@@ -1,0 +1,5 @@
+// TideLink SRAM Manager RTL filelist
++incdir+${TIDELINK_HOME}/src/rtl
+
+${TIDELINK_HOME}/src/rtl/tidelink_pkg.sv
+${TIDELINK_HOME}/src/rtl/tidelink_sram_manager.sv

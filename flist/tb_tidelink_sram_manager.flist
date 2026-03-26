@@ -1,0 +1,5 @@
+// TideLink SRAM Manager Testbench filelist
+-f ${TIDELINK_HOME}/flist/tidelink_sram_manager.flist
+
+${TIDELINK_HOME}/src/tb/sram_model.sv
+${TIDELINK_HOME}/src/tb/tb_tidelink_sram_manager.sv

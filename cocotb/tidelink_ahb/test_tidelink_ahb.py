@@ -100,6 +100,22 @@ def sram_read_word(dut, word_addr):
     return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
 
 
+async def ahb_write(dut, addr, data):
+    """Perform a single AHB word write with proper hsel/htrans/hready."""
+    await RisingEdge(dut.hclk)
+    dut.hsel.value   = 1
+    dut.htrans.value = 2  # NONSEQ
+    dut.hwrite.value = 1
+    dut.hsize.value  = 2  # WORD
+    dut.haddr.value  = addr
+    await RisingEdge(dut.hclk)
+    dut.hwdata.value = data
+    dut.htrans.value = 0  # IDLE
+    dut.hsel.value   = 0
+    await RisingEdge(dut.hclk)
+    dut.hwrite.value = 0
+
+
 async def setup(dut):
     """Start clock and create AHB Lite master driver."""
     cocotb.start_soon(Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start())
@@ -127,11 +143,12 @@ async def write_packet(dut, ahb, pkt, label=""):
     """
     prefix = f"[{label}] " if label else ""
 
-    # Beat 0: write length to address 0x0000
-    await ahb.write(0x0000, pkt.length)
-    # Move haddr away from 0 to prevent check_addr path
+    # Beat 0: write length to address 0x0000 (inline AHB for correct hsel)
+    await ahb_write(dut, 0x0000, pkt.length)
     dut.haddr.value = 0x3FFF
-    await ClockCycles(dut.hclk, 2)
+    # Extra cycles for metadata pipeline: capture_write_length_r (1 cycle) +
+    # packet_word_length_r (1 cycle) + write_target_addr_r (1 cycle)
+    await ClockCycles(dut.hclk, 3)
 
     write_ptr_before = int(dut.u_dut.write_ptr.value)
     target = int(dut.u_dut.write_target_addr.value)
@@ -152,19 +169,21 @@ async def write_packet(dut, ahb, pkt, label=""):
         dut.hsize.value  = 2  # WORD
         dut.haddr.value  = addr
 
-        # Data phase
+        # Data phase — sample write_complete BEFORE idling the bus
+        # write_complete is combinational and only true while hsel/htrans are active
         await RisingEdge(dut.hclk)
+        try:
+            hit_val = int(dut.u_dut.u_fifo_ctrl.write_complete.value)
+        except ValueError:
+            hit_val = 0
         dut.hwdata.value = word
         dut.htrans.value = 0  # IDLE
         dut.hsel.value   = 0
 
-        # Sample hit on falling edge for settled signals
-        await FallingEdge(dut.hclk)
-        hit = int(dut.u_dut.u_fifo_ctrl.write_complete.value)
-
         # Completion
         await RisingEdge(dut.hclk)
         dut.hwrite.value = 0
+        hit = hit_val
 
         dut._log.info(f"{prefix}Beat {i+1}: haddr=0x{addr:04X} "
                       f"data=0x{word:08X} write_complete={hit}")
@@ -278,7 +297,7 @@ async def test_07_write_packet_length_capture(dut):
     ahb = await setup(dut)
     await do_reset(dut)
 
-    await ahb.write(0x0000, 5)
+    await ahb_write(dut, 0x0000, 5)
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 2)
 
@@ -293,9 +312,8 @@ async def test_08_write_target_addr_calculation(dut):
     await do_reset(dut)
 
     for pkt_len in [1, 3, 10]:
-        await ahb.write(0x0000, pkt_len)
-        # Flush bus away from addr 0 to prevent check_addr path
-        await ahb.write(0x3FFC, 0)
+        await ahb_write(dut, 0x0000, pkt_len)
+        dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)
 
         target = int(dut.u_dut.write_target_addr.value)

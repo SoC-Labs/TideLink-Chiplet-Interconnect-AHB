@@ -119,18 +119,32 @@ module tidelink_ahb_fifo_ctrl #(
     // Valid AHB access to address 0 (gated on hsel, htrans, hready)
     wire valid_ahb_access = hsel && htrans[1] && hready;
 
+    // Registered flag: a valid write to addr 0 occurred in the address phase.
+    // hwdata is only valid in the DATA phase (one cycle later in AHB protocol),
+    // so we capture it on the next cycle.
+    logic capture_write_length_r, capture_write_length_nxt;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            capture_write_length_r <= 1'b0;
+        end else begin
+            capture_write_length_r <= capture_write_length_nxt;
+        end
+    end
+
     always_comb begin
         check_addr_nxt         = check_addr_r;
         packet_word_length_nxt = packet_word_length_r;
+        capture_write_length_nxt = valid_ahb_access && (haddr == 0) && hwrite;
 
         // Clear packet_word_length on completion so stale target addresses
         // don't cause spurious hits on subsequent transfers
         if (write_complete || read_complete) begin
             packet_word_length_nxt = '0;
-        end else if (valid_ahb_access && haddr == 0 && hwrite) begin
-            // Write to addr 0: capture packet length from write data
+        end else if (capture_write_length_r) begin
+            // Data phase of write to addr 0: hwdata is now valid
             packet_word_length_nxt = hwdata[RAM_ADDR_W-1:0];
-        end else if (valid_ahb_access && haddr == 0 && ~hwrite) begin
+        end else if (valid_ahb_access && (haddr == 0) && ~hwrite) begin
             // Read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin

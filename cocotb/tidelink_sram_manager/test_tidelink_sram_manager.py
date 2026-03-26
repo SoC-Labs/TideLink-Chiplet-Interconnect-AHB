@@ -37,6 +37,14 @@ def build_din_frame(num_words, start_val):
     return AxiStreamFrame(data)
 
 
+def build_din_frame_from_list(values):
+    """Build an AxiStreamFrame from an explicit list of 32-bit words."""
+    data = bytearray()
+    for val in values:
+        data.extend((val & 0xFFFFFFFF).to_bytes(4, "little"))
+    return AxiStreamFrame(data)
+
+
 def unpack_dout_words(frame):
     """Extract 32-bit words (LE) from a received AxiStreamFrame."""
     words = []
@@ -88,6 +96,14 @@ async def write_burst(ctrl_source, din_source, addr, num_words, start_val):
     """Issue a WRITE command then send din data. Waits until fully transmitted."""
     await send_ctrl(ctrl_source, 1, addr, num_words)
     frame = build_din_frame(num_words, start_val)
+    await din_source.send(frame)
+    await din_source.wait()
+
+
+async def write_burst_data(ctrl_source, din_source, addr, values):
+    """Issue a WRITE command then send explicit data values."""
+    await send_ctrl(ctrl_source, 1, addr, len(values))
+    frame = build_din_frame_from_list(values)
     await din_source.send(frame)
     await din_source.wait()
 
@@ -345,3 +361,268 @@ async def test_13_stress(dut):
         expected = (0xEE000000 + i) & 0xFFFFFFFF
         assert rx[i] == expected, \
             f"Stress data[{i}]: expected 0x{expected:08X}, got 0x{rx[i]:08X}"
+
+
+# ── Additional tests: out-of-order, wrapping, overwrite ─────────────────────
+
+@cocotb.test()
+async def test_14_out_of_order_write_read(dut):
+    """Test 14: Write to three non-contiguous regions, read back in reverse order."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    # Write region A (0x0000), B (0x0100), C (0x0200)
+    await write_burst(ctrl_source, din_source, 0x0000, 4, 0xA0000000)
+    await ClockCycles(dut.clk, 2)
+    await write_burst(ctrl_source, din_source, 0x0100, 4, 0xB0000000)
+    await ClockCycles(dut.clk, 2)
+    await write_burst(ctrl_source, din_source, 0x0200, 4, 0xC0000000)
+    await ClockCycles(dut.clk, 2)
+
+    # Read back in order C, A, B
+    rx_c = await read_burst(ctrl_source, dout_sink, 0x0200, 4)
+    rx_a = await read_burst(ctrl_source, dout_sink, 0x0000, 4)
+    rx_b = await read_burst(ctrl_source, dout_sink, 0x0100, 4)
+
+    for i in range(4):
+        assert rx_a[i] == (0xA0000000 + i) & 0xFFFFFFFF, \
+            f"Region A[{i}]: expected 0x{(0xA0000000 + i) & 0xFFFFFFFF:08X}, got 0x{rx_a[i]:08X}"
+        assert rx_b[i] == (0xB0000000 + i) & 0xFFFFFFFF, \
+            f"Region B[{i}]: expected 0x{(0xB0000000 + i) & 0xFFFFFFFF:08X}, got 0x{rx_b[i]:08X}"
+        assert rx_c[i] == (0xC0000000 + i) & 0xFFFFFFFF, \
+            f"Region C[{i}]: expected 0x{(0xC0000000 + i) & 0xFFFFFFFF:08X}, got 0x{rx_c[i]:08X}"
+
+
+@cocotb.test()
+async def test_15_scattered_single_writes_burst_read(dut):
+    """Test 15: Single-word writes to non-sequential addresses, then burst read."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    # Write individual words in scrambled order
+    addrs_vals = [
+        (0x000C, 0x33333333),
+        (0x0004, 0x11111111),
+        (0x0000, 0x00000000),
+        (0x0008, 0x22222222),
+    ]
+    for addr, val in addrs_vals:
+        await write_burst_data(ctrl_source, din_source, addr, [val])
+        await ClockCycles(dut.clk, 2)
+
+    # Read all 4 words as a single burst from 0x0000
+    rx = await read_burst(ctrl_source, dout_sink, 0x0000, 4)
+    expected = [0x00000000, 0x11111111, 0x22222222, 0x33333333]
+    for i in range(4):
+        assert rx[i] == expected[i], \
+            f"Scattered write word[{i}]: expected 0x{expected[i]:08X}, got 0x{rx[i]:08X}"
+
+
+@cocotb.test()
+async def test_16_overwrite_same_address(dut):
+    """Test 16: Write data, overwrite with new data, verify only latest persists."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    await write_burst(ctrl_source, din_source, 0x0300, 4, 0xAAAAAAAA)
+    await ClockCycles(dut.clk, 2)
+
+    # Overwrite same region with different data
+    await write_burst(ctrl_source, din_source, 0x0300, 4, 0x55550000)
+    await ClockCycles(dut.clk, 2)
+
+    rx = await read_burst(ctrl_source, dout_sink, 0x0300, 4)
+    for i in range(4):
+        expected = (0x55550000 + i) & 0xFFFFFFFF
+        assert rx[i] == expected, \
+            f"Overwrite word[{i}]: expected 0x{expected:08X}, got 0x{rx[i]:08X}"
+
+
+@cocotb.test()
+async def test_17_write_no_clobber_neighbour(dut):
+    """Test 17: Writing to one region must not corrupt adjacent data."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    # Write region A at 0x0400 and region B at 0x0410
+    await write_burst(ctrl_source, din_source, 0x0400, 4, 0xAAAA0000)
+    await ClockCycles(dut.clk, 2)
+    await write_burst(ctrl_source, din_source, 0x0410, 4, 0xBBBB0000)
+    await ClockCycles(dut.clk, 2)
+
+    # Overwrite region B
+    await write_burst(ctrl_source, din_source, 0x0410, 4, 0xCCCC0000)
+    await ClockCycles(dut.clk, 2)
+
+    # Region A should be untouched
+    rx_a = await read_burst(ctrl_source, dout_sink, 0x0400, 4)
+    for i in range(4):
+        expected = (0xAAAA0000 + i) & 0xFFFFFFFF
+        assert rx_a[i] == expected, \
+            f"Neighbour region A[{i}] clobbered: expected 0x{expected:08X}, got 0x{rx_a[i]:08X}"
+
+    # Region B should have the new data
+    rx_b = await read_burst(ctrl_source, dout_sink, 0x0410, 4)
+    for i in range(4):
+        expected = (0xCCCC0000 + i) & 0xFFFFFFFF
+        assert rx_b[i] == expected, \
+            f"Overwritten region B[{i}]: expected 0x{expected:08X}, got 0x{rx_b[i]:08X}"
+
+
+@cocotb.test()
+async def test_18_addr_wrap_write(dut):
+    """Test 18: Write burst that wraps from top of SRAM address space to bottom.
+
+    RAM_ADDR_W=14 → byte addresses 0x0000–0x3FFF.
+    A 4-word write starting at 0x3FF8 accesses: 0x3FF8, 0x3FFC, 0x0000, 0x0004.
+    """
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    values = [0xDE000000, 0xDE000001, 0xDE000002, 0xDE000003]
+    await write_burst_data(ctrl_source, din_source, 0x3FF8, values)
+    await ClockCycles(dut.clk, 2)
+
+    # Read back the two words below the boundary
+    rx_hi = await read_burst(ctrl_source, dout_sink, 0x3FF8, 2)
+    assert rx_hi[0] == 0xDE000000, f"Wrap word @0x3FF8: got 0x{rx_hi[0]:08X}"
+    assert rx_hi[1] == 0xDE000001, f"Wrap word @0x3FFC: got 0x{rx_hi[1]:08X}"
+
+    # Read the two words that wrapped to the bottom
+    rx_lo = await read_burst(ctrl_source, dout_sink, 0x0000, 2)
+    assert rx_lo[0] == 0xDE000002, f"Wrap word @0x0000: got 0x{rx_lo[0]:08X}"
+    assert rx_lo[1] == 0xDE000003, f"Wrap word @0x0004: got 0x{rx_lo[1]:08X}"
+
+
+@cocotb.test()
+async def test_19_addr_wrap_read(dut):
+    """Test 19: Read burst that wraps from top of SRAM to bottom.
+
+    Write two words at 0x3FF8 and two at 0x0000 separately,
+    then issue a single 4-word read from 0x3FF8 that wraps.
+    """
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    # Seed the two regions independently
+    await write_burst_data(ctrl_source, din_source, 0x3FF8, [0xF0F00001, 0xF0F00002])
+    await ClockCycles(dut.clk, 2)
+    await write_burst_data(ctrl_source, din_source, 0x0000, [0xF0F00003, 0xF0F00004])
+    await ClockCycles(dut.clk, 2)
+
+    # Single 4-word read starting at 0x3FF8 — should wrap through 0x0000
+    rx = await read_burst(ctrl_source, dout_sink, 0x3FF8, 4)
+    assert rx[0] == 0xF0F00001, f"Wrap read[0] @0x3FF8: got 0x{rx[0]:08X}"
+    assert rx[1] == 0xF0F00002, f"Wrap read[1] @0x3FFC: got 0x{rx[1]:08X}"
+    assert rx[2] == 0xF0F00003, f"Wrap read[2] @0x0000: got 0x{rx[2]:08X}"
+    assert rx[3] == 0xF0F00004, f"Wrap read[3] @0x0004: got 0x{rx[3]:08X}"
+
+
+@cocotb.test()
+async def test_20_addr_wrap_single_word_at_top(dut):
+    """Test 20: Single-word write/read at the very last SRAM address (0x3FFC)."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    await write_burst_data(ctrl_source, din_source, 0x3FFC, [0xBEEFCAFE])
+    await ClockCycles(dut.clk, 2)
+
+    rx = await read_burst(ctrl_source, dout_sink, 0x3FFC, 1)
+    assert rx[0] == 0xBEEFCAFE, \
+        f"Top-of-SRAM readback: expected 0xBEEFCAFE, got 0x{rx[0]:08X}"
+
+
+@cocotb.test()
+async def test_21_rapid_write_read_cycles(dut):
+    """Test 21: Rapid write-read-write-read with no extra idle between transactions."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    for iteration in range(8):
+        addr = iteration * 0x10
+        val = 0x10000000 * (iteration + 1)
+        await write_burst(ctrl_source, din_source, addr, 2, val)
+        rx = await read_burst(ctrl_source, dout_sink, addr, 2)
+        for i in range(2):
+            expected = (val + i) & 0xFFFFFFFF
+            assert rx[i] == expected, \
+                f"Rapid cycle {iteration} word[{i}]: expected 0x{expected:08X}, got 0x{rx[i]:08X}"
+
+
+@cocotb.test()
+async def test_22_max_burst_length(dut):
+    """Test 22: Maximum burst length (255 words) write and readback."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    num_words = 255  # max for 8-bit length field
+    await write_burst(ctrl_source, din_source, 0x0000, num_words, 0x00010000)
+    await ClockCycles(dut.clk, 2)
+
+    rx = await read_burst(ctrl_source, dout_sink, 0x0000, num_words)
+    assert len(rx) == num_words, f"Expected {num_words} words, got {len(rx)}"
+    for i in range(num_words):
+        expected = (0x00010000 + i) & 0xFFFFFFFF
+        assert rx[i] == expected, \
+            f"Max burst word[{i}]: expected 0x{expected:08X}, got 0x{rx[i]:08X}"
+
+
+@cocotb.test()
+async def test_23_addr_wrap_large_burst(dut):
+    """Test 23: Large burst starting near top of SRAM that wraps significantly.
+
+    64-word write starting at 0x3F80.
+    0x3F80–0x3FFC = 32 words before the boundary,
+    0x0000–0x007C = 32 words wrapping into the bottom.
+    """
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    num_words = 64
+    await write_burst(ctrl_source, din_source, 0x3F80, num_words, 0xDD000000)
+    await ClockCycles(dut.clk, 2)
+
+    # Read back the non-wrapped portion (first 32 words: 0x3F80–0x3FFC)
+    rx_hi = await read_burst(ctrl_source, dout_sink, 0x3F80, 32)
+    for i in range(32):
+        expected = (0xDD000000 + i) & 0xFFFFFFFF
+        assert rx_hi[i] == expected, \
+            f"Wrap large hi[{i}]: expected 0x{expected:08X}, got 0x{rx_hi[i]:08X}"
+
+    # Read the wrapped portion (last 32 words: 0x0000–0x007C)
+    rx_lo = await read_burst(ctrl_source, dout_sink, 0x0000, 32)
+    for i in range(32):
+        expected = (0xDD000000 + 32 + i) & 0xFFFFFFFF
+        assert rx_lo[i] == expected, \
+            f"Wrap large lo[{i}]: expected 0x{expected:08X}, got 0x{rx_lo[i]:08X}"
+
+
+@cocotb.test()
+async def test_24_out_of_order_gapped_stalled(dut):
+    """Test 24: Out-of-order access with gapped writes and stalled reads."""
+    ctrl_source, din_source, dout_sink = await setup(dut)
+    await do_reset(dut)
+
+    regions = [
+        (0x0500, 8, 0xA1000000),
+        (0x0600, 8, 0xB2000000),
+        (0x0700, 8, 0xC3000000),
+    ]
+
+    # Write all regions with random gaps
+    din_source.set_pause_generator(random_pause_generator(6))
+    for addr, n, sv in regions:
+        await write_burst(ctrl_source, din_source, addr, n, sv)
+        await ClockCycles(dut.clk, 2)
+    din_source.clear_pause_generator()
+
+    # Read back in reverse order with random stalls
+    dout_sink.set_pause_generator(random_pause_generator(6))
+    for addr, n, sv in reversed(regions):
+        rx = await read_burst(ctrl_source, dout_sink, addr, n)
+        assert len(rx) == n, f"Region @0x{addr:04X}: expected {n} words, got {len(rx)}"
+        for i in range(n):
+            expected = (sv + i) & 0xFFFFFFFF
+            assert rx[i] == expected, \
+                f"OoO gapped/stalled @0x{addr:04X}[{i}]: expected 0x{expected:08X}, got 0x{rx[i]:08X}"
+    dout_sink.clear_pause_generator()

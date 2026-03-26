@@ -1,8 +1,11 @@
 sim/*
 !Makefile
-cocotb/__pycache__/
-cocotb/sim_build/
+cocotb/*/__pycache__/
+cocotb/*/sim_build/
 *.vcd
 *.log
 *.key
 results.xml
+xcelium.d
+*.history
+*.xml

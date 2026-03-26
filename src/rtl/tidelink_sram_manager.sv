@@ -250,9 +250,9 @@ module tidelink_sram_manager #(
                 // if we see a handshake on the output stream, we can prepare the next beat of data
                 sramcs   = 1'b1;
                 sramaddr = addr; // Set the SRAM address for the read operation
+                rdata_out_valid_nxt = 1'b1;
                 if (dout_tready & ~dout_tlast) begin
                     trans_count_nxt     = trans_count - 1; // Decrement the transaction count for each beat of data read
-                    rdata_out_valid_nxt = 1'b1;
                     rdata_out_last_nxt  = (trans_count_nxt == 0); // If transaction count is 0, this is the last beat
                     addr_nxt            = addr + 4; // Increment address for next read
                     sramaddr            = addr_nxt; // Set the SRAM address for the read operation

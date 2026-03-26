@@ -1,4 +1,4 @@
-// Cocotb wrapper for tidelink_ahb_returner
+// Cocotb wrapper for tidelink_ahb_returner (3-channel version)
 // Exposes AHB bus signals as ports so cocotbext-ahb AHBLiteSlaveRAM
 // can drive slave responses from Python.
 module tb_top #(
@@ -8,12 +8,20 @@ module tb_top #(
     input  logic                  hclk,
     input  logic                  hresetn,
 
-    // Interrupt stimulus
-    input  logic                  interrupt,
+    // Interrupt channel 0 (release tokens — highest priority)
+    input  logic                  interrupt_0,
+    input  logic [SYS_ADDR_W-1:0] write_addr_0,
+    input  logic [SYS_DATA_W-1:0] write_data_0,
 
-    // Write parameters
-    input  logic [SYS_ADDR_W-1:0] write_addr,
-    input  logic [SYS_DATA_W-1:0] write_data,
+    // Interrupt channel 1 (doorbell — medium priority)
+    input  logic                  interrupt_1,
+    input  logic [SYS_ADDR_W-1:0] write_addr_1,
+    input  logic [SYS_DATA_W-1:0] write_data_1,
+
+    // Interrupt channel 2 (reset doorbell — lowest priority)
+    input  logic                  interrupt_2,
+    input  logic [SYS_ADDR_W-1:0] write_addr_2,
+    input  logic [SYS_DATA_W-1:0] write_data_2,
 
     // AHB Lite bus signals (exposed for cocotbext-ahb)
     output logic [SYS_ADDR_W-1:0] haddr,
@@ -34,20 +42,26 @@ module tb_top #(
         .SYS_ADDR_W(SYS_ADDR_W),
         .SYS_DATA_W(SYS_DATA_W)
     ) u_dut (
-        .hclk       (hclk),
-        .hresetn    (hresetn),
-        .interrupt  (interrupt),
-        .write_addr (write_addr),
-        .write_data (write_data),
-        .haddr      (haddr),
-        .hwdata     (hwdata),
-        .htrans     (htrans),
-        .hsize      (hsize),
-        .hwrite     (hwrite),
-        .hready     (hready),
-        .hresp      (hresp),
-        .hrdata     (hrdata),
-        .busy       (busy)
+        .hclk        (hclk),
+        .hresetn     (hresetn),
+        .interrupt_0 (interrupt_0),
+        .write_addr_0(write_addr_0),
+        .write_data_0(write_data_0),
+        .interrupt_1 (interrupt_1),
+        .write_addr_1(write_addr_1),
+        .write_data_1(write_data_1),
+        .interrupt_2 (interrupt_2),
+        .write_addr_2(write_addr_2),
+        .write_data_2(write_data_2),
+        .haddr       (haddr),
+        .hwdata      (hwdata),
+        .htrans      (htrans),
+        .hsize       (hsize),
+        .hwrite      (hwrite),
+        .hready      (hready),
+        .hresp       (hresp),
+        .hrdata      (hrdata),
+        .busy        (busy)
     );
 
     // Waveform dump

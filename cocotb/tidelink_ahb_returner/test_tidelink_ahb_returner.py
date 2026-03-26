@@ -32,9 +32,15 @@ async def setup(dut):
 async def do_reset(dut):
     """Assert active-low reset for 5 cycles, then deassert."""
     dut.hresetn.value = 0
-    dut.interrupt.value = 0
-    dut.write_addr.value = 0
-    dut.write_data.value = 0
+    dut.interrupt_0.value = 0
+    dut.write_addr_0.value = 0
+    dut.write_data_0.value = 0
+    dut.interrupt_1.value = 0
+    dut.write_addr_1.value = 0
+    dut.write_data_1.value = 0
+    dut.interrupt_2.value = 0
+    dut.write_addr_2.value = 0
+    dut.write_data_2.value = 0
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 2)
@@ -76,13 +82,13 @@ async def test_02_single_write_on_interrupt(dut):
     test_addr = 0x0000_1000
     test_data = 0xDEAD_BEEF
 
-    dut.write_addr.value = test_addr
-    dut.write_data.value = test_data
+    dut.write_addr_0.value = test_addr
+    dut.write_data_0.value = test_data
 
     # Pulse interrupt for one cycle
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     # Wait for the transfer to complete
     await wait_not_busy(dut)
@@ -100,12 +106,12 @@ async def test_03_busy_during_transfer(dut):
     await setup(dut)
     await do_reset(dut)
 
-    dut.write_addr.value = 0x0000_2000
-    dut.write_data.value = 0x1234_5678
+    dut.write_addr_0.value = 0x0000_2000
+    dut.write_data_0.value = 0x1234_5678
 
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     # On the next rising edge, DUT should be busy (address phase)
     await RisingEdge(dut.hclk)
@@ -122,8 +128,8 @@ async def test_04_no_transfer_without_interrupt(dut):
     await do_reset(dut)
 
     test_addr = 0x0000_3000
-    dut.write_addr.value = test_addr
-    dut.write_data.value = 0xAAAA_BBBB
+    dut.write_addr_0.value = test_addr
+    dut.write_data_0.value = 0xAAAA_BBBB
 
     # Wait several cycles without asserting interrupt
     await ClockCycles(dut.hclk, 10)
@@ -140,21 +146,21 @@ async def test_05_interrupt_ignored_while_busy(dut):
     slave = await setup(dut)
     await do_reset(dut)
 
-    dut.write_addr.value = 0x0000_4000
-    dut.write_data.value = 0x1111_2222
+    dut.write_addr_0.value = 0x0000_4000
+    dut.write_data_0.value = 0x1111_2222
 
     # First interrupt
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     # While busy, change data and pulse interrupt again
     await RisingEdge(dut.hclk)
-    dut.write_addr.value = 0x0000_5000
-    dut.write_data.value = 0x3333_4444
-    dut.interrupt.value = 1
+    dut.write_addr_0.value = 0x0000_5000
+    dut.write_data_0.value = 0x3333_4444
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     await wait_not_busy(dut)
     await ClockCycles(dut.hclk, 2)
@@ -177,12 +183,12 @@ async def test_06_back_to_back_transfers(dut):
     await do_reset(dut)
 
     # First transfer
-    dut.write_addr.value = 0x0000_A000
-    dut.write_data.value = 0xAAAA_0001
+    dut.write_addr_0.value = 0x0000_A000
+    dut.write_data_0.value = 0xAAAA_0001
 
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     await wait_not_busy(dut)
     await ClockCycles(dut.hclk, 2)
@@ -191,12 +197,12 @@ async def test_06_back_to_back_transfers(dut):
     assert actual1 == 0xAAAA_0001, f"First write mismatch: 0x{actual1:08X}"
 
     # Second transfer with different parameters
-    dut.write_addr.value = 0x0000_B000
-    dut.write_data.value = 0xBBBB_0002
+    dut.write_addr_0.value = 0x0000_B000
+    dut.write_data_0.value = 0xBBBB_0002
 
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     await wait_not_busy(dut)
     await ClockCycles(dut.hclk, 2)
@@ -211,15 +217,15 @@ async def test_07_htrans_sequence(dut):
     await setup(dut)
     await do_reset(dut)
 
-    dut.write_addr.value = 0x0000_6000
-    dut.write_data.value = 0xCAFE_BABE
+    dut.write_addr_0.value = 0x0000_6000
+    dut.write_data_0.value = 0xCAFE_BABE
 
     # Before interrupt, htrans should be IDLE
     assert dut.u_dut.htrans.value == 0, "htrans should be IDLE before interrupt"
 
-    dut.interrupt.value = 1
+    dut.interrupt_0.value = 1
     await RisingEdge(dut.hclk)
-    dut.interrupt.value = 0
+    dut.interrupt_0.value = 0
 
     # Address phase: htrans should be NONSEQ (0b10 = 2)
     await RisingEdge(dut.hclk)

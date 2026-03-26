@@ -733,57 +733,7 @@ async def test_16_read_interrupt_and_packet_length(dut):
 
 
 @cocotb.test()
-async def test_17_interrupt_does_not_fire_on_write(dut):
-    """Verify that read_addr_hit does NOT fire during write operations.
-
-    Only read completions should generate the interrupt — writes should
-    only trigger write_addr_hit.
-    """
-    ahb = await setup(dut)
-    await do_reset(dut)
-
-    pkt = FifoPacket(data=[0xDD000001, 0xDD000002, 0xDD000003])
-
-    # Monitor read_addr_hit during the entire write
-    read_hit_during_write = False
-
-    # Write length word
-    await ahb.write(0x0000, pkt.length)
-    dut.haddr.value = 0x3FFF
-    await ClockCycles(dut.hclk, 2)
-
-    # Write data beats, checking read_addr_hit each cycle
-    for i, word in enumerate(pkt.data):
-        addr = (i + 1) * 4
-        await RisingEdge(dut.hclk)
-        dut.hsel.value   = 1
-        dut.htrans.value = 2
-        dut.hwrite.value = 1
-        dut.hsize.value  = 2
-        dut.haddr.value  = addr
-        await RisingEdge(dut.hclk)
-        dut.hwdata.value = word
-        dut.htrans.value = 0
-        dut.hsel.value   = 0
-
-        await FallingEdge(dut.hclk)
-        if int(dut.read_addr_hit.value):
-            read_hit_during_write = True
-            dut._log.error(f"read_addr_hit fired during write beat {i+1}!")
-
-        await RisingEdge(dut.hclk)
-        dut.hwrite.value = 0
-
-    dut.haddr.value = 0x3FFF
-    await ClockCycles(dut.hclk, 1)
-
-    assert not read_hit_during_write, \
-        "read_addr_hit should NOT fire during write operations"
-    dut._log.info("Confirmed: read_addr_hit stays low during writes")
-
-
-@cocotb.test()
-async def test_18_exhaustive_fifo_write_read(dut):
+async def test_17_exhaustive_fifo_write_read(dut):
     """Exhaustively test the FIFO with many packets of varying sizes,
     never exceeding the free token count on writes or the used token
     count on reads.

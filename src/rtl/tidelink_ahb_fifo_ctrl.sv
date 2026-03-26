@@ -133,8 +133,8 @@ module tidelink_ahb_fifo_ctrl #(
     end
 
     always_comb begin
-        check_addr_nxt         = check_addr_r;
-        packet_word_length_nxt = packet_word_length_r;
+        check_addr_nxt           = check_addr_r;
+        packet_word_length_nxt   = packet_word_length_r;
         capture_write_length_nxt = valid_ahb_access && (haddr == 0) && hwrite;
 
         // Clear packet_word_length on completion so stale target addresses

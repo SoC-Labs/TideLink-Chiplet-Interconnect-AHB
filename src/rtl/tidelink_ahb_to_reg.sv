@@ -45,93 +45,117 @@ module tidelink_ahb_to_reg #(
     input  logic  [31:0]        reg_rdata
 );
 
-    // ----------------------------------------------------------
-    // AHB transfer detection
-    // ----------------------------------------------------------
-    // A valid AHB access requires hsel, hready, and a non-IDLE/BUSY transfer
-    logic ahb_access;
-    assign ahb_access = hsel & hready & htrans[1];
+    // ----------------------------------------
+    // Internal wires declarations
+    logic                   trans_req;
+    // transfer request issued only in SEQ and NONSEQ status and slave is
+    // selected and last transfer finish
+    
+    logic                   ahb_read_req;
+    logic                   ahb_write_req;
+    logic                   update_read_req;    // To update the read enable register
+    logic                   update_write_req;   // To update the write enable register
+    
+    logic     [ADDR_W-1:0]   addr_reg;     // address signal, registered
+    logic                    read_en_reg;  // read enable signal, registered
+    logic                    write_en_reg; // write enable signal, registered
+    
+    logic  [3:0]             byte_strobe_reg; // registered output for byte strobe
+    logic  [3:0]             byte_strobe_nxt; // next state for byte_strobe_reg
+    
+    assign trans_req     = hready & hsel & htrans[1]; // AHB transfer request, valid when there is an active transfer (HREADY=1), slave is selected (HSEL=1) and the transfer is NONSEQ or SEQ (HTRANS[1]=1)
+    assign ahb_read_req  = trans_req & (~hwrite);// AHB read request
+    assign ahb_write_req = trans_req &  hwrite;  // AHB write request
+    
+    //-----------------------------------------------------------
+    // Module logic start
+    //----------------------------------------------------------
 
-    logic ahb_write;
-    assign ahb_write = ahb_access & hwrite;
-
-    logic ahb_read;
-    assign ahb_read = ahb_access & ~hwrite;
-
-    // ----------------------------------------------------------
-    // Address-phase to data-phase pipeline registers
-    // ----------------------------------------------------------
-    // AHB is a pipelined protocol: address phase signals must be
-    // registered and used in the following data phase.
-    logic                reg_write_en_r;   // Data-phase write enable
-    logic                reg_read_en_r;    // Data-phase read enable
-    logic  [ADDR_W-1:0]  reg_addr_r;       // Data-phase address
-    logic  [3:0]         reg_byte_strobe_r; // Data-phase byte strobes
-
-    // ----------------------------------------------------------
-    // Byte lane decoder
-    // ----------------------------------------------------------
-    // Decode hsize and haddr[1:0] to generate byte-lane write strobes.
-    // This determines which bytes within the 32-bit word are active.
-    logic tx_byte, tx_half, tx_word;
-    assign tx_byte = ~hsize[1] & ~hsize[0];  // hsize == 3'b000 (8-bit)
-    assign tx_half = ~hsize[1] &  hsize[0];  // hsize == 3'b001 (16-bit)
-    assign tx_word =  hsize[1];              // hsize == 3'b01x (32-bit)
-
-    // Individual byte select signals
-    logic byte_at_00, byte_at_01, byte_at_10, byte_at_11;
-    assign byte_at_00 = tx_byte & ~haddr[1] & ~haddr[0];
-    assign byte_at_01 = tx_byte & ~haddr[1] &  haddr[0];
-    assign byte_at_10 = tx_byte &  haddr[1] & ~haddr[0];
-    assign byte_at_11 = tx_byte &  haddr[1] &  haddr[0];
-
-    // Halfword select signals
-    logic half_at_00, half_at_10;
-    assign half_at_00 = tx_half & ~haddr[1];
-    assign half_at_10 = tx_half &  haddr[1];
-
-    // Compose per-byte strobes
-    logic [3:0] byte_strobe_nxt;
-    assign byte_strobe_nxt[0] = tx_word | half_at_00 | byte_at_00;
-    assign byte_strobe_nxt[1] = tx_word | half_at_00 | byte_at_01;
-    assign byte_strobe_nxt[2] = tx_word | half_at_10 | byte_at_10;
-    assign byte_strobe_nxt[3] = tx_word | half_at_10 | byte_at_11;
-
-    // ----------------------------------------------------------
-    // Pipeline registers (address phase -> data phase)
-    // ----------------------------------------------------------
+    // Address signal registering, to make the address and data active at the same cycle
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn) begin
-            reg_write_en_r    <= 1'b0;
-            reg_read_en_r     <= 1'b0;
-            reg_addr_r        <= '0;
-            reg_byte_strobe_r <= 4'b0000;
-        end else if (hready) begin
-            reg_write_en_r    <= ahb_write;
-            reg_read_en_r     <= ahb_read;
-            reg_addr_r        <= haddr;
-            reg_byte_strobe_r <= byte_strobe_nxt & {4{ahb_write}};
+        if (~hresetn) begin
+            addr_reg <= {(ADDR_W){1'b0}}; //default address 0 is selected
+        end
+        else if (trans_req) begin
+            addr_reg <= haddr[ADDR_W-1:0];
         end
     end
 
-    // ----------------------------------------------------------
-    // Output assignments
-    // ----------------------------------------------------------
 
-    // Register interface outputs (active in data phase)
-    assign reg_addr        = reg_addr_r;
-    assign reg_read_en     = reg_read_en_r;
-    assign reg_write_en    = reg_write_en_r;
-    assign reg_byte_strobe = reg_byte_strobe_r;
+    // register read signal generation
+    assign update_read_req = ahb_read_req | (read_en_reg & hready); // Update read enable control if
+                                    //  1. When there is a valid read request
+                                    //  2. When there is an active read, update it at the end of transfer (HREADY=1)
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (~hresetn) begin
+            read_en_reg <= 1'b0;
+        end
+        else if (update_read_req) begin
+            read_en_reg  <= ahb_read_req;
+        end
+    end
+
+    // register write signal generation
+    assign update_write_req = ahb_write_req |( write_en_reg & hready);  // Update write enable control if
+                                    //  1. When there is a valid write request
+                                    //  2. When there is an active write, update it at the end of transfer (HREADY=1)
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (~hresetn) begin
+            write_en_reg <= 1'b0;
+        end
+        else if (update_write_req) begin
+            write_en_reg  <= ahb_write_req;
+        end
+    end
+
+    // byte strobe signal
+    always_comb begin
+        if (hsize == 3'b000) begin
+            case(haddr[1:0])
+                2'b00: byte_strobe_nxt = 4'b0001;
+                2'b01: byte_strobe_nxt = 4'b0010;
+                2'b10: byte_strobe_nxt = 4'b0100;
+                2'b11: byte_strobe_nxt = 4'b1000;
+                default: byte_strobe_nxt = 4'bxxxx;
+            endcase
+        end
+        else if (hsize == 3'b001) begin
+            if(haddr[1]==1'b1)
+            byte_strobe_nxt = 4'b1100;
+            else
+            byte_strobe_nxt = 4'b0011;
+        end
+        else begin
+            byte_strobe_nxt = 4'b1111;
+        end
+    end
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (~hresetn) begin
+            byte_strobe_reg <= {4{1'b0}};
+        end
+        else if (update_read_req|update_write_req) begin
+            // Update byte strobe registers if
+            // 1. if there is a valid read/write transfer request
+            // 2. if there is an on going transfer
+            byte_strobe_reg  <= byte_strobe_nxt;
+        end
+    end
+
+    //-----------------------------------------------------------
+    // Outputs
+    //-----------------------------------------------------------
+    // For simplify the timing, the master and slave signals are connected directly, execpt data bus.
+    assign reg_addr        = addr_reg[ADDR_W-1:0];
+    assign reg_read_en     = read_en_reg;
+    assign reg_write_en    = write_en_reg;
     assign reg_wdata       = hwdata;
+    assign reg_byte_strobe = byte_strobe_reg;
 
-    // AHB read data comes directly from the register bank
-    assign hrdata = reg_rdata;
-
-    // Zero wait-state slave: always ready
-    assign hreadyout = 1'b1;
-
-    // Always OKAY response (no error support)
-    assign hresp = 1'b0;
+    assign hreadyout       = 1'b1;  // slave always ready
+    assign hresp           = 1'b0;  // OKAY response from slave
+    assign hrdata          = reg_rdata;
 
 endmodule

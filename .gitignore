@@ -9,3 +9,7 @@ results.xml
 xcelium.d
 *.history
 *.xml
+novas.*
+*.fsdb*
+.vcs_checkoutpoint*
+verdiLog

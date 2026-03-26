@@ -438,9 +438,28 @@ async def read_packet(dut, ahb, label=""):
     prefix = f"[{label}] " if label else ""
 
     # Beat 0: read length from address 0x0000
-    resp = await ahb.read(0x0000)
-    # Move haddr away from 0 to let check_addr capture rdata
-    dut.haddr.value = 0x3FFF
+    # Use inline AHB phases to control timing precisely.
+    # The read triggers check_addr, which captures rdata on the next cycle.
+    # We need cs to remain asserted long enough for rdata to be valid.
+
+    # Address phase: drive read to addr 0
+    await RisingEdge(dut.hclk)
+    dut.hsel.value   = 1
+    dut.htrans.value = 2  # NONSEQ
+    dut.hwrite.value = 0
+    dut.hsize.value  = 2  # WORD
+    dut.haddr.value  = 0x0000
+
+    # Data phase: cmsdk_ahb_to_sram latches addr, asserts cs
+    # check_addr_nxt = 1 (haddr==0 && ~hwrite)
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0  # IDLE
+    dut.hsel.value   = 0
+    # Move haddr away so check_addr doesn't re-trigger
+    dut.haddr.value  = 0x3FFF
+
+    # Wait for: check_addr=1 -> captures rdata -> packet_word_length updates
+    # rdata is valid this cycle (cs_reg was set from previous cycle's cs)
     await ClockCycles(dut.hclk, 3)
 
     pkt_len = int(dut.u_dut.packet_word_length.value)

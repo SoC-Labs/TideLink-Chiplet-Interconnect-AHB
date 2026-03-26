@@ -80,36 +80,51 @@ module tidelink #(
     // --------------------------------------------------------------------------
     // APB Register Map
     // --------------------------------------------------------------------------
-    // Offset 0x000: Returner Write Address   (RW)
-    // Offset 0x004: Packet Word Length       (RO) - sideband from FIFO
-    // Offset 0x008: Token Count              (RO) - current total token count
-    // Offset 0x00C: Status Register          (RO)
+    // Offset 0x000: Release Tokens Address (RW) - target for token count on read completion
+    // Offset 0x004: Doorbell Target Address (RW) - target for token count on doorbell
+    // Offset 0x008: Packet Word Length      (RO) - sideband from FIFO
+    // Offset 0x00C: Token Count             (RO) - current total token count
+    // Offset 0x010: Status Register         (RO)
     //               [0] write_addr_hit
     //               [1] read_addr_hit
     //               [2] returner_busy
+    // Offset 0x014: Doorbell Register       (W1C) - write any value to trigger doorbell
     // --------------------------------------------------------------------------
 
-    logic [SYS_DATA_W-1:0] reg_write_addr;
+    logic [SYS_DATA_W-1:0] reg_release_tokens_addr;
+    logic [SYS_DATA_W-1:0] reg_doorbell_addr;
+    logic                  doorbell_trigger;
 
     // APB write logic
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            reg_write_addr <= '0;
-        end else if (apbs_psel && apbs_penable && apbs_pwrite) begin
-            case (apbs_paddr[4:2])
-                3'h0: reg_write_addr <= apbs_pwdata;
-                default: ;
-            endcase
+            reg_release_tokens_addr <= '0;
+            reg_doorbell_addr       <= '0;
+            doorbell_trigger        <= 1'b0;
+        end else begin
+            // Doorbell is a self-clearing pulse — deassert after one cycle
+            doorbell_trigger <= 1'b0;
+
+            if (apbs_psel && apbs_penable && apbs_pwrite) begin
+                case (apbs_paddr[4:2])
+                    3'h0: reg_release_tokens_addr <= apbs_pwdata;
+                    3'h1: reg_doorbell_addr       <= apbs_pwdata;
+                    3'h5: doorbell_trigger        <= 1'b1;
+                    default: ;
+                endcase
+            end
         end
     end
 
     // APB read logic
     always_comb begin
         case (apbs_paddr[4:2])
-            3'h0:    apbs_prdata = reg_write_addr;
-            3'h1:    apbs_prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
-            3'h2:    apbs_prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
-            3'h3:    apbs_prdata = {{(SYS_DATA_W-3){1'b0}}, returner_busy, read_addr_hit, write_addr_hit};
+            3'h0:    apbs_prdata = reg_release_tokens_addr;
+            3'h1:    apbs_prdata = reg_doorbell_addr;
+            3'h2:    apbs_prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
+            3'h3:    apbs_prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
+            3'h4:    apbs_prdata = {{(SYS_DATA_W-3){1'b0}}, returner_busy, read_addr_hit, write_addr_hit};
+            3'h5:    apbs_prdata = '0; // Doorbell register reads as 0
             default: apbs_prdata = '0;
         endcase
     end
@@ -118,13 +133,8 @@ module tidelink #(
     assign apbs_pready  = 1'b1;
     assign apbs_pslverr = 1'b0;
 
-    // Sideband: FIFO drives returner directly
-    // - write_addr from APB config register
-    // - write_data is packet_word_length from tidelink_ahb
-    // - interrupt is read_addr_hit (read packet completed)
-    wire [SYS_ADDR_W-1:0] returner_write_addr = reg_write_addr[SYS_ADDR_W-1:0];
-    wire [SYS_DATA_W-1:0] returner_write_data = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
-    wire                   returner_interrupt  = read_addr_hit;
+    // Sideband wiring to returner
+    wire [SYS_DATA_W-1:0] token_count_data = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
 
     // --------------------------------------------------------------------------
     // TideLink AHB FIFO Instance
@@ -155,28 +165,35 @@ module tidelink #(
     // --------------------------------------------------------------------------
     // TideLink AHB Returner Instance
     // --------------------------------------------------------------------------
+    // Channel 0 (priority): release tokens on read completion
+    // Channel 1: doorbell — software-triggered via APB register write
     tidelink_ahb_returner #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W)
     ) u_tidelink_ahb_returner (
-        .hclk       (hclk),
-        .hresetn    (hresetn),
-        
-        // Interface from FIFO (sideband)
-        .interrupt  (returner_interrupt),
-        .write_addr (returner_write_addr),
-        .write_data (returner_write_data),
-        
-        // Manager interface to AHB
-        .haddr      (ahbm_haddr),
-        .hwdata     (ahbm_hwdata),
-        .htrans     (ahbm_htrans),
-        .hsize      (ahbm_hsize),
-        .hwrite     (ahbm_hwrite),
-        .hready     (ahbm_hready),
-        .hresp      (ahbm_hresp),
-        .hrdata     (ahbm_hrdata),
-        .busy       (returner_busy)
+        .hclk        (hclk),
+        .hresetn     (hresetn),
+
+        // Channel 0: release tokens (read_addr_hit → write token count)
+        .interrupt_0 (read_addr_hit),
+        .write_addr_0(reg_release_tokens_addr[SYS_ADDR_W-1:0]),
+        .write_data_0(token_count_data),
+
+        // Channel 1: doorbell (software trigger → write token count)
+        .interrupt_1 (doorbell_trigger),
+        .write_addr_1(reg_doorbell_addr[SYS_ADDR_W-1:0]),
+        .write_data_1(token_count_data),
+
+        // AHB Master
+        .haddr       (ahbm_haddr),
+        .hwdata      (ahbm_hwdata),
+        .htrans      (ahbm_htrans),
+        .hsize       (ahbm_hsize),
+        .hwrite      (ahbm_hwrite),
+        .hready      (ahbm_hready),
+        .hresp       (ahbm_hresp),
+        .hrdata      (ahbm_hrdata),
+        .busy        (returner_busy)
     );
 
 endmodule

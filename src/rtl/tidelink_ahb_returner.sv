@@ -1,7 +1,8 @@
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink AHB Returner
 // - A simple AHB Lite master that performs a single-beat write transfer
-//   when an interrupt is asserted.
+//   when either of two interrupt channels is asserted. Channel 0 has
+//   priority over channel 1.
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
 // Contributors
@@ -19,12 +20,15 @@ module tidelink_ahb_returner #(
     input  wire                  hclk,
     input  wire                  hresetn,
 
-    // Interrupt input (active-high, level-sensitive)
-    input  wire                  interrupt,
+    // Interrupt channel 0 (release tokens — higher priority)
+    input  wire                  interrupt_0,
+    input  wire [SYS_ADDR_W-1:0] write_addr_0,
+    input  wire [SYS_DATA_W-1:0] write_data_0,
 
-    // Configurable write parameters
-    input  wire [SYS_ADDR_W-1:0] write_addr,
-    input  wire [SYS_DATA_W-1:0] write_data,
+    // Interrupt channel 1 (doorbell — lower priority)
+    input  wire                  interrupt_1,
+    input  wire [SYS_ADDR_W-1:0] write_addr_1,
+    input  wire [SYS_DATA_W-1:0] write_data_1,
 
     // AHB Lite Master Interface
     output logic [SYS_ADDR_W-1:0] haddr,
@@ -60,29 +64,42 @@ module tidelink_ahb_returner #(
     logic [SYS_ADDR_W-1:0] write_addr_r;
     logic [SYS_DATA_W-1:0] write_data_r;
 
-    // Interrupt edge detection
-    logic interrupt_r;
-    wire  interrupt_rising;
+    // Interrupt edge detection — channel 0
+    logic interrupt_0_r;
+    wire  interrupt_0_rising;
+    assign interrupt_0_rising = interrupt_0 & ~interrupt_0_r;
 
-    assign interrupt_rising = interrupt & ~interrupt_r;
+    // Interrupt edge detection — channel 1
+    logic interrupt_1_r;
+    wire  interrupt_1_rising;
+    assign interrupt_1_rising = interrupt_1 & ~interrupt_1_r;
+
     assign busy = (state_r != ST_IDLE);
 
-    // Interrupt edge register
+    // Interrupt edge registers
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            interrupt_r <= 1'b0;
-        else
-            interrupt_r <= interrupt;
+        if (!hresetn) begin
+            interrupt_0_r <= 1'b0;
+            interrupt_1_r <= 1'b0;
+        end else begin
+            interrupt_0_r <= interrupt_0;
+            interrupt_1_r <= interrupt_1;
+        end
     end
 
-    // Capture write parameters on interrupt rising edge
+    // Capture write parameters on interrupt rising edge (channel 0 has priority)
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             write_addr_r <= '0;
             write_data_r <= '0;
-        end else if (interrupt_rising && (state_r == ST_IDLE)) begin
-            write_addr_r <= write_addr;
-            write_data_r <= write_data;
+        end else if (state_r == ST_IDLE) begin
+            if (interrupt_0_rising) begin
+                write_addr_r <= write_addr_0;
+                write_data_r <= write_data_0;
+            end else if (interrupt_1_rising) begin
+                write_addr_r <= write_addr_1;
+                write_data_r <= write_data_1;
+            end
         end
     end
 
@@ -99,7 +116,7 @@ module tidelink_ahb_returner #(
         state_next = state_r;
         case (state_r)
             ST_IDLE: begin
-                if (interrupt_rising)
+                if (interrupt_0_rising || interrupt_1_rising)
                     state_next = ST_ADDR_PHASE;
             end
             ST_ADDR_PHASE: begin

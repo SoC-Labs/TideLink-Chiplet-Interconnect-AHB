@@ -1,6 +1,6 @@
 //-----------------------------------------------------------------------------
-// SoCLabs FPGA SRAM Wrapper
-// - to be substitued with same name file in filelist when moving to ASIC
+// SoCLabs TideLink AHB Token-based FIFO Interface
+// - A FIFO interface over AHB for transferring variable-length packets of data
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
 // Contributors

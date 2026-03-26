@@ -8,8 +8,8 @@ AHBLiteMaster (driving the FIFO slave port) and AHBLiteSlaveRAM
 Infrastructure is object-oriented so it can be reused across tests.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List
 
 import cocotb
 from cocotb.clock import Clock
@@ -22,11 +22,16 @@ CLK_PERIOD_NS = 10
 RAM_ADDR_W    = 14
 MAX_TOKENS    = 1 << (RAM_ADDR_W - 2)
 
-# APB register offsets
-APB_REG_WRITE_ADDR   = 0x000
-APB_REG_PKT_WORD_LEN = 0x004
-APB_REG_TOKEN_COUNT  = 0x008
-APB_REG_STATUS       = 0x00C
+# APB register offsets — Region 0 (paddr[5]=0)
+APB_REG_RELEASE_ADDR  = 0x000   # RW: returner target address for token release
+APB_REG_DOORBELL_ADDR = 0x004   # RW: returner target address for doorbell
+APB_REG_PKT_WORD_LEN  = 0x008   # RO: packet_word_length sideband from FIFO
+APB_REG_TOKEN_COUNT   = 0x00C   # RO: current total token count
+APB_REG_STATUS        = 0x010   # RO: [0] write_addr_hit [1] read_addr_hit [2] busy
+APB_REG_DOORBELL      = 0x014   # W1C: write any value to trigger doorbell
+
+# APB register offsets — Region 1 (paddr[5]=1)
+APB_REG_RELEASED_ACC  = 0x020   # W-add/R-clear: released tokens accumulator
 
 
 # ── Data Objects ─────────────────────────────────────────────────────────────
@@ -49,13 +54,6 @@ class FifoPacket:
     def addrs(self) -> List[int]:
         """Byte addresses for every beat (length word + data)."""
         return [i * 4 for i in range(self.length + 1)]
-
-
-@dataclass
-class ReturnerTxn:
-    """Captured returner master-port transaction."""
-    address: int
-    data: int
 
 
 # ── APB Master Driver ────────────────────────────────────────────────────────
@@ -94,11 +92,9 @@ class APBMaster:
         # Access phase
         self._penable.value = 1
         await RisingEdge(self._clk)
-        # Wait for pready (always 1 in current RTL, but future-proof)
         while not int(self._pready.value):
             await RisingEdge(self._clk)
 
-        # Return to idle
         self.idle()
 
     async def read(self, addr: int) -> int:
@@ -111,13 +107,16 @@ class APBMaster:
         self._pwdata.value  = 0
         await RisingEdge(self._clk)
 
-        # Access phase
+        # Access phase — sample prdata on falling edge to let combinational
+        # logic settle after the rising edge drives paddr into the read mux
         self._penable.value = 1
-        await RisingEdge(self._clk)
+        await FallingEdge(self._clk)
         while not int(self._pready.value):
             await RisingEdge(self._clk)
+            await FallingEdge(self._clk)
 
         data = int(self._prdata.value)
+        await RisingEdge(self._clk)
         self.idle()
         return data
 
@@ -176,10 +175,15 @@ class TidelinkTB:
 
     # ── APB Helpers ──────────────────────────────────────────────────────
 
-    async def configure_returner_addr(self, addr: int):
-        """Set the returner's write target address via APB."""
-        await self.apb.write(APB_REG_WRITE_ADDR, addr)
-        self.log.info(f"Configured returner write address = 0x{addr:08X}")
+    async def configure_release_addr(self, addr: int):
+        """Set the release-tokens returner target address via APB."""
+        await self.apb.write(APB_REG_RELEASE_ADDR, addr)
+        self.log.info(f"Configured release tokens address = 0x{addr:08X}")
+
+    async def configure_doorbell_addr(self, addr: int):
+        """Set the doorbell returner target address via APB."""
+        await self.apb.write(APB_REG_DOORBELL_ADDR, addr)
+        self.log.info(f"Configured doorbell address = 0x{addr:08X}")
 
     async def read_token_count(self) -> int:
         """Read the hardware token count via APB."""
@@ -194,6 +198,10 @@ class TidelinkTB:
             "returner_busy":  bool(raw & 4),
             "raw": raw,
         }
+
+    async def read_released_tokens_acc(self) -> int:
+        """Read (and clear) the released tokens accumulator."""
+        return await self.apb.read(APB_REG_RELEASED_ACC)
 
     # ── Packet Write (inline AHB phases) ─────────────────────────────────
 
@@ -213,9 +221,7 @@ class TidelinkTB:
         dut.ahbs_haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)
 
-        self.log.info(
-            f"{prefix}Writing {pkt.length}-word packet"
-        )
+        self.log.info(f"{prefix}Writing {pkt.length}-word packet")
 
         # Data beats via inline AHB phases (precise hit sampling)
         hit_fired = False
@@ -367,14 +373,17 @@ async def test_00_apb_register_dump(dut):
     tb = TidelinkTB(dut)
     await tb.reset()
 
-    for offset in [0x000, 0x004, 0x008, 0x00C, 0x010, 0x014]:
+    for offset in [0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x020]:
         val = await tb.apb.read(offset)
         tb.log.info(f"APB[0x{offset:03X}] (paddr[4:2]={offset>>2}) = 0x{val:08X} ({val})")
 
-    # Also probe RTL signals directly for comparison
+    # Probe RTL signals directly for comparison
     tc = int(dut.u_dut.current_token_count.value)
     pwl = int(dut.u_dut.packet_word_length.value)
     tb.log.info(f"Direct probe: current_token_count={tc}, packet_word_length={pwl}")
+
+    assert (await tb.apb.read(APB_REG_TOKEN_COUNT)) == MAX_TOKENS, \
+        "Token count register should read MAX_TOKENS after reset"
 
 
 @cocotb.test()
@@ -396,8 +405,8 @@ async def test_02_apb_write_addr_readback(dut):
     await tb.reset()
 
     test_addr = 0xDEAD_0100
-    await tb.configure_returner_addr(test_addr)
-    readback = await tb.apb.read(APB_REG_WRITE_ADDR)
+    await tb.configure_release_addr(test_addr)
+    readback = await tb.apb.read(APB_REG_RELEASE_ADDR)
     assert readback == test_addr, \
         f"APB readback: expected 0x{test_addr:08X}, got 0x{readback:08X}"
 
@@ -410,7 +419,7 @@ async def test_03_write_read_returner_flow(dut):
     3. Write two packets into the FIFO
     4. Track tokens in software
     5. Read one packet back — returner should fire
-    6. Verify returner wrote correct address & data
+    6. Verify returner wrote correct address & data (token_count_data)
     7. Read second packet — verify second return
     8. Confirm final token count via APB
     """
@@ -420,7 +429,7 @@ async def test_03_write_read_returner_flow(dut):
     RETURNER_ADDR = 0x0000_0100
 
     # ── Step 1: Configure returner target address ────────────────────
-    await tb.configure_returner_addr(RETURNER_ADDR)
+    await tb.configure_release_addr(RETURNER_ADDR)
 
     # ── Step 2: Verify initial token count ───────────────────────────
     hw_tokens = await tb.read_token_count()
@@ -465,12 +474,16 @@ async def test_03_write_read_returner_flow(dut):
     await tb.wait_returner_idle()
 
     # ── Step 6: Verify returner transaction ──────────────────────────
+    # The returner captures token_count_data on the same clock edge as
+    # read_addr_hit. Due to NBA semantics, it sees the PRE-read token
+    # count (before the read increments it).
+    pre_read_tokens = MAX_TOKENS - pkt1.total_words - pkt2.total_words
     returner_data = tb.read_returner_memory(RETURNER_ADDR)
     tb.log.info(f"Returner wrote 0x{returner_data:08X} to "
-                f"0x{RETURNER_ADDR:08X} (expected {pkt1.length})")
-    assert returner_data == pkt1.length, \
-        (f"Returner data mismatch: expected {pkt1.length} "
-         f"(packet_word_length), got {returner_data}")
+                f"0x{RETURNER_ADDR:08X} (expected 0x{pre_read_tokens:08X})")
+    assert returner_data == pre_read_tokens, \
+        (f"Returner data mismatch: expected 0x{pre_read_tokens:08X} "
+         f"(pre-read token count), got 0x{returner_data:08X}")
 
     # ── Step 7: Read packet 2 — triggers second return ───────────────
     read_pkt2, rhit2 = await tb.read_packet(label="RD_PKT2")
@@ -483,14 +496,14 @@ async def test_03_write_read_returner_flow(dut):
 
     await tb.wait_returner_idle()
 
-    # The returner writes to the same address, overwriting the previous
-    # value with pkt2's packet_word_length
+    # Returner sees pre-read token count for pkt2 read
+    pre_read2_tokens = MAX_TOKENS - pkt2.total_words
     returner_data = tb.read_returner_memory(RETURNER_ADDR)
     tb.log.info(f"Returner wrote 0x{returner_data:08X} to "
-                f"0x{RETURNER_ADDR:08X} (expected {pkt2.length})")
-    assert returner_data == pkt2.length, \
-        (f"Returner data mismatch: expected {pkt2.length}, "
-         f"got {returner_data}")
+                f"0x{RETURNER_ADDR:08X} (expected 0x{pre_read2_tokens:08X})")
+    assert returner_data == pre_read2_tokens, \
+        (f"Returner data mismatch: expected 0x{pre_read2_tokens:08X}, "
+         f"got 0x{returner_data:08X}")
 
     # ── Step 8: Final token check via APB ────────────────────────────
     hw_tokens = await tb.read_token_count()
@@ -513,7 +526,7 @@ async def test_04_multiple_packets_token_tracking(dut):
     await tb.reset()
 
     RETURNER_ADDR = 0x0000_0200
-    await tb.configure_returner_addr(RETURNER_ADDR)
+    await tb.configure_release_addr(RETURNER_ADDR)
 
     packets = [
         [0x11110001, 0x11110002],                               # 2 words
@@ -544,12 +557,15 @@ async def test_04_multiple_packets_token_tracking(dut):
 
         # Wait for returner and verify its transaction
         await tb.wait_returner_idle()
-        returner_data = tb.read_returner_memory(RETURNER_ADDR)
-        assert returner_data == pkt.length, \
-            (f"Read {i+1}: returner wrote {returner_data}, "
-             f"expected {pkt.length}")
 
-        # Verify token count
+        # Returner captures token count BEFORE the read updates it (NBA)
+        pre_read_tokens = tb.sw_token_count - pkt.total_words
+        returner_data = tb.read_returner_memory(RETURNER_ADDR)
+        assert returner_data == pre_read_tokens, \
+            (f"Read {i+1}: returner wrote {returner_data}, "
+             f"expected {pre_read_tokens} (pre-read token count)")
+
+        # Verify token count via APB
         hw_tokens = await tb.read_token_count()
         assert hw_tokens == tb.sw_token_count, \
             (f"Token mismatch after read {i+1}: "

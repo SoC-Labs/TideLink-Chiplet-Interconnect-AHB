@@ -40,7 +40,10 @@ module tb_top #(
     input  logic   [SYS_DATA_W-1:0] apbs_pwdata,
     output logic   [SYS_DATA_W-1:0] apbs_prdata,
     output logic                    apbs_pready,
-    output logic                    apbs_pslverr
+    output logic                    apbs_pslverr,
+
+    // Interrupt output
+    output logic                    released_tokens_irq
 );
 
     // Single-slave loopback: hready = hreadyout
@@ -87,7 +90,10 @@ module tb_top #(
         .apbs_pwdata     (apbs_pwdata),
         .apbs_prdata     (apbs_prdata),
         .apbs_pready     (apbs_pready),
-        .apbs_pslverr    (apbs_pslverr)
+        .apbs_pslverr    (apbs_pslverr),
+
+        // Interrupt
+        .released_tokens_irq (released_tokens_irq)
     );
 
     // Waveform dump

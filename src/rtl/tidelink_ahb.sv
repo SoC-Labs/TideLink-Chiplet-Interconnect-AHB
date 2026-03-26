@@ -35,7 +35,10 @@ module tidelink_ahb #(
     output logic                  write_addr_hit,
     output logic                  read_addr_hit,
 
-    output logic [RAM_ADDR_W-2:0] current_token_count
+    output logic [RAM_ADDR_W-2:0] current_token_count,
+
+    // Sideband outputs for returner
+    output logic [RAM_ADDR_W-1:0] packet_word_length_out
 );
 
     // --------------------------------------------------------------------------
@@ -47,6 +50,7 @@ module tidelink_ahb #(
     logic            [3:0] wen;
     logic                  cs;
     logic [RAM_ADDR_W-3:0] translated_addr;
+    logic [RAM_ADDR_W-1:0] translated_haddr;
 
     // Testbench-visible signal aliases (preserve cocotb probe paths)
     logic [RAM_ADDR_W-1:0] write_ptr;
@@ -74,6 +78,7 @@ module tidelink_ahb #(
         .rdata               (rdata),
         .addr                (addr),
         .translated_addr     (translated_addr),
+        .translated_haddr    (translated_haddr),
         .write_addr_hit      (write_addr_hit),
         .read_addr_hit       (read_addr_hit),
         .current_token_count (current_token_count),
@@ -95,7 +100,7 @@ module tidelink_ahb #(
         .HCLK       (hclk),
         .HRESETn    (hresetn),
         .HSEL       (hsel),
-        .HADDR      (haddr),
+        .HADDR      (translated_haddr),
         .HTRANS     (htrans),
         .HSIZE      (hsize),
         .HWRITE     (hwrite),
@@ -133,4 +138,8 @@ module tidelink_ahb #(
         // SRAM Output
         .RDATA      (rdata)
     );
+
+    // Sideband: expose packet_word_length for returner
+    assign packet_word_length_out = packet_word_length;
+
 endmodule

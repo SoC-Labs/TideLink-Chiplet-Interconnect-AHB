@@ -31,8 +31,9 @@ module tidelink_ahb_fifo_ctrl #(
     input  wire  [RAM_DATA_W-1:0] rdata,         // SRAM read data
     input  wire  [RAM_ADDR_W-3:0] addr,          // Word address from cmsdk_ahb_to_sram
 
-    // Translated address output to SRAM
-    output logic [RAM_ADDR_W-3:0] translated_addr,
+    // Translated address outputs
+    output logic [RAM_ADDR_W-3:0] translated_addr,      // Word address for SRAM
+    output logic [RAM_ADDR_W-1:0] translated_haddr,     // Byte address for cmsdk_ahb_to_sram
 
     // Hit and token outputs
     output wire                   write_addr_hit,
@@ -80,7 +81,9 @@ module tidelink_ahb_fifo_ctrl #(
     always_comb begin
         write_ptr_nxt  = write_ptr_r;
         read_ptr_nxt   = read_ptr_r;
-        ptr_offset_nxt = (hwrite ? write_ptr_r : read_ptr_r) >> 2;
+        // Write offset uses write_ptr_r (registered, matches buf_addr pipeline in cmsdk_ahb_to_sram)
+        // Read offset uses read_ptr_nxt (combinational, matches HADDR pass-through for reads)
+        ptr_offset_nxt = (hwrite ? write_ptr_r : read_ptr_nxt) >> 2;
 
         if (write_complete) begin
             write_ptr_nxt = write_ptr_r + (packet_word_length_r + 1) * 4;
@@ -101,9 +104,14 @@ module tidelink_ahb_fifo_ctrl #(
         end
     end
 
-    // translated_addr = SRAMADDR from cmsdk_ahb_to_sram + registered pointer offset
-    // Both are word addresses, both pipelined by 1 cycle, so they're aligned
-    assign translated_addr = addr + ptr_offset;
+    // Since cmsdk_ahb_to_sram now receives translated_haddr, its SRAMADDR
+    // output (addr) is already in translated space — pass it through directly
+    assign translated_addr = addr;
+
+    // Combinational translated byte address for cmsdk_ahb_to_sram
+    // This ensures buf_addr and buf_hit work in translated address space,
+    // preventing false read-after-write merges across different packets
+    assign translated_haddr = haddr + (hwrite ? write_ptr_r : read_ptr_r);
 
     // -------------------------------------------------------------------------
     // Packet Metadata Capture

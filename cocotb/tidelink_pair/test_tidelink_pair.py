@@ -556,7 +556,7 @@ async def test_06_write_packets_then_pair_resets(dut):
     dut._log.info(f"Total tokens used: {total_tokens_used}, "
                   f"expected free: {expected_free}")
 
-    # Wait for any returner activity from write_addr_hits to complete
+    # Wait for any returner activity from write_completes to complete
     await ClockCycles(dut.hclk, 20)
 
     # ── Verify DUT's token count via APB ─────────────────────────
@@ -681,3 +681,226 @@ async def test_07_write_and_read_packets_then_pair_resets(dut):
 
     for line_out in pair.log_lines:
         dut._log.info(line_out)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Bug Regression Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_bug1_metadata_capture_without_valid_transfer(dut):
+    """BUG: packet_word_length captured on idle bus when haddr is 0.
+
+    The metadata capture logic fires on haddr==0 without checking
+    hsel or htrans. During idle cycles where haddr is 0 and hwrite=0,
+    check_addr gets set, which then captures rdata (0 from inactive
+    SRAM) into packet_word_length, zeroing it out.
+    """
+    await setup(dut)
+    pair = PairRegisterBank(PAIR_BASE, 0, MAX_TOKENS)
+    monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
+    await do_reset(dut)
+    await ClockCycles(dut.hclk, 15)
+
+    # Write a packet to set packet_word_length = 3
+    await fifo_write_packet(dut, [0x11, 0x22, 0x33])
+    await ClockCycles(dut.hclk, 5)
+
+    pkt_len_before = await apb_read(dut, OFF_PKT_WORD_LEN)
+    dut._log.info(f"packet_word_length after write: {pkt_len_before}")
+    assert pkt_len_before == 3, f"Expected 3, got {pkt_len_before}"
+
+    # Leave haddr=0, hwrite=0, hsel=0, htrans=IDLE (idle bus at addr 0)
+    # The check_addr path triggers on haddr==0 && ~hwrite (no hsel/htrans check)
+    # Then next cycle, check_addr_r=1 captures rdata (0 from inactive cs) into pkt_len
+    dut.ahbs_haddr.value  = 0
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_htrans.value = 0
+    # Wait enough cycles for check_addr to set and rdata to be captured
+    await ClockCycles(dut.hclk, 10)
+
+    pkt_len_after = await apb_read(dut, OFF_PKT_WORD_LEN)
+    dut._log.info(f"packet_word_length after idle at addr 0: {pkt_len_after}")
+
+    if pkt_len_after == 0:
+        dut._log.error("BUG CONFIRMED: packet_word_length zeroed by idle bus "
+                       "at haddr=0. Metadata capture not gated on valid_transfer.")
+    assert pkt_len_after == 3, \
+        (f"BUG: packet_word_length corrupted from 3 to {pkt_len_after}. "
+         f"Capture fires on haddr==0 without checking hsel/htrans.")
+
+
+@cocotb.test()
+async def test_bug2_doorbell_lost_when_returner_busy(dut):
+    """BUG: Doorbell pulse lost if returner is busy with another channel.
+
+    doorbell_trigger is a 1-cycle self-clearing pulse. The returner only
+    captures interrupts in ST_IDLE. If channel 0 (read completion) is
+    mid-transfer when the doorbell fires, the pulse is gone before the
+    returner can service it.
+    """
+    await setup(dut)
+    pair = PairRegisterBank(PAIR_BASE, 0, MAX_TOKENS)
+    monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
+    await do_reset(dut)
+    await ClockCycles(dut.hclk, 15)
+    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await ClockCycles(dut.hclk, 2)
+    pair.released_tokens_acc = 0
+    pair.log_lines.clear()
+
+    # Write a packet
+    await fifo_write_packet(dut, [0xAA, 0xBB, 0xCC])
+    await ClockCycles(dut.hclk, 10)
+
+    # Read the packet back — last beat triggers read_complete → channel 0
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2
+    dut.ahbs_haddr.value = 0x0000; dut.ahbs_hready.value = 1
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0; dut.ahbs_hsel.value = 0
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    for i in range(3):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2
+        dut.ahbs_haddr.value = addr
+        await RisingEdge(dut.hclk)
+        dut.ahbs_htrans.value = 0; dut.ahbs_hsel.value = 0
+        dut.ahbs_haddr.value = 0x3FFF
+        await RisingEdge(dut.hclk)
+
+    # Channel 0 now active — IMMEDIATELY ring doorbell while busy
+    await apb_write(dut, OFF_DOORBELL, 1)
+    await ClockCycles(dut.hclk, 20)
+
+    # Check what the pair received
+    dut._log.info(f"Pair accumulated: {pair.released_tokens_acc}")
+    for line_out in pair.log_lines:
+        dut._log.info(line_out)
+
+    # If doorbell was serviced, pair should have received the total free
+    # tokens (MAX_TOKENS) in addition to any channel 0 deltas.
+    # If the doorbell was lost, pair only gets channel 0 deltas.
+    received_total = pair.released_tokens_acc > MAX_TOKENS or \
+                     any("4096" in l for l in pair.log_lines)
+    received_doorbell = any("4096" in l for l in pair.log_lines)
+
+    dut._log.info(f"Doorbell response received by pair: {received_doorbell}")
+
+    if not received_doorbell:
+        dut._log.error("BUG CONFIRMED: Doorbell pulse was lost because "
+                       "returner was busy with channel 0.")
+    assert received_doorbell, \
+        (f"BUG: Pair received {pair.released_tokens_acc} tokens but "
+         f"no doorbell response (MAX_TOKENS={MAX_TOKENS}) was seen. "
+         f"Doorbell pulse lost while returner was busy.")
+
+
+@cocotb.test()
+async def test_bug3_stale_packet_length_causes_spurious_hit(dut):
+    """BUG: packet_word_length not cleared after packet completion.
+
+    After a packet completes, the old packet_word_length persists and
+    write_target_addr remains at old_length * 4. A subsequent AHB write
+    to that stale address triggers a spurious completion, advancing the
+    pointer and decrementing the token count incorrectly.
+    """
+    await setup(dut)
+    pair = PairRegisterBank(PAIR_BASE, 0, MAX_TOKENS)
+    monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
+    await do_reset(dut)
+    await ClockCycles(dut.hclk, 15)
+    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await ClockCycles(dut.hclk, 2)
+
+    # Write a packet with length=3. Target addr = 3*4 = 0xC
+    await fifo_write_packet(dut, [0x11, 0x22, 0x33])
+    await ClockCycles(dut.hclk, 10)
+
+    tokens_after_pkt = await apb_read(dut, OFF_TOKEN_COUNT)
+    dut._log.info(f"Token count after packet: {tokens_after_pkt}")
+
+    # Now do a raw AHB write to haddr=0xC (stale target address)
+    # This is NOT a new packet — just a random write
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 1
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x000C
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwdata.value = 0xDEAD
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await ClockCycles(dut.hclk, 10)
+
+    tokens_after_spurious = await apb_read(dut, OFF_TOKEN_COUNT)
+    dut._log.info(f"Token count after spurious write to 0xC: {tokens_after_spurious}")
+
+    if tokens_after_spurious != tokens_after_pkt:
+        dut._log.error(f"BUG CONFIRMED: Stale packet_word_length caused "
+                       f"spurious hit. Tokens {tokens_after_pkt} -> "
+                       f"{tokens_after_spurious}.")
+    assert tokens_after_spurious == tokens_after_pkt, \
+        (f"BUG: Token count changed from {tokens_after_pkt} to "
+         f"{tokens_after_spurious}. packet_word_length should be "
+         f"cleared after packet completion.")
+
+
+@cocotb.test()
+async def test_bug4_hit_fires_on_wrong_direction(dut):
+    """BUG: write_complete fires during read operations.
+
+    The hit signals are not gated on hwrite direction. write_complete
+    can fire during a READ if haddr matches the write target address.
+    """
+    await setup(dut)
+    pair = PairRegisterBank(PAIR_BASE, 0, MAX_TOKENS)
+    monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
+    await do_reset(dut)
+    await ClockCycles(dut.hclk, 15)
+    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await ClockCycles(dut.hclk, 2)
+
+    # Write a packet with length=2. Target = 2*4 = 0x8
+    await fifo_write_packet(dut, [0xAA, 0xBB])
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 10)
+
+    # Now do an AHB READ at haddr=0x8 (the write target address)
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0  # READ
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0008
+
+    await RisingEdge(dut.hclk)
+    await FallingEdge(dut.hclk)
+    try:
+        w_hit = int(dut.u_dut.u_tidelink_ahb.u_fifo_ctrl.write_complete.value)
+    except ValueError:
+        w_hit = 0
+
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await RisingEdge(dut.hclk)
+
+    dut._log.info(f"write_complete during READ at 0x8: {w_hit}")
+
+    if w_hit == 1:
+        dut._log.error("BUG CONFIRMED: write_complete fired during a READ. "
+                       "Hit signal is not gated on hwrite direction.")
+    assert w_hit == 0, \
+        ("BUG: write_complete fired during a READ at the write target "
+         "address. Hit signals should be gated on transfer direction.")

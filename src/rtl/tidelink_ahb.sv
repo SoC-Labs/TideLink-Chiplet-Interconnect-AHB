@@ -32,8 +32,8 @@ module tidelink_ahb #(
     output logic                  hresp,     // AHB response
     output logic [SYS_DATA_W-1:0] hrdata,    // AHB read data bus
 
-    output logic                  write_addr_hit,
-    output logic                  read_addr_hit,
+    // Completion pulse: fires when a read packet finishes (drives returner)
+    output logic                  read_complete,
 
     output logic [RAM_ADDR_W-2:0] current_token_count,
 
@@ -72,6 +72,7 @@ module tidelink_ahb #(
         .hresetn             (hresetn),
         .hsel                (hsel),
         .htrans              (htrans),
+        .hready              (hready),
         .hwrite              (hwrite),
         .haddr               (haddr),
         .hwdata              (hwdata),
@@ -79,8 +80,7 @@ module tidelink_ahb #(
         .addr                (addr),
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),
-        .write_addr_hit      (write_addr_hit),
-        .read_addr_hit       (read_addr_hit),
+        .read_complete       (read_complete),
         .current_token_count (current_token_count),
         .write_ptr           (write_ptr),
         .read_ptr            (read_ptr),

@@ -23,6 +23,7 @@ module tidelink_ahb_fifo_ctrl #(
     // AHB address-phase signals
     input  wire                   hsel,
     input  wire             [1:0] htrans,
+    input  wire                   hready,
     input  wire                   hwrite,
     input  wire  [RAM_ADDR_W-1:0] haddr,
     input  wire  [SYS_DATA_W-1:0] hwdata,
@@ -35,9 +36,10 @@ module tidelink_ahb_fifo_ctrl #(
     output logic [RAM_ADDR_W-3:0] translated_addr,      // Word address for SRAM
     output logic [RAM_ADDR_W-1:0] translated_haddr,     // Byte address for cmsdk_ahb_to_sram
 
-    // Hit and token outputs
-    output wire                   write_addr_hit,
-    output wire                   read_addr_hit,
+    // Completion pulses (directly drive returner interrupt)
+    output wire                   read_complete,
+
+    // Token count output
     output wire  [RAM_ADDR_W-2:0] current_token_count,
 
     // Debug-visible state (exposed for testbench probing)
@@ -58,22 +60,20 @@ module tidelink_ahb_fifo_ctrl #(
     logic [RAM_ADDR_W-1:0] write_ptr_r,           write_ptr_nxt;
     logic [RAM_ADDR_W-3:0] ptr_offset,            ptr_offset_nxt;
     logic [RAM_ADDR_W-1:0] packet_word_length_r,  packet_word_length_nxt;
-    logic [RAM_ADDR_W-1:0] packet_word_count_r,   packet_word_count_nxt;
     logic                  check_addr_r,           check_addr_nxt;
     logic [RAM_ADDR_W-1:0] write_target_addr_r,   write_target_addr_nxt;
     logic [RAM_ADDR_W-1:0] read_target_addr_r,    read_target_addr_nxt;
     logic [RAM_ADDR_W-2:0] token_count_r,          token_count_nxt;
 
     // -------------------------------------------------------------------------
-    // Shared hit-detection signals
+    // Shared completion signals (gated on hready for correct AHB handshake)
     // -------------------------------------------------------------------------
     logic valid_transfer;
     logic write_complete;
-    logic read_complete;
 
-    assign valid_transfer = hsel && htrans[1] && (packet_word_length_r != '0);
+    assign valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
     assign write_complete = valid_transfer && (haddr == write_target_addr_r) && hwrite;
-    assign read_complete  = valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
+    assign read_complete  = valid_transfer && (haddr == read_target_addr_r)  && ~hwrite;
 
     // -------------------------------------------------------------------------
     // Pointer Management and Address Translation
@@ -116,16 +116,25 @@ module tidelink_ahb_fifo_ctrl #(
     // -------------------------------------------------------------------------
     // Packet Metadata Capture
     // -------------------------------------------------------------------------
+    // Valid AHB access to address 0 (gated on hsel, htrans, hready)
+    wire valid_ahb_access = hsel && htrans[1] && hready;
+
     always_comb begin
         check_addr_nxt         = check_addr_r;
         packet_word_length_nxt = packet_word_length_r;
-        packet_word_count_nxt  = packet_word_count_r;
 
-        if (haddr == 0 && hwrite) begin
+        // Clear packet_word_length on completion so stale target addresses
+        // don't cause spurious hits on subsequent transfers
+        if (write_complete || read_complete) begin
+            packet_word_length_nxt = '0;
+        end else if (valid_ahb_access && haddr == 0 && hwrite) begin
+            // Write to addr 0: capture packet length from write data
             packet_word_length_nxt = hwdata[RAM_ADDR_W-1:0];
-        end else if (haddr == 0 && ~hwrite) begin
+        end else if (valid_ahb_access && haddr == 0 && ~hwrite) begin
+            // Read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
+            // Capture SRAM read data as packet length, clear flag
             packet_word_length_nxt = rdata[RAM_ADDR_W-1:0];
             check_addr_nxt = 1'b0;
         end
@@ -138,24 +147,16 @@ module tidelink_ahb_fifo_ctrl #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             packet_word_length_r <= '0;
-            packet_word_count_r  <= '0;
             check_addr_r         <= 1'b0;
             write_target_addr_r  <= '0;
             read_target_addr_r   <= '0;
         end else begin
             packet_word_length_r <= packet_word_length_nxt;
-            packet_word_count_r  <= packet_word_count_nxt;
             check_addr_r         <= check_addr_nxt;
             write_target_addr_r  <= write_target_addr_nxt;
             read_target_addr_r   <= read_target_addr_nxt;
         end
     end
-
-    // -------------------------------------------------------------------------
-    // Hit Signal Outputs
-    // -------------------------------------------------------------------------
-    assign write_addr_hit = (haddr == write_target_addr_r) && (packet_word_length_r != '0);
-    assign read_addr_hit  = (haddr == read_target_addr_r)  && (packet_word_length_r != '0);
 
     // -------------------------------------------------------------------------
     // Token Counter

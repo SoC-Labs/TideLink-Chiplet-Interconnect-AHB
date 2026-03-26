@@ -16,8 +16,7 @@ module tb_top #(
     output logic                  hready,
     output logic                  hresp,
     output logic [SYS_DATA_W-1:0] hrdata,
-    output logic                  write_addr_hit,
-    output logic                  read_addr_hit,
+    output logic                  read_complete,
     output logic [RAM_ADDR_W-1:0] packet_word_length_out
 );
 
@@ -42,8 +41,7 @@ module tb_top #(
         .hreadyout     (hreadyout),
         .hresp         (hresp),
         .hrdata        (hrdata),
-        .write_addr_hit       (write_addr_hit),
-        .read_addr_hit        (read_addr_hit),
+        .read_complete        (read_complete),
         .current_token_count  (),
         .packet_word_length_out(packet_word_length_out)
     );

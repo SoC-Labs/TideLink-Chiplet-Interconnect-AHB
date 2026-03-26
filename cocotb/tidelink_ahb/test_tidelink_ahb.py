@@ -139,7 +139,7 @@ async def write_packet(dut, ahb, pkt, label=""):
                   f"packet_word_length={int(dut.u_dut.packet_word_length.value)}, "
                   f"write_target_addr=0x{target:04X}")
 
-    # Data beats: use inline AHB phases so we can sample write_addr_hit
+    # Data beats: use inline AHB phases so we can sample write_complete
     hit_fired = False
     for i, word in enumerate(pkt.data):
         addr = (i + 1) * 4
@@ -160,14 +160,14 @@ async def write_packet(dut, ahb, pkt, label=""):
 
         # Sample hit on falling edge for settled signals
         await FallingEdge(dut.hclk)
-        hit = int(dut.write_addr_hit.value)
+        hit = int(dut.u_dut.u_fifo_ctrl.write_complete.value)
 
         # Completion
         await RisingEdge(dut.hclk)
         dut.hwrite.value = 0
 
         dut._log.info(f"{prefix}Beat {i+1}: haddr=0x{addr:04X} "
-                      f"data=0x{word:08X} write_addr_hit={hit}")
+                      f"data=0x{word:08X} write_complete={hit}")
         if hit:
             hit_fired = True
 
@@ -305,27 +305,27 @@ async def test_08_write_target_addr_calculation(dut):
 
 
 @cocotb.test()
-async def test_09_write_addr_hit(dut):
-    """write_addr_hit fires on the last data beat of a 2-word packet."""
+async def test_09_write_complete(dut):
+    """write_complete fires on the last data beat of a 2-word packet."""
     ahb = await setup(dut)
     await do_reset(dut)
 
     pkt = FifoPacket(data=[0xFACE0001, 0xFACE0002])
     _, _, hit = await write_packet(dut, ahb, pkt, label="HIT_TEST")
 
-    assert hit, "write_addr_hit should have fired on the last data beat"
+    assert hit, "write_complete should have fired on the last data beat"
 
 
 @cocotb.test()
 async def test_10_single_packet_burst(dut):
-    """Write a 10-beat packet and verify write_addr_hit fires on the last beat."""
+    """Write a 10-beat packet and verify write_complete fires on the last beat."""
     ahb = await setup(dut)
     await do_reset(dut)
 
     pkt = FifoPacket(data=[0xDA7A0000 | i for i in range(1, 10)])
     _, _, hit = await write_packet(dut, ahb, pkt, label="PKT")
 
-    assert hit, "write_addr_hit should have fired on the last data beat"
+    assert hit, "write_complete should have fired on the last data beat"
 
 
 @cocotb.test()
@@ -340,11 +340,11 @@ async def test_11_two_packets_no_overwrite(dut):
 
     # Write packet 1
     _, wptr_after_1, hit1 = await write_packet(dut, ahb, pkt1, label="PKT1")
-    assert hit1, "write_addr_hit should have fired for packet 1"
+    assert hit1, "write_complete should have fired for packet 1"
 
     # Write packet 2
     _, wptr_after_2, hit2 = await write_packet(dut, ahb, pkt2, label="PKT2")
-    assert hit2, "write_addr_hit should have fired for packet 2"
+    assert hit2, "write_complete should have fired for packet 2"
 
     # Verify SRAM contents
     dut._log.info("--- SRAM contents ---")
@@ -383,7 +383,7 @@ async def test_12_three_packets_sequential(dut):
 
     for i, pkt in enumerate(packets):
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"PKT{i+1}")
-        assert hit, f"write_addr_hit should have fired for packet {i+1}"
+        assert hit, f"write_complete should have fired for packet {i+1}"
 
     # Verify all packets in SRAM
     dut._log.info("--- SRAM contents ---")
@@ -415,7 +415,7 @@ async def test_13_token_count_tracks_writes(dut):
     expected_tokens = MAX_TOKENS
     for i, pkt in enumerate(packets):
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"PKT{i+1}")
-        assert hit, f"write_addr_hit should have fired for packet {i+1}"
+        assert hit, f"write_complete should have fired for packet {i+1}"
 
         expected_tokens -= pkt.total_words
         actual_tokens = get_token_count(dut)
@@ -447,20 +447,20 @@ async def test_14_read_data_integrity_across_packets(dut):
 
     # Write both packets
     _, _, hit1 = await write_packet(dut, ahb, pkt1, label="WR_PKT1")
-    assert hit1, "write_addr_hit should have fired for packet 1"
+    assert hit1, "write_complete should have fired for packet 1"
     _, _, hit2 = await write_packet(dut, ahb, pkt2, label="WR_PKT2")
-    assert hit2, "write_addr_hit should have fired for packet 2"
+    assert hit2, "write_complete should have fired for packet 2"
 
     # Read packet 1
     read1, rhit1 = await read_packet(dut, ahb, label="RD_PKT1")
-    assert rhit1, "read_addr_hit should have fired for packet 1"
+    assert rhit1, "read_complete should have fired for packet 1"
 
     # Read packet 2 — this is where the bug manifests.
     # The first beat of this read uses a stale ptr_offset computed from
     # the OLD read_ptr, causing translated_addr to point to the wrong
     # SRAM word for one cycle.
     read2, rhit2 = await read_packet(dut, ahb, label="RD_PKT2")
-    assert rhit2, "read_addr_hit should have fired for packet 2"
+    assert rhit2, "read_complete should have fired for packet 2"
 
     # Assert EXACT data match — no tolerance for corruption
     dut._log.info("--- Verifying read-back data integrity ---")
@@ -585,7 +585,7 @@ async def read_packet(dut, ahb, label=""):
     """Read a packet from the FIFO via the AHB master.
 
     Reads the length word from haddr=0, then reads that many data words
-    from sequential addresses. The read_addr_hit should fire on the last
+    from sequential addresses. The read_complete should fire on the last
     beat, advancing read_ptr and releasing tokens.
 
     Returns (FifoPacket, hit_fired).
@@ -624,7 +624,7 @@ async def read_packet(dut, ahb, label=""):
                   f"read_ptr=0x{read_ptr_before:04X}, "
                   f"read_target_addr=0x{target:04X}")
 
-    # Data beats: read sequentially, sampling read_addr_hit
+    # Data beats: read sequentially, sampling read_complete
     # AHB read protocol: address phase N, data available at phase N+1
     hit_fired = False
     data = []
@@ -642,7 +642,7 @@ async def read_packet(dut, ahb, label=""):
         # Data phase — sample hit before idling the bus
         await RisingEdge(dut.hclk)
         await FallingEdge(dut.hclk)
-        hit = int(dut.read_addr_hit.value)
+        hit = int(dut.read_complete.value)
 
         # Now idle the bus
         dut.htrans.value = 0  # IDLE
@@ -658,7 +658,7 @@ async def read_packet(dut, ahb, label=""):
         data.append(word)
 
         dut._log.info(f"{prefix}Beat {i+1}: haddr=0x{addr:04X} "
-                      f"data=0x{word:08X} read_addr_hit={hit}")
+                      f"data=0x{word:08X} read_complete={hit}")
         if hit:
             hit_fired = True
 
@@ -677,12 +677,12 @@ async def read_packet(dut, ahb, label=""):
 
 @cocotb.test()
 async def test_16_read_interrupt_and_packet_length(dut):
-    """Verify that read_addr_hit (the returner interrupt source) fires on the
+    """Verify that read_complete (the returner interrupt source) fires on the
     last beat of a read, and that packet_word_length_out carries the correct
     sideband value at that moment.
 
     This is the contract between tidelink_ahb and tidelink_ahb_returner:
-    - read_addr_hit = interrupt
+    - read_complete = interrupt
     - packet_word_length_out = write_data for the returner
     """
     ahb = await setup(dut)
@@ -698,7 +698,7 @@ async def test_16_read_interrupt_and_packet_length(dut):
     # Write all packets first
     for i, pkt in enumerate(test_cases):
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"WR{i+1}")
-        assert hit, f"write_addr_hit should have fired for write packet {i+1}"
+        assert hit, f"write_complete should have fired for write packet {i+1}"
 
     # Read each packet back and verify interrupt + sideband
     for i, expected_pkt in enumerate(test_cases):
@@ -707,7 +707,7 @@ async def test_16_read_interrupt_and_packet_length(dut):
         # Read packet using the existing helper
         read_pkt, rhit = await read_packet(dut, ahb, label=label)
         assert rhit, (
-            f"[{label}] read_addr_hit (interrupt) did NOT fire on the last "
+            f"[{label}] read_complete (interrupt) did NOT fire on the last "
             f"beat of a {expected_pkt.length}-word read packet"
         )
 
@@ -784,7 +784,7 @@ async def test_17_exhaustive_fifo_write_read(dut):
             _, _, hit = await write_packet(
                 dut, ahb, pkt, label=f"R{round_num+1}_W{total_written}")
             assert hit, \
-                f"write_addr_hit should have fired for packet {total_written}"
+                f"write_complete should have fired for packet {total_written}"
 
             sw_tokens -= pkt_total
             hw_tokens = get_token_count(dut)
@@ -816,7 +816,7 @@ async def test_17_exhaustive_fifo_write_read(dut):
             read_pkt, hit = await read_packet(
                 dut, ahb, label=f"R{round_num+1}_R{total_read}")
             assert hit, \
-                f"read_addr_hit should have fired for read {total_read}"
+                f"read_complete should have fired for read {total_read}"
 
             # Verify data matches what was written
             assert read_pkt.data == expected_pkt.data, \

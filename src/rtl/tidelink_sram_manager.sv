@@ -124,14 +124,14 @@ module tidelink_sram_manager #(
             end
             
             PROCESSING_DATA_IN: begin
-                if (din_tvalid && din_tlast) begin
+                if (din_tvalid && din_tready && din_tlast) begin
                     ctrl_active_next = 1'b0;
                     control_state_next = IDLE;
                 end
             end
             
             PROCESSING_DATA_OUT: begin
-                if (dout_tvalid && dout_tlast) begin
+                if (dout_tvalid && dout_tready && dout_tlast) begin
                     ctrl_active_next = 1'b0;
                     control_state_next = IDLE;
                 end

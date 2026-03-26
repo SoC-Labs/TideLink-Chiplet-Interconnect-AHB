@@ -1,2 +1,8 @@
 sim/*
 !Makefile
+cocotb/__pycache__/
+cocotb/sim_build/
+*.vcd
+*.log
+*.key
+results.xml

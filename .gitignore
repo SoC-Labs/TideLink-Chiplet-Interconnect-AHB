@@ -13,3 +13,4 @@ novas.*
 *.fsdb*
 .vcs_checkoutpoint*
 verdiLog
+*.result

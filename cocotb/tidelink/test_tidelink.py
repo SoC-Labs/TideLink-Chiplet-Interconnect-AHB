@@ -23,18 +23,20 @@ RAM_ADDR_W    = 14
 MAX_TOKENS    = 1 << (RAM_ADDR_W - 2)
 
 # Default TIDELINK_PAIR_BASE = 0, so returner targets are:
-PAIR_RELEASED_TOKENS_ADDR = 0x20  # region 1 accumulator on the paired tidelink
-PAIR_DOORBELL_ADDR        = 0x14  # region 0 doorbell on the paired tidelink
+PAIR_RELEASED_TOKENS_ADDR   = 0x20  # region 1: delta accumulator on the paired tidelink
+PAIR_DOORBELL_RESPONSE_ADDR = 0x24  # region 1: doorbell response accumulator on the paired tidelink
+PAIR_DOORBELL_ADDR          = 0x14  # region 0: doorbell trigger on the paired tidelink
 
 # APB register offsets — Region 0 (paddr[5]=0)
 APB_REG_PAIR_BASE     = 0x000   # RO: TIDELINK_PAIR_BASE parameter
 APB_REG_PKT_WORD_LEN  = 0x008   # RO: packet_word_length sideband from FIFO
 APB_REG_TOKEN_COUNT   = 0x00C   # RO: current total token count
-APB_REG_STATUS        = 0x010   # RO: [0] write_addr_hit [1] read_addr_hit [2] busy
+APB_REG_STATUS        = 0x010   # RO: [0] returner_busy
 APB_REG_DOORBELL      = 0x014   # W1C: write any value to trigger doorbell
 
 # APB register offsets — Region 1 (paddr[5]=1)
-APB_REG_RELEASED_ACC  = 0x020   # W-add/R-clear: released tokens accumulator
+APB_REG_RELEASED_ACC      = 0x020   # W-add/R-clear: released tokens accumulator (channel 0 deltas)
+APB_REG_DOORBELL_RESP_ACC = 0x024   # W-add/R-clear: doorbell response accumulator (channel 1 totals)
 
 
 # ── Data Objects ─────────────────────────────────────────────────────────────
@@ -554,17 +556,14 @@ async def test_bug001_cumulative_token_drift(dut):
 
 
 @cocotb.test()
-async def test_bug004_delta_total_accumulator_conflation(dut):
-    """BUG-004: Channel 0 deltas and channel 1 totals share the same
-    accumulator on the pair side. If a read_complete (channel 0) fires
-    and then a doorbell (channel 1) fires before the pair reads the
-    accumulator, the values add together, giving an inflated count.
+async def test_bug004_fix_delta_total_separate_accumulators(dut):
+    """BUG-004 FIX VERIFICATION: Channel 0 deltas and channel 1 totals
+    now target SEPARATE addresses on the pair side.
 
-    This test:
-    1. Writes and reads a packet (channel 0 fires with delta)
-    2. While the returner is still busy or just finished, triggers doorbell
-    3. Checks what the pair's accumulator received
-    4. Verifies whether the delta and total are conflated
+    Channel 0 → PAIR_RELEASED_TOKENS_ADDR (0x020)
+    Channel 1 → PAIR_DOORBELL_RESPONSE_ADDR (0x024)
+
+    This test verifies they don't interfere with each other.
     """
     tb = TidelinkTB(dut)
     await tb.reset()
@@ -573,64 +572,49 @@ async def test_bug004_delta_total_accumulator_conflation(dut):
     expected_delta = len(pkt_data) + 1  # 4
 
     # Write a packet
-    await tb.write_packet(pkt_data, label="CONFLATE_WR")
+    await tb.write_packet(pkt_data, label="SEP_ACC_WR")
 
-    # Clear slave RAM
+    # Clear both slave RAM locations
     tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_DOORBELL_RESPONSE_ADDR, b'\x00\x00\x00\x00')
 
-    # Read the packet back — triggers channel 0 (delta)
-    _, _ = await tb.read_packet(label="CONFLATE_RD")
-
-    # Wait for channel 0 to complete
+    # Read the packet back — triggers channel 0 (delta → 0x020)
+    _, _ = await tb.read_packet(label="SEP_ACC_RD")
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    # Record channel 0 write
-    delta_written = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
-    tb.log.info(f"Channel 0 wrote delta = {delta_written}")
+    # Channel 0 should have written to 0x020 (delta accumulator)
+    delta_at_020 = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    total_at_024 = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
+    tb.log.info(f"After read: 0x020={delta_at_020}, 0x024={total_at_024}")
 
-    # Now trigger doorbell (channel 1) — writes total tokens
-    # The pair's accumulator hasn't been "read" (cleared), so if both
-    # channel 0 and channel 1 target the same address, values accumulate
-    # in the AHBLiteSlaveRAM (which just stores the last write, not
-    # accumulating). But in real hardware, the paired tidelink's
-    # write-to-add accumulator WOULD add them.
-    #
-    # This test documents the architectural concern: channel 0 and
-    # channel 1 share PAIR_RELEASED_TOKENS_ADDR, meaning if both fire
-    # before the pair CPU reads the accumulator, totals and deltas mix.
+    assert delta_at_020 == expected_delta, \
+        f"Channel 0 should write delta={expected_delta} to 0x020, got {delta_at_020}"
+    assert total_at_024 == 0, \
+        f"0x024 should be untouched after channel 0, got {total_at_024}"
 
-    # Trigger doorbell via APB
+    # Now trigger doorbell (channel 1 → 0x024)
     await tb.apb.write(APB_REG_DOORBELL, 1)
     await ClockCycles(dut.hclk, 2)
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    # Read what channel 1 wrote (overwrites in slave RAM)
-    total_written = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
-    expected_total = MAX_TOKENS - expected_delta  # tokens freed by read, but delta already consumed
-
-    tb.log.info(
-        f"Channel 1 wrote total = {total_written} "
-        f"(expected current_token_count = {await tb.read_token_count()})"
-    )
-
-    # Document the architectural issue:
-    # In real hardware, the pair's accumulator would contain:
-    #   delta_written + total_written (if CPU hasn't read in between)
-    # This conflates "tokens freed by this read" with "total free tokens".
-    # The pair's software must be aware of this protocol.
+    # Channel 1 should have written to 0x024 (doorbell response accumulator)
+    delta_at_020_after = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    total_at_024_after = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
     hw_token_count = await tb.read_token_count()
+
     tb.log.info(
-        f"Architectural note: Channel 0 (delta={delta_written}) and "
-        f"Channel 1 (total={total_written}) both target "
-        f"PAIR_RELEASED_TOKENS_ADDR (0x{PAIR_RELEASED_TOKENS_ADDR:03X}). "
-        f"In real hardware, pair accumulator would see "
-        f"{delta_written + total_written} if CPU hasn't cleared it."
+        f"After doorbell: 0x020={delta_at_020_after}, "
+        f"0x024={total_at_024_after}, token_count={hw_token_count}"
     )
 
-    # Verify channel 1 sent the correct total (current token count)
-    assert total_written == hw_token_count, (
-        f"Channel 1 (doorbell) should send current token count "
-        f"({hw_token_count}), got {total_written}"
-    )
+    # 0x020 should still have the delta from channel 0 (not overwritten)
+    assert delta_at_020_after == expected_delta, \
+        f"Channel 1 should NOT overwrite 0x020: expected {expected_delta}, got {delta_at_020_after}"
+
+    # 0x024 should have the total token count from channel 1
+    assert total_at_024_after == hw_token_count, \
+        f"Channel 1 should write token_count={hw_token_count} to 0x024, got {total_at_024_after}"
+
+    tb.log.info("BUG-004 fix verified: deltas and totals use separate accumulators")

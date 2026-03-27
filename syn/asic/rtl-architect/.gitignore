@@ -1,0 +1,16 @@
+HDL_LIBRARIES
+rtl_output.txt
+rtl_command.log
+*_ra_reports/
+*_ra_design/
+*_ra.log
+*.pvl
+*.syn
+*.mr
+*.svf
+alib-52
+work
+default.svf
+design_lib
+ARCH
+RA_work

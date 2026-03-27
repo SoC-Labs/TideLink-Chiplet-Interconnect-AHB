@@ -58,7 +58,6 @@ module tidelink_ahb_fifo_ctrl #(
     // -------------------------------------------------------------------------
     logic [RAM_ADDR_W-1:0] read_ptr_r,            read_ptr_nxt;
     logic [RAM_ADDR_W-1:0] write_ptr_r,           write_ptr_nxt;
-    logic [RAM_ADDR_W-3:0] ptr_offset,            ptr_offset_nxt;
     logic [RAM_ADDR_W-1:0] packet_word_length_r,  packet_word_length_nxt;
     logic                  check_addr_r,           check_addr_nxt;
     logic [RAM_ADDR_W-1:0] write_target_addr_r,   write_target_addr_nxt;
@@ -81,9 +80,6 @@ module tidelink_ahb_fifo_ctrl #(
     always_comb begin
         write_ptr_nxt  = write_ptr_r;
         read_ptr_nxt   = read_ptr_r;
-        // Write offset uses write_ptr_r (registered, matches buf_addr pipeline in cmsdk_ahb_to_sram)
-        // Read offset uses read_ptr_nxt (combinational, matches HADDR pass-through for reads)
-        ptr_offset_nxt = (hwrite ? write_ptr_r : read_ptr_nxt) >> 2;
 
         if (write_complete) begin
             write_ptr_nxt = write_ptr_r + (packet_word_length_r + 1) * 4;
@@ -96,11 +92,9 @@ module tidelink_ahb_fifo_ctrl #(
         if (!hresetn) begin
             read_ptr_r  <= '0;
             write_ptr_r <= '0;
-            ptr_offset  <= '0;
         end else begin
             read_ptr_r  <= read_ptr_nxt;
             write_ptr_r <= write_ptr_nxt;
-            ptr_offset  <= ptr_offset_nxt;
         end
     end
 
@@ -137,10 +131,12 @@ module tidelink_ahb_fifo_ctrl #(
         packet_word_length_nxt   = packet_word_length_r;
         capture_write_length_nxt = valid_ahb_access && (haddr == 0) && hwrite;
 
-        // Clear packet_word_length on completion so stale target addresses
-        // don't cause spurious hits on subsequent transfers
+        // Clear packet_word_length and check_addr on completion so stale
+        // target addresses don't cause spurious hits and check_addr doesn't
+        // capture stale rdata on the next cycle (BUG-005 fix)
         if (write_complete || read_complete) begin
             packet_word_length_nxt = '0;
+            check_addr_nxt = 1'b0;
         end else if (capture_write_length_r) begin
             // Data phase of write to addr 0: hwdata is now valid
             packet_word_length_nxt = hwdata[RAM_ADDR_W-1:0];

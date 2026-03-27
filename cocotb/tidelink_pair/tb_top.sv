@@ -44,8 +44,9 @@ module tb_top #(
     output logic                    apbs_pready,
     output logic                    apbs_pslverr,
 
-    // Interrupt
-    output logic                    released_tokens_irq
+    // Interrupt outputs
+    output logic                    released_tokens_irq,
+    output logic                    doorbell_irq
 );
 
     tidelink #(
@@ -84,7 +85,8 @@ module tb_top #(
         .apbs_prdata         (apbs_prdata),
         .apbs_pready         (apbs_pready),
         .apbs_pslverr        (apbs_pslverr),
-        .released_tokens_irq (released_tokens_irq)
+        .released_tokens_irq (released_tokens_irq),
+        .doorbell_irq        (doorbell_irq)
     );
 
     initial begin

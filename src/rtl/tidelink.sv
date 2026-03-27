@@ -65,9 +65,10 @@ module tidelink #(
     output logic                    apbs_pslverr,
 
     // --------------------------------------------------------------------------
-    // Interrupt Output (released tokens notification to CPU)
+    // Interrupt Outputs
     // --------------------------------------------------------------------------
-    output logic                    released_tokens_irq
+    output logic                    released_tokens_irq,  // Pair freed tokens (channel 0 deltas)
+    output logic                    doorbell_irq          // Pair responded to doorbell (channel 1 totals)
 );
 
     // --------------------------------------------------------------------------
@@ -94,15 +95,21 @@ module tidelink #(
     //                 [0] returner_busy
     //   Offset 0x014: Doorbell Register       (W1C) - write any value to trigger doorbell
     //
-    // Region 1 (paddr[5]=1): Released Tokens Receiver
+    // Region 1 (paddr[5]=1): Incoming Token Receivers
     //   Offset 0x020: Released Tokens Accumulator (W-add / R-clear)
-    //                 Write: value is ADDED to accumulator (from remote tidelink returner)
-    //                 Read:  returns accumulated total, then clears counter and interrupt
+    //                 Write: delta value is ADDED (from pair's channel 0 returner)
+    //                 Read:  returns accumulated deltas, then clears counter and IRQ
+    //                 IRQ:   released_tokens_irq
+    //   Offset 0x024: Doorbell Response Accumulator (W-add / R-clear)
+    //                 Write: total free tokens ADDED (from pair's channel 1 returner)
+    //                 Read:  returns accumulated total, then clears counter and IRQ
+    //                 IRQ:   doorbell_irq
     // --------------------------------------------------------------------------
 
     // Paired tidelink's target addresses (derived from parameter)
-    localparam [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h20); // Region 1: accumulator
-    localparam [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR        = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h14); // Region 0: doorbell
+    localparam [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR    = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h20); // Region 1: delta accumulator
+    localparam [SYS_ADDR_W-1:0] PAIR_DOORBELL_RESPONSE_ADDR  = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h24); // Region 1: doorbell response accumulator
+    localparam [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR           = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h14); // Region 0: doorbell trigger
 
     // Region select
     wire apb_region = apbs_paddr[5];
@@ -147,37 +154,50 @@ module tidelink #(
         end
     end
 
-    // ── Region 1: Released Tokens Receiver ──────────────────────────────────
-    // Another tidelink's returner writes token counts here via the bus fabric.
-    // Values accumulate. The first arrival asserts released_tokens_irq.
-    // A CPU read returns the total and clears both counter and interrupt.
+    // ── Region 1: Incoming Token Receivers ───────────────────────────────────
+    // Two separate accumulators prevent channel 0 (deltas) and channel 1
+    // (doorbell totals) from being conflated. Each has its own IRQ so the
+    // CPU knows which type of token notification arrived.
 
+    // --- 0x020: Released Tokens Accumulator (channel 0 deltas) ---
     logic [SYS_DATA_W-1:0] released_tokens_acc;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             released_tokens_acc <= '0;
         end else if (apb_read && apb_region && apbs_paddr[4:2] == 3'h0) begin
-            // Read-to-clear: CPU reads the accumulator → reset to 0
             released_tokens_acc <= '0;
         end else if (apb_write && apb_region && apbs_paddr[4:2] == 3'h0) begin
-            // Write-to-add: incoming token count is added to accumulator
             released_tokens_acc <= released_tokens_acc + apbs_pwdata;
         end
     end
 
-    // Interrupt: asserted when accumulator is non-zero (tokens have been released)
-    // Cleared automatically when CPU reads the accumulator (read-to-clear)
     assign released_tokens_irq = (released_tokens_acc != '0);
+
+    // --- 0x024: Doorbell Response Accumulator (channel 1 totals) ---
+    logic [SYS_DATA_W-1:0] doorbell_response_acc;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            doorbell_response_acc <= '0;
+        end else if (apb_read && apb_region && apbs_paddr[4:2] == 3'h1) begin
+            doorbell_response_acc <= '0;
+        end else if (apb_write && apb_region && apbs_paddr[4:2] == 3'h1) begin
+            doorbell_response_acc <= doorbell_response_acc + apbs_pwdata;
+        end
+    end
+
+    assign doorbell_irq = (doorbell_response_acc != '0);
 
     // ── APB Read Mux ────────────────────────────────────────────────────────
 
     always_comb begin
         apbs_prdata = '0;
         if (apb_region) begin
-            // Region 1: Released Tokens Receiver
+            // Region 1: Incoming Token Receivers
             case (apbs_paddr[4:2])
                 3'h0:    apbs_prdata = released_tokens_acc;
+                3'h1:    apbs_prdata = doorbell_response_acc;
                 default: ;
             endcase
         end else begin
@@ -198,7 +218,22 @@ module tidelink #(
 
     // Sideband wiring to returner
     // Delta: tokens freed by the last completed read (packet_word_length + 1 for the length word)
-    wire [SYS_DATA_W-1:0] token_delta_data = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + 1;
+    // BUG-001 FIX: packet_word_length is cleared to 0 on the same cycle as
+    // read_complete, so the combinational token_delta_data goes stale before
+    // the returner can capture it (returner samples one cycle later).
+    // Solution: register the delta on the read_complete cycle when the value
+    // is still valid.
+    wire [SYS_DATA_W-1:0] token_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + 1;
+
+    logic [SYS_DATA_W-1:0] token_delta_data_r;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            token_delta_data_r <= '0;
+        else if (read_complete)
+            token_delta_data_r <= token_delta_data_comb;
+    end
+
     // Total: all currently free tokens
     wire [SYS_DATA_W-1:0] token_count_data = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
 
@@ -231,11 +266,11 @@ module tidelink #(
     // TideLink AHB Returner Instance
     // --------------------------------------------------------------------------
     // Channel 0 (highest priority): release tokens on read completion
-    //   → writes DELTA (tokens freed by this read) to pair's accumulator
+    //   → writes DELTA (tokens freed by this read) to pair's released tokens accumulator (0x020)
     // Channel 1: doorbell — triggered by software OR by pair's reset
-    //   → writes TOTAL free tokens to pair's accumulator
+    //   → writes TOTAL free tokens to pair's doorbell response accumulator (0x024)
     // Channel 2 (lowest priority): reset doorbell — fires on reset deassertion
-    //   → rings pair's doorbell register so pair responds with its total free tokens
+    //   → rings pair's doorbell register (0x014) so pair responds with its total free tokens
     tidelink_ahb_returner #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W)
@@ -243,14 +278,14 @@ module tidelink #(
         .hclk        (hclk),
         .hresetn     (hresetn),
 
-        // Channel 0: release tokens (read_complete → write delta to pair's accumulator)
+        // Channel 0: release tokens (read_complete → write delta to pair's released tokens acc)
         .interrupt_0 (read_complete),
         .write_addr_0(PAIR_RELEASED_TOKENS_ADDR),
-        .write_data_0(token_delta_data),
+        .write_data_0(token_delta_data_r),
 
-        // Channel 1: doorbell (triggered → write total free tokens to pair's accumulator)
+        // Channel 1: doorbell (triggered → write total free tokens to pair's doorbell response acc)
         .interrupt_1 (doorbell_trigger),
-        .write_addr_1(PAIR_RELEASED_TOKENS_ADDR),
+        .write_addr_1(PAIR_DOORBELL_RESPONSE_ADDR),
         .write_data_1(token_count_data),
 
         // Channel 2: reset doorbell (reset deassertion → ring pair's doorbell)

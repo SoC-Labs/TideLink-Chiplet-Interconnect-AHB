@@ -1,0 +1,76 @@
+# TideLink GitLab CI Pipeline
+# Runs HAL lint, cocotb regression, and RTL Architect synthesis exploration
+
+stages:
+  - lint
+  - regression
+  - synthesis
+
+variables:
+  # Synopsys EDA tool paths
+  VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
+  VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
+  RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL_ARCHITECT_2022.06-SP2
+  # Cadence Xcelium (provides HAL linter)
+  XCELIUM_HOME: /eda/cadence/xcelium
+  PATH: "$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
+  # Simulator selection for cocotb
+  SIM: vcs
+  # License server (update as needed)
+  # SNPSLMD_LICENSE_FILE: "port@license-server"
+
+# ── Lint ───────────────────────────────────────────────────────────────────
+
+hal-lint:
+  stage: lint
+  tags:
+    - xcelium
+  before_script:
+    - echo "HAL version:" && hal -version 2>&1 | head -1
+  script:
+    - make -C lint lint-standalone
+  artifacts:
+    when: always
+    paths:
+      - lint/*_hal.log
+      - lint/*_hal.xml
+    expire_in: 30 days
+
+# ── Verification ───────────────────────────────────────────────────────────
+
+cocotb-regression:
+  stage: regression
+  tags:
+    - vcs
+  before_script:
+    - echo "Python version:" && python3 --version
+    - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+  script:
+    - make -C cocotb regression
+  artifacts:
+    when: always
+    paths:
+      - cocotb/*/run.log
+      - cocotb/*/.result
+    reports:
+      junit:
+        - cocotb/*/results.xml
+    expire_in: 30 days
+
+# ── RTL Architect ──────────────────────────────────────────────────────────
+
+rtl-architect:
+  stage: synthesis
+  tags:
+    - rtl_architect
+  before_script:
+    - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
+  script:
+    - make -C syn/asic/rtl-architect ra MODULE=tidelink
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/rtl-architect/tidelink_ra_reports/
+      - syn/asic/rtl-architect/tidelink_ra.log
+    expire_in: 30 days

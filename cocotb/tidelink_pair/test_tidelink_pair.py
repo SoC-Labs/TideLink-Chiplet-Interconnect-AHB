@@ -18,12 +18,13 @@ PAIR_BASE     = 0x4000_1000  # Must match tb_top parameter TIDELINK_PAIR_BASE
 MAX_TOKENS    = 1 << 12      # (1 << (RAM_ADDR_W - 2)), RAM_ADDR_W=14
 
 # APB offsets
-OFF_PAIR_BASE_ADDR   = 0x000
-OFF_PKT_WORD_LEN     = 0x008
-OFF_TOKEN_COUNT      = 0x00C
-OFF_STATUS           = 0x010
-OFF_DOORBELL         = 0x014
-OFF_RELEASED_TOKENS  = 0x020
+OFF_PAIR_BASE_ADDR     = 0x000
+OFF_PKT_WORD_LEN       = 0x008
+OFF_TOKEN_COUNT        = 0x00C
+OFF_STATUS             = 0x010
+OFF_DOORBELL           = 0x014
+OFF_RELEASED_TOKENS    = 0x020
+OFF_DOORBELL_RESPONSE  = 0x024
 
 
 # ── Pair Register Bank (Python model) ───────────────────────────────────────
@@ -67,18 +68,24 @@ class PairRegisterBank:
 
         if offset == OFF_DOORBELL:
             # Doorbell rung — respond with our total free tokens
+            # Write to DUT's doorbell response accumulator (0x024)
             self.doorbell_pending = True
             self.log(f"PAIR: Doorbell rung! Responding with token_count={self.token_count}")
-            # Write our total free tokens to the DUT's released tokens accumulator
             responses.append((
-                self.dut_apb_base + OFF_RELEASED_TOKENS,
+                self.dut_apb_base + OFF_DOORBELL_RESPONSE,
                 self.token_count
             ))
 
         elif offset == OFF_RELEASED_TOKENS:
-            # Released tokens received — accumulate
+            # Released tokens (channel 0 deltas) received — accumulate
             self.released_tokens_acc += data
             self.log(f"PAIR: Received {data} released tokens "
+                     f"(total accumulated: {self.released_tokens_acc})")
+
+        elif offset == OFF_DOORBELL_RESPONSE:
+            # Doorbell response (channel 1 totals) received — accumulate
+            self.released_tokens_acc += data
+            self.log(f"PAIR: Received {data} doorbell response tokens "
                      f"(total accumulated: {self.released_tokens_acc})")
 
         else:
@@ -262,8 +269,8 @@ async def test_01_reset_doorbell_flow(dut):
     1. DUT (side A) comes out of reset
     2. Channel 2 fires: writes to pair's doorbell (PAIR_BASE + 0x14)
     3. Pair model sees doorbell, responds by writing its token count
-       to DUT's released tokens accumulator (DUT_BASE + 0x20)
-    4. DUT's released_tokens_irq asserts
+       to DUT's doorbell response accumulator (DUT_BASE + 0x24)
+    4. DUT's doorbell_irq asserts
     5. CPU reads accumulator → gets pair's token count, IRQ clears
     """
     await setup(dut)
@@ -292,22 +299,22 @@ async def test_01_reset_doorbell_flow(dut):
     # Wait for the APB response write to propagate
     await ClockCycles(dut.hclk, 5)
 
-    # Check IRQ is asserted
-    irq = int(dut.released_tokens_irq.value)
-    dut._log.info(f"released_tokens_irq = {irq}")
-    assert irq == 1, "released_tokens_irq should be asserted after pair responds"
+    # Check doorbell IRQ is asserted (not released_tokens_irq)
+    irq = int(dut.doorbell_irq.value)
+    dut._log.info(f"doorbell_irq = {irq}")
+    assert irq == 1, "doorbell_irq should be asserted after pair responds"
 
-    # CPU reads the accumulator — should get pair's MAX_TOKENS
-    acc_value = await apb_read(dut, OFF_RELEASED_TOKENS)
-    dut._log.info(f"Released tokens accumulator = {acc_value} "
+    # CPU reads the doorbell response accumulator — should get pair's MAX_TOKENS
+    acc_value = await apb_read(dut, OFF_DOORBELL_RESPONSE)
+    dut._log.info(f"Doorbell response accumulator = {acc_value} "
                   f"(expected {MAX_TOKENS})")
     assert acc_value == MAX_TOKENS, \
         f"Expected {MAX_TOKENS}, got {acc_value}"
 
     # After read, IRQ should clear
     await ClockCycles(dut.hclk, 1)
-    irq = int(dut.released_tokens_irq.value)
-    assert irq == 0, "released_tokens_irq should clear after CPU read"
+    irq = int(dut.doorbell_irq.value)
+    assert irq == 0, "doorbell_irq should clear after CPU read"
 
     # Print pair model log
     for line in pair.log_lines:
@@ -320,7 +327,7 @@ async def test_02_software_doorbell(dut):
 
     1. DUT is out of reset and stable
     2. CPU writes to DUT's doorbell register (0x014)
-    3. Channel 1 fires: writes DUT's total free tokens to pair's accumulator
+    3. Channel 1 fires: writes DUT's total free tokens to pair's doorbell response accumulator (0x024)
     4. Pair model accumulates the value
     """
     await setup(dut)
@@ -379,15 +386,15 @@ async def test_03_independent_resets(dut):
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
 
-    irq = int(dut.released_tokens_irq.value)
-    assert irq == 1, "IRQ should be asserted after first reset handshake"
+    irq = int(dut.doorbell_irq.value)
+    assert irq == 1, "doorbell_irq should be asserted after first reset handshake"
 
-    acc = await apb_read(dut, OFF_RELEASED_TOKENS)
-    dut._log.info(f"After first reset: accumulator = {acc}")
+    acc = await apb_read(dut, OFF_DOORBELL_RESPONSE)
+    dut._log.info(f"After first reset: doorbell response accumulator = {acc}")
     assert acc == MAX_TOKENS, f"Expected {MAX_TOKENS}, got {acc}"
 
     await ClockCycles(dut.hclk, 2)
-    assert int(dut.released_tokens_irq.value) == 0, "IRQ should clear after read"
+    assert int(dut.doorbell_irq.value) == 0, "doorbell_irq should clear after read"
 
     # ── Second reset (DUT only, pair stays running) ──────────────
     dut._log.info("=== Second reset (DUT only) ===")
@@ -400,11 +407,11 @@ async def test_03_independent_resets(dut):
 
     assert pair.doorbell_pending, "Pair should see doorbell from DUT's second reset"
 
-    irq = int(dut.released_tokens_irq.value)
-    assert irq == 1, "IRQ should be asserted after second reset handshake"
+    irq = int(dut.doorbell_irq.value)
+    assert irq == 1, "doorbell_irq should be asserted after second reset handshake"
 
-    acc = await apb_read(dut, OFF_RELEASED_TOKENS)
-    dut._log.info(f"After second reset: accumulator = {acc} "
+    acc = await apb_read(dut, OFF_DOORBELL_RESPONSE)
+    dut._log.info(f"After second reset: doorbell response accumulator = {acc} "
                   f"(pair has {pair.token_count} free)")
     assert acc == MAX_TOKENS - 100, \
         f"Expected {MAX_TOKENS - 100} (pair's current free tokens), got {acc}"
@@ -439,7 +446,7 @@ async def test_04_pair_resets_while_dut_running(dut):
     # Clear reset doorbell state
     pair.released_tokens_acc = 0
     pair.log_lines.clear()
-    await apb_read(dut, OFF_RELEASED_TOKENS)  # Clear DUT's accumulator
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear DUT's doorbell response accumulator
     await ClockCycles(dut.hclk, 2)
 
     # Simulate pair resetting: pair's reset channel 2 writes to DUT's doorbell
@@ -448,7 +455,7 @@ async def test_04_pair_resets_while_dut_running(dut):
 
     await ClockCycles(dut.hclk, 10)
 
-    # DUT should have written its total free tokens to pair's accumulator
+    # DUT should have written its total free tokens to pair's doorbell response accumulator
     dut._log.info(f"Pair received: {pair.released_tokens_acc} tokens from DUT")
     assert pair.released_tokens_acc == MAX_TOKENS, \
         f"Expected DUT to send {MAX_TOKENS} tokens, got {pair.released_tokens_acc}"
@@ -484,8 +491,8 @@ async def test_05_simultaneous_reset(dut):
     # Wait for DUT's reset doorbell to complete
     await ClockCycles(dut.hclk, 15)
 
-    # DUT rang pair's doorbell, pair responded → DUT accumulator has pair's tokens
-    acc_from_pair = await apb_read(dut, OFF_RELEASED_TOKENS)
+    # DUT rang pair's doorbell, pair responded → DUT doorbell response accumulator has pair's tokens
+    acc_from_pair = await apb_read(dut, OFF_DOORBELL_RESPONSE)
     dut._log.info(f"DUT received from pair: {acc_from_pair}")
     assert acc_from_pair == MAX_TOKENS, \
         f"DUT should receive {MAX_TOKENS} from pair, got {acc_from_pair}"
@@ -533,7 +540,7 @@ async def test_06_write_packets_then_pair_resets(dut):
     # ── Initial reset handshake ──────────────────────────────────
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
-    await apb_read(dut, OFF_RELEASED_TOKENS)  # Clear accumulator/IRQ
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response accumulator/IRQ
     await ClockCycles(dut.hclk, 2)
 
     # ── Write packets into the FIFO ──────────────────────────────
@@ -606,7 +613,7 @@ async def test_07_write_and_read_packets_then_pair_resets(dut):
 
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
-    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response accumulator
     await ClockCycles(dut.hclk, 2)
     pair.released_tokens_acc = 0
 
@@ -741,7 +748,7 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
     monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
-    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response accumulator
     await ClockCycles(dut.hclk, 2)
     pair.released_tokens_acc = 0
     pair.log_lines.clear()
@@ -812,7 +819,7 @@ async def test_bug3_stale_packet_length_causes_spurious_hit(dut):
     monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
-    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response from reset
     await ClockCycles(dut.hclk, 2)
 
     # Write a packet with length=3. Target addr = 3*4 = 0xC
@@ -864,7 +871,7 @@ async def test_bug4_hit_fires_on_wrong_direction(dut):
     monitor = cocotb.start_soon(ahb_master_monitor(dut, pair))
     await do_reset(dut)
     await ClockCycles(dut.hclk, 15)
-    await apb_read(dut, OFF_RELEASED_TOKENS)
+    await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response from reset
     await ClockCycles(dut.hclk, 2)
 
     # Write a packet with length=2. Target = 2*4 = 0x8

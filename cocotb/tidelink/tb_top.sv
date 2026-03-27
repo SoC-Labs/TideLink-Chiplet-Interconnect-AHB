@@ -42,8 +42,9 @@ module tb_top #(
     output logic                    apbs_pready,
     output logic                    apbs_pslverr,
 
-    // Interrupt output
-    output logic                    released_tokens_irq
+    // Interrupt outputs
+    output logic                    released_tokens_irq,
+    output logic                    doorbell_irq
 );
 
     // Single-slave loopback: hready = hreadyout
@@ -92,8 +93,9 @@ module tb_top #(
         .apbs_pready     (apbs_pready),
         .apbs_pslverr    (apbs_pslverr),
 
-        // Interrupt
-        .released_tokens_irq (released_tokens_irq)
+        // Interrupts
+        .released_tokens_irq (released_tokens_irq),
+        .doorbell_irq        (doorbell_irq)
     );
 
     // Waveform dump

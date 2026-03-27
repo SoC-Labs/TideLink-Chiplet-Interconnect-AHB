@@ -1,93 +1,147 @@
 # TideLink
 
+A token-based FIFO interconnect for transferring variable-length packets between two cooperating SoCs over AHB. Each TideLink instance provides an AHB slave interface for writing/reading packets into SRAM, an AHB master interface for returning flow-control tokens to a paired TideLink, and an APB register interface for software configuration and status.
 
+A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Architecture
 
 ```
-cd existing_repo
-git remote add origin https://git.soton.ac.uk/soclabs/tidelink.git
-git branch -M main
-git push -uf origin main
+                         TideLink Instance
+  ┌──────────────────────────────────────────────────────────┐
+  │                                                          │
+  │  AHB Slave ──► tidelink_ahb ──► SRAM                    │
+  │  (packets)     (FIFO ctrl)      (cmsdk_fpga_sram)        │
+  │                    │                                     │
+  │                    │ completion / token signals           │
+  │                    ▼                                     │
+  │  APB Slave ──► Config/Status Registers                   │
+  │  (software)    (base addr, tokens, doorbell)             │
+  │                    │                                     │
+  │                    │ interrupts                           │
+  │                    ▼                                     │
+  │               tidelink_ahb_returner ──► AHB Master       │
+  │               (3-ch priority arbiter)   (to paired node) │
+  │                                                          │
+  └──────────────────────────────────────────────────────────┘
 ```
 
-## Integrate with your tools
+A typical system connects two TideLink instances back-to-back: the AHB master of one writes token/doorbell updates into the APB-visible accumulators of the other.
 
-* [Set up project integrations](https://git.soton.ac.uk/soclabs/tidelink/-/settings/integrations)
+### RTL Modules
 
-## Collaborate with your team
+| Module | Description |
+|--------|-------------|
+| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Generates interrupts for token release and doorbell events. |
+| `tidelink_ahb.sv` | AHB slave FIFO interface. Wraps `tidelink_ahb_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
+| `tidelink_ahb_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture, circular address translation, and token counting. |
+| `tidelink_ahb_returner.sv` | AHB lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Pending registers ensure short pulses are never lost. |
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+### Returner Channels
 
-## Test and Deploy
+| Channel | Priority | Purpose |
+|---------|----------|---------|
+| 0 | Highest | Release tokens -- writes delta to paired node's accumulator on read completion |
+| 1 | Medium  | Doorbell -- writes total free tokens to paired node |
+| 2 | Lowest  | Reset doorbell -- rings paired node's doorbell on reset deassertion |
 
-Use the built-in continuous integration in GitLab.
+### APB Register Map
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+| Offset | Name | Access | Description |
+|--------|------|--------|-------------|
+| 0x000 | Pair Base Address | RO | Base address of the paired TideLink's accumulator region |
+| 0x008 | Packet Word Length | RO | Current packet word length from FIFO |
+| 0x00C | Token Count | RO | Available FIFO tokens |
+| 0x010 | Status | RO | Returner busy flag |
+| 0x014 | Doorbell | W1C | Software doorbell trigger |
+| 0x020 | Released Tokens Accumulator | W-add / R-clear | Incoming token deltas (generates `released_tokens_irq`) |
+| 0x024 | Doorbell Response Accumulator | W-add / R-clear | Incoming doorbell responses (generates `doorbell_irq`) |
 
-***
+## Repository Structure
 
-# Editing this README
+```
+tidelink/
+├── src/rtl/                          # Synthesisable RTL
+│   ├── tidelink.sv                   # Top-level wrapper
+│   ├── tidelink_ahb.sv              # AHB slave FIFO interface
+│   ├── tidelink_ahb_fifo_ctrl.sv    # FIFO pointer/token control
+│   └── tidelink_ahb_returner.sv     # AHB master (3-ch arbiter)
+├── flist/                            # File lists for external tools
+├── cocotb/                           # Verification
+│   ├── Makefile                      # Regression runner
+│   ├── VERIFICATION_PLAN.md          # Test plan and known issues
+│   ├── tidelink_ahb/                 # FIFO unit tests
+│   ├── tidelink_ahb_returner/        # Returner unit tests
+│   ├── tidelink/                     # Integration tests
+│   └── tidelink_pair/                # Dual-instance system tests
+└── lint/                             # HAL (Cadence) lint flow
+    ├── Makefile
+    └── hal.tcl                       # Rule waivers
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## Dependencies
 
-## Suggestions for a good README
+- **CMSDK** -- ARM Cortex-M System Design Kit (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`). Expected at `~/Downloads/BP210-BU-00000-r1p1-00rel0/logical/` (configurable via `CMSDK_DIR` in Makefiles).
+- **VCS** -- Synopsys VCS simulator.
+- **cocotb** -- Python-based verification framework.
+- **cocotbext-ahb** -- AHB bus functional models for cocotb (`AHBLiteMaster`, `AHBLiteSlaveRAM`).
+- **Verdi** -- Synopsys Verdi for waveform viewing (optional, GUI target).
+- **HAL** -- Cadence HAL for RTL linting (optional).
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+## Running Tests
 
-## Name
-Choose a self-explaining name for your project.
+### Single test environment
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+cd cocotb/tidelink_ahb
+make
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### Full regression
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```bash
+cd cocotb
+make regression
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+This runs all four test environments (`tidelink_ahb`, `tidelink_ahb_returner`, `tidelink`, `tidelink_pair`), collects results, and prints a pass/fail summary.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Waveform viewing
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+cd cocotb/tidelink_ahb
+make gui
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Opens Verdi with the simulation database for interactive debug.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+## Linting
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+The HAL (Cadence) lint flow lives in `lint/`. Standalone modules can be linted without external IP; modules that instantiate CMSDK blocks require those sources to be added to the relevant filelist first.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+```bash
+cd lint
+make lint                                  # Lint default module (tidelink_ahb_fifo_ctrl)
+make lint MODULE=tidelink_ahb_returner     # Lint a specific module
+make lint-standalone                       # Lint all standalone modules in sequence
+make lint-each                             # Lint every module (CMSDK-dependent ones need IP paths)
+make lint-synth                            # Synthesisability checks only
+make lint-all                              # All checks (RTL + structural + synth)
+make gui                                   # Lint + open Cadence report browser
+make help                                  # Print all available targets
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Module | CMSDK required? |
+|--------|-----------------|
+| `tidelink_ahb_fifo_ctrl` | No |
+| `tidelink_ahb_returner` | No |
+| `tidelink_ahb` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
+| `tidelink` | Yes (via `tidelink_ahb`) |
+
+## Contributors
+
+- David Mapstone (d.a.mapstone@soton.ac.uk)
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Copyright 2026, SoC Labs (www.soclabs.org). Released under Arm Academic Access license.

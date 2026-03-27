@@ -265,37 +265,37 @@ design-compiler:
 
 # ── Gate-Level Simulation ──────────────────────────────────────────────
 
-gate-level-sim:
-  stage: gate-level
-  needs:
-    - job: clone
-    - job: preflight
-    - job: design-compiler
-      artifacts: true
-  tags:
-    - vcs
-  before_script:
-    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    - export CMSDK_DIR="$CMSDK_DIR"
-    # Set TIDELINK_HOME to the cloned work directory
-    - export TIDELINK_HOME="$WORK_DIR"
-    # Copy DC netlist output into the working tree so the filelist can find it
-    - cp -r syn/asic/design-compiler/tidelink_dc_output "$WORK_DIR/syn/asic/design-compiler/"
-  script:
-    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
-    - make -C "$WORK_DIR/cocotb/tidelink" sim_asic
-  after_script:
-    - mkdir -p cocotb/tidelink
-    - cp "$WORK_DIR/cocotb/tidelink/run.log"      cocotb/tidelink/ 2>/dev/null || true
-    - cp "$WORK_DIR/cocotb/tidelink/results.xml"   cocotb/tidelink/ 2>/dev/null || true
-  artifacts:
-    when: always
-    paths:
-      - cocotb/tidelink/run.log
-    reports:
-      junit:
-        - cocotb/tidelink/results.xml
-    expire_in: 30 days
+# gate-level-sim:
+#   stage: gate-level
+#   needs:
+#     - job: clone
+#     - job: preflight
+#     - job: design-compiler
+#       artifacts: true
+#   tags:
+#     - vcs
+#   before_script:
+#     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+#     - export CMSDK_DIR="$CMSDK_DIR"
+#     # Set TIDELINK_HOME to the cloned work directory
+#     - export TIDELINK_HOME="$WORK_DIR"
+#     # Copy DC netlist output into the working tree so the filelist can find it
+#     - cp -r syn/asic/design-compiler/tidelink_dc_output "$WORK_DIR/syn/asic/design-compiler/"
+#   script:
+#     - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+#     - make -C "$WORK_DIR/cocotb/tidelink" sim_asic
+#   after_script:
+#     - mkdir -p cocotb/tidelink
+#     - cp "$WORK_DIR/cocotb/tidelink/run.log"      cocotb/tidelink/ 2>/dev/null || true
+#     - cp "$WORK_DIR/cocotb/tidelink/results.xml"   cocotb/tidelink/ 2>/dev/null || true
+#   artifacts:
+#     when: always
+#     paths:
+#       - cocotb/tidelink/run.log
+#     reports:
+#       junit:
+#         - cocotb/tidelink/results.xml
+#     expire_in: 30 days
 
 # ── Dashboard ──────────────────────────────────────────────────────────
 

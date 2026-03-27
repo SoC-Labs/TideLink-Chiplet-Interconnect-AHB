@@ -850,3 +850,168 @@ async def test_17_exhaustive_fifo_write_read(dut):
 
     dut._log.info(f"Exhaustive test complete: {total_written} packets written, "
                   f"{total_read} packets read, token_count={get_token_count(dut)}")
+
+
+@cocotb.test()
+async def test_18_circular_buffer_wrap_around(dut):
+    """Fill the FIFO until write_ptr wraps past the SRAM boundary,
+    then read all packets back and verify data integrity.
+
+    RAM_ADDR_W=14 → 16384 bytes → 4096 words. Pointers are 14-bit
+    and naturally wrap. This test verifies that packets spanning the
+    wrap boundary are written and read correctly.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Fill most of the FIFO with large packets to force wrap-around
+    # Each packet = 100 data words + 1 length word = 101 words = 404 bytes
+    pkt_size = 100
+    num_fill_packets = MAX_TOKENS // (pkt_size + 1)  # ~40 packets to fill
+
+    written_packets = []
+    sw_tokens = MAX_TOKENS
+
+    for i in range(num_fill_packets):
+        pkt = FifoPacket(data=[(i << 16) | (j + 1) for j in range(pkt_size)])
+        if sw_tokens < pkt.total_words:
+            break
+
+        _, _, hit = await write_packet(dut, ahb, pkt, label=f"WRAP_W{i}")
+        assert hit, f"write_complete should fire for packet {i}"
+        sw_tokens -= pkt.total_words
+        written_packets.append(pkt)
+
+    write_ptr = int(dut.u_dut.write_ptr.value)
+    dut._log.info(f"After filling: write_ptr=0x{write_ptr:04X}, "
+                  f"packets={len(written_packets)}, tokens_free={sw_tokens}")
+
+    # Read all packets back
+    for i, expected_pkt in enumerate(written_packets):
+        read_pkt, hit = await read_packet(dut, ahb, label=f"WRAP_R{i}")
+        assert hit, f"read_complete should fire for packet {i}"
+
+        assert read_pkt.data == expected_pkt.data, (
+            f"Wrap-around data corruption at packet {i}: "
+            f"first mismatch at word "
+            f"{next((j for j, (e, g) in enumerate(zip(expected_pkt.data, read_pkt.data)) if e != g), '?')}"
+        )
+        sw_tokens += expected_pkt.total_words
+
+    assert sw_tokens == MAX_TOKENS
+    assert get_token_count(dut) == MAX_TOKENS
+    dut._log.info("Circular buffer wrap-around test passed")
+
+
+@cocotb.test()
+async def test_19_single_word_packet(dut):
+    """Minimal packet: 1 data word. Verify all signals behave correctly."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    pkt = FifoPacket(data=[0xDEADBEEF])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="MIN_W")
+    assert hit, "write_complete should fire for single-word packet"
+
+    expected_tokens = MAX_TOKENS - 2  # 1 data + 1 length = 2 words
+    actual_tokens = get_token_count(dut)
+    assert actual_tokens == expected_tokens, \
+        f"Expected {expected_tokens} tokens, got {actual_tokens}"
+
+    read_pkt, rhit = await read_packet(dut, ahb, label="MIN_R")
+    assert rhit, "read_complete should fire for single-word packet"
+    assert read_pkt.data == [0xDEADBEEF], \
+        f"Data mismatch: got {[f'0x{d:08X}' for d in read_pkt.data]}"
+
+    assert get_token_count(dut) == MAX_TOKENS
+    dut._log.info("Single-word packet test passed")
+
+
+@cocotb.test()
+async def test_20_maximum_size_packet(dut):
+    """Packet consuming all available tokens (MAX_TOKENS - 1 data words).
+    Verify completion fires and token count reaches 0."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    max_data_words = MAX_TOKENS - 1  # -1 for the length word
+    pkt = FifoPacket(data=[(i + 1) & 0xFFFFFFFF for i in range(max_data_words)])
+
+    _, _, hit = await write_packet(dut, ahb, pkt, label="MAX_W")
+    assert hit, "write_complete should fire for max-size packet"
+
+    actual_tokens = get_token_count(dut)
+    assert actual_tokens == 0, f"Tokens should be 0 after max packet, got {actual_tokens}"
+
+    read_pkt, rhit = await read_packet(dut, ahb, label="MAX_R")
+    assert rhit, "read_complete should fire for max-size packet"
+
+    # Verify first and last words (checking all would be slow)
+    assert read_pkt.data[0] == 1, f"First word: expected 1, got {read_pkt.data[0]}"
+    assert read_pkt.data[-1] == max_data_words & 0xFFFFFFFF
+
+    assert get_token_count(dut) == MAX_TOKENS
+    dut._log.info(f"Max-size packet test passed ({max_data_words} data words)")
+
+
+@cocotb.test()
+async def test_21_token_count_write_read_restore(dut):
+    """Write N packets, read N packets, verify tokens restored to MAX."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    packets = [
+        FifoPacket(data=[0x10 + i for i in range(3)]),   # 4 tokens
+        FifoPacket(data=[0x20 + i for i in range(7)]),   # 8 tokens
+        FifoPacket(data=[0x30 + i for i in range(1)]),   # 2 tokens
+        FifoPacket(data=[0x40 + i for i in range(15)]),  # 16 tokens
+    ]
+
+    sw_tokens = MAX_TOKENS
+    for i, pkt in enumerate(packets):
+        _, _, hit = await write_packet(dut, ahb, pkt, label=f"RESTORE_W{i}")
+        assert hit
+        sw_tokens -= pkt.total_words
+        assert get_token_count(dut) == sw_tokens
+
+    for i, pkt in enumerate(packets):
+        read_pkt, hit = await read_packet(dut, ahb, label=f"RESTORE_R{i}")
+        assert hit
+        assert read_pkt.data == pkt.data, f"Data mismatch at packet {i}"
+        sw_tokens += pkt.total_words
+        assert get_token_count(dut) == sw_tokens
+
+    assert sw_tokens == MAX_TOKENS
+    dut._log.info("Token restore test passed")
+
+
+@cocotb.test()
+async def test_22_back_to_back_write_packets(dut):
+    """Write packets with minimal gap between them, verify no pointer
+    corruption or data overlap."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    packets = [
+        FifoPacket(data=[0xA0 | i for i in range(4)]),
+        FifoPacket(data=[0xB0 | i for i in range(3)]),
+        FifoPacket(data=[0xC0 | i for i in range(5)]),
+    ]
+
+    prev_wptr = 0
+    for i, pkt in enumerate(packets):
+        wptr_before, wptr_after, hit = await write_packet(
+            dut, ahb, pkt, label=f"B2B_W{i}")
+        assert hit
+        assert wptr_before == prev_wptr, \
+            f"Packet {i}: write_ptr gap: expected 0x{prev_wptr:04X}, got 0x{wptr_before:04X}"
+        prev_wptr = wptr_after
+
+    # Verify all data in SRAM
+    base = 0
+    for i, pkt in enumerate(packets):
+        sram = SramContents(base_word=base, words=pkt.all_words)
+        sram.verify(dut, log=dut._log)
+        base += len(pkt.all_words)
+
+    dut._log.info("Back-to-back write test passed")

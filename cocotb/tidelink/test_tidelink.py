@@ -429,3 +429,208 @@ async def test_04_multiple_packets_token_tracking(dut):
 
     assert tb.sw_token_count == MAX_TOKENS
     tb.log.info("All packets verified with correct token tracking")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Bug Regression Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@cocotb.test()
+async def test_bug001_stale_token_delta_data(dut):
+    """BUG-001: Returner sends delta=1 instead of actual packet size.
+
+    Root cause: packet_word_length is cleared to 0 on the same cycle
+    read_complete fires (tidelink_ahb_fifo_ctrl.sv:142-143). The returner
+    captures token_delta_data one cycle later, by which time
+    packet_word_length_r = 0, so delta = 0 + 1 = 1.
+
+    This test writes packets of varying sizes, reads them back, and
+    verifies the returner writes the correct delta to the AHB slave RAM.
+    If the bug is present, delta will always be 1 regardless of packet size.
+    """
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    test_cases = [
+        ([0xAA000001, 0xAA000002, 0xAA000003], 4),  # 3 data words → delta should be 4
+        ([0xBB000001, 0xBB000002], 3),                # 2 data words → delta should be 3
+        ([0xCC000001], 2),                             # 1 data word  → delta should be 2
+        ([0xDD000001, 0xDD000002, 0xDD000003,          # 5 data words → delta should be 6
+          0xDD000004, 0xDD000005], 6),
+    ]
+
+    for i, (data, expected_delta) in enumerate(test_cases):
+        # Write the packet
+        await tb.write_packet(data, label=f"BUG001_WR{i+1}")
+
+        # Clear the slave RAM at the target address before reading
+        tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+        # Read the packet back — triggers read_complete → returner channel 0
+        read_pkt, rhit = await tb.read_packet(label=f"BUG001_RD{i+1}")
+
+        # Wait for the returner to complete its AHB write
+        await tb.wait_returner_idle()
+        await ClockCycles(dut.hclk, 2)
+
+        # Read what the returner wrote to the slave RAM
+        actual_delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+
+        tb.log.info(
+            f"Packet {i+1} ({len(data)} data words): "
+            f"expected delta={expected_delta}, actual delta={actual_delta}"
+        )
+
+        if actual_delta == 1 and expected_delta != 1:
+            tb.log.error(
+                f"BUG-001 CONFIRMED: Returner sent delta=1 instead of "
+                f"{expected_delta}. packet_word_length was cleared before "
+                f"the returner could capture it."
+            )
+
+        assert actual_delta == expected_delta, (
+            f"BUG-001: Packet {i+1} ({len(data)} data words): "
+            f"returner sent delta={actual_delta}, expected {expected_delta}. "
+            f"packet_word_length is stale when returner captures it."
+        )
+
+    tb.log.info("BUG-001 test passed — all deltas correct")
+
+
+@cocotb.test()
+async def test_bug001_cumulative_token_drift(dut):
+    """BUG-001 cumulative impact: after N read-backs, the total tokens
+    returned to the pair should equal the total tokens consumed.
+
+    If the bug is present (delta always 1), the pair sees N tokens
+    returned instead of the actual total, causing progressive drift.
+    """
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    packets = [
+        [0x11, 0x22, 0x33],        # 3+1 = 4 tokens
+        [0x44, 0x55],               # 2+1 = 3 tokens
+        [0x66],                     # 1+1 = 2 tokens
+        [0x77, 0x88, 0x99, 0xAA],  # 4+1 = 5 tokens
+    ]
+    total_expected_delta = sum(len(p) + 1 for p in packets)  # 4+3+2+5 = 14
+
+    # Write all packets
+    for i, data in enumerate(packets):
+        await tb.write_packet(data, label=f"DRIFT_WR{i+1}")
+
+    # Read all packets back, accumulating deltas
+    cumulative_delta = 0
+    for i, data in enumerate(packets):
+        tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+        _, rhit = await tb.read_packet(label=f"DRIFT_RD{i+1}")
+        await tb.wait_returner_idle()
+        await ClockCycles(dut.hclk, 2)
+
+        delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+        cumulative_delta += delta
+        tb.log.info(f"Read {i+1}: delta={delta}, cumulative={cumulative_delta}")
+
+    tb.log.info(
+        f"Total delta sent to pair: {cumulative_delta} "
+        f"(expected {total_expected_delta})"
+    )
+
+    if cumulative_delta == len(packets):  # If delta=1 every time
+        tb.log.error(
+            f"BUG-001 CONFIRMED: Cumulative delta is {len(packets)} "
+            f"(1 per read), should be {total_expected_delta}. "
+            f"Token drift = {total_expected_delta - cumulative_delta} tokens lost."
+        )
+
+    assert cumulative_delta == total_expected_delta, (
+        f"BUG-001: Cumulative token delta drift. "
+        f"Pair received {cumulative_delta} tokens, expected {total_expected_delta}. "
+        f"Drift = {total_expected_delta - cumulative_delta} tokens."
+    )
+
+
+@cocotb.test()
+async def test_bug004_delta_total_accumulator_conflation(dut):
+    """BUG-004: Channel 0 deltas and channel 1 totals share the same
+    accumulator on the pair side. If a read_complete (channel 0) fires
+    and then a doorbell (channel 1) fires before the pair reads the
+    accumulator, the values add together, giving an inflated count.
+
+    This test:
+    1. Writes and reads a packet (channel 0 fires with delta)
+    2. While the returner is still busy or just finished, triggers doorbell
+    3. Checks what the pair's accumulator received
+    4. Verifies whether the delta and total are conflated
+    """
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 4
+    expected_delta = len(pkt_data) + 1  # 4
+
+    # Write a packet
+    await tb.write_packet(pkt_data, label="CONFLATE_WR")
+
+    # Clear slave RAM
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    # Read the packet back — triggers channel 0 (delta)
+    _, _ = await tb.read_packet(label="CONFLATE_RD")
+
+    # Wait for channel 0 to complete
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    # Record channel 0 write
+    delta_written = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    tb.log.info(f"Channel 0 wrote delta = {delta_written}")
+
+    # Now trigger doorbell (channel 1) — writes total tokens
+    # The pair's accumulator hasn't been "read" (cleared), so if both
+    # channel 0 and channel 1 target the same address, values accumulate
+    # in the AHBLiteSlaveRAM (which just stores the last write, not
+    # accumulating). But in real hardware, the paired tidelink's
+    # write-to-add accumulator WOULD add them.
+    #
+    # This test documents the architectural concern: channel 0 and
+    # channel 1 share PAIR_RELEASED_TOKENS_ADDR, meaning if both fire
+    # before the pair CPU reads the accumulator, totals and deltas mix.
+
+    # Trigger doorbell via APB
+    await tb.apb.write(APB_REG_DOORBELL, 1)
+    await ClockCycles(dut.hclk, 2)
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    # Read what channel 1 wrote (overwrites in slave RAM)
+    total_written = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    expected_total = MAX_TOKENS - expected_delta  # tokens freed by read, but delta already consumed
+
+    tb.log.info(
+        f"Channel 1 wrote total = {total_written} "
+        f"(expected current_token_count = {await tb.read_token_count()})"
+    )
+
+    # Document the architectural issue:
+    # In real hardware, the pair's accumulator would contain:
+    #   delta_written + total_written (if CPU hasn't read in between)
+    # This conflates "tokens freed by this read" with "total free tokens".
+    # The pair's software must be aware of this protocol.
+    hw_token_count = await tb.read_token_count()
+    tb.log.info(
+        f"Architectural note: Channel 0 (delta={delta_written}) and "
+        f"Channel 1 (total={total_written}) both target "
+        f"PAIR_RELEASED_TOKENS_ADDR (0x{PAIR_RELEASED_TOKENS_ADDR:03X}). "
+        f"In real hardware, pair accumulator would see "
+        f"{delta_written + total_written} if CPU hasn't cleared it."
+    )
+
+    # Verify channel 1 sent the correct total (current token count)
+    assert total_written == hw_token_count, (
+        f"Channel 1 (doorbell) should send current token count "
+        f"({hw_token_count}), got {total_written}"
+    )

@@ -236,3 +236,263 @@ async def test_07_htrans_sequence(dut):
     await RisingEdge(dut.hclk)
     assert dut.u_dut.htrans.value == 0, \
         f"htrans should be IDLE (0) in data phase, got {dut.u_dut.htrans.value.integer}"
+
+
+# ── Priority and Coverage Tests ──────────────────────────────────────────────
+
+
+@cocotb.test()
+async def test_08_priority_channel_0_over_1(dut):
+    """Channel 0 has highest priority — when both are pending, 0 is serviced first."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addr_0, data_0 = 0x0000_1000, 0xAAAA_0000
+    addr_1, data_1 = 0x0000_2000, 0xBBBB_1111
+
+    dut.write_addr_0.value = addr_0
+    dut.write_data_0.value = data_0
+    dut.write_addr_1.value = addr_1
+    dut.write_data_1.value = data_1
+
+    # Pulse both interrupts simultaneously
+    dut.interrupt_0.value = 1
+    dut.interrupt_1.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_0.value = 0
+    dut.interrupt_1.value = 0
+
+    # Wait for first transfer (should be channel 0)
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_0 = read_slave_word(slave, addr_0)
+    assert actual_0 == data_0, \
+        f"Channel 0 should be serviced first: expected 0x{data_0:08X}, got 0x{actual_0:08X}"
+
+    # Wait for second transfer (should be channel 1)
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_1 = read_slave_word(slave, addr_1)
+    assert actual_1 == data_1, \
+        f"Channel 1 should be serviced second: expected 0x{data_1:08X}, got 0x{actual_1:08X}"
+
+
+@cocotb.test()
+async def test_09_priority_channel_0_over_2(dut):
+    """Channel 0 has highest priority over channel 2."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addr_0, data_0 = 0x0000_3000, 0xCCCC_0000
+    addr_2, data_2 = 0x0000_4000, 0xDDDD_2222
+
+    dut.write_addr_0.value = addr_0
+    dut.write_data_0.value = data_0
+    dut.write_addr_2.value = addr_2
+    dut.write_data_2.value = data_2
+
+    dut.interrupt_0.value = 1
+    dut.interrupt_2.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_0.value = 0
+    dut.interrupt_2.value = 0
+
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_0 = read_slave_word(slave, addr_0)
+    assert actual_0 == data_0, \
+        f"Channel 0 first: expected 0x{data_0:08X}, got 0x{actual_0:08X}"
+
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_2 = read_slave_word(slave, addr_2)
+    assert actual_2 == data_2, \
+        f"Channel 2 second: expected 0x{data_2:08X}, got 0x{actual_2:08X}"
+
+
+@cocotb.test()
+async def test_10_priority_channel_1_over_2(dut):
+    """Channel 1 has higher priority than channel 2."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addr_1, data_1 = 0x0000_5000, 0xEEEE_1111
+    addr_2, data_2 = 0x0000_6000, 0xFFFF_2222
+
+    dut.write_addr_1.value = addr_1
+    dut.write_data_1.value = data_1
+    dut.write_addr_2.value = addr_2
+    dut.write_data_2.value = data_2
+
+    dut.interrupt_1.value = 1
+    dut.interrupt_2.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_1.value = 0
+    dut.interrupt_2.value = 0
+
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_1 = read_slave_word(slave, addr_1)
+    assert actual_1 == data_1, \
+        f"Channel 1 first: expected 0x{data_1:08X}, got 0x{actual_1:08X}"
+
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_2 = read_slave_word(slave, addr_2)
+    assert actual_2 == data_2, \
+        f"Channel 2 second: expected 0x{data_2:08X}, got 0x{actual_2:08X}"
+
+
+@cocotb.test()
+async def test_11_all_three_channels_pending(dut):
+    """All three channels pending simultaneously — service order 0, 1, 2."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addrs = [0x0000_7000, 0x0000_8000, 0x0000_9000]
+    datas = [0x1111_0000, 0x2222_1111, 0x3333_2222]
+
+    dut.write_addr_0.value = addrs[0]
+    dut.write_data_0.value = datas[0]
+    dut.write_addr_1.value = addrs[1]
+    dut.write_data_1.value = datas[1]
+    dut.write_addr_2.value = addrs[2]
+    dut.write_data_2.value = datas[2]
+
+    # Pulse all three simultaneously
+    dut.interrupt_0.value = 1
+    dut.interrupt_1.value = 1
+    dut.interrupt_2.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_0.value = 0
+    dut.interrupt_1.value = 0
+    dut.interrupt_2.value = 0
+
+    # Wait for all three transfers to complete
+    for ch in range(3):
+        await wait_not_busy(dut)
+        await ClockCycles(dut.hclk, 2)
+
+    # Verify all three wrote correctly
+    for ch in range(3):
+        actual = read_slave_word(slave, addrs[ch])
+        assert actual == datas[ch], \
+            f"Channel {ch}: expected 0x{datas[ch]:08X}, got 0x{actual:08X}"
+
+
+@cocotb.test()
+async def test_12_pending_survives_busy(dut):
+    """Interrupt during busy state sets pending, serviced after current completes."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addr_0, data_0 = 0x0000_A000, 0xAAAA_AAAA
+    addr_1, data_1 = 0x0000_B000, 0xBBBB_BBBB
+
+    dut.write_addr_0.value = addr_0
+    dut.write_data_0.value = data_0
+    dut.write_addr_1.value = addr_1
+    dut.write_data_1.value = data_1
+
+    # Start channel 0 transfer
+    dut.interrupt_0.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_0.value = 0
+
+    # While busy, pulse channel 1
+    await RisingEdge(dut.hclk)
+    assert dut.busy.value == 1, "DUT should be busy"
+    dut.interrupt_1.value = 1
+    await RisingEdge(dut.hclk)
+    dut.interrupt_1.value = 0
+
+    # Wait for channel 0 to complete
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 1)
+
+    actual_0 = read_slave_word(slave, addr_0)
+    assert actual_0 == data_0, f"Channel 0: got 0x{actual_0:08X}"
+
+    # Channel 1 should now be serviced from pending
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual_1 = read_slave_word(slave, addr_1)
+    assert actual_1 == data_1, \
+        f"Channel 1 pending should survive busy: expected 0x{data_1:08X}, got 0x{actual_1:08X}"
+
+
+@cocotb.test()
+async def test_13_channel_data_isolation(dut):
+    """Each channel uses its own addr/data — verify no cross-contamination."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    # Set up all three channels with distinct addresses and data
+    channels = [
+        (0x0000_C000, 0xC0C0_C0C0),
+        (0x0000_D000, 0xD0D0_D0D0),
+        (0x0000_E000, 0xE0E0_E0E0),
+    ]
+
+    for i, (addr, data) in enumerate(channels):
+        getattr(dut, f"write_addr_{i}").value = addr
+        getattr(dut, f"write_data_{i}").value = data
+
+    # Fire each channel separately and verify isolation
+    for i, (addr, data) in enumerate(channels):
+        getattr(dut, f"interrupt_{i}").value = 1
+        await RisingEdge(dut.hclk)
+        getattr(dut, f"interrupt_{i}").value = 0
+
+        await wait_not_busy(dut)
+        await ClockCycles(dut.hclk, 2)
+
+        actual = read_slave_word(slave, addr)
+        assert actual == data, \
+            f"Channel {i} data contaminated: expected 0x{data:08X}, got 0x{actual:08X}"
+
+        # Verify other addresses weren't written (on first two iterations)
+        for j in range(i + 1, 3):
+            other_addr = channels[j][0]
+            other_val = read_slave_word(slave, other_addr)
+            assert other_val == 0, \
+                f"Channel {j} addr 0x{other_addr:08X} should be 0, got 0x{other_val:08X}"
+
+
+@cocotb.test()
+async def test_14_held_interrupt_single_transfer(dut):
+    """Interrupt held high should only produce one transfer (edge-triggered)."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    addr = 0x0000_F000
+    dut.write_addr_0.value = addr
+    dut.write_data_0.value = 0x1234_5678
+
+    # Hold interrupt high for many cycles
+    dut.interrupt_0.value = 1
+    await ClockCycles(dut.hclk, 10)
+    dut.interrupt_0.value = 0
+
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    actual = read_slave_word(slave, addr)
+    assert actual == 0x1234_5678, f"Expected single write, got 0x{actual:08X}"
+
+    # Change data and wait — no new transfer should happen
+    dut.write_data_0.value = 0xDEAD_BEEF
+    await ClockCycles(dut.hclk, 10)
+
+    assert dut.busy.value == 0, "No second transfer should occur from held interrupt"
+    # Original data should remain (not overwritten)
+    actual = read_slave_word(slave, addr)
+    assert actual == 0x1234_5678, \
+        f"Held interrupt should not cause second write: got 0x{actual:08X}"

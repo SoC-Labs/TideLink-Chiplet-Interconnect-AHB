@@ -20,7 +20,7 @@ variables:
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
   # ARM CMSDK — uses ARM_IP_LIBRARY_PATH env var set on runner
-  CMSDK_DIR: "${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/logical"
+  CMSDK_DIR: "${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/"
   # Simulator selection for cocotb
   SIM: vcs
   # License server (update as needed)

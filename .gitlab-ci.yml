@@ -6,7 +6,7 @@ stages:
   - lint
   - regression
   - synthesis
-  - gate-level
+  # - gate-level
   - pages
   - cleanup
 

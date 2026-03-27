@@ -147,6 +147,7 @@ cocotb-regression:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
     - make -C "$WORK_DIR/cocotb" regression
   after_script:
     - mkdir -p cocotb
@@ -176,7 +177,7 @@ rtl-architect:
   before_script:
     - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
   script:
-    - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
+    - echo "RTL Architect version:" && rtl_shell -version 2>&1 | head -3
     - make -C "$WORK_DIR/syn/asic/rtl-architect" ra MODULE=tidelink
   after_script:
     - mkdir -p syn/asic/rtl-architect

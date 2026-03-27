@@ -1,0 +1,130 @@
+"""PYNQ hardware test for a single TideLink instance.
+
+The Zynq PS acts as both the software controller and the "pair" —
+it writes packets into the FIFO, reads them back, and inspects the
+returner's AHB master writes via a PS-readable BRAM.
+
+Usage (on Pynq-Z2):
+    from pynq import Overlay
+    ol = Overlay("tidelink_test.bit")
+    exec(open("test_single_instance.py").read())
+
+Adjust FIFO_BASE, CFG_BASE, and RETURNER_BRAM_BASE to match your
+Vivado address map.
+"""
+
+from pynq import MMIO
+
+from tidelink.pynq_driver import PynqTidelinkDriver
+from tidelink.packet import FifoPacket
+from tidelink import regs
+
+# ── Address map (update to match your Vivado block design) ───────────────────
+FIFO_BASE          = 0x4000_0000   # AHB slave — FIFO data path
+CFG_BASE           = 0x4001_0000   # AHB slave — config registers (via bridge)
+RETURNER_BRAM_BASE = 0x4002_0000   # BRAM that captures returner master writes
+RETURNER_BRAM_SIZE = 0x1000
+
+# Returner target addresses (pair_base defaults to 0)
+PAIR_RELEASED_TOKENS_ADDR   = 0x020
+PAIR_DOORBELL_RESPONSE_ADDR = 0x024
+
+passed = 0
+failed = 0
+
+
+def check(name, condition, msg=""):
+    global passed, failed
+    if condition:
+        print(f"  PASS: {name}")
+        passed += 1
+    else:
+        print(f"  FAIL: {name} — {msg}")
+        failed += 1
+
+
+# ── Setup ────────────────────────────────────────────────────────────────────
+tl = PynqTidelinkDriver(FIFO_BASE, CFG_BASE)
+returner_bram = MMIO(RETURNER_BRAM_BASE, RETURNER_BRAM_SIZE)
+
+print("=" * 60)
+print("TideLink Single Instance Hardware Test")
+print("=" * 60)
+
+# ── Test 1: Token count after reset ──────────────────────────────────────────
+print("\n[Test 1] Token count after reset")
+tokens = tl.read_token_count()
+check("token count == MAX_TOKENS", tokens == regs.MAX_TOKENS,
+      f"got {tokens}, expected {regs.MAX_TOKENS}")
+
+# ── Test 2: Release threshold default ────────────────────────────────────────
+print("\n[Test 2] Release threshold default")
+threshold = tl.cfg_read(regs.REG_REL_THRESHOLD)
+check("threshold == 20", threshold == 20, f"got {threshold}")
+
+# ── Test 3: Release threshold R/W ────────────────────────────────────────────
+print("\n[Test 3] Release threshold R/W")
+tl.cfg_write(regs.REG_REL_THRESHOLD, 50)
+readback = tl.cfg_read(regs.REG_REL_THRESHOLD)
+check("threshold readback == 50", readback == 50, f"got {readback}")
+tl.cfg_write(regs.REG_REL_THRESHOLD, 0)  # Set to immediate for remaining tests
+
+# ── Test 4: Pair base address default ────────────────────────────────────────
+print("\n[Test 4] Pair base address default")
+pair_base = tl.cfg_read(regs.REG_PAIR_BASE)
+check("pair base == 0", pair_base == 0, f"got 0x{pair_base:08X}")
+
+# ── Test 5: FIFO write and token decrement ───────────────────────────────────
+print("\n[Test 5] FIFO write and token decrement")
+pkt_data = [0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003]
+pkt = FifoPacket(data=pkt_data)
+tl.write_packet(pkt_data)
+tokens_after_write = tl.read_token_count()
+expected = regs.MAX_TOKENS - pkt.total_words
+check(f"tokens == {expected}", tokens_after_write == expected,
+      f"got {tokens_after_write}")
+
+# ── Test 6: FIFO read and returner delta ─────────────────────────────────────
+print("\n[Test 6] FIFO read and returner delta")
+# Clear the returner BRAM target
+returner_bram.write(PAIR_RELEASED_TOKENS_ADDR, 0)
+
+read_data = tl.read_packet()
+tl.wait_returner_idle()
+
+check("read data matches written", read_data == pkt_data,
+      f"got {[hex(w) for w in read_data]}")
+
+returner_delta = returner_bram.read(PAIR_RELEASED_TOKENS_ADDR)
+check(f"returner delta == {pkt.total_words}", returner_delta == pkt.total_words,
+      f"got {returner_delta}")
+
+# ── Test 7: Tokens restored after read ───────────────────────────────────────
+print("\n[Test 7] Tokens restored after read")
+tokens_after_read = tl.read_token_count()
+check("tokens == MAX_TOKENS", tokens_after_read == regs.MAX_TOKENS,
+      f"got {tokens_after_read}")
+
+# ── Test 8: Doorbell triggers returner ───────────────────────────────────────
+print("\n[Test 8] Doorbell triggers returner")
+returner_bram.write(PAIR_DOORBELL_RESPONSE_ADDR, 0)
+tl.cfg_write(regs.REG_DOORBELL, 1)
+tl.wait_returner_idle()
+doorbell_resp = returner_bram.read(PAIR_DOORBELL_RESPONSE_ADDR)
+check(f"doorbell wrote token count {regs.MAX_TOKENS}",
+      doorbell_resp == regs.MAX_TOKENS,
+      f"got {doorbell_resp}")
+
+# ── Test 9: Accumulator W-add / R-clear ──────────────────────────────────────
+print("\n[Test 9] Accumulator W-add / R-clear")
+tl.cfg_write(regs.REG_RELEASED_ACC, 10)
+tl.cfg_write(regs.REG_RELEASED_ACC, 25)
+acc_val = tl.cfg_read(regs.REG_RELEASED_ACC)
+check("accumulator == 35", acc_val == 35, f"got {acc_val}")
+acc_val2 = tl.cfg_read(regs.REG_RELEASED_ACC)
+check("accumulator cleared to 0", acc_val2 == 0, f"got {acc_val2}")
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+print("\n" + "=" * 60)
+print(f"Results: {passed} passed, {failed} failed")
+print("=" * 60)

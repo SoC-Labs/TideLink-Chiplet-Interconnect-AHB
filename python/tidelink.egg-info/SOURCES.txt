@@ -1,0 +1,12 @@
+setup.py
+tidelink/__init__.py
+tidelink/driver.py
+tidelink/packet.py
+tidelink/pair_model.py
+tidelink/pynq_driver.py
+tidelink/regs.py
+tidelink.egg-info/PKG-INFO
+tidelink.egg-info/SOURCES.txt
+tidelink.egg-info/dependency_links.txt
+tidelink.egg-info/requires.txt
+tidelink.egg-info/top_level.txt

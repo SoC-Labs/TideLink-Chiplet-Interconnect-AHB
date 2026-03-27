@@ -8,24 +8,24 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
 
+from tidelink import regs
+
 CLK_PERIOD_NS = 10
 PAIR_BASE     = 0x4000_1000  # Must match tb_top parameter
 
-# APB offsets — Region 0
-OFF_PAIR_BASE     = 0x000
-OFF_REL_THRESHOLD = 0x004
-OFF_PKT_WORD_LEN  = 0x008
-OFF_TOKEN_COUNT   = 0x00C
-OFF_STATUS        = 0x010
-OFF_DOORBELL      = 0x014
-OFF_REL_ACC       = 0x018
-
-# APB offsets — Region 1
-OFF_REL_TOKENS    = 0x020
-OFF_DOORBELL_RSP  = 0x024
-OFF_PAIR_COUNTER  = 0x028
-OFF_PAIR_CONSUME  = 0x02C
-OFF_PAIR_CTR_EN   = 0x030
+# Local aliases (this file uses short names not found elsewhere)
+OFF_PAIR_BASE     = regs.REG_PAIR_BASE
+OFF_REL_THRESHOLD = regs.REG_REL_THRESHOLD
+OFF_PKT_WORD_LEN  = regs.REG_PKT_WORD_LEN
+OFF_TOKEN_COUNT   = regs.REG_TOKEN_COUNT
+OFF_STATUS        = regs.REG_STATUS
+OFF_DOORBELL      = regs.REG_DOORBELL
+OFF_REL_ACC       = regs.REG_REL_ACC
+OFF_REL_TOKENS    = regs.REG_RELEASED_ACC
+OFF_DOORBELL_RSP  = regs.REG_DOORBELL_RESP_ACC
+OFF_PAIR_COUNTER  = regs.REG_PAIR_TOKEN_COUNTER
+OFF_PAIR_CONSUME  = regs.REG_PAIR_TOKEN_CONSUME
+OFF_PAIR_CTR_EN   = regs.REG_PAIR_TOKEN_ENABLE
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

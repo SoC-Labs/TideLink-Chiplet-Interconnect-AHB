@@ -11,48 +11,22 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
 
+from tidelink.packet import FifoPacket
+from tidelink.regs import (
+    MAX_TOKENS,
+    REG_PAIR_BASE, REG_REL_THRESHOLD, REG_PKT_WORD_LEN,
+    REG_TOKEN_COUNT, REG_STATUS, REG_DOORBELL,
+    REG_RELEASED_ACC, REG_DOORBELL_RESP_ACC,
+    REG_PAIR_TOKEN_COUNTER, REG_PAIR_TOKEN_CONSUME, REG_PAIR_TOKEN_ENABLE,
+    PAIR_RELEASED_TOKENS_OFFSET, PAIR_DOORBELL_RESPONSE_OFFSET,
+)
+
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
-RAM_ADDR_W    = 14
-MAX_TOKENS    = 1 << (RAM_ADDR_W - 2)
 
-# Default TIDELINK_PAIR_BASE = 0
-PAIR_RELEASED_TOKENS_ADDR   = 0x20
-PAIR_DOORBELL_RESPONSE_ADDR = 0x24
-PAIR_DOORBELL_ADDR          = 0x14
-
-# APB/AHB config register offsets
-REG_PAIR_BASE          = 0x000
-REG_REL_THRESHOLD      = 0x004
-REG_PKT_WORD_LEN       = 0x008
-REG_TOKEN_COUNT        = 0x00C
-REG_STATUS             = 0x010
-REG_DOORBELL           = 0x014
-REG_RELEASED_ACC       = 0x020
-REG_DOORBELL_RESP_ACC  = 0x024
-REG_PAIR_TOKEN_COUNTER = 0x028
-REG_PAIR_TOKEN_CONSUME = 0x02C
-REG_PAIR_TOKEN_ENABLE  = 0x030
-
-
-# ── Data Objects ─────────────────────────────────────────────────────────────
-
-class FifoPacket:
-
-    def __init__(self, data):
-        self.data = data
-
-    @property
-    def length(self):
-        return len(self.data)
-
-    @property
-    def total_words(self) -> int:
-        return self.length + 1
-
-    @property
-    def addrs(self):
-        return [i * 4 for i in range(self.length + 1)]
+# Default TIDELINK_PAIR_BASE = 0, so returner targets are the raw offsets
+PAIR_RELEASED_TOKENS_ADDR   = PAIR_RELEASED_TOKENS_OFFSET
+PAIR_DOORBELL_RESPONSE_ADDR = PAIR_DOORBELL_RESPONSE_OFFSET
 
 
 # ── Testbench Environment ────────────────────────────────────────────────────

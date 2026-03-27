@@ -15,41 +15,11 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster
 
+from tidelink.packet import FifoPacket
+from tidelink.regs import RAM_ADDR_W, MAX_TOKENS
+
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
-RAM_ADDR_W    = 14
-MAX_TOKENS    = (1 << (RAM_ADDR_W - 2))  # Must match RTL localparam
-
-
-# ── Transaction Objects ──────────────────────────────────────────────────────
-
-class FifoPacket:
-    """Represents a packet to be written into the tidelink FIFO.
-
-    The first beat carries the length, subsequent beats carry data.
-    """
-
-    def __init__(self, data):
-        self.data = data
-
-    @property
-    def length(self):
-        return len(self.data)
-
-    @property
-    def all_words(self):
-        """Length word followed by data words."""
-        return [self.length] + self.data
-
-    @property
-    def total_words(self) -> int:
-        """Total SRAM words consumed: 1 (length word) + N (data words)."""
-        return self.length + 1
-
-    @property
-    def addrs(self):
-        """Byte addresses for each beat (0x0000, 0x0004, ...)."""
-        return [i * 4 for i in range(self.length + 1)]
 
 
 class SramContents:

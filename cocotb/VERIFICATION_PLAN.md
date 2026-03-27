@@ -115,9 +115,9 @@ directly from cocotb.
 | TOP-02 | APB pair base readback                | Offset 0x000 returns TIDELINK_PAIR_BASE parameter                           | Existing |
 | TOP-03 | Write-read-returner flow              | Full cycle: write, track tokens, read, verify returner delta                | Existing |
 | TOP-04 | Multiple packets token tracking       | Write/read several packets, verify sw model matches hw at each step         | Existing |
-| TOP-05 | Returner delta data correctness       | **BUG TEST**: Verify returner sends correct delta (not always 1)            | Existing |
-| TOP-06 | Cumulative token drift                | **BUG TEST**: Verify cumulative deltas match total tokens consumed           | Existing |
-| TOP-07 | Separate accumulators                 | **BUG TEST**: Channel 0 delta and channel 1 total use separate addresses    | Existing |
+| TOP-05 | Returner delta data correctness       | Verify returner sends correct delta (not always 1)                          | Existing |
+| TOP-06 | Cumulative token drift                | Verify cumulative deltas match total tokens consumed                        | Existing |
+| TOP-07 | Separate accumulators                 | Channel 0 delta and channel 1 total use separate addresses                  | Existing |
 | TOP-08 | Default threshold batching            | Small reads accumulate; returner fires batched delta when acc >= 20         | Existing |
 | TOP-09 | Threshold register RW                 | Read default (20), write new value, read back                               | Existing |
 | TOP-10 | Large packet exceeds threshold        | Single large packet delta exceeds threshold, immediate release              | Existing |
@@ -161,9 +161,9 @@ pair model, which generates response writes back to the DUT's APB interface.
 | PAIR-06| Write packets then pair resets        | DUT has reduced tokens, pair reset gets correct (reduced) count            | Existing |
 | PAIR-07| Write and read then pair resets       | Write+read, pair reset gets correct net token count                        | Existing |
 | PAIR-08| Metadata stable on idle bus           | Idle bus at haddr=0 doesn't corrupt packet_word_length                     | Existing |
-| PAIR-09| Doorbell lost when returner busy      | **BUG TEST**: Doorbell while returner busy, pending captures it            | Existing |
-| PAIR-10| Stale packet length spurious hit      | **BUG TEST**: Stale target addr doesn't trigger false completion           | Existing |
-| PAIR-11| Hit fires on wrong direction          | **BUG TEST**: write_complete doesn't fire during reads                     | Existing |
+| PAIR-09| Doorbell lost when returner busy      | Doorbell while returner busy, pending captures it                          | Existing |
+| PAIR-10| Stale packet length spurious hit      | Stale target addr doesn't trigger false completion                         | Existing |
+| PAIR-11| Hit fires on wrong direction          | write_complete doesn't fire during reads                                   | Existing |
 | PTC-01 | Counter defaults after reset          | Counter=0, enable=1 after reset                                            | Existing |
 | PTC-02 | Counter increments on released tokens | Write to 0x020 increments counter                                          | Existing |
 | PTC-03 | Counter decrements on consume         | Write to 0x02C decrements counter                                          | Existing |
@@ -175,29 +175,9 @@ pair model, which generates response writes back to the DUT's APB interface.
 
 ## Known Bugs
 
-### BUG-001: Stale `token_delta_data` (CRITICAL)
-
-**Location**: `tidelink.sv:201` + `tidelink_fifo_ctrl.sv:142-143`
-
-**Description**: `packet_word_length` is cleared to 0 on the same cycle
-`read_complete` fires. The returner captures `token_delta_data` one cycle
-later, by which time `packet_word_length_r = 0`, so `delta = 0 + 1 = 1`
-regardless of actual packet size.
-
-**Impact**: Paired TideLink always receives delta=1 for released tokens.
-Over time, the pair's view of available tokens diverges from reality,
-causing flow control starvation.
-
-**Proven by**: TOP-05, TOP-06
-
-**Fix direction**: Either (a) register `token_delta_data` on the same
-cycle as `read_complete` before it gets cleared, or (b) delay the
-`packet_word_length` clearing by one cycle to allow the returner to
-capture the correct value.
-
 ### BUG-002: No token underflow protection
 
-**Location**: `tidelink_fifo_ctrl.sv:180-181`
+**Location**: `tidelink_fifo_ctrl.sv`
 
 **Description**: Token count is decremented without checking that
 sufficient tokens are available. If software writes a packet larger
@@ -208,29 +188,13 @@ corrupt.
 
 **Proven by**: (software protocol violation, not tested directly)
 
-### BUG-003: Dead code - ptr_offset register
+## Resolved Bugs
 
-**Location**: `tidelink_fifo_ctrl.sv:61,86,99,103`
-
-**Description**: `ptr_offset` is computed and registered every cycle but
-the value is never used by any other signal. `translated_addr = addr`
-is a passthrough.
-
-**Impact**: Wasted area and power. No functional impact.
-
-### BUG-004: Doorbell total + delta conflation
-
-**Location**: `tidelink.sv:248-254`
-
-**Description**: Channel 0 writes deltas and channel 1 writes totals to
-the same `PAIR_RELEASED_TOKENS_ADDR` (write-to-add accumulator). If
-both arrive before the pair's CPU reads the accumulator, the values
-add together, giving an inflated token count.
-
-**Impact**: Pair may believe more tokens are available than reality,
-potentially causing FIFO overflow.
-
-**Proven by**: TOP-07, AHBW-10
+| Bug | Summary | Resolution |
+|-----|---------|------------|
+| BUG-001 | Stale `token_delta_data` — returner always sent delta=1 | Fixed: deltas now accumulated in `release_acc` inside `tidelink_apb_regs` and registered on `release_tokens_trigger`. Proven by TOP-05, TOP-06. |
+| BUG-003 | Dead code — `ptr_offset` register computed but unused | Fixed: `ptr_offset` removed from `tidelink_fifo_ctrl`. |
+| BUG-004 | Channel 0 delta and channel 1 total wrote to same address | Fixed: channel 0 targets `PAIR_RELEASED_TOKENS_ADDR` (0x020), channel 1 targets `PAIR_DOORBELL_RESPONSE_ADDR` (0x024) — separate accumulators. Proven by TOP-07, AHBW-10. |
 
 ## Running Tests
 

@@ -103,17 +103,27 @@ When side A resets:
 
 ```
 tidelink/
-├── src/rtl/                          # Synthesisable RTL
-│   ├── tidelink.sv                   # Top-level wrapper
-│   ├── tidelink_ahb.sv              # AHB wrapper (with AHB-to-APB bridge)
-│   ├── tidelink_apb_regs.sv          # APB register block
-│   ├── tidelink_fifo.sv              # AHB slave FIFO interface
-│   ├── tidelink_fifo_ctrl.sv         # FIFO pointer/token control
-│   ├── tidelink_returner.sv          # AHB master (3-ch arbiter + pending)
-│   ├── fpga/tidelink_sram.sv         # FPGA SRAM wrapper
-│   └── generic/tidelink_sram.sv      # Generic SRAM wrapper
-├── flist/                            # File lists for external tools
-├── cocotb/                           # Verification (110 tests total)
+├── src/
+│   ├── rtl/                          # Synthesisable RTL
+│   │   ├── tidelink.sv               # Top-level wrapper
+│   │   ├── tidelink_ahb.sv           # AHB wrapper (with AHB-to-APB bridge)
+│   │   ├── tidelink_apb_regs.sv      # APB register block
+│   │   ├── tidelink_fifo.sv          # AHB slave FIFO interface
+│   │   ├── tidelink_fifo_ctrl.sv     # FIFO pointer/token control
+│   │   ├── tidelink_returner.sv      # AHB master (3-ch arbiter + pending)
+│   │   ├── fpga/tidelink_sram.sv     # FPGA SRAM wrapper
+│   │   └── generic/tidelink_sram.sv  # Generic SRAM wrapper
+│   └── rdl/
+│       └── tidelink_regs.rdl         # SystemRDL register description
+├── python/                           # Shared Python package
+│   ├── setup.py                      # pip install -e python/
+│   └── tidelink/
+│       ├── regs.py                   # Register map (single source of truth)
+│       ├── packet.py                 # FifoPacket data class
+│       ├── pair_model.py             # PairRegisterBank (pure state machine)
+│       ├── driver.py                 # Abstract TidelinkDriver base class
+│       └── pynq_driver.py            # PYNQ MMIO driver for hardware testing
+├── cocotb/                           # Simulation verification (110 tests)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
 │   ├── tidelink_fifo/                # FIFO unit tests (22 tests)
@@ -122,6 +132,9 @@ tidelink/
 │   ├── tidelink/                     # Integration tests (11 tests)
 │   ├── tidelink_ahb/                 # AHB wrapper tests (13 tests)
 │   └── tidelink_py_pair/             # Dual-instance system tests (19 tests)
+├── pynq/                             # PYNQ hardware test scripts
+│   ├── test_single_instance.py       # Single TideLink (PS as pair)
+│   └── test_loopback_pair.py         # Two cross-connected instances
 ├── syn/                              # Synthesis flows
 └── lint/                             # HAL (Cadence) lint flow
     ├── Makefile
@@ -137,7 +150,28 @@ tidelink/
 - **Verdi** -- Synopsys Verdi for waveform viewing (optional, GUI target).
 - **HAL** -- Cadence HAL for RTL linting (optional).
 
+## Python Package
+
+The `python/tidelink/` package provides shared register definitions, data classes, and hardware drivers used by both cocotb simulation tests and PYNQ hardware tests.
+
+```bash
+pip install -e python/    # editable install for development
+```
+
+Key modules:
+- `tidelink.regs` -- single source of truth for all register offsets and constants
+- `tidelink.packet` -- `FifoPacket` data class
+- `tidelink.pair_model` -- `PairRegisterBank` Python model of a paired TideLink
+- `tidelink.driver` -- abstract `TidelinkDriver` base class
+- `tidelink.pynq_driver` -- `PynqTidelinkDriver` for Pynq-Z2 hardware testing via MMIO
+
 ## Running Tests
+
+### Setup
+
+```bash
+pip install -e python/    # required before running cocotb tests
+```
 
 ### Single test environment
 
@@ -193,6 +227,24 @@ make help                                  # Print all available targets
 | `tidelink_fifo` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
 | `tidelink` | Yes (via `tidelink_fifo`) |
 | `tidelink_ahb` | Yes (via `tidelink` + `cmsdk_ahb_to_apb`) |
+
+## PYNQ Hardware Testing
+
+The `pynq/` directory contains test scripts for running on a Pynq-Z2 board with TideLink synthesised into the FPGA fabric. These reuse `tidelink.regs`, `FifoPacket`, and `PynqTidelinkDriver` from the shared Python package.
+
+- `test_single_instance.py` -- single TideLink instance, PS acts as the pair (register R/W, FIFO write/read, token tracking, doorbell)
+- `test_loopback_pair.py` -- two cross-connected TideLink instances (reset handshake, token release, threshold batching, pair token counter)
+
+```python
+from tidelink.pynq_driver import PynqTidelinkDriver
+from tidelink import regs
+
+tl = PynqTidelinkDriver(fifo_base_addr=0x4000_0000, cfg_base_addr=0x4001_0000)
+tl.write_packet([0xDEAD, 0xBEEF])
+tokens = tl.read_token_count()
+```
+
+Requires a Vivado bitstream with `tidelink_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port. Update the base addresses in the test scripts to match your block design.
 
 ## Contributors
 

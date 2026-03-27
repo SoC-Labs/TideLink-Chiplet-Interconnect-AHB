@@ -14,51 +14,27 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
 
+from tidelink.packet import FifoPacket
+from tidelink.regs import RAM_ADDR_W, MAX_TOKENS
+
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
-RAM_ADDR_W    = 14
-MAX_TOKENS    = 1 << (RAM_ADDR_W - 2)
 
 # Default TIDELINK_PAIR_BASE = 0, so returner targets are:
-PAIR_RELEASED_TOKENS_ADDR   = 0x20  # region 1: delta accumulator on the paired tidelink
-PAIR_DOORBELL_RESPONSE_ADDR = 0x24  # region 1: doorbell response accumulator on the paired tidelink
-PAIR_DOORBELL_ADDR          = 0x14  # region 0: doorbell trigger on the paired tidelink
+PAIR_RELEASED_TOKENS_ADDR   = 0x20
+PAIR_DOORBELL_RESPONSE_ADDR = 0x24
+PAIR_DOORBELL_ADDR          = 0x14
 
-# APB register offsets — Region 0 (paddr[5]=0)
-APB_REG_PAIR_BASE     = 0x000   # RW: TIDELINK_PAIR_BASE parameter
-APB_REG_REL_THRESHOLD = 0x004   # RW: Release threshold (default 20)
-APB_REG_PKT_WORD_LEN  = 0x008   # RO: packet_word_length sideband from FIFO
-APB_REG_TOKEN_COUNT   = 0x00C   # RO: current total token count
-APB_REG_STATUS        = 0x010   # RO: [0] returner_busy
-APB_REG_DOORBELL      = 0x014   # W1C: write any value to trigger doorbell
-APB_REG_REL_ACC       = 0x018   # RO: pending unreleased tokens (debug)
-
-# APB register offsets — Region 1 (paddr[5]=1)
-APB_REG_RELEASED_ACC      = 0x020   # W-add/R-clear: released tokens accumulator (channel 0 deltas)
-APB_REG_DOORBELL_RESP_ACC = 0x024   # W-add/R-clear: doorbell response accumulator (channel 1 totals)
-
-
-# ── Data Objects ─────────────────────────────────────────────────────────────
-
-class FifoPacket:
-    """A packet written into / read from the tidelink FIFO."""
-
-    def __init__(self, data):
-        self.data = data
-
-    @property
-    def length(self):
-        return len(self.data)
-
-    @property
-    def total_words(self) -> int:
-        """Length word + data words."""
-        return self.length + 1
-
-    @property
-    def addrs(self):
-        """Byte addresses for every beat (length word + data)."""
-        return [i * 4 for i in range(self.length + 1)]
+# APB register offsets (local aliases for backward compatibility)
+APB_REG_PAIR_BASE         = 0x000
+APB_REG_REL_THRESHOLD     = 0x004
+APB_REG_PKT_WORD_LEN      = 0x008
+APB_REG_TOKEN_COUNT        = 0x00C
+APB_REG_STATUS             = 0x010
+APB_REG_DOORBELL           = 0x014
+APB_REG_REL_ACC            = 0x018
+APB_REG_RELEASED_ACC       = 0x020
+APB_REG_DOORBELL_RESP_ACC  = 0x024
 
 
 # ── APB Master Driver ────────────────────────────────────────────────────────

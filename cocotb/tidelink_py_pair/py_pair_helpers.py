@@ -1,83 +1,27 @@
 """Shared helpers for TideLink py_pair test suites.
 
-Contains constants, the PairRegisterBank model, AHB master monitor,
-APB read/write helpers, setup/reset, and FIFO write helper.
+Contains cocotb-specific AHB master monitor, APB read/write helpers,
+setup/reset, and FIFO write helper. Pure-logic components (constants,
+PairRegisterBank) are imported from the shared tidelink package.
 """
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# Import shared constants and model from the tidelink package
+from tidelink.regs import (
+    MAX_TOKENS,
+    OFF_PAIR_BASE_ADDR, OFF_PKT_WORD_LEN, OFF_TOKEN_COUNT,
+    OFF_STATUS, OFF_DOORBELL, OFF_RELEASED_TOKENS,
+    OFF_DOORBELL_RESPONSE, OFF_PAIR_TOKEN_COUNTER,
+    OFF_PAIR_TOKEN_CONSUME, OFF_PAIR_TOKEN_ENABLE,
+)
+from tidelink.pair_model import PairRegisterBank
+
+# ── Testbench-specific constants ─────────────────────────────────────────────
 CLK_PERIOD_NS = 10
 PAIR_BASE     = 0x4000_1000  # Must match tb_top parameter TIDELINK_PAIR_BASE
-MAX_TOKENS    = 1 << 12      # (1 << (RAM_ADDR_W - 2)), RAM_ADDR_W=14
-
-# APB offsets
-OFF_PAIR_BASE_ADDR     = 0x000
-OFF_PKT_WORD_LEN       = 0x008
-OFF_TOKEN_COUNT        = 0x00C
-OFF_STATUS             = 0x010
-OFF_DOORBELL           = 0x014
-OFF_RELEASED_TOKENS    = 0x020
-OFF_DOORBELL_RESPONSE  = 0x024
-OFF_PAIR_TOKEN_COUNTER = 0x028
-OFF_PAIR_TOKEN_CONSUME = 0x02C
-OFF_PAIR_TOKEN_ENABLE  = 0x030
-
-
-# ── Pair Register Bank (Python model) ────────────────────────────────────────
-
-class PairRegisterBank:
-    """Models the paired tidelink's APB register bank in Python.
-
-    Monitors the DUT's AHB master outputs for writes, and when a write
-    targets an address in this pair's address space, processes it:
-    - Write to doorbell (0x014): triggers a response write back to the DUT
-    - Write to released tokens accumulator (0x020): accumulates the value
-
-    The pair has its own token count (simulating its own FIFO state) and
-    can be independently reset.
-    """
-
-    def __init__(self, base_addr, dut_apb_base, max_tokens):
-        self.base_addr = base_addr
-        self.dut_apb_base = dut_apb_base
-        self.max_tokens = max_tokens
-        self.reset()
-
-    def reset(self):
-        self.token_count = self.max_tokens
-        self.released_tokens_acc = 0
-        self.doorbell_pending = False
-        self.log_lines = []
-
-    def log(self, msg):
-        self.log_lines.append(msg)
-
-    def handle_ahb_write(self, addr, data):
-        offset = addr - self.base_addr
-        responses = []
-
-        if offset == OFF_DOORBELL:
-            self.doorbell_pending = True
-            self.log(f"PAIR: Doorbell rung! Responding with token_count={self.token_count}")
-            responses.append((
-                self.dut_apb_base + OFF_DOORBELL_RESPONSE,
-                self.token_count
-            ))
-        elif offset == OFF_RELEASED_TOKENS:
-            self.released_tokens_acc += data
-            self.log(f"PAIR: Received {data} released tokens "
-                     f"(total accumulated: {self.released_tokens_acc})")
-        elif offset == OFF_DOORBELL_RESPONSE:
-            self.released_tokens_acc += data
-            self.log(f"PAIR: Received {data} doorbell response tokens "
-                     f"(total accumulated: {self.released_tokens_acc})")
-        else:
-            self.log(f"PAIR: Unknown write to offset 0x{offset:03X} = 0x{data:08X}")
-
-        return responses
 
 
 # ── AHB Master Monitor ──────────────────────────────────────────────────────

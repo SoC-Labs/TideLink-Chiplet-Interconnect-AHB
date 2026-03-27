@@ -123,6 +123,8 @@ hal-lint:
     - xcelium
   before_script:
     - export PATH="$XCELIUM_HOME/tools/bin:$PATH"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "HAL version:" && hal -version 2>&1 | head -1
     - make -C "$WORK_DIR/lint" lint-standalone
@@ -145,6 +147,8 @@ cocotb-regression:
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
     - export CMSDK_DIR="$CMSDK_DIR"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
@@ -179,6 +183,8 @@ rtl-saif:
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
     - export CMSDK_DIR="$CMSDK_DIR"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
   script:
     - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
     - make -C "$WORK_DIR/cocotb/tidelink" sim_rtl_saif
@@ -200,6 +206,8 @@ rtl-architect:
     - rtl_architect
   before_script:
     - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "RTL Architect version:" && rtl_shell -version 2>&1 | head -3
     - make -C "$WORK_DIR/syn/asic/rtl-architect" ra MODULE=tidelink
@@ -229,6 +237,8 @@ design-compiler:
     - design_compiler
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "DC version:" && { dc_shell -version 2>&1 | head -3 || true; }
     - |
@@ -267,6 +277,8 @@ gate-level-sim:
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
     - export CMSDK_DIR="$CMSDK_DIR"
+    # Set TIDELINK_HOME to the cloned work directory
+    - export TIDELINK_HOME="$WORK_DIR"
     # Copy DC netlist output into the working tree so the filelist can find it
     - cp -r syn/asic/design-compiler/tidelink_dc_output "$WORK_DIR/syn/asic/design-compiler/"
   script:

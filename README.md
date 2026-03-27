@@ -1,6 +1,6 @@
 # TideLink
 
-A token-based FIFO interconnect for transferring variable-length packets between two cooperating SoCs over AHB. Each TideLink instance provides an AHB slave interface for writing/reading packets into SRAM, an AHB master interface for returning flow-control tokens to a paired TideLink, and an APB register interface for software configuration and status.
+A token-based FIFO interconnect for transferring variable-length packets between two cooperating SoCs over AHB. Each TideLink instance provides an AHB slave interface for writing/reading packets into SRAM, an AHB master interface for returning flow-control tokens to a paired TideLink, and an APB register interface for software configuration, status, and token tracking.
 
 A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 
@@ -10,70 +10,98 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
                          TideLink Instance
   ┌──────────────────────────────────────────────────────────┐
   │                                                          │
-  │  AHB Slave ──► tidelink_ahb ──► SRAM                    │
-  │  (packets)     (FIFO ctrl)      (cmsdk_fpga_sram)        │
+  │  AHB Slave ──► tidelink_fifo ──► SRAM                    │
+  │  (packets)     (FIFO ctrl)       (cmsdk_fpga_sram)       │
   │                    │                                     │
-  │                    │ completion / token signals           │
+  │                    │ read_complete / token signals        │
   │                    ▼                                     │
-  │  APB Slave ──► Config/Status Registers                   │
-  │  (software)    (base addr, tokens, doorbell)             │
+  │  APB Slave ──► Config/Status/Token Registers             │
+  │  (software)    (base addr, tokens, doorbell,             │
+  │                 pair token counter)                       │
   │                    │                                     │
   │                    │ interrupts                           │
   │                    ▼                                     │
-  │               tidelink_ahb_returner ──► AHB Master       │
-  │               (3-ch priority arbiter)   (to paired node) │
+  │               tidelink_returner ──► AHB Master           │
+  │               (3-ch priority       (to paired node)      │
+  │                arbiter + pending)                         │
   │                                                          │
   └──────────────────────────────────────────────────────────┘
 ```
 
-A typical system connects two TideLink instances back-to-back: the AHB master of one writes token/doorbell updates into the APB-visible accumulators of the other.
+A typical system connects two TideLink instances back-to-back: the AHB master of one writes token/doorbell updates into the APB-visible registers of the other. The `TIDELINK_PAIR_BASE` parameter sets the target address so all returner writes are routed automatically.
 
 ### RTL Modules
 
 | Module | Description |
 |--------|-------------|
-| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Generates interrupts for token release and doorbell events. |
-| `tidelink_ahb.sv` | AHB slave FIFO interface. Wraps `tidelink_ahb_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
-| `tidelink_ahb_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture, circular address translation, and token counting. |
-| `tidelink_ahb_returner.sv` | AHB lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Pending registers ensure short pulses are never lost. |
+| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Generates interrupts for token release and doorbell events. Contains the pair token counter. |
+| `tidelink_fifo.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
+| `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, token counting. Clears `packet_word_length` on completion to prevent stale hits. |
+| `tidelink_returner.sv` | AHB Lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Uses pending registers so 1-cycle pulse interrupts are never lost, even if the returner is busy. |
+| `tidelink_apb_regs.sv` | APB register decode (if separated; currently inline in `tidelink.sv`). |
 
 ### Returner Channels
 
-| Channel | Priority | Purpose |
-|---------|----------|---------|
-| 0 | Highest | Release tokens -- writes delta to paired node's accumulator on read completion |
-| 1 | Medium  | Doorbell -- writes total free tokens to paired node |
-| 2 | Lowest  | Reset doorbell -- rings paired node's doorbell on reset deassertion |
+| Channel | Priority | Trigger | Target | Data |
+|---------|----------|---------|--------|------|
+| 0 | Highest | `read_complete` | Pair's released tokens accumulator (0x020) | Delta: tokens freed by this read (`packet_word_length + 1`) |
+| 1 | Medium | `doorbell_trigger` | Pair's doorbell response accumulator (0x024) | Total: all currently free tokens (`current_token_count`) |
+| 2 | Lowest | `reset_deassert_pulse` | Pair's doorbell register (0x014) | `0x1` (any value triggers W1C doorbell) |
+
+### Reset Handshake Flow
+
+When side A resets:
+1. A's channel 2 fires → writes to B's doorbell register (0x014)
+2. B's doorbell triggers → B's channel 1 writes B's total free tokens to A's doorbell response accumulator (0x024)
+3. A's `doorbell_irq` asserts → CPU reads 0x024 to learn how many tokens B has available
+4. If pair token counter is enabled, incoming tokens at 0x020 also increment the hardware counter at 0x028
 
 ### APB Register Map
 
+#### Region 0 (offsets 0x000-0x01F): Configuration and Status
+
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
-| 0x000 | Pair Base Address | RO | Base address of the paired TideLink's accumulator region |
-| 0x008 | Packet Word Length | RO | Current packet word length from FIFO |
-| 0x00C | Token Count | RO | Available FIFO tokens |
-| 0x010 | Status | RO | Returner busy flag |
-| 0x014 | Doorbell | W1C | Software doorbell trigger |
-| 0x020 | Released Tokens Accumulator | W-add / R-clear | Incoming token deltas (generates `released_tokens_irq`) |
-| 0x024 | Doorbell Response Accumulator | W-add / R-clear | Incoming doorbell responses (generates `doorbell_irq`) |
+| 0x000 | Pair Base Address | RO | `TIDELINK_PAIR_BASE` parameter value |
+| 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
+| 0x00C | Token Count | RO | Available FIFO tokens (local) |
+| 0x010 | Status | RO | `[0]` returner_busy |
+| 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
+
+#### Region 1 (offsets 0x020-0x03F): Incoming Token Receivers
+
+| Offset | Name | Access | Description |
+|--------|------|--------|-------------|
+| 0x020 | Released Tokens Accumulator | W-add / R-clear | Incoming token deltas from pair's channel 0. Generates `released_tokens_irq`. Also increments the pair token counter (0x028) when enabled. |
+| 0x024 | Doorbell Response Accumulator | W-add / R-clear | Incoming doorbell responses from pair's channel 1 (total free tokens). Generates `doorbell_irq`. |
+| 0x028 | Pair Token Counter | RO | Running count of available tokens on the paired TideLink. Incremented by writes to 0x020, decremented by writes to 0x02C. Read without side effects. |
+| 0x02C | Pair Token Consume | WO | CPU writes the number of tokens being consumed from the pair. Subtracted from the pair token counter. |
+| 0x030 | Pair Token Counter Enable | RW | Bit 0: enable (default: 1). When 0, the pair token counter freezes and ignores all increments/decrements. |
+
+### Interrupts
+
+| Signal | Source | Cleared by |
+|--------|--------|------------|
+| `released_tokens_irq` | `released_tokens_acc != 0` (offset 0x020) | CPU reading 0x020 (read-to-clear) |
+| `doorbell_irq` | `doorbell_response_acc != 0` (offset 0x024) | CPU reading 0x024 (read-to-clear) |
 
 ## Repository Structure
 
 ```
 tidelink/
 ├── src/rtl/                          # Synthesisable RTL
-│   ├── tidelink.sv                   # Top-level wrapper
-│   ├── tidelink_ahb.sv              # AHB slave FIFO interface
-│   ├── tidelink_ahb_fifo_ctrl.sv    # FIFO pointer/token control
-│   └── tidelink_ahb_returner.sv     # AHB master (3-ch arbiter)
+│   ├── tidelink.sv                   # Top-level wrapper + APB registers
+│   ├── tidelink_fifo.sv              # AHB slave FIFO interface
+│   ├── tidelink_fifo_ctrl.sv         # FIFO pointer/token control
+│   └── tidelink_returner.sv          # AHB master (3-ch arbiter + pending)
 ├── flist/                            # File lists for external tools
 ├── cocotb/                           # Verification
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
-│   ├── tidelink_ahb/                 # FIFO unit tests
+│   ├── tidelink_ahb/                 # FIFO unit tests (22 tests)
 │   ├── tidelink_ahb_returner/        # Returner unit tests
 │   ├── tidelink/                     # Integration tests
-│   └── tidelink_pair/                # Dual-instance system tests
+│   └── tidelink_pair/                # Dual-instance system tests (19 tests)
 └── lint/                             # HAL (Cadence) lint flow
     ├── Makefile
     └── hal.tcl                       # Rule waivers
@@ -104,7 +132,14 @@ cd cocotb
 make regression
 ```
 
-This runs all four test environments (`tidelink_ahb`, `tidelink_ahb_returner`, `tidelink`, `tidelink_pair`), collects results, and prints a pass/fail summary.
+This runs all test environments, collects results, and prints a pass/fail summary.
+
+### Running a specific test
+
+```bash
+cd cocotb/tidelink_pair
+make TESTCASE=test_ptc_01_defaults_after_reset
+```
 
 ### Waveform viewing
 
@@ -117,15 +152,13 @@ Opens Verdi with the simulation database for interactive debug.
 
 ## Linting
 
-The HAL (Cadence) lint flow lives in `lint/`. Standalone modules can be linted without external IP; modules that instantiate CMSDK blocks require those sources to be added to the relevant filelist first.
+The HAL (Cadence) lint flow lives in `lint/`.
 
 ```bash
 cd lint
-make lint                                  # Lint default module (tidelink_ahb_fifo_ctrl)
-make lint MODULE=tidelink_ahb_returner     # Lint a specific module
+make lint                                  # Lint default module (tidelink_fifo_ctrl)
+make lint MODULE=tidelink_returner         # Lint a specific module
 make lint-standalone                       # Lint all standalone modules in sequence
-make lint-each                             # Lint every module (CMSDK-dependent ones need IP paths)
-make lint-synth                            # Synthesisability checks only
 make lint-all                              # All checks (RTL + structural + synth)
 make gui                                   # Lint + open Cadence report browser
 make help                                  # Print all available targets
@@ -133,10 +166,10 @@ make help                                  # Print all available targets
 
 | Module | CMSDK required? |
 |--------|-----------------|
-| `tidelink_ahb_fifo_ctrl` | No |
-| `tidelink_ahb_returner` | No |
-| `tidelink_ahb` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
-| `tidelink` | Yes (via `tidelink_ahb`) |
+| `tidelink_fifo_ctrl` | No |
+| `tidelink_returner` | No |
+| `tidelink_fifo` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
+| `tidelink` | Yes (via `tidelink_fifo`) |
 
 ## Contributors
 

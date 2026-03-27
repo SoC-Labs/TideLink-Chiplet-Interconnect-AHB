@@ -123,19 +123,16 @@ module tidelink_fifo #(
    );
 
     // --------------------------------------------------------------------------
-    // FPGA SRAM Model
+    // SRAM (swap tidelink_sram.sv in filelist for FPGA vs ASIC)
     // --------------------------------------------------------------------------
-    cmsdk_fpga_sram #(
+    tidelink_sram #(
         .AW (RAM_ADDR_W)
     ) u_sram (
-        // SRAM Inputs
         .CLK        (hclk),
         .ADDR       (translated_addr),
         .WDATA      (wdata),
         .WREN       (wen),
         .CS         (cs),
-
-        // SRAM Output
         .RDATA      (rdata)
     );
 

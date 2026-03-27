@@ -72,7 +72,7 @@ cocotb-regression:
     - make -C "$WORK_DIR/cocotb" regression
   after_script:
     - mkdir -p cocotb
-    - for env in tidelink_ahb tidelink_ahb_returner tidelink tidelink_pair; do
+    - for env in tidelink_fifo tidelink_returner tidelink py_pair; do
         mkdir -p "cocotb/$env";
         cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;

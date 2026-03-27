@@ -6,6 +6,7 @@ CMSDK_DIR = $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
 VERILOG_SOURCES = \
     $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v \
     $(CMSDK_DIR)/models/memories/cmsdk_fpga_sram.v \
+    $(PWD)/../../src/rtl/fpga/tidelink_sram.sv \
     $(PWD)/../../src/rtl/tidelink_fifo_ctrl.sv \
     $(PWD)/../../src/rtl/tidelink_fifo.sv \
     $(PWD)/../../src/rtl/tidelink_returner.sv \
@@ -14,7 +15,9 @@ VERILOG_SOURCES = \
     $(PWD)/tb_top.sv
 
 TOPLEVEL = tb_top
-MODULE   = test_tidelink_pair
+
+# All test suites — cocotb loads each comma-separated module
+MODULE = test_doorbell,test_token_flow,test_bug_regression,test_pair_token_counter
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 SIM_ARGS     += +vcs+dumpvars+waves.vcd

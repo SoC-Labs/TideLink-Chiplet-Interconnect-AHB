@@ -93,10 +93,10 @@ def sram_read_word(dut, word_addr):
             return int(sig.value) & 0xFF
         except ValueError:
             return 0
-    b0 = safe_int(dut.u_dut.u_sram.BRAM0[word_addr])
-    b1 = safe_int(dut.u_dut.u_sram.BRAM1[word_addr])
-    b2 = safe_int(dut.u_dut.u_sram.BRAM2[word_addr])
-    b3 = safe_int(dut.u_dut.u_sram.BRAM3[word_addr])
+    b0 = safe_int(dut.u_dut.u_sram.u_sram.BRAM0[word_addr])
+    b1 = safe_int(dut.u_dut.u_sram.u_sram.BRAM1[word_addr])
+    b2 = safe_int(dut.u_dut.u_sram.u_sram.BRAM2[word_addr])
+    b3 = safe_int(dut.u_dut.u_sram.u_sram.BRAM3[word_addr])
     return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
 
 

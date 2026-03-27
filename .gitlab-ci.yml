@@ -6,6 +6,7 @@ stages:
   - lint
   - regression
   - synthesis
+  - pages
   - cleanup
 
 variables:
@@ -212,6 +213,22 @@ design-compiler:
       - syn/asic/design-compiler/tidelink_dc_output/
       - syn/asic/design-compiler/tidelink_dc.log
     expire_in: 30 days
+
+# ── Dashboard (GitLab Pages) ───────────────────────────────────────────
+
+pages:
+  stage: pages
+  needs:
+    - job: hal-lint
+      artifacts: true
+    - job: cocotb-regression
+      artifacts: true
+  script:
+    - python3 "$WORK_DIR/ci/generate_dashboard.py"
+  artifacts:
+    paths:
+      - public
+  when: always
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 

@@ -24,12 +24,6 @@ variables:
   # License server (update as needed)
   # SNPSLMD_LICENSE_FILE: "port@license-server"
 
-# Prepend EDA tools to PATH in every job (setting PATH as a variable
-# overwrites the system PATH, breaking basic commands like mkdir/rm/git)
-default:
-  before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
-
 # ── Clone ────────────────────────────────────────────────────────────────
 
 clone:
@@ -49,16 +43,17 @@ hal-lint:
   tags:
     - xcelium
   before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
-    - cd "$WORK_DIR"
-    - echo "HAL version:" && hal -version 2>&1 | head -1
+    - export PATH="$XCELIUM_HOME/tools/bin:$PATH"
   script:
-    - make -C lint lint-standalone
+    - echo "HAL version:" && hal -version 2>&1 | head -1
+    - make -C "$WORK_DIR/lint" lint-standalone
+  after_script:
+    - cp -r "$WORK_DIR/lint/"*_hal.log "$WORK_DIR/lint/"*_hal.xml . 2>/dev/null || true
   artifacts:
     when: always
     paths:
-      - lint/*_hal.log
-      - lint/*_hal.xml
+      - "*_hal.log"
+      - "*_hal.xml"
     expire_in: 30 days
 
 # ── Verification ─────────────────────────────────────────────────────────
@@ -69,13 +64,20 @@ cocotb-regression:
   tags:
     - vcs
   before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
-    - cd "$WORK_DIR"
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+  script:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-  script:
-    - make -C cocotb regression
+    - make -C "$WORK_DIR/cocotb" regression
+  after_script:
+    - mkdir -p cocotb
+    - for env in tidelink_ahb tidelink_ahb_returner tidelink tidelink_pair; do
+        mkdir -p "cocotb/$env";
+        cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/cocotb/$env/results.xml"   "cocotb/$env/" 2>/dev/null || true;
+      done
   artifacts:
     when: always
     paths:
@@ -94,11 +96,14 @@ rtl-architect:
   tags:
     - rtl_architect
   before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
-    - cd "$WORK_DIR"
-    - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
   script:
-    - make -C syn/asic/rtl-architect ra MODULE=tidelink
+    - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
+    - make -C "$WORK_DIR/syn/asic/rtl-architect" ra MODULE=tidelink
+  after_script:
+    - mkdir -p syn/asic/rtl-architect
+    - cp -r "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra_reports" syn/asic/rtl-architect/ 2>/dev/null || true
+    - cp    "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra.log"     syn/asic/rtl-architect/ 2>/dev/null || true
   artifacts:
     when: always
     paths:
@@ -112,11 +117,15 @@ design-compiler:
   tags:
     - design_compiler
   before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
-    - cd "$WORK_DIR"
-    - echo "DC version:" && dc_shell -version 2>&1 | head -3
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
   script:
-    - make -C syn/asic/design-compiler syn MODULE=tidelink
+    - echo "DC version:" && dc_shell -version 2>&1 | head -3
+    - make -C "$WORK_DIR/syn/asic/design-compiler" syn MODULE=tidelink
+  after_script:
+    - mkdir -p syn/asic/design-compiler
+    - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_dc_reports" syn/asic/design-compiler/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_dc_output"  syn/asic/design-compiler/ 2>/dev/null || true
+    - cp    "$WORK_DIR/syn/asic/design-compiler/tidelink_dc.log"     syn/asic/design-compiler/ 2>/dev/null || true
   artifacts:
     when: always
     paths:

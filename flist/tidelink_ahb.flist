@@ -1,0 +1,11 @@
++incdir+${TIDELINK_HOME}/src/rtl
+${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v
+${TIDELINK_HOME}/src/rtl/fpga/tidelink_sram.sv
+${TIDELINK_HOME}/src/rtl/tidelink_fifo_ctrl.sv
+${TIDELINK_HOME}/src/rtl/tidelink_fifo.sv
+${TIDELINK_HOME}/src/rtl/tidelink_returner.sv
+${TIDELINK_HOME}/src/rtl/tidelink_apb_regs.sv
+${TIDELINK_HOME}/src/rtl/tidelink.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ahb.sv

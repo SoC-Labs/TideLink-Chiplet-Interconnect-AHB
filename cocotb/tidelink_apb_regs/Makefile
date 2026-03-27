@@ -1,14 +1,16 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-VERILOG_SOURCES = \
-    $(PWD)/../../src/rtl/tidelink_apb_regs.sv \
-    $(PWD)/tb_top.sv
+TIDELINK_HOME = $(realpath $(PWD)/../..)
+export TIDELINK_HOME
+
+VERILOG_SOURCES = $(PWD)/tb_top.sv
 
 TOPLEVEL = tb_top
 MODULE   = test_tidelink_apb_regs
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_apb_regs.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

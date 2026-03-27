@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-// SoCLabs TideLink AHB Returner
+// SoCLabs TideLink Returner
 // - A simple AHB Lite master that performs a single-beat write transfer
 //   when any of three interrupt channels is asserted. Channel 0 has
 //   highest priority, channel 2 has lowest.
@@ -14,7 +14,7 @@
 // Copyright 2026, SoC Labs (www.soclabs.org)
 //-----------------------------------------------------------------------------
 
-module tidelink_ahb_returner #(
+module tidelink_returner #(
     parameter SYS_ADDR_W = 32,
     parameter SYS_DATA_W = 32
 )(

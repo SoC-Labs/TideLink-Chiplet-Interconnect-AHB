@@ -6,10 +6,10 @@ MODULE ?= tidelink
 
 # ── All lintable modules ─────────────────────────────────────────
 # Standalone modules (no external IP dependencies)
-STANDALONE_MODULES = tidelink_ahb_fifo_ctrl tidelink_ahb_returner
+STANDALONE_MODULES = tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs
 
 # Modules requiring CMSDK IP (cmsdk_ahb_to_sram, cmsdk_fpga_sram)
-CMSDK_MODULES = tidelink_ahb tidelink
+CMSDK_MODULES = tidelink_fifo tidelink
 
 # ── Paths ─────────────────────────────────────────────────────────
 FLIST   = $(TIDELINK_HOME)/flist/$(MODULE).flist
@@ -125,6 +125,6 @@ help:
 	@echo "CMSDK_DIR: $(CMSDK_DIR)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make lint MODULE=tidelink_ahb_returner"
+	@echo "  make lint MODULE=tidelink_returner"
 	@echo "  make lint-standalone"
 	@echo "  make lint report               - Lint then show warnings/errors"

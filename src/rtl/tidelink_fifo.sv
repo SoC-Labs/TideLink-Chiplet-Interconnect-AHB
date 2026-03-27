@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-// SoCLabs TideLink AHB Token-based FIFO Interface
+// SoCLabs TideLink Token-based FIFO Interface
 // - A FIFO interface over AHB for transferring variable-length packets of data
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
@@ -10,7 +10,7 @@
 // Copyright 2026, SoC Labs (www.soclabs.org)
 //-----------------------------------------------------------------------------
 
-module tidelink_ahb #(
+module tidelink_fifo #(
     // System Parameters
     parameter SYS_DATA_W = 32,  // System Data Width
     parameter RAM_ADDR_W = 14,  // Size of SRAM
@@ -63,7 +63,7 @@ module tidelink_ahb #(
     // --------------------------------------------------------------------------
     // FIFO Control Logic
     // --------------------------------------------------------------------------
-    tidelink_ahb_fifo_ctrl #(
+    tidelink_fifo_ctrl #(
         .SYS_DATA_W (SYS_DATA_W),
         .RAM_ADDR_W (RAM_ADDR_W),
         .RAM_DATA_W (RAM_DATA_W)

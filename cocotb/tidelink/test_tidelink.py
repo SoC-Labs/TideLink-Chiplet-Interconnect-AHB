@@ -227,7 +227,7 @@ class TidelinkTB:
         dut.ahbs_haddr.value  = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
-        pkt_len = int(dut.u_dut.u_tidelink_ahb.packet_word_length.value)
+        pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
         self.log.info(f"{prefix}Read length = {pkt_len}")
 
         hit_fired = False

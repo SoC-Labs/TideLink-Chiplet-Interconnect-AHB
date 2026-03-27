@@ -38,7 +38,7 @@ module tb_top #(
 );
 
     // DUT instantiation
-    tidelink_ahb_returner #(
+    tidelink_returner #(
         .SYS_ADDR_W(SYS_ADDR_W),
         .SYS_DATA_W(SYS_DATA_W)
     ) u_dut (

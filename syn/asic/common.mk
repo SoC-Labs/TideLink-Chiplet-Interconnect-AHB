@@ -26,4 +26,4 @@ export CLK_PERIOD     ?= 10.0
 export RST_NAME       ?= hresetn
 
 # ── Available modules ──────────────────────────────────────────────────────
-MODULES = tidelink tidelink_ahb tidelink_ahb_fifo_ctrl tidelink_ahb_returner
+MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs

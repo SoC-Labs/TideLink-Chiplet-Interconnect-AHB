@@ -1,7 +1,7 @@
 //-----------------------------------------------------------------------------
-// SoCLabs TideLink AHB FIFO Control Logic
+// SoCLabs TideLink FIFO Control Logic
 // - Manages FIFO pointers, packet metadata, token counting, and address
-//   translation for the tidelink_ahb module.
+//   translation for the tidelink_fifo module.
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
 // Contributors
@@ -11,7 +11,7 @@
 // Copyright 2026, SoC Labs (www.soclabs.org)
 //-----------------------------------------------------------------------------
 
-module tidelink_ahb_fifo_ctrl #(
+module tidelink_fifo_ctrl #(
     parameter SYS_DATA_W = 32,
     parameter RAM_ADDR_W = 14,
     parameter RAM_DATA_W = 32

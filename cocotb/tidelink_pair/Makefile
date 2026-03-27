@@ -6,9 +6,10 @@ CMSDK_DIR = $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
 VERILOG_SOURCES = \
     $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v \
     $(CMSDK_DIR)/models/memories/cmsdk_fpga_sram.v \
-    $(PWD)/../../src/rtl/tidelink_ahb_fifo_ctrl.sv \
-    $(PWD)/../../src/rtl/tidelink_ahb.sv \
-    $(PWD)/../../src/rtl/tidelink_ahb_returner.sv \
+    $(PWD)/../../src/rtl/tidelink_fifo_ctrl.sv \
+    $(PWD)/../../src/rtl/tidelink_fifo.sv \
+    $(PWD)/../../src/rtl/tidelink_returner.sv \
+    $(PWD)/../../src/rtl/tidelink_apb_regs.sv \
     $(PWD)/../../src/rtl/tidelink.sv \
     $(PWD)/tb_top.sv
 

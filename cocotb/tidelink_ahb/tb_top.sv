@@ -24,7 +24,7 @@ module tb_top #(
     wire hreadyout;
     assign hready = hreadyout;
 
-    tidelink_ahb #(
+    tidelink_fifo #(
         .SYS_DATA_W(SYS_DATA_W),
         .RAM_ADDR_W(RAM_ADDR_W),
         .RAM_DATA_W(RAM_DATA_W)

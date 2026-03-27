@@ -1,0 +1,160 @@
+// -----------------------------------------------------------------------------
+// SoCLabs TideLink Register Description (SystemRDL 2.0)
+//
+// Describes the APB register map for the tidelink_apb_regs module.
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
+    name = "TideLink APB Register Map";
+    desc = "Configuration, status, and token-flow registers for a single
+            TideLink instance. The address space is split into two regions:
+            Region 0 (offsets 0x000-0x01F) for configuration and status,
+            Region 1 (offsets 0x020-0x03F) for incoming token receivers.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // Region 0: Configuration and Status (paddr[5] = 0)
+    // =========================================================================
+
+    reg pair_base_addr_reg {
+        name = "Pair Base Address";
+        desc = "Read-only register returning the TIDELINK_PAIR_BASE parameter.
+                This is the APB base address of the paired TideLink instance,
+                used by the returner to target the pair's registers.";
+
+        field {} pair_base[32] = TIDELINK_PAIR_BASE;
+        pair_base->sw = r;
+        pair_base->hw = na;
+    };
+    pair_base_addr_reg pair_base_addr @ 0x000;
+
+    // 0x004: reserved
+
+    reg packet_word_length_reg {
+        name = "Packet Word Length";
+        desc = "Read-only sideband from the FIFO controller. Shows the word
+                length of the packet currently being processed (0 when idle).";
+
+        field {} pkt_word_len[14] = 0;
+        pkt_word_len->sw = r;
+        pkt_word_len->hw = w;
+    };
+    packet_word_length_reg packet_word_length @ 0x008;
+
+    reg token_count_reg {
+        name = "Token Count";
+        desc = "Read-only current count of free tokens in this TideLink's FIFO.
+                Starts at MAX_TOKENS after reset, decremented by writes,
+                incremented by reads.";
+
+        field {} count[13] = 0;
+        count->sw = r;
+        count->hw = w;
+    };
+    token_count_reg token_count @ 0x00C;
+
+    reg status_reg {
+        name = "Status Register";
+        desc = "Read-only status bits.";
+
+        field {} returner_busy[1] = 0;
+        returner_busy->sw = r;
+        returner_busy->hw = w;
+        returner_busy->desc = "1 when the AHB returner master is mid-transfer.";
+    };
+    status_reg status @ 0x010;
+
+    reg doorbell_reg {
+        name = "Doorbell Register";
+        desc = "Write-only, self-clearing. Writing any value triggers the
+                doorbell mechanism: the returner sends this TideLink's total
+                free token count to the paired TideLink's doorbell response
+                accumulator (pair offset 0x024).";
+
+        field {} trigger[1] = 0;
+        trigger->sw = w;
+        trigger->hw = r;
+        trigger->singlepulse;
+    };
+    doorbell_reg doorbell @ 0x014;
+
+    // =========================================================================
+    // Region 1: Incoming Token Receivers (paddr[5] = 1)
+    // =========================================================================
+
+    reg accumulator_reg {
+        name = "Token Accumulator";
+        desc = "Write-to-add / Read-to-clear accumulator.
+                Hardware (bus fabric) writes ADD the value to the running total.
+                Software reads return the accumulated total, then the register
+                is cleared to zero. The associated IRQ deasserts on clear.
+                NOTE: The write-accumulate and read-clear behaviour is custom
+                and not expressible in standard SystemRDL access types.";
+
+        field {} acc[32] = 0;
+        acc->sw   = rw;
+        acc->hw   = rw;
+        acc->rclr;
+    };
+
+    accumulator_reg released_tokens_acc @ 0x020;
+    released_tokens_acc->name = "Released Tokens Accumulator";
+    released_tokens_acc->desc = "Receives channel-0 delta values from the paired TideLink's
+                                 returner. Each write adds to the accumulator. A CPU read
+                                 returns the total and clears it. IRQ: released_tokens_irq.";
+
+    accumulator_reg doorbell_response_acc @ 0x024;
+    doorbell_response_acc->name = "Doorbell Response Accumulator";
+    doorbell_response_acc->desc = "Receives channel-1 total-token values from the paired
+                                   TideLink's returner (doorbell responses). Each write adds
+                                   to the accumulator. A CPU read returns the total and clears
+                                   it. IRQ: doorbell_irq.";
+
+    reg pair_token_counter_reg {
+        name = "Pair Token Counter";
+        desc = "Running count of available tokens on the paired TideLink side.
+                Automatically incremented when a value is written to the
+                Released Tokens Accumulator (0x020). Decremented by CPU writes
+                to the Pair Token Consume register (0x02C). Read-only from the
+                CPU perspective (read without side effects). Gated by the
+                Pair Token Counter Enable register.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = rw;
+    };
+    pair_token_counter_reg pair_token_counter @ 0x028;
+
+    reg pair_token_consume_reg {
+        name = "Pair Token Consume";
+        desc = "Write-only. CPU writes the number of tokens being consumed.
+                The value is subtracted from the Pair Token Counter (0x028).
+                Only effective when the Pair Token Counter Enable is set.";
+
+        field {} consume[32] = 0;
+        consume->sw = w;
+        consume->hw = r;
+    };
+    pair_token_consume_reg pair_token_consume @ 0x02C;
+
+    reg pair_token_counter_en_reg {
+        name = "Pair Token Counter Enable";
+        desc = "Bit 0 controls whether the Pair Token Counter (0x028) is
+                updated. Default is enabled (1). When disabled (0), the
+                counter freezes and ignores increment/decrement events.";
+
+        field {} enable[1] = 1;
+        enable->sw = rw;
+        enable->hw = r;
+    };
+    pair_token_counter_en_reg pair_token_counter_en @ 0x030;
+};

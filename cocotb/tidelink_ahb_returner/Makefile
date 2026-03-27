@@ -2,7 +2,7 @@ SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
 VERILOG_SOURCES = \
-    $(PWD)/../../src/rtl/tidelink_ahb_returner.sv \
+    $(PWD)/../../src/rtl/tidelink_returner.sv \
     $(PWD)/tb_top.sv
 
 TOPLEVEL = tb_top

@@ -18,7 +18,11 @@ module tb_top #(
     output logic [SYS_DATA_W-1:0] hrdata,
     output logic                  read_complete,
     output logic [RAM_ADDR_W-1:0] packet_word_length_out,
-    output logic                  packet_committed_irq
+    output logic                  packet_committed_irq,
+    output logic                  overrun,
+    output logic                  underrun,
+    input  logic                  enable,
+    input  logic                  flush
 );
 
     // In a single-slave system, HREADY = HREADYOUT
@@ -45,7 +49,11 @@ module tb_top #(
         .read_complete        (read_complete),
         .current_token_count  (),
         .packet_word_length_out(packet_word_length_out),
-        .packet_committed_irq (packet_committed_irq)
+        .packet_committed_irq (packet_committed_irq),
+        .overrun              (overrun),
+        .underrun             (underrun),
+        .enable               (enable),
+        .flush                (flush)
     );
 
     // Waveform dump

@@ -6,16 +6,27 @@ RTLA_WORK    = $(RTLA_DIR)/RTLA_WORK
 LOGFILE      = $(MODULE)_ra.log
 RPT_DIR      = $(MODULE)_ra_reports
 
-# ── RTL Architect (from RM kit) ───────────────────────────────────────────
-RA = rtl_shell
+# ── EDA tool binaries ───────────────────────────────────────────────────
+RTLA_BIN_DIR = /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12/bin
+ICC2_BIN_DIR = /eda/synopsys/2022-23/RHELx86/ICC2_2022.12/bin
+export PATH := $(RTLA_BIN_DIR):$(ICC2_BIN_DIR):$(PATH)
 
-.PHONY: ra init_design rtl_opt metrics gui clean setup help
+# ── LEF file for fusion library creation ─────────────────────────────────
+LEF_FILE     = $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/lef/sc12_cln65lp_base_rvt.lef
+export LEF_FILE
 
-# Default: run full flow (init_design -> rtl_opt -> metrics)
-ra: metrics
+.PHONY: ra gui clean setup fusion_lib help
+
+# Default: run full flow (fusion_lib -> init_design -> rtl_opt -> metrics)
+ra: $(RTLA_WORK)/setup $(RTLA_WORK)/fusion_lib/sc12_lib
+	cd $(RTLA_WORK) && $(MAKE) -f rm_setup/Makefile_rtla_flat all 2>&1 | tee $(RTLA_DIR)/$(LOGFILE)
+	@# Copy reports back to project tree
+	mkdir -p $(RTLA_DIR)/$(RPT_DIR)
+	cp -r $(RTLA_WORK)/rpts_fc/* $(RTLA_DIR)/$(RPT_DIR)/ 2>/dev/null || true
+	@echo ""
 	@echo "INFO: RTL Architect flow complete for $(MODULE)"
-	@echo "INFO: Reports in $(RTLA_WORK)/rpts/"
-	@echo "INFO: Logs in $(RTLA_WORK)/logs_rtl/"
+	@echo "INFO: Reports in $(RTLA_DIR)/$(RPT_DIR)/"
+	@echo "INFO: Log at $(RTLA_DIR)/$(LOGFILE)"
 
 # ── Set up RM working directory ──────────────────────────────────────────
 # Copies the Synopsys RTLA-RM kit and overlays TideLink customisations
@@ -32,29 +43,25 @@ $(RTLA_WORK)/setup:
 	@echo "INFO: Overlaying TideLink customisations..."
 	cp $(RTLA_DIR)/rm_setup/design_setup.tcl  $(RTLA_WORK)/rm_setup/design_setup.tcl
 	cp $(RTLA_DIR)/$(MODULE).FC.read_design.tcl $(RTLA_WORK)/
+	mkdir -p $(RTLA_WORK)/logs_rtl
 	touch $@
 
 setup: $(RTLA_WORK)/setup
 
-# ── RM flow stages ───────────────────────────────────────────────────────
-init_design: $(RTLA_WORK)/setup
-	cd $(RTLA_WORK) && $(RA) -f ./rm_rtl_flat_scripts/init_design.tcl 2>&1 | tee $(RTLA_DIR)/$(LOGFILE)
-	@echo "INFO: init_design complete"
+# ── Create fusion reference library from LEF + db ────────────────────────
+# This is a one-time preparation step; the resulting NDM library is used
+# by RTL Architect as a physical reference for area/congestion estimation.
+$(RTLA_WORK)/fusion_lib/sc12_lib: $(RTLA_WORK)/setup
+	@echo "INFO: Creating fusion reference library from LEF + db..."
+	cd $(RTLA_WORK) && lm_shell -f $(RTLA_DIR)/create_fusion_lib.tcl 2>&1 | tee $(RTLA_WORK)/logs_rtl/create_fusion_lib.log
+	@test -d $@ || (echo "ERROR: Fusion library creation failed"; exit 1)
+	@echo "INFO: Fusion reference library created"
 
-rtl_opt: init_design
-	cd $(RTLA_WORK) && $(RA) -f ./rm_rtl_flat_scripts/rtl_opt.tcl 2>&1 | tee -a $(RTLA_DIR)/$(LOGFILE)
-	@echo "INFO: rtl_opt complete"
-
-metrics: rtl_opt
-	cd $(RTLA_WORK) && $(RA) -f ./rm_rtl_flat_scripts/metrics.tcl 2>&1 | tee -a $(RTLA_DIR)/$(LOGFILE)
-	@echo "INFO: metrics complete"
-	@# Copy reports back to project tree
-	mkdir -p $(RTLA_DIR)/$(RPT_DIR)
-	cp -r $(RTLA_WORK)/rpts/* $(RTLA_DIR)/$(RPT_DIR)/ 2>/dev/null || true
+fusion_lib: $(RTLA_WORK)/fusion_lib/sc12_lib
 
 # ── GUI mode ─────────────────────────────────────────────────────────────
-gui: $(RTLA_WORK)/setup
-	cd $(RTLA_WORK) && $(RA) -gui
+gui: $(RTLA_WORK)/setup $(RTLA_WORK)/fusion_lib/sc12_lib
+	cd $(RTLA_WORK) && rtl_shell -gui
 
 # ── Clean ────────────────────────────────────────────────────────────────
 clean:
@@ -72,9 +79,7 @@ help:
 	@echo "Usage:"
 	@echo "  make ra                        - Run full RTLA flow (default: $(MODULE))"
 	@echo "  make ra MODULE=<name>          - Run for a specific module"
-	@echo "  make init_design               - Run init_design stage only"
-	@echo "  make rtl_opt                   - Run up to rtl_opt stage"
-	@echo "  make metrics                   - Run up to metrics stage"
+	@echo "  make fusion_lib                - Create fusion reference library only"
 	@echo "  make gui                       - Open RTL Architect GUI"
 	@echo "  make setup                     - Set up RM working directory only"
 	@echo "  make clean                     - Remove all generated files"

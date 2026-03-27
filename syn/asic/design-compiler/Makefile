@@ -9,10 +9,13 @@ LOGFILE    = $(MODULE)_dc.log
 # ── Design Compiler ───────────────────────────────────────────────────────
 DC = dc_shell
 
-.PHONY: syn gui clean help
+.PHONY: syn syn_asic gui clean help
 
 syn:
 	$(DC) -f $(TCL_SCRIPT) 2>&1 | tee $(LOGFILE)
+
+syn_asic:
+	FLIST=$(ASIC_FLIST) $(DC) -f $(TCL_SCRIPT) 2>&1 | tee $(LOGFILE)
 
 gui:
 	DC_GUI=1 design_vision -f $(TCL_SCRIPT)
@@ -28,6 +31,7 @@ help:
 	@echo "Usage:"
 	@echo "  make syn                       - Run DC synthesis (default: $(MODULE))"
 	@echo "  make syn MODULE=<name>         - Synthesise a specific module"
+	@echo "  make syn_asic                  - Run DC synthesis with ASIC SRAM (rf_16k)"
 	@echo "  make gui                       - Run in Design Vision GUI"
 	@echo "  make gui MODULE=<name>         - GUI for a specific module"
 	@echo "  make clean                     - Remove generated files"

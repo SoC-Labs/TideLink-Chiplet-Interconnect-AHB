@@ -32,6 +32,7 @@ async def setup(dut):
 async def do_reset(dut):
     """Assert active-low reset for 5 cycles, then deassert."""
     dut.hresetn.value = 0
+    dut.flush.value = 0
     dut.interrupt_0.value = 0
     dut.write_addr_0.value = 0
     dut.write_data_0.value = 0
@@ -479,3 +480,56 @@ async def test_14_held_interrupt_single_transfer(dut):
     actual = read_slave_word(slave, addr)
     assert actual == 0x1234_5678, \
         f"Held interrupt should not cause second write: got 0x{actual:08X}"
+
+
+# ── MASTER_ERROR Tests ──────────────────────────────────────────────────────
+
+
+@cocotb.test()
+async def test_15_master_error_clear_after_reset(dut):
+    """master_error should be 0 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+    assert int(dut.master_error.value) == 0, "master_error should be 0 after reset"
+
+
+@cocotb.test()
+async def test_16_master_error_clear_after_normal_transfer(dut):
+    """master_error should remain 0 after a successful transfer (hresp=0)."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    assert int(dut.master_error.value) == 0
+
+    dut.write_addr_0.value = 0x0000_1000
+    dut.write_data_0.value = 0xDEAD_BEEF
+
+    await pulse_interrupt(dut, 0)
+    await wait_not_busy(dut)
+    await ClockCycles(dut.hclk, 2)
+
+    # Successful transfer — master_error should still be 0
+    assert int(dut.master_error.value) == 0, \
+        "master_error should remain 0 after successful transfer"
+
+    dut._log.info("master_error stays 0 on success — passed")
+
+
+@cocotb.test()
+async def test_17_flush_clears_master_error_register(dut):
+    """Verify flush input resets the master_error register (even if already 0)."""
+    slave = await setup(dut)
+    await do_reset(dut)
+
+    assert int(dut.master_error.value) == 0
+
+    # Pulse flush — should not cause any issues when already clear
+    dut.flush.value = 1
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 0
+    await RisingEdge(dut.hclk)
+
+    assert int(dut.master_error.value) == 0, \
+        "master_error should still be 0 after flush when already clear"
+
+    dut._log.info("flush on already-clear master_error — passed")

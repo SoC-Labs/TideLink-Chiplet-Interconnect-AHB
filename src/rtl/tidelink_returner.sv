@@ -50,7 +50,13 @@ module tidelink_returner #(
     // hal lint_on USEPRT
 
     // Status output
-    output wire                   busy
+    output wire                   busy,
+
+    // Sticky error flag: set when master port receives ERROR response
+    output wire                   master_error,
+
+    // Control input: clears master_error
+    input  wire                   flush
 );
 
     // AHB Transfer Types
@@ -165,6 +171,24 @@ module tidelink_returner #(
             default: state_next = ST_IDLE;
         endcase
     end
+
+    // -------------------------------------------------------------------------
+    // Master Error Sticky Flag
+    // -------------------------------------------------------------------------
+    // Set when the AHB master receives an ERROR response (hresp=1) during
+    // the data phase. Sticky — remains set until cleared by flush.
+    logic master_error_r;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            master_error_r <= 1'b0;
+        else if (flush)
+            master_error_r <= 1'b0;
+        else if (state_r == ST_DATA_PHASE && hready && hresp)
+            master_error_r <= 1'b1;
+    end
+
+    assign master_error = master_error_r;
 
     // AHB output logic
     always_comb begin

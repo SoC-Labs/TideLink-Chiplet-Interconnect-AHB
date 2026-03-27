@@ -19,7 +19,7 @@ instance contains:
 
 ## Test Suites
 
-### 1. tidelink_fifo (FIFO Control Unit Tests) — 27 tests
+### 1. tidelink_fifo (FIFO Control Unit Tests) — 33 tests
 
 Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 `cmsdk_ahb_to_sram` and `cmsdk_fpga_sram`.
@@ -53,8 +53,14 @@ Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 | AHB-25 | IRQ clears on read addr 0             | `packet_committed_irq` clears when recipient reads FIFO address 0           | New      |
 | AHB-26 | IRQ stays cleared without new write   | After clear, IRQ remains 0 until another `write_complete`                   | New      |
 | AHB-27 | IRQ multi-cycle write/read toggle     | Multiple write/read cycles toggle IRQ correctly                             | New      |
+| AHB-28 | EN gate blocks writes                 | AHB writes gated when enable=0 — no pointer/token changes                  | New      |
+| AHB-29 | EN gate blocks reads                  | AHB reads gated when enable=0 — no metadata capture                        | New      |
+| AHB-30 | FLUSH resets state                    | FLUSH resets pointers, tokens to MAX, packet metadata to 0                  | New      |
+| AHB-31 | FLUSH clears overrun                  | Overrun sticky flag set on full write, cleared by FLUSH                     | New      |
+| AHB-32 | Underrun on empty read                | Underrun sticky flag set on read from empty buffer, cleared by FLUSH        | New      |
+| AHB-33 | Error flags clear after reset         | Both overrun and underrun are 0 after hardware reset                        | New      |
 
-### 2. tidelink_returner (AHB Master Unit Tests) — 14 tests
+### 2. tidelink_returner (AHB Master Unit Tests) — 17 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -72,6 +78,9 @@ Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 | RET-12 | Pending survives busy                 | Interrupt while busy, pending serviced after current completes              | Existing |
 | RET-13 | Channel data isolation                | Each channel uses its own addr/data, verify no cross-contamination          | Existing |
 | RET-14 | Held interrupt (level, not pulse)     | Interrupt held high, verify only one transfer fires                         | Existing |
+| RET-15 | master_error clear after reset        | master_error is 0 after hardware reset                                      | New      |
+| RET-16 | master_error stays 0 on success      | master_error remains 0 after a successful transfer (hresp=0)               | New      |
+| RET-17 | flush clears master_error register   | flush input resets master_error even when already 0                          | New      |
 
 ### 3. tidelink_apb_regs (APB Register Unit Tests) — 31 tests
 
@@ -206,7 +215,7 @@ corrupt.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 117 tests)
+# Run all test suites (6 environments, 126 tests)
 cd cocotb && make regression
 
 # Run individual suites

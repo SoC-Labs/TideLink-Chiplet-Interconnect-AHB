@@ -52,7 +52,15 @@ module tidelink_fifo_ctrl #(
 
     // Interrupt: asserts when a packet is committed to the FIFO, clears on
     // first read from address 0 (recipient starts reading the packet)
-    output wire                   packet_committed_irq
+    output wire                   packet_committed_irq,
+
+    // Sticky error flags (cleared by flush)
+    output wire                   overrun,        // Write discarded (buffer full)
+    output wire                   underrun,       // Read with no packet available
+
+    // Control inputs
+    input  wire                   enable,         // EN gate: 1 = data window active
+    input  wire                   flush           // Self-clearing flush: resets pointers/counters/errors
 );
 
     localparam MAX_TOKENS = (1 << (RAM_ADDR_W - 2));
@@ -74,7 +82,7 @@ module tidelink_fifo_ctrl #(
     logic valid_transfer;
     logic write_complete;
 
-    assign valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
+    assign valid_transfer = hsel && htrans[1] && hready && enable && (packet_word_length_r != '0);
     assign write_complete = valid_transfer && (haddr == write_target_addr_r) && hwrite;
     assign read_complete  = valid_transfer && (haddr == read_target_addr_r)  && ~hwrite;
 
@@ -96,6 +104,9 @@ module tidelink_fifo_ctrl #(
         if (!hresetn) begin
             read_ptr_r  <= '0;
             write_ptr_r <= '0;
+        end else if (flush) begin
+            read_ptr_r  <= '0;
+            write_ptr_r <= '0;
         end else begin
             read_ptr_r  <= read_ptr_nxt;
             write_ptr_r <= write_ptr_nxt;
@@ -115,7 +126,7 @@ module tidelink_fifo_ctrl #(
     // Packet Metadata Capture
     // -------------------------------------------------------------------------
     // Valid AHB access to address 0 (gated on hsel, htrans, hready)
-    wire valid_ahb_access = hsel && htrans[1] && hready;
+    wire valid_ahb_access = hsel && htrans[1] && hready && enable;
 
     // Registered flag: a valid write to addr 0 occurred in the address phase.
     // hwdata is only valid in the DATA phase (one cycle later in AHB protocol),
@@ -124,6 +135,8 @@ module tidelink_fifo_ctrl #(
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
+            capture_write_length_r <= 1'b0;
+        end else if (flush) begin
             capture_write_length_r <= 1'b0;
         end else begin
             capture_write_length_r <= capture_write_length_nxt;
@@ -164,6 +177,11 @@ module tidelink_fifo_ctrl #(
             check_addr_r         <= 1'b0;
             write_target_addr_r  <= '0;
             read_target_addr_r   <= '0;
+        end else if (flush) begin
+            packet_word_length_r <= '0;
+            check_addr_r         <= 1'b0;
+            write_target_addr_r  <= '0;
+            read_target_addr_r   <= '0;
         end else begin
             packet_word_length_r <= packet_word_length_nxt;
             check_addr_r         <= check_addr_nxt;
@@ -186,6 +204,8 @@ module tidelink_fifo_ctrl #(
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
+            token_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS));
+        end else if (flush) begin
             token_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS));
         end else begin
             token_count_r <= token_count_nxt;
@@ -213,12 +233,46 @@ module tidelink_fifo_ctrl #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             packet_committed_irq_r <= 1'b0;
+        end else if (flush) begin
+            packet_committed_irq_r <= 1'b0;
         end else begin
             packet_committed_irq_r <= packet_committed_irq_nxt;
         end
     end
 
     assign packet_committed_irq = packet_committed_irq_r;
+
+    // -------------------------------------------------------------------------
+    // Overrun / Underrun Sticky Error Flags
+    // -------------------------------------------------------------------------
+    // OVERRUN: set when a valid AHB write occurs but the buffer is full
+    //          (token_count_r == 0). The write data is silently discarded.
+    // UNDERRUN: set when a valid AHB read occurs but no packet is available
+    //           (token_count_r == MAX_TOKENS, i.e. buffer empty).
+    // Both are sticky — once set, they remain set until cleared by FLUSH.
+
+    logic overrun_r, underrun_r;
+
+    wire overrun_event  = hsel && htrans[1] && hready && enable && hwrite
+                          && (token_count_r == '0);
+    wire underrun_event = hsel && htrans[1] && hready && enable && ~hwrite
+                          && (token_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS)));
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            overrun_r  <= 1'b0;
+            underrun_r <= 1'b0;
+        end else if (flush) begin
+            overrun_r  <= 1'b0;
+            underrun_r <= 1'b0;
+        end else begin
+            if (overrun_event)  overrun_r  <= 1'b1;
+            if (underrun_event) underrun_r <= 1'b1;
+        end
+    end
+
+    assign overrun  = overrun_r;
+    assign underrun = underrun_r;
 
     // -------------------------------------------------------------------------
     // Debug-visible output assignments

@@ -76,12 +76,30 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
 
     reg status_reg {
         name = "Status Register";
-        desc = "Read-only status bits.";
+        desc = "Read-only status and sticky fault flags.";
 
         field {} returner_busy[1] = 0;
         returner_busy->sw = r;
         returner_busy->hw = w;
         returner_busy->desc = "1 when the AHB returner master is mid-transfer.";
+
+        field {} overrun[1] = 0;
+        overrun->sw = r;
+        overrun->hw = w;
+        overrun->desc = "Sticky. Set when a data window write is discarded because
+                         the buffer is full (token count == 0). Cleared by FLUSH.";
+
+        field {} underrun[1] = 0;
+        underrun->sw = r;
+        underrun->hw = w;
+        underrun->desc = "Sticky. Set when a data window read occurs with no packet
+                         available (buffer empty). Cleared by FLUSH.";
+
+        field {} master_error[1] = 0;
+        master_error->sw = r;
+        master_error->hw = w;
+        master_error->desc = "Sticky. Set when the AHB master port receives an ERROR
+                             response. Cleared by FLUSH.";
     };
     status_reg status @ 0x010;
 
@@ -112,6 +130,29 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         acc->hw = w;
     };
     release_acc_reg release_acc @ 0x018;
+
+    reg ctrl_reg {
+        name = "Control Register";
+        desc = "Block enable and flush control. FLUSH is self-clearing and
+                only takes effect when EN is 0.";
+
+        field {} en[1] = 0;
+        en->sw = rw;
+        en->hw = r;
+        en->desc = "Block enable. When 0, AHB data window accesses are gated
+                    (transfers ignored). APB registers and master port remain
+                    functional.";
+
+        field {} flush[1] = 0;
+        flush->sw = rw;
+        flush->hw = r;
+        flush->singlepulse;
+        flush->desc = "Write 1 to reset write/read pointers, packet counter,
+                      length-prepend parser, release accumulator, and sticky
+                      fault flags (OVERRUN, UNDERRUN, MASTER_ERROR). Self-clearing.
+                      EN must be 0 before flushing.";
+    };
+    ctrl_reg ctrl @ 0x01C;
 
     // =========================================================================
     // Region 1: Incoming Token Receivers (paddr[5] = 1)

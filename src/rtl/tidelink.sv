@@ -81,8 +81,17 @@ module tidelink #(
     logic [RAM_ADDR_W-2:0] current_token_count;
     logic [RAM_ADDR_W-1:0] packet_word_length;
 
+    // FIFO error flags
+    logic                   fifo_overrun;
+    logic                   fifo_underrun;
+
+    // Control signals (from APB regs to FIFO and returner)
+    logic                   ctrl_enable;
+    logic                   ctrl_flush;
+
     // Returner status
     logic                   returner_busy;
+    logic                   master_error;
 
     // APB register outputs → returner
     logic                    doorbell_trigger;
@@ -120,7 +129,11 @@ module tidelink #(
         .read_complete          (read_complete),
         .current_token_count    (current_token_count),
         .packet_word_length_out (packet_word_length),
-        .packet_committed_irq   (packet_committed_irq)
+        .packet_committed_irq   (packet_committed_irq),
+        .overrun                (fifo_overrun),
+        .underrun               (fifo_underrun),
+        .enable                 (ctrl_enable),
+        .flush                  (ctrl_flush)
     );
 
     // --------------------------------------------------------------------------
@@ -150,6 +163,13 @@ module tidelink #(
         .read_complete       (read_complete),
         // Returner status
         .returner_busy       (returner_busy),
+        // Error flags
+        .fifo_overrun        (fifo_overrun),
+        .fifo_underrun       (fifo_underrun),
+        .master_error        (master_error),
+        // Control outputs (to FIFO and returner)
+        .ctrl_enable         (ctrl_enable),
+        .ctrl_flush          (ctrl_flush),
         // Returner control
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
@@ -203,7 +223,9 @@ module tidelink #(
         .hready      (ahbm_hready),
         .hresp       (ahbm_hresp),
         .hrdata      (ahbm_hrdata),
-        .busy        (returner_busy)
+        .busy        (returner_busy),
+        .master_error(master_error),
+        .flush       (ctrl_flush)
     );
 
 endmodule

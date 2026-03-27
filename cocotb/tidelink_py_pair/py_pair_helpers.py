@@ -122,11 +122,13 @@ async def setup(dut):
 
 
 async def do_reset(dut, cycles=5):
-    """Assert reset for given cycles then deassert."""
+    """Assert reset for given cycles then deassert. Enables FIFO data window."""
     dut.hresetn.value = 0
     await ClockCycles(dut.hclk, cycles)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 2)
+    # Enable FIFO data window: write CTRL.EN=1 (offset 0x01C)
+    await apb_write(dut, 0x01C, 0x1)
 
 
 # ── AHB Slave (FIFO) Write Helper ───────────────────────────────────────────

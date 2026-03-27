@@ -1,0 +1,4 @@
+${TIDELINK_HOME}/syn/asic/design-compiler/tidelink_dc_output/tidelink.mapped.v
+${STDCELL_VERILOG}/sc12_cln65lp_base_rvt_udp.v
+${STDCELL_VERILOG}/sc12_cln65lp_base_rvt.v
+${MEM_PATH}/rf_16k.v

@@ -110,19 +110,23 @@ set EARLY_DATA_CHECK_POLICY     "none"
 ### LIBRARY SETUP - on-the-fly CLIB from Milkyway frames + .db files
 ##########################################################################################
 
-## No pre-compiled fusion libraries; use CLIB on-the-fly creation instead
-set REFERENCE_LIBRARY           [list ]
+## Pre-compiled fusion reference library (created by 'make fusion_lib' target)
+## The fusion library is created from LEF + db files in the RTLA_WORK directory
+set REFERENCE_LIBRARY           [list ./fusion_lib/sc12_lib]
 
-## On-the-fly CLIB reference library creation from Milkyway frames and dbs
-set CLIB_REFERENCE_LIBRARY_CONFIGURATION_FLOW_FRAME_LIST [list $::env(MW_REF_LIB)]
-set CLIB_REFERENCE_LIBRARY_CONFIGURATION_FLOW_DB_LIST    [list $::env(DB_SS) $::env(DB_FF)]
+## CLIB on-the-fly is not used (Fusion library is pre-compiled)
+set CLIB_REFERENCE_LIBRARY_CONFIGURATION_FLOW_FRAME_LIST [list ]
+set CLIB_REFERENCE_LIBRARY_CONFIGURATION_FLOW_DB_LIST    [list ]
 
 ## Fusion library settings (not used - using CLIB on-the-fly instead)
 set FUSION_REFERENCE_LIBRARY_FRAM_LIST  [list ]
 set FUSION_REFERENCE_LIBRARY_DB_LIST    [list ]
 set FUSION_REFERENCE_LIBRARY_DIR        "./local_fusion_library"
 
-set LINK_LIBRARY                ""
+set LINK_LIBRARY                [list $::env(DB_SS) $::env(DB_FF)]
+
+## Set link_library app var so create_lib can link timing data to fusion library
+set_app_var link_library        "* $::env(DB_SS) $::env(DB_FF)"
 set COMPRESS_LIBS               false
 
 set TCL_MULTI_VT_CONSTRAINT_FILE        "multi_vth_constraint_script.tcl"
@@ -138,7 +142,7 @@ set CTS_ONLY_LIB_CELL_PATTERN_LIST      ""
 set TECH_FILE                   "$::env(TF_FILE)"
 set TECH_LIB                   ""
 set PARASITIC_TECH_LIB          ""
-set TECH_LIB_INCLUDES_TECH_SETUP_INFO   false
+set TECH_LIB_INCLUDES_TECH_SETUP_INFO   true
 set TCL_TECH_SETUP_FILE         "init_design.tech_setup.tcl"
 set PHYSICAL_RULES_FILE         ""
 set DESIGN_LIBRARY_SCALE_FACTOR ""
@@ -341,6 +345,83 @@ set TCL_USER_METRICS_PRE_SCRIPT                 ""
 set TCL_USER_METRICS_POST_SCRIPT                ""
 set TCL_USER_EXPLORE_PRE_SCRIPT                 ""
 set TCL_USER_EXPLORE_POST_SCRIPT                ""
+
+##########################################################################################
+### REPORTING & DATA OUTPUT
+##########################################################################################
+set DEFINE_NAME_RULES_OPTIONS           ""
+set OUTPUTS_DIR                         "./outputs_fc"
+set REPORTS_DIR                         "./rpts_fc"
+set LOGS_DIR                            "./logs_fc"
+
+set ENABLE_INLINE_REPORT_QOR            true
+set REPORT_QOR                          true
+set REPORT_DEBUG                        false
+set REPORT_VERBOSE                      false
+set REPORT_QOR_REPORT_CONGESTION        true
+set REPORT_QOR_REPORT_POWER             true
+set REPORT_CLOCK_POWER                  false
+set REPORT_POWER_SAIF_FILE              ""
+
+set REPORT_INIT_DESIGN_ACTIVE_SCENARIO_LIST     ""
+set REPORT_COMPILE_ACTIVE_SCENARIO_LIST         ""
+set REPORT_PLACE_OPT_ACTIVE_SCENARIO_LIST       ""
+set REPORT_CLOCK_OPT_CTS_ACTIVE_SCENARIO_LIST   ""
+set REPORT_CLOCK_OPT_OPTO_ACTIVE_SCENARIO_LIST  ""
+set REPORT_ROUTE_AUTO_ACTIVE_SCENARIO_LIST       ""
+set REPORT_ROUTE_OPT_ACTIVE_SCENARIO_LIST        ""
+set REPORT_CHIP_FINISH_ACTIVE_SCENARIO_LIST      ""
+set REPORT_ICV_IN_DESIGN_ACTIVE_SCENARIO_LIST    ""
+set REPORT_ENDPOINT_OPT_ACTIVE_SCENARIO_LIST     ""
+set REPORT_TIMING_ECO_ACTIVE_SCENARIO_LIST       ""
+set REPORT_FUNCTIONAL_ECO_ACTIVE_SCENARIO_LIST   ""
+
+set REPORT_POWER_SAIF_MAP              "${OUTPUTS_DIR}/${COMPILE_BLOCK_NAME}.saif.fc.map"
+
+set WRITE_QOR_DATA                      true
+set WRITE_QOR_DATA_DIR                  "./qor_data"
+set COMPARE_QOR_DATA_DIR                "./compare_qor_data"
+set REPORT_PARALLEL_SUBMIT_COMMAND      ""
+set REPORT_PARALLEL_MAX_CORES           4
+set SET_HOST_OPTIONS_MAX_CORES          8
+set TCL_USER_SUPPLEMENTAL_REPORTS_SCRIPT ""
+set FUSION_REFERENCE_LIBRARY_LOG_DIR    "${LOGS_DIR}/lcsh"
+
+##########################################################################################
+### FUSA SETUP
+##########################################################################################
+set ENABLE_FUSA                         false
+set TCL_FUSA_POST_MAP_SETUP_FILE        ""
+set FUSA_SSF_FILE                       ""
+set FUSA_SSF_UPDATE_FILE                ""
+set FUSA_SSF_AUX_FILE                   ""
+set FUSA_CLOCK_SPLIT_BUF                ""
+set FUSA_CLOCK_SPLIT_INV                ""
+set FUSA_ENABLE_DCLS_SCAN_PROTECTION    false
+
+##########################################################################################
+### HPC CORE
+##########################################################################################
+set HPC_CORE                            ""
+set HPC_CORE_TOP                        ""
+set FLATTEN_BLOCK_NAME                  "flatten"
+set TCL_USER_FLATTEN_PRE_SCRIPT         ""
+set TCL_USER_FLATTEN_POST_SCRIPT        ""
+set FLATTEN_ACTIVE_SCENARIO_LIST        ""
+set TCL_USER_UNCOMMIT_POST_SCRIPT       ""
+set TCL_USER_MCMM_SETUP_POST_SCRIPT    ""
+set TCL_USER_UPF_SETUP_POST_SCRIPT      ""
+
+##########################################################################################
+### FLOORPLAN PLUGIN SCRIPTS
+##########################################################################################
+set TCL_USER_FLOORPLAN_PRE_SCRIPT       ""
+set TCL_USER_FLOORPLAN_POST_SCRIPT      ""
+set TCL_USER_READ_RTL_PRE_SCRIPT        ""
+set TCL_USER_READ_RTL_POST_SCRIPT       ""
+set TCL_USER_NON_PERSISTENT_SCRIPT      ""
+set TCL_USER_INIT_DESIGN_PRE_SCRIPT     ""
+set TCL_USER_CREATE_DFT_PORTS_POST_SCRIPT ""
 
 if {[file exists ./rm_setup/fc_setup.tcl]} {
         echo "RM-info    : Importing settings from Fusion Compiler RM fc_setup.tcl"

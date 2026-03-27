@@ -27,7 +27,14 @@ module tb_top #(
     // Returner status stimulus
     input  logic                    returner_busy,
 
+    // Error flag stimulus
+    input  logic                    fifo_overrun,
+    input  logic                    fifo_underrun,
+    input  logic                    master_error,
+
     // Outputs
+    output logic                    ctrl_enable,
+    output logic                    ctrl_flush,
     output logic                    doorbell_trigger,
     output logic                    reset_deassert_pulse,
     output logic [SYS_DATA_W-1:0]   token_delta_data,
@@ -59,6 +66,11 @@ module tb_top #(
         .current_token_count (current_token_count),
         .read_complete       (read_complete),
         .returner_busy       (returner_busy),
+        .fifo_overrun        (fifo_overrun),
+        .fifo_underrun       (fifo_underrun),
+        .master_error        (master_error),
+        .ctrl_enable         (ctrl_enable),
+        .ctrl_flush          (ctrl_flush),
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
         .token_delta_data    (token_delta_data),

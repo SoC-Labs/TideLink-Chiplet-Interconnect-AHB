@@ -35,6 +35,7 @@ APB_REG_DOORBELL           = 0x014
 APB_REG_REL_ACC            = 0x018
 APB_REG_RELEASED_ACC       = 0x020
 APB_REG_DOORBELL_RESP_ACC  = 0x024
+APB_REG_CTRL               = 0x01C
 
 
 # ── APB Master Driver ────────────────────────────────────────────────────────
@@ -129,6 +130,8 @@ class TidelinkTB:
         # Wait extra cycles for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
         self.sw_token_count = MAX_TOKENS
+        # Enable the data window (EN=1 in CTRL register)
+        await self.apb.write(APB_REG_CTRL, 0x1)
 
     # ── APB Helpers ──────────────────────────────────────────────────────
 

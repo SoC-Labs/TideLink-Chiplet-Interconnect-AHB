@@ -34,7 +34,9 @@ module tb_top #(
     input  logic [SYS_DATA_W-1:0] hrdata,
 
     // Status
-    output logic                  busy
+    output logic                  busy,
+    output logic                  master_error,
+    input  logic                  flush
 );
 
     // DUT instantiation
@@ -61,7 +63,9 @@ module tb_top #(
         .hready      (hready),
         .hresp       (hresp),
         .hrdata      (hrdata),
-        .busy        (busy)
+        .busy        (busy),
+        .master_error(master_error),
+        .flush       (flush)
     );
 
     // Waveform dump

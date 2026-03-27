@@ -6,6 +6,7 @@ stages:
   - lint
   - regression
   - synthesis
+  - gate-level
   - pages
   - cleanup
 
@@ -218,6 +219,38 @@ design-compiler:
       - syn/asic/design-compiler/tidelink_dc.log
     expire_in: 30 days
 
+# ── Gate-Level Simulation ──────────────────────────────────────────────
+
+gate-level-sim:
+  stage: gate-level
+  needs:
+    - job: clone
+    - job: preflight
+    - job: design-compiler
+      artifacts: true
+  tags:
+    - vcs
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+    # Copy DC netlist output into the working tree so the filelist can find it
+    - cp -r syn/asic/design-compiler/tidelink_dc_output "$WORK_DIR/syn/asic/design-compiler/"
+  script:
+    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+    - make -C "$WORK_DIR/cocotb/tidelink" sim_asic
+  after_script:
+    - mkdir -p cocotb/tidelink
+    - cp "$WORK_DIR/cocotb/tidelink/run.log"      cocotb/tidelink/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink/results.xml"   cocotb/tidelink/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink/run.log
+    reports:
+      junit:
+        - cocotb/tidelink/results.xml
+    expire_in: 30 days
+
 # ── Dashboard ──────────────────────────────────────────────────────────
 
 dashboard:
@@ -227,8 +260,43 @@ dashboard:
       artifacts: true
     - job: cocotb-regression
       artifacts: true
+    - job: design-compiler
+      artifacts: true
   script:
+    - export DC_REPORT_DIR="syn/asic/design-compiler/tidelink_dc_reports"
+    - export PYTHONPATH="$WORK_DIR/ci:$PYTHONPATH"
+    # Generate HTML dashboard (artifact)
     - python3 "$WORK_DIR/ci/generate_dashboard.py"
+    # Generate Markdown and push to wiki
+    - export WIKI_OUTPUT_DIR="$(mktemp -d)"
+    - python3 "$WORK_DIR/ci/generate_wiki.py"
+    - |
+      WIKI_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}.wiki.git"
+      WIKI_PUSH_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.wiki.git"
+      WIKI_DIR="$(mktemp -d)/wiki-repo"
+
+      # Clone or initialise the wiki repo
+      if git clone "$WIKI_PUSH_URL" "$WIKI_DIR" 2>/dev/null; then
+        echo "Wiki repo cloned"
+      else
+        echo "Wiki repo does not exist yet — initialising"
+        mkdir -p "$WIKI_DIR"
+        cd "$WIKI_DIR" && git init && git remote add origin "$WIKI_PUSH_URL"
+      fi
+
+      # Copy generated page into the wiki
+      cp "$WIKI_OUTPUT_DIR/CI-Dashboard.md" "$WIKI_DIR/CI-Dashboard.md"
+
+      cd "$WIKI_DIR"
+      git add CI-Dashboard.md
+      if git diff --cached --quiet; then
+        echo "No changes to wiki — skipping push"
+      else
+        git config user.name "CI Bot"
+        git config user.email "ci@tidelink.soclabs.org"
+        git commit -m "Update CI Dashboard (pipeline #${CI_PIPELINE_ID})"
+        git push origin HEAD 2>&1 || echo "WARNING: Wiki push failed (check project wiki is enabled)"
+      fi
   artifacts:
     paths:
       - public

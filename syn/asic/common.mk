@@ -12,6 +12,7 @@ export MODULE ?= tidelink
 
 # ── File lists ─────────────────────────────────────────────────────────────
 export FLIST := $(TIDELINK_HOME)/flist/$(MODULE).flist
+export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 
 # ── Cell libraries (update paths to match your PDK installation) ───────────
 # Target library (.db) — used for mapping and optimization
@@ -19,11 +20,19 @@ export FLIST := $(TIDELINK_HOME)/flist/$(MODULE).flist
 # Defaultly using the 65nm Library
 export TARGET_LIB     ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp/sc12_base_rvt/r0p0/db/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
 
+# ── Memory macro libraries (compiled register file) ─────────────────────
+export MEM_PATH       ?= /research/precompiled_mems/TSMC65/rf_16k
+export MEM_DB_SS      ?= $(MEM_PATH)/rf_16k_ss_1p08v_1p08v_125c.db
+export MEM_DB_FF      ?= $(MEM_PATH)/rf_16k_ff_1p32v_1p32v_m40c.db
+
 # Link libraries — target + any additional macro/IP libs
-export LINK_LIBS      ?= $(TARGET_LIB)
+export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DB_SS)
 
 # TF/Milkyway — physical reference for floorplan estimation (TSMC 65nm, 1p9m_6x2z)
 export PHYS_IP_PATH   ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
+
+# Standard cell Verilog simulation models (for gate-level simulation)
+export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
 export TF_FILE        ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/sc12_tech.tf
 export MW_REF_LIB     ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/milkyway/1p9m_6x2z/sc12_cln65lp_base_rvt
 
@@ -40,10 +49,10 @@ export TLUPLUS_PATH   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/synopsys_tluplus/1p9m_6x2
 export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
 
 # ── Design constraints ─────────────────────────────────────────────────────
-export CLK_NAME       ?= hclk
-export CLK_PERIOD     ?= 10.0
+export CLK_NAME        ?= hclk
+export CLK_PERIOD      ?= 4.0
 export CLK_UNCERTAINTY ?= 0.35
-export RST_NAME       ?= hresetn
+export RST_NAME        ?= hresetn
 
 # ── Available modules ──────────────────────────────────────────────────────
 MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs

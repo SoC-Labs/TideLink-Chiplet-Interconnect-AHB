@@ -15,6 +15,8 @@
 #   PHYS_IP_PATH   - Root of physical IP library
 #   TLUPLUS_PATH   - Path to TLU+ extraction models
 #   TLUPLUS_MAP    - Path to TLU+ layer map file
+#   MEM_DB_SS      - Memory macro .db (slow-slow corner)
+#   MEM_DB_FF      - Memory macro .db (fast-fast corner)
 #-----------------------------------------------------------------------------
 
 set tidelink_home $::env(TIDELINK_HOME)
@@ -26,6 +28,20 @@ set clk_uncert    $::env(CLK_UNCERTAINTY)
 set rst_name      $::env(RST_NAME)
 set tluplus_path  $::env(TLUPLUS_PATH)
 set tluplus_map   $::env(TLUPLUS_MAP)
+
+# Memory macro libraries (optional — only needed when using ASIC SRAM wrapper)
+if {[info exists ::env(MEM_DB_SS)]} {
+    set mem_db_ss $::env(MEM_DB_SS)
+    puts "INFO: Memory macro library (SS): $mem_db_ss"
+} else {
+    set mem_db_ss ""
+}
+if {[info exists ::env(MEM_DB_FF)]} {
+    set mem_db_ff $::env(MEM_DB_FF)
+    puts "INFO: Memory macro library (FF): $mem_db_ff"
+} else {
+    set mem_db_ff ""
+}
 
 #-----------------------------------------------------------------------------
 # Read design from filelist
@@ -104,6 +120,15 @@ set_top_module $top_module
 # MCMM (Multi-Corner Multi-Mode) setup
 #-----------------------------------------------------------------------------
 echo "FC_RTL_SCRIPT: apply MCMM constraints"
+
+# Add memory macro libraries to link_library if available
+if {$mem_db_ss ne "" || $mem_db_ff ne ""} {
+    set current_link [get_app_var link_library]
+    if {$mem_db_ss ne ""} { lappend current_link $mem_db_ss }
+    if {$mem_db_ff ne ""} { lappend current_link $mem_db_ff }
+    set_app_var link_library $current_link
+    puts "INFO: Updated link_library with memory macro .db files"
+}
 
 # Slow corner (worst-case setup timing)
 create_mode M1

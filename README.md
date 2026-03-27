@@ -78,9 +78,10 @@ When side A resets:
 | 0x004 | Release Threshold | RW | Minimum tokens to accumulate before releasing to pair (default: 20, 0 = immediate release) |
 | 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
 | 0x00C | Token Count | RO | Available FIFO tokens (local) |
-| 0x010 | Status | RO | `[0]` returner_busy |
+| 0x010 | Status | RO | `[0]` returner_busy, `[1]` overrun (sticky), `[2]` underrun (sticky), `[3]` master_error (sticky) |
 | 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
 | 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
+| 0x01C | CTRL | RW | `[0]` EN (block enable), `[1]` FLUSH (self-clearing, EN must be 0) |
 
 #### Region 1 (offsets 0x020-0x03F): Incoming Token Receivers
 
@@ -91,6 +92,35 @@ When side A resets:
 | 0x028 | Pair Token Counter | RO | Running count of available tokens on the paired TideLink. Incremented by writes to 0x020, decremented by writes to 0x02C. Read without side effects. |
 | 0x02C | Pair Token Consume | WO | CPU writes the number of tokens being consumed from the pair. Subtracted from the pair token counter. |
 | 0x030 | Pair Token Counter Enable | RW | Bit 0: enable (default: 1). When 0, the pair token counter freezes and ignores all increments/decrements. |
+
+### Block Enable and Error Handling
+
+TideLink includes a CTRL register (0x01C) with block enable and flush controls, plus sticky error flags visible in the STATUS register (0x010).
+
+#### CTRL Register (0x01C)
+
+- **EN (bit 0)**: Block enable. When 0 (default after reset), AHB data window accesses are gated — transfers are silently ignored and no pointer/token state changes. APB registers and the AHB master port remain functional. Software must set EN=1 before writing or reading packets.
+- **FLUSH (bit 1)**: Self-clearing. Writing 1 resets write/read pointers, packet metadata, token count (back to MAX_TOKENS), the release accumulator, and all sticky error flags. EN must be 0 before flushing. Use this for error recovery without a full hardware reset.
+
+#### Sticky Error Flags (STATUS register, 0x010)
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| `[1]` | OVERRUN | Set when a valid AHB write occurs but the buffer is full (token_count == 0). The write data is silently discarded. |
+| `[2]` | UNDERRUN | Set when a valid AHB read occurs but the buffer is empty (token_count == MAX_TOKENS). |
+| `[3]` | MASTER_ERROR | Set when the AHB master port (returner) receives an ERROR response (hresp=1) during the data phase of a credit return or doorbell write. |
+
+All three flags are sticky — once set, they remain asserted until cleared by FLUSH. They survive across multiple transactions so software can detect that an error occurred even if it wasn't polling at the time.
+
+#### Typical Error Recovery Sequence
+
+```
+1. Detect error (poll STATUS or respond to system-level fault)
+2. Write CTRL.EN = 0        (disable data window)
+3. Write CTRL = 0x02        (FLUSH — self-clearing, also clears EN)
+4. Re-configure as needed
+5. Write CTRL.EN = 1        (re-enable data window)
+```
 
 ### Interrupts
 
@@ -124,11 +154,11 @@ tidelink/
 │       ├── pair_model.py             # PairRegisterBank (pure state machine)
 │       ├── driver.py                 # Abstract TidelinkDriver base class
 │       └── pynq_driver.py            # PYNQ MMIO driver for hardware testing
-├── cocotb/                           # Simulation verification (117 tests)
+├── cocotb/                           # Simulation verification (126 tests)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
-│   ├── tidelink_fifo/                # FIFO unit tests (27 tests)
-│   ├── tidelink_returner/            # Returner unit tests (14 tests)
+│   ├── tidelink_fifo/                # FIFO unit tests (33 tests)
+│   ├── tidelink_returner/            # Returner unit tests (17 tests)
 │   ├── tidelink_apb_regs/            # APB register unit tests (31 tests)
 │   ├── tidelink/                     # Integration tests (12 tests)
 │   ├── tidelink_ahb/                 # AHB wrapper tests (14 tests)
@@ -188,7 +218,7 @@ cd cocotb
 make regression
 ```
 
-This runs all 6 test environments, collects results, and prints a pass/fail summary (117 tests total).
+This runs all 6 test environments, collects results, and prints a pass/fail summary (126 tests total).
 
 ### Running a specific test
 

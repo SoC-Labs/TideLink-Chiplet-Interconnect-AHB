@@ -12,9 +12,20 @@ REG_PAIR_BASE          = 0x000   # RW: pair base address (default TIDELINK_PAIR_
 REG_REL_THRESHOLD      = 0x004   # RW: release threshold (default 20, 0 = immediate)
 REG_PKT_WORD_LEN       = 0x008   # RO: packet word length sideband from FIFO
 REG_TOKEN_COUNT        = 0x00C   # RO: available FIFO tokens (local)
-REG_STATUS             = 0x010   # RO: bit[0] returner_busy
+REG_STATUS             = 0x010   # RO: [0] returner_busy, [1] overrun, [2] underrun, [3] master_error
 REG_DOORBELL           = 0x014   # W1C: software doorbell trigger
 REG_REL_ACC            = 0x018   # RO: pending unreleased tokens (debug)
+REG_CTRL               = 0x01C   # RW: [0] EN, [1] FLUSH (self-clearing)
+
+# ── Status register bit positions ────────────────────────────────────────
+STATUS_RETURNER_BUSY   = 0
+STATUS_OVERRUN         = 1
+STATUS_UNDERRUN        = 2
+STATUS_MASTER_ERROR    = 3
+
+# ── CTRL register bit positions ──────────────────────────────────────────
+CTRL_EN                = 0
+CTRL_FLUSH             = 1
 
 # ── Region 1 (paddr[5]=1): Incoming Token Receivers ─────────────────────────
 REG_RELEASED_ACC       = 0x020   # W-add/R-clear: released tokens accumulator
@@ -41,3 +52,4 @@ OFF_PAIR_TOKEN_CONSUME = REG_PAIR_TOKEN_CONSUME
 OFF_PAIR_TOKEN_ENABLE  = REG_PAIR_TOKEN_ENABLE
 OFF_REL_THRESHOLD      = REG_REL_THRESHOLD
 OFF_REL_ACC            = REG_REL_ACC
+OFF_CTRL               = REG_CTRL

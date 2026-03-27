@@ -84,8 +84,11 @@ async def setup(dut):
 async def do_reset(dut):
     """Assert active-low reset for 5 cycles, then deassert."""
     dut.hresetn.value = 0
+    dut.enable.value = 0
+    dut.flush.value = 0
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
+    dut.enable.value = 1
     await ClockCycles(dut.hclk, 2)
 
 
@@ -1118,3 +1121,211 @@ async def test_27_irq_multi_cycle_toggle(dut):
             f"Cycle {i}: IRQ should be 0 after read"
 
     dut._log.info("Multi-cycle IRQ toggle test passed")
+
+
+# ── EN Gate, FLUSH, Overrun/Underrun Tests ─────────────────────────────────
+
+
+def get_overrun(dut):
+    try:
+        return int(dut.overrun.value)
+    except ValueError:
+        return 0
+
+
+def get_underrun(dut):
+    try:
+        return int(dut.underrun.value)
+    except ValueError:
+        return 0
+
+
+@cocotb.test()
+async def test_28_en_gate_blocks_writes(dut):
+    """When enable=0, AHB writes should be gated (no pointer advance, no token change)."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    tokens_before = get_token_count(dut)
+
+    # Disable the FIFO
+    dut.enable.value = 0
+    await RisingEdge(dut.hclk)
+
+    # Attempt to write a packet
+    pkt = FifoPacket(data=[0xDEAD, 0xBEEF])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="EN_OFF_W")
+
+    # write_complete should NOT fire (enable gates valid_transfer)
+    assert not hit, "write_complete should not fire when enable=0"
+
+    # Token count should be unchanged
+    tokens_after = get_token_count(dut)
+    assert tokens_after == tokens_before, \
+        f"Tokens should be unchanged: before={tokens_before}, after={tokens_after}"
+
+    dut._log.info("EN gate blocks writes — passed")
+
+
+@cocotb.test()
+async def test_29_en_gate_blocks_reads(dut):
+    """When enable=0, AHB reads should be gated."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write a packet with enable=1
+    pkt = FifoPacket(data=[0xCAFE, 0xBABE])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="EN_RD_W")
+    assert hit
+
+    # Disable
+    dut.enable.value = 0
+    await RisingEdge(dut.hclk)
+
+    tokens_before = get_token_count(dut)
+
+    # Attempt to read — should be gated
+    # Read addr 0 (length)
+    await RisingEdge(dut.hclk)
+    dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
+    dut.hsize.value = 2; dut.haddr.value = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0; dut.hsel.value = 0; dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 4)
+
+    # packet_word_length should be 0 (gated by enable)
+    pwl = int(dut.u_dut.packet_word_length.value)
+    assert pwl == 0, f"packet_word_length should be 0 when disabled, got {pwl}"
+
+    tokens_after = get_token_count(dut)
+    assert tokens_after == tokens_before, "Tokens should be unchanged when disabled"
+
+    dut._log.info("EN gate blocks reads — passed")
+
+
+@cocotb.test()
+async def test_30_flush_resets_state(dut):
+    """FLUSH should reset pointers, token count, and packet state."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write a packet to change state
+    pkt = FifoPacket(data=[0x1111, 0x2222, 0x3333])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="FLUSH_W")
+    assert hit
+
+    tokens_after_write = get_token_count(dut)
+    assert tokens_after_write < MAX_TOKENS
+
+    # Disable, then flush
+    dut.enable.value = 0
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 1
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 0
+    await RisingEdge(dut.hclk)
+
+    # Verify state is reset
+    assert get_token_count(dut) == MAX_TOKENS, \
+        f"Token count should be MAX after flush, got {get_token_count(dut)}"
+    assert int(dut.u_dut.write_ptr.value) == 0, "write_ptr should be 0 after flush"
+    assert int(dut.u_dut.read_ptr.value) == 0, "read_ptr should be 0 after flush"
+    assert int(dut.u_dut.packet_word_length.value) == 0, \
+        "packet_word_length should be 0 after flush"
+
+    # Re-enable and verify FIFO works again
+    dut.enable.value = 1
+    await RisingEdge(dut.hclk)
+
+    pkt2 = FifoPacket(data=[0xAAAA, 0xBBBB])
+    _, _, hit2 = await write_packet(dut, ahb, pkt2, label="POST_FLUSH_W")
+    assert hit2, "FIFO should work normally after flush + re-enable"
+
+    dut._log.info("FLUSH resets state — passed")
+
+
+@cocotb.test()
+async def test_31_flush_clears_overrun(dut):
+    """Overrun sticky flag should be cleared by FLUSH."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    assert get_overrun(dut) == 0, "overrun should be 0 after reset"
+
+    # Fill the FIFO completely
+    max_data = MAX_TOKENS - 1
+    pkt = FifoPacket(data=[(i + 1) for i in range(max_data)])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="FILL")
+    assert hit
+    assert get_token_count(dut) == 0, "FIFO should be full"
+
+    # Attempt another write — should trigger overrun
+    await RisingEdge(dut.hclk)
+    dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 1
+    dut.hsize.value = 2; dut.haddr.value = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.hwdata.value = 0xBAD
+    dut.htrans.value = 0; dut.hsel.value = 0
+    await RisingEdge(dut.hclk)
+    dut.hwrite.value = 0
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    assert get_overrun(dut) == 1, "overrun should be set after write to full buffer"
+
+    # Flush should clear it
+    dut.enable.value = 0
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 1
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 0
+    await RisingEdge(dut.hclk)
+
+    assert get_overrun(dut) == 0, "overrun should be cleared by FLUSH"
+    dut._log.info("Overrun cleared by FLUSH — passed")
+
+
+@cocotb.test()
+async def test_32_underrun_on_empty_read(dut):
+    """Underrun sticky flag should set on read from empty buffer."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    assert get_underrun(dut) == 0, "underrun should be 0 after reset"
+    assert get_token_count(dut) == MAX_TOKENS, "Buffer should be empty after reset"
+
+    # Attempt a read from the empty buffer
+    await RisingEdge(dut.hclk)
+    dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
+    dut.hsize.value = 2; dut.haddr.value = 0x0004
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0; dut.hsel.value = 0
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    assert get_underrun(dut) == 1, "underrun should be set after read from empty buffer"
+
+    # Verify sticky: stays set without flush
+    await ClockCycles(dut.hclk, 5)
+    assert get_underrun(dut) == 1, "underrun should remain sticky"
+
+    # Flush should clear it
+    dut.enable.value = 0
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 1
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 0
+    await RisingEdge(dut.hclk)
+
+    assert get_underrun(dut) == 0, "underrun should be cleared by FLUSH"
+    dut._log.info("Underrun detection and FLUSH clear — passed")
+
+
+@cocotb.test()
+async def test_33_overrun_underrun_clear_after_reset(dut):
+    """Both error flags should be 0 after hardware reset."""
+    await setup(dut)
+    await do_reset(dut)
+    assert get_overrun(dut) == 0
+    assert get_underrun(dut) == 0
+    dut._log.info("Error flags clear after reset — passed")

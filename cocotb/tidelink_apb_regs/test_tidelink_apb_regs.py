@@ -41,6 +41,9 @@ async def setup(dut):
     dut.current_token_count.value = 0
     dut.read_complete.value       = 0
     dut.returner_busy.value       = 0
+    dut.fifo_overrun.value        = 0
+    dut.fifo_underrun.value       = 0
+    dut.master_error.value        = 0
 
 
 async def do_reset(dut):

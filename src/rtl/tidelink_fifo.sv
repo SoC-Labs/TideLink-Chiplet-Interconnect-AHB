@@ -41,7 +41,15 @@ module tidelink_fifo #(
     output logic [RAM_ADDR_W-1:0] packet_word_length_out,
 
     // Interrupt: packet committed to FIFO (set on write_complete, cleared on read addr 0)
-    output wire                   packet_committed_irq
+    output wire                   packet_committed_irq,
+
+    // Sticky error flags (from FIFO ctrl, cleared by flush)
+    output wire                   overrun,
+    output wire                   underrun,
+
+    // Control inputs (from APB registers)
+    input  wire                   enable,
+    input  wire                   flush
 );
 
     // --------------------------------------------------------------------------
@@ -91,7 +99,11 @@ module tidelink_fifo #(
         .read_target_addr    (read_target_addr),
         .packet_word_length  (packet_word_length),
         .token_count         (token_count),
-        .packet_committed_irq(packet_committed_irq)
+        .packet_committed_irq(packet_committed_irq),
+        .overrun             (overrun),
+        .underrun            (underrun),
+        .enable              (enable),
+        .flush               (flush)
     );
 
     // --------------------------------------------------------------------------

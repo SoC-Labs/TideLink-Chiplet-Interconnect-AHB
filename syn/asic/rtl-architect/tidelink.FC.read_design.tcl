@@ -130,19 +130,18 @@ if {$mem_db_ss ne "" || $mem_db_ff ne ""} {
     puts "INFO: Updated link_library with memory macro .db files"
 }
 
-# Slow corner (worst-case setup timing)
-create_mode M1
+# Single functional mode with two process corners
+create_mode func
 create_corner slow
-create_scenario -mode M1 -corner slow -name scen_slow
+create_scenario -mode func -corner slow -name scen_slow
 set_operating_conditions \
     -analysis_type on_chip_variation \
     -max ss_typical_max_1p08v_125c -min ss_typical_max_1p08v_125c \
     -library sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c
 
 # Fast corner (best-case hold timing)
-create_mode M2
 create_corner fast
-create_scenario -mode M2 -corner fast -name scen_fast
+create_scenario -mode func -corner fast -name scen_fast
 set_operating_conditions \
     -analysis_type on_chip_variation \
     -max ff_typical_min_1p32v_m40c -min ff_typical_min_1p32v_m40c \

@@ -104,6 +104,14 @@ module tidelink #(
     //                 Write: total free tokens ADDED (from pair's channel 1 returner)
     //                 Read:  returns accumulated total, then clears counter and IRQ
     //                 IRQ:   doorbell_irq
+    //   Offset 0x028: Pair Token Counter (RO)
+    //                 Running count of available pair tokens. Incremented by
+    //                 incoming released token writes (0x020). Read without side effects.
+    //   Offset 0x02C: Pair Token Consume (WO)
+    //                 CPU writes number of tokens being consumed. Value is
+    //                 subtracted from the pair token counter.
+    //   Offset 0x030: Pair Token Counter Enable (RW)
+    //                 Bit 0: enable (default 1). When 0, counter freezes.
     // --------------------------------------------------------------------------
 
     // Paired tidelink's target addresses (derived from parameter)
@@ -189,15 +197,49 @@ module tidelink #(
 
     assign doorbell_irq = (doorbell_response_acc != '0);
 
+    // --- 0x028/0x02C/0x030: Pair Token Counter, Consume, Enable ---
+    logic [SYS_DATA_W-1:0] pair_token_counter;
+    logic                  pair_token_counter_en;
+
+    // Conditions for increment/decrement
+    wire pair_counter_increment = apb_write && apb_region && apbs_paddr[4:2] == 3'h0; // write to 0x020
+    wire pair_counter_decrement = apb_write && apb_region && apbs_paddr[4:2] == 3'h3; // write to 0x02C
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            pair_token_counter    <= '0;
+            pair_token_counter_en <= 1'b1; // Enabled by default
+        end else begin
+            // Enable register write (0x030)
+            if (apb_write && apb_region && apbs_paddr[4:2] == 3'h4) begin
+                pair_token_counter_en <= apbs_pwdata[0];
+            end
+
+            // Counter update (only when enabled)
+            if (pair_token_counter_en) begin
+                if (pair_counter_increment && pair_counter_decrement) begin
+                    // Both in same cycle (shouldn't happen, but handle gracefully)
+                    pair_token_counter <= pair_token_counter + apbs_pwdata - apbs_pwdata;
+                end else if (pair_counter_increment) begin
+                    pair_token_counter <= pair_token_counter + apbs_pwdata;
+                end else if (pair_counter_decrement) begin
+                    pair_token_counter <= pair_token_counter - apbs_pwdata;
+                end
+            end
+        end
+    end
+
     // ── APB Read Mux ────────────────────────────────────────────────────────
 
     always_comb begin
         apbs_prdata = '0;
         if (apb_region) begin
-            // Region 1: Incoming Token Receivers
+            // Region 1: Incoming Token Receivers + Pair Token Counter
             case (apbs_paddr[4:2])
                 3'h0:    apbs_prdata = released_tokens_acc;
                 3'h1:    apbs_prdata = doorbell_response_acc;
+                3'h2:    apbs_prdata = pair_token_counter;
+                3'h4:    apbs_prdata = {{(SYS_DATA_W-1){1'b0}}, pair_token_counter_en};
                 default: ;
             endcase
         end else begin

@@ -49,6 +49,7 @@ hal-lint:
   tags:
     - xcelium
   before_script:
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
     - cd "$WORK_DIR"
     - echo "HAL version:" && hal -version 2>&1 | head -1
   script:
@@ -68,6 +69,7 @@ cocotb-regression:
   tags:
     - vcs
   before_script:
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
     - cd "$WORK_DIR"
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
@@ -92,6 +94,7 @@ rtl-architect:
   tags:
     - rtl_architect
   before_script:
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
     - cd "$WORK_DIR"
     - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
   script:
@@ -109,6 +112,7 @@ design-compiler:
   tags:
     - design_compiler
   before_script:
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
     - cd "$WORK_DIR"
     - echo "DC version:" && dc_shell -version 2>&1 | head -3
   script:

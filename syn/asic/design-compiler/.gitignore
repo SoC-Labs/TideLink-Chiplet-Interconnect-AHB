@@ -1,0 +1,13 @@
+*_dc_reports/
+*_dc_output/
+*_dc.log
+*.pvl
+*.syn
+*.mr
+*.svf
+alib-52
+work
+default.svf
+design_lib
+command.log
+*.log.bak

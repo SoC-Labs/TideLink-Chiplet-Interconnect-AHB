@@ -74,3 +74,19 @@ rtl-architect:
       - syn/asic/rtl-architect/tidelink_ra_reports/
       - syn/asic/rtl-architect/tidelink_ra.log
     expire_in: 30 days
+
+design-compiler:
+  stage: synthesis
+  tags:
+    - design_compiler
+  before_script:
+    - echo "DC version:" && dc_shell -version 2>&1 | head -3
+  script:
+    - make -C syn/asic/design-compiler syn MODULE=tidelink
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/design-compiler/tidelink_dc_reports/
+      - syn/asic/design-compiler/tidelink_dc_output/
+      - syn/asic/design-compiler/tidelink_dc.log
+    expire_in: 30 days

@@ -5,6 +5,7 @@ CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-0000
 
 VERILOG_SOURCES = \
     $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v \
+    $(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v \
     $(CMSDK_DIR)/models/memories/cmsdk_fpga_sram.v \
     $(PWD)/../../src/rtl/fpga/tidelink_sram.sv \
     $(PWD)/../../src/rtl/tidelink_fifo_ctrl.sv \
@@ -12,10 +13,11 @@ VERILOG_SOURCES = \
     $(PWD)/../../src/rtl/tidelink_returner.sv \
     $(PWD)/../../src/rtl/tidelink_apb_regs.sv \
     $(PWD)/../../src/rtl/tidelink.sv \
+    $(PWD)/../../src/rtl/tidelink_ahb.sv \
     $(PWD)/tb_top.sv
 
 TOPLEVEL = tb_top
-MODULE   = test_tidelink
+MODULE   = test_tidelink_ahb
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 SIM_ARGS     += +vcs+dumpvars+waves.vcd

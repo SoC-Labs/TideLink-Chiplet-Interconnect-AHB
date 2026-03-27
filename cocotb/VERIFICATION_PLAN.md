@@ -8,18 +8,20 @@ system-level tests required to fully verify the design.
 
 TideLink is a token-based FIFO interface for two cooperating SoCs. Each
 instance contains:
-- **AHB Slave FIFO** (`tidelink_ahb` + `tidelink_ahb_fifo_ctrl`): circular
+- **AHB Slave FIFO** (`tidelink_fifo` + `tidelink_fifo_ctrl`): circular
   buffer with pointer management, packet metadata capture, and token counting.
-- **AHB Master Returner** (`tidelink_ahb_returner`): 3-channel priority
+- **AHB Master Returner** (`tidelink_returner`): 3-channel priority
   arbiter that sends token updates to the paired TideLink.
-- **APB Register Interface**: configuration, status, and released-tokens
-  accumulator.
+- **APB Register Interface** (`tidelink_apb_regs`): configuration, status,
+  doorbell, token accumulators, pair token counter, and reset detection.
+- **AHB Wrapper** (`tidelink_ahb`): wraps `tidelink` with a `cmsdk_ahb_to_apb`
+  bridge so configuration registers are accessible via a second AHB slave port.
 
 ## Test Suites
 
-### 1. tidelink_ahb (FIFO Control Unit Tests)
+### 1. tidelink_fifo (FIFO Control Unit Tests) — 22 tests
 
-Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
+Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 `cmsdk_ahb_to_sram` and `cmsdk_fpga_sram`.
 
 | ID     | Test Name                             | Description                                                                 | Status   |
@@ -41,14 +43,13 @@ Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
 | AHB-15 | Read ptr_offset pipeline bug          | Targeted back-to-back read with no idle cycles                              | Existing |
 | AHB-16 | Read interrupt and packet length      | read_complete fires, packet_word_length_out correct at that moment          | Existing |
 | AHB-17 | Exhaustive FIFO write/read            | Random packets, fill and drain over multiple rounds, token invariants       | Existing |
-| AHB-18 | Circular buffer wrap-around           | Fill FIFO until pointers wrap past SRAM boundary, verify data integrity     | **New**  |
-| AHB-19 | Single-word packet                    | Minimal packet (1 data word), verify all signals correct                    | **New**  |
-| AHB-20 | Maximum-size packet                   | Packet using all available tokens, verify completion and token=0            | **New**  |
-| AHB-21 | Token count after write+read cycle    | Write N packets, read N packets, verify tokens restored to MAX              | **New**  |
-| AHB-22 | Back-to-back write packets            | Write packets with minimal gap, verify no pointer corruption                | **New**  |
-| AHB-23 | Read from empty FIFO                  | Read when no packet written, verify graceful behaviour                      | **New**  |
+| AHB-18 | Circular buffer wrap-around           | Fill FIFO until pointers wrap past SRAM boundary, verify data integrity     | Existing |
+| AHB-19 | Single-word packet                    | Minimal packet (1 data word), verify all signals correct                    | Existing |
+| AHB-20 | Maximum-size packet                   | Packet using all available tokens, verify completion and token=0            | Existing |
+| AHB-21 | Token count after write+read cycle    | Write N packets, read N packets, verify tokens restored to MAX              | Existing |
+| AHB-22 | Back-to-back write packets            | Write packets with minimal gap, verify no pointer corruption                | Existing |
 
-### 2. tidelink_ahb_returner (AHB Master Unit Tests)
+### 2. tidelink_returner (AHB Master Unit Tests) — 14 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -56,19 +57,18 @@ Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
 | RET-02 | Single write on interrupt             | Pulse interrupt_0, verify slave RAM write                                   | Existing |
 | RET-03 | Busy during transfer                  | busy asserted during addr+data phases                                       | Existing |
 | RET-04 | No transfer without interrupt         | Bus stays idle, no spurious writes                                          | Existing |
-| RET-05 | Interrupt ignored while busy          | Second pulse during active transfer uses first params                       | Existing |
+| RET-05 | Second interrupt queued while busy    | Second pulse during active transfer is queued via pending register           | Existing |
 | RET-06 | Back-to-back transfers                | Two consecutive interrupts produce two writes                               | Existing |
 | RET-07 | htrans sequence                       | IDLE -> NONSEQ -> IDLE during transfer                                      | Existing |
-| RET-08 | Priority channel 0 over 1             | Both pending, channel 0 serviced first                                      | **New**  |
-| RET-09 | Priority channel 0 over 2             | Both pending, channel 0 serviced first                                      | **New**  |
-| RET-10 | Priority channel 1 over 2             | Both pending, channel 1 serviced first                                      | **New**  |
-| RET-11 | All three channels pending             | All three pending, verify service order 0->1->2                            | **New**  |
-| RET-12 | Pending survives busy                 | Interrupt while busy, pending serviced after current completes              | **New**  |
-| RET-13 | Channel data isolation                | Each channel uses its own addr/data, verify no cross-contamination          | **New**  |
-| RET-14 | Held interrupt (level, not pulse)     | Interrupt held high, verify only one transfer fires                         | **New**  |
-| RET-15 | hready stall                          | Slave stalls hready during transfer, verify correct completion              | **New**  |
+| RET-08 | Priority channel 0 over 1             | Both pending, channel 0 serviced first                                      | Existing |
+| RET-09 | Priority channel 0 over 2             | Both pending, channel 0 serviced first                                      | Existing |
+| RET-10 | Priority channel 1 over 2             | Both pending, channel 1 serviced first                                      | Existing |
+| RET-11 | All three channels pending            | All three pending, verify service order 0->1->2                             | Existing |
+| RET-12 | Pending survives busy                 | Interrupt while busy, pending serviced after current completes              | Existing |
+| RET-13 | Channel data isolation                | Each channel uses its own addr/data, verify no cross-contamination          | Existing |
+| RET-14 | Held interrupt (level, not pulse)     | Interrupt held high, verify only one transfer fires                         | Existing |
 
-### 3. tidelink_apb_regs (APB Register Unit Tests)
+### 3. tidelink_apb_regs (APB Register Unit Tests) — 24 tests
 
 Tests target `tidelink_apb_regs` in isolation with sideband inputs driven
 directly from cocotb.
@@ -100,8 +100,7 @@ directly from cocotb.
 | APB-23 | pslverr always low                    | No errors                                                                   | Existing |
 | APB-24 | Unimplemented reads zero              | Reserved/unimplemented offsets return 0                                     | Existing |
 
-### 4. tidelink (Top-Level Integration Tests)
-
+### 4. tidelink (Top-Level Integration Tests) — 7 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -109,16 +108,35 @@ directly from cocotb.
 | TOP-02 | APB pair base readback                | Offset 0x000 returns TIDELINK_PAIR_BASE parameter                           | Existing |
 | TOP-03 | Write-read-returner flow              | Full cycle: write, track tokens, read, verify returner delta                | Existing |
 | TOP-04 | Multiple packets token tracking       | Write/read several packets, verify sw model matches hw at each step         | Existing |
-| TOP-05 | Returner delta data correctness       | **BUG TEST**: Verify returner sends correct delta (not always 1)            | **New**  |
-| TOP-06 | APB status register readback          | Read status reg, verify returner_busy bit                                   | **New**  |
-| TOP-07 | APB doorbell register                 | Write to doorbell, verify channel 1 fires                                   | **New**  |
-| TOP-08 | Released tokens accumulator add       | Multiple writes to accumulator, verify values add                           | **New**  |
-| TOP-09 | Released tokens read-to-clear         | Write to accumulator, read returns total and clears                         | **New**  |
-| TOP-10 | Released tokens IRQ assert/clear      | IRQ asserts on non-zero accumulator, clears on read                         | **New**  |
-| TOP-11 | Reset deassertion doorbell            | Reset deassertion triggers channel 2 to ring pair doorbell                  | **New**  |
-| TOP-12 | Token delta captures correct value    | **BUG TEST**: Prove delta=1 bug by varying packet sizes                     | **New**  |
+| TOP-05 | Returner delta data correctness       | **BUG TEST**: Verify returner sends correct delta (not always 1)            | Existing |
+| TOP-06 | Cumulative token drift                | **BUG TEST**: Verify cumulative deltas match total tokens consumed           | Existing |
+| TOP-07 | Separate accumulators                 | **BUG TEST**: Channel 0 delta and channel 1 total use separate addresses    | Existing |
 
-### 5. tidelink_pair (Dual TideLink System Tests)
+### 5. tidelink_ahb (AHB Wrapper Tests) — 11 tests
+
+Tests target `tidelink_ahb` which wraps `tidelink` with a `cmsdk_ahb_to_apb`
+bridge. All APB register access goes through the AHB config slave port
+(`ahbc_*`), verifying the full AHB-to-APB-to-register path.
+
+| ID     | Test Name                             | Description                                                                 | Status   |
+|--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
+| AHBW-01| Token count via AHB                   | Read token count through AHB-to-APB bridge after reset                      | Existing |
+| AHBW-02| Pair base readback via AHB            | Pair base register reads default 0 through bridge                           | Existing |
+| AHBW-03| Pair base write-readback via AHB      | Write new pair base address via AHB, read it back                           | Existing |
+| AHBW-04| Status register via AHB               | Status bit[0] (returner_busy) reads 0 when idle                            | Existing |
+| AHBW-05| Accumulator W-add R-clear via AHB     | Released tokens accumulator write-add / read-clear through bridge           | Existing |
+| AHBW-06| Doorbell response acc via AHB         | Doorbell response accumulator write-add / read-clear through bridge         | Existing |
+| AHBW-07| IRQ from accumulator via AHB          | Writing to accumulator via AHB asserts IRQ; reading clears it               | Existing |
+| AHBW-08| Doorbell triggers returner via AHB    | Doorbell write through bridge triggers returner channel 1                   | Existing |
+| AHBW-09| Write-read-return flow via AHB        | Full FIFO write/read/return flow with all register reads via AHB bridge     | Existing |
+| AHBW-10| Separate accumulators via AHB         | Channel 0 and channel 1 target different addresses, verified via AHB        | Existing |
+| AHBW-11| Pair token counter via AHB            | Counter increment, decrement, disable, re-enable — all via AHB bridge       | Existing |
+
+### 6. tidelink_py_pair (Dual TideLink System Tests) — 19 tests
+
+Uses a Python model (`PairRegisterBank`) to simulate the paired TideLink's
+register bank. The DUT's AHB master writes are monitored and routed to the
+pair model, which generates response writes back to the DUT's APB interface.
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -133,21 +151,20 @@ directly from cocotb.
 | PAIR-09| Doorbell lost when returner busy      | **BUG TEST**: Doorbell while returner busy, pending captures it            | Existing |
 | PAIR-10| Stale packet length spurious hit      | **BUG TEST**: Stale target addr doesn't trigger false completion           | Existing |
 | PAIR-11| Hit fires on wrong direction          | **BUG TEST**: write_complete doesn't fire during reads                     | Existing |
-| PAIR-12| Delta+total accumulator conflation    | **BUG TEST**: Channel 0 delta + channel 1 total interleave                 | **New**  |
 | PTC-01 | Counter defaults after reset          | Counter=0, enable=1 after reset                                            | Existing |
-| PTC-02 | Counter increments on released tokens  | Write to 0x020 increments counter                                          | Existing |
-| PTC-03 | Counter decrements on consume          | Write to 0x02C decrements counter                                          | Existing |
-| PTC-04 | Counter read no side effects           | Multiple reads return same value                                            | Existing |
-| PTC-05 | Counter disable freezes                | Disabled counter ignores increments and decrements                          | Existing |
-| PTC-06 | Counter re-enable resumes              | Re-enabling after disable resumes counting                                  | Existing |
-| PTC-07 | Counter independent of accumulator     | Read-clearing accumulator doesn't affect counter                            | Existing |
-| PTC-08 | Counter end-to-end with FIFO writes    | Write packets, simulate pair releasing tokens, verify counter               | Existing |
+| PTC-02 | Counter increments on released tokens | Write to 0x020 increments counter                                          | Existing |
+| PTC-03 | Counter decrements on consume         | Write to 0x02C decrements counter                                          | Existing |
+| PTC-04 | Counter read no side effects          | Multiple reads return same value                                            | Existing |
+| PTC-05 | Counter disable freezes               | Disabled counter ignores increments and decrements                          | Existing |
+| PTC-06 | Counter re-enable resumes             | Re-enabling after disable resumes counting                                  | Existing |
+| PTC-07 | Counter independent of accumulator    | Read-clearing accumulator doesn't affect counter                            | Existing |
+| PTC-08 | Counter end-to-end with FIFO writes   | Write packets, simulate pair releasing tokens, verify counter               | Existing |
 
 ## Known Bugs
 
 ### BUG-001: Stale `token_delta_data` (CRITICAL)
 
-**Location**: `tidelink.sv:201` + `tidelink_ahb_fifo_ctrl.sv:142-143`
+**Location**: `tidelink.sv:201` + `tidelink_fifo_ctrl.sv:142-143`
 
 **Description**: `packet_word_length` is cleared to 0 on the same cycle
 `read_complete` fires. The returner captures `token_delta_data` one cycle
@@ -158,7 +175,7 @@ regardless of actual packet size.
 Over time, the pair's view of available tokens diverges from reality,
 causing flow control starvation.
 
-**Proven by**: TOP-05, TOP-12
+**Proven by**: TOP-05, TOP-06
 
 **Fix direction**: Either (a) register `token_delta_data` on the same
 cycle as `read_complete` before it gets cleared, or (b) delay the
@@ -167,7 +184,7 @@ capture the correct value.
 
 ### BUG-002: No token underflow protection
 
-**Location**: `tidelink_ahb_fifo_ctrl.sv:180-181`
+**Location**: `tidelink_fifo_ctrl.sv:180-181`
 
 **Description**: Token count is decremented without checking that
 sufficient tokens are available. If software writes a packet larger
@@ -180,7 +197,7 @@ corrupt.
 
 ### BUG-003: Dead code - ptr_offset register
 
-**Location**: `tidelink_ahb_fifo_ctrl.sv:61,86,99,103`
+**Location**: `tidelink_fifo_ctrl.sv:61,86,99,103`
 
 **Description**: `ptr_offset` is computed and registered every cycle but
 the value is never used by any other signal. `translated_addr = addr`
@@ -200,17 +217,19 @@ add together, giving an inflated token count.
 **Impact**: Pair may believe more tokens are available than reality,
 potentially causing FIFO overflow.
 
-**Proven by**: PAIR-12
+**Proven by**: TOP-07, AHBW-10
 
 ## Running Tests
 
 ```bash
-# Run all test suites
+# Run all test suites (6 environments, 97 tests)
 cd cocotb && make regression
 
 # Run individual suites
-cd cocotb/tidelink_ahb && make
-cd cocotb/tidelink_ahb_returner && make
+cd cocotb/tidelink_fifo && make
+cd cocotb/tidelink_returner && make
+cd cocotb/tidelink_apb_regs && make
 cd cocotb/tidelink && make
-cd cocotb/tidelink_pair && make
+cd cocotb/tidelink_ahb && make
+cd cocotb/tidelink_py_pair && make
 ```

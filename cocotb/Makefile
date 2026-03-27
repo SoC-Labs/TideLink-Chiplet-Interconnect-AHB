@@ -4,7 +4,7 @@
 #   make tidelink_fifo       Run a single environment
 #   make clean               Clean all environments
 
-ENVS = tidelink_fifo tidelink_returner tidelink tidelink_py_pair
+ENVS = tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair
 
 # ── Per-environment targets ──────────────────────────────────────────────────
 # Each target runs make inside the subdirectory, collecting the result.

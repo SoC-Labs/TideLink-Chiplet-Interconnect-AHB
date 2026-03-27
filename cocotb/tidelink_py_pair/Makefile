@@ -1,7 +1,7 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-CMSDK_DIR = $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/logical
 
 VERILOG_SOURCES = \
     $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v \

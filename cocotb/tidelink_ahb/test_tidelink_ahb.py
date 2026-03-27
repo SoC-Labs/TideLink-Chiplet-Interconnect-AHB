@@ -1,0 +1,503 @@
+"""Cocotb testbench for tidelink_ahb (AHB wrapper with AHB-to-APB bridge).
+
+Exercises APB configuration registers over the AHB config slave port (ahbc_*)
+using cocotbext-ahb AHBLiteMaster.  Replicates a subset of the py_pair tests
+but with all register access going through the cmsdk_ahb_to_apb bridge.
+"""
+
+from dataclasses import dataclass
+from typing import List
+
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
+
+from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
+
+# ── Constants ────────────────────────────────────────────────────────────────
+CLK_PERIOD_NS = 10
+RAM_ADDR_W    = 14
+MAX_TOKENS    = 1 << (RAM_ADDR_W - 2)
+
+# Default TIDELINK_PAIR_BASE = 0
+PAIR_RELEASED_TOKENS_ADDR   = 0x20
+PAIR_DOORBELL_RESPONSE_ADDR = 0x24
+PAIR_DOORBELL_ADDR          = 0x14
+
+# APB/AHB config register offsets
+REG_PAIR_BASE          = 0x000
+REG_PKT_WORD_LEN       = 0x008
+REG_TOKEN_COUNT        = 0x00C
+REG_STATUS             = 0x010
+REG_DOORBELL           = 0x014
+REG_RELEASED_ACC       = 0x020
+REG_DOORBELL_RESP_ACC  = 0x024
+REG_PAIR_TOKEN_COUNTER = 0x028
+REG_PAIR_TOKEN_CONSUME = 0x02C
+REG_PAIR_TOKEN_ENABLE  = 0x030
+
+
+# ── Data Objects ─────────────────────────────────────────────────────────────
+
+@dataclass
+class FifoPacket:
+    data: List[int]
+
+    @property
+    def length(self) -> int:
+        return len(self.data)
+
+    @property
+    def total_words(self) -> int:
+        return self.length + 1
+
+    @property
+    def addrs(self) -> List[int]:
+        return [i * 4 for i in range(self.length + 1)]
+
+
+# ── Testbench Environment ────────────────────────────────────────────────────
+
+class TidelinkAhbTB:
+    """Reusable testbench for tidelink_ahb.
+
+    Provides:
+      - ahb_fifo:   AHBLiteMaster on the ahbs_* FIFO data port
+      - ahb_cfg:    AHBLiteMaster on the ahbc_* config register port
+      - ahb_slave:  AHBLiteSlaveRAM responding to the ahbm_* returner master
+    """
+
+    def __init__(self, dut):
+        self.dut = dut
+        self.log = dut._log
+
+        cocotb.start_soon(
+            Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
+        )
+
+        # FIFO data path AHB master
+        ahbs_bus = AHBBus.from_prefix(dut, "ahbs")
+        self.ahb_fifo = AHBLiteMaster(
+            ahbs_bus, dut.hclk, dut.hresetn, timeout=200
+        )
+
+        # Config register AHB master (goes through AHB-to-APB bridge)
+        ahbc_bus = AHBBus.from_prefix(dut, "ahbc")
+        self.ahb_cfg = AHBLiteMaster(
+            ahbc_bus, dut.hclk, dut.hresetn, timeout=200
+        )
+
+        # Returner AHB slave (captures returner writes)
+        ahbm_bus = AHBBus.from_prefix(dut, "ahbm")
+        self.ahb_slave = AHBLiteSlaveRAM(
+            ahbm_bus, dut.hclk, dut.hresetn,
+            mem_size=4096,
+        )
+
+        self.sw_token_count = MAX_TOKENS
+
+    async def reset(self):
+        self.dut.hresetn.value = 0
+        await ClockCycles(self.dut.hclk, 5)
+        self.dut.hresetn.value = 1
+        # Wait for reset deassertion pulse (channel 2) to complete
+        await ClockCycles(self.dut.hclk, 10)
+        self.sw_token_count = MAX_TOKENS
+
+    # ── Config register access via AHB ──────────────────────────────────
+
+    async def cfg_read(self, offset: int) -> int:
+        """Read a config register via the AHB config slave port."""
+        resp = await self.ahb_cfg.read(offset)
+        # cocotbext-ahb read returns list of dicts with "data" as hex string
+        return int(resp[0].get("data", "0x0"), 16)
+
+    async def cfg_write(self, offset: int, data: int):
+        """Write a config register via the AHB config slave port."""
+        await self.ahb_cfg.write(offset, data)
+
+    async def read_token_count(self) -> int:
+        return await self.cfg_read(REG_TOKEN_COUNT)
+
+    # ── FIFO Packet Write (inline AHB phases) ──────────────────────────
+
+    async def write_packet(self, data: List[int], label: str = "") -> bool:
+        pkt = FifoPacket(data=data)
+        prefix = f"[{label}] " if label else ""
+        dut = self.dut
+
+        await self.ahb_fifo.write(0x0000, pkt.length)
+        dut.ahbs_haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 2)
+        self.log.info(f"{prefix}Writing {pkt.length}-word packet")
+
+        hit_fired = False
+        for i, word in enumerate(pkt.data):
+            addr = (i + 1) * 4
+            await RisingEdge(dut.hclk)
+            dut.ahbs_hsel.value   = 1
+            dut.ahbs_htrans.value = 2
+            dut.ahbs_hwrite.value = 1
+            dut.ahbs_hsize.value  = 2
+            dut.ahbs_haddr.value  = addr
+            await RisingEdge(dut.hclk)
+            try:
+                hit = int(dut.u_dut.u_tidelink.u_fifo.u_fifo_ctrl.write_complete.value)
+            except ValueError:
+                hit = 0
+            dut.ahbs_hwdata.value = word
+            dut.ahbs_htrans.value = 0
+            dut.ahbs_hsel.value   = 0
+            await RisingEdge(dut.hclk)
+            dut.ahbs_hwrite.value = 0
+            if hit:
+                hit_fired = True
+
+        dut.ahbs_haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 1)
+        if hit_fired:
+            self.sw_token_count -= pkt.total_words
+            self.log.info(f"{prefix}Write complete. sw_tokens={self.sw_token_count}")
+        return hit_fired
+
+    # ── FIFO Packet Read (inline AHB phases) ───────────────────────────
+
+    async def read_packet(self, label: str = ""):
+        prefix = f"[{label}] " if label else ""
+        dut = self.dut
+
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 0
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = 0x0000
+        await RisingEdge(dut.hclk)
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        dut.ahbs_haddr.value  = 0x3FFF
+        await ClockCycles(dut.hclk, 3)
+
+        pkt_len = int(dut.u_dut.u_tidelink.u_fifo.packet_word_length_out.value)
+        self.log.info(f"{prefix}Read length = {pkt_len}")
+
+        hit_fired = False
+        data = []
+        for i in range(pkt_len):
+            addr = (i + 1) * 4
+            await RisingEdge(dut.hclk)
+            dut.ahbs_hsel.value   = 1
+            dut.ahbs_htrans.value = 2
+            dut.ahbs_hwrite.value = 0
+            dut.ahbs_hsize.value  = 2
+            dut.ahbs_haddr.value  = addr
+            await RisingEdge(dut.hclk)
+            try:
+                hit = int(dut.u_dut.u_tidelink.u_fifo.read_complete.value)
+            except ValueError:
+                hit = 0
+            dut.ahbs_htrans.value = 0
+            dut.ahbs_hsel.value   = 0
+            dut.ahbs_haddr.value  = 0x3FFF
+            await RisingEdge(dut.hclk)
+            try:
+                word = int(dut.ahbs_hrdata.value)
+            except ValueError:
+                word = 0
+            data.append(word)
+            if hit:
+                hit_fired = True
+
+        dut.ahbs_haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 3)
+        pkt = FifoPacket(data=data)
+        if hit_fired:
+            self.sw_token_count += pkt.total_words
+            self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_tokens={self.sw_token_count}")
+        return pkt, hit_fired
+
+    # ── Returner Helpers ────────────────────────────────────────────────
+
+    async def wait_returner_idle(self, timeout_cycles: int = 20):
+        for _ in range(timeout_cycles):
+            await RisingEdge(self.dut.hclk)
+            if not int(self.dut.u_dut.u_tidelink.returner_busy.value):
+                return
+        raise TimeoutError("Returner still busy after timeout")
+
+    def read_returner_memory(self, addr: int, num_bytes: int = 4) -> int:
+        raw = self.ahb_slave.memory.read(addr, num_bytes)
+        return int.from_bytes(raw, byteorder="little")
+
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+
+@cocotb.test()
+async def test_01_reset_and_token_count_via_ahb(dut):
+    """After reset, reading token count via AHB config port returns MAX_TOKENS."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    hw_tokens = await tb.read_token_count()
+    tb.log.info(f"Token count after reset (via AHB): {hw_tokens} (expected {MAX_TOKENS})")
+    assert hw_tokens == MAX_TOKENS, \
+        f"Expected {MAX_TOKENS}, got {hw_tokens}"
+
+
+@cocotb.test()
+async def test_02_pair_base_readback_via_ahb(dut):
+    """Reading pair base address register via AHB config port returns default 0."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    readback = await tb.cfg_read(REG_PAIR_BASE)
+    assert readback == 0, \
+        f"Pair base: expected 0x00000000, got 0x{readback:08X}"
+
+
+@cocotb.test()
+async def test_03_pair_base_write_readback_via_ahb(dut):
+    """Write a new pair base address via AHB, then read it back."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    new_base = 0x5000_2000
+    await tb.cfg_write(REG_PAIR_BASE, new_base)
+    await ClockCycles(dut.hclk, 2)
+
+    readback = await tb.cfg_read(REG_PAIR_BASE)
+    assert readback == new_base, \
+        f"Pair base: expected 0x{new_base:08X}, got 0x{readback:08X}"
+
+
+@cocotb.test()
+async def test_04_status_register_via_ahb(dut):
+    """Status register bit[0] (returner_busy) should be 0 when idle."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    status = await tb.cfg_read(REG_STATUS)
+    assert (status & 1) == 0, f"returner_busy should be 0, status=0x{status:08X}"
+
+
+@cocotb.test()
+async def test_05_accumulator_write_add_read_clear_via_ahb(dut):
+    """Released tokens accumulator: W-add / R-clear behaviour over AHB."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # Write two values — they should accumulate
+    await tb.cfg_write(REG_RELEASED_ACC, 10)
+    await ClockCycles(dut.hclk, 2)
+    await tb.cfg_write(REG_RELEASED_ACC, 25)
+    await ClockCycles(dut.hclk, 2)
+
+    # Read should return accumulated value and clear it
+    acc_val = await tb.cfg_read(REG_RELEASED_ACC)
+    tb.log.info(f"Released tokens accumulator: {acc_val} (expected 35)")
+    assert acc_val == 35, f"Expected 35, got {acc_val}"
+
+    # Second read should return 0 (cleared on previous read)
+    acc_val2 = await tb.cfg_read(REG_RELEASED_ACC)
+    assert acc_val2 == 0, f"Expected 0 after clear, got {acc_val2}"
+
+
+@cocotb.test()
+async def test_06_doorbell_response_accumulator_via_ahb(dut):
+    """Doorbell response accumulator: same W-add / R-clear over AHB."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    await tb.cfg_write(REG_DOORBELL_RESP_ACC, 100)
+    await ClockCycles(dut.hclk, 2)
+    await tb.cfg_write(REG_DOORBELL_RESP_ACC, 200)
+    await ClockCycles(dut.hclk, 2)
+
+    acc_val = await tb.cfg_read(REG_DOORBELL_RESP_ACC)
+    assert acc_val == 300, f"Expected 300, got {acc_val}"
+
+    acc_val2 = await tb.cfg_read(REG_DOORBELL_RESP_ACC)
+    assert acc_val2 == 0, f"Expected 0 after clear, got {acc_val2}"
+
+
+@cocotb.test()
+async def test_07_irq_from_accumulator_via_ahb(dut):
+    """Writing to released tokens accumulator via AHB should assert the IRQ."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # IRQ should be low initially
+    assert dut.released_tokens_irq.value == 0, "IRQ should be low after reset"
+
+    # Write a non-zero value to the accumulator
+    await tb.cfg_write(REG_RELEASED_ACC, 5)
+    await ClockCycles(dut.hclk, 2)
+
+    assert dut.released_tokens_irq.value == 1, "IRQ should be high after write"
+
+    # Read (clears accumulator) should deassert IRQ
+    _ = await tb.cfg_read(REG_RELEASED_ACC)
+    await ClockCycles(dut.hclk, 2)
+
+    assert dut.released_tokens_irq.value == 0, "IRQ should be low after read-clear"
+
+
+@cocotb.test()
+async def test_08_doorbell_triggers_returner_via_ahb(dut):
+    """Writing doorbell register via AHB config port triggers the returner
+    to write total token count to PAIR_DOORBELL_RESPONSE_ADDR."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # Clear slave RAM at target
+    tb.ahb_slave.memory.write(PAIR_DOORBELL_RESPONSE_ADDR, b'\x00\x00\x00\x00')
+
+    # Trigger doorbell via AHB config port
+    await tb.cfg_write(REG_DOORBELL, 1)
+    await ClockCycles(dut.hclk, 2)
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    # Returner should have written total token count to pair's doorbell response addr
+    written = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
+    tb.log.info(f"Returner wrote {written} to doorbell response (expected {MAX_TOKENS})")
+    assert written == MAX_TOKENS, \
+        f"Expected {MAX_TOKENS}, got {written}"
+
+
+@cocotb.test()
+async def test_09_write_read_return_flow_via_ahb(dut):
+    """Full flow: write packet, read it back, verify returner sends correct
+    token delta — all register access via AHB config port."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # Verify initial tokens via AHB
+    hw_tokens = await tb.read_token_count()
+    assert hw_tokens == MAX_TOKENS
+
+    # Write a packet
+    pkt_data = [0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003]
+    hit = await tb.write_packet(pkt_data, label="WR")
+    assert hit, "write_complete should fire"
+
+    # Verify tokens decreased
+    hw_tokens = await tb.read_token_count()
+    expected = MAX_TOKENS - (len(pkt_data) + 1)
+    assert hw_tokens == expected, f"Expected {expected}, got {hw_tokens}"
+
+    # Clear returner target
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    # Read packet back — triggers returner
+    read_pkt, rhit = await tb.read_packet(label="RD")
+    assert rhit, "read_complete should fire"
+    for i, (exp, got) in enumerate(zip(pkt_data, read_pkt.data)):
+        assert exp == got, f"Word {i}: expected 0x{exp:08X}, got 0x{got:08X}"
+
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    # Verify returner sent correct delta
+    delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    expected_delta = len(pkt_data) + 1
+    assert delta == expected_delta, f"Expected delta {expected_delta}, got {delta}"
+
+    # Verify tokens restored
+    hw_tokens = await tb.read_token_count()
+    assert hw_tokens == MAX_TOKENS
+
+    tb.log.info("Full write-read-return flow verified via AHB config port")
+
+
+@cocotb.test()
+async def test_10_separate_accumulators_via_ahb(dut):
+    """Channel 0 (delta → 0x020) and channel 1 (doorbell → 0x024) write to
+    separate addresses. Verify via AHB config port."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    pkt_data = [0xAA, 0xBB, 0xCC]
+    expected_delta = len(pkt_data) + 1
+
+    await tb.write_packet(pkt_data, label="SEP_WR")
+
+    # Clear both targets
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_DOORBELL_RESPONSE_ADDR, b'\x00\x00\x00\x00')
+
+    # Read packet → channel 0 fires
+    _, _ = await tb.read_packet(label="SEP_RD")
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    delta_020 = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    total_024 = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
+    assert delta_020 == expected_delta, f"0x020: expected {expected_delta}, got {delta_020}"
+    assert total_024 == 0, f"0x024 should be untouched, got {total_024}"
+
+    # Trigger doorbell → channel 1 fires
+    await tb.cfg_write(REG_DOORBELL, 1)
+    await ClockCycles(dut.hclk, 2)
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    delta_020_after = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    total_024_after = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
+    hw_tokens = await tb.read_token_count()
+
+    assert delta_020_after == expected_delta, \
+        f"0x020 should be unchanged: expected {expected_delta}, got {delta_020_after}"
+    assert total_024_after == hw_tokens, \
+        f"0x024 should have token count {hw_tokens}, got {total_024_after}"
+
+    tb.log.info("Separate accumulators verified via AHB config port")
+
+
+@cocotb.test()
+async def test_11_pair_token_counter_via_ahb(dut):
+    """Pair token counter increments on released-token writes, decrements
+    on consume writes, and can be disabled — all via AHB config port."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # Counter starts at 0, enabled by default
+    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    assert ctr == 0, f"Counter should be 0 after reset, got {ctr}"
+
+    en = await tb.cfg_read(REG_PAIR_TOKEN_ENABLE)
+    assert (en & 1) == 1, f"Counter should be enabled after reset, got {en}"
+
+    # Increment via released tokens accumulator write
+    await tb.cfg_write(REG_RELEASED_ACC, 10)
+    await ClockCycles(dut.hclk, 2)
+
+    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    assert ctr == 10, f"Counter should be 10, got {ctr}"
+
+    # Decrement via consume register
+    await tb.cfg_write(REG_PAIR_TOKEN_CONSUME, 3)
+    await ClockCycles(dut.hclk, 2)
+
+    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    assert ctr == 7, f"Counter should be 7, got {ctr}"
+
+    # Disable counter
+    await tb.cfg_write(REG_PAIR_TOKEN_ENABLE, 0)
+    await ClockCycles(dut.hclk, 2)
+    await tb.cfg_write(REG_RELEASED_ACC, 50)
+    await ClockCycles(dut.hclk, 2)
+
+    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    assert ctr == 7, f"Counter should be frozen at 7, got {ctr}"
+
+    # Re-enable and verify it resumes
+    await tb.cfg_write(REG_PAIR_TOKEN_ENABLE, 1)
+    await ClockCycles(dut.hclk, 2)
+    await tb.cfg_write(REG_RELEASED_ACC, 5)
+    await ClockCycles(dut.hclk, 2)
+
+    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    assert ctr == 12, f"Counter should be 12, got {ctr}"
+
+    tb.log.info("Pair token counter verified via AHB config port")

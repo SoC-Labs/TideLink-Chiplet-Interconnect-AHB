@@ -19,6 +19,8 @@ variables:
   RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL_ARCHITECT_2022.06-SP2
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
+  # ARM CMSDK — uses ARM_IP_LIBRARY_PATH env var set on runner
+  CMSDK_DIR: "${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/logical"
   # Simulator selection for cocotb
   SIM: vcs
   # License server (update as needed)
@@ -65,14 +67,16 @@ cocotb-regression:
     - vcs
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
   script:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - echo "CMSDK_DIR:" && ls "$CMSDK_DIR/cmsdk_ahb_to_sram" 2>&1 | head -1
     - make -C "$WORK_DIR/cocotb" regression
   after_script:
     - mkdir -p cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink py_pair; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair; do
         mkdir -p "cocotb/$env";
         cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;

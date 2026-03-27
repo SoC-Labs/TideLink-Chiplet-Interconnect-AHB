@@ -28,6 +28,17 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   └──────────────────────────────────────────────────────────┘
 ```
 
+The `tidelink_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge so both the FIFO data path and the configuration registers are accessible via AHB slave ports, suitable for direct connection to an AHB bus matrix.
+
+```
+  tidelink_ahb
+  ┌────────────────────────────────────────────┐
+  │  ahbs_* ──► tidelink (FIFO data path)      │
+  │  ahbc_* ──► cmsdk_ahb_to_apb ──► APB regs  │
+  │  ahbm_* ◄── tidelink (returner master)     │
+  └────────────────────────────────────────────┘
+```
+
 A typical system connects two TideLink instances back-to-back: the AHB master of one writes token/doorbell updates into the APB-visible registers of the other. The `TIDELINK_PAIR_BASE` parameter sets the target address so all returner writes are routed automatically.
 
 ### RTL Modules
@@ -35,6 +46,7 @@ A typical system connects two TideLink instances back-to-back: the AHB master of
 | Module | Description |
 |--------|-------------|
 | `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Derives returner target addresses from the RW pair base register. |
+| `tidelink_ahb.sv` | AHB wrapper. Instantiates `tidelink` and adds a `cmsdk_ahb_to_apb` bridge so configuration registers are accessible via a second AHB slave port (`ahbc_*`). |
 | `tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, token accumulators, pair token counter, and reset detection. |
 | `tidelink_fifo.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
 | `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, token counting. Clears `packet_word_length` on completion to prevent stale hits. |
@@ -51,9 +63,9 @@ A typical system connects two TideLink instances back-to-back: the AHB master of
 ### Reset Handshake Flow
 
 When side A resets:
-1. A's channel 2 fires → writes to B's doorbell register (0x014)
-2. B's doorbell triggers → B's channel 1 writes B's total free tokens to A's doorbell response accumulator (0x024)
-3. A's `doorbell_irq` asserts → CPU reads 0x024 to learn how many tokens B has available
+1. A's channel 2 fires -> writes to B's doorbell register (0x014)
+2. B's doorbell triggers -> B's channel 1 writes B's total free tokens to A's doorbell response accumulator (0x024)
+3. A's `doorbell_irq` asserts -> CPU reads 0x024 to learn how many tokens B has available
 4. If pair token counter is enabled, incoming tokens at 0x020 also increment the hardware counter at 0x028
 
 ### APB Register Map
@@ -91,19 +103,24 @@ When side A resets:
 tidelink/
 ├── src/rtl/                          # Synthesisable RTL
 │   ├── tidelink.sv                   # Top-level wrapper
+│   ├── tidelink_ahb.sv              # AHB wrapper (with AHB-to-APB bridge)
 │   ├── tidelink_apb_regs.sv          # APB register block
 │   ├── tidelink_fifo.sv              # AHB slave FIFO interface
 │   ├── tidelink_fifo_ctrl.sv         # FIFO pointer/token control
-│   └── tidelink_returner.sv          # AHB master (3-ch arbiter + pending)
+│   ├── tidelink_returner.sv          # AHB master (3-ch arbiter + pending)
+│   ├── fpga/tidelink_sram.sv         # FPGA SRAM wrapper
+│   └── generic/tidelink_sram.sv      # Generic SRAM wrapper
 ├── flist/                            # File lists for external tools
-├── cocotb/                           # Verification
+├── cocotb/                           # Verification (97 tests total)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
-│   ├── tidelink_ahb/                 # FIFO unit tests
-│   ├── tidelink_ahb_returner/        # Returner unit tests
+│   ├── tidelink_fifo/                # FIFO unit tests (22 tests)
+│   ├── tidelink_returner/            # Returner unit tests (14 tests)
 │   ├── tidelink_apb_regs/            # APB register unit tests (24 tests)
-│   ├── tidelink/                     # Integration tests
-│   └── tidelink_pair/                # Dual-instance system tests (19 tests)
+│   ├── tidelink/                     # Integration tests (7 tests)
+│   ├── tidelink_ahb/                 # AHB wrapper tests (11 tests)
+│   └── tidelink_py_pair/             # Dual-instance system tests (19 tests)
+├── syn/                              # Synthesis flows
 └── lint/                             # HAL (Cadence) lint flow
     ├── Makefile
     └── hal.tcl                       # Rule waivers
@@ -111,7 +128,7 @@ tidelink/
 
 ## Dependencies
 
-- **CMSDK** -- ARM Cortex-M System Design Kit (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`). Expected at `~/Downloads/BP210-BU-00000-r1p1-00rel0/logical/` (configurable via `CMSDK_DIR` in Makefiles).
+- **CMSDK** -- ARM Cortex-M System Design Kit (`cmsdk_ahb_to_sram`, `cmsdk_ahb_to_apb`, `cmsdk_fpga_sram`). Expected at `~/Downloads/BP210-BU-00000-r1p1-00rel0/logical/` (configurable via `CMSDK_DIR` in Makefiles).
 - **VCS** -- Synopsys VCS simulator.
 - **cocotb** -- Python-based verification framework.
 - **cocotbext-ahb** -- AHB bus functional models for cocotb (`AHBLiteMaster`, `AHBLiteSlaveRAM`).
@@ -123,7 +140,7 @@ tidelink/
 ### Single test environment
 
 ```bash
-cd cocotb/tidelink_ahb
+cd cocotb/tidelink_fifo
 make
 ```
 
@@ -134,19 +151,19 @@ cd cocotb
 make regression
 ```
 
-This runs all test environments, collects results, and prints a pass/fail summary.
+This runs all 6 test environments, collects results, and prints a pass/fail summary.
 
 ### Running a specific test
 
 ```bash
-cd cocotb/tidelink_pair
+cd cocotb/tidelink_py_pair
 make TESTCASE=test_ptc_01_defaults_after_reset
 ```
 
 ### Waveform viewing
 
 ```bash
-cd cocotb/tidelink_ahb
+cd cocotb/tidelink_fifo
 make gui
 ```
 
@@ -173,6 +190,7 @@ make help                                  # Print all available targets
 | `tidelink_apb_regs` | No |
 | `tidelink_fifo` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
 | `tidelink` | Yes (via `tidelink_fifo`) |
+| `tidelink_ahb` | Yes (via `tidelink` + `cmsdk_ahb_to_apb`) |
 
 ## Contributors
 

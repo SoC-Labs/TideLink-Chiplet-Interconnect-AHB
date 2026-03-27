@@ -1,5 +1,5 @@
 export TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
-export CMSDK_DIR    ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
+export CMSDK_DIR    ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
 # ── Target module (override on command line: make MODULE=tidelink_ahb_returner) ──
 MODULE ?= tidelink

@@ -37,11 +37,86 @@ clone:
     - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA"
     - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
 
+# ── Preflight — validate all tool/IP paths before running jobs ────────
+
+preflight:
+  stage: setup
+  needs: [clone]
+  script:
+    - |
+      echo "========================================"
+      echo " Preflight Environment Check"
+      echo "========================================"
+
+      pass=0; fail=0
+
+      check_dir() {
+        local name="$1" path="$2"
+        if [ -z "$path" ]; then
+          echo "  FAIL  $name  (not set)"
+          fail=$((fail + 1))
+        elif [ -d "$path" ]; then
+          echo "  OK    $name = $path"
+          pass=$((pass + 1))
+        else
+          echo "  FAIL  $name = $path  (directory not found)"
+          fail=$((fail + 1))
+        fi
+      }
+
+      check_bin() {
+        local name="$1" bin="$2"
+        if command -v "$bin" > /dev/null 2>&1; then
+          echo "  OK    $name  ($(command -v "$bin"))"
+          pass=$((pass + 1))
+        else
+          echo "  FAIL  $name  ('$bin' not found on PATH)"
+          fail=$((fail + 1))
+        fi
+      }
+
+      echo ""
+      echo "── EDA Tools ───────────────────────────"
+      check_dir "VCS_HOME"      "$VCS_HOME"
+      check_dir "VERDI_HOME"    "$VERDI_HOME"
+      check_dir "XCELIUM_HOME"  "$XCELIUM_HOME"
+      check_dir "RTLA_HOME"     "$RTLA_HOME"
+
+      echo ""
+      echo "── IP Libraries ────────────────────────"
+      check_dir "CMSDK_DIR"                    "$CMSDK_DIR"
+      check_dir "CMSDK cmsdk_ahb_to_sram"      "$CMSDK_DIR/logical/cmsdk_ahb_to_sram"
+      check_dir "CMSDK fpga_sram model"         "$CMSDK_DIR/logical/models/memories"
+
+      echo ""
+      echo "── Workspace ───────────────────────────"
+      check_dir "WORK_DIR"      "$WORK_DIR"
+
+      echo ""
+      echo "── Tool Binaries (with PATH set) ───────"
+      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$RTLA_HOME/bin:$PATH"
+      check_bin "vcs"             "vcs"
+      check_bin "hal"             "hal"
+      check_bin "python3"         "python3"
+      check_bin "cocotb-config"   "cocotb-config"
+
+      echo ""
+      echo "========================================"
+      echo " Preflight Summary  PASS=$pass  FAIL=$fail"
+      echo "========================================"
+
+      if [ "$fail" -ne 0 ]; then
+        echo ""
+        echo "ERROR: $fail preflight check(s) failed."
+        echo "Fix the paths in .gitlab-ci.yml variables or on the runner."
+        exit 1
+      fi
+
 # ── Lint ─────────────────────────────────────────────────────────────────
 
 hal-lint:
   stage: lint
-  needs: [clone]
+  needs: [clone, preflight]
   tags:
     - xcelium
   before_script:
@@ -62,7 +137,7 @@ hal-lint:
 
 cocotb-regression:
   stage: regression
-  needs: [clone]
+  needs: [clone, preflight]
   tags:
     - vcs
   before_script:
@@ -72,7 +147,6 @@ cocotb-regression:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-    - echo "CMSDK_DIR:" && ls "$CMSDK_DIR/cmsdk_ahb_to_sram" 2>&1 | head -1
     - make -C "$WORK_DIR/cocotb" regression
   after_script:
     - mkdir -p cocotb
@@ -96,7 +170,7 @@ cocotb-regression:
 
 rtl-architect:
   stage: synthesis
-  needs: [clone]
+  needs: [clone, preflight]
   tags:
     - rtl_architect
   before_script:
@@ -117,7 +191,7 @@ rtl-architect:
 
 design-compiler:
   stage: synthesis
-  needs: [clone]
+  needs: [clone, preflight]
   tags:
     - design_compiler
   before_script:

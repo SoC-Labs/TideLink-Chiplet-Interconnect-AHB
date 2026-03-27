@@ -21,7 +21,7 @@
 
 set tidelink_home $::env(TIDELINK_HOME)
 set top_module    $::env(MODULE)
-set flist         $::env(FLIST)
+set flist         $::env(ASIC_FLIST)
 set clk_name      $::env(CLK_NAME)
 set clk_period    $::env(CLK_PERIOD)
 set clk_uncert    $::env(CLK_UNCERTAINTY)

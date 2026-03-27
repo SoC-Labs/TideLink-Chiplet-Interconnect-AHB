@@ -27,3 +27,4 @@ WORK.nlib/
 presto_gensys_json_file_location
 *.log
 *_output.txt
+*.txt

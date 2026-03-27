@@ -123,10 +123,10 @@ set FUSION_REFERENCE_LIBRARY_FRAM_LIST  [list ]
 set FUSION_REFERENCE_LIBRARY_DB_LIST    [list ]
 set FUSION_REFERENCE_LIBRARY_DIR        "./local_fusion_library"
 
-set LINK_LIBRARY                [list $::env(DB_SS) $::env(DB_FF)]
+set LINK_LIBRARY                [list $::env(DB_SS) $::env(DB_FF) $::env(MEM_DB_SS) $::env(MEM_DB_FF)]
 
 ## Set link_library app var so create_lib can link timing data to fusion library
-set_app_var link_library        "* $::env(DB_SS) $::env(DB_FF)"
+set_app_var link_library        "* $::env(DB_SS) $::env(DB_FF) $::env(MEM_DB_SS) $::env(MEM_DB_FF)"
 set COMPRESS_LIBS               false
 
 set TCL_MULTI_VT_CONSTRAINT_FILE        "multi_vth_constraint_script.tcl"

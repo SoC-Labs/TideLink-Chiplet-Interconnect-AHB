@@ -2,11 +2,17 @@
 # Runs HAL lint, cocotb regression, and RTL Architect synthesis exploration
 
 stages:
+  - setup
   - lint
   - regression
   - synthesis
+  - cleanup
 
 variables:
+  # Disable GitLab's built-in checkout — we clone manually
+  GIT_STRATEGY: none
+  # Workspace directory for the pipeline
+  WORK_DIR: "${CI_BUILDS_DIR}/${CI_PROJECT_NAME}/${CI_PIPELINE_ID}"
   # Synopsys EDA tool paths
   VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
   VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
@@ -19,13 +25,26 @@ variables:
   # License server (update as needed)
   # SNPSLMD_LICENSE_FILE: "port@license-server"
 
-# ── Lint ───────────────────────────────────────────────────────────────────
+# ── Clone ────────────────────────────────────────────────────────────────
+
+clone:
+  stage: setup
+  script:
+    - rm -rf "$WORK_DIR"
+    - mkdir -p "$WORK_DIR"
+    - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch "$CI_REPOSITORY_URL" "$WORK_DIR"
+    - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA"
+    - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
+
+# ── Lint ─────────────────────────────────────────────────────────────────
 
 hal-lint:
   stage: lint
+  needs: [clone]
   tags:
     - xcelium
   before_script:
+    - cd "$WORK_DIR"
     - echo "HAL version:" && hal -version 2>&1 | head -1
   script:
     - make -C lint lint-standalone
@@ -36,13 +55,15 @@ hal-lint:
       - lint/*_hal.xml
     expire_in: 30 days
 
-# ── Verification ───────────────────────────────────────────────────────────
+# ── Verification ─────────────────────────────────────────────────────────
 
 cocotb-regression:
   stage: regression
+  needs: [clone]
   tags:
     - vcs
   before_script:
+    - cd "$WORK_DIR"
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
@@ -58,13 +79,15 @@ cocotb-regression:
         - cocotb/*/results.xml
     expire_in: 30 days
 
-# ── RTL Architect ──────────────────────────────────────────────────────────
+# ── RTL Architect ────────────────────────────────────────────────────────
 
 rtl-architect:
   stage: synthesis
+  needs: [clone]
   tags:
     - rtl_architect
   before_script:
+    - cd "$WORK_DIR"
     - echo "RTL Architect version:" && rtl_architect -version 2>&1 | head -3
   script:
     - make -C syn/asic/rtl-architect ra MODULE=tidelink
@@ -77,9 +100,11 @@ rtl-architect:
 
 design-compiler:
   stage: synthesis
+  needs: [clone]
   tags:
     - design_compiler
   before_script:
+    - cd "$WORK_DIR"
     - echo "DC version:" && dc_shell -version 2>&1 | head -3
   script:
     - make -C syn/asic/design-compiler syn MODULE=tidelink
@@ -90,3 +115,12 @@ design-compiler:
       - syn/asic/design-compiler/tidelink_dc_output/
       - syn/asic/design-compiler/tidelink_dc.log
     expire_in: 30 days
+
+# ── Cleanup ──────────────────────────────────────────────────────────────
+
+cleanup:
+  stage: cleanup
+  when: always
+  script:
+    - rm -rf "$WORK_DIR"
+    - echo "Cleaned up $WORK_DIR"

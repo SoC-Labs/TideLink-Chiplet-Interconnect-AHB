@@ -19,11 +19,16 @@ variables:
   RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL_ARCHITECT_2022.06-SP2
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
-  PATH: "$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
   # Simulator selection for cocotb
   SIM: vcs
   # License server (update as needed)
   # SNPSLMD_LICENSE_FILE: "port@license-server"
+
+# Prepend EDA tools to PATH in every job (setting PATH as a variable
+# overwrites the system PATH, breaking basic commands like mkdir/rm/git)
+default:
+  before_script:
+    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
 
 # ── Clone ────────────────────────────────────────────────────────────────
 

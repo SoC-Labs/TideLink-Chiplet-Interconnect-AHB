@@ -1,11 +1,11 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME = $(realpath $(PWD)/../..)
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
-VERILOG_SOURCES = $(PWD)/tb_top.sv
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 
 TOPLEVEL = tb_top
 MODULE   = test_tidelink_ahb

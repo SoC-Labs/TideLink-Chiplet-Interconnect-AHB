@@ -1,10 +1,10 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME = $(realpath $(PWD)/../..)
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
-VERILOG_SOURCES = $(PWD)/tb_top.sv
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 
 TOPLEVEL = tb_top
 MODULE   = test_tidelink_returner

@@ -169,6 +169,28 @@ cocotb-regression:
         - cocotb/*/results.xml
     expire_in: 30 days
 
+# ── RTL SAIF Generation ─────────────────────────────────────────────────
+
+rtl-saif:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+  script:
+    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+    - make -C "$WORK_DIR/cocotb/tidelink" sim_rtl_saif
+  after_script:
+    - mkdir -p cocotb/tidelink
+    - cp "$WORK_DIR/cocotb/tidelink/switching_activity.saif" cocotb/tidelink/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink/switching_activity.saif
+    expire_in: 30 days
+
 # ── RTL Architect ────────────────────────────────────────────────────────
 
 rtl-architect:
@@ -198,14 +220,26 @@ rtl-architect:
 
 design-compiler:
   stage: synthesis
-  needs: [clone, preflight]
+  needs:
+    - job: clone
+    - job: preflight
+    - job: rtl-saif
+      artifacts: true
   tags:
     - design_compiler
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
   script:
     - echo "DC version:" && dc_shell -version 2>&1 | head -3
-    - make -C "$WORK_DIR/syn/asic/design-compiler" syn MODULE=tidelink
+    - |
+      export SAIF_FILE="$(pwd)/cocotb/tidelink/switching_activity.saif"
+      if [ -f "$SAIF_FILE" ]; then
+        echo "SAIF file found — activity-based power enabled"
+      else
+        echo "WARNING — no SAIF file, using statistical power"
+        unset SAIF_FILE
+      fi
+      make -C "$WORK_DIR/syn/asic/design-compiler" syn_asic MODULE=tidelink
   after_script:
     - mkdir -p syn/asic/design-compiler
     - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_dc_reports" syn/asic/design-compiler/ 2>/dev/null || true

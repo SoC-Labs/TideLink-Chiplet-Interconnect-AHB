@@ -106,4 +106,21 @@ module tb_top #(
         $dumpvars(0, tb_top);
     end
 
+    // SAIF switching activity capture (gate-level only)
+    // Controlled by +saif_enable plusarg — only active when explicitly requested
+    initial begin
+        if ($test$plusargs("saif_enable")) begin
+            $set_gate_level_monitoring("rtl_on");
+            $set_toggle_region(u_dut);
+            $toggle_start();
+        end
+    end
+
+    final begin
+        if ($test$plusargs("saif_enable")) begin
+            $toggle_stop();
+            $toggle_report("switching_activity.saif", 1.0e-9, "tb_top.u_dut");
+        end
+    end
+
 endmodule

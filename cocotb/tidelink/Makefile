@@ -26,11 +26,16 @@ export MEM_PATH       ?= /research/precompiled_mems/TSMC65/rf_16k
 
 NETLIST_FLIST = $(TIDELINK_HOME)/flist/tidelink_netlist.flist
 
-.PHONY: gui sim_asic
+.PHONY: gui sim_rtl_saif sim_asic sim_saif
 gui: $(SIM_BUILD)/simv
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)
+
+sim_rtl_saif: clean
+	$(MAKE) SIM=vcs TOPLEVEL=tb_top MODULE=$(MODULE) \
+		SIM_ARGS="+vcs+dumpvars+waves.vcd +saif_enable"
+	@echo "RTL SAIF file generated: switching_activity.saif"
 
 sim_asic: clean
 	COCOTB_RESOLVE_X=ZEROS $(MAKE) SIM=vcs TOPLEVEL=tb_top MODULE=$(MODULE) \
@@ -38,3 +43,11 @@ sim_asic: clean
 		COMPILE_ARGS="-full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb \
 		-f $(NETLIST_FLIST) +nospecify +notimingcheck" \
 		SIM_ARGS="+vcs+dumpvars+waves.vcd"
+
+sim_saif: clean
+	COCOTB_RESOLVE_X=ZEROS $(MAKE) SIM=vcs TOPLEVEL=tb_top MODULE=$(MODULE) \
+		VERILOG_SOURCES="$(PWD)/tb_top.sv" \
+		COMPILE_ARGS="-full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb \
+		-f $(NETLIST_FLIST) +nospecify +notimingcheck" \
+		SIM_ARGS="+vcs+dumpvars+waves.vcd +saif_enable"
+	@echo "SAIF file generated: switching_activity.saif"

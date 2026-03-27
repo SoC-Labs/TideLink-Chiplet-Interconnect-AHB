@@ -110,6 +110,21 @@ report_constraints -all_violators > ${rpt_dir}/constraints.rpt
 report_cell                       > ${rpt_dir}/cells.rpt
 report_reference -hierarchy       > ${rpt_dir}/references.rpt
 
+# ── Activity-based power (optional SAIF) ──────────────────────────────────
+# If SAIF_FILE is set, read switching activity and produce a separate report
+if {[info exists ::env(SAIF_FILE)] && $::env(SAIF_FILE) ne ""} {
+    set saif_file $::env(SAIF_FILE)
+    if {[file exists $saif_file]} {
+        puts "INFO: Reading SAIF file: $saif_file"
+        reset_switching_activity
+        read_saif -input $saif_file -instance_name tb_top/u_dut
+        report_power -hierarchy > ${rpt_dir}/power_saif.rpt
+        puts "INFO: Activity-based power report written to ${rpt_dir}/power_saif.rpt"
+    } else {
+        puts "WARNING: SAIF file not found: $saif_file"
+    }
+}
+
 # ── Write outputs ──────────────────────────────────────────────────────────
 set out_dir "${top_module}_dc_output"
 file mkdir $out_dir

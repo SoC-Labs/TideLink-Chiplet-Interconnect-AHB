@@ -8,9 +8,6 @@ AHBLiteMaster (driving the FIFO slave port) and AHBLiteSlaveRAM
 Infrastructure is object-oriented so it can be reused across tests.
 """
 
-from dataclasses import dataclass
-from typing import List
-
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
@@ -28,11 +25,13 @@ PAIR_DOORBELL_RESPONSE_ADDR = 0x24  # region 1: doorbell response accumulator on
 PAIR_DOORBELL_ADDR          = 0x14  # region 0: doorbell trigger on the paired tidelink
 
 # APB register offsets — Region 0 (paddr[5]=0)
-APB_REG_PAIR_BASE     = 0x000   # RO: TIDELINK_PAIR_BASE parameter
+APB_REG_PAIR_BASE     = 0x000   # RW: TIDELINK_PAIR_BASE parameter
+APB_REG_REL_THRESHOLD = 0x004   # RW: Release threshold (default 20)
 APB_REG_PKT_WORD_LEN  = 0x008   # RO: packet_word_length sideband from FIFO
 APB_REG_TOKEN_COUNT   = 0x00C   # RO: current total token count
 APB_REG_STATUS        = 0x010   # RO: [0] returner_busy
 APB_REG_DOORBELL      = 0x014   # W1C: write any value to trigger doorbell
+APB_REG_REL_ACC       = 0x018   # RO: pending unreleased tokens (debug)
 
 # APB register offsets — Region 1 (paddr[5]=1)
 APB_REG_RELEASED_ACC      = 0x020   # W-add/R-clear: released tokens accumulator (channel 0 deltas)
@@ -41,13 +40,14 @@ APB_REG_DOORBELL_RESP_ACC = 0x024   # W-add/R-clear: doorbell response accumulat
 
 # ── Data Objects ─────────────────────────────────────────────────────────────
 
-@dataclass
 class FifoPacket:
     """A packet written into / read from the tidelink FIFO."""
-    data: List[int]
+
+    def __init__(self, data):
+        self.data = data
 
     @property
-    def length(self) -> int:
+    def length(self):
         return len(self.data)
 
     @property
@@ -56,7 +56,7 @@ class FifoPacket:
         return self.length + 1
 
     @property
-    def addrs(self) -> List[int]:
+    def addrs(self):
         """Byte addresses for every beat (length word + data)."""
         return [i * 4 for i in range(self.length + 1)]
 
@@ -170,7 +170,7 @@ class TidelinkTB:
 
     # ── Packet Write (inline AHB phases) ─────────────────────────────────
 
-    async def write_packet(self, data: List[int], label: str = "") -> bool:
+    async def write_packet(self, data, label: str = "") -> bool:
         """Write a packet into the FIFO. Returns True if write_complete fired."""
         pkt = FifoPacket(data=data)
         prefix = f"[{label}] " if label else ""
@@ -321,6 +321,7 @@ async def test_03_write_read_returner_flow(dut):
     """
     tb = TidelinkTB(dut)
     await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     # ── Step 1: Verify initial token count ───────────────────────────
     hw_tokens = await tb.read_token_count()
@@ -399,6 +400,7 @@ async def test_04_multiple_packets_token_tracking(dut):
     the Python token model matches hardware after every operation."""
     tb = TidelinkTB(dut)
     await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     packets = [
         [0x11110001, 0x11110002],
@@ -459,6 +461,7 @@ async def test_bug001_stale_token_delta_data(dut):
     """
     tb = TidelinkTB(dut)
     await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     test_cases = [
         ([0xAA000001, 0xAA000002, 0xAA000003], 4),  # 3 data words → delta should be 4
@@ -516,6 +519,7 @@ async def test_bug001_cumulative_token_drift(dut):
     """
     tb = TidelinkTB(dut)
     await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     packets = [
         [0x11, 0x22, 0x33],        # 3+1 = 4 tokens
@@ -573,6 +577,7 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     """
     tb = TidelinkTB(dut)
     await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 4
     expected_delta = len(pkt_data) + 1  # 4
@@ -624,3 +629,119 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
         f"Channel 1 should write token_count={hw_token_count} to 0x024, got {total_at_024_after}"
 
     tb.log.info("BUG-004 fix verified: deltas and totals use separate accumulators")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Release Threshold Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@cocotb.test()
+async def test_thresh_01_default_batching(dut):
+    """With default threshold=20, small packet reads accumulate and release
+    as a single batched delta when the total crosses the threshold."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Default threshold is 20 — verify
+    threshold = await tb.apb.read(APB_REG_REL_THRESHOLD)
+    assert threshold == 20, f"Expected default threshold=20, got {threshold}"
+
+    # Write 7 small packets (2 data words each → delta=3 per read)
+    # After 7 reads: accumulated = 7*3 = 21 >= 20 → trigger fires
+    packets = [[0xAA00 + i, 0xBB00 + i] for i in range(7)]
+    for i, data in enumerate(packets):
+        hit = await tb.write_packet(data, label=f"BATCH_WR{i}")
+        assert hit
+
+    # Clear returner target
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    # Read packets one by one — returner should NOT fire until threshold crossed
+    for i in range(6):
+        _, rhit = await tb.read_packet(label=f"BATCH_RD{i}")
+        assert rhit
+        await ClockCycles(dut.hclk, 5)
+
+    # After 6 reads: acc = 6*3 = 18 < 20, returner should not have fired
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    tb.log.info(f"After 6 reads: returner target = {returner_data}")
+    assert returner_data == 0, \
+        f"Returner should not have fired yet (acc=18 < 20), but target has {returner_data}"
+
+    # 7th read: acc = 18 + 3 = 21 >= 20 → trigger fires with batched delta=21
+    _, rhit = await tb.read_packet(label="BATCH_RD6")
+    assert rhit
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    tb.log.info(f"After 7 reads: returner target = {returner_data}")
+    assert returner_data == 21, \
+        f"Expected batched delta=21, got {returner_data}"
+
+    tb.log.info("Default threshold batching verified")
+
+
+@cocotb.test()
+async def test_thresh_02_threshold_register_rw(dut):
+    """Release threshold register is readable and writable via APB."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    val = await tb.apb.read(APB_REG_REL_THRESHOLD)
+    assert val == 20, f"Default should be 20, got {val}"
+
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 50)
+    val = await tb.apb.read(APB_REG_REL_THRESHOLD)
+    assert val == 50, f"Expected 50 after write, got {val}"
+
+
+@cocotb.test()
+async def test_thresh_03_large_packet_exceeds_threshold(dut):
+    """A single packet whose delta exceeds the threshold releases immediately."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Set threshold=10
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 10)
+
+    # Write a large packet: 15 data words → delta = 16 > 10
+    pkt_data = [0xDD00 + i for i in range(15)]
+    hit = await tb.write_packet(pkt_data, label="LARGE_WR")
+    assert hit
+
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    _, rhit = await tb.read_packet(label="LARGE_RD")
+    assert rhit
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    assert returner_data == 16, \
+        f"Expected immediate delta=16, got {returner_data}"
+
+
+@cocotb.test()
+async def test_thresh_04_threshold_zero_backward_compat(dut):
+    """Threshold=0 gives per-read immediate release (backward compatible)."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
+
+    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 4
+
+    hit = await tb.write_packet(pkt_data, label="COMPAT_WR")
+    assert hit
+
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    _, rhit = await tb.read_packet(label="COMPAT_RD")
+    assert rhit
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    assert returner_data == 4, \
+        f"Expected immediate delta=4, got {returner_data}"

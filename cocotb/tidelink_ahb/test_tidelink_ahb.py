@@ -5,9 +5,6 @@ using cocotbext-ahb AHBLiteMaster.  Replicates a subset of the py_pair tests
 but with all register access going through the cmsdk_ahb_to_apb bridge.
 """
 
-from dataclasses import dataclass
-from typing import List
-
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
@@ -26,6 +23,7 @@ PAIR_DOORBELL_ADDR          = 0x14
 
 # APB/AHB config register offsets
 REG_PAIR_BASE          = 0x000
+REG_REL_THRESHOLD      = 0x004
 REG_PKT_WORD_LEN       = 0x008
 REG_TOKEN_COUNT        = 0x00C
 REG_STATUS             = 0x010
@@ -39,12 +37,13 @@ REG_PAIR_TOKEN_ENABLE  = 0x030
 
 # ── Data Objects ─────────────────────────────────────────────────────────────
 
-@dataclass
 class FifoPacket:
-    data: List[int]
+
+    def __init__(self, data):
+        self.data = data
 
     @property
-    def length(self) -> int:
+    def length(self):
         return len(self.data)
 
     @property
@@ -52,7 +51,7 @@ class FifoPacket:
         return self.length + 1
 
     @property
-    def addrs(self) -> List[int]:
+    def addrs(self):
         return [i * 4 for i in range(self.length + 1)]
 
 
@@ -121,7 +120,7 @@ class TidelinkAhbTB:
 
     # ── FIFO Packet Write (inline AHB phases) ──────────────────────────
 
-    async def write_packet(self, data: List[int], label: str = "") -> bool:
+    async def write_packet(self, data, label: str = "") -> bool:
         pkt = FifoPacket(data=data)
         prefix = f"[{label}] " if label else ""
         dut = self.dut
@@ -371,6 +370,7 @@ async def test_09_write_read_return_flow_via_ahb(dut):
     token delta — all register access via AHB config port."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
+    await tb.cfg_write(REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     # Verify initial tokens via AHB
     hw_tokens = await tb.read_token_count()
@@ -416,6 +416,7 @@ async def test_10_separate_accumulators_via_ahb(dut):
     separate addresses. Verify via AHB config port."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
+    await tb.cfg_write(REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     pkt_data = [0xAA, 0xBB, 0xCC]
     expected_delta = len(pkt_data) + 1
@@ -501,3 +502,56 @@ async def test_11_pair_token_counter_via_ahb(dut):
     assert ctr == 12, f"Counter should be 12, got {ctr}"
 
     tb.log.info("Pair token counter verified via AHB config port")
+
+
+@cocotb.test()
+async def test_12_threshold_readback_via_ahb(dut):
+    """Release threshold register readable and writable via AHB config port."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    val = await tb.cfg_read(REG_REL_THRESHOLD)
+    assert val == 20, f"Default should be 20, got {val}"
+
+    await tb.cfg_write(REG_REL_THRESHOLD, 42)
+    val = await tb.cfg_read(REG_REL_THRESHOLD)
+    assert val == 42, f"Expected 42 after write, got {val}"
+
+
+@cocotb.test()
+async def test_13_threshold_batching_via_ahb(dut):
+    """With threshold=10, small reads accumulate and release as a batch
+    via the AHB config port."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+    await tb.cfg_write(REG_REL_THRESHOLD, 10)
+
+    # Write 4 small packets (2 data words each → delta=3 per read)
+    packets = [[0xAA00 + i, 0xBB00 + i] for i in range(4)]
+    for i, data in enumerate(packets):
+        hit = await tb.write_packet(data, label=f"BATCH_WR{i}")
+        assert hit
+
+    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    # Read 3 packets: acc = 3*3 = 9 < 10
+    for i in range(3):
+        _, rhit = await tb.read_packet(label=f"BATCH_RD{i}")
+        assert rhit
+        await ClockCycles(dut.hclk, 5)
+
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    assert returner_data == 0, \
+        f"Returner should not fire yet (acc=9 < 10), got {returner_data}"
+
+    # 4th read: acc = 9 + 3 = 12 >= 10 → batched release
+    _, rhit = await tb.read_packet(label="BATCH_RD3")
+    assert rhit
+    await tb.wait_returner_idle()
+    await ClockCycles(dut.hclk, 2)
+
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    assert returner_data == 12, \
+        f"Expected batched delta=12, got {returner_data}"
+
+    tb.log.info("Threshold batching verified via AHB config port")

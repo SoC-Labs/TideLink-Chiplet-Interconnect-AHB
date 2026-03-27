@@ -13,10 +13,12 @@ PAIR_BASE     = 0x4000_1000  # Must match tb_top parameter
 
 # APB offsets — Region 0
 OFF_PAIR_BASE     = 0x000
+OFF_REL_THRESHOLD = 0x004
 OFF_PKT_WORD_LEN  = 0x008
 OFF_TOKEN_COUNT   = 0x00C
 OFF_STATUS        = 0x010
 OFF_DOORBELL      = 0x014
+OFF_REL_ACC       = 0x018
 
 # APB offsets — Region 1
 OFF_REL_TOKENS    = 0x020
@@ -358,9 +360,12 @@ async def test_r1_11_pair_counter_enable_readback(dut):
 
 @cocotb.test()
 async def test_r1_12_token_delta_capture(dut):
-    """Token delta is captured on read_complete pulse."""
+    """Token delta is captured on read_complete pulse (threshold=0 immediate mode)."""
     await setup(dut)
     await do_reset(dut)
+
+    # Set threshold=0 for immediate release
+    await apb_write(dut, 0x004, 0)
 
     dut.packet_word_length.value = 5
     await ClockCycles(dut.hclk, 1)
@@ -410,6 +415,162 @@ async def test_misc_03_unimplemented_reads_zero(dut):
     await setup(dut)
     await do_reset(dut)
 
-    for offset in [0x004, 0x018, 0x01C, 0x034, 0x038]:
+    for offset in [0x01C, 0x034, 0x038]:
         val = await apb_read(dut, offset)
         assert val == 0, f"Offset 0x{offset:03X} should read 0, got 0x{val:08X}"
+
+
+# ── Release Threshold Tests ──────────────────────────────────────────────────
+
+
+@cocotb.test()
+async def test_thresh_01_default_readback(dut):
+    """Release threshold defaults to 20 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+
+    val = await apb_read(dut, OFF_REL_THRESHOLD)
+    assert val == 20, f"Expected 20, got {val}"
+
+
+@cocotb.test()
+async def test_thresh_02_rw(dut):
+    """Release threshold is read-write."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_THRESHOLD, 100)
+    val = await apb_read(dut, OFF_REL_THRESHOLD)
+    assert val == 100, f"Expected 100, got {val}"
+
+
+@cocotb.test()
+async def test_thresh_03_resets_to_default(dut):
+    """Release threshold reverts to 20 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_THRESHOLD, 999)
+    dut.hresetn.value = 0
+    await ClockCycles(dut.hclk, 5)
+    dut.hresetn.value = 1
+    await ClockCycles(dut.hclk, 2)
+
+    val = await apb_read(dut, OFF_REL_THRESHOLD)
+    assert val == 20, f"Expected 20 after reset, got {val}"
+
+
+@cocotb.test()
+async def test_thresh_04_accumulates_below_threshold(dut):
+    """Deltas accumulate without firing trigger when below threshold."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Set threshold high so a single delta won't cross it
+    await apb_write(dut, OFF_REL_THRESHOLD, 50)
+
+    # Pulse read_complete with packet_word_length=4 → delta=5
+    dut.packet_word_length.value = 4
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await RisingEdge(dut.hclk)
+
+    # Trigger should NOT have fired
+    assert int(dut.release_tokens_trigger.value) == 0, \
+        "Trigger should not fire below threshold"
+
+    # Release accumulator should hold 5
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 5, f"Expected acc=5, got {acc}"
+
+
+@cocotb.test()
+async def test_thresh_05_trigger_fires_at_threshold(dut):
+    """Trigger fires when accumulated tokens cross the threshold."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_THRESHOLD, 10)
+
+    # First pulse: packet_word_length=4 → delta=5, acc=5 < 10
+    dut.packet_word_length.value = 4
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 5, f"Expected acc=5 after first pulse, got {acc}"
+
+    # Second pulse: packet_word_length=4 → delta=5, acc_next=10 >= 10
+    dut.packet_word_length.value = 4
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await RisingEdge(dut.hclk)
+
+    # token_delta_data should have the full batch (10)
+    delta = int(dut.token_delta_data.value)
+    assert delta == 10, f"Expected batched delta=10, got {delta}"
+
+    # Accumulator should be cleared
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 0, f"Expected acc=0 after release, got {acc}"
+
+
+@cocotb.test()
+async def test_thresh_06_threshold_zero_immediate(dut):
+    """Threshold=0 gives immediate release on every read_complete."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_THRESHOLD, 0)
+
+    dut.packet_word_length.value = 7
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await RisingEdge(dut.hclk)
+
+    delta = int(dut.token_delta_data.value)
+    assert delta == 8, f"Expected immediate delta=8 (7+1), got {delta}"
+
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 0, f"Expected acc=0 after immediate release, got {acc}"
+
+
+@cocotb.test()
+async def test_thresh_07_release_acc_debug_readback(dut):
+    """Release accumulator at 0x018 reflects pending unreleased tokens."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Initially 0
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 0, f"Expected 0 after reset, got {acc}"
+
+    # Set high threshold and accumulate
+    await apb_write(dut, OFF_REL_THRESHOLD, 100)
+
+    # Accumulate two pulses: 3+1=4 and 9+1=10 → total 14
+    dut.packet_word_length.value = 3
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+    dut.packet_word_length.value = 9
+    await ClockCycles(dut.hclk, 1)
+    dut.read_complete.value = 1
+    await RisingEdge(dut.hclk)
+    dut.read_complete.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+    acc = await apb_read(dut, OFF_REL_ACC)
+    assert acc == 14, f"Expected acc=14, got {acc}"

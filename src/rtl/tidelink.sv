@@ -89,6 +89,7 @@ module tidelink #(
     logic [SYS_DATA_W-1:0]  token_delta_data;
     logic [SYS_DATA_W-1:0]  token_count_data;
     logic [SYS_ADDR_W-1:0]  pair_base_addr;
+    logic                    release_tokens_trigger;
 
     // Paired tidelink's target addresses (derived from RW pair_base_addr register)
     wire [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
@@ -152,6 +153,7 @@ module tidelink #(
         .reset_deassert_pulse(reset_deassert_pulse),
         .token_delta_data    (token_delta_data),
         .token_count_data    (token_count_data),
+        .release_tokens_trigger(release_tokens_trigger),
         // Pair base address
         .pair_base_addr      (pair_base_addr),
         // IRQs
@@ -175,8 +177,8 @@ module tidelink #(
         .hclk        (hclk),
         .hresetn     (hresetn),
 
-        // Channel 0: release tokens
-        .interrupt_0 (read_complete),
+        // Channel 0: release tokens (gated by threshold accumulator)
+        .interrupt_0 (release_tokens_trigger),
         .write_addr_0(PAIR_RELEASED_TOKENS_ADDR),
         .write_data_0(token_delta_data),
 

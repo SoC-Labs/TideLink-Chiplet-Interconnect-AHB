@@ -75,10 +75,12 @@ When side A resets:
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
 | 0x000 | Pair Base Address | RW | Base address of paired TideLink (defaults to `TIDELINK_PAIR_BASE` parameter, software-reconfigurable) |
+| 0x004 | Release Threshold | RW | Minimum tokens to accumulate before releasing to pair (default: 20, 0 = immediate release) |
 | 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
 | 0x00C | Token Count | RO | Available FIFO tokens (local) |
 | 0x010 | Status | RO | `[0]` returner_busy |
 | 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
+| 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
 
 #### Region 1 (offsets 0x020-0x03F): Incoming Token Receivers
 
@@ -111,14 +113,14 @@ tidelink/
 │   ├── fpga/tidelink_sram.sv         # FPGA SRAM wrapper
 │   └── generic/tidelink_sram.sv      # Generic SRAM wrapper
 ├── flist/                            # File lists for external tools
-├── cocotb/                           # Verification (97 tests total)
+├── cocotb/                           # Verification (110 tests total)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
 │   ├── tidelink_fifo/                # FIFO unit tests (22 tests)
 │   ├── tidelink_returner/            # Returner unit tests (14 tests)
-│   ├── tidelink_apb_regs/            # APB register unit tests (24 tests)
-│   ├── tidelink/                     # Integration tests (7 tests)
-│   ├── tidelink_ahb/                 # AHB wrapper tests (11 tests)
+│   ├── tidelink_apb_regs/            # APB register unit tests (31 tests)
+│   ├── tidelink/                     # Integration tests (11 tests)
+│   ├── tidelink_ahb/                 # AHB wrapper tests (13 tests)
 │   └── tidelink_py_pair/             # Dual-instance system tests (19 tests)
 ├── syn/                              # Synthesis flows
 └── lint/                             # HAL (Cadence) lint flow

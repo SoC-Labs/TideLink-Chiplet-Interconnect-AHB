@@ -47,6 +47,7 @@ module tidelink_apb_regs #(
     output logic                    reset_deassert_pulse,
     output logic [SYS_DATA_W-1:0]   token_delta_data,
     output logic [SYS_DATA_W-1:0]   token_count_data,
+    output logic                    release_tokens_trigger,
 
     // Pair base address output (RW register, used by tidelink.sv for returner targets)
     output logic [SYS_ADDR_W-1:0]   pair_base_addr,
@@ -61,10 +62,12 @@ module tidelink_apb_regs #(
     // -------------------------------------------------------------------------
     // Region 0 (paddr[5]=0): Configuration and Status
     //   0x000: Pair Base Address       (RW) - defaults to TIDELINK_PAIR_BASE param
+    //   0x004: Release Threshold       (RW) - default 20, 0 = immediate release
     //   0x008: Packet Word Length      (RO)
     //   0x00C: Token Count             (RO)
     //   0x010: Status Register         (RO) - bit[0] returner_busy
     //   0x014: Doorbell Register       (W1C) - self-clearing pulse
+    //   0x018: Release Accumulator     (RO) - debug: pending unreleased tokens
     //
     // Region 1 (paddr[5]=1): Incoming Token Receivers
     //   0x020: Released Tokens Acc     (W-add / R-clear) IRQ: released_tokens_irq
@@ -81,17 +84,21 @@ module tidelink_apb_regs #(
 
     // ── Region 0: Configuration Registers ───────────────────────────────────
 
+    logic [SYS_DATA_W-1:0] release_threshold;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            pair_base_addr   <= TIDELINK_PAIR_BASE;
-            doorbell_trigger <= 1'b0;
+            pair_base_addr    <= TIDELINK_PAIR_BASE;
+            doorbell_trigger  <= 1'b0;
+            release_threshold <= SYS_DATA_W'(20);
         end else begin
             doorbell_trigger <= 1'b0;
 
             if (apb_write && !apb_region) begin
                 case (paddr[4:2])
-                    3'h0: pair_base_addr   <= pwdata[SYS_ADDR_W-1:0];
-                    3'h5: doorbell_trigger <= 1'b1;
+                    3'h0: pair_base_addr    <= pwdata[SYS_ADDR_W-1:0];
+                    3'h1: release_threshold <= pwdata;
+                    3'h5: doorbell_trigger  <= 1'b1;
                     default: ;
                 endcase
             end
@@ -189,9 +196,11 @@ module tidelink_apb_regs #(
         end else begin
             case (paddr[4:2])
                 3'h0:    prdata = pair_base_addr;
+                3'h1:    prdata = release_threshold;
                 3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                 3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
                 3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, returner_busy};
+                3'h6:    prdata = release_acc;
                 default: ;
             endcase
         end
@@ -200,16 +209,36 @@ module tidelink_apb_regs #(
     assign pready  = 1'b1;
     assign pslverr = 1'b0;
 
-    // ── Token delta capture (BUG-001 fix) ─────────────────────────────────────
-    // Register the delta on read_complete when packet_word_length is still valid.
+    // ── Release threshold accumulator ───────────────────────────────────────
+    // Accumulates token deltas on each read_complete. When the accumulated
+    // total meets or exceeds release_threshold, fires release_tokens_trigger
+    // and sends the full batch to the returner. Threshold=0 means immediate
+    // release (backward-compatible with pre-threshold behaviour).
 
     wire [SYS_DATA_W-1:0] token_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + SYS_DATA_W'(1);
+
+    logic [SYS_DATA_W-1:0] release_acc;
+    wire  [SYS_DATA_W-1:0] release_acc_next = release_acc + token_delta_data_comb;
+    wire  [SYS_DATA_W-1:0] effective_acc    = read_complete ? release_acc_next : release_acc;
+
+    assign release_tokens_trigger =
+        (release_threshold == '0) ? read_complete :
+        (effective_acc >= release_threshold);
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            release_acc <= '0;
+        else if (release_tokens_trigger)
+            release_acc <= '0;
+        else if (read_complete)
+            release_acc <= release_acc_next;
+    end
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn)
             token_delta_data <= '0;
-        else if (read_complete)
-            token_delta_data <= token_delta_data_comb;
+        else if (release_tokens_trigger)
+            token_delta_data <= effective_acc;
     end
 
     // Total free tokens (combinational)

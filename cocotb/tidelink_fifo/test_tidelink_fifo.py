@@ -9,9 +9,6 @@ Packet format (written starting at haddr=0):
   Beats 1..N: data words
 """
 
-from dataclasses import dataclass
-from typing import List
-
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
@@ -26,20 +23,21 @@ MAX_TOKENS    = (1 << (RAM_ADDR_W - 2))  # Must match RTL localparam
 
 # ── Transaction Objects ──────────────────────────────────────────────────────
 
-@dataclass
 class FifoPacket:
-    """Represents a packet to be written into the tidelink_ahb FIFO.
+    """Represents a packet to be written into the tidelink FIFO.
 
     The first beat carries the length, subsequent beats carry data.
     """
-    data: List[int]
+
+    def __init__(self, data):
+        self.data = data
 
     @property
-    def length(self) -> int:
+    def length(self):
         return len(self.data)
 
     @property
-    def all_words(self) -> List[int]:
+    def all_words(self):
         """Length word followed by data words."""
         return [self.length] + self.data
 
@@ -49,16 +47,17 @@ class FifoPacket:
         return self.length + 1
 
     @property
-    def addrs(self) -> List[int]:
+    def addrs(self):
         """Byte addresses for each beat (0x0000, 0x0004, ...)."""
         return [i * 4 for i in range(self.length + 1)]
 
 
-@dataclass
 class SramContents:
     """Expected SRAM contents for verification."""
-    base_word: int
-    words: List[int]
+
+    def __init__(self, base_word, words):
+        self.base_word = base_word
+        self.words = words
 
     def verify(self, dut, log=None):
         """Check SRAM contents against expected values. Returns True if all match."""

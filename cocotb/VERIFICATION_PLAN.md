@@ -68,7 +68,7 @@ Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 | RET-13 | Channel data isolation                | Each channel uses its own addr/data, verify no cross-contamination          | Existing |
 | RET-14 | Held interrupt (level, not pulse)     | Interrupt held high, verify only one transfer fires                         | Existing |
 
-### 3. tidelink_apb_regs (APB Register Unit Tests) — 24 tests
+### 3. tidelink_apb_regs (APB Register Unit Tests) — 31 tests
 
 Tests target `tidelink_apb_regs` in isolation with sideband inputs driven
 directly from cocotb.
@@ -94,13 +94,20 @@ directly from cocotb.
 | APB-17 | Pair counter disable                  | Disabled counter ignores increments and decrements                          | Existing |
 | APB-18 | Pair counter re-enable                | Re-enabling resumes counting                                                | Existing |
 | APB-19 | Pair counter enable readback          | Enable register reads back correctly                                        | Existing |
-| APB-20 | Token delta capture                   | Delta registered on read_complete pulse                                     | Existing |
+| APB-20 | Token delta capture                   | Delta registered on read_complete pulse (threshold=0)                       | Existing |
 | APB-21 | Token count data passthrough          | current_token_count reflected combinationally                               | Existing |
 | APB-22 | pready always high                    | Zero wait-state slave                                                       | Existing |
 | APB-23 | pslverr always low                    | No errors                                                                   | Existing |
 | APB-24 | Unimplemented reads zero              | Reserved/unimplemented offsets return 0                                     | Existing |
+| APB-25 | Threshold default readback            | Release threshold reads 20 after reset                                      | Existing |
+| APB-26 | Threshold RW                          | Write new threshold, read it back                                           | Existing |
+| APB-27 | Threshold resets to default           | After reset, threshold reverts to 20                                        | Existing |
+| APB-28 | Accumulates below threshold           | Deltas accumulate without firing trigger when below threshold               | Existing |
+| APB-29 | Trigger fires at threshold            | Trigger fires when accumulated tokens cross threshold, clears accumulator   | Existing |
+| APB-30 | Threshold zero immediate              | Threshold=0 passes read_complete through directly (backward compat)         | Existing |
+| APB-31 | Release acc debug readback            | Release accumulator at 0x018 reflects pending unreleased tokens             | Existing |
 
-### 4. tidelink (Top-Level Integration Tests) — 7 tests
+### 4. tidelink (Top-Level Integration Tests) — 11 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -111,8 +118,12 @@ directly from cocotb.
 | TOP-05 | Returner delta data correctness       | **BUG TEST**: Verify returner sends correct delta (not always 1)            | Existing |
 | TOP-06 | Cumulative token drift                | **BUG TEST**: Verify cumulative deltas match total tokens consumed           | Existing |
 | TOP-07 | Separate accumulators                 | **BUG TEST**: Channel 0 delta and channel 1 total use separate addresses    | Existing |
+| TOP-08 | Default threshold batching            | Small reads accumulate; returner fires batched delta when acc >= 20         | Existing |
+| TOP-09 | Threshold register RW                 | Read default (20), write new value, read back                               | Existing |
+| TOP-10 | Large packet exceeds threshold        | Single large packet delta exceeds threshold, immediate release              | Existing |
+| TOP-11 | Threshold zero backward compat        | Threshold=0 gives per-read immediate release                                | Existing |
 
-### 5. tidelink_ahb (AHB Wrapper Tests) — 11 tests
+### 5. tidelink_ahb (AHB Wrapper Tests) — 13 tests
 
 Tests target `tidelink_ahb` which wraps `tidelink` with a `cmsdk_ahb_to_apb`
 bridge. All APB register access goes through the AHB config slave port
@@ -131,6 +142,8 @@ bridge. All APB register access goes through the AHB config slave port
 | AHBW-09| Write-read-return flow via AHB        | Full FIFO write/read/return flow with all register reads via AHB bridge     | Existing |
 | AHBW-10| Separate accumulators via AHB         | Channel 0 and channel 1 target different addresses, verified via AHB        | Existing |
 | AHBW-11| Pair token counter via AHB            | Counter increment, decrement, disable, re-enable — all via AHB bridge       | Existing |
+| AHBW-12| Threshold readback via AHB            | Release threshold register readable and writable via AHB config port        | Existing |
+| AHBW-13| Threshold batching via AHB            | Small reads accumulate; batched release when acc >= threshold via AHB       | Existing |
 
 ### 6. tidelink_py_pair (Dual TideLink System Tests) — 19 tests
 
@@ -222,7 +235,7 @@ potentially causing FIFO overflow.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 97 tests)
+# Run all test suites (6 environments, 110 tests)
 cd cocotb && make regression
 
 # Run individual suites

@@ -32,6 +32,7 @@ module tb_top #(
     output logic                    reset_deassert_pulse,
     output logic [SYS_DATA_W-1:0]   token_delta_data,
     output logic [SYS_DATA_W-1:0]   token_count_data,
+    output logic                    release_tokens_trigger,
     output logic [SYS_ADDR_W-1:0]   pair_base_addr,
     output logic                    released_tokens_irq,
     output logic                    doorbell_irq
@@ -62,6 +63,7 @@ module tb_top #(
         .reset_deassert_pulse(reset_deassert_pulse),
         .token_delta_data    (token_delta_data),
         .token_count_data    (token_count_data),
+        .release_tokens_trigger(release_tokens_trigger),
         .pair_base_addr      (pair_base_addr),
         .released_tokens_irq (released_tokens_irq),
         .doorbell_irq        (doorbell_irq)

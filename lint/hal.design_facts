@@ -10,7 +10,7 @@ Design facts for top module: tidelink
                                             Number Of single-bit
      Primary Input                    : Flipflops/latches controlled
      -------------                      ----------------------------
-     hclk                             : 385 FFs
+     hclk                             : 449 FFs
 
   2. Gated primary input used as flip-flop
      clocks and latch enables         :
@@ -51,8 +51,8 @@ Design facts for the complete design:
 
   1. Number of tops in hierarchy : 1
 
-  2. Number of single-bit flip-flops in hierarchy : 385
-    -- (i)  Number of single-bit D flip-flops in hierarchy : 385
+  2. Number of single-bit flip-flops in hierarchy : 449
+    -- (i)  Number of single-bit D flip-flops in hierarchy : 449
     -- (ii) Number of single-bit JK flip-flops in hierarchy : 0
 
   3. Number of single-bit latches in hierarchy : 0

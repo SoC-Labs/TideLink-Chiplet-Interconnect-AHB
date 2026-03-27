@@ -90,7 +90,7 @@ module tidelink_apb_regs #(
         if (!hresetn) begin
             pair_base_addr    <= TIDELINK_PAIR_BASE;
             doorbell_trigger  <= 1'b0;
-            release_threshold <= SYS_DATA_W'(20);
+            release_threshold <= SYS_DATA_W'(32'd20);
         end else begin
             doorbell_trigger <= 1'b0;
 
@@ -181,34 +181,6 @@ module tidelink_apb_regs #(
         end
     end
 
-    // ── APB Read Mux ──────────────────────────────────────────────────────────
-
-    always_comb begin
-        prdata = '0;
-        if (apb_region) begin
-            case (paddr[4:2])
-                3'h0:    prdata = released_tokens_acc;
-                3'h1:    prdata = doorbell_response_acc;
-                3'h2:    prdata = pair_token_counter;
-                3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_token_counter_en};
-                default: ;
-            endcase
-        end else begin
-            case (paddr[4:2])
-                3'h0:    prdata = pair_base_addr;
-                3'h1:    prdata = release_threshold;
-                3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
-                3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
-                3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, returner_busy};
-                3'h6:    prdata = release_acc;
-                default: ;
-            endcase
-        end
-    end
-
-    assign pready  = 1'b1;
-    assign pslverr = 1'b0;
-
     // ── Release threshold accumulator ───────────────────────────────────────
     // Accumulates token deltas on each read_complete. When the accumulated
     // total meets or exceeds release_threshold, fires release_tokens_trigger
@@ -243,5 +215,33 @@ module tidelink_apb_regs #(
 
     // Total free tokens (combinational)
     assign token_count_data = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
+
+    // ── APB Read Mux ──────────────────────────────────────────────────────────
+
+    always_comb begin
+        prdata = '0;
+        if (apb_region) begin
+            case (paddr[4:2])
+                3'h0:    prdata = released_tokens_acc;
+                3'h1:    prdata = doorbell_response_acc;
+                3'h2:    prdata = pair_token_counter;
+                3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_token_counter_en};
+                default: ;
+            endcase
+        end else begin
+            case (paddr[4:2])
+                3'h0:    prdata = pair_base_addr;
+                3'h1:    prdata = release_threshold;
+                3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
+                3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
+                3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, returner_busy};
+                3'h6:    prdata = release_acc;
+                default: ;
+            endcase
+        end
+    end
+
+    assign pready  = 1'b1;
+    assign pslverr = 1'b0;
 
 endmodule

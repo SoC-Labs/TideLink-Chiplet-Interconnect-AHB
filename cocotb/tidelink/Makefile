@@ -21,7 +21,7 @@ VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
 # ── Gate-level netlist simulation ────────────────────────────────────────
 # Standard cell and memory macro Verilog models
 export PHYS_IP_PATH   ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
-export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
+export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog
 export MEM_PATH       ?= /research/precompiled_mems/TSMC65/rf_16k
 
 NETLIST_FLIST = $(TIDELINK_HOME)/flist/tidelink_netlist.flist

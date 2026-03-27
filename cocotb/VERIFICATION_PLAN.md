@@ -19,7 +19,7 @@ instance contains:
 
 ## Test Suites
 
-### 1. tidelink_fifo (FIFO Control Unit Tests) — 22 tests
+### 1. tidelink_fifo (FIFO Control Unit Tests) — 27 tests
 
 Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 `cmsdk_ahb_to_sram` and `cmsdk_fpga_sram`.
@@ -48,6 +48,11 @@ Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 | AHB-20 | Maximum-size packet                   | Packet using all available tokens, verify completion and token=0            | Existing |
 | AHB-21 | Token count after write+read cycle    | Write N packets, read N packets, verify tokens restored to MAX              | Existing |
 | AHB-22 | Back-to-back write packets            | Write packets with minimal gap, verify no pointer corruption                | Existing |
+| AHB-23 | IRQ deasserted after reset            | `packet_committed_irq` is 0 after reset                                     | New      |
+| AHB-24 | IRQ asserts on write_complete         | `packet_committed_irq` goes high after packet write completes               | New      |
+| AHB-25 | IRQ clears on read addr 0             | `packet_committed_irq` clears when recipient reads FIFO address 0           | New      |
+| AHB-26 | IRQ stays cleared without new write   | After clear, IRQ remains 0 until another `write_complete`                   | New      |
+| AHB-27 | IRQ multi-cycle write/read toggle     | Multiple write/read cycles toggle IRQ correctly                             | New      |
 
 ### 2. tidelink_returner (AHB Master Unit Tests) — 14 tests
 
@@ -107,7 +112,7 @@ directly from cocotb.
 | APB-30 | Threshold zero immediate              | Threshold=0 passes read_complete through directly (backward compat)         | Existing |
 | APB-31 | Release acc debug readback            | Release accumulator at 0x018 reflects pending unreleased tokens             | Existing |
 
-### 4. tidelink (Top-Level Integration Tests) — 11 tests
+### 4. tidelink (Top-Level Integration Tests) — 12 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -122,8 +127,9 @@ directly from cocotb.
 | TOP-09 | Threshold register RW                 | Read default (20), write new value, read back                               | Existing |
 | TOP-10 | Large packet exceeds threshold        | Single large packet delta exceeds threshold, immediate release              | Existing |
 | TOP-11 | Threshold zero backward compat        | Threshold=0 gives per-read immediate release                                | Existing |
+| TOP-12 | Packet committed IRQ propagation      | `packet_committed_irq` asserts on write, clears on read through hierarchy   | New      |
 
-### 5. tidelink_ahb (AHB Wrapper Tests) — 13 tests
+### 5. tidelink_ahb (AHB Wrapper Tests) — 14 tests
 
 Tests target `tidelink_ahb` which wraps `tidelink` with a `cmsdk_ahb_to_apb`
 bridge. All APB register access goes through the AHB config slave port
@@ -144,6 +150,7 @@ bridge. All APB register access goes through the AHB config slave port
 | AHBW-11| Pair token counter via AHB            | Counter increment, decrement, disable, re-enable — all via AHB bridge       | Existing |
 | AHBW-12| Threshold readback via AHB            | Release threshold register readable and writable via AHB config port        | Existing |
 | AHBW-13| Threshold batching via AHB            | Small reads accumulate; batched release when acc >= threshold via AHB       | Existing |
+| AHBW-14| Packet committed IRQ via AHB          | `packet_committed_irq` asserts/clears correctly at AHB wrapper level       | New      |
 
 ### 6. tidelink_py_pair (Dual TideLink System Tests) — 19 tests
 
@@ -199,7 +206,7 @@ corrupt.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 110 tests)
+# Run all test suites (6 environments, 117 tests)
 cd cocotb && make regression
 
 # Run individual suites

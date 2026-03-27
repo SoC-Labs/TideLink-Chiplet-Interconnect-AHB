@@ -17,7 +17,8 @@ module tb_top #(
     output logic                  hresp,
     output logic [SYS_DATA_W-1:0] hrdata,
     output logic                  read_complete,
-    output logic [RAM_ADDR_W-1:0] packet_word_length_out
+    output logic [RAM_ADDR_W-1:0] packet_word_length_out,
+    output logic                  packet_committed_irq
 );
 
     // In a single-slave system, HREADY = HREADYOUT
@@ -43,7 +44,8 @@ module tb_top #(
         .hrdata        (hrdata),
         .read_complete        (read_complete),
         .current_token_count  (),
-        .packet_word_length_out(packet_word_length_out)
+        .packet_word_length_out(packet_word_length_out),
+        .packet_committed_irq (packet_committed_irq)
     );
 
     // Waveform dump

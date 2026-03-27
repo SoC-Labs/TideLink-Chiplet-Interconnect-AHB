@@ -38,7 +38,10 @@ module tidelink_fifo #(
     output wire  [RAM_ADDR_W-2:0] current_token_count,
 
     // Sideband outputs for returner
-    output logic [RAM_ADDR_W-1:0] packet_word_length_out
+    output logic [RAM_ADDR_W-1:0] packet_word_length_out,
+
+    // Interrupt: packet committed to FIFO (set on write_complete, cleared on read addr 0)
+    output wire                   packet_committed_irq
 );
 
     // --------------------------------------------------------------------------
@@ -87,7 +90,8 @@ module tidelink_fifo #(
         .write_target_addr   (write_target_addr),
         .read_target_addr    (read_target_addr),
         .packet_word_length  (packet_word_length),
-        .token_count         (token_count)
+        .token_count         (token_count),
+        .packet_committed_irq(packet_committed_irq)
     );
 
     // --------------------------------------------------------------------------

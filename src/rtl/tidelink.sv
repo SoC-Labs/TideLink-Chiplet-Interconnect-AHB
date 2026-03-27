@@ -68,7 +68,8 @@ module tidelink #(
     // Interrupt Outputs
     // --------------------------------------------------------------------------
     output wire                     released_tokens_irq,  // Pair freed tokens (channel 0 deltas)
-    output wire                     doorbell_irq          // Pair responded to doorbell (channel 1 totals)
+    output wire                     doorbell_irq,         // Pair responded to doorbell (channel 1 totals)
+    output wire                     packet_committed_irq  // Packet committed to FIFO (cleared on read addr 0)
 );
 
     // --------------------------------------------------------------------------
@@ -118,7 +119,8 @@ module tidelink #(
         .hrdata                 (ahbs_hrdata),
         .read_complete          (read_complete),
         .current_token_count    (current_token_count),
-        .packet_word_length_out (packet_word_length)
+        .packet_word_length_out (packet_word_length),
+        .packet_committed_irq   (packet_committed_irq)
     );
 
     // --------------------------------------------------------------------------

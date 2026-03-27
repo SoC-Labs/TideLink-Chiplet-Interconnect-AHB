@@ -48,7 +48,11 @@ module tidelink_fifo_ctrl #(
     output wire  [RAM_ADDR_W-1:0] write_target_addr,
     output wire  [RAM_ADDR_W-1:0] read_target_addr,
     output wire  [RAM_ADDR_W-1:0] packet_word_length,
-    output wire  [RAM_ADDR_W-2:0] token_count
+    output wire  [RAM_ADDR_W-2:0] token_count,
+
+    // Interrupt: asserts when a packet is committed to the FIFO, clears on
+    // first read from address 0 (recipient starts reading the packet)
+    output wire                   packet_committed_irq
 );
 
     localparam MAX_TOKENS = (1 << (RAM_ADDR_W - 2));
@@ -189,6 +193,32 @@ module tidelink_fifo_ctrl #(
     end
 
     assign current_token_count = token_count_r;
+
+    // -------------------------------------------------------------------------
+    // Packet Committed IRQ
+    // -------------------------------------------------------------------------
+    // Set when write_complete fires (packet fully written to FIFO).
+    // Cleared when recipient reads FIFO address 0 (start of packet read).
+    logic packet_committed_irq_r, packet_committed_irq_nxt;
+
+    always_comb begin
+        packet_committed_irq_nxt = packet_committed_irq_r;
+        if (write_complete) begin
+            packet_committed_irq_nxt = 1'b1;
+        end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
+            packet_committed_irq_nxt = 1'b0;
+        end
+    end
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            packet_committed_irq_r <= 1'b0;
+        end else begin
+            packet_committed_irq_r <= packet_committed_irq_nxt;
+        end
+    end
+
+    assign packet_committed_irq = packet_committed_irq_r;
 
     // -------------------------------------------------------------------------
     // Debug-visible output assignments

@@ -721,3 +721,37 @@ async def test_thresh_04_threshold_zero_backward_compat(dut):
     returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
     assert returner_data == 4, \
         f"Expected immediate delta=4, got {returner_data}"
+
+
+# ── Packet Committed IRQ ────────────────────────────────────────────────────
+
+
+@cocotb.test()
+async def test_12_packet_committed_irq_propagation(dut):
+    """packet_committed_irq asserts on write_complete, clears on read addr 0,
+    propagated through the tidelink top-level hierarchy."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Verify deasserted after reset
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should be 0 after reset"
+
+    # Write a packet — IRQ should assert
+    hit = await tb.write_packet([0xDEAD, 0xBEEF], label="IRQ_TEST_WR")
+    assert hit, "write_complete should have fired"
+    await RisingEdge(dut.hclk)
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should be 1 after write_complete"
+
+    # Read the packet — first read from addr 0 clears IRQ
+    pkt, rhit = await tb.read_packet(label="IRQ_TEST_RD")
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should be 0 after read from FIFO addr 0"
+
+    # Write another packet — verify IRQ re-asserts
+    hit2 = await tb.write_packet([0xCAFE, 0xBABE, 0xF00D], label="IRQ_TEST_WR2")
+    assert hit2
+    await RisingEdge(dut.hclk)
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should re-assert on second write"

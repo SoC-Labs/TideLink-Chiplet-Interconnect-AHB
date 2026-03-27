@@ -984,3 +984,137 @@ async def test_22_back_to_back_write_packets(dut):
         base += len(pkt.all_words)
 
     dut._log.info("Back-to-back write test passed")
+
+
+# ── Packet Committed IRQ Tests ──────────────────────────────────────────────
+
+
+def get_packet_committed_irq(dut):
+    """Read the packet_committed_irq signal from tidelink_fifo output."""
+    try:
+        return int(dut.u_dut.packet_committed_irq.value)
+    except ValueError:
+        return 0
+
+
+@cocotb.test()
+async def test_23_irq_deasserted_after_reset(dut):
+    """packet_committed_irq should be 0 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+    await RisingEdge(dut.hclk)
+
+    assert get_packet_committed_irq(dut) == 0, \
+        "packet_committed_irq should be 0 after reset"
+
+
+@cocotb.test()
+async def test_24_irq_asserts_on_write_complete(dut):
+    """packet_committed_irq should go high after a packet is committed."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Verify IRQ starts low
+    assert get_packet_committed_irq(dut) == 0
+
+    # Write a packet — write_complete fires on last beat
+    pkt = FifoPacket(data=[0xDEAD, 0xBEEF])
+    _, _, hit = await write_packet(dut, ahb, pkt, label="IRQ_SET")
+    assert hit, "write_complete should have fired"
+
+    # IRQ should now be asserted (registered, so check after the clock edge
+    # that captured write_complete)
+    await RisingEdge(dut.hclk)
+    assert get_packet_committed_irq(dut) == 1, \
+        "packet_committed_irq should be 1 after write_complete"
+
+
+@cocotb.test()
+async def test_25_irq_clears_on_read_addr_0(dut):
+    """packet_committed_irq should clear when recipient reads FIFO address 0."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write a packet to set the IRQ
+    pkt = FifoPacket(data=[0xCAFE, 0xBABE, 0xF00D])
+    await write_packet(dut, ahb, pkt, label="IRQ_CLR")
+    await RisingEdge(dut.hclk)
+    assert get_packet_committed_irq(dut) == 1, "IRQ should be set after write"
+
+    # Perform a read from address 0 (start of packet read)
+    await RisingEdge(dut.hclk)
+    dut.hsel.value   = 1
+    dut.htrans.value = 2  # NONSEQ
+    dut.hwrite.value = 0
+    dut.hsize.value  = 2  # WORD
+    dut.haddr.value  = 0x0000
+
+    # Data phase
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0  # IDLE
+    dut.hsel.value   = 0
+    dut.haddr.value  = 0x3FFF
+
+    # IRQ should clear on the next clock edge (registered output)
+    await RisingEdge(dut.hclk)
+    assert get_packet_committed_irq(dut) == 0, \
+        "packet_committed_irq should clear after read from address 0"
+
+
+@cocotb.test()
+async def test_26_irq_stays_cleared_without_write(dut):
+    """After clearing, IRQ should remain 0 until another write_complete."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write a packet, then read from addr 0 to clear IRQ
+    pkt = FifoPacket(data=[0x1111, 0x2222])
+    await write_packet(dut, ahb, pkt, label="IRQ_HOLD")
+    await RisingEdge(dut.hclk)
+    assert get_packet_committed_irq(dut) == 1
+
+    # Read from addr 0 to clear
+    await RisingEdge(dut.hclk)
+    dut.hsel.value   = 1
+    dut.htrans.value = 2
+    dut.hwrite.value = 0
+    dut.hsize.value  = 2
+    dut.haddr.value  = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0
+    dut.hsel.value   = 0
+    dut.haddr.value  = 0x3FFF
+    await RisingEdge(dut.hclk)
+    assert get_packet_committed_irq(dut) == 0
+
+    # Verify it stays 0 for several cycles
+    for _ in range(10):
+        await RisingEdge(dut.hclk)
+        assert get_packet_committed_irq(dut) == 0, \
+            "IRQ should remain 0 without a new write_complete"
+
+
+@cocotb.test()
+async def test_27_irq_multi_cycle_toggle(dut):
+    """Multiple write/read cycles should toggle IRQ correctly."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+    assert get_packet_committed_irq(dut) == 0
+
+    for i in range(3):
+        # Write a packet — IRQ should assert
+        pkt = FifoPacket(data=[0xA000 | i, 0xB000 | i])
+        _, _, hit = await write_packet(dut, ahb, pkt, label=f"TOGGLE_W{i}")
+        assert hit
+        await RisingEdge(dut.hclk)
+        assert get_packet_committed_irq(dut) == 1, \
+            f"Cycle {i}: IRQ should be 1 after write"
+
+        # Read the packet — IRQ should clear on addr 0 read
+        rpkt, rhit = await read_packet(dut, ahb, label=f"TOGGLE_R{i}")
+        # After read_packet, the first thing it does is read from addr 0,
+        # which clears the IRQ
+        assert get_packet_committed_irq(dut) == 0, \
+            f"Cycle {i}: IRQ should be 0 after read"
+
+    dut._log.info("Multi-cycle IRQ toggle test passed")

@@ -76,7 +76,8 @@ module tidelink_ahb #(
     // Interrupt Outputs
     // --------------------------------------------------------------------------
     output wire                     released_tokens_irq,
-    output wire                     doorbell_irq
+    output wire                     doorbell_irq,
+    output wire                     packet_committed_irq
 );
 
     // --------------------------------------------------------------------------
@@ -180,7 +181,8 @@ module tidelink_ahb #(
 
         // Interrupts
         .released_tokens_irq (released_tokens_irq),
-        .doorbell_irq        (doorbell_irq)
+        .doorbell_irq        (doorbell_irq),
+        .packet_committed_irq(packet_committed_irq)
     );
 
 endmodule

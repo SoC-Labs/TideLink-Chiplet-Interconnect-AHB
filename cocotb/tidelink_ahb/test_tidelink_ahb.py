@@ -529,3 +529,36 @@ async def test_13_threshold_batching_via_ahb(dut):
         f"Expected batched delta=12, got {returner_data}"
 
     tb.log.info("Threshold batching verified via AHB config port")
+
+
+@cocotb.test()
+async def test_14_packet_committed_irq_via_ahb(dut):
+    """packet_committed_irq asserts on write_complete, clears on read addr 0,
+    verified at the AHB wrapper level."""
+    tb = TidelinkAhbTB(dut)
+    await tb.reset()
+
+    # Verify deasserted after reset
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should be 0 after reset"
+
+    # Write a packet — IRQ should assert
+    hit = await tb.write_packet([0xDEAD, 0xBEEF], label="IRQ_AHB_WR")
+    assert hit
+    await RisingEdge(dut.hclk)
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should be 1 after write_complete"
+
+    # Read the packet — first read from addr 0 clears IRQ
+    pkt, rhit = await tb.read_packet(label="IRQ_AHB_RD")
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should be 0 after read from FIFO addr 0"
+
+    # Write another packet — verify re-assertion
+    hit2 = await tb.write_packet([0xCAFE, 0xBABE], label="IRQ_AHB_WR2")
+    assert hit2
+    await RisingEdge(dut.hclk)
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should re-assert on second write"
+
+    tb.log.info("packet_committed_irq verified via AHB wrapper")

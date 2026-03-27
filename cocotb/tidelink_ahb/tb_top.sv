@@ -47,7 +47,8 @@ module tb_top #(
 
     // Interrupt outputs
     output logic                    released_tokens_irq,
-    output logic                    doorbell_irq
+    output logic                    doorbell_irq,
+    output logic                    packet_committed_irq
 );
 
     // Single-slave loopback for FIFO AHB slave
@@ -104,7 +105,8 @@ module tb_top #(
 
         // Interrupts
         .released_tokens_irq (released_tokens_irq),
-        .doorbell_irq        (doorbell_irq)
+        .doorbell_irq        (doorbell_irq),
+        .packet_committed_irq(packet_committed_irq)
     );
 
     // Waveform dump

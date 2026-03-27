@@ -46,7 +46,8 @@ module tb_top #(
 
     // Interrupt outputs
     output logic                    released_tokens_irq,
-    output logic                    doorbell_irq
+    output logic                    doorbell_irq,
+    output logic                    packet_committed_irq
 );
 
     tidelink #(
@@ -86,7 +87,8 @@ module tb_top #(
         .apbs_pready         (apbs_pready),
         .apbs_pslverr        (apbs_pslverr),
         .released_tokens_irq (released_tokens_irq),
-        .doorbell_irq        (doorbell_irq)
+        .doorbell_irq        (doorbell_irq),
+        .packet_committed_irq(packet_committed_irq)
     );
 
     initial begin

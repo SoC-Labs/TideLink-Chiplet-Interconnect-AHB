@@ -98,6 +98,7 @@ When side A resets:
 |--------|--------|------------|
 | `released_tokens_irq` | `released_tokens_acc != 0` (offset 0x020) | CPU reading 0x020 (read-to-clear) |
 | `doorbell_irq` | `doorbell_response_acc != 0` (offset 0x024) | CPU reading 0x024 (read-to-clear) |
+| `packet_committed_irq` | `write_complete` in FIFO ctrl (packet fully written) | First read from FIFO address 0 (recipient starts reading) |
 
 ## Repository Structure
 
@@ -123,14 +124,14 @@ tidelink/
 │       ├── pair_model.py             # PairRegisterBank (pure state machine)
 │       ├── driver.py                 # Abstract TidelinkDriver base class
 │       └── pynq_driver.py            # PYNQ MMIO driver for hardware testing
-├── cocotb/                           # Simulation verification (110 tests)
+├── cocotb/                           # Simulation verification (117 tests)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
-│   ├── tidelink_fifo/                # FIFO unit tests (22 tests)
+│   ├── tidelink_fifo/                # FIFO unit tests (27 tests)
 │   ├── tidelink_returner/            # Returner unit tests (14 tests)
 │   ├── tidelink_apb_regs/            # APB register unit tests (31 tests)
-│   ├── tidelink/                     # Integration tests (11 tests)
-│   ├── tidelink_ahb/                 # AHB wrapper tests (13 tests)
+│   ├── tidelink/                     # Integration tests (12 tests)
+│   ├── tidelink_ahb/                 # AHB wrapper tests (14 tests)
 │   └── tidelink_py_pair/             # Dual-instance system tests (19 tests)
 ├── pynq/                             # PYNQ hardware test scripts
 │   ├── test_single_instance.py       # Single TideLink (PS as pair)
@@ -187,7 +188,7 @@ cd cocotb
 make regression
 ```
 
-This runs all 6 test environments, collects results, and prints a pass/fail summary.
+This runs all 6 test environments, collects results, and prints a pass/fail summary (117 tests total).
 
 ### Running a specific test
 

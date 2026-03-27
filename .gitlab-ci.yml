@@ -184,11 +184,15 @@ rtl-architect:
     - mkdir -p syn/asic/rtl-architect
     - cp -r "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra_reports" syn/asic/rtl-architect/ 2>/dev/null || true
     - cp    "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra.log"     syn/asic/rtl-architect/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/rtl-architect/RTLA_WORK/rpts"      syn/asic/rtl-architect/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/rtl-architect/RTLA_WORK/logs_rtl"  syn/asic/rtl-architect/ 2>/dev/null || true
   artifacts:
     when: always
     paths:
       - syn/asic/rtl-architect/tidelink_ra_reports/
       - syn/asic/rtl-architect/tidelink_ra.log
+      - syn/asic/rtl-architect/rpts/
+      - syn/asic/rtl-architect/logs_rtl/
     expire_in: 30 days
 
 design-compiler:

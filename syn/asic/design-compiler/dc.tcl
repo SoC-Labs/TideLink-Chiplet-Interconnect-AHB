@@ -29,7 +29,44 @@ set_app_var link_library   "* $link_libs"
 set_app_var search_path    "$tidelink_home/src/rtl"
 
 # ── Read design ────────────────────────────────────────────────────────────
-analyze -format sverilog -f $flist
+set_svf ${top_module}.svf
+
+# Helper: expand ${VAR} references to environment variable values
+proc expand_env {str} {
+    while {[regexp {\$\{(\w+)\}} $str -> varname]} {
+        if {[info exists ::env($varname)]} {
+            set pattern "\\$\\{${varname}\\}"
+            regsub $pattern $str $::env($varname) str
+        } else {
+            error "Environment variable $varname is not set"
+        }
+    }
+    return $str
+}
+
+# Read and process the filelist
+set fh [open $flist r]
+while {[gets $fh line] >= 0} {
+    set line [string trim $line]
+    if {$line eq "" || [string match "#*" $line]} {
+        # Skip empty lines and comments
+        continue
+    } elseif {[string match "+incdir+*" $line]} {
+        # Handle include directory
+        set incdir [expand_env [string range $line 8 end]]
+        set_app_var search_path [concat [get_app_var search_path] $incdir]
+    } else {
+        # Process file (substitute environment variables)
+        set file [expand_env $line]
+        if {[string match "*.sv" $file]} {
+            analyze -format sverilog $file
+        } elseif {[string match "*.v" $file]} {
+            analyze -format verilog $file
+        }
+    }
+}
+close $fh
+
 elaborate $top_module
 current_design $top_module
 link
@@ -50,8 +87,10 @@ set_input_delay  -clock $clk_name $io_delay $all_inputs
 set_output_delay -clock $clk_name $io_delay $all_outputs
 
 # Drive and load estimates
-set_driving_cell -no_design_rule -library [file rootname [file tail $target_lib]] \
-    -pin Z $all_inputs 2>/dev/null
+if {[llength $all_inputs] > 0} {
+    set_driving_cell -no_design_rule -library [file rootname [file tail $target_lib]] \
+        -pin Z $all_inputs
+}
 set_load 0.01 $all_outputs
 
 # ── Compile ────────────────────────────────────────────────────────────────

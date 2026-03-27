@@ -26,7 +26,9 @@ module tidelink_apb_regs #(
     input  logic                    psel,
     input  logic                    penable,
     input  logic                    pwrite,
-    input  logic   [APB_ADDR_W-1:0] paddr,
+    // hal lint_off USEPRT
+    input  logic   [APB_ADDR_W-1:0] paddr,       // Only paddr[5:2] decoded
+    // hal lint_on USEPRT
     input  logic   [SYS_DATA_W-1:0] pwdata,
     output logic   [SYS_DATA_W-1:0] prdata,
     output logic                    pready,
@@ -43,8 +45,11 @@ module tidelink_apb_regs #(
     // Returner control outputs (to tidelink top-level for returner wiring)
     output logic                    doorbell_trigger,
     output logic                    reset_deassert_pulse,
-    output logic [SYS_DATA_W-1:0]  token_delta_data,
-    output logic [SYS_DATA_W-1:0]  token_count_data,
+    output logic [SYS_DATA_W-1:0]   token_delta_data,
+    output logic [SYS_DATA_W-1:0]   token_count_data,
+
+    // Pair base address output (RW register, used by tidelink.sv for returner targets)
+    output logic [SYS_ADDR_W-1:0]   pair_base_addr,
 
     // IRQ outputs
     output logic                    released_tokens_irq,
@@ -55,7 +60,7 @@ module tidelink_apb_regs #(
     // APB Register Map
     // -------------------------------------------------------------------------
     // Region 0 (paddr[5]=0): Configuration and Status
-    //   0x000: Pair Base Address       (RO)
+    //   0x000: Pair Base Address       (RW) - defaults to TIDELINK_PAIR_BASE param
     //   0x008: Packet Word Length      (RO)
     //   0x00C: Token Count             (RO)
     //   0x010: Status Register         (RO) - bit[0] returner_busy
@@ -74,16 +79,18 @@ module tidelink_apb_regs #(
     wire apb_write  = psel && penable && pwrite;
     wire apb_read   = psel && penable && !pwrite;
 
-    // ── Region 0: Doorbell Register ───────────────────────────────────────────
+    // ── Region 0: Configuration Registers ───────────────────────────────────
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
+            pair_base_addr   <= TIDELINK_PAIR_BASE;
             doorbell_trigger <= 1'b0;
         end else begin
             doorbell_trigger <= 1'b0;
 
             if (apb_write && !apb_region) begin
                 case (paddr[4:2])
+                    3'h0: pair_base_addr   <= pwdata[SYS_ADDR_W-1:0];
                     3'h5: doorbell_trigger <= 1'b1;
                     default: ;
                 endcase
@@ -181,7 +188,7 @@ module tidelink_apb_regs #(
             endcase
         end else begin
             case (paddr[4:2])
-                3'h0:    prdata = TIDELINK_PAIR_BASE;
+                3'h0:    prdata = pair_base_addr;
                 3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                 3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
                 3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, returner_busy};
@@ -196,7 +203,7 @@ module tidelink_apb_regs #(
     // ── Token delta capture (BUG-001 fix) ─────────────────────────────────────
     // Register the delta on read_complete when packet_word_length is still valid.
 
-    wire [SYS_DATA_W-1:0] token_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + 1;
+    wire [SYS_DATA_W-1:0] token_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + SYS_DATA_W'(1);
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn)

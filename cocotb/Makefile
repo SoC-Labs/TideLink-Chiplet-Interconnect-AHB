@@ -1,10 +1,10 @@
 # Top-level cocotb regression Makefile
 # Usage:
 #   make regression          Run all test environments
-#   make tidelink_ahb        Run a single environment
+#   make tidelink_fifo       Run a single environment
 #   make clean               Clean all environments
 
-ENVS = tidelink_ahb tidelink_ahb_returner tidelink tidelink_pair
+ENVS = tidelink_fifo tidelink_returner tidelink tidelink_pair
 
 # ── Per-environment targets ──────────────────────────────────────────────────
 # Each target runs make inside the subdirectory, collecting the result.

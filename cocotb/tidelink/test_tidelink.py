@@ -171,7 +171,7 @@ class TidelinkTB:
     # ── Packet Write (inline AHB phases) ─────────────────────────────────
 
     async def write_packet(self, data: List[int], label: str = "") -> bool:
-        """Write a packet into the FIFO. Returns True if write_addr_hit fired."""
+        """Write a packet into the FIFO. Returns True if write_complete fired."""
         pkt = FifoPacket(data=data)
         prefix = f"[{label}] " if label else ""
         dut = self.dut
@@ -191,11 +191,14 @@ class TidelinkTB:
             dut.ahbs_hsize.value  = 2
             dut.ahbs_haddr.value  = addr
             await RisingEdge(dut.hclk)
+            # Sample write_complete before idling the bus (combinational signal)
+            try:
+                hit = int(dut.u_dut.u_fifo.u_fifo_ctrl.write_complete.value)
+            except ValueError:
+                hit = 0
             dut.ahbs_hwdata.value = word
             dut.ahbs_htrans.value = 0
             dut.ahbs_hsel.value   = 0
-            await FallingEdge(dut.hclk)
-            hit = int(dut.u_dut.write_addr_hit.value)
             await RisingEdge(dut.hclk)
             dut.ahbs_hwrite.value = 0
             if hit:
@@ -211,7 +214,7 @@ class TidelinkTB:
     # ── Packet Read (inline AHB phases) ──────────────────────────────────
 
     async def read_packet(self, label: str = "") -> (FifoPacket, bool):
-        """Read a packet from the FIFO. Returns (FifoPacket, read_addr_hit_fired)."""
+        """Read a packet from the FIFO. Returns (FifoPacket, read_complete_fired)."""
         prefix = f"[{label}] " if label else ""
         dut = self.dut
 
@@ -241,8 +244,11 @@ class TidelinkTB:
             dut.ahbs_hsize.value  = 2
             dut.ahbs_haddr.value  = addr
             await RisingEdge(dut.hclk)
-            await FallingEdge(dut.hclk)
-            hit = int(dut.u_dut.read_addr_hit.value)
+            # Sample read_complete before idling the bus (combinational signal)
+            try:
+                hit = int(dut.u_dut.u_fifo.read_complete.value)
+            except ValueError:
+                hit = 0
             dut.ahbs_htrans.value = 0
             dut.ahbs_hsel.value   = 0
             dut.ahbs_haddr.value  = 0x3FFF

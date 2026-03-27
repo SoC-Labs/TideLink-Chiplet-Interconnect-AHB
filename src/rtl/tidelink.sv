@@ -36,18 +36,18 @@ module tidelink #(
     input  logic                    ahbs_hwrite,
     input  logic   [RAM_ADDR_W-1:0] ahbs_haddr,
     input  logic   [SYS_DATA_W-1:0] ahbs_hwdata,
-    output logic                    ahbs_hreadyout,
-    output logic                    ahbs_hresp,
-    output logic   [SYS_DATA_W-1:0] ahbs_hrdata,
+    output wire                     ahbs_hreadyout,
+    output wire                     ahbs_hresp,
+    output wire    [SYS_DATA_W-1:0] ahbs_hrdata,
 
     // --------------------------------------------------------------------------
     // AHB Master Interface (from TideLink Returner)
     // --------------------------------------------------------------------------
-    output logic   [SYS_ADDR_W-1:0] ahbm_haddr,
-    output logic   [SYS_DATA_W-1:0] ahbm_hwdata,
-    output logic              [1:0] ahbm_htrans,
-    output logic              [2:0] ahbm_hsize,
-    output logic                    ahbm_hwrite,
+    output wire    [SYS_ADDR_W-1:0] ahbm_haddr,
+    output wire    [SYS_DATA_W-1:0] ahbm_hwdata,
+    output wire               [1:0] ahbm_htrans,
+    output wire               [2:0] ahbm_hsize,
+    output wire                     ahbm_hwrite,
     input  logic                    ahbm_hready,
     input  logic                    ahbm_hresp,
     input  logic   [SYS_DATA_W-1:0] ahbm_hrdata,
@@ -60,15 +60,15 @@ module tidelink #(
     input  logic                    apbs_pwrite,
     input  logic   [APB_ADDR_W-1:0] apbs_paddr,
     input  logic   [SYS_DATA_W-1:0] apbs_pwdata,
-    output logic   [SYS_DATA_W-1:0] apbs_prdata,
-    output logic                    apbs_pready,
-    output logic                    apbs_pslverr,
+    output wire    [SYS_DATA_W-1:0] apbs_prdata,
+    output wire                     apbs_pready,
+    output wire                     apbs_pslverr,
 
     // --------------------------------------------------------------------------
     // Interrupt Outputs
     // --------------------------------------------------------------------------
-    output logic                    released_tokens_irq,  // Pair freed tokens (channel 0 deltas)
-    output logic                    doorbell_irq          // Pair responded to doorbell (channel 1 totals)
+    output wire                     released_tokens_irq,  // Pair freed tokens (channel 0 deltas)
+    output wire                     doorbell_irq          // Pair responded to doorbell (channel 1 totals)
 );
 
     // --------------------------------------------------------------------------
@@ -88,11 +88,12 @@ module tidelink #(
     logic                    reset_deassert_pulse;
     logic [SYS_DATA_W-1:0]  token_delta_data;
     logic [SYS_DATA_W-1:0]  token_count_data;
+    logic [SYS_ADDR_W-1:0]  pair_base_addr;
 
-    // Paired tidelink's target addresses (derived from parameter)
-    localparam [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR    = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h20);
-    localparam [SYS_ADDR_W-1:0] PAIR_DOORBELL_RESPONSE_ADDR  = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h24);
-    localparam [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR           = TIDELINK_PAIR_BASE + SYS_ADDR_W'('h14);
+    // Paired tidelink's target addresses (derived from RW pair_base_addr register)
+    wire [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
+    wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_RESPONSE_ADDR  = pair_base_addr + SYS_ADDR_W'(32'h0000_0024);
+    wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR           = pair_base_addr + SYS_ADDR_W'(32'h0000_0014);
 
     // --------------------------------------------------------------------------
     // TideLink FIFO Instance
@@ -151,6 +152,8 @@ module tidelink #(
         .reset_deassert_pulse(reset_deassert_pulse),
         .token_delta_data    (token_delta_data),
         .token_count_data    (token_count_data),
+        // Pair base address
+        .pair_base_addr      (pair_base_addr),
         // IRQs
         .released_tokens_irq (released_tokens_irq),
         .doorbell_irq        (doorbell_irq)
@@ -185,7 +188,7 @@ module tidelink #(
         // Channel 2: reset doorbell
         .interrupt_2 (reset_deassert_pulse),
         .write_addr_2(PAIR_DOORBELL_ADDR),
-        .write_data_2(32'h1),
+        .write_data_2(32'h0000_0001),
 
         // AHB Master
         .haddr       (ahbm_haddr),

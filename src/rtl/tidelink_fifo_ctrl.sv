@@ -12,9 +12,7 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_fifo_ctrl #(
-    parameter SYS_DATA_W = 32,
-    parameter RAM_ADDR_W = 14,
-    parameter RAM_DATA_W = 32
+    parameter RAM_ADDR_W = 14
 )(
     // Clock/Reset
     input  wire                   hclk,
@@ -22,14 +20,16 @@ module tidelink_fifo_ctrl #(
 
     // AHB address-phase signals
     input  wire                   hsel,
-    input  wire             [1:0] htrans,
+    // hal lint_off USEPRT
+    input  wire             [1:0] htrans,        // Only htrans[1] used for transfer detection
+    // hal lint_on USEPRT
     input  wire                   hready,
     input  wire                   hwrite,
     input  wire  [RAM_ADDR_W-1:0] haddr,
-    input  wire  [SYS_DATA_W-1:0] hwdata,
+    input  wire  [RAM_ADDR_W-1:0] hwdata,         // Only packet-length bits used
 
     // SRAM interface signals
-    input  wire  [RAM_DATA_W-1:0] rdata,         // SRAM read data
+    input  wire  [RAM_ADDR_W-1:0] rdata,          // Only packet-length bits used
     input  wire  [RAM_ADDR_W-3:0] addr,          // Word address from cmsdk_ahb_to_sram
 
     // Translated address outputs
@@ -82,9 +82,9 @@ module tidelink_fifo_ctrl #(
         read_ptr_nxt   = read_ptr_r;
 
         if (write_complete) begin
-            write_ptr_nxt = write_ptr_r + (packet_word_length_r + 1) * 4;
+            write_ptr_nxt = write_ptr_r + RAM_ADDR_W'((packet_word_length_r + RAM_ADDR_W'(1'd1)) * RAM_ADDR_W'(4'd4));
         end else if (read_complete) begin
-            read_ptr_nxt = read_ptr_r + (packet_word_length_r + 1) * 4;
+            read_ptr_nxt = read_ptr_r + RAM_ADDR_W'((packet_word_length_r + RAM_ADDR_W'(1'd1)) * RAM_ADDR_W'(4'd4));
         end
     end
 
@@ -129,7 +129,7 @@ module tidelink_fifo_ctrl #(
     always_comb begin
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
-        capture_write_length_nxt = valid_ahb_access && (haddr == 0) && hwrite;
+        capture_write_length_nxt = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
 
         // Clear packet_word_length and check_addr on completion so stale
         // target addresses don't cause spurious hits and check_addr doesn't
@@ -139,19 +139,19 @@ module tidelink_fifo_ctrl #(
             check_addr_nxt = 1'b0;
         end else if (capture_write_length_r) begin
             // Data phase of write to addr 0: hwdata is now valid
-            packet_word_length_nxt = hwdata[RAM_ADDR_W-1:0];
-        end else if (valid_ahb_access && (haddr == 0) && ~hwrite) begin
+            packet_word_length_nxt = hwdata;
+        end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
             // Read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag
-            packet_word_length_nxt = rdata[RAM_ADDR_W-1:0];
+            packet_word_length_nxt = rdata;
             check_addr_nxt = 1'b0;
         end
 
         // Target address = packet length in bytes (packet length in words * 4)
-        write_target_addr_nxt = packet_word_length_r * 4;
-        read_target_addr_nxt  = packet_word_length_r * 4;
+        write_target_addr_nxt = packet_word_length_r * RAM_ADDR_W'(4'd4);
+        read_target_addr_nxt  = packet_word_length_r * RAM_ADDR_W'(4'd4);
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
@@ -174,15 +174,15 @@ module tidelink_fifo_ctrl #(
     always_comb begin
         token_count_nxt = token_count_r;
         if (write_complete) begin
-            token_count_nxt = token_count_r - (packet_word_length_r + 1);
+            token_count_nxt = token_count_r - (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
         end else if (read_complete) begin
-            token_count_nxt = token_count_r + (packet_word_length_r + 1);
+            token_count_nxt = token_count_r + (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
         end
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            token_count_r <= MAX_TOKENS;
+            token_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS));
         end else begin
             token_count_r <= token_count_nxt;
         end

@@ -44,8 +44,10 @@ module tidelink_returner #(
     output logic            [2:0] hsize,
     output logic                  hwrite,
     input  wire                   hready,
-    input  wire                   hresp,
-    input  wire  [SYS_DATA_W-1:0] hrdata,
+    // hal lint_off USEPRT
+    input  wire                   hresp,         // AHB spec — unused by write-only master
+    input  wire  [SYS_DATA_W-1:0] hrdata,        // AHB spec — unused by write-only master
+    // hal lint_on USEPRT
 
     // Status output
     output wire                   busy

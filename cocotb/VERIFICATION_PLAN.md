@@ -68,7 +68,40 @@ Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
 | RET-14 | Held interrupt (level, not pulse)     | Interrupt held high, verify only one transfer fires                         | **New**  |
 | RET-15 | hready stall                          | Slave stalls hready during transfer, verify correct completion              | **New**  |
 
-### 3. tidelink (Top-Level Integration Tests)
+### 3. tidelink_apb_regs (APB Register Unit Tests)
+
+Tests target `tidelink_apb_regs` in isolation with sideband inputs driven
+directly from cocotb.
+
+| ID     | Test Name                             | Description                                                                 | Status   |
+|--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
+| APB-01 | Pair base default                     | Reads back TIDELINK_PAIR_BASE parameter after reset                         | Existing |
+| APB-02 | Pair base RW                          | Write new value, read it back, verify output port                           | Existing |
+| APB-03 | Pair base resets to param             | Write new value, reset, verify reverts to parameter                         | Existing |
+| APB-04 | Packet word length RO                 | Sideband input reflected in APB read                                        | Existing |
+| APB-05 | Token count RO                        | Sideband input reflected in APB read                                        | Existing |
+| APB-06 | Status returner busy                  | Status bit 0 reflects returner_busy input                                   | Existing |
+| APB-07 | Doorbell trigger pulse                | Write to doorbell generates 1-cycle self-clearing pulse                     | Existing |
+| APB-08 | Reset deassert pulse                  | Reset deassertion generates 1-cycle pulse                                   | Existing |
+| APB-09 | Released tokens acc add               | Multiple writes accumulate                                                  | Existing |
+| APB-10 | Released tokens read-clear            | Read returns total and clears to 0                                          | Existing |
+| APB-11 | Released tokens IRQ                   | IRQ asserts on non-zero, clears on read                                     | Existing |
+| APB-12 | Doorbell response acc                 | Write-add and read-clear behaviour                                          | Existing |
+| APB-13 | Doorbell IRQ                          | IRQ asserts on non-zero, clears on read                                     | Existing |
+| APB-14 | Pair counter increment                | Increments on write to 0x020                                                | Existing |
+| APB-15 | Pair counter consume                  | Decrements on write to 0x02C                                                | Existing |
+| APB-16 | Pair counter no side-effect read      | Multiple reads return same value                                            | Existing |
+| APB-17 | Pair counter disable                  | Disabled counter ignores increments and decrements                          | Existing |
+| APB-18 | Pair counter re-enable                | Re-enabling resumes counting                                                | Existing |
+| APB-19 | Pair counter enable readback          | Enable register reads back correctly                                        | Existing |
+| APB-20 | Token delta capture                   | Delta registered on read_complete pulse                                     | Existing |
+| APB-21 | Token count data passthrough          | current_token_count reflected combinationally                               | Existing |
+| APB-22 | pready always high                    | Zero wait-state slave                                                       | Existing |
+| APB-23 | pslverr always low                    | No errors                                                                   | Existing |
+| APB-24 | Unimplemented reads zero              | Reserved/unimplemented offsets return 0                                     | Existing |
+
+### 4. tidelink (Top-Level Integration Tests)
+
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -85,7 +118,7 @@ Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
 | TOP-11 | Reset deassertion doorbell            | Reset deassertion triggers channel 2 to ring pair doorbell                  | **New**  |
 | TOP-12 | Token delta captures correct value    | **BUG TEST**: Prove delta=1 bug by varying packet sizes                     | **New**  |
 
-### 4. tidelink_pair (Dual TideLink System Tests)
+### 5. tidelink_pair (Dual TideLink System Tests)
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -101,6 +134,14 @@ Tests target `tidelink_ahb` which wraps `tidelink_ahb_fifo_ctrl` with
 | PAIR-10| Stale packet length spurious hit      | **BUG TEST**: Stale target addr doesn't trigger false completion           | Existing |
 | PAIR-11| Hit fires on wrong direction          | **BUG TEST**: write_complete doesn't fire during reads                     | Existing |
 | PAIR-12| Delta+total accumulator conflation    | **BUG TEST**: Channel 0 delta + channel 1 total interleave                 | **New**  |
+| PTC-01 | Counter defaults after reset          | Counter=0, enable=1 after reset                                            | Existing |
+| PTC-02 | Counter increments on released tokens  | Write to 0x020 increments counter                                          | Existing |
+| PTC-03 | Counter decrements on consume          | Write to 0x02C decrements counter                                          | Existing |
+| PTC-04 | Counter read no side effects           | Multiple reads return same value                                            | Existing |
+| PTC-05 | Counter disable freezes                | Disabled counter ignores increments and decrements                          | Existing |
+| PTC-06 | Counter re-enable resumes              | Re-enabling after disable resumes counting                                  | Existing |
+| PTC-07 | Counter independent of accumulator     | Read-clearing accumulator doesn't affect counter                            | Existing |
+| PTC-08 | Counter end-to-end with FIFO writes    | Write packets, simulate pair releasing tokens, verify counter               | Existing |
 
 ## Known Bugs
 

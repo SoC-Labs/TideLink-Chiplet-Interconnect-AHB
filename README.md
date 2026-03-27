@@ -34,11 +34,11 @@ A typical system connects two TideLink instances back-to-back: the AHB master of
 
 | Module | Description |
 |--------|-------------|
-| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Generates interrupts for token release and doorbell events. Contains the pair token counter. |
+| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Derives returner target addresses from the RW pair base register. |
+| `tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, token accumulators, pair token counter, and reset detection. |
 | `tidelink_fifo.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
 | `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, token counting. Clears `packet_word_length` on completion to prevent stale hits. |
 | `tidelink_returner.sv` | AHB Lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Uses pending registers so 1-cycle pulse interrupts are never lost, even if the returner is busy. |
-| `tidelink_apb_regs.sv` | APB register decode (if separated; currently inline in `tidelink.sv`). |
 
 ### Returner Channels
 
@@ -62,7 +62,7 @@ When side A resets:
 
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
-| 0x000 | Pair Base Address | RO | `TIDELINK_PAIR_BASE` parameter value |
+| 0x000 | Pair Base Address | RW | Base address of paired TideLink (defaults to `TIDELINK_PAIR_BASE` parameter, software-reconfigurable) |
 | 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
 | 0x00C | Token Count | RO | Available FIFO tokens (local) |
 | 0x010 | Status | RO | `[0]` returner_busy |
@@ -90,7 +90,8 @@ When side A resets:
 ```
 tidelink/
 ├── src/rtl/                          # Synthesisable RTL
-│   ├── tidelink.sv                   # Top-level wrapper + APB registers
+│   ├── tidelink.sv                   # Top-level wrapper
+│   ├── tidelink_apb_regs.sv          # APB register block
 │   ├── tidelink_fifo.sv              # AHB slave FIFO interface
 │   ├── tidelink_fifo_ctrl.sv         # FIFO pointer/token control
 │   └── tidelink_returner.sv          # AHB master (3-ch arbiter + pending)
@@ -98,8 +99,9 @@ tidelink/
 ├── cocotb/                           # Verification
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
-│   ├── tidelink_ahb/                 # FIFO unit tests (22 tests)
+│   ├── tidelink_ahb/                 # FIFO unit tests
 │   ├── tidelink_ahb_returner/        # Returner unit tests
+│   ├── tidelink_apb_regs/            # APB register unit tests (24 tests)
 │   ├── tidelink/                     # Integration tests
 │   └── tidelink_pair/                # Dual-instance system tests (19 tests)
 └── lint/                             # HAL (Cadence) lint flow
@@ -168,6 +170,7 @@ make help                                  # Print all available targets
 |--------|-----------------|
 | `tidelink_fifo_ctrl` | No |
 | `tidelink_returner` | No |
+| `tidelink_apb_regs` | No |
 | `tidelink_fifo` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
 | `tidelink` | Yes (via `tidelink_fifo`) |
 

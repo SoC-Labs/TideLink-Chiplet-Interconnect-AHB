@@ -28,14 +28,14 @@ module tidelink_fifo #(
     input  logic                  hwrite,    // AHB hwrite
     input  logic [RAM_ADDR_W-1:0] haddr,     // AHB address bus
     input  logic [SYS_DATA_W-1:0] hwdata,    // AHB write data bus
-    output logic                  hreadyout, // AHB ready output to S->M mux
-    output logic                  hresp,     // AHB response
-    output logic [SYS_DATA_W-1:0] hrdata,    // AHB read data bus
+    output wire                   hreadyout, // AHB ready output to S->M mux
+    output wire                   hresp,     // AHB response
+    output wire  [SYS_DATA_W-1:0] hrdata,    // AHB read data bus
 
     // Completion pulse: fires when a read packet finishes (drives returner)
-    output logic                  read_complete,
+    output wire                   read_complete,
 
-    output logic [RAM_ADDR_W-2:0] current_token_count,
+    output wire  [RAM_ADDR_W-2:0] current_token_count,
 
     // Sideband outputs for returner
     output logic [RAM_ADDR_W-1:0] packet_word_length_out
@@ -53,20 +53,20 @@ module tidelink_fifo #(
     logic [RAM_ADDR_W-1:0] translated_haddr;
 
     // Testbench-visible signal aliases (preserve cocotb probe paths)
+    // hal lint_off URDREG UCOPNM
     logic [RAM_ADDR_W-1:0] write_ptr;
     logic [RAM_ADDR_W-1:0] read_ptr;
     logic [RAM_ADDR_W-1:0] write_target_addr;
     logic [RAM_ADDR_W-1:0] read_target_addr;
     logic [RAM_ADDR_W-1:0] packet_word_length;
     logic [RAM_ADDR_W-2:0] token_count;
+    // hal lint_on URDREG UCOPNM
 
     // --------------------------------------------------------------------------
     // FIFO Control Logic
     // --------------------------------------------------------------------------
     tidelink_fifo_ctrl #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .RAM_ADDR_W (RAM_ADDR_W),
-        .RAM_DATA_W (RAM_DATA_W)
+        .RAM_ADDR_W (RAM_ADDR_W)
     ) u_fifo_ctrl (
         .hclk                (hclk),
         .hresetn             (hresetn),
@@ -75,8 +75,8 @@ module tidelink_fifo #(
         .hready              (hready),
         .hwrite              (hwrite),
         .haddr               (haddr),
-        .hwdata              (hwdata),
-        .rdata               (rdata),
+        .hwdata              (hwdata[RAM_ADDR_W-1:0]),
+        .rdata               (rdata[RAM_ADDR_W-1:0]),
         .addr                (addr),
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),

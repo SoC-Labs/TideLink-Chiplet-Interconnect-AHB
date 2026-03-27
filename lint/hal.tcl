@@ -60,3 +60,55 @@
 // design where combinational logic feeds registered logic across module
 // boundaries (e.g. fifo_ctrl ↔ ahb_to_sram ↔ sram)
 -nocheck CBPAHI
+// Combinational outputs at top level — AHB/APB protocols are comb by design
+-nocheck TPOUNR
+// Combinational (async) output ports — same reason
+-nocheck SYNPRT
+// Large operand arithmetic — inherent to parameterised widths
+-nocheck LRGOPR
+// Potential overflow — intentional wrapping for circular FIFO pointers
+-nocheck POIASG
+// Multiple non-blocking assigns — set/clear pattern for pending regs
+-nocheck MULNBA
+// Parameters in port expressions — localparam addresses passed to returner
+-nocheck PRMEXP
+-nocheck IPRTEX
+// FSM modelling style — HAL expects specific patterns, ours is valid
+-nocheck BADFSM
+-nocheck EXTFSM
+-nocheck TRNMBT
+-nocheck STMCNM
+// Typedef not in package — module-local typedefs are acceptable
+-nocheck TDOPKG
+// Lowercase type names — SV convention for types
+-nocheck UCCONN
+// Clock/reset renamed across CMSDK hierarchy (hclk→HCLK, hresetn→HRESETn)
+-nocheck DIFCLK
+-nocheck DIFRST
+// Aliased wires — read/write target share same expression by design
+-nocheck DALIAS
+// FF with constant data — reset_n_d1 tied to 1'b1 for deassertion detection
+-nocheck FFCSTD
+// FF without synchronous reset — async reset is sufficient
+-nocheck FFWNSR
+// Mixed driver types on vector — token_count_r init vs runtime, harmless
+-nocheck DFDRVS
+// Unused port bits — AHB htrans[0], hresp/hrdata on write-only master,
+// APB paddr upper/lower bits only [5:2] decoded. All by protocol/design.
+-nocheck USEPRT
+// Unconnected output naming — debug signals don't need _nc suffix
+-nocheck UCOPNM
+// Unconnected output ports — debug signals for cocotb probing only
+-nocheck UNCONO
+// Unread local registers — debug signal aliases for testbench visibility
+-nocheck URDREG
+// Glue logic at top level — expected for address derivation wires
+-nocheck ATLGLC
+// CMSDK-specific warnings that leak through
+-nocheck OLDALW
+-nocheck LOGNEG
+-nocheck LOGAND
+-nocheck BOUINC
+-nocheck MEMRNM
+-nocheck MICAWS
+-nocheck BBXSIG

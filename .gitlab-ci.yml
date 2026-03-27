@@ -230,7 +230,7 @@ design-compiler:
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
   script:
-    - echo "DC version:" && dc_shell -version 2>&1 | head -3
+    - echo "DC version:" && { dc_shell -version 2>&1 | head -3 || true; }
     - |
       export SAIF_FILE="$(pwd)/cocotb/tidelink/switching_activity.saif"
       if [ -f "$SAIF_FILE" ]; then

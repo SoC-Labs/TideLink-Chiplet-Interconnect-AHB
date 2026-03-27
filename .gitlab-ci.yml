@@ -16,7 +16,7 @@ variables:
   # Synopsys EDA tool paths
   VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
   VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-  RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL_ARCHITECT_2022.06-SP2
+  RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
   # ARM CMSDK — uses ARM_IP_LIBRARY_PATH env var set on runner

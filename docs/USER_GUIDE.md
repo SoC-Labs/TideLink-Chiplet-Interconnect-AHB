@@ -212,7 +212,7 @@ Bits 1–3 are sticky — they remain set until cleared by FLUSH.
 ```
 1. Detect error via STATUS register or system-level fault
 2. Write 0x00 to CTRL (0x01C)         — disable block (EN=0)
-3. Write 0x02 to CTRL (0x01C)         — FLUSH (self-clearing)
+3. Write 0x02 to CTRL (0x01C)         — FLUSH (self-clearing, ignored if EN=1)
    → Pointers, tokens, packet state, sticky flags all reset
 4. Reconfigure if needed:
    - Pair base address (0x000)
@@ -249,9 +249,9 @@ For full duplex communication between two chiplets, deploy two TideLink instance
 | 0x008 | Packet Word Length | RO | In-flight packet size (0 when idle) |
 | 0x00C | Token Count | RO | Local FIFO available tokens |
 | 0x010 | Status | RO | Busy, sticky error flags, packet_committed |
-| 0x014 | Doorbell | W1C | Trigger software doorbell |
+| 0x014 | Doorbell | WO | Trigger software doorbell (singlepulse, self-clearing) |
 | 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
-| 0x01C | CTRL | RW | EN (bit 0), FLUSH (bit 1) |
+| 0x01C | CTRL | RW | EN (bit 0), FLUSH (bit 1, self-clearing, EN must be 0) |
 | 0x020 | Released Tokens Acc | W-add/R-clear | Incoming token deltas. IRQ source. |
 | 0x024 | Doorbell Response Acc | W-add/R-clear | Incoming doorbell responses. IRQ source. |
 | 0x028 | Pair Token Counter | RO | Remote FIFO available tokens |

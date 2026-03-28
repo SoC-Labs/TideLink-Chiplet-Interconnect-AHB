@@ -27,13 +27,14 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
 
     reg pair_base_addr_reg {
         name = "Pair Base Address";
-        desc = "Read-only register returning the TIDELINK_PAIR_BASE parameter.
-                This is the APB base address of the paired TideLink instance,
-                used by the returner to target the pair's registers.";
+        desc = "Base address of the paired TideLink's APB register space.
+                Initialised from the TIDELINK_PAIR_BASE parameter at reset.
+                Software may override this at runtime before enabling the block.
+                The returner derives its target addresses from this value.";
 
         field {} pair_base[32] = TIDELINK_PAIR_BASE;
-        pair_base->sw = r;
-        pair_base->hw = na;
+        pair_base->sw = rw;
+        pair_base->hw = r;
     };
     pair_base_addr_reg pair_base_addr @ 0x000;
 

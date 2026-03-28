@@ -165,7 +165,7 @@ AHB Lite master interface for autonomous writes to the paired TideLink.
 | 0x008 | Packet Word Length | RO | 0 | In-flight packet's data word count, captured from FIFO sideband. Non-zero only while a packet write or read is in progress; cleared to 0 on `write_complete` or `read_complete`. Not suitable for polling to detect packet arrival — use `packet_committed_irq` instead. |
 | 0x00C | Token Count | RO | MAX_TOKENS | Available tokens in the local FIFO. Decremented on write, incremented on read. |
 | 0x010 | Status | RO | 0 | Bit 0: returner_busy. Bit 1: overrun (sticky). Bit 2: underrun (sticky). Bit 3: master_error (sticky). Bit 4: packet_committed (mirrors `packet_committed_irq`; pollable). |
-| 0x014 | Doorbell | W1C | 0 | Write any value to generate a one-cycle doorbell trigger pulse. Self-clearing. |
+| 0x014 | Doorbell | WO | 0 | Write any value to generate a one-cycle doorbell trigger pulse. Self-clearing (singlepulse). |
 | 0x018 | Release Accumulator | RO | 0 | Pending unreleased tokens (debug visibility). Cleared when release trigger fires. |
 | 0x01C | CTRL | RW | 0 | Bit 0: EN (block enable). Bit 1: FLUSH (self-clearing, EN must be 0). |
 
@@ -314,7 +314,7 @@ Typical usage: before transmitting a packet of size N+1 tokens, software checks 
 - Release accumulator to 0
 - All sticky error flags (overrun, underrun, master_error)
 
-EN must be 0 before writing FLUSH. FLUSH clears the EN bit as a side-effect.
+EN must be 0 before writing FLUSH. If EN is 1, the FLUSH write is silently ignored.
 
 ### 7.10 Error Handling
 
@@ -326,7 +326,7 @@ EN must be 0 before writing FLUSH. FLUSH clears the EN bit as a side-effect.
 | 3 | Master Error (sticky) | Returner receives `hresp == 1` during data phase | Token return or doorbell write lost |
 | 4 | Packet Committed | Packet fully written (`write_complete`) | Mirrors `packet_committed_irq`. Cleared when receiver reads FIFO address 0. Pollable alternative to the interrupt. |
 
-All flags are sticky — once set, they remain asserted until cleared by FLUSH or hardware reset.
+Bits 1–3 are sticky — once set, they remain asserted until cleared by FLUSH or hardware reset. Bit 0 (returner_busy) reflects real-time state. Bit 4 (packet_committed) is cleared when the receiver reads FIFO address 0.
 
 **Recovery sequence**:
 1. Detect error (poll STATUS register or respond to system-level fault)

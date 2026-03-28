@@ -44,6 +44,7 @@ async def setup(dut):
     dut.fifo_overrun.value        = 0
     dut.fifo_underrun.value       = 0
     dut.master_error.value        = 0
+    dut.packet_committed.value    = 0
 
 
 async def do_reset(dut):
@@ -577,3 +578,84 @@ async def test_thresh_07_release_acc_debug_readback(dut):
 
     acc = await apb_read(dut, OFF_REL_ACC)
     assert acc == 14, f"Expected acc=14, got {acc}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STATUS[4] packet_committed polling tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_status_pkt_committed_00_default(dut):
+    """STATUS[4] (packet_committed) is 0 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 0, \
+        f"Expected packet_committed=0 after reset, got STATUS=0x{val:08X}"
+
+
+@cocotb.test()
+async def test_status_pkt_committed_01_reflects_high(dut):
+    """STATUS[4] reflects packet_committed input when asserted."""
+    await setup(dut)
+    await do_reset(dut)
+
+    dut.packet_committed.value = 1
+    await ClockCycles(dut.hclk, 1)
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 1, \
+        f"Expected packet_committed=1, got STATUS=0x{val:08X}"
+
+
+@cocotb.test()
+async def test_status_pkt_committed_02_reflects_low(dut):
+    """STATUS[4] reflects packet_committed input when deasserted."""
+    await setup(dut)
+    await do_reset(dut)
+
+    dut.packet_committed.value = 1
+    await ClockCycles(dut.hclk, 1)
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 1
+
+    dut.packet_committed.value = 0
+    await ClockCycles(dut.hclk, 1)
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 0, \
+        f"Expected packet_committed=0 after deassert, got STATUS=0x{val:08X}"
+
+
+@cocotb.test()
+async def test_status_pkt_committed_03_independent_of_other_bits(dut):
+    """STATUS[4] is independent of other status bits."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Set all other status bits
+    dut.returner_busy.value  = 1
+    dut.fifo_overrun.value   = 1
+    dut.fifo_underrun.value  = 1
+    dut.master_error.value   = 1
+    dut.packet_committed.value = 0
+    await ClockCycles(dut.hclk, 1)
+
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 0, \
+        f"packet_committed should be 0 when input is 0, got STATUS=0x{val:08X}"
+    assert val & 0xF == 0xF, \
+        f"Lower 4 status bits should all be 1, got STATUS=0x{val:08X}"
+
+    # Now set only packet_committed, clear others
+    dut.returner_busy.value  = 0
+    dut.fifo_overrun.value   = 0
+    dut.fifo_underrun.value  = 0
+    dut.master_error.value   = 0
+    dut.packet_committed.value = 1
+    await ClockCycles(dut.hclk, 1)
+
+    val = await apb_read(dut, OFF_STATUS)
+    assert (val >> regs.STATUS_PACKET_COMMITTED) & 1 == 1, \
+        f"packet_committed should be 1, got STATUS=0x{val:08X}"
+    assert val & 0xF == 0, \
+        f"Lower 4 status bits should all be 0, got STATUS=0x{val:08X}"

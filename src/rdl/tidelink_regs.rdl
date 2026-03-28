@@ -100,6 +100,14 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         master_error->hw = w;
         master_error->desc = "Sticky. Set when the AHB master port receives an ERROR
                              response. Cleared by FLUSH.";
+
+        field {} packet_committed[1] = 0;
+        packet_committed->sw = r;
+        packet_committed->hw = w;
+        packet_committed->desc = "Set when a packet has been fully written to the FIFO
+                                  (write_complete). Cleared when the receiver reads FIFO
+                                  address 0. Mirrors the packet_committed_irq output and
+                                  can be polled as an alternative to using the interrupt.";
     };
     status_reg status @ 0x010;
 

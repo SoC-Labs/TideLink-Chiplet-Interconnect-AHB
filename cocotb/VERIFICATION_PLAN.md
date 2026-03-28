@@ -82,7 +82,7 @@ Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
 | RET-16 | master_error stays 0 on success      | master_error remains 0 after a successful transfer (hresp=0)               | New      |
 | RET-17 | flush clears master_error register   | flush input resets master_error even when already 0                          | New      |
 
-### 3. tidelink_apb_regs (APB Register Unit Tests) — 31 tests
+### 3. tidelink_apb_regs (APB Register Unit Tests) — 35 tests
 
 Tests target `tidelink_apb_regs` in isolation with sideband inputs driven
 directly from cocotb.
@@ -120,8 +120,12 @@ directly from cocotb.
 | APB-29 | Trigger fires at threshold            | Trigger fires when accumulated tokens cross threshold, clears accumulator   | Existing |
 | APB-30 | Threshold zero immediate              | Threshold=0 passes read_complete through directly (backward compat)         | Existing |
 | APB-31 | Release acc debug readback            | Release accumulator at 0x018 reflects pending unreleased tokens             | Existing |
+| APB-32 | STATUS[4] pkt_committed default       | STATUS bit 4 (packet_committed) is 0 after reset                           | New      |
+| APB-33 | STATUS[4] pkt_committed reflects high | STATUS bit 4 reads 1 when packet_committed input is asserted               | New      |
+| APB-34 | STATUS[4] pkt_committed reflects low  | STATUS bit 4 reads 0 when packet_committed input is deasserted             | New      |
+| APB-35 | STATUS[4] independent of other bits   | STATUS bit 4 is independent of bits [3:0]                                  | New      |
 
-### 4. tidelink (Top-Level Integration Tests) — 12 tests
+### 4. tidelink (Top-Level Integration Tests) — 13 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -137,6 +141,7 @@ directly from cocotb.
 | TOP-10 | Large packet exceeds threshold        | Single large packet delta exceeds threshold, immediate release              | Existing |
 | TOP-11 | Threshold zero backward compat        | Threshold=0 gives per-read immediate release                                | Existing |
 | TOP-12 | Packet committed IRQ propagation      | `packet_committed_irq` asserts on write, clears on read through hierarchy   | New      |
+| TOP-13 | STATUS[4] packet committed polling    | STATUS bit 4 mirrors `packet_committed_irq`, pollable via APB              | New      |
 
 ### 5. tidelink_ahb (AHB Wrapper Tests) — 14 tests
 
@@ -215,7 +220,7 @@ corrupt.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 126 tests)
+# Run all test suites (6 environments, 131 tests)
 cd cocotb && make regression
 
 # Run individual suites

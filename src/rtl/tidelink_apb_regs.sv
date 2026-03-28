@@ -47,6 +47,9 @@ module tidelink_apb_regs #(
     input  logic                    fifo_underrun,
     input  logic                    master_error,
 
+    // Packet committed flag (from FIFO ctrl, exposed in STATUS[4])
+    input  logic                    packet_committed,
+
     // Control outputs (to FIFO and returner)
     output logic                    ctrl_enable,
     output logic                    ctrl_flush,
@@ -274,11 +277,12 @@ module tidelink_apb_regs #(
                 3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                 3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_token_count};
                 3'h4:    prdata = {
-                             {(SYS_DATA_W-4){1'b0}},
-                             master_error,      // [3]
-                             fifo_underrun,      // [2]
-                             fifo_overrun,       // [1]
-                             returner_busy       // [0]
+                             {(SYS_DATA_W-5){1'b0}},
+                             packet_committed,   // [4]
+                             master_error,        // [3]
+                             fifo_underrun,       // [2]
+                             fifo_overrun,        // [1]
+                             returner_busy        // [0]
                          };
                 3'h6:    prdata = release_acc;
                 3'h7:    prdata = {{(SYS_DATA_W-2){1'b0}}, 1'b0, ctrl_enable_r};

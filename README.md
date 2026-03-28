@@ -78,7 +78,7 @@ When side A resets:
 | 0x004 | Release Threshold | RW | Minimum tokens to accumulate before releasing to pair (default: 20, 0 = immediate release) |
 | 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
 | 0x00C | Token Count | RO | Available FIFO tokens (local) |
-| 0x010 | Status | RO | `[0]` returner_busy, `[1]` overrun (sticky), `[2]` underrun (sticky), `[3]` master_error (sticky) |
+| 0x010 | Status | RO | `[0]` returner_busy, `[1]` overrun (sticky), `[2]` underrun (sticky), `[3]` master_error (sticky), `[4]` packet_committed (pollable) |
 | 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
 | 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
 | 0x01C | CTRL | RW | `[0]` EN (block enable), `[1]` FLUSH (self-clearing, EN must be 0) |
@@ -109,6 +109,7 @@ TideLink includes a CTRL register (0x01C) with block enable and flush controls, 
 | `[1]` | OVERRUN | Set when a valid AHB write occurs but the buffer is full (token_count == 0). The write data is silently discarded. |
 | `[2]` | UNDERRUN | Set when a valid AHB read occurs but the buffer is empty (token_count == MAX_TOKENS). |
 | `[3]` | MASTER_ERROR | Set when the AHB master port (returner) receives an ERROR response (hresp=1) during the data phase of a credit return or doorbell write. |
+| `[4]` | PACKET_COMMITTED | Mirrors `packet_committed_irq`. Set when a packet is fully written to the FIFO, cleared when the receiver reads FIFO address 0. Pollable alternative to the interrupt. |
 
 All three flags are sticky — once set, they remain asserted until cleared by FLUSH. They survive across multiple transactions so software can detect that an error occurred even if it wasn't polling at the time.
 
@@ -154,13 +155,13 @@ tidelink/
 │       ├── pair_model.py             # PairRegisterBank (pure state machine)
 │       ├── driver.py                 # Abstract TidelinkDriver base class
 │       └── pynq_driver.py            # PYNQ MMIO driver for hardware testing
-├── cocotb/                           # Simulation verification (126 tests)
+├── cocotb/                           # Simulation verification (131 tests)
 │   ├── Makefile                      # Regression runner
 │   ├── VERIFICATION_PLAN.md          # Test plan and known issues
 │   ├── tidelink_fifo/                # FIFO unit tests (33 tests)
 │   ├── tidelink_returner/            # Returner unit tests (17 tests)
-│   ├── tidelink_apb_regs/            # APB register unit tests (31 tests)
-│   ├── tidelink/                     # Integration tests (12 tests)
+│   ├── tidelink_apb_regs/            # APB register unit tests (35 tests)
+│   ├── tidelink/                     # Integration tests (13 tests)
 │   ├── tidelink_ahb/                 # AHB wrapper tests (14 tests)
 │   └── tidelink_py_pair/             # Dual-instance system tests (19 tests)
 ├── pynq/                             # PYNQ hardware test scripts
@@ -218,7 +219,7 @@ cd cocotb
 make regression
 ```
 
-This runs all 6 test environments, collects results, and prints a pass/fail summary (126 tests total).
+This runs all 6 test environments, collects results, and prints a pass/fail summary (131 tests total).
 
 ### Running a specific test
 

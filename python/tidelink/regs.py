@@ -22,6 +22,7 @@ STATUS_RETURNER_BUSY   = 0
 STATUS_OVERRUN         = 1
 STATUS_UNDERRUN        = 2
 STATUS_MASTER_ERROR    = 3
+STATUS_PACKET_COMMITTED = 4
 
 # ── CTRL register bit positions ──────────────────────────────────────────
 CTRL_EN                = 0

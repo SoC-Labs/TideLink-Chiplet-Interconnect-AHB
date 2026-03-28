@@ -167,6 +167,8 @@ module tidelink #(
         .fifo_overrun        (fifo_overrun),
         .fifo_underrun       (fifo_underrun),
         .master_error        (master_error),
+        // Packet committed (for STATUS[4] polling)
+        .packet_committed    (packet_committed_irq),
         // Control outputs (to FIFO and returner)
         .ctrl_enable         (ctrl_enable),
         .ctrl_flush          (ctrl_flush),

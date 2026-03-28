@@ -758,3 +758,87 @@ async def test_12_packet_committed_irq_propagation(dut):
     await RisingEdge(dut.hclk)
     assert int(dut.packet_committed_irq.value) == 1, \
         "packet_committed_irq should re-assert on second write"
+
+
+# ── STATUS[4] Packet Committed Polling ─────────────────────────────────────
+
+
+@cocotb.test()
+async def test_13_status_packet_committed_polling(dut):
+    """STATUS[4] (packet_committed) can be polled via APB as an alternative
+    to using the packet_committed_irq interrupt output.
+
+    Verifies:
+    1. STATUS[4] is 0 after reset (no packet pending)
+    2. STATUS[4] goes to 1 after a packet is written (write_complete)
+    3. STATUS[4] returns to 0 after the receiver reads FIFO address 0
+    4. STATUS[4] mirrors the packet_committed_irq output at every step
+    5. Multi-packet cycle: write/poll/read/poll for two packets
+    """
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    STATUS_PACKET_COMMITTED_BIT = 4
+
+    # ── Step 1: STATUS[4] == 0 after reset ──────────────────────────
+    status = await tb.apb.read(APB_REG_STATUS)
+    pkt_ready = (status >> STATUS_PACKET_COMMITTED_BIT) & 1
+    assert pkt_ready == 0, \
+        f"STATUS[4] should be 0 after reset, got STATUS=0x{status:08X}"
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should match STATUS[4] (both 0)"
+
+    # ── Step 2: Write a packet — STATUS[4] should go to 1 ──────────
+    hit = await tb.write_packet([0xAA, 0xBB, 0xCC], label="POLL_WR1")
+    assert hit, "write_complete should fire"
+    await RisingEdge(dut.hclk)
+
+    status = await tb.apb.read(APB_REG_STATUS)
+    pkt_ready = (status >> STATUS_PACKET_COMMITTED_BIT) & 1
+    assert pkt_ready == 1, \
+        f"STATUS[4] should be 1 after write_complete, got STATUS=0x{status:08X}"
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should match STATUS[4] (both 1)"
+
+    # ── Step 3: Read the packet — STATUS[4] should clear ───────────
+    pkt, rhit = await tb.read_packet(label="POLL_RD1")
+    assert rhit, "read_complete should fire"
+
+    status = await tb.apb.read(APB_REG_STATUS)
+    pkt_ready = (status >> STATUS_PACKET_COMMITTED_BIT) & 1
+    assert pkt_ready == 0, \
+        f"STATUS[4] should be 0 after read from addr 0, got STATUS=0x{status:08X}"
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should match STATUS[4] (both 0)"
+
+    # Verify data integrity
+    assert pkt.data == [0xAA, 0xBB, 0xCC], \
+        f"Data mismatch: expected [0xAA, 0xBB, 0xCC], got {pkt.data}"
+
+    # Wait for returner to complete before next packet
+    await tb.wait_returner_idle()
+
+    # ── Step 4: Second packet cycle — poll-driven read ──────────────
+    hit2 = await tb.write_packet([0x11, 0x22], label="POLL_WR2")
+    assert hit2
+    await RisingEdge(dut.hclk)
+
+    # Poll until STATUS[4] is set
+    status = await tb.apb.read(APB_REG_STATUS)
+    pkt_ready = (status >> STATUS_PACKET_COMMITTED_BIT) & 1
+    assert pkt_ready == 1, \
+        f"STATUS[4] should be 1 for second packet, got STATUS=0x{status:08X}"
+
+    # Read second packet
+    pkt2, rhit2 = await tb.read_packet(label="POLL_RD2")
+    assert rhit2
+
+    status = await tb.apb.read(APB_REG_STATUS)
+    pkt_ready = (status >> STATUS_PACKET_COMMITTED_BIT) & 1
+    assert pkt_ready == 0, \
+        f"STATUS[4] should clear after second read, got STATUS=0x{status:08X}"
+
+    assert pkt2.data == [0x11, 0x22], \
+        f"Data mismatch: expected [0x11, 0x22], got {pkt2.data}"
+
+    tb.log.info("STATUS[4] packet_committed polling verified across two packets")

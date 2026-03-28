@@ -32,6 +32,9 @@ module tb_top #(
     input  logic                    fifo_underrun,
     input  logic                    master_error,
 
+    // Packet committed flag stimulus
+    input  logic                    packet_committed,
+
     // Outputs
     output logic                    ctrl_enable,
     output logic                    ctrl_flush,
@@ -69,6 +72,7 @@ module tb_top #(
         .fifo_overrun        (fifo_overrun),
         .fifo_underrun       (fifo_underrun),
         .master_error        (master_error),
+        .packet_committed    (packet_committed),
         .ctrl_enable         (ctrl_enable),
         .ctrl_flush          (ctrl_flush),
         .doorbell_trigger    (doorbell_trigger),

@@ -100,8 +100,8 @@ def parse_timing_report(rpt_path):
     text = Path(rpt_path).read_text()
     paths = []
 
-    # Split into individual path reports
-    path_blocks = re.split(r"(?=\s+Startpoint:)", text)
+    # Split into individual path reports (use findall for Python 3.6 compat)
+    path_blocks = re.findall(r"\s+Startpoint:.*?(?=\s+Startpoint:|\Z)", text, re.DOTALL)
 
     for block in path_blocks:
         if "Startpoint:" not in block:

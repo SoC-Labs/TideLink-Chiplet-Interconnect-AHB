@@ -62,11 +62,23 @@ coverage_merge:
 	@echo "========================================"
 	@echo " Merging coverage databases"
 	@echo "========================================"
-	urg -full64 \
-	  $(foreach env,$(ENVS),-dir $(env)/coverage.vdb) \
-	  -dbname merged_coverage.vdb \
-	  -report $(COV_REPORT)
-	@echo "Coverage report: $(COV_REPORT)/dashboard.html"
+	@echo "── Per-environment reports ──"
+	@for env in $(ENVS); do \
+	  urg -full64 -dir $$env/sim_build/simv.vdb -dir $$env/coverage.vdb \
+	    -report $(COV_REPORT)/$$env -format text 2>&1 \
+	    | grep -E 'Note|Error' || true; \
+	done
+	@echo ""
+	@echo "── Per-environment coverage summary ──"
+	@printf "  %-25s %6s %6s %6s %6s %6s %6s\n" "ENVIRONMENT" "SCORE" "LINE" "COND" "TOGGLE" "FSM" "BRANCH"
+	@printf "  %-25s %6s %6s %6s %6s %6s %6s\n" "-------------------------" "------" "------" "------" "------" "------" "------"
+	@for env in $(ENVS); do \
+	  scores=$$(grep -A2 'Total Coverage Summary' $(COV_REPORT)/$$env/dashboard.txt 2>/dev/null \
+	    | tail -1 | sed 's/--/  N\/A /g'); \
+	  printf "  %-25s %s\n" "$$env" "$$scores"; \
+	done
+	@echo ""
+	@echo "Coverage reports: $(COV_REPORT)/<env>/dashboard.html"
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 .PHONY: clean

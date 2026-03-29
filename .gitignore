@@ -16,3 +16,12 @@ verdiLog
 *.result
 __pycache__
 *.pyc
+
+# Coverage Files
+.coverage
+.mode64
+dashboard.txt
+tests.txt
+modlist.txt
+modinfo.txt
+hierarchy.txt

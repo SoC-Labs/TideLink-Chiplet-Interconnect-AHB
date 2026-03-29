@@ -46,11 +46,34 @@ regression: $(ENVS)
 	echo "========================================"; \
 	[ "$$fail" -eq 0 ]
 
+# ── Coverage regression ──────────────────────────────────────────────────────
+# Run the full regression with VCS code coverage enabled, then merge results.
+#   make coverage
+# Override metrics with: make coverage CM_METRICS=line+cond
+CM_METRICS ?= line+cond+fsm+tgl+branch
+COV_REPORT  = coverage_report
+
+.PHONY: coverage coverage_merge
+coverage: export COVERAGE=1
+coverage: export CM_METRICS:=$(CM_METRICS)
+coverage: regression coverage_merge
+
+coverage_merge:
+	@echo "========================================"
+	@echo " Merging coverage databases"
+	@echo "========================================"
+	urg -full64 \
+	  $(foreach env,$(ENVS),-dir $(env)/coverage.vdb) \
+	  -dbname merged_coverage.vdb \
+	  -report $(COV_REPORT)
+	@echo "Coverage report: $(COV_REPORT)/dashboard.html"
+
 # ── Clean ────────────────────────────────────────────────────────────────────
 .PHONY: clean
 clean:
 	@for env in $(ENVS); do \
 	  $(MAKE) -C $$env clean > /dev/null 2>&1; \
-	  rm -f $$env/run.log $$env/.result; \
+	  rm -f $$env/run.log $$env/.result $$env/coverage.vdb; \
 	done
+	rm -rf merged_coverage.vdb $(COV_REPORT)
 	@echo "All environments cleaned"

@@ -14,6 +14,13 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_ahb.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
+# ── Code coverage ───────────────────────────────────────────────────────
+ifdef COVERAGE
+  CM_METRICS    ?= line+cond+fsm+tgl+branch
+  COMPILE_ARGS  += -cm $(CM_METRICS)
+  SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
+endif
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2

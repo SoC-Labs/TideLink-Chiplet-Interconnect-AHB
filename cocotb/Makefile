@@ -65,7 +65,7 @@ coverage_merge:
 	@echo "── Per-environment reports ──"
 	@for env in $(ENVS); do \
 	  urg -full64 -dir $$env/sim_build/simv.vdb -dir $$env/coverage.vdb \
-	    -report $(COV_REPORT)/$$env -format text 2>&1 \
+	    -report $(COV_REPORT)/$$env -format both 2>&1 \
 	    | grep -E 'Note|Error' || true; \
 	done
 	@echo ""

@@ -154,7 +154,7 @@ cocotb-regression:
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
     - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
-    - make -C "$WORK_DIR/cocotb" regression
+    - make -C "$WORK_DIR/cocotb" coverage
   after_script:
     - mkdir -p cocotb
     - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair; do
@@ -163,14 +163,17 @@ cocotb-regression:
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/results.xml"   "cocotb/$env/" 2>/dev/null || true;
       done
+    - cp -r "$WORK_DIR/cocotb/coverage_report" cocotb/ 2>/dev/null || true
   artifacts:
     when: always
     paths:
       - cocotb/*/run.log
       - cocotb/*/.result
+      - cocotb/coverage_report/
     reports:
       junit:
         - cocotb/*/results.xml
+    expose_as: "Coverage Report"
     expire_in: 30 days
 
 # ── RTL SAIF Generation ─────────────────────────────────────────────────

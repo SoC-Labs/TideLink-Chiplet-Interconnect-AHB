@@ -173,7 +173,6 @@ cocotb-regression:
     reports:
       junit:
         - cocotb/*/results.xml
-    expose_as: "Coverage Report"
     expire_in: 30 days
 
 # ── RTL SAIF Generation ─────────────────────────────────────────────────

@@ -78,11 +78,11 @@ Software writes to 0x02C unconditionally subtract from the pair token counter. T
 
 **Location**: `tidelink_apb_regs.sv` — accumulators at 0x020 and 0x024
 
-The W-add/R-clear accumulators handle simultaneous APB read and returner write in the same cycle. The current implementation adds the incoming value and clears on read, but if both happen in the same cycle, the behaviour depends on signal priority in the always block. A simultaneous read could lose the incoming write or return a stale value.
+The W-add/R-clear accumulators handle simultaneous APB read and returner write in the same cycle. The `if-else if` chain gives read-clear priority over write-add, so if both occur in the same cycle the accumulator is cleared and the incoming write value is silently lost.
 
-**Impact**: Low probability in practice (requires APB read at exact cycle of returner write), but could cause lost tokens.
+**Impact**: Low probability in practice (requires APB read at exact cycle of returner write), but the lost write means freed tokens are permanently dropped, causing token accounting drift between the pair.
 
-**Recommendation**: Document the priority explicitly, or use a two-stage handshake to prevent loss.
+**Recommendation**: Handle the simultaneous case explicitly by clearing the accumulator to the incoming write value (i.e. clear old total but retain the new delta), or use a two-stage handshake to prevent loss.
 
 ## Minor
 
@@ -122,19 +122,19 @@ Writes to read-only registers and reads from write-only registers silently succe
 
 **Location**: `tidelink_apb_regs.sv` — reset synchroniser
 
-The reset deassertion detector uses a two-stage pipeline on `hresetn`. If the reset signal glitches (bounces during deassertion), the detector could fire multiple times, causing multiple doorbell writes to the pair.
+The reset deassertion detector uses a two-stage synchroniser that correctly handles the async-to-sync transition and prevents metastability. However, if `hresetn` bounces during deassertion (goes low-high-low-high), each low-to-high transition resets the pipeline and produces a new deassertion pulse, causing multiple doorbell writes to the pair.
 
 **Impact**: Multiple doorbell responses from the pair, each adding to the accumulator. Software would read an inflated token count.
 
-**Recommendation**: Add a debounce or use a proper reset synchroniser with glitch filtering.
+**Recommendation**: Add a debounce counter after the synchroniser to filter reset bounce.
 
-### 14. No DMA-Friendly Burst Support
+### 14. Burst Transfers Accepted But Not Properly Handled
 
-**Location**: `tidelink_fifo_ctrl.sv` — single-beat transfers only
+**Location**: `tidelink_fifo_ctrl.sv` — `valid_transfer` check
 
-The FIFO only supports NONSEQ (single-beat) AHB transfers. There is no support for INCR or WRAP burst types. This means a DMA engine transferring a large packet must issue individual word transfers.
+The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (`2'b10`) and SEQ (`2'b11`) transfers. However, the FIFO control logic has no burst-aware address tracking — it treats every beat as an independent single-beat transfer. A DMA engine issuing INCR or WRAP bursts will have its SEQ beats accepted, but the FIFO's completion and metadata logic assumes NONSEQ-only sequencing, which could cause incorrect behaviour.
 
-**Recommendation**: Add burst support (INCR at minimum) for improved DMA throughput.
+**Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
 
 ### 15. Token Release Threshold Cannot Be Changed While Enabled
 
@@ -161,5 +161,5 @@ The release threshold register is freely writable at any time, but changing it w
 | 11 | Minor | No ID/version register |
 | 12 | Minor | pslverr always 0 |
 | 13 | Minor | Reset deassertion glitch sensitivity |
-| 14 | Minor | No burst transfer support |
+| 14 | Minor | Burst transfers accepted but not properly handled |
 | 15 | Minor | Threshold change while enabled |

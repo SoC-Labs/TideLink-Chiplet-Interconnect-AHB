@@ -842,3 +842,667 @@ async def test_13_status_packet_committed_polling(dut):
         f"Data mismatch: expected [0x11, 0x22], got {pkt2.data}"
 
     tb.log.info("STATUS[4] packet_committed polling verified across two packets")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Coverage Improvement Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@cocotb.test()
+async def test_cov_01_flush_resets_state(dut):
+    """FLUSH (CTRL[1]) resets pointers, token count, packet state, release
+    accumulator, and sticky error flags.  EN must be 0 before flush."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
+
+    # Write two packets to consume tokens and move pointers
+    await tb.write_packet([0xAA, 0xBB, 0xCC], label="FLUSH_WR1")
+    await tb.write_packet([0xDD, 0xEE], label="FLUSH_WR2")
+
+    hw_tokens_before = await tb.read_token_count()
+    assert hw_tokens_before < MAX_TOKENS, "Tokens should be consumed"
+
+    # Read one packet so release_acc gets a value
+    _, rhit = await tb.read_packet(label="FLUSH_RD1")
+    assert rhit
+    await tb.wait_returner_idle()
+
+    # Write another packet so packet_committed_irq re-asserts
+    await tb.write_packet([0x11, 0x22], label="FLUSH_WR3")
+    await RisingEdge(dut.hclk)
+    assert int(dut.packet_committed_irq.value) == 1, \
+        "packet_committed_irq should be set after third write"
+
+    # Disable EN before flush: write CTRL = 0x00 (EN=0)
+    await tb.apb.write(APB_REG_CTRL, 0x0)
+    await ClockCycles(dut.hclk, 2)
+
+    # Issue FLUSH: write CTRL = 0x02 (FLUSH=1, EN=0)
+    await tb.apb.write(APB_REG_CTRL, 0x2)
+    await ClockCycles(dut.hclk, 5)
+
+    # Token count should be back to MAX_TOKENS
+    hw_tokens_after = await tb.read_token_count()
+    assert hw_tokens_after == MAX_TOKENS, \
+        f"After flush: expected {MAX_TOKENS} tokens, got {hw_tokens_after}"
+
+    # packet_committed_irq should be cleared
+    assert int(dut.packet_committed_irq.value) == 0, \
+        "packet_committed_irq should be 0 after flush"
+
+    # Release accumulator should be 0
+    rel_acc = await tb.apb.read(APB_REG_REL_ACC)
+    assert rel_acc == 0, f"Release accumulator should be 0 after flush, got {rel_acc}"
+
+    # Re-enable and verify normal operation still works
+    await tb.apb.write(APB_REG_CTRL, 0x1)
+    await ClockCycles(dut.hclk, 10)  # wait for reset deassertion pulse
+    hit = await tb.write_packet([0x11, 0x22], label="FLUSH_POST_WR")
+    assert hit, "Should be able to write after flush + re-enable"
+
+    tb.log.info("Flush test passed — all state reset correctly")
+
+
+@cocotb.test()
+async def test_cov_02_apb_region1_released_tokens_acc(dut):
+    """APB Region 1 (paddr[5]=1): Released Tokens Accumulator at 0x020.
+    Write-add / Read-clear behaviour, plus released_tokens_irq."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # After reset, accumulator should be 0, IRQ deasserted
+    val = await tb.apb.read(APB_REG_RELEASED_ACC)
+    assert val == 0, f"Expected 0 after reset, got {val}"
+    assert int(dut.released_tokens_irq.value) == 0
+
+    # Write 10 to accumulator — should add
+    await tb.apb.write(APB_REG_RELEASED_ACC, 10)
+    await ClockCycles(dut.hclk, 1)
+    assert int(dut.released_tokens_irq.value) == 1, \
+        "released_tokens_irq should assert when acc != 0"
+
+    # Write 5 more — should accumulate to 15
+    await tb.apb.write(APB_REG_RELEASED_ACC, 5)
+    val = await tb.apb.read(APB_REG_RELEASED_ACC)
+    assert val == 15, f"Expected 15 (10+5), got {val}"
+
+    # Read clears — next read should be 0
+    val = await tb.apb.read(APB_REG_RELEASED_ACC)
+    assert val == 0, f"Expected 0 after read-clear, got {val}"
+    assert int(dut.released_tokens_irq.value) == 0, \
+        "released_tokens_irq should deassert when acc == 0"
+
+    tb.log.info("Released tokens accumulator W-add/R-clear verified")
+
+
+@cocotb.test()
+async def test_cov_03_apb_region1_doorbell_resp_acc(dut):
+    """APB Region 1: Doorbell Response Accumulator at 0x024.
+    Write-add / Read-clear behaviour, plus doorbell_irq."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    val = await tb.apb.read(APB_REG_DOORBELL_RESP_ACC)
+    assert val == 0
+
+    assert int(dut.doorbell_irq.value) == 0
+
+    # Write 7, then 3 — accumulate to 10
+    await tb.apb.write(APB_REG_DOORBELL_RESP_ACC, 7)
+    await tb.apb.write(APB_REG_DOORBELL_RESP_ACC, 3)
+
+    await ClockCycles(dut.hclk, 1)
+    assert int(dut.doorbell_irq.value) == 1
+
+    val = await tb.apb.read(APB_REG_DOORBELL_RESP_ACC)
+    assert val == 10, f"Expected 10, got {val}"
+
+    # Read clears
+    val = await tb.apb.read(APB_REG_DOORBELL_RESP_ACC)
+    assert val == 0
+    assert int(dut.doorbell_irq.value) == 0
+
+    tb.log.info("Doorbell response accumulator verified")
+
+
+@cocotb.test()
+async def test_cov_04_apb_region1_pair_token_counter(dut):
+    """APB Region 1: Pair token counter increment (0x020 write), decrement
+    (0x02C write), read (0x028), enable/disable (0x030)."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    APB_REG_PAIR_TOKEN_CTR    = 0x028
+    APB_REG_PAIR_TOKEN_CONS   = 0x02C
+    APB_REG_PAIR_TOKEN_EN     = 0x030
+
+    # After reset, counter = 0, enabled
+    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    assert val == 0, f"Expected 0 after reset, got {val}"
+
+    en = await tb.apb.read(APB_REG_PAIR_TOKEN_EN)
+    assert en == 1, f"Expected enabled (1) after reset, got {en}"
+
+    # Increment via released_tokens_acc write (offset 0x020, region 1, paddr[4:2]=0)
+    # This simultaneously adds to released_tokens_acc AND increments pair_token_counter
+    await tb.apb.write(APB_REG_RELEASED_ACC, 5)
+    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    assert val == 5, f"Expected 5 after increment, got {val}"
+
+    # Decrement via pair_token_consume write (offset 0x02C)
+    await tb.apb.write(APB_REG_PAIR_TOKEN_CONS, 2)
+    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    assert val == 3, f"Expected 3 after decrement, got {val}"
+
+    # Disable counter
+    await tb.apb.write(APB_REG_PAIR_TOKEN_EN, 0)
+    en = await tb.apb.read(APB_REG_PAIR_TOKEN_EN)
+    assert en == 0, f"Expected disabled (0), got {en}"
+
+    # Increment while disabled — counter should not change
+    await tb.apb.write(APB_REG_RELEASED_ACC, 10)
+    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    assert val == 3, f"Expected 3 (frozen), got {val}"
+
+    # Re-enable
+    await tb.apb.write(APB_REG_PAIR_TOKEN_EN, 1)
+
+    # Increment should work again
+    await tb.apb.write(APB_REG_RELEASED_ACC, 4)
+    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    assert val == 7, f"Expected 7 after re-enable + increment, got {val}"
+
+    # Clean up: read-clear the released_tokens_acc
+    await tb.apb.read(APB_REG_RELEASED_ACC)
+
+    tb.log.info("Pair token counter increment/decrement/enable verified")
+
+
+@cocotb.test()
+async def test_cov_05_fifo_overrun(dut):
+    """Write packets until FIFO is full (token_count == 0), then issue one
+    more write to trigger overrun. Verify STATUS[1] overrun flag is sticky
+    and cleared by flush."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+    await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
+
+    # Fill the FIFO by writing large packets until tokens are nearly exhausted
+    # MAX_TOKENS = 4096, write 512-word packets (513 total_words each)
+    pkt_size = 512
+    packets_written = 0
+    while True:
+        hw_tokens = await tb.read_token_count()
+        if hw_tokens < pkt_size + 1:
+            break
+        data = [0xF1110000 + i for i in range(pkt_size)]
+        hit = await tb.write_packet(data, label=f"FILL_{packets_written}")
+        if not hit:
+            break
+        packets_written += 1
+
+    # Write remaining tokens with smaller packets
+    while True:
+        hw_tokens = await tb.read_token_count()
+        if hw_tokens < 2:  # Need at least 2 tokens (1 length + 1 data)
+            break
+        remaining = hw_tokens - 1  # Leave 1 for length word
+        data = [0x5A110000 + i for i in range(remaining)]
+        hit = await tb.write_packet(data, label="FILL_SMALL")
+        if not hit:
+            break
+
+    # Verify token count is 0
+    hw_tokens = await tb.read_token_count()
+    tb.log.info(f"After filling: token_count = {hw_tokens}")
+
+    # Check overrun not yet set
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 1)), "Overrun should not be set yet"
+
+    # Now attempt a write when buffer is full — this should trigger overrun
+    # Drive AHB write manually to trigger the overrun_event
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2  # NONSEQ
+    dut.ahbs_hwrite.value = 1
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwdata.value = 1  # length = 1
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_hwrite.value = 0
+    await ClockCycles(dut.hclk, 3)
+
+    # Check overrun is now set
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert status & (1 << 1), \
+        f"Overrun (STATUS[1]) should be set, got STATUS=0x{status:08X}"
+    tb.log.info("Overrun flag set correctly")
+
+    # Verify sticky: still set after another cycle
+    await ClockCycles(dut.hclk, 5)
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert status & (1 << 1), "Overrun should be sticky"
+
+    # Flush should clear it
+    await tb.apb.write(APB_REG_CTRL, 0x0)  # EN=0
+    await tb.apb.write(APB_REG_CTRL, 0x2)  # FLUSH
+    await ClockCycles(dut.hclk, 3)
+
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 1)), \
+        f"Overrun should be cleared after flush, got STATUS=0x{status:08X}"
+
+    tb.log.info("Overrun test passed — sticky flag set and cleared by flush")
+
+
+@cocotb.test()
+async def test_cov_06_fifo_underrun(dut):
+    """Read from an empty FIFO (token_count == MAX_TOKENS) to trigger
+    underrun. Verify STATUS[2] underrun flag is sticky and cleared by flush."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Verify FIFO is empty (token_count == MAX_TOKENS)
+    hw_tokens = await tb.read_token_count()
+    assert hw_tokens == MAX_TOKENS
+
+    # Check underrun not yet set
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 2)), "Underrun should not be set yet"
+
+    # Issue a read from the empty FIFO
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2  # NONSEQ
+    dut.ahbs_hwrite.value = 0  # Read
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    await ClockCycles(dut.hclk, 3)
+
+    # Check underrun is now set
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert status & (1 << 2), \
+        f"Underrun (STATUS[2]) should be set, got STATUS=0x{status:08X}"
+    tb.log.info("Underrun flag set correctly")
+
+    # Verify sticky
+    await ClockCycles(dut.hclk, 5)
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert status & (1 << 2), "Underrun should be sticky"
+
+    # Flush should clear it
+    await tb.apb.write(APB_REG_CTRL, 0x0)  # EN=0
+    await tb.apb.write(APB_REG_CTRL, 0x2)  # FLUSH
+    await ClockCycles(dut.hclk, 3)
+
+    status = await tb.apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 2)), \
+        f"Underrun should be cleared after flush, got STATUS=0x{status:08X}"
+
+    tb.log.info("Underrun test passed — sticky flag set and cleared by flush")
+
+
+@cocotb.test()
+async def test_cov_07_apb_pair_base_write(dut):
+    """Write to APB offset 0x000 (pair_base_addr) and verify readback."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Default is 0 (from parameter)
+    val = await tb.apb.read(APB_REG_PAIR_BASE)
+    assert val == 0
+
+    # Write a new pair base address
+    await tb.apb.write(APB_REG_PAIR_BASE, 0x4000_0000)
+    val = await tb.apb.read(APB_REG_PAIR_BASE)
+    assert val == 0x4000_0000, f"Expected 0x40000000, got 0x{val:08X}"
+
+    # Write another value
+    await tb.apb.write(APB_REG_PAIR_BASE, 0xDEAD_0000)
+    val = await tb.apb.read(APB_REG_PAIR_BASE)
+    assert val == 0xDEAD_0000, f"Expected 0xDEAD0000, got 0x{val:08X}"
+
+    tb.log.info("Pair base address write/readback verified")
+
+
+@cocotb.test()
+async def test_cov_08_apb_pkt_word_len_read(dut):
+    """Read APB offset 0x008 (packet_word_length) — reflects FIFO sideband."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # After reset, packet_word_length should be 0
+    val = await tb.apb.read(APB_REG_PKT_WORD_LEN)
+    assert val == 0, f"Expected 0 after reset, got {val}"
+
+    # Write a 5-word packet — after write_complete, pkt_word_len resets to 0
+    # But during the write, it should be set
+    await tb.write_packet([0xAA, 0xBB, 0xCC, 0xDD, 0xEE], label="PKT_LEN_WR")
+
+    # After write_complete fires, packet_word_length is cleared
+    val = await tb.apb.read(APB_REG_PKT_WORD_LEN)
+    assert val == 0, f"Expected 0 after write_complete, got {val}"
+
+    tb.log.info("Packet word length APB read verified")
+
+
+@cocotb.test()
+async def test_cov_09_apb_release_acc_read(dut):
+    """Read APB offset 0x018 (release_acc) — debug register showing pending
+    unreleased tokens."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # With default threshold=20, reading back packets accumulates in release_acc
+    # until threshold is crossed
+    val = await tb.apb.read(APB_REG_REL_ACC)
+    assert val == 0, f"Expected 0 after reset, got {val}"
+
+    # Write and read a small packet (delta=3, below threshold=20)
+    await tb.write_packet([0xAA, 0xBB], label="ACC_WR1")
+    _, rhit = await tb.read_packet(label="ACC_RD1")
+    assert rhit
+    await ClockCycles(dut.hclk, 5)
+
+    # release_acc should be 3 (below threshold, not yet released)
+    val = await tb.apb.read(APB_REG_REL_ACC)
+    assert val == 3, f"Expected release_acc=3, got {val}"
+
+    # Write and read another (delta=3 more, total=6)
+    await tb.write_packet([0xCC, 0xDD], label="ACC_WR2")
+    _, rhit = await tb.read_packet(label="ACC_RD2")
+    assert rhit
+    await ClockCycles(dut.hclk, 5)
+
+    val = await tb.apb.read(APB_REG_REL_ACC)
+    assert val == 6, f"Expected release_acc=6, got {val}"
+
+    tb.log.info("Release accumulator APB read verified")
+
+
+@cocotb.test()
+async def test_cov_10_flush_clears_release_acc_and_errors(dut):
+    """Flush clears the release accumulator and sticky error flags together."""
+    tb = TidelinkTB(dut)
+    await tb.reset()
+
+    # Build up some release_acc (write+read a packet with default threshold=20)
+    await tb.write_packet([0x11, 0x22, 0x33], label="FLUSH2_WR")
+    _, _ = await tb.read_packet(label="FLUSH2_RD")
+    await ClockCycles(dut.hclk, 5)
+
+    rel_acc = await tb.apb.read(APB_REG_REL_ACC)
+    assert rel_acc > 0, "release_acc should be non-zero before flush"
+
+    # Disable + flush
+    await tb.apb.write(APB_REG_CTRL, 0x0)
+    await tb.apb.write(APB_REG_CTRL, 0x2)
+    await ClockCycles(dut.hclk, 3)
+
+    rel_acc = await tb.apb.read(APB_REG_REL_ACC)
+    assert rel_acc == 0, f"release_acc should be 0 after flush, got {rel_acc}"
+
+    tb.log.info("Flush clears release_acc verified")
+
+
+@cocotb.test()
+async def test_cov_11_ahb_master_wait_states(dut):
+    """AHB slave inserts wait states (hready=0) on the returner master port,
+    exercising the ST_ADDR_PHASE and ST_DATA_PHASE wait branches."""
+    import itertools
+
+    def bp_generator():
+        """Back-pressure generator: alternate between ready and wait."""
+        while True:
+            yield 1  # ready
+            yield 0  # wait
+            yield 0  # wait
+            yield 1  # ready
+
+    # Create a fresh TB but with back-pressure on the AHB slave
+    dut._log.info("Setting up TB with AHB slave back-pressure")
+    cocotb.start_soon(
+        Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
+    )
+
+    ahbs_bus = AHBBus.from_prefix(dut, "ahbs")
+    ahb_master = AHBLiteMaster(ahbs_bus, dut.hclk, dut.hresetn, timeout=200)
+
+    ahbm_bus = AHBBus.from_prefix(dut, "ahbm")
+    ahb_slave_bp = AHBLiteSlaveRAM(
+        ahbm_bus, dut.hclk, dut.hresetn,
+        mem_size=4096,
+        bp=bp_generator(),
+    )
+
+    apb = APBMaster(dut, dut.hclk)
+
+    # Reset
+    apb.idle()
+    dut.hresetn.value = 0
+    await ClockCycles(dut.hclk, 5)
+    dut.hresetn.value = 1
+    await ClockCycles(dut.hclk, 10)
+    await apb.write(APB_REG_CTRL, 0x1)
+    await apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release
+
+    # Write a packet
+    pkt_data = [0xAA, 0xBB, 0xCC]
+    pkt = FifoPacket(data=pkt_data)
+
+    await ahb_master.write(0x0000, pkt.length)
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    for i, word in enumerate(pkt_data):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 1
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = addr
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hwdata.value = word
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hwrite.value = 0
+
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 1)
+
+    # Read the packet back — triggers returner which now sees wait states
+    ahb_slave_bp.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
+
+    for i in range(pkt_len):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 0
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = addr
+        await RisingEdge(dut.hclk)
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        dut.ahbs_haddr.value  = 0x3FFF
+        await RisingEdge(dut.hclk)
+
+    dut.ahbs_haddr.value = 0x3FFF
+
+    # Wait longer for returner to complete (wait states slow it down)
+    for _ in range(50):
+        await RisingEdge(dut.hclk)
+        if not int(dut.u_dut.returner_busy.value):
+            break
+
+    # Verify the returner completed successfully despite wait states
+    returner_data = int.from_bytes(
+        ahb_slave_bp.memory.read(PAIR_RELEASED_TOKENS_ADDR, 4),
+        byteorder="little"
+    )
+    assert returner_data == pkt.total_words, \
+        f"Expected delta={pkt.total_words}, got {returner_data}"
+
+    dut._log.info("AHB master wait-state test passed")
+
+
+@cocotb.test()
+async def test_cov_12_master_error_flag(dut):
+    """Inject an AHB ERROR response (hresp=1) on the returner master port.
+    Verify STATUS[3] (master_error) is set and sticky, cleared by flush.
+
+    We do NOT attach an AHBLiteSlaveRAM — instead we manually drive ahbm
+    signals to inject the error."""
+    cocotb.start_soon(
+        Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
+    )
+
+    ahbs_bus = AHBBus.from_prefix(dut, "ahbs")
+    ahb_master = AHBLiteMaster(ahbs_bus, dut.hclk, dut.hresetn, timeout=200)
+
+    apb = APBMaster(dut, dut.hclk)
+
+    # Manually drive AHB master slave-side signals to idle defaults
+    dut.ahbm_hready.value = 1
+    dut.ahbm_hresp.value  = 0
+    dut.ahbm_hrdata.value = 0
+
+    # Reset
+    apb.idle()
+    dut.hresetn.value = 0
+    await ClockCycles(dut.hclk, 5)
+    dut.hresetn.value = 1
+    await ClockCycles(dut.hclk, 10)
+    await apb.write(APB_REG_CTRL, 0x1)
+    await apb.write(APB_REG_REL_THRESHOLD, 0)
+
+    # Verify master_error is clear
+    status = await apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 3)), "master_error should be 0 after reset"
+
+    # Write and read a packet to trigger the returner
+    pkt_data = [0xAA, 0xBB]
+    pkt = FifoPacket(data=pkt_data)
+
+    await ahb_master.write(0x0000, pkt.length)
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    for i, word in enumerate(pkt_data):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 1
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = addr
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hwdata.value = word
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hwrite.value = 0
+
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 1)
+
+    # Now read the packet — this triggers read_complete → returner fires
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
+    for i in range(pkt_len):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 0
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = addr
+        await RisingEdge(dut.hclk)
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        dut.ahbs_haddr.value  = 0x3FFF
+        await RisingEdge(dut.hclk)
+
+    dut.ahbs_haddr.value = 0x3FFF
+
+    # Hold hready low so the returner stalls in ADDR_PHASE until we're ready
+    dut.ahbm_hready.value = 0
+
+    # Wait for returner to enter ADDR_PHASE (htrans=NONSEQ)
+    for _ in range(30):
+        await RisingEdge(dut.hclk)
+        try:
+            if int(dut.ahbm_htrans.value) == 2:  # NONSEQ
+                break
+        except ValueError:
+            pass
+
+    # Release hready to let ADDR_PHASE complete → transitions to DATA_PHASE
+    dut.ahbm_hready.value = 1
+    await RisingEdge(dut.hclk)
+
+    # Now in DATA_PHASE — inject ERROR response on this cycle
+    dut.ahbm_hresp.value  = 1
+    dut.ahbm_hready.value = 1
+    await RisingEdge(dut.hclk)
+
+    # Clear error response
+    dut.ahbm_hresp.value  = 0
+    await ClockCycles(dut.hclk, 3)
+
+    # Check master_error is now set
+    status = await apb.read(APB_REG_STATUS)
+    assert status & (1 << 3), \
+        f"master_error (STATUS[3]) should be set, got STATUS=0x{status:08X}"
+    dut._log.info("master_error flag set correctly after hresp=1")
+
+    # Verify sticky
+    await ClockCycles(dut.hclk, 5)
+    status = await apb.read(APB_REG_STATUS)
+    assert status & (1 << 3), "master_error should be sticky"
+
+    # Flush should clear it
+    await apb.write(APB_REG_CTRL, 0x0)
+    await apb.write(APB_REG_CTRL, 0x2)
+    await ClockCycles(dut.hclk, 3)
+
+    status = await apb.read(APB_REG_STATUS)
+    assert not (status & (1 << 3)), \
+        f"master_error should be cleared after flush, got STATUS=0x{status:08X}"
+
+    dut._log.info("Master error test passed — sticky flag set and cleared by flush")

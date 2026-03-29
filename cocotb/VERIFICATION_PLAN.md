@@ -125,7 +125,7 @@ directly from cocotb.
 | APB-34 | STATUS[4] pkt_committed reflects low  | STATUS bit 4 reads 0 when packet_committed input is deasserted             | New      |
 | APB-35 | STATUS[4] independent of other bits   | STATUS bit 4 is independent of bits [3:0]                                  | New      |
 
-### 4. tidelink (Top-Level Integration Tests) — 13 tests
+### 4. tidelink (Top-Level Integration Tests) — 25 tests
 
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
@@ -140,8 +140,20 @@ directly from cocotb.
 | TOP-09 | Threshold register RW                 | Read default (20), write new value, read back                               | Existing |
 | TOP-10 | Large packet exceeds threshold        | Single large packet delta exceeds threshold, immediate release              | Existing |
 | TOP-11 | Threshold zero backward compat        | Threshold=0 gives per-read immediate release                                | Existing |
-| TOP-12 | Packet committed IRQ propagation      | `packet_committed_irq` asserts on write, clears on read through hierarchy   | New      |
-| TOP-13 | STATUS[4] packet committed polling    | STATUS bit 4 mirrors `packet_committed_irq`, pollable via APB              | New      |
+| TOP-12 | Packet committed IRQ propagation      | `packet_committed_irq` asserts on write, clears on read through hierarchy   | Existing |
+| TOP-13 | STATUS[4] packet committed polling    | STATUS bit 4 mirrors `packet_committed_irq`, pollable via APB              | Existing |
+| TOP-14 | Flush resets state                    | EN=0 then FLUSH resets pointers, tokens to MAX, IRQ, release_acc to 0; re-enable works | New |
+| TOP-15 | Region 1 released tokens acc          | APB 0x020 W-add/R-clear behaviour + `released_tokens_irq` assert/deassert  | New      |
+| TOP-16 | Region 1 doorbell response acc        | APB 0x024 W-add/R-clear behaviour + `doorbell_irq` assert/deassert         | New      |
+| TOP-17 | Region 1 pair token counter           | Counter increment (0x020), decrement (0x02C), enable/disable (0x030)        | New      |
+| TOP-18 | FIFO overrun                          | Fill FIFO to token_count=0, extra write sets sticky STATUS[1], flush clears | New      |
+| TOP-19 | FIFO underrun                         | Read from empty FIFO sets sticky STATUS[2], flush clears                    | New      |
+| TOP-20 | APB pair base write                   | Write to offset 0x000, verify readback and returner targeting               | New      |
+| TOP-21 | APB packet word length read           | Read offset 0x008 reflects FIFO sideband `packet_word_length`              | New      |
+| TOP-22 | APB release acc read                  | Read offset 0x018 shows pending unreleased tokens (debug register)          | New      |
+| TOP-23 | Flush clears release acc              | Flush zeros `release_acc` even when non-zero                                | New      |
+| TOP-24 | AHB master wait states                | AHB slave inserts back-pressure (hready=0); returner FSM stalls and completes | New   |
+| TOP-25 | Master error flag                     | AHB ERROR response (hresp=1) sets sticky STATUS[3], flush clears            | New      |
 
 ### 5. tidelink_ahb (AHB Wrapper Tests) — 14 tests
 
@@ -220,7 +232,7 @@ corrupt.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 131 tests)
+# Run all test suites (6 environments, 143 tests)
 cd cocotb && make regression
 
 # Run individual suites
@@ -230,4 +242,36 @@ cd cocotb/tidelink_apb_regs && make
 cd cocotb/tidelink && make
 cd cocotb/tidelink_ahb && make
 cd cocotb/tidelink_py_pair && make
+
+# Run full regression with VCS code coverage collection
+cd cocotb && make coverage
+
+# Override coverage metrics (default: line+cond+fsm+tgl+branch)
+cd cocotb && make coverage CM_METRICS=line+cond
 ```
+
+## Code Coverage
+
+VCS code coverage is collected via `make coverage` at the top-level cocotb
+Makefile. Each environment is compiled and simulated with `-cm line+cond+fsm+tgl+branch`,
+and per-environment reports are generated with `urg` under `coverage_report/<env>/`.
+
+### Coverage Summary (as of 2026-03-29)
+
+| Environment       | Score | Line   | Cond  | Toggle | FSM   | Branch |
+|-------------------|-------|--------|-------|--------|-------|--------|
+| tidelink_fifo     | 93.26 | 100.00 | 80.00 | 94.34  | N/A   | 98.72  |
+| tidelink          | 81.42 | 97.75  | 79.66 | 58.21  | 75.00 | 96.49  |
+| tidelink_returner | 75.71 | 98.55  | 70.00 | 48.91  | 75.00 | 86.11  |
+| tidelink_apb_regs | 75.08 | 92.41  | 81.13 | 36.22  | N/A   | 90.57  |
+| tidelink_py_pair  | 71.42 | 88.85  | 71.19 | 39.44  | 75.00 | 82.63  |
+| tidelink_ahb      | 62.95 | 86.54  | 75.41 | 41.69  | 30.43 | 80.66  |
+
+### Remaining Coverage Gaps
+
+| Gap | Affected Module(s) | Improvement Strategy |
+|-----|---------------------|----------------------|
+| Toggle on upper data/address bits | All (especially `tidelink_returner`) | Randomised wide data patterns in packets |
+| FSM `ST_ADDR_PHASE → ST_IDLE` | `tidelink_returner` | Unusual AHB error-abort edge case; low priority |
+| `cmsdk_ahb_to_apb` bridge low coverage | `tidelink_ahb` | Add coverage tests to `tidelink_ahb` environment (wait states, error injection via AHB config port) |
+| Condition coverage on `valid_transfer` sub-expressions | `tidelink_fifo_ctrl` | Tests with hsel=0, htrans=IDLE, or enable=0 mid-transfer |

@@ -2,7 +2,8 @@
 // tidelink_random_test.sv
 ///////////////////////////////////////////////////////////////////////////////
 // Constrained-random test: multiple packets with random sizes and data.
-// Primary test for coverage closure.
+// Data integrity is verified by the scoreboard (comparing AHB bus-level
+// write and read data captured by the VIP monitors).
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_TIDELINK_RANDOM_TEST_SV
@@ -56,19 +57,10 @@ class tidelink_random_test extends tidelink_base_test;
       rd_pkt_seq.num_words = wr_pkt_seq.num_words;
       rd_pkt_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
 
-      // Verify data
-      for (int i = 0; i < wr_pkt_seq.num_words; i++) begin
-        if (rd_pkt_seq.read_data[i] !== wr_pkt_seq.generated_data[i]) begin
-          `uvm_error("TEST", $sformatf(
-            "Packet %0d word %0d mismatch: wrote=0x%08h, read=0x%08h",
-            pkt, i, wr_pkt_seq.generated_data[i], rd_pkt_seq.read_data[i]))
-        end
-      end
-
       // Wait for returner to release tokens
       repeat (20) @(posedge vif.clk);
 
-      // Trigger scoreboard packet comparison
+      // Verify data integrity via scoreboard
       env.sb.compare_packet_data();
     end
 
@@ -81,7 +73,10 @@ class tidelink_random_test extends tidelink_base_test;
     rd_seq = apb_read_sequence::type_id::create("rd_tokens_final");
     rd_seq.addr = REG_TOKEN_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("Final TOKEN_COUNT = %0d", rd_seq.rdata), UVM_LOW)
+    `uvm_info("TEST", $sformatf("Final TOKEN_COUNT = %0d (expected %0d)",
+      rd_seq.rdata, MAX_TOKENS), UVM_LOW)
+    if (rd_seq.rdata !== MAX_TOKENS)
+      `uvm_error("TEST", "Final TOKEN_COUNT mismatch — tokens not fully recovered")
 
     repeat (50) @(posedge vif.clk);
     phase.drop_objection(this);

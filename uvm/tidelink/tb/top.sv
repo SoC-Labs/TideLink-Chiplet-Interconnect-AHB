@@ -177,19 +177,21 @@ module test_top;
   assign ahb_ret_if.slave_if[0].hwdata    = dut_ahbm_hwdata;
   assign ahb_ret_if.slave_if[0].hmaster   = 4'h0;
   assign ahb_ret_if.slave_if[0].hmastlock = 1'b0;
-  assign ahb_ret_if.slave_if[0].hsel      = 1'b1;
 
   initial begin
-    force ahb_ret_if.master_if[0].haddr   = dut_ahbm_haddr;
-    force ahb_ret_if.master_if[0].htrans  = dut_ahbm_htrans;
-    force ahb_ret_if.master_if[0].hburst  = 3'b000;
-    force ahb_ret_if.master_if[0].hsize   = dut_ahbm_hsize;
-    force ahb_ret_if.master_if[0].hwrite  = dut_ahbm_hwrite;
-    force ahb_ret_if.master_if[0].hwdata  = dut_ahbm_hwdata;
-    force ahb_ret_if.master_if[0].hready  = ahb_ret_if.slave_if[0].hready;
-    force ahb_ret_if.master_if[0].hresp   = ahb_ret_if.slave_if[0].hresp;
-    force ahb_ret_if.master_if[0].hrdata  = ahb_ret_if.slave_if[0].hrdata;
-    force ahb_ret_if.master_if[0].hgrant  = 1'b1;
+    force ahb_ret_if.slave_if[0].hsel      = 1'b1;
+    force ahb_ret_if.slave_if[0].hready_in = ahb_ret_if.slave_if[0].hready;
+    force ahb_ret_if.master_if[0].haddr    = dut_ahbm_haddr;
+    force ahb_ret_if.master_if[0].htrans   = dut_ahbm_htrans;
+    force ahb_ret_if.master_if[0].hburst   = 3'b000;
+    force ahb_ret_if.master_if[0].hsize    = dut_ahbm_hsize;
+    force ahb_ret_if.master_if[0].hprot    = 4'h0;
+    force ahb_ret_if.master_if[0].hwrite   = dut_ahbm_hwrite;
+    force ahb_ret_if.master_if[0].hwdata   = dut_ahbm_hwdata;
+    force ahb_ret_if.master_if[0].hready   = ahb_ret_if.slave_if[0].hready;
+    force ahb_ret_if.master_if[0].hresp    = ahb_ret_if.slave_if[0].hresp;
+    force ahb_ret_if.master_if[0].hrdata   = ahb_ret_if.slave_if[0].hrdata;
+    force ahb_ret_if.master_if[0].hgrant   = 1'b1;
   end
 
   // ---------------------------------------------------------------

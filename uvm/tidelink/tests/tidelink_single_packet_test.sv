@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Tests single packet write and read through the TideLink FIFO.
 // Verifies:
-//   - Packet data integrity (write matches read)
+//   - Packet data integrity via scoreboard (write matches read on the bus)
 //   - Token counting (tokens consumed on write, released on read)
 //   - Returner fires token release after read completion
 //   - packet_committed_irq assertion
@@ -47,6 +47,8 @@ class tidelink_single_packet_test extends tidelink_base_test;
     rd_seq.addr = REG_TOKEN_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("Initial TOKEN_COUNT = %0d", rd_seq.rdata), UVM_LOW)
+    if (rd_seq.rdata !== MAX_TOKENS)
+      `uvm_error("TEST", $sformatf("Expected TOKEN_COUNT=%0d, got %0d", MAX_TOKENS, rd_seq.rdata))
 
     // ---------------------------------------------------------------
     // Step 3: Write a 4-word packet
@@ -71,13 +73,17 @@ class tidelink_single_packet_test extends tidelink_base_test;
     rd_seq.addr = REG_STATUS;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("STATUS = 0x%08h", rd_seq.rdata), UVM_LOW)
+    if (rd_seq.rdata[STATUS_PACKET_COMMITTED] !== 1'b1)
+      `uvm_error("TEST", "Expected packet_committed bit set in STATUS")
 
-    // Check token count decreased
+    // Check token count decreased (5 tokens consumed: 1 length + 4 data)
     rd_seq = apb_read_sequence::type_id::create("rd_tokens_after_wr");
     rd_seq.addr = REG_TOKEN_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("TOKEN_COUNT after write = %0d (expected %0d)",
       rd_seq.rdata, MAX_TOKENS - 5), UVM_LOW)
+    if (rd_seq.rdata !== (MAX_TOKENS - 5))
+      `uvm_error("TEST", "TOKEN_COUNT mismatch after write")
 
     // ---------------------------------------------------------------
     // Step 5: Read the packet back
@@ -91,18 +97,10 @@ class tidelink_single_packet_test extends tidelink_base_test;
     repeat (20) @(posedge vif.clk);
 
     // ---------------------------------------------------------------
-    // Step 6: Verify read data matches written data
+    // Step 6: Verify data integrity via scoreboard
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 6: Verify packet data integrity", UVM_LOW)
-    for (int i = 0; i < 4; i++) begin
-      if (rd_pkt_seq.read_data[i] !== wr_pkt_seq.packet_data[i]) begin
-        `uvm_error("TEST", $sformatf(
-          "Packet data mismatch at word %0d: wrote=0x%08h, read=0x%08h",
-          i, wr_pkt_seq.packet_data[i], rd_pkt_seq.read_data[i]))
-      end else begin
-        `uvm_info("TEST", $sformatf("Word %0d match: 0x%08h", i, rd_pkt_seq.read_data[i]), UVM_MEDIUM)
-      end
-    end
+    `uvm_info("TEST", "Step 6: Verify packet data integrity via scoreboard", UVM_LOW)
+    env.sb.compare_packet_data();
 
     // ---------------------------------------------------------------
     // Step 7: Check token count recovered
@@ -113,6 +111,8 @@ class tidelink_single_packet_test extends tidelink_base_test;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("TOKEN_COUNT after read = %0d (expected %0d)",
       rd_seq.rdata, MAX_TOKENS), UVM_LOW)
+    if (rd_seq.rdata !== MAX_TOKENS)
+      `uvm_error("TEST", "TOKEN_COUNT did not recover after read")
 
     repeat (20) @(posedge vif.clk);
     phase.drop_objection(this);

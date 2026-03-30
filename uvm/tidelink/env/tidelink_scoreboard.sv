@@ -70,11 +70,16 @@ class tidelink_scoreboard extends uvm_scoreboard;
   virtual function void write_fifo_ahb(svt_ahb_transaction tr);
     svt_ahb_master_transaction mtr;
 
+    // Filter out IDLE transactions (from gapped sequences) — check both
+    // bus-level trans_type and sequence-level xact_type for robustness
     if (tr.trans_type == svt_ahb_transaction::IDLE)
       return;
 
     if (!$cast(mtr, tr))
       `uvm_fatal("SB_CAST", "Failed to cast svt_ahb_transaction to svt_ahb_master_transaction")
+
+    if (mtr.xact_type == svt_ahb_transaction::IDLE)
+      return;
 
     if (mtr.xact_type == svt_ahb_transaction::WRITE) begin
       fifo_write_count++;
@@ -83,7 +88,7 @@ class tidelink_scoreboard extends uvm_scoreboard;
         `uvm_info("SB_FIFO", $sformatf("FIFO WRITE addr=0x%04h data=0x%08h (queued %0d words)",
           mtr.addr, mtr.data[0], write_packet_data.size()), UVM_HIGH)
       end
-    end else begin
+    end else if (mtr.xact_type == svt_ahb_transaction::READ) begin
       fifo_read_count++;
       if (mtr.data.size() > 0) begin
         read_packet_data.push_back(mtr.data[0]);
@@ -91,6 +96,7 @@ class tidelink_scoreboard extends uvm_scoreboard;
           mtr.addr, mtr.data[0], read_packet_data.size()), UVM_HIGH)
       end
     end
+    // Any other xact_type (e.g. IDLE that slipped past the filter) is ignored
   endfunction
 
   // ---------------------------------------------------------------
@@ -179,16 +185,7 @@ class tidelink_scoreboard extends uvm_scoreboard;
     // Final comparison if any data remains
     compare_packet_data();
 
-    `uvm_info("SB_REPORT", $sformatf(
-      "\n---------- TideLink Scoreboard Summary ----------\n" +
-      "  FIFO writes:          %0d\n" +
-      "  FIFO reads:           %0d\n" +
-      "  Packet word matches:  %0d\n" +
-      "  Packet word mismatches: %0d\n" +
-      "  Returner transactions: %0d\n" +
-      "  Returner addr errors:  %0d\n" +
-      "  APB transactions:      %0d\n" +
-      "-------------------------------------------------",
+    `uvm_info("SB_REPORT", $sformatf("\n---------- TideLink Scoreboard Summary ----------\n  FIFO writes:          %0d\n  FIFO reads:           %0d\n  Packet word matches:  %0d\n  Packet word mismatches: %0d\n  Returner transactions: %0d\n  Returner addr errors:  %0d\n  APB transactions:      %0d\n-------------------------------------------------",
       fifo_write_count, fifo_read_count,
       packet_match_count, packet_mismatch_count,
       returner_txn_count, returner_addr_errors,

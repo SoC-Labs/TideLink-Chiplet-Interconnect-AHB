@@ -88,6 +88,12 @@ module test_top;
   wire        dut_doorbell_irq;
   wire        dut_packet_committed_irq;
 
+  // Gate-level netlists have no parameters; RTL uses parameterised instantiation
+`ifdef GATE_SIM
+  tidelink u_dut (
+    .hclk               (clk),
+    .hresetn             (rst_n),
+`else
   tidelink #(
     .SYS_ADDR_W         (32),
     .SYS_DATA_W         (32),
@@ -98,6 +104,7 @@ module test_top;
   ) u_dut (
     .hclk               (clk),
     .hresetn             (rst_n),
+`endif
 
     // AHB Slave (FIFO) - driven by VIP master
     .ahbs_hsel           (1'b1),

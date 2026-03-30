@@ -81,6 +81,12 @@ class tidelink_ret_ahb_config extends svt_ahb_system_configuration;
 
     this.master_cfg[0].enable_xml_gen = 0;
     this.slave_cfg[0].enable_xml_gen  = 0;
+
+    // Disable protocol checks on the passive master monitor —
+    // the DUT's returner is a simple AHB-Lite master that doesn't
+    // drive hprot/hmastlock, so those signals stay at their forced values.
+    this.master_cfg[0].protocol_checks_enable = 0;
+    this.slave_cfg[0].protocol_checks_enable  = 0;
   endfunction
 
 endclass

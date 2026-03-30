@@ -75,6 +75,8 @@ package tidelink_pkg;
   `include "ahb_packet_write_sequence.sv"
   `include "ahb_packet_read_sequence.sv"
   `include "ahb_random_packet_sequence.sv"
+  `include "ahb_gapped_packet_write_sequence.sv"
+  `include "ahb_gapped_packet_read_sequence.sv"
 
   // ---------------------------------------------------------------
   // Tests
@@ -83,6 +85,7 @@ package tidelink_pkg;
   `include "tidelink_register_test.sv"
   `include "tidelink_single_packet_test.sv"
   `include "tidelink_random_test.sv"
+  `include "tidelink_stall_test.sv"
 
 endpackage
 

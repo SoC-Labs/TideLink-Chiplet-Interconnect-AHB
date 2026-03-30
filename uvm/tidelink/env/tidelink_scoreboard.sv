@@ -78,9 +78,6 @@ class tidelink_scoreboard extends uvm_scoreboard;
     if (!$cast(mtr, tr))
       `uvm_fatal("SB_CAST", "Failed to cast svt_ahb_transaction to svt_ahb_master_transaction")
 
-    if (mtr.xact_type == svt_ahb_transaction::IDLE)
-      return;
-
     if (mtr.xact_type == svt_ahb_transaction::WRITE) begin
       fifo_write_count++;
       if (mtr.data.size() > 0) begin

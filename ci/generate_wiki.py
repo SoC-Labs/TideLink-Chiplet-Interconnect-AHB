@@ -20,11 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from generate_dashboard import (
     collect_lint_data,
     collect_regression_data,
+    collect_uvm_data,
 )
 from parse_ppa import collect_ppa_data
 
 
-def generate_markdown(regression, lint, ppa, meta):
+def generate_markdown(regression, lint, ppa, meta, uvm=None):
     """Generate the full Markdown dashboard."""
 
     commit = meta.get("commit", "local")[:8]
@@ -79,6 +80,12 @@ def generate_markdown(regression, lint, ppa, meta):
     md.append(f"| Lint Errors | {lint_total_errors} |")
     md.append(f"| Lint Warnings | {lint_total_warnings} |")
 
+    if uvm and uvm["junit"]:
+        j = uvm["junit"]
+        md.append(f"| UVM Tests Passing | {j['passed']}/{j['tests']} |")
+    else:
+        md.append("| UVM Tests Passing | N/A |")
+
     if ppa and ppa.get("available"):
         s = ppa["summary"]
         timing_status = "MET" if s["timing_met"] else "VIOLATED"
@@ -117,6 +124,21 @@ def generate_markdown(regression, lint, ppa, meta):
         warnings = l["total_warnings"] if l["total_warnings"] >= 0 else "N/A"
         md.append(f"| `{l['module']}` | {errors} | {warnings} |")
     md.append("")
+
+    # ── UVM Results ──────────────────────────────────────────────────────
+    if uvm and uvm["junit"] and uvm["junit"]["tests"] > 0:
+        j = uvm["junit"]
+        md.append("## UVM Regression")
+        md.append("")
+        md.append(f"**{j['passed']}/{j['tests']}** tests passed")
+        md.append("")
+        md.append("| Test | Status | Time |")
+        md.append("|------|--------|------|")
+        for tc in j["test_cases"]:
+            status = tc["status"].upper()
+            time_s = f'{tc["time"]:.2f}s' if tc["time"] else "-"
+            md.append(f"| `{tc['name']}` | {status} | {time_s} |")
+        md.append("")
 
     # ── PPA Results ──────────────────────────────────────────────────────
     if ppa and ppa.get("available"):
@@ -213,6 +235,7 @@ def generate_markdown(regression, lint, ppa, meta):
 def main():
     cocotb_dir = os.environ.get("COCOTB_ARTIFACT_DIR", "cocotb")
     lint_dir = os.environ.get("LINT_ARTIFACT_DIR", ".")
+    uvm_dir = os.environ.get("UVM_ARTIFACT_DIR", "uvm/tidelink")
     dc_rpt_dir = os.environ.get(
         "DC_REPORT_DIR", "syn/asic/design-compiler/tidelink_dc_reports"
     )
@@ -232,11 +255,14 @@ def main():
     print(f"Collecting lint data from: {lint_dir}")
     lint = collect_lint_data(lint_dir)
 
+    print(f"Collecting UVM data from: {uvm_dir}")
+    uvm = collect_uvm_data(uvm_dir)
+
     print(f"Collecting PPA data from: {dc_rpt_dir}")
     ppa = collect_ppa_data(dc_rpt_dir)
 
     print("Generating wiki Markdown...")
-    markdown = generate_markdown(regression, lint, ppa, meta)
+    markdown = generate_markdown(regression, lint, ppa, meta, uvm=uvm)
 
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "CI-Dashboard.md")

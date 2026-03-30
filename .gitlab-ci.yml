@@ -175,6 +175,50 @@ cocotb-regression:
         - cocotb/*/results.xml
     expire_in: 30 days
 
+# ── UVM Regression ──────────────────────────────────────────────────────
+
+uvm-regression:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true   # Report failures but don't gate subsequent stages
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export DESIGNWARE_HOME="$VIP_HOME"
+  variables:
+    VIP_HOME: /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+  script:
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    # Compile once, then run all tests (results go into sim_build/*.log)
+    - make -C "$WORK_DIR/uvm/tidelink" run_all || true
+    # Convert UVM logs to JUnit XML (exit code = number of failures)
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink/sim_build"
+        "$WORK_DIR/uvm/tidelink/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink
+    - cp "$WORK_DIR/uvm/tidelink/results.xml"         uvm/tidelink/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink/sim_build/"*.log      uvm/tidelink/ 2>/dev/null || true
+    - |
+      # Write a .result summary for dashboard integration
+      if grep -q 'failures="0"' uvm/tidelink/results.xml 2>/dev/null; then
+        echo "PASS" > uvm/tidelink/.result
+      else
+        echo "FAIL" > uvm/tidelink/.result
+      fi
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink/*.log
+      - uvm/tidelink/.result
+    reports:
+      junit:
+        - uvm/tidelink/results.xml
+    expire_in: 30 days
+
 # ── RTL SAIF Generation ─────────────────────────────────────────────────
 
 rtl-saif:
@@ -307,6 +351,8 @@ dashboard:
     - job: hal-lint
       artifacts: true
     - job: cocotb-regression
+      artifacts: true
+    - job: uvm-regression
       artifacts: true
     - job: design-compiler
       artifacts: true

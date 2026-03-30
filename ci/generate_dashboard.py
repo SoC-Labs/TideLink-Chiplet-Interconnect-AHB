@@ -148,6 +148,18 @@ def collect_regression_data(cocotb_dir):
     return results
 
 
+def collect_uvm_data(uvm_dir):
+    """Collect UVM regression results from artifact directory."""
+    uvm_dir = Path(uvm_dir)
+    result_path = uvm_dir / ".result"
+    junit_path = uvm_dir / "results.xml"
+
+    result = parse_result_file(result_path) if result_path.exists() else "UNKNOWN"
+    junit = parse_junit_xml(junit_path) if junit_path.exists() else None
+
+    return {"env": "tidelink_uvm", "result": result, "junit": junit}
+
+
 def collect_lint_data(lint_dir):
     """Collect lint results from HAL log artifacts."""
     modules = [
@@ -183,7 +195,7 @@ def status_badge(status):
     return "badge-unknown"
 
 
-def generate_html(regression, lint, meta, ppa=None):
+def generate_html(regression, lint, meta, ppa=None, uvm=None):
     """Generate the full HTML dashboard."""
 
     # Aggregate stats
@@ -195,6 +207,15 @@ def generate_html(regression, lint, meta, ppa=None):
     total_test_pass = sum(r["junit"]["passed"] for r in regression if r["junit"])
     total_test_fail = sum(r["junit"]["failures"] + r["junit"]["errors"]
                          for r in regression if r["junit"])
+
+    # UVM stats
+    uvm_tests = 0
+    uvm_pass = 0
+    uvm_fail = 0
+    if uvm and uvm["junit"]:
+        uvm_tests = uvm["junit"]["tests"]
+        uvm_pass = uvm["junit"]["passed"]
+        uvm_fail = uvm["junit"]["failures"] + uvm["junit"]["errors"]
 
     lint_total_errors = sum(l["total_errors"] for l in lint if l["total_errors"] >= 0)
     lint_total_warnings = sum(l["total_warnings"] for l in lint if l["total_warnings"] >= 0)
@@ -331,6 +352,41 @@ def generate_html(regression, lint, meta, ppa=None):
                 <tbody>{cat_rows}</tbody>
             </table>
         </div>"""
+
+    # --- UVM results section ---
+    uvm_section = ""
+    if uvm and uvm["junit"] and uvm["junit"]["tests"] > 0:
+        j = uvm["junit"]
+        uvm_rows = ""
+        for tc in j["test_cases"]:
+            tc_badge = status_badge(tc["status"])
+            tc_name = tc["name"]
+            tc_time = f'{tc["time"]:.2f}s' if tc["time"] else ""
+            tc_msg = ""
+            if tc["message"]:
+                tc_msg = f'<div class="tc-message">{tc["message"]}</div>'
+            uvm_rows += f"""
+                <tr>
+                    <td><span class="badge {tc_badge}">{tc["status"].upper()}</span></td>
+                    <td>{tc_name}{tc_msg}</td>
+                    <td class="text-right">{tc_time}</td>
+                </tr>"""
+        uvm_result = uvm["result"]
+        uvm_badge = status_badge(uvm_result)
+        uvm_section = f"""
+<h2>UVM Regression</h2>
+<div class="card">
+    <p><span class="badge {uvm_badge}">{uvm_result}</span> &mdash;
+       {j["passed"]}/{j["tests"]} tests passed{f', {j["failures"]} failed' if j["failures"] else ''}</p>
+    <table>
+        <thead><tr><th>Status</th><th>Test</th><th>Time</th></tr></thead>
+        <tbody>{uvm_rows}</tbody>
+    </table>
+</div>"""
+    elif uvm:
+        uvm_section = """
+<h2>UVM Regression</h2>
+<div class="card"><p class="text-muted">No UVM test results available</p></div>"""
 
     # --- Build page ---
     overall_class = "status-pass" if overall_ok else "status-fail"
@@ -552,6 +608,10 @@ tr:last-child td {{ border-bottom: none; }}
         <div class="value {'val-green' if lint_total_warnings == 0 else 'val-yellow'}">{lint_total_warnings}</div>
         <div class="label">Lint Warnings</div>
     </div>
+    <div class="summary-card">
+        <div class="value {'val-green' if uvm_fail == 0 and uvm_tests > 0 else 'val-red' if uvm_fail > 0 else 'val-blue'}">{uvm_pass}/{uvm_tests}</div>
+        <div class="label">UVM Tests</div>
+    </div>
 </div>
 
 <h2>Regression Results</h2>
@@ -580,6 +640,8 @@ tr:last-child td {{ border-bottom: none; }}
 
 {cat_summary}
 
+{uvm_section}
+
 {ppa_section}
 
 <div class="footer">
@@ -603,6 +665,7 @@ def main():
     # Can be overridden via environment variables
     cocotb_dir = os.environ.get("COCOTB_ARTIFACT_DIR", "cocotb")
     lint_dir = os.environ.get("LINT_ARTIFACT_DIR", ".")
+    uvm_dir = os.environ.get("UVM_ARTIFACT_DIR", "uvm/tidelink")
     dc_rpt_dir = os.environ.get("DC_REPORT_DIR", "syn/asic/design-compiler/tidelink_dc_reports")
     output_dir = os.environ.get("OUTPUT_DIR", "public")
     output_file = os.path.join(output_dir, "index.html")
@@ -622,11 +685,14 @@ def main():
     print(f"Collecting lint data from: {lint_dir}")
     lint = collect_lint_data(lint_dir)
 
+    print(f"Collecting UVM data from: {uvm_dir}")
+    uvm = collect_uvm_data(uvm_dir)
+
     print(f"Collecting PPA data from: {dc_rpt_dir}")
     ppa = collect_ppa_data(dc_rpt_dir)
 
     print("Generating dashboard HTML...")
-    html = generate_html(regression, lint, meta, ppa=ppa)
+    html = generate_html(regression, lint, meta, ppa=ppa, uvm=uvm)
 
     os.makedirs(output_dir, exist_ok=True)
     Path(output_file).write_text(html)
@@ -638,6 +704,10 @@ def main():
     lint_errors = sum(l["total_errors"] for l in lint if l["total_errors"] >= 0)
     lint_warnings = sum(l["total_warnings"] for l in lint if l["total_warnings"] >= 0)
     print(f"  Regression: {reg_pass}/{reg_total} environments passing")
+    if uvm["junit"]:
+        print(f"  UVM: {uvm['junit']['passed']}/{uvm['junit']['tests']} tests passing")
+    else:
+        print(f"  UVM: no results")
     print(f"  Lint: {lint_errors} errors, {lint_warnings} warnings")
     if ppa.get("available"):
         s = ppa["summary"]

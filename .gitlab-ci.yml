@@ -1,5 +1,5 @@
 # TideLink GitLab CI Pipeline
-# Runs HAL lint, cocotb regression, and RTL Architect synthesis exploration
+# Runs HAL lint, cocotb regression, xprop formal, and RTL Architect synthesis exploration
 
 stages:
   - setup
@@ -19,6 +19,7 @@ variables:
   VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
   VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
   RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12
+  VC_FORMAL_HOME: /eda/synopsys/2022-23/RHELx86/VC-STATIC_2022.06-SP2
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
   # ARM CMSDK — uses ARM_IP_LIBRARY_PATH env var set on runner
@@ -83,6 +84,7 @@ preflight:
       check_dir "VERDI_HOME"    "$VERDI_HOME"
       check_dir "XCELIUM_HOME"  "$XCELIUM_HOME"
       check_dir "RTLA_HOME"     "$RTLA_HOME"
+      check_dir "VC_FORMAL_HOME" "$VC_FORMAL_HOME"
 
       echo ""
       echo "── IP Libraries ────────────────────────"
@@ -96,9 +98,10 @@ preflight:
 
       echo ""
       echo "── Tool Binaries (with PATH set) ───────"
-      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$RTLA_HOME/bin:$PATH"
+      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$RTLA_HOME/bin:$VC_FORMAL_HOME/bin:$PATH"
       check_bin "vcs"             "vcs"
       check_bin "hal"             "hal"
+      check_bin "vc_formal"       "vc_formal"
       check_bin "python3"         "python3"
       check_bin "cocotb-config"   "cocotb-config"
 
@@ -217,6 +220,40 @@ uvm-regression:
     reports:
       junit:
         - uvm/tidelink/results.xml
+    expire_in: 30 days
+
+# ── Formal X-propagation ───────────────────────────────────────────────
+
+xprop-regression:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vc_formal
+  before_script:
+    - export PATH="$VC_FORMAL_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+    - export TIDELINK_HOME="$WORK_DIR"
+  script:
+    - echo "VC Formal version:" && vc_formal -version 2>&1 | head -3 || true
+    - make -C "$WORK_DIR/formal" standalone
+  after_script:
+    - mkdir -p formal
+    - for env in tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs; do
+        mkdir -p "formal/$env";
+        cp "$WORK_DIR/formal/$env/run.log"            "formal/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/formal/$env/.result"             "formal/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/formal/$env/xprop.log"           "formal/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/formal/$env/xprop_results.rpt"   "formal/$env/" 2>/dev/null || true;
+        cp "$WORK_DIR/formal/$env/xprop_summary.rpt"   "formal/$env/" 2>/dev/null || true;
+      done
+  artifacts:
+    when: always
+    paths:
+      - formal/*/run.log
+      - formal/*/.result
+      - formal/*/xprop.log
+      - formal/*/xprop_results.rpt
+      - formal/*/xprop_summary.rpt
     expire_in: 30 days
 
 # ── RTL SAIF Generation ─────────────────────────────────────────────────
@@ -353,6 +390,8 @@ dashboard:
     - job: cocotb-regression
       artifacts: true
     - job: uvm-regression
+      artifacts: true
+    - job: xprop-regression
       artifacts: true
     - job: design-compiler
       artifacts: true

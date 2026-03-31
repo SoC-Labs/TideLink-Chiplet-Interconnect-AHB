@@ -13,19 +13,19 @@ from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
 
 from tidelink.packet import FifoPacket
 from tidelink.regs import (
-    MAX_TOKENS,
+    MAX_CREDITS,
     REG_PAIR_BASE, REG_REL_THRESHOLD, REG_PKT_WORD_LEN,
-    REG_TOKEN_COUNT, REG_STATUS, REG_DOORBELL,
+    REG_CREDIT_COUNT, REG_STATUS, REG_DOORBELL,
     REG_RELEASED_ACC, REG_DOORBELL_RESP_ACC,
-    REG_PAIR_TOKEN_COUNTER, REG_PAIR_TOKEN_CONSUME, REG_PAIR_TOKEN_ENABLE,
-    PAIR_RELEASED_TOKENS_OFFSET, PAIR_DOORBELL_RESPONSE_OFFSET,
+    REG_PAIR_CREDIT_COUNTER, REG_PAIR_CREDIT_CONSUME, REG_PAIR_CREDIT_ENABLE,
+    PAIR_RELEASED_CREDITS_OFFSET, PAIR_DOORBELL_RESPONSE_OFFSET,
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
 
 # Default TIDELINK_PAIR_BASE = 0, so returner targets are the raw offsets
-PAIR_RELEASED_TOKENS_ADDR   = PAIR_RELEASED_TOKENS_OFFSET
+PAIR_RELEASED_CREDITS_ADDR   = PAIR_RELEASED_CREDITS_OFFSET
 PAIR_DOORBELL_RESPONSE_ADDR = PAIR_DOORBELL_RESPONSE_OFFSET
 
 
@@ -67,7 +67,7 @@ class TidelinkAhbTB:
             mem_size=4096,
         )
 
-        self.sw_token_count = MAX_TOKENS
+        self.sw_credit_count = MAX_CREDITS
 
     async def reset(self):
         self.dut.hresetn.value = 0
@@ -75,7 +75,7 @@ class TidelinkAhbTB:
         self.dut.hresetn.value = 1
         # Wait for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
-        self.sw_token_count = MAX_TOKENS
+        self.sw_credit_count = MAX_CREDITS
         # Enable the data window (EN=1 in CTRL register at 0x01C)
         await self.cfg_write(0x01C, 0x1)
 
@@ -91,8 +91,8 @@ class TidelinkAhbTB:
         """Write a config register via the AHB config slave port."""
         await self.ahb_cfg.write(offset, data)
 
-    async def read_token_count(self) -> int:
-        return await self.cfg_read(REG_TOKEN_COUNT)
+    async def read_credit_count(self) -> int:
+        return await self.cfg_read(REG_CREDIT_COUNT)
 
     # ── FIFO Packet Write (inline AHB phases) ──────────────────────────
 
@@ -131,8 +131,8 @@ class TidelinkAhbTB:
         dut.ahbs_haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 1)
         if hit_fired:
-            self.sw_token_count -= pkt.total_words
-            self.log.info(f"{prefix}Write complete. sw_tokens={self.sw_token_count}")
+            self.sw_credit_count -= pkt.total_words
+            self.log.info(f"{prefix}Write complete. sw_credits={self.sw_credit_count}")
         return hit_fired
 
     # ── FIFO Packet Read (inline AHB phases) ───────────────────────────
@@ -187,8 +187,8 @@ class TidelinkAhbTB:
         await ClockCycles(dut.hclk, 3)
         pkt = FifoPacket(data=data)
         if hit_fired:
-            self.sw_token_count += pkt.total_words
-            self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_tokens={self.sw_token_count}")
+            self.sw_credit_count += pkt.total_words
+            self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_credits={self.sw_credit_count}")
         return pkt, hit_fired
 
     # ── Returner Helpers ────────────────────────────────────────────────
@@ -208,15 +208,15 @@ class TidelinkAhbTB:
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 @cocotb.test()
-async def test_01_reset_and_token_count_via_ahb(dut):
-    """After reset, reading token count via AHB config port returns MAX_TOKENS."""
+async def test_01_reset_and_credit_count_via_ahb(dut):
+    """After reset, reading credit count via AHB config port returns MAX_CREDITS."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
 
-    hw_tokens = await tb.read_token_count()
-    tb.log.info(f"Token count after reset (via AHB): {hw_tokens} (expected {MAX_TOKENS})")
-    assert hw_tokens == MAX_TOKENS, \
-        f"Expected {MAX_TOKENS}, got {hw_tokens}"
+    hw_credits = await tb.read_credit_count()
+    tb.log.info(f"Credit count after reset (via AHB): {hw_credits} (expected {MAX_CREDITS})")
+    assert hw_credits == MAX_CREDITS, \
+        f"Expected {MAX_CREDITS}, got {hw_credits}"
 
 
 @cocotb.test()
@@ -257,7 +257,7 @@ async def test_04_status_register_via_ahb(dut):
 
 @cocotb.test()
 async def test_05_accumulator_write_add_read_clear_via_ahb(dut):
-    """Released tokens accumulator: W-add / R-clear behaviour over AHB."""
+    """Released credits accumulator: W-add / R-clear behaviour over AHB."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
 
@@ -269,7 +269,7 @@ async def test_05_accumulator_write_add_read_clear_via_ahb(dut):
 
     # Read should return accumulated value and clear it
     acc_val = await tb.cfg_read(REG_RELEASED_ACC)
-    tb.log.info(f"Released tokens accumulator: {acc_val} (expected 35)")
+    tb.log.info(f"Released credits accumulator: {acc_val} (expected 35)")
     assert acc_val == 35, f"Expected 35, got {acc_val}"
 
     # Second read should return 0 (cleared on previous read)
@@ -297,30 +297,30 @@ async def test_06_doorbell_response_accumulator_via_ahb(dut):
 
 @cocotb.test()
 async def test_07_irq_from_accumulator_via_ahb(dut):
-    """Writing to released tokens accumulator via AHB should assert the IRQ."""
+    """Writing to released credits accumulator via AHB should assert the IRQ."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
 
     # IRQ should be low initially
-    assert dut.released_tokens_irq.value == 0, "IRQ should be low after reset"
+    assert dut.released_credits_irq.value == 0, "IRQ should be low after reset"
 
     # Write a non-zero value to the accumulator
     await tb.cfg_write(REG_RELEASED_ACC, 5)
     await ClockCycles(dut.hclk, 2)
 
-    assert dut.released_tokens_irq.value == 1, "IRQ should be high after write"
+    assert dut.released_credits_irq.value == 1, "IRQ should be high after write"
 
     # Read (clears accumulator) should deassert IRQ
     _ = await tb.cfg_read(REG_RELEASED_ACC)
     await ClockCycles(dut.hclk, 2)
 
-    assert dut.released_tokens_irq.value == 0, "IRQ should be low after read-clear"
+    assert dut.released_credits_irq.value == 0, "IRQ should be low after read-clear"
 
 
 @cocotb.test()
 async def test_08_doorbell_triggers_returner_via_ahb(dut):
     """Writing doorbell register via AHB config port triggers the returner
-    to write total token count to PAIR_DOORBELL_RESPONSE_ADDR."""
+    to write total credit count to PAIR_DOORBELL_RESPONSE_ADDR."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
 
@@ -333,37 +333,37 @@ async def test_08_doorbell_triggers_returner_via_ahb(dut):
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    # Returner should have written total token count to pair's doorbell response addr
+    # Returner should have written total credit count to pair's doorbell response addr
     written = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
-    tb.log.info(f"Returner wrote {written} to doorbell response (expected {MAX_TOKENS})")
-    assert written == MAX_TOKENS, \
-        f"Expected {MAX_TOKENS}, got {written}"
+    tb.log.info(f"Returner wrote {written} to doorbell response (expected {MAX_CREDITS})")
+    assert written == MAX_CREDITS, \
+        f"Expected {MAX_CREDITS}, got {written}"
 
 
 @cocotb.test()
 async def test_09_write_read_return_flow_via_ahb(dut):
     """Full flow: write packet, read it back, verify returner sends correct
-    token delta — all register access via AHB config port."""
+    credit delta — all register access via AHB config port."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
     await tb.cfg_write(REG_REL_THRESHOLD, 0)  # Immediate release mode
 
-    # Verify initial tokens via AHB
-    hw_tokens = await tb.read_token_count()
-    assert hw_tokens == MAX_TOKENS
+    # Verify initial credits via AHB
+    hw_credits = await tb.read_credit_count()
+    assert hw_credits == MAX_CREDITS
 
     # Write a packet
     pkt_data = [0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003]
     hit = await tb.write_packet(pkt_data, label="WR")
     assert hit, "write_complete should fire"
 
-    # Verify tokens decreased
-    hw_tokens = await tb.read_token_count()
-    expected = MAX_TOKENS - (len(pkt_data) + 1)
-    assert hw_tokens == expected, f"Expected {expected}, got {hw_tokens}"
+    # Verify credits decreased
+    hw_credits = await tb.read_credit_count()
+    expected = MAX_CREDITS - (len(pkt_data) + 1)
+    assert hw_credits == expected, f"Expected {expected}, got {hw_credits}"
 
     # Clear returner target
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     # Read packet back — triggers returner
     read_pkt, rhit = await tb.read_packet(label="RD")
@@ -375,13 +375,13 @@ async def test_09_write_read_return_flow_via_ahb(dut):
     await ClockCycles(dut.hclk, 2)
 
     # Verify returner sent correct delta
-    delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    delta = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     expected_delta = len(pkt_data) + 1
     assert delta == expected_delta, f"Expected delta {expected_delta}, got {delta}"
 
-    # Verify tokens restored
-    hw_tokens = await tb.read_token_count()
-    assert hw_tokens == MAX_TOKENS
+    # Verify credits restored
+    hw_credits = await tb.read_credit_count()
+    assert hw_credits == MAX_CREDITS
 
     tb.log.info("Full write-read-return flow verified via AHB config port")
 
@@ -400,7 +400,7 @@ async def test_10_separate_accumulators_via_ahb(dut):
     await tb.write_packet(pkt_data, label="SEP_WR")
 
     # Clear both targets
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
     tb.ahb_slave.memory.write(PAIR_DOORBELL_RESPONSE_ADDR, b'\x00\x00\x00\x00')
 
     # Read packet → channel 0 fires
@@ -408,7 +408,7 @@ async def test_10_separate_accumulators_via_ahb(dut):
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    delta_020 = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    delta_020 = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     total_024 = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
     assert delta_020 == expected_delta, f"0x020: expected {expected_delta}, got {delta_020}"
     assert total_024 == 0, f"0x024 should be untouched, got {total_024}"
@@ -419,65 +419,65 @@ async def test_10_separate_accumulators_via_ahb(dut):
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    delta_020_after = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    delta_020_after = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     total_024_after = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
-    hw_tokens = await tb.read_token_count()
+    hw_credits = await tb.read_credit_count()
 
     assert delta_020_after == expected_delta, \
         f"0x020 should be unchanged: expected {expected_delta}, got {delta_020_after}"
-    assert total_024_after == hw_tokens, \
-        f"0x024 should have token count {hw_tokens}, got {total_024_after}"
+    assert total_024_after == hw_credits, \
+        f"0x024 should have credit count {hw_credits}, got {total_024_after}"
 
     tb.log.info("Separate accumulators verified via AHB config port")
 
 
 @cocotb.test()
-async def test_11_pair_token_counter_via_ahb(dut):
-    """Pair token counter increments on released-token writes, decrements
+async def test_11_pair_credit_counter_via_ahb(dut):
+    """Pair credit counter increments on released-credit writes, decrements
     on consume writes, and can be disabled — all via AHB config port."""
     tb = TidelinkAhbTB(dut)
     await tb.reset()
 
     # Counter starts at 0, enabled by default
-    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    ctr = await tb.cfg_read(REG_PAIR_CREDIT_COUNTER)
     assert ctr == 0, f"Counter should be 0 after reset, got {ctr}"
 
-    en = await tb.cfg_read(REG_PAIR_TOKEN_ENABLE)
+    en = await tb.cfg_read(REG_PAIR_CREDIT_ENABLE)
     assert (en & 1) == 1, f"Counter should be enabled after reset, got {en}"
 
-    # Increment via released tokens accumulator write
+    # Increment via released credits accumulator write
     await tb.cfg_write(REG_RELEASED_ACC, 10)
     await ClockCycles(dut.hclk, 2)
 
-    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    ctr = await tb.cfg_read(REG_PAIR_CREDIT_COUNTER)
     assert ctr == 10, f"Counter should be 10, got {ctr}"
 
     # Decrement via consume register
-    await tb.cfg_write(REG_PAIR_TOKEN_CONSUME, 3)
+    await tb.cfg_write(REG_PAIR_CREDIT_CONSUME, 3)
     await ClockCycles(dut.hclk, 2)
 
-    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    ctr = await tb.cfg_read(REG_PAIR_CREDIT_COUNTER)
     assert ctr == 7, f"Counter should be 7, got {ctr}"
 
     # Disable counter
-    await tb.cfg_write(REG_PAIR_TOKEN_ENABLE, 0)
+    await tb.cfg_write(REG_PAIR_CREDIT_ENABLE, 0)
     await ClockCycles(dut.hclk, 2)
     await tb.cfg_write(REG_RELEASED_ACC, 50)
     await ClockCycles(dut.hclk, 2)
 
-    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    ctr = await tb.cfg_read(REG_PAIR_CREDIT_COUNTER)
     assert ctr == 7, f"Counter should be frozen at 7, got {ctr}"
 
     # Re-enable and verify it resumes
-    await tb.cfg_write(REG_PAIR_TOKEN_ENABLE, 1)
+    await tb.cfg_write(REG_PAIR_CREDIT_ENABLE, 1)
     await ClockCycles(dut.hclk, 2)
     await tb.cfg_write(REG_RELEASED_ACC, 5)
     await ClockCycles(dut.hclk, 2)
 
-    ctr = await tb.cfg_read(REG_PAIR_TOKEN_COUNTER)
+    ctr = await tb.cfg_read(REG_PAIR_CREDIT_COUNTER)
     assert ctr == 12, f"Counter should be 12, got {ctr}"
 
-    tb.log.info("Pair token counter verified via AHB config port")
+    tb.log.info("Pair credit counter verified via AHB config port")
 
 
 @cocotb.test()
@@ -508,7 +508,7 @@ async def test_13_threshold_batching_via_ahb(dut):
         hit = await tb.write_packet(data, label=f"BATCH_WR{i}")
         assert hit
 
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     # Read 3 packets: acc = 3*3 = 9 < 10
     for i in range(3):
@@ -516,7 +516,7 @@ async def test_13_threshold_batching_via_ahb(dut):
         assert rhit
         await ClockCycles(dut.hclk, 5)
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     assert returner_data == 0, \
         f"Returner should not fire yet (acc=9 < 10), got {returner_data}"
 
@@ -526,7 +526,7 @@ async def test_13_threshold_batching_via_ahb(dut):
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     assert returner_data == 12, \
         f"Expected batched delta=12, got {returner_data}"
 

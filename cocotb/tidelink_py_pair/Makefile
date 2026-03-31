@@ -10,7 +10,7 @@ VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 TOPLEVEL = tb_top
 
 # All test suites — cocotb loads each comma-separated module
-MODULE = test_doorbell,test_token_flow,test_bug_regression,test_pair_token_counter
+MODULE = test_doorbell,test_credit_flow,test_bug_regression,test_pair_credit_counter
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink.flist

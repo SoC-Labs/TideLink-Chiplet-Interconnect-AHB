@@ -10,7 +10,7 @@ Usage:
         cfg_base_addr=0x4001_0000,
     )
     tl.write_packet([0xAA, 0xBB, 0xCC])
-    tokens = tl.read_token_count()
+    credits = tl.read_credit_count()
 """
 
 from tidelink.driver import TidelinkDriver

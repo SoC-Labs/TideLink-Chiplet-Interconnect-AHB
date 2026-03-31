@@ -17,15 +17,15 @@ PAIR_BASE     = 0x4000_1000  # Must match tb_top parameter
 OFF_PAIR_BASE     = regs.REG_PAIR_BASE
 OFF_REL_THRESHOLD = regs.REG_REL_THRESHOLD
 OFF_PKT_WORD_LEN  = regs.REG_PKT_WORD_LEN
-OFF_TOKEN_COUNT   = regs.REG_TOKEN_COUNT
+OFF_CREDIT_COUNT   = regs.REG_CREDIT_COUNT
 OFF_STATUS        = regs.REG_STATUS
 OFF_DOORBELL      = regs.REG_DOORBELL
 OFF_REL_ACC       = regs.REG_REL_ACC
-OFF_REL_TOKENS    = regs.REG_RELEASED_ACC
+OFF_REL_CREDITS    = regs.REG_RELEASED_ACC
 OFF_DOORBELL_RSP  = regs.REG_DOORBELL_RESP_ACC
-OFF_PAIR_COUNTER  = regs.REG_PAIR_TOKEN_COUNTER
-OFF_PAIR_CONSUME  = regs.REG_PAIR_TOKEN_CONSUME
-OFF_PAIR_CTR_EN   = regs.REG_PAIR_TOKEN_ENABLE
+OFF_PAIR_COUNTER  = regs.REG_PAIR_CREDIT_COUNTER
+OFF_PAIR_CONSUME  = regs.REG_PAIR_CREDIT_CONSUME
+OFF_PAIR_CTR_EN   = regs.REG_PAIR_CREDIT_ENABLE
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ async def setup(dut):
     dut.paddr.value   = 0
     dut.pwdata.value  = 0
     dut.packet_word_length.value  = 0
-    dut.current_token_count.value = 0
+    dut.current_credit_count.value = 0
     dut.read_complete.value       = 0
     dut.returner_busy.value       = 0
     dut.fifo_overrun.value        = 0
@@ -140,15 +140,15 @@ async def test_r0_04_packet_word_length_ro(dut):
 
 
 @cocotb.test()
-async def test_r0_05_token_count_ro(dut):
-    """Token count reflects sideband input."""
+async def test_r0_05_credit_count_ro(dut):
+    """Credit count reflects sideband input."""
     await setup(dut)
     await do_reset(dut)
 
-    dut.current_token_count.value = 1000
+    dut.current_credit_count.value = 1000
     await ClockCycles(dut.hclk, 1)
 
-    val = await apb_read(dut, OFF_TOKEN_COUNT)
+    val = await apb_read(dut, OFF_CREDIT_COUNT)
     assert val == 1000, f"Expected 1000, got {val}"
 
 
@@ -207,44 +207,44 @@ async def test_r0_08_reset_deassert_pulse(dut):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @cocotb.test()
-async def test_r1_01_released_tokens_acc_add(dut):
-    """Released tokens accumulator adds incoming values."""
+async def test_r1_01_released_credits_acc_add(dut):
+    """Released credits accumulator adds incoming values."""
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 10)
-    await apb_write(dut, OFF_REL_TOKENS, 20)
-    val = await apb_read(dut, OFF_REL_TOKENS)
+    await apb_write(dut, OFF_REL_CREDITS, 10)
+    await apb_write(dut, OFF_REL_CREDITS, 20)
+    val = await apb_read(dut, OFF_REL_CREDITS)
     assert val == 30, f"Expected 30, got {val}"
 
 
 @cocotb.test()
-async def test_r1_02_released_tokens_read_clear(dut):
-    """Reading released tokens accumulator clears it."""
+async def test_r1_02_released_credits_read_clear(dut):
+    """Reading released credits accumulator clears it."""
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 100)
-    await apb_read(dut, OFF_REL_TOKENS)  # Clears
-    val = await apb_read(dut, OFF_REL_TOKENS)
+    await apb_write(dut, OFF_REL_CREDITS, 100)
+    await apb_read(dut, OFF_REL_CREDITS)  # Clears
+    val = await apb_read(dut, OFF_REL_CREDITS)
     assert val == 0, f"Expected 0 after clear, got {val}"
 
 
 @cocotb.test()
-async def test_r1_03_released_tokens_irq(dut):
-    """released_tokens_irq asserts on non-zero, clears on read."""
+async def test_r1_03_released_credits_irq(dut):
+    """released_credits_irq asserts on non-zero, clears on read."""
     await setup(dut)
     await do_reset(dut)
 
-    assert int(dut.released_tokens_irq.value) == 0
+    assert int(dut.released_credits_irq.value) == 0
 
-    await apb_write(dut, OFF_REL_TOKENS, 5)
+    await apb_write(dut, OFF_REL_CREDITS, 5)
     await ClockCycles(dut.hclk, 1)
-    assert int(dut.released_tokens_irq.value) == 1
+    assert int(dut.released_credits_irq.value) == 1
 
-    await apb_read(dut, OFF_REL_TOKENS)
+    await apb_read(dut, OFF_REL_CREDITS)
     await ClockCycles(dut.hclk, 1)
-    assert int(dut.released_tokens_irq.value) == 0
+    assert int(dut.released_credits_irq.value) == 0
 
 
 @cocotb.test()
@@ -280,23 +280,23 @@ async def test_r1_05_doorbell_irq(dut):
 
 @cocotb.test()
 async def test_r1_06_pair_counter_increment(dut):
-    """Pair token counter increments on write to released tokens (0x020)."""
+    """Pair credit counter increments on write to released credits (0x020)."""
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 10)
-    await apb_write(dut, OFF_REL_TOKENS, 5)
+    await apb_write(dut, OFF_REL_CREDITS, 10)
+    await apb_write(dut, OFF_REL_CREDITS, 5)
     val = await apb_read(dut, OFF_PAIR_COUNTER)
     assert val == 15, f"Expected 15, got {val}"
 
 
 @cocotb.test()
 async def test_r1_07_pair_counter_consume(dut):
-    """Pair token counter decrements on write to consume (0x02C)."""
+    """Pair credit counter decrements on write to consume (0x02C)."""
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 20)
+    await apb_write(dut, OFF_REL_CREDITS, 20)
     await apb_write(dut, OFF_PAIR_CONSUME, 7)
     val = await apb_read(dut, OFF_PAIR_COUNTER)
     assert val == 13, f"Expected 13, got {val}"
@@ -304,11 +304,11 @@ async def test_r1_07_pair_counter_consume(dut):
 
 @cocotb.test()
 async def test_r1_08_pair_counter_no_side_effect_read(dut):
-    """Reading pair token counter does NOT clear it."""
+    """Reading pair credit counter does NOT clear it."""
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 42)
+    await apb_write(dut, OFF_REL_CREDITS, 42)
     for _ in range(3):
         val = await apb_read(dut, OFF_PAIR_COUNTER)
         assert val == 42
@@ -320,9 +320,9 @@ async def test_r1_09_pair_counter_disable(dut):
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 30)
+    await apb_write(dut, OFF_REL_CREDITS, 30)
     await apb_write(dut, OFF_PAIR_CTR_EN, 0)  # Disable
-    await apb_write(dut, OFF_REL_TOKENS, 100)  # Ignored
+    await apb_write(dut, OFF_REL_CREDITS, 100)  # Ignored
     await apb_write(dut, OFF_PAIR_CONSUME, 10)  # Ignored
     val = await apb_read(dut, OFF_PAIR_COUNTER)
     assert val == 30, f"Expected 30 (frozen), got {val}"
@@ -334,11 +334,11 @@ async def test_r1_10_pair_counter_re_enable(dut):
     await setup(dut)
     await do_reset(dut)
 
-    await apb_write(dut, OFF_REL_TOKENS, 50)
+    await apb_write(dut, OFF_REL_CREDITS, 50)
     await apb_write(dut, OFF_PAIR_CTR_EN, 0)
-    await apb_write(dut, OFF_REL_TOKENS, 999)  # Ignored
+    await apb_write(dut, OFF_REL_CREDITS, 999)  # Ignored
     await apb_write(dut, OFF_PAIR_CTR_EN, 1)
-    await apb_write(dut, OFF_REL_TOKENS, 25)
+    await apb_write(dut, OFF_REL_CREDITS, 25)
     await apb_write(dut, OFF_PAIR_CONSUME, 10)
     val = await apb_read(dut, OFF_PAIR_COUNTER)
     assert val == 65, f"Expected 65, got {val}"
@@ -363,8 +363,8 @@ async def test_r1_11_pair_counter_enable_readback(dut):
 
 
 @cocotb.test()
-async def test_r1_12_token_delta_capture(dut):
-    """Token delta is captured on read_complete pulse (threshold=0 immediate mode)."""
+async def test_r1_12_credit_delta_capture(dut):
+    """Credit delta is captured on read_complete pulse (threshold=0 immediate mode)."""
     await setup(dut)
     await do_reset(dut)
 
@@ -380,20 +380,20 @@ async def test_r1_12_token_delta_capture(dut):
     dut.read_complete.value = 0
     await RisingEdge(dut.hclk)
 
-    delta = int(dut.token_delta_data.value)
+    delta = int(dut.credit_delta_data.value)
     assert delta == 6, f"Expected delta 6 (5+1), got {delta}"
 
 
 @cocotb.test()
-async def test_r1_13_token_count_data_passthrough(dut):
-    """token_count_data reflects current_token_count combinationally."""
+async def test_r1_13_credit_count_data_passthrough(dut):
+    """credit_count_data reflects current_credit_count combinationally."""
     await setup(dut)
     await do_reset(dut)
 
-    dut.current_token_count.value = 4096
+    dut.current_credit_count.value = 4096
     await ClockCycles(dut.hclk, 1)
 
-    val = int(dut.token_count_data.value)
+    val = int(dut.credit_count_data.value)
     assert val == 4096, f"Expected 4096, got {val}"
 
 
@@ -482,7 +482,7 @@ async def test_thresh_04_accumulates_below_threshold(dut):
     await RisingEdge(dut.hclk)
 
     # Trigger should NOT have fired
-    assert int(dut.release_tokens_trigger.value) == 0, \
+    assert int(dut.release_credits_trigger.value) == 0, \
         "Trigger should not fire below threshold"
 
     # Release accumulator should hold 5
@@ -492,7 +492,7 @@ async def test_thresh_04_accumulates_below_threshold(dut):
 
 @cocotb.test()
 async def test_thresh_05_trigger_fires_at_threshold(dut):
-    """Trigger fires when accumulated tokens cross the threshold."""
+    """Trigger fires when accumulated credits cross the threshold."""
     await setup(dut)
     await do_reset(dut)
 
@@ -517,8 +517,8 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     dut.read_complete.value = 0
     await RisingEdge(dut.hclk)
 
-    # token_delta_data should have the full batch (10)
-    delta = int(dut.token_delta_data.value)
+    # credit_delta_data should have the full batch (10)
+    delta = int(dut.credit_delta_data.value)
     assert delta == 10, f"Expected batched delta=10, got {delta}"
 
     # Accumulator should be cleared
@@ -541,7 +541,7 @@ async def test_thresh_06_threshold_zero_immediate(dut):
     dut.read_complete.value = 0
     await RisingEdge(dut.hclk)
 
-    delta = int(dut.token_delta_data.value)
+    delta = int(dut.credit_delta_data.value)
     assert delta == 8, f"Expected immediate delta=8 (7+1), got {delta}"
 
     acc = await apb_read(dut, OFF_REL_ACC)
@@ -550,7 +550,7 @@ async def test_thresh_06_threshold_zero_immediate(dut):
 
 @cocotb.test()
 async def test_thresh_07_release_acc_debug_readback(dut):
-    """Release accumulator at 0x018 reflects pending unreleased tokens."""
+    """Release accumulator at 0x018 reflects pending unreleased credits."""
     await setup(dut)
     await do_reset(dut)
 

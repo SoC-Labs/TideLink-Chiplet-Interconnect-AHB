@@ -22,7 +22,7 @@ module tidelink_returner #(
     input  wire                  hclk,
     input  wire                  hresetn,
 
-    // Interrupt channel 0 (release tokens — highest priority)
+    // Interrupt channel 0 (release credits — highest priority)
     input  wire                  interrupt_0,
     input  wire [SYS_ADDR_W-1:0] write_addr_0,
     input  wire [SYS_DATA_W-1:0] write_data_0,

@@ -4,8 +4,8 @@
 // Tests single packet write and read through the TideLink FIFO.
 // Verifies:
 //   - Packet data integrity via scoreboard (write matches read on the bus)
-//   - Token counting (tokens consumed on write, released on read)
-//   - Returner fires token release after read completion
+//   - Credit counting (credits consumed on write, released on read)
+//   - Returner fires credit release after read completion
 //   - packet_committed_irq assertion
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -40,15 +40,15 @@ class tidelink_single_packet_test extends tidelink_base_test;
     init_seq.start(env.apb_agt.sequencer);
 
     // ---------------------------------------------------------------
-    // Step 2: Check initial token count
+    // Step 2: Check initial credit count
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 2: Check initial token count", UVM_LOW)
-    rd_seq = apb_read_sequence::type_id::create("rd_tokens_init");
-    rd_seq.addr = REG_TOKEN_COUNT;
+    `uvm_info("TEST", "Step 2: Check initial credit count", UVM_LOW)
+    rd_seq = apb_read_sequence::type_id::create("rd_credits_init");
+    rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("Initial TOKEN_COUNT = %0d", rd_seq.rdata), UVM_LOW)
-    if (rd_seq.rdata !== MAX_TOKENS)
-      `uvm_error("TEST", $sformatf("Expected TOKEN_COUNT=%0d, got %0d", MAX_TOKENS, rd_seq.rdata))
+    `uvm_info("TEST", $sformatf("Initial CREDIT_COUNT = %0d", rd_seq.rdata), UVM_LOW)
+    if (rd_seq.rdata !== MAX_CREDITS)
+      `uvm_error("TEST", $sformatf("Expected CREDIT_COUNT=%0d, got %0d", MAX_CREDITS, rd_seq.rdata))
 
     // ---------------------------------------------------------------
     // Step 3: Write a 4-word packet
@@ -76,14 +76,14 @@ class tidelink_single_packet_test extends tidelink_base_test;
     if (rd_seq.rdata[STATUS_PACKET_COMMITTED] !== 1'b1)
       `uvm_error("TEST", "Expected packet_committed bit set in STATUS")
 
-    // Check token count decreased (5 tokens consumed: 1 length + 4 data)
-    rd_seq = apb_read_sequence::type_id::create("rd_tokens_after_wr");
-    rd_seq.addr = REG_TOKEN_COUNT;
+    // Check credit count decreased (5 credits consumed: 1 length + 4 data)
+    rd_seq = apb_read_sequence::type_id::create("rd_credits_after_wr");
+    rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("TOKEN_COUNT after write = %0d (expected %0d)",
-      rd_seq.rdata, MAX_TOKENS - 5), UVM_LOW)
-    if (rd_seq.rdata !== (MAX_TOKENS - 5))
-      `uvm_error("TEST", "TOKEN_COUNT mismatch after write")
+    `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
+      rd_seq.rdata, MAX_CREDITS - 5), UVM_LOW)
+    if (rd_seq.rdata !== (MAX_CREDITS - 5))
+      `uvm_error("TEST", "CREDIT_COUNT mismatch after write")
 
     // ---------------------------------------------------------------
     // Step 5: Read the packet back
@@ -93,7 +93,7 @@ class tidelink_single_packet_test extends tidelink_base_test;
     rd_pkt_seq.num_words = 4;
     rd_pkt_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
 
-    // Wait for returner to complete token release
+    // Wait for returner to complete credit release
     repeat (20) @(posedge vif.clk);
 
     // ---------------------------------------------------------------
@@ -103,16 +103,16 @@ class tidelink_single_packet_test extends tidelink_base_test;
     env.sb.compare_packet_data();
 
     // ---------------------------------------------------------------
-    // Step 7: Check token count recovered
+    // Step 7: Check credit count recovered
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 7: Check token count after read", UVM_LOW)
-    rd_seq = apb_read_sequence::type_id::create("rd_tokens_final");
-    rd_seq.addr = REG_TOKEN_COUNT;
+    `uvm_info("TEST", "Step 7: Check credit count after read", UVM_LOW)
+    rd_seq = apb_read_sequence::type_id::create("rd_credits_final");
+    rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("TOKEN_COUNT after read = %0d (expected %0d)",
-      rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-    if (rd_seq.rdata !== MAX_TOKENS)
-      `uvm_error("TEST", "TOKEN_COUNT did not recover after read")
+    `uvm_info("TEST", $sformatf("CREDIT_COUNT after read = %0d (expected %0d)",
+      rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+    if (rd_seq.rdata !== MAX_CREDITS)
+      `uvm_error("TEST", "CREDIT_COUNT did not recover after read")
 
     repeat (20) @(posedge vif.clk);
     phase.drop_objection(this);

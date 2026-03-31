@@ -34,7 +34,7 @@ module tb_top #(
     input  logic                    ahbm_hresp,
     input  logic   [SYS_DATA_W-1:0] ahbm_hrdata,
 
-    // APB Slave Interface (configuration + released tokens receiver)
+    // APB Slave Interface (configuration + released credits receiver)
     input  logic                    apbs_psel,
     input  logic                    apbs_penable,
     input  logic                    apbs_pwrite,
@@ -45,7 +45,7 @@ module tb_top #(
     output logic                    apbs_pslverr,
 
     // Interrupt outputs
-    output logic                    released_tokens_irq,
+    output logic                    released_credits_irq,
     output logic                    doorbell_irq,
     output logic                    packet_committed_irq
 );
@@ -86,7 +86,7 @@ module tb_top #(
         .apbs_prdata         (apbs_prdata),
         .apbs_pready         (apbs_pready),
         .apbs_pslverr        (apbs_pslverr),
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
         .packet_committed_irq(packet_committed_irq)
     );

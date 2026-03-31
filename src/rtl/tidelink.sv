@@ -67,7 +67,7 @@ module tidelink #(
     // --------------------------------------------------------------------------
     // Interrupt Outputs
     // --------------------------------------------------------------------------
-    output wire                     released_tokens_irq,  // Pair freed tokens (channel 0 deltas)
+    output wire                     released_credits_irq,  // Pair freed credits (channel 0 deltas)
     output wire                     doorbell_irq,         // Pair responded to doorbell (channel 1 totals)
     output wire                     packet_committed_irq  // Packet committed to FIFO (cleared on read addr 0)
 );
@@ -78,7 +78,7 @@ module tidelink #(
 
     // FIFO sideband signals
     logic                  read_complete;
-    logic [RAM_ADDR_W-2:0] current_token_count;
+    logic [RAM_ADDR_W-2:0] current_credit_count;
     logic [RAM_ADDR_W-1:0] packet_word_length;
 
     // FIFO error flags
@@ -96,13 +96,13 @@ module tidelink #(
     // APB register outputs → returner
     logic                    doorbell_trigger;
     logic                    reset_deassert_pulse;
-    logic [SYS_DATA_W-1:0]  token_delta_data;
-    logic [SYS_DATA_W-1:0]  token_count_data;
+    logic [SYS_DATA_W-1:0]  credit_delta_data;
+    logic [SYS_DATA_W-1:0]  credit_count_data;
     logic [SYS_ADDR_W-1:0]  pair_base_addr;
-    logic                    release_tokens_trigger;
+    logic                    release_credits_trigger;
 
     // Paired tidelink's target addresses (derived from RW pair_base_addr register)
-    wire [SYS_ADDR_W-1:0] PAIR_RELEASED_TOKENS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
+    wire [SYS_ADDR_W-1:0] PAIR_RELEASED_CREDITS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
     wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_RESPONSE_ADDR  = pair_base_addr + SYS_ADDR_W'(32'h0000_0024);
     wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR           = pair_base_addr + SYS_ADDR_W'(32'h0000_0014);
 
@@ -127,7 +127,7 @@ module tidelink #(
         .hresp                  (ahbs_hresp),
         .hrdata                 (ahbs_hrdata),
         .read_complete          (read_complete),
-        .current_token_count    (current_token_count),
+        .current_credit_count    (current_credit_count),
         .packet_word_length_out (packet_word_length),
         .packet_committed_irq   (packet_committed_irq),
         .overrun                (fifo_overrun),
@@ -159,7 +159,7 @@ module tidelink #(
         .pslverr             (apbs_pslverr),
         // FIFO sideband
         .packet_word_length  (packet_word_length),
-        .current_token_count (current_token_count),
+        .current_credit_count (current_credit_count),
         .read_complete       (read_complete),
         // Returner status
         .returner_busy       (returner_busy),
@@ -175,23 +175,23 @@ module tidelink #(
         // Returner control
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
-        .token_delta_data    (token_delta_data),
-        .token_count_data    (token_count_data),
-        .release_tokens_trigger(release_tokens_trigger),
+        .credit_delta_data    (credit_delta_data),
+        .credit_count_data    (credit_count_data),
+        .release_credits_trigger(release_credits_trigger),
         // Pair base address
         .pair_base_addr      (pair_base_addr),
         // IRQs
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq)
     );
 
     // --------------------------------------------------------------------------
     // TideLink Returner Instance
     // --------------------------------------------------------------------------
-    // Channel 0 (highest priority): release tokens on read completion
-    //   → writes DELTA to pair's released tokens accumulator (0x020)
+    // Channel 0 (highest priority): release credits on read completion
+    //   → writes DELTA to pair's released credits accumulator (0x020)
     // Channel 1: doorbell — triggered by software OR by pair's reset
-    //   → writes TOTAL free tokens to pair's doorbell response accumulator (0x024)
+    //   → writes TOTAL free credits to pair's doorbell response accumulator (0x024)
     // Channel 2 (lowest priority): reset doorbell — fires on reset deassertion
     //   → rings pair's doorbell register (0x014)
     tidelink_returner #(
@@ -201,15 +201,15 @@ module tidelink #(
         .hclk        (hclk),
         .hresetn     (hresetn),
 
-        // Channel 0: release tokens (gated by threshold accumulator)
-        .interrupt_0 (release_tokens_trigger),
-        .write_addr_0(PAIR_RELEASED_TOKENS_ADDR),
-        .write_data_0(token_delta_data),
+        // Channel 0: release credits (gated by threshold accumulator)
+        .interrupt_0 (release_credits_trigger),
+        .write_addr_0(PAIR_RELEASED_CREDITS_ADDR),
+        .write_data_0(credit_delta_data),
 
         // Channel 1: doorbell response
         .interrupt_1 (doorbell_trigger),
         .write_addr_1(PAIR_DOORBELL_RESPONSE_ADDR),
-        .write_data_1(token_count_data),
+        .write_data_1(credit_count_data),
 
         // Channel 2: reset doorbell
         .interrupt_2 (reset_deassert_pulse),

@@ -16,6 +16,7 @@ verdiLog
 *.result
 __pycache__
 *.pyc
+.vscode
 
 # Coverage Files
 .coverage

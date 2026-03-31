@@ -29,14 +29,14 @@ class tidelink_register_test extends tidelink_base_test;
     // ---------------------------------------------------------------
     `uvm_info("TEST", "Test 1: Read default register values", UVM_LOW)
 
-    // Token count should be MAX_TOKENS (4096) at reset
-    rd_seq = apb_read_sequence::type_id::create("rd_token_cnt");
-    rd_seq.addr = REG_TOKEN_COUNT;
+    // Credit count should be MAX_CREDITS (4096) at reset
+    rd_seq = apb_read_sequence::type_id::create("rd_credit_cnt");
+    rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("TOKEN_COUNT = 0x%08h (expected 0x%08h)",
-      rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-    if (rd_seq.rdata !== MAX_TOKENS)
-      `uvm_error("TEST", "TOKEN_COUNT default value mismatch")
+    `uvm_info("TEST", $sformatf("CREDIT_COUNT = 0x%08h (expected 0x%08h)",
+      rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+    if (rd_seq.rdata !== MAX_CREDITS)
+      `uvm_error("TEST", "CREDIT_COUNT default value mismatch")
 
     // Status should be 0 at reset
     rd_seq = apb_read_sequence::type_id::create("rd_status");
@@ -111,7 +111,7 @@ class tidelink_register_test extends tidelink_base_test;
     // ---------------------------------------------------------------
     // Test 5: Write to accumulator registers (W-add behavior)
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Test 5: Write to released tokens accumulator", UVM_LOW)
+    `uvm_info("TEST", "Test 5: Write to released credits accumulator", UVM_LOW)
 
     wr_seq = apb_write_sequence::type_id::create("wr_rel_acc");
     wr_seq.addr = REG_RELEASED_ACC;

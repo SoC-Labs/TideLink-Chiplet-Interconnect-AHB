@@ -7,26 +7,26 @@ from py_pair_helpers import (
     setup, setup_with_pair, do_reset, apb_write, apb_read,
     ahb_master_monitor, PairRegisterBank,
     OFF_DOORBELL, OFF_DOORBELL_RESPONSE,
-    PAIR_BASE, MAX_TOKENS,
+    PAIR_BASE, MAX_CREDITS,
 )
 
 
 @cocotb.test()
 async def test_01_reset_doorbell_flow(dut):
-    """Test the reset -> doorbell -> token response flow.
+    """Test the reset -> doorbell -> credit response flow.
 
     1. DUT comes out of reset
     2. Channel 2 fires: writes to pair's doorbell
-    3. Pair responds with its token count to DUT's doorbell response accumulator
+    3. Pair responds with its credit count to DUT's doorbell response accumulator
     4. DUT's doorbell_irq asserts
-    5. CPU reads accumulator -> gets pair's token count, IRQ clears
+    5. CPU reads accumulator -> gets pair's credit count, IRQ clears
     """
     await setup(dut)
 
     pair = PairRegisterBank(
         base_addr=PAIR_BASE,
         dut_apb_base=0,
-        max_tokens=MAX_TOKENS,
+        max_credits=MAX_CREDITS,
     )
 
     cocotb.start_soon(ahb_master_monitor(dut, pair))
@@ -45,9 +45,9 @@ async def test_01_reset_doorbell_flow(dut):
 
     acc_value = await apb_read(dut, OFF_DOORBELL_RESPONSE)
     dut._log.info(f"Doorbell response accumulator = {acc_value} "
-                  f"(expected {MAX_TOKENS})")
-    assert acc_value == MAX_TOKENS, \
-        f"Expected {MAX_TOKENS}, got {acc_value}"
+                  f"(expected {MAX_CREDITS})")
+    assert acc_value == MAX_CREDITS, \
+        f"Expected {MAX_CREDITS}, got {acc_value}"
 
     await ClockCycles(dut.hclk, 1)
     irq = int(dut.doorbell_irq.value)
@@ -63,20 +63,20 @@ async def test_02_software_doorbell(dut):
 
     1. DUT is out of reset and stable
     2. CPU writes to DUT's doorbell register
-    3. Channel 1 fires: writes DUT's total free tokens to pair's doorbell response accumulator
+    3. Channel 1 fires: writes DUT's total free credits to pair's doorbell response accumulator
     4. Pair model accumulates the value
     """
     pair = await setup_with_pair(dut)
 
-    pair.released_tokens_acc = 0
+    pair.released_credits_acc = 0
     pair.log_lines.clear()
 
     await apb_write(dut, OFF_DOORBELL, 1)
     await ClockCycles(dut.hclk, 10)
 
-    dut._log.info(f"Pair received: {pair.released_tokens_acc} tokens")
-    assert pair.released_tokens_acc == MAX_TOKENS, \
-        f"Pair should have received {MAX_TOKENS} tokens, got {pair.released_tokens_acc}"
+    dut._log.info(f"Pair received: {pair.released_credits_acc} credits")
+    assert pair.released_credits_acc == MAX_CREDITS, \
+        f"Pair should have received {MAX_CREDITS} credits, got {pair.released_credits_acc}"
 
     for line in pair.log_lines:
         dut._log.info(line)
@@ -96,7 +96,7 @@ async def test_03_independent_resets(dut):
     pair = PairRegisterBank(
         base_addr=PAIR_BASE,
         dut_apb_base=0,
-        max_tokens=MAX_TOKENS,
+        max_credits=MAX_CREDITS,
     )
     cocotb.start_soon(ahb_master_monitor(dut, pair))
 
@@ -111,14 +111,14 @@ async def test_03_independent_resets(dut):
 
     acc = await apb_read(dut, OFF_DOORBELL_RESPONSE)
     dut._log.info(f"After first reset: doorbell response accumulator = {acc}")
-    assert acc == MAX_TOKENS, f"Expected {MAX_TOKENS}, got {acc}"
+    assert acc == MAX_CREDITS, f"Expected {MAX_CREDITS}, got {acc}"
 
     await ClockCycles(dut.hclk, 2)
     assert int(dut.doorbell_irq.value) == 0, "doorbell_irq should clear after read"
 
     # Second reset (DUT only, pair stays running)
     dut._log.info("=== Second reset (DUT only) ===")
-    pair.token_count = MAX_TOKENS - 100
+    pair.credit_count = MAX_CREDITS - 100
     pair.doorbell_pending = False
 
     await do_reset(dut)
@@ -131,9 +131,9 @@ async def test_03_independent_resets(dut):
 
     acc = await apb_read(dut, OFF_DOORBELL_RESPONSE)
     dut._log.info(f"After second reset: doorbell response accumulator = {acc} "
-                  f"(pair has {pair.token_count} free)")
-    assert acc == MAX_TOKENS - 100, \
-        f"Expected {MAX_TOKENS - 100} (pair's current free tokens), got {acc}"
+                  f"(pair has {pair.credit_count} free)")
+    assert acc == MAX_CREDITS - 100, \
+        f"Expected {MAX_CREDITS - 100} (pair's current free credits), got {acc}"
 
     for line in pair.log_lines:
         dut._log.info(line)
@@ -144,11 +144,11 @@ async def test_04_pair_resets_while_dut_running(dut):
     """Simulate the pair resetting while the DUT is running.
 
     When the pair resets, it rings the DUT's doorbell. The DUT should
-    respond with its total free tokens to the pair's accumulator.
+    respond with its total free credits to the pair's accumulator.
     """
     pair = await setup_with_pair(dut)
 
-    pair.released_tokens_acc = 0
+    pair.released_credits_acc = 0
     pair.log_lines.clear()
     await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear DUT's doorbell response accumulator
 
@@ -156,9 +156,9 @@ async def test_04_pair_resets_while_dut_running(dut):
     await apb_write(dut, OFF_DOORBELL, 1)
     await ClockCycles(dut.hclk, 10)
 
-    dut._log.info(f"Pair received: {pair.released_tokens_acc} tokens from DUT")
-    assert pair.released_tokens_acc == MAX_TOKENS, \
-        f"Expected DUT to send {MAX_TOKENS} tokens, got {pair.released_tokens_acc}"
+    dut._log.info(f"Pair received: {pair.released_credits_acc} credits from DUT")
+    assert pair.released_credits_acc == MAX_CREDITS, \
+        f"Expected DUT to send {MAX_CREDITS} credits, got {pair.released_credits_acc}"
 
     for line in pair.log_lines:
         dut._log.info(line)
@@ -170,16 +170,16 @@ async def test_05_simultaneous_reset(dut):
 
     1. DUT resets and pair resets simultaneously
     2. DUT's reset channel rings pair's doorbell
-    3. Pair responds with its full token count
+    3. Pair responds with its full credit count
     4. Pair would ring DUT's doorbell (simulated via APB write)
-    5. Verify both sides receive each other's token counts
+    5. Verify both sides receive each other's credit counts
     """
     await setup(dut)
 
     pair = PairRegisterBank(
         base_addr=PAIR_BASE,
         dut_apb_base=0,
-        max_tokens=MAX_TOKENS,
+        max_credits=MAX_CREDITS,
     )
     cocotb.start_soon(ahb_master_monitor(dut, pair))
 
@@ -190,18 +190,18 @@ async def test_05_simultaneous_reset(dut):
 
     acc_from_pair = await apb_read(dut, OFF_DOORBELL_RESPONSE)
     dut._log.info(f"DUT received from pair: {acc_from_pair}")
-    assert acc_from_pair == MAX_TOKENS, \
-        f"DUT should receive {MAX_TOKENS} from pair, got {acc_from_pair}"
+    assert acc_from_pair == MAX_CREDITS, \
+        f"DUT should receive {MAX_CREDITS} from pair, got {acc_from_pair}"
 
-    pair.released_tokens_acc = 0
+    pair.released_credits_acc = 0
     await apb_write(dut, OFF_DOORBELL, 1)
     await ClockCycles(dut.hclk, 10)
 
-    dut._log.info(f"Pair received from DUT: {pair.released_tokens_acc}")
-    assert pair.released_tokens_acc == MAX_TOKENS, \
-        f"Pair should receive {MAX_TOKENS} from DUT, got {pair.released_tokens_acc}"
+    dut._log.info(f"Pair received from DUT: {pair.released_credits_acc}")
+    assert pair.released_credits_acc == MAX_CREDITS, \
+        f"Pair should receive {MAX_CREDITS} from DUT, got {pair.released_credits_acc}"
 
-    dut._log.info("Both sides received each other's token counts")
+    dut._log.info("Both sides received each other's credit counts")
 
     for line in pair.log_lines:
         dut._log.info(line)

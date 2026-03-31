@@ -45,18 +45,18 @@ print("=" * 60)
 print("TideLink Loopback Pair Hardware Test")
 print("=" * 60)
 
-# ── Test 1: Both instances report MAX_TOKENS ─────────────────────────────────
-print("\n[Test 1] Initial token counts")
-tokens_a = tl_a.read_token_count()
-tokens_b = tl_b.read_token_count()
-check("A tokens == MAX_TOKENS", tokens_a == regs.MAX_TOKENS,
-      f"got {tokens_a}")
-check("B tokens == MAX_TOKENS", tokens_b == regs.MAX_TOKENS,
-      f"got {tokens_b}")
+# ── Test 1: Both instances report MAX_CREDITS ─────────────────────────────────
+print("\n[Test 1] Initial credit counts")
+credits_a = tl_a.read_credit_count()
+credits_b = tl_b.read_credit_count()
+check("A credits == MAX_CREDITS", credits_a == regs.MAX_CREDITS,
+      f"got {credits_a}")
+check("B credits == MAX_CREDITS", credits_b == regs.MAX_CREDITS,
+      f"got {credits_b}")
 
 # ── Test 2: Reset doorbell handshake ─────────────────────────────────────────
 # After reset, each instance's channel 2 fires a doorbell to the pair.
-# The pair responds with its total token count.
+# The pair responds with its total credit count.
 print("\n[Test 2] Reset doorbell handshake")
 # Wait for any reset-triggered returner activity to complete
 time.sleep(0.01)
@@ -65,30 +65,30 @@ tl_b.wait_returner_idle()
 
 # A should have received B's doorbell response at 0x024
 doorbell_resp_a = tl_a.cfg_read(regs.REG_DOORBELL_RESP_ACC)
-check("A received B's token count", doorbell_resp_a == regs.MAX_TOKENS,
+check("A received B's credit count", doorbell_resp_a == regs.MAX_CREDITS,
       f"got {doorbell_resp_a}")
 
 # B should have received A's doorbell response at 0x024
 doorbell_resp_b = tl_b.cfg_read(regs.REG_DOORBELL_RESP_ACC)
-check("B received A's token count", doorbell_resp_b == regs.MAX_TOKENS,
+check("B received A's credit count", doorbell_resp_b == regs.MAX_CREDITS,
       f"got {doorbell_resp_b}")
 
-# ── Test 3: Write packet to A, read back, verify B gets token delta ──────────
-print("\n[Test 3] Token release flow A->B")
+# ── Test 3: Write packet to A, read back, verify B gets credit delta ──────────
+print("\n[Test 3] Credit release flow A->B")
 # Set threshold=0 for immediate release
 tl_a.cfg_write(regs.REG_REL_THRESHOLD, 0)
 
-# Clear B's released tokens accumulator
+# Clear B's released credits accumulator
 _ = tl_b.cfg_read(regs.REG_RELEASED_ACC)
 
 pkt_data = [0xDEAD, 0xBEEF, 0xCAFE]
 pkt = FifoPacket(data=pkt_data)
 tl_a.write_packet(pkt_data)
 
-tokens_a_after_write = tl_a.read_token_count()
-expected_tokens = regs.MAX_TOKENS - pkt.total_words
-check(f"A tokens == {expected_tokens}", tokens_a_after_write == expected_tokens,
-      f"got {tokens_a_after_write}")
+credits_a_after_write = tl_a.read_credit_count()
+expected_credits = regs.MAX_CREDITS - pkt.total_words
+check(f"A credits == {expected_credits}", credits_a_after_write == expected_credits,
+      f"got {credits_a_after_write}")
 
 read_data = tl_a.read_packet()
 tl_a.wait_returner_idle()
@@ -97,15 +97,15 @@ time.sleep(0.001)  # Allow returner write to propagate
 check("read data matches", read_data == pkt_data,
       f"got {[hex(w) for w in read_data]}")
 
-# B's released tokens accumulator should have the delta
+# B's released credits accumulator should have the delta
 released_at_b = tl_b.cfg_read(regs.REG_RELEASED_ACC)
 check(f"B received delta == {pkt.total_words}", released_at_b == pkt.total_words,
       f"got {released_at_b}")
 
-# A's tokens should be restored
-tokens_a_after_read = tl_a.read_token_count()
-check("A tokens restored", tokens_a_after_read == regs.MAX_TOKENS,
-      f"got {tokens_a_after_read}")
+# A's credits should be restored
+credits_a_after_read = tl_a.read_credit_count()
+check("A credits restored", credits_a_after_read == regs.MAX_CREDITS,
+      f"got {credits_a_after_read}")
 
 # ── Test 4: Software doorbell A->B ───────────────────────────────────────────
 print("\n[Test 4] Software doorbell A->B")
@@ -117,8 +117,8 @@ tl_a.wait_returner_idle()
 time.sleep(0.001)
 
 doorbell_resp_b = tl_b.cfg_read(regs.REG_DOORBELL_RESP_ACC)
-check(f"B received A's total tokens ({regs.MAX_TOKENS})",
-      doorbell_resp_b == regs.MAX_TOKENS,
+check(f"B received A's total credits ({regs.MAX_CREDITS})",
+      doorbell_resp_b == regs.MAX_CREDITS,
       f"got {doorbell_resp_b}")
 
 # ── Test 5: Threshold batching ───────────────────────────────────────────────
@@ -152,12 +152,12 @@ released_after = tl_b.cfg_read(regs.REG_RELEASED_ACC)
 check("B received batched delta == 12", released_after == 12,
       f"got {released_after}")
 
-# ── Test 6: Pair token counter ───────────────────────────────────────────────
-print("\n[Test 6] Pair token counter")
+# ── Test 6: Pair credit counter ───────────────────────────────────────────────
+print("\n[Test 6] Pair credit counter")
 tl_a.cfg_write(regs.REG_REL_THRESHOLD, 0)
 
-# Reset B's pair token counter by reading released acc (clears it)
-_ = tl_a.cfg_read(regs.REG_PAIR_TOKEN_COUNTER)
+# Reset B's pair credit counter by reading released acc (clears it)
+_ = tl_a.cfg_read(regs.REG_PAIR_CREDIT_COUNTER)
 # Write and read a packet on B -> B's returner sends delta to A
 pkt_data_b = [0x1111, 0x2222]
 tl_b.cfg_write(regs.REG_REL_THRESHOLD, 0)
@@ -166,10 +166,10 @@ tl_b.read_packet()
 tl_b.wait_returner_idle()
 time.sleep(0.001)
 
-# A's pair token counter should have incremented
-pair_ctr = tl_a.cfg_read(regs.REG_PAIR_TOKEN_COUNTER)
+# A's pair credit counter should have incremented
+pair_ctr = tl_a.cfg_read(regs.REG_PAIR_CREDIT_COUNTER)
 expected_ctr = len(pkt_data_b) + 1  # 3
-check(f"A pair token counter == {expected_ctr}", pair_ctr == expected_ctr,
+check(f"A pair credit counter == {expected_ctr}", pair_ctr == expected_ctr,
       f"got {pair_ctr}")
 
 # ── Summary ──────────────────────────────────────────────────────────────────

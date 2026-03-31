@@ -57,7 +57,7 @@ class tidelink_random_test extends tidelink_base_test;
       rd_pkt_seq.num_words = wr_pkt_seq.num_words;
       rd_pkt_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
 
-      // Wait for returner to release tokens
+      // Wait for returner to release credits
       repeat (20) @(posedge vif.clk);
 
       // Verify data integrity via scoreboard
@@ -70,13 +70,13 @@ class tidelink_random_test extends tidelink_base_test;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("Final STATUS = 0x%08h", rd_seq.rdata), UVM_LOW)
 
-    rd_seq = apb_read_sequence::type_id::create("rd_tokens_final");
-    rd_seq.addr = REG_TOKEN_COUNT;
+    rd_seq = apb_read_sequence::type_id::create("rd_credits_final");
+    rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("Final TOKEN_COUNT = %0d (expected %0d)",
-      rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-    if (rd_seq.rdata !== MAX_TOKENS)
-      `uvm_error("TEST", "Final TOKEN_COUNT mismatch — tokens not fully recovered")
+    `uvm_info("TEST", $sformatf("Final CREDIT_COUNT = %0d (expected %0d)",
+      rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+    if (rd_seq.rdata !== MAX_CREDITS)
+      `uvm_error("TEST", "Final CREDIT_COUNT mismatch — credits not fully recovered")
 
     repeat (50) @(posedge vif.clk);
     phase.drop_objection(this);

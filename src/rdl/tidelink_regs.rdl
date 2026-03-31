@@ -12,10 +12,10 @@
 
 addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     name = "TideLink APB Register Map";
-    desc = "Configuration, status, and token-flow registers for a single
+    desc = "Configuration, status, and credit-flow registers for a single
             TideLink instance. The address space is split into two regions:
             Region 0 (offsets 0x000-0x01F) for configuration and status,
-            Region 1 (offsets 0x020-0x03F) for incoming token receivers.";
+            Region 1 (offsets 0x020-0x03F) for incoming credit receivers.";
 
     default hw = r;
     default sw = r;
@@ -40,8 +40,8 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
 
     reg release_threshold_reg {
         name = "Release Threshold";
-        desc = "Minimum number of tokens to accumulate before the returner fires
-                a release-tokens packet to the paired TideLink. Reduces AHB master
+        desc = "Minimum number of credits to accumulate before the returner fires
+                a release-credits packet to the paired TideLink. Reduces AHB master
                 bus traffic for workloads with many small packets.
                 A value of 0 means release immediately on every read completion
                 (backward-compatible with pre-threshold behaviour). Default: 20.";
@@ -63,17 +63,17 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     };
     packet_word_length_reg packet_word_length @ 0x008;
 
-    reg token_count_reg {
-        name = "Token Count";
-        desc = "Read-only current count of free tokens in this TideLink's FIFO.
-                Starts at MAX_TOKENS after reset, decremented by writes,
+    reg credit_count_reg {
+        name = "Credit Count";
+        desc = "Read-only current count of free credits in this TideLink's FIFO.
+                Starts at MAX_CREDITS after reset, decremented by writes,
                 incremented by reads.";
 
         field {} count[13] = 0;
         count->sw = r;
         count->hw = w;
     };
-    token_count_reg token_count @ 0x00C;
+    credit_count_reg credit_count @ 0x00C;
 
     reg status_reg {
         name = "Status Register";
@@ -88,7 +88,7 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         overrun->sw = r;
         overrun->hw = w;
         overrun->desc = "Sticky. Set when a data window write is discarded because
-                         the buffer is full (token count == 0). Cleared by FLUSH.";
+                         the buffer is full (credit count == 0). Cleared by FLUSH.";
 
         field {} underrun[1] = 0;
         underrun->sw = r;
@@ -116,7 +116,7 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         name = "Doorbell Register";
         desc = "Write-only, self-clearing. Writing any value triggers the
                 doorbell mechanism: the returner sends this TideLink's total
-                free token count to the paired TideLink's doorbell response
+                free credit count to the paired TideLink's doorbell response
                 accumulator (pair offset 0x024).";
 
         field {} trigger[1] = 0;
@@ -128,7 +128,7 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
 
     reg release_acc_reg {
         name = "Release Accumulator";
-        desc = "Read-only debug register. Shows the number of tokens that have
+        desc = "Read-only debug register. Shows the number of credits that have
                 been freed by packet reads but not yet released to the paired
                 TideLink (i.e. accumulated below the release threshold). Cleared
                 to zero when the release threshold is crossed and the returner
@@ -164,11 +164,11 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     ctrl_reg ctrl @ 0x01C;
 
     // =========================================================================
-    // Region 1: Incoming Token Receivers (paddr[5] = 1)
+    // Region 1: Incoming Credit Receivers (paddr[5] = 1)
     // =========================================================================
 
     reg accumulator_reg {
-        name = "Token Accumulator";
+        name = "Credit Accumulator";
         desc = "Write-to-add / Read-to-clear accumulator.
                 Hardware (bus fabric) writes ADD the value to the running total.
                 Software reads return the accumulated total, then the register
@@ -182,49 +182,49 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         acc->rclr;
     };
 
-    accumulator_reg released_tokens_acc @ 0x020;
-    released_tokens_acc->name = "Released Tokens Accumulator";
-    released_tokens_acc->desc = "Receives channel-0 delta values from the paired TideLink's
+    accumulator_reg released_credits_acc @ 0x020;
+    released_credits_acc->name = "Released Credits Accumulator";
+    released_credits_acc->desc = "Receives channel-0 delta values from the paired TideLink's
                                  returner. Each write adds to the accumulator. A CPU read
-                                 returns the total and clears it. IRQ: released_tokens_irq.";
+                                 returns the total and clears it. IRQ: released_credits_irq.";
 
     accumulator_reg doorbell_response_acc @ 0x024;
     doorbell_response_acc->name = "Doorbell Response Accumulator";
-    doorbell_response_acc->desc = "Receives channel-1 total-token values from the paired
+    doorbell_response_acc->desc = "Receives channel-1 total-credit values from the paired
                                    TideLink's returner (doorbell responses). Each write adds
                                    to the accumulator. A CPU read returns the total and clears
                                    it. IRQ: doorbell_irq.";
 
-    reg pair_token_counter_reg {
-        name = "Pair Token Counter";
-        desc = "Running count of available tokens on the paired TideLink side.
+    reg pair_credit_counter_reg {
+        name = "Pair Credit Counter";
+        desc = "Running count of available credits on the paired TideLink side.
                 Automatically incremented when a value is written to the
-                Released Tokens Accumulator (0x020). Decremented by CPU writes
-                to the Pair Token Consume register (0x02C). Read-only from the
+                Released Credits Accumulator (0x020). Decremented by CPU writes
+                to the Pair Credit Consume register (0x02C). Read-only from the
                 CPU perspective (read without side effects). Gated by the
-                Pair Token Counter Enable register.";
+                Pair Credit Counter Enable register.";
 
         field {} count[32] = 0;
         count->sw = r;
         count->hw = rw;
     };
-    pair_token_counter_reg pair_token_counter @ 0x028;
+    pair_credit_counter_reg pair_credit_counter @ 0x028;
 
-    reg pair_token_consume_reg {
-        name = "Pair Token Consume";
-        desc = "Write-only. CPU writes the number of tokens being consumed.
-                The value is subtracted from the Pair Token Counter (0x028).
-                Only effective when the Pair Token Counter Enable is set.";
+    reg pair_credit_consume_reg {
+        name = "Pair Credit Consume";
+        desc = "Write-only. CPU writes the number of credits being consumed.
+                The value is subtracted from the Pair Credit Counter (0x028).
+                Only effective when the Pair Credit Counter Enable is set.";
 
         field {} consume[32] = 0;
         consume->sw = w;
         consume->hw = r;
     };
-    pair_token_consume_reg pair_token_consume @ 0x02C;
+    pair_credit_consume_reg pair_credit_consume @ 0x02C;
 
-    reg pair_token_counter_en_reg {
-        name = "Pair Token Counter Enable";
-        desc = "Bit 0 controls whether the Pair Token Counter (0x028) is
+    reg pair_credit_counter_en_reg {
+        name = "Pair Credit Counter Enable";
+        desc = "Bit 0 controls whether the Pair Credit Counter (0x028) is
                 updated. Default is enabled (1). When disabled (0), the
                 counter freezes and ignores increment/decrement events.";
 
@@ -232,5 +232,5 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         enable->sw = rw;
         enable->hw = r;
     };
-    pair_token_counter_en_reg pair_token_counter_en @ 0x030;
+    pair_credit_counter_en_reg pair_credit_counter_en @ 0x030;
 };

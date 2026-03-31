@@ -5,7 +5,7 @@
 //
 // Tracks:
 //   1. Packet data integrity: data written to FIFO matches data read back
-//   2. Returner transactions: verifies token returns and doorbell writes
+//   2. Returner transactions: verifies credit returns and doorbell writes
 //      target the correct pair addresses
 //   3. APB register operations for coverage
 ///////////////////////////////////////////////////////////////////////////////

@@ -1,6 +1,6 @@
 # TideLink
 
-A token-based FIFO interconnect for transferring variable-length packets between two cooperating SoCs over AHB. Each TideLink instance provides an AHB slave interface for writing/reading packets into SRAM, an AHB master interface for returning flow-control tokens to a paired TideLink, and an APB register interface for software configuration, status, and token tracking.
+A credit-based FIFO interconnect for transferring variable-length packets between two cooperating SoCs over AHB. Each TideLink instance provides an AHB slave interface for writing/reading packets into SRAM, an AHB master interface for returning flow-control credits to a paired TideLink, and an APB register interface for software configuration, status, and credit tracking.
 
 A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 
@@ -13,11 +13,11 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   │  AHB Slave ──► tidelink_fifo ──► SRAM                    │
   │  (packets)     (FIFO ctrl)       (cmsdk_fpga_sram)       │
   │                    │                                     │
-  │                    │ read_complete / token signals        │
+  │                    │ read_complete / credit signals        │
   │                    ▼                                     │
-  │  APB Slave ──► Config/Status/Token Registers             │
-  │  (software)    (base addr, tokens, doorbell,             │
-  │                 pair token counter)                       │
+  │  APB Slave ──► Config/Status/Credit Registers             │
+  │  (software)    (base addr, credits, doorbell,             │
+  │                 pair credit counter)                       │
   │                    │                                     │
   │                    │ interrupts                           │
   │                    ▼                                     │
@@ -39,7 +39,7 @@ The `tidelink_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge so both the FIFO dat
   └────────────────────────────────────────────┘
 ```
 
-A typical system connects two TideLink instances back-to-back: the AHB master of one writes token/doorbell updates into the APB-visible registers of the other. The `TIDELINK_PAIR_BASE` parameter sets the target address so all returner writes are routed automatically.
+A typical system connects two TideLink instances back-to-back: the AHB master of one writes credit/doorbell updates into the APB-visible registers of the other. The `TIDELINK_PAIR_BASE` parameter sets the target address so all returner writes are routed automatically.
 
 ### RTL Modules
 
@@ -47,26 +47,26 @@ A typical system connects two TideLink instances back-to-back: the AHB master of
 |--------|-------------|
 | `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Derives returner target addresses from the RW pair base register. |
 | `tidelink_ahb.sv` | AHB wrapper. Instantiates `tidelink` and adds a `cmsdk_ahb_to_apb` bridge so configuration registers are accessible via a second AHB slave port (`ahbc_*`). |
-| `tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, token accumulators, pair token counter, and reset detection. |
+| `tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, credit accumulators, pair credit counter, and reset detection. |
 | `tidelink_fifo.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
-| `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, token counting. Clears `packet_word_length` on completion to prevent stale hits. |
+| `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, credit counting. Clears `packet_word_length` on completion to prevent stale hits. |
 | `tidelink_returner.sv` | AHB Lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Uses pending registers so 1-cycle pulse interrupts are never lost, even if the returner is busy. |
 
 ### Returner Channels
 
 | Channel | Priority | Trigger | Target | Data |
 |---------|----------|---------|--------|------|
-| 0 | Highest | `read_complete` | Pair's released tokens accumulator (0x020) | Delta: tokens freed by this read (`packet_word_length + 1`) |
-| 1 | Medium | `doorbell_trigger` | Pair's doorbell response accumulator (0x024) | Total: all currently free tokens (`current_token_count`) |
+| 0 | Highest | `read_complete` | Pair's released credits accumulator (0x020) | Delta: credits freed by this read (`packet_word_length + 1`) |
+| 1 | Medium | `doorbell_trigger` | Pair's doorbell response accumulator (0x024) | Total: all currently free credits (`current_credit_count`) |
 | 2 | Lowest | `reset_deassert_pulse` | Pair's doorbell register (0x014) | `0x1` (any value triggers W1C doorbell) |
 
 ### Reset Handshake Flow
 
 When side A resets:
 1. A's channel 2 fires -> writes to B's doorbell register (0x014)
-2. B's doorbell triggers -> B's channel 1 writes B's total free tokens to A's doorbell response accumulator (0x024)
-3. A's `doorbell_irq` asserts -> CPU reads 0x024 to learn how many tokens B has available
-4. If pair token counter is enabled, incoming tokens at 0x020 also increment the hardware counter at 0x028
+2. B's doorbell triggers -> B's channel 1 writes B's total free credits to A's doorbell response accumulator (0x024)
+3. A's `doorbell_irq` asserts -> CPU reads 0x024 to learn how many credits B has available
+4. If pair credit counter is enabled, incoming credits at 0x020 also increment the hardware counter at 0x028
 
 ### APB Register Map
 
@@ -75,23 +75,23 @@ When side A resets:
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
 | 0x000 | Pair Base Address | RW | Base address of paired TideLink (defaults to `TIDELINK_PAIR_BASE` parameter, software-reconfigurable) |
-| 0x004 | Release Threshold | RW | Minimum tokens to accumulate before releasing to pair (default: 20, 0 = immediate release) |
+| 0x004 | Release Threshold | RW | Minimum credits to accumulate before releasing to pair (default: 20, 0 = immediate release) |
 | 0x008 | Packet Word Length | RO | Current packet word length from FIFO sideband |
-| 0x00C | Token Count | RO | Available FIFO tokens (local) |
+| 0x00C | Credit Count | RO | Available FIFO credits (local) |
 | 0x010 | Status | RO | `[0]` returner_busy, `[1]` overrun (sticky), `[2]` underrun (sticky), `[3]` master_error (sticky), `[4]` packet_committed (pollable) |
 | 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
-| 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
+| 0x018 | Release Accumulator | RO | Pending unreleased credits (debug) |
 | 0x01C | CTRL | RW | `[0]` EN (block enable), `[1]` FLUSH (self-clearing, EN must be 0) |
 
-#### Region 1 (offsets 0x020-0x03F): Incoming Token Receivers
+#### Region 1 (offsets 0x020-0x03F): Incoming Credit Receivers
 
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
-| 0x020 | Released Tokens Accumulator | W-add / R-clear | Incoming token deltas from pair's channel 0. Generates `released_tokens_irq`. Also increments the pair token counter (0x028) when enabled. |
-| 0x024 | Doorbell Response Accumulator | W-add / R-clear | Incoming doorbell responses from pair's channel 1 (total free tokens). Generates `doorbell_irq`. |
-| 0x028 | Pair Token Counter | RO | Running count of available tokens on the paired TideLink. Incremented by writes to 0x020, decremented by writes to 0x02C. Read without side effects. |
-| 0x02C | Pair Token Consume | WO | CPU writes the number of tokens being consumed from the pair. Subtracted from the pair token counter. |
-| 0x030 | Pair Token Counter Enable | RW | Bit 0: enable (default: 1). When 0, the pair token counter freezes and ignores all increments/decrements. |
+| 0x020 | Released Credits Accumulator | W-add / R-clear | Incoming credit deltas from pair's channel 0. Generates `released_credits_irq`. Also increments the pair credit counter (0x028) when enabled. |
+| 0x024 | Doorbell Response Accumulator | W-add / R-clear | Incoming doorbell responses from pair's channel 1 (total free credits). Generates `doorbell_irq`. |
+| 0x028 | Pair Credit Counter | RO | Running count of available credits on the paired TideLink. Incremented by writes to 0x020, decremented by writes to 0x02C. Read without side effects. |
+| 0x02C | Pair Credit Consume | WO | CPU writes the number of credits being consumed from the pair. Subtracted from the pair credit counter. |
+| 0x030 | Pair Credit Counter Enable | RW | Bit 0: enable (default: 1). When 0, the pair credit counter freezes and ignores all increments/decrements. |
 
 ### Block Enable and Error Handling
 
@@ -99,15 +99,15 @@ TideLink includes a CTRL register (0x01C) with block enable and flush controls, 
 
 #### CTRL Register (0x01C)
 
-- **EN (bit 0)**: Block enable. When 0 (default after reset), AHB data window accesses are gated — transfers are silently ignored and no pointer/token state changes. APB registers and the AHB master port remain functional. Software must set EN=1 before writing or reading packets.
-- **FLUSH (bit 1)**: Self-clearing. Writing 1 resets write/read pointers, packet metadata, token count (back to MAX_TOKENS), the release accumulator, and all sticky error flags. EN must be 0 before flushing. Use this for error recovery without a full hardware reset.
+- **EN (bit 0)**: Block enable. When 0 (default after reset), AHB data window accesses are gated — transfers are silently ignored and no pointer/credit state changes. APB registers and the AHB master port remain functional. Software must set EN=1 before writing or reading packets.
+- **FLUSH (bit 1)**: Self-clearing. Writing 1 resets write/read pointers, packet metadata, credit count (back to MAX_CREDITS), the release accumulator, and all sticky error flags. EN must be 0 before flushing. Use this for error recovery without a full hardware reset.
 
 #### Sticky Error Flags (STATUS register, 0x010)
 
 | Bit | Name | Description |
 |-----|------|-------------|
-| `[1]` | OVERRUN | Set when a valid AHB write occurs but the buffer is full (token_count == 0). The write data is silently discarded. |
-| `[2]` | UNDERRUN | Set when a valid AHB read occurs but the buffer is empty (token_count == MAX_TOKENS). |
+| `[1]` | OVERRUN | Set when a valid AHB write occurs but the buffer is full (credit_count == 0). The write data is silently discarded. |
+| `[2]` | UNDERRUN | Set when a valid AHB read occurs but the buffer is empty (credit_count == MAX_CREDITS). |
 | `[3]` | MASTER_ERROR | Set when the AHB master port (returner) receives an ERROR response (hresp=1) during the data phase of a credit return or doorbell write. |
 | `[4]` | PACKET_COMMITTED | Mirrors `packet_committed_irq`. Set when a packet is fully written to the FIFO, cleared when the receiver reads FIFO address 0. Pollable alternative to the interrupt. |
 
@@ -127,7 +127,7 @@ All three flags are sticky — once set, they remain asserted until cleared by F
 
 | Signal | Source | Cleared by |
 |--------|--------|------------|
-| `released_tokens_irq` | `released_tokens_acc != 0` (offset 0x020) | CPU reading 0x020 (read-to-clear) |
+| `released_credits_irq` | `released_credits_acc != 0` (offset 0x020) | CPU reading 0x020 (read-to-clear) |
 | `doorbell_irq` | `doorbell_response_acc != 0` (offset 0x024) | CPU reading 0x024 (read-to-clear) |
 | `packet_committed_irq` | `write_complete` in FIFO ctrl (packet fully written) | First read from FIFO address 0 (recipient starts reading) |
 
@@ -141,7 +141,7 @@ tidelink/
 │   │   ├── tidelink_ahb.sv           # AHB wrapper (with AHB-to-APB bridge)
 │   │   ├── tidelink_apb_regs.sv      # APB register block
 │   │   ├── tidelink_fifo.sv          # AHB slave FIFO interface
-│   │   ├── tidelink_fifo_ctrl.sv     # FIFO pointer/token control
+│   │   ├── tidelink_fifo_ctrl.sv     # FIFO pointer/credit control
 │   │   ├── tidelink_returner.sv      # AHB master (3-ch arbiter + pending)
 │   │   ├── fpga/tidelink_sram.sv     # FPGA SRAM wrapper
 │   │   └── generic/tidelink_sram.sv  # Generic SRAM wrapper
@@ -264,8 +264,8 @@ make help                                  # Print all available targets
 
 The `pynq/` directory contains test scripts for running on a Pynq-Z2 board with TideLink synthesised into the FPGA fabric. These reuse `tidelink.regs`, `FifoPacket`, and `PynqTidelinkDriver` from the shared Python package.
 
-- `test_single_instance.py` -- single TideLink instance, PS acts as the pair (register R/W, FIFO write/read, token tracking, doorbell)
-- `test_loopback_pair.py` -- two cross-connected TideLink instances (reset handshake, token release, threshold batching, pair token counter)
+- `test_single_instance.py` -- single TideLink instance, PS acts as the pair (register R/W, FIFO write/read, credit tracking, doorbell)
+- `test_loopback_pair.py` -- two cross-connected TideLink instances (reset handshake, credit release, threshold batching, pair credit counter)
 
 ```python
 from tidelink.pynq_driver import PynqTidelinkDriver
@@ -273,7 +273,7 @@ from tidelink import regs
 
 tl = PynqTidelinkDriver(fifo_base_addr=0x4000_0000, cfg_base_addr=0x4001_0000)
 tl.write_packet([0xDEAD, 0xBEEF])
-tokens = tl.read_token_count()
+credits = tl.read_credit_count()
 ```
 
 Requires a Vivado bitstream with `tidelink_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port. Update the base addresses in the test scripts to match your block design.

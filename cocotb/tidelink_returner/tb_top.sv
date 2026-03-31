@@ -8,7 +8,7 @@ module tb_top #(
     input  logic                  hclk,
     input  logic                  hresetn,
 
-    // Interrupt channel 0 (release tokens — highest priority)
+    // Interrupt channel 0 (release credits — highest priority)
     input  logic                  interrupt_0,
     input  logic [SYS_ADDR_W-1:0] write_addr_0,
     input  logic [SYS_DATA_W-1:0] write_data_0,

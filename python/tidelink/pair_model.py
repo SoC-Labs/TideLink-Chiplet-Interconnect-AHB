@@ -16,22 +16,22 @@ class PairRegisterBank:
 
     Processes writes that arrive from the DUT's AHB master:
     - Write to doorbell (0x014): triggers a response write back to the DUT
-    - Write to released tokens accumulator (0x020): accumulates the value
+    - Write to released credits accumulator (0x020): accumulates the value
     - Write to doorbell response accumulator (0x024): accumulates the value
 
-    The pair has its own token count (simulating its own FIFO state) and
+    The pair has its own credit count (simulating its own FIFO state) and
     can be independently reset.
     """
 
-    def __init__(self, base_addr, dut_apb_base, max_tokens):
+    def __init__(self, base_addr, dut_apb_base, max_credits):
         self.base_addr = base_addr
         self.dut_apb_base = dut_apb_base
-        self.max_tokens = max_tokens
+        self.max_credits = max_credits
         self.reset()
 
     def reset(self):
-        self.token_count = self.max_tokens
-        self.released_tokens_acc = 0
+        self.credit_count = self.max_credits
+        self.released_credits_acc = 0
         self.doorbell_pending = False
         self.log_lines = []
 
@@ -49,19 +49,19 @@ class PairRegisterBank:
 
         if offset == REG_DOORBELL:
             self.doorbell_pending = True
-            self.log(f"PAIR: Doorbell rung! Responding with token_count={self.token_count}")
+            self.log(f"PAIR: Doorbell rung! Responding with credit_count={self.credit_count}")
             responses.append((
                 self.dut_apb_base + REG_DOORBELL_RESP_ACC,
-                self.token_count
+                self.credit_count
             ))
         elif offset == REG_RELEASED_ACC:
-            self.released_tokens_acc += data
-            self.log(f"PAIR: Received {data} released tokens "
-                     f"(total accumulated: {self.released_tokens_acc})")
+            self.released_credits_acc += data
+            self.log(f"PAIR: Received {data} released credits "
+                     f"(total accumulated: {self.released_credits_acc})")
         elif offset == REG_DOORBELL_RESP_ACC:
-            self.released_tokens_acc += data
-            self.log(f"PAIR: Received {data} doorbell response tokens "
-                     f"(total accumulated: {self.released_tokens_acc})")
+            self.released_credits_acc += data
+            self.log(f"PAIR: Received {data} doorbell response credits "
+                     f"(total accumulated: {self.released_credits_acc})")
         else:
             self.log(f"PAIR: Unknown write to offset 0x{offset:03X} = 0x{data:08X}")
 

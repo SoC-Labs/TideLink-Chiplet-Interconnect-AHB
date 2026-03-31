@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-// SoCLabs TideLink Token-based FIFO Interface
+// SoCLabs TideLink Credit-based FIFO Interface
 // - A FIFO interface over AHB for transferring variable-length packets of data
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
@@ -35,7 +35,7 @@ module tidelink_fifo #(
     // Completion pulse: fires when a read packet finishes (drives returner)
     output wire                   read_complete,
 
-    output wire  [RAM_ADDR_W-2:0] current_token_count,
+    output wire  [RAM_ADDR_W-2:0] current_credit_count,
 
     // Sideband outputs for returner
     output logic [RAM_ADDR_W-1:0] packet_word_length_out,
@@ -70,7 +70,7 @@ module tidelink_fifo #(
     logic [RAM_ADDR_W-1:0] write_target_addr;
     logic [RAM_ADDR_W-1:0] read_target_addr;
     logic [RAM_ADDR_W-1:0] packet_word_length;
-    logic [RAM_ADDR_W-2:0] token_count;
+    logic [RAM_ADDR_W-2:0] credit_count;
     // hal lint_on URDREG UCOPNM
 
     // --------------------------------------------------------------------------
@@ -92,13 +92,13 @@ module tidelink_fifo #(
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),
         .read_complete       (read_complete),
-        .current_token_count (current_token_count),
+        .current_credit_count (current_credit_count),
         .write_ptr           (write_ptr),
         .read_ptr            (read_ptr),
         .write_target_addr   (write_target_addr),
         .read_target_addr    (read_target_addr),
         .packet_word_length  (packet_word_length),
-        .token_count         (token_count),
+        .credit_count         (credit_count),
         .packet_committed_irq(packet_committed_irq),
         .overrun             (overrun),
         .underrun            (underrun),

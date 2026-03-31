@@ -1,6 +1,6 @@
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink FIFO Control Logic
-// - Manages FIFO pointers, packet metadata, token counting, and address
+// - Manages FIFO pointers, packet metadata, credit counting, and address
 //   translation for the tidelink_fifo module.
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
@@ -39,8 +39,8 @@ module tidelink_fifo_ctrl #(
     // Completion pulses (directly drive returner interrupt)
     output wire                   read_complete,
 
-    // Token count output
-    output wire  [RAM_ADDR_W-2:0] current_token_count,
+    // Credit count output
+    output wire  [RAM_ADDR_W-2:0] current_credit_count,
 
     // Debug-visible state (exposed for testbench probing)
     output wire  [RAM_ADDR_W-1:0] write_ptr,
@@ -48,7 +48,7 @@ module tidelink_fifo_ctrl #(
     output wire  [RAM_ADDR_W-1:0] write_target_addr,
     output wire  [RAM_ADDR_W-1:0] read_target_addr,
     output wire  [RAM_ADDR_W-1:0] packet_word_length,
-    output wire  [RAM_ADDR_W-2:0] token_count,
+    output wire  [RAM_ADDR_W-2:0] credit_count,
 
     // Interrupt: asserts when a packet is committed to the FIFO, clears on
     // first read from address 0 (recipient starts reading the packet)
@@ -63,7 +63,7 @@ module tidelink_fifo_ctrl #(
     input  wire                   flush           // Self-clearing flush: resets pointers/counters/errors
 );
 
-    localparam MAX_TOKENS = (1 << (RAM_ADDR_W - 2));
+    localparam MAX_CREDITS = (1 << (RAM_ADDR_W - 2));
 
     // -------------------------------------------------------------------------
     // Internal Registers
@@ -74,7 +74,7 @@ module tidelink_fifo_ctrl #(
     logic                  check_addr_r,           check_addr_nxt;
     logic [RAM_ADDR_W-1:0] write_target_addr_r,   write_target_addr_nxt;
     logic [RAM_ADDR_W-1:0] read_target_addr_r,    read_target_addr_nxt;
-    logic [RAM_ADDR_W-2:0] token_count_r,          token_count_nxt;
+    logic [RAM_ADDR_W-2:0] credit_count_r,          credit_count_nxt;
 
     // -------------------------------------------------------------------------
     // Shared completion signals (gated on hready for correct AHB handshake)
@@ -191,28 +191,28 @@ module tidelink_fifo_ctrl #(
     end
 
     // -------------------------------------------------------------------------
-    // Token Counter
+    // Credit Counter
     // -------------------------------------------------------------------------
     always_comb begin
-        token_count_nxt = token_count_r;
+        credit_count_nxt = credit_count_r;
         if (write_complete) begin
-            token_count_nxt = token_count_r - (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
+            credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
         end else if (read_complete) begin
-            token_count_nxt = token_count_r + (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
+            credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
         end
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            token_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS));
+            credit_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS));
         end else if (flush) begin
-            token_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS));
+            credit_count_r <= (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS));
         end else begin
-            token_count_r <= token_count_nxt;
+            credit_count_r <= credit_count_nxt;
         end
     end
 
-    assign current_token_count = token_count_r;
+    assign current_credit_count = credit_count_r;
 
     // -------------------------------------------------------------------------
     // Packet Committed IRQ
@@ -246,17 +246,17 @@ module tidelink_fifo_ctrl #(
     // Overrun / Underrun Sticky Error Flags
     // -------------------------------------------------------------------------
     // OVERRUN: set when a valid AHB write occurs but the buffer is full
-    //          (token_count_r == 0). The write data is silently discarded.
+    //          (credit_count_r == 0). The write data is silently discarded.
     // UNDERRUN: set when a valid AHB read occurs but no packet is available
-    //           (token_count_r == MAX_TOKENS, i.e. buffer empty).
+    //           (credit_count_r == MAX_CREDITS, i.e. buffer empty).
     // Both are sticky — once set, they remain set until cleared by FLUSH.
 
     logic overrun_r, underrun_r;
 
     wire overrun_event  = hsel && htrans[1] && hready && enable && hwrite
-                          && (token_count_r == '0);
+                          && (credit_count_r == '0);
     wire underrun_event = hsel && htrans[1] && hready && enable && ~hwrite
-                          && (token_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_TOKENS)));
+                          && (credit_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS)));
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -282,6 +282,6 @@ module tidelink_fifo_ctrl #(
     assign write_target_addr  = write_target_addr_r;
     assign read_target_addr   = read_target_addr_r;
     assign packet_word_length = packet_word_length_r;
-    assign token_count        = token_count_r;
+    assign credit_count        = credit_count_r;
 
 endmodule

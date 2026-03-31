@@ -39,9 +39,9 @@ class tidelink_init_sequence extends uvm_sequence #(apb_master_transaction);
     wr_seq.data = rel_threshold;
     wr_seq.start(m_sequencer);
 
-    // Enable pair token counter
+    // Enable pair credit counter
     wr_seq = apb_write_sequence::type_id::create("wr_ptc_en");
-    wr_seq.addr = REG_PAIR_TOKEN_ENABLE;
+    wr_seq.addr = REG_PAIR_CREDIT_ENABLE;
     wr_seq.data = 32'h1;
     wr_seq.start(m_sequencer);
 

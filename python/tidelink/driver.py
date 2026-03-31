@@ -8,7 +8,7 @@ on four abstract primitives: cfg_read, cfg_write, fifo_read, fifo_write.
 import time
 from abc import ABC, abstractmethod
 
-from tidelink.regs import REG_PKT_WORD_LEN, REG_TOKEN_COUNT, REG_STATUS
+from tidelink.regs import REG_PKT_WORD_LEN, REG_CREDIT_COUNT, REG_STATUS
 
 
 class TidelinkDriver(ABC):
@@ -32,9 +32,9 @@ class TidelinkDriver(ABC):
 
     # ── Default implementations using the four primitives ────────────────
 
-    def read_token_count(self):
-        """Read the current FIFO token count."""
-        return self.cfg_read(REG_TOKEN_COUNT)
+    def read_credit_count(self):
+        """Read the current FIFO credit count."""
+        return self.cfg_read(REG_CREDIT_COUNT)
 
     def read_status_busy(self):
         """Return True if the returner is currently busy."""

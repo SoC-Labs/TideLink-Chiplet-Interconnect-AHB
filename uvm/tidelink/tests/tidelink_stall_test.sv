@@ -11,7 +11,7 @@
 //
 // Data integrity is verified in the back-to-back tests (single_packet,
 // random). This test focuses on:
-//   - Token count recovery after gapped write/read cycles
+//   - Credit count recovery after gapped write/read cycles
 //   - Correct returner behaviour under stalled bus conditions
 //   - No error flags (overrun/underrun) despite timing gaps
 ///////////////////////////////////////////////////////////////////////////////
@@ -34,14 +34,14 @@ class tidelink_stall_test extends tidelink_base_test;
     ahb_packet_write_sequence         wr_seq;
     ahb_packet_read_sequence          rd_seq;
     apb_read_sequence                 apb_rd_seq;
-    bit [31:0] token_count_before;
+    bit [31:0] credit_count_before;
 
     phase.raise_objection(this);
 
     `uvm_info("TEST", "=== Stall & Gap Test ===", UVM_LOW)
 
     // ---------------------------------------------------------------
-    // Initialize TideLink (immediate token release)
+    // Initialize TideLink (immediate credit release)
     // ---------------------------------------------------------------
     init_seq = tidelink_init_sequence::type_id::create("init_seq");
     init_seq.pair_base_addr = 32'h4000_0000;
@@ -59,14 +59,14 @@ class tidelink_stall_test extends tidelink_base_test;
       wr_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (5) @(posedge vif.clk);
 
-      // Check tokens consumed
+      // Check credits consumed
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_1a");
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT after write = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS - 5), UVM_LOW)
-      if (apb_rd_seq.rdata !== (MAX_TOKENS - 5))
-        `uvm_error("TEST", "Test 1: TOKEN_COUNT mismatch after write")
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS - 5), UVM_LOW)
+      if (apb_rd_seq.rdata !== (MAX_CREDITS - 5))
+        `uvm_error("TEST", "Test 1: CREDIT_COUNT mismatch after write")
 
       gapped_rd_seq = ahb_gapped_packet_read_sequence::type_id::create("rd_gapped_1");
       gapped_rd_seq.num_words = 4;
@@ -75,14 +75,14 @@ class tidelink_stall_test extends tidelink_base_test;
       gapped_rd_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (30) @(posedge vif.clk);
 
-      // Verify token recovery
+      // Verify credit recovery
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_1b");
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT after gapped read = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-      if (apb_rd_seq.rdata !== MAX_TOKENS)
-        `uvm_error("TEST", "Test 1: tokens not recovered after gapped read")
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT after gapped read = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+      if (apb_rd_seq.rdata !== MAX_CREDITS)
+        `uvm_error("TEST", "Test 1: credits not recovered after gapped read")
     end
 
     // ---------------------------------------------------------------
@@ -99,14 +99,14 @@ class tidelink_stall_test extends tidelink_base_test;
       gapped_wr_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (5) @(posedge vif.clk);
 
-      // Check tokens consumed (7 tokens: 1 length + 6 data)
+      // Check credits consumed (7 credits: 1 length + 6 data)
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_2a");
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT after gapped write = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS - 7), UVM_LOW)
-      if (apb_rd_seq.rdata !== (MAX_TOKENS - 7))
-        `uvm_error("TEST", "Test 2: TOKEN_COUNT mismatch after gapped write")
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT after gapped write = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS - 7), UVM_LOW)
+      if (apb_rd_seq.rdata !== (MAX_CREDITS - 7))
+        `uvm_error("TEST", "Test 2: CREDIT_COUNT mismatch after gapped write")
 
       rd_seq = ahb_packet_read_sequence::type_id::create("rd_b2b_1");
       rd_seq.num_words = 6;
@@ -114,12 +114,12 @@ class tidelink_stall_test extends tidelink_base_test;
       repeat (30) @(posedge vif.clk);
 
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_2b");
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT after b2b read = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-      if (apb_rd_seq.rdata !== MAX_TOKENS)
-        `uvm_error("TEST", "Test 2: tokens not recovered after back-to-back read")
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT after b2b read = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+      if (apb_rd_seq.rdata !== MAX_CREDITS)
+        `uvm_error("TEST", "Test 2: credits not recovered after back-to-back read")
     end
 
     // ---------------------------------------------------------------
@@ -144,12 +144,12 @@ class tidelink_stall_test extends tidelink_base_test;
       repeat (30) @(posedge vif.clk);
 
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_3");
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT after dual-gapped = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-      if (apb_rd_seq.rdata !== MAX_TOKENS)
-        `uvm_error("TEST", "Test 3: tokens not recovered after dual-gapped packet")
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT after dual-gapped = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+      if (apb_rd_seq.rdata !== MAX_CREDITS)
+        `uvm_error("TEST", "Test 3: credits not recovered after dual-gapped packet")
     end
 
     // ---------------------------------------------------------------
@@ -186,14 +186,14 @@ class tidelink_stall_test extends tidelink_base_test;
       gapped_rd_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (30) @(posedge vif.clk);
 
-      // Verify token recovery per-packet
+      // Verify credit recovery per-packet
       apb_rd_seq = apb_read_sequence::type_id::create($sformatf("rd_tk_4_%0d", pkt));
-      apb_rd_seq.addr = REG_TOKEN_COUNT;
+      apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
-      `uvm_info("TEST", $sformatf("TOKEN_COUNT = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_TOKENS), UVM_LOW)
-      if (apb_rd_seq.rdata !== MAX_TOKENS)
-        `uvm_error("TEST", $sformatf("Test 4 packet %0d: tokens not recovered", pkt))
+      `uvm_info("TEST", $sformatf("CREDIT_COUNT = %0d (expected %0d)",
+        apb_rd_seq.rdata, MAX_CREDITS), UVM_LOW)
+      if (apb_rd_seq.rdata !== MAX_CREDITS)
+        `uvm_error("TEST", $sformatf("Test 4 packet %0d: credits not recovered", pkt))
     end
 
     // ---------------------------------------------------------------

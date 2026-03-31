@@ -26,7 +26,7 @@ RETURNER_BRAM_BASE = 0x4002_0000   # BRAM that captures returner master writes
 RETURNER_BRAM_SIZE = 0x1000
 
 # Returner target addresses (pair_base defaults to 0)
-PAIR_RELEASED_TOKENS_ADDR   = 0x020
+PAIR_RELEASED_CREDITS_ADDR   = 0x020
 PAIR_DOORBELL_RESPONSE_ADDR = 0x024
 
 passed = 0
@@ -51,11 +51,11 @@ print("=" * 60)
 print("TideLink Single Instance Hardware Test")
 print("=" * 60)
 
-# ── Test 1: Token count after reset ──────────────────────────────────────────
-print("\n[Test 1] Token count after reset")
-tokens = tl.read_token_count()
-check("token count == MAX_TOKENS", tokens == regs.MAX_TOKENS,
-      f"got {tokens}, expected {regs.MAX_TOKENS}")
+# ── Test 1: Credit count after reset ──────────────────────────────────────────
+print("\n[Test 1] Credit count after reset")
+credits = tl.read_credit_count()
+check("credit count == MAX_CREDITS", credits == regs.MAX_CREDITS,
+      f"got {credits}, expected {regs.MAX_CREDITS}")
 
 # ── Test 2: Release threshold default ────────────────────────────────────────
 print("\n[Test 2] Release threshold default")
@@ -74,20 +74,20 @@ print("\n[Test 4] Pair base address default")
 pair_base = tl.cfg_read(regs.REG_PAIR_BASE)
 check("pair base == 0", pair_base == 0, f"got 0x{pair_base:08X}")
 
-# ── Test 5: FIFO write and token decrement ───────────────────────────────────
-print("\n[Test 5] FIFO write and token decrement")
+# ── Test 5: FIFO write and credit decrement ───────────────────────────────────
+print("\n[Test 5] FIFO write and credit decrement")
 pkt_data = [0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003]
 pkt = FifoPacket(data=pkt_data)
 tl.write_packet(pkt_data)
-tokens_after_write = tl.read_token_count()
-expected = regs.MAX_TOKENS - pkt.total_words
-check(f"tokens == {expected}", tokens_after_write == expected,
-      f"got {tokens_after_write}")
+credits_after_write = tl.read_credit_count()
+expected = regs.MAX_CREDITS - pkt.total_words
+check(f"credits == {expected}", credits_after_write == expected,
+      f"got {credits_after_write}")
 
 # ── Test 6: FIFO read and returner delta ─────────────────────────────────────
 print("\n[Test 6] FIFO read and returner delta")
 # Clear the returner BRAM target
-returner_bram.write(PAIR_RELEASED_TOKENS_ADDR, 0)
+returner_bram.write(PAIR_RELEASED_CREDITS_ADDR, 0)
 
 read_data = tl.read_packet()
 tl.wait_returner_idle()
@@ -95,15 +95,15 @@ tl.wait_returner_idle()
 check("read data matches written", read_data == pkt_data,
       f"got {[hex(w) for w in read_data]}")
 
-returner_delta = returner_bram.read(PAIR_RELEASED_TOKENS_ADDR)
+returner_delta = returner_bram.read(PAIR_RELEASED_CREDITS_ADDR)
 check(f"returner delta == {pkt.total_words}", returner_delta == pkt.total_words,
       f"got {returner_delta}")
 
-# ── Test 7: Tokens restored after read ───────────────────────────────────────
-print("\n[Test 7] Tokens restored after read")
-tokens_after_read = tl.read_token_count()
-check("tokens == MAX_TOKENS", tokens_after_read == regs.MAX_TOKENS,
-      f"got {tokens_after_read}")
+# ── Test 7: Credits restored after read ───────────────────────────────────────
+print("\n[Test 7] Credits restored after read")
+credits_after_read = tl.read_credit_count()
+check("credits == MAX_CREDITS", credits_after_read == regs.MAX_CREDITS,
+      f"got {credits_after_read}")
 
 # ── Test 8: Doorbell triggers returner ───────────────────────────────────────
 print("\n[Test 8] Doorbell triggers returner")
@@ -111,8 +111,8 @@ returner_bram.write(PAIR_DOORBELL_RESPONSE_ADDR, 0)
 tl.cfg_write(regs.REG_DOORBELL, 1)
 tl.wait_returner_idle()
 doorbell_resp = returner_bram.read(PAIR_DOORBELL_RESPONSE_ADDR)
-check(f"doorbell wrote token count {regs.MAX_TOKENS}",
-      doorbell_resp == regs.MAX_TOKENS,
+check(f"doorbell wrote credit count {regs.MAX_CREDITS}",
+      doorbell_resp == regs.MAX_CREDITS,
       f"got {doorbell_resp}")
 
 # ── Test 9: Accumulator W-add / R-clear ──────────────────────────────────────

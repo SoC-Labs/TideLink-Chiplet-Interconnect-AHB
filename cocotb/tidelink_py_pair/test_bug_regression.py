@@ -5,8 +5,8 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from py_pair_helpers import (
     setup_with_pair, apb_write, apb_read, fifo_write_packet,
-    OFF_DOORBELL, OFF_DOORBELL_RESPONSE, OFF_PKT_WORD_LEN, OFF_TOKEN_COUNT,
-    MAX_TOKENS,
+    OFF_DOORBELL, OFF_DOORBELL_RESPONSE, OFF_PKT_WORD_LEN, OFF_CREDIT_COUNT,
+    MAX_CREDITS,
 )
 
 
@@ -54,7 +54,7 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
     pair = await setup_with_pair(dut)
     await apb_read(dut, OFF_DOORBELL_RESPONSE)  # Clear doorbell response accumulator
     await ClockCycles(dut.hclk, 2)
-    pair.released_tokens_acc = 0
+    pair.released_credits_acc = 0
     pair.log_lines.clear()
 
     # Write a packet
@@ -87,7 +87,7 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
     await ClockCycles(dut.hclk, 20)
 
     # Check what the pair received
-    dut._log.info(f"Pair accumulated: {pair.released_tokens_acc}")
+    dut._log.info(f"Pair accumulated: {pair.released_credits_acc}")
     for line_out in pair.log_lines:
         dut._log.info(line_out)
 
@@ -99,8 +99,8 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
         dut._log.error("BUG CONFIRMED: Doorbell pulse was lost because "
                        "returner was busy with channel 0.")
     assert received_doorbell, \
-        (f"BUG: Pair received {pair.released_tokens_acc} tokens but "
-         f"no doorbell response (MAX_TOKENS={MAX_TOKENS}) was seen. "
+        (f"BUG: Pair received {pair.released_credits_acc} credits but "
+         f"no doorbell response (MAX_CREDITS={MAX_CREDITS}) was seen. "
          f"Doorbell pulse lost while returner was busy.")
 
 
@@ -120,8 +120,8 @@ async def test_bug3_stale_packet_length_causes_spurious_hit(dut):
     await fifo_write_packet(dut, [0x11, 0x22, 0x33])
     await ClockCycles(dut.hclk, 10)
 
-    tokens_after_pkt = await apb_read(dut, OFF_TOKEN_COUNT)
-    dut._log.info(f"Token count after packet: {tokens_after_pkt}")
+    credits_after_pkt = await apb_read(dut, OFF_CREDIT_COUNT)
+    dut._log.info(f"Credit count after packet: {credits_after_pkt}")
 
     # Now do a raw AHB write to haddr=0xC (stale target address)
     await RisingEdge(dut.hclk)
@@ -139,16 +139,16 @@ async def test_bug3_stale_packet_length_causes_spurious_hit(dut):
     dut.ahbs_haddr.value  = 0x3FFF
     await ClockCycles(dut.hclk, 10)
 
-    tokens_after_spurious = await apb_read(dut, OFF_TOKEN_COUNT)
-    dut._log.info(f"Token count after spurious write to 0xC: {tokens_after_spurious}")
+    credits_after_spurious = await apb_read(dut, OFF_CREDIT_COUNT)
+    dut._log.info(f"Credit count after spurious write to 0xC: {credits_after_spurious}")
 
-    if tokens_after_spurious != tokens_after_pkt:
+    if credits_after_spurious != credits_after_pkt:
         dut._log.error(f"BUG CONFIRMED: Stale packet_word_length caused "
-                       f"spurious hit. Tokens {tokens_after_pkt} -> "
-                       f"{tokens_after_spurious}.")
-    assert tokens_after_spurious == tokens_after_pkt, \
-        (f"BUG: Token count changed from {tokens_after_pkt} to "
-         f"{tokens_after_spurious}. packet_word_length should be "
+                       f"spurious hit. Credits {credits_after_pkt} -> "
+                       f"{credits_after_spurious}.")
+    assert credits_after_spurious == credits_after_pkt, \
+        (f"BUG: Credit count changed from {credits_after_pkt} to "
+         f"{credits_after_spurious}. packet_word_length should be "
          f"cleared after packet completion.")
 
 

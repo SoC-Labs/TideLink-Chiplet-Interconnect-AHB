@@ -4,15 +4,15 @@ An analysis of limitations, potential issues, and areas for improvement in the c
 
 ## Critical
 
-### 1. No Token Underflow Protection (BUG-002)
+### 1. No Credit Underflow Protection (BUG-002)
 
-**Location**: `tidelink_fifo_ctrl.sv` — token count decrement on `write_complete`
+**Location**: `tidelink_fifo_ctrl.sv` — credit count decrement on `write_complete`
 
-The token counter is decremented unconditionally on `write_complete` without checking that the packet fits. If software writes a packet larger than `token_count`, the unsigned 13-bit counter wraps to a large value, silently corrupting token accounting. The overrun flag only detects `token_count == 0` at the point of a valid transfer, not whether the entire packet will fit.
+The credit counter is decremented unconditionally on `write_complete` without checking that the packet fits. If software writes a packet larger than `credit_count`, the unsigned 13-bit counter wraps to a large value, silently corrupting credit accounting. The overrun flag only detects `credit_count == 0` at the point of a valid transfer, not whether the entire packet will fit.
 
-**Impact**: FIFO pointer and token state become inconsistent. Unread data can be silently overwritten.
+**Impact**: FIFO pointer and credit state become inconsistent. Unread data can be silently overwritten.
 
-**Recommendation**: Either saturate the counter at zero (preventing wrap) or add a pre-flight check that compares `packet_word_length + 1` against `token_count` before allowing `write_complete` to fire.
+**Recommendation**: Either saturate the counter at zero (preventing wrap) or add a pre-flight check that compares `packet_word_length + 1` against `credit_count` before allowing `write_complete` to fire.
 
 ### 2. Single Packet In-Flight Limitation
 
@@ -30,9 +30,9 @@ Only one packet can be written or read at a time. Writing to address 0 overwrite
 
 **Location**: `tidelink_fifo_ctrl.sv` — metadata capture
 
-The packet word length captured from address 0 is accepted unconditionally. Software can write a length that exceeds `MAX_TOKENS`, producing a target address beyond the SRAM boundary. The pointer arithmetic will wrap, but this can cause the packet to overwrite data from other packets.
+The packet word length captured from address 0 is accepted unconditionally. Software can write a length that exceeds `MAX_CREDITS`, producing a target address beyond the SRAM boundary. The pointer arithmetic will wrap, but this can cause the packet to overwrite data from other packets.
 
-**Recommendation**: Clamp or reject packet lengths that exceed available tokens or `MAX_TOKENS - 1`.
+**Recommendation**: Clamp or reject packet lengths that exceed available credits or `MAX_CREDITS - 1`.
 
 ### 4. No AHB Error Response on Overrun/Underrun
 
@@ -48,9 +48,9 @@ When the FIFO is full (overrun) or empty (underrun), the AHB slave completes the
 
 **Location**: `tidelink_returner.sv`
 
-If the returner receives an AHB error response (`hresp=1`), it sets the `master_error` sticky flag but does not retry the write. The token delta or doorbell response is permanently lost.
+If the returner receives an AHB error response (`hresp=1`), it sets the `master_error` sticky flag but does not retry the write. The credit delta or doorbell response is permanently lost.
 
-**Impact**: Token accounting between the pair can drift out of sync after a transient bus error. Recovery requires a full flush and re-handshake on both sides.
+**Impact**: Credit accounting between the pair can drift out of sync after a transient bus error. Recovery requires a full flush and re-handshake on both sides.
 
 **Recommendation**: Add a configurable retry count (e.g. 1–3 retries) before latching `master_error`.
 
@@ -66,11 +66,11 @@ If a packet write is abandoned partway through (e.g. software crash, bus error, 
 
 **Recommendation**: Add a watchdog timer or explicit abort mechanism that can roll back a partial write without flushing the entire FIFO.
 
-### 7. Pair Token Counter Has No Underflow Guard
+### 7. Pair Credit Counter Has No Underflow Guard
 
-**Location**: `tidelink_apb_regs.sv` — pair token counter decrement via 0x02C
+**Location**: `tidelink_apb_regs.sv` — pair credit counter decrement via 0x02C
 
-Software writes to 0x02C unconditionally subtract from the pair token counter. There is no check that the counter remains non-negative. An erroneous consume write can cause the counter to wrap, leading software to believe the remote side has billions of free tokens.
+Software writes to 0x02C unconditionally subtract from the pair credit counter. There is no check that the counter remains non-negative. An erroneous consume write can cause the counter to wrap, leading software to believe the remote side has billions of free credits.
 
 **Recommendation**: Saturate at zero on decrement, or return an error indication.
 
@@ -80,7 +80,7 @@ Software writes to 0x02C unconditionally subtract from the pair token counter. T
 
 The W-add/R-clear accumulators handle simultaneous APB read and returner write in the same cycle. The `if-else if` chain gives read-clear priority over write-add, so if both occur in the same cycle the accumulator is cleared and the incoming write value is silently lost.
 
-**Impact**: Low probability in practice (requires APB read at exact cycle of returner write), but the lost write means freed tokens are permanently dropped, causing token accounting drift between the pair.
+**Impact**: Low probability in practice (requires APB read at exact cycle of returner write), but the lost write means freed credits are permanently dropped, causing credit accounting drift between the pair.
 
 **Recommendation**: Handle the simultaneous case explicitly by clearing the accumulator to the incoming write value (i.e. clear old total but retain the new delta), or use a two-stage handshake to prevent loss.
 
@@ -88,19 +88,19 @@ The W-add/R-clear accumulators handle simultaneous APB read and returner write i
 
 ### 9. Fixed 32-bit Data Width
 
-**Location**: All modules — `SYS_DATA_W` parameter exists but SRAM interface and token arithmetic assume 32-bit words
+**Location**: All modules — `SYS_DATA_W` parameter exists but SRAM interface and credit arithmetic assume 32-bit words
 
-Although `SYS_DATA_W` is parameterised, the SRAM byte enables are hardcoded to 4 bits (`WREN[3:0]`), the token-to-bytes conversion is hardcoded as `× 4`, and the SRAM variants are all 32-bit wide. Changing `SYS_DATA_W` would require significant rework.
+Although `SYS_DATA_W` is parameterised, the SRAM byte enables are hardcoded to 4 bits (`WREN[3:0]`), the credit-to-bytes conversion is hardcoded as `× 4`, and the SRAM variants are all 32-bit wide. Changing `SYS_DATA_W` would require significant rework.
 
-**Recommendation**: Either remove the parameter (making 32-bit explicit) or fully parameterise the byte enable width and token arithmetic.
+**Recommendation**: Either remove the parameter (making 32-bit explicit) or fully parameterise the byte enable width and credit arithmetic.
 
 ### 10. No Hardware Flow Control on the AHB Slave
 
 **Location**: `tidelink_fifo.sv`
 
-The AHB slave never asserts `hreadyout=0` to back-pressure the bus master. All flow control is software-managed (check tokens before writing). A misbehaving or unaware bus master can write at full speed and cause overruns.
+The AHB slave never asserts `hreadyout=0` to back-pressure the bus master. All flow control is software-managed (check credits before writing). A misbehaving or unaware bus master can write at full speed and cause overruns.
 
-**Recommendation**: Consider de-asserting `hreadyout` when `token_count == 0` to provide hardware-level back-pressure, at least as a configurable option.
+**Recommendation**: Consider de-asserting `hreadyout` when `credit_count == 0` to provide hardware-level back-pressure, at least as a configurable option.
 
 ### 11. No Identification or Version Register
 
@@ -124,7 +124,7 @@ Writes to read-only registers and reads from write-only registers silently succe
 
 The reset deassertion detector uses a two-stage synchroniser that correctly handles the async-to-sync transition and prevents metastability. However, if `hresetn` bounces during deassertion (goes low-high-low-high), each low-to-high transition resets the pipeline and produces a new deassertion pulse, causing multiple doorbell writes to the pair.
 
-**Impact**: Multiple doorbell responses from the pair, each adding to the accumulator. Software would read an inflated token count.
+**Impact**: Multiple doorbell responses from the pair, each adding to the accumulator. Software would read an inflated credit count.
 
 **Recommendation**: Add a debounce counter after the synchroniser to filter reset bounce.
 
@@ -136,7 +136,7 @@ The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (
 
 **Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
 
-### 15. Token Release Threshold Cannot Be Changed While Enabled
+### 15. Credit Release Threshold Cannot Be Changed While Enabled
 
 **Location**: `tidelink_apb_regs.sv`
 
@@ -148,13 +148,13 @@ The release threshold register is freely writable at any time, but changing it w
 
 | # | Severity | Shortcoming |
 |---|----------|-------------|
-| 1 | Critical | No token underflow protection (BUG-002) |
+| 1 | Critical | No credit underflow protection (BUG-002) |
 | 2 | Critical | Single packet in-flight limitation |
 | 3 | Moderate | No hardware packet size validation |
 | 4 | Moderate | No AHB error response on overrun/underrun |
 | 5 | Moderate | No returner retry on bus error |
 | 6 | Moderate | No partial packet write recovery |
-| 7 | Moderate | Pair token counter underflow risk |
+| 7 | Moderate | Pair credit counter underflow risk |
 | 8 | Moderate | Accumulator read/write race condition |
 | 9 | Minor | Fixed 32-bit data width despite parameter |
 | 10 | Minor | No hardware back-pressure via hreadyout |

@@ -2,7 +2,7 @@
 
 ## Introduction
 
-TideLink is a token-based FIFO interconnect for transferring variable-length packets between two chiplets over an AHB bus bridge. This guide covers how to integrate, configure, and operate TideLink in your system.
+TideLink is a credit-based FIFO interconnect for transferring variable-length packets between two chiplets over an AHB bus bridge. This guide covers how to integrate, configure, and operate TideLink in your system.
 
 ## Getting Started
 
@@ -37,10 +37,10 @@ tidelink_ahb #(
     .ahbs_hsel  (...),
     // AHB slave - configuration registers
     .ahbc_hsel  (...),
-    // AHB master - token return path
+    // AHB master - credit return path
     .ahbm_hready(...),
     // Interrupts
-    .released_tokens_irq (...),
+    .released_credits_irq (...),
     .doorbell_irq        (...),
     .packet_committed_irq(...)
 );
@@ -59,7 +59,7 @@ After reset, TideLink is disabled. Follow this sequence to bring it up:
 2. (Optional) Write release threshold to 0x004 (default: 20)
 3. Write 0x01 to CTRL register (0x01C) to set EN=1
 4. Wait for doorbell_irq (pair's reset handshake response)
-5. Read doorbell response accumulator (0x024) to get pair's available tokens
+5. Read doorbell response accumulator (0x024) to get pair's available credits
 6. TideLink is now ready for data transfer
 ```
 
@@ -83,13 +83,13 @@ A write packet has a one-word header followed by the data payload:
               ◄──── All words are 32 bits ────►
 ```
 
-The length word contains the number of **data** words only (0–4095) and does not count itself. The total FIFO occupancy is N + 1 tokens (1 header + N data).
+The length word contains the number of **data** words only (0–4095) and does not count itself. The total FIFO occupancy is N + 1 credits (1 header + N data).
 
 To send a packet of N data words:
 
 ```
-1. Check pair token counter (0x028) >= N + 1, OR
-   maintain a software token counter from released_tokens_irq
+1. Check pair credit counter (0x028) >= N + 1, OR
+   maintain a software credit counter from released_credits_irq
 2. Write N to FIFO address 0x000 (packet length)
 3. Write data word 0 to FIFO address 0x004
 4. Write data word 1 to FIFO address 0x008
@@ -97,11 +97,11 @@ To send a packet of N data words:
 6. Write data word N-1 to FIFO address N*4
    → write_complete fires internally
    → packet_committed_irq asserts
-7. Write N + 1 to pair token consume register (0x02C)
-   to decrement the pair token counter
+7. Write N + 1 to pair credit consume register (0x02C)
+   to decrement the pair credit counter
 ```
 
-The write to the final address (N × 4) triggers completion — pointers advance and tokens are consumed automatically.
+The write to the final address (N × 4) triggers completion — pointers advance and credits are consumed automatically.
 
 ### Reading a Packet (Receive Side)
 
@@ -116,10 +116,10 @@ To receive a packet:
 5. ...
 6. Read FIFO address N*4 → data word N-1
    → read_complete fires internally
-   → tokens are freed and release mechanism triggers
+   → credits are freed and release mechanism triggers
 ```
 
-The read from the final address triggers completion — pointers advance, tokens are restored, and the release accumulator is incremented.
+The read from the final address triggers completion — pointers advance, credits are restored, and the release accumulator is incremented.
 
 ### Interrupt-Driven Operation
 
@@ -127,42 +127,42 @@ TideLink provides three interrupts for efficient event-driven software:
 
 **`packet_committed_irq`** — A new packet has been fully written to the FIFO and is ready to read. Cleared automatically when the receiver reads FIFO address 0 (the length word). Also exposed as STATUS register bit 4 (`packet_committed`) for polling-based designs that don't use interrupts.
 
-**`released_tokens_irq`** — The paired TideLink has freed tokens (buffer space). Read register 0x020 to get the delta (read-to-clear). Use this to maintain a software token budget for transmission.
+**`released_credits_irq`** — The paired TideLink has freed credits (buffer space). Read register 0x020 to get the delta (read-to-clear). Use this to maintain a software credit budget for transmission.
 
-**`doorbell_irq`** — The paired TideLink has responded to a doorbell or reset handshake. Read register 0x024 to get the pair's total free token count (read-to-clear).
+**`doorbell_irq`** — The paired TideLink has responded to a doorbell or reset handshake. Read register 0x024 to get the pair's total free credit count (read-to-clear).
 
-## Token Flow Control
+## Credit Flow Control
 
 ### How It Works
 
-TideLink prevents buffer overflow through a token-based credit scheme:
+TideLink prevents buffer overflow through a credit-based credit scheme:
 
-1. Each instance starts with `MAX_TOKENS` (4096) tokens representing its FIFO capacity.
-2. When chiplet A writes a packet to chiplet B's TideLink, B's local token count decreases.
-3. When chiplet B's software reads the packet, tokens are freed and batched.
-4. Once the accumulated freed tokens reach the release threshold, B's returner autonomously writes the delta back to A's Released Tokens Accumulator (0x020).
-5. Chiplet A's software reads the accumulator (or uses the pair token counter) to know it can send more data.
+1. Each instance starts with `MAX_CREDITS` (4096) credits representing its FIFO capacity.
+2. When chiplet A writes a packet to chiplet B's TideLink, B's local credit count decreases.
+3. When chiplet B's software reads the packet, credits are freed and batched.
+4. Once the accumulated freed credits reach the release threshold, B's returner autonomously writes the delta back to A's Released Credits Accumulator (0x020).
+5. Chiplet A's software reads the accumulator (or uses the pair credit counter) to know it can send more data.
 
-**Golden rule**: never write a packet unless you have confirmed the remote side has enough tokens to receive it.
+**Golden rule**: never write a packet unless you have confirmed the remote side has enough credits to receive it.
 
-### Using the Pair Token Counter
+### Using the Pair Credit Counter
 
-The hardware pair token counter at 0x028 tracks the remote FIFO's available tokens automatically:
+The hardware pair credit counter at 0x028 tracks the remote FIFO's available credits automatically:
 
 ```
-1. After reset handshake, read 0x024 to get initial pair tokens
-2. The counter at 0x028 auto-increments when pair releases tokens (0x020 writes)
+1. After reset handshake, read 0x024 to get initial pair credits
+2. The counter at 0x028 auto-increments when pair releases credits (0x020 writes)
 3. Before sending a packet of size N+1:
    a. Read 0x028 and check value >= N + 1
-   b. Write N + 1 to 0x02C to reserve (consume) the tokens
+   b. Write N + 1 to 0x02C to reserve (consume) the credits
    c. Write the packet to the FIFO data window
 ```
 
-To disable the hardware counter (e.g. if managing tokens in software), write 0 to 0x030.
+To disable the hardware counter (e.g. if managing credits in software), write 0 to 0x030.
 
 ### Release Threshold Tuning
 
-The release threshold (register 0x004, default 20) controls how aggressively freed tokens are returned:
+The release threshold (register 0x004, default 20) controls how aggressively freed credits are returned:
 
 | Threshold | Behaviour | Best For |
 |-----------|-----------|----------|
@@ -180,13 +180,13 @@ The doorbell is a software-initiated request/response mechanism. Use it when you
 **Sending a doorbell**:
 ```
 Write any value to Doorbell register (0x014)
-→ Returner channel 1 sends local token_count to pair's 0x024
+→ Returner channel 1 sends local credit_count to pair's 0x024
 ```
 
 **Receiving a doorbell response**:
 ```
 Wait for doorbell_irq
-Read 0x024 → pair's total free tokens (read-to-clear)
+Read 0x024 → pair's total free credits (read-to-clear)
 ```
 
 The doorbell is also used automatically during the reset handshake — you typically only need to use it explicitly for runtime re-synchronisation.
@@ -202,7 +202,7 @@ Read the Status register (0x010):
 | 0 | Returner Busy | Returner is mid-transfer (not an error, informational) |
 | 1 | Overrun | A write occurred when the FIFO was full. Data may be corrupted. |
 | 2 | Underrun | A read occurred when the FIFO was empty. Stale data returned. |
-| 3 | Master Error | The returner received an AHB error response. Token return was lost. |
+| 3 | Master Error | The returner received an AHB error response. Credit return was lost. |
 | 4 | Packet Committed | A packet has been fully written and is ready to read. Cleared on read of FIFO address 0. |
 
 Bits 1–3 are sticky — they remain set until cleared by FLUSH.
@@ -213,12 +213,12 @@ Bits 1–3 are sticky — they remain set until cleared by FLUSH.
 1. Detect error via STATUS register or system-level fault
 2. Write 0x00 to CTRL (0x01C)         — disable block (EN=0)
 3. Write 0x02 to CTRL (0x01C)         — FLUSH (self-clearing, ignored if EN=1)
-   → Pointers, tokens, packet state, sticky flags all reset
+   → Pointers, credits, packet state, sticky flags all reset
 4. Reconfigure if needed:
    - Pair base address (0x000)
    - Release threshold (0x004)
 5. Write 0x01 to CTRL (0x01C)         — re-enable (EN=1)
-6. Re-establish token counts with the pair (doorbell or reset handshake)
+6. Re-establish credit counts with the pair (doorbell or reset handshake)
 ```
 
 ## Bidirectional Communication
@@ -245,18 +245,18 @@ For full duplex communication between two chiplets, deploy two TideLink instance
 | Offset | Name | Access | Description |
 |--------|------|--------|-------------|
 | 0x000 | Pair Base Address | RW | Target address for returner writes |
-| 0x004 | Release Threshold | RW | Token batching threshold (default 20) |
+| 0x004 | Release Threshold | RW | Credit batching threshold (default 20) |
 | 0x008 | Packet Word Length | RO | In-flight packet size (0 when idle) |
-| 0x00C | Token Count | RO | Local FIFO available tokens |
+| 0x00C | Credit Count | RO | Local FIFO available credits |
 | 0x010 | Status | RO | Busy, sticky error flags, packet_committed |
 | 0x014 | Doorbell | WO | Trigger software doorbell (singlepulse, self-clearing) |
-| 0x018 | Release Accumulator | RO | Pending unreleased tokens (debug) |
+| 0x018 | Release Accumulator | RO | Pending unreleased credits (debug) |
 | 0x01C | CTRL | RW | EN (bit 0), FLUSH (bit 1, self-clearing, EN must be 0) |
-| 0x020 | Released Tokens Acc | W-add/R-clear | Incoming token deltas. IRQ source. |
+| 0x020 | Released Credits Acc | W-add/R-clear | Incoming credit deltas. IRQ source. |
 | 0x024 | Doorbell Response Acc | W-add/R-clear | Incoming doorbell responses. IRQ source. |
-| 0x028 | Pair Token Counter | RO | Remote FIFO available tokens |
-| 0x02C | Pair Token Consume | WO | Reserve tokens before sending |
-| 0x030 | Pair Token Counter En | RW | Enable/disable hardware counter |
+| 0x028 | Pair Credit Counter | RO | Remote FIFO available credits |
+| 0x02C | Pair Credit Consume | WO | Reserve credits before sending |
+| 0x030 | Pair Credit Counter En | RW | Enable/disable hardware counter |
 
 ## Running Tests
 
@@ -315,8 +315,8 @@ tl = PynqTidelinkDriver(
 # Write a packet
 tl.write_packet([0xDEAD, 0xBEEF, 0xCAFE])
 
-# Read token count
-tokens = tl.read_token_count()
+# Read credit count
+credits = tl.read_credit_count()
 
 # Trigger doorbell
 tl.doorbell()

@@ -16,7 +16,7 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 from cocotbext.ahb import AHBBus, AHBLiteMaster
 
 from tidelink.packet import FifoPacket
-from tidelink.regs import RAM_ADDR_W, MAX_TOKENS
+from tidelink.regs import RAM_ADDR_W, MAX_CREDITS
 
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
@@ -49,9 +49,9 @@ class SramContents:
 
 # ── Helper Functions ─────────────────────────────────────────────────────────
 
-def get_token_count(dut):
-    """Read the current FIFO token count from the RTL."""
-    return int(dut.u_dut.token_count.value)
+def get_credit_count(dut):
+    """Read the current FIFO credit count from the RTL."""
+    return int(dut.u_dut.credit_count.value)
 
 
 def sram_read_word(dut, word_addr):
@@ -147,10 +147,10 @@ async def write_packet(dut, ahb, pkt, label=""):
             hit_fired = True
 
     write_ptr_after = int(dut.u_dut.write_ptr.value)
-    tokens = get_token_count(dut)
+    credits = get_credit_count(dut)
     dut._log.info(f"{prefix}Packet done: write_ptr 0x{write_ptr_before:04X} "
                   f"-> 0x{write_ptr_after:04X}, hit={hit_fired}, "
-                  f"token_count={tokens}")
+                  f"credit_count={credits}")
 
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 1)
@@ -169,8 +169,8 @@ async def test_01_reset_defaults(dut):
 
     assert int(dut.hready.value) == 1, "hready should be high after reset"
     assert int(dut.hresp.value) == 0, "hresp should be OKAY after reset"
-    assert get_token_count(dut) == MAX_TOKENS, \
-        f"token_count should be {MAX_TOKENS} after reset, got {get_token_count(dut)}"
+    assert get_credit_count(dut) == MAX_CREDITS, \
+        f"credit_count should be {MAX_CREDITS} after reset, got {get_credit_count(dut)}"
 
 
 @cocotb.test()
@@ -332,14 +332,14 @@ async def test_11_two_packets_no_overwrite(dut):
     )
     sram_pkt2.verify(dut, log=dut._log)
 
-    # Verify token count decreased by total data words written
-    tokens = get_token_count(dut)
-    expected_tokens = MAX_TOKENS - pkt1.total_words - pkt2.total_words
+    # Verify credit count decreased by total data words written
+    credits = get_credit_count(dut)
+    expected_credits = MAX_CREDITS - pkt1.total_words - pkt2.total_words
     dut._log.info(f"Both packets verified. "
                   f"write_ptr: 0x0000 -> 0x{wptr_after_1:04X} -> 0x{wptr_after_2:04X}, "
-                  f"token_count={tokens} (expected {expected_tokens})")
-    assert tokens == expected_tokens, \
-        f"token_count: expected {expected_tokens}, got {tokens}"
+                  f"credit_count={credits} (expected {expected_credits})")
+    assert credits == expected_credits, \
+        f"credit_count: expected {expected_credits}, got {credits}"
 
 
 @cocotb.test()
@@ -371,14 +371,14 @@ async def test_12_three_packets_sequential(dut):
 
 
 @cocotb.test()
-async def test_13_token_count_tracks_writes(dut):
-    """Token count should start at MAX_TOKENS and decrement by
+async def test_13_credit_count_tracks_writes(dut):
+    """Credit count should start at MAX_CREDITS and decrement by
     packet_word_length each time a write packet completes."""
     ahb = await setup(dut)
     await do_reset(dut)
 
-    assert get_token_count(dut) == MAX_TOKENS, \
-        f"token_count should be {MAX_TOKENS} after reset"
+    assert get_credit_count(dut) == MAX_CREDITS, \
+        f"credit_count should be {MAX_CREDITS} after reset"
 
     packets = [
         FifoPacket(data=[0xAA]),                              # 1 word
@@ -386,18 +386,18 @@ async def test_13_token_count_tracks_writes(dut):
         FifoPacket(data=[0x11, 0x22, 0x33, 0x44, 0x55]),      # 5 words
     ]
 
-    expected_tokens = MAX_TOKENS
+    expected_credits = MAX_CREDITS
     for i, pkt in enumerate(packets):
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"PKT{i+1}")
         assert hit, f"write_complete should have fired for packet {i+1}"
 
-        expected_tokens -= pkt.total_words
-        actual_tokens = get_token_count(dut)
+        expected_credits -= pkt.total_words
+        actual_credits = get_credit_count(dut)
         dut._log.info(f"After PKT{i+1} ({pkt.length} words): "
-                      f"token_count={actual_tokens} (expected {expected_tokens})")
-        assert actual_tokens == expected_tokens, \
-            (f"After packet {i+1}: token_count expected {expected_tokens}, "
-             f"got {actual_tokens}")
+                      f"credit_count={actual_credits} (expected {expected_credits})")
+        assert actual_credits == expected_credits, \
+            (f"After packet {i+1}: credit_count expected {expected_credits}, "
+             f"got {actual_credits}")
 
 
 @cocotb.test()
@@ -560,7 +560,7 @@ async def read_packet(dut, ahb, label=""):
 
     Reads the length word from haddr=0, then reads that many data words
     from sequential addresses. The read_complete should fire on the last
-    beat, advancing read_ptr and releasing tokens.
+    beat, advancing read_ptr and releasing credits.
 
     Returns (FifoPacket, hit_fired).
     """
@@ -643,10 +643,10 @@ async def read_packet(dut, ahb, label=""):
             hit_fired = True
 
     read_ptr_after = int(dut.u_dut.read_ptr.value)
-    tokens = get_token_count(dut)
+    credits = get_credit_count(dut)
     dut._log.info(f"{prefix}Read done: read_ptr 0x{read_ptr_before:04X} "
                   f"-> 0x{read_ptr_after:04X}, hit={hit_fired}, "
-                  f"token_count={tokens}")
+                  f"credit_count={credits}")
 
     dut.haddr.value = 0x3FFF
     # Extra idle cycles to let ptr_offset pipeline settle after read_ptr advances
@@ -712,7 +712,7 @@ async def test_16_read_interrupt_and_packet_length(dut):
 @cocotb.test()
 async def test_17_exhaustive_fifo_write_read(dut):
     """Exhaustively test the FIFO with many packets of varying sizes,
-    never exceeding the free token count on writes or the used token
+    never exceeding the free credit count on writes or the used credit
     count on reads.
 
     Strategy:
@@ -720,7 +720,7 @@ async def test_17_exhaustive_fifo_write_read(dut):
     2. Write packets until the FIFO is nearly full
     3. Read packets back, verifying data integrity
     4. Repeat several rounds to stress wrap-around behaviour
-    5. After each operation, assert token_count stays in [0, MAX_TOKENS]
+    5. After each operation, assert credit_count stays in [0, MAX_CREDITS]
     """
     import random
     random.seed(0xDEAD)  # Deterministic for reproducibility
@@ -728,10 +728,10 @@ async def test_17_exhaustive_fifo_write_read(dut):
     ahb = await setup(dut)
     await do_reset(dut)
 
-    assert get_token_count(dut) == MAX_TOKENS
+    assert get_credit_count(dut) == MAX_CREDITS
 
-    # Track software model of token state
-    sw_tokens = MAX_TOKENS
+    # Track software model of credit state
+    sw_credits = MAX_CREDITS
     written_packets = []  # Queue of packets waiting to be read back
     total_written = 0
     total_read = 0
@@ -743,13 +743,13 @@ async def test_17_exhaustive_fifo_write_read(dut):
         dut._log.info(f"=== Round {round_num + 1}/{NUM_ROUNDS} ===")
 
         # ── Write phase: fill until we can't fit another max-size packet ──
-        while sw_tokens >= MAX_PKT_SIZE + 1:  # +1 for length word
+        while sw_credits >= MAX_PKT_SIZE + 1:  # +1 for length word
             pkt_len = random.randint(1, MAX_PKT_SIZE)
             pkt_total = pkt_len + 1  # length word + data
 
-            # Don't exceed available tokens
-            if pkt_total > sw_tokens:
-                pkt_len = sw_tokens - 1
+            # Don't exceed available credits
+            if pkt_total > sw_credits:
+                pkt_len = sw_credits - 1
                 pkt_total = pkt_len + 1
                 if pkt_len < 1:
                     break
@@ -763,27 +763,27 @@ async def test_17_exhaustive_fifo_write_read(dut):
             assert hit, \
                 f"write_complete should have fired for packet {total_written}"
 
-            sw_tokens -= pkt_total
-            hw_tokens = get_token_count(dut)
+            sw_credits -= pkt_total
+            hw_credits = get_credit_count(dut)
 
-            assert hw_tokens == sw_tokens, \
-                (f"Token mismatch after write {total_written}: "
-                 f"sw={sw_tokens}, hw={hw_tokens}")
-            assert hw_tokens >= 0, \
-                f"Token underflow! hw_tokens={hw_tokens}"
+            assert hw_credits == sw_credits, \
+                (f"Credit mismatch after write {total_written}: "
+                 f"sw={sw_credits}, hw={hw_credits}")
+            assert hw_credits >= 0, \
+                f"Credit underflow! hw_credits={hw_credits}"
 
             written_packets.append(pkt)
             total_written += 1
 
-        used_tokens = MAX_TOKENS - sw_tokens
+        used_credits = MAX_CREDITS - sw_credits
         dut._log.info(f"Write phase done: {len(written_packets)} packets buffered, "
-                      f"tokens free={sw_tokens}, used={used_tokens}")
+                      f"credits free={sw_credits}, used={used_credits}")
 
         # ── Read phase: drain all buffered packets ──
         packets_to_read = len(written_packets)
         for read_idx in range(packets_to_read):
             expected_pkt = written_packets[0]
-            used = MAX_TOKENS - sw_tokens
+            used = MAX_CREDITS - sw_credits
 
             # Don't read more than what's been written
             assert used >= expected_pkt.total_words, \
@@ -801,27 +801,27 @@ async def test_17_exhaustive_fifo_write_read(dut):
                  f"expected {[f'0x{d:08X}' for d in expected_pkt.data]}, "
                  f"got {[f'0x{d:08X}' for d in read_pkt.data]}")
 
-            sw_tokens += expected_pkt.total_words
-            hw_tokens = get_token_count(dut)
+            sw_credits += expected_pkt.total_words
+            hw_credits = get_credit_count(dut)
 
-            assert hw_tokens == sw_tokens, \
-                (f"Token mismatch after read {total_read}: "
-                 f"sw={sw_tokens}, hw={hw_tokens}")
-            assert hw_tokens <= MAX_TOKENS, \
-                f"Token overflow! hw_tokens={hw_tokens}"
+            assert hw_credits == sw_credits, \
+                (f"Credit mismatch after read {total_read}: "
+                 f"sw={sw_credits}, hw={hw_credits}")
+            assert hw_credits <= MAX_CREDITS, \
+                f"Credit overflow! hw_credits={hw_credits}"
 
             written_packets.pop(0)
             total_read += 1
 
-        dut._log.info(f"Read phase done: tokens restored to {sw_tokens}")
+        dut._log.info(f"Read phase done: credits restored to {sw_credits}")
 
-    assert sw_tokens == MAX_TOKENS, \
-        f"Final token count should be {MAX_TOKENS}, got {sw_tokens}"
+    assert sw_credits == MAX_CREDITS, \
+        f"Final credit count should be {MAX_CREDITS}, got {sw_credits}"
     assert len(written_packets) == 0, \
         f"{len(written_packets)} packets still unread"
 
     dut._log.info(f"Exhaustive test complete: {total_written} packets written, "
-                  f"{total_read} packets read, token_count={get_token_count(dut)}")
+                  f"{total_read} packets read, credit_count={get_credit_count(dut)}")
 
 
 @cocotb.test()
@@ -839,24 +839,24 @@ async def test_18_circular_buffer_wrap_around(dut):
     # Fill most of the FIFO with large packets to force wrap-around
     # Each packet = 100 data words + 1 length word = 101 words = 404 bytes
     pkt_size = 100
-    num_fill_packets = MAX_TOKENS // (pkt_size + 1)  # ~40 packets to fill
+    num_fill_packets = MAX_CREDITS // (pkt_size + 1)  # ~40 packets to fill
 
     written_packets = []
-    sw_tokens = MAX_TOKENS
+    sw_credits = MAX_CREDITS
 
     for i in range(num_fill_packets):
         pkt = FifoPacket(data=[(i << 16) | (j + 1) for j in range(pkt_size)])
-        if sw_tokens < pkt.total_words:
+        if sw_credits < pkt.total_words:
             break
 
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"WRAP_W{i}")
         assert hit, f"write_complete should fire for packet {i}"
-        sw_tokens -= pkt.total_words
+        sw_credits -= pkt.total_words
         written_packets.append(pkt)
 
     write_ptr = int(dut.u_dut.write_ptr.value)
     dut._log.info(f"After filling: write_ptr=0x{write_ptr:04X}, "
-                  f"packets={len(written_packets)}, tokens_free={sw_tokens}")
+                  f"packets={len(written_packets)}, credits_free={sw_credits}")
 
     # Read all packets back
     for i, expected_pkt in enumerate(written_packets):
@@ -868,10 +868,10 @@ async def test_18_circular_buffer_wrap_around(dut):
             f"first mismatch at word "
             f"{next((j for j, (e, g) in enumerate(zip(expected_pkt.data, read_pkt.data)) if e != g), '?')}"
         )
-        sw_tokens += expected_pkt.total_words
+        sw_credits += expected_pkt.total_words
 
-    assert sw_tokens == MAX_TOKENS
-    assert get_token_count(dut) == MAX_TOKENS
+    assert sw_credits == MAX_CREDITS
+    assert get_credit_count(dut) == MAX_CREDITS
     dut._log.info("Circular buffer wrap-around test passed")
 
 
@@ -885,35 +885,35 @@ async def test_19_single_word_packet(dut):
     _, _, hit = await write_packet(dut, ahb, pkt, label="MIN_W")
     assert hit, "write_complete should fire for single-word packet"
 
-    expected_tokens = MAX_TOKENS - 2  # 1 data + 1 length = 2 words
-    actual_tokens = get_token_count(dut)
-    assert actual_tokens == expected_tokens, \
-        f"Expected {expected_tokens} tokens, got {actual_tokens}"
+    expected_credits = MAX_CREDITS - 2  # 1 data + 1 length = 2 words
+    actual_credits = get_credit_count(dut)
+    assert actual_credits == expected_credits, \
+        f"Expected {expected_credits} credits, got {actual_credits}"
 
     read_pkt, rhit = await read_packet(dut, ahb, label="MIN_R")
     assert rhit, "read_complete should fire for single-word packet"
     assert read_pkt.data == [0xDEADBEEF], \
         f"Data mismatch: got {[f'0x{d:08X}' for d in read_pkt.data]}"
 
-    assert get_token_count(dut) == MAX_TOKENS
+    assert get_credit_count(dut) == MAX_CREDITS
     dut._log.info("Single-word packet test passed")
 
 
 @cocotb.test()
 async def test_20_maximum_size_packet(dut):
-    """Packet consuming all available tokens (MAX_TOKENS - 1 data words).
-    Verify completion fires and token count reaches 0."""
+    """Packet consuming all available credits (MAX_CREDITS - 1 data words).
+    Verify completion fires and credit count reaches 0."""
     ahb = await setup(dut)
     await do_reset(dut)
 
-    max_data_words = MAX_TOKENS - 1  # -1 for the length word
+    max_data_words = MAX_CREDITS - 1  # -1 for the length word
     pkt = FifoPacket(data=[(i + 1) & 0xFFFFFFFF for i in range(max_data_words)])
 
     _, _, hit = await write_packet(dut, ahb, pkt, label="MAX_W")
     assert hit, "write_complete should fire for max-size packet"
 
-    actual_tokens = get_token_count(dut)
-    assert actual_tokens == 0, f"Tokens should be 0 after max packet, got {actual_tokens}"
+    actual_credits = get_credit_count(dut)
+    assert actual_credits == 0, f"Credits should be 0 after max packet, got {actual_credits}"
 
     read_pkt, rhit = await read_packet(dut, ahb, label="MAX_R")
     assert rhit, "read_complete should fire for max-size packet"
@@ -922,39 +922,39 @@ async def test_20_maximum_size_packet(dut):
     assert read_pkt.data[0] == 1, f"First word: expected 1, got {read_pkt.data[0]}"
     assert read_pkt.data[-1] == max_data_words & 0xFFFFFFFF
 
-    assert get_token_count(dut) == MAX_TOKENS
+    assert get_credit_count(dut) == MAX_CREDITS
     dut._log.info(f"Max-size packet test passed ({max_data_words} data words)")
 
 
 @cocotb.test()
-async def test_21_token_count_write_read_restore(dut):
-    """Write N packets, read N packets, verify tokens restored to MAX."""
+async def test_21_credit_count_write_read_restore(dut):
+    """Write N packets, read N packets, verify credits restored to MAX."""
     ahb = await setup(dut)
     await do_reset(dut)
 
     packets = [
-        FifoPacket(data=[0x10 + i for i in range(3)]),   # 4 tokens
-        FifoPacket(data=[0x20 + i for i in range(7)]),   # 8 tokens
-        FifoPacket(data=[0x30 + i for i in range(1)]),   # 2 tokens
-        FifoPacket(data=[0x40 + i for i in range(15)]),  # 16 tokens
+        FifoPacket(data=[0x10 + i for i in range(3)]),   # 4 credits
+        FifoPacket(data=[0x20 + i for i in range(7)]),   # 8 credits
+        FifoPacket(data=[0x30 + i for i in range(1)]),   # 2 credits
+        FifoPacket(data=[0x40 + i for i in range(15)]),  # 16 credits
     ]
 
-    sw_tokens = MAX_TOKENS
+    sw_credits = MAX_CREDITS
     for i, pkt in enumerate(packets):
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"RESTORE_W{i}")
         assert hit
-        sw_tokens -= pkt.total_words
-        assert get_token_count(dut) == sw_tokens
+        sw_credits -= pkt.total_words
+        assert get_credit_count(dut) == sw_credits
 
     for i, pkt in enumerate(packets):
         read_pkt, hit = await read_packet(dut, ahb, label=f"RESTORE_R{i}")
         assert hit
         assert read_pkt.data == pkt.data, f"Data mismatch at packet {i}"
-        sw_tokens += pkt.total_words
-        assert get_token_count(dut) == sw_tokens
+        sw_credits += pkt.total_words
+        assert get_credit_count(dut) == sw_credits
 
-    assert sw_tokens == MAX_TOKENS
-    dut._log.info("Token restore test passed")
+    assert sw_credits == MAX_CREDITS
+    dut._log.info("Credit restore test passed")
 
 
 @cocotb.test()
@@ -1142,11 +1142,11 @@ def get_underrun(dut):
 
 @cocotb.test()
 async def test_28_en_gate_blocks_writes(dut):
-    """When enable=0, AHB writes should be gated (no pointer advance, no token change)."""
+    """When enable=0, AHB writes should be gated (no pointer advance, no credit change)."""
     ahb = await setup(dut)
     await do_reset(dut)
 
-    tokens_before = get_token_count(dut)
+    credits_before = get_credit_count(dut)
 
     # Disable the FIFO
     dut.enable.value = 0
@@ -1159,10 +1159,10 @@ async def test_28_en_gate_blocks_writes(dut):
     # write_complete should NOT fire (enable gates valid_transfer)
     assert not hit, "write_complete should not fire when enable=0"
 
-    # Token count should be unchanged
-    tokens_after = get_token_count(dut)
-    assert tokens_after == tokens_before, \
-        f"Tokens should be unchanged: before={tokens_before}, after={tokens_after}"
+    # Credit count should be unchanged
+    credits_after = get_credit_count(dut)
+    assert credits_after == credits_before, \
+        f"Credits should be unchanged: before={credits_before}, after={credits_after}"
 
     dut._log.info("EN gate blocks writes — passed")
 
@@ -1182,7 +1182,7 @@ async def test_29_en_gate_blocks_reads(dut):
     dut.enable.value = 0
     await RisingEdge(dut.hclk)
 
-    tokens_before = get_token_count(dut)
+    credits_before = get_credit_count(dut)
 
     # Attempt to read — should be gated
     # Read addr 0 (length)
@@ -1197,15 +1197,15 @@ async def test_29_en_gate_blocks_reads(dut):
     pwl = int(dut.u_dut.packet_word_length.value)
     assert pwl == 0, f"packet_word_length should be 0 when disabled, got {pwl}"
 
-    tokens_after = get_token_count(dut)
-    assert tokens_after == tokens_before, "Tokens should be unchanged when disabled"
+    credits_after = get_credit_count(dut)
+    assert credits_after == credits_before, "Credits should be unchanged when disabled"
 
     dut._log.info("EN gate blocks reads — passed")
 
 
 @cocotb.test()
 async def test_30_flush_resets_state(dut):
-    """FLUSH should reset pointers, token count, and packet state."""
+    """FLUSH should reset pointers, credit count, and packet state."""
     ahb = await setup(dut)
     await do_reset(dut)
 
@@ -1214,8 +1214,8 @@ async def test_30_flush_resets_state(dut):
     _, _, hit = await write_packet(dut, ahb, pkt, label="FLUSH_W")
     assert hit
 
-    tokens_after_write = get_token_count(dut)
-    assert tokens_after_write < MAX_TOKENS
+    credits_after_write = get_credit_count(dut)
+    assert credits_after_write < MAX_CREDITS
 
     # Disable, then flush
     dut.enable.value = 0
@@ -1226,8 +1226,8 @@ async def test_30_flush_resets_state(dut):
     await RisingEdge(dut.hclk)
 
     # Verify state is reset
-    assert get_token_count(dut) == MAX_TOKENS, \
-        f"Token count should be MAX after flush, got {get_token_count(dut)}"
+    assert get_credit_count(dut) == MAX_CREDITS, \
+        f"Credit count should be MAX after flush, got {get_credit_count(dut)}"
     assert int(dut.u_dut.write_ptr.value) == 0, "write_ptr should be 0 after flush"
     assert int(dut.u_dut.read_ptr.value) == 0, "read_ptr should be 0 after flush"
     assert int(dut.u_dut.packet_word_length.value) == 0, \
@@ -1253,11 +1253,11 @@ async def test_31_flush_clears_overrun(dut):
     assert get_overrun(dut) == 0, "overrun should be 0 after reset"
 
     # Fill the FIFO completely
-    max_data = MAX_TOKENS - 1
+    max_data = MAX_CREDITS - 1
     pkt = FifoPacket(data=[(i + 1) for i in range(max_data)])
     _, _, hit = await write_packet(dut, ahb, pkt, label="FILL")
     assert hit
-    assert get_token_count(dut) == 0, "FIFO should be full"
+    assert get_credit_count(dut) == 0, "FIFO should be full"
 
     # Attempt another write — should trigger overrun
     await RisingEdge(dut.hclk)
@@ -1292,7 +1292,7 @@ async def test_32_underrun_on_empty_read(dut):
     await do_reset(dut)
 
     assert get_underrun(dut) == 0, "underrun should be 0 after reset"
-    assert get_token_count(dut) == MAX_TOKENS, "Buffer should be empty after reset"
+    assert get_credit_count(dut) == MAX_CREDITS, "Buffer should be empty after reset"
 
     # Attempt a read from the empty buffer
     await RisingEdge(dut.hclk)

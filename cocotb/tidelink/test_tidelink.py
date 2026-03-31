@@ -15,13 +15,13 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
 
 from tidelink.packet import FifoPacket
-from tidelink.regs import RAM_ADDR_W, MAX_TOKENS
+from tidelink.regs import RAM_ADDR_W, MAX_CREDITS
 
 # ── Constants ────────────────────────────────────────────────────────────────
 CLK_PERIOD_NS = 10
 
 # Default TIDELINK_PAIR_BASE = 0, so returner targets are:
-PAIR_RELEASED_TOKENS_ADDR   = 0x20
+PAIR_RELEASED_CREDITS_ADDR   = 0x20
 PAIR_DOORBELL_RESPONSE_ADDR = 0x24
 PAIR_DOORBELL_ADDR          = 0x14
 
@@ -29,7 +29,7 @@ PAIR_DOORBELL_ADDR          = 0x14
 APB_REG_PAIR_BASE         = 0x000
 APB_REG_REL_THRESHOLD     = 0x004
 APB_REG_PKT_WORD_LEN      = 0x008
-APB_REG_TOKEN_COUNT        = 0x00C
+APB_REG_CREDIT_COUNT        = 0x00C
 APB_REG_STATUS             = 0x010
 APB_REG_DOORBELL           = 0x014
 APB_REG_REL_ACC            = 0x018
@@ -119,7 +119,7 @@ class TidelinkTB:
         )
 
         self.apb = APBMaster(dut, dut.hclk)
-        self.sw_token_count = MAX_TOKENS
+        self.sw_credit_count = MAX_CREDITS
 
     async def reset(self):
         """Assert active-low reset for 5 cycles, then release."""
@@ -129,14 +129,14 @@ class TidelinkTB:
         self.dut.hresetn.value = 1
         # Wait extra cycles for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
-        self.sw_token_count = MAX_TOKENS
+        self.sw_credit_count = MAX_CREDITS
         # Enable the data window (EN=1 in CTRL register)
         await self.apb.write(APB_REG_CTRL, 0x1)
 
     # ── APB Helpers ──────────────────────────────────────────────────────
 
-    async def read_token_count(self) -> int:
-        return await self.apb.read(APB_REG_TOKEN_COUNT)
+    async def read_credit_count(self) -> int:
+        return await self.apb.read(APB_REG_CREDIT_COUNT)
 
     async def read_status(self) -> dict:
         raw = await self.apb.read(APB_REG_STATUS)
@@ -186,8 +186,8 @@ class TidelinkTB:
         dut.ahbs_haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 1)
         if hit_fired:
-            self.sw_token_count -= pkt.total_words
-            self.log.info(f"{prefix}Write complete. sw_tokens={self.sw_token_count}")
+            self.sw_credit_count -= pkt.total_words
+            self.log.info(f"{prefix}Write complete. sw_credits={self.sw_credit_count}")
         return hit_fired
 
     # ── Packet Read (inline AHB phases) ──────────────────────────────────
@@ -244,8 +244,8 @@ class TidelinkTB:
         await ClockCycles(dut.hclk, 3)
         pkt = FifoPacket(data=data)
         if hit_fired:
-            self.sw_token_count += pkt.total_words
-            self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_tokens={self.sw_token_count}")
+            self.sw_credit_count += pkt.total_words
+            self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_credits={self.sw_credit_count}")
         return pkt, hit_fired
 
     # ── Returner Helpers ─────────────────────────────────────────────────
@@ -265,15 +265,15 @@ class TidelinkTB:
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 @cocotb.test()
-async def test_01_reset_and_initial_tokens(dut):
-    """After reset the APB token-count register should read MAX_TOKENS."""
+async def test_01_reset_and_initial_credits(dut):
+    """After reset the APB credit-count register should read MAX_CREDITS."""
     tb = TidelinkTB(dut)
     await tb.reset()
 
-    hw_tokens = await tb.read_token_count()
-    tb.log.info(f"Token count after reset: {hw_tokens} (expected {MAX_TOKENS})")
-    assert hw_tokens == MAX_TOKENS, \
-        f"Expected {MAX_TOKENS}, got {hw_tokens}"
+    hw_credits = await tb.read_credit_count()
+    tb.log.info(f"Credit count after reset: {hw_credits} (expected {MAX_CREDITS})")
+    assert hw_credits == MAX_CREDITS, \
+        f"Expected {MAX_CREDITS}, got {hw_credits}"
 
 
 @cocotb.test()
@@ -290,23 +290,23 @@ async def test_02_apb_pair_base_readback(dut):
 @cocotb.test()
 async def test_03_write_read_returner_flow(dut):
     """Full functional test:
-    1. Check initial token count
+    1. Check initial credit count
     2. Write two packets into the FIFO
-    3. Track tokens in software
+    3. Track credits in software
     4. Read one packet back — returner should fire channel 0
-    5. Verify returner wrote token_delta_data to PAIR_RELEASED_TOKENS_ADDR
+    5. Verify returner wrote credit_delta_data to PAIR_RELEASED_CREDITS_ADDR
     6. Read second packet — verify second return
-    7. Confirm final token count via APB
+    7. Confirm final credit count via APB
     """
     tb = TidelinkTB(dut)
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
-    # ── Step 1: Verify initial token count ───────────────────────────
-    hw_tokens = await tb.read_token_count()
-    assert hw_tokens == MAX_TOKENS, \
-        f"Initial tokens: expected {MAX_TOKENS}, got {hw_tokens}"
-    tb.log.info(f"Initial token count = {hw_tokens}")
+    # ── Step 1: Verify initial credit count ───────────────────────────
+    hw_credits = await tb.read_credit_count()
+    assert hw_credits == MAX_CREDITS, \
+        f"Initial credits: expected {MAX_CREDITS}, got {hw_credits}"
+    tb.log.info(f"Initial credit count = {hw_credits}")
 
     # ── Step 2: Write two packets ────────────────────────────────────
     pkt1_data = [0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003]
@@ -317,19 +317,19 @@ async def test_03_write_read_returner_flow(dut):
     hit2 = await tb.write_packet(pkt2_data, label="WR_PKT2")
     assert hit2, "write_addr_hit should fire for packet 2"
 
-    # ── Step 3: Verify token count after writes ──────────────────────
+    # ── Step 3: Verify credit count after writes ──────────────────────
     pkt1 = FifoPacket(data=pkt1_data)
     pkt2 = FifoPacket(data=pkt2_data)
-    expected_tokens = MAX_TOKENS - pkt1.total_words - pkt2.total_words
+    expected_credits = MAX_CREDITS - pkt1.total_words - pkt2.total_words
 
-    hw_tokens = await tb.read_token_count()
-    tb.log.info(f"After 2 writes: hw_tokens={hw_tokens}, expected={expected_tokens}")
-    assert hw_tokens == expected_tokens
-    assert tb.sw_token_count == expected_tokens
+    hw_credits = await tb.read_credit_count()
+    tb.log.info(f"After 2 writes: hw_credits={hw_credits}, expected={expected_credits}")
+    assert hw_credits == expected_credits
+    assert tb.sw_credit_count == expected_credits
 
     # ── Step 4: Read packet 1 — triggers returner channel 0 ─────────
     # Clear any prior returner writes at the target address
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     read_pkt1, rhit1 = await tb.read_packet(label="RD_PKT1")
     assert rhit1, "read_addr_hit should fire for packet 1 read"
@@ -340,16 +340,16 @@ async def test_03_write_read_returner_flow(dut):
     await tb.wait_returner_idle()
 
     # ── Step 5: Verify returner transaction ──────────────────────────
-    # Channel 0 writes token_delta_data = packet_word_length + 1 = total_words
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    # Channel 0 writes credit_delta_data = packet_word_length + 1 = total_words
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     expected_delta = pkt1.total_words
-    tb.log.info(f"Returner wrote {returner_data} to 0x{PAIR_RELEASED_TOKENS_ADDR:03X} "
+    tb.log.info(f"Returner wrote {returner_data} to 0x{PAIR_RELEASED_CREDITS_ADDR:03X} "
                 f"(expected delta={expected_delta})")
     assert returner_data == expected_delta, \
         f"Returner delta mismatch: expected {expected_delta}, got {returner_data}"
 
     # ── Step 6: Read packet 2 — triggers second return ───────────────
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     read_pkt2, rhit2 = await tb.read_packet(label="RD_PKT2")
     assert rhit2, "read_addr_hit should fire for packet 2 read"
@@ -359,24 +359,24 @@ async def test_03_write_read_returner_flow(dut):
 
     await tb.wait_returner_idle()
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     expected_delta = pkt2.total_words
     tb.log.info(f"Returner wrote {returner_data} (expected delta={expected_delta})")
     assert returner_data == expected_delta
 
-    # ── Step 7: Final token check via APB ────────────────────────────
-    hw_tokens = await tb.read_token_count()
-    tb.log.info(f"Final: hw_tokens={hw_tokens}, sw_tokens={tb.sw_token_count}")
-    assert hw_tokens == MAX_TOKENS
-    assert tb.sw_token_count == MAX_TOKENS
+    # ── Step 7: Final credit check via APB ────────────────────────────
+    hw_credits = await tb.read_credit_count()
+    tb.log.info(f"Final: hw_credits={hw_credits}, sw_credits={tb.sw_credit_count}")
+    assert hw_credits == MAX_CREDITS
+    assert tb.sw_credit_count == MAX_CREDITS
 
     tb.log.info("Full write-read-return flow verified successfully")
 
 
 @cocotb.test()
-async def test_04_multiple_packets_token_tracking(dut):
+async def test_04_multiple_packets_credit_tracking(dut):
     """Write several packets, read them back one at a time, and verify
-    the Python token model matches hardware after every operation."""
+    the Python credit model matches hardware after every operation."""
     tb = TidelinkTB(dut)
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
@@ -390,14 +390,14 @@ async def test_04_multiple_packets_token_tracking(dut):
     for i, data in enumerate(packets):
         hit = await tb.write_packet(data, label=f"WR{i+1}")
         assert hit, f"write_addr_hit should fire for packet {i+1}"
-        hw_tokens = await tb.read_token_count()
-        assert hw_tokens == tb.sw_token_count, \
-            f"Token mismatch after write {i+1}: hw={hw_tokens}, sw={tb.sw_token_count}"
+        hw_credits = await tb.read_credit_count()
+        assert hw_credits == tb.sw_credit_count, \
+            f"Credit mismatch after write {i+1}: hw={hw_credits}, sw={tb.sw_credit_count}"
 
     for i, data in enumerate(packets):
         pkt = FifoPacket(data=data)
         # Clear target before each read
-        tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+        tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
         read_pkt, rhit = await tb.read_packet(label=f"RD{i+1}")
         assert rhit, f"read_addr_hit should fire for read {i+1}"
@@ -406,18 +406,18 @@ async def test_04_multiple_packets_token_tracking(dut):
 
         await tb.wait_returner_idle()
 
-        # Verify returner wrote token delta
-        returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+        # Verify returner wrote credit delta
+        returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
         assert returner_data == pkt.total_words, \
             f"Read {i+1}: returner wrote {returner_data}, expected {pkt.total_words}"
 
-        hw_tokens = await tb.read_token_count()
-        assert hw_tokens == tb.sw_token_count, \
-            f"Token mismatch after read {i+1}: hw={hw_tokens}, sw={tb.sw_token_count}"
-        tb.log.info(f"After read {i+1}: tokens={hw_tokens}")
+        hw_credits = await tb.read_credit_count()
+        assert hw_credits == tb.sw_credit_count, \
+            f"Credit mismatch after read {i+1}: hw={hw_credits}, sw={tb.sw_credit_count}"
+        tb.log.info(f"After read {i+1}: credits={hw_credits}")
 
-    assert tb.sw_token_count == MAX_TOKENS
-    tb.log.info("All packets verified with correct token tracking")
+    assert tb.sw_credit_count == MAX_CREDITS
+    tb.log.info("All packets verified with correct credit tracking")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -426,12 +426,12 @@ async def test_04_multiple_packets_token_tracking(dut):
 
 
 @cocotb.test()
-async def test_bug001_stale_token_delta_data(dut):
+async def test_bug001_stale_credit_delta_data(dut):
     """BUG-001: Returner sends delta=1 instead of actual packet size.
 
     Root cause: packet_word_length is cleared to 0 on the same cycle
     read_complete fires (tidelink_ahb_fifo_ctrl.sv:142-143). The returner
-    captures token_delta_data one cycle later, by which time
+    captures credit_delta_data one cycle later, by which time
     packet_word_length_r = 0, so delta = 0 + 1 = 1.
 
     This test writes packets of varying sizes, reads them back, and
@@ -455,7 +455,7 @@ async def test_bug001_stale_token_delta_data(dut):
         await tb.write_packet(data, label=f"BUG001_WR{i+1}")
 
         # Clear the slave RAM at the target address before reading
-        tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+        tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
         # Read the packet back — triggers read_complete → returner channel 0
         read_pkt, rhit = await tb.read_packet(label=f"BUG001_RD{i+1}")
@@ -465,7 +465,7 @@ async def test_bug001_stale_token_delta_data(dut):
         await ClockCycles(dut.hclk, 2)
 
         # Read what the returner wrote to the slave RAM
-        actual_delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+        actual_delta = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
 
         tb.log.info(
             f"Packet {i+1} ({len(data)} data words): "
@@ -489,11 +489,11 @@ async def test_bug001_stale_token_delta_data(dut):
 
 
 @cocotb.test()
-async def test_bug001_cumulative_token_drift(dut):
-    """BUG-001 cumulative impact: after N read-backs, the total tokens
-    returned to the pair should equal the total tokens consumed.
+async def test_bug001_cumulative_credit_drift(dut):
+    """BUG-001 cumulative impact: after N read-backs, the total credits
+    returned to the pair should equal the total credits consumed.
 
-    If the bug is present (delta always 1), the pair sees N tokens
+    If the bug is present (delta always 1), the pair sees N credits
     returned instead of the actual total, causing progressive drift.
     """
     tb = TidelinkTB(dut)
@@ -501,10 +501,10 @@ async def test_bug001_cumulative_token_drift(dut):
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     packets = [
-        [0x11, 0x22, 0x33],        # 3+1 = 4 tokens
-        [0x44, 0x55],               # 2+1 = 3 tokens
-        [0x66],                     # 1+1 = 2 tokens
-        [0x77, 0x88, 0x99, 0xAA],  # 4+1 = 5 tokens
+        [0x11, 0x22, 0x33],        # 3+1 = 4 credits
+        [0x44, 0x55],               # 2+1 = 3 credits
+        [0x66],                     # 1+1 = 2 credits
+        [0x77, 0x88, 0x99, 0xAA],  # 4+1 = 5 credits
     ]
     total_expected_delta = sum(len(p) + 1 for p in packets)  # 4+3+2+5 = 14
 
@@ -515,13 +515,13 @@ async def test_bug001_cumulative_token_drift(dut):
     # Read all packets back, accumulating deltas
     cumulative_delta = 0
     for i, data in enumerate(packets):
-        tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+        tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
         _, rhit = await tb.read_packet(label=f"DRIFT_RD{i+1}")
         await tb.wait_returner_idle()
         await ClockCycles(dut.hclk, 2)
 
-        delta = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+        delta = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
         cumulative_delta += delta
         tb.log.info(f"Read {i+1}: delta={delta}, cumulative={cumulative_delta}")
 
@@ -534,13 +534,13 @@ async def test_bug001_cumulative_token_drift(dut):
         tb.log.error(
             f"BUG-001 CONFIRMED: Cumulative delta is {len(packets)} "
             f"(1 per read), should be {total_expected_delta}. "
-            f"Token drift = {total_expected_delta - cumulative_delta} tokens lost."
+            f"Credit drift = {total_expected_delta - cumulative_delta} credits lost."
         )
 
     assert cumulative_delta == total_expected_delta, (
-        f"BUG-001: Cumulative token delta drift. "
-        f"Pair received {cumulative_delta} tokens, expected {total_expected_delta}. "
-        f"Drift = {total_expected_delta - cumulative_delta} tokens."
+        f"BUG-001: Cumulative credit delta drift. "
+        f"Pair received {cumulative_delta} credits, expected {total_expected_delta}. "
+        f"Drift = {total_expected_delta - cumulative_delta} credits."
     )
 
 
@@ -549,7 +549,7 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     """BUG-004 FIX VERIFICATION: Channel 0 deltas and channel 1 totals
     now target SEPARATE addresses on the pair side.
 
-    Channel 0 → PAIR_RELEASED_TOKENS_ADDR (0x020)
+    Channel 0 → PAIR_RELEASED_CREDITS_ADDR (0x020)
     Channel 1 → PAIR_DOORBELL_RESPONSE_ADDR (0x024)
 
     This test verifies they don't interfere with each other.
@@ -565,7 +565,7 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     await tb.write_packet(pkt_data, label="SEP_ACC_WR")
 
     # Clear both slave RAM locations
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
     tb.ahb_slave.memory.write(PAIR_DOORBELL_RESPONSE_ADDR, b'\x00\x00\x00\x00')
 
     # Read the packet back — triggers channel 0 (delta → 0x020)
@@ -574,7 +574,7 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     await ClockCycles(dut.hclk, 2)
 
     # Channel 0 should have written to 0x020 (delta accumulator)
-    delta_at_020 = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    delta_at_020 = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     total_at_024 = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
     tb.log.info(f"After read: 0x020={delta_at_020}, 0x024={total_at_024}")
 
@@ -590,22 +590,22 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     await ClockCycles(dut.hclk, 2)
 
     # Channel 1 should have written to 0x024 (doorbell response accumulator)
-    delta_at_020_after = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    delta_at_020_after = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     total_at_024_after = tb.read_returner_memory(PAIR_DOORBELL_RESPONSE_ADDR)
-    hw_token_count = await tb.read_token_count()
+    hw_credit_count = await tb.read_credit_count()
 
     tb.log.info(
         f"After doorbell: 0x020={delta_at_020_after}, "
-        f"0x024={total_at_024_after}, token_count={hw_token_count}"
+        f"0x024={total_at_024_after}, credit_count={hw_credit_count}"
     )
 
     # 0x020 should still have the delta from channel 0 (not overwritten)
     assert delta_at_020_after == expected_delta, \
         f"Channel 1 should NOT overwrite 0x020: expected {expected_delta}, got {delta_at_020_after}"
 
-    # 0x024 should have the total token count from channel 1
-    assert total_at_024_after == hw_token_count, \
-        f"Channel 1 should write token_count={hw_token_count} to 0x024, got {total_at_024_after}"
+    # 0x024 should have the total credit count from channel 1
+    assert total_at_024_after == hw_credit_count, \
+        f"Channel 1 should write credit_count={hw_credit_count} to 0x024, got {total_at_024_after}"
 
     tb.log.info("BUG-004 fix verified: deltas and totals use separate accumulators")
 
@@ -634,7 +634,7 @@ async def test_thresh_01_default_batching(dut):
         assert hit
 
     # Clear returner target
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     # Read packets one by one — returner should NOT fire until threshold crossed
     for i in range(6):
@@ -643,7 +643,7 @@ async def test_thresh_01_default_batching(dut):
         await ClockCycles(dut.hclk, 5)
 
     # After 6 reads: acc = 6*3 = 18 < 20, returner should not have fired
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     tb.log.info(f"After 6 reads: returner target = {returner_data}")
     assert returner_data == 0, \
         f"Returner should not have fired yet (acc=18 < 20), but target has {returner_data}"
@@ -654,7 +654,7 @@ async def test_thresh_01_default_batching(dut):
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     tb.log.info(f"After 7 reads: returner target = {returner_data}")
     assert returner_data == 21, \
         f"Expected batched delta=21, got {returner_data}"
@@ -690,14 +690,14 @@ async def test_thresh_03_large_packet_exceeds_threshold(dut):
     hit = await tb.write_packet(pkt_data, label="LARGE_WR")
     assert hit
 
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     _, rhit = await tb.read_packet(label="LARGE_RD")
     assert rhit
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     assert returner_data == 16, \
         f"Expected immediate delta=16, got {returner_data}"
 
@@ -714,14 +714,14 @@ async def test_thresh_04_threshold_zero_backward_compat(dut):
     hit = await tb.write_packet(pkt_data, label="COMPAT_WR")
     assert hit
 
-    tb.ahb_slave.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     _, rhit = await tb.read_packet(label="COMPAT_RD")
     assert rhit
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
-    returner_data = tb.read_returner_memory(PAIR_RELEASED_TOKENS_ADDR)
+    returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     assert returner_data == 4, \
         f"Expected immediate delta=4, got {returner_data}"
 
@@ -851,18 +851,18 @@ async def test_13_status_packet_committed_polling(dut):
 
 @cocotb.test()
 async def test_cov_01_flush_resets_state(dut):
-    """FLUSH (CTRL[1]) resets pointers, token count, packet state, release
+    """FLUSH (CTRL[1]) resets pointers, credit count, packet state, release
     accumulator, and sticky error flags.  EN must be 0 before flush."""
     tb = TidelinkTB(dut)
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
 
-    # Write two packets to consume tokens and move pointers
+    # Write two packets to consume credits and move pointers
     await tb.write_packet([0xAA, 0xBB, 0xCC], label="FLUSH_WR1")
     await tb.write_packet([0xDD, 0xEE], label="FLUSH_WR2")
 
-    hw_tokens_before = await tb.read_token_count()
-    assert hw_tokens_before < MAX_TOKENS, "Tokens should be consumed"
+    hw_credits_before = await tb.read_credit_count()
+    assert hw_credits_before < MAX_CREDITS, "Credits should be consumed"
 
     # Read one packet so release_acc gets a value
     _, rhit = await tb.read_packet(label="FLUSH_RD1")
@@ -883,10 +883,10 @@ async def test_cov_01_flush_resets_state(dut):
     await tb.apb.write(APB_REG_CTRL, 0x2)
     await ClockCycles(dut.hclk, 5)
 
-    # Token count should be back to MAX_TOKENS
-    hw_tokens_after = await tb.read_token_count()
-    assert hw_tokens_after == MAX_TOKENS, \
-        f"After flush: expected {MAX_TOKENS} tokens, got {hw_tokens_after}"
+    # Credit count should be back to MAX_CREDITS
+    hw_credits_after = await tb.read_credit_count()
+    assert hw_credits_after == MAX_CREDITS, \
+        f"After flush: expected {MAX_CREDITS} credits, got {hw_credits_after}"
 
     # packet_committed_irq should be cleared
     assert int(dut.packet_committed_irq.value) == 0, \
@@ -906,22 +906,22 @@ async def test_cov_01_flush_resets_state(dut):
 
 
 @cocotb.test()
-async def test_cov_02_apb_region1_released_tokens_acc(dut):
-    """APB Region 1 (paddr[5]=1): Released Tokens Accumulator at 0x020.
-    Write-add / Read-clear behaviour, plus released_tokens_irq."""
+async def test_cov_02_apb_region1_released_credits_acc(dut):
+    """APB Region 1 (paddr[5]=1): Released Credits Accumulator at 0x020.
+    Write-add / Read-clear behaviour, plus released_credits_irq."""
     tb = TidelinkTB(dut)
     await tb.reset()
 
     # After reset, accumulator should be 0, IRQ deasserted
     val = await tb.apb.read(APB_REG_RELEASED_ACC)
     assert val == 0, f"Expected 0 after reset, got {val}"
-    assert int(dut.released_tokens_irq.value) == 0
+    assert int(dut.released_credits_irq.value) == 0
 
     # Write 10 to accumulator — should add
     await tb.apb.write(APB_REG_RELEASED_ACC, 10)
     await ClockCycles(dut.hclk, 1)
-    assert int(dut.released_tokens_irq.value) == 1, \
-        "released_tokens_irq should assert when acc != 0"
+    assert int(dut.released_credits_irq.value) == 1, \
+        "released_credits_irq should assert when acc != 0"
 
     # Write 5 more — should accumulate to 15
     await tb.apb.write(APB_REG_RELEASED_ACC, 5)
@@ -931,10 +931,10 @@ async def test_cov_02_apb_region1_released_tokens_acc(dut):
     # Read clears — next read should be 0
     val = await tb.apb.read(APB_REG_RELEASED_ACC)
     assert val == 0, f"Expected 0 after read-clear, got {val}"
-    assert int(dut.released_tokens_irq.value) == 0, \
-        "released_tokens_irq should deassert when acc == 0"
+    assert int(dut.released_credits_irq.value) == 0, \
+        "released_credits_irq should deassert when acc == 0"
 
-    tb.log.info("Released tokens accumulator W-add/R-clear verified")
+    tb.log.info("Released credits accumulator W-add/R-clear verified")
 
 
 @cocotb.test()
@@ -968,74 +968,74 @@ async def test_cov_03_apb_region1_doorbell_resp_acc(dut):
 
 
 @cocotb.test()
-async def test_cov_04_apb_region1_pair_token_counter(dut):
-    """APB Region 1: Pair token counter increment (0x020 write), decrement
+async def test_cov_04_apb_region1_pair_credit_counter(dut):
+    """APB Region 1: Pair credit counter increment (0x020 write), decrement
     (0x02C write), read (0x028), enable/disable (0x030)."""
     tb = TidelinkTB(dut)
     await tb.reset()
 
-    APB_REG_PAIR_TOKEN_CTR    = 0x028
-    APB_REG_PAIR_TOKEN_CONS   = 0x02C
-    APB_REG_PAIR_TOKEN_EN     = 0x030
+    APB_REG_PAIR_CREDIT_CTR    = 0x028
+    APB_REG_PAIR_CREDIT_CONS   = 0x02C
+    APB_REG_PAIR_CREDIT_EN     = 0x030
 
     # After reset, counter = 0, enabled
-    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    val = await tb.apb.read(APB_REG_PAIR_CREDIT_CTR)
     assert val == 0, f"Expected 0 after reset, got {val}"
 
-    en = await tb.apb.read(APB_REG_PAIR_TOKEN_EN)
+    en = await tb.apb.read(APB_REG_PAIR_CREDIT_EN)
     assert en == 1, f"Expected enabled (1) after reset, got {en}"
 
-    # Increment via released_tokens_acc write (offset 0x020, region 1, paddr[4:2]=0)
-    # This simultaneously adds to released_tokens_acc AND increments pair_token_counter
+    # Increment via released_credits_acc write (offset 0x020, region 1, paddr[4:2]=0)
+    # This simultaneously adds to released_credits_acc AND increments pair_credit_counter
     await tb.apb.write(APB_REG_RELEASED_ACC, 5)
-    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    val = await tb.apb.read(APB_REG_PAIR_CREDIT_CTR)
     assert val == 5, f"Expected 5 after increment, got {val}"
 
-    # Decrement via pair_token_consume write (offset 0x02C)
-    await tb.apb.write(APB_REG_PAIR_TOKEN_CONS, 2)
-    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    # Decrement via pair_credit_consume write (offset 0x02C)
+    await tb.apb.write(APB_REG_PAIR_CREDIT_CONS, 2)
+    val = await tb.apb.read(APB_REG_PAIR_CREDIT_CTR)
     assert val == 3, f"Expected 3 after decrement, got {val}"
 
     # Disable counter
-    await tb.apb.write(APB_REG_PAIR_TOKEN_EN, 0)
-    en = await tb.apb.read(APB_REG_PAIR_TOKEN_EN)
+    await tb.apb.write(APB_REG_PAIR_CREDIT_EN, 0)
+    en = await tb.apb.read(APB_REG_PAIR_CREDIT_EN)
     assert en == 0, f"Expected disabled (0), got {en}"
 
     # Increment while disabled — counter should not change
     await tb.apb.write(APB_REG_RELEASED_ACC, 10)
-    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    val = await tb.apb.read(APB_REG_PAIR_CREDIT_CTR)
     assert val == 3, f"Expected 3 (frozen), got {val}"
 
     # Re-enable
-    await tb.apb.write(APB_REG_PAIR_TOKEN_EN, 1)
+    await tb.apb.write(APB_REG_PAIR_CREDIT_EN, 1)
 
     # Increment should work again
     await tb.apb.write(APB_REG_RELEASED_ACC, 4)
-    val = await tb.apb.read(APB_REG_PAIR_TOKEN_CTR)
+    val = await tb.apb.read(APB_REG_PAIR_CREDIT_CTR)
     assert val == 7, f"Expected 7 after re-enable + increment, got {val}"
 
-    # Clean up: read-clear the released_tokens_acc
+    # Clean up: read-clear the released_credits_acc
     await tb.apb.read(APB_REG_RELEASED_ACC)
 
-    tb.log.info("Pair token counter increment/decrement/enable verified")
+    tb.log.info("Pair credit counter increment/decrement/enable verified")
 
 
 @cocotb.test()
 async def test_cov_05_fifo_overrun(dut):
-    """Write packets until FIFO is full (token_count == 0), then issue one
+    """Write packets until FIFO is full (credit_count == 0), then issue one
     more write to trigger overrun. Verify STATUS[1] overrun flag is sticky
     and cleared by flush."""
     tb = TidelinkTB(dut)
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
 
-    # Fill the FIFO by writing large packets until tokens are nearly exhausted
-    # MAX_TOKENS = 4096, write 512-word packets (513 total_words each)
+    # Fill the FIFO by writing large packets until credits are nearly exhausted
+    # MAX_CREDITS = 4096, write 512-word packets (513 total_words each)
     pkt_size = 512
     packets_written = 0
     while True:
-        hw_tokens = await tb.read_token_count()
-        if hw_tokens < pkt_size + 1:
+        hw_credits = await tb.read_credit_count()
+        if hw_credits < pkt_size + 1:
             break
         data = [0xF1110000 + i for i in range(pkt_size)]
         hit = await tb.write_packet(data, label=f"FILL_{packets_written}")
@@ -1043,20 +1043,20 @@ async def test_cov_05_fifo_overrun(dut):
             break
         packets_written += 1
 
-    # Write remaining tokens with smaller packets
+    # Write remaining credits with smaller packets
     while True:
-        hw_tokens = await tb.read_token_count()
-        if hw_tokens < 2:  # Need at least 2 tokens (1 length + 1 data)
+        hw_credits = await tb.read_credit_count()
+        if hw_credits < 2:  # Need at least 2 credits (1 length + 1 data)
             break
-        remaining = hw_tokens - 1  # Leave 1 for length word
+        remaining = hw_credits - 1  # Leave 1 for length word
         data = [0x5A110000 + i for i in range(remaining)]
         hit = await tb.write_packet(data, label="FILL_SMALL")
         if not hit:
             break
 
-    # Verify token count is 0
-    hw_tokens = await tb.read_token_count()
-    tb.log.info(f"After filling: token_count = {hw_tokens}")
+    # Verify credit count is 0
+    hw_credits = await tb.read_credit_count()
+    tb.log.info(f"After filling: credit_count = {hw_credits}")
 
     # Check overrun not yet set
     status = await tb.apb.read(APB_REG_STATUS)
@@ -1102,14 +1102,14 @@ async def test_cov_05_fifo_overrun(dut):
 
 @cocotb.test()
 async def test_cov_06_fifo_underrun(dut):
-    """Read from an empty FIFO (token_count == MAX_TOKENS) to trigger
+    """Read from an empty FIFO (credit_count == MAX_CREDITS) to trigger
     underrun. Verify STATUS[2] underrun flag is sticky and cleared by flush."""
     tb = TidelinkTB(dut)
     await tb.reset()
 
-    # Verify FIFO is empty (token_count == MAX_TOKENS)
-    hw_tokens = await tb.read_token_count()
-    assert hw_tokens == MAX_TOKENS
+    # Verify FIFO is empty (credit_count == MAX_CREDITS)
+    hw_credits = await tb.read_credit_count()
+    assert hw_credits == MAX_CREDITS
 
     # Check underrun not yet set
     status = await tb.apb.read(APB_REG_STATUS)
@@ -1197,7 +1197,7 @@ async def test_cov_08_apb_pkt_word_len_read(dut):
 @cocotb.test()
 async def test_cov_09_apb_release_acc_read(dut):
     """Read APB offset 0x018 (release_acc) — debug register showing pending
-    unreleased tokens."""
+    unreleased credits."""
     tb = TidelinkTB(dut)
     await tb.reset()
 
@@ -1321,7 +1321,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
     await ClockCycles(dut.hclk, 1)
 
     # Read the packet back — triggers returner which now sees wait states
-    ahb_slave_bp.memory.write(PAIR_RELEASED_TOKENS_ADDR, b'\x00\x00\x00\x00')
+    ahb_slave_bp.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value   = 1
@@ -1361,7 +1361,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
 
     # Verify the returner completed successfully despite wait states
     returner_data = int.from_bytes(
-        ahb_slave_bp.memory.read(PAIR_RELEASED_TOKENS_ADDR, 4),
+        ahb_slave_bp.memory.read(PAIR_RELEASED_CREDITS_ADDR, 4),
         byteorder="little"
     )
     assert returner_data == pkt.total_words, \

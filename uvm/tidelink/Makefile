@@ -58,6 +58,7 @@ VCS  = $(VCS_HOME)/bin/vcs
 VCS_COMMON  = -full64 -sverilog
 VCS_COMMON += -ntb_opts uvm-1.2
 VCS_COMMON += -timescale=1ns/1ps
+VCS_COMMON += -xprop=tmerge
 
 # VIP defines
 VCS_COMMON += +define+DESIGNWARE_INCDIR=$(VIP_HOME)

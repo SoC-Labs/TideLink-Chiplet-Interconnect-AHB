@@ -1,16 +1,16 @@
 # TideLink GitLab CI Pipeline
-# Runs HAL lint, cocotb regression, UVM regression, new module tests,
-# system-level stress tests, and coverage merging.
+# Runs lint, cocotb regression (204 tests), UVM, synthesis, and coverage.
 #
 # Stages:
 #   1. setup      - Clone repo, validate tool paths
 #   2. lint       - HAL lint on FIFO and new modules
-#   3. regression - Existing cocotb (131 tests) and UVM (4 tests)
-#   4. new_module - New cocotb and UVM tests for fc_adapter, top, integration
-#   5. system     - System-level stress tests (cocotb + UVM)
-#   6. coverage   - Merge VCS coverage from all runs
-#   7. pages      - Dashboard generation
-#   8. cleanup    - Remove workspace
+#   3. regression - All cocotb (204 tests, 9 envs) and UVM (4 tests)
+#   4. new_module - Additional cocotb/UVM for fc_adapter, top, integration
+#   5. system     - System-level paired stress tests (cocotb + UVM)
+#   6. synthesis  - Design Compiler: FIFO, FC adapter, tidelink_top
+#   7. coverage   - Merge VCS coverage from all runs
+#   8. pages      - Dashboard generation
+#   9. cleanup    - Remove workspace
 
 stages:
   - setup
@@ -18,6 +18,7 @@ stages:
   - regression
   - new_module
   - system
+  - synthesis
   - coverage
   - pages
   - cleanup
@@ -190,11 +191,11 @@ cocotb-regression:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-    # Run all 131 existing cocotb tests with coverage
+    # Run all cocotb tests (204 tests across 9 environments) with coverage
     - make -C "$WORK_DIR/cocotb" coverage
   after_script:
     - mkdir -p cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system; do
         mkdir -p "cocotb/$env";
         cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;
@@ -431,7 +432,54 @@ uvm-system:
     expire_in: 30 days
 
 # ============================================================================
-# Stage 6: Coverage Merge
+# Stage 6: Synthesis
+# ============================================================================
+# Synthesise the full tidelink_top and individual modules using Design Compiler.
+# tidelink_top requires XHB500 and Wlink IP — use WLINK_VERILOG_DIR to point
+# to the generated Wlink output directory.
+
+.dc_setup: &dc_setup
+  before_script:
+    - export PATH="$VCS_HOME/bin:$RTLA_HOME/bin:/eda/synopsys/syn/bin:$PATH"
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export WLINK_VERILOG_DIR="$WORK_DIR/deps/axi-chiplet-controller/wav-wlink-hw/output_tidelink"
+
+synth-fifo:
+  stage: synthesis
+  needs: [cocotb-regression]
+  tags:
+    - vcs
+  <<: *dc_setup
+  script:
+    - cd "$WORK_DIR/syn/asic/design-compiler"
+    - make MODULE=tidelink 2>&1 | tee dc_tidelink.log
+    - make MODULE=tidelink_fc_adapter 2>&1 | tee dc_fc_adapter.log
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/design-compiler/dc_*.log
+    expire_in: 30 days
+  allow_failure: true
+
+synth-top:
+  stage: synthesis
+  needs: [cocotb-regression]
+  tags:
+    - vcs
+  <<: *dc_setup
+  script:
+    - cd "$WORK_DIR/syn/asic/design-compiler"
+    # tidelink_top requires Wlink generated Verilog + XHB500 + CMSDK
+    - make MODULE=tidelink_top 2>&1 | tee dc_tidelink_top.log
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/design-compiler/dc_tidelink_top.log
+    expire_in: 30 days
+  allow_failure: true
+
+# ============================================================================
+# Stage 7: Coverage Merge
 # ============================================================================
 
 coverage-merge:
@@ -504,7 +552,7 @@ coverage-merge:
     expire_in: 30 days
 
 # ============================================================================
-# Stage 7: Dashboard
+# Stage 8: Dashboard
 # ============================================================================
 
 dashboard:
@@ -571,7 +619,7 @@ dashboard:
   when: always
 
 # ============================================================================
-# Stage 8: Cleanup
+# Stage 9: Cleanup
 # ============================================================================
 
 cleanup:

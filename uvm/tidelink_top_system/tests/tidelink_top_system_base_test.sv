@@ -125,8 +125,8 @@ class tidelink_top_system_base_test extends uvm_test;
     b_init.side_name = "B";
     b_init.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
 
-    // Wait for doorbells to propagate through Wlink FC path
-    repeat (100) @(posedge tb_if.clk);
+    // Wait for doorbells to propagate through Wlink FC path (GPIO PHY is slow)
+    repeat (phy_transit_wait) @(posedge tb_if.clk);
 
     `uvm_info("TEST", "Both sides initialized.", UVM_LOW)
   endtask

@@ -10,11 +10,13 @@ export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/BP210/BP210-BU-00000-r1p1-00rel0
 # ── Target module ──────────────────────────────────���───────────────────────
 export MODULE ?= tidelink
 
-# ── Module-to-top mapping ──────────────────────��──────────────────────────
+# ── Module-to-top mapping ──────────────────────────────────────────────────
 # Flist basenames and SV module names diverge after the FIFO rename.
 # MODULE selects the flist; TOP selects the elaboration top.
-TOP_tidelink      = tidelink_fifo
-TOP_tidelink_fifo = tidelink_fifo_mem
+TOP_tidelink          = tidelink_fifo
+TOP_tidelink_fifo     = tidelink_fifo_mem
+TOP_tidelink_top      = tidelink_top
+TOP_tidelink_fc_adapter = tidelink_fc_adapter
 export TOP := $(or $(TOP_$(MODULE)),$(MODULE))
 
 # ── File lists ───────────────────────────────────────────────��─────────────
@@ -62,4 +64,4 @@ export CLK_UNCERTAINTY ?= 0.35
 export RST_NAME        ?= hresetn
 
 # ── Available modules ───────────��──────────────────────────────────────────
-MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs
+MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs tidelink_fc_adapter tidelink_top

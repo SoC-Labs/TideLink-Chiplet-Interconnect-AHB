@@ -59,7 +59,6 @@ module tidelink_fifo_ctrl #(
     output wire                   underrun,       // Read with no packet available
 
     // Control inputs
-    input  wire                   enable,         // EN gate: 1 = data window active
     input  wire                   flush           // Self-clearing flush: resets pointers/counters/errors
 );
 
@@ -82,7 +81,7 @@ module tidelink_fifo_ctrl #(
     logic valid_transfer;
     logic write_complete;
 
-    assign valid_transfer = hsel && htrans[1] && hready && enable && (packet_word_length_r != '0);
+    assign valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
     assign write_complete = valid_transfer && (haddr == write_target_addr_r) && hwrite;
     assign read_complete  = valid_transfer && (haddr == read_target_addr_r)  && ~hwrite;
 
@@ -126,7 +125,7 @@ module tidelink_fifo_ctrl #(
     // Packet Metadata Capture
     // -------------------------------------------------------------------------
     // Valid AHB access to address 0 (gated on hsel, htrans, hready)
-    wire valid_ahb_access = hsel && htrans[1] && hready && enable;
+    wire valid_ahb_access = hsel && htrans[1] && hready;
 
     // Registered flag: a valid write to addr 0 occurred in the address phase.
     // hwdata is only valid in the DATA phase (one cycle later in AHB protocol),
@@ -253,9 +252,9 @@ module tidelink_fifo_ctrl #(
 
     logic overrun_r, underrun_r;
 
-    wire overrun_event  = hsel && htrans[1] && hready && enable && hwrite
+    wire overrun_event  = hsel && htrans[1] && hready && hwrite
                           && (credit_count_r == '0);
-    wire underrun_event = hsel && htrans[1] && hready && enable && ~hwrite
+    wire underrun_event = hsel && htrans[1] && hready && ~hwrite
                           && (credit_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS)));
 
     always_ff @(posedge hclk or negedge hresetn) begin

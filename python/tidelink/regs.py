@@ -15,7 +15,7 @@ REG_CREDIT_COUNT        = 0x00C   # RO: available FIFO credits (local)
 REG_STATUS             = 0x010   # RO: [0] returner_busy, [1] overrun, [2] underrun, [3] master_error
 REG_DOORBELL           = 0x014   # W1C: software doorbell trigger
 REG_REL_ACC            = 0x018   # RO: pending unreleased credits (debug)
-REG_CTRL               = 0x01C   # RW: [0] EN, [1] FLUSH (self-clearing)
+REG_CTRL               = 0x01C   # RW: [0] reserved, [1] FLUSH (self-clearing)
 
 # ── Status register bit positions ────────────────────────────────────────
 STATUS_RETURNER_BUSY   = 0
@@ -25,7 +25,7 @@ STATUS_MASTER_ERROR    = 3
 STATUS_PACKET_COMMITTED = 4
 
 # ── CTRL register bit positions ──────────────────────────────────────────
-CTRL_EN                = 0
+CTRL_EN                = 0  # Removed from hardware — FIFO always enabled after reset
 CTRL_FLUSH             = 1
 
 # ── Region 1 (paddr[5]=1): Incoming Credit Receivers ─────────────────────────

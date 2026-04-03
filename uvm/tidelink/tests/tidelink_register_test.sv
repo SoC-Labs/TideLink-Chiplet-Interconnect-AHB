@@ -91,22 +91,22 @@ class tidelink_register_test extends tidelink_base_test;
       `uvm_error("TEST", "REL_THRESHOLD write/readback mismatch")
 
     // ---------------------------------------------------------------
-    // Test 4: Write and readback CTRL register
+    // Test 4: Write to CTRL register (EN bit removed, bit[0] is reserved)
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Test 4: Enable block via CTRL register", UVM_LOW)
+    `uvm_info("TEST", "Test 4: CTRL bit[0] is reserved (EN removed), should read as 0", UVM_LOW)
 
     wr_seq = apb_write_sequence::type_id::create("wr_ctrl");
     wr_seq.addr = REG_CTRL;
-    wr_seq.data = 32'h1;  // EN = 1
+    wr_seq.data = 32'h1;  // Write to reserved bit[0]
     wr_seq.start(env.apb_agt.sequencer);
 
     rd_seq = apb_read_sequence::type_id::create("rd_ctrl2");
     rd_seq.addr = REG_CTRL;
     rd_seq.start(env.apb_agt.sequencer);
-    `uvm_info("TEST", $sformatf("CTRL = 0x%08h (expected 0x00000001)",
+    `uvm_info("TEST", $sformatf("CTRL = 0x%08h (expected 0x00000000)",
       rd_seq.rdata), UVM_LOW)
-    if (rd_seq.rdata !== 32'h1)
-      `uvm_error("TEST", "CTRL enable write/readback mismatch")
+    if (rd_seq.rdata !== 32'h0)
+      `uvm_error("TEST", "CTRL bit[0] should read as 0 (EN removed)")
 
     // ---------------------------------------------------------------
     // Test 5: Write to accumulator registers (W-add behavior)

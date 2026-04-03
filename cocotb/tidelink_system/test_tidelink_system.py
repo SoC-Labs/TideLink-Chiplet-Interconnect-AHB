@@ -19,7 +19,7 @@ from cocotbext.ahb import AHBBus, AHBLiteMaster
 
 from tidelink.regs import (
     MAX_CREDITS,
-    REG_CREDIT_COUNT, REG_CTRL, REG_DOORBELL, REG_REL_THRESHOLD,
+    REG_CREDIT_COUNT, REG_DOORBELL, REG_REL_THRESHOLD,
     REG_RELEASED_ACC, REG_DOORBELL_RESP_ACC, REG_STATUS,
     REG_PAIR_CREDIT_COUNTER, REG_PAIR_CREDIT_ENABLE,
     STATUS_OVERRUN, STATUS_UNDERRUN,
@@ -215,14 +215,11 @@ class TideLinkSystemTB:
         self.b = TideLinkDriver(dut, "b", dut._log)
 
     async def reset(self):
-        """Assert reset, release, and enable both FIFOs."""
+        """Assert reset, release, and wait for initialization."""
         self.dut.hresetn.value = 0
         await ClockCycles(self.dut.hclk, 5)
         self.dut.hresetn.value = 1
         await ClockCycles(self.dut.hclk, 10)
-        # Enable both FIFO data windows
-        await self.a.cfg_write(REG_CTRL, 0x1)
-        await self.b.cfg_write(REG_CTRL, 0x1)
         await ClockCycles(self.dut.hclk, 5)
 
     async def send_and_receive(self, sender, receiver, data_words,
@@ -825,9 +822,6 @@ async def test_20_reset_mid_transfer(dut):
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 10)
 
-    # Re-enable both FIFOs
-    await tb.a.cfg_write(REG_CTRL, 0x1)
-    await tb.b.cfg_write(REG_CTRL, 0x1)
     await ClockCycles(dut.hclk, 10)
 
     # Verify both sides are in clean state

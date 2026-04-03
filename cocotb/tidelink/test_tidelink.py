@@ -130,8 +130,6 @@ class TidelinkTB:
         # Wait extra cycles for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
         self.sw_credit_count = MAX_CREDITS
-        # Enable the data window (EN=1 in CTRL register)
-        await self.apb.write(APB_REG_CTRL, 0x1)
 
     # ── APB Helpers ──────────────────────────────────────────────────────
 
@@ -852,7 +850,7 @@ async def test_13_status_packet_committed_polling(dut):
 @cocotb.test()
 async def test_cov_01_flush_resets_state(dut):
     """FLUSH (CTRL[1]) resets pointers, credit count, packet state, release
-    accumulator, and sticky error flags.  EN must be 0 before flush."""
+    accumulator, and sticky error flags."""
     tb = TidelinkTB(dut)
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
@@ -875,11 +873,7 @@ async def test_cov_01_flush_resets_state(dut):
     assert int(dut.packet_committed_irq.value) == 1, \
         "packet_committed_irq should be set after third write"
 
-    # Disable EN before flush: write CTRL = 0x00 (EN=0)
-    await tb.apb.write(APB_REG_CTRL, 0x0)
-    await ClockCycles(dut.hclk, 2)
-
-    # Issue FLUSH: write CTRL = 0x02 (FLUSH=1, EN=0)
+    # Issue FLUSH: write CTRL = 0x02 (FLUSH=1)
     await tb.apb.write(APB_REG_CTRL, 0x2)
     await ClockCycles(dut.hclk, 5)
 
@@ -896,11 +890,10 @@ async def test_cov_01_flush_resets_state(dut):
     rel_acc = await tb.apb.read(APB_REG_REL_ACC)
     assert rel_acc == 0, f"Release accumulator should be 0 after flush, got {rel_acc}"
 
-    # Re-enable and verify normal operation still works
-    await tb.apb.write(APB_REG_CTRL, 0x1)
-    await ClockCycles(dut.hclk, 10)  # wait for reset deassertion pulse
+    # Verify normal operation still works after flush
+    await ClockCycles(dut.hclk, 10)
     hit = await tb.write_packet([0x11, 0x22], label="FLUSH_POST_WR")
-    assert hit, "Should be able to write after flush + re-enable"
+    assert hit, "Should be able to write after flush"
 
     tb.log.info("Flush test passed — all state reset correctly")
 
@@ -1089,7 +1082,6 @@ async def test_cov_05_fifo_overrun(dut):
     assert status & (1 << 1), "Overrun should be sticky"
 
     # Flush should clear it
-    await tb.apb.write(APB_REG_CTRL, 0x0)  # EN=0
     await tb.apb.write(APB_REG_CTRL, 0x2)  # FLUSH
     await ClockCycles(dut.hclk, 3)
 
@@ -1139,7 +1131,6 @@ async def test_cov_06_fifo_underrun(dut):
     assert status & (1 << 2), "Underrun should be sticky"
 
     # Flush should clear it
-    await tb.apb.write(APB_REG_CTRL, 0x0)  # EN=0
     await tb.apb.write(APB_REG_CTRL, 0x2)  # FLUSH
     await ClockCycles(dut.hclk, 3)
 
@@ -1242,8 +1233,7 @@ async def test_cov_10_flush_clears_release_acc_and_errors(dut):
     rel_acc = await tb.apb.read(APB_REG_REL_ACC)
     assert rel_acc > 0, "release_acc should be non-zero before flush"
 
-    # Disable + flush
-    await tb.apb.write(APB_REG_CTRL, 0x0)
+    # Flush
     await tb.apb.write(APB_REG_CTRL, 0x2)
     await ClockCycles(dut.hclk, 3)
 
@@ -1291,7 +1281,6 @@ async def test_cov_11_ahb_master_wait_states(dut):
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 10)
-    await apb.write(APB_REG_CTRL, 0x1)
     await apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release
 
     # Write a packet
@@ -1397,7 +1386,6 @@ async def test_cov_12_master_error_flag(dut):
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 10)
-    await apb.write(APB_REG_CTRL, 0x1)
     await apb.write(APB_REG_REL_THRESHOLD, 0)
 
     # Verify master_error is clear
@@ -1497,7 +1485,6 @@ async def test_cov_12_master_error_flag(dut):
     assert status & (1 << 3), "master_error should be sticky"
 
     # Flush should clear it
-    await apb.write(APB_REG_CTRL, 0x0)
     await apb.write(APB_REG_CTRL, 0x2)
     await ClockCycles(dut.hclk, 3)
 

@@ -163,15 +163,21 @@ VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/veri
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
 
-# Wlink chiplet controller (Chisel-generated Verilog)
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/Wlink.v
+# Wlink chiplet controller (Chisel-generated Verilog, GPIO PHY + TideLink)
+# Use -y to pick up all sub-modules (APBFanout, WlinkTxRouter, etc.)
+VCS_FLAGS += -y $(DEPS_DIR)/wav-wlink-hw/output_tidelink_gpio
+VCS_FLAGS += +libext+.v
 
 # Wlink PHY (GPIO behavioural model)
 VCS_FLAGS += -y $(DEPS_DIR)/logical/PHY/generic
+VCS_FLAGS += -y $(DEPS_DIR)/logical/wlink
 VCS_FLAGS += +libext+.v
 
-# Address translation
+# Address translator and its dependencies
+VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
+VCS_FLAGS += $(DEPS_DIR)/logical/apb_control/apb_control.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/address_translation/address_translation.sv
+VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 
 # Bridge dependencies
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges

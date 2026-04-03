@@ -86,7 +86,6 @@ module tidelink_fifo #(
     logic                   fifo_underrun;
 
     // Control signals (from APB regs to FIFO and returner)
-    logic                   ctrl_enable;
     logic                   ctrl_flush;
 
     // Returner status
@@ -132,7 +131,6 @@ module tidelink_fifo #(
         .packet_committed_irq   (packet_committed_irq),
         .overrun                (fifo_overrun),
         .underrun               (fifo_underrun),
-        .enable                 (ctrl_enable),
         .flush                  (ctrl_flush)
     );
 
@@ -170,7 +168,6 @@ module tidelink_fifo #(
         // Packet committed (for STATUS[4] polling)
         .packet_committed    (packet_committed_irq),
         // Control outputs (to FIFO and returner)
-        .ctrl_enable         (ctrl_enable),
         .ctrl_flush          (ctrl_flush),
         // Returner control
         .doorbell_trigger    (doorbell_trigger),

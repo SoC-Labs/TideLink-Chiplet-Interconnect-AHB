@@ -82,13 +82,12 @@ async def setup(dut):
 
 
 async def do_reset(dut):
-    """Assert active-low reset for 5 cycles, then deassert."""
+    """Assert active-low reset for 5 cycles, then deassert.
+    The FIFO data window is always enabled (CTRL.EN removed)."""
     dut.hresetn.value = 0
-    dut.enable.value = 0
     dut.flush.value = 0
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
-    dut.enable.value = 1
     await ClockCycles(dut.hclk, 2)
 
 
@@ -1141,70 +1140,7 @@ def get_underrun(dut):
 
 
 @cocotb.test()
-async def test_28_en_gate_blocks_writes(dut):
-    """When enable=0, AHB writes should be gated (no pointer advance, no credit change)."""
-    ahb = await setup(dut)
-    await do_reset(dut)
-
-    credits_before = get_credit_count(dut)
-
-    # Disable the FIFO
-    dut.enable.value = 0
-    await RisingEdge(dut.hclk)
-
-    # Attempt to write a packet
-    pkt = FifoPacket(data=[0xDEAD, 0xBEEF])
-    _, _, hit = await write_packet(dut, ahb, pkt, label="EN_OFF_W")
-
-    # write_complete should NOT fire (enable gates valid_transfer)
-    assert not hit, "write_complete should not fire when enable=0"
-
-    # Credit count should be unchanged
-    credits_after = get_credit_count(dut)
-    assert credits_after == credits_before, \
-        f"Credits should be unchanged: before={credits_before}, after={credits_after}"
-
-    dut._log.info("EN gate blocks writes — passed")
-
-
-@cocotb.test()
-async def test_29_en_gate_blocks_reads(dut):
-    """When enable=0, AHB reads should be gated."""
-    ahb = await setup(dut)
-    await do_reset(dut)
-
-    # Write a packet with enable=1
-    pkt = FifoPacket(data=[0xCAFE, 0xBABE])
-    _, _, hit = await write_packet(dut, ahb, pkt, label="EN_RD_W")
-    assert hit
-
-    # Disable
-    dut.enable.value = 0
-    await RisingEdge(dut.hclk)
-
-    credits_before = get_credit_count(dut)
-
-    # Attempt to read — should be gated
-    # Read addr 0 (length)
-    await RisingEdge(dut.hclk)
-    dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
-    dut.hsize.value = 2; dut.haddr.value = 0x0000
-    await RisingEdge(dut.hclk)
-    dut.htrans.value = 0; dut.hsel.value = 0; dut.haddr.value = 0x3FFF
-    await ClockCycles(dut.hclk, 4)
-
-    # packet_word_length should be 0 (gated by enable)
-    pwl = int(dut.u_dut.packet_word_length.value)
-    assert pwl == 0, f"packet_word_length should be 0 when disabled, got {pwl}"
-
-    credits_after = get_credit_count(dut)
-    assert credits_after == credits_before, "Credits should be unchanged when disabled"
-
-    dut._log.info("EN gate blocks reads — passed")
-
-
-@cocotb.test()
-async def test_30_flush_resets_state(dut):
+async def test_28_flush_resets_state(dut):
     """FLUSH should reset pointers, credit count, and packet state."""
     ahb = await setup(dut)
     await do_reset(dut)
@@ -1217,9 +1153,7 @@ async def test_30_flush_resets_state(dut):
     credits_after_write = get_credit_count(dut)
     assert credits_after_write < MAX_CREDITS
 
-    # Disable, then flush
-    dut.enable.value = 0
-    await RisingEdge(dut.hclk)
+    # Flush
     dut.flush.value = 1
     await RisingEdge(dut.hclk)
     dut.flush.value = 0
@@ -1233,19 +1167,16 @@ async def test_30_flush_resets_state(dut):
     assert int(dut.u_dut.packet_word_length.value) == 0, \
         "packet_word_length should be 0 after flush"
 
-    # Re-enable and verify FIFO works again
-    dut.enable.value = 1
-    await RisingEdge(dut.hclk)
-
+    # Verify FIFO works again after flush
     pkt2 = FifoPacket(data=[0xAAAA, 0xBBBB])
     _, _, hit2 = await write_packet(dut, ahb, pkt2, label="POST_FLUSH_W")
-    assert hit2, "FIFO should work normally after flush + re-enable"
+    assert hit2, "FIFO should work normally after flush"
 
     dut._log.info("FLUSH resets state — passed")
 
 
 @cocotb.test()
-async def test_31_flush_clears_overrun(dut):
+async def test_29_flush_clears_overrun(dut):
     """Overrun sticky flag should be cleared by FLUSH."""
     ahb = await setup(dut)
     await do_reset(dut)
@@ -1274,8 +1205,6 @@ async def test_31_flush_clears_overrun(dut):
     assert get_overrun(dut) == 1, "overrun should be set after write to full buffer"
 
     # Flush should clear it
-    dut.enable.value = 0
-    await RisingEdge(dut.hclk)
     dut.flush.value = 1
     await RisingEdge(dut.hclk)
     dut.flush.value = 0
@@ -1286,7 +1215,7 @@ async def test_31_flush_clears_overrun(dut):
 
 
 @cocotb.test()
-async def test_32_underrun_on_empty_read(dut):
+async def test_30_underrun_on_empty_read(dut):
     """Underrun sticky flag should set on read from empty buffer."""
     ahb = await setup(dut)
     await do_reset(dut)
@@ -1310,8 +1239,6 @@ async def test_32_underrun_on_empty_read(dut):
     assert get_underrun(dut) == 1, "underrun should remain sticky"
 
     # Flush should clear it
-    dut.enable.value = 0
-    await RisingEdge(dut.hclk)
     dut.flush.value = 1
     await RisingEdge(dut.hclk)
     dut.flush.value = 0
@@ -1322,7 +1249,7 @@ async def test_32_underrun_on_empty_read(dut):
 
 
 @cocotb.test()
-async def test_33_overrun_underrun_clear_after_reset(dut):
+async def test_31_overrun_underrun_clear_after_reset(dut):
     """Both error flags should be 0 after hardware reset."""
     await setup(dut)
     await do_reset(dut)

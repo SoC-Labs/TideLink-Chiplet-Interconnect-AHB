@@ -51,7 +51,6 @@ module tidelink_apb_regs #(
     input  logic                    packet_committed,
 
     // Control outputs (to FIFO and returner)
-    output logic                    ctrl_enable,
     output logic                    ctrl_flush,
 
     // Returner control outputs (to tidelink_fifo top-level for returner wiring)
@@ -80,7 +79,7 @@ module tidelink_apb_regs #(
     //   0x010: Status Register         (RO) - expanded status and sticky errors
     //   0x014: Doorbell Register       (W1C) - self-clearing pulse
     //   0x018: Release Accumulator     (RO) - debug: pending unreleased credits
-    //   0x01C: CTRL Register           (RW) - [0] EN, [1] FLUSH (self-clearing)
+    //   0x01C: CTRL Register           (RW) - [0] Reserved, [1] FLUSH (self-clearing)
     //
     // Region 1 (paddr[5]=1): Incoming Credit Receivers
     //   0x020: Released Credits Acc     (W-add / R-clear) IRQ: released_credits_irq
@@ -100,27 +99,22 @@ module tidelink_apb_regs #(
     logic [SYS_DATA_W-1:0] release_threshold;
 
     // ── CTRL register (0x01C) ─────────────────────────────────────────────
-    // [0] EN:    Block enable. When 0, AHB data window accesses are gated.
+    // [0] EN:    Reserved (reads as 0). Formerly gated AHB data window accesses.
     // [1] FLUSH: Write 1 to reset pointers, packet state, and sticky errors.
-    //            Self-clearing. EN must be 0 before flushing.
-    logic ctrl_enable_r;
+    //            Self-clearing.
     logic ctrl_flush_r;
 
-    assign ctrl_enable = ctrl_enable_r;
     assign ctrl_flush  = ctrl_flush_r;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            ctrl_enable_r <= 1'b0;
             ctrl_flush_r  <= 1'b0;
         end else begin
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
 
             if (apb_write && !apb_region && paddr[4:2] == 3'h7) begin
-                ctrl_enable_r <= pwdata[0];
-                // FLUSH only honoured when EN == 0
-                if (pwdata[1] && !ctrl_enable_r)
+                if (pwdata[1])
                     ctrl_flush_r <= 1'b1;
             end
         end
@@ -285,7 +279,7 @@ module tidelink_apb_regs #(
                              returner_busy        // [0]
                          };
                 3'h6:    prdata = release_acc;
-                3'h7:    prdata = {{(SYS_DATA_W-2){1'b0}}, 1'b0, ctrl_enable_r};
+                3'h7:    prdata = {(SYS_DATA_W){1'b0}};
                 default: ;
             endcase
         end

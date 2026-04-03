@@ -21,7 +21,6 @@ module tb_top #(
     output logic                  packet_committed_irq,
     output logic                  overrun,
     output logic                  underrun,
-    input  logic                  enable,
     input  logic                  flush
 );
 
@@ -52,7 +51,6 @@ module tb_top #(
         .packet_committed_irq (packet_committed_irq),
         .overrun              (overrun),
         .underrun             (underrun),
-        .enable               (enable),
         .flush                (flush)
     );
 

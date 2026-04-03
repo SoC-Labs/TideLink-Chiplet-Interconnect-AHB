@@ -19,7 +19,7 @@ from cocotbext.ahb import AHBBus, AHBLiteMaster
 
 from tidelink.regs import (
     MAX_CREDITS,
-    REG_CREDIT_COUNT, REG_CTRL, REG_DOORBELL, REG_REL_THRESHOLD,
+    REG_CREDIT_COUNT, REG_DOORBELL, REG_REL_THRESHOLD,
     REG_RELEASED_ACC, REG_DOORBELL_RESP_ACC, REG_STATUS,
 )
 
@@ -73,7 +73,7 @@ class TidelinkTopTB:
         dut.ahb_fifo_hready_in.value = 1
 
     async def reset(self):
-        """Assert reset, release, and enable the FIFO data window."""
+        """Assert reset, release, and wait for reset doorbell to complete."""
         self.dut.hresetn.value = 0
         await ClockCycles(self.dut.hclk, 5)
         self.dut.hresetn.value = 1
@@ -81,8 +81,6 @@ class TidelinkTopTB:
         # to fire and be consumed by the FC loopback. This prevents stale
         # sideband words from interfering with the first real packet.
         await ClockCycles(self.dut.hclk, 30)
-        # Enable FIFO data window: CTRL.EN=1 (offset 0x01C)
-        await self.cfg_write(REG_CTRL, 0x1)
         await ClockCycles(self.dut.hclk, 10)
 
     # -- Config register helpers -----------------------------------------------
@@ -242,19 +240,8 @@ async def test_01_single_fifo_data_word_loopback(dut):
     monitor.kill()
 
     # Debug: check internal state
-    try:
-        en = int(dut.u_tidelink_fifo.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.enable.value)
-        tb.log.info(f"FIFO enable={en}")
-    except Exception:
-        pass
-    try:
-        en2 = int(dut.u_tidelink_fifo.u_tidelink_fifo.ctrl_enable.value)
-        tb.log.info(f"ctrl_enable={en2}")
-    except Exception as e:
-        tb.log.info(f"ctrl_enable probe: {e}")
-    ctrl_val = await tb.cfg_read(REG_CTRL)
     credits = await tb.cfg_read(REG_CREDIT_COUNT)
-    tb.log.info(f"REG_CTRL=0x{ctrl_val:08X}, credits={credits}, "
+    tb.log.info(f"credits={credits}, "
                 f"pkt_irq={int(dut.packet_committed_irq.value)}")
     try:
         wp = int(dut.u_tidelink_fifo.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.write_ptr.value)

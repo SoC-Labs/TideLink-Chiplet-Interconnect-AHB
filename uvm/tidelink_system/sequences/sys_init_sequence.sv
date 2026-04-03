@@ -5,7 +5,6 @@
 //   1. Set pair base address (points to the other side's config space)
 //   2. Set release threshold
 //   3. Enable pair credit counter
-//   4. Enable the block (CTRL.EN = 1)
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_SYS_INIT_SEQUENCE_SV
@@ -46,12 +45,6 @@ class sys_init_sequence extends svt_ahb_master_transaction_base_sequence;
     // Enable pair credit counter
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_ptc_en");
     wr_seq.addr = REG_PAIR_CREDIT_ENABLE;
-    wr_seq.data = 32'h1;
-    wr_seq.start(p_sequencer);
-
-    // Enable the block (CTRL.EN = 1)
-    wr_seq = integration_cfg_write_sequence::type_id::create("wr_ctrl_en");
-    wr_seq.addr = REG_CTRL;
     wr_seq.data = 32'h1;
     wr_seq.start(p_sequencer);
 

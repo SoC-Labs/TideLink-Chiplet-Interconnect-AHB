@@ -53,8 +53,8 @@ Tests target `tidelink_fifo_mem` which wraps `tidelink_fifo_ctrl` with
 | AHB-25 | IRQ clears on read addr 0             | `packet_committed_irq` clears when recipient reads FIFO address 0           | New      |
 | AHB-26 | IRQ stays cleared without new write   | After clear, IRQ remains 0 until another `write_complete`                   | New      |
 | AHB-27 | IRQ multi-cycle write/read toggle     | Multiple write/read cycles toggle IRQ correctly                             | New      |
-| AHB-28 | EN gate blocks writes                 | AHB writes gated when enable=0 — no pointer/credit changes                  | New      |
-| AHB-29 | EN gate blocks reads                  | AHB reads gated when enable=0 — no metadata capture                        | New      |
+| AHB-28 | _Removed_ | _EN gate test removed — FIFO is always enabled after reset_ | — |
+| AHB-29 | _Removed_ | _EN gate test removed — FIFO is always enabled after reset_ | — |
 | AHB-30 | FLUSH resets state                    | FLUSH resets pointers, credits to MAX, packet metadata to 0                  | New      |
 | AHB-31 | FLUSH clears overrun                  | Overrun sticky flag set on full write, cleared by FLUSH                     | New      |
 | AHB-32 | Underrun on empty read                | Underrun sticky flag set on read from empty buffer, cleared by FLUSH        | New      |
@@ -142,7 +142,7 @@ directly from cocotb.
 | TOP-11 | Threshold zero backward compat        | Threshold=0 gives per-read immediate release                                | Existing |
 | TOP-12 | Packet committed IRQ propagation      | `packet_committed_irq` asserts on write, clears on read through hierarchy   | Existing |
 | TOP-13 | STATUS[4] packet committed polling    | STATUS bit 4 mirrors `packet_committed_irq`, pollable via APB              | Existing |
-| TOP-14 | Flush resets state                    | EN=0 then FLUSH resets pointers, credits to MAX, IRQ, release_acc to 0; re-enable works | New |
+| TOP-14 | Flush resets state                    | FLUSH resets pointers, credits to MAX, IRQ, release_acc to 0; can be issued at any time | New |
 | TOP-15 | Region 1 released credits acc          | APB 0x020 W-add/R-clear behaviour + `released_credits_irq` assert/deassert  | New      |
 | TOP-16 | Region 1 doorbell response acc        | APB 0x024 W-add/R-clear behaviour + `doorbell_irq` assert/deassert         | New      |
 | TOP-17 | Region 1 pair credit counter           | Counter increment (0x020), decrement (0x02C), enable/disable (0x030)        | New      |
@@ -274,4 +274,4 @@ and per-environment reports are generated with `urg` under `coverage_report/<env
 | Toggle on upper data/address bits | All (especially `tidelink_returner`) | Randomised wide data patterns in packets |
 | FSM `ST_ADDR_PHASE → ST_IDLE` | `tidelink_returner` | Unusual AHB error-abort edge case; low priority |
 | `cmsdk_ahb_to_apb` bridge low coverage | `tidelink_ahb` | Add coverage tests to `tidelink_ahb` environment (wait states, error injection via AHB config port) |
-| Condition coverage on `valid_transfer` sub-expressions | `tidelink_fifo_ctrl` | Tests with hsel=0, htrans=IDLE, or enable=0 mid-transfer |
+| Condition coverage on `valid_transfer` sub-expressions | `tidelink_fifo_ctrl` | Tests with hsel=0 or htrans=IDLE mid-transfer |

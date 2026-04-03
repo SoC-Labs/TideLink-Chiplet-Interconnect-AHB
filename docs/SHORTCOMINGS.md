@@ -142,7 +142,7 @@ The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (
 
 The release threshold register is freely writable at any time, but changing it while packets are being read could cause inconsistent batching behaviour — a read_complete that was below the old threshold might suddenly exceed the new one, or vice versa.
 
-**Recommendation**: Document that threshold changes should only be made while EN=0, or add gating logic.
+**Recommendation**: Document that threshold changes should only be made while the FIFO is idle (no in-flight packets), or add gating logic.
 
 ## Summary
 

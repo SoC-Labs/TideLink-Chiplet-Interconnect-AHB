@@ -45,7 +45,7 @@ package tidelink_top_system_pkg;
   parameter STATUS_PACKET_COMMITTED = 4;
 
   // CTRL register bit positions
-  parameter CTRL_EN    = 0;
+  // CTRL_EN removed: FIFO is now always enabled, EN bit no longer exists in HW
   parameter CTRL_FLUSH = 1;
 
   // Hardware constants
@@ -85,6 +85,7 @@ package tidelink_top_system_pkg;
   // ---------------------------------------------------------------
   `include "top_sys_wlink_init_sequence.sv"
   `include "top_sys_init_sequence.sv"
+  `include "top_sys_ahb_sub_sequence.sv"
 
   // ---------------------------------------------------------------
   // Tests

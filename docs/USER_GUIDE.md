@@ -52,15 +52,14 @@ The pair base address can also be changed at runtime by writing to register 0x00
 
 ### Initialisation Sequence
 
-After reset, TideLink is disabled. Follow this sequence to bring it up:
+After reset, the FIFO data window is immediately enabled. Follow this sequence to bring it up:
 
 ```
 1. (Optional) Write pair base address to 0x000 if different from parameter default
 2. (Optional) Write release threshold to 0x004 (default: 20)
-3. Write 0x01 to CTRL register (0x01C) to set EN=1
-4. Wait for doorbell_irq (pair's reset handshake response)
-5. Read doorbell response accumulator (0x024) to get pair's available credits
-6. TideLink is now ready for data transfer
+3. Wait for doorbell_irq (pair's reset handshake response)
+4. Read doorbell response accumulator (0x024) to get pair's available credits
+5. TideLink is now ready for data transfer
 ```
 
 ### Writing a Packet (Transmit Side)
@@ -211,14 +210,12 @@ Bits 1–3 are sticky — they remain set until cleared by FLUSH.
 
 ```
 1. Detect error via STATUS register or system-level fault
-2. Write 0x00 to CTRL (0x01C)         — disable block (EN=0)
-3. Write 0x02 to CTRL (0x01C)         — FLUSH (self-clearing, ignored if EN=1)
+2. Write 0x02 to CTRL (0x01C)         — FLUSH (self-clearing)
    → Pointers, credits, packet state, sticky flags all reset
-4. Reconfigure if needed:
+3. Reconfigure if needed:
    - Pair base address (0x000)
    - Release threshold (0x004)
-5. Write 0x01 to CTRL (0x01C)         — re-enable (EN=1)
-6. Re-establish credit counts with the pair (doorbell or reset handshake)
+4. Re-establish credit counts with the pair (doorbell or reset handshake)
 ```
 
 ## Bidirectional Communication
@@ -251,7 +248,7 @@ For full duplex communication between two chiplets, deploy two TideLink instance
 | 0x010 | Status | RO | Busy, sticky error flags, packet_committed |
 | 0x014 | Doorbell | WO | Trigger software doorbell (singlepulse, self-clearing) |
 | 0x018 | Release Accumulator | RO | Pending unreleased credits (debug) |
-| 0x01C | CTRL | RW | EN (bit 0), FLUSH (bit 1, self-clearing, EN must be 0) |
+| 0x01C | CTRL | RW | Bit 0: reserved. FLUSH (bit 1, self-clearing) |
 | 0x020 | Released Credits Acc | W-add/R-clear | Incoming credit deltas. IRQ source. |
 | 0x024 | Doorbell Response Acc | W-add/R-clear | Incoming doorbell responses. IRQ source. |
 | 0x028 | Pair Credit Counter | RO | Remote FIFO available credits |

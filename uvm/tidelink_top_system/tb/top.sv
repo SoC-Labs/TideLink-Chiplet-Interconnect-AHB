@@ -43,6 +43,9 @@
 // System-specific interface
 `include "tidelink_top_system_if.sv"
 
+// APB master interface (must be compiled outside the package)
+`include "apb_master_if.sv"
+
 // Testbench package
 `include "tidelink_top_system_pkg.sv"
 
@@ -199,16 +202,18 @@ module test_top;
   assign tb_if.poresetn = poresetn;
 
   // ---------------------------------------------------------------
-  // PHY pad crossover: A TX -> B RX, B TX -> A RX
+  // PHY pad crossover: A TX -> B RX, B TX -> A RX (GPIO: 1 lane)
   // ---------------------------------------------------------------
-  wire        a_pad_clk_tx, b_pad_clk_tx;
-  wire [7:0]  a_pad_tx, b_pad_tx;
+  localparam NUM_PHY_LANES = 1;
+
+  wire                       a_pad_clk_tx, b_pad_clk_tx;
+  wire [NUM_PHY_LANES-1:0]   a_pad_tx, b_pad_tx;
 
   // A TX pads -> B RX pads, B TX pads -> A RX pads
-  wire        a_pad_clk_rx = b_pad_clk_tx;
-  wire [7:0]  a_pad_rx     = b_pad_tx;
-  wire        b_pad_clk_rx = a_pad_clk_tx;
-  wire [7:0]  b_pad_rx     = a_pad_tx;
+  wire                       a_pad_clk_rx = b_pad_clk_tx;
+  wire [NUM_PHY_LANES-1:0]   a_pad_rx     = b_pad_tx;
+  wire                       b_pad_clk_rx = a_pad_clk_tx;
+  wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a_pad_tx;
 
   // ---------------------------------------------------------------
   // General bus crossover: A out -> B in, B out -> A in
@@ -288,6 +293,7 @@ module test_top;
     .RAM_DATA_W        (RAM_DATA_W),
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
+    .NUM_PHY_LANES     (NUM_PHY_LANES),
     .TIDELINK_PAIR_BASE(A_PAIR_BASE)
   ) u_tidelink_top_a (
     .hclk              (clk),
@@ -372,11 +378,11 @@ module test_top;
 
     // APB Wlink controller config
     .apb_ctrl_psel     (apb_a_if.psel),
-    .apb_ctrl_paddr    (apb_a_if.paddr),
+    .apb_ctrl_paddr    ({1'b0, apb_a_if.paddr}),
     .apb_ctrl_penable  (apb_a_if.penable),
     .apb_ctrl_pwrite   (apb_a_if.pwrite),
-    .apb_ctrl_pstrb    (apb_a_if.pstrb),
-    .apb_ctrl_pprot    (apb_a_if.pprot),
+    .apb_ctrl_pstrb    (4'hF),
+    .apb_ctrl_pprot    (3'h0),
     .apb_ctrl_pwdata   (apb_a_if.pwdata),
     .apb_ctrl_prdata   (apb_a_if.prdata),
     .apb_ctrl_pready   (apb_a_if.pready),
@@ -421,6 +427,7 @@ module test_top;
     .RAM_DATA_W        (RAM_DATA_W),
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
+    .NUM_PHY_LANES     (NUM_PHY_LANES),
     .TIDELINK_PAIR_BASE(B_PAIR_BASE)
   ) u_tidelink_top_b (
     .hclk              (clk),
@@ -505,11 +512,11 @@ module test_top;
 
     // APB Wlink controller config
     .apb_ctrl_psel     (apb_b_if.psel),
-    .apb_ctrl_paddr    (apb_b_if.paddr),
+    .apb_ctrl_paddr    ({1'b0, apb_b_if.paddr}),
     .apb_ctrl_penable  (apb_b_if.penable),
     .apb_ctrl_pwrite   (apb_b_if.pwrite),
-    .apb_ctrl_pstrb    (apb_b_if.pstrb),
-    .apb_ctrl_pprot    (apb_b_if.pprot),
+    .apb_ctrl_pstrb    (4'hF),
+    .apb_ctrl_pprot    (3'h0),
     .apb_ctrl_pwdata   (apb_b_if.pwdata),
     .apb_ctrl_prdata   (apb_b_if.prdata),
     .apb_ctrl_pready   (apb_b_if.pready),
@@ -684,11 +691,15 @@ module test_top;
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b_mng_ahb_sys_env",  "vif", ahb_b_mng_if);
 
-    // APB interfaces
-    uvm_config_db#(virtual apb_master_if)::set(uvm_root::get(),
-      "uvm_test_top.env.a_apb_agt", "vif", apb_a_if);
-    uvm_config_db#(virtual apb_master_if)::set(uvm_root::get(),
-      "uvm_test_top.env.b_apb_agt", "vif", apb_b_if);
+    // APB interfaces — driver and monitor need separate modport VIFs
+    uvm_config_db#(virtual apb_master_if.driver)::set(uvm_root::get(),
+      "uvm_test_top.env.a_apb_agt.driver", "vif", apb_a_if);
+    uvm_config_db#(virtual apb_master_if.monitor)::set(uvm_root::get(),
+      "uvm_test_top.env.a_apb_agt.monitor", "vif", apb_a_if);
+    uvm_config_db#(virtual apb_master_if.driver)::set(uvm_root::get(),
+      "uvm_test_top.env.b_apb_agt.driver", "vif", apb_b_if);
+    uvm_config_db#(virtual apb_master_if.monitor)::set(uvm_root::get(),
+      "uvm_test_top.env.b_apb_agt.monitor", "vif", apb_b_if);
 
     // Clock/reset/IRQ interface
     uvm_config_db#(virtual tidelink_top_system_if)::set(uvm_root::get(),

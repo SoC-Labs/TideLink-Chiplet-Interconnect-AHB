@@ -167,7 +167,7 @@ AHB Lite master interface for autonomous writes to the paired TideLink.
 | 0x010 | Status | RO | 0 | Bit 0: returner_busy. Bit 1: overrun (sticky). Bit 2: underrun (sticky). Bit 3: master_error (sticky). Bit 4: packet_committed (mirrors `packet_committed_irq`; pollable). |
 | 0x014 | Doorbell | WO | 0 | Write any value to generate a one-cycle doorbell trigger pulse. Self-clearing (singlepulse). |
 | 0x018 | Release Accumulator | RO | 0 | Pending unreleased credits (debug visibility). Cleared when release trigger fires. |
-| 0x01C | CTRL | RW | 0 | Bit 0: EN (block enable). Bit 1: FLUSH (self-clearing, EN must be 0). |
+| 0x01C | CTRL | RW | 0 | Bit 0: Reserved. Bit 1: FLUSH (self-clearing). |
 
 ### 6.2 Region 1 — Incoming Credit Receivers (0x020–0x03F)
 
@@ -303,18 +303,16 @@ The pair credit counter (0x028) provides a hardware-maintained running count of 
 
 Typical usage: before transmitting a packet of size N+1 credits, software checks that `pair_credit_counter >= N+1`, then writes N+1 to 0x02C to reserve the credits.
 
-### 7.9 Block Enable and Flush
+### 7.9 Flush
 
-**Enable (CTRL bit 0)**: When EN=0 (default after reset), all AHB data window transfers are silently ignored — no pointer, credit, or metadata state changes occur. The APB register interface and AHB master remain functional. Software must set EN=1 before reading or writing packets.
+The FIFO data window is always enabled after reset — there is no enable bit.
 
-**Flush (CTRL bit 1)**: Self-clearing. Resets:
+**Flush (CTRL bit 1)**: Self-clearing. Can be issued at any time. Resets:
 - Read and write pointers to 0
 - Packet word length to 0
 - Credit count to MAX_CREDITS
 - Release accumulator to 0
 - All sticky error flags (overrun, underrun, master_error)
-
-EN must be 0 before writing FLUSH. If EN is 1, the FLUSH write is silently ignored.
 
 ### 7.10 Error Handling
 
@@ -330,10 +328,9 @@ Bits 1–3 are sticky — once set, they remain asserted until cleared by FLUSH 
 
 **Recovery sequence**:
 1. Detect error (poll STATUS register or respond to system-level fault)
-2. Write `CTRL.EN = 0` (disable data window)
-3. Write `CTRL = 0x02` (FLUSH — self-clearing)
-4. Reconfigure as needed (pair base address, threshold, etc.)
-5. Write `CTRL.EN = 1` (re-enable data window)
+2. Write `CTRL = 0x02` (FLUSH — self-clearing, resets all state and sticky flags)
+3. Reconfigure as needed (pair base address, threshold, etc.)
+4. Resume normal operation
 
 ## 8. SRAM Variants
 

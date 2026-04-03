@@ -811,7 +811,6 @@ Connect the four interrupt outputs to the CPU interrupt controller:
 6. **Configure TideLink FIFO**: Via `ahb_cfg_*`:
    - Write `pair_base_addr` register (0x000) if different from `TIDELINK_PAIR_BASE` default.
    - Write `release_threshold` (0x004) to set credit batching granularity.
-   - Set CTRL EN bit (0x01C bit [0]) to enable the FIFO.
 7. **Release system reset**: Assert `hresetn` high.
 8. **Enable interrupts**: Enable `packet_committed_irq`, `released_credits_irq`, `doorbell_irq`, `wlink_irq` in the CPU interrupt controller.
 9. **Exchange initial credits**: The remote chiplet must have also completed initialisation. Initial FC credits are established by Wlink during link training.

@@ -31,18 +31,18 @@ class tidelink_top_system_coverage extends uvm_component;
   covergroup cg_packet_size;
     option.per_instance = 1;
     a_pkt_size: coverpoint a_pkt_word_length {
-      bins single     = {1};
-      bins small      = {[2:4]};
-      bins medium     = {[5:16]};
-      bins large      = {[17:255]};
-      bins very_large = {[256:4095]};
+      bins pkt_single     = {1};
+      bins pkt_small      = {[2:4]};
+      bins pkt_medium     = {[5:16]};
+      bins pkt_large      = {[17:255]};
+      bins pkt_very_large = {[256:4095]};
     }
     b_pkt_size: coverpoint b_pkt_word_length {
-      bins single     = {1};
-      bins small      = {[2:4]};
-      bins medium     = {[5:16]};
-      bins large      = {[17:255]};
-      bins very_large = {[256:4095]};
+      bins pkt_single     = {1};
+      bins pkt_small      = {[2:4]};
+      bins pkt_medium     = {[5:16]};
+      bins pkt_large      = {[17:255]};
+      bins pkt_very_large = {[256:4095]};
     }
   endgroup
 
@@ -56,16 +56,16 @@ class tidelink_top_system_coverage extends uvm_component;
   covergroup cg_traffic_volume;
     option.per_instance = 1;
     a_tx_vol: coverpoint a_tx_total_words {
-      bins low    = {[1:10]};
-      bins medium = {[11:100]};
-      bins high   = {[101:1000]};
-      bins stress = {[1001:$]};
+      bins vol_low    = {[1:10]};
+      bins vol_medium = {[11:100]};
+      bins vol_high   = {[101:1000]};
+      bins vol_stress = {[1001:$]};
     }
     b_tx_vol: coverpoint b_tx_total_words {
-      bins low    = {[1:10]};
-      bins medium = {[11:100]};
-      bins high   = {[101:1000]};
-      bins stress = {[1001:$]};
+      bins vol_low    = {[1:10]};
+      bins vol_medium = {[11:100]};
+      bins vol_high   = {[101:1000]};
+      bins vol_stress = {[1001:$]};
     }
   endgroup
 

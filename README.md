@@ -81,7 +81,7 @@ When side A resets:
 | 0x010 | Status | RO | `[0]` returner_busy, `[1]` overrun (sticky), `[2]` underrun (sticky), `[3]` master_error (sticky), `[4]` packet_committed (pollable) |
 | 0x014 | Doorbell | W1C | Write any value to trigger software doorbell |
 | 0x018 | Release Accumulator | RO | Pending unreleased credits (debug) |
-| 0x01C | CTRL | RW | `[0]` EN (block enable), `[1]` FLUSH (self-clearing, EN must be 0) |
+| 0x01C | CTRL | RW | `[0]` Reserved, `[1]` FLUSH (self-clearing) |
 
 #### Region 1 (offsets 0x020-0x03F): Incoming Credit Receivers
 
@@ -93,14 +93,14 @@ When side A resets:
 | 0x02C | Pair Credit Consume | WO | CPU writes the number of credits being consumed from the pair. Subtracted from the pair credit counter. |
 | 0x030 | Pair Credit Counter Enable | RW | Bit 0: enable (default: 1). When 0, the pair credit counter freezes and ignores all increments/decrements. |
 
-### Block Enable and Error Handling
+### Flush and Error Handling
 
-TideLink includes a CTRL register (0x01C) with block enable and flush controls, plus sticky error flags visible in the STATUS register (0x010).
+TideLink includes a CTRL register (0x01C) with a flush control, plus sticky error flags visible in the STATUS register (0x010). The FIFO data window is always enabled after reset.
 
 #### CTRL Register (0x01C)
 
-- **EN (bit 0)**: Block enable. When 0 (default after reset), AHB data window accesses are gated — transfers are silently ignored and no pointer/credit state changes. APB registers and the AHB master port remain functional. Software must set EN=1 before writing or reading packets.
-- **FLUSH (bit 1)**: Self-clearing. Writing 1 resets write/read pointers, packet metadata, credit count (back to MAX_CREDITS), the release accumulator, and all sticky error flags. EN must be 0 before flushing. Use this for error recovery without a full hardware reset.
+- **Bit 0**: Reserved.
+- **FLUSH (bit 1)**: Self-clearing. Writing 1 resets write/read pointers, packet metadata, credit count (back to MAX_CREDITS), the release accumulator, and all sticky error flags. Can be issued at any time. Use this for error recovery without a full hardware reset.
 
 #### Sticky Error Flags (STATUS register, 0x010)
 
@@ -117,10 +117,9 @@ All three flags are sticky — once set, they remain asserted until cleared by F
 
 ```
 1. Detect error (poll STATUS or respond to system-level fault)
-2. Write CTRL.EN = 0        (disable data window)
-3. Write CTRL = 0x02        (FLUSH — self-clearing, also clears EN)
-4. Re-configure as needed
-5. Write CTRL.EN = 1        (re-enable data window)
+2. Write CTRL = 0x02        (FLUSH — self-clearing, resets all state and sticky flags)
+3. Re-configure as needed
+4. Resume normal operation
 ```
 
 ### Interrupts

@@ -46,6 +46,9 @@ module tidelink_top #(
     // TideLink FC node parameters
     parameter FC_DATA_W  = 48,       // FC node data width (matches AXI W channel)
 
+    // PHY parameters
+    parameter NUM_PHY_LANES = 1,     // Number of SerDes/GPIO PHY lanes (1 for GPIO, 8 for SerDes)
+
     // Default pair base address (for returner — routed through FC sideband)
     parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0
 )(
@@ -182,12 +185,12 @@ module tidelink_top #(
     output wire              [31:0] gb_out,
 
     // --------------------------------------------------------------------------
-    // PHY Pads
+    // PHY Pads (width depends on NUM_PHY_LANES: 1 for GPIO, 8 for SerDes)
     // --------------------------------------------------------------------------
-    output wire                     pad_clk_tx,
-    output wire               [7:0] pad_tx,
-    input  wire                     pad_clk_rx,
-    input  wire               [7:0] pad_rx,
+    output wire                              pad_clk_tx,
+    output wire        [NUM_PHY_LANES-1:0]   pad_tx,
+    input  wire                              pad_clk_rx,
+    input  wire        [NUM_PHY_LANES-1:0]   pad_rx,
 
     // --------------------------------------------------------------------------
     // Interrupt Outputs
@@ -890,13 +893,11 @@ module tidelink_top #(
         .generalbus_in              (gb_in),
         .generalbus_out             (gb_out),
 
-        // TideLink FC node (48-bit, data_id=0xa1)
-        .tidelink_a2l_valid         (tl_fc_a2l_valid),
-        .tidelink_a2l_data          (tl_fc_a2l_data),
-        .tidelink_a2l_ready         (tl_fc_a2l_ready),
-        .tidelink_l2a_valid         (tl_fc_l2a_valid),
-        .tidelink_l2a_data          (tl_fc_l2a_data),
-        .tidelink_l2a_accept        (tl_fc_l2a_accept),
+        // TideLink FC node (packed bus, 50-bit = 48-bit data + 2 control)
+        // tidelink_in  = {a2l_valid, a2l_data[47:0], l2a_accept}
+        // tidelink_out = {a2l_ready, l2a_valid, l2a_data[47:0]}
+        .tidelink_in                ({tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_l2a_accept}),
+        .tidelink_out               ({tl_fc_a2l_ready, tl_fc_l2a_valid, tl_fc_l2a_data}),
 
         // Scan / DFT
         .scan_mode                  (scan_mode),
@@ -909,25 +910,11 @@ module tidelink_top #(
         // Interrupts
         .interrupt                  (wlink_irq),
 
-        // PHY pads
+        // PHY pads (GPIO: 1 lane, SerDes: 8 lanes)
         .pad_clk_tx                 (pad_clk_tx),
         .pad_tx_0                   (pad_tx[0]),
-        .pad_tx_1                   (pad_tx[1]),
-        .pad_tx_2                   (pad_tx[2]),
-        .pad_tx_3                   (pad_tx[3]),
-        .pad_tx_4                   (pad_tx[4]),
-        .pad_tx_5                   (pad_tx[5]),
-        .pad_tx_6                   (pad_tx[6]),
-        .pad_tx_7                   (pad_tx[7]),
         .pad_clk_rx                 (pad_clk_rx),
-        .pad_rx_0                   (pad_rx[0]),
-        .pad_rx_1                   (pad_rx[1]),
-        .pad_rx_2                   (pad_rx[2]),
-        .pad_rx_3                   (pad_rx[3]),
-        .pad_rx_4                   (pad_rx[4]),
-        .pad_rx_5                   (pad_rx[5]),
-        .pad_rx_6                   (pad_rx[6]),
-        .pad_rx_7                   (pad_rx[7])
+        .pad_rx_0                   (pad_rx[0])
     );
 
 endmodule

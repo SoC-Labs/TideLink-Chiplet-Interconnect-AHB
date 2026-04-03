@@ -18,6 +18,8 @@ __pycache__
 *.pyc
 .vscode
 .claude
+csrc
+vc_hdrs.h
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

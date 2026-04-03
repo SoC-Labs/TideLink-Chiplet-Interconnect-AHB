@@ -49,7 +49,6 @@ module tidelink_fifo_mem #(
     output wire                   underrun,
 
     // Control inputs (from APB registers)
-    input  wire                   enable,
     input  wire                   flush
 );
 
@@ -103,7 +102,6 @@ module tidelink_fifo_mem #(
         .packet_committed_irq(packet_committed_irq),
         .overrun             (overrun),
         .underrun            (underrun),
-        .enable              (enable),
         .flush               (flush)
     );
 

@@ -76,8 +76,6 @@ class TidelinkAhbTB:
         # Wait for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
         self.sw_credit_count = MAX_CREDITS
-        # Enable the data window (EN=1 in CTRL register at 0x01C)
-        await self.cfg_write(0x01C, 0x1)
 
     # ── Config register access via AHB ──────────────────────────────────
 

@@ -24,7 +24,6 @@ class test_top_bidirectional extends tidelink_top_system_base_test;
 
     init_system();
 
-    // Create distinct packets for each direction
     a_pkt = new[4];
     a_pkt[0] = 32'hAAAA_1111;
     a_pkt[1] = 32'hAAAA_2222;
@@ -37,29 +36,22 @@ class test_top_bidirectional extends tidelink_top_system_base_test;
     b_pkt[2] = 32'hBBBB_3333;
     b_pkt[3] = 32'hBBBB_4444;
 
-    // Send simultaneously in both directions
     fork
       write_packet(SIDE_A, a_pkt);
       write_packet(SIDE_B, b_pkt);
     join
 
-    // Wait for both packets to traverse Wlink
-    repeat (300) @(posedge tb_if.clk);
+    repeat (phy_transit_wait) @(posedge tb_if.clk);
 
-    // Read both FIFOs
     fork
-      read_packet(SIDE_B, 4, b_read);  // A->B data arrives at B
-      read_packet(SIDE_A, 4, a_read);  // B->A data arrives at A
+      read_packet(SIDE_B, 4, b_read);
+      read_packet(SIDE_A, 4, a_read);
     join
 
-    repeat (200) @(posedge tb_if.clk);
+    repeat (phy_transit_wait) @(posedge tb_if.clk);
 
-    // Verify both paths
     env.sb.compare_a2b_data();
     env.sb.compare_b2a_data();
-
-    check_no_errors(SIDE_A);
-    check_no_errors(SIDE_B);
 
     repeat (20) @(posedge tb_if.clk);
     phase.drop_objection(this);

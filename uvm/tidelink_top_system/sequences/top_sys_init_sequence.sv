@@ -27,15 +27,18 @@ class top_sys_init_sequence extends svt_ahb_master_transaction_base_sequence;
   virtual task body();
     svt_ahb_master_transaction txn;
     svt_configuration get_cfg;
+    svt_ahb_master_configuration cfg;
 
     `uvm_info("TL_INIT", $sformatf("[%s] Initializing TideLink (pair_base=0x%08h, threshold=%0d)...",
       side_name, pair_base_addr, rel_threshold), UVM_LOW)
 
     p_sequencer.get_cfg(get_cfg);
+    if (!$cast(cfg, get_cfg))
+      `uvm_fatal("TL_INIT", "Failed to cast SVT configuration")
 
     // Write pair base address
     `uvm_create(txn)
-    txn.cfg = get_cfg;
+    txn.cfg = cfg;
     assert(txn.randomize() with {
       xact_type == svt_ahb_transaction::WRITE;
       addr      == REG_PAIR_BASE;
@@ -48,7 +51,7 @@ class top_sys_init_sequence extends svt_ahb_master_transaction_base_sequence;
 
     // Write release threshold
     `uvm_create(txn)
-    txn.cfg = get_cfg;
+    txn.cfg = cfg;
     assert(txn.randomize() with {
       xact_type == svt_ahb_transaction::WRITE;
       addr      == REG_REL_THRESHOLD;
@@ -61,7 +64,7 @@ class top_sys_init_sequence extends svt_ahb_master_transaction_base_sequence;
 
     // Enable pair credit counter
     `uvm_create(txn)
-    txn.cfg = get_cfg;
+    txn.cfg = cfg;
     assert(txn.randomize() with {
       xact_type == svt_ahb_transaction::WRITE;
       addr      == REG_PAIR_CREDIT_ENABLE;
@@ -72,22 +75,9 @@ class top_sys_init_sequence extends svt_ahb_master_transaction_base_sequence;
     });
     `uvm_send(txn)
 
-    // Enable TideLink (CTRL.EN = 1)
-    `uvm_create(txn)
-    txn.cfg = get_cfg;
-    assert(txn.randomize() with {
-      xact_type == svt_ahb_transaction::WRITE;
-      addr      == REG_CTRL;
-      burst_type == svt_ahb_transaction::SINGLE;
-      burst_size == svt_ahb_transaction::BURST_SIZE_32BIT;
-      data.size() == 1;
-      data[0]   == 32'h0000_0001;
-    });
-    `uvm_send(txn)
-
     // Ring doorbell to send initial credits to peer
     `uvm_create(txn)
-    txn.cfg = get_cfg;
+    txn.cfg = cfg;
     assert(txn.randomize() with {
       xact_type == svt_ahb_transaction::WRITE;
       addr      == REG_DOORBELL;

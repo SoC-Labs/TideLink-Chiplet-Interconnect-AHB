@@ -51,8 +51,12 @@ class FCMonitor:
     async def _run(self):
         while self._running:
             await RisingEdge(self.dut.hclk)
-            if int(self.dut.tl_fc_a2l_valid.value) == 1 and \
-               int(self.dut.tl_fc_a2l_ready.value) == 1:
+            try:
+                valid = int(self.dut.tl_fc_a2l_valid.value)
+                ready = int(self.dut.tl_fc_a2l_ready.value)
+            except ValueError:
+                continue
+            if valid == 1 and ready == 1:
                 raw = int(self.dut.tl_fc_a2l_data.value)
                 pkt = self._decode(raw)
                 if self.log:
@@ -151,7 +155,12 @@ class AHBMasterMonitor:
         pending_addr = None
         while self._running:
             await RisingEdge(self.dut.hclk)
-            hready_val = int(self.hready.value)
+            try:
+                hready_val = int(self.hready.value)
+                htrans_val = int(self.htrans.value)
+                hwrite_val = int(self.hwrite.value)
+            except ValueError:
+                continue
             # Data phase: capture write data for the previously latched address
             if pending_addr is not None and hready_val:
                 data = int(self.hwdata.value)
@@ -162,8 +171,6 @@ class AHBMasterMonitor:
                 self.writes.put_nowait({"addr": pending_addr, "data": data})
                 pending_addr = None
             # Address phase: detect new transaction
-            htrans_val = int(self.htrans.value)
-            hwrite_val = int(self.hwrite.value)
             if htrans_val == HTRANS_NONSEQ and hwrite_val == 1 and hready_val:
                 pending_addr = int(self.haddr.value)
 
@@ -808,7 +815,7 @@ async def test_20_full_duplex(dut):
 
     # Start RX in background
     async def rx_task():
-        await fc_drv.send(PKT_FIFO_DATA, 0x0300, 0xRX_DATA_1 if False else 0x11111111)
+        await fc_drv.send(PKT_FIFO_DATA, 0x0300, 0x11111111)
         await ClockCycles(dut.hclk, 2)
         await fc_drv.send(PKT_FIFO_DATA, 0x0304, 0x22222222)
 
@@ -895,7 +902,7 @@ async def test_22_mixed_rx_fifo_and_cfg(dut):
     # Send alternating FIFO and SIDEBAND
     await fc_drv.send(PKT_FIFO_DATA, 0x0000, 0xF0F0F0F0)
     await ClockCycles(dut.hclk, 5)
-    await fc_drv.send(PKT_SIDEBAND, 0x014, 0xS1S1S1S1 if False else 0x51515151)
+    await fc_drv.send(PKT_SIDEBAND, 0x014, 0x51515151)
     await ClockCycles(dut.hclk, 5)
     await fc_drv.send(PKT_FIFO_DATA, 0x0004, 0xF1F1F1F1)
     await ClockCycles(dut.hclk, 5)

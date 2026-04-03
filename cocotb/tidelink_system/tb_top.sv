@@ -37,10 +37,9 @@ module tb_top #(
     input  logic              [2:0] a_ahb_tx_hsize,
     input  logic                    a_ahb_tx_hwrite,
     input  logic  [SYS_DATA_W-1:0] a_ahb_tx_hwdata,
-    input  logic                    a_ahb_tx_hready,
     output logic  [SYS_DATA_W-1:0] a_ahb_tx_hrdata,
     output logic                    a_ahb_tx_hresp,
-    output logic                    a_ahb_tx_hreadyout,
+    output logic                    a_ahb_tx_hready,
 
     // AHB Slave -- FIFO data read port A
     input  logic                    a_ahb_fifo_hsel,
@@ -49,10 +48,9 @@ module tb_top #(
     input  logic              [2:0] a_ahb_fifo_hsize,
     input  logic                    a_ahb_fifo_hwrite,
     input  logic  [SYS_DATA_W-1:0] a_ahb_fifo_hwdata,
-    input  logic                    a_ahb_fifo_hready,
     output logic  [SYS_DATA_W-1:0] a_ahb_fifo_hrdata,
     output logic                    a_ahb_fifo_hresp,
-    output logic                    a_ahb_fifo_hreadyout,
+    output logic                    a_ahb_fifo_hready,
 
     // AHB Slave -- Config registers A
     input  logic                    a_ahb_cfg_hsel,
@@ -61,10 +59,9 @@ module tb_top #(
     input  logic              [2:0] a_ahb_cfg_hsize,
     input  logic                    a_ahb_cfg_hwrite,
     input  logic  [SYS_DATA_W-1:0] a_ahb_cfg_hwdata,
-    input  logic                    a_ahb_cfg_hready,
     output logic  [SYS_DATA_W-1:0] a_ahb_cfg_hrdata,
     output logic                    a_ahb_cfg_hresp,
-    output logic                    a_ahb_cfg_hreadyout,
+    output logic                    a_ahb_cfg_hready,
 
     // Interrupt outputs A
     output logic                    a_released_credits_irq,
@@ -82,10 +79,9 @@ module tb_top #(
     input  logic              [2:0] b_ahb_tx_hsize,
     input  logic                    b_ahb_tx_hwrite,
     input  logic  [SYS_DATA_W-1:0] b_ahb_tx_hwdata,
-    input  logic                    b_ahb_tx_hready,
     output logic  [SYS_DATA_W-1:0] b_ahb_tx_hrdata,
     output logic                    b_ahb_tx_hresp,
-    output logic                    b_ahb_tx_hreadyout,
+    output logic                    b_ahb_tx_hready,
 
     // AHB Slave -- FIFO data read port B
     input  logic                    b_ahb_fifo_hsel,
@@ -94,10 +90,9 @@ module tb_top #(
     input  logic              [2:0] b_ahb_fifo_hsize,
     input  logic                    b_ahb_fifo_hwrite,
     input  logic  [SYS_DATA_W-1:0] b_ahb_fifo_hwdata,
-    input  logic                    b_ahb_fifo_hready,
     output logic  [SYS_DATA_W-1:0] b_ahb_fifo_hrdata,
     output logic                    b_ahb_fifo_hresp,
-    output logic                    b_ahb_fifo_hreadyout,
+    output logic                    b_ahb_fifo_hready,
 
     // AHB Slave -- Config registers B
     input  logic                    b_ahb_cfg_hsel,
@@ -106,10 +101,9 @@ module tb_top #(
     input  logic              [2:0] b_ahb_cfg_hsize,
     input  logic                    b_ahb_cfg_hwrite,
     input  logic  [SYS_DATA_W-1:0] b_ahb_cfg_hwdata,
-    input  logic                    b_ahb_cfg_hready,
     output logic  [SYS_DATA_W-1:0] b_ahb_cfg_hrdata,
     output logic                    b_ahb_cfg_hresp,
-    output logic                    b_ahb_cfg_hreadyout,
+    output logic                    b_ahb_cfg_hready,
 
     // Interrupt outputs B
     output logic                    b_released_credits_irq,
@@ -185,7 +179,20 @@ module tb_top #(
     wire                    a_fifo_mux_hresp;
     wire                    a_fifo_mux_hreadyout;
 
-    wire a_fc_rx_fifo_active = a_fc_rx_fifo_htrans[1];
+    // FC RX FIFO active: high from addr phase through data phase completion.
+    // Tracks the FC adapter's full AHB transaction to prevent mux switching
+    // mid-transaction.
+    wire a_fc_rx_fifo_addr_phase = a_fc_rx_fifo_htrans[1];
+    reg  a_fc_rx_fifo_data_phase;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            a_fc_rx_fifo_data_phase <= 1'b0;
+        else if (a_fc_rx_fifo_addr_phase && a_fifo_mux_hreadyout)
+            a_fc_rx_fifo_data_phase <= 1'b1;
+        else if (a_fc_rx_fifo_data_phase && a_fifo_mux_hreadyout)
+            a_fc_rx_fifo_data_phase <= 1'b0;
+    end
+    wire a_fc_rx_fifo_active = a_fc_rx_fifo_addr_phase | a_fc_rx_fifo_data_phase;
 
     assign a_fifo_mux_hsel   = a_fc_rx_fifo_active ? 1'b1                 : a_ahb_fifo_hsel;
     assign a_fifo_mux_haddr  = a_fc_rx_fifo_active ? a_fc_rx_fifo_haddr   : a_ahb_fifo_haddr;
@@ -198,7 +205,7 @@ module tb_top #(
     assign a_fc_rx_fifo_hready    = a_fc_rx_fifo_active ? a_fifo_mux_hreadyout : 1'b1;
     assign a_fc_rx_fifo_hresp     = a_fifo_mux_hresp;
     assign a_fc_rx_fifo_hrdata    = a_fifo_mux_hrdata;
-    assign a_ahb_fifo_hreadyout   = a_fc_rx_fifo_active ? 1'b0 : a_fifo_mux_hreadyout;
+    assign a_ahb_fifo_hready      = a_fc_rx_fifo_active ? 1'b0 : a_fifo_mux_hreadyout;
     assign a_ahb_fifo_hresp       = a_fifo_mux_hresp;
     assign a_ahb_fifo_hrdata      = a_fifo_mux_hrdata;
 
@@ -214,7 +221,18 @@ module tb_top #(
     wire                    a_cfg_mux_hresp;
     wire                    a_cfg_mux_hreadyout;
 
-    wire a_fc_rx_cfg_active = a_fc_rx_cfg_htrans[1];
+    // FC RX config active: high from addr phase through data phase completion
+    wire a_fc_rx_cfg_addr_phase = a_fc_rx_cfg_htrans[1];
+    reg  a_fc_rx_cfg_data_phase;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            a_fc_rx_cfg_data_phase <= 1'b0;
+        else if (a_fc_rx_cfg_addr_phase && a_cfg_mux_hreadyout)
+            a_fc_rx_cfg_data_phase <= 1'b1;
+        else if (a_fc_rx_cfg_data_phase && a_cfg_mux_hreadyout)
+            a_fc_rx_cfg_data_phase <= 1'b0;
+    end
+    wire a_fc_rx_cfg_active = a_fc_rx_cfg_addr_phase | a_fc_rx_cfg_data_phase;
 
     assign a_cfg_mux_hsel   = a_fc_rx_cfg_active ? 1'b1                : a_ahb_cfg_hsel;
     assign a_cfg_mux_haddr  = a_fc_rx_cfg_active ? a_fc_rx_cfg_haddr   : a_ahb_cfg_haddr;
@@ -227,7 +245,7 @@ module tb_top #(
     assign a_fc_rx_cfg_hready    = a_fc_rx_cfg_active ? a_cfg_mux_hreadyout : 1'b1;
     assign a_fc_rx_cfg_hresp     = a_cfg_mux_hresp;
     assign a_fc_rx_cfg_hrdata    = a_cfg_mux_hrdata;
-    assign a_ahb_cfg_hreadyout   = a_fc_rx_cfg_active ? 1'b0 : a_cfg_mux_hreadyout;
+    assign a_ahb_cfg_hready      = a_fc_rx_cfg_active ? 1'b0 : a_cfg_mux_hreadyout;
     assign a_ahb_cfg_hresp       = a_cfg_mux_hresp;
     assign a_ahb_cfg_hrdata      = a_cfg_mux_hrdata;
 
@@ -273,7 +291,18 @@ module tb_top #(
     wire                    b_fifo_mux_hresp;
     wire                    b_fifo_mux_hreadyout;
 
-    wire b_fc_rx_fifo_active = b_fc_rx_fifo_htrans[1];
+    // FC RX FIFO active: high from addr phase through data phase completion
+    wire b_fc_rx_fifo_addr_phase = b_fc_rx_fifo_htrans[1];
+    reg  b_fc_rx_fifo_data_phase;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            b_fc_rx_fifo_data_phase <= 1'b0;
+        else if (b_fc_rx_fifo_addr_phase && b_fifo_mux_hreadyout)
+            b_fc_rx_fifo_data_phase <= 1'b1;
+        else if (b_fc_rx_fifo_data_phase && b_fifo_mux_hreadyout)
+            b_fc_rx_fifo_data_phase <= 1'b0;
+    end
+    wire b_fc_rx_fifo_active = b_fc_rx_fifo_addr_phase | b_fc_rx_fifo_data_phase;
 
     assign b_fifo_mux_hsel   = b_fc_rx_fifo_active ? 1'b1                 : b_ahb_fifo_hsel;
     assign b_fifo_mux_haddr  = b_fc_rx_fifo_active ? b_fc_rx_fifo_haddr   : b_ahb_fifo_haddr;
@@ -286,7 +315,7 @@ module tb_top #(
     assign b_fc_rx_fifo_hready    = b_fc_rx_fifo_active ? b_fifo_mux_hreadyout : 1'b1;
     assign b_fc_rx_fifo_hresp     = b_fifo_mux_hresp;
     assign b_fc_rx_fifo_hrdata    = b_fifo_mux_hrdata;
-    assign b_ahb_fifo_hreadyout   = b_fc_rx_fifo_active ? 1'b0 : b_fifo_mux_hreadyout;
+    assign b_ahb_fifo_hready      = b_fc_rx_fifo_active ? 1'b0 : b_fifo_mux_hreadyout;
     assign b_ahb_fifo_hresp       = b_fifo_mux_hresp;
     assign b_ahb_fifo_hrdata      = b_fifo_mux_hrdata;
 
@@ -302,7 +331,18 @@ module tb_top #(
     wire                    b_cfg_mux_hresp;
     wire                    b_cfg_mux_hreadyout;
 
-    wire b_fc_rx_cfg_active = b_fc_rx_cfg_htrans[1];
+    // FC RX config active: high from addr phase through data phase completion
+    wire b_fc_rx_cfg_addr_phase = b_fc_rx_cfg_htrans[1];
+    reg  b_fc_rx_cfg_data_phase;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            b_fc_rx_cfg_data_phase <= 1'b0;
+        else if (b_fc_rx_cfg_addr_phase && b_cfg_mux_hreadyout)
+            b_fc_rx_cfg_data_phase <= 1'b1;
+        else if (b_fc_rx_cfg_data_phase && b_cfg_mux_hreadyout)
+            b_fc_rx_cfg_data_phase <= 1'b0;
+    end
+    wire b_fc_rx_cfg_active = b_fc_rx_cfg_addr_phase | b_fc_rx_cfg_data_phase;
 
     assign b_cfg_mux_hsel   = b_fc_rx_cfg_active ? 1'b1                : b_ahb_cfg_hsel;
     assign b_cfg_mux_haddr  = b_fc_rx_cfg_active ? b_fc_rx_cfg_haddr   : b_ahb_cfg_haddr;
@@ -315,7 +355,7 @@ module tb_top #(
     assign b_fc_rx_cfg_hready    = b_fc_rx_cfg_active ? b_cfg_mux_hreadyout : 1'b1;
     assign b_fc_rx_cfg_hresp     = b_cfg_mux_hresp;
     assign b_fc_rx_cfg_hrdata    = b_cfg_mux_hrdata;
-    assign b_ahb_cfg_hreadyout   = b_fc_rx_cfg_active ? 1'b0 : b_cfg_mux_hreadyout;
+    assign b_ahb_cfg_hready      = b_fc_rx_cfg_active ? 1'b0 : b_cfg_mux_hreadyout;
     assign b_ahb_cfg_hresp       = b_cfg_mux_hresp;
     assign b_ahb_cfg_hrdata      = b_cfg_mux_hrdata;
 
@@ -368,6 +408,9 @@ module tb_top #(
     // =====================================================================
     // Side A -- FC adapter instance
     // =====================================================================
+    wire a_ahb_tx_hreadyout;
+    assign a_ahb_tx_hready = a_ahb_tx_hreadyout;
+
     tidelink_fc_adapter #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W),
@@ -383,7 +426,7 @@ module tb_top #(
         .ahb_tx_hsize      (a_ahb_tx_hsize),
         .ahb_tx_hwrite     (a_ahb_tx_hwrite),
         .ahb_tx_hwdata     (a_ahb_tx_hwdata),
-        .ahb_tx_hready     (a_ahb_tx_hready),
+        .ahb_tx_hready     (a_ahb_tx_hreadyout),
         .ahb_tx_hrdata     (a_ahb_tx_hrdata),
         .ahb_tx_hresp      (a_ahb_tx_hresp),
         .ahb_tx_hreadyout  (a_ahb_tx_hreadyout),
@@ -468,6 +511,9 @@ module tb_top #(
     // =====================================================================
     // Side B -- FC adapter instance
     // =====================================================================
+    wire b_ahb_tx_hreadyout;
+    assign b_ahb_tx_hready = b_ahb_tx_hreadyout;
+
     tidelink_fc_adapter #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W),
@@ -483,7 +529,7 @@ module tb_top #(
         .ahb_tx_hsize      (b_ahb_tx_hsize),
         .ahb_tx_hwrite     (b_ahb_tx_hwrite),
         .ahb_tx_hwdata     (b_ahb_tx_hwdata),
-        .ahb_tx_hready     (b_ahb_tx_hready),
+        .ahb_tx_hready     (b_ahb_tx_hreadyout),
         .ahb_tx_hrdata     (b_ahb_tx_hrdata),
         .ahb_tx_hresp      (b_ahb_tx_hresp),
         .ahb_tx_hreadyout  (b_ahb_tx_hreadyout),

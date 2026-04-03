@@ -46,7 +46,7 @@ module tb_top #(
     input  logic   [SYS_DATA_W-1:0] ahbm_hrdata,
 
     // Interrupt outputs
-    output logic                    released_tokens_irq,
+    output logic                    released_credits_irq,
     output logic                    doorbell_irq,
     output logic                    packet_committed_irq
 );
@@ -104,7 +104,7 @@ module tb_top #(
         .ahbm_hrdata         (ahbm_hrdata),
 
         // Interrupts
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
         .packet_committed_irq(packet_committed_irq)
     );

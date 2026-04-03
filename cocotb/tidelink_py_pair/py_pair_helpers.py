@@ -11,11 +11,11 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 # Import shared constants and model from the tidelink package
 from tidelink.regs import (
-    MAX_TOKENS,
-    OFF_PAIR_BASE_ADDR, OFF_PKT_WORD_LEN, OFF_TOKEN_COUNT,
-    OFF_STATUS, OFF_DOORBELL, OFF_RELEASED_TOKENS,
-    OFF_DOORBELL_RESPONSE, OFF_PAIR_TOKEN_COUNTER,
-    OFF_PAIR_TOKEN_CONSUME, OFF_PAIR_TOKEN_ENABLE,
+    MAX_CREDITS,
+    OFF_PAIR_BASE_ADDR, OFF_PKT_WORD_LEN, OFF_CREDIT_COUNT,
+    OFF_STATUS, OFF_DOORBELL, OFF_RELEASED_CREDITS,
+    OFF_DOORBELL_RESPONSE, OFF_PAIR_CREDIT_COUNTER,
+    OFF_PAIR_CREDIT_CONSUME, OFF_PAIR_CREDIT_ENABLE,
 )
 from tidelink.pair_model import PairRegisterBank
 
@@ -183,7 +183,7 @@ async def setup_with_pair(dut):
     pair = PairRegisterBank(
         base_addr=PAIR_BASE,
         dut_apb_base=0,
-        max_tokens=MAX_TOKENS
+        max_credits=MAX_CREDITS
     )
     cocotb.start_soon(ahb_master_monitor(dut, pair))
     await do_reset(dut)

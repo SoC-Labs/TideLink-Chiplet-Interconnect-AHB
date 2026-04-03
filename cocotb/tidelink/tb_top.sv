@@ -43,7 +43,7 @@ module tb_top #(
     output logic                    apbs_pslverr,
 
     // Interrupt outputs
-    output logic                    released_tokens_irq,
+    output logic                    released_credits_irq,
     output logic                    doorbell_irq,
     output logic                    packet_committed_irq
 );
@@ -95,7 +95,7 @@ module tb_top #(
         .apbs_pslverr    (apbs_pslverr),
 
         // Interrupts
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
         .packet_committed_irq(packet_committed_irq)
     );

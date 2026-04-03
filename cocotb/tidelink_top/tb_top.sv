@@ -26,16 +26,17 @@ module tb_top #(
     input  logic                    hresetn,
 
     // AHB Slave -- TX aperture (prefix "ahb_tx")
+    // cocotbext-ahb convention: hready = slave output, hready_in = bus input
     input  logic                    ahb_tx_hsel,
     input  logic  [RAM_ADDR_W-1:0] ahb_tx_haddr,
     input  logic              [1:0] ahb_tx_htrans,
     input  logic              [2:0] ahb_tx_hsize,
     input  logic                    ahb_tx_hwrite,
     input  logic  [SYS_DATA_W-1:0] ahb_tx_hwdata,
-    input  logic                    ahb_tx_hready,
+    input  logic                    ahb_tx_hready_in,
     output logic  [SYS_DATA_W-1:0] ahb_tx_hrdata,
     output logic                    ahb_tx_hresp,
-    output logic                    ahb_tx_hreadyout,
+    output logic                    ahb_tx_hready,
 
     // AHB Slave -- FIFO data read port (prefix "ahb_fifo")
     input  logic                    ahb_fifo_hsel,
@@ -44,10 +45,10 @@ module tb_top #(
     input  logic              [2:0] ahb_fifo_hsize,
     input  logic                    ahb_fifo_hwrite,
     input  logic  [SYS_DATA_W-1:0] ahb_fifo_hwdata,
-    input  logic                    ahb_fifo_hready,
+    input  logic                    ahb_fifo_hready_in,
     output logic  [SYS_DATA_W-1:0] ahb_fifo_hrdata,
     output logic                    ahb_fifo_hresp,
-    output logic                    ahb_fifo_hreadyout,
+    output logic                    ahb_fifo_hready,
 
     // AHB Slave -- Config registers (prefix "ahb_cfg")
     input  logic                    ahb_cfg_hsel,
@@ -56,10 +57,10 @@ module tb_top #(
     input  logic              [2:0] ahb_cfg_hsize,
     input  logic                    ahb_cfg_hwrite,
     input  logic  [SYS_DATA_W-1:0] ahb_cfg_hwdata,
-    input  logic                    ahb_cfg_hready,
+    input  logic                    ahb_cfg_hready_in,
     output logic  [SYS_DATA_W-1:0] ahb_cfg_hrdata,
     output logic                    ahb_cfg_hresp,
-    output logic                    ahb_cfg_hreadyout,
+    output logic                    ahb_cfg_hready,
 
     // Interrupt outputs
     output logic                    released_credits_irq,
@@ -73,14 +74,32 @@ module tb_top #(
     wire                   tl_fc_a2l_valid;
     wire [FC_DATA_W-1:0]  tl_fc_a2l_data;
     wire                   tl_fc_a2l_ready;
-    wire                   tl_fc_l2a_valid;
-    wire [FC_DATA_W-1:0]  tl_fc_l2a_data;
+    reg                    tl_fc_l2a_valid;
+    reg  [FC_DATA_W-1:0]  tl_fc_l2a_data;
     wire                   tl_fc_l2a_accept;
 
-    // Loopback: connect TX output directly to RX input
-    assign tl_fc_l2a_valid = tl_fc_a2l_valid;
-    assign tl_fc_l2a_data  = tl_fc_a2l_data;
-    assign tl_fc_a2l_ready = tl_fc_l2a_accept;
+    // 1-cycle registered loopback to break the combinational loop between
+    // a2l_valid/ready and l2a_valid/accept.
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            tl_fc_l2a_valid <= 1'b0;
+            tl_fc_l2a_data  <= '0;
+        end else if (tl_fc_a2l_valid && tl_fc_a2l_ready) begin
+            tl_fc_l2a_valid <= 1'b1;
+            tl_fc_l2a_data  <= tl_fc_a2l_data;
+        end else if (tl_fc_l2a_accept) begin
+            tl_fc_l2a_valid <= 1'b0;
+        end
+    end
+    assign tl_fc_a2l_ready = !tl_fc_l2a_valid || tl_fc_l2a_accept;
+
+    // =========================================================================
+    // AHB-Lite hready loopback: in single-slave systems, hready_in = hready
+    // cocotbext-ahb doesn't drive hready_in, so we tie it to the slave output.
+    // =========================================================================
+    wire ahb_tx_hready_loop   = ahb_tx_hready;
+    wire ahb_fifo_hready_loop = ahb_fifo_hready;
+    wire ahb_cfg_hready_loop  = ahb_cfg_hready;
 
     // =========================================================================
     // Returner AHB master wiring (tidelink_fifo_ahb -> FC adapter)
@@ -132,7 +151,19 @@ module tb_top #(
     wire                    fifo_mux_hresp;
     wire                    fifo_mux_hreadyout;
 
-    wire fc_rx_fifo_active = fc_rx_fifo_htrans[1];
+    // FC adapter owns the mux during ADDR phase (htrans active) AND the
+    // following DATA phase.  Use combinational htrans[1] for ADDR phase,
+    // registered flag for DATA phase.
+    reg fc_rx_fifo_data_phase;
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            fc_rx_fifo_data_phase <= 1'b0;
+        else if (fc_rx_fifo_htrans[1] && fifo_mux_hreadyout)
+            fc_rx_fifo_data_phase <= 1'b1;   // ADDR accepted, DATA phase next
+        else if (fc_rx_fifo_data_phase && fifo_mux_hreadyout)
+            fc_rx_fifo_data_phase <= 1'b0;   // DATA phase completed
+    end
+    wire fc_rx_fifo_active = fc_rx_fifo_htrans[1] || fc_rx_fifo_data_phase;
 
     assign fifo_mux_hsel   = fc_rx_fifo_active ? 1'b1              : ahb_fifo_hsel;
     assign fifo_mux_haddr  = fc_rx_fifo_active ? fc_rx_fifo_haddr  : ahb_fifo_haddr;
@@ -140,12 +171,12 @@ module tb_top #(
     assign fifo_mux_hsize  = fc_rx_fifo_active ? fc_rx_fifo_hsize  : ahb_fifo_hsize;
     assign fifo_mux_hwrite = fc_rx_fifo_active ? fc_rx_fifo_hwrite : ahb_fifo_hwrite;
     assign fifo_mux_hwdata = fc_rx_fifo_active ? fc_rx_fifo_hwdata : ahb_fifo_hwdata;
-    assign fifo_mux_hready = fifo_mux_hreadyout;
+    assign fifo_mux_hready = fc_rx_fifo_active ? fifo_mux_hreadyout : ahb_fifo_hready_loop;
 
     assign fc_rx_fifo_hready    = fc_rx_fifo_active ? fifo_mux_hreadyout : 1'b1;
     assign fc_rx_fifo_hresp     = fifo_mux_hresp;
     assign fc_rx_fifo_hrdata    = fifo_mux_hrdata;
-    assign ahb_fifo_hreadyout   = fc_rx_fifo_active ? 1'b0 : fifo_mux_hreadyout;
+    assign ahb_fifo_hready      = fc_rx_fifo_active ? 1'b0 : fifo_mux_hreadyout;
     assign ahb_fifo_hresp       = fifo_mux_hresp;
     assign ahb_fifo_hrdata      = fifo_mux_hrdata;
 
@@ -166,7 +197,16 @@ module tb_top #(
     wire                    cfg_mux_hresp;
     wire                    cfg_mux_hreadyout;
 
-    wire fc_rx_cfg_active = fc_rx_cfg_htrans[1];
+    reg fc_rx_cfg_data_phase;
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            fc_rx_cfg_data_phase <= 1'b0;
+        else if (fc_rx_cfg_htrans[1] && cfg_mux_hreadyout)
+            fc_rx_cfg_data_phase <= 1'b1;
+        else if (fc_rx_cfg_data_phase && cfg_mux_hreadyout)
+            fc_rx_cfg_data_phase <= 1'b0;
+    end
+    wire fc_rx_cfg_active = fc_rx_cfg_htrans[1] || fc_rx_cfg_data_phase;
 
     assign cfg_mux_hsel   = fc_rx_cfg_active ? 1'b1             : ahb_cfg_hsel;
     assign cfg_mux_haddr  = fc_rx_cfg_active ? fc_rx_cfg_haddr  : ahb_cfg_haddr;
@@ -174,12 +214,12 @@ module tb_top #(
     assign cfg_mux_hsize  = fc_rx_cfg_active ? fc_rx_cfg_hsize  : ahb_cfg_hsize;
     assign cfg_mux_hwrite = fc_rx_cfg_active ? fc_rx_cfg_hwrite : ahb_cfg_hwrite;
     assign cfg_mux_hwdata = fc_rx_cfg_active ? fc_rx_cfg_hwdata : ahb_cfg_hwdata;
-    assign cfg_mux_hready = cfg_mux_hreadyout;
+    assign cfg_mux_hready = fc_rx_cfg_active ? cfg_mux_hreadyout : ahb_cfg_hready_loop;
 
     assign fc_rx_cfg_hready    = fc_rx_cfg_active ? cfg_mux_hreadyout : 1'b1;
     assign fc_rx_cfg_hresp     = cfg_mux_hresp;
     assign fc_rx_cfg_hrdata    = cfg_mux_hrdata;
-    assign ahb_cfg_hreadyout   = fc_rx_cfg_active ? 1'b0 : cfg_mux_hreadyout;
+    assign ahb_cfg_hready      = fc_rx_cfg_active ? 1'b0 : cfg_mux_hreadyout;
     assign ahb_cfg_hresp       = cfg_mux_hresp;
     assign ahb_cfg_hrdata      = cfg_mux_hrdata;
 
@@ -257,10 +297,10 @@ module tb_top #(
         .ahb_tx_hsize      (ahb_tx_hsize),
         .ahb_tx_hwrite     (ahb_tx_hwrite),
         .ahb_tx_hwdata     (ahb_tx_hwdata),
-        .ahb_tx_hready     (ahb_tx_hready),
+        .ahb_tx_hready     (ahb_tx_hready_loop),
         .ahb_tx_hrdata     (ahb_tx_hrdata),
         .ahb_tx_hresp      (ahb_tx_hresp),
-        .ahb_tx_hreadyout  (ahb_tx_hreadyout),
+        .ahb_tx_hreadyout  (ahb_tx_hready),
 
         // AHB Slave -- Returner interception
         .rtn_haddr         (rtn_haddr),

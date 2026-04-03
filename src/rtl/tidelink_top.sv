@@ -356,7 +356,18 @@ module tidelink_top #(
     wire                    fifo_mux_hresp;
     wire                    fifo_mux_hreadyout;
 
-    wire fc_rx_fifo_active = fc_rx_fifo_htrans[1];
+    // FC adapter owns the mux during ADDR phase (htrans active) AND the
+    // following DATA phase.  Combinational for ADDR, registered for DATA.
+    reg fc_rx_fifo_data_phase;
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            fc_rx_fifo_data_phase <= 1'b0;
+        else if (fc_rx_fifo_htrans[1] && fifo_mux_hreadyout)
+            fc_rx_fifo_data_phase <= 1'b1;
+        else if (fc_rx_fifo_data_phase && fifo_mux_hreadyout)
+            fc_rx_fifo_data_phase <= 1'b0;
+    end
+    wire fc_rx_fifo_active = fc_rx_fifo_htrans[1] || fc_rx_fifo_data_phase;
 
     assign fifo_mux_hsel   = fc_rx_fifo_active ? 1'b1              : ahb_fifo_hsel;
     assign fifo_mux_haddr  = fc_rx_fifo_active ? fc_rx_fifo_haddr  : ahb_fifo_haddr;
@@ -364,7 +375,9 @@ module tidelink_top #(
     assign fifo_mux_hsize  = fc_rx_fifo_active ? fc_rx_fifo_hsize  : ahb_fifo_hsize;
     assign fifo_mux_hwrite = fc_rx_fifo_active ? fc_rx_fifo_hwrite : ahb_fifo_hwrite;
     assign fifo_mux_hwdata = fc_rx_fifo_active ? fc_rx_fifo_hwdata : ahb_fifo_hwdata;
-    assign fifo_mux_hready = fifo_mux_hreadyout;
+    // hready to slave: when FC active, use hreadyout (self-loop for internal master);
+    // when CPU active, use external hready (driven by cocotbext-ahb or bus matrix)
+    assign fifo_mux_hready = fc_rx_fifo_active ? fifo_mux_hreadyout : ahb_fifo_hready;
 
     assign fc_rx_fifo_hready    = fc_rx_fifo_active ? fifo_mux_hreadyout : 1'b1;
     assign fc_rx_fifo_hresp     = fifo_mux_hresp;
@@ -391,7 +404,16 @@ module tidelink_top #(
     wire                    cfg_mux_hresp;
     wire                    cfg_mux_hreadyout;
 
-    wire fc_rx_cfg_active = fc_rx_cfg_htrans[1];
+    reg fc_rx_cfg_data_phase;
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            fc_rx_cfg_data_phase <= 1'b0;
+        else if (fc_rx_cfg_htrans[1] && cfg_mux_hreadyout)
+            fc_rx_cfg_data_phase <= 1'b1;
+        else if (fc_rx_cfg_data_phase && cfg_mux_hreadyout)
+            fc_rx_cfg_data_phase <= 1'b0;
+    end
+    wire fc_rx_cfg_active = fc_rx_cfg_htrans[1] || fc_rx_cfg_data_phase;
 
     assign cfg_mux_hsel   = fc_rx_cfg_active ? 1'b1             : ahb_cfg_hsel;
     assign cfg_mux_haddr  = fc_rx_cfg_active ? fc_rx_cfg_haddr  : ahb_cfg_haddr;
@@ -399,7 +421,7 @@ module tidelink_top #(
     assign cfg_mux_hsize  = fc_rx_cfg_active ? fc_rx_cfg_hsize  : ahb_cfg_hsize;
     assign cfg_mux_hwrite = fc_rx_cfg_active ? fc_rx_cfg_hwrite : ahb_cfg_hwrite;
     assign cfg_mux_hwdata = fc_rx_cfg_active ? fc_rx_cfg_hwdata : ahb_cfg_hwdata;
-    assign cfg_mux_hready = cfg_mux_hreadyout;
+    assign cfg_mux_hready = fc_rx_cfg_active ? cfg_mux_hreadyout : ahb_cfg_hready;
 
     assign fc_rx_cfg_hready    = fc_rx_cfg_active ? cfg_mux_hreadyout : 1'b1;
     assign fc_rx_cfg_hresp     = cfg_mux_hresp;

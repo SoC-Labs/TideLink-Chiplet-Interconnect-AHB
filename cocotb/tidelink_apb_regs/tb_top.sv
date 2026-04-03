@@ -21,7 +21,7 @@ module tb_top #(
 
     // FIFO sideband stimulus
     input  logic [RAM_ADDR_W-1:0]   packet_word_length,
-    input  logic [RAM_ADDR_W-2:0]   current_token_count,
+    input  logic [RAM_ADDR_W-2:0]   current_credit_count,
     input  logic                    read_complete,
 
     // Returner status stimulus
@@ -40,11 +40,11 @@ module tb_top #(
     output logic                    ctrl_flush,
     output logic                    doorbell_trigger,
     output logic                    reset_deassert_pulse,
-    output logic [SYS_DATA_W-1:0]   token_delta_data,
-    output logic [SYS_DATA_W-1:0]   token_count_data,
-    output logic                    release_tokens_trigger,
+    output logic [SYS_DATA_W-1:0]   credit_delta_data,
+    output logic [SYS_DATA_W-1:0]   credit_count_data,
+    output logic                    release_credits_trigger,
     output logic [SYS_ADDR_W-1:0]   pair_base_addr,
-    output logic                    released_tokens_irq,
+    output logic                    released_credits_irq,
     output logic                    doorbell_irq
 );
 
@@ -66,7 +66,7 @@ module tb_top #(
         .pready              (pready),
         .pslverr             (pslverr),
         .packet_word_length  (packet_word_length),
-        .current_token_count (current_token_count),
+        .current_credit_count (current_credit_count),
         .read_complete       (read_complete),
         .returner_busy       (returner_busy),
         .fifo_overrun        (fifo_overrun),
@@ -77,11 +77,11 @@ module tb_top #(
         .ctrl_flush          (ctrl_flush),
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
-        .token_delta_data    (token_delta_data),
-        .token_count_data    (token_count_data),
-        .release_tokens_trigger(release_tokens_trigger),
+        .credit_delta_data    (credit_delta_data),
+        .credit_count_data    (credit_count_data),
+        .release_credits_trigger(release_credits_trigger),
         .pair_base_addr      (pair_base_addr),
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq)
     );
 

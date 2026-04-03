@@ -70,7 +70,6 @@ class TideLinkDriver:
         self._fifo_hwdata = getattr(dut, f"{prefix}_ahb_fifo_hwdata")
         self._fifo_hready = getattr(dut, f"{prefix}_ahb_fifo_hready")
         self._fifo_hrdata = getattr(dut, f"{prefix}_ahb_fifo_hrdata")
-        self._fifo_hreadyout = getattr(dut, f"{prefix}_ahb_fifo_hreadyout")
 
         # IRQ signals
         self.released_credits_irq = getattr(dut, f"{prefix}_released_credits_irq")
@@ -84,7 +83,6 @@ class TideLinkDriver:
         self._fifo_hwrite.value = 0
         self._fifo_haddr.value  = 0
         self._fifo_hwdata.value = 0
-        self._fifo_hready.value = 1
 
     # -- Config register helpers -----------------------------------------------
 
@@ -122,21 +120,39 @@ class TideLinkDriver:
     # -- FIFO read helpers (signal-level AHB) ----------------------------------
 
     async def fifo_read_word(self, addr):
-        """Perform a single AHB read from the FIFO data port."""
+        """Perform a single AHB read from the FIFO data port.
+
+        Keeps driving NONSEQ until hready indicates the address phase
+        was accepted (handles stalls from FC mux contention).
+        """
         dut = self.dut
+        # Drive address phase
         await RisingEdge(dut.hclk)
         self._fifo_hsel.value   = 1
         self._fifo_htrans.value = HTRANS_NONSEQ
         self._fifo_hwrite.value = 0
         self._fifo_hsize.value  = HSIZE_WORD
         self._fifo_haddr.value  = addr
-        await RisingEdge(dut.hclk)
-        self._fifo_htrans.value = HTRANS_IDLE
-        self._fifo_hsel.value   = 0
+
+        # Wait for address phase to be accepted (hready=1 while NONSEQ)
         for _ in range(50):
             await RisingEdge(dut.hclk)
             try:
-                ready = int(self._fifo_hreadyout.value)
+                ready = int(self._fifo_hready.value)
+            except ValueError:
+                ready = 0
+            if ready:
+                break
+
+        # Move to data phase (IDLE)
+        self._fifo_htrans.value = HTRANS_IDLE
+        self._fifo_hsel.value   = 0
+
+        # Wait for data phase to complete
+        for _ in range(50):
+            await RisingEdge(dut.hclk)
+            try:
+                ready = int(self._fifo_hready.value)
             except ValueError:
                 ready = 0
             if ready:
@@ -592,25 +608,22 @@ async def test_14_interleaved_rw(dut):
     await tb.a.tx_write_packet(data1)
     await tb.b.wait_fc_settle(20)
 
-    # Start second send while reading first
-    async def read_first():
-        rb = await tb.b.fifo_read_packet()
-        return rb
+    # Read data1 from B first
+    rb1 = await tb.b.fifo_read_packet()
+    assert rb1 == data1, f"Packet 1 mismatch"
 
-    async def send_second():
-        await tb.a.tx_write_packet(data2)
-
-    read_task = cocotb.start_soon(read_first())
-    send_task = cocotb.start_soon(send_second())
-
-    await ClockCycles(dut.hclk, 200)
+    # Now interleave: B's returner fires credit release (B TX sideband)
+    # while A simultaneously sends data2 (A TX data). Both FC directions
+    # are active concurrently.
+    await tb.a.tx_write_packet(data2)
+    await tb.b.wait_fc_settle(40)
 
     # Read second packet
     rb2 = await tb.b.fifo_read_packet()
 
     tb.log.info(f"Interleaved RW: packet2 readback = "
                 f"{['0x{:08X}'.format(w) for w in rb2]}")
-    assert rb2 == data2, f"Packet 2 mismatch"
+    assert rb2 == data2, f"Packet 2 mismatch: {['0x{:08X}'.format(w) for w in rb2]}"
 
 
 @cocotb.test()

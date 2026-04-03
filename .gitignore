@@ -19,6 +19,13 @@ __pycache__
 .vscode
 .claude
 
+# Generated IP (from set_env.sh)
+deps/xhb500/generated/
+
+# UVM simulation artifacts
+uvm/*/sim_build/
+uvm/*/coverage_report/
+
 # Coverage Files
 .coverage
 .mode64

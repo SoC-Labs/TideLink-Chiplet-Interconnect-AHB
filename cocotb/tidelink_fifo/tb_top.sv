@@ -47,7 +47,7 @@ module tb_top #(
         .hresp         (hresp),
         .hrdata        (hrdata),
         .read_complete        (read_complete),
-        .current_token_count  (),
+        .current_credit_count (),
         .packet_word_length_out(packet_word_length_out),
         .packet_committed_irq (packet_committed_irq),
         .overrun              (overrun),

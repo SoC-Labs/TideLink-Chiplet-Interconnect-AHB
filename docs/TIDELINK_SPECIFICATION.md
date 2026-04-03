@@ -422,7 +422,7 @@ Both ports use narrowed address widths (not full 32-bit system addresses) since 
 
 Standard AHB-Lite subordinate (Section 5.2, A=32). Runtime configuration of the address translation mapping applied to `ahb_sub_haddr`.
 
-### 5.9 APB Subordinate — Chiplet Controller Config (`apb_ctrl_*`)
+### 5.10 APB Subordinate — Chiplet Controller Config (`apb_ctrl_*`)
 
 APB3 subordinate for Wlink/chiplet controller configuration. Drives the APB slave port of `tidelink_chiplet_controller` directly.
 
@@ -439,7 +439,7 @@ APB3 subordinate for Wlink/chiplet controller configuration. Drives the APB slav
 | `apb_ctrl_pready` | Out | 1 | Slave ready |
 | `apb_ctrl_pslverr` | Out | 1 | Slave error |
 
-### 5.10 I2C Sideband
+### 5.11 I2C Sideband
 
 Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 
@@ -452,7 +452,7 @@ Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 | `i2c_sda_o` | Out | 1 | SDA output |
 | `i2c_sda_t` | Out | 1 | SDA tristate enable |
 
-### 5.11 General Bus
+### 5.12 General Bus
 
 32-bit bus for cross-link interrupt forwarding via Wlink FC node 0xa0.
 
@@ -461,7 +461,7 @@ Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 | `gb_in[31:0]` | In | 32 | Interrupts to send to remote chiplet |
 | `gb_out[31:0]` | Out | 32 | Interrupts received from remote chiplet |
 
-### 5.12 PHY Pads
+### 5.13 PHY Pads
 
 8-lane source-synchronous die-to-die interface.
 
@@ -472,7 +472,7 @@ Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 | `pad_clk_rx` | In | 1 | Receive clock (from remote chiplet) |
 | `pad_rx[7:0]` | In | 8 | Receive data lanes |
 
-### 5.13 Interrupt Outputs
+### 5.14 Interrupt Outputs
 
 | Signal | Direction | Width | Description |
 |---|---|---|---|
@@ -481,7 +481,7 @@ Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 | `packet_committed_irq` | Out | 1 | An inbound packet has been written into the local RX FIFO |
 | `wlink_irq` | Out | 1 | Wlink internal interrupt (link error, training, etc.) |
 
-### 5.14 Reset Output
+### 5.15 Reset Output
 
 | Signal | Direction | Width | Description |
 |---|---|---|---|
@@ -575,13 +575,43 @@ Host CPU                        TideLink (Host)           Link          TideLink
 
 ### 7.3 Read Request Flow (Host → Device → Host)
 
-1. Host CPU writes RD_REQ descriptor to TX aperture (no data payload).
-2. Descriptor traverses link as described above.
-3. Device CPU services interrupt, pops descriptor, performs local AHB reads at `dest_addr`.
-4. Device CPU constructs RD_RSP packet: writes RD_RSP header + read data to device TX aperture.
-5. RD_RSP traverses back to host chiplet.
-6. Host RX FIFO accumulates RD_RSP. `packet_committed_irq` fires on host.
-7. Host CPU pops response data. Bus is never stalled; host CPU was free between steps 1 and 7.
+```
+Host CPU                        TideLink (Host)           Link          TideLink (Device)        Device CPU
+    │                                │                      │                 │                       │
+    │  AHB writes (RD_REQ, no data)  │                      │                 │                       │
+    │──────────────────────────────► TX aperture            │                 │                       │
+    │  (returns immediately)         │  FC FIFO_DATA pkts   │                 │                       │
+    │◄─────────────────────────────── ahb_tx_hreadyout      │                 │                       │
+    │                                │──────────────────────►                 │                       │
+    │  [Host CPU free to do other     │                      │  FC FIFO_DATA   │                       │
+    │   work while link is in flight] │                      │─────────────────► FC adapter RX         │
+    │                                │                      │                 │  AHB writes to FIFO   │
+    │                                │                      │                 │───────────────────────►│
+    │                                │                      │                 │                       │  packet_committed_irq
+    │                                │                      │                 │                       │◄─────────────────────
+    │                                │                      │                 │                       │  Pop RD_REQ descriptor
+    │                                │                      │                 │                       │  Local AHB reads
+    │                                │                      │                 │                       │  at dest_addr
+    │                                │                      │                 │                       │
+    │                                │                      │                 │  AHB writes (RD_RSP)  │
+    │                                │                      │                 │◄──────────── TX aperture
+    │                                │                      │  FC FIFO_DATA   │                       │
+    │                                │◄─────────────────────────────────────── FC adapter RX         │
+    │                                │  AHB writes to FIFO  │                 │                       │
+    │                                │ (fc_rx_fifo_* master) │                │                       │
+    │                                │  packet_committed_irq│                 │                       │
+    │◄─────────────────────────────── (host)                │                 │                       │
+    │  Pop RD_RSP + data             │                      │                 │                       │
+    │  from ahb_fifo_*               │                      │                 │                       │
+```
+
+1. Host CPU writes RD_REQ descriptor (4 words: length, header, dest_addr, length/size) to TX aperture (`ahb_tx_*`). No data payload. AHB completes immediately after local FIFO writes.
+2. FC adapter encodes each word as `{PKT_FIFO_DATA, haddr[13:0], hwdata}` and transmits via TideLink FC node (data_id=0xa1).
+3. Remote FC adapter receives each packet and drives `fc_rx_fifo_*` internal AHB master, writing into device FIFO via the FIFO mux. When the final word is written, `packet_committed_irq` fires on the device.
+4. Device CPU services the interrupt, pops the RD_REQ descriptor from `ahb_fifo_*`, and performs the local AHB reads at the `dest_addr` specified in the descriptor.
+5. Device CPU constructs an RD_RSP packet (header + read data) and writes it word-by-word to the device TX aperture.
+6. The RD_RSP traverses the link in the same way: FIFO_DATA packets → remote FC adapter → `fc_rx_fifo_*` → host FIFO. When all words are received, `packet_committed_irq` fires on the host.
+7. Host CPU pops the RD_RSP and data from `ahb_fifo_*`. The host AHB bus was never stalled; the host CPU was free for other work between steps 1 and 7.
 
 ### 7.4 Credit Return Flow
 
@@ -649,91 +679,43 @@ Wlink uses standard dual-flop demetastabilisation (`WavDemetReset`) and gray-cod
 
 ## 9. Design Justification
 
-### 9.1 Why a Dedicated FC Node for the Mailbox Path?
+### 9.1 Dedicated FC Node for the Mailbox Path
 
-**Problem**: The mailbox path requires a direct FIFO-to-FIFO transport that carries application-defined data without address translation, AXI protocol framing, or the overhead of the AXI bridge path.
+A dedicated FC node (WlinkGenericFCSM_6, data_id=0xa1) is added rather than reusing the existing AXI FC nodes (0x80–0x84). Using the AXI nodes would require generating full AXI write transactions from the TX aperture, coupling mailbox flow control to AXI credit accounting and requiring an AHB-to-AXI conversion layer. The dedicated node keeps mailbox credits independent, makes the FC adapter a simple FSM rather than an AXI master, and gives each FC word a self-contained address field that makes the RX side stateless. The one-time cost is forking the Chisel source and regenerating Wlink Verilog (see 9.5).
 
-**Alternative considered**: Using existing AXI FC nodes (0x80–0x84). This would require generating AXI write transactions from the TX aperture, which implies an AHB-to-AXI conversion layer for what is conceptually a simple FIFO push. The remote side would receive AXI write transactions and would need additional logic to detect and store them in the correct FIFO location. Credit accounting would be shared with AXI FC credits, coupling mailbox flow control to AXI traffic.
+### 9.2 48-bit FC Data Width
 
-**Chosen approach**: Add a dedicated FC node (WlinkGenericFCSM_6, data_id=0xa1) with a 48-bit data width. Each FC word carries both a data payload and an address, making the RX adapter stateless. Mailbox credits are independent of AXI credits, preventing credit starvation between the two traffic classes. The implementation is also simpler: the FC adapter is a small combinational/FSM block rather than a full AXI master.
+48 bits is the minimum self-describing word: 2 bits (`pkt_type`) + 14 bits (`addr_offset` for the 16 KB aperture) + 32 bits (payload). This avoids per-packet boundary tracking on the RX side; each word routes itself. A wider word would waste PHY bandwidth on padding; the `addr_offset` field grows proportionally if `RAM_ADDR_W` is increased.
 
-**Trade-off accepted**: Requires modifying the Chisel source of `wav-wlink-hw` and regenerating the Wlink Verilog. This is a non-trivial one-time cost but produces a maintainable, versioned fork that can track Wlink releases.
+### 9.3 Returner Interception Rather Than Bus Matrix Routing
 
-### 9.2 Why 48-bit FC Data Width?
+The returner's credit-return and doorbell writes could traverse `ahb_sub_*` → XHB500 → AXI → Wlink, but this ties credit-return latency to AXI path congestion and requires an additional AHB master slot in the bus matrix. Instead, the FC adapter intercepts the returner's AHB writes and re-encodes them as SIDEBAND FC packets on the TideLink FC node. The returner is unmodified; it sees a compliant AHB slave with correct HREADY handshaking. No bus matrix master slot is needed. The trade-off is additional multiplexer logic in the FC adapter TX path.
 
-**Problem**: The FC word must carry a 32-bit FIFO payload plus enough addressing information to let the RX adapter write to the correct FIFO location without maintaining state.
+### 9.4 Sideband Priority Over TX Aperture
 
-**Chosen**: 48 bits = 2 bits (pkt_type) + 14 bits (addr_offset for 16 KB aperture) + 32 bits (payload).
+When `rtn_pending_r` is set, `tl_fc_a2l_data` carries the sideband word and `ahb_tx_hreadyout` is suppressed via `~rtn_fc_valid`. Credit returns are infrequent but time-critical: delayed credits stall the remote sender, potentially causing deadlock if the remote side is itself waiting for credit. TX aperture data words experience at most one extra cycle of stall — negligible for bulk transfers.
 
-**Alignment**: 48 bits matches the data width of the existing axiwFC node (WlinkGenericFCSM_1, 37 bits as measured from RTL — the plan document quoted 48 bits reflecting the target for the new TideLink node). Using a width that maps cleanly to Wlink's internal packet alignment avoids padding overhead.
+### 9.5 Internal RX Masters Rather Than an External `ahb_fc_rx_*` Port
 
-**Why not wider**: 48 bits is the minimum necessary. A wider word would waste PHY bandwidth on padding for most transactions.
+An earlier design exposed a single external AHB master (`ahb_fc_rx_*`) with `RX_FIFO_BASE` and `RX_CFG_BASE` parameters, requiring a bus matrix master slot and a full 32-bit address computation on every received FC word. Misconfigured base addresses caused silent data corruption and were a common integration error. The current design splits the RX path into two internal masters (`fc_rx_fifo_*` and `fc_rx_cfg_*`) with narrowed address widths (`RAM_ADDR_W` and `APB_ADDR_W`), eliminating both parameters and the external master port. The trade-off is two combinational muxes in `tidelink_top`.
 
-### 9.3 Why Intercept the Returner Rather Than Route It to the Bus Matrix?
+### 9.6 Combinational 2:1 Muxes for FC Write Arbitration
 
-**Problem**: The returner needs to write credit delta and doorbell values to registers on the remote chiplet. In a naive implementation this would require an additional AHB master port on the bus matrix, with routing to the remote side via the regular AXI bridge path.
+Adding second AHB slave ports to `tidelink_fifo_ahb` would increase the complexity of that submodule. Instead, two 2:1 combinational muxes (`fifo_mux_*`, `cfg_mux_*`) in `tidelink_top` arbitrate between the FC adapter internal masters and the CPU-facing external slave ports. FC adapter has priority on both; CPU access is stalled via `hreadyout`. The muxes are localised, leave `tidelink_fifo_ahb` unchanged, and correctly prevent incoming data and sideband from being dropped by CPU contention.
 
-**Alternative**: Connect returner AHB master to bus matrix. The returner's writes would traverse `ahb_sub_*` → XHB500 → AXI → Wlink → remote. This pollutes the AXI path with small, latency-sensitive control writes. It also creates a dependency between credit-return responsiveness and AXI path congestion: if the AXI FC nodes are stalled by data traffic, credit returns are delayed, causing the sending side to back off. It also requires an additional AHB master slot in the bus matrix.
+### 9.7 Mailbox Pattern for Data-Plane Traffic
 
-**Chosen**: Intercept the returner's AHB master writes within the FC adapter and re-encode them as SIDEBAND packets on the dedicated TideLink FC node. The returner sees a compliant AHB slave (the FC adapter presents correct HREADY handshaking) and is unchanged. Credit returns and doorbells ride the same FC node as FIFO data, but with a distinct pkt_type field ensuring correct routing at the RX side. No bus matrix master port is needed.
+Transparent AHB read bridging stalls the host bus for the link round-trip — at 10 ns one-way latency and 100 MHz AHB, practical stalls reach 20–100 cycles per read due to link FIFO buffering and protocol framing. AHB SPLIT/RETRY would theoretically release the bus, but Cortex-M bus matrices do not implement it. Routing via the AXI path does not help: the XHB500 bridge holds AHB until the AXI response returns, reintroducing the same stall. The mailbox bounds AHB stall to the local FIFO write time (a handful of cycles); the CPU is free while the transaction is in flight. The cost is software overhead (~100–200 cycles of ISR entry and descriptor parsing per transaction), which is amortised well over bulk transfers and requires a CPU on the device side — satisfied by the nanoSoC Cortex-M0 pattern.
 
-**Trade-off accepted**: The FC adapter is more complex: it must present a synthesisable AHB slave to the returner and multiplex its sideband packets with TX aperture FIFO data onto the single FC TX interface. The priority scheme (sideband > TX aperture) adds a small timing dependency. This is justified because credit-return delays cause backpressure on the sending side; prioritising sideband over data minimises this.
+### 9.8 Chisel Regen Rather Than Verilog Wrapper for Wlink Extension
 
-### 9.4 Why Sideband Priority Over TX Aperture?
-
-**Problem**: When the returner needs to send a credit return simultaneously with the CPU streaming data through the TX aperture, one must yield.
-
-**Chosen**: Returner sideband takes priority. When `rtn_pending_r` is set, `tl_fc_a2l_data` is driven with the sideband word and `ahb_tx_hreadyout` is suppressed (by the `~rtn_fc_valid` term).
-
-**Justification**: Credit returns are infrequent (fire at most once per credit-release threshold) but time-sensitive: delaying credit return causes the remote sender to stall when it exhausts its credit allocation, potentially deadlocking the system if the remote sender is also waiting for credit before it can write to its own TX aperture. Data words in the TX aperture, by contrast, experience only a single-cycle stall — negligible for bulk transfers.
-
-### 9.5 Why Internal RX Masters Rather Than an External `ahb_fc_rx_*` Port?
-
-**Problem**: Received FC data must reach two distinct targets: the FIFO data window (for FIFO_DATA packets) and the APB config registers (for SIDEBAND packets). An earlier design exposed a single external AHB master (`ahb_fc_rx_*`) that computed full system addresses from `RX_FIFO_BASE`/`RX_CFG_BASE` parameters and required a bus matrix master slot.
-
-**Chosen**: Split the RX path into two internal AHB masters (`fc_rx_fifo_*` and `fc_rx_cfg_*`) with narrowed address widths. Each feeds into a 2:1 mux inside `tidelink_top` that arbitrates with the corresponding external CPU-facing slave port. No external AHB master port is needed.
-
-**Justification**: This eliminates the `RX_FIFO_BASE` and `RX_CFG_BASE` parameters entirely — a common source of integration errors (misconfigured base addresses causing silent data corruption). It also removes the need for an additional bus matrix master slot, simplifying SoC integration. The trade-off is two internal muxes, but these are small combinational blocks with well-defined priority (FC always wins).
-
-### 9.6 Why 2:1 Muxes Rather Than Dedicated Slave Ports for FC Writes?
-
-**Problem**: Both the FIFO data window and the config register block must be accessible by two sources: the FC adapter RX internal masters (writing incoming packets and sideband) and the external CPU ports (reading packets, reading/writing config). The `tidelink_fifo_ahb` module exposes a single AHB slave for each.
-
-**Alternative**: Add second AHB slave ports to `tidelink_fifo_ahb` for FC writes, eliminating the muxes.
-
-**Chosen**: Two 2:1 combinational muxes in `tidelink_top` — one for the FIFO data window (`fifo_mux_*`) and one for the config registers (`cfg_mux_*`). FC adapter RX has priority on both; CPU access is stalled via `hreadyout` when the FC adapter is active.
-
-**Justification**: Modifying `tidelink_fifo_ahb` to add second slave ports would increase the size and complexity of the FIFO submodule. The muxes are clean, localised additions in the top-level that leave the FIFO module unchanged. Priority for FC writes is correct: incoming data and credit/doorbell sideband must not be dropped due to CPU contention.
-
-### 9.7 Why a Mailbox Pattern Rather Than Transparent AHB Bridge for Data Plane Traffic?
-
-**Problem**: Transparent AHB bridging stalls the CPU bus for the full round-trip time of every read transaction. For chiplet link latencies of 5–20 ns at 100 MHz AHB, this is 1–4 additional cycles per read in the ideal case, but practical latencies (link negotiation, FIFO buffering, protocol framing) are higher, easily reaching 20–100 cycles.
-
-**Alternative**: AHB SPLIT/RETRY. Theoretically allows the bus to be released during a long-latency response. Not implemented in Cortex-M bus matrices; requires bus arbiter changes incompatible with existing SoC infrastructure.
-
-**Alternative**: Use only the AXI path. AXI supports outstanding transactions, mitigating the blocking problem. But Wlink's AXI path still imposes end-to-end latency, and the XHB500 bridge does not provide zero-latency completion: the bridge holds the AHB bus until the AXI response is received, which reintroduces the stall on the AHB side.
-
-**Chosen**: Software-mediated mailbox. CPU writes a descriptor and is immediately free. AHB bus stalling is bounded by the local FIFO write time (a handful of cycles), not the link RTT. This is the correct solution for a Cortex-M class system where link latency dominates and the CPU has other work to do while waiting for remote data.
-
-**Trade-off accepted**: Adds software overhead (ISR entry, descriptor parsing, buffer management). Single 32-bit reads incur ~100–200 cycles of overhead on top of link latency. This is acceptable and amortised well for bulk transfers (one descriptor covers any burst length). It requires a CPU on the device side to service requests — the nanoSoC pattern (Cortex-M0 on each chiplet) satisfies this requirement.
-
-### 9.8 Why Modify Wlink via Chisel Regen Rather Than Adding a Verilog Wrapper?
-
-**Problem**: The TideLink FC node must be integrated into Wlink's TX and RX routers (WlinkTxRouter 6→7, WlinkRxRouter 7→8). A Verilog wrapper cannot extend internal router connections.
-
-**Alternative**: Write a Verilog shim that muxes a new FC node onto the existing `generalbusgb` FC node or onto an unused channel. This is fragile, data_id conflicts are difficult to avoid, and it complicates credit management.
-
-**Chosen**: Fork `wav-wlink-hw`, modify the Chisel source, and regenerate Verilog. This produces a clean, internally consistent Wlink instance with a proper data_id assignment (0xa1) and correctly extended routers. Future Wlink upstream updates can be tracked by merging the Chisel fork.
+The TideLink FC node must be connected inside Wlink's TX and RX routers (WlinkTxRouter 6→7, WlinkRxRouter 7→8). A Verilog wrapper cannot modify internal router connections. A Verilog shim multiplexing onto an existing node risks data_id conflicts and complicates credit management. Forking `wav-wlink-hw`, modifying the Chisel, and regenerating Verilog produces a clean, internally consistent chiplet controller with a correctly assigned data_id (0xa1) and properly extended routers. Upstream Wlink updates can be tracked by merging the Chisel fork.
 
 ### 9.9 Two-Tier Implementation Strategy
 
-TideLink defines two implementation tiers:
+**Tier 1 — Software-mediated (current)**: CPU on each side services descriptors via interrupts. Handles all transaction types; appropriate for control-plane and infrequent data transfers.
 
-**Tier 1 — Software-mediated (current implementation)**: CPU on each side services transaction descriptors via interrupts. Maximum flexibility, correct for control-plane traffic, small/infrequent reads, and early prototyping.
-
-**Tier 2 — Hardware request engine (planned)**: A small autonomous FSM on the device side that can service read and write descriptors without CPU intervention. Equivalent to a micro-DMA engine, it eliminates ISR overhead for data-plane traffic. Planned for bulk SRAM read use cases in the megaSoC reference design. The packet format is unchanged — Tier 2 differs only in who services the descriptor on the device side.
-
-The two tiers share the same hardware: all TideLink RTL supports both. Tier selection is a software and SoC integration decision, not a hardware parameter.
+**Tier 2 — Hardware request engine (planned)**: An autonomous FSM on the device side services descriptors without CPU intervention, eliminating ISR overhead for bulk data-plane transfers. The packet format is unchanged; Tier 2 differs only in descriptor servicing. Both tiers use identical TideLink RTL — tier selection is a software and integration choice, not a hardware parameter.
 
 ---
 
@@ -844,48 +826,39 @@ The reference integration is the `nanosoc-chiplet-tech` project, which integrate
 
 ### 11.1 AHB Subordinate Path — Read Latency
 
-Read transactions on `ahb_sub_*` stall the AHB bus for the full link round-trip time. At moderate link latencies (>10 ns at 100 MHz), this causes significant throughput degradation for read-intensive workloads. Use the mailbox path (`ahb_tx_*`) with RD_REQ descriptors for latency-tolerant reads or bulk read transfers. The transparent bridge is appropriate only for infrequent control-plane reads.
+Read transactions on `ahb_sub_*` stall the AHB bus for the full link round-trip. At moderate link latencies (>10 ns at 100 MHz), practical stalls reach 20–100 cycles. Use the mailbox path (`ahb_tx_*`) with RD_REQ descriptors for bulk or latency-sensitive reads; reserve the transparent bridge for infrequent control-plane reads.
 
 ### 11.2 Single Clock Domain
 
-The current implementation drives all three clock inputs of `tidelink_chiplet_controller` from `hclk`. This couples the link-layer timing to the AHB fabric clock. If the AHB fabric and link layer must operate at different frequencies, the Wlink clock inputs must be driven independently and CDC must be verified. This is a planned enhancement for future integration into higher-performance systems.
+All three clock inputs of `tidelink_chiplet_controller` (`apb_clk`, `app_clk`, `hsclk`) are driven from `hclk`, coupling link-layer timing to the AHB fabric clock. If independent frequencies are required, the Wlink clock inputs must be driven separately and CDC must be re-verified.
 
 ### 11.3 FC Adapter RX: Single Word in Flight
 
-The FC adapter RX FSM processes one FC word at a time (latch → AHB write → next). Back-to-back FC words stall in the Wlink FC FIFO while the AHB write is in progress. For high-rate mailbox transfers, the link-side FC credits limit throughput to at most one AHB write cycle per FC word. At 100 MHz AHB with a two-cycle AHB write, this gives a maximum RX throughput of 50 MWords/s (200 MB/s). This is sufficient for Cortex-M0 class applications; higher-performance systems would require a pipelined RX path.
+The RX FSM processes one FC word at a time (latch → AHB write → next). At 100 MHz AHB with a two-cycle write, maximum RX throughput is 50 MWords/s (200 MB/s). This is sufficient for Cortex-M0 class systems; higher-throughput applications would require a pipelined RX path.
 
 ### 11.4 TX Aperture: Write-Only
 
-The TX aperture slave (`ahb_tx_*`) does not support reads. Any AHB read transaction to this address range will receive zero data and an OKAY response. The aperture should be declared non-readable in the system MPU configuration.
+`ahb_tx_*` does not support reads; any read returns zero with an OKAY response. Declare the aperture non-readable in the system MPU configuration and do not issue DMA pre-fetches to this range.
 
-### 11.5 Internal Muxes: CPU Access Stall During FC RX Writes
+### 11.5 Internal Mux Stalls During FC RX Writes
 
-Two internal 2:1 muxes arbitrate access to `tidelink_fifo_ahb` slave ports:
-
-- **FIFO Mux**: When the FC adapter RX FIFO master is active (`fc_rx_fifo_htrans[1]`), `ahb_fifo_hreadyout` is held low. CPU reads from the RX FIFO stall for the duration of each incoming AHB write (typically 2 cycles).
-- **Config Mux**: When the FC adapter RX config master is active (`fc_rx_cfg_htrans[1]`), `ahb_cfg_hreadyout` is held low. CPU access to config registers stalls for the duration of each incoming sideband write.
-
-This is a correctness requirement (FC writes must not be dropped) and is transparent to software provided the CPU handles it as a normal wait-state extension. Cache or DMA pre-fetch from the FIFO or config address ranges should be avoided.
+When `fc_rx_fifo_htrans[1]` is asserted, `ahb_fifo_hreadyout` is held low (FIFO mux). When `fc_rx_cfg_htrans[1]` is asserted, `ahb_cfg_hreadyout` is held low (Config mux). Stalls are typically 2 cycles and are transparent to software. Avoid cache or DMA pre-fetch from the FIFO (`ahb_fifo_*`) or config (`ahb_cfg_*`) address ranges.
 
 ### 11.6 Signal Naming: released_credits_irq
 
-The interrupt naming has been aligned across most of the design. `tidelink_fifo_ahb.sv`, `tidelink_fifo.sv`, `tidelink_apb_regs.sv`, `tidelink.sv`, and `tidelink_top.sv` all use `released_credits_irq`. The legacy `tidelink_ahb.sv` wrapper still uses the old name `released_tokens_irq`. Integrators using `tidelink_top` see `released_credits_irq` consistently at the top-level boundary.
+`tidelink_top.sv`, `tidelink_fifo_ahb.sv`, `tidelink_fifo.sv`, `tidelink_apb_regs.sv`, and `tidelink.sv` all use `released_credits_irq`. The legacy `tidelink_ahb.sv` wrapper retains the old name `released_tokens_irq`. Integrators using `tidelink_top` see the updated name at the top-level boundary.
 
-### 11.7 No Read Data from TX Aperture or Returner Interception
+### 11.7 TIDELINK_PAIR_BASE Default of Zero
 
-Both the TX aperture slave and the returner interception slave return zero on `hrdata`. The TX aperture is write-only by design. The returner never issues reads (it is a write-only master), so the interception slave's read data path is unused. If diagnostic access to these paths is needed, it must be implemented at a higher level.
+`TIDELINK_PAIR_BASE` defaults to `'0`. An unconfigured instance targets address 0x00000000 on the remote chiplet for credit returns and doorbells, which is almost certainly incorrect. Always set this parameter explicitly. The removed `RX_FIFO_BASE` and `RX_CFG_BASE` parameters (see Section 6) are no longer needed.
 
-### 11.8 TIDELINK_PAIR_BASE Default of Zero
+### 11.8 Tier 2 Hardware Request Engine Not Yet Implemented
 
-The default value of `TIDELINK_PAIR_BASE` is `'0` (all zeros). If the parameter is not set by the integrator, the returner will target address 0x00000000 on the remote chiplet, which is almost certainly incorrect. Integrators must always set `TIDELINK_PAIR_BASE` explicitly. Leaving the default in place will result in incorrect credit return and doorbell behaviour. (The former `RX_FIFO_BASE` and `RX_CFG_BASE` parameters have been removed — see Section 6.)
+The Tier 2 autonomous descriptor engine is planned but absent from the current RTL. All servicing is software-mediated (Tier 1). The packet format is Tier 2 compatible; the verification suite (131 cocotb FIFO tests) is compatible with both tiers.
 
-### 11.9 Tier 2 Hardware Request Engine Not Yet Implemented
+### 11.9 Address Translator Second Port Unused
 
-The Tier 2 hardware request engine (autonomous descriptor servicing without CPU intervention) is planned but not yet part of the TideLink RTL. All transaction servicing is currently software-mediated (Tier 1). The packet format supports Tier 2 operation and the existing verification infrastructure (131 cocotb FIFO tests) is compatible with both tiers.
-
-### 11.10 Address Translator Second Port Unused
-
-`tidelink_addr_translator` is instantiated with two translation ports. The second port (`chp1_ahb_haddr_i/o`) is tied to zero input and its output is left unconnected. It is available for future extension if a second translated address region is required.
+`tidelink_addr_translator` provides two translation ports. The second port (`chp1_ahb_haddr_i/o`) is tied to zero and its output is left unconnected, available for a future second translated address region.
 
 ---
 

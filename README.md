@@ -10,7 +10,7 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
                          TideLink Instance
   ┌──────────────────────────────────────────────────────────┐
   │                                                          │
-  │  AHB Slave ──► tidelink_fifo ──► SRAM                    │
+  │  AHB Slave ──► tidelink_fifo_mem ──► SRAM                 │
   │  (packets)     (FIFO ctrl)       (cmsdk_fpga_sram)       │
   │                    │                                     │
   │                    │ read_complete / credit signals        │
@@ -28,15 +28,15 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   └──────────────────────────────────────────────────────────┘
 ```
 
-The `tidelink_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge so both the FIFO data path and the configuration registers are accessible via AHB slave ports, suitable for direct connection to an AHB bus matrix.
+The `tidelink_fifo_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge so both the FIFO data path and the configuration registers are accessible via AHB slave ports, suitable for direct connection to an AHB bus matrix.
 
 ```
-  tidelink_ahb
-  ┌────────────────────────────────────────────┐
-  │  ahbs_* ──► tidelink (FIFO data path)      │
-  │  ahbc_* ──► cmsdk_ahb_to_apb ──► APB regs  │
-  │  ahbm_* ◄── tidelink (returner master)     │
-  └────────────────────────────────────────────┘
+  tidelink_fifo_ahb
+  ┌──────────────────────────────────────────────────┐
+  │  ahbs_* ──► tidelink_fifo (FIFO data path)       │
+  │  ahbc_* ──► cmsdk_ahb_to_apb ──► APB regs        │
+  │  ahbm_* ◄── tidelink_fifo (returner master)      │
+  └──────────────────────────────────────────────────┘
 ```
 
 A typical system connects two TideLink instances back-to-back: the AHB master of one writes credit/doorbell updates into the APB-visible registers of the other. The `TIDELINK_PAIR_BASE` parameter sets the target address so all returner writes are routed automatically.
@@ -45,12 +45,12 @@ A typical system connects two TideLink instances back-to-back: the AHB master of
 
 | Module | Description |
 |--------|-------------|
-| `tidelink.sv` | Top-level wrapper. Connects the FIFO, returner, and APB register file. Derives returner target addresses from the RW pair base register. |
-| `tidelink_ahb.sv` | AHB wrapper. Instantiates `tidelink` and adds a `cmsdk_ahb_to_apb` bridge so configuration registers are accessible via a second AHB slave port (`ahbc_*`). |
-| `tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, credit accumulators, pair credit counter, and reset detection. |
-| `tidelink_fifo.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
-| `tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, credit counting. Clears `packet_word_length` on completion to prevent stale hits. |
-| `tidelink_returner.sv` | AHB Lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Uses pending registers so 1-cycle pulse interrupts are never lost, even if the returner is busy. |
+| `fifo/tidelink_fifo.sv` | Top-level FIFO wrapper. Connects the FIFO memory, returner, and APB register file. Derives returner target addresses from the RW pair base register. |
+| `fifo/tidelink_fifo_ahb.sv` | AHB wrapper. Instantiates `tidelink_fifo` and adds a `cmsdk_ahb_to_apb` bridge so configuration registers are accessible via a second AHB slave port (`ahbc_*`). |
+| `fifo/tidelink_apb_regs.sv` | APB register block. Configuration (pair base address), status, doorbell, credit accumulators, pair credit counter, and reset detection. |
+| `fifo/tidelink_fifo_mem.sv` | AHB slave FIFO interface. Wraps `tidelink_fifo_ctrl` with a CMSDK AHB-to-SRAM bridge and FPGA SRAM model. |
+| `fifo/tidelink_fifo_ctrl.sv` | FIFO control logic. Manages read/write pointers, packet metadata capture (gated on valid AHB transfers with `hready`), circular address translation, credit counting. Clears `packet_word_length` on completion to prevent stale hits. |
+| `fifo/tidelink_returner.sv` | AHB Lite master with a 3-channel priority arbiter. Performs single-beat writes when interrupt channels fire. Uses pending registers so 1-cycle pulse interrupts are never lost, even if the returner is busy. |
 
 ### Returner Channels
 
@@ -137,14 +137,18 @@ All three flags are sticky — once set, they remain asserted until cleared by F
 tidelink/
 ├── src/
 │   ├── rtl/                          # Synthesisable RTL
-│   │   ├── tidelink.sv               # Top-level wrapper
-│   │   ├── tidelink_ahb.sv           # AHB wrapper (with AHB-to-APB bridge)
-│   │   ├── tidelink_apb_regs.sv      # APB register block
-│   │   ├── tidelink_fifo.sv          # AHB slave FIFO interface
-│   │   ├── tidelink_fifo_ctrl.sv     # FIFO pointer/credit control
-│   │   ├── tidelink_returner.sv      # AHB master (3-ch arbiter + pending)
-│   │   ├── fpga/tidelink_sram.sv     # FPGA SRAM wrapper
-│   │   └── generic/tidelink_sram.sv  # Generic SRAM wrapper
+│   │   ├── tidelink_top.sv           # Top-level chiplet subsystem
+│   │   ├── tidelink_fc_adapter.sv    # FC adapter
+│   │   ├── tidelink_addr_translator.sv # Address translator
+│   │   └── fifo/                     # FIFO subsystem modules
+│   │       ├── tidelink_fifo.sv      # FIFO top-level wrapper
+│   │       ├── tidelink_fifo_ahb.sv  # AHB wrapper (with AHB-to-APB bridge)
+│   │       ├── tidelink_apb_regs.sv  # APB register block
+│   │       ├── tidelink_fifo_mem.sv  # AHB slave FIFO interface
+│   │       ├── tidelink_fifo_ctrl.sv # FIFO pointer/credit control
+│   │       ├── tidelink_returner.sv  # AHB master (3-ch arbiter + pending)
+│   │       ├── fpga/tidelink_sram.sv # FPGA SRAM wrapper
+│   │       └── generic/tidelink_sram.sv # Generic SRAM wrapper
 │   └── rdl/
 │       └── tidelink_regs.rdl         # SystemRDL register description
 ├── python/                           # Shared Python package
@@ -256,9 +260,9 @@ make help                                  # Print all available targets
 | `tidelink_fifo_ctrl` | No |
 | `tidelink_returner` | No |
 | `tidelink_apb_regs` | No |
-| `tidelink_fifo` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
-| `tidelink` | Yes (via `tidelink_fifo`) |
-| `tidelink_ahb` | Yes (via `tidelink` + `cmsdk_ahb_to_apb`) |
+| `tidelink_fifo_mem` | Yes (`cmsdk_ahb_to_sram`, `cmsdk_fpga_sram`) |
+| `tidelink_fifo` | Yes (via `tidelink_fifo_mem`) |
+| `tidelink_fifo_ahb` | Yes (via `tidelink_fifo` + `cmsdk_ahb_to_apb`) |
 
 ## PYNQ Hardware Testing
 
@@ -276,7 +280,7 @@ tl.write_packet([0xDEAD, 0xBEEF])
 credits = tl.read_credit_count()
 ```
 
-Requires a Vivado bitstream with `tidelink_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port. Update the base addresses in the test scripts to match your block design.
+Requires a Vivado bitstream with `tidelink_fifo_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port. Update the base addresses in the test scripts to match your block design.
 
 ## Contributors
 

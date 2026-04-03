@@ -25,10 +25,10 @@ Each TideLink instance handles one direction of data flow. For bidirectional com
 ## 3. Block Diagram
 
 ```
-                         TideLink Instance (tidelink.sv)
+                         TideLink Instance (tidelink_fifo.sv)
   ┌──────────────────────────────────────────────────────────────────┐
   │                                                                  │
-  │  AHB Slave ──► tidelink_fifo ──► SRAM (16 KB)                   │
+  │  AHB Slave ──► tidelink_fifo_mem ──► SRAM (16 KB)               │
   │  (packets)     ┌─────────────────────┐                           │
   │                │ tidelink_fifo_ctrl   │                           │
   │                │ - circular pointers  │                           │
@@ -56,7 +56,7 @@ Each TideLink instance handles one direction of data flow. For bidirectional com
   └──────────────────────────────────────────────────────────────────┘
 ```
 
-The `tidelink_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge, exposing three AHB ports:
+The `tidelink_fifo_ahb` wrapper adds a `cmsdk_ahb_to_apb` bridge, exposing three AHB ports:
 
 | Port | Direction | Function |
 |------|-----------|----------|
@@ -385,7 +385,7 @@ Instance A's `TIDELINK_PAIR_BASE` points to instance B's APB base, and vice vers
 
 ### 11.2 AHB Bus Matrix Connection
 
-When using `tidelink_ahb`, connect:
+When using `tidelink_fifo_ahb`, connect:
 - `ahbs_*` to the bus matrix as a slave (FIFO data window)
 - `ahbc_*` to the bus matrix as a slave (configuration registers)
 - `ahbm_*` to the bus matrix as a master (routed to the paired instance's `ahbc_*` slave port)

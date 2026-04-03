@@ -36,7 +36,7 @@ The packet word length captured from address 0 is accepted unconditionally. Soft
 
 ### 4. No AHB Error Response on Overrun/Underrun
 
-**Location**: `tidelink_fifo.sv`, `tidelink_fifo_ctrl.sv`
+**Location**: `tidelink_fifo_mem.sv`, `tidelink_fifo_ctrl.sv`
 
 When the FIFO is full (overrun) or empty (underrun), the AHB slave completes the transfer normally (`hresp=0`) and silently sets a sticky flag. The bus master receives no indication that the transfer failed.
 
@@ -96,7 +96,7 @@ Although `SYS_DATA_W` is parameterised, the SRAM byte enables are hardcoded to 4
 
 ### 10. No Hardware Flow Control on the AHB Slave
 
-**Location**: `tidelink_fifo.sv`
+**Location**: `tidelink_fifo_mem.sv`
 
 The AHB slave never asserts `hreadyout=0` to back-pressure the bus master. All flow control is software-managed (check credits before writing). A misbehaving or unaware bus master can write at full speed and cause overruns.
 

@@ -1,4 +1,4 @@
-// Cocotb wrapper for tidelink_ahb
+// Cocotb wrapper for tidelink_fifo_mem
 // Exposes AHB interface signals for cocotb to drive
 module tb_top #(
     parameter SYS_DATA_W = 32,
@@ -29,7 +29,7 @@ module tb_top #(
     wire hreadyout;
     assign hready = hreadyout;
 
-    tidelink_fifo #(
+    tidelink_fifo_mem #(
         .SYS_DATA_W(SYS_DATA_W),
         .RAM_ADDR_W(RAM_ADDR_W),
         .RAM_DATA_W(RAM_DATA_W)

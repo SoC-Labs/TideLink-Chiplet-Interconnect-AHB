@@ -15,7 +15,7 @@
 #-----------------------------------------------------------------------------
 
 set tidelink_home $::env(TIDELINK_HOME)
-set top_module    $::env(MODULE)
+set top_module    $::env(TOP)
 set flist         $::env(FLIST)
 set target_lib    $::env(TARGET_LIB)
 set link_libs     $::env(LINK_LIBS)
@@ -26,7 +26,7 @@ set rst_name      $::env(RST_NAME)
 # ── Library setup ──────────────────────────────────────────────────────────
 set_app_var target_library $target_lib
 set_app_var link_library   "* $link_libs"
-set_app_var search_path    "$tidelink_home/src/rtl"
+set_app_var search_path    "$tidelink_home/src/rtl $tidelink_home/src/rtl/fifo"
 
 # ── Read design ────────────────────────────────────────────────────────────
 set_svf ${top_module}.svf

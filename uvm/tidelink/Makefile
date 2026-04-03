@@ -77,6 +77,7 @@ VCS_COMMON += +incdir+$(UVM_HOME)
 VCS_COMMON += +incdir+$(SVT_HOME)/sverilog/include
 VCS_COMMON += +incdir+$(AMBA_HOME)/sverilog/include
 VCS_COMMON += +incdir+$(RTL_DIR)
+VCS_COMMON += +incdir+$(RTL_DIR)/fifo
 VCS_COMMON += +incdir+$(TB_DIR)
 VCS_COMMON += +incdir+$(ENV_DIR)
 VCS_COMMON += +incdir+$(AGENT_DIR)
@@ -104,12 +105,12 @@ VCS_RTL_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # DUT source (generic SRAM variant for simulation)
 VCS_RTL_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
 VCS_RTL_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_RTL_FLAGS += $(RTL_DIR)/generic/tidelink_sram.sv
-VCS_RTL_FLAGS += $(RTL_DIR)/tidelink_fifo_ctrl.sv
-VCS_RTL_FLAGS += $(RTL_DIR)/tidelink_fifo.sv
-VCS_RTL_FLAGS += $(RTL_DIR)/tidelink_returner.sv
-VCS_RTL_FLAGS += $(RTL_DIR)/tidelink_apb_regs.sv
-VCS_RTL_FLAGS += $(RTL_DIR)/tidelink.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ctrl.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_mem.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_returner.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_apb_regs.sv
+VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo.sv
 
 # ---------------------------------------------------------------
 # Gate-level-specific compile flags

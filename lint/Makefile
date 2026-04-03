@@ -11,6 +11,13 @@ STANDALONE_MODULES = tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs
 # Modules requiring CMSDK IP (cmsdk_ahb_to_sram, cmsdk_fpga_sram)
 CMSDK_MODULES = tidelink_fifo tidelink
 
+# ── Module-to-top mapping ────────────────────────────────────────
+# Flist basenames and SV module names diverge after the FIFO rename.
+# MODULE selects the flist; TOP selects the elaboration top.
+TOP_tidelink          = tidelink_fifo
+TOP_tidelink_fifo     = tidelink_fifo_mem
+TOP ?= $(or $(TOP_$(MODULE)),$(MODULE))
+
 # ── Paths ─────────────────────────────────────────────────────────
 FLIST   = $(TIDELINK_HOME)/flist/$(MODULE).flist
 LOGFILE = $(MODULE)_hal.log
@@ -21,7 +28,7 @@ RPTFILE = $(MODULE)_hal_report.txt
 HAL       = hal
 HAL_FLAGS = -64bit \
             -sv \
-            -top $(MODULE) \
+            -top $(TOP) \
             -check ALL_RTL \
             -logfile $(LOGFILE) \
             -xmlfile $(XMLFILE) \

@@ -1,17 +1,29 @@
 # TideLink GitLab CI Pipeline
-# Runs HAL lint, cocotb regression, xprop formal, and RTL Architect synthesis exploration
+# Runs HAL lint, cocotb regression, UVM regression, new module tests,
+# system-level stress tests, and coverage merging.
+#
+# Stages:
+#   1. setup      - Clone repo, validate tool paths
+#   2. lint       - HAL lint on FIFO and new modules
+#   3. regression - Existing cocotb (131 tests) and UVM (4 tests)
+#   4. new_module - New cocotb and UVM tests for fc_adapter, top, integration
+#   5. system     - System-level stress tests (cocotb + UVM)
+#   6. coverage   - Merge VCS coverage from all runs
+#   7. pages      - Dashboard generation
+#   8. cleanup    - Remove workspace
 
 stages:
   - setup
   - lint
   - regression
-  - synthesis
-  # - gate-level
+  - new_module
+  - system
+  - coverage
   - pages
   - cleanup
 
 variables:
-  # Disable GitLab's built-in checkout — we clone manually
+  # Disable GitLab's built-in checkout -- we clone manually
   GIT_STRATEGY: none
   # Workspace directory for the pipeline
   WORK_DIR: "${CI_BUILDS_DIR}/${CI_PROJECT_NAME}/${CI_PIPELINE_ID}"
@@ -19,16 +31,24 @@ variables:
   VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
   VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
   RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12
+  VIP_HOME: /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
-  # ARM CMSDK — uses ARM_IP_LIBRARY_PATH env var set on runner
+  # ARM CMSDK -- configurable via CI variable
   CMSDK_DIR: "/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0"
   # Simulator selection for cocotb
   SIM: vcs
-  # License server (update as needed)
-  # SNPSLMD_LICENSE_FILE: "port@license-server"
+  # Pip cache directory for faster installs
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
 
-# ── Clone ────────────────────────────────────────────────────────────────
+cache:
+  key: pip-${CI_COMMIT_REF_SLUG}
+  paths:
+    - .pip-cache/
+
+# ============================================================================
+# Stage 1: Setup
+# ============================================================================
 
 clone:
   stage: setup
@@ -38,8 +58,6 @@ clone:
     - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch "$CI_REPOSITORY_URL" "$WORK_DIR"
     - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA"
     - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
-
-# ── Preflight — validate all tool/IP paths before running jobs ────────
 
 preflight:
   stage: setup
@@ -78,25 +96,25 @@ preflight:
       }
 
       echo ""
-      echo "── EDA Tools ───────────────────────────"
+      echo "-- EDA Tools ----------------------------"
       check_dir "VCS_HOME"      "$VCS_HOME"
       check_dir "VERDI_HOME"    "$VERDI_HOME"
       check_dir "XCELIUM_HOME"  "$XCELIUM_HOME"
-      check_dir "RTLA_HOME"     "$RTLA_HOME"
+      check_dir "VIP_HOME"      "$VIP_HOME"
 
       echo ""
-      echo "── IP Libraries ────────────────────────"
+      echo "-- IP Libraries -------------------------"
       check_dir "CMSDK_DIR"                    "$CMSDK_DIR"
       check_dir "CMSDK cmsdk_ahb_to_sram"      "$CMSDK_DIR/logical/cmsdk_ahb_to_sram"
       check_dir "CMSDK fpga_sram model"         "$CMSDK_DIR/logical/models/memories"
 
       echo ""
-      echo "── Workspace ───────────────────────────"
+      echo "-- Workspace ----------------------------"
       check_dir "WORK_DIR"      "$WORK_DIR"
 
       echo ""
-      echo "── Tool Binaries (with PATH set) ───────"
-      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$RTLA_HOME/bin:$PATH"
+      echo "-- Tool Binaries (with PATH set) --------"
+      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
       check_bin "vcs"             "vcs"
       check_bin "hal"             "hal"
       check_bin "python3"         "python3"
@@ -114,7 +132,9 @@ preflight:
         exit 1
       fi
 
-# ── Lint ─────────────────────────────────────────────────────────────────
+# ============================================================================
+# Stage 2: Lint
+# ============================================================================
 
 hal-lint:
   stage: lint
@@ -123,11 +143,13 @@ hal-lint:
     - xcelium
   before_script:
     - export PATH="$XCELIUM_HOME/tools/bin:$PATH"
-    # Set TIDELINK_HOME to the cloned work directory
     - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "HAL version:" && hal -version 2>&1 | head -1
+    # Lint all standalone FIFO modules (no CMSDK dependency)
     - make -C "$WORK_DIR/lint" lint-standalone
+    # Lint CMSDK-dependent modules (tidelink_fifo, tidelink)
+    - make -C "$WORK_DIR/lint" lint-each
   after_script:
     - cp -r "$WORK_DIR/lint/"*_hal.log "$WORK_DIR/lint/"*_hal.xml . 2>/dev/null || true
   artifacts:
@@ -137,23 +159,38 @@ hal-lint:
       - "*_hal.xml"
     expire_in: 30 days
 
-# ── Verification ─────────────────────────────────────────────────────────
+# ============================================================================
+# Stage 3: Existing Tests (regression)
+# ============================================================================
+
+# -- Common before_script templates ------------------------------------------
+
+.vcs_cocotb_setup: &vcs_cocotb_setup
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+    - export TIDELINK_HOME="$WORK_DIR"
+    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+    - python3 -m pip install --user cocotb cocotbext-ahb --quiet
+
+.vcs_uvm_setup: &vcs_uvm_setup
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - export CMSDK_DIR="$CMSDK_DIR"
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export DESIGNWARE_HOME="$VIP_HOME"
 
 cocotb-regression:
   stage: regression
   needs: [clone, preflight]
   tags:
     - vcs
-  before_script:
-    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    - export CMSDK_DIR="$CMSDK_DIR"
-    # Set TIDELINK_HOME to the cloned work directory
-    - export TIDELINK_HOME="$WORK_DIR"
+  <<: *vcs_cocotb_setup
   script:
     - echo "Python version:" && python3 --version
     - echo "cocotb version:" && python3 -m cocotb --version || cocotb-config --version
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+    # Run all 131 existing cocotb tests with coverage
     - make -C "$WORK_DIR/cocotb" coverage
   after_script:
     - mkdir -p cocotb
@@ -164,37 +201,35 @@ cocotb-regression:
         cp "$WORK_DIR/cocotb/$env/results.xml"   "cocotb/$env/" 2>/dev/null || true;
       done
     - cp -r "$WORK_DIR/cocotb/coverage_report" cocotb/ 2>/dev/null || true
+    # Collect VDB coverage databases for final merge
+    - mkdir -p coverage_vdbs/cocotb
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair; do
+        cp -r "$WORK_DIR/cocotb/$env/coverage.vdb" "coverage_vdbs/cocotb/${env}.vdb" 2>/dev/null || true;
+        cp -r "$WORK_DIR/cocotb/$env/sim_build/simv.vdb" "coverage_vdbs/cocotb/${env}_simv.vdb" 2>/dev/null || true;
+      done
   artifacts:
     when: always
     paths:
       - cocotb/*/run.log
       - cocotb/*/.result
       - cocotb/coverage_report/
+      - coverage_vdbs/cocotb/
     reports:
       junit:
         - cocotb/*/results.xml
     expire_in: 30 days
-
-# ── UVM Regression ──────────────────────────────────────────────────────
 
 uvm-regression:
   stage: regression
   needs: [clone, preflight]
   tags:
     - vcs
-  allow_failure: true   # Report failures but don't gate subsequent stages
-  before_script:
-    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    - export CMSDK_DIR="$CMSDK_DIR"
-    - export TIDELINK_HOME="$WORK_DIR"
-    - export DESIGNWARE_HOME="$VIP_HOME"
-  variables:
-    VIP_HOME: /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+  <<: *vcs_uvm_setup
   script:
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-    # Compile once, then run all tests (results go into sim_build/*.log)
+    # Run all 4 existing UVM tests
     - make -C "$WORK_DIR/uvm/tidelink" run_all || true
-    # Convert UVM logs to JUnit XML (exit code = number of failures)
+    # Convert UVM logs to JUnit XML
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink/sim_build"
         "$WORK_DIR/uvm/tidelink/results.xml"
@@ -202,8 +237,11 @@ uvm-regression:
     - mkdir -p uvm/tidelink
     - cp "$WORK_DIR/uvm/tidelink/results.xml"         uvm/tidelink/ 2>/dev/null || true
     - cp "$WORK_DIR/uvm/tidelink/sim_build/"*.log      uvm/tidelink/ 2>/dev/null || true
+    # Collect VDB coverage databases for final merge
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink.vdb" 2>/dev/null || true
+    # Write result summary
     - |
-      # Write a .result summary for dashboard integration
       if grep -q 'failures="0"' uvm/tidelink/results.xml 2>/dev/null; then
         echo "PASS" > uvm/tidelink/.result
       else
@@ -214,170 +252,260 @@ uvm-regression:
     paths:
       - uvm/tidelink/*.log
       - uvm/tidelink/.result
+      - coverage_vdbs/uvm/
     reports:
       junit:
         - uvm/tidelink/results.xml
     expire_in: 30 days
 
-# ── Formal X-propagation (disabled — vc_formal not installed) ──────────
+# ============================================================================
+# Stage 4: New Module Tests
+# ============================================================================
 
-# xprop-regression:
-#   stage: regression
-#   needs: [clone, preflight]
-#   tags:
-#     - vc_formal
-#   before_script:
-#     - export PATH="$VC_FORMAL_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-#     - export CMSDK_DIR="$CMSDK_DIR"
-#     - export TIDELINK_HOME="$WORK_DIR"
-#   script:
-#     - echo "VC Formal version:" && vc_formal -version 2>&1 | head -3 || true
-#     - make -C "$WORK_DIR/formal" standalone
-#   after_script:
-#     - mkdir -p formal
-#     - for env in tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs; do
-#         mkdir -p "formal/$env";
-#         cp "$WORK_DIR/formal/$env/run.log"            "formal/$env/" 2>/dev/null || true;
-#         cp "$WORK_DIR/formal/$env/.result"             "formal/$env/" 2>/dev/null || true;
-#         cp "$WORK_DIR/formal/$env/xprop.log"           "formal/$env/" 2>/dev/null || true;
-#         cp "$WORK_DIR/formal/$env/xprop_results.rpt"   "formal/$env/" 2>/dev/null || true;
-#         cp "$WORK_DIR/formal/$env/xprop_summary.rpt"   "formal/$env/" 2>/dev/null || true;
-#       done
-#   artifacts:
-#     when: always
-#     paths:
-#       - formal/*/run.log
-#       - formal/*/.result
-#       - formal/*/xprop.log
-#       - formal/*/xprop_results.rpt
-#       - formal/*/xprop_summary.rpt
-#     expire_in: 30 days
-
-# ── RTL SAIF Generation ─────────────────────────────────────────────────
-
-rtl-saif:
-  stage: regression
+cocotb-fc-adapter:
+  stage: new_module
   needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running 24 cocotb tidelink_fc_adapter tests"
+    - cd "$WORK_DIR/cocotb/tidelink_fc_adapter" && COVERAGE=1 make
+  after_script:
+    - mkdir -p cocotb/tidelink_fc_adapter
+    - cp "$WORK_DIR/cocotb/tidelink_fc_adapter/results.xml"   cocotb/tidelink_fc_adapter/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_fc_adapter/run.log"       cocotb/tidelink_fc_adapter/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/cocotb
+    - cp -r "$WORK_DIR/cocotb/tidelink_fc_adapter/coverage.vdb" "coverage_vdbs/cocotb/tidelink_fc_adapter.vdb" 2>/dev/null || true
+    - cp -r "$WORK_DIR/cocotb/tidelink_fc_adapter/sim_build/simv.vdb" "coverage_vdbs/cocotb/tidelink_fc_adapter_simv.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_fc_adapter/
+      - coverage_vdbs/cocotb/
+    reports:
+      junit:
+        - cocotb/tidelink_fc_adapter/results.xml
+    expire_in: 30 days
+
+cocotb-top:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running 14 cocotb tidelink_top tests"
+    - cd "$WORK_DIR/cocotb/tidelink_top" && COVERAGE=1 make
+  after_script:
+    - mkdir -p cocotb/tidelink_top
+    - cp "$WORK_DIR/cocotb/tidelink_top/results.xml"   cocotb/tidelink_top/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_top/run.log"       cocotb/tidelink_top/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/cocotb
+    - cp -r "$WORK_DIR/cocotb/tidelink_top/coverage.vdb" "coverage_vdbs/cocotb/tidelink_top.vdb" 2>/dev/null || true
+    - cp -r "$WORK_DIR/cocotb/tidelink_top/sim_build/simv.vdb" "coverage_vdbs/cocotb/tidelink_top_simv.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_top/
+      - coverage_vdbs/cocotb/
+    reports:
+      junit:
+        - cocotb/tidelink_top/results.xml
+    expire_in: 30 days
+
+uvm-fc-adapter:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running 5 UVM tidelink_fc_adapter tests"
+    - make -C "$WORK_DIR/uvm/tidelink_fc_adapter" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_fc_adapter/sim_build"
+        "$WORK_DIR/uvm/tidelink_fc_adapter/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_fc_adapter
+    - cp "$WORK_DIR/uvm/tidelink_fc_adapter/results.xml"      uvm/tidelink_fc_adapter/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_fc_adapter/sim_build/"*.log   uvm/tidelink_fc_adapter/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_fc_adapter/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_fc_adapter.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_fc_adapter/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_fc_adapter/results.xml
+    expire_in: 30 days
+
+uvm-integration:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running 3 UVM tidelink_integration tests"
+    - make -C "$WORK_DIR/uvm/tidelink_integration" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_integration/sim_build"
+        "$WORK_DIR/uvm/tidelink_integration/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_integration
+    - cp "$WORK_DIR/uvm/tidelink_integration/results.xml"      uvm/tidelink_integration/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_integration/sim_build/"*.log   uvm/tidelink_integration/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_integration/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_integration.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_integration/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_integration/results.xml
+    expire_in: 30 days
+
+# ============================================================================
+# Stage 5: System Tests
+# ============================================================================
+
+cocotb-system:
+  stage: system
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running 25 cocotb tidelink_system stress tests"
+    - cd "$WORK_DIR/cocotb/tidelink_system" && COVERAGE=1 make
+  after_script:
+    - mkdir -p cocotb/tidelink_system
+    - cp "$WORK_DIR/cocotb/tidelink_system/results.xml"   cocotb/tidelink_system/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_system/run.log"       cocotb/tidelink_system/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/cocotb
+    - cp -r "$WORK_DIR/cocotb/tidelink_system/coverage.vdb" "coverage_vdbs/cocotb/tidelink_system.vdb" 2>/dev/null || true
+    - cp -r "$WORK_DIR/cocotb/tidelink_system/sim_build/simv.vdb" "coverage_vdbs/cocotb/tidelink_system_simv.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_system/
+      - coverage_vdbs/cocotb/
+    reports:
+      junit:
+        - cocotb/tidelink_system/results.xml
+    expire_in: 30 days
+
+uvm-system:
+  stage: system
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running 12 UVM tidelink_system tests"
+    - make -C "$WORK_DIR/uvm/tidelink_system" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_system/sim_build"
+        "$WORK_DIR/uvm/tidelink_system/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_system
+    - cp "$WORK_DIR/uvm/tidelink_system/results.xml"      uvm/tidelink_system/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_system/sim_build/"*.log   uvm/tidelink_system/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_system/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_system.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_system/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_system/results.xml
+    expire_in: 30 days
+
+# ============================================================================
+# Stage 6: Coverage Merge
+# ============================================================================
+
+coverage-merge:
+  stage: coverage
+  needs:
+    - job: clone
+    - job: cocotb-regression
+      artifacts: true
+    - job: uvm-regression
+      artifacts: true
+    - job: cocotb-fc-adapter
+      artifacts: true
+    - job: cocotb-top
+      artifacts: true
+    - job: uvm-fc-adapter
+      artifacts: true
+    - job: uvm-integration
+      artifacts: true
+    - job: cocotb-system
+      artifacts: true
+    - job: uvm-system
+      artifacts: true
   tags:
     - vcs
   before_script:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    - export CMSDK_DIR="$CMSDK_DIR"
-    # Set TIDELINK_HOME to the cloned work directory
-    - export TIDELINK_HOME="$WORK_DIR"
   script:
-    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
-    - make -C "$WORK_DIR/cocotb/tidelink" sim_rtl_saif
-  after_script:
-    - mkdir -p cocotb/tidelink
-    - cp "$WORK_DIR/cocotb/tidelink/switching_activity.saif" cocotb/tidelink/ 2>/dev/null || true
-  artifacts:
-    when: always
-    paths:
-      - cocotb/tidelink/switching_activity.saif
-    expire_in: 30 days
-
-# ── RTL Architect ────────────────────────────────────────────────────────
-
-rtl-architect:
-  stage: synthesis
-  needs: [clone, preflight]
-  tags:
-    - rtl_architect
-  before_script:
-    - export PATH="$RTLA_HOME/bin:$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    # Set TIDELINK_HOME to the cloned work directory
-    - export TIDELINK_HOME="$WORK_DIR"
-  script:
-    - echo "RTL Architect version:" && rtl_shell -version 2>&1 | head -3
-    - make -C "$WORK_DIR/syn/asic/rtl-architect" ra MODULE=tidelink
-  after_script:
-    - mkdir -p syn/asic/rtl-architect
-    - cp -r "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra_reports" syn/asic/rtl-architect/ 2>/dev/null || true
-    - cp    "$WORK_DIR/syn/asic/rtl-architect/tidelink_ra.log"     syn/asic/rtl-architect/ 2>/dev/null || true
-    - cp -r "$WORK_DIR/syn/asic/rtl-architect/RTLA_WORK/rpts_fc"    syn/asic/rtl-architect/rpts_fc/ 2>/dev/null || true
-    - cp -r "$WORK_DIR/syn/asic/rtl-architect/RTLA_WORK/logs_rtl"  syn/asic/rtl-architect/logs_rtl/ 2>/dev/null || true
-  artifacts:
-    when: always
-    paths:
-      - syn/asic/rtl-architect/tidelink_ra_reports/
-      - syn/asic/rtl-architect/tidelink_ra.log
-      - syn/asic/rtl-architect/rpts_fc/
-      - syn/asic/rtl-architect/logs_rtl/
-    expire_in: 30 days
-
-design-compiler:
-  stage: synthesis
-  needs:
-    - job: clone
-    - job: preflight
-    - job: rtl-saif
-      artifacts: true
-  tags:
-    - design_compiler
-  before_script:
-    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-    # Set TIDELINK_HOME to the cloned work directory
-    - export TIDELINK_HOME="$WORK_DIR"
-  script:
-    - echo "DC version:" && { dc_shell -version 2>&1 | head -3 || true; }
     - |
-      export SAIF_FILE="$(pwd)/cocotb/tidelink/switching_activity.saif"
-      if [ -f "$SAIF_FILE" ]; then
-        echo "SAIF file found — activity-based power enabled"
-      else
-        echo "WARNING — no SAIF file, using statistical power"
-        unset SAIF_FILE
+      echo "========================================"
+      echo " Merging VCS Coverage Databases"
+      echo "========================================"
+
+      # Collect all VDB directories that exist
+      VDB_DIRS=""
+      for vdb in coverage_vdbs/cocotb/*.vdb coverage_vdbs/uvm/*.vdb; do
+        if [ -d "$vdb" ]; then
+          VDB_DIRS="$VDB_DIRS -dir $vdb"
+          echo "  Found: $vdb"
+        fi
+      done
+
+      if [ -z "$VDB_DIRS" ]; then
+        echo "WARNING: No VDB coverage databases found. Skipping merge."
+        exit 0
       fi
-      make -C "$WORK_DIR/syn/asic/design-compiler" syn_asic MODULE=tidelink
-  after_script:
-    - mkdir -p syn/asic/design-compiler
-    - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_dc_reports" syn/asic/design-compiler/ 2>/dev/null || true
-    - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_dc_output"  syn/asic/design-compiler/ 2>/dev/null || true
-    - cp    "$WORK_DIR/syn/asic/design-compiler/tidelink_dc.log"     syn/asic/design-compiler/ 2>/dev/null || true
+
+      echo ""
+      echo "-- Merging all databases ----------------"
+      urg -full64 $VDB_DIRS \
+        -report merged_coverage_report \
+        -format both \
+        -metric line+cond+fsm+tgl+branch \
+        2>&1 | grep -E 'Note|Error|Warning' || true
+
+      echo ""
+      echo "-- Coverage Summary ---------------------"
+      if [ -f merged_coverage_report/dashboard.txt ]; then
+        cat merged_coverage_report/dashboard.txt
+      else
+        echo "  (dashboard.txt not found)"
+      fi
+
+      echo ""
+      echo "Coverage report: merged_coverage_report/dashboard.html"
   artifacts:
     when: always
     paths:
-      - syn/asic/design-compiler/tidelink_dc_reports/
-      - syn/asic/design-compiler/tidelink_dc_output/
-      - syn/asic/design-compiler/tidelink_dc.log
+      - merged_coverage_report/
+    expose_as: "Merged Coverage Report"
     expire_in: 30 days
 
-# ── Gate-Level Simulation ──────────────────────────────────────────────
-
-# gate-level-sim:
-#   stage: gate-level
-#   needs:
-#     - job: clone
-#     - job: preflight
-#     - job: design-compiler
-#       artifacts: true
-#   tags:
-#     - vcs
-#   before_script:
-#     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
-#     - export CMSDK_DIR="$CMSDK_DIR"
-#     # Set TIDELINK_HOME to the cloned work directory
-#     - export TIDELINK_HOME="$WORK_DIR"
-#     # Copy DC netlist output into the working tree so the filelist can find it
-#     - cp -r syn/asic/design-compiler/tidelink_dc_output "$WORK_DIR/syn/asic/design-compiler/"
-#   script:
-#     - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
-#     - make -C "$WORK_DIR/cocotb/tidelink" sim_asic
-#   after_script:
-#     - mkdir -p cocotb/tidelink
-#     - cp "$WORK_DIR/cocotb/tidelink/run.log"      cocotb/tidelink/ 2>/dev/null || true
-#     - cp "$WORK_DIR/cocotb/tidelink/results.xml"   cocotb/tidelink/ 2>/dev/null || true
-#   artifacts:
-#     when: always
-#     paths:
-#       - cocotb/tidelink/run.log
-#     reports:
-#       junit:
-#         - cocotb/tidelink/results.xml
-#     expire_in: 30 days
-
-# ── Dashboard ──────────────────────────────────────────────────────────
+# ============================================================================
+# Stage 7: Dashboard
+# ============================================================================
 
 dashboard:
   stage: pages
@@ -388,10 +516,21 @@ dashboard:
       artifacts: true
     - job: uvm-regression
       artifacts: true
-    - job: design-compiler
+    - job: cocotb-fc-adapter
+      artifacts: true
+    - job: cocotb-top
+      artifacts: true
+    - job: uvm-fc-adapter
+      artifacts: true
+    - job: uvm-integration
+      artifacts: true
+    - job: cocotb-system
+      artifacts: true
+    - job: uvm-system
+      artifacts: true
+    - job: coverage-merge
       artifacts: true
   script:
-    - export DC_REPORT_DIR="syn/asic/design-compiler/tidelink_dc_reports"
     - export PYTHONPATH="$WORK_DIR/ci:$PYTHONPATH"
     # Generate HTML dashboard (artifact)
     - python3 "$WORK_DIR/ci/generate_dashboard.py"
@@ -399,7 +538,6 @@ dashboard:
     - export WIKI_OUTPUT_DIR="$(mktemp -d)"
     - python3 "$WORK_DIR/ci/generate_wiki.py"
     - |
-      WIKI_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}.wiki.git"
       WIKI_PUSH_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.wiki.git"
       WIKI_DIR="$(mktemp -d)/wiki-repo"
 
@@ -407,7 +545,7 @@ dashboard:
       if git clone "$WIKI_PUSH_URL" "$WIKI_DIR" 2>/dev/null; then
         echo "Wiki repo cloned"
       else
-        echo "Wiki repo does not exist yet — initialising"
+        echo "Wiki repo does not exist yet -- initialising"
         mkdir -p "$WIKI_DIR"
         cd "$WIKI_DIR" && git init && git remote add origin "$WIKI_PUSH_URL"
       fi
@@ -418,7 +556,7 @@ dashboard:
       cd "$WIKI_DIR"
       git add CI-Dashboard.md
       if git diff --cached --quiet; then
-        echo "No changes to wiki — skipping push"
+        echo "No changes to wiki -- skipping push"
       else
         git config user.name "CI Bot"
         git config user.email "ci@tidelink.soclabs.org"
@@ -432,7 +570,9 @@ dashboard:
     expire_in: 30 days
   when: always
 
-# ── Cleanup ──────────────────────────────────────────────────────────────
+# ============================================================================
+# Stage 8: Cleanup
+# ============================================================================
 
 cleanup:
   stage: cleanup

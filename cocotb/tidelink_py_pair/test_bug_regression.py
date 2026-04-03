@@ -179,7 +179,7 @@ async def test_bug4_hit_fires_on_wrong_direction(dut):
     await RisingEdge(dut.hclk)
     await FallingEdge(dut.hclk)
     try:
-        w_hit = int(dut.u_dut.u_fifo.u_fifo_ctrl.write_complete.value)
+        w_hit = int(dut.u_dut.u_fifo_mem.u_fifo_ctrl.write_complete.value)
     except ValueError:
         w_hit = 0
 

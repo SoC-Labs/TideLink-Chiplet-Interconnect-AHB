@@ -1,4 +1,4 @@
-"""Cocotb testbench for tidelink_ahb (AHB wrapper with AHB-to-APB bridge).
+"""Cocotb testbench for tidelink_fifo_ahb (AHB wrapper with AHB-to-APB bridge).
 
 Exercises APB configuration registers over the AHB config slave port (ahbc_*)
 using cocotbext-ahb AHBLiteMaster.  Replicates a subset of the py_pair tests
@@ -32,7 +32,7 @@ PAIR_DOORBELL_RESPONSE_ADDR = PAIR_DOORBELL_RESPONSE_OFFSET
 # ── Testbench Environment ────────────────────────────────────────────────────
 
 class TidelinkAhbTB:
-    """Reusable testbench for tidelink_ahb.
+    """Reusable testbench for tidelink_fifo_ahb.
 
     Provides:
       - ahb_fifo:   AHBLiteMaster on the ahbs_* FIFO data port
@@ -117,7 +117,7 @@ class TidelinkAhbTB:
             dut.ahbs_haddr.value  = addr
             await RisingEdge(dut.hclk)
             try:
-                hit = int(dut.u_dut.u_tidelink.u_fifo.u_fifo_ctrl.write_complete.value)
+                hit = int(dut.u_dut.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.write_complete.value)
             except ValueError:
                 hit = 0
             dut.ahbs_hwdata.value = word
@@ -153,7 +153,7 @@ class TidelinkAhbTB:
         dut.ahbs_haddr.value  = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
-        pkt_len = int(dut.u_dut.u_tidelink.u_fifo.packet_word_length_out.value)
+        pkt_len = int(dut.u_dut.u_tidelink_fifo.u_fifo_mem.packet_word_length_out.value)
         self.log.info(f"{prefix}Read length = {pkt_len}")
 
         hit_fired = False
@@ -168,7 +168,7 @@ class TidelinkAhbTB:
             dut.ahbs_haddr.value  = addr
             await RisingEdge(dut.hclk)
             try:
-                hit = int(dut.u_dut.u_tidelink.u_fifo.read_complete.value)
+                hit = int(dut.u_dut.u_tidelink_fifo.u_fifo_mem.read_complete.value)
             except ValueError:
                 hit = 0
             dut.ahbs_htrans.value = 0
@@ -196,7 +196,7 @@ class TidelinkAhbTB:
     async def wait_returner_idle(self, timeout_cycles: int = 20):
         for _ in range(timeout_cycles):
             await RisingEdge(self.dut.hclk)
-            if not int(self.dut.u_dut.u_tidelink.returner_busy.value):
+            if not int(self.dut.u_dut.u_tidelink_fifo.returner_busy.value):
                 return
         raise TimeoutError("Returner still busy after timeout")
 

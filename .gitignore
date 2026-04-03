@@ -17,6 +17,7 @@ verdiLog
 __pycache__
 *.pyc
 .vscode
+.claude
 
 # Coverage Files
 .coverage

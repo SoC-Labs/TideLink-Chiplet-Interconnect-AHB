@@ -1,7 +1,7 @@
-"""Cocotb testbench for tidelink_ahb.
+"""Cocotb testbench for tidelink_fifo_mem.
 
 Uses cocotbext-ahb AHBLiteMaster to drive AHB transactions against the
-tidelink_ahb wrapper (cmsdk_ahb_to_sram + cmsdk_fpga_sram with FIFO
+tidelink_fifo_mem wrapper (cmsdk_ahb_to_sram + cmsdk_fpga_sram with FIFO
 address translation).
 
 Packet format (written starting at haddr=0):

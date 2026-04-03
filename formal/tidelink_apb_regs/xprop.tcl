@@ -5,7 +5,7 @@
 # ── Analyze design ──────────────────────────────────────────────────────────
 set TIDELINK_HOME [file normalize [file dirname [info script]]/../..]
 
-analyze -format sverilog ${TIDELINK_HOME}/src/rtl/tidelink_apb_regs.sv
+analyze -format sverilog ${TIDELINK_HOME}/src/rtl/fifo/tidelink_apb_regs.sv
 
 # ── Elaborate ───────────────────────────────────────────────────────────────
 elaborate -top tidelink_apb_regs \

@@ -50,7 +50,7 @@ module tb_top #(
     output logic                    packet_committed_irq
 );
 
-    tidelink #(
+    tidelink_fifo #(
         .SYS_ADDR_W       (SYS_ADDR_W),
         .SYS_DATA_W       (SYS_DATA_W),
         .RAM_ADDR_W       (RAM_ADDR_W),

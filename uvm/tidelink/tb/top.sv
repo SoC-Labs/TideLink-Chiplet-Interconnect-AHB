@@ -90,11 +90,11 @@ module test_top;
 
   // Gate-level netlists have no parameters; RTL uses parameterised instantiation
 `ifdef GATE_SIM
-  tidelink u_dut (
+  tidelink_fifo u_dut (
     .hclk               (clk),
     .hresetn             (rst_n),
 `else
-  tidelink #(
+  tidelink_fifo #(
     .SYS_ADDR_W         (32),
     .SYS_DATA_W         (32),
     .RAM_ADDR_W         (14),

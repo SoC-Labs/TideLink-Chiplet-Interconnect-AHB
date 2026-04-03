@@ -13,12 +13,12 @@ analyze -format verilog \
     ${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v
 
 analyze -format sverilog \
-    ${TIDELINK_HOME}/src/rtl/fpga/tidelink_sram.sv \
-    ${TIDELINK_HOME}/src/rtl/tidelink_fifo_ctrl.sv \
-    ${TIDELINK_HOME}/src/rtl/tidelink_fifo.sv
+    ${TIDELINK_HOME}/src/rtl/fifo/fpga/tidelink_sram.sv \
+    ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ctrl.sv \
+    ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_mem.sv
 
 # ── Elaborate ───────────────────────────────────────────────────────────────
-elaborate -top tidelink_fifo \
+elaborate -top tidelink_fifo_mem \
     -parameter SYS_DATA_W 32 \
     -parameter RAM_ADDR_W 14 \
     -parameter RAM_DATA_W 32

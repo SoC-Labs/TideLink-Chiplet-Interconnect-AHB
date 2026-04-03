@@ -8,20 +8,20 @@ system-level tests required to fully verify the design.
 
 TideLink is a credit-based FIFO interface for two cooperating SoCs. Each
 instance contains:
-- **AHB Slave FIFO** (`tidelink_fifo` + `tidelink_fifo_ctrl`): circular
+- **AHB Slave FIFO** (`tidelink_fifo_mem` + `tidelink_fifo_ctrl`): circular
   buffer with pointer management, packet metadata capture, and credit counting.
 - **AHB Master Returner** (`tidelink_returner`): 3-channel priority
   arbiter that sends credit updates to the paired TideLink.
 - **APB Register Interface** (`tidelink_apb_regs`): configuration, status,
   doorbell, credit accumulators, pair credit counter, and reset detection.
-- **AHB Wrapper** (`tidelink_ahb`): wraps `tidelink` with a `cmsdk_ahb_to_apb`
+- **AHB Wrapper** (`tidelink_fifo_ahb`): wraps `tidelink_fifo` with a `cmsdk_ahb_to_apb`
   bridge so configuration registers are accessible via a second AHB slave port.
 
 ## Test Suites
 
 ### 1. tidelink_fifo (FIFO Control Unit Tests) — 33 tests
 
-Tests target `tidelink_fifo` which wraps `tidelink_fifo_ctrl` with
+Tests target `tidelink_fifo_mem` which wraps `tidelink_fifo_ctrl` with
 `cmsdk_ahb_to_sram` and `cmsdk_fpga_sram`.
 
 | ID     | Test Name                             | Description                                                                 | Status   |

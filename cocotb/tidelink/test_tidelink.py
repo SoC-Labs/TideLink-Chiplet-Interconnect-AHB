@@ -172,7 +172,7 @@ class TidelinkTB:
             await RisingEdge(dut.hclk)
             # Sample write_complete before idling the bus (combinational signal)
             try:
-                hit = int(dut.u_dut.u_fifo.u_fifo_ctrl.write_complete.value)
+                hit = int(dut.u_dut.u_fifo_mem.u_fifo_ctrl.write_complete.value)
             except ValueError:
                 hit = 0
             dut.ahbs_hwdata.value = word
@@ -209,7 +209,7 @@ class TidelinkTB:
         dut.ahbs_haddr.value  = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
-        pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
+        pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
         self.log.info(f"{prefix}Read length = {pkt_len}")
 
         hit_fired = False
@@ -225,7 +225,7 @@ class TidelinkTB:
             await RisingEdge(dut.hclk)
             # Sample read_complete before idling the bus (combinational signal)
             try:
-                hit = int(dut.u_dut.u_fifo.read_complete.value)
+                hit = int(dut.u_dut.u_fifo_mem.read_complete.value)
             except ValueError:
                 hit = 0
             dut.ahbs_htrans.value = 0
@@ -1335,7 +1335,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
     dut.ahbs_haddr.value  = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
+    pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
 
     for i in range(pkt_len):
         addr = (i + 1) * 4
@@ -1443,7 +1443,7 @@ async def test_cov_12_master_error_flag(dut):
     dut.ahbs_haddr.value  = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    pkt_len = int(dut.u_dut.u_fifo.packet_word_length.value)
+    pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
     for i in range(pkt_len):
         addr = (i + 1) * 4
         await RisingEdge(dut.hclk)

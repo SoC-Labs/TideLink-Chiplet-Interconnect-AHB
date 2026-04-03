@@ -10,8 +10,8 @@ TideLink is a credit-based FIFO interconnect for transferring variable-length pa
 
 | Wrapper | Use When |
 |---------|----------|
-| `tidelink.sv` | Your system already has an APB bus for register access |
-| `tidelink_ahb.sv` | You need all interfaces on AHB (includes an AHB-to-APB bridge for registers) |
+| `fifo/tidelink_fifo.sv` | Your system already has an APB bus for register access |
+| `fifo/tidelink_fifo_ahb.sv` | You need all interfaces on AHB (includes an AHB-to-APB bridge for registers) |
 
 ### Selecting an SRAM Variant
 
@@ -28,7 +28,7 @@ Include the appropriate file list for your target:
 At instantiation, set the pair base address to point at the paired TideLink's register space:
 
 ```verilog
-tidelink_ahb #(
+tidelink_fifo_ahb #(
     .TIDELINK_PAIR_BASE (32'h5000_1000)  // Paired instance's APB base
 ) u_tidelink_tx (
     .hclk       (hclk),
@@ -322,4 +322,4 @@ credits = tl.read_credit_count()
 tl.doorbell()
 ```
 
-Requires a Vivado bitstream with `tidelink_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port.
+Requires a Vivado bitstream with `tidelink_fifo_ahb` connected via `axi_ahblite_bridge` to the Zynq PS AXI GP port.

@@ -17,7 +17,7 @@
 #-----------------------------------------------------------------------------
 
 set tidelink_home $::env(TIDELINK_HOME)
-set top_module    $::env(MODULE)
+set top_module    $::env(TOP)
 set flist         $::env(FLIST)
 set target_lib    $::env(TARGET_LIB)
 set link_libs     $::env(LINK_LIBS)

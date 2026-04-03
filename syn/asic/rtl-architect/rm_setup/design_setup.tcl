@@ -23,7 +23,7 @@ set DESIGN_NAME                 "$::env(MODULE)"
 set LIBRARY_SUFFIX              ""
 set DESIGN_LIBRARY              "${DESIGN_NAME}${LIBRARY_SUFFIX}"
 set TECHLIB_DATA_DIR            ""
-set SUPPLEMENTAL_SEARCH_PATH    "$::env(TIDELINK_HOME)/src/rtl"
+set SUPPLEMENTAL_SEARCH_PATH    "$::env(TIDELINK_HOME)/src/rtl $::env(TIDELINK_HOME)/src/rtl/fifo"
 
 ##########################################################################################
 ### BLOCK LABEL NAMES

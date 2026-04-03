@@ -1,0 +1,3 @@
+[submodule "deps/axi-chiplet-controller"]
+	path = deps/axi-chiplet-controller
+	url = https://git.soton.ac.uk/soclabs/chiplets/axi-chiplet-controller.git

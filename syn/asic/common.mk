@@ -3,18 +3,25 @@
 
 export TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 
-# ── CMSDK path ─────────────────────────────────────────────────────────────
+# ── CMSDK path ─────────────────��─────────────────────────���─────────────────
 # ARM Cortex-M System Design Kit (required for cmsdk_ahb_to_sram)
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/BP210/BP210-BU-00000-r1p1-00rel0
 
-# ── Target module ──────────────────────────────────────────────────────────
+# ── Target module ──────────────────────────────────���───────────────────────
 export MODULE ?= tidelink
 
-# ── File lists ─────────────────────────────────────────────────────────────
+# ── Module-to-top mapping ──────────────────────��──────────────────────────
+# Flist basenames and SV module names diverge after the FIFO rename.
+# MODULE selects the flist; TOP selects the elaboration top.
+TOP_tidelink      = tidelink_fifo
+TOP_tidelink_fifo = tidelink_fifo_mem
+export TOP := $(or $(TOP_$(MODULE)),$(MODULE))
+
+# ── File lists ───────────────────────────────────────────────��─────────────
 export FLIST := $(TIDELINK_HOME)/flist/$(MODULE).flist
 export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 
-# ── Cell libraries (update paths to match your PDK installation) ───────────
+# ── Cell libraries (update paths to match your PDK installation) ───────��───
 # Target library (.db) — used for mapping and optimization
 # export TARGET_LIB     ?= /eda/pdk/example/std_cell.db
 # Defaultly using the 65nm Library
@@ -36,7 +43,7 @@ export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
 export TF_FILE        ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/sc12_tech.tf
 export MW_REF_LIB     ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/milkyway/1p9m_6x2z/sc12_cln65lp_base_rvt
 
-# ── RTLA Reference Methodology ────────────────────────────────────────────
+# ── RTLA Reference Methodology ──────���─────────────────���───────────────────
 export RTLA_RM_PATH   ?= /research/synopsys/RTLA-RM_U-2022.12
 
 # ── Multi-corner .db libraries (for RTLA CLIB on-the-fly creation) ────────
@@ -48,11 +55,11 @@ export DB_FF          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m
 export TLUPLUS_PATH   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/synopsys_tluplus/1p9m_6x2z
 export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
 
-# ── Design constraints ─────────────────────────────────────────────────────
+# ── Design constraints ─────────────────────────��───────────────────────────
 export CLK_NAME        ?= hclk
 export CLK_PERIOD      ?= 4.0
 export CLK_UNCERTAINTY ?= 0.35
 export RST_NAME        ?= hresetn
 
-# ── Available modules ──────────────────────────────────────────────────────
+# ── Available modules ───────────��──────────────────────────────────────────
 MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs

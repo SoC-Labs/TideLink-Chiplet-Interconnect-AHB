@@ -1,4 +1,4 @@
-// Cocotb wrapper for tidelink_ahb (AHB wrapper with AHB-to-APB bridge)
+// Cocotb wrapper for tidelink_fifo_ahb (AHB wrapper with AHB-to-APB bridge)
 // Exposes three AHB interfaces:
 //   ahbs_* — FIFO data path (driven by cocotbext AHBLiteMaster)
 //   ahbc_* — Config registers via AHB-to-APB bridge (driven by second AHBLiteMaster)
@@ -59,7 +59,7 @@ module tb_top #(
     wire ahbc_hreadyout;
     assign ahbc_hready = ahbc_hreadyout;
 
-    tidelink_ahb #(
+    tidelink_fifo_ahb #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W),
         .RAM_ADDR_W (RAM_ADDR_W),

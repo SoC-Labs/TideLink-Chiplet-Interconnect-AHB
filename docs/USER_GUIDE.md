@@ -297,6 +297,139 @@ cd cocotb/tidelink_fifo
 make gui    # Opens Verdi with simulation database
 ```
 
+## PTP Clock Synchronisation
+
+TideLink includes a PTP subsystem (`tidelink_ptp.sv`) for precision clock synchronisation between chiplets. It uses a two-message protocol (SYNC + DELAY_REQ) with hardware timestamp capture for low-jitter time transfer. See `docs/PTP_PROTOCOL.md` for the full protocol specification.
+
+### PTP Ports
+
+The PTP subsystem adds the following ports to `tidelink_top`:
+
+| Port | Direction | Description |
+|------|-----------|-------------|
+| `ahb_ptp_hsel` | Input | AHB slave select for PTP writes |
+| `ahb_ptp_haddr` | Input | AHB address |
+| `ahb_ptp_htrans` | Input | AHB transfer type |
+| `ahb_ptp_hwrite` | Input | AHB write enable |
+| `ahb_ptp_hwdata` | Input | AHB write data (msg_type in [35:32], payload in [31:0]) |
+| `ahb_ptp_hready` | Input | AHB ready input |
+| `ahb_ptp_hreadyout` | Output | AHB ready output |
+| `ahb_ptp_hrdata` | Output | AHB read data (PTP_RX_PAYLOAD) |
+| `phc_hw_capture` | Output | One-cycle pulse to PHC hw_capture input |
+| `ptp_irq` | Output | Interrupt: PTP RX packet received |
+
+### PHC Initialisation
+
+Before using PTP, initialise the PTP Hardware Clock:
+
+```
+1. Write nominal nanosecond increment to PHC NS_INCR register
+   (e.g. 0x8 for 125 MHz clock = 8 ns per cycle)
+2. Write sub-nanosecond fractional increment to PHC NS_INCR_FRAC register
+   (e.g. 0x0 for exact integer period)
+3. (Optional) Set initial time via PHC SET_TIME registers
+4. Enable PHC: write 1 to PHC CTRL.EN
+```
+
+### PTP Initialisation
+
+```
+1. Write 1 to PTP_CTRL (APB offset 0x034) to enable the PTP subsystem
+2. Enable ptp_irq in the system interrupt controller
+```
+
+### Triggering a SYNC Exchange
+
+**On the Grandmaster side:**
+
+```
+1. Write to the PTP AHB slave with msg_type=0x0 (SYNC)
+   → tidelink_ptp waits for tx_router_idle
+   → hw_capture fires (t1 captured in PHC HW_CAP registers)
+   → SYNC packet sent via PTP FC node
+
+2. Wait for ptp_irq (DELAY_REQ received from Subordinate)
+   → t4 captured automatically in PHC HW_CAP registers
+
+3. Read t1 and t4 from PHC HW_CAP registers:
+   - HW_CAP_SEC_HI  (0x040)
+   - HW_CAP_SEC_LO  (0x044)
+   - HW_CAP_NS      (0x048)
+   - HW_CAP_NS_FRAC (0x04C)
+   Note: read t1 before DELAY_REQ arrives to avoid overwrite,
+   or use Option B second capture bank if available
+
+4. Send t1 to Subordinate via mailbox FIFO (Path 2) or AHB bridge (Path 1)
+```
+
+**On the Subordinate side:**
+
+```
+1. Wait for ptp_irq (SYNC received from Grandmaster)
+   → t2 captured automatically in PHC HW_CAP registers
+
+2. Read t2 from PHC HW_CAP registers (0x040-0x04C)
+
+3. Write to the PTP AHB slave with msg_type=0x1 (DELAY_REQ)
+   → tidelink_ptp waits for tx_router_idle
+   → hw_capture fires (t3 captured in PHC HW_CAP registers)
+   → DELAY_REQ packet sent via PTP FC node
+
+4. Read t3 from PHC HW_CAP registers (0x040-0x04C)
+
+5. Receive t1 from Grandmaster (via mailbox FIFO or AHB bridge)
+```
+
+### Computing Offset and Delay
+
+With all four timestamps available on the Subordinate:
+
+```
+offset = ((t2 - t1) - (t4 - t3)) / 2
+delay  = ((t2 - t1) + (t4 - t3)) / 2
+```
+
+- `offset` > 0 means the Subordinate clock is ahead of the Grandmaster
+- `delay` is the one-way propagation delay through the die-to-die link
+
+### Adjusting the PHC for Clock Discipline
+
+**Phase correction (large offset):**
+```
+Write corrected time to PHC SET_TIME registers
+```
+
+**Frequency steering (small offset, steady state):**
+```
+Adjust PHC NS_INCR_FRAC register:
+  - Subordinate behind → increase NS_INCR_FRAC (speed up clock)
+  - Subordinate ahead  → decrease NS_INCR_FRAC (slow down clock)
+```
+
+A proportional-integral (PI) controller is recommended for the servo loop. Typical exchange intervals are 100 ms to 1 s depending on required accuracy.
+
+### PTP Interrupt Handling
+
+The `ptp_irq` interrupt fires when the PTP FC RX path receives a packet:
+
+```
+ptp_irq handler:
+  1. Read PTP_STATUS (APB offset 0x03C)
+     - Bit 0: RX packet available
+     - Bit 1: TX busy (waiting for tx_router_idle)
+  2. Read PTP_RX_PAYLOAD (APB offset 0x038) for received msg_type and payload
+  3. Read PHC HW_CAP registers for the captured timestamp
+  4. Signal the software PTP state machine
+```
+
+### PTP Register Summary
+
+| Offset | Name | Access | Description |
+|--------|------|--------|-------------|
+| 0x034 | PTP_CTRL | RW | Bit 0: PTP enable |
+| 0x038 | PTP_RX_PAYLOAD | RO | Last received PTP payload [31:0] |
+| 0x03C | PTP_STATUS | RO | Bit 0: RX available, Bit 1: TX busy |
+
 ## PYNQ Hardware Testing
 
 For Pynq-Z2 boards with TideLink synthesised into the FPGA fabric:

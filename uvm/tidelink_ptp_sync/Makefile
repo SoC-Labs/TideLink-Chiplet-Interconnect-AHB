@@ -1,12 +1,9 @@
 ###############################################################################
-# Makefile for TideLink Top System (Full tidelink_top Paired) UVM Testbench
+# Makefile for TideLink PTP Sync UVM Testbench
 ###############################################################################
-# Tests two complete tidelink_top modules connected back-to-back via PHY pad
-# crossover, exercising the full chiplet communication stack including:
-#   - TideLink FIFO + FC adapter
-#   - XHB500 AHB<->AXI bridges
-#   - Wlink chiplet controller with GPIO PHY
-#   - Address translator
+# Verifies that two chiplets with independent PHCs can synchronise via
+# TideLink PTP exchanges, and that clock recovery works after intentional
+# desynchronisation.
 #
 # Targets:
 #   make run TEST=<test_name>   - Compile and run a specific test
@@ -34,16 +31,21 @@ TEST_DIR     = $(CURDIR)/tests
 # Shared agents and sequences from existing testbenches
 UNIT_UVM_DIR = $(PROJ_HOME)/uvm/tidelink
 INT_UVM_DIR  = $(PROJ_HOME)/uvm/tidelink_integration
+TOP_UVM_DIR  = $(PROJ_HOME)/uvm/tidelink_top_system
 AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
+TOP_SEQ_DIR  = $(TOP_UVM_DIR)/sequences
 
 # CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb)
 CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
 
-# XHB500 generated bridge directories (set by 'source ../../set_env.sh')
+# XHB500 generated bridge directories
 XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
 XHB500_SLV_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_slv
 XHB500_MST_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_mst
+
+# PTP Hardware Clock path
+PHC_DIR     ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb/src/rtl
 
 # Simulation output
 SIM_DIR      = sim_build
@@ -53,7 +55,7 @@ COV_DIR      = coverage_report
 export DESIGNWARE_HOME := $(VIP_HOME)
 
 # Default test
-TEST        ?= test_top_single_packet
+TEST        ?= test_initial_offset
 SEED        ?= random
 VERBOSITY   ?= UVM_MEDIUM
 
@@ -89,6 +91,7 @@ VCS_FLAGS += +incdir+$(ENV_DIR)
 VCS_FLAGS += +incdir+$(AGENT_DIR)
 VCS_FLAGS += +incdir+$(SEQ_DIR)
 VCS_FLAGS += +incdir+$(INT_SEQ_DIR)
+VCS_FLAGS += +incdir+$(TOP_SEQ_DIR)
 VCS_FLAGS += +incdir+$(TEST_DIR)
 
 # VIP source search paths
@@ -128,13 +131,18 @@ VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ahb.sv
 # TideLink FC Adapter RTL
 VCS_FLAGS += $(RTL_DIR)/tidelink_fc_adapter.sv
 
-# TideLink PTP (register pass-through)
+# TideLink PTP
 VCS_FLAGS += $(RTL_DIR)/tidelink_ptp.sv
 
 # TideLink Address Translator
 VCS_FLAGS += $(RTL_DIR)/tidelink_addr_translator.sv
 
-# XHB500 AHB-to-AXI bridge (subordinate path — chiplet_slv)
+# PTP Hardware Clock (external dependency)
+VCS_FLAGS += +incdir+$(PHC_DIR)
+VCS_FLAGS += -y $(PHC_DIR)
+VCS_FLAGS += +libext+.sv+.v
+
+# XHB500 AHB-to-AXI bridge (subordinate path)
 VCS_FLAGS += $(XHB500_SLV_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice.sv
 VCS_FLAGS += $(XHB500_SLV_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_reverse_regd_slice_rst_empty.sv
 VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.sv
@@ -146,7 +154,7 @@ VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/veri
 VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core.sv
 VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv.sv
 
-# XHB500 AXI-to-AHB bridge (manager path — chiplet_mst)
+# XHB500 AXI-to-AHB bridge (manager path)
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_or.sv
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_xor.sv
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_flop.sv
@@ -167,7 +175,6 @@ VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/veri
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
 
 # Wlink chiplet controller (Chisel-generated Verilog, GPIO PHY + TideLink)
-# Use -y to pick up all sub-modules (APBFanout, WlinkTxRouter, etc.)
 VCS_FLAGS += -y $(DEPS_DIR)/wav-wlink-hw/output_tidelink_gpio
 VCS_FLAGS += +libext+.v
 
@@ -206,19 +213,10 @@ endif
 # ---------------------------------------------------------------
 # Test suite
 # ---------------------------------------------------------------
-TESTS = test_top_single_packet \
-        test_top_bidirectional \
-        test_top_back_to_back \
-        test_top_max_packet \
-        test_top_credit_exhaustion \
-        test_top_reset_recovery \
-        test_top_long_running \
-        test_top_mixed_traffic
-
-# AHB passthrough hangs: Wlink AXI FC target not accepting from XHB500.
-# Needs Wlink AXI FC path initialization (future work).
-# Run separately: make run TEST=test_top_ahb_passthrough
-TESTS_EXPERIMENTAL = test_top_ahb_passthrough
+TESTS = test_initial_offset \
+        test_frequency_drift \
+        test_step_change \
+        test_long_term_stability
 
 # ---------------------------------------------------------------
 # Targets
@@ -236,24 +234,15 @@ help:
 	@echo "  make clean                      - Remove all build artifacts"
 	@echo ""
 	@echo "Available tests:"
-	@echo "  test_top_single_packet     - Single packet A->B through full Wlink stack"
-	@echo "  test_top_bidirectional     - Simultaneous bidirectional packets"
-	@echo "  test_top_back_to_back      - Rapid-fire packets through Wlink"
-	@echo "  test_top_max_packet        - Maximum-size (256-word) packet"
-	@echo "  test_top_credit_exhaustion - Exhaust credits, verify recovery"
-	@echo "  test_top_ahb_passthrough   - AHB regular access via XHB500+Wlink"
-	@echo "  test_top_reset_recovery    - Flush/re-init, verify clean operation"
-	@echo "  test_top_long_running      - 100+ packets, check for drift"
-	@echo "  test_top_mixed_traffic     - Concurrent TideLink FIFO + AHB passthrough"
+	@echo "  test_initial_offset        - PHC_B starts +1us offset, servo converges"
+	@echo "  test_frequency_drift       - PHC_B at +100ppm, servo adjusts NS_INCR_FRAC"
+	@echo "  test_step_change           - +10us step mid-test, servo recovers"
+	@echo "  test_long_term_stability   - 10000 exchanges at +50ppm, bounded residual"
 	@echo ""
 	@echo "Variables:"
-	@echo "  TEST=<name>                       - Test to run (default: test_top_single_packet)"
+	@echo "  TEST=<name>                       - Test to run (default: test_initial_offset)"
 	@echo "  SEED=<value|random>               - Random seed (default: random)"
 	@echo "  VERBOSITY=<UVM_NONE|...|UVM_DEBUG>- UVM verbosity (default: UVM_MEDIUM)"
-	@echo "  SOCLABS_NANOSOC_TECH_DIR=<path>   - Path to nanosoc-chiplet-tech (for XHB500)"
-	@echo ""
-	@echo "Before running, source the environment setup:"
-	@echo "  source ../../set_env.sh"
 
 compile: | $(SIM_DIR)
 	$(VCS) $(VCS_FLAGS)

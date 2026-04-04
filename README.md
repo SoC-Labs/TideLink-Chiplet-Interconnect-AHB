@@ -6,8 +6,9 @@ TideLink solves a fundamental problem: **AHB is a blocking protocol** that canno
 
 - **Path 1 — Transparent AHB bridge**: For control-plane access, configuration writes, and direct memory-mapped reads. Uses XHB500 → AXI → Wlink → AXI → XHB500. Reads block the bus (acceptable for short config accesses).
 - **Path 2 — Mailbox packet FIFO**: For bulk data and latency-sensitive traffic. A dedicated Wlink FC node carries packets directly between paired FIFOs, bypassing AXI entirely. The CPU writes a descriptor packet to a local TX aperture and is immediately free — no bus stalling.
+- **Path 3 — PTP subsystem**: For precision clock synchronisation between chiplets. A dedicated high-priority FC node (data_id=0xa2, 48-bit) carries two-message PTP exchanges (SYNC + DELAY_REQ) with hardware timestamp capture at the FC handshake boundary. Idle gating of the TX link layer eliminates transmit-side jitter. Integrates a PTP Hardware Clock (PHC) for nanosecond-resolution timekeeping.
 
-Both paths share a single GPIO PHY and are independently flow-controlled, so mailbox traffic cannot starve transparent AHB traffic (and vice versa).
+All three paths share a single GPIO PHY and are independently flow-controlled, so mailbox traffic cannot starve transparent AHB traffic (and vice versa).
 
 A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 
@@ -33,10 +34,17 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   │  │  tidelink_fifo_ahb (FIFO + APB regs + returner)│                 │
   │  └─────────────────────────────────────────────────┘                 │
   │                                                                      │
+  │  AHB Slave 4: PTP subsystem (tidelink_ptp)                           │
+  │  ┌─────────────────────────────────────────────────────┐                 │
+  │  │  tidelink_ptp → PTP FC node (data_id=0xa2) ────────│──► Wlink       │
+  │  │  + PHC (hw_capture) + idle gating                   │     highest    │
+  │  └─────────────────────────────────────────────────────┘     TX prio    │
+  │                                                                      │
   │  AHB Master: Incoming from remote (via Wlink → XHB500)              │
   │                                                                      │
   │  Internal: FC adapter RX → FIFO mux / Config mux                    │
   │  Internal: Returner → FC sideband (credit/doorbell over link)       │
+  │  Internal: PTP FC RX → hw_capture + ptp_irq                         │
   └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,6 +66,7 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
 | `tidelink_top.sv` | Chiplet subsystem wrapper. Integrates all components below. |
 | `tidelink_fc_adapter.sv` | AHB ↔ Wlink FC bridge. TX path (AHB slave → FC TX), RX path (FC RX → split AHB masters for FIFO + config), returner interception (AHB master → FC sideband). |
 | `tidelink_addr_translator.sv` | APB-configurable address remapping for the transparent AHB bridge path. |
+| `tidelink_ptp.sv` | PTP subsystem. Idle-gated FC TX/RX, PHC hw_capture generation, AHB slave for software-initiated exchanges. |
 
 ### FIFO Subsystem (`src/rtl/fifo/`)
 
@@ -135,12 +144,15 @@ tidelink/
 │   ├── tidelink_py_pair/            # Paired credit flow tests (19)
 │   ├── tidelink_fc_adapter/         # FC adapter unit tests (24)
 │   ├── tidelink_top/                # Loopback integration tests (14)
-│   └── tidelink_system/             # Paired system stress tests (25)
+│   ├── tidelink_system/             # Paired system stress tests (25)
+│   └── tidelink_ptp/               # PTP subsystem tests
 ├── uvm/                             # UVM verification (4 environments)
 │   ├── tidelink/                    # FIFO UVM env (4 tests)
 │   ├── tidelink_fc_adapter/         # FC adapter UVM env (5 tests)
 │   ├── tidelink_integration/        # Loopback UVM env (3 tests)
-│   └── tidelink_system/             # Paired system UVM env (12 tests, vplan)
+│   ├── tidelink_system/             # Paired system UVM env (12 tests, vplan)
+│   ├── tidelink_ptp_stress/         # PTP jitter characterisation UVM env
+│   └── tidelink_ptp_sync/          # PTP convergence UVM env
 ├── flist/                           # Synopsys file lists per module
 ├── syn/asic/                        # ASIC synthesis (Design Compiler, RTL Architect)
 ├── formal/                          # Formal verification (xprop)
@@ -149,7 +161,8 @@ tidelink/
 │   ├── TIDELINK_SPECIFICATION.md    # Full specification and design justification
 │   ├── SPECIFICATION.md             # Hardware register specification
 │   ├── USER_GUIDE.md                # Integration and operation guide
-│   └── SHORTCOMINGS.md              # Known limitations
+│   ├── SHORTCOMINGS.md              # Known limitations
+│   └── PTP_PROTOCOL.md             # PTP protocol specification
 └── .gitlab-ci.yml                   # CI pipeline (9 stages, 16 jobs)
 ```
 
@@ -160,6 +173,7 @@ tidelink/
 | ARM CMSDK | Arm Academic Access | `cmsdk_ahb_to_sram`, `cmsdk_ahb_to_apb`, `cmsdk_apb_slave_mux`, `cmsdk_fpga_sram` |
 | ARM XHB500 | Arm Academic Access | AHB ↔ AXI bridges (transparent bridge path) |
 | Wlink | `deps/axi-chiplet-controller/` | D2D link layer, FC nodes, GPIO PHY |
+| PHC | `deps/ptp-hardware-clock-ahb/` | PTP Hardware Clock with hw_capture support |
 | VCS | Synopsys | Simulation |
 | cocotb + cocotbext-ahb | pip | Verification |
 
@@ -203,6 +217,7 @@ The GitLab CI pipeline runs 9 stages:
 | AXI (5 channels) | 0x08–0x1b | 0x80–0x84 | 101b | AXI4 AW/W/B/AR/R |
 | GeneralBus | 0x40–0x43 | 0xa0 | 32b | Edge-triggered bus |
 | **TideLink** | **0x44–0x47** | **0xa1** | **48b** | Streaming valid/ready |
+| **TideLink PTP** | **0x48–0x4b** | **0xa2** | **48b** | PTP timestamp exchange (highest TX priority) |
 
 ## Reference Integration
 

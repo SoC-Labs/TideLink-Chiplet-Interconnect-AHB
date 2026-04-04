@@ -202,9 +202,9 @@ module test_top;
   assign tb_if.poresetn = poresetn;
 
   // ---------------------------------------------------------------
-  // PHY pad crossover: A TX -> B RX, B TX -> A RX (GPIO: 1 lane)
+  // PHY pad crossover: A TX -> B RX, B TX -> A RX (8-lane GPIO)
   // ---------------------------------------------------------------
-  localparam NUM_PHY_LANES = 1;
+  localparam NUM_PHY_LANES = 8;
 
   wire                       a_pad_clk_tx, b_pad_clk_tx;
   wire [NUM_PHY_LANES-1:0]   a_pad_tx, b_pad_tx;

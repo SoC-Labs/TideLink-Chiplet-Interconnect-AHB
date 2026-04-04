@@ -1,0 +1,313 @@
+// -----------------------------------------------------------------------------
+// SoCLabs PTP Hardware Clock Register Description (SystemRDL 2.0)
+//
+// Describes the APB register map for the phc_apb_regs module in the
+// ptp-hardware-clock-ahb IP. Covers the full 110-bit IEEE 1588-compatible
+// timestamp counter, capture registers, alarm, interrupts, and the
+// hardware capture extension (HW_CAP_*) for TideLink PTP integration.
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap phc_regs #(longint unsigned DEFAULT_NS_INCR = 4) {
+    name = "PTP Hardware Clock APB Register Map";
+    desc = "Configuration, status, capture, and alarm registers for the PHC
+            (PTP Hardware Clock). The timestamp counter maintains 48-bit seconds,
+            30-bit nanoseconds, and 32-bit sub-nanosecond fractional parts
+            (110 bits total). The address space is split into three regions:
+            Region 0 (0x000-0x01F) for core configuration,
+            Region 1 (0x020-0x03F) for capture and alarm,
+            Region 2 (0x040-0x04F) for hardware-triggered capture registers.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // Region 0: Core Configuration (paddr[6:5] = 00)
+    // =========================================================================
+
+    reg ctrl_reg {
+        name = "Control";
+        desc = "Clock enable, time set, and capture control.";
+
+        field {} en[1] = 0;
+        en->sw = rw;
+        en->hw = r;
+        en->desc = "Clock enable. 1 = counter increments each cycle.
+                    0 = counter frozen, PPS output forced low.";
+
+        field {} set_time[1] = 0;
+        set_time->sw = rw;
+        set_time->hw = r;
+        set_time->singlepulse;
+        set_time->desc = "Write 1 to atomically load SET_SECONDS_LO/HI and
+                         SET_NANOSECONDS into the running counter. Sub-nanosecond
+                         accumulator is cleared to zero. Self-clearing.";
+
+        field {} capture[1] = 0;
+        capture->sw = rw;
+        capture->hw = r;
+        capture->singlepulse;
+        capture->desc = "Write 1 to atomically latch the current {seconds,
+                        nanoseconds, sub_nanoseconds} into the CAP_* registers
+                        (Region 1, offsets 0x020-0x02C). Self-clearing.
+                        See also hw_capture for hardware-triggered capture.";
+    };
+    ctrl_reg ctrl @ 0x000;
+
+    reg status_reg {
+        name = "Status";
+        desc = "Read-only clock status and sticky flags.";
+
+        field {} running[1] = 0;
+        running->sw = r;
+        running->hw = w;
+        running->desc = "Mirror of ctrl.en. 1 = counter is running.";
+
+        field {} pps_sticky[1] = 0;
+        pps_sticky->sw = r;
+        pps_sticky->hw = w;
+        pps_sticky->desc = "Sticky PPS flag. Set when the counter rolls over a
+                           second boundary (nanoseconds wraps past 999,999,999).
+                           Cleared on read of this register (read-to-clear).";
+
+        field {} alarm_hit[1] = 0;
+        alarm_hit->sw = r;
+        alarm_hit->hw = w;
+        alarm_hit->desc = "Combinational alarm match. 1 when alarm_arm is set
+                          AND seconds == alarm_seconds AND nanoseconds >=
+                          alarm_nanoseconds. Deasserts when alarm_arm clears
+                          (manually or via auto_disarm).";
+    };
+    status_reg status @ 0x004;
+
+    reg ns_incr_reg {
+        name = "NS Increment";
+        desc = "Integer nanosecond increment applied to the counter each clock
+                cycle. Set to match the clock period: 4 for 250 MHz, 5 for
+                200 MHz, 10 for 100 MHz.";
+
+        field {} ns_incr[8] = DEFAULT_NS_INCR;
+        ns_incr->sw = rw;
+        ns_incr->hw = r;
+    };
+    ns_incr_reg ns_incr @ 0x008;
+
+    reg ns_incr_frac_reg {
+        name = "NS Increment Fractional";
+        desc = "Sub-nanosecond fractional increment accumulator. Each cycle,
+                this value is added to the 32-bit sub-nanosecond register.
+                When the sub-nanosecond register overflows (carry out), an
+                extra nanosecond is added to the nanosecond counter. This
+                provides fine-grained frequency adjustment for PTP servo loops.
+                For example, at 250 MHz with ns_incr=4 and ns_incr_frac=
+                0x80000000, the effective increment is 4.5 ns per cycle.";
+
+        field {} ns_incr_frac[32] = 0;
+        ns_incr_frac->sw = rw;
+        ns_incr_frac->hw = r;
+    };
+    ns_incr_frac_reg ns_incr_frac @ 0x00C;
+
+    reg set_seconds_lo_reg {
+        name = "Set Seconds Low";
+        desc = "Lower 32 bits of the 48-bit seconds value to load when
+                ctrl.set_time is written.";
+
+        field {} set_seconds_lo[32] = 0;
+        set_seconds_lo->sw = rw;
+        set_seconds_lo->hw = r;
+    };
+    set_seconds_lo_reg set_seconds_lo @ 0x010;
+
+    reg set_seconds_hi_reg {
+        name = "Set Seconds High";
+        desc = "Upper 16 bits of the 48-bit seconds value to load when
+                ctrl.set_time is written.";
+
+        field {} set_seconds_hi[16] = 0;
+        set_seconds_hi->sw = rw;
+        set_seconds_hi->hw = r;
+    };
+    set_seconds_hi_reg set_seconds_hi @ 0x014;
+
+    reg set_nanoseconds_reg {
+        name = "Set Nanoseconds";
+        desc = "30-bit nanosecond value (0-999,999,999) to load when
+                ctrl.set_time is written.";
+
+        field {} set_nanoseconds[30] = 0;
+        set_nanoseconds->sw = rw;
+        set_nanoseconds->hw = r;
+    };
+    set_nanoseconds_reg set_nanoseconds @ 0x018;
+
+    reg int_en_reg {
+        name = "Interrupt Enable";
+        desc = "Interrupt enable flags. Each bit gates the corresponding
+                combinational interrupt output.";
+
+        field {} pps_irq_en[1] = 0;
+        pps_irq_en->sw = rw;
+        pps_irq_en->hw = r;
+        pps_irq_en->desc = "1 = enable pps_irq output (pps_sticky AND pps_irq_en).";
+
+        field {} alarm_irq_en[1] = 0;
+        alarm_irq_en->sw = rw;
+        alarm_irq_en->hw = r;
+        alarm_irq_en->desc = "1 = enable alarm_irq output (alarm_hit AND alarm_irq_en).";
+    };
+    int_en_reg int_en @ 0x01C;
+
+    // =========================================================================
+    // Region 1: Software Capture and Alarm (paddr[6:5] = 01)
+    // =========================================================================
+
+    reg cap_seconds_lo_reg {
+        name = "Captured Seconds Low";
+        desc = "Lower 32 bits of seconds latched by ctrl.capture or hw_capture.";
+
+        field {} cap_seconds_lo[32] = 0;
+        cap_seconds_lo->sw = r;
+        cap_seconds_lo->hw = w;
+    };
+    cap_seconds_lo_reg cap_seconds_lo @ 0x020;
+
+    reg cap_seconds_hi_reg {
+        name = "Captured Seconds High";
+        desc = "Upper 16 bits of seconds latched by ctrl.capture or hw_capture.";
+
+        field {} cap_seconds_hi[16] = 0;
+        cap_seconds_hi->sw = r;
+        cap_seconds_hi->hw = w;
+    };
+    cap_seconds_hi_reg cap_seconds_hi @ 0x024;
+
+    reg cap_nanoseconds_reg {
+        name = "Captured Nanoseconds";
+        desc = "30-bit nanoseconds latched by ctrl.capture or hw_capture.";
+
+        field {} cap_nanoseconds[30] = 0;
+        cap_nanoseconds->sw = r;
+        cap_nanoseconds->hw = w;
+    };
+    cap_nanoseconds_reg cap_nanoseconds @ 0x028;
+
+    reg cap_ns_frac_reg {
+        name = "Captured Sub-Nanoseconds";
+        desc = "32-bit sub-nanosecond fractional part latched by ctrl.capture
+                or hw_capture. Provides sub-nanosecond timestamp resolution
+                when read alongside cap_nanoseconds.";
+
+        field {} cap_ns_frac[32] = 0;
+        cap_ns_frac->sw = r;
+        cap_ns_frac->hw = w;
+    };
+    cap_ns_frac_reg cap_ns_frac @ 0x02C;
+
+    reg alarm_seconds_lo_reg {
+        name = "Alarm Seconds Low";
+        desc = "Lower 32 bits of the 48-bit alarm match seconds value.";
+
+        field {} alarm_seconds_lo[32] = 0;
+        alarm_seconds_lo->sw = rw;
+        alarm_seconds_lo->hw = r;
+    };
+    alarm_seconds_lo_reg alarm_seconds_lo @ 0x030;
+
+    reg alarm_seconds_hi_reg {
+        name = "Alarm Seconds High";
+        desc = "Upper 16 bits of the 48-bit alarm match seconds value.";
+
+        field {} alarm_seconds_hi[16] = 0;
+        alarm_seconds_hi->sw = rw;
+        alarm_seconds_hi->hw = r;
+    };
+    alarm_seconds_hi_reg alarm_seconds_hi @ 0x034;
+
+    reg alarm_nanoseconds_reg {
+        name = "Alarm Nanoseconds";
+        desc = "30-bit alarm match nanoseconds. Alarm fires when seconds match
+                AND nanoseconds >= this value.";
+
+        field {} alarm_nanoseconds[30] = 0;
+        alarm_nanoseconds->sw = rw;
+        alarm_nanoseconds->hw = r;
+    };
+    alarm_nanoseconds_reg alarm_nanoseconds @ 0x038;
+
+    reg alarm_ctrl_reg {
+        name = "Alarm Control";
+        desc = "Arm and auto-disarm control for the alarm comparator.";
+
+        field {} arm[1] = 0;
+        arm->sw = rw;
+        arm->hw = rw;
+        arm->desc = "1 = alarm comparator enabled. When alarm_hit fires and
+                     auto_disarm=1, this bit is cleared by hardware.";
+
+        field {} auto_disarm[1] = 0;
+        auto_disarm->sw = rw;
+        auto_disarm->hw = r;
+        auto_disarm->desc = "1 = automatically clear arm on the cycle after
+                            alarm_hit asserts. Prevents repeated alarm firing.";
+    };
+    alarm_ctrl_reg alarm_ctrl @ 0x03C;
+
+    // =========================================================================
+    // Region 2: Hardware Capture Registers (paddr[6:5] = 10)
+    //
+    // Dedicated capture registers for the hw_capture input. These are
+    // independent of the software-triggered CAP_* registers in Region 1,
+    // preventing contention between PTP hardware captures and software
+    // diagnostic captures.
+    // =========================================================================
+
+    reg hw_cap_seconds_lo_reg {
+        name = "HW Captured Seconds Low";
+        desc = "Lower 32 bits of seconds latched by hw_capture only. Independent
+                of the Region 1 CAP_* registers. Used by TideLink PTP to read
+                timestamps captured at FC TX/RX handshake moments.";
+
+        field {} hw_cap_seconds_lo[32] = 0;
+        hw_cap_seconds_lo->sw = r;
+        hw_cap_seconds_lo->hw = w;
+    };
+    hw_cap_seconds_lo_reg hw_cap_seconds_lo @ 0x040;
+
+    reg hw_cap_seconds_hi_reg {
+        name = "HW Captured Seconds High";
+        desc = "Upper 16 bits of seconds latched by hw_capture only.";
+
+        field {} hw_cap_seconds_hi[16] = 0;
+        hw_cap_seconds_hi->sw = r;
+        hw_cap_seconds_hi->hw = w;
+    };
+    hw_cap_seconds_hi_reg hw_cap_seconds_hi @ 0x044;
+
+    reg hw_cap_nanoseconds_reg {
+        name = "HW Captured Nanoseconds";
+        desc = "30-bit nanoseconds latched by hw_capture only.";
+
+        field {} hw_cap_nanoseconds[30] = 0;
+        hw_cap_nanoseconds->sw = r;
+        hw_cap_nanoseconds->hw = w;
+    };
+    hw_cap_nanoseconds_reg hw_cap_nanoseconds @ 0x048;
+
+    reg hw_cap_ns_frac_reg {
+        name = "HW Captured Sub-Nanoseconds";
+        desc = "32-bit sub-nanosecond fractional part latched by hw_capture only.";
+
+        field {} hw_cap_ns_frac[32] = 0;
+        hw_cap_ns_frac->sw = r;
+        hw_cap_ns_frac->hw = w;
+    };
+    hw_cap_ns_frac_reg hw_cap_ns_frac @ 0x04C;
+};

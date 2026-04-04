@@ -37,6 +37,10 @@ variables:
   XCELIUM_HOME: /eda/cadence/xcelium
   # ARM CMSDK -- configurable via CI variable
   CMSDK_DIR: "/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0"
+  # PTP Hardware Clock (separate component, cloned for PTP tests)
+  PHC_REPO: "https://git.soton.ac.uk/soclabs/chiplets/ptp-hardware-clock-ahb.git"
+  PHC_BRANCH: "main"
+  PHC_DIR: "${WORK_DIR}/deps/ptp-hardware-clock-ahb/src/rtl"
   # Simulator selection for cocotb
   SIM: vcs
   # Pip cache directory for faster installs
@@ -59,6 +63,8 @@ clone:
     - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch "$CI_REPOSITORY_URL" "$WORK_DIR"
     - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA"
     - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
+    - echo "Cloning PHC (separate component, needed for PTP tests)"
+    - git clone --branch "$PHC_BRANCH" --single-branch --depth 1 "$PHC_REPO" "$WORK_DIR/deps/ptp-hardware-clock-ahb" || echo "WARN PHC clone failed, PTP tests will be skipped"
 
 preflight:
   stage: setup
@@ -171,7 +177,8 @@ hal-lint:
     - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
     - export CMSDK_DIR="$CMSDK_DIR"
     - export TIDELINK_HOME="$WORK_DIR"
-    - python3 -m pip install --user -e "$WORK_DIR/python" --quiet
+    - python3 -m pip install --user --force-reinstall --no-deps -e "$WORK_DIR/python" --quiet
+    - find "$WORK_DIR" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     - python3 -m pip install --user cocotb cocotbext-ahb --quiet
 
 .vcs_uvm_setup: &vcs_uvm_setup
@@ -371,6 +378,32 @@ uvm-integration:
         - uvm/tidelink_integration/results.xml
     expire_in: 30 days
 
+cocotb-ptp:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running cocotb tidelink_ptp tests"
+    - cd "$WORK_DIR/cocotb/tidelink_ptp" && COVERAGE=1 make
+  after_script:
+    - mkdir -p cocotb/tidelink_ptp
+    - cp "$WORK_DIR/cocotb/tidelink_ptp/results.xml"   cocotb/tidelink_ptp/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_ptp/run.log"       cocotb/tidelink_ptp/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/cocotb
+    - cp -r "$WORK_DIR/cocotb/tidelink_ptp/coverage.vdb" "coverage_vdbs/cocotb/tidelink_ptp.vdb" 2>/dev/null || true
+    - cp -r "$WORK_DIR/cocotb/tidelink_ptp/sim_build/simv.vdb" "coverage_vdbs/cocotb/tidelink_ptp_simv.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_ptp/
+      - coverage_vdbs/cocotb/
+    reports:
+      junit:
+        - cocotb/tidelink_ptp/results.xml
+    expire_in: 30 days
+
 # ============================================================================
 # Stage 5: System Tests
 # ============================================================================
@@ -429,6 +462,64 @@ uvm-system:
     reports:
       junit:
         - uvm/tidelink_system/results.xml
+    expire_in: 30 days
+
+uvm-ptp-stress:
+  stage: system
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running 2 UVM tidelink_ptp_stress tests"
+    - make -C "$WORK_DIR/uvm/tidelink_ptp_stress" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_ptp_stress/sim_build"
+        "$WORK_DIR/uvm/tidelink_ptp_stress/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_ptp_stress
+    - cp "$WORK_DIR/uvm/tidelink_ptp_stress/results.xml"      uvm/tidelink_ptp_stress/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_ptp_stress/sim_build/"*.log   uvm/tidelink_ptp_stress/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_ptp_stress/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_ptp_stress.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_ptp_stress/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_ptp_stress/results.xml
+    expire_in: 30 days
+
+uvm-ptp-sync:
+  stage: system
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running 4 UVM tidelink_ptp_sync tests"
+    - make -C "$WORK_DIR/uvm/tidelink_ptp_sync" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build"
+        "$WORK_DIR/uvm/tidelink_ptp_sync/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_ptp_sync
+    - cp "$WORK_DIR/uvm/tidelink_ptp_sync/results.xml"      uvm/tidelink_ptp_sync/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build/"*.log   uvm/tidelink_ptp_sync/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_ptp_sync.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_ptp_sync/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_ptp_sync/results.xml
     expire_in: 30 days
 
 # ============================================================================
@@ -494,6 +585,8 @@ coverage-merge:
       artifacts: true
     - job: cocotb-top
       artifacts: true
+    - job: cocotb-ptp
+      artifacts: true
     - job: uvm-fc-adapter
       artifacts: true
     - job: uvm-integration
@@ -501,6 +594,10 @@ coverage-merge:
     - job: cocotb-system
       artifacts: true
     - job: uvm-system
+      artifacts: true
+    - job: uvm-ptp-stress
+      artifacts: true
+    - job: uvm-ptp-sync
       artifacts: true
   tags:
     - vcs
@@ -568,6 +665,8 @@ dashboard:
       artifacts: true
     - job: cocotb-top
       artifacts: true
+    - job: cocotb-ptp
+      artifacts: true
     - job: uvm-fc-adapter
       artifacts: true
     - job: uvm-integration
@@ -575,6 +674,10 @@ dashboard:
     - job: cocotb-system
       artifacts: true
     - job: uvm-system
+      artifacts: true
+    - job: uvm-ptp-stress
+      artifacts: true
+    - job: uvm-ptp-sync
       artifacts: true
     - job: coverage-merge
       artifacts: true

@@ -47,7 +47,7 @@ module tidelink_top #(
     parameter FC_DATA_W  = 48,       // FC node data width (matches AXI W channel)
 
     // PHY parameters
-    parameter NUM_PHY_LANES = 1,     // Number of SerDes/GPIO PHY lanes (1 for GPIO, 8 for SerDes)
+    parameter NUM_PHY_LANES = 8,     // Number of GPIO PHY lanes (default 8 for production)
 
     // Default pair base address (for returner — routed through FC sideband)
     parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0
@@ -193,11 +193,32 @@ module tidelink_top #(
     input  wire        [NUM_PHY_LANES-1:0]   pad_rx,
 
     // --------------------------------------------------------------------------
+    // AHB Subordinate — PTP TX Write Port
+    // (CPU writes here to trigger PTP FC messages)
+    // --------------------------------------------------------------------------
+    input  wire                     ahb_ptp_hsel,
+    input  wire               [3:0] ahb_ptp_haddr,
+    input  wire               [1:0] ahb_ptp_htrans,
+    input  wire               [2:0] ahb_ptp_hsize,
+    input  wire                     ahb_ptp_hwrite,
+    input  wire  [SYS_DATA_W-1:0]  ahb_ptp_hwdata,
+    input  wire                     ahb_ptp_hready,
+    output wire  [SYS_DATA_W-1:0]  ahb_ptp_hrdata,
+    output wire                     ahb_ptp_hresp,
+    output wire                     ahb_ptp_hreadyout,
+
+    // --------------------------------------------------------------------------
+    // PHC Hardware Capture Output (directly to external PHC hw_capture input)
+    // --------------------------------------------------------------------------
+    output wire                     phc_hw_capture,
+
+    // --------------------------------------------------------------------------
     // Interrupt Outputs
     // --------------------------------------------------------------------------
     output wire                     released_credits_irq,
     output wire                     doorbell_irq,
     output wire                     packet_committed_irq,
+    output wire                     ptp_irq,
     output wire                     wlink_irq,
 
     // --------------------------------------------------------------------------
@@ -306,6 +327,26 @@ module tidelink_top #(
     wire                   tl_fc_l2a_valid;
     wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
     wire                   tl_fc_l2a_accept;
+
+    // =========================================================================
+    // PTP FC Node wiring (PTP module ↔ Chiplet Controller)
+    // =========================================================================
+    wire                   ptp_fc_a2l_valid;
+    wire [FC_DATA_W-1:0]  ptp_fc_a2l_data;
+    wire                   ptp_fc_a2l_ready;
+    wire                   ptp_fc_l2a_valid;
+    wire [FC_DATA_W-1:0]  ptp_fc_l2a_data;
+    wire                   ptp_fc_l2a_accept;
+
+    // TX link idle signal from chiplet controller (Wlink tx_link_idle output)
+    // Directly driven by .tx_link_idle port on the Wlink instance
+    wire                   tx_router_idle;
+
+    // PTP register interface (PTP module ↔ APB regs, via pass-through)
+    wire                   ptp_reg_write;
+    wire            [2:0]  ptp_reg_addr;
+    wire [SYS_DATA_W-1:0] ptp_reg_wdata;
+    wire [SYS_DATA_W-1:0] ptp_reg_rdata;
 
     // =========================================================================
     // Returner AHB master wiring (tidelink_fifo_ahb → FC adapter interception)
@@ -492,7 +533,13 @@ module tidelink_top #(
         // Interrupts
         .released_credits_irq (released_credits_irq),
         .doorbell_irq         (doorbell_irq),
-        .packet_committed_irq (packet_committed_irq)
+        .packet_committed_irq (packet_committed_irq),
+
+        // PTP register pass-through (to/from tidelink_ptp)
+        .ptp_reg_write       (ptp_reg_write),
+        .ptp_reg_addr        (ptp_reg_addr),
+        .ptp_reg_wdata       (ptp_reg_wdata),
+        .ptp_reg_rdata       (ptp_reg_rdata)
     );
 
     // =========================================================================
@@ -560,6 +607,57 @@ module tidelink_top #(
         .tl_fc_l2a_valid   (tl_fc_l2a_valid),
         .tl_fc_l2a_data    (tl_fc_l2a_data),
         .tl_fc_l2a_accept  (tl_fc_l2a_accept)
+    );
+
+    // =========================================================================
+    // 2b. TideLink PTP Module
+    //     - TX path: AHB slave → wait for tx_router_idle → PTP FC node TX
+    //     - RX path: PTP FC node RX → payload latch + PHC hw_capture
+    //     - Registers: PTP_CTRL/PTP_RX_PAYLOAD/PTP_STATUS via APB pass-through
+    // =========================================================================
+    tidelink_ptp #(
+        .SYS_DATA_W (SYS_DATA_W),
+        .FC_DATA_W  (FC_DATA_W)
+    ) u_ptp (
+        .hclk              (hclk),
+        .hresetn           (hresetn),
+
+        // TX router idle (from chiplet controller)
+        .tx_router_idle    (tx_router_idle),
+
+        // PTP FC TX interface
+        .ptp_fc_a2l_valid  (ptp_fc_a2l_valid),
+        .ptp_fc_a2l_data   (ptp_fc_a2l_data),
+        .ptp_fc_a2l_ready  (ptp_fc_a2l_ready),
+
+        // PTP FC RX interface
+        .ptp_fc_l2a_valid  (ptp_fc_l2a_valid),
+        .ptp_fc_l2a_data   (ptp_fc_l2a_data),
+        .ptp_fc_l2a_accept (ptp_fc_l2a_accept),
+
+        // PHC hardware capture
+        .phc_hw_capture    (phc_hw_capture),
+
+        // AHB slave — PTP TX write port
+        .ahb_ptp_hsel      (ahb_ptp_hsel),
+        .ahb_ptp_haddr     (ahb_ptp_haddr),
+        .ahb_ptp_htrans    (ahb_ptp_htrans),
+        .ahb_ptp_hsize     (ahb_ptp_hsize),
+        .ahb_ptp_hwrite    (ahb_ptp_hwrite),
+        .ahb_ptp_hwdata    (ahb_ptp_hwdata),
+        .ahb_ptp_hready    (ahb_ptp_hready),
+        .ahb_ptp_hrdata    (ahb_ptp_hrdata),
+        .ahb_ptp_hresp     (ahb_ptp_hresp),
+        .ahb_ptp_hreadyout (ahb_ptp_hreadyout),
+
+        // Register interface (from APB regs pass-through)
+        .ptp_reg_write     (ptp_reg_write),
+        .ptp_reg_addr      (ptp_reg_addr),
+        .ptp_reg_wdata     (ptp_reg_wdata),
+        .ptp_reg_rdata     (ptp_reg_rdata),
+
+        // Interrupt
+        .ptp_irq           (ptp_irq)
     );
 
     // =========================================================================
@@ -899,6 +997,13 @@ module tidelink_top #(
         .tidelink_in                ({tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_l2a_accept}),
         .tidelink_out               ({tl_fc_a2l_ready, tl_fc_l2a_valid, tl_fc_l2a_data}),
 
+        // PTP FC node (packed bus, same 50-bit convention)
+        .ptp_in                     ({ptp_fc_a2l_valid, ptp_fc_a2l_data, ptp_fc_l2a_accept}),
+        .ptp_out                    ({ptp_fc_a2l_ready, ptp_fc_l2a_valid, ptp_fc_l2a_data}),
+
+        // TX link idle (for PTP jitter-free timestamp capture)
+        .tx_link_idle               (tx_router_idle),
+
         // Scan / DFT
         .scan_mode                  (scan_mode),
         .scan_asyncrst_ctrl         (scan_asyncrst_ctrl),
@@ -910,11 +1015,25 @@ module tidelink_top #(
         // Interrupts
         .interrupt                  (wlink_irq),
 
-        // PHY pads (GPIO: 1 lane, SerDes: 8 lanes)
+        // PHY pads (8-lane GPIO)
         .pad_clk_tx                 (pad_clk_tx),
         .pad_tx_0                   (pad_tx[0]),
+        .pad_tx_1                   (pad_tx[1]),
+        .pad_tx_2                   (pad_tx[2]),
+        .pad_tx_3                   (pad_tx[3]),
+        .pad_tx_4                   (pad_tx[4]),
+        .pad_tx_5                   (pad_tx[5]),
+        .pad_tx_6                   (pad_tx[6]),
+        .pad_tx_7                   (pad_tx[7]),
         .pad_clk_rx                 (pad_clk_rx),
-        .pad_rx_0                   (pad_rx[0])
+        .pad_rx_0                   (pad_rx[0]),
+        .pad_rx_1                   (pad_rx[1]),
+        .pad_rx_2                   (pad_rx[2]),
+        .pad_rx_3                   (pad_rx[3]),
+        .pad_rx_4                   (pad_rx[4]),
+        .pad_rx_5                   (pad_rx[5]),
+        .pad_rx_6                   (pad_rx[6]),
+        .pad_rx_7                   (pad_rx[7])
     );
 
 endmodule

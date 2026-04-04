@@ -144,6 +144,48 @@ The release threshold register is freely writable at any time, but changing it w
 
 **Recommendation**: Document that threshold changes should only be made while the FIFO is idle (no in-flight packets), or add gating logic.
 
+## PTP Subsystem
+
+### 16. Idle Gating Adds Variable Wait Time Before PTP TX
+
+**Location**: `tidelink_ptp.sv` — TX path idle gating
+
+The PTP TX path waits for `tx_router_idle` before asserting FC valid and capturing the transmit timestamp. If other FC nodes (AXI channels, mailbox FIFO) are actively transmitting, this wait time is variable and unbounded in the worst case. While this does not affect timestamp accuracy (the capture occurs at the actual TX moment), it increases the total exchange latency and limits the maximum PTP update rate under heavy link traffic.
+
+**Impact**: PTP exchange latency increases proportionally to link utilisation. In pathological cases, a sustained burst of AXI or mailbox traffic could delay PTP exchanges indefinitely.
+
+**Recommendation**: Assign the PTP FC node the highest TX router priority (already done) and consider adding a maximum wait timeout with an error indication.
+
+### 17. RX-Side Jitter Not Eliminated
+
+**Location**: `tidelink_ptp.sv` — RX path timestamp capture
+
+The Wlink RX pipeline (deserialiser, link layer, FC demux) introduces variable latency that cannot be gated from the receiver's perspective. The t2 and t4 timestamps are captured at the FC RX interface output, not at the PHY, so they include this pipeline jitter.
+
+**Impact**: Residual jitter on receive timestamps (t2, t4) limits the achievable synchronisation accuracy. The magnitude depends on the Wlink RX pipeline depth and clock domain crossing stages.
+
+**Recommendation**: Characterise the RX pipeline jitter via the `tidelink_ptp_stress` UVM environment and account for it in the servo loop filter bandwidth.
+
+### 18. Software-Mediated Servo Loop (Tier 1)
+
+**Location**: Software — PTP offset computation and clock discipline
+
+The offset computation, PI filtering, and PHC adjustment are performed entirely in software via interrupt-driven exchanges. This introduces scheduling jitter and limits the servo bandwidth to the software update rate.
+
+**Impact**: Steady-state synchronisation accuracy is bounded by the software loop latency (typically microseconds). A hardware servo (Tier 2) could achieve sub-microsecond accuracy.
+
+**Recommendation**: Acceptable for the current use case. Document the expected accuracy bounds. Consider a hardware servo for future revisions requiring tighter synchronisation.
+
+### 19. PHC hw_capture and Software CAPTURE Share Clock Core
+
+**Location**: PHC — `hw_capture` input and software CAPTURE register
+
+The PHC has a single time counter that is shared between the hardware capture path (`hw_capture` input, writing to HW_CAP registers) and the software capture path (CAPTURE register, writing to CAP registers). If both fire simultaneously, one capture may be lost or the clock core may produce undefined behaviour.
+
+**Impact**: Low probability in practice (requires software CAPTURE at the exact cycle of a PTP hw_capture event), but could corrupt a timestamp if it occurs.
+
+**Recommendation**: This is mitigated by Option B, which provides a second capture register bank (HW_CAP_*) independent of the software capture bank (CAP_*). Ensure software does not issue CAPTURE during an active PTP exchange.
+
 ## Summary
 
 | # | Severity | Shortcoming |
@@ -163,3 +205,7 @@ The release threshold register is freely writable at any time, but changing it w
 | 13 | Minor | Reset deassertion glitch sensitivity |
 | 14 | Minor | Burst transfers accepted but not properly handled |
 | 15 | Minor | Threshold change while enabled |
+| 16 | Moderate | PTP idle gating adds variable TX wait time |
+| 17 | Moderate | PTP RX-side jitter not eliminated |
+| 18 | Minor | PTP servo loop is software-mediated (Tier 1) |
+| 19 | Minor | PHC hw_capture and software CAPTURE share clock core |

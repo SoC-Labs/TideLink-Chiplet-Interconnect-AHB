@@ -206,6 +206,34 @@ pair model, which generates response writes back to the DUT's APB interface.
 | PTC-07 | Counter independent of accumulator    | Read-clearing accumulator doesn't affect counter                            | Existing |
 | PTC-08 | Counter end-to-end with FIFO writes   | Write packets, simulate pair releasing credits, verify counter               | Existing |
 
+### 7. tidelink_ptp (PTP Subsystem Tests)
+
+Tests target `tidelink_ptp` which wraps the PTP FC TX/RX paths, idle gating
+logic, and PHC hw_capture generation.
+
+| ID     | Test Name                             | Description                                                                 | Status   |
+|--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
+| PTP-01 | Reset defaults                        | PTP_CTRL=0, PTP_STATUS=0, ptp_irq=0, phc_hw_capture=0 after reset          | New      |
+| PTP-02 | PTP enable/disable                    | Write PTP_CTRL[0]=1 enables subsystem; =0 disables, FC TX/RX idle          | New      |
+| PTP-03 | SYNC TX with idle gating              | Write msg_type=0x0, verify FC TX waits for tx_router_idle before asserting valid | New |
+| PTP-04 | SYNC TX hw_capture pulse              | On SYNC TX, phc_hw_capture asserts for exactly 1 cycle at FC handshake     | New      |
+| PTP-05 | SYNC TX packet format                 | Verify FC TX data matches {2'b10, 10'b0, 4'h0, 32'h0} for SYNC            | New      |
+| PTP-06 | DELAY_REQ TX packet format            | Write msg_type=0x1, verify FC TX data matches {2'b10, 10'b0, 4'h1, 32'h0} | New      |
+| PTP-07 | RX SYNC reception                     | Drive SYNC on FC RX, verify ptp_irq asserts and PTP_RX_PAYLOAD correct     | New      |
+| PTP-08 | RX hw_capture pulse                   | On FC RX handshake, phc_hw_capture asserts for exactly 1 cycle             | New      |
+| PTP-09 | RX DELAY_REQ reception                | Drive DELAY_REQ on FC RX, verify ptp_irq and PTP_RX_PAYLOAD                | New      |
+| PTP-10 | PTP_STATUS TX busy                    | PTP_STATUS[1] asserts while waiting for tx_router_idle                     | New      |
+| PTP-11 | PTP_STATUS RX available               | PTP_STATUS[0] asserts after RX packet, clears on PTP_RX_PAYLOAD read      | New      |
+| PTP-12 | TX blocked when disabled              | With PTP_CTRL[0]=0, AHB write to PTP slave does not produce FC TX          | New      |
+| PTP-13 | RX ignored when disabled              | With PTP_CTRL[0]=0, FC RX packet does not assert ptp_irq                  | New      |
+| PTP-14 | Idle gating immediate                 | tx_router_idle already high, verify TX fires without delay                 | New      |
+| PTP-15 | Idle gating delayed                   | tx_router_idle low for N cycles then high, verify TX waits then fires      | New      |
+| PTP-16 | Full SYNC exchange loopback           | SYNC TX -> RX -> DELAY_REQ TX -> RX, verify all 4 hw_capture pulses       | New      |
+| PTP-17 | Back-to-back exchanges                | Two consecutive SYNC exchanges, verify no state corruption                 | New      |
+| PTP-18 | PTP concurrent with mailbox traffic   | FIFO TX active during PTP exchange, verify idle gating and no interference | New      |
+| PTP-19 | ptp_irq deasserts after payload read  | ptp_irq clears when software reads PTP_RX_PAYLOAD                         | New      |
+| PTP-20 | TX during RX                          | RX packet arrives while TX is waiting for idle, verify both complete       | New      |
+
 ## Known Bugs
 
 ### BUG-002: No credit underflow protection

@@ -1,0 +1,126 @@
+// -----------------------------------------------------------------------------
+// SoCLabs TideLink PTP Register Description (SystemRDL 2.0)
+//
+// Describes the PTP registers added to the tidelink_apb_regs module at
+// Region 1 offsets 0x034-0x03C. These registers control the single-phase
+// PTP subsystem (tidelink_ptp) and provide access to received PTP payloads.
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap tidelink_ptp_regs {
+    name = "TideLink PTP Register Map";
+    desc = "Control, status, and receive-payload registers for the TideLink
+            single-phase PTP subsystem. These registers occupy Region 1
+            (paddr[5]=1) offsets 0x034-0x03C of the tidelink_apb_regs address
+            space, using the three previously free slots.
+
+            Timestamps are NOT stored here — they live in the external PHC
+            (PTP Hardware Clock) capture registers. The PTP module pulses
+            phc_hw_capture at the FC handshake moment; software reads the
+            PHC HW_CAP_SECONDS/NANOSECONDS registers for actual timestamps.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // PTP Control Register
+    // =========================================================================
+
+    reg ptp_ctrl_reg {
+        name = "PTP Control";
+        desc = "Enable, clear, and status bits for the PTP subsystem. Software
+                writes enable and clear; rx_valid and rx_msg_type are read-only
+                status set by hardware on PTP FC word reception.";
+
+        field {} enable[1] = 0;
+        enable->sw = rw;
+        enable->hw = r;
+        enable->desc = "PTP enable. When 1, the PTP module captures timestamps
+                        on FC TX/RX handshakes and accepts incoming PTP FC words.
+                        When 0, incoming PTP FC words are still accepted (to avoid
+                        link-level backpressure) but timestamps are not captured
+                        and ptp_irq is not asserted.";
+
+        field {} clear[1] = 0;
+        clear->sw = rw;
+        clear->hw = r;
+        clear->singlepulse;
+        clear->desc = "Write 1 to clear rx_valid and tx_pending state. Self-clearing.
+                       Use before initiating a new PTP exchange to ensure stale
+                       state from a previous exchange does not persist.";
+
+        field {} rx_valid[1] = 0;
+        rx_valid->sw = r;
+        rx_valid->hw = w;
+        rx_valid->desc = "Set by hardware when a PTP FC word is received and latched.
+                         Cleared by writing clear=1 or by reading PTP_RX_PAYLOAD.
+                         Can be polled as an alternative to the ptp_irq interrupt.";
+
+        field {} rx_msg_type[4] = 0;
+        rx_msg_type->sw = r;
+        rx_msg_type->hw = w;
+        rx_msg_type->desc = "Message type from the most recently received PTP FC word.
+                            Extracted from addr_offset[3:0] of the 48-bit FC word.
+                            4'h0 = SYNC (grandmaster to subordinate).
+                            4'h1 = DELAY_REQ (subordinate to grandmaster).
+                            Valid only when rx_valid=1.";
+    };
+    ptp_ctrl_reg ptp_ctrl @ 0x034;
+
+    // =========================================================================
+    // PTP RX Payload Register
+    // =========================================================================
+
+    reg ptp_rx_payload_reg {
+        name = "PTP RX Payload";
+        desc = "Read-only. Contains the 32-bit payload field from the most recently
+                received PTP FC word. In the single-phase protocol this carries a
+                software-defined value (e.g. sequence number or ancillary data).
+                Reading this register clears ptp_ctrl.rx_valid.";
+
+        field {} payload[32] = 0;
+        payload->sw = r;
+        payload->hw = w;
+        payload->desc = "Payload[31:0] from the last received PTP FC word.
+                        Latched when ptp_fc_l2a_valid is accepted.";
+    };
+    ptp_rx_payload_reg ptp_rx_payload @ 0x038;
+
+    // =========================================================================
+    // PTP Status Register
+    // =========================================================================
+
+    reg ptp_status_reg {
+        name = "PTP Status";
+        desc = "Read-only status bits reflecting the current state of the PTP
+                TX path and the Wlink TX router.";
+
+        field {} tx_idle[1] = 0;
+        tx_idle->sw = r;
+        tx_idle->hw = w;
+        tx_idle->desc = "Mirror of tx_router_idle from the chiplet controller.
+                        1 = no FC node currently has an in-flight packet on the
+                        TX router. The PTP module gates its FC TX valid on this
+                        signal to achieve jitter-free timestamp capture.
+                        Software can poll this to confirm the router is idle
+                        before triggering a PTP exchange, though the hardware
+                        gating makes this optional.";
+
+        field {} tx_pending[1] = 0;
+        tx_pending->sw = r;
+        tx_pending->hw = w;
+        tx_pending->desc = "1 = the PTP module has a TX word waiting to be sent
+                           but is stalled because tx_router_idle is low. The AHB
+                           PTP slave hreadyout is held low during this time,
+                           stalling the CPU. This bit is informational; it clears
+                           when the FC handshake completes.";
+    };
+    ptp_status_reg ptp_status @ 0x03C;
+};

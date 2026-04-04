@@ -69,7 +69,15 @@ module tidelink_fifo #(
     // --------------------------------------------------------------------------
     output wire                     released_credits_irq,  // Pair freed credits (channel 0 deltas)
     output wire                     doorbell_irq,         // Pair responded to doorbell (channel 1 totals)
-    output wire                     packet_committed_irq  // Packet committed to FIFO (cleared on read addr 0)
+    output wire                     packet_committed_irq, // Packet committed to FIFO (cleared on read addr 0)
+
+    // --------------------------------------------------------------------------
+    // PTP Register Pass-Through (to/from tidelink_ptp via tidelink_top)
+    // --------------------------------------------------------------------------
+    output wire                     ptp_reg_write,
+    output wire               [2:0] ptp_reg_addr,
+    output wire  [SYS_DATA_W-1:0]  ptp_reg_wdata,
+    input  logic [SYS_DATA_W-1:0]  ptp_reg_rdata
 );
 
     // --------------------------------------------------------------------------
@@ -179,7 +187,12 @@ module tidelink_fifo #(
         .pair_base_addr      (pair_base_addr),
         // IRQs
         .released_credits_irq (released_credits_irq),
-        .doorbell_irq        (doorbell_irq)
+        .doorbell_irq        (doorbell_irq),
+        // PTP register pass-through
+        .ptp_reg_write       (ptp_reg_write),
+        .ptp_reg_addr        (ptp_reg_addr),
+        .ptp_reg_wdata       (ptp_reg_wdata),
+        .ptp_reg_rdata       (ptp_reg_rdata)
     );
 
     // --------------------------------------------------------------------------

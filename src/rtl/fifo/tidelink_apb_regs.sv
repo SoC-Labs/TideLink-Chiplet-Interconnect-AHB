@@ -65,7 +65,13 @@ module tidelink_apb_regs #(
 
     // IRQ outputs
     output logic                    released_credits_irq,
-    output logic                    doorbell_irq
+    output logic                    doorbell_irq,
+
+    // PTP register pass-through (directly to/from tidelink_ptp module)
+    output logic                    ptp_reg_write,
+    output logic              [2:0] ptp_reg_addr,
+    output logic [SYS_DATA_W-1:0]  ptp_reg_wdata,
+    input  logic [SYS_DATA_W-1:0]  ptp_reg_rdata
 );
 
     // -------------------------------------------------------------------------
@@ -252,6 +258,13 @@ module tidelink_apb_regs #(
     // Total free credits (combinational)
     assign credit_count_data = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
 
+    // ── PTP register pass-through ──────────────────────────────────────────────
+    // PTP registers occupy Region 1 offsets 0x034/0x038/0x03C (paddr[4:2] = 5/6/7).
+    // Write/read decode is forwarded to the tidelink_ptp module via direct wires.
+    assign ptp_reg_write = apb_write && apb_region && (paddr[4:2] >= 3'h5);
+    assign ptp_reg_addr  = paddr[4:2];
+    assign ptp_reg_wdata = pwdata;
+
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 
     always_comb begin
@@ -262,6 +275,9 @@ module tidelink_apb_regs #(
                 3'h1:    prdata = doorbell_response_acc;
                 3'h2:    prdata = pair_credit_counter;
                 3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_credit_counter_en};
+                3'h5:    prdata = ptp_reg_rdata;  // PTP_CTRL
+                3'h6:    prdata = ptp_reg_rdata;  // PTP_RX_PAYLOAD
+                3'h7:    prdata = ptp_reg_rdata;  // PTP_STATUS
                 default: ;
             endcase
         end else begin

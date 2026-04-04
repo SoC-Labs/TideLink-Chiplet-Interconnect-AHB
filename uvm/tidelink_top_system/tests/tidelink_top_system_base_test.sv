@@ -46,8 +46,9 @@ class tidelink_top_system_base_test extends uvm_test;
   // Wlink link-up wait (PLL lock ~400 ref_clk cycles + SerDes precount + link training)
   int unsigned wlink_link_up_wait = 10000;
 
-  // GPIO PHY serialization wait: 1-lane GPIO needs ~20K cycles per 5-word packet
-  int unsigned phy_transit_wait = 20000;
+  // GPIO PHY serialization wait: 8-lane GPIO is ~8x faster than 1-lane
+  // ~2500 cycles per 5-word packet (vs 20K for 1-lane)
+  int unsigned phy_transit_wait = 5000;
 
   function new(string name = "tidelink_top_system_base_test", uvm_component parent = null);
     super.new(name, parent);

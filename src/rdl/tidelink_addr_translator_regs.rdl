@@ -1,0 +1,160 @@
+// -----------------------------------------------------------------------------
+// SoCLabs TideLink Address Translator Register Description (SystemRDL 2.0)
+//
+// Describes the APB register map for a single channel of the
+// tidelink_addr_translator module (derived from nanosoc_ss_chiplet_addr).
+// Each channel has a base offset register and a 256-entry segment table
+// for 8-bit upper-address remapping, plus ARM PrimeCell identification
+// registers (PIDR/CIDR).
+//
+// The address translator has two independent channels. This addrmap
+// describes one channel; instantiate twice at the integration level.
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap tidelink_addr_translator_regs {
+    name = "TideLink Address Translator Register Map";
+    desc = "Per-channel address translation configuration. The translator remaps
+            AHB addresses by:
+            1. Subtracting base_offset from the input address to normalise it.
+            2. Looking up the upper 8 bits (addr[31:24]) of the normalised
+               address in a 256-entry segment table.
+            3. Replacing addr[31:24] with the segment table value; addr[23:0]
+               passes through unchanged.
+
+            The segment table is stored as 64 x 32-bit registers, each packing
+            4 x 8-bit segment addresses. On reset the table is initialised to
+            an identity mapping (seg[k] = k).";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // Base Offset Register
+    // =========================================================================
+
+    reg base_offset_reg {
+        name = "Base Offset";
+        desc = "32-bit value subtracted from the input AHB address before the
+                upper-byte segment lookup. This allows the translator to operate
+                on addresses relative to an arbitrary base.
+
+                For example, if the local AHB slave decodes 0x60000000-0x6FFFFFFF
+                for remote access, set base_offset = 0x60000000 so that the
+                segment lookup sees normalised addresses 0x00000000-0x0FFFFFFF.";
+
+        field {} base_offset[32] = 0;
+        base_offset->sw = rw;
+        base_offset->hw = r;
+    };
+    base_offset_reg base_offset @ 0x000;
+
+    // =========================================================================
+    // Segment Table Registers (64 registers × 4 segments each = 256 entries)
+    //
+    // Register N at offset 0x004 + 4*N packs 4 segment entries:
+    //   [7:0]   = seg[4N+0]
+    //   [15:8]  = seg[4N+1]
+    //   [23:16] = seg[4N+2]
+    //   [31:24] = seg[4N+3]
+    //
+    // Reset value: seg[k] = k (identity mapping).
+    // Register N reset = {(4N+3)[7:0], (4N+2)[7:0], (4N+1)[7:0], (4N+0)[7:0]}
+    // =========================================================================
+
+    reg segment_reg {
+        name = "Segment Table Entry";
+        desc = "Four packed 8-bit segment addresses. Each byte maps one value
+                of the upper address byte (addr[31:24]) to a new value.";
+
+        field {} seg_0[8] = 0;
+        seg_0->sw = rw;
+        seg_0->hw = r;
+        seg_0->desc = "Segment address for input byte value 4N+0.";
+
+        field {} seg_1[8] = 0;
+        seg_1->sw = rw;
+        seg_1->hw = r;
+        seg_1->desc = "Segment address for input byte value 4N+1.";
+
+        field {} seg_2[8] = 0;
+        seg_2->sw = rw;
+        seg_2->hw = r;
+        seg_2->desc = "Segment address for input byte value 4N+2.";
+
+        field {} seg_3[8] = 0;
+        seg_3->sw = rw;
+        seg_3->hw = r;
+        seg_3->desc = "Segment address for input byte value 4N+3.";
+    };
+
+    // Instantiate 64 segment registers at offsets 0x004 through 0x100
+    segment_reg segment_table[64] @ 0x004 += 0x004;
+
+    // =========================================================================
+    // PrimeCell Identification Registers (read-only, fixed values)
+    //
+    // These follow the ARM PrimeCell convention for peripheral identification.
+    // =========================================================================
+
+    reg pidr_reg {
+        name = "Peripheral ID Register";
+        desc = "Read-only ARM PrimeCell peripheral identification.";
+
+        field {} pid[8] = 0;
+        pid->sw = r;
+        pid->hw = na;
+    };
+
+    reg cidr_reg {
+        name = "Component ID Register";
+        desc = "Read-only ARM PrimeCell component identification.";
+
+        field {} cid[8] = 0;
+        cid->sw = r;
+        cid->hw = na;
+    };
+
+    pidr_reg pidr4 @ 0xFD0;
+    pidr4.pid->reset = 0x00;
+
+    pidr_reg pidr5 @ 0xFD4;
+    pidr5.pid->reset = 0x00;
+
+    pidr_reg pidr6 @ 0xFD8;
+    pidr6.pid->reset = 0x00;
+
+    pidr_reg pidr7 @ 0xFDC;
+    pidr7.pid->reset = 0x00;
+
+    pidr_reg pidr0 @ 0xFE0;
+    pidr0.pid->reset = 0x59;
+
+    pidr_reg pidr1 @ 0xFE4;
+    pidr1.pid->reset = 0x16;
+
+    pidr_reg pidr2 @ 0xFE8;
+    pidr2.pid->reset = 0x15;
+
+    pidr_reg pidr3 @ 0xFEC;
+    pidr3.pid->reset = 0x00;
+
+    cidr_reg cidr0 @ 0xFF0;
+    cidr0.cid->reset = 0x50;
+
+    cidr_reg cidr1 @ 0xFF4;
+    cidr1.cid->reset = 0x51;
+
+    cidr_reg cidr2 @ 0xFF8;
+    cidr2.cid->reset = 0x4C;
+
+    cidr_reg cidr3 @ 0xFFC;
+    cidr3.cid->reset = 0x54;
+};

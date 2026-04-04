@@ -23,5 +23,8 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/address_translation/address
 ${CMSDK_DIR}/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 
+// PTP timestamp bridge
+${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

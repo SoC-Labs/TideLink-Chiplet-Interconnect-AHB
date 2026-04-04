@@ -1,6 +1,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 // test_top_ahb_passthrough.sv — AHB regular access path via XHB500 + Wlink
 ///////////////////////////////////////////////////////////////////////////////
+// Exercises the ahb_sub -> XHB500 AHB→AXI -> Wlink AXI FC -> PHY ->
+// remote Wlink AXI FC -> XHB500 AXI→AHB -> ahb_mng path.
+//
+// Requires full system init (Wlink link up + TideLink/AXI FC active).
+///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_TEST_TOP_AHB_PASSTHROUGH_SV
 `define GUARD_TEST_TOP_AHB_PASSTHROUGH_SV
@@ -22,7 +27,8 @@ class test_top_ahb_passthrough extends tidelink_top_system_base_test;
 
     `uvm_info("TEST", "=== Test Top AHB Passthrough A->B ===", UVM_LOW)
 
-    init_wlink();
+    // Full system init needed — Wlink AXI FC must be active
+    init_system();
 
     // Write via A's ahb_sub
     `uvm_info("TEST", "Writing via A SUB port...", UVM_LOW)
@@ -31,7 +37,7 @@ class test_top_ahb_passthrough extends tidelink_top_system_base_test;
     wr_seq.data = 32'hCAFE_F00D;
     wr_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
 
-    repeat (500) @(posedge tb_if.clk);
+    repeat (phy_transit_wait) @(posedge tb_if.clk);
     `uvm_info("TEST", "AHB passthrough write complete.", UVM_LOW)
 
     // Read via A's ahb_sub
@@ -39,7 +45,7 @@ class test_top_ahb_passthrough extends tidelink_top_system_base_test;
     rd_seq.addr = 32'h0000_2000;
     rd_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
 
-    repeat (500) @(posedge tb_if.clk);
+    repeat (phy_transit_wait) @(posedge tb_if.clk);
     `uvm_info("TEST", "AHB passthrough read complete.", UVM_LOW)
 
     repeat (20) @(posedge tb_if.clk);

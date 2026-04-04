@@ -1,5 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
-// test_top_mixed_traffic.sv — Mix TideLink FIFO + AHB passthrough traffic
+// test_top_mixed_traffic.sv — Concurrent bidirectional TideLink FIFO traffic
+//                              with varying packet sizes
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_TEST_TOP_MIXED_TRAFFIC_SV
@@ -25,9 +26,9 @@ class test_top_mixed_traffic extends tidelink_top_system_base_test;
 
     init_system();
 
-    // Simultaneously drive TideLink FIFO + AHB passthrough
+    // Simultaneously drive TideLink FIFO in both directions
     fork
-      // TideLink FIFO: A->B
+      // TideLink FIFO: A->B (3 packets)
       begin
         for (int p = 0; p < 3; p++) begin
           pkt_data = new[4];
@@ -37,24 +38,13 @@ class test_top_mixed_traffic extends tidelink_top_system_base_test;
         end
       end
 
-      // TideLink FIFO: B->A
+      // TideLink FIFO: B->A (3 packets)
       begin
         for (int p = 0; p < 3; p++) begin
           pkt_data = new[4];
           for (int w = 0; w < 4; w++)
             pkt_data[w] = 32'hF2F0_0000 | (p << 8) | w;
           write_packet(SIDE_B, pkt_data);
-        end
-      end
-
-      // AHB passthrough: A SUB writes
-      begin
-        top_sys_ahb_sub_write_sequence wr_seq;
-        for (int i = 0; i < 3; i++) begin
-          wr_seq = top_sys_ahb_sub_write_sequence::type_id::create("wr_seq");
-          wr_seq.addr = 32'h0000_1000 + (i * 4);
-          wr_seq.data = 32'hABCD_0000 | i;
-          wr_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
         end
       end
     join

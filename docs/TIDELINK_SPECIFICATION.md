@@ -1,7 +1,7 @@
 # TideLink Chiplet Interconnect Subsystem — Specification and Design Justification
 
-**Version**: 1.1
-**Date**: 2026-04-03
+**Version**: 1.2
+**Date**: 2026-04-05
 **Status**: Draft — based on RTL in `src/rtl/tidelink_top.sv` and `src/rtl/tidelink_fc_adapter.sv`
 **Authors**: David Mapstone (d.a.mapstone@soton.ac.uk), SoC Labs, University of Southampton
 **License**: Joint work under Arm Academic Access license
@@ -406,17 +406,17 @@ Two internal AHB master ports wired entirely within `tidelink_top`; they do **no
 | `fc_rx_fifo_hsize[2:0]` | 3 | Always HSIZE_WORD |
 | `fc_rx_fifo_hwrite` | 1 | Always 1 when active |
 
-**`fc_rx_cfg_*`** — Writes SIDEBAND payloads (credit deltas, doorbells) to the local APB config registers (via Config mux):
+**`fc_rx_cfg_*`** — Writes SIDEBAND payloads (credit deltas, doorbells) to the local APB config registers (via Config APB mux). This path uses APB natively, eliminating the need for an AHB-to-APB bridge:
 
 | Signal | Width | Description |
 |---|---|---|
-| `fc_rx_cfg_haddr[APB_ADDR_W-1:0]` | 12 | APB register offset (addr_offset from FC word) |
-| `fc_rx_cfg_hwdata[31:0]` | 32 | Payload from FC word |
-| `fc_rx_cfg_htrans[1:0]` | 2 | IDLE or NONSEQ |
-| `fc_rx_cfg_hsize[2:0]` | 3 | Always HSIZE_WORD |
-| `fc_rx_cfg_hwrite` | 1 | Always 1 when active |
+| `fc_rx_cfg_paddr[APB_ADDR_W-1:0]` | 12 | APB register offset (addr_offset from FC word) |
+| `fc_rx_cfg_pwdata[31:0]` | 32 | Payload from FC word |
+| `fc_rx_cfg_psel` | 1 | APB select (active during setup + access) |
+| `fc_rx_cfg_penable` | 1 | APB enable (active during access phase) |
+| `fc_rx_cfg_pwrite` | 1 | Always 1 (write-only) |
 
-Both ports use narrowed address widths (not full 32-bit system addresses) since they connect directly to the internal muxes in front of `tidelink_fifo_ahb` slave ports.
+The FIFO data port uses AHB; the config port uses APB directly, matching the downstream register interface protocol.
 
 ### 5.9 AHB Subordinate — Address Translator Config (`ahb_adr_*`)
 
@@ -864,6 +864,22 @@ The Tier 2 autonomous descriptor engine is planned but absent from the current R
 The PTP hardware sync initiator requires the PHC's `seconds`, `nanoseconds`, and `pps` outputs to be wired to `tidelink_top`'s `phc_seconds`, `phc_nanoseconds`, and `phc_pps` input ports. These are in addition to the existing `phc_hw_capture` output. If the hardware sync initiator is not used, these inputs should be tied to zero.
 
 The hardware sync initiator adds three registers in a new APB Region 2 (offsets 0x040–0x048): `HW_SYNC_CTRL`, `HW_SYNC_INTERVAL`, and `HW_SYNC_STATUS`. The APB address decode has been expanded from 1-bit (`paddr[5]`) to 2-bit (`paddr[6:5]`) to support this region, matching the PHC's decode pattern. Existing registers in Region 0 and Region 1 are unaffected.
+
+### 11.11 Timing and Area Optimisations (v1.2)
+
+Several architectural changes have been made to improve timing closure and reduce area:
+
+**Address translator pipeline register** (`tidelink_top.sv`): A registered pipeline stage is inserted between the `address_translation` combinational output and the XHB500 AHB-to-AXI bridge. This breaks the 256:1 segment mux + adder critical path. Each new NONSEQ transfer incurs one additional wait state; SEQ beats within a burst pass through without stalling.
+
+**FC adapter TX skid buffer** (`tidelink_fc_adapter.sv`): A single-entry skid buffer (48 flops) decouples the Wlink FC node's `tl_fc_a2l_ready` signal from the AHB HREADY critical path. In the common case (skid empty), AHB writes complete without any dependency on Wlink timing. The arbiter priority order (returner > servo > TX aperture) is preserved.
+
+**Pipelined release threshold comparison** (`fifo/tidelink_apb_regs.sv`): The `read_complete` signal and `effective_acc` accumulator value are registered by one cycle before the 32-bit threshold comparison. `release_credits_trigger` fires one cycle after `read_complete` instead of combinationally. This is transparent at system level since the returner takes 3+ cycles per credit return transaction.
+
+**APB-native FC RX config path** (`tidelink_fc_adapter.sv`, `tidelink_top.sv`): The FC adapter's RX config master now outputs APB signals directly (psel/penable/pwrite/paddr/pwdata) instead of AHB. This eliminates the `cmsdk_ahb_to_apb` bridge instance that previously sat between the FC adapter and the TideLink config APB mux, saving approximately 200-300 gates.
+
+**Unused APB mux ports disabled** (`tidelink_addr_translator.sv`): The `cmsdk_apb_slave_mux` instance now has `PORT2_ENABLE` through `PORT15_ENABLE` set to 0, eliminating decode logic for the 14 unused ports.
+
+**Big-endian byte swap gated by generate** (`tidelink_addr_translator.sv`): The byte-swap logic in the address translator is wrapped in `generate if (BE != 0)`. When `BE=0` (the only configuration in use), the swap registers and muxes are eliminated entirely.
 
 ---
 

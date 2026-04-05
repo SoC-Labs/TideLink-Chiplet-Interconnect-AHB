@@ -1,0 +1,41 @@
+SIM             = vcs
+TOPLEVEL_LANG   = verilog
+
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+export TIDELINK_HOME
+export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv
+
+TOPLEVEL = tb_top
+MODULE   = test_tidelink_addr_translator
+
+COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+
+# Address translator and its dependencies
+COMPILE_ARGS += +incdir+$(TIDELINK_HOME)/src/rtl
+COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
+COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/apb_control/apb_control.sv
+COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/address_translation/address_translation.sv
+COMPILE_ARGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+COMPILE_ARGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
+COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_addr_translator.sv
+
+SIM_ARGS     += +vcs+dumpvars+waves.vcd
+
+# -- Code coverage -----------------------------------------------------------
+ifdef COVERAGE
+  CM_METRICS    ?= line+cond+fsm+tgl+branch
+  COMPILE_ARGS  += -cm $(CM_METRICS)
+  SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
+endif
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
+
+VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
+
+.PHONY: gui
+gui: $(SIM_BUILD)/simv
+	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
+	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
+	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)

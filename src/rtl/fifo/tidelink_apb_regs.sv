@@ -253,9 +253,25 @@ module tidelink_apb_regs #(
     wire  [SYS_DATA_W-1:0] release_acc_next = release_acc + credit_delta_data_comb;
     wire  [SYS_DATA_W-1:0] effective_acc    = read_complete ? release_acc_next : release_acc;
 
+    // Pipeline stage: register read_complete and effective_acc to break the
+    // adder → mux → 32-bit comparator combinational chain. The one-cycle
+    // delay is invisible at system level (returner takes 3+ cycles per txn).
+    logic                  read_complete_d1;
+    logic [SYS_DATA_W-1:0] effective_acc_d1;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            read_complete_d1 <= 1'b0;
+            effective_acc_d1 <= '0;
+        end else begin
+            read_complete_d1 <= read_complete;
+            effective_acc_d1 <= effective_acc;
+        end
+    end
+
     assign release_credits_trigger =
-        (release_threshold == '0) ? read_complete :
-        (effective_acc >= release_threshold);
+        (release_threshold == '0) ? read_complete_d1 :
+        (read_complete_d1 && (effective_acc_d1 >= release_threshold));
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn)
@@ -272,7 +288,7 @@ module tidelink_apb_regs #(
         if (!hresetn)
             credit_delta_data <= '0;
         else if (release_credits_trigger)
-            credit_delta_data <= effective_acc;
+            credit_delta_data <= effective_acc_d1;
     end
 
     // Total free credits (combinational)

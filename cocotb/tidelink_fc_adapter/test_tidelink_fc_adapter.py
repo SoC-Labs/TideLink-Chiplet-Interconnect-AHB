@@ -185,6 +185,59 @@ class AHBMasterMonitor:
         self._running = False
 
 
+class APBMasterMonitor:
+    """Monitors an APB master port driven by the DUT (output).
+
+    Captures write transactions on the APB access phase:
+      psel=1, penable=1, pwrite=1, pready=1 -> latch addr + data
+    """
+
+    def __init__(self, dut, prefix, log=None):
+        self.psel    = getattr(dut, f"{prefix}_psel")
+        self.penable = getattr(dut, f"{prefix}_penable")
+        self.pwrite  = getattr(dut, f"{prefix}_pwrite")
+        self.paddr   = getattr(dut, f"{prefix}_paddr")
+        self.pwdata  = getattr(dut, f"{prefix}_pwdata")
+        self.pready  = getattr(dut, f"{prefix}_pready")
+        self.dut     = dut
+        self.log     = log
+        self.writes  = Queue()
+        self._running = False
+
+    def start(self):
+        self._running = True
+        cocotb.start_soon(self._run())
+
+    async def _run(self):
+        while self._running:
+            await RisingEdge(self.dut.hclk)
+            try:
+                psel_val    = int(self.psel.value)
+                penable_val = int(self.penable.value)
+                pwrite_val  = int(self.pwrite.value)
+                pready_val  = int(self.pready.value)
+            except ValueError:
+                continue
+            if psel_val and penable_val and pwrite_val and pready_val:
+                addr = int(self.paddr.value)
+                data = int(self.pwdata.value)
+                if self.log:
+                    self.log.info(
+                        f"APB Master Write: addr=0x{addr:04X} "
+                        f"data=0x{data:08X}")
+                self.writes.put_nowait({"addr": addr, "data": data})
+
+    async def get(self, timeout_cycles=100):
+        for _ in range(timeout_cycles):
+            if not self.writes.empty():
+                return self.writes.get_nowait()
+            await RisingEdge(self.dut.hclk)
+        raise TimeoutError("APBMasterMonitor: no write captured within timeout")
+
+    def stop(self):
+        self._running = False
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -196,7 +249,7 @@ async def setup(dut):
     fc_mon    = FCMonitor(dut, log=dut._log)
     fc_drv    = FCDriver(dut, log=dut._log)
     fifo_mon  = AHBMasterMonitor(dut, "fc_rx_fifo", log=dut._log)
-    cfg_mon   = AHBMasterMonitor(dut, "fc_rx_cfg", log=dut._log)
+    cfg_mon   = APBMasterMonitor(dut, "fc_rx_cfg", log=dut._log)
 
     fc_mon.start()
     fifo_mon.start()
@@ -236,9 +289,8 @@ async def do_reset(dut):
     dut.fc_rx_fifo_hready.value = 1
     dut.fc_rx_fifo_hresp.value  = 0
     dut.fc_rx_fifo_hrdata.value = 0
-    dut.fc_rx_cfg_hready.value  = 1
-    dut.fc_rx_cfg_hresp.value   = 0
-    dut.fc_rx_cfg_hrdata.value  = 0
+    dut.fc_rx_cfg_pready.value  = 1
+    dut.fc_rx_cfg_prdata.value  = 0
 
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
@@ -315,8 +367,8 @@ async def test_01_reset_defaults(dut):
     assert int(dut.tl_fc_a2l_valid.value) == 0, "a2l_valid should be 0 after reset"
     assert int(dut.fc_rx_fifo_htrans.value) == HTRANS_IDLE, \
         "RX FIFO htrans should be IDLE after reset"
-    assert int(dut.fc_rx_cfg_htrans.value) == HTRANS_IDLE, \
-        "RX Config htrans should be IDLE after reset"
+    assert int(dut.fc_rx_cfg_psel.value) == 0, \
+        "RX Config psel should be 0 after reset"
     assert int(dut.ahb_tx_hreadyout.value) == 1, \
         "TX aperture hreadyout should be 1 (idle) after reset"
     assert int(dut.ahb_tx_hrdata.value) == 0, \
@@ -372,14 +424,14 @@ async def test_03_tx_sequential_words(dut):
 
 @cocotb.test()
 async def test_04_tx_backpressure(dut):
-    """Deassert a2l_ready: AHB TX hreadyout should stall."""
+    """Deassert a2l_ready: first write absorbed by skid buffer, second stalls."""
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
     # Deassert FC TX ready — backpressure
     dut.tl_fc_a2l_ready.value = 0
 
-    # Start address phase
+    # First write: goes into skid buffer (AHB completes without stall)
     dut.ahb_tx_hsel.value   = 1
     dut.ahb_tx_haddr.value  = 0x0200
     dut.ahb_tx_htrans.value = HTRANS_NONSEQ
@@ -387,30 +439,42 @@ async def test_04_tx_backpressure(dut):
     dut.ahb_tx_hready.value = 1
     await RisingEdge(dut.hclk)
 
-    # Data phase — present data, go idle on addr bus
     dut.ahb_tx_htrans.value = HTRANS_IDLE
     dut.ahb_tx_hsel.value   = 0
     dut.ahb_tx_hwdata.value = 0x12345678
-
-    # hreadyout should be low while FC is not ready
     await RisingEdge(dut.hclk)
-    assert int(dut.ahb_tx_hreadyout.value) == 0, \
-        "hreadyout should be 0 when FC a2l_ready is deasserted"
 
-    # Hold for a few more cycles — should remain stalled
-    await ClockCycles(dut.hclk, 3)
+    # First write absorbed by skid buffer — hreadyout should be high
+    assert int(dut.ahb_tx_hreadyout.value) == 1, \
+        "hreadyout should be 1: first write absorbed by skid buffer"
+
+    # Second write: skid buffer full, should stall
+    dut.ahb_tx_hsel.value   = 1
+    dut.ahb_tx_haddr.value  = 0x0204
+    dut.ahb_tx_htrans.value = HTRANS_NONSEQ
+    dut.ahb_tx_hwrite.value = 1
+    dut.ahb_tx_hready.value = 1
+    await RisingEdge(dut.hclk)
+
+    dut.ahb_tx_htrans.value = HTRANS_IDLE
+    dut.ahb_tx_hsel.value   = 0
+    dut.ahb_tx_hwdata.value = 0xDEADBEEF
+    await RisingEdge(dut.hclk)
+
     assert int(dut.ahb_tx_hreadyout.value) == 0, \
-        "hreadyout should remain 0 while backpressured"
+        "hreadyout should be 0: skid buffer full, FC not ready"
 
     # Release backpressure
     dut.tl_fc_a2l_ready.value = 1
-    await RisingEdge(dut.hclk)
+    await ClockCycles(dut.hclk, 3)
     assert int(dut.ahb_tx_hreadyout.value) == 1, \
-        "hreadyout should go high when FC becomes ready"
+        "hreadyout should go high when FC drains skid buffer"
 
-    # Verify the word made it through
-    pkt = await fc_mon.get()
-    assert pkt["payload"] == 0x12345678
+    # Verify both words made it through
+    pkt1 = await fc_mon.get()
+    assert pkt1["payload"] == 0x12345678
+    pkt2 = await fc_mon.get()
+    assert pkt2["payload"] == 0xDEADBEEF
 
 
 @cocotb.test()
@@ -485,38 +549,49 @@ async def test_08_rtn_doorbell(dut):
 
 @cocotb.test()
 async def test_09_rtn_backpressure(dut):
-    """Returner stall: FC busy -> rtn_hready held low."""
+    """Returner stall: FC busy + skid full -> rtn_hready held low."""
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
     # Deassert FC TX ready — backpressure
     dut.tl_fc_a2l_ready.value = 0
 
-    # Drive returner address phase
+    # First returner write: absorbed by skid buffer
     dut.rtn_haddr.value  = 0x0000_0020
     dut.rtn_htrans.value = HTRANS_NONSEQ
     dut.rtn_hwrite.value = 1
     await RisingEdge(dut.hclk)
 
-    # Move to data phase
     dut.rtn_htrans.value = HTRANS_IDLE
     dut.rtn_hwrite.value = 0
     dut.rtn_hwdata.value = 0xFACEFACE
-
-    # rtn_hready should be low while FC pending and not ready
     await RisingEdge(dut.hclk)
-    assert int(dut.rtn_hready.value) == 0, \
-        "rtn_hready should be 0 when FC is busy"
 
-    # Release
-    dut.tl_fc_a2l_ready.value = 1
-    await RisingEdge(dut.hclk)
+    # First write absorbed by skid buffer — rtn_hready should be high
     assert int(dut.rtn_hready.value) == 1, \
-        "rtn_hready should go high when FC becomes ready"
+        "rtn_hready should be 1: first write absorbed by skid buffer"
 
-    pkt = await fc_mon.get()
-    assert pkt["pkt_type"] == PKT_SIDEBAND
-    assert pkt["payload"] == 0xFACEFACE
+    # Second returner write: skid full, should stall
+    dut.rtn_haddr.value  = 0x0000_0024
+    dut.rtn_htrans.value = HTRANS_NONSEQ
+    dut.rtn_hwrite.value = 1
+    await RisingEdge(dut.hclk)
+
+    dut.rtn_htrans.value = HTRANS_IDLE
+    dut.rtn_hwrite.value = 0
+    dut.rtn_hwdata.value = 0xCAFECAFE
+    await RisingEdge(dut.hclk)
+
+    assert int(dut.rtn_hready.value) == 0, \
+        "rtn_hready should be 0 when skid buffer full"
+
+    # Release backpressure
+    dut.tl_fc_a2l_ready.value = 1
+    await ClockCycles(dut.hclk, 3)
+
+    pkt1 = await fc_mon.get()
+    assert pkt1["pkt_type"] == PKT_SIDEBAND
+    assert pkt1["payload"] == 0xFACEFACE
 
 
 # =============================================================================
@@ -527,53 +602,50 @@ async def test_09_rtn_backpressure(dut):
 async def test_10_arb_returner_priority(dut):
     """Simultaneous TX aperture + returner: returner wins (priority).
 
-    Set up both sources to have pending data, then release FC ready and
-    verify the returner packet comes out first.
+    Stall FC so both sources accumulate, then release. Returner should
+    exit first due to arbiter priority, even through the skid buffer.
     """
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
-    # Stall FC so both sources can queue up
+    # Stall FC so both sources accumulate in the arbiter
     dut.tl_fc_a2l_ready.value = 0
 
-    # Start TX aperture write (address phase)
+    # TX aperture address phase
     dut.ahb_tx_hsel.value   = 1
     dut.ahb_tx_haddr.value  = 0x0100
     dut.ahb_tx_htrans.value = HTRANS_NONSEQ
     dut.ahb_tx_hwrite.value = 1
     dut.ahb_tx_hready.value = 1
-    await RisingEdge(dut.hclk)
-
-    # TX aperture data phase
-    dut.ahb_tx_htrans.value = HTRANS_IDLE
-    dut.ahb_tx_hsel.value   = 0
-    dut.ahb_tx_hwdata.value = 0xAAAAAAAA
-
-    # Start returner write (address phase)
+    # Returner address phase (same cycle)
     dut.rtn_haddr.value  = 0x0000_0020
     dut.rtn_htrans.value = HTRANS_NONSEQ
     dut.rtn_hwrite.value = 1
     await RisingEdge(dut.hclk)
 
-    # Returner data phase
+    # Both enter data phase
+    dut.ahb_tx_htrans.value = HTRANS_IDLE
+    dut.ahb_tx_hsel.value   = 0
+    dut.ahb_tx_hwdata.value = 0xAAAAAAAA
     dut.rtn_htrans.value = HTRANS_IDLE
     dut.rtn_hwrite.value = 0
     dut.rtn_hwdata.value = 0xBBBBBBBB
-
     await RisingEdge(dut.hclk)
 
-    # Both should now be pending. Release FC.
+    # Both pending, FC stalled. Returner wins priority -> enters skid first.
+    # Release FC.
     dut.tl_fc_a2l_ready.value = 1
-    await RisingEdge(dut.hclk)
+    await ClockCycles(dut.hclk, 5)
 
-    # First packet should be from returner (SIDEBAND, priority)
+    # Both packets should arrive, verify both data values present
     pkt1 = await fc_mon.get()
+    pkt2 = await fc_mon.get()
+
+    # Returner (SIDEBAND) should be first due to priority
     assert pkt1["pkt_type"] == PKT_SIDEBAND, \
         f"First packet should be SIDEBAND (returner priority), got type {pkt1['pkt_type']}"
     assert pkt1["payload"] == 0xBBBBBBBB
 
-    # Second packet should be from TX aperture (FIFO_DATA)
-    pkt2 = await fc_mon.get()
     assert pkt2["pkt_type"] == PKT_FIFO_DATA, \
         f"Second packet should be FIFO_DATA (TX aperture), got type {pkt2['pkt_type']}"
     assert pkt2["payload"] == 0xAAAAAAAA
@@ -764,7 +836,7 @@ async def test_19_rx_cfg_backpressure(dut):
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
-    dut.fc_rx_cfg_hready.value = 0
+    dut.fc_rx_cfg_pready.value = 0
 
     # Send a SIDEBAND word
     raw = FCDriver.encode(PKT_SIDEBAND, 0x014, 0xBEEFBEEF)
@@ -792,7 +864,7 @@ async def test_19_rx_cfg_backpressure(dut):
     dut.tl_fc_l2a_valid.value = 0
 
     # Release
-    dut.fc_rx_cfg_hready.value = 1
+    dut.fc_rx_cfg_pready.value = 1
     await ClockCycles(dut.hclk, 5)
 
     wr = await cfg_mon.get()

@@ -124,14 +124,15 @@ module tb_top #(
     wire                    fc_rx_fifo_hresp;
     wire [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata;
 
-    wire [APB_ADDR_W-1:0]  fc_rx_cfg_haddr;
-    wire [SYS_DATA_W-1:0]  fc_rx_cfg_hwdata;
-    wire              [1:0] fc_rx_cfg_htrans;
-    wire              [2:0] fc_rx_cfg_hsize;
-    wire                    fc_rx_cfg_hwrite;
-    wire                    fc_rx_cfg_hready;
-    wire                    fc_rx_cfg_hresp;
-    wire [SYS_DATA_W-1:0]  fc_rx_cfg_hrdata;
+    // FC adapter RX config path — APB-native (no AHB-to-APB bridge needed)
+    wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
+    wire                    fc_cfg_apb_psel;
+    wire                    fc_cfg_apb_penable;
+    wire                    fc_cfg_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_prdata;
+    wire                    fc_cfg_apb_pready;
+    wire                    fc_cfg_apb_pslverr;
 
     // =========================================================================
     // FIFO port mux (same logic as tidelink_top.sv)
@@ -195,66 +196,8 @@ module tb_top #(
     assign apb_pready  = apb_sel_tidelink ? tl_regs_pready : 1'b1;
 
     // =========================================================================
-    // FC adapter RX Config path: AHB-to-APB bridge (same as tidelink_top.sv)
-    //   The FC adapter RX config master uses AHB internally. Bridge it to APB
-    //   so we can mux it with the external APB path at the APB level.
-    // =========================================================================
-    wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
-    wire                    fc_cfg_apb_psel;
-    wire                    fc_cfg_apb_penable;
-    wire                    fc_cfg_apb_pwrite;
-    wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
-    wire [SYS_DATA_W-1:0]  fc_cfg_apb_prdata;
-    wire                    fc_cfg_apb_pready;
-    wire                    fc_cfg_apb_pslverr;
-
-    wire                    fc_cfg_ahb_hreadyout;
-    wire                    fc_cfg_ahb_hresp;
-    wire [SYS_DATA_W-1:0]  fc_cfg_ahb_hrdata;
-
-    assign fc_rx_cfg_hready = fc_cfg_ahb_hreadyout;
-    assign fc_rx_cfg_hresp  = fc_cfg_ahb_hresp;
-    assign fc_rx_cfg_hrdata = fc_cfg_ahb_hrdata;
-
-    cmsdk_ahb_to_apb #(
-        .ADDRWIDTH      (APB_ADDR_W),
-        .REGISTER_RDATA (0),
-        .REGISTER_WDATA (0)
-    ) u_fc_cfg_ahb_to_apb (
-        .HCLK      (hclk),
-        .HRESETn   (hresetn),
-        .PCLKEN    (1'b1),
-
-        .HSEL      (fc_rx_cfg_htrans[1]),
-        .HADDR     (fc_rx_cfg_haddr),
-        .HTRANS    (fc_rx_cfg_htrans),
-        .HSIZE     (fc_rx_cfg_hsize),
-        .HPROT     (4'b0011),
-        .HWRITE    (fc_rx_cfg_hwrite),
-        .HREADY    (fc_cfg_ahb_hreadyout),
-        .HWDATA    (fc_rx_cfg_hwdata),
-
-        .HREADYOUT (fc_cfg_ahb_hreadyout),
-        .HRDATA    (fc_cfg_ahb_hrdata),
-        .HRESP     (fc_cfg_ahb_hresp),
-
-        .PADDR     (fc_cfg_apb_paddr),
-        .PSEL      (fc_cfg_apb_psel),
-        .PENABLE   (fc_cfg_apb_penable),
-        .PWRITE    (fc_cfg_apb_pwrite),
-        .PSTRB     (),
-        .PPROT     (),
-        .PWDATA    (fc_cfg_apb_pwdata),
-        .APBACTIVE (),
-
-        .PRDATA    (fc_cfg_apb_prdata),
-        .PREADY    (fc_cfg_apb_pready),
-        .PSLVERR   (fc_cfg_apb_pslverr)
-    );
-
-    // =========================================================================
     // TideLink config APB mux: 2:1 APB mux (same as tidelink_top.sv)
-    //   Source 0 (priority): FC adapter RX config (bridged from AHB above)
+    //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
     //   Source 1: External unified APB port (CPU reads/writes)
     //
     // FC adapter has priority (credit/doorbell delivery is time-sensitive).
@@ -394,14 +337,19 @@ module tb_top #(
         .fc_rx_fifo_hrdata (fc_rx_fifo_hrdata),
 
         // AHB Master -- RX Config path
-        .fc_rx_cfg_haddr   (fc_rx_cfg_haddr),
-        .fc_rx_cfg_hwdata  (fc_rx_cfg_hwdata),
-        .fc_rx_cfg_htrans  (fc_rx_cfg_htrans),
-        .fc_rx_cfg_hsize   (fc_rx_cfg_hsize),
-        .fc_rx_cfg_hwrite  (fc_rx_cfg_hwrite),
-        .fc_rx_cfg_hready  (fc_rx_cfg_hready),
-        .fc_rx_cfg_hresp   (fc_rx_cfg_hresp),
-        .fc_rx_cfg_hrdata  (fc_rx_cfg_hrdata),
+        // APB Master — RX Config path (direct APB, no AHB-to-APB bridge)
+        .fc_rx_cfg_paddr   (fc_cfg_apb_paddr),
+        .fc_rx_cfg_pwdata  (fc_cfg_apb_pwdata),
+        .fc_rx_cfg_psel    (fc_cfg_apb_psel),
+        .fc_rx_cfg_penable (fc_cfg_apb_penable),
+        .fc_rx_cfg_pwrite  (fc_cfg_apb_pwrite),
+        .fc_rx_cfg_prdata  (fc_cfg_apb_prdata),
+        .fc_rx_cfg_pready  (fc_cfg_apb_pready),
+
+        // Servo (not tested at unit level, tied off)
+        .servo_fc_valid    (1'b0),
+        .servo_fc_data     ({FC_DATA_W{1'b0}}),
+        .servo_fc_ready    (),
 
         // FC Node interface (looped back at top of this file)
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),

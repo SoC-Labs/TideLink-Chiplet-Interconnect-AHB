@@ -42,15 +42,14 @@ module tb_top #(
     input  logic                     fc_rx_fifo_hresp,
     input  logic  [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata,
 
-    // ── AHB Master — RX Config Path ─────────────────────────────────────
-    output logic  [APB_ADDR_W-1:0]  fc_rx_cfg_haddr,
-    output logic  [SYS_DATA_W-1:0]  fc_rx_cfg_hwdata,
-    output logic              [1:0]  fc_rx_cfg_htrans,
-    output logic              [2:0]  fc_rx_cfg_hsize,
-    output logic                     fc_rx_cfg_hwrite,
-    input  logic                     fc_rx_cfg_hready,
-    input  logic                     fc_rx_cfg_hresp,
-    input  logic  [SYS_DATA_W-1:0]  fc_rx_cfg_hrdata,
+    // ── APB Master — RX Config Path ─────────────────────────────────────
+    output logic  [APB_ADDR_W-1:0]  fc_rx_cfg_paddr,
+    output logic  [SYS_DATA_W-1:0]  fc_rx_cfg_pwdata,
+    output logic                     fc_rx_cfg_psel,
+    output logic                     fc_rx_cfg_penable,
+    output logic                     fc_rx_cfg_pwrite,
+    input  logic  [SYS_DATA_W-1:0]  fc_rx_cfg_prdata,
+    input  logic                     fc_rx_cfg_pready,
 
     // ── FC Node Interface ────────────────────────────────────────────────
     output logic                     tl_fc_a2l_valid,
@@ -105,15 +104,19 @@ module tb_top #(
         .fc_rx_fifo_hresp  (fc_rx_fifo_hresp),
         .fc_rx_fifo_hrdata (fc_rx_fifo_hrdata),
 
-        // RX Config AHB Master
-        .fc_rx_cfg_haddr   (fc_rx_cfg_haddr),
-        .fc_rx_cfg_hwdata  (fc_rx_cfg_hwdata),
-        .fc_rx_cfg_htrans  (fc_rx_cfg_htrans),
-        .fc_rx_cfg_hsize   (fc_rx_cfg_hsize),
-        .fc_rx_cfg_hwrite  (fc_rx_cfg_hwrite),
-        .fc_rx_cfg_hready  (fc_rx_cfg_hready),
-        .fc_rx_cfg_hresp   (fc_rx_cfg_hresp),
-        .fc_rx_cfg_hrdata  (fc_rx_cfg_hrdata),
+        // RX Config APB Master
+        .fc_rx_cfg_paddr   (fc_rx_cfg_paddr),
+        .fc_rx_cfg_pwdata  (fc_rx_cfg_pwdata),
+        .fc_rx_cfg_psel    (fc_rx_cfg_psel),
+        .fc_rx_cfg_penable (fc_rx_cfg_penable),
+        .fc_rx_cfg_pwrite  (fc_rx_cfg_pwrite),
+        .fc_rx_cfg_prdata  (fc_rx_cfg_prdata),
+        .fc_rx_cfg_pready  (fc_rx_cfg_pready),
+
+        // Servo (not tested at unit level, tied off)
+        .servo_fc_valid    (1'b0),
+        .servo_fc_data     ({FC_DATA_W{1'b0}}),
+        .servo_fc_ready    (),
 
         // FC Node
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),

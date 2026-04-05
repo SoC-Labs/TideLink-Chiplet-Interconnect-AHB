@@ -415,14 +415,15 @@ module tidelink_top #(
     wire                    fc_rx_fifo_hresp;
     wire [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata;
 
-    wire [APB_ADDR_W-1:0]  fc_rx_cfg_haddr;
-    wire [SYS_DATA_W-1:0]  fc_rx_cfg_hwdata;
-    wire              [1:0] fc_rx_cfg_htrans;
-    wire              [2:0] fc_rx_cfg_hsize;
-    wire                    fc_rx_cfg_hwrite;
-    wire                    fc_rx_cfg_hready;
-    wire                    fc_rx_cfg_hresp;
-    wire [SYS_DATA_W-1:0]  fc_rx_cfg_hrdata;
+    // FC adapter RX config path — APB-native (no AHB-to-APB bridge needed)
+    wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
+    wire                    fc_cfg_apb_psel;
+    wire                    fc_cfg_apb_penable;
+    wire                    fc_cfg_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_prdata;
+    wire                    fc_cfg_apb_pready;
+    wire                    fc_cfg_apb_pslverr;
 
     // =========================================================================
     // FIFO port mux: 2:1 AHB mux for FIFO slave port
@@ -500,66 +501,8 @@ module tidelink_top #(
                          apb_sel_tidelink ? tl_regs_pslverr : 1'b0;
 
     // =========================================================================
-    // FC adapter RX Config path: AHB-to-APB bridge
-    //   The FC adapter RX config master uses AHB internally. Bridge it to APB
-    //   so we can mux it with the external APB path at the APB level.
-    // =========================================================================
-    wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
-    wire                    fc_cfg_apb_psel;
-    wire                    fc_cfg_apb_penable;
-    wire                    fc_cfg_apb_pwrite;
-    wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
-    wire [SYS_DATA_W-1:0]  fc_cfg_apb_prdata;
-    wire                    fc_cfg_apb_pready;
-    wire                    fc_cfg_apb_pslverr;
-
-    wire                    fc_cfg_ahb_hreadyout;
-    wire                    fc_cfg_ahb_hresp;
-    wire [SYS_DATA_W-1:0]  fc_cfg_ahb_hrdata;
-
-    assign fc_rx_cfg_hready = fc_cfg_ahb_hreadyout;
-    assign fc_rx_cfg_hresp  = fc_cfg_ahb_hresp;
-    assign fc_rx_cfg_hrdata = fc_cfg_ahb_hrdata;
-
-    cmsdk_ahb_to_apb #(
-        .ADDRWIDTH      (APB_ADDR_W),
-        .REGISTER_RDATA (0),
-        .REGISTER_WDATA (0)
-    ) u_fc_cfg_ahb_to_apb (
-        .HCLK      (hclk),
-        .HRESETn   (hresetn),
-        .PCLKEN    (1'b1),
-
-        .HSEL      (fc_rx_cfg_htrans[1]),
-        .HADDR     (fc_rx_cfg_haddr),
-        .HTRANS    (fc_rx_cfg_htrans),
-        .HSIZE     (fc_rx_cfg_hsize),
-        .HPROT     (4'b0011),
-        .HWRITE    (fc_rx_cfg_hwrite),
-        .HREADY    (fc_cfg_ahb_hreadyout),
-        .HWDATA    (fc_rx_cfg_hwdata),
-
-        .HREADYOUT (fc_cfg_ahb_hreadyout),
-        .HRDATA    (fc_cfg_ahb_hrdata),
-        .HRESP     (fc_cfg_ahb_hresp),
-
-        .PADDR     (fc_cfg_apb_paddr),
-        .PSEL      (fc_cfg_apb_psel),
-        .PENABLE   (fc_cfg_apb_penable),
-        .PWRITE    (fc_cfg_apb_pwrite),
-        .PSTRB     (),
-        .PPROT     (),
-        .PWDATA    (fc_cfg_apb_pwdata),
-        .APBACTIVE (),
-
-        .PRDATA    (fc_cfg_apb_prdata),
-        .PREADY    (fc_cfg_apb_pready),
-        .PSLVERR   (fc_cfg_apb_pslverr)
-    );
-
-    // =========================================================================
     // TideLink config APB mux: 2:1 APB mux
-    //   Source 0 (priority): FC adapter RX config (bridged from AHB above)
+    //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
     //   Source 1: External unified APB port (CPU reads/writes)
     //
     // FC adapter has priority (credit/doorbell delivery is time-sensitive).
@@ -593,9 +536,74 @@ module tidelink_top #(
     assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
 
     // =========================================================================
-    // Address translation wiring
+    // Address translation wiring + pipeline register
     // =========================================================================
-    wire [SYS_ADDR_W-1:0]  translated_sub_haddr;
+    wire [SYS_ADDR_W-1:0]  translated_sub_haddr;  // combinational output from translator
+
+    // Pipeline register: breaks the 256:1 segment mux + adder combinational
+    // path between the address translator and XHB500. Inserts one wait state
+    // per new NONSEQ transfer; SEQ beats pass through without stalling.
+    logic [SYS_ADDR_W-1:0] pipe_haddr_r;
+    logic              [1:0] pipe_htrans_r;
+    logic              [2:0] pipe_hsize_r;
+    logic                    pipe_hwrite_r;
+    logic              [2:0] pipe_hburst_r;
+    logic              [3:0] pipe_hprot_r;
+    logic                    pipe_hsel_r;
+    logic                    pipe_valid_r;   // latched address phase ready for XHB500
+
+    // Detect new address phase on external port
+    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1] & ahb_sub_hready;
+    wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
+
+    // XHB500 hreadyout (raw, before pipeline insertion)
+    wire xhb_sub_hreadyout_raw;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            pipe_haddr_r   <= '0;
+            pipe_htrans_r  <= 2'b00;
+            pipe_hsize_r   <= 3'b0;
+            pipe_hwrite_r  <= 1'b0;
+            pipe_hburst_r  <= 3'b0;
+            pipe_hprot_r   <= 4'b0;
+            pipe_hsel_r    <= 1'b0;
+            pipe_valid_r   <= 1'b0;
+        end else begin
+            if (ext_is_nonseq && !pipe_valid_r) begin
+                // Latch address-phase signals + translated address
+                pipe_haddr_r   <= translated_sub_haddr;
+                pipe_htrans_r  <= ahb_sub_htrans;
+                pipe_hsize_r   <= ahb_sub_hsize;
+                pipe_hwrite_r  <= ahb_sub_hwrite;
+                pipe_hburst_r  <= ahb_sub_hburst;
+                pipe_hprot_r   <= ahb_sub_hprot;
+                pipe_hsel_r    <= 1'b1;
+                pipe_valid_r   <= 1'b1;
+            end else if (pipe_valid_r && xhb_sub_hreadyout_raw) begin
+                // XHB500 accepted the address phase, clear pipeline
+                pipe_valid_r   <= 1'b0;
+                pipe_hsel_r    <= 1'b0;
+                pipe_htrans_r  <= 2'b00;
+            end
+        end
+    end
+
+    // Signals presented to XHB500: pipeline register when valid, pass-through for SEQ
+    wire [SYS_ADDR_W-1:0] xhb_sub_haddr  = pipe_valid_r ? pipe_haddr_r  : translated_sub_haddr;
+    wire              [1:0] xhb_sub_htrans = pipe_valid_r ? pipe_htrans_r : ahb_sub_htrans;
+    wire              [2:0] xhb_sub_hsize  = pipe_valid_r ? pipe_hsize_r  : ahb_sub_hsize;
+    wire                    xhb_sub_hwrite = pipe_valid_r ? pipe_hwrite_r : ahb_sub_hwrite;
+    wire              [2:0] xhb_sub_hburst = pipe_valid_r ? pipe_hburst_r : ahb_sub_hburst;
+    wire              [3:0] xhb_sub_hprot  = pipe_valid_r ? pipe_hprot_r  : ahb_sub_hprot;
+    wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
+    // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
+    // the stale address; once pipeline is valid, pass through XHB500's own hreadyout
+    wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
+                                             (ext_is_nonseq ? 1'b0 : ahb_sub_hready);
+
+    // External hreadyout: stall upstream during the pipeline fill cycle
+    assign ahb_sub_hreadyout = (ext_is_nonseq && !pipe_valid_r) ? 1'b0 : xhb_sub_hreadyout_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -719,14 +727,14 @@ module tidelink_top #(
         .fc_rx_fifo_hrdata (fc_rx_fifo_hrdata),
 
         // AHB Master — RX Config path (internal, via config mux)
-        .fc_rx_cfg_haddr   (fc_rx_cfg_haddr),
-        .fc_rx_cfg_hwdata  (fc_rx_cfg_hwdata),
-        .fc_rx_cfg_htrans  (fc_rx_cfg_htrans),
-        .fc_rx_cfg_hsize   (fc_rx_cfg_hsize),
-        .fc_rx_cfg_hwrite  (fc_rx_cfg_hwrite),
-        .fc_rx_cfg_hready  (fc_rx_cfg_hready),
-        .fc_rx_cfg_hresp   (fc_rx_cfg_hresp),
-        .fc_rx_cfg_hrdata  (fc_rx_cfg_hrdata),
+        // APB Master — RX Config path (direct APB, no AHB-to-APB bridge)
+        .fc_rx_cfg_paddr   (fc_cfg_apb_paddr),
+        .fc_rx_cfg_pwdata  (fc_cfg_apb_pwdata),
+        .fc_rx_cfg_psel    (fc_cfg_apb_psel),
+        .fc_rx_cfg_penable (fc_cfg_apb_penable),
+        .fc_rx_cfg_pwrite  (fc_cfg_apb_pwrite),
+        .fc_rx_cfg_prdata  (fc_cfg_apb_prdata),
+        .fc_rx_cfg_pready  (fc_cfg_apb_pready),
 
         // Servo FC SIDEBAND injection (timestamp exchange)
         .servo_fc_valid    (servo_fc_valid),
@@ -873,21 +881,21 @@ module tidelink_top #(
         .buf_write_error_irq(),
         .irq_en            (1'b0),
 
-        .hsel              (ahb_sub_hsel),
+        .hsel              (xhb_sub_hsel),
         .hnonsec           (1'b0),
-        .haddr             (translated_sub_haddr),
-        .htrans            (ahb_sub_htrans),
-        .hsize             (ahb_sub_hsize),
-        .hwrite            (ahb_sub_hwrite),
-        .hready            (ahb_sub_hready),
-        .hprot             ({3'h0, ahb_sub_hprot}),
-        .hburst            (ahb_sub_hburst),
+        .haddr             (xhb_sub_haddr),
+        .htrans            (xhb_sub_htrans),
+        .hsize             (xhb_sub_hsize),
+        .hwrite            (xhb_sub_hwrite),
+        .hready            (xhb_sub_hready),
+        .hprot             ({3'h0, xhb_sub_hprot}),
+        .hburst            (xhb_sub_hburst),
         .hmastlock         (1'b0),
         .hwdata            (ahb_sub_hwdata),
         .hexcl             (1'b0),
         .hmaster           (12'd0),
         .hrdata            (ahb_sub_hrdata),
-        .hreadyout         (ahb_sub_hreadyout),
+        .hreadyout         (xhb_sub_hreadyout_raw),
         .hresp             (ahb_sub_hresp),
         .hexokay           (),
         .hqos              (4'h0),

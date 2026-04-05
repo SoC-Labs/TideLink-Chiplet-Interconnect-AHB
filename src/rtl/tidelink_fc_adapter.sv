@@ -48,13 +48,13 @@ module tidelink_fc_adapter #(
     // AHB Slave — TX Aperture (CPU/DMA writes FIFO packets here)
     // --------------------------------------------------------------------------
     input  wire                     ahb_tx_hsel,
-    input  wire  [RAM_ADDR_W-1:0]  ahb_tx_haddr,
+    input  wire   [RAM_ADDR_W-1:0]  ahb_tx_haddr,
     input  wire               [1:0] ahb_tx_htrans,
     input  wire               [2:0] ahb_tx_hsize,
     input  wire                     ahb_tx_hwrite,
-    input  wire  [SYS_DATA_W-1:0]  ahb_tx_hwdata,
+    input  wire   [SYS_DATA_W-1:0]  ahb_tx_hwdata,
     input  wire                     ahb_tx_hready,
-    output wire  [SYS_DATA_W-1:0]  ahb_tx_hrdata,
+    output wire   [SYS_DATA_W-1:0]  ahb_tx_hrdata,
     output wire                     ahb_tx_hresp,
     output wire                     ahb_tx_hreadyout,
 
@@ -62,40 +62,39 @@ module tidelink_fc_adapter #(
     // AHB Slave — Returner Interception
     // (Returner AHB master connects here; writes become FC sideband packets)
     // --------------------------------------------------------------------------
-    input  wire  [SYS_ADDR_W-1:0]  rtn_haddr,
-    input  wire  [SYS_DATA_W-1:0]  rtn_hwdata,
+    input  wire   [SYS_ADDR_W-1:0]  rtn_haddr,
+    input  wire   [SYS_DATA_W-1:0]  rtn_hwdata,
     input  wire               [1:0] rtn_htrans,
     input  wire               [2:0] rtn_hsize,
     input  wire                     rtn_hwrite,
     output wire                     rtn_hready,
     output wire                     rtn_hresp,
-    output wire  [SYS_DATA_W-1:0]  rtn_hrdata,
+    output wire   [SYS_DATA_W-1:0]  rtn_hrdata,
 
     // --------------------------------------------------------------------------
     // AHB Master — RX FIFO Path (FIFO_DATA packets → local FIFO data window)
     // Uses addr_offset directly as FIFO byte address (no base address needed)
     // --------------------------------------------------------------------------
-    output wire  [RAM_ADDR_W-1:0]  fc_rx_fifo_haddr,
-    output wire  [SYS_DATA_W-1:0]  fc_rx_fifo_hwdata,
+    output wire   [RAM_ADDR_W-1:0]  fc_rx_fifo_haddr,
+    output wire   [SYS_DATA_W-1:0]  fc_rx_fifo_hwdata,
     output wire               [1:0] fc_rx_fifo_htrans,
     output wire               [2:0] fc_rx_fifo_hsize,
     output wire                     fc_rx_fifo_hwrite,
     input  wire                     fc_rx_fifo_hready,
     input  wire                     fc_rx_fifo_hresp,
-    input  wire  [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata,
+    input  wire   [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata,
 
     // --------------------------------------------------------------------------
-    // AHB Master — RX Config Path (SIDEBAND packets → local APB config regs)
-    // Uses addr_offset directly as APB register offset (no base address needed)
+    // APB Master — RX Config Path (SIDEBAND packets → local APB config regs)
+    // Drives APB directly, eliminating the AHB-to-APB bridge overhead.
     // --------------------------------------------------------------------------
-    output wire  [APB_ADDR_W-1:0]  fc_rx_cfg_haddr,
-    output wire  [SYS_DATA_W-1:0]  fc_rx_cfg_hwdata,
-    output wire               [1:0] fc_rx_cfg_htrans,
-    output wire               [2:0] fc_rx_cfg_hsize,
-    output wire                     fc_rx_cfg_hwrite,
-    input  wire                     fc_rx_cfg_hready,
-    input  wire                     fc_rx_cfg_hresp,
-    input  wire  [SYS_DATA_W-1:0]  fc_rx_cfg_hrdata,
+    output wire  [APB_ADDR_W-1:0]  fc_rx_cfg_paddr,
+    output wire  [SYS_DATA_W-1:0]  fc_rx_cfg_pwdata,
+    output wire                     fc_rx_cfg_psel,
+    output wire                     fc_rx_cfg_penable,
+    output wire                     fc_rx_cfg_pwrite,
+    input  wire  [SYS_DATA_W-1:0]  fc_rx_cfg_prdata,
+    input  wire                     fc_rx_cfg_pready,
 
     // --------------------------------------------------------------------------
     // Servo Timestamp Injection (SIDEBAND packets from PTP servo)
@@ -135,14 +134,16 @@ module tidelink_fc_adapter #(
     // AHB data phase (next cycle): combine latched addr + hwdata → FC word
     // Stall HREADY when FC TX is not ready or returner has priority conflict
 
+    // Forward declarations for skid buffer and arbiter signals (defined below)
+    wire skid_can_accept;
+    wire rtn_fc_valid;
+
     // Address phase detection
     wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite;
 
     // Registered address from address phase (valid in data phase)
     logic [RAM_ADDR_W-1:0] tx_addr_r;
     logic                  tx_data_phase_r;  // Flag: data phase pending
-    
-    wire rtn_fc_valid;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -152,8 +153,8 @@ module tidelink_fc_adapter #(
             if (tx_valid_addr_phase) begin
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
-            end else if (tx_data_phase_r && tl_fc_a2l_ready && !rtn_fc_valid) begin
-                // Data phase completed, FC accepted the word (and returner not blocking)
+            end else if (tx_data_phase_r && skid_can_accept && !rtn_fc_valid && !servo_fc_valid) begin
+                // Data phase completed, skid buffer accepted the word
                 tx_data_phase_r <= 1'b0;
             end
         end
@@ -163,9 +164,9 @@ module tidelink_fc_adapter #(
     wire [FC_DATA_W-1:0] tx_fc_word  = {PKT_FIFO_DATA, tx_addr_r, ahb_tx_hwdata};
     wire                 tx_fc_valid = tx_data_phase_r;
 
-    // TX aperture HREADY: stall when in data phase and FC not ready,
-    // or when returner/servo sideband has priority on the FC TX interface
-    assign ahb_tx_hreadyout = tx_data_phase_r ? (tl_fc_a2l_ready & ~rtn_fc_valid & ~servo_fc_valid) : 1'b1;
+    // TX aperture HREADY: stall when in data phase and skid buffer full,
+    // or when returner/servo have priority on the arbiter
+    assign ahb_tx_hreadyout = tx_data_phase_r ? (skid_can_accept & ~rtn_fc_valid & ~servo_fc_valid) : 1'b1;
     assign ahb_tx_hresp     = 1'b0;  // No error responses
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only
 
@@ -197,7 +198,7 @@ module tidelink_fc_adapter #(
             if (rtn_valid_addr_phase && rtn_hready) begin
                 rtn_addr_latched_r <= rtn_addr_offset;
                 rtn_pending_r      <= 1'b1;
-            end else if (rtn_pending_r && tl_fc_a2l_ready) begin
+            end else if (rtn_pending_r && skid_can_accept) begin
                 rtn_pending_r <= 1'b0;
             end
         end
@@ -207,25 +208,54 @@ module tidelink_fc_adapter #(
     wire [FC_DATA_W-1:0] rtn_fc_word  = {PKT_SIDEBAND, rtn_addr_latched_r, rtn_hwdata};
     assign               rtn_fc_valid = rtn_pending_r;
 
-    // Returner HREADY: stall when pending FC word can't be sent
-    assign rtn_hready = rtn_pending_r ? tl_fc_a2l_ready : 1'b1;
+    // Returner HREADY: stall when pending FC word can't enter skid buffer
+    assign rtn_hready = rtn_pending_r ? skid_can_accept : 1'b1;
     assign rtn_hresp  = 1'b0;
     assign rtn_hrdata = '0;
 
     // =========================================================================
-    // TX Arbiter — Mux TX aperture and returner to single FC TX output
+    // TX Arbiter + Skid Buffer
     // =========================================================================
-    // Priority: returner sideband > TX aperture
-    // (credit/doorbell are infrequent but time-sensitive — delaying credit
-    // return can cause remote FIFO back-pressure)
+    // Priority: returner sideband > servo > TX aperture
+    // A 1-entry skid buffer decouples the Wlink FC ready signal from the
+    // AHB HREADY critical path. Common case (skid empty): AHB completes
+    // without any Wlink timing dependency.
 
-    // Servo FC ready: can send when FC is ready and returner is not active
-    assign servo_fc_ready = tl_fc_a2l_ready & ~rtn_fc_valid;
+    // Arbiter output (combinational)
+    wire                  arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
+    wire [FC_DATA_W-1:0] arb_data  = rtn_fc_valid   ? rtn_fc_word  :
+                                     servo_fc_valid ? servo_fc_data :
+                                     tx_fc_word;
 
-    assign tl_fc_a2l_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
-    assign tl_fc_a2l_data  = rtn_fc_valid   ? rtn_fc_word  :
-                             servo_fc_valid ? servo_fc_data :
-                             tx_fc_word;
+    // Skid buffer registers
+    logic                  skid_valid_r;
+    logic [FC_DATA_W-1:0]  skid_data_r;
+
+    // Skid buffer can accept when empty OR when FC drains it this cycle
+    assign skid_can_accept = ~skid_valid_r | tl_fc_a2l_ready;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            skid_valid_r <= 1'b0;
+            skid_data_r  <= '0;
+        end else begin
+            if (arb_valid && skid_can_accept) begin
+                // Load new word from arbiter
+                skid_valid_r <= 1'b1;
+                skid_data_r  <= arb_data;
+            end else if (skid_valid_r && tl_fc_a2l_ready) begin
+                // Drain: FC accepted, no new word
+                skid_valid_r <= 1'b0;
+            end
+        end
+    end
+
+    // FC interface driven from skid buffer
+    assign tl_fc_a2l_valid = skid_valid_r;
+    assign tl_fc_a2l_data  = skid_data_r;
+
+    // Servo FC ready: can enter arbiter when skid accepts and returner inactive
+    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)
@@ -259,8 +289,8 @@ module tidelink_fc_adapter #(
     // Route selection: which AHB master port to drive
     wire rx_is_fifo = (rx_pkt_type == PKT_FIFO_DATA);
 
-    // HREADY from the active target port
-    wire rx_active_hready = rx_is_fifo ? fc_rx_fifo_hready : fc_rx_cfg_hready;
+    // Ready from the active target port (AHB for FIFO, APB for config)
+    wire rx_active_hready = rx_is_fifo ? fc_rx_fifo_hready : fc_rx_cfg_pready;
 
     // Accept FC RX data when idle and a word is available
     wire rx_accept = tl_fc_l2a_valid & (rx_state_r == RX_IDLE) & ~rx_pending_r;
@@ -319,12 +349,16 @@ module tidelink_fc_adapter #(
     assign fc_rx_fifo_hwdata = (rx_state_r == RX_DATA_PHASE && rx_is_fifo) ? rx_payload : '0;
 
     // -------------------------------------------------------------------------
-    // RX Config AHB Master — drives SIDEBAND writes to local APB config regs
+    // RX Config APB Master — drives SIDEBAND writes to local APB config regs
+    // Maps RX FSM states to APB protocol:
+    //   RX_ADDR_PHASE = APB setup phase  (psel=1, penable=0)
+    //   RX_DATA_PHASE = APB access phase (psel=1, penable=1)
     // -------------------------------------------------------------------------
-    assign fc_rx_cfg_haddr  = (rx_state_r == RX_ADDR_PHASE && !rx_is_fifo) ? rx_addr_offset[APB_ADDR_W-1:0] : '0;
-    assign fc_rx_cfg_htrans = (rx_state_r == RX_ADDR_PHASE && !rx_is_fifo) ? HTRANS_NONSEQ : HTRANS_IDLE;
-    assign fc_rx_cfg_hsize  = HSIZE_WORD;
-    assign fc_rx_cfg_hwrite = (rx_state_r == RX_ADDR_PHASE && !rx_is_fifo) ? 1'b1 : 1'b0;
-    assign fc_rx_cfg_hwdata = (rx_state_r == RX_DATA_PHASE && !rx_is_fifo) ? rx_payload : '0;
+    wire rx_cfg_active = !rx_is_fifo && (rx_state_r == RX_ADDR_PHASE || rx_state_r == RX_DATA_PHASE);
+    assign fc_rx_cfg_paddr   = rx_addr_offset[APB_ADDR_W-1:0];
+    assign fc_rx_cfg_pwdata  = rx_payload;
+    assign fc_rx_cfg_pwrite  = 1'b1;  // all sideband writes
+    assign fc_rx_cfg_psel    = rx_cfg_active;
+    assign fc_rx_cfg_penable = !rx_is_fifo && (rx_state_r == RX_DATA_PHASE);
 
 endmodule

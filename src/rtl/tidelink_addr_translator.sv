@@ -79,43 +79,49 @@ wire             i_pslverr_mux;
 
 // endian handling
 wire             APBACTIVE;
-wire             bigendian;
-assign           bigendian = (BE!=0) ? 1'b1 : 1'b0;
 
 wire   [31:0]    hwdata_le; // Little endian write data
 wire   [31:0]    hrdata_le; // Little endian read data
-wire             reg_be_swap_ctrl_en = chp_adr_hsel & chp_adr_htrans[1] & chp_adr_hready & bigendian;
-reg     [1:0]    reg_be_swap_ctrl; // registered byte swap control
-wire    [1:0]    nxt_be_swap_ctrl; // next state of byte swap control
 
-assign nxt_be_swap_ctrl[1] = bigendian & (chp_adr_hsize[1:0]==2'b10); // Swap upper and lower half word
-assign nxt_be_swap_ctrl[0] = bigendian & (chp_adr_hsize[1:0]!=2'b00); // Swap byte within hafword
+generate
+if (BE != 0) begin : gen_be_swap
+    wire bigendian = 1'b1;
+    wire reg_be_swap_ctrl_en = chp_adr_hsel & chp_adr_htrans[1] & chp_adr_hready;
+    reg     [1:0]    reg_be_swap_ctrl;
+    wire    [1:0]    nxt_be_swap_ctrl;
 
-// Register byte swap control for data phase
-always @(posedge CLK or negedge RESETn)
-begin
-if (~RESETn)
-    reg_be_swap_ctrl <= 2'b00;
-else if (reg_be_swap_ctrl_en)
-    reg_be_swap_ctrl <= nxt_be_swap_ctrl;
+    assign nxt_be_swap_ctrl[1] = (chp_adr_hsize[1:0]==2'b10); // Swap upper and lower half word
+    assign nxt_be_swap_ctrl[0] = (chp_adr_hsize[1:0]!=2'b00); // Swap byte within halfword
+
+    always @(posedge CLK or negedge RESETn)
+    begin
+    if (~RESETn)
+        reg_be_swap_ctrl <= 2'b00;
+    else if (reg_be_swap_ctrl_en)
+        reg_be_swap_ctrl <= nxt_be_swap_ctrl;
+    end
+
+    // swap byte within half word
+    wire  [31:0] hwdata_mux_1 = (reg_be_swap_ctrl[0]) ?
+        {chp_adr_hwdata[23:16],chp_adr_hwdata[31:24],chp_adr_hwdata[7:0],chp_adr_hwdata[15:8]}:
+        {chp_adr_hwdata[31:24],chp_adr_hwdata[23:16],chp_adr_hwdata[15:8],chp_adr_hwdata[7:0]};
+    // swap lower and upper half word
+    assign       hwdata_le    = (reg_be_swap_ctrl[1]) ?
+        {hwdata_mux_1[15: 0],hwdata_mux_1[31:16]}:
+        {hwdata_mux_1[31:16],hwdata_mux_1[15:0]};
+    // swap byte within half word
+    wire  [31:0] hrdata_mux_1 = (reg_be_swap_ctrl[0]) ?
+        {hrdata_le[23:16],hrdata_le[31:24],hrdata_le[ 7:0],hrdata_le[15:8]}:
+        {hrdata_le[31:24],hrdata_le[23:16],hrdata_le[15:8],hrdata_le[7:0]};
+    // swap lower and upper half word
+    assign    chp_adr_hrdata       = (reg_be_swap_ctrl[1]) ?
+        {hrdata_mux_1[15: 0],hrdata_mux_1[31:16]}:
+        {hrdata_mux_1[31:16],hrdata_mux_1[15:0]};
+end else begin : gen_no_swap
+    assign hwdata_le       = chp_adr_hwdata;
+    assign chp_adr_hrdata  = hrdata_le;
 end
-
-// swap byte within half word
-wire  [31:0] hwdata_mux_1 = (reg_be_swap_ctrl[0] & bigendian) ?
-    {chp_adr_hwdata[23:16],chp_adr_hwdata[31:24],chp_adr_hwdata[7:0],chp_adr_hwdata[15:8]}:
-    {chp_adr_hwdata[31:24],chp_adr_hwdata[23:16],chp_adr_hwdata[15:8],chp_adr_hwdata[7:0]};
-// swap lower and upper half word
-assign       hwdata_le    = (reg_be_swap_ctrl[1] & bigendian) ?
-    {hwdata_mux_1[15: 0],hwdata_mux_1[31:16]}:
-    {hwdata_mux_1[31:16],hwdata_mux_1[15:0]};
-// swap byte within half word
-wire  [31:0] hrdata_mux_1 = (reg_be_swap_ctrl[0] & bigendian) ?
-    {hrdata_le[23:16],hrdata_le[31:24],hrdata_le[ 7:0],hrdata_le[15:8]}:
-    {hrdata_le[31:24],hrdata_le[23:16],hrdata_le[15:8],hrdata_le[7:0]};
-// swap lower and upper half word
-assign    chp_adr_hrdata       = (reg_be_swap_ctrl[1] & bigendian) ?
-    {hrdata_mux_1[15: 0],hrdata_mux_1[31:16]}:
-    {hrdata_mux_1[31:16],hrdata_mux_1[15:0]};
+endgenerate
 
   // AHB to APB bus bridge
   cmsdk_ahb_to_apb
@@ -159,20 +165,20 @@ assign    chp_adr_hrdata       = (reg_be_swap_ctrl[1] & bigendian) ?
   cmsdk_apb_slave_mux #( // Parameter to determine which ports are used
     .PORT0_ENABLE  (1), // address translator 0
     .PORT1_ENABLE  (1), // address translator 1
-    .PORT2_ENABLE  (1), // not used
-    .PORT3_ENABLE  (1), // not used
-    .PORT4_ENABLE  (1), // not used
-    .PORT5_ENABLE  (1), // not used
-    .PORT6_ENABLE  (1), // not used
-    .PORT7_ENABLE  (1), // not used
-    .PORT8_ENABLE  (1), // not used
-    .PORT9_ENABLE  (1), // not used
-    .PORT10_ENABLE (1), // not used
-    .PORT11_ENABLE (1), // not used
-    .PORT12_ENABLE (1), // not used
-    .PORT13_ENABLE (1), // not used
-    .PORT14_ENABLE (1), // not used
-    .PORT15_ENABLE (1)
+    .PORT2_ENABLE  (0), // not used
+    .PORT3_ENABLE  (0), // not used
+    .PORT4_ENABLE  (0), // not used
+    .PORT5_ENABLE  (0), // not used
+    .PORT6_ENABLE  (0), // not used
+    .PORT7_ENABLE  (0), // not used
+    .PORT8_ENABLE  (0), // not used
+    .PORT9_ENABLE  (0), // not used
+    .PORT10_ENABLE (0), // not used
+    .PORT11_ENABLE (0), // not used
+    .PORT12_ENABLE (0), // not used
+    .PORT13_ENABLE (0), // not used
+    .PORT14_ENABLE (0), // not used
+    .PORT15_ENABLE (0)
   ) u_apb_slave_mux (
     // Inputs
     .DECODE4BIT        (i_paddr[15:12]),

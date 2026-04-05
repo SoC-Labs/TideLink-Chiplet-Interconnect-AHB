@@ -378,7 +378,8 @@ async def test_r1_12_credit_delta_capture(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    await RisingEdge(dut.hclk)
+    # release_credits_trigger is pipelined by one cycle
+    await ClockCycles(dut.hclk, 2)
 
     delta = int(dut.credit_delta_data.value)
     assert delta == 6, f"Expected delta 6 (5+1), got {delta}"
@@ -515,7 +516,8 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    await RisingEdge(dut.hclk)
+    # release_credits_trigger is pipelined by one cycle
+    await ClockCycles(dut.hclk, 2)
 
     # credit_delta_data should have the full batch (10)
     delta = int(dut.credit_delta_data.value)
@@ -539,7 +541,8 @@ async def test_thresh_06_threshold_zero_immediate(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    await RisingEdge(dut.hclk)
+    # release_credits_trigger is pipelined by one cycle
+    await ClockCycles(dut.hclk, 2)
 
     delta = int(dut.credit_delta_data.value)
     assert delta == 8, f"Expected immediate delta=8 (7+1), got {delta}"

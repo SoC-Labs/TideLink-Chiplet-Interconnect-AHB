@@ -96,10 +96,40 @@ class APBMaster:
 
 # ── Testbench Environment ────────────────────────────────────────────────────
 
+_prev_slave_task = None  # Track previous AHBLiteSlaveRAM background coroutine
+
+
+def _create_slave_ram(bus, clock, reset, **kwargs):
+    """Create AHBLiteSlaveRAM and capture its background task handle."""
+    global _prev_slave_task
+    captured_task = None
+    original_start_soon = cocotb.start_soon
+
+    def capturing_start_soon(coro):
+        nonlocal captured_task
+        task = original_start_soon(coro)
+        captured_task = task
+        return task
+
+    cocotb.start_soon = capturing_start_soon
+    try:
+        slave = AHBLiteSlaveRAM(bus, clock, reset, **kwargs)
+    finally:
+        cocotb.start_soon = original_start_soon
+
+    _prev_slave_task = captured_task
+    return slave
+
+
 class TidelinkTB:
-    """Reusable testbench environment for the tidelink top-level module."""
+    """Reusable testbench environment for the tidelink top-level module.
+
+    The previous AHBLiteSlaveRAM's background task is killed before creating
+    a new one to prevent bus contention from stale driver coroutines.
+    """
 
     def __init__(self, dut):
+        global _prev_slave_task
         self.dut = dut
         self.log = dut._log
 
@@ -112,10 +142,13 @@ class TidelinkTB:
             ahbs_bus, dut.hclk, dut.hresetn, timeout=200
         )
 
+        # Kill previous slave's background coroutine before creating a new one
+        if _prev_slave_task is not None:
+            _prev_slave_task.kill()
+
         ahbm_bus = AHBBus.from_prefix(dut, "ahbm")
-        self.ahb_slave = AHBLiteSlaveRAM(
-            ahbm_bus, dut.hclk, dut.hresetn,
-            mem_size=4096,
+        self.ahb_slave = _create_slave_ram(
+            ahbm_bus, dut.hclk, dut.hresetn, mem_size=4096
         )
 
         self.apb = APBMaster(dut, dut.hclk)
@@ -1259,6 +1292,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
             yield 1  # ready
 
     # Create a fresh TB but with back-pressure on the AHB slave
+    global _prev_slave_task
     dut._log.info("Setting up TB with AHB slave back-pressure")
     cocotb.start_soon(
         Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
@@ -1267,8 +1301,12 @@ async def test_cov_11_ahb_master_wait_states(dut):
     ahbs_bus = AHBBus.from_prefix(dut, "ahbs")
     ahb_master = AHBLiteMaster(ahbs_bus, dut.hclk, dut.hresetn, timeout=200)
 
+    # Kill previous slave before creating back-pressure variant
+    if _prev_slave_task is not None:
+        _prev_slave_task.kill()
+
     ahbm_bus = AHBBus.from_prefix(dut, "ahbm")
-    ahb_slave_bp = AHBLiteSlaveRAM(
+    ahb_slave_bp = _create_slave_ram(
         ahbm_bus, dut.hclk, dut.hresetn,
         mem_size=4096,
         bp=bp_generator(),
@@ -1344,10 +1382,12 @@ async def test_cov_11_ahb_master_wait_states(dut):
     dut.ahbs_haddr.value = 0x3FFF
 
     # Wait longer for returner to complete (wait states slow it down)
-    for _ in range(50):
+    for _ in range(100):
         await RisingEdge(dut.hclk)
         if not int(dut.u_dut.returner_busy.value):
             break
+    # Extra settle time for AHB slave to capture the write data
+    await ClockCycles(dut.hclk, 5)
 
     # Verify the returner completed successfully despite wait states
     returner_data = int.from_bytes(

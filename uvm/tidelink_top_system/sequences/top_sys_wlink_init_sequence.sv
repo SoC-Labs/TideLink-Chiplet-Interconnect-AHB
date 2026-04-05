@@ -25,10 +25,27 @@ class top_sys_wlink_init_sequence extends uvm_sequence #(apb_master_transaction)
   endfunction
 
   virtual task body();
-    // Wlink is enabled by default after reset (swi_enable=1).
+    apb_master_transaction wr_txn;
+
+    // ── Step 1: Lock the chiplet controller role ─────────────────────────
+    // The role defaults from the role_strap_i pin (master=0, slave=1).
+    // Writing ROLE_CFG[1]=1 (lock) releases Wlink from POR hold and allows
+    // link training to begin. swi_enable defaults to 1, so training is
+    // automatic once POR deasserts.
+    //
+    // ROLE_CFG register is at TideLink APB offset 0x2080 (Region 4, addr 0).
+    `uvm_info("WLINK_INIT", $sformatf("[%s] Locking chiplet controller role (accepting strap default).",
+      side_name), UVM_LOW)
+
+    `uvm_create(wr_txn)
+    wr_txn.paddr  = 15'h2080;  // ROLE_CFG
+    wr_txn.pwdata = 32'h0000_0002;  // role_lock=1, role=0 (accept strap default)
+    wr_txn.pwrite = 1;
+    `uvm_send(wr_txn)
+
+    // ── Step 2: Wait for link training ───────────────────────────────────
     // GPIO PHY link training happens automatically when both sides are active.
-    // No APB writes needed for default configuration.
-    `uvm_info("WLINK_INIT", $sformatf("[%s] Wlink uses default reset configuration (enabled).",
+    `uvm_info("WLINK_INIT", $sformatf("[%s] Role locked. Wlink link training in progress.",
       side_name), UVM_LOW)
   endtask
 

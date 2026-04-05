@@ -31,16 +31,44 @@ PAIR_DOORBELL_RESPONSE_ADDR = PAIR_DOORBELL_RESPONSE_OFFSET
 
 # ── Testbench Environment ────────────────────────────────────────────────────
 
+_prev_slave_task = None  # Track previous AHBLiteSlaveRAM background coroutine
+
+
+def _create_slave_ram(bus, clock, reset, **kwargs):
+    """Create AHBLiteSlaveRAM and capture its background task handle.
+
+    AHBLiteSlave.__init__ calls cocotb.start_soon(self._proc_txn()) internally.
+    We temporarily wrap start_soon to intercept the task handle.
+    """
+    global _prev_slave_task
+    captured_task = None
+    original_start_soon = cocotb.start_soon
+
+    def capturing_start_soon(coro):
+        nonlocal captured_task
+        task = original_start_soon(coro)
+        captured_task = task
+        return task
+
+    cocotb.start_soon = capturing_start_soon
+    try:
+        slave = AHBLiteSlaveRAM(bus, clock, reset, **kwargs)
+    finally:
+        cocotb.start_soon = original_start_soon
+
+    _prev_slave_task = captured_task
+    return slave
+
+
 class TidelinkAhbTB:
     """Reusable testbench for tidelink_fifo_ahb.
 
-    NOTE: cocotbext AHB drivers spawn persistent coroutines. Multiple
-    TidelinkAhbTB instances across tests cause bus contention on the
-    returner master bus (ahbm_*). Tests that exercise the returner
-    write-back path may fail when run sequentially after other tests.
+    The previous AHBLiteSlaveRAM's background task is killed before creating
+    a new one to prevent bus contention from stale driver coroutines.
     """
 
     def __init__(self, dut):
+        global _prev_slave_task
         self.dut = dut
         self.log = dut._log
 
@@ -48,23 +76,23 @@ class TidelinkAhbTB:
             Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
         )
 
-        # FIFO data path AHB master
         ahbs_bus = AHBBus.from_prefix(dut, "ahbs")
         self.ahb_fifo = AHBLiteMaster(
             ahbs_bus, dut.hclk, dut.hresetn, timeout=200
         )
 
-        # Config register AHB master (goes through AHB-to-APB bridge)
         ahbc_bus = AHBBus.from_prefix(dut, "ahbc")
         self.ahb_cfg = AHBLiteMaster(
             ahbc_bus, dut.hclk, dut.hresetn, timeout=200
         )
 
-        # Returner AHB slave (captures returner writes)
+        # Kill previous slave's background coroutine before creating a new one
+        if _prev_slave_task is not None:
+            _prev_slave_task.kill()
+
         ahbm_bus = AHBBus.from_prefix(dut, "ahbm")
-        self.ahb_slave = AHBLiteSlaveRAM(
-            ahbm_bus, dut.hclk, dut.hresetn,
-            mem_size=4096,
+        self.ahb_slave = _create_slave_ram(
+            ahbm_bus, dut.hclk, dut.hresetn, mem_size=4096
         )
 
         self.sw_credit_count = MAX_CREDITS

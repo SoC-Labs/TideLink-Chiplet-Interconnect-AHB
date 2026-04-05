@@ -83,7 +83,13 @@ module tidelink_apb_regs #(
     // Timestamp mailbox pass-through (Region 3 writes from FC SIDEBAND)
     output logic                    mbox_reg_write,
     output logic              [2:0] mbox_reg_addr,
-    output logic [SYS_DATA_W-1:0]  mbox_reg_wdata
+    output logic [SYS_DATA_W-1:0]  mbox_reg_wdata,
+
+    // Chiplet controller register pass-through (Region 4)
+    output logic                    ctrl_reg_write,
+    output logic              [2:0] ctrl_reg_addr,
+    output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
+    input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata
 );
 
     // -------------------------------------------------------------------------
@@ -109,14 +115,20 @@ module tidelink_apb_regs #(
     //   0x038: PTP_RX_PAYLOAD           (RO) - pass-through to tidelink_ptp
     //   0x03C: PTP_STATUS               (RO) - pass-through to tidelink_ptp
     //
-    // Region 2 (paddr[6:5]=10): PTP HW Sync Initiator
+    // Region 2 (paddr[7:5]=010): PTP HW Sync Initiator
     //   0x040: HW_SYNC_CTRL            (RW) - [0] enable, [1] seq_clear (W1C), [2] force_en
     //   0x044: HW_SYNC_INTERVAL        (RW) - pass-through to tidelink_ptp
     //   0x048: HW_SYNC_STATUS          (RO) - [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
+    //
+    // Region 4 (paddr[7:5]=100): Chiplet Controller Role Configuration
+    //   0x080: ROLE_CFG                (RW) - pass-through to axi_chiplet_controller
+    //   0x084: ROLE_STATUS             (RO) - pass-through
+    //   0x088: I2C_SLV_ADDR           (RW) - pass-through
+    //   0x08C: I2C_PRESCALE           (RW) - pass-through
     // -------------------------------------------------------------------------
 
-    // APB decode
-    wire [1:0] apb_region = paddr[6:5];
+    // APB decode (3-bit region select for Regions 0-4)
+    wire [2:0] apb_region = paddr[7:5];
     wire apb_write  = psel && penable && pwrite;
     wire apb_read   = psel && penable && !pwrite;
 
@@ -139,7 +151,7 @@ module tidelink_apb_regs #(
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
 
-            if (apb_write && (apb_region == 2'b00) && paddr[4:2] == 3'h7) begin
+            if (apb_write && (apb_region == 3'b000) && paddr[4:2] == 3'h7) begin
                 if (pwdata[1])
                     ctrl_flush_r <= 1'b1;
             end
@@ -154,7 +166,7 @@ module tidelink_apb_regs #(
         end else begin
             doorbell_trigger <= 1'b0;
 
-            if (apb_write && (apb_region == 2'b00)) begin
+            if (apb_write && (apb_region == 3'b000)) begin
                 case (paddr[4:2])
                     3'h0: pair_base_addr    <= pwdata[SYS_ADDR_W-1:0];
                     3'h1: release_threshold <= pwdata;
@@ -187,9 +199,9 @@ module tidelink_apb_regs #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             released_credits_acc <= '0;
-        end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
+        end else if (apb_read && (apb_region == 3'b001) && paddr[4:2] == 3'h0) begin
             released_credits_acc <= '0;
-        end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
+        end else if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0) begin
             // Saturating 16-bit add: clamp at 0xFFFF on overflow
             if ({1'b0, released_credits_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
                 released_credits_acc <= 16'hFFFF;
@@ -207,9 +219,9 @@ module tidelink_apb_regs #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             doorbell_response_acc <= '0;
-        end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
+        end else if (apb_read && (apb_region == 3'b001) && paddr[4:2] == 3'h1) begin
             doorbell_response_acc <= '0;
-        end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
+        end else if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h1) begin
             // Saturating 16-bit add: clamp at 0xFFFF on overflow
             if ({1'b0, doorbell_response_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
                 doorbell_response_acc <= 16'hFFFF;
@@ -225,15 +237,15 @@ module tidelink_apb_regs #(
     logic [SYS_DATA_W-1:0] pair_credit_counter;
     logic                  pair_credit_counter_en;
 
-    wire pair_counter_increment = apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h0;
-    wire pair_counter_decrement = apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h3;
+    wire pair_counter_increment = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
+    wire pair_counter_decrement = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h3;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pair_credit_counter    <= '0;
             pair_credit_counter_en <= 1'b1;
         end else begin
-            if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h4) begin
+            if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h4) begin
                 pair_credit_counter_en <= pwdata[0];
             end
 
@@ -320,29 +332,34 @@ module tidelink_apb_regs #(
     // PTP basic registers occupy Region 1 offsets 0x034/0x038/0x03C (paddr[4:2] = 5/6/7).
     // PTP HW sync registers occupy Region 2 offsets 0x040/0x044/0x048 (paddr[4:2] = 0/1/2).
     // Write/read decode is forwarded to the tidelink_ptp module via direct wires.
-    assign ptp_reg_write  = (apb_write && (apb_region == 2'b01) && (paddr[4:2] >= 3'h5)) ||
-                            (apb_write && (apb_region == 2'b10) && (paddr[4:2] <= 3'h2));
+    assign ptp_reg_write  = (apb_write && (apb_region == 3'b001) && (paddr[4:2] >= 3'h5)) ||
+                            (apb_write && (apb_region == 3'b010) && (paddr[4:2] <= 3'h2));
     assign ptp_reg_addr   = paddr[4:2];
     assign ptp_reg_wdata  = pwdata;
-    assign ptp_reg_region = (apb_region == 2'b10);
+    assign ptp_reg_region = (apb_region == 3'b010);
 
     // Servo config: Region 2 addr 3-7 (offsets 0x04C-0x05C) → servo_reg_addr 0-4
     // Servo status: Region 3 addr 0-1 (offsets 0x060-0x064) → servo_reg_addr 5-6
-    assign servo_reg_write = apb_write && (apb_region == 2'b10) && (paddr[4:2] >= 3'h3);
-    assign servo_reg_addr  = (apb_region == 2'b11) ? (3'h5 + paddr[4:2]) : (paddr[4:2] - 3'h3);
+    assign servo_reg_write = apb_write && (apb_region == 3'b010) && (paddr[4:2] >= 3'h3);
+    assign servo_reg_addr  = (apb_region == 3'b011) ? (3'h5 + paddr[4:2]) : (paddr[4:2] - 3'h3);
     assign servo_reg_wdata = pwdata;
 
     // Timestamp mailbox: Region 3 (offsets 0x060-0x07C, written by FC SIDEBAND)
-    assign mbox_reg_write = apb_write && (apb_region == 2'b11);
+    assign mbox_reg_write = apb_write && (apb_region == 3'b011);
     assign mbox_reg_addr  = paddr[4:2];
     assign mbox_reg_wdata = pwdata;
+
+    // Chiplet controller: Region 4 (offsets 0x080-0x09C)
+    assign ctrl_reg_write = apb_write && (apb_region == 3'b100);
+    assign ctrl_reg_addr  = paddr[4:2];
+    assign ctrl_reg_wdata = pwdata;
 
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 
     always_comb begin
         prdata = '0;
         case (apb_region)
-            2'b00: begin // Region 0: Configuration and Status
+            3'b000: begin // Region 0: Configuration and Status
                 case (paddr[4:2])
                     3'h0:    prdata = pair_base_addr;
                     3'h1:    prdata = release_threshold;
@@ -361,7 +378,7 @@ module tidelink_apb_regs #(
                     default: ;
                 endcase
             end
-            2'b01: begin // Region 1: Credits + PTP Basic
+            3'b001: begin // Region 1: Credits + PTP Basic
                 case (paddr[4:2])
                     3'h0:    prdata = {{16{1'b0}}, released_credits_acc};
                     3'h1:    prdata = {{16{1'b0}}, doorbell_response_acc};
@@ -373,15 +390,19 @@ module tidelink_apb_regs #(
                     default: ;
                 endcase
             end
-            2'b10: begin // Region 2: PTP HW Sync (addr 0-2) + Servo Config (addr 3-7)
+            3'b010: begin // Region 2: PTP HW Sync (addr 0-2) + Servo Config (addr 3-7)
                 if (paddr[4:2] >= 3'h3)
                     prdata = servo_reg_rdata;
                 else
                     prdata = ptp_reg_rdata;
             end
-            2'b11: begin // Region 3: Servo status + Mailbox (read-only)
+            3'b011: begin // Region 3: Servo status + Mailbox (read-only)
                 prdata = servo_reg_rdata;
             end
+            3'b100: begin // Region 4: Chiplet controller role config (pass-through)
+                prdata = ctrl_reg_rdata;
+            end
+            default: ;
         endcase
     end
 

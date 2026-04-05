@@ -254,7 +254,69 @@ module tidelink_top #(
     // --------------------------------------------------------------------------
     // Reset output
     // --------------------------------------------------------------------------
-    output wire                     d2d_reset_o
+    output wire                     d2d_reset_o,
+
+    // --------------------------------------------------------------------------
+    // Chiplet Controller Role Selection
+    // --------------------------------------------------------------------------
+    input  wire                     role_strap_i,        // 0=master, 1=slave
+    output wire                     role_is_master_o,
+    output wire                     role_locked_o,
+
+    // --------------------------------------------------------------------------
+    // I2C Sideband (open-drain tristate)
+    // --------------------------------------------------------------------------
+    input  wire                     i2c_scl_i,
+    output wire                     i2c_scl_o,
+    output wire                     i2c_scl_t,
+    input  wire                     i2c_sda_i,
+    output wire                     i2c_sda_o,
+    output wire                     i2c_sda_t,
+
+    // --------------------------------------------------------------------------
+    // I2C Sideband AXI (master mode: CPU → I2C master → remote)
+    // --------------------------------------------------------------------------
+    input  wire                     s_i2c_axi_awvalid,
+    input  wire               [1:0] s_i2c_axi_awid,
+    input  wire               [3:0] s_i2c_axi_awaddr,
+    input  wire               [7:0] s_i2c_axi_awlen,
+    input  wire               [2:0] s_i2c_axi_awsize,
+    input  wire               [1:0] s_i2c_axi_awburst,
+    input  wire                     s_i2c_axi_awlock,
+    input  wire               [3:0] s_i2c_axi_awcache,
+    input  wire               [2:0] s_i2c_axi_awprot,
+    output wire                     s_i2c_axi_awready,
+    input  wire                     s_i2c_axi_wvalid,
+    input  wire  [SYS_DATA_W-1:0]  s_i2c_axi_wdata,
+    input  wire               [3:0] s_i2c_axi_wstrb,
+    input  wire                     s_i2c_axi_wlast,
+    output wire                     s_i2c_axi_wready,
+    output wire                     s_i2c_axi_bvalid,
+    output wire               [1:0] s_i2c_axi_bid,
+    output wire               [1:0] s_i2c_axi_bresp,
+    input  wire                     s_i2c_axi_bready,
+    input  wire                     s_i2c_axi_arvalid,
+    input  wire               [1:0] s_i2c_axi_arid,
+    input  wire               [3:0] s_i2c_axi_araddr,
+    input  wire               [7:0] s_i2c_axi_arlen,
+    input  wire               [2:0] s_i2c_axi_arsize,
+    input  wire               [1:0] s_i2c_axi_arburst,
+    input  wire                     s_i2c_axi_arlock,
+    input  wire               [3:0] s_i2c_axi_arcache,
+    input  wire               [2:0] s_i2c_axi_arprot,
+    output wire                     s_i2c_axi_arready,
+    output wire                     s_i2c_axi_rvalid,
+    output wire               [1:0] s_i2c_axi_rid,
+    output wire  [SYS_DATA_W-1:0]  s_i2c_axi_rdata,
+    output wire               [1:0] s_i2c_axi_rresp,
+    output wire                     s_i2c_axi_rlast,
+    input  wire                     s_i2c_axi_rready,
+
+    // --------------------------------------------------------------------------
+    // I2C Interrupts
+    // --------------------------------------------------------------------------
+    output wire                     i2c_nbsy_irq,
+    output wire                     i2c_nrd_empty_irq
 );
 
     // =========================================================================
@@ -391,6 +453,12 @@ module tidelink_top #(
     wire                   mbox_reg_write;
     wire            [2:0]  mbox_reg_addr;
     wire [SYS_DATA_W-1:0] mbox_reg_wdata;
+
+    // Chiplet controller register interface (APB regs Region 4 ↔ controller)
+    wire                   ctrl_reg_write;
+    wire            [2:0]  ctrl_reg_addr;
+    wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
+    wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
     // Servo ↔ PTP event signals
     wire                   sync_tx_done;
@@ -656,6 +724,12 @@ module tidelink_top #(
         .mbox_reg_write      (mbox_reg_write),
         .mbox_reg_addr       (mbox_reg_addr),
         .mbox_reg_wdata      (mbox_reg_wdata),
+
+        // Chiplet controller register pass-through
+        .ctrl_reg_write      (ctrl_reg_write),
+        .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_wdata      (ctrl_reg_wdata),
+        .ctrl_reg_rdata      (ctrl_reg_rdata),
 
         // FC direct write (from FC adapter, bypasses AHB for FIFO writes)
         .fc_wr_valid         (fc_rx_fifo_valid),
@@ -1123,35 +1197,44 @@ module tidelink_top #(
     );
 
     // =========================================================================
-    // 6. Chiplet Controller (Wlink with TideLink FC node)
-    //    Handles link layer, flow control, CRC/ECC, and SERDES PHY
-    //    Generated module: Wlink (Chisel output)
-    //    Note: Wlink uses active-high resets
+    // 6. Generic Chiplet Controller (Wlink + I2C master/slave + role selection)
+    //    Wraps the Chisel-generated Wlink core with runtime master/slave role
+    //    selection, I2C sideband, and APB mux for Wlink register access.
     // =========================================================================
-    Wlink u_chiplet_controller (
+    axi_chiplet_controller u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
         .user_hsclk                 (user_ref_clk),
 
-        .apb_reset                  (~hresetn),
-        .por_reset                  (~poresetn),
-        .app_clk_reset              (~hresetn),
+        .poresetn                   (poresetn),
+        .hresetn                    (hresetn),
 
         .sb_reset_in                (1'b0),
         .sb_reset_out               (d2d_reset_o),
         .sb_wake                    (),
 
+        // Role configuration
+        .role_strap_i               (role_strap_i),
+        .role_is_master_o           (role_is_master_o),
+        .role_locked_o              (role_locked_o),
+
+        // Controller register pass-through (from tidelink_apb_regs Region 4)
+        .ctrl_reg_write             (ctrl_reg_write),
+        .ctrl_reg_addr              (ctrl_reg_addr),
+        .ctrl_reg_wdata             (ctrl_reg_wdata),
+        .ctrl_reg_rdata             (ctrl_reg_rdata),
+
         // APB control interface (from unified APB port, Wlink region)
-        .apbport_0_psel             (apb_sel_wlink),
-        .apbport_0_paddr            (apb_paddr[12:0]),
-        .apbport_0_penable          (apb_penable),
-        .apbport_0_pprot            (apb_pprot),
-        .apbport_0_pstrb            (apb_pstrb),
-        .apbport_0_pwrite           (apb_pwrite),
-        .apbport_0_pwdata           (apb_pwdata),
-        .apbport_0_prdata           (wlink_prdata),
-        .apbport_0_pready           (wlink_pready),
-        .apbport_0_pslverr          (wlink_pslverr),
+        .apb_psel                   (apb_sel_wlink),
+        .apb_paddr                  (apb_paddr[12:0]),
+        .apb_penable                (apb_penable),
+        .apb_pprot                  (apb_pprot),
+        .apb_pstrb                  (apb_pstrb),
+        .apb_pwrite                 (apb_pwrite),
+        .apb_pwdata                 (apb_pwdata),
+        .apb_prdata                 (wlink_prdata),
+        .apb_pready                 (wlink_pready),
+        .apb_pslverr                (wlink_pslverr),
 
         // AXI target (from XHB500 AHB→AXI bridge)
         .axi_tgt_0_aw_valid         (s_axi_awvalid),
@@ -1244,19 +1327,64 @@ module tidelink_top #(
         .generalbus_out             (gb_out),
 
         // TideLink FC node (packed bus, 50-bit = 48-bit data + 2 control)
-        // tidelink_in  = {a2l_valid, a2l_data[47:0], l2a_accept}
-        // tidelink_out = {a2l_ready, l2a_valid, l2a_data[47:0]}
         .tidelink_in                ({tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_l2a_accept}),
         .tidelink_out               ({tl_fc_a2l_ready, tl_fc_l2a_valid, tl_fc_l2a_data}),
 
         // PTP Short Packet port (26-bit packed bus)
-        // ptp_in  = {tx_valid[25], tx_data_id[24:17], tx_payload[16:1], rx_accept[0]}
-        // ptp_out = {tx_ready[25], rx_valid[24], rx_data_id[23:16], rx_payload[15:0]}
         .ptp_in                     ({ptp_sp_tx_valid, ptp_sp_tx_data_id, ptp_sp_tx_payload, ptp_sp_rx_accept}),
         .ptp_out                    ({ptp_sp_tx_ready, ptp_sp_rx_valid, ptp_sp_rx_data_id, ptp_sp_rx_payload}),
 
         // TX link idle (for PTP jitter-free timestamp capture)
         .tx_link_idle               (tx_router_idle),
+
+        // I2C sideband AXI (master mode: CPU → I2C master → remote)
+        .s_i2c_axi_awvalid          (s_i2c_axi_awvalid),
+        .s_i2c_axi_awid             (s_i2c_axi_awid),
+        .s_i2c_axi_awaddr           (s_i2c_axi_awaddr),
+        .s_i2c_axi_awlen            (s_i2c_axi_awlen),
+        .s_i2c_axi_awsize           (s_i2c_axi_awsize),
+        .s_i2c_axi_awburst          (s_i2c_axi_awburst),
+        .s_i2c_axi_awlock           (s_i2c_axi_awlock),
+        .s_i2c_axi_awcache          (s_i2c_axi_awcache),
+        .s_i2c_axi_awprot           (s_i2c_axi_awprot),
+        .s_i2c_axi_awready          (s_i2c_axi_awready),
+        .s_i2c_axi_wvalid           (s_i2c_axi_wvalid),
+        .s_i2c_axi_wdata            (s_i2c_axi_wdata),
+        .s_i2c_axi_wstrb            (s_i2c_axi_wstrb),
+        .s_i2c_axi_wlast            (s_i2c_axi_wlast),
+        .s_i2c_axi_wready           (s_i2c_axi_wready),
+        .s_i2c_axi_bvalid           (s_i2c_axi_bvalid),
+        .s_i2c_axi_bid              (s_i2c_axi_bid),
+        .s_i2c_axi_bresp            (s_i2c_axi_bresp),
+        .s_i2c_axi_bready           (s_i2c_axi_bready),
+        .s_i2c_axi_arvalid          (s_i2c_axi_arvalid),
+        .s_i2c_axi_arid             (s_i2c_axi_arid),
+        .s_i2c_axi_araddr           (s_i2c_axi_araddr),
+        .s_i2c_axi_arlen            (s_i2c_axi_arlen),
+        .s_i2c_axi_arsize           (s_i2c_axi_arsize),
+        .s_i2c_axi_arburst          (s_i2c_axi_arburst),
+        .s_i2c_axi_arlock           (s_i2c_axi_arlock),
+        .s_i2c_axi_arcache          (s_i2c_axi_arcache),
+        .s_i2c_axi_arprot           (s_i2c_axi_arprot),
+        .s_i2c_axi_arready          (s_i2c_axi_arready),
+        .s_i2c_axi_rvalid           (s_i2c_axi_rvalid),
+        .s_i2c_axi_rid              (s_i2c_axi_rid),
+        .s_i2c_axi_rdata            (s_i2c_axi_rdata),
+        .s_i2c_axi_rresp            (s_i2c_axi_rresp),
+        .s_i2c_axi_rlast            (s_i2c_axi_rlast),
+        .s_i2c_axi_rready           (s_i2c_axi_rready),
+
+        // I2C interrupts
+        .i2c_nbsy_irq               (i2c_nbsy_irq),
+        .i2c_nrd_empty_irq          (i2c_nrd_empty_irq),
+
+        // I2C pins (tristate)
+        .i2c_scl_i                  (i2c_scl_i),
+        .i2c_scl_o                  (i2c_scl_o),
+        .i2c_scl_t                  (i2c_scl_t),
+        .i2c_sda_i                  (i2c_sda_i),
+        .i2c_sda_o                  (i2c_sda_o),
+        .i2c_sda_t                  (i2c_sda_t),
 
         // Scan / DFT
         .scan_mode                  (scan_mode),
@@ -1271,23 +1399,9 @@ module tidelink_top #(
 
         // PHY pads (8-lane GPIO)
         .pad_clk_tx                 (pad_clk_tx),
-        .pad_tx_0                   (pad_tx[0]),
-        .pad_tx_1                   (pad_tx[1]),
-        .pad_tx_2                   (pad_tx[2]),
-        .pad_tx_3                   (pad_tx[3]),
-        .pad_tx_4                   (pad_tx[4]),
-        .pad_tx_5                   (pad_tx[5]),
-        .pad_tx_6                   (pad_tx[6]),
-        .pad_tx_7                   (pad_tx[7]),
+        .pad_tx                     (pad_tx),
         .pad_clk_rx                 (pad_clk_rx),
-        .pad_rx_0                   (pad_rx[0]),
-        .pad_rx_1                   (pad_rx[1]),
-        .pad_rx_2                   (pad_rx[2]),
-        .pad_rx_3                   (pad_rx[3]),
-        .pad_rx_4                   (pad_rx[4]),
-        .pad_rx_5                   (pad_rx[5]),
-        .pad_rx_6                   (pad_rx[6]),
-        .pad_rx_7                   (pad_rx[7])
+        .pad_rx                     (pad_rx)
     );
 
 endmodule

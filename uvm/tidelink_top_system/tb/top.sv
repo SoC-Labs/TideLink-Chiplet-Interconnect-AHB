@@ -370,8 +370,72 @@ module test_top;
     .doorbell_irq         (a_doorbell_irq),
     .packet_committed_irq (a_packet_committed_irq),
     .wlink_irq            (a_wlink_irq),
-    .d2d_reset_o          (a_d2d_reset_o)
+    .d2d_reset_o          (a_d2d_reset_o),
+
+    // Chiplet controller role (A = master by default)
+    .role_strap_i         (1'b0),
+    .role_is_master_o     (),
+    .role_locked_o        (),
+
+    // I2C sideband (crossover: A ↔ B)
+    .i2c_scl_i            (i2c_scl),
+    .i2c_scl_o            (a_i2c_scl_o),
+    .i2c_scl_t            (a_i2c_scl_t),
+    .i2c_sda_i            (i2c_sda),
+    .i2c_sda_o            (a_i2c_sda_o),
+    .i2c_sda_t            (a_i2c_sda_t),
+
+    // I2C AXI sideband (tied off — no I2C master agent in this testbench)
+    .s_i2c_axi_awvalid    (1'b0),
+    .s_i2c_axi_awid       (2'b0),
+    .s_i2c_axi_awaddr     (4'b0),
+    .s_i2c_axi_awlen      (8'b0),
+    .s_i2c_axi_awsize     (3'b0),
+    .s_i2c_axi_awburst    (2'b0),
+    .s_i2c_axi_awlock     (1'b0),
+    .s_i2c_axi_awcache    (4'b0),
+    .s_i2c_axi_awprot     (3'b0),
+    .s_i2c_axi_awready    (),
+    .s_i2c_axi_wvalid     (1'b0),
+    .s_i2c_axi_wdata      (32'b0),
+    .s_i2c_axi_wstrb      (4'b0),
+    .s_i2c_axi_wlast      (1'b0),
+    .s_i2c_axi_wready     (),
+    .s_i2c_axi_bvalid     (),
+    .s_i2c_axi_bid        (),
+    .s_i2c_axi_bresp      (),
+    .s_i2c_axi_bready     (1'b0),
+    .s_i2c_axi_arvalid    (1'b0),
+    .s_i2c_axi_arid       (2'b0),
+    .s_i2c_axi_araddr     (4'b0),
+    .s_i2c_axi_arlen      (8'b0),
+    .s_i2c_axi_arsize     (3'b0),
+    .s_i2c_axi_arburst    (2'b0),
+    .s_i2c_axi_arlock     (1'b0),
+    .s_i2c_axi_arcache    (4'b0),
+    .s_i2c_axi_arprot     (3'b0),
+    .s_i2c_axi_arready    (),
+    .s_i2c_axi_rvalid     (),
+    .s_i2c_axi_rid        (),
+    .s_i2c_axi_rdata      (),
+    .s_i2c_axi_rresp      (),
+    .s_i2c_axi_rlast      (),
+    .s_i2c_axi_rready     (1'b0),
+
+    .i2c_nbsy_irq         (),
+    .i2c_nrd_empty_irq    ()
   );
+
+  // =================================================================
+  // I2C open-drain bus model (wire-AND with pull-up)
+  // =================================================================
+  wire a_i2c_scl_o, a_i2c_scl_t, a_i2c_sda_o, a_i2c_sda_t;
+  wire b_i2c_scl_o, b_i2c_scl_t, b_i2c_sda_o, b_i2c_sda_t;
+
+  wire i2c_scl = (a_i2c_scl_t ? 1'b1 : a_i2c_scl_o) &
+                 (b_i2c_scl_t ? 1'b1 : b_i2c_scl_o);
+  wire i2c_sda = (a_i2c_sda_t ? 1'b1 : a_i2c_sda_o) &
+                 (b_i2c_sda_t ? 1'b1 : b_i2c_sda_o);
 
   // =================================================================
   // DUT B — tidelink_top
@@ -491,7 +555,60 @@ module test_top;
     .doorbell_irq         (b_doorbell_irq),
     .packet_committed_irq (b_packet_committed_irq),
     .wlink_irq            (b_wlink_irq),
-    .d2d_reset_o          (b_d2d_reset_o)
+    .d2d_reset_o          (b_d2d_reset_o),
+
+    // Chiplet controller role (B = slave by default)
+    .role_strap_i         (1'b1),
+    .role_is_master_o     (),
+    .role_locked_o        (),
+
+    // I2C sideband (crossover: A ↔ B)
+    .i2c_scl_i            (i2c_scl),
+    .i2c_scl_o            (b_i2c_scl_o),
+    .i2c_scl_t            (b_i2c_scl_t),
+    .i2c_sda_i            (i2c_sda),
+    .i2c_sda_o            (b_i2c_sda_o),
+    .i2c_sda_t            (b_i2c_sda_t),
+
+    // I2C AXI sideband (tied off)
+    .s_i2c_axi_awvalid    (1'b0),
+    .s_i2c_axi_awid       (2'b0),
+    .s_i2c_axi_awaddr     (4'b0),
+    .s_i2c_axi_awlen      (8'b0),
+    .s_i2c_axi_awsize     (3'b0),
+    .s_i2c_axi_awburst    (2'b0),
+    .s_i2c_axi_awlock     (1'b0),
+    .s_i2c_axi_awcache    (4'b0),
+    .s_i2c_axi_awprot     (3'b0),
+    .s_i2c_axi_awready    (),
+    .s_i2c_axi_wvalid     (1'b0),
+    .s_i2c_axi_wdata      (32'b0),
+    .s_i2c_axi_wstrb      (4'b0),
+    .s_i2c_axi_wlast      (1'b0),
+    .s_i2c_axi_wready     (),
+    .s_i2c_axi_bvalid     (),
+    .s_i2c_axi_bid        (),
+    .s_i2c_axi_bresp      (),
+    .s_i2c_axi_bready     (1'b0),
+    .s_i2c_axi_arvalid    (1'b0),
+    .s_i2c_axi_arid       (2'b0),
+    .s_i2c_axi_araddr     (4'b0),
+    .s_i2c_axi_arlen      (8'b0),
+    .s_i2c_axi_arsize     (3'b0),
+    .s_i2c_axi_arburst    (2'b0),
+    .s_i2c_axi_arlock     (1'b0),
+    .s_i2c_axi_arcache    (4'b0),
+    .s_i2c_axi_arprot     (3'b0),
+    .s_i2c_axi_arready    (),
+    .s_i2c_axi_rvalid     (),
+    .s_i2c_axi_rid        (),
+    .s_i2c_axi_rdata      (),
+    .s_i2c_axi_rresp      (),
+    .s_i2c_axi_rlast      (),
+    .s_i2c_axi_rready     (1'b0),
+
+    .i2c_nbsy_irq         (),
+    .i2c_nrd_empty_irq    ()
   );
 
   // =================================================================

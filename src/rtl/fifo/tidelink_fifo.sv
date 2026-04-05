@@ -96,6 +96,14 @@ module tidelink_fifo #(
     output wire    [SYS_DATA_W-1:0] mbox_reg_wdata,
 
     // --------------------------------------------------------------------------
+    // Chiplet Controller Register Pass-Through (Region 4)
+    // --------------------------------------------------------------------------
+    output wire                     ctrl_reg_write,
+    output wire               [2:0] ctrl_reg_addr,
+    output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
+    input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
+
+    // --------------------------------------------------------------------------
     // FC Direct Write Interface (single-cycle, bypasses AHB for FIFO writes)
     // --------------------------------------------------------------------------
     input  wire                    fc_wr_valid,
@@ -233,7 +241,12 @@ module tidelink_fifo #(
         // Timestamp mailbox pass-through
         .mbox_reg_write      (mbox_reg_write),
         .mbox_reg_addr       (mbox_reg_addr),
-        .mbox_reg_wdata      (mbox_reg_wdata)
+        .mbox_reg_wdata      (mbox_reg_wdata),
+        // Chiplet controller register pass-through
+        .ctrl_reg_write      (ctrl_reg_write),
+        .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_wdata      (ctrl_reg_wdata),
+        .ctrl_reg_rdata      (ctrl_reg_rdata)
     );
 
     // --------------------------------------------------------------------------

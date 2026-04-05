@@ -29,3 +29,10 @@ gui: $(SIM_BUILD)/simv
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)
+
+# -- Lock gate tests (PHC_LOCK_GATE_EN=1) ------------------------------------
+.PHONY: gated
+gated:
+	$(MAKE) SIM_BUILD=sim_build_gated \
+		VERILOG_SOURCES="$(CURDIR)/tb_top_gated.sv $(TIDELINK_HOME)/src/rtl/tidelink_ptp.sv" \
+		MODULE=test_tidelink_ptp_lock_gate

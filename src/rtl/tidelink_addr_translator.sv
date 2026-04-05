@@ -33,24 +33,25 @@
 module tidelink_addr_translator #(
     parameter BE           = 0,
     parameter NUM_CHANNELS = 2,
-    parameter NUM_RULES    = 8 )(
+    parameter NUM_RULES    = 8
+)(
     input  wire         CLK,
     input  wire         RESETn,
 
     // Chiplet Address Control AHB interface
-    input  wire         chp_adr_hsel,           // AHB region select
-    input  wire  [31:0] chp_adr_haddr,          // AHB address
-    input  wire  [ 2:0] chp_adr_hburst,         // AHB burst
-    input  wire         chp_adr_hmastlock,      // AHB lock
-    input  wire  [ 3:0] chp_adr_hprot,          // AHB prot
-    input  wire  [ 2:0] chp_adr_hsize,          // AHB size
-    input  wire  [ 1:0] chp_adr_htrans,         // AHB transfer
-    input  wire  [31:0] chp_adr_hwdata,         // AHB write data
-    input  wire         chp_adr_hwrite,         // AHB write
-    input  wire         chp_adr_hready,         // AHB ready
-    output  wire [31:0] chp_adr_hrdata,         // AHB read-data
-    output  wire        chp_adr_hresp,          // AHB response
-    output  wire        chp_adr_hreadyout,      // AHB ready out
+    input   wire         chp_adr_hsel,           // AHB region select
+    input   wire  [31:0] chp_adr_haddr,          // AHB address
+    input   wire  [ 2:0] chp_adr_hburst,         // AHB burst
+    input   wire         chp_adr_hmastlock,      // AHB lock
+    input   wire  [ 3:0] chp_adr_hprot,          // AHB prot
+    input   wire  [ 2:0] chp_adr_hsize,          // AHB size
+    input   wire  [ 1:0] chp_adr_htrans,         // AHB transfer
+    input   wire  [31:0] chp_adr_hwdata,         // AHB write data
+    input   wire         chp_adr_hwrite,         // AHB write
+    input   wire         chp_adr_hready,         // AHB ready
+    output  wire  [31:0] chp_adr_hrdata,         // AHB read-data
+    output  wire         chp_adr_hresp,          // AHB response
+    output  wire         chp_adr_hreadyout,      // AHB ready out
 
 
     input  wire [31:0]  chp0_ahb_haddr_i,
@@ -127,11 +128,11 @@ end
 endgenerate
 
   // AHB to APB bus bridge
-  cmsdk_ahb_to_apb
-  #(.ADDRWIDTH      (16),
+  cmsdk_ahb_to_apb #(
+    .ADDRWIDTH      (16),
     .REGISTER_RDATA (1),
-    .REGISTER_WDATA (0))
-  u_ahb_to_apb(
+    .REGISTER_WDATA (0)
+  ) u_ahb_to_apb(
     // AHB side
     .HCLK     (CLK),
     .HRESETn  (RESETn),

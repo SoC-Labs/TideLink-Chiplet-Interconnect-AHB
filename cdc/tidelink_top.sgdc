@@ -1,0 +1,55 @@
+#-----------------------------------------------------------------------------
+# SoCLabs TideLink — SpyGlass CDC Design Constraints
+#
+# Defines clock domains, resets, and constant ports for CDC analysis of
+# tidelink_top.  Two asynchronous clock domains:
+#
+#   hclk_domain  — AHB / application clock (all bus interfaces)
+#   phc_domain   — Precision Hardware Clock (PTP timestamping)
+#
+# The Wlink chiplet controller has its own internal clocking (PLL from
+# user_ref_clk) but those domains are fully contained within third-party
+# IP and are waived separately.
+#
+# Contributors
+#
+# David Mapstone (d.a.mapstone@soton.ac.uk)
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+
+current_design tidelink_top
+
+# ============================================================================
+# Clock Definitions
+# ============================================================================
+
+# Primary system clock — drives all AHB/APB interfaces, FIFO, FC adapter
+clock -name hclk       -domain hclk_domain  -period 4.0 [get_ports hclk]
+
+# PTP hardware clock — independent frequency, drives PHC timestamping
+clock -name phc_clk    -domain phc_domain   -period 10.0 [get_ports phc_clk]
+
+# Wlink PLL reference clock — internal to Wlink, define for completeness
+clock -name user_ref_clk -domain wlink_ref_domain -period 8.0 [get_ports user_ref_clk]
+
+# PHY receive clock — recovered clock from remote side
+clock -name pad_clk_rx -domain phy_rx_domain -period 4.0 [get_ports pad_clk_rx]
+
+# ============================================================================
+# Reset Definitions
+# ============================================================================
+
+reset -name hresetn    -value 0 [get_ports hresetn]
+reset -name poresetn   -value 0 [get_ports poresetn]
+reset -name phc_resetn -value 0 [get_ports phc_resetn]
+
+# ============================================================================
+# Constant / DFT Ports
+# ============================================================================
+
+# scan_mode held inactive during functional CDC analysis
+abstract_port -name scan_mode          -value 0 [get_ports scan_mode]
+abstract_port -name scan_asyncrst_ctrl -value 0 [get_ports scan_asyncrst_ctrl]
+abstract_port -name scan_shift         -value 0 [get_ports scan_shift]
+abstract_port -name scan_in            -value 0 [get_ports scan_in]

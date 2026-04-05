@@ -1,0 +1,56 @@
+#-----------------------------------------------------------------------------
+# SoCLabs TideLink — SpyGlass CDC Waivers
+#
+# Suppress CDC violations originating entirely within third-party IP.
+# TideLink-authored RTL (src/rtl/**) should NEVER be waived here —
+# add targeted waivers with justification comments instead.
+#
+# Contributors
+#
+# David Mapstone (d.a.mapstone@soton.ac.uk)
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+
+# ============================================================================
+# Third-party IP: ARM CMSDK
+# ============================================================================
+# CMSDK AHB-to-SRAM and FPGA SRAM models are single-clock designs with no
+# real CDC paths — any flagged crossings are false positives from port-level
+# analysis.
+
+waiver -rule {*} -module {cmsdk_ahb_to_sram}  -comment "ARM CMSDK IP — single-clock, no real CDC"
+waiver -rule {*} -module {cmsdk_fpga_sram}     -comment "ARM CMSDK IP — single-clock, no real CDC"
+waiver -rule {*} -module {cmsdk_ahb_to_apb}    -comment "ARM CMSDK IP — single-clock, no real CDC"
+waiver -rule {*} -module {cmsdk_apb_slave_mux}  -comment "ARM CMSDK IP — single-clock, no real CDC"
+
+# ============================================================================
+# Third-party IP: ARM XHB500 bridges
+# ============================================================================
+# XHB500 bridges are delivered pre-verified for CDC by ARM.  Waive all
+# violations within their module hierarchy.
+
+waiver -rule {*} -module {xhb500_*}            -comment "ARM XHB500 IP — pre-verified CDC"
+
+# ============================================================================
+# Third-party IP: Wlink chiplet controller (Chisel-generated)
+# ============================================================================
+# Wlink contains its own synchronizers (WavMultibitSync, WavDemetReset,
+# WavSyncPulse, etc.) and internal CDC between PLL-generated clocks.
+# These are outside TideLink's control.
+
+waiver -rule {*} -module {Wlink}               -comment "Wlink top — Chisel-generated, own CDC"
+waiver -rule {*} -module {Wav*}                -comment "Wlink primitives — verified CDC cells"
+waiver -rule {*} -module {Wlink*}              -comment "Wlink submodules — Chisel-generated"
+waiver -rule {*} -module {AXI4ToWlink}         -comment "Wlink AXI adapter — Chisel-generated"
+waiver -rule {*} -module {GeneralBusToWlink}   -comment "Wlink GB adapter — Chisel-generated"
+waiver -rule {*} -module {ShortPacketToWlink}  -comment "Wlink SP adapter — Chisel-generated"
+waiver -rule {*} -module {TideLinkToWlink}     -comment "Wlink TL adapter — Chisel-generated"
+waiver -rule {*} -module {APBFanout*}          -comment "Wlink APB fanout — Chisel-generated"
+waiver -rule {*} -module {wlink_*}             -comment "Wlink internal modules — Chisel-generated"
+
+# ============================================================================
+# Third-party IP: wav_latch_model
+# ============================================================================
+
+waiver -rule {*} -module {wav_latch_model}     -comment "Wlink latch model — simulation primitive"

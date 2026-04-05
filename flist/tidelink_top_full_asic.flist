@@ -17,6 +17,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
 
 // PTP subsystem
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+${TIDELINK_HOME}/src/rtl/tidelink_mul_iter.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 

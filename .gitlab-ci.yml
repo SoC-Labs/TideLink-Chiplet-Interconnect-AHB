@@ -35,6 +35,8 @@ variables:
   VIP_HOME: /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
   # Cadence Xcelium (provides HAL linter)
   XCELIUM_HOME: /eda/cadence/xcelium
+  # Synopsys SpyGlass (CDC lint)
+  SPYGLASS_HOME: /eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2/SPYGLASS_HOME
   # ARM CMSDK -- configurable via CI variable
   CMSDK_DIR: "/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0"
   # PTP Hardware Clock (separate component, cloned for PTP tests)
@@ -107,6 +109,7 @@ preflight:
       check_dir "VCS_HOME"      "$VCS_HOME"
       check_dir "VERDI_HOME"    "$VERDI_HOME"
       check_dir "XCELIUM_HOME"  "$XCELIUM_HOME"
+      check_dir "SPYGLASS_HOME" "$SPYGLASS_HOME"
       check_dir "VIP_HOME"      "$VIP_HOME"
 
       echo ""
@@ -121,8 +124,9 @@ preflight:
 
       echo ""
       echo "-- Tool Binaries (with PATH set) --------"
-      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$PATH"
+      export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$XCELIUM_HOME/tools/bin:$SPYGLASS_HOME/bin:$PATH"
       check_bin "vcs"             "vcs"
+      check_bin "spyglass"        "spyglass"
       check_bin "hal"             "hal"
       check_bin "python3"         "python3"
       check_bin "cocotb-config"   "cocotb-config"
@@ -164,6 +168,28 @@ hal-lint:
     paths:
       - "*_hal.log"
       - "*_hal.xml"
+    expire_in: 30 days
+
+spyglass-cdc:
+  stage: lint
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  before_script:
+    - export PATH="$SPYGLASS_HOME/bin:$PATH"
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export CMSDK_DIR="$CMSDK_DIR"
+  script:
+    - echo "SpyGlass version:" && spyglass -batch -tcl "puts [get_tool_info version]; exit" 2>&1 | tail -1 || true
+    - make -C "$WORK_DIR/cdc" cdc SPYGLASS_HOME="$SPYGLASS_HOME"
+  after_script:
+    - mkdir -p spyglass_cdc
+    - cp "$WORK_DIR/cdc/"*_cdc_summary.rpt spyglass_cdc/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/cdc/"*_spyglass/cdc_verify/spyglass_reports spyglass_cdc/reports 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - spyglass_cdc/
     expire_in: 30 days
 
 # ============================================================================
@@ -225,6 +251,30 @@ cocotb-regression:
     reports:
       junit:
         - cocotb/*/results.xml
+    expire_in: 30 days
+
+cdriver-regression:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Building C driver shared library"
+    - make -C "$WORK_DIR/cocotb/tidelink_ahb" driver-so
+    - echo "Running C driver-in-the-loop tests"
+    - make -C "$WORK_DIR/cocotb/tidelink_ahb" sim MODULE=test_tidelink_ahb_cdriver
+  after_script:
+    - mkdir -p cocotb/tidelink_ahb_cdriver
+    - cp "$WORK_DIR/cocotb/tidelink_ahb/run.log"      cocotb/tidelink_ahb_cdriver/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_ahb/results.xml"   cocotb/tidelink_ahb_cdriver/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_ahb_cdriver/run.log
+    reports:
+      junit:
+        - cocotb/tidelink_ahb_cdriver/results.xml
     expire_in: 30 days
 
 uvm-regression:
@@ -678,6 +728,8 @@ dashboard:
   stage: pages
   needs:
     - job: hal-lint
+      artifacts: true
+    - job: spyglass-cdc
       artifacts: true
     - job: cocotb-regression
       artifacts: true

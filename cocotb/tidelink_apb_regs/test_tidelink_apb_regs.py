@@ -704,6 +704,7 @@ async def test_sat_03_released_credits_clear_on_read(dut):
     await do_reset(dut)
 
     await apb_write(dut, OFF_REL_CREDITS, 42)
+    await ClockCycles(dut.hclk, 1)
     # IRQ should be asserted
     assert int(dut.released_credits_irq.value) == 1, "IRQ should be 1 when acc != 0"
 

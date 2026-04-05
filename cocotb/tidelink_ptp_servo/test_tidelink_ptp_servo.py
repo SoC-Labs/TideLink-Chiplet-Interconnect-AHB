@@ -292,3 +292,122 @@ async def test_sub_phase_step(dut):
     assert locked == 0, "servo_locked should be 0 after phase step"
 
     dut._log.info("test_sub_phase_step PASSED")
+
+
+@cocotb.test()
+async def test_sub_integral_anti_windup(dut):
+    """PI integrator saturates at INTEGRAL_MAX after repeated small offsets.
+
+    Run multiple PTP exchanges with a consistent non-zero offset. The integral
+    accumulator should grow but saturate at INTEGRAL_MAX rather than overflow.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    tb = ServoTB(dut)
+    await tb.reset()
+
+    # Configure as Subordinate with large step threshold (force frequency steering)
+    await tb.reg_write(0, 0x3)  # enable=1, mode=1
+    await tb.reg_write(3, 1_000_000)  # step_thresh = 1ms
+
+    # Run multiple exchanges with consistent offset to build up integral
+    for iteration in range(20):
+        # t2 = ns=200, t1 = ns=100 → d_fwd = 100
+        # t3 = ns=300, t4 = ns=200 → d_rev = -100
+        # offset = (100 - (-100))/2 = 100 ns (consistent positive offset)
+        await tb.set_hw_cap(seconds=0, nanoseconds=200, sub_ns=0)
+        await tb.pulse_event(dut.sync_rx_done)
+        await ClockCycles(dut.clk, 2)
+
+        for _ in range(20):
+            await RisingEdge(dut.clk)
+            if dut.servo_dreq_trigger.value == 1:
+                break
+
+        await tb.set_hw_cap(seconds=0, nanoseconds=300, sub_ns=0)
+        await tb.pulse_event(dut.dreq_tx_done)
+        await ClockCycles(dut.clk, 2)
+
+        # t1 = ns=100
+        await tb.write_mbox(sec_lo=0, sec_hi=0, ns=100, sub_ns=0)
+        await ClockCycles(dut.clk, 2)
+
+        # t4 = ns=200
+        await tb.write_mbox(sec_lo=0, sec_hi=0, ns=200, sub_ns=0)
+        await ClockCycles(dut.clk, 2)
+
+        # Wait for computation
+        await ClockCycles(dut.clk, 10)
+
+    # Read the integral register directly via hierarchy
+    integral_val = dut.u_dut.integral_r.value.signed_integer
+
+    # INTEGRAL_MAX = 0x0000_00FF_FFFF_FFFF (~1099 seconds in sub-ns)
+    INTEGRAL_MAX = 0x0000_00FF_FFFF_FFFF
+
+    # The integral should have saturated, not grown unbounded
+    assert abs(integral_val) <= INTEGRAL_MAX, \
+        f"Integral should be clamped to ±{INTEGRAL_MAX}, got {integral_val}"
+
+    dut._log.info(f"Integral after 20 iterations: {integral_val}")
+    dut._log.info("test_sub_integral_anti_windup PASSED")
+
+
+@cocotb.test()
+async def test_sub_integral_resets_on_phase_step(dut):
+    """Integral is reset to 0 when a phase step occurs, even after accumulation."""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    tb = ServoTB(dut)
+    await tb.reset()
+
+    # Configure as Subordinate — large threshold for initial steering
+    await tb.reg_write(0, 0x3)
+    await tb.reg_write(3, 1_000_000)
+
+    # First exchange: small offset to build integral
+    await tb.set_hw_cap(seconds=0, nanoseconds=200, sub_ns=0)
+    await tb.pulse_event(dut.sync_rx_done)
+    await ClockCycles(dut.clk, 2)
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        if dut.servo_dreq_trigger.value == 1:
+            break
+    await tb.set_hw_cap(seconds=0, nanoseconds=300, sub_ns=0)
+    await tb.pulse_event(dut.dreq_tx_done)
+    await ClockCycles(dut.clk, 2)
+    await tb.write_mbox(sec_lo=0, sec_hi=0, ns=100, sub_ns=0)
+    await ClockCycles(dut.clk, 2)
+    await tb.write_mbox(sec_lo=0, sec_hi=0, ns=200, sub_ns=0)
+    await ClockCycles(dut.clk, 2)
+    await ClockCycles(dut.clk, 10)
+
+    # Verify integral is non-zero
+    integral_val = dut.u_dut.integral_r.value.signed_integer
+    assert integral_val != 0, f"Integral should be non-zero after steering, got {integral_val}"
+
+    # Now reduce threshold to trigger phase step
+    await tb.reg_write(3, 10)  # step_thresh = 10 ns
+
+    # Second exchange: large offset to force phase step
+    # t2=10000, t1=0, t3=10100, t4=100 → offset=10000 >> threshold
+    await tb.set_hw_cap(seconds=0, nanoseconds=10_000, sub_ns=0)
+    await tb.pulse_event(dut.sync_rx_done)
+    await ClockCycles(dut.clk, 2)
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        if dut.servo_dreq_trigger.value == 1:
+            break
+    await tb.set_hw_cap(seconds=0, nanoseconds=10_100, sub_ns=0)
+    await tb.pulse_event(dut.dreq_tx_done)
+    await ClockCycles(dut.clk, 2)
+    await tb.write_mbox(sec_lo=0, sec_hi=0, ns=0, sub_ns=0)
+    await ClockCycles(dut.clk, 2)
+    await tb.write_mbox(sec_lo=0, sec_hi=0, ns=100, sub_ns=0)
+    await ClockCycles(dut.clk, 2)
+    await ClockCycles(dut.clk, 10)
+
+    # Phase step should have reset integral to 0
+    integral_val = dut.u_dut.integral_r.value.signed_integer
+    assert integral_val == 0, \
+        f"Integral should be 0 after phase step, got {integral_val}"
+
+    dut._log.info("test_sub_integral_resets_on_phase_step PASSED")

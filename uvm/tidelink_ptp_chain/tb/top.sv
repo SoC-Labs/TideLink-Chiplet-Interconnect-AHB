@@ -642,6 +642,7 @@ module test_top;
     // Wait for reset deassertion
     @(posedge rst_n);
     // Force PHC enable and ns_incr on all three PHCs
+    // ns_incr=10 for 100 MHz (10 ns per cycle)
     force u_phc_a.ctrl_enable = 1'b1;
     force u_phc_a.ns_incr     = 8'd10;
     force u_phc_b.ctrl_enable = 1'b1;
@@ -649,6 +650,16 @@ module test_top;
     force u_phc_c.ctrl_enable = 1'b1;
     force u_phc_c.ns_incr     = 8'd10;
   end
+
+  // Connect PHC free-running time outputs to tidelink_top inputs.
+  // The PHC module doesn't expose nanoseconds/seconds as ports, so we
+  // use hierarchical references to the internal clock core signals.
+  assign a_phc_nanoseconds = u_phc_a.nanoseconds;
+  assign a_phc_seconds     = u_phc_a.seconds;
+  assign b_phc_nanoseconds = u_phc_b.nanoseconds;
+  assign b_phc_seconds     = u_phc_b.seconds;
+  assign c_phc_nanoseconds = u_phc_c.nanoseconds;
+  assign c_phc_seconds     = u_phc_c.seconds;
 
   // ---------------------------------------------------------------
   // Waveform dumping

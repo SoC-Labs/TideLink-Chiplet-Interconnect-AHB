@@ -30,13 +30,13 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
 
   `uvm_component_utils(tidelink_system_scoreboard)
 
-  // Analysis exports (6 streams)
+  // Analysis exports (6 streams: 4 AHB + 2 APB config)
   uvm_analysis_imp_a_tx   #(svt_ahb_transaction, tidelink_system_scoreboard) a_tx_export;
   uvm_analysis_imp_a_fifo #(svt_ahb_transaction, tidelink_system_scoreboard) a_fifo_export;
-  uvm_analysis_imp_a_cfg  #(svt_ahb_transaction, tidelink_system_scoreboard) a_cfg_export;
+  uvm_analysis_imp_a_cfg  #(apb_master_transaction, tidelink_system_scoreboard) a_cfg_export;
   uvm_analysis_imp_b_tx   #(svt_ahb_transaction, tidelink_system_scoreboard) b_tx_export;
   uvm_analysis_imp_b_fifo #(svt_ahb_transaction, tidelink_system_scoreboard) b_fifo_export;
-  uvm_analysis_imp_b_cfg  #(svt_ahb_transaction, tidelink_system_scoreboard) b_cfg_export;
+  uvm_analysis_imp_b_cfg  #(apb_master_transaction, tidelink_system_scoreboard) b_cfg_export;
 
   // A->B path: A TX writes should appear as B FIFO reads
   bit [31:0] a_tx_write_data[$];
@@ -129,17 +129,14 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
   endfunction
 
   // ---------------------------------------------------------------
-  // A Config transactions
+  // A Config transactions (APB)
   // ---------------------------------------------------------------
-  virtual function void write_a_cfg(svt_ahb_transaction tr);
-    svt_ahb_master_transaction mtr;
-    if (tr.trans_type == svt_ahb_transaction::IDLE) return;
-    if (!$cast(mtr, tr)) return;
-    if (mtr.xact_type == svt_ahb_transaction::WRITE) begin
+  virtual function void write_a_cfg(apb_master_transaction tr);
+    if (tr.write) begin
       a_cfg_write_count++;
-      `uvm_info("SB_A_CFG", $sformatf("A CFG WRITE addr=0x%03h data=0x%08h",
-        mtr.addr, mtr.data.size() > 0 ? mtr.data[0] : 32'h0), UVM_HIGH)
-    end else if (mtr.xact_type == svt_ahb_transaction::READ) begin
+      `uvm_info("SB_A_CFG", $sformatf("A CFG WRITE addr=0x%04h data=0x%08h",
+        tr.addr, tr.wdata), UVM_HIGH)
+    end else begin
       a_cfg_read_count++;
     end
   endfunction
@@ -181,17 +178,14 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
   endfunction
 
   // ---------------------------------------------------------------
-  // B Config transactions
+  // B Config transactions (APB)
   // ---------------------------------------------------------------
-  virtual function void write_b_cfg(svt_ahb_transaction tr);
-    svt_ahb_master_transaction mtr;
-    if (tr.trans_type == svt_ahb_transaction::IDLE) return;
-    if (!$cast(mtr, tr)) return;
-    if (mtr.xact_type == svt_ahb_transaction::WRITE) begin
+  virtual function void write_b_cfg(apb_master_transaction tr);
+    if (tr.write) begin
       b_cfg_write_count++;
-      `uvm_info("SB_B_CFG", $sformatf("B CFG WRITE addr=0x%03h data=0x%08h",
-        mtr.addr, mtr.data.size() > 0 ? mtr.data[0] : 32'h0), UVM_HIGH)
-    end else if (mtr.xact_type == svt_ahb_transaction::READ) begin
+      `uvm_info("SB_B_CFG", $sformatf("B CFG WRITE addr=0x%04h data=0x%08h",
+        tr.addr, tr.wdata), UVM_HIGH)
+    end else begin
       b_cfg_read_count++;
     end
   endfunction

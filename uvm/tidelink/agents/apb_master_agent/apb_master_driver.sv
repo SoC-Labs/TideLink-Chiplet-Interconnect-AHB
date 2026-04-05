@@ -29,7 +29,7 @@ class apb_master_driver extends uvm_driver #(apb_master_transaction);
     vif.drv_cb.psel    <= 1'b0;
     vif.drv_cb.penable <= 1'b0;
     vif.drv_cb.pwrite  <= 1'b0;
-    vif.drv_cb.paddr   <= 12'h0;
+    vif.drv_cb.paddr   <= 15'h0;
     vif.drv_cb.pwdata  <= 32'h0;
 
     forever begin
@@ -64,7 +64,7 @@ class apb_master_driver extends uvm_driver #(apb_master_transaction);
       tr.rdata = vif.drv_cb.prdata;
     tr.slverr = vif.drv_cb.pslverr;
 
-    `uvm_info("APB_DRV", $sformatf("%s addr=0x%03h %s",
+    `uvm_info("APB_DRV", $sformatf("%s addr=0x%04h %s",
       tr.write ? "WRITE" : "READ", tr.addr,
       tr.write ? $sformatf("data=0x%08h", tr.wdata)
                : $sformatf("data=0x%08h", tr.rdata)), UVM_HIGH)

@@ -80,7 +80,9 @@ module tb_top #(
         .release_credits_trigger(release_credits_trigger),
         .pair_base_addr      (pair_base_addr),
         .released_credits_irq (released_credits_irq),
-        .doorbell_irq        (doorbell_irq)
+        .doorbell_irq        (doorbell_irq),
+        // PTP register pass-through (tied off — no tidelink_ptp in this testbench)
+        .ptp_reg_rdata       ({SYS_DATA_W{1'b0}})
     );
 
     initial begin

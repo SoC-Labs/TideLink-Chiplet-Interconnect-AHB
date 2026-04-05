@@ -18,6 +18,15 @@ package tidelink_system_pkg;
   import svt_ahb_uvm_pkg::*;
 
   // ---------------------------------------------------------------
+  // APB master agent (reused from unit-level testbench)
+  // ---------------------------------------------------------------
+  `include "apb_master_transaction.sv"
+  `include "apb_master_driver.sv"
+  `include "apb_master_monitor.sv"
+  `include "apb_master_sequencer.sv"
+  `include "apb_master_agent.sv"
+
+  // ---------------------------------------------------------------
   // TideLink register map constants (shared with integration TB)
   // ---------------------------------------------------------------
   // Region 0: Configuration and Status

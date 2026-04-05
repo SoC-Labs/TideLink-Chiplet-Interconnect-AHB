@@ -14,7 +14,7 @@ interface apb_master_if (
   logic        psel;
   logic        penable;
   logic        pwrite;
-  logic [11:0] paddr;
+  logic [14:0] paddr;
   logic [31:0] pwdata;
   logic [31:0] prdata;
   logic        pready;

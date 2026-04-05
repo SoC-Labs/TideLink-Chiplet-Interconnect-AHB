@@ -10,7 +10,7 @@
 
 class apb_read_sequence extends uvm_sequence #(apb_master_transaction);
 
-  rand bit [11:0] addr;
+  rand bit [14:0] addr;
 
   // Read data captured after transfer
   bit [31:0] rdata;
@@ -26,7 +26,7 @@ class apb_read_sequence extends uvm_sequence #(apb_master_transaction);
   virtual task body();
     apb_master_transaction tr;
 
-    `uvm_info("SEQ", $sformatf("APB read: addr=0x%03h", addr), UVM_MEDIUM)
+    `uvm_info("SEQ", $sformatf("APB read: addr=0x%04h", addr), UVM_MEDIUM)
 
     tr = apb_master_transaction::type_id::create("apb_rd_tr");
     start_item(tr);

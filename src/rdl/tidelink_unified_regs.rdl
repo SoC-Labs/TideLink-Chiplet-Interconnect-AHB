@@ -1,0 +1,61 @@
+// -----------------------------------------------------------------------------
+// SoCLabs TideLink Unified Register Map (SystemRDL 2.0)
+//
+// Top-level hierarchical address map composing all register blocks accessible
+// through the unified APB configuration port on tidelink_top.
+//
+// Address layout (15-bit APB address, 32KB space):
+//   0x0000 - 0x1FFF : Wlink chiplet controller (PHY, link, FC nodes)
+//   0x2000 - 0x203F : TideLink FIFO configuration, status, and credits
+//   0x2034 - 0x203C : TideLink PTP subsystem registers
+//
+// External register blocks (separate APB ports, not in this map):
+//   PHC (PTP Hardware Clock) — see phc_regs.rdl
+//   Address Translator      — see tidelink_addr_translator_regs.rdl
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap tidelink_unified_regs {
+    name = "TideLink Unified APB Register Map";
+    desc = "Hierarchical register map for the single unified APB configuration
+            port on tidelink_top. Composes the Wlink chiplet controller registers
+            and the TideLink-specific registers into a single address space.
+
+            The APB address decoder in tidelink_top routes accesses as follows:
+              paddr[14:13] == 2'b0x → Wlink (paddr[12:0] passed through)
+              paddr[14:13] == 2'b10 → TideLink registers (paddr[5:0] decoded)
+
+            The TideLink register region includes an internal APB mux that
+            arbitrates between external APB access and the FC adapter RX config
+            master (sideband credit/doorbell delivery). The FC adapter has
+            priority; external APB access is stalled (pready=0) when the FC
+            adapter is active.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // Wlink Chiplet Controller (0x0000 - 0x1FFF)
+    // =========================================================================
+
+    external wlink_regs wlink @ 0x0000;
+    wlink->desc = "Wlink chiplet controller: PHY, link layer, and FC node
+                   registers. See wlink_regs.rdl for detailed register
+                   descriptions. Note: Wlink RTL is Chisel-generated.";
+
+    // =========================================================================
+    // TideLink Configuration + PTP (0x2000 - 0x203F)
+    // =========================================================================
+
+    external tidelink_regs tidelink @ 0x2000;
+    tidelink->desc = "TideLink FIFO configuration, status, credit management,
+                      and PTP subsystem registers. See tidelink_regs.rdl and
+                      tidelink_ptp_regs.rdl for detailed register descriptions.";
+};

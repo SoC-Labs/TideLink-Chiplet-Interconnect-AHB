@@ -16,10 +16,10 @@
 `ifndef GUARD_TIDELINK_INTEGRATION_SCOREBOARD_SV
 `define GUARD_TIDELINK_INTEGRATION_SCOREBOARD_SV
 
-// Analysis imp declarations for three AHB monitor streams
+// Analysis imp declarations for two AHB monitor streams and one APB monitor stream
 `uvm_analysis_imp_decl(_tx_ahb)
 `uvm_analysis_imp_decl(_fifo_ahb)
-`uvm_analysis_imp_decl(_cfg_ahb)
+`uvm_analysis_imp_decl(_cfg_apb)
 
 class tidelink_integration_scoreboard extends uvm_scoreboard;
 
@@ -28,7 +28,7 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
   // Analysis exports
   uvm_analysis_imp_tx_ahb   #(svt_ahb_transaction, tidelink_integration_scoreboard) tx_ahb_export;
   uvm_analysis_imp_fifo_ahb #(svt_ahb_transaction, tidelink_integration_scoreboard) fifo_ahb_export;
-  uvm_analysis_imp_cfg_ahb  #(svt_ahb_transaction, tidelink_integration_scoreboard) cfg_ahb_export;
+  uvm_analysis_imp_cfg_apb  #(apb_master_transaction, tidelink_integration_scoreboard) cfg_apb_export;
 
   // TX write data queue (words written to TX aperture)
   bit [31:0] tx_write_data[$];
@@ -62,7 +62,7 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
     super.build_phase(phase);
     tx_ahb_export   = new("tx_ahb_export", this);
     fifo_ahb_export = new("fifo_ahb_export", this);
-    cfg_ahb_export  = new("cfg_ahb_export", this);
+    cfg_apb_export  = new("cfg_apb_export", this);
   endfunction
 
   // ---------------------------------------------------------------
@@ -116,26 +116,18 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
   endfunction
 
   // ---------------------------------------------------------------
-  // Config AHB transactions (from VIP master monitor on config port)
+  // Config APB transactions (from APB master agent monitor)
   // Tracks sideband register reads/writes
   // ---------------------------------------------------------------
-  virtual function void write_cfg_ahb(svt_ahb_transaction tr);
-    svt_ahb_master_transaction mtr;
-
-    if (tr.trans_type == svt_ahb_transaction::IDLE)
-      return;
-
-    if (!$cast(mtr, tr))
-      return;
-
-    if (mtr.xact_type == svt_ahb_transaction::WRITE) begin
+  virtual function void write_cfg_apb(apb_master_transaction tr);
+    if (tr.write) begin
       cfg_write_count++;
-      `uvm_info("SB_CFG", $sformatf("CFG WRITE addr=0x%03h data=0x%08h",
-        mtr.addr, mtr.data.size() > 0 ? mtr.data[0] : 32'h0), UVM_MEDIUM)
-    end else if (mtr.xact_type == svt_ahb_transaction::READ) begin
+      `uvm_info("SB_CFG", $sformatf("CFG WRITE addr=0x%04h data=0x%08h",
+        tr.addr, tr.wdata), UVM_MEDIUM)
+    end else begin
       cfg_read_count++;
-      `uvm_info("SB_CFG", $sformatf("CFG READ addr=0x%03h data=0x%08h",
-        mtr.addr, mtr.data.size() > 0 ? mtr.data[0] : 32'h0), UVM_MEDIUM)
+      `uvm_info("SB_CFG", $sformatf("CFG READ addr=0x%04h data=0x%08h",
+        tr.addr, tr.rdata), UVM_MEDIUM)
     end
   endfunction
 

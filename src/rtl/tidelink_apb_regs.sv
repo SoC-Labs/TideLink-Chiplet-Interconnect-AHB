@@ -91,7 +91,7 @@ module tidelink_apb_regs #(
     // -------------------------------------------------------------------------
 
     // APB decode
-    wire apb_region = paddr[5];
+    wire [1:0] apb_region = paddr[6:5];
     wire apb_write  = psel && penable && pwrite;
     wire apb_read   = psel && penable && !pwrite;
 
@@ -117,7 +117,7 @@ module tidelink_apb_regs #(
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
 
-            if (apb_write && !apb_region && paddr[4:2] == 3'h7) begin
+            if (apb_write && (apb_region == 2'b00) && paddr[4:2] == 3'h7) begin
                 ctrl_enable_r <= pwdata[0];
                 // FLUSH only honoured when EN == 0
                 if (pwdata[1] && !ctrl_enable_r)
@@ -134,7 +134,7 @@ module tidelink_apb_regs #(
         end else begin
             doorbell_trigger <= 1'b0;
 
-            if (apb_write && !apb_region) begin
+            if (apb_write && (apb_region == 2'b00)) begin
                 case (paddr[4:2])
                     3'h0: pair_base_addr    <= pwdata[SYS_ADDR_W-1:0];
                     3'h1: release_threshold <= pwdata;
@@ -167,9 +167,9 @@ module tidelink_apb_regs #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             released_credits_acc <= '0;
-        end else if (apb_read && apb_region && paddr[4:2] == 3'h0) begin
+        end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
             released_credits_acc <= '0;
-        end else if (apb_write && apb_region && paddr[4:2] == 3'h0) begin
+        end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
             released_credits_acc <= released_credits_acc + pwdata;
         end
     end
@@ -183,9 +183,9 @@ module tidelink_apb_regs #(
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             doorbell_response_acc <= '0;
-        end else if (apb_read && apb_region && paddr[4:2] == 3'h1) begin
+        end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
             doorbell_response_acc <= '0;
-        end else if (apb_write && apb_region && paddr[4:2] == 3'h1) begin
+        end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
             doorbell_response_acc <= doorbell_response_acc + pwdata;
         end
     end
@@ -197,15 +197,15 @@ module tidelink_apb_regs #(
     logic [SYS_DATA_W-1:0] pair_credit_counter;
     logic                  pair_credit_counter_en;
 
-    wire pair_counter_increment = apb_write && apb_region && paddr[4:2] == 3'h0;
-    wire pair_counter_decrement = apb_write && apb_region && paddr[4:2] == 3'h3;
+    wire pair_counter_increment = apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h0;
+    wire pair_counter_decrement = apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h3;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pair_credit_counter    <= '0;
             pair_credit_counter_en <= 1'b1;
         end else begin
-            if (apb_write && apb_region && paddr[4:2] == 3'h4) begin
+            if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h4) begin
                 pair_credit_counter_en <= pwdata[0];
             end
 
@@ -262,33 +262,37 @@ module tidelink_apb_regs #(
 
     always_comb begin
         prdata = '0;
-        if (apb_region) begin
-            case (paddr[4:2])
-                3'h0:    prdata = released_credits_acc;
-                3'h1:    prdata = doorbell_response_acc;
-                3'h2:    prdata = pair_credit_counter;
-                3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_credit_counter_en};
-                default: ;
-            endcase
-        end else begin
-            case (paddr[4:2])
-                3'h0:    prdata = pair_base_addr;
-                3'h1:    prdata = release_threshold;
-                3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
-                3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
-                3'h4:    prdata = {
-                             {(SYS_DATA_W-5){1'b0}},
-                             packet_committed,   // [4]
-                             master_error,        // [3]
-                             fifo_underrun,       // [2]
-                             fifo_overrun,        // [1]
-                             returner_busy        // [0]
-                         };
-                3'h6:    prdata = release_acc;
-                3'h7:    prdata = {{(SYS_DATA_W-2){1'b0}}, 1'b0, ctrl_enable_r};
-                default: ;
-            endcase
-        end
+        case (apb_region)
+            2'b00: begin // Region 0: Configuration and Status
+                case (paddr[4:2])
+                    3'h0:    prdata = pair_base_addr;
+                    3'h1:    prdata = release_threshold;
+                    3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
+                    3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
+                    3'h4:    prdata = {
+                                 {(SYS_DATA_W-5){1'b0}},
+                                 packet_committed,   // [4]
+                                 master_error,        // [3]
+                                 fifo_underrun,       // [2]
+                                 fifo_overrun,        // [1]
+                                 returner_busy        // [0]
+                             };
+                    3'h6:    prdata = release_acc;
+                    3'h7:    prdata = {{(SYS_DATA_W-2){1'b0}}, 1'b0, ctrl_enable_r};
+                    default: ;
+                endcase
+            end
+            2'b01: begin // Region 1: Credits
+                case (paddr[4:2])
+                    3'h0:    prdata = released_credits_acc;
+                    3'h1:    prdata = doorbell_response_acc;
+                    3'h2:    prdata = pair_credit_counter;
+                    3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_credit_counter_en};
+                    default: ;
+                endcase
+            end
+            default: ;
+        endcase
     end
 
     assign pready  = 1'b1;

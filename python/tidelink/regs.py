@@ -7,6 +7,20 @@ All register offsets and hardware constants for the tidelink_apb_regs module.
 RAM_ADDR_W = 14
 MAX_CREDITS = 1 << (RAM_ADDR_W - 2)  # 4096
 
+# ── Unified APB address space bases ────────────────────────────────────────
+WLINK_BASE                    = 0x0000  # Wlink chiplet controller (0x0000-0x1FFF)
+TIDELINK_APB_BASE             = 0x2000  # TideLink config + PTP regs (0x2000-0x203F)
+
+# ── Wlink FC node SM Control offsets (absolute within unified APB) ─────────
+WLINK_FC_AW_SM_CONTROL        = 0x1014
+WLINK_FC_W_SM_CONTROL         = 0x1114
+WLINK_FC_B_SM_CONTROL         = 0x1214
+WLINK_FC_AR_SM_CONTROL        = 0x1314
+WLINK_FC_R_SM_CONTROL         = 0x1414
+WLINK_FC_GENERAL_SM_CONTROL   = 0x1614
+WLINK_FC_TIDELINK_SM_CONTROL  = 0x1714
+FC_SM_DISABLE_CRC_BIT         = 16
+
 # ── Region 0 (paddr[5]=0): Configuration and Status ─────────────────────────
 REG_PAIR_BASE          = 0x000   # RW: pair base address (default TIDELINK_PAIR_BASE)
 REG_REL_THRESHOLD      = 0x004   # RW: release threshold (default 20, 0 = immediate)

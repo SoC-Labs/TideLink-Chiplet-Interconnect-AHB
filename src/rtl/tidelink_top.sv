@@ -16,10 +16,11 @@
 //   ahb_tx_*   — AHB subordinate: TideLink TX aperture (direct to FC node,
 //                same aperture size as remote RX FIFO, no address translation)
 //   ahb_fifo_* — AHB subordinate: local RX FIFO data window (read packets)
-//   ahb_cfg_*  — AHB subordinate: TideLink config registers (via APB bridge)
 //   ahb_mng_*  — AHB manager: incoming from remote side (via XHB500)
 //   ahb_adr_*  — AHB subordinate: address translator configuration
-//   ahb_ctrl_* — APB subordinate: Wlink chiplet controller configuration
+//   apb_*      — APB subordinate: unified configuration port
+//                (0x0000-0x1FFF: Wlink chiplet controller,
+//                 0x2000-0x203F: TideLink config + PTP registers)
 //
 // Reference: nanosoc_ss_chiplet_mng.v in nanosoc-chiplet-tech
 //
@@ -106,20 +107,6 @@ module tidelink_top #(
     output wire                     ahb_fifo_hreadyout,
 
     // --------------------------------------------------------------------------
-    // AHB Subordinate — TideLink FIFO config registers (via APB bridge)
-    // --------------------------------------------------------------------------
-    input  wire                     ahb_cfg_hsel,
-    input  wire   [APB_ADDR_W-1:0] ahb_cfg_haddr,
-    input  wire               [1:0] ahb_cfg_htrans,
-    input  wire               [2:0] ahb_cfg_hsize,
-    input  wire                     ahb_cfg_hwrite,
-    input  wire  [SYS_DATA_W-1:0]  ahb_cfg_hwdata,
-    input  wire                     ahb_cfg_hready,
-    output wire  [SYS_DATA_W-1:0]  ahb_cfg_hrdata,
-    output wire                     ahb_cfg_hresp,
-    output wire                     ahb_cfg_hreadyout,
-
-    // --------------------------------------------------------------------------
     // AHB Manager — Incoming from remote side (via XHB500 AXI→AHB)
     // --------------------------------------------------------------------------
     output wire  [SYS_ADDR_W-1:0]  ahb_mng_haddr,
@@ -150,18 +137,20 @@ module tidelink_top #(
     output wire                     ahb_adr_hreadyout,
 
     // --------------------------------------------------------------------------
-    // APB Subordinate — Chiplet controller (Wlink) configuration
+    // APB Subordinate — Unified configuration port
+    //   0x0000-0x1FFF: Wlink chiplet controller (PHY, link, FC nodes)
+    //   0x2000-0x203F: TideLink FIFO config + PTP registers
     // --------------------------------------------------------------------------
-    input  wire              [12:0] apb_ctrl_paddr,
-    input  wire                     apb_ctrl_penable,
-    input  wire                     apb_ctrl_pwrite,
-    input  wire               [3:0] apb_ctrl_pstrb,
-    input  wire               [2:0] apb_ctrl_pprot,
-    input  wire  [SYS_DATA_W-1:0]  apb_ctrl_pwdata,
-    input  wire                     apb_ctrl_psel,
-    output wire  [SYS_DATA_W-1:0]  apb_ctrl_prdata,
-    output wire                     apb_ctrl_pready,
-    output wire                     apb_ctrl_pslverr,
+    input  wire              [14:0] apb_paddr,
+    input  wire                     apb_penable,
+    input  wire                     apb_pwrite,
+    input  wire               [3:0] apb_pstrb,
+    input  wire               [2:0] apb_pprot,
+    input  wire  [SYS_DATA_W-1:0]  apb_pwdata,
+    input  wire                     apb_psel,
+    output wire  [SYS_DATA_W-1:0]  apb_prdata,
+    output wire                     apb_pready,
+    output wire                     apb_pslverr,
 
     // --------------------------------------------------------------------------
     // Scan / DFT
@@ -211,6 +200,34 @@ module tidelink_top #(
     // PHC Hardware Capture Output (directly to external PHC hw_capture input)
     // --------------------------------------------------------------------------
     output wire                     phc_hw_capture,
+
+    // --------------------------------------------------------------------------
+    // PHC Time Inputs (from external PHC, for hardware sync initiator)
+    // --------------------------------------------------------------------------
+    input  wire              [29:0] phc_nanoseconds,
+    input  wire              [47:0] phc_seconds,
+    input  wire                     phc_pps,
+
+    // --------------------------------------------------------------------------
+    // PHC Hardware Capture Inputs (from external PHC, for servo timestamp capture)
+    // --------------------------------------------------------------------------
+    input  wire              [47:0] phc_hw_cap_seconds,
+    input  wire              [29:0] phc_hw_cap_nanoseconds,
+    input  wire  [SYS_DATA_W-1:0]  phc_hw_cap_sub_nanoseconds,
+
+    // --------------------------------------------------------------------------
+    // PHC Hardware Adjustment Outputs (from servo to external PHC)
+    // --------------------------------------------------------------------------
+    output wire                     phc_hw_set_time,
+    output wire              [47:0] phc_hw_set_seconds,
+    output wire              [29:0] phc_hw_set_nanoseconds,
+    output wire                     phc_hw_adj_valid,
+    output wire  [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac,
+
+    // --------------------------------------------------------------------------
+    // Servo Status
+    // --------------------------------------------------------------------------
+    output wire                     servo_locked,
 
     // --------------------------------------------------------------------------
     // Interrupt Outputs
@@ -329,14 +346,16 @@ module tidelink_top #(
     wire                   tl_fc_l2a_accept;
 
     // =========================================================================
-    // PTP FC Node wiring (PTP module ↔ Chiplet Controller)
+    // PTP Short Packet wiring (PTP module ↔ Chiplet Controller)
     // =========================================================================
-    wire                   ptp_fc_a2l_valid;
-    wire [FC_DATA_W-1:0]  ptp_fc_a2l_data;
-    wire                   ptp_fc_a2l_ready;
-    wire                   ptp_fc_l2a_valid;
-    wire [FC_DATA_W-1:0]  ptp_fc_l2a_data;
-    wire                   ptp_fc_l2a_accept;
+    wire                   ptp_sp_tx_valid;
+    wire            [7:0]  ptp_sp_tx_data_id;
+    wire           [15:0]  ptp_sp_tx_payload;
+    wire                   ptp_sp_tx_ready;
+    wire                   ptp_sp_rx_valid;
+    wire            [7:0]  ptp_sp_rx_data_id;
+    wire           [15:0]  ptp_sp_rx_payload;
+    wire                   ptp_sp_rx_accept;
 
     // TX link idle signal from chiplet controller (Wlink tx_link_idle output)
     // Directly driven by .tx_link_idle port on the Wlink instance
@@ -347,6 +366,30 @@ module tidelink_top #(
     wire            [2:0]  ptp_reg_addr;
     wire [SYS_DATA_W-1:0] ptp_reg_wdata;
     wire [SYS_DATA_W-1:0] ptp_reg_rdata;
+    wire                   ptp_reg_region;
+
+    // Servo register interface (servo ↔ APB regs, via pass-through)
+    wire                   servo_reg_write;
+    wire            [2:0]  servo_reg_addr;
+    wire [SYS_DATA_W-1:0] servo_reg_wdata;
+    wire [SYS_DATA_W-1:0] servo_reg_rdata;
+
+    // Servo mailbox interface (FC RX SIDEBAND → servo timestamp mailbox)
+    wire                   mbox_reg_write;
+    wire            [2:0]  mbox_reg_addr;
+    wire [SYS_DATA_W-1:0] mbox_reg_wdata;
+
+    // Servo ↔ PTP event signals
+    wire                   sync_tx_done;
+    wire                   dreq_tx_done;
+    wire                   sync_rx_done;
+    wire                   dreq_rx_done;
+    wire                   servo_dreq_trigger;
+
+    // Servo ↔ FC adapter (SIDEBAND injection)
+    wire                   servo_fc_valid;
+    wire [FC_DATA_W-1:0]  servo_fc_data;
+    wire                   servo_fc_ready;
 
     // =========================================================================
     // Returner AHB master wiring (tidelink_fifo_ahb → FC adapter interception)
@@ -431,48 +474,123 @@ module tidelink_top #(
     assign ahb_fifo_hrdata      = fifo_mux_hrdata;
 
     // =========================================================================
-    // Config port mux: 2:1 AHB mux for config/APB slave port
-    //   Source 0: FC adapter RX Config master (writes credit/doorbell sideband)
-    //   Source 1: External ahb_cfg_* port (CPU reads/writes config registers)
+    // Unified APB address decode
+    //   paddr[13] == 0 → Wlink chiplet controller (paddr[12:0])
+    //   paddr[13] == 1 → TideLink config registers (paddr[5:0])
+    // =========================================================================
+    wire apb_sel_wlink    = apb_psel && !apb_paddr[13];
+    wire apb_sel_tidelink = apb_psel &&  apb_paddr[13];
+
+    // Wlink APB response signals
+    wire [SYS_DATA_W-1:0] wlink_prdata;
+    wire                   wlink_pready;
+    wire                   wlink_pslverr;
+
+    // TideLink regs APB response signals (from APB mux below)
+    wire [SYS_DATA_W-1:0] tl_regs_prdata;
+    wire                   tl_regs_pready;
+    wire                   tl_regs_pslverr;
+
+    // Unified APB response mux
+    assign apb_prdata  = apb_sel_wlink    ? wlink_prdata    :
+                         apb_sel_tidelink ? tl_regs_prdata  : '0;
+    assign apb_pready  = apb_sel_wlink    ? wlink_pready    :
+                         apb_sel_tidelink ? tl_regs_pready  : 1'b1;
+    assign apb_pslverr = apb_sel_wlink    ? wlink_pslverr   :
+                         apb_sel_tidelink ? tl_regs_pslverr : 1'b0;
+
+    // =========================================================================
+    // FC adapter RX Config path: AHB-to-APB bridge
+    //   The FC adapter RX config master uses AHB internally. Bridge it to APB
+    //   so we can mux it with the external APB path at the APB level.
+    // =========================================================================
+    wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
+    wire                    fc_cfg_apb_psel;
+    wire                    fc_cfg_apb_penable;
+    wire                    fc_cfg_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
+    wire [SYS_DATA_W-1:0]  fc_cfg_apb_prdata;
+    wire                    fc_cfg_apb_pready;
+    wire                    fc_cfg_apb_pslverr;
+
+    wire                    fc_cfg_ahb_hreadyout;
+    wire                    fc_cfg_ahb_hresp;
+    wire [SYS_DATA_W-1:0]  fc_cfg_ahb_hrdata;
+
+    assign fc_rx_cfg_hready = fc_cfg_ahb_hreadyout;
+    assign fc_rx_cfg_hresp  = fc_cfg_ahb_hresp;
+    assign fc_rx_cfg_hrdata = fc_cfg_ahb_hrdata;
+
+    cmsdk_ahb_to_apb #(
+        .ADDRWIDTH      (APB_ADDR_W),
+        .REGISTER_RDATA (0),
+        .REGISTER_WDATA (0)
+    ) u_fc_cfg_ahb_to_apb (
+        .HCLK      (hclk),
+        .HRESETn   (hresetn),
+        .PCLKEN    (1'b1),
+
+        .HSEL      (fc_rx_cfg_htrans[1]),
+        .HADDR     (fc_rx_cfg_haddr),
+        .HTRANS    (fc_rx_cfg_htrans),
+        .HSIZE     (fc_rx_cfg_hsize),
+        .HPROT     (4'b0011),
+        .HWRITE    (fc_rx_cfg_hwrite),
+        .HREADY    (fc_cfg_ahb_hreadyout),
+        .HWDATA    (fc_rx_cfg_hwdata),
+
+        .HREADYOUT (fc_cfg_ahb_hreadyout),
+        .HRDATA    (fc_cfg_ahb_hrdata),
+        .HRESP     (fc_cfg_ahb_hresp),
+
+        .PADDR     (fc_cfg_apb_paddr),
+        .PSEL      (fc_cfg_apb_psel),
+        .PENABLE   (fc_cfg_apb_penable),
+        .PWRITE    (fc_cfg_apb_pwrite),
+        .PSTRB     (),
+        .PPROT     (),
+        .PWDATA    (fc_cfg_apb_pwdata),
+        .APBACTIVE (),
+
+        .PRDATA    (fc_cfg_apb_prdata),
+        .PREADY    (fc_cfg_apb_pready),
+        .PSLVERR   (fc_cfg_apb_pslverr)
+    );
+
+    // =========================================================================
+    // TideLink config APB mux: 2:1 APB mux
+    //   Source 0 (priority): FC adapter RX config (bridged from AHB above)
+    //   Source 1: External unified APB port (CPU reads/writes)
     //
     // FC adapter has priority (credit/doorbell delivery is time-sensitive).
+    // External APB is stalled (pready=0) when FC adapter is active.
     // =========================================================================
-    wire                    cfg_mux_hsel;
-    wire [APB_ADDR_W-1:0]  cfg_mux_haddr;
-    wire              [1:0] cfg_mux_htrans;
-    wire              [2:0] cfg_mux_hsize;
-    wire                    cfg_mux_hwrite;
-    wire [SYS_DATA_W-1:0]  cfg_mux_hwdata;
-    wire                    cfg_mux_hready;
-    wire [SYS_DATA_W-1:0]  cfg_mux_hrdata;
-    wire                    cfg_mux_hresp;
-    wire                    cfg_mux_hreadyout;
+    wire fc_cfg_apb_active = fc_cfg_apb_psel;
 
-    reg fc_rx_cfg_data_phase;
-    always @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            fc_rx_cfg_data_phase <= 1'b0;
-        else if (fc_rx_cfg_htrans[1] && cfg_mux_hreadyout)
-            fc_rx_cfg_data_phase <= 1'b1;
-        else if (fc_rx_cfg_data_phase && cfg_mux_hreadyout)
-            fc_rx_cfg_data_phase <= 1'b0;
-    end
-    wire fc_rx_cfg_active = fc_rx_cfg_htrans[1] || fc_rx_cfg_data_phase;
+    // APB signals to tidelink_fifo APB slave
+    wire [APB_ADDR_W-1:0]  tl_apb_paddr;
+    wire                    tl_apb_psel;
+    wire                    tl_apb_penable;
+    wire                    tl_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  tl_apb_pwdata;
+    wire [SYS_DATA_W-1:0]  tl_apb_prdata;
+    wire                    tl_apb_pready;
+    wire                    tl_apb_pslverr;
 
-    assign cfg_mux_hsel   = fc_rx_cfg_active ? 1'b1             : ahb_cfg_hsel;
-    assign cfg_mux_haddr  = fc_rx_cfg_active ? fc_rx_cfg_haddr  : ahb_cfg_haddr;
-    assign cfg_mux_htrans = fc_rx_cfg_active ? fc_rx_cfg_htrans : ahb_cfg_htrans;
-    assign cfg_mux_hsize  = fc_rx_cfg_active ? fc_rx_cfg_hsize  : ahb_cfg_hsize;
-    assign cfg_mux_hwrite = fc_rx_cfg_active ? fc_rx_cfg_hwrite : ahb_cfg_hwrite;
-    assign cfg_mux_hwdata = fc_rx_cfg_active ? fc_rx_cfg_hwdata : ahb_cfg_hwdata;
-    assign cfg_mux_hready = fc_rx_cfg_active ? cfg_mux_hreadyout : ahb_cfg_hready;
+    assign tl_apb_paddr   = fc_cfg_apb_active ? fc_cfg_apb_paddr   : apb_paddr[APB_ADDR_W-1:0];
+    assign tl_apb_psel    = fc_cfg_apb_active ? fc_cfg_apb_psel    : apb_sel_tidelink;
+    assign tl_apb_penable = fc_cfg_apb_active ? fc_cfg_apb_penable : apb_penable;
+    assign tl_apb_pwrite  = fc_cfg_apb_active ? fc_cfg_apb_pwrite  : apb_pwrite;
+    assign tl_apb_pwdata  = fc_cfg_apb_active ? fc_cfg_apb_pwdata  : apb_pwdata;
 
-    assign fc_rx_cfg_hready    = fc_rx_cfg_active ? cfg_mux_hreadyout : 1'b1;
-    assign fc_rx_cfg_hresp     = cfg_mux_hresp;
-    assign fc_rx_cfg_hrdata    = cfg_mux_hrdata;
-    assign ahb_cfg_hreadyout   = fc_rx_cfg_active ? 1'b0 : cfg_mux_hreadyout;
-    assign ahb_cfg_hresp       = cfg_mux_hresp;
-    assign ahb_cfg_hrdata      = cfg_mux_hrdata;
+    // Route APB responses back to both sources
+    assign fc_cfg_apb_prdata  = tl_apb_prdata;
+    assign fc_cfg_apb_pready  = tl_apb_pready;
+    assign fc_cfg_apb_pslverr = tl_apb_pslverr;
+
+    assign tl_regs_prdata  = fc_cfg_apb_active ? '0   : tl_apb_prdata;
+    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : tl_apb_pready;
+    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
 
     // =========================================================================
     // Address translation wiring
@@ -480,12 +598,12 @@ module tidelink_top #(
     wire [SYS_ADDR_W-1:0]  translated_sub_haddr;
 
     // =========================================================================
-    // 1. TideLink RX FIFO (tidelink_fifo_ahb)
+    // 1. TideLink RX FIFO (tidelink_fifo)
     //    - AHB slave: FIFO data window (via mux from CPU + FC adapter RX)
-    //    - AHB slave: config registers (ahb_cfg_*)
+    //    - APB slave: config registers (via APB mux above)
     //    - AHB master: returner → routed to FC adapter for sideband transport
     // =========================================================================
-    tidelink_fifo_ahb #(
+    tidelink_fifo #(
         .SYS_ADDR_W        (SYS_ADDR_W),
         .SYS_DATA_W        (SYS_DATA_W),
         .RAM_ADDR_W        (RAM_ADDR_W),
@@ -508,17 +626,15 @@ module tidelink_top #(
         .ahbs_hresp        (fifo_mux_hresp),
         .ahbs_hrdata       (fifo_mux_hrdata),
 
-        // AHB Slave — Config registers (muxed: FC adapter RX sideband + CPU access)
-        .ahbc_hsel         (cfg_mux_hsel),
-        .ahbc_hready       (cfg_mux_hready),
-        .ahbc_htrans       (cfg_mux_htrans),
-        .ahbc_hsize        (cfg_mux_hsize),
-        .ahbc_hwrite       (cfg_mux_hwrite),
-        .ahbc_haddr        (cfg_mux_haddr),
-        .ahbc_hwdata       (cfg_mux_hwdata),
-        .ahbc_hreadyout    (cfg_mux_hreadyout),
-        .ahbc_hresp        (cfg_mux_hresp),
-        .ahbc_hrdata       (cfg_mux_hrdata),
+        // APB Slave — Config registers (via APB mux: FC adapter + external APB)
+        .apbs_psel         (tl_apb_psel),
+        .apbs_penable      (tl_apb_penable),
+        .apbs_pwrite       (tl_apb_pwrite),
+        .apbs_paddr        (tl_apb_paddr),
+        .apbs_pwdata       (tl_apb_pwdata),
+        .apbs_prdata       (tl_apb_prdata),
+        .apbs_pready       (tl_apb_pready),
+        .apbs_pslverr      (tl_apb_pslverr),
 
         // AHB Master — Returner (routed to FC adapter, NOT external bus)
         .ahbm_haddr        (rtn_haddr),
@@ -539,7 +655,19 @@ module tidelink_top #(
         .ptp_reg_write       (ptp_reg_write),
         .ptp_reg_addr        (ptp_reg_addr),
         .ptp_reg_wdata       (ptp_reg_wdata),
-        .ptp_reg_rdata       (ptp_reg_rdata)
+        .ptp_reg_rdata       (ptp_reg_rdata),
+        .ptp_reg_region      (ptp_reg_region),
+
+        // Servo register pass-through (to/from tidelink_ptp_servo)
+        .servo_reg_write     (servo_reg_write),
+        .servo_reg_addr      (servo_reg_addr),
+        .servo_reg_wdata     (servo_reg_wdata),
+        .servo_reg_rdata     (servo_reg_rdata),
+
+        // Timestamp mailbox pass-through (FC SIDEBAND → servo)
+        .mbox_reg_write      (mbox_reg_write),
+        .mbox_reg_addr       (mbox_reg_addr),
+        .mbox_reg_wdata      (mbox_reg_wdata)
     );
 
     // =========================================================================
@@ -600,6 +728,11 @@ module tidelink_top #(
         .fc_rx_cfg_hresp   (fc_rx_cfg_hresp),
         .fc_rx_cfg_hrdata  (fc_rx_cfg_hrdata),
 
+        // Servo FC SIDEBAND injection (timestamp exchange)
+        .servo_fc_valid    (servo_fc_valid),
+        .servo_fc_data     (servo_fc_data),
+        .servo_fc_ready    (servo_fc_ready),
+
         // FC Node interface (to Wlink TideLink FC node)
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),
         .tl_fc_a2l_data    (tl_fc_a2l_data),
@@ -610,14 +743,13 @@ module tidelink_top #(
     );
 
     // =========================================================================
-    // 2b. TideLink PTP Module
-    //     - TX path: AHB slave → wait for tx_router_idle → PTP FC node TX
-    //     - RX path: PTP FC node RX → payload latch + PHC hw_capture
+    // 2b. TideLink PTP Module (Short Packet)
+    //     - TX path: AHB slave → wait for tx_router_idle → Short Packet TX
+    //     - RX path: Short Packet RX → payload latch + PHC hw_capture
     //     - Registers: PTP_CTRL/PTP_RX_PAYLOAD/PTP_STATUS via APB pass-through
     // =========================================================================
     tidelink_ptp #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .FC_DATA_W  (FC_DATA_W)
+        .SYS_DATA_W (SYS_DATA_W)
     ) u_ptp (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -625,18 +757,25 @@ module tidelink_top #(
         // TX router idle (from chiplet controller)
         .tx_router_idle    (tx_router_idle),
 
-        // PTP FC TX interface
-        .ptp_fc_a2l_valid  (ptp_fc_a2l_valid),
-        .ptp_fc_a2l_data   (ptp_fc_a2l_data),
-        .ptp_fc_a2l_ready  (ptp_fc_a2l_ready),
+        // PTP Short Packet TX interface
+        .ptp_sp_tx_valid   (ptp_sp_tx_valid),
+        .ptp_sp_tx_data_id (ptp_sp_tx_data_id),
+        .ptp_sp_tx_payload (ptp_sp_tx_payload),
+        .ptp_sp_tx_ready   (ptp_sp_tx_ready),
 
-        // PTP FC RX interface
-        .ptp_fc_l2a_valid  (ptp_fc_l2a_valid),
-        .ptp_fc_l2a_data   (ptp_fc_l2a_data),
-        .ptp_fc_l2a_accept (ptp_fc_l2a_accept),
+        // PTP Short Packet RX interface
+        .ptp_sp_rx_valid   (ptp_sp_rx_valid),
+        .ptp_sp_rx_data_id (ptp_sp_rx_data_id),
+        .ptp_sp_rx_payload (ptp_sp_rx_payload),
+        .ptp_sp_rx_accept  (ptp_sp_rx_accept),
 
         // PHC hardware capture
         .phc_hw_capture    (phc_hw_capture),
+
+        // PHC time inputs (for hardware sync initiator)
+        .phc_nanoseconds   (phc_nanoseconds),
+        .phc_seconds        (phc_seconds),
+        .phc_pps            (phc_pps),
 
         // AHB slave — PTP TX write port
         .ahb_ptp_hsel      (ahb_ptp_hsel),
@@ -655,9 +794,73 @@ module tidelink_top #(
         .ptp_reg_addr      (ptp_reg_addr),
         .ptp_reg_wdata     (ptp_reg_wdata),
         .ptp_reg_rdata     (ptp_reg_rdata),
+        .ptp_reg_region    (ptp_reg_region),
+
+        // Servo event outputs
+        .sync_tx_done      (sync_tx_done),
+        .dreq_tx_done      (dreq_tx_done),
+        .sync_rx_done      (sync_rx_done),
+        .dreq_rx_done      (dreq_rx_done),
+
+        // Servo DELAY_REQ injection
+        .servo_dreq_trigger (servo_dreq_trigger),
 
         // Interrupt
         .ptp_irq           (ptp_irq)
+    );
+
+    // =========================================================================
+    // 2c. TideLink PTP Servo (Autonomous Clock Synchronisation)
+    //     - Grandmaster: captures t1/t4, sends via FC SIDEBAND to Subordinate
+    //     - Subordinate: captures t2/t3, receives t1/t4, computes offset,
+    //       adjusts PHC via SET_TIME or NS_INCR_FRAC
+    // =========================================================================
+    tidelink_ptp_servo #(
+        .SYS_DATA_W (SYS_DATA_W),
+        .FC_DATA_W  (FC_DATA_W)
+    ) u_servo (
+        .clk                    (hclk),
+        .resetn                 (hresetn),
+
+        // Register interface (from APB regs, Region 2 addr 3-7 + Region 3)
+        .servo_reg_write        (servo_reg_write),
+        .servo_reg_addr         (servo_reg_addr),
+        .servo_reg_wdata        (servo_reg_wdata),
+        .servo_reg_rdata        (servo_reg_rdata),
+
+        // PTP event inputs
+        .sync_tx_done           (sync_tx_done),
+        .dreq_tx_done           (dreq_tx_done),
+        .sync_rx_done           (sync_rx_done),
+        .dreq_rx_done           (dreq_rx_done),
+
+        // PHC hardware capture (direct wire from PHC)
+        .hw_cap_seconds         (phc_hw_cap_seconds),
+        .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds),
+        .hw_cap_sub_nanoseconds (phc_hw_cap_sub_nanoseconds),
+
+        // FC SIDEBAND injection (to FC adapter)
+        .servo_fc_valid         (servo_fc_valid),
+        .servo_fc_data          (servo_fc_data),
+        .servo_fc_ready         (servo_fc_ready),
+
+        // Timestamp mailbox (from FC RX config path via APB)
+        .mbox_reg_write         (mbox_reg_write),
+        .mbox_reg_addr          (mbox_reg_addr),
+        .mbox_reg_wdata         (mbox_reg_wdata),
+
+        // DELAY_REQ trigger (to PTP TX path)
+        .servo_dreq_trigger     (servo_dreq_trigger),
+
+        // PHC adjustment outputs (to external PHC)
+        .phc_hw_set_time        (phc_hw_set_time),
+        .phc_hw_set_seconds     (phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds (phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid       (phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac(phc_hw_adj_ns_incr_frac),
+
+        // Status
+        .servo_locked           (servo_locked)
     );
 
     // =========================================================================
@@ -889,17 +1092,17 @@ module tidelink_top #(
         .sb_reset_out               (d2d_reset_o),
         .sb_wake                    (),
 
-        // APB control interface (apbport_0)
-        .apbport_0_psel             (apb_ctrl_psel),
-        .apbport_0_paddr            (apb_ctrl_paddr),
-        .apbport_0_penable          (apb_ctrl_penable),
-        .apbport_0_pprot            (apb_ctrl_pprot),
-        .apbport_0_pstrb            (apb_ctrl_pstrb),
-        .apbport_0_pwrite           (apb_ctrl_pwrite),
-        .apbport_0_pwdata           (apb_ctrl_pwdata),
-        .apbport_0_prdata           (apb_ctrl_prdata),
-        .apbport_0_pready           (apb_ctrl_pready),
-        .apbport_0_pslverr          (apb_ctrl_pslverr),
+        // APB control interface (from unified APB port, Wlink region)
+        .apbport_0_psel             (apb_sel_wlink),
+        .apbport_0_paddr            (apb_paddr[12:0]),
+        .apbport_0_penable          (apb_penable),
+        .apbport_0_pprot            (apb_pprot),
+        .apbport_0_pstrb            (apb_pstrb),
+        .apbport_0_pwrite           (apb_pwrite),
+        .apbport_0_pwdata           (apb_pwdata),
+        .apbport_0_prdata           (wlink_prdata),
+        .apbport_0_pready           (wlink_pready),
+        .apbport_0_pslverr          (wlink_pslverr),
 
         // AXI target (from XHB500 AHB→AXI bridge)
         .axi_tgt_0_aw_valid         (s_axi_awvalid),
@@ -997,9 +1200,11 @@ module tidelink_top #(
         .tidelink_in                ({tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_l2a_accept}),
         .tidelink_out               ({tl_fc_a2l_ready, tl_fc_l2a_valid, tl_fc_l2a_data}),
 
-        // PTP FC node (packed bus, same 50-bit convention)
-        .ptp_in                     ({ptp_fc_a2l_valid, ptp_fc_a2l_data, ptp_fc_l2a_accept}),
-        .ptp_out                    ({ptp_fc_a2l_ready, ptp_fc_l2a_valid, ptp_fc_l2a_data}),
+        // PTP Short Packet port (26-bit packed bus)
+        // ptp_in  = {tx_valid[25], tx_data_id[24:17], tx_payload[16:1], rx_accept[0]}
+        // ptp_out = {tx_ready[25], rx_valid[24], rx_data_id[23:16], rx_payload[15:0]}
+        .ptp_in                     ({ptp_sp_tx_valid, ptp_sp_tx_data_id, ptp_sp_tx_payload, ptp_sp_rx_accept}),
+        .ptp_out                    ({ptp_sp_tx_ready, ptp_sp_rx_valid, ptp_sp_rx_data_id, ptp_sp_rx_payload}),
 
         // TX link idle (for PTP jitter-free timestamp capture)
         .tx_link_idle               (tx_router_idle),

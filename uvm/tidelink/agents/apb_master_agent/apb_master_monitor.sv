@@ -55,7 +55,7 @@ class apb_master_monitor extends uvm_monitor;
     else
       tr.rdata = vif.mon_cb.prdata;
 
-    `uvm_info("APB_MON", $sformatf("Captured %s addr=0x%03h%s",
+    `uvm_info("APB_MON", $sformatf("Captured %s addr=0x%04h%s",
       tr.write ? "WRITE" : "READ", tr.addr,
       tr.slverr ? " [SLVERR]" : ""), UVM_MEDIUM)
   endtask

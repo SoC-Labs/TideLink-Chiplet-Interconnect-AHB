@@ -98,14 +98,14 @@ class tidelink_system_base_test extends uvm_test;
     a_init.pair_base_addr = a_pair_base;
     a_init.rel_threshold  = a_threshold;
     a_init.side_name = "A";
-    a_init.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+    a_init.start(env.a_cfg_apb_agent.sequencer);
 
     // Initialize side B
     b_init = sys_init_sequence::type_id::create("b_init");
     b_init.pair_base_addr = b_pair_base;
     b_init.rel_threshold  = b_threshold;
     b_init.side_name = "B";
-    b_init.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+    b_init.start(env.b_cfg_apb_agent.sequencer);
 
     // Wait for doorbells to propagate through FC crossover
     repeat (50) @(posedge tb_if.clk);
@@ -125,37 +125,39 @@ class tidelink_system_base_test extends uvm_test;
     init_seq.rel_threshold  = threshold;
     init_seq.side_name = (side == SIDE_A) ? "A" : "B";
     if (side == SIDE_A)
-      init_seq.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+      init_seq.start(env.a_cfg_apb_agent.sequencer);
     else
-      init_seq.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+      init_seq.start(env.b_cfg_apb_agent.sequencer);
   endtask
 
   // ---------------------------------------------------------------
   // Helper: read a config register on a given side
+  // TideLink regs at 0x2000 offset in unified APB space
   // ---------------------------------------------------------------
   virtual task read_cfg_reg(side_t side, input bit [11:0] addr, output bit [31:0] data);
     integration_cfg_read_sequence rd_seq;
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
-    rd_seq.addr = addr;
+    rd_seq.addr = 15'h2000 + addr;
     if (side == SIDE_A)
-      rd_seq.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.a_cfg_apb_agent.sequencer);
     else
-      rd_seq.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.b_cfg_apb_agent.sequencer);
     data = rd_seq.rdata;
   endtask
 
   // ---------------------------------------------------------------
   // Helper: write a config register on a given side
+  // TideLink regs at 0x2000 offset in unified APB space
   // ---------------------------------------------------------------
   virtual task write_cfg_reg(side_t side, input bit [11:0] addr, input bit [31:0] data);
     integration_cfg_write_sequence wr_seq;
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_seq");
-    wr_seq.addr = addr;
+    wr_seq.addr = 15'h2000 + addr;
     wr_seq.data = data;
     if (side == SIDE_A)
-      wr_seq.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.a_cfg_apb_agent.sequencer);
     else
-      wr_seq.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.b_cfg_apb_agent.sequencer);
   endtask
 
   // ---------------------------------------------------------------

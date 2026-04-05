@@ -8,7 +8,7 @@
 //
 //   Chiplet A (tidelink_top)           Chiplet B (tidelink_top)
 //   +---------------------------+      +---------------------------+
-//   | tidelink_fifo_ahb         |      | tidelink_fifo_ahb         |
+//   | tidelink_fifo             |      | tidelink_fifo             |
 //   | tidelink_fc_adapter       |      | tidelink_fc_adapter       |
 //   | tidelink_addr_translator  |      | tidelink_addr_translator  |
 //   | XHB500 AHB<->AXI bridges  |      | XHB500 AHB<->AXI bridges  |
@@ -23,15 +23,15 @@
 //     A pad_tx -> B pad_rx,  B pad_tx -> A pad_rx
 //
 // Per-side SVT AHB VIP interfaces:
-//   1. ahb_sub  — AHB master VIP → regular AHB access (via XHB500+Wlink)
-//   2. ahb_tx   — AHB master VIP → TideLink TX aperture (via FC node)
-//   3. ahb_fifo — AHB master VIP → RX FIFO data read
-//   4. ahb_cfg  — AHB master VIP → TideLink config registers
-//   5. ahb_adr  — AHB master VIP → address translator configuration
-//   6. ahb_mng  — AHB slave VIP  ← incoming remote AHB (via XHB500+Wlink)
+//   1. ahb_sub  — AHB master VIP -> regular AHB access (via XHB500+Wlink)
+//   2. ahb_tx   — AHB master VIP -> TideLink TX aperture (via FC node)
+//   3. ahb_fifo — AHB master VIP -> RX FIFO data read
+//   4. ahb_adr  — AHB master VIP -> address translator configuration
+//   5. ahb_mng  — AHB slave VIP  <- incoming remote AHB (via XHB500+Wlink)
 //
 // Per-side APB agent:
-//   7. apb_ctrl — APB master agent → Wlink controller configuration
+//   6. apb_agt — APB master agent -> unified config port (Wlink + TideLink regs)
+//      Address map: 0x0000-0x1FFF = Wlink, 0x2000-0x203F = TideLink config + PTP
 ///////////////////////////////////////////////////////////////////////////////
 
 `timescale 1ns/1ps
@@ -104,31 +104,9 @@ module test_top;
   localparam [SYS_ADDR_W-1:0] B_PAIR_BASE = 32'h5000_0000;
 
   // ---------------------------------------------------------------
-  // APB master interface (simple wires, driven by apb_master_agent)
+  // APB master interfaces (driven by apb_master_agent, unified config port)
+  // Address map: 0x0000-0x1FFF = Wlink, 0x2000-0x203F = TideLink + PTP
   // ---------------------------------------------------------------
-  // Chiplet A APB
-  wire        a_apb_psel;
-  wire [12:0] a_apb_paddr;
-  wire        a_apb_penable;
-  wire        a_apb_pwrite;
-  wire  [3:0] a_apb_pstrb;
-  wire  [2:0] a_apb_pprot;
-  wire [31:0] a_apb_pwdata;
-  wire [31:0] a_apb_prdata;
-  wire        a_apb_pready;
-  wire        a_apb_pslverr;
-
-  // Chiplet B APB
-  wire        b_apb_psel;
-  wire [12:0] b_apb_paddr;
-  wire        b_apb_penable;
-  wire        b_apb_pwrite;
-  wire  [3:0] b_apb_pstrb;
-  wire  [2:0] b_apb_pprot;
-  wire [31:0] b_apb_pwdata;
-  wire [31:0] b_apb_prdata;
-  wire        b_apb_pready;
-  wire        b_apb_pslverr;
 
   // ---------------------------------------------------------------
   // SVT AHB Interface instances — Chiplet A
@@ -148,11 +126,6 @@ module test_top;
   svt_ahb_if ahb_a_fifo_if();
   assign ahb_a_fifo_if.hclk    = clk;
   assign ahb_a_fifo_if.hresetn = rst_n;
-
-  // AHB Config
-  svt_ahb_if ahb_a_cfg_if();
-  assign ahb_a_cfg_if.hclk    = clk;
-  assign ahb_a_cfg_if.hresetn = rst_n;
 
   // AHB Address translator config
   svt_ahb_if ahb_a_adr_if();
@@ -182,10 +155,6 @@ module test_top;
   svt_ahb_if ahb_b_fifo_if();
   assign ahb_b_fifo_if.hclk    = clk;
   assign ahb_b_fifo_if.hresetn = rst_n;
-
-  svt_ahb_if ahb_b_cfg_if();
-  assign ahb_b_cfg_if.hclk    = clk;
-  assign ahb_b_cfg_if.hresetn = rst_n;
 
   svt_ahb_if ahb_b_adr_if();
   assign ahb_b_adr_if.hclk    = clk;
@@ -231,8 +200,6 @@ module test_top;
   wire [31:0] a_dut_tx_hrdata;
   wire        a_dut_fifo_hreadyout, a_dut_fifo_hresp;
   wire [31:0] a_dut_fifo_hrdata;
-  wire        a_dut_cfg_hreadyout, a_dut_cfg_hresp;
-  wire [31:0] a_dut_cfg_hrdata;
   wire        a_dut_adr_hreadyout, a_dut_adr_hresp;
   wire [31:0] a_dut_adr_hrdata;
 
@@ -263,8 +230,6 @@ module test_top;
   wire [31:0] b_dut_tx_hrdata;
   wire        b_dut_fifo_hreadyout, b_dut_fifo_hresp;
   wire [31:0] b_dut_fifo_hrdata;
-  wire        b_dut_cfg_hreadyout, b_dut_cfg_hresp;
-  wire [31:0] b_dut_cfg_hrdata;
   wire        b_dut_adr_hreadyout, b_dut_adr_hresp;
   wire [31:0] b_dut_adr_hrdata;
 
@@ -338,17 +303,17 @@ module test_top;
     .ahb_fifo_hresp    (a_dut_fifo_hresp),
     .ahb_fifo_hreadyout(a_dut_fifo_hreadyout),
 
-    // AHB Config
-    .ahb_cfg_hsel      (1'b1),
-    .ahb_cfg_haddr     (ahb_a_cfg_if.master_if[0].haddr[APB_ADDR_W-1:0]),
-    .ahb_cfg_htrans    (ahb_a_cfg_if.master_if[0].htrans),
-    .ahb_cfg_hsize     (ahb_a_cfg_if.master_if[0].hsize),
-    .ahb_cfg_hwrite    (ahb_a_cfg_if.master_if[0].hwrite),
-    .ahb_cfg_hwdata    (ahb_a_cfg_if.master_if[0].hwdata[31:0]),
-    .ahb_cfg_hready    (ahb_a_cfg_if.master_if[0].hready),
-    .ahb_cfg_hrdata    (a_dut_cfg_hrdata),
-    .ahb_cfg_hresp     (a_dut_cfg_hresp),
-    .ahb_cfg_hreadyout (a_dut_cfg_hreadyout),
+    // Unified APB config port (Wlink 0x0000-0x1FFF, TideLink 0x2000-0x203F)
+    .apb_psel          (apb_a_if.psel),
+    .apb_paddr         (apb_a_if.paddr),
+    .apb_penable       (apb_a_if.penable),
+    .apb_pwrite        (apb_a_if.pwrite),
+    .apb_pstrb         (4'hF),
+    .apb_pprot         (3'h0),
+    .apb_pwdata        (apb_a_if.pwdata),
+    .apb_prdata        (apb_a_if.prdata),
+    .apb_pready        (apb_a_if.pready),
+    .apb_pslverr       (apb_a_if.pslverr),
 
     // AHB Manager (incoming from remote)
     .ahb_mng_haddr     (a_dut_mng_haddr),
@@ -375,18 +340,6 @@ module test_top;
     .ahb_adr_hrdata    (a_dut_adr_hrdata),
     .ahb_adr_hresp     (a_dut_adr_hresp),
     .ahb_adr_hreadyout (a_dut_adr_hreadyout),
-
-    // APB Wlink controller config
-    .apb_ctrl_psel     (apb_a_if.psel),
-    .apb_ctrl_paddr    ({1'b0, apb_a_if.paddr}),
-    .apb_ctrl_penable  (apb_a_if.penable),
-    .apb_ctrl_pwrite   (apb_a_if.pwrite),
-    .apb_ctrl_pstrb    (4'hF),
-    .apb_ctrl_pprot    (3'h0),
-    .apb_ctrl_pwdata   (apb_a_if.pwdata),
-    .apb_ctrl_prdata   (apb_a_if.prdata),
-    .apb_ctrl_pready   (apb_a_if.pready),
-    .apb_ctrl_pslverr  (apb_a_if.pslverr),
 
     // Scan / DFT (tied off)
     .scan_mode         (1'b0),
@@ -472,17 +425,17 @@ module test_top;
     .ahb_fifo_hresp    (b_dut_fifo_hresp),
     .ahb_fifo_hreadyout(b_dut_fifo_hreadyout),
 
-    // AHB Config
-    .ahb_cfg_hsel      (1'b1),
-    .ahb_cfg_haddr     (ahb_b_cfg_if.master_if[0].haddr[APB_ADDR_W-1:0]),
-    .ahb_cfg_htrans    (ahb_b_cfg_if.master_if[0].htrans),
-    .ahb_cfg_hsize     (ahb_b_cfg_if.master_if[0].hsize),
-    .ahb_cfg_hwrite    (ahb_b_cfg_if.master_if[0].hwrite),
-    .ahb_cfg_hwdata    (ahb_b_cfg_if.master_if[0].hwdata[31:0]),
-    .ahb_cfg_hready    (ahb_b_cfg_if.master_if[0].hready),
-    .ahb_cfg_hrdata    (b_dut_cfg_hrdata),
-    .ahb_cfg_hresp     (b_dut_cfg_hresp),
-    .ahb_cfg_hreadyout (b_dut_cfg_hreadyout),
+    // Unified APB config port (Wlink 0x0000-0x1FFF, TideLink 0x2000-0x203F)
+    .apb_psel          (apb_b_if.psel),
+    .apb_paddr         (apb_b_if.paddr),
+    .apb_penable       (apb_b_if.penable),
+    .apb_pwrite        (apb_b_if.pwrite),
+    .apb_pstrb         (4'hF),
+    .apb_pprot         (3'h0),
+    .apb_pwdata        (apb_b_if.pwdata),
+    .apb_prdata        (apb_b_if.prdata),
+    .apb_pready        (apb_b_if.pready),
+    .apb_pslverr       (apb_b_if.pslverr),
 
     // AHB Manager
     .ahb_mng_haddr     (b_dut_mng_haddr),
@@ -509,18 +462,6 @@ module test_top;
     .ahb_adr_hrdata    (b_dut_adr_hrdata),
     .ahb_adr_hresp     (b_dut_adr_hresp),
     .ahb_adr_hreadyout (b_dut_adr_hreadyout),
-
-    // APB Wlink controller config
-    .apb_ctrl_psel     (apb_b_if.psel),
-    .apb_ctrl_paddr    ({1'b0, apb_b_if.paddr}),
-    .apb_ctrl_penable  (apb_b_if.penable),
-    .apb_ctrl_pwrite   (apb_b_if.pwrite),
-    .apb_ctrl_pstrb    (4'hF),
-    .apb_ctrl_pprot    (3'h0),
-    .apb_ctrl_pwdata   (apb_b_if.pwdata),
-    .apb_ctrl_prdata   (apb_b_if.prdata),
-    .apb_ctrl_pready   (apb_b_if.pready),
-    .apb_ctrl_pslverr  (apb_b_if.pslverr),
 
     // Scan / DFT
     .scan_mode         (1'b0),
@@ -618,7 +559,6 @@ module test_top;
   `WIRE_AHB_SUB(ahb_a_sub_if,  a_dut_sub_hreadyout,  a_dut_sub_hresp,  a_dut_sub_hrdata)
   `WIRE_AHB_SUB(ahb_a_tx_if,   a_dut_tx_hreadyout,   a_dut_tx_hresp,   a_dut_tx_hrdata)
   `WIRE_AHB_SUB(ahb_a_fifo_if, a_dut_fifo_hreadyout, a_dut_fifo_hresp, a_dut_fifo_hrdata)
-  `WIRE_AHB_SUB(ahb_a_cfg_if,  a_dut_cfg_hreadyout,  a_dut_cfg_hresp,  a_dut_cfg_hrdata)
   `WIRE_AHB_SUB(ahb_a_adr_if,  a_dut_adr_hreadyout,  a_dut_adr_hresp,  a_dut_adr_hrdata)
 
   // --- Chiplet A manager interface ---
@@ -631,7 +571,6 @@ module test_top;
   `WIRE_AHB_SUB(ahb_b_sub_if,  b_dut_sub_hreadyout,  b_dut_sub_hresp,  b_dut_sub_hrdata)
   `WIRE_AHB_SUB(ahb_b_tx_if,   b_dut_tx_hreadyout,   b_dut_tx_hresp,   b_dut_tx_hrdata)
   `WIRE_AHB_SUB(ahb_b_fifo_if, b_dut_fifo_hreadyout, b_dut_fifo_hresp, b_dut_fifo_hrdata)
-  `WIRE_AHB_SUB(ahb_b_cfg_if,  b_dut_cfg_hreadyout,  b_dut_cfg_hresp,  b_dut_cfg_hrdata)
   `WIRE_AHB_SUB(ahb_b_adr_if,  b_dut_adr_hreadyout,  b_dut_adr_hresp,  b_dut_adr_hrdata)
 
   // --- Chiplet B manager interface ---
@@ -671,8 +610,6 @@ module test_top;
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_fifo_ahb_sys_env", "vif", ahb_a_fifo_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.a_cfg_ahb_sys_env",  "vif", ahb_a_cfg_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_adr_ahb_sys_env",  "vif", ahb_a_adr_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_mng_ahb_sys_env",  "vif", ahb_a_mng_if);
@@ -684,8 +621,6 @@ module test_top;
       "uvm_test_top.env.b_tx_ahb_sys_env",   "vif", ahb_b_tx_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b_fifo_ahb_sys_env", "vif", ahb_b_fifo_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.b_cfg_ahb_sys_env",  "vif", ahb_b_cfg_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b_adr_ahb_sys_env",  "vif", ahb_b_adr_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),

@@ -1,7 +1,7 @@
 +incdir+${TIDELINK_HOME}/src/rtl
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 
-// ── FIFO subsystem — ASIC variant (compiled SRAM macro) ──────────────────
+// FIFO subsystem -- ASIC variant (compiled SRAM macro)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 ${TIDELINK_HOME}/src/rtl/fifo/asic/tidelink_sram.sv
@@ -12,20 +12,21 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_apb_regs.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 
-// ── FC adapter ───────────────────────────────────────────────────────────
+// FC adapter
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
 
-// ── Address translator and dependencies ──────────────────────────────────
+// Address translator and dependencies
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/apb_control/apb_control.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/address_translation/address_translation.sv
 ${CMSDK_DIR}/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 
-// ── PTP timestamp bridge ─────────────────────────────────────────────────
+// PTP timestamp bridge and autonomous servo
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 
-// ── XHB500 AHB-to-AXI bridge (subordinate path) ─────────────────────────
+// XHB500 AHB-to-AXI bridge (subordinate path)
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_flop.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_or.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_sync.sv
@@ -41,7 +42,7 @@ ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv.sv
 
-// ── XHB500 AXI-to-AHB bridge (manager path) ─────────────────────────────
+// XHB500 AXI-to-AHB bridge (manager path)
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_flop.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_or.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_sync.sv
@@ -61,8 +62,7 @@ ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core.sv
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst.sv
 
-// ── Wlink chiplet controller (Chisel-generated, 103 files) ───────────────
-// Submodules first, top-level Wlink.v last
+// Wlink chiplet controller (Chisel-generated)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/AXI4ToWlink.v
@@ -167,5 +167,5 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_l2a_48x16.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/Wlink.v
 
-// ── Top-level wrapper ────────────────────────────────────────────────────
+// Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

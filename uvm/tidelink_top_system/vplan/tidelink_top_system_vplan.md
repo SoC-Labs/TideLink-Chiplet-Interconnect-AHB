@@ -52,6 +52,11 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | F22 | Wlink FC node | P0 | FC valid/ready/data handshake functions correctly |
 | F23 | General bus crossover | P2 | gb_in/gb_out forwarding between sides |
 | F24 | Interrupt propagation | P1 | IRQs fire correctly (credits, doorbell, packet committed, wlink) |
+| F25 | HW sync initiator enable/disable | P0 | Enable hw_sync, verify periodic SYNC FC packets appear |
+| F26 | HW sync interval configuration | P1 | Write different intervals, verify correct timing |
+| F27 | HW sync sequence number | P1 | Verify auto-incrementing seq_num in SYNC payload |
+| F28 | HW sync + software TX arbitration | P1 | Software AHB write during hw_sync active, verify coexistence |
+| F29 | HW sync register read-back | P0 | Write/read HW_SYNC_CTRL, INTERVAL; verify STATUS fields |
 
 ## 3. Test Plan
 
@@ -66,6 +71,10 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | test_top_reset_recovery | F18 | Flush and re-init, verify clean operation |
 | test_top_long_running | F4, F7, F19, F21 | 100+ packets per direction, check for drift |
 | test_top_mixed_traffic | F1, F2, F10, F20 | Concurrent TideLink FIFO + AHB passthrough |
+| test_hw_sync_basic | F25, F27, F29 | Enable hw_sync with 1s interval, verify SYNC packets with incrementing seq |
+| test_hw_sync_interval | F26 | Configure sub-second interval (e.g. 128 Hz), verify correct timing |
+| test_hw_sync_arbitration | F28 | Software TX during hw_sync, verify mutual exclusion |
+| test_hw_sync_disable | F25 | Enable then disable hw_sync mid-operation, verify SYNC stops |
 
 ## 4. Coverage Goals
 

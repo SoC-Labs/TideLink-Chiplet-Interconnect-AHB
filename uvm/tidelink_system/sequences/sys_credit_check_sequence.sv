@@ -1,14 +1,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 // sys_credit_check_sequence.sv
 ///////////////////////////////////////////////////////////////////////////////
-// Read and verify credit-related registers on one side. Returns the values
-// for the test to inspect.
+// Read and verify credit-related registers on one side via APB config port.
+// Returns the values for the test to inspect.
+//
+// TideLink config registers are at 0x2000 offset in the unified APB space.
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_SYS_CREDIT_CHECK_SEQUENCE_SV
 `define GUARD_SYS_CREDIT_CHECK_SEQUENCE_SV
 
-class sys_credit_check_sequence extends svt_ahb_master_transaction_base_sequence;
+class sys_credit_check_sequence extends uvm_sequence #(apb_master_transaction);
 
   // Output fields (populated after body completes)
   bit [31:0] credit_count;
@@ -30,27 +32,27 @@ class sys_credit_check_sequence extends svt_ahb_master_transaction_base_sequence
 
     `uvm_info("SEQ", $sformatf("[%s] Reading credit registers", side_name), UVM_MEDIUM)
 
-    // Read CREDIT_COUNT
+    // Read CREDIT_COUNT (0x2000 + REG_CREDIT_COUNT)
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_credit_count");
-    rd_seq.addr = REG_CREDIT_COUNT;
+    rd_seq.addr = 15'h2000 + REG_CREDIT_COUNT;
     rd_seq.start(p_sequencer);
     credit_count = rd_seq.rdata;
 
-    // Read PAIR_CREDIT_COUNTER
+    // Read PAIR_CREDIT_COUNTER (0x2000 + REG_PAIR_CREDIT_COUNTER)
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_pair_credit");
-    rd_seq.addr = REG_PAIR_CREDIT_COUNTER;
+    rd_seq.addr = 15'h2000 + REG_PAIR_CREDIT_COUNTER;
     rd_seq.start(p_sequencer);
     pair_credit_counter = rd_seq.rdata;
 
-    // Read STATUS
+    // Read STATUS (0x2000 + REG_STATUS)
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_status");
-    rd_seq.addr = REG_STATUS;
+    rd_seq.addr = 15'h2000 + REG_STATUS;
     rd_seq.start(p_sequencer);
     status_reg = rd_seq.rdata;
 
-    // Read REL_ACC
+    // Read REL_ACC (0x2000 + REG_REL_ACC)
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_rel_acc");
-    rd_seq.addr = REG_REL_ACC;
+    rd_seq.addr = 15'h2000 + REG_REL_ACC;
     rd_seq.start(p_sequencer);
     rel_acc = rd_seq.rdata;
 

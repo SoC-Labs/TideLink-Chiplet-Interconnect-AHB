@@ -98,6 +98,13 @@ module tidelink_fc_adapter #(
     input  wire  [SYS_DATA_W-1:0]  fc_rx_cfg_hrdata,
 
     // --------------------------------------------------------------------------
+    // Servo Timestamp Injection (SIDEBAND packets from PTP servo)
+    // --------------------------------------------------------------------------
+    input  wire                     servo_fc_valid,
+    input  wire   [FC_DATA_W-1:0]   servo_fc_data,
+    output wire                     servo_fc_ready,
+
+    // --------------------------------------------------------------------------
     // FC Node Interface (to Wlink TideLink FC node)
     // --------------------------------------------------------------------------
     output wire                     tl_fc_a2l_valid,
@@ -157,8 +164,8 @@ module tidelink_fc_adapter #(
     wire                 tx_fc_valid = tx_data_phase_r;
 
     // TX aperture HREADY: stall when in data phase and FC not ready,
-    // or when returner sideband has priority on the FC TX interface
-    assign ahb_tx_hreadyout = tx_data_phase_r ? (tl_fc_a2l_ready & ~rtn_fc_valid) : 1'b1;
+    // or when returner/servo sideband has priority on the FC TX interface
+    assign ahb_tx_hreadyout = tx_data_phase_r ? (tl_fc_a2l_ready & ~rtn_fc_valid & ~servo_fc_valid) : 1'b1;
     assign ahb_tx_hresp     = 1'b0;  // No error responses
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only
 
@@ -212,8 +219,13 @@ module tidelink_fc_adapter #(
     // (credit/doorbell are infrequent but time-sensitive — delaying credit
     // return can cause remote FIFO back-pressure)
 
-    assign tl_fc_a2l_valid = tx_fc_valid | rtn_fc_valid;
-    assign tl_fc_a2l_data  = rtn_fc_valid ? rtn_fc_word : tx_fc_word;
+    // Servo FC ready: can send when FC is ready and returner is not active
+    assign servo_fc_ready = tl_fc_a2l_ready & ~rtn_fc_valid;
+
+    assign tl_fc_a2l_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
+    assign tl_fc_a2l_data  = rtn_fc_valid   ? rtn_fc_word  :
+                             servo_fc_valid ? servo_fc_data :
+                             tx_fc_word;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)

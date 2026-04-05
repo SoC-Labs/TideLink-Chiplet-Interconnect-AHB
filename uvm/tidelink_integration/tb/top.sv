@@ -5,21 +5,20 @@
 //
 // Instantiates a self-contained loopback topology:
 //   - tidelink_fc_adapter: TX aperture + returner interception + RX routing
-//   - tidelink_fifo_ahb: RX FIFO with AHB + APB (config) slave ports
-//   - FIFO/config port mux logic (copied from tidelink_top.sv)
+//   - tidelink_fifo: RX FIFO with AHB data + APB config slave ports
+//   - cmsdk_ahb_to_apb bridge: converts FC adapter RX config (AHB) to APB
+//   - APB config mux: arbitrates FC adapter APB vs external APB master
+//   - FIFO data port mux: arbitrates FC adapter RX vs external AHB reads
 //   - FC TX→RX loopback: a2l wired directly to l2a
 //
 // Data path: TX aperture write → FC TX → loopback → FC RX → mux → FIFO
 // Sideband path: returner write → FC TX → loopback → FC RX → mux → config
 //
-// Three SVT AHB VIP interfaces:
-//   1. TX aperture AHB master (drives writes into FC adapter TX path)
-//   2. FIFO read AHB master (reads received packets from RX FIFO)
-//   3. Config AHB master (reads/writes config/status registers)
-//
-// One custom APB master agent (reused from unit-level testbench) is NOT
-// needed here — config access goes through the AHB config VIP instead,
-// which hits the AHB-to-APB bridge inside tidelink_fifo_ahb.
+// Interfaces:
+//   1. SVT AHB VIP: TX aperture AHB master (drives writes into FC adapter)
+//   2. SVT AHB VIP: FIFO read AHB master (reads received packets from FIFO)
+//   3. Custom APB master agent: config register access (unified APB port,
+//      TideLink regs at 0x2000 offset)
 ///////////////////////////////////////////////////////////////////////////////
 
 `timescale 1ns/1ps
@@ -27,6 +26,9 @@
 `include "uvm_pkg.sv"
 `include "svt_ahb.uvm.pkg"
 `include "svt_ahb_if.svi"
+
+// APB master agent interface (for config register access)
+`include "apb_master_if.sv"
 
 // Integration-specific interface
 `include "tidelink_integration_if.sv"
@@ -88,10 +90,8 @@ module test_top;
   assign ahb_fifo_if.hclk    = clk;
   assign ahb_fifo_if.hresetn = rst_n;
 
-  // Config AHB interface (VIP master reads/writes config registers)
-  svt_ahb_if ahb_cfg_if();
-  assign ahb_cfg_if.hclk    = clk;
-  assign ahb_cfg_if.hresetn = rst_n;
+  // Config APB interface (custom APB master agent reads/writes config registers)
+  apb_master_if apb_cfg_if(.clk(clk), .rst_n(rst_n));
 
   // Simple clock/reset/IRQ interface for tests
   tidelink_integration_if tb_if(.clk(clk), .rst_n(rst_n));
@@ -158,11 +158,6 @@ module test_top;
   wire        dut_fifo_hresp;
   wire [31:0] dut_fifo_hrdata;
 
-  // Config DUT slave outputs (muxed)
-  wire        dut_cfg_hreadyout;
-  wire        dut_cfg_hresp;
-  wire [31:0] dut_cfg_hrdata;
-
   // Interrupts
   wire        dut_released_credits_irq;
   wire        dut_doorbell_irq;
@@ -203,38 +198,96 @@ module test_top;
   assign dut_fifo_hrdata    = fifo_mux_hrdata;
 
   // ---------------------------------------------------------------
-  // Config port mux: 2:1 AHB mux for config/APB slave port
-  //   Source 0: FC adapter RX Config master (writes credit/doorbell sideband)
-  //   Source 1: External ahb_cfg VIP (CPU reads/writes config registers)
-  // FC adapter has priority.
+  // FC adapter RX config: AHB-to-APB bridge
+  // Converts FC adapter's AHB config master to APB for the config mux
   // ---------------------------------------------------------------
-  wire                   cfg_mux_hsel;
-  wire [APB_ADDR_W-1:0] cfg_mux_haddr;
-  wire            [1:0]  cfg_mux_htrans;
-  wire            [2:0]  cfg_mux_hsize;
-  wire                   cfg_mux_hwrite;
-  wire [SYS_DATA_W-1:0] cfg_mux_hwdata;
-  wire                   cfg_mux_hready;
-  wire [SYS_DATA_W-1:0] cfg_mux_hrdata;
-  wire                   cfg_mux_hresp;
-  wire                   cfg_mux_hreadyout;
+  wire [APB_ADDR_W-1:0] fc_cfg_apb_paddr;
+  wire                   fc_cfg_apb_psel;
+  wire                   fc_cfg_apb_penable;
+  wire                   fc_cfg_apb_pwrite;
+  wire [SYS_DATA_W-1:0] fc_cfg_apb_pwdata;
+  wire [SYS_DATA_W-1:0] fc_cfg_apb_prdata;
+  wire                   fc_cfg_apb_pready;
+  wire                   fc_cfg_apb_pslverr;
 
-  wire fc_rx_cfg_active = fc_rx_cfg_htrans[1];
+  wire                   fc_cfg_ahb_hreadyout;
+  wire                   fc_cfg_ahb_hresp;
+  wire [SYS_DATA_W-1:0] fc_cfg_ahb_hrdata;
 
-  assign cfg_mux_hsel   = fc_rx_cfg_active ? 1'b1             : 1'b1;
-  assign cfg_mux_haddr  = fc_rx_cfg_active ? fc_rx_cfg_haddr  : ahb_cfg_if.master_if[0].haddr[APB_ADDR_W-1:0];
-  assign cfg_mux_htrans = fc_rx_cfg_active ? fc_rx_cfg_htrans : ahb_cfg_if.master_if[0].htrans;
-  assign cfg_mux_hsize  = fc_rx_cfg_active ? fc_rx_cfg_hsize  : ahb_cfg_if.master_if[0].hsize;
-  assign cfg_mux_hwrite = fc_rx_cfg_active ? fc_rx_cfg_hwrite : ahb_cfg_if.master_if[0].hwrite;
-  assign cfg_mux_hwdata = fc_rx_cfg_active ? fc_rx_cfg_hwdata : ahb_cfg_if.master_if[0].hwdata[31:0];
-  assign cfg_mux_hready = cfg_mux_hreadyout;
+  assign fc_rx_cfg_hready = fc_cfg_ahb_hreadyout;
+  assign fc_rx_cfg_hresp  = fc_cfg_ahb_hresp;
+  assign fc_rx_cfg_hrdata = fc_cfg_ahb_hrdata;
 
-  assign fc_rx_cfg_hready  = fc_rx_cfg_active ? cfg_mux_hreadyout : 1'b1;
-  assign fc_rx_cfg_hresp   = cfg_mux_hresp;
-  assign fc_rx_cfg_hrdata  = cfg_mux_hrdata;
-  assign dut_cfg_hreadyout = fc_rx_cfg_active ? 1'b0 : cfg_mux_hreadyout;
-  assign dut_cfg_hresp     = cfg_mux_hresp;
-  assign dut_cfg_hrdata    = cfg_mux_hrdata;
+  cmsdk_ahb_to_apb #(
+    .ADDRWIDTH      (APB_ADDR_W),
+    .REGISTER_RDATA (1),
+    .REGISTER_WDATA (0)
+  ) u_fc_cfg_ahb_to_apb (
+    .HCLK      (clk),
+    .HRESETn   (rst_n),
+    .PCLKEN    (1'b1),
+
+    .HSEL      (fc_rx_cfg_htrans[1]),
+    .HADDR     (fc_rx_cfg_haddr),
+    .HTRANS    (fc_rx_cfg_htrans),
+    .HSIZE     (fc_rx_cfg_hsize),
+    .HPROT     (4'b0011),
+    .HWRITE    (fc_rx_cfg_hwrite),
+    .HREADY    (fc_cfg_ahb_hreadyout),
+    .HWDATA    (fc_rx_cfg_hwdata),
+
+    .HREADYOUT (fc_cfg_ahb_hreadyout),
+    .HRDATA    (fc_cfg_ahb_hrdata),
+    .HRESP     (fc_cfg_ahb_hresp),
+
+    .PADDR     (fc_cfg_apb_paddr),
+    .PSEL      (fc_cfg_apb_psel),
+    .PENABLE   (fc_cfg_apb_penable),
+    .PWRITE    (fc_cfg_apb_pwrite),
+    .PSTRB     (),
+    .PPROT     (),
+    .PWDATA    (fc_cfg_apb_pwdata),
+    .APBACTIVE (),
+
+    .PRDATA    (fc_cfg_apb_prdata),
+    .PREADY    (fc_cfg_apb_pready),
+    .PSLVERR   (fc_cfg_apb_pslverr)
+  );
+
+  // ---------------------------------------------------------------
+  // Config port mux: 2:1 APB mux for config slave port
+  //   Source 0 (priority): FC adapter RX Config (bridged from AHB above)
+  //   Source 1: External APB master agent (CPU reads/writes config registers)
+  // FC adapter has priority (credit/doorbell delivery is time-sensitive).
+  // External APB is stalled (pready=0) when FC adapter is active.
+  // ---------------------------------------------------------------
+  wire fc_cfg_apb_active = fc_cfg_apb_psel;
+
+  // APB signals to tidelink_fifo APB slave
+  wire [APB_ADDR_W-1:0] tl_apb_paddr;
+  wire                   tl_apb_psel;
+  wire                   tl_apb_penable;
+  wire                   tl_apb_pwrite;
+  wire [SYS_DATA_W-1:0] tl_apb_pwdata;
+  wire [SYS_DATA_W-1:0] tl_apb_prdata;
+  wire                   tl_apb_pready;
+  wire                   tl_apb_pslverr;
+
+  assign tl_apb_paddr   = fc_cfg_apb_active ? fc_cfg_apb_paddr   : apb_cfg_if.paddr[APB_ADDR_W-1:0];
+  assign tl_apb_psel    = fc_cfg_apb_active ? fc_cfg_apb_psel    : apb_cfg_if.psel;
+  assign tl_apb_penable = fc_cfg_apb_active ? fc_cfg_apb_penable : apb_cfg_if.penable;
+  assign tl_apb_pwrite  = fc_cfg_apb_active ? fc_cfg_apb_pwrite  : apb_cfg_if.pwrite;
+  assign tl_apb_pwdata  = fc_cfg_apb_active ? fc_cfg_apb_pwdata  : apb_cfg_if.pwdata;
+
+  // Route APB responses back to both sources
+  assign fc_cfg_apb_prdata  = tl_apb_prdata;
+  assign fc_cfg_apb_pready  = tl_apb_pready;
+  assign fc_cfg_apb_pslverr = tl_apb_pslverr;
+
+  // External APB: stall when FC adapter is active, otherwise pass through
+  assign apb_cfg_if.prdata  = fc_cfg_apb_active ? '0   : tl_apb_prdata;
+  assign apb_cfg_if.pready  = fc_cfg_apb_active ? 1'b0 : tl_apb_pready;
+  assign apb_cfg_if.pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
 
   // ---------------------------------------------------------------
   // DUT: TideLink FC Adapter
@@ -301,9 +354,9 @@ module test_top;
   );
 
   // ---------------------------------------------------------------
-  // DUT: TideLink FIFO AHB wrapper
+  // DUT: TideLink FIFO (with APB config interface)
   // ---------------------------------------------------------------
-  tidelink_fifo_ahb #(
+  tidelink_fifo #(
     .SYS_ADDR_W        (SYS_ADDR_W),
     .SYS_DATA_W        (SYS_DATA_W),
     .RAM_ADDR_W        (RAM_ADDR_W),
@@ -326,17 +379,15 @@ module test_top;
     .ahbs_hresp        (fifo_mux_hresp),
     .ahbs_hrdata       (fifo_mux_hrdata),
 
-    // AHB Slave — Config registers (muxed: FC RX sideband + VIP access)
-    .ahbc_hsel         (cfg_mux_hsel),
-    .ahbc_hready       (cfg_mux_hready),
-    .ahbc_htrans       (cfg_mux_htrans),
-    .ahbc_hsize        (cfg_mux_hsize),
-    .ahbc_hwrite       (cfg_mux_hwrite),
-    .ahbc_haddr        (cfg_mux_haddr),
-    .ahbc_hwdata       (cfg_mux_hwdata),
-    .ahbc_hreadyout    (cfg_mux_hreadyout),
-    .ahbc_hresp        (cfg_mux_hresp),
-    .ahbc_hrdata       (cfg_mux_hrdata),
+    // APB Slave — Config registers (muxed: FC RX sideband + APB agent)
+    .apbs_psel         (tl_apb_psel),
+    .apbs_penable      (tl_apb_penable),
+    .apbs_pwrite       (tl_apb_pwrite),
+    .apbs_paddr        (tl_apb_paddr),
+    .apbs_pwdata       (tl_apb_pwdata),
+    .apbs_prdata       (tl_apb_prdata),
+    .apbs_pready       (tl_apb_pready),
+    .apbs_pslverr      (tl_apb_pslverr),
 
     // AHB Master — Returner (routed to FC adapter for sideband transport)
     .ahbm_haddr        (rtn_haddr),
@@ -351,7 +402,14 @@ module test_top;
     // Interrupts
     .released_credits_irq (dut_released_credits_irq),
     .doorbell_irq         (dut_doorbell_irq),
-    .packet_committed_irq (dut_packet_committed_irq)
+    .packet_committed_irq (dut_packet_committed_irq),
+
+    // PTP register pass-through (unused in integration testbench)
+    .ptp_reg_write     (),
+    .ptp_reg_addr      (),
+    .ptp_reg_wdata     (),
+    .ptp_reg_rdata     (32'h0),
+    .ptp_reg_region    ()
   );
 
   // Wire IRQs to tb_if
@@ -412,30 +470,10 @@ module test_top;
   end
 
   // ---------------------------------------------------------------
-  // Config AHB: VIP master reads/writes config regs (through mux)
+  // Config APB: custom APB master agent reads/writes config regs
+  // (APB interface signals are directly driven by the APB agent via
+  //  apb_cfg_if, and muxed with FC adapter APB in the config mux above)
   // ---------------------------------------------------------------
-  assign ahb_cfg_if.slave_if[0].haddr     = ahb_cfg_if.master_if[0].haddr;
-  assign ahb_cfg_if.slave_if[0].htrans    = ahb_cfg_if.master_if[0].htrans;
-  assign ahb_cfg_if.slave_if[0].hburst    = ahb_cfg_if.master_if[0].hburst;
-  assign ahb_cfg_if.slave_if[0].hsize     = ahb_cfg_if.master_if[0].hsize;
-  assign ahb_cfg_if.slave_if[0].hprot     = ahb_cfg_if.master_if[0].hprot;
-  assign ahb_cfg_if.slave_if[0].hwrite    = ahb_cfg_if.master_if[0].hwrite;
-  assign ahb_cfg_if.slave_if[0].hwdata    = ahb_cfg_if.master_if[0].hwdata;
-  assign ahb_cfg_if.slave_if[0].hmaster   = 4'h0;
-  assign ahb_cfg_if.slave_if[0].hmastlock = 1'b0;
-  assign ahb_cfg_if.slave_if[0].hready_in = dut_cfg_hreadyout;
-
-  initial begin
-    force ahb_cfg_if.master_if[0].hready = dut_cfg_hreadyout;
-    force ahb_cfg_if.master_if[0].hresp  = {1'b0, dut_cfg_hresp};
-    force ahb_cfg_if.master_if[0].hrdata = dut_cfg_hrdata;
-    force ahb_cfg_if.master_if[0].hgrant = 1'b1;
-
-    force ahb_cfg_if.slave_if[0].hsel    = 1'b1;
-    force ahb_cfg_if.slave_if[0].hready  = dut_cfg_hreadyout;
-    force ahb_cfg_if.slave_if[0].hrdata  = dut_cfg_hrdata;
-    force ahb_cfg_if.slave_if[0].hresp   = {1'b0, dut_cfg_hresp};
-  end
 
   // ---------------------------------------------------------------
   // Waveform dumping
@@ -465,8 +503,12 @@ module test_top;
       "uvm_test_top.env.tx_ahb_sys_env", "vif", ahb_tx_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.fifo_ahb_sys_env", "vif", ahb_fifo_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.cfg_ahb_sys_env", "vif", ahb_cfg_if);
+
+    // Set APB config agent interfaces
+    uvm_config_db#(virtual apb_master_if.driver)::set(uvm_root::get(),
+      "uvm_test_top.env.cfg_apb_agent.driver", "vif", apb_cfg_if);
+    uvm_config_db#(virtual apb_master_if.monitor)::set(uvm_root::get(),
+      "uvm_test_top.env.cfg_apb_agent.monitor", "vif", apb_cfg_if);
 
     // Clock/reset/IRQ interface
     uvm_config_db#(virtual tidelink_integration_if)::set(uvm_root::get(),

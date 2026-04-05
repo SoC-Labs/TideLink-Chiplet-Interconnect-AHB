@@ -1,16 +1,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 // integration_cfg_read_sequence.sv
 ///////////////////////////////////////////////////////////////////////////////
-// AHB master sequence: single-beat read from config register via AHB port.
-// After completion, read data is available in rdata.
+// APB master sequence: single-beat read from config register via unified APB
+// port. After completion, read data is available in rdata.
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_INTEGRATION_CFG_READ_SEQUENCE_SV
 `define GUARD_INTEGRATION_CFG_READ_SEQUENCE_SV
 
-class integration_cfg_read_sequence extends svt_ahb_master_transaction_base_sequence;
+class integration_cfg_read_sequence extends uvm_sequence #(apb_master_transaction);
 
-  bit [11:0] addr;
+  bit [14:0] addr;
 
   // Read data captured after transfer
   bit [31:0] rdata;
@@ -22,29 +22,17 @@ class integration_cfg_read_sequence extends svt_ahb_master_transaction_base_sequ
   endfunction
 
   virtual task body();
-    integer status;
-    svt_configuration get_cfg;
+    apb_master_transaction tr;
 
-    `uvm_info("SEQ", $sformatf("CFG read: addr=0x%03h", addr), UVM_MEDIUM)
+    `uvm_info("SEQ", $sformatf("CFG read: addr=0x%04h", addr), UVM_MEDIUM)
 
-    p_sequencer.get_cfg(get_cfg);
-    if (!$cast(cfg, get_cfg))
-      `uvm_fatal("body", "Unable to $cast configuration to svt_ahb_port_configuration")
+    tr = apb_master_transaction::type_id::create("apb_cfg_rd_tr");
+    start_item(tr);
+    tr.addr  = addr;
+    tr.write = 1'b0;
+    finish_item(tr);
 
-    `uvm_create(req)
-    status = req.randomize() with {
-      xact_type  == svt_ahb_transaction::READ;
-      burst_type == svt_ahb_transaction::SINGLE;
-      burst_size == svt_ahb_transaction::BURST_SIZE_32BIT;
-      addr       == local::addr;
-      data.size() == 1;
-    };
-    if (!status)
-      `uvm_fatal("body", "Unable to randomize AHB read transaction")
-    `uvm_send(req)
-
-    if (req.data.size() > 0)
-      rdata = req.data[0];
+    rdata = tr.rdata;
   endtask
 
 endclass

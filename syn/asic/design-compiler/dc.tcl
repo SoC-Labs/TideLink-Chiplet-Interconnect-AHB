@@ -103,6 +103,17 @@ if {[llength $all_inputs] > 0} {
 }
 set_load 0.01 $all_outputs
 
+# ── Preserve XHB500 manager bridge from being optimised away ──────────────
+# The XHB500 AXI-to-AHB manager bridge (u_xhb_mng) is driven by the Wlink
+# AXI master port which has no external stimulus at the tidelink_top boundary.
+# Without constraints DC trims the entire manager datapath. We prevent this
+# by setting dont_touch on the manager bridge instance only (not on the Wlink
+# or subordinate bridge, which DC can freely optimise).
+if {[sizeof_collection [get_cells -quiet u_xhb_mng]] > 0} {
+    set_dont_touch [get_cells u_xhb_mng]
+    puts "INFO: set_dont_touch on u_xhb_mng to prevent manager bridge removal"
+}
+
 # ── Compile ────────────────────────────────────────────────────────────────
 check_design
 compile_ultra

@@ -233,6 +233,13 @@ logic, and PHC hw_capture generation.
 | PTP-18 | PTP concurrent with mailbox traffic   | FIFO TX active during PTP exchange, verify idle gating and no interference | New      |
 | PTP-19 | ptp_irq deasserts after payload read  | ptp_irq clears when software reads PTP_RX_PAYLOAD                         | New      |
 | PTP-20 | TX during RX                          | RX packet arrives while TX is waiting for idle, verify both complete       | New      |
+| PTP-21 | HW sync enable/disable                | Write HW_SYNC_CTRL enable, verify FSM activates; disable, verify stops     | New      |
+| PTP-22 | HW sync basic fire                    | Enable with interval, drive PHC nanoseconds past target, verify FC TX SYNC | New      |
+| PTP-23 | HW sync seq increment                 | Verify payload contains incrementing seq_num across multiple fires          | New      |
+| PTP-24 | HW sync seq clear                     | Write seq_clear bit, verify seq_num resets to 0                            | New      |
+| PTP-25 | HW sync status readback               | Read HW_SYNC_STATUS, verify active/busy/seq_num fields                     | New      |
+| PTP-26 | HW sync SW coexistence                | Software TX while hw_sync enabled, verify both operate correctly           | New      |
+| PTP-27 | HW sync second rollover               | PHC nanoseconds wrap past 1e9, verify target seconds increments            | New      |
 
 ## Known Bugs
 

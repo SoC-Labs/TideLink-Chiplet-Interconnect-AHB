@@ -9,11 +9,14 @@ l2a in tb_top.sv).  Tests the end-to-end path:
 
 XHB500, Wlink, and address translator are NOT instantiated; they require
 external IP that is out of scope for this unit/integration test.
+
+The config register interface is now APB (unified port) with TideLink
+registers at offset 0x2000 in the 15-bit address space.
 """
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster
 
@@ -31,6 +34,65 @@ HTRANS_IDLE   = 0
 HTRANS_NONSEQ = 2
 HSIZE_WORD    = 2
 
+# TideLink config registers live at offset 0x2000 in the unified APB space
+APB_TIDELINK_OFFSET = 0x2000
+
+
+# -- APB Master Driver --------------------------------------------------------
+
+class APBMaster:
+    """Minimal APB master driver for register access."""
+
+    def __init__(self, dut, clk, prefix="apb"):
+        self._clk     = clk
+        self._psel    = getattr(dut, f"{prefix}_psel")
+        self._penable = getattr(dut, f"{prefix}_penable")
+        self._pwrite  = getattr(dut, f"{prefix}_pwrite")
+        self._paddr   = getattr(dut, f"{prefix}_paddr")
+        self._pwdata  = getattr(dut, f"{prefix}_pwdata")
+        self._prdata  = getattr(dut, f"{prefix}_prdata")
+        self._pready  = getattr(dut, f"{prefix}_pready")
+
+    def idle(self):
+        """Drive APB signals to idle state."""
+        self._psel.value    = 0
+        self._penable.value = 0
+        self._pwrite.value  = 0
+        self._paddr.value   = 0
+        self._pwdata.value  = 0
+
+    async def write(self, addr: int, data: int):
+        """APB write transfer (setup + access phase)."""
+        self._psel.value    = 1
+        self._penable.value = 0
+        self._pwrite.value  = 1
+        self._paddr.value   = addr
+        self._pwdata.value  = data
+        await RisingEdge(self._clk)
+        self._penable.value = 1
+        await RisingEdge(self._clk)
+        while not int(self._pready.value):
+            await RisingEdge(self._clk)
+        self.idle()
+
+    async def read(self, addr: int) -> int:
+        """APB read transfer. Returns read data."""
+        self._psel.value    = 1
+        self._penable.value = 0
+        self._pwrite.value  = 0
+        self._paddr.value   = addr
+        self._pwdata.value  = 0
+        await RisingEdge(self._clk)
+        self._penable.value = 1
+        await FallingEdge(self._clk)
+        while not int(self._pready.value):
+            await RisingEdge(self._clk)
+            await FallingEdge(self._clk)
+        data = int(self._prdata.value)
+        await RisingEdge(self._clk)
+        self.idle()
+        return data
+
 
 # -- Testbench Environment ----------------------------------------------------
 
@@ -39,7 +101,7 @@ class TidelinkTopTB:
 
     Provides:
       - ahb_tx:   AHBLiteMaster on the ahb_tx_* TX aperture port
-      - ahb_cfg:  AHBLiteMaster on the ahb_cfg_* config register port
+      - apb_cfg:  APBMaster on the apb_* unified config port
       - Direct signal access for ahb_fifo_* (FIFO read port)
     """
 
@@ -57,11 +119,9 @@ class TidelinkTopTB:
             ahb_tx_bus, dut.hclk, dut.hresetn, timeout=200
         )
 
-        # Config register AHB master (goes through AHB-to-APB bridge)
-        ahb_cfg_bus = AHBBus.from_prefix(dut, "ahb_cfg")
-        self.ahb_cfg = AHBLiteMaster(
-            ahb_cfg_bus, dut.hclk, dut.hresetn, timeout=200
-        )
+        # Config register APB master (unified APB port)
+        self.apb_cfg = APBMaster(dut, dut.hclk, prefix="apb")
+        self.apb_cfg.idle()
 
         # FIFO read port defaults
         dut.ahb_fifo_hsel.value   = 0
@@ -86,13 +146,21 @@ class TidelinkTopTB:
     # -- Config register helpers -----------------------------------------------
 
     async def cfg_read(self, offset: int) -> int:
-        """Read a config register via the AHB config slave port."""
-        resp = await self.ahb_cfg.read(offset)
-        return int(resp[0].get("data", "0x0"), 16)
+        """Read a config register via the unified APB port.
+
+        The offset is the register offset within the TideLink register space
+        (e.g. REG_CREDIT_COUNT = 0x00C). The APB_TIDELINK_OFFSET (0x2000) is
+        added automatically.
+        """
+        return await self.apb_cfg.read(APB_TIDELINK_OFFSET + offset)
 
     async def cfg_write(self, offset: int, data: int):
-        """Write a config register via the AHB config slave port."""
-        await self.ahb_cfg.write(offset, data)
+        """Write a config register via the unified APB port.
+
+        The offset is the register offset within the TideLink register space.
+        The APB_TIDELINK_OFFSET (0x2000) is added automatically.
+        """
+        await self.apb_cfg.write(APB_TIDELINK_OFFSET + offset, data)
 
     # -- TX aperture helpers ---------------------------------------------------
 
@@ -175,11 +243,11 @@ class TidelinkTopTB:
     # -- Returner idle check ---------------------------------------------------
 
     async def wait_returner_idle(self, timeout_cycles: int = 50):
-        """Wait until the returner FSM inside tidelink_fifo_ahb is idle."""
+        """Wait until the returner FSM inside tidelink_fifo is idle."""
         for _ in range(timeout_cycles):
             await RisingEdge(self.dut.hclk)
             try:
-                busy = int(self.dut.u_tidelink_fifo.u_dut.returner_busy.value)
+                busy = int(self.dut.u_tidelink_fifo.u_returner.busy.value)
             except (AttributeError, ValueError):
                 # If hierarchy is different, fall back to status register
                 status = await self.cfg_read(REG_STATUS)
@@ -244,9 +312,9 @@ async def test_01_single_fifo_data_word_loopback(dut):
     tb.log.info(f"credits={credits}, "
                 f"pkt_irq={int(dut.packet_committed_irq.value)}")
     try:
-        wp = int(dut.u_tidelink_fifo.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.write_ptr.value)
-        rp = int(dut.u_tidelink_fifo.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.read_ptr.value)
-        pwl = int(dut.u_tidelink_fifo.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.packet_word_length.value)
+        wp = int(dut.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.write_ptr.value)
+        rp = int(dut.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.read_ptr.value)
+        pwl = int(dut.u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl.packet_word_length.value)
         tb.log.info(f"FIFO write_ptr={wp}, read_ptr={rp}, pkt_word_len={pwl}")
     except Exception as e:
         tb.log.info(f"FIFO ptr probe: {e}")
@@ -370,7 +438,7 @@ async def test_05_credit_release_sideband_loopback(dut):
     await tb.wait_fc_loopback(cycles=60)
 
     # The sideband loopback should have written to the released credits
-    # accumulator register (0x020).  Read it via AHB config port.
+    # accumulator register (0x020).  Read it via APB config port.
     acc_val = await tb.cfg_read(REG_RELEASED_ACC)
     tb.log.info(f"Released credits accumulator: {acc_val}")
 
@@ -497,7 +565,7 @@ async def test_09_fc_adapter_has_fifo_mux_priority(dut):
 @cocotb.test()
 async def test_10_fc_adapter_has_cfg_mux_priority(dut):
     """When the FC adapter RX is writing to config registers (sideband), the
-    CPU config port should see hreadyout=0 (stalled).  After FC completes,
+    CPU config port should see pready=0 (stalled).  After FC completes,
     CPU config access should resume normally."""
     tb = TidelinkTopTB(dut)
     await tb.reset()
@@ -508,8 +576,8 @@ async def test_10_fc_adapter_has_cfg_mux_priority(dut):
     assert credits_before == MAX_CREDITS
 
     # Trigger doorbell -- returner will write a sideband FC packet,
-    # which loops back and writes to config register via the config mux.
-    # The CPU config port should be briefly stalled.
+    # which loops back and writes to config register via the APB mux.
+    # The CPU APB port should be briefly stalled.
     await tb.cfg_write(REG_DOORBELL, 1)
     await tb.wait_fc_loopback(cycles=40)
 
@@ -558,8 +626,8 @@ async def test_12_tx_aperture_is_write_only(dut):
 
 @cocotb.test()
 async def test_13_credit_count_preserved_through_loopback(dut):
-    """Verify that the credit count register is accessible through the config
-    mux and returns MAX_CREDITS after reset (sanity check for config path)."""
+    """Verify that the credit count register is accessible through the APB
+    config port and returns MAX_CREDITS after reset (sanity check for config path)."""
     tb = TidelinkTopTB(dut)
     await tb.reset()
 

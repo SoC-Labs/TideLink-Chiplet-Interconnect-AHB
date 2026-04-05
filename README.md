@@ -6,7 +6,7 @@ TideLink solves a fundamental problem: **AHB is a blocking protocol** that canno
 
 - **Path 1 — Transparent AHB bridge**: For control-plane access, configuration writes, and direct memory-mapped reads. Uses XHB500 → AXI → Wlink → AXI → XHB500. Reads block the bus (acceptable for short config accesses).
 - **Path 2 — Mailbox packet FIFO**: For bulk data and latency-sensitive traffic. A dedicated Wlink FC node carries packets directly between paired FIFOs, bypassing AXI entirely. The CPU writes a descriptor packet to a local TX aperture and is immediately free — no bus stalling.
-- **Path 3 — PTP subsystem**: For precision clock synchronisation between chiplets. A dedicated high-priority FC node (data_id=0xa2, 48-bit) carries two-message PTP exchanges (SYNC + DELAY_REQ) with hardware timestamp capture at the FC handshake boundary. Idle gating of the TX link layer eliminates transmit-side jitter. Integrates a PTP Hardware Clock (PHC) for nanosecond-resolution timekeeping.
+- **Path 3 — PTP subsystem**: For precision clock synchronisation between chiplets. A dedicated high-priority FC node (data_id=0xa2, 48-bit) carries two-message PTP exchanges (SYNC + DELAY_REQ) with hardware timestamp capture at the FC handshake boundary. Idle gating of the TX link layer eliminates transmit-side jitter. Integrates a PTP Hardware Clock (PHC) for nanosecond-resolution timekeeping. Includes a **hardware sync initiator** that autonomously generates periodic SYNC messages at configurable intervals (IEEE 1588 logSyncInterval range: 128 Hz to 1/16 Hz), using the PHC time outputs as its timing reference.
 
 All three paths share a single GPIO PHY and are independently flow-controlled, so mailbox traffic cannot starve transparent AHB traffic (and vice versa).
 
@@ -37,8 +37,9 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   │  AHB Slave 4: PTP subsystem (tidelink_ptp)                           │
   │  ┌─────────────────────────────────────────────────────┐                 │
   │  │  tidelink_ptp → PTP FC node (data_id=0xa2) ────────│──► Wlink       │
-  │  │  + PHC (hw_capture) + idle gating                   │     highest    │
-  │  └─────────────────────────────────────────────────────┘     TX prio    │
+  │  │  + PHC (hw_capture + time inputs) + idle gating      │     highest    │
+  │  │  + HW sync initiator (auto SYNC at configurable Hz) │     TX prio    │
+  │  └─────────────────────────────────────────────────────┘                 │
   │                                                                      │
   │  AHB Master: Incoming from remote (via Wlink → XHB500)              │
   │                                                                      │

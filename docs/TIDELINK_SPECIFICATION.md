@@ -95,8 +95,8 @@ Wlink is a layered chiplet communication stack: application layer (protocol-spec
  │  AHB Subordinate: Local RX FIFO                   │           │      ││
  │  ahb_fifo_* ──► FIFO Mux (2:1) ◄─────────────────┘           │      ││
  │                      │                                        │      ││
- │  AHB Subordinate: TideLink config regs                        │      ││
- │  ahb_cfg_*  ──► Config Mux (2:1) ◄───────────────────────────┘      ││
+ │  APB config regs (via unified apb_* port)                      │      ││
+ │  apb_*     ──► Config Mux (2:1) ◄───────────────────────────┘      ││
  │                      │                                               ││
  │                      ▼                                               ││
  │               tidelink_fifo_ahb                                      ││
@@ -121,7 +121,7 @@ Wlink is a layered chiplet communication stack: application layer (protocol-spec
  │  m_axi ──► xhb500_axi_to_ahb ──► ahb_mng_*                            │
  │                                                                        │
  │  AHB Subordinate: Address translator config  ahb_adr_*                 │
- │  APB Subordinate: Chiplet controller config  apb_ctrl_*                │
+ │  APB Subordinate: Unified config port  apb_* (Wlink + TideLink)        │
  │  I2C Sideband: i2c_scl/sda                                             │
  │  General Bus: gb_in[31:0], gb_out[31:0]                                │
  │  Interrupts: released_credits_irq, doorbell_irq,                       │
@@ -174,11 +174,11 @@ The FC adapter has priority (`fc_rx_fifo_active = fc_rx_fifo_htrans[1]`). When t
 
 **Config Mux** (`cfg_mux_*`): Arbitrates access to the APB config register slave port of `tidelink_fifo_ahb` between:
 - `fc_rx_cfg_*` — FC adapter RX config master (writes incoming SIDEBAND packets: credit deltas, doorbells)
-- `ahb_cfg_*` — External CPU port (reads/writes config registers)
+- `apb_*` — External CPU port (reads/writes config registers, unified APB)
 
-The FC adapter has priority (`fc_rx_cfg_active = fc_rx_cfg_htrans[1]`). When the FC adapter is active, `ahb_cfg_hreadyout` is driven low, stalling any concurrent CPU config access.
+The FC adapter has priority (`fc_rx_cfg_active = fc_rx_cfg_htrans[1]`). When the FC adapter is active, the config path stalls any concurrent CPU config access.
 
-Both muxes are purely combinational and located in `tidelink_top`. There is no external `ahb_fc_rx_*` AHB master port — all FC adapter RX traffic is routed internally through these muxes.
+Both muxes are purely combinational and located in `tidelink_top`. There is no external `ahb_fc_rx_*` AHB master port -- all FC adapter RX traffic is routed internally through these muxes.
 
 ---
 
@@ -319,7 +319,7 @@ Within `tidelink_top`, these packed buses are decomposed into separate valid/rea
 
 **Other chiplet controller interfaces:**
 
-- **APB slave** (`apb_ctrl_*`): Wlink internal configuration — link training, PHY parameters, FC credit initialisation, interrupt status.
+- **APB slave** (via unified `apb_*` port, 0x0000-0x1FFF): Wlink internal configuration -- link training, PHY parameters, FC credit initialisation, interrupt status.
 - **AXI slave** (`s_axi_*`): Outbound AXI from XHB500 bridge; packetised into FC nodes 0x80–0x84.
 - **AXI master** (`m_axi_*`): Inbound AXI from FC nodes 0x80–0x84; driven into XHB500 bridge.
 - **General bus** (`gb_in[31:0]`, `gb_out[31:0]`): 32-bit interrupt forwarding via FC node 0xa0.
@@ -371,9 +371,9 @@ Standard AHB-Lite subordinate (Section 5.2, A=`RAM_ADDR_W`=14). Write-only; each
 
 Standard AHB-Lite subordinate (Section 5.2, A=`RAM_ADDR_W`=14). CPU read/write access to received packets. Internally multiplexed with the FC adapter RX FIFO master via the FIFO mux (Section 3.6); FC adapter has priority. `ahb_fifo_hreadyout` is held low when the FC adapter RX FIFO master is active.
 
-### 5.6 AHB Subordinate — TideLink Config Registers (`ahb_cfg_*`)
+### 5.6 APB Subordinate — Unified Config Port (`apb_*`)
 
-Standard AHB-Lite subordinate (Section 5.2, A=`APB_ADDR_W`=12). Access to TideLink FIFO config and status registers via a CMSDK AHB-to-APB bridge inside `tidelink_fifo_ahb`. Internally multiplexed with the FC adapter RX config master via the Config mux (Section 3.6). `ahb_cfg_hreadyout` is held low when the FC adapter RX config master is active.
+Single APB3 subordinate (15-bit address). Address range 0x0000-0x1FFF is routed to Wlink chiplet controller registers. Address range 0x2000-0x203F is routed to TideLink FIFO config and PTP registers. TideLink config registers are internally multiplexed with the FC adapter RX config master via the Config mux (Section 3.6).
 
 ### 5.7 AHB Manager — Regular Bridge Incoming (`ahb_mng_*`)
 
@@ -422,22 +422,22 @@ Both ports use narrowed address widths (not full 32-bit system addresses) since 
 
 Standard AHB-Lite subordinate (Section 5.2, A=32). Runtime configuration of the address translation mapping applied to `ahb_sub_haddr`.
 
-### 5.10 APB Subordinate — Chiplet Controller Config (`apb_ctrl_*`)
+### 5.10 APB Subordinate — Unified Config Port (`apb_*`)
 
-APB3 subordinate for Wlink/chiplet controller configuration. Drives the APB slave port of `tidelink_chiplet_controller` directly.
+Single APB3 subordinate for all TideLink and Wlink configuration. Internally decoded: 0x0000-0x1FFF routes to Wlink chiplet controller, 0x2000-0x203F routes to TideLink config/PTP registers.
 
 | Signal | Direction | Width | Description |
 |---|---|---|---|
-| `apb_ctrl_paddr[12:0]` | In | 13 | Register address |
-| `apb_ctrl_penable` | In | 1 | APB enable phase |
-| `apb_ctrl_pwrite` | In | 1 | Write enable |
-| `apb_ctrl_pstrb[3:0]` | In | 4 | Byte strobes |
-| `apb_ctrl_pprot[2:0]` | In | 3 | Protection attributes |
-| `apb_ctrl_pwdata[31:0]` | In | 32 | Write data |
-| `apb_ctrl_psel` | In | 1 | Slave select |
-| `apb_ctrl_prdata[31:0]` | Out | 32 | Read data |
-| `apb_ctrl_pready` | Out | 1 | Slave ready |
-| `apb_ctrl_pslverr` | Out | 1 | Slave error |
+| `apb_paddr[14:0]` | In | 15 | Register address |
+| `apb_penable` | In | 1 | APB enable phase |
+| `apb_pwrite` | In | 1 | Write enable |
+| `apb_pstrb[3:0]` | In | 4 | Byte strobes |
+| `apb_pprot[2:0]` | In | 3 | Protection attributes |
+| `apb_pwdata[31:0]` | In | 32 | Write data |
+| `apb_psel` | In | 1 | Slave select |
+| `apb_prdata[31:0]` | Out | 32 | Read data |
+| `apb_pready` | Out | 1 | Slave ready |
+| `apb_pslverr` | Out | 1 | Slave error |
 
 ### 5.11 I2C Sideband
 
@@ -499,7 +499,7 @@ All parameters are defined on the `tidelink_top` module and propagated to sub-in
 | `SYS_DATA_W` | integer | 32 | System data width in bits. Must be 32 for AHB-Lite compatibility with XHB500. |
 | `RAM_ADDR_W` | integer | 14 | FIFO SRAM address width. Determines FIFO capacity: 2^`RAM_ADDR_W` bytes. Default 14 gives 16 KB. Also sets the TX aperture address width. |
 | `RAM_DATA_W` | integer | 32 | FIFO SRAM data width in bits. |
-| `APB_ADDR_W` | integer | 12 | APB register address width. Determines the address range of the `ahb_cfg_*` port. |
+| `APB_ADDR_W` | integer | 12 | APB register address width for TideLink config registers. |
 | `FC_DATA_W` | integer | 48 | FC node data width. Must match the TideLink FC node in the chiplet controller (WlinkGenericFCSM_6). Do not change unless regenerating the Chisel. |
 | `TIDELINK_PAIR_BASE` | `[SYS_ADDR_W-1:0]` | 0 | Default pair base address for the returner. This is the base address of the remote TideLink APB register block as seen from the local system address map. Used as the reset default for the pair base address register (APB offset 0x000). Can be overridden at runtime by writing to the register. |
 
@@ -740,7 +740,6 @@ Connect the following TideLink ports to the SoC bus matrix:
 | `ahb_sub_*` | Any range (e.g., 0x60000000–0x7FFFFFFF) | Regular remote AHB access. Decode must select this slave when targeting remote addresses. |
 | `ahb_tx_*` | 16 KB (e.g., 0x50000000–0x50003FFF) | TideLink TX aperture. Must be exactly `2^RAM_ADDR_W` bytes. Align to `RAM_ADDR_W`-bit boundary. |
 | `ahb_fifo_*` | 16 KB (e.g., 0x50004000–0x50007FFF) | RX FIFO data window. Internally muxed with FC adapter RX FIFO writes. |
-| `ahb_cfg_*` | 4 KB (e.g., 0x50008000–0x50008FFF) | TideLink config registers. Internally muxed with FC adapter RX sideband writes. |
 | `ahb_adr_*` | Any (e.g., 0x40021000) | Address translator configuration. |
 
 **AHB Masters (TideLink is a manager):**
@@ -749,13 +748,13 @@ Connect the following TideLink ports to the SoC bus matrix:
 |---|---|---|
 | `ahb_mng_*` | All local AHB slaves | Regular incoming remote AHB. Must have access to all addressable local slaves. |
 
-Note: Unlike earlier versions, there is no external `ahb_fc_rx_*` AHB master port. The FC adapter RX path uses two internal masters (`fc_rx_fifo_*` and `fc_rx_cfg_*`) that are multiplexed inside `tidelink_top` with the `ahb_fifo_*` and `ahb_cfg_*` external slave ports respectively. This eliminates the need for an additional bus matrix master slot for FC RX traffic.
+Note: Unlike earlier versions, there is no external `ahb_fc_rx_*` AHB master port. The FC adapter RX path uses two internal masters (`fc_rx_fifo_*` and `fc_rx_cfg_*`) that are multiplexed inside `tidelink_top` with the `ahb_fifo_*` external slave port and the internal config path respectively. This eliminates the need for an additional bus matrix master slot for FC RX traffic.
 
 **APB Slave:**
 
-| Port | Suggested address range |
-|---|---|
-| `apb_ctrl_*` | Any 8 KB APB region (e.g., 0x40023000) |
+| Port | Suggested address range | Notes |
+|---|---|---|
+| `apb_*` | 32 KB APB region (e.g., 0x40020000) | Unified config: 0x0000-0x1FFF Wlink, 0x2000-0x203F TideLink |
 
 ### 10.3 Parameter Configuration
 
@@ -764,9 +763,10 @@ For a typical 32-bit Cortex-M0 SoC with the following address map:
 ```
 0x50000000  TideLink TX aperture    (ahb_tx_*)     16 KB
 0x50004000  TideLink RX FIFO        (ahb_fifo_*)   16 KB
-0x50008000  TideLink config regs    (ahb_cfg_*)     4 KB
-0x50009000  Address translator cfg  (ahb_adr_*)     4 KB
-0x5000A000  Chiplet controller APB  (apb_ctrl_*)    8 KB
+0x50008000  Address translator cfg  (ahb_adr_*)     4 KB
+0x50010000  Unified APB config      (apb_*)        32 KB
+            ├─ 0x0000-0x1FFF  Wlink chiplet controller
+            └─ 0x2000-0x203F  TideLink config + PTP
 ```
 
 Instantiate as follows (illustrative — adjust to match your address map):
@@ -805,12 +805,12 @@ Connect the four interrupt outputs to the CPU interrupt controller:
 
 1. **Assert reset**: Hold `hresetn` low. Ensure `poresetn` is also low initially.
 2. **Release power-on reset**: Assert `poresetn` high once supplies and reference clock are stable.
-3. **Configure Wlink via APB**: Write to `apb_ctrl_*` to configure PHY parameters, lane count, and link training as required by the Wlink APB register map.
+3. **Configure Wlink via APB**: Write to the unified `apb_*` port (offsets 0x0000-0x1FFF) to configure PHY parameters, lane count, and link training as required by the Wlink APB register map.
 4. **Wait for link training**: Poll Wlink status registers until the link is up and FC credits are initialised.
 5. **Configure address translator**: Write the address translation mapping to `ahb_adr_*`.
-6. **Configure TideLink FIFO**: Via `ahb_cfg_*`:
-   - Write `pair_base_addr` register (0x000) if different from `TIDELINK_PAIR_BASE` default.
-   - Write `release_threshold` (0x004) to set credit batching granularity.
+6. **Configure TideLink FIFO**: Via the unified `apb_*` port (offsets 0x2000-0x203F):
+   - Write `pair_base_addr` register (0x2000) if different from `TIDELINK_PAIR_BASE` default.
+   - Write `release_threshold` (0x2004) to set credit batching granularity.
 7. **Release system reset**: Assert `hresetn` high.
 8. **Enable interrupts**: Enable `packet_committed_irq`, `released_credits_irq`, `doorbell_irq`, `wlink_irq` in the CPU interrupt controller.
 9. **Exchange initial credits**: The remote chiplet must have also completed initialisation. Initial FC credits are established by Wlink during link training.
@@ -841,7 +841,7 @@ The RX FSM processes one FC word at a time (latch → AHB write → next). At 10
 
 ### 11.5 Internal Mux Stalls During FC RX Writes
 
-When `fc_rx_fifo_htrans[1]` is asserted, `ahb_fifo_hreadyout` is held low (FIFO mux). When `fc_rx_cfg_htrans[1]` is asserted, `ahb_cfg_hreadyout` is held low (Config mux). Stalls are typically 2 cycles and are transparent to software. Avoid cache or DMA pre-fetch from the FIFO (`ahb_fifo_*`) or config (`ahb_cfg_*`) address ranges.
+When `fc_rx_fifo_htrans[1]` is asserted, `ahb_fifo_hreadyout` is held low (FIFO mux). When `fc_rx_cfg_htrans[1]` is asserted, the config path stalls (Config mux). Stalls are typically 2 cycles and are transparent to software. Avoid cache or DMA pre-fetch from the FIFO (`ahb_fifo_*`) or config (`apb_*` at 0x2000+) address ranges.
 
 ### 11.6 Signal Naming: released_credits_irq
 
@@ -858,6 +858,12 @@ The Tier 2 autonomous descriptor engine is planned but absent from the current R
 ### 11.9 Address Translator Second Port Unused
 
 `tidelink_addr_translator` provides two translation ports. The second port (`chp1_ahb_haddr_i/o`) is tied to zero and its output is left unconnected, available for a future second translated address region.
+
+### 11.10 PTP Hardware Sync Initiator — PHC Time Inputs Required
+
+The PTP hardware sync initiator requires the PHC's `seconds`, `nanoseconds`, and `pps` outputs to be wired to `tidelink_top`'s `phc_seconds`, `phc_nanoseconds`, and `phc_pps` input ports. These are in addition to the existing `phc_hw_capture` output. If the hardware sync initiator is not used, these inputs should be tied to zero.
+
+The hardware sync initiator adds three registers in a new APB Region 2 (offsets 0x040–0x048): `HW_SYNC_CTRL`, `HW_SYNC_INTERVAL`, and `HW_SYNC_STATUS`. The APB address decode has been expanded from 1-bit (`paddr[5]`) to 2-bit (`paddr[6:5]`) to support this region, matching the PHC's decode pattern. Existing registers in Region 0 and Region 1 are unaffected.
 
 ---
 

@@ -11,7 +11,7 @@
 class apb_master_transaction extends uvm_sequence_item;
 
   // Request fields (set by sequence)
-  rand bit [11:0] addr;
+  rand bit [14:0] addr;
   rand bit [31:0] wdata;
   rand bit        write;
 

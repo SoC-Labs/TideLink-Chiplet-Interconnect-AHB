@@ -41,7 +41,6 @@ class tidelink_integration_base_test extends uvm_test;
   tidelink_integration_env                 env;
   tidelink_integration_tx_ahb_config       tx_ahb_cfg;
   tidelink_integration_fifo_ahb_config     fifo_ahb_cfg;
-  tidelink_integration_cfg_ahb_config      cfg_ahb_cfg;
 
   // Virtual interface for clock/reset/IRQ access
   virtual tidelink_integration_if tb_if;
@@ -69,14 +68,11 @@ class tidelink_integration_base_test extends uvm_test;
     // Create configurations
     tx_ahb_cfg   = tidelink_integration_tx_ahb_config::type_id::create("tx_ahb_cfg");
     fifo_ahb_cfg = tidelink_integration_fifo_ahb_config::type_id::create("fifo_ahb_cfg");
-    cfg_ahb_cfg  = tidelink_integration_cfg_ahb_config::type_id::create("cfg_ahb_cfg");
 
     uvm_config_db#(tidelink_integration_tx_ahb_config)::set(
       this, "env", "tx_ahb_cfg", tx_ahb_cfg);
     uvm_config_db#(tidelink_integration_fifo_ahb_config)::set(
       this, "env", "fifo_ahb_cfg", fifo_ahb_cfg);
-    uvm_config_db#(tidelink_integration_cfg_ahb_config)::set(
-      this, "env", "cfg_ahb_cfg", cfg_ahb_cfg);
 
     // Create environment
     env = tidelink_integration_env::type_id::create("env", this);
@@ -100,22 +96,22 @@ class tidelink_integration_base_test extends uvm_test;
     phase.drop_objection(this);
   endtask
 
-  // Helper task: initialize TideLink via config AHB port
+  // Helper task: initialize TideLink via unified APB config port
   virtual task init_tidelink(bit [31:0] pair_base = 32'h4000_0000,
                               bit [31:0] threshold = 32'd0);
     integration_init_sequence init_seq;
     init_seq = integration_init_sequence::type_id::create("init_seq");
     init_seq.pair_base_addr = pair_base;
     init_seq.rel_threshold  = threshold;
-    init_seq.start(env.cfg_ahb_sys_env.master[0].sequencer);
+    init_seq.start(env.cfg_apb_agent.sequencer);
   endtask
 
-  // Helper task: read a config register
+  // Helper task: read a config register (adds 0x2000 offset for TideLink regs)
   virtual task read_cfg_reg(input bit [11:0] addr, output bit [31:0] data);
     integration_cfg_read_sequence rd_seq;
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
-    rd_seq.addr = addr;
-    rd_seq.start(env.cfg_ahb_sys_env.master[0].sequencer);
+    rd_seq.addr = 15'h2000 + addr;
+    rd_seq.start(env.cfg_apb_agent.sequencer);
     data = rd_seq.rdata;
   endtask
 

@@ -1,9 +1,8 @@
-// Cocotb wrapper for tidelink_ptp (single-phase PTP module)
+// Cocotb wrapper for tidelink_ptp (single-phase PTP module, short packet)
 // Exposes all DUT interfaces for cocotb access:
-//   AHB slave (ahb_ptp_*), FC TX/RX, register interface, PHC capture, IRQ
+//   AHB slave (ahb_ptp_*), SP TX/RX, register interface, PHC capture, IRQ
 module tb_top #(
-    parameter SYS_DATA_W = 32,
-    parameter FC_DATA_W  = 48
+    parameter SYS_DATA_W = 32
 )(
     input  logic                    hclk,
     input  logic                    hresetn,
@@ -22,24 +21,32 @@ module tb_top #(
     output logic                    ahb_ptp_hresp,
     output logic                    ahb_ptp_hreadyout,
 
-    // FC TX Interface (a2l = application-to-link)
-    output logic                    ptp_fc_a2l_valid,
-    output logic   [FC_DATA_W-1:0] ptp_fc_a2l_data,
-    input  logic                    ptp_fc_a2l_ready,
+    // Short Packet TX Interface
+    output logic                    ptp_sp_tx_valid,
+    output logic              [7:0] ptp_sp_tx_data_id,
+    output logic             [15:0] ptp_sp_tx_payload,
+    input  logic                    ptp_sp_tx_ready,
 
-    // FC RX Interface (l2a = link-to-application)
-    input  logic                    ptp_fc_l2a_valid,
-    input  logic   [FC_DATA_W-1:0] ptp_fc_l2a_data,
-    output logic                    ptp_fc_l2a_accept,
+    // Short Packet RX Interface
+    input  logic                    ptp_sp_rx_valid,
+    input  logic              [7:0] ptp_sp_rx_data_id,
+    input  logic             [15:0] ptp_sp_rx_payload,
+    output logic                    ptp_sp_rx_accept,
 
     // PHC Hardware Capture
     output logic                    phc_hw_capture,
+
+    // PHC Time Inputs (for hardware sync initiator)
+    input  logic             [29:0] phc_nanoseconds,
+    input  logic             [47:0] phc_seconds,
+    input  logic                    phc_pps,
 
     // Register Interface (normally from tidelink_apb_regs)
     input  logic                    ptp_reg_write,
     input  logic              [2:0] ptp_reg_addr,
     input  logic   [SYS_DATA_W-1:0] ptp_reg_wdata,
     output logic   [SYS_DATA_W-1:0] ptp_reg_rdata,
+    input  logic                    ptp_reg_region,
 
     // Interrupt
     output logic                    ptp_irq
@@ -49,24 +56,35 @@ module tb_top #(
     wire ahb_ptp_hready;
     assign ahb_ptp_hready = ahb_ptp_hreadyout;
 
+    // Servo event outputs (unused in unit test, but must be connected)
+    wire sync_tx_done;
+    wire dreq_tx_done;
+    wire sync_rx_done;
+    wire dreq_rx_done;
+
     tidelink_ptp #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .FC_DATA_W  (FC_DATA_W)
+        .SYS_DATA_W (SYS_DATA_W)
     ) u_dut (
         .hclk               (hclk),
         .hresetn             (hresetn),
 
         .tx_router_idle      (tx_router_idle),
 
-        .ptp_fc_a2l_valid    (ptp_fc_a2l_valid),
-        .ptp_fc_a2l_data     (ptp_fc_a2l_data),
-        .ptp_fc_a2l_ready    (ptp_fc_a2l_ready),
+        .ptp_sp_tx_valid     (ptp_sp_tx_valid),
+        .ptp_sp_tx_data_id   (ptp_sp_tx_data_id),
+        .ptp_sp_tx_payload   (ptp_sp_tx_payload),
+        .ptp_sp_tx_ready     (ptp_sp_tx_ready),
 
-        .ptp_fc_l2a_valid    (ptp_fc_l2a_valid),
-        .ptp_fc_l2a_data     (ptp_fc_l2a_data),
-        .ptp_fc_l2a_accept   (ptp_fc_l2a_accept),
+        .ptp_sp_rx_valid     (ptp_sp_rx_valid),
+        .ptp_sp_rx_data_id   (ptp_sp_rx_data_id),
+        .ptp_sp_rx_payload   (ptp_sp_rx_payload),
+        .ptp_sp_rx_accept    (ptp_sp_rx_accept),
 
         .phc_hw_capture      (phc_hw_capture),
+
+        .phc_nanoseconds     (phc_nanoseconds),
+        .phc_seconds          (phc_seconds),
+        .phc_pps              (phc_pps),
 
         .ahb_ptp_hsel        (ahb_ptp_hsel),
         .ahb_ptp_haddr       (ahb_ptp_haddr),
@@ -83,6 +101,16 @@ module tb_top #(
         .ptp_reg_addr        (ptp_reg_addr),
         .ptp_reg_wdata       (ptp_reg_wdata),
         .ptp_reg_rdata       (ptp_reg_rdata),
+        .ptp_reg_region      (ptp_reg_region),
+
+        // Servo event outputs (monitored in system tests, unused here)
+        .sync_tx_done        (sync_tx_done),
+        .dreq_tx_done        (dreq_tx_done),
+        .sync_rx_done        (sync_rx_done),
+        .dreq_rx_done        (dreq_rx_done),
+
+        // Servo DELAY_REQ injection (tied off — no servo in unit test)
+        .servo_dreq_trigger  (1'b0),
 
         .ptp_irq             (ptp_irq)
     );

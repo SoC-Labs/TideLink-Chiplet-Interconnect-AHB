@@ -132,16 +132,23 @@ module test_top;
     .apbs_psel           (apb_if.psel),
     .apbs_penable        (apb_if.penable),
     .apbs_pwrite         (apb_if.pwrite),
-    .apbs_paddr          (apb_if.paddr),
+    .apbs_paddr          (apb_if.paddr[11:0]),
     .apbs_pwdata         (apb_if.pwdata),
     .apbs_prdata         (apb_if.prdata),
     .apbs_pready         (apb_if.pready),
     .apbs_pslverr        (apb_if.pslverr),
 
     // Interrupts
-    .released_tokens_irq (dut_released_tokens_irq),
-    .doorbell_irq        (dut_doorbell_irq),
-    .packet_committed_irq(dut_packet_committed_irq)
+    .released_credits_irq (dut_released_tokens_irq),
+    .doorbell_irq         (dut_doorbell_irq),
+    .packet_committed_irq (dut_packet_committed_irq),
+
+    // PTP register pass-through (unused in base tests, tie off)
+    .ptp_reg_write       (),
+    .ptp_reg_addr        (),
+    .ptp_reg_wdata       (),
+    .ptp_reg_rdata       (32'h0),
+    .ptp_reg_region      ()
   );
 
   // ---------------------------------------------------------------

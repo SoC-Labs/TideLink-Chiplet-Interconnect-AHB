@@ -316,6 +316,9 @@ The PTP subsystem adds the following ports to `tidelink_top`:
 | `ahb_ptp_hreadyout` | Output | AHB ready output |
 | `ahb_ptp_hrdata` | Output | AHB read data (PTP_RX_PAYLOAD) |
 | `phc_hw_capture` | Output | One-cycle pulse to PHC hw_capture input |
+| `phc_nanoseconds` | Input | PHC current nanoseconds [29:0] (for HW sync initiator) |
+| `phc_seconds` | Input | PHC current seconds [47:0] (for HW sync initiator) |
+| `phc_pps` | Input | PHC pulse-per-second (reserved for future use) |
 | `ptp_irq` | Output | Interrupt: PTP RX packet received |
 
 ### PHC Initialisation
@@ -408,6 +411,44 @@ Adjust PHC NS_INCR_FRAC register:
 
 A proportional-integral (PI) controller is recommended for the servo loop. Typical exchange intervals are 100 ms to 1 s depending on required accuracy.
 
+### Hardware Sync Initiator
+
+The PTP subsystem includes an optional hardware sync initiator that autonomously generates periodic SYNC messages without CPU intervention, using the PHC time outputs as its timing reference.
+
+**Wiring the PHC time inputs:**
+
+Connect the PHC's `seconds`, `nanoseconds`, and `pps` outputs to `tidelink_top`:
+
+```verilog
+tidelink_top #(...) u_tidelink (
+    // ... other ports ...
+    .phc_hw_capture    (phc_hw_capture),
+    .phc_nanoseconds   (phc_nanoseconds),   // from phc_clock_core.seconds
+    .phc_seconds       (phc_seconds),        // from phc_clock_core.nanoseconds
+    .phc_pps           (phc_pps),            // from phc_clock_core.pps
+    // ...
+);
+```
+
+**Enabling the hardware sync initiator:**
+
+```
+1. Configure the sync interval (in nanoseconds):
+   Write desired interval to HW_SYNC_INTERVAL (APB offset 0x044)
+   Example: 0x3B9AC9FF (999,999,999) for ~1 Hz
+   Example: 0x00773594 (7,812,500) for 128 Hz
+
+2. Enable the initiator:
+   Write 1 to HW_SYNC_CTRL (APB offset 0x040)
+
+3. Monitor via HW_SYNC_STATUS (APB offset 0x048):
+   Bit 0: active (FSM is running)
+   Bit 1: busy (TX in progress)
+   Bits [17:2]: current sequence number
+```
+
+The initiator generates SYNC messages (msg_type=0x0) with an auto-incrementing 16-bit sequence number in the payload. To reset the sequence number, write bit 1 of HW_SYNC_CTRL.
+
 ### PTP Interrupt Handling
 
 The `ptp_irq` interrupt fires when the PTP FC RX path receives a packet:
@@ -429,6 +470,9 @@ ptp_irq handler:
 | 0x034 | PTP_CTRL | RW | Bit 0: PTP enable |
 | 0x038 | PTP_RX_PAYLOAD | RO | Last received PTP payload [31:0] |
 | 0x03C | PTP_STATUS | RO | Bit 0: RX available, Bit 1: TX busy |
+| 0x040 | HW_SYNC_CTRL | RW | Bit 0: HW sync enable, Bit 1: seq clear (W1C) |
+| 0x044 | HW_SYNC_INTERVAL | RW | Sync interval in nanoseconds [29:0] |
+| 0x048 | HW_SYNC_STATUS | RO | Bit 0: active, Bit 1: busy, [17:2]: seq_num |
 
 ## PYNQ Hardware Testing
 

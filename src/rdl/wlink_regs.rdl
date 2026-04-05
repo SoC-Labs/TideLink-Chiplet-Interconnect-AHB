@@ -1,0 +1,512 @@
+// -----------------------------------------------------------------------------
+// SoCLabs Wlink Chiplet Controller Register Description (SystemRDL 2.0)
+//
+// Documents the APB register map for the Wlink chiplet controller module
+// (Chisel-generated). This RDL is documentation-only — the Wlink RTL is
+// generated from Scala/Chisel source, not from this file.
+//
+// Register map derived from:
+//   - deps/axi-chiplet-controller/docs/source/register_map.rst
+//   - deps/axi-chiplet-controller/wav-wlink-hw/src/main/scala/Wlink.scala
+//   - deps/axi-chiplet-controller/wav-wlink-hw/src/main/scala/FC.scala
+//   - deps/axi-chiplet-controller/wav-wlink-hw/src/main/scala/LinkLayer.scala
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+// ============================================================================
+// FC Node register template — shared by all flow control nodes
+// ============================================================================
+
+reg fc_id_control_reg {
+    name = "FC ID Control";
+    desc = "Data IDs used for credit negotiation and acknowledgement packets.";
+
+    field {} credit_id[8] = 0x08;
+    credit_id->sw = rw;
+    credit_id->hw = r;
+    credit_id->desc = "Short packet Data ID for credit advertisement.";
+
+    field {} credit_ack_id[8] = 0x09;
+    credit_ack_id->sw = rw;
+    credit_ack_id->hw = r;
+    credit_ack_id->desc = "Short packet Data ID for credit acknowledgement.";
+
+    field {} ack_data_id[8] = 0x0A;
+    ack_data_id->sw = rw;
+    ack_data_id->hw = r;
+    ack_data_id->desc = "Short packet Data ID for ACK (successful reception).";
+
+    field {} nack_data_id[8] = 0x0B;
+    nack_data_id->sw = rw;
+    nack_data_id->hw = r;
+    nack_data_id->desc = "Short packet Data ID for NACK (CRC error / retry).";
+};
+
+reg fc_data_id_control_reg {
+    name = "FC Data ID Control";
+    desc = "Data ID for long (data) packets on this FC channel.";
+
+    field {} data_id[8] = 0x80;
+    data_id->sw = rw;
+    data_id->hw = r;
+    data_id->desc = "Long packet Data ID for application data.";
+};
+
+reg fc_tx_fifo_reg {
+    name = "FC TX Flow Control FIFO";
+    desc = "Status of the TX-side flow control FIFO.";
+
+    field {} empty[1] = 1;
+    empty->sw = r;
+    empty->hw = w;
+    empty->desc = "1 = TX FC FIFO is empty (no pending data).";
+};
+
+reg fc_ack_nack_fifo_reg {
+    name = "FC Ack/Nack FIFO";
+    desc = "Status of the ACK/NACK tracking FIFO.";
+
+    field {} empty[1] = 1;
+    empty->sw = r;
+    empty->hw = w;
+    empty->desc = "1 = ACK/NACK FIFO is empty.";
+
+    field {} full[1] = 0;
+    full->sw = r;
+    full->hw = w;
+    full->desc = "1 = ACK/NACK FIFO is full.";
+
+    field {} half_full[1] = 0;
+    half_full->sw = r;
+    half_full->hw = w;
+    half_full->desc = "1 = ACK/NACK FIFO is at or above half capacity.";
+
+    field {} almost_empty[1] = 0;
+    almost_empty->sw = r;
+    almost_empty->hw = w;
+    almost_empty->desc = "1 = entries <= almost_empty_lvl.";
+
+    field {} almost_full[1] = 0;
+    almost_full->sw = r;
+    almost_full->hw = w;
+    almost_full->desc = "1 = entries >= almost_full_lvl.";
+
+    field {} rsvd_5_7[3] = 0;
+    rsvd_5_7->sw = r;
+    rsvd_5_7->hw = na;
+
+    field {} almost_full_lvl[3] = 6;
+    almost_full_lvl->sw = rw;
+    almost_full_lvl->hw = r;
+    almost_full_lvl->desc = "Threshold for almost_full flag.";
+
+    field {} rsvd_11_15[5] = 0;
+    rsvd_11_15->sw = r;
+    rsvd_11_15->hw = na;
+
+    field {} almost_empty_lvl[3] = 2;
+    almost_empty_lvl->sw = rw;
+    almost_empty_lvl->hw = r;
+    almost_empty_lvl->desc = "Threshold for almost_empty flag.";
+};
+
+reg fc_sm_control_reg {
+    name = "FC SM Control";
+    desc = "Flow control state machine configuration.
+            Includes the disable_crc bit which bypasses CRC checking
+            on this FC node — useful at GPIO speeds where the bit error
+            rate is negligible and CRC adds ~9-20% bandwidth overhead.";
+
+    field {} link_en_wait[8] = 8;
+    link_en_wait->sw = rw;
+    link_en_wait->hw = r;
+    link_en_wait->desc = "Number of cycles to remain IDLE after credit negotiation.";
+
+    field {} ack_dly_count[8] = 7;
+    ack_dly_count->sw = rw;
+    ack_dly_count->hw = r;
+    ack_dly_count->desc = "Number of cycles to wait between ACK packets.";
+
+    field {} disable_crc[1] = 0;
+    disable_crc->sw = rw;
+    disable_crc->hw = r;
+    disable_crc->desc = "Disable CRC check on this FC node. When set, received
+                         packets are accepted without CRC validation. Saves 2 bytes
+                         per long packet. Recommended for GPIO-speed deployments.";
+};
+
+reg fc_crc_errors_reg {
+    name = "FC CRC Errors";
+    desc = "Count of CRC errors observed on this FC node.";
+
+    field {} crc_errors[16] = 0;
+    crc_errors->sw = r;
+    crc_errors->hw = w;
+    crc_errors->desc = "Number of CRC errors seen. Increments on each CRC mismatch
+                        (only when disable_crc = 0).";
+};
+
+// ============================================================================
+// FC Node address map template
+// ============================================================================
+
+addrmap fc_node_regs {
+    name = "FC Node Registers";
+    desc = "Register block for a single Wlink flow control (FC) node.
+            Each AXI channel and custom FC node has this layout at its
+            respective base address within the Wlink APB space.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    fc_id_control_reg       id_control      @ 0x00;
+    fc_data_id_control_reg  data_id_control @ 0x04;
+    fc_tx_fifo_reg          tx_fifo         @ 0x08;
+    fc_ack_nack_fifo_reg    ack_nack_fifo   @ 0x10;
+    fc_sm_control_reg       sm_control      @ 0x14;
+    fc_crc_errors_reg       crc_errors      @ 0x20;
+};
+
+// ============================================================================
+// Wlink top-level register map
+// ============================================================================
+
+addrmap wlink_regs {
+    name = "Wlink Chiplet Controller APB Register Map";
+    desc = "Full APB register map for the Wlink chiplet controller.
+            The address space is divided into PHY registers, link-layer
+            registers, and per-FC-node register blocks.
+
+            NOTE: This RDL is documentation-only. The Wlink RTL is
+            generated from Chisel/Scala source, not from this file.
+            FC node Data ID defaults vary per channel — see the
+            Wlink Scala source for per-node defaults.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // ====================================================================
+    // PHY Registers (0x0000 - 0x01FF)
+    // ====================================================================
+
+    reg phy_general_controls_reg {
+        name = "PHY General Controls";
+        desc = "General controls for the SerDes PHY.";
+
+        field {} pre_count[8] = 1;
+        pre_count->sw = rw;
+        pre_count->hw = r;
+        pre_count->desc = "SerDes pre-emphasis count.";
+
+        field {} post_count[8] = 7;
+        post_count->sw = rw;
+        post_count->hw = r;
+        post_count->desc = "SerDes post-emphasis count.";
+
+        field {} rx_polarity[1] = 1;
+        rx_polarity->sw = rw;
+        rx_polarity->hw = r;
+        rx_polarity->desc = "RX lane polarity inversion.";
+    };
+    phy_general_controls_reg phy_general_controls @ 0x0000;
+
+    reg phy_pre_divider_reg {
+        name = "PHY Pre Divider";
+        desc = "Pre divider for SerDes PLL.";
+
+        field {} pre_divider[4] = 4;
+        pre_divider->sw = rw;
+        pre_divider->hw = r;
+    };
+    phy_pre_divider_reg phy_pre_divider @ 0x0004;
+
+    reg phy_post_divider_reg {
+        name = "PHY Post Divider";
+        desc = "Post divider for SerDes PLL.";
+
+        field {} post_divider[4] = 0;
+        post_divider->sw = rw;
+        post_divider->hw = r;
+    };
+    phy_post_divider_reg phy_post_divider @ 0x0008;
+
+    reg phy_pll_reg {
+        name = "PHY PLL Enable/Lock";
+        desc = "PLL enable control and lock status.";
+
+        field {} pll_enable[1] = 0;
+        pll_enable->sw = rw;
+        pll_enable->hw = r;
+        pll_enable->desc = "1 = enable SerDes PLL.";
+
+        field {} rsvd_1_7[7] = 0;
+        rsvd_1_7->sw = r;
+        rsvd_1_7->hw = na;
+
+        field {} pll_locked[1] = 0;
+        pll_locked->sw = r;
+        pll_locked->hw = w;
+        pll_locked->desc = "1 = PLL has achieved lock.";
+    };
+    phy_pll_reg phy_pll @ 0x000C;
+
+    // ====================================================================
+    // Wlink Link Registers (0x0200 - 0x03FF)
+    // ====================================================================
+
+    reg link_capabilities_reg {
+        name = "Link Capabilities";
+        desc = "Read-only link capability information.";
+
+        field {} max_tx_lanes[16] = 8;
+        max_tx_lanes->sw = r;
+        max_tx_lanes->hw = na;
+        max_tx_lanes->desc = "Maximum number of TX lanes supported.";
+
+        field {} max_rx_lanes[16] = 8;
+        max_rx_lanes->sw = r;
+        max_rx_lanes->hw = na;
+        max_rx_lanes->desc = "Maximum number of RX lanes supported.";
+    };
+    link_capabilities_reg link_capabilities @ 0x0200;
+
+    reg link_phy_version_reg {
+        name = "PHY Version";
+        desc = "Read-only PHY implementation version.";
+
+        field {} version[32] = 0;
+        version->sw = r;
+        version->hw = na;
+    };
+    link_phy_version_reg link_phy_version @ 0x0204;
+
+    reg link_enable_reset_reg {
+        name = "Link Enable/Reset";
+        desc = "Link layer enable, reset, and short packet configuration.";
+
+        field {} swi_enable[1] = 1;
+        swi_enable->sw = rw;
+        swi_enable->hw = r;
+        swi_enable->desc = "Software enable for link layer.";
+
+        field {} ll_tx_enable[1] = 1;
+        ll_tx_enable->sw = rw;
+        ll_tx_enable->hw = r;
+        ll_tx_enable->desc = "TX link layer enable.";
+
+        field {} ll_rx_enable[1] = 1;
+        ll_rx_enable->sw = rw;
+        ll_rx_enable->hw = r;
+        ll_rx_enable->desc = "RX link layer enable.";
+
+        field {} sw_reset[1] = 0;
+        sw_reset->sw = rw;
+        sw_reset->hw = r;
+        sw_reset->desc = "Software reset. Write 1 to reset link layer.";
+
+        field {} rsvd_4_7[4] = 0;
+        rsvd_4_7->sw = r;
+        rsvd_4_7->hw = na;
+
+        field {} max_short_packet[8] = 0x7F;
+        max_short_packet->sw = rw;
+        max_short_packet->hw = r;
+        max_short_packet->desc = "Maximum Data ID value treated as a short packet.
+                                  Data IDs > this value are long packets.";
+
+        field {} preq_data_id[8] = 0x02;
+        preq_data_id->sw = rw;
+        preq_data_id->hw = r;
+        preq_data_id->desc = "Data ID for P-state request packets.";
+    };
+    link_enable_reset_reg link_enable_reset @ 0x0208;
+
+    reg link_active_lanes_reg {
+        name = "Active Lanes";
+        desc = "Number of active TX and RX lanes (value = lanes - 1).";
+
+        field {} active_tx_lanes[16] = 8;
+        active_tx_lanes->sw = rw;
+        active_tx_lanes->hw = r;
+        active_tx_lanes->desc = "Active TX lanes minus 1.";
+
+        field {} active_rx_lanes[16] = 8;
+        active_rx_lanes->sw = rw;
+        active_rx_lanes->hw = r;
+        active_rx_lanes->desc = "Active RX lanes minus 1.";
+    };
+    link_active_lanes_reg link_active_lanes @ 0x0210;
+
+    reg link_pstate_control_reg {
+        name = "P-State Control";
+        desc = "Power state transition timing configuration.";
+
+        field {} delay_cycles[16] = 1700;
+        delay_cycles->sw = rw;
+        delay_cycles->hw = r;
+        delay_cycles->desc = "Number of idle cycles before P-state transition.";
+
+        field {} num_p_reqs[3] = 0;
+        num_p_reqs->sw = rw;
+        num_p_reqs->hw = r;
+        num_p_reqs->desc = "Number of P-state request packets to send.";
+
+        field {} rsvd_19_23[5] = 0;
+        rsvd_19_23->sw = r;
+        rsvd_19_23->hw = na;
+
+        field {} cycles_post_reqs[8] = 255;
+        cycles_post_reqs->sw = rw;
+        cycles_post_reqs->hw = r;
+        cycles_post_reqs->desc = "Cycles to wait after P-state requests before transition.";
+    };
+    link_pstate_control_reg link_pstate_control @ 0x0230;
+
+    reg link_status_reg {
+        name = "Link Status";
+        desc = "Link layer status and sideband reset control.";
+
+        field {} sb_reset[1] = 0;
+        sb_reset->sw = rw;
+        sb_reset->hw = r;
+        sb_reset->desc = "Sideband reset output control.";
+
+        field {} sb_reset_mux[1] = 0;
+        sb_reset_mux->sw = rw;
+        sb_reset_mux->hw = r;
+        sb_reset_mux->desc = "Sideband reset mux select.";
+
+        field {} in_error_state[1] = 0;
+        in_error_state->sw = r;
+        in_error_state->hw = w;
+        in_error_state->desc = "1 = RX link layer is in ERROR state (ECC corruption).";
+
+        field {} tx_ready[1] = 0;
+        tx_ready->sw = r;
+        tx_ready->hw = w;
+        tx_ready->desc = "1 = TX link layer is ready to accept packets.";
+
+        field {} rx_data_valid[1] = 1;
+        rx_data_valid->sw = r;
+        rx_data_valid->hw = w;
+        rx_data_valid->desc = "1 = RX data is valid.";
+    };
+    link_status_reg link_status @ 0x0234;
+
+    reg link_error_injection_reg {
+        name = "Error Injection";
+        desc = "Error injection controls for link-level testing.";
+
+        field {} err_inject_data_id[8] = 0;
+        err_inject_data_id->sw = rw;
+        err_inject_data_id->hw = r;
+        err_inject_data_id->desc = "Data ID of packets to inject errors into.";
+
+        field {} err_inject_byte[8] = 0;
+        err_inject_byte->sw = rw;
+        err_inject_byte->hw = r;
+        err_inject_byte->desc = "Byte index within packet to corrupt.";
+
+        field {} err_inject_bit[3] = 0;
+        err_inject_bit->sw = rw;
+        err_inject_bit->hw = r;
+        err_inject_bit->desc = "Bit position within byte to flip.";
+
+        field {} rsvd_19_23[5] = 0;
+        rsvd_19_23->sw = r;
+        rsvd_19_23->hw = na;
+
+        field {} err_inject_enable[1] = 0;
+        err_inject_enable->sw = rw;
+        err_inject_enable->hw = r;
+        err_inject_enable->desc = "1 = enable error injection on matching packets.";
+    };
+    link_error_injection_reg link_error_injection @ 0x023C;
+
+    reg link_interrupts_reg {
+        name = "Link Interrupts";
+        desc = "CRC and ECC error status and interrupt enable bits.
+                Status bits are write-1-to-clear (W1C). Interrupt outputs
+                are gated by the corresponding enable bits.";
+
+        field {} crc_errors[1] = 0;
+        crc_errors->sw = rw;
+        crc_errors->hw = w;
+        crc_errors->desc = "CRC error detected (W1C).";
+
+        field {} crc_errors_int_en[1] = 1;
+        crc_errors_int_en->sw = rw;
+        crc_errors_int_en->hw = r;
+        crc_errors_int_en->desc = "Enable interrupt on CRC error.";
+
+        field {} rsvd_2_7[6] = 0;
+        rsvd_2_7->sw = r;
+        rsvd_2_7->hw = na;
+
+        field {} ecc_corrected[1] = 0;
+        ecc_corrected->sw = rw;
+        ecc_corrected->hw = w;
+        ecc_corrected->desc = "ECC single-bit error corrected (W1C).";
+
+        field {} ecc_corrected_int_en[1] = 0;
+        ecc_corrected_int_en->sw = rw;
+        ecc_corrected_int_en->hw = r;
+        ecc_corrected_int_en->desc = "Enable interrupt on ECC correction.";
+
+        field {} rsvd_10_15[6] = 0;
+        rsvd_10_15->sw = r;
+        rsvd_10_15->hw = na;
+
+        field {} ecc_corrupted[1] = 0;
+        ecc_corrupted->sw = rw;
+        ecc_corrupted->hw = w;
+        ecc_corrupted->desc = "ECC multi-bit error detected — uncorrectable (W1C).";
+
+        field {} ecc_corrupted_int_en[1] = 1;
+        ecc_corrupted_int_en->sw = rw;
+        ecc_corrupted_int_en->hw = r;
+        ecc_corrupted_int_en->desc = "Enable interrupt on ECC corruption.";
+    };
+    link_interrupts_reg link_interrupts @ 0x0240;
+
+    // ====================================================================
+    // FC Node Instances (0x1000 - 0x17FF)
+    // ====================================================================
+
+    fc_node_regs fc_axi_aw @ 0x1000;
+    fc_axi_aw->name = "AXI2WL AW FC Node";
+    fc_axi_aw->desc = "Flow control for AXI Write Address channel.";
+
+    fc_node_regs fc_axi_w  @ 0x1100;
+    fc_axi_w->name  = "AXI2WL W FC Node";
+    fc_axi_w->desc  = "Flow control for AXI Write Data channel.";
+
+    fc_node_regs fc_axi_b  @ 0x1200;
+    fc_axi_b->name  = "AXI2WL B FC Node";
+    fc_axi_b->desc  = "Flow control for AXI Write Response channel.";
+
+    fc_node_regs fc_axi_ar @ 0x1300;
+    fc_axi_ar->name = "AXI2WL AR FC Node";
+    fc_axi_ar->desc = "Flow control for AXI Read Address channel.";
+
+    fc_node_regs fc_axi_r  @ 0x1400;
+    fc_axi_r->name  = "AXI2WL R FC Node";
+    fc_axi_r->desc  = "Flow control for AXI Read Data channel.";
+
+    fc_node_regs fc_general @ 0x1600;
+    fc_general->name = "GeneralBus FC Node";
+    fc_general->desc = "Flow control for general-purpose bus interface.";
+
+    fc_node_regs fc_tidelink @ 0x1700;
+    fc_tidelink->name = "TideLink FC Node";
+    fc_tidelink->desc = "Flow control for TideLink custom protocol (FIFO data,
+                         credit return, doorbell, and PTP sideband).";
+};

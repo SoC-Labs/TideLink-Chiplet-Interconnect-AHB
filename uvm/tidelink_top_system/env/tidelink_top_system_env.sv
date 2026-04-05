@@ -71,18 +71,16 @@ class tidelink_top_system_env extends uvm_env;
   svt_ahb_system_env       a_sub_ahb_sys_env;
   svt_ahb_system_env       a_tx_ahb_sys_env;
   svt_ahb_system_env       a_fifo_ahb_sys_env;
-  svt_ahb_system_env       a_cfg_ahb_sys_env;
   svt_ahb_system_env       a_adr_ahb_sys_env;
   // Chiplet A manager port (active slave)
   svt_ahb_system_env       a_mng_ahb_sys_env;
-  // Chiplet A APB agent (Wlink config)
+  // Chiplet A APB agent (unified config: Wlink + TideLink regs)
   apb_master_agent         a_apb_agt;
 
   // Chiplet B agents
   svt_ahb_system_env       b_sub_ahb_sys_env;
   svt_ahb_system_env       b_tx_ahb_sys_env;
   svt_ahb_system_env       b_fifo_ahb_sys_env;
-  svt_ahb_system_env       b_cfg_ahb_sys_env;
   svt_ahb_system_env       b_adr_ahb_sys_env;
   svt_ahb_system_env       b_mng_ahb_sys_env;
   apb_master_agent         b_apb_agt;
@@ -93,9 +91,9 @@ class tidelink_top_system_env extends uvm_env;
   tidelink_top_system_vseq         vseqr;
 
   // Configurations
-  top_sys_ahb_master_config  a_sub_cfg, a_tx_cfg, a_fifo_cfg, a_cfg_cfg, a_adr_cfg;
+  top_sys_ahb_master_config  a_sub_cfg, a_tx_cfg, a_fifo_cfg, a_adr_cfg;
   top_sys_ahb_slave_config   a_mng_cfg;
-  top_sys_ahb_master_config  b_sub_cfg, b_tx_cfg, b_fifo_cfg, b_cfg_cfg, b_adr_cfg;
+  top_sys_ahb_master_config  b_sub_cfg, b_tx_cfg, b_fifo_cfg, b_adr_cfg;
   top_sys_ahb_slave_config   b_mng_cfg;
 
   function new(string name = "tidelink_top_system_env", uvm_component parent = null);

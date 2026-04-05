@@ -1,7 +1,7 @@
 +incdir+${TIDELINK_HOME}/src/rtl
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 
-// FIFO subsystem (tidelink_fifo_ahb and dependencies)
+// FIFO subsystem (tidelink_fifo and dependencies)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 ${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
@@ -23,8 +23,9 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/address_translation/address
 ${CMSDK_DIR}/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 
-// PTP timestamp bridge
+// PTP timestamp bridge and autonomous servo
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

@@ -5,8 +5,8 @@
 //
 // Instantiates two tidelink_top instances (Chiplet A and Chiplet B), each
 // with a PHC (PTP Hardware Clock) and TideLink PTP module. The two chiplets
-// are connected via FC crossover so that PTP SYNC and DELAY_REQ messages
-// traverse the link.
+// are connected via Wlink crossover so that PTP SYNC and DELAY_REQ short
+// packets traverse the die-to-die link.
 //
 // Six SVT AHB VIP interfaces (3 per side):
 //   1. PHC AHB master   (reads/writes PHC registers: NS_INCR, HW_CAP, etc.)

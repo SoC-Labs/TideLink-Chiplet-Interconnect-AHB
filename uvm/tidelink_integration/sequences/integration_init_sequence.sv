@@ -1,19 +1,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 // integration_init_sequence.sv
 ///////////////////////////////////////////////////////////////////////////////
-// AHB master sequence to initialize TideLink via config AHB port:
+// APB master sequence to initialize TideLink via unified APB config port:
 //   1. Set pair base address
 //   2. Set release threshold
 //   3. Enable pair credit counter
 //
-// This is the integration equivalent of tidelink_init_sequence, but uses
-// AHB writes (through the AHB-to-APB bridge) instead of direct APB.
+// TideLink config registers are at 0x2000 offset in the unified APB space.
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_INTEGRATION_INIT_SEQUENCE_SV
 `define GUARD_INTEGRATION_INIT_SEQUENCE_SV
 
-class integration_init_sequence extends svt_ahb_master_transaction_base_sequence;
+class integration_init_sequence extends uvm_sequence #(apb_master_transaction);
 
   bit [31:0] pair_base_addr  = 32'h4000_0000;
   bit [31:0] rel_threshold   = 32'd0;  // 0 = immediate release
@@ -30,23 +29,23 @@ class integration_init_sequence extends svt_ahb_master_transaction_base_sequence
     `uvm_info("SEQ", $sformatf("Initializing TideLink: pair_base=0x%08h threshold=%0d",
       pair_base_addr, rel_threshold), UVM_LOW)
 
-    // Set pair base address
+    // Set pair base address (0x2000 + REG_PAIR_BASE)
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_pair_base");
-    wr_seq.addr = REG_PAIR_BASE;
+    wr_seq.addr = 15'h2000 + REG_PAIR_BASE;
     wr_seq.data = pair_base_addr;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(m_sequencer);
 
-    // Set release threshold
+    // Set release threshold (0x2000 + REG_REL_THRESHOLD)
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_threshold");
-    wr_seq.addr = REG_REL_THRESHOLD;
+    wr_seq.addr = 15'h2000 + REG_REL_THRESHOLD;
     wr_seq.data = rel_threshold;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(m_sequencer);
 
-    // Enable pair credit counter
+    // Enable pair credit counter (0x2000 + REG_PAIR_CREDIT_ENABLE)
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_ptc_en");
-    wr_seq.addr = REG_PAIR_CREDIT_ENABLE;
+    wr_seq.addr = 15'h2000 + REG_PAIR_CREDIT_ENABLE;
     wr_seq.data = 32'h1;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(m_sequencer);
 
     `uvm_info("SEQ", "TideLink initialization complete.", UVM_LOW)
   endtask

@@ -25,31 +25,31 @@ current_design tidelink_top
 # ============================================================================
 
 # Primary system clock — drives all AHB/APB interfaces, FIFO, FC adapter
-clock -name hclk       -domain hclk_domain  -period 4.0 [get_ports hclk]
+clock -name hclk       -domain hclk_domain  -period 4.0
 
 # PTP hardware clock — independent frequency, drives PHC timestamping
-clock -name phc_clk    -domain phc_domain   -period 10.0 [get_ports phc_clk]
+clock -name phc_clk    -domain phc_domain   -period 10.0
 
 # Wlink PLL reference clock — internal to Wlink, define for completeness
-clock -name user_ref_clk -domain wlink_ref_domain -period 8.0 [get_ports user_ref_clk]
+clock -name user_ref_clk -domain wlink_ref_domain -period 8.0
 
 # PHY receive clock — recovered clock from remote side
-clock -name pad_clk_rx -domain phy_rx_domain -period 4.0 [get_ports pad_clk_rx]
+clock -name pad_clk_rx -domain phy_rx_domain -period 4.0
 
 # ============================================================================
 # Reset Definitions
 # ============================================================================
 
-reset -name hresetn    -value 0 [get_ports hresetn]
-reset -name poresetn   -value 0 [get_ports poresetn]
-reset -name phc_resetn -value 0 [get_ports phc_resetn]
+reset -name hresetn    -value 0
+reset -name poresetn   -value 0
+reset -name phc_resetn -value 0
 
 # ============================================================================
 # Constant / DFT Ports
 # ============================================================================
 
 # scan_mode held inactive during functional CDC analysis
-abstract_port -name scan_mode          -value 0 [get_ports scan_mode]
-abstract_port -name scan_asyncrst_ctrl -value 0 [get_ports scan_asyncrst_ctrl]
-abstract_port -name scan_shift         -value 0 [get_ports scan_shift]
-abstract_port -name scan_in            -value 0 [get_ports scan_in]
+set_case_analysis -name scan_mode          -value 0
+set_case_analysis -name scan_asyncrst_ctrl -value 0
+set_case_analysis -name scan_shift         -value 0
+set_case_analysis -name scan_in            -value 0

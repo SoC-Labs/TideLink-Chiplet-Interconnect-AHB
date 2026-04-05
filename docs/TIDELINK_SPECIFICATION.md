@@ -140,7 +140,7 @@ The `tidelink_top` module instantiates six sub-components:
 | `u_xhb_sub` | `xhb500_ahb_to_axi_bridge_chiplet_slv` | AHB → AXI for regular subordinate path |
 | `u_xhb_mng` | `xhb500_axi_to_ahb_bridge_chiplet_mst` | AXI → AHB for regular manager path |
 | `u_addr_translator` | `tidelink_addr_translator` | APB-configurable address remapping |
-| `u_chiplet_controller` | `tidelink_chiplet_controller` | Modified Wlink: link layer, FC nodes, CRC/ECC, PHY |
+| `u_chiplet_controller` | `axi_chiplet_controller` | Generic chiplet controller: Wlink core + I2C master/slave + role selection + APB mux |
 
 ### 3.3 Internal AXI Bus
 
@@ -439,20 +439,50 @@ Single APB3 subordinate for all TideLink and Wlink configuration. Internally dec
 | `apb_pready` | Out | 1 | Slave ready |
 | `apb_pslverr` | Out | 1 | Slave error |
 
-### 5.11 I2C Sideband
+### 5.11 Chiplet Controller Role Selection
 
-Tri-state I2C interface for Wlink out-of-band link management and bring-up.
+Runtime master/slave role selection for the generic chiplet controller (`axi_chiplet_controller`). The role determines I2C bus direction and APB mux behaviour.
 
 | Signal | Direction | Width | Description |
 |---|---|---|---|
-| `i2c_scl_i` | In | 1 | SCL input |
-| `i2c_scl_o` | Out | 1 | SCL output (active drive) |
-| `i2c_scl_t` | Out | 1 | SCL tristate enable (1 = high-Z) |
+| `role_strap_i` | In | 1 | Default role from strap pin (0=master, 1=slave) |
+| `role_is_master_o` | Out | 1 | Effective role: 1=master, 0=slave |
+| `role_locked_o` | Out | 1 | 1 when role is locked and Wlink is active |
+
+Role configuration registers are accessible via the unified APB port at Region 4 (offsets 0x2080-0x208F). See REGISTER_MAP.md for details.
+
+**Startup sequence**: After `poresetn` release, Wlink is held in reset until the CPU writes `role_lock=1` to ROLE_CFG (0x2080). The role defaults from `role_strap_i` and can be overridden by writing ROLE_CFG[0] before locking. Once locked, only `poresetn` can change the role — warm reset (`hresetn`) preserves it.
+
+### 5.12 I2C Sideband
+
+Tri-state I2C interface for Wlink out-of-band link management and bring-up. In master mode, the I2C master core drives SCL/SDA to configure the remote slave's Wlink registers. In slave mode, the I2C slave core responds on SCL/SDA (SCL forced high-Z since slaves don't drive clock).
+
+| Signal | Direction | Width | Description |
+|---|---|---|---|
+| `i2c_scl_i` | In | 1 | SCL input (from open-drain bus) |
+| `i2c_scl_o` | Out | 1 | SCL output (active drive, master mode only) |
+| `i2c_scl_t` | Out | 1 | SCL tristate enable (1 = high-Z; always 1 in slave mode) |
 | `i2c_sda_i` | In | 1 | SDA input |
 | `i2c_sda_o` | Out | 1 | SDA output |
 | `i2c_sda_t` | Out | 1 | SDA tristate enable |
 
-### 5.12 General Bus
+The I2C master is controlled via the I2C sideband AXI port (`s_i2c_axi_*`). The I2C slave address is configurable via register I2C_SLV_ADDR (0x2088, default 0x00).
+
+### 5.13 I2C Sideband AXI
+
+AXI4 subordinate port for CPU access to the I2C master controller (master mode only).
+
+| Signal | Direction | Width | Description |
+|---|---|---|---|
+| `s_i2c_axi_aw*` | In/Out | various | AXI write address channel (4-bit addr, 2-bit ID) |
+| `s_i2c_axi_w*` | In/Out | various | AXI write data channel |
+| `s_i2c_axi_b*` | In/Out | various | AXI write response channel |
+| `s_i2c_axi_ar*` | In/Out | various | AXI read address channel |
+| `s_i2c_axi_r*` | In/Out | various | AXI read data channel |
+| `i2c_nbsy_irq` | Out | 1 | I2C bus not busy interrupt |
+| `i2c_nrd_empty_irq` | Out | 1 | I2C read FIFO not empty interrupt |
+
+### 5.14 General Bus
 
 32-bit bus for cross-link interrupt forwarding via Wlink FC node 0xa0.
 
@@ -461,7 +491,7 @@ Tri-state I2C interface for Wlink out-of-band link management and bring-up.
 | `gb_in[31:0]` | In | 32 | Interrupts to send to remote chiplet |
 | `gb_out[31:0]` | Out | 32 | Interrupts received from remote chiplet |
 
-### 5.13 PHY Pads
+### 5.15 PHY Pads
 
 8-lane source-synchronous die-to-die interface.
 

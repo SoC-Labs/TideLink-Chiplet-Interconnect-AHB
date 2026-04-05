@@ -52,15 +52,43 @@ The pair base address can also be changed at runtime by writing to register 0x00
 
 ### Initialisation Sequence
 
-After reset, the FIFO data window is immediately enabled. Follow this sequence to bring it up:
+TideLink uses a two-phase initialisation: first the chiplet controller role must be locked (releasing Wlink from reset), then the FIFO credit exchange completes link bring-up.
+
+#### Phase 1: Chiplet Controller Role Selection
+
+After power-on reset (`poresetn`), the Wlink core is held in reset until the controller role is locked. This allows the CPU to select master or slave mode before the link trains.
 
 ```
-1. (Optional) Write pair base address to 0x000 if different from parameter default
-2. (Optional) Write release threshold to 0x004 (default: 20)
-3. Wait for doorbell_irq (pair's reset handshake response)
-4. Read doorbell response accumulator (0x024) to get pair's available credits
-5. TideLink is now ready for data transfer
+1. (Optional) Read ROLE_STATUS (0x2084) to check strap default
+2. (Optional) Write ROLE_CFG (0x2080) bit[0] to override role (0=master, 1=slave)
+3. Write ROLE_CFG (0x2080) bit[1] = 1 to lock the role
+   → Wlink POR deasserts, link training begins automatically (swi_enable=1 default)
+4. Wait for link-up (~10,000 cycles for GPIO PHY)
 ```
+
+If no CPU intervention is needed, the role defaults from the `role_strap_i` pin. The CPU just needs to lock it: write `0x02` to `ROLE_CFG`.
+
+The role lock bit is W1S (write-1-to-set) and survives warm reset (`hresetn`). Only a full power-on reset (`poresetn`) can change the role.
+
+**C driver**: Use `tidelink_ctrl_link_bringup()` from `tidelink_chiplet_ctrl.h` for a single-call bring-up.
+
+#### Phase 2: TideLink FIFO Credit Exchange
+
+After the Wlink link is active:
+
+```
+1. (Optional) Write pair base address to 0x2000 if different from parameter default
+2. (Optional) Write release threshold to 0x2004 (default: 20)
+3. Enable pair credit counter: write 1 to 0x2030
+4. Ring doorbell: write 1 to 0x2014 (sends initial credits to peer)
+5. Wait for doorbell_irq (peer's reset handshake response)
+6. Read doorbell response accumulator (0x2024) to get peer's available credits
+7. TideLink is now ready for data transfer
+```
+
+#### I2C Remote Configuration (Slave Mode)
+
+In slave mode, the remote master can configure Wlink registers via the I2C sideband. The I2C slave address defaults to `0x00` and can be changed by writing `I2C_SLV_ADDR` (0x2088). The local CPU retains read-only APB access to Wlink registers for diagnostics.
 
 ### Writing a Packet (Transmit Side)
 

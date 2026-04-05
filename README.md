@@ -57,6 +57,7 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
 - **Credit-based flow control** with configurable release threshold batching. Returner credit/doorbell writes go through FC sideband (not the external AHB bus).
 - **GPIO PHY** — 8-lane parallel D2D with single-ended pads. Matches the nanosoc-chiplet-tech reference integration.
 - **FIFO always enabled** — no CTRL.EN gate. FLUSH can be issued at any time for error recovery.
+- **Generic chiplet controller** — `axi_chiplet_controller` wraps Wlink with runtime master/slave role selection via I2C sideband. Identical silicon on both chiplets; firmware selects role at boot.
 
 ## Module Hierarchy
 
@@ -84,9 +85,11 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
 
 | Component | Description |
 |-----------|-------------|
+| `axi_chiplet_controller.sv` | Generic wrapper: Wlink + I2C master/slave + role registers + APB mux. |
 | Generated Wlink | 7 FC nodes: 5 AXI channels + GeneralBus + TideLink. GPIO PHY, 8 lanes. |
 | `TideLink.scala` | Chisel source for the TideLink FC node (48-bit valid/ready streaming). |
 | XHB500 | ARM AHB-to-AXI / AXI-to-AHB bridges (licensed IP, not included). |
+| I2C cores | `i2c_master_axil`, `i2c_slave_axil_master` + Bluespec AXI/APB bridges. |
 
 ## Packet Format (4-word header)
 
@@ -136,7 +139,7 @@ tidelink/
 │   ├── packet.py                    # FifoPacket + DescriptorPacket classes
 │   ├── pair_model.py                # PairRegisterBank state machine
 │   └── pynq_driver.py              # PYNQ hardware driver
-├── cocotb/                          # cocotb verification (204 tests, 9 envs)
+├── cocotb/                          # cocotb verification (232+ tests, 10 envs)
 │   ├── tidelink_fifo/               # FIFO unit tests (31)
 │   ├── tidelink_returner/           # Returner unit tests (17)
 │   ├── tidelink_apb_regs/           # APB register tests (35)
@@ -146,7 +149,8 @@ tidelink/
 │   ├── tidelink_fc_adapter/         # FC adapter unit tests (24)
 │   ├── tidelink_top/                # Loopback integration tests (14)
 │   ├── tidelink_system/             # Paired system stress tests (25)
-│   └── tidelink_ptp/               # PTP subsystem tests
+│   ├── tidelink_ptp/               # PTP subsystem tests (15)
+│   ���── axi_chiplet_controller/     # Controller role selection tests (23)
 ├── uvm/                             # UVM verification (4 environments)
 │   ├── tidelink/                    # FIFO UVM env (4 tests)
 │   ├── tidelink_fc_adapter/         # FC adapter UVM env (5 tests)

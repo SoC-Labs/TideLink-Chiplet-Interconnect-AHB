@@ -111,7 +111,7 @@ async def test_07_write_and_read_packets_then_pair_resets(dut):
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
     dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2
-    dut.ahbs_haddr.value = 0x0000; dut.ahbs_hready.value = 1
+    dut.ahbs_haddr.value = 0x0000
     await RisingEdge(dut.hclk)
     dut.ahbs_htrans.value = 0; dut.ahbs_hsel.value = 0
     dut.ahbs_haddr.value = 0x3FFF

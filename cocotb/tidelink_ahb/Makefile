@@ -21,6 +21,22 @@ ifdef COVERAGE
   SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
 endif
 
+# ── C Driver Shared Library (for driver-in-the-loop testing) ────────────
+TL_SW        := $(TIDELINK_HOME)/src/sw
+CC_HOST      := gcc
+CFLAGS_HOST  := -shared -fPIC -DHAL_TEST_MODE -O0 -g -Wall -Wextra
+
+libtidelink_driver.so: $(TL_SW)/tidelink.c tidelink_test_wrappers.c \
+                       $(TL_SW)/tidelink.h $(TL_SW)/hal_io.h
+	$(CC_HOST) $(CFLAGS_HOST) -I$(TL_SW) -include $(TL_SW)/hal_io.h \
+	    $(TL_SW)/tidelink.c tidelink_test_wrappers.c -o $@
+
+.PHONY: driver-so clean-driver
+driver-so: libtidelink_driver.so
+
+clean-driver:
+	rm -f libtidelink_driver.so
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2

@@ -65,6 +65,7 @@ module tidelink_ptp_servo #(
     // --------------------------------------------------------------------------
     input  logic             [47:0] hw_cap_seconds,
     input  logic             [29:0] hw_cap_nanoseconds,
+    input  logic  [SYS_DATA_W-1:0] hw_cap_sub_nanoseconds,
 
     // --------------------------------------------------------------------------
     // FC SIDEBAND Injection (to FC adapter TX arbiter)
@@ -188,14 +189,17 @@ module tidelink_ptp_servo #(
     // GM timestamps (captured from PHC hw_cap wires)
     logic [47:0] gm_t1_sec, gm_t4_sec;
     logic [29:0] gm_t1_ns,  gm_t4_ns;
+    logic [SYS_DATA_W-1:0] gm_t1_sub, gm_t4_sub;
 
     // Sub local timestamps (captured from PHC hw_cap wires)
     logic [47:0] sub_t2_sec, sub_t3_sec;
     logic [29:0] sub_t2_ns,  sub_t3_ns;
+    logic [SYS_DATA_W-1:0] sub_t2_sub, sub_t3_sub;
 
     // Sub remote timestamps (received via FC SIDEBAND mailbox)
     logic [47:0] sub_t1_sec, sub_t4_sec;
     logic [29:0] sub_t1_ns,  sub_t4_ns;
+    logic [SYS_DATA_W-1:0] sub_t1_sub, sub_t4_sub;
 
     // =========================================================================
     // Timestamp Mailbox — Receives FC SIDEBAND writes from remote side
@@ -232,9 +236,10 @@ module tidelink_ptp_servo #(
         end
     end
 
-    // Assembled mailbox timestamp
+    // Assembled mailbox timestamp + sub-ns (not sent over link, tied to zero)
     wire [47:0] mbox_seconds    = {mbox_sec_hi_r, mbox_sec_lo_r};
     wire [29:0] mbox_nanoseconds = mbox_ns_r;
+    wire [SYS_DATA_W-1:0] mbox_sub_ns = '0;
 
     // =========================================================================
     // Grandmaster FSM
@@ -526,12 +531,12 @@ module tidelink_ptp_servo #(
                         // Extract nanosecond portion of offset for status
                         // offset_r is in sub-nanosecond units ({ns, sub_ns})
                         // Shift right by 32 to get ns portion
-                        last_offset_r <= offset_r[63:32];
-                        last_delay_r  <= delay_r[63:32];
+                        last_offset_r <= offset_r;
+                        last_delay_r  <= delay_r;
 
                         if (needs_phase_step_r ||
-                            ($signed(offset_r[63:32]) > $signed(servo_step_thresh_r)) ||
-                            ($signed(offset_r[63:32]) < -$signed(servo_step_thresh_r))) begin
+                            ($signed(offset_r) > $signed(servo_step_thresh_r)) ||
+                            ($signed(offset_r) < -$signed(servo_step_thresh_r))) begin
                             // Phase step — correct time directly
                             phc_hw_set_time <= 1'b1;
                             // Corrected time = local_a (t2) - offset
@@ -558,15 +563,15 @@ module tidelink_ptp_servo #(
                             // i_term = ki * integral_ns (Q0.32 * signed)
                             // Take upper 32 bits of 64-bit product
                             current_frac_r <= current_frac_r -
-                                pi_output(servo_kp_r, offset_r[63:32],
+                                pi_output(servo_kp_r, offset_r,
                                           servo_ki_r, integral_r[63:32]);
                             phc_hw_adj_valid      <= 1'b1;
                             phc_hw_adj_ns_incr_frac <= current_frac_r -
-                                pi_output(servo_kp_r, offset_r[63:32],
+                                pi_output(servo_kp_r, offset_r,
                                           servo_ki_r, integral_r[63:32]);
 
                             // Lock detection
-                            if ($unsigned(offset_r[63:32]) < servo_step_thresh_r[31:2]) begin
+                            if ($unsigned(offset_r) < servo_step_thresh_r[31:2]) begin
                                 if (lock_counter_r < LOCK_COUNT)
                                     lock_counter_r <= lock_counter_r + 4'd1;
                                 else

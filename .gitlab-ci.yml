@@ -60,6 +60,8 @@ cache:
 clone:
   stage: setup
   script:
+    # Remove stale workspaces from previous pipelines (older than 24h)
+    - find "${CI_BUILDS_DIR}/${CI_PROJECT_NAME}" -maxdepth 1 -mindepth 1 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
     - rm -rf "$WORK_DIR"
     - mkdir -p "$WORK_DIR"
     - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch "$CI_REPOSITORY_URL" "$WORK_DIR"
@@ -803,5 +805,5 @@ cleanup:
   stage: cleanup
   when: always
   script:
-    - rm -rf "$WORK_DIR"
+    - rm -rf "$WORK_DIR" || true
     - echo "Cleaned up $WORK_DIR"

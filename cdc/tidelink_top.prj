@@ -38,13 +38,6 @@ read_file -type sgdc $::env(SGDC)
 
 read_file -type waiver $::env(SWL)
 
-# ── Report directory ─────────────────────────────────────────────────────────
-
-set_option reportdir cdc_verify/spyglass_reports
-
 # ── Goal setup ───────────────────────────────────────────────────────────────
-
-current_goal cdc_verify -top $::env(SG_TOP)
-
-# Run structural CDC checks
-run_goal
+# Goal is specified via -goals on the command line (required for -batch mode).
+# current_goal / run_goal are not used in -batch -project -goals flow.

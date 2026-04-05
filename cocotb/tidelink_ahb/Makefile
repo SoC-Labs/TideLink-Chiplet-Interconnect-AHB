@@ -29,7 +29,12 @@ CFLAGS_HOST  := -shared -fPIC -DHAL_TEST_MODE -O0 -g -Wall -Wextra
 # Default target: build C driver then run cocotb simulation
 all: libtidelink_driver.so sim
 
-libtidelink_driver.so: $(TL_SW)/tidelink.c tidelink_test_wrappers.c \
+# Ensure generated headers exist (from RDL sources) before compiling
+.PHONY: generate-headers
+generate-headers:
+	$(MAKE) -C $(TL_SW) generate
+
+libtidelink_driver.so: generate-headers $(TL_SW)/tidelink.c tidelink_test_wrappers.c \
                        $(TL_SW)/tidelink.h $(TL_SW)/hal_io.h
 	$(CC_HOST) $(CFLAGS_HOST) -I$(TL_SW) -include $(TL_SW)/hal_io.h \
 	    $(TL_SW)/tidelink.c tidelink_test_wrappers.c -o $@

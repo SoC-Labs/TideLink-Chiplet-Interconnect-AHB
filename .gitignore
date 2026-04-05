@@ -28,6 +28,8 @@ AN.DB
 *trace*.txt
 crte*.txt
 *.so
+*.pvk
+syn/asic/design-compiler/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.pvk
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

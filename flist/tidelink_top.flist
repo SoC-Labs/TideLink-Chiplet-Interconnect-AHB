@@ -26,6 +26,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 // PTP timestamp bridge and autonomous servo
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

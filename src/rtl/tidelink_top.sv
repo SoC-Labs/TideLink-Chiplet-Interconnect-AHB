@@ -59,6 +59,8 @@ module tidelink_top #(
     input  wire                     hclk,           // AHB / application clock
     input  wire                     hresetn,        // Active-low reset
     input  wire                     poresetn,       // Power-on reset (active-low)
+    input  wire                     phc_clk,        // PHC clock (may differ from hclk)
+    input  wire                     phc_resetn,     // PHC reset (active-low)
 
     // --------------------------------------------------------------------------
     // AHB Subordinate — Regular AHB access to remote side
@@ -390,6 +392,24 @@ module tidelink_top #(
     wire                   servo_fc_valid;
     wire [FC_DATA_W-1:0]  servo_fc_data;
     wire                   servo_fc_ready;
+
+    // =========================================================================
+    // PHC CDC intermediate wires (hclk-domain ↔ tidelink_phc_cdc ↔ phc_clk)
+    // =========================================================================
+    // _raw signals: hclk-domain outputs from u_ptp / u_servo (before CDC)
+    // _sync signals: hclk-domain inputs to u_ptp / u_servo (after CDC)
+    wire                    phc_hw_capture_raw;     // from u_ptp → CDC → PHC
+    wire             [29:0] phc_nanoseconds_sync;   // from PHC → CDC → u_ptp
+    wire             [47:0] phc_seconds_sync;        // from PHC → CDC → u_ptp
+    wire                    phc_pps_sync;            // from PHC → CDC → u_ptp
+    wire             [47:0] phc_hw_cap_seconds_sync;       // from PHC → CDC → u_servo
+    wire             [29:0] phc_hw_cap_nanoseconds_sync;   // from PHC → CDC → u_servo
+    wire [SYS_DATA_W-1:0]  phc_hw_cap_sub_nanoseconds_sync;
+    wire                    phc_hw_set_time_raw;           // from u_servo → CDC → PHC
+    wire             [47:0] phc_hw_set_seconds_raw;
+    wire             [29:0] phc_hw_set_nanoseconds_raw;
+    wire                    phc_hw_adj_valid_raw;
+    wire [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac_raw;
 
     // =========================================================================
     // Returner AHB master wiring (tidelink_fifo_ahb → FC adapter interception)
@@ -778,12 +798,12 @@ module tidelink_top #(
         .ptp_sp_rx_accept  (ptp_sp_rx_accept),
 
         // PHC hardware capture
-        .phc_hw_capture    (phc_hw_capture),
+        .phc_hw_capture    (phc_hw_capture_raw),
 
-        // PHC time inputs (for hardware sync initiator)
-        .phc_nanoseconds   (phc_nanoseconds),
-        .phc_seconds        (phc_seconds),
-        .phc_pps            (phc_pps),
+        // PHC time inputs (for hardware sync initiator, via CDC)
+        .phc_nanoseconds   (phc_nanoseconds_sync),
+        .phc_seconds        (phc_seconds_sync),
+        .phc_pps            (phc_pps_sync),
 
         // AHB slave — PTP TX write port
         .ahb_ptp_hsel      (ahb_ptp_hsel),
@@ -842,10 +862,10 @@ module tidelink_top #(
         .sync_rx_done           (sync_rx_done),
         .dreq_rx_done           (dreq_rx_done),
 
-        // PHC hardware capture (direct wire from PHC)
-        .hw_cap_seconds         (phc_hw_cap_seconds),
-        .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds),
-        .hw_cap_sub_nanoseconds (phc_hw_cap_sub_nanoseconds),
+        // PHC hardware capture (via CDC from PHC)
+        .hw_cap_seconds         (phc_hw_cap_seconds_sync),
+        .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds_sync),
+        .hw_cap_sub_nanoseconds (phc_hw_cap_sub_nanoseconds_sync),
 
         // FC SIDEBAND injection (to FC adapter)
         .servo_fc_valid         (servo_fc_valid),
@@ -860,15 +880,67 @@ module tidelink_top #(
         // DELAY_REQ trigger (to PTP TX path)
         .servo_dreq_trigger     (servo_dreq_trigger),
 
-        // PHC adjustment outputs (to external PHC)
-        .phc_hw_set_time        (phc_hw_set_time),
-        .phc_hw_set_seconds     (phc_hw_set_seconds),
-        .phc_hw_set_nanoseconds (phc_hw_set_nanoseconds),
-        .phc_hw_adj_valid       (phc_hw_adj_valid),
-        .phc_hw_adj_ns_incr_frac(phc_hw_adj_ns_incr_frac),
+        // PHC adjustment outputs (via CDC to external PHC)
+        .phc_hw_set_time        (phc_hw_set_time_raw),
+        .phc_hw_set_seconds     (phc_hw_set_seconds_raw),
+        .phc_hw_set_nanoseconds (phc_hw_set_nanoseconds_raw),
+        .phc_hw_adj_valid       (phc_hw_adj_valid_raw),
+        .phc_hw_adj_ns_incr_frac(phc_hw_adj_ns_incr_frac_raw),
 
         // Status
         .servo_locked           (servo_locked)
+    );
+
+    // =========================================================================
+    // 2c. PHC Clock Domain Crossing Bridge
+    //     All PHC ↔ TideLink signals pass through this module.
+    //     When phc_clk = hclk, the module adds benign pipeline latency.
+    // =========================================================================
+    tidelink_phc_cdc #(
+        .SYS_DATA_W  (SYS_DATA_W),
+        .SYNC_STAGES (2)
+    ) u_phc_cdc (
+        .hclk       (hclk),
+        .hresetn    (hresetn),
+        .phc_clk    (phc_clk),
+        .phc_resetn (phc_resetn),
+        .scan_mode  (scan_mode),
+
+        // Path 4: HW Capture trigger (hclk → phc_clk)
+        .h_hw_capture               (phc_hw_capture_raw),
+        .p_hw_capture               (phc_hw_capture),
+
+        // Path 1: HW Capture timestamps (phc_clk → hclk)
+        .p_hw_cap_seconds           (phc_hw_cap_seconds),
+        .p_hw_cap_nanoseconds       (phc_hw_cap_nanoseconds),
+        .p_hw_cap_sub_nanoseconds   (phc_hw_cap_sub_nanoseconds),
+        .h_hw_cap_seconds           (phc_hw_cap_seconds_sync),
+        .h_hw_cap_nanoseconds       (phc_hw_cap_nanoseconds_sync),
+        .h_hw_cap_sub_nanoseconds   (phc_hw_cap_sub_nanoseconds_sync),
+
+        // Path 2: Free-running PHC time (phc_clk → hclk)
+        .p_phc_nanoseconds          (phc_nanoseconds),
+        .p_phc_seconds              (phc_seconds),
+        .h_phc_nanoseconds          (phc_nanoseconds_sync),
+        .h_phc_seconds              (phc_seconds_sync),
+
+        // Path 3: PPS pulse (phc_clk → hclk)
+        .p_phc_pps                  (phc_pps),
+        .h_phc_pps                  (phc_pps_sync),
+
+        // Path 5: Phase step command (hclk → phc_clk)
+        .h_hw_set_time              (phc_hw_set_time_raw),
+        .h_hw_set_seconds           (phc_hw_set_seconds_raw),
+        .h_hw_set_nanoseconds       (phc_hw_set_nanoseconds_raw),
+        .p_hw_set_time              (phc_hw_set_time),
+        .p_hw_set_seconds           (phc_hw_set_seconds),
+        .p_hw_set_nanoseconds       (phc_hw_set_nanoseconds),
+
+        // Path 6: Frequency adjust (hclk → phc_clk)
+        .h_hw_adj_valid             (phc_hw_adj_valid_raw),
+        .h_hw_adj_ns_incr_frac      (phc_hw_adj_ns_incr_frac_raw),
+        .p_hw_adj_valid             (phc_hw_adj_valid),
+        .p_hw_adj_ns_incr_frac      (phc_hw_adj_ns_incr_frac)
     );
 
     // =========================================================================

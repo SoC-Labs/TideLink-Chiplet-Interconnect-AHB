@@ -21,6 +21,8 @@ __pycache__
 csrc
 vc_hdrs.h
 cocotb/coverage_report/
+simv
+simv.daidir
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

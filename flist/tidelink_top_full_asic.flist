@@ -25,6 +25,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 // PTP timestamp bridge and autonomous servo
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
 // XHB500 AHB-to-AXI bridge (subordinate path)
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_flop.sv

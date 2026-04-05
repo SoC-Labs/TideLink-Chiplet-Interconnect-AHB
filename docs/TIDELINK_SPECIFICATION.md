@@ -881,6 +881,27 @@ Several architectural changes have been made to improve timing closure and reduc
 
 **Big-endian byte swap gated by generate** (`tidelink_addr_translator.sv`): The byte-swap logic in the address translator is wrapped in `generate if (BE != 0)`. When `BE=0` (the only configuration in use), the swap registers and muxes are eliminated entirely.
 
+### 11.12 PHC Clock Domain Crossing (`tidelink_phc_cdc`)
+
+When the external PHC runs on a separate clock (`phc_clk`) from TideLink (`hclk`), the `tidelink_phc_cdc` module provides safe clock domain crossing for all PHC ↔ TideLink signals. It is instantiated inside `tidelink_top.sv` and adds two new top-level ports: `phc_clk` and `phc_resetn`.
+
+**Signal paths and mechanisms:**
+
+| Path | Direction | Width | Mechanism | Latency |
+|------|-----------|-------|-----------|---------|
+| HW capture trigger | hclk→phc | 1b | Toggle pulse sync | 2-3 phc_clk |
+| HW capture timestamps | phc→hclk | 110b | Quasi-static capture (done flag sync) | 2-3 hclk |
+| Free-running PHC time | phc→hclk | 78b | Continuous req/ack handshake snapshot | 4-6 hclk |
+| PPS pulse | phc→hclk | 1b | Toggle pulse sync | 2-3 hclk |
+| Phase step command | hclk→phc | 79b | Data + req/ack handshake | 4-6 phc_clk |
+| Frequency adjust | hclk→phc | 33b | Data + req/ack handshake | 4-6 phc_clk |
+
+**Hardware cost:** ~526 FFs (~3,200 gates). Parameterizable synchronizer depth (`SYNC_STAGES`, default 2).
+
+**Single-clock operation:** When `phc_clk = hclk`, the module adds benign pipeline latency (2-6 cycles per path). All existing functionality is preserved. This is the recommended configuration for systems where the PHC shares the AHB clock.
+
+**Timestamp accuracy:** The CDC latency does not affect timestamp accuracy. The PHC captures the correct moment atomically via `hw_capture`; the CDC only delays delivery of the captured value to the servo. PTP offset computation uses the captured timestamps, not the transfer time.
+
 ---
 
 *End of TideLink Chiplet Interconnect Subsystem Specification and Design Justification*

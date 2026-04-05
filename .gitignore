@@ -23,6 +23,7 @@ vc_hdrs.h
 cocotb/coverage_report/
 simv
 simv.daidir
+AN.DB
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

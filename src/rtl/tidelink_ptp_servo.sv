@@ -65,7 +65,6 @@ module tidelink_ptp_servo #(
     // --------------------------------------------------------------------------
     input  logic             [47:0] hw_cap_seconds,
     input  logic             [29:0] hw_cap_nanoseconds,
-    input  logic   [SYS_DATA_W-1:0] hw_cap_sub_nanoseconds,
 
     // --------------------------------------------------------------------------
     // FC SIDEBAND Injection (to FC adapter TX arbiter)
@@ -106,6 +105,8 @@ module tidelink_ptp_servo #(
     // =========================================================================
     localparam [1:0]  PKT_SIDEBAND = 2'b01;
     localparam [29:0] NS_PER_SECOND = 30'd999_999_999;
+    // One second in nanoseconds
+    localparam signed [30:0] ONE_SEC_NS = 31'sd1_000_000_000;
 
     // Mailbox target offsets (where SIDEBAND packets write on the remote side)
     // These are APB register offsets within TideLink config space
@@ -187,17 +188,14 @@ module tidelink_ptp_servo #(
     // GM timestamps (captured from PHC hw_cap wires)
     logic [47:0] gm_t1_sec, gm_t4_sec;
     logic [29:0] gm_t1_ns,  gm_t4_ns;
-    logic [31:0] gm_t1_sub, gm_t4_sub;
 
     // Sub local timestamps (captured from PHC hw_cap wires)
     logic [47:0] sub_t2_sec, sub_t3_sec;
     logic [29:0] sub_t2_ns,  sub_t3_ns;
-    logic [31:0] sub_t2_sub, sub_t3_sub;
 
     // Sub remote timestamps (received via FC SIDEBAND mailbox)
     logic [47:0] sub_t1_sec, sub_t4_sec;
     logic [29:0] sub_t1_ns,  sub_t4_ns;
-    logic [31:0] sub_t1_sub, sub_t4_sub;
 
     // =========================================================================
     // Timestamp Mailbox — Receives FC SIDEBAND writes from remote side
@@ -209,7 +207,6 @@ module tidelink_ptp_servo #(
     logic [31:0] mbox_sec_lo_r;
     logic [15:0] mbox_sec_hi_r;
     logic [29:0] mbox_ns_r;
-    logic [31:0] mbox_sub_ns_r;
     logic        mbox_ts_complete;  // Pulse: full timestamp received
 
     always_ff @(posedge clk or negedge resetn) begin
@@ -217,18 +214,16 @@ module tidelink_ptp_servo #(
             mbox_sec_lo_r   <= '0;
             mbox_sec_hi_r   <= '0;
             mbox_ns_r       <= '0;
-            mbox_sub_ns_r   <= '0;
             mbox_ts_complete <= 1'b0;
         end else begin
             mbox_ts_complete <= 1'b0;
             if (mbox_reg_write) begin
-                // Region 3 paddr[4:2]: 2=SEC_LO, 3=SEC_HI, 4=NS, 5=SUB_NS
+                // Region 3 paddr[4:2]: 2=SEC_LO, 3=SEC_HI, 4=NS (last word triggers complete)
                 case (mbox_reg_addr)
                     3'h2: mbox_sec_lo_r <= mbox_reg_wdata;
                     3'h3: mbox_sec_hi_r <= mbox_reg_wdata[15:0];
-                    3'h4: mbox_ns_r     <= mbox_reg_wdata[29:0];
-                    3'h5: begin
-                        mbox_sub_ns_r    <= mbox_reg_wdata;
+                    3'h4: begin
+                        mbox_ns_r        <= mbox_reg_wdata[29:0];
                         mbox_ts_complete <= 1'b1;
                     end
                     default: ;
@@ -240,7 +235,6 @@ module tidelink_ptp_servo #(
     // Assembled mailbox timestamp
     wire [47:0] mbox_seconds    = {mbox_sec_hi_r, mbox_sec_lo_r};
     wire [29:0] mbox_nanoseconds = mbox_ns_r;
-    wire [31:0] mbox_sub_ns      = mbox_sub_ns_r;
 
     // =========================================================================
     // Grandmaster FSM
@@ -360,25 +354,23 @@ module tidelink_ptp_servo #(
     // =========================================================================
     // Offset/Delay Computation Pipeline Registers
     // =========================================================================
-    // All arithmetic uses 62-bit values: {nanoseconds[29:0], sub_ns[31:0]}
+    // All arithmetic uses 30-bit nanosecond values (sub-ns dropped).
     // Seconds differences checked separately for phase step decisions.
 
-    logic signed [62:0] d_fwd_r;      // t2 - t1 (forward path)
-    logic signed [62:0] d_rev_r;      // t4 - t3 (reverse path)
-    logic signed [63:0] raw_offset_r;
-    logic signed [63:0] raw_delay_r;
-    logic signed [63:0] offset_r;     // raw_offset >>> 1
-    /* verilator lint_off UNUSED */
-    logic signed [63:0] delay_r;      // raw_delay >>> 1 (sub-ns portion [31:0] intentionally unused)
-    /* verilator lint_on UNUSED */
+    logic signed [30:0] d_fwd_r;      // t2 - t1 (forward path, ns)
+    logic signed [30:0] d_rev_r;      // t4 - t3 (reverse path, ns)
+    logic signed [31:0] raw_offset_r;
+    logic signed [31:0] raw_delay_r;
+    logic signed [31:0] offset_r;     // raw_offset >>> 1
+    logic signed [31:0] delay_r;      // raw_delay >>> 1
 
     // Seconds difference tracking
     logic signed [48:0] sec_diff_fwd_r;  // t2_sec - t1_sec
     logic signed [48:0] sec_diff_rev_r;  // t4_sec - t3_sec
     logic               needs_phase_step_r;
 
-    // PI controller state
-    logic signed [63:0] integral_r;
+    // PI controller state (32-bit: ±2.15 seconds max accumulated error)
+    logic signed [31:0] integral_r;
 
     // Locked detection: offset below threshold for consecutive exchanges
     localparam LOCK_COUNT = 4;
@@ -491,28 +483,34 @@ module tidelink_ptp_servo #(
                         sec_diff_rev_r <= $signed({1'b0, sub_t4_sec}) -
                                           $signed({1'b0, sub_t3_sec});
                         // Adjust d_fwd for seconds borrow/carry
-                        if (sec_diff_fwd_r != 0) begin
-                            // Add seconds difference as nanoseconds
-                            d_fwd_r <= d_fwd_r + $signed(sec_diff_fwd_r) * $signed(63'd1_000_000_000);
-                        end
-                        needs_phase_step_r <= (sec_diff_fwd_r > 49'sd1) ||
-                                              (sec_diff_fwd_r < -49'sd1);
+                        // Only handle |sec_diff| <= 1 arithmetically; larger
+                        // differences force a phase step (no multiply needed).
+                        case (sec_diff_fwd_r)
+                            49'sd0:  ; // Same second — no adjustment
+                            49'sd1:  d_fwd_r <= d_fwd_r + ONE_SEC_NS;
+                            -49'sd1: d_fwd_r <= d_fwd_r - ONE_SEC_NS;
+                            default: ; // |sec_diff| > 1 handled below
+                        endcase
+                        if (sec_diff_fwd_r > 49'sd1 || sec_diff_fwd_r < -49'sd1)
+                            needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_3;
                     end
 
                     SUB_COMPUTE_3: begin
                         // Adjust d_rev for seconds borrow/carry
-                        if (sec_diff_rev_r != 0) begin
-                            d_rev_r <= d_rev_r + $signed(sec_diff_rev_r) * $signed(63'd1_000_000_000);
-                        end
+                        case (sec_diff_rev_r)
+                            49'sd0:  ; // Same second — no adjustment
+                            49'sd1:  d_rev_r <= d_rev_r + ONE_SEC_NS;
+                            -49'sd1: d_rev_r <= d_rev_r - ONE_SEC_NS;
+                            default: ; // |sec_diff| > 1 handled below
+                        endcase
                         // Compute raw offset and delay
                         raw_offset_r <= $signed({d_fwd_r[62], d_fwd_r}) -
                                         $signed({d_rev_r[62], d_rev_r});
                         raw_delay_r  <= $signed({d_fwd_r[62], d_fwd_r}) +
                                         $signed({d_rev_r[62], d_rev_r});
-                        needs_phase_step_r <= needs_phase_step_r ||
-                                              (sec_diff_rev_r > 49'sd1) ||
-                                              (sec_diff_rev_r < -49'sd1);
+                        if (sec_diff_rev_r > 49'sd1 || sec_diff_rev_r < -49'sd1)
+                            needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_4;
                     end
 

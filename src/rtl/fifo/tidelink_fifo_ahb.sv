@@ -198,7 +198,13 @@ module tidelink_fifo_ahb #(
         .ptp_reg_addr        (ptp_reg_addr),
         .ptp_reg_wdata       (ptp_reg_wdata),
         .ptp_reg_rdata       (ptp_reg_rdata),
-        .ptp_reg_region      (ptp_reg_region)
+        .ptp_reg_region      (ptp_reg_region),
+
+        // Servo register pass-through (tied off — servo not present in AHB wrapper)
+        .servo_reg_write     (),
+        .servo_reg_addr      (),
+        .servo_reg_wdata     (),
+        .servo_reg_rdata     ({SYS_DATA_W{1'b0}})
     );
 
 endmodule

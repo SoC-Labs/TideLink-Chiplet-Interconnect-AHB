@@ -1117,7 +1117,8 @@ async def test_cov_06_fifo_underrun(dut):
     await RisingEdge(dut.hclk)
     dut.ahbs_htrans.value = 0
     dut.ahbs_hsel.value   = 0
-    await ClockCycles(dut.hclk, 3)
+    dut.ahbs_haddr.value  = 0x3FFF  # park address away from FIFO
+    await ClockCycles(dut.hclk, 5)
 
     # Check underrun is now set
     status = await tb.apb.read(APB_REG_STATUS)

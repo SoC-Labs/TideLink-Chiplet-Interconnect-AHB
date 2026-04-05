@@ -38,6 +38,13 @@ class TidelinkAhbTB:
       - ahb_fifo:   AHBLiteMaster on the ahbs_* FIFO data port
       - ahb_cfg:    AHBLiteMaster on the ahbc_* config register port
       - ahb_slave:  AHBLiteSlaveRAM responding to the ahbm_* returner master
+
+    NOTE: cocotbext AHB drivers start background coroutines that persist for the
+    entire simulation. Creating multiple TidelinkAhbTB instances across tests
+    causes bus contention on the AHB master bus (multiple AHBLiteSlaveRAM
+    instances driving hready/hresp/hrdata). Tests 09+ that exercise the returner
+    fail because prior test instances' slave coroutines interfere. This requires
+    a cocotbext driver lifecycle fix.
     """
 
     def __init__(self, dut):

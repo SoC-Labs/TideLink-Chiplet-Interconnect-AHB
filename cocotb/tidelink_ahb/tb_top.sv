@@ -59,6 +59,12 @@ module tb_top #(
     wire ahbc_hreadyout;
     assign ahbc_hready = ahbc_hreadyout;
 
+    // Tie off PTP register pass-through (no PTP in this testbench)
+    wire                    ptp_reg_write;
+    wire              [2:0] ptp_reg_addr;
+    wire [SYS_DATA_W-1:0]  ptp_reg_wdata;
+    wire                    ptp_reg_region;
+
     tidelink_fifo_ahb #(
         .SYS_ADDR_W (SYS_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W),
@@ -106,7 +112,14 @@ module tb_top #(
         // Interrupts
         .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
-        .packet_committed_irq(packet_committed_irq)
+        .packet_committed_irq(packet_committed_irq),
+
+        // PTP register pass-through (tied off — no PTP in this testbench)
+        .ptp_reg_write       (ptp_reg_write),
+        .ptp_reg_addr        (ptp_reg_addr),
+        .ptp_reg_wdata       (ptp_reg_wdata),
+        .ptp_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        .ptp_reg_region      (ptp_reg_region)
     );
 
     // Waveform dump

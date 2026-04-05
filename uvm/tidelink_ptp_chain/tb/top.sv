@@ -651,6 +651,67 @@ module test_top;
     force u_phc_c.ns_incr     = 8'd10;
   end
 
+  // ---------------------------------------------------------------
+  // PTP Debug Probes — trace the full short packet path
+  // ---------------------------------------------------------------
+  // Monitor PHC time to verify it's counting
+  always @(posedge clk) begin
+    if ($time % 10_000_000 == 0 && $time > 0)  // Every 10us
+      $display("[%0t] PHC_A: sec=%0d ns=%0d | PHC_B: sec=%0d ns=%0d", $time,
+        u_phc_a.seconds, u_phc_a.nanoseconds,
+        u_phc_b.seconds, u_phc_b.nanoseconds);
+  end
+
+  // Monitor HW sync FSM state on Chiplet A
+  always @(posedge clk) begin
+    if (u_chiplet_a.u_ptp.hw_sync_state_r !== u_chiplet_a.u_ptp.hw_sync_state_next)
+      $display("[%0t] A HW_SYNC FSM: %0d -> %0d (en=%b gate=%b)", $time,
+        u_chiplet_a.u_ptp.hw_sync_state_r, u_chiplet_a.u_ptp.hw_sync_state_next,
+        u_chiplet_a.u_ptp.hw_sync_en_r, u_chiplet_a.u_ptp.hw_sync_gate);
+  end
+
+  // Monitor PTP short packet TX on Chiplet A
+  always @(posedge clk) begin
+    if (u_chiplet_a.ptp_sp_tx_valid && u_chiplet_a.ptp_sp_tx_ready)
+      $display("[%0t] A PTP TX: data_id=0x%02h payload=0x%04h", $time,
+        u_chiplet_a.ptp_sp_tx_data_id, u_chiplet_a.ptp_sp_tx_payload);
+  end
+
+  // Monitor PTP short packet RX on Chiplet B1
+  always @(posedge clk) begin
+    if (u_chiplet_b_link1.ptp_sp_rx_valid)
+      $display("[%0t] B1 PTP RX: data_id=0x%02h payload=0x%04h (accept=%b)", $time,
+        u_chiplet_b_link1.ptp_sp_rx_data_id, u_chiplet_b_link1.ptp_sp_rx_payload,
+        u_chiplet_b_link1.ptp_sp_rx_accept);
+  end
+
+  // Monitor servo events on B1
+  always @(posedge clk) begin
+    if (u_chiplet_b_link1.sync_rx_done)
+      $display("[%0t] B1 SERVO: sync_rx_done", $time);
+    if (u_chiplet_b_link1.dreq_tx_done)
+      $display("[%0t] B1 SERVO: dreq_tx_done", $time);
+    if (u_chiplet_b_link1.u_ptp.phc_hw_capture)
+      $display("[%0t] B1 PHC hw_capture pulse", $time);
+  end
+
+  // Monitor PHC hw_capture on A
+  always @(posedge clk) begin
+    if (a_dut_hw_capture)
+      $display("[%0t] A PHC hw_capture pulse", $time);
+  end
+
+  // Monitor Wlink link status (tx_link_idle on A)
+  initial begin
+    @(posedge rst_n);
+    forever begin
+      @(posedge u_chiplet_a.tx_router_idle);
+      $display("[%0t] A tx_router_idle ASSERTED", $time);
+      @(negedge u_chiplet_a.tx_router_idle);
+      $display("[%0t] A tx_router_idle DEASSERTED", $time);
+    end
+  end
+
   // Connect PHC free-running time outputs to tidelink_top inputs.
   // The PHC module doesn't expose nanoseconds/seconds as ports, so we
   // use hierarchical references to the internal clock core signals.

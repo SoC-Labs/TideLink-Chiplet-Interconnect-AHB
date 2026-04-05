@@ -1,10 +1,16 @@
 // Cocotb testbench for paired TideLink subsystem stress testing
 //
 // Instantiates two complete TideLink subsystems (A and B), each consisting of:
-//   - tidelink_fc_adapter (FC packet encode/decode)
-//   - tidelink_fifo_ahb   (FIFO + AHB-to-APB bridge + returner)
-//   - FIFO port mux       (FC adapter RX vs CPU read port)
-//   - Config port mux     (FC adapter RX sideband vs CPU config port)
+//   - tidelink_fc_adapter  (FC packet encode/decode)
+//   - tidelink_fifo        (FIFO + APB regs + returner)
+//   - cmsdk_ahb_to_apb     (CPU AHB config path -> APB bridge)
+//   - APB 2:1 mux          (FC adapter APB config vs CPU APB config)
+//
+// FC adapter RX paths (new interface):
+//   - FIFO writes: direct-write interface (fc_rx_fifo_valid/addr/wdata)
+//                  -> tidelink_fifo fc_wr_* ports (no AHB mux needed)
+//   - Config writes: APB master (fc_rx_cfg_p*)
+//                    -> APB mux with CPU bridge output -> tidelink_fifo apbs_*
 //
 // FC crossover wiring:
 //   A's a2l (TX output) -> B's l2a (RX input)
@@ -140,6 +146,8 @@ module tb_top #(
     // =====================================================================
     // Side A -- Internal wiring
     // =====================================================================
+
+    // Returner AHB master (tidelink_fifo -> fc_adapter)
     wire [SYS_ADDR_W-1:0]  a_rtn_haddr;
     wire [SYS_DATA_W-1:0]  a_rtn_hwdata;
     wire              [1:0] a_rtn_htrans;
@@ -149,109 +157,73 @@ module tb_top #(
     wire                    a_rtn_hresp;
     wire [SYS_DATA_W-1:0]  a_rtn_hrdata;
 
-    wire [RAM_ADDR_W-1:0]  a_fc_rx_fifo_haddr;
-    wire [SYS_DATA_W-1:0]  a_fc_rx_fifo_hwdata;
-    wire              [1:0] a_fc_rx_fifo_htrans;
-    wire              [2:0] a_fc_rx_fifo_hsize;
-    wire                    a_fc_rx_fifo_hwrite;
-    wire                    a_fc_rx_fifo_hready;
-    wire                    a_fc_rx_fifo_hresp;
-    wire [SYS_DATA_W-1:0]  a_fc_rx_fifo_hrdata;
+    // FC adapter RX direct write (fc_adapter -> tidelink_fifo fc_wr_*)
+    wire                    a_fc_rx_fifo_valid;
+    wire                    a_fc_rx_fifo_write;
+    wire [RAM_ADDR_W-1:0]  a_fc_rx_fifo_addr;
+    wire [SYS_DATA_W-1:0]  a_fc_rx_fifo_wdata;
+    wire                    a_fc_rx_fifo_ready;
 
-    wire [APB_ADDR_W-1:0]  a_fc_rx_cfg_haddr;
-    wire [SYS_DATA_W-1:0]  a_fc_rx_cfg_hwdata;
-    wire              [1:0] a_fc_rx_cfg_htrans;
-    wire              [2:0] a_fc_rx_cfg_hsize;
-    wire                    a_fc_rx_cfg_hwrite;
-    wire                    a_fc_rx_cfg_hready;
-    wire                    a_fc_rx_cfg_hresp;
-    wire [SYS_DATA_W-1:0]  a_fc_rx_cfg_hrdata;
+    // FC adapter RX config APB (fc_adapter -> APB mux)
+    wire [APB_ADDR_W-1:0]  a_fc_cfg_paddr;
+    wire [SYS_DATA_W-1:0]  a_fc_cfg_pwdata;
+    wire                    a_fc_cfg_psel;
+    wire                    a_fc_cfg_penable;
+    wire                    a_fc_cfg_pwrite;
+    wire [SYS_DATA_W-1:0]  a_fc_cfg_prdata;
+    wire                    a_fc_cfg_pready;
 
-    // Side A FIFO port mux
-    wire                    a_fifo_mux_hsel;
-    wire [RAM_ADDR_W-1:0]  a_fifo_mux_haddr;
-    wire              [1:0] a_fifo_mux_htrans;
-    wire              [2:0] a_fifo_mux_hsize;
-    wire                    a_fifo_mux_hwrite;
-    wire [SYS_DATA_W-1:0]  a_fifo_mux_hwdata;
-    wire                    a_fifo_mux_hready;
-    wire [SYS_DATA_W-1:0]  a_fifo_mux_hrdata;
-    wire                    a_fifo_mux_hresp;
-    wire                    a_fifo_mux_hreadyout;
+    // CPU AHB-to-APB bridge output (bridge -> APB mux)
+    wire [APB_ADDR_W-1:0]  a_cpu_apb_paddr;
+    wire                    a_cpu_apb_psel;
+    wire                    a_cpu_apb_penable;
+    wire                    a_cpu_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  a_cpu_apb_pwdata;
+    wire [SYS_DATA_W-1:0]  a_cpu_apb_prdata;
+    wire                    a_cpu_apb_pready;
+    wire                    a_cpu_apb_pslverr;
 
-    // FC RX FIFO active: high from addr phase through data phase completion.
-    // Tracks the FC adapter's full AHB transaction to prevent mux switching
-    // mid-transaction.
-    wire a_fc_rx_fifo_addr_phase = a_fc_rx_fifo_htrans[1];
-    reg  a_fc_rx_fifo_data_phase;
-    always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            a_fc_rx_fifo_data_phase <= 1'b0;
-        else if (a_fc_rx_fifo_addr_phase && a_fifo_mux_hreadyout)
-            a_fc_rx_fifo_data_phase <= 1'b1;
-        else if (a_fc_rx_fifo_data_phase && a_fifo_mux_hreadyout)
-            a_fc_rx_fifo_data_phase <= 1'b0;
-    end
-    wire a_fc_rx_fifo_active = a_fc_rx_fifo_addr_phase | a_fc_rx_fifo_data_phase;
+    // APB mux output (-> tidelink_fifo apbs_*)
+    wire [APB_ADDR_W-1:0]  a_apb_mux_paddr;
+    wire                    a_apb_mux_psel;
+    wire                    a_apb_mux_penable;
+    wire                    a_apb_mux_pwrite;
+    wire [SYS_DATA_W-1:0]  a_apb_mux_pwdata;
+    wire [SYS_DATA_W-1:0]  a_apb_mux_prdata;
+    wire                    a_apb_mux_pready;
+    wire                    a_apb_mux_pslverr;
 
-    assign a_fifo_mux_hsel   = a_fc_rx_fifo_active ? 1'b1                 : a_ahb_fifo_hsel;
-    assign a_fifo_mux_haddr  = a_fc_rx_fifo_active ? a_fc_rx_fifo_haddr   : a_ahb_fifo_haddr;
-    assign a_fifo_mux_htrans = a_fc_rx_fifo_active ? a_fc_rx_fifo_htrans  : a_ahb_fifo_htrans;
-    assign a_fifo_mux_hsize  = a_fc_rx_fifo_active ? a_fc_rx_fifo_hsize   : a_ahb_fifo_hsize;
-    assign a_fifo_mux_hwrite = a_fc_rx_fifo_active ? a_fc_rx_fifo_hwrite  : a_ahb_fifo_hwrite;
-    assign a_fifo_mux_hwdata = a_fc_rx_fifo_active ? a_fc_rx_fifo_hwdata  : a_ahb_fifo_hwdata;
-    assign a_fifo_mux_hready = a_fifo_mux_hreadyout;
+    // -----------------------------------------------------------------
+    // Side A: APB 2:1 mux (FC adapter has priority over CPU bridge)
+    // -----------------------------------------------------------------
+    wire a_fc_cfg_active = a_fc_cfg_psel;
 
-    assign a_fc_rx_fifo_hready    = a_fc_rx_fifo_active ? a_fifo_mux_hreadyout : 1'b1;
-    assign a_fc_rx_fifo_hresp     = a_fifo_mux_hresp;
-    assign a_fc_rx_fifo_hrdata    = a_fifo_mux_hrdata;
-    assign a_ahb_fifo_hready      = a_fc_rx_fifo_active ? 1'b0 : a_fifo_mux_hreadyout;
-    assign a_ahb_fifo_hresp       = a_fifo_mux_hresp;
-    assign a_ahb_fifo_hrdata      = a_fifo_mux_hrdata;
+    assign a_apb_mux_paddr   = a_fc_cfg_active ? a_fc_cfg_paddr   : a_cpu_apb_paddr;
+    assign a_apb_mux_psel    = a_fc_cfg_active ? a_fc_cfg_psel    : a_cpu_apb_psel;
+    assign a_apb_mux_penable = a_fc_cfg_active ? a_fc_cfg_penable : a_cpu_apb_penable;
+    assign a_apb_mux_pwrite  = a_fc_cfg_active ? a_fc_cfg_pwrite  : a_cpu_apb_pwrite;
+    assign a_apb_mux_pwdata  = a_fc_cfg_active ? a_fc_cfg_pwdata  : a_cpu_apb_pwdata;
 
-    // Side A Config port mux
-    wire                    a_cfg_mux_hsel;
-    wire [APB_ADDR_W-1:0]  a_cfg_mux_haddr;
-    wire              [1:0] a_cfg_mux_htrans;
-    wire              [2:0] a_cfg_mux_hsize;
-    wire                    a_cfg_mux_hwrite;
-    wire [SYS_DATA_W-1:0]  a_cfg_mux_hwdata;
-    wire                    a_cfg_mux_hready;
-    wire [SYS_DATA_W-1:0]  a_cfg_mux_hrdata;
-    wire                    a_cfg_mux_hresp;
-    wire                    a_cfg_mux_hreadyout;
+    // Route APB responses back to both sources
+    assign a_fc_cfg_prdata  = a_apb_mux_prdata;
+    assign a_fc_cfg_pready  = a_apb_mux_pready;
 
-    // FC RX config active: high from addr phase through data phase completion
-    wire a_fc_rx_cfg_addr_phase = a_fc_rx_cfg_htrans[1];
-    reg  a_fc_rx_cfg_data_phase;
-    always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            a_fc_rx_cfg_data_phase <= 1'b0;
-        else if (a_fc_rx_cfg_addr_phase && a_cfg_mux_hreadyout)
-            a_fc_rx_cfg_data_phase <= 1'b1;
-        else if (a_fc_rx_cfg_data_phase && a_cfg_mux_hreadyout)
-            a_fc_rx_cfg_data_phase <= 1'b0;
-    end
-    wire a_fc_rx_cfg_active = a_fc_rx_cfg_addr_phase | a_fc_rx_cfg_data_phase;
+    assign a_cpu_apb_prdata  = a_fc_cfg_active ? '0   : a_apb_mux_prdata;
+    assign a_cpu_apb_pready  = a_fc_cfg_active ? 1'b0 : a_apb_mux_pready;
+    assign a_cpu_apb_pslverr = a_fc_cfg_active ? 1'b0 : a_apb_mux_pslverr;
 
-    assign a_cfg_mux_hsel   = a_fc_rx_cfg_active ? 1'b1                : a_ahb_cfg_hsel;
-    assign a_cfg_mux_haddr  = a_fc_rx_cfg_active ? a_fc_rx_cfg_haddr   : a_ahb_cfg_haddr;
-    assign a_cfg_mux_htrans = a_fc_rx_cfg_active ? a_fc_rx_cfg_htrans  : a_ahb_cfg_htrans;
-    assign a_cfg_mux_hsize  = a_fc_rx_cfg_active ? a_fc_rx_cfg_hsize   : a_ahb_cfg_hsize;
-    assign a_cfg_mux_hwrite = a_fc_rx_cfg_active ? a_fc_rx_cfg_hwrite  : a_ahb_cfg_hwrite;
-    assign a_cfg_mux_hwdata = a_fc_rx_cfg_active ? a_fc_rx_cfg_hwdata  : a_ahb_cfg_hwdata;
-    assign a_cfg_mux_hready = a_cfg_mux_hreadyout;
-
-    assign a_fc_rx_cfg_hready    = a_fc_rx_cfg_active ? a_cfg_mux_hreadyout : 1'b1;
-    assign a_fc_rx_cfg_hresp     = a_cfg_mux_hresp;
-    assign a_fc_rx_cfg_hrdata    = a_cfg_mux_hrdata;
-    assign a_ahb_cfg_hready      = a_fc_rx_cfg_active ? 1'b0 : a_cfg_mux_hreadyout;
-    assign a_ahb_cfg_hresp       = a_cfg_mux_hresp;
-    assign a_ahb_cfg_hrdata      = a_cfg_mux_hrdata;
+    // -----------------------------------------------------------------
+    // Side A: FIFO read port -- direct connection (no mux needed)
+    // CPU reads go via AHB slave; FC writes go via fc_wr_* direct-write.
+    // -----------------------------------------------------------------
+    wire a_fifo_hreadyout;
+    assign a_ahb_fifo_hready = a_fifo_hreadyout;
 
     // =====================================================================
     // Side B -- Internal wiring
     // =====================================================================
+
+    // Returner AHB master (tidelink_fifo -> fc_adapter)
     wire [SYS_ADDR_W-1:0]  b_rtn_haddr;
     wire [SYS_DATA_W-1:0]  b_rtn_hwdata;
     wire              [1:0] b_rtn_htrans;
@@ -261,108 +233,109 @@ module tb_top #(
     wire                    b_rtn_hresp;
     wire [SYS_DATA_W-1:0]  b_rtn_hrdata;
 
-    wire [RAM_ADDR_W-1:0]  b_fc_rx_fifo_haddr;
-    wire [SYS_DATA_W-1:0]  b_fc_rx_fifo_hwdata;
-    wire              [1:0] b_fc_rx_fifo_htrans;
-    wire              [2:0] b_fc_rx_fifo_hsize;
-    wire                    b_fc_rx_fifo_hwrite;
-    wire                    b_fc_rx_fifo_hready;
-    wire                    b_fc_rx_fifo_hresp;
-    wire [SYS_DATA_W-1:0]  b_fc_rx_fifo_hrdata;
+    // FC adapter RX direct write (fc_adapter -> tidelink_fifo fc_wr_*)
+    wire                    b_fc_rx_fifo_valid;
+    wire                    b_fc_rx_fifo_write;
+    wire [RAM_ADDR_W-1:0]  b_fc_rx_fifo_addr;
+    wire [SYS_DATA_W-1:0]  b_fc_rx_fifo_wdata;
+    wire                    b_fc_rx_fifo_ready;
 
-    wire [APB_ADDR_W-1:0]  b_fc_rx_cfg_haddr;
-    wire [SYS_DATA_W-1:0]  b_fc_rx_cfg_hwdata;
-    wire              [1:0] b_fc_rx_cfg_htrans;
-    wire              [2:0] b_fc_rx_cfg_hsize;
-    wire                    b_fc_rx_cfg_hwrite;
-    wire                    b_fc_rx_cfg_hready;
-    wire                    b_fc_rx_cfg_hresp;
-    wire [SYS_DATA_W-1:0]  b_fc_rx_cfg_hrdata;
+    // FC adapter RX config APB (fc_adapter -> APB mux)
+    wire [APB_ADDR_W-1:0]  b_fc_cfg_paddr;
+    wire [SYS_DATA_W-1:0]  b_fc_cfg_pwdata;
+    wire                    b_fc_cfg_psel;
+    wire                    b_fc_cfg_penable;
+    wire                    b_fc_cfg_pwrite;
+    wire [SYS_DATA_W-1:0]  b_fc_cfg_prdata;
+    wire                    b_fc_cfg_pready;
 
-    // Side B FIFO port mux
-    wire                    b_fifo_mux_hsel;
-    wire [RAM_ADDR_W-1:0]  b_fifo_mux_haddr;
-    wire              [1:0] b_fifo_mux_htrans;
-    wire              [2:0] b_fifo_mux_hsize;
-    wire                    b_fifo_mux_hwrite;
-    wire [SYS_DATA_W-1:0]  b_fifo_mux_hwdata;
-    wire                    b_fifo_mux_hready;
-    wire [SYS_DATA_W-1:0]  b_fifo_mux_hrdata;
-    wire                    b_fifo_mux_hresp;
-    wire                    b_fifo_mux_hreadyout;
+    // CPU AHB-to-APB bridge output (bridge -> APB mux)
+    wire [APB_ADDR_W-1:0]  b_cpu_apb_paddr;
+    wire                    b_cpu_apb_psel;
+    wire                    b_cpu_apb_penable;
+    wire                    b_cpu_apb_pwrite;
+    wire [SYS_DATA_W-1:0]  b_cpu_apb_pwdata;
+    wire [SYS_DATA_W-1:0]  b_cpu_apb_prdata;
+    wire                    b_cpu_apb_pready;
+    wire                    b_cpu_apb_pslverr;
 
-    // FC RX FIFO active: high from addr phase through data phase completion
-    wire b_fc_rx_fifo_addr_phase = b_fc_rx_fifo_htrans[1];
-    reg  b_fc_rx_fifo_data_phase;
-    always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            b_fc_rx_fifo_data_phase <= 1'b0;
-        else if (b_fc_rx_fifo_addr_phase && b_fifo_mux_hreadyout)
-            b_fc_rx_fifo_data_phase <= 1'b1;
-        else if (b_fc_rx_fifo_data_phase && b_fifo_mux_hreadyout)
-            b_fc_rx_fifo_data_phase <= 1'b0;
-    end
-    wire b_fc_rx_fifo_active = b_fc_rx_fifo_addr_phase | b_fc_rx_fifo_data_phase;
+    // APB mux output (-> tidelink_fifo apbs_*)
+    wire [APB_ADDR_W-1:0]  b_apb_mux_paddr;
+    wire                    b_apb_mux_psel;
+    wire                    b_apb_mux_penable;
+    wire                    b_apb_mux_pwrite;
+    wire [SYS_DATA_W-1:0]  b_apb_mux_pwdata;
+    wire [SYS_DATA_W-1:0]  b_apb_mux_prdata;
+    wire                    b_apb_mux_pready;
+    wire                    b_apb_mux_pslverr;
 
-    assign b_fifo_mux_hsel   = b_fc_rx_fifo_active ? 1'b1                 : b_ahb_fifo_hsel;
-    assign b_fifo_mux_haddr  = b_fc_rx_fifo_active ? b_fc_rx_fifo_haddr   : b_ahb_fifo_haddr;
-    assign b_fifo_mux_htrans = b_fc_rx_fifo_active ? b_fc_rx_fifo_htrans  : b_ahb_fifo_htrans;
-    assign b_fifo_mux_hsize  = b_fc_rx_fifo_active ? b_fc_rx_fifo_hsize   : b_ahb_fifo_hsize;
-    assign b_fifo_mux_hwrite = b_fc_rx_fifo_active ? b_fc_rx_fifo_hwrite  : b_ahb_fifo_hwrite;
-    assign b_fifo_mux_hwdata = b_fc_rx_fifo_active ? b_fc_rx_fifo_hwdata  : b_ahb_fifo_hwdata;
-    assign b_fifo_mux_hready = b_fifo_mux_hreadyout;
+    // -----------------------------------------------------------------
+    // Side B: APB 2:1 mux (FC adapter has priority over CPU bridge)
+    // -----------------------------------------------------------------
+    wire b_fc_cfg_active = b_fc_cfg_psel;
 
-    assign b_fc_rx_fifo_hready    = b_fc_rx_fifo_active ? b_fifo_mux_hreadyout : 1'b1;
-    assign b_fc_rx_fifo_hresp     = b_fifo_mux_hresp;
-    assign b_fc_rx_fifo_hrdata    = b_fifo_mux_hrdata;
-    assign b_ahb_fifo_hready      = b_fc_rx_fifo_active ? 1'b0 : b_fifo_mux_hreadyout;
-    assign b_ahb_fifo_hresp       = b_fifo_mux_hresp;
-    assign b_ahb_fifo_hrdata      = b_fifo_mux_hrdata;
+    assign b_apb_mux_paddr   = b_fc_cfg_active ? b_fc_cfg_paddr   : b_cpu_apb_paddr;
+    assign b_apb_mux_psel    = b_fc_cfg_active ? b_fc_cfg_psel    : b_cpu_apb_psel;
+    assign b_apb_mux_penable = b_fc_cfg_active ? b_fc_cfg_penable : b_cpu_apb_penable;
+    assign b_apb_mux_pwrite  = b_fc_cfg_active ? b_fc_cfg_pwrite  : b_cpu_apb_pwrite;
+    assign b_apb_mux_pwdata  = b_fc_cfg_active ? b_fc_cfg_pwdata  : b_cpu_apb_pwdata;
 
-    // Side B Config port mux
-    wire                    b_cfg_mux_hsel;
-    wire [APB_ADDR_W-1:0]  b_cfg_mux_haddr;
-    wire              [1:0] b_cfg_mux_htrans;
-    wire              [2:0] b_cfg_mux_hsize;
-    wire                    b_cfg_mux_hwrite;
-    wire [SYS_DATA_W-1:0]  b_cfg_mux_hwdata;
-    wire                    b_cfg_mux_hready;
-    wire [SYS_DATA_W-1:0]  b_cfg_mux_hrdata;
-    wire                    b_cfg_mux_hresp;
-    wire                    b_cfg_mux_hreadyout;
+    // Route APB responses back to both sources
+    assign b_fc_cfg_prdata  = b_apb_mux_prdata;
+    assign b_fc_cfg_pready  = b_apb_mux_pready;
 
-    // FC RX config active: high from addr phase through data phase completion
-    wire b_fc_rx_cfg_addr_phase = b_fc_rx_cfg_htrans[1];
-    reg  b_fc_rx_cfg_data_phase;
-    always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
-            b_fc_rx_cfg_data_phase <= 1'b0;
-        else if (b_fc_rx_cfg_addr_phase && b_cfg_mux_hreadyout)
-            b_fc_rx_cfg_data_phase <= 1'b1;
-        else if (b_fc_rx_cfg_data_phase && b_cfg_mux_hreadyout)
-            b_fc_rx_cfg_data_phase <= 1'b0;
-    end
-    wire b_fc_rx_cfg_active = b_fc_rx_cfg_addr_phase | b_fc_rx_cfg_data_phase;
+    assign b_cpu_apb_prdata  = b_fc_cfg_active ? '0   : b_apb_mux_prdata;
+    assign b_cpu_apb_pready  = b_fc_cfg_active ? 1'b0 : b_apb_mux_pready;
+    assign b_cpu_apb_pslverr = b_fc_cfg_active ? 1'b0 : b_apb_mux_pslverr;
 
-    assign b_cfg_mux_hsel   = b_fc_rx_cfg_active ? 1'b1                : b_ahb_cfg_hsel;
-    assign b_cfg_mux_haddr  = b_fc_rx_cfg_active ? b_fc_rx_cfg_haddr   : b_ahb_cfg_haddr;
-    assign b_cfg_mux_htrans = b_fc_rx_cfg_active ? b_fc_rx_cfg_htrans  : b_ahb_cfg_htrans;
-    assign b_cfg_mux_hsize  = b_fc_rx_cfg_active ? b_fc_rx_cfg_hsize   : b_ahb_cfg_hsize;
-    assign b_cfg_mux_hwrite = b_fc_rx_cfg_active ? b_fc_rx_cfg_hwrite  : b_ahb_cfg_hwrite;
-    assign b_cfg_mux_hwdata = b_fc_rx_cfg_active ? b_fc_rx_cfg_hwdata  : b_ahb_cfg_hwdata;
-    assign b_cfg_mux_hready = b_cfg_mux_hreadyout;
-
-    assign b_fc_rx_cfg_hready    = b_fc_rx_cfg_active ? b_cfg_mux_hreadyout : 1'b1;
-    assign b_fc_rx_cfg_hresp     = b_cfg_mux_hresp;
-    assign b_fc_rx_cfg_hrdata    = b_cfg_mux_hrdata;
-    assign b_ahb_cfg_hready      = b_fc_rx_cfg_active ? 1'b0 : b_cfg_mux_hreadyout;
-    assign b_ahb_cfg_hresp       = b_cfg_mux_hresp;
-    assign b_ahb_cfg_hrdata      = b_cfg_mux_hrdata;
+    // -----------------------------------------------------------------
+    // Side B: FIFO read port -- direct connection (no mux needed)
+    // -----------------------------------------------------------------
+    wire b_fifo_hreadyout;
+    assign b_ahb_fifo_hready = b_fifo_hreadyout;
 
     // =====================================================================
-    // Side A -- FIFO instance
+    // Side A -- CPU AHB-to-APB Bridge (config path)
     // =====================================================================
-    tidelink_fifo_ahb #(
+    cmsdk_ahb_to_apb #(
+        .ADDRWIDTH      (APB_ADDR_W),
+        .REGISTER_RDATA (1),
+        .REGISTER_WDATA (0)
+    ) u_ahb_to_apb_a (
+        .HCLK      (hclk),
+        .HRESETn   (hresetn),
+        .PCLKEN    (1'b1),
+        .HSEL      (a_ahb_cfg_hsel),
+        .HADDR     (a_ahb_cfg_haddr),
+        .HTRANS    (a_ahb_cfg_htrans),
+        .HSIZE     (a_ahb_cfg_hsize),
+        .HPROT     (4'b0011),
+        .HWRITE    (a_ahb_cfg_hwrite),
+        .HREADY    (a_ahb_cfg_hready),
+        .HWDATA    (a_ahb_cfg_hwdata),
+        .HREADYOUT (a_ahb_cfg_hready),
+        .HRDATA    (a_ahb_cfg_hrdata),
+        .HRESP     (a_ahb_cfg_hresp),
+        .PADDR     (a_cpu_apb_paddr),
+        .PSEL      (a_cpu_apb_psel),
+        .PENABLE   (a_cpu_apb_penable),
+        .PWRITE    (a_cpu_apb_pwrite),
+        .PSTRB     (),
+        .PPROT     (),
+        .PWDATA    (a_cpu_apb_pwdata),
+        .APBACTIVE (),
+        .PRDATA    (a_cpu_apb_prdata),
+        .PREADY    (a_cpu_apb_pready),
+        .PSLVERR   (a_cpu_apb_pslverr)
+    );
+
+    // Note: a_ahb_cfg_hready is an output port driven by the bridge's HREADYOUT,
+    // and fed back to the bridge's HREADY input (single-master, no other AHB agents).
+
+    // =====================================================================
+    // Side A -- FIFO instance (tidelink_fifo, not tidelink_fifo_ahb)
+    // =====================================================================
+    tidelink_fifo #(
         .SYS_ADDR_W        (SYS_ADDR_W),
         .SYS_DATA_W        (SYS_DATA_W),
         .RAM_ADDR_W        (RAM_ADDR_W),
@@ -372,26 +345,30 @@ module tb_top #(
     ) u_fifo_a (
         .hclk              (hclk),
         .hresetn           (hresetn),
-        .ahbs_hsel         (a_fifo_mux_hsel),
-        .ahbs_hready       (a_fifo_mux_hready),
-        .ahbs_htrans       (a_fifo_mux_htrans),
-        .ahbs_hsize        (a_fifo_mux_hsize),
-        .ahbs_hwrite       (a_fifo_mux_hwrite),
-        .ahbs_haddr        (a_fifo_mux_haddr),
-        .ahbs_hwdata       (a_fifo_mux_hwdata),
-        .ahbs_hreadyout    (a_fifo_mux_hreadyout),
-        .ahbs_hresp        (a_fifo_mux_hresp),
-        .ahbs_hrdata       (a_fifo_mux_hrdata),
-        .ahbc_hsel         (a_cfg_mux_hsel),
-        .ahbc_hready       (a_cfg_mux_hready),
-        .ahbc_htrans       (a_cfg_mux_htrans),
-        .ahbc_hsize        (a_cfg_mux_hsize),
-        .ahbc_hwrite       (a_cfg_mux_hwrite),
-        .ahbc_haddr        (a_cfg_mux_haddr),
-        .ahbc_hwdata       (a_cfg_mux_hwdata),
-        .ahbc_hreadyout    (a_cfg_mux_hreadyout),
-        .ahbc_hresp        (a_cfg_mux_hresp),
-        .ahbc_hrdata       (a_cfg_mux_hrdata),
+
+        // AHB Slave -- FIFO data window (CPU reads, direct connection)
+        .ahbs_hsel         (a_ahb_fifo_hsel),
+        .ahbs_hready       (a_fifo_hreadyout),
+        .ahbs_htrans       (a_ahb_fifo_htrans),
+        .ahbs_hsize        (a_ahb_fifo_hsize),
+        .ahbs_hwrite       (a_ahb_fifo_hwrite),
+        .ahbs_haddr        (a_ahb_fifo_haddr),
+        .ahbs_hwdata       (a_ahb_fifo_hwdata),
+        .ahbs_hreadyout    (a_fifo_hreadyout),
+        .ahbs_hresp        (a_ahb_fifo_hresp),
+        .ahbs_hrdata       (a_ahb_fifo_hrdata),
+
+        // APB Slave -- Config registers (via APB mux)
+        .apbs_psel         (a_apb_mux_psel),
+        .apbs_penable      (a_apb_mux_penable),
+        .apbs_pwrite       (a_apb_mux_pwrite),
+        .apbs_paddr        (a_apb_mux_paddr),
+        .apbs_pwdata       (a_apb_mux_pwdata),
+        .apbs_prdata       (a_apb_mux_prdata),
+        .apbs_pready       (a_apb_mux_pready),
+        .apbs_pslverr      (a_apb_mux_pslverr),
+
+        // AHB Master -- Returner (routed to FC adapter)
         .ahbm_haddr        (a_rtn_haddr),
         .ahbm_hwdata       (a_rtn_hwdata),
         .ahbm_htrans       (a_rtn_htrans),
@@ -400,9 +377,36 @@ module tb_top #(
         .ahbm_hready       (a_rtn_hready),
         .ahbm_hresp        (a_rtn_hresp),
         .ahbm_hrdata       (a_rtn_hrdata),
+
+        // Interrupts
         .released_credits_irq (a_released_credits_irq),
         .doorbell_irq         (a_doorbell_irq),
-        .packet_committed_irq (a_packet_committed_irq)
+        .packet_committed_irq (a_packet_committed_irq),
+
+        // PTP register pass-through (tied off -- no PTP in this testbench)
+        .ptp_reg_write       (),
+        .ptp_reg_addr        (),
+        .ptp_reg_wdata       (),
+        .ptp_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        .ptp_reg_region      (),
+
+        // Servo register pass-through (tied off)
+        .servo_reg_write     (),
+        .servo_reg_addr      (),
+        .servo_reg_wdata     (),
+        .servo_reg_rdata     ({SYS_DATA_W{1'b0}}),
+
+        // Timestamp mailbox pass-through (tied off)
+        .mbox_reg_write      (),
+        .mbox_reg_addr       (),
+        .mbox_reg_wdata      (),
+
+        // FC direct write (from FC adapter)
+        .fc_wr_valid         (a_fc_rx_fifo_valid),
+        .fc_wr_write         (a_fc_rx_fifo_write),
+        .fc_wr_addr          (a_fc_rx_fifo_addr),
+        .fc_wr_wdata         (a_fc_rx_fifo_wdata),
+        .fc_wr_ready         (a_fc_rx_fifo_ready)
     );
 
     // =====================================================================
@@ -420,6 +424,8 @@ module tb_top #(
     ) u_fc_a (
         .hclk              (hclk),
         .hresetn           (hresetn),
+
+        // AHB Slave -- TX aperture
         .ahb_tx_hsel       (a_ahb_tx_hsel),
         .ahb_tx_haddr      (a_ahb_tx_haddr),
         .ahb_tx_htrans     (a_ahb_tx_htrans),
@@ -430,6 +436,8 @@ module tb_top #(
         .ahb_tx_hrdata     (a_ahb_tx_hrdata),
         .ahb_tx_hresp      (a_ahb_tx_hresp),
         .ahb_tx_hreadyout  (a_ahb_tx_hreadyout),
+
+        // AHB Slave -- Returner interception
         .rtn_haddr         (a_rtn_haddr),
         .rtn_hwdata        (a_rtn_hwdata),
         .rtn_htrans        (a_rtn_htrans),
@@ -438,22 +446,29 @@ module tb_top #(
         .rtn_hready        (a_rtn_hready),
         .rtn_hresp         (a_rtn_hresp),
         .rtn_hrdata        (a_rtn_hrdata),
-        .fc_rx_fifo_haddr  (a_fc_rx_fifo_haddr),
-        .fc_rx_fifo_hwdata (a_fc_rx_fifo_hwdata),
-        .fc_rx_fifo_htrans (a_fc_rx_fifo_htrans),
-        .fc_rx_fifo_hsize  (a_fc_rx_fifo_hsize),
-        .fc_rx_fifo_hwrite (a_fc_rx_fifo_hwrite),
-        .fc_rx_fifo_hready (a_fc_rx_fifo_hready),
-        .fc_rx_fifo_hresp  (a_fc_rx_fifo_hresp),
-        .fc_rx_fifo_hrdata (a_fc_rx_fifo_hrdata),
-        .fc_rx_cfg_haddr   (a_fc_rx_cfg_haddr),
-        .fc_rx_cfg_hwdata  (a_fc_rx_cfg_hwdata),
-        .fc_rx_cfg_htrans  (a_fc_rx_cfg_htrans),
-        .fc_rx_cfg_hsize   (a_fc_rx_cfg_hsize),
-        .fc_rx_cfg_hwrite  (a_fc_rx_cfg_hwrite),
-        .fc_rx_cfg_hready  (a_fc_rx_cfg_hready),
-        .fc_rx_cfg_hresp   (a_fc_rx_cfg_hresp),
-        .fc_rx_cfg_hrdata  (a_fc_rx_cfg_hrdata),
+
+        // Direct Write -- RX FIFO path (to tidelink_fifo fc_wr_*)
+        .fc_rx_fifo_valid  (a_fc_rx_fifo_valid),
+        .fc_rx_fifo_write  (a_fc_rx_fifo_write),
+        .fc_rx_fifo_addr   (a_fc_rx_fifo_addr),
+        .fc_rx_fifo_wdata  (a_fc_rx_fifo_wdata),
+        .fc_rx_fifo_ready  (a_fc_rx_fifo_ready),
+
+        // APB Master -- RX Config path (to APB mux)
+        .fc_rx_cfg_paddr   (a_fc_cfg_paddr),
+        .fc_rx_cfg_pwdata  (a_fc_cfg_pwdata),
+        .fc_rx_cfg_psel    (a_fc_cfg_psel),
+        .fc_rx_cfg_penable (a_fc_cfg_penable),
+        .fc_rx_cfg_pwrite  (a_fc_cfg_pwrite),
+        .fc_rx_cfg_prdata  (a_fc_cfg_prdata),
+        .fc_rx_cfg_pready  (a_fc_cfg_pready),
+
+        // Servo FC injection (tied off -- no servo in this testbench)
+        .servo_fc_valid    (1'b0),
+        .servo_fc_data     ({FC_DATA_W{1'b0}}),
+        .servo_fc_ready    (),
+
+        // FC Node interface
         .tl_fc_a2l_valid   (a_fc_a2l_valid),
         .tl_fc_a2l_data    (a_fc_a2l_data),
         .tl_fc_a2l_ready   (a_fc_a2l_ready),
@@ -463,9 +478,47 @@ module tb_top #(
     );
 
     // =====================================================================
-    // Side B -- FIFO instance
+    // Side B -- CPU AHB-to-APB Bridge (config path)
     // =====================================================================
-    tidelink_fifo_ahb #(
+    cmsdk_ahb_to_apb #(
+        .ADDRWIDTH      (APB_ADDR_W),
+        .REGISTER_RDATA (1),
+        .REGISTER_WDATA (0)
+    ) u_ahb_to_apb_b (
+        .HCLK      (hclk),
+        .HRESETn   (hresetn),
+        .PCLKEN    (1'b1),
+        .HSEL      (b_ahb_cfg_hsel),
+        .HADDR     (b_ahb_cfg_haddr),
+        .HTRANS    (b_ahb_cfg_htrans),
+        .HSIZE     (b_ahb_cfg_hsize),
+        .HPROT     (4'b0011),
+        .HWRITE    (b_ahb_cfg_hwrite),
+        .HREADY    (b_ahb_cfg_hready),
+        .HWDATA    (b_ahb_cfg_hwdata),
+        .HREADYOUT (b_ahb_cfg_hready),
+        .HRDATA    (b_ahb_cfg_hrdata),
+        .HRESP     (b_ahb_cfg_hresp),
+        .PADDR     (b_cpu_apb_paddr),
+        .PSEL      (b_cpu_apb_psel),
+        .PENABLE   (b_cpu_apb_penable),
+        .PWRITE    (b_cpu_apb_pwrite),
+        .PSTRB     (),
+        .PPROT     (),
+        .PWDATA    (b_cpu_apb_pwdata),
+        .APBACTIVE (),
+        .PRDATA    (b_cpu_apb_prdata),
+        .PREADY    (b_cpu_apb_pready),
+        .PSLVERR   (b_cpu_apb_pslverr)
+    );
+
+    // Note: b_ahb_cfg_hready is an output port driven by the bridge's HREADYOUT,
+    // and fed back to the bridge's HREADY input (single-master, no other AHB agents).
+
+    // =====================================================================
+    // Side B -- FIFO instance (tidelink_fifo, not tidelink_fifo_ahb)
+    // =====================================================================
+    tidelink_fifo #(
         .SYS_ADDR_W        (SYS_ADDR_W),
         .SYS_DATA_W        (SYS_DATA_W),
         .RAM_ADDR_W        (RAM_ADDR_W),
@@ -475,26 +528,30 @@ module tb_top #(
     ) u_fifo_b (
         .hclk              (hclk),
         .hresetn           (hresetn),
-        .ahbs_hsel         (b_fifo_mux_hsel),
-        .ahbs_hready       (b_fifo_mux_hready),
-        .ahbs_htrans       (b_fifo_mux_htrans),
-        .ahbs_hsize        (b_fifo_mux_hsize),
-        .ahbs_hwrite       (b_fifo_mux_hwrite),
-        .ahbs_haddr        (b_fifo_mux_haddr),
-        .ahbs_hwdata       (b_fifo_mux_hwdata),
-        .ahbs_hreadyout    (b_fifo_mux_hreadyout),
-        .ahbs_hresp        (b_fifo_mux_hresp),
-        .ahbs_hrdata       (b_fifo_mux_hrdata),
-        .ahbc_hsel         (b_cfg_mux_hsel),
-        .ahbc_hready       (b_cfg_mux_hready),
-        .ahbc_htrans       (b_cfg_mux_htrans),
-        .ahbc_hsize        (b_cfg_mux_hsize),
-        .ahbc_hwrite       (b_cfg_mux_hwrite),
-        .ahbc_haddr        (b_cfg_mux_haddr),
-        .ahbc_hwdata       (b_cfg_mux_hwdata),
-        .ahbc_hreadyout    (b_cfg_mux_hreadyout),
-        .ahbc_hresp        (b_cfg_mux_hresp),
-        .ahbc_hrdata       (b_cfg_mux_hrdata),
+
+        // AHB Slave -- FIFO data window (CPU reads, direct connection)
+        .ahbs_hsel         (b_ahb_fifo_hsel),
+        .ahbs_hready       (b_fifo_hreadyout),
+        .ahbs_htrans       (b_ahb_fifo_htrans),
+        .ahbs_hsize        (b_ahb_fifo_hsize),
+        .ahbs_hwrite       (b_ahb_fifo_hwrite),
+        .ahbs_haddr        (b_ahb_fifo_haddr),
+        .ahbs_hwdata       (b_ahb_fifo_hwdata),
+        .ahbs_hreadyout    (b_fifo_hreadyout),
+        .ahbs_hresp        (b_ahb_fifo_hresp),
+        .ahbs_hrdata       (b_ahb_fifo_hrdata),
+
+        // APB Slave -- Config registers (via APB mux)
+        .apbs_psel         (b_apb_mux_psel),
+        .apbs_penable      (b_apb_mux_penable),
+        .apbs_pwrite       (b_apb_mux_pwrite),
+        .apbs_paddr        (b_apb_mux_paddr),
+        .apbs_pwdata       (b_apb_mux_pwdata),
+        .apbs_prdata       (b_apb_mux_prdata),
+        .apbs_pready       (b_apb_mux_pready),
+        .apbs_pslverr      (b_apb_mux_pslverr),
+
+        // AHB Master -- Returner (routed to FC adapter)
         .ahbm_haddr        (b_rtn_haddr),
         .ahbm_hwdata       (b_rtn_hwdata),
         .ahbm_htrans       (b_rtn_htrans),
@@ -503,9 +560,36 @@ module tb_top #(
         .ahbm_hready       (b_rtn_hready),
         .ahbm_hresp        (b_rtn_hresp),
         .ahbm_hrdata       (b_rtn_hrdata),
+
+        // Interrupts
         .released_credits_irq (b_released_credits_irq),
         .doorbell_irq         (b_doorbell_irq),
-        .packet_committed_irq (b_packet_committed_irq)
+        .packet_committed_irq (b_packet_committed_irq),
+
+        // PTP register pass-through (tied off)
+        .ptp_reg_write       (),
+        .ptp_reg_addr        (),
+        .ptp_reg_wdata       (),
+        .ptp_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        .ptp_reg_region      (),
+
+        // Servo register pass-through (tied off)
+        .servo_reg_write     (),
+        .servo_reg_addr      (),
+        .servo_reg_wdata     (),
+        .servo_reg_rdata     ({SYS_DATA_W{1'b0}}),
+
+        // Timestamp mailbox pass-through (tied off)
+        .mbox_reg_write      (),
+        .mbox_reg_addr       (),
+        .mbox_reg_wdata      (),
+
+        // FC direct write (from FC adapter)
+        .fc_wr_valid         (b_fc_rx_fifo_valid),
+        .fc_wr_write         (b_fc_rx_fifo_write),
+        .fc_wr_addr          (b_fc_rx_fifo_addr),
+        .fc_wr_wdata         (b_fc_rx_fifo_wdata),
+        .fc_wr_ready         (b_fc_rx_fifo_ready)
     );
 
     // =====================================================================
@@ -523,6 +607,8 @@ module tb_top #(
     ) u_fc_b (
         .hclk              (hclk),
         .hresetn           (hresetn),
+
+        // AHB Slave -- TX aperture
         .ahb_tx_hsel       (b_ahb_tx_hsel),
         .ahb_tx_haddr      (b_ahb_tx_haddr),
         .ahb_tx_htrans     (b_ahb_tx_htrans),
@@ -533,6 +619,8 @@ module tb_top #(
         .ahb_tx_hrdata     (b_ahb_tx_hrdata),
         .ahb_tx_hresp      (b_ahb_tx_hresp),
         .ahb_tx_hreadyout  (b_ahb_tx_hreadyout),
+
+        // AHB Slave -- Returner interception
         .rtn_haddr         (b_rtn_haddr),
         .rtn_hwdata        (b_rtn_hwdata),
         .rtn_htrans        (b_rtn_htrans),
@@ -541,22 +629,29 @@ module tb_top #(
         .rtn_hready        (b_rtn_hready),
         .rtn_hresp         (b_rtn_hresp),
         .rtn_hrdata        (b_rtn_hrdata),
-        .fc_rx_fifo_haddr  (b_fc_rx_fifo_haddr),
-        .fc_rx_fifo_hwdata (b_fc_rx_fifo_hwdata),
-        .fc_rx_fifo_htrans (b_fc_rx_fifo_htrans),
-        .fc_rx_fifo_hsize  (b_fc_rx_fifo_hsize),
-        .fc_rx_fifo_hwrite (b_fc_rx_fifo_hwrite),
-        .fc_rx_fifo_hready (b_fc_rx_fifo_hready),
-        .fc_rx_fifo_hresp  (b_fc_rx_fifo_hresp),
-        .fc_rx_fifo_hrdata (b_fc_rx_fifo_hrdata),
-        .fc_rx_cfg_haddr   (b_fc_rx_cfg_haddr),
-        .fc_rx_cfg_hwdata  (b_fc_rx_cfg_hwdata),
-        .fc_rx_cfg_htrans  (b_fc_rx_cfg_htrans),
-        .fc_rx_cfg_hsize   (b_fc_rx_cfg_hsize),
-        .fc_rx_cfg_hwrite  (b_fc_rx_cfg_hwrite),
-        .fc_rx_cfg_hready  (b_fc_rx_cfg_hready),
-        .fc_rx_cfg_hresp   (b_fc_rx_cfg_hresp),
-        .fc_rx_cfg_hrdata  (b_fc_rx_cfg_hrdata),
+
+        // Direct Write -- RX FIFO path (to tidelink_fifo fc_wr_*)
+        .fc_rx_fifo_valid  (b_fc_rx_fifo_valid),
+        .fc_rx_fifo_write  (b_fc_rx_fifo_write),
+        .fc_rx_fifo_addr   (b_fc_rx_fifo_addr),
+        .fc_rx_fifo_wdata  (b_fc_rx_fifo_wdata),
+        .fc_rx_fifo_ready  (b_fc_rx_fifo_ready),
+
+        // APB Master -- RX Config path (to APB mux)
+        .fc_rx_cfg_paddr   (b_fc_cfg_paddr),
+        .fc_rx_cfg_pwdata  (b_fc_cfg_pwdata),
+        .fc_rx_cfg_psel    (b_fc_cfg_psel),
+        .fc_rx_cfg_penable (b_fc_cfg_penable),
+        .fc_rx_cfg_pwrite  (b_fc_cfg_pwrite),
+        .fc_rx_cfg_prdata  (b_fc_cfg_prdata),
+        .fc_rx_cfg_pready  (b_fc_cfg_pready),
+
+        // Servo FC injection (tied off -- no servo in this testbench)
+        .servo_fc_valid    (1'b0),
+        .servo_fc_data     ({FC_DATA_W{1'b0}}),
+        .servo_fc_ready    (),
+
+        // FC Node interface
         .tl_fc_a2l_valid   (b_fc_a2l_valid),
         .tl_fc_a2l_data    (b_fc_a2l_data),
         .tl_fc_a2l_ready   (b_fc_a2l_ready),

@@ -16,10 +16,10 @@
 export TIDELINK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # CMSDK path (Arm Corstone SSE-200 / BP210 package)
-export CMSDK_DIR="${CMSDK_DIR:-${HOME}/Downloads/BP210-BU-00000-r1p1-00rel0/logical}"
+export CMSDK_DIR="${CMSDK_DIR:-${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0}"
 
 # XHB500 source IP (Arm XHB-500 Generic Global Bundle)
-export XHB500_IP_DIR="${XHB500_IP_DIR:-${HOME}/SoCLabs/support_requests/bharti/March-9-2026/aes128_project/arm_ip/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500}"
+export XHB500_IP_DIR="${XHB500_IP_DIR:-${ARM_IP_LIBRARY_PATH}/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500}"
 
 # Generated XHB500 output (within this repo, gitignored)
 export XHB500_GEN_DIR="${TIDELINK_HOME}/deps/xhb500/generated"

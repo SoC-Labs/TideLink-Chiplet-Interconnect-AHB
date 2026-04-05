@@ -204,7 +204,19 @@ module tidelink_fifo_ahb #(
         .servo_reg_write     (),
         .servo_reg_addr      (),
         .servo_reg_wdata     (),
-        .servo_reg_rdata     ({SYS_DATA_W{1'b0}})
+        .servo_reg_rdata     ({SYS_DATA_W{1'b0}}),
+
+        // FC direct write path (tied off — no FC adapter in AHB wrapper)
+        .fc_wr_valid         (1'b0),
+        .fc_wr_write         (1'b0),
+        .fc_wr_addr          ({RAM_ADDR_W{1'b0}}),
+        .fc_wr_wdata         ({SYS_DATA_W{1'b0}}),
+        .fc_wr_ready         (),
+
+        // Mbox register pass-through (tied off)
+        .mbox_reg_write      (),
+        .mbox_reg_addr       (),
+        .mbox_reg_wdata      ()
     );
 
 endmodule

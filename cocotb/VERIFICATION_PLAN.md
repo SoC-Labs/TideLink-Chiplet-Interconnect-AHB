@@ -214,15 +214,15 @@ logic, and PHC hw_capture generation.
 | ID     | Test Name                             | Description                                                                 | Status   |
 |--------|---------------------------------------|-----------------------------------------------------------------------------|----------|
 | PTP-01 | Reset defaults                        | PTP_CTRL=0, PTP_STATUS=0, ptp_irq=0, phc_hw_capture=0 after reset          | New      |
-| PTP-02 | PTP enable/disable                    | Write PTP_CTRL[0]=1 enables subsystem; =0 disables, FC TX/RX idle          | New      |
-| PTP-03 | SYNC TX with idle gating              | Write msg_type=0x0, verify FC TX waits for tx_router_idle before asserting valid | New |
-| PTP-04 | SYNC TX hw_capture pulse              | On SYNC TX, phc_hw_capture asserts for exactly 1 cycle at FC handshake     | New      |
-| PTP-05 | SYNC TX packet format                 | Verify FC TX data matches {2'b10, 10'b0, 4'h0, 32'h0} for SYNC            | New      |
+| PTP-02 | PTP enable/disable                    | Write PTP_CTRL[0]=1 enables subsystem; =0 disables, FC TX/RX idle          | Existing |
+| PTP-03 | SYNC TX with idle gating              | Write msg_type=0x0, verify FC TX waits for tx_router_idle before asserting valid | Existing |
+| PTP-04 | SYNC TX hw_capture pulse              | On SYNC TX, phc_hw_capture asserts for exactly 1 cycle at FC handshake     | Existing |
+| PTP-05 | SYNC TX packet format                 | Verify FC TX data matches {2'b10, 10'b0, 4'h0, 32'h0} for SYNC            | Existing |
 | PTP-06 | DELAY_REQ TX packet format            | Write msg_type=0x1, verify FC TX data matches {2'b10, 10'b0, 4'h1, 32'h0} | New      |
-| PTP-07 | RX SYNC reception                     | Drive SYNC on FC RX, verify ptp_irq asserts and PTP_RX_PAYLOAD correct     | New      |
-| PTP-08 | RX hw_capture pulse                   | On FC RX handshake, phc_hw_capture asserts for exactly 1 cycle             | New      |
+| PTP-07 | RX SYNC reception                     | Drive SYNC on FC RX, verify ptp_irq asserts and PTP_RX_PAYLOAD correct     | Existing |
+| PTP-08 | RX hw_capture pulse                   | On FC RX handshake, phc_hw_capture asserts for exactly 1 cycle             | Existing |
 | PTP-09 | RX DELAY_REQ reception                | Drive DELAY_REQ on FC RX, verify ptp_irq and PTP_RX_PAYLOAD                | New      |
-| PTP-10 | PTP_STATUS TX busy                    | PTP_STATUS[1] asserts while waiting for tx_router_idle                     | New      |
+| PTP-10 | PTP_STATUS TX busy                    | PTP_STATUS[1] asserts while waiting for tx_router_idle                     | Existing |
 | PTP-11 | PTP_STATUS RX available               | PTP_STATUS[0] asserts after RX packet, clears on PTP_RX_PAYLOAD read      | New      |
 | PTP-12 | TX blocked when disabled              | With PTP_CTRL[0]=0, AHB write to PTP slave does not produce FC TX          | New      |
 | PTP-13 | RX ignored when disabled              | With PTP_CTRL[0]=0, FC RX packet does not assert ptp_irq                  | New      |
@@ -233,13 +233,28 @@ logic, and PHC hw_capture generation.
 | PTP-18 | PTP concurrent with mailbox traffic   | FIFO TX active during PTP exchange, verify idle gating and no interference | New      |
 | PTP-19 | ptp_irq deasserts after payload read  | ptp_irq clears when software reads PTP_RX_PAYLOAD                         | New      |
 | PTP-20 | TX during RX                          | RX packet arrives while TX is waiting for idle, verify both complete       | New      |
-| PTP-21 | HW sync enable/disable                | Write HW_SYNC_CTRL enable, verify FSM activates; disable, verify stops     | New      |
-| PTP-22 | HW sync basic fire                    | Enable with interval, drive PHC nanoseconds past target, verify FC TX SYNC | New      |
-| PTP-23 | HW sync seq increment                 | Verify payload contains incrementing seq_num across multiple fires          | New      |
-| PTP-24 | HW sync seq clear                     | Write seq_clear bit, verify seq_num resets to 0                            | New      |
-| PTP-25 | HW sync status readback               | Read HW_SYNC_STATUS, verify active/busy/seq_num fields                     | New      |
-| PTP-26 | HW sync SW coexistence                | Software TX while hw_sync enabled, verify both operate correctly           | New      |
-| PTP-27 | HW sync second rollover               | PHC nanoseconds wrap past 1e9, verify target seconds increments            | New      |
+| PTP-21 | HW sync enable/disable                | Write HW_SYNC_CTRL enable, verify FSM activates; disable, verify stops     | Existing |
+| PTP-22 | HW sync basic fire                    | Enable with interval, drive PHC nanoseconds past target, verify FC TX SYNC | Existing |
+| PTP-23 | HW sync seq increment                 | Verify payload contains incrementing seq_num across multiple fires          | Existing |
+| PTP-24 | HW sync seq clear                     | Write seq_clear bit, verify seq_num resets to 0                            | Existing |
+| PTP-25 | HW sync status readback               | Read HW_SYNC_STATUS, verify active/busy/seq_num fields                     | Existing |
+| PTP-26 | HW sync SW coexistence                | Software TX while hw_sync enabled, verify both operate correctly           | Existing |
+| PTP-27 | HW sync second rollover               | PHC nanoseconds wrap past 1e9, verify target seconds increments            | Existing |
+
+### 7b. tidelink_ptp Lock Gate Tests (PHC_LOCK_GATE_EN=1)
+
+Tests target the lock gate logic added for multi-hop PTP chaining. These use
+`tb_top_gated.sv` which instantiates `tidelink_ptp` with `PHC_LOCK_GATE_EN=1`,
+ensuring the gate logic is not optimised away by synthesis.
+
+| ID    | Test Name                           | Description                                                                 | Status   |
+|-------|-------------------------------------|-----------------------------------------------------------------------------|----------|
+| LG-01 | Gate blocks arm                     | phc_locked_i=0 prevents HW sync IDLE→ARMED despite enable=1                | Existing |
+| LG-02 | Gate allows arm when locked         | phc_locked_i=1 allows normal HW sync operation                             | Existing |
+| LG-03 | Enable before lock                  | Enable HW sync first, then assert phc_locked_i — arms on rising edge       | Existing |
+| LG-04 | Force enable overrides gate         | hw_sync_force_en=1 bypasses phc_locked_i gate                              | Existing |
+| LG-05 | Lock drop while armed               | phc_locked_i deasserts after arming — FSM continues (gate is startup guard) | Existing |
+| LG-06 | Status phc_locked bit               | HW_SYNC_STATUS[18] tracks phc_locked_i input in real time                  | Existing |
 
 ## Known Bugs
 
@@ -262,6 +277,8 @@ corrupt.
 |-----|---------|------------|
 | BUG-001 | Stale `credit_delta_data` — returner always sent delta=1 | Fixed: deltas now accumulated in `release_acc` inside `tidelink_apb_regs` and registered on `release_credits_trigger`. Proven by TOP-05, TOP-06. |
 | BUG-003 | Dead code — `ptr_offset` register computed but unused | Fixed: `ptr_offset` removed from `tidelink_fifo_ctrl`. |
+| BUG-004 | Channel 0 delta and channel 1 total wrote to same address | Fixed: channel 0 targets `PAIR_RELEASED_CREDITS_ADDR` (0x020), channel 1 targets `PAIR_DOORBELL_RESPONSE_ADDR` (0x024) — separate accumulators. Proven by TOP-07, AHBW-10. |
+| BUG-005 | CDC Path 2 handshake deadlock — `tidelink_phc_cdc.sv` Path 2 (free-running PHC time) used req/ack handshake where both toggle signals reset to 0. Neither side initiates the first transfer, so `h_phc_nanoseconds`/`h_phc_seconds` stay at 0 forever after reset. | Fixed: reset `time_req_toggle_h` to `1'b1` to kick-start the handshake. Proven by LG-02 (gate allows arm when PHC time advances). |
 | BUG-004 | Channel 0 delta and channel 1 total wrote to same address | Fixed: channel 0 targets `PAIR_RELEASED_CREDITS_ADDR` (0x020), channel 1 targets `PAIR_DOORBELL_RESPONSE_ADDR` (0x024) — separate accumulators. Proven by TOP-07, AHBW-10. |
 
 ## Running Tests

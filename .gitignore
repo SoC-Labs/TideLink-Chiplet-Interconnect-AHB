@@ -27,6 +27,7 @@ AN.DB
 *.o
 *trace*.txt
 crte*.txt
+*.so
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

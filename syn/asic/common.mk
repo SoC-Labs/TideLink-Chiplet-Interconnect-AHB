@@ -8,7 +8,7 @@ export TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/BP210/BP210-BU-00000-r1p1-00rel0
 
 # ── Target module ──────────────────────────────────���───────────────────────
-export MODULE ?= tidelink
+export MODULE ?= tidelink_top
 
 # ── Module-to-top mapping ──────────────────────────────────────────────────
 # Flist basenames and SV module names diverge after the FIFO rename.
@@ -16,11 +16,15 @@ export MODULE ?= tidelink
 TOP_tidelink          = tidelink_fifo
 TOP_tidelink_fifo     = tidelink_fifo_mem
 TOP_tidelink_top      = tidelink_top
+TOP_tidelink_top_full = tidelink_top
 TOP_tidelink_fc_adapter = tidelink_fc_adapter
 export TOP := $(or $(TOP_$(MODULE)),$(MODULE))
 
-# ── File lists ───────────────────────────────────────────────��─────────────
-export FLIST := $(TIDELINK_HOME)/flist/$(MODULE).flist
+# ── File lists ───────────────────────────────────────────────────────────
+# Use ASIC-specific flist if it exists (swaps FPGA SRAM for compiled macro),
+# otherwise fall back to the default flist.
+ASIC_FLIST_PATH := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
+export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flist/$(MODULE).flist)
 export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 
 # ── Cell libraries (update paths to match your PDK installation) ───────��───
@@ -64,4 +68,4 @@ export CLK_UNCERTAINTY ?= 0.35
 export RST_NAME        ?= hresetn
 
 # ── Available modules ───────────��──────────────────────────────────────────
-MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs tidelink_fc_adapter tidelink_top
+MODULES = tidelink tidelink_fifo tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs tidelink_fc_adapter tidelink_top tidelink_top_full

@@ -560,12 +560,34 @@ synth-top:
   <<: *dc_setup
   script:
     - cd "$WORK_DIR/syn/asic/design-compiler"
-    # tidelink_top requires Wlink generated Verilog + XHB500 + CMSDK
+    # tidelink_top with blackboxed XHB500/Wlink (faster, TideLink-only area)
     - make MODULE=tidelink_top 2>&1 | tee dc_tidelink_top.log
   artifacts:
     when: always
     paths:
       - syn/asic/design-compiler/dc_tidelink_top.log
+    expire_in: 30 days
+  allow_failure: true
+
+synth-top-full:
+  stage: synthesis
+  needs: [cocotb-regression]
+  tags:
+    - vcs
+  <<: *dc_setup
+  script:
+    - cd "$WORK_DIR/syn/asic/design-compiler"
+    # Full tidelink_top with XHB500 bridges + Wlink (complete area estimate)
+    - make MODULE=tidelink_top_full 2>&1 | tee dc_tidelink_top_full.log
+  after_script:
+    - mkdir -p syn/asic/design-compiler
+    - cp "$WORK_DIR/syn/asic/design-compiler/dc_tidelink_top_full.log" syn/asic/design-compiler/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/design-compiler/tidelink_top_dc_reports" syn/asic/design-compiler/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/design-compiler/dc_tidelink_top_full.log
+      - syn/asic/design-compiler/tidelink_top_dc_reports/
     expire_in: 30 days
   allow_failure: true
 

@@ -51,10 +51,20 @@ while {[gets $fh line] >= 0} {
     if {$line eq "" || [string match "#*" $line]} {
         # Skip empty lines and comments
         continue
+    } elseif {[string match "//*" $line]} {
+        # Skip C-style comments
+        continue
     } elseif {[string match "+incdir+*" $line]} {
         # Handle include directory
         set incdir [expand_env [string range $line 8 end]]
         set_app_var search_path [concat [get_app_var search_path] $incdir]
+    } elseif {[string match "-y *" $line]} {
+        # Handle library directory (-y <dir>)
+        set libdir [expand_env [string range $line 3 end]]
+        set_app_var search_path [concat [get_app_var search_path] $libdir]
+    } elseif {[string match "+libext+*" $line]} {
+        # Skip libext directives (DC uses search_path with define_design_lib)
+        continue
     } else {
         # Process file (substitute environment variables)
         set file [expand_env $line]

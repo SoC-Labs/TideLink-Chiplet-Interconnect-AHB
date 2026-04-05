@@ -96,6 +96,14 @@ module tidelink_fifo #(
     output wire    [SYS_DATA_W-1:0] mbox_reg_wdata,
 
     // --------------------------------------------------------------------------
+    // Chiplet Controller Register Pass-Through (Region 4)
+    // --------------------------------------------------------------------------
+    output wire                     ctrl_reg_write,
+    output wire               [2:0] ctrl_reg_addr,
+    output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
+    input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
+
+    // --------------------------------------------------------------------------
     // FC Direct Write Interface (single-cycle, bypasses AHB for FIFO writes)
     // --------------------------------------------------------------------------
     input  wire                    fc_wr_valid,
@@ -132,6 +140,14 @@ module tidelink_fifo #(
     logic [SYS_DATA_W-1:0]  credit_count_data;
     logic [SYS_ADDR_W-1:0]  pair_base_addr;
     logic                    release_credits_trigger;
+
+    // Delay trigger by 1 cycle so credit_delta_data is stable when the
+    // returner captures it (both are registered on release_credits_trigger).
+    logic                    release_credits_trigger_d;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) release_credits_trigger_d <= 1'b0;
+        else          release_credits_trigger_d <= release_credits_trigger;
+    end
 
     // Paired tidelink's target addresses (derived from RW pair_base_addr register)
     wire [SYS_ADDR_W-1:0] PAIR_RELEASED_CREDITS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
@@ -233,7 +249,12 @@ module tidelink_fifo #(
         // Timestamp mailbox pass-through
         .mbox_reg_write      (mbox_reg_write),
         .mbox_reg_addr       (mbox_reg_addr),
-        .mbox_reg_wdata      (mbox_reg_wdata)
+        .mbox_reg_wdata      (mbox_reg_wdata),
+        // Chiplet controller register pass-through
+        .ctrl_reg_write      (ctrl_reg_write),
+        .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_wdata      (ctrl_reg_wdata),
+        .ctrl_reg_rdata      (ctrl_reg_rdata)
     );
 
     // --------------------------------------------------------------------------
@@ -252,8 +273,8 @@ module tidelink_fifo #(
         .hclk        (hclk),
         .hresetn     (hresetn),
 
-        // Channel 0: release credits (gated by threshold accumulator)
-        .interrupt_0 (release_credits_trigger),
+        // Channel 0: release credits (delayed 1 cycle so credit_delta_data is stable)
+        .interrupt_0 (release_credits_trigger_d),
         .write_addr_0(PAIR_RELEASED_CREDITS_ADDR),
         .write_data_0(credit_delta_data),
 

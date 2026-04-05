@@ -25,10 +25,18 @@ class top_sys_wlink_init_sequence extends uvm_sequence #(apb_master_transaction)
   endfunction
 
   virtual task body();
-    // Wlink is enabled by default after reset (swi_enable=1).
-    // GPIO PHY link training happens automatically when both sides are active.
-    // No APB writes needed for default configuration.
-    `uvm_info("WLINK_INIT", $sformatf("[%s] Wlink uses default reset configuration (enabled).",
+    apb_master_transaction wr_txn;
+
+    `uvm_info("WLINK_INIT", $sformatf("[%s] Locking chiplet controller role (accepting strap default).",
+      side_name), UVM_LOW)
+
+    `uvm_create(wr_txn)
+    wr_txn.paddr  = 15'h2080;  // ROLE_CFG
+    wr_txn.pwdata = 32'h0000_0002;  // role_lock=1, role=0 (accept strap default)
+    wr_txn.pwrite = 1;
+    `uvm_send(wr_txn)
+
+    `uvm_info("WLINK_INIT", $sformatf("[%s] Role locked. Wlink link training in progress.",
       side_name), UVM_LOW)
   endtask
 

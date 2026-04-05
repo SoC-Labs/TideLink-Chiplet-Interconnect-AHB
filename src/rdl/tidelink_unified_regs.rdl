@@ -8,6 +8,8 @@
 //   0x0000 - 0x1FFF : Wlink chiplet controller (PHY, link, FC nodes)
 //   0x2000 - 0x203F : TideLink FIFO configuration, status, and credits
 //   0x2034 - 0x203C : TideLink PTP subsystem registers
+//   0x2040 - 0x207F : PTP HW Sync, Servo config, Servo status, Mailbox
+//   0x2080 - 0x208F : Chiplet controller role configuration
 //
 // External register blocks (separate APB ports, not in this map):
 //   PHC (PTP Hardware Clock) — see phc_regs.rdl
@@ -29,7 +31,7 @@ addrmap tidelink_unified_regs {
 
             The APB address decoder in tidelink_top routes accesses as follows:
               paddr[14:13] == 2'b0x → Wlink (paddr[12:0] passed through)
-              paddr[14:13] == 2'b10 → TideLink registers (paddr[5:0] decoded)
+              paddr[14:13] == 2'b10 → TideLink registers (paddr[7:0] decoded)
 
             The TideLink register region includes an internal APB mux that
             arbitrates between external APB access and the FC adapter RX config
@@ -51,11 +53,15 @@ addrmap tidelink_unified_regs {
                    descriptions. Note: Wlink RTL is Chisel-generated.";
 
     // =========================================================================
-    // TideLink Configuration + PTP (0x2000 - 0x203F)
+    // TideLink Configuration + PTP + Controller Role (0x2000 - 0x208F)
     // =========================================================================
 
     external tidelink_regs tidelink @ 0x2000;
     tidelink->desc = "TideLink FIFO configuration, status, credit management,
-                      and PTP subsystem registers. See tidelink_regs.rdl and
-                      tidelink_ptp_regs.rdl for detailed register descriptions.";
+                      PTP subsystem registers, and chiplet controller role
+                      configuration. See tidelink_regs.rdl and
+                      tidelink_ptp_regs.rdl for detailed register descriptions.
+                      Region 4 (0x2080-0x208F) contains the chiplet controller
+                      role selection registers, passed through to
+                      axi_chiplet_controller via ctrl_reg_* interface.";
 };

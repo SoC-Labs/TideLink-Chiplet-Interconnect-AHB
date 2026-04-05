@@ -19,7 +19,7 @@
 
 void tidelink_at_init(tidelink_at_t *at, uint32_t base)
 {
-    at->ch = (TIDELINK_ADDR_TRANS_CH_TypeDef *)base;
+    at->ch = (TIDELINK_AT_CH_TypeDef *)base;
 }
 
 /* ── Rule Management ────────────────────────────────────────────────────── */

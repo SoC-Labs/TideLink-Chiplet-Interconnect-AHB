@@ -14,7 +14,6 @@ module tb_top #(
 
     // AHB Slave Interface (FIFO data path)
     input  logic                    ahbs_hsel,
-    input  logic                    ahbs_hready,
     input  logic              [1:0] ahbs_htrans,
     input  logic              [2:0] ahbs_hsize,
     input  logic                    ahbs_hwrite,
@@ -49,6 +48,22 @@ module tb_top #(
     output logic                    doorbell_irq,
     output logic                    packet_committed_irq
 );
+
+    // Single-slave loopback: hready = hreadyout
+    wire ahbs_hready;
+    assign ahbs_hready = ahbs_hreadyout;
+
+    // Tie off unused pass-through inputs (no PTP, servo, or FC in this testbench)
+    wire ptp_reg_write, ptp_reg_region;
+    wire [2:0] ptp_reg_addr;
+    wire [SYS_DATA_W-1:0] ptp_reg_wdata;
+    wire servo_reg_write;
+    wire [2:0] servo_reg_addr;
+    wire [SYS_DATA_W-1:0] servo_reg_wdata;
+    wire mbox_reg_write;
+    wire [2:0] mbox_reg_addr;
+    wire [SYS_DATA_W-1:0] mbox_reg_wdata;
+    wire fc_wr_ready;
 
     tidelink_fifo #(
         .SYS_ADDR_W       (SYS_ADDR_W),
@@ -88,7 +103,28 @@ module tb_top #(
         .apbs_pslverr        (apbs_pslverr),
         .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
-        .packet_committed_irq(packet_committed_irq)
+        .packet_committed_irq(packet_committed_irq),
+
+        // PTP/Servo/Mbox pass-through (tied off)
+        .ptp_reg_write   (ptp_reg_write),
+        .ptp_reg_addr    (ptp_reg_addr),
+        .ptp_reg_wdata   (ptp_reg_wdata),
+        .ptp_reg_rdata   ({SYS_DATA_W{1'b0}}),
+        .ptp_reg_region  (ptp_reg_region),
+        .servo_reg_write (servo_reg_write),
+        .servo_reg_addr  (servo_reg_addr),
+        .servo_reg_wdata (servo_reg_wdata),
+        .servo_reg_rdata ({SYS_DATA_W{1'b0}}),
+        .mbox_reg_write  (mbox_reg_write),
+        .mbox_reg_addr   (mbox_reg_addr),
+        .mbox_reg_wdata  (mbox_reg_wdata),
+
+        // FC direct write path (tied off)
+        .fc_wr_valid     (1'b0),
+        .fc_wr_write     (1'b0),
+        .fc_wr_addr      ({RAM_ADDR_W{1'b0}}),
+        .fc_wr_wdata     ({SYS_DATA_W{1'b0}}),
+        .fc_wr_ready     (fc_wr_ready)
     );
 
     initial begin

@@ -190,8 +190,9 @@ module tidelink_fifo_ctrl #(
         end
 
         // Target address = packet length in bytes (packet length in words << 2)
-        write_target_addr_nxt = RAM_ADDR_W'(packet_word_length_r << 2);
-        read_target_addr_nxt  = RAM_ADDR_W'(packet_word_length_r << 2);
+        // Use _nxt value to eliminate 1-cycle lag when loading from SRAM read
+        write_target_addr_nxt = RAM_ADDR_W'(packet_word_length_nxt << 2);
+        read_target_addr_nxt  = RAM_ADDR_W'(packet_word_length_nxt << 2);
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin

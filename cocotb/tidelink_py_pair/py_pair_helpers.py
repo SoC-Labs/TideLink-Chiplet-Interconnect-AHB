@@ -103,7 +103,7 @@ async def setup(dut):
     cocotb.start_soon(Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start())
 
     dut.ahbs_hsel.value    = 0
-    dut.ahbs_hready.value  = 1
+
     dut.ahbs_htrans.value  = 0
     dut.ahbs_hsize.value   = 2
     dut.ahbs_hwrite.value  = 0
@@ -141,7 +141,7 @@ async def fifo_write_packet(dut, data_words):
     dut.ahbs_hwrite.value = 1
     dut.ahbs_hsize.value  = 2
     dut.ahbs_haddr.value  = 0x0000
-    dut.ahbs_hready.value = 1
+
     await RisingEdge(dut.hclk)
     dut.ahbs_hwdata.value = pkt_len
     dut.ahbs_htrans.value = 0

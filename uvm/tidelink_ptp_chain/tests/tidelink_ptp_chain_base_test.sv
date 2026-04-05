@@ -29,6 +29,11 @@ class ptp_chain_hrdata_xz_catcher extends uvm_report_catcher;
       set_action(UVM_NO_ACTION);
       return CAUGHT;
     end
+    if (get_id() == "register_fail:AMBA:AHB_COMMON:hready_out_from_slave_not_X_or_Z_when_data_phase_not_pending") begin
+      set_severity(UVM_INFO);
+      set_action(UVM_NO_ACTION);
+      return CAUGHT;
+    end
     return THROW;
   endfunction
 endclass

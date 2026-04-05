@@ -186,6 +186,32 @@ The PHC has a single time counter that is shared between the hardware capture pa
 
 **Recommendation**: This is mitigated by Option B, which provides a second capture register bank (HW_CAP_*) independent of the software capture bank (CAP_*). Ensure software does not issue CAPTURE during an active PTP exchange.
 
+## Servo Optimisation Trade-offs
+
+### 20. Sub-Nanosecond Precision Dropped
+
+**Location**: `tidelink_ptp_servo.sv` — timestamp format reduced from 110-bit to 78-bit
+
+Sub-nanosecond fields have been removed from the timestamp representation. This is acceptable at Cortex-M0 clock rates where the system clock period is much larger than one nanosecond, so the additional precision provided no practical benefit.
+
+**Impact**: None at target clock rates. Would need to be revisited if the design were retargeted to a high-frequency fabric with sub-nanosecond synchronisation requirements.
+
+### 21. PI Controller Latency Increased
+
+**Location**: `tidelink_ptp_servo.sv` — combinational multiplier replaced with iterative shared multiplier
+
+The PI controller now uses an iterative shared multiplier instead of a dedicated combinational multiplier. This adds approximately 64 clock cycles of latency per PTP exchange (two sequential multiply operations). This is negligible compared to the PTP exchange interval (typically milliseconds).
+
+**Impact**: Servo computation takes ~64 extra cycles per exchange. No measurable effect on synchronisation accuracy or convergence rate at expected exchange intervals.
+
+### 22. Large Offset Forces Phase Step
+
+**Location**: `tidelink_ptp_servo.sv` — offset decision logic
+
+When |sec_diff| > 1, the servo forces a phase step (direct PHC set) rather than applying the PI controller. This is correct behaviour for PTP steady-state operation: offsets larger than one second indicate the clocks are too far apart for the PI loop to converge efficiently, so a coarse adjustment is appropriate.
+
+**Impact**: Correct design intent. The PI controller only operates on offsets where it can converge within a reasonable number of exchanges.
+
 ## Summary
 
 | # | Severity | Shortcoming |

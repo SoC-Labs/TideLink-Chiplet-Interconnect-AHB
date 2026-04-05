@@ -2,7 +2,10 @@
  * SoCLabs TideLink Address Translator Driver — Header
  *
  * CMSIS-style driver for the TideLink CAM-based address translator.
- * Register definitions from src/rdl/tidelink_addr_translator_regs.rdl.
+ *
+ * Register structs and bit definitions are auto-generated from SystemRDL
+ * via tidelink_addr_translator_regs.generated.h. This header adds the
+ * driver-level API.
  *
  * The address translator remaps AHB addresses in the transparent bridge
  * path by:
@@ -28,19 +31,16 @@
 #ifndef TIDELINK_ADDR_TRANS_H
 #define TIDELINK_ADDR_TRANS_H
 
-#include <stdint.h>
+#include "tidelink_addr_translator_regs.generated.h"  /* bit defs + TypeDef */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ── CMSIS-style access qualifiers ──────────────────────────────────────── */
+/* ── CMSIS-style access qualifiers (if not already defined) ─────────────── */
 
 #ifndef __IO
 #define __IO volatile
-#endif
-#ifndef __I
-#define __I  volatile const
 #endif
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
@@ -48,10 +48,23 @@ extern "C" {
 #define TIDELINK_AT_NUM_RULES    8U
 #define TIDELINK_AT_NUM_CHANNELS 2U
 
-/* ── Per-Channel Register Map ───────────────────────────────────────────
+/* ── Convenience aliases for generated bit definitions ──────────────────── */
+
+#define TIDELINK_AT_CTRL_ENABLE_Pos       TIDELINK_ADDR_TRANSLATOR_REGS_CTRL_ENABLE_Pos
+#define TIDELINK_AT_CTRL_ENABLE_Msk       TIDELINK_ADDR_TRANSLATOR_REGS_CTRL_ENABLE_Msk
+
+#define TIDELINK_AT_RULE_ENABLE_Pos       TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_ENABLE_Pos
+#define TIDELINK_AT_RULE_ENABLE_Msk       TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_ENABLE_Msk
+#define TIDELINK_AT_RULE_MATCH_BYTE_Pos   TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_MATCH_BYTE_Pos
+#define TIDELINK_AT_RULE_MATCH_BYTE_Msk   TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_MATCH_BYTE_Msk
+#define TIDELINK_AT_RULE_REPLACE_BYTE_Pos TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_REPLACE_BYTE_Pos
+#define TIDELINK_AT_RULE_REPLACE_BYTE_Msk TIDELINK_ADDR_TRANSLATOR_REGS_RULE_0_REPLACE_BYTE_Msk
+
+/* ── Per-channel register access struct ─────────────────────────────────
  *
- * Each channel occupies a contiguous register block. Channel 1 follows
- * channel 0 at a fixed stride in the address translator's AHB slave space.
+ * The generated TIDELINK_ADDR_TRANSLATOR_REGS_TypeDef is flat (all rules
+ * as RULE_0..RULE_7 plus PrimeCell IDs with large padding). For the
+ * driver we use a compact per-channel struct with a RULE array.
  * ----------------------------------------------------------------------- */
 
 typedef struct {
@@ -59,34 +72,12 @@ typedef struct {
     __IO uint32_t CTRL;                  /* 0x004 RW  [0]=enable             */
          uint32_t RESERVED[2];           /* 0x008-0x00C                      */
     __IO uint32_t RULE[TIDELINK_AT_NUM_RULES]; /* 0x010-0x02C RW             */
-} TIDELINK_ADDR_TRANS_CH_TypeDef;
-
-/* ── CTRL register bit positions ────────────────────────────────────────── */
-
-#define TIDELINK_AT_CTRL_ENABLE_Pos  0U
-#define TIDELINK_AT_CTRL_ENABLE_Msk  (1UL << 0U)
-
-/* ── RULE register field positions ──────────────────────────────────────── */
-
-#define TIDELINK_AT_RULE_ENABLE_Pos       0U
-#define TIDELINK_AT_RULE_ENABLE_Msk       (1UL << 0U)
-
-#define TIDELINK_AT_RULE_MATCH_BYTE_Pos   8U
-#define TIDELINK_AT_RULE_MATCH_BYTE_Msk   (0xFFUL << 8U)
-
-#define TIDELINK_AT_RULE_REPLACE_BYTE_Pos 16U
-#define TIDELINK_AT_RULE_REPLACE_BYTE_Msk (0xFFUL << 16U)
-
-/* ── PrimeCell ID offsets (read-only, relative to AHB slave base) ──────── */
-
-#define TIDELINK_AT_PIDR4_OFFSET  0xFD0U
-#define TIDELINK_AT_PIDR0_OFFSET  0xFE0U
-#define TIDELINK_AT_CIDR0_OFFSET  0xFF0U
+} TIDELINK_AT_CH_TypeDef;
 
 /* ── Driver handle ──────────────────────────────────────────────────────── */
 
 typedef struct {
-    TIDELINK_ADDR_TRANS_CH_TypeDef *ch;  /* Channel register block pointer */
+    TIDELINK_AT_CH_TypeDef *ch;  /* Channel register block pointer */
 } tidelink_at_t;
 
 /* ── Initialisation ─────────────────────────────────────────────────────── */

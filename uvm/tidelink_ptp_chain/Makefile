@@ -120,8 +120,9 @@ VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ahb.sv
 # TideLink FC Adapter
 VCS_FLAGS += $(RTL_DIR)/tidelink_fc_adapter.sv
 
-# TideLink PTP + Servo + CDC
+# TideLink PTP + Servo + CDC + Multiplier
 VCS_FLAGS += $(RTL_DIR)/tidelink_ptp.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_mul_iter.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_ptp_servo.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
 

@@ -4,6 +4,9 @@
  * CMSIS-style bare-metal driver for the TideLink chiplet interconnect
  * mailbox FIFO, credit-flow control, and doorbell subsystem.
  *
+ * Register structs and bit definitions are auto-generated from SystemRDL
+ * via tidelink_regs.generated.h. This header adds the driver-level API.
+ *
  * Target: ARM Cortex-M0 (word-aligned access only, no OS)
  *
  * A joint work commissioned on behalf of SoC Labs, under Arm Academic
@@ -18,22 +21,10 @@
 #ifndef TIDELINK_H
 #define TIDELINK_H
 
-#include <stdint.h>
+#include "tidelink_regs.generated.h"  /* TIDELINK_REGS_TypeDef + bit defs */
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-/* ── CMSIS-style access qualifiers ──────────────────────────────────────── */
-
-#ifndef __IO
-#define __IO volatile
-#endif
-#ifndef __I
-#define __I  volatile const
-#endif
-#ifndef __O
-#define __O  volatile
 #endif
 
 /* ── Hardware parameters ────────────────────────────────────────────────── */
@@ -47,59 +38,33 @@ extern "C" {
 #define TIDELINK_WLINK_BASE       0x0000U
 #define TIDELINK_APB_BASE         0x2000U
 
-/* ── Configuration Register Map (TIDELINK_CFG_TypeDef) ──────────────────
+/* ── Convenience aliases for generated bit definitions ──────────────────
  *
- * Based on tidelink_apb_regs.sv and python/tidelink/regs.py.
- * All offsets relative to the TideLink config AHB slave base address
- * (which bridges to APB base + 0x2000 internally).
+ * The generated header uses TIDELINK_REGS_<REG>_<FIELD>_Pos/Msk naming.
+ * These shorter aliases match the hand-written driver convention.
  * ----------------------------------------------------------------------- */
 
-typedef struct {
-    __IO uint32_t PAIR_BASE;           /* 0x000 RW  Paired instance APB base   */
-    __IO uint32_t REL_THRESHOLD;       /* 0x004 RW  Release threshold (def 20) */
-    __I  uint32_t PKT_WORD_LEN;        /* 0x008 RO  Current packet word length */
-    __I  uint32_t CREDIT_COUNT;        /* 0x00C RO  Available FIFO credits     */
-    __I  uint32_t STATUS;              /* 0x010 RO  Status + sticky errors     */
-    __O  uint32_t DOORBELL;            /* 0x014 WO  Self-clearing doorbell     */
-    __I  uint32_t REL_ACC;             /* 0x018 RO  Pending unreleased credits */
-    __IO uint32_t CTRL;                /* 0x01C RW  [0]=EN [1]=FLUSH           */
-    __IO uint32_t RELEASED_ACC;        /* 0x020 W-add/R-clear                  */
-    __IO uint32_t DOORBELL_RESP_ACC;   /* 0x024 W-add/R-clear                  */
-    __I  uint32_t PAIR_CREDIT_CTR;     /* 0x028 RO  Pair credit counter        */
-    __O  uint32_t PAIR_CREDIT_CONSUME; /* 0x02C WO  Consume pair credits       */
-    __IO uint32_t PAIR_CREDIT_EN;      /* 0x030 RW  [0]=counter enable         */
-} TIDELINK_CFG_TypeDef;
+#define TIDELINK_STATUS_RETURNER_BUSY_Pos    TIDELINK_REGS_STATUS_RETURNER_BUSY_Pos
+#define TIDELINK_STATUS_RETURNER_BUSY_Msk    TIDELINK_REGS_STATUS_RETURNER_BUSY_Msk
+#define TIDELINK_STATUS_OVERRUN_Pos          TIDELINK_REGS_STATUS_OVERRUN_Pos
+#define TIDELINK_STATUS_OVERRUN_Msk          TIDELINK_REGS_STATUS_OVERRUN_Msk
+#define TIDELINK_STATUS_UNDERRUN_Pos         TIDELINK_REGS_STATUS_UNDERRUN_Pos
+#define TIDELINK_STATUS_UNDERRUN_Msk         TIDELINK_REGS_STATUS_UNDERRUN_Msk
+#define TIDELINK_STATUS_MASTER_ERROR_Pos     TIDELINK_REGS_STATUS_MASTER_ERROR_Pos
+#define TIDELINK_STATUS_MASTER_ERROR_Msk     TIDELINK_REGS_STATUS_MASTER_ERROR_Msk
+#define TIDELINK_STATUS_PACKET_COMMITTED_Pos TIDELINK_REGS_STATUS_PACKET_COMMITTED_Pos
+#define TIDELINK_STATUS_PACKET_COMMITTED_Msk TIDELINK_REGS_STATUS_PACKET_COMMITTED_Msk
 
-/* ── STATUS register bit positions (offset 0x010) ──────────────────────── */
-
-#define TIDELINK_STATUS_RETURNER_BUSY_Pos    0U
-#define TIDELINK_STATUS_RETURNER_BUSY_Msk    (1UL << TIDELINK_STATUS_RETURNER_BUSY_Pos)
-
-#define TIDELINK_STATUS_OVERRUN_Pos          1U
-#define TIDELINK_STATUS_OVERRUN_Msk          (1UL << TIDELINK_STATUS_OVERRUN_Pos)
-
-#define TIDELINK_STATUS_UNDERRUN_Pos         2U
-#define TIDELINK_STATUS_UNDERRUN_Msk         (1UL << TIDELINK_STATUS_UNDERRUN_Pos)
-
-#define TIDELINK_STATUS_MASTER_ERROR_Pos     3U
-#define TIDELINK_STATUS_MASTER_ERROR_Msk     (1UL << TIDELINK_STATUS_MASTER_ERROR_Pos)
-
-#define TIDELINK_STATUS_PACKET_COMMITTED_Pos 4U
-#define TIDELINK_STATUS_PACKET_COMMITTED_Msk (1UL << TIDELINK_STATUS_PACKET_COMMITTED_Pos)
-
-/* ── CTRL register bit positions (offset 0x01C) ────────────────────────── */
-
-#define TIDELINK_CTRL_EN_Pos                 0U
-#define TIDELINK_CTRL_EN_Msk                 (1UL << TIDELINK_CTRL_EN_Pos)
-
-#define TIDELINK_CTRL_FLUSH_Pos              1U
-#define TIDELINK_CTRL_FLUSH_Msk              (1UL << TIDELINK_CTRL_FLUSH_Pos)
+#define TIDELINK_CTRL_EN_Pos                 TIDELINK_REGS_CTRL_EN_Pos
+#define TIDELINK_CTRL_EN_Msk                 TIDELINK_REGS_CTRL_EN_Msk
+#define TIDELINK_CTRL_FLUSH_Pos              TIDELINK_REGS_CTRL_FLUSH_Pos
+#define TIDELINK_CTRL_FLUSH_Msk              TIDELINK_REGS_CTRL_FLUSH_Msk
 
 /* ── Driver handle ──────────────────────────────────────────────────────── */
 
 typedef struct {
-    TIDELINK_CFG_TypeDef *cfg;    /* Config register base (AHB cfg slave)  */
-    __IO uint32_t        *fifo;   /* FIFO data window base (AHB FIFO slave)*/
+    TIDELINK_REGS_TypeDef *cfg;    /* Config register base (AHB cfg slave)  */
+    __IO uint32_t         *fifo;   /* FIFO data window base (AHB FIFO slave)*/
 } tidelink_t;
 
 /* ── Initialisation ─────────────────────────────────────────────────────── */
@@ -118,25 +83,25 @@ void tidelink_init(tidelink_t *tl, uint32_t cfg_base, uint32_t fifo_base);
 /** Set the paired TideLink instance's APB base address. */
 static inline void tidelink_set_pair_base(tidelink_t *tl, uint32_t addr)
 {
-    tl->cfg->PAIR_BASE = addr;
+    tl->cfg->PAIR_BASE_ADDR = addr;
 }
 
 /** Get the paired TideLink instance's APB base address. */
 static inline uint32_t tidelink_get_pair_base(tidelink_t *tl)
 {
-    return tl->cfg->PAIR_BASE;
+    return tl->cfg->PAIR_BASE_ADDR;
 }
 
 /** Set the release threshold (0 = immediate release). */
 static inline void tidelink_set_threshold(tidelink_t *tl, uint32_t thresh)
 {
-    tl->cfg->REL_THRESHOLD = thresh;
+    tl->cfg->RELEASE_THRESHOLD = thresh;
 }
 
 /** Get the current release threshold. */
 static inline uint32_t tidelink_get_threshold(tidelink_t *tl)
 {
-    return tl->cfg->REL_THRESHOLD;
+    return tl->cfg->RELEASE_THRESHOLD;
 }
 
 /* ── Status ─────────────────────────────────────────────────────────────── */
@@ -168,13 +133,13 @@ static inline uint32_t tidelink_get_credit_count(tidelink_t *tl)
 /** Read the current packet word length from the FIFO controller. */
 static inline uint32_t tidelink_get_pkt_word_len(tidelink_t *tl)
 {
-    return tl->cfg->PKT_WORD_LEN;
+    return tl->cfg->PACKET_WORD_LENGTH;
 }
 
 /** Read the pending unreleased credit accumulator (debug). */
 static inline uint32_t tidelink_get_release_acc(tidelink_t *tl)
 {
-    return tl->cfg->REL_ACC;
+    return tl->cfg->RELEASE_ACC;
 }
 
 /* ── Control ────────────────────────────────────────────────────────────── */
@@ -210,7 +175,7 @@ static inline void tidelink_doorbell(tidelink_t *tl)
  */
 static inline uint32_t tidelink_read_released(tidelink_t *tl)
 {
-    return tl->cfg->RELEASED_ACC;
+    return tl->cfg->RELEASED_CREDITS_ACC;
 }
 
 /**
@@ -219,13 +184,13 @@ static inline uint32_t tidelink_read_released(tidelink_t *tl)
  */
 static inline uint32_t tidelink_read_doorbell_resp(tidelink_t *tl)
 {
-    return tl->cfg->DOORBELL_RESP_ACC;
+    return tl->cfg->DOORBELL_RESPONSE_ACC;
 }
 
 /** Read the pair credit counter (no side effects). */
 static inline uint32_t tidelink_get_pair_credits(tidelink_t *tl)
 {
-    return tl->cfg->PAIR_CREDIT_CTR;
+    return tl->cfg->PAIR_CREDIT_COUNTER;
 }
 
 /** Consume N credits from the pair credit counter. */
@@ -237,7 +202,7 @@ static inline void tidelink_consume_credits(tidelink_t *tl, uint32_t n)
 /** Enable or disable the pair credit counter. */
 static inline void tidelink_set_pair_credit_en(tidelink_t *tl, uint32_t en)
 {
-    tl->cfg->PAIR_CREDIT_EN = en & 1U;
+    tl->cfg->PAIR_CREDIT_COUNTER_EN = en & 1U;
 }
 
 /* ── FIFO Packet I/O ────────────────────────────────────────────────────── */

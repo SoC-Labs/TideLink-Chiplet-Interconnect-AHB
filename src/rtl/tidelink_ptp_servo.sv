@@ -35,8 +35,8 @@ module tidelink_ptp_servo #(
     parameter [SYS_DATA_W-1:0] DEFAULT_KP         = 32'h0000_B333,  // ~0.7
     parameter [SYS_DATA_W-1:0] DEFAULT_KI         = 32'h0000_4CCC,  // ~0.3
     parameter [SYS_DATA_W-1:0] DEFAULT_STEP_THRESH = 32'd1000,       // 1000 ns
-    // Anti-windup: clamp integral accumulator to ±INTEGRAL_MAX
-    parameter signed [63:0]    INTEGRAL_MAX        = 64'sh0000_00FF_FFFF_FFFF  // ~±1099 sec
+    // Multiplier mode: 0=iterative (small, 32-cycle), 1=combinational (large, 1-cycle)
+    parameter MULTIPLIER_MODE = 0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -274,7 +274,7 @@ module tidelink_ptp_servo #(
                 GM_CAPTURE_T1: begin
                     gm_t1_sec  <= hw_cap_seconds;
                     gm_t1_ns   <= hw_cap_nanoseconds;
-                    gm_t1_sub  <= hw_cap_sub_nanoseconds;
+
                     gm_state_r <= GM_WAIT_DREQ_RX;
                 end
 
@@ -286,21 +286,19 @@ module tidelink_ptp_servo #(
                 GM_CAPTURE_T4: begin
                     gm_t4_sec  <= hw_cap_seconds;
                     gm_t4_ns   <= hw_cap_nanoseconds;
-                    gm_t4_sub  <= hw_cap_sub_nanoseconds;
+
                     gm_state_r <= GM_SEND_T1_0;
                 end
 
-                // Send t1 as 4 FC SIDEBAND packets
+                // Send t1 as 3 FC SIDEBAND packets (sec_lo, sec_hi, ns)
                 GM_SEND_T1_0: if (servo_fc_ready) gm_state_r <= GM_SEND_T1_1;
                 GM_SEND_T1_1: if (servo_fc_ready) gm_state_r <= GM_SEND_T1_2;
-                GM_SEND_T1_2: if (servo_fc_ready) gm_state_r <= GM_SEND_T1_3;
-                GM_SEND_T1_3: if (servo_fc_ready) gm_state_r <= GM_SEND_T4_0;
+                GM_SEND_T1_2: if (servo_fc_ready) gm_state_r <= GM_SEND_T4_0;
 
-                // Send t4 as 4 FC SIDEBAND packets
+                // Send t4 as 3 FC SIDEBAND packets (sec_lo, sec_hi, ns)
                 GM_SEND_T4_0: if (servo_fc_ready) gm_state_r <= GM_SEND_T4_1;
                 GM_SEND_T4_1: if (servo_fc_ready) gm_state_r <= GM_SEND_T4_2;
-                GM_SEND_T4_2: if (servo_fc_ready) gm_state_r <= GM_SEND_T4_3;
-                GM_SEND_T4_3: if (servo_fc_ready) gm_state_r <= GM_IDLE;
+                GM_SEND_T4_2: if (servo_fc_ready) gm_state_r <= GM_IDLE;
 
                 default: gm_state_r <= GM_IDLE;
             endcase
@@ -318,11 +316,9 @@ module tidelink_ptp_servo #(
             GM_SEND_T1_0: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SEC_LO_OFFSET, gm_t1_sec[31:0]};  end
             GM_SEND_T1_1: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SEC_HI_OFFSET, {16'b0, gm_t1_sec[47:32]}}; end
             GM_SEND_T1_2: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_NS_OFFSET,     {2'b0, gm_t1_ns}};  end
-            GM_SEND_T1_3: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SUB_NS_OFFSET, gm_t1_sub};         end
             GM_SEND_T4_0: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SEC_LO_OFFSET, gm_t4_sec[31:0]};  end
             GM_SEND_T4_1: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SEC_HI_OFFSET, {16'b0, gm_t4_sec[47:32]}}; end
             GM_SEND_T4_2: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_NS_OFFSET,     {2'b0, gm_t4_ns}};  end
-            GM_SEND_T4_3: begin gm_fc_valid = 1'b1; gm_fc_data = {PKT_SIDEBAND, MBOX_SUB_NS_OFFSET, gm_t4_sub};         end
             default: ;
         endcase
     end
@@ -345,7 +341,9 @@ module tidelink_ptp_servo #(
         SUB_COMPUTE_2    = 4'd10,
         SUB_COMPUTE_3    = 4'd11,
         SUB_COMPUTE_4    = 4'd12,
-        SUB_ADJUST       = 4'd13
+        SUB_ADJUST       = 4'd13,
+        SUB_PI_MUL_P     = 4'd14,
+        SUB_PI_MUL_I     = 4'd15
     } sub_state_t;
 
     sub_state_t sub_state_r;
@@ -375,6 +373,36 @@ module tidelink_ptp_servo #(
     // Locked detection: offset below threshold for consecutive exchanges
     localparam LOCK_COUNT = 4;
     logic [3:0] lock_counter_r;
+
+    // =========================================================================
+    // Iterative Multiplier for PI Controller
+    // =========================================================================
+    logic              mul_start;
+    logic signed [31:0] mul_a;
+    logic        [31:0] mul_b;
+    logic signed [63:0] mul_result;
+    logic              mul_done;
+    logic              mul_busy;
+    logic signed [31:0] pi_p_term_r;
+
+    generate
+        if (MULTIPLIER_MODE == 0) begin : gen_iter_mul
+            tidelink_mul_iter u_mul (
+                .clk    (clk),
+                .resetn (resetn),
+                .start  (mul_start),
+                .busy   (mul_busy),
+                .done   (mul_done),
+                .a      (mul_a),
+                .b      (mul_b),
+                .result (mul_result)
+            );
+        end else begin : gen_comb_mul
+            assign mul_result = $signed({{32{mul_a[31]}}, mul_a}) * $signed({1'b0, mul_b});
+            assign mul_done   = mul_start;
+            assign mul_busy   = 1'b0;
+        end
+    endgenerate
 
     // =========================================================================
     // Subordinate FSM Logic
@@ -421,7 +449,7 @@ module tidelink_ptp_servo #(
                     SUB_CAPTURE_T2: begin
                         sub_t2_sec  <= hw_cap_seconds;
                         sub_t2_ns   <= hw_cap_nanoseconds;
-                        sub_t2_sub  <= hw_cap_sub_nanoseconds;
+
                         sub_state_r <= SUB_SEND_DREQ;
                     end
 
@@ -438,7 +466,7 @@ module tidelink_ptp_servo #(
                     SUB_CAPTURE_T3: begin
                         sub_t3_sec  <= hw_cap_seconds;
                         sub_t3_ns   <= hw_cap_nanoseconds;
-                        sub_t3_sub  <= hw_cap_sub_nanoseconds;
+
                         sub_state_r <= SUB_WAIT_T1;
                     end
 
@@ -450,7 +478,7 @@ module tidelink_ptp_servo #(
                     SUB_LATCH_T1: begin
                         sub_t1_sec  <= mbox_seconds;
                         sub_t1_ns   <= mbox_nanoseconds;
-                        sub_t1_sub  <= mbox_sub_ns;
+
                         sub_state_r <= SUB_WAIT_T4;
                     end
 
@@ -462,15 +490,15 @@ module tidelink_ptp_servo #(
                     SUB_LATCH_T4: begin
                         sub_t4_sec  <= mbox_seconds;
                         sub_t4_ns   <= mbox_nanoseconds;
-                        sub_t4_sub  <= mbox_sub_ns;
+
                         sub_state_r <= SUB_COMPUTE_1;
                     end
 
                     // ── Offset Computation Pipeline ──────────────────────
                     SUB_COMPUTE_1: begin
                         // d_fwd = t2 - t1
-                        d_fwd_r <= $signed({1'b0, sub_t2_ns, sub_t2_sub}) -
-                                   $signed({1'b0, sub_t1_ns, sub_t1_sub});
+                        d_fwd_r <= $signed({1'b0, sub_t2_ns}) -
+                                   $signed({1'b0, sub_t1_ns});
                         sec_diff_fwd_r <= $signed({1'b0, sub_t2_sec}) -
                                           $signed({1'b0, sub_t1_sec});
                         sub_state_r <= SUB_COMPUTE_2;
@@ -478,8 +506,8 @@ module tidelink_ptp_servo #(
 
                     SUB_COMPUTE_2: begin
                         // d_rev = t4 - t3
-                        d_rev_r <= $signed({1'b0, sub_t4_ns, sub_t4_sub}) -
-                                   $signed({1'b0, sub_t3_ns, sub_t3_sub});
+                        d_rev_r <= $signed({1'b0, sub_t4_ns}) -
+                                   $signed({1'b0, sub_t3_ns});
                         sec_diff_rev_r <= $signed({1'b0, sub_t4_sec}) -
                                           $signed({1'b0, sub_t3_sec});
                         // Adjust d_fwd for seconds borrow/carry
@@ -523,50 +551,63 @@ module tidelink_ptp_servo #(
 
                     // ── Clock Adjustment ─────────────────────────────────
                     SUB_ADJUST: begin
-                        // Extract nanosecond portion of offset for status
-                        // offset_r is in sub-nanosecond units ({ns, sub_ns})
-                        // Shift right by 32 to get ns portion
-                        last_offset_r <= offset_r[63:32];
-                        last_delay_r  <= delay_r[63:32];
+                        // offset_r and delay_r are now directly in nanoseconds
+                        last_offset_r <= offset_r;
+                        last_delay_r  <= delay_r;
 
                         if (needs_phase_step_r ||
-                            ($signed(offset_r[63:32]) > $signed(servo_step_thresh_r)) ||
-                            ($signed(offset_r[63:32]) < -$signed(servo_step_thresh_r))) begin
+                            (offset_r > $signed(servo_step_thresh_r)) ||
+                            (offset_r < -$signed(servo_step_thresh_r))) begin
                             // Phase step — correct time directly
                             phc_hw_set_time <= 1'b1;
-                            // Corrected time = local_a (t2) - offset
-                            // offset > 0 means Sub ahead, so subtract
                             phc_hw_set_seconds    <= sub_t2_sec;
                             phc_hw_set_nanoseconds <= sub_t2_ns -
-                                                      offset_r[61:32]; // ns portion of offset
-                            // Reset integral on phase step
+                                                      offset_r[29:0];
                             integral_r     <= '0;
                             lock_counter_r <= '0;
                             servo_locked   <= 1'b0;
+                            sub_state_r    <= SUB_IDLE;
                         end else begin
-                            // Frequency steering via PI controller
-                            // Anti-windup: saturate integral to prevent unbounded growth
-                            if ($signed(integral_r + offset_r) > INTEGRAL_MAX)
-                                integral_r <= INTEGRAL_MAX;
-                            else if ($signed(integral_r + offset_r) < -INTEGRAL_MAX)
-                                integral_r <= -INTEGRAL_MAX;
+                            // Frequency steering — update integral then start PI multiply
+                            if ((integral_r[31] == 1'b0) && (offset_r[31] == 1'b0) &&
+                                (integral_r + offset_r < 0))
+                                integral_r <= 32'sh7FFF_FFFF;
+                            else if ((integral_r[31] == 1'b1) && (offset_r[31] == 1'b1) &&
+                                     (integral_r + offset_r >= 0))
+                                integral_r <= 32'sh8000_0000;
                             else
                                 integral_r <= integral_r + offset_r;
 
-                            // PI output computation
-                            // p_term = kp * offset_ns (Q0.32 * signed)
-                            // i_term = ki * integral_ns (Q0.32 * signed)
-                            // Take upper 32 bits of 64-bit product
-                            current_frac_r <= current_frac_r -
-                                pi_output(servo_kp_r, offset_r[63:32],
-                                          servo_ki_r, integral_r[63:32]);
-                            phc_hw_adj_valid      <= 1'b1;
-                            phc_hw_adj_ns_incr_frac <= current_frac_r -
-                                pi_output(servo_kp_r, offset_r[63:32],
-                                          servo_ki_r, integral_r[63:32]);
+                            // Start P-term multiply: kp × offset
+                            mul_start   <= 1'b1;
+                            mul_a       <= offset_r;
+                            mul_b       <= servo_kp_r;
+                            sub_state_r <= SUB_PI_MUL_P;
+                        end
+                    end
+
+                    // ── PI P-term Multiply ───────────────────────────────
+                    SUB_PI_MUL_P: begin
+                        mul_start <= 1'b0;
+                        if (mul_done) begin
+                            pi_p_term_r <= mul_result[63:32];
+                            mul_start   <= 1'b1;
+                            mul_a       <= integral_r;
+                            mul_b       <= servo_ki_r;
+                            sub_state_r <= SUB_PI_MUL_I;
+                        end
+                    end
+
+                    // ── PI I-term Multiply ───────────────────────────────
+                    SUB_PI_MUL_I: begin
+                        mul_start <= 1'b0;
+                        if (mul_done) begin
+                            current_frac_r          <= current_frac_r - (pi_p_term_r + mul_result[63:32]);
+                            phc_hw_adj_valid        <= 1'b1;
+                            phc_hw_adj_ns_incr_frac <= current_frac_r - (pi_p_term_r + mul_result[63:32]);
 
                             // Lock detection
-                            if ($unsigned(offset_r[63:32]) < servo_step_thresh_r[31:2]) begin
+                            if ($unsigned(offset_r) < servo_step_thresh_r[31:2]) begin
                                 if (lock_counter_r < LOCK_COUNT)
                                     lock_counter_r <= lock_counter_r + 4'd1;
                                 else
@@ -575,9 +616,9 @@ module tidelink_ptp_servo #(
                                 lock_counter_r <= '0;
                                 servo_locked   <= 1'b0;
                             end
-                        end
 
-                        sub_state_r <= SUB_IDLE;
+                            sub_state_r <= SUB_IDLE;
+                        end
                     end
 
                     default: sub_state_r <= SUB_IDLE;
@@ -585,26 +626,6 @@ module tidelink_ptp_servo #(
             end
         end
     end
-
-    // =========================================================================
-    // PI Output Function — kp * offset + ki * integral
-    // =========================================================================
-    // Returns the adjustment to NS_INCR_FRAC (signed, 32-bit)
-    // Uses Q0.32 fixed-point gains: multiply 32-bit signed offset by 32-bit
-    // unsigned gain, take upper 32 bits of 64-bit product.
-
-    function automatic logic signed [31:0] pi_output(
-        input logic [31:0] kp,
-        input logic signed [31:0] offset_ns,
-        input logic [31:0] ki,
-        input logic signed [31:0] integral_ns
-    );
-        logic signed [63:0] p_term;
-        logic signed [63:0] i_term;
-        p_term = $signed({{32{offset_ns[31]}}, offset_ns}) * $signed({1'b0, kp});
-        i_term = $signed({{32{integral_ns[31]}}, integral_ns}) * $signed({1'b0, ki});
-        return 32'((p_term + i_term) >>> 32);
-    endfunction
 
     // =========================================================================
     // Output Muxing — Servo DELAY_REQ Trigger

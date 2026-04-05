@@ -24,7 +24,6 @@ module tb_top #(
     // PHC hardware capture
     input  logic             [47:0] hw_cap_seconds,
     input  logic             [29:0] hw_cap_nanoseconds,
-    input  logic [SYS_DATA_W-1:0]  hw_cap_sub_nanoseconds,
 
     // FC SIDEBAND TX
     output logic                    servo_fc_valid,
@@ -66,7 +65,6 @@ module tb_top #(
         .dreq_rx_done           (dreq_rx_done),
         .hw_cap_seconds         (hw_cap_seconds),
         .hw_cap_nanoseconds     (hw_cap_nanoseconds),
-        .hw_cap_sub_nanoseconds (hw_cap_sub_nanoseconds),
         .servo_fc_valid         (servo_fc_valid),
         .servo_fc_data          (servo_fc_data),
         .servo_fc_ready         (servo_fc_ready),

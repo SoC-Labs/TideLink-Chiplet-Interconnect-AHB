@@ -57,6 +57,26 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | F27 | HW sync sequence number | P1 | Verify auto-incrementing seq_num in SYNC payload |
 | F28 | HW sync + software TX arbitration | P1 | Software AHB write during hw_sync active, verify coexistence |
 | F29 | HW sync register read-back | P0 | Write/read HW_SYNC_CTRL, INTERVAL; verify STATUS fields |
+| F30 | Role register defaults | P0 | After POR, ROLE_CFG=0, ROLE_STATUS reflects strap pin |
+| F31 | Role write and lock | P0 | Write role, lock, verify frozen. Lock is W1S (POR-only clear) |
+| F32 | Simultaneous role+lock write | P0 | Single write with role=1+lock=1 captures intended role, not strap |
+| F33 | Role lock prevents change | P0 | After lock, writes to ROLE_CFG.role are ignored |
+| F34 | Warm reset preserves role | P0 | hresetn asserted/released, role_locked and role_cfg survive |
+| F35 | POR clears role | P0 | poresetn clears role_locked, Wlink enters reset |
+| F36 | Wlink POR gating | P0 | Wlink held in reset until role_locked=1 |
+| F37 | Master mode APB passthrough | P0 | External APB writes reach Wlink in master mode |
+| F38 | Slave mode APB write gating | P0 | External APB writes to Wlink are gated in slave mode |
+| F39 | Slave mode APB read access | P1 | External APB reads from Wlink work in slave mode when I2C idle |
+| F40 | I2C pin mux master mode | P1 | I2C master core drives SCL/SDA in master mode |
+| F41 | I2C pin mux slave mode | P1 | I2C slave core drives SDA, SCL forced high-Z in slave mode |
+| F42 | I2C slave address config | P1 | I2C_SLV_ADDR register writable before and after lock |
+| F43 | I2C prescale config | P2 | I2C_PRESCALE register writable before and after lock |
+| F44 | Role strap override | P1 | Software role overrides strap default before lock |
+| F45 | Rapid role toggle before lock | P2 | Multiple role writes before lock, final value captured |
+| F46 | Overlapping resets | P2 | Simultaneous poresetn+hresetn handled correctly |
+| F47 | Default strap link-up | P0 | Both sides use strap defaults, lock, verify existing data flow works |
+| F48 | Role swap | P1 | Override straps so A=slave B=master, verify data flow |
+| F49 | Warm reset link re-training | P1 | After hresetn, Wlink re-trains automatically (role stays locked) |
 
 ## 3. Test Plan
 
@@ -75,6 +95,14 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | test_hw_sync_interval | F26 | Configure sub-second interval (e.g. 128 Hz), verify correct timing |
 | test_hw_sync_arbitration | F28 | Software TX during hw_sync, verify mutual exclusion |
 | test_hw_sync_disable | F25 | Enable then disable hw_sync mid-operation, verify SYNC stops |
+| test_top_role_default_strap | F30, F47 | Both sides use strap defaults (A=master, B=slave), lock, verify single packet flow |
+| test_top_role_swap | F44, F48 | Override straps: A=slave, B=master, lock, verify bidirectional data flow |
+| test_top_role_lock_prevents_change | F31, F33 | Lock role, attempt role write, verify ignored |
+| test_top_warm_reset_role_persist | F34, F49 | Lock, send packet, hresetn, verify role persists, re-send packet |
+| test_top_por_clears_role | F35, F36 | Lock, send packet, poresetn, verify role cleared, must re-lock |
+| test_top_simultaneous_lock | F32 | Single write with role+lock, verify correct role captured |
+| test_top_slave_apb_write_gated | F38, F39 | Configure as slave, verify APB writes to Wlink are gated, reads work |
+| test_top_wlink_held_before_lock | F36 | After POR, verify no link activity until role is locked |
 
 ## 4. Coverage Goals
 
@@ -85,6 +113,9 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | cg_packet_size | single(1), small(2-4), medium(5-16), large(17-255), very_large(256+) | 100% |
 | cg_bidirectional | both_active, a_only, b_only, neither | 100% |
 | cg_traffic_volume | low(1-10), medium(11-100), high(101-1000), stress(1001+) | 80% |
+| cg_role_config | master, slave | 100% |
+| cg_role_transitions | strap_default_lock, override_then_lock, warm_reset_relocked, por_relock | 100% |
+| cg_apb_mux_mode | master_write, master_read, slave_write_gated, slave_read_idle, slave_read_i2c_active | 100% |
 
 ### 4.2 Code Coverage
 
@@ -139,6 +170,10 @@ The system scoreboard tracks three independent data paths:
 | XHB500 AXI protocol compliance | Disable protocol checks if needed; XHB500 is pre-verified |
 | Mixed AXI/FC traffic contention in Wlink | test_top_mixed_traffic exercises this scenario |
 | Credit release timing through full stack | Tests use generous waits; future: exact timing checks |
+| Role register POR domain vs system reset domain | Tests verify hresetn preserves role, poresetn clears it |
+| Wlink POR gating race at power-up | Test verifies Wlink stays in reset before lock |
+| APB mux slave mode write gating | Dedicated test verifies writes are blocked |
+| I2C bus hang after role change | Pin mux tests verify clean transitions |
 
 ### 6.3 Future Enhancements
 

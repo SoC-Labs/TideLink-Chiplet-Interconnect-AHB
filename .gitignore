@@ -24,6 +24,9 @@ cocotb/coverage_report/
 simv
 simv.daidir
 AN.DB
+*.o
+*trace*.txt
+crte*.txt
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/
@@ -40,3 +43,6 @@ tests.txt
 modlist.txt
 modinfo.txt
 hierarchy.txt
+
+# Generated C headers (from scripts/rdl2c.py)
+src/sw/*.generated.h

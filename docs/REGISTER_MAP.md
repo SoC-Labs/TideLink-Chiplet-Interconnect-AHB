@@ -20,6 +20,8 @@ configuration registers, plus a separate AHB port for the address translator:
 |---|---|
 | 0x0000 - 0x1FFF | Wlink chiplet controller registers |
 | 0x2000 - 0x203F | TideLink configuration + PTP registers |
+| 0x2040 - 0x207F | PTP HW Sync, Servo config, Servo status, Timestamp mailbox |
+| 0x2080 - 0x208F | Chiplet controller role configuration |
 
 > **Note:** PHC registers are external to tidelink_top and accessed via their
 > own APB port on the `ptp-hardware-clock-ahb` IP.
@@ -98,6 +100,47 @@ the register select within each region.
 |-----|------|-------------|
 | [0] | tx_idle | Mirror of tx_router_idle. 1 = no in-flight FC packet. |
 | [1] | tx_pending | 1 = PTP TX word waiting, stalled on tx_router_idle. |
+
+### Region 4: Chiplet Controller Role Configuration (paddr[7:5] = 100)
+
+These registers control the master/slave role selection of the generic
+chiplet controller (`axi_chiplet_controller`). They are passed through from
+`tidelink_apb_regs` to the controller via the `ctrl_reg_*` interface.
+
+**Important:** The role registers are reset only by `poresetn` (power-on
+reset). System reset (`hresetn`) preserves them, allowing warm reset
+without re-negotiating the link role.
+
+| Offset | Name | Access | Reset | Description |
+|--------|------|--------|-------|-------------|
+| 0x2080 | ROLE_CFG | RW | 0 | Role select and lock (see below). |
+| 0x2084 | ROLE_STATUS | RO | strap | Live role status and I2C state. |
+| 0x2088 | I2C_SLV_ADDR | RW | 0x00 | 7-bit I2C slave device address. |
+| 0x208C | I2C_PRESCALE | RW | 0x0001 | 16-bit I2C master clock prescaler. |
+
+#### ROLE_CFG Register (0x2080) Fields
+
+| Bit | Name | Access | Description |
+|-----|------|--------|-------------|
+| [0] | role | RW | 0 = master, 1 = slave. Only writable while role_lock == 0. |
+| [1] | role_lock | W1S | Write-1-to-set. Locks the role and releases Wlink POR. Cleared only by poresetn. |
+
+#### ROLE_STATUS Register (0x2084) Fields
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| [0] | effective_role | Current effective role. Before lock: reflects role_strap_i pin. After lock: reflects ROLE_CFG.role. |
+| [1] | locked | 1 when role_lock has been set. Wlink link is training or active. |
+| [2] | i2c_busy | I2C slave core busy (slave mode only). |
+| [3] | i2c_addressed | I2C slave has been addressed on the bus. |
+
+#### Startup Sequence
+
+1. `poresetn` released — system active, Wlink held in reset (`role_locked = 0`)
+2. CPU reads ROLE_STATUS to check strap default (optional)
+3. CPU writes ROLE_CFG to override role if needed (optional)
+4. CPU writes `ROLE_CFG.role_lock = 1` — Wlink POR deasserts, link training begins
+5. `swi_enable` is high by default, so FC credit exchange starts automatically
 
 ---
 

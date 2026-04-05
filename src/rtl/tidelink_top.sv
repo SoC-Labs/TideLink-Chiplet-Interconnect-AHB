@@ -834,7 +834,6 @@ module tidelink_top #(
         // PHC hardware capture (via CDC from PHC)
         .hw_cap_seconds         (phc_hw_cap_seconds_sync),
         .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds_sync),
-        .hw_cap_sub_nanoseconds (phc_hw_cap_sub_nanoseconds_sync),
 
         // FC SIDEBAND injection (to FC adapter)
         .servo_fc_valid         (servo_fc_valid),

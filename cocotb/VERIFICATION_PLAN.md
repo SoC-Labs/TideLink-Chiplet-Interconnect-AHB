@@ -241,6 +241,29 @@ logic, and PHC hw_capture generation.
 | PTP-26 | HW sync SW coexistence                | Software TX while hw_sync enabled, verify both operate correctly           | New      |
 | PTP-27 | HW sync second rollover               | PHC nanoseconds wrap past 1e9, verify target seconds increments            | New      |
 
+### 8. tidelink_mul_iter (Iterative Multiplier Unit Tests) — 10 tests
+
+| ID      | Test Name                        | Description                                                        | Status |
+|---------|----------------------------------|--------------------------------------------------------------------|--------|
+| MUL-001 | Reset defaults                   | Outputs idle after reset: result_valid=0, busy=0, result=0         | New    |
+| MUL-002 | Zero times zero                  | Multiply 0 x 0, verify result=0                                   | New    |
+| MUL-003 | Identity multiply                | N x 1 and 1 x N for several N                                     | New    |
+| MUL-004 | Small positive multiply          | Known small values (e.g. 7 x 13 = 91)                             | New    |
+| MUL-005 | Large operand multiply           | Values near 2^31, verify against reference                        | New    |
+| MUL-006 | Signed negative operands         | Negative x positive and negative x negative                        | New    |
+| MUL-007 | Maximum negative value           | -2^31 x -1 and -2^31 x 1 corner cases                             | New    |
+| MUL-008 | Back-to-back operations          | Second multiply immediately after result_valid                     | New    |
+| MUL-009 | Busy flag behaviour              | busy=1 during iteration, deasserts with result_valid               | New    |
+| MUL-010 | Randomised stress                | 100 random signed pairs, all match Python reference                | New    |
+
+### 9. tidelink_ptp_servo (PTP Servo Tests — Updated) — 15 tests
+
+The servo test suite has been updated to reflect servo area optimisations:
+- 7 existing tests updated (SRV-001 to SRV-007) for 78-bit timestamps, iterative multiplier, and 32-bit integral
+- 8 new tests added (SRV-008 to SRV-015) covering the optimised timestamp format, 3-word GM SIDEBAND, phase step logic, shared multiplier arbitration, and latency characterisation
+
+See `cocotb/tidelink_ptp_servo/SERVO_OPT_VPLAN.md` for the full servo optimisation verification plan.
+
 ## Known Bugs
 
 ### BUG-002: No credit underflow protection
@@ -267,7 +290,7 @@ corrupt.
 ## Running Tests
 
 ```bash
-# Run all test suites (6 environments, 143 tests)
+# Run all test suites (9 environments, 168 tests)
 cd cocotb && make regression
 
 # Run individual suites

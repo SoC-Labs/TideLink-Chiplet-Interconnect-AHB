@@ -19,7 +19,7 @@
 
 void tidelink_init(tidelink_t *tl, uint32_t cfg_base, uint32_t fifo_base)
 {
-    tl->cfg  = (TIDELINK_CFG_TypeDef *)cfg_base;
+    tl->cfg  = (TIDELINK_REGS_TypeDef *)cfg_base;
     tl->fifo = (__IO uint32_t *)fifo_base;
 }
 
@@ -70,7 +70,7 @@ int tidelink_read_packet(tidelink_t *tl, uint32_t *buf, uint32_t max_len)
     (void)tl->fifo[0];
 
     /* Read the captured packet word length from the config register */
-    pkt_len = tl->cfg->PKT_WORD_LEN;
+    pkt_len = tl->cfg->PACKET_WORD_LENGTH;
 
     if (pkt_len > max_len) {
         return -1;

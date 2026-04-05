@@ -281,11 +281,15 @@ end else begin : gen_cdc
     end
 
     // hclk: synchronize ack, sample snapshot, re-request
+    // Note: time_req_toggle_h initialises to 1'b1 (not 1'b0) so that the
+    // first request is issued immediately after reset. Without this, the
+    // req/ack handshake deadlocks because both toggle signals start at 0
+    // and neither side sees an edge to initiate the first transfer.
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             time_ack_sync_h    <= '0;
             time_ack_prev_h    <= 1'b0;
-            time_req_toggle_h  <= 1'b0;
+            time_req_toggle_h  <= 1'b1;   // Kick-start: first request after reset
             h_phc_seconds      <= '0;
             h_phc_nanoseconds  <= '0;
         end else begin

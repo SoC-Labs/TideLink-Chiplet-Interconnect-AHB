@@ -233,4 +233,88 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         enable->hw = r;
     };
     pair_credit_counter_en_reg pair_credit_counter_en @ 0x030;
+
+    // =========================================================================
+    // Region 4: Chiplet Controller Role Configuration (paddr[7:5] = 100)
+    //   Accessible via tidelink_apb_regs Region 4 pass-through to
+    //   axi_chiplet_controller role register block.
+    //   These registers are reset only by poresetn (survive warm hresetn).
+    // =========================================================================
+
+    reg role_cfg_reg {
+        name = "Role Configuration";
+        desc = "Selects chiplet controller role (master or slave) and locks
+                the selection. The role must be locked before the Wlink link
+                can train. Once locked, only a full power-on reset (poresetn)
+                can change the role.
+                Before lock: role defaults to the role_strap_i pin value.
+                After lock: role is frozen to the register value.";
+
+        field {} role[1] = 0;
+        role->sw = rw;
+        role->hw = r;
+        role->desc = "0 = master (I2C bus master, APB direct to Wlink).
+                      1 = slave (I2C bus slave, remote master configures Wlink).
+                      Only writable while role_lock == 0.";
+
+        field {} role_lock[1] = 0;
+        role_lock->sw = rw;
+        role_lock->hw = r;
+        role_lock->desc = "Write-1-to-set (W1S). Once set, the role field is
+                           frozen and Wlink POR is released, allowing link
+                           training to begin. Cleared only by poresetn.";
+    };
+    role_cfg_reg role_cfg @ 0x080;
+
+    reg role_status_reg {
+        name = "Role Status";
+        desc = "Read-only view of the current role state and I2C slave status.";
+
+        field {} effective_role[1] = 0;
+        effective_role->sw = r;
+        effective_role->hw = w;
+        effective_role->desc = "Current effective role: 0=master, 1=slave.
+                                Before lock: reflects role_strap_i.
+                                After lock: reflects role_cfg.role.";
+
+        field {} locked[1] = 0;
+        locked->sw = r;
+        locked->hw = w;
+        locked->desc = "1 when role_lock has been set. Wlink is active.";
+
+        field {} i2c_busy[1] = 0;
+        i2c_busy->sw = r;
+        i2c_busy->hw = w;
+        i2c_busy->desc = "I2C slave core busy flag (slave mode only).";
+
+        field {} i2c_addressed[1] = 0;
+        i2c_addressed->sw = r;
+        i2c_addressed->hw = w;
+        i2c_addressed->desc = "I2C slave has been addressed on the bus.";
+    };
+    role_status_reg role_status @ 0x084;
+
+    reg i2c_slv_addr_reg {
+        name = "I2C Slave Address";
+        desc = "7-bit I2C device address for the slave core. Only effective
+                in slave mode. Can be written before or after role lock.";
+
+        field {} device_addr[7] = 0;
+        device_addr->sw = rw;
+        device_addr->hw = r;
+    };
+    i2c_slv_addr_reg i2c_slv_addr @ 0x088;
+
+    reg i2c_prescale_reg {
+        name = "I2C Master Prescale";
+        desc = "16-bit clock prescaler for the I2C master core. Sets the
+                SCL frequency: f_SCL = f_CLK / (4 * prescale). Only
+                effective in master mode. Can be written before or after
+                role lock.";
+
+        field {} prescale[16] = 1;
+        prescale->sw = rw;
+        prescale->hw = r;
+    };
+    i2c_prescale_reg i2c_prescale @ 0x08C;
 };

@@ -32,15 +32,12 @@ module tb_top #(
     output logic                     rtn_hresp,
     output logic  [SYS_DATA_W-1:0]  rtn_hrdata,
 
-    // ── AHB Master — RX FIFO Path ───────────────────────────────────────
-    output logic  [RAM_ADDR_W-1:0]  fc_rx_fifo_haddr,
-    output logic  [SYS_DATA_W-1:0]  fc_rx_fifo_hwdata,
-    output logic              [1:0]  fc_rx_fifo_htrans,
-    output logic              [2:0]  fc_rx_fifo_hsize,
-    output logic                     fc_rx_fifo_hwrite,
-    input  logic                     fc_rx_fifo_hready,
-    input  logic                     fc_rx_fifo_hresp,
-    input  logic  [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata,
+    // ── Direct Write — RX FIFO Path ─────────────────────────────────────
+    output logic                     fc_rx_fifo_valid,
+    output logic                     fc_rx_fifo_write,
+    output logic  [RAM_ADDR_W-1:0]  fc_rx_fifo_addr,
+    output logic  [SYS_DATA_W-1:0]  fc_rx_fifo_wdata,
+    input  logic                     fc_rx_fifo_ready,
 
     // ── APB Master — RX Config Path ─────────────────────────────────────
     output logic  [APB_ADDR_W-1:0]  fc_rx_cfg_paddr,
@@ -95,14 +92,12 @@ module tb_top #(
         .rtn_hrdata        (rtn_hrdata),
 
         // RX FIFO AHB Master
-        .fc_rx_fifo_haddr  (fc_rx_fifo_haddr),
-        .fc_rx_fifo_hwdata (fc_rx_fifo_hwdata),
-        .fc_rx_fifo_htrans (fc_rx_fifo_htrans),
-        .fc_rx_fifo_hsize  (fc_rx_fifo_hsize),
-        .fc_rx_fifo_hwrite (fc_rx_fifo_hwrite),
-        .fc_rx_fifo_hready (fc_rx_fifo_hready),
-        .fc_rx_fifo_hresp  (fc_rx_fifo_hresp),
-        .fc_rx_fifo_hrdata (fc_rx_fifo_hrdata),
+        // RX FIFO Direct Write
+        .fc_rx_fifo_valid  (fc_rx_fifo_valid),
+        .fc_rx_fifo_write  (fc_rx_fifo_write),
+        .fc_rx_fifo_addr   (fc_rx_fifo_addr),
+        .fc_rx_fifo_wdata  (fc_rx_fifo_wdata),
+        .fc_rx_fifo_ready  (fc_rx_fifo_ready),
 
         // RX Config APB Master
         .fc_rx_cfg_paddr   (fc_rx_cfg_paddr),

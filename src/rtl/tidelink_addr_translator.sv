@@ -1,23 +1,24 @@
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink Address Translator
 //
-// APB-configurable address remapping subsystem. Provides two independent
-// address translation channels, each with its own APB register bank for
-// programming segment-based address mapping.
+// APB-configurable address remapping subsystem. Uses CAM-based rule
+// matching for area-efficient address translation. Each channel has N
+// programmable match/replace rules (default 8) instead of a full 256-entry
+// segment table, reducing register storage from 2048 FFs to ~169 FFs per
+// channel.
 //
 // AHB subordinate interface is bridged to APB, then fanned out via an APB
-// slave mux to two address translation register sets (slots 0 and 1).
-// Each slot drives a combinational address_translation block that remaps
-// the upper 8 bits of a 32-bit address using a 256-entry segment table.
+// slave mux to the channel register sets. Each channel drives a
+// combinational CAM-based translation block.
 //
 // Based on: nanosoc_ss_chiplet_addr (nanosoc-chiplet-tech)
 //
 // External dependencies (must be on the compile file list):
-//   - apb4_if            (SV interface)  — from axi-chiplet-controller
-//   - apb_control        (SV module)     — from axi-chiplet-controller
-//   - address_translation(SV module)     — from axi-chiplet-controller
-//   - cmsdk_ahb_to_apb   (Verilog)       — from ARM CMSDK
-//   - cmsdk_apb_slave_mux(Verilog)       — from ARM CMSDK
+//   - apb4_if             (SV interface)  — from axi-chiplet-controller
+//   - tl_addr_trans_regs  (SV module)     — from tidelink src/rtl
+//   - tl_addr_trans_cam   (SV module)     — from tidelink src/rtl
+//   - cmsdk_ahb_to_apb    (Verilog)       — from ARM CMSDK
+//   - cmsdk_apb_slave_mux (Verilog)       — from ARM CMSDK
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic
 // Access license.
@@ -30,7 +31,9 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_addr_translator #(
-    parameter BE = 0 )(
+    parameter BE           = 0,
+    parameter NUM_CHANNELS = 2,
+    parameter NUM_RULES    = 8 )(
     input  wire         CLK,
     input  wire         RESETn,
 
@@ -163,8 +166,8 @@ endgenerate
 
   // APB slave multiplexer
   cmsdk_apb_slave_mux #( // Parameter to determine which ports are used
-    .PORT0_ENABLE  (1), // address translator 0
-    .PORT1_ENABLE  (1), // address translator 1
+    .PORT0_ENABLE  (1),                    // address translator 0
+    .PORT1_ENABLE  (NUM_CHANNELS > 1),     // address translator 1 (disabled when single channel)
     .PORT2_ENABLE  (0), // not used
     .PORT3_ENABLE  (0), // not used
     .PORT4_ENABLE  (0), // not used
@@ -271,53 +274,99 @@ endgenerate
   );
 
 
+// --------------------------------------------------------------------------
+// Channel 0 APB wiring (always present)
+// --------------------------------------------------------------------------
 assign CHP_ADR_APB_0.penable = i_penable;
 assign CHP_ADR_APB_0.paddr = i_paddr;
 assign CHP_ADR_APB_0.pwrite = i_pwrite;
 assign CHP_ADR_APB_0.pwdata = i_pwdata;
 assign CHP_ADR_APB_0.pstrb = i_pstrb;
-assign CHP_ADR_APB_0.pwdata = i_pwdata;
 
-assign CHP_ADR_APB_1.penable = i_penable;
-assign CHP_ADR_APB_1.paddr = i_paddr;
-assign CHP_ADR_APB_1.pwrite = i_pwrite;
-assign CHP_ADR_APB_1.pwdata = i_pwdata;
-assign CHP_ADR_APB_1.pstrb = i_pstrb;
-assign CHP_ADR_APB_1.pwdata = i_pwdata;
+wire [31:0]            base_offset_0;
+wire                   global_enable_0;
+wire [NUM_RULES-1:0]  rule_enable_0;
+wire [7:0]             rule_match_0   [NUM_RULES];
+wire [7:0]             rule_replace_0 [NUM_RULES];
 
-wire [31:0]  base_offset_0;
-wire [7:0]   seg_addr_0 [256];
-wire [31:0]  base_offset_1;
-wire [7:0]   seg_addr_1 [256];
-
-apb_control u_apb_addr_translator_0(
-    .PCLK(CLK),
-    .PRESETn(RESETn),
-    .CTRL_APB(CHP_ADR_APB_0),
-    .seg_addr(seg_addr_0),
-    .base_offset(base_offset_0)
+tl_addr_trans_regs #(
+    .NUM_RULES (NUM_RULES)
+) u_regs_0 (
+    .PCLK          (CLK),
+    .PRESETn       (RESETn),
+    .CTRL_APB      (CHP_ADR_APB_0),
+    .base_offset   (base_offset_0),
+    .global_enable (global_enable_0),
+    .rule_enable   (rule_enable_0),
+    .rule_match    (rule_match_0),
+    .rule_replace  (rule_replace_0)
 );
 
-address_translation u_addr_translator_0(
-    .addr_i(chp0_ahb_haddr_i),
-    .addr_o(chp0_ahb_haddr_o),
-    .base_offset(base_offset_0),
-    .seg_addr(seg_addr_0)
+tl_addr_trans_cam #(
+    .NUM_RULES (NUM_RULES)
+) u_cam_0 (
+    .addr_i        (chp0_ahb_haddr_i),
+    .addr_o        (chp0_ahb_haddr_o),
+    .base_offset   (base_offset_0),
+    .global_enable (global_enable_0),
+    .rule_enable   (rule_enable_0),
+    .rule_match    (rule_match_0),
+    .rule_replace  (rule_replace_0)
 );
 
-apb_control u_apb_addr_translator_1(
-    .PCLK(CLK),
-    .PRESETn(RESETn),
-    .CTRL_APB(CHP_ADR_APB_1),
-    .seg_addr(seg_addr_1),
-    .base_offset(base_offset_1)
-);
+// --------------------------------------------------------------------------
+// Channel 1 (conditional on NUM_CHANNELS > 1)
+// --------------------------------------------------------------------------
+generate
+if (NUM_CHANNELS > 1) begin : gen_ch1
 
-address_translation u_addr_translator_1(
-    .addr_i(chp1_ahb_haddr_i),
-    .addr_o(chp1_ahb_haddr_o),
-    .base_offset(base_offset_1),
-    .seg_addr(seg_addr_1)
-);
+    assign CHP_ADR_APB_1.penable = i_penable;
+    assign CHP_ADR_APB_1.paddr = i_paddr;
+    assign CHP_ADR_APB_1.pwrite = i_pwrite;
+    assign CHP_ADR_APB_1.pwdata = i_pwdata;
+    assign CHP_ADR_APB_1.pstrb = i_pstrb;
+
+    wire [31:0]            base_offset_1;
+    wire                   global_enable_1;
+    wire [NUM_RULES-1:0]  rule_enable_1;
+    wire [7:0]             rule_match_1   [NUM_RULES];
+    wire [7:0]             rule_replace_1 [NUM_RULES];
+
+    tl_addr_trans_regs #(
+        .NUM_RULES (NUM_RULES)
+    ) u_regs_1 (
+        .PCLK          (CLK),
+        .PRESETn       (RESETn),
+        .CTRL_APB      (CHP_ADR_APB_1),
+        .base_offset   (base_offset_1),
+        .global_enable (global_enable_1),
+        .rule_enable   (rule_enable_1),
+        .rule_match    (rule_match_1),
+        .rule_replace  (rule_replace_1)
+    );
+
+    tl_addr_trans_cam #(
+        .NUM_RULES (NUM_RULES)
+    ) u_cam_1 (
+        .addr_i        (chp1_ahb_haddr_i),
+        .addr_o        (chp1_ahb_haddr_o),
+        .base_offset   (base_offset_1),
+        .global_enable (global_enable_1),
+        .rule_enable   (rule_enable_1),
+        .rule_match    (rule_match_1),
+        .rule_replace  (rule_replace_1)
+    );
+
+end else begin : gen_ch1_tieoff
+
+    assign chp1_ahb_haddr_o = 32'h0;
+
+    // Tie off APB mux port 1 return signals
+    assign CHP_ADR_APB_1.pready  = 1'b1;
+    assign CHP_ADR_APB_1.prdata  = 32'h00000000;
+    assign CHP_ADR_APB_1.pslverr = 1'b1;
+
+end
+endgenerate
 
 endmodule

@@ -2,12 +2,11 @@
 // SoCLabs TideLink Address Translator Register Description (SystemRDL 2.0)
 //
 // Describes the APB register map for a single channel of the
-// tidelink_addr_translator module (derived from nanosoc_ss_chiplet_addr).
-// Each channel has a base offset register and a 256-entry segment table
-// for 8-bit upper-address remapping, plus ARM PrimeCell identification
-// registers (PIDR/CIDR).
+// tidelink_addr_translator module using CAM-based rule matching.
+// Each channel has a base offset register, a global enable control,
+// and N programmable match/replace rules (default N=8).
 //
-// The address translator has two independent channels. This addrmap
+// The address translator has up to two independent channels. This addrmap
 // describes one channel; instantiate twice at the integration level.
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
@@ -19,18 +18,22 @@
 // -----------------------------------------------------------------------------
 
 addrmap tidelink_addr_translator_regs {
-    name = "TideLink Address Translator Register Map";
-    desc = "Per-channel address translation configuration. The translator remaps
-            AHB addresses by:
+    name = "TideLink Address Translator Register Map (CAM-based)";
+    desc = "Per-channel address translation configuration using CAM-based
+            rule matching. The translator remaps AHB addresses by:
             1. Subtracting base_offset from the input address to normalise it.
-            2. Looking up the upper 8 bits (addr[31:24]) of the normalised
-               address in a 256-entry segment table.
-            3. Replacing addr[31:24] with the segment table value; addr[23:0]
-               passes through unchanged.
+            2. Comparing the upper 8 bits (addr[31:24]) of the normalised
+               address against each enabled rule's match byte.
+            3. If a rule matches, replacing addr[31:24] with the rule's
+               replace byte. Lowest-index rule has highest priority.
+            4. If no rule matches and global_enable is set, addr[31:24]
+               passes through unchanged (identity mapping).
+            5. If global_enable is cleared, all addresses pass through
+               unchanged regardless of rule state.
+            6. addr[23:0] always passes through unchanged.
 
-            The segment table is stored as 64 x 32-bit registers, each packing
-            4 x 8-bit segment addresses. On reset the table is initialised to
-            an identity mapping (seg[k] = k).";
+            On reset all rules are disabled and global_enable is 0,
+            giving pure identity passthrough (safe default).";
 
     default hw = r;
     default sw = r;
@@ -43,12 +46,12 @@ addrmap tidelink_addr_translator_regs {
     reg base_offset_reg {
         name = "Base Offset";
         desc = "32-bit value subtracted from the input AHB address before the
-                upper-byte segment lookup. This allows the translator to operate
+                upper-byte rule matching. This allows the translator to operate
                 on addresses relative to an arbitrary base.
 
                 For example, if the local AHB slave decodes 0x60000000-0x6FFFFFFF
                 for remote access, set base_offset = 0x60000000 so that the
-                segment lookup sees normalised addresses 0x00000000-0x0FFFFFFF.";
+                rule matching sees normalised addresses 0x00000000-0x0FFFFFFF.";
 
         field {} base_offset[32] = 0;
         base_offset->sw = rw;
@@ -57,46 +60,73 @@ addrmap tidelink_addr_translator_regs {
     base_offset_reg base_offset @ 0x000;
 
     // =========================================================================
-    // Segment Table Registers (64 registers × 4 segments each = 256 entries)
-    //
-    // Register N at offset 0x004 + 4*N packs 4 segment entries:
-    //   [7:0]   = seg[4N+0]
-    //   [15:8]  = seg[4N+1]
-    //   [23:16] = seg[4N+2]
-    //   [31:24] = seg[4N+3]
-    //
-    // Reset value: seg[k] = k (identity mapping).
-    // Register N reset = {(4N+3)[7:0], (4N+2)[7:0], (4N+1)[7:0], (4N+0)[7:0]}
+    // Control Register
     // =========================================================================
 
-    reg segment_reg {
-        name = "Segment Table Entry";
-        desc = "Four packed 8-bit segment addresses. Each byte maps one value
-                of the upper address byte (addr[31:24]) to a new value.";
+    reg ctrl_reg {
+        name = "Control";
+        desc = "Global translation control. When enable is 0, all addresses
+                pass through unchanged regardless of rule configuration.
+                When enable is 1, address translation is active and rules
+                are evaluated.";
 
-        field {} seg_0[8] = 0;
-        seg_0->sw = rw;
-        seg_0->hw = r;
-        seg_0->desc = "Segment address for input byte value 4N+0.";
+        field {} enable[1] = 0;
+        enable->sw = rw;
+        enable->hw = r;
+        enable->desc = "Global translation enable. 0=identity passthrough, 1=active.";
+    };
+    ctrl_reg ctrl @ 0x004;
 
-        field {} seg_1[8] = 0;
-        seg_1->sw = rw;
-        seg_1->hw = r;
-        seg_1->desc = "Segment address for input byte value 4N+1.";
+    // =========================================================================
+    // Rule Registers (N rules, default 8, at offsets 0x010-0x02C)
+    //
+    // Each rule register contains:
+    //   [0]     — enable: rule active when set
+    //   [7:1]   — reserved
+    //   [15:8]  — match: upper address byte value to match against
+    //   [23:16] — replace: replacement value for upper address byte
+    //   [31:24] — reserved
+    //
+    // Priority: Rule 0 has highest priority. If multiple rules match,
+    // the lowest-index rule's replace value is used.
+    //
+    // Reset: All rules disabled (enable=0, match=0, replace=0).
+    // =========================================================================
 
-        field {} seg_2[8] = 0;
-        seg_2->sw = rw;
-        seg_2->hw = r;
-        seg_2->desc = "Segment address for input byte value 4N+2.";
+    reg rule_reg {
+        name = "Translation Rule";
+        desc = "Programmable address translation rule. When enabled, if the
+                normalised input address upper byte matches the match field,
+                it is replaced with the replace field in the output address.";
 
-        field {} seg_3[8] = 0;
-        seg_3->sw = rw;
-        seg_3->hw = r;
-        seg_3->desc = "Segment address for input byte value 4N+3.";
+        field {} enable[1] = 0;
+        enable->sw = rw;
+        enable->hw = r;
+        enable->desc = "Rule enable. 0=inactive, 1=active.";
+
+        field {} rsvd_0[7] = 0;
+        rsvd_0->sw = r;
+        rsvd_0->hw = na;
+        rsvd_0->desc = "Reserved.";
+
+        field {} match_byte[8] = 0;
+        match_byte->sw = rw;
+        match_byte->hw = r;
+        match_byte->desc = "Upper address byte value to match against (addr_norm[31:24]).";
+
+        field {} replace_byte[8] = 0;
+        replace_byte->sw = rw;
+        replace_byte->hw = r;
+        replace_byte->desc = "Replacement value for upper address byte when rule matches.";
+
+        field {} rsvd_1[8] = 0;
+        rsvd_1->sw = r;
+        rsvd_1->hw = na;
+        rsvd_1->desc = "Reserved.";
     };
 
-    // Instantiate 64 segment registers at offsets 0x004 through 0x100
-    segment_reg segment_table[64] @ 0x004 += 0x004;
+    // Instantiate 8 rule registers at offsets 0x010 through 0x02C
+    rule_reg rule[8] @ 0x010 += 0x004;
 
     // =========================================================================
     // PrimeCell Identification Registers (read-only, fixed values)

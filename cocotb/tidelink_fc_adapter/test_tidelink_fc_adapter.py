@@ -238,6 +238,51 @@ class APBMasterMonitor:
         self._running = False
 
 
+class DirectWriteMonitor:
+    """Monitors a direct valid/addr/wdata write port driven by the DUT."""
+
+    def __init__(self, dut, prefix, log=None):
+        self.valid = getattr(dut, f"{prefix}_valid")
+        self.write = getattr(dut, f"{prefix}_write")
+        self.addr  = getattr(dut, f"{prefix}_addr")
+        self.wdata = getattr(dut, f"{prefix}_wdata")
+        self.dut   = dut
+        self.log   = log
+        self.writes = Queue()
+        self._running = False
+
+    def start(self):
+        self._running = True
+        cocotb.start_soon(self._run())
+
+    async def _run(self):
+        while self._running:
+            await RisingEdge(self.dut.hclk)
+            try:
+                valid_val = int(self.valid.value)
+                write_val = int(self.write.value)
+            except ValueError:
+                continue
+            if valid_val and write_val:
+                addr = int(self.addr.value)
+                data = int(self.wdata.value)
+                if self.log:
+                    self.log.info(
+                        f"Direct Write: addr=0x{addr:04X} "
+                        f"data=0x{data:08X}")
+                self.writes.put_nowait({"addr": addr, "data": data})
+
+    async def get(self, timeout_cycles=100):
+        for _ in range(timeout_cycles):
+            if not self.writes.empty():
+                return self.writes.get_nowait()
+            await RisingEdge(self.dut.hclk)
+        raise TimeoutError("DirectWriteMonitor: no write captured within timeout")
+
+    def stop(self):
+        self._running = False
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -248,7 +293,7 @@ async def setup(dut):
 
     fc_mon    = FCMonitor(dut, log=dut._log)
     fc_drv    = FCDriver(dut, log=dut._log)
-    fifo_mon  = AHBMasterMonitor(dut, "fc_rx_fifo", log=dut._log)
+    fifo_mon  = DirectWriteMonitor(dut, "fc_rx_fifo", log=dut._log)
     cfg_mon   = APBMasterMonitor(dut, "fc_rx_cfg", log=dut._log)
 
     fc_mon.start()
@@ -286,9 +331,7 @@ async def do_reset(dut):
     dut.tl_fc_l2a_data.value  = 0
 
     # RX AHB slave responses — always ready by default
-    dut.fc_rx_fifo_hready.value = 1
-    dut.fc_rx_fifo_hresp.value  = 0
-    dut.fc_rx_fifo_hrdata.value = 0
+    dut.fc_rx_fifo_ready.value = 1
     dut.fc_rx_cfg_pready.value  = 1
     dut.fc_rx_cfg_prdata.value  = 0
 
@@ -365,8 +408,8 @@ async def test_01_reset_defaults(dut):
     await do_reset(dut)
 
     assert int(dut.tl_fc_a2l_valid.value) == 0, "a2l_valid should be 0 after reset"
-    assert int(dut.fc_rx_fifo_htrans.value) == HTRANS_IDLE, \
-        "RX FIFO htrans should be IDLE after reset"
+    assert int(dut.fc_rx_fifo_valid.value) == 0, \
+        "RX FIFO valid should be 0 after reset"
     assert int(dut.fc_rx_cfg_psel.value) == 0, \
         "RX Config psel should be 0 after reset"
     assert int(dut.ahb_tx_hreadyout.value) == 1, \
@@ -740,12 +783,12 @@ async def test_14_rx_fifo_multiple(dut):
 
 @cocotb.test()
 async def test_15_rx_fifo_backpressure(dut):
-    """Hold fc_rx_fifo_hready low -> verify FC l2a_accept pauses."""
+    """Hold fc_rx_fifo_ready low -> verify FC l2a_accept pauses for FIFO_DATA."""
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
     # Deassert FIFO slave hready to simulate backpressure
-    dut.fc_rx_fifo_hready.value = 0
+    dut.fc_rx_fifo_ready.value = 0
 
     # Drive an FC RX FIFO_DATA word — it should be accepted into the latch
     raw = FCDriver.encode(PKT_FIFO_DATA, 0x0100, 0xABCDABCD)
@@ -774,7 +817,7 @@ async def test_15_rx_fifo_backpressure(dut):
     dut.tl_fc_l2a_valid.value = 0
 
     # Release backpressure
-    dut.fc_rx_fifo_hready.value = 1
+    dut.fc_rx_fifo_ready.value = 1
     await ClockCycles(dut.hclk, 5)
 
     # First word should now complete

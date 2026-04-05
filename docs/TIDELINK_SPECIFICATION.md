@@ -833,7 +833,7 @@ All three clock inputs of `tidelink_chiplet_controller` (`apb_clk`, `app_clk`, `
 
 ### 11.3 FC Adapter RX: Single Word in Flight
 
-The RX FSM processes one FC word at a time (latch → AHB write → next). At 100 MHz AHB with a two-cycle write, maximum RX throughput is 50 MWords/s (200 MB/s). This is sufficient for Cortex-M0 class systems; higher-throughput applications would require a pipelined RX path.
+The RX FSM processes one FC word at a time. For FIFO_DATA packets, the FC adapter uses a direct valid/addr/data write interface to the FIFO memory, completing in a single cycle (vs. the previous 2-cycle AHB path). At 100 MHz, maximum RX FIFO throughput is 100 MWords/s (400 MB/s). SIDEBAND packets still use the 2-cycle APB path. The FIFO memory contains a simple SRAM arbiter that gives FC direct writes priority over CPU AHB reads, inserting at most 1 wait state per FC write on the CPU path.
 
 ### 11.4 TX Aperture: Write-Only
 
@@ -880,6 +880,8 @@ Several architectural changes have been made to improve timing closure and reduc
 **Unused APB mux ports disabled** (`tidelink_addr_translator.sv`): The `cmsdk_apb_slave_mux` instance now has `PORT2_ENABLE` through `PORT15_ENABLE` set to 0, eliminating decode logic for the 14 unused ports.
 
 **Big-endian byte swap gated by generate** (`tidelink_addr_translator.sv`): The byte-swap logic in the address translator is wrapped in `generate if (BE != 0)`. When `BE=0` (the only configuration in use), the swap registers and muxes are eliminated entirely.
+
+**Direct FC-to-FIFO write path** (`tidelink_fc_adapter.sv`, `tidelink_fifo_mem.sv`, `tidelink_top.sv`): The FC adapter's RX FIFO path now uses a single-cycle valid/addr/data interface instead of a 2-cycle AHB master. This eliminates the 2:1 AHB mux in `tidelink_top`, removes the AHB address-phase overhead, and doubles RX FIFO throughput from 200 MB/s to 400 MB/s at 100 MHz. The FIFO memory includes a simple SRAM arbiter that prioritises FC writes over CPU AHB reads. The CPU read path remains AHB. Approximate gate savings: ~950 gates (AHB mux + write-path buffers in cmsdk_ahb_to_sram).
 
 ### 11.12 PHC Clock Domain Crossing (`tidelink_phc_cdc`)
 

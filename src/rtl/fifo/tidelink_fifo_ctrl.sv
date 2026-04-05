@@ -59,7 +59,16 @@ module tidelink_fifo_ctrl #(
     output wire                   underrun,       // Read with no packet available
 
     // Control inputs
-    input  wire                   flush           // Self-clearing flush: resets pointers/counters/errors
+    input  wire                   flush,          // Self-clearing flush: resets pointers/counters/errors
+
+    // FC direct write interface (single-cycle addr+data, bypasses AHB)
+    input  wire                   fc_wr_valid,
+    input  wire                   fc_wr_write,
+    input  wire  [RAM_ADDR_W-1:0] fc_wr_addr,
+    input  wire  [RAM_ADDR_W-1:0] fc_wr_wdata,    // Only packet-length bits used
+
+    // FC translated write address output (byte address with write_ptr offset)
+    output wire  [RAM_ADDR_W-1:0] fc_translated_addr
 );
 
     localparam MAX_CREDITS = (1 << (RAM_ADDR_W - 2));
@@ -76,14 +85,20 @@ module tidelink_fifo_ctrl #(
     logic [RAM_ADDR_W-2:0] credit_count_r,          credit_count_nxt;
 
     // -------------------------------------------------------------------------
-    // Shared completion signals (gated on hready for correct AHB handshake)
+    // Completion signals — dual-source (FC direct write + AHB read/write)
     // -------------------------------------------------------------------------
-    logic valid_transfer;
     logic write_complete;
 
-    assign valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
-    assign write_complete = valid_transfer && (haddr == write_target_addr_r) && hwrite;
-    assign read_complete  = valid_transfer && (haddr == read_target_addr_r)  && ~hwrite;
+    // FC direct write completion (single-cycle, addr+data in same cycle)
+    wire fc_write_valid = fc_wr_valid && fc_wr_write && (packet_word_length_r != '0);
+    wire fc_write_complete = fc_write_valid && (fc_wr_addr == write_target_addr_r);
+
+    // AHB path completion (preserved for CPU reads + testbench backward compat)
+    wire ahb_valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
+    wire ahb_write_complete = ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
+
+    assign write_complete = fc_write_complete || ahb_write_complete;
+    assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
 
     // -------------------------------------------------------------------------
     // Pointer Management and Address Translation
@@ -116,20 +131,25 @@ module tidelink_fifo_ctrl #(
     // output (addr) is already in translated space — pass it through directly
     assign translated_addr = addr;
 
-    // Combinational translated byte address for cmsdk_ahb_to_sram
-    // This ensures buf_addr and buf_hit work in translated address space,
-    // preventing false read-after-write merges across different packets
+    // AHB path: translated byte address for cmsdk_ahb_to_sram (CPU reads + legacy writes)
     assign translated_haddr = haddr + (hwrite ? write_ptr_r : read_ptr_r);
 
+    // FC direct write path: translated byte address (write_ptr offset applied)
+    assign fc_translated_addr = fc_wr_addr + write_ptr_r;
+
     // -------------------------------------------------------------------------
-    // Packet Metadata Capture
+    // Packet Metadata Capture — Dual Source
     // -------------------------------------------------------------------------
-    // Valid AHB access to address 0 (gated on hsel, htrans, hready)
+    // FC direct writes deliver addr+data in the same cycle (same-cycle capture).
+    // AHB writes use the standard 2-phase protocol (pipelined capture).
+    // AHB reads use check_addr_r to capture length from SRAM read data.
+
     wire valid_ahb_access = hsel && htrans[1] && hready;
 
-    // Registered flag: a valid write to addr 0 occurred in the address phase.
-    // hwdata is only valid in the DATA phase (one cycle later in AHB protocol),
-    // so we capture it on the next cycle.
+    // FC write to addr 0: same-cycle length capture
+    wire fc_write_addr0 = fc_wr_valid && fc_wr_write && (fc_wr_addr == '0);
+
+    // AHB write pipeline: addr phase detection → data phase capture
     logic capture_write_length_r, capture_write_length_nxt;
 
     always_ff @(posedge hclk or negedge hresetn) begin
@@ -147,17 +167,18 @@ module tidelink_fifo_ctrl #(
         packet_word_length_nxt   = packet_word_length_r;
         capture_write_length_nxt = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
 
-        // Clear packet_word_length and check_addr on completion so stale
-        // target addresses don't cause spurious hits and check_addr doesn't
-        // capture stale rdata on the next cycle (BUG-005 fix)
+        // Clear packet_word_length and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin
             packet_word_length_nxt = '0;
             check_addr_nxt = 1'b0;
+        end else if (fc_write_addr0) begin
+            // FC direct write to addr 0: capture length immediately (same cycle)
+            packet_word_length_nxt = fc_wr_wdata;
         end else if (capture_write_length_r) begin
-            // Data phase of write to addr 0: hwdata is now valid
+            // AHB data phase of write to addr 0: hwdata is now valid
             packet_word_length_nxt = hwdata;
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
-            // Read from addr 0: set flag to capture length from SRAM next cycle
+            // AHB read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag
@@ -252,7 +273,8 @@ module tidelink_fifo_ctrl #(
 
     logic overrun_r, underrun_r;
 
-    wire overrun_event  = hsel && htrans[1] && hready && hwrite
+    wire overrun_event  = ((fc_wr_valid && fc_wr_write) ||
+                           (hsel && htrans[1] && hready && hwrite))
                           && (credit_count_r == '0);
     wire underrun_event = hsel && htrans[1] && hready && ~hwrite
                           && (credit_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS)));

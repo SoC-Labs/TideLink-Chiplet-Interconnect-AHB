@@ -49,19 +49,41 @@ module tidelink_fifo_mem #(
     output wire                   underrun,
 
     // Control inputs (from APB registers)
-    input  wire                   flush
+    input  wire                   flush,
+
+    // FC direct write interface (single-cycle, bypasses AHB)
+    input  wire                   fc_wr_valid,
+    input  wire                   fc_wr_write,
+    input  wire  [RAM_ADDR_W-1:0] fc_wr_addr,
+    input  wire  [SYS_DATA_W-1:0] fc_wr_wdata,
+    output wire                   fc_wr_ready
 );
 
     // --------------------------------------------------------------------------
     // Internal Wiring
     // --------------------------------------------------------------------------
-    logic [RAM_ADDR_W-3:0] addr;
-    logic [RAM_DATA_W-1:0] wdata;
+    logic [RAM_ADDR_W-3:0] ahb_sram_addr;   // from cmsdk_ahb_to_sram
+    logic [RAM_DATA_W-1:0] ahb_sram_wdata;
     logic [RAM_DATA_W-1:0] rdata;
-    logic            [3:0] wen;
-    logic                  cs;
+    logic            [3:0] ahb_sram_wen;
+    logic                  ahb_sram_cs;
     logic [RAM_ADDR_W-3:0] translated_addr;
     logic [RAM_ADDR_W-1:0] translated_haddr;
+    logic [RAM_ADDR_W-1:0] fc_translated_addr;  // from fifo_ctrl FC write path
+
+    // SRAM arbiter: FC direct writes have priority over AHB
+    wire fc_active = fc_wr_valid && fc_wr_write;
+    assign fc_wr_ready = 1'b1;  // SRAM completes writes in 1 cycle
+
+    // Final SRAM signals (muxed between FC and AHB paths)
+    wire [RAM_ADDR_W-3:0] sram_addr  = fc_active ? fc_translated_addr[RAM_ADDR_W-1:2] : ahb_sram_addr;
+    wire [RAM_DATA_W-1:0] sram_wdata = fc_active ? fc_wr_wdata                        : ahb_sram_wdata;
+    wire            [3:0] sram_wen   = fc_active ? 4'b1111                             : ahb_sram_wen;
+    wire                  sram_cs    = fc_active ? 1'b1                                : ahb_sram_cs;
+
+    // AHB stall: hold hready low when FC write occupies the SRAM
+    wire ahb_hready_gated = hready && !fc_active;
+    wire ahb_hreadyout_raw;
 
     // Testbench-visible signal aliases (preserve cocotb probe paths)
     // hal lint_off URDREG UCOPNM
@@ -88,7 +110,7 @@ module tidelink_fifo_mem #(
         .haddr               (haddr),
         .hwdata              (hwdata[RAM_ADDR_W-1:0]),
         .rdata               (rdata[RAM_ADDR_W-1:0]),
-        .addr                (addr),
+        .addr                (ahb_sram_addr),
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),
         .read_complete       (read_complete),
@@ -102,7 +124,13 @@ module tidelink_fifo_mem #(
         .packet_committed_irq(packet_committed_irq),
         .overrun             (overrun),
         .underrun            (underrun),
-        .flush               (flush)
+        .flush               (flush),
+        // FC direct write interface
+        .fc_wr_valid         (fc_wr_valid),
+        .fc_wr_write         (fc_wr_write),
+        .fc_wr_addr          (fc_wr_addr),
+        .fc_wr_wdata         (fc_wr_wdata[RAM_ADDR_W-1:0]),
+        .fc_translated_addr  (fc_translated_addr)
     );
 
     // --------------------------------------------------------------------------
@@ -111,7 +139,7 @@ module tidelink_fifo_mem #(
     cmsdk_ahb_to_sram #(
         .AW (RAM_ADDR_W)
     ) u_ahb_to_sram (
-        // AHB Inputs
+        // AHB Inputs (hready gated when FC write occupies SRAM)
         .HCLK       (hclk),
         .HRESETn    (hresetn),
         .HSEL       (hsel),
@@ -120,22 +148,25 @@ module tidelink_fifo_mem #(
         .HSIZE      (hsize),
         .HWRITE     (hwrite),
         .HWDATA     (hwdata),
-        .HREADY     (hready),
+        .HREADY     (ahb_hready_gated),
 
         // AHB Outputs
-        .HREADYOUT  (hreadyout),
+        .HREADYOUT  (ahb_hreadyout_raw),
         .HRDATA     (hrdata),
         .HRESP      (hresp),
 
         // SRAM input
         .SRAMRDATA  (rdata),
 
-        // SRAM Outputs
-        .SRAMADDR   (addr),
-        .SRAMWDATA  (wdata),
-        .SRAMWEN    (wen),
-        .SRAMCS     (cs)
+        // SRAM Outputs (muxed with FC path before reaching SRAM)
+        .SRAMADDR   (ahb_sram_addr),
+        .SRAMWDATA  (ahb_sram_wdata),
+        .SRAMWEN    (ahb_sram_wen),
+        .SRAMCS     (ahb_sram_cs)
    );
+
+    // AHB hreadyout: stall when FC write is active
+    assign hreadyout = ahb_hreadyout_raw && !fc_active;
 
     // --------------------------------------------------------------------------
     // SRAM (swap tidelink_sram.sv in filelist for FPGA vs ASIC)
@@ -144,10 +175,10 @@ module tidelink_fifo_mem #(
         .AW (RAM_ADDR_W)
     ) u_sram (
         .CLK        (hclk),
-        .ADDR       (translated_addr),
-        .WDATA      (wdata),
-        .WREN       (wen),
-        .CS         (cs),
+        .ADDR       (fc_active ? fc_translated_addr[RAM_ADDR_W-1:2] : translated_addr),
+        .WDATA      (sram_wdata),
+        .WREN       (sram_wen),
+        .CS         (sram_cs),
         .RDATA      (rdata)
     );
 

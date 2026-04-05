@@ -78,7 +78,16 @@ module tidelink_fifo #(
     output wire               [2:0] ptp_reg_addr,
     output wire  [SYS_DATA_W-1:0]  ptp_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ptp_reg_rdata,
-    output wire                     ptp_reg_region   // 0=Region 1 (basic PTP), 1=Region 2 (HW sync)
+    output wire                     ptp_reg_region,  // 0=Region 1 (basic PTP), 1=Region 2 (HW sync)
+
+    // --------------------------------------------------------------------------
+    // FC Direct Write Interface (single-cycle, bypasses AHB for FIFO writes)
+    // --------------------------------------------------------------------------
+    input  wire                    fc_wr_valid,
+    input  wire                    fc_wr_write,
+    input  wire  [RAM_ADDR_W-1:0] fc_wr_addr,
+    input  wire  [SYS_DATA_W-1:0] fc_wr_wdata,
+    output wire                    fc_wr_ready
 );
 
     // --------------------------------------------------------------------------
@@ -140,7 +149,13 @@ module tidelink_fifo #(
         .packet_committed_irq   (packet_committed_irq),
         .overrun                (fifo_overrun),
         .underrun               (fifo_underrun),
-        .flush                  (ctrl_flush)
+        .flush                  (ctrl_flush),
+        // FC direct write interface
+        .fc_wr_valid            (fc_wr_valid),
+        .fc_wr_write            (fc_wr_write),
+        .fc_wr_addr             (fc_wr_addr),
+        .fc_wr_wdata            (fc_wr_wdata),
+        .fc_wr_ready            (fc_wr_ready)
     );
 
     // --------------------------------------------------------------------------

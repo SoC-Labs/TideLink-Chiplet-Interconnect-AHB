@@ -51,7 +51,13 @@ module tb_top #(
         .packet_committed_irq (packet_committed_irq),
         .overrun              (overrun),
         .underrun             (underrun),
-        .flush                (flush)
+        .flush                (flush),
+        // FC direct write port (tied off — tests use AHB)
+        .fc_wr_valid          (1'b0),
+        .fc_wr_write          (1'b0),
+        .fc_wr_addr           ({RAM_ADDR_W{1'b0}}),
+        .fc_wr_wdata          ({SYS_DATA_W{1'b0}}),
+        .fc_wr_ready          ()
     );
 
     // Waveform dump

@@ -72,17 +72,14 @@ module tidelink_fc_adapter #(
     output wire   [SYS_DATA_W-1:0]  rtn_hrdata,
 
     // --------------------------------------------------------------------------
-    // AHB Master — RX FIFO Path (FIFO_DATA packets → local FIFO data window)
-    // Uses addr_offset directly as FIFO byte address (no base address needed)
+    // Direct Write — RX FIFO Path (FIFO_DATA packets → local FIFO data window)
+    // Single-cycle valid/addr/data, bypasses AHB for 2x throughput.
     // --------------------------------------------------------------------------
-    output wire   [RAM_ADDR_W-1:0]  fc_rx_fifo_haddr,
-    output wire   [SYS_DATA_W-1:0]  fc_rx_fifo_hwdata,
-    output wire               [1:0] fc_rx_fifo_htrans,
-    output wire               [2:0] fc_rx_fifo_hsize,
-    output wire                     fc_rx_fifo_hwrite,
-    input  wire                     fc_rx_fifo_hready,
-    input  wire                     fc_rx_fifo_hresp,
-    input  wire   [SYS_DATA_W-1:0]  fc_rx_fifo_hrdata,
+    output wire                     fc_rx_fifo_valid,
+    output wire                     fc_rx_fifo_write,
+    output wire   [RAM_ADDR_W-1:0]  fc_rx_fifo_addr,
+    output wire   [SYS_DATA_W-1:0]  fc_rx_fifo_wdata,
+    input  wire                     fc_rx_fifo_ready,
 
     // --------------------------------------------------------------------------
     // APB Master — RX Config Path (SIDEBAND packets → local APB config regs)
@@ -289,8 +286,8 @@ module tidelink_fc_adapter #(
     // Route selection: which AHB master port to drive
     wire rx_is_fifo = (rx_pkt_type == PKT_FIFO_DATA);
 
-    // Ready from the active target port (AHB for FIFO, APB for config)
-    wire rx_active_hready = rx_is_fifo ? fc_rx_fifo_hready : fc_rx_cfg_pready;
+    // Ready from the active target port (direct for FIFO, APB for config)
+    wire rx_active_ready = rx_is_fifo ? fc_rx_fifo_ready : fc_rx_cfg_pready;
 
     // Accept FC RX data when idle and a word is available
     wire rx_accept = tl_fc_l2a_valid & (rx_state_r == RX_IDLE) & ~rx_pending_r;
@@ -306,7 +303,9 @@ module tidelink_fc_adapter #(
             if (rx_accept) begin
                 rx_fc_word_r <= tl_fc_l2a_data;
                 rx_pending_r <= 1'b1;
-            end else if (rx_state_r == RX_DATA_PHASE && rx_active_hready) begin
+            end else if ((rx_state_r == RX_DATA_PHASE && rx_active_ready) ||
+                        (rx_state_r == RX_ADDR_PHASE && rx_is_fifo && fc_rx_fifo_ready)) begin
+                // Clear pending: SIDEBAND completes in DATA_PHASE, FIFO completes in ADDR_PHASE
                 rx_pending_r <= 1'b0;
             end
         end
@@ -328,11 +327,19 @@ module tidelink_fc_adapter #(
                     rx_state_next = RX_ADDR_PHASE;
             end
             RX_ADDR_PHASE: begin
-                if (rx_active_hready)
-                    rx_state_next = RX_DATA_PHASE;
+                if (rx_is_fifo) begin
+                    // FIFO direct write: completes in this cycle (addr+data together)
+                    if (fc_rx_fifo_ready)
+                        rx_state_next = RX_IDLE;
+                end else begin
+                    // SIDEBAND APB setup phase → access phase
+                    if (rx_active_ready)
+                        rx_state_next = RX_DATA_PHASE;
+                end
             end
             RX_DATA_PHASE: begin
-                if (rx_active_hready)
+                // Only SIDEBAND reaches here (APB access phase)
+                if (rx_active_ready)
                     rx_state_next = RX_IDLE;
             end
             default: rx_state_next = RX_IDLE;
@@ -340,13 +347,12 @@ module tidelink_fc_adapter #(
     end
 
     // -------------------------------------------------------------------------
-    // RX FIFO AHB Master — drives FIFO_DATA writes to local FIFO data window
+    // RX FIFO Direct Write — single-cycle addr+data to local FIFO
     // -------------------------------------------------------------------------
-    assign fc_rx_fifo_haddr  = (rx_state_r == RX_ADDR_PHASE && rx_is_fifo) ? rx_addr_offset[RAM_ADDR_W-1:0] : '0;
-    assign fc_rx_fifo_htrans = (rx_state_r == RX_ADDR_PHASE && rx_is_fifo) ? HTRANS_NONSEQ : HTRANS_IDLE;
-    assign fc_rx_fifo_hsize  = HSIZE_WORD;
-    assign fc_rx_fifo_hwrite = (rx_state_r == RX_ADDR_PHASE && rx_is_fifo) ? 1'b1 : 1'b0;
-    assign fc_rx_fifo_hwdata = (rx_state_r == RX_DATA_PHASE && rx_is_fifo) ? rx_payload : '0;
+    assign fc_rx_fifo_valid = (rx_state_r == RX_ADDR_PHASE) && rx_is_fifo;
+    assign fc_rx_fifo_write = 1'b1;
+    assign fc_rx_fifo_addr  = rx_addr_offset[RAM_ADDR_W-1:0];
+    assign fc_rx_fifo_wdata = rx_payload;
 
     // -------------------------------------------------------------------------
     // RX Config APB Master — drives SIDEBAND writes to local APB config regs

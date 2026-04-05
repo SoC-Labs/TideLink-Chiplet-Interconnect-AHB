@@ -15,8 +15,8 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # Address translator and its dependencies
 COMPILE_ARGS += +incdir+$(TIDELINK_HOME)/src/rtl
 COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
-COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/apb_control/apb_control.sv
-COMPILE_ARGS += $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/address_translation/address_translation.sv
+COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tl_addr_trans_regs.sv
+COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tl_addr_trans_cam.sv
 COMPILE_ARGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 COMPILE_ARGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_addr_translator.sv

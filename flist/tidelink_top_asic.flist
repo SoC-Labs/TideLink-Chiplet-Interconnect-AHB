@@ -22,8 +22,10 @@ ${TIDELINK_HOME}/src/rtl/tl_addr_trans_regs.sv
 ${TIDELINK_HOME}/src/rtl/tl_addr_trans_cam.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 
-// PTP timestamp bridge
+// PTP subsystem
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

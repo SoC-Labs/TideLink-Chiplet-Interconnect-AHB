@@ -2,8 +2,12 @@
 //
 // Exposes the AHB config slave interface and two address translation
 // channels as flat ports for cocotb signal-level driving.
+// Parameterised for NUM_CHANNELS and NUM_RULES to test the CAM-based
+// address translator.
 module tb_top #(
-    parameter BE = 0
+    parameter BE           = 0,
+    parameter NUM_CHANNELS = 2,
+    parameter NUM_RULES    = 8
 )(
     input  logic        hclk,
     input  logic        hresetn,
@@ -36,7 +40,9 @@ module tb_top #(
     assign ahbc_hready = ahbc_hreadyout;
 
     tidelink_addr_translator #(
-        .BE (BE)
+        .BE           (BE),
+        .NUM_CHANNELS (NUM_CHANNELS),
+        .NUM_RULES    (NUM_RULES)
     ) u_dut (
         .CLK               (hclk),
         .RESETn             (hresetn),

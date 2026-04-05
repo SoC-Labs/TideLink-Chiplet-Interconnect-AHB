@@ -75,13 +75,19 @@ endgenerate
 reg [7:0] addr_o_upper;
 assign addr_o[31:24] = addr_o_upper;
 
+// Ascending loop with early-exit flag synthesizes as a parallel priority
+// tree rather than the cascading mux chain of the descending-overwrite form.
 integer i;
+reg found;
 always @(*) begin
     addr_o_upper = addr_upper; // default: identity passthrough
+    found = 1'b0;
     if (global_enable) begin
-        for (i = NUM_RULES - 1; i >= 0; i = i - 1) begin
-            if (match[i])
+        for (i = 0; i < NUM_RULES; i = i + 1) begin
+            if (match[i] && !found) begin
                 addr_o_upper = rule_replace[i];
+                found = 1'b1;
+            end
         end
     end
 end

@@ -182,7 +182,7 @@ module tidelink_apb_regs #(
 
     // ── Region 1: Released Credits Accumulator (0x020) ─────────────────────────
 
-    logic [SYS_DATA_W-1:0] released_credits_acc;
+    logic [15:0] released_credits_acc;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -190,7 +190,11 @@ module tidelink_apb_regs #(
         end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
             released_credits_acc <= '0;
         end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h0) begin
-            released_credits_acc <= released_credits_acc + pwdata;
+            // Saturating 16-bit add: clamp at 0xFFFF on overflow
+            if ({1'b0, released_credits_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
+                released_credits_acc <= 16'hFFFF;
+            else
+                released_credits_acc <= released_credits_acc + pwdata[15:0];
         end
     end
 
@@ -198,7 +202,7 @@ module tidelink_apb_regs #(
 
     // ── Region 1: Doorbell Response Accumulator (0x024) ───────────────────────
 
-    logic [SYS_DATA_W-1:0] doorbell_response_acc;
+    logic [15:0] doorbell_response_acc;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -206,7 +210,11 @@ module tidelink_apb_regs #(
         end else if (apb_read && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
             doorbell_response_acc <= '0;
         end else if (apb_write && (apb_region == 2'b01) && paddr[4:2] == 3'h1) begin
-            doorbell_response_acc <= doorbell_response_acc + pwdata;
+            // Saturating 16-bit add: clamp at 0xFFFF on overflow
+            if ({1'b0, doorbell_response_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
+                doorbell_response_acc <= 16'hFFFF;
+            else
+                doorbell_response_acc <= doorbell_response_acc + pwdata[15:0];
         end
     end
 
@@ -249,13 +257,27 @@ module tidelink_apb_regs #(
 
     wire [SYS_DATA_W-1:0] credit_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + SYS_DATA_W'(1);
 
-    logic [SYS_DATA_W-1:0] release_acc;
-    wire  [SYS_DATA_W-1:0] release_acc_next = release_acc + credit_delta_data_comb;
-    wire  [SYS_DATA_W-1:0] effective_acc    = read_complete ? release_acc_next : release_acc;
+    // Pipeline stage 1: register credit delta and read_complete to break
+    // the zero-extend → add_1 → add_acc → compare combinational chain.
+    // Two-cycle total latency is invisible (returner takes 3+ cycles per txn).
+    logic [SYS_DATA_W-1:0] credit_delta_data_r;
+    logic                   read_complete_pipe;
 
-    // Pipeline stage: register read_complete and effective_acc to break the
-    // adder → mux → 32-bit comparator combinational chain. The one-cycle
-    // delay is invisible at system level (returner takes 3+ cycles per txn).
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            credit_delta_data_r <= '0;
+            read_complete_pipe  <= 1'b0;
+        end else begin
+            credit_delta_data_r <= credit_delta_data_comb;
+            read_complete_pipe  <= read_complete;
+        end
+    end
+
+    logic [SYS_DATA_W-1:0] release_acc;
+    wire  [SYS_DATA_W-1:0] release_acc_next = release_acc + credit_delta_data_r;
+    wire  [SYS_DATA_W-1:0] effective_acc    = read_complete_pipe ? release_acc_next : release_acc;
+
+    // Pipeline stage 2: register effective_acc for threshold comparison.
     logic                  read_complete_d1;
     logic [SYS_DATA_W-1:0] effective_acc_d1;
 
@@ -264,7 +286,7 @@ module tidelink_apb_regs #(
             read_complete_d1 <= 1'b0;
             effective_acc_d1 <= '0;
         end else begin
-            read_complete_d1 <= read_complete;
+            read_complete_d1 <= read_complete_pipe;
             effective_acc_d1 <= effective_acc;
         end
     end
@@ -280,7 +302,7 @@ module tidelink_apb_regs #(
             release_acc <= '0;
         else if (release_credits_trigger)
             release_acc <= '0;
-        else if (read_complete)
+        else if (read_complete_pipe)
             release_acc <= release_acc_next;
     end
 
@@ -341,8 +363,8 @@ module tidelink_apb_regs #(
             end
             2'b01: begin // Region 1: Credits + PTP Basic
                 case (paddr[4:2])
-                    3'h0:    prdata = released_credits_acc;
-                    3'h1:    prdata = doorbell_response_acc;
+                    3'h0:    prdata = {{16{1'b0}}, released_credits_acc};
+                    3'h1:    prdata = {{16{1'b0}}, doorbell_response_acc};
                     3'h2:    prdata = pair_credit_counter;
                     3'h4:    prdata = {{(SYS_DATA_W-1){1'b0}}, pair_credit_counter_en};
                     3'h5:    prdata = ptp_reg_rdata;  // PTP_CTRL

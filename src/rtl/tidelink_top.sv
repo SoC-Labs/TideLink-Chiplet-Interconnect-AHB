@@ -117,7 +117,7 @@ module tidelink_top #(
     // --------------------------------------------------------------------------
     output wire  [SYS_ADDR_W-1:0]  ahb_mng_haddr,
     output wire               [2:0] ahb_mng_hburst,
-    output wire               [3:0] ahb_mng_hprot,
+    output wire               [6:0] ahb_mng_hprot,
     output wire               [2:0] ahb_mng_hsize,
     output wire               [1:0] ahb_mng_htrans,
     output wire  [SYS_DATA_W-1:0]  ahb_mng_hwdata,

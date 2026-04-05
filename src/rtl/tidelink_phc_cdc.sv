@@ -11,8 +11,9 @@
 //   Path 5: Phase step command     (hclk→phc, 79-bit data+pulse handshake)
 //   Path 6: Frequency adjust       (hclk→phc, 33-bit data+pulse handshake)
 //
-// Total cost: ~526 FFs (~3,200 gates). Safe for fully asynchronous clocks.
-// When phc_clk = hclk (single-clock mode), the module adds benign latency.
+// Total cost: ~526 FFs (~3,200 gates) with BYPASS_CDC=0.
+// Set BYPASS_CDC=1 when phc_clk == hclk to save ~506 FFs (~20 FFs remain
+// for single-cycle output registers).
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic
 // Access license.
@@ -26,7 +27,8 @@
 
 module tidelink_phc_cdc #(
     parameter SYS_DATA_W  = 32,
-    parameter SYNC_STAGES = 2     // Synchronizer chain depth (min 2)
+    parameter SYNC_STAGES = 2,    // Synchronizer chain depth (min 2)
+    parameter BYPASS_CDC  = 0     // 1 = single-clock mode, bypass all CDC logic
 )(
     // ── hclk domain ─────────────────────────────────────────────────────
     input  wire                     hclk,
@@ -95,6 +97,72 @@ module tidelink_phc_cdc #(
     output logic                    p_hw_adj_valid,
     output logic [SYS_DATA_W-1:0]  p_hw_adj_ns_incr_frac
 );
+
+generate
+if (BYPASS_CDC) begin : gen_bypass
+    // =================================================================
+    // Single-clock bypass: no synchronization, minimal register latency.
+    // Use when phc_clk == hclk to save ~506 FFs.
+    // =================================================================
+
+    // Path 4: capture trigger — direct pass-through
+    assign p_hw_capture = h_hw_capture;
+
+    // Path 1: HW capture timestamps — single-cycle register
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            h_hw_cap_seconds         <= '0;
+            h_hw_cap_nanoseconds     <= '0;
+            h_hw_cap_sub_nanoseconds <= '0;
+        end else begin
+            h_hw_cap_seconds         <= p_hw_cap_seconds;
+            h_hw_cap_nanoseconds     <= p_hw_cap_nanoseconds;
+            h_hw_cap_sub_nanoseconds <= p_hw_cap_sub_nanoseconds;
+        end
+    end
+
+    // Path 2: free-running PHC time — single-cycle register
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            h_phc_nanoseconds <= '0;
+            h_phc_seconds     <= '0;
+        end else begin
+            h_phc_nanoseconds <= p_phc_nanoseconds;
+            h_phc_seconds     <= p_phc_seconds;
+        end
+    end
+
+    // Path 3: PPS — direct pass-through
+    assign h_phc_pps = p_phc_pps;
+
+    // Path 5: phase step — single-cycle register
+    always_ff @(posedge phc_clk or negedge phc_resetn) begin
+        if (!phc_resetn) begin
+            p_hw_set_time        <= 1'b0;
+            p_hw_set_seconds     <= '0;
+            p_hw_set_nanoseconds <= '0;
+        end else begin
+            p_hw_set_time        <= h_hw_set_time;
+            p_hw_set_seconds     <= h_hw_set_seconds;
+            p_hw_set_nanoseconds <= h_hw_set_nanoseconds;
+        end
+    end
+
+    // Path 6: frequency adjust — single-cycle register
+    always_ff @(posedge phc_clk or negedge phc_resetn) begin
+        if (!phc_resetn) begin
+            p_hw_adj_valid        <= 1'b0;
+            p_hw_adj_ns_incr_frac <= '0;
+        end else begin
+            p_hw_adj_valid        <= h_hw_adj_valid;
+            p_hw_adj_ns_incr_frac <= h_hw_adj_ns_incr_frac;
+        end
+    end
+
+end else begin : gen_cdc
+    // =================================================================
+    // Full CDC logic for asynchronous phc_clk / hclk domains
+    // =================================================================
 
     // =====================================================================
     // Path 4: HW Capture Trigger (hclk → phc_clk) — Toggle Pulse Sync
@@ -395,5 +463,8 @@ module tidelink_phc_cdc #(
             end
         end
     end
+
+end
+endgenerate
 
 endmodule

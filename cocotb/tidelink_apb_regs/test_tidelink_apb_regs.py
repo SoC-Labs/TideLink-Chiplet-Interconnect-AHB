@@ -378,8 +378,8 @@ async def test_r1_12_credit_delta_capture(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    # release_credits_trigger is pipelined by one cycle
-    await ClockCycles(dut.hclk, 2)
+    # release_credits_trigger is pipelined by two cycles (delta reg + threshold compare)
+    await ClockCycles(dut.hclk, 3)
 
     delta = int(dut.credit_delta_data.value)
     assert delta == 6, f"Expected delta 6 (5+1), got {delta}"
@@ -505,7 +505,8 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    await ClockCycles(dut.hclk, 2)
+    # Two-cycle pipeline: delta register + threshold compare
+    await ClockCycles(dut.hclk, 3)
 
     acc = await apb_read(dut, OFF_REL_ACC)
     assert acc == 5, f"Expected acc=5 after first pulse, got {acc}"
@@ -516,8 +517,8 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    # release_credits_trigger is pipelined by one cycle
-    await ClockCycles(dut.hclk, 2)
+    # Two-cycle pipeline: delta register + threshold compare
+    await ClockCycles(dut.hclk, 3)
 
     # credit_delta_data should have the full batch (10)
     delta = int(dut.credit_delta_data.value)
@@ -541,8 +542,8 @@ async def test_thresh_06_threshold_zero_immediate(dut):
     dut.read_complete.value = 1
     await RisingEdge(dut.hclk)
     dut.read_complete.value = 0
-    # release_credits_trigger is pipelined by one cycle
-    await ClockCycles(dut.hclk, 2)
+    # Two-cycle pipeline: delta register + threshold compare
+    await ClockCycles(dut.hclk, 3)
 
     delta = int(dut.credit_delta_data.value)
     assert delta == 8, f"Expected immediate delta=8 (7+1), got {delta}"
@@ -662,3 +663,96 @@ async def test_status_pkt_committed_03_independent_of_other_bits(dut):
         f"packet_committed should be 1, got STATUS=0x{val:08X}"
     assert val & 0xF == 0, \
         f"Lower 4 status bits should all be 0, got STATUS=0x{val:08X}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Opt 8: 16-bit Saturating Accumulator Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_sat_01_released_credits_saturation(dut):
+    """Released credits accumulator saturates at 0xFFFF instead of wrapping."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Write a large value to released_credits_acc (region 1, offset 0x020)
+    await apb_write(dut, OFF_REL_CREDITS, 0x0000_FF00)
+    # Write another value that would overflow 16 bits
+    await apb_write(dut, OFF_REL_CREDITS, 0x0000_0200)
+
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 0xFFFF, f"Expected saturation at 0xFFFF, got 0x{val:08X}"
+
+
+@cocotb.test()
+async def test_sat_02_released_credits_normal_add(dut):
+    """Normal accumulation within 16-bit range works correctly."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_CREDITS, 100)
+    await apb_write(dut, OFF_REL_CREDITS, 200)
+
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 300, f"Expected 300, got {val}"
+
+
+@cocotb.test()
+async def test_sat_03_released_credits_clear_on_read(dut):
+    """Accumulator clears to 0 on read and IRQ deasserts."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_CREDITS, 42)
+    # IRQ should be asserted
+    assert int(dut.released_credits_irq.value) == 1, "IRQ should be 1 when acc != 0"
+
+    # Read clears the accumulator
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 42, f"Expected 42 on first read, got {val}"
+    await ClockCycles(dut.hclk, 1)
+
+    # IRQ should now be deasserted
+    assert int(dut.released_credits_irq.value) == 0, "IRQ should be 0 after read-clear"
+
+    # Second read should return 0
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 0, f"Expected 0 after clear, got {val}"
+
+
+@cocotb.test()
+async def test_sat_04_doorbell_response_saturation(dut):
+    """Doorbell response accumulator saturates at 0xFFFF."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_DOORBELL_RSP, 0x0000_FFFE)
+    await apb_write(dut, OFF_DOORBELL_RSP, 0x0000_0005)
+
+    val = await apb_read(dut, OFF_DOORBELL_RSP)
+    assert val == 0xFFFF, f"Expected doorbell saturation at 0xFFFF, got 0x{val:08X}"
+
+
+@cocotb.test()
+async def test_sat_05_upper_bits_ignored_on_write(dut):
+    """Only lower 16 bits of write data are used for accumulation."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Write with upper bits set — only lower 16 bits should be added
+    await apb_write(dut, OFF_REL_CREDITS, 0xFFFF_0005)
+
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 5, f"Expected 5 (upper bits ignored), got {val}"
+
+
+@cocotb.test()
+async def test_sat_06_readback_zero_extended(dut):
+    """APB read returns 32-bit zero-extended value."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_CREDITS, 0x1234)
+
+    val = await apb_read(dut, OFF_REL_CREDITS)
+    assert val == 0x0000_1234, f"Expected zero-extended 0x00001234, got 0x{val:08X}"

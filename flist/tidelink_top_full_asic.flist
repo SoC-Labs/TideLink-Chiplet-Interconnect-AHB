@@ -62,6 +62,7 @@ ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb
 ${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst.sv
 
 // Wlink chiplet controller (Chisel-generated)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wav_latch_model.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/AXI4ToWlink.v

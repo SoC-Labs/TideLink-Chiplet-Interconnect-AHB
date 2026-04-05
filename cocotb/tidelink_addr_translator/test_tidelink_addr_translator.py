@@ -707,3 +707,102 @@ async def test_30_no_match_identity_with_base_offset(dut):
     out = tb.get_translated_addr(0)
     # addr_norm upper = 0x50, no match -> passthrough 0x50
     assert out == 0x50ABCDEF, f"No match passthrough: expected 0x50ABCDEF, got 0x{out:08X}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Opt 2: Parallel Priority Encoder Verification
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_31_priority_lowest_index_wins(dut):
+    """When multiple rules match, the lowest-index rule wins (Opt 2 verification).
+
+    Configure rules 0, 3, 7 all matching 0xAA, with different replace values.
+    Lowest index (0) must win.
+    """
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    await tb.write_ctrl(0, 1)  # global enable
+    await tb.write_base_offset(0, 0)
+
+    # Rules 0, 3, 7 all match 0xAA but replace with different values
+    await tb.write_rule(0, 0, enable=1, match_byte=0xAA, replace_byte=0x11)
+    await tb.write_rule(0, 3, enable=1, match_byte=0xAA, replace_byte=0x33)
+    await tb.write_rule(0, 7, enable=1, match_byte=0xAA, replace_byte=0x77)
+    await ClockCycles(dut.hclk, 2)
+
+    tb.set_input_addr(0, 0xAA123456)
+    await ClockCycles(dut.hclk, 1)
+    out = tb.get_translated_addr(0)
+    assert out == 0x11123456, f"Lowest-index rule 0 should win: expected 0x11123456, got 0x{out:08X}"
+
+
+@cocotb.test()
+async def test_32_priority_skips_disabled_lower_index(dut):
+    """If a lower-index rule is disabled, the next matching rule wins.
+
+    Rule 0: disabled, matches 0xBB
+    Rule 1: enabled, matches 0xBB, replace 0x22
+    Rule 5: enabled, matches 0xBB, replace 0x55
+    Rule 1 should win.
+    """
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    await tb.write_ctrl(0, 1)
+    await tb.write_base_offset(0, 0)
+
+    await tb.write_rule(0, 0, enable=0, match_byte=0xBB, replace_byte=0x00)
+    await tb.write_rule(0, 1, enable=1, match_byte=0xBB, replace_byte=0x22)
+    await tb.write_rule(0, 5, enable=1, match_byte=0xBB, replace_byte=0x55)
+    await ClockCycles(dut.hclk, 2)
+
+    tb.set_input_addr(0, 0xBB000000)
+    await ClockCycles(dut.hclk, 1)
+    out = tb.get_translated_addr(0)
+    assert out == 0x22000000, f"Rule 1 should win (rule 0 disabled): expected 0x22000000, got 0x{out:08X}"
+
+
+@cocotb.test()
+async def test_33_priority_last_rule_only(dut):
+    """Only the highest-index rule matches — verifies it is still selected.
+
+    Rule 7: enabled, matches 0xCC, replace 0x77
+    All others: disabled or different match.
+    """
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    await tb.write_ctrl(0, 1)
+    await tb.write_base_offset(0, 0)
+
+    # Only rule 7 matches
+    for i in range(7):
+        await tb.write_rule(0, i, enable=1, match_byte=0xDD, replace_byte=0x00)
+    await tb.write_rule(0, 7, enable=1, match_byte=0xCC, replace_byte=0x77)
+    await ClockCycles(dut.hclk, 2)
+
+    tb.set_input_addr(0, 0xCCABCDEF)
+    await ClockCycles(dut.hclk, 1)
+    out = tb.get_translated_addr(0)
+    assert out == 0x77ABCDEF, f"Rule 7 only match: expected 0x77ABCDEF, got 0x{out:08X}"
+
+
+@cocotb.test()
+async def test_34_all_rules_match_same_addr(dut):
+    """All 8 rules match the same address — rule 0 must win."""
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    await tb.write_ctrl(0, 1)
+    await tb.write_base_offset(0, 0)
+
+    for i in range(NUM_RULES):
+        await tb.write_rule(0, i, enable=1, match_byte=0xEE, replace_byte=(0x10 + i))
+    await ClockCycles(dut.hclk, 2)
+
+    tb.set_input_addr(0, 0xEE000000)
+    await ClockCycles(dut.hclk, 1)
+    out = tb.get_translated_addr(0)
+    assert out == 0x10000000, f"All rules match: rule 0 (replace=0x10) should win, got 0x{out:08X}"

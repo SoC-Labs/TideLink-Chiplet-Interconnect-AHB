@@ -76,10 +76,10 @@ wire     [2:0]   i_pprot;
 wire     [3:0]   i_pstrb;
 wire     [31:0]  i_pwdata;
 
-// wire from APB slave mux to APB bridge
-wire             i_pready_mux;
-wire     [31:0]  i_prdata_mux;
-wire             i_pslverr_mux;
+// Signals from APB slave mux to APB bridge
+logic            i_pready_mux;
+logic    [31:0]  i_prdata_mux;
+logic            i_pslverr_mux;
 
 // endian handling
 wire             APBACTIVE;
@@ -165,114 +165,42 @@ endgenerate
     .PSLVERR  (i_pslverr_mux)
     );
 
-  // APB slave multiplexer
-  cmsdk_apb_slave_mux #( // Parameter to determine which ports are used
-    .PORT0_ENABLE  (1),                    // address translator 0
-    .PORT1_ENABLE  (NUM_CHANNELS > 1),     // address translator 1 (disabled when single channel)
-    .PORT2_ENABLE  (0), // not used
-    .PORT3_ENABLE  (0), // not used
-    .PORT4_ENABLE  (0), // not used
-    .PORT5_ENABLE  (0), // not used
-    .PORT6_ENABLE  (0), // not used
-    .PORT7_ENABLE  (0), // not used
-    .PORT8_ENABLE  (0), // not used
-    .PORT9_ENABLE  (0), // not used
-    .PORT10_ENABLE (0), // not used
-    .PORT11_ENABLE (0), // not used
-    .PORT12_ENABLE (0), // not used
-    .PORT13_ENABLE (0), // not used
-    .PORT14_ENABLE (0), // not used
-    .PORT15_ENABLE (0)
-  ) u_apb_slave_mux (
-    // Inputs
-    .DECODE4BIT        (i_paddr[15:12]),
-    .PSEL              (i_psel),
-    // PSEL (output) and return status & data (inputs) for each port
-    .PSEL0             (CHP_ADR_APB_0.psel),
-    .PREADY0           (CHP_ADR_APB_0.pready),
-    .PRDATA0           (CHP_ADR_APB_0.prdata),
-    .PSLVERR0          (CHP_ADR_APB_0.pslverr),
+  // Lightweight APB slave mux — only NUM_CHANNELS ports instantiated.
+  // Replaces cmsdk_apb_slave_mux which carries full 16-port decode logic
+  // even when PORT_ENABLE=0 (runtime disable, not synthesis optimize-out).
+  logic psel_ch0, psel_ch1;
 
-    .PSEL1             (CHP_ADR_APB_1.psel),
-    .PREADY1           (CHP_ADR_APB_1.pready),
-    .PRDATA1           (CHP_ADR_APB_1.prdata),
-    .PSLVERR1          (CHP_ADR_APB_1.pslverr),
+  always_comb begin
+    // Default: no selection, error response
+    psel_ch0      = 1'b0;
+    psel_ch1      = 1'b0;
+    i_pready_mux  = 1'b1;
+    i_prdata_mux  = 32'h00000000;
+    i_pslverr_mux = 1'b1;
 
-    .PSEL2             (),
-    .PREADY2           (1'b1),
-    .PRDATA2           (32'h00000000),
-    .PSLVERR2          (1'b1),
+    if (i_psel) begin
+      case (i_paddr[15:12])
+        4'h0: begin
+          psel_ch0      = 1'b1;
+          i_pready_mux  = CHP_ADR_APB_0.pready;
+          i_prdata_mux  = CHP_ADR_APB_0.prdata;
+          i_pslverr_mux = CHP_ADR_APB_0.pslverr;
+        end
+        4'h1: begin
+          if (NUM_CHANNELS > 1) begin
+            psel_ch1      = 1'b1;
+            i_pready_mux  = CHP_ADR_APB_1.pready;
+            i_prdata_mux  = CHP_ADR_APB_1.prdata;
+            i_pslverr_mux = CHP_ADR_APB_1.pslverr;
+          end
+        end
+        default: ; // error response (pslverr=1)
+      endcase
+    end
+  end
 
-    .PSEL3             (),
-    .PREADY3           (1'b1),
-    .PRDATA3           (32'h00000000),
-    .PSLVERR3          (1'b1),
-
-    .PSEL4             (),
-    .PREADY4           (1'b1),
-    .PRDATA4           (32'h00000000),
-    .PSLVERR4          (1'b1),
-
-    .PSEL5             (),
-    .PREADY5           (1'b1),
-    .PRDATA5           (32'h00000000),
-    .PSLVERR5          (1'b1),
-
-    .PSEL6             (),
-    .PREADY6           (1'b1),
-    .PRDATA6           (32'h00000000),
-    .PSLVERR6          (1'b1),
-
-    .PSEL7             (),
-    .PREADY7           (1'b1),
-    .PRDATA7           (32'h00000000),
-    .PSLVERR7          (1'b1),
-
-    .PSEL8             (),
-    .PREADY8           (1'b1),
-    .PRDATA8           (32'h00000000),
-    .PSLVERR8          (1'b1),
-
-    .PSEL9             (),
-    .PREADY9           (1'b1),
-    .PRDATA9           (32'h00000000),
-    .PSLVERR9          (1'b1),
-
-    .PSEL10            (),
-    .PREADY10          (1'b1),
-    .PRDATA10          (32'h00000000),
-    .PSLVERR10         (1'b1),
-
-    .PSEL11            (),
-    .PREADY11          (1'b1),
-    .PRDATA11          (32'h00000000),
-    .PSLVERR11         (1'b1),
-
-    .PSEL12            (),
-    .PREADY12          (1'b1),
-    .PRDATA12          (32'h00000000),
-    .PSLVERR12         (1'b1),
-
-    .PSEL13            (),
-    .PREADY13          (1'b1),
-    .PRDATA13          (32'h00000000),
-    .PSLVERR13         (1'b1),
-
-    .PSEL14            (),
-    .PREADY14          (1'b1),
-    .PRDATA14          (32'h00000000),
-    .PSLVERR14         (1'b1),
-
-    .PSEL15            (),
-    .PREADY15          (1'b1),
-    .PRDATA15          (32'h00000000),
-    .PSLVERR15         (1'b1),
-
-    // Output
-    .PREADY            (i_pready_mux),
-    .PRDATA            (i_prdata_mux),
-    .PSLVERR           (i_pslverr_mux)
-  );
+  assign CHP_ADR_APB_0.psel = psel_ch0;
+  assign CHP_ADR_APB_1.psel = psel_ch1;
 
 
 // --------------------------------------------------------------------------

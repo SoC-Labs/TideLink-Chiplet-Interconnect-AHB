@@ -84,6 +84,9 @@ module tidelink_fifo_ctrl #(
     logic [RAM_ADDR_W-1:0] read_target_addr_r,    read_target_addr_nxt;
     logic [RAM_ADDR_W-2:0] credit_count_r,          credit_count_nxt;
 
+    // Shared intermediate: packet length + 1 (word count including metadata)
+    wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(1'd1);
+
     // -------------------------------------------------------------------------
     // Completion signals — dual-source (FC direct write + AHB read/write)
     // -------------------------------------------------------------------------
@@ -108,9 +111,9 @@ module tidelink_fifo_ctrl #(
         read_ptr_nxt   = read_ptr_r;
 
         if (write_complete) begin
-            write_ptr_nxt = write_ptr_r + RAM_ADDR_W'((packet_word_length_r + RAM_ADDR_W'(1'd1)) * RAM_ADDR_W'(4'd4));
+            write_ptr_nxt = write_ptr_r + RAM_ADDR_W'(packet_delta << 2);
         end else if (read_complete) begin
-            read_ptr_nxt = read_ptr_r + RAM_ADDR_W'((packet_word_length_r + RAM_ADDR_W'(1'd1)) * RAM_ADDR_W'(4'd4));
+            read_ptr_nxt = read_ptr_r + RAM_ADDR_W'(packet_delta << 2);
         end
     end
 
@@ -186,9 +189,9 @@ module tidelink_fifo_ctrl #(
             check_addr_nxt = 1'b0;
         end
 
-        // Target address = packet length in bytes (packet length in words * 4)
-        write_target_addr_nxt = packet_word_length_r * RAM_ADDR_W'(4'd4);
-        read_target_addr_nxt  = packet_word_length_r * RAM_ADDR_W'(4'd4);
+        // Target address = packet length in bytes (packet length in words << 2)
+        write_target_addr_nxt = RAM_ADDR_W'(packet_word_length_r << 2);
+        read_target_addr_nxt  = RAM_ADDR_W'(packet_word_length_r << 2);
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
@@ -216,9 +219,9 @@ module tidelink_fifo_ctrl #(
     always_comb begin
         credit_count_nxt = credit_count_r;
         if (write_complete) begin
-            credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
+            credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_delta);
         end else if (read_complete) begin
-            credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_word_length_r + RAM_ADDR_W'(1'd1));
+            credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_delta);
         end
     end
 

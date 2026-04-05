@@ -34,7 +34,9 @@ module tidelink_ptp_servo #(
     // Default PI gains in Q0.32 fixed-point
     parameter [SYS_DATA_W-1:0] DEFAULT_KP         = 32'h0000_B333,  // ~0.7
     parameter [SYS_DATA_W-1:0] DEFAULT_KI         = 32'h0000_4CCC,  // ~0.3
-    parameter [SYS_DATA_W-1:0] DEFAULT_STEP_THRESH = 32'd1000        // 1000 ns
+    parameter [SYS_DATA_W-1:0] DEFAULT_STEP_THRESH = 32'd1000,       // 1000 ns
+    // Anti-windup: clamp integral accumulator to ±INTEGRAL_MAX
+    parameter signed [63:0]    INTEGRAL_MAX        = 64'sh0000_00FF_FFFF_FFFF  // ~±1099 sec
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -260,7 +262,7 @@ module tidelink_ptp_servo #(
     } gm_state_t;
 
     gm_state_t gm_state_r;
-    wire gm_active = (gm_state_r != GM_IDLE);
+    assign gm_active = (gm_state_r != GM_IDLE);
 
     always_ff @(posedge clk or negedge resetn) begin
         if (!resetn) begin
@@ -353,7 +355,7 @@ module tidelink_ptp_servo #(
     } sub_state_t;
 
     sub_state_t sub_state_r;
-    wire sub_active = (sub_state_r != SUB_IDLE);
+    assign sub_active = (sub_state_r != SUB_IDLE);
 
     // =========================================================================
     // Offset/Delay Computation Pipeline Registers
@@ -545,7 +547,13 @@ module tidelink_ptp_servo #(
                             servo_locked   <= 1'b0;
                         end else begin
                             // Frequency steering via PI controller
-                            integral_r <= integral_r + offset_r;
+                            // Anti-windup: saturate integral to prevent unbounded growth
+                            if ($signed(integral_r + offset_r) > INTEGRAL_MAX)
+                                integral_r <= INTEGRAL_MAX;
+                            else if ($signed(integral_r + offset_r) < -INTEGRAL_MAX)
+                                integral_r <= -INTEGRAL_MAX;
+                            else
+                                integral_r <= integral_r + offset_r;
 
                             // PI output computation
                             // p_term = kp * offset_ns (Q0.32 * signed)

@@ -38,6 +38,10 @@ read_file -type sgdc $::env(SGDC)
 
 read_file -type waiver $::env(SWL)
 
+# ── Report directory ─────────────────────────────────────────────────────────
+
+set_option reportdir cdc_verify/spyglass_reports
+
 # ── Goal setup ───────────────────────────────────────────────────────────────
 
 current_goal cdc_verify -top $::env(SG_TOP)

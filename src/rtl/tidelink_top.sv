@@ -51,7 +51,11 @@ module tidelink_top #(
     parameter NUM_PHY_LANES = 8,     // Number of GPIO PHY lanes (default 8 for production)
 
     // Default pair base address (for returner — routed through FC sideband)
-    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0
+    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0,
+
+    // PHC lock gate for multi-hop PTP chaining
+    // 0 = no gating (backward compat), 1 = gate HW sync on phc_locked_i
+    parameter PHC_LOCK_GATE_EN = 0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -225,6 +229,13 @@ module tidelink_top #(
     output wire              [29:0] phc_hw_set_nanoseconds,
     output wire                     phc_hw_adj_valid,
     output wire  [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac,
+
+    // --------------------------------------------------------------------------
+    // External PHC Lock Gate (for multi-hop PTP chaining)
+    // When PHC_LOCK_GATE_EN=1, gates HW sync initiator on this signal.
+    // Tie to 1'b1 for single-link deployments.
+    // --------------------------------------------------------------------------
+    input  wire                     phc_locked_i,
 
     // --------------------------------------------------------------------------
     // Servo Status
@@ -777,7 +788,8 @@ module tidelink_top #(
     //     - Registers: PTP_CTRL/PTP_RX_PAYLOAD/PTP_STATUS via APB pass-through
     // =========================================================================
     tidelink_ptp #(
-        .SYS_DATA_W (SYS_DATA_W)
+        .SYS_DATA_W       (SYS_DATA_W),
+        .PHC_LOCK_GATE_EN (PHC_LOCK_GATE_EN)
     ) u_ptp (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -832,6 +844,9 @@ module tidelink_top #(
 
         // Servo DELAY_REQ injection
         .servo_dreq_trigger (servo_dreq_trigger),
+
+        // External PHC lock gate (for multi-hop chaining)
+        .phc_locked_i      (phc_locked_i),
 
         // Interrupt
         .ptp_irq           (ptp_irq)

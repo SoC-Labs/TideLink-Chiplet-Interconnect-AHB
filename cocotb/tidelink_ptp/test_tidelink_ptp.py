@@ -34,6 +34,7 @@ CTRL_RX_MSG_LO = 3   # [6:3] RO  rx_msg_type
 # HW_SYNC_CTRL bit positions
 HW_SYNC_EN        = 0   # [0] RW  enable
 HW_SYNC_SEQ_CLEAR = 1   # [1] W1C seq_clear
+HW_SYNC_FORCE_EN  = 2   # [2] RW  force_en (bypass phc_locked_i gate)
 
 # Short packet data_id values
 DATA_ID_SYNC      = 0x50
@@ -82,6 +83,8 @@ class PtpTB:
         dut.phc_nanoseconds.value = 0
         dut.phc_seconds.value = 0
         dut.phc_pps.value = 0
+        # External PHC lock gate (default: locked for backward compat)
+        dut.phc_locked_i.value = 1
 
         await ClockCycles(dut.hclk, 5)
         dut.hresetn.value = 1
@@ -631,9 +634,10 @@ async def test_hw_sync_status_readback(dut):
     await tb.reset()
     await tb.enable_ptp()
 
-    # After reset: all zeros
+    # After reset: active=0, busy=0, seq_num=0; phc_locked (bit 18) reflects input
     status = await tb.hw_sync_read(REG_HW_SYNC_STATUS)
-    assert status == 0, f"HW_SYNC_STATUS should be 0 after reset, got 0x{status:08X}"
+    status_masked = status & 0x0003FFFF  # Mask out phc_locked bit [18]
+    assert status_masked == 0, f"HW_SYNC_STATUS [17:0] should be 0 after reset, got 0x{status:08X}"
 
     # Enable and verify active bit
     tb.set_phc_time(0, 0)

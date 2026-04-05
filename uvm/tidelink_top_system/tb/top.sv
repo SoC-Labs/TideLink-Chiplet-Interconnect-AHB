@@ -362,6 +362,9 @@ module test_top;
     .pad_clk_rx        (a_pad_clk_rx),
     .pad_rx            (a_pad_rx),
 
+    // External PHC lock gate (not used in this testbench)
+    .phc_locked_i         (1'b1),
+
     // Interrupts
     .released_credits_irq (a_released_credits_irq),
     .doorbell_irq         (a_doorbell_irq),
@@ -480,6 +483,9 @@ module test_top;
     .pad_tx            (b_pad_tx),
     .pad_clk_rx        (b_pad_clk_rx),
     .pad_rx            (b_pad_rx),
+
+    // External PHC lock gate (not used in this testbench)
+    .phc_locked_i         (1'b1),
 
     .released_credits_irq (b_released_credits_irq),
     .doorbell_irq         (b_doorbell_irq),

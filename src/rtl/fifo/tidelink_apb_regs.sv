@@ -110,9 +110,9 @@ module tidelink_apb_regs #(
     //   0x03C: PTP_STATUS               (RO) - pass-through to tidelink_ptp
     //
     // Region 2 (paddr[6:5]=10): PTP HW Sync Initiator
-    //   0x040: HW_SYNC_CTRL            (RW) - pass-through to tidelink_ptp
+    //   0x040: HW_SYNC_CTRL            (RW) - [0] enable, [1] seq_clear (W1C), [2] force_en
     //   0x044: HW_SYNC_INTERVAL        (RW) - pass-through to tidelink_ptp
-    //   0x048: HW_SYNC_STATUS          (RO) - pass-through to tidelink_ptp
+    //   0x048: HW_SYNC_STATUS          (RO) - [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
     // -------------------------------------------------------------------------
 
     // APB decode

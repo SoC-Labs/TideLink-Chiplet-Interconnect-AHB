@@ -48,6 +48,9 @@ module tb_top #(
     output logic   [SYS_DATA_W-1:0] ptp_reg_rdata,
     input  logic                    ptp_reg_region,
 
+    // External PHC lock gate (for multi-hop chaining tests)
+    input  logic                    phc_locked_i,
+
     // Interrupt
     output logic                    ptp_irq
 );
@@ -111,6 +114,9 @@ module tb_top #(
 
         // Servo DELAY_REQ injection (tied off — no servo in unit test)
         .servo_dreq_trigger  (1'b0),
+
+        // External PHC lock gate
+        .phc_locked_i        (phc_locked_i),
 
         .ptp_irq             (ptp_irq)
     );

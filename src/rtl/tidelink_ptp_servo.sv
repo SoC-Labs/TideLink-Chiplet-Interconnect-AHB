@@ -47,8 +47,8 @@ module tidelink_ptp_servo #(
     // --------------------------------------------------------------------------
     input  logic                    servo_reg_write,
     input  logic              [2:0] servo_reg_addr,
-    input  logic [SYS_DATA_W-1:0]  servo_reg_wdata,
-    output logic [SYS_DATA_W-1:0]  servo_reg_rdata,
+    input  logic   [SYS_DATA_W-1:0] servo_reg_wdata,
+    output logic   [SYS_DATA_W-1:0] servo_reg_rdata,
 
     // --------------------------------------------------------------------------
     // PTP Event Inputs (from tidelink_ptp)
@@ -63,13 +63,13 @@ module tidelink_ptp_servo #(
     // --------------------------------------------------------------------------
     input  logic             [47:0] hw_cap_seconds,
     input  logic             [29:0] hw_cap_nanoseconds,
-    input  logic [SYS_DATA_W-1:0]  hw_cap_sub_nanoseconds,
+    input  logic   [SYS_DATA_W-1:0] hw_cap_sub_nanoseconds,
 
     // --------------------------------------------------------------------------
     // FC SIDEBAND Injection (to FC adapter TX arbiter)
     // --------------------------------------------------------------------------
     output logic                    servo_fc_valid,
-    output logic  [FC_DATA_W-1:0]  servo_fc_data,
+    output logic   [FC_DATA_W-1:0]  servo_fc_data,
     input  logic                    servo_fc_ready,
 
     // --------------------------------------------------------------------------
@@ -77,7 +77,7 @@ module tidelink_ptp_servo #(
     // --------------------------------------------------------------------------
     input  logic                    mbox_reg_write,
     input  logic              [2:0] mbox_reg_addr,   // 3-bit offset within mailbox
-    input  logic [SYS_DATA_W-1:0]  mbox_reg_wdata,
+    input  logic  [SYS_DATA_W-1:0]  mbox_reg_wdata,
 
     // --------------------------------------------------------------------------
     // DELAY_REQ Trigger (to tidelink_ptp TX path)
@@ -91,7 +91,7 @@ module tidelink_ptp_servo #(
     output logic             [47:0] phc_hw_set_seconds,
     output logic             [29:0] phc_hw_set_nanoseconds,
     output logic                    phc_hw_adj_valid,
-    output logic [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac,
+    output logic  [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac,
 
     // --------------------------------------------------------------------------
     // Status

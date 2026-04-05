@@ -312,6 +312,7 @@ apb_control u_apb_addr_translator_1(
     .seg_addr(seg_addr_1),
     .base_offset(base_offset_1)
 );
+
 address_translation u_addr_translator_1(
     .addr_i(chp1_ahb_haddr_i),
     .addr_o(chp1_ahb_haddr_o),

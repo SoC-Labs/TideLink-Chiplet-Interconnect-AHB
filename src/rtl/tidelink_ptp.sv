@@ -31,7 +31,8 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_ptp #(
-    parameter SYS_DATA_W = 32
+    parameter SYS_DATA_W = 32,
+    parameter PHC_LOCK_GATE_EN = 0   // 0 = no gating (backward compat), 1 = gate HW sync on phc_locked_i
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -82,9 +83,9 @@ module tidelink_ptp #(
     input  wire               [1:0] ahb_ptp_htrans,
     input  wire               [2:0] ahb_ptp_hsize,
     input  wire                     ahb_ptp_hwrite,
-    input  wire  [SYS_DATA_W-1:0]  ahb_ptp_hwdata,
+    input  wire   [SYS_DATA_W-1:0]  ahb_ptp_hwdata,
     input  wire                     ahb_ptp_hready,
-    output wire  [SYS_DATA_W-1:0]  ahb_ptp_hrdata,
+    output wire   [SYS_DATA_W-1:0]  ahb_ptp_hrdata,
     output wire                     ahb_ptp_hresp,
     output wire                     ahb_ptp_hreadyout,
 
@@ -93,8 +94,8 @@ module tidelink_ptp #(
     // --------------------------------------------------------------------------
     input  wire                     ptp_reg_write,
     input  wire               [2:0] ptp_reg_addr,
-    input  wire  [SYS_DATA_W-1:0]  ptp_reg_wdata,
-    output logic [SYS_DATA_W-1:0]  ptp_reg_rdata,
+    input  wire   [SYS_DATA_W-1:0]  ptp_reg_wdata,
+    output logic  [SYS_DATA_W-1:0]  ptp_reg_rdata,
     input  wire                     ptp_reg_region,  // 0=Region 1 (basic PTP), 1=Region 2 (HW sync)
 
     // --------------------------------------------------------------------------
@@ -109,6 +110,13 @@ module tidelink_ptp #(
     // Servo DELAY_REQ Injection (autonomous servo triggers DELAY_REQ TX)
     // --------------------------------------------------------------------------
     input  wire                     servo_dreq_trigger,
+
+    // --------------------------------------------------------------------------
+    // External PHC Lock Gate (for multi-hop PTP chaining)
+    // When PHC_LOCK_GATE_EN=1, HW sync initiator is gated by this signal.
+    // Tie to 1'b1 if unused.
+    // --------------------------------------------------------------------------
+    input  wire                     phc_locked_i,
 
     // --------------------------------------------------------------------------
     // Interrupt Output
@@ -323,9 +331,9 @@ module tidelink_ptp #(
     // =========================================================================
     //
     // Region 2 registers (ptp_reg_region=1):
-    //   3'h0 (0x040): HW_SYNC_CTRL     — [0] enable, [1] seq_clear (W1C)
+    //   3'h0 (0x040): HW_SYNC_CTRL     — [0] enable, [1] seq_clear (W1C), [2] force_en
     //   3'h1 (0x044): HW_SYNC_INTERVAL — sync interval in nanoseconds [29:0]
-    //   3'h2 (0x048): HW_SYNC_STATUS   — [0] active, [1] busy, [17:2] seq_num
+    //   3'h2 (0x048): HW_SYNC_STATUS   — [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
     // =========================================================================
 
     localparam [29:0] NS_PER_SECOND = 30'd999_999_999;
@@ -334,10 +342,20 @@ module tidelink_ptp #(
     // HW sync registers
     logic        hw_sync_en_r;
     logic        hw_sync_en_prev_r;    // for rising-edge detection
+    logic        hw_sync_force_en_r;   // force-enable, bypasses phc_locked_i gate
     logic [29:0] hw_sync_interval_r;
     logic [15:0] hw_seq_num_int_r;
 
     assign hw_seq_num_r = hw_seq_num_int_r;
+
+    // PHC lock gate — controls HW_SYNC_IDLE → HW_SYNC_ARMED transition
+    // When PHC_LOCK_GATE_EN=0, gate is always 1 (backward compatible).
+    // When PHC_LOCK_GATE_EN=1, gate requires phc_locked_i OR hw_sync_force_en_r.
+    wire hw_sync_gate = (PHC_LOCK_GATE_EN == 0) ? 1'b1
+                      : (hw_sync_force_en_r | phc_locked_i);
+
+    // Rising-edge detection on gate (for enable-before-lock ordering)
+    logic hw_sync_gate_prev_r;
 
     // Target timestamp for next SYNC fire
     logic [47:0] target_seconds_r;
@@ -355,6 +373,9 @@ module tidelink_ptp #(
 
     // Rising edge of hw_sync_en
     wire hw_sync_en_rising = hw_sync_en_r & ~hw_sync_en_prev_r;
+
+    // Rising edge of gate (phc_locked_i or force_en asserted while enable held high)
+    wire hw_sync_gate_rising = hw_sync_gate & ~hw_sync_gate_prev_r;
 
     // PHC time comparison: current time >= target time
     wire phc_time_reached = (phc_seconds > target_seconds_r) ||
@@ -387,7 +408,8 @@ module tidelink_ptp #(
         hw_sync_state_next = hw_sync_state_r;
         case (hw_sync_state_r)
             HW_SYNC_IDLE: begin
-                if (hw_sync_en_rising)
+                if ((hw_sync_en_rising && hw_sync_gate) ||
+                    (hw_sync_en_r && hw_sync_gate_rising))
                     hw_sync_state_next = HW_SYNC_ARMED;
             end
             HW_SYNC_ARMED: begin
@@ -418,19 +440,23 @@ module tidelink_ptp #(
             hw_sync_state_r    <= HW_SYNC_IDLE;
             hw_sync_en_r       <= 1'b0;
             hw_sync_en_prev_r  <= 1'b0;
+            hw_sync_force_en_r <= 1'b0;
+            hw_sync_gate_prev_r <= 1'b0;
             hw_sync_interval_r <= DEFAULT_INTERVAL;
             hw_seq_num_int_r   <= 16'b0;
             target_seconds_r   <= 48'b0;
             target_ns_r        <= 30'b0;
         end else begin
-            hw_sync_state_r   <= hw_sync_state_next;
-            hw_sync_en_prev_r <= hw_sync_en_r;
+            hw_sync_state_r     <= hw_sync_state_next;
+            hw_sync_en_prev_r   <= hw_sync_en_r;
+            hw_sync_gate_prev_r <= hw_sync_gate;
 
             // Register writes (Region 2)
             if (ptp_reg_write && ptp_reg_region) begin
                 case (ptp_reg_addr)
                     3'h0: begin // HW_SYNC_CTRL
-                        hw_sync_en_r <= ptp_reg_wdata[0];
+                        hw_sync_en_r       <= ptp_reg_wdata[0];
+                        hw_sync_force_en_r <= ptp_reg_wdata[2];
                         if (ptp_reg_wdata[1])  // seq_clear (W1C)
                             hw_seq_num_int_r <= 16'b0;
                     end
@@ -444,7 +470,8 @@ module tidelink_ptp #(
             // FSM actions
             case (hw_sync_state_r)
                 HW_SYNC_IDLE: begin
-                    if (hw_sync_en_rising) begin
+                    if ((hw_sync_en_rising && hw_sync_gate) ||
+                        (hw_sync_en_r && hw_sync_gate_rising)) begin
                         // Latch initial target = current PHC time + interval
                         if (({1'b0, phc_nanoseconds} + {1'b0, hw_sync_interval_r}) > {1'b0, NS_PER_SECOND}) begin
                             target_ns_r      <= phc_nanoseconds + hw_sync_interval_r - NS_PER_SECOND - 30'd1;
@@ -475,18 +502,20 @@ module tidelink_ptp #(
     //     3'h6 (0x038): PTP_RX_PAYLOAD
     //     3'h7 (0x03C): PTP_STATUS
     //   Region 2 (ptp_reg_region=1):
-    //     3'h0 (0x040): HW_SYNC_CTRL
+    //     3'h0 (0x040): HW_SYNC_CTRL     — [0] enable, [1] seq_clear (W1C), [2] force_en
     //     3'h1 (0x044): HW_SYNC_INTERVAL
-    //     3'h2 (0x048): HW_SYNC_STATUS
+    //     3'h2 (0x048): HW_SYNC_STATUS   — [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
     // =========================================================================
     always_comb begin
         ptp_reg_rdata = '0;
         if (ptp_reg_region) begin
             // Region 2: HW Sync Initiator registers
             case (ptp_reg_addr)
-                3'h0:    ptp_reg_rdata = {{(SYS_DATA_W-1){1'b0}}, hw_sync_en_r};
+                3'h0:    ptp_reg_rdata = {{(SYS_DATA_W-3){1'b0}}, hw_sync_force_en_r,
+                                          1'b0, hw_sync_en_r};  // [2] force_en, [1] seq_clear (W1C, reads 0), [0] enable
                 3'h1:    ptp_reg_rdata = {{(SYS_DATA_W-30){1'b0}}, hw_sync_interval_r};
-                3'h2:    ptp_reg_rdata = {{(SYS_DATA_W-18){1'b0}}, hw_seq_num_int_r,
+                3'h2:    ptp_reg_rdata = {{(SYS_DATA_W-19){1'b0}}, phc_locked_i,     // [18] phc_locked
+                                          hw_seq_num_int_r,
                                           (hw_sync_state_r != HW_SYNC_IDLE) &&
                                           (hw_sync_state_r != HW_SYNC_ARMED), // [1] busy
                                           hw_sync_en_r};                       // [0] active

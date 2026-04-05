@@ -533,10 +533,10 @@ module tidelink_ptp_servo #(
                             default: ; // |sec_diff| > 1 handled below
                         endcase
                         // Compute raw offset and delay
-                        raw_offset_r <= $signed({d_fwd_r[62], d_fwd_r}) -
-                                        $signed({d_rev_r[62], d_rev_r});
-                        raw_delay_r  <= $signed({d_fwd_r[62], d_fwd_r}) +
-                                        $signed({d_rev_r[62], d_rev_r});
+                        raw_offset_r <= $signed({d_fwd_r[30], d_fwd_r}) -
+                                        $signed({d_rev_r[30], d_rev_r});
+                        raw_delay_r  <= $signed({d_fwd_r[30], d_fwd_r}) +
+                                        $signed({d_rev_r[30], d_rev_r});
                         if (sec_diff_rev_r > 49'sd1 || sec_diff_rev_r < -49'sd1)
                             needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_4;

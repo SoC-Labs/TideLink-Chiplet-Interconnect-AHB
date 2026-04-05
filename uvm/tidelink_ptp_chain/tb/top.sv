@@ -358,11 +358,7 @@ module test_top;
   // =================================================================
   // Macro to instantiate tidelink_top with all port connections
   // =================================================================
-  `define INSTANTIATE_TIDELINK_TOP(INST_NAME, PREFIX, PAIR_BASE, LOCK_GATE_EN, PHC_LOCKED_I, \
-    PAD_CLK_TX, PAD_TX, PAD_CLK_RX, PAD_RX, GB_IN, GB_OUT, \
-    PHC_HW_CAP_SEC, PHC_HW_CAP_NS, PHC_HW_CAP_SUBNS, PHC_NS, PHC_SEC, PHC_PPS, \
-    DUT_HW_CAPTURE, HW_SET_TIME, HW_SET_SEC, HW_SET_NS, HW_ADJ_VALID, HW_ADJ_FRAC, \
-    SERVO_LOCKED) \
+  `define INSTANTIATE_TIDELINK_TOP(INST_NAME, PREFIX, PAIR_BASE, LOCK_GATE_EN, PHC_LOCKED_I, PAD_CLK_TX, PAD_TX, PAD_CLK_RX, PAD_RX, GB_IN, GB_OUT, PHC_HW_CAP_SEC, PHC_HW_CAP_NS, PHC_HW_CAP_SUBNS, PHC_NS, PHC_SEC, PHC_PPS, DUT_HW_CAPTURE, HW_SET_TIME, HW_SET_SEC, HW_SET_NS, HW_ADJ_VALID, HW_ADJ_FRAC, SERVO_LOCKED) \
   tidelink_top #( \
     .SYS_ADDR_W        (SYS_ADDR_W), \
     .SYS_DATA_W        (SYS_DATA_W), \
@@ -636,6 +632,23 @@ module test_top;
   `WIRE_SIDE_MNG(b2)
   `WIRE_SIDE_SUBS(c)
   `WIRE_SIDE_MNG(c)
+
+  // ---------------------------------------------------------------
+  // PHC initialization — force enable and ns_incr for 100 MHz clock
+  // Without this, PHC clock cores won't count and HW sync won't fire.
+  // ns_incr=10 for 100 MHz (10 ns per cycle).
+  // ---------------------------------------------------------------
+  initial begin
+    // Wait for reset deassertion
+    @(posedge rst_n);
+    // Force PHC enable and ns_incr on all three PHCs
+    force u_phc_a.ctrl_enable = 1'b1;
+    force u_phc_a.ns_incr     = 8'd10;
+    force u_phc_b.ctrl_enable = 1'b1;
+    force u_phc_b.ns_incr     = 8'd10;
+    force u_phc_c.ctrl_enable = 1'b1;
+    force u_phc_c.ns_incr     = 8'd10;
+  end
 
   // ---------------------------------------------------------------
   // Waveform dumping

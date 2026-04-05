@@ -17,7 +17,6 @@ class tidelink_ptp_chain_vseq extends uvm_sequencer;
   svt_ahb_master_transaction_sequencer a_sub_sqr;
   svt_ahb_master_transaction_sequencer a_tx_sqr;
   svt_ahb_master_transaction_sequencer a_fifo_sqr;
-  svt_ahb_master_transaction_sequencer a_cfg_sqr;
   svt_ahb_master_transaction_sequencer a_adr_sqr;
   apb_master_sequencer                 a_apb_sqr;
 
@@ -25,7 +24,6 @@ class tidelink_ptp_chain_vseq extends uvm_sequencer;
   svt_ahb_master_transaction_sequencer b1_sub_sqr;
   svt_ahb_master_transaction_sequencer b1_tx_sqr;
   svt_ahb_master_transaction_sequencer b1_fifo_sqr;
-  svt_ahb_master_transaction_sequencer b1_cfg_sqr;
   svt_ahb_master_transaction_sequencer b1_adr_sqr;
   apb_master_sequencer                 b1_apb_sqr;
 
@@ -33,7 +31,6 @@ class tidelink_ptp_chain_vseq extends uvm_sequencer;
   svt_ahb_master_transaction_sequencer b2_sub_sqr;
   svt_ahb_master_transaction_sequencer b2_tx_sqr;
   svt_ahb_master_transaction_sequencer b2_fifo_sqr;
-  svt_ahb_master_transaction_sequencer b2_cfg_sqr;
   svt_ahb_master_transaction_sequencer b2_adr_sqr;
   apb_master_sequencer                 b2_apb_sqr;
 
@@ -41,7 +38,6 @@ class tidelink_ptp_chain_vseq extends uvm_sequencer;
   svt_ahb_master_transaction_sequencer c_sub_sqr;
   svt_ahb_master_transaction_sequencer c_tx_sqr;
   svt_ahb_master_transaction_sequencer c_fifo_sqr;
-  svt_ahb_master_transaction_sequencer c_cfg_sqr;
   svt_ahb_master_transaction_sequencer c_adr_sqr;
   apb_master_sequencer                 c_apb_sqr;
 

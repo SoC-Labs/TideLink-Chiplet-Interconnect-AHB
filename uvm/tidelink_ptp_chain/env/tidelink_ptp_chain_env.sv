@@ -71,7 +71,7 @@ class tidelink_ptp_chain_env extends uvm_env;
   svt_ahb_system_env       a_sub_ahb_sys_env;
   svt_ahb_system_env       a_tx_ahb_sys_env;
   svt_ahb_system_env       a_fifo_ahb_sys_env;
-  svt_ahb_system_env       a_cfg_ahb_sys_env;
+
   svt_ahb_system_env       a_adr_ahb_sys_env;
   svt_ahb_system_env       a_mng_ahb_sys_env;
   apb_master_agent         a_apb_agt;
@@ -80,7 +80,7 @@ class tidelink_ptp_chain_env extends uvm_env;
   svt_ahb_system_env       b1_sub_ahb_sys_env;
   svt_ahb_system_env       b1_tx_ahb_sys_env;
   svt_ahb_system_env       b1_fifo_ahb_sys_env;
-  svt_ahb_system_env       b1_cfg_ahb_sys_env;
+
   svt_ahb_system_env       b1_adr_ahb_sys_env;
   svt_ahb_system_env       b1_mng_ahb_sys_env;
   apb_master_agent         b1_apb_agt;
@@ -89,7 +89,7 @@ class tidelink_ptp_chain_env extends uvm_env;
   svt_ahb_system_env       b2_sub_ahb_sys_env;
   svt_ahb_system_env       b2_tx_ahb_sys_env;
   svt_ahb_system_env       b2_fifo_ahb_sys_env;
-  svt_ahb_system_env       b2_cfg_ahb_sys_env;
+
   svt_ahb_system_env       b2_adr_ahb_sys_env;
   svt_ahb_system_env       b2_mng_ahb_sys_env;
   apb_master_agent         b2_apb_agt;
@@ -98,7 +98,7 @@ class tidelink_ptp_chain_env extends uvm_env;
   svt_ahb_system_env       c_sub_ahb_sys_env;
   svt_ahb_system_env       c_tx_ahb_sys_env;
   svt_ahb_system_env       c_fifo_ahb_sys_env;
-  svt_ahb_system_env       c_cfg_ahb_sys_env;
+
   svt_ahb_system_env       c_adr_ahb_sys_env;
   svt_ahb_system_env       c_mng_ahb_sys_env;
   apb_master_agent         c_apb_agt;
@@ -110,13 +110,13 @@ class tidelink_ptp_chain_env extends uvm_env;
   tidelink_ptp_chain_vseq        vseqr;
 
   // ----- AHB configurations -----
-  ptp_chain_ahb_master_config  a_sub_cfg,  a_tx_cfg,  a_fifo_cfg,  a_cfg_cfg,  a_adr_cfg;
+  ptp_chain_ahb_master_config  a_sub_cfg,  a_tx_cfg,  a_fifo_cfg,  a_adr_cfg;
   ptp_chain_ahb_slave_config   a_mng_cfg;
-  ptp_chain_ahb_master_config  b1_sub_cfg, b1_tx_cfg, b1_fifo_cfg, b1_cfg_cfg, b1_adr_cfg;
+  ptp_chain_ahb_master_config  b1_sub_cfg, b1_tx_cfg, b1_fifo_cfg, b1_adr_cfg;
   ptp_chain_ahb_slave_config   b1_mng_cfg;
-  ptp_chain_ahb_master_config  b2_sub_cfg, b2_tx_cfg, b2_fifo_cfg, b2_cfg_cfg, b2_adr_cfg;
+  ptp_chain_ahb_master_config  b2_sub_cfg, b2_tx_cfg, b2_fifo_cfg, b2_adr_cfg;
   ptp_chain_ahb_slave_config   b2_mng_cfg;
-  ptp_chain_ahb_master_config  c_sub_cfg,  c_tx_cfg,  c_fifo_cfg,  c_cfg_cfg,  c_adr_cfg;
+  ptp_chain_ahb_master_config  c_sub_cfg,  c_tx_cfg,  c_fifo_cfg,  c_adr_cfg;
   ptp_chain_ahb_slave_config   c_mng_cfg;
 
   function new(string name = "tidelink_ptp_chain_env", uvm_component parent = null);
@@ -134,7 +134,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     a_sub_cfg  = ptp_chain_ahb_master_config::type_id::create("a_sub_cfg");
     a_tx_cfg   = ptp_chain_ahb_master_config::type_id::create("a_tx_cfg");
     a_fifo_cfg = ptp_chain_ahb_master_config::type_id::create("a_fifo_cfg");
-    a_cfg_cfg  = ptp_chain_ahb_master_config::type_id::create("a_cfg_cfg");
     a_adr_cfg  = ptp_chain_ahb_master_config::type_id::create("a_adr_cfg");
     a_mng_cfg  = ptp_chain_ahb_slave_config::type_id::create("a_mng_cfg");
 
@@ -144,7 +143,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     b1_sub_cfg  = ptp_chain_ahb_master_config::type_id::create("b1_sub_cfg");
     b1_tx_cfg   = ptp_chain_ahb_master_config::type_id::create("b1_tx_cfg");
     b1_fifo_cfg = ptp_chain_ahb_master_config::type_id::create("b1_fifo_cfg");
-    b1_cfg_cfg  = ptp_chain_ahb_master_config::type_id::create("b1_cfg_cfg");
     b1_adr_cfg  = ptp_chain_ahb_master_config::type_id::create("b1_adr_cfg");
     b1_mng_cfg  = ptp_chain_ahb_slave_config::type_id::create("b1_mng_cfg");
 
@@ -154,7 +152,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     b2_sub_cfg  = ptp_chain_ahb_master_config::type_id::create("b2_sub_cfg");
     b2_tx_cfg   = ptp_chain_ahb_master_config::type_id::create("b2_tx_cfg");
     b2_fifo_cfg = ptp_chain_ahb_master_config::type_id::create("b2_fifo_cfg");
-    b2_cfg_cfg  = ptp_chain_ahb_master_config::type_id::create("b2_cfg_cfg");
     b2_adr_cfg  = ptp_chain_ahb_master_config::type_id::create("b2_adr_cfg");
     b2_mng_cfg  = ptp_chain_ahb_slave_config::type_id::create("b2_mng_cfg");
 
@@ -164,7 +161,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     c_sub_cfg  = ptp_chain_ahb_master_config::type_id::create("c_sub_cfg");
     c_tx_cfg   = ptp_chain_ahb_master_config::type_id::create("c_tx_cfg");
     c_fifo_cfg = ptp_chain_ahb_master_config::type_id::create("c_fifo_cfg");
-    c_cfg_cfg  = ptp_chain_ahb_master_config::type_id::create("c_cfg_cfg");
     c_adr_cfg  = ptp_chain_ahb_master_config::type_id::create("c_adr_cfg");
     c_mng_cfg  = ptp_chain_ahb_slave_config::type_id::create("c_mng_cfg");
 
@@ -174,7 +170,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_sub_ahb_sys_env",  "cfg", a_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_tx_ahb_sys_env",   "cfg", a_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_fifo_ahb_sys_env", "cfg", a_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_cfg_ahb_sys_env",  "cfg", a_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_adr_ahb_sys_env",  "cfg", a_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_mng_ahb_sys_env",  "cfg", a_mng_cfg);
 
@@ -184,7 +179,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_sub_ahb_sys_env",  "cfg", b1_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_tx_ahb_sys_env",   "cfg", b1_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_fifo_ahb_sys_env", "cfg", b1_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_cfg_ahb_sys_env",  "cfg", b1_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_adr_ahb_sys_env",  "cfg", b1_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b1_mng_ahb_sys_env",  "cfg", b1_mng_cfg);
 
@@ -194,7 +188,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_sub_ahb_sys_env",  "cfg", b2_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_tx_ahb_sys_env",   "cfg", b2_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_fifo_ahb_sys_env", "cfg", b2_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_cfg_ahb_sys_env",  "cfg", b2_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_adr_ahb_sys_env",  "cfg", b2_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b2_mng_ahb_sys_env",  "cfg", b2_mng_cfg);
 
@@ -204,7 +197,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_sub_ahb_sys_env",  "cfg", c_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_tx_ahb_sys_env",   "cfg", c_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_fifo_ahb_sys_env", "cfg", c_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_cfg_ahb_sys_env",  "cfg", c_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_adr_ahb_sys_env",  "cfg", c_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "c_mng_ahb_sys_env",  "cfg", c_mng_cfg);
 
@@ -214,7 +206,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     a_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_sub_ahb_sys_env", this);
     a_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("a_tx_ahb_sys_env", this);
     a_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("a_fifo_ahb_sys_env", this);
-    a_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_cfg_ahb_sys_env", this);
     a_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_adr_ahb_sys_env", this);
     a_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_mng_ahb_sys_env", this);
     a_apb_agt          = apb_master_agent::type_id::create("a_apb_agt", this);
@@ -225,7 +216,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     b1_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("b1_sub_ahb_sys_env", this);
     b1_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("b1_tx_ahb_sys_env", this);
     b1_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("b1_fifo_ahb_sys_env", this);
-    b1_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("b1_cfg_ahb_sys_env", this);
     b1_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("b1_adr_ahb_sys_env", this);
     b1_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("b1_mng_ahb_sys_env", this);
     b1_apb_agt          = apb_master_agent::type_id::create("b1_apb_agt", this);
@@ -236,7 +226,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     b2_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("b2_sub_ahb_sys_env", this);
     b2_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("b2_tx_ahb_sys_env", this);
     b2_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("b2_fifo_ahb_sys_env", this);
-    b2_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("b2_cfg_ahb_sys_env", this);
     b2_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("b2_adr_ahb_sys_env", this);
     b2_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("b2_mng_ahb_sys_env", this);
     b2_apb_agt          = apb_master_agent::type_id::create("b2_apb_agt", this);
@@ -247,7 +236,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     c_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("c_sub_ahb_sys_env", this);
     c_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("c_tx_ahb_sys_env", this);
     c_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("c_fifo_ahb_sys_env", this);
-    c_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("c_cfg_ahb_sys_env", this);
     c_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("c_adr_ahb_sys_env", this);
     c_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("c_mng_ahb_sys_env", this);
     c_apb_agt          = apb_master_agent::type_id::create("c_apb_agt", this);
@@ -275,7 +263,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     vseqr.a_sub_sqr  = a_sub_ahb_sys_env.master[0].sequencer;
     vseqr.a_tx_sqr   = a_tx_ahb_sys_env.master[0].sequencer;
     vseqr.a_fifo_sqr = a_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.a_cfg_sqr  = a_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.a_adr_sqr  = a_adr_ahb_sys_env.master[0].sequencer;
     vseqr.a_apb_sqr  = a_apb_agt.sequencer;
 
@@ -285,7 +272,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     vseqr.b1_sub_sqr  = b1_sub_ahb_sys_env.master[0].sequencer;
     vseqr.b1_tx_sqr   = b1_tx_ahb_sys_env.master[0].sequencer;
     vseqr.b1_fifo_sqr = b1_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.b1_cfg_sqr  = b1_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.b1_adr_sqr  = b1_adr_ahb_sys_env.master[0].sequencer;
     vseqr.b1_apb_sqr  = b1_apb_agt.sequencer;
 
@@ -295,7 +281,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     vseqr.b2_sub_sqr  = b2_sub_ahb_sys_env.master[0].sequencer;
     vseqr.b2_tx_sqr   = b2_tx_ahb_sys_env.master[0].sequencer;
     vseqr.b2_fifo_sqr = b2_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.b2_cfg_sqr  = b2_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.b2_adr_sqr  = b2_adr_ahb_sys_env.master[0].sequencer;
     vseqr.b2_apb_sqr  = b2_apb_agt.sequencer;
 
@@ -305,7 +290,6 @@ class tidelink_ptp_chain_env extends uvm_env;
     vseqr.c_sub_sqr  = c_sub_ahb_sys_env.master[0].sequencer;
     vseqr.c_tx_sqr   = c_tx_ahb_sys_env.master[0].sequencer;
     vseqr.c_fifo_sqr = c_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.c_cfg_sqr  = c_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.c_adr_sqr  = c_adr_ahb_sys_env.master[0].sequencer;
     vseqr.c_apb_sqr  = c_apb_agt.sequencer;
   endfunction

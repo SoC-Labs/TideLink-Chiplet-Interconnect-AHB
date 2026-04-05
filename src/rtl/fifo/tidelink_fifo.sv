@@ -81,6 +81,21 @@ module tidelink_fifo #(
     output wire                     ptp_reg_region,  // 0=Region 1 (basic PTP), 1=Region 2 (HW sync)
 
     // --------------------------------------------------------------------------
+    // Servo Register Pass-Through (to/from tidelink_ptp_servo via tidelink_top)
+    // --------------------------------------------------------------------------
+    output wire                     servo_reg_write,
+    output wire               [2:0] servo_reg_addr,
+    output wire    [SYS_DATA_W-1:0] servo_reg_wdata,
+    input  logic   [SYS_DATA_W-1:0] servo_reg_rdata,
+
+    // --------------------------------------------------------------------------
+    // Timestamp Mailbox Pass-Through (FC SIDEBAND → servo, write-only)
+    // --------------------------------------------------------------------------
+    output wire                     mbox_reg_write,
+    output wire               [2:0] mbox_reg_addr,
+    output wire    [SYS_DATA_W-1:0] mbox_reg_wdata,
+
+    // --------------------------------------------------------------------------
     // FC Direct Write Interface (single-cycle, bypasses AHB for FIFO writes)
     // --------------------------------------------------------------------------
     input  wire                    fc_wr_valid,
@@ -209,7 +224,16 @@ module tidelink_fifo #(
         .ptp_reg_addr        (ptp_reg_addr),
         .ptp_reg_wdata       (ptp_reg_wdata),
         .ptp_reg_rdata       (ptp_reg_rdata),
-        .ptp_reg_region      (ptp_reg_region)
+        .ptp_reg_region      (ptp_reg_region),
+        // Servo register pass-through
+        .servo_reg_write     (servo_reg_write),
+        .servo_reg_addr      (servo_reg_addr),
+        .servo_reg_wdata     (servo_reg_wdata),
+        .servo_reg_rdata     (servo_reg_rdata),
+        // Timestamp mailbox pass-through
+        .mbox_reg_write      (mbox_reg_write),
+        .mbox_reg_addr       (mbox_reg_addr),
+        .mbox_reg_wdata      (mbox_reg_wdata)
     );
 
     // --------------------------------------------------------------------------

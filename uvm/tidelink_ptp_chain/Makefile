@@ -68,6 +68,7 @@ VCS_FLAGS += +define+UVM_DISABLE_AUTO_ITEM_RECORDING
 VCS_FLAGS += +define+SVT_AHB_DISABLE_IMPLICIT_BUS_CONNECTION
 
 VCS_FLAGS += -cm line+cond+tgl+fsm+branch
+VCS_FLAGS += -top test_top
 
 UVM_HOME     = $(VCS_HOME)/etc/uvm-1.2
 VCS_FLAGS += +incdir+$(UVM_HOME)
@@ -124,7 +125,9 @@ VCS_FLAGS += $(RTL_DIR)/tidelink_ptp.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_ptp_servo.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
 
-# TideLink Address Translator
+# TideLink Address Translator (and its sub-modules)
+VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_regs.sv
+VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_cam.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_addr_translator.sv
 
 # PHC (PTP Hardware Clock) RTL

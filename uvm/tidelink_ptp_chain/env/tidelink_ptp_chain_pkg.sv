@@ -93,9 +93,9 @@ package tidelink_ptp_chain_pkg;
   // ---------------------------------------------------------------
   // Environment components
   // ---------------------------------------------------------------
+  `include "tidelink_ptp_chain_config.sv"
   `include "tidelink_ptp_chain_coverage.sv"
   `include "tidelink_ptp_chain_scoreboard.sv"
-  `include "tidelink_ptp_chain_config.sv"
   `include "tidelink_ptp_chain_vseq.sv"
   `include "tidelink_ptp_chain_env.sv"
 

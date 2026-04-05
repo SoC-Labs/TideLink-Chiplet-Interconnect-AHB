@@ -27,6 +27,7 @@ package tidelink_ptp_sync_pkg;
   parameter PHC_REG_SET_NANOSECONDS   = 12'h018;
   parameter PHC_REG_HW_CAP_SECONDS_LO = 12'h040;
   parameter PHC_REG_HW_CAP_NANOSECONDS = 12'h048;
+  parameter PHC_REG_SERVO_CTRL         = 12'h0A0;  // bit[0]=SRC_SEL (0=TideLink, 1=HA1588)
 
   // PHC CTRL bit positions
   parameter PHC_CTRL_SET_TIME = 1;

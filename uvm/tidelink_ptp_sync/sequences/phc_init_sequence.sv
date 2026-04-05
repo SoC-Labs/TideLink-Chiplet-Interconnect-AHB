@@ -51,6 +51,12 @@ class phc_init_sequence extends svt_ahb_master_transaction_base_sequence;
     wr_seq.data = ns_incr_frac;
     wr_seq.start(p_sequencer);
 
+    // Select TideLink as hardware servo source (SRC_SEL=0)
+    wr_seq = ahb_reg_write_sequence::type_id::create("wr_servo_ctrl");
+    wr_seq.addr = PHC_REG_SERVO_CTRL;
+    wr_seq.data = 32'h0000_0000;
+    wr_seq.start(p_sequencer);
+
     `uvm_info("SEQ", $sformatf("[%s] PHC init complete.", side_name), UVM_LOW)
   endtask
 

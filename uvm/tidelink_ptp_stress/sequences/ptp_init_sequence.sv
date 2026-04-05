@@ -93,6 +93,21 @@ class ptp_init_sequence extends svt_ahb_master_transaction_base_sequence;
     });
     `uvm_send(txn)
 
+    // -------------------------------------------------------------------
+    // PHC SERVO_CTRL: Select TideLink as hardware servo source (SRC_SEL=0)
+    // -------------------------------------------------------------------
+    `uvm_create(txn)
+    txn.cfg = cfg;
+    assert(txn.randomize() with {
+      xact_type  == svt_ahb_transaction::WRITE;
+      addr       == REG_PHC_SERVO_CTRL;
+      burst_type == svt_ahb_transaction::SINGLE;
+      burst_size == svt_ahb_transaction::BURST_SIZE_32BIT;
+      data.size() == 1;
+      data[0]    == 32'h0000_0000;
+    });
+    `uvm_send(txn)
+
     `uvm_info("PTP_INIT", $sformatf("[%s] PHC + PTP initialization complete.", side_name), UVM_LOW)
   endtask
 

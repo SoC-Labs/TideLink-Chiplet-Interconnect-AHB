@@ -39,12 +39,13 @@ package tidelink_ptp_stress_pkg;
   parameter REG_PTP_RX_PAYLOAD = 12'h038;
   parameter REG_PTP_STATUS     = 12'h03C;
 
-  // PHC register offsets
+  // PHC register offsets (via dedicated PHC AHB port → PHC APB space)
   parameter REG_PHC_CTRL               = 12'h040;
   parameter REG_PHC_NS_INCR            = 12'h044;
   parameter REG_PHC_HW_CAP_SECONDS_LO  = 12'h050;
   parameter REG_PHC_HW_CAP_SECONDS_HI  = 12'h054;
   parameter REG_PHC_HW_CAP_NANOSECONDS = 12'h058;
+  parameter REG_PHC_SERVO_CTRL         = 12'h0A0;  // bit[0]=SRC_SEL (0=TideLink, 1=HA1588)
 
   // Status register bit positions
   parameter STATUS_RETURNER_BUSY    = 0;

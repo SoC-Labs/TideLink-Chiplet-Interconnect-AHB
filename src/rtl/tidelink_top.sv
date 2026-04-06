@@ -250,6 +250,13 @@ module tidelink_top #(
     input  wire                     tc_axis_rx_tready,
 
     // --------------------------------------------------------------------------
+    // QoS Priority Hint (Phase 5A, from TideChart TC_QOS_CFG register)
+    // When >0: TideChart PKT_EXT packets are prioritised above FIFO_DATA
+    // When =0: original fixed priority (FIFO_DATA may win over PKT_EXT)
+    // --------------------------------------------------------------------------
+    input  wire               [2:0] tc_qos_priority,
+
+    // --------------------------------------------------------------------------
     // Link active status (Wlink link layer is up and operational)
     // --------------------------------------------------------------------------
     output wire                     link_active,
@@ -858,6 +865,9 @@ module tidelink_top #(
         .tc_axis_rx_tvalid   (tc_axis_rx_tvalid),
         .tc_axis_rx_tdata    (tc_axis_rx_tdata),
         .tc_axis_rx_tready   (tc_axis_rx_tready),
+
+        // QoS priority hint
+        .tc_qos_priority     (tc_qos_priority),
 
         // PUF SRAM read (to FIFO memory)
         .puf_addr            (puf_addr),

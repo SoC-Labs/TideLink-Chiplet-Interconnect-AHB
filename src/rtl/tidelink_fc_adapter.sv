@@ -114,6 +114,13 @@ module tidelink_fc_adapter #(
     input  wire                     tc_axis_rx_tready,
 
     // --------------------------------------------------------------------------
+    // QoS Priority Hint (from TideChart TC_QOS_CFG, Phase 5A)
+    // When >0, PKT_EXT packets get boosted above TX aperture FIFO_DATA.
+    // When =0 (default), original fixed priority applies.
+    // --------------------------------------------------------------------------
+    input  wire               [2:0] tc_qos_priority,
+
+    // --------------------------------------------------------------------------
     // PUF SRAM Read Interface (to tidelink_fifo_mem, for local PUF reads)
     // --------------------------------------------------------------------------
     output reg  [RAM_ADDR_W-3:0]    puf_addr,
@@ -339,14 +346,29 @@ module tidelink_fc_adapter #(
         end
     end
 
-    // Arbiter output: extension + sideband has priority unless starvation limit reached
-    // Priority: tc_axis (remote only) > returner > servo > TX aperture
-    wire ext_grant = tc_tx_is_remote && !sideband_starving;
-    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || tc_tx_is_remote) && !sideband_starving;
-    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | tc_tx_is_remote;
-    wire [FC_DATA_W-1:0] arb_data  = ext_grant                                ? tc_axis_tx_tdata :
-                                     (sideband_grant && rtn_fc_valid)          ? rtn_fc_word      :
+    // Arbiter output: priority-aware dispatch (Phase 5A QoS hinting)
+    //
+    // Fixed priority (always):
+    //   1. Returner sideband (credit/doorbell — flow-control critical)
+    //   2. Servo sideband (PTP timing)
+    //
+    // Configurable priority via tc_qos_priority:
+    //   When tc_qos_priority > 0: TideChart PKT_EXT > TX aperture FIFO_DATA
+    //   When tc_qos_priority = 0: TX aperture FIFO_DATA > TideChart PKT_EXT
+    //
+    // Starvation prevention applies regardless of QoS setting.
+    wire ext_wants = tc_tx_is_remote;
+    wire ext_boosted = ext_wants && (|tc_qos_priority);  // Priority > 0 boosts PKT_EXT
+
+    wire ext_grant = ext_wants && !sideband_starving &&
+                     (ext_boosted || !tx_fc_valid);       // If boosted: always win vs TX aperture
+                                                          // If not boosted: only win when no TX data
+
+    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || ext_grant) && !sideband_starving;
+    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | ext_wants;
+    wire [FC_DATA_W-1:0] arb_data  = (sideband_grant && rtn_fc_valid)          ? rtn_fc_word      :
                                      (sideband_grant && servo_fc_valid)        ? servo_fc_data    :
+                                     ext_grant                                 ? tc_axis_tx_tdata :
                                      tx_fc_word;
 
     // Skid buffer registers

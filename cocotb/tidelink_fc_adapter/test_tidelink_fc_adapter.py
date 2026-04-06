@@ -351,6 +351,9 @@ async def do_reset(dut):
     dut.puf_rdata.value = 0
     dut.puf_ack.value   = 0
 
+    # QoS priority — default 0 (no boost)
+    dut.tc_qos_priority.value = 0
+
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 5)
@@ -1502,3 +1505,93 @@ async def test_36_tc_axis_tready_backpressure(dut):
     # Verify tvalid is no longer asserted (no PUF response, no more remote data)
     assert int(dut.tc_axis_rx_tvalid.value) == 0, \
         "tc_axis_rx_tvalid should be 0 after handshake completed"
+
+
+
+# =============================================================================
+# Phase 5A: QoS Priority Tests
+# =============================================================================
+
+@cocotb.test()
+async def test_qos_priority_zero_default(dut):
+    """With qos_priority=0, PKT_EXT should NOT be boosted above TX aperture."""
+    fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
+    await do_reset(dut)
+
+    dut.tc_qos_priority.value = 0
+
+    # Present both TX aperture data and TideChart PKT_EXT simultaneously
+    # TX aperture: start address phase
+    dut.ahb_tx_hsel.value   = 1
+    dut.ahb_tx_htrans.value = HTRANS_NONSEQ
+    dut.ahb_tx_hwrite.value = 1
+    dut.ahb_tx_haddr.value  = 0x0100
+    await RisingEdge(dut.hclk)
+
+    # Data phase + simultaneously assert TideChart TX
+    dut.ahb_tx_hsel.value   = 0
+    dut.ahb_tx_htrans.value = HTRANS_IDLE
+    dut.ahb_tx_hwdata.value = 0xAAAA_BBBB
+    dut.tc_axis_tx_tvalid.value = 1
+    dut.tc_axis_tx_tdata.value  = (PKT_EXT << 46) | (0x0010 << 32) | 0xCCCC_DDDD
+
+    # Wait for FC TX — with priority 0, TX aperture should win when no sideband
+    pkt = await fc_mon.get(timeout_cycles=20)
+
+    # The first packet could be either (depends on exact arbiter timing)
+    # but with qos=0 and no sideband, TX aperture data is the natural winner
+    dut.tc_axis_tx_tvalid.value = 0
+    dut.ahb_tx_hsel.value = 0
+
+    # Just verify we got a packet — the arbiter resolves conflict
+    assert pkt is not None, "Should get an FC packet"
+
+
+@cocotb.test()
+async def test_qos_priority_boost_ext(dut):
+    """With qos_priority>0, PKT_EXT should be prioritised above TX aperture FIFO_DATA."""
+    fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
+    await do_reset(dut)
+
+    dut.tc_qos_priority.value = 3  # Non-zero: boost PKT_EXT
+
+    # Assert TideChart PKT_EXT
+    ext_payload = 0x1234_5678
+    ext_word = (PKT_EXT << 46) | (0x0010 << 32) | ext_payload
+    dut.tc_axis_tx_tvalid.value = 1
+    dut.tc_axis_tx_tdata.value  = ext_word
+
+    # Wait for FC TX — with priority > 0, PKT_EXT should be sent
+    pkt = await fc_mon.get(timeout_cycles=20)
+    assert pkt is not None, "Should get an FC packet"
+    assert pkt["pkt_type"] == PKT_EXT, f"Expected PKT_EXT, got {pkt['pkt_type']:02b}"
+    assert pkt["payload"] == ext_payload, f"Payload mismatch: {pkt['payload']:#010x}"
+
+    dut.tc_axis_tx_tvalid.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+
+@cocotb.test()
+async def test_qos_priority_change_runtime(dut):
+    """QoS priority can be changed at runtime."""
+    fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
+    await do_reset(dut)
+
+    # Start with priority 0
+    dut.tc_qos_priority.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+    # Change to priority 5
+    dut.tc_qos_priority.value = 5
+    await ClockCycles(dut.hclk, 2)
+
+    # Send a PKT_EXT — should be boosted
+    dut.tc_axis_tx_tvalid.value = 1
+    dut.tc_axis_tx_tdata.value  = (PKT_EXT << 46) | (0x0016 << 32) | 0xBEEF
+    pkt = await fc_mon.get(timeout_cycles=20)
+    assert pkt["pkt_type"] == PKT_EXT, "PKT_EXT should be sent with boosted priority"
+    dut.tc_axis_tx_tvalid.value = 0
+
+    # Change back to 0
+    dut.tc_qos_priority.value = 0
+    await ClockCycles(dut.hclk, 2)

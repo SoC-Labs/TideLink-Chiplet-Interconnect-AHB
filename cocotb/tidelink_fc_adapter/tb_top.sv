@@ -57,6 +57,9 @@ module tb_top #(
     output logic   [FC_DATA_W-1:0]  tc_axis_rx_tdata,
     input  logic                     tc_axis_rx_tready,
 
+    // ── QoS Priority Hint ──────────────────────────────────────────────
+    input  logic               [2:0] tc_qos_priority,
+
     // ── PUF SRAM Read Interface ─────────────────────────────────────────
     output logic   [RAM_ADDR_W-3:0] puf_addr,
     output logic                     puf_req,
@@ -135,6 +138,9 @@ module tb_top #(
         .tc_axis_rx_tvalid   (tc_axis_rx_tvalid),
         .tc_axis_rx_tdata    (tc_axis_rx_tdata),
         .tc_axis_rx_tready   (tc_axis_rx_tready),
+
+        // QoS priority
+        .tc_qos_priority     (tc_qos_priority),
 
         // PUF SRAM read interface
         .puf_addr          (puf_addr),

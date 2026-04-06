@@ -7,9 +7,9 @@
 // segment table, reducing register storage from 2048 FFs to ~169 FFs per
 // channel.
 //
-// AHB subordinate interface is bridged to APB, then fanned out via an APB
-// slave mux to the channel register sets. Each channel drives a
-// combinational CAM-based translation block.
+// APB subordinate interface is fanned out via an APB slave mux to the
+// channel register sets. Each channel drives a combinational CAM-based
+// translation block.
 //
 // Based on: nanosoc_ss_chiplet_addr (nanosoc-chiplet-tech)
 //
@@ -17,8 +17,6 @@
 //   - apb4_if             (SV interface)  — from axi-chiplet-controller
 //   - tl_addr_trans_regs  (SV module)     — from tidelink src/rtl
 //   - tl_addr_trans_cam   (SV module)     — from tidelink src/rtl
-//   - cmsdk_ahb_to_apb    (Verilog)       — from ARM CMSDK
-//   - cmsdk_apb_slave_mux (Verilog)       — from ARM CMSDK
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic
 // Access license.
@@ -31,27 +29,23 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_addr_translator #(
-    parameter BE           = 0,
     parameter NUM_CHANNELS = 2,
     parameter NUM_RULES    = 8
 )(
     input  wire         CLK,
     input  wire         RESETn,
 
-    // Chiplet Address Control AHB interface
-    input   wire         chp_adr_hsel,           // AHB region select
-    input   wire  [31:0] chp_adr_haddr,          // AHB address
-    input   wire  [ 2:0] chp_adr_hburst,         // AHB burst
-    input   wire         chp_adr_hmastlock,      // AHB lock
-    input   wire  [ 3:0] chp_adr_hprot,          // AHB prot
-    input   wire  [ 2:0] chp_adr_hsize,          // AHB size
-    input   wire  [ 1:0] chp_adr_htrans,         // AHB transfer
-    input   wire  [31:0] chp_adr_hwdata,         // AHB write data
-    input   wire         chp_adr_hwrite,         // AHB write
-    input   wire         chp_adr_hready,         // AHB ready
-    output  wire  [31:0] chp_adr_hrdata,         // AHB read-data
-    output  wire         chp_adr_hresp,          // AHB response
-    output  wire         chp_adr_hreadyout,      // AHB ready out
+    // Chiplet Address Control APB interface
+    input   wire  [15:0] chp_adr_paddr,          // APB address
+    input   wire         chp_adr_psel,           // APB select
+    input   wire         chp_adr_penable,        // APB enable
+    input   wire         chp_adr_pwrite,         // APB write
+    input   wire  [31:0] chp_adr_pwdata,         // APB write data
+    input   wire  [ 3:0] chp_adr_pstrb,          // APB byte strobe
+    input   wire  [ 2:0] chp_adr_pprot,          // APB protection
+    output  wire  [31:0] chp_adr_prdata,         // APB read data
+    output  wire         chp_adr_pready,         // APB ready
+    output  wire         chp_adr_pslverr,        // APB slave error
 
 
     input  wire [31:0]  chp0_ahb_haddr_i,
@@ -68,102 +62,15 @@ module tidelink_addr_translator #(
 apb4_if CHP_ADR_APB_0();
 apb4_if CHP_ADR_APB_1();
 
-wire     [15:0]  i_paddr;
-wire             i_psel;
-wire             i_penable;
-wire             i_pwrite;
-wire     [2:0]   i_pprot;
-wire     [3:0]   i_pstrb;
-wire     [31:0]  i_pwdata;
-
-// Signals from APB slave mux to APB bridge
+// Signals from APB slave mux
 logic            i_pready_mux;
 logic    [31:0]  i_prdata_mux;
 logic            i_pslverr_mux;
 
-// endian handling
-wire             APBACTIVE;
-
-wire   [31:0]    hwdata_le; // Little endian write data
-wire   [31:0]    hrdata_le; // Little endian read data
-
-generate
-if (BE != 0) begin : gen_be_swap
-    wire bigendian = 1'b1;
-    wire reg_be_swap_ctrl_en = chp_adr_hsel & chp_adr_htrans[1] & chp_adr_hready;
-    reg     [1:0]    reg_be_swap_ctrl;
-    wire    [1:0]    nxt_be_swap_ctrl;
-
-    assign nxt_be_swap_ctrl[1] = (chp_adr_hsize[1:0]==2'b10); // Swap upper and lower half word
-    assign nxt_be_swap_ctrl[0] = (chp_adr_hsize[1:0]!=2'b00); // Swap byte within halfword
-
-    always @(posedge CLK or negedge RESETn)
-    begin
-    if (~RESETn)
-        reg_be_swap_ctrl <= 2'b00;
-    else if (reg_be_swap_ctrl_en)
-        reg_be_swap_ctrl <= nxt_be_swap_ctrl;
-    end
-
-    // swap byte within half word
-    wire  [31:0] hwdata_mux_1 = (reg_be_swap_ctrl[0]) ?
-        {chp_adr_hwdata[23:16],chp_adr_hwdata[31:24],chp_adr_hwdata[7:0],chp_adr_hwdata[15:8]}:
-        {chp_adr_hwdata[31:24],chp_adr_hwdata[23:16],chp_adr_hwdata[15:8],chp_adr_hwdata[7:0]};
-    // swap lower and upper half word
-    assign       hwdata_le    = (reg_be_swap_ctrl[1]) ?
-        {hwdata_mux_1[15: 0],hwdata_mux_1[31:16]}:
-        {hwdata_mux_1[31:16],hwdata_mux_1[15:0]};
-    // swap byte within half word
-    wire  [31:0] hrdata_mux_1 = (reg_be_swap_ctrl[0]) ?
-        {hrdata_le[23:16],hrdata_le[31:24],hrdata_le[ 7:0],hrdata_le[15:8]}:
-        {hrdata_le[31:24],hrdata_le[23:16],hrdata_le[15:8],hrdata_le[7:0]};
-    // swap lower and upper half word
-    assign    chp_adr_hrdata       = (reg_be_swap_ctrl[1]) ?
-        {hrdata_mux_1[15: 0],hrdata_mux_1[31:16]}:
-        {hrdata_mux_1[31:16],hrdata_mux_1[15:0]};
-end else begin : gen_no_swap
-    assign hwdata_le       = chp_adr_hwdata;
-    assign chp_adr_hrdata  = hrdata_le;
-end
-endgenerate
-
-  // AHB to APB bus bridge
-  cmsdk_ahb_to_apb #(
-    .ADDRWIDTH      (16),
-    .REGISTER_RDATA (1),
-    .REGISTER_WDATA (0)
-  ) u_ahb_to_apb(
-    // AHB side
-    .HCLK     (CLK),
-    .HRESETn  (RESETn),
-    .HSEL     (chp_adr_hsel),
-    .HADDR    (chp_adr_haddr[15:0]),
-    .HTRANS   (chp_adr_htrans),
-    .HSIZE    (chp_adr_hsize),
-    .HPROT    (chp_adr_hprot),
-    .HWRITE   (chp_adr_hwrite),
-    .HREADY   (chp_adr_hready),
-    .HWDATA   (hwdata_le),
-
-    .HREADYOUT(chp_adr_hreadyout), // AHB Outputs
-    .HRDATA   (hrdata_le),
-    .HRESP    (chp_adr_hresp),
-
-    .PADDR    (i_paddr[15:0]),
-    .PSEL     (i_psel),
-    .PENABLE  (i_penable),
-    .PSTRB    (i_pstrb),
-    .PPROT    (i_pprot),
-    .PWRITE   (i_pwrite),
-    .PWDATA   (i_pwdata),
-
-    .APBACTIVE(APBACTIVE),
-    .PCLKEN   (1'b1),     // APB clock enable signal
-
-    .PRDATA   (i_prdata_mux),
-    .PREADY   (i_pready_mux),
-    .PSLVERR  (i_pslverr_mux)
-    );
+// APB response outputs
+assign chp_adr_prdata  = i_prdata_mux;
+assign chp_adr_pready  = i_pready_mux;
+assign chp_adr_pslverr = i_pslverr_mux;
 
   // Lightweight APB slave mux — only NUM_CHANNELS ports instantiated.
   // Replaces cmsdk_apb_slave_mux which carries full 16-port decode logic
@@ -178,8 +85,8 @@ endgenerate
     i_prdata_mux  = 32'h00000000;
     i_pslverr_mux = 1'b1;
 
-    if (i_psel) begin
-      case (i_paddr[15:12])
+    if (chp_adr_psel) begin
+      case (chp_adr_paddr[15:12])
         4'h0: begin
           psel_ch0      = 1'b1;
           i_pready_mux  = CHP_ADR_APB_0.pready;
@@ -206,11 +113,11 @@ endgenerate
 // --------------------------------------------------------------------------
 // Channel 0 APB wiring (always present)
 // --------------------------------------------------------------------------
-assign CHP_ADR_APB_0.penable = i_penable;
-assign CHP_ADR_APB_0.paddr = i_paddr;
-assign CHP_ADR_APB_0.pwrite = i_pwrite;
-assign CHP_ADR_APB_0.pwdata = i_pwdata;
-assign CHP_ADR_APB_0.pstrb = i_pstrb;
+assign CHP_ADR_APB_0.penable = chp_adr_penable;
+assign CHP_ADR_APB_0.paddr = chp_adr_paddr;
+assign CHP_ADR_APB_0.pwrite = chp_adr_pwrite;
+assign CHP_ADR_APB_0.pwdata = chp_adr_pwdata;
+assign CHP_ADR_APB_0.pstrb = chp_adr_pstrb;
 
 wire [31:0]            base_offset_0;
 wire                   global_enable_0;
@@ -249,11 +156,11 @@ tl_addr_trans_cam #(
 generate
 if (NUM_CHANNELS > 1) begin : gen_ch1
 
-    assign CHP_ADR_APB_1.penable = i_penable;
-    assign CHP_ADR_APB_1.paddr = i_paddr;
-    assign CHP_ADR_APB_1.pwrite = i_pwrite;
-    assign CHP_ADR_APB_1.pwdata = i_pwdata;
-    assign CHP_ADR_APB_1.pstrb = i_pstrb;
+    assign CHP_ADR_APB_1.penable = chp_adr_penable;
+    assign CHP_ADR_APB_1.paddr = chp_adr_paddr;
+    assign CHP_ADR_APB_1.pwrite = chp_adr_pwrite;
+    assign CHP_ADR_APB_1.pwdata = chp_adr_pwdata;
+    assign CHP_ADR_APB_1.pstrb = chp_adr_pstrb;
 
     wire [31:0]            base_offset_1;
     wire                   global_enable_1;

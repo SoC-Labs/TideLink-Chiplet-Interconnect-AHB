@@ -17,10 +17,10 @@
 //                same aperture size as remote RX FIFO, no address translation)
 //   ahb_fifo_* — AHB subordinate: local RX FIFO data window (read packets)
 //   ahb_mng_*  — AHB manager: incoming from remote side (via XHB500)
-//   ahb_adr_*  — AHB subordinate: address translator configuration
 //   apb_*      — APB subordinate: unified configuration port
 //                (0x0000-0x1FFF: Wlink chiplet controller,
-//                 0x2000-0x203F: TideLink config + PTP registers)
+//                 0x2000-0x3FFF: TideLink config + PTP registers,
+//                 0x4000-0x5FFF: Address translator configuration)
 //
 // Reference: nanosoc_ss_chiplet_mng.v in nanosoc-chiplet-tech
 //
@@ -125,22 +125,6 @@ module tidelink_top #(
     output wire                     ahb_mng_hready,
     input  wire    [SYS_DATA_W-1:0] ahb_mng_hrdata,
     input  wire                     ahb_mng_hresp,
-
-    // --------------------------------------------------------------------------
-    // AHB Subordinate — Address translator configuration
-    // --------------------------------------------------------------------------
-    input  wire                     ahb_adr_hsel,
-    input  wire    [SYS_ADDR_W-1:0] ahb_adr_haddr,
-    input  wire               [2:0] ahb_adr_hburst,
-    input  wire               [3:0] ahb_adr_hprot,
-    input  wire               [2:0] ahb_adr_hsize,
-    input  wire               [1:0] ahb_adr_htrans,
-    input  wire    [SYS_DATA_W-1:0] ahb_adr_hwdata,
-    input  wire                     ahb_adr_hwrite,
-    input  wire                     ahb_adr_hready,
-    output wire    [SYS_DATA_W-1:0] ahb_adr_hrdata,
-    output wire                     ahb_adr_hresp,
-    output wire                     ahb_adr_hreadyout,
 
     // --------------------------------------------------------------------------
     // APB Subordinate — Unified configuration port
@@ -523,11 +507,14 @@ module tidelink_top #(
 
     // =========================================================================
     // Unified APB address decode
-    //   paddr[13] == 0 → Wlink chiplet controller (paddr[12:0])
-    //   paddr[13] == 1 → TideLink config registers (paddr[5:0])
+    //   paddr[14:13] == 00 → Wlink chiplet controller (paddr[12:0])
+    //   paddr[14:13] == 01 → TideLink config registers (paddr[11:0])
+    //   paddr[14:13] == 10 → Address translator config (paddr[12:0])
+    //   paddr[14:13] == 11 → Reserved
     // =========================================================================
-    wire apb_sel_wlink    = apb_psel && !apb_paddr[13];
-    wire apb_sel_tidelink = apb_psel &&  apb_paddr[13];
+    wire apb_sel_wlink     = apb_psel && !apb_paddr[14] && !apb_paddr[13];
+    wire apb_sel_tidelink  = apb_psel && !apb_paddr[14] &&  apb_paddr[13];
+    wire apb_sel_addr_xlat = apb_psel &&  apb_paddr[14] && !apb_paddr[13];
 
     // Wlink APB response signals
     wire [SYS_DATA_W-1:0] wlink_prdata;
@@ -539,13 +526,21 @@ module tidelink_top #(
     wire                   tl_regs_pready;
     wire                   tl_regs_pslverr;
 
+    // Address translator APB response signals
+    wire [SYS_DATA_W-1:0] adr_xlat_prdata;
+    wire                   adr_xlat_pready;
+    wire                   adr_xlat_pslverr;
+
     // Unified APB response mux
-    assign apb_prdata  = apb_sel_wlink    ? wlink_prdata    :
-                         apb_sel_tidelink ? tl_regs_prdata  : '0;
-    assign apb_pready  = apb_sel_wlink    ? wlink_pready    :
-                         apb_sel_tidelink ? tl_regs_pready  : 1'b1;
-    assign apb_pslverr = apb_sel_wlink    ? wlink_pslverr   :
-                         apb_sel_tidelink ? tl_regs_pslverr : 1'b0;
+    assign apb_prdata  = apb_sel_wlink     ? wlink_prdata     :
+                         apb_sel_tidelink  ? tl_regs_prdata   :
+                         apb_sel_addr_xlat ? adr_xlat_prdata   : '0;
+    assign apb_pready  = apb_sel_wlink     ? wlink_pready     :
+                         apb_sel_tidelink  ? tl_regs_pready   :
+                         apb_sel_addr_xlat ? adr_xlat_pready   : 1'b1;
+    assign apb_pslverr = apb_sel_wlink     ? wlink_pslverr    :
+                         apb_sel_tidelink  ? tl_regs_pslverr  :
+                         apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
 
     // =========================================================================
     // TideLink config APB mux: 2:1 APB mux
@@ -1164,28 +1159,25 @@ module tidelink_top #(
     // =========================================================================
     // 5. Address Translator
     //    APB-configurable address remapping for the regular AHB bridge path
+    //    Config accessed via unified APB port, region 2 (0x4000-0x5FFF)
     // =========================================================================
     tidelink_addr_translator #(
-        .BE           (0),
         .NUM_CHANNELS (1)
     ) u_addr_translator (
         .CLK               (hclk),
         .RESETn            (hresetn),
 
-        // AHB slave for address translator configuration
-        .chp_adr_hsel      (ahb_adr_hsel),
-        .chp_adr_haddr     (ahb_adr_haddr),
-        .chp_adr_hburst    (ahb_adr_hburst),
-        .chp_adr_hmastlock (1'b0),
-        .chp_adr_hprot     (ahb_adr_hprot),
-        .chp_adr_hsize     (ahb_adr_hsize),
-        .chp_adr_htrans    (ahb_adr_htrans),
-        .chp_adr_hwdata    (ahb_adr_hwdata),
-        .chp_adr_hwrite    (ahb_adr_hwrite),
-        .chp_adr_hready    (ahb_adr_hready),
-        .chp_adr_hrdata    (ahb_adr_hrdata),
-        .chp_adr_hresp     (ahb_adr_hresp),
-        .chp_adr_hreadyout (ahb_adr_hreadyout),
+        // APB slave for address translator configuration
+        .chp_adr_paddr     ({3'b000, apb_paddr[12:0]}),
+        .chp_adr_psel      (apb_sel_addr_xlat),
+        .chp_adr_penable   (apb_penable),
+        .chp_adr_pwrite    (apb_pwrite),
+        .chp_adr_pwdata    (apb_pwdata),
+        .chp_adr_pstrb     (apb_pstrb),
+        .chp_adr_pprot     (apb_pprot),
+        .chp_adr_prdata    (adr_xlat_prdata),
+        .chp_adr_pready    (adr_xlat_pready),
+        .chp_adr_pslverr   (adr_xlat_pslverr),
 
         // Address translation: input from ahb_sub, output to XHB500
         .chp0_ahb_haddr_i  (ahb_sub_haddr),

@@ -1,6 +1,6 @@
 """Cocotb testbench for tidelink_addr_translator (CAM-based).
 
-Exercises APB-configurable CAM rule-based address remapping via the AHB
+Exercises APB-configurable CAM rule-based address remapping via the APB
 config slave, verifying rule programming, priority, global enable,
 base offset, identity passthrough, and edge cases.
 
@@ -16,9 +16,63 @@ Register map per channel (tl_addr_trans_regs):
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
-from cocotbext.ahb import AHBBus, AHBLiteMaster
+
+# ── Minimal APB Master Driver ───────────────────────────────────────────────
+
+class APBMaster:
+    """Minimal APB master driver for register access."""
+
+    def __init__(self, dut, clk, prefix="apbc"):
+        self._clk     = clk
+        self._psel    = getattr(dut, f"{prefix}_psel")
+        self._penable = getattr(dut, f"{prefix}_penable")
+        self._pwrite  = getattr(dut, f"{prefix}_pwrite")
+        self._paddr   = getattr(dut, f"{prefix}_paddr")
+        self._pwdata  = getattr(dut, f"{prefix}_pwdata")
+        self._pstrb   = getattr(dut, f"{prefix}_pstrb")
+        self._prdata  = getattr(dut, f"{prefix}_prdata")
+        self._pready  = getattr(dut, f"{prefix}_pready")
+
+    def idle(self):
+        self._psel.value    = 0
+        self._penable.value = 0
+        self._pwrite.value  = 0
+        self._paddr.value   = 0
+        self._pwdata.value  = 0
+        self._pstrb.value   = 0
+
+    async def write(self, addr, data):
+        self._psel.value    = 1
+        self._penable.value = 0
+        self._pwrite.value  = 1
+        self._paddr.value   = addr
+        self._pwdata.value  = data
+        self._pstrb.value   = 0xF
+        await RisingEdge(self._clk)
+        self._penable.value = 1
+        await RisingEdge(self._clk)
+        while not int(self._pready.value):
+            await RisingEdge(self._clk)
+        self.idle()
+
+    async def read(self, addr):
+        self._psel.value    = 1
+        self._penable.value = 0
+        self._pwrite.value  = 0
+        self._paddr.value   = addr
+        self._pwdata.value  = 0
+        await RisingEdge(self._clk)
+        self._penable.value = 1
+        await FallingEdge(self._clk)
+        while not int(self._pready.value):
+            await RisingEdge(self._clk)
+            await FallingEdge(self._clk)
+        data = int(self._prdata.value)
+        await RisingEdge(self._clk)
+        self.idle()
+        return data
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -65,27 +119,24 @@ class AddrTranslatorTB:
             Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start()
         )
 
-        ahbc_bus = AHBBus.from_prefix(dut, "ahbc")
-        self.ahb_cfg = AHBLiteMaster(
-            ahbc_bus, dut.hclk, dut.hresetn, timeout=200
-        )
+        self.apb_cfg = APBMaster(dut, dut.hclk, prefix="apbc")
 
     async def reset(self):
         self.dut.hresetn.value = 0
         self.dut.chp0_ahb_haddr_i.value = 0
         self.dut.chp1_ahb_haddr_i.value = 0
+        self.apb_cfg.idle()
         await ClockCycles(self.dut.hclk, 5)
         self.dut.hresetn.value = 1
         await ClockCycles(self.dut.hclk, 5)
 
     async def cfg_read(self, offset):
-        """Read a 32-bit config register via the AHB config slave."""
-        resp = await self.ahb_cfg.read(offset)
-        return int(resp[0].get("data", "0x0"), 16)
+        """Read a 32-bit config register via the APB config slave."""
+        return await self.apb_cfg.read(offset)
 
     async def cfg_write(self, offset, data):
-        """Write a 32-bit config register via the AHB config slave."""
-        await self.ahb_cfg.write(offset, data)
+        """Write a 32-bit config register via the APB config slave."""
+        await self.apb_cfg.write(offset, data)
 
     async def write_base_offset(self, channel, value):
         ch_base = CH0_BASE if channel == 0 else CH1_BASE

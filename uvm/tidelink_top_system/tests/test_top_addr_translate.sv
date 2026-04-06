@@ -4,7 +4,7 @@
 // Verification gap G30: Address translator not tested in integration context.
 //
 // Tests the address translator through the full Wlink stack by:
-//   1. Configuring translation rules via ahb_adr port
+//   1. Configuring translation rules via unified APB port (region 0x4000)
 //   2. Writing to ahb_sub with source addresses
 //   3. Verifying translated addresses arrive at ahb_mng on the remote side
 //
@@ -27,27 +27,28 @@ class test_top_addr_translate extends tidelink_top_system_base_test;
     test_timeout_cycles = 10_000_000;
   endfunction
 
-  // Helper: write an address translator register via ahb_adr port
+  // Helper: write an address translator register via unified APB port
+  // Address translator is at APB region 0x4000 (paddr[14:13] = 2'b10)
   task write_adr_reg(side_t side, bit [31:0] addr, bit [31:0] data);
-    integration_cfg_write_sequence wr_seq;
-    wr_seq = integration_cfg_write_sequence::type_id::create("adr_wr");
-    wr_seq.addr = addr[14:0];
+    apb_write_sequence wr_seq;
+    wr_seq = apb_write_sequence::type_id::create("adr_wr");
+    wr_seq.addr = 15'h4000 | addr[12:0];
     wr_seq.data = data;
     if (side == SIDE_A)
-      wr_seq.start(env.a_adr_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.a_apb_agt.sequencer);
     else
-      wr_seq.start(env.b_adr_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.b_apb_agt.sequencer);
   endtask
 
-  // Helper: read an address translator register via ahb_adr port
+  // Helper: read an address translator register via unified APB port
   task read_adr_reg(side_t side, bit [31:0] addr, output bit [31:0] data);
-    integration_cfg_read_sequence rd_seq;
-    rd_seq = integration_cfg_read_sequence::type_id::create("adr_rd");
-    rd_seq.addr = addr[14:0];
+    apb_read_sequence rd_seq;
+    rd_seq = apb_read_sequence::type_id::create("adr_rd");
+    rd_seq.addr = 15'h4000 | addr[12:0];
     if (side == SIDE_A)
-      rd_seq.start(env.a_adr_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.a_apb_agt.sequencer);
     else
-      rd_seq.start(env.b_adr_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.b_apb_agt.sequencer);
     data = rd_seq.rdata;
   endtask
 
@@ -79,7 +80,7 @@ class test_top_addr_translate extends tidelink_top_system_base_test;
     // ===============================================================
     // Test 1: Verify address translator registers are accessible
     // ===============================================================
-    `uvm_info("TEST", "--- Test 1: Register access via ahb_adr port ---", UVM_LOW)
+    `uvm_info("TEST", "--- Test 1: Register access via APB port ---", UVM_LOW)
 
     // Read PIDR (identification registers at 0xFD0-0xFFC)
     read_adr_reg(SIDE_A, 32'h0000_0FE0, reg_data);

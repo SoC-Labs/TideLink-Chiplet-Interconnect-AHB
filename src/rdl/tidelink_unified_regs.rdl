@@ -10,10 +10,10 @@
 //   0x2034 - 0x203C : TideLink PTP subsystem registers
 //   0x2040 - 0x207F : PTP HW Sync, Servo config, Servo status, Mailbox
 //   0x2080 - 0x208F : Chiplet controller role configuration
+//   0x4000 - 0x4FFF : Address translator channel 0 configuration
 //
-// External register blocks (separate APB ports, not in this map):
+// External register blocks (separate ports, not in this map):
 //   PHC (PTP Hardware Clock) — see phc_regs.rdl
-//   Address Translator      — see tidelink_addr_translator_regs.rdl
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 //
@@ -30,8 +30,9 @@ addrmap tidelink_unified_regs {
             and the TideLink-specific registers into a single address space.
 
             The APB address decoder in tidelink_top routes accesses as follows:
-              paddr[14:13] == 2'b0x → Wlink (paddr[12:0] passed through)
-              paddr[14:13] == 2'b10 → TideLink registers (paddr[7:0] decoded)
+              paddr[14:13] == 2'b00 → Wlink (paddr[12:0] passed through)
+              paddr[14:13] == 2'b01 → TideLink registers (paddr[7:0] decoded)
+              paddr[14:13] == 2'b10 → Address translator (paddr[12:0] passed through)
 
             The TideLink register region includes an internal APB mux that
             arbitrates between external APB access and the FC adapter RX config
@@ -64,4 +65,15 @@ addrmap tidelink_unified_regs {
                       Region 4 (0x2080-0x208F) contains the chiplet controller
                       role selection registers, passed through to
                       axi_chiplet_controller via ctrl_reg_* interface.";
+
+    // =========================================================================
+    // Address Translator Configuration (0x4000 - 0x4FFF)
+    // =========================================================================
+
+    external tidelink_addr_translator_regs addr_translator @ 0x4000;
+    addr_translator->desc = "Address translator channel 0 configuration.
+                             CAM-based address remapping for the regular AHB
+                             bridge path (ahb_sub → XHB500). See
+                             tidelink_addr_translator_regs.rdl for detailed
+                             register descriptions.";
 };

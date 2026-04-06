@@ -37,6 +37,7 @@ extern "C" {
 
 #define TIDELINK_WLINK_BASE       0x0000U
 #define TIDELINK_APB_BASE         0x2000U
+#define TIDELINK_ADDR_XLAT_BASE   0x4000U
 
 /* ── Convenience aliases for generated bit definitions ──────────────────
  *

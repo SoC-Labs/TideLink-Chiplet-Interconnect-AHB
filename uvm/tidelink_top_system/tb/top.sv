@@ -26,12 +26,12 @@
 //   1. ahb_sub  — AHB master VIP -> regular AHB access (via XHB500+Wlink)
 //   2. ahb_tx   — AHB master VIP -> TideLink TX aperture (via FC node)
 //   3. ahb_fifo — AHB master VIP -> RX FIFO data read
-//   4. ahb_adr  — AHB master VIP -> address translator configuration
-//   5. ahb_mng  — AHB slave VIP  <- incoming remote AHB (via XHB500+Wlink)
+//   4. ahb_mng  — AHB slave VIP  <- incoming remote AHB (via XHB500+Wlink)
 //
 // Per-side APB agent:
-//   6. apb_agt — APB master agent -> unified config port (Wlink + TideLink regs)
-//      Address map: 0x0000-0x1FFF = Wlink, 0x2000-0x203F = TideLink config + PTP
+//   5. apb_agt — APB master agent -> unified config port (Wlink + TideLink + Addr Translator)
+//      Address map: 0x0000-0x1FFF = Wlink, 0x2000-0x3FFF = TideLink config + PTP,
+//                   0x4000-0x5FFF = Address translator
 ///////////////////////////////////////////////////////////////////////////////
 
 `timescale 1ns/1ps
@@ -127,11 +127,6 @@ module test_top;
   assign ahb_a_fifo_if.hclk    = clk;
   assign ahb_a_fifo_if.hresetn = rst_n;
 
-  // AHB Address translator config
-  svt_ahb_if ahb_a_adr_if();
-  assign ahb_a_adr_if.hclk    = clk;
-  assign ahb_a_adr_if.hresetn = rst_n;
-
   // AHB Manager (incoming from remote — slave VIP responds)
   svt_ahb_if ahb_a_mng_if();
   assign ahb_a_mng_if.hclk    = clk;
@@ -155,10 +150,6 @@ module test_top;
   svt_ahb_if ahb_b_fifo_if();
   assign ahb_b_fifo_if.hclk    = clk;
   assign ahb_b_fifo_if.hresetn = rst_n;
-
-  svt_ahb_if ahb_b_adr_if();
-  assign ahb_b_adr_if.hclk    = clk;
-  assign ahb_b_adr_if.hresetn = rst_n;
 
   svt_ahb_if ahb_b_mng_if();
   assign ahb_b_mng_if.hclk    = clk;
@@ -335,20 +326,6 @@ module test_top;
     .ahb_mng_hrdata    (a_mng_hrdata),
     .ahb_mng_hresp     (a_mng_hresp),
 
-    // AHB Address translator config
-    .ahb_adr_hsel      (1'b1),
-    .ahb_adr_haddr     (ahb_a_adr_if.master_if[0].haddr),
-    .ahb_adr_hburst    (ahb_a_adr_if.master_if[0].hburst),
-    .ahb_adr_hprot     (ahb_a_adr_if.master_if[0].hprot[3:0]),
-    .ahb_adr_hsize     (ahb_a_adr_if.master_if[0].hsize),
-    .ahb_adr_htrans    (ahb_a_adr_if.master_if[0].htrans),
-    .ahb_adr_hwdata    (ahb_a_adr_if.master_if[0].hwdata[31:0]),
-    .ahb_adr_hwrite    (ahb_a_adr_if.master_if[0].hwrite),
-    .ahb_adr_hready    (ahb_a_adr_if.master_if[0].hready),
-    .ahb_adr_hrdata    (a_dut_adr_hrdata),
-    .ahb_adr_hresp     (a_dut_adr_hresp),
-    .ahb_adr_hreadyout (a_dut_adr_hreadyout),
-
     // Scan / DFT (tied off)
     .scan_mode         (1'b0),
     .scan_asyncrst_ctrl(1'b0),
@@ -514,20 +491,6 @@ module test_top;
     .ahb_mng_hrdata    (b_mng_hrdata),
     .ahb_mng_hresp     (b_mng_hresp),
 
-    // AHB Address translator config
-    .ahb_adr_hsel      (1'b1),
-    .ahb_adr_haddr     (ahb_b_adr_if.master_if[0].haddr),
-    .ahb_adr_hburst    (ahb_b_adr_if.master_if[0].hburst),
-    .ahb_adr_hprot     (ahb_b_adr_if.master_if[0].hprot[3:0]),
-    .ahb_adr_hsize     (ahb_b_adr_if.master_if[0].hsize),
-    .ahb_adr_htrans    (ahb_b_adr_if.master_if[0].htrans),
-    .ahb_adr_hwdata    (ahb_b_adr_if.master_if[0].hwdata[31:0]),
-    .ahb_adr_hwrite    (ahb_b_adr_if.master_if[0].hwrite),
-    .ahb_adr_hready    (ahb_b_adr_if.master_if[0].hready),
-    .ahb_adr_hrdata    (b_dut_adr_hrdata),
-    .ahb_adr_hresp     (b_dut_adr_hresp),
-    .ahb_adr_hreadyout (b_dut_adr_hreadyout),
-
     // Scan / DFT
     .scan_mode         (1'b0),
     .scan_asyncrst_ctrl(1'b0),
@@ -681,7 +644,6 @@ module test_top;
   `WIRE_AHB_SUB(ahb_a_sub_if,  a_dut_sub_hreadyout,  a_dut_sub_hresp,  a_dut_sub_hrdata)
   `WIRE_AHB_SUB(ahb_a_tx_if,   a_dut_tx_hreadyout,   a_dut_tx_hresp,   a_dut_tx_hrdata)
   `WIRE_AHB_SUB(ahb_a_fifo_if, a_dut_fifo_hreadyout, a_dut_fifo_hresp, a_dut_fifo_hrdata)
-  `WIRE_AHB_SUB(ahb_a_adr_if,  a_dut_adr_hreadyout,  a_dut_adr_hresp,  a_dut_adr_hrdata)
 
   // --- Chiplet A manager interface ---
   `WIRE_AHB_MNG(ahb_a_mng_if,
@@ -693,7 +655,6 @@ module test_top;
   `WIRE_AHB_SUB(ahb_b_sub_if,  b_dut_sub_hreadyout,  b_dut_sub_hresp,  b_dut_sub_hrdata)
   `WIRE_AHB_SUB(ahb_b_tx_if,   b_dut_tx_hreadyout,   b_dut_tx_hresp,   b_dut_tx_hrdata)
   `WIRE_AHB_SUB(ahb_b_fifo_if, b_dut_fifo_hreadyout, b_dut_fifo_hresp, b_dut_fifo_hrdata)
-  `WIRE_AHB_SUB(ahb_b_adr_if,  b_dut_adr_hreadyout,  b_dut_adr_hresp,  b_dut_adr_hrdata)
 
   // --- Chiplet B manager interface ---
   `WIRE_AHB_MNG(ahb_b_mng_if,
@@ -732,8 +693,6 @@ module test_top;
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_fifo_ahb_sys_env", "vif", ahb_a_fifo_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.a_adr_ahb_sys_env",  "vif", ahb_a_adr_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_mng_ahb_sys_env",  "vif", ahb_a_mng_if);
 
     // Chiplet B AHB VIPs
@@ -743,8 +702,6 @@ module test_top;
       "uvm_test_top.env.b_tx_ahb_sys_env",   "vif", ahb_b_tx_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b_fifo_ahb_sys_env", "vif", ahb_b_fifo_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.b_adr_ahb_sys_env",  "vif", ahb_b_adr_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b_mng_ahb_sys_env",  "vif", ahb_b_mng_if);
 

@@ -102,9 +102,6 @@ module test_top;
     svt_ahb_if ahb_``PREFIX``_fifo_if(); \
     assign ahb_``PREFIX``_fifo_if.hclk    = clk; \
     assign ahb_``PREFIX``_fifo_if.hresetn = rst_n;\
-    svt_ahb_if ahb_``PREFIX``_adr_if();  \
-    assign ahb_``PREFIX``_adr_if.hclk    = clk;  \
-    assign ahb_``PREFIX``_adr_if.hresetn = rst_n; \
     svt_ahb_if ahb_``PREFIX``_mng_if();  \
     assign ahb_``PREFIX``_mng_if.hclk    = clk;  \
     assign ahb_``PREFIX``_mng_if.hresetn = rst_n; \
@@ -154,8 +151,6 @@ module test_top;
     wire [31:0] PREFIX``_dut_tx_hrdata;     \
     wire        PREFIX``_dut_fifo_hreadyout, PREFIX``_dut_fifo_hresp; \
     wire [31:0] PREFIX``_dut_fifo_hrdata;   \
-    wire        PREFIX``_dut_adr_hreadyout, PREFIX``_dut_adr_hresp; \
-    wire [31:0] PREFIX``_dut_adr_hrdata;    \
     wire [31:0] PREFIX``_dut_mng_haddr;     \
     wire  [2:0] PREFIX``_dut_mng_hburst;    \
     wire  [3:0] PREFIX``_dut_mng_hprot;     \
@@ -410,19 +405,6 @@ module test_top;
     .ahb_fifo_hrdata   (PREFIX``_dut_fifo_hrdata), \
     .ahb_fifo_hresp    (PREFIX``_dut_fifo_hresp), \
     .ahb_fifo_hreadyout(PREFIX``_dut_fifo_hreadyout), \
-    /* AHB Addr translator config */ \
-    .ahb_adr_hsel      (1'b1), \
-    .ahb_adr_haddr     (ahb_``PREFIX``_adr_if.master_if[0].haddr), \
-    .ahb_adr_hburst    (ahb_``PREFIX``_adr_if.master_if[0].hburst), \
-    .ahb_adr_hprot     (ahb_``PREFIX``_adr_if.master_if[0].hprot[3:0]), \
-    .ahb_adr_hsize     (ahb_``PREFIX``_adr_if.master_if[0].hsize), \
-    .ahb_adr_htrans    (ahb_``PREFIX``_adr_if.master_if[0].htrans), \
-    .ahb_adr_hwdata    (ahb_``PREFIX``_adr_if.master_if[0].hwdata[31:0]), \
-    .ahb_adr_hwrite    (ahb_``PREFIX``_adr_if.master_if[0].hwrite), \
-    .ahb_adr_hready    (ahb_``PREFIX``_adr_if.master_if[0].hready), \
-    .ahb_adr_hrdata    (PREFIX``_dut_adr_hrdata), \
-    .ahb_adr_hresp     (PREFIX``_dut_adr_hresp), \
-    .ahb_adr_hreadyout (PREFIX``_dut_adr_hreadyout), \
     /* AHB Manager */ \
     .ahb_mng_haddr     (PREFIX``_dut_mng_haddr), \
     .ahb_mng_hburst    (PREFIX``_dut_mng_hburst), \
@@ -615,8 +597,7 @@ module test_top;
   `define WIRE_SIDE_SUBS(PREFIX) \
     `WIRE_AHB_SUB(ahb_``PREFIX``_sub_if,  PREFIX``_dut_sub_hreadyout,  PREFIX``_dut_sub_hresp,  PREFIX``_dut_sub_hrdata)  \
     `WIRE_AHB_SUB(ahb_``PREFIX``_tx_if,   PREFIX``_dut_tx_hreadyout,   PREFIX``_dut_tx_hresp,   PREFIX``_dut_tx_hrdata)   \
-    `WIRE_AHB_SUB(ahb_``PREFIX``_fifo_if, PREFIX``_dut_fifo_hreadyout, PREFIX``_dut_fifo_hresp, PREFIX``_dut_fifo_hrdata) \
-    `WIRE_AHB_SUB(ahb_``PREFIX``_adr_if,  PREFIX``_dut_adr_hreadyout,  PREFIX``_dut_adr_hresp,  PREFIX``_dut_adr_hrdata)
+    `WIRE_AHB_SUB(ahb_``PREFIX``_fifo_if, PREFIX``_dut_fifo_hreadyout, PREFIX``_dut_fifo_hresp, PREFIX``_dut_fifo_hrdata)
 
   `define WIRE_SIDE_MNG(PREFIX) \
     `WIRE_AHB_MNG(ahb_``PREFIX``_mng_if, \
@@ -693,8 +674,6 @@ module test_top;
       uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(), \
         {"uvm_test_top.env.", `"PREFIX`", "_fifo_ahb_sys_env"}, "vif", ahb_``PREFIX``_fifo_if); \
       uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(), \
-        {"uvm_test_top.env.", `"PREFIX`", "_adr_ahb_sys_env"}, "vif", ahb_``PREFIX``_adr_if); \
-      uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(), \
         {"uvm_test_top.env.", `"PREFIX`", "_mng_ahb_sys_env"}, "vif", ahb_``PREFIX``_mng_if); \
       uvm_config_db#(virtual apb_master_if.driver)::set(uvm_root::get(), \
         {"uvm_test_top.env.", `"PREFIX`", "_apb_agt.driver"}, "vif", apb_``PREFIX``_if); \
@@ -709,8 +688,6 @@ module test_top;
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_fifo_ahb_sys_env", "vif", ahb_a_fifo_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.a_adr_ahb_sys_env",  "vif", ahb_a_adr_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.a_mng_ahb_sys_env",  "vif", ahb_a_mng_if);
 
     // B_link1
@@ -720,8 +697,6 @@ module test_top;
       "uvm_test_top.env.b1_tx_ahb_sys_env",   "vif", ahb_b1_tx_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b1_fifo_ahb_sys_env", "vif", ahb_b1_fifo_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.b1_adr_ahb_sys_env",  "vif", ahb_b1_adr_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b1_mng_ahb_sys_env",  "vif", ahb_b1_mng_if);
 
@@ -733,8 +708,6 @@ module test_top;
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b2_fifo_ahb_sys_env", "vif", ahb_b2_fifo_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.b2_adr_ahb_sys_env",  "vif", ahb_b2_adr_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.b2_mng_ahb_sys_env",  "vif", ahb_b2_mng_if);
 
     // Chiplet C
@@ -744,8 +717,6 @@ module test_top;
       "uvm_test_top.env.c_tx_ahb_sys_env",   "vif", ahb_c_tx_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.c_fifo_ahb_sys_env", "vif", ahb_c_fifo_if);
-    uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
-      "uvm_test_top.env.c_adr_ahb_sys_env",  "vif", ahb_c_adr_if);
     uvm_config_db#(svt_ahb_vif)::set(uvm_root::get(),
       "uvm_test_top.env.c_mng_ahb_sys_env",  "vif", ahb_c_mng_if);
 

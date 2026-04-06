@@ -134,3 +134,52 @@ int tidelink_ctrl_link_bringup(const tidelink_ctrl_t *ctx,
 
     return 0;
 }
+
+/* ── Auto-negotiation API ─────────────────────────────────────────────── */
+
+int tidelink_ctrl_nego_enable(const tidelink_ctrl_t *ctx, uint32_t pri_sel,
+                               uint32_t fallback, uint32_t force_lock)
+{
+    uint32_t cfg = TIDELINK_NEGO_CFG_EN_Msk
+                 | ((pri_sel    << TIDELINK_NEGO_CFG_PRI_SEL_Pos)    & TIDELINK_NEGO_CFG_PRI_SEL_Msk)
+                 | ((fallback   << TIDELINK_NEGO_CFG_FALLBACK_Pos)   & TIDELINK_NEGO_CFG_FALLBACK_Msk)
+                 | ((force_lock << TIDELINK_NEGO_CFG_FORCE_LOCK_Pos) & TIDELINK_NEGO_CFG_FORCE_LOCK_Msk);
+    ctx->ctrl->NEGO_CFG = cfg;
+    return 0;
+}
+
+int tidelink_ctrl_nego_set_priority(const tidelink_ctrl_t *ctx, uint16_t pri)
+{
+    ctx->ctrl->NEGO_PRIORITY = (uint32_t)pri;
+    return 0;
+}
+
+int tidelink_ctrl_nego_set_timeout(const tidelink_ctrl_t *ctx, uint32_t cycles)
+{
+    ctx->ctrl->NEGO_TIMEOUT = cycles;
+    return 0;
+}
+
+int tidelink_ctrl_nego_wait_done(const tidelink_ctrl_t *ctx, uint32_t poll_limit)
+{
+    uint32_t count = poll_limit;
+    while (!(ctx->ctrl->NEGO_STATUS & TIDELINK_NEGO_STATUS_DONE_Msk)) {
+        if (ctx->ctrl->NEGO_STATUS & TIDELINK_NEGO_STATUS_ERROR_Msk)
+            return -2;
+        if (poll_limit != 0U) {
+            if (count == 0U) return -1;
+            count--;
+        }
+    }
+    return 0;
+}
+
+uint32_t tidelink_ctrl_nego_is_error(const tidelink_ctrl_t *ctx)
+{
+    return ctx->ctrl->NEGO_STATUS & TIDELINK_NEGO_STATUS_ERROR_Msk;
+}
+
+uint32_t tidelink_ctrl_nego_won(const tidelink_ctrl_t *ctx)
+{
+    return ctx->ctrl->NEGO_STATUS & TIDELINK_NEGO_STATUS_WON_Msk;
+}

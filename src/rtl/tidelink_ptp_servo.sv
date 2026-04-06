@@ -362,9 +362,11 @@ module tidelink_ptp_servo #(
     logic signed [31:0] offset_r;     // raw_offset >>> 1
     logic signed [31:0] delay_r;      // raw_delay >>> 1
 
-    // Seconds difference tracking
-    logic signed [48:0] sec_diff_fwd_r;  // t2_sec - t1_sec
-    logic signed [48:0] sec_diff_rev_r;  // t4_sec - t3_sec
+    // Seconds difference tracking (compressed: only need -1/0/+1 or overflow)
+    logic signed [1:0]  sec_diff_fwd_r;   // -1, 0, +1 (saturated)
+    logic               sec_diff_fwd_ovf; // |diff| > 1 → force phase step
+    logic signed [1:0]  sec_diff_rev_r;   // -1, 0, +1 (saturated)
+    logic               sec_diff_rev_ovf; // |diff| > 1 → force phase step
     logic               needs_phase_step_r;
 
     // PI controller state (32-bit: ±2.15 seconds max accumulated error)
@@ -417,8 +419,10 @@ module tidelink_ptp_servo #(
             raw_delay_r        <= '0;
             offset_r           <= '0;
             delay_r            <= '0;
-            sec_diff_fwd_r     <= '0;
-            sec_diff_rev_r     <= '0;
+            sec_diff_fwd_r     <= 2'sd0;
+            sec_diff_fwd_ovf   <= 1'b0;
+            sec_diff_rev_r     <= 2'sd0;
+            sec_diff_rev_ovf   <= 1'b0;
             needs_phase_step_r <= 1'b0;
             integral_r         <= '0;
             lock_counter_r     <= '0;
@@ -496,30 +500,52 @@ module tidelink_ptp_servo #(
 
                     // ── Offset Computation Pipeline ──────────────────────
                     SUB_COMPUTE_1: begin
-                        // d_fwd = t2 - t1
+                        // d_fwd = t2_ns - t1_ns
                         d_fwd_r <= $signed({1'b0, sub_t2_ns}) -
                                    $signed({1'b0, sub_t1_ns});
-                        sec_diff_fwd_r <= $signed({1'b0, sub_t2_sec}) -
-                                          $signed({1'b0, sub_t1_sec});
+                        // Seconds difference: compressed to -1/0/+1 with overflow flag
+                        if (sub_t2_sec == sub_t1_sec) begin
+                            sec_diff_fwd_r  <= 2'sd0;
+                            sec_diff_fwd_ovf <= 1'b0;
+                        end else if (sub_t2_sec == sub_t1_sec + 48'd1) begin
+                            sec_diff_fwd_r  <= 2'sd1;
+                            sec_diff_fwd_ovf <= 1'b0;
+                        end else if (sub_t2_sec + 48'd1 == sub_t1_sec) begin
+                            sec_diff_fwd_r  <= -2'sd1;
+                            sec_diff_fwd_ovf <= 1'b0;
+                        end else begin
+                            sec_diff_fwd_r  <= 2'sd0;
+                            sec_diff_fwd_ovf <= 1'b1;  // |diff| > 1 → phase step
+                        end
                         sub_state_r <= SUB_COMPUTE_2;
                     end
 
                     SUB_COMPUTE_2: begin
-                        // d_rev = t4 - t3
+                        // d_rev = t4_ns - t3_ns
                         d_rev_r <= $signed({1'b0, sub_t4_ns}) -
                                    $signed({1'b0, sub_t3_ns});
-                        sec_diff_rev_r <= $signed({1'b0, sub_t4_sec}) -
-                                          $signed({1'b0, sub_t3_sec});
+                        // Seconds difference for reverse path
+                        if (sub_t4_sec == sub_t3_sec) begin
+                            sec_diff_rev_r  <= 2'sd0;
+                            sec_diff_rev_ovf <= 1'b0;
+                        end else if (sub_t4_sec == sub_t3_sec + 48'd1) begin
+                            sec_diff_rev_r  <= 2'sd1;
+                            sec_diff_rev_ovf <= 1'b0;
+                        end else if (sub_t4_sec + 48'd1 == sub_t3_sec) begin
+                            sec_diff_rev_r  <= -2'sd1;
+                            sec_diff_rev_ovf <= 1'b0;
+                        end else begin
+                            sec_diff_rev_r  <= 2'sd0;
+                            sec_diff_rev_ovf <= 1'b1;
+                        end
                         // Adjust d_fwd for seconds borrow/carry
-                        // Only handle |sec_diff| <= 1 arithmetically; larger
-                        // differences force a phase step (no multiply needed).
                         case (sec_diff_fwd_r)
-                            49'sd0:  ; // Same second — no adjustment
-                            49'sd1:  d_fwd_r <= d_fwd_r + ONE_SEC_NS;
-                            -49'sd1: d_fwd_r <= d_fwd_r - ONE_SEC_NS;
-                            default: ; // |sec_diff| > 1 handled below
+                            2'sd0:  ; // Same second — no adjustment
+                            2'sd1:  d_fwd_r <= d_fwd_r + ONE_SEC_NS;
+                            -2'sd1: d_fwd_r <= d_fwd_r - ONE_SEC_NS;
+                            default: ;
                         endcase
-                        if (sec_diff_fwd_r > 49'sd1 || sec_diff_fwd_r < -49'sd1)
+                        if (sec_diff_fwd_ovf)
                             needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_3;
                     end
@@ -527,17 +553,18 @@ module tidelink_ptp_servo #(
                     SUB_COMPUTE_3: begin
                         // Adjust d_rev for seconds borrow/carry
                         case (sec_diff_rev_r)
-                            49'sd0:  ; // Same second — no adjustment
-                            49'sd1:  d_rev_r <= d_rev_r + ONE_SEC_NS;
-                            -49'sd1: d_rev_r <= d_rev_r - ONE_SEC_NS;
-                            default: ; // |sec_diff| > 1 handled below
+                            2'sd0:  ; // Same second — no adjustment
+                            2'sd1:  d_rev_r <= d_rev_r + ONE_SEC_NS;
+                            -2'sd1: d_rev_r <= d_rev_r - ONE_SEC_NS;
+                            default: ;
                         endcase
                         // Compute raw offset and delay
-                        raw_offset_r <= $signed({d_fwd_r[62], d_fwd_r}) -
-                                        $signed({d_rev_r[62], d_rev_r});
-                        raw_delay_r  <= $signed({d_fwd_r[62], d_fwd_r}) +
-                                        $signed({d_rev_r[62], d_rev_r});
-                        if (sec_diff_rev_r > 49'sd1 || sec_diff_rev_r < -49'sd1)
+                        // Sign-extend d_fwd_r[30] and d_rev_r[30] (the actual sign bits)
+                        raw_offset_r <= $signed({d_fwd_r[30], d_fwd_r}) -
+                                        $signed({d_rev_r[30], d_rev_r});
+                        raw_delay_r  <= $signed({d_fwd_r[30], d_fwd_r}) +
+                                        $signed({d_rev_r[30], d_rev_r});
+                        if (sec_diff_rev_ovf)
                             needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_4;
                     end

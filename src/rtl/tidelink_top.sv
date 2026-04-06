@@ -267,6 +267,14 @@ module tidelink_top #(
     output wire                     role_locked_o,
 
     // --------------------------------------------------------------------------
+    // Auto-Negotiation
+    // --------------------------------------------------------------------------
+    input  wire [15:0]              nego_priority_i,    // External negotiation priority (OTP/UID)
+    input  wire [15:0]              puf_seed,           // From TideChart PUF sampler
+    input  wire                     puf_ready,          // PUF sampling complete
+    output wire                     nego_error_irq,     // Negotiation error interrupt
+
+    // --------------------------------------------------------------------------
     // I2C Sideband (open-drain tristate)
     // --------------------------------------------------------------------------
     input  wire                     i2c_scl_i,
@@ -1334,6 +1342,10 @@ module tidelink_top #(
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),
         .role_locked_o              (role_locked_o),
+        .nego_priority_i            (nego_priority_i),
+        .puf_seed                   (puf_seed),
+        .puf_ready                  (puf_ready),
+        .nego_error_irq             (nego_error_irq),
 
         // Controller register pass-through (from APB regs Region 4)
         .ctrl_reg_write             (ctrl_reg_write),

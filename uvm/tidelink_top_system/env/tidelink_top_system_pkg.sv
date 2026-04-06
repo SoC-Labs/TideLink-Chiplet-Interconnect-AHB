@@ -48,6 +48,19 @@ package tidelink_top_system_pkg;
   // CTRL_EN removed: FIFO is now always enabled, EN bit no longer exists in HW
   parameter CTRL_FLUSH = 1;
 
+  // Region 4: Auto-negotiation registers
+  parameter REG_NEGO_CFG      = 12'h090;
+  parameter REG_NEGO_STATUS   = 12'h094;
+  parameter REG_NEGO_PRIORITY = 12'h098;
+  parameter REG_NEGO_TIMEOUT  = 12'h09C;
+  parameter REG_I2C_PRESCALE  = 12'h0A0;
+
+  // NEGO_STATUS bit positions
+  parameter NEGO_STATUS_DONE  = 3;
+  parameter NEGO_STATUS_ERROR = 4;
+  parameter NEGO_STATUS_WON   = 5;
+  parameter NEGO_STATUS_LOST  = 6;
+
   // Hardware constants
   parameter RAM_ADDR_W  = 14;
   parameter MAX_CREDITS = (1 << (RAM_ADDR_W - 2)); // 4096
@@ -84,6 +97,7 @@ package tidelink_top_system_pkg;
   // Sequences
   // ---------------------------------------------------------------
   `include "top_sys_wlink_init_sequence.sv"
+  `include "top_sys_autoneg_sequence.sv"
   `include "top_sys_init_sequence.sv"
   `include "top_sys_ahb_sub_sequence.sv"
 
@@ -102,6 +116,9 @@ package tidelink_top_system_pkg;
   `include "test_top_mixed_traffic.sv"
   `include "test_top_coordinated_reset.sv"
   `include "test_top_addr_translate.sv"
+  `include "test_top_autoneg_basic.sv"
+  `include "test_top_autoneg_bypass.sv"
+  `include "test_top_autoneg_timeout.sv"
 
 endpackage
 

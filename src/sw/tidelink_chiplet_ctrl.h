@@ -44,6 +44,10 @@ typedef struct {
     __I  uint32_t ROLE_STATUS;      /* 0x2084: [0]=eff_role [1]=locked ...    */
     __IO uint32_t I2C_SLV_ADDR;     /* 0x2088: [6:0]=I2C slave device addr   */
     __IO uint32_t I2C_PRESCALE;     /* 0x208C: [15:0]=I2C master prescaler   */
+    __IO uint32_t NEGO_CFG;         /* 0x2090: negotiation config            */
+    __I  uint32_t NEGO_STATUS;      /* 0x2094: negotiation status (RO)       */
+    __IO uint32_t NEGO_PRIORITY;    /* 0x2098: negotiation priority          */
+    __IO uint32_t NEGO_TIMEOUT;     /* 0x209C: negotiation timeout (cycles)  */
 } TIDELINK_CTRL_TypeDef;
 
 /* ── ROLE_CFG (0x2080) bit definitions ──────────────────────────────────── */
@@ -73,6 +77,32 @@ typedef struct {
 
 #define TIDELINK_CTRL_I2C_PRESCALE_Pos           0U
 #define TIDELINK_CTRL_I2C_PRESCALE_Msk           (0xFFFFUL << 0U)
+
+/* ── NEGO_CFG (0x2090) bit definitions ─────────────────────────────────── */
+
+#define TIDELINK_NEGO_CFG_EN_Pos           0U
+#define TIDELINK_NEGO_CFG_EN_Msk           (0x1UL)
+#define TIDELINK_NEGO_CFG_START_Pos        1U
+#define TIDELINK_NEGO_CFG_START_Msk        (0x2UL)
+#define TIDELINK_NEGO_CFG_PRI_SEL_Pos      2U
+#define TIDELINK_NEGO_CFG_PRI_SEL_Msk      (0xCUL)
+#define TIDELINK_NEGO_CFG_FALLBACK_Pos     4U
+#define TIDELINK_NEGO_CFG_FALLBACK_Msk     (0x10UL)
+#define TIDELINK_NEGO_CFG_FORCE_LOCK_Pos   5U
+#define TIDELINK_NEGO_CFG_FORCE_LOCK_Msk   (0x20UL)
+
+/* ── NEGO_STATUS (0x2094) bit definitions ──────────────────────────────── */
+
+#define TIDELINK_NEGO_STATUS_STATE_Pos     0U
+#define TIDELINK_NEGO_STATUS_STATE_Msk     (0x7UL)
+#define TIDELINK_NEGO_STATUS_DONE_Pos      3U
+#define TIDELINK_NEGO_STATUS_DONE_Msk      (0x8UL)
+#define TIDELINK_NEGO_STATUS_ERROR_Pos     4U
+#define TIDELINK_NEGO_STATUS_ERROR_Msk     (0x10UL)
+#define TIDELINK_NEGO_STATUS_WON_Pos       5U
+#define TIDELINK_NEGO_STATUS_WON_Msk       (0x20UL)
+#define TIDELINK_NEGO_STATUS_LOST_Pos      6U
+#define TIDELINK_NEGO_STATUS_LOST_Msk      (0x40UL)
 
 /* ── Role values ────────────────────────────────────────────────────────── */
 
@@ -173,6 +203,39 @@ int tidelink_ctrl_link_bringup(const tidelink_ctrl_t *ctx,
                                 uint32_t role,
                                 uint32_t pair_base_addr,
                                 uint32_t timeout_cycles);
+
+/**
+ * Enable auto-negotiation with the given configuration.
+ *
+ * @param ctx        Driver handle.
+ * @param pri_sel    Priority selection mode (2-bit).
+ * @param fallback   Enable fallback on negotiation failure (0/1).
+ * @param force_lock Force role lock after negotiation completes (0/1).
+ * @return 0 on success.
+ */
+int  tidelink_ctrl_nego_enable(const tidelink_ctrl_t *ctx, uint32_t pri_sel,
+                                uint32_t fallback, uint32_t force_lock);
+
+/** Set negotiation priority value. */
+int  tidelink_ctrl_nego_set_priority(const tidelink_ctrl_t *ctx, uint16_t pri);
+
+/** Set negotiation timeout in clock cycles. */
+int  tidelink_ctrl_nego_set_timeout(const tidelink_ctrl_t *ctx, uint32_t cycles);
+
+/**
+ * Poll until negotiation completes or an error/timeout occurs.
+ *
+ * @param ctx        Driver handle.
+ * @param poll_limit Maximum poll iterations (0 = unlimited).
+ * @return 0 on done, -1 on poll timeout, -2 on negotiation error.
+ */
+int  tidelink_ctrl_nego_wait_done(const tidelink_ctrl_t *ctx, uint32_t poll_limit);
+
+/** Returns non-zero if negotiation error flag is set. */
+uint32_t tidelink_ctrl_nego_is_error(const tidelink_ctrl_t *ctx);
+
+/** Returns non-zero if this side won negotiation. */
+uint32_t tidelink_ctrl_nego_won(const tidelink_ctrl_t *ctx);
 
 #ifdef __cplusplus
 }

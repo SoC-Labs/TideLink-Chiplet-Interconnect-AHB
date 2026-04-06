@@ -89,7 +89,14 @@ module tidelink_apb_regs #(
     output logic                    ctrl_reg_write,
     output logic              [2:0] ctrl_reg_addr,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
-    input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata
+    input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
+
+    // Performance profiling register pass-through (Regions 5-7)
+    output logic                    perf_reg_write,
+    output logic              [2:0] perf_reg_addr,
+    output logic [SYS_DATA_W-1:0]  perf_reg_wdata,
+    input  logic [SYS_DATA_W-1:0]  perf_reg_rdata,
+    output logic              [1:0] perf_reg_region
 );
 
     // -------------------------------------------------------------------------
@@ -403,6 +410,12 @@ module tidelink_apb_regs #(
     assign ctrl_reg_addr  = paddr[4:2];
     assign ctrl_reg_wdata = pwdata;
 
+    // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC)
+    assign perf_reg_write  = apb_write && (apb_region >= 3'b101);
+    assign perf_reg_addr   = paddr[4:2];
+    assign perf_reg_wdata  = pwdata;
+    assign perf_reg_region = apb_region[1:0];
+
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 
     always_comb begin
@@ -457,6 +470,9 @@ module tidelink_apb_regs #(
             3'b100: begin // Region 4: Chiplet controller role config (pass-through)
                 prdata = ctrl_reg_rdata;
             end
+            3'b101: prdata = perf_reg_rdata;
+            3'b110: prdata = perf_reg_rdata;
+            3'b111: prdata = perf_reg_rdata;
             default: ;
         endcase
     end

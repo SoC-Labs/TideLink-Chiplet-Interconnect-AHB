@@ -101,6 +101,18 @@ module tidelink_fc_adapter #(
     output wire                     servo_fc_ready,
 
     // --------------------------------------------------------------------------
+    // Extension FC Port (for TideChart or other external protocol modules)
+    // Packets with pkt_type=2'b10 are routed to/from this port.
+    // --------------------------------------------------------------------------
+    input  wire                     ext_fc_tx_valid,
+    input  wire   [FC_DATA_W-1:0]   ext_fc_tx_data,
+    output wire                     ext_fc_tx_ready,
+
+    output wire                     ext_fc_rx_valid,
+    output wire   [FC_DATA_W-1:0]   ext_fc_rx_data,
+    input  wire                     ext_fc_rx_accept,
+
+    // --------------------------------------------------------------------------
     // FC Node Interface (to Wlink TideLink FC node)
     // --------------------------------------------------------------------------
     output wire                     tl_fc_a2l_valid,
@@ -117,6 +129,7 @@ module tidelink_fc_adapter #(
     // =========================================================================
     localparam [1:0] PKT_FIFO_DATA = 2'b00;
     localparam [1:0] PKT_SIDEBAND  = 2'b01;
+    localparam [1:0] PKT_EXT       = 2'b10;  // Extension (TideChart etc.)
 
     // AHB constants
     localparam [1:0] HTRANS_IDLE   = 2'b00;
@@ -235,7 +248,7 @@ module tidelink_fc_adapter #(
         if (!hresetn) begin
             sideband_burst_r <= '0;
         end else if (arb_valid && skid_can_accept) begin
-            if (rtn_fc_valid || servo_fc_valid) begin
+            if (rtn_fc_valid || servo_fc_valid || ext_fc_tx_valid) begin
                 if (!sideband_starving && sideband_burst_r < SB_CNT_W'(MAX_SIDEBAND_BURST))
                     sideband_burst_r <= sideband_burst_r + SB_CNT_W'(1);
             end else begin
@@ -244,11 +257,14 @@ module tidelink_fc_adapter #(
         end
     end
 
-    // Arbiter output: sideband has priority unless starvation limit reached
-    assign sideband_grant = (rtn_fc_valid || servo_fc_valid) && !sideband_starving;
-    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
-    wire [FC_DATA_W-1:0] arb_data  = (sideband_grant && rtn_fc_valid)   ? rtn_fc_word  :
-                                     (sideband_grant && servo_fc_valid) ? servo_fc_data :
+    // Arbiter output: extension + sideband has priority unless starvation limit reached
+    // Priority: ext > returner > servo > TX aperture
+    wire ext_grant = ext_fc_tx_valid && !sideband_starving;
+    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || ext_fc_tx_valid) && !sideband_starving;
+    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | ext_fc_tx_valid;
+    wire [FC_DATA_W-1:0] arb_data  = ext_grant                                ? ext_fc_tx_data :
+                                     (sideband_grant && rtn_fc_valid)          ? rtn_fc_word    :
+                                     (sideband_grant && servo_fc_valid)        ? servo_fc_data  :
                                      tx_fc_word;
 
     // Skid buffer registers
@@ -278,8 +294,11 @@ module tidelink_fc_adapter #(
     assign tl_fc_a2l_valid = skid_valid_r;
     assign tl_fc_a2l_data  = skid_data_r;
 
-    // Servo FC ready: can enter arbiter when skid accepts and sideband has grant
-    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~sideband_starving;
+    // Servo FC ready: can enter arbiter when skid accepts and no higher-priority source active
+    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~ext_fc_tx_valid & ~sideband_starving;
+
+    // Extension FC ready: highest sideband priority, can enter when skid accepts
+    assign ext_fc_tx_ready = skid_can_accept & ~sideband_starving;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)
@@ -310,11 +329,14 @@ module tidelink_fc_adapter #(
     wire  [13:0]           rx_addr_offset = rx_fc_word_r[45:32];
     wire  [SYS_DATA_W-1:0] rx_payload    = rx_fc_word_r[31:0];
 
-    // Route selection: which AHB master port to drive
+    // Route selection: which destination to drive
     wire rx_is_fifo = (rx_pkt_type == PKT_FIFO_DATA);
+    wire rx_is_ext  = (rx_pkt_type == PKT_EXT);
 
     // Ready from the active target port (direct for FIFO, APB for config)
-    wire rx_active_ready = rx_is_fifo ? fc_rx_fifo_ready : fc_rx_cfg_pready;
+    wire rx_active_ready = rx_is_fifo ? fc_rx_fifo_ready :
+                           rx_is_ext  ? ext_fc_rx_accept  :
+                                        fc_rx_cfg_pready;
 
     // Accept FC RX data when idle and a word is available
     wire rx_accept = tl_fc_l2a_valid & (rx_state_r == RX_IDLE) & ~rx_pending_r;
@@ -358,6 +380,10 @@ module tidelink_fc_adapter #(
                     // FIFO direct write: completes in this cycle (addr+data together)
                     if (fc_rx_fifo_ready)
                         rx_state_next = RX_IDLE;
+                end else if (rx_is_ext) begin
+                    // Extension packet: single-cycle handoff to ext port
+                    if (ext_fc_rx_accept)
+                        rx_state_next = RX_IDLE;
                 end else begin
                     // SIDEBAND APB setup phase → access phase
                     if (rx_active_ready)
@@ -387,11 +413,17 @@ module tidelink_fc_adapter #(
     //   RX_ADDR_PHASE = APB setup phase  (psel=1, penable=0)
     //   RX_DATA_PHASE = APB access phase (psel=1, penable=1)
     // -------------------------------------------------------------------------
-    wire rx_cfg_active = !rx_is_fifo && (rx_state_r == RX_ADDR_PHASE || rx_state_r == RX_DATA_PHASE);
+    wire rx_cfg_active = !rx_is_fifo && !rx_is_ext && (rx_state_r == RX_ADDR_PHASE || rx_state_r == RX_DATA_PHASE);
     assign fc_rx_cfg_paddr   = rx_addr_offset[APB_ADDR_W-1:0];
     assign fc_rx_cfg_pwdata  = rx_payload;
     assign fc_rx_cfg_pwrite  = 1'b1;  // all sideband writes
     assign fc_rx_cfg_psel    = rx_cfg_active;
-    assign fc_rx_cfg_penable = !rx_is_fifo && (rx_state_r == RX_DATA_PHASE);
+    assign fc_rx_cfg_penable = !rx_is_fifo && !rx_is_ext && (rx_state_r == RX_DATA_PHASE);
+
+    // -------------------------------------------------------------------------
+    // RX Extension Port — single-cycle handoff for PKT_EXT packets
+    // -------------------------------------------------------------------------
+    assign ext_fc_rx_valid = (rx_state_r == RX_ADDR_PHASE) && rx_is_ext;
+    assign ext_fc_rx_data  = rx_fc_word_r;
 
 endmodule

@@ -104,6 +104,20 @@ module tidelink_fifo #(
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 
     // --------------------------------------------------------------------------
+    // Performance Profiling Register Pass-Through (Regions 5-7)
+    // --------------------------------------------------------------------------
+    output wire                     perf_reg_write,
+    output wire               [2:0] perf_reg_addr,
+    output wire    [SYS_DATA_W-1:0] perf_reg_wdata,
+    input  logic   [SYS_DATA_W-1:0] perf_reg_rdata,
+    output wire               [1:0] perf_reg_region,
+
+    // --------------------------------------------------------------------------
+    // Credit Count Observation (for performance profiling)
+    // --------------------------------------------------------------------------
+    output wire  [RAM_ADDR_W-2:0]   perf_credit_count,
+
+    // --------------------------------------------------------------------------
     // FC Direct Write Interface (single-cycle, bypasses AHB for FIFO writes)
     // --------------------------------------------------------------------------
     input  wire                    fc_wr_valid,
@@ -121,6 +135,9 @@ module tidelink_fifo #(
     logic                  read_complete;
     logic [RAM_ADDR_W-2:0] current_credit_count;
     logic [RAM_ADDR_W-1:0] packet_word_length;
+
+    // Expose credit count for performance profiling
+    assign perf_credit_count = current_credit_count;
 
     // FIFO error flags
     logic                   fifo_overrun;
@@ -254,7 +271,13 @@ module tidelink_fifo #(
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_wdata      (ctrl_reg_wdata),
-        .ctrl_reg_rdata      (ctrl_reg_rdata)
+        .ctrl_reg_rdata      (ctrl_reg_rdata),
+        // Performance profiling register pass-through
+        .perf_reg_write      (perf_reg_write),
+        .perf_reg_addr       (perf_reg_addr),
+        .perf_reg_wdata      (perf_reg_wdata),
+        .perf_reg_rdata      (perf_reg_rdata),
+        .perf_reg_region     (perf_reg_region)
     );
 
     // --------------------------------------------------------------------------

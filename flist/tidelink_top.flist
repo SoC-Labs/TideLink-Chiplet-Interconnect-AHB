@@ -37,5 +37,8 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 
+// Performance profiling
+${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
+
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

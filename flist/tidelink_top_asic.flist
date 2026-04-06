@@ -28,5 +28,8 @@ ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
+// Performance profiling
+${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
+
 // Top-level wrapper
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

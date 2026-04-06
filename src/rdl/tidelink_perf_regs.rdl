@@ -1,0 +1,413 @@
+// -----------------------------------------------------------------------------
+// SoCLabs TideLink Performance Profiling Register Description (SystemRDL 2.0)
+//
+// Describes the performance profiling registers in the tidelink_apb_regs module
+// at Regions 5-7 (offsets 0x0A0-0x0FC). These registers control the passive
+// performance observation module (tidelink_perf) and provide access to
+// timestamps, counters, and live debug status.
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+//
+// Contributors
+//   David Mapstone (d.a.mapstone@soton.ac.uk)
+//
+// Copyright 2026, SoC Labs (www.soclabs.org)
+// -----------------------------------------------------------------------------
+
+addrmap tidelink_perf_regs {
+    name = "TideLink Performance Profiling Register Map";
+    desc = "Timestamp, counter, and debug registers for the TideLink performance
+            profiling subsystem. These registers occupy Regions 5-7
+            (paddr[7:5] = 101/110/111) of the tidelink_apb_regs address space,
+            covering offsets 0x0A0-0x0FC.
+
+            Timestamps use the free-running PHC time from the CDC module (Path 2),
+            NOT phc_hw_capture. This avoids arbitration with PTP and HA1588 servo.
+            The CDC snapshot has ~4 cycle staleness -- constant offset that cancels
+            in differential measurements.";
+
+    default hw = r;
+    default sw = r;
+    default reset = 0;
+
+    // =========================================================================
+    // Region 5 (paddr[7:5]=101): Control & TX Timestamps (0x0A0-0x0BC)
+    // =========================================================================
+
+    reg perf_ctrl_reg {
+        name = "PERF_CTRL";
+        desc = "Performance profiling control register. Controls enable, freeze,
+                counter clear, timestamp clear, and interrupt enable.";
+
+        field {} enable[1] = 0;
+        enable->sw = rw;
+        enable->hw = r;
+        enable->desc = "Performance profiling enable. When 1, counters increment
+                        and timestamps are captured on observed events. When 0,
+                        all observation is suppressed.";
+
+        field {} freeze[1] = 0;
+        freeze->sw = rw;
+        freeze->hw = r;
+        freeze->desc = "Freeze mode. When 1 (with enable=1), counters and timestamps
+                        stop updating, allowing consistent snapshot reads. The module
+                        remains logically enabled so no events are lost on unfreeze.";
+
+        field {} clear_counters[1] = 0;
+        clear_counters->sw = rw;
+        clear_counters->hw = r;
+        clear_counters->singlepulse;
+        clear_counters->desc = "Write 1 to clear all performance counters and in-flight
+                                trackers to zero. Self-clearing. Does not affect timestamps
+                                or control bits.";
+
+        field {} clear_timestamps[1] = 0;
+        clear_timestamps->sw = rw;
+        clear_timestamps->hw = r;
+        clear_timestamps->singlepulse;
+        clear_timestamps->desc = "Write 1 to clear all timestamp valid bits
+                                  (tx_ts_valid, rx_first_valid, rx_done_valid).
+                                  Self-clearing. Does not affect counter values.";
+
+        field {} irq_en[1] = 0;
+        irq_en->sw = rw;
+        irq_en->hw = r;
+        irq_en->desc = "Interrupt enable. When 1, perf_irq is asserted when
+                        rx_done_valid becomes set (RX packet committed timestamp
+                        captured). When 0, perf_irq is held low.";
+    };
+    perf_ctrl_reg perf_ctrl @ 0x0A0;
+
+    reg tx_origin_ns_reg {
+        name = "TX_ORIGIN_NS";
+        desc = "Software-writable origin timestamp nanoseconds. Used for
+                end-to-end pipeline tracing (e.g. Ethernet MAC TX timestamp).
+                Software writes the origin time before initiating a TX packet;
+                the perf module preserves it for later read-back and delta
+                computation.";
+
+        field {} nanoseconds[30] = 0;
+        nanoseconds->sw = rw;
+        nanoseconds->hw = r;
+        nanoseconds->desc = "Origin timestamp nanoseconds [29:0].";
+    };
+    tx_origin_ns_reg tx_origin_ns @ 0x0A4;
+
+    reg tx_origin_sec_reg {
+        name = "TX_ORIGIN_SEC";
+        desc = "Software-writable origin timestamp seconds (lower 32 bits).";
+
+        field {} seconds[32] = 0;
+        seconds->sw = rw;
+        seconds->hw = r;
+        seconds->desc = "Origin timestamp seconds [31:0].";
+    };
+    tx_origin_sec_reg tx_origin_sec @ 0x0A8;
+
+    reg perf_status_reg {
+        name = "PERF_STATUS";
+        desc = "Read-only status register showing timestamp validity and freeze state.";
+
+        field {} tx_ts_valid[1] = 0;
+        tx_ts_valid->sw = r;
+        tx_ts_valid->hw = w;
+        tx_ts_valid->desc = "Set when a TX timestamp has been captured (first FC
+                            FIFO_DATA word after tx_pkt_start). Cleared by writing
+                            clear_timestamps in PERF_CTRL.";
+
+        field {} rx_first_valid[1] = 0;
+        rx_first_valid->sw = r;
+        rx_first_valid->hw = w;
+        rx_first_valid->desc = "Set when an RX first-word timestamp has been captured.
+                                Cleared by writing clear_timestamps in PERF_CTRL.";
+
+        field {} rx_done_valid[1] = 0;
+        rx_done_valid->sw = r;
+        rx_done_valid->hw = w;
+        rx_done_valid->desc = "Set when an RX done timestamp has been captured
+                                (packet_committed_irq rising edge). Cleared by writing
+                                clear_timestamps in PERF_CTRL.";
+
+        field {} frozen[1] = 0;
+        frozen->sw = r;
+        frozen->hw = w;
+        frozen->desc = "Mirror of the freeze control bit. 1 = counters and timestamps
+                        are currently frozen.";
+    };
+    perf_status_reg perf_status @ 0x0AC;
+
+    reg tx_start_ns_reg {
+        name = "TX_START_NS";
+        desc = "TX start timestamp nanoseconds. Captured from free-running PHC time
+                at the moment the first FC FIFO_DATA word is handed off to the link
+                layer after a tx_pkt_start event.";
+
+        field {} nanoseconds[30] = 0;
+        nanoseconds->sw = r;
+        nanoseconds->hw = w;
+        nanoseconds->desc = "TX start nanoseconds [29:0]. Valid when PERF_STATUS.tx_ts_valid=1.";
+    };
+    tx_start_ns_reg tx_start_ns @ 0x0B0;
+
+    reg tx_start_sec_reg {
+        name = "TX_START_SEC";
+        desc = "TX start timestamp seconds (lower 32 bits).";
+
+        field {} seconds[32] = 0;
+        seconds->sw = r;
+        seconds->hw = w;
+        seconds->desc = "TX start seconds [31:0]. Valid when PERF_STATUS.tx_ts_valid=1.";
+    };
+    tx_start_sec_reg tx_start_sec @ 0x0B4;
+
+    reg rx_first_ns_reg {
+        name = "RX_FIRST_NS";
+        desc = "RX first-word timestamp nanoseconds. Captured from free-running PHC
+                time when the first FC FIFO_DATA word of an incoming packet is received
+                (addr_offset == 0).";
+
+        field {} nanoseconds[30] = 0;
+        nanoseconds->sw = r;
+        nanoseconds->hw = w;
+        nanoseconds->desc = "RX first-word nanoseconds [29:0]. Valid when PERF_STATUS.rx_first_valid=1.";
+    };
+    rx_first_ns_reg rx_first_ns @ 0x0B8;
+
+    reg rx_first_sec_reg {
+        name = "RX_FIRST_SEC";
+        desc = "RX first-word timestamp seconds (lower 32 bits).";
+
+        field {} seconds[32] = 0;
+        seconds->sw = r;
+        seconds->hw = w;
+        seconds->desc = "RX first-word seconds [31:0]. Valid when PERF_STATUS.rx_first_valid=1.";
+    };
+    rx_first_sec_reg rx_first_sec @ 0x0BC;
+
+    // =========================================================================
+    // Region 6 (paddr[7:5]=110): RX Timestamps & Packet Counters (0x0C0-0x0DC)
+    // =========================================================================
+
+    reg rx_done_ns_reg {
+        name = "RX_DONE_NS";
+        desc = "RX done timestamp nanoseconds. Captured from free-running PHC time
+                on the rising edge of packet_committed_irq (packet fully written to
+                RX FIFO and committed).";
+
+        field {} nanoseconds[30] = 0;
+        nanoseconds->sw = r;
+        nanoseconds->hw = w;
+        nanoseconds->desc = "RX done nanoseconds [29:0]. Valid when PERF_STATUS.rx_done_valid=1.";
+    };
+    rx_done_ns_reg rx_done_ns @ 0x0C0;
+
+    reg rx_done_sec_reg {
+        name = "RX_DONE_SEC";
+        desc = "RX done timestamp seconds (lower 32 bits).";
+
+        field {} seconds[32] = 0;
+        seconds->sw = r;
+        seconds->hw = w;
+        seconds->desc = "RX done seconds [31:0]. Valid when PERF_STATUS.rx_done_valid=1.";
+    };
+    rx_done_sec_reg rx_done_sec @ 0x0C4;
+
+    reg tx_pkt_count_reg {
+        name = "TX_PKT_COUNT";
+        desc = "Saturating 32-bit counter of TX packets initiated (tx_pkt_start events).
+                Only increments when perf_active (enable=1, freeze=0). Saturates at
+                0xFFFFFFFF. Cleared by writing clear_counters in PERF_CTRL.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "TX packet count.";
+    };
+    tx_pkt_count_reg tx_pkt_count @ 0x0C8;
+
+    reg rx_pkt_count_reg {
+        name = "RX_PKT_COUNT";
+        desc = "Saturating 32-bit counter of RX packets committed (packet_committed_irq
+                rising edges). Only increments when perf_active. Saturates at 0xFFFFFFFF.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "RX packet count.";
+    };
+    rx_pkt_count_reg rx_pkt_count @ 0x0CC;
+
+    reg tx_word_count_reg {
+        name = "TX_WORD_COUNT";
+        desc = "Saturating 32-bit counter of TX FIFO_DATA words transferred on the FC
+                link (fc_tx_handshake && fc_tx_is_data). Only increments when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "TX word count.";
+    };
+    tx_word_count_reg tx_word_count @ 0x0D0;
+
+    reg rx_word_count_reg {
+        name = "RX_WORD_COUNT";
+        desc = "Saturating 32-bit counter of RX FIFO_DATA words received on the FC
+                link (fc_rx_handshake && fc_rx_is_data). Only increments when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "RX word count.";
+    };
+    rx_word_count_reg rx_word_count @ 0x0D4;
+
+    reg tx_stall_count_reg {
+        name = "TX_STALL_COUNT";
+        desc = "Saturating 32-bit counter of TX stall cycles (fc_tx_valid && !fc_tx_ready).
+                Measures backpressure from the link layer on TX path. Only increments
+                when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "TX stall cycle count.";
+    };
+    tx_stall_count_reg tx_stall_count @ 0x0D8;
+
+    reg rx_stall_count_reg {
+        name = "RX_STALL_COUNT";
+        desc = "Saturating 32-bit counter of RX stall cycles (fc_rx_valid && !fc_rx_accept).
+                Measures backpressure from the FC adapter on RX path. Only increments
+                when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "RX stall cycle count.";
+    };
+    rx_stall_count_reg rx_stall_count @ 0x0DC;
+
+    // =========================================================================
+    // Region 7 (paddr[7:5]=111): Link Counters & Debug (0x0E0-0x0FC)
+    // =========================================================================
+
+    reg link_busy_count_reg {
+        name = "LINK_BUSY_COUNT";
+        desc = "Saturating 32-bit counter of cycles where the TX router is not idle
+                (!tx_router_idle). Measures overall link utilisation. Only increments
+                when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "Link busy cycle count.";
+    };
+    link_busy_count_reg link_busy_count @ 0x0E0;
+
+    reg credit_starve_count_reg {
+        name = "CREDIT_STARVE_COUNT";
+        desc = "Saturating 32-bit counter of cycles where credit_count == 0 (no free
+                credits available for TX). Measures credit starvation. Only increments
+                when perf_active.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "Credit starvation cycle count.";
+    };
+    credit_starve_count_reg credit_starve_count @ 0x0E4;
+
+    reg sample_count_reg {
+        name = "SAMPLE_COUNT";
+        desc = "Saturating 32-bit counter that increments every cycle when perf_active.
+                Provides the time base for computing ratios (e.g. stall_count/sample_count
+                = stall fraction). Cleared by clear_counters.";
+
+        field {} count[32] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "Active sample cycle count.";
+    };
+    sample_count_reg sample_count @ 0x0E8;
+
+    reg dbg_live_status_reg {
+        name = "DBG_LIVE_STATUS";
+        desc = "Live debug register showing instantaneous link state. Not frozen by
+                freeze mode. Bit layout depends on RAM_ADDR_W parameter (default 14):
+                [0] tx_router_idle, [12:1] credit_count (13 bits for RAM_ADDR_W=14),
+                [13] fc_tx_valid, [14] fc_rx_valid.";
+
+        field {} tx_router_idle[1] = 0;
+        tx_router_idle->sw = r;
+        tx_router_idle->hw = w;
+        tx_router_idle->desc = "Mirror of tx_router_idle from chiplet controller.";
+
+        field {} credit_count[13] = 0;
+        credit_count->sw = r;
+        credit_count->hw = w;
+        credit_count->desc = "Current credit count (RAM_ADDR_W-1 bits, default 13).";
+
+        field {} fc_tx_valid[1] = 0;
+        fc_tx_valid->sw = r;
+        fc_tx_valid->hw = w;
+        fc_tx_valid->desc = "FC TX valid signal (1 = TX data pending).";
+
+        field {} fc_rx_valid[1] = 0;
+        fc_rx_valid->sw = r;
+        fc_rx_valid->hw = w;
+        fc_rx_valid->desc = "FC RX valid signal (1 = RX data available).";
+    };
+    dbg_live_status_reg dbg_live_status @ 0x0EC;
+
+    reg tx_inflight_reg {
+        name = "TX_INFLIGHT";
+        desc = "In-flight TX word counter. Resets to 0 on each tx_pkt_start, then
+                increments for each FC FIFO_DATA TX handshake. Shows how many words
+                of the current TX packet have been handed to the link layer. Saturates
+                at 0xFFFF.";
+
+        field {} count[16] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "TX in-flight word count [15:0].";
+    };
+    tx_inflight_reg tx_inflight @ 0x0F0;
+
+    reg rx_inflight_reg {
+        name = "RX_INFLIGHT";
+        desc = "In-flight RX word counter. Resets to 1 on first-word reception
+                (fc_rx_is_first), then increments for subsequent FC FIFO_DATA words.
+                Shows progress of current RX packet reception. Saturates at 0xFFFF.";
+
+        field {} count[16] = 0;
+        count->sw = r;
+        count->hw = w;
+        count->desc = "RX in-flight word count [15:0].";
+    };
+    rx_inflight_reg rx_inflight @ 0x0F4;
+
+    reg dbg_scratch_reg {
+        name = "DBG_SCRATCH";
+        desc = "Debug scratch register. Reserved for future use. Reads as 0.";
+
+        field {} scratch[32] = 0;
+        scratch->sw = r;
+        scratch->hw = w;
+        scratch->desc = "Scratch value (reserved).";
+    };
+    dbg_scratch_reg dbg_scratch @ 0x0F8;
+
+    reg perf_id_reg {
+        name = "PERF_ID";
+        desc = "Read-only identification register. Returns a fixed value identifying
+                the performance profiling module and its version.
+                [31:16] = 0x5046 ('PF' for Performance), [15:8] = major version,
+                [7:0] = minor version. Current value: 0x50460100 (v1.0).";
+
+        field {} id[32] = 32'h50460100;
+        id->sw = r;
+        id->hw = na;
+        id->desc = "Module ID and version. Fixed at 0x5046_0100.";
+    };
+    perf_id_reg perf_id @ 0x0FC;
+};

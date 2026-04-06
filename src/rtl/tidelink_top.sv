@@ -233,7 +233,25 @@ module tidelink_top #(
     output wire                     doorbell_irq,
     output wire                     packet_committed_irq,
     output wire                     ptp_irq,
+    output wire                     perf_irq,
     output wire                     wlink_irq,
+
+    // --------------------------------------------------------------------------
+    // Extension FC Port (for TideChart or other external protocol modules)
+    // Packets with pkt_type=2'b10 are routed to/from this port.
+    // --------------------------------------------------------------------------
+    input  wire                     ext_fc_tx_valid,
+    input  wire    [FC_DATA_W-1:0]  ext_fc_tx_data,
+    output wire                     ext_fc_tx_ready,
+
+    output wire                     ext_fc_rx_valid,
+    output wire    [FC_DATA_W-1:0]  ext_fc_rx_data,
+    input  wire                     ext_fc_rx_accept,
+
+    // --------------------------------------------------------------------------
+    // Link active status (Wlink link layer is up and operational)
+    // --------------------------------------------------------------------------
+    output wire                     link_active,
 
     // --------------------------------------------------------------------------
     // Reset output
@@ -443,6 +461,14 @@ module tidelink_top #(
     wire            [2:0]  ctrl_reg_addr;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
+
+    // Performance profiling register interface (APB regs Regions 5-7 ↔ perf)
+    wire                   perf_reg_write;
+    wire            [2:0]  perf_reg_addr;
+    wire [SYS_DATA_W-1:0] perf_reg_wdata;
+    wire [SYS_DATA_W-1:0] perf_reg_rdata;
+    wire            [1:0]  perf_reg_region;
+    wire [RAM_ADDR_W-2:0]  perf_credit_count;
 
     // Servo ↔ PTP event signals
     wire                   sync_tx_done;
@@ -726,6 +752,16 @@ module tidelink_top #(
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
+        // Performance profiling register pass-through
+        .perf_reg_write      (perf_reg_write),
+        .perf_reg_addr       (perf_reg_addr),
+        .perf_reg_wdata      (perf_reg_wdata),
+        .perf_reg_rdata      (perf_reg_rdata),
+        .perf_reg_region     (perf_reg_region),
+
+        // Credit count observation (for performance profiling)
+        .perf_credit_count   (perf_credit_count),
+
         // FC direct write (from FC adapter, bypasses AHB for FIFO writes)
         .fc_wr_valid         (fc_rx_fifo_valid),
         .fc_wr_write         (fc_rx_fifo_write),
@@ -794,6 +830,14 @@ module tidelink_top #(
         .servo_fc_valid    (servo_fc_valid),
         .servo_fc_data     (servo_fc_data),
         .servo_fc_ready    (servo_fc_ready),
+
+        // Extension FC port (for TideChart or other external protocol modules)
+        .ext_fc_tx_valid   (ext_fc_tx_valid),
+        .ext_fc_tx_data    (ext_fc_tx_data),
+        .ext_fc_tx_ready   (ext_fc_tx_ready),
+        .ext_fc_rx_valid   (ext_fc_rx_valid),
+        .ext_fc_rx_data    (ext_fc_rx_data),
+        .ext_fc_rx_accept  (ext_fc_rx_accept),
 
         // FC Node interface (to Wlink TideLink FC node)
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),
@@ -978,6 +1022,68 @@ module tidelink_top #(
         .h_hw_adj_ns_incr_frac      (phc_hw_adj_ns_incr_frac_raw),
         .p_hw_adj_valid             (phc_hw_adj_valid),
         .p_hw_adj_ns_incr_frac      (phc_hw_adj_ns_incr_frac)
+    );
+
+    // =========================================================================
+    // 2d. TideLink Performance Profiling Module
+    //     Passive observer: timestamps TX/RX events, counts packets/words/stalls.
+    //     Uses free-running PHC time (Path 2 CDC), not phc_hw_capture.
+    // =========================================================================
+
+    // Derived observation signals for tidelink_perf
+    wire fc_tx_handshake = tl_fc_a2l_valid & tl_fc_a2l_ready;
+    wire fc_rx_handshake = tl_fc_l2a_valid & tl_fc_l2a_accept;
+    wire fc_tx_is_data   = (tl_fc_a2l_data[47:46] == 2'b00);
+    wire fc_rx_is_data   = (tl_fc_l2a_data[47:46] == 2'b00);
+    wire fc_rx_is_first  = fc_rx_is_data & (tl_fc_l2a_data[45:32] == '0);
+    wire tx_pkt_start    = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite & (ahb_tx_haddr == '0);
+
+    tidelink_perf #(
+        .SYS_DATA_W (SYS_DATA_W),
+        .RAM_ADDR_W (RAM_ADDR_W),
+        .FC_DATA_W  (FC_DATA_W)
+    ) u_perf (
+        .hclk              (hclk),
+        .hresetn           (hresetn),
+
+        // Register interface (from APB regs, Regions 5-7)
+        .perf_reg_write    (perf_reg_write),
+        .perf_reg_addr     (perf_reg_addr),
+        .perf_reg_wdata    (perf_reg_wdata),
+        .perf_reg_rdata    (perf_reg_rdata),
+        .perf_reg_region   (perf_reg_region),
+
+        // Free-running PHC time (hclk domain, from CDC Path 2)
+        .phc_nanoseconds   (phc_nanoseconds_sync[29:0]),
+        .phc_seconds       (phc_seconds_sync[31:0]),
+
+        // FC TX observation
+        .fc_tx_handshake   (fc_tx_handshake),
+        .fc_tx_is_data     (fc_tx_is_data),
+
+        // FC RX observation
+        .fc_rx_handshake   (fc_rx_handshake),
+        .fc_rx_is_data     (fc_rx_is_data),
+        .fc_rx_is_first    (fc_rx_is_first),
+
+        // TX aperture observation
+        .tx_pkt_start      (tx_pkt_start),
+
+        // RX FIFO observation
+        .rx_pkt_committed  (packet_committed_irq),
+
+        // Link status
+        .tx_router_idle    (tx_router_idle),
+        .fc_tx_valid       (tl_fc_a2l_valid),
+        .fc_tx_ready       (tl_fc_a2l_ready),
+        .fc_rx_valid       (tl_fc_l2a_valid),
+        .fc_rx_accept      (tl_fc_l2a_accept),
+
+        // Credit observation
+        .credit_count      (perf_credit_count),
+
+        // Interrupt
+        .perf_irq          (perf_irq)
     );
 
     // =========================================================================
@@ -1396,5 +1502,10 @@ module tidelink_top #(
         .pad_clk_rx                 (pad_clk_rx),
         .pad_rx                     (pad_rx)
     );
+
+    // =========================================================================
+    // Link active status — role_locked_o indicates Wlink link is operational
+    // =========================================================================
+    assign link_active = role_locked_o;
 
 endmodule

@@ -29,7 +29,7 @@ GENERATED_HEADERS := \
 
 # ── Driver sources ──────────────────────────────────────────────────────
 
-SRCS := tidelink.c tidelink_ptp.c tidelink_addr_trans.c
+SRCS := tidelink.c tidelink_ptp.c tidelink_addr_trans.c tidelink_perf.c phc.c
 OBJS := $(SRCS:.c=.o)
 
 # ── Targets ─────────────────────────────────────────────────────────────

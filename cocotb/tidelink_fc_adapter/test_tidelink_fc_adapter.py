@@ -1415,6 +1415,10 @@ async def test_35_sram_arbiter_priority(dut):
     async def puf_task():
         await tc_axis_tx_send(dut, PKT_EXT, SUB_PUF_READ_REQ, puf_read_addr)
 
+    # Start PUF response capture BEFORE kicking off concurrent tasks
+    # (the response may arrive during the settling period)
+    puf_rsp_task = cocotb.start_soon(tc_axis_rx_recv(dut, timeout_cycles=60))
+
     cocotb.start_soon(fc_rx_task())
     cocotb.start_soon(tx_task())
     cocotb.start_soon(puf_task())
@@ -1437,8 +1441,8 @@ async def test_35_sram_arbiter_priority(dut):
             found_tx = True
     assert found_tx, "TX aperture FIFO_DATA packet not found on FC TX"
 
-    # Verify PUF response
-    rsp = await tc_axis_rx_recv(dut, timeout_cycles=10)
+    # Verify PUF response (captured by the task started above)
+    rsp = puf_rsp_task.result()
     assert rsp["pkt_type"] == PKT_EXT
     assert rsp["addr_offset"] == SUB_PUF_READ_RSP
     assert rsp["payload"] == puf_rdata_val

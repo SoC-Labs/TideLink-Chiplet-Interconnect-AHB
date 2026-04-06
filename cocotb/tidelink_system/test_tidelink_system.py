@@ -101,19 +101,24 @@ class TideLinkDriver:
         """Write a single word to the TX aperture via AHB."""
         await self.ahb_tx.write(addr, data)
 
-    async def tx_write_packet(self, data_words):
+    async def tx_write_packet(self, data_words, dest_addr=0):
         """Write a complete packet to the TX aperture.
 
-        Writes length word at addr 0, then data words at addr 4, 8, ...
+        2-word header: packed Word 0 at addr 0, dest_addr at addr 4,
+        then data words at addr 8, 12, ...
         Each word goes through the FC adapter and crosses to the remote side.
         """
-        pkt_len = len(data_words)
-        # Write length word at offset 0
-        await self.tx_write_word(0x0000, pkt_len)
+        from tidelink.packet import FifoPacket
+        pkt = FifoPacket(data=data_words, dest_addr=dest_addr)
+        # Write packed header (Word 0) at offset 0
+        await self.tx_write_word(0x0000, pkt.word0)
         await ClockCycles(self.dut.hclk, 10)
-        # Write data words at consecutive addresses
+        # Write dest_addr (Word 1) at offset 4
+        await self.tx_write_word(0x0004, pkt.dest_addr)
+        await ClockCycles(self.dut.hclk, 10)
+        # Write data words at consecutive addresses starting at 0x0008
         for i, word in enumerate(data_words):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             await self.tx_write_word(addr, word)
             await ClockCycles(self.dut.hclk, 10)
 
@@ -166,14 +171,19 @@ class TideLinkDriver:
     async def fifo_read_packet(self):
         """Read a complete packet from the FIFO.
 
-        First word is length, then length data words.
-        Returns the data words (not including the length word).
+        2-word header: read packed Word 0 at addr 0, dest_addr at addr 4,
+        then length data words at addr 8, 12, ...
+        Returns the data words (not including the 2-word header).
         """
-        length = await self.fifo_read_word(0x0000)
+        from tidelink.packet import decode_word0
+        word0 = await self.fifo_read_word(0x0000)
         await ClockCycles(self.dut.hclk, 2)
+        dest_addr = await self.fifo_read_word(0x0004)
+        fields = decode_word0(word0)
+        length = fields["length"]
         data = []
         for i in range(length):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             word = await self.fifo_read_word(addr)
             data.append(word)
         return data
@@ -358,7 +368,7 @@ async def test_06_credit_tracking(dut):
     await tb.b.wait_fc_settle(30)
 
     credits_b_after_write = await tb.b.cfg_read(REG_CREDIT_COUNT)
-    expected = MAX_CREDITS - (len(data) + 1)  # +1 for length word
+    expected = MAX_CREDITS - (len(data) + 2)  # +2 for 2-word header
     tb.log.info(f"B credits after write: {credits_b_after_write} "
                 f"(expected {expected})")
     assert credits_b_after_write == expected, \
@@ -381,9 +391,9 @@ async def test_07_credit_exhaustion(dut):
     await tb.reset()
 
     # Write packets until B's credits are low
-    # Each packet = 1 length word + N data words
-    # MAX_CREDITS = 4096, use packets of 100 words each = 101 credits each
-    # Write ~40 packets = 4040 credits. Remaining = 56 credits.
+    # Each packet = 2-word header + N data words
+    # MAX_CREDITS = 4096, use packets of 100 words each = 102 credits each
+    # Write ~40 packets = 4080 credits. Remaining = 16 credits.
     pkt_data = list(range(100))
     packets_sent = 0
     for _ in range(40):
@@ -393,16 +403,16 @@ async def test_07_credit_exhaustion(dut):
 
     credits_b = await tb.b.cfg_read(REG_CREDIT_COUNT)
     tb.log.info(f"B credits after {packets_sent} packets: {credits_b}")
-    assert credits_b < 101, \
-        f"B should have fewer than 101 credits, got {credits_b}"
+    assert credits_b < 102, \
+        f"B should have fewer than 102 credits, got {credits_b}"
 
     # Now write a packet that would exceed remaining credits
     # The TX aperture should still work (FC adapter doesn't check credits),
     # but B's FIFO ctrl will flag overrun if truly full.
     # Write exactly enough to exhaust
     remaining = credits_b
-    if remaining > 1:
-        small_data = list(range(remaining - 1))  # -1 for length word
+    if remaining > 2:
+        small_data = list(range(remaining - 2))  # -2 for 2-word header
         await tb.a.tx_write_packet(small_data)
         await tb.b.wait_fc_settle(30)
 
@@ -418,7 +428,7 @@ async def test_08_credit_recovery(dut):
     await tb.reset()
     await tb.b.cfg_write(REG_REL_THRESHOLD, 0)  # Immediate release
 
-    # Write 10 packets of 10 data words each = 110 credits consumed
+    # Write 10 packets of 10 data words each = 120 credits consumed (10*(10+2))
     packets = []
     for i in range(10):
         data = [(i * 10 + j) for j in range(10)]
@@ -428,7 +438,7 @@ async def test_08_credit_recovery(dut):
 
     credits_mid = await tb.b.cfg_read(REG_CREDIT_COUNT)
     tb.log.info(f"B credits after 10 packets: {credits_mid}")
-    expected_mid = MAX_CREDITS - 110
+    expected_mid = MAX_CREDITS - 120
     assert credits_mid == expected_mid
 
     # Now drain all packets from B
@@ -458,28 +468,25 @@ async def test_09_credit_threshold_batching(dut):
     # Enable pair credit counter on A to track incoming released credits
     await tb.a.cfg_write(REG_PAIR_CREDIT_ENABLE, 1)
 
-    # Write 2 small packets (3 words each = 4 credits each = 8 credits total)
-    for _ in range(2):
-        await tb.a.tx_write_packet([0x11, 0x22, 0x33])
-        await tb.b.wait_fc_settle(20)
+    # Write 1 small packet (3 data words = 5 credits each with 2-word header)
+    await tb.a.tx_write_packet([0x11, 0x22, 0x33])
+    await tb.b.wait_fc_settle(20)
 
-    # Read both packets from B
-    for _ in range(2):
-        _ = await tb.b.fifo_read_packet()
-        await tb.b.wait_fc_settle(50)
+    # Read the packet from B
+    _ = await tb.b.fifo_read_packet()
+    await tb.b.wait_fc_settle(50)
 
     await ClockCycles(dut.hclk, 100)
 
-    # 8 credits freed but threshold=10, so no release yet
+    # 5 credits freed but threshold=10, so no release yet
     a_released = await tb.a.cfg_read(REG_RELEASED_ACC)
-    tb.log.info(f"A released acc after 8 credits freed: {a_released}")
-    # Might be 0 if threshold not met, or might be 8 if threshold accumulator
-    # triggers early. The threshold logic fires when acc >= threshold.
-    # 8 < 10, so no release expected.
+    tb.log.info(f"A released acc after 5 credits freed: {a_released}")
+    # The threshold logic fires when acc >= threshold.
+    # 5 < 10, so no release expected.
     assert a_released == 0, \
         f"Expected 0 released credits (below threshold), got {a_released}"
 
-    # Write and read one more packet (4 credits -> total 12 >= 10)
+    # Write and read one more packet (5 credits -> total 10 >= 10)
     await tb.a.tx_write_packet([0xAA, 0xBB, 0xCC])
     await tb.b.wait_fc_settle(20)
     _ = await tb.b.fifo_read_packet()
@@ -487,7 +494,7 @@ async def test_09_credit_threshold_batching(dut):
     await ClockCycles(dut.hclk, 100)
 
     a_released2 = await tb.a.cfg_read(REG_RELEASED_ACC)
-    tb.log.info(f"A released acc after 12 credits freed: {a_released2}")
+    tb.log.info(f"A released acc after 10 credits freed: {a_released2}")
     assert a_released2 >= 10, \
         f"Expected >= 10 batch-released credits, got {a_released2}"
 
@@ -504,7 +511,7 @@ async def test_10_pair_credit_counter(dut):
     _ = await tb.a.cfg_read(REG_RELEASED_ACC)
     await ClockCycles(dut.hclk, 5)
 
-    # A sends a packet to B (4 credits). B reads it, releasing 4 credits back.
+    # A sends a packet to B (5 credits: 3 data + 2 header). B reads it, releasing 5 credits back.
     await tb.a.tx_write_packet([0xAA, 0xBB, 0xCC])
     await tb.b.wait_fc_settle(20)
     _ = await tb.b.fifo_read_packet()
@@ -513,7 +520,7 @@ async def test_10_pair_credit_counter(dut):
     # A's pair credit counter should have incremented
     pair_counter = await tb.a.cfg_read(REG_PAIR_CREDIT_COUNTER)
     tb.log.info(f"A pair credit counter: {pair_counter}")
-    assert pair_counter == 4, f"Expected 4, got {pair_counter}"
+    assert pair_counter == 5, f"Expected 5, got {pair_counter}"
 
 
 # =============================================================================
@@ -570,7 +577,7 @@ async def test_13_pointer_wrap(dut):
     # Send and receive packets in batches to stay within credit limits.
     total_words = 0
     pkt_size = 50  # data words per packet
-    credits_per_pkt = pkt_size + 1
+    credits_per_pkt = pkt_size + 2
 
     # Send enough packets to wrap pointers (> 4096 words)
     target_words = MAX_CREDITS + 500
@@ -810,10 +817,12 @@ async def test_20_reset_mid_transfer(dut):
 
     # Start sending a packet
     data = [0xABCD_0001, 0xABCD_0002, 0xABCD_0003, 0xABCD_0004]
-    # Write length word and first data word
-    await tb.a.tx_write_word(0x0000, len(data))
+    # Write packed header (Word 0) and dest_addr (Word 1)
+    from tidelink.packet import FifoPacket
+    pkt = FifoPacket(data=data)
+    await tb.a.tx_write_word(0x0000, pkt.word0)
     await ClockCycles(dut.hclk, 10)
-    await tb.a.tx_write_word(0x0004, data[0])
+    await tb.a.tx_write_word(0x0004, pkt.dest_addr)
     await ClockCycles(dut.hclk, 5)
 
     # Assert reset mid-transfer
@@ -854,7 +863,7 @@ async def test_21_credit_underflow_attempt(dut):
 
     # Fill B's FIFO to near-capacity
     pkt_size = 100
-    num_fill_packets = (MAX_CREDITS // (pkt_size + 1)) - 1
+    num_fill_packets = (MAX_CREDITS // (pkt_size + 2)) - 1
     for i in range(num_fill_packets):
         data = list(range(i * pkt_size, (i + 1) * pkt_size))
         await tb.a.tx_write_packet(data)
@@ -886,7 +895,7 @@ async def test_22_overrun_detection(dut):
 
     # Fill FIFO completely
     pkt_size = 100
-    num_packets = MAX_CREDITS // (pkt_size + 1)
+    num_packets = MAX_CREDITS // (pkt_size + 2)
     for i in range(num_packets):
         data = list(range(pkt_size))
         await tb.a.tx_write_packet(data)
@@ -896,8 +905,8 @@ async def test_22_overrun_detection(dut):
     tb.log.info(f"B credits after fill: {credits_b}")
 
     # Use remaining credits
-    if credits_b > 1:
-        data = list(range(credits_b - 1))
+    if credits_b > 2:
+        data = list(range(credits_b - 2))
         await tb.a.tx_write_packet(data)
         await tb.b.wait_fc_settle(20)
 
@@ -986,7 +995,7 @@ async def test_25_all_address_offsets(dut):
     await tb.reset()
 
     # Use a packet with enough words to exercise multiple address offsets
-    # The FIFO addresses are offset 0 (length), 4, 8, ... up to pkt_len*4
+    # The FIFO addresses are offset 0 (word0), 4 (dest_addr), 8, ... for payload
     num_words = 32
     data = [0xADD00000 | (i * 4) for i in range(num_words)]
 

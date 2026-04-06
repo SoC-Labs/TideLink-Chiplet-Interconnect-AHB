@@ -110,21 +110,18 @@ class tidelink_top_system_base_test extends uvm_test;
                                 bit [31:0] b_pair_base = 32'h5000_0000,
                                 bit [31:0] a_threshold = 32'd0,
                                 bit [31:0] b_threshold = 32'd0);
-    top_sys_init_sequence a_init, b_init;
 
     `uvm_info("TEST", "Initializing TideLink on both sides...", UVM_LOW)
 
-    a_init = top_sys_init_sequence::type_id::create("a_init");
-    a_init.pair_base_addr = a_pair_base;
-    a_init.rel_threshold  = a_threshold;
-    a_init.side_name = "A";
-    a_init.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+    // Initialize side A via APB writes (TideLink regs at 0x2000 offset)
+    write_cfg_reg(SIDE_A, REG_PAIR_BASE,          a_pair_base);
+    write_cfg_reg(SIDE_A, REG_REL_THRESHOLD,       a_threshold);
+    write_cfg_reg(SIDE_A, REG_PAIR_CREDIT_ENABLE,  32'h1);
 
-    b_init = top_sys_init_sequence::type_id::create("b_init");
-    b_init.pair_base_addr = b_pair_base;
-    b_init.rel_threshold  = b_threshold;
-    b_init.side_name = "B";
-    b_init.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+    // Initialize side B via APB writes
+    write_cfg_reg(SIDE_B, REG_PAIR_BASE,          b_pair_base);
+    write_cfg_reg(SIDE_B, REG_REL_THRESHOLD,       b_threshold);
+    write_cfg_reg(SIDE_B, REG_PAIR_CREDIT_ENABLE,  32'h1);
 
     // Wait for doorbells to propagate through Wlink FC path (GPIO PHY is slow)
     repeat (phy_transit_wait) @(posedge tb_if.clk);
@@ -149,11 +146,11 @@ class tidelink_top_system_base_test extends uvm_test;
   virtual task read_cfg_reg(side_t side, input bit [11:0] addr, output bit [31:0] data);
     integration_cfg_read_sequence rd_seq;
     rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
-    rd_seq.addr = addr;
+    rd_seq.addr = 15'h2000 + addr;  // TideLink regs at 0x2000 offset in unified APB
     if (side == SIDE_A)
-      rd_seq.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.a_apb_agt.sequencer);
     else
-      rd_seq.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+      rd_seq.start(env.b_apb_agt.sequencer);
     data = rd_seq.rdata;
   endtask
 
@@ -163,12 +160,12 @@ class tidelink_top_system_base_test extends uvm_test;
   virtual task write_cfg_reg(side_t side, input bit [11:0] addr, input bit [31:0] data);
     integration_cfg_write_sequence wr_seq;
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_seq");
-    wr_seq.addr = addr;
+    wr_seq.addr = 15'h2000 + addr;  // TideLink regs at 0x2000 offset in unified APB
     wr_seq.data = data;
     if (side == SIDE_A)
-      wr_seq.start(env.a_cfg_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.a_apb_agt.sequencer);
     else
-      wr_seq.start(env.b_cfg_ahb_sys_env.master[0].sequencer);
+      wr_seq.start(env.b_apb_agt.sequencer);
   endtask
 
   // ---------------------------------------------------------------

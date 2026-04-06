@@ -396,7 +396,7 @@ async def test_r1_12_credit_delta_capture(dut):
     await ClockCycles(dut.hclk, 3)
 
     delta = int(dut.credit_delta_data.value)
-    assert delta == 6, f"Expected delta 6 (5+1), got {delta}"
+    assert delta == 7, f"Expected delta 7 (5+2), got {delta}"
 
 
 @cocotb.test()
@@ -488,7 +488,7 @@ async def test_thresh_04_accumulates_below_threshold(dut):
     # Set threshold high so a single delta won't cross it
     await apb_write(dut, OFF_REL_THRESHOLD, 50)
 
-    # Pulse read_complete with packet_word_length=4 → delta=5
+    # Pulse read_complete with packet_word_length=4 → delta=6
     dut.packet_word_length.value = 4
     await ClockCycles(dut.hclk, 1)
     dut.read_complete.value = 1
@@ -500,9 +500,9 @@ async def test_thresh_04_accumulates_below_threshold(dut):
     assert int(dut.release_credits_trigger.value) == 0, \
         "Trigger should not fire below threshold"
 
-    # Release accumulator should hold 5
+    # Release accumulator should hold 6
     acc = await apb_read(dut, OFF_REL_ACC)
-    assert acc == 5, f"Expected acc=5, got {acc}"
+    assert acc == 6, f"Expected acc=6, got {acc}"
 
 
 @cocotb.test()
@@ -513,7 +513,7 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
 
     await apb_write(dut, OFF_REL_THRESHOLD, 10)
 
-    # First pulse: packet_word_length=4 → delta=5, acc=5 < 10
+    # First pulse: packet_word_length=4 → delta=6, acc=6 < 10
     dut.packet_word_length.value = 4
     await ClockCycles(dut.hclk, 1)
     dut.read_complete.value = 1
@@ -523,9 +523,9 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     await ClockCycles(dut.hclk, 3)
 
     acc = await apb_read(dut, OFF_REL_ACC)
-    assert acc == 5, f"Expected acc=5 after first pulse, got {acc}"
+    assert acc == 6, f"Expected acc=6 after first pulse, got {acc}"
 
-    # Second pulse: packet_word_length=4 → delta=5, acc_next=10 >= 10
+    # Second pulse: packet_word_length=4 → delta=6, acc_next=12 >= 10
     dut.packet_word_length.value = 4
     await ClockCycles(dut.hclk, 1)
     dut.read_complete.value = 1
@@ -534,9 +534,9 @@ async def test_thresh_05_trigger_fires_at_threshold(dut):
     # Two-cycle pipeline: delta register + threshold compare
     await ClockCycles(dut.hclk, 3)
 
-    # credit_delta_data should have the full batch (10)
+    # credit_delta_data should have the full batch (12)
     delta = int(dut.credit_delta_data.value)
-    assert delta == 10, f"Expected batched delta=10, got {delta}"
+    assert delta == 12, f"Expected batched delta=12, got {delta}"
 
     # Accumulator should be cleared
     acc = await apb_read(dut, OFF_REL_ACC)
@@ -560,7 +560,7 @@ async def test_thresh_06_threshold_zero_immediate(dut):
     await ClockCycles(dut.hclk, 3)
 
     delta = int(dut.credit_delta_data.value)
-    assert delta == 8, f"Expected immediate delta=8 (7+1), got {delta}"
+    assert delta == 9, f"Expected immediate delta=9 (7+2), got {delta}"
 
     acc = await apb_read(dut, OFF_REL_ACC)
     assert acc == 0, f"Expected acc=0 after immediate release, got {acc}"
@@ -579,7 +579,7 @@ async def test_thresh_07_release_acc_debug_readback(dut):
     # Set high threshold and accumulate
     await apb_write(dut, OFF_REL_THRESHOLD, 100)
 
-    # Accumulate two pulses: 3+1=4 and 9+1=10 → total 14
+    # Accumulate two pulses: 3+2=5 and 9+2=11 → total 16
     dut.packet_word_length.value = 3
     await ClockCycles(dut.hclk, 1)
     dut.read_complete.value = 1
@@ -595,7 +595,7 @@ async def test_thresh_07_release_acc_debug_readback(dut):
     await ClockCycles(dut.hclk, 2)
 
     acc = await apb_read(dut, OFF_REL_ACC)
-    assert acc == 14, f"Expected acc=14, got {acc}"
+    assert acc == 16, f"Expected acc=16, got {acc}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

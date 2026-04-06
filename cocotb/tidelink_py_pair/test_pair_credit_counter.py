@@ -207,8 +207,8 @@ async def test_ptc_08_end_to_end_with_fifo_writes(dut):
     await ClockCycles(dut.hclk, 2)
 
     # Write 2 packets
-    await fifo_write_packet(dut, [0xAA, 0xBB, 0xCC])      # 4 credits
-    await fifo_write_packet(dut, [0x11, 0x22])              # 3 credits
+    await fifo_write_packet(dut, [0xAA, 0xBB, 0xCC])      # 5 credits
+    await fifo_write_packet(dut, [0x11, 0x22])              # 4 credits
     await ClockCycles(dut.hclk, 20)
 
     # The write completions send deltas to the pair's accumulator (0x020)

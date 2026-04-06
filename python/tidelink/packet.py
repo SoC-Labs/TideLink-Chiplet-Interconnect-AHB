@@ -1,64 +1,31 @@
-"""TideLink FIFO packet data object."""
+"""TideLink FIFO packet data object.
 
-# ── Packet type constants (pkt_type field, 4 bits) ──────────────────────────
-PKT_RD_REQ = 0x1   # Read request  — header only, no payload
-PKT_WR_REQ = 0x2   # Write request — header + data payload
-PKT_RD_RSP = 0x3   # Read response — header + data payload
-PKT_WR_RSP = 0x4   # Write response — header only, no payload
-PKT_ERROR  = 0xF   # Error response
+Packet format (2-word header + optional payload):
+  Word 0: length[31:20] | pkt_type[19:18] | src_id[17:13] | dest_id[12:8] | tag[7:0]
+  Word 1: dest_addr[31:0]
+  Words 2..N+1: Data payload (type-specific)
+
+length (N) = payload word count only; total FIFO occupancy = N + 2.
+"""
+
+# ── Packet type constants (pkt_type field, 2 bits) ──────────────────────────
+PKT_RD_REQ   = 0b00   # Read request  — N=0 (single) or N=1 (burst descriptor)
+PKT_WR_REQ   = 0b01   # Write request — N data words as payload
+PKT_RSP      = 0b10   # Response      — read data, write ack, or error
+PKT_RESERVED = 0b11   # Reserved for future use
 
 PKT_TYPE_NAMES = {
-    PKT_RD_REQ: "RD_REQ",
-    PKT_WR_REQ: "WR_REQ",
-    PKT_RD_RSP: "RD_RSP",
-    PKT_WR_RSP: "WR_RSP",
-    PKT_ERROR:  "ERROR",
+    PKT_RD_REQ:   "RD_REQ",
+    PKT_WR_REQ:   "WR_REQ",
+    PKT_RSP:      "RSP",
+    PKT_RESERVED: "RESERVED",
 }
 
-# ── Burst type constants (burst_type field, 2 bits) ─────────────────────────
-BURST_SINGLE = 0
-BURST_INCR   = 1
-BURST_WRAP   = 2
-
-# ── Status constants (status field, 2 bits) ─────────────────────────────────
-STATUS_OKAY    = 0
-STATUS_ERROR   = 1
-STATUS_TIMEOUT = 2
-
-# ── Size constants (size field, 3 bits — mirrors AHB HSIZE) ─────────────────
+# ── Burst descriptor constants (RD_REQ payload word, N=1) ──────────────────
+# beat_count[31:3] | size[2:0]
 SIZE_BYTE     = 0
 SIZE_HALFWORD = 1
 SIZE_WORD     = 2
-
-
-class FifoPacket:
-    """Represents a packet written into / read from the TideLink FIFO.
-
-    The first beat carries the length word, subsequent beats carry data.
-    """
-
-    def __init__(self, data=None):
-        self.data = data if data is not None else []
-
-    @property
-    def length(self):
-        """Number of data words (excludes the length word itself)."""
-        return len(self.data)
-
-    @property
-    def total_words(self):
-        """Total SRAM words consumed: 1 (length word) + N (data words)."""
-        return self.length + 1
-
-    @property
-    def all_words(self):
-        """Length word followed by data words."""
-        return [self.length] + self.data
-
-    @property
-    def addrs(self):
-        """Byte addresses for each beat (0x0000, 0x0004, ...)."""
-        return [i * 4 for i in range(self.length + 1)]
 
 
 # ── Field encoding / decoding helpers ────────────────────────────────────────
@@ -67,175 +34,163 @@ def _mask(width):
     return (1 << width) - 1
 
 
-def _encode_control(pkt_type, src_id, dest_id, tag, status, burst_type):
-    """Pack the Control word (Word 1) from its fields."""
+def encode_word0(length, pkt_type=PKT_RD_REQ, src_id=0, dest_id=0, tag=0):
+    """Pack Word 0 from its fields."""
     return (
-        ((pkt_type   & _mask(4))  << 28) |
-        ((src_id     & _mask(8))  << 20) |
-        ((dest_id    & _mask(8))  << 12) |
-        ((tag        & _mask(8))  <<  4) |
-        ((status     & _mask(2))  <<  2) |
-        ((burst_type & _mask(2))  <<  0)
+        ((length   & _mask(12)) << 20) |
+        ((pkt_type & _mask(2))  << 18) |
+        ((src_id   & _mask(5))  << 13) |
+        ((dest_id  & _mask(5))  <<  8) |
+        ((tag      & _mask(8))  <<  0)
     )
 
 
-def _decode_control(word):
-    """Unpack the Control word into a dict of fields."""
+def decode_word0(word):
+    """Unpack Word 0 into a dict of fields."""
     return {
-        "pkt_type":   (word >> 28) & _mask(4),
-        "src_id":     (word >> 20) & _mask(8),
-        "dest_id":    (word >> 12) & _mask(8),
-        "tag":        (word >>  4) & _mask(8),
-        "status":     (word >>  2) & _mask(2),
-        "burst_type": (word >>  0) & _mask(2),
+        "length":   (word >> 20) & _mask(12),
+        "pkt_type": (word >> 18) & _mask(2),
+        "src_id":   (word >> 13) & _mask(5),
+        "dest_id":  (word >>  8) & _mask(5),
+        "tag":      (word >>  0) & _mask(8),
     }
 
 
-def _encode_length_size(length, size):
-    """Pack Word 3: length[15:3], size[2:0]."""
-    return ((length & _mask(13)) << 3) | (size & _mask(3))
+def encode_burst_descriptor(beat_count, size=SIZE_WORD):
+    """Encode a burst read descriptor payload word (RD_REQ N=1)."""
+    return ((beat_count & _mask(29)) << 3) | (size & _mask(3))
 
 
-def _decode_length_size(word):
-    """Unpack Word 3 into (length, size)."""
-    return (word >> 3) & _mask(13), word & _mask(3)
+def decode_burst_descriptor(word):
+    """Decode a burst read descriptor payload word into (beat_count, size)."""
+    return (word >> 3) & _mask(29), word & _mask(3)
+
+
+# ── FifoPacket ───────────────────────────────────────────────────────────────
+
+class FifoPacket:
+    """Represents a packet written into / read from the TideLink FIFO.
+
+    2-word header (packed Word 0 + dest_addr) followed by payload data words.
+    """
+
+    def __init__(self, data=None, pkt_type=PKT_RD_REQ, src_id=0, dest_id=0,
+                 tag=0, dest_addr=0):
+        self.data      = data if data is not None else []
+        self.pkt_type  = pkt_type
+        self.src_id    = src_id
+        self.dest_id   = dest_id
+        self.tag       = tag
+        self.dest_addr = dest_addr
+
+    @property
+    def length(self):
+        """Number of payload data words (excludes the 2-word header)."""
+        return len(self.data)
+
+    @property
+    def total_words(self):
+        """Total SRAM words consumed: 2 (header) + N (payload)."""
+        return self.length + 2
+
+    @property
+    def word0(self):
+        """Packed Word 0 value."""
+        return encode_word0(self.length, self.pkt_type, self.src_id,
+                            self.dest_id, self.tag)
+
+    @property
+    def all_words(self):
+        """Word 0 (packed header), Word 1 (dest_addr), then payload."""
+        return [self.word0, self.dest_addr] + self.data
+
+    @property
+    def addrs(self):
+        """Byte addresses for each beat (0x0000, 0x0004, ...)."""
+        return [i * 4 for i in range(self.total_words)]
+
+    @classmethod
+    def from_words(cls, words):
+        """Create a FifoPacket from a raw list of 32-bit words.
+
+        *words* must start with Word 0 (packed header).
+        """
+        if len(words) < 2:
+            raise ValueError(
+                f"Need at least 2 words (header + dest_addr), got {len(words)}")
+
+        fields = decode_word0(words[0])
+        n = fields["length"]
+        if len(words) < n + 2:
+            raise ValueError(
+                f"Length field says {n} payload words, "
+                f"but only {len(words) - 2} provided")
+
+        return cls(
+            data      = list(words[2:n + 2]),
+            pkt_type  = fields["pkt_type"],
+            src_id    = fields["src_id"],
+            dest_id   = fields["dest_id"],
+            tag       = fields["tag"],
+            dest_addr = words[1] & 0xFFFFFFFF,
+        )
 
 
 # ── DescriptorPacket ─────────────────────────────────────────────────────────
 
 class DescriptorPacket(FifoPacket):
-    """4-word descriptor header packet used by the TideLink mailbox.
+    """High-level packet constructor with factory methods for each type.
 
-    Word 0: FIFO length (N) — number of 32-bit words that follow
-    Word 1: Control — pkt_type | src_id | dest_id | tag | status | burst_type
-    Word 2: dest_addr[31:0]
-    Word 3: length[15:3] | size[2:0]
-    Words 4..N: Data payload (present for WR_REQ and RD_RSP)
+    Word 0: length[31:20] | pkt_type[19:18] | src_id[17:13] | dest_id[12:8] | tag[7:0]
+    Word 1: dest_addr[31:0]
+    Words 2+: Payload (type-specific)
     """
 
-    # Number of header words *after* the FIFO length word
-    _HEADER_WORDS = 3
-
     def __init__(self, pkt_type=PKT_RD_REQ, src_id=0, dest_id=0, tag=0,
-                 dest_addr=0, length=1, size=SIZE_WORD, status=STATUS_OKAY,
-                 burst_type=BURST_SINGLE, payload=None):
-        self.pkt_type   = pkt_type
-        self.src_id     = src_id
-        self.dest_id    = dest_id
-        self.tag        = tag
-        self.dest_addr  = dest_addr
-        self.beat_length = length    # beat count (descriptor field)
-        self.size       = size
-        self.status     = status
-        self.burst_type = burst_type
-        self.payload    = list(payload) if payload is not None else []
-
-        # Initialise base FifoPacket with the words after the length word
-        super().__init__(data=self._build_data())
-
-    # ── Encoding ─────────────────────────────────────────────────────────
-
-    def _build_data(self):
-        """Build the list of words that follow the FIFO length word."""
-        ctrl = _encode_control(self.pkt_type, self.src_id, self.dest_id,
-                               self.tag, self.status, self.burst_type)
-        ls = _encode_length_size(self.beat_length, self.size)
-        return [ctrl, self.dest_addr & 0xFFFFFFFF, ls] + self.payload
-
-    def _refresh(self):
-        """Rebuild the underlying FifoPacket data after field changes."""
-        self.data = self._build_data()
-
-    def encode(self):
-        """Return the full list of 32-bit words (FIFO length + header + payload)."""
-        self._refresh()
-        return self.all_words
-
-    # ── Decoding ─────────────────────────────────────────────────────────
-
-    @classmethod
-    def decode(cls, words):
-        """Create a DescriptorPacket from a list of 32-bit words.
-
-        *words* must start with the FIFO length word (Word 0).
-        """
-        if len(words) < 4:
-            raise ValueError(
-                f"Need at least 4 words (length + 3 header), got {len(words)}")
-
-        fifo_len = words[0]
-        if len(words) < fifo_len + 1:
-            raise ValueError(
-                f"FIFO length field says {fifo_len} words follow, "
-                f"but only {len(words) - 1} provided")
-
-        ctrl_fields = _decode_control(words[1])
-        dest_addr   = words[2] & 0xFFFFFFFF
-        beat_length, size = _decode_length_size(words[3])
-        payload     = list(words[4:fifo_len + 1])
-
-        return cls(
-            pkt_type   = ctrl_fields["pkt_type"],
-            src_id     = ctrl_fields["src_id"],
-            dest_id    = ctrl_fields["dest_id"],
-            tag        = ctrl_fields["tag"],
-            status     = ctrl_fields["status"],
-            burst_type = ctrl_fields["burst_type"],
-            dest_addr  = dest_addr,
-            length     = beat_length,
-            size       = size,
-            payload    = payload,
+                 dest_addr=0, payload=None):
+        payload = list(payload) if payload is not None else []
+        super().__init__(
+            data=payload,
+            pkt_type=pkt_type,
+            src_id=src_id,
+            dest_id=dest_id,
+            tag=tag,
+            dest_addr=dest_addr,
         )
 
     # ── Factory methods ──────────────────────────────────────────────────
 
     @classmethod
-    def read_request(cls, dest_addr, length=1, size=SIZE_WORD, src_id=0,
-                     dest_id=0, tag=0, burst_type=BURST_SINGLE):
-        """Create a RD_REQ packet (header only, no payload)."""
+    def read_request(cls, dest_addr, src_id=0, dest_id=0, tag=0):
+        """Create a single-read RD_REQ packet (N=0, 2 credits)."""
         return cls(pkt_type=PKT_RD_REQ, src_id=src_id, dest_id=dest_id,
-                   tag=tag, dest_addr=dest_addr, length=length, size=size,
-                   burst_type=burst_type)
+                   tag=tag, dest_addr=dest_addr)
 
     @classmethod
-    def write_request(cls, dest_addr, payload, length=None, size=SIZE_WORD,
-                      src_id=0, dest_id=0, tag=0, burst_type=BURST_SINGLE):
-        """Create a WR_REQ packet (header + data payload).
+    def burst_read_request(cls, dest_addr, beat_count, size=SIZE_WORD,
+                           src_id=0, dest_id=0, tag=0):
+        """Create a burst-read RD_REQ packet (N=1, 3 credits)."""
+        descriptor = encode_burst_descriptor(beat_count, size)
+        return cls(pkt_type=PKT_RD_REQ, src_id=src_id, dest_id=dest_id,
+                   tag=tag, dest_addr=dest_addr, payload=[descriptor])
 
-        If *length* is not given it defaults to ``len(payload)``.
-        """
-        if length is None:
-            length = len(payload)
+    @classmethod
+    def write_request(cls, dest_addr, payload, src_id=0, dest_id=0, tag=0):
+        """Create a WR_REQ packet (N=len(payload), N+2 credits)."""
         return cls(pkt_type=PKT_WR_REQ, src_id=src_id, dest_id=dest_id,
-                   tag=tag, dest_addr=dest_addr, length=length, size=size,
-                   burst_type=burst_type, payload=payload)
+                   tag=tag, dest_addr=dest_addr, payload=payload)
 
     @classmethod
-    def read_response(cls, dest_addr, payload, length=None, size=SIZE_WORD,
-                      src_id=0, dest_id=0, tag=0, status=STATUS_OKAY,
-                      burst_type=BURST_SINGLE):
-        """Create a RD_RSP packet (header + data payload)."""
-        if length is None:
-            length = len(payload)
-        return cls(pkt_type=PKT_RD_RSP, src_id=src_id, dest_id=dest_id,
-                   tag=tag, dest_addr=dest_addr, length=length, size=size,
-                   status=status, burst_type=burst_type, payload=payload)
+    def response(cls, dest_addr=0, payload=None, src_id=0, dest_id=0, tag=0):
+        """Create a RSP packet. N=0 for write ack, N>0 for read data."""
+        return cls(pkt_type=PKT_RSP, src_id=src_id, dest_id=dest_id,
+                   tag=tag, dest_addr=dest_addr, payload=payload)
 
     @classmethod
-    def write_response(cls, dest_addr=0, src_id=0, dest_id=0, tag=0,
-                       status=STATUS_OKAY, burst_type=BURST_SINGLE):
-        """Create a WR_RSP packet (header only, no payload)."""
-        return cls(pkt_type=PKT_WR_RSP, src_id=src_id, dest_id=dest_id,
-                   tag=tag, dest_addr=dest_addr, length=0, size=SIZE_WORD,
-                   status=status, burst_type=burst_type)
-
-    @classmethod
-    def error_response(cls, dest_addr=0, src_id=0, dest_id=0, tag=0,
-                       burst_type=BURST_SINGLE):
-        """Create an ERROR packet."""
-        return cls(pkt_type=PKT_ERROR, src_id=src_id, dest_id=dest_id,
-                   tag=tag, dest_addr=dest_addr, length=0, size=SIZE_WORD,
-                   status=STATUS_ERROR, burst_type=burst_type)
+    def error_response(cls, src_id=0, dest_id=0, tag=0):
+        """Create an error RSP packet (N=0, dest_addr=0xFFFFFFFF)."""
+        return cls(pkt_type=PKT_RSP, src_id=src_id, dest_id=dest_id,
+                   tag=tag, dest_addr=0xFFFFFFFF)
 
     # ── Display ──────────────────────────────────────────────────────────
 
@@ -250,9 +205,8 @@ class DescriptorPacket(FifoPacket):
             f"dest={self.dest_id:#x}",
             f"tag={self.tag:#x}",
             f"addr={self.dest_addr:#010x}",
-            f"len={self.beat_length}",
-            f"size={self.size}",
+            f"len={self.length}",
         ]
-        if self.payload:
-            parts.append(f"payload=[{', '.join(f'0x{w:08X}' for w in self.payload)}]")
+        if self.data:
+            parts.append(f"payload=[{', '.join(f'0x{w:08X}' for w in self.data)}]")
         return ", ".join(parts) + ")"

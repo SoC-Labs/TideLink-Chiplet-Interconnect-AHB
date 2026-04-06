@@ -59,6 +59,14 @@ class tidelink_ptp_chain_base_test extends uvm_test;
   // GPIO PHY serialization wait
   int unsigned phy_transit_wait = 5000;
 
+  // Default servo parameters
+  bit [31:0] default_kp          = 32'h0000_0100;  // Proportional gain
+  bit [31:0] default_ki          = 32'h0000_0010;  // Integral gain
+  bit [31:0] default_step_thresh = 32'h3B9A_CA00;  // 1,000,000,000 ns (1s)
+
+  // Default HW sync interval (nanoseconds)
+  bit [31:0] hw_sync_interval    = 32'h0001_0000;  // ~65us
+
   function new(string name = "tidelink_ptp_chain_base_test", uvm_component parent = null);
     super.new(name, parent);
   endfunction

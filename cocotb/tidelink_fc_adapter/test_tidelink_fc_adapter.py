@@ -440,16 +440,18 @@ async def test_02_tx_single_word(dut):
 
 @cocotb.test()
 async def test_03_tx_sequential_words(dut):
-    """Sequential word writes simulate a FIFO packet (length + data words)."""
+    """Sequential word writes simulate a FIFO packet (2-word header + data words)."""
     fc_mon, fc_drv, fifo_mon, cfg_mon = await setup(dut)
     await do_reset(dut)
 
-    # Packet: length=3 at offset 0, then 3 data words
+    # Packet: packed word0 (length=3) at offset 0, dest_addr at offset 4,
+    # then 3 data words starting at offset 8
     words = [
-        (0x0000, 0x00000003),  # length
-        (0x0004, 0xAAAAAAAA),  # word 0
-        (0x0008, 0xBBBBBBBB),  # word 1
-        (0x000C, 0xCCCCCCCC),  # word 2
+        (0x0000, 3 << 20),     # packed word0: length=3
+        (0x0004, 0x00000000),  # dest_addr
+        (0x0008, 0xAAAAAAAA),  # data word 0
+        (0x000C, 0xBBBBBBBB),  # data word 1
+        (0x0010, 0xCCCCCCCC),  # data word 2
     ]
 
     for addr, data in words:

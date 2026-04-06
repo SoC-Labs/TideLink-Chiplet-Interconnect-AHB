@@ -316,7 +316,7 @@ module tidelink_apb_regs #(
     // and sends the full batch to the returner. Threshold=0 means immediate
     // release (backward-compatible with pre-threshold behaviour).
 
-    wire [SYS_DATA_W-1:0] credit_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + SYS_DATA_W'(1);
+    wire [SYS_DATA_W-1:0] credit_delta_data_comb = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length} + SYS_DATA_W'(2);
 
     // Pipeline stage 1: register credit delta and read_complete to break
     // the zero-extend → add_1 → add_acc → compare combinational chain.

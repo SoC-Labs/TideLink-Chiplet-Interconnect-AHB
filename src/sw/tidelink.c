@@ -48,36 +48,48 @@ int tidelink_wait_idle(tidelink_t *tl, uint32_t timeout)
 
 /* ── FIFO Packet I/O ────────────────────────────────────────────────────── */
 
-void tidelink_write_packet(tidelink_t *tl, const uint32_t *data, uint32_t len)
+void tidelink_write_packet(tidelink_t *tl, uint32_t word0,
+                           uint32_t dest_addr,
+                           const uint32_t *payload, uint32_t payload_len)
 {
     uint32_t i;
 
-    /* Word 0: packet length (number of data words that follow) */
-    tl->fifo[0] = len;
+    /* Word 0: packed header (length in bits [31:20], plus routing fields) */
+    tl->fifo[0] = word0;
 
-    /* Words 1..N: data payload */
-    for (i = 0U; i < len; i++) {
-        tl->fifo[i + 1U] = data[i];
+    /* Word 1: destination address */
+    tl->fifo[1] = dest_addr;
+
+    /* Words 2..N+1: data payload */
+    for (i = 0U; i < payload_len; i++) {
+        tl->fifo[i + 2U] = payload[i];
     }
 }
 
-int tidelink_read_packet(tidelink_t *tl, uint32_t *buf, uint32_t max_len)
+int tidelink_read_packet(tidelink_t *tl, uint32_t *word0_out,
+                         uint32_t *dest_addr_out,
+                         uint32_t *payload_buf, uint32_t max_payload)
 {
     uint32_t pkt_len;
     uint32_t i;
 
-    /* Reading FIFO address 0 triggers the length capture in hardware */
-    (void)tl->fifo[0];
+    /* Reading FIFO address 0 triggers the length capture in hardware.
+     * The full packed Word 0 is returned from SRAM. */
+    *word0_out = tl->fifo[0];
 
-    /* Read the captured packet word length from the config register */
+    /* Read the extracted payload length from the config register */
     pkt_len = tl->cfg->PACKET_WORD_LENGTH;
 
-    if (pkt_len > max_len) {
+    /* Word 1: destination address */
+    *dest_addr_out = tl->fifo[1];
+
+    if (pkt_len > max_payload) {
         return -1;
     }
 
+    /* Words 2..N+1: payload */
     for (i = 0U; i < pkt_len; i++) {
-        buf[i] = tl->fifo[i + 1U];
+        payload_buf[i] = tl->fifo[i + 2U];
     }
 
     return (int)pkt_len;

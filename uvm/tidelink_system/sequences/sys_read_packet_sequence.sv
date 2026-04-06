@@ -3,9 +3,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Read a complete packet from one side's RX FIFO.
 //
-// Packet format:
-//   Beat 0: Read packet_word_length from address 0x0000
-//   Beat 1..N: Read data words from address 0x0004, 0x0008, ...
+// Packet format (2-word header):
+//   Beat 0: Read packed header word 0 from address 0x0000
+//           {length[31:20], pkt_type[19:18], src_id[17:13], dest_id[12:8], tag[7:0]}
+//   Beat 1: Read dest_addr from address 0x0004
+//   Beat 2..N+1: Read data words from address 0x0008, 0x000C, ...
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_SYS_READ_PACKET_SEQUENCE_SV
@@ -18,6 +20,9 @@ class sys_read_packet_sequence extends svt_ahb_master_transaction_base_sequence;
 
   // Captured read data
   bit [31:0] read_data[];
+
+  // Captured header fields
+  bit [31:0] read_dest_addr;
 
   // Side identifier for logging
   string side_name = "?";
@@ -38,7 +43,7 @@ class sys_read_packet_sequence extends svt_ahb_master_transaction_base_sequence;
     if (!$cast(cfg, get_cfg))
       `uvm_fatal("body", "Unable to $cast configuration to svt_ahb_port_configuration")
 
-    // Beat 0: Read length word from address 0x0000
+    // Beat 0: Read packed header word 0 from address 0x0000
     `uvm_create(req)
     status = req.randomize() with {
       xact_type  == svt_ahb_transaction::READ;
@@ -48,21 +53,37 @@ class sys_read_packet_sequence extends svt_ahb_master_transaction_base_sequence;
       data.size() == 1;
     };
     if (!status)
-      `uvm_fatal("body", "Unable to randomize AHB read transaction (length)")
+      `uvm_fatal("body", "Unable to randomize AHB read transaction (header word 0)")
     `uvm_send(req)
 
-    // If num_words not pre-set, use the read-back length
+    // If num_words not pre-set, extract length from bits [31:20]
     if (num_words == 0 && req.data.size() > 0)
-      num_words = req.data[0];
+      num_words = req.data[0][31:20];
+
+    // Beat 1: Read dest_addr from address 0x0004
+    `uvm_create(req)
+    status = req.randomize() with {
+      xact_type  == svt_ahb_transaction::READ;
+      burst_type == svt_ahb_transaction::SINGLE;
+      burst_size == svt_ahb_transaction::BURST_SIZE_32BIT;
+      addr       == 32'h0000_0004;
+      data.size() == 1;
+    };
+    if (!status)
+      `uvm_fatal("body", "Unable to randomize AHB read transaction (dest_addr)")
+    `uvm_send(req)
+
+    if (req.data.size() > 0)
+      read_dest_addr = req.data[0];
 
     `uvm_info("SEQ", $sformatf("[%s] FIFO reading packet: %0d data words",
       side_name, num_words), UVM_MEDIUM)
 
     read_data = new[num_words];
 
-    // Beats 1..N: Read data words
+    // Beats 2..N+1: Read data words
     for (int i = 0; i < num_words; i++) begin
-      addr = (i + 1) * 4;
+      addr = (i + 2) * 4;
 
       `uvm_create(req)
       status = req.randomize() with {

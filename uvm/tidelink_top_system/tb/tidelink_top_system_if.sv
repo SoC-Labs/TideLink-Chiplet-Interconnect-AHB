@@ -25,4 +25,11 @@ interface tidelink_top_system_if (
   // Reset control (active-low)
   logic poresetn;
 
+  // Test-driven reset control (set by tests, consumed by top.sv force logic)
+  logic force_reset;
+
+  initial begin
+    force_reset = 1'b0;
+  end
+
 endinterface

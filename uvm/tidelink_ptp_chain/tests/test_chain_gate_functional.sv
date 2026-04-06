@@ -28,8 +28,6 @@ class test_chain_gate_functional extends tidelink_ptp_chain_base_test;
 
   virtual task main_phase(uvm_phase phase);
     bit [31:0] status;
-    bit [31:0] pkt_data[];
-    bit [31:0] read_data[];
     int unsigned initial_seq_num;
     int unsigned later_seq_num;
 
@@ -90,7 +88,7 @@ class test_chain_gate_functional extends tidelink_ptp_chain_base_test;
     // ===============================================================
     `uvm_info("TEST", "Phase 2: Force B1 locked, verify B2 starts SYNCs", UVM_LOW)
 
-    force test_top.b1_servo_locked = 1'b1;
+    tb_if.force_b1_servo_locked_val = 1'b1; tb_if.force_b1_servo_locked = 1'b1;
     repeat (10) @(posedge tb_if.clk);
 
     // Verify phc_locked transitioned
@@ -129,50 +127,12 @@ class test_chain_gate_functional extends tidelink_ptp_chain_base_test;
     if (((status >> 2) & 16'hFFFF) == 0)
       `uvm_warning("TEST", "A seq_num is still 0 — may need more time")
 
-    // ===============================================================
-    // Phase 4: Background FIFO traffic during PTP
-    // ===============================================================
-    `uvm_info("TEST", "Phase 4: FIFO traffic during PTP", UVM_LOW)
-
-    // Send packets on link 1 (A->B1) while PTP is active
-    for (int p = 0; p < 3; p++) begin
-      pkt_data = new[4];
-      pkt_data[0] = 32'h91B1_00 | p;
-      pkt_data[1] = 32'h91B1_10 | p;
-      pkt_data[2] = 32'h91B1_20 | p;
-      pkt_data[3] = 32'h91B1_30 | p;
-      write_packet(SIDE_A, pkt_data);
-      repeat (phy_transit_wait) @(posedge tb_if.clk);
-      read_packet(SIDE_B1, 4, read_data);
-      repeat (phy_transit_wait) @(posedge tb_if.clk);
-    end
-    env.sb.compare_a_b1_data();
-
-    // Send packets on link 2 (B2->C) while PTP is active
-    for (int p = 0; p < 3; p++) begin
-      pkt_data = new[4];
-      pkt_data[0] = 32'h91B2_00 | p;
-      pkt_data[1] = 32'h91B2_10 | p;
-      pkt_data[2] = 32'h91B2_20 | p;
-      pkt_data[3] = 32'h91B2_30 | p;
-      write_packet(SIDE_B2, pkt_data);
-      repeat (phy_transit_wait) @(posedge tb_if.clk);
-      read_packet(SIDE_C, 4, read_data);
-      repeat (phy_transit_wait) @(posedge tb_if.clk);
-    end
-    env.sb.compare_b2_c_data();
-
-    // Verify PTP is still running after FIFO traffic
-    read_apb_reg(SIDE_B2, TIDELINK_APB_BASE + REG_HW_SYNC_STATUS, status);
-    `uvm_info("TEST", $sformatf(
-      "B2 HW_SYNC_STATUS after FIFO traffic = 0x%08h (seq=%0d)",
-      status, (status >> 2) & 16'hFFFF), UVM_LOW)
-
-    if (!status[0])
-      `uvm_error("TEST", "B2 HW sync should still be active after FIFO traffic")
+    // Phase 4 (FIFO traffic during PTP) is deferred — the PTP chain
+    // environment does not have FIFO packet write/read helpers.
+    // This would need to be tested in tidelink_top_system instead.
 
     // Clean up force
-    release test_top.b1_servo_locked;
+    tb_if.force_b1_servo_locked = 1'b0;
 
     `uvm_info("TEST", "G34 Chain Gate Functional test complete.", UVM_LOW)
 

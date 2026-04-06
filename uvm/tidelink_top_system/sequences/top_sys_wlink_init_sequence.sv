@@ -31,9 +31,9 @@ class top_sys_wlink_init_sequence extends uvm_sequence #(apb_master_transaction)
       side_name), UVM_LOW)
 
     `uvm_create(wr_txn)
-    wr_txn.paddr  = 15'h2080;  // ROLE_CFG
-    wr_txn.pwdata = 32'h0000_0002;  // role_lock=1, role=0 (accept strap default)
-    wr_txn.pwrite = 1;
+    wr_txn.addr  = 15'h2080;  // ROLE_CFG
+    wr_txn.wdata = 32'h0000_0002;  // role_lock=1, role=0 (accept strap default)
+    wr_txn.write = 1;
     `uvm_send(wr_txn)
 
     `uvm_info("WLINK_INIT", $sformatf("[%s] Role locked. Wlink link training in progress.",

@@ -80,12 +80,13 @@ module tidelink_fifo_ctrl #(
     logic [RAM_ADDR_W-1:0] write_ptr_r,           write_ptr_nxt;
     logic [RAM_ADDR_W-1:0] packet_word_length_r,  packet_word_length_nxt;
     logic                  check_addr_r,           check_addr_nxt;
+    logic                  packet_active_r,        packet_active_nxt;
     logic [RAM_ADDR_W-1:0] write_target_addr_r,   write_target_addr_nxt;
     logic [RAM_ADDR_W-1:0] read_target_addr_r,    read_target_addr_nxt;
     logic [RAM_ADDR_W-2:0] credit_count_r,          credit_count_nxt;
 
-    // Shared intermediate: packet length + 1 (word count including metadata)
-    wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(1'd1);
+    // Shared intermediate: payload length + 2 (2-word header + N payload words)
+    wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
 
     // -------------------------------------------------------------------------
     // Completion signals — dual-source (FC direct write + AHB read/write)
@@ -93,13 +94,13 @@ module tidelink_fifo_ctrl #(
     logic write_complete;
 
     // FC direct write completion (single-cycle, addr+data in same cycle)
-    wire fc_write_valid = fc_wr_valid && fc_wr_write && (packet_word_length_r != '0);
+    wire fc_write_valid = fc_wr_valid && fc_wr_write && packet_active_r;
     wire fc_write_complete = fc_write_valid && (fc_wr_addr == write_target_addr_r);
 
     // AHB path completion (preserved for CPU reads + testbench backward compat)
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
-    wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && (packet_word_length_r != '0);
+    wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
     wire ahb_write_complete = ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
@@ -168,8 +169,8 @@ module tidelink_fifo_ctrl #(
         end
     end
 
-    // Shortcoming #3: maximum valid packet word length (total_words = length + 1 <= MAX_CREDITS)
-    localparam [RAM_ADDR_W-1:0] MAX_PACKET_LEN = RAM_ADDR_W'(MAX_CREDITS - 1);
+    // Maximum payload length: total_words = length + 2 <= MAX_CREDITS (2-word header)
+    localparam [RAM_ADDR_W-1:0] MAX_PACKET_LEN = RAM_ADDR_W'(MAX_CREDITS - 2);
 
     // Clamp a raw length value to MAX_PACKET_LEN
     function automatic [RAM_ADDR_W-1:0] clamp_length(input [RAM_ADDR_W-1:0] raw);
@@ -179,49 +180,56 @@ module tidelink_fifo_ctrl #(
     always_comb begin
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
+        packet_active_nxt        = packet_active_r;
         capture_write_length_nxt = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
 
-        // Clear packet_word_length and check_addr on completion (BUG-005 fix)
+        // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin
             packet_word_length_nxt = '0;
+            packet_active_nxt = 1'b0;
             check_addr_nxt = 1'b0;
         end else if (fc_write_addr0) begin
             // FC direct write to addr 0: capture length immediately (same cycle)
-            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
+            // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
             packet_word_length_nxt = clamp_length(fc_wr_wdata);
+            packet_active_nxt = 1'b1;
         end else if (capture_write_length_r) begin
             // AHB data phase of write to addr 0: hwdata is now valid
-            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
+            // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
             packet_word_length_nxt = clamp_length(hwdata);
+            packet_active_nxt = 1'b1;
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
             // AHB read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag
-            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
             packet_word_length_nxt = clamp_length(rdata);
+            packet_active_nxt = 1'b1;
             check_addr_nxt = 1'b0;
         end
 
-        // Target address = packet length in bytes (packet length in words << 2)
-        // Use _nxt value to eliminate 1-cycle lag when loading from SRAM read
-        write_target_addr_nxt = RAM_ADDR_W'(packet_word_length_nxt << 2);
-        read_target_addr_nxt  = RAM_ADDR_W'(packet_word_length_nxt << 2);
+        // Target address = (payload_length + 1) in bytes — last word is dest_addr
+        // (at offset 0x4) plus N payload words. Use _nxt to eliminate 1-cycle lag.
+        write_target_addr_nxt = RAM_ADDR_W'((packet_word_length_nxt + RAM_ADDR_W'(1)) << 2);
+        read_target_addr_nxt  = RAM_ADDR_W'((packet_word_length_nxt + RAM_ADDR_W'(1)) << 2);
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             packet_word_length_r <= '0;
+            packet_active_r      <= 1'b0;
             check_addr_r         <= 1'b0;
             write_target_addr_r  <= '0;
             read_target_addr_r   <= '0;
         end else if (flush) begin
             packet_word_length_r <= '0;
+            packet_active_r      <= 1'b0;
             check_addr_r         <= 1'b0;
             write_target_addr_r  <= '0;
             read_target_addr_r   <= '0;
         end else begin
             packet_word_length_r <= packet_word_length_nxt;
+            packet_active_r      <= packet_active_nxt;
             check_addr_r         <= check_addr_nxt;
             write_target_addr_r  <= write_target_addr_nxt;
             read_target_addr_r   <= read_target_addr_nxt;

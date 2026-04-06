@@ -94,11 +94,9 @@ class test_top_coordinated_reset extends tidelink_top_system_base_test;
         // Wait a bit, then assert hresetn on A only
         repeat (phy_transit_wait / 4) @(posedge tb_if.clk);
         `uvm_info("TEST", "Asserting hresetn on side A", UVM_LOW)
-        force test_top.rst_n = 1'b0;
+        tb_if.force_reset = 1'b1;
         repeat (20) @(posedge tb_if.clk);
-        force test_top.rst_n = 1'b1;
-        repeat (5) @(posedge tb_if.clk);
-        release test_top.rst_n;
+        tb_if.force_reset = 1'b0;
       end
     join_any
     disable fork;
@@ -149,11 +147,9 @@ class test_top_coordinated_reset extends tidelink_top_system_base_test;
 
     // Bilateral reset: both sides reset at the same time
     `uvm_info("TEST", "Asserting bilateral reset", UVM_LOW)
-    force test_top.rst_n = 1'b0;
+    tb_if.force_reset = 1'b1;
     repeat (20) @(posedge tb_if.clk);
-    force test_top.rst_n = 1'b1;
-    repeat (5) @(posedge tb_if.clk);
-    release test_top.rst_n;
+    tb_if.force_reset = 1'b0;
 
     repeat (wlink_link_up_wait) @(posedge tb_if.clk);
 
@@ -228,11 +224,9 @@ class test_top_coordinated_reset extends tidelink_top_system_base_test;
 
     // 3. Assert reset
     `uvm_info("TEST", "Asserting reset after clean shutdown", UVM_LOW)
-    force test_top.rst_n = 1'b0;
+    tb_if.force_reset = 1'b1;
     repeat (20) @(posedge tb_if.clk);
-    force test_top.rst_n = 1'b1;
-    repeat (5) @(posedge tb_if.clk);
-    release test_top.rst_n;
+    tb_if.force_reset = 1'b0;
 
     repeat (wlink_link_up_wait) @(posedge tb_if.clk);
 

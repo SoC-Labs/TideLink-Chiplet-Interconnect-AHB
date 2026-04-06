@@ -41,7 +41,7 @@ class ahb_gapped_packet_read_sequence extends svt_ahb_master_transaction_base_se
     if (!$cast(cfg, get_cfg))
       `uvm_fatal("body", "Unable to $cast configuration to svt_ahb_port_configuration")
 
-    // Beat 0: Read length word from address 0x0000 (no gap on first beat)
+    // Beat 0: Read packed header word 0 from address 0x0000 (no gap on first beat)
     `uvm_create(req)
     status = req.randomize() with {
       xact_type  == svt_ahb_transaction::READ;
@@ -51,16 +51,31 @@ class ahb_gapped_packet_read_sequence extends svt_ahb_master_transaction_base_se
       data.size() == 1;
     };
     if (!status)
-      `uvm_fatal("body", "Unable to randomize AHB read transaction (length)")
+      `uvm_fatal("body", "Unable to randomize AHB read transaction (header word 0)")
+    `uvm_send(req)
+
+    // Beat 1: Read dest_addr from address 0x0004 (with gap)
+    gap = min_gap + ($urandom() % (max_gap - min_gap + 1));
+    `uvm_create(req)
+    status = req.randomize() with {
+      xact_type       == svt_ahb_transaction::READ;
+      burst_type      == svt_ahb_transaction::SINGLE;
+      burst_size      == svt_ahb_transaction::BURST_SIZE_32BIT;
+      addr            == 32'h0000_0004;
+      data.size()     == 1;
+      num_idle_cycles == local::gap;
+    };
+    if (!status)
+      `uvm_fatal("body", "Unable to randomize AHB read transaction (dest_addr)")
     `uvm_send(req)
 
     `uvm_info("SEQ", $sformatf("Gapped packet read: %0d words, gaps [%0d:%0d]",
       num_words, min_gap, max_gap), UVM_MEDIUM)
 
-    // Beats 1..N with random idle gaps before each beat
+    // Beats 2..N+1 with random idle gaps before each beat
     for (int i = 0; i < num_words; i++) begin
       gap  = min_gap + ($urandom() % (max_gap - min_gap + 1));
-      addr = (i + 1) * 4;
+      addr = (i + 2) * 4;
 
       `uvm_create(req)
       status = req.randomize() with {

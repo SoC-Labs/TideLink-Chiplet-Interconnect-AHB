@@ -187,6 +187,13 @@ VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges
 VCS_FLAGS += +libext+.v
 
+# I2C master/slave (used by axi_chiplet_controller)
+VCS_FLAGS += -y $(DEPS_DIR)/logical/i2c/rtl
+VCS_FLAGS += +libext+.v
+
+# Chiplet controller top (Wlink wrapper)
+VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
+
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv
 

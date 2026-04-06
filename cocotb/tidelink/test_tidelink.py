@@ -191,14 +191,18 @@ class TidelinkTB:
         prefix = f"[{label}] " if label else ""
         dut = self.dut
 
-        await self.ahb_master.write(0x0000, pkt.length)
+        # Write 2-word header: word0 (packed) to 0x0000, dest_addr to 0x0004
+        await self.ahb_master.write(0x0000, pkt.word0)
+        dut.ahbs_haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 2)
+        await self.ahb_master.write(0x0004, pkt.dest_addr)
         dut.ahbs_haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)
         self.log.info(f"{prefix}Writing {pkt.length}-word packet")
 
         hit_fired = False
         for i, word in enumerate(pkt.data):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             await RisingEdge(dut.hclk)
             dut.ahbs_hsel.value   = 1
             dut.ahbs_htrans.value = 2
@@ -233,6 +237,7 @@ class TidelinkTB:
         prefix = f"[{label}] " if label else ""
         dut = self.dut
 
+        # Read Word 0 (packed header) from addr 0x0000 — triggers capture
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2
@@ -248,10 +253,27 @@ class TidelinkTB:
         pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
         self.log.info(f"{prefix}Read length = {pkt_len}")
 
+        # Read Word 1 (dest_addr) from addr 0x0004
+        await RisingEdge(dut.hclk)
+        dut.ahbs_hsel.value   = 1
+        dut.ahbs_htrans.value = 2
+        dut.ahbs_hwrite.value = 0
+        dut.ahbs_hsize.value  = 2
+        dut.ahbs_haddr.value  = 0x0004
+        await RisingEdge(dut.hclk)
+        dut.ahbs_htrans.value = 0
+        dut.ahbs_hsel.value   = 0
+        dut.ahbs_haddr.value  = 0x3FFF
+        await RisingEdge(dut.hclk)
+        try:
+            dest_addr = int(dut.ahbs_hrdata.value)
+        except ValueError:
+            dest_addr = 0
+
         hit_fired = False
         data = []
         for i in range(pkt_len):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             await RisingEdge(dut.hclk)
             dut.ahbs_hsel.value   = 1
             dut.ahbs_htrans.value = 2
@@ -278,7 +300,7 @@ class TidelinkTB:
 
         dut.ahbs_haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 3)
-        pkt = FifoPacket(data=data)
+        pkt = FifoPacket(data=data, dest_addr=dest_addr)
         if hit_fired:
             self.sw_credit_count += pkt.total_words
             self.log.info(f"{prefix}Read complete ({pkt.length} words). sw_credits={self.sw_credit_count}")
@@ -376,7 +398,7 @@ async def test_03_write_read_returner_flow(dut):
     await tb.wait_returner_idle()
 
     # ── Step 5: Verify returner transaction ──────────────────────────
-    # Channel 0 writes credit_delta_data = packet_word_length + 1 = total_words
+    # Channel 0 writes credit_delta_data = packet_word_length + 2 = total_words
     returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
     expected_delta = pkt1.total_words
     tb.log.info(f"Returner wrote {returner_data} to 0x{PAIR_RELEASED_CREDITS_ADDR:03X} "
@@ -479,11 +501,11 @@ async def test_bug001_stale_credit_delta_data(dut):
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     test_cases = [
-        ([0xAA000001, 0xAA000002, 0xAA000003], 4),  # 3 data words → delta should be 4
-        ([0xBB000001, 0xBB000002], 3),                # 2 data words → delta should be 3
-        ([0xCC000001], 2),                             # 1 data word  → delta should be 2
-        ([0xDD000001, 0xDD000002, 0xDD000003,          # 5 data words → delta should be 6
-          0xDD000004, 0xDD000005], 6),
+        ([0xAA000001, 0xAA000002, 0xAA000003], 5),  # 3 data words → delta should be 5
+        ([0xBB000001, 0xBB000002], 4),                # 2 data words → delta should be 4
+        ([0xCC000001], 3),                             # 1 data word  → delta should be 3
+        ([0xDD000001, 0xDD000002, 0xDD000003,          # 5 data words → delta should be 7
+          0xDD000004, 0xDD000005], 7),
     ]
 
     for i, (data, expected_delta) in enumerate(test_cases):
@@ -537,12 +559,12 @@ async def test_bug001_cumulative_credit_drift(dut):
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
     packets = [
-        [0x11, 0x22, 0x33],        # 3+1 = 4 credits
-        [0x44, 0x55],               # 2+1 = 3 credits
-        [0x66],                     # 1+1 = 2 credits
-        [0x77, 0x88, 0x99, 0xAA],  # 4+1 = 5 credits
+        [0x11, 0x22, 0x33],        # 3+2 = 5 credits
+        [0x44, 0x55],               # 2+2 = 4 credits
+        [0x66],                     # 1+2 = 3 credits
+        [0x77, 0x88, 0x99, 0xAA],  # 4+2 = 6 credits
     ]
-    total_expected_delta = sum(len(p) + 1 for p in packets)  # 4+3+2+5 = 14
+    total_expected_delta = sum(len(p) + 2 for p in packets)  # 5+4+3+6 = 18
 
     # Write all packets
     for i, data in enumerate(packets):
@@ -594,8 +616,8 @@ async def test_bug004_fix_delta_total_separate_accumulators(dut):
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release mode
 
-    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 4
-    expected_delta = len(pkt_data) + 1  # 4
+    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 5
+    expected_delta = len(pkt_data) + 2  # 5
 
     # Write a packet
     await tb.write_packet(pkt_data, label="SEP_ACC_WR")
@@ -662,8 +684,8 @@ async def test_thresh_01_default_batching(dut):
     threshold = await tb.apb.read(APB_REG_REL_THRESHOLD)
     assert threshold == 20, f"Expected default threshold=20, got {threshold}"
 
-    # Write 7 small packets (2 data words each → delta=3 per read)
-    # After 7 reads: accumulated = 7*3 = 21 >= 20 → trigger fires
+    # Write 7 small packets (2 data words each → delta=4 per read)
+    # After 5 reads: accumulated = 5*4 = 20 >= 20 → trigger fires
     packets = [[0xAA00 + i, 0xBB00 + i] for i in range(7)]
     for i, data in enumerate(packets):
         hit = await tb.write_packet(data, label=f"BATCH_WR{i}")
@@ -673,27 +695,27 @@ async def test_thresh_01_default_batching(dut):
     tb.ahb_slave.memory.write(PAIR_RELEASED_CREDITS_ADDR, b'\x00\x00\x00\x00')
 
     # Read packets one by one — returner should NOT fire until threshold crossed
-    for i in range(6):
+    for i in range(4):
         _, rhit = await tb.read_packet(label=f"BATCH_RD{i}")
         assert rhit
         await ClockCycles(dut.hclk, 5)
 
-    # After 6 reads: acc = 6*3 = 18 < 20, returner should not have fired
+    # After 4 reads: acc = 4*4 = 16 < 20, returner should not have fired
     returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
-    tb.log.info(f"After 6 reads: returner target = {returner_data}")
+    tb.log.info(f"After 4 reads: returner target = {returner_data}")
     assert returner_data == 0, \
-        f"Returner should not have fired yet (acc=18 < 20), but target has {returner_data}"
+        f"Returner should not have fired yet (acc=16 < 20), but target has {returner_data}"
 
-    # 7th read: acc = 18 + 3 = 21 >= 20 → trigger fires with batched delta=21
-    _, rhit = await tb.read_packet(label="BATCH_RD6")
+    # 5th read: acc = 16 + 4 = 20 >= 20 → trigger fires with batched delta=20
+    _, rhit = await tb.read_packet(label="BATCH_RD4")
     assert rhit
     await tb.wait_returner_idle()
     await ClockCycles(dut.hclk, 2)
 
     returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
-    tb.log.info(f"After 7 reads: returner target = {returner_data}")
-    assert returner_data == 21, \
-        f"Expected batched delta=21, got {returner_data}"
+    tb.log.info(f"After 5 reads: returner target = {returner_data}")
+    assert returner_data == 20, \
+        f"Expected batched delta=20, got {returner_data}"
 
     tb.log.info("Default threshold batching verified")
 
@@ -721,7 +743,7 @@ async def test_thresh_03_large_packet_exceeds_threshold(dut):
     # Set threshold=10
     await tb.apb.write(APB_REG_REL_THRESHOLD, 10)
 
-    # Write a large packet: 15 data words → delta = 16 > 10
+    # Write a large packet: 15 data words → delta = 17 > 10
     pkt_data = [0xDD00 + i for i in range(15)]
     hit = await tb.write_packet(pkt_data, label="LARGE_WR")
     assert hit
@@ -734,8 +756,8 @@ async def test_thresh_03_large_packet_exceeds_threshold(dut):
     await ClockCycles(dut.hclk, 2)
 
     returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
-    assert returner_data == 16, \
-        f"Expected immediate delta=16, got {returner_data}"
+    assert returner_data == 17, \
+        f"Expected immediate delta=17, got {returner_data}"
 
 
 @cocotb.test()
@@ -745,7 +767,7 @@ async def test_thresh_04_threshold_zero_backward_compat(dut):
     await tb.reset()
     await tb.apb.write(APB_REG_REL_THRESHOLD, 0)
 
-    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 4
+    pkt_data = [0xAA, 0xBB, 0xCC]  # 3 data words → delta = 5
 
     hit = await tb.write_packet(pkt_data, label="COMPAT_WR")
     assert hit
@@ -758,8 +780,8 @@ async def test_thresh_04_threshold_zero_backward_compat(dut):
     await ClockCycles(dut.hclk, 2)
 
     returner_data = tb.read_returner_memory(PAIR_RELEASED_CREDITS_ADDR)
-    assert returner_data == 4, \
-        f"Expected immediate delta=4, got {returner_data}"
+    assert returner_data == 5, \
+        f"Expected immediate delta=5, got {returner_data}"
 
 
 # ── Packet Committed IRQ ────────────────────────────────────────────────────
@@ -1066,7 +1088,7 @@ async def test_cov_05_fifo_overrun(dut):
     packets_written = 0
     while True:
         hw_credits = await tb.read_credit_count()
-        if hw_credits < pkt_size + 1:
+        if hw_credits < pkt_size + 2:
             break
         data = [0xF1110000 + i for i in range(pkt_size)]
         hit = await tb.write_packet(data, label=f"FILL_{packets_written}")
@@ -1077,9 +1099,9 @@ async def test_cov_05_fifo_overrun(dut):
     # Write remaining credits with smaller packets
     while True:
         hw_credits = await tb.read_credit_count()
-        if hw_credits < 2:  # Need at least 2 credits (1 length + 1 data)
+        if hw_credits < 3:  # Need at least 3 credits (2 header + 1 data)
             break
-        remaining = hw_credits - 1  # Leave 1 for length word
+        remaining = hw_credits - 2  # Leave 2 for header words
         data = [0x5A110000 + i for i in range(remaining)]
         hit = await tb.write_packet(data, label="FILL_SMALL")
         if not hit:
@@ -1095,6 +1117,7 @@ async def test_cov_05_fifo_overrun(dut):
 
     # Now attempt a write when buffer is full — this should trigger overrun
     # Drive AHB write manually to trigger the overrun_event
+    # Pack length=1 into word0 bits [31:20]
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value   = 1
     dut.ahbs_htrans.value = 2  # NONSEQ
@@ -1102,7 +1125,7 @@ async def test_cov_05_fifo_overrun(dut):
     dut.ahbs_hsize.value  = 2
     dut.ahbs_haddr.value  = 0x0000
     await RisingEdge(dut.hclk)
-    dut.ahbs_hwdata.value = 1  # length = 1
+    dut.ahbs_hwdata.value = (1 << 20)  # packed word0: length=1
     dut.ahbs_htrans.value = 0
     dut.ahbs_hsel.value   = 0
     dut.ahbs_hwrite.value = 0
@@ -1236,24 +1259,24 @@ async def test_cov_09_apb_release_acc_read(dut):
     val = await tb.apb.read(APB_REG_REL_ACC)
     assert val == 0, f"Expected 0 after reset, got {val}"
 
-    # Write and read a small packet (delta=3, below threshold=20)
+    # Write and read a small packet (delta=4, below threshold=20)
     await tb.write_packet([0xAA, 0xBB], label="ACC_WR1")
     _, rhit = await tb.read_packet(label="ACC_RD1")
     assert rhit
     await ClockCycles(dut.hclk, 5)
 
-    # release_acc should be 3 (below threshold, not yet released)
+    # release_acc should be 4 (below threshold, not yet released)
     val = await tb.apb.read(APB_REG_REL_ACC)
-    assert val == 3, f"Expected release_acc=3, got {val}"
+    assert val == 4, f"Expected release_acc=4, got {val}"
 
-    # Write and read another (delta=3 more, total=6)
+    # Write and read another (delta=4 more, total=8)
     await tb.write_packet([0xCC, 0xDD], label="ACC_WR2")
     _, rhit = await tb.read_packet(label="ACC_RD2")
     assert rhit
     await ClockCycles(dut.hclk, 5)
 
     val = await tb.apb.read(APB_REG_REL_ACC)
-    assert val == 6, f"Expected release_acc=6, got {val}"
+    assert val == 8, f"Expected release_acc=8, got {val}"
 
     tb.log.info("Release accumulator APB read verified")
 
@@ -1331,7 +1354,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
     pkt_data = [0xAA, 0xBB, 0xCC]
     pkt = FifoPacket(data=pkt_data)
 
-    # Write length word to addr 0
+    # Write 2-word header: word0 (packed) to addr 0, dest_addr to addr 4
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value   = 1
     dut.ahbs_htrans.value = 2
@@ -1339,7 +1362,23 @@ async def test_cov_11_ahb_master_wait_states(dut):
     dut.ahbs_hsize.value  = 2
     dut.ahbs_haddr.value  = 0x0000
     await RisingEdge(dut.hclk)
-    dut.ahbs_hwdata.value = pkt.length
+    dut.ahbs_hwdata.value = pkt.word0
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    # Write dest_addr to addr 4
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 1
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwdata.value = pkt.dest_addr
     dut.ahbs_htrans.value = 0
     dut.ahbs_hsel.value   = 0
     await RisingEdge(dut.hclk)
@@ -1348,7 +1387,7 @@ async def test_cov_11_ahb_master_wait_states(dut):
     await ClockCycles(dut.hclk, 2)
 
     for i, word in enumerate(pkt_data):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2
@@ -1382,8 +1421,28 @@ async def test_cov_11_ahb_master_wait_states(dut):
 
     pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
 
+    # Read Word 1 (dest_addr) from addr 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0004
+    for _ in range(10):
+        await RisingEdge(dut.hclk)
+        try:
+            if int(dut.ahbs_hready.value) == 1:
+                break
+        except ValueError:
+            pass
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await RisingEdge(dut.hclk)
+
+    # Read payload from addr 0x0008+
     for i in range(pkt_len):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2
@@ -1463,12 +1522,16 @@ async def test_cov_12_master_error_flag(dut):
     pkt_data = [0xAA, 0xBB]
     pkt = FifoPacket(data=pkt_data)
 
-    await ahb_master.write(0x0000, pkt.length)
+    # Write 2-word header: word0 to 0x0000, dest_addr to 0x0004
+    await ahb_master.write(0x0000, pkt.word0)
+    dut.ahbs_haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+    await ahb_master.write(0x0004, pkt.dest_addr)
     dut.ahbs_haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 2)
 
     for i, word in enumerate(pkt_data):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2
@@ -1499,8 +1562,23 @@ async def test_cov_12_master_error_flag(dut):
     await ClockCycles(dut.hclk, 3)
 
     pkt_len = int(dut.u_dut.u_fifo_mem.packet_word_length.value)
+
+    # Read Word 1 (dest_addr) from addr 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await RisingEdge(dut.hclk)
+
+    # Read payload from addr 0x0008+
     for i in range(pkt_len):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2

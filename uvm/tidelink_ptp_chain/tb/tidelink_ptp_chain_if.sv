@@ -36,4 +36,13 @@ interface tidelink_ptp_chain_if (
   logic b2_wlink_irq;
   logic c_wlink_irq;
 
+  // Test-driven force control (set by tests, consumed by top.sv force logic)
+  logic force_b1_servo_locked;
+  logic force_b1_servo_locked_val;
+
+  initial begin
+    force_b1_servo_locked     = 1'b0;
+    force_b1_servo_locked_val = 1'b0;
+  end
+
 endinterface

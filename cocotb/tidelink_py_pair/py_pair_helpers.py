@@ -131,10 +131,17 @@ async def do_reset(dut, cycles=5):
 
 # ── AHB Slave (FIFO) Write Helper ───────────────────────────────────────────
 
-async def fifo_write_packet(dut, data_words):
-    """Write a packet into the DUT's FIFO via the AHB slave interface."""
-    pkt_len = len(data_words)
+async def fifo_write_packet(dut, data_words, dest_addr=0):
+    """Write a packet into the DUT's FIFO via the AHB slave interface.
 
+    2-word header: Word 0 = packed header (length in bits [31:20]),
+                   Word 1 = dest_addr.
+    Payload starts at byte address 0x0008.
+    """
+    from tidelink.packet import FifoPacket
+    pkt = FifoPacket(data=data_words, dest_addr=dest_addr)
+
+    # Write Word 0 (packed header) to addr 0x0000
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value   = 1
     dut.ahbs_htrans.value = 2
@@ -143,7 +150,24 @@ async def fifo_write_packet(dut, data_words):
     dut.ahbs_haddr.value  = 0x0000
 
     await RisingEdge(dut.hclk)
-    dut.ahbs_hwdata.value = pkt_len
+    dut.ahbs_hwdata.value = pkt.word0
+    dut.ahbs_htrans.value = 0
+    dut.ahbs_hsel.value   = 0
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwrite.value = 0
+    dut.ahbs_haddr.value  = 0x3FFF
+    await ClockCycles(dut.hclk, 2)
+
+    # Write Word 1 (dest_addr) to addr 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value   = 1
+    dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 1
+    dut.ahbs_hsize.value  = 2
+    dut.ahbs_haddr.value  = 0x0004
+
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hwdata.value = pkt.dest_addr
     dut.ahbs_htrans.value = 0
     dut.ahbs_hsel.value   = 0
     await RisingEdge(dut.hclk)
@@ -152,7 +176,7 @@ async def fifo_write_packet(dut, data_words):
     await ClockCycles(dut.hclk, 2)
 
     for i, word in enumerate(data_words):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value   = 1
         dut.ahbs_htrans.value = 2

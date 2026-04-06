@@ -100,6 +100,7 @@ VCS_FLAGS += +libext+.svp+.sv+.svi+.svh
 
 # Top-level testbench
 VCS_FLAGS += $(TB_DIR)/top.sv
+VCS_FLAGS += -top test_top
 
 # Compile outputs
 VCS_FLAGS += -l $(SIM_DIR)/compile.log
@@ -185,6 +186,20 @@ VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 # Bridge dependencies
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges
 VCS_FLAGS += +libext+.v
+
+# TideLink sub-modules (PTP servo, CDC, address translator components)
+VCS_FLAGS += $(RTL_DIR)/tidelink_mul_iter.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_ptp_servo.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
+VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_regs.sv
+VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_cam.sv
+
+# I2C master/slave (used by axi_chiplet_controller)
+VCS_FLAGS += -y $(DEPS_DIR)/logical/i2c/rtl
+VCS_FLAGS += +libext+.v
+
+# Chiplet controller top (Wlink wrapper)
+VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
 
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv

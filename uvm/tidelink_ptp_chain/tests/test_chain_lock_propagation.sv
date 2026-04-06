@@ -67,7 +67,7 @@ class test_chain_lock_propagation extends tidelink_ptp_chain_base_test;
     // Simulate B1 achieving servo lock via force
     // ---------------------------------------------------------------
     `uvm_info("TEST", "Forcing b1_servo_locked = 1...", UVM_LOW)
-    force test_top.b1_servo_locked = 1'b1;
+    tb_if.force_b1_servo_locked_val = 1'b1; tb_if.force_b1_servo_locked = 1'b1;
 
     // Wait a few cycles for the signal to propagate through B2's phc_locked_i
     repeat (10) @(posedge tb_if.clk);
@@ -95,7 +95,7 @@ class test_chain_lock_propagation extends tidelink_ptp_chain_base_test;
       status, (status >> 2) & 16'hFFFF, status[1], status[0]), UVM_LOW)
 
     // Release force
-    release test_top.b1_servo_locked;
+    tb_if.force_b1_servo_locked = 1'b0;
 
     `uvm_info("TEST", "=== Test Chain Lock Propagation Complete ===", UVM_LOW)
     repeat (20) @(posedge tb_if.clk);

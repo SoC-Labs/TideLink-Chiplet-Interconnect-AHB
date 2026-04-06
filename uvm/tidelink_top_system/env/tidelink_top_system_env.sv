@@ -109,7 +109,6 @@ class tidelink_top_system_env extends uvm_env;
     a_sub_cfg  = top_sys_ahb_master_config::type_id::create("a_sub_cfg");
     a_tx_cfg   = top_sys_ahb_master_config::type_id::create("a_tx_cfg");
     a_fifo_cfg = top_sys_ahb_master_config::type_id::create("a_fifo_cfg");
-    a_cfg_cfg  = top_sys_ahb_master_config::type_id::create("a_cfg_cfg");
     a_adr_cfg  = top_sys_ahb_master_config::type_id::create("a_adr_cfg");
     a_mng_cfg  = top_sys_ahb_slave_config::type_id::create("a_mng_cfg");
 
@@ -117,7 +116,6 @@ class tidelink_top_system_env extends uvm_env;
     b_sub_cfg  = top_sys_ahb_master_config::type_id::create("b_sub_cfg");
     b_tx_cfg   = top_sys_ahb_master_config::type_id::create("b_tx_cfg");
     b_fifo_cfg = top_sys_ahb_master_config::type_id::create("b_fifo_cfg");
-    b_cfg_cfg  = top_sys_ahb_master_config::type_id::create("b_cfg_cfg");
     b_adr_cfg  = top_sys_ahb_master_config::type_id::create("b_adr_cfg");
     b_mng_cfg  = top_sys_ahb_slave_config::type_id::create("b_mng_cfg");
 
@@ -125,14 +123,12 @@ class tidelink_top_system_env extends uvm_env;
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_sub_ahb_sys_env",  "cfg", a_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_tx_ahb_sys_env",   "cfg", a_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_fifo_ahb_sys_env", "cfg", a_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_cfg_ahb_sys_env",  "cfg", a_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_adr_ahb_sys_env",  "cfg", a_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "a_mng_ahb_sys_env",  "cfg", a_mng_cfg);
 
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_sub_ahb_sys_env",  "cfg", b_sub_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_tx_ahb_sys_env",   "cfg", b_tx_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_fifo_ahb_sys_env", "cfg", b_fifo_cfg);
-    uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_cfg_ahb_sys_env",  "cfg", b_cfg_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_adr_ahb_sys_env",  "cfg", b_adr_cfg);
     uvm_config_db#(svt_ahb_system_configuration)::set(this, "b_mng_ahb_sys_env",  "cfg", b_mng_cfg);
 
@@ -140,7 +136,6 @@ class tidelink_top_system_env extends uvm_env;
     a_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_sub_ahb_sys_env", this);
     a_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("a_tx_ahb_sys_env", this);
     a_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("a_fifo_ahb_sys_env", this);
-    a_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_cfg_ahb_sys_env", this);
     a_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_adr_ahb_sys_env", this);
     a_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("a_mng_ahb_sys_env", this);
     a_apb_agt          = apb_master_agent::type_id::create("a_apb_agt", this);
@@ -149,7 +144,6 @@ class tidelink_top_system_env extends uvm_env;
     b_sub_ahb_sys_env  = svt_ahb_system_env::type_id::create("b_sub_ahb_sys_env", this);
     b_tx_ahb_sys_env   = svt_ahb_system_env::type_id::create("b_tx_ahb_sys_env", this);
     b_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("b_fifo_ahb_sys_env", this);
-    b_cfg_ahb_sys_env  = svt_ahb_system_env::type_id::create("b_cfg_ahb_sys_env", this);
     b_adr_ahb_sys_env  = svt_ahb_system_env::type_id::create("b_adr_ahb_sys_env", this);
     b_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("b_mng_ahb_sys_env", this);
     b_apb_agt          = apb_master_agent::type_id::create("b_apb_agt", this);
@@ -168,13 +162,11 @@ class tidelink_top_system_env extends uvm_env;
     // Chiplet A monitors -> scoreboard
     a_tx_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.a_tx_export);
     a_fifo_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.a_fifo_export);
-    a_cfg_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.a_cfg_export);
     a_sub_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.a_sub_export);
 
     // Chiplet B monitors -> scoreboard
     b_tx_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.b_tx_export);
     b_fifo_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.b_fifo_export);
-    b_cfg_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.b_cfg_export);
     b_sub_ahb_sys_env.master[0].monitor.item_observed_port.connect(sb.b_sub_export);
 
     // Coverage
@@ -187,14 +179,12 @@ class tidelink_top_system_env extends uvm_env;
     vseqr.a_sub_sqr  = a_sub_ahb_sys_env.master[0].sequencer;
     vseqr.a_tx_sqr   = a_tx_ahb_sys_env.master[0].sequencer;
     vseqr.a_fifo_sqr = a_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.a_cfg_sqr  = a_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.a_adr_sqr  = a_adr_ahb_sys_env.master[0].sequencer;
     vseqr.a_apb_sqr  = a_apb_agt.sequencer;
 
     vseqr.b_sub_sqr  = b_sub_ahb_sys_env.master[0].sequencer;
     vseqr.b_tx_sqr   = b_tx_ahb_sys_env.master[0].sequencer;
     vseqr.b_fifo_sqr = b_fifo_ahb_sys_env.master[0].sequencer;
-    vseqr.b_cfg_sqr  = b_cfg_ahb_sys_env.master[0].sequencer;
     vseqr.b_adr_sqr  = b_adr_ahb_sys_env.master[0].sequencer;
     vseqr.b_apb_sqr  = b_apb_agt.sequencer;
   endfunction

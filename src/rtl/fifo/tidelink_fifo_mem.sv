@@ -108,8 +108,8 @@ module tidelink_fifo_mem #(
         .hready              (hready),
         .hwrite              (hwrite),
         .haddr               (haddr),
-        .hwdata              (hwdata[RAM_ADDR_W-1:0]),
-        .rdata               (rdata[RAM_ADDR_W-1:0]),
+        .hwdata              ({2'b0, hwdata[31:20]}),
+        .rdata               ({2'b0, rdata[31:20]}),
         .addr                (ahb_sram_addr),
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),
@@ -129,7 +129,7 @@ module tidelink_fifo_mem #(
         .fc_wr_valid         (fc_wr_valid),
         .fc_wr_write         (fc_wr_write),
         .fc_wr_addr          (fc_wr_addr),
-        .fc_wr_wdata         (fc_wr_wdata[RAM_ADDR_W-1:0]),
+        .fc_wr_wdata         ({2'b0, fc_wr_wdata[31:20]}),
         .fc_translated_addr  (fc_translated_addr)
     );
 

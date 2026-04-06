@@ -62,6 +62,7 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
     await ClockCycles(dut.hclk, 10)
 
     # Read the packet back -- last beat triggers read_complete -> channel 0
+    # Read Word 0 (packed header) from addr 0x0000
     await RisingEdge(dut.hclk)
     dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
     dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2
@@ -71,8 +72,19 @@ async def test_bug2_doorbell_lost_when_returner_busy(dut):
     dut.ahbs_haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
+    # Read Word 1 (dest_addr) from addr 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
+    dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2
+    dut.ahbs_haddr.value = 0x0004
+    await RisingEdge(dut.hclk)
+    dut.ahbs_htrans.value = 0; dut.ahbs_hsel.value = 0
+    dut.ahbs_haddr.value = 0x3FFF
+    await RisingEdge(dut.hclk)
+
+    # Read payload from addr 0x0008+
     for i in range(3):
-        addr = (i + 1) * 4
+        addr = (i + 2) * 4
         await RisingEdge(dut.hclk)
         dut.ahbs_hsel.value = 1; dut.ahbs_htrans.value = 2
         dut.ahbs_hwrite.value = 0; dut.ahbs_hsize.value = 2

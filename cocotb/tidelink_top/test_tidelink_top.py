@@ -168,23 +168,28 @@ class TidelinkTopTB:
         """Write a single word to the TX aperture via AHB."""
         await self.ahb_tx.write(addr, data)
 
-    async def tx_write_packet(self, data_words: list):
+    async def tx_write_packet(self, data_words: list, dest_addr: int = 0):
         """Write a properly framed packet to the TX aperture.
 
-        Follows the FIFO protocol:
-          1. Write length word (len(data_words)) at address 0x0000
-          2. Write each data word at addresses 0x0004, 0x0008, ...
-          3. The last write triggers write_complete which commits the packet.
+        Follows the 2-word header FIFO protocol:
+          1. Write packed Word 0 (length in bits [31:20]) at address 0x0000
+          2. Write dest_addr at address 0x0004
+          3. Write each data word at addresses 0x0008, 0x000C, ...
+          4. The last write triggers write_complete which commits the packet.
 
         After writing, waits for FC loopback to deliver the packet to the RX FIFO.
         """
-        length = len(data_words)
-        # Write length word at addr 0x0000
-        await self.tx_write_word(0x0000, length)
+        from tidelink.packet import FifoPacket
+        pkt = FifoPacket(data=data_words, dest_addr=dest_addr)
+        # Write packed header (Word 0) at addr 0x0000
+        await self.tx_write_word(0x0000, pkt.word0)
         await self.wait_fc_loopback(cycles=10)
-        # Write data words at sequential addresses
+        # Write dest_addr (Word 1) at addr 0x0004
+        await self.tx_write_word(0x0004, pkt.dest_addr)
+        await self.wait_fc_loopback(cycles=10)
+        # Write data words at sequential addresses starting at 0x0008
         for i, word in enumerate(data_words):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             await self.tx_write_word(addr, word)
             await self.wait_fc_loopback(cycles=10)
 
@@ -219,15 +224,20 @@ class TidelinkTopTB:
         return rdata
 
     async def fifo_read_packet(self) -> list:
-        """Read a complete packet from the FIFO following the protocol:
-          1. Read at addr 0x0000 to get length (clears packet_committed_irq)
-          2. Read length data words at 0x0004, 0x0008, ...
-        Returns the data words (not including the length word)."""
-        length = await self.fifo_read_word(0x0000)
+        """Read a complete packet from the FIFO following the 2-word header protocol:
+          1. Read at addr 0x0000 to get packed header (clears packet_committed_irq)
+          2. Read at addr 0x0004 to get dest_addr
+          3. Read length data words at 0x0008, 0x000C, ...
+        Returns the data words (not including the 2-word header)."""
+        from tidelink.packet import decode_word0
+        word0 = await self.fifo_read_word(0x0000)
         await ClockCycles(self.dut.hclk, 2)
+        dest_addr = await self.fifo_read_word(0x0004)
+        fields = decode_word0(word0)
+        length = fields["length"]
         data = []
         for i in range(length):
-            addr = (i + 1) * 4
+            addr = (i + 2) * 4
             word = await self.fifo_read_word(addr)
             data.append(word)
         return data
@@ -265,7 +275,7 @@ class TidelinkTopTB:
 
 @cocotb.test()
 async def test_01_single_fifo_data_word_loopback(dut):
-    """Write a 1-word packet (length=1 + 1 data word) through the TX aperture,
+    """Write a 1-word packet (2-word header + 1 data word) through the TX aperture,
     verify it arrives in RX FIFO via the FC loopback."""
     tb = TidelinkTopTB(dut)
     await tb.reset()
@@ -443,8 +453,8 @@ async def test_05_credit_release_sideband_loopback(dut):
     tb.log.info(f"Released credits accumulator: {acc_val}")
 
     # With threshold=0, the returner releases all freed credits immediately.
-    # Reading a packet with 2 data words means total_words = 3 (length + 2 data).
-    expected_delta = len(data_words) + 1  # length word + data words
+    # Reading a packet with 2 data words means total_words = 4 (2-word header + 2 data).
+    expected_delta = len(data_words) + 2  # 2-word header + data words
     assert acc_val == expected_delta, \
         f"Expected released credits = {expected_delta}, got {acc_val}"
 
@@ -654,9 +664,9 @@ async def test_14_write_read_full_loopback_with_credits(dut):
     await tb.tx_write_packet(data_words)
 
     # After loopback write into FIFO, credits should decrease by total_words
-    # total_words = length_word + data_words = 1 + 2 = 3
+    # total_words = 2-word header + data_words = 2 + 2 = 4
     credits_after_write = await tb.cfg_read(REG_CREDIT_COUNT)
-    total_words = len(data_words) + 1  # length word + data words
+    total_words = len(data_words) + 2  # 2-word header + data words
     expected_after_write = MAX_CREDITS - total_words
     tb.log.info(f"Credits after write: {credits_after_write} "
                 f"(expected {expected_after_write})")

@@ -78,7 +78,7 @@ async def test_irq_packet_committed(dut):
         f"Data mismatch: expected {data}, got {readback}"
     tb.log.info(f"Packet data verified: {len(readback)} words correct")
 
-    # Reading address 0 (the length word) should have cleared the committed
+    # Reading address 0 (the packed header word) should have cleared the committed
     # flag.  Allow a few cycles for the flag to propagate.
     await ClockCycles(dut.hclk, 10)
 
@@ -128,7 +128,7 @@ async def test_irq_released_credits(dut):
     # Read RELEASED_ACC on A -- this should return the accumulated value
     # and clear the IRQ
     released = await tb.a.cfg_read(REG_RELEASED_ACC)
-    expected_credits = len(data) + 1  # 4 credits (length word + 3 data)
+    expected_credits = len(data) + 2  # 5 credits (2-word header + 3 data)
     tb.log.info(f"RELEASED_ACC on A = {released} (expected {expected_credits})")
     assert released == expected_credits, \
         f"Expected {expected_credits} released credits, got {released}"
@@ -180,7 +180,7 @@ async def test_credit_threshold_sweep(dut):
         await tb.b.wait_fc_settle(30)
 
         credits_after_send = await tb.b.cfg_read(REG_CREDIT_COUNT)
-        expected_after_send = credits_before - (len(data) + 1)
+        expected_after_send = credits_before - (len(data) + 2)
         tb.log.info(f"  B credits after send: {credits_after_send} "
                     f"(expected {expected_after_send})")
         assert credits_after_send == expected_after_send, \
@@ -271,8 +271,8 @@ async def test_accumulator_race(dut):
 
         acc_value = await tb.a.cfg_read(REG_RELEASED_ACC)
 
-        # Expected value if the write has landed: len(data)+1 = 4
-        expected = len(data) + 1
+        # Expected value if the write has landed: len(data)+2 = 5
+        expected = len(data) + 2
 
         if acc_value == 0:
             outcome = "OLD (zero -- write not yet landed)"

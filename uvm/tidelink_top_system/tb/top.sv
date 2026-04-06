@@ -765,4 +765,15 @@ module test_top;
     run_test();
   end
 
+  // =================================================================
+  // Reset control (driven by tests via tb_if)
+  // Force/release must be in module context, not inside a package.
+  // =================================================================
+  always @(*) begin
+    if (tb_if.force_reset)
+      force rst_n = 1'b0;
+    else
+      release rst_n;
+  end
+
 endmodule

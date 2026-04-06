@@ -102,43 +102,43 @@ module tidelink_top #(
     // AHB Subordinate — Local RX FIFO data window (read received packets)
     // --------------------------------------------------------------------------
     input  wire                     ahb_fifo_hsel,
-    input  wire  [RAM_ADDR_W-1:0]  ahb_fifo_haddr,
+    input  wire   [RAM_ADDR_W-1:0]  ahb_fifo_haddr,
     input  wire               [1:0] ahb_fifo_htrans,
     input  wire               [2:0] ahb_fifo_hsize,
     input  wire                     ahb_fifo_hwrite,
-    input  wire  [SYS_DATA_W-1:0]  ahb_fifo_hwdata,
+    input  wire   [SYS_DATA_W-1:0]  ahb_fifo_hwdata,
     input  wire                     ahb_fifo_hready,
-    output wire  [SYS_DATA_W-1:0]  ahb_fifo_hrdata,
+    output wire   [SYS_DATA_W-1:0]  ahb_fifo_hrdata,
     output wire                     ahb_fifo_hresp,
     output wire                     ahb_fifo_hreadyout,
 
     // --------------------------------------------------------------------------
     // AHB Manager — Incoming from remote side (via XHB500 AXI→AHB)
     // --------------------------------------------------------------------------
-    output wire  [SYS_ADDR_W-1:0]  ahb_mng_haddr,
+    output wire    [SYS_ADDR_W-1:0] ahb_mng_haddr,
     output wire               [2:0] ahb_mng_hburst,
     output wire               [6:0] ahb_mng_hprot,
     output wire               [2:0] ahb_mng_hsize,
     output wire               [1:0] ahb_mng_htrans,
-    output wire  [SYS_DATA_W-1:0]  ahb_mng_hwdata,
+    output wire    [SYS_DATA_W-1:0] ahb_mng_hwdata,
     output wire                     ahb_mng_hwrite,
     output wire                     ahb_mng_hready,
-    input  wire  [SYS_DATA_W-1:0]  ahb_mng_hrdata,
+    input  wire    [SYS_DATA_W-1:0] ahb_mng_hrdata,
     input  wire                     ahb_mng_hresp,
 
     // --------------------------------------------------------------------------
     // AHB Subordinate — Address translator configuration
     // --------------------------------------------------------------------------
     input  wire                     ahb_adr_hsel,
-    input  wire  [SYS_ADDR_W-1:0]  ahb_adr_haddr,
+    input  wire    [SYS_ADDR_W-1:0] ahb_adr_haddr,
     input  wire               [2:0] ahb_adr_hburst,
     input  wire               [3:0] ahb_adr_hprot,
     input  wire               [2:0] ahb_adr_hsize,
     input  wire               [1:0] ahb_adr_htrans,
-    input  wire  [SYS_DATA_W-1:0]  ahb_adr_hwdata,
+    input  wire    [SYS_DATA_W-1:0] ahb_adr_hwdata,
     input  wire                     ahb_adr_hwrite,
     input  wire                     ahb_adr_hready,
-    output wire  [SYS_DATA_W-1:0]  ahb_adr_hrdata,
+    output wire    [SYS_DATA_W-1:0] ahb_adr_hrdata,
     output wire                     ahb_adr_hresp,
     output wire                     ahb_adr_hreadyout,
 
@@ -228,7 +228,7 @@ module tidelink_top #(
     output wire              [47:0] phc_hw_set_seconds,
     output wire              [29:0] phc_hw_set_nanoseconds,
     output wire                     phc_hw_adj_valid,
-    output wire  [SYS_DATA_W-1:0]  phc_hw_adj_ns_incr_frac,
+    output wire    [SYS_DATA_W-1:0] phc_hw_adj_ns_incr_frac,
 
     // --------------------------------------------------------------------------
     // External PHC Lock Gate (for multi-hop PTP chaining)

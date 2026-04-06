@@ -210,26 +210,35 @@ static inline void tidelink_set_pair_credit_en(tidelink_t *tl, uint32_t en)
 /**
  * Write a packet into the remote FIFO via the TX aperture.
  *
- * Writes the length word at FIFO offset 0x0000, then data words at
- * sequential word-aligned offsets.
+ * Writes packed Word 0 at FIFO offset 0x0000, dest_addr at 0x0004,
+ * then payload words at sequential offsets from 0x0008.
  *
- * @param tl    Driver handle.
- * @param data  Array of 32-bit data words.
- * @param len   Number of data words.
+ * @param tl           Driver handle.
+ * @param word0        Packed header (use tidelink_pkt_encode_word0()).
+ * @param dest_addr    Destination address on remote chiplet.
+ * @param payload      Array of 32-bit payload words (may be NULL if len=0).
+ * @param payload_len  Number of payload data words.
  */
-void tidelink_write_packet(tidelink_t *tl, const uint32_t *data, uint32_t len);
+void tidelink_write_packet(tidelink_t *tl, uint32_t word0,
+                           uint32_t dest_addr,
+                           const uint32_t *payload, uint32_t payload_len);
 
 /**
  * Read a packet from the local RX FIFO.
  *
- * Reads FIFO offset 0x0000 to trigger length capture, then reads data words.
+ * Reads FIFO offset 0x0000 (packed header) to trigger length capture,
+ * then reads dest_addr and payload words.
  *
- * @param tl       Driver handle.
- * @param buf      Buffer to receive data words.
- * @param max_len  Maximum words to read (buffer capacity).
- * @return Number of words actually read, or -1 if packet exceeds max_len.
+ * @param tl            Driver handle.
+ * @param word0_out     Returns packed Word 0 (decode with tidelink_pkt_decode_word0()).
+ * @param dest_addr_out Returns destination address (Word 1).
+ * @param payload_buf   Buffer to receive payload data words.
+ * @param max_payload   Maximum payload words to read (buffer capacity).
+ * @return Number of payload words actually read, or -1 if exceeds max_payload.
  */
-int tidelink_read_packet(tidelink_t *tl, uint32_t *buf, uint32_t max_len);
+int tidelink_read_packet(tidelink_t *tl, uint32_t *word0_out,
+                         uint32_t *dest_addr_out,
+                         uint32_t *payload_buf, uint32_t max_payload);
 
 /* ── IRQ Handler Stubs (weak, user-overridable) ─────────────────────────── */
 

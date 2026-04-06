@@ -49,7 +49,7 @@ class test_chain_b_unlock_c_holds extends tidelink_ptp_chain_base_test;
     // Phase 1: Force B1 locked, enable B2 HW sync -> should arm
     // ---------------------------------------------------------------
     `uvm_info("TEST", "Phase 1: Force B1 locked, enable B2 HW sync", UVM_LOW)
-    force test_top.b1_servo_locked = 1'b1;
+    tb_if.force_b1_servo_locked_val = 1'b1; tb_if.force_b1_servo_locked = 1'b1;
     repeat (5) @(posedge tb_if.clk);
 
     enable_hw_sync(SIDE_B2, hw_sync_interval);
@@ -66,7 +66,7 @@ class test_chain_b_unlock_c_holds extends tidelink_ptp_chain_base_test;
     // Phase 2: Drop B1 lock -> B2 phc_locked=0 but FSM stays active
     // ---------------------------------------------------------------
     `uvm_info("TEST", "Phase 2: Drop B1 lock, verify B2 FSM stays active", UVM_LOW)
-    force test_top.b1_servo_locked = 1'b0;
+    tb_if.force_b1_servo_locked_val = 1'b0; tb_if.force_b1_servo_locked = 1'b1;
     repeat (10) @(posedge tb_if.clk);
 
     read_apb_reg(SIDE_B2, TIDELINK_APB_BASE + REG_HW_SYNC_STATUS, status);
@@ -103,7 +103,7 @@ class test_chain_b_unlock_c_holds extends tidelink_ptp_chain_base_test;
     // Phase 4: Re-assert B1 lock -> B2 should re-arm
     // ---------------------------------------------------------------
     `uvm_info("TEST", "Phase 4: Re-assert B1 lock, verify B2 re-arms", UVM_LOW)
-    force test_top.b1_servo_locked = 1'b1;
+    tb_if.force_b1_servo_locked_val = 1'b1; tb_if.force_b1_servo_locked = 1'b1;
     repeat (10) @(posedge tb_if.clk);
 
     read_apb_reg(SIDE_B2, TIDELINK_APB_BASE + REG_HW_SYNC_STATUS, status);
@@ -113,7 +113,7 @@ class test_chain_b_unlock_c_holds extends tidelink_ptp_chain_base_test;
     `uvm_info("TEST", $sformatf("B2 HW_SYNC_STATUS after re-lock: 0x%08h", status), UVM_LOW)
 
     // Release force
-    release test_top.b1_servo_locked;
+    tb_if.force_b1_servo_locked = 1'b0;
 
     `uvm_info("TEST", "=== Test Chain B Unlock C Holds Complete ===", UVM_LOW)
     repeat (20) @(posedge tb_if.clk);

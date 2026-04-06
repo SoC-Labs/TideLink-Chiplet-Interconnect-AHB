@@ -4,9 +4,11 @@ Uses cocotbext-ahb AHBLiteMaster to drive AHB transactions against the
 tidelink_fifo_mem wrapper (cmsdk_ahb_to_sram + cmsdk_fpga_sram with FIFO
 address translation).
 
-Packet format (written starting at haddr=0):
-  Beat 0: length word (number of data words to follow)
-  Beats 1..N: data words
+Packet format (2-word header + payload, written starting at haddr=0):
+  Beat 0: Word 0 — length[31:20] | pkt_type[19:18] | src_id[17:13] |
+                    dest_id[12:8] | tag[7:0]
+  Beat 1: Word 1 — dest_addr[31:0]
+  Beats 2..N+1: payload data words
 """
 
 import cocotb
@@ -15,7 +17,7 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster
 
-from tidelink.packet import FifoPacket
+from tidelink.packet import FifoPacket, encode_word0, decode_word0, PKT_RD_REQ, PKT_WR_REQ, PKT_RSP
 from tidelink.regs import RAM_ADDR_W, MAX_CREDITS
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -98,8 +100,8 @@ async def write_packet(dut, ahb, pkt, label=""):
     """
     prefix = f"[{label}] " if label else ""
 
-    # Beat 0: write length to address 0x0000
-    await ahb.write(0x0000, pkt.length)
+    # Beat 0: write packed Word 0 (header) to address 0x0000
+    await ahb.write(0x0000, pkt.word0)
     dut.haddr.value = 0x3FFF
     # Extra cycles for metadata pipeline: capture_write_length_r (1 cycle) +
     # packet_word_length_r (1 cycle) + write_target_addr_r (1 cycle)
@@ -107,13 +109,15 @@ async def write_packet(dut, ahb, pkt, label=""):
 
     write_ptr_before = int(dut.u_dut.write_ptr.value)
     target = int(dut.u_dut.write_target_addr.value)
-    dut._log.info(f"{prefix}After length write: write_ptr=0x{write_ptr_before:04X}, "
+    dut._log.info(f"{prefix}After header write: write_ptr=0x{write_ptr_before:04X}, "
                   f"packet_word_length={int(dut.u_dut.packet_word_length.value)}, "
                   f"write_target_addr=0x{target:04X}")
 
-    # Data beats: use inline AHB phases so we can sample write_complete
+    # Remaining beats: dest_addr (Word 1) then payload words
+    # Use inline AHB phases so we can sample write_complete
+    remaining_words = [pkt.dest_addr] + pkt.data
     hit_fired = False
-    for i, word in enumerate(pkt.data):
+    for i, word in enumerate(remaining_words):
         addr = (i + 1) * 4
 
         # Address phase
@@ -140,7 +144,8 @@ async def write_packet(dut, ahb, pkt, label=""):
         dut.hwrite.value = 0
         hit = hit_val
 
-        dut._log.info(f"{prefix}Beat {i+1}: haddr=0x{addr:04X} "
+        beat_label = "dest_addr" if i == 0 else f"payload[{i-1}]"
+        dut._log.info(f"{prefix}Beat {i+1} ({beat_label}): haddr=0x{addr:04X} "
                       f"data=0x{word:08X} write_complete={hit}")
         if hit:
             hit_fired = True
@@ -252,7 +257,7 @@ async def test_07_write_packet_length_capture(dut):
     ahb = await setup(dut)
     await do_reset(dut)
 
-    await ahb.write(0x0000, 5)
+    await ahb.write(0x0000, 5 << 20)
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 2)
 
@@ -262,17 +267,17 @@ async def test_07_write_packet_length_capture(dut):
 
 @cocotb.test()
 async def test_08_write_target_addr_calculation(dut):
-    """write_target_addr should be packet_word_length * 4."""
+    """write_target_addr should be (packet_word_length + 1) * 4."""
     ahb = await setup(dut)
     await do_reset(dut)
 
     for pkt_len in [1, 3, 10]:
-        await ahb.write(0x0000, pkt_len)
+        await ahb.write(0x0000, pkt_len << 20)
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)
 
         target = int(dut.u_dut.write_target_addr.value)
-        expected = pkt_len * 4
+        expected = (pkt_len + 1) * 4
         assert target == expected, \
             f"pkt_len={pkt_len}: expected 0x{expected:04X}, got 0x{target:04X}"
 
@@ -372,7 +377,7 @@ async def test_12_three_packets_sequential(dut):
 @cocotb.test()
 async def test_13_credit_count_tracks_writes(dut):
     """Credit count should start at MAX_CREDITS and decrement by
-    packet_word_length each time a write packet completes."""
+    total_words (header + payload) each time a write packet completes."""
     ahb = await setup(dut)
     await do_reset(dut)
 
@@ -492,9 +497,9 @@ async def test_15_read_ptr_offset_pipeline_bug(dut):
     pkt1_len = int(dut.u_dut.packet_word_length.value)
     assert pkt1_len == pkt1.length, f"Pkt1 length: expected {pkt1.length}, got {pkt1_len}"
 
-    # -- Read packet 1 data beats --
+    # -- Read packet 1 dest_addr + data beats --
     read1_data = []
-    for i in range(pkt1_len):
+    for i in range(pkt1_len + 1):  # +1 for dest_addr word
         addr = (i + 1) * 4
         await RisingEdge(dut.hclk)
         dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
@@ -521,9 +526,9 @@ async def test_15_read_ptr_offset_pipeline_bug(dut):
     pkt2_len = int(dut.u_dut.packet_word_length.value)
     assert pkt2_len == pkt2.length, f"Pkt2 length: expected {pkt2.length}, got {pkt2_len}"
 
-    # -- Read packet 2 data beats --
+    # -- Read packet 2 dest_addr + data beats --
     read2_data = []
-    for i in range(pkt2_len):
+    for i in range(pkt2_len + 1):  # +1 for dest_addr word
         addr = (i + 1) * 4
         await RisingEdge(dut.hclk)
         dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
@@ -539,13 +544,16 @@ async def test_15_read_ptr_offset_pipeline_bug(dut):
     dut._log.info(f"Pkt2 read: {[f'0x{d:08X}' for d in read2_data]}")
 
     # -- Verify EXACT data integrity --
+    # First word in read data is dest_addr; remaining are payload
+    read1_payload = read1_data[1:]
+    read2_payload = read2_data[1:]
     dut._log.info("--- Data integrity check ---")
-    for i, (exp, got) in enumerate(zip(pkt1.data, read1_data)):
+    for i, (exp, got) in enumerate(zip(pkt1.data, read1_payload)):
         status = "OK" if exp == got else "CORRUPT"
         dut._log.info(f"  PKT1[{i}]: expected 0x{exp:08X} got 0x{got:08X} {status}")
         assert exp == got, f"PKT1[{i}]: expected 0x{exp:08X}, got 0x{got:08X}"
 
-    for i, (exp, got) in enumerate(zip(pkt2.data, read2_data)):
+    for i, (exp, got) in enumerate(zip(pkt2.data, read2_payload)):
         status = "OK" if exp == got else "CORRUPT"
         dut._log.info(f"  PKT2[{i}]: expected 0x{exp:08X} got 0x{got:08X} {status}")
         assert exp == got, \
@@ -557,9 +565,10 @@ async def test_15_read_ptr_offset_pipeline_bug(dut):
 async def read_packet(dut, ahb, label=""):
     """Read a packet from the FIFO via the AHB master.
 
-    Reads the length word from haddr=0, then reads that many data words
-    from sequential addresses. The read_complete should fire on the last
-    beat, advancing read_ptr and releasing credits.
+    Reads the packed header from haddr=0 (hardware extracts length from
+    bits [31:20]), then reads that many data words from sequential
+    addresses. The read_complete should fire on the last beat, advancing
+    read_ptr and releasing credits.
 
     Returns (FifoPacket, hit_fired).
     """
@@ -600,12 +609,13 @@ async def read_packet(dut, ahb, label=""):
                   f"read_ptr=0x{read_ptr_before:04X}, "
                   f"read_target_addr=0x{target:04X}")
 
-    # Data beats: read sequentially, sampling read_complete
+    # Data beats: read dest_addr (Word 1) then payload words sequentially,
+    # sampling read_complete.
     # read_complete is combinational — only true while hsel/htrans active.
     # Must sample at the rising edge BEFORE idling the bus.
     hit_fired = False
-    data = []
-    for i in range(pkt_len):
+    all_read_data = []
+    for i in range(pkt_len + 1):  # +1 for dest_addr word
         addr = (i + 1) * 4
 
         # Address phase
@@ -634,12 +644,16 @@ async def read_packet(dut, ahb, label=""):
             word = int(dut.hrdata.value)
         except ValueError:
             word = 0
-        data.append(word)
+        all_read_data.append(word)
 
         dut._log.info(f"{prefix}Beat {i+1}: haddr=0x{addr:04X} "
                       f"data=0x{word:08X} read_complete={hit}")
         if hit:
             hit_fired = True
+
+    # First word read is dest_addr, remaining are payload
+    dest_addr = all_read_data[0] if all_read_data else 0
+    data = all_read_data[1:]
 
     read_ptr_after = int(dut.u_dut.read_ptr.value)
     credits = get_credit_count(dut)
@@ -651,7 +665,7 @@ async def read_packet(dut, ahb, label=""):
     # Extra idle cycles to let ptr_offset pipeline settle after read_ptr advances
     await ClockCycles(dut.hclk, 3)
 
-    return FifoPacket(data=data), hit_fired
+    return FifoPacket(data=data, dest_addr=dest_addr), hit_fired
 
 
 @cocotb.test()
@@ -742,14 +756,14 @@ async def test_17_exhaustive_fifo_write_read(dut):
         dut._log.info(f"=== Round {round_num + 1}/{NUM_ROUNDS} ===")
 
         # ── Write phase: fill until we can't fit another max-size packet ──
-        while sw_credits >= MAX_PKT_SIZE + 1:  # +1 for length word
+        while sw_credits >= MAX_PKT_SIZE + 2:  # +2 for 2-word header
             pkt_len = random.randint(1, MAX_PKT_SIZE)
-            pkt_total = pkt_len + 1  # length word + data
+            pkt_total = pkt_len + 2  # 2-word header + data
 
             # Don't exceed available credits
             if pkt_total > sw_credits:
-                pkt_len = sw_credits - 1
-                pkt_total = pkt_len + 1
+                pkt_len = sw_credits - 2
+                pkt_total = pkt_len + 2
                 if pkt_len < 1:
                     break
 
@@ -836,9 +850,9 @@ async def test_18_circular_buffer_wrap_around(dut):
     await do_reset(dut)
 
     # Fill most of the FIFO with large packets to force wrap-around
-    # Each packet = 100 data words + 1 length word = 101 words = 404 bytes
+    # Each packet = 100 data words + 2 header words = 102 words = 408 bytes
     pkt_size = 100
-    num_fill_packets = MAX_CREDITS // (pkt_size + 1)  # ~40 packets to fill
+    num_fill_packets = MAX_CREDITS // (pkt_size + 2)  # ~40 packets to fill
 
     written_packets = []
     sw_credits = MAX_CREDITS
@@ -884,7 +898,7 @@ async def test_19_single_word_packet(dut):
     _, _, hit = await write_packet(dut, ahb, pkt, label="MIN_W")
     assert hit, "write_complete should fire for single-word packet"
 
-    expected_credits = MAX_CREDITS - 2  # 1 data + 1 length = 2 words
+    expected_credits = MAX_CREDITS - 3  # 1 data + 2 header = 3 words
     actual_credits = get_credit_count(dut)
     assert actual_credits == expected_credits, \
         f"Expected {expected_credits} credits, got {actual_credits}"
@@ -900,12 +914,12 @@ async def test_19_single_word_packet(dut):
 
 @cocotb.test()
 async def test_20_maximum_size_packet(dut):
-    """Packet consuming all available credits (MAX_CREDITS - 1 data words).
+    """Packet consuming all available credits (MAX_CREDITS - 2 data words).
     Verify completion fires and credit count reaches 0."""
     ahb = await setup(dut)
     await do_reset(dut)
 
-    max_data_words = MAX_CREDITS - 1  # -1 for the length word
+    max_data_words = MAX_CREDITS - 2  # -2 for the 2-word header
     pkt = FifoPacket(data=[(i + 1) & 0xFFFFFFFF for i in range(max_data_words)])
 
     _, _, hit = await write_packet(dut, ahb, pkt, label="MAX_W")
@@ -932,10 +946,10 @@ async def test_21_credit_count_write_read_restore(dut):
     await do_reset(dut)
 
     packets = [
-        FifoPacket(data=[0x10 + i for i in range(3)]),   # 4 credits
-        FifoPacket(data=[0x20 + i for i in range(7)]),   # 8 credits
-        FifoPacket(data=[0x30 + i for i in range(1)]),   # 2 credits
-        FifoPacket(data=[0x40 + i for i in range(15)]),  # 16 credits
+        FifoPacket(data=[0x10 + i for i in range(3)]),   # 5 credits
+        FifoPacket(data=[0x20 + i for i in range(7)]),   # 9 credits
+        FifoPacket(data=[0x30 + i for i in range(1)]),   # 3 credits
+        FifoPacket(data=[0x40 + i for i in range(15)]),  # 17 credits
     ]
 
     sw_credits = MAX_CREDITS
@@ -1184,7 +1198,7 @@ async def test_29_flush_clears_overrun(dut):
     assert get_overrun(dut) == 0, "overrun should be 0 after reset"
 
     # Fill the FIFO completely
-    max_data = MAX_CREDITS - 1
+    max_data = MAX_CREDITS - 2
     pkt = FifoPacket(data=[(i + 1) for i in range(max_data)])
     _, _, hit = await write_packet(dut, ahb, pkt, label="FILL")
     assert hit
@@ -1275,11 +1289,11 @@ async def test_32_credit_underflow_saturation(dut):
     assert initial_credits == MAX_CREDITS, f"Expected {MAX_CREDITS}, got {initial_credits}"
 
     # Step 1: Fill most of the FIFO to leave only a few credits.
-    # Write packets of 100 words each (101 credits each: 1 length + 100 data)
+    # Write packets of 100 words each (102 credits each: 2 header + 100 data)
     # until fewer than 110 credits remain.
     pkt_size = 100
     packets_written = 0
-    while get_credit_count(dut) >= pkt_size + 1:
+    while get_credit_count(dut) >= pkt_size + 2:
         pkt = FifoPacket(data=[0xAA000000 | i for i in range(pkt_size)])
         _, _, hit = await write_packet(dut, ahb, pkt, label=f"fill-{packets_written}")
         assert hit, f"write_complete should fire for fill packet {packets_written}"
@@ -1287,7 +1301,7 @@ async def test_32_credit_underflow_saturation(dut):
 
     remaining = get_credit_count(dut)
     dut._log.info(f"After filling: {packets_written} packets, {remaining} credits remain")
-    assert remaining < pkt_size + 1, "Should have fewer credits than a full packet"
+    assert remaining < pkt_size + 2, "Should have fewer credits than a full packet"
     assert remaining > 0, "Should have some credits remaining"
 
     # Step 2: Now write a packet whose total_words > remaining credits.
@@ -1295,13 +1309,14 @@ async def test_32_credit_underflow_saturation(dut):
     oversized_len = remaining + 10  # Guaranteed to exceed available credits
     oversized_pkt = FifoPacket(data=[0xBB000000 | i for i in range(oversized_len)])
 
-    # Write the length word
-    await ahb.write(0x0000, oversized_pkt.length)
+    # Write the packed header (length in bits [31:20])
+    await ahb.write(0x0000, oversized_pkt.word0)
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    # Write data beats up to and including the target address
-    for i, word in enumerate(oversized_pkt.data):
+    # Write dest_addr (Word 1) then data beats
+    remaining_words = [oversized_pkt.dest_addr] + oversized_pkt.data
+    for i, word in enumerate(remaining_words):
         addr = (i + 1) * 4
         await RisingEdge(dut.hclk)
         dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 1
@@ -1343,7 +1358,7 @@ async def test_33_credit_underflow_normal_path_unaffected(dut):
     ahb = await setup(dut)
     await do_reset(dut)
 
-    # Write a small packet (5 words = 6 credits: 1 length + 5 data)
+    # Write a small packet (5 words = 7 credits: 2 header + 5 data)
     pkt = FifoPacket(data=[0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555])
     credits_before = get_credit_count(dut)
     _, _, hit = await write_packet(dut, ahb, pkt, label="normal")
@@ -1367,8 +1382,8 @@ async def test_33_credit_underflow_normal_path_unaffected(dut):
     pkt_len = int(dut.u_dut.packet_word_length.value)
     assert pkt_len == 5, f"Expected packet length 5, got {pkt_len}"
 
-    # Read data beats
-    for i in range(pkt_len):
+    # Read dest_addr + data beats (pkt_len + 1 total)
+    for i in range(pkt_len + 1):
         addr = (i + 1) * 4
         await RisingEdge(dut.hclk)
         dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
@@ -1390,23 +1405,25 @@ async def test_33_credit_underflow_normal_path_unaffected(dut):
 
 @cocotb.test()
 async def test_34_packet_size_clamped_to_max(dut):
-    """Shortcoming #3: Packet lengths exceeding MAX_CREDITS-1 must be clamped.
+    """Shortcoming #3: Packet lengths exceeding MAX_CREDITS-2 must be clamped.
 
     Writing a length larger than the SRAM can hold should be silently
-    clamped to MAX_CREDITS-1 (4095), preventing pointer wrap and SRAM
+    clamped to MAX_CREDITS-2 (4094), preventing pointer wrap and SRAM
     boundary overrun.
     """
     ahb = await setup(dut)
     await do_reset(dut)
 
-    # Write an oversized length to address 0
-    oversized_length = MAX_CREDITS + 100  # e.g. 4196, way beyond 4095
-    await ahb.write(0x0000, oversized_length)
+    # Write an oversized length to address 0 (packed in bits [31:20])
+    # The length field is 12 bits (max 4095), but MAX_PACKET_LEN = 4094.
+    # Use 4095 which fits in 12 bits but exceeds the clamp threshold.
+    oversized_length = MAX_CREDITS - 1  # 4095, one above MAX_PACKET_LEN (4094)
+    await ahb.write(0x0000, (oversized_length & 0xFFF) << 20)
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
     captured_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
-    max_valid = MAX_CREDITS - 1  # 4095
+    max_valid = MAX_CREDITS - 2  # 4094
 
     dut._log.info(f"Wrote length {oversized_length}, captured as {captured_len} "
                   f"(max valid = {max_valid})")
@@ -1425,14 +1442,14 @@ async def test_35_packet_size_valid_length_unaffected(dut):
     await do_reset(dut)
 
     # Test several valid lengths
-    for length in [1, 10, 100, MAX_CREDITS - 1]:
+    for length in [1, 10, 100, MAX_CREDITS - 2]:
         # Flush between tests to clear state
         dut.flush.value = 1
         await RisingEdge(dut.hclk)
         dut.flush.value = 0
         await ClockCycles(dut.hclk, 2)
 
-        await ahb.write(0x0000, length)
+        await ahb.write(0x0000, length << 20)
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
@@ -1456,7 +1473,7 @@ async def test_36_seq_transfers_rejected(dut):
     await do_reset(dut)
 
     # First, write a valid packet length via NONSEQ (htrans=2)
-    await ahb.write(0x0000, 5)
+    await ahb.write(0x0000, 5 << 20)
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
@@ -1474,7 +1491,7 @@ async def test_36_seq_transfers_rejected(dut):
     dut.hsel.value = 1; dut.htrans.value = 3; dut.hwrite.value = 1
     dut.hsize.value = 2; dut.haddr.value = 0x0000
     await RisingEdge(dut.hclk)
-    dut.hwdata.value = 10  # Attempt to set length=10
+    dut.hwdata.value = 10 << 20  # Attempt to set length=10 (packed)
     dut.htrans.value = 0; dut.hsel.value = 0
     await RisingEdge(dut.hclk)
     dut.hwrite.value = 0
@@ -1486,3 +1503,227 @@ async def test_36_seq_transfers_rejected(dut):
     )
 
     dut._log.info("SEQ transfers correctly rejected — passed")
+
+
+# ── Phase 9: New Tests for 2-Word Packed Header ────────────────────────────
+
+
+@cocotb.test()
+async def test_37_header_only_packet_n0(dut):
+    """N=0 header-only packet (RD_REQ): 2 words, 2 credits.
+
+    Verifies that a packet with zero payload words completes correctly:
+    write_complete fires on addr 0x0004 (dest_addr), packet_committed_irq
+    asserts, credit count decreases by 2, write_ptr advances by 8 bytes.
+    Then read back and verify read_complete and credit restore.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    credits_before = get_credit_count(dut)
+    assert credits_before == MAX_CREDITS
+
+    # Build N=0 packet (header-only, no payload)
+    pkt = FifoPacket(data=[], pkt_type=PKT_RD_REQ, src_id=1, dest_id=2,
+                     tag=0x42, dest_addr=0xDEAD_0000)
+
+    assert pkt.length == 0
+    assert pkt.total_words == 2
+
+    # Write via helper
+    _, write_ptr_after, hit_fired = await write_packet(dut, ahb, pkt, label="N0-WR")
+
+    assert hit_fired, "write_complete should fire for N=0 packet on dest_addr write"
+
+    # Check credit count decreased by 2
+    credits_after_write = get_credit_count(dut)
+    assert credits_after_write == credits_before - 2, \
+        f"Expected credits={credits_before - 2}, got {credits_after_write}"
+
+    # Check write_ptr advanced by 8 bytes (2 words)
+    assert write_ptr_after == 8, \
+        f"Expected write_ptr=8, got {write_ptr_after}"
+
+    # Check packet_committed_irq
+    irq = int(dut.u_dut.u_fifo_ctrl.packet_committed_irq.value)
+    assert irq == 1, "packet_committed_irq should be asserted after N=0 write"
+
+    # Verify SRAM contents: Word 0 (packed header) and Word 1 (dest_addr)
+    sram_w0 = sram_read_word(dut, 0)
+    sram_w1 = sram_read_word(dut, 1)
+    assert sram_w0 == pkt.word0, \
+        f"SRAM[0]: expected 0x{pkt.word0:08X}, got 0x{sram_w0:08X}"
+    assert sram_w1 == 0xDEAD_0000, \
+        f"SRAM[1]: expected 0xDEAD0000, got 0x{sram_w1:08X}"
+
+    # Read back: addr 0 triggers capture, addr 4 triggers read_complete
+    await ahb.read(0x0000)  # triggers length capture + clears IRQ
+    await ClockCycles(dut.hclk, 3)  # pipeline settle
+
+    pkt_len = int(dut.u_dut.packet_word_length.value)
+    assert pkt_len == 0, f"Read-back packet_word_length should be 0, got {pkt_len}"
+
+    # Read dest_addr (should trigger read_complete for N=0)
+    resp = await ahb.read(0x0004)
+    await ClockCycles(dut.hclk, 2)
+
+    credits_after_read = get_credit_count(dut)
+    assert credits_after_read == credits_before, \
+        f"Credits should restore to {credits_before}, got {credits_after_read}"
+
+    dut._log.info("N=0 header-only packet — passed")
+
+
+@cocotb.test()
+async def test_38_packed_header_field_preservation(dut):
+    """Hardware extracts only bits [31:20] as length; other fields are preserved in SRAM.
+
+    Write packets with various pkt_type, src_id, dest_id, tag values.
+    Probe SRAM to verify the full 32-bit Word 0 is stored correctly.
+    Verify hardware only extracts the length, ignoring other fields.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    test_cases = [
+        # (length, pkt_type, src_id, dest_id, tag, dest_addr)
+        (0,  PKT_RD_REQ, 0x00, 0x00, 0x00, 0x00000000),  # all zeros
+        (0,  PKT_RSP,    0x1F, 0x1F, 0xFF, 0xFFFFFFFF),  # all ones (within field widths)
+        (3,  PKT_WR_REQ, 0x0A, 0x15, 0x7E, 0x4000_1234),  # mixed fields
+        (10, PKT_RD_REQ, 0x01, 0x02, 0x42, 0xDEAD_BEEF),  # non-trivial length
+    ]
+
+    for i, (length, pkt_type, src_id, dest_id, tag, dest_addr) in enumerate(test_cases):
+        # Flush between tests to reset pointers
+        dut.flush.value = 1
+        await RisingEdge(dut.hclk)
+        dut.flush.value = 0
+        await ClockCycles(dut.hclk, 2)
+
+        data = [0xDA7A0000 | j for j in range(length)]
+        pkt = FifoPacket(data=data, pkt_type=pkt_type, src_id=src_id,
+                         dest_id=dest_id, tag=tag, dest_addr=dest_addr)
+
+        expected_word0 = encode_word0(length, pkt_type, src_id, dest_id, tag)
+
+        # Write packed header
+        await ahb.write(0x0000, expected_word0)
+        dut.haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 3)
+
+        # Verify hardware extracted only the length
+        hw_length = int(dut.u_dut.packet_word_length.value)
+        assert hw_length == length, \
+            f"Case {i}: expected hw length={length}, got {hw_length}"
+
+        # Verify full Word 0 stored in SRAM
+        sram_w0 = sram_read_word(dut, 0)
+        assert sram_w0 == expected_word0, \
+            f"Case {i}: SRAM[0] expected 0x{expected_word0:08X}, got 0x{sram_w0:08X}"
+
+        # Decode and verify all fields round-trip
+        decoded = decode_word0(sram_w0)
+        assert decoded["length"] == length, f"Case {i}: decoded length mismatch"
+        assert decoded["pkt_type"] == pkt_type, f"Case {i}: decoded pkt_type mismatch"
+        assert decoded["src_id"] == src_id, f"Case {i}: decoded src_id mismatch"
+        assert decoded["dest_id"] == dest_id, f"Case {i}: decoded dest_id mismatch"
+        assert decoded["tag"] == tag, f"Case {i}: decoded tag mismatch"
+
+        dut._log.info(f"Case {i}: length={length} pkt_type={pkt_type} "
+                      f"src={src_id} dest={dest_id} tag=0x{tag:02X} — OK")
+
+    dut._log.info("Packed header field preservation — passed")
+
+
+@cocotb.test()
+async def test_39_burst_read_request_n1(dut):
+    """Burst RD_REQ (N=1): 3 words total (header + dest_addr + burst descriptor).
+
+    Verifies completion, credit count decrease by 3, pointer advance by 12.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    credits_before = get_credit_count(dut)
+
+    # Build N=1 packet: RD_REQ with one payload word (burst descriptor)
+    burst_descriptor = (16 << 3) | 2  # beat_count=16, size=WORD
+    pkt = FifoPacket(data=[burst_descriptor], pkt_type=PKT_RD_REQ,
+                     src_id=3, dest_id=7, tag=0xAB, dest_addr=0x8000_0000)
+
+    assert pkt.length == 1
+    assert pkt.total_words == 3
+
+    _, write_ptr_after, hit_fired = await write_packet(dut, ahb, pkt, label="BURST-RD")
+
+    assert hit_fired, "write_complete should fire for N=1 burst RD_REQ"
+
+    credits_after = get_credit_count(dut)
+    assert credits_after == credits_before - 3, \
+        f"Expected credits={credits_before - 3}, got {credits_after}"
+
+    assert write_ptr_after == 12, \
+        f"Expected write_ptr=12 (3 words * 4), got {write_ptr_after}"
+
+    # Verify SRAM contents
+    sram_w0 = sram_read_word(dut, 0)
+    sram_w1 = sram_read_word(dut, 1)
+    sram_w2 = sram_read_word(dut, 2)
+    assert sram_w0 == pkt.word0, f"SRAM[0] mismatch: 0x{sram_w0:08X}"
+    assert sram_w1 == 0x8000_0000, f"SRAM[1] mismatch: 0x{sram_w1:08X}"
+    assert sram_w2 == burst_descriptor, f"SRAM[2] mismatch: 0x{sram_w2:08X}"
+
+    dut._log.info("Burst RD_REQ (N=1) — passed")
+
+
+@cocotb.test()
+async def test_40_credit_delta_regression(dut):
+    """Credit delta = N + 2 for various packet sizes (N=0, N=1, N=10).
+
+    Writes a packet, reads it back, and verifies that the credit count
+    is correctly restored by exactly total_words = N + 2.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    for n, label in [(0, "N=0"), (1, "N=1"), (10, "N=10")]:
+        # Flush to start clean
+        dut.flush.value = 1
+        await RisingEdge(dut.hclk)
+        dut.flush.value = 0
+        await ClockCycles(dut.hclk, 2)
+
+        credits_start = get_credit_count(dut)
+        assert credits_start == MAX_CREDITS, f"{label}: expected MAX_CREDITS after flush"
+
+        data = [0xBEEF0000 | i for i in range(n)]
+        pkt = FifoPacket(data=data, pkt_type=PKT_WR_REQ, dest_addr=0x1000)
+
+        expected_delta = n + 2
+
+        # Write packet
+        _, _, hit = await write_packet(dut, ahb, pkt, label=f"{label}-WR")
+        assert hit, f"{label}: write_complete should fire"
+
+        credits_after_write = get_credit_count(dut)
+        assert credits_after_write == MAX_CREDITS - expected_delta, \
+            f"{label}: after write expected {MAX_CREDITS - expected_delta}, got {credits_after_write}"
+
+        # Read back: addr 0 triggers capture
+        await ahb.read(0x0000)
+        await ClockCycles(dut.hclk, 3)
+
+        # Read remaining words (dest_addr + payload)
+        for i in range(n + 1):
+            await ahb.read((i + 1) * 4)
+            await ClockCycles(dut.hclk, 1)
+
+        await ClockCycles(dut.hclk, 2)
+
+        credits_after_read = get_credit_count(dut)
+        assert credits_after_read == MAX_CREDITS, \
+            f"{label}: after read expected {MAX_CREDITS}, got {credits_after_read}"
+
+        dut._log.info(f"{label}: delta={expected_delta} — credits correctly restored")
+
+    dut._log.info("Credit delta regression (N=0,1,10) — passed")

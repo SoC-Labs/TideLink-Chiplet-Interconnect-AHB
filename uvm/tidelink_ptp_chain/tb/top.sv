@@ -774,4 +774,15 @@ module test_top;
     run_test();
   end
 
+  // =================================================================
+  // Force control (driven by tests via tb_if)
+  // Force/release must be in module context, not inside a package.
+  // =================================================================
+  always @(*) begin
+    if (tb_if.force_b1_servo_locked)
+      force b1_servo_locked = tb_if.force_b1_servo_locked_val;
+    else
+      release b1_servo_locked;
+  end
+
 endmodule

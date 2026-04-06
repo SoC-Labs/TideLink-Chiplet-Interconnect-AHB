@@ -11,7 +11,7 @@
 
 /* ── Struct Layout Assertions ───────────────────────────────────────────── */
 
-_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x034,
+_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x090,
                "TIDELINK_REGS_TypeDef size mismatch");
 _Static_assert(offsetof(TIDELINK_REGS_TypeDef, PAIR_BASE_ADDR) == 0x000,
                "PAIR_BASE_ADDR offset mismatch");

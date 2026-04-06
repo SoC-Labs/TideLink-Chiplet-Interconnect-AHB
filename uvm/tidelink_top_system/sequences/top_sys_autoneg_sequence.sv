@@ -112,7 +112,7 @@ class top_sys_autoneg_sequence extends uvm_sequence #(apb_master_transaction);
 
     while (!nego_done && !nego_error && (poll_count < max_poll_cycles)) begin
       // Wait between polls
-      repeat (poll_interval) @(posedge p_sequencer.vif.pclk);
+      #(poll_interval * 10ns);
 
       `uvm_create(rd_txn)
       rd_txn.addr  = 15'h2000 + REG_NEGO_STATUS[14:0];

@@ -198,8 +198,12 @@ VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_cam.sv
 VCS_FLAGS += -y $(DEPS_DIR)/logical/i2c/rtl
 VCS_FLAGS += +libext+.v
 
-# Chiplet controller top (Wlink wrapper)
+# Autonegotiation and chiplet controller top (Wlink wrapper)
+VCS_FLAGS += $(DEPS_DIR)/logical/top/tidelink_autoneg.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
+
+# Performance counter
+VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
 
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv

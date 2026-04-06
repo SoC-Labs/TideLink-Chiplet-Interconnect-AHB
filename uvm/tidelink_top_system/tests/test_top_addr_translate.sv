@@ -30,8 +30,8 @@ class test_top_addr_translate extends tidelink_top_system_base_test;
   // Helper: write an address translator register via unified APB port
   // Address translator is at APB region 0x4000 (paddr[14:13] = 2'b10)
   task write_adr_reg(side_t side, bit [31:0] addr, bit [31:0] data);
-    apb_write_sequence wr_seq;
-    wr_seq = apb_write_sequence::type_id::create("adr_wr");
+    integration_cfg_write_sequence wr_seq;
+    wr_seq = integration_cfg_write_sequence::type_id::create("adr_wr");
     wr_seq.addr = 15'h4000 | addr[12:0];
     wr_seq.data = data;
     if (side == SIDE_A)
@@ -42,26 +42,14 @@ class test_top_addr_translate extends tidelink_top_system_base_test;
 
   // Helper: read an address translator register via unified APB port
   task read_adr_reg(side_t side, bit [31:0] addr, output bit [31:0] data);
-    apb_read_sequence rd_seq;
-    rd_seq = apb_read_sequence::type_id::create("adr_rd");
+    integration_cfg_read_sequence rd_seq;
+    rd_seq = integration_cfg_read_sequence::type_id::create("adr_rd");
     rd_seq.addr = 15'h4000 | addr[12:0];
     if (side == SIDE_A)
       rd_seq.start(env.a_apb_agt.sequencer);
     else
       rd_seq.start(env.b_apb_agt.sequencer);
     data = rd_seq.rdata;
-  endtask
-
-  // Helper: write to ahb_sub (regular AHB path through Wlink)
-  task write_ahb_sub(side_t side, bit [31:0] addr, bit [31:0] data);
-    top_sys_ahb_sub_write_sequence wr_seq;
-    wr_seq = top_sys_ahb_sub_write_sequence::type_id::create("sub_wr");
-    wr_seq.addr = addr;
-    wr_seq.data = data;
-    if (side == SIDE_A)
-      wr_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
-    else
-      wr_seq.start(env.b_sub_ahb_sys_env.master[0].sequencer);
   endtask
 
   virtual task main_phase(uvm_phase phase);

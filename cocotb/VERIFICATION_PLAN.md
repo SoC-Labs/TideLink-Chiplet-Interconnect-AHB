@@ -279,6 +279,60 @@ The servo test suite has been updated to reflect servo area optimisations:
 
 See `cocotb/tidelink_ptp_servo/SERVO_OPT_VPLAN.md` for the full servo optimisation verification plan.
 
+### 10. tidelink_tidechart (TideChart / PUF Integration Tests)
+
+Tests target the TideChart AXI-Stream interface (`tc_axis_*`) on `tidelink_top` and the PUF
+SRAM read mechanism in `tidelink_fc_adapter`.
+
+#### 10a. PUF Local Read Handler Tests
+
+| ID      | Test Name                           | Description                                                                 | Status |
+|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
+| TC-01   | PUF read single word                | Send PUF_READ_REQ (subtype=0x0020), verify PUF_READ_RSP (subtype=0x0021) on tc_axis_tx with correct SRAM data | New |
+| TC-02   | PUF read multiple addresses         | Issue PUF_READ_REQ for several SRAM addresses, verify each returns correct data | New |
+| TC-03   | PUF read local only                 | Verify PUF_READ_REQ does not produce any FC TX activity (no die-to-die traffic) | New |
+| TC-04   | PUF read does not appear on tc_axis_tx as REQ | Verify PUF_READ_REQ is intercepted locally and not forwarded to tc_axis_tx | New |
+| TC-05   | PUF read after SRAM write           | Write known data to SRAM via FIFO path, then PUF read same address — returns written data (not PUF entropy) | New |
+
+#### 10b. Remote PKT_EXT Forwarding Tests
+
+| ID      | Test Name                           | Description                                                                 | Status |
+|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
+| TC-06   | PKT_EXT RX to tc_axis_tx           | Inject PKT_EXT FC word on FC RX, verify it appears on tc_axis_tx_tvalid/tdata | New |
+| TC-07   | PKT_EXT tc_axis_rx to FC TX        | Drive PKT_EXT on tc_axis_rx, verify it appears on FC TX interface           | New |
+| TC-08   | PKT_EXT round-trip                  | Send PKT_EXT through FC TX, loopback, verify arrival on tc_axis_tx          | New |
+| TC-09   | PKT_EXT subtype preserved           | Verify subtype field is preserved end-to-end for non-PUF subtypes           | New |
+| TC-10   | PKT_EXT payload integrity           | Randomised payloads, verify bit-exact preservation                          | New |
+| TC-11   | PKT_EXT concurrent with FIFO_DATA   | Send PKT_EXT and FIFO_DATA simultaneously, verify both paths operate correctly | New |
+
+#### 10c. SRAM Arbiter Priority Tests
+
+| ID      | Test Name                           | Description                                                                 | Status |
+|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
+| TC-12   | FC write priority over AHB read     | Concurrent FC write and CPU AHB read, verify FC completes first (CPU stalled) | New |
+| TC-13   | FC write priority over PUF read     | Concurrent FC write and PUF read, verify FC completes first (PUF stalled)   | New |
+| TC-14   | AHB priority over PUF read          | Concurrent AHB read and PUF read, verify AHB completes first               | New |
+| TC-15   | PUF read completes when idle        | No FC or AHB activity, verify PUF read completes without stall              | New |
+| TC-16   | Sustained FC writes delay PUF       | Burst of FC writes during PUF read, verify PUF eventually completes         | New |
+
+#### 10d. tc_axis Backpressure Tests
+
+| ID      | Test Name                           | Description                                                                 | Status |
+|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
+| TC-17   | tc_axis_tx backpressure             | Deassert tc_axis_tx_tready, verify PKT_EXT held and FC RX stalled           | New |
+| TC-18   | tc_axis_tx tready reassert          | Deassert then reassert tready, verify held PKT_EXT delivered correctly      | New |
+| TC-19   | tc_axis_rx backpressure             | Drive tc_axis_rx_tvalid while TC TX arbiter is busy, verify tready deasserts | New |
+| TC-20   | tc_axis_rx back-to-back             | Two consecutive PKT_EXT packets on tc_axis_rx, verify both transmitted      | New |
+
+#### 10e. PUF Isolation Tests
+
+| ID      | Test Name                           | Description                                                                 | Status |
+|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
+| TC-21   | PUF does not corrupt FIFO pointers  | Issue PUF reads, verify FIFO write_ptr and read_ptr unchanged               | New |
+| TC-22   | PUF does not corrupt credit count   | Issue PUF reads, verify credit_count unchanged                              | New |
+| TC-23   | PUF does not affect FIFO data       | Write packet to FIFO, PUF read different address, read back FIFO packet — data intact | New |
+| TC-24   | FIFO operation after PUF reads      | Complete PUF reads, then full FIFO write/read cycle, verify normal operation | New |
+
 ## Known Bugs
 
 ### BUG-002: No credit underflow protection

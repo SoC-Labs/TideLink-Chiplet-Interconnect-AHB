@@ -101,16 +101,25 @@ module tidelink_fc_adapter #(
     output wire                     servo_fc_ready,
 
     // --------------------------------------------------------------------------
-    // Extension FC Port (for TideChart or other external protocol modules)
+    // TideChart AXI-Stream Port (for TideChart or other external modules)
     // Packets with pkt_type=2'b10 are routed to/from this port.
+    // Subtype 0x0020 (PUF_READ_REQ) is handled locally, not sent over FC.
     // --------------------------------------------------------------------------
-    input  wire                     ext_fc_tx_valid,
-    input  wire   [FC_DATA_W-1:0]   ext_fc_tx_data,
-    output wire                     ext_fc_tx_ready,
+    input  wire                     tc_axis_tx_tvalid,
+    input  wire   [FC_DATA_W-1:0]   tc_axis_tx_tdata,
+    output wire                     tc_axis_tx_tready,
 
-    output wire                     ext_fc_rx_valid,
-    output wire   [FC_DATA_W-1:0]   ext_fc_rx_data,
-    input  wire                     ext_fc_rx_accept,
+    output reg                      tc_axis_rx_tvalid,
+    output reg    [FC_DATA_W-1:0]   tc_axis_rx_tdata,
+    input  wire                     tc_axis_rx_tready,
+
+    // --------------------------------------------------------------------------
+    // PUF SRAM Read Interface (to tidelink_fifo_mem, for local PUF reads)
+    // --------------------------------------------------------------------------
+    output reg  [RAM_ADDR_W-3:0]    puf_addr,
+    output reg                      puf_req,
+    input  wire [31:0]              puf_rdata,
+    input  wire                     puf_ack,
 
     // --------------------------------------------------------------------------
     // FC Node Interface (to Wlink TideLink FC node)
@@ -130,6 +139,10 @@ module tidelink_fc_adapter #(
     localparam [1:0] PKT_FIFO_DATA = 2'b00;
     localparam [1:0] PKT_SIDEBAND  = 2'b01;
     localparam [1:0] PKT_EXT       = 2'b10;  // Extension (TideChart etc.)
+
+    // TideChart PUF subtypes (local-only, never sent over FC)
+    localparam [13:0] SUB_PUF_READ_REQ = 14'h0020;
+    localparam [13:0] SUB_PUF_READ_RSP = 14'h0021;
 
     // AHB constants
     localparam [1:0] HTRANS_IDLE   = 2'b00;
@@ -243,12 +256,81 @@ module tidelink_fc_adapter #(
     wire sideband_starving = (sideband_burst_r >= SB_CNT_W'(MAX_SIDEBAND_BURST))
                              && tx_fc_valid;
 
+    // -------------------------------------------------------------------------
+    // TideChart TX path: split local PUF requests from remote FC packets
+    // -------------------------------------------------------------------------
+    wire [13:0] tc_tx_subtype = tc_axis_tx_tdata[45:32];
+    wire        tc_tx_is_puf  = tc_axis_tx_tvalid && (tc_tx_subtype == SUB_PUF_READ_REQ);
+    wire        tc_tx_is_remote = tc_axis_tx_tvalid && !tc_tx_is_puf;
+
+    // -------------------------------------------------------------------------
+    // Local PUF read handler
+    // Routes PUF_READ_REQ to SRAM, returns PUF_READ_RSP on tc_axis_rx
+    // -------------------------------------------------------------------------
+    typedef enum logic [1:0] {
+        PUF_IDLE    = 2'b00,
+        PUF_READ    = 2'b01,
+        PUF_RESPOND = 2'b10
+    } puf_state_t;
+
+    puf_state_t puf_state_r;
+    logic [31:0] puf_rdata_r;
+    logic        puf_rsp_valid_r;
+    logic [FC_DATA_W-1:0] puf_rsp_data_r;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            puf_state_r     <= PUF_IDLE;
+            puf_req         <= 1'b0;
+            puf_addr        <= '0;
+            puf_rdata_r     <= '0;
+            puf_rsp_valid_r <= 1'b0;
+            puf_rsp_data_r  <= '0;
+        end else begin
+            case (puf_state_r)
+                PUF_IDLE: begin
+                    puf_rsp_valid_r <= 1'b0;
+                    if (tc_tx_is_puf) begin
+                        // Extract word address from payload
+                        puf_addr    <= tc_axis_tx_tdata[RAM_ADDR_W-3:0];
+                        puf_req     <= 1'b1;
+                        puf_state_r <= PUF_READ;
+                    end
+                end
+
+                PUF_READ: begin
+                    if (puf_ack) begin
+                        puf_req         <= 1'b0;
+                        puf_rdata_r     <= puf_rdata;
+                        puf_rsp_valid_r <= 1'b1;
+                        puf_rsp_data_r  <= {PKT_EXT, SUB_PUF_READ_RSP, puf_rdata};
+                        puf_state_r     <= PUF_RESPOND;
+                    end
+                end
+
+                PUF_RESPOND: begin
+                    if (tc_axis_rx_tready) begin
+                        puf_rsp_valid_r <= 1'b0;
+                        puf_state_r     <= PUF_IDLE;
+                    end
+                end
+
+                default: puf_state_r <= PUF_IDLE;
+            endcase
+        end
+    end
+
+    // TideChart TX tready: PUF requests accepted by local handler;
+    // remote packets accepted by FC arbiter
+    assign tc_axis_tx_tready = tc_tx_is_puf ? (puf_state_r == PUF_IDLE) :
+                               (skid_can_accept & ~sideband_starving);
+
     // Track consecutive sideband grants
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             sideband_burst_r <= '0;
         end else if (arb_valid && skid_can_accept) begin
-            if (rtn_fc_valid || servo_fc_valid || ext_fc_tx_valid) begin
+            if (rtn_fc_valid || servo_fc_valid || tc_tx_is_remote) begin
                 if (!sideband_starving && sideband_burst_r < SB_CNT_W'(MAX_SIDEBAND_BURST))
                     sideband_burst_r <= sideband_burst_r + SB_CNT_W'(1);
             end else begin
@@ -258,13 +340,13 @@ module tidelink_fc_adapter #(
     end
 
     // Arbiter output: extension + sideband has priority unless starvation limit reached
-    // Priority: ext > returner > servo > TX aperture
-    wire ext_grant = ext_fc_tx_valid && !sideband_starving;
-    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || ext_fc_tx_valid) && !sideband_starving;
-    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | ext_fc_tx_valid;
-    wire [FC_DATA_W-1:0] arb_data  = ext_grant                                ? ext_fc_tx_data :
-                                     (sideband_grant && rtn_fc_valid)          ? rtn_fc_word    :
-                                     (sideband_grant && servo_fc_valid)        ? servo_fc_data  :
+    // Priority: tc_axis (remote only) > returner > servo > TX aperture
+    wire ext_grant = tc_tx_is_remote && !sideband_starving;
+    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || tc_tx_is_remote) && !sideband_starving;
+    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | tc_tx_is_remote;
+    wire [FC_DATA_W-1:0] arb_data  = ext_grant                                ? tc_axis_tx_tdata :
+                                     (sideband_grant && rtn_fc_valid)          ? rtn_fc_word      :
+                                     (sideband_grant && servo_fc_valid)        ? servo_fc_data    :
                                      tx_fc_word;
 
     // Skid buffer registers
@@ -295,10 +377,7 @@ module tidelink_fc_adapter #(
     assign tl_fc_a2l_data  = skid_data_r;
 
     // Servo FC ready: can enter arbiter when skid accepts and no higher-priority source active
-    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~ext_fc_tx_valid & ~sideband_starving;
-
-    // Extension FC ready: highest sideband priority, can enter when skid accepts
-    assign ext_fc_tx_ready = skid_can_accept & ~sideband_starving;
+    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~tc_tx_is_remote & ~sideband_starving;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)
@@ -334,8 +413,9 @@ module tidelink_fc_adapter #(
     wire rx_is_ext  = (rx_pkt_type == PKT_EXT);
 
     // Ready from the active target port (direct for FIFO, APB for config)
+    // For ext packets, tc_axis_rx_tready is checked only when no PUF response is pending
     wire rx_active_ready = rx_is_fifo ? fc_rx_fifo_ready :
-                           rx_is_ext  ? ext_fc_rx_accept  :
+                           rx_is_ext  ? (tc_axis_rx_tready & ~puf_rsp_valid_r) :
                                         fc_rx_cfg_pready;
 
     // Accept FC RX data when idle and a word is available
@@ -353,8 +433,9 @@ module tidelink_fc_adapter #(
                 rx_fc_word_r <= tl_fc_l2a_data;
                 rx_pending_r <= 1'b1;
             end else if ((rx_state_r == RX_DATA_PHASE && rx_active_ready) ||
-                        (rx_state_r == RX_ADDR_PHASE && rx_is_fifo && fc_rx_fifo_ready)) begin
-                // Clear pending: SIDEBAND completes in DATA_PHASE, FIFO completes in ADDR_PHASE
+                        (rx_state_r == RX_ADDR_PHASE && rx_is_fifo && fc_rx_fifo_ready) ||
+                        (rx_state_r == RX_ADDR_PHASE && rx_is_ext && tc_axis_rx_tready && !puf_rsp_valid_r)) begin
+                // Clear pending: SIDEBAND in DATA_PHASE, FIFO/EXT in ADDR_PHASE
                 rx_pending_r <= 1'b0;
             end
         end
@@ -381,8 +462,8 @@ module tidelink_fc_adapter #(
                     if (fc_rx_fifo_ready)
                         rx_state_next = RX_IDLE;
                 end else if (rx_is_ext) begin
-                    // Extension packet: single-cycle handoff to ext port
-                    if (ext_fc_rx_accept)
+                    // Extension packet: single-cycle handoff (wait for PUF response to clear)
+                    if (tc_axis_rx_tready && !puf_rsp_valid_r)
                         rx_state_next = RX_IDLE;
                 end else begin
                     // SIDEBAND APB setup phase → access phase
@@ -421,9 +502,19 @@ module tidelink_fc_adapter #(
     assign fc_rx_cfg_penable = !rx_is_fifo && !rx_is_ext && (rx_state_r == RX_DATA_PHASE);
 
     // -------------------------------------------------------------------------
-    // RX Extension Port — single-cycle handoff for PKT_EXT packets
+    // TideChart RX AXI-Stream — mux remote PKT_EXT with local PUF responses
+    // PUF responses have priority (they're time-sensitive at boot)
     // -------------------------------------------------------------------------
-    assign ext_fc_rx_valid = (rx_state_r == RX_ADDR_PHASE) && rx_is_ext;
-    assign ext_fc_rx_data  = rx_fc_word_r;
+    wire remote_ext_valid = (rx_state_r == RX_ADDR_PHASE) && rx_is_ext;
+
+    always @(*) begin
+        if (puf_rsp_valid_r) begin
+            tc_axis_rx_tvalid = 1'b1;
+            tc_axis_rx_tdata  = puf_rsp_data_r;
+        end else begin
+            tc_axis_rx_tvalid = remote_ext_valid;
+            tc_axis_rx_tdata  = rx_fc_word_r;
+        end
+    end
 
 endmodule

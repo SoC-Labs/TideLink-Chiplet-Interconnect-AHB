@@ -48,6 +48,21 @@ module tb_top #(
     input  logic  [SYS_DATA_W-1:0]  fc_rx_cfg_prdata,
     input  logic                     fc_rx_cfg_pready,
 
+    // ── TideChart AXI-Stream Interface ──────────────────────────────────
+    input  logic                     tc_axis_tx_tvalid,
+    input  logic   [FC_DATA_W-1:0]  tc_axis_tx_tdata,
+    output logic                     tc_axis_tx_tready,
+
+    output logic                     tc_axis_rx_tvalid,
+    output logic   [FC_DATA_W-1:0]  tc_axis_rx_tdata,
+    input  logic                     tc_axis_rx_tready,
+
+    // ── PUF SRAM Read Interface ─────────────────────────────────────────
+    output logic   [RAM_ADDR_W-3:0] puf_addr,
+    output logic                     puf_req,
+    input  logic   [31:0]            puf_rdata,
+    input  logic                     puf_ack,
+
     // ── FC Node Interface ────────────────────────────────────────────────
     output logic                     tl_fc_a2l_valid,
     output logic   [FC_DATA_W-1:0]  tl_fc_a2l_data,
@@ -113,13 +128,19 @@ module tb_top #(
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
 
-        // Extension FC port (not tested at unit level, tied off)
-        .ext_fc_tx_valid   (1'b0),
-        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
-        .ext_fc_tx_ready   (),
-        .ext_fc_rx_valid   (),
-        .ext_fc_rx_data    (),
-        .ext_fc_rx_accept  (1'b1),
+        // TideChart AXI-Stream
+        .tc_axis_tx_tvalid   (tc_axis_tx_tvalid),
+        .tc_axis_tx_tdata    (tc_axis_tx_tdata),
+        .tc_axis_tx_tready   (tc_axis_tx_tready),
+        .tc_axis_rx_tvalid   (tc_axis_rx_tvalid),
+        .tc_axis_rx_tdata    (tc_axis_rx_tdata),
+        .tc_axis_rx_tready   (tc_axis_rx_tready),
+
+        // PUF SRAM read interface
+        .puf_addr          (puf_addr),
+        .puf_req           (puf_req),
+        .puf_rdata         (puf_rdata),
+        .puf_ack           (puf_ack),
 
         // FC Node
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),

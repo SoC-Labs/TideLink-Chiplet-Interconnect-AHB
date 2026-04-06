@@ -453,12 +453,12 @@ module tb_top #(
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
 
-        .ext_fc_tx_valid   (1'b0),
-        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
-        .ext_fc_tx_ready   (),
-        .ext_fc_rx_valid   (),
-        .ext_fc_rx_data    (),
-        .ext_fc_rx_accept  (1'b1),
+        .tc_axis_tx_tvalid   (1'b0),
+        .tc_axis_tx_tdata    ({FC_DATA_W{1'b0}}),
+        .tc_axis_tx_tready   (),
+        .tc_axis_rx_tvalid   (),
+        .tc_axis_rx_tdata    (),
+        .tc_axis_rx_tready  (1'b1),
 
         // FC node interface
         .tl_fc_a2l_valid   (a_fc_a2l_valid),
@@ -640,12 +640,12 @@ module tb_top #(
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
 
-        .ext_fc_tx_valid   (1'b0),
-        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
-        .ext_fc_tx_ready   (),
-        .ext_fc_rx_valid   (),
-        .ext_fc_rx_data    (),
-        .ext_fc_rx_accept  (1'b1),
+        .tc_axis_tx_tvalid   (1'b0),
+        .tc_axis_tx_tdata    ({FC_DATA_W{1'b0}}),
+        .tc_axis_tx_tready   (),
+        .tc_axis_rx_tvalid   (),
+        .tc_axis_rx_tdata    (),
+        .tc_axis_rx_tready  (1'b1),
 
         // FC node interface
         .tl_fc_a2l_valid   (b_fc_a2l_valid),

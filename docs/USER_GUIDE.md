@@ -520,6 +520,70 @@ ptp_irq handler:
 | 0x044 | HW_SYNC_INTERVAL | RW | Sync interval in nanoseconds [29:0] |
 | 0x048 | HW_SYNC_STATUS | RO | Bit 0: active, Bit 1: busy, [17:2]: seq_num |
 
+## TideChart Integration
+
+TideLink provides an AXI-Stream interface (`tc_axis_*`) for connecting an external TideChart controller. TideChart handles chiplet-level orchestration protocols; TideLink transports PKT_EXT packets (FC pkt_type=2'b10) between TideChart and the die-to-die link.
+
+### Wiring the TideChart Controller
+
+Connect the `tc_axis_*` ports to your TideChart controller instance:
+
+```verilog
+tidelink_top #(...) u_tidelink (
+    // ... other ports ...
+
+    // TideChart AXI-Stream TX (TideLink -> TideChart controller)
+    .tc_axis_tx_tvalid (tc_tx_tvalid),
+    .tc_axis_tx_tdata  (tc_tx_tdata),    // 48-bit FC word
+    .tc_axis_tx_tready (tc_tx_tready),
+
+    // TideChart AXI-Stream RX (TideChart controller -> TideLink)
+    .tc_axis_rx_tvalid (tc_rx_tvalid),
+    .tc_axis_rx_tdata  (tc_rx_tdata),    // 48-bit FC word
+    .tc_axis_rx_tready (tc_rx_tready),
+
+    // ...
+);
+```
+
+If TideChart is not used, tie the RX inputs to inactive:
+
+```verilog
+    .tc_axis_rx_tvalid (1'b0),
+    .tc_axis_rx_tdata  (48'h0),
+```
+
+The TX outputs (`tc_axis_tx_tvalid`, `tc_axis_tx_tdata`) can be left unconnected.
+
+### PKT_EXT Packet Format
+
+PKT_EXT packets use the standard 48-bit FC word layout:
+
+```
+[47:46]  pkt_type    = 2'b10 (PKT_EXT)
+[45:40]  subtype     (6 bits) — extension protocol identifier
+[39:32]  reserved    (8 bits)
+[31:0]   payload     (32 bits)
+```
+
+The TideChart controller is responsible for interpreting and generating the subtype and payload fields.
+
+### PUF Boot Entropy
+
+TideLink supports reading uninitialized SRAM data as a Physical Unclonable Function (PUF) entropy source. The TideChart controller (or boot firmware) issues PUF_READ_REQ packets to sample the SRAM power-up state before the FIFO is enabled.
+
+**PUF read flow:**
+
+1. TideChart controller sends a PUF_READ_REQ (subtype=0x0020, payload[7:0]=SRAM word address) via `tc_axis_rx_*`.
+2. The FC adapter intercepts this packet locally and reads the addressed SRAM word.
+3. A PUF_READ_RSP (subtype=0x0021, payload=SRAM data) appears on `tc_axis_tx_*`.
+
+**Important constraints:**
+
+- PUF reads are **local only** — they never cross the die-to-die link and do not consume FC node bandwidth or credits.
+- PUF data is only valid before software writes to the SRAM. Once the FIFO is enabled and packets begin flowing, the SRAM contents are overwritten. Run PUF reads before FIFO initialisation (Phase 2 of the bring-up sequence).
+- PUF reads have the lowest SRAM arbiter priority. Under heavy traffic they may be delayed, but this is not a concern at boot when the FIFO is idle.
+
 ## PYNQ Hardware Testing
 
 For Pynq-Z2 boards with TideLink synthesised into the FPGA fabric:

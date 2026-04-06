@@ -124,7 +124,15 @@ module tidelink_fifo #(
     input  wire                    fc_wr_write,
     input  wire  [RAM_ADDR_W-1:0] fc_wr_addr,
     input  wire  [SYS_DATA_W-1:0] fc_wr_wdata,
-    output wire                    fc_wr_ready
+    output wire                    fc_wr_ready,
+
+    // --------------------------------------------------------------------------
+    // PUF SRAM Read Interface (lowest priority, for TideChart boot entropy)
+    // --------------------------------------------------------------------------
+    input  wire [RAM_ADDR_W-3:0]   puf_addr,
+    input  wire                    puf_req,
+    output wire [RAM_DATA_W-1:0]   puf_rdata,
+    output wire                    puf_ack
 );
 
     // --------------------------------------------------------------------------
@@ -203,7 +211,12 @@ module tidelink_fifo #(
         .fc_wr_write            (fc_wr_write),
         .fc_wr_addr             (fc_wr_addr),
         .fc_wr_wdata            (fc_wr_wdata),
-        .fc_wr_ready            (fc_wr_ready)
+        .fc_wr_ready            (fc_wr_ready),
+        // PUF SRAM read interface
+        .puf_addr               (puf_addr),
+        .puf_req                (puf_req),
+        .puf_rdata              (puf_rdata),
+        .puf_ack                (puf_ack)
     );
 
     // --------------------------------------------------------------------------

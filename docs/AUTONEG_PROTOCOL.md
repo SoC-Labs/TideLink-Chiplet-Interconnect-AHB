@@ -252,51 +252,63 @@ When an SRAM bitcell powers on without being written, it settles to a logic 0 or
 
 This property is the foundation of **SRAM PUF** (Physical Unclonable Function) technology, widely used in secure key generation and device fingerprinting.
 
-#### 3.6.2 The `tidelink_sram_puf` Block
+#### 3.6.2 Reuse of the TideChart PUF Sampler
 
-A small optional hardware block (`tidelink_sram_puf`, ~30-40 lines of RTL) reads `PUF_SAMPLE_WORDS` words (default 16) from a fixed region of the TideLink FIFO SRAM immediately after `poresetn` deasserts, before the CPU or any other logic writes to the SRAM. It XOR-folds the read values into a 16-bit priority output.
+The TideChart project already provides a fully implemented and tested SRAM PUF sampler (`tidechart_puf_sampler.sv`, ~149 lines) that reads power-on SRAM state via the TideLink FC sideband. This module is directly reusable for auto-negotiation priority generation — no new PUF hardware is needed.
 
-**Operation:**
+**Existing PUF data path:**
 
 ```
-1. poresetn deasserts
-2. tidelink_sram_puf asserts SRAM chip-select and reads word 0
-3. Accumulator = read_data[15:0] ^ read_data[31:16]
-4. Read word 1; accumulator ^= read_data[15:0] ^ read_data[31:16]
-5. ... repeat for PUF_SAMPLE_WORDS words ...
-6. Assert puf_valid; output puf_priority[15:0] = accumulator
-7. Hold output stable indefinitely (until next poresetn)
+tidechart_puf_sampler
+  → AXI-Stream TX: PUF_READ_REQ (subtype 0x0020, payload = SRAM word address)
+    → tidelink_fc_adapter (local interception — never crosses die-to-die link)
+      → reads SRAM word at addressed location
+      → synthesises PUF_READ_RSP (subtype 0x0021, payload = SRAM data)
+    → AXI-Stream RX: response returned to sampler
+  → XOR-folds all responses into 32-bit accumulator
+  → puf_seed[15:0] = acc[31:16] ^ acc[15:0]
+  → puf_ready asserts when complete
 ```
 
-Total time: `PUF_SAMPLE_WORDS + 2` clock cycles (~180 ns at 100 MHz with 16 words). This completes well before the `NEGO_BASE_DELAY` window (default 20 µs), so the priority is available before the negotiation timer starts.
+**Key properties (from `tidechart_puf_sampler.sv`):**
 
-**Interface:**
+| Property | Value |
+|----------|-------|
+| SRAM words sampled | `PUF_NUM_WORDS` parameter (default 16) |
+| Algorithm | 32-bit XOR accumulate, then fold 32→16 bits |
+| Completion time | ~3 × `PUF_NUM_WORDS` cycles (~48 cycles at default) |
+| Output signals | `puf_seed[15:0]`, `puf_ready`, `puf_raw[31:0]` |
+| SRAM access | Local only via FC adapter — no link bandwidth consumed |
+| SRAM modification | Read-only — contents preserved |
 
-```systemverilog
-module tidelink_sram_puf #(
-    parameter PUF_SAMPLE_WORDS = 16,   // words to read from SRAM
-    parameter PUF_BASE_ADDR    = 14'h0 // SRAM start address (word-aligned)
-)(
-    input  wire        clk,
-    input  wire        poresetn,
-    // SRAM read port (directly accesses tidelink_sram via a mux)
-    output logic       puf_sram_cs,
-    output logic [11:0] puf_sram_addr,   // word address
-    input  wire [31:0] puf_sram_rdata,
-    // Priority output
-    output logic       puf_valid,
-    output logic [15:0] puf_priority
-);
-```
+**Integration with auto-negotiation:**
 
-**SRAM Access Arbitration:**
+The `tidelink_autoneg` FSM receives `puf_seed[15:0]` and `puf_ready` from the existing TideChart PUF sampler (routed through `tidelink_top`). When `NEGO_CFG[NEGO_PRI_SEL]=2`:
 
-The PUF block needs read access to the FIFO SRAM before the FIFO controller starts using it. Since `wlink_por_reset` holds Wlink in reset until `role_locked`, and auto-negotiation completes before role lock, the FIFO SRAM is idle during the PUF sampling window. The PUF block can drive the SRAM read port directly during this window, with a simple mux that gives PUF priority when `!puf_valid` and normal FIFO access when `puf_valid`.
+1. The autoneg FSM waits for `puf_ready` before entering `NEGO_WAIT` (the PUF completes in ~48 cycles, well before `NEGO_BASE_DELAY` of 2000 cycles).
+2. `puf_seed[15:0]` is used as the negotiation priority value.
+3. No new SRAM access logic, no new mux on the SRAM port, no new RTL module.
 
-The PUF sampling window is guaranteed to complete before any FIFO write because:
-1. Wlink is in reset → no FC adapter writes to the FIFO
-2. The CPU has no reason to write to the FIFO before role lock
-3. The PUF block completes in ~18 cycles, well before the `NEGO_BASE_DELAY` of 2000 cycles
+**Existing test coverage** (from `cocotb/tidechart_puf_sampler/test_tidechart_puf_sampler.py`):
+
+| Test | Description |
+|------|-------------|
+| `test_reset` | `puf_ready=0` after reset |
+| `test_completes` | Sampling completes within 100 cycles |
+| `test_known_data` | XOR-fold correctness for 16 known values |
+| `test_different_data` | Different SRAM patterns → different seeds |
+| `test_all_zeros` | All-zero SRAM → seed 0x0000 |
+
+**APB visibility** (from `tidechart_apb_regs.sv`):
+
+The PUF seed is also readable via APB at `TC_PUF_STATUS` (0x30): bit [16] = `puf_ready`, bits [15:0] = `puf_seed`. The full 32-bit accumulator is at `TC_PUF_RAW` (0x34). Software can read these for diagnostics or to implement a firmware-based priority override.
+
+**Timing guarantee:**
+
+The PUF sampling window completes before negotiation starts because:
+1. Wlink is in reset → no FC adapter writes to the FIFO → SRAM is idle
+2. PUF_READ_REQ is handled locally by the FC adapter (no link dependency)
+3. `NEGO_BASE_DELAY` (default 2000 cycles) provides >40× margin over PUF completion (~48 cycles)
 
 #### 3.6.3 Collision Probability
 
@@ -402,7 +414,7 @@ Extending REGISTER_MAP.md Region 4:
 | `nego_priority_i[15:0]` input port | 16 wires | New input to `axi_chiplet_controller` and `tidelink_top` for OTP/UID priority. |
 | `nego_error_irq` output | 1 wire | New interrupt output. |
 | Modified `role_effective` mux | ~5 LUTs | 3-way mux: pre-lock-negotiation / pre-lock-strap / post-lock (see Section 6). |
-| `tidelink_sram_puf` (optional) | ~30-40 LUTs, ~20 FFs | SRAM PUF entropy source. Reads `PUF_SAMPLE_WORDS` words from FIFO SRAM at POR, XOR-folds to 16 bits. Includes SRAM read port mux. Only instantiated when SRAM PUF priority source is needed. |
+| `tidechart_puf_sampler` (reused) | 0 (already present) | Existing TideChart PUF sampler. Already instantiated when TideChart is enabled. Provides `puf_seed[15:0]` and `puf_ready` outputs. No new RTL required — only wiring of existing signals to the autoneg FSM. |
 
 ### 5.3 I2C Transaction Sequencing by the FSM
 
@@ -650,9 +662,8 @@ Test the `tidelink_autoneg` module in isolation:
 | NEGO-U06 | `nego_force_lock=0`: verify FSM sets `role_cfg_reg` but does NOT set `role_lock_reg`. | `role_locked_o` remains 0 after NEGO_DONE until firmware writes ROLE_CFG[1]. |
 | NEGO-U07 | Register read-back: read all NEGO_* registers after negotiation completes. | Values match expected state. |
 | NEGO-U08 | I2C master reset sequencing: verify `i2c_mst_reset` deasserts at least 16 cycles before first AXI-Lite write in NEGO_CLAIM. | No AXI-Lite transaction issues within the dead-zone window. |
-| NEGO-U09 | SRAM PUF: `nego_pri_sel=2`. Verify `tidelink_sram_puf` reads `PUF_SAMPLE_WORDS` from SRAM after POR, produces `puf_valid=1`, and output is non-zero. | `puf_priority != 0` (vanishingly unlikely all 512 bits are symmetric). Priority stable after `puf_valid`. |
-| NEGO-U10 | SRAM PUF timing: verify PUF sampling completes before `NEGO_BASE_DELAY` expires. | `puf_valid` asserts within `PUF_SAMPLE_WORDS + 2` cycles of POR. |
-| NEGO-U11 | SRAM PUF FIFO isolation: verify PUF block does not write to SRAM and releases the read port after sampling. | SRAM contents unchanged after PUF; normal FIFO operations succeed after negotiation. |
+| NEGO-U09 | PUF priority source: `nego_pri_sel=2`. Inject `puf_ready=1`, `puf_seed=0x1234` on the autoneg FSM inputs. Verify FSM uses 0x1234 as the backoff priority. | Backoff delay corresponds to priority 0x1234. |
+| NEGO-U10 | PUF not-ready stall: `nego_pri_sel=2`, hold `puf_ready=0`. Verify FSM waits in `NEGO_INIT` until `puf_ready` asserts. | FSM does not enter `NEGO_WAIT` while `puf_ready=0`. |
 
 ### 10.2 Integration Tests: Paired `axi_chiplet_controller`
 

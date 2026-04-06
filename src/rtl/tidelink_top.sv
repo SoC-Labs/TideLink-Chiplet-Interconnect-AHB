@@ -237,16 +237,17 @@ module tidelink_top #(
     output wire                     wlink_irq,
 
     // --------------------------------------------------------------------------
-    // Extension FC Port (for TideChart or other external protocol modules)
+    // TideChart AXI-Stream Port (for TideChart or other external modules)
     // Packets with pkt_type=2'b10 are routed to/from this port.
+    // Subtype 0x0020 (PUF_READ_REQ) is handled locally by the FC adapter.
     // --------------------------------------------------------------------------
-    input  wire                     ext_fc_tx_valid,
-    input  wire    [FC_DATA_W-1:0]  ext_fc_tx_data,
-    output wire                     ext_fc_tx_ready,
+    input  wire                     tc_axis_tx_tvalid,
+    input  wire    [FC_DATA_W-1:0]  tc_axis_tx_tdata,
+    output wire                     tc_axis_tx_tready,
 
-    output wire                     ext_fc_rx_valid,
-    output wire    [FC_DATA_W-1:0]  ext_fc_rx_data,
-    input  wire                     ext_fc_rx_accept,
+    output wire                     tc_axis_rx_tvalid,
+    output wire    [FC_DATA_W-1:0]  tc_axis_rx_tdata,
+    input  wire                     tc_axis_rx_tready,
 
     // --------------------------------------------------------------------------
     // Link active status (Wlink link layer is up and operational)
@@ -521,6 +522,12 @@ module tidelink_top #(
     wire [SYS_DATA_W-1:0]  fc_rx_fifo_wdata;
     wire                    fc_rx_fifo_ready;
 
+    // PUF SRAM read path (FC adapter ↔ FIFO)
+    wire [RAM_ADDR_W-3:0]  puf_addr;
+    wire                    puf_req;
+    wire [31:0]             puf_rdata;
+    wire                    puf_ack;
+
     // FC adapter RX config path — APB-native
     wire [APB_ADDR_W-1:0]  fc_cfg_apb_paddr;
     wire [SYS_DATA_W-1:0]  fc_cfg_apb_pwdata;
@@ -767,7 +774,12 @@ module tidelink_top #(
         .fc_wr_write         (fc_rx_fifo_write),
         .fc_wr_addr          (fc_rx_fifo_addr),
         .fc_wr_wdata         (fc_rx_fifo_wdata),
-        .fc_wr_ready         (fc_rx_fifo_ready)
+        .fc_wr_ready         (fc_rx_fifo_ready),
+        // PUF SRAM read (from FC adapter, for TideChart boot entropy)
+        .puf_addr            (puf_addr),
+        .puf_req             (puf_req),
+        .puf_rdata           (puf_rdata),
+        .puf_ack             (puf_ack)
     );
 
     // =========================================================================
@@ -831,13 +843,19 @@ module tidelink_top #(
         .servo_fc_data     (servo_fc_data),
         .servo_fc_ready    (servo_fc_ready),
 
-        // Extension FC port (for TideChart or other external protocol modules)
-        .ext_fc_tx_valid   (ext_fc_tx_valid),
-        .ext_fc_tx_data    (ext_fc_tx_data),
-        .ext_fc_tx_ready   (ext_fc_tx_ready),
-        .ext_fc_rx_valid   (ext_fc_rx_valid),
-        .ext_fc_rx_data    (ext_fc_rx_data),
-        .ext_fc_rx_accept  (ext_fc_rx_accept),
+        // TideChart AXI-Stream port
+        .tc_axis_tx_tvalid   (tc_axis_tx_tvalid),
+        .tc_axis_tx_tdata    (tc_axis_tx_tdata),
+        .tc_axis_tx_tready   (tc_axis_tx_tready),
+        .tc_axis_rx_tvalid   (tc_axis_rx_tvalid),
+        .tc_axis_rx_tdata    (tc_axis_rx_tdata),
+        .tc_axis_rx_tready   (tc_axis_rx_tready),
+
+        // PUF SRAM read (to FIFO memory)
+        .puf_addr            (puf_addr),
+        .puf_req             (puf_req),
+        .puf_rdata           (puf_rdata),
+        .puf_ack             (puf_ack),
 
         // FC Node interface (to Wlink TideLink FC node)
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),

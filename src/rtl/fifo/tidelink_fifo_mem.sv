@@ -56,7 +56,13 @@ module tidelink_fifo_mem #(
     input  wire                   fc_wr_write,
     input  wire  [RAM_ADDR_W-1:0] fc_wr_addr,
     input  wire  [SYS_DATA_W-1:0] fc_wr_wdata,
-    output wire                   fc_wr_ready
+    output wire                   fc_wr_ready,
+
+    // PUF SRAM read interface (lowest priority, for TideChart boot entropy)
+    input  wire [RAM_ADDR_W-3:0]  puf_addr,
+    input  wire                   puf_req,
+    output wire [RAM_DATA_W-1:0]  puf_rdata,
+    output reg                    puf_ack
 );
 
     // --------------------------------------------------------------------------
@@ -71,15 +77,34 @@ module tidelink_fifo_mem #(
     logic [RAM_ADDR_W-1:0] translated_haddr;
     logic [RAM_ADDR_W-1:0] fc_translated_addr;  // from fifo_ctrl FC write path
 
-    // SRAM arbiter: FC direct writes have priority over AHB
+    // SRAM arbiter: FC direct writes have priority over AHB; PUF reads are lowest
     wire fc_active = fc_wr_valid && fc_wr_write;
     assign fc_wr_ready = 1'b1;  // SRAM completes writes in 1 cycle
 
-    // Final SRAM signals (muxed between FC and AHB paths)
-    wire [RAM_ADDR_W-3:0] sram_addr  = fc_active ? fc_translated_addr[RAM_ADDR_W-1:2] : ahb_sram_addr;
+    // PUF read: lowest priority — only when FC and AHB are both idle
+    wire puf_can_read = puf_req && !fc_active && !ahb_sram_cs;
+
+    // Final SRAM signals (muxed between FC, AHB, and PUF paths)
+    wire [RAM_ADDR_W-3:0] sram_addr  = fc_active    ? fc_translated_addr[RAM_ADDR_W-1:2] :
+                                        ahb_sram_cs  ? ahb_sram_addr :
+                                        puf_can_read ? puf_addr :
+                                                       ahb_sram_addr;
     wire [RAM_DATA_W-1:0] sram_wdata = fc_active ? fc_wr_wdata                        : ahb_sram_wdata;
-    wire            [3:0] sram_wen   = fc_active ? 4'b1111                             : ahb_sram_wen;
-    wire                  sram_cs    = fc_active ? 1'b1                                : ahb_sram_cs;
+    wire            [3:0] sram_wen   = fc_active    ? 4'b1111 :
+                                        puf_can_read ? 4'b0000 :
+                                                       ahb_sram_wen;
+    wire                  sram_cs    = fc_active | ahb_sram_cs | puf_can_read;
+
+    // PUF read data: shared SRAM output, valid one cycle after puf_can_read
+    assign puf_rdata = rdata;
+
+    // PUF ack: registered one cycle after read (SRAM has 1-cycle read latency)
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            puf_ack <= 1'b0;
+        else
+            puf_ack <= puf_can_read;
+    end
 
     // AHB stall: hold hready low when FC write occupies the SRAM
     wire ahb_hready_gated = hready && !fc_active;
@@ -175,7 +200,9 @@ module tidelink_fifo_mem #(
         .AW (RAM_ADDR_W)
     ) u_sram (
         .CLK        (hclk),
-        .ADDR       (fc_active ? fc_translated_addr[RAM_ADDR_W-1:2] : translated_addr),
+        .ADDR       (fc_active    ? fc_translated_addr[RAM_ADDR_W-1:2] :
+                     puf_can_read ? puf_addr :
+                                    translated_addr),
         .WDATA      (sram_wdata),
         .WREN       (sram_wen),
         .CS         (sram_cs),

@@ -344,6 +344,38 @@ The `test_reset_recovery` test covers a mid-FIFO reset on a single side, but no 
 
 **Recommendation**: Add paired reset tests covering unilateral reset during active traffic, bilateral simultaneous reset, and staggered reset with in-flight packets.
 
+## TideChart / PUF Integration
+
+### 36. PUF SRAM Reads Have Lowest Arbiter Priority
+
+**Location**: `tidelink_fifo_mem.sv` — 3-way SRAM arbiter
+
+PUF reads have the lowest priority in the 3-way SRAM arbiter (FC writes > AHB reads/writes > PUF reads). If the FIFO is receiving heavy incoming traffic at boot time (e.g., the remote chiplet begins transmitting before PUF reads complete), PUF reads may be delayed indefinitely.
+
+**Impact**: PUF entropy collection could take significantly longer than expected under concurrent FIFO traffic. In pathological cases, PUF reads may not complete before firmware enables the FIFO, rendering the PUF data invalid.
+
+**Recommendation**: Complete all PUF SRAM reads before enabling the FIFO (Phase 2 of the bring-up sequence). Document that PUF reads must occur during the boot window when no FIFO traffic is active.
+
+### 37. PUF Data Only Valid Before Software Writes to SRAM
+
+**Location**: `tidelink_fc_adapter.sv` — PUF read FSM, `tidelink_fifo_mem.sv` — shared SRAM
+
+The PUF entropy source relies on uninitialized SRAM contents. Once software enables the FIFO and packets are written, the SRAM contents are overwritten with FIFO data. There is no hardware mechanism to reserve a portion of SRAM for PUF use or to detect that PUF data has been invalidated by a FIFO write.
+
+**Impact**: If PUF reads are issued after FIFO traffic has started, the returned data is deterministic FIFO content, not PUF entropy. Software that relies on this data for key generation or device authentication would use predictable values.
+
+**Recommendation**: Enforce in firmware that PUF reads complete before FIFO enable. Consider adding a hardware lock bit that disables PUF reads after the first FIFO write, providing a clear error indication.
+
+### 38. tc_axis_* Interface Has No Flow Control Credits
+
+**Location**: `tidelink_top.sv` — tc_axis_* ports, `tidelink_fc_adapter.sv` — PKT_EXT TX path
+
+The AXI-Stream interface between TideLink and the TideChart controller relies solely on `tready` backpressure for flow control. There is no credit-based scheme, no packet-level acknowledgement, and no timeout mechanism. If the TideChart controller deasserts `tc_axis_tx_tready` for an extended period, incoming PKT_EXT packets from the FC RX path are stalled, which in turn stalls the FC node and may affect FIFO_DATA and SIDEBAND packet reception on shared FC infrastructure.
+
+**Impact**: A slow or unresponsive TideChart controller can back-pressure the entire FC RX path. This is a head-of-line blocking risk.
+
+**Recommendation**: Add a small elastic FIFO (4-8 entries) on the `tc_axis_tx_*` path to decouple PKT_EXT stalls from the FC RX pipeline. Alternatively, add a configurable timeout that drops stalled PKT_EXT packets and sets an error flag.
+
 ## Summary
 
 | # | Severity | Shortcoming |
@@ -383,3 +415,6 @@ The `test_reset_recovery` test covers a mid-FIFO reset on a single side, but no 
 | 33 | Minor | No throughput or latency characterisation tests |
 | 34 | Minor | PTP multi-hop chaining not verified |
 | 35 | Minor | Coordinated chiplet reset sequence not tested |
+| 36 | Minor | PUF SRAM reads have lowest arbiter priority — may be delayed at boot |
+| 37 | Moderate | PUF data only valid before software writes to SRAM |
+| 38 | Moderate | tc_axis_* interface has no flow control credits |

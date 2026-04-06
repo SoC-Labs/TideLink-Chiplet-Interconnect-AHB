@@ -7,8 +7,9 @@ TideLink solves a fundamental problem: **AHB is a blocking protocol** that canno
 - **Path 1 — Transparent AHB bridge**: For control-plane access, configuration writes, and direct memory-mapped reads. Uses XHB500 → AXI → Wlink → AXI → XHB500. Reads block the bus (acceptable for short config accesses).
 - **Path 2 — Mailbox packet FIFO**: For bulk data and latency-sensitive traffic. A dedicated Wlink FC node carries packets directly between paired FIFOs, bypassing AXI entirely. The CPU writes a descriptor packet to a local TX aperture and is immediately free — no bus stalling.
 - **Path 3 — PTP subsystem**: For precision clock synchronisation between chiplets. A dedicated high-priority FC node (data_id=0xa2, 48-bit) carries two-message PTP exchanges (SYNC + DELAY_REQ) with hardware timestamp capture at the FC handshake boundary. Idle gating of the TX link layer eliminates transmit-side jitter. Integrates a PTP Hardware Clock (PHC) for nanosecond-resolution timekeeping. Includes a **hardware sync initiator** that autonomously generates periodic SYNC messages at configurable intervals (IEEE 1588 logSyncInterval range: 128 Hz to 1/16 Hz), using the PHC time outputs as its timing reference.
+- **Path 4 — TideChart AXI-Stream interface**: For extension protocol traffic (`tc_axis_tx_*` / `tc_axis_rx_*`). PKT_EXT packets (FC pkt_type=2'b10) are forwarded between the die-to-die link and an external TideChart controller via standard AXI-Stream valid/ready handshaking. Includes a local PUF SRAM read path for boot-time entropy collection from uninitialized FIFO SRAM.
 
-All three paths share a single GPIO PHY and are independently flow-controlled, so mailbox traffic cannot starve transparent AHB traffic (and vice versa).
+All four paths share a single GPIO PHY and are independently flow-controlled, so mailbox traffic cannot starve transparent AHB traffic (and vice versa).
 
 A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 
@@ -43,6 +44,13 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   │                                                                      │
   │  AHB Master: Incoming from remote (via Wlink → XHB500)              │
   │                                                                      │
+  │  AXI-Stream: TideChart interface (PKT_EXT forwarding)               │
+  │  ┌─────────────────────────────────────────────────┐                 │
+  │  │  tc_axis_tx_tvalid/tdata/tready → TideChart     │                 │
+  │  │  tc_axis_rx_tvalid/tdata/tready ← TideChart     │                 │
+  │  │  + PUF SRAM local read (subtype 0x0020/0x0021)  │                 │
+  │  └─────────────────────────────────────────────────┘                 │
+  │                                                                      │
   │  Internal: FC adapter RX → FIFO mux / Config mux                    │
   │  Internal: Returner → FC sideband (credit/doorbell over link)       │
   │  Internal: PTP FC RX → hw_capture + ptp_irq                         │
@@ -65,8 +73,8 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
 
 | Module | Description |
 |--------|-------------|
-| `tidelink_top.sv` | Chiplet subsystem wrapper. Integrates all components below. |
-| `tidelink_fc_adapter.sv` | AHB ↔ Wlink FC bridge. TX path (AHB slave → FC TX), RX path (FC RX → split AHB masters for FIFO + config), returner interception (AHB master → FC sideband). |
+| `tidelink_top.sv` | Chiplet subsystem wrapper. Integrates all components below. Exposes `tc_axis_*` AXI-Stream ports for TideChart integration. |
+| `tidelink_fc_adapter.sv` | AHB ↔ Wlink FC bridge. TX path (AHB slave → FC TX), RX path (FC RX → split AHB masters for FIFO + config), returner interception (AHB master → FC sideband), PKT_EXT routing to/from tc_axis_*, PUF SRAM local read handler. |
 | `tidelink_addr_translator.sv` | APB-configurable address remapping for the transparent AHB bridge path. |
 | `tidelink_ptp.sv` | PTP subsystem. Idle-gated FC TX/RX, PHC hw_capture generation, AHB slave for software-initiated exchanges. |
 
@@ -76,7 +84,7 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
 |--------|-------------|
 | `tidelink_fifo_ahb.sv` | AHB wrapper with `cmsdk_ahb_to_apb` bridge for config registers. |
 | `tidelink_fifo.sv` | Core wrapper connecting FIFO memory, returner, and APB register file. |
-| `tidelink_fifo_mem.sv` | AHB slave FIFO interface with CMSDK AHB-to-SRAM bridge. |
+| `tidelink_fifo_mem.sv` | AHB slave FIFO interface with CMSDK AHB-to-SRAM bridge. 3-way SRAM arbiter (FC writes > AHB > PUF reads). |
 | `tidelink_fifo_ctrl.sv` | Pointer management, packet metadata, credit counting, address translation. |
 | `tidelink_apb_regs.sv` | Configuration, status, credit accumulators, pair credit counter, doorbell. |
 | `tidelink_returner.sv` | 3-channel priority AHB master for autonomous credit return and doorbell signalling. |
@@ -221,8 +229,17 @@ The GitLab CI pipeline runs 9 stages:
 |---------|-----------|---------|-------|----------|
 | AXI (5 channels) | 0x08–0x1b | 0x80–0x84 | 101b | AXI4 AW/W/B/AR/R |
 | GeneralBus | 0x40–0x43 | 0xa0 | 32b | Edge-triggered bus |
-| **TideLink** | **0x44–0x47** | **0xa1** | **48b** | Streaming valid/ready |
+| **TideLink** | **0x44–0x47** | **0xa1** | **48b** | Streaming valid/ready (FIFO_DATA, SIDEBAND, PKT_EXT) |
 | **TideLink PTP** | **0x48–0x4b** | **0xa2** | **48b** | PTP timestamp exchange (highest TX priority) |
+
+**FC Packet Types (pkt_type, bits [47:46] of FC word):**
+
+| Value | Type | Description |
+|-------|------|-------------|
+| 0b00 | FIFO_DATA | Mailbox FIFO data word |
+| 0b01 | SIDEBAND | Credit delta / doorbell return |
+| 0b10 | PKT_EXT | Extension protocol (TideChart, PUF) |
+| 0b11 | Reserved | Reserved for future use |
 
 ## Reference Integration
 

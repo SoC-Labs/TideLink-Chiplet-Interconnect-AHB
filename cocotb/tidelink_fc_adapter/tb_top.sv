@@ -113,6 +113,14 @@ module tb_top #(
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
 
+        // Extension FC port (not tested at unit level, tied off)
+        .ext_fc_tx_valid   (1'b0),
+        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
+        .ext_fc_tx_ready   (),
+        .ext_fc_rx_valid   (),
+        .ext_fc_rx_data    (),
+        .ext_fc_rx_accept  (1'b1),
+
         // FC Node
         .tl_fc_a2l_valid   (tl_fc_a2l_valid),
         .tl_fc_a2l_data    (tl_fc_a2l_data),

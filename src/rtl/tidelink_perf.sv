@@ -228,7 +228,7 @@ module tidelink_perf #(
                         && perf_reg_addr == 3'h0 && perf_reg_wdata[2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn || clear_counters) begin
+        if (!hresetn) begin
             tx_pkt_count_r       <= '0;
             rx_pkt_count_r       <= '0;
             tx_word_count_r      <= '0;
@@ -240,7 +240,19 @@ module tidelink_perf #(
             sample_count_r       <= '0;
             tx_inflight_r        <= '0;
             rx_inflight_r        <= '0;
-        end else if (perf_active) begin
+        end else if (clear_counters) begin
+            tx_pkt_count_r       <= '0;
+            rx_pkt_count_r       <= '0;
+            tx_word_count_r      <= '0;
+            rx_word_count_r      <= '0;
+            tx_stall_count_r     <= '0;
+            rx_stall_count_r     <= '0;
+            link_busy_count_r    <= '0;
+            credit_starve_count_r <= '0;
+            sample_count_r       <= '0;
+            tx_inflight_r        <= '0;
+            rx_inflight_r        <= '0;
+        end else if (perf_enable_r & ~perf_freeze_r) begin
             // Sample counter (always increments when active)
             sample_count_r <= sat_inc(sample_count_r);
 

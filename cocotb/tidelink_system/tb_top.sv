@@ -453,6 +453,13 @@ module tb_top #(
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
 
+        .ext_fc_tx_valid   (1'b0),
+        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
+        .ext_fc_tx_ready   (),
+        .ext_fc_rx_valid   (),
+        .ext_fc_rx_data    (),
+        .ext_fc_rx_accept  (1'b1),
+
         // FC node interface
         .tl_fc_a2l_valid   (a_fc_a2l_valid),
         .tl_fc_a2l_data    (a_fc_a2l_data),
@@ -632,6 +639,13 @@ module tb_top #(
         .servo_fc_valid    (1'b0),
         .servo_fc_data     ({FC_DATA_W{1'b0}}),
         .servo_fc_ready    (),
+
+        .ext_fc_tx_valid   (1'b0),
+        .ext_fc_tx_data    ({FC_DATA_W{1'b0}}),
+        .ext_fc_tx_ready   (),
+        .ext_fc_rx_valid   (),
+        .ext_fc_rx_data    (),
+        .ext_fc_rx_accept  (1'b1),
 
         // FC node interface
         .tl_fc_a2l_valid   (b_fc_a2l_valid),

@@ -21,7 +21,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_mul_iter.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
-// Address translator (CAM-based)
+// Address translator (CAM-based) and APB dependencies
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
+${CMSDK_DIR}/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 ${TIDELINK_HOME}/src/rtl/tl_addr_trans_regs.sv
 ${TIDELINK_HOME}/src/rtl/tl_addr_trans_cam.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv

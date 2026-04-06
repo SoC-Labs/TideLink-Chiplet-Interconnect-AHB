@@ -748,8 +748,9 @@ module test_top;
   // =================================================================
   // Force control (driven by tests via tb_if)
   // Force/release must be in module context, not inside a package.
+  // Use always_ff on clk to sample the control signal reliably.
   // =================================================================
-  always @(*) begin
+  always @(posedge clk) begin
     if (tb_if.force_b1_servo_locked)
       force b1_servo_locked = tb_if.force_b1_servo_locked_val;
     else

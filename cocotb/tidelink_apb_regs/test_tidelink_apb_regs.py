@@ -26,6 +26,7 @@ OFF_DOORBELL_RSP  = regs.REG_DOORBELL_RESP_ACC
 OFF_PAIR_COUNTER  = regs.REG_PAIR_CREDIT_COUNTER
 OFF_PAIR_CONSUME  = regs.REG_PAIR_CREDIT_CONSUME
 OFF_PAIR_CTR_EN   = regs.REG_PAIR_CREDIT_ENABLE
+OFF_CTRL          = regs.REG_CTRL
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -185,17 +186,30 @@ async def test_r0_07_doorbell_trigger_pulse(dut):
 
 @cocotb.test()
 async def test_r0_08_reset_deassert_pulse(dut):
-    """Reset deassertion generates a one-cycle pulse."""
+    """Reset deassertion generates a one-cycle pulse after debounce.
+
+    With Shortcoming #13 fix, the pulse fires after the 4-cycle debounce
+    counter confirms the synchronised reset is stable high.
+    """
     await setup(dut)
     dut.hresetn.value = 0
     await ClockCycles(dut.hclk, 5)
     dut.hresetn.value = 1
 
-    # Pulse should fire 2 cycles after reset deassertion
-    await RisingEdge(dut.hclk)
-    await RisingEdge(dut.hclk)
+    # Pulse should fire after 2 (synchroniser) + 4 (debounce) = 6 cycles
+    # Wait and verify pulse is 0 before debounce completes
+    await ClockCycles(dut.hclk, 4)
     pulse = int(dut.reset_deassert_pulse.value)
-    assert pulse == 1, "reset_deassert_pulse should fire"
+    assert pulse == 0, "Pulse should not fire before debounce period"
+
+    # Wait for debounce to complete (cycles 5 and 6)
+    for _ in range(4):
+        await RisingEdge(dut.hclk)
+        pulse = int(dut.reset_deassert_pulse.value)
+        if pulse == 1:
+            break
+
+    assert pulse == 1, "reset_deassert_pulse should fire after debounce"
 
     await RisingEdge(dut.hclk)
     pulse = int(dut.reset_deassert_pulse.value)
@@ -757,3 +771,213 @@ async def test_sat_06_readback_zero_extended(dut):
 
     val = await apb_read(dut, OFF_REL_CREDITS)
     assert val == 0x0000_1234, f"Expected zero-extended 0x00001234, got 0x{val:08X}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shortcoming #12: pslverr tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def apb_write_check_err(dut, addr, data):
+    """Perform APB write and return pslverr value."""
+    await RisingEdge(dut.hclk)
+    dut.psel.value    = 1
+    dut.penable.value = 0
+    dut.pwrite.value  = 1
+    dut.paddr.value   = addr & 0xFFF
+    dut.pwdata.value  = data
+    await RisingEdge(dut.hclk)
+    dut.penable.value = 1
+    await RisingEdge(dut.hclk)
+    err = int(dut.pslverr.value)
+    dut.psel.value    = 0
+    dut.penable.value = 0
+    dut.pwrite.value  = 0
+    return err
+
+
+async def apb_read_check_err(dut, addr):
+    """Perform APB read and return (rdata, pslverr) tuple."""
+    await RisingEdge(dut.hclk)
+    dut.psel.value    = 1
+    dut.penable.value = 0
+    dut.pwrite.value  = 0
+    dut.paddr.value   = addr & 0xFFF
+    await RisingEdge(dut.hclk)
+    dut.penable.value = 1
+    await RisingEdge(dut.hclk)
+    rdata = int(dut.prdata.value)
+    err = int(dut.pslverr.value)
+    dut.psel.value    = 0
+    dut.penable.value = 0
+    return rdata, err
+
+
+@cocotb.test()
+async def test_err_01_write_to_ro_registers_asserts_pslverr(dut):
+    """Writing to read-only registers should assert pslverr."""
+    await setup(dut)
+    await do_reset(dut)
+
+    ro_regs = [
+        (OFF_PKT_WORD_LEN, "PKT_WORD_LEN"),
+        (OFF_CREDIT_COUNT,  "CREDIT_COUNT"),
+        (OFF_STATUS,        "STATUS"),
+        (OFF_REL_ACC,       "REL_ACC"),
+        (OFF_PAIR_COUNTER,  "PAIR_CREDIT_COUNTER"),
+    ]
+
+    for addr, name in ro_regs:
+        err = await apb_write_check_err(dut, addr, 0xDEADBEEF)
+        dut._log.info(f"Write to RO {name} (0x{addr:03X}): pslverr={err}")
+        assert err == 1, f"pslverr should be 1 for write to RO register {name}"
+
+
+@cocotb.test()
+async def test_err_02_read_from_wo_registers_asserts_pslverr(dut):
+    """Reading from write-only registers should assert pslverr."""
+    await setup(dut)
+    await do_reset(dut)
+
+    _, err = await apb_read_check_err(dut, OFF_PAIR_CONSUME)
+    dut._log.info(f"Read from WO PAIR_CREDIT_CONSUME: pslverr={err}")
+    assert err == 1, "pslverr should be 1 for read from WO register"
+
+
+@cocotb.test()
+async def test_err_03_valid_accesses_no_pslverr(dut):
+    """Valid RW, W-add/R-clear, and RO-read accesses should not assert pslverr."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # RW write
+    err = await apb_write_check_err(dut, OFF_PAIR_BASE, 0x12345678)
+    assert err == 0, f"pslverr should be 0 for RW write, got {err}"
+
+    # RW read
+    _, err = await apb_read_check_err(dut, OFF_PAIR_BASE)
+    assert err == 0, f"pslverr should be 0 for RW read, got {err}"
+
+    # RO read
+    _, err = await apb_read_check_err(dut, OFF_STATUS)
+    assert err == 0, f"pslverr should be 0 for RO read, got {err}"
+
+    # W-add write
+    err = await apb_write_check_err(dut, OFF_REL_CREDITS, 5)
+    assert err == 0, f"pslverr should be 0 for W-add write, got {err}"
+
+    # R-clear read
+    _, err = await apb_read_check_err(dut, OFF_REL_CREDITS)
+    assert err == 0, f"pslverr should be 0 for R-clear read, got {err}"
+
+    # WO write
+    err = await apb_write_check_err(dut, OFF_PAIR_CONSUME, 1)
+    assert err == 0, f"pslverr should be 0 for WO write, got {err}"
+
+    dut._log.info("All valid accesses correctly return pslverr=0 — passed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shortcoming #25: Configuration lock bit tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_lock_01_unlocked_by_default(dut):
+    """CTRL.LOCK (bit 2) is 0 after reset."""
+    await setup(dut)
+    await do_reset(dut)
+
+    ctrl = await apb_read(dut, OFF_CTRL)
+    lock_bit = (ctrl >> 2) & 1
+    assert lock_bit == 0, f"LOCK should be 0 after reset, got {lock_bit}"
+
+
+@cocotb.test()
+async def test_lock_02_blocks_pair_base_write(dut):
+    """Once LOCK is set, writes to pair_base_addr are ignored."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Write a custom pair base address
+    await apb_write(dut, OFF_PAIR_BASE, 0xAAAA_0000)
+    val = await apb_read(dut, OFF_PAIR_BASE)
+    assert val == 0xAAAA_0000, f"Expected 0xAAAA0000 before lock, got 0x{val:08X}"
+
+    # Set LOCK bit (CTRL[2] = 1)
+    await apb_write(dut, OFF_CTRL, 0x04)
+
+    # Verify lock is set
+    ctrl = await apb_read(dut, OFF_CTRL)
+    assert (ctrl >> 2) & 1 == 1, "LOCK should be set"
+
+    # Attempt to write a different pair base address — should be blocked
+    await apb_write(dut, OFF_PAIR_BASE, 0xBBBB_0000)
+    val = await apb_read(dut, OFF_PAIR_BASE)
+    assert val == 0xAAAA_0000, (
+        f"pair_base_addr should still be 0xAAAA0000 after locked write, got 0x{val:08X}"
+    )
+
+    dut._log.info("LOCK blocks pair_base_addr write — passed")
+
+
+@cocotb.test()
+async def test_lock_03_blocks_threshold_write(dut):
+    """Once LOCK is set, writes to release_threshold are ignored."""
+    await setup(dut)
+    await do_reset(dut)
+
+    await apb_write(dut, OFF_REL_THRESHOLD, 50)
+    val = await apb_read(dut, OFF_REL_THRESHOLD)
+    assert val == 50, f"Expected 50 before lock, got {val}"
+
+    # Set LOCK
+    await apb_write(dut, OFF_CTRL, 0x04)
+
+    # Attempt to write — blocked
+    await apb_write(dut, OFF_REL_THRESHOLD, 999)
+    val = await apb_read(dut, OFF_REL_THRESHOLD)
+    assert val == 50, f"release_threshold should still be 50 after locked write, got {val}"
+
+    dut._log.info("LOCK blocks release_threshold write — passed")
+
+
+@cocotb.test()
+async def test_lock_04_cannot_clear_lock_by_software(dut):
+    """LOCK bit cannot be cleared by writing 0 — only reset clears it."""
+    await setup(dut)
+    await do_reset(dut)
+
+    # Set LOCK
+    await apb_write(dut, OFF_CTRL, 0x04)
+    ctrl = await apb_read(dut, OFF_CTRL)
+    assert (ctrl >> 2) & 1 == 1, "LOCK should be set"
+
+    # Try to clear LOCK by writing 0
+    await apb_write(dut, OFF_CTRL, 0x00)
+    ctrl = await apb_read(dut, OFF_CTRL)
+    assert (ctrl >> 2) & 1 == 1, "LOCK should still be set — cannot clear by software"
+
+    # Reset should clear it
+    await do_reset(dut)
+    ctrl = await apb_read(dut, OFF_CTRL)
+    assert (ctrl >> 2) & 1 == 0, "LOCK should be cleared after reset"
+
+    dut._log.info("LOCK is write-once, cleared only by reset — passed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shortcoming #11: ID/Version register tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_id_01_version_register_readable(dut):
+    """Reading the doorbell address (0x014) should return TideLink ID/version."""
+    await setup(dut)
+    await do_reset(dut)
+
+    val = await apb_read(dut, OFF_DOORBELL)
+    dut._log.info(f"ID register = 0x{val:08X}")
+
+    # Component ID = 0x544C ("TL"), major = 0x01, minor = 0x00
+    assert val == 0x544C_0100, f"Expected 0x544C0100, got 0x{val:08X}"
+
+    dut._log.info("ID/version register — passed")

@@ -100,6 +100,8 @@ package tidelink_top_system_pkg;
   `include "test_top_reset_recovery.sv"
   `include "test_top_long_running.sv"
   `include "test_top_mixed_traffic.sv"
+  `include "test_top_coordinated_reset.sv"
+  `include "test_top_addr_translate.sv"
 
 endpackage
 

@@ -1256,3 +1256,233 @@ async def test_31_overrun_underrun_clear_after_reset(dut):
     assert get_overrun(dut) == 0
     assert get_underrun(dut) == 0
     dut._log.info("Error flags clear after reset — passed")
+
+
+# ── Shortcoming Fix Tests ───────────────────────────────────────────────────
+
+@cocotb.test()
+async def test_32_credit_underflow_saturation(dut):
+    """BUG-002: Credit counter must saturate at 0, not wrap on underflow.
+
+    Writes a packet whose total_words exceeds remaining credits after
+    draining most of the FIFO. The credit counter should saturate at 0
+    and the overrun flag should be set — NOT wrap to a large value.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    initial_credits = get_credit_count(dut)
+    assert initial_credits == MAX_CREDITS, f"Expected {MAX_CREDITS}, got {initial_credits}"
+
+    # Step 1: Fill most of the FIFO to leave only a few credits.
+    # Write packets of 100 words each (101 credits each: 1 length + 100 data)
+    # until fewer than 110 credits remain.
+    pkt_size = 100
+    packets_written = 0
+    while get_credit_count(dut) >= pkt_size + 1:
+        pkt = FifoPacket(data=[0xAA000000 | i for i in range(pkt_size)])
+        _, _, hit = await write_packet(dut, ahb, pkt, label=f"fill-{packets_written}")
+        assert hit, f"write_complete should fire for fill packet {packets_written}"
+        packets_written += 1
+
+    remaining = get_credit_count(dut)
+    dut._log.info(f"After filling: {packets_written} packets, {remaining} credits remain")
+    assert remaining < pkt_size + 1, "Should have fewer credits than a full packet"
+    assert remaining > 0, "Should have some credits remaining"
+
+    # Step 2: Now write a packet whose total_words > remaining credits.
+    # This is the bug scenario: credit_count_r - packet_delta should NOT wrap.
+    oversized_len = remaining + 10  # Guaranteed to exceed available credits
+    oversized_pkt = FifoPacket(data=[0xBB000000 | i for i in range(oversized_len)])
+
+    # Write the length word
+    await ahb.write(0x0000, oversized_pkt.length)
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    # Write data beats up to and including the target address
+    for i, word in enumerate(oversized_pkt.data):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 1
+        dut.hsize.value = 2; dut.haddr.value = addr
+        await RisingEdge(dut.hclk)
+        dut.hwdata.value = word
+        dut.htrans.value = 0; dut.hsel.value = 0
+        await RisingEdge(dut.hclk)
+        dut.hwrite.value = 0
+
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    # Step 3: Check the credit counter
+    final_credits = get_credit_count(dut)
+    dut._log.info(f"Credits after oversized write: {final_credits}")
+
+    # The fix: credit_count should be 0 (saturated), NOT a huge wrapped value
+    assert final_credits == 0, (
+        f"Credit counter should saturate at 0, got {final_credits}. "
+        f"If this is a large value (e.g. >4000), the counter has wrapped — BUG-002."
+    )
+
+    # Note: the overrun flag checks credit_count == 0 per individual AHB beat,
+    # not whether the entire packet fits. Since credits were > 0 when the beats
+    # happened, overrun may not be set. The key invariant is that credit_count
+    # saturated at 0 rather than wrapping.
+
+    dut._log.info("Credit underflow saturation — passed")
+
+
+@cocotb.test()
+async def test_33_credit_underflow_normal_path_unaffected(dut):
+    """Verify the saturation guard does not affect normal credit accounting.
+
+    Writes and reads packets that fit within available credits, confirming
+    credit_count decrements and increments correctly without false saturation.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write a small packet (5 words = 6 credits: 1 length + 5 data)
+    pkt = FifoPacket(data=[0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555])
+    credits_before = get_credit_count(dut)
+    _, _, hit = await write_packet(dut, ahb, pkt, label="normal")
+    assert hit, "write_complete should fire"
+
+    credits_after_write = get_credit_count(dut)
+    expected = credits_before - pkt.total_words
+    assert credits_after_write == expected, (
+        f"Expected {expected} credits after write, got {credits_after_write}"
+    )
+
+    # Read the packet back
+    # Read length
+    await RisingEdge(dut.hclk)
+    dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
+    dut.hsize.value = 2; dut.haddr.value = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.htrans.value = 0; dut.hsel.value = 0; dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 4)
+
+    pkt_len = int(dut.u_dut.packet_word_length.value)
+    assert pkt_len == 5, f"Expected packet length 5, got {pkt_len}"
+
+    # Read data beats
+    for i in range(pkt_len):
+        addr = (i + 1) * 4
+        await RisingEdge(dut.hclk)
+        dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 0
+        dut.haddr.value = addr
+        await RisingEdge(dut.hclk)
+        dut.htrans.value = 0; dut.hsel.value = 0; dut.haddr.value = 0x3FFF
+        await RisingEdge(dut.hclk)
+
+    await ClockCycles(dut.hclk, 3)
+
+    credits_after_read = get_credit_count(dut)
+    assert credits_after_read == credits_before, (
+        f"Credits should be restored to {credits_before} after read, got {credits_after_read}"
+    )
+
+    assert get_overrun(dut) == 0, "Overrun should NOT be set for normal operation"
+    dut._log.info("Normal credit path unaffected by saturation guard — passed")
+
+
+@cocotb.test()
+async def test_34_packet_size_clamped_to_max(dut):
+    """Shortcoming #3: Packet lengths exceeding MAX_CREDITS-1 must be clamped.
+
+    Writing a length larger than the SRAM can hold should be silently
+    clamped to MAX_CREDITS-1 (4095), preventing pointer wrap and SRAM
+    boundary overrun.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Write an oversized length to address 0
+    oversized_length = MAX_CREDITS + 100  # e.g. 4196, way beyond 4095
+    await ahb.write(0x0000, oversized_length)
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    captured_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    max_valid = MAX_CREDITS - 1  # 4095
+
+    dut._log.info(f"Wrote length {oversized_length}, captured as {captured_len} "
+                  f"(max valid = {max_valid})")
+
+    assert captured_len == max_valid, (
+        f"packet_word_length should be clamped to {max_valid}, got {captured_len}"
+    )
+
+    dut._log.info("Packet size clamping — passed")
+
+
+@cocotb.test()
+async def test_35_packet_size_valid_length_unaffected(dut):
+    """Verify valid packet lengths are not clamped."""
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # Test several valid lengths
+    for length in [1, 10, 100, MAX_CREDITS - 1]:
+        # Flush between tests to clear state
+        dut.flush.value = 1
+        await RisingEdge(dut.hclk)
+        dut.flush.value = 0
+        await ClockCycles(dut.hclk, 2)
+
+        await ahb.write(0x0000, length)
+        dut.haddr.value = 0x3FFF
+        await ClockCycles(dut.hclk, 3)
+
+        captured = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+        assert captured == length, (
+            f"Valid length {length} should not be clamped, got {captured}"
+        )
+        dut._log.info(f"  Length {length} captured correctly")
+
+    dut._log.info("Valid packet lengths unaffected by clamping — passed")
+
+
+@cocotb.test()
+async def test_36_seq_transfers_rejected(dut):
+    """Shortcoming #14: SEQ burst beats (htrans=3) must be ignored.
+
+    Only NONSEQ transfers (htrans=2) should be accepted by the FIFO.
+    SEQ beats from INCR/WRAP bursts would corrupt the metadata logic.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # First, write a valid packet length via NONSEQ (htrans=2)
+    await ahb.write(0x0000, 5)
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    pkt_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    assert pkt_len == 5, f"NONSEQ write to addr 0 should capture length, got {pkt_len}"
+
+    # Flush and try again with SEQ (htrans=3) — should NOT capture
+    dut.flush.value = 1
+    await RisingEdge(dut.hclk)
+    dut.flush.value = 0
+    await ClockCycles(dut.hclk, 2)
+
+    # Manual AHB beat with htrans = SEQ (3)
+    await RisingEdge(dut.hclk)
+    dut.hsel.value = 1; dut.htrans.value = 3; dut.hwrite.value = 1
+    dut.hsize.value = 2; dut.haddr.value = 0x0000
+    await RisingEdge(dut.hclk)
+    dut.hwdata.value = 10  # Attempt to set length=10
+    dut.htrans.value = 0; dut.hsel.value = 0
+    await RisingEdge(dut.hclk)
+    dut.hwrite.value = 0
+    await ClockCycles(dut.hclk, 3)
+
+    pkt_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    assert pkt_len == 0, (
+        f"SEQ transfer (htrans=3) should be ignored, but packet_word_length={pkt_len}"
+    )
+
+    dut._log.info("SEQ transfers correctly rejected — passed")

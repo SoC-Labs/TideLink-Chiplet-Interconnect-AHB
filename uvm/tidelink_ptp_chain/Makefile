@@ -212,7 +212,8 @@ TESTS = test_chain_convergence \
         test_chain_step_recovery \
         test_chain_b_unlock_c_holds \
         test_chain_stress \
-        test_chain_force_enable
+        test_chain_force_enable \
+        test_chain_gate_functional
 
 # ---------------------------------------------------------------
 # Targets

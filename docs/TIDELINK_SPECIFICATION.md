@@ -541,39 +541,87 @@ Note: Earlier versions of TideLink included `RX_FIFO_BASE` and `RX_CFG_BASE` par
 
 ### 7.1 TideLink Packet Format
 
-Software on the sending side constructs packets by writing sequential 32-bit words to the TideLink TX aperture (`ahb_tx_*`). The first word at address offset 0x0000 is a framing word specifying the number of payload words that follow. Words 1–3 form the packet descriptor header. Subsequent words are the payload.
+TideLink packets are a software convention imposed on the raw FIFO word stream. Hardware is unaware of packet semantics — it transports each 32-bit word independently as a FIFO_DATA FC packet. The receiving CPU reconstructs the packet by reading the header word first, then popping the address and payload from the local RX FIFO.
+
+A packet consists of a 2-word header followed by an optional data payload:
 
 ```
 FIFO Addr   Content
 ┌──────────┬────────────────────────────────────────────────────────────────┐
-│ 0x0000   │ FIFO Length (N) — count of words following this word           │
+│ 0x0000   │ Word 0: length[31:20] | pkt_type[19:18] | src_id[17:13] |     │
+│          │         dest_id[12:8] | tag[7:0]                              │
 ├──────────┼────────────────────────────────────────────────────────────────┤
-│ 0x0004   │ pkt_type[31:28], src_id[27:20], dest_id[19:12],                │
-│          │ tag[11:4], status[3:2], burst_type[1:0]                        │
+│ 0x0004   │ Word 1: dest_addr[31:0]                                       │
 ├──────────┼────────────────────────────────────────────────────────────────┤
-│ 0x0008   │ dest_addr[31:0]                                                │
+│ 0x0008   │ Word 2: Data payload[0]  (WR_REQ / RSP only)                  │
 ├──────────┼────────────────────────────────────────────────────────────────┤
-│ 0x000C   │ length[15:3], size[2:0]                                        │
+│   ...    │ ...                                                           │
 ├──────────┼────────────────────────────────────────────────────────────────┤
-│ 0x0010+  │ Data payload (WR_REQ data / RD_RSP data)                       │
+│(N+1) × 4 │ Word N+1: Data payload[N-1]  ← final write triggers completion│
 └──────────┴────────────────────────────────────────────────────────────────┘
 ```
 
-**Header field definitions:**
+The `length` field (N) counts **data payload words only** — it does not include the 2-word header. Total FIFO occupancy per packet is N + 2 credits (2 header words + N data words). For header-only packets (RD_REQ), N = 0 and the total occupancy is 2 credits.
 
-| Field | Width | Description |
-|---|---|---|
-| `pkt_type` | 4 bits | Transaction type: RD_REQ, WR_REQ, RD_RSP, WR_RSP, ERROR |
-| `src_id` | 8 bits | Requester chiplet ID (for response routing) |
-| `dest_id` | 8 bits | Target chiplet ID (for multi-hop daisy-chaining) |
-| `tag` | 8 bits | Transaction tag (matches response to request) |
-| `status` | 2 bits | Response status: OKAY / ERROR |
-| `burst_type` | 2 bits | AHB burst type mirror: SINGLE / INCR / WRAP |
-| `dest_addr` | 32 bits | Target address on remote chiplet |
-| `length` | 13 bits | Number of beats in burst |
-| `size` | 3 bits | Beat size (mirrors AHB HSIZE) |
+**Word 0 — Packed header (32 bits):**
 
-Software constructs this structure in memory and writes it word-by-word to the TX aperture. Hardware transports each word as a separate FIFO_DATA FC packet. The receiving software reconstructs the packet from the FIFO.
+| Bits | Width | Field | Description |
+|------|-------|-------|-------------|
+| [31:20] | 12 | `length` | Data payload word count (0–4095). Does not include the 2-word header. |
+| [19:18] | 2 | `pkt_type` | Transaction type (see encoding below) |
+| [17:13] | 5 | `src_id` | Source chiplet ID (0–31) |
+| [12:8] | 5 | `dest_id` | Destination chiplet ID (0–31) |
+| [7:0] | 8 | `tag` | Transaction tag (matches responses to requests) |
+
+**Word 1 — Destination address (32 bits):**
+
+| Bits | Width | Field | Description |
+|------|-------|-------|-------------|
+| [31:0] | 32 | `dest_addr` | Target address on the remote chiplet |
+
+**Packet type encoding (2 bits):**
+
+| Value | Type | Description |
+|-------|------|-------------|
+| 0b00 | RD_REQ | Read request — dest_addr specifies where to read |
+| 0b01 | WR_REQ | Write request — dest_addr + data payload |
+| 0b10 | RSP | Response — covers read data, write ack, and error |
+| 0b11 | Reserved | Reserved for future use |
+
+**Per-type payload conventions:**
+
+The payload meaning is defined per packet type. Hardware is unaware of these conventions — it transports words based on the length field alone. Software on the receiving side interprets the payload according to the packet type.
+
+#### RD_REQ — Read Request
+
+| Variant | N | Payload | Description |
+|---------|---|---------|-------------|
+| Single read | 0 | None | Read 1 word at `dest_addr`. Total: 2 credits. |
+| Burst read | 1 | `beat_count[31:3] \| size[2:0]` | Read `beat_count` words starting at `dest_addr`. Total: 3 credits. |
+
+For a single read (N=0), the responder reads one word at `dest_addr` and returns it in a RSP. For a burst read (N=1), payload word 0 encodes the beat count and transfer size (mirroring AHB HSIZE). The responder reads `beat_count` sequential words starting at `dest_addr` and returns them as a RSP with N = `beat_count`.
+
+#### WR_REQ — Write Request
+
+| N | Payload | Description |
+|---|---------|-------------|
+| P (≥ 1) | P data words | Write P words sequentially starting at `dest_addr`. Total: P + 2 credits. |
+
+The payload length implicitly defines the burst length — no separate beat count field is needed. The responder writes the payload words to sequential addresses starting at `dest_addr`.
+
+#### RSP — Response
+
+| Variant | N | Payload | Description |
+|---------|---|---------|-------------|
+| Write ack | 0 | None | Acknowledges a completed WR_REQ. Total: 2 credits. |
+| Error | 0 | None | Signals an error. `dest_addr` = 0xFFFFFFFF (reserved). Total: 2 credits. |
+| Read data | P | P data words | Returns P words read from `dest_addr`. Total: P + 2 credits. |
+
+The `tag` field matches the response to its originating request. For read data responses, the payload length matches the requested `beat_count` (or 1 for single reads). Write acknowledgements and errors carry no payload — the receiver distinguishes them by checking `dest_addr` (0xFFFFFFFF = error) or by application-specific convention.
+
+**Hardware extraction**: The FIFO control logic (`tidelink_fifo_ctrl`) extracts bits [31:20] of Word 0 as the packet length. All other fields are opaque to hardware — only software on the receiving side interprets them.
+
+Software constructs this structure in memory and writes it word-by-word to the TX aperture. The receiving software reconstructs the packet from the FIFO.
 
 ### 7.2 Write Request Flow (Host → Device)
 
@@ -595,20 +643,20 @@ Host CPU                        TideLink (Host)           Link          TideLink
     │                                │  (optional WR_RSP)   │                 │                       │
 ```
 
-1. Host CPU writes FIFO length word, descriptor (3 words), and data payload to TX aperture (`ahb_tx_*`).
+1. Host CPU writes the 2-word header (packed header + dest_addr) and data payload to TX aperture (`ahb_tx_*`). Total words: N + 2.
 2. Each AHB write is converted by the FC adapter to a FIFO_DATA packet carrying `{00, haddr[13:0], hwdata}`.
 3. Packets traverse the TideLink FC node (data_id=0xa1) through Wlink.
 4. Remote FC adapter receives each packet and drives an internal AHB master write on `fc_rx_fifo_*` with `haddr = addr_offset`. The FIFO mux routes this to the `tidelink_fifo_ahb` FIFO data window slave port.
-5. The remote `tidelink_fifo_ahb` FIFO accumulates words. When the final word of the packet is written (determined by the length field at offset 0), `packet_committed_irq` fires.
-6. Device CPU services the interrupt, pops the descriptor, and performs the requested local AHB write.
-7. Optionally, a WR_RSP packet is constructed and sent back.
+5. The remote `tidelink_fifo_ahb` FIFO accumulates words. When the final word of the packet is written (determined by the length field in bits [31:20] of the word at offset 0), `packet_committed_irq` fires.
+6. Device CPU services the interrupt, reads the 2-word header, and performs the requested local AHB write using dest_addr and the payload.
+7. Optionally, a WR_RSP (RSP with N=0) is constructed and sent back.
 
 ### 7.3 Read Request Flow (Host → Device → Host)
 
 ```
 Host CPU                        TideLink (Host)           Link          TideLink (Device)        Device CPU
     │                                │                      │                 │                       │
-    │  AHB writes (RD_REQ, no data)  │                      │                 │                       │
+    │  AHB writes (RD_REQ)           │                      │                 │                       │
     │──────────────────────────────► TX aperture            │                 │                       │
     │  (returns immediately)         │  FC FIFO_DATA pkts   │                 │                       │
     │◄─────────────────────────────── ahb_tx_hreadyout      │                 │                       │
@@ -619,11 +667,11 @@ Host CPU                        TideLink (Host)           Link          TideLink
     │                                │                      │                 │───────────────────────►│
     │                                │                      │                 │                       │  packet_committed_irq
     │                                │                      │                 │                       │◄─────────────────────
-    │                                │                      │                 │                       │  Pop RD_REQ descriptor
+    │                                │                      │                 │                       │  Pop RD_REQ header
     │                                │                      │                 │                       │  Local AHB reads
     │                                │                      │                 │                       │  at dest_addr
     │                                │                      │                 │                       │
-    │                                │                      │                 │  AHB writes (RD_RSP)  │
+    │                                │                      │                 │  AHB writes (RSP)     │
     │                                │                      │                 │◄──────────── TX aperture
     │                                │                      │  FC FIFO_DATA   │                       │
     │                                │◄─────────────────────────────────────── FC adapter RX         │
@@ -631,17 +679,27 @@ Host CPU                        TideLink (Host)           Link          TideLink
     │                                │ (fc_rx_fifo_* master) │                │                       │
     │                                │  packet_committed_irq│                 │                       │
     │◄─────────────────────────────── (host)                │                 │                       │
-    │  Pop RD_RSP + data             │                      │                 │                       │
+    │  Pop RSP + data                │                      │                 │                       │
     │  from ahb_fifo_*               │                      │                 │                       │
 ```
 
-1. Host CPU writes RD_REQ descriptor (4 words: length, header, dest_addr, length/size) to TX aperture (`ahb_tx_*`). No data payload. AHB completes immediately after local FIFO writes.
+#### Single read (N=0, 2 credits)
+
+1. Host CPU writes RD_REQ with N=0 (2 words: packed header + dest_addr) to TX aperture. AHB completes immediately.
 2. FC adapter encodes each word as `{PKT_FIFO_DATA, haddr[13:0], hwdata}` and transmits via TideLink FC node (data_id=0xa1).
-3. Remote FC adapter receives each packet and drives `fc_rx_fifo_*` internal AHB master, writing into device FIFO via the FIFO mux. When the final word is written, `packet_committed_irq` fires on the device.
-4. Device CPU services the interrupt, pops the RD_REQ descriptor from `ahb_fifo_*`, and performs the local AHB reads at the `dest_addr` specified in the descriptor.
-5. Device CPU constructs an RD_RSP packet (header + read data) and writes it word-by-word to the device TX aperture.
-6. The RD_RSP traverses the link in the same way: FIFO_DATA packets → remote FC adapter → `fc_rx_fifo_*` → host FIFO. When all words are received, `packet_committed_irq` fires on the host.
-7. Host CPU pops the RD_RSP and data from `ahb_fifo_*`. The host AHB bus was never stalled; the host CPU was free for other work between steps 1 and 7.
+3. Remote FC adapter writes into device FIFO. When dest_addr (offset 0x0004) is written, `packet_committed_irq` fires.
+4. Device CPU pops the 2-word header, reads 1 word at `dest_addr`.
+5. Device CPU constructs RSP (N=1: header + 1 data word) and writes to device TX aperture.
+6. RSP traverses the link; `packet_committed_irq` fires on the host.
+7. Host CPU pops the RSP header and reads the returned data word.
+
+#### Burst read (N=1, 3 credits)
+
+1. Host CPU writes RD_REQ with N=1 (3 words: packed header + dest_addr + `beat_count|size`) to TX aperture.
+2–3. Same as single read — FC adapter transmits, device FIFO receives, `packet_committed_irq` fires.
+4. Device CPU pops the 2-word header and the burst descriptor payload. Reads `beat_count` sequential words starting at `dest_addr` using the specified transfer `size`.
+5. Device CPU constructs RSP (N=`beat_count`: header + read data) and writes to device TX aperture.
+6–7. Same as single read — RSP traverses link, host pops header and `beat_count` data words.
 
 ### 7.4 Credit Return Flow
 

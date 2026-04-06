@@ -213,7 +213,9 @@ TESTS = test_top_single_packet \
         test_top_credit_exhaustion \
         test_top_reset_recovery \
         test_top_long_running \
-        test_top_mixed_traffic
+        test_top_mixed_traffic \
+        test_top_coordinated_reset \
+        test_top_addr_translate
 
 # AHB passthrough hangs: Wlink AXI FC target not accepting from XHB500.
 # Needs Wlink AXI FC path initialization (future work).

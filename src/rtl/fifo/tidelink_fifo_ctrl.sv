@@ -97,7 +97,9 @@ module tidelink_fifo_ctrl #(
     wire fc_write_complete = fc_write_valid && (fc_wr_addr == write_target_addr_r);
 
     // AHB path completion (preserved for CPU reads + testbench backward compat)
-    wire ahb_valid_transfer = hsel && htrans[1] && hready && (packet_word_length_r != '0);
+    // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
+    // beats from burst transfers which the FIFO logic cannot handle correctly.
+    wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && (packet_word_length_r != '0);
     wire ahb_write_complete = ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
@@ -147,7 +149,8 @@ module tidelink_fifo_ctrl #(
     // AHB writes use the standard 2-phase protocol (pipelined capture).
     // AHB reads use check_addr_r to capture length from SRAM read data.
 
-    wire valid_ahb_access = hsel && htrans[1] && hready;
+    // Shortcoming #14 fix: NONSEQ only (htrans == 2'b10), reject SEQ bursts
+    wire valid_ahb_access = hsel && (htrans == 2'b10) && hready;
 
     // FC write to addr 0: same-cycle length capture
     wire fc_write_addr0 = fc_wr_valid && fc_wr_write && (fc_wr_addr == '0);
@@ -165,6 +168,14 @@ module tidelink_fifo_ctrl #(
         end
     end
 
+    // Shortcoming #3: maximum valid packet word length (total_words = length + 1 <= MAX_CREDITS)
+    localparam [RAM_ADDR_W-1:0] MAX_PACKET_LEN = RAM_ADDR_W'(MAX_CREDITS - 1);
+
+    // Clamp a raw length value to MAX_PACKET_LEN
+    function automatic [RAM_ADDR_W-1:0] clamp_length(input [RAM_ADDR_W-1:0] raw);
+        clamp_length = (raw > MAX_PACKET_LEN) ? MAX_PACKET_LEN : raw;
+    endfunction
+
     always_comb begin
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
@@ -176,16 +187,19 @@ module tidelink_fifo_ctrl #(
             check_addr_nxt = 1'b0;
         end else if (fc_write_addr0) begin
             // FC direct write to addr 0: capture length immediately (same cycle)
-            packet_word_length_nxt = fc_wr_wdata;
+            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
+            packet_word_length_nxt = clamp_length(fc_wr_wdata);
         end else if (capture_write_length_r) begin
             // AHB data phase of write to addr 0: hwdata is now valid
-            packet_word_length_nxt = hwdata;
+            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
+            packet_word_length_nxt = clamp_length(hwdata);
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
             // AHB read from addr 0: set flag to capture length from SRAM next cycle
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag
-            packet_word_length_nxt = rdata;
+            // Shortcoming #3 fix: clamp to prevent SRAM boundary overrun
+            packet_word_length_nxt = clamp_length(rdata);
             check_addr_nxt = 1'b0;
         end
 
@@ -220,7 +234,11 @@ module tidelink_fifo_ctrl #(
     always_comb begin
         credit_count_nxt = credit_count_r;
         if (write_complete) begin
-            credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_delta);
+            // BUG-002 fix: saturate at zero to prevent unsigned underflow wrap
+            if (credit_count_r >= (RAM_ADDR_W-1)'(packet_delta))
+                credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_delta);
+            else
+                credit_count_nxt = '0;
         end else if (read_complete) begin
             credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_delta);
         end
@@ -278,9 +296,9 @@ module tidelink_fifo_ctrl #(
     logic overrun_r, underrun_r;
 
     wire overrun_event  = ((fc_wr_valid && fc_wr_write) ||
-                           (hsel && htrans[1] && hready && hwrite))
+                           (hsel && (htrans == 2'b10) && hready && hwrite))
                           && (credit_count_r == '0);
-    wire underrun_event = hsel && htrans[1] && hready && ~hwrite
+    wire underrun_event = hsel && (htrans == 2'b10) && hready && ~hwrite
                           && (credit_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS)));
 
     always_ff @(posedge hclk or negedge hresetn) begin

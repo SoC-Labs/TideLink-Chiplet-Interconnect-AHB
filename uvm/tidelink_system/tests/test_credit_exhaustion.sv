@@ -105,10 +105,10 @@ class test_credit_exhaustion extends tidelink_system_base_test;
     // Step 5: Send one more packet to confirm system works after recovery
     `uvm_info("TEST", "Step 5: Verification packet after recovery", UVM_LOW)
     pkt_data = new[4];
-    pkt_data[0] = 32'hRECO_VER1;
-    pkt_data[1] = 32'hRECO_VER2;
-    pkt_data[2] = 32'hRECO_VER3;
-    pkt_data[3] = 32'hRECO_VER4;
+    pkt_data[0] = 32'hEEC0_BE21;
+    pkt_data[1] = 32'hEEC0_BE22;
+    pkt_data[2] = 32'hEEC0_BE23;
+    pkt_data[3] = 32'hEEC0_BE24;
     write_packet(SIDE_A, pkt_data);
     repeat (30) @(posedge tb_if.clk);
     read_packet(SIDE_B, 4, read_data);

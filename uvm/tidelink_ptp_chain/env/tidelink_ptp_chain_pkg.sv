@@ -115,6 +115,7 @@ package tidelink_ptp_chain_pkg;
   `include "test_chain_b_unlock_c_holds.sv"
   `include "test_chain_stress.sv"
   `include "test_chain_force_enable.sv"
+  `include "test_chain_gate_functional.sv"
 
 endpackage
 

@@ -533,3 +533,103 @@ async def test_17_flush_clears_master_error_register(dut):
         "master_error should still be 0 after flush when already clear"
 
     dut._log.info("flush on already-clear master_error — passed")
+
+
+# ── Shortcoming #5: Retry Mechanism Tests ───────────────────────────────────
+
+async def setup_manual_ahb(dut):
+    """Setup without AHBLiteSlaveRAM — drive hready/hresp manually."""
+    cocotb.start_soon(Clock(dut.hclk, CLK_PERIOD_NS, units="ns").start())
+
+
+@cocotb.test()
+async def test_18_retry_on_transient_error(dut):
+    """Returner retries after hresp=1 and succeeds on subsequent attempt.
+
+    Inject one error response, then OK. The returner should retry and
+    complete without setting master_error.
+    """
+    await setup_manual_ahb(dut)
+    await do_reset(dut)
+
+    # Drive AHB ready, no error
+    dut.hready.value = 1
+    dut.hresp.value = 0
+
+    # Configure channel 0
+    dut.write_addr_0.value = 0x1000
+    dut.write_data_0.value = 0xCAFE0001
+
+    # Pulse interrupt
+    await pulse_interrupt(dut, 0)
+
+    # Wait for ADDR_PHASE (htrans goes to NONSEQ)
+    for _ in range(10):
+        await RisingEdge(dut.hclk)
+        if int(dut.htrans.value) == 2:
+            break
+
+    # Accept addr phase (hready=1 already)
+    await RisingEdge(dut.hclk)
+    # Now in DATA_PHASE — inject error
+    dut.hresp.value = 1
+    await RisingEdge(dut.hclk)
+    # Error accepted, should retry (go back to ADDR_PHASE)
+    dut.hresp.value = 0
+
+    # Wait for retry ADDR_PHASE
+    for _ in range(10):
+        await RisingEdge(dut.hclk)
+        if int(dut.htrans.value) == 2:
+            break
+
+    # Let retry succeed
+    await RisingEdge(dut.hclk)  # data phase
+    await RisingEdge(dut.hclk)  # completion
+
+    await wait_not_busy(dut)
+
+    assert int(dut.master_error.value) == 0, \
+        "master_error should NOT be set after successful retry"
+
+    dut._log.info("Retry on transient error — passed")
+
+
+@cocotb.test()
+async def test_19_master_error_after_all_retries_exhausted(dut):
+    """After RETRY_COUNT+1 consecutive errors, master_error should be set."""
+    await setup_manual_ahb(dut)
+    await do_reset(dut)
+
+    dut.hready.value = 1
+    dut.hresp.value = 0
+
+    dut.write_addr_0.value = 0x2000
+    dut.write_data_0.value = 0xDEAD0001
+
+    # Pulse interrupt
+    await pulse_interrupt(dut, 0)
+
+    # Hold hresp=1 permanently — every data phase will see an error.
+    # The returner should retry 3 times then give up.
+    # Wait for first ADDR_PHASE
+    for _ in range(10):
+        await RisingEdge(dut.hclk)
+        if int(dut.htrans.value) == 2:
+            break
+
+    # Now hold hresp=1 for all subsequent data phases
+    dut.hresp.value = 1
+
+    # Run for enough cycles to exhaust all retries (each attempt is ~3 cycles)
+    for _ in range(50):
+        await RisingEdge(dut.hclk)
+        if int(dut.master_error.value) == 1:
+            break
+
+    dut.hresp.value = 0
+
+    assert int(dut.master_error.value) == 1, \
+        "master_error should be set after all retries exhausted"
+
+    dut._log.info("master_error set after retry exhaustion — passed")

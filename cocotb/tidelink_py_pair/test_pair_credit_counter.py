@@ -230,3 +230,63 @@ async def test_ptc_08_end_to_end_with_fifo_writes(dut):
     counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
     dut._log.info(f"After consuming 5: counter={counter}")
     assert counter == 2, f"Expected 2, got {counter}"
+
+
+@cocotb.test()
+async def test_ptc_09_underflow_saturates_at_zero(dut):
+    """Shortcoming #7: Consuming more credits than available must saturate
+    the pair credit counter at 0, not wrap to a large unsigned value."""
+    pair = await setup_with_pair(dut)
+    await apb_read(dut, OFF_RELEASED_CREDITS)
+    await ClockCycles(dut.hclk, 2)
+
+    # Add 10 credits
+    await apb_write(dut, OFF_RELEASED_CREDITS, 10)
+    await ClockCycles(dut.hclk, 2)
+
+    counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
+    assert counter == 10, f"Expected 10, got {counter}"
+
+    # Over-consume: try to subtract 25 from a counter of 10
+    await apb_write(dut, OFF_PAIR_CREDIT_CONSUME, 25)
+    await ClockCycles(dut.hclk, 2)
+
+    counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
+    dut._log.info(f"After over-consuming 25 from 10: counter={counter}")
+
+    # Should saturate at 0, NOT wrap to a huge value
+    assert counter == 0, (
+        f"Pair credit counter should saturate at 0, got {counter}. "
+        f"If large, the 32-bit counter has wrapped — Shortcoming #7."
+    )
+
+
+@cocotb.test()
+async def test_ptc_10_underflow_guard_normal_path(dut):
+    """Verify the underflow guard does not affect normal consume operations."""
+    pair = await setup_with_pair(dut)
+    await apb_read(dut, OFF_RELEASED_CREDITS)
+    await ClockCycles(dut.hclk, 2)
+
+    # Add 100 credits
+    await apb_write(dut, OFF_RELEASED_CREDITS, 100)
+    await ClockCycles(dut.hclk, 2)
+
+    # Consume exactly 100 — should reach 0 without saturation issues
+    await apb_write(dut, OFF_PAIR_CREDIT_CONSUME, 50)
+    await ClockCycles(dut.hclk, 2)
+    counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
+    assert counter == 50, f"Expected 50, got {counter}"
+
+    await apb_write(dut, OFF_PAIR_CREDIT_CONSUME, 50)
+    await ClockCycles(dut.hclk, 2)
+    counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
+    assert counter == 0, f"Expected 0, got {counter}"
+
+    # Add more after reaching 0 — should still work
+    await apb_write(dut, OFF_RELEASED_CREDITS, 5)
+    await ClockCycles(dut.hclk, 2)
+    counter = await apb_read(dut, OFF_PAIR_CREDIT_COUNTER)
+    assert counter == 5, f"Expected 5 after adding to 0, got {counter}"
+
+    dut._log.info("Normal consume path unaffected by underflow guard — passed")

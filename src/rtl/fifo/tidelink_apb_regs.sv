@@ -134,13 +134,17 @@ module tidelink_apb_regs #(
     // [0] EN:    Reserved (reads as 0). Formerly gated AHB data window accesses.
     // [1] FLUSH: Write 1 to reset pointers, packet state, and sticky errors.
     //            Self-clearing.
+    // [2] LOCK:  Shortcoming #25 fix — write-once. Once set, prevents modification
+    //            of pair_base_addr and release_threshold until next reset.
     logic ctrl_flush_r;
+    logic ctrl_lock_r;
 
     assign ctrl_flush  = ctrl_flush_r;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             ctrl_flush_r  <= 1'b0;
+            ctrl_lock_r   <= 1'b0;
         end else begin
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
@@ -148,6 +152,9 @@ module tidelink_apb_regs #(
             if (apb_write && (apb_region == 3'b000) && paddr[4:2] == 3'h7) begin
                 if (pwdata[1])
                     ctrl_flush_r <= 1'b1;
+                // LOCK is write-once: can only be set, never cleared by software
+                if (pwdata[2])
+                    ctrl_lock_r <= 1'b1;
             end
         end
     end
@@ -162,8 +169,10 @@ module tidelink_apb_regs #(
 
             if (apb_write && (apb_region == 3'b000)) begin
                 case (paddr[4:2])
-                    3'h0: pair_base_addr    <= pwdata[SYS_ADDR_W-1:0];
-                    3'h1: release_threshold <= pwdata;
+                    // Shortcoming #25: pair_base_addr and release_threshold
+                    // gated by lock bit
+                    3'h0: if (!ctrl_lock_r) pair_base_addr    <= pwdata[SYS_ADDR_W-1:0];
+                    3'h1: if (!ctrl_lock_r) release_threshold <= pwdata;
                     3'h5: doorbell_trigger  <= 1'b1;
                     default: ;
                 endcase
@@ -171,18 +180,43 @@ module tidelink_apb_regs #(
         end
     end
 
-    // ── Reset deassertion detector ────────────────────────────────────────────
+    // ── Reset deassertion detector with debounce (Shortcoming #13) ────────────
+    // The two-stage synchroniser detects async-to-sync reset deassertion.
+    // A 4-cycle debounce counter filters glitches on hresetn during deassertion,
+    // preventing multiple doorbell writes from reset bounce.
 
     logic reset_n_d1, reset_n_d2;
-    assign reset_deassert_pulse = reset_n_d1 & ~reset_n_d2;
+    logic [2:0] debounce_count_r;
+    logic debounce_stable_r;
+
+    // Raw edge: synchronised reset just deasserted
+    wire reset_n_raw_edge = reset_n_d1 & ~reset_n_d2;
+
+    // Pulse only fires after stable for 4 consecutive cycles
+    assign reset_deassert_pulse = debounce_stable_r;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            reset_n_d1 <= 1'b0;
-            reset_n_d2 <= 1'b0;
+            reset_n_d1       <= 1'b0;
+            reset_n_d2       <= 1'b0;
+            debounce_count_r <= '0;
+            debounce_stable_r <= 1'b0;
         end else begin
             reset_n_d1 <= 1'b1;
             reset_n_d2 <= reset_n_d1;
+
+            // Debounce: count consecutive cycles where synchroniser output is stable high
+            debounce_stable_r <= 1'b0;  // Default: no pulse
+            if (!reset_n_d1) begin
+                // Reset still active (or bouncing low) — restart count
+                debounce_count_r <= '0;
+            end else if (debounce_count_r < 3'd4) begin
+                debounce_count_r <= debounce_count_r + 3'd1;
+            end else if (debounce_count_r == 3'd4) begin
+                // Stable for 4 cycles — emit pulse once
+                debounce_stable_r <= 1'b1;
+                debounce_count_r  <= 3'd5;  // Saturate to prevent re-firing
+            end
         end
     end
 
@@ -190,12 +224,23 @@ module tidelink_apb_regs #(
 
     logic [15:0] released_credits_acc;
 
+    // Shortcoming #8 fix: handle simultaneous read-clear and write-add explicitly.
+    // On standard APB, apb_read and apb_write are mutually exclusive (pwrite is
+    // a single bit), so the simultaneous case cannot occur. This explicit handling
+    // is defensive — if a future integration adds a second write port, the incoming
+    // write value is retained rather than silently lost.
+    wire acc0_read  = apb_read  && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
+    wire acc0_write = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             released_credits_acc <= '0;
-        end else if (apb_read && (apb_region == 3'b001) && paddr[4:2] == 3'h0) begin
+        end else if (acc0_read && acc0_write) begin
+            // Simultaneous: clear old total, retain new delta
+            released_credits_acc <= pwdata[15:0];
+        end else if (acc0_read) begin
             released_credits_acc <= '0;
-        end else if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0) begin
+        end else if (acc0_write) begin
             // Saturating 16-bit add: clamp at 0xFFFF on overflow
             if ({1'b0, released_credits_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
                 released_credits_acc <= 16'hFFFF;
@@ -210,12 +255,18 @@ module tidelink_apb_regs #(
 
     logic [15:0] doorbell_response_acc;
 
+    // Same defensive handling as released_credits_acc (Shortcoming #8)
+    wire acc1_read  = apb_read  && (apb_region == 3'b001) && paddr[4:2] == 3'h1;
+    wire acc1_write = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h1;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             doorbell_response_acc <= '0;
-        end else if (apb_read && (apb_region == 3'b001) && paddr[4:2] == 3'h1) begin
+        end else if (acc1_read && acc1_write) begin
+            doorbell_response_acc <= pwdata[15:0];
+        end else if (acc1_read) begin
             doorbell_response_acc <= '0;
-        end else if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h1) begin
+        end else if (acc1_write) begin
             // Saturating 16-bit add: clamp at 0xFFFF on overflow
             if ({1'b0, doorbell_response_acc} + {1'b0, pwdata[15:0]} > 17'h0FFFF)
                 doorbell_response_acc <= 16'hFFFF;
@@ -249,7 +300,11 @@ module tidelink_apb_regs #(
                 end else if (pair_counter_increment) begin
                     pair_credit_counter <= pair_credit_counter + pwdata;
                 end else if (pair_counter_decrement) begin
-                    pair_credit_counter <= pair_credit_counter - pwdata;
+                    // Shortcoming #7 fix: saturate at zero to prevent unsigned underflow wrap
+                    if (pair_credit_counter >= pwdata)
+                        pair_credit_counter <= pair_credit_counter - pwdata;
+                    else
+                        pair_credit_counter <= '0;
                 end
             end
         end
@@ -367,8 +422,14 @@ module tidelink_apb_regs #(
                                  fifo_overrun,        // [1]
                                  returner_busy        // [0]
                              };
+                    // Shortcoming #11: peripheral ID/version register
+                    // Reads from doorbell address (0x014) return ID.
+                    // [31:16] = component ID (0x544C = "TL" for TideLink)
+                    // [15:8]  = major version
+                    // [7:0]   = minor version
+                    3'h5:    prdata = 32'h544C_0100;  // TideLink v1.0
                     3'h6:    prdata = release_acc;
-                    3'h7:    prdata = {(SYS_DATA_W){1'b0}};
+                    3'h7:    prdata = {{(SYS_DATA_W-3){1'b0}}, ctrl_lock_r, 2'b00};
                     default: ;
                 endcase
             end
@@ -401,6 +462,32 @@ module tidelink_apb_regs #(
     end
 
     assign pready  = 1'b1;
-    assign pslverr = 1'b0;
+
+    // Shortcoming #12 fix: assert pslverr for invalid accesses
+    // (writes to RO registers, reads from WO registers)
+    logic pslverr_comb;
+    always_comb begin
+        pslverr_comb = 1'b0;
+        if (psel && penable) begin
+            case (apb_region)
+                3'b000: begin
+                    if (pwrite) begin
+                        case (paddr[4:2])
+                            3'h2, 3'h3, 3'h4, 3'h6: pslverr_comb = 1'b1; // Write to RO: PKT_WORD_LEN, CREDIT_COUNT, STATUS, REL_ACC
+                            default: ;
+                        endcase
+                    end
+                end
+                3'b001: begin
+                    if (pwrite && paddr[4:2] == 3'h2)
+                        pslverr_comb = 1'b1; // Write to RO: PAIR_CREDIT_COUNTER
+                    if (!pwrite && paddr[4:2] == 3'h3)
+                        pslverr_comb = 1'b1; // Read from WO: PAIR_CREDIT_CONSUME
+                end
+                default: ;
+            endcase
+        end
+    end
+    assign pslverr = pslverr_comb;
 
 endmodule

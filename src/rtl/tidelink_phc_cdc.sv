@@ -165,30 +165,60 @@ end else begin : gen_cdc
     // =================================================================
 
     // =====================================================================
-    // Path 4: HW Capture Trigger (hclk → phc_clk) — Toggle Pulse Sync
+    // Path 4: HW Capture Trigger (hclk → phc_clk) — Toggle Handshake
     // =====================================================================
+    // Full req/ack handshake (same pattern as Paths 5/6) guarantees the
+    // toggle is held stable long enough for phc_clk to sample it.  The
+    // busy flag blocks further captures until phc_clk acknowledges.
+    // In practice PTP events are spaced milliseconds apart so the busy
+    // gate never fires, but the handshake satisfies CDC formal checks.
 
     (* cdc_sync = "true" *)
     logic [SYNC_STAGES-1:0] cap_trig_sync_p;
+    (* cdc_sync = "true" *)
+    logic [SYNC_STAGES-1:0] cap_ack_sync_h;
     logic                   cap_trig_toggle_h;
     logic                   cap_trig_prev_p;
+    logic                   cap_ack_toggle_p;
+    logic                   cap_ack_prev_h;
+    logic                   cap_busy_h;
 
-    // hclk: toggle on capture pulse
+    // hclk: toggle on capture pulse (gated by busy)
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
+        if (!hresetn) begin
             cap_trig_toggle_h <= 1'b0;
-        else if (h_hw_capture)
-            cap_trig_toggle_h <= ~cap_trig_toggle_h;
+            cap_busy_h        <= 1'b0;
+            cap_ack_sync_h    <= '0;
+            cap_ack_prev_h    <= 1'b0;
+        end else begin
+            cap_ack_sync_h <= {cap_ack_sync_h[SYNC_STAGES-2:0], cap_ack_toggle_p};
+            cap_ack_prev_h <= cap_ack_sync_h[SYNC_STAGES-1];
+
+            // Ack received: clear busy
+            if (cap_ack_sync_h[SYNC_STAGES-1] ^ cap_ack_prev_h)
+                cap_busy_h <= 1'b0;
+
+            // New capture: toggle req and set busy
+            if (h_hw_capture && !cap_busy_h) begin
+                cap_trig_toggle_h <= ~cap_trig_toggle_h;
+                cap_busy_h        <= 1'b1;
+            end
+        end
     end
 
-    // phc_clk: synchronize toggle, detect edge
+    // phc_clk: synchronize toggle, detect edge, toggle ack
     always_ff @(posedge phc_clk or negedge phc_resetn) begin
         if (!phc_resetn) begin
             cap_trig_sync_p <= '0;
             cap_trig_prev_p <= 1'b0;
+            cap_ack_toggle_p <= 1'b0;
         end else begin
             cap_trig_sync_p <= {cap_trig_sync_p[SYNC_STAGES-2:0], cap_trig_toggle_h};
             cap_trig_prev_p <= cap_trig_sync_p[SYNC_STAGES-1];
+
+            // On req edge: acknowledge
+            if (cap_trig_sync_p[SYNC_STAGES-1] ^ cap_trig_prev_p)
+                cap_ack_toggle_p <= ~cap_ack_toggle_p;
         end
     end
 

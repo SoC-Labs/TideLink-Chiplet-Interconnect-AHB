@@ -150,7 +150,11 @@ TESTS = test_single_packet \
         test_interleaved_types \
         test_error_injection \
         test_reset_recovery \
-        test_long_running
+        test_long_running \
+        test_pair_credit_underflow \
+        test_partial_packet_abandon \
+        test_error_recovery \
+        test_throughput_latency
 
 # ---------------------------------------------------------------
 # Targets

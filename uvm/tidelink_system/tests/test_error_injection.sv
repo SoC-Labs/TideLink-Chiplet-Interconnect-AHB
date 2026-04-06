@@ -96,7 +96,7 @@ class test_error_injection extends tidelink_system_base_test;
     `uvm_info("TEST", "Test 4: Verify normal operation after errors", UVM_LOW)
 
     pkt_data = new[4];
-    pkt_data[0] = 32'hAFTE_RERR;
+    pkt_data[0] = 32'hAF1E_EE22;
     pkt_data[1] = 32'h1111_1111;
     pkt_data[2] = 32'h2222_2222;
     pkt_data[3] = 32'h3333_3333;

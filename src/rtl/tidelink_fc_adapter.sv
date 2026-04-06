@@ -134,6 +134,8 @@ module tidelink_fc_adapter #(
     // Forward declarations for skid buffer and arbiter signals (defined below)
     wire skid_can_accept;
     wire rtn_fc_valid;
+    wire sideband_grant;
+    wire arb_valid;
 
     // Address phase detection
     wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite;
@@ -150,7 +152,7 @@ module tidelink_fc_adapter #(
             if (tx_valid_addr_phase) begin
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
-            end else if (tx_data_phase_r && skid_can_accept && !rtn_fc_valid && !servo_fc_valid) begin
+            end else if (tx_data_phase_r && skid_can_accept && !sideband_grant) begin
                 // Data phase completed, skid buffer accepted the word
                 tx_data_phase_r <= 1'b0;
             end
@@ -162,8 +164,8 @@ module tidelink_fc_adapter #(
     wire                 tx_fc_valid = tx_data_phase_r;
 
     // TX aperture HREADY: stall when in data phase and skid buffer full,
-    // or when returner/servo have priority on the arbiter
-    assign ahb_tx_hreadyout = tx_data_phase_r ? (skid_can_accept & ~rtn_fc_valid & ~servo_fc_valid) : 1'b1;
+    // or when sideband has priority on the arbiter (unless starved)
+    assign ahb_tx_hreadyout = tx_data_phase_r ? (skid_can_accept & ~sideband_grant) : 1'b1;
     assign ahb_tx_hresp     = 1'b0;  // No error responses
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only
 
@@ -213,15 +215,40 @@ module tidelink_fc_adapter #(
     // =========================================================================
     // TX Arbiter + Skid Buffer
     // =========================================================================
-    // Priority: returner sideband > servo > TX aperture
+    // Priority: returner sideband > servo > TX aperture (with fairness)
     // A 1-entry skid buffer decouples the Wlink FC ready signal from the
     // AHB HREADY critical path. Common case (skid empty): AHB completes
     // without any Wlink timing dependency.
+    //
+    // Shortcoming #26 fix: after MAX_SIDEBAND_BURST consecutive sideband
+    // grants, force one TX aperture grant to prevent indefinite starvation.
 
-    // Arbiter output (combinational)
-    wire                  arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
-    wire [FC_DATA_W-1:0] arb_data  = rtn_fc_valid   ? rtn_fc_word  :
-                                     servo_fc_valid ? servo_fc_data :
+    localparam MAX_SIDEBAND_BURST = 4;
+    localparam SB_CNT_W = $clog2(MAX_SIDEBAND_BURST + 1);
+
+    logic [SB_CNT_W-1:0] sideband_burst_r;
+    wire sideband_starving = (sideband_burst_r >= SB_CNT_W'(MAX_SIDEBAND_BURST))
+                             && tx_fc_valid;
+
+    // Track consecutive sideband grants
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sideband_burst_r <= '0;
+        end else if (arb_valid && skid_can_accept) begin
+            if (rtn_fc_valid || servo_fc_valid) begin
+                if (!sideband_starving && sideband_burst_r < SB_CNT_W'(MAX_SIDEBAND_BURST))
+                    sideband_burst_r <= sideband_burst_r + SB_CNT_W'(1);
+            end else begin
+                sideband_burst_r <= '0;  // TX aperture granted, reset counter
+            end
+        end
+    end
+
+    // Arbiter output: sideband has priority unless starvation limit reached
+    assign sideband_grant = (rtn_fc_valid || servo_fc_valid) && !sideband_starving;
+    assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid;
+    wire [FC_DATA_W-1:0] arb_data  = (sideband_grant && rtn_fc_valid)   ? rtn_fc_word  :
+                                     (sideband_grant && servo_fc_valid) ? servo_fc_data :
                                      tx_fc_word;
 
     // Skid buffer registers
@@ -251,8 +278,8 @@ module tidelink_fc_adapter #(
     assign tl_fc_a2l_valid = skid_valid_r;
     assign tl_fc_a2l_data  = skid_data_r;
 
-    // Servo FC ready: can enter arbiter when skid accepts and returner inactive
-    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid;
+    // Servo FC ready: can enter arbiter when skid accepts and sideband has grant
+    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~sideband_starving;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)

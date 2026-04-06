@@ -162,7 +162,7 @@ AHB Lite master interface for autonomous writes to the paired TideLink.
 |--------|------|--------|-------------|-------------|
 | 0x000 | Pair Base Address | RW | `TIDELINK_PAIR_BASE` | Base address of the paired TideLink's APB register space. The returner derives its target addresses from this value. |
 | 0x004 | Release Threshold | RW | 20 | Minimum accumulated credits before triggering a release to the pair. Set to 0 for immediate per-packet release. |
-| 0x008 | Packet Word Length | RO | 0 | In-flight packet's data word count, captured from FIFO sideband. Non-zero only while a packet write or read is in progress; cleared to 0 on `write_complete` or `read_complete`. Not suitable for polling to detect packet arrival — use `packet_committed_irq` instead. |
+| 0x008 | Packet Word Length | RO | 0 | In-flight packet's data payload word count, extracted from bits [31:20] of Word 0. Non-zero only while a packet write or read is in progress; cleared to 0 on `write_complete` or `read_complete`. Note: this is the payload length N, not the total FIFO occupancy (N + 2). Not suitable for polling to detect packet arrival — use `packet_committed_irq` instead. |
 | 0x00C | Credit Count | RO | MAX_CREDITS | Available credits in the local FIFO. Decremented on write, incremented on read. |
 | 0x010 | Status | RO | 0 | Bit 0: returner_busy. Bit 1: overrun (sticky). Bit 2: underrun (sticky). Bit 3: master_error (sticky). Bit 4: packet_committed (mirrors `packet_committed_irq`; pollable). |
 | 0x014 | Doorbell | WO | 0 | Write any value to generate a one-cycle doorbell trigger pulse. Self-clearing (singlepulse). |
@@ -193,25 +193,39 @@ The returner derives three target addresses from the Pair Base Address register 
 
 ### 7.1 Packet Format
 
-A TideLink packet consists of a length word followed by data words:
+A TideLink packet consists of a 2-word header followed by an optional data payload. The first word packs the payload length and routing fields; the second carries the destination address. Hardware extracts only the length field (bits [31:20] of Word 0) — all other fields are opaque to the FIFO and interpreted solely by software on the receiving side.
 
 | Word Index | Content |
 |------------|---------|
-| 0 (address 0x000) | Packet word length N (number of data words that follow) |
-| 1 (address 0x004) | Data word 0 |
-| 2 (address 0x008) | Data word 1 |
+| 0 (address 0x000) | `length[31:20] | pkt_type[19:18] | src_id[17:13] | dest_id[12:8] | tag[7:0]` |
+| 1 (address 0x004) | `dest_addr[31:0]` |
+| 2 (address 0x008) | Payload word 0 (type-specific, see below) |
 | ... | ... |
-| N (address N×4) | Data word N-1 |
+| N+1 (address (N+1)×4) | Payload word N-1 |
 
-Total FIFO occupancy per packet: N + 1 credits (1 length word + N data words).
+The `length` field (N) counts payload words only. Total FIFO occupancy per packet: N + 2 credits (2 header words + N payload words).
+
+**Packet types** (2 bits, `pkt_type`): RD_REQ (0b00), WR_REQ (0b01), RSP (0b10), Reserved (0b11).
+
+**Per-type payload:**
+
+| Type | N | Payload | Total credits |
+|------|---|---------|---------------|
+| RD_REQ (single) | 0 | None — read 1 word at dest_addr | 2 |
+| RD_REQ (burst) | 1 | `beat_count[31:3] \| size[2:0]` | 3 |
+| WR_REQ | P | P data words to write at dest_addr | P + 2 |
+| RSP (write ack / error) | 0 | None | 2 |
+| RSP (read data) | P | P data words from dest_addr | P + 2 |
+
+See `TIDELINK_SPECIFICATION.md` Section 7.1 for full field definitions, bit-level encoding, and flow diagrams.
 
 ### 7.2 FIFO Control Logic
 
 The FIFO uses a circular buffer implemented in SRAM with read and write pointers.
 
 **Metadata capture** (on data phase of AHB transfer to address 0):
-- **Write to address 0**: `hwdata` is captured as the packet word length. The write target address is computed as `packet_word_length × 4`. The packet committed IRQ is armed.
-- **Read from address 0**: A check flag is set; the read data from SRAM is captured on the next cycle as the packet word length. The read target address is computed as `packet_word_length × 4`.
+- **Write to address 0**: Bits [31:20] of `hwdata` are extracted as the packet payload length. The write target address is computed as `(packet_word_length + 1) × 4` (the dest_addr word plus N payload words). The packet committed IRQ is armed.
+- **Read from address 0**: A check flag is set; bits [31:20] of the SRAM read data are captured on the next cycle as the packet payload length. The read target address is computed as `(packet_word_length + 1) × 4`.
 
 **Address translation**: The AHB address presented to the SRAM is offset by the current pointer:
 ```
@@ -225,9 +239,11 @@ write_complete = valid_transfer & (haddr == write_target_addr) & hwrite
 read_complete  = valid_transfer & (haddr == read_target_addr)  & ~hwrite
 ```
 
-**Pointer advancement**:
-- On `write_complete`: `write_ptr += (packet_word_length + 1) × 4`
-- On `read_complete`: `read_ptr += (packet_word_length + 1) × 4`
+Note: for header-only packets (N=0), `packet_word_length` is 0 but the target address is `(0 + 1) × 4 = 0x0004` (the dest_addr word). The `valid_transfer` gate requires `packet_word_length != 0` — this condition must be updated to account for the 2-word header minimum (see Section 7.2 hardware change notes).
+
+**Pointer advancement** — `packet_delta = packet_word_length + 2` (header word + dest_addr word + N payload words):
+- On `write_complete`: `write_ptr += packet_delta × 4`
+- On `read_complete`: `read_ptr += packet_delta × 4`
 
 Pointers wrap naturally at the SRAM boundary (14-bit unsigned arithmetic).
 
@@ -239,14 +255,14 @@ Each credit represents one 32-bit word of SRAM capacity. The local credit counte
 |-------|-------------|
 | Reset | `credit_count = MAX_CREDITS` |
 | Flush | `credit_count = MAX_CREDITS` |
-| `write_complete` | `credit_count -= (packet_word_length + 1)` |
-| `read_complete` | `credit_count += (packet_word_length + 1)` |
+| `write_complete` | `credit_count -= (packet_word_length + 2)` |
+| `read_complete` | `credit_count += (packet_word_length + 2)` |
 
 ### 7.4 Credit Release Mechanism
 
 When a packet is read from the FIFO, the freed credits must be communicated back to the transmitting chiplet so it can send more data. This is handled by the release threshold accumulator and the returner.
 
-1. On `read_complete`, the delta `(packet_word_length + 1)` is added to the release accumulator.
+1. On `read_complete`, the delta `(packet_word_length + 2)` is added to the release accumulator.
 2. The release trigger fires when `release_acc + pending_delta >= threshold` (or immediately if `threshold == 0`).
 3. When the trigger fires, the accumulated delta is registered as `credit_delta_data`, the release accumulator is cleared, and the returner's channel 0 interrupt is asserted.
 4. The returner performs an AHB write of `credit_delta_data` to the pair's Released Credits Accumulator (pair_base + 0x020).
@@ -353,7 +369,7 @@ All variants expose the same interface: `CS`, `ADDR`, `WDATA`, `WREN[3:0]`, `RDA
 
 ## 10. Constraints and Limitations
 
-- Maximum packet size: `MAX_CREDITS - 1` data words (4095 words with default 16 KB SRAM).
+- Maximum packet payload: `MAX_CREDITS - 2` data words (4094 words with default 16 KB SRAM). The 2-word header is always present, so total occupancy is payload + 2.
 - Only one packet may be in-flight (being written or being read) at a time. The next packet's metadata capture at address 0 overwrites the current packet's length.
 - The FIFO data window does not generate AHB error responses. Overrun and underrun are indicated only via sticky status flags.
 - The returner is write-only and performs only single-beat NONSEQ transfers.

@@ -92,43 +92,61 @@ In slave mode, the remote master can configure Wlink registers via the I2C sideb
 
 ### Writing a Packet (Transmit Side)
 
-A write packet has a one-word header followed by the data payload:
+A packet has a 2-word header followed by an optional data payload:
 
 ```
  FIFO Address   Content
- ┌───────────┬────────────────────────────────┐
- │  0x0000   │  Length (N)                    │  ← Header: number of data words
- ├───────────┼────────────────────────────────┤
- │  0x0004   │  Data[0]                       │
- ├───────────┼────────────────────────────────┤
- │  0x0008   │  Data[1]                       │
- ├───────────┼────────────────────────────────┤
- │    ...    │  ...                           │
- ├───────────┼────────────────────────────────┤
- │  N × 4   │  Data[N-1]                      │  ← Final write triggers completion
- └───────────┴────────────────────────────────┘
-              ◄──── All words are 32 bits ────►
+ ┌───────────┬──────────────────────────────────────────────────────────┐
+ │  0x0000   │  length[31:20] | pkt_type[19:18] | src_id[17:13] |      │
+ │           │  dest_id[12:8] | tag[7:0]                               │
+ ├───────────┼──────────────────────────────────────────────────────────┤
+ │  0x0004   │  dest_addr[31:0]                                        │
+ ├───────────┼──────────────────────────────────────────────────────────┤
+ │  0x0008   │  Payload[0]        (type-specific, see below)            │
+ ├───────────┼──────────────────────────────────────────────────────────┤
+ │    ...    │  ...                                                    │
+ ├───────────┼──────────────────────────────────────────────────────────┤
+ │(N+1) × 4 │  Payload[N-1]       ← Final write triggers completion   │
+ └───────────┴──────────────────────────────────────────────────────────┘
+              ◄──────────────── All words are 32 bits ────────────────►
 ```
 
-The length word contains the number of **data** words only (0–4095) and does not count itself. The total FIFO occupancy is N + 1 credits (1 header + N data).
+The `length` field (bits [31:20] of Word 0) contains the number of **payload** words only (0–4095). It does not count the 2-word header. The total FIFO occupancy is N + 2 credits (2 header + N payload).
 
-To send a packet of N data words:
+Hardware extracts only the length field — all other fields (`pkt_type`, `src_id`, `dest_id`, `tag`) are opaque to the FIFO and interpreted by receiving software.
+
+**Packet types** (`pkt_type`, bits [19:18]): RD_REQ (0b00), WR_REQ (0b01), RSP (0b10), Reserved (0b11).
+
+**Payload meaning is defined per packet type:**
+
+| Type | N | Payload | Total credits |
+|------|---|---------|---------------|
+| RD_REQ (single read) | 0 | None — read 1 word at dest_addr | 2 |
+| RD_REQ (burst read) | 1 | `beat_count[31:3] \| size[2:0]` | 3 |
+| WR_REQ | P | P data words to write at dest_addr | P + 2 |
+| RSP (write ack / error) | 0 | None | 2 |
+| RSP (read data) | P | P data words from dest_addr | P + 2 |
+
+See `TIDELINK_SPECIFICATION.md` Section 7.1 for full field definitions, and `src/sw/tidelink_packet.h` (C) / `python/tidelink/packet.py` (Python) for software helpers.
+
+To send a packet with N data payload words:
 
 ```
-1. Check pair credit counter (0x028) >= N + 1, OR
+1. Check pair credit counter (0x028) >= N + 2, OR
    maintain a software credit counter from released_credits_irq
-2. Write N to FIFO address 0x000 (packet length)
-3. Write data word 0 to FIFO address 0x004
-4. Write data word 1 to FIFO address 0x008
+2. Write packed header to FIFO address 0x000
+   (length N in bits [31:20], pkt_type, src_id, dest_id, tag)
+3. Write dest_addr to FIFO address 0x004
+4. Write data word 0 to FIFO address 0x008  (if N > 0)
 5. ...
-6. Write data word N-1 to FIFO address N*4
+6. Write data word N-1 to FIFO address (N+1)*4
    → write_complete fires internally
    → packet_committed_irq asserts
-7. Write N + 1 to pair credit consume register (0x02C)
+7. Write N + 2 to pair credit consume register (0x02C)
    to decrement the pair credit counter
 ```
 
-The write to the final address (N × 4) triggers completion — pointers advance and credits are consumed automatically.
+The write to the final address ((N+1) × 4) triggers completion — pointers advance and credits are consumed automatically. For a header-only packet (N=0), completion triggers on the write to address 0x0004 (dest_addr).
 
 ### Reading a Packet (Receive Side)
 
@@ -136,17 +154,17 @@ To receive a packet:
 
 ```
 1. Wait for packet_committed_irq, or poll STATUS[4] (packet_committed) until set
-2. Read FIFO address 0x000 → returns packet length N
+2. Read FIFO address 0x000 → returns packed header (extract N from bits [31:20])
    → packet_committed_irq and STATUS[4] clear
-3. Read FIFO address 0x004 → data word 0
-4. Read FIFO address 0x008 → data word 1
+3. Read FIFO address 0x004 → dest_addr
+4. Read FIFO address 0x008 → data word 0  (if N > 0)
 5. ...
-6. Read FIFO address N*4 → data word N-1
+6. Read FIFO address (N+1)*4 → data word N-1
    → read_complete fires internally
-   → credits are freed and release mechanism triggers
+   → N + 2 credits are freed and release mechanism triggers
 ```
 
-The read from the final address triggers completion — pointers advance, credits are restored, and the release accumulator is incremented.
+The read from the final address triggers completion — pointers advance, N + 2 credits are restored, and the release accumulator is incremented.
 
 ### Interrupt-Driven Operation
 
@@ -179,9 +197,9 @@ The hardware pair credit counter at 0x028 tracks the remote FIFO's available cre
 ```
 1. After reset handshake, read 0x024 to get initial pair credits
 2. The counter at 0x028 auto-increments when pair releases credits (0x020 writes)
-3. Before sending a packet of size N+1:
-   a. Read 0x028 and check value >= N + 1
-   b. Write N + 1 to 0x02C to reserve (consume) the credits
+3. Before sending a packet with N payload words (N+2 total):
+   a. Read 0x028 and check value >= N + 2
+   b. Write N + 2 to 0x02C to reserve (consume) the credits
    c. Write the packet to the FIFO data window
 ```
 

@@ -36,19 +36,19 @@ class sys_init_sequence extends uvm_sequence #(apb_master_transaction);
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_pair_base");
     wr_seq.addr = 15'h2000 + REG_PAIR_BASE;
     wr_seq.data = pair_base_addr;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(get_sequencer());
 
     // Set release threshold (0x2000 + REG_REL_THRESHOLD)
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_threshold");
     wr_seq.addr = 15'h2000 + REG_REL_THRESHOLD;
     wr_seq.data = rel_threshold;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(get_sequencer());
 
     // Enable pair credit counter (0x2000 + REG_PAIR_CREDIT_ENABLE)
     wr_seq = integration_cfg_write_sequence::type_id::create("wr_ptc_en");
     wr_seq.addr = 15'h2000 + REG_PAIR_CREDIT_ENABLE;
     wr_seq.data = 32'h1;
-    wr_seq.start(p_sequencer);
+    wr_seq.start(get_sequencer());
 
     `uvm_info("SEQ", $sformatf("[%s] TideLink initialization complete.", side_name), UVM_LOW)
   endtask

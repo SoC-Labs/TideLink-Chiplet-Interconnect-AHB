@@ -212,6 +212,138 @@ When |sec_diff| > 1, the servo forces a phase step (direct PHC set) rather than 
 
 **Impact**: Correct design intent. The PI controller only operates on offsets where it can converge within a reasonable number of exchanges.
 
+## Design Holes
+
+### 23. No End-to-End Packet Integrity Check
+
+**Location**: `tidelink_fc_adapter.sv`, `tidelink_fifo_ctrl.sv` — FC data path
+
+The FIFO data path has no packet-level checksum, CRC, or sequence number. While the Wlink link layer provides CRC/ECC on individual FC transfers, there is no application-layer integrity mechanism to detect higher-level corruption such as a missed FC beat, a duplicated write, or software writing to the wrong FIFO address. The PTP subsystem has a 16-bit sequence number (`hw_seq_num`), but the mailbox FIFO path has none.
+
+**Impact**: A silent data corruption (e.g. from a pointer arithmetic bug or an undetected overrun) would be delivered to the reader as a valid packet. There is no way for the receiver to distinguish a corrupted packet from a correct one.
+
+**Recommendation**: Add an optional packet CRC (computed on write, checked on read) or at minimum a monotonic sequence number in the packet header so the reader can detect gaps or reordering.
+
+### 24. No Hardware Timeout for Stalled Credit Flow
+
+**Location**: `tidelink_fifo_ctrl.sv`, `tidelink_returner.sv` — credit return path
+
+If the remote side stops returning credits (e.g. due to a crash, link failure, or misconfiguration), the local TX path will stall indefinitely with `credit_count == 0`. There is no hardware watchdog or timeout mechanism to detect this condition. Software must poll the credit count and infer a stall, but there is no interrupt or timeout flag to signal the condition.
+
+**Impact**: A unilateral remote failure causes a silent, indefinite stall on the local TX path. In an interrupt-driven flow, the CPU may never be notified that the link is effectively dead.
+
+**Recommendation**: Add a configurable credit stall watchdog timer that asserts an interrupt if `credit_count` remains zero for longer than a programmable threshold.
+
+### 25. Configuration Registers Not Lockable After Initialisation
+
+**Location**: `tidelink_apb_regs.sv` — `pair_base_addr`, `release_threshold`, `pair_credit_counter` registers
+
+Critical configuration registers (pair base address, release threshold) are freely writable at any time, including while the FIFO is active and packets are in flight. An erroneous or malicious software write to `pair_base_addr` mid-stream would redirect returner writes to an arbitrary address, potentially corrupting remote memory.
+
+**Impact**: No protection against accidental reconfiguration during operation. A single stray write can break the credit return path and corrupt remote state.
+
+**Recommendation**: Add a lock bit (write-once after configuration) that prevents modification of critical registers until the next reset, similar to the role lock in `axi_chiplet_controller`.
+
+### 26. FC Adapter TX Arbitration Can Starve Data Path
+
+**Location**: `tidelink_fc_adapter.sv` — TX arbitration (returner > TX aperture)
+
+The returner sideband channel has unconditional priority over the TX aperture data path. While sideband writes are normally infrequent, a pathological scenario (e.g. rapid credit release batches combined with doorbell + reset responses) could produce a sustained burst of returner traffic that blocks the TX aperture indefinitely. There is no fairness counter or maximum-hold limit.
+
+**Impact**: In the worst case, a burst of sideband traffic could delay FIFO data transmission for an unbounded number of cycles, causing the remote reader to time out or starve.
+
+**Recommendation**: Add a maximum consecutive sideband grant counter (e.g. 4–8 beats) after which the TX aperture gets at least one grant, preventing indefinite starvation.
+
+### 27. No Coordinated Reset Protocol Between Paired Chiplets
+
+**Location**: `tidelink_top.sv`, `tidelink_returner.sv` — reset handling
+
+When one chiplet resets, it sends a doorbell (channel 2) to its pair via the returner. However, there is no handshake to ensure the pair has drained its in-flight packets before the resetting side reinitialises. The pair may have packets in the Wlink TX pipeline that arrive after the reset, corrupting the freshly-initialised FIFO state.
+
+**Impact**: A unilateral reset during active traffic can leave the pair in an inconsistent state. The only safe recovery is for both sides to flush and re-handshake, but this is not enforced in hardware.
+
+**Recommendation**: Define a reset protocol: the resetting side should drain its TX pipeline (wait for `tx_router_idle`), send a FLUSH command, wait for acknowledgement, then reset. At minimum, document the required software sequence.
+
+## Verification Gaps
+
+### 28. Error Recovery Path Not Tested End-to-End
+
+**Location**: `cocotb/tidelink_system/`, `uvm/tidelink_system/`
+
+No test exercises the full error recovery sequence: returner `hresp=1` → `master_error` flag set → software detects via STATUS poll → FLUSH → reconfigure → resume normal operation. Individual error flags are tested, but the complete recovery flow is not.
+
+**Impact**: The recovery path described in the user guide has never been validated. A real error event in deployment would rely on untested software sequences.
+
+**Recommendation**: Add an end-to-end error injection test that forces a returner AHB error, verifies the sticky flag, performs the documented recovery procedure, and confirms that normal packet flow resumes without credit accounting drift.
+
+### 29. CDC Multi-Clock Ratio Variations Not Exercised
+
+**Location**: `cocotb/tidelink_ptp/`, `uvm/tidelink_ptp_stress/`
+
+All cocotb tests run with `phc_clk == hclk` or a fixed ratio. No test varies the `phc_clk:hclk` frequency ratio to exercise the CDC handshake paths under different timing relationships. The Spyglass formal CDC run verifies structural correctness but does not exercise functional behaviour under asynchronous clock ratios.
+
+**Impact**: CDC bugs that only manifest at specific frequency ratios (e.g. back-to-back handshake requests where ack returns in the same cycle as a new request) would not be caught.
+
+**Recommendation**: Add parameterised tests with `phc_clk` at 0.5×, 0.7×, 1.3×, and 2× `hclk` to exercise the CDC handshake paths under realistic asynchronous conditions.
+
+### 30. Address Translator Not Tested in tidelink_top Integration Context
+
+**Location**: `cocotb/tidelink_addr_translator/` (standalone), `cocotb/tidelink_top/` (integration)
+
+The address translator has 34 thorough standalone cocotb tests, but it is not exercised in the `tidelink_top` integration or system-level environments. No test verifies that address translation works correctly when traffic is flowing through the full Wlink → XHB500 → address translator → AHB manager path.
+
+**Impact**: Integration-level issues (e.g. address width mismatches at the XHB500 boundary, CAM lookup timing under Wlink backpressure) would not be detected.
+
+**Recommendation**: Add integration tests in `tidelink_top` or `tidelink_system` that configure address translation rules and verify translated addresses arrive correctly at the AHB manager output.
+
+### 31. Pair Credit Counter Underflow Not Tested
+
+**Location**: `cocotb/tidelink_apb_regs/`, `cocotb/tidelink_py_pair/`
+
+No test verifies the behaviour when software writes to the pair credit consume register (0x02C) more times than credits are available. Shortcoming #7 identifies this as a risk, but no regression test confirms whether the counter wraps or saturates, and no test verifies recovery.
+
+**Recommendation**: Add a test that deliberately over-consumes pair credits and verifies the resulting counter value and system behaviour.
+
+### 32. Partial Packet Abandon and Recovery Not Tested
+
+**Location**: `cocotb/tidelink_fifo/`, `cocotb/tidelink_system/`
+
+No test writes a partial packet (e.g. header + 2 of 10 words) and then abandons the write (via reset, disable, or simply stopping). Shortcoming #6 identifies the resulting inconsistent state, but no test verifies what happens to the FIFO pointers, credit count, or subsequent packets after an abandoned write.
+
+**Recommendation**: Add tests for: (a) partial write followed by FLUSH and resume, (b) partial write followed by a new packet write without FLUSH, to characterise the failure mode and verify recovery.
+
+### 33. No Throughput or Latency Characterisation Tests
+
+**Location**: All test environments
+
+No test measures or asserts on performance metrics:
+- Maximum sustainable packet throughput (packets/second at various sizes)
+- End-to-end latency (TX aperture write to RX FIFO committed IRQ)
+- Credit return latency (read_complete to returner write arrival at pair)
+- Throughput degradation under bidirectional load
+
+**Impact**: Performance regressions could be introduced without detection. Integration teams have no validated throughput figures to design against.
+
+**Recommendation**: Add a performance characterisation test suite that measures and records these metrics, with regression thresholds to catch degradation.
+
+### 34. PTP Multi-Hop Chaining Not Verified
+
+**Location**: `tidelink_ptp.sv` — `PHC_LOCK_GATE_EN` parameter, `cocotb/tidelink_ptp/`
+
+The PTP module has a `PHC_LOCK_GATE_EN` parameter and `phc_locked` signal intended to support multi-hop PTP chaining (chiplet A → B → C, where B only begins syncing C after B has locked to A). However, no test exercises this feature. No multi-hop testbench exists.
+
+**Impact**: The gating logic may not work correctly. A three-chiplet deployment relying on cascaded PTP synchronisation would be using untested hardware.
+
+**Recommendation**: Add a multi-hop test environment with at least three PTP instances in a chain, verifying that downstream synchronisation only begins after upstream lock is achieved.
+
+### 35. Coordinated Chiplet Reset Sequence Not Tested
+
+**Location**: `cocotb/tidelink_system/`
+
+The `test_reset_recovery` test covers a mid-FIFO reset on a single side, but no test exercises a coordinated reset across both chiplets in a pair. Specifically, no test verifies: (a) what happens when one side resets while the other has packets in the Wlink TX pipeline, (b) whether the doorbell reset notification arrives correctly and the pair recovers, (c) behaviour under simultaneous reset of both sides.
+
+**Recommendation**: Add paired reset tests covering unilateral reset during active traffic, bilateral simultaneous reset, and staggered reset with in-flight packets.
+
 ## Summary
 
 | # | Severity | Shortcoming |
@@ -235,3 +367,19 @@ When |sec_diff| > 1, the servo forces a phase step (direct PHC set) rather than 
 | 17 | Moderate | PTP RX-side jitter not eliminated |
 | 18 | Minor | PTP servo loop is software-mediated (Tier 1) |
 | 19 | Minor | PHC hw_capture and software CAPTURE share clock core |
+| 20 | Minor | Sub-nanosecond precision dropped (servo optimisation) |
+| 21 | Minor | PI controller latency increased (servo optimisation) |
+| 22 | Minor | Large offset forces phase step (servo, by design) |
+| 23 | Moderate | No end-to-end packet integrity check |
+| 24 | Moderate | No hardware timeout for stalled credit flow |
+| 25 | Moderate | Configuration registers not lockable after init |
+| 26 | Minor | FC adapter TX arbitration can starve data path |
+| 27 | Moderate | No coordinated reset protocol between paired chiplets |
+| 28 | Moderate | Error recovery path not tested end-to-end |
+| 29 | Moderate | CDC multi-clock ratio variations not exercised |
+| 30 | Minor | Address translator not tested in integration context |
+| 31 | Minor | Pair credit counter underflow not tested |
+| 32 | Minor | Partial packet abandon and recovery not tested |
+| 33 | Minor | No throughput or latency characterisation tests |
+| 34 | Minor | PTP multi-hop chaining not verified |
+| 35 | Minor | Coordinated chiplet reset sequence not tested |

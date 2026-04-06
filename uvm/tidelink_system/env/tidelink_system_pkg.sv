@@ -89,6 +89,7 @@ package tidelink_system_pkg;
   `include "sys_init_sequence.sv"
   `include "sys_credit_check_sequence.sv"
   `include "sys_bidirectional_sequence.sv"
+  `include "sys_partial_packet_sequence.sv"
 
   // ---------------------------------------------------------------
   // Tests
@@ -105,6 +106,10 @@ package tidelink_system_pkg;
   `include "test_error_injection.sv"
   `include "test_reset_recovery.sv"
   `include "test_long_running.sv"
+  `include "test_pair_credit_underflow.sv"
+  `include "test_partial_packet_abandon.sv"
+  `include "test_error_recovery.sv"
+  `include "test_throughput_latency.sv"
 
 endpackage
 

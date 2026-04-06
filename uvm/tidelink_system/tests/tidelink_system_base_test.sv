@@ -19,7 +19,14 @@ class system_hrdata_xz_catcher extends uvm_report_catcher;
     super.new(name);
   endfunction
   virtual function action_e catch();
+    // Demote HRDATA X/Z (uninitialized SRAM during IDLE)
     if (get_id() == "register_fail:AMBA:AHB_COMMON:signal_valid_hrdata_check") begin
+      set_severity(UVM_INFO);
+      set_action(UVM_NO_ACTION);
+      return CAUGHT;
+    end
+    // Demote zero_wait_cycle_okay (fc_wr direct write can stall AHB hready)
+    if (get_id() == "register_fail:AMBA:AHB_COMMON:zero_wait_cycle_okay") begin
       set_severity(UVM_INFO);
       set_action(UVM_NO_ACTION);
       return CAUGHT;

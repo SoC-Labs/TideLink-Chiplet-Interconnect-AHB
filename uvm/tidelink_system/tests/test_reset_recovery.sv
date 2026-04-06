@@ -42,10 +42,10 @@ class test_reset_recovery extends tidelink_system_base_test;
     init_both_sides();
 
     pkt_data = new[4];
-    pkt_data[0] = 32'hBEFO_RE01;
-    pkt_data[1] = 32'hBEFO_RE02;
-    pkt_data[2] = 32'hBEFO_RE03;
-    pkt_data[3] = 32'hBEFO_RE04;
+    pkt_data[0] = 32'hBEF0_2E01;
+    pkt_data[1] = 32'hBEF0_2E02;
+    pkt_data[2] = 32'hBEF0_2E03;
+    pkt_data[3] = 32'hBEF0_2E04;
     write_packet(SIDE_A, pkt_data);
     repeat (30) @(posedge tb_if.clk);
     read_packet(SIDE_B, 4, read_data);
@@ -68,14 +68,10 @@ class test_reset_recovery extends tidelink_system_base_test;
         // Assert reset after a few cycles (mid-transfer)
         repeat (8) @(posedge tb_if.clk);
         `uvm_info("TEST", "Asserting reset NOW", UVM_LOW)
-        force test_top.rst_n = 1'b0;
+        tb_if.force_reset = 1'b1;
         repeat (20) @(posedge tb_if.clk);
-        release test_top.rst_n;
-        // rst_n will be driven by the initial block in top.sv
-        // But we need to explicitly bring it back
-        force test_top.rst_n = 1'b1;
+        tb_if.force_reset = 1'b0;
         repeat (5) @(posedge tb_if.clk);
-        release test_top.rst_n;
       end
     join_any
     // Wait for both forks to settle (the write may error or complete)
@@ -110,10 +106,10 @@ class test_reset_recovery extends tidelink_system_base_test;
     init_both_sides();
 
     pkt_data = new[4];
-    pkt_data[0] = 32'hAFTE_RST1;
-    pkt_data[1] = 32'hAFTE_RST2;
-    pkt_data[2] = 32'hAFTE_RST3;
-    pkt_data[3] = 32'hAFTE_RST4;
+    pkt_data[0] = 32'hAF1E_25101;
+    pkt_data[1] = 32'hAF1E_25102;
+    pkt_data[2] = 32'hAF1E_25103;
+    pkt_data[3] = 32'hAF1E_25104;
     write_packet(SIDE_A, pkt_data);
     repeat (30) @(posedge tb_if.clk);
     read_packet(SIDE_B, 4, read_data);

@@ -66,6 +66,10 @@ module tidelink_returner #(
     // AHB Transfer Size (32-bit word)
     localparam [2:0] HSIZE_WORD = 3'b010;
 
+    // Shortcoming #5: Retry parameters
+    localparam RETRY_COUNT = 3;
+    localparam RETRY_W = $clog2(RETRY_COUNT + 1);
+
     // State encoding
     typedef enum logic [1:0] {
         ST_IDLE       = 2'b00,
@@ -152,6 +156,16 @@ module tidelink_returner #(
             state_r <= state_next;
     end
 
+    // -------------------------------------------------------------------------
+    // Master Error Sticky Flag with Retry (Shortcoming #5)
+    // -------------------------------------------------------------------------
+    // On hresp=1, retry the write up to RETRY_COUNT times before latching
+    // master_error. This prevents transient bus errors from permanently
+    // losing credit returns or doorbells.
+    logic master_error_r;
+    logic [RETRY_W-1:0] retry_count_r;
+    wire  ahb_error_event = (state_r == ST_DATA_PHASE) && hready && hresp;
+
     // Next-state logic
     always_comb begin
         state_next = state_r;
@@ -165,27 +179,36 @@ module tidelink_returner #(
                     state_next = ST_DATA_PHASE;
             end
             ST_DATA_PHASE: begin
-                if (hready)
-                    state_next = ST_IDLE;
+                if (hready) begin
+                    if (hresp && retry_count_r < RETRY_W'(RETRY_COUNT))
+                        state_next = ST_ADDR_PHASE;  // Retry the write
+                    else
+                        state_next = ST_IDLE;
+                end
             end
             default: state_next = ST_IDLE;
         endcase
     end
 
-    // -------------------------------------------------------------------------
-    // Master Error Sticky Flag
-    // -------------------------------------------------------------------------
-    // Set when the AHB master receives an ERROR response (hresp=1) during
-    // the data phase. Sticky — remains set until cleared by flush.
-    logic master_error_r;
-
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn)
+        if (!hresetn) begin
             master_error_r <= 1'b0;
-        else if (flush)
+            retry_count_r  <= '0;
+        end else if (flush) begin
             master_error_r <= 1'b0;
-        else if (state_r == ST_DATA_PHASE && hready && hresp)
-            master_error_r <= 1'b1;
+            retry_count_r  <= '0;
+        end else begin
+            // Reset retry counter when starting a new (non-retry) transaction
+            if (state_r == ST_IDLE && any_pending)
+                retry_count_r <= '0;
+
+            if (ahb_error_event) begin
+                if (retry_count_r < RETRY_W'(RETRY_COUNT))
+                    retry_count_r <= retry_count_r + RETRY_W'(1);
+                else
+                    master_error_r <= 1'b1;
+            end
+        end
     end
 
     assign master_error = master_error_r;

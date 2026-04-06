@@ -21,8 +21,9 @@ export SG_TOP := $(TOP)
 PRJ           := $(TIDELINK_HOME)/cdc/tidelink_top.prj
 
 # SpyGlass output directory
-SG_WORK := $(MODULE)_spyglass
-RPTDIR  := $(SG_WORK)/cdc_verify/spyglass_reports
+# When using -goals (no -work_dir), SpyGlass creates <module>/<module>/cdc/...
+SG_WORK := $(MODULE)
+RPTDIR  := $(SG_WORK)/$(MODULE)/cdc/cdc_verify/spyglass_reports
 
 # Report files
 RPT_SUMMARY := $(MODULE)_cdc_summary.rpt
@@ -42,7 +43,7 @@ cdc:
 	@echo "══════════════════════════════════════════════════════════"
 	$(SPYGLASS) $(SG_FLAGS)
 	@echo ""
-	@echo "CDC analysis complete. Results in $(RPTDIR)/"
+	@echo "CDC analysis complete. Results in $(SG_WORK)/"
 	@$(MAKE) --no-print-directory cdc-report
 
 # ── Extract summary report ───────────────────────────────────────────────────
@@ -73,7 +74,7 @@ cdc-report:
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 clean:
-	rm -rf *_spyglass *_cdc_summary.rpt *_cdc_detail.rpt \
+	rm -rf *_spyglass $(MODULE) *_cdc_summary.rpt *_cdc_detail.rpt \
 	       spyglass_output spyglass.log sg_shell.log
 
 # ── Help ─────────────────────────────────────────────────────────────────────

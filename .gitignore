@@ -31,6 +31,7 @@ crte*.txt
 *.pvk
 syn/asic/design-compiler/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.pvk
 cdc/tidelink_top
+cdc/*summary.rpt
 
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/

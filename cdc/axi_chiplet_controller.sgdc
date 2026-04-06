@@ -1,0 +1,54 @@
+#-----------------------------------------------------------------------------
+# SoCLabs TideLink — SpyGlass CDC Constraints for axi_chiplet_controller
+#
+# This module is black-boxed (stop_module) in the top-level .prj file.
+# These constraints declare the clock domain of each port so SpyGlass can
+# verify CDC at the integration boundary.
+#
+# The chiplet controller receives app_clk (= hclk) and user_hsclk
+# (= user_ref_clk). All port-facing interfaces operate in the app_clk
+# domain. Internal user_ref_clk <-> app_clk CDC is pre-verified by Wlink IP.
+#
+# Contributors
+#
+# David Mapstone (d.a.mapstone@soton.ac.uk)
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+
+current_design axi_chiplet_controller
+
+# Clock: app_clk is connected to hclk at the top level
+clock -name app_clk -domain hclk_domain -period 4.0
+
+# All output ports are in the app_clk (hclk) domain
+abstract_port -ports "tidelink_out[*]"     -clock app_clk
+abstract_port -ports "ptp_out[*]"          -clock app_clk
+abstract_port -ports "tx_link_idle"        -clock app_clk
+abstract_port -ports "axi_ini_0_*"         -clock app_clk
+abstract_port -ports "axi_tgt_0_*"         -clock app_clk
+abstract_port -ports "apb_prdata[*]"       -clock app_clk
+abstract_port -ports "apb_pready"          -clock app_clk
+abstract_port -ports "apb_pslverr"         -clock app_clk
+abstract_port -ports "generalbus_out[*]"   -clock app_clk
+abstract_port -ports "s_i2c_axi_*"         -clock app_clk
+abstract_port -ports "sb_reset_out"        -clock app_clk
+abstract_port -ports "role_is_master_o"    -clock app_clk
+abstract_port -ports "role_locked_o"       -clock app_clk
+abstract_port -ports "ctrl_reg_rdata[*]"   -clock app_clk
+abstract_port -ports "i2c_nbsy_irq"        -clock app_clk
+abstract_port -ports "i2c_nrd_empty_irq"   -clock app_clk
+
+# All input ports are in the app_clk (hclk) domain
+abstract_port -ports "tidelink_in[*]"      -clock app_clk
+abstract_port -ports "ptp_in[*]"           -clock app_clk
+abstract_port -ports "apb_psel"            -clock app_clk
+abstract_port -ports "apb_paddr[*]"        -clock app_clk
+abstract_port -ports "apb_penable"         -clock app_clk
+abstract_port -ports "apb_pprot[*]"        -clock app_clk
+abstract_port -ports "apb_pstrb[*]"        -clock app_clk
+abstract_port -ports "apb_pwrite"          -clock app_clk
+abstract_port -ports "apb_pwdata[*]"       -clock app_clk
+abstract_port -ports "ctrl_reg_write"      -clock app_clk
+abstract_port -ports "ctrl_reg_addr[*]"    -clock app_clk
+abstract_port -ports "ctrl_reg_wdata[*]"   -clock app_clk

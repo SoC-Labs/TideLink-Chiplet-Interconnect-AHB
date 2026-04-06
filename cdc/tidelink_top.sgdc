@@ -53,3 +53,64 @@ set_case_analysis -name scan_mode          -value 0
 set_case_analysis -name scan_asyncrst_ctrl -value 0
 set_case_analysis -name scan_shift         -value 0
 set_case_analysis -name scan_in            -value 0
+
+# ============================================================================
+# Top-Level Input Port Clock Domains
+# ============================================================================
+# All SoC-facing bus ports are driven by the hclk domain externally.
+# Without these declarations SpyGlass assigns virtual clocks (SG_VCLK_*)
+# and flags false CDC violations at black-boxed module boundaries.
+
+# AHB subordinate ports — driven by SoC AHB bus (hclk domain)
+abstract_port -ports "ahb_sub_*"     -clock hclk
+abstract_port -ports "ahb_tx_*"      -clock hclk
+abstract_port -ports "ahb_fifo_*"    -clock hclk
+abstract_port -ports "ahb_adr_*"     -clock hclk
+abstract_port -ports "ahb_ptp_*"     -clock hclk
+
+# AHB manager read-back — driven by SoC AHB bus (hclk domain)
+abstract_port -ports "ahb_mng_hrdata[*]" -clock hclk
+abstract_port -ports "ahb_mng_hresp"     -clock hclk
+
+# APB subordinate — driven by SoC APB bus (hclk domain)
+abstract_port -ports "apb_paddr[*]"  -clock hclk
+abstract_port -ports "apb_penable"   -clock hclk
+abstract_port -ports "apb_pwrite"    -clock hclk
+abstract_port -ports "apb_pstrb[*]"  -clock hclk
+abstract_port -ports "apb_pprot[*]"  -clock hclk
+abstract_port -ports "apb_pwdata[*]" -clock hclk
+abstract_port -ports "apb_psel"      -clock hclk
+
+# I2C sideband AXI — driven by SoC AXI bus (hclk domain)
+abstract_port -ports "s_i2c_axi_*"   -clock hclk
+
+# General bus �� driven by SoC interrupt controller (hclk domain)
+abstract_port -ports "gb_in[*]"      -clock hclk
+
+# PHY receive data — recovered from remote side (pad_clk_rx domain)
+abstract_port -ports "pad_rx[*]"     -clock pad_clk_rx
+
+# ============================================================================
+# Quasi-Static / Asynchronous External Inputs
+# ============================================================================
+# These signals are not synchronous to any on-chip clock.
+
+# Role strap — hardware pin, stable before reset deassertion
+quasi_static -name "role_strap_i"
+
+# DFT scan_clk — held inactive during functional mode
+set_case_analysis -name scan_clk -value 0
+
+# I2C bus lines — truly asynchronous (synchronised inside chiplet controller)
+# Handled by waiver below since they are external async by design.
+
+# Power-on reset — asynchronous by nature, synchronised internally
+# (poresetn already declared as reset above)
+
+# ============================================================================
+# Black-Boxed Third-Party IP
+# ============================================================================
+# Port clock domains for black-boxed modules (set_option stop_module in .prj)
+# are defined in separate SGDC files loaded by the .prj:
+#   axi_chiplet_controller.sgdc — all ports in app_clk (= hclk) domain
+#   xhb500.sgdc                — all ports in clk (= hclk) domain

@@ -34,9 +34,20 @@ set_option top $::env(SG_TOP)
 
 read_file -type sgdc $::env(SGDC)
 
+# Port-level constraints for black-boxed third-party IP
+read_file -type sgdc $::env(TIDELINK_HOME)/cdc/axi_chiplet_controller.sgdc
+read_file -type sgdc $::env(TIDELINK_HOME)/cdc/xhb500.sgdc
+
 # ── Waivers ──────────────────────────────────────────────────────────────────
 
 read_file -type waiver $::env(SWL)
+
+# ── Black-box pre-verified third-party IP ────────────────────────────────────
+# Prevents SpyGlass from tracing through these modules, so CDC analysis
+# only sees their port-level constraints (defined via abstract_port in SGDC).
+# Internal CDC is pre-verified by the IP vendor.
+
+set_option stop_module {axi_chiplet_controller xhb500_axi_to_ahb_bridge_chiplet_mst xhb500_ahb_to_axi_bridge_chiplet_slv}
 
 # ── Goal setup ───────────────────────────────────────────────────────────────
 # Goal is specified via -goals on the command line (required for -batch mode).

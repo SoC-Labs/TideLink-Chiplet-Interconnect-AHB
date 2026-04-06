@@ -1,0 +1,26 @@
+#-----------------------------------------------------------------------------
+# SoCLabs TideLink — SpyGlass CDC Constraints for XHB500 bridges
+#
+# Both XHB500 bridge variants are black-boxed (stop_module) in the top-level
+# .prj file. All ports operate on a single clock domain (clk = hclk).
+#
+# Contributors
+#
+# David Mapstone (d.a.mapstone@soton.ac.uk)
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+
+# ── AHB-to-AXI Subordinate Bridge ───────────────────────────────────────────
+current_design xhb500_ahb_to_axi_bridge_chiplet_slv
+
+clock -name clk -domain hclk_domain -period 4.0
+
+abstract_port -ports "*" -clock clk
+
+# ── AXI-to-AHB Manager Bridge ───────────────────────────────────────────────
+current_design xhb500_axi_to_ahb_bridge_chiplet_mst
+
+clock -name clk -domain hclk_domain -period 4.0
+
+abstract_port -ports "*" -clock clk

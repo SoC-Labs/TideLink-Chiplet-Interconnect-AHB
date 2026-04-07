@@ -64,8 +64,8 @@ clone:
     - find "${CI_BUILDS_DIR}/${CI_PROJECT_NAME}" -maxdepth 1 -mindepth 1 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
     - rm -rf "$WORK_DIR"
     - mkdir -p "$WORK_DIR"
-    - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch "$CI_REPOSITORY_URL" "$WORK_DIR"
-    - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA"
+    - git clone --branch "$CI_COMMIT_REF_NAME" --single-branch --recurse-submodules "$CI_REPOSITORY_URL" "$WORK_DIR"
+    - cd "$WORK_DIR" && git checkout "$CI_COMMIT_SHA" && git submodule update --init --recursive
     - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
     - echo "Cloning PHC (separate component, needed for PTP tests)"
     - git clone --branch "$PHC_BRANCH" --single-branch --depth 1 "$PHC_REPO" "$WORK_DIR/deps/ptp-hardware-clock-ahb" || echo "WARN PHC clone failed, PTP tests will be skipped"

@@ -180,7 +180,7 @@ module tidelink_ahb #(
         .apbs_pslverr    (apb_pslverr),
 
         // Interrupts
-        .released_tokens_irq (released_tokens_irq),
+        .released_credits_irq (released_tokens_irq),
         .doorbell_irq        (doorbell_irq),
         .packet_committed_irq(packet_committed_irq)
     );

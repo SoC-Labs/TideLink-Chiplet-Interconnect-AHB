@@ -6,6 +6,9 @@ setup(
     description="TideLink register definitions, packet helpers, and hardware drivers",
     packages=find_packages(),
     python_requires=">=3.6",
+    install_requires=[
+        "systemrdl-compiler",
+    ],
     extras_require={
         "pynq": ["pynq"],
     },

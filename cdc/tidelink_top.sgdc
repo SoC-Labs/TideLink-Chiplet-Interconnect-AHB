@@ -65,7 +65,6 @@ set_case_analysis -name scan_in            -value 0
 abstract_port -ports "ahb_sub_*"     -clock hclk
 abstract_port -ports "ahb_tx_*"      -clock hclk
 abstract_port -ports "ahb_fifo_*"    -clock hclk
-abstract_port -ports "ahb_adr_*"     -clock hclk
 abstract_port -ports "ahb_ptp_*"     -clock hclk
 
 # AHB manager read-back — driven by SoC AHB bus (hclk domain)

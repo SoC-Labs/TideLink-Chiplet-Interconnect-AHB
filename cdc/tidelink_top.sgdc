@@ -83,9 +83,6 @@ abstract_port -ports "apb_psel"      -clock hclk
 # I2C sideband AXI — driven by SoC AXI bus (hclk domain)
 abstract_port -ports "s_i2c_axi_*"   -clock hclk
 
-# General bus �� driven by SoC interrupt controller (hclk domain)
-abstract_port -ports "gb_in[*]"      -clock hclk
-
 # PHY receive data — recovered from remote side (pad_clk_rx domain)
 abstract_port -ports "pad_rx[*]"     -clock pad_clk_rx
 

@@ -32,7 +32,7 @@ the same PR that introduces the node.
 | 0x83    | AXI AR                  | —      | `axi-chiplet-controller/.../scala/AXI.scala`            |
 | 0x84    | AXI R                   | —      | `axi-chiplet-controller/.../scala/AXI.scala`            |
 | 0x90    | APB initiator           | —      | `axi-chiplet-controller/.../scala/APB.scala`            |
-| 0xa0    | GeneralBus (deprecated) | 32     | `axi-chiplet-controller/.../scala/GeneralBus.scala` — scheduled for retirement once IRQC lands (previous cross-chiplet IRQ forwarding path via `gb_in[31:0]` / `gb_out[31:0]`). |
+| 0xa0    | GeneralBus (unused by TideLink) | 32     | `axi-chiplet-controller/.../scala/GeneralBus.scala` — TideLink's `gb_in[31:0]` / `gb_out[31:0]` ports were removed in branch `strip-generalbus-irq`. The Wlink FC node still exists inside `axi_chiplet_controller` but TideLink ties `generalbus_in` to 0 and leaves `generalbus_out` unconnected. Available for other consumers if needed. |
 | 0xa1    | TideLink                | 48     | `axi-chiplet-controller/.../scala/TideLink.scala`        |
 | 0xa2    | PTP                     | 48     | TideLink README §FC Nodes (PTP integration)             |
 | 0xa3    | **Chiplet IRQC**        | **64** | `ahb-chiplet-interrupt-controller` (this IP)            |
@@ -65,8 +65,11 @@ should pick from this list and update the table above.
   that fits within the link layer's credit unit. TideLink and PTP
   use 48-bit words; the IRQC uses 64-bit words to carry a full 32-bit
   chiplet bitmap in a single TREE_BCAST packet.
-- **0xa0 GeneralBus retirement**: This node was used by `tidelink_top`
-  (`gb_in` / `gb_out`) as a lightweight cross-chiplet interrupt
-  forwarding path. It is scheduled for removal once the dedicated
-  Chiplet IRQC (`data_id = 0xa3`) is validated. Track the deprecation
-  in the IRQC repo's STATUS.md.
+- **0xa0 GeneralBus / TideLink decoupling**: This node was previously
+  used by `tidelink_top` (`gb_in` / `gb_out`) as a lightweight
+  cross-chiplet interrupt forwarding path. The TideLink-side ports were
+  removed in TideLink branch `strip-generalbus-irq` (2026-04-13). The
+  FC node is left intact inside `axi_chiplet_controller` so that other
+  IPs (or a future host) can re-bind to it; today it is unused.
+  Cross-chiplet interrupt delivery now flows through the dedicated
+  `ahb-chiplet-interrupt-controller` IP on FC `data_id = 0xa3`.

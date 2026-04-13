@@ -134,13 +134,6 @@ module test_top;
   wire                     c_pad_clk_rx  = b2_pad_clk_tx;
   wire [NUM_PHY_LANES-1:0] c_pad_rx      = b2_pad_tx;
 
-  // General bus crossover
-  wire [31:0] a_gb_out, b1_gb_out, b2_gb_out, c_gb_out;
-  wire [31:0] a_gb_in  = b1_gb_out;
-  wire [31:0] b1_gb_in = a_gb_out;
-  wire [31:0] b2_gb_in = c_gb_out;
-  wire [31:0] c_gb_in  = b2_gb_out;
-
   // ---------------------------------------------------------------
   // DUT output wires — macro to declare per-side wires
   // ---------------------------------------------------------------
@@ -353,7 +346,7 @@ module test_top;
   // =================================================================
   // Macro to instantiate tidelink_top with all port connections
   // =================================================================
-  `define INSTANTIATE_TIDELINK_TOP(INST_NAME, PREFIX, PAIR_BASE, LOCK_GATE_EN, PHC_LOCKED_I, PAD_CLK_TX, PAD_TX, PAD_CLK_RX, PAD_RX, GB_IN, GB_OUT, PHC_HW_CAP_SEC, PHC_HW_CAP_NS, PHC_HW_CAP_SUBNS, PHC_NS, PHC_SEC, PHC_PPS, DUT_HW_CAPTURE, HW_SET_TIME, HW_SET_SEC, HW_SET_NS, HW_ADJ_VALID, HW_ADJ_FRAC, SERVO_LOCKED) \
+  `define INSTANTIATE_TIDELINK_TOP(INST_NAME, PREFIX, PAIR_BASE, LOCK_GATE_EN, PHC_LOCKED_I, PAD_CLK_TX, PAD_TX, PAD_CLK_RX, PAD_RX, PHC_HW_CAP_SEC, PHC_HW_CAP_NS, PHC_HW_CAP_SUBNS, PHC_NS, PHC_SEC, PHC_PPS, DUT_HW_CAPTURE, HW_SET_TIME, HW_SET_SEC, HW_SET_NS, HW_ADJ_VALID, HW_ADJ_FRAC, SERVO_LOCKED) \
   tidelink_top #( \
     .SYS_ADDR_W        (SYS_ADDR_W), \
     .SYS_DATA_W        (SYS_DATA_W), \
@@ -447,9 +440,6 @@ module test_top;
     .scan_out          (), \
     /* Wlink PLL reference */ \
     .user_ref_clk      (ref_clk), \
-    /* General bus */ \
-    .gb_in             (GB_IN), \
-    .gb_out            (GB_OUT), \
     /* PHY pads */ \
     .pad_clk_tx        (PAD_CLK_TX), \
     .pad_tx            (PAD_TX), \
@@ -484,7 +474,7 @@ module test_top;
   // DUT A — Chiplet A (Grandmaster)
   // =================================================================
   `INSTANTIATE_TIDELINK_TOP(u_chiplet_a, a, A_PAIR_BASE, 0, 1'b1,
-    a_pad_clk_tx, a_pad_tx, a_pad_clk_rx, a_pad_rx, a_gb_in, a_gb_out,
+    a_pad_clk_tx, a_pad_tx, a_pad_clk_rx, a_pad_rx,
     a_phc_hw_cap_seconds, a_phc_hw_cap_nanoseconds, a_phc_hw_cap_sub_nanoseconds,
     a_phc_nanoseconds, a_phc_seconds, a_phc_pps,
     a_dut_hw_capture, a_hw_set_time, a_hw_set_seconds, a_hw_set_nanoseconds,
@@ -494,7 +484,7 @@ module test_top;
   // DUT B_link1 — Chiplet B, link to A (Subordinate)
   // =================================================================
   `INSTANTIATE_TIDELINK_TOP(u_chiplet_b_link1, b1, B1_PAIR_BASE, 0, 1'b1,
-    b1_pad_clk_tx, b1_pad_tx, b1_pad_clk_rx, b1_pad_rx, b1_gb_in, b1_gb_out,
+    b1_pad_clk_tx, b1_pad_tx, b1_pad_clk_rx, b1_pad_rx,
     b_phc_hw_cap_seconds, b_phc_hw_cap_nanoseconds, b_phc_hw_cap_sub_nanoseconds,
     b_phc_nanoseconds, b_phc_seconds, b_phc_pps,
     b1_dut_hw_capture, b1_hw_set_time, b1_hw_set_seconds, b1_hw_set_nanoseconds,
@@ -504,7 +494,7 @@ module test_top;
   // DUT B_link2 — Chiplet B, link to C (Grandmaster, gated by B_link1 lock)
   // =================================================================
   `INSTANTIATE_TIDELINK_TOP(u_chiplet_b_link2, b2, B2_PAIR_BASE, 1, b1_servo_locked,
-    b2_pad_clk_tx, b2_pad_tx, b2_pad_clk_rx, b2_pad_rx, b2_gb_in, b2_gb_out,
+    b2_pad_clk_tx, b2_pad_tx, b2_pad_clk_rx, b2_pad_rx,
     b_phc_hw_cap_seconds, b_phc_hw_cap_nanoseconds, b_phc_hw_cap_sub_nanoseconds,
     b_phc_nanoseconds, b_phc_seconds, b_phc_pps,
     b2_dut_hw_capture, b2_hw_set_time, b2_hw_set_seconds, b2_hw_set_nanoseconds,
@@ -514,7 +504,7 @@ module test_top;
   // DUT C — Chiplet C (Subordinate)
   // =================================================================
   `INSTANTIATE_TIDELINK_TOP(u_chiplet_c, c, C_PAIR_BASE, 0, 1'b1,
-    c_pad_clk_tx, c_pad_tx, c_pad_clk_rx, c_pad_rx, c_gb_in, c_gb_out,
+    c_pad_clk_tx, c_pad_tx, c_pad_clk_rx, c_pad_rx,
     c_phc_hw_cap_seconds, c_phc_hw_cap_nanoseconds, c_phc_hw_cap_sub_nanoseconds,
     c_phc_nanoseconds, c_phc_seconds, c_phc_pps,
     c_dut_hw_capture, c_hw_set_time, c_hw_set_seconds, c_hw_set_nanoseconds,

@@ -127,7 +127,6 @@ Wlink is a layered chiplet communication stack: application layer (protocol-spec
  │  AHB Subordinate: Address translator config  ahb_adr_*                 │
  │  APB Subordinate: Unified config port  apb_* (Wlink + TideLink)        │
  │  I2C Sideband: i2c_scl/sda                                             │
- │  General Bus: gb_in[31:0], gb_out[31:0]                                │
  │  Interrupts: released_credits_irq, doorbell_irq,                       │
  │              packet_committed_irq, wlink_irq                           │
  └────────────────────────────────────────────────────────────────────────┘
@@ -304,7 +303,7 @@ The chiplet controller is a modified fork of the Wlink AXI chiplet controller. I
 | axibFC | WlinkGenericFCSM_2 | 0x82 | 14 bits | AXI Write Response channel |
 | axiarFC | WlinkGenericFCSM_3 | 0x83 | 101 bits | AXI Read Address channel |
 | axirFC | WlinkGenericFCSM_4 | 0x84 | 47 bits | AXI Read Data channel |
-| generalbusgb | WlinkGenericFCSM_5 | 0xa0 | 32 bits | General Bus (interrupt forwarding) |
+| generalbusgb | WlinkGenericFCSM_5 | 0xa0 | 32 bits | General Bus (Wlink-internal; **unused by TideLink** — historic cross-chiplet IRQ path replaced by `ahb-chiplet-interrupt-controller` on FC `data_id = 0xa3`) |
 | **TideLink FC** | **WlinkGenericFCSM_6** | **0xa1** | **48 bits** | **TideLink mailbox** |
 
 The TideLink FC node is the only addition to the upstream Wlink configuration. The TX router is extended from 6 to 7 inputs and the RX router from 7 to 8 outputs to accommodate it.
@@ -327,7 +326,6 @@ Within `tidelink_top`, these packed buses are decomposed into separate valid/rea
 - **APB slave** (via unified `apb_*` port, 0x0000-0x1FFF): Wlink internal configuration -- link training, PHY parameters, FC credit initialisation, interrupt status.
 - **AXI slave** (`s_axi_*`): Outbound AXI from XHB500 bridge; packetised into FC nodes 0x80–0x84.
 - **AXI master** (`m_axi_*`): Inbound AXI from FC nodes 0x80–0x84; driven into XHB500 bridge.
-- **General bus** (`gb_in[31:0]`, `gb_out[31:0]`): 32-bit interrupt forwarding via FC node 0xa0.
 - **I2C sideband** (`i2c_scl_i/o/t`, `i2c_sda_i/o/t`): Out-of-band sideband channel for link bring-up and management.
 - **PHY pads** (`pad_clk_tx`, `pad_tx[7:0]`, `pad_clk_rx`, `pad_rx[7:0]`): 8-lane plus clock die-to-die physical interface.
 - **Reset sideband** (`sb_reset_in`, `sb_reset_out` / `d2d_reset_o`): Power-on reset coordination across the link.
@@ -526,14 +524,17 @@ AXI4 subordinate port for CPU access to the I2C master controller (master mode o
 | `i2c_nbsy_irq` | Out | 1 | I2C bus not busy interrupt |
 | `i2c_nrd_empty_irq` | Out | 1 | I2C read FIFO not empty interrupt |
 
-### 5.14 General Bus
+### 5.14 General Bus (removed)
 
-32-bit bus for cross-link interrupt forwarding via Wlink FC node 0xa0.
-
-| Signal | Direction | Width | Description |
-|---|---|---|---|
-| `gb_in[31:0]` | In | 32 | Interrupts to send to remote chiplet |
-| `gb_out[31:0]` | Out | 32 | Interrupts received from remote chiplet |
+The legacy 32-bit `gb_in` / `gb_out` cross-link interrupt forwarding ports
+have been removed from `tidelink_top`. Cross-chiplet interrupt delivery is
+now handled by the dedicated `ahb-chiplet-interrupt-controller` IP on a
+separate Wlink FC node (`data_id = 0xa3`), independently flow-controlled
+from the TideLink mailbox so interrupt traffic cannot be starved by — and
+cannot starve — bulk AHB / mailbox traffic. The Wlink GeneralBus FC node
+itself (`data_id = 0xa0`) still exists inside `axi_chiplet_controller`
+but its `generalbus_in` is tied to zero and `generalbus_out` is left
+unconnected at the TideLink boundary.
 
 ### 5.15 PHY Pads
 

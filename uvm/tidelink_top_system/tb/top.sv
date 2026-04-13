@@ -176,13 +176,6 @@ module test_top;
   wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a_pad_tx;
 
   // ---------------------------------------------------------------
-  // General bus crossover: A out -> B in, B out -> A in
-  // ---------------------------------------------------------------
-  wire [31:0] a_gb_out, b_gb_out;
-  wire [31:0] a_gb_in = b_gb_out;
-  wire [31:0] b_gb_in = a_gb_out;
-
-  // ---------------------------------------------------------------
   // DUT output wires — Chiplet A
   // ---------------------------------------------------------------
   wire        a_dut_sub_hreadyout, a_dut_sub_hresp;
@@ -336,10 +329,6 @@ module test_top;
 
     // Wlink PLL reference
     .user_ref_clk      (ref_clk),
-
-    // General bus crossover
-    .gb_in             (a_gb_in),
-    .gb_out            (a_gb_out),
 
     // PHY pads
     .pad_clk_tx        (a_pad_clk_tx),
@@ -500,9 +489,6 @@ module test_top;
     .scan_out          (),
 
     .user_ref_clk      (ref_clk),
-
-    .gb_in             (b_gb_in),
-    .gb_out            (b_gb_out),
 
     .pad_clk_tx        (b_pad_clk_tx),
     .pad_tx            (b_pad_tx),

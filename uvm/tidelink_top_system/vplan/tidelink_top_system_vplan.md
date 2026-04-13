@@ -50,7 +50,7 @@ The PHY pad crossover connects A's TX to B's RX and B's TX to A's RX.
 | F20 | Mixed traffic | P1 | Concurrent TideLink FIFO + AHB passthrough traffic |
 | F21 | PHY pad crossover integrity | P0 | No data corruption in serialization/deserialization |
 | F22 | Wlink FC node | P0 | FC valid/ready/data handshake functions correctly |
-| F23 | General bus crossover | P2 | gb_in/gb_out forwarding between sides |
+| F23 | ~~General bus crossover~~ | — | **REMOVED** — gb_in/gb_out ports stripped from tidelink_top; cross-chiplet IRQ now via separate `ahb-chiplet-interrupt-controller` IP (FC `data_id = 0xa3`) |
 | F24 | Interrupt propagation | P1 | IRQs fire correctly (credits, doorbell, packet committed, wlink) |
 | F25 | HW sync initiator enable/disable | P0 | Enable hw_sync, verify periodic SYNC FC packets appear |
 | F26 | HW sync interval configuration | P1 | Write different intervals, verify correct timing |

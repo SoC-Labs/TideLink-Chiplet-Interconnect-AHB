@@ -149,6 +149,12 @@ preflight:
 # Stage 2: Lint
 # ============================================================================
 
+strip-generalbus-check:
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]

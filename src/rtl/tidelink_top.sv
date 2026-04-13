@@ -158,12 +158,6 @@ module tidelink_top #(
     input  wire                     user_ref_clk,
 
     // --------------------------------------------------------------------------
-    // General Bus (interrupt forwarding across link)
-    // --------------------------------------------------------------------------
-    input  wire              [31:0] gb_in,
-    output wire              [31:0] gb_out,
-
-    // --------------------------------------------------------------------------
     // PHY Pads (width depends on NUM_PHY_LANES: 1 for GPIO, 8 for SerDes)
     // --------------------------------------------------------------------------
     output wire                              pad_clk_tx,
@@ -1480,9 +1474,13 @@ module tidelink_top #(
         .axi_ini_0_r_bits_resp      (m_axi_rresp),
         .axi_ini_0_r_bits_last      (m_axi_rlast),
 
-        // General bus (interrupt forwarding)
-        .generalbus_in              (gb_in),
-        .generalbus_out             (gb_out),
+        // General bus FC node (legacy cross-chiplet interrupt forwarding):
+        // tied off at the TideLink boundary. Cross-chiplet interrupts now
+        // go through the dedicated ahb-chiplet-interrupt-controller IP
+        // (Wlink FC data_id = 0xa3). The Wlink GeneralBus node remains in
+        // the axi_chiplet_controller RTL but is unused from here.
+        .generalbus_in              (32'h0),
+        .generalbus_out             (/* unused */),
 
         // TideLink FC node (packed bus, 50-bit = 48-bit data + 2 control)
         .tidelink_in                ({tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_l2a_accept}),

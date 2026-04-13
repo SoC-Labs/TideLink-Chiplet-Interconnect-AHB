@@ -257,6 +257,19 @@ module tidelink_top #(
     input  wire               [2:0] tc_qos_priority,
 
     // --------------------------------------------------------------------------
+    // Congestion sideband (Phase 1, to TideChart link-state agent)
+    // Pure combinational: same hclk domain as everything else in this module.
+    // See docs/../../../tidechart/docs/CONGESTION_AWARE_ROUTING.md.
+    //   tl_local_link_state_o = {starve, trend[1:0], level[1:0]}
+    //   tl_link_state_change_o = one-cycle pulse on any quantised transition
+    //   tl_bcast_ack_i = level-sensitive, clears starve-sticky after broadcast
+    // --------------------------------------------------------------------------
+    output wire               [4:0] tl_local_link_state_o,
+    output wire                     tl_link_state_change_o,
+    output wire              [12:0] tl_ewma_credit_o,
+    input  wire                     tl_bcast_ack_i,
+
+    // --------------------------------------------------------------------------
     // Link active status (Wlink link layer is up and operational)
     // --------------------------------------------------------------------------
     output wire                     link_active,
@@ -1117,6 +1130,12 @@ module tidelink_top #(
 
         // Credit observation
         .credit_count      (perf_credit_count),
+
+        // Congestion sideband (Phase 1 — see CONGESTION_AWARE_ROUTING.md)
+        .local_link_state_o  (tl_local_link_state_o),
+        .link_state_change_o (tl_link_state_change_o),
+        .ewma_credit_o       (tl_ewma_credit_o),
+        .bcast_ack_i         (tl_bcast_ack_i),
 
         // Interrupt
         .perf_irq          (perf_irq)

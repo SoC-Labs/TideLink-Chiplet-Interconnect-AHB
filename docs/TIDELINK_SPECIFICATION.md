@@ -1071,6 +1071,54 @@ When the external PHC runs on a separate clock (`phc_clk`) from TideLink (`hclk`
 
 ---
 
+## 12. Performance Profiling and Congestion Telemetry (`tidelink_perf`)
+
+The `tidelink_perf` module passively observes the FC adapter and FIFO signals to produce saturating counters, event timestamps (sourced from the free-running PHC), and — as of the congestion-aware placement feature — a quantised per-link congestion signal exported to TideChart.
+
+### 12.1 Congestion estimator
+
+Three new local signals are derived from `credit_count`:
+
+- **EWMA** over `credit_count`, `alpha = 1/16` (shift-and-add; tau approx 16 cycles).
+- **Windowed derivative**, sampled every 256 cycles (`DERIV_WINDOW_LOG = 8`).
+- **Credit-starve sticky flag**, latched on `credit_count == 0`, cleared by `bcast_ack_i`.
+
+**Semantic convention:** `credit_count` high means the *remote* FIFO has room. Growing `credit_count` (positive derivative) means the remote side is draining (healthy). Shrinking `credit_count` means the remote FIFO is filling (congestion building). The quantiser encodes this directly — see [CONGESTION_AWARE_ROUTING.md](../../tidechart/docs/CONGESTION_AWARE_ROUTING.md) for the full trend and level tables.
+
+### 12.2 Sideband interface
+
+`tidelink_top` exports four new signals for TideChart:
+
+| Signal | Direction | Width | Purpose |
+|---|---|---|---|
+| `tl_local_link_state_o`   | out | 5  | `{starve, trend[1:0], level[1:0]}` |
+| `tl_link_state_change_o`  | out | 1  | one-cycle pulse on any quantised transition |
+| `tl_ewma_credit_o`        | out | 13 | debug only; raw integer EWMA value |
+| `tl_bcast_ack_i`          | in  | 1  | clears the credit-starve sticky after TideChart broadcasts |
+
+All signals are combinational in `hclk` — no CDC is required between TideLink and TideChart.
+
+### 12.3 Debug readback
+
+The APB register space exposes the estimator state via `PERF_CONG_STATE` at Region 7 offset `3'h6`:
+
+```
+[12:0]  ewma_q_r (13-bit smoothed credit count)
+[17:16] level
+[19:18] trend
+[20]    credit_starve_sticky
+```
+
+### 12.4 Parameter defaults
+
+| Parameter | Default | Tuning range |
+|---|---|---|
+| `EWMA_ALPHA_SHIFT`   | 4   | 2..8 |
+| `DERIV_WINDOW_LOG`   | 8   | 6..12 |
+| `LOCAL_LINK_STATE_W` | 5   | fixed |
+
+---
+
 *End of TideLink Chiplet Interconnect Subsystem Specification and Design Justification*
 
 *For questions about this specification contact SoC Labs at soclabs.org or open an issue in the TideLink repository.*

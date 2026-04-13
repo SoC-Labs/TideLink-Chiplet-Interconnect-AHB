@@ -1,0 +1,39 @@
+#-----------------------------------------------------------------------------
+# TideLink Module
+# A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+#
+# Contributors
+#
+# David Mapstone (d.a.mapstone@soton.ac.uk)
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+# Derived from RTL: src/rtl/tidelink.sv, src/rtl/tidelink_fifo.sv
+#
+# TideLink credit-based AHB-to-AHB bridge with variable-length packet FIFO
+# and optional IEEE 1588 PTP timestamping. Each direction (TX and RX) has
+# an independent SRAM-backed FIFO for packet storage.
+
+module:
+  name: tidelink
+  gen: False
+  desc: >
+    TideLink credit-based AHB bridge with dual SRAM-backed FIFOs for
+    TX and RX packet buffering. Supports AHB initiator/target interfaces
+    and optional PTP timestamping.
+
+  params:
+    RAM_ADDR_W: { type: int, default: 14, desc: "FIFO SRAM address width (phys = 4 * 2^N bytes, default 16 KB per FIFO)" }
+
+  interfaces:
+    # Clock and Reset
+    - { name: HCLK,    type: wire, direction: in, params: { WIDTH: 1 }, desc: AHB clock }
+    - { name: HRESETn, type: wire, direction: in, params: { WIDTH: 1 }, desc: AHB reset (active low) }
+
+    # AHB interfaces
+    - { name: ahb_initiator, type: ahb, direction: initiator, params: { ADDR_WIDTH: 32, DATA_WIDTH: 32 }, desc: "AHB initiator port (outbound transactions)" }
+    - { name: ahb_target,    type: ahb, direction: target,    params: { ADDR_WIDTH: 32, DATA_WIDTH: 32 }, desc: "AHB target port (inbound transactions)" }
+
+  srams:
+    - { name: u_tx_fifo.u_sram, addr_width: $RAM_ADDR_W, data_width: 32, desc: "TX FIFO packet buffer SRAM (tidelink_sram)" }
+    - { name: u_rx_fifo.u_sram, addr_width: $RAM_ADDR_W, data_width: 32, desc: "RX FIFO packet buffer SRAM (tidelink_sram)" }

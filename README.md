@@ -49,6 +49,8 @@ A joint work commissioned on behalf of SoC Labs, under Arm Academic Access licen
   │  │  tc_axis_tx_tvalid/tdata/tready → TideChart     │                 │
   │  │  tc_axis_rx_tvalid/tdata/tready ← TideChart     │                 │
   │  │  + PUF SRAM local read (subtype 0x0020/0x0021)  │                 │
+  │  │  + tl_local_link_state_o[4:0] → TideChart       │                 │
+  │  │    (quantised congestion sideband, Phase 1)     │                 │
   │  └─────────────────────────────────────────────────┘                 │
   │                                                                      │
   │  Internal: FC adapter RX → FIFO mux / Config mux                    │

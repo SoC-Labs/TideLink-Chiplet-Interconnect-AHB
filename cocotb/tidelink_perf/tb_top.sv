@@ -44,6 +44,12 @@ module tb_top #(
     // Credit observation
     input  logic [RAM_ADDR_W-2:0]    credit_count,
 
+    // Congestion sideband (Phase 1)
+    output logic                [4:0] local_link_state_o,
+    output logic                      link_state_change_o,
+    output logic [RAM_ADDR_W-2:0]     ewma_credit_o,
+    input  logic                      bcast_ack_i,
+
     // Interrupt output
     output logic                     perf_irq
 );
@@ -83,6 +89,11 @@ module tb_top #(
         .fc_rx_accept      (fc_rx_accept),
 
         .credit_count      (credit_count),
+
+        .local_link_state_o  (local_link_state_o),
+        .link_state_change_o (link_state_change_o),
+        .ewma_credit_o       (ewma_credit_o),
+        .bcast_ack_i         (bcast_ack_i),
 
         .perf_irq          (perf_irq)
     );

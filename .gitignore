@@ -51,3 +51,4 @@ hierarchy.txt
 
 # Generated C headers (from scripts/rdl2c.py)
 src/sw/*.generated.h
+imp/

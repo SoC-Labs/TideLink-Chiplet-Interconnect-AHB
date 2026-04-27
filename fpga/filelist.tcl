@@ -17,9 +17,13 @@
 ###   XHB500_IP_DIR        - Root of Arm XHB-500 IP (for XHB500 bridge sources)
 ###-----------------------------------------------------------------------------
 
-set TIDELINK_HOME $env(SOCLABS_TIDELINK_DIR)
-set CMSDK         $env(CMSDK_DIR)
-set XHB500_IP     $env(XHB500_IP_DIR)
+# Names match the placeholders the flist actually uses (${TIDELINK_HOME},
+# ${CMSDK_DIR}, ${XHB500_IP_DIR}). The [subst] in the parser below relies
+# on these TCL variables existing.
+set TIDELINK_HOME        $env(SOCLABS_TIDELINK_DIR)
+set SOCLABS_TIDELINK_DIR $env(SOCLABS_TIDELINK_DIR)
+set CMSDK_DIR            $env(CMSDK_DIR)
+set XHB500_IP_DIR        $env(XHB500_IP_DIR)
 
 # flist written by Agent A2
 set fpga_flist [file join $TIDELINK_HOME flist tidelink_fpga.flist]
@@ -29,25 +33,30 @@ if { ![file exists $fpga_flist] } {
 
 # Include paths: CMSDK and XHB500 verilog headers
 set_property include_dirs [list \
-    $CMSDK/logical/models/cells/verilog \
-    $XHB500_IP/logical/xhb500/verilog \
+    $CMSDK_DIR/logical/models/cells/verilog \
+    $XHB500_IP_DIR/logical/xhb500/verilog \
 ] [current_fileset]
 
 # Parse flist — supports:
 #   +incdir+<path>   → added to include_dirs (appended to the list above)
 #   <path>           → read_verilog -sv
+# Comment markers: '#' and '//' (the FPGA flist uses Verilog-style '//').
+# ${VAR} references are TCL-substituted via [subst] so the flist can carry
+# literal references to ${TIDELINK_HOME}, ${CMSDK_DIR}, ${XHB500_IP_DIR}.
 set fh [open $fpga_flist r]
 set extra_incdirs {}
 while { [gets $fh line] >= 0 } {
     set line [string trim $line]
-    # Skip blank lines and comments
-    if { $line eq "" || [string index $line 0] eq "#" } { continue }
+    if { $line eq "" } { continue }
+    if { [string index $line 0] eq "#" } { continue }
+    if { [string range $line 0 1] eq "//" } { continue }
 
-    if { [string match "+incdir+*" $line] } {
-        set incdir [string range $line 8 end]
+    set resolved [subst $line]
+    if { [string match "+incdir+*" $resolved] } {
+        set incdir [string range $resolved 8 end]
         lappend extra_incdirs $incdir
     } else {
-        read_verilog -sv $line
+        read_verilog -sv $resolved
     }
 }
 close $fh

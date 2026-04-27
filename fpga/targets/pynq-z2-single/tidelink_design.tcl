@@ -23,7 +23,7 @@
 ###   - TideLink IP (soclabs.org:user:tidelink_vivado_wrapper:1.0)
 ###
 ### Address map (PS7 M_AXI_GP0 address space):
-###   0x4000_0000 .. 0x4FFF_FFFF  ahb_sub  (256 MB — transparent chiplet window)
+###   0x4000_0000 .. 0x43FF_FFFF  ahb_sub  (64 MB — transparent chiplet window)
 ###   0x4400_0000 .. 0x4400_FFFF  ahb_tx   (64 KB  — TX aperture, RAM_ADDR_W=14)
 ###   0x4401_0000 .. 0x4401_FFFF  ahb_fifo (64 KB  — RX FIFO window)
 ###   0x4402_0000 .. 0x4402_0FFF  ahb_ptp  (4 KB   — PTP TX write port)
@@ -323,7 +323,9 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_ahb_fifo/s_axi_aclk] \
                    [get_bd_pins axi_ahb_ptp/s_axi_aclk] \
                    [get_bd_pins axi_apb/s_axi_aclk] \
-                   [get_bd_pins tidelink_0/hclk]
+                   [get_bd_pins tidelink_0/hclk] \
+                   [get_bd_pins tidelink_0/user_ref_clk] \
+                   [get_bd_pins tidelink_0/scan_clk]
 
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
@@ -436,15 +438,16 @@ proc create_root_design { parentCell } {
     # Offset and range assigned within the PS7 M_AXI_GP0 (32-bit) space.
     # Vivado SmartConnect requires power-of-two ranges >= 4 KB.
     #
-    #   ahb_sub  : 0x4000_0000  256 MB — transparent chiplet data window
+    #   ahb_sub  : 0x4000_0000   64 MB — transparent chiplet data window
     #   ahb_tx   : 0x4400_0000   64 KB — TX aperture (RAM_ADDR_W=14)
     #   ahb_fifo : 0x4401_0000   64 KB — RX FIFO window
     #   ahb_ptp  : 0x4402_0000    4 KB — PTP TX write port (16 B internal)
     #   apb      : 0x4403_0000   32 KB — unified config registers (15-bit PADDR)
     ###########################################################################
 
-    # ahb_sub: 256 MB window starting at 0x4000_0000
-    assign_bd_address -offset 0x40000000 -range 0x10000000 \
+    # ahb_sub: 64 MB at 0x4000_0000 (covers 0x4000_0000 .. 0x43FF_FFFF;
+    # the next slave at 0x4400_0000 is intentionally just past this region).
+    assign_bd_address -offset 0x40000000 -range 0x04000000 \
         [get_bd_addr_segs {tidelink_0/ahb_sub/Reg}]
 
     # ahb_tx: 64 KB at 0x4400_0000

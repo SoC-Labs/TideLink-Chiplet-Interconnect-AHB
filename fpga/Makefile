@@ -33,6 +33,8 @@
 
 # Project root - assumes this Makefile lives in $SOCLABS_TIDELINK_DIR/fpga
 TIDELINK_HOME   := $(realpath ..)
+FPGA_DIR        := $(TIDELINK_HOME)/fpga
+VIVADO_IP_DIR   := $(FPGA_DIR)/vivado_ip
 
 # Surface SOCLABS_TIDELINK_DIR if not already set (e.g. when the parent shell
 # didn't source set_env.sh). Both the filelist and any sub-tools rely on it.

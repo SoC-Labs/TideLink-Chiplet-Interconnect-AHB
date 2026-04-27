@@ -117,80 +117,13 @@ module tidelink_design_wrapper (
         .led0                     (led0),
         .led1                     (led1),
         .led2                     (led2),
-        .led3                     (led3),
+        .led3                     (led3)
 
-        // =====================================================================
-        // Board-level tie-offs — signals not exposed at the top-level port
-        // =====================================================================
-
-        // Role strap: driven inside the BD by axi_gpio_strap (paired-only).
-        // Not connected at this scope — the BD does not expose role_strap_i
-        // as an external port for this target.
-
-        // Broadcast acknowledge: no TideChart agent present at this stage.
-        .tl_bcast_ack_i           (1'b0),
-
-        // PHC tie-offs — Q4 TODO: replace with phc_hardware_clock IP instance
-        .phc_pps                  (1'b0),
-        .phc_locked_i             (1'b0),
-
-        // TideChart AXI-Stream tie-offs — not used at this stage
-        .tc_axis_tx_tvalid        (1'b0),
-        .tc_axis_tx_tdata         (48'h0),
-        // tc_axis_rx_tready: always ready (accept and discard any RX packets)
-        .tc_axis_rx_tready        (1'b1),
-
-        // QoS priority: default (best-effort)
-        .tc_qos_priority          (3'b0),
-
-        // PUF: puf_ready = 1, seed = 0xA5A5 (both wired in BD via xlconstant)
-
-        // Wlink PLL reference clock: no external TCXO on Pynq-Z2; tie to 0.
-        // The Wlink PLL will lock to the HCLK domain internally.
-        .user_ref_clk             (1'b0),
-
-        // I2C sideband: open-drain idle state (both lines released high)
-        .i2c_scl_i                (1'b1),
-        .i2c_sda_i                (1'b1),
-
-        // I2C AXI slave: not connected — tie all inputs low
-        .s_i2c_axi_awvalid        (1'b0),
-        .s_i2c_axi_awid           (2'b0),
-        .s_i2c_axi_awaddr         (4'b0),
-        .s_i2c_axi_awlen          (8'b0),
-        .s_i2c_axi_awsize         (3'b0),
-        .s_i2c_axi_awburst        (2'b0),
-        .s_i2c_axi_awlock         (1'b0),
-        .s_i2c_axi_awcache        (4'b0),
-        .s_i2c_axi_awprot         (3'b0),
-        .s_i2c_axi_wvalid         (1'b0),
-        .s_i2c_axi_wdata          (32'b0),
-        .s_i2c_axi_wstrb          (4'b0),
-        .s_i2c_axi_wlast          (1'b0),
-        .s_i2c_axi_bready         (1'b0),
-        .s_i2c_axi_arvalid        (1'b0),
-        .s_i2c_axi_arid           (2'b0),
-        .s_i2c_axi_araddr         (4'b0),
-        .s_i2c_axi_arlen          (8'b0),
-        .s_i2c_axi_arsize         (3'b0),
-        .s_i2c_axi_arburst        (2'b0),
-        .s_i2c_axi_arlock         (1'b0),
-        .s_i2c_axi_arcache        (4'b0),
-        .s_i2c_axi_arprot         (3'b0),
-        .s_i2c_axi_rready         (1'b0),
-
-        // ahb_mng (incoming manager from remote chiplet): not connected.
-        // Drive HRDATA=0, HRESP=OKAY. Vivado INFO (not ERROR) for undriven
-        // master outputs — acceptable for single-instance bring-up.
-        .ahb_mng_hrdata           (32'b0),
-        .ahb_mng_hresp            (1'b0),
-
-        // Scan / DFT: tie all low for normal FPGA operation
-        .scan_mode                (1'b0),
-        .scan_asyncrst_ctrl       (1'b0),
-        .scan_clk                 (1'b0),
-        .scan_shift               (1'b0),
-        .scan_in                  (1'b0)
+        // All other tie-offs (tl_bcast_ack_i, phc_pps, phc_locked_i,
+        // tc_axis_*, tc_qos_priority, user_ref_clk, scan_*, i2c_*, ahb_mng_*,
+        // s_i2c_axi_*) are driven INSIDE the block design via xlconstant
+        // cells in tidelink_design.tcl. They are not exposed as BD external
+        // ports, so they do not appear in this instantiation.
     );
 
 endmodule

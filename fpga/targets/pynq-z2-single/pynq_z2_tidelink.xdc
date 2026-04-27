@@ -65,32 +65,32 @@
 #-- TX side (outputs from TideLink) ------------------------------------------
 
 # pad_clk_tx: TX clock forwarded to paired board
-set_property -dict { PACKAGE_PIN W18 IOSTANDARD LVCMOS33 } [get_ports pad_clk_tx]   ;# RPi GPIO2  / pin 4
+set_property -dict { PACKAGE_PIN W18 IOSTANDARD LVCMOS33 } [get_ports pad_clk_tx]   ;# RPi GPIO0
 
 # pad_tx[7:0]: TX data lanes
-set_property -dict { PACKAGE_PIN W19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[0]}]  ;# RPi GPIO3  / pin 6
-set_property -dict { PACKAGE_PIN W14 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[1]}]  ;# RPi GPIO4  / pin 8
-set_property -dict { PACKAGE_PIN V17 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[2]}]  ;# RPi GPIO14 / pin 10
-set_property -dict { PACKAGE_PIN V18 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[3]}]  ;# RPi GPIO15 / pin 12
-set_property -dict { PACKAGE_PIN W10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[4]}]  ;# RPi GPIO23 / pin 16
-set_property -dict { PACKAGE_PIN V9  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[5]}]  ;# RPi GPIO24 / pin 18
-set_property -dict { PACKAGE_PIN V13 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[6]}]  ;# RPi GPIO25 / pin 22
-set_property -dict { PACKAGE_PIN T16 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]}]  ;# RPi GPIO8  / pin 24
+set_property -dict { PACKAGE_PIN W19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[0]}]  ;# RPi GPIO1
+set_property -dict { PACKAGE_PIN Y18 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[1]}]  ;# RPi GPIO2
+set_property -dict { PACKAGE_PIN Y19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[2]}]  ;# RPi GPIO3
+set_property -dict { PACKAGE_PIN U18 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[3]}]  ;# RPi GPIO4
+set_property -dict { PACKAGE_PIN U19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[4]}]  ;# RPi GPIO5
+set_property -dict { PACKAGE_PIN F19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[5]}]  ;# RPi GPIO6
+set_property -dict { PACKAGE_PIN V10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[6]}]  ;# RPi GPIO7
+set_property -dict { PACKAGE_PIN V8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]}]  ;# RPi GPIO8
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 
 # pad_clk_rx: TX clock received from paired board
-set_property -dict { PACKAGE_PIN R16 IOSTANDARD LVCMOS33 } [get_ports pad_clk_rx]   ;# RPi GPIO7  / pin 26
+set_property -dict { PACKAGE_PIN W10 IOSTANDARD LVCMOS33 } [get_ports pad_clk_rx]   ;# RPi GPIO9
 
 # pad_rx[7:0]: RX data lanes
-set_property -dict { PACKAGE_PIN U17 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[0]}]  ;# RPi GPIO16 / pin 36
-set_property -dict { PACKAGE_PIN T17 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[1]}]  ;# RPi GPIO20 / pin 38
-set_property -dict { PACKAGE_PIN R17 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[2]}]  ;# RPi GPIO21 / pin 40
-set_property -dict { PACKAGE_PIN P18 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[3]}]  ;# RPi GPIO12 / pin 32
-set_property -dict { PACKAGE_PIN N17 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[4]}]  ;# RPi GPIO13 / pin 33
-set_property -dict { PACKAGE_PIN V16 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[5]}]  ;# RPi GPIO19 / pin 35
-set_property -dict { PACKAGE_PIN U16 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6]}]  ;# RPi GPIO26 / pin 37
-set_property -dict { PACKAGE_PIN T12 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}]  ;# RPi GPIO6  / pin 31
+set_property -dict { PACKAGE_PIN B20 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[0]}]  ;# RPi GPIO10
+set_property -dict { PACKAGE_PIN W8  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[1]}]  ;# RPi GPIO11
+set_property -dict { PACKAGE_PIN V6  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[2]}]  ;# RPi GPIO12
+set_property -dict { PACKAGE_PIN Y6  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[3]}]  ;# RPi GPIO13
+set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[4]}]  ;# RPi GPIO14
+set_property -dict { PACKAGE_PIN U7  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[5]}]  ;# RPi GPIO15
+set_property -dict { PACKAGE_PIN C20 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6]}]  ;# RPi GPIO16
+set_property -dict { PACKAGE_PIN Y8  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}]  ;# RPi GPIO17
 
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established

@@ -35,11 +35,18 @@ set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 # Virtual TX clock — source-synchronous reference for pad_clk_tx and pad_tx[*].
 # This tells Vivado that pad_clk_tx is launched from the 50 MHz domain.
-create_clock -name tl_tx_clk -period 20.0 [get_ports pad_clk_tx]
+# create_clock -name tl_tx_clk -period 20.0 [get_ports pad_clk_tx]
+# Disabled for first bring-up: pad_clk_tx maps to a non-clock-capable RPi
+# pin (W18 on the Pynq-Z2 RPi header, bank 35). Treating it as a regular
+# output skips the IO Clock Placer requirement. Re-enable once the
+# link characterisation needs source-synchronous output timing — and
+# move the pin to an MRCC/SRCC site at the same time.
 
 # Virtual RX clock — received from the remote chiplet on pad_clk_rx.
 # Used as the capture clock for pad_rx[*].
-create_clock -name tl_rx_clk -period 20.0 [get_ports pad_clk_rx]
+# create_clock -name tl_rx_clk -period 20.0 [get_ports pad_clk_rx]
+# Disabled for first bring-up: pad_clk_rx maps to a non-clock-capable RPi
+# pin (R16). Same rationale as pad_clk_tx above.
 
 #-----------------------------------------------------------------------------
 # GPIO PHY pad I/O timing (conservative, 50 MHz)
@@ -53,12 +60,12 @@ create_clock -name tl_rx_clk -period 20.0 [get_ports pad_clk_rx]
 #-----------------------------------------------------------------------------
 
 # Output delays on TX data lanes relative to TX clock
-set_output_delay -clock [get_clocks tl_tx_clk] -min -5.0 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks tl_tx_clk] -max  5.0 [get_ports {pad_tx[*]}]
+# Disabled with tl_tx_clk: set_output_delay -clock [get_clocks tl_tx_clk] -min -5.0 [get_ports {pad_tx[*]}]
+# Disabled with tl_tx_clk: set_output_delay -clock [get_clocks tl_tx_clk] -max  5.0 [get_ports {pad_tx[*]}]
 
 # Input delays on RX data lanes relative to RX clock
-set_input_delay  -clock [get_clocks tl_rx_clk] -min -5.0 [get_ports {pad_rx[*]}]
-set_input_delay  -clock [get_clocks tl_rx_clk] -max  5.0 [get_ports {pad_rx[*]}]
+# Disabled with tl_rx_clk: set_input_delay  -clock [get_clocks tl_rx_clk] -min -5.0 [get_ports {pad_rx[*]}]
+# Disabled with tl_rx_clk: set_input_delay  -clock [get_clocks tl_rx_clk] -max  5.0 [get_ports {pad_rx[*]}]
 
 # The forwarded TX clock itself has no setup/hold budget — it is the
 # reference clock for the TX domain. Mark it as false-path for timing

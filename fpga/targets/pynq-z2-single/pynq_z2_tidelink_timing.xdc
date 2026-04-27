@@ -107,3 +107,20 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 # versions; the global severity downgrade is more robust and only relaxes
 # this specific DRC.
 set_property SEVERITY {Warning} [get_drc_checks LUTLP-1]
+
+#-----------------------------------------------------------------------------
+# Clock-route relaxation for non-clock-capable PHY pins
+#-----------------------------------------------------------------------------
+# The WlinkGPIORx logic uses pad_clk_rx as a sampling clock, and Wlink TX
+# uses pad_clk_tx as a forwarded clock. Both pads land on Pynq-Z2 RPi-header
+# GPIOs (W18, R16) which are NOT clock-capable I/O sites on bank 35. Vivado
+# infers BUFG on these signals during elaboration; the IO Clock Placer then
+# fails because BUFG requires a clock-region access pin.
+#
+# CLOCK_DEDICATED_ROUTE = FALSE tells the router to use general fabric for
+# the clock distribution instead of the dedicated clock network. Higher
+# skew/jitter, but valid for ≤50 MHz over short ribbon. Re-evaluate when
+# moving to a higher link rate or relocating these nets to MRCC pins (e.g.
+# K17/K18) via flying leads.
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of [get_ports pad_clk_rx]]
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of [get_ports pad_clk_tx]]

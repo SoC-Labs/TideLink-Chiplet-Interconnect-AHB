@@ -68,6 +68,28 @@ After `fpgahub pair up` and the bitstream programs both boards, the LEDs report:
 
 If LD0 is off after a few seconds: ribbon may be wired wrong, or `user_ref_clk` not present. If LD1 is the same on both boards: strap GPIO write didn't land.
 
+## Bring-up sequence (verified 2026-04-27)
+
+Programming the bitstream is **not enough on its own** — Wlink stays in reset until the role is locked via APB. The minimum sequence is:
+
+1. `fpgahub pair lease acquire bridge1 --user $(whoami) --ttl 3600`
+2. SCP `tidelink.bin` + `tidelink.hwh` to each board, copy to `/lib/firmware/`, `echo tidelink.bin > /sys/class/fpga_manager/fpga0/firmware`
+3. Write the strap GPIO at `0x4404_0000`: 0 → die_a/master, 1 → die_b/slave (note: chiplet-controller inverts, so strap=0 → master)
+4. **Lock the role**: write `0x2` (master, lock=1) or `0x3` (slave, lock=1) to `0x4403_2080`. This releases Wlink from reset (`wlink_por_reset = ~poresetn | ~role_locked`).
+5. After ~1 s, LD0 should be solid on both boards.
+
+`pynq/scripts/deploy_pair.sh` does the whole sequence; `pynq/scripts/wlink_probe.sh` dumps current state.
+
+## ⚠ AHB_TX hang hazard
+
+**Do not write to `0x4400_0000` (AHB_TX) until the link is verified UP.**
+
+If Wlink's TX FC node is wedged (RX deserializer not synced with the peer, ribbon wrong, `pad_clk_rx` clocking unreliable, etc.), the FC adapter never asserts HREADY. The AXI-Lite-to-AHB bridge stalls, SmartConnect blocks, and the PS's `mmap` write hangs in kernel space — taking down SSH and requiring a physical power-cycle (UART reboot may not recover).
+
+Bench evidence (2026-04-27): an AHB_TX write on z2_02 with link unsynced took the board offline; UART reboot did not bring it back within 4 minutes.
+
+The PYNQ overlay's `TidelinkOverlay.assert_link_safe_for_tx()` and the stress runner's `write_packet()` both gate on a Wlink-activity probe before issuing AHB_TX writes — use those rather than rolling your own write loop.
+
 ## PHC tie-off
 
 PHC inputs are zeroed for first bring-up (Q4 in the plan). PTP tests are gated until `ptp-hardware-clock-ahb` is wired in.

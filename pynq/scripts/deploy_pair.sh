@@ -25,6 +25,19 @@
 #
 # If you change the role or want to retry the link, the bitstream must be
 # reloaded — role_lock_reg is W1S with POR-only clear.
+#
+# **HAZARD — DO NOT WRITE TO AHB_TX (0x4400_0000) FROM PS UNTIL THE LINK
+# IS VERIFIED UP.**  If the Wlink TX FC node is wedged (RX deserializer
+# unsynced, ribbon wiring wrong, RX clock unusable), the FC adapter never
+# asserts HREADY back to the AXI-Lite-to-AHB bridge. SmartConnect then
+# stalls, the PS mmap write hangs in kernel space, and SSH gets killed.
+# Bench evidence (2026-04-27): an AHB_TX write on z2_02 took it offline
+# and required a physical power-cycle (UART reboot did not recover).
+#
+# Safe-to-execute always: APB reads/writes, strap GPIO writes, role-lock
+# writes, doorbell trigger (the doorbell goes through APB, which is a
+# separate path). Run wlink_probe.sh first to inspect link state before
+# attempting any AHB_TX traffic.
 set -e
 
 BOARD_IP="$1"

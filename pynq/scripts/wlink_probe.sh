@@ -35,6 +35,23 @@
 #     Health must be inferred from FC activity counters or by sending a
 #     test packet and watching the peer's CURRENT_CREDITS drop.
 #
+# **HAZARD — DO NOT WRITE TO AHB_TX (0x4400_0000) UNTIL LINK IS PROVEN UP.**
+# If the Wlink TX FC node is wedged (e.g. RX deserializer not synced with
+# the peer, ribbon wiring wrong, or RX clock unusable), the FC adapter
+# never asserts HREADY back. The AXI4-Lite-to-AHB-Lite bridge in the BD
+# then stalls indefinitely, SmartConnect blocks, and the PS Linux mmap
+# write hangs in kernel space — taking down SSH and requiring a
+# hardware power-cycle of the board (UART reboot may not recover it).
+#
+# Verified on bench (2026-04-27): writing a 4-word packet to AHB_TX on
+# z2_02 broke its SSH session immediately and the PS would not respond
+# to subsequent ping. fpgahub UART reboot did not recover it within
+# 4 min; physical power-cycle was needed.
+#
+# Safe read-only probes (this script's APB reads, doorbell triggers,
+# strap writes, role_lock writes) do NOT have this problem because they
+# target paths that always complete locally regardless of link state.
+#
 # Usage:
 #   wlink_probe.sh BOARD_IP
 set -e

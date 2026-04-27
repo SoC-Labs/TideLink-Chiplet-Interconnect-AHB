@@ -5,24 +5,29 @@ it writes packets into the FIFO, reads them back, and inspects the
 returner's AHB master writes via a PS-readable BRAM.
 
 Usage (on Pynq-Z2):
-    from pynq import Overlay
-    ol = Overlay("tidelink_test.bit")
     exec(open("test_single_instance.py").read())
 
-Adjust FIFO_BASE, CFG_BASE, and RETURNER_BRAM_BASE to match your
-Vivado address map.
+Address map targets the Wave B1 single-instance bitstream
+(fpga/targets/pynq-z2-single/tidelink_design.tcl).
 """
 
-from pynq import MMIO
+try:
+    from overlay import TidelinkOverlay as _Overlay
+    _ol = _Overlay(paired=False)
+    _mmio_cls = _ol.ahb_sub.__class__  # pynq.MMIO
+except ImportError:
+    from bare_overlay import TidelinkBareOverlay as _Overlay, BareMMIO as _mmio_cls
+    _ol = _Overlay(paired=False, skip_load=True)
 
 from tidelink.pynq_driver import PynqTidelinkDriver
 from tidelink.packet import FifoPacket
 from tidelink import regs
 
-# ── Address map (update to match your Vivado block design) ───────────────────
-FIFO_BASE          = 0x4000_0000   # AHB slave — FIFO data path
-CFG_BASE           = 0x4001_0000   # AHB slave — config registers (via bridge)
-RETURNER_BRAM_BASE = 0x4002_0000   # BRAM that captures returner master writes
+# ── Address map — Wave B1 single-instance (fpga/targets/pynq-z2-single) ──────
+# Source: tidelink_design.tcl assign_bd_address block
+FIFO_BASE          = 0x4401_0000   # ahb_fifo — RX FIFO window (64 KB)
+CFG_BASE           = 0x4403_0000   # apb      — unified config registers (32 KB)
+RETURNER_BRAM_BASE = 0x4400_0000   # ahb_tx   — TX aperture used as returner capture
 RETURNER_BRAM_SIZE = 0x1000
 
 # Returner target addresses (pair_base defaults to 0)
@@ -45,7 +50,7 @@ def check(name, condition, msg=""):
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 tl = PynqTidelinkDriver(FIFO_BASE, CFG_BASE)
-returner_bram = MMIO(RETURNER_BRAM_BASE, RETURNER_BRAM_SIZE)
+returner_bram = _ol.ahb_tx  # re-use already-open MMIO from overlay
 
 print("=" * 60)
 print("TideLink Single Instance Hardware Test")

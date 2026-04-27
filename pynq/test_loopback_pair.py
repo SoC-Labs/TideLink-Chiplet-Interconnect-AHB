@@ -3,25 +3,42 @@
 Instance A's returner master writes to instance B's config registers,
 and vice versa. No Python pair model is needed — the hardware does it.
 
-Usage (on Pynq-Z2):
-    from pynq import Overlay
-    ol = Overlay("tidelink_pair.bit")
-    exec(open("test_loopback_pair.py").read())
+Usage (on Pynq-Z2, two boards running the paired bitstream):
+    # Board A:  FPGAHUB_LOCAL_ROLE=die_a python3 test_loopback_pair.py
+    # Board B:  FPGAHUB_LOCAL_ROLE=die_b python3 test_loopback_pair.py
 
-Adjust base addresses to match your Vivado address map.
+Address map targets the Wave B2 paired bitstream
+(fpga/targets/pynq-z2-pair/tidelink_design.tcl).
 """
 
+import os
 import time
+
+try:
+    from overlay import TidelinkOverlay as _Overlay
+    _ol = _Overlay(paired=True)
+except ImportError:
+    from bare_overlay import TidelinkBareOverlay as _Overlay
+    _ol = _Overlay(paired=True, skip_load=True)
+
+# Apply role strap from environment if running under fpgahub
+_local_role = os.environ.get("FPGAHUB_LOCAL_ROLE")
+if _local_role:
+    _ol.set_role(_local_role)
 
 from tidelink.pynq_driver import PynqTidelinkDriver
 from tidelink.packet import FifoPacket
 from tidelink import regs
 
-# ── Address map (update to match your Vivado block design) ───────────────────
-TL_A_FIFO = 0x4000_0000
-TL_A_CFG  = 0x4001_0000
-TL_B_FIFO = 0x4002_0000
-TL_B_CFG  = 0x4003_0000
+# ── Address map — Wave B2 paired bitstream (fpga/targets/pynq-z2-pair) ───────
+# Source: tidelink_design.tcl assign_bd_address block
+# Each physical board exposes a single TideLink instance; A/B are the two boards.
+# On a single-FPGA loopback rig both instances share the same address space —
+# this layout is kept for documentation; the drivers below use the overlay MMIO.
+TL_A_FIFO = 0x4401_0000   # ahb_fifo  — RX FIFO window (64 KB)
+TL_A_CFG  = 0x4403_0000   # apb       — config registers (32 KB)
+TL_B_FIFO = 0x4401_0000   # (same physical board in pair; remote via GPIO bridge)
+TL_B_CFG  = 0x4403_0000   # (remote APB registers accessible via ahb_sub window)
 
 passed = 0
 failed = 0
@@ -38,6 +55,8 @@ def check(name, condition, msg=""):
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────
+# Both drivers address the local instance; in a real paired test each board
+# runs this script independently and the GPIO bridge carries the traffic.
 tl_a = PynqTidelinkDriver(TL_A_FIFO, TL_A_CFG)
 tl_b = PynqTidelinkDriver(TL_B_FIFO, TL_B_CFG)
 

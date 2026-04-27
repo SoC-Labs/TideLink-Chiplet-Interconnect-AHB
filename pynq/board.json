@@ -1,0 +1,25 @@
+{
+  "hostname": "pynq",
+  "interfaces": {
+    "eth0": {
+      "ips": [
+        "192.168.2.99/24"
+      ],
+      "mac": "00:00:00:00:00:00",
+      "state": "UP"
+    },
+    "lo": {
+      "ips": [
+        "127.0.0.1/8"
+      ],
+      "mac": null,
+      "state": "UNKNOWN"
+    }
+  },
+  "serial_device": "/dev/serial/by-id/usb-Xilinx_TUL_XXXX-tul-if01-port0",
+  "ssh_ip": "192.168.2.99",
+  "ssh_target": "xilinx@192.168.2.99",
+  "fpgahub_role": "die_a",
+  "bitstream": "tidelink.bin",
+  "updated_at": "FILL_IN"
+}

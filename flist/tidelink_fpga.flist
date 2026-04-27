@@ -197,6 +197,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFOL1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxi2axil_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxil2apb_bridge.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v

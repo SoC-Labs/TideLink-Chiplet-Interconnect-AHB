@@ -57,6 +57,14 @@ GPIO_DATA_OFF = 0x000  # GPIO_DATA register (channel 1)
 APB_CTRL_OFF  = 0x01C
 APB_CTRL_FLUSH_BIT = (1 << 1)  # bit[1] = FLUSH (self-clearing; EN must be 0)
 
+# Chiplet-controller ROLE_CFG register (paddr[14:5] selects region 4 within
+# TideLink, paddr[4:2] = 0). Within the unified APB map TideLink starts at
+# offset 0x2000 and region 4 begins at offset 0x80, so the absolute APB
+# offset is 0x2080. Bit[0] = role_cfg (0=master, 1=slave; matches strap),
+# bit[1] = role_lock (W1S, POR-only clear). Locking releases Wlink from
+# reset; until then, link_active stays low.
+REG_ROLE_LOCK = 0x2080
+
 
 class TidelinkOverlay(Overlay):
     """PYNQ Overlay for the TideLink chiplet bridge.
@@ -101,10 +109,16 @@ class TidelinkOverlay(Overlay):
     def set_role(self, role: str):
         """Write the role strap GPIO.
 
-        Parameters
-        ----------
-        role : ``"die_a"`` or ``"die_b"``
-            die_a -> strap = 0 (slave); die_b -> strap = 1 (master).
+        Verified on Pynq-Z2 hardware (2026-04-27): the chiplet controller's
+        ``role_is_master = ~role_effective`` inverts the strap, so the
+        operator-visible mapping is
+
+            die_a -> strap = 0  (master, role_is_master_o = 1)
+            die_b -> strap = 1  (slave,  role_is_master_o = 0)
+
+        Picking which board is which is purely a labelling convention
+        (see ``[pairs.<id>].roles`` in fpgahub config); the hardware
+        treats the two roles symmetrically apart from this strap bit.
         """
         if self.strap is None:
             raise RuntimeError(
@@ -122,6 +136,47 @@ class TidelinkOverlay(Overlay):
             return "die_a"
         val = self.strap.read(GPIO_DATA_OFF)
         return "die_b" if (val & 1) else "die_a"
+
+    def lock_role(self, role: str | None = None) -> int:
+        """Release Wlink from reset by locking the role.
+
+        Until the role is locked, the chiplet controller asserts
+        ``wlink_por_reset = ~poresetn | ~role_locked``, which holds the
+        whole Wlink link/PHY in reset. Without this call the design's
+        ``link_active`` LED stays off even when both boards have their
+        straps set correctly.
+
+        The bit layout at APB region 4 offset 0 (TideLink PADDR 0x2080,
+        MMIO 0x4403_2080) is::
+
+            bit[0] = role_cfg  (0 = master, 1 = slave; matches strap)
+            bit[1] = role_lock (W1S, only clears on POR)
+
+        ``role_lock`` is write-1-set with a power-on-only clear: once
+        locked, it stays locked until the bitstream is reloaded. That
+        matches the autoneg flow but the application has to drive it
+        explicitly when autoneg isn't running (which is our setup —
+        I2C autoneg is unconnected on the Pynq-Z2 build).
+
+        Parameters
+        ----------
+        role : ``"die_a"``, ``"die_b"`` or ``None``
+            When given, also writes the strap before locking — convenient
+            one-shot sequencing. ``None`` leaves the current strap
+            untouched and just locks whatever's there.
+
+        Returns
+        -------
+        int
+            The post-write value of the ROLE_CFG register, useful for
+            asserting ``(value & 0x2) != 0`` in test code.
+        """
+        if role is not None:
+            self.set_role(role)
+        # bit[1] = lock, bit[0] = role_cfg (mirrors strap for safety)
+        cfg_bit = self.get_role() == "die_b"
+        self.apb.write(REG_ROLE_LOCK, 0x2 | (1 if cfg_bit else 0))
+        return self.apb.read(REG_ROLE_LOCK)
 
     # -------------------------------------------------------------------------
     # CoreSight ID helpers (APB)

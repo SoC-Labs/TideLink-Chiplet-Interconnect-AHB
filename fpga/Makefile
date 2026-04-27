@@ -66,15 +66,14 @@ TARGET_DIR      := $(FPGA_DIR)/targets/$(TARGET)
 
 # Xilinx part — keyed off TARGET
 # pynq-z2-single / pynq-z2-pair: Zynq-7020 on Digilent Pynq-Z2
-# mps3: Kintex UltraScale+ on MPS3 / AN552 board
-#   NOTE: mps3 part is a placeholder — confirm with Agent B3 once the target
-#   files are finalised (the AN552 baseboard carries xcku115-flva1517-2-e).
+# mps3: Kintex UltraScale on MPS3 board (xcku115-flvb1760-1-c).
+#   Confirmed against the working ethernet-subsystem-ahb arm_mps3 target.
 ifeq ($(TARGET),pynq-z2-single)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),mps3)
-XILINX_PART     := xcku115-flva1517-2-e
+XILINX_PART     := xcku115-flvb1760-1-c
 endif
 
 # Build output directories
@@ -276,7 +275,7 @@ help:
 	@echo "TARGET values (default: pynq-z2-single):"
 	@echo "  pynq-z2-single    Digilent Pynq-Z2 — single-node   (xc7z020clg400-1)"
 	@echo "  pynq-z2-pair      Digilent Pynq-Z2 — loopback pair (xc7z020clg400-1)"
-	@echo "  mps3              MPS3 / AN552                      (xcku115-flva1517-2-e, placeholder)"
+	@echo "  mps3              MPS3 / Arm baseboard               (xcku115-flvb1760-1-c)"
 	@echo ""
 	@echo "Build targets:"
 	@echo "  all               Full flow: package_ip -> build_design (default)"

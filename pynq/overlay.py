@@ -179,6 +179,108 @@ class TidelinkOverlay(Overlay):
         return self.apb.read(REG_ROLE_LOCK)
 
     # -------------------------------------------------------------------------
+    # Link health — safe diagnostics that never touch AHB_TX
+    # -------------------------------------------------------------------------
+
+    def link_health(self, sample_window_s: float = 1.0) -> dict:
+        """Return a snapshot of link-state indicators that don't risk a
+        PS hang.
+
+        Reads only the APB and Wlink-config regions, never AHB_TX or
+        AHB_FIFO. Samples Wlink's per-FC-channel activity bytes twice
+        with ``sample_window_s`` between, so any free-running counters
+        show as deltas.
+
+        Returns a dict keyed by indicator name, suitable for assertions
+        in tests::
+
+            health = ol.link_health()
+            assert health["role_locked"], "role not locked"
+            assert health["wlink_activity_seen"], "no Wlink traffic in 1s"
+
+        ``wlink_activity_seen`` is the field test code should check
+        before issuing any AHB_TX write — if it's False the TX FC node
+        is wedged and writing to AHB_TX will hang the PS (see commit
+        581634b for the bench evidence).
+        """
+        import time as _t
+
+        # Role lock + strap (always safe)
+        role_cfg = self.apb.read(REG_ROLE_LOCK)
+        role_locked = bool(role_cfg & 0x2)
+        local_role = self.get_role()
+
+        # Tidelink-side credit counters
+        current_credits = self.apb.read(0x0c)
+        released_acc = self.apb.read(0x20)
+        doorbell_resp_acc = self.apb.read(0x24)
+        pair_credit_ctr = self.apb.read(0x28)
+
+        # Wlink per-FC activity bytes [+0x08 inside each region]
+        # See pynq/scripts/wlink_probe.sh for the layout.
+        wlink_regions = (0x1000, 0x1100, 0x1200, 0x1300, 0x1400,
+                         0x1600, 0x1700)
+        # Take a ``before`` then ``after`` sample of every region's
+        # 8-word header so any free-running counter shows up.
+        def _snap():
+            return {base: [self.apb.read(base + i * 4) for i in range(8)]
+                    for base in [b - 0x30000 for b in wlink_regions]}
+        # apb base is already 0x44030000; the wlink regions are at
+        # offset (region - 0x30000) within self.apb (mmio offset).
+        # Actually self.apb is mmap'd at APB_BASE = 0x4403_0000 with
+        # APB_RANGE = 0x8000, so Wlink regions live at offset 0x0..0x1FFF.
+        # Re-compute cleanly:
+        before = {base: [self.apb.read(base + i * 4) for i in range(8)]
+                  for base in wlink_regions}
+        _t.sleep(sample_window_s)
+        after = {base: [self.apb.read(base + i * 4) for i in range(8)]
+                 for base in wlink_regions}
+        deltas = {base: [a - b for a, b in zip(after[base], before[base])]
+                  for base in wlink_regions}
+        wlink_activity_seen = any(any(d != 0 for d in v)
+                                  for v in deltas.values())
+        tidelink_fc_active = before[0x1700][2] == 1  # [0x08] activity bit
+
+        return {
+            "role_locked":           role_locked,
+            "local_role":            local_role,
+            "role_cfg_reg":          role_cfg,
+            "current_credits":       current_credits,
+            "released_acc":          released_acc,
+            "doorbell_resp_acc":     doorbell_resp_acc,
+            "pair_credit_counter":   pair_credit_ctr,
+            "wlink_activity_seen":   wlink_activity_seen,
+            "tidelink_fc_active":    tidelink_fc_active,
+            "_wlink_deltas":         deltas,
+        }
+
+    def assert_link_safe_for_tx(self):
+        """Raise RuntimeError unless the link is safe for an AHB_TX write.
+
+        Checks (in order):
+          1. ``role_locked`` is set — Wlink is out of reset.
+          2. ``current_credits == MAX_CREDITS`` — RX FIFO is empty (a
+             previous run didn't leave packets stuck in the FIFO).
+          3. The TideLink FC channel has activity — Wlink TX is actually
+             producing/receiving traffic.
+
+        Without (3), an AHB_TX write blocks indefinitely waiting on
+        HREADY from a wedged FC adapter, which takes the PS down. See
+        commit 581634b for the bench evidence.
+        """
+        h = self.link_health()
+        if not h["role_locked"]:
+            raise RuntimeError(
+                "role not locked (ROLE_CFG=0x{:x}); call lock_role() "
+                "before TX".format(h["role_cfg_reg"]))
+        if not h["tidelink_fc_active"]:
+            raise RuntimeError(
+                "Wlink TideLink FC node is idle (no traffic seen). "
+                "Writing to AHB_TX would hang the PS — link is not up. "
+                "Run pynq/scripts/wlink_probe.sh and check the ribbon / "
+                "RX clock.")
+
+    # -------------------------------------------------------------------------
     # CoreSight ID helpers (APB)
     # -------------------------------------------------------------------------
 

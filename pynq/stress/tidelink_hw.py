@@ -105,8 +105,16 @@ class TidelinkHw:
 
     # ── Packet I/O ───────────────────────────────────────────────────────────
 
-    def write_packet(self, data):
-        """Write a packet through ahb_tx. data is a list of 32-bit words."""
+    def write_packet(self, data, *, skip_link_check: bool = False):
+        """Write a packet through ahb_tx. data is a list of 32-bit words.
+
+        Calls :meth:`overlay.assert_link_safe_for_tx` first to avoid the
+        documented PS-hang failure mode where AHB_TX blocks indefinitely
+        when the Wlink TX FC node is wedged. Set ``skip_link_check=True``
+        only in tests that explicitly verify the hang behaviour.
+        """
+        if not skip_link_check:
+            self.overlay.assert_link_safe_for_tx()
         self.ahb_tx.write(0x0000, len(data))
         for i, word in enumerate(data):
             self.ahb_tx.write((i + 1) * 4, word)

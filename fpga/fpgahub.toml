@@ -1,0 +1,212 @@
+# fpgahub manifest for tidelink
+#
+# TideLink chiplet bridge: Pynq-Z2 single-instance, paired GPIO-bridge
+# (two boards connected via RPi-header ribbon), and MPS3/AN552.
+#
+# Upstream dependency: fpgahub >= feat/pair-tokens-and-env
+#   Pair tokens ({pair.*}) are rendered at action-dispatch time by fpgahub;
+#   no helper scripts are needed.  FPGAHUB_PEER_* env vars are also injected
+#   into each action subprocess automatically for pair-bound actions.
+
+schema_version = 1
+project        = "tidelink"
+description    = "TideLink chiplet bridge — Pynq-Z2 single + paired GPIO-bridge + MPS3"
+
+# ---------------------------------------------------------------------------
+# Artefacts — three bitstream targets, each with .bit / .bin / .hwh
+# ---------------------------------------------------------------------------
+
+[artefacts.bitstream_pynq_z2_single]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-single/tidelink.bit"
+
+[artefacts.bitstream_bin_pynq_z2_single]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-single/tidelink.bin"
+
+[artefacts.hwh_pynq_z2_single]
+kind        = "other"
+path        = "../imp/fpga/output/pynq-z2-single/tidelink.hwh"
+description = "Vivado hardware handoff — consumed by the PYNQ Overlay wrapper."
+
+[artefacts.bitstream_pynq_z2_pair]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair/tidelink.bit"
+
+[artefacts.bitstream_bin_pynq_z2_pair]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair/tidelink.bin"
+
+[artefacts.hwh_pynq_z2_pair]
+kind        = "other"
+path        = "../imp/fpga/output/pynq-z2-pair/tidelink.hwh"
+description = "Vivado hardware handoff — consumed by the PYNQ Overlay wrapper."
+
+[artefacts.bitstream_mps3]
+kind = "bitstream"
+path = "../imp/fpga/output/mps3/tidelink.bit"
+
+[artefacts.bitstream_bin_mps3]
+kind = "bitstream"
+path = "../imp/fpga/output/mps3/tidelink.bin"
+
+[artefacts.hwh_mps3]
+kind        = "other"
+path        = "../imp/fpga/output/mps3/tidelink.hwh"
+description = "Vivado hardware handoff — MPS3 / AN552 variant."
+
+# ---------------------------------------------------------------------------
+# Build actions
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id        = "build_z2_single"
+title     = "Build Pynq-Z2 single-instance bitstream"
+command   = ["make", "-C", "fpga", "TARGET=pynq-z2-single", "build_design"]
+produces  = ["bitstream_built_z2_single"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_z2_pair"
+title     = "Build Pynq-Z2 paired GPIO-bridge bitstream"
+command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair", "build_design"]
+produces  = ["bitstream_built_z2_pair"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_mps3"
+title     = "Build MPS3 bitstream"
+command   = ["make", "-C", "fpga", "TARGET=mps3", "build_design"]
+produces  = ["bitstream_built_mps3"]
+timeout_s = 3600
+
+# ---------------------------------------------------------------------------
+# Program (JTAG) actions
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id        = "program_z2_single"
+title     = "Program Pynq-Z2 single-instance via JTAG"
+command   = ["make", "-C", "fpga", "program", "TARGET=pynq-z2-single"]
+requires  = ["bitstream_built_z2_single"]
+produces  = ["bitstream_loaded"]
+timeout_s = 300
+
+[[actions]]
+id        = "program_z2_pair"
+title     = "Program Pynq-Z2 paired-board via JTAG"
+command   = ["make", "-C", "fpga", "program", "TARGET=pynq-z2-pair"]
+requires  = ["bitstream_built_z2_pair"]
+produces  = ["bitstream_loaded"]
+timeout_s = 300
+
+# ---------------------------------------------------------------------------
+# Deploy (PYNQ fpga_manager) actions
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id          = "deploy_z2_single"
+title       = "Deploy single-instance overlay to PYNQ Linux"
+description = "Uses PYNQ fpga_manager over SSH/SCP. Requires PYNQ_PASSWORD secret."
+command     = ["make", "-C", "fpga", "deploy",
+               "TARGET=pynq-z2-single",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+requires    = ["bitstream_built_z2_single"]
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+[[actions]]
+id          = "deploy_z2_pair"
+title       = "Deploy paired GPIO-bridge overlay to PYNQ Linux"
+description = "Uses PYNQ fpga_manager over SSH/SCP. Requires PYNQ_PASSWORD secret."
+command     = ["make", "-C", "fpga", "deploy",
+               "TARGET=pynq-z2-pair",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+requires    = ["bitstream_built_z2_pair"]
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+# ---------------------------------------------------------------------------
+# Stress tests
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id          = "stress_single"
+title       = "Solo stress test on single-instance board"
+description = """
+Runs pynq.stress.runner in --solo mode on the board over SSH.
+Key-based auth + NOPASSWD sudo required (configure once per PYNQ image).
+"""
+command   = ["ssh",
+             "-o", "StrictHostKeyChecking=no",
+             "-o", "ConnectTimeout=10",
+             "-o", "ServerAliveInterval=15",
+             "{host.ssh}",
+             "cd /home/xilinx/tidelink_overlay && sudo -n python3 -m pynq.stress.runner --solo --budget 300"]
+requires  = ["bitstream_loaded"]
+timeout_s = 900
+
+# NOTE — env propagation choice for stress_pair:
+#
+# fpgahub injects FPGAHUB_PEER_* into the *local* action subprocess (the ssh
+# client process).  ssh(1) does NOT forward those env vars to the remote shell
+# by default; SendEnv / AcceptEnv require SSH server config that we cannot
+# guarantee on stock PYNQ images.
+#
+# Option (a) — bake token substitutions into the command line (chosen here):
+#   fpgahub renders {pair.peer.*} to concrete values at dispatch time, so the
+#   peer's SSH address etc. are literal strings by the time ssh executes.
+#   No env propagation needed at all; the remote runner receives everything as
+#   CLI flags.
+#
+# Option (b) — "env KEY=VAL ... python3 ..." prefix in the remote command:
+#   Would work but duplicates the token → env-var mapping that fpgahub already
+#   maintains, and makes the command line harder to audit.
+#
+# Using option (a): cleaner, no SSH server policy dependency.
+# The runner may also check FPGAHUB_* locally if needed (via sudo -E), but
+# the critical peer-addressing data is in the flags.
+
+[[actions]]
+id          = "stress_pair"
+title       = "Paired stress test (requires board to be in a pair)"
+description = """
+Runs pynq.stress.runner in --pair mode on the local board over SSH.
+Pair tokens are baked into the command line at dispatch time by fpgahub, so
+no SSH env propagation is required.  sudo -E is passed so that the local
+FPGAHUB_* vars visible to the ssh process are forwarded into the sudo
+environment on the board — useful for any ancillary lookups the runner does
+locally, but the critical peer-addressing flags come from the CLI tokens.
+
+IMPORTANT: this action uses {pair.*} tokens and MUST be run against a board
+that is currently a member of an active pair lease.  Running it outside a
+pair context will cause fpgahub to fail token resolution at dispatch time.
+"""
+command   = ["ssh",
+             "-o", "StrictHostKeyChecking=no",
+             "-o", "ConnectTimeout=10",
+             "-o", "ServerAliveInterval=15",
+             "{host.ssh}",
+             "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{pair.peer.host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
+requires  = ["bitstream_loaded"]
+timeout_s = 1500
+
+# ---------------------------------------------------------------------------
+# Composite CI flows
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id        = "ci_single_full"
+title     = "Full CI: build → deploy → stress (single)"
+steps     = ["build_z2_single", "deploy_z2_single", "stress_single"]
+timeout_s = 0
+
+[[actions]]
+id        = "ci_pair_full"
+title     = "Full CI: build → deploy → stress (pair)"
+steps     = ["build_z2_pair", "deploy_z2_pair", "stress_pair"]
+timeout_s = 0

@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -73,6 +73,8 @@ TARGET_DIR      := $(FPGA_DIR)/targets/$(TARGET)
 ifeq ($(TARGET),pynq-z2-single)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-flip)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c

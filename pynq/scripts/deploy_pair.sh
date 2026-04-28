@@ -46,6 +46,28 @@ ROLE="$3"
 ARTEFACTS="${4:-/tmp/tidelink_deploy}"
 PASS="${TIDELINK_BOARD_PASS:-xilinx}"
 
+# When using a STRAIGHT-THROUGH RPi GPIO ribbon (1:1 cable, e.g. The
+# Pi Hut 40-pin), the two boards need MIRRORED pin maps so that one
+# board's TX pads land on the other board's RX pads. die_a runs the
+# standard pynq-z2-pair bitstream (TX on RPi GPIO 0..8); die_b runs
+# the pynq-z2-pair-flip bitstream (TX on RPi GPIO 9..17). With a
+# custom cross-strap ribbon you'd run pynq-z2-pair on both boards;
+# set FORCE_ARTEFACTS=tidelink to opt out of the per-role selection.
+if [ -n "${FORCE_ARTEFACTS:-}" ]; then
+    BIN="${FORCE_ARTEFACTS}.bin"
+    HWH="${FORCE_ARTEFACTS}.hwh"
+elif [ -f "${ARTEFACTS}/tidelink.bin" ] && [ ! -f "${ARTEFACTS}/tidelink-flip.bin" ]; then
+    # Single-bitstream layout (legacy / cross-strap-cable workflow).
+    BIN="tidelink.bin"; HWH="tidelink.hwh"
+else
+    # Two-bitstream layout (straight-through cable). die_a gets the
+    # canonical pynq-z2-pair bitstream; die_b gets the flip.
+    case "$ROLE" in
+        die_a) BIN="tidelink.bin";       HWH="tidelink.hwh" ;;
+        die_b) BIN="tidelink-flip.bin";  HWH="tidelink-flip.hwh" ;;
+    esac
+fi
+
 case "$ROLE" in
     die_a) STRAP=0 ; CTRL=0x2 ;;   # master
     die_b) STRAP=1 ; CTRL=0x3 ;;   # slave
@@ -57,12 +79,16 @@ esac
 
 SSHCOMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-echo "==== $LABEL @ $BOARD_IP — role=$ROLE strap=$STRAP ctrl=$CTRL ===="
+echo "==== $LABEL @ $BOARD_IP — role=$ROLE strap=$STRAP ctrl=$CTRL bitstream=$BIN ===="
 
-# 1. Copy artefacts
+# 1. Copy artefacts (renaming on the board to the canonical name so
+#    fpga_manager always loads from /lib/firmware/tidelink.bin).
 sshpass -p "$PASS" scp $SSHCOMMON \
-    "$ARTEFACTS/tidelink.bin" "$ARTEFACTS/tidelink.hwh" \
-    xilinx@$BOARD_IP:/tmp/
+    "$ARTEFACTS/$BIN" \
+    "xilinx@$BOARD_IP:/tmp/tidelink.bin"
+sshpass -p "$PASS" scp $SSHCOMMON \
+    "$ARTEFACTS/$HWH" \
+    "xilinx@$BOARD_IP:/tmp/tidelink.hwh"
 
 # 2. Load bitstream via Linux fpga_manager
 sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \

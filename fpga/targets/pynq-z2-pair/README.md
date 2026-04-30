@@ -80,6 +80,33 @@ Programming the bitstream is **not enough on its own** — Wlink stays in reset 
 
 `pynq/scripts/deploy_pair.sh` does the whole sequence; `pynq/scripts/wlink_probe.sh` dumps current state.
 
+## Damaged ribbon recovery (lane mask)
+
+The 8-lane GPIO PHY can operate at reduced width if a ribbon pin is broken or marginal. Each lane k can be individually disabled via the Wlink `link_lane_mask` register at offset `0x214` (absolute APB address `0x4403_0214`). When a lane is masked off the LinkLayer skips it during striping, the GPIO PHY drives the corresponding TX pad to 0, and the RX side ignores any garbage that pin produces.
+
+**Both boards must be programmed with identical masks** before the link is enabled — there is no auto-detection ([SHORTCOMINGS.md #14a](../../../docs/SHORTCOMINGS.md)). The cleanest way to update the mask is from PYNQ on each board:
+
+```python
+from overlay import TidelinkOverlay
+ol = TidelinkOverlay()
+ol.set_lane_mask(0xFB)            # drop physical lane 2 in both directions
+tx, rx = ol.get_lane_mask()       # confirm
+print(ol.get_active_lanes())      # (7, 7)  — popcount(0xFB) per direction
+ol.assert_link_safe_for_tx()      # rejects mask=0
+```
+
+Recommended sequence when a specific ribbon pin starts misbehaving:
+1. Identify the suspect lane index from the `pad_tx[k]` / `pad_rx[k]` mapping in `pynq_z2_tidelink_pair.xdc`.
+2. On **both boards**, disable Wlink LL: APB write `0x0` to `0x4403_0208` (clears `lltx_enable` and `llrx_enable`).
+3. On **both boards**, write `tx_lane_mask = rx_lane_mask = ~(1 << k) & 0xFF` to `0x4403_0214`.
+4. On **both boards**, re-enable LL: APB write the original value back to `0x4403_0208` (default `0x027F0107`).
+5. Confirm `link_health()` reports `wlink_activity_seen=True` and `tx_active_lanes / rx_active_lanes` both equal `popcount(mask)`.
+6. Send a probe packet via `local_hw.write_packet(...)` to verify round-trip.
+
+The `lane_mask_burnt_lane` test in `pynq/stress/bridge_tests.py` walks every lane k in 0..7, programs the mask on both ends, and verifies traffic still survives — useful as a regression after a ribbon swap.
+
+If you've already lost a known ribbon pin, you can also re-pin physically: swap the ribbon mapping in the XDC so the dead pad lands on the highest logical lane index, then drop the mask down to a contiguous range. The `pynq-z2-pair-flip` target is an existing example of remapping the ribbon for orientation; the same pattern works for moving a dead pin out of the active set.
+
 ## ⚠ AHB_TX hang hazard
 
 **Do not write to `0x4400_0000` (AHB_TX) until the link is verified UP.**

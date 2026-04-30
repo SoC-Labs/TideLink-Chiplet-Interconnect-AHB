@@ -97,6 +97,7 @@ package tidelink_top_system_pkg;
   // Sequences
   // ---------------------------------------------------------------
   `include "top_sys_wlink_init_sequence.sv"
+  `include "top_sys_wlink_lane_mask_sequence.sv"
   `include "top_sys_autoneg_sequence.sv"
   `include "top_sys_init_sequence.sv"
   `include "top_sys_ahb_sub_sequence.sv"
@@ -119,6 +120,7 @@ package tidelink_top_system_pkg;
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"
+  `include "test_top_lane_mask.sv"
 
 endpackage
 

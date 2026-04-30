@@ -90,6 +90,45 @@ After the Wlink link is active:
 
 In slave mode, the remote master can configure Wlink registers via the I2C sideband. The I2C slave address defaults to `0x00` and can be changed by writing `I2C_SLV_ADDR` (0x2088). The local CPU retains read-only APB access to Wlink registers for diagnostics.
 
+#### Routing Around Damaged Lanes (Lane Mask)
+
+The Wlink physical link is striped across `numTxLanes`/`numRxLanes` parallel lanes (8 by default). If one lane is electrically damaged — for example a broken ribbon pin during bring-up — software can disable that lane and continue operating at reduced width by programming the `link_lane_mask` register at Wlink offset `0x214`:
+
+| bits | field | reset (8-lane) | meaning |
+|------|-------|----------------|---------|
+| [15:0] | `tx_lane_mask` | `0x00FF` | bit[k]=1 enables physical TX lane k |
+| [31:16] | `rx_lane_mask` | `0x00FF` | bit[k]=1 enables physical RX lane k |
+
+The link striping width is `popcount(mask) << 1` bytes per cycle (recomputed live in hardware), and the legacy `link_active_lanes` register at offset `0x210` becomes a read-only echo of `popcount(mask) - 1` per direction.
+
+**Programming rules:**
+- Both ends of the link **must** program identical masks (or the corresponding cross-side fields, see below). Mismatch produces silent corruption — the hardware does not detect it today.
+- Change the mask **with the link disabled** (`link_enable_reset.lltx_enable=0` and `llrx_enable=0`, offset `0x208`) to avoid corrupting in-flight bytes.
+- `tx_lane_mask = 0` is rejected by the PYNQ helper but accepted by the hardware; the link will go inert.
+- For an asymmetric ribbon fault (e.g. only A→B direction is broken on lane 5), set `A.tx_lane_mask = B.rx_lane_mask` together as one pair, and `B.tx_lane_mask = A.rx_lane_mask` separately. The TX↔RX direction-pair is what must agree, not the local TX/RX pair.
+
+**Bring-up sequence to drop a damaged lane on both boards:**
+```
+On both boards, with the link disabled:
+1. Write 0x00 to link_enable_reset.lltx_enable and llrx_enable (offset 0x208)
+2. Write the new mask to link_lane_mask (offset 0x214)
+   e.g. mask=0xFB drops lane 2: pack as 0x00FB_00FB
+3. Re-enable LL: write the original value back to 0x208
+4. Read link_active_lanes (0x210) and confirm both fields show popcount(mask)-1
+5. Send a probe packet through TideLink and verify it arrives
+```
+
+**Python helper** (PYNQ):
+```python
+ol.set_lane_mask(0xFB)       # symmetric: same TX and RX
+ol.set_lane_mask(0x7F, 0xFF) # asymmetric: drop top TX lane, keep all RX
+tx, rx = ol.get_lane_mask()
+tx_count, rx_count = ol.get_active_lanes()
+ol.assert_link_safe_for_tx() # rejects mask=0 in addition to existing checks
+```
+
+See [`pynq/overlay.py`](../pynq/overlay.py) (`set_lane_mask`, `get_lane_mask`, `get_active_lanes`) for the full helper surface, and `pynq/scripts/wlink_probe.sh` for read-only diagnostics that show the active mask in a snapshot.
+
 ### Writing a Packet (Transmit Side)
 
 A packet has a 2-word header followed by an optional data payload:

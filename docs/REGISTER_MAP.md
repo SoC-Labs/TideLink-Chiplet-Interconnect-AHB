@@ -189,8 +189,10 @@ without re-negotiating the link role.
 | | | [3] | 0 | RW | SW Reset |
 | | | [15:8] | 0x7F | RW | Max Short Packet ID |
 | | | [23:16] | 0x02 | RW | PREQ Data ID |
-| 0x10 | Active Lanes | [15:0] | 8 | RW | Active TX Lanes - 1 |
-| | | [31:16] | 8 | RW | Active RX Lanes - 1 |
+| 0x10 | Active Lanes | [15:0] | 7 | RO | Active TX Lanes - 1 (derived: `popcount(tx_lane_mask) - 1`) |
+| | | [31:16] | 7 | RO | Active RX Lanes - 1 (derived: `popcount(rx_lane_mask) - 1`) |
+| 0x14 | Lane Mask | [15:0] | 0xFF | RW | TX Lane Mask: bit[k]=1 enables physical TX lane k |
+| | | [31:16] | 0xFF | RW | RX Lane Mask: bit[k]=1 enables physical RX lane k |
 | 0x30 | P-State Control | [15:0] | 1700 | RW | Delay Cycles |
 | | | [18:16] | 0 | RW | Number P Reqs |
 | | | [31:24] | 255 | RW | Cycles post Reqs |

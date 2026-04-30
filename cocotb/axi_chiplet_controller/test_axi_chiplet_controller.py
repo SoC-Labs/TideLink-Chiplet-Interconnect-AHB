@@ -710,3 +710,109 @@ async def test_23_i2c_prescale_writable_after_lock(dut):
     readback = await ctrl_read(dut, ADDR_I2C_PRESCALE)
     assert readback == test_prescale2, \
         f"I2C prescale should update again: expected 0x{test_prescale2:04X}, got 0x{readback:08X}"
+
+
+# =============================================================================
+# G. Wlink Lane Mask Register
+# =============================================================================
+# Wlink link_lane_mask register at APB offset 0x214 with two 16-bit fields:
+#   tx_lane_mask[15:0]  bit[k]=1 enables physical TX lane k
+#   rx_lane_mask[31:16] bit[k]=1 enables physical RX lane k
+# link_active_lanes (0x210) is now read-only and tracks popcount(mask)-1.
+# Reset value of the mask is (1<<numLanes)-1 (= 0xFF for the 8-lane build).
+WLINK_ACTIVE_LANES_OFF = 0x210
+WLINK_LANE_MASK_OFF    = 0x214
+
+
+def _split_mask(reg_val):
+    return reg_val & 0xFFFF, (reg_val >> 16) & 0xFFFF
+
+
+@cocotb.test()
+async def test_30_lane_mask_reset_default(dut):
+    """After POR + master lock, lane_mask reads back as all-lanes-enabled
+    and active_lanes derives to popcount(mask)-1."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    mask = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    tx_mask, rx_mask = _split_mask(mask)
+    # 8-lane build: 0xFF in each field. Higher-bit fields are zero.
+    assert tx_mask & 0xFF == 0xFF, f"tx_lane_mask reset = 0xFF, got 0x{tx_mask:04X}"
+    assert rx_mask & 0xFF == 0xFF, f"rx_lane_mask reset = 0xFF, got 0x{rx_mask:04X}"
+
+    active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active, rx_active = _split_mask(active)
+    assert tx_active == 7, f"derived active_tx_lanes = popcount(0xFF)-1 = 7, got {tx_active}"
+    assert rx_active == 7, f"derived active_rx_lanes = popcount(0xFF)-1 = 7, got {rx_active}"
+
+
+@cocotb.test()
+async def test_31_lane_mask_writeable(dut):
+    """Writing tx/rx lane masks via APB updates both fields and the
+    derived active_lanes register tracks the new popcount."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Drop highest TX lane and a middle RX lane: tx=0x7F (7 lanes), rx=0xFB (7 lanes).
+    new_mask = 0x7F | (0xFB << 16)
+    await apb_write(dut, WLINK_LANE_MASK_OFF, new_mask)
+    await ClockCycles(dut.apb_clk, 2)
+
+    readback = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    tx_mask, rx_mask = _split_mask(readback)
+    assert tx_mask & 0xFF == 0x7F, f"tx_lane_mask should be 0x7F, got 0x{tx_mask:04X}"
+    assert rx_mask & 0xFF == 0xFB, f"rx_lane_mask should be 0xFB, got 0x{rx_mask:04X}"
+
+    active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active, rx_active = _split_mask(active)
+    assert tx_active == 6, f"popcount(0x7F)-1 = 6, got {tx_active}"
+    assert rx_active == 6, f"popcount(0xFB)-1 = 6, got {rx_active}"
+
+
+@cocotb.test()
+async def test_32_active_lanes_register_is_readonly(dut):
+    """The link_active_lanes register at 0x210 is now hw-driven (RO from
+    SW). Writes to it must not change the value reported by the read.
+    Only changing lane_mask should move active_lanes."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Capture default
+    before = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+
+    # Try to write a bogus value into the RO register
+    await apb_write(dut, WLINK_ACTIVE_LANES_OFF, 0x00010001)
+    await ClockCycles(dut.apb_clk, 2)
+
+    after = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    assert after == before, \
+        f"active_lanes should be RO, before=0x{before:08X} after=0x{after:08X}"
+
+
+@cocotb.test()
+async def test_33_lane_mask_non_contiguous(dut):
+    """Non-contiguous masks (drop lanes from the middle) are accepted by
+    the register file. Striping correctness on a real link is verified
+    at FPGA bring-up; this test only confirms the register holds the
+    value and active_lanes derives consistently."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Symmetric non-contiguous: lanes {0,1,3,4,5,6,7} active (drop lane 2)
+    mask = 0xFB | (0xFB << 16)
+    await apb_write(dut, WLINK_LANE_MASK_OFF, mask)
+    await ClockCycles(dut.apb_clk, 2)
+
+    active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active, rx_active = _split_mask(active)
+    assert tx_active == 6, f"popcount(0xFB)-1 = 6, got {tx_active}"
+    assert rx_active == 6, f"popcount(0xFB)-1 = 6, got {rx_active}"

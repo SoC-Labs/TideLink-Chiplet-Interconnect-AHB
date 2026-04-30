@@ -331,19 +331,40 @@ addrmap wlink_regs {
 
     reg link_active_lanes_reg {
         name = "Active Lanes";
-        desc = "Number of active TX and RX lanes (value = lanes - 1).";
+        desc = "Number of active TX and RX lanes (value = lanes - 1).
+                Read-only; derived in hardware as popcount(link_lane_mask) - 1.
+                To change link width, write the corresponding link_lane_mask field.";
 
-        field {} active_tx_lanes[16] = 8;
-        active_tx_lanes->sw = rw;
-        active_tx_lanes->hw = r;
-        active_tx_lanes->desc = "Active TX lanes minus 1.";
+        field {} active_tx_lanes[16] = 7;
+        active_tx_lanes->sw = r;
+        active_tx_lanes->hw = w;
+        active_tx_lanes->desc = "Active TX lanes minus 1 (derived from tx_lane_mask).";
 
-        field {} active_rx_lanes[16] = 8;
-        active_rx_lanes->sw = rw;
-        active_rx_lanes->hw = r;
-        active_rx_lanes->desc = "Active RX lanes minus 1.";
+        field {} active_rx_lanes[16] = 7;
+        active_rx_lanes->sw = r;
+        active_rx_lanes->hw = w;
+        active_rx_lanes->desc = "Active RX lanes minus 1 (derived from rx_lane_mask).";
     };
     link_active_lanes_reg link_active_lanes @ 0x0210;
+
+    reg link_lane_mask_reg {
+        name = "Lane Mask";
+        desc = "Per-lane enable mask. bit[k]=1 enables physical lane k.
+                Striping width = popcount(mask). Both ends of the link must
+                program identical masks before the link is enabled.
+                Reset value matches the synthesised lane count (8-lane build = 0x00FF).";
+
+        field {} tx_lane_mask[16] = 16'h00FF;
+        tx_lane_mask->sw = rw;
+        tx_lane_mask->hw = r;
+        tx_lane_mask->desc = "TX per-lane enable. bit[k]=1 enables physical TX lane k.";
+
+        field {} rx_lane_mask[16] = 16'h00FF;
+        rx_lane_mask->sw = rw;
+        rx_lane_mask->hw = r;
+        rx_lane_mask->desc = "RX per-lane enable. bit[k]=1 enables physical RX lane k.";
+    };
+    link_lane_mask_reg link_lane_mask @ 0x0214;
 
     reg link_pstate_control_reg {
         name = "P-State Control";

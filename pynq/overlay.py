@@ -65,6 +65,11 @@ APB_CTRL_FLUSH_BIT = (1 << 1)  # bit[1] = FLUSH (self-clearing; EN must be 0)
 # reset; until then, link_active stays low.
 REG_ROLE_LOCK = 0x2080
 
+# Wlink link-layer register offsets (within self.apb). See src/rdl/wlink_regs.rdl.
+WLINK_ACTIVE_LANES_OFF = 0x0210  # RO; popcount(lane_mask)-1 per direction
+WLINK_LANE_MASK_OFF    = 0x0214  # RW; bit[k]=1 enables physical lane k
+WLINK_LANES            = 8       # synthesised lane count for pynq-z2-pair
+
 
 class TidelinkOverlay(Overlay):
     """PYNQ Overlay for the TideLink chiplet bridge.
@@ -210,6 +215,14 @@ class TidelinkOverlay(Overlay):
         role_locked = bool(role_cfg & 0x2)
         local_role = self.get_role()
 
+        # Wlink lane configuration
+        lane_mask_reg = self.apb.read(WLINK_LANE_MASK_OFF)
+        tx_lane_mask = lane_mask_reg & 0xFFFF
+        rx_lane_mask = (lane_mask_reg >> 16) & 0xFFFF
+        active_lanes_reg = self.apb.read(WLINK_ACTIVE_LANES_OFF)
+        tx_active_lanes = (active_lanes_reg & 0xFFFF) + 1
+        rx_active_lanes = ((active_lanes_reg >> 16) & 0xFFFF) + 1
+
         # Tidelink-side credit counters
         current_credits = self.apb.read(0x0c)
         released_acc = self.apb.read(0x20)
@@ -251,8 +264,69 @@ class TidelinkOverlay(Overlay):
             "pair_credit_counter":   pair_credit_ctr,
             "wlink_activity_seen":   wlink_activity_seen,
             "tidelink_fc_active":    tidelink_fc_active,
+            "tx_lane_mask":          tx_lane_mask,
+            "rx_lane_mask":          rx_lane_mask,
+            "tx_active_lanes":       tx_active_lanes,
+            "rx_active_lanes":       rx_active_lanes,
             "_wlink_deltas":         deltas,
         }
+
+    # -------------------------------------------------------------------------
+    # Wlink lane mask — disable individual physical lanes
+    # -------------------------------------------------------------------------
+
+    def get_lane_mask(self):
+        """Return ``(tx_mask, rx_mask)`` from the Wlink LaneMask register.
+
+        Each mask is an integer with bit[k]=1 for each enabled physical
+        lane. On pynq-z2-pair the synthesised lane count is 8, so masks
+        come up as 0xFF after reset (all lanes enabled).
+        """
+        v = self.apb.read(WLINK_LANE_MASK_OFF)
+        tx = v & 0xFFFF
+        rx = (v >> 16) & 0xFFFF
+        return tx, rx
+
+    def get_active_lanes(self):
+        """Return ``(tx_lanes, rx_lanes)`` — derived popcount of LaneMask.
+
+        Reads the LinkActiveLanes register (RO) which the hardware drives
+        as ``popcount(lane_mask) - 1``. Add 1 to get the lane count.
+        """
+        v = self.apb.read(WLINK_ACTIVE_LANES_OFF)
+        tx = (v & 0xFFFF) + 1
+        rx = ((v >> 16) & 0xFFFF) + 1
+        return tx, rx
+
+    def set_lane_mask(self, tx_mask, rx_mask=None):
+        """Program the Wlink LaneMask register.
+
+        Both ends of the link must program identical masks before the
+        link is enabled (or with the link held in reset/disabled). The
+        hardware does not enforce this; mismatch produces silent
+        corruption.
+
+        Parameters
+        ----------
+        tx_mask : int
+            Per-lane TX enable bitmap. bit[k]=1 enables physical lane k.
+            Must be non-zero (mask=0 disables every lane and the link
+            cannot transmit). Bits above ``WLINK_LANES`` are ignored.
+        rx_mask : int or None
+            Per-lane RX enable bitmap. Defaults to ``tx_mask`` (the
+            common case where a damaged ribbon pin breaks both
+            directions of the same lane).
+        """
+        if rx_mask is None:
+            rx_mask = tx_mask
+        valid = (1 << WLINK_LANES) - 1
+        tx = tx_mask & valid
+        rx = rx_mask & valid
+        if tx == 0 or rx == 0:
+            raise ValueError(
+                "lane_mask=0 is illegal (link cannot operate); "
+                "tx=0x{:x} rx=0x{:x}".format(tx_mask, rx_mask))
+        self.apb.write(WLINK_LANE_MASK_OFF, tx | (rx << 16))
 
     def assert_link_safe_for_tx(self):
         """Raise RuntimeError unless the link is safe for an AHB_TX write.
@@ -273,6 +347,12 @@ class TidelinkOverlay(Overlay):
             raise RuntimeError(
                 "role not locked (ROLE_CFG=0x{:x}); call lock_role() "
                 "before TX".format(h["role_cfg_reg"]))
+        tx_mask, rx_mask = self.get_lane_mask()
+        if tx_mask == 0 or rx_mask == 0:
+            raise RuntimeError(
+                "lane_mask is zero (tx=0x{:x} rx=0x{:x}); link cannot "
+                "operate. Call set_lane_mask() with a non-zero mask "
+                "before TX.".format(tx_mask, rx_mask))
         if not h["tidelink_fc_active"]:
             raise RuntimeError(
                 "Wlink TideLink FC node is idle (no traffic seen). "

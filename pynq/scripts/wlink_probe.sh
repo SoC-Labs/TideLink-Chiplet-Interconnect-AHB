@@ -81,6 +81,12 @@ for base,label in LABELS.items():
     vals=[struct.unpack_from("<I",r,o+i)[0] for i in (0,4,8,0xC,0x10,0x14)]
     activity = "  active" if (base>=0x1000 and vals[2]==1) else ""
     print("  0x{:04x} {:11s}: ".format(base,label) + " ".join("{:08x}".format(v) for v in vals) + activity)
+# Lane control: derived ActiveLanes (RO) and per-lane Mask (RW).
+ll,lo=mm(WL+0x200, 64)
+al = struct.unpack_from("<I",ll,lo+0x10)[0]
+lm = struct.unpack_from("<I",ll,lo+0x14)[0]
+print("  0x0210 ActiveLanes : tx={} rx={} (popcount(mask)-1 each; +1 = lane count)".format(al & 0xFFFF, (al>>16) & 0xFFFF))
+print("  0x0214 LaneMask    : tx=0x{:04x} rx=0x{:04x}".format(lm & 0xFFFF, (lm>>16) & 0xFFFF))
 tl,to=mm(0x44032000)
 def rd(off): return struct.unpack_from("<I",tl,to+off)[0]
 print()

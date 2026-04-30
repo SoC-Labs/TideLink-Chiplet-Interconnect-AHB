@@ -136,6 +136,16 @@ The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (
 
 **Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
 
+### 14a. Lane-Mask Mismatch Is Silent
+
+**Location**: `Wlink.scala` — `link_lane_mask` register at offset `0x214`
+
+Both ends of the link must program identical `tx_lane_mask`/`rx_lane_mask` values (or the corresponding cross-side fields) for byte striping to round-trip correctly. The hardware does not detect a mismatch — if A and B disagree on the active lane set, the link will silently corrupt data on every cycle. Recovery requires software-mediated re-programming on both sides under link-disabled state.
+
+**Impact**: An operator error (programming mask only on one board, or asymmetric programming for a symmetric ribbon) produces a fully-driven but corrupt link. The error surface (CRC errors, FC stalls, dropped packets) is documented in the simulation test plan but not auto-detected.
+
+**Recommendation**: Add a peer-mask handshake to the autoneg layer (see [`AUTONEG_PROTOCOL.md`](AUTONEG_PROTOCOL.md)) — exchange the local mask via the chiplet sideband (I2C or short-packet) before unblocking the data path, and refuse link-up if the masks disagree. Until that lands, software should program both ends in a single coordinated sequence (the PYNQ stress test `lane_mask_burnt_lane` and UVM `test_top_lane_mask` enforce this convention).
+
 ### 15. Credit Release Threshold Cannot Be Changed While Enabled
 
 **Location**: `tidelink_apb_regs.sv`

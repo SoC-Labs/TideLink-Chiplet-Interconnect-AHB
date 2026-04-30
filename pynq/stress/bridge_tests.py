@@ -386,6 +386,74 @@ def bridge_glitch(local_hw, peer):
     return False, ['TODO: implement bridge_glitch (semi-manual, operator required)'], {}
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Test 17: lane_mask_burnt_lane  (pair)
+# Walks the lane mask through every "drop one lane" configuration on both
+# ends, runs a single packet round-trip per configuration, and confirms
+# the link still carries traffic. Restores mask=0xFF at the end so it
+# doesn't poison other tests in the same session.
+#
+# Programs both sides via APB before each sub-iteration. The mismatch
+# window between A's write and B's write is small (<5ms in practice);
+# we then sleep 10ms before sending a probe packet so any in-flight
+# bytes from the previous mask flush out.
+# ────────────────────────────────────────────────────────────────────────────
+
+@_test('lane_mask_burnt_lane', ['pair'],
+       'Drop each physical lane in turn; verify link still ferries traffic')
+def lane_mask_burnt_lane(local_hw, peer):
+    errors = []
+    counters = {'lanes_passed': 0, 'lanes_failed': 0}
+
+    full_mask = 0xFF  # 8-lane build
+    lane_mask_off = 0x214
+
+    def _write_mask_both(mask):
+        # Pack tx/rx fields into 32-bit register: tx=[15:0], rx=[31:16]
+        word = (mask & 0xFFFF) | ((mask & 0xFFFF) << 16)
+        local_hw.cfg_write(lane_mask_off, word)
+        peer.call('mmio_write', aperture='apb', offset=lane_mask_off, value=word)
+        time.sleep(0.010)  # let in-flight bytes drain
+
+    try:
+        for k in range(8):
+            mask = full_mask & ~(1 << k)
+            _write_mask_both(mask)
+
+            # Verify both ends saw the write and active_lanes derives correctly.
+            local_lm = local_hw.cfg_read(lane_mask_off)
+            peer_lm  = peer.call('mmio_read', aperture='apb', offset=lane_mask_off)
+            if (local_lm & 0xFFFF) != mask or (peer_lm & 0xFFFF) != mask:
+                errors.append(
+                    f'lane {k}: mask readback mismatch local=0x{local_lm:08x} '
+                    f'peer=0x{peer_lm:08x} expected tx={mask:#x}')
+                counters['lanes_failed'] += 1
+                continue
+
+            # Probe: send a small packet and read it back.
+            pkt = packet_words(seed=0xBEEF_0000 | k, n_words=4)
+            try:
+                local_hw.write_packet(pkt, skip_link_check=True)
+                time.sleep(0.010)
+                rx = peer.call('read_packet')
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f'lane {k} masked: probe raised {exc!r}')
+                counters['lanes_failed'] += 1
+                continue
+
+            if rx != pkt:
+                errors.append(f'lane {k} masked: rx mismatch got {rx} expected {pkt}')
+                counters['lanes_failed'] += 1
+            else:
+                counters['lanes_passed'] += 1
+    finally:
+        # Always restore the default mask so subsequent tests see the link
+        # at full width.
+        _write_mask_both(full_mask)
+
+    return len(errors) == 0, errors, counters
+
+
 @_test('ptp_sync', ['pair', 'skip'],
        'Two-message PTP exchange (gated: requires PHC hardware)')
 def ptp_sync(local_hw, peer):
@@ -415,5 +483,6 @@ DEFAULT_BUDGETS = {
     'long_running':              600,
     'congestion_estimator':      90,
     'bridge_glitch':             120,
+    'lane_mask_burnt_lane':      120,
     'ptp_sync':                  90,
 }

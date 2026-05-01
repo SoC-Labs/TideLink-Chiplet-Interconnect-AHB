@@ -430,12 +430,19 @@ def lane_mask_burnt_lane(local_hw, peer):
                 counters['lanes_failed'] += 1
                 continue
 
-            # Probe: send a small packet and read it back.
+            # Probe: send a packet from local, read it back on peer's FIFO.
+            # Mirrors the bidirectional test pattern: peer reads packet length
+            # from APB offset 0x008 then reads ahb_fifo word-by-word.
             pkt = packet_words(seed=0xBEEF_0000 | k, n_words=4)
             try:
                 local_hw.write_packet(pkt, skip_link_check=True)
                 time.sleep(0.010)
-                rx = peer.call('read_packet')
+                local_hw.wait_returner_idle()
+                peer_pkt_len = peer.call('mmio_read', aperture='apb',
+                                          offset=0x008)
+                rx = [peer.call('mmio_read', aperture='ahb_fifo',
+                                 offset=(i + 1) * 4)
+                       for i in range(peer_pkt_len)]
             except Exception as exc:  # noqa: BLE001
                 errors.append(f'lane {k} masked: probe raised {exc!r}')
                 counters['lanes_failed'] += 1

@@ -164,16 +164,42 @@ module test_top;
   // ---------------------------------------------------------------
   // PHY pad crossover: A TX -> B RX, B TX -> A RX (8-lane GPIO)
   // ---------------------------------------------------------------
+  // Each lane's pass-through can be intercepted via tb_if.{a2b,b2a}_lane_perturb_*
+  // (default = pass-through). Used by Phase 4 lane-mask sim plan tests to
+  // simulate a damaged ribbon pin: the perturb forces a stuck/garbage value
+  // on the wire and the test asserts that with the corresponding mask bit
+  // cleared, packet integrity holds.
   localparam NUM_PHY_LANES = 8;
 
   wire                       a_pad_clk_tx, b_pad_clk_tx;
   wire [NUM_PHY_LANES-1:0]   a_pad_tx, b_pad_tx;
 
-  // A TX pads -> B RX pads, B TX pads -> A RX pads
+  // Per-lane perturb mux on A->B path
+  wire [NUM_PHY_LANES-1:0]   a2b_pad;
+  genvar pi;
+  generate
+    for (pi = 0; pi < NUM_PHY_LANES; pi = pi + 1) begin : g_a2b_perturb
+      assign a2b_pad[pi] = tb_if.a2b_lane_perturb_en[pi]
+                         ? tb_if.a2b_lane_perturb_val[pi]
+                         : a_pad_tx[pi];
+    end
+  endgenerate
+
+  // Per-lane perturb mux on B->A path
+  wire [NUM_PHY_LANES-1:0]   b2a_pad;
+  generate
+    for (pi = 0; pi < NUM_PHY_LANES; pi = pi + 1) begin : g_b2a_perturb
+      assign b2a_pad[pi] = tb_if.b2a_lane_perturb_en[pi]
+                         ? tb_if.b2a_lane_perturb_val[pi]
+                         : b_pad_tx[pi];
+    end
+  endgenerate
+
+  // A TX pads -> B RX pads, B TX pads -> A RX pads (with perturb hook)
   wire                       a_pad_clk_rx = b_pad_clk_tx;
-  wire [NUM_PHY_LANES-1:0]   a_pad_rx     = b_pad_tx;
+  wire [NUM_PHY_LANES-1:0]   a_pad_rx     = b2a_pad;
   wire                       b_pad_clk_rx = a_pad_clk_tx;
-  wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a_pad_tx;
+  wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a2b_pad;
 
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A

@@ -352,7 +352,15 @@ addrmap wlink_regs {
         desc = "Per-lane enable mask. bit[k]=1 enables physical lane k.
                 Striping width = popcount(mask). Both ends of the link must
                 program identical masks before the link is enabled.
-                Reset value matches the synthesised lane count (8-lane build = 0x00FF).";
+
+                Hardware reset value tracks the synthesised lane count
+                (numTxLanes / numRxLanes from the Wlink Chisel config) —
+                see Wlink.scala WavRW(...,((1<<numTxLanes)-1).U,...). The
+                constant 0x00FF in this RDL is illustrative for the 8-lane
+                TideLink build only. For other builds (1/2/4 lanes) the
+                actual reset is (1<<numLanes)-1 and software should read
+                this register at boot to discover the real default rather
+                than relying on the RDL-derived header constant.";
 
         field {} tx_lane_mask[16] = 16'h00FF;
         tx_lane_mask->sw = rw;

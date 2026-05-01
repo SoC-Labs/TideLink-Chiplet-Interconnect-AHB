@@ -816,3 +816,149 @@ async def test_33_lane_mask_non_contiguous(dut):
     tx_active, rx_active = _split_mask(active)
     assert tx_active == 6, f"popcount(0xFB)-1 = 6, got {tx_active}"
     assert rx_active == 6, f"popcount(0xFB)-1 = 6, got {rx_active}"
+
+
+@cocotb.test()
+async def test_34_lane_mask_all_bits_writable(dut):
+    """For each k in 0..7: write mask = 1<<k, verify only that bit is set
+    in tx and rx readbacks. Catches stuck-bit or mask-width bugs."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    for k in range(8):
+        single = 1 << k
+        word = single | (single << 16)
+        await apb_write(dut, WLINK_LANE_MASK_OFF, word)
+        await ClockCycles(dut.apb_clk, 2)
+        readback = await apb_read(dut, WLINK_LANE_MASK_OFF)
+        tx, rx = _split_mask(readback)
+        assert tx & 0xFF == single, \
+            f"lane {k}: tx_lane_mask expected 0x{single:02X}, got 0x{tx:04X}"
+        assert rx & 0xFF == single, \
+            f"lane {k}: rx_lane_mask expected 0x{single:02X}, got 0x{rx:04X}"
+
+
+@cocotb.test()
+async def test_35_active_lanes_tracks_popcount(dut):
+    """For a curated set of masks covering contiguous + non-contiguous +
+    single-lane, verify active_lanes derives popcount(mask)-1 per direction."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    masks = [0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF,
+             0xFB, 0x6E, 0xC3, 0x99, 0xA5, 0x80]
+    for mask in masks:
+        word = mask | (mask << 16)
+        await apb_write(dut, WLINK_LANE_MASK_OFF, word)
+        await ClockCycles(dut.apb_clk, 2)
+        active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+        tx_active, rx_active = _split_mask(active)
+        expected = bin(mask).count('1') - 1
+        assert tx_active == expected, \
+            f"mask=0x{mask:02X}: tx_active expected {expected}, got {tx_active}"
+        assert rx_active == expected, \
+            f"mask=0x{mask:02X}: rx_active expected {expected}, got {rx_active}"
+
+
+@cocotb.test()
+async def test_36_lane_mask_zero_accepted(dut):
+    """Writing mask=0 is accepted by the register (no HW enforcement) and
+    active_lanes reads back as 0 (saturated, not -1). The link goes inert
+    but the register interface continues to respond. Software is expected
+    to gate against this in a higher-layer helper."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    await apb_write(dut, WLINK_LANE_MASK_OFF, 0x0000_0000)
+    await ClockCycles(dut.apb_clk, 2)
+
+    readback = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    assert readback == 0, f"mask=0 expected, got 0x{readback:08X}"
+
+    active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active, rx_active = _split_mask(active)
+    assert tx_active == 0, \
+        f"active_tx_lanes saturates at 0 for popcount=0, got {tx_active}"
+    assert rx_active == 0, \
+        f"active_rx_lanes saturates at 0 for popcount=0, got {rx_active}"
+
+
+@cocotb.test()
+async def test_37_independent_tx_rx_masks(dut):
+    """tx_lane_mask and rx_lane_mask are independently writable. Verify
+    that asymmetric values round-trip and active_lanes derives per direction."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Asymmetric: tx drops 1 lane, rx drops 3 lanes
+    word = 0x7F | (0x1F << 16)
+    await apb_write(dut, WLINK_LANE_MASK_OFF, word)
+    await ClockCycles(dut.apb_clk, 2)
+
+    readback = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    tx, rx = _split_mask(readback)
+    assert tx & 0xFF == 0x7F, f"tx_lane_mask expected 0x7F, got 0x{tx:04X}"
+    assert rx & 0xFF == 0x1F, f"rx_lane_mask expected 0x1F, got 0x{rx:04X}"
+
+    active = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active, rx_active = _split_mask(active)
+    assert tx_active == 6, f"popcount(0x7F)-1 = 6, got {tx_active}"
+    assert rx_active == 4, f"popcount(0x1F)-1 = 4, got {rx_active}"
+
+    # Swap: now tx drops 3, rx drops 1
+    word2 = 0x1F | (0x7F << 16)
+    await apb_write(dut, WLINK_LANE_MASK_OFF, word2)
+    await ClockCycles(dut.apb_clk, 2)
+
+    active2 = await apb_read(dut, WLINK_ACTIVE_LANES_OFF)
+    tx_active2, rx_active2 = _split_mask(active2)
+    assert tx_active2 == 4, f"after swap: popcount(0x1F)-1 = 4, got {tx_active2}"
+    assert rx_active2 == 6, f"after swap: popcount(0x7F)-1 = 6, got {rx_active2}"
+
+
+@cocotb.test()
+async def test_38_lane_mask_persists_through_link_disable(dut):
+    """The lane mask register value survives toggling the LL enable bits
+    in link_enable_reset (offset 0x208). This is the recommended bring-up
+    sequence: disable LL, change mask, re-enable LL — the mask must not
+    be reset by the LL toggle."""
+    await setup(dut)
+    await do_por(dut)
+    await lock_as_master(dut)
+    await ClockCycles(dut.apb_clk, 5)
+
+    LINK_ENABLE_RESET_OFF = 0x208
+
+    # Program a non-default mask
+    target_mask = 0xFB | (0xFB << 16)
+    await apb_write(dut, WLINK_LANE_MASK_OFF, target_mask)
+    await ClockCycles(dut.apb_clk, 2)
+
+    # Read current enable_reset, clear lltx_enable / llrx_enable bits
+    enable_reset = await apb_read(dut, LINK_ENABLE_RESET_OFF)
+    # bits [1] = lltx_enable, [2] = llrx_enable, [0] = swi_enable
+    enable_reset_disabled = enable_reset & ~0x6  # clear bits [2:1]
+    await apb_write(dut, LINK_ENABLE_RESET_OFF, enable_reset_disabled)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Mask should still be intact
+    mid = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    assert mid == target_mask, \
+        f"mask drifted while LL disabled: expected 0x{target_mask:08X}, got 0x{mid:08X}"
+
+    # Re-enable LL
+    await apb_write(dut, LINK_ENABLE_RESET_OFF, enable_reset)
+    await ClockCycles(dut.apb_clk, 5)
+
+    # Mask still intact post re-enable
+    after = await apb_read(dut, WLINK_LANE_MASK_OFF)
+    assert after == target_mask, \
+        f"mask drifted after LL re-enable: expected 0x{target_mask:08X}, got 0x{after:08X}"

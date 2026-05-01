@@ -120,7 +120,25 @@ package tidelink_top_system_pkg;
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"
+  // Lane mask family — base test plus 6 mask scenarios + 1 mid-stream + 1 err-inj.
+  // The base class is virtual and not directly runnable; the canonical drop-high
+  // test uses test_top_lane_mask, with the rest being thin parameter wrappers.
+  `include "test_top_lane_mask_base.sv"
   `include "test_top_lane_mask.sv"
+  `include "test_top_lane_mask_drop_middle.sv"
+  `include "test_top_lane_mask_single_lane.sv"
+  `include "test_top_lane_mask_two_drops.sv"
+  `include "test_top_lane_mask_asymmetric.sv"
+  `include "test_top_lane_mask_midstream.sv"
+  `include "test_top_lane_mask_with_err_inj.sv"
+  // Phase 4 — PHY gating + damaged-lane recovery
+  `include "test_top_lane_mask_phy_gating.sv"
+  `include "test_top_lane_mask_damaged_lane.sv"
+  `include "test_top_lane_mask_damaged_lane_unmasked.sv"
+  // Phase 5 — diagnostic sweep over mismatched mask pairs (writes CSV report)
+  `include "test_top_lane_mask_mismatch_sweep.sv"
+  // Phase 7 — random-mask soak (also drops cg_lane_mask coverage samples)
+  `include "test_top_lane_mask_random_soak.sv"
 
 endpackage
 

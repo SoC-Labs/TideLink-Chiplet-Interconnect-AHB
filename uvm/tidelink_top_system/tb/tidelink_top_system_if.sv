@@ -40,6 +40,11 @@ interface tidelink_top_system_if (
   logic [7:0] b2a_lane_perturb_en;
   logic [7:0] b2a_lane_perturb_val;
 
+  // Pad observability for the lane-mask PHY gating test. Sampled by top.sv
+  // each cycle so tests can assert on per-lane TX pad values.
+  logic [7:0] a_pad_tx_obs;
+  logic [7:0] b_pad_tx_obs;
+
   initial begin
     force_reset           = 1'b0;
     a2b_lane_perturb_en   = 8'h00;

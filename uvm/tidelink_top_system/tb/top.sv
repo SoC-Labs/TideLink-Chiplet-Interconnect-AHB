@@ -201,6 +201,11 @@ module test_top;
   wire                       b_pad_clk_rx = a_pad_clk_tx;
   wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a2b_pad;
 
+  // Mirror pad values into tb_if so UVM tests can assert on them without
+  // reaching across module boundaries from inside a uvm_pkg context.
+  assign tb_if.a_pad_tx_obs = a_pad_tx;
+  assign tb_if.b_pad_tx_obs = b_pad_tx;
+
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A
   // ---------------------------------------------------------------

@@ -35,12 +35,12 @@ class test_top_lane_mask_phy_gating extends test_top_lane_mask_base;
     forever begin
       @(posedge tb_if.clk);
       samples++;
-      if (top.a_pad_tx[7] !== 1'b0) begin
+      if (tb_if.a_pad_tx_obs[7] !== 1'b0) begin
         violations++;
         if (violations <= 5) begin
           `uvm_error("TEST", $sformatf(
-            "[%0t] a_pad_tx[7] = %0b but lane 7 is masked off",
-            $time, top.a_pad_tx[7]))
+            "[%0t] a_pad_tx_obs[7] = %0b but lane 7 is masked off",
+            $time, tb_if.a_pad_tx_obs[7]))
         end
       end
     end

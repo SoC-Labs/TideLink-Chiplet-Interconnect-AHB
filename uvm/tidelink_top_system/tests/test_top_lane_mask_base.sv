@@ -35,33 +35,64 @@ class test_top_lane_mask_base extends tidelink_top_system_base_test;
     super.new(name, parent);
   endfunction
 
-  // Programs masks on both sides, then runs the existing init flow.
-  virtual task init_system_with_lane_mask();
-    top_sys_wlink_lane_mask_sequence a_mask, b_mask;
+  // Wlink register offsets within unified APB (Wlink space is 0x0000-0x1FFF)
+  localparam bit [14:0] WLINK_LINK_ENABLE_RESET = 15'h0208;
+  localparam bit [14:0] WLINK_LANE_MASK         = 15'h0214;
+  // Default LL enable register value (swi_enable=1, lltx_enable=1, llrx_enable=1,
+  // short_packet_max=0x7F, preq_data_id=0x02). See SW.scala:WavSWReg(0x8, ...).
+  localparam bit [31:0] LL_ENABLE_DEFAULT  = 32'h0002_7F07;
+  localparam bit [31:0] LL_ENABLE_DISABLED = LL_ENABLE_DEFAULT & ~32'h0000_0006;
 
+  // Brings up the link, then reprograms the lane mask using the safe
+  // LL-disable → write-mask → LL-enable sequence. The mask register can't
+  // be written while Wlink is in reset (waiting on role-lock), so we lock
+  // the role first and let the link train at the default 0xFF mask, then
+  // change to the test mask afterwards. Tests that want the mask in place
+  // before any traffic still see this happen before run_traffic() runs.
+  virtual task init_system_with_lane_mask();
     `uvm_info("TEST", $sformatf(
-      "Programming lane mask: A.tx=0x%04h A.rx=0x%04h B.tx=0x%04h B.rx=0x%04h",
+      "Lane mask plan: A.tx=0x%04h A.rx=0x%04h B.tx=0x%04h B.rx=0x%04h",
       a_tx_mask, a_rx_mask, b_tx_mask, b_rx_mask), UVM_LOW)
 
-    a_mask = top_sys_wlink_lane_mask_sequence::type_id::create("a_mask");
-    a_mask.side_name = "A";
-    a_mask.tx_mask   = a_tx_mask;
-    a_mask.rx_mask   = a_rx_mask;
-    a_mask.start(env.a_apb_agt.sequencer);
+    // 1. Bring up the link at default mask = 0xFF (training cannot happen
+    //    while Wlink is in reset, so we lock the role first).
+    init_wlink();
+    init_both_sides();
 
-    b_mask = top_sys_wlink_lane_mask_sequence::type_id::create("b_mask");
-    b_mask.side_name = "B";
-    b_mask.tx_mask   = b_tx_mask;
-    b_mask.rx_mask   = b_rx_mask;
-    b_mask.start(env.b_apb_agt.sequencer);
+    // 2. If any per-side mask differs from the default, reprogram via the
+    //    safe disable/enable sequence. Skip if all masks are 0xFF.
+    if (a_tx_mask != 16'h00FF || a_rx_mask != 16'h00FF
+        || b_tx_mask != 16'h00FF || b_rx_mask != 16'h00FF) begin
+      apply_lane_mask();
+    end
 
     // Drop a coverage sample for the lane-mask covergroup. Sample the A side
     // values; mismatch tests can override to sample additional points.
     if (env.cov != null)
       env.cov.sample_lane_mask(a_tx_mask, a_rx_mask);
+  endtask
 
-    init_wlink();
-    init_both_sides();
+  // Disable LL on both sides, write the lane mask, re-enable LL, wait for
+  // link training. Used by the base init and by mid-stream tests that
+  // change the mask after traffic has started.
+  virtual task apply_lane_mask();
+    `uvm_info("TEST", $sformatf(
+      "Reprogramming lane mask via LL disable/enable: A.tx=0x%04h A.rx=0x%04h B.tx=0x%04h B.rx=0x%04h",
+      a_tx_mask, a_rx_mask, b_tx_mask, b_rx_mask), UVM_LOW)
+
+    write_cfg_reg_raw(SIDE_A, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DISABLED);
+    write_cfg_reg_raw(SIDE_B, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DISABLED);
+    repeat (200) @(posedge tb_if.clk);
+
+    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK,
+                       {a_rx_mask, a_tx_mask});
+    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK,
+                       {b_rx_mask, b_tx_mask});
+    repeat (50) @(posedge tb_if.clk);
+
+    write_cfg_reg_raw(SIDE_A, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DEFAULT);
+    write_cfg_reg_raw(SIDE_B, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DEFAULT);
+    repeat (wlink_link_up_wait) @(posedge tb_if.clk);
   endtask
 
   // Confirm derived active_lanes register reads back popcount(mask)-1 on each

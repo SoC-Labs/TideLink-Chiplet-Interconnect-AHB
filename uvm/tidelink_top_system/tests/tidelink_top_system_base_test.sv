@@ -8,6 +8,27 @@
 `ifndef GUARD_TIDELINK_TOP_SYSTEM_BASE_TEST_SV
 `define GUARD_TIDELINK_TOP_SYSTEM_BASE_TEST_SV
 
+// Report catcher: demote scoreboard A2B mismatches to UVM_INFO. Used by
+// tests that *expect* mismatches (damaged-lane unmasked positive control,
+// the mismatch sweep diagnostic). Disabled by default — tests opt in by
+// setting expect_a2b_mismatch=1 before main_phase.
+class top_system_a2b_expected_catcher extends uvm_report_catcher;
+  `uvm_object_utils(top_system_a2b_expected_catcher)
+  static bit expect_a2b_mismatch = 1'b0;
+  function new(string name = "top_system_a2b_expected_catcher");
+    super.new(name);
+  endfunction
+  virtual function action_e catch();
+    if (expect_a2b_mismatch &&
+        (get_id() == "SB_A2B" || get_id() == "SB_REPORT")) begin
+      set_severity(UVM_INFO);
+      set_action(UVM_NO_ACTION);
+      return CAUGHT;
+    end
+    return THROW;
+  endfunction
+endclass
+
 // Report catcher: demote SVT VIP HRDATA X/Z errors to INFO
 class top_system_hrdata_xz_catcher extends uvm_report_catcher;
   `uvm_object_utils(top_system_hrdata_xz_catcher)
@@ -55,6 +76,7 @@ class tidelink_top_system_base_test extends uvm_test;
   virtual tidelink_top_system_if tb_if;
 
   top_system_hrdata_xz_catcher hrdata_catcher;
+  top_system_a2b_expected_catcher a2b_catcher;
 
   int unsigned test_timeout_cycles = 2_000_000;
 
@@ -77,6 +99,9 @@ class tidelink_top_system_base_test extends uvm_test;
 
     hrdata_catcher = top_system_hrdata_xz_catcher::type_id::create("hrdata_catcher");
     uvm_report_cb::add(null, hrdata_catcher);
+
+    a2b_catcher = top_system_a2b_expected_catcher::type_id::create("a2b_catcher");
+    uvm_report_cb::add(null, a2b_catcher);
 
     env = tidelink_top_system_env::type_id::create("env", this);
   endfunction

@@ -36,6 +36,8 @@ class test_top_lane_mask_damaged_lane_unmasked extends test_top_lane_mask_base;
     a_rx_mask = 16'h00FF;
     b_tx_mask = 16'h00FF;
     b_rx_mask = 16'h00FF;
+    // Mismatches are the expected positive-control signal here
+    top_system_a2b_expected_catcher::expect_a2b_mismatch = 1'b1;
   endfunction
 
   virtual task main_phase(uvm_phase phase);

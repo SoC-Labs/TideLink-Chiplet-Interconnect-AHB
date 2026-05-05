@@ -397,7 +397,7 @@ module test_top;
     .tc_axis_rx_tready    (1'b1),
     .tc_qos_priority      (3'h0),
     .tl_bcast_ack_i       (1'b0),
-    .apb_debug_unlock_i   (1'b0),
+    .apb_debug_unlock_i   (1'b1),
 
     // Negotiation / PUF (tied off — autoneg not exercised in this tb)
     .nego_priority_i      (16'h0),
@@ -590,7 +590,7 @@ module test_top;
     .tc_axis_rx_tready    (1'b1),
     .tc_qos_priority      (3'h0),
     .tl_bcast_ack_i       (1'b0),
-    .apb_debug_unlock_i   (1'b0),
+    .apb_debug_unlock_i   (1'b1),
 
     // Negotiation / PUF (tied off)
     .nego_priority_i      (16'h0),

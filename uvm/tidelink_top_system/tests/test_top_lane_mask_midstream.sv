@@ -70,8 +70,9 @@ class test_top_lane_mask_midstream extends test_top_lane_mask_base;
     repeat (200) @(posedge tb_if.clk);
 
     `uvm_info("TEST", "Reprogramming mask to 0x00FB on both sides", UVM_LOW)
-    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, {16'h00FB, 16'h00FB});
-    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, {16'h00FB, 16'h00FB});
+    // Pack as {rx[7:0], tx[7:0]} into bits [15:0] — see test_top_lane_mask_base
+    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, {16'h0000, 8'hFB, 8'hFB});
+    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, {16'h0000, 8'hFB, 8'hFB});
     repeat (50) @(posedge tb_if.clk);
 
     // Update tracked masks for the active_lanes check

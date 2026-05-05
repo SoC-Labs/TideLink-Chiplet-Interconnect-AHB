@@ -279,6 +279,7 @@ module tidelink_top #(
     input  wire                     role_strap_i,
     output wire                     role_is_master_o,
     output wire                     role_locked_o,
+    input  wire                     apb_debug_unlock_i,
 
     // --------------------------------------------------------------------------
     // Auto-Negotiation
@@ -1365,6 +1366,7 @@ module tidelink_top #(
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),
         .role_locked_o              (role_locked_o),
+        .apb_debug_unlock_i         (apb_debug_unlock_i),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),

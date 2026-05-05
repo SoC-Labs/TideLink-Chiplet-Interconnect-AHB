@@ -53,6 +53,8 @@ class test_top_lane_mask_mismatch_sweep extends test_top_lane_mask_base;
     b_rx_mask = 16'h00FF;
     // Generous global timeout — sweep covers ~15 mask pairs at ~5 ms each.
     test_timeout_cycles = 20_000_000;
+    // Per-pair mismatches are expected (this is a diagnostic sweep)
+    top_system_a2b_expected_catcher::expect_a2b_mismatch = 1'b1;
 
     pairs = new[15];
     pairs[ 0] = '{16'h00FF, 16'h007F, "peer_thinks_more_lanes_drop_top"};
@@ -122,11 +124,12 @@ class test_top_lane_mask_mismatch_sweep extends test_top_lane_mask_base;
         UVM_LOW)
 
       disable_ll_both();
-      // Apply mismatched masks (symmetric within each side: tx = rx)
+      // Apply mismatched masks (symmetric within each side: tx = rx).
+      // Pack as {rx[7:0], tx[7:0]} into bits [15:0] — see test_top_lane_mask_base.
       write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK,
-                         {pairs[i].a_mask, pairs[i].a_mask});
+                         {16'h0000, pairs[i].a_mask[7:0], pairs[i].a_mask[7:0]});
       write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK,
-                         {pairs[i].b_mask, pairs[i].b_mask});
+                         {16'h0000, pairs[i].b_mask[7:0], pairs[i].b_mask[7:0]});
       clear_link_interrupts(SIDE_A);
       clear_link_interrupts(SIDE_B);
       enable_ll_both();
@@ -176,8 +179,8 @@ class test_top_lane_mask_mismatch_sweep extends test_top_lane_mask_base;
     // Restore default mask before phase end so other tests in the same
     // run start from a sane state.
     disable_ll_both();
-    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, {16'h00FF, 16'h00FF});
-    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, {16'h00FF, 16'h00FF});
+    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, 32'h0000_FFFF);
+    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, 32'h0000_FFFF);
     enable_ll_both();
 
     repeat (20) @(posedge tb_if.clk);

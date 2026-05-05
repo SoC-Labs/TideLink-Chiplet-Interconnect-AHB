@@ -85,10 +85,9 @@ class test_top_lane_mask_random_soak extends test_top_lane_mask_base;
         i + 1, n_iterations, new_mask, $countones(new_mask)), UVM_LOW)
 
       disable_ll_both();
-      write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK,
-                         {new_mask, 8'h00, new_mask, 8'h00});
-      write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK,
-                         {new_mask, 8'h00, new_mask, 8'h00});
+      // Pack as {rx[7:0], tx[7:0]} into bits [15:0] — see test_top_lane_mask_base
+      write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, {16'h0000, new_mask, new_mask});
+      write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, {16'h0000, new_mask, new_mask});
 
       // Track for active_lanes check & coverage sample
       a_tx_mask = {8'h00, new_mask};
@@ -120,8 +119,8 @@ class test_top_lane_mask_random_soak extends test_top_lane_mask_base;
 
     // Restore default mask
     disable_ll_both();
-    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, {16'h00FF, 16'h00FF});
-    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, {16'h00FF, 16'h00FF});
+    write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK, 32'h0000_FFFF);
+    write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK, 32'h0000_FFFF);
     enable_ll_both();
 
     repeat (20) @(posedge tb_if.clk);

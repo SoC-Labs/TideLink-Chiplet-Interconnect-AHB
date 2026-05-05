@@ -37,9 +37,9 @@ set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 # pad_clk_tx is on Y6 (IO_L13N_T2_MRCC_13). Both are multi-region
 # clock-capable, so dedicated routing is available.
 
-# Input clock from the remote chiplet on pad_clk_rx — 50 MHz, drives the
-# pad_rx[*] sampling registers.
-create_clock -name pad_clk_rx -period 20.0 [get_ports pad_clk_rx]
+# Input clock from the remote chiplet on pad_clk_rx — 1 MHz (slow variant),
+# drives the pad_rx[*] sampling registers.
+create_clock -name pad_clk_rx -period 1000.0 [get_ports pad_clk_rx]
 
 # pad_clk_tx is forwarded out of the FPGA from the local hclk domain.
 # It's launched by clk_wiz/clk_out1 (the existing 50 MHz domain), so
@@ -113,9 +113,10 @@ set_property SEVERITY {Warning} [get_drc_checks LUTLP-1]
 #-----------------------------------------------------------------------------
 # Source-synchronous async clock group
 #-----------------------------------------------------------------------------
-# pad_clk_rx is asynchronous to the local clk_wiz hclk — it comes from the
+# pad_clk_rx is asynchronous to the local FCLK_CLK0 hclk — it comes from the
 # remote chiplet's TX clock with arbitrary phase. Tell Vivado to skip CDC
 # analysis between the two domains; Wlink internally synchronises.
+# (Slow variant: no clk_wiz; FCLK_CLK0 from PS7 drives all logic directly.)
 set_clock_groups -asynchronous \
     -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]]
+    -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */processing_system7_0/FCLK_CLK0}]]

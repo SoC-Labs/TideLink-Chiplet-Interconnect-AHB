@@ -73,17 +73,17 @@
 #   used as master's pad_clk_rx; Y9 (SRCC P) carries master's pad_clk_tx
 #   so that slave's pad_clk_rx (also Y9 via the cable) is also on a P-side
 #   clock-capable site.
-set_property -dict { PACKAGE_PIN Y9  IOSTANDARD LVCMOS33 } [get_ports pad_clk_tx]   ;# J13 pin 40  (SRCC_13 P)
+set_property -dict { PACKAGE_PIN Y9  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports pad_clk_tx]   ;# J13 pin 40  (SRCC_13 P)
 
 # pad_tx[7:0]: TX data lanes
-set_property -dict { PACKAGE_PIN F19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[0]}]  ;# J13 pin 24
-set_property -dict { PACKAGE_PIN V10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[1]}]  ;# J13 pin 21
-set_property -dict { PACKAGE_PIN V8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[2]}]  ;# J13 pin 19
-set_property -dict { PACKAGE_PIN W10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[3]}]  ;# J13 pin 23
-set_property -dict { PACKAGE_PIN B20 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[4]}]  ;# J13 pin 32
-set_property -dict { PACKAGE_PIN W8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[5]}]  ;# J13 pin 33
-set_property -dict { PACKAGE_PIN V6  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[6]}]  ;# J13 pin 8
-set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]}]  ;# J13 pin 36
+set_property -dict { PACKAGE_PIN F19 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[0]}]  ;# J13 pin 24
+set_property -dict { PACKAGE_PIN V10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[1]}]  ;# J13 pin 21
+set_property -dict { PACKAGE_PIN V8  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[2]}]  ;# J13 pin 19
+set_property -dict { PACKAGE_PIN W10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[3]}]  ;# J13 pin 23
+set_property -dict { PACKAGE_PIN B20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[4]}]  ;# J13 pin 32
+set_property -dict { PACKAGE_PIN W8  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[5]}]  ;# J13 pin 33
+set_property -dict { PACKAGE_PIN V6  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[6]}]  ;# J13 pin 8
+set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[7]}]  ;# J13 pin 36
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 

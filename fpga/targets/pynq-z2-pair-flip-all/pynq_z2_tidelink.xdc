@@ -40,15 +40,15 @@
 # This XDC takes the upper half (idx 15..23) for TX so a 1:1 ribbon
 # carries the signals onto the peer pair board's RX (idx 15..23).
 # TX side: same J13 pins as pynq-z2-pair's RX side (straight-through cable).
-set_property -dict { PACKAGE_PIN Y7  IOSTANDARD LVCMOS33 } [get_ports pad_clk_tx]   ;# J13 pin 18  (MRCC_13 P; peer pad_clk_rx)
-set_property -dict { PACKAGE_PIN U7  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[0]}]  ;# J13 pin 11  (peer pad_rx[0])
-set_property -dict { PACKAGE_PIN C20 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[1]}]  ;# J13 pin 12  (peer pad_rx[1])
-set_property -dict { PACKAGE_PIN Y8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[2]}]  ;# J13 pin 35  (peer pad_rx[2])
-set_property -dict { PACKAGE_PIN A20 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[3]}]  ;# J13 pin 38  (peer pad_rx[3])
-set_property -dict { PACKAGE_PIN U8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[4]}]  ;# J13 pin 15  (peer pad_rx[4])
-set_property -dict { PACKAGE_PIN W6  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[5]}]  ;# J13 pin 16  (peer pad_rx[5])
-set_property -dict { PACKAGE_PIN Y6  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[6]}]  ;# J13 pin 10  (MRCC N; output OK; peer pad_rx[6])
-set_property -dict { PACKAGE_PIN F20 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]}]  ;# J13 pin 22  (peer pad_rx[7])
+set_property -dict { PACKAGE_PIN Y7  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports pad_clk_tx]   ;# J13 pin 18  (MRCC_13 P; peer pad_clk_rx)
+set_property -dict { PACKAGE_PIN U7  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[0]}]  ;# J13 pin 11  (peer pad_rx[0])
+set_property -dict { PACKAGE_PIN C20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[1]}]  ;# J13 pin 12  (peer pad_rx[1])
+set_property -dict { PACKAGE_PIN Y8  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[2]}]  ;# J13 pin 35  (peer pad_rx[2])
+set_property -dict { PACKAGE_PIN A20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[3]}]  ;# J13 pin 38  (peer pad_rx[3])
+set_property -dict { PACKAGE_PIN U8  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[4]}]  ;# J13 pin 15  (peer pad_rx[4])
+set_property -dict { PACKAGE_PIN W6  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[5]}]  ;# J13 pin 16  (peer pad_rx[5])
+set_property -dict { PACKAGE_PIN Y6  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[6]}]  ;# J13 pin 10  (MRCC N; output OK; peer pad_rx[6])
+set_property -dict { PACKAGE_PIN F20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[7]}]  ;# J13 pin 22  (peer pad_rx[7])
 
 #-- RX side (inputs to this board ← straight-through ribbon ← peer's TX) -----
 # Mirror of pynq-z2-pair: clocks on Y7/Y9 (both P-side clock-capable).

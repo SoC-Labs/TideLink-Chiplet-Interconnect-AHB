@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-loopback mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -76,6 +76,20 @@ else ifeq ($(TARGET),pynq-z2-pair)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip)
 XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-slow)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-flip-slow)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-ila)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-flip-ila)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-all)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-flip-all)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-loopback)
+XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
 endif
@@ -94,6 +108,7 @@ FPGA_NUM_JOBS   ?= 4
 
 .PHONY: all package_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
+        program_via_plugin deploy_via_plugin \
         resolve_board help
 
 all: build_design
@@ -237,16 +252,40 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 #-----------------------------------------------------------------------------
 
 program_via_fpgahub:
-	@if [ -z "$(FPGAHUB_TARGET)" ]; then \
-	    echo "ERROR: set BOARD=<name> or BOARD_TAG=<capability>" >&2; exit 2; \
-	fi
-	fpgahub actions run $(FPGAHUB_TARGET) program
+	@echo "ERROR: tidelink has no bare 'program' / 'deploy' actions —" >&2
+	@echo "       use program_via_plugin (recommended), or pick a named" >&2
+	@echo "       manifest action: program_z2_single / program_z2_pair /" >&2
+	@echo "       program_mps3 / deploy_z2_single / deploy_z2_pair." >&2
+	@echo "       e.g.  TARGET=pynq-z2-single make program_via_plugin" >&2
+	@exit 2
 
 deploy_via_fpgahub:
-	@if [ -z "$(FPGAHUB_TARGET)" ]; then \
-	    echo "ERROR: set BOARD=<name> or BOARD_TAG=<capability>" >&2; exit 2; \
+	@echo "ERROR: tidelink has no bare 'deploy' action —" >&2
+	@echo "       use deploy_via_plugin (recommended) or fpgahub actions" >&2
+	@echo "       run BOARD deploy_z2_single / deploy_z2_pair." >&2
+	@exit 2
+
+# fpgahub board-program plugin path. Hands the freshly-built bitstream
+# to whichever program plugin is configured under
+# [boards.<n>.program.<method>] (vivado_jtag / pynq_overlay /
+# sd_install). Bypasses the manifest. FPGAHUB_METHOD picks a non-default
+# method; FPGAHUB_FORCE=1 overrides the part-mismatch refusal.
+FPGAHUB_METHOD  ?=
+program_via_plugin: $(BITSTREAM)
+	@if [ -z "$(BOARD)" ]; then \
+	    echo "ERROR: set BOARD=<name>" >&2; exit 2; \
 	fi
-	fpgahub actions run $(FPGAHUB_TARGET) deploy
+	fpgahub board program $(BOARD) $(BITSTREAM) \
+	    $(if $(FPGAHUB_METHOD),--method $(FPGAHUB_METHOD)) \
+	    $(if $(FPGAHUB_FORCE),--force)
+
+deploy_via_plugin: $(BITSTREAM)
+	@if [ -z "$(BOARD)" ]; then \
+	    echo "ERROR: set BOARD=<name>" >&2; exit 2; \
+	fi
+	fpgahub board program $(BOARD) $(BITSTREAM) \
+	    --method $(if $(FPGAHUB_METHOD),$(FPGAHUB_METHOD),linux) \
+	    $(if $(FPGAHUB_FORCE),--force)
 
 stress_via_fpgahub:
 	@if [ -z "$(FPGAHUB_TARGET)" ]; then \
@@ -277,9 +316,11 @@ help:
 	@echo "Usage: make [TARGET=<board>] <target>"
 	@echo ""
 	@echo "TARGET values (default: pynq-z2-single):"
-	@echo "  pynq-z2-single    Digilent Pynq-Z2 — single-node   (xc7z020clg400-1)"
-	@echo "  pynq-z2-pair      Digilent Pynq-Z2 — loopback pair (xc7z020clg400-1)"
-	@echo "  mps3              MPS3 / Arm baseboard               (xcku115-flvb1760-1-c)"
+	@echo "  pynq-z2-single     Digilent Pynq-Z2 — single-node    (xc7z020clg400-1)"
+	@echo "  pynq-z2-pair       Digilent Pynq-Z2 — paired         (xc7z020clg400-1)"
+	@echo "  pynq-z2-pair-flip  Digilent Pynq-Z2 — paired (mirror)(xc7z020clg400-1)"
+	@echo "  pynq-z2-loopback   Digilent Pynq-Z2 — internal TX→RX (xc7z020clg400-1)"
+	@echo "  mps3               MPS3 / Arm baseboard              (xcku115-flvb1760-1-c)"
 	@echo ""
 	@echo "Build targets:"
 	@echo "  all               Full flow: package_ip -> build_design (default)"
@@ -291,8 +332,10 @@ help:
 	@echo ""
 	@echo "fpgahub targets (set BOARD=<name> or BOARD_TAG=<cap>):"
 	@echo "  resolve_board          Show resolved SSH endpoint for current BOARD"
-	@echo "  program_via_fpgahub    Program via fpgahub lease"
-	@echo "  deploy_via_fpgahub     Deploy via fpgahub lease"
+	@echo "  program_via_fpgahub    Program via fpgahub manifest 'program' action"
+	@echo "  deploy_via_fpgahub     Deploy via fpgahub manifest 'deploy' action"
+	@echo "  program_via_plugin     Program via [boards.<n>.program.default] plugin"
+	@echo "  deploy_via_plugin      Program via 'linux' method (pynq_overlay)"
 	@echo "  stress_via_fpgahub     Stress-test via fpgahub lease"
 	@echo "  ci_full_via_fpgahub    Full CI sweep via fpgahub lease"
 	@echo ""

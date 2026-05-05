@@ -39,7 +39,7 @@ set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 # Input clock from the remote chiplet on pad_clk_rx — 50 MHz, drives the
 # pad_rx[*] sampling registers.
-create_clock -name pad_clk_rx -period 20.0 [get_ports pad_clk_rx]
+create_clock -name pad_clk_rx -period 40.0 [get_ports pad_clk_rx]
 
 # pad_clk_tx is forwarded out of the FPGA from the local hclk domain.
 # It's launched by clk_wiz/clk_out1 (the existing 50 MHz domain), so
@@ -57,13 +57,19 @@ create_clock -name pad_clk_rx -period 20.0 [get_ports pad_clk_rx]
 # pad_rx[*] are input relative to pad_clk_rx from the remote node.
 #-----------------------------------------------------------------------------
 
-# Output delays on TX data lanes relative to TX clock
-# Disabled with tl_tx_clk: set_output_delay -clock [get_clocks tl_tx_clk] -min -5.0 [get_ports {pad_tx[*]}]
-# Disabled with tl_tx_clk: set_output_delay -clock [get_clocks tl_tx_clk] -max  5.0 [get_ports {pad_tx[*]}]
+# Output delays on TX data lanes relative to the launching hclk
+# (clk_wiz/clk_out1). Source-sync SDR centred-eye launch.
+# DISABLED 2026-05-05: matching working pair build to avoid hold violations
+# on the RX capture path. The asymmetric -min 1.0 -max 8.0 window forced
+# Vivado to insert hold-violating routing on every lane (134 endpoints).
+# set_output_delay -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]] -min -5.0 [get_ports {pad_tx[*]}]
+# set_output_delay -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]] -max  5.0 [get_ports {pad_tx[*]}]
 
-# Input delays on RX data lanes relative to RX clock
-# Disabled with tl_rx_clk: set_input_delay  -clock [get_clocks tl_rx_clk] -min -5.0 [get_ports {pad_rx[*]}]
-# Disabled with tl_rx_clk: set_input_delay  -clock [get_clocks tl_rx_clk] -max  5.0 [get_ports {pad_rx[*]}]
+# Input delays on RX data lanes relative to pad_clk_rx — centred eye on
+# 50 MHz, 20 ns period: data eye spans 1..8 ns from pad_clk_rx edge so
+# Vivado adds IODELAY to land the capture flop near the eye centre.
+# set_input_delay  -clock [get_clocks pad_clk_rx] -min  1.0 [get_ports {pad_rx[*]}]
+# set_input_delay  -clock [get_clocks pad_clk_rx] -max  8.0 [get_ports {pad_rx[*]}]
 
 # The forwarded TX clock itself has no setup/hold budget — it is the
 # reference clock for the TX domain. Mark it as false-path for timing

@@ -33,20 +33,18 @@ set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 # create_generated_clock call is needed here for hclk.
 #-----------------------------------------------------------------------------
 
-# Virtual TX clock — source-synchronous reference for pad_clk_tx and pad_tx[*].
-# This tells Vivado that pad_clk_tx is launched from the 50 MHz domain.
-# create_clock -name tl_tx_clk -period 20.0 [get_ports pad_clk_tx]
-# Disabled for first bring-up: pad_clk_tx maps to a non-clock-capable RPi
-# pin (W18 on the Pynq-Z2 RPi header, bank 35). Treating it as a regular
-# output skips the IO Clock Placer requirement. Re-enable once the
-# link characterisation needs source-synchronous output timing — and
-# move the pin to an MRCC/SRCC site at the same time.
+# Pin map (2026-04-29): pad_clk_rx is on Y7 (IO_L13P_T2_MRCC_13) and
+# pad_clk_tx is on Y6 (IO_L13N_T2_MRCC_13). Both are multi-region
+# clock-capable, so dedicated routing is available.
 
-# Virtual RX clock — received from the remote chiplet on pad_clk_rx.
-# Used as the capture clock for pad_rx[*].
-# create_clock -name tl_rx_clk -period 20.0 [get_ports pad_clk_rx]
-# Disabled for first bring-up: pad_clk_rx maps to a non-clock-capable RPi
-# pin (R16). Same rationale as pad_clk_tx above.
+# Input clock from the remote chiplet on pad_clk_rx — 50 MHz, drives the
+# pad_rx[*] sampling registers.
+create_clock -name pad_clk_rx -period 20.0 [get_ports pad_clk_rx]
+
+# pad_clk_tx is forwarded out of the FPGA from the local hclk domain.
+# It's launched by clk_wiz/clk_out1 (the existing 50 MHz domain), so
+# Vivado already sees it on the source side; no separate create_clock
+# needed for the output.
 
 #-----------------------------------------------------------------------------
 # GPIO PHY pad I/O timing (conservative, 50 MHz)
@@ -113,18 +111,11 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 set_property SEVERITY {Warning} [get_drc_checks LUTLP-1]
 
 #-----------------------------------------------------------------------------
-# Clock-route relaxation for non-clock-capable PHY pins
+# Source-synchronous async clock group
 #-----------------------------------------------------------------------------
-# The WlinkGPIORx logic uses pad_clk_rx as a sampling clock, and Wlink TX
-# uses pad_clk_tx as a forwarded clock. Both pads land on Pynq-Z2 RPi-header
-# GPIOs (W18, R16) which are NOT clock-capable I/O sites on bank 35. Vivado
-# infers BUFG on these signals during elaboration; the IO Clock Placer then
-# fails because BUFG requires a clock-region access pin.
-#
-# CLOCK_DEDICATED_ROUTE = FALSE tells the router to use general fabric for
-# the clock distribution instead of the dedicated clock network. Higher
-# skew/jitter, but valid for ≤50 MHz over short ribbon. Re-evaluate when
-# moving to a higher link rate or relocating these nets to MRCC pins (e.g.
-# K17/K18) via flying leads.
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of [get_ports pad_clk_rx]]
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of [get_ports pad_clk_tx]]
+# pad_clk_rx is asynchronous to the local clk_wiz hclk — it comes from the
+# remote chiplet's TX clock with arbitrary phase. Tell Vivado to skip CDC
+# analysis between the two domains; Wlink internally synchronises.
+set_clock_groups -asynchronous \
+    -group [get_clocks pad_clk_rx] \
+    -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]]

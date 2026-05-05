@@ -100,7 +100,13 @@ sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
         printf \"  fpga_manager: %s\n\" \"\$(cat /sys/class/fpga_manager/fpga0/state)\"
     '"
 
-# 3. Configure role + lock — this is what releases Wlink from reset.
+# 3. Configure role + lock + address translator. PAIR_BASE_ADDR is the
+#    base address the local FC uses when sending doorbell / credit
+#    frames to the peer (frame target = pair_base_addr + reg_offset).
+#    Both boards have TideLink APB at the SAME local address 0x44032000,
+#    so each peer's PAIR_BASE_ADDR points to that same value.
+#    Without this step, frames are addressed to peer-DDR (0x00000000+offset)
+#    and the peer's DOORBELL_RESP_ACC / RELEASED_ACC registers never tick.
 #    AXI GPIO strap at 0x4404_0000 sets the strap bit; APB ROLE_CFG at
 #    0x4403_2080 latches bit[1] = role_lock (W1S, POR-only clear).
 sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
@@ -112,9 +118,12 @@ def mm(a):
 s,so=mm(0x44040000)              # strap GPIO
 struct.pack_into(\"<I\",s,so,$STRAP)
 r,ro=mm(0x44032000)              # TideLink APB
-struct.pack_into(\"<I\",r,ro+0x80,$CTRL)
+struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR
+struct.pack_into(\"<I\",r,ro+0x80,$CTRL)        # ROLE_CFG (incl. role_lock)
+pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]
 val=struct.unpack_from(\"<I\",r,ro+0x80)[0]
-print(\"  ROLE_CFG = 0x{:02x} (lock={}, cfg={})\".format(val,(val>>1)&1,val&1))
+print(\"  PAIR_BASE_ADDR = 0x{:08x}\".format(pba))
+print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={})\".format(val,(val>>1)&1,val&1))
 '"
 
 echo "==== $LABEL done ===="

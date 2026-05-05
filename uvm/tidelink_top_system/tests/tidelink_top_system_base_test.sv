@@ -103,13 +103,18 @@ class tidelink_top_system_base_test extends uvm_test;
 
     `uvm_info("TEST", "Initializing Wlink on both sides...", UVM_LOW)
 
-    // Initialize both Wlink controllers
+    // Initialize both Wlink controllers. A = master (matches strap=0 in
+    // tb top.sv:381), B = slave (matches strap=1 in tb top.sv:539). The
+    // ROLE_CFG bit[0] override must MATCH the strap or the link comes up
+    // with both sides as master and no credit-grant peer.
     a_wlink_init = top_sys_wlink_init_sequence::type_id::create("a_wlink_init");
     a_wlink_init.side_name = "A";
+    a_wlink_init.is_slave  = 1'b0;
     a_wlink_init.start(env.a_apb_agt.sequencer);
 
     b_wlink_init = top_sys_wlink_init_sequence::type_id::create("b_wlink_init");
     b_wlink_init.side_name = "B";
+    b_wlink_init.is_slave  = 1'b1;
     b_wlink_init.start(env.b_apb_agt.sequencer);
 
     // Wait for link training (PHY pad crossover + Wlink handshake)

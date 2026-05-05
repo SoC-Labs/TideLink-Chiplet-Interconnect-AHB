@@ -118,6 +118,86 @@ class tidelink_top_system_base_test extends uvm_test;
     `uvm_info("TEST", "Wlink link-up complete.", UVM_LOW)
   endtask
 
+  // Diagnostic: read Wlink link_status (0x0234) and link_capabilities (0x0200)
+  // on both sides and report tx_ready / rx_data_valid / in_error_state.
+  // Used to diagnose stalls where the link might not have actually trained.
+  virtual task probe_wlink_state();
+    bit [31:0] a_status, b_status;
+    bit [31:0] a_caps, b_caps;
+    bit [31:0] a_phy_gen, b_phy_gen, a_phy_pll, b_phy_pll;
+    bit [31:0] a_enr, b_enr, a_pst, b_pst;
+    integration_cfg_read_sequence rd_seq;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0200;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_caps = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0234;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_status = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0000;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_phy_gen = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h000C;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_phy_pll = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0208;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_enr = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0044;
+    rd_seq.start(env.a_apb_agt.sequencer);
+    a_pst = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0200;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_caps = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0234;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_status = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0000;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_phy_gen = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h000C;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_phy_pll = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0208;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_enr = rd_seq.rdata;
+
+    rd_seq = integration_cfg_read_sequence::type_id::create("rd_seq");
+    rd_seq.addr = 15'h0044;
+    rd_seq.start(env.b_apb_agt.sequencer);
+    b_pst = rd_seq.rdata;
+
+    `uvm_info("PROBE", $sformatf(
+      "[A] caps=0x%08h status=0x%08h tx_rdy=%0d rx_dv=%0d in_err=%0d  phy_gen=0x%08h phy_pll=0x%08h  enable_reset=0x%08h  tx_pstate=0x%08h",
+      a_caps, a_status, (a_status>>3)&1, (a_status>>4)&1, (a_status>>2)&1,
+      a_phy_gen, a_phy_pll, a_enr, a_pst), UVM_LOW)
+    `uvm_info("PROBE", $sformatf(
+      "[B] caps=0x%08h status=0x%08h tx_rdy=%0d rx_dv=%0d in_err=%0d  phy_gen=0x%08h phy_pll=0x%08h  enable_reset=0x%08h  tx_pstate=0x%08h",
+      b_caps, b_status, (b_status>>3)&1, (b_status>>4)&1, (b_status>>2)&1,
+      b_phy_gen, b_phy_pll, b_enr, b_pst), UVM_LOW)
+  endtask
+
   // ---------------------------------------------------------------
   // Helper: initialize TideLink on both sides
   // ---------------------------------------------------------------
@@ -137,6 +217,13 @@ class tidelink_top_system_base_test extends uvm_test;
     write_cfg_reg(SIDE_B, REG_PAIR_BASE,          b_pair_base);
     write_cfg_reg(SIDE_B, REG_REL_THRESHOLD,       b_threshold);
     write_cfg_reg(SIDE_B, REG_PAIR_CREDIT_ENABLE,  32'h1);
+
+    // Ring doorbell on both sides to start the credit handshake. Without
+    // this, the Wlink TideLink FC TX node never gets initial credits from
+    // the peer and stalls when traffic starts (skid_can_accept=0 → AHB
+    // master back-pressured indefinitely).
+    write_cfg_reg(SIDE_A, REG_DOORBELL,            32'h1);
+    write_cfg_reg(SIDE_B, REG_DOORBELL,            32'h1);
 
     // Wait for doorbells to propagate through Wlink FC path (GPIO PHY is slow)
     repeat (phy_transit_wait) @(posedge tb_if.clk);

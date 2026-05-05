@@ -84,10 +84,14 @@ class test_top_lane_mask_base extends tidelink_top_system_base_test;
     write_cfg_reg_raw(SIDE_B, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DISABLED);
     repeat (200) @(posedge tb_if.clk);
 
+    // Pack as {rx[7:0], tx[7:0]} into bits [15:0] — the Wlink Verilog
+    // implements lane_mask as `{rx_lane_mask[7:0], tx_lane_mask[7:0]}`
+    // for the 8-lane build. Writing the masks as full 16-bit fields would
+    // clobber rx with the upper byte of tx (=0).
     write_cfg_reg_raw(SIDE_A, WLINK_LANE_MASK,
-                       {a_rx_mask, a_tx_mask});
+                       {16'h0000, a_rx_mask[7:0], a_tx_mask[7:0]});
     write_cfg_reg_raw(SIDE_B, WLINK_LANE_MASK,
-                       {b_rx_mask, b_tx_mask});
+                       {16'h0000, b_rx_mask[7:0], b_tx_mask[7:0]});
     repeat (50) @(posedge tb_if.clk);
 
     write_cfg_reg_raw(SIDE_A, WLINK_LINK_ENABLE_RESET, LL_ENABLE_DEFAULT);
@@ -96,7 +100,10 @@ class test_top_lane_mask_base extends tidelink_top_system_base_test;
   endtask
 
   // Confirm derived active_lanes register reads back popcount(mask)-1 on each
-  // side. Subclasses can override to skip this check (e.g. mismatch tests).
+  // side. The Wlink Verilog packs the register as
+  //   {28'd0, active_rx[3:0], active_tx[3:0]}
+  // for the 8-lane build (4 bits per direction, both in the lower byte).
+  // Subclasses can override to skip this check (e.g. mismatch tests).
   virtual task check_active_lanes();
     bit [31:0] a_active, b_active;
     int        a_tx_expected, a_rx_expected, b_tx_expected, b_rx_expected;
@@ -107,20 +114,20 @@ class test_top_lane_mask_base extends tidelink_top_system_base_test;
     b_rx_expected = $countones(b_rx_mask) - 1;
 
     read_cfg_reg_raw(SIDE_A, 15'h0210, a_active);
-    if ((a_active & 32'h0000_FFFF) != a_tx_expected)
-      `uvm_error("TEST", $sformatf("[A] active_tx_lanes expected %0d, got %0d",
-                                    a_tx_expected, a_active & 32'h0000_FFFF))
-    if (((a_active >> 16) & 32'h0000_FFFF) != a_rx_expected)
-      `uvm_error("TEST", $sformatf("[A] active_rx_lanes expected %0d, got %0d",
-                                    a_rx_expected, (a_active >> 16) & 32'h0000_FFFF))
+    if ((a_active & 32'h0000_000F) != a_tx_expected)
+      `uvm_error("TEST", $sformatf("[A] active_tx_lanes expected %0d, got %0d (raw=0x%08h)",
+                                    a_tx_expected, a_active & 32'h0000_000F, a_active))
+    if (((a_active >> 4) & 32'h0000_000F) != a_rx_expected)
+      `uvm_error("TEST", $sformatf("[A] active_rx_lanes expected %0d, got %0d (raw=0x%08h)",
+                                    a_rx_expected, (a_active >> 4) & 32'h0000_000F, a_active))
 
     read_cfg_reg_raw(SIDE_B, 15'h0210, b_active);
-    if ((b_active & 32'h0000_FFFF) != b_tx_expected)
-      `uvm_error("TEST", $sformatf("[B] active_tx_lanes expected %0d, got %0d",
-                                    b_tx_expected, b_active & 32'h0000_FFFF))
-    if (((b_active >> 16) & 32'h0000_FFFF) != b_rx_expected)
-      `uvm_error("TEST", $sformatf("[B] active_rx_lanes expected %0d, got %0d",
-                                    b_rx_expected, (b_active >> 16) & 32'h0000_FFFF))
+    if ((b_active & 32'h0000_000F) != b_tx_expected)
+      `uvm_error("TEST", $sformatf("[B] active_tx_lanes expected %0d, got %0d (raw=0x%08h)",
+                                    b_tx_expected, b_active & 32'h0000_000F, b_active))
+    if (((b_active >> 4) & 32'h0000_000F) != b_rx_expected)
+      `uvm_error("TEST", $sformatf("[B] active_rx_lanes expected %0d, got %0d (raw=0x%08h)",
+                                    b_rx_expected, (b_active >> 4) & 32'h0000_000F, b_active))
   endtask
 
   // Default traffic: single 4-word packet A->B, scoreboard compare.

@@ -370,6 +370,40 @@ module test_top;
     // External PHC lock gate (not used in this testbench)
     .phc_locked_i         (1'b1),
 
+    // PHC clock + reset (tied off — PHC not exercised in this tb)
+    .phc_clk              (clk),
+    .phc_resetn           (rst_n),
+    .phc_nanoseconds      (30'h0),
+    .phc_seconds          (48'h0),
+    .phc_pps              (1'b0),
+    .phc_hw_cap_seconds   (48'h0),
+    .phc_hw_cap_nanoseconds(30'h0),
+    .phc_hw_cap_sub_nanoseconds(32'h0),
+
+    // PTP AHB write port (tied off — PTP not exercised)
+    .ahb_ptp_hsel         (1'b0),
+    .ahb_ptp_haddr        (4'h0),
+    .ahb_ptp_htrans       (2'b00),
+    .ahb_ptp_hsize        (3'h0),
+    .ahb_ptp_hwrite       (1'b0),
+    .ahb_ptp_hwdata       (32'h0),
+    .ahb_ptp_hready       (1'b1),
+
+    // TideChart axis (tied off — TideChart not exercised, drive defined zeros
+    // so the FC arbiter doesn't see X on tc_qos_priority / tx_tvalid which
+    // propagates to sideband_grant and onto Wlink TX data path).
+    .tc_axis_tx_tvalid    (1'b0),
+    .tc_axis_tx_tdata     ({FC_DATA_W{1'b0}}),
+    .tc_axis_rx_tready    (1'b1),
+    .tc_qos_priority      (3'h0),
+    .tl_bcast_ack_i       (1'b0),
+    .apb_debug_unlock_i   (1'b0),
+
+    // Negotiation / PUF (tied off — autoneg not exercised in this tb)
+    .nego_priority_i      (16'h0),
+    .puf_seed             (16'h0),
+    .puf_ready            (1'b0),
+
     // Interrupts
     .released_credits_irq (a_released_credits_irq),
     .doorbell_irq         (a_doorbell_irq),
@@ -528,6 +562,40 @@ module test_top;
 
     // External PHC lock gate (not used in this testbench)
     .phc_locked_i         (1'b1),
+
+    // PHC clock + reset (tied off — PHC not exercised in this tb)
+    .phc_clk              (clk),
+    .phc_resetn           (rst_n),
+    .phc_nanoseconds      (30'h0),
+    .phc_seconds          (48'h0),
+    .phc_pps              (1'b0),
+    .phc_hw_cap_seconds   (48'h0),
+    .phc_hw_cap_nanoseconds(30'h0),
+    .phc_hw_cap_sub_nanoseconds(32'h0),
+
+    // PTP AHB write port (tied off)
+    .ahb_ptp_hsel         (1'b0),
+    .ahb_ptp_haddr        (4'h0),
+    .ahb_ptp_htrans       (2'b00),
+    .ahb_ptp_hsize        (3'h0),
+    .ahb_ptp_hwrite       (1'b0),
+    .ahb_ptp_hwdata       (32'h0),
+    .ahb_ptp_hready       (1'b1),
+
+    // TideChart axis (tied off — drive defined zeros so the FC arbiter
+    // doesn't see X on tc_qos_priority / tx_tvalid which would propagate
+    // through sideband_grant onto the Wlink TX data path).
+    .tc_axis_tx_tvalid    (1'b0),
+    .tc_axis_tx_tdata     ({FC_DATA_W{1'b0}}),
+    .tc_axis_rx_tready    (1'b1),
+    .tc_qos_priority      (3'h0),
+    .tl_bcast_ack_i       (1'b0),
+    .apb_debug_unlock_i   (1'b0),
+
+    // Negotiation / PUF (tied off)
+    .nego_priority_i      (16'h0),
+    .puf_seed             (16'h0),
+    .puf_ready            (1'b0),
 
     .released_credits_irq (b_released_credits_irq),
     .doorbell_irq         (b_doorbell_irq),

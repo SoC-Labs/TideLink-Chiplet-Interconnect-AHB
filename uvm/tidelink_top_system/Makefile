@@ -261,6 +261,7 @@ help:
 	@echo "  make coverage                   - Generate merged coverage report"
 	@echo "  make waves                      - Compile with waveform dumping"
 	@echo "  make clean                      - Remove all build artifacts"
+	@echo "  make wlink_regen                - Force regenerate Wlink Verilog ($(WLINK_CONFIG))"
 	@echo ""
 	@echo "Available tests:"
 	@echo "  test_top_single_packet     - Single packet A->B through full Wlink stack"
@@ -282,7 +283,28 @@ help:
 	@echo "Before running, source the environment setup:"
 	@echo "  source ../../set_env.sh"
 
-compile: | $(SIM_DIR)
+# --------------------------------------------------------------------------
+# Auto-regenerate the GPIO Wlink Verilog if missing or older than the Scala.
+# output_tidelink_gpio/ is gitignored, so each fresh checkout starts empty
+# and the Scala edits in src/main/scala may render the previous output
+# stale. Compile depends on $(WLINK_GEN_V); the rule invokes sbt only when
+# the file is missing or out of date.
+# --------------------------------------------------------------------------
+WLINK_HW_DIR  := $(DEPS_DIR)/wav-wlink-hw
+WLINK_GEN_DIR := $(WLINK_HW_DIR)/output_tidelink_gpio
+WLINK_GEN_V   := $(WLINK_GEN_DIR)/Wlink.v
+WLINK_CONFIG  := wav.wlink.Wlink8LaneAXI32bitTideLinkConfig
+WLINK_SCALA   := $(wildcard $(WLINK_HW_DIR)/src/main/scala/*.scala)
+
+$(WLINK_GEN_V): $(WLINK_SCALA)
+	@echo "Regenerating Wlink Verilog ($(WLINK_CONFIG)) into $(WLINK_GEN_DIR)..."
+	cd $(WLINK_HW_DIR) && \
+	  sbt 'runMain wav.wlink.WlinkGen -o $(WLINK_GEN_DIR) -c $(WLINK_CONFIG)'
+
+.PHONY: wlink_regen
+wlink_regen: $(WLINK_GEN_V)
+
+compile: $(WLINK_GEN_V) | $(SIM_DIR)
 	$(VCS) $(VCS_FLAGS)
 
 $(SIM_DIR):

@@ -331,6 +331,16 @@ proc create_root_design { parentCell } {
         CONFIG.CONST_VAL   {42405} \
     ] $const_puf_seed
 
+    # SoC Labs bring-up patch (2026-05-06): tie mask_hs_bypass_i HIGH so the
+    # peer-mask handshake gate is open and role_lock_reg latches immediately
+    # on ROLE_CFG write. See pynq-z2-pair-all for full rationale.
+    set const_mask_bypass [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_mask_hs_bypass]
+    set_property -dict [list \
+        CONFIG.CONST_WIDTH {1} \
+        CONFIG.CONST_VAL   {1} \
+    ] $const_mask_bypass
+
     #--------------------------------------------------------------------------
     # ILA — capture pad_clk_rx + pad_rx[7:0] (signals coming FROM the slave).
     # Sampled in the local hclk (50 MHz) domain; the goal is to see whether
@@ -545,6 +555,8 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/nego_priority_i]
     connect_bd_net [get_bd_pins xlconst_puf_seed/dout] \
                    [get_bd_pins tidelink_0/puf_seed]
+    connect_bd_net [get_bd_pins xlconst_mask_hs_bypass/dout] \
+                   [get_bd_pins tidelink_0/mask_hs_bypass_i]
 
     ###########################################################################
     # ADDRESS MAP

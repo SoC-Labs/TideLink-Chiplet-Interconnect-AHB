@@ -139,6 +139,9 @@ package tidelink_top_system_pkg;
   `include "test_top_lane_mask_mismatch_sweep.sv"
   // Phase 7 — random-mask soak (also drops cg_lane_mask coverage samples)
   `include "test_top_lane_mask_random_soak.sv"
+  // Peer-mask handshake (gate-on-mismatch hardware enforcement)
+  `include "test_top_peer_mask_match.sv"
+  `include "test_top_peer_mask_mismatch_refused.sv"
 
 endpackage
 

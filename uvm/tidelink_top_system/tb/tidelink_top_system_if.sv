@@ -45,12 +45,30 @@ interface tidelink_top_system_if (
   logic [7:0] a_pad_tx_obs;
   logic [7:0] b_pad_tx_obs;
 
+  // Per-side debug-unlock strap (allows local SW writes to Wlink in
+  // slave mode). Default 1 = open. See axi_chiplet_controller.sv.
+  logic a_apb_debug_unlock;
+  logic b_apb_debug_unlock;
+
+  // Per-side peer-mask handshake bypass strap. Default 1 = gate held
+  // permanently open (preserves existing test behaviour). Tests that
+  // exercise the gate drive these to 0 to engage the gate; SW (or, in
+  // future, the autoneg FSM) must then write the local
+  // link_lane_mask_hs_result @ 0x21C with peer_says_match=1 before
+  // role_lock can latch.
+  logic a_mask_hs_bypass;
+  logic b_mask_hs_bypass;
+
   initial begin
     force_reset           = 1'b0;
     a2b_lane_perturb_en   = 8'h00;
     a2b_lane_perturb_val  = 8'h00;
     b2a_lane_perturb_en   = 8'h00;
     b2a_lane_perturb_val  = 8'h00;
+    a_apb_debug_unlock    = 1'b1;
+    b_apb_debug_unlock    = 1'b1;
+    a_mask_hs_bypass      = 1'b1;
+    b_mask_hs_bypass      = 1'b1;
   end
 
 endinterface

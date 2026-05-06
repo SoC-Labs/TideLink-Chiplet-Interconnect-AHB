@@ -136,15 +136,19 @@ The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (
 
 **Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
 
-### 14a. Lane-Mask Mismatch Is Silent
+### 14a. Lane-Mask Mismatch — Hardware Gate Is Software-Driven
 
-**Location**: `Wlink.scala` — `link_lane_mask` register at offset `0x214`
+**Location**: `Wlink.scala` — `link_lane_mask_hs_result` register at offset `0x21C`; `axi_chiplet_controller.sv` — peer-mask gate on `role_lock_reg`
 
-Both ends of the link must program identical `tx_lane_mask`/`rx_lane_mask` values (or the corresponding cross-side fields) for byte striping to round-trip correctly. The hardware does not detect a mismatch — if A and B disagree on the active lane set, the link will silently corrupt data on every cycle. Recovery requires software-mediated re-programming on both sides under link-disabled state.
+**Status (2026-05-06)**: A hardware *gate* on `role_lock` is in place. With the `mask_hs_bypass_i` strap held low, hardware refuses to assert `role_lock_reg` until software writes `0x01` (peer_says_match) to the local `link_lane_mask_hs_result @ 0x21C`. A write of `0x02` (peer_says_fail) latches the sticky `nego_mask_mismatch` bit (NEGO_STATUS[8]) and routes through `nego_error_irq`. The gate is exercised by UVM tests `test_top_peer_mask_match` and `test_top_peer_mask_mismatch_refused`.
 
-**Impact**: An operator error (programming mask only on one board, or asymmetric programming for a symmetric ribbon) produces a fully-driven but corrupt link. The error surface (CRC errors, FC stalls, dropped packets) is documented in the simulation test plan but not auto-detected.
+**What's still software-driven**: the *handshake itself* — i.e. the master peer reading the slave's mask via I2C, comparing against its local mask, and writing the result byte. Today software (or a future autoneg-FSM extension) drives that exchange. The hardware just enforces "no role_lock without a passing handshake byte".
 
-**Recommendation**: Add a peer-mask handshake to the autoneg layer (see [`AUTONEG_PROTOCOL.md`](AUTONEG_PROTOCOL.md)) — exchange the local mask via the chiplet sideband (I2C or short-packet) before unblocking the data path, and refuse link-up if the masks disagree. Until that lands, software should program both ends in a single coordinated sequence (the PYNQ stress test `lane_mask_burnt_lane` and UVM `test_top_lane_mask` enforce this convention).
+**Impact**: An operator who forgets to drive the handshake will see the link refuse to bring up (role_lock stays 0, IRQ on mismatch) — the silent-corruption failure mode is gone. An operator who drives it incorrectly (wrong byte) gets a deterministic error. The remaining concern is operator discipline: the handshake script must read peer mask, compute the correct outcome, and write the result on both sides.
+
+**Recommendation**: Continue with the autoneg-FSM extension (Phase 2 of the peer-mask plan in `~/.claude/plans/peer-mask-handshake.md`) — extend `tidelink_autoneg.sv` with `NEGO_MASK_WRITE/READ/VERIFY` states that drive the I2C exchange in hardware. The wrapper-side gate this commit adds is the receiving end; the FSM extension just supplies the result byte automatically. The pynq `mask_hs_bypass_i` strap stays at 1 in pre-handshake bring-up environments and goes to 0 once the FSM lands.
+
+**Reference**: The pre-existing PYNQ stress test `lane_mask_burnt_lane` and UVM `test_top_lane_mask` family still rely on the bypass strap being asserted. New tests `test_top_peer_mask_match` and `_mismatch_refused` exercise the gate.
 
 ### 15. Credit Release Threshold Cannot Be Changed While Enabled
 

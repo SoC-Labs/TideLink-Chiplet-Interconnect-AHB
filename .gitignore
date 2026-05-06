@@ -36,6 +36,12 @@ cdc/*summary.rpt
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/
 
+# Vivado tool transcripts (cached in repo root by `vivado -mode batch ...`)
+vivado*.jou
+vivado*.log
+*.backup.jou
+*.backup.log
+
 # UVM simulation artifacts
 uvm/*/sim_build/
 uvm/*/coverage_report/

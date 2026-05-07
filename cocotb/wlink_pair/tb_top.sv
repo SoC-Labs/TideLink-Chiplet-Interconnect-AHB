@@ -78,6 +78,15 @@ module tb_top;
     logic m_apb_debug_unlock = 1'b0;
     logic s_apb_debug_unlock = 1'b0;
 
+    // Peer-mask handshake bypass (added 2026-05-06): the chiplet controller's
+    // role_lock_reg now refuses to latch unless mask_hs_match | mask_hs_bypass_i.
+    // For the wlink_pair sim we keep the gate fully open — the sim cross-wires
+    // the lane-mask sideband internally so the autoneg-driven handshake doesn't
+    // apply, and we want role_lock to behave identically to the pre-handshake
+    // RTL. Production silicon should drive this from a real strap.
+    logic m_mask_hs_bypass = 1'b1;
+    logic s_mask_hs_bypass = 1'b1;
+
     // ----- Master instance ----------------------------------------------------
     axi_chiplet_controller u_master (
         .apb_clk(master_clk), .app_clk(master_clk), .user_hsclk(master_clk),
@@ -88,6 +97,7 @@ module tb_top;
         .role_is_master_o(m_role_is_master),
         .role_locked_o(m_role_locked),
         .apb_debug_unlock_i(m_apb_debug_unlock),
+        .mask_hs_bypass_i(m_mask_hs_bypass),
 
         .nego_priority_i(16'h8000), .puf_seed(16'hA5A5), .puf_ready(1'b1),
         .nego_error_irq(),
@@ -191,6 +201,7 @@ module tb_top;
         .role_is_master_o(s_role_is_master),
         .role_locked_o(s_role_locked),
         .apb_debug_unlock_i(s_apb_debug_unlock),
+        .mask_hs_bypass_i(s_mask_hs_bypass),
 
         .nego_priority_i(16'h7FFF), .puf_seed(16'h5A5A), .puf_ready(1'b1),
         .nego_error_irq(),

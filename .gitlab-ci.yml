@@ -237,7 +237,7 @@ cocotb-regression:
     - make -C "$WORK_DIR/cocotb" coverage
   after_script:
     - mkdir -p cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
         mkdir -p "cocotb/$env";
         cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;
@@ -246,7 +246,7 @@ cocotb-regression:
     - cp -r "$WORK_DIR/cocotb/coverage_report" cocotb/ 2>/dev/null || true
     # Collect VDB coverage databases for final merge
     - mkdir -p coverage_vdbs/cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
         cp -r "$WORK_DIR/cocotb/$env/coverage.vdb" "coverage_vdbs/cocotb/${env}.vdb" 2>/dev/null || true;
         cp -r "$WORK_DIR/cocotb/$env/sim_build/simv.vdb" "coverage_vdbs/cocotb/${env}_simv.vdb" 2>/dev/null || true;
       done
@@ -495,6 +495,33 @@ cocotb-ptp:
         - cocotb/tidelink_ptp/results.xml
     expire_in: 30 days
 
+# Two-Wlink pair-link bring-up sim — depends on the FPGA filelist
+# (tidelink_fpga.flist references Xilinx-targeted PHY GPIO Verilog and
+# the WAV-WLINK output dir). allow_failure while the env stabilises and
+# any flist tweaks needed for pure-VCS regression land.
+cocotb-wlink-pair:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running cocotb wlink_pair bring-up tests (6 tests)"
+    - cd "$WORK_DIR/cocotb/wlink_pair" && make
+  after_script:
+    - mkdir -p cocotb/wlink_pair
+    - cp "$WORK_DIR/cocotb/wlink_pair/results.xml"   cocotb/wlink_pair/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/wlink_pair/run.log"       cocotb/wlink_pair/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/wlink_pair/
+    reports:
+      junit:
+        - cocotb/wlink_pair/results.xml
+    expire_in: 30 days
+
 # ============================================================================
 # Stage 5: System Tests
 # ============================================================================
@@ -613,6 +640,35 @@ uvm-ptp-sync:
         - uvm/tidelink_ptp_sync/results.xml
     expire_in: 30 days
 
+uvm-ptp-chain:
+  stage: system
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running UVM tidelink_ptp_chain tests"
+    - make -C "$WORK_DIR/uvm/tidelink_ptp_chain" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_ptp_chain/sim_build"
+        "$WORK_DIR/uvm/tidelink_ptp_chain/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_ptp_chain
+    - cp "$WORK_DIR/uvm/tidelink_ptp_chain/results.xml"      uvm/tidelink_ptp_chain/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_ptp_chain/sim_build/"*.log   uvm/tidelink_ptp_chain/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_ptp_chain/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_ptp_chain.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_ptp_chain/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_ptp_chain/results.xml
+    expire_in: 30 days
+
 # ============================================================================
 # Stage 6: Synthesis
 # ============================================================================
@@ -708,11 +764,15 @@ coverage-merge:
       artifacts: true
     - job: cocotb-system
       artifacts: true
+    - job: cocotb-wlink-pair
+      artifacts: true
     - job: uvm-system
       artifacts: true
     - job: uvm-ptp-stress
       artifacts: true
     - job: uvm-ptp-sync
+      artifacts: true
+    - job: uvm-ptp-chain
       artifacts: true
   tags:
     - vcs
@@ -792,11 +852,15 @@ dashboard:
       artifacts: true
     - job: cocotb-system
       artifacts: true
+    - job: cocotb-wlink-pair
+      artifacts: true
     - job: uvm-system
       artifacts: true
     - job: uvm-ptp-stress
       artifacts: true
     - job: uvm-ptp-sync
+      artifacts: true
+    - job: uvm-ptp-chain
       artifacts: true
     - job: coverage-merge
       artifacts: true

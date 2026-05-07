@@ -84,13 +84,19 @@ class top_sys_autoneg_sequence extends uvm_sequence #(apb_master_transaction);
     // ---------------------------------------------------------------
     // Step 4: Write NEGO_CFG (enables negotiation)
     // ---------------------------------------------------------------
-    nego_cfg_val = {24'b0,
-                    1'b0,            // [7] reserved
-                    1'b0,            // [6] reserved
-                    1'b0,            // [5] reserved
-                    force_lock,      // [4] force_lock
-                    fallback_role,   // [3] fallback
-                    pri_sel,         // [2:1] pri_sel
+    // Bit layout matches axi_chiplet_controller.sv (NEGO_CFG fields):
+    //   [0]   nego_en
+    //   [1]   nego_start (unused — FSM starts on nego_en=1)
+    //   [3:2] pri_sel
+    //   [4]   nego_fallback
+    //   [5]   nego_force_lock
+    //   [6]   mask_hs_auto_en (Phase 2)
+    nego_cfg_val = {25'b0,
+                    1'b0,            // [6] mask_hs_auto_en (off in this sequence)
+                    force_lock,      // [5] force_lock
+                    fallback_role,   // [4] fallback
+                    pri_sel,         // [3:2] pri_sel
+                    1'b0,            // [1] nego_start (unused)
                     nego_en};        // [0] nego_en
 
     `uvm_info("AUTONEG", $sformatf("[%s] Setting NEGO_CFG = 0x%08h (nego_en=%0b, pri_sel=%0b, fallback=%0b, force_lock=%0b)",

@@ -53,7 +53,7 @@ package tidelink_top_system_pkg;
   parameter REG_NEGO_STATUS   = 12'h094;
   parameter REG_NEGO_PRIORITY = 12'h098;
   parameter REG_NEGO_TIMEOUT  = 12'h09C;
-  parameter REG_I2C_PRESCALE  = 12'h0A0;
+  parameter REG_I2C_PRESCALE  = 12'h08C;  // ctrl_reg_addr 3 (was 0x0A0 — pre-existing bug, that lives in perf region)
 
   // NEGO_STATUS bit positions. State field widened from 3 to 4 bits in
   // Phase 2 to host the new ST_NEGO_MASK_RES_TX state, so all the higher
@@ -146,10 +146,7 @@ package tidelink_top_system_pkg;
   // Peer-mask handshake (gate-on-mismatch hardware enforcement)
   `include "test_top_peer_mask_match.sv"
   `include "test_top_peer_mask_mismatch_refused.sv"
-  // test_top_peer_mask_auto.sv exists but is omitted from the regression
-  // manifest — it depends on the autoneg I2C ACK path which has a
-  // pre-existing failure (see test_top_autoneg_basic). Re-include it
-  // once that's fixed.
+  `include "test_top_peer_mask_auto.sv"
 
 endpackage
 

@@ -437,6 +437,38 @@ uvm-integration:
         - uvm/tidelink_integration/results.xml
     expire_in: 30 days
 
+# Full top-system paired UVM (two tidelink_top instances cross-wired by PHY
+# pads). Curated TESTS list from the Makefile — excludes WIP tests like
+# autoneg / lane_mask / peer_mask. allow_failure while the env stabilises.
+uvm-top-system:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  allow_failure: true
+  <<: *vcs_uvm_setup
+  script:
+    - echo "Running curated UVM tidelink_top_system tests (10 tests in run_all)"
+    - make -C "$WORK_DIR/uvm/tidelink_top_system" run_all || true
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_top_system/sim_build"
+        "$WORK_DIR/uvm/tidelink_top_system/results.xml"
+  after_script:
+    - mkdir -p uvm/tidelink_top_system
+    - cp "$WORK_DIR/uvm/tidelink_top_system/results.xml"      uvm/tidelink_top_system/ 2>/dev/null || true
+    - cp "$WORK_DIR/uvm/tidelink_top_system/sim_build/"*.log   uvm/tidelink_top_system/ 2>/dev/null || true
+    - mkdir -p coverage_vdbs/uvm
+    - cp -r "$WORK_DIR/uvm/tidelink_top_system/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_top_system.vdb" 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - uvm/tidelink_top_system/*.log
+      - coverage_vdbs/uvm/
+    reports:
+      junit:
+        - uvm/tidelink_top_system/results.xml
+    expire_in: 30 days
+
 cocotb-ptp:
   stage: new_module
   needs: [clone, preflight]
@@ -672,6 +704,8 @@ coverage-merge:
       artifacts: true
     - job: uvm-integration
       artifacts: true
+    - job: uvm-top-system
+      artifacts: true
     - job: cocotb-system
       artifacts: true
     - job: uvm-system
@@ -753,6 +787,8 @@ dashboard:
     - job: uvm-fc-adapter
       artifacts: true
     - job: uvm-integration
+      artifacts: true
+    - job: uvm-top-system
       artifacts: true
     - job: cocotb-system
       artifacts: true

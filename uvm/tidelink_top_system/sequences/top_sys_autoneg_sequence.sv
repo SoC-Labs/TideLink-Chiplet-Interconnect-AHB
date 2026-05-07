@@ -55,31 +55,34 @@ class top_sys_autoneg_sequence extends uvm_sequence #(apb_master_transaction);
     // Step 1: Write NEGO_PRIORITY
     // ---------------------------------------------------------------
     `uvm_info("AUTONEG", $sformatf("[%s] Setting NEGO_PRIORITY = 0x%08h", side_name, priority_val), UVM_LOW)
-    `uvm_create(wr_txn)
-    wr_txn.addr  = 15'h2000 + REG_NEGO_PRIORITY[14:0];
+    wr_txn = apb_master_transaction::type_id::create("wr_txn");
+    start_item(wr_txn);
+    wr_txn.addr  = 15'h2000 + 15'(REG_NEGO_PRIORITY);
     wr_txn.wdata = priority_val;
     wr_txn.write = 1;
-    `uvm_send(wr_txn)
+    finish_item(wr_txn);
 
     // ---------------------------------------------------------------
     // Step 2: Write NEGO_TIMEOUT
     // ---------------------------------------------------------------
     `uvm_info("AUTONEG", $sformatf("[%s] Setting NEGO_TIMEOUT = 0x%08h", side_name, timeout_val), UVM_LOW)
-    `uvm_create(wr_txn)
-    wr_txn.addr  = 15'h2000 + REG_NEGO_TIMEOUT[14:0];
+    wr_txn = apb_master_transaction::type_id::create("wr_txn");
+    start_item(wr_txn);
+    wr_txn.addr  = 15'h2000 + 15'(REG_NEGO_TIMEOUT);
     wr_txn.wdata = timeout_val;
     wr_txn.write = 1;
-    `uvm_send(wr_txn)
+    finish_item(wr_txn);
 
     // ---------------------------------------------------------------
     // Step 3: Write I2C_PRESCALE
     // ---------------------------------------------------------------
     `uvm_info("AUTONEG", $sformatf("[%s] Setting I2C_PRESCALE = 0x%08h", side_name, i2c_prescale), UVM_LOW)
-    `uvm_create(wr_txn)
-    wr_txn.addr  = 15'h2000 + REG_I2C_PRESCALE[14:0];
+    wr_txn = apb_master_transaction::type_id::create("wr_txn");
+    start_item(wr_txn);
+    wr_txn.addr  = 15'h2000 + 15'(REG_I2C_PRESCALE);
     wr_txn.wdata = i2c_prescale;
     wr_txn.write = 1;
-    `uvm_send(wr_txn)
+    finish_item(wr_txn);
 
     // ---------------------------------------------------------------
     // Step 4: Write NEGO_CFG (enables negotiation)
@@ -101,11 +104,12 @@ class top_sys_autoneg_sequence extends uvm_sequence #(apb_master_transaction);
 
     `uvm_info("AUTONEG", $sformatf("[%s] Setting NEGO_CFG = 0x%08h (nego_en=%0b, pri_sel=%0b, fallback=%0b, force_lock=%0b)",
       side_name, nego_cfg_val, nego_en, pri_sel, fallback_role, force_lock), UVM_LOW)
-    `uvm_create(wr_txn)
-    wr_txn.addr  = 15'h2000 + REG_NEGO_CFG[14:0];
+    wr_txn = apb_master_transaction::type_id::create("wr_txn");
+    start_item(wr_txn);
+    wr_txn.addr  = 15'h2000 + 15'(REG_NEGO_CFG);
     wr_txn.wdata = nego_cfg_val;
     wr_txn.write = 1;
-    `uvm_send(wr_txn)
+    finish_item(wr_txn);
 
     // ---------------------------------------------------------------
     // Step 5: Poll NEGO_STATUS until done or error
@@ -120,10 +124,11 @@ class top_sys_autoneg_sequence extends uvm_sequence #(apb_master_transaction);
       // Wait between polls
       #(poll_interval * 10ns);
 
-      `uvm_create(rd_txn)
-      rd_txn.addr  = 15'h2000 + REG_NEGO_STATUS[14:0];
+      rd_txn = apb_master_transaction::type_id::create("rd_txn");
+      start_item(rd_txn);
+      rd_txn.addr  = 15'h2000 + 15'(REG_NEGO_STATUS);
       rd_txn.write = 0;
-      `uvm_send(rd_txn)
+      finish_item(rd_txn);
 
       final_status = rd_txn.rdata;
       nego_done    = final_status[NEGO_STATUS_DONE];

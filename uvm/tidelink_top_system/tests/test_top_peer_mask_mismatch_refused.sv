@@ -75,15 +75,17 @@ class test_top_peer_mask_mismatch_refused extends test_top_lane_mask_base;
     if (role_b[1] != 1'b0)
       `uvm_error("TEST", $sformatf("[B] role_lock asserted despite mask-fail (ROLE_CFG=0x%08h) — GATE LEAKED", role_b))
 
-    // Expectation: nego_status[8] = nego_mask_mismatch is set on both sides.
+    // Expectation: nego_status bit NEGO_STATUS_MASK_MM = nego_mask_mismatch
+    // is set on both sides. State field widened in Phase 2, so this is bit[9]
+    // (was bit[8] in Phase 1).
     read_cfg_reg_raw(SIDE_A, CTRL_NEGO_STATUS, status_a);
     read_cfg_reg_raw(SIDE_B, CTRL_NEGO_STATUS, status_b);
     `uvm_info("TEST", $sformatf(
-      "NEGO_STATUS: A=0x%08h B=0x%08h (bit[8] mask_mismatch should be 1)",
-      status_a, status_b), UVM_LOW)
-    if (status_a[8] != 1'b1)
+      "NEGO_STATUS: A=0x%08h B=0x%08h (bit[%0d] mask_mismatch should be 1)",
+      status_a, status_b, NEGO_STATUS_MASK_MM), UVM_LOW)
+    if (status_a[NEGO_STATUS_MASK_MM] != 1'b1)
       `uvm_error("TEST", $sformatf("[A] nego_mask_mismatch not latched (NEGO_STATUS=0x%08h)", status_a))
-    if (status_b[8] != 1'b1)
+    if (status_b[NEGO_STATUS_MASK_MM] != 1'b1)
       `uvm_error("TEST", $sformatf("[B] nego_mask_mismatch not latched (NEGO_STATUS=0x%08h)", status_b))
 
     repeat (20) @(posedge tb_if.clk);

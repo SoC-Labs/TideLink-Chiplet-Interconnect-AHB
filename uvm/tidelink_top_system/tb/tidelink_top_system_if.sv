@@ -25,8 +25,13 @@ interface tidelink_top_system_if (
   // Reset control (active-low)
   logic poresetn;
 
-  // Test-driven reset control (set by tests, consumed by top.sv force logic)
+  // Test-driven reset control (set by tests, consumed by top.sv force logic).
+  // force_reset:   pulses rst_n (system reset, preserves POR-domain state).
+  // force_poreset: pulses poresetn — used to re-arm the autoneg FSM after
+  //                programming NEGO_CFG, since BYPASS is terminal and only
+  //                a POR re-triggers nego_en evaluation.
   logic force_reset;
+  logic force_poreset;
 
   // Per-lane perturb hooks (for damaged-lane simulation, Phase 4 of the
   // lane-mask sim plan). Default 0 = pass-through. When perturb_en[k]=1,
@@ -61,6 +66,7 @@ interface tidelink_top_system_if (
 
   initial begin
     force_reset           = 1'b0;
+    force_poreset         = 1'b0;
     a2b_lane_perturb_en   = 8'h00;
     a2b_lane_perturb_val  = 8'h00;
     b2a_lane_perturb_en   = 8'h00;

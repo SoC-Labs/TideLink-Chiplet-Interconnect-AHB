@@ -820,4 +820,15 @@ module test_top;
       release rst_n;
   end
 
+  // Power-on reset force/release. Used by tests that need to re-trigger
+  // POR-domain logic (e.g. the tidelink_autoneg FSM, which sits on
+  // poresetn and goes to ST_BYPASS on the first cycle if nego_en isn't
+  // already 1 — re-arming requires a poreset pulse).
+  always @(*) begin
+    if (tb_if.force_poreset)
+      force poresetn = 1'b0;
+    else
+      release poresetn;
+  end
+
 endmodule

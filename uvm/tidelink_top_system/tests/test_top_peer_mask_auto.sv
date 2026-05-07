@@ -74,8 +74,11 @@ class test_top_peer_mask_auto extends test_top_lane_mask_base;
     // Program I2C slave address (peer expects 0x7E claim writes) and prescale
     write_cfg_reg_raw(SIDE_A, CTRL_I2C_SLV_ADDR, 32'h0000_007E);
     write_cfg_reg_raw(SIDE_B, CTRL_I2C_SLV_ADDR, 32'h0000_007E);
-    write_cfg_reg_raw(SIDE_A, CTRL_I2C_PRESCALE, 32'h0000_0001);
-    write_cfg_reg_raw(SIDE_B, CTRL_I2C_PRESCALE, 32'h0000_0001);
+    // Larger prescale → slower I2C SCL. With prescale=1 (default), SCL is
+    // ~clk/8 which may be too fast for the slave to track. Use 0x10 for
+    // ~clk/68 ≈ 1.4 MHz at 100 MHz.
+    write_cfg_reg_raw(SIDE_A, CTRL_I2C_PRESCALE, 32'h0000_0010);
+    write_cfg_reg_raw(SIDE_B, CTRL_I2C_PRESCALE, 32'h0000_0010);
 
     // Program priority — A wins (lower = sooner)
     write_cfg_reg_raw(SIDE_A, CTRL_NEGO_PRIORITY, 32'h0000_0001);

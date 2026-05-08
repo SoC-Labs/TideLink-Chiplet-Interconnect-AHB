@@ -127,25 +127,138 @@ BACKUP="$CONFIG.bak-$TS"
 echo "Backing up $CONFIG → $BACKUP"
 run "cp -p $CONFIG $BACKUP"
 
-# 2. Append the tidelink block
-TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
+# 2a. Inject manifest_path into the EXISTING [boards.<n>] header lines.
+#
+# The boards already exist in the config (they're how the daemon knows
+# about them), so we can't write a fresh [boards.<n>] block — TOML rejects
+# re-declaration of the same table. Instead, surgically insert a
+# manifest_path line immediately after each existing header. The awk
+# below is idempotent: it skips boards that already have manifest_path
+# inside their block (which the marker check above already guarantees,
+# but belt-and-braces).
+TMP_OUT=$(mktemp)
+trap 'rm -f "$TMP_OUT"' EXIT
 
-# Generate the block. Per-board sections at the bottom of the file work
-# regardless of where the original [boards.<n>] block lives because TOML
-# treats per-key paths as additive (only the same exact key triggers the
-# duplicate-key error). manifest_path / host / program / secrets are all
-# new keys for these boards, so this is safe.
-cat > "$TMPFILE" <<EOF
+# Pre-check: detect existing manifest_path bindings on either pair member.
+# A different manifest is a real conflict (fpgahub binds one manifest per
+# board) — bail unless the operator opts in via REPLACE_MANIFEST=1.
+REPLACE_MANIFEST="${REPLACE_MANIFEST:-0}"
+need_replace=0
+
+declare -A EXISTING_MP
+for B in pynq_z2_02_pl pynq_z2_03_pl; do
+    existing=$(awk -v target="$B" '
+        BEGIN { inside = 0 }
+        /^\[boards\.[A-Za-z0-9_]+\][[:space:]]*$/ {
+            name = $0; sub(/^\[boards\./, "", name); sub(/\][[:space:]]*$/, "", name)
+            inside = (name == target) ? 1 : 0; next
+        }
+        /^\[/ { inside = 0 }
+        inside && /^[[:space:]]*manifest_path[[:space:]]*=/ {
+            mp = $0
+            sub(/^[[:space:]]*manifest_path[[:space:]]*=[[:space:]]*"/, "", mp)
+            sub(/"[[:space:]]*$/, "", mp)
+            print mp; exit
+        }
+    ' "$CONFIG")
+    if [ -n "$existing" ]; then
+        EXISTING_MP[$B]="$existing"
+        if [ "$existing" = "$MANIFEST_PATH" ]; then
+            echo "Note: [boards.$B] already has manifest_path = $MANIFEST_PATH (matches — no change needed)."
+        else
+            need_replace=1
+            echo "WARN: [boards.$B] is bound to a DIFFERENT manifest:"
+            echo "        existing : $existing"
+            echo "        wanted   : $MANIFEST_PATH"
+        fi
+    fi
+done
+
+if [ $need_replace -eq 1 ] && [ "$REPLACE_MANIFEST" != "1" ]; then
+    cat <<EOF >&2
+
+ERROR: at least one pair member is already bound to a different manifest.
+       fpgahub binds ONE manifest per board, so the existing binding
+       would shadow the tidelink actions.
+
+       To proceed, decide which project owns this board right now:
+
+         a. Re-run with REPLACE_MANIFEST=1 to overwrite the existing
+            manifest_path with tidelink's. The other project's actions
+            on this board will become unavailable until you switch back.
+
+              sudo MANIFEST_PATH="$MANIFEST_PATH" REPLACE_MANIFEST=1 $0
+
+         b. Pick a different board for the tidelink slave (would also
+            require recreating the pair declaration in fpgahubd config).
+
+         c. Manually edit /etc/fpgahub/config.toml to remove the existing
+            manifest_path before re-running.
+
+       No changes have been made.
+EOF
+    exit 6
+fi
+
+awk -v mp="$MANIFEST_PATH" '
+BEGIN {
+    targets["pynq_z2_02_pl"] = 1
+    targets["pynq_z2_03_pl"] = 1
+}
+
+# Match a [boards.<name>] header. Track whether were inside one of our
+# targets so we can skip / replace its existing manifest_path line below.
+/^\[boards\.[A-Za-z0-9_]+\][[:space:]]*$/ {
+    name = $0; sub(/^\[boards\./, "", name); sub(/\][[:space:]]*$/, "", name)
+    print
+    in_target = (name in targets) ? 1 : 0
+    injected_for[name] = 0
+    next
+}
+
+# Any other [...] header closes the section. If we never saw a
+# manifest_path inside a target section, inject ours now (right before
+# the new section header).
+/^\[/ {
+    if (in_target && name && !injected_for[name]) {
+        print "manifest_path = \"" mp "\""
+        injected_for[name] = 1
+    }
+    in_target = 0
+    print
+    next
+}
+
+# Replace any existing manifest_path inside a target section with ours.
+in_target && /^[[:space:]]*manifest_path[[:space:]]*=/ {
+    print "manifest_path = \"" mp "\""
+    injected_for[name] = 1
+    next
+}
+
+{ print }
+
+END {
+    # Catch the case where the file ends inside a target section that
+    # never got an injection (no other [...] header followed).
+    if (in_target && name && !injected_for[name]) {
+        print "manifest_path = \"" mp "\""
+    }
+}
+' "$CONFIG" > "$TMP_OUT"
+
+# 2b. Append the marker-bracketed block of NEW sub-tables. These are
+# brand-new TOML tables (host, secrets, program, program.linux,
+# program.linux.params), so they don't collide with the existing
+# [boards.<n>] declaration. The marker brackets keep them grouped for
+# the idempotency check + revert.
+cat >> "$TMP_OUT" <<EOF
 
 $MARKER_BEGIN
 # Added by tidelink/fpga/scripts/setup_fpgahub_tidelink.sh on $TS.
-# Configures pynq_z2_02_pl (die_a, master) and pynq_z2_03_pl (die_b, slave)
-# for the tidelink pair: PS-side ethernet for fpgahub deploy, manifest
-# binding for the tidelink fpgahub.toml actions, pynq_overlay program plugin.
-
-[boards.pynq_z2_02_pl]
-manifest_path = "$MANIFEST_PATH"
+# Sub-tables for pynq_z2_02_pl (die_a, master) and pynq_z2_03_pl
+# (die_b, slave). The matching manifest_path entries were injected
+# in-place above each board's existing [boards.<n>] header.
 
 [boards.pynq_z2_02_pl.host]
 ssh = "xilinx@192.168.4.101"
@@ -161,9 +274,6 @@ description = "Load PL bitstream via PYNQ fpga_manager over SSH"
 [boards.pynq_z2_02_pl.program.linux.params]
 remote_dir = "/home/xilinx/.fpgahub"
 sudo_secret = "pynq.ssh_password"
-
-[boards.pynq_z2_03_pl]
-manifest_path = "$MANIFEST_PATH"
 
 [boards.pynq_z2_03_pl.host]
 ssh = "xilinx@192.168.6.101"
@@ -183,10 +293,12 @@ $MARKER_END
 EOF
 
 if [ $DRY_RUN -eq 1 ]; then
-    echo "[dry-run] would append the following block to $CONFIG:"
-    cat "$TMPFILE"
+    echo "[dry-run] would write a modified $CONFIG with:"
+    echo "  - manifest_path injected into existing [boards.pynq_z2_02_pl] / [boards.pynq_z2_03_pl] headers"
+    echo "  - the following new sub-tables appended at the bottom:"
+    sed -n "/$MARKER_BEGIN/,/$MARKER_END/p" "$TMP_OUT"
 else
-    cat "$TMPFILE" >> "$CONFIG"
+    cp -p "$TMP_OUT" "$CONFIG"
 fi
 
 # 3. Secret file

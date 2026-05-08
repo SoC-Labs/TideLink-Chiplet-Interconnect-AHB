@@ -80,11 +80,6 @@ fi
 echo "Using manifest at: $MANIFEST_PATH"
 
 CONFIG=/etc/fpgahub/config.toml
-SECRET_DIR=/etc/fpgahub/secrets
-SECRET_FILE="$SECRET_DIR/pynq.passwd"
-SUDO_PASSWORD="${PYNQ_SUDO_PASSWORD:-xilinx}"
-MARKER_BEGIN="# >>> tidelink-fpgahub-setup >>>"
-MARKER_END="# <<< tidelink-fpgahub-setup <<<"
 
 if [ ! -f "$CONFIG" ]; then
     echo "ERROR: $CONFIG not found — is fpgahub installed on this host?" >&2
@@ -99,20 +94,8 @@ run() {
     fi
 }
 
-# Idempotency check: if our marker is already in the config, we've already
-# applied. Nothing to do.
-if grep -qF "$MARKER_BEGIN" "$CONFIG"; then
-    echo "Tidelink config block already present in $CONFIG (marker found)."
-    echo "If you need to update, remove the block between"
-    echo "  $MARKER_BEGIN"
-    echo "  $MARKER_END"
-    echo "from $CONFIG and re-run this script."
-    exit 0
-fi
-
 # Sanity-check that the boards we're about to configure actually exist in
-# the daemon's view. Avoids appending [boards.foo.*] for a board the
-# operator hasn't declared.
+# the daemon's view.
 for B in pynq_z2_02_pl pynq_z2_03_pl; do
     if ! /opt/fpgahub/bin/fpgahub board show "$B" >/dev/null 2>&1; then
         echo "ERROR: board '$B' is unknown to fpgahubd." >&2
@@ -145,7 +128,6 @@ trap 'rm -f "$TMP_OUT"' EXIT
 REPLACE_MANIFEST="${REPLACE_MANIFEST:-0}"
 need_replace=0
 
-declare -A EXISTING_MP
 for B in pynq_z2_02_pl pynq_z2_03_pl; do
     existing=$(awk -v target="$B" '
         BEGIN { inside = 0 }
@@ -162,9 +144,8 @@ for B in pynq_z2_02_pl pynq_z2_03_pl; do
         }
     ' "$CONFIG")
     if [ -n "$existing" ]; then
-        EXISTING_MP[$B]="$existing"
         if [ "$existing" = "$MANIFEST_PATH" ]; then
-            echo "Note: [boards.$B] already has manifest_path = $MANIFEST_PATH (matches — no change needed)."
+            echo "Note: [boards.$B] already has manifest_path = $MANIFEST_PATH (no change)."
         else
             need_replace=1
             echo "WARN: [boards.$B] is bound to a DIFFERENT manifest:"
@@ -181,33 +162,25 @@ ERROR: at least one pair member is already bound to a different manifest.
        fpgahub binds ONE manifest per board, so the existing binding
        would shadow the tidelink actions.
 
-       To proceed, decide which project owns this board right now:
+       To proceed, re-run with REPLACE_MANIFEST=1 to overwrite the
+       existing manifest_path with tidelink's. The other project's
+       actions on this board will become unavailable until you swap
+       back. No changes have been made.
 
-         a. Re-run with REPLACE_MANIFEST=1 to overwrite the existing
-            manifest_path with tidelink's. The other project's actions
-            on this board will become unavailable until you switch back.
+           sudo MANIFEST_PATH="$MANIFEST_PATH" REPLACE_MANIFEST=1 $0
 
-              sudo MANIFEST_PATH="$MANIFEST_PATH" REPLACE_MANIFEST=1 $0
-
-         b. Pick a different board for the tidelink slave (would also
-            require recreating the pair declaration in fpgahubd config).
-
-         c. Manually edit /etc/fpgahub/config.toml to remove the existing
-            manifest_path before re-running.
-
-       No changes have been made.
 EOF
     exit 6
 fi
 
+# Surgically inject (or replace) manifest_path inside each existing
+# [boards.<n>] block. Everything else (host, secrets, program.linux,
+# etc.) is already present in /etc/fpgahub/config.toml — fpgahub's
+# admin has wired the boards for pynq_overlay deploy already, and we
+# don't need to touch any of it.
 awk -v mp="$MANIFEST_PATH" '
-BEGIN {
-    targets["pynq_z2_02_pl"] = 1
-    targets["pynq_z2_03_pl"] = 1
-}
+BEGIN { targets["pynq_z2_02_pl"] = 1; targets["pynq_z2_03_pl"] = 1 }
 
-# Match a [boards.<name>] header. Track whether were inside one of our
-# targets so we can skip / replace its existing manifest_path line below.
 /^\[boards\.[A-Za-z0-9_]+\][[:space:]]*$/ {
     name = $0; sub(/^\[boards\./, "", name); sub(/\][[:space:]]*$/, "", name)
     print
@@ -216,9 +189,9 @@ BEGIN {
     next
 }
 
-# Any other [...] header closes the section. If we never saw a
-# manifest_path inside a target section, inject ours now (right before
-# the new section header).
+# Any subsequent [...] header closes the current section. If the section
+# was a target and we never saw an existing manifest_path to replace,
+# inject ours now (right before the new header).
 /^\[/ {
     if (in_target && name && !injected_for[name]) {
         print "manifest_path = \"" mp "\""
@@ -239,84 +212,36 @@ in_target && /^[[:space:]]*manifest_path[[:space:]]*=/ {
 { print }
 
 END {
-    # Catch the case where the file ends inside a target section that
-    # never got an injection (no other [...] header followed).
+    # File-ends-inside-target safety net.
     if (in_target && name && !injected_for[name]) {
         print "manifest_path = \"" mp "\""
     }
 }
 ' "$CONFIG" > "$TMP_OUT"
 
-# 2b. Append the marker-bracketed block of NEW sub-tables. These are
-# brand-new TOML tables (host, secrets, program, program.linux,
-# program.linux.params), so they don't collide with the existing
-# [boards.<n>] declaration. The marker brackets keep them grouped for
-# the idempotency check + revert.
-cat >> "$TMP_OUT" <<EOF
-
-$MARKER_BEGIN
-# Added by tidelink/fpga/scripts/setup_fpgahub_tidelink.sh on $TS.
-# Sub-tables for pynq_z2_02_pl (die_a, master) and pynq_z2_03_pl
-# (die_b, slave). The matching manifest_path entries were injected
-# in-place above each board's existing [boards.<n>] header.
-
-[boards.pynq_z2_02_pl.host]
-ssh = "xilinx@192.168.4.101"
-proxy = ""
-
-[boards.pynq_z2_02_pl.secrets]
-"pynq.ssh_password" = "file:$SECRET_FILE"
-
-[boards.pynq_z2_02_pl.program.linux]
-method = "pynq_overlay"
-description = "Load PL bitstream via PYNQ fpga_manager over SSH"
-
-[boards.pynq_z2_02_pl.program.linux.params]
-remote_dir = "/home/xilinx/.fpgahub"
-sudo_secret = "pynq.ssh_password"
-
-[boards.pynq_z2_03_pl.host]
-ssh = "xilinx@192.168.6.101"
-proxy = ""
-
-[boards.pynq_z2_03_pl.secrets]
-"pynq.ssh_password" = "file:$SECRET_FILE"
-
-[boards.pynq_z2_03_pl.program.linux]
-method = "pynq_overlay"
-description = "Load PL bitstream via PYNQ fpga_manager over SSH"
-
-[boards.pynq_z2_03_pl.program.linux.params]
-remote_dir = "/home/xilinx/.fpgahub"
-sudo_secret = "pynq.ssh_password"
-$MARKER_END
-EOF
-
 if [ $DRY_RUN -eq 1 ]; then
-    echo "[dry-run] would write a modified $CONFIG with:"
-    echo "  - manifest_path injected into existing [boards.pynq_z2_02_pl] / [boards.pynq_z2_03_pl] headers"
-    echo "  - the following new sub-tables appended at the bottom:"
-    sed -n "/$MARKER_BEGIN/,/$MARKER_END/p" "$TMP_OUT"
+    echo "[dry-run] would update $CONFIG by injecting manifest_path into:"
+    grep -n "^\[boards.pynq_z2_0[23]_pl\]\$" "$CONFIG"
+    echo "[dry-run] resulting per-board snippet:"
+    for B in pynq_z2_02_pl pynq_z2_03_pl; do
+        echo "  $B:"
+        awk -v target="$B" '
+            BEGIN { inside = 0 }
+            /^\[boards\.[A-Za-z0-9_]+\][[:space:]]*$/ {
+                name = $0; sub(/^\[boards\./, "", name); sub(/\][[:space:]]*$/, "", name)
+                inside = (name == target) ? 1 : 0
+                if (inside) print "    " $0
+                next
+            }
+            /^\[/ { inside = 0 }
+            inside && /manifest_path/ { print "    " $0 }
+        ' "$TMP_OUT"
+    done
 else
     cp -p "$TMP_OUT" "$CONFIG"
 fi
 
-# 3. Secret file
-if [ ! -f "$SECRET_FILE" ]; then
-    echo "Creating secret store at $SECRET_FILE (group-fpga readable)"
-    run "install -d -m 0750 -o root -g fpga $SECRET_DIR"
-    if [ $DRY_RUN -eq 0 ]; then
-        printf '%s' "$SUDO_PASSWORD" > "$SECRET_FILE"
-        chmod 0640 "$SECRET_FILE"
-        chgrp fpga "$SECRET_FILE"
-    else
-        echo "[dry-run] would write \$PYNQ_SUDO_PASSWORD into $SECRET_FILE (mode 0640, group fpga)"
-    fi
-else
-    echo "$SECRET_FILE already exists — leaving in place."
-fi
-
-# 4. Validate the new config by loading it through fpgahub's own schema.
+# 3. Validate the new config by loading it through fpgahub's own schema.
 # This catches typos before we restart the daemon (fpgahubd's auto-restart
 # loop is opaque; failing closed here is far more debuggable).
 echo "Validating $CONFIG against fpgahub's Config schema..."
@@ -336,7 +261,7 @@ else
     echo "[dry-run] would validate via fpgahub.config.Config.load(...)"
 fi
 
-# 5. Reload daemon + manifests
+# 4. Reload daemon + manifests
 echo "Reloading fpgahubd..."
 run "systemctl reload-or-restart fpgahubd"
 sleep 1
@@ -357,20 +282,15 @@ cat <<EOF
 
 Done. The tidelink pair is now wired up via fpgahub.
 
-Next steps (one-time):
-  1. Install an SSH pubkey for whoever fpgahubd runs as into
-     xilinx@192.168.{4,6}.101:~/.ssh/authorized_keys so the
-     pynq_overlay plugin's BatchMode=yes ssh works.
+Verify:
+    fpgahub manifest show pynq_z2_02_pl  | grep deploy_pair
+    fpgahub manifest show pynq_z2_03_pl  | grep deploy_pair
 
-  2. Verify the binding:
-       fpgahub manifest show pynq_z2_02_pl  | grep deploy_pair
-       fpgahub board show     pynq_z2_02_pl | grep -A2 program
+Try a deploy from any client (after acquiring the lease):
+    fpgahub --addr mapstone-dev.ecs.soton.ac.uk pair lease acquire bridge1 \\
+        --user \$(whoami) --ttl 3600
+    fpgahub actions run pynq_z2_02_pl deploy_pair
+    fpgahub actions run pynq_z2_03_pl deploy_pair
 
-  3. Try a deploy from any client (after acquiring the lease):
-       fpgahub --addr mapstone-dev.ecs.soton.ac.uk pair lease acquire bridge1 \\
-           --user \$(whoami) --ttl 3600
-       fpgahub actions run pynq_z2_02_pl deploy_pair
-       fpgahub actions run pynq_z2_03_pl deploy_pair
-
-To revert: cp -p $BACKUP $CONFIG && systemctl restart fpgahubd
+To revert: cp -p $BACKUP $CONFIG && systemctl reload fpgahubd
 EOF

@@ -249,6 +249,55 @@ provision_pynq_sudo:
 	@PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" PYNQ_PASSWORD="$(PYNQ_PASSWORD)" \
 	    $(FPGA_DIR)/scripts/provision_pynq_sudo.sh
 
+# One-time route provisioning for a paired PYNQ-Z2 image. Adds a
+# persistent kernel route to the peer board's PS-side /24 via
+# mapstone-dev as gateway, so the stress runner's peer-agent SSH spawn
+# works without manual ProxyJump plumbing. Idempotent.
+#
+# Two invocation modes:
+#
+#   1. Manifest-driven (fpgahub):
+#        PYNQ_HOST = {host.ssh}            (e.g. xilinx@192.168.4.101)
+#        PEER_SSH  = {pair.peer.host.ssh}  (e.g. xilinx@192.168.6.101)
+#      The make target derives PEER_NET (peer's /24) and GATEWAY
+#      (this board's /24, .1) automatically from those.
+#
+#   2. Manual / standalone:
+#        PYNQ_HOST=xilinx@192.168.4.101
+#        PEER_NET=192.168.6.0/24
+#        GATEWAY=192.168.4.1
+#      Pass them explicitly; PEER_SSH not needed.
+
+.PHONY: provision_pynq_route
+provision_pynq_route:
+	@if [ -z "$(PYNQ_HOST)" ]; then \
+	    echo "ERROR: set PYNQ_HOST=user@host." >&2; exit 2; \
+	fi
+	@if [ -z "$(PYNQ_PASSWORD)" ]; then \
+	    echo "ERROR: set PYNQ_PASSWORD (sudo)." >&2; exit 2; \
+	fi
+	@if [ -z "$(PEER_NET)" ] && [ -z "$(PEER_SSH)" ]; then \
+	    echo "ERROR: set PEER_NET=<peer/24> OR PEER_SSH=user@peer-IP." >&2; exit 2; \
+	fi
+	@if [ -z "$(GATEWAY)" ] && [ -z "$(PYNQ_HOST)" ]; then \
+	    echo "ERROR: set GATEWAY=<local-net-gateway-IP> OR PYNQ_HOST=user@local-IP for auto-derivation." >&2; exit 2; \
+	fi
+	@# Derive PEER_NET and GATEWAY from PEER_SSH / PYNQ_HOST when not
+	@# given explicitly. Both inputs are "user@a.b.c.d"; chop off the
+	@# user@ prefix and trim the last octet via shell parameter
+	@# expansion so we get a.b.c.0/24 / a.b.c.1 respectively.
+	@LOCAL_IP="$(PYNQ_HOST)"; LOCAL_IP="$${LOCAL_IP#*@}"; \
+	 PEER_IP="$(PEER_SSH)"; PEER_IP="$${PEER_IP#*@}"; \
+	 _PEER_NET="$(PEER_NET)"; \
+	 [ -n "$$_PEER_NET" ] || _PEER_NET="$${PEER_IP%.*}.0/24"; \
+	 _GATEWAY="$(GATEWAY)"; \
+	 [ -n "$$_GATEWAY" ]  || _GATEWAY="$${LOCAL_IP%.*}.1"; \
+	 echo "Provisioning route: PYNQ_HOST=$(PYNQ_HOST) PEER_NET=$$_PEER_NET GATEWAY=$$_GATEWAY"; \
+	 PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" \
+	    PEER_NET="$$_PEER_NET" GATEWAY="$$_GATEWAY" \
+	    PYNQ_PASSWORD="$(PYNQ_PASSWORD)" \
+	    $(FPGA_DIR)/scripts/provision_pynq_route.sh
+
 # Map an fpgahub pair role (die_a / die_b) to the matching TARGET, then
 # call deploy. The two pair targets ship MIRRORED RPi pinouts so the
 # physical cross-cable wires up correctly. fpgahub renders this via:

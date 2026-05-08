@@ -10,12 +10,18 @@ runner), three one-shot steps with the daemon already up:
 fpgahub --addr mapstone-dev.ecs.soton.ac.uk pair lease acquire bridge1 \
     --user $(whoami) --ttl 1800
 
-# 2. Provision NOPASSWD sudo on each member. Idempotent — re-running
-#    on a board that's already provisioned is a no-op.
+# 2. Provision NOPASSWD sudo on each member. Idempotent.
 fpgahub actions run pynq_z2_02_pl provision_pynq_sudo
 fpgahub actions run pynq_z2_03_pl provision_pynq_sudo
 
-# 3. Deploy the role-aware bitstream + run stress, all via lease.
+# 3. Provision peer-route on each member: persistent kernel route to
+#    the peer board's /24 via mapstone-dev. Required for the stress
+#    runner's peer-agent SSH (otherwise "Network is unreachable").
+#    Idempotent. Run AFTER provision_pynq_sudo.
+fpgahub actions run pynq_z2_02_pl provision_pynq_route
+fpgahub actions run pynq_z2_03_pl provision_pynq_route
+
+# 4. Deploy the role-aware bitstream + run stress, all via lease.
 fpgahub actions run pynq_z2_02_pl deploy_pair
 fpgahub actions run pynq_z2_03_pl deploy_pair
 fpgahub actions run pynq_z2_02_pl stress_pair

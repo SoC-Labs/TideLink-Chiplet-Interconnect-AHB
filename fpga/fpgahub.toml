@@ -223,6 +223,34 @@ command     = ["make", "-C", "fpga", "provision_pynq_sudo",
 secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
 timeout_s   = 60
 
+# Static-route provisioning: lay down a persistent kernel route from
+# this board to the peer board's PS-side /24 via mapstone-dev as
+# gateway. Without this, the stress runner's peer-agent SSH spawn
+# (`ssh xilinx@<peer-IP>`) fails with "Network is unreachable" — the
+# two boards live on separate per-board /24s and only mapstone-dev
+# bridges them.
+#
+# Idempotent — re-running on a board that's already routed is a no-op.
+# Persistent across reboots via systemd-networkd drop-in. Run once per
+# pair member after a fresh PYNQ image flash, AFTER provision_pynq_sudo
+# (this action uses sudo via secret_env).
+[[actions]]
+id          = "provision_pynq_route"
+title       = "One-time: install static route to peer board's /24"
+description = """
+Adds a persistent kernel route to the peer's PS-side /24 via the
+local /24 gateway (mapstone-dev). Required for the stress runner's
+peer-agent SSH spawn to work. Pair-bound action — uses
+{pair.peer.host.ssh} to derive the peer's /24, {host.ssh} to derive
+the local /24's .1 gateway. Idempotent.
+"""
+command     = ["make", "-C", "fpga", "provision_pynq_route",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}",
+               "PEER_SSH={pair.peer.host.ssh}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+timeout_s   = 60
+
 # ---------------------------------------------------------------------------
 # Stress tests
 # ---------------------------------------------------------------------------

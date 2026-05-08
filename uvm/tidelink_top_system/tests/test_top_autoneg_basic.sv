@@ -71,9 +71,38 @@ class test_top_autoneg_basic extends tidelink_top_system_base_test;
     // ---------------------------------------------------------------
     // Step 3: Wait for Wlink link training
     // ---------------------------------------------------------------
+    // 50000 cycles (5x default) — A's role_lock asserts ~13ms after B's
+    // (B sees SDA-START first; A finishes its claim/POLL later), so by
+    // the time A's Wlink leaves POR, B's Wlink has been driving alone
+    // for ms-scale time. Give the resync handshake plenty of slack.
     `uvm_info("TEST", "Waiting for Wlink link-up after role lock...", UVM_LOW)
     repeat (wlink_link_up_wait) @(posedge tb_if.clk);
     `uvm_info("TEST", "Wlink link-up complete.", UVM_LOW)
+
+    // Diag: read ROLE_CFG and Wlink link_status / link_capabilities on
+    // both sides. Use raw integration_cfg_read_sequence calls so we can
+    // hit Wlink space (0x0xxx) and chiplet-controller space (0x2xxx)
+    // alike — the base read_cfg_reg helper only addresses 0x2xxx.
+    begin
+      integration_cfg_read_sequence rd;
+      bit [31:0] role_a, role_b, status_a, status_b, capab_a, capab_b;
+      bit [14:0] addrs[$] = '{15'h2080, 15'h0234, 15'h0200};
+      bit [31:0] vals_a[3], vals_b[3];
+      foreach (addrs[i]) begin
+        rd = integration_cfg_read_sequence::type_id::create("rd");
+        rd.addr = addrs[i];
+        rd.start(env.a_apb_agt.sequencer);
+        vals_a[i] = rd.rdata;
+
+        rd = integration_cfg_read_sequence::type_id::create("rd");
+        rd.addr = addrs[i];
+        rd.start(env.b_apb_agt.sequencer);
+        vals_b[i] = rd.rdata;
+      end
+      `uvm_info("TEST", $sformatf(
+        "DIAG ROLE_CFG: A=0x%08h B=0x%08h | link_status: A=0x%08h B=0x%08h | link_capab: A=0x%08h B=0x%08h",
+        vals_a[0], vals_b[0], vals_a[1], vals_b[1], vals_a[2], vals_b[2]), UVM_LOW)
+    end
 
     // ---------------------------------------------------------------
     // Step 4: Initialize TideLink (pair base, credits, doorbell)

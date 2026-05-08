@@ -136,19 +136,47 @@ The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (
 
 **Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
 
-### 14a. Lane-Mask Mismatch — Hardware Gate Is Software-Driven
+### 14a. Lane-Mask Handshake — End-to-End Hardware-Driven
 
-**Location**: `Wlink.scala` — `link_lane_mask_hs_result` register at offset `0x21C`; `axi_chiplet_controller.sv` — peer-mask gate on `role_lock_reg`
+**Location**: `tidelink_autoneg.sv` (master FSM), `axi_chiplet_controller.sv` (gate + register block), `Wlink.scala` (`link_lane_mask_hs_result @ 0x21C`, `link_lane_mask_peer @ 0x218`)
 
-**Status (2026-05-06)**: A hardware *gate* on `role_lock` is in place. With the `mask_hs_bypass_i` strap held low, hardware refuses to assert `role_lock_reg` until software writes `0x01` (peer_says_match) to the local `link_lane_mask_hs_result @ 0x21C`. A write of `0x02` (peer_says_fail) latches the sticky `nego_mask_mismatch` bit (NEGO_STATUS[8]) and routes through `nego_error_irq`. The gate is exercised by UVM tests `test_top_peer_mask_match` and `test_top_peer_mask_mismatch_refused`.
+**Status (2026-05-08)**: The full hardware-driven peer-mask handshake is in tree and exercised end-to-end in UVM. After winning the I2C claim, the master FSM:
+1. Sets the slave's address pointer to `0x0214` via a 2-byte `cmd_write_multiple` (no STOP) — `ST_NEGO_MASK_RD_ADDR` (state 4'd9).
+2. Issues 4 `cmd_read` commands (with cmd_start on byte 0 for the repeated start, cmd_stop on byte 3) and pops the 4 bytes from the rd-data FIFO into `peer_{tx,rx}_lane_mask_r` — `ST_NEGO_MASK_RD_DATA` (state 4'd10). Bytes 2/3 are the unused upper half of the 32-bit register and are discarded.
+3. Runs the crossover-identity comparator `mask_match = (local.tx == peer.rx) && (local.rx == peer.tx)` — combinational.
+4. Writes the verdict byte (0x01 match / 0x02 fail) to peer's `link_lane_mask_hs_result @ 0x21C` via I2C — `ST_NEGO_MASK_RES_TX` (state 4'd8). The verdict byte is sourced from the comb comparator wire so the latch (`mask_hs_local_match_r` / `mask_hs_local_fail_r`) can be deferred to the RES_TX → DONE edge — latching earlier opens the gate while the FSM is still mid-write, which makes the wrapper latch role_lock, deassert nego_driving, and hand the AXIL bus to the bridge before bvalid is captured.
 
-**What's still software-driven**: the *handshake itself* — i.e. the master peer reading the slave's mask via I2C, comparing against its local mask, and writing the result byte. Today software (or a future autoneg-FSM extension) drives that exchange. The hardware just enforces "no role_lock without a passing handshake byte".
+The wrapper-side gate (`mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i`) refuses `role_lock_reg` while the verdict is fail, and the sticky `nego_mask_mismatch` bit (NEGO_STATUS[9]) plus `nego_error_irq` fire on either side (master from its own `mask_hs_local_fail` flag, slave from the I2C-written `hs_result[1]`).
 
-**Impact**: An operator who forgets to drive the handshake will see the link refuse to bring up (role_lock stays 0, IRQ on mismatch) — the silent-corruption failure mode is gone. An operator who drives it incorrectly (wrong byte) gets a deterministic error. The remaining concern is operator discipline: the handshake script must read peer mask, compute the correct outcome, and write the result on both sides.
+NEGO_CFG[6] = `mask_hs_auto_en` enables this path; with the bit clear the FSM takes the legacy direct POLL → DONE branch (no peer-mask read).
 
-**Recommendation**: Continue with the autoneg-FSM extension (Phase 2 of the peer-mask plan in `~/.claude/plans/peer-mask-handshake.md`) — extend `tidelink_autoneg.sv` with `NEGO_MASK_WRITE/READ/VERIFY` states that drive the I2C exchange in hardware. The wrapper-side gate this commit adds is the receiving end; the FSM extension just supplies the result byte automatically. The pynq `mask_hs_bypass_i` strap stays at 1 in pre-handshake bring-up environments and goes to 0 once the FSM lands.
+**Verification**:
+- `test_top_peer_mask_match` and `test_top_peer_mask_mismatch_refused` — original SW-driven gate (Phase 1), still passing.
+- `test_top_peer_mask_auto` — full HW-driven match path (state flow `4→9→10→8→5`, B's hs_result reads 0x01, role_lock asserts on both sides, A→B AHB traffic flows).
+- `test_top_peer_mask_auto_mismatch` — full HW-driven fail path. With `B.tx_mask=0x7F` against `A.rx_mask=0xFF`, the comparator returns fail, FSM writes 0x02 to B's hs_result, gate stays closed, `nego_mask_mismatch` sticky on both sides.
 
-**Reference**: The pre-existing PYNQ stress test `lane_mask_burnt_lane` and UVM `test_top_lane_mask` family still rely on the bypass strap being asserted. New tests `test_top_peer_mask_match` and `_mismatch_refused` exercise the gate.
+**Pre-existing autoneg I2C ACK failure (resolved as part of Phase 2)**: Phase 2 bring-up uncovered three latent bugs in the autoneg ACK path:
+1. `i2c_slv_addr_reg` defaulted to `7'd0` at POR — once `role_lock` latched the device-address mux switched mid-transaction from the autoneg `0x7E` to `i2c_slv_addr_reg=0x00` and the slave NACKed. Fixed by defaulting `i2c_slv_addr_reg` to `7'h7E` at POR.
+2. The autoneg sequence used `\`uvm_create + \`uvm_send` (which randomizes after we set the txn fields) and `REG_*[14:0]` slicing on 12-bit parameters (returns 0). Both fixed.
+3. The AXL drive logic had a stale-`axl_done_r` race plus an unconditional `m_axil_rready=1` drain that ate rvalid before AXL_RD_DATA captured it. Fixed by gating `AXL_IDLE` on `!axl_done_r` and removing the drain. The MASK_RES_TX (state 8) was also missing from `nego_driving`; widened to include states 8/9/10.
+
+**Remaining**: Bring-up on PYNQ FPGA (still uses `mask_hs_bypass_i=1` strap pre-deployment). The pynq stress and `test_top_lane_mask_*` UVM family continue to bypass the gate.
+
+### 14b. Autoneg-Driven Role-Lock Doesn't Carry A→B Traffic in `test_top_autoneg_basic`
+
+**Location**: `test_top_autoneg_basic.sv` (and the FSM-driven role-lock release flow it exercises)
+
+**Status (2026-05-08)**: After the Phase-2 autoneg ACK fixes (item 14a), the autoneg portion of `test_top_autoneg_basic` reports `won=1 / lost=1` correctly and both sides' `ROLE_CFG = 0x02 / 0x03` (lock + master/slave) latch as expected. Wlink's `link_status @ 0x234` reports `0x18` on both sides — `tx_active=1`, `rx_active=1`, `in_error_state=0`. By every observable register, the link is up. *But* the test's A→B AHB packet never reaches B's FIFO; the scoreboard reports `RX=0x00000000` for every payload word.
+
+The same packet flow works identically in `test_top_peer_mask_auto` (which goes through the longer MASK_RD/RES_TX path before role_lock). The difference is the post-`role_lock` window: in peer-mask the test waits ~250 ms; in basic-autoneg it waits 100 µs (`wlink_link_up_wait = 10_000` cycles). Bumping the wait to 5 ms didn't change the outcome — link_status still reads `0x18` and traffic still doesn't flow, so it isn't simply training time.
+
+Likely cause: Wlink's link-up handshake / FCSM credit grant is sensitive to the staggered `wlink_por_reset` release between the two sides. In autoneg-basic, B's role_lock latches ~13.6 ms before A's (B sees SDA-START first; A finishes its CLAIM/POLL later). B's Wlink runs alone through its training cycle while A's PHY is still in reset emitting whatever a held-PHY emits, and may end up in a state that doesn't recover once A comes online.
+
+**Impact**: Autoneg-driven link bring-up cannot currently be validated end-to-end in pre-silicon UVM. Bring-up flows that don't use autoneg (`test_top_single_packet`, `test_top_bidirectional`, `test_top_peer_mask_auto`, etc.) are unaffected.
+
+**Recommendation (deferred)**: Wave-debug the FCSM and PHY training signals from B (the early-locked side) starting at A's role_lock release time. If the FCSM is stuck in a credit-grant retry loop, an explicit `swreset` toggle after role_lock might recover. Alternatively, gate `role_lock_reg` to assert simultaneously on both sides via a sideband sync — out of scope for the current Phase 2 work.
+
+**Reference**: See `test_top_autoneg_basic.sv` — DIAG read of ROLE_CFG/link_status/link_capab is in place to confirm the post-autoneg state. The test currently fails on scoreboard mismatches; the autoneg assertions (won/lost) all pass.
 
 ### 15. Credit Release Threshold Cannot Be Changed While Enabled
 

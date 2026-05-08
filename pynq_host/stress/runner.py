@@ -45,11 +45,15 @@ except ImportError:
     from tidelink_hw  import TidelinkHw
     from pair_state   import PairState
 
-# Lazy overlay import (Wave C1)
+# Lazy overlay import. The repo-local overlay module lives in
+# pynq_host.overlay (renamed from pynq.overlay to avoid collision with
+# the PYNQ framework's pynq.* namespace on the board's sys.path).
 try:
-    from pynq.overlay import TidelinkOverlay
-except ImportError:
+    from pynq_host.overlay import TidelinkOverlay
+    _overlay_import_error = None
+except ImportError as _e:
     TidelinkOverlay = None
+    _overlay_import_error = repr(_e)
 
 log = logging.getLogger('stress.runner')
 
@@ -141,7 +145,10 @@ def _setup_logging(verbose):
 
 def _load_overlay(role='die_a'):
     if TidelinkOverlay is None:
-        raise ImportError('TidelinkOverlay not available (Wave C1 not merged)')
+        raise ImportError(
+            'TidelinkOverlay not importable from pynq_host.overlay; '
+            'underlying error: %s' % (_overlay_import_error or 'unknown')
+        )
     return TidelinkOverlay()
 
 

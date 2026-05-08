@@ -274,11 +274,14 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@scp $(SCP_OPTS) $(BITSTREAM)             $(PYNQ_HOST):$(PYNQ_DEST)/
 	@scp $(SCP_OPTS) $(BITBIN)                $(PYNQ_HOST):$(PYNQ_DEST)/
 	@scp $(SCP_OPTS) $(HWH)                   $(PYNQ_HOST):$(PYNQ_DEST)/
-	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/pynq/* $(PYNQ_HOST):$(PYNQ_DEST)/
-	@# pynq/stress/bridge_tests.py imports `from tidelink.regs import ...`,
-	@# and pynq/test_*.py reach further into the package — ship the
-	@# tidelink/ package alongside so it sits at $(PYNQ_DEST)/tidelink/
-	@# (same level as $(PYNQ_DEST)/stress/, importable from cwd).
+	@# Ship the entire pynq/ package (NOT pynq/*) so the package layout
+	@# is preserved on the board: imports like `from pynq.overlay import
+	@# TidelinkOverlay` inside pynq/stress/runner.py resolve correctly
+	@# when invoked as `python3 -m pynq.stress.runner` from $(PYNQ_DEST).
+	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/pynq $(PYNQ_HOST):$(PYNQ_DEST)/
+	@# tidelink/ is a sibling package — pynq/stress/bridge_tests.py imports
+	@# `from tidelink.regs import ...`. Place it at $(PYNQ_DEST)/tidelink/
+	@# so cwd-based resolution finds both packages.
 	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/python/tidelink $(PYNQ_HOST):$(PYNQ_DEST)/
 	@echo "Installing .bin into /lib/firmware/ and loading via fpga_manager..."
 	@ssh $(SSH_OPTS) $(PYNQ_HOST) "echo $(PYNQ_PASSWORD) | sudo -S cp $(PYNQ_DEST)/tidelink.bin /lib/firmware/ && \

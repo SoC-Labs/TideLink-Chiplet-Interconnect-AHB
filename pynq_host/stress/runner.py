@@ -77,12 +77,43 @@ class PeerProxy:
 
     def __init__(self, ssh_target, proxy=None, peer_role='die_b'):
         self._next_id = 0
-        cmd = ['ssh']
+        # Test-rig SSH options: bypass host-key checking on both this hop
+        # and the proxy hop. Authentication is still gated by the per-board
+        # key trust set up by provision_pynq_peer_keys.sh.
+        ssh_opts = [
+            '-o', 'BatchMode=yes',
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
+            '-o', 'LogLevel=ERROR',
+        ]
+        # The runner is launched under `sudo -E` on the board, so $HOME is
+        # /root and the default key search misses xilinx's keypair. Point
+        # ssh at xilinx's identity explicitly when present (PYNQ default
+        # path) so the proxy hop can authenticate as the trusted xilinx@board
+        # identity rather than as root.
+        xilinx_key = '/home/xilinx/.ssh/id_ed25519'
+        if os.path.exists(xilinx_key):
+            ssh_opts += ['-i', xilinx_key, '-o', 'IdentitiesOnly=yes']
+        cmd = ['ssh', *ssh_opts]
         if proxy:
-            cmd += ['-o', f'ProxyJump={proxy}']
-        cmd += [ssh_target,
-                'python3', '-m', 'pynq_host.stress.peer_agent',
-                '--role', peer_role]
+            # Use ProxyCommand (not ProxyJump) so we can pass -o flags into
+            # the inner ssh — ProxyJump's child ssh ignores `-o` set on the
+            # outer command line and falls back to strict host-key checking,
+            # which fails on a fresh board with empty known_hosts.
+            inner = ['ssh', '-W', '%h:%p', *ssh_opts, proxy]
+            cmd += ['-o', 'ProxyCommand=' + ' '.join(inner)]
+        # Run the peer agent from the deployed overlay directory so
+        # `python3 -m pynq_host.*` finds the package on PYTHONPATH (`.`).
+        # The peer agent itself doesn't need sudo/MMIO access for the SSH
+        # handshake — it only loads the overlay once tests start, so we
+        # can run it as the xilinx user. (When tests need MMIO, peer_agent
+        # internally re-execs sudo for the relevant subcommand.)
+        remote_cmd = (
+            'cd /home/xilinx/tidelink_overlay && '
+            'sudo -E -n python3 -m pynq_host.stress.peer_agent '
+            f'--role {peer_role}'
+        )
+        cmd += [ssh_target, remote_cmd]
         log.info('Spawning peer agent: %s', ' '.join(cmd))
         self._proc = subprocess.Popen(
             cmd,
@@ -198,13 +229,16 @@ def _run_test(entry, local_hw, peer, budget_s, log_path):
         ok, errors, counters = entry['fn'](local_hw, peer)
     except Exception as exc:             # noqa: BLE001
         errors.append(f'{type(exc).__name__}: {exc}')
-        log.debug(traceback.format_exc())
+        log.error('TRACEBACK %s:\n%s', name, traceback.format_exc())
     duration_s = time.time() - started_at
     record = dict(name=name, started_at=started_at, duration_s=round(duration_s, 3),
                   ok=ok, errors=errors, counters=counters)
     _jsonl_append(log_path, record)
     log.info('END %s ok=%s duration=%.1fs errors=%d',
              name, ok, duration_s, len(errors))
+    if not ok and errors:
+        for err in errors:
+            log.error('  err: %s', err)
     return record
 
 
@@ -238,6 +272,9 @@ def main():
                     help='Subset of tests (default: all matching tag)')
     ap.add_argument('--run-skipped', action='store_true',
                     help='Run tests tagged "skip" as well')
+    ap.add_argument('--fail-fast',   action='store_true',
+                    help='Stop after the first failed test (useful when each '
+                         'failure may risk wedging the board).')
     ap.add_argument('--log-dir',     default=LOGS_DIR,
                     help='Directory for .jsonl run logs')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -317,6 +354,9 @@ def main():
             summary.append(rec)
             if rec.get('ok') is False:
                 overall_ok = False
+                if args.fail_fast:
+                    log.error('FAIL-FAST: stopping after first failure (%s)', rec.get('name'))
+                    break
     finally:
         if peer is not None:
             peer.close()

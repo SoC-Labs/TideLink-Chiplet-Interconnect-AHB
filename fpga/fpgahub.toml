@@ -313,7 +313,7 @@ command   = ["ssh",
              "-o", "ConnectTimeout=10",
              "-o", "ServerAliveInterval=15",
              "{host.ssh}",
-             "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq_host.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{pair.peer.host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
+             "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq_host.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
 requires  = ["bitstream_loaded"]
 timeout_s = 1500
 

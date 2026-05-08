@@ -308,6 +308,7 @@ that is currently a member of an active pair lease.  Running it outside a
 pair context will cause fpgahub to fail token resolution at dispatch time.
 """
 command   = ["ssh",
+             "-A",
              "-o", "StrictHostKeyChecking=no",
              "-o", "ConnectTimeout=10",
              "-o", "ServerAliveInterval=15",

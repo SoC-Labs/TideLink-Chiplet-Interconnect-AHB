@@ -222,6 +222,21 @@ program:
 $(BITBIN): $(BITSTREAM) $(BIT2BIN)
 	python3 $(BIT2BIN) $(BITSTREAM) $(BITBIN)
 
+# Map an fpgahub pair role (die_a / die_b) to the matching TARGET, then
+# call deploy. The two pair targets ship MIRRORED RPi pinouts so the
+# physical cross-cable wires up correctly. fpgahub renders this via:
+#   command = ["make", "-C", "fpga", "deploy_pair_role",
+#              "ROLE={pair.local.role}", ...]
+.PHONY: deploy_pair_role
+deploy_pair_role:
+	@case "$(ROLE)" in \
+	    die_a) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-all      \
+	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
+	    die_b) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-flip-all \
+	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
+	    *)     echo "ERROR: deploy_pair_role: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	esac
+
 deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@if [ -z "$(PYNQ_HOST)" ]; then \
 	    echo "ERROR: PYNQ_HOST is empty. Set BOARD=<name> (fpgahub lookup) or PYNQ_HOST=user@host." >&2; \

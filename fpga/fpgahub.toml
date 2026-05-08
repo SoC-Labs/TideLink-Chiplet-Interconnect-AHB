@@ -42,6 +42,37 @@ kind        = "other"
 path        = "../imp/fpga/output/pynq-z2-pair/tidelink.hwh"
 description = "Vivado hardware handoff — consumed by the PYNQ Overlay wrapper."
 
+# Role-aware pair targets (master = pair-all, slave = pair-flip-all).
+# The two TARGETs ship MIRRORED RPi pinouts so the cross-cable wires
+# up correctly. fpgahub's `deploy_pair` action (below) selects between
+# them at dispatch time via the {pair.local.role} token.
+
+[artefacts.bitstream_pynq_z2_pair_all]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair-all/tidelink.bit"
+
+[artefacts.bitstream_bin_pynq_z2_pair_all]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair-all/tidelink.bin"
+
+[artefacts.hwh_pynq_z2_pair_all]
+kind        = "other"
+path        = "../imp/fpga/output/pynq-z2-pair-all/tidelink.hwh"
+description = "Master-side (die_a) pair bitstream handoff — pair-all RPi pinout."
+
+[artefacts.bitstream_pynq_z2_pair_flip_all]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair-flip-all/tidelink.bit"
+
+[artefacts.bitstream_bin_pynq_z2_pair_flip_all]
+kind = "bitstream"
+path = "../imp/fpga/output/pynq-z2-pair-flip-all/tidelink.bin"
+
+[artefacts.hwh_pynq_z2_pair_flip_all]
+kind        = "other"
+path        = "../imp/fpga/output/pynq-z2-pair-flip-all/tidelink.hwh"
+description = "Slave-side (die_b) pair bitstream handoff — pair-flip-all RPi pinout (mirrored)."
+
 [artefacts.bitstream_mps3]
 kind = "bitstream"
 path = "../imp/fpga/output/mps3/tidelink.bit"
@@ -71,6 +102,20 @@ id        = "build_z2_pair"
 title     = "Build Pynq-Z2 paired GPIO-bridge bitstream"
 command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair", "build_design"]
 produces  = ["bitstream_built_z2_pair"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_z2_pair_all"
+title     = "Build Pynq-Z2 pair master bitstream (pair-all)"
+command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair-all", "build_design"]
+produces  = ["bitstream_built_z2_pair_all"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_z2_pair_flip_all"
+title     = "Build Pynq-Z2 pair slave bitstream (pair-flip-all)"
+command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair-flip-all", "build_design"]
+produces  = ["bitstream_built_z2_pair_flip_all"]
 timeout_s = 3600
 
 [[actions]]
@@ -127,6 +172,25 @@ command     = ["make", "-C", "fpga", "deploy",
                "PYNQ_PROXY={host.proxy}"]
 secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
 requires    = ["bitstream_built_z2_pair"]
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+# Role-aware pair deploy. Selects pair-all (master, die_a) or
+# pair-flip-all (slave, die_b) based on {pair.local.role}. Bound to
+# pair members; fpgahub fans this action out per side at dispatch time.
+[[actions]]
+id          = "deploy_pair"
+title       = "Deploy bitstream matching this side's pair role"
+description = """
+PYNQ fpga_manager over SSH/SCP. die_a → pynq-z2-pair-all, die_b →
+pynq-z2-pair-flip-all (mirrored RPi pinout for the cross-cable).
+"""
+command     = ["make", "-C", "fpga", "deploy_pair_role",
+               "ROLE={pair.local.role}",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+requires    = ["bitstream_built_z2_pair_all", "bitstream_built_z2_pair_flip_all"]
 produces    = ["bitstream_loaded"]
 timeout_s   = 600
 
@@ -207,6 +271,17 @@ timeout_s = 0
 
 [[actions]]
 id        = "ci_pair_full"
-title     = "Full CI: build → deploy → stress (pair)"
+title     = "Full CI: build → deploy → stress (pair, single bitstream)"
 steps     = ["build_z2_pair", "deploy_z2_pair", "stress_pair"]
+timeout_s = 0
+
+# Role-aware pair CI: build BOTH master + slave bitstreams, then run
+# the role-aware deploy on each pair member, then stress. This is the
+# preferred end-to-end pipeline for bring-up validation — replaces the
+# ad-hoc /tmp/deploy_pair_proxy.sh + sshpass flow.
+[[actions]]
+id        = "ci_pair_role_aware"
+title     = "Full CI: build (master + slave) → deploy role-aware → stress"
+steps     = ["build_z2_pair_all", "build_z2_pair_flip_all",
+             "deploy_pair", "stress_pair"]
 timeout_s = 0

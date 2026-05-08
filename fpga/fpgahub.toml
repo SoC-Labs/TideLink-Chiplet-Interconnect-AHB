@@ -251,6 +251,32 @@ command     = ["make", "-C", "fpga", "provision_pynq_route",
 secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
 timeout_s   = 60
 
+# Per-board SSH peer-key trust: generates a keypair for xilinx@<board>
+# and propagates the pubkey to david@mapstone-dev (intermediate hop) and
+# xilinx@<peer> (final hop). Required for the stress runner's peer-agent
+# SSH chain when boards live on separate /24s and jump through
+# mapstone-dev. Idempotent. Pair-bound action — uses {pair.peer.host.ssh}
+# to identify the peer.
+#
+# Run after provision_pynq_sudo (we use sudo on the board to write
+# ~/.ssh files when needed) and after the proxy field has been wired
+# into /etc/fpgahub/config.toml (see fpga/scripts/setup_fpgahub_pynq_proxy.sh).
+[[actions]]
+id          = "provision_pynq_peer_keys"
+title       = "One-time: generate + propagate xilinx@board SSH keys for peer-agent"
+description = """
+Generates xilinx@<board>:~/.ssh/id_ed25519 if missing, then appends the
+pubkey to david@mapstone-dev:~/.ssh/authorized_keys (proxy hop) and
+xilinx@<peer>:~/.ssh/authorized_keys (final hop). Idempotent.
+Pair-bound — uses {pair.peer.host.ssh} to identify the peer.
+"""
+command     = ["make", "-C", "fpga", "provision_pynq_peer_keys",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}",
+               "PEER_SSH={pair.peer.host.ssh}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+timeout_s   = 60
+
 # ---------------------------------------------------------------------------
 # Stress tests
 # ---------------------------------------------------------------------------

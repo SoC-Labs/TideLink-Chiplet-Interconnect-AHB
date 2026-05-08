@@ -298,6 +298,25 @@ provision_pynq_route:
 	    PYNQ_PASSWORD="$(PYNQ_PASSWORD)" \
 	    $(FPGA_DIR)/scripts/provision_pynq_route.sh
 
+# One-time SSH peer-key provisioning. Generates xilinx@<board>:~/.ssh/id_ed25519
+# (if missing) and propagates the pubkey to david@mapstone-dev (intermediate
+# hop) and xilinx@<peer> (final hop) so the stress runner's peer-agent SSH
+# spawn can authenticate at both hops without prompts. Idempotent.
+#
+# Manifest-driven (fpgahub):
+#     PYNQ_HOST = {host.ssh}            (this board)
+#     PEER_SSH  = {pair.peer.host.ssh}  (peer board)
+.PHONY: provision_pynq_peer_keys
+provision_pynq_peer_keys:
+	@if [ -z "$(PYNQ_HOST)" ] || [ -z "$(PEER_SSH)" ]; then \
+	    echo "ERROR: set PYNQ_HOST=<user@board> and PEER_SSH=<user@peer>." >&2; exit 2; \
+	fi
+	@PYNQ_HOST="$(PYNQ_HOST)" PEER_HOST="$(PEER_SSH)" \
+	    MAPSTONE_HOST="$(MAPSTONE_HOST)" \
+	    PYNQ_PROXY="$(PYNQ_PROXY)" \
+	    PYNQ_PASSWORD="$(PYNQ_PASSWORD)" \
+	    $(FPGA_DIR)/scripts/provision_pynq_peer_keys.sh
+
 # Map an fpgahub pair role (die_a / die_b) to the matching TARGET, then
 # call deploy. The two pair targets ship MIRRORED RPi pinouts so the
 # physical cross-cable wires up correctly. fpgahub renders this via:

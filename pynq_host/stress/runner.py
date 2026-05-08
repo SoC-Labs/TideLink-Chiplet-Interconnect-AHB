@@ -208,6 +208,14 @@ def _jsonl_append(path, record):
         log.warning('could not append to log: %s', exc)
 
 
+class _TestTimeout(Exception):
+    """Raised when a test exceeds its per-test budget."""
+
+
+def _alarm_handler(signum, frame):
+    raise _TestTimeout(f'exceeded budget')
+
+
 def _run_test(entry, local_hw, peer, budget_s, log_path):
     """Execute one test entry; return summary dict."""
     name = entry['id']
@@ -225,11 +233,25 @@ def _run_test(entry, local_hw, peer, budget_s, log_path):
     ok = False
     errors = []
     counters = {}
+    # Per-test wall-clock cap via SIGALRM. Tests that wait on hardware
+    # state (e.g. wait_returner_idle on a stuck FCSM) can otherwise spin
+    # forever and risk wedging the AXI subsystem on the PS. Round up to
+    # 1s minimum; alarm() takes integer seconds.
+    import signal
+    cap_s = max(1, int(budget_s) + 1)
+    prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    signal.alarm(cap_s)
     try:
         ok, errors, counters = entry['fn'](local_hw, peer)
+    except _TestTimeout:
+        errors.append(f'TestTimeout: exceeded {budget_s:.0f}s budget')
+        log.error('TIMEOUT %s after %.0fs', name, budget_s)
     except Exception as exc:             # noqa: BLE001
         errors.append(f'{type(exc).__name__}: {exc}')
         log.error('TRACEBACK %s:\n%s', name, traceback.format_exc())
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev_handler)
     duration_s = time.time() - started_at
     record = dict(name=name, started_at=started_at, duration_s=round(duration_s, 3),
                   ok=ok, errors=errors, counters=counters)

@@ -45,15 +45,25 @@ except ImportError:
     from tidelink_hw  import TidelinkHw
     from pair_state   import PairState
 
-# Lazy overlay import. The repo-local overlay module lives in
-# pynq_host.overlay (renamed from pynq.overlay to avoid collision with
-# the PYNQ framework's pynq.* namespace on the board's sys.path).
+# Lazy overlay import with bare-metal fallback. The framework-backed
+# overlay (pynq_host.overlay) needs the system PYNQ Python package
+# installed on the board; minimal PYNQ images don't ship it. When
+# that import fails, fall back to pynq_host.bare_overlay which uses
+# /dev/mem + /sys/class/fpga_manager directly and has the same API
+# surface (it's in-tree exactly for this purpose).
+TidelinkOverlay = None
+_overlay_import_error = None
 try:
-    from pynq_host.overlay import TidelinkOverlay
-    _overlay_import_error = None
+    from pynq_host.overlay import TidelinkOverlay  # noqa: F811
 except ImportError as _e:
-    TidelinkOverlay = None
-    _overlay_import_error = repr(_e)
+    _framework_err = repr(_e)
+    try:
+        from pynq_host.bare_overlay import TidelinkBareOverlay as TidelinkOverlay  # noqa: F811
+    except ImportError as _e2:
+        _overlay_import_error = (
+            'pynq_host.overlay failed: %s; '
+            'pynq_host.bare_overlay failed: %s' % (_framework_err, repr(_e2))
+        )
 
 log = logging.getLogger('stress.runner')
 

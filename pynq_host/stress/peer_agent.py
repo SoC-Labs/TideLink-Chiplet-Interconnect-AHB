@@ -42,13 +42,16 @@ try:
 except ImportError:
     from tidelink_hw import TidelinkHw, TidelinkTimeout
 
-# Lazy overlay import. The repo-local overlay module lives in
-# pynq_host.overlay (renamed from pynq.overlay to avoid collision with
-# the PYNQ framework's pynq.* namespace on the board's sys.path).
+# Lazy overlay import with bare-metal fallback. See pynq_host/stress/
+# runner.py for the rationale.
+TidelinkOverlay = None
 try:
-    from pynq_host.overlay import TidelinkOverlay
+    from pynq_host.overlay import TidelinkOverlay  # noqa: F811
 except ImportError:
-    TidelinkOverlay = None
+    try:
+        from pynq_host.bare_overlay import TidelinkBareOverlay as TidelinkOverlay  # noqa: F811
+    except ImportError:
+        pass
 
 
 def _get_aperture(hw, name):

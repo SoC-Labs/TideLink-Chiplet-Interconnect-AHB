@@ -147,6 +147,7 @@ package tidelink_top_system_pkg;
   `include "test_top_peer_mask_match.sv"
   `include "test_top_peer_mask_mismatch_refused.sv"
   `include "test_top_peer_mask_auto.sv"
+  `include "test_top_peer_mask_auto_mismatch.sv"
 
 endpackage
 

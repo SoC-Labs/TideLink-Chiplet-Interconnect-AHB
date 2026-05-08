@@ -13,7 +13,7 @@
 # Reads JSON-lines RPC from stdin, writes responses to stdout.
 #
 # Invoke:
-#   ssh user@peer python3 -m pynq.stress.peer_agent --role die_b
+#   ssh user@peer python3 -m pynq_host.stress.peer_agent --role die_b
 #
 # RPC methods:
 #   mmio_read(aperture, offset)

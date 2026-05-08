@@ -81,7 +81,7 @@ class PeerProxy:
         if proxy:
             cmd += ['-o', f'ProxyJump={proxy}']
         cmd += [ssh_target,
-                'python3', '-m', 'pynq.stress.peer_agent',
+                'python3', '-m', 'pynq_host.stress.peer_agent',
                 '--role', peer_role]
         log.info('Spawning peer agent: %s', ' '.join(cmd))
         self._proc = subprocess.Popen(

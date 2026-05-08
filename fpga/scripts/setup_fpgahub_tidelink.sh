@@ -26,7 +26,14 @@
 #    sudo /home/dam1n19/SoCLabs/tidelink/fpga/scripts/setup_fpgahub_tidelink.sh --dry-run
 #
 # Optional env:
-#   TIDELINK_DIR       — path to the tidelink checkout (default: parent of this script)
+#   MANIFEST_PATH      — path to fpgahub.toml on this host. Default: try the
+#                        in-repo path (parent of this script), then fall back
+#                        to /etc/fpgahub/tidelink-fpgahub.toml. Override with
+#                        an absolute path if you've staged the manifest
+#                        somewhere else.
+#   TIDELINK_DIR       — alternative to MANIFEST_PATH: a tidelink checkout
+#                        root. The script picks $TIDELINK_DIR/fpga/fpgahub.toml.
+#                        Ignored when MANIFEST_PATH is set.
 #   PYNQ_SUDO_PASSWORD — value to put in /etc/fpgahub/secrets/pynq.passwd (default: xilinx)
 #
 # To revert: copy the timestamped backup back over /etc/fpgahub/config.toml
@@ -45,17 +52,32 @@ if [ "$(id -u)" -ne 0 ] && [ $DRY_RUN -eq 0 ]; then
     exit 1
 fi
 
-# Resolve repo root from the script location so manifest_path is correct
-# regardless of where the user ran us from.
+# Resolve the manifest path. Three candidates, in priority order:
+#   1. $MANIFEST_PATH   — explicit override.
+#   2. $TIDELINK_DIR/fpga/fpgahub.toml — when the user has a checkout.
+#   3. <script_dir>/../fpgahub.toml or <script_dir>/../../fpga/fpgahub.toml
+#      — auto-detect when the script lives inside a tidelink checkout.
+#   4. /etc/fpgahub/tidelink-fpgahub.toml — admin-staged fallback.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TIDELINK_DIR="${TIDELINK_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-MANIFEST_PATH="$TIDELINK_DIR/fpga/fpgahub.toml"
+if [ -n "${MANIFEST_PATH:-}" ]; then
+    :  # use as-is
+elif [ -n "${TIDELINK_DIR:-}" ]; then
+    MANIFEST_PATH="$TIDELINK_DIR/fpga/fpgahub.toml"
+elif [ -f "$SCRIPT_DIR/../../fpga/fpgahub.toml" ]; then
+    MANIFEST_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/fpga/fpgahub.toml"
+elif [ -f "/etc/fpgahub/tidelink-fpgahub.toml" ]; then
+    MANIFEST_PATH="/etc/fpgahub/tidelink-fpgahub.toml"
+else
+    echo "ERROR: cannot find fpgahub.toml — set MANIFEST_PATH or TIDELINK_DIR" >&2
+    echo "       (or stage the manifest at /etc/fpgahub/tidelink-fpgahub.toml)" >&2
+    exit 2
+fi
 
 if [ ! -f "$MANIFEST_PATH" ]; then
     echo "ERROR: manifest not found at $MANIFEST_PATH" >&2
-    echo "       set TIDELINK_DIR to your tidelink checkout root." >&2
     exit 2
 fi
+echo "Using manifest at: $MANIFEST_PATH"
 
 CONFIG=/etc/fpgahub/config.toml
 SECRET_DIR=/etc/fpgahub/secrets

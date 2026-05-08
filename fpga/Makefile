@@ -277,7 +277,10 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@# Drop any leftover pynq/ from earlier deploys — it would shadow the
 	@# system PYNQ framework's `pynq` package on sys.path and break
 	@# `from pynq import Overlay, MMIO` inside pynq_host/overlay.py.
-	@ssh $(SSH_OPTS) $(PYNQ_HOST) "rm -rf $(PYNQ_DEST)/pynq"
+	@# Needs sudo because leftover __pycache__ files inside the stale
+	@# pynq/ tree are root-owned (created when root-run stress.runner
+	@# imported them on prior runs).
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "echo $(PYNQ_PASSWORD) | sudo -S rm -rf $(PYNQ_DEST)/pynq"
 	@# Ship the entire pynq_host/ package (renamed from pynq/ to avoid the
 	@# system-framework collision). Invoked as `python3 -m pynq_host.stress.runner`
 	@# from $(PYNQ_DEST); imports like `from pynq_host.overlay import

@@ -101,16 +101,21 @@ Gateway=$GATEWAY
 EOF
 )
 
-# Idempotency: if the file already has the expected content, no-op.
-if [ -f "$DROPIN_FILE" ] && \
-   echo "$PASSWORD" | sudo -S diff -q <(echo "$EXPECTED") "$DROPIN_FILE" >/dev/null 2>&1; then
-    echo "Route already provisioned: $DROPIN_FILE matches expected content."
+# Idempotency: stage expected content in a temp file and compare via
+# md5sum (avoids process-substitution / sudo-stdin interaction issues).
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+echo "$EXPECTED" > "$TMP"
+chmod 0644 "$TMP"
+
+# Hash the staged expected vs the installed file (sudo to read it).
+EXPECTED_MD5=$(md5sum "$TMP" | awk '{print $1}')
+INSTALLED_MD5=$(echo "$PASSWORD" | sudo -S md5sum "$DROPIN_FILE" 2>/dev/null | awk '{print $1}' || true)
+
+if [ "$EXPECTED_MD5" = "$INSTALLED_MD5" ]; then
+    echo "Route already provisioned: $DROPIN_FILE matches expected content (md5=$EXPECTED_MD5)."
 else
     echo "Installing $DROPIN_FILE..."
-    TMP=$(mktemp)
-    trap 'rm -f "$TMP"' EXIT
-    echo "$EXPECTED" > "$TMP"
-    chmod 0644 "$TMP"
     echo "$PASSWORD" | sudo -S install -m 0644 -o root -g root "$TMP" "$DROPIN_FILE"
 fi
 

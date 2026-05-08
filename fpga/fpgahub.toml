@@ -178,6 +178,14 @@ timeout_s   = 600
 # Role-aware pair deploy. Selects pair-all (master, die_a) or
 # pair-flip-all (slave, die_b) based on {pair.local.role}. Bound to
 # pair members; fpgahub fans this action out per side at dispatch time.
+#
+# Note on `requires`: this action does NOT gate on the
+# bitstream_built_z2_pair_{all,flip-all} flags. The Makefile's `deploy:
+# $(BITSTREAM) $(BITBIN) $(HWH)` rule already errors if the bitstreams
+# are missing, and forcing a flag handshake means the daemon refuses
+# to dispatch unless the build action ran in-process — even when
+# bitstreams are sitting on disk from an external Vivado run. Keep
+# the gate on the file system, not on the flag bookkeeping.
 [[actions]]
 id          = "deploy_pair"
 title       = "Deploy bitstream matching this side's pair role"
@@ -190,7 +198,6 @@ command     = ["make", "-C", "fpga", "deploy_pair_role",
                "PYNQ_HOST={host.ssh}",
                "PYNQ_PROXY={host.proxy}"]
 secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
-requires    = ["bitstream_built_z2_pair_all", "bitstream_built_z2_pair_flip_all"]
 produces    = ["bitstream_loaded"]
 timeout_s   = 600
 

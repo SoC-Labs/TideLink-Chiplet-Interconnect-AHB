@@ -274,13 +274,18 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@scp $(SCP_OPTS) $(BITSTREAM)             $(PYNQ_HOST):$(PYNQ_DEST)/
 	@scp $(SCP_OPTS) $(BITBIN)                $(PYNQ_HOST):$(PYNQ_DEST)/
 	@scp $(SCP_OPTS) $(HWH)                   $(PYNQ_HOST):$(PYNQ_DEST)/
-	@# Ship the entire pynq/ package (NOT pynq/*) so the package layout
-	@# is preserved on the board: imports like `from pynq.overlay import
-	@# TidelinkOverlay` inside pynq/stress/runner.py resolve correctly
-	@# when invoked as `python3 -m pynq.stress.runner` from $(PYNQ_DEST).
-	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/pynq $(PYNQ_HOST):$(PYNQ_DEST)/
-	@# tidelink/ is a sibling package — pynq/stress/bridge_tests.py imports
-	@# `from tidelink.regs import ...`. Place it at $(PYNQ_DEST)/tidelink/
+	@# Drop any leftover pynq/ from earlier deploys — it would shadow the
+	@# system PYNQ framework's `pynq` package on sys.path and break
+	@# `from pynq import Overlay, MMIO` inside pynq_host/overlay.py.
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "rm -rf $(PYNQ_DEST)/pynq"
+	@# Ship the entire pynq_host/ package (renamed from pynq/ to avoid the
+	@# system-framework collision). Invoked as `python3 -m pynq_host.stress.runner`
+	@# from $(PYNQ_DEST); imports like `from pynq_host.overlay import
+	@# TidelinkOverlay` resolve to our package, and `from pynq import
+	@# Overlay, MMIO` falls through to the system framework.
+	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/pynq_host $(PYNQ_HOST):$(PYNQ_DEST)/
+	@# tidelink/ is a sibling helper package — pynq_host/stress/bridge_tests.py
+	@# imports `from tidelink.regs import ...`. Place it at $(PYNQ_DEST)/tidelink/
 	@# so cwd-based resolution finds both packages.
 	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/python/tidelink $(PYNQ_HOST):$(PYNQ_DEST)/
 	@echo "Installing .bin into /lib/firmware/ and loading via fpga_manager..."

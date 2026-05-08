@@ -231,7 +231,7 @@ timeout_s   = 60
 id          = "stress_single"
 title       = "Solo stress test on single-instance board"
 description = """
-Runs pynq.stress.runner in --solo mode on the board over SSH.
+Runs pynq_host.stress.runner in --solo mode on the board over SSH.
 Key-based auth + NOPASSWD sudo required (configure once per PYNQ image).
 """
 command   = ["ssh",
@@ -239,7 +239,7 @@ command   = ["ssh",
              "-o", "ConnectTimeout=10",
              "-o", "ServerAliveInterval=15",
              "{host.ssh}",
-             "cd /home/xilinx/tidelink_overlay && sudo -n python3 -m pynq.stress.runner --solo --budget 300"]
+             "cd /home/xilinx/tidelink_overlay && sudo -n python3 -m pynq_host.stress.runner --solo --budget 300"]
 requires  = ["bitstream_loaded"]
 timeout_s = 900
 
@@ -268,7 +268,7 @@ timeout_s = 900
 id          = "stress_pair"
 title       = "Paired stress test (requires board to be in a pair)"
 description = """
-Runs pynq.stress.runner in --pair mode on the local board over SSH.
+Runs pynq_host.stress.runner in --pair mode on the local board over SSH.
 Pair tokens are baked into the command line at dispatch time by fpgahub, so
 no SSH env propagation is required.  sudo -E is passed so that the local
 FPGAHUB_* vars visible to the ssh process are forwarded into the sudo
@@ -284,7 +284,7 @@ command   = ["ssh",
              "-o", "ConnectTimeout=10",
              "-o", "ServerAliveInterval=15",
              "{host.ssh}",
-             "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{pair.peer.host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
+             "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq_host.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{pair.peer.host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
 requires  = ["bitstream_loaded"]
 timeout_s = 1500
 

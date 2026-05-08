@@ -127,7 +127,7 @@ tx_count, rx_count = ol.get_active_lanes()
 ol.assert_link_safe_for_tx() # rejects mask=0 in addition to existing checks
 ```
 
-See [`pynq/overlay.py`](../pynq/overlay.py) (`set_lane_mask`, `get_lane_mask`, `get_active_lanes`) for the full helper surface, and `pynq/scripts/wlink_probe.sh` for read-only diagnostics that show the active mask in a snapshot.
+See [`pynq_host/overlay.py`](../pynq_host/overlay.py) (`set_lane_mask`, `get_lane_mask`, `get_active_lanes`) for the full helper surface, and `pynq_host/scripts/wlink_probe.sh` for read-only diagnostics that show the active mask in a snapshot.
 
 ### Writing a Packet (Transmit Side)
 

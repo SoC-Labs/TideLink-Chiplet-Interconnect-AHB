@@ -38,13 +38,15 @@ for _p in (_ROOT, _PYNQ, _HERE):
         sys.path.insert(0, _p)
 
 try:
-    from pynq.stress.tidelink_hw import TidelinkHw, TidelinkTimeout
+    from pynq_host.stress.tidelink_hw import TidelinkHw, TidelinkTimeout
 except ImportError:
     from tidelink_hw import TidelinkHw, TidelinkTimeout
 
-# Lazy overlay import (Wave C1)
+# Lazy overlay import. The repo-local overlay module lives in
+# pynq_host.overlay (renamed from pynq.overlay to avoid collision with
+# the PYNQ framework's pynq.* namespace on the board's sys.path).
 try:
-    from pynq.overlay import TidelinkOverlay
+    from pynq_host.overlay import TidelinkOverlay
 except ImportError:
     TidelinkOverlay = None
 

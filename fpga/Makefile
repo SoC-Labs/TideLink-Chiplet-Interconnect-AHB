@@ -230,6 +230,25 @@ program:
 $(BITBIN): $(BITSTREAM) $(BIT2BIN)
 	python3 $(BIT2BIN) $(BITSTREAM) $(BITBIN)
 
+# One-time NOPASSWD sudo provisioning for a fresh PYNQ-Z2 image.
+# Wraps fpga/scripts/provision_pynq_sudo.sh so fpgahub can dispatch
+# this as a manifest action with the standard PYNQ_HOST / PYNQ_PROXY /
+# PYNQ_PASSWORD env. Idempotent — re-running on a board that's already
+# provisioned is a no-op.
+#
+# Usage (manual / lab):
+#   make -C fpga provision_pynq_sudo PYNQ_HOST=xilinx@192.168.4.101 PYNQ_PASSWORD=xilinx
+.PHONY: provision_pynq_sudo
+provision_pynq_sudo:
+	@if [ -z "$(PYNQ_HOST)" ]; then \
+	    echo "ERROR: set PYNQ_HOST=user@host (or BOARD=<n> via fpgahub)." >&2; exit 2; \
+	fi
+	@if [ -z "$(PYNQ_PASSWORD)" ]; then \
+	    echo "ERROR: set PYNQ_PASSWORD (the xilinx user's existing sudo password)." >&2; exit 2; \
+	fi
+	@PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" PYNQ_PASSWORD="$(PYNQ_PASSWORD)" \
+	    $(FPGA_DIR)/scripts/provision_pynq_sudo.sh
+
 # Map an fpgahub pair role (die_a / die_b) to the matching TARGET, then
 # call deploy. The two pair targets ship MIRRORED RPi pinouts so the
 # physical cross-cable wires up correctly. fpgahub renders this via:

@@ -1,5 +1,45 @@
 # Long-term fpgahub deploy/stress flow for the tidelink pair
 
+## Onboarding a new PYNQ-Z2 to the tidelink pair
+
+For a fresh image (or a board that's never run the tidelink stress
+runner), three one-shot steps with the daemon already up:
+
+```sh
+# 1. Acquire the pair lease (any client w/ fpgahub access).
+fpgahub --addr mapstone-dev.ecs.soton.ac.uk pair lease acquire bridge1 \
+    --user $(whoami) --ttl 1800
+
+# 2. Provision NOPASSWD sudo on each member. Idempotent — re-running
+#    on a board that's already provisioned is a no-op.
+fpgahub actions run pynq_z2_02_pl provision_pynq_sudo
+fpgahub actions run pynq_z2_03_pl provision_pynq_sudo
+
+# 3. Deploy the role-aware bitstream + run stress, all via lease.
+fpgahub actions run pynq_z2_02_pl deploy_pair
+fpgahub actions run pynq_z2_03_pl deploy_pair
+fpgahub actions run pynq_z2_02_pl stress_pair
+
+# 4. Release.
+fpgahub --addr mapstone-dev.ecs.soton.ac.uk pair lease release bridge1 \
+    --token <token-from-step-1>
+```
+
+`provision_pynq_sudo` is the only non-idempotent moment in the
+onboarding — it uses the xilinx user's existing sudo password
+(injected from `pynq.ssh_password` secret) to install
+`/etc/sudoers.d/pynq-fpgahub` granting `xilinx ALL=(ALL) NOPASSWD: ALL`.
+After it lands, every subsequent fpgahub action that uses `sudo -n`
+on the board (deploy_pair's pynq_overlay, stress_pair's runner) just
+works.
+
+The action is wired through `fpga/scripts/provision_pynq_sudo.sh` →
+`make provision_pynq_sudo` → manifest action of the same name. Use
+the same secret indirection as the deploy action — there's nothing
+new for the operator to set up.
+
+
+
 **Goal**: replace the ad-hoc `deploy_pair_proxy.sh` / `sshpass` pipeline with
 plugin-based bitstream load and manifest-driven stress runs, so that
 `make program_via_plugin BOARD=pynq_z2_02_pl` (or `fpgahub actions run

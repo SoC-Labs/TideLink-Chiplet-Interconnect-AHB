@@ -202,6 +202,28 @@ produces    = ["bitstream_loaded"]
 timeout_s   = 600
 
 # ---------------------------------------------------------------------------
+# One-time PYNQ image provisioning
+# ---------------------------------------------------------------------------
+
+# Drops /etc/sudoers.d/pynq-fpgahub on a fresh PYNQ-Z2 image so the
+# xilinx user can run `sudo -n` without a password prompt. Required
+# before stress_pair, deploy_pair, etc. work cleanly. Idempotent —
+# safe to re-run. Run once per board after a fresh PYNQ image flash.
+[[actions]]
+id          = "provision_pynq_sudo"
+title       = "One-time: enable NOPASSWD sudo on a fresh PYNQ-Z2 image"
+description = """
+Drops /etc/sudoers.d/pynq-fpgahub via the existing xilinx sudo password
+(secret_env). Idempotent. Required before stress_pair / deploy_pair can
+run sudo -n successfully. Run once per fresh PYNQ image flash.
+"""
+command     = ["make", "-C", "fpga", "provision_pynq_sudo",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+timeout_s   = 60
+
+# ---------------------------------------------------------------------------
 # Stress tests
 # ---------------------------------------------------------------------------
 

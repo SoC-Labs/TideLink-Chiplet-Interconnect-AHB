@@ -53,15 +53,23 @@ ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
 
+# Targets that need the Arm IP (Corstone CMSDK + XHB500). Anything else
+# (deploy, program, deploy_pair_role, the manifest-driven dispatch
+# wrappers) just consumes pre-built bitstreams and doesn't need the
+# IP-library env vars set. Gating the env check on these specific goals
+# lets fpgahub-driven deploys run on hosts that don't have ARM_IP_LIBRARY_PATH.
+BUILD_GOALS := all build_design package_ip
+ifneq ($(filter $(BUILD_GOALS),$(MAKECMDGOALS)),)
 ifndef CMSDK_DIR
-$(error CMSDK_DIR is not set - source set_env.sh first)
+$(error CMSDK_DIR is not set - source set_env.sh first (only required for build/package goals: $(BUILD_GOALS)))
 endif
 export CMSDK_DIR
 
 ifndef XHB500_IP_DIR
-$(error XHB500_IP_DIR is not set - source set_env.sh first)
+$(error XHB500_IP_DIR is not set - source set_env.sh first (only required for build/package goals: $(BUILD_GOALS)))
 endif
 export XHB500_IP_DIR
+endif
 endif
 
 TARGET_DIR      := $(FPGA_DIR)/targets/$(TARGET)

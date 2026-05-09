@@ -69,7 +69,34 @@ class test_top_autoneg_basic extends tidelink_top_system_base_test;
       b_autoneg.nego_won, b_autoneg.nego_lost), UVM_LOW)
 
     // ---------------------------------------------------------------
-    // Step 3: Wait for Wlink link training
+    // Step 3: Write swi_phase_offset on the side that won master.
+    // Master's POR releases later than slave's (autoneg arbitration:
+    // master locks last). Per PROBE_GPIO_COUNT histogram, master's RX
+    // counter is 11 ticks ahead of slave's TX counter (mod 16) when the
+    // first bits arrive ⇒ slide A's sample point back by setting
+    // swi_phase_offset = (16 - 11) % 16 = 5. Slave's RX counter is
+    // already aligned because slave was waiting for master's pad_clk_rx,
+    // which only starts at master's POR release — so slave samples from
+    // its very first pad_clk and naturally aligns to count=0.
+    //
+    // ORDER MATTERS: write phase IMMEDIATELY after autoneg completes,
+    // BEFORE the link-train wait. Once the deserialiser locks at the
+    // wrong phase, subsequent swi_phase_offset writes only shift the
+    // bit-select — they don't re-sync the counter. PHY ctrl reg
+    // WL+0x0000 bits[20:17] = swi_phase_offset.
+    begin
+      integration_cfg_write_sequence phase_wr;
+      phase_wr = integration_cfg_write_sequence::type_id::create("phase_wr");
+      phase_wr.addr = 15'h0000;
+      phase_wr.data = 32'h000A_0000;  // bits[20:17] = 4'h5
+      phase_wr.start(env.a_apb_agt.sequencer);
+      `uvm_info("TEST", "[A] phase_offset=5 written (master, late POR) — pre link-train",
+                UVM_LOW)
+      // B keeps phase=0 (default) — already aligned.
+    end
+
+    // ---------------------------------------------------------------
+    // Step 4: Wait for Wlink link training
     // ---------------------------------------------------------------
     // 50000 cycles (5x default) — A's role_lock asserts ~13ms after B's
     // (B sees SDA-START first; A finishes its claim/POLL later), so by

@@ -34,6 +34,7 @@ class top_sys_wlink_init_sequence extends uvm_sequence #(apb_master_transaction)
   virtual task body();
     apb_master_transaction wr_txn;
     bit [31:0] role_cfg_value;
+    bit [31:0] phy_ctrl_value;
 
     // bit[1]=lock, bit[0]=role override (0=master, 1=slave)
     role_cfg_value = is_slave ? 32'h0000_0003 : 32'h0000_0002;
@@ -47,6 +48,27 @@ class top_sys_wlink_init_sequence extends uvm_sequence #(apb_master_transaction)
     wr_txn.wdata = role_cfg_value;
     wr_txn.write = 1;
     `uvm_send(wr_txn)
+
+    // SoC Labs (2026-05-08) SHORTCOMINGS-14b fix: AFTER role_lock releases
+    // Wlink from POR, set per-side `swi_phase_offset` (bits[20:17] of PHY
+    // ctrl reg WL+0x0000) to compensate for asymmetric deserialiser counter
+    // init. The phase compensates for POR-release skew: whichever side
+    // releases POR LATER needs phase=Δ (mod 16) where Δ is the gap (in
+    // pad_clks) between the two PoR releases.
+    //
+    // In strap-based init_wlink, A (master) goes first, B (slave) goes
+    // second by ~60 ns ≈ 3 pad_clks ⇒ slave phase=3.
+    // In autoneg-based init, the phase write is done by the test directly
+    // (see test_top_autoneg_basic).
+    phy_ctrl_value = 32'h0000_0000; // both sides phase=0 (small POR Δ in init_wlink path)
+    `uvm_create(wr_txn)
+    wr_txn.addr  = 15'h0000;
+    wr_txn.wdata = phy_ctrl_value;
+    wr_txn.write = 1;
+    `uvm_send(wr_txn)
+    `uvm_info("WLINK_INIT", $sformatf(
+      "[%s] PHY ctrl phase_offset=%0d written post-lock.",
+      side_name, (phy_ctrl_value >> 17) & 4'hF), UVM_LOW)
 
     `uvm_info("WLINK_INIT", $sformatf("[%s] Role locked. Wlink link training in progress.",
       side_name), UVM_LOW)

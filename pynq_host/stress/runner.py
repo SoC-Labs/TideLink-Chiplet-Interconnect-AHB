@@ -190,7 +190,17 @@ def _load_overlay(role='die_a'):
             'TidelinkOverlay not importable from pynq_host.overlay; '
             'underlying error: %s' % (_overlay_import_error or 'unknown')
         )
-    return TidelinkOverlay()
+    overlay = TidelinkOverlay()
+    # Bring the link out of POR. fpga_manager firmware reload clears
+    # role_lock (W1S, POR-only clear), so without this every stress run
+    # starts with the link held in reset → returner stays busy → every
+    # test fails fast on wait_returner_idle. lock_role() also writes
+    # swi_phase_offset for the slave side (SHORTCOMINGS-14b fix).
+    if hasattr(overlay, 'lock_role') and overlay.strap is not None:
+        cfg = overlay.lock_role(role)
+        log.info('Locked role=%s, ROLE_CFG=0x%02x (lock=%d, cfg=%d)',
+                 role, cfg, (cfg >> 1) & 1, cfg & 1)
+    return overlay
 
 
 def _scale_budgets(total_s, selected):

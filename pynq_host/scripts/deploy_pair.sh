@@ -68,9 +68,14 @@ else
     esac
 fi
 
+# PHASE = swi_phase_offset (Wlink PHY ctrl reg WL+0x0000, bits[20:17]).
+# SHORTCOMINGS-14b: in strap-driven init, master's POR releases first;
+# slave's RX deserialiser counter ends up ~3 pad_clks ahead of master's
+# TX framing. Setting phase=3 on slave realigns adj_count to 0.
+# Encoded as the full 32-bit register value: phase << 17.
 case "$ROLE" in
-    die_a) STRAP=0 ; CTRL=0x2 ;;   # master
-    die_b) STRAP=1 ; CTRL=0x3 ;;   # slave
+    die_a) STRAP=0 ; CTRL=0x2 ; PHASE=0x00000000 ;;   # master, phase=0
+    die_b) STRAP=1 ; CTRL=0x3 ; PHASE=0x00060000 ;;   # slave,  phase=3
     *) echo "ROLE must be die_a or die_b (got '$ROLE')" >&2; exit 2 ;;
 esac
 
@@ -117,11 +122,19 @@ def mm(a):
     b=a&~(P-1); return mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),(a-b)
 s,so=mm(0x44040000)              # strap GPIO
 struct.pack_into(\"<I\",s,so,$STRAP)
-r,ro=mm(0x44032000)              # TideLink APB
+r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
+w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
+# SHORTCOMINGS-14b: write swi_phase_offset BEFORE ROLE_CFG asserts
+# role_lock. Once role_lock fires, Wlink leaves POR; the deserialiser
+# starts free-running and subsequent phase writes only shift the bit-
+# select, they don't re-sync the counter.
+struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset
 struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR
 struct.pack_into(\"<I\",r,ro+0x80,$CTRL)        # ROLE_CFG (incl. role_lock)
+phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]
 pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]
 val=struct.unpack_from(\"<I\",r,ro+0x80)[0]
+print(\"  PHY_CTRL       = 0x{:08x} (swi_phase_offset={})\".format(phy,(phy>>17)&0xF))
 print(\"  PAIR_BASE_ADDR = 0x{:08x}\".format(pba))
 print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={})\".format(val,(val>>1)&1,val&1))
 '"

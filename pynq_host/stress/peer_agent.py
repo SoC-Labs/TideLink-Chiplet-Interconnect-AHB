@@ -127,6 +127,14 @@ def main():
 
     sys.stderr.write(f'[peer_agent] loading overlay (role={args.role})\n')
     overlay = TidelinkOverlay()
+    # Bring the link out of POR + apply SHORTCOMINGS-14b phase fix on the
+    # slave side. fpga_manager firmware reload clears role_lock, so the
+    # peer must lock its role here too — otherwise the returner is wedged
+    # before any test starts. Mirrors runner.py:_load_overlay().
+    if hasattr(overlay, 'lock_role') and overlay.strap is not None:
+        cfg = overlay.lock_role(args.role)
+        sys.stderr.write(
+            f'[peer_agent] locked role={args.role} ROLE_CFG=0x{cfg:02x}\n')
     hw = TidelinkHw(overlay, role=args.role)
     sys.stderr.write('[peer_agent] ready\n')
     sys.stderr.flush()

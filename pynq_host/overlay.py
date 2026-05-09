@@ -70,6 +70,17 @@ WLINK_ACTIVE_LANES_OFF = 0x0210  # RO; popcount(lane_mask)-1 per direction
 WLINK_LANE_MASK_OFF    = 0x0214  # RW; bit[k]=1 enables physical lane k
 WLINK_LANES            = 8       # synthesised lane count for pynq-z2-pair
 
+# Wlink PHY ctrl register: bits[20:17] = swi_phase_offset (added to the
+# deserialiser counter to compensate for POR-release skew). See
+# project_tidelink_fpga_bringup.md "5-bit deserialiser phase offset on A"
+# and uvm/.../top_sys_wlink_init_sequence.sv. In the strap-driven init
+# flow (deploy_pair.sh, lock_role()), master goes first by ~3 pad_clks,
+# so SLAVE is the late-POR side and needs phase=3.
+WLINK_PHY_CTRL_OFF        = 0x0000
+SWI_PHASE_OFFSET_SHIFT    = 17
+SWI_PHASE_OFFSET_DIE_B    = 3      # slave: master goes first by ~3 pad_clks
+SWI_PHASE_OFFSET_DIE_A    = 0      # master: aligns naturally
+
 
 class TidelinkOverlay(Overlay):
     """PYNQ Overlay for the TideLink chiplet bridge.
@@ -180,6 +191,14 @@ class TidelinkOverlay(Overlay):
             self.set_role(role)
         # bit[1] = lock, bit[0] = role_cfg (mirrors strap for safety)
         cfg_bit = self.get_role() == "die_b"
+
+        # SHORTCOMINGS-14b fix: write swi_phase_offset BEFORE role_lock.
+        # Once role_lock asserts, Wlink leaves POR and the deserialiser
+        # counter starts free-running; subsequent phase writes only shift
+        # the bit-select, they don't re-sync. master=phase=0, slave=phase=3.
+        phase = SWI_PHASE_OFFSET_DIE_B if cfg_bit else SWI_PHASE_OFFSET_DIE_A
+        self.apb.write(WLINK_PHY_CTRL_OFF, phase << SWI_PHASE_OFFSET_SHIFT)
+
         self.apb.write(REG_ROLE_LOCK, 0x2 | (1 if cfg_bit else 0))
         return self.apb.read(REG_ROLE_LOCK)
 

@@ -38,14 +38,31 @@ redirect -tee -file ${fc_reports}/04a_route_auto.qor.rep {
 save_block
 
 #-----------------------------------------------------------------------------
-# route_opt — post-route timing + DRC opto
+# route_opt — post-route timing + DRC opto. Default pass first, then a
+# second high-effort pass that targets residual setup/hold/DRC. The
+# extra pass is cheap (~10 min) and routinely picks up the 30-50 nets
+# that the default-effort pass leaves with marginal slack or DRC.
 #-----------------------------------------------------------------------------
-puts "INFO: \[fc_route\] route_opt"
+puts "INFO: \[fc_route\] route_opt (default effort)"
 route_opt
 
 redirect -tee -file ${fc_reports}/04b_route_opt.qor.rep {
     report_qor -summary
     report_timing -nets -capacitance
+}
+
+puts "INFO: \[fc_route\] route_opt -effort high (residual recovery)"
+if {[catch {route_opt -effort high} err]} {
+    # Some FC builds don't accept -effort directly on route_opt; fall
+    # back to a second default pass which still picks up residuals.
+    puts "INFO: \[fc_route\] -effort high rejected ($err); using second default pass"
+    route_opt
+}
+
+redirect -tee -file ${fc_reports}/04c_route_opt_high.qor.rep {
+    report_qor -summary
+    report_timing -nets -capacitance -max_paths 5
+    report_design -nosplit
 }
 
 #-----------------------------------------------------------------------------

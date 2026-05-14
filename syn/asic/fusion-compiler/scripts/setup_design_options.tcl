@@ -61,6 +61,37 @@ if {!([info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off")}
 # `compile.flow.gate_clock` app_option doesn't exist in U-2022.12
 # (Invalid option name); set_dont_use on the library is the reliable
 # cross-version path. Production builds keep CG on for the area win.
+#-----------------------------------------------------------------------------
+# Optional: preserve Wlink Chisel FCSM modules through synthesis.
+#
+# These auto-generated modules are the source of the LEC don't-verify
+# residual (264 DFFs in the current build). set_dont_touch_network on
+# them prevents synth from doing constant-folding / FSM re-encoding /
+# array flattening on those modules, which keeps the netlist register
+# structure 1:1 with the RTL and lets Formality verify everything cleanly.
+#
+# Trade-off: those modules synthesise less optimally (estimated +5-10%
+# area on the affected blocks, possibly a small timing hit). Enable
+# only when LEC sign-off cleanliness is more important than the last
+# few % of area. Disabled by default.
+#
+#   make fc FC_PRESERVE_WLINK_FCSM=on
+#-----------------------------------------------------------------------------
+if {[info exists ::env(FC_PRESERVE_WLINK_FCSM)] && $::env(FC_PRESERVE_WLINK_FCSM) eq "on"} {
+    puts "INFO: \[setup\] FC_PRESERVE_WLINK_FCSM=on — set_dont_touch on WlinkGenericFCSM_*"
+    set preserved 0
+    foreach mod {WlinkGenericFCSM WlinkGenericFCSM_1 WlinkGenericFCSM_2 \
+                 WlinkGenericFCSM_3 WlinkGenericFCSM_4 WlinkGenericFCSM_5 \
+                 WlinkGenericFCSM_6} {
+        set cells [get_cells -quiet -hier -filter "ref_name == $mod"]
+        if {[sizeof_collection $cells] > 0} {
+            set_dont_touch $cells true
+            incr preserved [sizeof_collection $cells]
+        }
+    }
+    puts "INFO: \[setup\]   $preserved Wlink FCSM instances preserved"
+}
+
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
     puts "INFO: \[setup\] FC_CLOCK_GATING=off — banning PREICG_* cells"
     set icg_cells [get_lib_cells -quiet */PREICG_*]

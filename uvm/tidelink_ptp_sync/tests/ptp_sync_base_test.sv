@@ -46,7 +46,11 @@ class ptp_sync_base_test extends uvm_test;
   ptp_servo_model servo;
 
   // Default timeout (in clock cycles)
-  int unsigned test_timeout_cycles = 50_000_000;
+  // 1M cycles = 10 ms simulated; bounds wall-time for the placeholder tb
+  // (the env was designed around a different DUT topology, tests can't
+  // converge against the constant-zero stubs). Override per-test if a
+  // real DUT lands.
+  int unsigned test_timeout_cycles = 1_000_000;
 
   function new(string name = "ptp_sync_base_test", uvm_component parent = null);
     super.new(name, parent);

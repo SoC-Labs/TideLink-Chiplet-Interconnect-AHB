@@ -95,38 +95,39 @@ module test_top;
   assign ahb_b_cfg_if.hresetn = rst_n;
 
   // ---------------------------------------------------------------
-  // DUT slave response wires
+  // DUT slave response wires — placeholder always-ready stubs
   // ---------------------------------------------------------------
+  // No real DUT yet (env was designed around a 3-AHB-VIP-per-side topology
+  // that doesn't match current tidelink_top). Tie HREADY=1 / HRESP=0 /
+  // HRDATA=0 so the SVT AHB slave/master monitors don't spam UVM_ERROR on
+  // X HREADY every cycle — that previously produced 15GB log files. Tests
+  // still fail at convergence (PHC reads return 0 forever) and the
+  // watchdog in ptp_sync_base_test catches them; uvm-ptp-sync is
+  // allow_failure: true in CI so the pipeline stays green.
 
-  // Chiplet A PHC slave outputs
-  wire        a_phc_hreadyout;
-  wire        a_phc_hresp;
-  wire [31:0] a_phc_hrdata;
+  wire        a_phc_hreadyout = 1'b1;
+  wire        a_phc_hresp     = 1'b0;
+  wire [31:0] a_phc_hrdata    = 32'h0;
 
-  // Chiplet A PTP slave outputs
-  wire        a_ptp_hreadyout;
-  wire        a_ptp_hresp;
-  wire [31:0] a_ptp_hrdata;
+  wire        a_ptp_hreadyout = 1'b1;
+  wire        a_ptp_hresp     = 1'b0;
+  wire [31:0] a_ptp_hrdata    = 32'h0;
 
-  // Chiplet A CFG slave outputs
-  wire        a_cfg_hreadyout;
-  wire        a_cfg_hresp;
-  wire [31:0] a_cfg_hrdata;
+  wire        a_cfg_hreadyout = 1'b1;
+  wire        a_cfg_hresp     = 1'b0;
+  wire [31:0] a_cfg_hrdata    = 32'h0;
 
-  // Chiplet B PHC slave outputs
-  wire        b_phc_hreadyout;
-  wire        b_phc_hresp;
-  wire [31:0] b_phc_hrdata;
+  wire        b_phc_hreadyout = 1'b1;
+  wire        b_phc_hresp     = 1'b0;
+  wire [31:0] b_phc_hrdata    = 32'h0;
 
-  // Chiplet B PTP slave outputs
-  wire        b_ptp_hreadyout;
-  wire        b_ptp_hresp;
-  wire [31:0] b_ptp_hrdata;
+  wire        b_ptp_hreadyout = 1'b1;
+  wire        b_ptp_hresp     = 1'b0;
+  wire [31:0] b_ptp_hrdata    = 32'h0;
 
-  // Chiplet B CFG slave outputs
-  wire        b_cfg_hreadyout;
-  wire        b_cfg_hresp;
-  wire [31:0] b_cfg_hrdata;
+  wire        b_cfg_hreadyout = 1'b1;
+  wire        b_cfg_hresp     = 1'b0;
+  wire [31:0] b_cfg_hrdata    = 32'h0;
 
   // ---------------------------------------------------------------
   // DUT instantiation placeholder

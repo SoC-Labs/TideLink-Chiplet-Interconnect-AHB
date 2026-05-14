@@ -122,7 +122,12 @@ module tidelink_top #(
     output wire               [1:0] ahb_mng_htrans,
     output wire    [SYS_DATA_W-1:0] ahb_mng_hwdata,
     output wire                     ahb_mng_hwrite,
-    output wire                     ahb_mng_hready,
+    // HREADY flows slave→manager in AHB. tidelink_top is the manager
+    // on this bus (the chiplet drives transactions out into the local
+    // SoC fabric), so HREADY is an input — the slave's ready signal
+    // back to the manager. Formality LEC flagged the previous `output`
+    // declaration as a directly-undriven primary output port.
+    input  wire                     ahb_mng_hready,
     input  wire    [SYS_DATA_W-1:0] ahb_mng_hrdata,
     input  wire                     ahb_mng_hresp,
 

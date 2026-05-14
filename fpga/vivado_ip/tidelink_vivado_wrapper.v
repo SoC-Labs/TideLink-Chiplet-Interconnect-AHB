@@ -155,7 +155,9 @@ module tidelink_vivado_wrapper #(
     (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HTRANS" *) output wire  [1:0] ahb_mng_htrans,
     (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HWDATA" *) output wire [31:0] ahb_mng_hwdata,
     (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HWRITE" *) output wire        ahb_mng_hwrite,
-    (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HREADY" *) output wire        ahb_mng_hready,
+    // HREADY flows slave→manager; fixed direction (was incorrectly `output`
+    // here and on the tidelink_top RTL boundary it wraps).
+    (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HREADY" *) input  wire        ahb_mng_hready,
     (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HRDATA" *) input  wire [31:0] ahb_mng_hrdata,
     (* X_INTERFACE_INFO = "xilinx.com:interface:ahblite:2.0 ahb_mng HRESP"  *) input  wire        ahb_mng_hresp,
 

@@ -555,6 +555,8 @@ module test_top;
       force VIF.slave_if[0].hresp   = {1'b0, DUT_HRESP};          \
     end
 
+  // HREADY direction fix: see tidelink_top_system tb/top.sv for the rationale.
+  // DUT_HREADY is a DUT INPUT driven by the slave VIP's hready output.
   `define WIRE_AHB_MNG(VIF, DUT_HADDR, DUT_HBURST, DUT_HPROT, DUT_HSIZE, DUT_HTRANS, DUT_HWDATA, DUT_HWRITE, DUT_HREADY, MNG_HRDATA, MNG_HRESP) \
     assign VIF.slave_if[0].haddr     = DUT_HADDR;                  \
     assign VIF.slave_if[0].htrans    = DUT_HTRANS;                 \
@@ -566,9 +568,10 @@ module test_top;
     assign VIF.slave_if[0].hmaster   = 4'h0;                       \
     assign VIF.slave_if[0].hmastlock = 1'b0;                       \
     assign VIF.slave_if[0].hsel      = DUT_HTRANS[1];              \
-    assign VIF.slave_if[0].hready_in = DUT_HREADY;                 \
+    assign VIF.slave_if[0].hready_in = VIF.slave_if[0].hready;     \
+    assign DUT_HREADY = VIF.slave_if[0].hready;                    \
     assign MNG_HRDATA = VIF.slave_if[0].hrdata[31:0];              \
-    assign MNG_HRESP  = VIF.slave_if[0].hresp[0];                 \
+    assign MNG_HRESP  = VIF.slave_if[0].hresp[0];                  \
     initial begin                                                   \
       force VIF.master_if[0].haddr   = DUT_HADDR;                  \
       force VIF.master_if[0].htrans  = DUT_HTRANS;                 \
@@ -577,7 +580,7 @@ module test_top;
       force VIF.master_if[0].hprot   = DUT_HPROT;                  \
       force VIF.master_if[0].hwrite  = DUT_HWRITE;                 \
       force VIF.master_if[0].hwdata  = DUT_HWDATA;                 \
-      force VIF.master_if[0].hready  = DUT_HREADY;                 \
+      force VIF.master_if[0].hready  = VIF.slave_if[0].hready;     \
       force VIF.master_if[0].hresp   = VIF.slave_if[0].hresp;      \
       force VIF.master_if[0].hrdata  = VIF.slave_if[0].hrdata;     \
       force VIF.master_if[0].hgrant  = 1'b1;                       \

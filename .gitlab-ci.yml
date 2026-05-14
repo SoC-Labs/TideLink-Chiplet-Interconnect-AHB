@@ -7,10 +7,11 @@
 #   3. regression - All cocotb (204 tests, 9 envs) and UVM (4 tests)
 #   4. new_module - Additional cocotb/UVM for fc_adapter, top, integration
 #   5. system     - System-level paired stress tests (cocotb + UVM)
-#   6. synthesis  - Design Compiler: FIFO, FC adapter, tidelink_top
-#   7. coverage   - Merge VCS coverage from all runs
-#   8. pages      - Dashboard generation
-#   9. cleanup    - Remove workspace
+#   6. fpga       - Real-board ci_pair_role_aware via fpgahub (FCFS lease)
+#   7. synthesis  - Design Compiler: FIFO, FC adapter, tidelink_top
+#   8. coverage   - Merge VCS coverage from all runs
+#   9. pages      - Dashboard generation
+#  10. cleanup    - Remove workspace
 
 stages:
   - setup
@@ -18,6 +19,7 @@ stages:
   - regression
   - new_module
   - system
+  - fpga
   - synthesis
   - coverage
   - pages
@@ -673,7 +675,68 @@ uvm-ptp-chain:
     expire_in: 30 days
 
 # ============================================================================
-# Stage 6: Synthesis
+# Stage 6: FPGA-on-Bench (real Pynq-Z2 pair via fpgahub)
+# ============================================================================
+# Acquires the chassis lease for the TideLink Pynq-Z2 pair and runs the
+# manifest's `ci_pair_role_aware` composite (build master + slave bitstreams,
+# role-aware deploy, paired stress). Acquires under fpgahub's BACKGROUND
+# tier with --requeue-on-revoke so a developer arriving with an interactive
+# acquire preempts this run: the runner SIGTERMs the composite, our wrapper
+# script gets rc=130, loops back to `lease wait` until the chassis frees,
+# and re-runs `ci_pair_role_aware` from scratch.
+#
+# Concurrency policy:
+#   * `rules:` below: only on main / feat/fpga-flow / scheduled / web
+#   * `tags: [fpga]`: a single-concurrency runner registered on mapstone-dev
+#   * FPGAHUB_LEASE_WAIT_S in fpga_run_pair.sh: hard cap on initial-queue
+#     wait; FPGAHUB_MAX_REVOKES caps the revoke→retry attempts so a
+#     pathologically-revoke-prone run can't loop forever.
+#
+# Background on the tier model: see fpgahub
+# docs/PROPOSAL_BACKGROUND_TIER.md and docs/GUIDE.md §"Two tiers".
+
+fpga-pair:
+  stage: fpga
+  needs: [clone, preflight]
+  tags: [fpga]
+  # Real-board flow — keep it opt-in while it stabilises so a flaky
+  # board doesn't redden every pipeline.
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "feat/fpga-flow"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  variables:
+    # Wired to a real 2-member Pynq-Z2 chassis on mapstone-dev. The
+    # fpgahub default grouping derives chassis ids from board names
+    # (pynq_z2_02_ps + pynq_z2_02_pl → chassis pynq_z2_02), so no
+    # config alias is involved — just point at whichever physical
+    # pair the TideLink boards are wired to.
+    FPGAHUB_PAIR_CHASSIS: "pynq_z2_02"
+    FPGAHUB_LEASE_TTL_S:  "3600"
+    FPGAHUB_LEASE_WAIT_S: "10800"
+    FPGAHUB_MAX_REVOKES:  "5"
+    FPGAHUB_BIN:          "/opt/fpgahub/bin/fpgahub"
+  before_script:
+    - export PATH="/opt/fpgahub/bin:$PATH"
+    - '"$FPGAHUB_BIN" --version'
+  script:
+    - cd "$WORK_DIR"
+    - bash ci/fpga_run_pair.sh
+  after_script:
+    - mkdir -p fpga/ci_logs
+    - cp -r "$WORK_DIR/fpga/ci_logs/." fpga/ci_logs/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - fpga/ci_logs/
+    reports:
+      junit: fpga/ci_logs/results.xml
+    expire_in: 30 days
+
+# ============================================================================
+# Stage 7: Synthesis
 # ============================================================================
 # Synthesise the full tidelink_top and individual modules using Design Compiler.
 # tidelink_top requires XHB500 and Wlink IP — use WLINK_VERILOG_DIR to point

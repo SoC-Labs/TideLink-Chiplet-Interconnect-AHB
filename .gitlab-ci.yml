@@ -7,7 +7,8 @@
 #   3. regression - All cocotb (204 tests, 9 envs) and UVM (4 tests)
 #   4. new_module - Additional cocotb/UVM for fc_adapter, top, integration
 #   5. system     - System-level paired stress tests (cocotb + UVM)
-#   6. fpga       - Real-board ci_pair_role_aware via fpgahub (FCFS lease)
+#   6. fpga       - Real-board ci_pair_role_aware via fpgahub (background-tier
+#                   lease; preempted by interactive acquires, retried on revoke)
 #   7. synthesis  - Design Compiler: FIFO, FC adapter, tidelink_top
 #   8. coverage   - Merge VCS coverage from all runs
 #   9. pages      - Dashboard generation

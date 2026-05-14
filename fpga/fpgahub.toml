@@ -342,6 +342,10 @@ command   = ["ssh",
              "cd /home/xilinx/tidelink_overlay && sudo -E -n python3 -m pynq_host.stress.runner --pair --peer-ssh '{pair.peer.host.ssh}' --peer-proxy '{host.proxy}' --local-role '{pair.local.role}' --peer-role '{pair.peer.role}' --pair-id '{pair.id}' --budget 600"]
 requires  = ["bitstream_loaded"]
 timeout_s = 1500
+# Background-tier revoke gives the runner this many seconds to unwind
+# before SIGKILL. The runner's SIGTERM handler closes the peer SSH and
+# kills the remote peer_agent; 30s leaves slack for slow PYNQ links.
+revoke_grace_s = 30
 
 # ---------------------------------------------------------------------------
 # Composite CI flows

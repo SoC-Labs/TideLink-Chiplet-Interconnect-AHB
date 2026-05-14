@@ -226,6 +226,21 @@ def _alarm_handler(signum, frame):
     raise _TestTimeout(f'exceeded budget')
 
 
+def _install_term_handler():
+    # fpgahub revokes a background lease by sending SIGTERM to the action's
+    # subprocess (this script). Without an explicit handler Python kills the
+    # process abruptly, the main() try/finally never runs, and the peer SSH
+    # subprocess + remote peer_agent python on the other board both leak.
+    # SystemExit propagates through `finally`, so peer.close() runs on its
+    # way out and the peer agent gets EOF on its stdin.
+    import signal
+    def _term(signum, frame):
+        log.warning('received SIGTERM (likely fpgahub lease revoke) — '
+                    'tearing down and exiting 130')
+        sys.exit(130)
+    signal.signal(signal.SIGTERM, _term)
+
+
 def _run_test(entry, local_hw, peer, budget_s, log_path):
     """Execute one test entry; return summary dict."""
     name = entry['id']
@@ -320,6 +335,7 @@ def main():
         return 0
 
     _setup_logging(args.verbose)
+    _install_term_handler()
 
     # Resolve env fallbacks
     peer_ssh   = args.peer_ssh   or os.environ.get('FPGAHUB_PEER_HOST_SSH',  '')

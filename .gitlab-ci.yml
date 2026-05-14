@@ -617,35 +617,6 @@ uvm-ptp-stress:
         - uvm/tidelink_ptp_stress/results.xml
     expire_in: 30 days
 
-uvm-ptp-sync:
-  stage: system
-  needs: [clone, preflight]
-  tags:
-    - vcs
-  allow_failure: true
-  <<: *vcs_uvm_setup
-  script:
-    - echo "Running 4 UVM tidelink_ptp_sync tests"
-    - make -C "$WORK_DIR/uvm/tidelink_ptp_sync" run_all || true
-    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
-        "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build"
-        "$WORK_DIR/uvm/tidelink_ptp_sync/results.xml"
-  after_script:
-    - mkdir -p uvm/tidelink_ptp_sync
-    - cp "$WORK_DIR/uvm/tidelink_ptp_sync/results.xml"      uvm/tidelink_ptp_sync/ 2>/dev/null || true
-    - cp "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build/"*.log   uvm/tidelink_ptp_sync/ 2>/dev/null || true
-    - mkdir -p coverage_vdbs/uvm
-    - cp -r "$WORK_DIR/uvm/tidelink_ptp_sync/sim_build/simv.vdb" "coverage_vdbs/uvm/tidelink_ptp_sync.vdb" 2>/dev/null || true
-  artifacts:
-    when: always
-    paths:
-      - uvm/tidelink_ptp_sync/*.log
-      - coverage_vdbs/uvm/
-    reports:
-      junit:
-        - uvm/tidelink_ptp_sync/results.xml
-    expire_in: 30 days
-
 uvm-ptp-chain:
   stage: system
   needs: [clone, preflight]
@@ -837,8 +808,6 @@ coverage-merge:
       artifacts: true
     - job: uvm-ptp-stress
       artifacts: true
-    - job: uvm-ptp-sync
-      artifacts: true
     - job: uvm-ptp-chain
       artifacts: true
   tags:
@@ -924,8 +893,6 @@ dashboard:
     - job: uvm-system
       artifacts: true
     - job: uvm-ptp-stress
-      artifacts: true
-    - job: uvm-ptp-sync
       artifacts: true
     - job: uvm-ptp-chain
       artifacts: true

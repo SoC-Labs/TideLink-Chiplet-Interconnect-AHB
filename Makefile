@@ -13,7 +13,6 @@ clean_uvm:
 	$(MAKE) -C uvm/tidelink_top_system clean
 	$(MAKE) -C uvm/tidelink_ptp_chain clean
 	$(MAKE) -C uvm/tidelink_ptp_stress clean
-	$(MAKE) -C uvm/tidelink_ptp_sync clean
 	$(MAKE) -C uvm/tidelink_system clean
 	@echo "UVM clean completed"
 

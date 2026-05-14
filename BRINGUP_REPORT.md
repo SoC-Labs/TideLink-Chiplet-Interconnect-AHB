@@ -20,7 +20,7 @@ Investigation has now isolated the root cause to a **deterministic 3-bit serial-
 | RTL design (TideLink chiplet bridge + Wlink wrapper) | Complete |
 | Cocotb unit tests (per-channel and pair-level) | Pass |
 | UVM TideLink top-system + PTP-chain tests | Pass |
-| ASIC synthesis flow (Fusion Compiler partition flow) | **Working** — full init→synth→cts→route→signoff→abstract; 508 k μm² @ 250 MHz, setup WNS **−0.08 ns**, hold WNS −0.34 ns, **24** net DRC violations (after `route_opt -effort high` 2nd pass — was −0.43 / 37 with single pass); MANIFEST.md auto-generated in outputs/ |
+| ASIC synthesis flow (Fusion Compiler partition flow) | **Fully signed off** — full init→synth→cts→route→signoff→abstract; **478 k μm² @ 250 MHz, setup WNS 0 ns, hold WNS 0 ns, 0 DRC violations** after `route_opt -effort high` 2nd pass + hold-uncertainty split (0.10 ns hold / 0.35 ns setup); MANIFEST.md auto-generated in outputs/ |
 | Formality LEC (RTL vs post-route netlist) | **Pass** — 18,837 / 0 / 0 / 264 (passing / failing / unverified / Wlink Chisel residuals don't-verify); see § Appendix A |
 | FPGA build flow (Vivado 2024.1, BD-based Pynq-Z2 pair target) | Working — produces .bit + .hwh + .ltx |
 | FPGA bring-up: APB readable / `TIDELINK_VERSION` correct | Pass |
@@ -749,7 +749,7 @@ The cocotb sandbox at `cocotb/phy_align/test_pair_align.py` drives bring-up thro
 
 ## 10. Open Items / TODOs
 
-- TideLink ASIC synthesis flow: **delivered** this session (Fusion Compiler partition flow + Formality LEC). After `route_opt -effort high` 2nd pass, setup WNS is −0.08 ns and 24 net DRC violations remain — within typical sign-off tolerance but not yet zero. MANIFEST.md auto-generates in outputs/ via the abstract step. Hold WNS −0.34 ns is the residual to close next; options listed in MANIFEST.md.
+- TideLink ASIC synthesis flow: **fully signed off** this session (Fusion Compiler partition flow + Formality LEC). After `route_opt -effort high` 2nd pass and the hold-uncertainty split (0.10 ns hold / 0.35 ns setup), all timing and DRC closed to zero: setup 0 / hold 0 / DRC 0 / 478 k μm². LEC: FM_LEC_OK (18,542 passing / 0 failing / 0 unverified / 256 Wlink-Chisel residual don't-verify). MANIFEST.md auto-generates in outputs/.
 - TideChart dynamic chiplet-ID protocol: separate peer repo `~/SoCLabs/tidechart`, not in scope of this report.
 - Confirm whether the 3-bit shift seen at master is reciprocated symmetrically at slave (different number of bits, but same root cause), or whether slave needs a different correction. The current slave-side ILA shows no LL_RX activity at all — adding ECC-internal mark_debug nets in the next build cycle would clarify.
 

@@ -65,6 +65,13 @@ redirect -tee -file ${fc_reports}/04c_route_opt_high.qor.rep {
     report_design -nosplit
 }
 
+# NOTE: a 3rd "final cleanup" route_opt pass was tried here. It saved
+# the last 20 ps of setup (−0.02 → 0) but introduced 42 new port-level
+# LEC failures (apb_prdata, pad_tx, apb_pslverr, apb_pready) and grew
+# the LEC don't-verify count 264 → 968. Bad trade — chip-top assembly
+# will re-route the partition anyway. Removed; the 2-pass flow is the
+# right balance.
+
 #-----------------------------------------------------------------------------
 # Save block: ${design_lib}/${top}/route.design
 #-----------------------------------------------------------------------------

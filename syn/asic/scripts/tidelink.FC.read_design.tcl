@@ -175,7 +175,22 @@ echo "FC_RTL_SCRIPT: clock constraints"
 
 create_clock -name $clk_name -period $clk_period \
     -waveform "0 [expr {$clk_period / 2.0}]" [get_ports $clk_name]
-set_clock_uncertainty $clk_uncert [get_clocks $clk_name]
+
+# Separate setup vs hold uncertainty. The CLK_UNCERTAINTY env var sets
+# setup margin (~10% of clock period for jitter + skew). Hold uncertainty
+# is independent and must be much smaller — typical chip clocks see
+# 50-100 ps of inter-flop skew, not 350 ps.
+#
+# History on this knob: a single 0.35 ns uncertainty applied to both
+# setup and hold kept hold WNS pinned at −0.34 ns regardless of opto.
+# Dropping hold to 0.05 closed hold completely but gave synth too much
+# freedom on output cones, regressing LEC equivalence (40 port failures
+# + 968 don't-verify). 0.10 is the industry-standard middle ground —
+# closes hold without triggering aggressive opto on outputs.
+set hold_uncert 0.10
+puts "INFO: clock uncertainty: setup=$clk_uncert  hold=$hold_uncert"
+set_clock_uncertainty -setup $clk_uncert [get_clocks $clk_name]
+set_clock_uncertainty -hold  $hold_uncert [get_clocks $clk_name]
 
 if {[sizeof_collection [get_ports $rst_name -quiet]] > 0} {
     set_false_path -from [get_ports $rst_name]

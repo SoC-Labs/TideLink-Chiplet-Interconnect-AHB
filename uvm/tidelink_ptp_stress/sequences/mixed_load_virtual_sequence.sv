@@ -120,14 +120,16 @@ class mixed_load_virtual_sequence extends uvm_sequence;
     while (!stop_traffic) begin
       integration_cfg_read_sequence rd_seq;
 
-      // Read status register on both sides to generate bus activity
+      // Read status register on both sides to generate bus activity.
+      // integration_cfg_read_sequence is uvm_sequence #(apb_master_transaction)
+      // so it must run on the APB master sequencer, not the AHB cfg sequencer.
       rd_seq = integration_cfg_read_sequence::type_id::create("gb_rd_a");
       rd_seq.addr = REG_STATUS;
-      rd_seq.start(vseqr.a_cfg_sqr, this);
+      rd_seq.start(vseqr.a_apb_sqr, this);
 
       rd_seq = integration_cfg_read_sequence::type_id::create("gb_rd_b");
       rd_seq.addr = REG_STATUS;
-      rd_seq.start(vseqr.b_cfg_sqr, this);
+      rd_seq.start(vseqr.b_apb_sqr, this);
 
       repeat (idle_gap) @(posedge tb_if.clk);
       iter++;

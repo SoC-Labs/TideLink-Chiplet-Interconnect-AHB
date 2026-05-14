@@ -354,7 +354,40 @@ module test_top;
     .ptp_reg_addr      (),
     .ptp_reg_wdata     (),
     .ptp_reg_rdata     (32'h0),
-    .ptp_reg_region    ()
+    .ptp_reg_region    (),
+
+    // Servo register pass-through (unused, tie off)
+    .servo_reg_write   (),
+    .servo_reg_addr    (),
+    .servo_reg_wdata   (),
+    .servo_reg_rdata   (32'h0),
+
+    // Mailbox register pass-through (unused, tie off)
+    .mbox_reg_write    (),
+    .mbox_reg_addr     (),
+    .mbox_reg_wdata    (),
+
+    // Chiplet controller register pass-through (unused, tie off)
+    .ctrl_reg_write    (),
+    .ctrl_reg_addr     (),
+    .ctrl_reg_wdata    (),
+    .ctrl_reg_rdata    (32'h0),
+
+    // Performance profiling register pass-through (unused, tie off)
+    .perf_reg_write    (),
+    .perf_reg_addr     (),
+    .perf_reg_wdata    (),
+    .perf_reg_rdata    (32'h0),
+    .perf_reg_region   (),
+
+    // Credit count observation (unused, tie off)
+    .perf_credit_count (),
+
+    // PUF SRAM read interface (not exercised in system testbench)
+    .puf_addr          ('0),
+    .puf_req           (1'b0),
+    .puf_rdata         (),
+    .puf_ack           ()
   );
 
   // =================================================================
@@ -563,7 +596,40 @@ module test_top;
     .ptp_reg_addr      (),
     .ptp_reg_wdata     (),
     .ptp_reg_rdata     (32'h0),
-    .ptp_reg_region    ()
+    .ptp_reg_region    (),
+
+    // Servo register pass-through (unused, tie off)
+    .servo_reg_write   (),
+    .servo_reg_addr    (),
+    .servo_reg_wdata   (),
+    .servo_reg_rdata   (32'h0),
+
+    // Mailbox register pass-through (unused, tie off)
+    .mbox_reg_write    (),
+    .mbox_reg_addr     (),
+    .mbox_reg_wdata    (),
+
+    // Chiplet controller register pass-through (unused, tie off)
+    .ctrl_reg_write    (),
+    .ctrl_reg_addr     (),
+    .ctrl_reg_wdata    (),
+    .ctrl_reg_rdata    (32'h0),
+
+    // Performance profiling register pass-through (unused, tie off)
+    .perf_reg_write    (),
+    .perf_reg_addr     (),
+    .perf_reg_wdata    (),
+    .perf_reg_rdata    (32'h0),
+    .perf_reg_region   (),
+
+    // Credit count observation (unused, tie off)
+    .perf_credit_count (),
+
+    // PUF SRAM read interface (not exercised in system testbench)
+    .puf_addr          ('0),
+    .puf_req           (1'b0),
+    .puf_rdata         (),
+    .puf_ack           ()
   );
 
   // =================================================================

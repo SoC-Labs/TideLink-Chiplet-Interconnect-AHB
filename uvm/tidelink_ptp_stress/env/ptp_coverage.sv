@@ -33,7 +33,7 @@ class ptp_coverage extends uvm_component;
     cp_axi: coverpoint axi_load {
       bins idle       = {0};
       bins low        = {[1:25]};
-      bins medium     = {[26:50]};
+      bins med_load   = {[26:50]};
       bins high       = {[51:75]};
       bins saturated  = {[76:100]};
     }
@@ -41,7 +41,7 @@ class ptp_coverage extends uvm_component;
     cp_fifo: coverpoint fifo_load {
       bins idle       = {0};
       bins low        = {[1:25]};
-      bins medium     = {[26:50]};
+      bins med_load   = {[26:50]};
       bins high       = {[51:75]};
       bins saturated  = {[76:100]};
     }
@@ -49,7 +49,7 @@ class ptp_coverage extends uvm_component;
     cp_gb: coverpoint gb_load {
       bins idle       = {0};
       bins low        = {[1:25]};
-      bins medium     = {[26:50]};
+      bins med_load   = {[26:50]};
       bins high       = {[51:75]};
       bins saturated  = {[76:100]};
     }
@@ -66,7 +66,7 @@ class ptp_coverage extends uvm_component;
     cp_fwd_delay: coverpoint fwd_delay_ns {
       bins very_low    = {[0:50]};
       bins low         = {[51:200]};
-      bins medium      = {[201:500]};
+      bins med_delay   = {[201:500]};
       bins high        = {[501:1000]};
       bins very_high   = {[1001:5000]};
       bins extreme     = {[5001:$]};
@@ -117,7 +117,7 @@ class ptp_coverage extends uvm_component;
   virtual function void write_ptp_cov_timestamp(ptp_timestamp_tuple t);
     real fwd;
     fwd = real'(t.t2) - real'(t.t1);
-    fwd_delay_ns = (fwd < 0) ? 0 : int unsigned'(fwd);
+    fwd_delay_ns = (fwd < 0) ? 0 : int'(fwd);
     cg_forward_delay.sample();
   endfunction
 

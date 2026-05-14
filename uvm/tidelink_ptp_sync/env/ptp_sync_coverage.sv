@@ -35,7 +35,7 @@ class ptp_sync_coverage extends uvm_component;
     option.per_instance = 1;
     option.name = "cg_initial_offset";
 
-    offset_ns: coverpoint sample_initial_offset_ns {
+    offset_ns: coverpoint int'(sample_initial_offset_ns) {
       bins zero           = {0};
       bins tiny_pos       = {[1:100]};
       bins small_pos      = {[101:1000]};
@@ -52,7 +52,7 @@ class ptp_sync_coverage extends uvm_component;
     option.per_instance = 1;
     option.name = "cg_frequency_error";
 
-    freq_ppm: coverpoint sample_frequency_error_ppm {
+    freq_ppm: coverpoint int'(sample_frequency_error_ppm) {
       bins zero            = {0};
       bins low_pos         = {[1:10]};
       bins medium_pos      = {[11:100]};
@@ -80,11 +80,11 @@ class ptp_sync_coverage extends uvm_component;
     option.per_instance = 1;
     option.name = "cg_residual_error";
 
-    residual_ns: coverpoint sample_residual_ns {
+    residual_ns: coverpoint int'(sample_residual_ns) {
       bins sub_ns      = {[0:1]};
       bins few_ns      = {[2:5]};
       bins moderate    = {[6:10]};
-      bins large       = {[11:$]};
+      bins large_bin   = {[11:$]};
     }
   endgroup
 

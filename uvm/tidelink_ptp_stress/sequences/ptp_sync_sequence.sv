@@ -60,6 +60,8 @@ class ptp_sync_sequence extends uvm_sequence;
       `uvm_fatal("PTP_SYNC", "Failed to cast SVT configuration")
     txn = svt_ahb_master_transaction::type_id::create("txn");
     txn.cfg = cfg;
+    txn.set_sequencer(sqr);
+    start_item(txn, -1, sqr);
     assert(txn.randomize() with {
       xact_type  == svt_ahb_transaction::WRITE;
       addr       == local::addr;
@@ -68,8 +70,7 @@ class ptp_sync_sequence extends uvm_sequence;
       data.size() == 1;
       data[0]    == local::data;
     });
-    txn.set_sequencer(sqr);
-    txn.start(sqr, this);
+    finish_item(txn);
   endtask
 
   // -------------------------------------------------------------------
@@ -85,6 +86,8 @@ class ptp_sync_sequence extends uvm_sequence;
       `uvm_fatal("PTP_SYNC", "Failed to cast SVT configuration")
     txn = svt_ahb_master_transaction::type_id::create("txn");
     txn.cfg = cfg;
+    txn.set_sequencer(sqr);
+    start_item(txn, -1, sqr);
     assert(txn.randomize() with {
       xact_type  == svt_ahb_transaction::READ;
       addr       == local::addr;
@@ -92,8 +95,7 @@ class ptp_sync_sequence extends uvm_sequence;
       burst_size == svt_ahb_transaction::BURST_SIZE_32BIT;
       data.size() == 1;
     });
-    txn.set_sequencer(sqr);
-    txn.start(sqr, this);
+    finish_item(txn);
     rdata = (txn.data.size() > 0) ? txn.data[0] : 32'h0;
   endtask
 

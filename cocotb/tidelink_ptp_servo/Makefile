@@ -5,6 +5,7 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
+                  $(TIDELINK_HOME)/src/rtl/tidelink_mul_iter.sv \
                   $(TIDELINK_HOME)/src/rtl/tidelink_ptp_servo.sv
 
 TOPLEVEL = tb_top

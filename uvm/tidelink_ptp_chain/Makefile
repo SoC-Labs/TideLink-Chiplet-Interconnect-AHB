@@ -34,8 +34,9 @@ AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
 TOP_SEQ_DIR  = $(TOP_SYS_DIR)/sequences
 
-# CMSDK path
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+# CMSDK path. Convention: CMSDK_DIR is the package root (parent of
+# `logical/`), matching cocotb/lint.
+CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
 
 # XHB500 generated bridge directories
 XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
@@ -103,10 +104,10 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # ---------------------------------------------------------------
 
 # CMSDK components
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 
 # TideLink FIFO RTL
 VCS_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
@@ -176,12 +177,20 @@ VCS_FLAGS += +libext+.v
 VCS_FLAGS += -y $(DEPS_DIR)/logical/PHY/generic
 VCS_FLAGS += -y $(DEPS_DIR)/logical/wlink
 VCS_FLAGS += +libext+.v
+# Use the §9 phy-align Wlink.v + edited GPIO PHY files (swi_bit_slip_in /
+# swi_training_mode_in ports) rather than the older Chisel output under
+# wav-wlink-hw/.
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpio.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioTx.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioRx.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WlinkGPIOPHY.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/Wlink.v
 
 # Address translator dependencies
 VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/apb_control/apb_control.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/address_translation/address_translation.sv
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 
 # Bridge dependencies
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges
@@ -197,6 +206,7 @@ VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
 
 # Performance counter
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_regs.sv
 
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv

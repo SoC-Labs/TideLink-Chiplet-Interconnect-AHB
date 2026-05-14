@@ -26,8 +26,9 @@ AGENT_DIR    = $(CURDIR)/agents/apb_master_agent
 SEQ_DIR      = $(CURDIR)/sequences
 TEST_DIR     = $(CURDIR)/tests
 
-# CMSDK path (for cmsdk_ahb_to_sram)
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+# CMSDK path (for cmsdk_ahb_to_sram). Convention: CMSDK_DIR points at the
+# package root (parent of `logical/`), matching cocotb / lint / .gitlab-ci.yml.
+CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
 
 # Synthesis / gate-level paths
 SYN_DIR      = $(PROJ_HOME)/syn/asic/design-compiler
@@ -103,8 +104,8 @@ VCS_RTL_FLAGS += -o $(SIM_DIR)/simv
 VCS_RTL_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 
 # DUT source (generic SRAM variant for simulation)
-VCS_RTL_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
-VCS_RTL_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+VCS_RTL_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
+VCS_RTL_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 VCS_RTL_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
 VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ctrl.sv
 VCS_RTL_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_mem.sv

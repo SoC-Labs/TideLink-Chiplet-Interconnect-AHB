@@ -1,19 +1,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 // ahb_rx_responder.sv
 ///////////////////////////////////////////////////////////////////////////////
-// Passive AHB slave responder for the DUT's RX master ports.
-// Simply drives hready=1 and hresp=0 (OKAY) so the DUT's AHB masters
-// can complete their write transactions. Captures observed writes into
-// an analysis port for the scoreboard.
-//
-// Parameterised by ADDR_W to handle both FIFO (14-bit) and config (12-bit)
-// address widths.
+// Passive responders for the DUT's RX master ports. The DUT moved off AHB:
+//   - RX FIFO path is now a direct valid/write/addr/wdata interface
+//   - RX Config path is now an APB-style master
+// File name retained for backwards-compat with includes; classes wrap each
+// protocol with an analysis port to feed the existing scoreboard.
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_AHB_RX_RESPONDER_SV
 `define GUARD_AHB_RX_RESPONDER_SV
 
-// Sequence item for observed RX AHB writes
+// Sequence item for observed RX writes (FIFO valid/write or APB)
 class ahb_rx_observed_item extends uvm_sequence_item;
 
   bit [13:0] addr;
@@ -33,7 +31,9 @@ class ahb_rx_observed_item extends uvm_sequence_item;
 endclass
 
 // ---------------------------------------------------------------
-// RX FIFO AHB Slave Responder
+// RX FIFO Direct-Write Responder
+// Drives fc_rx_fifo_ready high; captures (addr, wdata) on every
+// accepted (valid && write && ready) cycle.
 // ---------------------------------------------------------------
 class ahb_rx_fifo_responder extends uvm_component;
 
@@ -54,37 +54,23 @@ class ahb_rx_fifo_responder extends uvm_component;
   endfunction
 
   virtual task run_phase(uvm_phase phase);
-    // Always ready, no error
-    vif.fc_rx_fifo_hready <= 1'b1;
-    vif.fc_rx_fifo_hresp  <= 1'b0;
-    vif.fc_rx_fifo_hrdata <= 32'h0;
+    vif.fc_rx_fifo_ready <= 1'b1;
 
     @(posedge vif.rst_n);
 
     forever begin
       @(posedge vif.clk);
 
-      // Detect address phase (NONSEQ write)
-      if (vif.fc_rx_fifo_htrans == 2'b10 && vif.fc_rx_fifo_hwrite) begin
-        bit [13:0] captured_addr;
-        captured_addr = vif.fc_rx_fifo_haddr;
+      if (vif.fc_rx_fifo_valid && vif.fc_rx_fifo_write && vif.fc_rx_fifo_ready) begin
+        ahb_rx_observed_item item;
+        item = ahb_rx_observed_item::type_id::create("rx_fifo_obs");
+        item.addr    = vif.fc_rx_fifo_addr;
+        item.data    = vif.fc_rx_fifo_wdata;
+        item.is_fifo = 1'b1;
+        ap.write(item);
 
-        // Wait for data phase
-        @(posedge vif.clk);
-        while (!vif.fc_rx_fifo_hready)
-          @(posedge vif.clk);
-
-        begin
-          ahb_rx_observed_item item;
-          item = ahb_rx_observed_item::type_id::create("rx_fifo_obs");
-          item.addr    = captured_addr;
-          item.data    = vif.fc_rx_fifo_hwdata;
-          item.is_fifo = 1'b1;
-          ap.write(item);
-
-          `uvm_info("RX_FIFO_RESP", $sformatf("Observed FIFO write: addr=0x%04h data=0x%08h",
-            item.addr, item.data), UVM_MEDIUM)
-        end
+        `uvm_info("RX_FIFO_RESP", $sformatf("Observed FIFO write: addr=0x%04h data=0x%08h",
+          item.addr, item.data), UVM_MEDIUM)
       end
     end
   endtask
@@ -92,7 +78,9 @@ class ahb_rx_fifo_responder extends uvm_component;
 endclass
 
 // ---------------------------------------------------------------
-// RX Config AHB Slave Responder
+// RX Config APB Responder
+// Drives PREADY high during the access (PENABLE) phase and zero PRDATA;
+// captures (PADDR, PWDATA) at the end of every write access.
 // ---------------------------------------------------------------
 class ahb_rx_cfg_responder extends uvm_component;
 
@@ -113,37 +101,26 @@ class ahb_rx_cfg_responder extends uvm_component;
   endfunction
 
   virtual task run_phase(uvm_phase phase);
-    // Always ready, no error
-    vif.fc_rx_cfg_hready <= 1'b1;
-    vif.fc_rx_cfg_hresp  <= 1'b0;
-    vif.fc_rx_cfg_hrdata <= 32'h0;
+    vif.fc_rx_cfg_pready <= 1'b1;
+    vif.fc_rx_cfg_prdata <= 32'h0;
 
     @(posedge vif.rst_n);
 
     forever begin
       @(posedge vif.clk);
 
-      // Detect address phase (NONSEQ write)
-      if (vif.fc_rx_cfg_htrans == 2'b10 && vif.fc_rx_cfg_hwrite) begin
-        bit [11:0] captured_addr;
-        captured_addr = vif.fc_rx_cfg_haddr;
+      // Capture on the access phase (PSEL && PENABLE && PREADY) for writes.
+      if (vif.fc_rx_cfg_psel && vif.fc_rx_cfg_penable && vif.fc_rx_cfg_pready
+          && vif.fc_rx_cfg_pwrite) begin
+        ahb_rx_observed_item item;
+        item = ahb_rx_observed_item::type_id::create("rx_cfg_obs");
+        item.addr    = {2'b00, vif.fc_rx_cfg_paddr};
+        item.data    = vif.fc_rx_cfg_pwdata;
+        item.is_fifo = 1'b0;
+        ap.write(item);
 
-        // Wait for data phase
-        @(posedge vif.clk);
-        while (!vif.fc_rx_cfg_hready)
-          @(posedge vif.clk);
-
-        begin
-          ahb_rx_observed_item item;
-          item = ahb_rx_observed_item::type_id::create("rx_cfg_obs");
-          item.addr    = {2'b00, captured_addr};
-          item.data    = vif.fc_rx_cfg_hwdata;
-          item.is_fifo = 1'b0;
-          ap.write(item);
-
-          `uvm_info("RX_CFG_RESP", $sformatf("Observed CFG write: addr=0x%03h data=0x%08h",
-            item.addr, item.data), UVM_MEDIUM)
-        end
+        `uvm_info("RX_CFG_RESP", $sformatf("Observed CFG write: addr=0x%03h data=0x%08h",
+          item.addr, item.data), UVM_MEDIUM)
       end
     end
   endtask

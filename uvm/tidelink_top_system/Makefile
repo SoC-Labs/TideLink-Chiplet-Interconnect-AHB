@@ -37,8 +37,9 @@ INT_UVM_DIR  = $(PROJ_HOME)/uvm/tidelink_integration
 AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
 
-# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb)
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb). Convention:
+# CMSDK_DIR is the package root (parent of `logical/`), matching cocotb/lint.
+CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
 
 # XHB500 generated bridge directories (set by 'source ../../set_env.sh')
 XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
@@ -65,6 +66,10 @@ VCS  = $(VCS_HOME)/bin/vcs
 VCS_FLAGS  = -full64 -sverilog
 VCS_FLAGS += -ntb_opts uvm-1.2
 VCS_FLAGS += -timescale=1ns/1ps
+# Enable hierarchical-path read/deposit (used by §9 alignment tests to drive
+# swi_bit_slip / swi_training_mode by HDL backdoor + module-context force).
+VCS_FLAGS += -debug_access+all
+VCS_FLAGS += -v2k_generate
 # Disabled: +xprop=tmerge causes tx_ready/tx_en/precnt to go X at ~19us even
 # though Wlink trains successfully (tx_ready=1 from 5us-18us). The same RTL
 # runs cleanly in the cocotb regression (which doesn't enable xprop). Some
@@ -104,6 +109,13 @@ VCS_FLAGS += -y $(AMBA_HOME)/sverilog/src/vcs
 VCS_FLAGS += -y $(AMBA_HOME)/sverilog/src/com
 VCS_FLAGS += +libext+.svp+.sv+.svi+.svh
 
+# §9 per-lane bit-slip alignment TB plumbing (asymmetric skew tests)
+# Lane checker now lives in src/rtl as tidelink_lane_checker (renamed from
+# the cocotb-local wlink_lane_checker; the lane_checker is also pulled in by
+# the FPGA/ASIC flists for synthesis paths).
+VCS_FLAGS += $(TB_DIR)/pad_skid_lanes.sv
+VCS_FLAGS += $(PROJ_HOME)/src/rtl/tidelink_lane_checker.sv
+
 # Top-level testbench
 VCS_FLAGS += $(TB_DIR)/top.sv
 VCS_FLAGS += -top test_top
@@ -118,10 +130,10 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # ---------------------------------------------------------------
 
 # CMSDK components
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 
 # TideLink FIFO RTL
 VCS_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
@@ -183,11 +195,23 @@ VCS_FLAGS += -y $(DEPS_DIR)/logical/PHY/generic
 VCS_FLAGS += -y $(DEPS_DIR)/logical/wlink
 VCS_FLAGS += +libext+.v
 
+# Explicitly compile the GPIO PHY files (rather than letting -y resolve them
+# lazily). XMRE references from the §9 alignment soft-strap force-blocks in
+# tb/top.sv require the gpio module's internal regs to be elaborated, which
+# only happens when the file is explicitly compiled.
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpio.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioTx.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioRx.v
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WlinkGPIOPHY.v
+# Use the §9 phy-align Wlink.v (with swi_bit_slip_in / swi_training_mode_in
+# ports) rather than the older Chisel output under wav-wlink-hw/.
+VCS_FLAGS += $(DEPS_DIR)/logical/wlink/Wlink.v
+
 # Address translator and its dependencies
 VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/apb_control/apb_control.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/address_translation/address_translation.sv
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 
 # Bridge dependencies
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges
@@ -210,6 +234,7 @@ VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
 
 # Performance counter
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_regs.sv
 
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv
@@ -241,6 +266,12 @@ TESTS = test_top_single_packet \
         test_top_mixed_traffic \
         test_top_coordinated_reset \
         test_top_addr_translate
+
+# BRINGUP_REPORT.md §9 — per-lane bit-slip alignment tests (uvm-thoroughness)
+TESTS_ALIGN = test_align_uniform_skew \
+              test_align_asymmetric_skew \
+              test_align_one_dead_lane \
+              test_align_recalibration_after_link_drop
 
 # AHB passthrough hangs: Wlink AXI FC target not accepting from XHB500.
 # Needs Wlink AXI FC path initialization (future work).

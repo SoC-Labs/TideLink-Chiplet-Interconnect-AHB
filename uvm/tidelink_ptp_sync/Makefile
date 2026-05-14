@@ -36,8 +36,9 @@ AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
 TOP_SEQ_DIR  = $(TOP_UVM_DIR)/sequences
 
-# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb)
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb). Convention:
+# CMSDK_DIR is the package root (parent of `logical/`), matching cocotb/lint.
+CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
 
 # XHB500 generated bridge directories
 XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
@@ -68,6 +69,7 @@ VCS_FLAGS  = -full64 -sverilog
 VCS_FLAGS += -ntb_opts uvm-1.2
 VCS_FLAGS += -timescale=1ns/1ps
 VCS_FLAGS += -xprop=tmerge
+VCS_FLAGS += -top test_top
 
 # VIP defines
 VCS_FLAGS += +define+DESIGNWARE_INCDIR=$(VIP_HOME)
@@ -114,10 +116,10 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # ---------------------------------------------------------------
 
 # CMSDK components
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 
 # TideLink FIFO RTL
 VCS_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
@@ -187,7 +189,7 @@ VCS_FLAGS += +libext+.v
 VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/apb_control/apb_control.sv
 VCS_FLAGS += $(DEPS_DIR)/logical/address_translation/address_translation.sv
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
 
 # Bridge dependencies
 VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges

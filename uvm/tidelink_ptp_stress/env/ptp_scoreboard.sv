@@ -111,8 +111,8 @@ class ptp_scoreboard extends uvm_scoreboard;
 
     // Histogram (integer bin = delay in nanoseconds)
     begin
-      int unsigned fwd_bin = int unsigned'(fwd_delay);
-      int unsigned rev_bin = int unsigned'(rev_delay);
+      int unsigned fwd_bin = int'(fwd_delay);
+      int unsigned rev_bin = int'(rev_delay);
       if (fwd_histogram.exists(fwd_bin))
         fwd_histogram[fwd_bin]++;
       else

@@ -3,7 +3,7 @@
 
 // FIFO subsystem (tidelink_fifo and dependencies)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v
+${CMSDK_FPGA_SRAM_V}
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 ${TIDELINK_HOME}/src/rtl/fifo/fpga/tidelink_sram.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ctrl.sv

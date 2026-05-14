@@ -18,6 +18,16 @@ export TIDELINK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # CMSDK path (Arm Corstone SSE-200 / BP210 package)
 export CMSDK_DIR="${CMSDK_DIR:-${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0}"
 
+# cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install used in CI;
+# fall back to the standalone BP210 install when not present in CMSDK_DIR.
+if [ -z "${CMSDK_FPGA_SRAM_V}" ]; then
+    if [ -f "${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v" ]; then
+        export CMSDK_FPGA_SRAM_V="${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v"
+    else
+        export CMSDK_FPGA_SRAM_V="${ARM_IP_LIBRARY_PATH}/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
+    fi
+fi
+
 # XHB500 source IP (Arm XHB-500 Generic Global Bundle)
 export XHB500_IP_DIR="${XHB500_IP_DIR:-${ARM_IP_LIBRARY_PATH}/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500}"
 

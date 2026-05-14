@@ -39,6 +39,9 @@ variables:
   SPYGLASS_HOME: /eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2/SPYGLASS_HOME
   # ARM CMSDK -- configurable via CI variable
   CMSDK_DIR: "/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0"
+  # cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install above; pull
+  # it from the standalone BP210 install. Flists reference ${CMSDK_FPGA_SRAM_V}.
+  CMSDK_FPGA_SRAM_V: "/research/AAA/ip_library/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
   # PTP Hardware Clock (separate component, cloned for PTP tests)
   PHC_REPO: "https://git.soton.ac.uk/soclabs/chiplets/ptp-hardware-clock-ahb.git"
   PHC_BRANCH: "main"

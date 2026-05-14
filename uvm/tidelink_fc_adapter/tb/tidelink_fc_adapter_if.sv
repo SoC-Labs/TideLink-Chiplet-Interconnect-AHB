@@ -44,28 +44,26 @@ interface tidelink_fc_adapter_if (
   logic [31:0]       rtn_hrdata;         // output from DUT
 
   // ---------------------------------------------------------------
-  // AHB Master — RX FIFO Path (DUT drives, AHB slave agent responds)
+  // Direct Write — RX FIFO Path (DUT drives valid/write/addr/wdata,
+  //                              responder drives ready)
   // ---------------------------------------------------------------
-  logic [13:0]       fc_rx_fifo_haddr;   // output from DUT
-  logic [31:0]       fc_rx_fifo_hwdata;  // output from DUT
-  logic  [1:0]       fc_rx_fifo_htrans;  // output from DUT
-  logic  [2:0]       fc_rx_fifo_hsize;   // output from DUT
-  logic              fc_rx_fifo_hwrite;  // output from DUT
-  logic              fc_rx_fifo_hready;  // input to DUT (driven by agent)
-  logic              fc_rx_fifo_hresp;   // input to DUT (driven by agent)
-  logic [31:0]       fc_rx_fifo_hrdata;  // input to DUT (driven by agent)
+  logic              fc_rx_fifo_valid;   // output from DUT
+  logic              fc_rx_fifo_write;   // output from DUT
+  logic [13:0]       fc_rx_fifo_addr;    // output from DUT
+  logic [31:0]       fc_rx_fifo_wdata;   // output from DUT
+  logic              fc_rx_fifo_ready;   // input to DUT (driven by responder)
 
   // ---------------------------------------------------------------
-  // AHB Master — RX Config Path (DUT drives, AHB slave agent responds)
+  // APB Master — RX Config Path (DUT drives PSEL/PENABLE/PWRITE/...,
+  //                              responder drives PREADY/PRDATA)
   // ---------------------------------------------------------------
-  logic [11:0]       fc_rx_cfg_haddr;    // output from DUT
-  logic [31:0]       fc_rx_cfg_hwdata;   // output from DUT
-  logic  [1:0]       fc_rx_cfg_htrans;   // output from DUT
-  logic  [2:0]       fc_rx_cfg_hsize;    // output from DUT
-  logic              fc_rx_cfg_hwrite;   // output from DUT
-  logic              fc_rx_cfg_hready;   // input to DUT (driven by agent)
-  logic              fc_rx_cfg_hresp;    // input to DUT (driven by agent)
-  logic [31:0]       fc_rx_cfg_hrdata;   // input to DUT (driven by agent)
+  logic [11:0]       fc_rx_cfg_paddr;    // output from DUT
+  logic [31:0]       fc_rx_cfg_pwdata;   // output from DUT
+  logic              fc_rx_cfg_psel;     // output from DUT
+  logic              fc_rx_cfg_penable;  // output from DUT
+  logic              fc_rx_cfg_pwrite;   // output from DUT
+  logic [31:0]       fc_rx_cfg_prdata;   // input to DUT (driven by responder)
+  logic              fc_rx_cfg_pready;   // input to DUT (driven by responder)
 
   // ---------------------------------------------------------------
   // FC Node Interface — TX (DUT drives a2l, agent drives ready)
@@ -101,23 +99,22 @@ interface tidelink_fc_adapter_if (
   endclocking
 
   // ---------------------------------------------------------------
-  // Clocking block: AHB slave responding to RX FIFO
+  // Clocking block: direct-write responder for RX FIFO path
   // ---------------------------------------------------------------
   clocking rx_fifo_slv_cb @(posedge clk);
     default input #1 output #1;
-    input  fc_rx_fifo_haddr, fc_rx_fifo_hwdata, fc_rx_fifo_htrans;
-    input  fc_rx_fifo_hsize, fc_rx_fifo_hwrite;
-    output fc_rx_fifo_hready, fc_rx_fifo_hresp, fc_rx_fifo_hrdata;
+    input  fc_rx_fifo_valid, fc_rx_fifo_write, fc_rx_fifo_addr, fc_rx_fifo_wdata;
+    output fc_rx_fifo_ready;
   endclocking
 
   // ---------------------------------------------------------------
-  // Clocking block: AHB slave responding to RX Config
+  // Clocking block: APB responder for RX Config path
   // ---------------------------------------------------------------
   clocking rx_cfg_slv_cb @(posedge clk);
     default input #1 output #1;
-    input  fc_rx_cfg_haddr, fc_rx_cfg_hwdata, fc_rx_cfg_htrans;
-    input  fc_rx_cfg_hsize, fc_rx_cfg_hwrite;
-    output fc_rx_cfg_hready, fc_rx_cfg_hresp, fc_rx_cfg_hrdata;
+    input  fc_rx_cfg_paddr, fc_rx_cfg_pwdata, fc_rx_cfg_psel;
+    input  fc_rx_cfg_penable, fc_rx_cfg_pwrite;
+    output fc_rx_cfg_prdata, fc_rx_cfg_pready;
   endclocking
 
   // ---------------------------------------------------------------
@@ -148,10 +145,10 @@ interface tidelink_fc_adapter_if (
     input ahb_tx_hrdata, ahb_tx_hresp, ahb_tx_hreadyout;
     input rtn_haddr, rtn_hwdata, rtn_htrans, rtn_hsize, rtn_hwrite;
     input rtn_hready, rtn_hresp, rtn_hrdata;
-    input fc_rx_fifo_haddr, fc_rx_fifo_hwdata, fc_rx_fifo_htrans;
-    input fc_rx_fifo_hsize, fc_rx_fifo_hwrite, fc_rx_fifo_hready;
-    input fc_rx_cfg_haddr, fc_rx_cfg_hwdata, fc_rx_cfg_htrans;
-    input fc_rx_cfg_hsize, fc_rx_cfg_hwrite, fc_rx_cfg_hready;
+    input fc_rx_fifo_valid, fc_rx_fifo_write, fc_rx_fifo_addr;
+    input fc_rx_fifo_wdata, fc_rx_fifo_ready;
+    input fc_rx_cfg_paddr, fc_rx_cfg_pwdata, fc_rx_cfg_psel;
+    input fc_rx_cfg_penable, fc_rx_cfg_pwrite, fc_rx_cfg_pready;
     input tl_fc_a2l_valid, tl_fc_a2l_data, tl_fc_a2l_ready;
     input tl_fc_l2a_valid, tl_fc_l2a_data, tl_fc_l2a_accept;
   endclocking

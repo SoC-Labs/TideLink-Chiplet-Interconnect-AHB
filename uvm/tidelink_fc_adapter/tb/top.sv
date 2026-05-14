@@ -94,25 +94,43 @@ module test_top;
     .rtn_hresp           (dut_if.rtn_hresp),
     .rtn_hrdata          (dut_if.rtn_hrdata),
 
-    // AHB Master — RX FIFO Path
-    .fc_rx_fifo_haddr    (dut_if.fc_rx_fifo_haddr),
-    .fc_rx_fifo_hwdata   (dut_if.fc_rx_fifo_hwdata),
-    .fc_rx_fifo_htrans   (dut_if.fc_rx_fifo_htrans),
-    .fc_rx_fifo_hsize    (dut_if.fc_rx_fifo_hsize),
-    .fc_rx_fifo_hwrite   (dut_if.fc_rx_fifo_hwrite),
-    .fc_rx_fifo_hready   (dut_if.fc_rx_fifo_hready),
-    .fc_rx_fifo_hresp    (dut_if.fc_rx_fifo_hresp),
-    .fc_rx_fifo_hrdata   (dut_if.fc_rx_fifo_hrdata),
+    // Direct Write — RX FIFO Path
+    .fc_rx_fifo_valid    (dut_if.fc_rx_fifo_valid),
+    .fc_rx_fifo_write    (dut_if.fc_rx_fifo_write),
+    .fc_rx_fifo_addr     (dut_if.fc_rx_fifo_addr),
+    .fc_rx_fifo_wdata    (dut_if.fc_rx_fifo_wdata),
+    .fc_rx_fifo_ready    (dut_if.fc_rx_fifo_ready),
 
-    // AHB Master — RX Config Path
-    .fc_rx_cfg_haddr     (dut_if.fc_rx_cfg_haddr),
-    .fc_rx_cfg_hwdata    (dut_if.fc_rx_cfg_hwdata),
-    .fc_rx_cfg_htrans    (dut_if.fc_rx_cfg_htrans),
-    .fc_rx_cfg_hsize     (dut_if.fc_rx_cfg_hsize),
-    .fc_rx_cfg_hwrite    (dut_if.fc_rx_cfg_hwrite),
-    .fc_rx_cfg_hready    (dut_if.fc_rx_cfg_hready),
-    .fc_rx_cfg_hresp     (dut_if.fc_rx_cfg_hresp),
-    .fc_rx_cfg_hrdata    (dut_if.fc_rx_cfg_hrdata),
+    // APB Master — RX Config Path
+    .fc_rx_cfg_paddr     (dut_if.fc_rx_cfg_paddr),
+    .fc_rx_cfg_pwdata    (dut_if.fc_rx_cfg_pwdata),
+    .fc_rx_cfg_psel      (dut_if.fc_rx_cfg_psel),
+    .fc_rx_cfg_penable   (dut_if.fc_rx_cfg_penable),
+    .fc_rx_cfg_pwrite    (dut_if.fc_rx_cfg_pwrite),
+    .fc_rx_cfg_prdata    (dut_if.fc_rx_cfg_prdata),
+    .fc_rx_cfg_pready    (dut_if.fc_rx_cfg_pready),
+
+    // Servo timestamp injection (not exercised at unit level)
+    .servo_fc_valid      (1'b0),
+    .servo_fc_data       (48'h0),
+    .servo_fc_ready      (),
+
+    // TideChart AXI-Stream port (not exercised at unit level)
+    .tc_axis_tx_tvalid   (1'b0),
+    .tc_axis_tx_tdata    (48'h0),
+    .tc_axis_tx_tready   (),
+    .tc_axis_rx_tvalid   (),
+    .tc_axis_rx_tdata    (),
+    .tc_axis_rx_tready   (1'b1),
+
+    // QoS priority hint (default = original fixed priority)
+    .tc_qos_priority     (3'b000),
+
+    // PUF SRAM read interface (not exercised at unit level)
+    .puf_addr            (),
+    .puf_req             (),
+    .puf_rdata           (32'h0),
+    .puf_ack             (1'b0),
 
     // FC Node Interface
     .tl_fc_a2l_valid     (dut_if.tl_fc_a2l_valid),

@@ -1,6 +1,13 @@
 export TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 export CMSDK_DIR     ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
+# cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install used in CI;
+# fall back to the standalone BP210 install when not present in CMSDK_DIR.
+CMSDK_FPGA_SRAM_V ?= $(if $(wildcard $(CMSDK_DIR)/logical/models/memories/cmsdk_fpga_sram.v),\
+                       $(CMSDK_DIR)/logical/models/memories/cmsdk_fpga_sram.v,\
+                       $(ARM_IP_LIBRARY_PATH)/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v)
+export CMSDK_FPGA_SRAM_V
+
 # ── SpyGlass tool ────────────────────────────────────────────────────────────
 SPYGLASS_HOME ?= /eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2/SPYGLASS_HOME
 SPYGLASS      := $(SPYGLASS_HOME)/bin/spyglass

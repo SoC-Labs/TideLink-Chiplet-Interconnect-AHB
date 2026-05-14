@@ -37,8 +37,9 @@ AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 UNIT_SEQ_DIR = $(UNIT_UVM_DIR)/sequences
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
 
-# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb)
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0/logical
+# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb). Convention:
+# CMSDK_DIR is the package root (parent of `logical/`), matching cocotb/lint.
+CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
 
 # Simulation output
 SIM_DIR      = sim_build
@@ -106,10 +107,10 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # DUT RTL sources
 # ---------------------------------------------------------------
 # CMSDK components
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog
-VCS_FLAGS += $(CMSDK_DIR)/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog
+VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
 
 # TideLink FIFO RTL
 VCS_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv

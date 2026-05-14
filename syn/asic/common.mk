@@ -34,12 +34,25 @@ export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 export TARGET_LIB     ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp/sc12_base_rvt/r0p0/db/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
 
 # ── Memory macro libraries (compiled register file) ─────────────────────
-export MEM_PATH       ?= /research/precompiled_mems/TSMC65/rf_16k
-export MEM_DB_SS      ?= $(MEM_PATH)/rf_16k_ss_1p08v_1p08v_125c.db
-export MEM_DB_FF      ?= $(MEM_PATH)/rf_16k_ff_1p32v_1p32v_m40c.db
+# tidelink_top instantiates a single rf_16k (FIFO mem). MEM_BASE is the
+# precompiled-mems root so the FC fusion-lib can pick up additional macro
+# LEFs by name if the partition ever grows. MEM_PATH/MEM_DB_SS/MEM_DB_FF
+# remain as backwards-compat aliases for the DC + RTLA flows.
+export MEM_BASE       ?= /research/precompiled_mems/TSMC65
+export RF_16K_DB_SS   ?= $(MEM_BASE)/rf_16k/rf_16k_ss_1p08v_1p08v_125c.db
+export RF_16K_DB_FF   ?= $(MEM_BASE)/rf_16k/rf_16k_ff_1p32v_1p32v_m40c.db
 
-# Link libraries — target + any additional macro/IP libs
-export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DB_SS)
+# Aggregate slow/fast macro library lists for link_library
+export MEM_DBS_SS     := $(RF_16K_DB_SS)
+export MEM_DBS_FF     := $(RF_16K_DB_FF)
+
+# Backwards-compat aliases (DC + RTLA flow + FC.read_design.tcl)
+export MEM_PATH       ?= $(MEM_BASE)/rf_16k
+export MEM_DB_SS      ?= $(RF_16K_DB_SS)
+export MEM_DB_FF      ?= $(RF_16K_DB_FF)
+
+# Link libraries — target + every macro corner present
+export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DBS_SS)
 
 # TF/Milkyway — physical reference for floorplan estimation (TSMC 65nm, 1p9m_6x2z)
 export PHYS_IP_PATH   ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp

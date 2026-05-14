@@ -33,6 +33,36 @@ syn/asic/design-compiler/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.pvk
 cdc/tidelink_top
 cdc/*summary.rpt
 
+# ── Synthesis: Fusion Compiler — all generated trees ──────────────────────
+syn/asic/fusion-compiler/work/
+syn/asic/fusion-compiler/libs/
+syn/asic/fusion-compiler/logs/
+syn/asic/fusion-compiler/reports/
+syn/asic/fusion-compiler/outputs/
+# lm_shell / fc_shell scratch that lands at the flow root
+syn/asic/fusion-compiler/PreFrameCheck/
+syn/asic/fusion-compiler/check_workspace.ems
+syn/asic/fusion-compiler/lm_output.txt
+syn/asic/fusion-compiler/lm_command.log
+syn/asic/fusion-compiler/fc_output.txt
+syn/asic/fusion-compiler/fc_command.log
+syn/asic/fusion-compiler/*.svf
+syn/asic/fusion-compiler/alib-*
+syn/asic/fusion-compiler/.synopsys*
+
+# ── Synthesis: RTL Architect ──────────────────────────────────────────────
+syn/asic/rtl-architect/RTLA_WORK/
+syn/asic/rtl-architect/fusion_lib/
+syn/asic/rtl-architect/*_ra_reports/
+syn/asic/rtl-architect/*_ra.log
+
+# ── Formality LEC ─────────────────────────────────────────────────────────
+syn/asic/formality/work/
+syn/asic/formality/logs/
+syn/asic/formality/reports/
+syn/asic/formality/fm_shell_command.log
+syn/asic/formality/*.svf
+
 # Generated IP (from set_env.sh)
 deps/xhb500/generated/
 
@@ -58,3 +88,20 @@ hierarchy.txt
 # Generated C headers (from scripts/rdl2c.py)
 src/sw/*.generated.h
 imp/
+
+# Fusion Compiler
+*.gz
+*.pvl
+*.done
+*.svf
+*.rep
+*.mr
+*.ems
+*_log
+*.err
+*.ndm
+*.misc
+*.tluplus
+*.map
+*.tdm
+*.attach

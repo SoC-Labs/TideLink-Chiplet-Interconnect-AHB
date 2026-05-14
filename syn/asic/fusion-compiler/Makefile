@@ -17,10 +17,14 @@ override FLIST := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
 export FLIST
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-# Switch work / outputs / etc to a parallel _nocg tree when CG is off so
-# the production area-tight checkpoints + deliverables aren't clobbered.
+# Switch work / outputs / etc to a parallel tree for non-production variants
+# so the production checkpoints + deliverables aren't clobbered:
+#   FC_CLOCK_GATING=off         → work_nocg/    (ICG-free netlist)
+#   FC_PRESERVE_WLINK_FCSM=on   → work_preserve/ (Wlink FCSMs set_dont_touch'd)
 ifeq ($(FC_CLOCK_GATING),off)
 WORK_SUFFIX = _nocg
+else ifeq ($(FC_PRESERVE_WLINK_FCSM),on)
+WORK_SUFFIX = _preserve
 else
 WORK_SUFFIX =
 endif

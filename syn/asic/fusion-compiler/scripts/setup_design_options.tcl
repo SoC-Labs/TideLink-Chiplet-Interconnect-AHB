@@ -64,18 +64,27 @@ if {!([info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off")}
 #-----------------------------------------------------------------------------
 # Optional: preserve Wlink Chisel FCSM modules through synthesis.
 #
-# These auto-generated modules are the source of the LEC don't-verify
-# residual (264 DFFs in the current build). set_dont_touch_network on
-# them prevents synth from doing constant-folding / FSM re-encoding /
-# array flattening on those modules, which keeps the netlist register
-# structure 1:1 with the RTL and lets Formality verify everything cleanly.
+#   make fc FC_PRESERVE_WLINK_FCSM=on   # uses work_preserve/ tree
 #
-# Trade-off: those modules synthesise less optimally (estimated +5-10%
-# area on the affected blocks, possibly a small timing hit). Enable
-# only when LEC sign-off cleanliness is more important than the last
-# few % of area. Disabled by default.
+# EMPIRICAL FINDING (this build): the knob is INEFFECTIVE for reducing
+# LEC don't-verify residuals on this design. Measured both production
+# and preserve variants:
+#   production: 18,542 / 0 / 0 / 256 don't-verify  (area 477,768 μm²)
+#   preserve:   18,542 / 0 / 0 / 256 don't-verify  (area 477,711 μm²)
+# Identical LEC counts, ~0 area cost.
 #
-#   make fc FC_PRESERVE_WLINK_FCSM=on
+# Why: the 256 residuals are dominated by registers OUTSIDE
+# WlinkGenericFCSM_* — 128 of them in lltx/link_data_reg_reg
+# (WlinkTxLinkLayer), 16 in txpstate/count_reg (WlinkTxPstateCtrl),
+# 12 in lltx/byte_count_reg. set_dont_touch on FCSM_* eliminates
+# residuals in 3 of the 4 axi*FC instances but the net total is
+# unchanged.
+#
+# To actually shift the residual count, the preserve list would need
+# to include WlinkTxLinkLayer, WlinkTxPstateCtrl, WlinkRxLinkLayer,
+# etc. — costlier and probably still leaves residuals elsewhere.
+# Keeping the knob in place for future investigation but not a
+# recommended default.
 #-----------------------------------------------------------------------------
 if {[info exists ::env(FC_PRESERVE_WLINK_FCSM)] && $::env(FC_PRESERVE_WLINK_FCSM) eq "on"} {
     puts "INFO: \[setup\] FC_PRESERVE_WLINK_FCSM=on — set_dont_touch on WlinkGenericFCSM_*"

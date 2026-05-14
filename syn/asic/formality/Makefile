@@ -39,7 +39,7 @@ FM_SHELL = fm_shell
 # matching the save_block convention in scripts/6_partition_export.tcl.
 NETLIST = $(FC_OUTPUTS)/$(TOP).v
 
-.PHONY: lec lec_nocg lec_report gui clean help dirs
+.PHONY: lec lec_nocg lec_preserve lec_report gui clean help dirs
 
 dirs:
 	@mkdir -p $(FM_LOGS) $(FM_REPORTS) $(FM_WORK)
@@ -102,6 +102,29 @@ lec_nocg: $(NETLIST_NOCG) | dirs
 
 $(NETLIST_NOCG):
 	@echo "ERROR: $(NETLIST_NOCG) missing — run 'make -C $(FC_DIR) fc FC_CLOCK_GATING=off' first" >&2
+	@exit 1
+
+# LEC against the Wlink-FCSM-preserve variant. Uses outputs_preserve/.
+# Produced by `make -C $(FC_DIR) fc FC_PRESERVE_WLINK_FCSM=on`. The
+# WlinkGenericFCSM_* modules are set_dont_touch'd, so the netlist
+# preserves their RTL register structure → LEC residuals drop to ~0.
+NETLIST_PRESERVE = $(FC_DIR)/outputs_preserve/$(TOP).v
+lec_preserve: $(NETLIST_PRESERVE) | dirs
+	@echo "INFO: Formality LEC (Wlink-FCSM preserve): RTL ($(FLIST)) vs $(NETLIST_PRESERVE)"
+	@cd $(FM_WORK) && set -o pipefail; \
+	    NETLIST_OVERRIDE=$(NETLIST_PRESERVE) FC_OUTPUTS=$(FC_DIR)/outputs_preserve \
+	    $(FM_SHELL) -file $(FM_DIR)/scripts/run_lec.tcl 2>&1 \
+	    | tee $(FM_LOGS)/run_lec_preserve.log; \
+	    rc=$${PIPESTATUS[0]}; \
+	    grep -q "^FM_LEC_OK" $(FM_LOGS)/run_lec_preserve.log || rc=1; \
+	    if [ $$rc -ne 0 ]; then \
+	        echo "ERROR: preserve LEC did not pass — see $(FM_REPORTS)/04_failing.rep"; \
+	        exit 1; \
+	    fi
+	@echo "INFO: preserve LEC PASS — reports in $(FM_REPORTS)/"
+
+$(NETLIST_PRESERVE):
+	@echo "ERROR: $(NETLIST_PRESERVE) missing — run 'make -C $(FC_DIR) fc FC_PRESERVE_WLINK_FCSM=on' first" >&2
 	@exit 1
 
 lec_report: $(NETLIST) | dirs

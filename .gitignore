@@ -34,11 +34,11 @@ cdc/tidelink_top
 cdc/*summary.rpt
 
 # ── Synthesis: Fusion Compiler — all generated trees ──────────────────────
-syn/asic/fusion-compiler/work/
-syn/asic/fusion-compiler/libs/
-syn/asic/fusion-compiler/logs/
-syn/asic/fusion-compiler/reports/
-syn/asic/fusion-compiler/outputs/
+syn/asic/fusion-compiler/work*/
+syn/asic/fusion-compiler/libs*/
+syn/asic/fusion-compiler/logs*/
+syn/asic/fusion-compiler/reports*/
+syn/asic/fusion-compiler/outputs*/
 # lm_shell / fc_shell scratch that lands at the flow root
 syn/asic/fusion-compiler/PreFrameCheck/
 syn/asic/fusion-compiler/check_workspace.ems

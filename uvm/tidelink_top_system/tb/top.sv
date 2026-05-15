@@ -81,6 +81,10 @@ module test_top;
     rst_n = 1'b1;
   end
 
+  // SoC Labs (2026-05-08): force experiment removed — XMRE error.
+  // Test by directly editing reset value of swi_phase_offset in WavD2DGpio.v
+  // OR by APB-writing it post-lock + post-swreset.
+
   // ---------------------------------------------------------------
   // Package imports
   // ---------------------------------------------------------------
@@ -195,16 +199,77 @@ module test_top;
     end
   endgenerate
 
-  // A TX pads -> B RX pads, B TX pads -> A RX pads (with perturb hook)
-  wire                       a_pad_clk_rx = b_pad_clk_tx;
-  wire [NUM_PHY_LANES-1:0]   a_pad_rx     = b2a_pad;
-  wire                       b_pad_clk_rx = a_pad_clk_tx;
-  wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a2b_pad;
+  // ---------------------------------------------------------------
+  // BRINGUP_REPORT.md §9 — per-lane bit-slip skid block (asymmetric skew).
+  //
+  // After the perturb mux but before the cross-wired RX feed, insert a
+  // pad_skid_lanes module on each direction. The skid amounts are driven
+  // from tb_if.{a2b,b2a}_skid_bits_per_lane (default all-zero =
+  // passthrough). Tests opt in by setting these before init_system().
+  // ---------------------------------------------------------------
+  wire                       a2b_pad_clk_skid;
+  wire [NUM_PHY_LANES-1:0]   a2b_pad_skid;
+  wire                       b2a_pad_clk_skid;
+  wire [NUM_PHY_LANES-1:0]   b2a_pad_skid;
+
+  pad_skid_lanes #(.LANES(NUM_PHY_LANES)) u_skid_a2b (
+    .pad_clk_in        (a_pad_clk_tx),
+    .pad_data_in       (a2b_pad),
+    .skid_bits_per_lane(tb_if.a2b_skid_bits_per_lane),
+    .pad_clk_out       (a2b_pad_clk_skid),
+    .pad_data_out      (a2b_pad_skid)
+  );
+
+  pad_skid_lanes #(.LANES(NUM_PHY_LANES)) u_skid_b2a (
+    .pad_clk_in        (b_pad_clk_tx),
+    .pad_data_in       (b2a_pad),
+    .skid_bits_per_lane(tb_if.b2a_skid_bits_per_lane),
+    .pad_clk_out       (b2a_pad_clk_skid),
+    .pad_data_out      (b2a_pad_skid)
+  );
+
+  // A TX pads -> B RX pads, B TX pads -> A RX pads (perturb + skid hooks)
+  wire                       a_pad_clk_rx = b2a_pad_clk_skid;
+  wire [NUM_PHY_LANES-1:0]   a_pad_rx     = b2a_pad_skid;
+  wire                       b_pad_clk_rx = a2b_pad_clk_skid;
+  wire [NUM_PHY_LANES-1:0]   b_pad_rx     = a2b_pad_skid;
 
   // Mirror pad values into tb_if so UVM tests can assert on them without
   // reaching across module boundaries from inside a uvm_pkg context.
   assign tb_if.a_pad_tx_obs = a_pad_tx;
   assign tb_if.b_pad_tx_obs = b_pad_tx;
+
+  // ---------------------------------------------------------------
+  // §9 per-lane training-pattern lane-lock checkers — one per side.
+  // Driven by the deserialised lane data at each side's WavD2DGpio.
+  // ---------------------------------------------------------------
+  wire [127:0] a_rx_lane_data = u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_data;
+  wire         a_rx_link_clk  = u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
+  wire [127:0] b_rx_lane_data = u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_data;
+  wire         b_rx_link_clk  = u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
+
+  wire a_checker_rst = ~poresetn;
+  wire b_checker_rst = ~poresetn;
+
+  wire [7:0] a_lane_locked_w;
+  wire [7:0] b_lane_locked_w;
+
+  tidelink_lane_checker u_a_checker (
+    .clk        (a_rx_link_clk),
+    .rst        (a_checker_rst),
+    .lane_data  (a_rx_lane_data),
+    .lane_locked(a_lane_locked_w)
+  );
+
+  tidelink_lane_checker u_b_checker (
+    .clk        (b_rx_link_clk),
+    .rst        (b_checker_rst),
+    .lane_data  (b_rx_lane_data),
+    .lane_locked(b_lane_locked_w)
+  );
+
+  assign tb_if.a_lane_locked = a_lane_locked_w;
+  assign tb_if.b_lane_locked = b_lane_locked_w;
 
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A
@@ -760,6 +825,539 @@ module test_top;
   // ---------------------------------------------------------------
   // Waveform dumping
   // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+  // SoC Labs (debug A→B data flow): probes on TX/RX FC paths and B
+  // FIFO write enables to find where data gets lost.
+  // ---------------------------------------------------------------
+  // A: FC adapter TX side
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_valid &&
+        u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_ready) begin
+      $display("[PROBE_ATX] T=%0t  A.fc_a2l: data=0x%012h type=%0d addr=0x%04h payload=0x%08h",
+               $time,
+               u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_data,
+               u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_data[47:46],
+               u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_data[45:32],
+               u_tidelink_top_a.u_fc_adapter.tl_fc_a2l_data[31:0]);
+    end
+  end
+  // A: Wlink TideLink TL TX OUT (post-FCSM, into data link layer)
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_advance) begin
+      $display("[PROBE_ATX_TL] T=%0t  A.tx_out sop=%0d data_id=0x%02h wc=%0d data=0x%014h",
+               $time,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_sop,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_data_id,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_word_count,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_data);
+    end
+  end
+  // B: Wlink TideLink TL RX IN (pre-FCSM, from data link layer)
+  always @(posedge clk) begin
+    if (u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_valid) begin
+      $display("[PROBE_BRX_TL] T=%0t  B.rx_in sop=%0d data_id=0x%02h wc=%0d data=0x%014h",
+               $time,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_sop,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_data_id,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_word_count,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_data);
+    end
+  end
+  // B: Wlink TideLink TL TX OUT (B's own outgoing, mostly should be cr_pkts)
+  always @(posedge clk) begin
+    if (u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_advance) begin
+      $display("[PROBE_BTX_TL] T=%0t  B.tx_out sop=%0d data_id=0x%02h wc=%0d data=0x%014h",
+               $time,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_sop,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_data_id,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_word_count,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_tx_out_data);
+    end
+  end
+  // A: Wlink TideLink TL RX IN (A's own incoming, B->A path)
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_valid) begin
+      $display("[PROBE_ARX_TL] T=%0t  A.rx_in sop=%0d data_id=0x%02h wc=%0d data=0x%014h",
+               $time,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_sop,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_data_id,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_word_count,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_data);
+    end
+  end
+  // A: TX aperture AHB writes (slave side)
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_fc_adapter.ahb_tx_hsel &&
+        u_tidelink_top_a.u_fc_adapter.ahb_tx_htrans[1] &&
+        u_tidelink_top_a.u_fc_adapter.ahb_tx_hwrite &&
+        u_tidelink_top_a.u_fc_adapter.ahb_tx_hready) begin
+      $display("[PROBE_ATX_AHB] T=%0t  A.tx_aperture addr=0x%04h hready=%0d",
+               $time, u_tidelink_top_a.u_fc_adapter.ahb_tx_haddr,
+               u_tidelink_top_a.u_fc_adapter.ahb_tx_hready);
+    end
+  end
+  // A: TX aperture data phase
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_fc_adapter.tx_data_phase_r) begin
+      $display("[PROBE_ATX_DATA] T=%0t  A.tx_data_phase tx_addr_r=0x%04h hwdata=0x%08h skid_can_accept=%0d sb_grant=%0d tx_fc_valid=%0d",
+               $time, u_tidelink_top_a.u_fc_adapter.tx_addr_r,
+               u_tidelink_top_a.u_fc_adapter.ahb_tx_hwdata,
+               u_tidelink_top_a.u_fc_adapter.skid_can_accept,
+               u_tidelink_top_a.u_fc_adapter.sideband_grant,
+               u_tidelink_top_a.u_fc_adapter.tx_fc_valid);
+    end
+  end
+  // B: FC adapter RX side
+  always @(posedge clk) begin
+    if (u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_valid &&
+        u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_accept) begin
+      $display("[PROBE_BRX] T=%0t  B.fc_l2a: data=0x%012h type=%0d addr=0x%04h payload=0x%08h",
+               $time,
+               u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_data,
+               u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_data[47:46],
+               u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_data[45:32],
+               u_tidelink_top_b.u_fc_adapter.tl_fc_l2a_data[31:0]);
+    end
+  end
+  // B: FIFO direct write fired
+  always @(posedge clk) begin
+    if (u_tidelink_top_b.u_fc_adapter.fc_rx_fifo_valid &&
+        u_tidelink_top_b.u_fc_adapter.fc_rx_fifo_ready) begin
+      $display("[PROBE_BFIFO_WR] T=%0t  B.fc_wr addr=0x%04h wdata=0x%08h",
+               $time,
+               u_tidelink_top_b.u_fc_adapter.fc_rx_fifo_addr,
+               u_tidelink_top_b.u_fc_adapter.fc_rx_fifo_wdata);
+    end
+  end
+  // A: returner state and pending
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_tidelink_fifo.u_returner.state_r != 2'b00) begin
+      $display("[PROBE_ARTN] T=%0t  A.returner state=%0d busy=%0d pend0=%0d pend1=%0d pend2=%0d addr=0x%08h data=0x%08h hready=%0d",
+               $time,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.state_r,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.busy,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.pending_0,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.pending_1,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.pending_2,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.haddr,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.hwdata,
+               u_tidelink_top_a.u_tidelink_fifo.u_returner.hready);
+    end
+  end
+  // ---------------------------------------------------------------
+  // SoC Labs (2026-05-08): TideLink FCSM diagnostic — periodically print
+  // FCSM state + cr/crack_pkt_seen on both sides so we can pinpoint the
+  // SHORTCOMINGS 14b bug (cr_pkt_seen_rx never asserts -> SEND_CREDITS1
+  // stuck) inside UVM test_top_autoneg_basic.
+  // ---------------------------------------------------------------
+  // Snapshot A's FCSM state during the 195-200us SB_A2B window
+  initial begin
+    #195_000;
+    $display("[SOCLABS_DIAG_PRE195] T=%0t  A.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+    $display("[SOCLABS_DIAG_PRE195] T=%0t  B.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+  end
+
+  // FCSM state-change tracker on both sides
+  logic [2:0] a_tlfcsm_state_prev;
+  logic [2:0] b_tlfcsm_state_prev;
+  always @(posedge clk) begin
+    if (!rst_n) begin
+      a_tlfcsm_state_prev <= 3'h0;
+      b_tlfcsm_state_prev <= 3'h0;
+    end else begin
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state !== a_tlfcsm_state_prev) begin
+        $display("[PROBE_AFCSM] T=%0t  A.tlfcsm: %0d -> %0d cr_seen_rx=%0d crack_seen_rx=%0d",
+                 $time,
+                 a_tlfcsm_state_prev,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+        a_tlfcsm_state_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state !== b_tlfcsm_state_prev) begin
+        $display("[PROBE_BFCSM] T=%0t  B.tlfcsm: %0d -> %0d cr_seen_rx=%0d crack_seen_rx=%0d",
+                 $time,
+                 b_tlfcsm_state_prev,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+        b_tlfcsm_state_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+      end
+    end
+  end
+
+  // ---------------------------------------------------------------
+  // 5-level RX-path tracing: trace upstream of tl2wl rx_in_valid on A & B
+  //   L1: tl2wl_auto_wlink_tidelinktl_rx_in_valid (FCSM TL channel input)
+  //   L2: rxrouter_auto_out_7_valid                 (router output for TL)
+  //   L3: rxrouter_auto_in_valid (== llrx_auto_out_valid)
+  //   L4: WlinkRxLinkLayer.state[1:0] (LL_RX FSM)
+  //   L5: llrx_io_link_data (deserialiser output, 128-bit)
+  // ---------------------------------------------------------------
+
+  // Counters / sticky-seen flags so we can summarise after the run
+  integer a_l1_cnt; integer a_l2_cnt; integer a_l3_cnt;
+  integer b_l1_cnt; integer b_l2_cnt; integer b_l3_cnt;
+  reg     a_llrx_left_idle; reg b_llrx_left_idle;
+  reg     a_link_data_nz_seen; reg b_link_data_nz_seen;
+  reg [1:0] a_llrx_state_prev, b_llrx_state_prev;
+
+  // Limit print rate
+  integer a_l1_prints, a_l2_prints, a_l3_prints;
+  integer b_l1_prints, b_l2_prints, b_l3_prints;
+  integer a_data_prints, b_data_prints;
+
+  initial begin
+    a_l1_cnt = 0; a_l2_cnt = 0; a_l3_cnt = 0;
+    b_l1_cnt = 0; b_l2_cnt = 0; b_l3_cnt = 0;
+    a_llrx_left_idle = 1'b0; b_llrx_left_idle = 1'b0;
+    a_link_data_nz_seen = 1'b0; b_link_data_nz_seen = 1'b0;
+    a_llrx_state_prev = 2'h0; b_llrx_state_prev = 2'h0;
+    a_l1_prints = 0; a_l2_prints = 0; a_l3_prints = 0;
+    b_l1_prints = 0; b_l2_prints = 0; b_l3_prints = 0;
+    a_data_prints = 0; b_data_prints = 0;
+  end
+
+  always @(posedge clk) begin
+    if (rst_n) begin
+      // === A side ===
+      // L1
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_valid) begin
+        a_l1_cnt <= a_l1_cnt + 1;
+        if (a_l1_prints < 5) begin
+          $display("[PROBE_ARX_L1] T=%0t  A.tl2wl_rx_in_valid=1 (count=%0d)",
+                   $time, a_l1_cnt);
+          a_l1_prints <= a_l1_prints + 1;
+        end
+      end
+      // L2
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.rxrouter_auto_out_7_valid) begin
+        a_l2_cnt <= a_l2_cnt + 1;
+        if (a_l2_prints < 5) begin
+          $display("[PROBE_ARX_L2] T=%0t  A.rxrouter_auto_out_7_valid=1 (count=%0d)",
+                   $time, a_l2_cnt);
+          a_l2_prints <= a_l2_prints + 1;
+        end
+      end
+      // L3
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.rxrouter_auto_in_valid) begin
+        a_l3_cnt <= a_l3_cnt + 1;
+        if (a_l3_prints < 5) begin
+          $display("[PROBE_ARX_L3] T=%0t  A.rxrouter_auto_in_valid=1 (llrx_auto_out_valid) (count=%0d) data_id=0x%02h sop=%0d",
+                   $time, a_l3_cnt,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_auto_out_data_id,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_auto_out_sop);
+          a_l3_prints <= a_l3_prints + 1;
+        end
+      end
+      // L4 — LL_RX state changes
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.state !== a_llrx_state_prev) begin
+        $display("[PROBE_ARX_L4] T=%0t  A.llrx.state %0d -> %0d  link_data=0x%032h",
+                 $time, a_llrx_state_prev,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.state,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data);
+        a_llrx_state_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.state;
+        if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.state != 2'h0) a_llrx_left_idle <= 1'b1;
+      end
+      // L5 — link_data non-zero (deserialiser activity)
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data != 128'h0) begin
+        if (!a_link_data_nz_seen) begin
+          $display("[PROBE_ARX_L5_FIRST] T=%0t  A.llrx_io_link_data first non-zero = 0x%032h  enable=%0d active_lanes=0x%02h lane_mask=0x%02h",
+                   $time,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_enable,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_active_lanes,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_lane_mask);
+          a_link_data_nz_seen <= 1'b1;
+        end
+        if (a_data_prints < 8) begin
+          $display("[PROBE_ARX_L5] T=%0t  A.llrx_io_link_data=0x%032h",
+                   $time, u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data);
+          a_data_prints <= a_data_prints + 1;
+        end
+      end
+
+      // === B side ===
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl_auto_wlink_tidelinktl_rx_in_valid) begin
+        b_l1_cnt <= b_l1_cnt + 1;
+        if (b_l1_prints < 5) begin
+          $display("[PROBE_BRX_L1] T=%0t  B.tl2wl_rx_in_valid=1 (count=%0d)",
+                   $time, b_l1_cnt);
+          b_l1_prints <= b_l1_prints + 1;
+        end
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.rxrouter_auto_out_7_valid) begin
+        b_l2_cnt <= b_l2_cnt + 1;
+        if (b_l2_prints < 5) begin
+          $display("[PROBE_BRX_L2] T=%0t  B.rxrouter_auto_out_7_valid=1 (count=%0d)",
+                   $time, b_l2_cnt);
+          b_l2_prints <= b_l2_prints + 1;
+        end
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.rxrouter_auto_in_valid) begin
+        b_l3_cnt <= b_l3_cnt + 1;
+        if (b_l3_prints < 5) begin
+          $display("[PROBE_BRX_L3] T=%0t  B.rxrouter_auto_in_valid=1 (count=%0d) data_id=0x%02h sop=%0d",
+                   $time, b_l3_cnt,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_auto_out_data_id,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_auto_out_sop);
+          b_l3_prints <= b_l3_prints + 1;
+        end
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.state !== b_llrx_state_prev) begin
+        $display("[PROBE_BRX_L4] T=%0t  B.llrx.state %0d -> %0d  link_data=0x%032h",
+                 $time, b_llrx_state_prev,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.state,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data);
+        b_llrx_state_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.state;
+        if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.state != 2'h0) b_llrx_left_idle <= 1'b1;
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data != 128'h0) begin
+        if (!b_link_data_nz_seen) begin
+          $display("[PROBE_BRX_L5_FIRST] T=%0t  B.llrx_io_link_data first non-zero = 0x%032h  enable=%0d active_lanes=0x%02h lane_mask=0x%02h",
+                   $time,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_enable,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_active_lanes,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_lane_mask);
+          b_link_data_nz_seen <= 1'b1;
+        end
+        if (b_data_prints < 8) begin
+          $display("[PROBE_BRX_L5] T=%0t  B.llrx_io_link_data=0x%032h",
+                   $time, u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data);
+          b_data_prints <= b_data_prints + 1;
+        end
+      end
+    end
+  end
+
+  // Track link_data changes — count distinct values per side
+  reg [127:0] a_link_data_prev, b_link_data_prev;
+  integer a_link_data_changes, b_link_data_changes;
+  integer a_valid_count, b_valid_count;
+  integer a_short_count, b_short_count;
+  integer a_long_count, b_long_count;
+  integer a_corrupt_count, b_corrupt_count;
+  integer a_change_prints, b_change_prints;
+  initial begin
+    a_link_data_prev = 128'h0; b_link_data_prev = 128'h0;
+    a_link_data_changes = 0; b_link_data_changes = 0;
+    a_valid_count = 0; b_valid_count = 0;
+    a_short_count = 0; b_short_count = 0;
+    a_long_count = 0; b_long_count = 0;
+    a_corrupt_count = 0; b_corrupt_count = 0;
+    a_change_prints = 0; b_change_prints = 0;
+  end
+
+  always @(posedge clk) begin
+    if (rst_n) begin
+      // A: link_data change detection (sampling on clk; aliased view of rx_link_clk domain)
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data !== a_link_data_prev) begin
+        a_link_data_changes <= a_link_data_changes + 1;
+        if (a_change_prints < 12) begin
+          $display("[PROBE_ARX_LDCHG] T=%0t  A.link_data: 0x%032h -> 0x%032h",
+                   $time, a_link_data_prev,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data);
+          a_change_prints <= a_change_prints + 1;
+        end
+        a_link_data_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data;
+      end
+      // A: LL_RX internals
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.valid) a_valid_count <= a_valid_count + 1;
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.is_short_pkt) a_short_count <= a_short_count + 1;
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.is_long_pkt)  a_long_count  <= a_long_count + 1;
+      if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.ecc_check_corrupted) a_corrupt_count <= a_corrupt_count + 1;
+
+      // B: link_data change detection
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data !== b_link_data_prev) begin
+        b_link_data_changes <= b_link_data_changes + 1;
+        if (b_change_prints < 12) begin
+          $display("[PROBE_BRX_LDCHG] T=%0t  B.link_data: 0x%032h -> 0x%032h",
+                   $time, b_link_data_prev,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data);
+          b_change_prints <= b_change_prints + 1;
+        end
+        b_link_data_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_link_data;
+      end
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.valid) b_valid_count <= b_valid_count + 1;
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.is_short_pkt) b_short_count <= b_short_count + 1;
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.is_long_pkt)  b_long_count  <= b_long_count + 1;
+      if (u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx.ecc_check_corrupted) b_corrupt_count <= b_corrupt_count + 1;
+    end
+  end
+
+  // ---------------------------------------------------------------
+  // PROBE_TXRX_DIFF: Cycle-by-cycle compare of B.phy_link_tx_tx_link_data
+  // (B's LL_TX framer output, going into the GPIO PHY) vs
+  // A.llrx_io_link_data (deserialiser output on A's RX path).
+  //
+  // Goal: determine whether the bug is in B's LL_TX framer or in
+  // the loopback/deserialiser path. Prints whenever either signal
+  // changes, with a print cap to keep log volume bounded. Also
+  // captures the first non-zero transition timestamps for both.
+  // ---------------------------------------------------------------
+  reg [127:0] btx_link_data_prev;
+  reg [127:0] arx_link_data_prev;
+  reg         btx_first_seen;
+  reg         arx_first_seen;
+  integer     btx_first_t;
+  integer     arx_first_t;
+  integer     diff_prints;
+  integer     diff_cycle_cnt;
+  integer     diff_match_cnt;
+  integer     diff_mismatch_cnt;
+  integer     diff_first_mismatch_t;
+  reg [127:0] diff_first_mismatch_btx;
+  reg [127:0] diff_first_mismatch_arx;
+
+  initial begin
+    btx_link_data_prev = 128'h0;
+    arx_link_data_prev = 128'h0;
+    btx_first_seen     = 1'b0;
+    arx_first_seen     = 1'b0;
+    btx_first_t        = 0;
+    arx_first_t        = 0;
+    diff_prints        = 0;
+    diff_cycle_cnt     = 0;
+    diff_match_cnt     = 0;
+    diff_mismatch_cnt  = 0;
+    diff_first_mismatch_t   = 0;
+    diff_first_mismatch_btx = 128'h0;
+    diff_first_mismatch_arx = 128'h0;
+  end
+
+  // Sample on the free-running test clk (same as other PROBE_*_LDCHG
+  // blocks). This aliases the link_clk domains but is sufficient to
+  // expose any persistent value mismatch since link_data is held on
+  // each lltx/llrx cycle.
+  always @(posedge clk) begin
+    if (rst_n) begin
+      // First non-zero TX (B) sighting
+      if (!btx_first_seen &&
+          (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data != 128'h0)) begin
+        btx_first_seen <= 1'b1;
+        btx_first_t    <= $time;
+        $display("[PROBE_TXRX_DIFF_BTX_FIRST] T=%0t  B.phy_link_tx_tx_link_data first non-zero = 0x%032h",
+                 $time,
+                 u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data);
+      end
+      // First non-zero RX (A) sighting (already captured elsewhere but
+      // recorded here too for direct comparison in the same block)
+      if (!arx_first_seen &&
+          (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data != 128'h0)) begin
+        arx_first_seen <= 1'b1;
+        arx_first_t    <= $time;
+        $display("[PROBE_TXRX_DIFF_ARX_FIRST] T=%0t  A.llrx_io_link_data first non-zero = 0x%032h",
+                 $time,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data);
+      end
+
+      // Cycle-by-cycle pair logging — print whenever EITHER side's
+      // link_data changes value, capped to 200 lines so we cover the
+      // first ~5us of corruption without flooding.
+      if (((u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data !== btx_link_data_prev) ||
+           (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data       !== arx_link_data_prev)) &&
+          (btx_first_seen || arx_first_seen)) begin
+        diff_cycle_cnt <= diff_cycle_cnt + 1;
+        if (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data ===
+            u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data) begin
+          diff_match_cnt <= diff_match_cnt + 1;
+        end else begin
+          diff_mismatch_cnt <= diff_mismatch_cnt + 1;
+          if (diff_mismatch_cnt == 0) begin
+            diff_first_mismatch_t   <= $time;
+            diff_first_mismatch_btx <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data;
+            diff_first_mismatch_arx <= u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data;
+          end
+        end
+        if (diff_prints < 200) begin
+          $display("[PROBE_TXRX_DIFF] T=%0t  B.tx=0x%032h  A.rx=0x%032h  %s",
+                   $time,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data,
+                   (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data ===
+                    u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data) ? "MATCH" : "DIFF");
+          diff_prints <= diff_prints + 1;
+        end
+        btx_link_data_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy_link_tx_tx_link_data;
+        arx_link_data_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data;
+      end
+    end
+  end
+
+  final begin
+    $display("[PROBE_TXRX_DIFF_SUMMARY] btx_first_t=%0t arx_first_t=%0t cycles=%0d match=%0d mismatch=%0d",
+             btx_first_t, arx_first_t, diff_cycle_cnt, diff_match_cnt, diff_mismatch_cnt);
+    if (diff_mismatch_cnt > 0) begin
+      $display("[PROBE_TXRX_DIFF_FIRST_MISMATCH] T=%0t  B.tx=0x%032h  A.rx=0x%032h",
+               diff_first_mismatch_t, diff_first_mismatch_btx, diff_first_mismatch_arx);
+    end
+  end
+
+  // Final summary at end of sim
+  final begin
+    $display("[PROBE_RXSUMMARY] A: L1_cnt=%0d L2_cnt=%0d L3_cnt=%0d llrx_left_idle=%0d link_data_nz_seen=%0d",
+             a_l1_cnt, a_l2_cnt, a_l3_cnt, a_llrx_left_idle, a_link_data_nz_seen);
+    $display("[PROBE_RXSUMMARY] B: L1_cnt=%0d L2_cnt=%0d L3_cnt=%0d llrx_left_idle=%0d link_data_nz_seen=%0d",
+             b_l1_cnt, b_l2_cnt, b_l3_cnt, b_llrx_left_idle, b_link_data_nz_seen);
+    $display("[PROBE_RXSUMMARY] A: link_data_changes=%0d valid_cnt=%0d short_cnt=%0d long_cnt=%0d corrupt_cnt=%0d",
+             a_link_data_changes, a_valid_count, a_short_count, a_long_count, a_corrupt_count);
+    $display("[PROBE_RXSUMMARY] B: link_data_changes=%0d valid_cnt=%0d short_cnt=%0d long_cnt=%0d corrupt_cnt=%0d",
+             b_link_data_changes, b_valid_count, b_short_count, b_long_count, b_corrupt_count);
+    $display("[PROBE_RXSUMMARY] A.llrx_io_enable=%0d active_lanes=0x%02h lane_mask=0x%02h",
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_enable,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_active_lanes,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_lane_mask);
+    $display("[PROBE_RXSUMMARY] B.llrx_io_enable=%0d active_lanes=0x%02h lane_mask=0x%02h",
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_enable,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_active_lanes,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_lane_mask);
+    // TX-side mask configuration (driving the wire that A receives)
+    $display("[PROBE_RXSUMMARY] A.lltx_active_lanes=0x%02h tx_lane_mask=0x%02h short_pkt_max=0x%02h",
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.lltx_io_active_lanes,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.lltx_io_lane_mask,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_swi_short_packet_max);
+    $display("[PROBE_RXSUMMARY] B.lltx_active_lanes=0x%02h tx_lane_mask=0x%02h short_pkt_max=0x%02h",
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.lltx_io_active_lanes,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.lltx_io_lane_mask,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.llrx_io_swi_short_packet_max);
+  end
+
+  initial begin
+    #150_000;  // 150 ns — earliest sample (autoneg likely still in progress)
+    $display("[SOCLABS_DIAG_T0] T=%0t", $time);
+    #150_000_000;  // 150 us — past autoneg, before SB_A2B traffic
+    $display("[SOCLABS_DIAG] T=%0t  A.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+    $display("[SOCLABS_DIAG] T=%0t  B.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+    #150_000_000;  // 300 us — during/after SB_A2B traffic
+    $display("[SOCLABS_DIAG] T=%0t  A.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+    $display("[SOCLABS_DIAG] T=%0t  B.tlfcsm: state=%0d cr_seen_rx=%0d crack_seen_rx=%0d",
+             $time,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx,
+             u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx);
+  end
+
 `ifdef WAVES_FSDB
   initial begin
     $fsdbDumpfile("test_top");
@@ -818,6 +1416,187 @@ module test_top;
   end
 
   // =================================================================
+  // [PROBE_AECC] Dump ph_in / rx_ecc / calc_ecc / link_data on every
+  // ECC-corruption event observed by A's WlinkRxLinkLayer.  Limit the
+  // print volume so the log stays readable — first 40 events only.
+  // =================================================================
+  integer a_ecc_dump_count;
+  initial a_ecc_dump_count = 0;
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.ecc_check_corrupted) begin
+      if (a_ecc_dump_count < 40) begin
+        $display("[PROBE_AECC] T=%0t  ph_in=0x%06h  rx_ecc=0x%02h  calc_ecc=0x%02h  link_data=0x%032h",
+                 $time,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.ecc_check_ph_in,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.ecc_check_rx_ecc,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx.ecc_check_calc_ecc,
+                 u_tidelink_top_a.u_chiplet_controller.u_wlink.llrx_io_link_data);
+        a_ecc_dump_count <= a_ecc_dump_count + 1;
+      end
+    end
+  end
+
+  // =================================================================
+  // [PROBE_GPIO_RST] Print A.gpiorx_0 io_por_reset every time it changes
+  // and toggle-sample A.gpiorx_0 io_pad_clk to see if it's actually
+  // toggling. A's rx_count being stuck at 15 means either reset is
+  // held active or pad_clk isn't toggling.
+  // =================================================================
+  reg a_gpiorx0_por_prev, b_gpiorx0_por_prev;
+  reg a_gpiotx0_por_prev, b_gpiotx0_por_prev;
+  reg a_gpiorx0_padclk_prev;
+  integer a_gpiorx0_padclk_toggles;
+  initial begin
+    a_gpiorx0_por_prev = 1'b1;
+    b_gpiorx0_por_prev = 1'b1;
+    a_gpiotx0_por_prev = 1'b1;
+    b_gpiotx0_por_prev = 1'b1;
+    a_gpiorx0_padclk_prev = 1'b0;
+    a_gpiorx0_padclk_toggles = 0;
+  end
+  always @(posedge clk) begin
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset !== a_gpiorx0_por_prev) begin
+      $display("[PROBE_GPIO_RST] T=%0t  A.gpiorx_0.io_por_reset: %b -> %b",
+               $time, a_gpiorx0_por_prev,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset);
+      a_gpiorx0_por_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset;
+    end
+    if (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset !== b_gpiorx0_por_prev) begin
+      $display("[PROBE_GPIO_RST] T=%0t  B.gpiorx_0.io_por_reset: %b -> %b",
+               $time, b_gpiorx0_por_prev,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset);
+      b_gpiorx0_por_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset;
+    end
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset !== a_gpiotx0_por_prev) begin
+      $display("[PROBE_GPIO_RST] T=%0t  A.gpiotx_0.io_reset: %b -> %b",
+               $time, a_gpiotx0_por_prev,
+               u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset);
+      a_gpiotx0_por_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset;
+    end
+    if (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset !== b_gpiotx0_por_prev) begin
+      $display("[PROBE_GPIO_RST] T=%0t  B.gpiotx_0.io_reset: %b -> %b",
+               $time, b_gpiotx0_por_prev,
+               u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset);
+      b_gpiotx0_por_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.io_reset;
+    end
+    if (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_pad_clk !== a_gpiorx0_padclk_prev) begin
+      a_gpiorx0_padclk_toggles <= a_gpiorx0_padclk_toggles + 1;
+      a_gpiorx0_padclk_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_pad_clk;
+    end
+  end
+  final begin
+    $display("[PROBE_GPIO_RST_SUMMARY] A.gpiorx_0.io_pad_clk total toggles=%0d  final_por=%b  final_padclk=%b",
+             a_gpiorx0_padclk_toggles,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_por_reset,
+             u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_pad_clk);
+  end
+
+  // =================================================================
+  // [PROBE_GPIO_COUNT] Compare WavD2DGpio counter alignment between
+  // B's serialiser (gpiotx_0) and A's deserialiser (gpiorx_0). The
+  // 5-bit-shift relationship observed in PROBE_TXRX_DIFF could be a
+  // reset-time counter offset between TX and RX. If so, A.rx.count
+  // vs B.tx.count will show a fixed delta.
+  //
+  // Both counters increment by 1 each pad_clk cycle; in this dual-DUT
+  // simulation pad_clk_rx is wired from B.tx out to A.rx in. So at the
+  // pad_clk edge they should track with a known phase relationship.
+  //
+  // Print first 40 changes plus a final summary of (a_count - b_count)
+  // mod 16 to see if the offset is constant.
+  // =================================================================
+  integer gpio_cnt_prints;
+  integer gpio_cnt_changes;
+  reg [3:0] a_rx_cnt_prev;
+  reg [3:0] b_tx_cnt_prev;
+  integer gpio_cnt_offset_hist[0:15];
+  integer i_gpio_init;
+  initial begin
+    gpio_cnt_prints  = 0;
+    gpio_cnt_changes = 0;
+    a_rx_cnt_prev    = 4'hf;
+    b_tx_cnt_prev    = 4'hf;
+    for (i_gpio_init = 0; i_gpio_init < 16; i_gpio_init = i_gpio_init + 1)
+      gpio_cnt_offset_hist[i_gpio_init] = 0;
+  end
+  always @(posedge u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_pad_clk) begin
+    if (rst_n) begin
+      // Sample current counters via hierarchical refs (on A's RX pad clk)
+      if ((u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count !== a_rx_cnt_prev) ||
+          (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count !== b_tx_cnt_prev)) begin
+        gpio_cnt_changes <= gpio_cnt_changes + 1;
+        // Histogram the (a_rx - b_tx) mod 16 offset
+        gpio_cnt_offset_hist[
+          (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count -
+           u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count) & 4'hf
+        ] <= gpio_cnt_offset_hist[
+          (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count -
+           u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count) & 4'hf
+        ] + 1;
+        // Skip prints during initial reset hold (POR releases ~44us)
+        if (gpio_cnt_prints < 80 && $time > 50_000_000) begin
+          $display("[PROBE_GPIO_COUNT] T=%0t  A.rx_count=%0d  B.tx_count=%0d  (a-b)mod16=%0d",
+                   $time,
+                   u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count,
+                   u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count,
+                   (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count -
+                    u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count) & 4'hf);
+          gpio_cnt_prints <= gpio_cnt_prints + 1;
+        end
+        a_rx_cnt_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count;
+        b_tx_cnt_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count;
+      end
+    end
+  end
+  final begin
+    integer i_hist;
+    $display("[PROBE_GPIO_COUNT_SUMMARY] total_changes=%0d", gpio_cnt_changes);
+    for (i_hist = 0; i_hist < 16; i_hist = i_hist + 1) begin
+      if (gpio_cnt_offset_hist[i_hist] != 0)
+        $display("[PROBE_GPIO_COUNT_SUMMARY]   offset=%0d  count=%0d", i_hist, gpio_cnt_offset_hist[i_hist]);
+    end
+  end
+
+  // Same probe for B.gpiorx_0 vs A.gpiotx_0 — to see the reverse direction
+  reg [3:0] b_rx_cnt_prev;
+  reg [3:0] a_tx_cnt_prev;
+  integer gpio_cnt_offset_hist_b[0:15];
+  integer gpio_cnt_changes_b;
+  integer i_gpio_init_b;
+  initial begin
+    b_rx_cnt_prev = 4'hf;
+    a_tx_cnt_prev = 4'hf;
+    gpio_cnt_changes_b = 0;
+    for (i_gpio_init_b = 0; i_gpio_init_b < 16; i_gpio_init_b = i_gpio_init_b + 1)
+      gpio_cnt_offset_hist_b[i_gpio_init_b] = 0;
+  end
+  always @(posedge u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.io_pad_clk) begin
+    if (rst_n) begin
+      if ((u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count !== b_rx_cnt_prev) ||
+          (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count !== a_tx_cnt_prev)) begin
+        gpio_cnt_changes_b <= gpio_cnt_changes_b + 1;
+        gpio_cnt_offset_hist_b[
+          (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count -
+           u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count) & 4'hf
+        ] <= gpio_cnt_offset_hist_b[
+          (u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count -
+           u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count) & 4'hf
+        ] + 1;
+        b_rx_cnt_prev <= u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.gpiorx_0.count;
+        a_tx_cnt_prev <= u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.gpiotx_0.count;
+      end
+    end
+  end
+  final begin
+    integer i_hist_b;
+    $display("[PROBE_GPIO_COUNT_B_SUMMARY] total_changes=%0d (B.rx vs A.tx)", gpio_cnt_changes_b);
+    for (i_hist_b = 0; i_hist_b < 16; i_hist_b = i_hist_b + 1) begin
+      if (gpio_cnt_offset_hist_b[i_hist_b] != 0)
+        $display("[PROBE_GPIO_COUNT_B_SUMMARY]   offset=%0d  count=%0d", i_hist_b, gpio_cnt_offset_hist_b[i_hist_b]);
+    end
+  end
+
+  // =================================================================
   // Reset control (driven by tests via tb_if)
   // Force/release must be in module context, not inside a package.
   // =================================================================
@@ -837,6 +1616,39 @@ module test_top;
       force poresetn = 1'b0;
     else
       release poresetn;
+  end
+
+  // -----------------------------------------------------------------
+  // BRINGUP_REPORT.md §9 — soft-strap drive for swi_bit_slip /
+  // swi_training_mode on each WavD2DGpio. Tests assert the _en signal
+  // and the corresponding value via tb_if; this always-block forces it
+  // into the gpio module. Force/release in module context is robust
+  // across VCS register-default optimisation (uvm_hdl_force can fail to
+  // locate constant-default regs even with -debug_access+all).
+  // -----------------------------------------------------------------
+  always @(*) begin
+    if (tb_if.a_align_bit_slip_en)
+      force u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.swi_bit_slip = tb_if.a_align_bit_slip;
+    else
+      release u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.swi_bit_slip;
+  end
+  always @(*) begin
+    if (tb_if.b_align_bit_slip_en)
+      force u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.swi_bit_slip = tb_if.b_align_bit_slip;
+    else
+      release u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.swi_bit_slip;
+  end
+  always @(*) begin
+    if (tb_if.a_align_training_mode_en)
+      force u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.swi_training_mode = tb_if.a_align_training_mode;
+    else
+      release u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.swi_training_mode;
+  end
+  always @(*) begin
+    if (tb_if.b_align_training_mode_en)
+      force u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.swi_training_mode = tb_if.b_align_training_mode;
+    else
+      release u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.swi_training_mode;
   end
 
 endmodule

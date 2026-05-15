@@ -64,6 +64,42 @@ interface tidelink_top_system_if (
   logic a_mask_hs_bypass;
   logic b_mask_hs_bypass;
 
+  // -------------------------------------------------------------------------
+  // BRINGUP_REPORT.md §9 — per-lane bit-slip alignment test plumbing.
+  //
+  // a2b_skid_bits_per_lane / b2a_skid_bits_per_lane drive an in-line
+  // pad_skid_lanes module on each PHY direction. Each entry is a 3-bit
+  // value 0..7 specifying how many pad_clk cycles to delay that lane's
+  // data wrt the clock. Default 0 = passthrough (existing tests behave
+  // exactly as before).
+  //
+  // a_lane_locked / b_lane_locked are 8-bit readback signals fed by an
+  // in-band wlink_lane_checker on each side. lane_locked[N]==1 means the
+  // training pattern is byte-aligned on lane N — i.e. the slip applied by
+  // swi_bit_slip[N] cancels the corresponding skid_bits_per_lane[N].
+  //
+  // a_align_*_drive / b_align_*_drive control the WavD2DGpio soft-strap
+  // registers swi_bit_slip / swi_training_mode. tb_top.sv has an
+  // always-block that force's the gpio register when the corresponding
+  // _en signal is asserted (uvm_hdl_force is unreliable with the way
+  // VCS optimises these constant-default regs; force/release from module
+  // context is the robust approach, matching the existing force_reset
+  // mechanism).
+  // -------------------------------------------------------------------------
+  logic [7:0][2:0] a2b_skid_bits_per_lane;   // master TX -> slave  RX
+  logic [7:0][2:0] b2a_skid_bits_per_lane;   // slave  TX -> master RX
+  logic [7:0]      a_lane_locked;            // observed on A's RX = b2a path
+  logic [7:0]      b_lane_locked;            // observed on B's RX = a2b path
+  // Per-side soft-strap drive
+  logic [23:0]     a_align_bit_slip;
+  logic [23:0]     b_align_bit_slip;
+  logic            a_align_bit_slip_en;
+  logic            b_align_bit_slip_en;
+  logic            a_align_training_mode;
+  logic            b_align_training_mode;
+  logic            a_align_training_mode_en;
+  logic            b_align_training_mode_en;
+
   initial begin
     force_reset           = 1'b0;
     force_poreset         = 1'b0;
@@ -75,6 +111,16 @@ interface tidelink_top_system_if (
     b_apb_debug_unlock    = 1'b1;
     a_mask_hs_bypass      = 1'b1;
     b_mask_hs_bypass      = 1'b1;
+    a2b_skid_bits_per_lane = '0;
+    b2a_skid_bits_per_lane = '0;
+    a_align_bit_slip         = 24'h0;
+    b_align_bit_slip         = 24'h0;
+    a_align_bit_slip_en      = 1'b0;
+    b_align_bit_slip_en      = 1'b0;
+    a_align_training_mode    = 1'b0;
+    b_align_training_mode    = 1'b0;
+    a_align_training_mode_en = 1'b0;
+    b_align_training_mode_en = 1'b0;
   end
 
 endinterface

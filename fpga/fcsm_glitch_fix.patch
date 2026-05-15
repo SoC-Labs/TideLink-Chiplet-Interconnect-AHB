@@ -1,0 +1,38 @@
+--- a/logical/wlink/WlinkGenericFCSM_6.v
++++ b/logical/wlink/WlinkGenericFCSM_6.v
+@@ -696,19 +696,27 @@
+       fe_rx_credit_max <= auto_rx_in_word_count[15:8];
+     end
+   end
+-  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+-    if (io_rx_reset) begin
+-      cr_pkt_seen_rx <= 1'h0;
+-    end else if (_fe_tx_credit_max_in_T) begin
++  // SoC Labs (FPGA bring-up fix, 2026-05-08): make cr_pkt_seen_rx and
++  // crack_pkt_seen_rx fully sticky once set. On FPGA the proc_sys_reset
++  // re-pulses io_rx_reset until clk_wiz locks; the original code would
++  // clear the latched bit, leaving the master never seeing the slave's
++  // crack and the FCSM wedging at state=1. The synchronous clear via
++  // `_fe_tx_credit_max_in_T = ~en_ff2_rx_demet_io_out` is also dropped
++  // because the swi_enable-rx synchronizer can dip low transiently during
++  // the same reset window. These latches are pure "have I ever seen a
++  // cr/crack pkt?" markers used only to advance state 1 -> 2; channel
++  // disable/re-enable is normally handled by full POR (`reset` here),
++  // which still asynchronously re-zeroes them. Normal sim bring-up is
++  // unaffected because in steady state these signals don't toggle.
++  always @(posedge io_rx_clk or posedge reset) begin
++    if (reset) begin
+       cr_pkt_seen_rx <= 1'h0;
+     end else begin
+       cr_pkt_seen_rx <= pkt_is_cr_pkt | cr_pkt_seen_rx;
+     end
+   end
+-  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+-    if (io_rx_reset) begin
+-      crack_pkt_seen_rx <= 1'h0;
+-    end else if (_fe_tx_credit_max_in_T) begin
++  always @(posedge io_rx_clk or posedge reset) begin
++    if (reset) begin
+       crack_pkt_seen_rx <= 1'h0;
+     end else begin
+       crack_pkt_seen_rx <= pkt_is_crack_pkt | crack_pkt_seen_rx;

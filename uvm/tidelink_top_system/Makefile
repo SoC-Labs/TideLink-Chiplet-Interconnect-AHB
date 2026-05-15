@@ -144,25 +144,47 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 # proved Boolean equivalence; this would prove behaviour with the
 # real cells + reset sequencing).
 #
-# STATUS: infrastructure complete + validated (the netlist/lib swap
-# and sim_build_gate dir are correct — `make -n compile GATE=1`
-# confirms it). NOT yet runnable end-to-end because tb/top.sv has
-# 214 cross-module-reference (XMR) debug probes reaching deep DUT
-# hierarchy (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy...)
-# for the §9 phy-align + FC data-flow instrumentation. The FC
-# netlist is flattened, so synthesis dissolved that hierarchy and
-# every XMR fails to resolve (Error-[XMRE], 10 errors at compile).
+# STATUS: compiles + elaborates + links + runs to completion.
 #
-# To make GATE=1 fully run, ONE of:
-#   (a) guard the 214 XMR probes under `ifndef GATE_SIM` in tb/top.sv
-#       — simplest, but the gate sim then has no internal visibility,
-#       and tb/top.sv currently carries active phy-align WIP so this
-#       edit should be coordinated with that work;
-#   (b) synthesise with hierarchy preserved (FC group/ungroup +
-#       set_dont_touch on the probed instances) so the netlist keeps
-#       u_chiplet_controller/u_wlink/... paths — costs area/runtime;
-#   (c) a dedicated probe-free gate-only TB wrapper.
-# Tracked as a known follow-up; LEC equivalence stands in the interim.
+# The original blocker — 214 XMR debug probes in tb/top.sv reaching
+# deep DUT hierarchy (u_tidelink_top_a.u_chiplet_controller.u_wlink...)
+# that the flattened FC netlist dissolved (Error-[XMRE]) — is RESOLVED
+# via option (c): gen_gate_tb.awk derives a probe-free tb/top_gate.sv
+# (1654→1133 lines, 0 XMR residual, run_test + all WIRE_AHB macros +
+# both DUT instances preserved verbatim; Makefile asserts the strip).
+#
+# OPEN — gate-level X-init: test_top_single_packet runs to $finish but
+# the scoreboard sees the A->B datapath deliver all-zeros at gate
+# (RX=0x00000000 vs TX=0xdeadbeef...). 6 SB_A2B UVM_ERRORs; the same
+# test PASSES at RTL because the UVM env demotes those 6 once data
+# arrives — at gate the data never arrives. Classic zero-delay /
+# +notimingcheck / no-SDF X-pessimism: the Wlink Chisel CDC + demet
+# flops (the same logic in the 256 LEC don't-verify residuals) power
+# up at X and never resolve without flop initialisation. This is the
+# additive value of gate sim over LEC (LEC proved Boolean equivalence
+# but cannot see X-init / reset-sequencing).
+#
+# INVESTIGATION SO FAR (separate bring-up effort to finish):
+#   - scan/ICG tie-off RULED OUT: the DUT scan_mode/scan_* pins are
+#     already tied to functional 0 in the TB (inherited from top.sv),
+#     so the netlist's PREICG clock-gates pass functional clocks.
+#   - +vcs+initreg+0 (now the GATE_INITREG default, wired into the
+#     GATE path) is INSUFFICIENT: caught-error count rises 6→12 but
+#     the A->B datapath still delivers RX=0x00000000 — the Wlink
+#     Chisel CDC/demet flops (the same logic in the 256 LEC
+#     don't-verify residuals) X-lock in a state that survives 0-init.
+#
+# REMAINING (genuine gate functional bring-up, not a quick knob):
+#   1. try GATE_INITREG=random (pessimism-free) — `make run GATE=1
+#      GATE_INITREG=random`;
+#   2. if demet flops still X-lock, force them through a longer/
+#      explicit reset in a gate-only force block (poresetn hold +
+#      direct force on */sync_*_demet/f1,f2 until first valid edge);
+#   3. last resort: SDF-annotated run with X-pessimism off.
+# GATE=1 today is a clean compile/elab/link + run-to-$finish smoke
+# that already surfaces real datapath X behaviour LEC cannot see;
+# functional gate sign-off needs step 1-3. LEC covers RTL≡netlist
+# Boolean equivalence in the interim.
 # ---------------------------------------------------------------
 ifeq ($(GATE),1)
 
@@ -172,6 +194,15 @@ RF16K_SIM   ?= $(MEM_BASE)/rf_16k/rf_16k.v
 
 VCS_FLAGS += +define+GATE_SIM
 VCS_FLAGS += +notimingcheck +nospecify +delay_mode_zero
+# Deterministic 0-init of all netlist flops/latches. Without this the
+# flattened netlist powers up at X and the Wlink Chisel CDC/demet path
+# never resolves (A->B datapath delivers all-zeros, 6 SB_A2B errors).
+# Overridable: GATE_INITREG=random for pessimism-free random init, or
+# GATE_INITREG= (empty) to study the raw X behaviour.
+GATE_INITREG ?= 0
+ifneq ($(GATE_INITREG),)
+VCS_FLAGS += +vcs+initreg+$(GATE_INITREG)
+endif
 VCS_FLAGS += $(FC_NETLIST)
 VCS_FLAGS += $(STDCELL_SIM)
 VCS_FLAGS += $(RF16K_SIM)

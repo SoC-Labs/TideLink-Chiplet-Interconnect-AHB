@@ -48,7 +48,8 @@ set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_
 set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
-set_property -dict {PACKAGE_PIN F20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
+# LANE-7 REMAP (mirror of pynq-z2-pair-all): B19/F20 bad → spare V7/W9.
+set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was F20 (bad)
 
 #-- RX side (inputs to this board ← straight-through ribbon ← peer's TX) -----
 # Mirror of pynq-z2-pair: clocks on Y7/Y9 (both P-side clock-capable).
@@ -60,7 +61,7 @@ set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
 set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
 set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
-set_property -dict {PACKAGE_PIN B19 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
+set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
 
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]

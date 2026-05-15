@@ -495,14 +495,25 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     };
     nego_train_step_reg nego_train_step @ 0x114;
 
-    reg swi_bit_slip_hi_reg {
-        name = "SWI Bit Slip (High) -- reserved";
-        desc = "Reserved for future 16-lane PHY builds.";
-        field {} bit_slip_hi[24] = 0;
-        bit_slip_hi->sw = rw;
-        bit_slip_hi->hw = r;
+    reg swi_phase_offset_reg {
+        name = "SWI Phase Offset";
+        desc = "Per-lane sub-bit (1/16) sample-point phase for the 8 PHY
+                RX lanes, packed 4 bits per lane (lane K at bits
+                [4K+3:4K]). SW override of the autonomous calibrator's
+                per-lane phase sweep (slip 0..7 x phase 0..15).
+                OR-merged with the calibrator phase bus into the Wlink
+                swi_phase_offset_in port, then OR-merged per-lane inside
+                WavD2DGpio with the legacy single-global APB phase reg
+                (Wlink PHY-ctrl bits[20:17]) so a lane left at 0 still
+                inherits the global phase (bit-slip and phase compose).
+                This slot was the reserved SWI_BIT_SLIP_HI (16-lane
+                builds); repurposed for the 8-lane FPGA bring-up (S9.7).";
+        field {} phase_offset[32] = 0;
+        phase_offset->sw = rw;
+        phase_offset->hw = r;
+        phase_offset->desc = "8 lanes x 4-bit sub-bit phase offset.";
     };
-    swi_bit_slip_hi_reg swi_bit_slip_hi @ 0x118;
+    swi_phase_offset_reg swi_phase_offset @ 0x118;
 
     reg phy_align_id_reg {
         name = "PHY Alignment Block ID";

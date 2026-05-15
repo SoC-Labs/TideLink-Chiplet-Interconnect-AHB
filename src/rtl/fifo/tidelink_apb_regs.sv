@@ -141,7 +141,7 @@ module tidelink_apb_regs #(
     //   0x10C: NEGO_TRAIN_CFG           (RW) - training handshake config
     //   0x110: NEGO_TRAIN_STATUS        (RO) - training FSM status
     //   0x114: NEGO_TRAIN_STEP          (RW) - W1P single-step pulse
-    //   0x118: SWI_BIT_SLIP_HI          (RW) - reserved for 16-lane builds
+    //   0x118: SWI_PHASE_OFFSET         (RW) - [31:0] per-lane sub-bit phase (8 x 4-bit, §9.7)
     //   0x11C: PHY_ALIGN_ID             (RO) - 0x5041_0100
     // -------------------------------------------------------------------------
 

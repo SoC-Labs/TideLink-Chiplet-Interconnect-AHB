@@ -163,7 +163,7 @@ slots 0..7 remapped to 0x100..0x11C).
 | 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | I²C training handshake config (auto/sw_step/retrain + timing)  |
 | 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | Training FSM live status + last-captured peer values           |
 | 0x2114 | NEGO_TRAIN_STEP   | W1P    | 0           | bit[0] = self-clearing step pulse (debug)                      |
-| 0x2118 | SWI_BIT_SLIP_HI   | RW     | 0           | Reserved for 16-lane builds                                    |
+| 0x2118 | SWI_PHASE_OFFSET  | RW     | 0           | bits[31:0] = per-lane sub-bit phase (8 lanes × 4 bits) — §9.7  |
 | 0x211C | PHY_ALIGN_ID      | RO     | 0x5041_0100 | "PA" v1.0 — SW probes for Region 8 presence                    |
 
 See `staging/apb_redesign/PROPOSAL.md` for the full design rationale and
@@ -200,6 +200,22 @@ OR-merged into the Wlink port.
 
 Packed so an I²C 4-byte read captures all three signals in a single
 transaction.
+
+#### SWI_PHASE_OFFSET Register (0x2118) Fields
+
+| Bits   | Name         | Access | Description |
+|--------|--------------|--------|-------------|
+|[31:0]  | phase_offset | RW     | 8 lanes × 4-bit sub-bit sample-point phase (lane K at bits [4K+3:4K]). |
+
+§9.7 per-lane phase. SW override of the autonomous calibrator's per-lane
+phase sweep (slip 0..7 × phase 0..15). OR-merged with the calibrator's
+`phase_offset` bus into the Wlink `swi_phase_offset_in` port; further
+OR-merged *per-lane* inside `WavD2DGpio` with the legacy single-global
+APB phase reg (Wlink PHY-ctrl reg bits[20:17]) so a lane left at 0 here
+still inherits the global phase (bit-slip and phase compose; the global
+path is not broken). This slot was the reserved `SWI_BIT_SLIP_HI`
+(16-lane builds); repurposed for the 8-lane FPGA bring-up. Defaults 0 →
+behaviour bit-exact to the pre-§9.7 single-global-phase design.
 
 ---
 

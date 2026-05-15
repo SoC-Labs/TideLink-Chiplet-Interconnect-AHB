@@ -36,6 +36,9 @@
 //
 //   bit_slip[23:0]       Drives WavD2DGpio.swi_bit_slip (8 × 3 bits, lane N at
 //                        bits [3*N+2 : 3*N]).
+//   phase_offset[31:0]   Drives WavD2DGpio.swi_phase_offset (8 × 4 bits,
+//                        lane N at bits [4*N+3 : 4*N]). Per-lane sub-bit
+//                        sample-point adjust. See "Search strategy" below.
 //   training_mode        Drives WavD2DGpio.swi_training_mode. Asserted during
 //                        the sweep; deasserts once all lanes have either
 //                        locked or faulted out. The integrator wires this
@@ -74,13 +77,50 @@
 // In both cases the FSM:
 //   1. Clears lane_fault[7:0] and calibration_done.
 //   2. Asserts training_mode=1.
-//   3. Starts each lane at slip=0, dwell counter 0.
+//   3. Starts each lane at slip=0, phase=0, dwell counter 0.
 //   4. Per lane, parallel: dwells DWELL_CYCLES; if lane_locked[lane] rises
-//      within the dwell, latches that slip value. Otherwise advances slip;
-//      if all 8 slip values exhausted, sets lane_fault[lane]=1 and treats
-//      the lane as "done".
+//      within the dwell, latches that (phase,slip) pair. Otherwise the
+//      shared (phase,slip) iterator advances; once all 128 combinations
+//      are exhausted for a lane it has lane_fault[lane]=1 and is "done".
 //   5. Once every lane is either locked or faulted: asserts
 //      calibration_done=1, deasserts training_mode=0.
+//
+// -----------------------------------------------------------------------------
+// Search strategy — per-lane slip × phase sweep (§9.7, 2026-05-15)
+// -----------------------------------------------------------------------------
+//
+// HARDWARE MOTIVATION: on the Pynq-Z2 GPIO-PHY pair, bit-slip-only locks
+// only ~5/8 lanes; the remaining ~3 lanes (different per board) have a
+// sub-bit (sample-point) misalignment that a byte-boundary slip cannot
+// correct. They need a per-lane PHASE offset. A single global phase
+// cannot satisfy lanes whose sub-bit misalignment differs, so the search
+// is per-lane in BOTH dimensions.
+//
+// The search space per lane is slip ∈ [0..7] × phase ∈ [0..15] (128
+// points). It is walked by a SINGLE SHARED iterator (all lanes attempt
+// the same (phase,slip) at the same dwell; the sweep is fully parallel,
+// exactly like the original slip-only design — lanes that lock early
+// latch their pair and hold it while slower lanes finish).
+//
+// Iteration order is **phase-outer, slip-inner**:
+//
+//     for phase in 0..15:           // outer
+//         for slip in 0..7:         // inner
+//             dwell DWELL_CYCLES; latch any newly-locked lane
+//
+// WHY THIS ORDER (critical correctness property): with phase=0 the inner
+// loop is byte-for-byte the ORIGINAL slip-only sweep (slip 0→7, same
+// DWELL_CYCLES, same latch-on-lock, same advance rule). Therefore any
+// lane that locked on slip alone in the pre-§9.7 design locks at the
+// IDENTICAL slip value, in the IDENTICAL cycle, during the phase=0
+// pass — before any non-zero phase is ever applied. The bit-slip-only
+// behaviour, the role_locked trigger, the swreset re-trigger, and the
+// lane_fault / calibration_done / state semantics are all preserved
+// bit-exact; the phase dimension only ever runs for lanes that the
+// original design would have FAULTED (slip exhausted at phase 0).
+//
+// A lane is faulted only after the full 128-point space is exhausted
+// (phase==15 && slip==7 with no lock).
 //
 // If `swreset` asserts mid-sweep, the FSM cancels and waits for swreset to
 // deassert; that falling edge re-triggers the sweep from scratch.
@@ -90,8 +130,13 @@
 // -----------------------------------------------------------------------------
 //
 // Parallel sweep, DWELL_CYCLES=32 (2× the 16-cycle LOCK_THRESH in the
-// wlink_lane_checker). Worst-case 8 slip values × 32 cycles = 256 cycles, plus
-// a small settle margin = ~280 cycles. Target ~1 µs at a 250 MHz link clock.
+// wlink_lane_checker). Worst-case (a lane that needs the very last
+// combination, or faults) is 16 phase × 8 slip × 32 cycles = 4096
+// cycles, plus a small settle margin. At a 250 MHz link clock that is
+// ~16 µs worst case; the common case (most lanes lock at phase 0 in the
+// first 256 cycles, only the 2–3 phase-needing lanes walk further) is
+// far shorter. The slip-only convergence time is UNCHANGED for any lane
+// that locks during the phase=0 pass.
 // =============================================================================
 
 `timescale 1ns/1ps
@@ -117,6 +162,10 @@ module tidelink_phy_align_calibrator #(
 
     // Outputs to PHY
     output logic [23:0] bit_slip,
+    // Per-lane 4-bit phase offset, 8 lanes × 4 bits (lane N at bits
+    // [4*N+3 : 4*N]). Drives WavD2DGpio.swi_phase_offset via the per-lane
+    // distribution added in §9.7.
+    output logic [31:0] phase_offset,
     output logic        training_mode,
     output logic        calibration_done,
     output logic [7:0]  lane_fault,
@@ -165,24 +214,36 @@ module tidelink_phy_align_calibrator #(
     // Per-lane sweep state
     //
     // Each lane tracks:
-    //   - slip[lane] : current slip attempt (3 bits)
-    //   - done[lane] : lane has either locked or faulted out
+    //   - slip[lane]  : latched/working slip attempt   (3 bits, 0..7)
+    //   - phase[lane] : latched/working phase attempt  (4 bits, 0..15)
+    //   - done[lane]  : lane has either locked or faulted out
     //
-    // The dwell counter is shared across all lanes since the sweep is fully
-    // parallel: every lane attempts slip=0 at the same time, every lane
-    // advances at the same time. Lanes that lock early have `done` latched
-    // and simply hold their latched slip while the slower lanes finish.
+    // A SINGLE SHARED (phase,slip) iterator (sweep_phase, sweep_slip) plus a
+    // shared dwell counter walks the search space — the sweep is fully
+    // parallel: every not-done lane attempts the same (phase,slip) at the
+    // same time, and the iterator advances for all of them together. A lane
+    // that locks latches the iterator's CURRENT (phase,slip) into its own
+    // slip[]/phase[] registers and sets lane_done; its outputs then hold
+    // that locking pair while slower lanes keep walking.
     //
-    // NOTE on shared dwell counter: this is the simplest correct design.
-    // Edge case: a fast lane locks at slip=0, but we keep walking — what
-    // happens if the lane "un-locks" later? Answer: we already latched
-    // done[lane], so the slip register for that lane is no longer advanced;
-    // the lane_locked input may bounce around, but the slip is held at the
-    // locking value. Re-trigger required to start over.
+    // Iteration order is phase-outer, slip-inner (see header "Search
+    // strategy"): sweep_slip cycles 0→7, and only when it wraps 7→0 does
+    // sweep_phase advance. With phase=0 the inner slip loop is byte-for-byte
+    // the original slip-only sweep, so slip-only-lockable lanes are
+    // unaffected.
+    //
+    // NOTE on shared dwell counter / late un-lock: identical to the
+    // original design. Once lane_done[lane] is set, slip[]/phase[] for
+    // that lane are frozen at the locking pair; lane_locked may bounce but
+    // the held value does not change. Re-trigger required to start over.
     // -------------------------------------------------------------------------
-    logic [2:0] slip      [0:7];
-    logic [7:0] lane_done;        // sticky during a sweep
+    logic [2:0] slip      [0:7];   // per-lane latched/working slip
+    logic [3:0] phase     [0:7];   // per-lane latched/working phase
+    logic [7:0] lane_done;         // sticky during a sweep
     logic [7:0] lane_fault_q;
+    // Shared search iterator (phase-outer, slip-inner).
+    logic [2:0] sweep_slip;        // 0..7
+    logic [3:0] sweep_phase;       // 0..15
     logic [$clog2(DWELL_CYCLES+1)-1:0] dwell_ctr;
     localparam int DWELL_MAX = DWELL_CYCLES - 1;
 
@@ -248,7 +309,12 @@ module tidelink_phy_align_calibrator #(
             dwell_ctr    <= '0;
             lane_done    <= 8'h00;
             lane_fault_q <= 8'h00;
-            for (int i = 0; i < 8; i++) slip[i] <= 3'd0;
+            sweep_slip   <= 3'd0;
+            sweep_phase  <= 4'd0;
+            for (int i = 0; i < 8; i++) begin
+                slip[i]  <= 3'd0;
+                phase[i] <= 4'd0;
+            end
         end else begin
             unique case (cur_state)
                 S_ARM: begin
@@ -258,31 +324,49 @@ module tidelink_phy_align_calibrator #(
                     dwell_ctr    <= '0;
                     lane_done    <= 8'h00;
                     lane_fault_q <= 8'h00;
-                    for (int i = 0; i < 8; i++) slip[i] <= 3'd0;
+                    sweep_slip   <= 3'd0;
+                    sweep_phase  <= 4'd0;
+                    for (int i = 0; i < 8; i++) begin
+                        slip[i]  <= 3'd0;
+                        phase[i] <= 4'd0;
+                    end
                 end
 
                 S_SWEEP: begin
-                    // First latch any new locks at the *current* slip value.
+                    // First latch any new locks at the *current* shared
+                    // (phase,slip) iterator value into that lane's own
+                    // slip[]/phase[] registers, then freeze the lane.
                     for (int i = 0; i < 8; i++) begin
                         if (lane_new_lock[i]) begin
                             lane_done[i] <= 1'b1;
-                            // slip[i] holds — no advance for this lane.
+                            slip[i]      <= sweep_slip;
+                            phase[i]     <= sweep_phase;
                         end
                     end
 
                     if (dwell_ctr == DWELL_MAX[$clog2(DWELL_CYCLES+1)-1:0]) begin
-                        // Dwell expired — for each still-not-done lane,
-                        // either advance the slip or mark it as faulted.
+                        // Dwell expired — advance the SHARED iterator
+                        // (phase-outer, slip-inner) and, if the full
+                        // 128-point space is now exhausted, fault every
+                        // lane that is still not done.
                         dwell_ctr <= '0;
-                        for (int i = 0; i < 8; i++) begin
-                            if (!lane_done[i] && !lane_new_lock[i]) begin
-                                if (slip[i] == 3'd7) begin
-                                    lane_fault_q[i] <= 1'b1;
-                                    lane_done[i]    <= 1'b1;
-                                end else begin
-                                    slip[i] <= slip[i] + 3'd1;
+                        if (sweep_slip == 3'd7) begin
+                            sweep_slip <= 3'd0;
+                            if (sweep_phase == 4'd15) begin
+                                // Search space exhausted: any lane that
+                                // never locked (and is not already done)
+                                // faults out. sweep_phase holds at 15.
+                                for (int i = 0; i < 8; i++) begin
+                                    if (!lane_done[i] && !lane_new_lock[i]) begin
+                                        lane_fault_q[i] <= 1'b1;
+                                        lane_done[i]    <= 1'b1;
+                                    end
                                 end
+                            end else begin
+                                sweep_phase <= sweep_phase + 4'd1;
                             end
+                        end else begin
+                            sweep_slip <= sweep_slip + 3'd1;
                         end
                     end else begin
                         dwell_ctr <= dwell_ctr + 1'b1;
@@ -290,7 +374,8 @@ module tidelink_phy_align_calibrator #(
                 end
 
                 S_CANCEL: begin
-                    // Hold state; no advances. Slip values retained for ILA.
+                    // Hold state; no advances. Iterator/latched values
+                    // retained for ILA.
                 end
 
                 default: begin
@@ -304,25 +389,45 @@ module tidelink_phy_align_calibrator #(
     // -------------------------------------------------------------------------
     // Output drivers
     // -------------------------------------------------------------------------
-    // Pack per-lane 3-bit slips into a 24-bit vector.
+    // Per lane, the PHY must see:
+    //   - the lane's LATCHED (slip,phase) once it is done (locked/faulted),
+    //   - the LIVE shared iterator (sweep_phase,sweep_slip) while it is
+    //     still being swept.
+    // This reproduces the original slip-only design exactly: at phase=0 a
+    // not-done lane presents sweep_slip walking 0→7 each dwell (same as the
+    // old per-lane slip[] advancing), and freezes on lock. A faulted lane
+    // holds its last-tried (slip=7, phase=15) — same "hold" behaviour as
+    // the original (which held slip=7).
     logic [23:0] bit_slip_internal;
+    logic [31:0] phase_offset_internal;
     always_comb begin
-        bit_slip_internal = 24'h0;
-        for (int i = 0; i < 8; i++)
-            bit_slip_internal[3*i +: 3] = slip[i];
+        bit_slip_internal     = 24'h0;
+        phase_offset_internal = 32'h0;
+        for (int i = 0; i < 8; i++) begin
+            if (lane_done[i]) begin
+                bit_slip_internal[3*i +: 3]     = slip[i];
+                phase_offset_internal[4*i +: 4] = phase[i];
+            end else begin
+                bit_slip_internal[3*i +: 3]     = sweep_slip;
+                phase_offset_internal[4*i +: 4] = sweep_phase;
+            end
+        end
     end
 
     // APB override: drive bit_slip directly from the override register and
     // force the FSM's "no calibration in progress" outputs. In this mode the
     // PHY behaves exactly as the existing soft-strap design — SW is in
-    // charge of slip selection.
+    // charge of slip selection. phase_offset is forced to 0 so the global
+    // APB phase path (WavD2DGpio PHY-ctrl reg) keeps full control.
     always_comb begin
         if (apb_override_enable) begin
             bit_slip         = apb_bit_slip_override;
+            phase_offset     = 32'h0;
             training_mode    = 1'b0;
             calibration_done = 1'b1;
         end else begin
             bit_slip         = bit_slip_internal;
+            phase_offset     = phase_offset_internal;
             training_mode    = (cur_state == S_ARM) || (cur_state == S_SWEEP);
             calibration_done = (cur_state == S_DONE);
         end

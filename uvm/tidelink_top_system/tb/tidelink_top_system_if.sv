@@ -100,6 +100,39 @@ interface tidelink_top_system_if (
   logic            a_align_training_mode_en;
   logic            b_align_training_mode_en;
 
+  // Phase 3 — I²C-train injection knobs (Agent #4, retargeted by the §9
+  // integration). Test-driven; the `always @(*)` in top.sv hierarchically
+  // forces the per-side chiplet_controller's REAL calibrator/lane-checker
+  // nets (lane_locked_w / cal_lane_fault_w / cal_calibration_done_w) when
+  // *_force_en is asserted — NOT #4's deleted placeholder regs. Tests use
+  // these to simulate lane-fault scenarios without running the calibrator.
+  logic       a_train_force_en;
+  logic [7:0] a_train_lane_locked;
+  logic [7:0] a_train_lane_fault;
+  logic       a_train_cal_done;
+  logic       b_train_force_en;
+  logic [7:0] b_train_lane_locked;
+  logic [7:0] b_train_lane_fault;
+  logic       b_train_cal_done;
+
+  // Phase 3 — slave-I²C-disable injection for the no-peer-response test.
+  // When asserted, top.sv forces the slave's i2c_slv_reset high so the
+  // slave drops off the bus after autoneg completes.
+  logic       b_i2c_slv_disable;
+
+  // Phase 3 — train-status observation (driven by top.sv mirrors from the
+  // chiplet_controller's train_*_w wires). Allows the UVM tests to assert
+  // on FSM state without doing an APB read of NEGO_TRAIN_STATUS.
+  logic [3:0]  a_train_state_obs;
+  logic        a_train_ok_obs;
+  logic        a_train_fail_obs;
+  logic        a_train_in_progress_obs;
+  logic        a_train_peer_nack_obs;
+  logic [7:0]  a_train_peer_lane_locked_obs;
+  logic [7:0]  a_train_peer_lane_fault_obs;
+  logic [7:0]  a_train_local_lane_fault_obs;
+  logic [15:0] a_nego_train_cfg_obs;
+
   initial begin
     force_reset           = 1'b0;
     force_poreset         = 1'b0;
@@ -121,6 +154,15 @@ interface tidelink_top_system_if (
     b_align_training_mode    = 1'b0;
     a_align_training_mode_en = 1'b0;
     b_align_training_mode_en = 1'b0;
+    a_train_force_en      = 1'b0;
+    a_train_lane_locked   = 8'hFF;
+    a_train_lane_fault    = 8'h00;
+    a_train_cal_done      = 1'b1;
+    b_train_force_en      = 1'b0;
+    b_train_lane_locked   = 8'hFF;
+    b_train_lane_fault    = 8'h00;
+    b_train_cal_done      = 1'b1;
+    b_i2c_slv_disable     = 1'b0;
   end
 
 endinterface

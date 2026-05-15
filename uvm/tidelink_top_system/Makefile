@@ -46,6 +46,10 @@ XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
 XHB500_SLV_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_slv
 XHB500_MST_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_mst
 
+# Physical-IP paths for GATE=1 gate-level sim (mirror syn/asic/common.mk)
+PHYS_IP_PATH ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
+MEM_BASE     ?= /research/precompiled_mems/TSMC65
+
 # Simulation output
 SIM_DIR      = sim_build
 COV_DIR      = coverage_report
@@ -126,8 +130,48 @@ VCS_FLAGS += -o $(SIM_DIR)/simv
 VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 
 # ---------------------------------------------------------------
-# DUT RTL sources
+# DUT sources — RTL by default, or the post-route FC netlist when
+# GATE=1 (gate-level UVM sign-off). The gate path swaps the entire
+# DUT RTL list for the single flattened netlist + sc12 / rf_16k
+# Verilog sim models. Zero-delay, no timing checks (LEC already
+# proved Boolean equivalence; this would prove behaviour with the
+# real cells + reset sequencing).
+#
+# STATUS: infrastructure complete + validated (the netlist/lib swap
+# and sim_build_gate dir are correct — `make -n compile GATE=1`
+# confirms it). NOT yet runnable end-to-end because tb/top.sv has
+# 214 cross-module-reference (XMR) debug probes reaching deep DUT
+# hierarchy (u_tidelink_top_a.u_chiplet_controller.u_wlink.phy...)
+# for the §9 phy-align + FC data-flow instrumentation. The FC
+# netlist is flattened, so synthesis dissolved that hierarchy and
+# every XMR fails to resolve (Error-[XMRE], 10 errors at compile).
+#
+# To make GATE=1 fully run, ONE of:
+#   (a) guard the 214 XMR probes under `ifndef GATE_SIM` in tb/top.sv
+#       — simplest, but the gate sim then has no internal visibility,
+#       and tb/top.sv currently carries active phy-align WIP so this
+#       edit should be coordinated with that work;
+#   (b) synthesise with hierarchy preserved (FC group/ungroup +
+#       set_dont_touch on the probed instances) so the netlist keeps
+#       u_chiplet_controller/u_wlink/... paths — costs area/runtime;
+#   (c) a dedicated probe-free gate-only TB wrapper.
+# Tracked as a known follow-up; LEC equivalence stands in the interim.
 # ---------------------------------------------------------------
+ifeq ($(GATE),1)
+
+FC_NETLIST  ?= $(PROJ_HOME)/syn/asic/fusion-compiler/outputs/tidelink_top.v
+STDCELL_SIM ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog/sc12_cln65lp_base_rvt.v
+RF16K_SIM   ?= $(MEM_BASE)/rf_16k/rf_16k.v
+
+VCS_FLAGS += +define+GATE_SIM
+VCS_FLAGS += +notimingcheck +nospecify +delay_mode_zero
+VCS_FLAGS += $(FC_NETLIST)
+VCS_FLAGS += $(STDCELL_SIM)
+VCS_FLAGS += $(RF16K_SIM)
+# rf_16k.v + sc12 model need the unit-delay UDP file for some seq cells
+VCS_FLAGS += $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog/sc12_cln65lp_base_rvt_udp.v
+
+else
 
 # CMSDK components
 VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
@@ -240,6 +284,8 @@ VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
 # TideLink top module
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv
 
+endif  # GATE
+
 # ---------------------------------------------------------------
 # Simulation run flags
 # ---------------------------------------------------------------
@@ -336,7 +382,16 @@ $(WLINK_GEN_V): $(WLINK_SCALA)
 .PHONY: wlink_regen
 wlink_regen: $(WLINK_GEN_V)
 
-compile: $(WLINK_GEN_V) | $(SIM_DIR)
+# GATE=1 uses the flattened FC netlist, so the Chisel-generated Wlink
+# Verilog isn't a prerequisite (it's already baked into the netlist).
+ifeq ($(GATE),1)
+COMPILE_DEPS =
+SIM_DIR      = sim_build_gate
+else
+COMPILE_DEPS = $(WLINK_GEN_V)
+endif
+
+compile: $(COMPILE_DEPS) | $(SIM_DIR)
 	$(VCS) $(VCS_FLAGS)
 
 $(SIM_DIR):

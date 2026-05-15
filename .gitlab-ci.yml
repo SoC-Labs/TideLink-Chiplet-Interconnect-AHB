@@ -776,6 +776,42 @@ synth-top-full:
     expire_in: 30 days
   allow_failure: true
 
+# Fusion Compiler partition flow + Formality LEC. The FC flow is ~2 h
+# end-to-end so this is a manual one-click sign-off check, not a
+# per-push gate. It runs init→synth→cts→route→signoff→abstract then
+# LEC (RTL vs the FC netlist). FM_LEC_OK is the pass condition; the
+# 256 documented Wlink-Chisel don't-verify residuals are expected and
+# do NOT fail the run (the run_lec.tcl iterative-skip flow handles
+# them and exits 0 on FM_LEC_OK).
+formality-lec:
+  stage: synthesis
+  needs: [cocotb-regression]
+  when: manual
+  tags:
+    - vcs
+  <<: *dc_setup
+  timeout: 4h
+  script:
+    - cd "$WORK_DIR/syn/asic/fusion-compiler"
+    - make fc FC_CORE_UTILIZATION=0.70 2>&1 | tee fc_flow.log
+    - cd "$WORK_DIR/syn/asic/formality"
+    - make lec 2>&1 | tee lec.log
+  after_script:
+    - mkdir -p syn/asic/fusion-compiler syn/asic/formality
+    - cp "$WORK_DIR/syn/asic/fusion-compiler/fc_flow.log" syn/asic/fusion-compiler/ 2>/dev/null || true
+    - cp "$WORK_DIR/syn/asic/fusion-compiler/outputs/MANIFEST.md" syn/asic/fusion-compiler/ 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/fusion-compiler/reports" syn/asic/fusion-compiler/fc_reports 2>/dev/null || true
+    - cp -r "$WORK_DIR/syn/asic/formality/reports" syn/asic/formality/lec_reports 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - syn/asic/fusion-compiler/fc_flow.log
+      - syn/asic/fusion-compiler/MANIFEST.md
+      - syn/asic/fusion-compiler/fc_reports/
+      - syn/asic/formality/lec_reports/
+    expire_in: 30 days
+  allow_failure: true
+
 # ============================================================================
 # Stage 7: Coverage Merge
 # ============================================================================

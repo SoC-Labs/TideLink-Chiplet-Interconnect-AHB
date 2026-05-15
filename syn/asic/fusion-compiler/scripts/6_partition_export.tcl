@@ -114,6 +114,17 @@ set hold_wns [grab_first {scen_fast\s+\(Hold\)\s+([-0-9\.]+)}                   
 set drc      [grab_first {Nets with DRC Violations:\s+([0-9]+)}                   [list $qor_route_hi $qor_signoff]]
 set area     [grab_first {Total cell area:\s+([0-9\.]+)}                          [list $qor_signoff $qor_route_hi]]
 if {$area eq ""} { set area "(see report)" }
+
+# Power — report_power output lands in the signoff QoR. Capture the
+# dynamic-power breakdown; leakage is often N/A when the .db lacks a
+# leakage table for this corner (note that verbatim rather than guess).
+set pwr_internal  [grab_first {Cell Internal Power\s+=\s+([0-9eE\.\+\-]+ \w+)}  [list $qor_signoff]]
+set pwr_switching [grab_first {Net Switching Power\s+=\s+([0-9eE\.\+\-]+ \w+)}  [list $qor_signoff]]
+set pwr_dynamic   [grab_first {Total Dynamic Power\s+=\s+([0-9eE\.\+\-]+ \w+)}  [list $qor_signoff]]
+set pwr_leakage   [grab_first {Cell Leakage Power\s+=\s+(N/A|[0-9eE\.\+\-]+ \w+)} [list $qor_signoff]]
+foreach v {pwr_internal pwr_switching pwr_dynamic pwr_leakage} {
+    if {[set $v] eq ""} { set $v "(see signoff report)" }
+}
 set git_sha "(run-time tag — no git query inside fc_shell)"
 
 set mf [open ${fc_outputs}/MANIFEST.md w]
@@ -164,6 +175,10 @@ puts $mf "| Setup WNS (slow corner) | $wns_slow ns |"
 puts $mf "| Setup TNS (slow corner) | $tns_slow ns |"
 puts $mf "| Hold WNS (fast corner) | $hold_wns ns |"
 puts $mf "| Net DRC violations | $drc |"
+puts $mf "| Cell internal power | $pwr_internal |"
+puts $mf "| Net switching power | $pwr_switching |"
+puts $mf "| Total dynamic power | $pwr_dynamic @ $::env(CLK_PERIOD) ns |"
+puts $mf "| Cell leakage power | $pwr_leakage |"
 puts $mf "| Library | TSMC65 sc12_base_rvt (single-Vt, single-bit DFFs) |"
 # Compute knob status strings outside the heredoc to dodge Tcl quoting issues.
 set cg_status "on (PREICG_*) min_bitwidth=2"

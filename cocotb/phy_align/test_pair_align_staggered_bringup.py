@@ -77,18 +77,22 @@ from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
 from test_link_bringup import (
     ctrl_write,
-    apb_read,
+    ctrl_read,
 )
 
 
-# tidelink_phy_align_regs APB offsets (paddr[12] selects the phy_align region,
-# so add 0x1000 to the in-block offset).
-PA_BASE              = 0x1000
-PA_SWI_BIT_SLIP      = PA_BASE + 0x00
-PA_SWI_TRAINING_MODE = PA_BASE + 0x04
-PA_SWI_LANE_LOCKED   = PA_BASE + 0x08
-PA_SWI_LANE_FAULT    = PA_BASE + 0x0C
-PA_SWI_CAL_DONE      = PA_BASE + 0x10  # [0]=cal_done, [11:8]=cal_state
+# §9 registers moved out of the deleted interim Wlink-domain shim
+# (0x4403_1000) into Region 8 of the TideLink config APB, read via the
+# chiplet-controller ctrl_reg interface. ctrl_reg_addr[3]=1 selects
+# Region 8. SWI_LANE_STATUS (slot 2) packs everything:
+#   [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done.
+R8_SWI_LANE_STATUS   = 0b1010  # ctrl_reg_addr {1, 3'h2}, MMIO 0x4403_2108
+
+
+async def _read_lane_status(dut, side):
+    """Return (lane_locked, lane_fault, cal_done) from Region 8."""
+    v = await ctrl_read(dut, side, R8_SWI_LANE_STATUS)
+    return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0x1)
 
 
 def _chiplet(dut, side):
@@ -188,7 +192,17 @@ async def _wait_for_cal_done(dut, side, timeout_cycles=8000):
 
 @cocotb.test()
 async def test_staggered_bringup_reproduces_fpga_failure(dut):
-    """Headline reproducer.
+    """Staggered-bringup convergence test (§9.8).
+
+    NOTE — §9 INTEGRATION: this test remains a *reproducer* of the FPGA
+    staggered-bringup autocal failure, with the status read path
+    corrected to Region 8 (the interim 0x4403_1000 shim was deleted; the
+    old apb_read of that shim returned garbage that falsely masked the
+    slave fault). With the correct read, the failure STILL reproduces:
+    the second-running side faults all 8 lanes. The assertion is NOT
+    flipped to success — the I²C-coordinated training path that would fix
+    staggered bring-up is gated by SHORTCOMINGS-14a (see the TODO at the
+    assertion site). The function name is retained for CI continuity.
 
     Sequence (mimics the FPGA deploy flow):
       1. Enable autocal on both sides.
@@ -197,8 +211,8 @@ async def test_staggered_bringup_reproduces_fpga_failure(dut):
          have completed if it were going to.
       4. Bring slave out of POR; lock slave role.
       5. Wait for slave's autocal to complete or time out.
-      6. Read APB status on both sides.
-      7. Assert the staggered-bringup failure mode:
+      6. Read Region 8 SWI_LANE_STATUS on both sides.
+      7. Assert the staggered-bringup FAILURE mode (slave faults 8 lanes):
             - master converges (clk_en fix makes the master FSM wait for
               the slave's TX clock to start, so master's sweep happens
               concurrently with slave's wake-up and the master locks all
@@ -255,22 +269,21 @@ async def test_staggered_bringup_reproduces_fpga_failure(dut):
     # Let APB CDC settle.
     await ClockCycles(dut.apb_clk, 32)
 
-    # Step 6 — read APB status on both sides.
-    m_lane_locked = await apb_read(dut, "m", PA_SWI_LANE_LOCKED)
-    m_lane_fault  = await apb_read(dut, "m", PA_SWI_LANE_FAULT)
-    m_cal_done    = await apb_read(dut, "m", PA_SWI_CAL_DONE)
-    s_lane_locked = await apb_read(dut, "s", PA_SWI_LANE_LOCKED)
-    s_lane_fault  = await apb_read(dut, "s", PA_SWI_LANE_FAULT)
-    s_cal_done    = await apb_read(dut, "s", PA_SWI_CAL_DONE)
+    # Step 6 — read Region 8 SWI_LANE_STATUS on both sides (via ctrl_reg;
+    # the interim 0x1000 shim was deleted in the §9 integration). cal_done
+    # is bit[16] of SWI_LANE_STATUS; m_cal_done/s_cal_done below keep the
+    # bit[0]=cal_done convention the classifier expects.
+    m_lane_locked, m_lane_fault, m_cd = await _read_lane_status(dut, "m")
+    s_lane_locked, s_lane_fault, s_cd = await _read_lane_status(dut, "s")
+    m_cal_done = m_cd
+    s_cal_done = s_cd
     dut._log.info(
-        f"[apb] master SWI_LANE_LOCKED=0x{m_lane_locked:02x} "
-        f"SWI_LANE_FAULT=0x{m_lane_fault:02x} "
-        f"SWI_CAL_DONE=0x{m_cal_done:04x}"
+        f"[r8] master SWI_LANE_LOCKED=0x{m_lane_locked:02x} "
+        f"SWI_LANE_FAULT=0x{m_lane_fault:02x} cal_done={m_cal_done}"
     )
     dut._log.info(
-        f"[apb] slave  SWI_LANE_LOCKED=0x{s_lane_locked:02x} "
-        f"SWI_LANE_FAULT=0x{s_lane_fault:02x} "
-        f"SWI_CAL_DONE=0x{s_cal_done:04x}"
+        f"[r8] slave  SWI_LANE_LOCKED=0x{s_lane_locked:02x} "
+        f"SWI_LANE_FAULT=0x{s_lane_fault:02x} cal_done={s_cal_done}"
     )
     m_fsm_state = _read_cal_state_hier(dut, "m")
     s_fsm_state = _read_cal_state_hier(dut, "s")
@@ -311,43 +324,62 @@ async def test_staggered_bringup_reproduces_fpga_failure(dut):
     master_converged = (m_cal_done & 0x1) == 1 and m_lane_fault == 0x00
     slave_converged  = (s_cal_done & 0x1) == 1 and s_lane_fault == 0x00
 
-    if master_converged and slave_converged:
-        raise AssertionError(
-            "Both sides converged unexpectedly under staggered bring-up "
-            "(master_lane_fault=0x{:02x}, slave_lane_fault=0x{:02x}, both "
-            "cal_done=1). The trunk RTL (clk_en fix + autocal FSM) appears "
-            "sufficient to handle staggered bring-up on its own — please "
-            "flip this test from asserting failure to asserting success."
-            .format(m_lane_fault, s_lane_fault)
-        )
-
-    # Headline assertion: staggered bring-up does NOT converge with the
-    # current trunk RTL. At least one side ends in lane_fault=0xff or stuck.
-    # This is the failure mode that motivates Fix B (I²C-coordinated
-    # training). Flip this assertion to assert(master_converged and
-    # slave_converged) once Fix B lands.
-    assert not (master_converged and slave_converged), "see above"
-    # Strong post-condition: specifically check the slave side ends in the
-    # FPGA-documented failure mode (lane_fault=0xff, cal_done=1, state=S_DONE).
-    # This matches the bench observation on the side whose autocal triggered
-    # second (master in the FPGA, slave in this sim — the roles swap because
-    # the cocotb master comes up first, but the *sequencing* relationship is
-    # identical: the side that runs its sweep after its peer has already
-    # exited training mode is the one that faults all 8 lanes).
+    # ==================================================================
+    # §9 INTEGRATION — assertion KEPT as failure-mode reproducer, with
+    # the read path corrected to Region 8 (the interim 0x4403_1000 shim
+    # was deleted; the old apb_read of that shim returned garbage that
+    # *masked* the slave fault and made the scenario look converged).
+    #
+    # With the correct Region 8 SWI_LANE_STATUS read, the staggered
+    # scenario STILL reproduces the FPGA failure: the side whose autocal
+    # sweep runs *after* its peer has exited training-mode (slave in this
+    # sim) faults all 8 lanes (lane_fault=0xFF, cal_done=1, FSM=S_DONE)
+    # while the first side (master) converges cleanly. Trunk's WavD2DGpio
+    # clk_en fix + the in-RTL calibrator are NOT sufficient on their own
+    # for staggered bring-up — the second side needs its peer to still be
+    # emitting the training pattern when its sweep runs.
+    #
+    # TODO(SHORTCOMINGS-14a) — FLIP TO assert(master_converged and
+    #   slave_converged) once the I²C-coordinated training path works
+    #   end-to-end. That path (#4 ST_TRAIN_* autoneg FSM driving
+    #   swi_training_mode through Region 8 + #5 mask_hs_bypass=0 + the
+    #   physical I²C jumpers) is the mechanism that holds training_mode
+    #   HIGH until BOTH sides lock, which fixes exactly this staggered
+    #   case. It is currently blocked by the pre-existing autoneg I²C
+    #   wedge SHORTCOMINGS-14a (master's I²C "claim" write succeeds but
+    #   follow-on multi-byte transactions NACK/wedge). A parallel agent
+    #   owns the 14a fix; the §9 ST_TRAIN_* FSM is structurally in place
+    #   and wired (Step 4) but cannot be exercised end-to-end until 14a
+    #   lands. The FPGA hardware bring-up blocker is NOT closed until
+    #   then (on-board CURRENT_CREDITS must read ≠ 4096).
+    # ==================================================================
+    assert not (master_converged and slave_converged), (
+        f"Unexpected: staggered bring-up converged on BOTH sides via the "
+        f"corrected Region 8 read (master lf=0x{m_lane_fault:02x} "
+        f"cd={m_cal_done}, slave lf=0x{s_lane_fault:02x} cd={s_cal_done}). "
+        f"If this is real (not a read-path bug), the I²C-coordinated path "
+        f"is no longer required for staggered bring-up — re-evaluate the "
+        f"SHORTCOMINGS-14a TODO and flip to assert success."
+    )
+    # Strong post-condition: the second-running side (slave in this sim)
+    # reproduces the FPGA failure mode exactly: all 8 lanes faulted,
+    # cal_done=1, FSM at S_DONE.
     assert s_lane_fault == 0xFF, (
-        f"Expected the side-running-second (slave in this sim) to reproduce "
-        f"the FPGA failure mode (lane_fault=0xFF, all lanes exhausted slip "
-        f"sweep without locking), got slave lane_fault=0x{s_lane_fault:02x}, "
-        f"cal_done=0x{s_cal_done:04x}, FSM state={s_fsm_state}."
+        f"Expected the side-running-second (slave) to reproduce the FPGA "
+        f"failure mode (lane_fault=0xFF), got slave lane_fault="
+        f"0x{s_lane_fault:02x}, cal_done={s_cal_done}, FSM={s_fsm_state}."
     )
-    assert (s_cal_done & 0x1) == 1, (
-        f"Expected slave cal_done bit[0]=1 (FSM reached S_DONE) after the "
-        f"isolated failed sweep, got SWI_CAL_DONE=0x{s_cal_done:04x}"
+    assert (s_cal_done & 0x1) == 1 and s_fsm_state == 4, (
+        f"Expected slave cal_done=1 and FSM at S_DONE (4) after the "
+        f"isolated failed sweep, got cal_done={s_cal_done}, "
+        f"FSM={s_fsm_state}."
     )
-    s_cal_state_field = (s_cal_done >> 8) & 0xF
-    assert s_cal_state_field == 4, (
-        f"Expected slave cal_state field == 4 (S_DONE), got "
-        f"{s_cal_state_field} (SWI_CAL_DONE=0x{s_cal_done:04x})"
+    # And the first side (master) converges cleanly — confirms the
+    # asymmetry is a sequencing effect, not a global RTL break.
+    assert master_converged and m_fsm_state == 4, (
+        f"Expected master (side-running-first) to converge cleanly "
+        f"(lane_fault=0x00, cal_done=1, FSM=4), got lane_fault="
+        f"0x{m_lane_fault:02x}, cal_done={m_cal_done}, FSM={m_fsm_state}."
     )
 
 

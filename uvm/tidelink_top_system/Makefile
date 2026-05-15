@@ -175,12 +175,20 @@ VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
 #     don't-verify residuals) X-lock in a state that survives 0-init.
 #
 # REMAINING (genuine gate functional bring-up, not a quick knob):
-#   1. try GATE_INITREG=random (pessimism-free) — `make run GATE=1
-#      GATE_INITREG=random`;
-#   2. if demet flops still X-lock, force them through a longer/
-#      explicit reset in a gate-only force block (poresetn hold +
-#      direct force on */sync_*_demet/f1,f2 until first valid edge);
-#   3. last resort: SDF-annotated run with X-pessimism off.
+#   1. GATE_INITREG=random TRIED — also INSUFFICIENT (identical
+#      RX=0x00000000, 6 SB_A2B, 12 caught). So neither 0- nor
+#      random-init resolves it: this is NOT plain power-up X, it's a
+#      structural gate behaviour in the Wlink CDC/demet path (the
+#      256-LEC-residual logic) — likely the gray-code/demet CDC not
+#      converging under zero-delay, or a reset-ordering dependency.
+#   2. NEXT: force the */sync_*_demet/f1,f2 (and read/write gray
+#      pointer) flops through a longer explicit reset in a gate-only
+#      force block (hold poresetn extra cycles, release after first
+#      stable pad_clk), then re-check the A->B path;
+#   3. then: SDF-annotated run (unit or back-annotated) with
+#      X-pessimism off — zero-delay CDC sim is inherently fragile;
+#   4. cross-check: does RTL sim with +vcs+initreg+random also break?
+#      if so the issue is the Wlink CDC model, not the netlist.
 # GATE=1 today is a clean compile/elab/link + run-to-$finish smoke
 # that already surfaces real datapath X behaviour LEC cannot see;
 # functional gate sign-off needs step 1-3. LEC covers RTL≡netlist

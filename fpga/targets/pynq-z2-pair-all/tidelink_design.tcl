@@ -331,19 +331,28 @@ proc create_root_design { parentCell } {
         CONFIG.CONST_VAL   {42405} \
     ] $const_puf_seed
 
-    # SoC Labs bring-up patch (2026-05-06): tie mask_hs_bypass_i HIGH so the
-    # peer-mask handshake gate is open and role_lock_reg latches immediately
-    # on ROLE_CFG write. Without this, role_lock stays 0, wlink stays in POR
-    # reset, no traffic crosses the link. The peer-mask handshake (added in
-    # axi-chiplet-controller@1564f28 / tidelink@44f3e17) is intended for
-    # production use with I2C-coordinated startup; for FPGA pair bring-up
-    # we bypass it. Production silicon should drive this from a real strap
-    # or coordinated handshake.
+    # SoC Labs bring-up patch (2026-05-06, un-tied 2026-05-14):
+    # mask_hs_bypass_i was previously tied HIGH so the peer-mask handshake
+    # gate stayed open and role_lock_reg latched immediately on ROLE_CFG
+    # write. With the autoneg FSM + autocal §9 work landed in trunk we now
+    # drive this LOW so the actual autoneg-driven mask-handshake path
+    # gets exercised on hardware. The xlconstant is intentionally retained
+    # (not removed) so reverting to bypass is a one-line CONFIG.CONST_VAL
+    # change rather than a BD topology edit.
+    #
+    # NOTE: with bypass=0, role_lock will NOT latch until the peer-mask
+    # handshake reports a match — that requires either (a) SW writing
+    # link_lane_mask_hs_result @ 0x21C with peer_says_match=1, or (b) the
+    # autoneg FSM (NEGO_CFG[6] mask_hs_auto_en=1) running end-to-end with
+    # the I2C sideband physically wired between the two boards. Until the
+    # I2C jumpers are in place, the link will hang waiting for the
+    # handshake. Use apb_debug_unlock_i (existing strap) for emergency
+    # local bring-up that doesn't require peer coordination.
     set const_mask_bypass [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_mask_hs_bypass]
     set_property -dict [list \
         CONFIG.CONST_WIDTH {1} \
-        CONFIG.CONST_VAL   {1} \
+        CONFIG.CONST_VAL   {0} \
     ] $const_mask_bypass
 
     #--------------------------------------------------------------------------

@@ -331,14 +331,23 @@ proc create_root_design { parentCell } {
         CONFIG.CONST_VAL   {42405} \
     ] $const_puf_seed
 
-    # SoC Labs bring-up patch (2026-05-06): tie mask_hs_bypass_i HIGH so the
-    # peer-mask handshake gate is open and role_lock_reg latches immediately
-    # on ROLE_CFG write. See pynq-z2-pair-all for full rationale.
+    # SoC Labs bring-up patch (2026-05-06, un-tied 2026-05-14):
+    # mask_hs_bypass_i was previously tied HIGH; now driven LOW so the
+    # autoneg-driven peer-mask handshake gates role_lock. The xlconstant
+    # is retained so reverting is a one-line CONFIG.CONST_VAL change.
+    # See pynq-z2-pair-all for full rationale and SW prerequisites.
+    #
+    # REQUIRES PHYSICAL I2C JUMPERS between the two Pynq-Z2 boards (SDA/SCL
+    # + GND on the PMOD sideband — see PHYSICAL_WIRING.md). With bypass=0
+    # and no jumpers the link HANGS waiting for the peer-mask handshake.
+    # Also gated by the autoneg I2C wedge SHORTCOMINGS-14a until that fix
+    # lands. Do NOT treat this bitstream as bring-up-ready without the
+    # jumpers + 14a.
     set const_mask_bypass [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_mask_hs_bypass]
     set_property -dict [list \
         CONFIG.CONST_WIDTH {1} \
-        CONFIG.CONST_VAL   {1} \
+        CONFIG.CONST_VAL   {0} \
     ] $const_mask_bypass
 
     #--------------------------------------------------------------------------

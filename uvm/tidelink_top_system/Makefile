@@ -120,8 +120,15 @@ VCS_FLAGS += +libext+.svp+.sv+.svi+.svh
 VCS_FLAGS += $(TB_DIR)/pad_skid_lanes.sv
 VCS_FLAGS += $(PROJ_HOME)/src/rtl/tidelink_lane_checker.sv
 
-# Top-level testbench
+# Top-level testbench. GATE=1 uses a probe-free TB auto-derived from
+# top.sv (XMR debug instrumentation stripped — see gen_gate_tb.awk),
+# since the flattened FC netlist has no internal hierarchy for the
+# cross-module-reference probes to resolve against.
+ifeq ($(GATE),1)
+VCS_FLAGS += $(TB_DIR)/top_gate.sv
+else
 VCS_FLAGS += $(TB_DIR)/top.sv
+endif
 VCS_FLAGS += -top test_top
 
 # Compile outputs
@@ -383,13 +390,32 @@ $(WLINK_GEN_V): $(WLINK_SCALA)
 wlink_regen: $(WLINK_GEN_V)
 
 # GATE=1 uses the flattened FC netlist, so the Chisel-generated Wlink
-# Verilog isn't a prerequisite (it's already baked into the netlist).
+# Verilog isn't a prerequisite (it's already baked into the netlist);
+# instead, the probe-free gate TB must be regenerated from top.sv.
 ifeq ($(GATE),1)
-COMPILE_DEPS =
+COMPILE_DEPS = $(TB_DIR)/top_gate.sv
 SIM_DIR      = sim_build_gate
 else
 COMPILE_DEPS = $(WLINK_GEN_V)
 endif
+
+# Derive the probe-free gate TB from top.sv, then assert the strip
+# actually worked: zero residual XMR tokens AND run_test() preserved.
+# Regenerated whenever top.sv or the generator changes.
+$(TB_DIR)/top_gate.sv: $(TB_DIR)/top.sv $(TB_DIR)/gen_gate_tb.awk
+	@echo "Generating probe-free gate TB: $@"
+	@awk -f $(TB_DIR)/gen_gate_tb.awk $(TB_DIR)/top.sv > $@.tmp
+	@if grep -qE 'u_tidelink_top_[ab]\.' $@.tmp; then \
+		echo "ERROR: gate TB still has XMR refs — gen_gate_tb.awk under-stripped:"; \
+		grep -nE 'u_tidelink_top_[ab]\.' $@.tmp | head -5; \
+		rm -f $@.tmp; exit 1; \
+	fi
+	@if ! grep -q 'run_test(' $@.tmp; then \
+		echo "ERROR: gate TB lost run_test() — gen_gate_tb.awk over-stripped"; \
+		rm -f $@.tmp; exit 1; \
+	fi
+	@mv $@.tmp $@
+	@echo "  OK: 0 XMR refs, run_test() preserved ($$(wc -l < $@) lines, was $$(wc -l < $(TB_DIR)/top.sv))"
 
 compile: $(COMPILE_DEPS) | $(SIM_DIR)
 	$(VCS) $(VCS_FLAGS)

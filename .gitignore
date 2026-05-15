@@ -34,11 +34,11 @@ cdc/tidelink_top
 cdc/*summary.rpt
 
 # ── Synthesis: Fusion Compiler — all generated trees ──────────────────────
-syn/asic/fusion-compiler/work/
-syn/asic/fusion-compiler/libs/
-syn/asic/fusion-compiler/logs/
-syn/asic/fusion-compiler/reports/
-syn/asic/fusion-compiler/outputs/
+syn/asic/fusion-compiler/work*/
+syn/asic/fusion-compiler/libs*/
+syn/asic/fusion-compiler/logs*/
+syn/asic/fusion-compiler/reports*/
+syn/asic/fusion-compiler/outputs*/
 # lm_shell / fc_shell scratch that lands at the flow root
 syn/asic/fusion-compiler/PreFrameCheck/
 syn/asic/fusion-compiler/check_workspace.ems
@@ -74,7 +74,10 @@ vivado*.log
 
 # UVM simulation artifacts
 uvm/*/sim_build/
+uvm/*/sim_build_gate/
 uvm/*/coverage_report/
+# Generated probe-free gate TB (derived from top.sv by gen_gate_tb.awk)
+uvm/tidelink_top_system/tb/top_gate.sv
 
 # Coverage Files
 .coverage

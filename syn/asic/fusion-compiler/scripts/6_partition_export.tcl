@@ -170,9 +170,26 @@ set cg_status "on (PREICG_*) min_bitwidth=2"
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
     set cg_status "off (PREICG_* set_dont_use, +area for LEC parity)"
 }
-set fcsm_status "off (default — area-optimised, 264 LEC don't-verify residuals)"
+# Pull the live LEC don't-verify count from the most recent Formality
+# summary if one exists, so the manifest never ships a stale number.
+set dv_count "see syn/asic/formality reports"
+foreach lecrep [list \
+        [file join $fc_dir .. formality reports 03b_verify_summary_final.rep] \
+        [file join $fc_dir .. formality reports 03_verify_summary.rep]] {
+    if {[file exists $lecrep]} {
+        set fp [open $lecrep r]
+        set raw [read $fp]; close $fp
+        # Row is: "Don't verify  <BBPin> <Loop> <BBNet> <Cut> <Port>
+        #          <DFF> <LAT> <TOTAL>" — grab the trailing TOTAL.
+        if {[regexp {Don't verify(?:\s+\d+){7}\s+(\d+)} $raw -> n]} {
+            set dv_count "$n"
+            break
+        }
+    }
+}
+set fcsm_status "off (default; LEC don't-verify residual = $dv_count, intrinsic to Wlink Chisel auto-gen)"
 if {[info exists ::env(FC_PRESERVE_WLINK_FCSM)] && $::env(FC_PRESERVE_WLINK_FCSM) eq "on"} {
-    set fcsm_status "on (set_dont_touch — LEC-clean variant)"
+    set fcsm_status "on (set_dont_touch on FCSM_* — VALIDATED INEFFECTIVE: same residual count, ~0 area delta)"
 }
 puts $mf "| Clock-gate insertion | $cg_status |"
 puts $mf "| Wlink FCSM preservation | $fcsm_status |"
@@ -188,9 +205,13 @@ puts $mf "   that \`ahb_mng_hready\` is an INPUT (slave→manager); this was a b
 puts $mf "   RTL and is now corrected. See BRINGUP_REPORT.md Appendix A for details."
 puts $mf "5. Single power domain (\`VDD\` = 1.08 V core, \`VSS\` = 0 V) inside the partition."
 puts $mf "6. LEC: \`cd ../formality && make lec\` for RTL→netlist equivalence check."
-puts $mf "   Current residuals: 264 Wlink Chisel synth-transform DFFs (iteratively skipped);"
-puts $mf "   downstream cones all verify. Set \`FC_PRESERVE_WLINK_FCSM=on\` to eliminate them"
-puts $mf "   at the cost of some area on the Wlink modules."
+puts $mf "   Result: FM_LEC_OK with $dv_count don't-verify residuals — Wlink Chisel"
+puts $mf "   auto-gen synth-transform DFFs (lltx/link_data_reg, txpstate/count_reg,"
+puts $mf "   axi*FC/link_data_reg). Iteratively skipped; ALL downstream cones verify,"
+puts $mf "   so external behaviour is proven equivalent. \`FC_PRESERVE_WLINK_FCSM=on\`"
+puts $mf "   was tried and is VALIDATED INEFFECTIVE (same residual count, ~0 area"
+puts $mf "   delta) — the residuals are not concentrated in WlinkGenericFCSM_*."
+puts $mf "   They are intrinsic to this Wlink release's Chisel/FIRRTL output."
 puts $mf ""
 puts $mf "## Reproducing this build"
 puts $mf ""

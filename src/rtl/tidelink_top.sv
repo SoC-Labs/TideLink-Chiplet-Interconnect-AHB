@@ -486,9 +486,12 @@ module tidelink_top #(
     wire            [2:0]  mbox_reg_addr;
     wire [SYS_DATA_W-1:0] mbox_reg_wdata;
 
-    // Chiplet controller register interface (APB regs Region 4 ↔ controller)
+    // Chiplet controller register interface (APB regs Regions 4 + 8 ↔ controller).
+    // ctrl_reg_addr widened from 3 to 4 bits for Region 8 (PHY-align / I2C-train).
+    // bit[3]=0 → Region 4 (slots 0..7, 0x080..0x09C);
+    // bit[3]=1 → Region 8 (slots 0..7, 0x100..0x11C).
     wire                   ctrl_reg_write;
-    wire            [2:0]  ctrl_reg_addr;
+    wire            [3:0]  ctrl_reg_addr;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 

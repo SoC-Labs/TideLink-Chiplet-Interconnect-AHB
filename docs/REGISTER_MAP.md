@@ -142,6 +142,65 @@ without re-negotiating the link role.
 4. CPU writes `ROLE_CFG.role_lock = 1` — Wlink POR deasserts, link training begins
 5. `swi_enable` is high by default, so FC credit exchange starts automatically
 
+### Region 8: Chiplet Extended — PHY Alignment & I²C Training (paddr[8:5] = 1000)
+
+These registers absorb the §9 PHY-alignment soft-strap controls (formerly
+interim-shim'd at MMIO 0x4403_1000) and the I²C-coordinated training
+protocol registers (per `staging/i2c_train/I2C_TRAIN_PROTOCOL.md`). They
+reside in a 4-bit region-select decode (`paddr[8:5]=1000`) — the existing
+3-bit decode for Regions 0..7 is unchanged.
+
+These registers are also pass-through via the same `ctrl_reg_*` interface
+to `axi_chiplet_controller`; the controller's `ctrl_reg_addr[3]`
+distinguishes Region 4 (bit 3 = 0, slots 0..7) from Region 8 (bit 3 = 1,
+slots 0..7 remapped to 0x100..0x11C).
+
+| Offset | Name              | Access | Reset       | Description                                                    |
+|--------|-------------------|--------|-------------|----------------------------------------------------------------|
+| 0x2100 | SWI_TRAINING_MODE | RW     | 0           | bit[0] = training-mode enable                                  |
+| 0x2104 | SWI_BIT_SLIP_LO   | RW     | 0           | bits[23:0] = per-lane bit-slip (8 lanes × 3 bits)              |
+| 0x2108 | SWI_LANE_STATUS   | RO     | 0           | [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done    |
+| 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | I²C training handshake config (auto/sw_step/retrain + timing)  |
+| 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | Training FSM live status + last-captured peer values           |
+| 0x2114 | NEGO_TRAIN_STEP   | W1P    | 0           | bit[0] = self-clearing step pulse (debug)                      |
+| 0x2118 | SWI_BIT_SLIP_HI   | RW     | 0           | Reserved for 16-lane builds                                    |
+| 0x211C | PHY_ALIGN_ID      | RO     | 0x5041_0100 | "PA" v1.0 — SW probes for Region 8 presence                    |
+
+See `staging/apb_redesign/PROPOSAL.md` for the full design rationale and
+the migration history from the interim shim at MMIO 0x4403_1000.
+
+#### SWI_TRAINING_MODE Register (0x2100) Fields
+
+| Bit | Name              | Access | Description |
+|-----|-------------------|--------|-------------|
+| [0] | swi_training_mode | RW     | When 1, drives the Wlink GPIO PHY's training pattern + lane checker. |
+
+POR-only reset domain — survives warm `hresetn` so training state persists
+across system reset cycles. Writable from both local APB and the I²C-slave
+AXIL bridge (peer-driven).
+
+#### SWI_BIT_SLIP_LO Register (0x2104) Fields
+
+| Bits  | Name      | Access | Description |
+|-------|-----------|--------|-------------|
+|[23:0] | bit_slip  | RW     | 8 lanes × 3-bit right-rotation amount (lane K at bits [3K+2:3K]). |
+
+SW override of the autonomous calibration FSM's per-lane slip value. When
+`NEGO_TRAIN_CFG.train_auto_en = 1` AND `swi_calibration_done = 0`, the cal
+FSM owns slip; otherwise SW override applies. Both contributions are
+OR-merged into the Wlink port.
+
+#### SWI_LANE_STATUS Register (0x2108) Fields
+
+| Bits   | Name             | Description |
+|--------|------------------|-------------|
+|[7:0]   | lane_locked      | Per-lane lock status from `wlink_lane_checker`. |
+|[15:8]  | lane_fault       | Per-lane sticky fault from cal FSM. |
+|[16]    | calibration_done | Set by cal FSM at convergence. Cleared by swreset / train_retrain. |
+
+Packed so an I²C 4-byte read captures all three signals in a single
+transaction.
+
 ---
 
 ## 2. Wlink Chiplet Controller Registers (APB base 0x0000)

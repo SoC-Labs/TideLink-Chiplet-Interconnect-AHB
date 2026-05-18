@@ -221,6 +221,11 @@ spyglass-cdc:
     - python3 -m pip install --user --no-deps -e "$WORK_DIR/python" --quiet
     - find "$WORK_DIR" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     - python3 -m pip install --user cocotb cocotbext-ahb systemrdl-compiler --quiet
+    # fpgahub-sdk provides fpgahub_sdk.testkit.HALBridge (Phase 7B): the
+    # byte-identical de-duplicated replacement for the old copy-pasted
+    # cocotb/common/hal_bridge.py. Editable local path install (the SDK
+    # is a sibling workspace repo, not yet published to an index).
+    - python3 -m pip install --user -e "$WORK_DIR/../fpgahub" --quiet
 
 .vcs_uvm_setup: &vcs_uvm_setup
   before_script:

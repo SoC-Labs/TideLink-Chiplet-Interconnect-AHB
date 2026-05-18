@@ -39,7 +39,7 @@ set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 # Input clock from the remote chiplet on pad_clk_rx — 50 MHz, drives the
 # pad_rx[*] sampling registers.
-create_clock -name pad_clk_rx -period 40.0 [get_ports pad_clk_rx]
+create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 # pad_clk_tx is forwarded out of the FPGA from the local hclk domain.
 # It's launched by clk_wiz/clk_out1 (the existing 50 MHz domain), so
@@ -114,7 +114,9 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 # knowing the auto-generated net hierarchy, which changes between Vivado
 # versions; the global severity downgrade is more robust and only relaxes
 # this specific DRC.
-set_property SEVERITY {Warning} [get_drc_checks LUTLP-1]
+# Per-net waiver as backup — write_bitstream's pre-DRC sometimes ignores the
+# severity downgrade in Vivado 2024.1. Match all u_xhb_sub/u_resp nets.
+set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
 
 #-----------------------------------------------------------------------------
 # Source-synchronous async clock group
@@ -122,6 +124,16 @@ set_property SEVERITY {Warning} [get_drc_checks LUTLP-1]
 # pad_clk_rx is asynchronous to the local clk_wiz hclk — it comes from the
 # remote chiplet's TX clock with arbitrary phase. Tell Vivado to skip CDC
 # analysis between the two domains; Wlink internally synchronises.
-set_clock_groups -asynchronous \
-    -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]]
+set_clock_groups -asynchronous -group [get_clocks pad_clk_rx] -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]]
+
+
+
+
+
+
+
+
+
+
+
+

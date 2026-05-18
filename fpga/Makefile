@@ -114,10 +114,18 @@ FPGA_VENDOR     := soclabs.org
 FPGA_CORE_REV   := 1
 FPGA_NUM_JOBS   ?= 4
 
+# Vivado-native remote-host farming (launch_runs -host). Empty = local build.
+# "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".
+# Prerequisites + sysadmin NFS request: fpga/docs/FARM_NFS_EXPORT_REQUEST.md.
+# Validate a farm host first:  make farm_check FARM_HOST=srv04936
+FPGA_REMOTE_HOSTS ?=
+FPGA_REMOTE_CMD   ?=
+FARM_HOST         ?= srv04936
+
 .PHONY: all package_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
-        resolve_board help
+        resolve_board farm_check help
 
 all: build_design
 
@@ -147,6 +155,8 @@ build_design: package_ip
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
+	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
+	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	vivado -mode batch -source $(FPGA_DIR)/build_design.tcl \
 	    -log $(RUN_DIR)/build_design.log \
 	    -journal $(RUN_DIR)/build_design.jou
@@ -156,6 +166,14 @@ build_design: package_ip
 	@echo " Bitstream: $(OUTPUT_DIR)/tidelink.bit"
 	@echo " HWH:       $(OUTPUT_DIR)/tidelink.hwh"
 	@echo "=========================================="
+
+#-----------------------------------------------------------------------------
+# Validate the four Vivado -host prerequisites against FARM_HOST before
+# trusting FPGA_REMOTE_HOSTS in a real build. Run from an authenticated shell.
+#-----------------------------------------------------------------------------
+farm_check:
+	@FARM_HOST='$(FARM_HOST)' BUILD_DIR='$(BUILD_DIR)' \
+	    $(FPGA_DIR)/scripts/farm_preflight.sh
 
 #-----------------------------------------------------------------------------
 # Deployment helpers
@@ -452,6 +470,7 @@ help:
 	@echo "  all               Full flow: package_ip -> build_design (default)"
 	@echo "  package_ip        Package TideLink RTL as Vivado XCI IP"
 	@echo "  build_design      Block design + synth + impl + bitstream + .hwh"
+	@echo "  farm_check        Verify Vivado -host prereqs vs FARM_HOST"
 	@echo "  program           JTAG-program the PL via Vivado Hardware Manager"
 	@echo "  deploy            SCP .bit/.bin/.hwh to PYNQ board and load via fpga_manager"
 	@echo "  clean             Remove all build outputs (imp/fpga/)"
@@ -469,6 +488,9 @@ help:
 	@echo "  make TARGET=pynq-z2-single build_design"
 	@echo "  make TARGET=pynq-z2-pair   build_design"
 	@echo "  make TARGET=mps3           build_design"
+	@echo "  make farm_check FARM_HOST=srv04936"
+	@echo "  make TARGET=pynq-z2-pair build_design \\"
+	@echo "       FPGA_REMOTE_HOSTS=\"srv03335 4 srv04936 8\""
 	@echo "  make TARGET=pynq-z2-single BOARD=fpga1 deploy"
 	@echo "  make TARGET=pynq-z2-pair   BOARD_TAG=pynq_z2 deploy_via_fpgahub"
 	@echo ""

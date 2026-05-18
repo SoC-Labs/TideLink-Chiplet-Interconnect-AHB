@@ -69,6 +69,45 @@ The Pynq-Z2 RPi header has GNDs on physical pins 6, 9, 14, 20, 25, 30, 34, 39. T
 
 **Do NOT** wire +3V3 (J13 pins 1, 17) or +5V (J13 pins 2, 4) through the ribbon. Each board powers itself from its own micro-USB.
 
+## Pins to cut for header coexistence
+
+To keep the Pmod SF3 QSPI flash (PMODA), the LAN8720 RMII PHY
+(PMODB + Arduino IO0), or a J-Link SWD probe (2x3 SPI header) usable on
+either board while the ribbon is plugged in, the following J13 pins must
+**not** be carried through the cable. These are *physical J13 pin
+numbers* and are fixed by the Pynq-Z2 v1.0 board — independent of the
+TideLink pin-map revision. Full analysis:
+[fpga/docs/pynq_z2_connector_coexistence.md](../../docs/pynq_z2_connector_coexistence.md).
+
+**Power rails — 4 pins, ALWAYS cut:**
+
+| J13 pin | Rail | Why |
+|:---:|:---|:---|
+| 1  | 3V3 | Each board powers itself; tying two regulators back-feeds the lower one. |
+| 2  | 5V  | Same problem, higher current. |
+| 4  | 5V  | Same. |
+| 17 | 3V3 | Same. |
+
+**PMODA-shared GPIO — 8 pins, cut if either board populates PMODA:**
+
+| J13 pin | FPGA ball | PMODA | Collides with (SF3 flash) |
+|:---:|:---:|:---:|:---|
+| 3  | W18 | JA9  | SF3 JA9 reserved |
+| 5  | W19 | JA10 | SF3 JA10 reserved |
+| 7  | Y18 | JA1  | SF3 `qspi_ncs` |
+| 26 | U19 | JA8  | SF3 `qspi_io[3]` |
+| 27 | Y16 | JA3  | SF3 `qspi_io[1]` *(also ID_SD)* |
+| 28 | Y17 | JA4  | SF3 `qspi_sclk` *(also ID_SC)* |
+| 29 | Y19 | JA2  | SF3 `qspi_io[0]` |
+| 31 | U18 | JA7  | SF3 `qspi_io[2]` |
+
+**Total: 12 conductors to cut**, leaving a 28-wire effective ribbon
+(18 link lanes + 8 GNDs + 2 unused GPIO at pins 13/37). PMODB, the SPI
+header, the Arduino shield, and the four status LEDs share no FPGA ball
+with J13, so nothing else needs cutting. Easiest in practice: pull the
+12 conductors from one IDC connector and snip them flush — leave the
+other end intact so the count can't drift.
+
 ## Cable spec
 
 - Length: ≤10 cm (longer = ringing on the unimpedance-matched header).

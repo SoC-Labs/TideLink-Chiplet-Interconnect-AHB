@@ -24,6 +24,15 @@ set TIDELINK_HOME        $env(SOCLABS_TIDELINK_DIR)
 set SOCLABS_TIDELINK_DIR $env(SOCLABS_TIDELINK_DIR)
 set CMSDK_DIR            $env(CMSDK_DIR)
 set XHB500_IP_DIR        $env(XHB500_IP_DIR)
+# CMSDK_FPGA_SRAM_V: path to cmsdk_fpga_sram.v. Set explicitly so the flist's
+# ${CMSDK_FPGA_SRAM_V} placeholder resolves under [subst]. set_env.sh derives
+# this from CMSDK_DIR when not set; we mirror the same fallback here so the
+# flist works under any invocation that has CMSDK_DIR set.
+if { [info exists env(CMSDK_FPGA_SRAM_V)] && $env(CMSDK_FPGA_SRAM_V) ne "" } {
+    set CMSDK_FPGA_SRAM_V $env(CMSDK_FPGA_SRAM_V)
+} else {
+    set CMSDK_FPGA_SRAM_V [file join $CMSDK_DIR logical models memories cmsdk_fpga_sram.v]
+}
 
 # flist written by Agent A2
 set fpga_flist [file join $TIDELINK_HOME flist tidelink_fpga.flist]

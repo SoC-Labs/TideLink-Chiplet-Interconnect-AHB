@@ -79,6 +79,12 @@ case "$ROLE" in
     *) echo "ROLE must be die_a or die_b (got '$ROLE')" >&2; exit 2 ;;
 esac
 
+# Optional override: PHASE_OVERRIDE env var (full 32-bit register value).
+# Used for empirical phase sweeps during bring-up debug.
+if [ -n "${PHASE_OVERRIDE:-}" ]; then
+    PHASE="$PHASE_OVERRIDE"
+fi
+
 [[ -z "$BOARD_IP" || -z "$LABEL" ]] && {
     sed -n '4,18p' "$0" | sed 's/^# *//'; exit 2; }
 
@@ -122,15 +128,42 @@ def mm(a):
     b=a&~(P-1); return mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),(a-b)
 s,so=mm(0x44040000)              # strap GPIO
 struct.pack_into(\"<I\",s,so,$STRAP)
+# In slave mode, axi_chiplet_controller gates external APB writes to
+# Wlink (wl_apb_pwrite forced 0). Asserting apb_debug_unlock_i via
+# axi_gpio_debug_unlock at 0x44041000 lets the local PYNQ APB through
+# so SW can write swi_phase_offset on slave. Master is unaffected
+# (master path is always open).
+d,do=mm(0x44041000)              # debug_unlock GPIO
+struct.pack_into(\"<I\",d,do,1)
 r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
 w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
-# SHORTCOMINGS-14b: write swi_phase_offset BEFORE ROLE_CFG asserts
-# role_lock. Once role_lock fires, Wlink leaves POR; the deserialiser
-# starts free-running and subsequent phase writes only shift the bit-
-# select, they don't re-sync the counter.
-struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset
 struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR
+# SHORTCOMINGS-14b: write swi_phase_offset BEFORE role_lock asserts.
+# Two reset domains:
+#   - swi_phase_offset reg has reset = apb_reset (~hresetn) — always low
+#     during normal operation, so APB writes ALWAYS land regardless of
+#     role_lock state.
+#   - WavD2DGpioRx.count reg has reset = io_por_reset (= wlink_por =
+#     ~poresetn | ~role_locked). Resets to 4hF while role_lock=0;
+#     starts incrementing the moment role_lock=1.
+# So the only chance to influence the deserialiser counter alignment
+# is to have the right swi_phase_offset value LOADED before role_lock
+# asserts, so adj_count = count + phase is correct from cycle 0.
+# Setting phase AFTER role_lock only shifts the bit-select but does
+# not re-sync the counter (which has already locked at the wrong phase).
+struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset
 struct.pack_into(\"<I\",r,ro+0x80,$CTRL)        # ROLE_CFG (incl. role_lock)
+# 2026-05-09 fix: drain stuck TideLink FC TX FIFO via swreset+lltx toggle.
+# After role_lock, the LL_TX state machine is sometimes wedged with the
+# initial cr_pkt queued but not draining. Pulsing swreset and re-enabling
+# the lltx paths bootstraps the link layer. WL+0x208 layout:
+#   bit[0] swi_enable, bit[1] lltx_enable, bit[2] lltx_enable_1, bit[3] swreset
+import time as _t
+struct.pack_into(\"<I\",w,wo+0x208,0x00027f08)  # swreset on, enables off
+_t.sleep(0.005)
+struct.pack_into(\"<I\",w,wo+0x208,0x00027f00)  # release swreset
+_t.sleep(0.005)
+struct.pack_into(\"<I\",w,wo+0x208,0x00027f07)  # re-enable swi+lltx+lltx_1
 phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]
 pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]
 val=struct.unpack_from(\"<I\",r,ro+0x80)[0]

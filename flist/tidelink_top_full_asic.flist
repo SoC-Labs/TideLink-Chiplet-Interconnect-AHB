@@ -178,6 +178,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+
+// §9 PHY alignment APB regs + per-lane lock checker + auto-cal FSM
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
+${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 
 // Performance profiling

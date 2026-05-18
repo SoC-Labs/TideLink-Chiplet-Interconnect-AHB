@@ -1356,7 +1356,14 @@ module tidelink_top #(
     //    Generated module: Wlink (Chisel output)
     //    Note: Wlink uses active-high resets
     // =========================================================================
-    axi_chiplet_controller u_chiplet_controller (
+    // SoC Labs §9 auto-cal: enable the in-RTL per-lane calibration FSM at
+    // the TideLink integration level. The chiplet controller defaults to
+    // 0 (disabled) so the cocotb wlink_pair sweep tests keep their
+    // hierarchical-force semantics; turning it on here means every TideLink
+    // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
+    axi_chiplet_controller #(
+        .AUTOCAL_ENABLE(1'b1)
+    ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
         .user_hsclk                 (user_ref_clk),

@@ -149,6 +149,13 @@ package tidelink_top_system_pkg;
   `include "test_top_peer_mask_auto.sv"
   `include "test_top_peer_mask_auto_mismatch.sv"
 
+  // BRINGUP_REPORT.md §9 — per-lane bit-slip alignment tests.
+  `include "test_top_align_base.sv"
+  `include "test_align_uniform_skew.sv"
+  `include "test_align_asymmetric_skew.sv"
+  `include "test_align_one_dead_lane.sv"
+  `include "test_align_recalibration_after_link_drop.sv"
+
 endpackage
 
 `endif // GUARD_TIDELINK_TOP_SYSTEM_PKG_SV

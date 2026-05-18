@@ -13,7 +13,46 @@
 // =============================================================================
 `timescale 1ns/1ps
 
-module tb_top;
+module tb_top #(
+    // Bit-level skid inserted between TX and RX pads, modelling the
+    // FPGA-side serial-to-parallel boundary misalignment (BRINGUP_REPORT.md
+    // §6, §8.1, §8.4). Default 0 = passthrough (existing test behaviour).
+    // Override at elaboration via VCS `-pvalue+tb_top.SKID_BITS=3` or via
+    // cocotb's COMPILE_ARGS using the `+define+TB_TOP_SKID_BITS=3` pattern
+    // exposed by the Makefile (legacy uniform mode).
+    parameter int SKID_BITS = `ifdef TB_TOP_SKID_BITS `TB_TOP_SKID_BITS `else 0 `endif,
+    // -------------------------------------------------------------------
+    // Per-lane skid overrides (2026-05-14). Each lane defaults to the
+    // uniform SKID_BITS above. To set lane N independently, pass
+    // `+define+TB_TOP_SKID_LANEN=<value>` via cocotb COMPILE_ARGS — the
+    // wlink_pair Makefile exposes this through the `SKID_LANE<n>` knobs.
+    // -------------------------------------------------------------------
+    parameter int SKID_BITS_LANE0 = `ifdef TB_TOP_SKID_LANE0 `TB_TOP_SKID_LANE0 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE1 = `ifdef TB_TOP_SKID_LANE1 `TB_TOP_SKID_LANE1 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE2 = `ifdef TB_TOP_SKID_LANE2 `TB_TOP_SKID_LANE2 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE3 = `ifdef TB_TOP_SKID_LANE3 `TB_TOP_SKID_LANE3 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE4 = `ifdef TB_TOP_SKID_LANE4 `TB_TOP_SKID_LANE4 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE5 = `ifdef TB_TOP_SKID_LANE5 `TB_TOP_SKID_LANE5 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE6 = `ifdef TB_TOP_SKID_LANE6 `TB_TOP_SKID_LANE6 `else SKID_BITS `endif,
+    parameter int SKID_BITS_LANE7 = `ifdef TB_TOP_SKID_LANE7 `TB_TOP_SKID_LANE7 `else SKID_BITS `endif,
+    // Separate per-lane skid pattern for the slave→master direction. When
+    // not overridden, slave→master uses the same per-lane values as
+    // master→slave (the common case). For tests that need asymmetric
+    // master and slave directions, override via `+define+TB_TOP_SKID_S_LANEN=<v>`.
+    parameter int SKID_BITS_S_LANE0 = `ifdef TB_TOP_SKID_S_LANE0 `TB_TOP_SKID_S_LANE0 `else SKID_BITS_LANE0 `endif,
+    parameter int SKID_BITS_S_LANE1 = `ifdef TB_TOP_SKID_S_LANE1 `TB_TOP_SKID_S_LANE1 `else SKID_BITS_LANE1 `endif,
+    parameter int SKID_BITS_S_LANE2 = `ifdef TB_TOP_SKID_S_LANE2 `TB_TOP_SKID_S_LANE2 `else SKID_BITS_LANE2 `endif,
+    parameter int SKID_BITS_S_LANE3 = `ifdef TB_TOP_SKID_S_LANE3 `TB_TOP_SKID_S_LANE3 `else SKID_BITS_LANE3 `endif,
+    parameter int SKID_BITS_S_LANE4 = `ifdef TB_TOP_SKID_S_LANE4 `TB_TOP_SKID_S_LANE4 `else SKID_BITS_LANE4 `endif,
+    parameter int SKID_BITS_S_LANE5 = `ifdef TB_TOP_SKID_S_LANE5 `TB_TOP_SKID_S_LANE5 `else SKID_BITS_LANE5 `endif,
+    parameter int SKID_BITS_S_LANE6 = `ifdef TB_TOP_SKID_S_LANE6 `TB_TOP_SKID_S_LANE6 `else SKID_BITS_LANE6 `endif,
+    parameter int SKID_BITS_S_LANE7 = `ifdef TB_TOP_SKID_S_LANE7 `TB_TOP_SKID_S_LANE7 `else SKID_BITS_LANE7 `endif,
+    // Stuck-at-zero per-lane mask (one bit per lane). Drives the
+    // STUCK_LANES_MASK port of pad_skid. Used by the partial-failure test
+    // to confirm an un-calibratable lane is reported as un-locked.
+    parameter [7:0] STUCK_LANES_MASK   = `ifdef TB_TOP_STUCK_LANES_MASK `TB_TOP_STUCK_LANES_MASK `else 8'h00 `endif,
+    parameter [7:0] STUCK_LANES_MASK_S = `ifdef TB_TOP_STUCK_LANES_MASK_S `TB_TOP_STUCK_LANES_MASK_S `else STUCK_LANES_MASK `endif
+);
 
     // ----- Clocks & resets ----------------------------------------------------
     // Default: shared 50 MHz clock (optimistic — same package, common PLL).
@@ -41,8 +80,117 @@ module tb_top;
     assign hresetn  = m_hresetn  & s_hresetn;
 
     // ----- Cross-wired GPIO PHY pads ------------------------------------------
+    // m_pad_clk_tx / m_pad_tx are driven by the master, fed into the skid
+    // block, and the skid output goes to the slave's RX (m_pad_*_skid).
+    // Likewise for slave→master via s_pad_*_skid.
     wire        m_pad_clk_tx, s_pad_clk_tx;
     wire [7:0]  m_pad_tx,     s_pad_tx;
+    wire        m_pad_clk_tx_skid, s_pad_clk_tx_skid;
+    wire [7:0]  m_pad_tx_skid,     s_pad_tx_skid;
+
+    // Master→slave direction uses the LANE0..7 per-lane skid pattern.
+    pad_skid #(
+        .SKID_BITS(SKID_BITS), .LANES(8),
+        .SKID_BITS_LANE0(SKID_BITS_LANE0),
+        .SKID_BITS_LANE1(SKID_BITS_LANE1),
+        .SKID_BITS_LANE2(SKID_BITS_LANE2),
+        .SKID_BITS_LANE3(SKID_BITS_LANE3),
+        .SKID_BITS_LANE4(SKID_BITS_LANE4),
+        .SKID_BITS_LANE5(SKID_BITS_LANE5),
+        .SKID_BITS_LANE6(SKID_BITS_LANE6),
+        .SKID_BITS_LANE7(SKID_BITS_LANE7),
+        .STUCK_LANES_MASK(STUCK_LANES_MASK)
+    ) u_skid_m2s (
+        .pad_clk_in   (m_pad_clk_tx),
+        .pad_data_in  (m_pad_tx),
+        .pad_clk_out  (m_pad_clk_tx_skid),
+        .pad_data_out (m_pad_tx_skid)
+    );
+    // Slave→master direction uses the S_LANE0..7 pattern (defaults to the
+    // same per-lane values as master→slave unless explicitly overridden).
+    pad_skid #(
+        .SKID_BITS(SKID_BITS), .LANES(8),
+        .SKID_BITS_LANE0(SKID_BITS_S_LANE0),
+        .SKID_BITS_LANE1(SKID_BITS_S_LANE1),
+        .SKID_BITS_LANE2(SKID_BITS_S_LANE2),
+        .SKID_BITS_LANE3(SKID_BITS_S_LANE3),
+        .SKID_BITS_LANE4(SKID_BITS_S_LANE4),
+        .SKID_BITS_LANE5(SKID_BITS_S_LANE5),
+        .SKID_BITS_LANE6(SKID_BITS_S_LANE6),
+        .SKID_BITS_LANE7(SKID_BITS_S_LANE7),
+        .STUCK_LANES_MASK(STUCK_LANES_MASK_S)
+    ) u_skid_s2m (
+        .pad_clk_in   (s_pad_clk_tx),
+        .pad_data_in  (s_pad_tx),
+        .pad_clk_out  (s_pad_clk_tx_skid),
+        .pad_data_out (s_pad_tx_skid)
+    );
+
+    // Expose SKID_BITS as a localparam mirror for cocotb logging.
+    localparam int SKID_BITS_EXPOSED = SKID_BITS;
+    // Per-lane skid mirrors (cocotb reads these to log the actual pattern
+    // in use, since the legacy SKID_BITS_EXPOSED only reflects the uniform
+    // fallback). Master→slave lanes:
+    localparam int SKID_BITS_LANE0_EXPOSED = SKID_BITS_LANE0;
+    localparam int SKID_BITS_LANE1_EXPOSED = SKID_BITS_LANE1;
+    localparam int SKID_BITS_LANE2_EXPOSED = SKID_BITS_LANE2;
+    localparam int SKID_BITS_LANE3_EXPOSED = SKID_BITS_LANE3;
+    localparam int SKID_BITS_LANE4_EXPOSED = SKID_BITS_LANE4;
+    localparam int SKID_BITS_LANE5_EXPOSED = SKID_BITS_LANE5;
+    localparam int SKID_BITS_LANE6_EXPOSED = SKID_BITS_LANE6;
+    localparam int SKID_BITS_LANE7_EXPOSED = SKID_BITS_LANE7;
+    // Slave→master lanes:
+    localparam int SKID_BITS_S_LANE0_EXPOSED = SKID_BITS_S_LANE0;
+    localparam int SKID_BITS_S_LANE1_EXPOSED = SKID_BITS_S_LANE1;
+    localparam int SKID_BITS_S_LANE2_EXPOSED = SKID_BITS_S_LANE2;
+    localparam int SKID_BITS_S_LANE3_EXPOSED = SKID_BITS_S_LANE3;
+    localparam int SKID_BITS_S_LANE4_EXPOSED = SKID_BITS_S_LANE4;
+    localparam int SKID_BITS_S_LANE5_EXPOSED = SKID_BITS_S_LANE5;
+    localparam int SKID_BITS_S_LANE6_EXPOSED = SKID_BITS_S_LANE6;
+    localparam int SKID_BITS_S_LANE7_EXPOSED = SKID_BITS_S_LANE7;
+
+    // -------------------------------------------------------------------------
+    // SoC Labs bit-slip + training-mode checker plumbing
+    // (BRINGUP_REPORT.md §9 — per-lane alignment calibration)
+    //
+    // The new bit-slip / training-mode registers live inside each side's
+    // WavD2DGpio (u_<side>.u_wlink.phy.gpio) — cocotb writes them via
+    // hierarchical reference. We mirror the master/slave 128-bit deserialised
+    // lane data here and run a tidelink_lane_checker on each side, exposing
+    // master_lane_locked / slave_lane_locked for the cocotb sweep.
+    //
+    // Each side's checker is clocked on the *peer's* recovered link clock,
+    // because that is the clock that captures the deserialised words (a
+    // master's RX runs on the slave's TX-side recovered clock — the link
+    // clock derived from io_pad_clk_rx).
+    // -------------------------------------------------------------------------
+    wire [127:0] m_rx_lane_data  = u_master.u_wlink.phy.gpio.io_link_rx_rx_link_data;
+    wire         m_rx_link_clk   = u_master.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
+    wire [127:0] s_rx_lane_data  = u_slave.u_wlink.phy.gpio.io_link_rx_rx_link_data;
+    wire         s_rx_link_clk   = u_slave.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
+
+    // Checker reset: hold while POR is asserted. The bit-slip/training-mode
+    // registers default to zero on power-up, so this naturally behaves like
+    // a pre-training "no-lock" state.
+    wire m_checker_rst = ~m_poresetn;
+    wire s_checker_rst = ~s_poresetn;
+
+    wire [7:0] master_lane_locked;
+    wire [7:0] slave_lane_locked;
+
+    tidelink_lane_checker u_master_checker (
+        .clk        (m_rx_link_clk),
+        .rst        (m_checker_rst),
+        .lane_data  (m_rx_lane_data),
+        .lane_locked(master_lane_locked)
+    );
+
+    tidelink_lane_checker u_slave_checker (
+        .clk        (s_rx_link_clk),
+        .rst        (s_checker_rst),
+        .lane_data  (s_rx_lane_data),
+        .lane_locked(slave_lane_locked)
+    );
 
     // ----- APB master/slave interface (cocotb drives via DUT_M / DUT_S) -------
     // Master APB
@@ -186,9 +334,9 @@ module tb_top;
         .scan_shift(1'b0), .scan_in(1'b0), .scan_out(),
         .interrupt(m_interrupt),
 
-        // PHY pads — cross-wired
+        // PHY pads — cross-wired through skid module(s)
         .pad_clk_tx(m_pad_clk_tx), .pad_tx(m_pad_tx),
-        .pad_clk_rx(s_pad_clk_tx), .pad_rx(s_pad_tx)
+        .pad_clk_rx(s_pad_clk_tx_skid), .pad_rx(s_pad_tx_skid)
     );
 
     // ----- Slave instance -----------------------------------------------------
@@ -286,7 +434,7 @@ module tb_top;
         .interrupt(s_interrupt),
 
         .pad_clk_tx(s_pad_clk_tx), .pad_tx(s_pad_tx),
-        .pad_clk_rx(m_pad_clk_tx), .pad_rx(m_pad_tx)
+        .pad_clk_rx(m_pad_clk_tx_skid), .pad_rx(m_pad_tx_skid)
     );
 
     // VCD dump

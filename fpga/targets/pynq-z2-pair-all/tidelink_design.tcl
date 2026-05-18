@@ -151,12 +151,23 @@ proc create_root_design { parentCell } {
     # Active-low reset (resetn) from PS FCLK_RESET0_N.
     #--------------------------------------------------------------------------
     set clk_wiz [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk_wiz_0]
+    # SoC Labs §9 structural fix (2026-05-18): CLKOUT3 = 200 MHz added as the
+    # IDELAYCTRL reference clock for the per-lane IDELAYE2 RX delay elements
+    # (tidelink_idelay_rx, USE_IDELAY=1). One MMCM with three synchronous
+    # outputs: 25 / 25 / 200 MHz from a 100 MHz input is well inside the
+    # xc7z020-1 MMCM range (VCO settles ~1000 MHz: ÷40→25, ÷5→200). The
+    # 200 MHz net is BD-internal so the clk_wiz IP emits its own
+    # create_generated_clock — the *_idelay.xdc deliberately adds NO manual
+    # create_clock for it (see that file's rationale).
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
         CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \
+        CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {200.000} \
+        CONFIG.CLKOUT3_USED              {true} \
+        CONFIG.NUM_OUT_CLKS              {3} \
         CONFIG.USE_LOCKED                {true} \
         CONFIG.USE_RESET                 {true} \
         CONFIG.RESET_TYPE                {ACTIVE_LOW} \
@@ -440,6 +451,11 @@ proc create_root_design { parentCell } {
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
                    [get_bd_pins tidelink_0/phc_clk]
+
+    #-- SoC Labs §9 structural fix: clk_wiz clk_out3 (200 MHz) -> IDELAYCTRL
+    #   reference clock for the per-lane IDELAYE2 RX delay elements.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out3] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk]
 
     #-- Reset fan-out (active-low peripheral_aresetn)
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \

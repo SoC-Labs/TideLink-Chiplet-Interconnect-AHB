@@ -202,6 +202,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
+// ── §9 structural fix: per-lane IDELAYE2 RX delay element (calibrator-
+//    driven). Instantiated by axi_chiplet_controller, so it must be in the
+//    fileset before it. USE_IDELAY=0 default → bit-exact passthrough, no
+//    Xilinx primitive (this is what cocotb/iverilog/Verilator/VCS and the
+//    ASIC flist take). The FPGA IP packaging sets USE_IDELAY=1 and defines
+//    TIDELINK_USE_IDELAY. ──
+${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 

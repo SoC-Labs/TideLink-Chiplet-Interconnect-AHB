@@ -41,6 +41,16 @@ set wrapper_dir [file dirname [info script]]
 read_verilog $wrapper_dir/tidelink_vivado_wrapper.v
 
 set_property top tidelink_vivado_wrapper [current_fileset]
+
+# SoC Labs §9 structural fix: enable the Xilinx IDELAYE2 RX delay primitive.
+# tidelink_idelay_rx.sv guards the unisim IDELAYE2/IDELAYCTRL behind BOTH a
+# USE_IDELAY parameter (1 in the FPGA wrapper) AND `ifdef TIDELINK_USE_IDELAY.
+# This is the ONLY place that define is set — every non-Vivado parse (cocotb
+# iverilog/Verilator/VCS, the ASIC flist) never sees the primitive and takes
+# the bit-exact passthrough branch. Setting it as a fileset verilog_define
+# bakes it into the packaged IP so the downstream synth project inherits it.
+set_property verilog_define {TIDELINK_USE_IDELAY=1} [current_fileset]
+
 update_compile_order -fileset sources_1
 
 # STEP 1: Package the project as IP

@@ -55,7 +55,13 @@ module tidelink_top #(
 
     // PHC lock gate for multi-hop PTP chaining
     // 0 = no gating (backward compat), 1 = gate HW sync on phc_locked_i
-    parameter PHC_LOCK_GATE_EN = 0
+    parameter PHC_LOCK_GATE_EN = 0,
+
+    // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element driven
+    // by the calibrator. 0 (default) = bit-exact passthrough, no Xilinx
+    // primitive (sim / ASIC). The FPGA vivado wrapper overrides to 1 and the
+    // fpga build defines TIDELINK_USE_IDELAY. See tidelink_idelay_rx.sv.
+    parameter USE_IDELAY = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -169,6 +175,11 @@ module tidelink_top #(
     output wire        [NUM_PHY_LANES-1:0]   pad_tx,
     input  wire                              pad_clk_rx,
     input  wire        [NUM_PHY_LANES-1:0]   pad_rx,
+
+    // SoC Labs §9 IDELAYE2 RX delay: 200 MHz IDELAYCTRL reference clock.
+    // Used only when USE_IDELAY=1 (FPGA). Tie 1'b0 in sim / ASIC — the
+    // controller's tidelink_idelay_rx is pure passthrough then.
+    input  wire                              idelay_ref_clk,
 
     // --------------------------------------------------------------------------
     // AHB Subordinate — PTP TX Write Port
@@ -1365,7 +1376,10 @@ module tidelink_top #(
     // hierarchical-force semantics; turning it on here means every TideLink
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
     axi_chiplet_controller #(
-        .AUTOCAL_ENABLE(1'b1)
+        .AUTOCAL_ENABLE(1'b1),
+        // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
+        // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
+        .USE_IDELAY    (USE_IDELAY)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
@@ -1576,7 +1590,13 @@ module tidelink_top #(
         .pad_clk_tx                 (pad_clk_tx),
         .pad_tx                     (pad_tx),
         .pad_clk_rx                 (pad_clk_rx),
-        .pad_rx                     (pad_rx)
+        .pad_rx                     (pad_rx),
+
+        // §9 IDELAYE2 RX delay: 200 MHz ref clock + active-high reset
+        // (derived from poresetn). Unused inside the controller when
+        // USE_IDELAY=0 (pure passthrough).
+        .idelay_ref_clk             (idelay_ref_clk),
+        .idelay_rst                 (~poresetn)
     );
 
     // =========================================================================

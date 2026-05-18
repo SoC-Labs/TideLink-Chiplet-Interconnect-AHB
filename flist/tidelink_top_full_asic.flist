@@ -184,6 +184,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 //    Region 8 of the TideLink config APB @ MMIO 0x4403_2100.)
 ${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+// §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0
+// (TIDELINK_USE_IDELAY undefined) → pure passthrough; the Xilinx
+// IDELAYE2/IDELAYCTRL primitive text is never seen by the ASIC
+// elaborator. The ASIC equivalent (a programmable per-lane delay cell
+// driven by the same calibrator phase) is documented for the future
+// ASIC target — see the agent report / ASIC source-sync guidance.
+${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 

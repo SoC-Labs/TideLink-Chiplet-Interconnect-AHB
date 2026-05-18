@@ -28,6 +28,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
+// §9 structural fix: per-lane RX delay element (instantiated by the
+// controller; USE_IDELAY=0 default → bit-exact passthrough, no primitive).
+${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv

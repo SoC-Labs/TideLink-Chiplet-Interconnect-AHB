@@ -1,0 +1,319 @@
+--- a/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
++++ b/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
+@@ -60,7 +60,7 @@
+     // ── Chiplet Controller Register pass-through (from tidelink_apb_regs)
+     input  wire             ctrl_reg_write,
+-    input  wire  [2:0]      ctrl_reg_addr,
++    input  wire  [3:0]      ctrl_reg_addr,    // [3]=1 selects Region 8 (PHY-align/I²C-train)
+     input  wire  [31:0]     ctrl_reg_wdata,
+     output logic [31:0]     ctrl_reg_rdata,
+
+@@ -258,8 +258,18 @@
+     // =====================================================================
+     // Role Register Block
+     //   Reset only by poresetn (survives warm hresetn reset)
+-    //   Register map (via ctrl_reg_* pass-through):
+-    //     0: ROLE_CFG      [0]=role (0=master,1=slave), [1]=role_lock (W1S)
++    //   Register map (via ctrl_reg_* pass-through, ctrl_reg_addr[3:0]):
++    //     0x0 (Region 4 slot 0, MMIO 0x080): ROLE_CFG      [0]=role, [1]=role_lock (W1S)
++    //     0x1 (Region 4 slot 1, MMIO 0x084): ROLE_STATUS   (RO)
++    //     0x2 (Region 4 slot 2, MMIO 0x088): I2C_SLV_ADDR
++    //     0x3 (Region 4 slot 3, MMIO 0x08C): I2C_PRESCALE
++    //     0x4..0x7 (Region 4 slots 4-7, MMIO 0x090..0x09C): NEGO_*
++    //     0x8 (Region 8 slot 0, MMIO 0x100): SWI_TRAINING_MODE
++    //     0x9 (Region 8 slot 1, MMIO 0x104): SWI_BIT_SLIP_LO
++    //     0xA (Region 8 slot 2, MMIO 0x108): SWI_LANE_STATUS  (RO)
++    //     0xB (Region 8 slot 3, MMIO 0x10C): NEGO_TRAIN_CFG
++    //     0xC (Region 8 slot 4, MMIO 0x110): NEGO_TRAIN_STATUS (RO)
++    //     0xD (Region 8 slot 5, MMIO 0x114): NEGO_TRAIN_STEP   (W1P)
++    //     0xE (Region 8 slot 6, MMIO 0x118): SWI_BIT_SLIP_HI   (reserved)
++    //     0xF (Region 8 slot 7, MMIO 0x11C): PHY_ALIGN_ID      (RO 0x5041_0100)
+     //     ...
+     // =====================================================================
+
+@@ -270,6 +280,28 @@
+     logic [6:0]  nego_cfg_reg;
+     logic [15:0] nego_priority_reg;
+     logic [31:0] nego_timeout_reg;
+
++    // ─── Region 8: Chiplet Extended (PHY alignment + I²C training) ──────
++    // POR-only reset domain (survives warm hresetn so training state
++    // persists across system reset cycles).
++    logic        swi_training_mode_reg;       // 0x100[0]
++    logic [23:0] swi_bit_slip_lo_reg;         // 0x104[23:0]
++    // SWI_LANE_STATUS @ 0x108 is read-only — sourced from PHY signals below.
++    // I²C-train fields packed into NEGO_TRAIN_CFG @ 0x10C
++    logic        train_auto_en_reg;
++    logic        train_sw_step_reg;
++    logic [3:0]  train_poll_timeout_reg;
++    logic [7:0]  train_fsm_wait_hi_reg;
++    // train_retrain is a single-pulse, generated combinationally on write
++    logic        train_retrain_pulse;
++    // NEGO_TRAIN_STEP @ 0x114 is W1P
++    logic        train_step_pulse;
++    // SWI_BIT_SLIP_HI @ 0x118 — reserved future, 24 bits
++    logic [23:0] swi_bit_slip_hi_reg;
++    // PHY_ALIGN_ID @ 0x11C — ROM constant
++    localparam logic [31:0] PHY_ALIGN_ID_VALUE = 32'h5041_0100;
++
++    // Convenience: select Region 8 vs Region 4 from ctrl_reg_addr[3].
++    wire ctrl_addr_is_ext = ctrl_reg_addr[3];
++    wire [2:0] ctrl_slot  = ctrl_reg_addr[2:0];
++
+     // Auto-negotiation FSM wire forward declarations (instantiated later)
+     wire [3:0]  nego_state_w;
+     // ... unchanged ...
+
+@@ -360,6 +392,8 @@
+         if (!poresetn) begin
+             role_cfg_reg            <= 1'b0;
+             role_lock_reg           <= 1'b0;
+             i2c_slv_addr_reg        <= 7'h7E;
+             i2c_prescale_reg        <= 16'd1;
+             nego_cfg_reg            <= 7'd0;
+             nego_priority_reg       <= 16'hFFFF;
+             nego_timeout_reg        <= 32'd131_082_000;
+             nego_lock_pending_reg   <= 1'b0;
+             nego_mask_mismatch_reg  <= 1'b0;
++            // Region 8 resets
++            swi_training_mode_reg   <= 1'b0;
++            swi_bit_slip_lo_reg     <= 24'h0;
++            train_auto_en_reg       <= 1'b0;
++            train_sw_step_reg       <= 1'b0;
++            train_poll_timeout_reg  <= 4'h0;
++            train_fsm_wait_hi_reg   <= 8'h0;
++            swi_bit_slip_hi_reg     <= 24'h0;
+         end else begin
+             // ... existing mask-handshake + nego_set_role_cfg_w handling ...
+
+-            // (existing case (ctrl_reg_addr) for slots 0..7, unchanged)
++            // EXISTING Region 4 handlers (ctrl_addr_is_ext = 0):
++            //   case (ctrl_slot)
++            //     3'h0 (ROLE_CFG), 3'h2 (I2C_SLV_ADDR), 3'h3 (I2C_PRESCALE),
++            //     3'h4 (NEGO_CFG), 3'h6 (NEGO_PRIORITY), 3'h7 (NEGO_TIMEOUT)
++            //   are handled as before (lines 382-407 unchanged in semantics,
++            //   just gated by !ctrl_addr_is_ext).
+
+-            if (ctrl_reg_write && !role_locked && ctrl_reg_addr != 3'h0) begin
++            if (ctrl_reg_write && !role_locked && !ctrl_addr_is_ext && ctrl_slot != 3'h0) begin
+                 case (ctrl_slot)
+                     3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
+                     3'h3: i2c_prescale_reg  <= ctrl_reg_wdata[15:0];
+                     3'h4: nego_cfg_reg      <= ctrl_reg_wdata[6:0];
+                     3'h6: nego_priority_reg <= ctrl_reg_wdata[15:0];
+                     3'h7: nego_timeout_reg  <= ctrl_reg_wdata[31:0];
+                     default: ;
+                 endcase
+-            end else if (ctrl_reg_write && role_locked) begin
++            end else if (ctrl_reg_write && role_locked && !ctrl_addr_is_ext) begin
+                 case (ctrl_slot)
+                     3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
+                     3'h3: i2c_prescale_reg  <= ctrl_reg_wdata[15:0];
+                     3'h4: nego_cfg_reg      <= ctrl_reg_wdata[6:0];
+                     3'h6: nego_priority_reg <= ctrl_reg_wdata[15:0];
+                     3'h7: nego_timeout_reg  <= ctrl_reg_wdata[31:0];
+                     default: ;
+                 endcase
+             end
++
++            // NEW: Region 8 writes (ctrl_addr_is_ext == 1). Writable
++            // regardless of role_locked — training is by definition a
++            // post-lock activity. Both pre-lock and post-lock paths allow
++            // writes, so a single guard suffices.
++            if (ctrl_reg_write && ctrl_addr_is_ext) begin
++                case (ctrl_slot)
++                    3'h0: swi_training_mode_reg <= ctrl_reg_wdata[0];           // 0x100
++                    3'h1: swi_bit_slip_lo_reg   <= ctrl_reg_wdata[23:0];        // 0x104
++                    // 3'h2 SWI_LANE_STATUS is RO — pslverr issued upstream
++                    3'h3: begin                                                  // 0x10C NEGO_TRAIN_CFG
++                        train_auto_en_reg      <= ctrl_reg_wdata[0];
++                        train_sw_step_reg      <= ctrl_reg_wdata[1];
++                        train_poll_timeout_reg <= ctrl_reg_wdata[7:4];
++                        train_fsm_wait_hi_reg  <= ctrl_reg_wdata[15:8];
++                        // bit[2] is the W1P retrain pulse — driven combinationally below
++                    end
++                    // 3'h4 NEGO_TRAIN_STATUS is RO
++                    // 3'h5 NEGO_TRAIN_STEP is W1P — driven combinationally below
++                    3'h6: swi_bit_slip_hi_reg   <= ctrl_reg_wdata[23:0];        // 0x118
++                    // 3'h7 PHY_ALIGN_ID is RO
++                    default: ;
++                endcase
++            end
+         end
+     end
++
++    // W1P pulses for retrain and step. These fire for exactly one cycle on
++    // a write that sets the pulse bit. The autoneg FSM samples these on
++    // its clk domain (apb_clk, same as here).
++    assign train_retrain_pulse = ctrl_reg_write && ctrl_addr_is_ext &&
++                                 (ctrl_slot == 3'h3) && ctrl_reg_wdata[2];
++    assign train_step_pulse    = ctrl_reg_write && ctrl_addr_is_ext &&
++                                 (ctrl_slot == 3'h5) && ctrl_reg_wdata[0];
+
+     // Role register read mux — extended to cover Region 8 slots.
+-    always_comb begin
+-        case (ctrl_reg_addr)
+-            3'h0:    ctrl_reg_rdata = {30'b0, role_lock_reg, role_cfg_reg};
+-            3'h1:    ctrl_reg_rdata = {28'b0, i2c_slv_addressed, i2c_slv_busy, role_locked, role_effective};
+-            3'h2:    ctrl_reg_rdata = {25'b0, i2c_slv_addr_reg};
+-            3'h3:    ctrl_reg_rdata = {16'b0, i2c_prescale_reg};
+-            3'h4:    ctrl_reg_rdata = {25'd0, nego_cfg_reg};
+-            3'h5:    ctrl_reg_rdata = {22'd0, nego_mask_mismatch_reg, nego_sda_start_seen, nego_lost_w, nego_won_w, nego_error_w, nego_done_w, nego_state_w};
+-            3'h6:    ctrl_reg_rdata = {16'd0, nego_priority_reg};
+-            3'h7:    ctrl_reg_rdata = nego_timeout_reg;
+-            default: ctrl_reg_rdata = 32'b0;
+-        endcase
+-    end
++    always_comb begin
++        case (ctrl_reg_addr)
++            // ── Region 4 (ctrl_reg_addr[3] = 0) ────────────────────────
++            4'h0:    ctrl_reg_rdata = {30'b0, role_lock_reg, role_cfg_reg};
++            4'h1:    ctrl_reg_rdata = {28'b0, i2c_slv_addressed, i2c_slv_busy,
++                                       role_locked, role_effective};
++            4'h2:    ctrl_reg_rdata = {25'b0, i2c_slv_addr_reg};
++            4'h3:    ctrl_reg_rdata = {16'b0, i2c_prescale_reg};
++            4'h4:    ctrl_reg_rdata = {25'd0, nego_cfg_reg};
++            4'h5:    ctrl_reg_rdata = {22'd0, nego_mask_mismatch_reg,
++                                       nego_sda_start_seen, nego_lost_w,
++                                       nego_won_w, nego_error_w, nego_done_w,
++                                       nego_state_w};
++            4'h6:    ctrl_reg_rdata = {16'd0, nego_priority_reg};
++            4'h7:    ctrl_reg_rdata = nego_timeout_reg;
++            // ── Region 8 (ctrl_reg_addr[3] = 1) ────────────────────────
++            4'h8:    ctrl_reg_rdata = {31'd0, swi_training_mode_reg};
++            4'h9:    ctrl_reg_rdata = {8'd0,  swi_bit_slip_lo_reg};
++            4'hA:    ctrl_reg_rdata = {15'd0,                                 // [31:17]
++                                       swi_calibration_done_w,                // [16]
++                                       swi_lane_fault_w,                       // [15:8]
++                                       swi_lane_locked_w};                     // [7:0]
++            4'hB:    ctrl_reg_rdata = {16'd0, train_fsm_wait_hi_reg,          // [15:8]
++                                       train_poll_timeout_reg,                // [7:4]
++                                       1'b0,                                   // [3] reserved
++                                       1'b0,                                   // [2] retrain (W1P, reads 0)
++                                       train_sw_step_reg,                     // [1]
++                                       train_auto_en_reg};                    // [0]
++            4'hC:    ctrl_reg_rdata = {train_local_lane_fault_w,              // [31:24]
++                                       train_peer_lane_fault_w,                // [23:16]
++                                       train_peer_lane_locked_w,               // [15:8]
++                                       train_state_w,                          // [7:4]
++                                       train_peer_nack_w,                      // [3]
++                                       train_in_progress_w,                    // [2]
++                                       train_fail_w,                           // [1]
++                                       train_ok_w};                            // [0]
++            4'hD:    ctrl_reg_rdata = 32'd0;                                  // STEP reads-as-zero
++            4'hE:    ctrl_reg_rdata = {8'd0, swi_bit_slip_hi_reg};
++            4'hF:    ctrl_reg_rdata = PHY_ALIGN_ID_VALUE;
++            default: ctrl_reg_rdata = 32'b0;
++        endcase
++    end
+
+ // ────────────────────────────────────────────────────────────────────
+@@ -890,49 +965,30 @@
+ // (Existing slave-mode-vs-master APB mux block unchanged: lines 870-893)
+ // ────────────────────────────────────────────────────────────────────
+
+-    // =====================================================================
+-    // SoC Labs §9 PHY alignment registers (per-chiplet)
+-    //   Split the Wlink 8KB APB region by wl_apb_paddr[12]:
+-    //     [12]=0 (0x0000-0x0FFF): existing Wavious Wlink registers
+-    //     [12]=1 (0x1000-0x1FFF): phy_align_regs (swi_bit_slip + swi_training_mode)
+-    //   MMIO mapping (master at 0x4403_0000): phy_align at 0x4403_1000+.
+-    //   The new module re-uses the same Wlink-domain mux so any access mode
+-    //   (master, slave-via-I²C, debug_unlock) reaches both blocks identically.
+-    // =====================================================================
+-    wire        pa_apb_psel    = wl_apb_psel &  wl_apb_paddr[12];
+-    wire        wl_apb_psel_gt = wl_apb_psel & ~wl_apb_paddr[12];  // gated to Wlink
+-    wire [31:0] pa_apb_prdata;
+-    wire        pa_apb_pready;
+-    wire        pa_apb_pslverr;
+-    wire [23:0] swi_bit_slip_w;
+-    wire        swi_training_mode_w;
+-
+-    tidelink_phy_align_regs u_phy_align (
+-        .clk                 (apb_clk),
+-        .rstn                (~apb_reset),
+-        .psel                (pa_apb_psel),
+-        .penable             (wl_apb_penable),
+-        .pwrite              (wl_apb_pwrite),
+-        .paddr               (wl_apb_paddr[11:0]),
+-        .pwdata              (wl_apb_pwdata),
+-        .pstrb               (wl_apb_pstrb),
+-        .prdata              (pa_apb_prdata),
+-        .pready              (pa_apb_pready),
+-        .pslverr             (pa_apb_pslverr),
+-        .swi_bit_slip_o      (swi_bit_slip_w),
+-        .swi_training_mode_o (swi_training_mode_w)
+-    );
+-
+-    // Mux Wlink vs phy_align responses based on paddr[12] sampled when psel
+-    // asserted. Both blocks are always-ready single-cycle in this design, so
+-    // we just direct-mux.
+-    wire        sel_pa = wl_apb_paddr[12];
+-    wire [31:0] muxed_prdata  = sel_pa ? pa_apb_prdata  : wl_apb_prdata;
+-    wire        muxed_pready  = sel_pa ? pa_apb_pready  : wl_apb_pready;
+-    wire        muxed_pslverr = sel_pa ? pa_apb_pslverr : wl_apb_pslverr;
+-
+-    // External APB response: Wlink/phy_align response passed back, stalled when I2C active
+-    assign apb_prdata  = muxed_prdata;
+-    assign apb_pready  = slv_apb_active ? 1'b0 : muxed_pready;
+-    assign apb_pslverr = slv_apb_active ? 1'b0 : muxed_pslverr;
++    // =====================================================================
++    // PHY alignment / I²C-training register signals.
++    //   The interim shim (tidelink_phy_align_regs at MMIO 0x4403_1000+)
++    //   has been deleted as part of the apb_redesign migration. The §9
++    //   control signals are now sourced from Region 8 registers above
++    //   (swi_training_mode_reg, swi_bit_slip_lo_reg) AND from the
++    //   autonomous calibration FSM and I²C-train autoneg extension.
++    //
++    //   See staging/apb_redesign/PROPOSAL.md for the full register layout.
++    // =====================================================================
++
++    // Wires from the cal FSM (Layer 1, integrated separately) and the
++    // I²C-train extension to tidelink_autoneg (Layer 2, integrated by the
++    // I²C agent). Until those modules land, tie-off to the Region 8
++    // SW-writable register value (preserves interim-shim behaviour).
++    wire [23:0] swi_bit_slip_w     = swi_bit_slip_lo_reg;   // overridden by cal FSM when present
++    wire        swi_training_mode_w = swi_training_mode_reg
++                                    | i2c_train_set_local_w  // pulse-set from FSM
++                                    & ~i2c_train_clr_local_w;
++    // RO Region 8 status sources — driven by Wlink lane checker + cal FSM:
++    wire [7:0]  swi_lane_locked_w       = wlink_swi_lane_locked;
++    wire [7:0]  swi_lane_fault_w        = wlink_swi_lane_fault;
++    wire        swi_calibration_done_w  = wlink_swi_calibration_done;
++    // I²C-train status outputs (from autoneg extension):
++    wire        train_ok_w, train_fail_w, train_in_progress_w, train_peer_nack_w;
++    wire [3:0]  train_state_w;
++    wire [7:0]  train_peer_lane_locked_w, train_peer_lane_fault_w, train_local_lane_fault_w;
++    // Direct APB response — no paddr[12] mux anymore.
++    assign apb_prdata  = wl_apb_prdata;
++    assign apb_pready  = slv_apb_active ? 1'b0 : wl_apb_pready;
++    assign apb_pslverr = slv_apb_active ? 1'b0 : wl_apb_pslverr;
+
+@@ -960,3 +1010,3 @@
+         // APB (from mux). Gated by ~paddr[12] so Wlink only sees offsets
+-        // 0x0000-0x0FFF; phy_align_regs handles paddr[12]=1.
+-        .apbport_0_psel             (wl_apb_psel_gt),
++        // 0x0000-0x1FFF (full 8KB now that the interim phy_align shim is gone).
++        .apbport_0_psel             (wl_apb_psel),
+@@ -1110,9 +1160,17 @@
+         .mask_hs_result_o           (wlink_mask_hs_result),
+-        // SoC Labs §9: alignment-control inputs sourced from the
+-        // tidelink_phy_align_regs APB block (MMIO 0x4403_1000+ on master).
++        // SoC Labs §9: alignment-control inputs sourced from Region 8 of
++        // the TideLink-internal config APB (MMIO 0x4403_2100+).
+         .swi_bit_slip_in            (swi_bit_slip_w),
+-        .swi_training_mode_in       (swi_training_mode_w)
++        .swi_training_mode_in       (swi_training_mode_w),
++        // RO PHY status outputs — back to Region 8 read mux:
++        .swi_lane_locked_o          (wlink_swi_lane_locked),
++        .swi_lane_fault_o           (wlink_swi_lane_fault),
++        .swi_calibration_done_o     (wlink_swi_calibration_done)
+     );
+
++    // Wires for Wlink RO status outputs (added to Wlink.v / WlinkGPIOPHY.v
++    // module port lists as part of the §9 + cal FSM integration step).
++    wire [7:0] wlink_swi_lane_locked;
++    wire [7:0] wlink_swi_lane_fault;
++    wire       wlink_swi_calibration_done;
++
+ endmodule

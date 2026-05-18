@@ -1,5 +1,13 @@
 # TideLink FPGA build farm — Vivado `-host` + NFS export request
 
+> **If you just want concurrent farmed builds today**, you do **not** need
+> this NFS export — see **`CONCURRENT_FARM.md`** for independent-job farming
+> (`make build_pair_farmed` / `farm_build`), which runs whole-TARGET builds
+> in parallel across hosts over plain ssh+rsync. This document is only for
+> Vivado-native `launch_runs -host` run-distribution, which remains blocked
+> on the NFS export below.
+
+
 This sets up **Vivado-native remote-host farming** (`launch_runs -host`) so the
 CPU-contended `srv03335` can offload synthesis/implementation onto `srv04936`
 (and run multiple OOC-IP / strategy runs in parallel where they exist).

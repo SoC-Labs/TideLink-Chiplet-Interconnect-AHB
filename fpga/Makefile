@@ -108,6 +108,11 @@ IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 RUN_DIR         := $(BUILD_DIR)/run
 PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
 OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
+# Per-TARGET Vivado working dir. build_design cd's here and writes its
+# -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
+# concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
+# or logs — the prerequisite for the farm flow (scripts/build_farm.sh).
+BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)
 
 # IP metadata
 FPGA_VENDOR     := soclabs.org
@@ -122,10 +127,29 @@ FPGA_REMOTE_HOSTS ?=
 FPGA_REMOTE_CMD   ?=
 FARM_HOST         ?= srv04936
 
+# Concurrent independent-job farming (scripts/build_farm.sh). Unlike
+# FPGA_REMOTE_HOSTS (Vivado -host, needs the unfulfilled NFS export — see
+# docs/CONCURRENT_FARM.md) this runs whole TARGET builds in parallel, each
+# pinned to a host, and works today over plain ssh+rsync to FARM_HOST.
+#   FARM_JOBS   "TARGET@HOST ..."  (HOST = 'local' or a farm hostname)
+#   SKIP_PACKAGE_IP=1  drop the package_ip prereq of build_design; the farm
+#                      orchestrator runs package_ip ONCE then fans out
+#                      build_design, so parallel runs don't race the shared
+#                      IP repo. Standalone `make build_design` is unchanged.
+FARM_JOBS         ?=
+SKIP_PACKAGE_IP   ?=
+
+ifeq ($(SKIP_PACKAGE_IP),1)
+BUILD_DESIGN_DEPS :=
+else
+BUILD_DESIGN_DEPS := package_ip
+endif
+
 .PHONY: all package_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
-        resolve_board farm_check help
+        resolve_board farm_check farm_build build_pair_concurrent \
+        build_pair_farmed help
 
 all: build_design
 
@@ -146,9 +170,9 @@ package_ip:
 #-----------------------------------------------------------------------------
 # Step 2: Build block design + synthesis + implementation + bitstream
 #-----------------------------------------------------------------------------
-build_design: package_ip
-	@mkdir -p $(RUN_DIR) $(PROJECT_DIR) $(OUTPUT_DIR)
-	cd $(RUN_DIR) && \
+build_design: $(BUILD_DESIGN_DEPS)
+	@mkdir -p $(BUILD_RUN_DIR) $(PROJECT_DIR) $(OUTPUT_DIR)
+	cd $(BUILD_RUN_DIR) && \
 	export FPGA_PART=$(XILINX_PART) && \
 	export FPGA_PROJECT_DIR=$(PROJECT_DIR) && \
 	export FPGA_IP_REPO=$(IP_OUTPUT_DIR) && \
@@ -158,8 +182,8 @@ build_design: package_ip
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	vivado -mode batch -source $(FPGA_DIR)/build_design.tcl \
-	    -log $(RUN_DIR)/build_design.log \
-	    -journal $(RUN_DIR)/build_design.jou
+	    -log $(BUILD_RUN_DIR)/build_design.log \
+	    -journal $(BUILD_RUN_DIR)/build_design.jou
 	@echo ""
 	@echo "=========================================="
 	@echo " FPGA build complete!"
@@ -174,6 +198,41 @@ build_design: package_ip
 farm_check:
 	@FARM_HOST='$(FARM_HOST)' BUILD_DIR='$(BUILD_DIR)' \
 	    $(FPGA_DIR)/scripts/farm_preflight.sh
+
+#-----------------------------------------------------------------------------
+# Concurrent independent-job farming (works today — no NFS export needed).
+#
+# build_farm.sh runs package_ip ONCE locally, then fans out one whole
+# `build_design` per job in parallel. Each job is "TARGET@HOST"; HOST is
+# 'local' (this box) or a farm hostname (ssh+rsync — tree out, build there,
+# only imp/fpga/output/<TARGET>/ rsynced back to the identical local path so
+# `make deploy` / deploy_pair work unchanged). See docs/CONCURRENT_FARM.md.
+#
+#   make farm_build FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936"
+#-----------------------------------------------------------------------------
+farm_build:
+	@if [ -z "$(FARM_JOBS)" ]; then \
+	    echo 'ERROR: set FARM_JOBS="TARGET@HOST ...", e.g.' >&2; \
+	    echo '  make farm_build FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@$(FARM_HOST)"' >&2; \
+	    exit 2; \
+	fi
+	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
+	    $(FPGA_DIR)/scripts/build_farm.sh $(FARM_JOBS)
+
+# The headline pair flows. *_concurrent runs master+slave in parallel on
+# THIS host (promotes the old /tmp/build_pair_parallel.sh prototype, now
+# race-safe). *_farmed offloads the slave onto FARM_HOST so the two halves
+# build at the same time on two machines (~halves wall time, unloads the
+# contended local host).
+build_pair_concurrent:
+	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
+	    $(FPGA_DIR)/scripts/build_farm.sh \
+	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@local
+
+build_pair_farmed:
+	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
+	    $(FPGA_DIR)/scripts/build_farm.sh \
+	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@$(FARM_HOST)
 
 #-----------------------------------------------------------------------------
 # Deployment helpers
@@ -471,6 +530,11 @@ help:
 	@echo "  package_ip        Package TideLink RTL as Vivado XCI IP"
 	@echo "  build_design      Block design + synth + impl + bitstream + .hwh"
 	@echo "  farm_check        Verify Vivado -host prereqs vs FARM_HOST"
+	@echo ""
+	@echo "Concurrent farming (parallel whole-TARGET builds — no NFS needed):"
+	@echo "  build_pair_concurrent  master+slave in parallel on THIS host"
+	@echo "  build_pair_farmed      master local + slave on FARM_HOST, concurrent"
+	@echo "  farm_build             generic: FARM_JOBS=\"TARGET@HOST ...\""
 	@echo "  program           JTAG-program the PL via Vivado Hardware Manager"
 	@echo "  deploy            SCP .bit/.bin/.hwh to PYNQ board and load via fpga_manager"
 	@echo "  clean             Remove all build outputs (imp/fpga/)"
@@ -491,6 +555,10 @@ help:
 	@echo "  make farm_check FARM_HOST=srv04936"
 	@echo "  make TARGET=pynq-z2-pair build_design \\"
 	@echo "       FPGA_REMOTE_HOSTS=\"srv03335 4 srv04936 8\""
+	@echo "  make build_pair_farmed FARM_HOST=srv04936"
+	@echo "  make build_pair_concurrent"
+	@echo "  make farm_build \\"
+	@echo "       FARM_JOBS=\"pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936\""
 	@echo "  make TARGET=pynq-z2-single BOARD=fpga1 deploy"
 	@echo "  make TARGET=pynq-z2-pair   BOARD_TAG=pynq_z2 deploy_via_fpgahub"
 	@echo ""

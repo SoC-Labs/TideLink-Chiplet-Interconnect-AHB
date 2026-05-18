@@ -176,7 +176,9 @@ tidelink/
 │   ├── SPECIFICATION.md             # Hardware register specification
 │   ├── USER_GUIDE.md                # Integration and operation guide
 │   ├── SHORTCOMINGS.md              # Known limitations
-│   └── PTP_PROTOCOL.md             # PTP protocol specification
+│   ├── PTP_PROTOCOL.md             # PTP protocol specification
+│   ├── ASIC_SOURCE_SYNC_CONSTRAINTS.md  # Source-sync PHY constraint guidance for ASIC bring-up
+│   └── DETERMINISM_VALIDATION.md    # Lane-lock determinism metric + validation procedure
 └── .gitlab-ci.yml                   # CI pipeline (9 stages, 16 jobs)
 ```
 

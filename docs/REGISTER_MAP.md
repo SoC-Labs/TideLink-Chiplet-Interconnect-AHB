@@ -159,15 +159,65 @@ slots 0..7 remapped to 0x100..0x11C).
 |--------|-------------------|--------|-------------|----------------------------------------------------------------|
 | 0x2100 | SWI_TRAINING_MODE | RW     | 0           | bit[0] = training-mode enable                                  |
 | 0x2104 | SWI_BIT_SLIP_LO   | RW     | 0           | bits[23:0] = per-lane bit-slip (8 lanes × 3 bits)              |
-| 0x2108 | SWI_LANE_STATUS   | RO     | 0           | [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done    |
+| 0x2108 | SWI_LANE_STATUS   | RO     | 0           | [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done; [31:17] = CREDIT_PATH_STATUS (see below) |
 | 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | I²C training handshake config (auto/sw_step/retrain + timing)  |
 | 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | Training FSM live status + last-captured peer values           |
-| 0x2114 | NEGO_TRAIN_STEP   | W1P    | 0           | bit[0] = self-clearing step pulse (debug)                      |
+| 0x2114 | ECC_COUNTERS      | RO     | 0           | [15:0] ecc_corrupted sat-cnt, [31:16] ecc_corrected sat-cnt (was NEGO_TRAIN_STEP RO=0; W1P write path unchanged & still ignored) |
 | 0x2118 | SWI_PHASE_OFFSET  | RW     | 0           | bits[31:0] = per-lane sub-bit phase (8 lanes × 4 bits) — §9.7  |
 | 0x211C | PHY_ALIGN_ID      | RO     | 0x5041_0100 | "PA" v1.0 — SW probes for Region 8 presence                    |
 
 See `staging/apb_redesign/PROPOSAL.md` for the full design rationale and
 the migration history from the interim shim at MMIO 0x4403_1000.
+
+#### Credit-Path Observability (RO) — replaces the ILA debug core
+
+Read-only visibility into the Wlink `LL_RX → cr_pkt → FCSM` credit path so
+`wlink_probe` can diagnose a wedged credit path with a 1-second APB read
+instead of a Vivado ILA capture. Region 8 has only 8 physical slots
+(`paddr[4:2]`, all assigned), so the observability bits are packed into
+two slots whose read paths were otherwise dead bits / a dead word — **no
+pre-existing live field moves**:
+
+* **CREDIT_PATH_STATUS** is packed into the free upper bits `[31:17]` of
+  `SWI_LANE_STATUS` (0x2108). The legacy `[16:0]`
+  (`lane_locked`/`lane_fault`/`calibration_done`) are byte-for-byte
+  unchanged.
+
+  | Bit     | Name              | Source (Wlink hierarchy)                              |
+  |---------|-------------------|------------------------------------------------------|
+  | [16:0]  | (legacy)          | lane_locked / lane_fault / calibration_done          |
+  | [20:17] | fcsm_state        | `WlinkGenericFCSM_6.state` (3b; bit[20] always 0)    |
+  | [22:21] | llrx_state        | `WlinkRxLinkLayer.state` (byte-align FSM, ==2 → err) |
+  | [23]    | cr_pkt_seen_rx    | `WlinkGenericFCSM_6.cr_pkt_seen_rx` (sticky, 0e126b0)|
+  | [24]    | crack_pkt_seen_rx | `WlinkGenericFCSM_6.crack_pkt_seen_rx` (sticky)      |
+  | [25]    | is_short_pkt      | `WlinkRxLinkLayer.is_short_pkt`                      |
+  | [26]    | is_long_pkt       | `WlinkRxLinkLayer.is_long_pkt`                       |
+  | [27]    | pkt_is_cr_pkt     | `WlinkGenericFCSM_6.pkt_is_cr_pkt`                   |
+  | [28]    | pkt_is_crack_pkt  | `WlinkGenericFCSM_6.pkt_is_crack_pkt`                |
+  | [29]    | llrx_valid        | `WlinkRxLinkLayer.valid`                             |
+  | [31:30] | reserved          | 0                                                    |
+
+* **ECC_COUNTERS** repurposes the read path of slot 5 (0x2114, was
+  `NEGO_TRAIN_STEP` which read a constant `32'h0`; its W1P write path is
+  untouched and still ignored, so no functional change). Two 16-bit
+  saturating counters in the recovered-RX-link-clock domain, counting the
+  `WlinkRxLinkLayer.ecc_check_corrupted` / `ecc_check_corrected` event
+  pulses (saturate at 0xFFFF):
+
+  | Bit     | Name              | Description                                  |
+  |---------|-------------------|----------------------------------------------|
+  | [15:0]  | ecc_corrupted_cnt | saturating count of ECC-corrupted words      |
+  | [31:16] | ecc_corrected_cnt | saturating count of ECC-corrected words      |
+
+All sources cross from the FCSM (`io_tx_clk`) / recovered-RX-link
+(`phy_link_rx_rx_link_clk`) domains into `apb_clk` via a 2-flop
+synchroniser in `axi_chiplet_controller.sv` (`sync_obs_*`, identical
+pattern to `sync_lane_locked_*`). The signals are surfaced as new
+`output` ports on `WlinkGenericFCSM_6` / `WlinkRxLinkLayer` →
+`TideLinkToWlink` → `Wlink` (mirrors the existing
+`phy_link_rx_rx_link_*_o` / `mask_hs_result_o` SoC-Labs port pattern in
+the Chisel-generated wrappers). The ECC saturating counters live in
+`Wlink.v` in the `phy_link_rx_rx_link_clk` domain.
 
 #### SWI_TRAINING_MODE Register (0x2100) Fields
 

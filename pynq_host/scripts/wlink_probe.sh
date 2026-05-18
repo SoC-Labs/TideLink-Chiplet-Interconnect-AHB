@@ -110,6 +110,25 @@ print("  SWI_LANE_STATUS   : 0x{:08x} (locked=0x{:02x}, fault=0x{:02x}, cal_done
 print("  NEGO_TRAIN_CFG    : 0x{:08x}".format(rd(0x10C)))
 print("  NEGO_TRAIN_STATUS : 0x{:08x}".format(rd(0x110)))
 print("  PHY_ALIGN_ID      : 0x{:08x} (expect 0x50410100)".format(rd(0x11C)))
+print()
+print("== Credit-path observability (RO, replaces ILA) ==")
+# CREDIT_PATH_STATUS is packed into SWI_LANE_STATUS[31:17] (slot 2, 0x108).
+print("  CREDIT_PATH_STATUS (SWI_LANE_STATUS[31:17] @0x108):")
+print("    FCSM state      : {}  (wedges at 1 in the credit-path failure)".format((v>>17)&0xF))
+print("    LL_RX state     : {}  (byte-align FSM; 2 = error)".format((v>>21)&0x3))
+print("    cr_pkt_seen_rx  : {}  (sticky)".format((v>>23)&1))
+print("    crack_pkt_seen  : {}  (sticky)".format((v>>24)&1))
+print("    is_short_pkt    : {}".format((v>>25)&1))
+print("    is_long_pkt     : {}".format((v>>26)&1))
+print("    pkt_is_cr_pkt   : {}".format((v>>27)&1))
+print("    pkt_is_crack    : {}".format((v>>28)&1))
+print("    llrx_valid      : {}".format((v>>29)&1))
+e=rd(0x114)
+print("  ECC_COUNTERS (0x114, was NEGO_TRAIN_STEP RO=0):")
+print("    ecc_corrupted_cnt : {}{}".format(e&0xFFFF, " (SATURATED)" if (e&0xFFFF)==0xFFFF else ""))
+print("    ecc_corrected_cnt : {}{}".format((e>>16)&0xFFFF, " (SATURATED)" if ((e>>16)&0xFFFF)==0xFFFF else ""))
+if (e&0xFFFF)==0xFFFF:
+    print("    >>> ECC corrupted SATURATED — ECC is failing on (nearly) every word; PHY/byte-align not delivering clean packets to the FCSM")
 # Legacy interim shim addresses (delete after Phase 5 migration completes).
 ws,wso=mm(0x44031000)
 def rd_wl(off): return struct.unpack_from("<I",ws,wso+off)[0]

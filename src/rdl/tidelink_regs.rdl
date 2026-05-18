@@ -415,11 +415,14 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     swi_bit_slip_lo_reg swi_bit_slip_lo @ 0x104;
 
     reg swi_lane_status_reg {
-        name = "SWI Lane Status";
-        desc = "Read-only per-lane lock + fault + calibration done status.
-                Packed so an I2C 4-byte read captures all three signals in
-                one transaction (byte 0 = lane_locked, byte 1 = lane_fault,
-                byte 2 = calibration_done, byte 3 = reserved).";
+        name = "SWI Lane Status + Credit-Path Status";
+        desc = "Read-only per-lane lock + fault + calibration done status
+                (legacy [16:0]) plus CREDIT_PATH_STATUS observability packed
+                into the otherwise-free upper bits [31:17]. The legacy field
+                positions are unchanged. CREDIT_PATH_STATUS replaces the ILA
+                debug core: it surfaces the Wlink LL_RX -> cr_pkt -> FCSM
+                credit-path internals, 2-flop-synced from the FCSM/recovered-
+                RX-link clock domains into apb_clk.";
         field {} lane_locked[8] = 0;
         lane_locked->sw = r;
         lane_locked->hw = w;
@@ -432,6 +435,40 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         calibration_done->sw = r;
         calibration_done->hw = w;
         calibration_done->desc = "Set by the cal FSM at convergence.";
+        field {} fcsm_state[4] = 0;          // [20:17]
+        fcsm_state->sw = r;
+        fcsm_state->hw = w;
+        fcsm_state->desc = "WlinkGenericFCSM_6.state (3b; bit[20] always 0).
+                            Wedges at 1 in the credit-path bring-up failure.";
+        field {} llrx_state[2] = 0;          // [22:21]
+        llrx_state->sw = r;
+        llrx_state->hw = w;
+        llrx_state->desc = "WlinkRxLinkLayer byte-align FSM state (==2 -> err).";
+        field {} cr_pkt_seen_rx[1] = 0;      // [23]
+        cr_pkt_seen_rx->sw = r;
+        cr_pkt_seen_rx->hw = w;
+        cr_pkt_seen_rx->desc = "Sticky cr-pkt-seen (FCSM, 0e126b0).";
+        field {} crack_pkt_seen_rx[1] = 0;   // [24]
+        crack_pkt_seen_rx->sw = r;
+        crack_pkt_seen_rx->hw = w;
+        crack_pkt_seen_rx->desc = "Sticky crack-pkt-seen (FCSM).";
+        field {} is_short_pkt[1] = 0;        // [25]
+        is_short_pkt->sw = r;
+        is_short_pkt->hw = w;
+        field {} is_long_pkt[1] = 0;         // [26]
+        is_long_pkt->sw = r;
+        is_long_pkt->hw = w;
+        field {} pkt_is_cr_pkt[1] = 0;       // [27]
+        pkt_is_cr_pkt->sw = r;
+        pkt_is_cr_pkt->hw = w;
+        field {} pkt_is_crack_pkt[1] = 0;    // [28]
+        pkt_is_crack_pkt->sw = r;
+        pkt_is_crack_pkt->hw = w;
+        field {} llrx_valid[1] = 0;          // [29]
+        llrx_valid->sw = r;
+        llrx_valid->hw = w;
+        llrx_valid->desc = "WlinkRxLinkLayer has a valid packet.";
+        // [31:30] reserved (read 0).
     };
     swi_lane_status_reg swi_lane_status @ 0x108;
 
@@ -485,15 +522,29 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     };
     nego_train_status_reg nego_train_status @ 0x110;
 
-    reg nego_train_step_reg {
-        name = "Nego Train Step";
-        desc = "W1P single-step pulse for debug.";
-        field {} step[1] = 0;
-        step->sw = rw;
-        step->hw = r;
-        step->singlepulse;
+    // Slot 5 (0x114): the read path is repurposed for ECC_COUNTERS (was
+    // NEGO_TRAIN_STEP whose read returned a constant 0). The W1P single-
+    // step write path is functionally unchanged (still ignored — it was
+    // never implemented). Two 16-bit saturating ECC event counters in the
+    // recovered-RX-link-clock domain, 2-flop-synced into apb_clk. Replaces
+    // the ILA debug core's "is ECC failing every word?" view.
+    reg ecc_counters_reg {
+        name = "ECC Counters (Credit-Path Observability)";
+        desc = "RO. Saturating (0xFFFF) counts of the WlinkRxLinkLayer
+                ecc_check_corrupted / ecc_check_corrected event pulses,
+                sampled in the recovered-RX-link-clock domain and 2-flop-
+                synced into apb_clk. The slot's legacy W1P NEGO_TRAIN_STEP
+                write path is retained and still ignored.";
+        field {} ecc_corrupted_cnt[16] = 0;   // [15:0]
+        ecc_corrupted_cnt->sw = r;
+        ecc_corrupted_cnt->hw = w;
+        ecc_corrupted_cnt->desc = "Saturating count of ECC-corrupted words.";
+        field {} ecc_corrected_cnt[16] = 0;   // [31:16]
+        ecc_corrected_cnt->sw = r;
+        ecc_corrected_cnt->hw = w;
+        ecc_corrected_cnt->desc = "Saturating count of ECC-corrected words.";
     };
-    nego_train_step_reg nego_train_step @ 0x114;
+    ecc_counters_reg ecc_counters @ 0x114;
 
     reg swi_phase_offset_reg {
         name = "SWI Phase Offset";

@@ -384,6 +384,31 @@ proc create_root_design { parentCell } {
     # ILA build use the dedicated `pynq-z2-pair-ila` target instead.
     #--------------------------------------------------------------------------
 
+    # Third ILA — capture the inter-board I2C sideband (W9/V7) to isolate
+    # whether the autoneg I2C master physically drives the pads and whether
+    # the peer receives. Stable 50 MHz clk_wiz domain (I2C ~tens of kHz at
+    # PRESCALE=200, heavily oversampled). Probes: 0 scl_o 1 scl_t 2 scl_i
+    # 3 sda_o 4 sda_t 5 sda_i. Master CLAIM => scl/sda _o/_t toggle; slave
+    # _i mirrors them iff W9/V7 physically carries the signal.
+    set ila_i2c [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_i2c]
+    set_property -dict [list \
+        CONFIG.C_NUM_OF_PROBES   {6} \
+        CONFIG.C_PROBE0_WIDTH    {1} \
+        CONFIG.C_PROBE1_WIDTH    {1} \
+        CONFIG.C_PROBE2_WIDTH    {1} \
+        CONFIG.C_PROBE3_WIDTH    {1} \
+        CONFIG.C_PROBE4_WIDTH    {1} \
+        CONFIG.C_PROBE5_WIDTH    {1} \
+        CONFIG.C_DATA_DEPTH      {4096} \
+        CONFIG.C_INPUT_PIPE_STAGES {2} \
+        CONFIG.C_EN_STRG_QUAL    {0} \
+        CONFIG.ALL_PROBE_SAME_MU {true} \
+        CONFIG.ALL_PROBE_SAME_MU_CNT {2} \
+        CONFIG.C_TRIGOUT_EN      {false} \
+        CONFIG.C_TRIGIN_EN       {false} \
+        CONFIG.C_ADV_TRIGGER     {false} \
+    ] $ila_i2c
+
     ###########################################################################
     # CONNECTIONS
     ###########################################################################
@@ -509,6 +534,17 @@ proc create_root_design { parentCell } {
     #-- (ila_rx / ila_pad probes removed 2026-05-19 — see NOTE above; the
     #--  raw-pad ILA is incompatible with the real IDELAYE2 IDATAIN route.
     #--  RO APB SWI_LANE_STATUS is the observability path now.)
+
+    # ila_i2c: stable 50 MHz domain; taps the W9/V7 I2C BD-port nets
+    # (additional sinks on the existing tidelink_0 i2c nets, like ila_rx
+    # taps pad_rx).
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins ila_i2c/clk]
+    connect_bd_net [get_bd_ports i2c_scl_o] [get_bd_pins ila_i2c/probe0]
+    connect_bd_net [get_bd_ports i2c_scl_t] [get_bd_pins ila_i2c/probe1]
+    connect_bd_net [get_bd_ports i2c_scl_i] [get_bd_pins ila_i2c/probe2]
+    connect_bd_net [get_bd_ports i2c_sda_o] [get_bd_pins ila_i2c/probe3]
+    connect_bd_net [get_bd_ports i2c_sda_t] [get_bd_pins ila_i2c/probe4]
+    connect_bd_net [get_bd_ports i2c_sda_i] [get_bd_pins ila_i2c/probe5]
 
     #-- LEDs -> external ports
     #   led0 = link_active    (lit when D2D link is up)

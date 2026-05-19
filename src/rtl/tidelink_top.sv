@@ -65,7 +65,13 @@ module tidelink_top #(
     parameter USE_IDELAY = 1'b0,
     // §9 clock fix: recovered-RX-clock BUFG forward (sim/ASIC default 0;
     // FPGA wrapper sets 1, carried in component.xml). tidelink_rxclk_buf.sv.
-    parameter USE_CLKBUF = 1'b0
+    parameter USE_CLKBUF = 1'b0,
+    // §9 T3a (2026-05-19): per-lane self-aligning RX comma hunt (sim/ASIC
+    // default 0; FPGA wrapper sets 1, carried in component.xml). Each
+    // WavD2DGpioRx slips its `count` once per io_por_reset to align to the
+    // peer's training-byte boundary, killing the per-deploy 16-cycle phase
+    // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
+    parameter USE_T3A    = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1384,7 +1390,9 @@ module tidelink_top #(
         // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
         // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
         .USE_IDELAY    (USE_IDELAY),
-        .USE_CLKBUF    (USE_CLKBUF)
+        .USE_CLKBUF    (USE_CLKBUF),
+        // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
+        .USE_T3A       (USE_T3A)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

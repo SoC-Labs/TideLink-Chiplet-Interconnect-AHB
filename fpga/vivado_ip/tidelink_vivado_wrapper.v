@@ -64,7 +64,13 @@ module tidelink_vivado_wrapper #(
     // §9 clock fix: FPGA defaults the recovered-RX-clock BUFG ON (carried
     // in component.xml → reaches OOC synth, no `define). Override to 0 for
     // an A/B determinism comparison. See tidelink_rxclk_buf.sv.
-    parameter USE_CLKBUF = 1'b1
+    parameter USE_CLKBUF = 1'b1,
+    // §9 T3a (2026-05-19): self-aligning RX comma hunt. FPGA default ON
+    // (carried in component.xml). Each WavD2DGpioRx slips its `count` once
+    // per io_por_reset to align to the peer's training-byte boundary,
+    // killing the per-deploy 16-cycle count-phase lottery that anti-
+    // correlated master/slave 0xff hits. Override to 0 for A/B comparison.
+    parameter USE_T3A    = 1'b1
 )(
     // =========================================================================
     // Clocks and Resets
@@ -410,7 +416,9 @@ module tidelink_vivado_wrapper #(
         // §9 structural fix: per-lane IDELAYE2 RX delay (FPGA wants it on).
         .USE_IDELAY          (USE_IDELAY),
         // §9 clock fix: recovered-RX-clock global BUFG (FPGA wants it on).
-        .USE_CLKBUF          (USE_CLKBUF)
+        .USE_CLKBUF          (USE_CLKBUF),
+        // §9 T3a: self-aligning RX comma hunt (FPGA wants it on).
+        .USE_T3A             (USE_T3A)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

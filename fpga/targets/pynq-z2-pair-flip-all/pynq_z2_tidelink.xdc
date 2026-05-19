@@ -63,6 +63,15 @@ set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
 set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
 
+#-- Inter-board I2C (autonomous lane-mask coordination) ----------------------
+# Mirror of pynq-z2-pair-all. On feat/td-combined the lane-7 remap claims
+# W9/V7 for pad_tx[7]/pad_rx[7], so I2C is moved off-ribbon to Arduino
+# dedicated I2C pads (P15/P16, on-board pull-ups) by the immediately
+# following repin commit (3de5ebe). The I2C PACKAGE_PIN lines themselves
+# are NOT defined here — they're added by 3de5ebe directly on P15/P16.
+# UNCONDITIONAL (no Tcl guard): XDC does not support the Tcl `if` command
+# (Vivado [Designutils 20-1307]); see pair-all rationale block.
+
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]
 set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS33} [get_ports led1]

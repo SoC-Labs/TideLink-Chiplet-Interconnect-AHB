@@ -153,7 +153,17 @@ module tidelink_phy_align_calibrator #(
     // training_mode high so two skew-triggered nodes converge. 0 = retry
     // while role_locked (correct cold bring-up). Non-zero = terminal fault
     // after this many auto-retries (a definite end for sim / non-bring-up).
-    parameter int MAX_RESWEEPS = 0
+    parameter int MAX_RESWEEPS = 0,
+    // T3.2 (peer-aware training hold): on this node's OWN sweep_success do
+    // NOT release immediately. The first node to succeed must keep
+    // training_mode high long enough for the (role_lock-skew-delayed) peer
+    // — now fed a guaranteed-continuous pattern — to ALSO reach
+    // sweep_success. Hold HOLD_CYCLES (≫ 2 sweep periods) then release;
+    // both nodes time out within ≤2 sweeps of each other and the latched
+    // per-lane (slip,phase) holds through the skew. Defeats the
+    // first-to-succeed-abandons-the-peer deadlock the HW T3 test exposed.
+    // Default = 8 full sweep periods (1 sweep = 128 × DWELL_CYCLES).
+    parameter int HOLD_CYCLES  = 8 * 128 * DWELL_CYCLES
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -186,9 +196,11 @@ module tidelink_phy_align_calibrator #(
         S_IDLE       = 4'd0,   // Waiting for role_locked rising / first sweep
         S_ARM        = 4'd1,   // Drop training, start sweep next cycle
         S_SWEEP      = 4'd2,   // Sweeping; dwell + advance per lane
-        S_FINISH     = 4'd3,   // All lanes done; deassert training_mode
+        S_FINISH     = 4'd3,   // All lanes done; decide release vs re-sweep
         S_DONE       = 4'd4,   // Calibration complete; idle until re-trigger
-        S_CANCEL     = 4'd5    // swreset asserted mid-sweep; wait for deassert
+        S_CANCEL     = 4'd5,   // swreset asserted mid-sweep; wait for deassert
+        S_HOLD       = 4'd6    // T3.2: locked locally; keep training_mode
+                               //       high HOLD_CYCLES so the peer converges
     } state_t;
 
     state_t cur_state, nxt_state;
@@ -277,6 +289,10 @@ module tidelink_phy_align_calibrator #(
     wire retry_exhausted = (MAX_RESWEEPS != 0) &&
                            (resweep_ctr >= MAX_RESWEEPS);
 
+    // T3.2 peer-aware training-hold counter (cycles spent in S_HOLD).
+    localparam int HOLD_MAX = HOLD_CYCLES - 1;
+    logic [$clog2(HOLD_CYCLES+1)-1:0] hold_ctr;
+
     // -------------------------------------------------------------------------
     // FSM next-state logic
     // -------------------------------------------------------------------------
@@ -305,15 +321,32 @@ module tidelink_phy_align_calibrator #(
                 // nodes then re-sweep continuously until their windows
                 // coincide — converting the ms-scale non-overlap (fatal)
                 // into a ≤few-hundred-µs convergence delay (benign).
-                if (sweep_success || retry_exhausted) nxt_state = S_DONE;
-                else if (role_locked)                 nxt_state = S_ARM;
-                else                                  nxt_state = S_DONE;
+                // T3.2: a genuinely all-locked sweep enters S_HOLD (NOT
+                // straight to S_DONE) to keep our TX training pattern up
+                // while the skew-delayed peer also converges. A faulted
+                // sweep auto re-sweeps while role_locked (T3).
+                if (sweep_success)        nxt_state = S_HOLD;
+                else if (retry_exhausted) nxt_state = S_DONE;
+                else if (role_locked)     nxt_state = S_ARM;
+                else                      nxt_state = S_DONE;
             end
             S_DONE: begin
                 if (trigger_now)        nxt_state = S_ARM;
             end
             S_CANCEL: begin
                 if (!swreset)           nxt_state = S_ARM;   // restart fresh
+            end
+            S_HOLD: begin
+                // Latched all lanes; keep training_mode high (TX pattern +
+                // clk_en) HOLD_CYCLES so the peer — now fed our continuous
+                // pattern — also reaches sweep_success. We deliberately do
+                // NOT react to lane_locked here: our (slip,phase) is latched
+                // and physically correct; the peer switching to real data on
+                // its own release will (correctly) drop our lane_checker,
+                // which must NOT trigger a re-sweep. S_DONE is sticky.
+                if (swreset)                   nxt_state = S_CANCEL;
+                else if (!role_locked)         nxt_state = S_DONE;
+                else if (hold_ctr >= HOLD_MAX) nxt_state = S_DONE;
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -341,6 +374,18 @@ module tidelink_phy_align_calibrator #(
         else if (trigger_now)                     resweep_ctr <= 16'd0;
         else if ((cur_state == S_FINISH) &&
                  (nxt_state  == S_ARM))           resweep_ctr <= resweep_ctr + 16'd1;
+    end
+
+    // -------------------------------------------------------------------------
+    // T3.2 hold counter: cycles spent in S_HOLD. Reset whenever NOT in
+    // S_HOLD (each S_HOLD entry starts fresh); free-runs while in S_HOLD,
+    // saturating at HOLD_MAX (the S_HOLD→S_DONE release condition).
+    // -------------------------------------------------------------------------
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                       hold_ctr <= '0;
+        else if (cur_state != S_HOLD)  hold_ctr <= '0;
+        else if (hold_ctr < HOLD_MAX[$clog2(HOLD_CYCLES+1)-1:0])
+                                       hold_ctr <= hold_ctr + 1'b1;
     end
 
     // -------------------------------------------------------------------------
@@ -476,7 +521,8 @@ module tidelink_phy_align_calibrator #(
         end else begin
             bit_slip         = bit_slip_internal;
             phase_offset     = phase_offset_internal;
-            training_mode    = (cur_state == S_ARM) || (cur_state == S_SWEEP);
+            training_mode    = (cur_state == S_ARM) || (cur_state == S_SWEEP)
+                            || (cur_state == S_HOLD);   // T3.2: hold pattern
             calibration_done = (cur_state == S_DONE);
         end
     end

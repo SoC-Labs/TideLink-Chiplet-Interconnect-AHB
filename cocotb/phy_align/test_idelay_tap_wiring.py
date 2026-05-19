@@ -156,3 +156,208 @@ async def test_idelay_passthrough_bit_exact(dut):
         f"samples (pad_rx_o binstr == pad_rx_i binstr) — Wlink sees the "
         f"raw pads, every existing pair/align test premise preserved"
     )
+
+
+def _pack_per_lane(per_lane):
+    """Pack 8 per-lane nibbles into the 32-bit swi_phase_offset word
+    (lane N at [4N+3:4N]) — identical packing to the §9.7 wiring test."""
+    packed = 0
+    for ln, nib in enumerate(per_lane):
+        packed |= (nib & 0xF) << (4 * ln)
+    return packed
+
+
+@cocotb.test()
+async def test_idelay_passthrough_phase_invariant(dut):
+    """Audit-rec D1 — passthrough is INDEPENDENT of phase_tap_i.
+
+    Commit 1b2e87e made USE_IDELAY the SOLE gate of the IDELAYE2 path.
+    With USE_IDELAY=0 (the sim/ASIC default + the bit-exact requirement)
+    the module MUST be a pure `assign pad_rx_o = pad_rx_i` that does NOT
+    observe phase_tap_i AT ALL. test_idelay_passthrough_bit_exact only
+    samples bit-exactness at the calibrator-idle phase — it would NOT
+    catch a refactor that let phase_tap_i leak into pad_rx_o in the
+    g_passthru branch (the load-bearing invariant of 1b2e87e).
+
+    This test drives a DISTINCT non-zero per-lane phase via the Region-8
+    SWI_PHASE_OFFSET override, proves pad_rx_o==pad_rx_i under it, then
+    CHANGES the phase to a clearly-different pattern MID-STREAM and proves
+    (a) still bit-exact, and (b) for every input value seen under BOTH
+    patterns the output is byte-identical — i.e. ZERO perturbation
+    attributable to the phase change. A phase leak in g_passthru
+    (e.g. `pad_rx_o = pad_rx_i ^ {NUM_LANES{|phase_tap_i}}`) fails (b)
+    (and almost always (a)) the instant the second pattern is written.
+
+    The Region-8 SWI_PHASE_OFFSET override is a PER-SIDE register: a write
+    via ctrl_write(dut, "m", ...) drives ONLY the master's
+    swi_phase_offset_w (== master u_idelay_rx.phase_tap_i). The slave's
+    calibrator stays idle so its bus holds 0 — a "phase change" never
+    occurs there, so the load-bearing invariance proof is MASTER-side
+    (where phase_tap_i genuinely transitions A->B). The slave side is
+    still held to bit-exact passthrough as a corroborating check (its
+    phase is constant 0, so any pad_rx_o!=pad_rx_i there is also a bug).
+    This mirrors the existing tests in this file, which likewise drive
+    Region-8 on "m" only and read the master phase bus."""
+    await setup(dut)
+    dut.m_apb_debug_unlock.value = 1
+    await ClockCycles(dut.apb_clk, 4)
+    await ctrl_write(dut, "m", 0, 0x02)            # role-lock master
+    await ClockCycles(dut.apb_clk, 8)
+
+    # Two clearly-different non-zero per-lane phase patterns. Pattern A is
+    # the odd-lane nibble style already used in this file; pattern B is its
+    # near-complement so EVERY lane's phase nibble changes between writes —
+    # any phase_tap_i dependence in g_passthru perturbs every lane.
+    phase_a = [1, 0, 3, 0, 5, 0, 7, 0]
+    phase_b = [15, 14, 13, 12, 11, 10, 9, 8]
+    packed_a = _pack_per_lane(phase_a)
+    packed_b = _pack_per_lane(phase_b)
+
+    # --- Phase pattern A: drive on the master, verify it landed --------
+    await ctrl_write(dut, "m", R8_SWI_PHASE_OFFSET, packed_a)
+    await ClockCycles(dut.apb_clk, 8)
+    rb_a = await ctrl_read(dut, "m", R8_SWI_PHASE_OFFSET)
+    assert rb_a == packed_a, (
+        f"Region 8 SWI_PHASE_OFFSET read 0x{rb_a:08x}, wrote phase A "
+        f"0x{packed_a:08x} — override path did not take, test premise void"
+    )
+    bus_a = _phase_bus(dut, "m")
+    assert bus_a == packed_a, (
+        f"m: swi_phase_offset_w=0x{bus_a:08x} != phase A 0x{packed_a:08x} "
+        f"(calibrator idle, the Region-8 override must own the master bus "
+        f"that feeds master u_idelay_rx.phase_tap_i)"
+    )
+    tap_a = int(_idelay(dut, "m").phase_tap_i.value)
+    assert tap_a == packed_a, (
+        f"m: u_idelay_rx.phase_tap_i=0x{tap_a:08x} != phase A "
+        f"0x{packed_a:08x} — the IDELAY tap is not seeing phase A; the "
+        f"invariance check below would not be exercising a phase change"
+    )
+    dut._log.info(
+        f"phase A 0x{packed_a:08x} driven onto master swi_phase_offset_w "
+        f"== master u_idelay_rx.phase_tap_i (slave calibrator idle, slave "
+        f"bus held 0 — invariance proof is master-side where phase moves)"
+    )
+
+    # Settle out of POR/bring-up X, then sample under phase A. Record, per
+    # side, the observed pad_rx_i binstr -> pad_rx_o binstr mapping. Under a
+    # correct passthrough this is always the identity; we KEEP it so the
+    # phase-B pass can prove the SAME inputs still map the SAME way.
+    await ClockCycles(dut.master_clk, 200)
+    seen_a = {"m": {}, "s": {}}
+    mismatches_a = 0
+    checked_a = 0
+    for _ in range(64):
+        await ClockCycles(dut.master_clk, 1)
+        for side in ("m", "s"):
+            inst = _idelay(dut, side)
+            pi = inst.pad_rx_i.value.binstr
+            po = inst.pad_rx_o.value.binstr
+            checked_a += 1
+            if pi != po:
+                mismatches_a += 1
+                dut._log.error(
+                    f"phase A {side}: pad_rx_i={pi} != pad_rx_o={po}"
+                )
+            # Last write wins; a clean passthrough is deterministic in
+            # pad_rx_i, so any prior entry for this key must already match.
+            seen_a[side][pi] = po
+    assert mismatches_a == 0, (
+        f"phase A: USE_IDELAY=0 passthrough NOT bit-exact: "
+        f"{mismatches_a}/{checked_a} pad_rx_i != pad_rx_o samples"
+    )
+    dut._log.info(
+        f"OK phase A: passthrough bit-exact over {checked_a} samples; "
+        f"recorded {len(seen_a['m'])} (m) / {len(seen_a['s'])} (s) "
+        f"distinct pad_rx_i->pad_rx_o entries for the invariance check"
+    )
+
+    # --- Phase pattern B: re-write Region-8 WHILE traffic flows ---------
+    await ctrl_write(dut, "m", R8_SWI_PHASE_OFFSET, packed_b)
+    await ClockCycles(dut.apb_clk, 8)
+    rb_b = await ctrl_read(dut, "m", R8_SWI_PHASE_OFFSET)
+    assert rb_b == packed_b, (
+        f"Region 8 SWI_PHASE_OFFSET read 0x{rb_b:08x}, wrote phase B "
+        f"0x{packed_b:08x} — mid-stream phase change did not take"
+    )
+    bus_b = _phase_bus(dut, "m")
+    assert bus_b == packed_b, (
+        f"m: swi_phase_offset_w=0x{bus_b:08x} != phase B 0x{packed_b:08x} "
+        f"— the mid-stream phase change did not reach the master bus"
+    )
+    tap_b = int(_idelay(dut, "m").phase_tap_i.value)
+    assert tap_b == packed_b and tap_b != tap_a, (
+        f"m: u_idelay_rx.phase_tap_i=0x{tap_b:08x} (was 0x{tap_a:08x}); "
+        f"expected phase B 0x{packed_b:08x} and DIFFERENT from phase A — "
+        f"phase_tap_i did NOT actually change, the invariance check below "
+        f"would be vacuous (it must exercise a real phase transition)"
+    )
+    dut._log.info(
+        f"master phase_tap_i changed MID-STREAM A->B: 0x{tap_a:08x} -> "
+        f"0x{tap_b:08x} (every lane's nibble differs); sampling under "
+        f"phase B — master proves invariance, slave corroborates passthru"
+    )
+
+    mismatches_b = 0
+    perturbed = 0
+    checked_b = 0
+    repeated = {"m": 0, "s": 0}
+    for _ in range(64):
+        await ClockCycles(dut.master_clk, 1)
+        for side in ("m", "s"):
+            inst = _idelay(dut, side)
+            pi = inst.pad_rx_i.value.binstr
+            po = inst.pad_rx_o.value.binstr
+            checked_b += 1
+            # (a) still a bit-exact passthrough under the new phase.
+            if pi != po:
+                mismatches_b += 1
+                dut._log.error(
+                    f"phase B {side}: pad_rx_i={pi} != pad_rx_o={po}"
+                )
+            # (b) zero perturbation attributable to the phase change: an
+            # input value also seen under phase A must produce the IDENTICAL
+            # output now. If phase_tap_i leaked into pad_rx_o, the SAME
+            # pad_rx_i would map to a DIFFERENT pad_rx_o under phase B.
+            if pi in seen_a[side]:
+                repeated[side] += 1
+                if seen_a[side][pi] != po:
+                    perturbed += 1
+                    dut._log.error(
+                        f"phase B {side}: pad_rx_i={pi} -> pad_rx_o={po} "
+                        f"but under phase A the SAME input -> "
+                        f"{seen_a[side][pi]} — pad_rx_o is phase-DEPENDENT, "
+                        f"g_passthru leaks phase_tap_i (defeats 1b2e87e)"
+                    )
+    assert mismatches_b == 0, (
+        f"phase B: USE_IDELAY=0 passthrough NOT bit-exact: "
+        f"{mismatches_b}/{checked_b} pad_rx_i != pad_rx_o samples — the "
+        f"mid-stream phase change perturbed the passthrough datapath"
+    )
+    assert perturbed == 0, (
+        f"phase B: {perturbed} repeated-input samples produced a DIFFERENT "
+        f"pad_rx_o than under phase A for the SAME pad_rx_i — the "
+        f"USE_IDELAY=0 g_passthru branch is NOT independent of "
+        f"phase_tap_i. 1b2e87e's sole-gate invariant (phase has ZERO "
+        f"effect when USE_IDELAY=0) is BROKEN."
+    )
+    # The MASTER is the side whose phase_tap_i actually transitioned A->B;
+    # the invariance proof is only non-vacuous if the SAME pad_rx_i value
+    # was observed before AND after that transition there.
+    assert repeated["m"] > 0, (
+        f"no pad_rx_i value recurred on the MASTER across the phase-A and "
+        f"phase-B windows (m repeated={repeated['m']}) — the phase-"
+        f"invariance assertion never actually fired on the side whose "
+        f"phase_tap_i changed; the live link did not replay a comparable "
+        f"RX value across the mid-stream phase change"
+    )
+    dut._log.info(
+        f"OK: USE_IDELAY=0 passthrough is PHASE-INVARIANT — over a "
+        f"mid-stream MASTER phase change (0x{packed_a:08x} -> "
+        f"0x{packed_b:08x}) pad_rx_o stayed bit-exact ({checked_b} "
+        f"samples, both sides) AND every one of {repeated['m']} master "
+        f"(+{repeated['s']} slave) repeated pad_rx_i values mapped to the "
+        f"IDENTICAL pad_rx_o as before — zero perturbation attributable "
+        f"to phase_tap_i. Closes audit-rec D1; defends 1b2e87e's "
+        f"sole-gate invariant (phase_tap_i has NO effect, USE_IDELAY=0)."
+    )

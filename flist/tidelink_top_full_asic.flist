@@ -191,6 +191,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
 // driven by the same calibrator phase) is documented for the future
 // ASIC target — see the agent report / ASIC source-sync guidance.
 ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 

@@ -209,6 +209,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 //    ASIC flist take). The FPGA IP packaging sets USE_IDELAY=1 and defines
 //    TIDELINK_USE_IDELAY. ──
 ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 

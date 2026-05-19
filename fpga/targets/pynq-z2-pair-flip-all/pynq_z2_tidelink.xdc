@@ -64,12 +64,20 @@ set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
 set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
 
 #-- PMOD-B cross-board trigger -----------------------------------------------
-# PMOD-B header (JB) on PYNQ-Z2 v1.0 — pin 1 = Y16 (bank 13 LVCMOS33).
+# PMOD-B header (JB) on PYNQ-Z2 v1.0 -- pin 1 = Y16 (bank 13 LVCMOS33).
 # Bidirectional pad: driven high by the controlling board, sensed by the peer.
 # PULLDOWN keeps the line at '0' when no board is driving (idle state).
-# Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation — well
+# Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation -- well
 # below the PHC quantisation (20 ns at 50 MHz).
 set_property -dict { PACKAGE_PIN Y16 IOSTANDARD LVCMOS33 PULLDOWN TRUE } [get_ports pmod_b_trig]
+
+#-- Inter-board I2C (autonomous lane-mask coordination) ----------------------
+# Mirror of pynq-z2-pair-all. The I2C PACKAGE_PIN lines themselves are NOT
+# defined here -- they're added by the immediately following commit
+# (3de5ebe) which repins I2C off-ribbon to Arduino dedicated I2C pads
+# (P15/P16, on-board pull-ups).
+# UNCONDITIONAL (no Tcl guard): XDC does not support the Tcl `if` command
+# (Vivado [Designutils 20-1307]); see pair-all rationale block.
 
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]

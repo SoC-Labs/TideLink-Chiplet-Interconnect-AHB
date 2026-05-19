@@ -118,6 +118,27 @@ set_property PACKAGE_PIN Y16 [get_ports pmod_b_trig]
 set_property IOSTANDARD LVCMOS33 [get_ports pmod_b_trig]
 set_property PULLTYPE PULLDOWN [get_ports pmod_b_trig]
 
+#-- Inter-board I2C (autonomous lane-mask coordination) ----------------------
+# SHORTCOMINGS-14a/14b: the autonomous cross-board lane-lock flow needs a
+# real inter-board I2C channel (autoneg master -> peer 0x21C verdict).
+#
+# NOTE: On feat/td-combined the lane-7 remap already claims W9/V7 (above)
+# for pad_tx[7]/pad_rx[7], so the original on-ribbon W9/V7 I2C map cannot
+# coexist. The I2C channel is therefore moved to the Arduino dedicated
+# I2C pads (P15/P16, on-board pull-ups) by the immediately-following
+# repin commit (3de5ebe). The I2C PACKAGE_PIN lines themselves are NOT
+# defined here — they're added by 3de5ebe directly on P15/P16.
+#
+# UNCONDITIONAL (no Tcl guard): Vivado's XDC reader is a restricted
+# dialect that does NOT support the Tcl `if` command — an earlier
+# `if {[llength [get_ports -quiet ...]]}` guard was silently skipped
+# (CRITICAL WARNING [Designutils 20-1307]), so pin constraints never
+# applied and place_design failed with "[Place 30-58] unplaced IO Ports:
+# i2c_scl_io i2c_sda_io". BD Edit 1 is committed in BOTH pynq-z2-pair-all
+# and -flip-all, so these ports ALWAYS exist in these targets — the
+# constraints can (and must) be unconditional like every other pin.
+
+
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established
 # LD1 (P14) = role_is_master_o — lit when this node won the master role

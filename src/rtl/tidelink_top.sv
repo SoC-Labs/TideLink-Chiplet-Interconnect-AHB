@@ -62,7 +62,10 @@ module tidelink_top #(
     // primitive (sim / ASIC). The FPGA IP wrapper overrides to 1 (carried in
     // the packaged IP's component.xml — no preprocessor define needed; see
     // tidelink_idelay_rx.sv header for why the old `ifdef was removed).
-    parameter USE_IDELAY = 1'b0
+    parameter USE_IDELAY = 1'b0,
+    // §9 clock fix: recovered-RX-clock BUFG forward (sim/ASIC default 0;
+    // FPGA wrapper sets 1, carried in component.xml). tidelink_rxclk_buf.sv.
+    parameter USE_CLKBUF = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1380,7 +1383,8 @@ module tidelink_top #(
         .AUTOCAL_ENABLE(1'b1),
         // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
         // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
-        .USE_IDELAY    (USE_IDELAY)
+        .USE_IDELAY    (USE_IDELAY),
+        .USE_CLKBUF    (USE_CLKBUF)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

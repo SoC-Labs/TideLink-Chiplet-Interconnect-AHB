@@ -60,7 +60,11 @@ module tidelink_vivado_wrapper #(
     // removed; see tidelink_idelay_rx.sv header).
     // Override to 0 to build the FPGA image with passthrough RX (A/B
     // determinism comparison).
-    parameter USE_IDELAY = 1'b1
+    parameter USE_IDELAY = 1'b1,
+    // §9 clock fix: FPGA defaults the recovered-RX-clock BUFG ON (carried
+    // in component.xml → reaches OOC synth, no `define). Override to 0 for
+    // an A/B determinism comparison. See tidelink_rxclk_buf.sv.
+    parameter USE_CLKBUF = 1'b1
 )(
     // =========================================================================
     // Clocks and Resets
@@ -404,7 +408,9 @@ module tidelink_vivado_wrapper #(
         .TIDELINK_PAIR_BASE  (TIDELINK_PAIR_BASE),
         .PHC_LOCK_GATE_EN    (PHC_LOCK_GATE_EN),
         // §9 structural fix: per-lane IDELAYE2 RX delay (FPGA wants it on).
-        .USE_IDELAY          (USE_IDELAY)
+        .USE_IDELAY          (USE_IDELAY),
+        // §9 clock fix: recovered-RX-clock global BUFG (FPGA wants it on).
+        .USE_CLKBUF          (USE_CLKBUF)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

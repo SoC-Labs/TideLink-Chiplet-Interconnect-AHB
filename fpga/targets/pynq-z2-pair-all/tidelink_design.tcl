@@ -367,49 +367,15 @@ proc create_root_design { parentCell } {
     ] $const_mask_bypass
 
     #--------------------------------------------------------------------------
-    # ILA — capture pad_clk_rx + pad_rx[7:0] (signals coming FROM the slave).
-    # Sampled in the local hclk (50 MHz) domain; the goal is to see whether
-    # the slave's pad_tx pins are alive (toggling, stuck high, stuck low,
-    # floating) on the master's RX pads.
-    #
-    # Clock = pad_clk_rx itself (the recovered clock from the slave). If the
-    # slave's pad_clk_tx is dead, this domain will be too — which is itself
-    # the diagnostic. We connect pad_clk_rx to ILA's clk through a BUFG so
-    # Vivado sees it as a real clock; pad_rx[7:0] is the 8-bit data probe.
-    # If pad_clk_rx is dead, the ILA never samples — try the second ILA on
-    # the hclk (50 MHz) domain to capture the raw pin value asynchronously.
+    # NOTE (2026-05-19): the ila_rx / ila_pad cores that used to probe the
+    # raw pad_rx IBUF were REMOVED. They are vestigial — RO APB observability
+    # (submodule 250f1cf, Region-8 SWI_LANE_STATUS) replaced them — and they
+    # are fundamentally incompatible with the §9 real IDELAYE2 RX delay:
+    # IDELAYE2 with DELAY_SRC("IDATAIN") needs the dedicated IBUF->IDELAYE2
+    # route, so the pad_rx IBUF cannot also fan into ILA fabric (route_design
+    # fails: all 8 pad_rx_IBUF nets unroutable). For an explicit pad-domain
+    # ILA build use the dedicated `pynq-z2-pair-ila` target instead.
     #--------------------------------------------------------------------------
-    set ila_rx [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_rx]
-    set_property -dict [list \
-        CONFIG.C_NUM_OF_PROBES   {2} \
-        CONFIG.C_PROBE0_WIDTH    {1} \
-        CONFIG.C_PROBE1_WIDTH    {8} \
-        CONFIG.C_DATA_DEPTH      {4096} \
-        CONFIG.C_INPUT_PIPE_STAGES {2} \
-        CONFIG.C_EN_STRG_QUAL    {0} \
-        CONFIG.ALL_PROBE_SAME_MU {true} \
-        CONFIG.ALL_PROBE_SAME_MU_CNT {2} \
-        CONFIG.C_TRIGOUT_EN      {false} \
-        CONFIG.C_TRIGIN_EN       {false} \
-        CONFIG.C_ADV_TRIGGER     {false} \
-    ] $ila_rx
-
-    # Second ILA in the hclk (50 MHz) domain — captures pad_clk_rx as data
-    # so we can see whether the pad is even toggling at all.
-    set ila_pad [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_pad]
-    set_property -dict [list \
-        CONFIG.C_NUM_OF_PROBES   {2} \
-        CONFIG.C_PROBE0_WIDTH    {1} \
-        CONFIG.C_PROBE1_WIDTH    {8} \
-        CONFIG.C_DATA_DEPTH      {4096} \
-        CONFIG.C_INPUT_PIPE_STAGES {2} \
-        CONFIG.C_EN_STRG_QUAL    {0} \
-        CONFIG.ALL_PROBE_SAME_MU {true} \
-        CONFIG.ALL_PROBE_SAME_MU_CNT {2} \
-        CONFIG.C_TRIGOUT_EN      {false} \
-        CONFIG.C_TRIGIN_EN       {false} \
-        CONFIG.C_ADV_TRIGGER     {false} \
-    ] $ila_pad
 
     ###########################################################################
     # CONNECTIONS
@@ -517,25 +483,15 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins axi_gpio_debug_unlock/gpio_io_o] \
                    [get_bd_pins tidelink_0/apb_debug_unlock_i]
 
-    #-- GPIO PHY pads -> external ports (with ILA taps on RX side)
+    #-- GPIO PHY pads -> external ports
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_ports pad_clk_tx]
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
     connect_bd_net [get_bd_ports pad_clk_rx]            [get_bd_pins tidelink_0/pad_clk_rx]
     connect_bd_net [get_bd_ports pad_rx]                [get_bd_pins tidelink_0/pad_rx]
 
-    #-- ILA probes
-    # ila_rx samples in the recovered-clock domain. Clock = pad_clk_rx
-    # (taps the same external port). Probe0 = pad_clk_rx (1-bit, mostly
-    # for trigger reference), probe1 = pad_rx[7:0].
-    connect_bd_net [get_bd_ports pad_clk_rx] [get_bd_pins ila_rx/clk]
-    connect_bd_net [get_bd_ports pad_clk_rx] [get_bd_pins ila_rx/probe0]
-    connect_bd_net [get_bd_ports pad_rx]      [get_bd_pins ila_rx/probe1]
-
-    # ila_pad samples in the local hclk (50 MHz) domain — survives even
-    # when pad_clk_rx is dead. Lets us see the raw pin level / toggling.
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins ila_pad/clk]
-    connect_bd_net [get_bd_ports pad_clk_rx]         [get_bd_pins ila_pad/probe0]
-    connect_bd_net [get_bd_ports pad_rx]              [get_bd_pins ila_pad/probe1]
+    #-- (ila_rx / ila_pad probes removed 2026-05-19 — see NOTE above; the
+    #--  raw-pad ILA is incompatible with the real IDELAYE2 IDATAIN route.
+    #--  RO APB SWI_LANE_STATUS is the observability path now.)
 
     #-- LEDs -> external ports
     #   led0 = link_active    (lit when D2D link is up)

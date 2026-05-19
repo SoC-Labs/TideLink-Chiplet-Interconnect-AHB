@@ -108,26 +108,60 @@ set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
 set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was F20 (bad) — LANE-7 REMAP
 
-#-- Inter-board I2C (autonomous lane-mask coordination) ----------------------
+#-- Inter-board I2C (autonomous lane-mask coordination) — OFF-RIBBON ---------
 # SHORTCOMINGS-14a/14b: the autonomous cross-board lane-lock flow needs a
 # real inter-board I2C channel (autoneg master -> peer 0x21C verdict).
 #
-# NOTE: On feat/td-combined the lane-7 remap already claims W9/V7 (above)
-# for pad_tx[7]/pad_rx[7], so the original on-ribbon W9/V7 I2C map cannot
-# coexist. The I2C channel is therefore moved to the Arduino dedicated
-# I2C pads (P15/P16, on-board pull-ups) by the immediately-following
-# repin commit (3de5ebe). The I2C PACKAGE_PIN lines themselves are NOT
-# defined here — they're added by 3de5ebe directly on P15/P16.
+# Pin choice rationale (see staging/i2c_train/{J13_PIN_BUDGET,
+# HW_VALIDATION_RESULTS}.md):
+#   * 2026-05-19: the prior on-ribbon W9/V7 (J13 13/37) choice was
+#     electrically inert in HW — neither board's i2c_slave bus-detector
+#     saw activity across 5 s of fast polling, including the MASTER
+#     whose i2c_slave taps the IOBUF readback of its own drive. FPGA
+#     internal pull (~10-50 kohm) too weak to establish open-drain idle
+#     against the ribbon-pair capacitance. (Predicted by the
+#     J13_PIN_BUDGET §3 caveat at the time of the on-ribbon choice.)
+#   * 2026-05-19 (this commit): repinned OFF the ribbon onto the
+#     dedicated PYNQ-Z2 Arduino I2C pads P15=SCL / P16=SDA. TUL fits
+#     on-board pull-ups on these pads (xilinx.com:interface:iic_rtl:1.0
+#     "i2c" component in board.xml). Unused in tidelink AND in the live
+#     nanosoc-ethernet-flash-system pynq-z2 XDC (eth-flash uses only
+#     T14 from the Arduino side, for phy_rmii_txd[1]).
+#   * Bonus: moving off the ribbon frees W9/V7 back up, so the
+#     superproject 5d34baf lane-7 remap (which moves pad_tx[7]/pad_rx[7]
+#     onto W9/V7) no longer collides with the I2C map. On feat/td-combined
+#     the lane-7 remap is in effect (W9 = pad_tx[7], V7 = pad_rx[7]), so
+#     this off-ribbon I2C choice is REQUIRED — not optional — for collision-
+#     free placement.
+#
+# Wiring: 3-wire Dupont harness between the two boards' Arduino shield
+# headers — SDA<->SDA (P16), SCL<->SCL (P15), GND<->GND. I2C is
+# symmetric so the same map is in pair-flip-all (no flip).
+#
+# *** KEEPERS ***  Neither board may have an Arduino shield card
+# populated (it would contend with the I2C bus). The Zynq PS-side IIC_1
+# peripheral must not be routed to EMIO onto this pad pair (the current
+# pair-config PS firmware does not enable it).
+#
+# I2C_PRESCALE: with proper on-board pull-ups you can run at 100-400 kHz.
+# RTL default is 128 (≈100 kHz at 50 MHz apb_clk) — leave it for the
+# first bench run; tune via axi_chiplet_controller ctrl_reg #3 if needed.
+#
+# The BD exports i2c_sda_io / i2c_scl_io as bidirectional (IOBUF) top
+# ports wired to the chiplet's i2c_sda_{i,o,t}/i2c_scl_{i,o,t} (BD Edit 1
+# already committed in both pair-all and -flip-all).
 #
 # UNCONDITIONAL (no Tcl guard): Vivado's XDC reader is a restricted
 # dialect that does NOT support the Tcl `if` command — an earlier
-# `if {[llength [get_ports -quiet ...]]}` guard was silently skipped
-# (CRITICAL WARNING [Designutils 20-1307]), so pin constraints never
-# applied and place_design failed with "[Place 30-58] unplaced IO Ports:
-# i2c_scl_io i2c_sda_io". BD Edit 1 is committed in BOTH pynq-z2-pair-all
-# and -flip-all, so these ports ALWAYS exist in these targets — the
-# constraints can (and must) be unconditional like every other pin.
-
+# `if {[llength [get_ports -quiet ...]]}` guard here was silently
+# skipped (CRITICAL WARNING [Designutils 20-1307]), the constraints
+# never applied, and place_design failed with "[Place 30-58] unplaced
+# IO Ports: i2c_scl_io i2c_sda_io". Constraint stays unconditional.
+#
+# PULLTYPE PULLUP omitted — TUL's on-board resistors dominate the
+# ~10-50 kohm FPGA weak pull, so it'd be a no-op.
+set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports i2c_sda_io]
+set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33} [get_ports i2c_scl_io]
 
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established

@@ -63,14 +63,20 @@ set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
 set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
 
-#-- Inter-board I2C (autonomous lane-mask coordination) ----------------------
-# Mirror of pynq-z2-pair-all. On feat/td-combined the lane-7 remap claims
-# W9/V7 for pad_tx[7]/pad_rx[7], so I2C is moved off-ribbon to Arduino
-# dedicated I2C pads (P15/P16, on-board pull-ups) by the immediately
-# following repin commit (3de5ebe). The I2C PACKAGE_PIN lines themselves
-# are NOT defined here — they're added by 3de5ebe directly on P15/P16.
-# UNCONDITIONAL (no Tcl guard): XDC does not support the Tcl `if` command
-# (Vivado [Designutils 20-1307]); see pair-all rationale block.
+#-- Inter-board I2C (autonomous lane-mask coordination) — OFF-RIBBON ---------
+# Mirror of pynq-z2-pair-all. I2C runs OFF the J13 ribbon, on the
+# dedicated PYNQ-Z2 Arduino I2C pads P15=SCL / P16=SDA (TUL on-board
+# pull-ups). 3-wire Dupont harness between the two boards' Arduino
+# shield headers (SDA<->SDA, SCL<->SCL, GND<->GND); I2C is symmetric so
+# no flip/cross. Full rationale (incl. why the prior on-ribbon W9/V7
+# choice was abandoned after the 2026-05-19 HW result) is in
+# pynq-z2-pair-all/pynq_z2_tidelink.xdc and
+# staging/i2c_train/HW_VALIDATION_RESULTS.md.
+# UNCONDITIONAL (no Tcl guard): XDC does not support `if` ([Designutils
+# 20-1307]); BD Edit 1 always exposes these ports in both pair-all and
+# -flip-all so constrain unconditionally.
+set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports i2c_sda_io]
+set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33} [get_ports i2c_scl_io]
 
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]

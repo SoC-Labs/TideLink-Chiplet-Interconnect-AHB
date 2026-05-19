@@ -1,101 +1,81 @@
-# TideLink FPGA bring-up — the actual state, and exactly what to do next
+# TideLink FPGA bring-up — CONVERGED diagnosis + the fix decision
 
-_2026-05-19. This supersedes the months of "HW/runtime nondeterminism"
-investigation. Read this before touching RTL or running another phase sweep._
+_2026-05-19. The problem is no longer "not converging." It is netlist-proven,
+physical causes are ruled out by a HW swap test, and the fix is specified.
+This supersedes all earlier next-steps._
 
-## The one-paragraph truth
+## The fully converged causal chain (each step evidence-backed)
 
-The link was never failing for a mysterious or architectural reason. Four
-independent RTL/FPGA/methodology audits converged: the PHY architecture is
-sound (real closed-loop word-boundary recovery via per-lane training byte +
-`bit_slip` hunt; the cable at 50 Mb/s is not the wall). There were exactly
-three real defects — **all three already diagnosed and fixed in this repo's
-history** — plus a deploy-script race that was misattributed to silicon and
-never fixed. The reason it never "converged" is process, not engineering:
-the fixes were scattered across ~12 branches and 6 worktrees, the one branch
-that has all of them (`feat/td-combined`) was trapped in a worktree whose
-submodule objects existed in exactly one place, and every HW metric
-(`7.5/16`, `D_score=0`, "byte-identical bits diverge") was measured through a
-deploy harness that races `role_lock` by *seconds* against a *microsecond*
-alignment window.
+1. **PHY is sound; not a lottery, not a deadlock, not the bitstream.**
+   v1 HW (consolidated b_combined, S_HOLD+T3+IDELAYE2+FCSM-sticky, md5-unique,
+   IDELAYE2 in routed netlist): NOT converged, best 9/16, but a *stable
+   structural directional asymmetry*, fault=0x00 (calibrator healthy).
+2. **Deploy methodology fixed (v2).** v1 did one deploy + 20 recals; but
+   `WavD2DGpioRx.count` (the word-skew = the real lottery variable) is frozen
+   at role_lock and `swreset`/recal does NOT re-sync it. v2 re-deploys both
+   boards in parallel per iteration (re-rolls the skew) + best-of-N read.
+3. **SWAP test → physical RULED OUT, failure is LOGICAL.** Dead side =
+   die_a / non-flip target / `pad_clk_rx`=Y7-MRCC, `cal_done=0` always,
+   0–3 lanes. Alive side = die_b / flip / Y9-SRCC, `cal_done=1`, up to 7/8.
+   The dead side **followed the bitstream/role, not the board or ribbon**
+   (NORMAL and SWAPPED). Not a damaged conductor, not a bad pin.
+4. **Netlist-proven root cause (from the routed impl reports, not theory).**
+   `pad_clk_rx` is NOT on a dedicated clock network. It is
+   `IBUF → BUFG → fabric-LUT2 (io_pol/scan clock-mux) → BUFG`, and lanes
+   **1–7's `link_data_reg` capture stage is clocked by a LUT through general
+   routing** — 7× `Place 30-568` "a LUT is driving the clock pin of 16
+   registers … large hold violations". The 8 capture sites span 5 clock
+   regions. **This structure is byte-identical in both targets** (the flip
+   build has the same 4 BUFGs + same 7 LUT-clock warnings) — so MRCC-vs-SRCC
+   was always a red herring; Y7 vs Y9 merely lands that LUT-clock's *fixed*
+   insertion skew inside (Y9) vs outside (Y7) the calibrator window. Stable
+   per bitstream ⇒ exactly the swap-test result. Every XDC comment ("Vivado
+   infers a BUFG / dedicated clock network", "SRCC weaker than MRCC") is
+   **false against the implemented netlist** and tuned with the asymmetry
+   sign backwards.
+5. **The clock-mux selects are static — bypassing them is SAFE.**
+   `io_pol` = `out_prepend_swi_polarity` (APB SW reg, reset 0, never written
+   by the calibrator or `deploy_pair.sh`); `scan_mode`=0 on FPGA. Both are
+   constant 0 in the bring-up flow, so removing them from the clock path does
+   not change functional behaviour.
 
-## What is now consolidated and hardened (done)
+## The fix (specified; this is the remaining work)
 
-- **`feat/td-combined`** is THE branch. It contains, verified wired:
-  - **S_HOLD / T3.2** (`50f7869`) + **T3 re-sweep** (`1e5f4e0`) in
-    `src/rtl/tidelink_phy_align_calibrator.sv` (`S_HOLD = 4'd6`,
-    `sweep_success`, `HOLD_CYCLES`) — defeats the first-to-succeed deadlock.
-  - **IDELAYE2** (`fff8df2` + `1b2e87e`/`54b5879`/`a4f0605`):
-    `u_idelay_rx` instantiated at
-    `deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv:1382`,
-    `USE_IDELAY` threaded through `tidelink_top.sv`, BD `clk_wiz` CLKOUT3 =
-    200 MHz → `idelay_ref_clk` wired in both pair targets.
-  - **FCSM sticky** credit-path fix: submodule `678a9b3` ⊇ `0e126b0`.
-- Built + HW-tested already (memory: bitstream `b012827f`, mean 7.5/16,
-  best 12/16) — but tested *through the raced deploy*, so those numbers are
-  a lower bound measured wrong, not the RTL's real ceiling.
-- **Submodule de-fragmented**: the `678a9b3` chain is now redundant in the
-  main submodule clone (`deps/axi-chiplet-controller/.git`), pinned by
-  `refs/heads/bringup/consolidated-td-combined`. The consolidated branch can
-  no longer become unbuildable by removing a worktree.
-- **New deploy tool**: `pynq_host/scripts/bringup_pair_converge.sh` — the
-  piece that never existed. Parallel deploy (role_lock skew → SSH-launch
-  jitter, not seconds), then a closed loop of *coordinated parallel recal*
-  (re-arm BOTH calibrators near-simultaneously; S_HOLD bridges residual
-  skew) + *settle-then-read* (poll `SWI_LANE_STATUS` until stable — never a
-  single snapshot), looped until both ends genuinely lock 16/16. Safe-ops
-  only (no AHB_TX, no doorbell → cannot trip the board-wedge hazard).
+Goal: the recovered RX clock must reach all 8 lane capture/IDELAYE2 regs on
+a **clean global-buffer network**, not via per-lane fabric LUTs. Three
+options, increasing robustness / blast-radius:
 
-## What to actually do next (in order)
+- **(A) XDC-mitigation only** (lowest risk, may be insufficient):
+  new `pynq_z2_tidelink_clk.xdc` in both targets (wired impl-only like
+  `_drc.xdc`): `set_property CLOCK_DEDICATED_ROUTE BACKBONE` + force
+  `CLOCK_BUFFER_TYPE BUFG` on the recovered-clock + per-lane mux nets,
+  `set_clock_uncertainty` to bound 8-site skew. Caveat: `set_case_analysis`
+  is an *impl-time STA* directive and will NOT remove a synthesis-created
+  LUT — so XDC alone likely cannot collapse the per-lane clock-mux LUTs;
+  it can only improve their routing. ~19-min farm build + lease retest.
+- **(B) Structural RTL (recommended, deterministic):** mirror the
+  established `tidelink_idelay_rx.sv` pattern — an FPGA-only, param/macro-
+  guarded clean-clock path that takes `pad_clk_rx`, puts it on a single
+  `BUFG`, and feeds all 8 lanes' capture directly, with `io_pol`/`scan_mode`
+  tied 0 on the FPGA path (proven safe by step 5). Removes the LUT-in-clock
+  entirely. Larger change to the Wav PHY clock path (hand-patched SoC Labs
+  Verilog, so edits persist), sim/ASIC guarded.
+- **(C) Defer to a clock-architecture redesign** of the Wav GPIO PHY RX
+  recovered-clock distribution (out of scope for a bring-up fix).
 
-1. **Build `feat/td-combined`** if a fresh bitstream is wanted (else reuse
-   the staged `b012827f` bins). Build from the worktree
-   `/home/dam1n19/td_idelay_wt` (submodule already at `678a9b3`). The farm
-   path is unchanged (`make build_pair_farmed`).
-2. **Acquire the bridge1 lease and VERIFY it is `granted`, not `queued`.**
-   Confirm both boards reachable (`z2_02` master 192.168.4.101, `z2_03`
-   slave 192.168.6.101) before launching anything.
-3. **Run the closed-loop bring-up** from a board-network host (mapstone-dev),
-   bins staged in `/tmp/tidelink_deploy`:
-   ```
-   MAX_RETRIES=20 STABLE=3 bringup_pair_converge.sh
-   ```
-   Expected with the consolidated RTL: lock climbs across iterations and
-   converges to 16/16 (exit 0). This is the first time the RTL fixes and a
-   deploy method that exploits them are in the same place at the same time.
-4. **Interpret per the script's own guide.** If it plateaus high (12–15/16)
-   that residual is a *genuine, now-isolable* per-lane sub-UI / IDELAYE2-tap
-   ceiling — characterise the named stuck lane(s) (the `fault` byte names
-   them); that is the *first* point at which a new RTL hypothesis is
-   warranted. If it bounces uncorrelated with no upward trend, the bitstream
-   is NOT from `feat/td-combined` (re-check S_HOLD is in the calibrator).
+After whichever fix: rebuild `feat/td-combined` (farm), then
+`bringup_pair_converge.sh` (v2, `MAX_RETRIES≈8`). Expected if correct:
+die_a (Y7-MRCC) `cal_done` 0→1, `locked`→~0xfe, i.e. it behaves like the
+currently-working die_b → full 16/16.
 
-## Stop doing these (they are why it didn't converge)
+## Hard-won rules (do not relitigate)
 
-- **Do not** run phase/slip sweeps through `deploy_pair_with_retry.sh` /
-  `phase_recal_sweep.sh` and draw conclusions: each point is a fresh raced
-  deploy, so the sweep measures per-deploy timing luck convolved with phase.
-  Every "best op-point" / `D_score=0` / "byte-identical bits diverge"
-  conclusion came from this confounded measurement.
-- **Do not** invent new RTL determinism mechanisms before step 3. The
-  diagnosis is closed; the fixes exist; they just had never been run
-  together through a non-broken deploy.
-- **Do not** trust `redeploy_repeatability.sh`'s verdict as a bring-up
-  signal — it is a one-shot characteriser whose heuristic was written to
-  *prove* the lottery (one recal, one snapshot). Use
-  `bringup_pair_converge.sh` for bring-up.
-- **Do not** consolidate onto `feat/fpga-flow`: it is a *divergent* line
-  (shares only ancestor `86ce6fa`) with a different §9 RTL lineage. Merging
-  the fixes onto it is the conflict mess that ate months. Work on
-  `feat/td-combined`.
-
-## If step 3 still doesn't give 16/16
-
-Then — and only then — you have a real, isolated, single residual to chase,
-measured honestly for the first time. The ranked candidates (now testable
-because the lottery and the deadlock are out of the way):
-IDELAYE2 tap precision (x2 scaling 0..15→0..30, IDELAYCTRL `RDY` is left
-unconnected by design — `tidelink_idelay_rx.sv:138`), single-ended
-forwarded-clock jitter on the unterminated ribbon, and the unconstrained
-pad→capture path (the source-sync XDC `5ad4b0c` is present; verify it
-actually constrained the build vs being overridden by an async clock-group).
+- Work on `feat/td-combined` only (consolidated; submodule de-fragmented).
+  NOT `feat/fpga-flow` (divergent §9 lineage).
+- The fixes (S_HOLD/T3/IDELAYE2/FCSM-sticky) ARE in the b_combined silicon
+  (md5-unique, IDELAYE2 in routed netlist) — proven, do not re-question.
+- Physical (ribbon/pin/board) is ruled out by the swap test — do not chase.
+- Lease discipline: acquire → verify `granted` + our holder on BOTH boards
+  (else stop) → release with token → `pkill -9 -f` the tree → verify.
+  `bringup_pair_converge.sh` is safe-ops only (no AHB_TX/doorbell).
+- Logs: `td_campaign/bringup_converge_run1.log`, `bringup_swap_diag.log`.

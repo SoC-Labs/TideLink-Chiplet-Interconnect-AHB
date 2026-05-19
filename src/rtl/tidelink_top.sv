@@ -59,8 +59,9 @@ module tidelink_top #(
 
     // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element driven
     // by the calibrator. 0 (default) = bit-exact passthrough, no Xilinx
-    // primitive (sim / ASIC). The FPGA vivado wrapper overrides to 1 and the
-    // fpga build defines TIDELINK_USE_IDELAY. See tidelink_idelay_rx.sv.
+    // primitive (sim / ASIC). The FPGA IP wrapper overrides to 1 (carried in
+    // the packaged IP's component.xml — no preprocessor define needed; see
+    // tidelink_idelay_rx.sv header for why the old `ifdef was removed).
     parameter USE_IDELAY = 1'b0
 )(
     // --------------------------------------------------------------------------

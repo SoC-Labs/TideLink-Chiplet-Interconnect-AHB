@@ -29,21 +29,31 @@
 // the data, on TOP of its existing deserialiser bit-select — giving it a
 // monotone, characterised lever over the actual clk-to-data eye position.
 //
-// ADDITIVE & PARAMETER-GATED. USE_IDELAY defaults to 0:
+// ADDITIVE & PARAMETER-GATED. The USE_IDELAY parameter is the SINGLE source
+// of truth. USE_IDELAY defaults to 0:
 //   * USE_IDELAY=0  → pure combinational passthrough (pad_rx_o = pad_rx_i).
 //                     NO Xilinx primitive is referenced. Bit-exact to the
 //                     pre-change netlist. This is what every HDL simulator
-//                     and the ASIC flist all elaborate.
+//                     and the ASIC flist all elaborate (the constant
+//                     generate-if prunes the IDELAY branch entirely, so the
+//                     unisim primitive text is never elaborated/resolved).
 //   * USE_IDELAY=1  → per-lane IDELAYE2 + IDELAYCTRL (Xilinx 7-series only).
-//                     Additionally guarded by `ifdef TIDELINK_USE_IDELAY` so
-//                     the unisim primitive *text* is entirely absent from any
-//                     non-Vivado parse — only fpga/build_design.tcl defines
-//                     TIDELINK_USE_IDELAY (and only then sets USE_IDELAY=1).
+//                     The FPGA IP wrapper sets this to 1; it is carried into
+//                     the packaged IP's component.xml as the parameter
+//                     default and reaches the IP's out-of-context synthesis
+//                     with NO preprocessor cooperation required.
 //
-// Belt-and-braces: BOTH the elaboration-time parameter (generate-if) AND the
-// preprocessor `ifdef must select the IDELAY branch. A sim that somehow
-// passed USE_IDELAY=1 without the define still falls back to passthrough
-// rather than failing to compile on a missing IDELAYE2 cell.
+// HISTORY — why this is parameter-only now: a prior revision ALSO required a
+// preprocessor `ifdef TIDELINK_USE_IDELAY (opt-IN) set via a packaging-project
+// `set_property verilog_define`. That define is NOT baked into the IP-XACT
+// core, so it never reached the IP's OOC synth — the `ifdef was always false
+// and the IDELAYE2 primitive was silently dropped from EVERY FPGA build
+// (proven: an "IDELAY-off" build was byte-identical to the "on" build).
+// Fixed by deleting that opt-in guard. The belt-and-braces escape hatch is
+// preserved but INVERTED to opt-OUT: a non-Vivado flow that deliberately
+// forces USE_IDELAY=1 without a unisim library can define
+// TIDELINK_IDELAY_NO_PRIMITIVE to fall back to passthrough. Default
+// (undefined) = real IDELAYE2 whenever USE_IDELAY=1 — safe by default.
 //
 // IDELAYE2 / IDELAYCTRL constraints (handled in pynq_z2_tidelink_idelay.xdc):
 //   * IDELAYCTRL needs a stable 200 MHz REFCLK; we expose idelay_ref_clk and
@@ -69,7 +79,8 @@
 module tidelink_idelay_rx #(
     // 0 = passthrough (bit-exact, no Xilinx primitive — sim/ASIC default).
     // 1 = per-lane IDELAYE2 + IDELAYCTRL (Xilinx 7-series FPGA only). The
-    //     FPGA build_design.tcl sets this to 1 AND defines TIDELINK_USE_IDELAY.
+    //     FPGA IP wrapper sets this to 1; carried via the packaged IP's
+    //     component.xml. No preprocessor define is needed (see header).
     parameter bit          USE_IDELAY = 1'b0,
     // Number of RX data lanes (GPIO PHY = 8).
     parameter int          NUM_LANES  = 8,
@@ -104,7 +115,7 @@ module tidelink_idelay_rx #(
 
     generate
         if (USE_IDELAY) begin : g_idelay
-`ifdef TIDELINK_USE_IDELAY
+`ifndef TIDELINK_IDELAY_NO_PRIMITIVE
             // ---------------------------------------------------------------
             // One IDELAYCTRL for the whole pad_rx bank. RDY is intentionally
             // left unconnected: IDELAYCTRL not asserting RDY only means the
@@ -162,10 +173,12 @@ module tidelink_idelay_rx #(
                 );
             end
 `else
-            // USE_IDELAY=1 but TIDELINK_USE_IDELAY not defined (a non-Vivado
-            // parse, or a misconfigured build). Fall back to passthrough so
-            // elaboration never fails on a missing unisim cell. The unused
-            // idelay_* / phase_tap_i inputs are harmless.
+            // OPT-OUT escape hatch: reached only if a non-Vivado flow both
+            // forces USE_IDELAY=1 AND defines TIDELINK_IDELAY_NO_PRIMITIVE
+            // (no unisim library). Falls back to passthrough so elaboration
+            // never fails on a missing IDELAYE2 cell. Default builds never
+            // define this macro, so the FPGA path needs zero preprocessor
+            // cooperation — the USE_IDELAY parameter alone selects IDELAY.
             assign pad_rx_o = pad_rx_i;
             // Reference the would-be-unused ports so lint stays quiet.
             wire _unused_idelay = idelay_ref_clk & idelay_rst &

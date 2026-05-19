@@ -52,9 +52,12 @@ module tidelink_vivado_wrapper #(
     // PHC lock gate enable
     parameter PHC_LOCK_GATE_EN = 0,
     // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element.
-    // Defaults to 1 here (this is the FPGA IP wrapper — the only place
-    // the Xilinx IDELAYE2 is wanted). fpga/build_design.tcl additionally
-    // defines TIDELINK_USE_IDELAY (the unisim-primitive `ifdef guard).
+    // Defaults to 1 here (this is the FPGA IP wrapper — the only place the
+    // Xilinx IDELAYE2 is wanted). This default is captured into the packaged
+    // IP's component.xml by ipx::package_project and is the SOLE gate for the
+    // IDELAY path — no preprocessor define is involved (the old
+    // `ifdef TIDELINK_USE_IDELAY was unreachable in OOC synth and was
+    // removed; see tidelink_idelay_rx.sv header).
     // Override to 0 to build the FPGA image with passthrough RX (A/B
     // determinism comparison).
     parameter USE_IDELAY = 1'b1

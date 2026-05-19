@@ -42,14 +42,19 @@ read_verilog $wrapper_dir/tidelink_vivado_wrapper.v
 
 set_property top tidelink_vivado_wrapper [current_fileset]
 
-# SoC Labs §9 structural fix: enable the Xilinx IDELAYE2 RX delay primitive.
-# tidelink_idelay_rx.sv guards the unisim IDELAYE2/IDELAYCTRL behind BOTH a
-# USE_IDELAY parameter (1 in the FPGA wrapper) AND `ifdef TIDELINK_USE_IDELAY.
-# This is the ONLY place that define is set — every non-Vivado parse (cocotb
-# iverilog/Verilator/VCS, the ASIC flist) never sees the primitive and takes
-# the bit-exact passthrough branch. Setting it as a fileset verilog_define
-# bakes it into the packaged IP so the downstream synth project inherits it.
-set_property verilog_define {TIDELINK_USE_IDELAY=1} [current_fileset]
+# SoC Labs §9 structural fix: the Xilinx IDELAYE2 RX delay primitive is now
+# gated SOLELY by the USE_IDELAY parameter of tidelink_vivado_wrapper
+# (default 1'b1). ipx::package_project records that wrapper parameter default
+# in the IP's component.xml, so the IP's out-of-context synthesis elaborates
+# the IDELAY branch with NO preprocessor cooperation.
+#
+# DO NOT reintroduce `set_property verilog_define {TIDELINK_USE_IDELAY=1}`
+# here: a fileset verilog_define set on this PACKAGING project is NOT baked
+# into the IP-XACT core, so it never reached the IP's OOC synth — the old
+# `ifdef was always false and the IDELAYE2 primitive was silently dropped
+# from EVERY FPGA build (proven byte-identical to an IDELAY-off build,
+# 2026-05-19). The opt-in `ifdef has been deleted in tidelink_idelay_rx.sv;
+# the parameter is the single source of truth.
 
 update_compile_order -fileset sources_1
 

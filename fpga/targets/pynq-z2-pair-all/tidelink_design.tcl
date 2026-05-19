@@ -121,6 +121,19 @@ proc create_root_design { parentCell } {
     create_bd_port -dir I           pad_clk_rx
     create_bd_port -dir I -from 7 -to 0 pad_rx
 
+    # Inter-board I2C sideband (BD Edit 1, SHORTCOMINGS-14a/14b) — expose
+    # the chiplet's I2C tristate pins as external BD ports so the board
+    # wrapper can IOBUF them onto J13 W9/V7. Mirrors the proven mps3
+    # target (tidelink_ip_0 -> here tidelink_0). Previously the pins were
+    # left unconnected (Vivado default); no constant driver existed, so
+    # this is purely additive (no tie-off removed, no double-drive).
+    create_bd_port -dir I           i2c_scl_i
+    create_bd_port -dir O           i2c_scl_o
+    create_bd_port -dir O           i2c_scl_t
+    create_bd_port -dir I           i2c_sda_i
+    create_bd_port -dir O           i2c_sda_o
+    create_bd_port -dir O           i2c_sda_t
+
     # Board LEDs (accent green, active-high)
     create_bd_port -dir O           led0
     create_bd_port -dir O           led1
@@ -559,6 +572,16 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
     connect_bd_net [get_bd_ports pad_clk_rx]            [get_bd_pins tidelink_0/pad_clk_rx]
     connect_bd_net [get_bd_ports pad_rx]                [get_bd_pins tidelink_0/pad_rx]
+
+    #-- BD Edit 1: chiplet I2C sideband -> external BD ports (mirrors mps3
+    #   tidelink_design.tcl:631-636). Wrapper IOBUFs these onto P15/P16
+    #   (Arduino dedicated I2C — repinned off W9/V7 by 3de5ebe).
+    connect_bd_net [get_bd_ports i2c_scl_i] [get_bd_pins tidelink_0/i2c_scl_i]
+    connect_bd_net [get_bd_pins tidelink_0/i2c_scl_o] [get_bd_ports i2c_scl_o]
+    connect_bd_net [get_bd_pins tidelink_0/i2c_scl_t] [get_bd_ports i2c_scl_t]
+    connect_bd_net [get_bd_ports i2c_sda_i] [get_bd_pins tidelink_0/i2c_sda_i]
+    connect_bd_net [get_bd_pins tidelink_0/i2c_sda_o] [get_bd_ports i2c_sda_o]
+    connect_bd_net [get_bd_pins tidelink_0/i2c_sda_t] [get_bd_ports i2c_sda_t]
 
     #-- (ila_rx / ila_pad probes removed 2026-05-19 — see NOTE above; the
     #--  raw-pad ILA is incompatible with the real IDELAYE2 IDATAIN route.

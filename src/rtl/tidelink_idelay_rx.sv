@@ -84,9 +84,16 @@ module tidelink_idelay_rx #(
     parameter bit          USE_IDELAY = 1'b0,
     // Number of RX data lanes (GPIO PHY = 8).
     parameter int          NUM_LANES  = 8,
-    // IODELAY_GROUP string shared by every IDELAYE2 and the IDELAYCTRL. Must
-    // match the IODELAY_GROUP set in pynq_z2_tidelink_idelay.xdc.
-    parameter string       IDELAY_GRP = "tidelink_rx_idelay",
+    // IODELAY_GROUP shared by every IDELAYE2 and the IDELAYCTRL. NOTE: the
+    // (* IODELAY_GROUP *) attributes below use a STRING LITERAL, not this
+    // parameter — Vivado synthesis rejects a SystemVerilog `string`-typed
+    // (unpacked) parameter in an attribute expression ([Synth 8-281]
+    // "expression must be of a packed type"; this only ever surfaced once
+    // the propagation fix made the IDELAY branch actually synthesize). This
+    // parameter is kept untyped + documentary; its value, the literal in
+    // the attributes, and `_idelay_grp` in pynq_z2_tidelink_idelay.xdc MUST
+    // all be the same string.
+    parameter              IDELAY_GRP = "tidelink_rx_idelay",
     // IDELAYCTRL reference-clock frequency in MHz. 200.0 is the standard
     // 7-series value (≈ 78 ps/tap at 200 MHz, 32 taps). Must equal the
     // actual frequency of idelay_ref_clk and the create_clock in the XDC.
@@ -123,7 +130,10 @@ module tidelink_idelay_rx #(
             // it must NOT gate the RX datapath or the calibrator. The XDC
             // ties this IDELAYCTRL to the IDELAYE2s via IODELAY_GROUP.
             // ---------------------------------------------------------------
-            (* IODELAY_GROUP = IDELAY_GRP *)
+            // Literal (not the IDELAY_GRP param) — Vivado synth requires a
+            // packed/literal attribute value. MUST equal IDELAY_GRP default
+            // and _idelay_grp in pynq_z2_tidelink_idelay.xdc.
+            (* IODELAY_GROUP = "tidelink_rx_idelay" *)
             IDELAYCTRL u_idelayctrl (
                 .RDY    (/* unconnected — see note above */),
                 .REFCLK (idelay_ref_clk),
@@ -147,7 +157,8 @@ module tidelink_idelay_rx #(
                 // many cycles per phase). DATAIN/IDATAIN: IDATAIN is the
                 // pad path (IBUF output inside the BD/IOB); the tool infers
                 // the IBUF->IDELAYE2 connection from the top-level port.
-                (* IODELAY_GROUP = IDELAY_GRP *)
+                // Literal IODELAY_GROUP (see IDELAYCTRL note above).
+                (* IODELAY_GROUP = "tidelink_rx_idelay" *)
                 IDELAYE2 #(
                     .CINVCTRL_SEL          ("FALSE"),
                     .DELAY_SRC             ("IDATAIN"),

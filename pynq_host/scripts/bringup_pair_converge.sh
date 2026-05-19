@@ -88,11 +88,17 @@ ARTEFACTS="${ARTEFACTS:-/tmp/tidelink_deploy}"
 
 MP="${MP:-0}"                 # master phase (0 = let calibrator own it)
 SP="${SP:-0}"                 # slave  phase (0 = let calibrator own it)
-MAX_RETRIES="${MAX_RETRIES:-20}"
-STABLE="${STABLE:-3}"         # consecutive equal reads required = "settled"
-SETTLE="${SETTLE:-2}"         # seconds to let a recal sweep run before polling
-POLL_GAP="${POLL_GAP:-0.3}"   # seconds between settle-poll reads
+MAX_RETRIES="${MAX_RETRIES:-12}"
+SETTLE="${SETTLE:-2}"         # seconds after recal (S_HOLD is sub-10ms @25MHz,
+                              #  HOLD_CYCLES=8*128*32=32768 cyc; 2s ≫ that)
+BESTOF="${BESTOF:-3}"         # quick reads/iter; report BEST popcount (locked
+                              #  legitimately bounces — never demand N-equal)
+POLL_GAP="${POLL_GAP:-0.4}"
 RECAL_HOLD="${RECAL_HOLD:-0.25}"
+# SWAP=1 : deploy die_b(flip) to MASTER_IP and die_a(non-flip) to SLAVE_IP
+#          (role/bitstream swap — the physical-vs-logical discriminator for
+#           the dead RX direction; needs NO rebuild).
+SWAP="${SWAP:-0}"
 
 MPV=$(( MP << 17 )); SPV=$(( SP << 17 ))
 
@@ -137,23 +143,21 @@ lk=s&0xff; ft=(s>>8)&0xff
 print(\"0x%02x 0x%02x %d %d %d %d\"%(lk,ft,(s>>16)&1,bin(lk).count(\"1\"),(s>>17)&0xF,(s>>23)&1))'" 2>/dev/null
 }
 
-# Settle-then-read: poll until `locked` repeats STABLE times in a row
-# (or give up after STABLE*4 polls and return the last sample). This is
-# the measurement fix — never trust a single fixed-delay snapshot.
-settle_read() {  # IP  -> echoes the settled status line
-    local IP=$1 last="" lk prev="" run=0 polls=0 maxpolls=$(( STABLE * 4 + 2 ))
-    while [ "$polls" -lt "$maxpolls" ]; do
-        last=$(read_status "$IP")
-        [ -z "$last" ] && { sleep "$POLL_GAP"; polls=$((polls+1)); continue; }
-        lk=$(echo "$last" | awk '{print $1}')
-        if [ "$lk" = "$prev" ]; then
-            run=$((run+1)); [ "$run" -ge "$STABLE" ] && break
-        else
-            run=1; prev="$lk"
+# Best-of-N read. `locked` legitimately bounces every read (the calibrator
+# continuously re-sweeps — fault=0x00), so demanding N-equal-in-a-row was
+# v1's bug: it returned an arbitrary transient. Instead take BESTOF quick
+# samples and keep the one with the most lanes locked (+ its cal/fcsm/cr).
+best_read() {  # IP -> echoes the best status line of BESTOF reads
+    local IP=$1 s pc best="" bestpc=-1 n=0
+    while [ "$n" -lt "$BESTOF" ]; do
+        s=$(read_status "$IP")
+        if [ -n "$s" ]; then
+            pc=$(echo "$s" | awk '{print $4+0}')
+            if [ "${pc:-0}" -gt "$bestpc" ] 2>/dev/null; then bestpc=$pc; best="$s"; fi
         fi
-        sleep "$POLL_GAP"; polls=$((polls+1))
+        n=$((n+1)); [ "$n" -lt "$BESTOF" ] && sleep "$POLL_GAP"
     done
-    echo "$last"
+    echo "$best"
 }
 
 # Coordinated parallel recal: re-arm BOTH calibrators within ~1 SSH RTT.
@@ -167,60 +171,86 @@ recal_cycle() {
     sleep "$SETTLE"
 }
 
+# Deploy one board for a given role. deploy_pair.sh maps ROLE->bitstream
+# (die_a=tidelink.bin non-flip, die_b=tidelink-flip.bin) + strap + phase.
+deploy_one() {  # IP ROLE PHASEVAL
+    PHASE_OVERRIDE=$(printf 0x%08x "$3") \
+        bash "$DEPLOY_PAIR" "$1" z2_$2 "$2" "$ARTEFACTS" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
+# Role assignment. Normal: MASTER_IP=die_a(non-flip), SLAVE_IP=die_b(flip).
+# SWAP=1: MASTER_IP=die_b(flip), SLAVE_IP=die_a(non-flip) — the physical-vs-
+# logical discriminator. v1 HW showed the die_a/non-flip RX (clock on Y7-
+# MRCC) DEAD and die_b/flip RX (clock on Y9-SRCC) alive. If after SWAP the
+# dead RX FOLLOWS THE IP/board -> physical (that board's Y7 pin / that
+# ribbon conductor). If it FOLLOWS THE ROLE/bitstream -> logical (the
+# non-flip target's RX path). Decisive; needs NO rebuild.
+if [ "$SWAP" = "1" ]; then
+    A_IP=$SLAVE_IP;  A_LBL="SLAVE_IP($SLAVE_IP)"   # die_a -> the slave IP
+    B_IP=$MASTER_IP; B_LBL="MASTER_IP($MASTER_IP)" # die_b -> the master IP
+    MODE="SWAPPED (die_a->$SLAVE_IP, die_b->$MASTER_IP)"
+else
+    A_IP=$MASTER_IP; A_LBL="MASTER_IP($MASTER_IP)"
+    B_IP=$SLAVE_IP;  B_LBL="SLAVE_IP($SLAVE_IP)"
+    MODE="NORMAL (die_a->$MASTER_IP, die_b->$SLAVE_IP)"
+fi
+
 echo "=============================================================="
 echo " TideLink coordinated closed-loop bring-up  $(date)"
-echo "  master=$MASTER_IP slave=$SLAVE_IP  phase mp=$MP sp=$SP"
-echo "  MAX_RETRIES=$MAX_RETRIES STABLE=$STABLE SETTLE=${SETTLE}s"
+echo "  $MODE"
+echo "  die_a=$A_LBL (non-flip, RX-clk Y7-MRCC)  phase mp=$MP"
+echo "  die_b=$B_LBL (flip,     RX-clk Y9-SRCC)  phase sp=$SP"
+echo "  MAX_RETRIES=$MAX_RETRIES SETTLE=${SETTLE}s BESTOF=$BESTOF"
 echo "  RTL: T3+S_HOLD calibrator + IDELAYE2 + FCSM-sticky (td-combined)"
+echo "  v2: RE-DEPLOY per iteration (re-rolls role_lock/count skew — the"
+echo "      actual lottery variable; v1's one-deploy-many-recal could not"
+echo "      since swreset/recal does NOT re-sync WavD2DGpioRx.count)."
 echo "=============================================================="
 
 # Reachability pre-flight (fail fast, do not run a half-pair).
-for ip in "$MASTER_IP" "$SLAVE_IP"; do
+for ip in "$A_IP" "$B_IP"; do
     sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$ip" true 2>/dev/null \
         || fail "board $ip unreachable over SSH (check lease GRANTED + board up)"
 done
 
-echo "--- Phase 1: parallel deploy (role_lock skew = SSH-launch jitter) ---"
-PHASE_OVERRIDE=$(printf 0x%08x $MPV) \
-    bash "$DEPLOY_PAIR" "$MASTER_IP" z2_master die_a "$ARTEFACTS" >/dev/null 2>&1 &
-mpid=$!
-PHASE_OVERRIDE=$(printf 0x%08x $SPV) \
-    bash "$DEPLOY_PAIR" "$SLAVE_IP"  z2_slave  die_b "$ARTEFACTS" >/dev/null 2>&1 &
-spid=$!
-wait $mpid; mrc=$?
-wait $spid; src=$?
-[ $mrc -eq 0 ] || echo "  WARN: master deploy_pair.sh rc=$mrc (continuing — closed loop may still recover)"
-[ $src -eq 0 ] || echo "  WARN: slave  deploy_pair.sh rc=$src (continuing — closed loop may still recover)"
-sleep 1
-
-echo "--- Phase 2: closed-loop coordinated recal until converged ---"
-printf '%-4s | %-30s | %-30s | %s\n' IT "MASTER lk/ft cal# fcsm cr" "SLAVE lk/ft cal# fcsm cr" "tot/16"
+printf '%-4s | %-30s | %-30s | %s\n' IT \
+    "die_a@${A_IP##*.} lk/ft cal# fs cr" "die_b@${B_IP##*.} lk/ft cal# fs cr" "tot/16"
 
 best=-1; best_it=0; best_line=""; conv_it=0
 for it in $(seq 1 "$MAX_RETRIES"); do
+    # v2 core fix: re-deploy BOTH in parallel each iteration. Each deploy
+    # reloads the bitstream (fresh POR) and re-asserts role_lock, so
+    # WavD2DGpioRx.count is re-rolled — the one variable that actually
+    # gates word alignment and that recal alone cannot move.
+    deploy_one "$A_IP" die_a "$MPV" & ap=$!
+    deploy_one "$B_IP" die_b "$SPV" & bp=$!
+    wait $ap; arc=$?
+    wait $bp; brc=$?
+    [ $arc -eq 0 ] || echo "  WARN it=$it: die_a@$A_IP deploy rc=$arc"
+    [ $brc -eq 0 ] || echo "  WARN it=$it: die_b@$B_IP deploy rc=$brc"
+    sleep 1
     recal_cycle
-    MR=$(settle_read "$MASTER_IP")
-    SR=$(settle_read "$SLAVE_IP")
-    mlk=$(echo "$MR" | awk '{print $1}'); mft=$(echo "$MR" | awk '{print $2}')
-    mcd=$(echo "$MR" | awk '{print $3}'); mpc=$(echo "$MR" | awk '{print $4}')
-    mfs=$(echo "$MR" | awk '{print $5}'); mcr=$(echo "$MR" | awk '{print $6}')
-    slk=$(echo "$SR" | awk '{print $1}'); sft=$(echo "$SR" | awk '{print $2}')
-    scd=$(echo "$SR" | awk '{print $3}'); spc=$(echo "$SR" | awk '{print $4}')
-    sfs=$(echo "$SR" | awk '{print $5}'); scr=$(echo "$SR" | awk '{print $6}')
-    mpc=${mpc:-0}; spc=${spc:-0}
-    tot=$(( mpc + spc ))
+    AR=$(best_read "$A_IP")
+    BR=$(best_read "$B_IP")
+    alk=$(echo "$AR" | awk '{print $1}'); aft=$(echo "$AR" | awk '{print $2}')
+    acd=$(echo "$AR" | awk '{print $3}'); apc=$(echo "$AR" | awk '{print $4}')
+    afs=$(echo "$AR" | awk '{print $5}'); acr=$(echo "$AR" | awk '{print $6}')
+    blk=$(echo "$BR" | awk '{print $1}'); bft=$(echo "$BR" | awk '{print $2}')
+    bcd=$(echo "$BR" | awk '{print $3}'); bpc=$(echo "$BR" | awk '{print $4}')
+    bfs=$(echo "$BR" | awk '{print $5}'); bcr=$(echo "$BR" | awk '{print $6}')
+    apc=${apc:-0}; bpc=${bpc:-0}
+    tot=$(( apc + bpc ))
     printf '%-4s | %-30s | %-30s | %s\n' "$it" \
-        "${mlk:-?}/${mft:-?} ${mpc} ${mcd:-?} fs${mfs:-?} cr${mcr:-?}" \
-        "${slk:-?}/${sft:-?} ${spc} ${scd:-?} fs${sfs:-?} cr${scr:-?}" \
+        "${alk:-?}/${aft:-?} ${apc} ${acd:-?} fs${afs:-?} cr${acr:-?}" \
+        "${blk:-?}/${bft:-?} ${bpc} ${bcd:-?} fs${bfs:-?} cr${bcr:-?}" \
         "$tot"
     if [ "$tot" -gt "$best" ] 2>/dev/null; then
         best=$tot; best_it=$it
-        best_line="M[$MR] S[$SR]"
+        best_line="die_a@$A_IP[$AR]  die_b@$B_IP[$BR]"
     fi
-    # Converged = both sides all 8 lanes locked AND both cal_done.
-    if [ "$mpc" -eq 8 ] 2>/dev/null && [ "$spc" -eq 8 ] 2>/dev/null \
-       && [ "${mcd:-0}" -eq 1 ] 2>/dev/null && [ "${scd:-0}" -eq 1 ] 2>/dev/null; then
+    if [ "$apc" -eq 8 ] 2>/dev/null && [ "$bpc" -eq 8 ] 2>/dev/null \
+       && [ "${acd:-0}" -eq 1 ] 2>/dev/null && [ "${bcd:-0}" -eq 1 ] 2>/dev/null; then
         conv_it=$it
         break
     fi
@@ -229,25 +259,25 @@ done
 echo "=============================================================="
 if [ "$conv_it" -gt 0 ]; then
     echo "RESULT: CONVERGED — full 16/16 bidirectional link at iteration $conv_it"
-    echo "        $best_line"
-    echo "  This is what the consolidated RTL + coordinated closed-loop"
-    echo "  deploy was supposed to deliver. Bring-up is up. (Doorbell /"
-    echo "  AHB_TX end-to-end is a SEPARATE step — observe the wedge hazard.)"
+    echo "  $best_line"
+    echo "  (Doorbell / AHB_TX end-to-end is a SEPARATE step — wedge hazard.)"
     exit 0
 else
-    echo "RESULT: NOT CONVERGED in $MAX_RETRIES iterations."
+    echo "RESULT: NOT CONVERGED in $MAX_RETRIES re-deploys ($MODE)."
     echo "  Best seen: ${best}/16 at iteration $best_it"
     echo "  $best_line"
-    echo "  Interpretation guide:"
-    echo "   * best climbs across iters then plateaus high (e.g. 12-15/16):"
-    echo "       residual is per-lane sub-UI / IDELAYE2 tap precision — a"
-    echo "       genuine, now-isolable RTL ceiling (raise MAX_RETRIES; then"
-    echo "       characterise the stuck lane(s) — fault byte names them)."
-    echo "   * one side always ~0, the other climbs: that side's recovered"
-    echo "       RX clock / role_lock did not take — check its deploy WARN"
-    echo "       and ROLE_CFG lock bit via wlink_probe.sh."
-    echo "   * both sides bounce uncorrelated with NO upward trend across"
-    echo "       iters: S_HOLD/T3 not actually in this bitstream — verify"
-    echo "       the build is from feat/td-combined (S_HOLD in calibrator)."
+    echo "  Interpretation (v1 already proved S_HOLD/T3/IDELAYE2 ARE in"
+    echo "  this bitstream — do NOT re-question that):"
+    echo "   * one side stuck ~0 across ALL re-deploys, other side alive:"
+    echo "       a stable DIRECTIONAL dead. If SWAP flips which IP is dead"
+    echo "       -> the dead is tied to die_a/non-flip RX path (logical)."
+    echo "       If the SAME IP stays dead under SWAP -> that board's"
+    echo "       physical Y7 RX pin / that ribbon conductor (physical)."
+    echo "   * best climbs with re-deploys then plateaus high (12-15/16):"
+    echo "       per-lane sub-UI / IDELAYE2-tap ceiling — characterise the"
+    echo "       named stuck lane(s) (fault byte)."
+    echo "   * both alive but neither reaches 8 and uncorrelated: residual"
+    echo "       count-skew beyond calibrator range — needs the unbuilt"
+    echo "       comma/word-realign (T3a), not more deploys."
     exit 1
 fi

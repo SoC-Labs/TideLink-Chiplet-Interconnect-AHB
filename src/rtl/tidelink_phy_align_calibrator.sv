@@ -146,7 +146,14 @@ module tidelink_phy_align_calibrator #(
     // (default 16). Default 32 is 2× the checker threshold.
     parameter int DWELL_CYCLES = 32,
     // Number of lanes (informational — code is hand-rolled for 8 lanes).
-    parameter int NUM_LANES    = 8
+    parameter int NUM_LANES    = 8,
+    // T3 (per-deploy lottery fix): if a sweep finishes WITHOUT all lanes
+    // locked (some faulted because the peer's training window didn't
+    // overlap ours), auto re-sweep instead of giving up — keeping
+    // training_mode high so two skew-triggered nodes converge. 0 = retry
+    // while role_locked (correct cold bring-up). Non-zero = terminal fault
+    // after this many auto-retries (a definite end for sim / non-bring-up).
+    parameter int MAX_RESWEEPS = 0
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -257,6 +264,19 @@ module tidelink_phy_align_calibrator #(
     // All lanes have either locked-and-latched OR faulted out.
     wire all_done = &lane_done;
 
+    // T3: a sweep is a genuine SUCCESS only if NO lane faulted (every lane
+    // found a locking (phase,slip)). lane_fault_q is bounce-immune, unlike
+    // &lane_locked. The per-deploy lottery failure mode is all_done=1 with
+    // lane_fault_q != 0 — the peer's training pattern wasn't present during
+    // this node's ~82 µs sweep because the two role_lock triggers were
+    // ms-skewed (T1 HW-confirmed).
+    wire sweep_success  = ~|lane_fault_q;
+    // Auto-retry budget since the last EXTERNAL trigger (see resweep_ctr
+    // block). MAX_RESWEEPS==0 ⇒ never exhausts (retry while role_locked).
+    logic [15:0] resweep_ctr;
+    wire retry_exhausted = (MAX_RESWEEPS != 0) &&
+                           (resweep_ctr >= MAX_RESWEEPS);
+
     // -------------------------------------------------------------------------
     // FSM next-state logic
     // -------------------------------------------------------------------------
@@ -275,7 +295,19 @@ module tidelink_phy_align_calibrator #(
                 else if (all_done)      nxt_state = S_FINISH;
             end
             S_FINISH: begin
-                nxt_state = S_DONE;
+                // T3 lottery fix. Release to the link (→ S_DONE →
+                // calibration_done → lltx/FCSM) ONLY on a genuine
+                // all-lanes-locked sweep, or after the retry cap. A sweep
+                // that faulted because the peer's training window didn't
+                // overlap ours auto re-sweeps while role_locked, holding
+                // training_mode high (it is high in S_ARM/S_SWEEP) so our
+                // TX keeps the training pattern up. Two skew-triggered
+                // nodes then re-sweep continuously until their windows
+                // coincide — converting the ms-scale non-overlap (fatal)
+                // into a ≤few-hundred-µs convergence delay (benign).
+                if (sweep_success || retry_exhausted) nxt_state = S_DONE;
+                else if (role_locked)                 nxt_state = S_ARM;
+                else                                  nxt_state = S_DONE;
             end
             S_DONE: begin
                 if (trigger_now)        nxt_state = S_ARM;
@@ -293,6 +325,22 @@ module tidelink_phy_align_calibrator #(
     always_ff @(posedge clk or posedge rst) begin
         if (rst) cur_state <= S_IDLE;
         else     cur_state <= nxt_state;
+    end
+
+    // -------------------------------------------------------------------------
+    // T3 re-sweep counter — auto-retries since the last EXTERNAL trigger.
+    // Cleared by reset and by trigger_now (a fresh role_locked rising /
+    // swreset-fall cycle resets the retry budget). Incremented exactly on
+    // the S_FINISH→S_ARM auto-retry edge. Deliberately NOT touched by the
+    // S_ARM mass-clear datapath branch (that clears per-sweep state; the
+    // retry budget must survive auto re-arms). Bring-up default
+    // MAX_RESWEEPS=0 ⇒ this just free-runs and retry_exhausted stays 0.
+    // -------------------------------------------------------------------------
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                                  resweep_ctr <= 16'd0;
+        else if (trigger_now)                     resweep_ctr <= 16'd0;
+        else if ((cur_state == S_FINISH) &&
+                 (nxt_state  == S_ARM))           resweep_ctr <= resweep_ctr + 16'd1;
     end
 
     // -------------------------------------------------------------------------

@@ -81,11 +81,18 @@ module tidelink_design_wrapper (
     // a short jumper. The driving board pulses high; the sense-side reads
     // it via AXI GPIO ch2 and the PHC latches its time (Option A capture).
     // Idle = '0' (PULLDOWN in XDC); driving side sets gpio_o=1 briefly.
-    inout  wire        pmod_b_trig        // JB1 / Y16 (PMOD-B pin 1)
+    inout  wire        pmod_b_trig,       // JB1 / Y16 (PMOD-B pin 1)
+
+    // Inter-board I2C sideband (BD Edit 1, SHORTCOMINGS-14a/14b). XDC
+    // (Phase 4 autonomy) pins these to Arduino dedicated I2C (P15/P16)
+    // which have on-board pull-ups. Open-drain via the IOBUFs below.
+    // Identical to pynq-z2-pair-all (I2C is symmetric, no flip/cross).
+    inout  wire        i2c_scl_io,
+    inout  wire        i2c_sda_io
 );
 
     //=========================================================================
-    // PMOD-B trigger IOBUF — single pad both drives and senses.
+    // PMOD-B trigger IOBUF -- single pad both drives and senses.
     //=========================================================================
     wire pmod_b_trig_o_w;
     wire pmod_b_trig_i_w;
@@ -96,6 +103,17 @@ module tidelink_design_wrapper (
         .T  (~pmod_b_trig_o_w),       // tristate when not driving high
         .IO (pmod_b_trig)
     );
+
+    //=========================================================================
+    // I2C open-drain tristate (Vivado convention: _t=1 => Hi-Z).
+    // Mirrors the proven mps3/tidelink_design_wrapper.v pattern.
+    //=========================================================================
+    wire i2c_scl_i_int, i2c_scl_o_int, i2c_scl_t_int;
+    wire i2c_sda_i_int, i2c_sda_o_int, i2c_sda_t_int;
+    assign i2c_scl_io    = i2c_scl_t_int ? 1'bz : i2c_scl_o_int;
+    assign i2c_scl_i_int = i2c_scl_io;
+    assign i2c_sda_io    = i2c_sda_t_int ? 1'bz : i2c_sda_o_int;
+    assign i2c_sda_i_int = i2c_sda_io;
 
     //=========================================================================
     // Block Design Instance
@@ -140,10 +158,20 @@ module tidelink_design_wrapper (
 
         // PMOD-B cross-board trigger (split out for the IOBUF above)
         .pmod_b_trig_o            (pmod_b_trig_o_w),
-        .pmod_b_trig_i            (pmod_b_trig_i_w)
+        .pmod_b_trig_i            (pmod_b_trig_i_w),
 
-        // All other tie-offs (tl_bcast_ack_i, phc_locked_i, tc_axis_*,
-        // tc_qos_priority, user_ref_clk, scan_*, i2c_*, ahb_mng_*,
+        // Inter-board I2C sideband (BD Edit 1) -- exposed as external
+        // BD ports (see tidelink_design.tcl create_bd_port/connect_bd_net);
+        // IOBUF'd to i2c_{scl,sda}_io above.
+        .i2c_scl_i                (i2c_scl_i_int),
+        .i2c_scl_o                (i2c_scl_o_int),
+        .i2c_scl_t                (i2c_scl_t_int),
+        .i2c_sda_i                (i2c_sda_i_int),
+        .i2c_sda_o                (i2c_sda_o_int),
+        .i2c_sda_t                (i2c_sda_t_int)
+
+        // Other tie-offs (tl_bcast_ack_i, phc_pps, phc_locked_i,
+        // tc_axis_*, tc_qos_priority, user_ref_clk, scan_*, ahb_mng_*,
         // s_i2c_axi_*) are driven INSIDE the block design via xlconstant
         // cells in tidelink_design.tcl. They are not exposed as BD external
         // ports, so they do not appear in this instantiation.

@@ -169,27 +169,68 @@ redirect -file $_qor_post {
     report_qor -summary
 }
 set _wns_slow ""
+set _hold_slow ""
 if {[file exists $_qor_post]} {
     set _fh [open $_qor_post r]
     while {[gets $_fh _line] >= 0} {
-        # report_qor row: "scen_slow ... (Setup)  <WNS>  <TNS>  <NVE>"
-        # or single-scenario row: "Setup  <WNS>  <TNS>  <NVE>"
         if {[regexp {\(Setup\)\s+(-?[0-9.]+)\s+(-?[0-9.]+)\s+(\d+)} $_line _ _wns _tns _nve]} {
-            set _wns_slow $_wns
-            break
+            if {$_wns_slow eq ""} { set _wns_slow $_wns }
+        }
+        if {[regexp {\(Hold\)\s+(-?[0-9.]+)\s+(-?[0-9.]+)\s+(\d+)} $_line _ _hwns _htns _hnve]} {
+            if {$_hold_slow eq ""} { set _hold_slow $_hwns }
         }
     }
     close $_fh
 }
 
+# Also capture scen_fast hold (Gap B/C's known failure mode was here).
+set _qor_post_fast ${fc_reports}/04i_pg_post_eco_qor_fast.rep
+redirect -file $_qor_post_fast {
+    if {[sizeof_collection [get_scenarios -quiet scen_fast]] > 0} {
+        current_scenario scen_fast
+        report_qor -summary
+    }
+}
+set _hold_fast ""
+if {[file exists $_qor_post_fast]} {
+    set _fh [open $_qor_post_fast r]
+    while {[gets $_fh _line] >= 0} {
+        if {[regexp {\(Hold\)\s+(-?[0-9.]+)} $_line _ _hwns]} {
+            set _hold_fast $_hwns; break
+        }
+    }
+    close $_fh
+}
+
+set _abort 0
 if {$_wns_slow eq ""} {
-    puts "WARN: \[fc_pg\] could not parse setup WNS from $_qor_post — skipping timing guard"
+    puts "WARN: \[fc_pg\] could not parse setup WNS — skipping setup guard"
 } elseif {[expr {$_wns_slow < -0.05}]} {
     puts "ERROR: \[fc_pg\] scen_slow setup WNS regressed to $_wns_slow (< -0.05 ns)"
+    set _abort 1
+} else {
+    puts "INFO: \[fc_pg\] setup guard PASS: scen_slow setup WNS = $_wns_slow"
+}
+
+# Hold guard — Gap B/C's failure mode was -4.71 ns scen_fast hold WNS.
+# Tolerance ±0.5 ns (much wider than setup because hold violations are
+# typically fixable downstream via buffer insertion; we only block on a
+# catastrophic regression).
+if {$_hold_fast eq ""} {
+    puts "WARN: \[fc_pg\] could not parse scen_fast hold WNS — skipping hold guard"
+} elseif {[expr {$_hold_fast < -0.5}]} {
+    puts "ERROR: \[fc_pg\] scen_fast hold WNS regressed to $_hold_fast (< -0.5 ns)"
+    puts "ERROR: \[fc_pg\]   typical cause: ASIC_TSMC65 cell substitution without"
+    puts "ERROR: \[fc_pg\]   adequate async-reset false_path coverage (see"
+    puts "ERROR: \[fc_pg\]   1_init_design.tcl Wav async-pin block)"
+    set _abort 1
+} else {
+    puts "INFO: \[fc_pg\] hold guard PASS: scen_fast hold WNS = $_hold_fast"
+}
+
+if {$_abort} {
     puts "ERROR: \[fc_pg\] aborting — pg.design NOT saved, FC_STAGE_OK NOT emitted"
     exit 1
-} else {
-    puts "INFO: \[fc_pg\] timing guard PASS: scen_slow setup WNS = $_wns_slow"
 }
 
 save_block

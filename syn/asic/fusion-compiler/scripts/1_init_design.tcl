@@ -110,6 +110,29 @@ if {[file exists $extra_sdc]} {
 }
 
 #-----------------------------------------------------------------------------
+# Gap C (ASIC_TSMC65) — false_path the explicit SDFFRPQ/SDFFSRPQ async
+# reset pins. When the substitution is active these flops are
+# instantiated as RTL primitives with R / SN as async-reset inputs, but
+# the sc12 Liberty doesn't tag the reset arcs with `preset` so
+# fc_shell's timer treats them as data inputs and hold-times the
+# source-to-reset paths (caused a -4.71 ns scen_fast hold WNS on the
+# first attempt). Apply false_path here in full-fc_shell Tcl, where
+# get_pins -hier -filter / sizeof_collection are available (SDC mode
+# rejects them, see inputs/constraints.sdc note).
+foreach scen_name {scen_slow scen_fast} {
+    if {[sizeof_collection [get_scenarios -quiet $scen_name]] == 0} { continue }
+    current_scenario $scen_name
+    set _wav_async_pins [get_pins -hier -quiet \
+        -filter "lib_pin_name == R || lib_pin_name == SN"]
+    if {[sizeof_collection $_wav_async_pins] > 0} {
+        set_false_path -to $_wav_async_pins
+        puts "INFO: \[fc_init\] $scen_name: [sizeof_collection $_wav_async_pins] Wav R/SN async-reset endpoints false_path'd"
+    } else {
+        puts "INFO: \[fc_init\] $scen_name: no R/SN pins found (ASIC_TSMC65 not active or pre-elaborate)"
+    }
+}
+
+#-----------------------------------------------------------------------------
 # Initialise floorplan — partition target: aspect 1.0, util 0.85
 #-----------------------------------------------------------------------------
 puts "INFO: \[fc_init\] initialize_floorplan aspect=$aspect_ratio util=$core_util offset=$core_offset"

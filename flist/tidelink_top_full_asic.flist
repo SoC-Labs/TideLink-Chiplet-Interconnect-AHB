@@ -2,14 +2,27 @@
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 
 // ASIC TSMC65 cell-substitution gate (gaps B + C of
-// docs/ASIC_HARD_IP_INVENTORY.md) — DISABLED in v1: the explicit
-// SDFFRPQ/SDFFSRPQ reset-pin endpoints added by the substitution were
-// not balanced by FC's reset-tree inference, regressing hold WNS from
-// −0.00 ns to −4.71 ns (scen_fast, 2026-05-20). The substitution
-// wrappers ARE in-tree (deps/.../WavDemet*.v ifdef blocks, plus
-// tsmc/WavClockMux_tsmc65.v) — re-enabling needs a timing-aware
-// integration (constrained reset propagation, hold-fix pass after CTS).
-// Uncomment to opt-in once that work is done:
+// docs/ASIC_HARD_IP_INVENTORY.md). When defined:
+//   * tsmc/WavClockMux_tsmc65.v structural glitch-free clock mux
+//   * SDFFRPQ/SDFFSRPQ_X1M_A12TR scan-replaceable async-reset flops
+//     replace the behavioural model in
+//     WavDemet{Set,Reset,Reset_7,_27,_107,_124,_129}.v
+//
+// CURRENTLY DORMANT in v1. Two integration attempts (2026-05-20 + 21)
+// both regressed scen_fast hold by ~-4.7 to -4.85 ns. Investigation:
+//   * Attempt 1: enabled raw, no false_path on R/SN.
+//     Failure mode: hypothesised reset-tree imbalance.
+//   * Attempt 2: enabled with set_false_path -to [R/SN pins] applied
+//     to 840 endpoints in 1_init_design.tcl (still in-tree, harmless
+//     when this define is off).
+//     Result: setup PASS (-0.00 ns), hold still -4.85 ns.
+//     Real failure mode: the back-to-back u_f1 / u_f2 demet flops
+//     have a direct Q→D net with no logic between them.
+//     SDFFRPQ_X1M_A12TR's hold time exceeds the clock-to-Q + skew
+//     available, and FC's placer drops the two flops too close.
+//
+// v1.1 fix: insert a BUF_X*M_A12TR between u_f1.Q and u_f2.D inside
+// each WavDemet*.v `ifdef ASIC_TSMC65 arm, then re-enable this gate.
 //+define+ASIC_TSMC65
 
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)

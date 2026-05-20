@@ -1,28 +1,41 @@
 # I²C Autonomous Lock — Open TODO
 
-State as of 2026-05-20, end of bench session.
-Branch `feat/i2c-autonomous-lock-integ` @ `910b5c7` (pushed), submodule @ `467b889` (pushed).
+State as of 2026-05-20 (evening bench session).
+Branch `feat/i2c-autonomous-lock-integ` @ `a657306` (pushed), submodule @ `88fea5e` (pushed).
+
+## Today's headline (2026-05-20 evening)
+
+- ✅ **Autoneg works on silicon.** Diagnostic bitstream with the two fixes (`467b889` decouple `nego_driving` + `be5eed2` default `txn_step_nxt`) and 11 `mark_debug` probes wired into `u_dbg_int`. Master wins, slave loses, both `role_locked=1`, `nego_done=1`.
+- ✅ **Full I²C transaction observable via ILA**: PRESCALE/DATA/COMMAND AXIL writes handshake clean, cmd_fifo loads, i2c_master core enters busy, SDA pulled low (START), SCL clocks. `busy_seen_r` correctly latches.
+- ⚠️ **NEW Bug #3 discovered**: Mask phase (states 8/9/10) **never enters on silicon** despite NEGO_CFG[6]=1 (read back from chip). ILA armed on `state_r==9` for 30 s after fresh POR + autoneg kick: never triggered. `hs_result=0` on slave confirms master never wrote it. Sim takes this path correctly (per agent #1's test). **Same class as latch bug** — likely synth optimization pruning `nego_cfg_reg[6]` fanout.
 
 ---
 
-## Phase 1 — Verify the cocotb-agent RTL fix on silicon
+## Phase 1 — Verify the cocotb-agent RTL fix on silicon ✅ DONE
 
-The cocotb agent found and fixed the gating bug (sub `467b889`: decouple `nego_driving` from `role_locked`). Sim is green. Need to confirm on HW.
+- [x] Build with `467b889`+`be5eed2` + 11 `mark_debug` attrs + `FPGA_INSERT_DEBUG_CORE=1` (build #4 @ 16:07, build #5 @ 18:00)
+- [x] Convert + stage to mapstone, redeploy
+- [x] `run_i2c_test_fast.sh` shows `EVER i2c_addr=1`, `EVER sda_start_seen=1`, `EVER nego_done=1` on slave
+- [x] Master `NEGO_STATUS=0x055 (DONE, won=1)`; slave `NEGO_STATUS=0x195 (DONE, lost=1)`
+- [x] Both `role_locked=1` with correct roles
+- [x] ILA capture on `mst_axil_awvalid==1` showed the complete CLAIM→POLL sequence with all 13 internal signals correct
 
-- [ ] Wait for farm build to complete (started 2026-05-20, background `b6suzp3z0`, ~30 min wall). New bitstreams have the RTL fix.
-- [ ] Convert `.bit` → `.bin` (`fpga/scripts/bit2bin.py`) for both `pynq-z2-pair-all` and `pynq-z2-pair-flip-all`.
-- [ ] Stage `.bin/.hwh/.ltx/.bit` to `mapstone:~/tidelink_hwval/` (use `ssh 'cat > X' < Y`, scp is broken).
-- [ ] Deploy with the **original** `deploy_pair.sh` (NOT `deploy_pair_autoneg.sh`) — the RTL fix means the strap-lock is no longer a blocker; legacy flow works again.
-- [ ] Smoke: `wlink_probe.sh` on both boards (expect ROLE_CFG=0x2/0x3, lock=1).
-- [ ] **The decisive test:** `run_i2c_test_fast.sh`. Expect:
-  - `EVER i2c_busy=1` on both boards within ~100 ms
-  - `EVER nego_done=1` and `EVER i2c_addr=1`
-  - Master FSM reaches state `DONE` (5) or stays in `MASK_*` (8/9/10) doing peer-mask handshake
-  - Both ROLE_STATUS show `locked=1` with consistent roles
-- [ ] JTAG ILA confirm: trigger on `i2c_scl_t == 0` should fire within seconds (was timing out before).
-- [ ] If all green: full guided lock via `bringup_autocal_i2c.sh` (post-lock link bring-up).
+## Phase 2a — Fix bug #3: mask phase synth-pruned (CANDIDATE FIX APPLIED)
 
-## Phase 2 — If Phase 1 still shows the bus inert
+The autoneg FSM's `if (mask_hs_auto_en)` branch silently doesn't fire on silicon, even though `NEGO_CFG[6]` reads back as 1 and `nego_cfg_reg[6]` is in synth's source. Same class as the `txn_step_nxt` latch bug — sim tolerates, synth optimizes badly.
+
+- [x] **Applied**: `(* keep = "true" *) wire mask_hs_auto_en_kept = mask_hs_auto_en;` in `tidelink_autoneg.sv` lines 137 + `if (mask_hs_auto_en)` → `if (mask_hs_auto_en_kept)` (sub `72bc582`, parent `9f81947`).
+- [x] **Cocotb regression**: 33 tests green across 7 suites (wlink_pair 9/9 + 4/4 + 3/3, wlink_pair_full 3/3, autoneg_i2c_e2e 3/3, tidelink_autoneg 7/7, i2c_mask_selflock 3/3, i2c_clkstretch 1/1). No regression. State 4→9 transition visible in `wlink_pair_full` log.
+- [x] **Build #5**: kicked off with `FPGA_INSERT_DEBUG_CORE=1` (background task `bh7pvmvyk`, ~30 min).
+- [ ] **Bench verify (next cycle)**: rebuild + redeploy + autoneg kick. ILA armed on `state_r==9` should now trigger. `hs_result=0x01` on slave should appear after autoneg completes.
+
+If the keep-attribute doesn't take on silicon, escalation paths:
+- [ ] Add `(* dont_touch = "true" *)` on `nego_cfg_reg` declaration in chiplet controller.
+- [ ] Add `(* mark_debug = "true" *)` on `mask_hs_auto_en_kept` (forces preservation AND gives bench observability).
+- [ ] Restructure the FSM `if` to a `case (mask_hs_auto_en_kept)` block — synth tools sometimes optimize cases differently than ifs.
+- [ ] Spawn a cocotb agent to look for OTHER similar synth-only artifacts in the same pattern.
+
+## Phase 2b — If Phase 1 still shows the bus inert (SUPERSEDED — phase 1 done)
 
 The deploy workaround (`deploy_pair_autoneg.sh`, role_lock=0) did NOT make the master drive even with the FSM in POLL. ILA triggered on `(scl_o|sda_o|scl_t|sda_t)==0` for 15 s never fired. Either (a) the workaround didn't actually achieve role_lock=0 on silicon (sim says it should), or (b) there's a second bug only on silicon.
 

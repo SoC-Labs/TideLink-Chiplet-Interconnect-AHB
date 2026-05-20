@@ -79,6 +79,9 @@ set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}] 
 # UNCONDITIONAL (no Tcl guard): XDC does not support `if` ([Designutils
 # 20-1307]); BD Edit 1 always exposes these ports in both pair-all and
 # -flip-all so constrain unconditionally.
+## Mirror of pair-all (I2C symmetric — no flip). W9/V7 retest failed
+## on 2026-05-20 with all 3 bug fixes applied; weak-pull was real.
+## See pair-all XDC + HW_VALIDATION_RESULTS §A.12.
 set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports i2c_sda_io]
 set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33} [get_ports i2c_scl_io]
 

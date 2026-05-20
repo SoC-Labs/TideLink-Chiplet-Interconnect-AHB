@@ -165,6 +165,16 @@ set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}] 
 #
 # PULLTYPE PULLUP omitted — TUL's on-board resistors dominate the
 # ~10-50 kohm FPGA weak pull, so it'd be a no-op.
+## W9/V7 RETEST RESULT (2026-05-20 evening): with bugs #1+#2+#3 all fixed
+## (sub 6a757e2: nego_driving decouple + txn_step latch + case-default),
+## the master correctly tries to drive I2C, but the FPGA weak internal
+## pull (~10-50 kohm) on W9/V7 is insufficient to form clean open-drain
+## edges over the ribbon-pair capacitance. Slave never sees i2c_busy /
+## i2c_addr / sda_start. Confirms the 2026-05-19 weak-pull theory was
+## REAL after all — it was just compounded by the 3 FSM bugs which
+## masked the electrical issue. P15/P16 with TUL on-board 1.5 kohm
+## pull-ups is genuinely required for operational I2C.
+## Bench evidence: staging/i2c_train/HW_VALIDATION_RESULTS.md §A.12.
 set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports i2c_sda_io]
 set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33} [get_ports i2c_scl_io]
 

@@ -309,3 +309,48 @@ remote-action surface here.
 Released. `fpgahub pair lease show bridge1` returned `free` at sign-off.
 Boards remain deployed with the ila_i2c bitstreams (they're idle and
 fully redeployable from `mapstone-dev:~/tidelink_hwval/`).
+
+## §A.12 — W9/V7 ribbon retest (2026-05-20 evening, post-all-fixes)
+
+**User question**: "Has W9/V7 on-ribbon I²C been re-investigated with the
+recent bug fixes? Move the I²C onto the ribbon and see if autoneg works
+there too."
+
+**Background**: The 2026-05-19 inert W9/V7 result was originally
+attributed to "weak internal pull insufficient for ribbon-pair
+capacitance". That diagnosis was made BEFORE we'd identified bugs
+#1/#2/#3 — the master wasn't actually driving the bus at all, so the
+electrical strength of the pull-up was never fairly tested.
+
+**Test**: Swapped I²C pins P15/P16 → W9/V7 on both pair-all + pair-flip-all
+XDCs (commit `ae7ced1`), kept `PULLTYPE PULLUP` (FPGA weak internal
+pull only — no on-board pull-ups on these balls). Built #7 with all 3
+bug fixes + mark_debug + debug core (~28 min). Deployed via vanilla
+`deploy_pair.sh`. Ran `run_i2c_test_fast.sh`.
+
+**Result — clear silicon evidence the weak-pull theory was REAL**:
+- Master: `NEGO_STATUS=0x004 (POLL)`, stuck. `EVER nego_done=0`.
+- Slave: `NEGO_STATUS=0x095 (DONE, lost=1)` — slave timed out, tried
+  to claim, got NACK from peer's i2c_slave (which was inert), backed off.
+- Both: `EVER i2c_busy=0`, `EVER i2c_addr=0`, `EVER sda_start_seen=0`
+  — **no physical bus activity observable on either side**.
+
+The master tries to drive (per FSM behaviour — now correct after bug
+fixes), but the ~10-50 kΩ FPGA internal pull doesn't form clean
+open-drain idle-high against the ribbon-pair capacitance. Slave's
+i2c_slave bus-detector never fires.
+
+**Confirms**: P15/P16 with TUL's on-board 1.5 kΩ pull-ups is genuinely
+required. Single-ribbon I²C is not viable without external pull-ups.
+
+**Action taken**: reverted XDC back to P15/P16 in both pair-all +
+pair-flip-all. The W9/V7 swap commit (`ae7ced1`) is preserved in the
+git history for reproducibility; reverted by a follow-up commit with
+the W9/V7 finding documented in the XDC comment.
+
+**Fallback option (documented in J13_PIN_BUDGET.md §3b but not yet
+tested)**: external 2.2-4.7 kΩ pull-ups on W9/V7 (rather than relying
+on FPGA internal pull). If shipping a single-ribbon solution becomes
+important, this is the next step — solder/clip the resistors, rebuild
+with W9/V7 XDC, retest. The Arduino-header harness on P15/P16 remains
+the validated default.

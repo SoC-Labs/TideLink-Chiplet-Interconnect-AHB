@@ -206,7 +206,11 @@ set_max_delay -datapath_only 8.000 \
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
+# 2026-05-20: COMMENTED OUT — mirror of pair-all change.
+# Bus-skew 2 ns forces equalisation across all 8 lanes; placer can't
+# meet on lanes 0+7 (vector endpoints) and silently leaves them
+# unrecoverable. See docs/REGRESSION_CANDIDATE_HUNT.md.
+# set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

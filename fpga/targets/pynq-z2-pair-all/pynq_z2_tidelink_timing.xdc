@@ -185,7 +185,14 @@ set_max_delay -datapath_only 8.000 \
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
+# 2026-05-20: COMMENTED OUT — the 2 ns bus-skew constraint forces the
+# placer to equalise all 8 RX capture paths, but on lanes 0+7 (vector
+# endpoints, physically far from the central lane group) the placer
+# CAN'T meet 2 ns and silently leaves them outside the recoverable
+# window. Symptom: 30/30 deterministic 0x7e (lanes 1-6 lock, 0+7 dead,
+# sticky-confirmed never-transient-lock). Reverting per
+# docs/REGRESSION_CANDIDATE_HUNT.md candidate #1.
+# set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

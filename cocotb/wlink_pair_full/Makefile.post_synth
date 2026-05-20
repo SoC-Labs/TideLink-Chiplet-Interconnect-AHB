@@ -1,0 +1,47 @@
+# =============================================================================
+# Post-synthesis netlist cocotb sim (Angle 2).
+#
+# Uses the synth-only funcsim netlist of the chiplet IP wrapper, exported
+# from Vivado via post_synth/export_chiplet_netlist.tcl.
+#
+# Notes:
+#  * The netlist instantiates UNISIM primitives (FDR, LUT*, BUF*, RAM*, etc.)
+#    so we need the Xilinx UNISIM lib + `glbl` module on the elaborator.
+#  * `glbl` is included at the end of the netlist file itself.
+#  * The netlist also references SRL* primitives — VCS's xilinx_glob / unisim
+#    library handles those when -xilinxlib is set.
+#  * Two instances of the post-synth chiplet — they share scl/sda via wired-AND.
+# =============================================================================
+SIM             = vcs
+TOPLEVEL_LANG   = verilog
+
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+export TIDELINK_HOME
+
+VERILOG_SOURCES = $(CURDIR)/tb_top_post_synth.sv \
+                  $(CURDIR)/post_synth/tidelink_design_tidelink_0_0_funcsim.v
+
+TOPLEVEL = tb_top
+MODULE ?= test_post_synth_hw_mirror
+
+# Vivado UNISIM library — VCS-compatible source files
+VIVADO_BIN  ?= $(shell which vivado)
+VIVADO_DIR  := $(shell dirname $(shell dirname $(VIVADO_BIN)))
+UNISIM_DIR  := $(VIVADO_DIR)/data/verilog/src
+
+# Include UNISIM primitives. The post-synth netlist references components
+# like FDRE, FDSE, LUT6, RAMD32, SRL16E etc. The unisim source compiles
+# into a flat namespace; VCS picks up the cell defs by liblist.
+COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+COMPILE_ARGS += +define+XIL_TIMING -y $(UNISIM_DIR)/unisims +libext+.v
+COMPILE_ARGS += -y $(UNISIM_DIR)/retarget +libext+.v
+COMPILE_ARGS += -y $(UNISIM_DIR)/glbl +libext+.v
+# Use `+notimingcheck` for funcsim — no SDF, no setup/hold violations.
+COMPILE_ARGS += +notimingcheck
+
+# VCS needs `glbl` to be elaborated alongside the top
+COMPILE_ARGS += -top tb_top -top glbl
+
+SIM_ARGS     += +vcs+dumpvars+waves_post.vcd
+
+include $(shell cocotb-config --makefiles)/Makefile.sim

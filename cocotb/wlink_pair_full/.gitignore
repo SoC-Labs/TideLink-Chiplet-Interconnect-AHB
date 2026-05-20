@@ -1,0 +1,10 @@
+sim_build/
+sim_build_postsynth/
+__pycache__/
+results.xml
+ucli.key
+waves.vcd
+waves_post.vcd
+# Post-synth netlist artifact — regenerate via:
+#   vivado -mode batch -source post_synth/export_chiplet_netlist.tcl
+post_synth/tidelink_design_tidelink_0_0_funcsim.v

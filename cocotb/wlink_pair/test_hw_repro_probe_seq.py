@@ -100,17 +100,32 @@ async def _ctrl_write(dut, side, addr, data):
 
 
 def _snap(dut, tag):
+    # NOTE — hierarchy paths for wlink_pair/tb_top (this branch, feat/td-combined):
+    #   - axi_chiplet_controller instance is u_master / u_slave (no u_chiplet
+    #     wrapper as on the i2c-autonomous tb).
+    #   - The slave-side peer-mask handshake observable is the Wlink-output
+    #     `wlink_mask_hs_result[1:0]` ([0]=peer_match, [1]=peer_fail), which is
+    #     a wire inside the chiplet controller (not a *_q reg in u_wlink — that
+    #     register name only existed on feat/i2c-autonomous-lock-integ).
+    #   - i2c_scl_t / i2c_sda_t etc. are unconnected output ports on this tb
+    #     (.i2c_scl_t() at the instantiation). They are still drillable via
+    #     u_master.i2c_scl_t / u_master.i2c_sda_t under VCS -debug_access+all.
+    #   - There is NO tb-level i2c bus net (the two sides' i2c outputs are
+    #     not wired together in wlink_pair/tb_top.sv), so the closing "bus
+    #     scl=/sda=" fields are sourced from the master pad-mux instead.
     m_st = int(dut.u_master.u_autoneg.nego_state.value)
     s_st = int(dut.u_slave.u_autoneg.nego_state.value)
     m_lm = int(dut.u_master.u_autoneg.mask_hs_local_match_r.value)
     m_lf = int(dut.u_master.u_autoneg.mask_hs_local_fail_r.value)
-    s_mq = int(dut.u_slave.u_wlink.hs_result_match_q.value)
-    s_fq = int(dut.u_slave.u_wlink.hs_result_fail_q.value)
-    # Pad-mux outputs (what the IOBUF would drive):
-    m_scl_t = int(dut.m_i2c_scl_t.value)
-    m_scl_o = int(dut.m_i2c_scl_o.value)
-    m_sda_t = int(dut.m_i2c_sda_t.value)
-    m_sda_o = int(dut.m_i2c_sda_o.value)
+    s_mhs = int(dut.u_slave.wlink_mask_hs_result.value)
+    s_mq = s_mhs & 0x1
+    s_fq = (s_mhs >> 1) & 0x1
+    # Pad-mux outputs (what the IOBUF would drive) — access via instance scope
+    # since the tb leaves them unconnected at the top:
+    m_scl_t = int(dut.u_master.i2c_scl_t.value)
+    m_scl_o = int(dut.u_master.i2c_scl_o.value)
+    m_sda_t = int(dut.u_master.i2c_sda_t.value)
+    m_sda_o = int(dut.u_master.i2c_sda_o.value)
     dut._log.info(
         "[%s] m: state=%d is_mst=%d won=%d lost=%d local_match=%d "
         "scl_t=%d scl_o=%d sda_t=%d sda_o=%d | s: state=%d is_mst=%d "
@@ -120,7 +135,7 @@ def _snap(dut, tag):
         int(dut.u_master.u_autoneg.nego_lost.value), m_lm,
         m_scl_t, m_scl_o, m_sda_t, m_sda_o,
         s_st, int(dut.s_role_is_master.value), s_mq, s_fq,
-        int(dut.i2c_scl.value), int(dut.i2c_sda.value))
+        m_scl_o, m_sda_o)
 
 
 async def _arm_hw_mirror(dut, m_bypass, s_bypass):
@@ -177,9 +192,9 @@ async def _observe(dut, max_us, tag):
             saw_post_claim = 1
         if m_st >= 8:                        # MASK_RES_TX / RD_*
             saw_post_claim = 1
-        if int(dut.m_i2c_scl_t.value) == 0:
+        if int(dut.u_master.i2c_scl_t.value) == 0:
             saw_scl_low = 1
-        if int(dut.m_i2c_sda_t.value) == 0:
+        if int(dut.u_master.i2c_sda_t.value) == 0:
             saw_sda_low = 1
         if int(dut.u_master.u_autoneg.nego_done.value):
             break

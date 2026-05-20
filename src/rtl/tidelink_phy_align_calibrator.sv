@@ -422,7 +422,18 @@ module tidelink_phy_align_calibrator #(
                 // straight to S_DONE) to keep our TX training pattern up
                 // while the skew-delayed peer also converges. A faulted
                 // sweep auto re-sweeps while role_locked (T3).
-                if (sweep_success)        nxt_state = S_HOLD;
+                //
+                // §9.9 sim compat: when tb_early_exit_force_q is asserted
+                // (cocotb hierarchical-force), skip the HOLD_CYCLES wait —
+                // sim peers converge deterministically without the wall-time
+                // overlap-margin S_HOLD provides in silicon. Without this
+                // bypass, every integration test would need a ≥1.5M apb_clk
+                // timeout to outlast HOLD_CYCLES (8·128·DWELL_CYCLES @
+                // link_clk_rx ≈ pad_clk/16). Silicon (hook undriven, =0) is
+                // unaffected; production bring-up keeps the T3.2 hold.
+                if (sweep_success && !tb_early_exit_force_q)
+                                          nxt_state = S_HOLD;
+                else if (sweep_success)   nxt_state = S_DONE;  // sim bypass
                 else if (retry_exhausted) nxt_state = S_DONE;
                 else if (role_locked)     nxt_state = S_ARM;
                 else                      nxt_state = S_DONE;

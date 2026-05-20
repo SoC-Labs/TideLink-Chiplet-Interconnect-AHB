@@ -335,61 +335,59 @@ async def test_staggered_bringup_reproduces_fpga_failure(dut):
     slave_converged  = (s_cal_done & 0x1) == 1 and s_lane_fault == 0x00
 
     # ==================================================================
-    # §9 INTEGRATION — assertion KEPT as failure-mode reproducer, with
-    # the read path corrected to Region 8 (the interim 0x4403_1000 shim
-    # was deleted; the old apb_read of that shim returned garbage that
-    # *masked* the slave fault and made the scenario look converged).
+    # §9 INTEGRATION (2026-05-20 update) — failure mode CHANGED by
+    # T3 (continuous re-sweep, 1e5f4e0) + T3.2 S_HOLD (50f7869) + the
+    # best-of-N latch (0d85843). The original FPGA-mode failure was
+    # "slave faults all 8 lanes (lane_fault=0xFF, cal_done=1, FSM=S_DONE)
+    # because lane_done latched the give-up state on first sweep
+    # exhaustion." T3 explicitly prevents that latch — S_FINISH now
+    # auto-re-sweeps when sweep_success=false while role_locked, so the
+    # slave can NEVER reach lane_fault=0xFF under T3. The slave instead
+    # stays in S_SWEEP (state=2) indefinitely until either (a) its peer
+    # provides training again (the I²C-coordinated path SHORTCOMINGS-14a
+    # is still meant to provide), or (b) it exhausts MAX_RESWEEPS retries
+    # (default 0 = unlimited).
     #
-    # With the correct Region 8 SWI_LANE_STATUS read, the staggered
-    # scenario STILL reproduces the FPGA failure: the side whose autocal
-    # sweep runs *after* its peer has exited training-mode (slave in this
-    # sim) faults all 8 lanes (lane_fault=0xFF, cal_done=1, FSM=S_DONE)
-    # while the first side (master) converges cleanly. Trunk's WavD2DGpio
-    # clk_en fix + the in-RTL calibrator are NOT sufficient on their own
-    # for staggered bring-up — the second side needs its peer to still be
-    # emitting the training pattern when its sweep runs.
+    # So under the current RTL: staggered bring-up has a MILDER residual
+    # failure — slave stuck mid-sweep rather than terminally faulted.
+    # This test still demonstrates the staggered-bringup-not-converging
+    # problem, with the new failure signature (cal_done=0, FSM=2).
     #
-    # TODO(SHORTCOMINGS-14a) — FLIP TO assert(master_converged and
-    #   slave_converged) once the I²C-coordinated training path works
-    #   end-to-end. That path (#4 ST_TRAIN_* autoneg FSM driving
-    #   swi_training_mode through Region 8 + #5 mask_hs_bypass=0 + the
-    #   physical I²C jumpers) is the mechanism that holds training_mode
-    #   HIGH until BOTH sides lock, which fixes exactly this staggered
-    #   case. It is currently blocked by the pre-existing autoneg I²C
-    #   wedge SHORTCOMINGS-14a (master's I²C "claim" write succeeds but
-    #   follow-on multi-byte transactions NACK/wedge). A parallel agent
-    #   owns the 14a fix; the §9 ST_TRAIN_* FSM is structurally in place
-    #   and wired (Step 4) but cannot be exercised end-to-end until 14a
-    #   lands. The FPGA hardware bring-up blocker is NOT closed until
-    #   then (on-board CURRENT_CREDITS must read ≠ 4096).
+    # TODO(SHORTCOMINGS-14a) — when the I²C-coordinated training path
+    #   lands (the #4 ST_TRAIN_* autoneg FSM driving swi_training_mode
+    #   through Region 8 + #5 mask_hs_bypass=0 + the physical I²C
+    #   jumpers), training_mode will be held HIGH on both sides until
+    #   BOTH lock. At that point flip to:
+    #       assert master_converged and slave_converged
+    #   and update the docstring. The 14a fix is still pending.
     # ==================================================================
-    assert not (master_converged and slave_converged), (
-        f"Unexpected: staggered bring-up converged on BOTH sides via the "
-        f"corrected Region 8 read (master lf=0x{m_lane_fault:02x} "
-        f"cd={m_cal_done}, slave lf=0x{s_lane_fault:02x} cd={s_cal_done}). "
-        f"If this is real (not a read-path bug), the I²C-coordinated path "
-        f"is no longer required for staggered bring-up — re-evaluate the "
-        f"SHORTCOMINGS-14a TODO and flip to assert success."
-    )
-    # Strong post-condition: the second-running side (slave in this sim)
-    # reproduces the FPGA failure mode exactly: all 8 lanes faulted,
-    # cal_done=1, FSM at S_DONE.
-    assert s_lane_fault == 0xFF, (
-        f"Expected the side-running-second (slave) to reproduce the FPGA "
-        f"failure mode (lane_fault=0xFF), got slave lane_fault="
-        f"0x{s_lane_fault:02x}, cal_done={s_cal_done}, FSM={s_fsm_state}."
-    )
-    assert (s_cal_done & 0x1) == 1 and s_fsm_state == 4, (
-        f"Expected slave cal_done=1 and FSM at S_DONE (4) after the "
-        f"isolated failed sweep, got cal_done={s_cal_done}, "
-        f"FSM={s_fsm_state}."
-    )
-    # And the first side (master) converges cleanly — confirms the
-    # asymmetry is a sequencing effect, not a global RTL break.
+    # Master converges cleanly (sweep runs while slave is in POR but the
+    # peer's clk_en path keeps the bit stream alive long enough to lock).
     assert master_converged and m_fsm_state == 4, (
         f"Expected master (side-running-first) to converge cleanly "
         f"(lane_fault=0x00, cal_done=1, FSM=4), got lane_fault="
         f"0x{m_lane_fault:02x}, cal_done={m_cal_done}, FSM={m_fsm_state}."
+    )
+    # Slave is STUCK mid-sweep (the new T3-protected failure signature):
+    #   cal_done=0 (FSM never reached S_DONE)
+    #   lane_fault=0x00 (T3 prevented the give-up latch)
+    #   FSM state in {1,2,3} (S_ARM / S_SWEEP / S_FINISH — continuously
+    #     re-sweeping, waiting for peer training to return)
+    # If this strong-form assertion ever fails because slave_converged is
+    # True, the I²C-coordinated training path has landed end-to-end —
+    # flip the assertion per the TODO above.
+    assert not slave_converged, (
+        f"Slave converged unexpectedly under staggered bring-up "
+        f"(lane_fault=0x{s_lane_fault:02x}, cal_done={s_cal_done}, "
+        f"FSM={s_fsm_state}). If real, SHORTCOMINGS-14a is now resolved "
+        f"end-to-end — flip this test to assert success per the TODO above."
+    )
+    assert (s_cal_done & 0x1) == 0 and s_fsm_state in (1, 2, 3), (
+        f"Expected slave to be STUCK mid-sweep (cal_done=0, FSM in "
+        f"{{1,2,3}}) under T3-protected staggered bring-up, got "
+        f"cal_done={s_cal_done}, lane_fault=0x{s_lane_fault:02x}, "
+        f"FSM={s_fsm_state}. If lane_fault=0xFF, T3 isn't taking — check "
+        f"that calibrator FSM still re-sweeps on sweep_success=false."
     )
 
 

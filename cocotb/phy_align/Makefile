@@ -26,13 +26,25 @@ export PYTHONPATH := $(PHY_ALIGN_TEST_DIR):$(PYTHONPATH)
 MODULE    ?= test_pair_align
 SKID_BITS ?= 3
 
+# Per-module defaults for tb_top.sv stimulus parameters. The
+# test_pair_align_partial_failure test asserts that lane 4 is stuck (via
+# STUCK_LANES_MASK=0x10) — without this default a bare `make MODULE=...`
+# invocation fails on the test's own setup-sanity check. Override on the
+# command line as needed (e.g. STUCK_LANES_MASK=0x03 for lanes 0+1).
+ifeq ($(MODULE),test_pair_align_partial_failure)
+  STUCK_LANES_MASK ?= 16
+endif
+STUCK_LANES_MASK   ?=
+STUCK_LANES_MASK_S ?=
+export STUCK_LANES_MASK STUCK_LANES_MASK_S
+
 # Delegate to the wlink_pair Makefile — it owns the testbench top compilation.
 %:
-	$(MAKE) -C $(WLINK_PAIR_DIR) MODULE=$(MODULE) SKID_BITS=$(SKID_BITS) $@
+	$(MAKE) -C $(WLINK_PAIR_DIR) MODULE=$(MODULE) SKID_BITS=$(SKID_BITS) STUCK_LANES_MASK=$(STUCK_LANES_MASK) STUCK_LANES_MASK_S=$(STUCK_LANES_MASK_S) $@
 
 # Default goal: run the test
 .PHONY: sim
 sim:
-	$(MAKE) -C $(WLINK_PAIR_DIR) MODULE=$(MODULE) SKID_BITS=$(SKID_BITS)
+	$(MAKE) -C $(WLINK_PAIR_DIR) MODULE=$(MODULE) SKID_BITS=$(SKID_BITS) STUCK_LANES_MASK=$(STUCK_LANES_MASK) STUCK_LANES_MASK_S=$(STUCK_LANES_MASK_S)
 
 .DEFAULT_GOAL := sim

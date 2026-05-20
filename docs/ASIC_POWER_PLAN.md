@@ -12,7 +12,14 @@ Audience: power-aware-flow engineer (UPF authoring, Design Compiler
           + IC Compiler low-power flow, formal CLP), DV (low-power sim
           / UPF static checks), DFT (retention scan, IR-drop sign-off).
 Target:   ~22 nm CMOS, single-die chiplet, ~5 mm² area class, link
-          rate 200 Mb/s aggregate (25 MHz forwarded clock, 8 lanes).
+          rate **~800 Mb/s aggregate (100 MHz forwarded clock, 8 lanes)**.
+          Note: the FPGA validation rig runs at 25 MHz/lane (200 Mb/s
+          aggregate) due to Vivado timing-closure constraints — that is
+          NOT the ASIC target. See §11 for power number rationale.
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target per user constraint. Updated Target line; §11 active power figures revised for 100 MHz dynamic scaling; §7.3 retention timing clarified as SoC-core-clock-dependent; §4 wake-up note added re I²C clock independence from link rate. |
 
 ---
 
@@ -265,6 +272,19 @@ the I²C transaction itself at 400 kHz (~80 µs for a 4-byte address +
 1-byte data + ACK overhead). Everything after I²C completion is
 ~20 µs.
 
+**Link-rate independence of wake latency.** The ~100 µs figure is
+**not** sensitive to the PHY link rate (25 MHz vs 100 MHz). The I²C
+decode is clocked by the AON RC oscillator (~1 MHz), the power-rail
+ramp by the PMIC, and the reset deassertion by `hclk` (SoC core clock).
+The calibrator re-convergence at the end of the sequence (the ~5 ms
+"calibrator starts" entry in the timeline above) does depend on the
+sweep width and `DWELL_CYCLES`, which are measured in recovered-clock
+cycles. At 100 MHz the word clock is 100/16 ≈ 6.25 MHz; the 8192-cycle
+sweep (128 points × 64 dwell) completes in ~1.3 ms vs ~13 ms at
+25 MHz. The end-to-end wake latency at 100 MHz is therefore **shorter**
+than at 25 MHz once the calibrator sweep dominates. The ~100 µs figure
+shown here is the floor (I²C + rail + reset).
+
 ### 4.2 Wake-byte protocol
 
 Re-using the existing I²C slave (`u_i2c_slave` in
@@ -477,8 +497,14 @@ Three classes of state:
   domain → ~4 %)
 - **Total area overhead:** ~520 × 1.6 (retention cell vs regular FF
   area ratio) × ~10 µm² ≈ 8 320 µm² (~0.008 mm² — negligible).
-- **Retention save / restore time:** 4 cycles at 25 MHz = 160 ns SAVE,
-  same for RESTORE — well inside the 10 µs ramp-window budget.
+- **Retention save / restore time:** 4 cycles of the SoC core clock
+  (hclk). This is **not link-rate-dependent** — retention is controlled
+  by the AON power-controller FSM which uses hclk for sequencing, not
+  the PHY bit clock. At a 100 MHz hclk the SAVE / RESTORE window is
+  4 × 10 ns = 40 ns, well inside the 10 µs ramp-window budget.
+  If hclk is slower (e.g. 50 MHz) the window is 80 ns — still
+  negligible. The original "4 cycles at 25 MHz = 160 ns" figure assumed
+  a 25 MHz SoC core clock, not a 25 MHz link rate.
 
 ### 7.4 UPF retention strategy (per-domain)
 
@@ -815,13 +841,30 @@ pass with PrimeTime PX.
 
 | State | Dynamic | Leakage | Total | Notes |
 |---|---|---|---|---|
-| `ACTIVE` (link saturated 200 Mb/s) | 4–8 mW (PD\_CORE) + 6–15 mW (PD\_PHY) + 0.05 mW (AON) | 0.4 mW (CORE+PHY+AON) | **~10–25 mW** | Worst case at 25 MHz hclk with all bridges running concurrently. PHY pad ring + LVCMOS33 drive is a large fraction. |
-| `ACTIVE` (link idle but on, no traffic) | 1–2 mW (CORE clock distribution + idle Wlink) + 0.05 mW (AON) | 0.4 mW | **~2 mW** | Mostly clock distribution and Wlink idle-state TX of training bytes. |
-| `AON_ONLY` (deep idle) | ~0 | **~30 µW (AON) + ~50 µW (PD\_CORE/PD\_PHY leakage through gated switches)** | **~80 µW** | I²C bus quiescent; AON FSM clock-gated, ref-osc running. |
-| AON-only with I²C transaction in flight | ~10 µW switching | ~30 µW | **~40–60 µW transient** | 400 kHz I²C activity dominates briefly. |
+| `ACTIVE` (link saturated, ~800 Mb/s at 100 MHz) | 16–32 mW (PD\_CORE) + 24–60 mW (PD\_PHY) + 0.05 mW (AON) | 0.4 mW (CORE+PHY+AON) | **~40–95 mW** | v1 ASIC at 100 MHz. Dynamic scales ~4× relative to 25 MHz FPGA figures (activity factor × frequency). PD\_PHY pad-switching at 100 MHz with LVCMOS18 drive dominates. See note below. |
+| `ACTIVE` (link idle but on, no traffic) | 4–8 mW (CORE clock distribution + idle Wlink at 100 MHz) + 0.05 mW (AON) | 0.4 mW | **~5–10 mW** | Mostly clock distribution and Wlink idle-state TX of training bytes at 100 MHz. |
+| `AON_ONLY` (deep idle) | ~0 | **~30 µW (AON) + ~50 µW (PD\_CORE/PD\_PHY leakage through gated switches)** | **~80 µW** | Link clock-rate-independent: AON is clocked by the RC oscillator at ~1 MHz (not the link clock). This figure is unchanged from the 25 MHz estimate. |
+| AON-only with I²C transaction in flight | ~10 µW switching | ~30 µW | **~40–60 µW transient** | 400 kHz I²C — not link-rate-dependent. |
 
-Pad ring leakage is **not** included — that depends on board
-termination and is bounded by 3.3 V open-drain pull-ups.
+**Power derivation note.** The pre-revision figures (10–25 mW ACTIVE) were
+pre-synthesis estimates anchored to 25 MHz hclk and 25 MHz link clock
+(FPGA rig rate). At the v1 ASIC target of 100 MHz, dynamic power scales
+approximately linearly with clock frequency (same activity factor, same
+capacitance, 4× the frequency). The revised ACTIVE range of 40–95 mW
+reflects this scaling. The actual PrimeTime PX number after first-pass
+synthesis may be lower if the activity factor at 100 MHz is lower than
+at 25 MHz saturation (which is plausible — at 100 Mb/s link-layer
+backpressure is less frequent). Refine after synthesis.
+
+Pad ring leakage is **not** included — that depends on package
+termination and is bounded by 1.8 V LVCMOS18 open-drain pull-ups.
+
+**Idle and AON\_ONLY power figures are unchanged from the 25 MHz
+estimate.** These states are dominated by leakage (not switching) and
+by the AON RC oscillator (~1 MHz), neither of which is link-rate-dependent.
+The ~80 µW AON\_ONLY figure and ~2 mW idle-link figure should be treated
+as conservative lower bounds; post-synthesis leakage may be lower at
+22 nm than the pre-synthesis estimate.
 
 ---
 
@@ -928,6 +971,7 @@ termination and is bounded by 3.3 V open-drain pull-ups.
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-20 | David Mapstone | Initial issue under task "UPF / power-management plan for v1 GPIO-PHY chiplet" — islands, isolation, retention, AON; based on RTL state at `feat/td-combined` HEAD `6e4265a` after the FPGA-primitive quarantine into `fpga/rtl/`. |
+| 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target: updated Target line to 800 Mb/s aggregate; revised §11 ACTIVE power ~4× for 100 MHz dynamic scaling; added link-rate-independence notes to §4.1 (wake latency) and §7.3 (retention timing). |
 
 ---
 

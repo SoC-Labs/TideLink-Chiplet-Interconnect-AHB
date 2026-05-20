@@ -2,13 +2,20 @@
 
 | Field | Value |
 |-------|-------|
-| Document version | 1.0.1 (initial scoping draft — re-tagged with correct commit subject; content unchanged from 1.0) |
+| Document version | 1.0.2 |
 | Branch / commit | `feat/td-combined` (local; original content landed in `4def6e9` under an incorrect parallel-agent commit subject) |
 | Status | Pre-tapeout planning — feeds DFT engineer scoping |
-| Scope | TideLink v1 chiplet (subsystem ASIC), GPIO-PHY variant |
+| Scope | TideLink v1 chiplet (subsystem ASIC), GPIO-PHY variant, **100 MHz/lane** link rate |
 | Target node | TSMC 65nm (`rf_16k` register-file macro, std-cell library) |
 | Author | David Mapstone (`d.a.mapstone@soton.ac.uk`) |
 | Reviewers (TBD) | DFT lead, physical-design lead, foundry CE |
+
+**Revision history**
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-20 | David Mapstone | v1.0 initial issue. |
+| 2026-05-20 | David Mapstone | v1.0.2: Reconcile 100 MHz ASIC target. DFT scan-shift frequency and MBIST clock are ATE-set and not link-rate-dependent — explicit statements added to §3.3, §4.3, §7.2, §8.4. `scan_pll_bypass` note updated to reflect that a link PLL IS present at 100 MHz (see ASIC_HARD_IP_INVENTORY §4.1). |
 
 ## Preface — how to read this document
 
@@ -296,6 +303,14 @@ equalise chain lengths, typically ±5 %). After balancing we expect
 chain lengths ~2.5–3 k flops — yielding ~3000 TCK cycles per ATPG
 vector load, which at 25 MHz TCK = 120 µs per vector.
 
+**Scan-shift frequency is not link-rate-dependent.** TCK is driven by
+the ATE (10–25 MHz, see §2.6) and is independent of the v1 ASIC link
+rate (100 MHz/lane). The chain counts, vector depths, and ATPG timing
+estimates in this section apply regardless of whether the link runs at
+25 MHz (FPGA rig) or 100 MHz (v1 ASIC target). The scan flops are
+clocked by `scan_clk` (TCK or dedicated ATE clock), not by the
+forwarded PHY clock.
+
 ### 3.4 Per-clock-domain partitioning rationale
 
 Each chain is **single-clock-domain, single-edge**. Mixing domains
@@ -464,6 +479,14 @@ them.
 At 100 MHz BIST clock, March-C+ on 16 KB takes ~520 µs — completes
 between two JTAG status polls. Acceptable for ATE-replayable
 production test.
+
+**MBIST clock is not the link clock.** The BIST controller is clocked
+by a dedicated ATE-supplied or internally-divided test clock
+(typically derived from TCK or a separate BIST clock input). It is
+independent of the v1 ASIC PHY link rate (100 MHz/lane). The 100 MHz
+figure in the table above refers to the BIST clock, which may or may
+not coincide with the link bit rate — this is an ATE configuration
+choice, not an architectural dependency.
 
 ### 4.4 Diagnostic data path
 
@@ -665,8 +688,15 @@ the ASIC flow:
 Beyond the existing hooks, the ASIC needs:
 
 * **`scan_pll_bypass`** — bypass any PLLs / clock dividers during
-  scan. v1 has no PLL on the chiplet itself (clocks are forwarded
-  from outside), so this is a no-op. **Mark as N/A for v1.**
+  scan. The v1 ASIC at 100 MHz/lane **does** include a link PLL hard-IP
+  (see `ASIC_HARD_IP_INVENTORY.md §4.1`) that generates `apb_clk` and
+  `link_clk` from a reference input. During scan shift this PLL must
+  be bypassed so the scan clock (`scan_clk` from TCK or ATE) replaces
+  the PLL output. The bypass path is a glitch-free clock mux
+  (`CKMUX2X*`) already required for the functional `WavClockMux`
+  cells (§6.4). The `scan_pll_bypass` control drives this mux from the
+  TAP. **DFT lead: confirm PLL bypass path with PLL hard-IP vendor and
+  add to the scan integration flow.**
 * **`scan_idelay_bypass`** — disable the IDELAYE2 calibrator in
   scan mode. The IDELAYE2 is FPGA-only (`USE_IDELAY=1` only in the
   FPGA wrapper — `tidelink_top.sv:65`); for the ASIC, the cal block
@@ -727,11 +757,13 @@ or alternative plan:
 ### 8.4 ATE pattern budget
 
 * Scan vectors: ~3 000 patterns × ~3 k chain depth × ~26 chains
-  / 1 (serialised via TCK) ≈ ~6 s of TCK time at 25 MHz. Acceptable
+  / 1 (serialised via TCK) ≈ ~6 s of TCK time at 25 MHz TCK. Acceptable
   for engineering ATE — production-test would require parallel scan
-  pins (deferred).
+  pins (deferred). **Note: the 25 MHz figure here is the ATE TCK rate,
+  not the v1 ASIC link rate. These are independent clocks. Increasing
+  the link rate to 100 MHz has no effect on this estimate.**
 * MBIST: ~520 µs per algorithm per macro × 1 macro × 1 algo (March-C+)
-  = ~0.5 ms. Negligible.
+  = ~0.5 ms. Negligible. (BIST clock is ATE-supplied, not link-rate-dependent.)
 
 ---
 

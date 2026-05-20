@@ -3,8 +3,12 @@
 Author:    SoC Labs (David Mapstone, `d.a.mapstone@soton.ac.uk`)
 Branch:    `feat/td-combined`
 Date:      2026-05-20
-Status:    Pre-NTO scoping document. Section 3 (line rate) and section 12
-           (decisions) are blocking inputs from the chip lead / silicon team.
+Status:    Pre-NTO scoping document. Section 12 (decisions) contains
+           remaining open items for the chip lead / silicon team.
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target per user constraint. §3 updated from TBD/25 Mb/s to 100 MHz; §2.6 ODT, §6.2/6.3 delay-cell plan, §11 effort, §12 action items, §15 conclusion all updated accordingly. |
 
 ---
 
@@ -31,13 +35,13 @@ significantly. See §10 for the breakdown.
 
 **Key risks.**
 
-1. **Line-rate decision is unresolved** (§3). At the current FPGA-validated
-   25 Mb/s/lane the PHY is trivially LVCMOS with no termination, no
-   equalisation, and matched-delay-cell receive alignment will suffice. At
-   >100 Mb/s/lane we need a different pad library (SSTL/LVDS), on-die
-   termination, and the receive-side delay calibration must move from a
-   coarse 4-bit phase select to a vendor-characterised programmable delay
-   element with VT tracking.
+1. **v1 ASIC line rate is 100 MHz/lane** (§3). At 100 Mb/s single-ended
+   LVCMOS signalling remains viable (no differential pad library change
+   required), and matched-delay-cell or foundry-programmable-delay receive
+   alignment is sufficient. ODT is borderline at 100 MHz — see §2.6. The
+   receive-side delay calibration uses a foundry programmable delay
+   element (PDE) with ~5–10 ps/tap resolution; at a 10 ns UI even a
+   coarse 50–100 ps step centres the eye adequately without a DLL.
 2. **The Wav PHY's "vendor cells" (`WavClockGate`, `WavResetSync`,
    `WavDemetReset`, `WavD2DGpio*`) are Chisel-generated behavioural** —
    they reference latch/AND/INV models that must be re-mapped to real
@@ -70,10 +74,10 @@ the v1 reference pinout (`tidelink_top.sv` port list, lines 76–373):
 
 | Pad             | Direction | Width | Cell type required                                      | Notes |
 |-----------------|-----------|-------|---------------------------------------------------------|-------|
-| `pad_clk_tx`    | OUT       | 1     | **Clock-capable output driver** with controlled slew + ESD | Forwarded source-synchronous clock. At 25 Mb/s the slew rate is non-critical; at higher rates it must be matched to the data driver to preserve eye centre. |
-| `pad_clk_rx`    | IN        | 1     | **Clock-capable input** with hysteresis input + ESD; routes onto a clock-tree root | At 25 Mb/s a standard LVCMOS input is fine; at >100 Mb/s a low-VT comparator with controlled threshold is needed. |
-| `pad_tx[7:0]`   | OUT       | 8     | Data output driver, controlled slew, ESD                | Drive strength: see §3 (line rate). At 25 Mb/s/lane an 8 mA LVCMOS33-equivalent driver suffices. |
-| `pad_rx[7:0]`   | IN        | 8     | Schmitt-trigger or comparator input, ESD                | RX is sampled in the receive-clock domain (calibrator-aligned). At higher rates this must be a differential comparator, not LVCMOS. |
+| `pad_clk_tx`    | OUT       | 1     | **Clock-capable output driver** with controlled slew + ESD | Forwarded source-synchronous clock. At 100 MHz (v1 ASIC target) slew must be matched to the data driver to preserve eye centre; a LVCMOS18 clock driver with matched drive strength is appropriate. |
+| `pad_clk_rx`    | IN        | 1     | **Clock-capable input** with hysteresis input + ESD; routes onto a clock-tree root | At 100 MHz a LVCMOS18 input with controlled threshold is required. Standard LVCMOS33 is functional but the tighter threshold of a low-VT LVCMOS18 variant improves the setup/hold window at 10 ns UI. |
+| `pad_tx[7:0]`   | OUT       | 8     | Data output driver, controlled slew, ESD                | At 100 MHz/lane an 8–12 mA LVCMOS18-equivalent driver with matched slew is required; see §3 (line rate). |
+| `pad_rx[7:0]`   | IN        | 8     | Schmitt-trigger or comparator input, ESD                | RX is sampled in the receive-clock domain (calibrator-aligned). At 100 MHz LVCMOS18 single-ended input remains viable; differential (SLVS/SSTL) is not required until >500 Mb/s. |
 
 That is 18 high-speed pads total per chiplet. Per-pad ESD requirement: an
 **HBM 2 kV minimum** target is standard for chiplet edges, with diodes
@@ -123,7 +127,7 @@ There is no TAP in the current RTL — see §7.
 | Net          | Pad type                                  | Notes |
 |--------------|-------------------------------------------|-------|
 | `VDD_CORE`   | Power pad, multiple per side              | 0.8 V or 0.9 V typical at 22 nm. Multiple instances on the ring (every ~150 µm) to satisfy IR-drop. |
-| `VDD_IO`     | Power pad, multiple per side              | 1.8 V or 3.3 V depending on pad library. At 25 Mb/s LVCMOS33 is feasible; at higher rates 1.8 V SSTL or 1.2 V SLVS is more area-efficient. |
+| `VDD_IO`     | Power pad, multiple per side              | **1.8 V** (LVCMOS18 at 100 MHz v1 ASIC target). 3.3 V LVCMOS33 is functional but power-inefficient at 100 MHz; SSTL or SLVS not required until >500 Mb/s. |
 | `VDD_AON`    | Power pad (always-on island)              | Separate rail for §8 AON island (I²C, POR, OTP). Powered before VDD_CORE; powered down only during full chip-off. |
 | `VDD_PLL`    | Quiet analog supply                       | Clean rail for §4 PLL. Often 1.5 V – 1.8 V. Sized for ~5 mA. |
 | `VSS_CORE`   | Ground pad                                | Many instances. |
@@ -136,65 +140,81 @@ JTAG, ≈10 misc test/debug pads. **Total IO ring: ~60 pads at v1**.
 
 ### 2.6 On-die termination
 
-ODT is **not required** at the FPGA-validated 25 Mb/s/lane: the LVCMOS
-ring oscillation length is far longer than the link bit period, and
-unterminated transmission with controlled-slew drivers is the standard
-GPIO PHY approach. ODT becomes mandatory above ~100 Mb/s — at that point
-every signal pad needs a programmable ZQ-calibrated termination resistor
-(typically 40–60 Ω) on the RX side, and the TX must drive into a matched
-impedance. See §3.
+At the FPGA validation rig rate (25 Mb/s/lane) ODT is clearly not
+required: ring oscillation lengths are well below one bit period and
+unterminated LVCMOS33 drive is standard practice.
+
+At the **v1 ASIC target of 100 MHz/lane** the situation is borderline.
+The 10 ns UI at 100 Mb/s means the round-trip reflection time
+(~0.1 ns/mm for on-chip wiring, longer for chiplet package traces) can
+be comparable to the bit period on long inter-chiplet nets. The
+practical rule: ODT is **optional but recommended** at 100 MHz for
+inter-chiplet package or substrate traces longer than ~15 mm. For
+on-die or very short package traces (<5 mm) ODT can be omitted; for
+interposer or PCB-level chiplet integration it should be included. If
+included: a weak on-die pull to `VDD_IO/2` (Hi-Z style, ~120–200 Ω
+parallel pull) is sufficient at 100 MHz — strong ZQ-calibrated 40–50 Ω
+termination is only mandatory above ~500 Mb/s. The chip lead must decide
+based on the package/interposer trace length (§12 item 3). See §3.
 
 ---
 
-## 3. Line-rate consideration  (**TBD — needs decision**)
+## 3. Line-rate specification
 
-| Item                | FPGA today    | v1 ASIC                     |
-|---------------------|---------------|-----------------------------|
-| Lane rate           | 25 Mb/s/lane  | **TBD — open question**     |
-| Aggregate           | 200 Mb/s      | TBD                         |
-| Pad standard        | LVCMOS33      | TBD (LVCMOS18 / SLVS / SSTL)|
-| Termination         | None          | TBD (none / 40 Ω / 50 Ω)    |
-| Equalisation        | None          | TBD (none / FFE / DFE)      |
-| Receive alignment   | 4-bit phase + 3-bit slip (calibrator FSM) | Same calibrator FSM, but its phase output may drive a **programmable analog delay** instead of the FPGA `IDELAYE2` (see §6) |
+The v1 ASIC chiplet targets **100 MHz/lane** (single-ended, source-synchronous,
+GPIO PHY, parallel 8-lane). The FPGA validation rig operates at 25 MHz/lane
+as a baseline artefact of Vivado timing-closure on LVCMOS33 RPi-header GPIO
+— that rate is **not** the ASIC target. See `docs/SHORTCOMINGS.md §1.4`.
 
-### 3.1 Trade-offs by target rate
+| Item                | FPGA validation rig | v1 ASIC target              |
+|---------------------|---------------------|-----------------------------|
+| Lane rate           | 25 Mb/s/lane        | **~100 Mb/s/lane**          |
+| Aggregate           | 200 Mb/s            | **~800 Mb/s**               |
+| UI                  | 40 ns               | **10 ns**                   |
+| Pad standard        | LVCMOS33            | **LVCMOS18** (single-ended) |
+| Termination         | None                | Optional weak pull (§2.6); mandatory only if package traces > 15 mm |
+| Equalisation        | None                | **None required** at 100 Mb/s with short traces |
+| Receive alignment   | 4-bit phase + 3-bit slip (calibrator FSM) + IDELAYE2 | Same calibrator FSM; IDELAYE2 replaced by **foundry PDE** (§6) |
 
-**At 25 Mb/s/lane (no change from FPGA).**
-- Pad library: any LVCMOS18 or LVCMOS33 set, no controlled-impedance
-  package required, no ODT.
-- The forwarded clock can drive a small clock-tree directly from the input
-  pad without intermediate PLL multiplication. Eye centring is by the
-  calibrator's 4-bit phase select (16 sub-bit positions per UI = ~2.5 ns
-  per step at 25 Mb/s).
-- The RTL changes needed are minor: swap pad cells, swap PLL for a small
-  ring oscillator (or even skip it — the application clock can be derived
-  by a divider from `user_ref_clk`).
+### 3.1 100 MHz pad and analog requirements
 
-**At 100 Mb/s — 1 Gb/s/lane.**
-- Pad library: SLVS (sub-LVDS) or 1.8 V SSTL pseudo-differential.
-- ODT mandatory on every RX pad (~50 Ω, ZQ-calibrated).
-- Controlled-impedance package routing (BGA + interposer or RDL).
-- Receive eye is now ≤1 UI = ≤10 ns. The IDELAYE2-equivalent programmable
-  delay element must resolve to ≤1/16 of UI = ≤625 ps, and must remain
-  monotonic across PVT — a 16-tap matched-cell delay line will need a
-  trim/calibration loop (PLL-locked replica or external `IDELAYCTRL`
-  equivalent — see §6).
-- An eye-monitor / sweep mode may be needed.
+**Pad library.** LVCMOS18 single-ended is the natural choice at 100 Mb/s.
+It avoids the area and power overhead of differential pads while providing
+adequate noise margin at 10 ns UI. LVCMOS33 is functional but wastes IO
+power at 100 MHz; SLVS/SSTL are unnecessary at this rate.
 
-**At >1 Gb/s/lane.**
-- The GPIO PHY architecture **breaks down**. Per-lane bit-position muxing
-  and a forwarded fabric clock are not viable; the link needs a proper
-  SerDes (CDR, equaliser, encoder/decoder), which is a separate hard-IP
-  block — that is what the BoW/UCIe physical-layer specs target. The
-  Wav GPIO PHY is *not* the right starting point above ~1 Gb/s.
+**Eye budget.** UI = 10 ns. The calibrator's 4-bit phase offset provides
+16 sub-UI steps (0.625 ns/step at 100 MHz — adequate for centring). The
+foundry programmable delay element (§6.2) needs ~5–10 ps tap resolution
+to resolve within a comfortable fraction of the eye; a 50–100 ps step is
+workable. An analog DLL is **not required** — a matched std-cell delay
+line characterised at tapeout is sufficient for 100 MHz.
 
-### 3.2 Recommendation
+**PLL.** The link PLL (§4.1) generates the application clock. At 100 MHz
+the PLL output range must cover 100 MHz (or N × 100 MHz if the
+architecture uses a multiple-of-bit-rate internal clock). The current RTL
+uses `user_ref_clk` (25–50 MHz reference) to a PLL generating `apb_clk`
+and `link_clk`; for 100 MHz operation the PLL output frequency must be
+confirmed against the architectural clock multiplier. **Action: confirm
+with RTL owner what the PLL-to-bit-rate ratio is (1:1 forwarded-clock
+scheme or N:1 oversampling) before specifying PLL output range.**
 
-For v1 silicon — given that the bring-up campaign is complete at 25 Mb/s
-on FPGA — **stay at 25 Mb/s for v1 silicon**, validate the digital stack,
-and explore a higher-rate v2 with a real SerDes or with a more carefully
-characterised pad library. This minimises analog-engineering effort while
-preserving the chiplet protocol stack as silicon-validated reference.
+**Power at 100 MHz.** Dynamic power scales approximately linearly with
+frequency relative to the FPGA rig baseline. See §11 for updated estimates.
+
+### 3.2 Rates outside the v1 scope
+
+**25 Mb/s/lane.** Retained as the FPGA validation rig baseline. The
+`USE_IDELAY`, `USE_CLKBUF`, and `USE_T3A` parameter-gated paths that
+support the FPGA rig at 25 MHz must not be removed from the source tree;
+they remain active for any future FPGA characterisation at sub-100 MHz.
+
+**>500 Mb/s/lane.** Differential pad library (SLVS or SSTL) and strong ODT
+become necessary. Not in v1 scope.
+
+**>1 Gb/s/lane.** The GPIO PHY architecture breaks down — SerDes (CDR,
+equaliser) required. The Wav GPIO PHY is not the right starting point above
+~1 Gb/s. This is a v2+ concern.
 
 ---
 
@@ -358,23 +378,32 @@ plus 1 `IDELAYCTRL` shared per bank.
 
 | Line rate              | Replacement                                                                                                                                     |
 |------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
-| 25 Mb/s/lane (today)   | **Matched-cell delay chain in std-cells**. Each "tap" is a calibrated buffer-pair, layout-matched. 16 taps × ~125 ps = 2 ns total (~half UI). No calibration loop needed — matching ensures monotonicity across PVT. |
-| 100 Mb/s – 1 Gb/s/lane | **Vendor programmable delay element** (PDE). 5–10 ps/tap, with a replica delay locked to a reference clock divider — i.e. a delay-locked loop (DLL) shared by all 8 lanes. This is the ASIC equivalent of `IDELAYCTRL` and is a hard-IP block from the foundry/vendor. |
+| 25 Mb/s/lane (FPGA rig baseline — not the ASIC target) | **Matched-cell delay chain in std-cells**. 16 taps × ~125 ps = 2 ns total (~half UI at 25 MHz). No calibration loop needed. Retained in source tree for FPGA characterisation builds. |
+| **~100 Mb/s/lane (v1 ASIC target)** | **Foundry programmable delay element** (PDE) with ~5–10 ps/tap resolution. UI = 10 ns; 16 calibrator-driven taps cover ~80–160 ps — sufficient to centre the eye within a 10 ns window. A **matched-cell PDE array** (layout-constrained, characterised at tapeout corners) is preferred over a DLL for v1 because the required precision (~50–100 ps) is achievable with purely digital characterisation. A DLL hard-IP is **not required** at 100 MHz. |
+| >500 Mb/s/lane         | DLL or PLL-locked delay reference required — tap resolution must track PVT. Out of v1 scope. |
 | >1 Gb/s/lane           | Subsumed by SerDes IP (out of scope for the GPIO PHY architecture). |
 
-### 6.3 Concrete v1 plan (assuming line rate stays at 25 Mb/s)
+### 6.3 Concrete v1 plan (100 MHz ASIC target)
 
-- **No DLL**, **no calibration loop**. Per-lane 16-tap std-cell delay chain
-  with a 4-to-16 decoder driven by the calibrator's `phase_offset[4*N+3:4*N]`.
-- **Layout discipline**: all 8 lanes' delay chains must be placed in a
-  matched array under floorplan constraints, otherwise PVT variation
-  shifts the per-lane eye centre.
-- **No analog characterisation needed** — std-cell delays are characterised
-  with the rest of the library.
+- **No DLL**. Per-lane 16-tap foundry PDE array, driven by the
+  calibrator's `phase_offset[4*N+3:4*N]` (4-bit, 16 taps). Tap
+  resolution target: 5–10 ps/tap, giving 80–160 ps total range.
+- **Layout discipline**: all 8 lanes' PDE arrays must be placed in a
+  matched array under floorplan constraints. At 100 MHz a ±10 ps lane-to-lane
+  mismatch corresponds to ±0.1% UI — negligible. PVT corner variation
+  matters more: the foundry must characterise the PDE across SS/FF/TT corners
+  and confirm monotonicity (no tap inversion across PVT).
+- **Characterisation required**: unlike the 25 Mb/s matched-cell chain where
+  std-cell timing models suffice, a 10 ps-resolution PDE at 100 MHz needs
+  foundry characterisation of tap step size vs PVT. This is a 2–4 week
+  additional effort compared to the 25 Mb/s plan but does not require a DLL.
+- **No analog DLL hard-IP needed**: the ~5 ps quantum is meaningful at a
+  10 ns UI (0.05% UI per tap) but centring only requires landing within
+  ±2 taps (~10–20 ps) of the eye centre, which a static characterised PDE
+  achieves across all practical PVT corners for a 22 nm-class node.
 
-If line rate moves to ≥100 Mb/s the picture changes radically: add a DLL
-hard-IP, characterise the delay element across PVT, and add an in-RTL
-calibration controller equivalent to Xilinx `IDELAYCTRL`.
+For rates ≥500 Mb/s a DLL hard-IP must be added to track PVT dynamically
+and the calibration controller becomes equivalent to Xilinx `IDELAYCTRL`.
 
 ---
 
@@ -609,16 +638,18 @@ workstream, plus the existing SoC Labs team for RTL work.
 | **Hard-IP integration** (PLL, SRAM)   | 6–8 weeks    | Vendor IP delivery, RTL wrappers, behavioural-model substitution, SDC integration.        |
 | **DFT integration**                   | 4–8 weeks    | TAP controller selection, scan stitching, MBIST insertion, boundary-scan integration.     |
 | **UPF / power-domain implementation** | 4–6 weeks    | UPF file, isolation/level-shifter insertion, AON island design, retention selection.       |
-| **PHY analog characterisation (if rate > 25 Mb/s)** | **3–6 months** | DLL, programmable delay element, ODT, eye-monitor — multi-discipline effort. |
+| **PHY PDE characterisation at 100 MHz** | **2–4 weeks** | No DLL required at 100 MHz (see §6.3). Characterise foundry PDE tap resolution vs PVT corners; confirm monotonicity. ODT optional (§2.6). No eye-monitor required at this rate. |
 | **Synthesis + P&R**                   | 6–10 weeks   | Iterative; depends on convergence of timing/area/power.                                   |
 | **STA at corners (sign-off)**         | 3–4 weeks    | All PVT corners, all modes (functional, scan, BIST).                                      |
 | **DRC / LVS / Antenna sign-off**      | 2–3 weeks    | Standard.                                                                                 |
 | **Tapeout sign-off + handoff**        | 2 weeks      | Buffer for last-minute fixes.                                                             |
-| **Total (calendar)**                  | **9–14 months** | Many of the above run in parallel; critical path is PHY analog if line rate >25 Mb/s.  |
+| **Total (calendar)**                  | **9–11 months** | Many of the above run in parallel; critical path is now the DFT flow and SRAM compiler, not PHY analog (100 MHz does not require DLL or differential pads). |
 
 Key risk gates (where a misstep costs months, not weeks):
-1. **Line rate decision** (§3, §12). Stays at 25 Mb/s → 9-month tapeout
-   is feasible. Goes to 1 Gb/s → 14 months, plus analog spec lock.
+1. **PHY PDE characterisation** (§3, §6.3). 100 MHz target requires a
+   characterised foundry PDE; this is 2–4 weeks, not months. If the
+   foundry's PDE does not meet monotonicity at SS corner, escalate to
+   a DLL-based solution — that adds ~3 months.
 2. **SRAM compiler availability**. If the foundry's compiler can't hit
    the cycle time at the chosen node, the FIFO has to be redesigned
    (multi-bank, multi-cycle, or wider).
@@ -633,11 +664,14 @@ Key risk gates (where a misstep costs months, not weeks):
 The chip lead must resolve these before NTO. Items are ordered roughly
 by deadline urgency.
 
-1. **Line rate decision** (§3). Stay at 25 Mb/s, or move higher? Drives:
-   - Pad library choice (LVCMOS33 vs SLVS vs SSTL).
-   - Whether a DLL hard-IP is needed (§6).
-   - PHY analog characterisation effort (§11).
-   - **Recommendation: stay at 25 Mb/s for v1**.
+1. **Line rate = 100 MHz/lane** (§3). **Resolved**. Drives:
+   - Pad library choice: LVCMOS18 (single-ended). LVCMOS33 functional
+     but power-inefficient; SLVS/SSTL not required at 100 Mb/s.
+   - Foundry PDE characterisation required (§6.3): 2–4 weeks, no DLL.
+   - ODT: optional, package-trace-length dependent (§2.6). Chip lead
+     to confirm based on package/interposer trace length.
+   - **25 Mb/s FPGA rig paths (`USE_IDELAY`, `USE_CLKBUF`, `USE_T3A`) must
+     be preserved** — do not remove from source tree.
 
 2. **Foundry / node selection**. The area numbers above assume
    22 nm-class. Other candidates: 28 nm (cheaper, ~1.5× area), 16 nm
@@ -859,7 +893,7 @@ this codebase has an ASIC counterpart:
 | FPGA primitive (Xilinx 7-series)  | TideLink role                              | ASIC replacement                                              |
 |-----------------------------------|--------------------------------------------|---------------------------------------------------------------|
 | `MMCM` / `PLLE2` (`clk_wiz`)      | Generate `apb_clk`, `phc_clk` from board ref | Foundry PLL hard-IP (§4.1)                                 |
-| `IDELAYE2` / `IDELAYCTRL`         | Per-lane RX bit-position adjustment        | Matched std-cell delay chain (§6.3) at 25 Mb/s, or DLL+PDE at >100 Mb/s |
+| `IDELAYE2` / `IDELAYCTRL`         | Per-lane RX bit-position adjustment        | **Foundry PDE at 100 MHz (v1 ASIC target)** — matched-cell PDE array, characterised at tapeout corners (§6.3). DLL not required at 100 MHz. |
 | `BUFG`                            | Recovered-RX-clock distribution            | Std-cell clock-tree synthesis                                 |
 | `BUFGCE` (clock gating)           | Wlink `WavClockGate` (FPGA mapping)        | Std-cell ICG (e.g. `CKLNQD8`)                                 |
 | `IBUF` / `OBUF`                   | LVCMOS33 I/O                               | Foundry pad cells (§2)                                        |
@@ -881,17 +915,21 @@ months-scale engineering task with vendor and tool dependencies.
 
 For an aggressive v1 tapeout we recommend:
 
-1. **Stay at 25 Mb/s/lane** (no analog characterisation effort).
+1. **Target 100 MHz/lane** with LVCMOS18 single-ended pads and a
+   characterised foundry PDE (no DLL, no differential signalling, no
+   eye-monitor required at this rate). The 25 Mb/s FPGA rig paths must
+   be preserved in source and are not in scope for removal.
 2. **Two power islands** (PD_AON + everything else), no retention.
 3. **Foundry's bundled PLL + SRAM compiler**, single TSMC65-compatible
-   reg-file substitute already in place as a stub.
+   reg-file substitute already in place as a stub. PLL output range
+   must be confirmed against the 100 MHz bit-rate architecture.
 4. **Standard DFT methodology** (DFT-MAX or equivalent), JTAG TAP from
    any reputable IP source.
 5. **SECDED ECC on the 16 KB RX FIFO** (cheap insurance).
 
 This gets the chiplet protocol stack — Wlink + GPIO PHY + TideLink FC
-fabric + PTP — into silicon, validates the architecture, and provides
-the platform from which a v2 with a real SerDes can be planned.
+fabric + PTP — into silicon at 100 MHz, validates the architecture, and
+provides the platform from which a v2 with a real SerDes can be planned.
 
 The chip lead's decisions (§12) gate everything that follows.
 

@@ -5,6 +5,10 @@ Branch: `feat/td-combined` @ `56a8aca`+ (parent), submodule `deps/axi-chiplet-co
 Date: 2026-05-20
 Audience: SoC Labs engineers preparing for v1 ASIC port at ~100 MHz
 
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target. §2.1 and §3.3 now carry explicit caveats that reliability numbers (16.7%/80%/89.4%) are at the FPGA rig's 25 MHz, not the 100 MHz ASIC target. §1.4 already stated the ASIC target correctly — preserved unchanged. |
+
 This document catalogues what v1 does not yet do well, what is an artefact of
 the Pynq-Z2 FPGA rig rather than the architecture, and what is explicitly
 deferred to v2. Measured data is from the 30-deploy reliability
@@ -131,19 +135,27 @@ tape-out.
 
 ### 2.1 One-shot calibration success rate: 16.7% perfect, 80% near
 
+**These numbers are at 25 MHz/lane (FPGA rig rate) and must NOT be
+directly extrapolated to the 100 MHz ASIC target.** At 100 MHz the
+calibration sweep runs ~4× faster (§4.1.1 of `GPIO_PHY_ARCHITECTURE.md`)
+and the bank-35 VT divergence (a major contributor to the tail failures)
+disappears on ASIC. The ASIC per-shot rate is therefore expected to be
+higher than the 16.7% figure, but a characterisation run at 100 MHz has
+not yet been performed.
+
 The best-of-N calibrator (§9.9 of `GPIO_PHY_ARCHITECTURE.md`) performs one
 full 128-point sweep on each role-lock event and latches the widest-eye
-(slip, phase) pair per lane. Reliability characterisation at 25 MHz over
-N = 30 independent deploys (no retry):
+(slip, phase) pair per lane. Reliability characterisation **at 25 MHz (FPGA
+rig)** over N = 30 independent deploys (no retry):
 
-| Metric | Result |
-|---|---|
-| 16/16 lanes locked (perfect, one-shot) | 5/30 — **16.7%** |
-| 14+/16 lanes locked (near, one-shot) | 24/30 — **80.0%** |
-| FCSM state >= 2 on both sides | 18/30 — **60.0%** |
-| die_a (master RX) lock count | min=5, max=8, **mean=7.03/8** |
-| die_b (slave RX) lock count | min=6, max=8, **mean=7.27/8** |
-| Combined lock count | min=12, max=16, **mean=14.30/16 (89.4%)** |
+| Metric | Result | Rate context |
+|---|---|---|
+| 16/16 lanes locked (perfect, one-shot) | 5/30 — **16.7%** | **25 MHz FPGA rig only** |
+| 14+/16 lanes locked (near, one-shot) | 24/30 — **80.0%** | **25 MHz FPGA rig only** |
+| FCSM state >= 2 on both sides | 18/30 — **60.0%** | **25 MHz FPGA rig only** |
+| die_a (master RX) lock count | min=5, max=8, **mean=7.03/8** | **25 MHz FPGA rig only** |
+| die_b (slave RX) lock count | min=6, max=8, **mean=7.27/8** | **25 MHz FPGA rig only** |
+| Combined lock count | min=12, max=16, **mean=14.30/16 (89.4%)** | **25 MHz FPGA rig only** |
 
 The mean combined lock count (14.30/16) confirms the calibration stack is
 working; the residual failure is concentrated in the tail. Per-lane analysis
@@ -299,6 +311,12 @@ baseline gives a per-shot mean of 14.30/16 and a 16.7% perfect rate; the
 extended run is needed to confirm these numbers are stable and to produce the
 per-lane lock probability table (`CONVERGENCE_SPEEDUP.md` §3.1) at sufficient
 statistical confidence (binomial 1-σ at N=30 is ±9 pp per lane).
+
+**These characterisation numbers are at 25 MHz/lane (FPGA rig).** They are
+not a proxy for the v1 ASIC target of 100 MHz/lane. A separate
+characterisation run against silicon (or against an FPGA bring-up retargeted
+to the highest achievable clock rate) will be needed to establish the ASIC
+per-shot reliability baseline.
 
 ### 3.4 ECC + autoneg interaction not HW-tested on the same bitstream
 

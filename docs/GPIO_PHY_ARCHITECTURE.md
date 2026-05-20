@@ -3,8 +3,12 @@
 Author: SoC Labs (David Mapstone)
 Branch:  `feat/td-combined` @ `56a8aca`+ (parent), submodule
          `deps/axi-chiplet-controller` @ `678a9b3`+
-Status:  Silicon-validated; one residual (bank-35/bank-13 IDELAYCTRL VT
-         asymmetry) tracked in §10.
+Status:  Silicon-validated (FPGA, 25 MHz); one residual (bank-35/bank-13
+         IDELAYCTRL VT asymmetry) tracked in §10. ASIC target: 100 MHz/lane.
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target. §1 updated to distinguish FPGA rig rate (25 MHz) from v1 ASIC target (100 MHz). Calibration sweep timing figures updated for both rates (§4.1.1). FPGA-vs-ASIC comparison table added (§11). §7 bank-group discussion clarified as FPGA-only artefact; ASIC at 100 MHz uses single flat clock domain. |
 
 This document is the single-read entry point to the TideLink chiplet
 interconnect GPIO PHY. It describes the vendor PHY core, the SoC Labs
@@ -18,11 +22,19 @@ calibration FSM, and the FPGA-only structural fixes added during the
 
 The TideLink GPIO PHY is a half-duplex per-direction, **source-synchronous
 forwarded-clock parallel** chiplet link. Each direction carries one
-forwarded clock and eight LVCMOS33 single-ended data lanes. Lane rate
-is **25 Mb/s/lane** (40 ns UI) — the 16-bit Wlink link word is
-serialised across 8 lanes × 2 cycles, with the forwarded clock at the
-serialiser bit rate (25 MHz). With 8 lanes the aggregate link
-payload rate is **200 Mb/s** before link-layer overhead.
+forwarded clock and eight single-ended data lanes.
+
+**FPGA validation rig (Pynq-Z2):** Lane rate is 25 Mb/s/lane (40 ns UI)
+— the 16-bit Wlink link word is serialised across 8 lanes × 2 cycles,
+with the forwarded clock at the serialiser bit rate (25 MHz). Aggregate
+link payload rate is 200 Mb/s before link-layer overhead. This rate is
+a Vivado timing-closure artefact on LVCMOS33 RPi-header GPIO and is
+**not** the architectural design target.
+
+**v1 ASIC target:** Lane rate is **~100 Mb/s/lane** (10 ns UI), LVCMOS18
+single-ended, same 8-lane parallel architecture. Aggregate link payload
+rate is **~800 Mb/s** before link-layer overhead. See §11 for a
+comprehensive FPGA-vs-ASIC comparison.
 
 The PHY is built on the **WavD2DGpio** Chisel-generated IP (vendor),
 extended with SoC Labs alignment + automation patches inside the
@@ -88,6 +100,13 @@ The pair targets (`pynq-z2-pair-all` and the cable-mirrored
 `pynq-z2-pair-flip-all`) are byte-symmetric; the ribbon physically
 crosses master TX → slave RX in one direction and the converse in
 the other.
+
+**v1 ASIC implementation.** The ASIC IO ring places all pads in a
+single flat clock domain (no Xilinx bank groups). There are no
+IDELAYCTRL column boundaries on the ASIC; all eight RX lanes share
+the same foundry PDE reference. The `USE_IDELAY`, `USE_CLKBUF`, and
+`USE_T3A` parameter paths are set to 0 on ASIC (the FPGA-only paths
+are pruned at elaboration); see §5 and §11.
 
 ---
 
@@ -392,7 +411,22 @@ dwell expiry (lines 581–589).
 Total worst-case sweep time = 128 × DWELL_CYCLES cycles on the
 `phy_link_rx_rx_link_clk_w` domain (the recovered word clock,
 `pad_clk_rx`/16). At `DWELL_CYCLES = 64` (the default after §9.9 —
-raised from 32) one sweep is **8192 cycles** ≈ 13 ms at 25 Mb/s/lane.
+raised from 32) one sweep is **8192 cycles**:
+
+| Rate | Word clock (`pad_clk_rx`/16) | One sweep (8192 cycles) |
+|---|---|---|
+| 25 MHz/lane (FPGA rig) | 25/16 ≈ 1.56 MHz | **~5.25 ms** |
+| 100 MHz/lane (v1 ASIC target) | 100/16 ≈ 6.25 MHz | **~1.31 ms** |
+
+The S_HOLD window (`HOLD_CYCLES = 8 × 128 × DWELL_CYCLES = 65 536 cycles`):
+
+| Rate | S_HOLD duration |
+|---|---|
+| 25 MHz/lane (FPGA rig) | ~42 ms |
+| 100 MHz/lane (v1 ASIC) | ~10.5 ms |
+
+At 100 MHz the full cold-boot convergence (sweep + S_HOLD) completes in
+~11.8 ms per node — approximately 4× faster than the FPGA rig.
 
 #### 4.1.2 T3 — continuous re-sweep
 
@@ -844,15 +878,19 @@ observability.
                           sweep_slip 0..7 ×             (lottery: peer's
                           DWELL_CYCLES = 8192 cycles    training may not
                                                        be live yet)
-   t ≈ 22                 sweep_exhausted             sweep_exhausted
-                          either succeeds → S_HOLD    if mid-skew: fault
+   t ≈ 22 (FPGA / 25 MHz) sweep_exhausted             sweep_exhausted
+   t ≈ 10.3 (ASIC / 100 MHz)  either succeeds → S_HOLD  if mid-skew: fault
                           (HOLD_CYCLES wait) or       → T3 re-sweep
                           re-sweeps                   (training stays 1)
-   t = 22…22 + HOLD       calibration_done = 1        converges within
-                          (after S_HOLD finishes)     2 sweeps via T3
-   t ≈ 25                 lltx_enable gated by        likewise
-                          calibration_done lifted
+   t = 22…64 (FPGA)       calibration_done = 1        converges within
+   t = 10.3…20.8 (ASIC)   (after S_HOLD finishes)    2 sweeps via T3
+   t ≈ 25 (FPGA)          lltx_enable gated by        likewise
+   t ≈ 12 (ASIC)          calibration_done lifted
                           training_mode = 0
+
+   (Timing above: ms from deploy. FPGA rig = 25 MHz/lane word clock
+   ≈ 1.56 MHz. ASIC target = 100 MHz/lane word clock ≈ 6.25 MHz.
+   All other events — POR, role-lock, FCSM — are independent of link rate.)
    t = 25..30             cr_pkt exchange             cr_pkt exchange
                           FCSM 0 → 1 → 2 → 3 → 4      FCSM 0 → 1 → … → 4
    t = 30+                link_active = 1             link_active = 1
@@ -865,11 +903,19 @@ T3 re-sweep windows coincide.
 
 ---
 
-## 7. Bank-35 vs bank-13 asymmetry (the residual)
+## 7. Bank-35 vs bank-13 asymmetry (the residual) — FPGA rig only
 
-This is the **one** open issue after all §9 fixes land. It is a
-silicon-runtime VT effect inside the IDELAYCTRL primitives that no
-RTL or XDC can sidestep without changing the J13 pin choice.
+**This section describes an FPGA-specific artefact.** The bank-35 /
+bank-13 IDELAYCTRL divergence is caused by the physical pin mapping
+of the Pynq-Z2 J13 header and does not carry over to the v1 ASIC.
+On ASIC at 100 MHz, the IO ring presents all pads to the same
+delay reference (no bank groups); the per-lane VT divergence
+described below disappears entirely. See §11 (FPGA-vs-ASIC table).
+
+For FPGA rig engineers: this is the **one** open issue after all §9
+fixes land. It is a silicon-runtime VT effect inside the IDELAYCTRL
+primitives that no RTL or XDC can sidestep without changing the J13
+pin choice.
 
 ### 7.1 Mechanism
 
@@ -1070,6 +1116,31 @@ target is `GTX` SerDes with embedded clock recovery; the same
 calibrator structure (Region 8 status, FSM, lane_checker) carries
 over because it talks to the link-layer side not the analogue
 side.
+
+---
+
+## 11. FPGA validation rig vs v1 ASIC — comparison table
+
+This table consolidates the key differences between the Pynq-Z2 FPGA
+bring-up rig and the v1 ASIC target. Engineers porting TideLink from
+the FPGA bring-up to ASIC should use this as the primary reference.
+
+| Property | FPGA rig (Pynq-Z2) | v1 ASIC target | Notes |
+|---|---|---|---|
+| Lane rate | 25 Mb/s/lane | **~100 Mb/s/lane** | FPGA rate is timing-closure artefact (§1). |
+| UI | 40 ns | **10 ns** | |
+| Aggregate | 200 Mb/s | **~800 Mb/s** | 8 lanes, before link-layer overhead. |
+| Pad standard | LVCMOS33 | **LVCMOS18** | Single-ended in both cases. |
+| IO bank structure | Bank 13 (6 RX lanes + RX clock) + bank 35 (2 RX lanes) — split causes VT divergence (§7) | **Single flat clock domain** — no bank groups on ASIC IO ring. All pads share the same delay reference. Bank-35 VT divergence disappears entirely. | This is the most significant FPGA-vs-ASIC structural difference for the PHY. |
+| Per-lane delay element | Xilinx IDELAYE2 (32 tap, ~78 ps/tap, 200 MHz ref) via `tidelink_idelay_rx.sv` — gated by `USE_IDELAY=1` | **Foundry PDE** (~5–10 ps/tap, characterised at tapeout corners) — `USE_IDELAY=0` on ASIC, integrator provides PDE wrapper at same 4-bit interface. | See `ASIC_HARD_IP_INVENTORY.md §6`. |
+| Clock boundary buffer | Xilinx BUFG at IP boundary + in-PHY BUFGs — `USE_CLKBUF=1` on FPGA | **Std-cell clock-tree synthesis** — `USE_CLKBUF=0` on ASIC. WavClockMux cells map to `CKMUX2X*` glitch-free std cells. | §5.2, §5.3. |
+| RX comma-hunt (T3a) | `USE_T3A=1` — per-lane comma-hunt FSM corrects count misalignment from SSH-staggered deploy | **`USE_T3A=0` on ASIC** — count misalignment is a POR-skew artefact of the FPGA deployment flow; on ASIC POR is deterministic per chiplet. T3a code is preserved in tree. | §5.4. |
+| Calibration sweep time (one sweep) | ~5.25 ms (8192 word-clock cycles at 1.56 MHz word clock) | **~1.31 ms** (8192 word-clock cycles at 6.25 MHz word clock) | §4.1.1. |
+| S_HOLD duration | ~42 ms | **~10.5 ms** | §4.1.1. |
+| Full cold-boot convergence (per node) | ~50 ms (sweep + S_HOLD + FCSM) | **~12 ms** | Calibrator portion only; I²C role-lock and POR are clock-independent. |
+| Per-lane calibrator accuracy | Shared iterator; bank-35 lanes have narrower effective eye (§7) | **Independent of bank groups** — all lanes have equal delay-reference quality on ASIC. Per-lane best-of-sweep still beneficial for manufacturing variation. | §10.1 lane-masking not required on ASIC for bank reasons. |
+| Link PLL | FPGA MMCM/PLLE2 via `clk_wiz` (not in TideLink RTL — host FPGA fabric) | **Foundry PLL hard-IP** — generates `apb_clk` and `link_clk` from reference; see `ASIC_HARD_IP_INVENTORY.md §4.1`. | |
+| Scan / DFT primitives | `scan_mode` tied 0 at top; no stitching | **Full scan stitching + TAP + MBIST** — see `ASIC_DFT_PLAN.md`. | |
 
 ---
 

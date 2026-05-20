@@ -105,3 +105,5 @@ imp/
 *.map
 *.tdm
 *.attach
+# Killed-agent patch backups, local-only
+.local-staging/

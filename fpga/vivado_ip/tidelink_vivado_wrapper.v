@@ -61,9 +61,12 @@ module tidelink_vivado_wrapper #(
     // Override to 0 to build the FPGA image with passthrough RX (A/B
     // determinism comparison).
     parameter USE_IDELAY = 1'b1,
-    // §9 clock fix: FPGA defaults the recovered-RX-clock BUFG ON (carried
-    // in component.xml → reaches OOC synth, no `define). Override to 0 for
-    // an A/B determinism comparison. See tidelink_rxclk_buf.sv.
+    // §9 clock fix: FPGA defaults the IP-boundary recovered-RX-clock BUFG
+    // ON (carried in component.xml → reaches OOC synth, no `define).
+    // Override to 0 for an A/B determinism comparison. See
+    // fpga/rtl/tidelink_rxclk_buf.sv. NB: this now controls ONLY the
+    // IP-boundary BUFG; the in-PHY USE_CLKBUF restructure inside
+    // WavD2DGpioRx was removed (ASIC purification, 2026-05-20).
     parameter USE_CLKBUF = 1'b1,
     // §9 T3a (2026-05-19): self-aligning RX comma hunt. FPGA default ON
     // (carried in component.xml). Each WavD2DGpioRx slips its `count` once

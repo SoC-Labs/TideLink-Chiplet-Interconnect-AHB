@@ -1,462 +1,397 @@
-# TideLink Design Shortcomings
-
-An analysis of limitations, potential issues, and areas for improvement in the current TideLink design, derived from code review.
-
-## Critical
-
-### 1. No Credit Underflow Protection (BUG-002)
-
-**Location**: `tidelink_fifo_ctrl.sv` — credit count decrement on `write_complete`
-
-The credit counter is decremented unconditionally on `write_complete` without checking that the packet fits. If software writes a packet larger than `credit_count`, the unsigned 13-bit counter wraps to a large value, silently corrupting credit accounting. The overrun flag only detects `credit_count == 0` at the point of a valid transfer, not whether the entire packet will fit.
-
-**Impact**: FIFO pointer and credit state become inconsistent. Unread data can be silently overwritten.
-
-**Recommendation**: Either saturate the counter at zero (preventing wrap) or add a pre-flight check that compares `packet_word_length + 1` against `credit_count` before allowing `write_complete` to fire.
-
-### 2. Single Packet In-Flight Limitation
-
-**Location**: `tidelink_fifo_ctrl.sv` — metadata capture at address 0
-
-Only one packet can be written or read at a time. Writing to address 0 overwrites the current `packet_word_length`, meaning a second packet cannot begin until the first completes. There is no queuing of packet metadata.
-
-**Impact**: Throughput is limited to one packet at a time. Software cannot pipeline writes of consecutive packets and must wait for `write_complete` before starting the next packet. Similarly, reads are serialised.
-
-**Recommendation**: For higher throughput, consider a packet descriptor ring or a header FIFO that can hold metadata for multiple in-flight packets.
-
-## Moderate
-
-### 3. No Hardware-Enforced Packet Size Validation
-
-**Location**: `tidelink_fifo_ctrl.sv` — metadata capture
-
-The packet word length captured from address 0 is accepted unconditionally. Software can write a length that exceeds `MAX_CREDITS`, producing a target address beyond the SRAM boundary. The pointer arithmetic will wrap, but this can cause the packet to overwrite data from other packets.
-
-**Recommendation**: Clamp or reject packet lengths that exceed available credits or `MAX_CREDITS - 1`.
-
-### 4. No AHB Error Response on Overrun/Underrun
-
-**Location**: `tidelink_fifo_mem.sv`, `tidelink_fifo_ctrl.sv`
-
-When the FIFO is full (overrun) or empty (underrun), the AHB slave completes the transfer normally (`hresp=0`) and silently sets a sticky flag. The bus master receives no indication that the transfer failed.
-
-**Impact**: Software must poll the STATUS register to discover errors. In a DMA scenario, the DMA engine has no way to know a write was discarded.
-
-**Recommendation**: Assert `hresp=1` (ERROR) on overrun/underrun so the bus master can detect the failure immediately.
-
-### 5. Returner Has No Retry Mechanism
-
-**Location**: `tidelink_returner.sv`
-
-If the returner receives an AHB error response (`hresp=1`), it sets the `master_error` sticky flag but does not retry the write. The credit delta or doorbell response is permanently lost.
-
-**Impact**: Credit accounting between the pair can drift out of sync after a transient bus error. Recovery requires a full flush and re-handshake on both sides.
-
-**Recommendation**: Add a configurable retry count (e.g. 1–3 retries) before latching `master_error`.
-
-### 6. No Protection Against Partial Packet Writes
-
-**Location**: `tidelink_fifo_ctrl.sv`
-
-If a packet write is abandoned partway through (e.g. software crash, bus error, or the block is disabled mid-write), the FIFO is left in an inconsistent state:
-- `packet_word_length` is non-zero (captured from address 0)
-- The write pointer has not advanced
-- Partial data occupies SRAM but the packet is not committed
-- The only recovery is FLUSH, which discards all buffered data
-
-**Recommendation**: Add a watchdog timer or explicit abort mechanism that can roll back a partial write without flushing the entire FIFO.
-
-### 7. Pair Credit Counter Has No Underflow Guard
-
-**Location**: `tidelink_apb_regs.sv` — pair credit counter decrement via 0x02C
-
-Software writes to 0x02C unconditionally subtract from the pair credit counter. There is no check that the counter remains non-negative. An erroneous consume write can cause the counter to wrap, leading software to believe the remote side has billions of free credits.
-
-**Recommendation**: Saturate at zero on decrement, or return an error indication.
-
-### 8. Release Accumulator Race with Simultaneous Read and Write
-
-**Location**: `tidelink_apb_regs.sv` — accumulators at 0x020 and 0x024
-
-The W-add/R-clear accumulators handle simultaneous APB read and returner write in the same cycle. The `if-else if` chain gives read-clear priority over write-add, so if both occur in the same cycle the accumulator is cleared and the incoming write value is silently lost.
-
-**Impact**: Low probability in practice (requires APB read at exact cycle of returner write), but the lost write means freed credits are permanently dropped, causing credit accounting drift between the pair.
-
-**Recommendation**: Handle the simultaneous case explicitly by clearing the accumulator to the incoming write value (i.e. clear old total but retain the new delta), or use a two-stage handshake to prevent loss.
-
-## Minor
-
-### 9. Fixed 32-bit Data Width
-
-**Location**: All modules — `SYS_DATA_W` parameter exists but SRAM interface and credit arithmetic assume 32-bit words
-
-Although `SYS_DATA_W` is parameterised, the SRAM byte enables are hardcoded to 4 bits (`WREN[3:0]`), the credit-to-bytes conversion is hardcoded as `× 4`, and the SRAM variants are all 32-bit wide. Changing `SYS_DATA_W` would require significant rework.
-
-**Recommendation**: Either remove the parameter (making 32-bit explicit) or fully parameterise the byte enable width and credit arithmetic.
-
-### 10. No Hardware Flow Control on the AHB Slave
-
-**Location**: `tidelink_fifo_mem.sv`
-
-The AHB slave never asserts `hreadyout=0` to back-pressure the bus master. All flow control is software-managed (check credits before writing). A misbehaving or unaware bus master can write at full speed and cause overruns.
-
-**Recommendation**: Consider de-asserting `hreadyout` when `credit_count == 0` to provide hardware-level back-pressure, at least as a configurable option.
-
-### 11. No Identification or Version Register
-
-**Location**: `tidelink_apb_regs.sv`
-
-There is no peripheral ID, component ID, or version register. Software cannot distinguish TideLink from other peripherals at an unknown address, and cannot detect hardware version mismatches.
-
-**Recommendation**: Add standard ARM PID/CID registers (0xFD0–0xFFC) or at minimum a version register.
-
-### 12. `pslverr` Is Hardcoded to 0
-
-**Location**: `tidelink_apb_regs.sv`
-
-Writes to read-only registers and reads from write-only registers silently succeed. There is no APB error signalling for invalid accesses.
-
-**Recommendation**: Assert `pslverr` for writes to RO registers and reads from WO registers.
-
-### 13. Reset Deassertion Pulse Can Fire Spuriously
-
-**Location**: `tidelink_apb_regs.sv` — reset synchroniser
-
-The reset deassertion detector uses a two-stage synchroniser that correctly handles the async-to-sync transition and prevents metastability. However, if `hresetn` bounces during deassertion (goes low-high-low-high), each low-to-high transition resets the pipeline and produces a new deassertion pulse, causing multiple doorbell writes to the pair.
-
-**Impact**: Multiple doorbell responses from the pair, each adding to the accumulator. Software would read an inflated credit count.
-
-**Recommendation**: Add a debounce counter after the synchroniser to filter reset bounce.
-
-### 14. Burst Transfers Accepted But Not Properly Handled
-
-**Location**: `tidelink_fifo_ctrl.sv` — `valid_transfer` check
-
-The `valid_transfer` signal checks only `htrans[1]`, which accepts both NONSEQ (`2'b10`) and SEQ (`2'b11`) transfers. However, the FIFO control logic has no burst-aware address tracking — it treats every beat as an independent single-beat transfer. A DMA engine issuing INCR or WRAP bursts will have its SEQ beats accepted, but the FIFO's completion and metadata logic assumes NONSEQ-only sequencing, which could cause incorrect behaviour.
-
-**Recommendation**: Either add proper burst support (INCR at minimum) for DMA throughput, or explicitly reject SEQ transfers by checking `htrans == 2'b10`.
-
-### 14a. Lane-Mask Handshake — End-to-End Hardware-Driven
-
-**Location**: `tidelink_autoneg.sv` (master FSM), `axi_chiplet_controller.sv` (gate + register block), `Wlink.scala` (`link_lane_mask_hs_result @ 0x21C`, `link_lane_mask_peer @ 0x218`)
-
-**Status (2026-05-08)**: The full hardware-driven peer-mask handshake is in tree and exercised end-to-end in UVM. After winning the I2C claim, the master FSM:
-1. Sets the slave's address pointer to `0x0214` via a 2-byte `cmd_write_multiple` (no STOP) — `ST_NEGO_MASK_RD_ADDR` (state 4'd9).
-2. Issues 4 `cmd_read` commands (with cmd_start on byte 0 for the repeated start, cmd_stop on byte 3) and pops the 4 bytes from the rd-data FIFO into `peer_{tx,rx}_lane_mask_r` — `ST_NEGO_MASK_RD_DATA` (state 4'd10). Bytes 2/3 are the unused upper half of the 32-bit register and are discarded.
-3. Runs the crossover-identity comparator `mask_match = (local.tx == peer.rx) && (local.rx == peer.tx)` — combinational.
-4. Writes the verdict byte (0x01 match / 0x02 fail) to peer's `link_lane_mask_hs_result @ 0x21C` via I2C — `ST_NEGO_MASK_RES_TX` (state 4'd8). The verdict byte is sourced from the comb comparator wire so the latch (`mask_hs_local_match_r` / `mask_hs_local_fail_r`) can be deferred to the RES_TX → DONE edge — latching earlier opens the gate while the FSM is still mid-write, which makes the wrapper latch role_lock, deassert nego_driving, and hand the AXIL bus to the bridge before bvalid is captured.
-
-The wrapper-side gate (`mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i`) refuses `role_lock_reg` while the verdict is fail, and the sticky `nego_mask_mismatch` bit (NEGO_STATUS[9]) plus `nego_error_irq` fire on either side (master from its own `mask_hs_local_fail` flag, slave from the I2C-written `hs_result[1]`).
-
-NEGO_CFG[6] = `mask_hs_auto_en` enables this path; with the bit clear the FSM takes the legacy direct POLL → DONE branch (no peer-mask read).
-
-**Verification**:
-- `test_top_peer_mask_match` and `test_top_peer_mask_mismatch_refused` — original SW-driven gate (Phase 1), still passing.
-- `test_top_peer_mask_auto` — full HW-driven match path (state flow `4→9→10→8→5`, B's hs_result reads 0x01, role_lock asserts on both sides, A→B AHB traffic flows).
-- `test_top_peer_mask_auto_mismatch` — full HW-driven fail path. With `B.tx_mask=0x7F` against `A.rx_mask=0xFF`, the comparator returns fail, FSM writes 0x02 to B's hs_result, gate stays closed, `nego_mask_mismatch` sticky on both sides.
-
-**Pre-existing autoneg I2C ACK failure (resolved as part of Phase 2)**: Phase 2 bring-up uncovered three latent bugs in the autoneg ACK path:
-1. `i2c_slv_addr_reg` defaulted to `7'd0` at POR — once `role_lock` latched the device-address mux switched mid-transaction from the autoneg `0x7E` to `i2c_slv_addr_reg=0x00` and the slave NACKed. Fixed by defaulting `i2c_slv_addr_reg` to `7'h7E` at POR.
-2. The autoneg sequence used `\`uvm_create + \`uvm_send` (which randomizes after we set the txn fields) and `REG_*[14:0]` slicing on 12-bit parameters (returns 0). Both fixed.
-3. The AXL drive logic had a stale-`axl_done_r` race plus an unconditional `m_axil_rready=1` drain that ate rvalid before AXL_RD_DATA captured it. Fixed by gating `AXL_IDLE` on `!axl_done_r` and removing the drain. The MASK_RES_TX (state 8) was also missing from `nego_driving`; widened to include states 8/9/10.
-
-**Remaining**: Bring-up on PYNQ FPGA (still uses `mask_hs_bypass_i=1` strap pre-deployment). The pynq stress and `test_top_lane_mask_*` UVM family continue to bypass the gate.
-
-### 14b. Autoneg-Driven Role-Lock Doesn't Carry A→B Traffic in `test_top_autoneg_basic`
-
-**Location**: `test_top_autoneg_basic.sv` (and the FSM-driven role-lock release flow it exercises)
-
-**Status (2026-05-08)**: After the Phase-2 autoneg ACK fixes (item 14a), the autoneg portion of `test_top_autoneg_basic` reports `won=1 / lost=1` correctly and both sides' `ROLE_CFG = 0x02 / 0x03` (lock + master/slave) latch as expected. Wlink's `link_status @ 0x234` reports `0x18` on both sides — `tx_active=1`, `rx_active=1`, `in_error_state=0`. By every observable register, the link is up. *But* the test's A→B AHB packet never reaches B's FIFO; the scoreboard reports `RX=0x00000000` for every payload word.
-
-The same packet flow works identically in `test_top_peer_mask_auto` (which goes through the longer MASK_RD/RES_TX path before role_lock). The difference is the post-`role_lock` window: in peer-mask the test waits ~250 ms; in basic-autoneg it waits 100 µs (`wlink_link_up_wait = 10_000` cycles). Bumping the wait to 5 ms didn't change the outcome — link_status still reads `0x18` and traffic still doesn't flow, so it isn't simply training time.
-
-Likely cause: Wlink's link-up handshake / FCSM credit grant is sensitive to the staggered `wlink_por_reset` release between the two sides. In autoneg-basic, B's role_lock latches ~13.6 ms before A's (B sees SDA-START first; A finishes its CLAIM/POLL later). B's Wlink runs alone through its training cycle while A's PHY is still in reset emitting whatever a held-PHY emits, and may end up in a state that doesn't recover once A comes online.
-
-**Impact**: Autoneg-driven link bring-up cannot currently be validated end-to-end in pre-silicon UVM. Bring-up flows that don't use autoneg (`test_top_single_packet`, `test_top_bidirectional`, `test_top_peer_mask_auto`, etc.) are unaffected.
-
-**Recommendation (deferred)**: Wave-debug the FCSM and PHY training signals from B (the early-locked side) starting at A's role_lock release time. If the FCSM is stuck in a credit-grant retry loop, an explicit `swreset` toggle after role_lock might recover. Alternatively, gate `role_lock_reg` to assert simultaneously on both sides via a sideband sync — out of scope for the current Phase 2 work.
-
-**Reference**: See `test_top_autoneg_basic.sv` — DIAG read of ROLE_CFG/link_status/link_capab is in place to confirm the post-autoneg state. The test currently fails on scoreboard mismatches; the autoneg assertions (won/lost) all pass.
-
-### 15. Credit Release Threshold Cannot Be Changed While Enabled
-
-**Location**: `tidelink_apb_regs.sv`
-
-The release threshold register is freely writable at any time, but changing it while packets are being read could cause inconsistent batching behaviour — a read_complete that was below the old threshold might suddenly exceed the new one, or vice versa.
-
-**Recommendation**: Document that threshold changes should only be made while the FIFO is idle (no in-flight packets), or add gating logic.
-
-## PTP Subsystem
-
-### 16. Idle Gating Adds Variable Wait Time Before PTP TX
-
-**Location**: `tidelink_ptp.sv` — TX path idle gating
-
-The PTP TX path waits for `tx_router_idle` before asserting FC valid and capturing the transmit timestamp. If other FC nodes (AXI channels, mailbox FIFO) are actively transmitting, this wait time is variable and unbounded in the worst case. While this does not affect timestamp accuracy (the capture occurs at the actual TX moment), it increases the total exchange latency and limits the maximum PTP update rate under heavy link traffic.
-
-**Impact**: PTP exchange latency increases proportionally to link utilisation. In pathological cases, a sustained burst of AXI or mailbox traffic could delay PTP exchanges indefinitely.
-
-**Recommendation**: Assign the PTP FC node the highest TX router priority (already done) and consider adding a maximum wait timeout with an error indication.
-
-### 17. RX-Side Jitter Not Eliminated
-
-**Location**: `tidelink_ptp.sv` — RX path timestamp capture
-
-The Wlink RX pipeline (deserialiser, link layer, FC demux) introduces variable latency that cannot be gated from the receiver's perspective. The t2 and t4 timestamps are captured at the FC RX interface output, not at the PHY, so they include this pipeline jitter.
-
-**Impact**: Residual jitter on receive timestamps (t2, t4) limits the achievable synchronisation accuracy. The magnitude depends on the Wlink RX pipeline depth and clock domain crossing stages.
-
-**Recommendation**: Characterise the RX pipeline jitter via the `tidelink_ptp_stress` UVM environment and account for it in the servo loop filter bandwidth.
-
-### 18. Software-Mediated Servo Loop (Tier 1)
-
-**Location**: Software — PTP offset computation and clock discipline
-
-The offset computation, PI filtering, and PHC adjustment are performed entirely in software via interrupt-driven exchanges. This introduces scheduling jitter and limits the servo bandwidth to the software update rate.
-
-**Impact**: Steady-state synchronisation accuracy is bounded by the software loop latency (typically microseconds). A hardware servo (Tier 2) could achieve sub-microsecond accuracy.
-
-**Recommendation**: Acceptable for the current use case. Document the expected accuracy bounds. Consider a hardware servo for future revisions requiring tighter synchronisation.
-
-### 19. PHC hw_capture and Software CAPTURE Share Clock Core
-
-**Location**: PHC — `hw_capture` input and software CAPTURE register
-
-The PHC has a single time counter that is shared between the hardware capture path (`hw_capture` input, writing to HW_CAP registers) and the software capture path (CAPTURE register, writing to CAP registers). If both fire simultaneously, one capture may be lost or the clock core may produce undefined behaviour.
-
-**Impact**: Low probability in practice (requires software CAPTURE at the exact cycle of a PTP hw_capture event), but could corrupt a timestamp if it occurs.
-
-**Recommendation**: This is mitigated by Option B, which provides a second capture register bank (HW_CAP_*) independent of the software capture bank (CAP_*). Ensure software does not issue CAPTURE during an active PTP exchange.
-
-## Servo Optimisation Trade-offs
-
-### 20. Sub-Nanosecond Precision Dropped
-
-**Location**: `tidelink_ptp_servo.sv` — timestamp format reduced from 110-bit to 78-bit
-
-Sub-nanosecond fields have been removed from the timestamp representation. This is acceptable at Cortex-M0 clock rates where the system clock period is much larger than one nanosecond, so the additional precision provided no practical benefit.
-
-**Impact**: None at target clock rates. Would need to be revisited if the design were retargeted to a high-frequency fabric with sub-nanosecond synchronisation requirements.
-
-### 21. PI Controller Latency Increased
-
-**Location**: `tidelink_ptp_servo.sv` — combinational multiplier replaced with iterative shared multiplier
-
-The PI controller now uses an iterative shared multiplier instead of a dedicated combinational multiplier. This adds approximately 64 clock cycles of latency per PTP exchange (two sequential multiply operations). This is negligible compared to the PTP exchange interval (typically milliseconds).
-
-**Impact**: Servo computation takes ~64 extra cycles per exchange. No measurable effect on synchronisation accuracy or convergence rate at expected exchange intervals.
-
-### 22. Large Offset Forces Phase Step
-
-**Location**: `tidelink_ptp_servo.sv` — offset decision logic
-
-When |sec_diff| > 1, the servo forces a phase step (direct PHC set) rather than applying the PI controller. This is correct behaviour for PTP steady-state operation: offsets larger than one second indicate the clocks are too far apart for the PI loop to converge efficiently, so a coarse adjustment is appropriate.
-
-**Impact**: Correct design intent. The PI controller only operates on offsets where it can converge within a reasonable number of exchanges.
-
-## Design Holes
-
-### 23. No End-to-End Packet Integrity Check
-
-**Location**: `tidelink_fc_adapter.sv`, `tidelink_fifo_ctrl.sv` — FC data path
-
-The FIFO data path has no packet-level checksum, CRC, or sequence number. While the Wlink link layer provides CRC/ECC on individual FC transfers, there is no application-layer integrity mechanism to detect higher-level corruption such as a missed FC beat, a duplicated write, or software writing to the wrong FIFO address. The PTP subsystem has a 16-bit sequence number (`hw_seq_num`), but the mailbox FIFO path has none.
-
-**Impact**: A silent data corruption (e.g. from a pointer arithmetic bug or an undetected overrun) would be delivered to the reader as a valid packet. There is no way for the receiver to distinguish a corrupted packet from a correct one.
-
-**Recommendation**: Add an optional packet CRC (computed on write, checked on read) or at minimum a monotonic sequence number in the packet header so the reader can detect gaps or reordering.
-
-### 24. No Hardware Timeout for Stalled Credit Flow
-
-**Location**: `tidelink_fifo_ctrl.sv`, `tidelink_returner.sv` — credit return path
-
-If the remote side stops returning credits (e.g. due to a crash, link failure, or misconfiguration), the local TX path will stall indefinitely with `credit_count == 0`. There is no hardware watchdog or timeout mechanism to detect this condition. Software must poll the credit count and infer a stall, but there is no interrupt or timeout flag to signal the condition.
-
-**Impact**: A unilateral remote failure causes a silent, indefinite stall on the local TX path. In an interrupt-driven flow, the CPU may never be notified that the link is effectively dead.
-
-**Recommendation**: Add a configurable credit stall watchdog timer that asserts an interrupt if `credit_count` remains zero for longer than a programmable threshold.
-
-### 25. Configuration Registers Not Lockable After Initialisation
-
-**Location**: `tidelink_apb_regs.sv` — `pair_base_addr`, `release_threshold`, `pair_credit_counter` registers
-
-Critical configuration registers (pair base address, release threshold) are freely writable at any time, including while the FIFO is active and packets are in flight. An erroneous or malicious software write to `pair_base_addr` mid-stream would redirect returner writes to an arbitrary address, potentially corrupting remote memory.
-
-**Impact**: No protection against accidental reconfiguration during operation. A single stray write can break the credit return path and corrupt remote state.
-
-**Recommendation**: Add a lock bit (write-once after configuration) that prevents modification of critical registers until the next reset, similar to the role lock in `axi_chiplet_controller`.
-
-### 26. FC Adapter TX Arbitration Can Starve Data Path
-
-**Location**: `tidelink_fc_adapter.sv` — TX arbitration (returner > TX aperture)
-
-The returner sideband channel has unconditional priority over the TX aperture data path. While sideband writes are normally infrequent, a pathological scenario (e.g. rapid credit release batches combined with doorbell + reset responses) could produce a sustained burst of returner traffic that blocks the TX aperture indefinitely. There is no fairness counter or maximum-hold limit.
-
-**Impact**: In the worst case, a burst of sideband traffic could delay FIFO data transmission for an unbounded number of cycles, causing the remote reader to time out or starve.
-
-**Recommendation**: Add a maximum consecutive sideband grant counter (e.g. 4–8 beats) after which the TX aperture gets at least one grant, preventing indefinite starvation.
-
-### 27. No Coordinated Reset Protocol Between Paired Chiplets
-
-**Location**: `tidelink_top.sv`, `tidelink_returner.sv` — reset handling
-
-When one chiplet resets, it sends a doorbell (channel 2) to its pair via the returner. However, there is no handshake to ensure the pair has drained its in-flight packets before the resetting side reinitialises. The pair may have packets in the Wlink TX pipeline that arrive after the reset, corrupting the freshly-initialised FIFO state.
-
-**Impact**: A unilateral reset during active traffic can leave the pair in an inconsistent state. The only safe recovery is for both sides to flush and re-handshake, but this is not enforced in hardware.
-
-**Recommendation**: Define a reset protocol: the resetting side should drain its TX pipeline (wait for `tx_router_idle`), send a FLUSH command, wait for acknowledgement, then reset. At minimum, document the required software sequence.
-
-## Verification Gaps
-
-### 28. Error Recovery Path Not Tested End-to-End
-
-**Location**: `cocotb/tidelink_system/`, `uvm/tidelink_system/`
-
-No test exercises the full error recovery sequence: returner `hresp=1` → `master_error` flag set → software detects via STATUS poll → FLUSH → reconfigure → resume normal operation. Individual error flags are tested, but the complete recovery flow is not.
-
-**Impact**: The recovery path described in the user guide has never been validated. A real error event in deployment would rely on untested software sequences.
-
-**Recommendation**: Add an end-to-end error injection test that forces a returner AHB error, verifies the sticky flag, performs the documented recovery procedure, and confirms that normal packet flow resumes without credit accounting drift.
-
-### 29. CDC Multi-Clock Ratio Variations Not Exercised
-
-**Location**: `cocotb/tidelink_ptp/`, `uvm/tidelink_ptp_stress/`
-
-All cocotb tests run with `phc_clk == hclk` or a fixed ratio. No test varies the `phc_clk:hclk` frequency ratio to exercise the CDC handshake paths under different timing relationships. The Spyglass formal CDC run verifies structural correctness but does not exercise functional behaviour under asynchronous clock ratios.
-
-**Impact**: CDC bugs that only manifest at specific frequency ratios (e.g. back-to-back handshake requests where ack returns in the same cycle as a new request) would not be caught.
-
-**Recommendation**: Add parameterised tests with `phc_clk` at 0.5×, 0.7×, 1.3×, and 2× `hclk` to exercise the CDC handshake paths under realistic asynchronous conditions.
-
-### 30. Address Translator Not Tested in tidelink_top Integration Context
-
-**Location**: `cocotb/tidelink_addr_translator/` (standalone), `cocotb/tidelink_top/` (integration)
-
-The address translator has 34 thorough standalone cocotb tests, but it is not exercised in the `tidelink_top` integration or system-level environments. No test verifies that address translation works correctly when traffic is flowing through the full Wlink → XHB500 → address translator → AHB manager path.
-
-**Impact**: Integration-level issues (e.g. address width mismatches at the XHB500 boundary, CAM lookup timing under Wlink backpressure) would not be detected.
-
-**Recommendation**: Add integration tests in `tidelink_top` or `tidelink_system` that configure address translation rules and verify translated addresses arrive correctly at the AHB manager output.
-
-### 31. Pair Credit Counter Underflow Not Tested
-
-**Location**: `cocotb/tidelink_apb_regs/`, `cocotb/tidelink_py_pair/`
-
-No test verifies the behaviour when software writes to the pair credit consume register (0x02C) more times than credits are available. Shortcoming #7 identifies this as a risk, but no regression test confirms whether the counter wraps or saturates, and no test verifies recovery.
-
-**Recommendation**: Add a test that deliberately over-consumes pair credits and verifies the resulting counter value and system behaviour.
-
-### 32. Partial Packet Abandon and Recovery Not Tested
-
-**Location**: `cocotb/tidelink_fifo/`, `cocotb/tidelink_system/`
-
-No test writes a partial packet (e.g. header + 2 of 10 words) and then abandons the write (via reset, disable, or simply stopping). Shortcoming #6 identifies the resulting inconsistent state, but no test verifies what happens to the FIFO pointers, credit count, or subsequent packets after an abandoned write.
-
-**Recommendation**: Add tests for: (a) partial write followed by FLUSH and resume, (b) partial write followed by a new packet write without FLUSH, to characterise the failure mode and verify recovery.
-
-### 33. No Throughput or Latency Characterisation Tests
-
-**Location**: All test environments
-
-No test measures or asserts on performance metrics:
-- Maximum sustainable packet throughput (packets/second at various sizes)
-- End-to-end latency (TX aperture write to RX FIFO committed IRQ)
-- Credit return latency (read_complete to returner write arrival at pair)
-- Throughput degradation under bidirectional load
-
-**Impact**: Performance regressions could be introduced without detection. Integration teams have no validated throughput figures to design against.
-
-**Recommendation**: Add a performance characterisation test suite that measures and records these metrics, with regression thresholds to catch degradation.
-
-### 34. PTP Multi-Hop Chaining Not Verified
-
-**Location**: `tidelink_ptp.sv` — `PHC_LOCK_GATE_EN` parameter, `cocotb/tidelink_ptp/`
-
-The PTP module has a `PHC_LOCK_GATE_EN` parameter and `phc_locked` signal intended to support multi-hop PTP chaining (chiplet A → B → C, where B only begins syncing C after B has locked to A). However, no test exercises this feature. No multi-hop testbench exists.
-
-**Impact**: The gating logic may not work correctly. A three-chiplet deployment relying on cascaded PTP synchronisation would be using untested hardware.
-
-**Recommendation**: Add a multi-hop test environment with at least three PTP instances in a chain, verifying that downstream synchronisation only begins after upstream lock is achieved.
-
-### 35. Coordinated Chiplet Reset Sequence Not Tested
-
-**Location**: `cocotb/tidelink_system/`
-
-The `test_reset_recovery` test covers a mid-FIFO reset on a single side, but no test exercises a coordinated reset across both chiplets in a pair. Specifically, no test verifies: (a) what happens when one side resets while the other has packets in the Wlink TX pipeline, (b) whether the doorbell reset notification arrives correctly and the pair recovers, (c) behaviour under simultaneous reset of both sides.
-
-**Recommendation**: Add paired reset tests covering unilateral reset during active traffic, bilateral simultaneous reset, and staggered reset with in-flight packets.
-
-## TideChart / PUF Integration
-
-### 36. PUF SRAM Reads Have Lowest Arbiter Priority
-
-**Location**: `tidelink_fifo_mem.sv` — 3-way SRAM arbiter
-
-PUF reads have the lowest priority in the 3-way SRAM arbiter (FC writes > AHB reads/writes > PUF reads). If the FIFO is receiving heavy incoming traffic at boot time (e.g., the remote chiplet begins transmitting before PUF reads complete), PUF reads may be delayed indefinitely.
-
-**Impact**: PUF entropy collection could take significantly longer than expected under concurrent FIFO traffic. In pathological cases, PUF reads may not complete before firmware enables the FIFO, rendering the PUF data invalid.
-
-**Recommendation**: Complete all PUF SRAM reads before enabling the FIFO (Phase 2 of the bring-up sequence). Document that PUF reads must occur during the boot window when no FIFO traffic is active.
-
-### 37. PUF Data Only Valid Before Software Writes to SRAM
-
-**Location**: `tidelink_fc_adapter.sv` — PUF read FSM, `tidelink_fifo_mem.sv` — shared SRAM
-
-The PUF entropy source relies on uninitialized SRAM contents. Once software enables the FIFO and packets are written, the SRAM contents are overwritten with FIFO data. There is no hardware mechanism to reserve a portion of SRAM for PUF use or to detect that PUF data has been invalidated by a FIFO write.
-
-**Impact**: If PUF reads are issued after FIFO traffic has started, the returned data is deterministic FIFO content, not PUF entropy. Software that relies on this data for key generation or device authentication would use predictable values.
-
-**Recommendation**: Enforce in firmware that PUF reads complete before FIFO enable. Consider adding a hardware lock bit that disables PUF reads after the first FIFO write, providing a clear error indication.
-
-### 38. tc_axis_* Interface Has No Flow Control Credits
-
-**Location**: `tidelink_top.sv` — tc_axis_* ports, `tidelink_fc_adapter.sv` — PKT_EXT TX path
-
-The AXI-Stream interface between TideLink and the TideChart controller relies solely on `tready` backpressure for flow control. There is no credit-based scheme, no packet-level acknowledgement, and no timeout mechanism. If the TideChart controller deasserts `tc_axis_tx_tready` for an extended period, incoming PKT_EXT packets from the FC RX path are stalled, which in turn stalls the FC node and may affect FIFO_DATA and SIDEBAND packet reception on shared FC infrastructure.
-
-**Impact**: A slow or unresponsive TideChart controller can back-pressure the entire FC RX path. This is a head-of-line blocking risk.
-
-**Recommendation**: Add a small elastic FIFO (4-8 entries) on the `tc_axis_tx_*` path to decouple PKT_EXT stalls from the FC RX pipeline. Alternatively, add a configurable timeout that drops stalled PKT_EXT packets and sets an error flag.
-
-## Summary
-
-| # | Severity | Shortcoming |
-|---|----------|-------------|
-| 1 | Critical | No credit underflow protection (BUG-002) |
-| 2 | Critical | Single packet in-flight limitation |
-| 3 | Moderate | No hardware packet size validation |
-| 4 | Moderate | No AHB error response on overrun/underrun |
-| 5 | Moderate | No returner retry on bus error |
-| 6 | Moderate | No partial packet write recovery |
-| 7 | Moderate | Pair credit counter underflow risk |
-| 8 | Moderate | Accumulator read/write race condition |
-| 9 | Minor | Fixed 32-bit data width despite parameter |
-| 10 | Minor | No hardware back-pressure via hreadyout |
-| 11 | Minor | No ID/version register |
-| 12 | Minor | pslverr always 0 |
-| 13 | Minor | Reset deassertion glitch sensitivity |
-| 14 | Minor | Burst transfers accepted but not properly handled |
-| 15 | Minor | Threshold change while enabled |
-| 16 | Moderate | PTP idle gating adds variable TX wait time |
-| 17 | Moderate | PTP RX-side jitter not eliminated |
-| 18 | Minor | PTP servo loop is software-mediated (Tier 1) |
-| 19 | Minor | PHC hw_capture and software CAPTURE share clock core |
-| 20 | Minor | Sub-nanosecond precision dropped (servo optimisation) |
-| 21 | Minor | PI controller latency increased (servo optimisation) |
-| 22 | Minor | Large offset forces phase step (servo, by design) |
-| 23 | Moderate | No end-to-end packet integrity check |
-| 24 | Moderate | No hardware timeout for stalled credit flow |
-| 25 | Moderate | Configuration registers not lockable after init |
-| 26 | Minor | FC adapter TX arbitration can starve data path |
-| 27 | Moderate | No coordinated reset protocol between paired chiplets |
-| 28 | Moderate | Error recovery path not tested end-to-end |
-| 29 | Moderate | CDC multi-clock ratio variations not exercised |
-| 30 | Minor | Address translator not tested in integration context |
-| 31 | Minor | Pair credit counter underflow not tested |
-| 32 | Minor | Partial packet abandon and recovery not tested |
-| 33 | Minor | No throughput or latency characterisation tests |
-| 34 | Minor | PTP multi-hop chaining not verified |
-| 35 | Minor | Coordinated chiplet reset sequence not tested |
-| 36 | Minor | PUF SRAM reads have lowest arbiter priority — may be delayed at boot |
-| 37 | Moderate | PUF data only valid before software writes to SRAM |
-| 38 | Moderate | tc_axis_* interface has no flow control credits |
+# TideLink v1-RC GPIO-PHY Bring-up — Known Limits and FPGA/ASIC Differences
+
+Author: SoC Labs (David Mapstone)
+Branch: `feat/td-combined` @ `56a8aca`+ (parent), submodule `deps/axi-chiplet-controller` @ `678a9b3`+
+Date: 2026-05-20
+Audience: SoC Labs engineers preparing for v1 ASIC port at ~100 MHz
+
+This document catalogues what v1 does not yet do well, what is an artefact of
+the Pynq-Z2 FPGA rig rather than the architecture, and what is explicitly
+deferred to v2. Measured data is from the 30-deploy reliability
+characterisation run on 2026-05-20 at 25 MHz (MASTER=192.168.4.101,
+SLAVE=192.168.6.101). Architecture and design context lives in
+`docs/GPIO_PHY_ARCHITECTURE.md`, `docs/GPIO_PHY_SEPARATION_DESIGN.md`, and
+`docs/CONVERGENCE_SPEEDUP.md`; this document does not re-derive those
+references but cites them where the explanation would otherwise be
+self-contained.
+
+---
+
+## 1. FPGA-only artefacts — not architectural shortcomings
+
+These items exist because of Zynq-7020 silicon constraints. They disappear on
+an ASIC implementation; no architectural change is needed.
+
+### 1.1 Bank-13 / bank-35 IDELAYCTRL column split
+
+The Pynq-Z2 RPi GPIO header (J13) forces two of the eight RX data lanes
+(`pad_rx[1]` = C20, `pad_rx[3]` = A20) onto bank 35, while the remaining six
+RX lanes and the forwarded RX clock land on bank 13. Vivado places one
+IDELAYCTRL per IDELAY column; bank 13 pins use IDELAYCTRL_X0Y0 and bank 35
+pins use IDELAYCTRL_X1Y2. These are physically distinct cells with independent
+VT-dependent tap-time references. At runtime the bank-35 cells produce taps
+that are typically 5–10 % off the bank-13 cells in both magnitude and
+centring, even when the same IODELAY_GROUP string and reference clock are
+applied (see `GPIO_PHY_ARCHITECTURE.md` §7.1).
+
+No XDC `set_property PACKAGE_PIN` rotation avoids this. Six of the eighteen
+J13 pins are physically bonded to bank 35 and all eight RX data pins plus the
+RX clock are needed; two RX data lanes must land there. The per-deploy
+reliability characterisation shows the consequence: die_a lane 3 (the
+worst-case bank-35 lane) locks only 53% of deploys one-shot versus 97–100%
+for the all-bank-13 lanes. This is a pin-out artefact, not a calibration
+algorithm deficiency.
+
+On an ASIC there are no bank groups. The IO ring presents all pads to the same
+delay reference, and the per-lane IDELAYE2 logic is replaced by a foundry
+programmable delay cell driven by the same calibrator phase values. The bank-35
+VT divergence disappears entirely.
+
+### 1.2 IDELAYE2 hard-IP wrapper
+
+`fpga/rtl/tidelink_idelay_rx.sv` instantiates Xilinx `IDELAYE2` and
+`IDELAYCTRL` primitives to provide per-lane RX analogue delay control
+(see `GPIO_PHY_ARCHITECTURE.md` §5.1). These are 7-series Xilinx-specific
+hard-IP cells. The calibrator drives a 4-bit `phase_tap` per lane; the
+wrapper maps this to a 5-bit tap count (multiply by 2 to span the 0–30 range)
+and holds `LD=1` so the IDELAYE2 continuously tracks the live calibrator
+output.
+
+The ASIC equivalent is a foundry-provided programmable delay cell — typically
+a configurable inverter chain or a binary-weighted RC ladder — driven by
+exactly the same 4-bit `phase_tap` interface. The gate parameter `USE_IDELAY`
+(default 0; set to 1 by `tidelink_vivado_wrapper.v`) prunes the entire
+IDELAYE2 instantiation at elaboration time on ASIC, restoring a
+passthrough (`pad_rx_o = pad_rx_i`). The ASIC integrator replaces this
+passthrough with the foundry delay cell wrapper at that boundary.
+
+### 1.3 IP-boundary BUFG (USE_CLKBUF) — boundary-only after ASIC purification
+
+The Wav `WavD2DGpioRx` deserialiser routes the recovered pad clock through
+three `WavClockMux` cells (lines 139, 145, 151 of `WavD2DGpioRx.v`). On
+7-series Vivado these LUT-inferred mux cells appear on general routing on the
+clock pin, triggering `Place 30-568` clock-DRC and producing non-deterministic
+per-lane skew.
+
+The previous fix put a Xilinx `BUFG` at the IP boundary (`tidelink_rxclk_buf`,
+now in `fpga/rtl/`) AND two internal `BUFG` cells inside `WavD2DGpioRx`
+(`g_clkbuf` generate branch) so each lane's clock reached its capture flops
+on the dedicated clock network. On the 16-deploy reliability characterisation
+that combination delivered the ≈ 89 % 16/16-lane lock rate.
+
+**Post-ASIC-purification (2026-05-20):** the in-PHY `g_clkbuf` branch has been
+removed from `WavD2DGpioRx.v` because it was FPGA-specific contamination
+inside a vendor Chisel-generated PHY file. The IP-boundary `BUFG`
+(`fpga/rtl/tidelink_rxclk_buf.sv`, gated by the boundary-only `USE_CLKBUF`
+parameter on the `axi_chiplet_controller` instance) is retained — the FPGA
+build now relies on the boundary BUFG plus the calibrator's best-of-sweep
+phase + bit-slip + IDELAYE2 path, not the in-PHY BUFG.
+
+Expected FPGA reliability impact: the 16/16-lane lock rate is likely to
+regress from the in-PHY BUFG figure (≈ 89 %) toward the boundary-only
+baseline (≈ 60–70 % per historical b_clkbuf coverage). Convergence at the
+pair level (full link) is preserved by the calibrator's best-of-sweep
+search; total bring-up time may increase due to more per-lane retries
+within the autonomous bring-up script. If the regression measures worse
+than ≈ 60 % the in-PHY BUFG can be re-introduced as an explicit FPGA-only
+wrapper in `fpga/rtl/` (e.g. by adding a thin RTL wrapper that drives the
+`WavD2DGpio` clock inputs through `BUFG`s before they enter the vendor
+file); it should NOT live inside the vendor file again.
+
+BUFG is a Xilinx global clock buffer primitive. On ASIC, the synthesised
+clock tree replaces it. The `USE_CLKBUF` parameter (default 0 in
+`tidelink_top`, ASIC) prunes the boundary BUFG entirely at elaboration —
+which is the correct path for the foundry standard-cell flow.
+
+### 1.4 25 MHz pad_clk rate
+
+The forwarded clock at `pad_clk_tx` / `pad_clk_rx` runs at 25 MHz on the FPGA
+rig. This is driven by Vivado timing-closure limits on LVCMOS33 GPIO routed
+through RPi-header pins over a passive ribbon cable, not by any protocol
+constraint. The 40 ns UI leaves ample timing margin for the IDELAYE2 tap range
+to span the entire setup window.
+
+The v1 ASIC target is approximately 100 MHz (`project_tidelink_v1_asic_target`
+memory). At 100 MHz the UI shrinks to 10 ns. The calibrator search space
+(128 points: 16 phase offsets × 8 bit-slip values, with `DWELL_CYCLES = 64`)
+and the IDELAYE2 → foundry delay cell replacement remain valid; what changes is
+the analogue delay cell's tap resolution and range, which must be characterised
+against a 10 ns UI rather than 40 ns. The `USE_IDELAY` / `USE_CLKBUF` /
+`USE_T3A` paths are quarantined behind their gate parameters and must not be
+removed from the source tree; they remain active on any future FPGA
+characterisation rig.
+
+---
+
+## 2. Real architectural shortcomings — carry over to ASIC
+
+These items are present in the architecture regardless of implementation
+technology. They will require RTL or algorithm changes before or after the v1
+tape-out.
+
+### 2.1 One-shot calibration success rate: 16.7% perfect, 80% near
+
+The best-of-N calibrator (§9.9 of `GPIO_PHY_ARCHITECTURE.md`) performs one
+full 128-point sweep on each role-lock event and latches the widest-eye
+(slip, phase) pair per lane. Reliability characterisation at 25 MHz over
+N = 30 independent deploys (no retry):
+
+| Metric | Result |
+|---|---|
+| 16/16 lanes locked (perfect, one-shot) | 5/30 — **16.7%** |
+| 14+/16 lanes locked (near, one-shot) | 24/30 — **80.0%** |
+| FCSM state >= 2 on both sides | 18/30 — **60.0%** |
+| die_a (master RX) lock count | min=5, max=8, **mean=7.03/8** |
+| die_b (slave RX) lock count | min=6, max=8, **mean=7.27/8** |
+| Combined lock count | min=12, max=16, **mean=14.30/16 (89.4%)** |
+
+The mean combined lock count (14.30/16) confirms the calibration stack is
+working; the residual failure is concentrated in the tail. Per-lane analysis
+(`CONVERGENCE_SPEEDUP.md` §3.1) identifies die_a lane 3 as the single worst
+lane (53% lock rate), attributable to the bank-35 IDELAYCTRL VT spread
+(§1.1). Removing the FPGA-rig artefact will improve the distribution but will
+not eliminate it entirely: the shared single-phase calibrator sweep is
+fundamentally a one-shot Bernoulli trial per deploy. The architectural fix is
+a per-bank-group (or per-lane) independent phase search, deferred to v2
+(§4.2).
+
+The closed-loop `bringup_pair_converge.sh` script treats each deploy as an
+independent retry and achieves convergence in 2–17 iterations with geometric
+distribution (mean ~3 min at current 30 s per-deploy wall-clock). This is the
+v1 operational bring-up path; it is not a substitute for improving the
+per-shot rate.
+
+### 2.2 No automatic on-line retraining after mid-operation link drop
+
+Calibration is triggered by the rising edge of `role_locked` or by an explicit
+`SWI_RECAL` write (MMIO `0x4403_2100` bit 1). Once `calibration_done` asserts
+and `training_mode` drops to 0, the calibrator enters `S_DONE` (sticky) and
+stops sweeping. If a lane degrades mid-operation (e.g. thermal drift shifts
+the eye centre past the calibrated tap), there is no hardware mechanism to
+detect the degradation and re-trigger a sweep without driving `SWI_RECAL` from
+software or asserting `swreset`.
+
+The `SWI_LANE_STATUS` register (`0x4403_2108`, bits [7:0] `lane_locked`)
+exposes the per-lane lock state in real time, so a software watchdog could
+poll and issue `SWI_RECAL` on lock-bit loss. This is not currently implemented
+in the bring-up scripts. The architectural change required is: detect sustained
+`lane_locked[i] = 0` (e.g. via a counter on the `S_DONE`-state lane_checker
+output) and re-trigger `S_ARM` autonomously. This is a calibrator FSM
+extension, not a PHY change.
+
+### 2.3 Sequential per-lane calibration sweep — no parallel-lane search
+
+The calibrator's 128-point sweep uses a single shared iterator
+(`sweep_slip[2:0]` × `sweep_phase[3:0]`; `GPIO_PHY_ARCHITECTURE.md` §4.1.1).
+All eight lanes are evaluated at the same (slip, phase) point simultaneously
+within each dwell window. This is efficient for lanes whose optimal point is
+near the shared sweep centre, but suboptimal for lanes whose eye centre lies at
+a different phase from the majority: the calibrator discovers the best
+phase for the majority and the minority lane settles for whatever score it
+achieved at that phase.
+
+The correct fix (identified in `GPIO_PHY_ARCHITECTURE.md` §10.2) is a
+per-bank-group calibrator with independent phase iterators — one iterator per
+IDELAYCTRL column group — while keeping the bit-slip search shared. On ASIC,
+where bank groups do not exist, the equivalent split is per-group of lanes
+sharing a common analogue delay reference. Until this is implemented, the
+bank-35 lane pair will continue to show reduced per-shot lock probability
+relative to the bank-13 majority.
+
+### 2.4 FCSM cr/crack handshake uses sticky-OR latch — cannot distinguish stale from fresh
+
+Submodule commit `0e126b0` made `cr_pkt_seen_rx` and `crack_pkt_seen_rx`
+sticky-latched at the ECC syndrome gate in `WlinkGenericFCSM_6.v`. Once a
+valid cr packet is seen, the flag holds until the FCSM consumes it. This was
+the fix for the single-error cr-miss mode (a per-lane bit error in the cr
+header is detected by Hamming(33,24) ECC but the frame is discarded rather
+than retried, causing the FCSM to miss the cr seed it needed to advance past
+state 1 — see `docs/AGENT_BRIEF_FCSM_RX_BUG.md`).
+
+The sticky latch is correct for the miss-mode it fixes, but it introduces a
+new property: once set, the flag cannot be cleared without a `swreset` cycle.
+If a cr packet is seen on a marginal lane during a partial-convergence window
+(before `calibration_done`), the stale `cr_pkt_seen_rx` flag may be consumed
+by the FCSM in a later training window where the packet was not re-received.
+The FCSM state machine cannot distinguish a fresh cr from a latched stale one.
+This is visible in the characterisation data as the FCSM-both->=2 rate (60.0%)
+being lower than the 14+/16 near-convergence rate (80.0%): some deploys lock
+14+ lanes but still sit at FCSM state < 2, which is consistent with a stale-cr
+scenario where the FCSM advanced on one side from a pre-convergence cr that
+did not survive to full link-up.
+
+The architectural fix is a sequence-number or timestamp on the cr frame, or a
+re-seedable latch (cleared on every swreset or training_mode deassertion).
+Neither is in tree for v1.
+
+### 2.5 ECC restored to upstream Hamming(33,24) SECDED — HW validation pending
+
+`WlinkEccSyndrome.v` was hand-patched on 2026-05-05 to bypass ECC (to isolate
+an unrelated FCSM bug). The bypass was restored to upstream Chisel-generated
+Hamming(33,24) SECDED on headers (single-bit correct, double-bit detect) and
+is present in the `feat/td-combined` tree at submodule `678a9b3`+. The
+restoration is cocotb-regressed but has not been exercised on hardware with the
+current `feat/td-combined` + `best-of-sweep` + `S_HOLD` bitstream. The
+reliability characterisation run (N=30, 2026-05-20) used this bitstream;
+the ECC counters at SWI_LANE_STATUS slot 5 (`ECC_COUNTERS`, offset 0x114) were
+not read in that run. HW confirmation that ECC is active (corrected-count > 0
+under marginal-lane conditions) is still outstanding.
+
+### 2.6 I2C autoneg integration is bench-validated on inert pins — active-rig HW test pending
+
+Branch `feat/i2c-autonomous-lock-integ` at `e22528a` (submodule `34126b6`)
+adds I2C-based master/slave role negotiation via dedicated pins. The initial
+rig used W9/V7 channel pins, which proved inert (weak board pull-up, floating
+high; no I2C activity routed through). The design was repinned to Arduino
+connector P15/P16, which carry on-board 2.2 kΩ pull-ups and are unused in the
+active Ethernet / flash path. Bitstreams for the repinned variant are
+rebuilding (see `project_tidelink_i2c_autonomy` memory entry). Full HW
+validation of the autoneg protocol on active P15/P16 pins has not been
+completed. The current `feat/td-combined` bring-up (`bringup_pair_converge.sh`)
+does not use the I2C autoneg path; role straps are set manually via MMIO at
+deploy time.
+
+---
+
+## 3. Open verification items
+
+### 3.1 cocotb test duplication between cocotb/phy_align/ and top-level cocotb/*.py
+
+The PHY-align test suite lives under `cocotb/phy_align/` (pair-level
+integration: `test_pair_align.py`, `test_pair_align_asymmetric*.py`,
+`test_pair_align_staggered_bringup.py`). Several top-level `cocotb/*.py` files
+cover overlapping calibrator and lane-checker scenarios that were written before
+the `cocotb/phy_align/` suite existed. The duplicate coverage is not harmful
+but makes it harder to determine the authoritative regression for a given
+failure: a CI failure in the top-level stubs does not necessarily point at the
+same root cause as the corresponding `phy_align` test. The canonical test map
+is `cocotb/PHY_TESTS.md`; the top-level stubs that overlap with entries in
+that map should be migrated or removed.
+
+### 3.2 Three RTL files with stale or incorrect header comments
+
+The following files carry comments that do not match their current function:
+
+- `src/rtl/tidelink_lane_checker.sv` — module header claims the file is
+  `wlink_*` (pre-rename from an earlier naming convention). The module name and
+  interface are correct; the header comment is stale.
+- `src/rtl/tidelink_phy_align_regs.sv` — 141-line file implementing a Region 8
+  APB slave that is superseded by the Region 8 logic now embedded in
+  `deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv` (line
+  1273 instantiates the chiplet-internal register block; `tidelink_phy_align_regs`
+  is not included in either the ASIC flist or the FPGA Vivado IP). The file is
+  dead code in the current build. It should be removed or archived to avoid
+  confusing engineers who find it in `src/rtl/` and assume it is active.
+- `src/rtl/tidelink_fifo.sv` — naming collision with a second
+  `src/rtl/fifo/tidelink_fifo.sv`. The top-level `src/rtl/tidelink_fifo.sv`
+  is the FIFO subsystem wrapper; `src/rtl/fifo/tidelink_fifo.sv` is the
+  SRAM-backed FIFO controller. Both are in the ASIC flist; the duplicate module
+  name is resolved by elaboration-order dependency but is fragile and generates
+  tool warnings in some EDA flows.
+
+### 3.3 Extended reliability characterisation (50+ deploys post-I2C) not yet run
+
+The characterisation data cited in this document is 30 deploys on the
+`feat/td-combined` bitstream before I2C autoneg repinning. The v1-RC
+validation target is 50+ deploys with the full autoneg path active and ECC
+counters read per deploy. This run has not been executed. The current N=30
+baseline gives a per-shot mean of 14.30/16 and a 16.7% perfect rate; the
+extended run is needed to confirm these numbers are stable and to produce the
+per-lane lock probability table (`CONVERGENCE_SPEEDUP.md` §3.1) at sufficient
+statistical confidence (binomial 1-σ at N=30 is ±9 pp per lane).
+
+### 3.4 ECC + autoneg interaction not HW-tested on the same bitstream
+
+The ECC restoration (§2.5) and the I2C autoneg repinning (§2.6) each represent
+independent changes to the `feat/td-combined` + submodule state. Neither has
+been exercised simultaneously on the same hardware bring-up. The specific
+concern is the interaction during the FCSM credit-grant window: if the autoneg
+I2C transaction overlaps with cr-packet reception and the ECC corrects a
+single-bit error in the cr header, the sticky `cr_pkt_seen_rx` flag should
+latch and the FCSM should advance normally. This path is cocotb-covered but
+not HW-confirmed.
+
+### 3.5 DFT plan, UPF power plan, and ASIC hard-IP inventory in flight as separate documents
+
+`docs/ASIC_HARD_IP_INVENTORY.md` identifies the Xilinx-specific cells and
+their ASIC substitution candidates. A UPF power intent file and a DFT
+insertion plan (scan chain, boundary scan, MBIST for the Wlink SRAM) are
+referenced in architecture discussions but not yet written. The `io_scan_mode`
+and `io_scan_asyncrst_ctrl` ports on `WavD2DGpioRx` are present and tied 0 in
+the production flow; the scan-chain insertion plan that would make use of them
+has not been drafted. These are pre-tape-out deliverables, not v1-RC items, but
+they are called out here to avoid late-stage discovery.
+
+---
+
+## 4. What v1-RC explicitly does NOT include — deferred to v2
+
+The following capabilities are absent from `feat/td-combined` by deliberate
+deferral. They are architecturally considered but not implemented. Including
+them in the v1 scope would require RTL changes with non-trivial regression cost
+in the current bring-up window.
+
+### 4.1 On-line retrain (adaptive re-calibration without swreset)
+
+The calibrator has no autonomous degradation-detect path. Re-calibration
+requires either `role_locked` re-assertion (requires a link drop and role
+renegotiation) or a software-issued `SWI_RECAL`. A hardware monitor that
+detects sustained `lane_locked[i] = 0` and autonomously re-triggers `S_ARM`
+without dropping `role_locked` is the correct v2 feature. The `MAX_RESWEEPS`
+parameter (default 0 = unlimited) and the T3 continuous re-sweep
+(`GPIO_PHY_ARCHITECTURE.md` §4.1.2) handle the cold-boot case but not
+mid-operation degradation.
+
+### 4.2 Per-lane parallel calibration sweep
+
+The shared 128-point iterator evaluates all eight lanes at the same
+(slip, phase) point. A per-lane independent iterator — or a per-bank-group
+iterator as the intermediate fix — would allow the calibrator to find the
+per-lane optimal point in a single sweep rather than settling for the
+majority-optimal point. The RTL change is a moderate calibrator refactor
+(per-group score arrays, per-group phase register, per-group iterator);
+estimated at 5–7 days including regression (§4.2 of `GPIO_PHY_ARCHITECTURE.md`).
+Not in v1.
+
+### 4.3 Adaptive equalisation (DFE / FFE)
+
+The v1 GPIO PHY at ~100 MHz on a bare-metal CMOS process does not require
+decision-feedback equalisation or feed-forward equalisation. The channel model
+(short on-chip or chiplet-to-chiplet trace, LVCMOS33 signalling) does not
+produce inter-symbol interference at 100 Mb/s rates. This is explicitly noted
+here for engineers porting to higher-rate links: at 1 Gb/s+ with longer traces,
+DFE/FFE become necessary and `WavD2DGpioRx`'s count-based deserialiser would
+need replacement with an ISERDESE2 or GTX-class front-end.
+
+### 4.4 PTP single-phase protocol
+
+`tidelink_ptp.sv` and the associated `FC_NODE_REGISTRY.md` PTP FC node are in
+tree on `feat/td-combined`. The PTP path is not a v1 validation target. The
+PHC `hw_capture` input, the UVM `tidelink_ptp_stress` environment, and the
+cocotb PTP tests are present and passing; the protocol has not been exercised
+on the FPGA hardware bring-up pair. PTP bring-up on silicon is a v2 milestone.
+
+### 4.5 TideChart dynamic chiplet ID protocol
+
+TideChart (dynamic chiplet identity assignment via a separate peer repository
+`~/SoCLabs/tidechart`) is architecturally planned as the layer above TideLink
+but is not integrated into `feat/td-combined`. The `tc_axis_*` interface ports
+on `tidelink_top.sv` are present as stubs. No TideChart protocol traffic has
+been exercised on the FPGA rig. This is a separate project with its own release
+timeline.
+
+---
+
+## Cross-references
+
+- `docs/GPIO_PHY_ARCHITECTURE.md` — full calibrator FSM, FPGA structural fixes,
+  bank-35 asymmetry analysis, bring-up sequence timeline
+- `docs/GPIO_PHY_SEPARATION_DESIGN.md` — proposed clean architectural
+  separation; the five-level USE_* parameter threading and the vendor-freeze
+  refactor plan; schedule for post-v1 cleanup window
+- `docs/CONVERGENCE_SPEEDUP.md` — per-deploy latency waterfall, geometric
+  reliability model, per-lane lock probability table, phased optimisation plan
+- `docs/ASIC_HARD_IP_INVENTORY.md` — per-primitive ASIC substitution candidates
+- `pynq_host/scripts/bringup_reliability.sh` — the characterisation harness
+  that produced the N=30 data cited in §2.1
+- SWI_LANE_STATUS MMIO: `0x4403_2108`; SWI_RECAL: write `0x2` to `0x4403_2100`

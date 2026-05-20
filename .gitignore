@@ -90,7 +90,10 @@ hierarchy.txt
 
 # Generated C headers (from scripts/rdl2c.py)
 src/sw/*.generated.h
-imp/
+imp/*
+!imp/ASIC/
+imp/ASIC/*
+!imp/ASIC/Makefile
 
 # Fusion Compiler
 *.gz

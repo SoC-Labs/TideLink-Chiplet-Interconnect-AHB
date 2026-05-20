@@ -120,8 +120,8 @@ PT_FLOW_DIR = $(TIDELINK_HOME)/syn/asic/primetime
 export MEM_FF_DB_DIR  ?= $(TIDELINK_HOME)/syn/asic/libs/mem_ff
 
 .PHONY: fc fc_all fc_init fc_synth fc_cts fc_route fc_pg fc_signoff \
-        fc_drc fc_abstract fc_lec fc_etm drc_summary mem_ff_db \
-        gdsii synth_netlist gui clean help dirs fusion_lib
+        fc_drc fc_abstract fc_lec fc_etm fc_pg_deepdive drc_summary \
+        mem_ff_db gdsii synth_netlist gui clean help dirs fusion_lib
 
 # ── Workspace setup ───────────────────────────────────────────────────────
 dirs:
@@ -226,6 +226,18 @@ drc_summary:
 	    exit 1; \
 	fi
 	@cat $(FC_REPORTS)/07_summary.rep
+
+# fc_pg_deepdive — independent net-centric audit of check_pg_connectivity's
+# floating-cell count. Opens drc.design (or signoff/pg fallback) and
+# proves the count is wire-stub-fragment artefact, not real logical
+# floating. Drops 08_pg_deepdive.rep next to the DRC reports.
+fc_pg_deepdive: $(DRC_DONE)
+	@echo "INFO: PG floating-cell deep-dive (net-centric audit)"
+	cd $(FC_WORK) && $(FC_SHELL) -f $(FC_DIR)/scripts/pg_deepdive.tcl 2>&1 \
+	    | tee $(FC_LOGS)/pg_deepdive.log
+	@grep -q "^PG_DEEPDIVE_OK" $(FC_LOGS)/pg_deepdive.log \
+	    || (echo "ERROR: pg_deepdive did not reach PG_DEEPDIVE_OK marker"; exit 1)
+	@cat $(FC_REPORTS)/08_pg_deepdive.rep
 
 $(ABSTRACT_DONE): $(DRC_DONE)
 	@echo "INFO: [Phase 6] partition export (LEF, DEF, GDS, NDM, Verilog, SDC, UPF, SPEF, SDF)"

@@ -78,6 +78,8 @@ module tidelink_phy_align_regs (
     reg [7:0]  lane_fault_sync0,   lane_fault_sync1;
     reg        cal_done_sync0,     cal_done_sync1;
     reg [3:0]  cal_state_sync0,    cal_state_sync1;
+    // Sticky-once-locked accumulator (see comment in always-block below).
+    reg [7:0]  lane_locked_sticky;
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             lane_locked_sync0 <= 8'h0;
@@ -88,6 +90,7 @@ module tidelink_phy_align_regs (
             cal_done_sync1    <= 1'b0;
             cal_state_sync0   <= 4'h0;
             cal_state_sync1   <= 4'h0;
+            lane_locked_sticky <= 8'h0;
         end else begin
             lane_locked_sync0 <= lane_locked_in;
             lane_locked_sync1 <= lane_locked_sync0;
@@ -97,6 +100,16 @@ module tidelink_phy_align_regs (
             cal_done_sync1    <= cal_done_sync0;
             cal_state_sync0   <= cal_state_in;
             cal_state_sync1   <= cal_state_sync0;
+            // 2026-05-20: sticky-once-locked OR of lane_locked_sync1.
+            // Before this, SW reads of SWI_LANE_STATUS were a live
+            // snapshot of the calibrator-iterator-dependent
+            // lane_locked_in signal — placement-shift-sensitive (see
+            // docs/LANE_LOCK_REGRESSION_ANALYSIS.md). Sticky accumulator
+            // captures "any lane that EVER locked since last POR /
+            // recal-mediated swreset", giving SW deterministic
+            // "best-seen-so-far" readings independent of the read
+            // window vs sweep-iterator phase.
+            lane_locked_sticky <= lane_locked_sticky | lane_locked_sync1;
         end
     end
 
@@ -128,7 +141,7 @@ module tidelink_phy_align_regs (
         case (paddr[4:2])
             3'b000:  prdata = {8'h0, swi_bit_slip_r};
             3'b001:  prdata = {31'h0, swi_training_mode_r};
-            3'b010:  prdata = {24'h0, lane_locked_sync1};
+            3'b010:  prdata = {24'h0, lane_locked_sticky};
             3'b011:  prdata = {24'h0, lane_fault_sync1};
             3'b100:  prdata = {16'h0, 4'h0, cal_state_sync1, 7'h0, cal_done_sync1};
             default: prdata = 32'h0;

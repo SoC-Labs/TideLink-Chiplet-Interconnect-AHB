@@ -8,6 +8,7 @@ Audience: SoC Labs engineers preparing for v1 ASIC port at ~100 MHz
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-05-20 | David Mapstone | Reconcile 100 MHz ASIC target. §2.1 and §3.3 now carry explicit caveats that reliability numbers (16.7%/80%/89.4%) are at the FPGA rig's 25 MHz, not the 100 MHz ASIC target. §1.4 already stated the ASIC target correctly — preserved unchanged. |
+| 2026-05-20 | David Mapstone | Post-revert reconciliation: in-PHY USE_CLKBUF BUFG restructure restored in `WavD2DGpioRx.v` (commit `b9b26e2` reverts `ce91961`). §1.3 rewritten to reflect current RTL state. Boundary-only experiment documented as attempted-and-reverted; ASIC purification deferred to v2 (§4.6). |
 
 This document catalogues what v1 does not yet do well, what is an artefact of
 the Pynq-Z2 FPGA rig rather than the architecture, and what is explicitly
@@ -69,43 +70,51 @@ IDELAYE2 instantiation at elaboration time on ASIC, restoring a
 passthrough (`pad_rx_o = pad_rx_i`). The ASIC integrator replaces this
 passthrough with the foundry delay cell wrapper at that boundary.
 
-### 1.3 IP-boundary BUFG (USE_CLKBUF) — boundary-only after ASIC purification
+### 1.3 In-PHY and IP-boundary BUFG (USE_CLKBUF) — FPGA-rig-load-bearing, present in v1 RTL
 
 The Wav `WavD2DGpioRx` deserialiser routes the recovered pad clock through
 three `WavClockMux` cells (lines 139, 145, 151 of `WavD2DGpioRx.v`). On
-7-series Vivado these LUT-inferred mux cells appear on general routing on the
-clock pin, triggering `Place 30-568` clock-DRC and producing non-deterministic
-per-lane skew.
+7-series Vivado these LUT-inferred mux cells are placed on general routing when
+no global-clock buffer is present, triggering `Place 30-568` clock-DRC and
+producing non-deterministic per-lane skew.
 
-The previous fix put a Xilinx `BUFG` at the IP boundary (`tidelink_rxclk_buf`,
-now in `fpga/rtl/`) AND two internal `BUFG` cells inside `WavD2DGpioRx`
-(`g_clkbuf` generate branch) so each lane's clock reached its capture flops
-on the dedicated clock network. On the 16-deploy reliability characterisation
-that combination delivered the ≈ 89 % 16/16-lane lock rate.
+**Current RTL state (post-`b9b26e2`):** the in-PHY clock restructure IS
+present in `WavD2DGpioRx.v`. The `g_clkbuf` generate branch inserts two
+Xilinx `BUFG` cells inside the vendor PHY so that each lane's recovered clock
+reaches its capture flops on the dedicated clock network. This is gated by the
+`USE_CLKBUF` parameter (default 1 in `tidelink_vivado_wrapper.v`, default 0 in
+`tidelink_top.sv` for ASIC). A second `BUFG` sits at the IP boundary
+(`tidelink_rxclk_buf`, `fpga/rtl/`), also gated by `USE_CLKBUF`. Together
+these two BUFG stages form the FPGA clock topology that delivered the ≈ 89 %
+16/16-lane lock rate in the N=30 reliability characterisation run (2026-05-20).
 
-**Post-ASIC-purification (2026-05-20):** the in-PHY `g_clkbuf` branch has been
-removed from `WavD2DGpioRx.v` because it was FPGA-specific contamination
-inside a vendor Chisel-generated PHY file. The IP-boundary `BUFG`
-(`fpga/rtl/tidelink_rxclk_buf.sv`, gated by the boundary-only `USE_CLKBUF`
-parameter on the `axi_chiplet_controller` instance) is retained — the FPGA
-build now relies on the boundary BUFG plus the calibrator's best-of-sweep
-phase + bit-slip + IDELAYE2 path, not the in-PHY BUFG.
+**Attempted boundary-only experiment and revert (commits `ce91961` /
+`b9b26e2`):** on 2026-05-20 the in-PHY `g_clkbuf` branch was removed from
+`WavD2DGpioRx.v` in an attempt to confine all FPGA-specific logic to
+`fpga/rtl/` and keep the Chisel-generated vendor file clean. The experiment
+failed immediately on silicon: Vivado's auto-BUFG insertion placed a LUT on
+the clock tree to satisfy DRC (TIMING-14 + TIMING-17, approximately 1000
+unclocked cells), which wedged the calibrator FSM at state 0 in hardware.
+Reliability dropped from 89 % to 0 % lock rate (not the 60–70 % predicted
+by the pre-revert estimate). The commit was reverted. The in-PHY `g_clkbuf`
+branch is therefore load-bearing for the FPGA rig and must not be removed
+without a proper replacement.
 
-Expected FPGA reliability impact: the 16/16-lane lock rate is likely to
-regress from the in-PHY BUFG figure (≈ 89 %) toward the boundary-only
-baseline (≈ 60–70 % per historical b_clkbuf coverage). Convergence at the
-pair level (full link) is preserved by the calibrator's best-of-sweep
-search; total bring-up time may increase due to more per-lane retries
-within the autonomous bring-up script. If the regression measures worse
-than ≈ 60 % the in-PHY BUFG can be re-introduced as an explicit FPGA-only
-wrapper in `fpga/rtl/` (e.g. by adding a thin RTL wrapper that drives the
-`WavD2DGpio` clock inputs through `BUFG`s before they enter the vendor
-file); it should NOT live inside the vendor file again.
+**ASIC build path:** the `USE_CLKBUF` parameter is 0 in `tidelink_top.sv`.
+Elaboration prunes both the in-PHY `g_clkbuf` generate block and the
+boundary `BUFG` instantiation, so neither Xilinx primitive appears in the
+ASIC netlist. The ASIC synthesiser sees a passthrough clock path through the
+`WavClockMux` cells, which the foundry standard-cell clock tree insertion
+step drives correctly from the same recovered clock source. The parameter
+arrangement is confirmed in `docs/ASIC_HARD_IP_INVENTORY.md` and in the
+ASIC flist `flist/tidelink_top_full_asic.flist`.
 
-BUFG is a Xilinx global clock buffer primitive. On ASIC, the synthesised
-clock tree replaces it. The `USE_CLKBUF` parameter (default 0 in
-`tidelink_top`, ASIC) prunes the boundary BUFG entirely at elaboration —
-which is the correct path for the foundry standard-cell flow.
+**v2 deferred action:** the correct long-term solution is a thin RTL wrapper
+in `fpga/rtl/` that intercepts the `WavD2DGpio` clock inputs, routes them
+through `BUFG`s, and feeds them back in — replicating the `g_clkbuf`
+topology without touching the vendor file. This is architecturally clean and
+keeps the vendor file unmodified. It is a v2 task (see §4.6); the in-PHY
+`g_clkbuf` branch remains the v1 FPGA-rig clock fix.
 
 ### 1.4 25 MHz pad_clk rate
 
@@ -397,6 +406,20 @@ but is not integrated into `feat/td-combined`. The `tc_axis_*` interface ports
 on `tidelink_top.sv` are present as stubs. No TideChart protocol traffic has
 been exercised on the FPGA rig. This is a separate project with its own release
 timeline.
+
+### 4.6 ASIC purification of in-PHY USE_CLKBUF via fpga/rtl/ thin-wrapper escape hatch
+
+The in-PHY `g_clkbuf` generate block inside `WavD2DGpioRx.v` is FPGA-specific
+but lives inside a Chisel-generated vendor file (see §1.3). The intended
+long-term fix is a thin RTL wrapper in `fpga/rtl/` that drives the
+`WavD2DGpio` clock inputs through `BUFG` primitives before they enter the
+vendor file, allowing the vendor file to be kept unmodified and identical to
+the upstream Chisel output. The `g_clkbuf` block inside `WavD2DGpioRx.v` can
+then be removed. Until this wrapper exists, the in-PHY `g_clkbuf` branch is
+the only mechanism that prevents Vivado from inserting a LUT on the clock tree
+and wedging the calibrator FSM. This is a v2 task; its completion is a
+prerequisite for any future vendor file upgrade that would otherwise diff-merge
+the `g_clkbuf` block as a local modification.
 
 ---
 

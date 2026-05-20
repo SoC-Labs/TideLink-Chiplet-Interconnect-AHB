@@ -2,8 +2,8 @@
 
 | Field | Value |
 |-------|-------|
-| Document version | 1.0 (initial scoping draft) |
-| Branch / commit | `feat/td-combined` (local) |
+| Document version | 1.0.1 (initial scoping draft — re-tagged with correct commit subject; content unchanged from 1.0) |
+| Branch / commit | `feat/td-combined` (local; original content landed in `4def6e9` under an incorrect parallel-agent commit subject) |
 | Status | Pre-tapeout planning — feeds DFT engineer scoping |
 | Scope | TideLink v1 chiplet (subsystem ASIC), GPIO-PHY variant |
 | Target node | TSMC 65nm (`rf_16k` register-file macro, std-cell library) |

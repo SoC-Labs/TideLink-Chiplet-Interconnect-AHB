@@ -1,0 +1,154 @@
+// HAL Design Info — targeted lint_checking waivers for TideLink
+//
+// This file is passed via the -DESIGN_INFO option to HAL. It scopes
+// off specific lint rules in specific files/design units WITHOUT
+// disabling the rule globally — globally-disabled rules live in the
+// command-line args file (lint/hal.tcl) via -nocheck.
+//
+// Reference syntax: see
+//   /eda/cadence/xcelium/tools/hal/Methodology/Example/General/HAL_setup_files/design_info
+//   /eda/cadence/xcelium/tools/hal/files/hal.def §"merge_design_info_lint_pragmas"
+//
+
+// =====================================================================
+// CLKDMN — toggle-handshake CDC paths in tidelink_phc_cdc.sv
+// =====================================================================
+// Path 4 (set-time, hclk→phc_clk, lines 410-437) and Path 6 (frequency
+// adjust, hclk→phc_clk, lines 440-499) implement explicit data+pulse
+// toggle-handshake CDC: req_toggle is 2-flop synchronised, data is
+// held stable in the source-domain holding register while the
+// synchroniser settles, then registered on the destination side when
+// the req edge passes the second flop. The (* cdc_sync = "true" *)
+// attributes mark the synchroniser flops for downstream tools.
+//
+// HAL does not recognise the toggle-handshake pattern and reports
+// CLKDMN at the three destination-domain payload registers:
+//   p_hw_set_seconds         (tidelink_phc_cdc.sv:431)
+//   p_hw_set_nanoseconds     (tidelink_phc_cdc.sv:432)
+//   p_hw_adj_ns_incr_frac    (tidelink_phc_cdc.sv:494)
+//
+// These are by-construction false positives; the design is correct.
+// The scope is per-file so any NEW CLKDMN finding in any other file
+// remains an ERROR.
+lint_checking file=../src/rtl/tidelink_phc_cdc.sv
+{
+    CLKDMN off;
+}
+
+// =====================================================================
+// Vendor IP — axi-chiplet-controller (Wlink + I2C + autoneg)
+// =====================================================================
+// Upstream Chisel-generated (Wlink, WavAnd, WavD2DGpio) and Opencores
+// Verilog (Alex Forencich I2C master, axis_fifo). Out of TideLink RTL
+// scope; upstream maintenance owns these. The full elaboration
+// includes them so address translation, FC node and external GPIO
+// pads are resolved — but their lint findings are not TideLink
+// sign-off blockers.
+//
+// 107 RTLINI/SIZMIS in I2C, 5 RTLINI/GLTASR/TERMST in top wrappers,
+// 3 GLTASR/OUTRNG in WavAnd.v / WavD2DGpio.v.
+lint_checking file=../deps/axi-chiplet-controller/logical/i2c/rtl/*.v
+{
+    RTLINI off;
+    SIZMIS off;
+    GLTASR off;
+    OUTRNG off;
+    TERMST off;
+}
+
+lint_checking file=../deps/axi-chiplet-controller/logical/top/*
+{
+    RTLINI off;
+    SIZMIS off;
+    GLTASR off;
+    OUTRNG off;
+    TERMST off;
+    METAEQ off;
+    UNRCHS off;
+}
+
+lint_checking file=../deps/axi-chiplet-controller/logical/wlink/*.v
+{
+    RTLINI off;
+    SIZMIS off;
+    GLTASR off;
+    OUTRNG off;
+    TERMST off;
+}
+
+lint_checking file=../deps/axi-chiplet-controller/logical/bridges/*.v
+{
+    RTLINI off;
+    SIZMIS off;
+    GLTASR off;
+    OUTRNG off;
+    TERMST off;
+}
+
+lint_checking file=../deps/axi-chiplet-controller/logical/interfaces/*
+{
+    RTLINI off;
+    SIZMIS off;
+}
+
+// =====================================================================
+// Vendor IP — XHB500 AHB-to-AXI bridge (Cadence-generated)
+// =====================================================================
+// Cadence-generated XHB500 wrappers for AHB-master and AHB-slave
+// directions. Both directories are included (xhb_chiplet_mst and
+// xhb_chiplet_slv) which is the source of the -allowredefinition
+// requirement; the lint findings are duplicated likewise. Upstream
+// maintenance is by Cadence (XHB500 release).
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}
+
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}
+
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}
+
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_slv/logical/shared/verilog/xhb500_regd_slice/verilog/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}
+
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}
+
+lint_checking file=../deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/*
+{
+    GLTASR off;
+    TERMST off;
+    RTLINI off;
+    OUTRNG off;
+    SIZMIS off;
+}

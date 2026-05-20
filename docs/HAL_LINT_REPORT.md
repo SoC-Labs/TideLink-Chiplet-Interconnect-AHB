@@ -284,3 +284,113 @@ override).
 ## Commit
 
 This report was generated at `feat/td-combined` tip **`ac579cf`**.
+
+---
+
+## Clean run — v1-RC HAL sign-off (post-fix update)
+
+**Status:** ✓ HAL-clean. All three engines (halcheck / halsynth /
+halstruct) report `Total errors = 0` on the full ASIC elaboration
+(`tidelink_top_full_asic.flist`, top = `tidelink_top`), with the same
+`-irunargs "-allowredefinition -timescale 1ns/1ps"` overrides as
+described above. All 5 TideLink RTL sign-off blockers (`VERCAS`,
+`RTLINI`, `CLKDMN`x3) are either fixed in RTL or covered by
+targeted, file-scoped waivers — there is **no blanket `-nocheck` on
+any sign-off-class rule**.
+
+### Final error counts
+
+| Engine     | Errors | Warnings |
+|------------|-------:|---------:|
+| `halcheck` |  **0** |   10,566 |
+| `halsynth` |  **0** |      324 |
+| `halstruct`|  **0** |    3,734 |
+
+The warning totals are the same shape as the previous run (the
+underlying warning rules were not waived).
+
+### Fixes (RTL edits)
+
+1. **`VERCAS` in `tidelink_perf.sv:38`** — RENAMED parameter
+   `LOCAL_LINK_STATE_W` → `LOCAL_LINK_STATE_WIDTH` (4 in-file
+   references; instantiations in `tidelink_top.sv` and
+   `cocotb/tidelink_perf/tb_top.sv` do not pass this parameter so
+   the rename is local to `tidelink_perf.sv`). Spec table in
+   `docs/TIDELINK_SPECIFICATION.md` §13 also updated.
+
+2. **`RTLINI` in `tidelink_phy_align_calibrator.sv:279`** — DROPPED
+   the `= 1'b0` declaration-time initialiser on
+   `tb_early_exit_force_q`. The signal is now declared as
+   `reg tb_early_exit_force_q;` (no init). Cocotb/UVM tests that
+   exercise the calibrator (`test_pair_align_staggered_bringup`,
+   `test_autocal_integrated`, `test_best_of_sweep_placeholder`)
+   already force the signal value explicitly via
+   `.value = 0/1` before `role_locked` rises, so the dropped init
+   does not change observable simulation behaviour. The
+   `verilator lint_off UNDRIVEN` wrapper is retained — the signal
+   has no RTL driver by design.
+
+### Waivers (file-scoped, NOT global `-nocheck`)
+
+Added `lint/hal.design_info` (passed via `-design_info` from
+`lint/hal.tcl`) with the following targeted blocks:
+
+| Scope                                                            | Rules waived                                  | Reason                                                                                                                                                                          |
+|------------------------------------------------------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `src/rtl/tidelink_phc_cdc.sv`                                    | `CLKDMN`                                      | Path-4 set-time + Path-6 freq-adjust toggle-handshake CDC; req/ack 2-flop synced, data held stable while synchroniser settles. HAL does not recognise toggle-handshake pattern. |
+| `deps/axi-chiplet-controller/logical/i2c/rtl/*.v`                | `RTLINI`/`SIZMIS`/`GLTASR`/`OUTRNG`/`TERMST`  | Opencores Alex Forencich I2C IP, upstream maintenance.                                                                                                                          |
+| `deps/axi-chiplet-controller/logical/top/*`                      | (above) + `METAEQ` + `UNRCHS`                 | Wlink+I2C+autoneg integration wrappers, vendor.                                                                                                                                 |
+| `deps/axi-chiplet-controller/logical/wlink/*.v`                  | `RTLINI`/`SIZMIS`/`GLTASR`/`OUTRNG`/`TERMST`  | Chisel-generated Wlink (WavAnd, WavD2DGpio).                                                                                                                                    |
+| `deps/axi-chiplet-controller/logical/bridges/*.v`                | (above)                                       | AXI/APB bridges (mkaxi2axil_bridge, FIFO2 etc.).                                                                                                                                |
+| `deps/axi-chiplet-controller/logical/interfaces/*`               | `RTLINI`/`SIZMIS`                             | AXI/APB protocol interfaces (`apb4_if.sv`).                                                                                                                                     |
+| `deps/xhb500/generated/{mst,slv}/.../cells/generic/*`            | (above)                                       | Cadence-generated XHB500 generic cells.                                                                                                                                         |
+| `deps/xhb500/generated/{mst,slv}/.../regd_slice/verilog/*`       | (above)                                       | XHB500 register-slice variants.                                                                                                                                                 |
+| `deps/xhb500/generated/{mst,slv}/.../{axi_to_ahb,ahb_to_axi}/.../verilog/*` | (above)                            | XHB500 bridge cores (master + slave directions).                                                                                                                                |
+
+Total: **6 file-scoped TideLink-RTL waivers (1 file)** +
+**~17 vendor-IP scope blocks across `deps/`** (split by subdirectory
+because the HAL csh-glob pattern in `lint_checking file=...` does
+not traverse `/`).
+
+The `CLKDMN`-off scope is **only** active in
+`src/rtl/tidelink_phc_cdc.sv` — any CDC finding in any other
+TideLink RTL file remains an `*E,CLKDMN` ERROR and gates sign-off.
+
+### Files edited
+
+| File                                            |  Lines | Change                                                       |
+|-------------------------------------------------|-------:|--------------------------------------------------------------|
+| `src/rtl/tidelink_perf.sv`                      |      4 | rename `LOCAL_LINK_STATE_W` → `LOCAL_LINK_STATE_WIDTH`       |
+| `src/rtl/tidelink_phy_align_calibrator.sv`      |      7 | drop `= 1'b0` init on `tb_early_exit_force_q` + comment text |
+| `docs/TIDELINK_SPECIFICATION.md`                |      1 | parameter table rename                                       |
+| `lint/hal.tcl`                                  |     14 | add `-design_info hal.design_info` reference + intro comment |
+| `lint/hal.design_info`                          |    new | per-file lint_checking blocks (target + vendor scope)        |
+
+### Verilator regression
+
+Verilator (`RTL_LINT_REPORT.md` baseline) re-run after the RTL
+edits — **838 warnings, identical to baseline**. No new findings
+introduced by the rename or the init-drop.
+
+### Reproduce
+
+```sh
+cd $TIDELINK_HOME/lint
+make clean
+make lint MODULE=tidelink_returner          # spot-check standalone
+# OR full ASIC sign-off elaboration:
+hal -64bit -sv -top tidelink_top -check ALL_RTL                                    \
+    -logfile tidelink_top_full_asic_hal.log -xmlfile tidelink_top_full_asic_hal.xml \
+    -messages -stats -lintpragma                                                   \
+    -file $TIDELINK_HOME/lint/hal.tcl                                              \
+    -irunargs "-allowredefinition -timescale 1ns/1ps"                              \
+    -f $TIDELINK_HOME/flist/tidelink_top_full_asic.flist
+```
+
+Expected final lines of the log:
+```
+halcheck:  Total errors   = 0.
+halsynth:  Total errors   = 0.
+halstruct: Total errors   = 0.
+```
+

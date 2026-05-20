@@ -1116,7 +1116,7 @@ The APB register space exposes the estimator state via `PERF_CONG_STATE` at Regi
 |---|---|---|
 | `EWMA_ALPHA_SHIFT`   | 4   | 2..8 |
 | `DERIV_WINDOW_LOG`   | 8   | 6..12 |
-| `LOCAL_LINK_STATE_W` | 5   | fixed |
+| `LOCAL_LINK_STATE_WIDTH` | 5 | fixed |
 
 ---
 

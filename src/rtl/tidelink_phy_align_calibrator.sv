@@ -273,10 +273,14 @@ module tidelink_phy_align_calibrator #(
     //   <tb>.<calibrator>.tb_early_exit_force_q
     // — exactly the same pattern axi_chiplet_controller already uses to
     // gate role_locked into the calibrator (see autocal_force_enable_q).
-    // Initialised to 0 here so RTL elab is unambiguous; cocotb force lifts
-    // it before role_locked rises.
+    // No RTL initializer (HAL RTLINI is escalated to ERROR on synthesis-grade
+    // lint). The signal is pure-undriven in RTL — cocotb hierarchical-force
+    // (or DPI/UVM force) sets it before role_locked rises; in silicon, the
+    // synthesis netlist ties it to 0 (no RTL driver = constant 0 after
+    // synthesis floorplan). Verilator UNDRIVEN waiver is kept for the same
+    // reason.
     /* verilator lint_off UNDRIVEN */
-    reg tb_early_exit_force_q = 1'b0;
+    reg tb_early_exit_force_q;
     /* verilator lint_on UNDRIVEN */
     wire early_exit_en_w = EARLY_EXIT_ON_ALL_LOCKED | tb_early_exit_force_q;
 

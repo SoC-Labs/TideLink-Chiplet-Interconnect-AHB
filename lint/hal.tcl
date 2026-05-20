@@ -2,6 +2,22 @@
 //
 // Waive rules that conflict with AHB/AMBA/APB naming conventions or are
 // style-only and not relevant to design correctness.
+//
+// Targeted, file-/unit-scoped waivers live in `lint/hal.design_info` and
+// are loaded via the -design_info option below — those scope HAL rules
+// off in a specific file or design unit ONLY (e.g. CLKDMN-off in the
+// PTP toggle-handshake CDC). Global -nocheck below disables a rule
+// across the WHOLE design and should only be used for naming/style
+// rules that conflict with AMBA spec or for pre-existing-by-design
+// stylistic choices.
+
+// ── Design-scoped lint filters ────────────────────────────────────
+// Per-file / per-designunit waivers for documented false positives
+// (toggle-handshake CDC) and out-of-scope vendor IP. See hal.design_info.
+// Path is resolved relative to HAL's CWD (the lint Makefile invocation
+// is run from $TIDELINK_HOME/lint/).
+-design_info hal.design_info
+
 
 // ── Naming convention waivers ─────────────────────────────────────
 // AHB/APB signal names (hclk, hresetn, hsel, apbs_psel, etc.) are

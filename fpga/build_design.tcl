@@ -118,6 +118,15 @@ generate_target all [get_files ${design_name}.bd]
 # STEP 7: Update compile order
 update_compile_order -fileset sources_1
 
+# STEP 7.5: Verilog defines.
+# FPGA_DEBUG_ILA gates Xilinx-specific `(* mark_debug = "true" *)` attrs in
+# the chiplet RTL (deps/axi-chiplet-controller/logical/top/, .../i2c/rtl/).
+# Without it the attributes evaluate to nothing, so ASIC synthesis tools
+# (Design Compiler / Fusion Compiler / Genus) never see the vendor-specific
+# attribute. Defining it here keeps the marks live for Vivado's
+# insert_debug_core flow (controlled separately by FPGA_INSERT_DEBUG_CORE).
+set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
+
 # STEP 8: Synthesis
 puts "Starting synthesis..."
 launch_runs synth_1 -jobs $num_jobs

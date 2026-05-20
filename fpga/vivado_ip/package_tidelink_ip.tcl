@@ -58,6 +58,12 @@ set_property top tidelink_vivado_wrapper [current_fileset]
 
 update_compile_order -fileset sources_1
 
+# Carry FPGA_DEBUG_ILA into the packaged IP so its OOC synth context sees
+# the Xilinx-specific `(* mark_debug = ... *)` attributes in the chiplet
+# RTL. The ASIC flow doesn't define this macro, so the same RTL synthesises
+# cleanly on Design Compiler / Fusion Compiler.
+set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
+
 # STEP 1: Package the project as IP
 ipx::package_project -root_dir $component_lib \
     -vendor   $fpga_vendor \

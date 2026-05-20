@@ -1386,13 +1386,15 @@ module tidelink_top #(
     // hierarchical-force semantics; turning it on here means every TideLink
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
     axi_chiplet_controller #(
-        .AUTOCAL_ENABLE(1'b1),
-        // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
-        // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
-        .USE_IDELAY    (USE_IDELAY),
-        .USE_CLKBUF    (USE_CLKBUF),
-        // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
-        .USE_T3A       (USE_T3A)
+        .AUTOCAL_ENABLE(1'b1)
+        // NOTE 2026-05-20: USE_IDELAY/USE_CLKBUF/USE_T3A overrides dropped
+        // because the submodule pin (f902acc) is on the
+        // feat/i2c-autonomous-lock lineage which provides per-lane
+        // bit-slip/training (cf6b805) — superseding the td-idelay-slaveclk
+        // self-aligning-RX (USE_T3A) and IDELAYE2 (USE_IDELAY) experiments.
+        // The top-level params at lines 65-74 are retained for FPGA IP
+        // wrapper compatibility (component.xml threading) but now go
+        // unused at this instance.
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

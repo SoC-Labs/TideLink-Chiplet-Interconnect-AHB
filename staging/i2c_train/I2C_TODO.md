@@ -1,97 +1,101 @@
-# I²C Autonomous Lock — Open TODO
+# I²C Autonomous Lock — Outstanding TODO
 
-State as of 2026-05-20 (evening bench session).
-Branch `feat/i2c-autonomous-lock-integ` @ `a657306` (pushed), submodule @ `88fea5e` (pushed).
+State as of 2026-05-20 (late evening, after build #6 bench test).
+Branch `feat/i2c-autonomous-lock-integ` @ `d06d495` (pushed), submodule @ `6a757e2` (pushed).
 
-## Today's headline (2026-05-20 evening)
+## Headline status
 
-- ✅ **Autoneg works on silicon.** Diagnostic bitstream with the two fixes (`467b889` decouple `nego_driving` + `be5eed2` default `txn_step_nxt`) and 11 `mark_debug` probes wired into `u_dbg_int`. Master wins, slave loses, both `role_locked=1`, `nego_done=1`.
-- ✅ **Full I²C transaction observable via ILA**: PRESCALE/DATA/COMMAND AXIL writes handshake clean, cmd_fifo loads, i2c_master core enters busy, SDA pulled low (START), SCL clocks. `busy_seen_r` correctly latches.
-- ⚠️ **NEW Bug #3 discovered**: Mask phase (states 8/9/10) **never enters on silicon** despite NEGO_CFG[6]=1 (read back from chip). ILA armed on `state_r==9` for 30 s after fresh POR + autoneg kick: never triggered. `hs_result=0` on slave confirms master never wrote it. Sim takes this path correctly (per agent #1's test). **Same class as latch bug** — likely synth optimization pruning `nego_cfg_reg[6]` fanout.
-
----
-
-## Phase 1 — Verify the cocotb-agent RTL fix on silicon ✅ DONE
-
-- [x] Build with `467b889`+`be5eed2` + 11 `mark_debug` attrs + `FPGA_INSERT_DEBUG_CORE=1` (build #4 @ 16:07, build #5 @ 18:00)
-- [x] Convert + stage to mapstone, redeploy
-- [x] `run_i2c_test_fast.sh` shows `EVER i2c_addr=1`, `EVER sda_start_seen=1`, `EVER nego_done=1` on slave
-- [x] Master `NEGO_STATUS=0x055 (DONE, won=1)`; slave `NEGO_STATUS=0x195 (DONE, lost=1)`
-- [x] Both `role_locked=1` with correct roles
-- [x] ILA capture on `mst_axil_awvalid==1` showed the complete CLAIM→POLL sequence with all 13 internal signals correct
-
-## Phase 2a — Fix bug #3: mask phase synth-pruned (CANDIDATE FIX APPLIED)
-
-The autoneg FSM's `if (mask_hs_auto_en)` branch silently doesn't fire on silicon, even though `NEGO_CFG[6]` reads back as 1 and `nego_cfg_reg[6]` is in synth's source. Same class as the `txn_step_nxt` latch bug — sim tolerates, synth optimizes badly.
-
-- [x] **Applied**: `(* keep = "true" *) wire mask_hs_auto_en_kept = mask_hs_auto_en;` in `tidelink_autoneg.sv` lines 137 + `if (mask_hs_auto_en)` → `if (mask_hs_auto_en_kept)` (sub `72bc582`, parent `9f81947`).
-- [x] **Cocotb regression**: 33 tests green across 7 suites (wlink_pair 9/9 + 4/4 + 3/3, wlink_pair_full 3/3, autoneg_i2c_e2e 3/3, tidelink_autoneg 7/7, i2c_mask_selflock 3/3, i2c_clkstretch 1/1). No regression. State 4→9 transition visible in `wlink_pair_full` log.
-- [x] **Build #5**: kicked off with `FPGA_INSERT_DEBUG_CORE=1` (background task `bh7pvmvyk`, ~30 min).
-- [ ] **Bench verify (next cycle)**: rebuild + redeploy + autoneg kick. ILA armed on `state_r==9` should now trigger. `hs_result=0x01` on slave should appear after autoneg completes.
-
-If the keep-attribute doesn't take on silicon, escalation paths:
-- [ ] Add `(* dont_touch = "true" *)` on `nego_cfg_reg` declaration in chiplet controller.
-- [ ] Add `(* mark_debug = "true" *)` on `mask_hs_auto_en_kept` (forces preservation AND gives bench observability).
-- [ ] Restructure the FSM `if` to a `case (mask_hs_auto_en_kept)` block — synth tools sometimes optimize cases differently than ifs.
-- [ ] Spawn a cocotb agent to look for OTHER similar synth-only artifacts in the same pattern.
-
-## Phase 2b — If Phase 1 still shows the bus inert (SUPERSEDED — phase 1 done)
-
-The deploy workaround (`deploy_pair_autoneg.sh`, role_lock=0) did NOT make the master drive even with the FSM in POLL. ILA triggered on `(scl_o|sda_o|scl_t|sda_t)==0` for 15 s never fired. Either (a) the workaround didn't actually achieve role_lock=0 on silicon (sim says it should), or (b) there's a second bug only on silicon.
-
-- [ ] Add **PS-readable observability** for `role_is_master`, `nego_role_r`, `nego_driving`, `axl_state_r`, `axl_done_r`. Right now ROLE_STATUS only exposes the role_effective output; we can't tell whether the pad mux is actually selecting master vs slave outputs at the moment of CLAIM. Suggest adding a debug-mirror register that latches these on every CLAIM/POLL transition.
-- [ ] Read `i2c_master_axil` STATUS register directly. Currently inaccessible from PS during autoneg (bridge_axil is MUXed away when nego_driving=1). Either:
-  - Temporarily set NEGO_CFG=0 (disable autoneg → nego_driving=0 → bridge_axil enabled → read STATUS via the AXI4 bridge path)
-  - Or add a parallel PS-side read path for the i2c_master_axil status reg.
-- [ ] Manually drive a known-good I²C transaction via bridge_axil (write PRESCALE/DATA/COMMAND directly from PS, bypassing the autoneg FSM). If THIS doesn't drive the bus, the i2c_master_axil core has a deeper problem. If it DOES drive, the autoneg FSM's AXIL writes during nego_driving=1 are being lost somehow.
-- [ ] Compare HW ROLE_STATUS / NEGO_STATUS sample-by-sample against the cocotb agent's sim trace to find where they diverge.
-
-## Phase 3 — NEGO_PRIORITY semantics check
-
-When the deploy_pair_autoneg.sh ran (role_lock=0), the **slave's ROLE_STATUS bit 0 flipped 1→0 mid-run** (slave→master). The probe script gives master=1, slave=0xFFFF — observation suggests 0xFFFF wins. Either the script's priority assignment is inverted, or this was just both-boards-timing-out-and-claiming-master because the bus was inert. After Phase 1/2 unblocks the bus, retest:
-
-- [ ] Confirm master z2_02 with `NEGO_PRIORITY=1` becomes master, slave z2_03 with `NEGO_PRIORITY=0xFFFF` becomes slave.
-- [ ] If inverted: swap the script's assignment, OR fix the RTL priority comparison (whichever is wrong). Document in `nego_probe_fast.py` header.
-
-## Phase 4 — Test on-ribbon W9/V7 as alternative pinning
-
-Once P15/P16 + RTL fix is fully validated, **retest the original W9/V7 ribbon pinning** to see if the autonomous flow works there too (it should, if W9/V7 has external pull-ups). This would let the project ship on a single ribbon cable with no external Arduino-header harness.
-
-- [ ] Solder external 2.2–4.7 kΩ pull-ups from W9 and V7 each to 3.3 V on one board (J13_PIN_BUDGET option b). 3.3 V available at J13 pin 1.
-- [ ] Make a `pynq-z2-pair-all-w9v7` (and -flip-all) target variant that pins i2c_sda_io=W9, i2c_scl_io=V7. Keep the existing P15/P16 target as primary.
-- [ ] Build + deploy + test. Compare to P15/P16 result. If clean: document W9/V7 as the cleaner long-term choice (single ribbon, no off-ribbon harness).
-- [ ] Confirm the lane-7 remap collision warning in `J13_PIN_BUDGET.md` is still flagged (superproject 5d34baf moves pad_tx[7]/pad_rx[7] onto W9/V7).
-
-## Phase 5 — Cleanup + merge
-
-- [ ] Decide deploy-script disposition: if the RTL fix makes vanilla `deploy_pair.sh` work, retire `deploy_pair_autoneg.sh` (or keep as a documented alternative for cleaner-startup-trace).
-- [ ] Update `docs/SHORTCOMINGS.md` §14a / §14b — promote from "blocked" to "resolved" with bench evidence + RTL commits.
-- [ ] Update `staging/i2c_train/HW_VALIDATION_RESULTS.md` with final pass evidence (ILA capture of a successful CLAIM transaction).
-- [ ] Run UVM regression once more on parent `910b5c7` to confirm no top-system regression from the `nego_driving` decoupling.
-- [ ] Open MR feat/i2c-autonomous-lock-integ → feat/fpga-flow once stable. Reference the issue, link cocotb test_hw_repro_probe_seq.py as the HW-bug reproducer.
-
-## Phase 6 — Cocotb scope gap to fix in the test suite
-
-The cocotb agent's reproducer (`test_hw_probe_after_role_lock`) is now the canonical HW-bug regression. Before merging, harden it:
-
-- [ ] Add to `cocotb/wlink_pair/Makefile` so it runs in CI alongside `test_autoneg_i2c_e2e`.
-- [ ] Add a positive variant: same setup, but assert the master DOES drive scl_t==0 within N µs (acts as the regression guard for the gating bug).
-- [ ] Consider extending `test_autoneg_i2c_e2e` parameter matrix to cover the `ROLE_CFG-write-before-NEGO_CFG` ordering as a permutation.
+| Capability | Status | Where |
+|---|---|---|
+| Bug #1 (`nego_driving` gated by `role_locked`) | ✅ Silicon-fixed | sub `467b889` |
+| Bug #2 (synth latch on `txn_step_nxt`) | ✅ Silicon-fixed | sub `be5eed2` |
+| Bug #3 (missing `default` on `case (state_r)` collapsing mask gate) | ⚠️ Structural fix applied, **partial silicon improvement** but `hs_result=0` still | sub `6a757e2` |
+| Autoneg arbitration (roles assigned) | ✅ Silicon-confirmed | bench evidence |
+| I²C bus electrically functional on P15/P16 | ✅ Confirmed | slave `i2c_addr=1`, `sda_start_seen=1` |
+| Mask phase actually writes `hs_result` over I²C | ❌ Still failing on silicon | bench evidence |
+| Link training post-autoneg (rx mask) | ❌ Still `0x0000` | wlink_probe |
 
 ---
 
-## Quick reference — what's where right now
+## Phase A — Complete bug #3 diagnosis (CURRENT PRIORITY)
+
+After structural fix (sub `6a757e2`, build #6):
+- Master FSM now visits POLL→DONE quickly with won=1 (good)
+- Slave sees `EVER i2c_addr=1` consistently (better than build #5)
+- BUT `hs_result=0` on slave → master never wrote it via MASK_RES_TX I²C transaction
+- AND `hs_result=0` on master too → master's own hs_result also not updated (Fix B 0x21C sniffer)
+
+Hypotheses:
+- (a) FSM enters state 9 briefly but exits to DONE without doing MASK_RES_TX
+- (b) FSM enters states 9/10 but MASK_RES_TX itself fails silently
+- (c) NEGO_TIMEOUT fires too quickly — kills the mask sequence partway through
+- (d) Mask_byte_cnt / mask_retry counters have similar synth issues to the latch bug
+
+Next steps:
+- [ ] Re-arm ILA on `state_r==9` after fresh POR + autoneg kick. If it triggers → (a) or (b). If not → structural fix didn't take.
+- [ ] Re-arm ILA on `state_r==8` (MASK_RES_TX). If never triggers → (a). If triggers → master DOES attempt MASK_RES_TX but the I²C write doesn't reach slave's hs_result.
+- [ ] Read NEGO_STATUS bit 9 (mismatch) post-autoneg on master — if 1, mask comparison failed; if 0, comparison may not have run.
+- [ ] Check `mask_byte_cnt_r` / `mask_retry_r` declaration sites — apply same default-pattern hygiene as `txn_step_nxt` to be safe.
+- [ ] Trigger ILA on `axl_done_r==1` with pre-window — captures every AXIL completion; counting them tells us how many transactions the autoneg actually issued.
+
+## Phase B — Investigate W9/V7 on-ribbon I²C with bugs #1+#2+#3 all fixed
+
+User raised 2026-05-20: original W9/V7 inert test (2026-05-19) was with all 3 bugs present. The "weak pull" attribution was a partial misdiagnosis. Re-test on the fixed bitstream.
+
+- [x] XDC edited in-place on both pair-all + pair-flip-all: I²C → W9/V7 (SDA/SCL with FPGA `PULLTYPE PULLUP` weak internal pull). **Not yet committed.**
+- [ ] Build pair-all + pair-flip-all with W9/V7 XDC (~27 min).
+- [ ] Stage + deploy.
+- [ ] Reconnect ribbon (currently disconnected for P15/P16 testing), confirm 3-wire I²C jumper between Arduino headers is REMOVED, J13 ribbon back.
+- [ ] Bench-test: same `run_i2c_test_fast.sh` flow.
+- [ ] Expected outcomes:
+  - **Best case**: works as well as P15/P16 → single-ribbon I²C ships, no Arduino harness
+  - **Worse case**: bus inert → weak-pull WAS a real electrical issue, revert XDC to P15/P16
+- [ ] Either way, commit/document the result. If reverting, restore P15/P16 XDC.
+- [ ] If both work, consider making formal target variants (`pynq-z2-pair-w9v7-all` etc.) so we ship two pin options.
+
+## Phase C — Full link bring-up post-autoneg
+
+Even with autoneg complete and role-locked, the wlink RX mask is still 0:
+- `LaneMask: tx=0xffff rx=0x0000` on both boards
+- `idx0=0x55115500` lane-7 guard hasn't been verified
+- Link not "up" in the operational sense
+
+- [ ] Run `bringup_autocal_i2c.sh` after autoneg completes — does the link train?
+- [ ] If link trains: full operational success (with caveat that hs_result is still 0).
+- [ ] If link doesn't train: investigate why (phase calibration, idelay alignment, etc.). May be orthogonal to I²C — see `project_tidelink_fpga_bringup.md` for the related lane-lock work.
+
+## Phase D — Cocotb regression + sim/HW parity hardening
+
+- [ ] Wire `cocotb/wlink_pair/test_hw_repro_probe_seq.py` (agent #1) and `test_hw_repro_full.py` (agent #3) into the default Makefile + CI.
+- [ ] Wire `cocotb/wlink_pair_full/` (agent #4 BD-IP harness + post-synth) into CI as periodic (full BD harness is slow).
+- [ ] Add a regression test in cocotb that asserts the autoneg's `case (state_r)` has a default — would have caught bug #3 in sim if the case-coverage were checked.
+- [ ] Add a regression test that fails sim if any `always_comb` block has a missing default (catches bug #2-like latches).
+
+## Phase E — Documentation + merge
+
+- [ ] Update `docs/SHORTCOMINGS.md` §14a/§14b — promote from "blocked" to "resolved (bugs #1/#2)" + "partial (bug #3 needs phase A completion)".
+- [ ] Update `staging/i2c_train/MERGE_HANDOFF.md` with new commits.
+- [ ] Decide deploy-script: vanilla `deploy_pair.sh` is now sufficient (bug #1 fix means strap-lock isn't a blocker); retire `deploy_pair_autoneg.sh` or keep as alternative.
+- [ ] Open MR feat/i2c-autonomous-lock-integ → feat/fpga-flow once Phase A complete + Phase B decided.
+
+## Phase F — ASIC-side considerations (v1 release)
+
+Per memory note [v1 ASIC target = 100 MHz GPIO PHY], the chiplet ships on ASIC. The structural bug #3 fix (`default:` on case) is ASIC-portable (no Xilinx attributes), which is the right pattern for v1.
+
+- [ ] Verify the autoneg + mask-phase flow works at 100 MHz ASIC apb_clk (vs 50 MHz on FPGA). I²C prescale needs adjusting.
+- [ ] Lint-clean the autoneg + chiplet RTL — agent #2's latch fix and the case-default fix removed two synth warnings; ensure no others remain.
+
+## Reference — branch state
 
 | Item | Location |
 |---|---|
-| Branch tip (parent) | `feat/i2c-autonomous-lock-integ` @ `910b5c7` |
-| Submodule tip | `467b889` (autoneg: decouple nego_driving from role_locked) |
-| Worktree | `/tmp/i2c_wt` |
-| New cocotb HW-repro test | `cocotb/wlink_pair/test_hw_repro_probe_seq.py` |
-| Bench artefacts (current) | `mapstone-dev:~/tidelink_hwval/{tidelink,tidelink-flip}.{bit,bin,hwh,ltx}` (built from `3de5ebe`, no RTL fix yet) |
-| Bench artefacts (next) | Will overwrite same path once farm build `b6suzp3z0` completes |
-| JTAG access | `mapstone-dev.ecs.soton.ac.uk` hw_server :3121, targets `Z2_0[1-4]_TULA` |
-| Deploy script variants | `deploy_pair.sh` (vanilla, sets role_lock=1) / `deploy_pair_autoneg.sh` (workaround, leaves role_lock=0) |
-| HW probe | `run_i2c_test_fast.sh` → orchestrates `nego_probe_fast.py` on both boards |
-| ILA capture playbook | `staging/i2c_train/HW_VALIDATION_RESULTS.md` §4 (also Phase 1/2 here) |
-| Lease | bridge1, still held by mapstone-dev as of writeup |
+| Parent integ branch tip | `feat/i2c-autonomous-lock-integ` @ `d06d495` |
+| Submodule tip | `feat/i2c-autonomous-lock` @ `6a757e2` |
+| Bench artefacts (build #6, structural fix) | `mapstone:~/tidelink_hwval/` |
+| Diagnostic TCL | `staging/i2c_train/ila_diag_capture.tcl` |
+| Cocotb regression | 33 tests across 7 suites, all green |
+| Other agent's integration | `feat/td-combined` (separate lineage, has structural fix + lane-lock work; see [project_tidelink_consolidated_bringup_branch]) |
+
+## Reference — open uncommitted changes in `/tmp/i2c_wt`
+
+- Both pair-all + pair-flip-all XDCs modified for W9/V7 retest (Phase B item — not yet committed/built/tested)

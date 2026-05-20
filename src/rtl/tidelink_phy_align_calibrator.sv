@@ -198,7 +198,13 @@ module tidelink_phy_align_calibrator #(
     //     cocotb/UVM tests whose timing assumptions depend on the early
     //     exit set this to 1 (via the tb_early_exit_force_q hierarchical-
     //     force hook below) without re-elaborating the design.
-    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b0
+    // 2026-05-21: Default flipped 0 -> 1. The §9.9 best-of-sweep policy
+    // (commit 0d85843) was rejecting transient locks on marginal-eye
+    // lanes 0+7 that first-match-wins would have accepted. Per
+    // docs/REGRESSION_CANDIDATE_HUNT.md candidate #2. Reverting to
+    // §9.7 first-match-wins behaviour to restore morning's 14+/16
+    // lock-rate.
+    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b1
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high

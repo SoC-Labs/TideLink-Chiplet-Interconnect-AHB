@@ -63,11 +63,8 @@ module tidelink_top #(
     // the packaged IP's component.xml — no preprocessor define needed; see
     // tidelink_idelay_rx.sv header for why the old `ifdef was removed).
     parameter USE_IDELAY = 1'b0,
-    // §9 clock fix: IP-boundary BUFG on the recovered RX clock (sim/ASIC
-    // default 0; FPGA wrapper sets 1, carried in component.xml). See
-    // fpga/rtl/tidelink_rxclk_buf.sv. NB: the in-PHY USE_CLKBUF restructure
-    // inside WavD2DGpioRx was removed (ASIC purification, 2026-05-20); this
-    // parameter now drives ONLY the IP-boundary BUFG.
+    // §9 clock fix: recovered-RX-clock BUFG forward (sim/ASIC default 0;
+    // FPGA wrapper sets 1, carried in component.xml). tidelink_rxclk_buf.sv.
     parameter USE_CLKBUF = 1'b0,
     // §9 T3a (2026-05-19): per-lane self-aligning RX comma hunt (sim/ASIC
     // default 0; FPGA wrapper sets 1, carried in component.xml). Each

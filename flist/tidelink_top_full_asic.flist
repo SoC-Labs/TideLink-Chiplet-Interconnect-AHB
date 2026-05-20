@@ -180,8 +180,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_mast
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // §9 PHY alignment: per-lane lock checker + auto-cal FSM
-//   tidelink_phy_align_regs.sv (interim shim) removed — registers live in
-//   Region 8 of the TideLink config APB @ MMIO 0x4403_2100.
+//   tidelink_phy_align_regs.sv: APB interim shim for SW override registers
+//   (bit_slip + training_mode) and per-lane status read-backs. Restored
+//   2026-05-20 — required by axi_chiplet_controller (sub f902acc on the
+//   i2c-autonomous-lock lineage instantiates u_phy_align at line 949).
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
 

@@ -273,15 +273,23 @@ module tidelink_phy_align_calibrator #(
     //   <tb>.<calibrator>.tb_early_exit_force_q
     // — exactly the same pattern axi_chiplet_controller already uses to
     // gate role_locked into the calibrator (see autocal_force_enable_q).
-    // No RTL initializer (HAL RTLINI is escalated to ERROR on synthesis-grade
-    // lint). The signal is pure-undriven in RTL — cocotb hierarchical-force
-    // (or DPI/UVM force) sets it before role_locked rises; in silicon, the
-    // synthesis netlist ties it to 0 (no RTL driver = constant 0 after
-    // synthesis floorplan). Verilator UNDRIVEN waiver is kept for the same
-    // reason.
-    /* verilator lint_off UNDRIVEN */
+    //
+    // The register is reset-driven (clears to 1'b0 on rst, holds otherwise)
+    // so VCS/Xcelium start with a deterministic 0 instead of X. Cocotb /
+    // DPI / UVM `force` on the hierarchical handle still overrides the flop
+    // exactly as before — the always_ff body never writes the register in
+    // normal operation, so the force is uncontested once asserted. In
+    // silicon, synthesis sees a flop that resets to 0 with no enable path,
+    // which constant-prop / sequential-opt collapse to a tie-0 (functionally
+    // identical to the previous "pure-undriven" pattern but HAL-clean — no
+    // RTLINI finding, no UNDRIVEN waiver needed for Verilator).
     reg tb_early_exit_force_q;
-    /* verilator lint_on UNDRIVEN */
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            tb_early_exit_force_q <= 1'b0;
+        end
+        // else: hold value — cocotb/UVM hierarchical force is the only writer
+    end
     wire early_exit_en_w = EARLY_EXIT_ON_ALL_LOCKED | tb_early_exit_force_q;
 
     // -------------------------------------------------------------------------

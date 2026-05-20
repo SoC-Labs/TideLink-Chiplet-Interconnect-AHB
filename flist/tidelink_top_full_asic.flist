@@ -1,6 +1,17 @@
 +incdir+${TIDELINK_HOME}/src/rtl
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 
+// ASIC TSMC65 cell-substitution gate (gaps B + C of
+// docs/ASIC_HARD_IP_INVENTORY.md) — DISABLED in v1: the explicit
+// SDFFRPQ/SDFFSRPQ reset-pin endpoints added by the substitution were
+// not balanced by FC's reset-tree inference, regressing hold WNS from
+// −0.00 ns to −4.71 ns (scen_fast, 2026-05-20). The substitution
+// wrappers ARE in-tree (deps/.../WavDemet*.v ifdef blocks, plus
+// tsmc/WavClockMux_tsmc65.v) — re-enabling needs a timing-aware
+// integration (constrained reset propagation, hold-fix pass after CTS).
+// Uncomment to opt-in once that work is done:
+//+define+ASIC_TSMC65
+
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
@@ -75,7 +86,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/TideLinkToWlink.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/tsmc/WavClockMux_tsmc65.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpio.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioRx.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioTx.v

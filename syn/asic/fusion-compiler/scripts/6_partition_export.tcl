@@ -51,18 +51,93 @@ write_verilog -include {pg_objects} ${fc_outputs}/${top_module}.pg.v
 puts "INFO: \[fc_abstract\] write_sdc"
 write_sdc -output ${fc_outputs}/${top_module}.sdc
 
+# Per-scenario SDF + SPEF for back-annotated gate-level sim and chip-top
+# hierarchical STA. write_sdf / write_parasitics operate on the current
+# scenario, so iterate every ACTIVE scenario. A bare ${top}.sdf alias
+# (slow-biased: scen_slow if present, else the first active scenario)
+# is also emitted so existing chip-top sim scripts that expect the
+# un-suffixed name keep working.
+set active_scenarios [list]
+foreach_in_collection s [get_scenarios -quiet -filter active==true] {
+    lappend active_scenarios [get_attribute $s name]
+}
+if {[llength $active_scenarios] == 0} {
+    puts "WARNING: \[fc_abstract\] no active scenarios — skipping SDF/SPEF"
+} else {
+    puts "INFO: \[fc_abstract\] SDF/SPEF for scenarios: $active_scenarios"
+    set sdf_alias_scen [expr {[lsearch -exact $active_scenarios scen_slow] >= 0 \
+                              ? "scen_slow" : [lindex $active_scenarios 0]}]
+    foreach scen $active_scenarios {
+        current_scenario $scen
+        puts "INFO: \[fc_abstract\] write_sdf ($scen)"
+        write_sdf ${fc_outputs}/${top_module}.${scen}.sdf
+        if {$scen eq $sdf_alias_scen} {
+            write_sdf ${fc_outputs}/${top_module}.sdf
+        }
+        puts "INFO: \[fc_abstract\] write_parasitics SPEF ($scen)"
+        if {[catch {write_parasitics -format SPEF \
+                        -output ${fc_outputs}/${top_module}.${scen}.spef} perr]} {
+            puts "WARNING: \[fc_abstract\] SPEF write failed for $scen: $perr"
+            puts "WARNING: \[fc_abstract\]   (signoff-stage update_timing -full may have failed —"
+            puts "WARNING: \[fc_abstract\]    chip-top must re-extract through the block instead)"
+        }
+    }
+}
+
 puts "INFO: \[fc_abstract\] write_def"
 write_def ${fc_outputs}/${top_module}.def
 
 puts "INFO: \[fc_abstract\] write_lef"
 write_lef ${fc_outputs}/${top_module}.lef
 
-# Optional: GDSII for chip-finishing. Skipped here because GDS write
-# requires technology layer-mapping config that is tech-specific;
-# uncomment + add a layer-map once layer alignment with the top-level
-# GDS merge step is settled.
-# puts "INFO: \[fc_abstract\] write_gds"
-# write_gds -hierarchical ${fc_outputs}/${top_module}.gds
+# Boundary UPF — pg_mesh.tcl builds PD_TOP + VDD/VSS supply ports/nets
+# with create_power_domain / create_supply_*. A chip-top that wraps this
+# partition in its own (possibly multi-rail) power intent needs the
+# block's supply-set as UPF: which ports are power, that there is a
+# single PD_TOP domain, and (by their absence) that no isolation /
+# level-shift / retention strategy is required at the boundary.
+puts "INFO: \[fc_abstract\] save_upf"
+if {[catch {save_upf ${fc_outputs}/${top_module}.upf} uerr]} {
+    puts "WARNING: \[fc_abstract\] save_upf failed: $uerr"
+    puts "WARNING: \[fc_abstract\]   (chip-top must treat VDD/VSS as plain supply ports"
+    puts "WARNING: \[fc_abstract\]    from the .pg.v netlist)"
+}
+
+# GDSII hard macro — partition geometry plus the referenced std-cell +
+# rf_16k GDS streams merged in so the output is self-contained for
+# chip-finish DRC/LVS. Without -merge_files the emitted GDS contains
+# only the partition's metal/via shapes and chip-top would have to
+# merge the std-cell + macro GDS itself at LVS time.
+puts "INFO: \[fc_abstract\] write_gds (merging std-cell + rf_16k streams)"
+set gds_layer_map [expr {[info exists ::env(GDS_LAYER_MAP)] ? $::env(GDS_LAYER_MAP) : ""}]
+set gds_merge_files [list]
+foreach v {GDS_STDCELL GDS_MEM_RF16K} {
+    if {[info exists ::env($v)] && [file exists $::env($v)]} {
+        lappend gds_merge_files $::env($v)
+    } else {
+        puts "WARNING: \[fc_abstract\] $v missing or path not found — skipping merge"
+    }
+}
+if {$gds_layer_map ne "" && [file exists $gds_layer_map]} {
+    # Std-cell layout views are resolved from -merge_files, not the .ndm.
+    # write_gds fires GDS-034 per lib-cell during the view-lookup pass
+    # even when the cell IS in the merge stream (verified: grep on the
+    # merge GDS finds every warned cell). Suppress the noise around the
+    # write so the 400+ benign warnings don't drown out real errors.
+    suppress_message GDS-034
+    write_gds \
+        -hierarchy all \
+        -layer_map $gds_layer_map \
+        -layer_map_format icc2 \
+        -merge_files $gds_merge_files \
+        -compress \
+        ${fc_outputs}/${top_module}.gds
+    unsuppress_message GDS-034
+    puts "INFO: \[fc_abstract\] GDS at ${fc_outputs}/${top_module}.gds"
+} else {
+    puts "WARNING: \[fc_abstract\] GDS_LAYER_MAP not found at '$gds_layer_map' — skipping GDS write"
+    puts "WARNING: \[fc_abstract\]   chip-top will need to stream the partition itself"
+}
 
 #-----------------------------------------------------------------------------
 # Manifest of delivered products

@@ -131,6 +131,19 @@ initialize_floorplan \
 source ${fc_dir}/scripts/place_memories.tcl
 
 #-----------------------------------------------------------------------------
+# Port-to-edge assignment — Wlink PHY on TOP, AHB busses on BOTTOM,
+# APB + PHC time on LEFT, clocks/resets/DFT on RIGHT.
+#-----------------------------------------------------------------------------
+source ${fc_dir}/scripts/place_pins.tcl
+
+#-----------------------------------------------------------------------------
+# Power-ground mesh — VDD/VSS supply nets, M1 std-cell rails, M5/M6
+# mesh, and macro long-pin straps. Built BEFORE compile_fusion runs
+# std-cell placement so the placer dodges the straps.
+#-----------------------------------------------------------------------------
+source ${fc_dir}/scripts/pg_mesh.tcl
+
+#-----------------------------------------------------------------------------
 # Pre-compile sanity checks
 #-----------------------------------------------------------------------------
 file mkdir $fc_reports

@@ -1,5 +1,12 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_formal clean_lint clean_syn
 
+# ── ASIC PnR / GDSII flow ────────────────────────────────────────────────
+# Exposes `make fc`, `make gdsii`, `make fc_lec`, `make fc_etm`, `make
+# fc_all`, `make asic_stage`, `make asic_clean` at the project root.
+# Override the partition cut with ASIC_MODULE=<name>; default is
+# tidelink_top_full (full chiplet subsystem).
+include flows/makefile.asic
+
 # Clean all verification, lint, and synthesis directories
 clean_all: clean_uvm clean_cocotb clean_formal clean_lint clean_syn
 	@echo "All clean targets completed"

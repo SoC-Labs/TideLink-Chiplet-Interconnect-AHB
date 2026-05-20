@@ -74,7 +74,24 @@ export DB_FF          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m
 export TLUPLUS_PATH   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/synopsys_tluplus/1p9m_6x2z
 export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
 
+# ── FC GDS stream-out — layer map + macro/stdcell GDS to merge ─────────────
+# write_gds in 6_partition_export.tcl needs (a) a Synopsys-format layer
+# map and (b) the GDS of every reference cell (std cells + rf_16k macro)
+# so the emitted stream-out is self-contained for chip-finish DRC/LVS.
+# Without -merge_files the partition GDS contains only the metal/via
+# shapes the FC flow created — chip-top would have to merge the
+# std-cell + rf_16k GDS itself at LVS time.
+export GDS_LAYER_MAP   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/stream_out_layer_map
+export GDS_STDCELL     ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/gds2/sc12_cln65lp_base_rvt.gds2
+export GDS_MEM_RF16K   ?= $(MEM_BASE)/rf_16k/rf_16k.gds2
+export GDS_MERGE_FILES ?= $(GDS_STDCELL) $(GDS_MEM_RF16K)
+
 # ── Design constraints ─────────────────────────��───────────────────────────
+# TideLink top has two boundary clocks (hclk + phc_clk) plus a Wlink
+# user_ref_clk and a DFT scan_clk. The shared FC.read_design.tcl creates
+# the primary clock (hclk @ 4 ns); the FC inputs/constraints.sdc overlay
+# adds phc_clk, the Wlink ref clock, the scan clock and async clock-group
+# definitions so each domain has its own setup window.
 export CLK_NAME        ?= hclk
 export CLK_PERIOD      ?= 4.0
 export CLK_UNCERTAINTY ?= 0.35

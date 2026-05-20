@@ -1,0 +1,65 @@
+# ASIC flow includes — sourced by the top-level Makefile.
+#
+# Mirrors ahb_qspi/flows/makefile.asic: exposes the partition flow as
+# top-level targets so the project root looks like a single drop point.
+# The actual work delegates into syn/asic/fusion-compiler (PnR + GDSII)
+# and imp/ASIC (chip-top drop staging).
+
+TIDELINK_HOME ?= $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+
+ASIC_MODULE ?= tidelink_top_full
+
+# --- top-level entry points -----------------------------------------------
+.PHONY: fc gdsii fc_lec fc_etm fc_all asic_stage asic_clean
+
+# Run the FC partition flow through to fc_abstract (hard-macro deliverables).
+fc:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc MODULE=$(ASIC_MODULE)
+
+# Convenience alias — fc + report the GDSII file at the end.
+gdsii:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler gdsii MODULE=$(ASIC_MODULE)
+
+# RTL ↔ post-layout LEC sign-off.
+fc_lec:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_lec MODULE=$(ASIC_MODULE)
+
+# PrimeTime boundary ETM.
+fc_etm:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_etm MODULE=$(ASIC_MODULE)
+
+# fc + LEC (CI / tape-in).
+fc_all:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_all MODULE=$(ASIC_MODULE)
+
+# Copy the partition deliverables into imp/ASIC/$(ASIC_MODULE)/ — the
+# canonical chip-top drop location.
+asic_stage:
+	$(MAKE) -C $(TIDELINK_HOME)/imp/ASIC gdsii MODULE=$(ASIC_MODULE)
+
+# Wipe all FC / PT / staging artefacts.
+asic_clean:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler clean
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/primetime clean || true
+	$(MAKE) -C $(TIDELINK_HOME)/imp/ASIC clean MODULE=$(ASIC_MODULE) || true
+
+# --- flist generator (DC-style) -------------------------------------------
+# Optional Synopsys-style flist generator — emitted under
+# imp/ASIC/$(MODULE)/flist/ when the soctools_flow `filelist_compile.py`
+# helper is available on PATH. Mirrors ahb_qspi/flows/makefile.asic's
+# `flist_synopsys` target. Off by default — the FC flow consumes the
+# Verilog flist directly, but a chip-top DC re-synth pass can use this.
+TCL_ASIC_FLIST_DIR        := $(TIDELINK_HOME)/imp/ASIC/$(ASIC_MODULE)/flist
+DC_OUTPUT_FILELIST        := $(TCL_ASIC_FLIST_DIR)/dc_flist.tcl
+DESIGN_VC                 ?= $(TIDELINK_HOME)/flist/$(ASIC_MODULE)_asic.flist
+
+.PHONY: flist_synopsys
+flist_synopsys:
+	@mkdir -p $(TCL_ASIC_FLIST_DIR)
+	@if command -v filelist_compile.py >/dev/null 2>&1; then \
+	    filelist_compile.py -t -s -a -f $(DESIGN_VC) -o $(DC_OUTPUT_FILELIST); \
+	    echo "INFO: DC flist at $(DC_OUTPUT_FILELIST)"; \
+	else \
+	    echo "WARN: filelist_compile.py not on PATH — skipping DC flist generation"; \
+	    echo "WARN:   (set SOCLABS_SOCTOOLS_FLOW_DIR or install the soctools_flow helper)"; \
+	fi

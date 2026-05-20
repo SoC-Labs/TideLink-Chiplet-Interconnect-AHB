@@ -88,7 +88,7 @@ ARTEFACTS="${ARTEFACTS:-/tmp/tidelink_deploy}"
 
 MP="${MP:-0}"                 # master phase (0 = let calibrator own it)
 SP="${SP:-0}"                 # slave  phase (0 = let calibrator own it)
-MAX_RETRIES="${MAX_RETRIES:-12}"
+MAX_RETRIES="${MAX_RETRIES:-20}"
 SETTLE="${SETTLE:-2}"         # seconds after recal (S_HOLD is sub-10ms @25MHz,
                               #  HOLD_CYCLES=8*128*32=32768 cyc; 2s ≫ that)
 BESTOF="${BESTOF:-3}"         # quick reads/iter; report BEST popcount (locked

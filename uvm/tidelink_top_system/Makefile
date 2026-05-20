@@ -234,7 +234,6 @@ VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
 
 # Performance counter
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_regs.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
 
 # TideLink top module

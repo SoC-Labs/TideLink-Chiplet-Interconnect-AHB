@@ -1,10 +1,137 @@
-# HW Validation — Final Results (2026-05-19)
+# HW Validation — Results across two bench sessions (2026-05-19 / 05-20)
 
 Companion to `HW_VALIDATION_PLAN.md`. This is what actually happened when
 the plan was executed end-to-end on the live `bridge1` pair (z2_02/z2_03)
-from feat/i2c-autonomous-lock-integ @ **7b1697c** (BD Edit 1 + ila_i2c).
+across two consecutive bench sessions. Each session moved the diagnosis
+one layer deeper. Read top to bottom in date order.
+
+**2026-05-20 status (latest):** Two confirmed bugs found and fixed
+(W9/V7 weak-pull ruled out → repinned to P15/P16 dedicated Arduino I²C;
+`role_lock=1` from deploy strap was blocking `nego_driving` → deploy
+script variant skips the strap-lock). Master autoneg FSM now advances
+past CLAIM into POLL, **but** master's i2c_master core *still* doesn't
+physically drive the bus. ILA shows `i2c_*_t = 1` continuously. Next:
+trace why TXN_PRESCALE→TXN_DATA→TXN_COMMAND completes (FSM advances)
+without the i2c_master_axil core actually starting an I²C transaction.
+
+**2026-05-19 status (earlier):** the W9/V7 inert result triggered a
+repin to PYNQ-Z2's dedicated Arduino I²C pads **P15=SCL / P16=SDA**
+(TUL on-board pull-ups) — see §8 below. Bitstreams rebuilt; bench
+follow-up is a 3-wire Dupont harness between the two Arduino shield
+headers, not external pull-ups on W9/V7.
 
 ---
+
+## A. 2026-05-20 bench session — `role_lock=1` strap blocking autoneg
+
+Re-built bitstreams with the P15/P16 repin (commit `3de5ebe`) and
+deployed on bridge1. JTAG ILA available remotely via mapstone-dev's
+`hw_server` on TCP:3121, with FT2232 cables `Z2_01_TULA`..`Z2_04_TULA`.
+
+### A.1 First probe — bus still inert (predicted nothing)
+
+`run_i2c_test_fast.sh` with the standard `deploy_pair.sh` (which writes
+`ROLE_CFG=0x2/0x3` with `lock=1`):
+
+- Master z2_02: state stuck in `CLAIM` (NEGO_STATUS=0x003) from t=0.
+- Slave z2_03: `WAIT` → `CLAIM` at t=2624ms.
+- `EVER i2c_busy = i2c_addr = sda_start_seen = 0` on both, across 5 s.
+
+### A.2 Master JTAG ILA capture — i2c_master never drives
+
+Captured 4096 samples of `ila_i2c` (probes scl/sda × i/o/t) via Vivado
+HW Manager on mapstone-dev. **Every sample showed (1,1,1,1,1,1)**:
+- `i2c_scl_t = i2c_sda_t = 1` — tristate **always HiZ** (master never
+  commands the IOBUF to drive low)
+- `i2c_scl_i = i2c_sda_i = 1` — readback idle-high (pull-ups working)
+
+This ruled out (A) weak pull, (B) ribbon, (C) pin assignment, (D) BD
+wiring. Locked focus onto **(D') master core not driving / autoneg-to-
+i2c-master gating bug**.
+
+### A.3 Root cause #1 — `role_lock=1` strap kills `nego_driving`
+
+Found in [`axi_chiplet_controller.sv`](../../deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv):
+
+```verilog
+// line 299
+wire role_in_nego = nego_en && !role_locked;
+// line 597
+assign nego_driving = role_in_nego && (state in {WAIT,CLAIM,POLL,MASK_*});
+// lines 604-612 — autoneg FSM's AXIL signals are MUXed to i2c_master core
+// only when nego_driving == 1; else mst_axil_* takes the dormant
+// bridge_axil_* path.
+assign mst_axil_awvalid = nego_driving ? fsm_axil_awvalid : bridge_axil_awvalid;
+```
+
+The deploy script `deploy_pair.sh` writes `ROLE_CFG` with `lock=1` at
+deploy time (legacy of the manual sw_coord_autocal flow). `role_lock_reg`
+is W1S with POR-only clear. So at the moment the autoneg FSM tries to
+drive AXIL transactions, `role_in_nego = nego_en && !1 = 0` and the
+autoneg's signals are MUXed away from the i2c_master core — which sits
+in HiZ forever.
+
+Sim doesn't hit this because cocotb tests don't set the strap-lock — the
+RTL comes out of reset with `role_locked=0`, autoneg writes `NEGO_CFG=
+0x61`, and `role_in_nego=1` so `nego_driving` can assert.
+
+### A.4 Fix — `deploy_pair_autoneg.sh` skips the strap-lock
+
+Staged on `mapstone:~/tidelink_hwval/`. Variant of `deploy_pair.sh` that:
+- Loads bitstream + .hwh
+- Writes strap GPIO (preferred role hint)
+- Writes debug_unlock GPIO
+- Writes PAIR_BASE_ADDR + PHY_CTRL phase
+- **Skips the `ROLE_CFG` strap-lock write** so `role_locked=0` at POR.
+
+After this deploy on power-cycled boards, `ROLE_CFG=0x00000000` (verified
+in deploy output, `role_lock=0`).
+
+### A.5 Second probe — bus *still* inert, but FSM advances
+
+`run_i2c_test_fast.sh` post-fix:
+
+- Master z2_02: state **`POLL`** (NEGO_STATUS=0x004) — **advanced past CLAIM!**
+  ROLE_STATUS=0x0 (locked=0).
+- Slave z2_03: `WAIT` (0ms) → `CLAIM` (2624ms). ROLE_STATUS bit 0 flipped
+  1→0 (slave→master) mid-run — possibly the autoneg arbitration picking
+  the wrong winner (NEGO_PRIORITY comparison direction may be inverted
+  from what the probe script assumes: script gives master=1, slave=0xFFFF;
+  the slave's role flipping to master suggests 0xFFFF wins).
+- Master JTAG ILA re-capture: still **4096/4096 samples of (1,1,1,1,1,1)**.
+  Master FSM is in POLL but `i2c_*_t` never falls.
+
+### A.6 Current open mystery
+
+The autoneg FSM transitioned `IDLE → INIT → WAIT → CLAIM → POLL` —
+meaning `TXN_PRESCALE → TXN_DATA → TXN_COMMAND` all completed (each step
+advances on `axl_done_r`, which means the AXIL write handshake succeeded
+against `i2c_master_axil`). Yet the i2c_master core never physically
+drives SCL/SDA low.
+
+Hypotheses to test next:
+1. The AXIL writes complete (`bready`) but the i2c_master_axil core
+   doesn't actually issue the I²C transaction — perhaps a missing enable
+   bit, or a clock-domain crossing that's slow enough that 4096 samples
+   (~82 µs at 50 MHz) don't see the transaction kick off.
+2. ILA capture window misses the transient — need a triggered capture
+   (trigger on `i2c_scl_t == 0`) with a re-arm cycle.
+3. NEGO_PRIORITY arbitration is inverted from the probe script's
+   assumption — both boards may be trying to become master simultaneously
+   and the bus collides at a level the ILA isn't capturing.
+
+A parallel cocotb agent (launched 2026-05-20 ~13:35) is replicating the
+exact `nego_probe_fast.py` write sequence in sim to see whether the bug
+reproduces there. Findings pending.
+
+### A.7 Lease
+
+Still held by mapstone-dev. **Not released** at session end pending
+follow-up. Will release before merging anything.
+
+---
+
+## B. 2026-05-19 bench session (earlier) — W9/V7 channel inert
 
 ## TL;DR
 
@@ -14,7 +141,7 @@ from feat/i2c-autonomous-lock-integ @ **7b1697c** (BD Edit 1 + ila_i2c).
 | BD Edit 1 (W9/V7 IOBUF top-port + tidelink_0 i2c hookup) | ✅ silicon-validated — BD assembles, place/route clean, lane-7 guard held, build behaviourally == known-good image except I2C pads exist |
 | `ila_i2c` BD-cell (6× scl/sda i/o/t probes) | ✅ built into both pair-all + pair-flip-all bitstreams, deployed to both boards, .ltx staged for bench JTAG |
 | End-to-end XDC / build pipeline (XDC-`if` bug etc.) | ✅ resolved — full farm-build pipeline green on `feat/i2c-autonomous-lock-integ` |
-| **W9/V7 I²C channel electrically functional** | ❌ NO bus activity observable from either board — most consistent with the long-flagged **(A) weak internal pull insufficient** caveat in `J13_PIN_BUDGET.md §3` |
+| **W9/V7 I²C channel electrically functional** | ❌ NO bus activity observable from either board — most consistent with the long-flagged **(A) weak internal pull insufficient** caveat in `J13_PIN_BUDGET.md §3` (note 2026-05-20: this turned out to be coincidence — the real issue was the strap-lock; section A above) |
 | Bench freed | ✅ fpgahub `bridge1` lease released |
 
 ---

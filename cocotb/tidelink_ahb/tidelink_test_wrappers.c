@@ -11,7 +11,13 @@
 
 /* ── Struct Layout Assertions ───────────────────────────────────────────── */
 
-_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x090,
+/* Updated 2026-05-20: struct grew 0x090 → 0x120 after fixing the rdl2c.py
+ * preprocessor (commit 7fd12a4) which had been silently dropping 11
+ * register fields whose `field {} foo; foo->hw = w;` declarations ended
+ * in a trailing `// [bit-range]` comment. With the regex tolerating
+ * trailing comments, those fields now appear in the generated header
+ * (SWI_TRAINING_MODE..PHY_ALIGN_ID at offsets 0x100-0x11C). */
+_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x120,
                "TIDELINK_REGS_TypeDef size mismatch");
 _Static_assert(offsetof(TIDELINK_REGS_TypeDef, PAIR_BASE_ADDR) == 0x000,
                "PAIR_BASE_ADDR offset mismatch");

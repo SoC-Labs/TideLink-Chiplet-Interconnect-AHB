@@ -1605,13 +1605,13 @@ module tidelink_top #(
         .pad_clk_tx                 (pad_clk_tx),
         .pad_tx                     (pad_tx),
         .pad_clk_rx                 (pad_clk_rx),
-        .pad_rx                     (pad_rx),
-
-        // §9 IDELAYE2 RX delay: 200 MHz ref clock + active-high reset
-        // (derived from poresetn). Unused inside the controller when
-        // USE_IDELAY=0 (pure passthrough).
-        .idelay_ref_clk             (idelay_ref_clk),
-        .idelay_rst                 (~poresetn)
+        .pad_rx                     (pad_rx)
+        // NOTE 2026-05-20: idelay_ref_clk / idelay_rst port connections
+        // dropped because the submodule pin (f902acc, i2c-autonomous-lock
+        // lineage) has no per-lane IDELAYE2 wrapper inside the controller.
+        // The top-level idelay_ref_clk / idelay_rst signals are still
+        // declared at the parent module port (~line 190) for FPGA-wrapper
+        // compatibility, but they fan out to nothing in this build.
     );
 
     // =========================================================================

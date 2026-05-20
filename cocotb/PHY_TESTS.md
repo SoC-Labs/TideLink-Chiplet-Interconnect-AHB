@@ -10,7 +10,7 @@ testbench with `vcs` as the simulator. Companion to the existing
 
 | RTL component                            | Test directory                            | What is covered                                                                                                              |
 |---|---|---|
-| `src/rtl/tidelink_rxclk_buf.sv`          | `cocotb/tidelink_rxclk_buf/`              | Boundary BUFG buffer USE_CLKBUF=0 g_passthru and USE_CLKBUF=1+TIDELINK_RXCLK_NO_PRIMITIVE opt-OUT — bit-exact passthrough on both elaboratable corners. |
+| `fpga/rtl/tidelink_rxclk_buf.sv`         | `cocotb/tidelink_rxclk_buf/`              | Boundary BUFG buffer USE_CLKBUF=0 g_passthru and USE_CLKBUF=1+TIDELINK_RXCLK_NO_PRIMITIVE opt-OUT — bit-exact passthrough on both elaboratable corners. |
 | `WavD2DGpioRx.v` USE_CLKBUF generate     | `cocotb/wavd2d_gpiorx_clkbuf/`            | USE_CLKBUF=0 g_passthru arm = the legacy WavClockMux-alias path (pre-restructure bit-exact). Deserialised io_link_data is well-formed (hi==lo, non-degenerate) from a periodic byte stream. |
 | `WavD2DGpioRx.v` T3a comma-hunt          | `cocotb/wavd2d_gpiorx_t3a/`               | USE_T3A=1 slip-on-match: 8 lanes × 4 skews per lane (32 sub-checks), io_link_data INVARIANT under POR-deassertion skew = lottery defeated. (existing — covers all 8 lane-byte rotations.) |
 | `WavD2DGpioRx.v` T3a — MAX_HUNT timeout  | `cocotb/wavd2d_gpiorx_t3a_timeout/`       | USE_T3A=1 silent-peer fallback: io_pad held 0 → S_HUNT exits to S_LOCKED via MAX_HUNT, do_slip stays 0, io_link_data steady 0. Staggered bring-up cannot livelock. |

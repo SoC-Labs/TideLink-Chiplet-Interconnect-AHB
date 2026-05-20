@@ -2,7 +2,7 @@
 test_idelay_tap_wiring — pins the §9 IDELAYE2 RX delay element wiring.
 
 SoC Labs §9 structural fix (2026-05-18). The per-lane IDELAYE2 RX delay
-element (src/rtl/tidelink_idelay_rx.sv, instantiated as u_idelay_rx inside
+element (fpga/rtl/tidelink_idelay_rx.sv, instantiated as u_idelay_rx inside
 axi_chiplet_controller) is driven by the SAME per-lane phase value the
 calibrator already feeds into the Wlink deserialiser
 (swi_phase_offset_w[31:0], lane N nibble at [4N+3:4N]). This converts the

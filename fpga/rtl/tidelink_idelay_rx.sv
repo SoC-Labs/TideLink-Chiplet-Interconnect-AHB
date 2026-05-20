@@ -2,6 +2,17 @@
 // tidelink_idelay_rx.sv — Per-lane IDELAYE2 RX delay element, calibrator-driven
 // =============================================================================
 //
+// ★ FPGA VALIDATION ONLY — NOT ASIC TAPEOUT MATERIAL ★
+//
+//   This module wraps a Xilinx 7-series IDELAYE2 + IDELAYCTRL primitive. It
+//   lives under fpga/rtl/ and is intentionally outside the ASIC core fileset
+//   (tidelink_top_full_asic.flist does NOT include this file). The ASIC
+//   tapeout MUST REPLACE this with a foundry programmable-delay cell exposing
+//   an equivalent CNTVALUEIN/LD interface (5-bit tap load + LD strobe, taps
+//   characterised against a known reference). The calibrator drives the
+//   tap from the same per-lane phase nibble used today; only the cell
+//   implementation needs swapping.
+//
 // SoC Labs §9 FPGA bring-up — structural fix for the slave-RX-lock determinism
 // blocker (see /tmp/timing_determinism_investigation_brief.md §"Concrete XDC
 // constraints" point 4, and project_tidelink_fpga_bringup memory).

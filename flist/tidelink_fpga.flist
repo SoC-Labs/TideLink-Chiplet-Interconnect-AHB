@@ -202,14 +202,14 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
-// ── §9 structural fix: per-lane IDELAYE2 RX delay element (calibrator-
-//    driven). Instantiated by axi_chiplet_controller, so it must be in the
-//    fileset before it. USE_IDELAY=0 default → bit-exact passthrough, no
-//    Xilinx primitive (this is what cocotb/iverilog/Verilator/VCS and the
-//    ASIC flist take). The FPGA IP packaging sets USE_IDELAY=1 and defines
-//    TIDELINK_USE_IDELAY. ──
-${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
-${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
+// ── FPGA-only primitive wrappers (quarantined under fpga/rtl/) ──────────────
+//    tidelink_idelay_rx.sv  — per-lane Xilinx IDELAYE2 RX delay (calibrator-
+//      driven). USE_IDELAY=1 here (FPGA wrapper override via component.xml).
+//    tidelink_rxclk_buf.sv  — global BUFG on the recovered RX clock.
+//      USE_CLKBUF=1 here. The ASIC tapeout replaces both with foundry cells;
+//      tidelink_top_full_asic.flist does NOT include this fpga/rtl/ directory.
+${TIDELINK_HOME}/fpga/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/fpga/rtl/tidelink_rxclk_buf.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 

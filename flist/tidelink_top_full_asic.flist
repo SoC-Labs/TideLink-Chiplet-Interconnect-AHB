@@ -180,18 +180,21 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_mast
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // §9 PHY alignment: per-lane lock checker + auto-cal FSM
-//   (Interim shim tidelink_phy_align_regs.sv removed — registers moved to
-//    Region 8 of the TideLink config APB @ MMIO 0x4403_2100.)
+//   tidelink_phy_align_regs.sv (interim shim) removed — registers live in
+//   Region 8 of the TideLink config APB @ MMIO 0x4403_2100.
 ${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
-// §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0
-// (TIDELINK_USE_IDELAY undefined) → pure passthrough; the Xilinx
-// IDELAYE2/IDELAYCTRL primitive text is never seen by the ASIC
-// elaborator. The ASIC equivalent (a programmable per-lane delay cell
-// driven by the same calibrator phase) is documented for the future
-// ASIC target — see the agent report / ASIC source-sync guidance.
-${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
-${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
+
+// FPGA-validation primitive wrappers (Xilinx IDELAYE2 / BUFG). Quarantined
+// to fpga/rtl/ to make the contamination boundary explicit; the modules
+// retain USE_IDELAY=0 / USE_CLKBUF=0 defaults so the constant-false
+// generate-if prunes the Xilinx primitive text from the ASIC elaboration.
+// The ASIC tapeout MUST REPLACE these with foundry equivalents (a per-lane
+// programmable-delay cell with CNTVALUEIN/LD interface, and a clock-tree
+// buffer on the recovered RX clock). See fpga/rtl/tidelink_idelay_rx.sv
+// header for the ASIC migration interface.
+${TIDELINK_HOME}/fpga/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/fpga/rtl/tidelink_rxclk_buf.sv
 
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 

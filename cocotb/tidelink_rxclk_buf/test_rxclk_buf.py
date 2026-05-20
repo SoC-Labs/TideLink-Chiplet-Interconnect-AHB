@@ -1,7 +1,7 @@
 """
 test_rxclk_buf — pin the tidelink_rxclk_buf boundary BUFG buffer passthrough.
 
-src/rtl/tidelink_rxclk_buf.sv wraps a single global clock buffer on the
+fpga/rtl/tidelink_rxclk_buf.sv wraps a single global clock buffer on the
 recovered RX clock (§9 clock fix, 2026-05-19). It is the IP-boundary BUFG
 that gives `pad_clk_rx` a deterministic dedicated clock route on every FPGA
 build (Vivado was inferring fabric-LUT clock distribution otherwise — the

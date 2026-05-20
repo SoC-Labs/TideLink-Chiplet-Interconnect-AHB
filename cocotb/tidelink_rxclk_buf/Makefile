@@ -29,7 +29,7 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
-                  $(TIDELINK_HOME)/src/rtl/tidelink_rxclk_buf.sv
+                  $(TIDELINK_HOME)/fpga/rtl/tidelink_rxclk_buf.sv
 
 TOPLEVEL = tb_top
 MODULE   = test_rxclk_buf

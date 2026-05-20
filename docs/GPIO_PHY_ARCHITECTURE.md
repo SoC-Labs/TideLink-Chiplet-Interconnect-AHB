@@ -531,7 +531,7 @@ generate-if prunes the Xilinx primitive branch entirely.
 
 ### 5.1 `tidelink_idelay_rx` — per-lane IDELAYE2 RX delay
 
-`src/rtl/tidelink_idelay_rx.sv` (213 lines).
+`fpga/rtl/tidelink_idelay_rx.sv` (213 lines).
 
 ```
    pad_rx[7:0]                                  +-- one IDELAYCTRL --+
@@ -574,7 +574,7 @@ only by non-Vivado simulators that lack `unisim` but force
 
 ### 5.2 `tidelink_rxclk_buf` — recovered-RX-clock boundary BUFG
 
-`src/rtl/tidelink_rxclk_buf.sv` (93 lines, faithful idelay-mirror).
+`fpga/rtl/tidelink_rxclk_buf.sv` (93 lines, faithful idelay-mirror).
 
 ```
    pad_clk_rx ──IBUF── clk_i ─────► generate g_bufg ───► clk_o ───►

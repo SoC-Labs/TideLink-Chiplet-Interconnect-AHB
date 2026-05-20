@@ -27,7 +27,7 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
-                  $(TIDELINK_HOME)/src/rtl/tidelink_idelay_rx.sv
+                  $(TIDELINK_HOME)/fpga/rtl/tidelink_idelay_rx.sv
 
 TOPLEVEL = tb_top
 MODULE   = test_idelay_optout_passthrough

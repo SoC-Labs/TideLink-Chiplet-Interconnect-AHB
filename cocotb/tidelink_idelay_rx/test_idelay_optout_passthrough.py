@@ -1,7 +1,7 @@
 """
 test_idelay_optout_passthrough — pins the IDELAY OPT-OUT escape hatch.
 
-src/rtl/tidelink_idelay_rx.sv gates a Xilinx IDELAYE2/IDELAYCTRL RX-delay
+fpga/rtl/tidelink_idelay_rx.sv gates a Xilinx IDELAYE2/IDELAYCTRL RX-delay
 path. After commit 1b2e87e the gating is:
 
     generate

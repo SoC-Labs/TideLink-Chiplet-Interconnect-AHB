@@ -87,7 +87,12 @@ set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_p
 # pin F20, not lane index). Moved to spare W9/V7 = J13 pins 13/37 — carried
 # by the 1:1 ribbon, NOT in the 12 cut conductors, driven by no other XDC.
 # Mirror preserved with pynq-z2-pair-flip-all.
-set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was B19 (bad)
+# 2026-05-21: SLEW FAST DRIVE 8 -> SLEW SLOW DRIVE 4 on W9 to reduce
+# crosstalk into the adjacent forwarded TX clock @ Y9 (same I/O tile,
+# bank 13 clock cluster). Per docs/LANE_0_7_DEEP_DIVE.md hypothesis:
+# fast-edge TX driver smears peer's recovered pad_clk_rx exactly when
+# sampling lane-7 data -> 30/30 deterministic 0x7e regression.
+set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports {pad_tx[7]}]  ;# was B19 (bad), then SLEW FAST DRIVE 8
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 

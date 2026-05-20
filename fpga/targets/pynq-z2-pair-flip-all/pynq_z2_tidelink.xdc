@@ -49,7 +49,11 @@ set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_p
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
 # LANE-7 REMAP (mirror of pynq-z2-pair-all): B19/F20 bad → spare V7/W9.
-set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was F20 (bad)
+# 2026-05-21: SLEW FAST DRIVE 8 -> SLEW SLOW DRIVE 4 on V7 (slave mirror
+# of master W9 change). Reduces lane-7 TX crosstalk into adjacent
+# forwarded TX clock @ Y7 same I/O tile. See pair-all variant for full
+# rationale.
+set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports {pad_tx[7]}]  ;# was F20 (bad), then SLEW FAST DRIVE 8
 
 #-- RX side (inputs to this board ← straight-through ribbon ← peer's TX) -----
 # Mirror of pynq-z2-pair: clocks on Y7/Y9 (both P-side clock-capable).

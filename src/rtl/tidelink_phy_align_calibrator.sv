@@ -1,5 +1,5 @@
 // =============================================================================
-// wlink_phy_align_calibrator.sv — Autonomous per-lane bit-slip calibration FSM
+// tidelink_phy_align_calibrator.sv — Autonomous per-lane bit-slip calibration FSM
 // =============================================================================
 //
 // STAGING — not yet integrated into trunk RTL. This module is a prototype of
@@ -13,7 +13,7 @@
 // Interface
 // -----------------------------------------------------------------------------
 //
-//   clk                  Link-clock domain (same as wlink_lane_checker.clk)
+//   clk                  Link-clock domain (same as tidelink_lane_checker.clk)
 //   rst                  Active-high reset (typ. ~poresetn)
 //
 //   role_locked          Level signal from chiplet-controller role_lock_reg.
@@ -24,7 +24,7 @@
 //                        Asserting (i.e. swreset==1) cancels any in-flight
 //                        calibration; on its falling edge (with role_locked
 //                        still high) a fresh sweep is launched.
-//   lane_locked[7:0]     Per-lane locked-status from wlink_lane_checker.
+//   lane_locked[7:0]     Per-lane locked-status from tidelink_lane_checker.
 //
 //   apb_bit_slip_override[23:0]  SW-debug: full 8-lane × 3-bit slip vector.
 //   apb_override_enable          When 1, FSM is bypassed entirely — bit_slip
@@ -143,7 +143,7 @@
 // -----------------------------------------------------------------------------
 //
 // Parallel sweep, DWELL_CYCLES=64 by default (4× the 16-cycle LOCK_THRESH
-// in the wlink_lane_checker; raised from 32 in §9.9 so the per-dwell
+// in the tidelink_lane_checker; raised from 32 in §9.9 so the per-dwell
 // score has more dynamic range without ballooning sweep time). Worst
 // case under the best-of-sweep policy is the FULL 128-point space every
 // time, 16 phase × 8 slip × 64 cycles = 8192 cycles, plus settle margin.

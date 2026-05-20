@@ -923,4 +923,12 @@ termination and is bounded by 3.3 V open-drain pull-ups.
 
 ---
 
+## 16. Revision history
+
+| Date | Author | Change |
+|---|---|---|
+| 2026-05-20 | David Mapstone | Initial issue under task "UPF / power-management plan for v1 GPIO-PHY chiplet" — islands, isolation, retention, AON; based on RTL state at `feat/td-combined` HEAD `6e4265a` after the FPGA-primitive quarantine into `fpga/rtl/`. |
+
+---
+
 *End of plan.*

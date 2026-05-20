@@ -54,6 +54,19 @@ def _force_autocal_enable(dut, side, on):
     inst.autocal_force_enable_q.value = 1 if on else 0
 
 
+def _force_early_exit(dut, side, on):
+    """§9.9 compat: force the calibrator into legacy first-match-wins mode
+    via the hierarchical hook tb_early_exit_force_q. Silicon ships with
+    EARLY_EXIT_ON_ALL_LOCKED=0 (best-of-sweep), which requires the full
+    128-point sweep to complete before lanes are latched — much longer
+    than the timing the existing autocal sim tests were authored for.
+    Tests that rely on the §9.7 first-match wall-time call this BEFORE
+    role_locked rises.
+    """
+    inst = _chiplet_path(dut, side)
+    inst.u_calibrator.tb_early_exit_force_q.value = 1 if on else 0
+
+
 def _read_lane_locked_tb(dut, side):
     sig = dut.master_lane_locked if side == "m" else dut.slave_lane_locked
     return int(sig.value)
@@ -88,8 +101,13 @@ def _read_cal_bit_slip(dut, side):
 async def test_autocal_integrated_basic(dut):
     """Role-lock → autocal sweep → calibration_done → FCSM reaches state>=4."""
     # 1. Enable the calibrator on both sides BEFORE coming out of POR.
+    #    Also engage the §9.9 first-match-wins compat mode so this test's
+    #    4000-cycle cal_done timeout still applies (the silicon-default
+    #    best-of-sweep mode walks all 128 dwell windows).
     _force_autocal_enable(dut, "m", True)
     _force_autocal_enable(dut, "s", True)
+    _force_early_exit(dut, "m", True)
+    _force_early_exit(dut, "s", True)
 
     # 2. Boot both sides.
     await setup(dut)

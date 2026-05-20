@@ -50,7 +50,7 @@ from cocotb.handle import Force, Release
 from cocotb.triggers import ClockCycles, RisingEdge
 
 from test_link_bringup import setup, lock_master, lock_slave, ctrl_read
-from test_autocal_integrated import _chiplet_path, _force_autocal_enable
+from test_autocal_integrated import _chiplet_path, _force_autocal_enable, _force_early_exit
 
 # Region 8 ctrl_reg_addr: bit[3]=1 selects Region 8, bits[2:0]=slot.
 R8_SWI_LANE_STATUS = 0b1010   # slot 2 — SWI_LANE_STATUS + CREDIT_PATH_STATUS
@@ -158,6 +158,11 @@ async def test_credit_path_observability_live(dut):
     equals the in-RTL counter."""
     _force_autocal_enable(dut, "m", True)
     _force_autocal_enable(dut, "s", True)
+    # §9.9 compat: this test's 4000-iter * 25 master_clk poll assumes the
+    # §9.7 first-match calibrator timing. Silicon default is best-of-sweep
+    # which walks the full 128-point space — too long for this assertion.
+    _force_early_exit(dut, "m", True)
+    _force_early_exit(dut, "s", True)
     await setup(dut)
     await lock_master(dut)
     await lock_slave(dut)

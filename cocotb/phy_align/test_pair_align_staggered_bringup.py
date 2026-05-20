@@ -107,6 +107,12 @@ def _force_autocal_enable(dut, side, on):
     inst.autocal_force_enable_q.value = 1 if on else 0
 
 
+def _force_early_exit(dut, side, on):
+    """§9.9 compat: force calibrator into first-match-wins legacy mode."""
+    inst = _chiplet(dut, side)
+    inst.u_calibrator.tb_early_exit_force_q.value = 1 if on else 0
+
+
 def _read_cal_state_hier(dut, side):
     return int(_chiplet(dut, side).cal_state_w.value)
 
@@ -227,6 +233,10 @@ async def test_staggered_bringup_reproduces_fpga_failure(dut):
     """
     _force_autocal_enable(dut, "m", True)
     _force_autocal_enable(dut, "s", True)
+    # §9.9: stay on §9.7 first-match timing for the staggered-bringup
+    # reproducer (its 8000-cycle cal_done timeout assumes early exit).
+    _force_early_exit(dut, "m", True)
+    _force_early_exit(dut, "s", True)
 
     # Step 1 — clocks + clean POR.
     await _start_clocks_once(dut)

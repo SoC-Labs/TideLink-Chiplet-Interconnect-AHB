@@ -60,6 +60,7 @@ from test_link_bringup import setup, lock_master, lock_slave, ctrl_read, ctrl_wr
 from test_autocal_integrated import (
     _chiplet_path,
     _force_autocal_enable,
+    _force_early_exit,
     _read_cal_done_hier,
     _read_cal_state,
     _read_cal_lane_fault,
@@ -97,6 +98,11 @@ async def test_phase_sweep_converges_and_is_exercised(dut):
     phase_offset bus is observed reaching the individual RX ports."""
     _force_autocal_enable(dut, "m", True)
     _force_autocal_enable(dut, "s", True)
+    # §9.9 compat: this test polls for cal_done within 8000 apb_clks; the
+    # best-of-sweep mode walks the full 128-point space (>> 8000 cycles
+    # in this simulator). Engage first-match-wins for back-compat.
+    _force_early_exit(dut, "m", True)
+    _force_early_exit(dut, "s", True)
     await setup(dut)
     await lock_master(dut)
     await lock_slave(dut)

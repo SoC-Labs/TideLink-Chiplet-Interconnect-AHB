@@ -65,17 +65,18 @@ from systemrdl.node import (
 INLINE_PROPS = {'hw', 'sw', 'singlepulse', 'rclr', 'woclr', 'woset',
                 'swmod', 'onread', 'onwrite'}
 
-# Dynamic assignment with value:  name->prop = value;
+# Dynamic assignment with value:  name->prop = value;  (optional trailing // comment)
 RE_DYN_ASSIGN = re.compile(
-    r'^(\s*)(\w+)\s*->\s*(\w+)\s*=\s*(.+?)\s*;\s*$'
+    r'^(\s*)(\w+)\s*->\s*(\w+)\s*=\s*(.+?)\s*;\s*(?://.*)?$'
 )
-# Dynamic assignment without value (boolean):  name->singlepulse;
+# Dynamic assignment without value (boolean):  name->singlepulse;  (optional trailing // comment)
 RE_DYN_BOOL = re.compile(
-    r'^(\s*)(\w+)\s*->\s*(\w+)\s*;\s*$'
+    r'^(\s*)(\w+)\s*->\s*(\w+)\s*;\s*(?://.*)?$'
 )
 # Field declaration:  field {} name[width] = reset;  or  field {} name[hi:lo] = reset;
+# (optional trailing // comment, e.g. "// [20:17]" bit-range annotations)
 RE_FIELD_DECL = re.compile(
-    r'^(\s*)field\s*\{([^}]*)\}\s*(\w+)\s*(\[[^\]]+\])?\s*(=\s*.+?)?\s*;\s*$'
+    r'^(\s*)field\s*\{([^}]*)\}\s*(\w+)\s*(\[[^\]]+\])?\s*(=\s*.+?)?\s*;\s*(?://.*)?$'
 )
 
 

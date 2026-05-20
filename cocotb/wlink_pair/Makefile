@@ -7,6 +7,10 @@ TOPLEVEL_LANG   = verilog
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# CMSDK_FPGA_SRAM_V is not in the Corstone-101 BP210 install — see project
+# memory note `project_cmsdk_fpga_sram_workaround`. Fall back to the in-tree
+# copy that the wlink_pair_full Makefile uses.
+export CMSDK_FPGA_SRAM_V ?= /research/AAA/ip_library/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v
 
 PHY_ALIGN_DIR ?= $(realpath $(CURDIR)/../phy_align)
 # Lane checker now lives in src/rtl as tidelink_lane_checker.sv but the module
@@ -108,3 +112,39 @@ COMPILE_ARGS += $(SKID_PER_LANE_DEFINES)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# ---------------------------------------------------------------------------
+# Convenience: full autonomous autoneg-over-I2C end-to-end proof. Does NOT
+# change the default MODULE (the 9-test bring-up regression) and is NOT the
+# default goal — `make` alone still runs the 9-test regression. Invokes the
+# cocotb `sim` target explicitly (recursing on the default goal would loop).
+# Run with:  make autoneg_e2e
+# ---------------------------------------------------------------------------
+.PHONY: autoneg_e2e
+autoneg_e2e:
+	+$(MAKE) sim MODULE=test_autoneg_i2c_e2e
+
+# ---------------------------------------------------------------------------
+# HW-bug reproduction suites (Phase D regression hardening). These tests
+# mirror the on-board observed FSM stalls that bug class #1 (latch from
+# missing comb default) and bug class #2 (collapsed case from missing
+# default) caused on silicon. Both bug classes were sim-tolerant in earlier
+# tb shapes; these tests are constructed to fail in sim if the RTL
+# regresses to either bug.
+#
+#   make hw_repro_probe_seq        # 4 tests (minimal 3-write probe seq)
+#   make hw_repro_full             # 3 tests (full HW deploy_pair.sh mirror)
+#   make autoneg_e2e               # 3 tests (autonomous autoneg end-to-end)
+#   make hw_repro                  # all of the above in sequence
+# ---------------------------------------------------------------------------
+.PHONY: hw_repro_probe_seq hw_repro_full hw_repro
+hw_repro_probe_seq:
+	+$(MAKE) sim MODULE=test_hw_repro_probe_seq SIM_BUILD=sim_build_hw_repro_probe_seq
+
+hw_repro_full:
+	+$(MAKE) sim MODULE=test_hw_repro_full SIM_BUILD=sim_build_hw_repro_full
+
+hw_repro: hw_repro_probe_seq hw_repro_full autoneg_e2e
+	@echo "========================================"
+	@echo " wlink_pair HW-repro suites complete"
+	@echo "========================================"

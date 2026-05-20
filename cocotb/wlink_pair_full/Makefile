@@ -17,6 +17,11 @@ export CMSDK_FPGA_SRAM_V ?= /research/AAA/ip_library/BP210/BP210-BU-00000-r1p1-0
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 
 TOPLEVEL = tb_top
+# Default `make` runs the agent #4 BD-IP harness suite (3 tests). This is the
+# slowest of the HW-mirror suites — full tidelink_top instances with the
+# APB → ctrl_reg path through tidelink_apb_regs. It catches both bug class
+# #1 (comb latch) and bug class #2 (collapsed case) at the chiplet-controller
+# integration level, where the autoneg FSM has to traverse MASK_RD_ADDR.
 MODULE ?= test_hw_full_mirror_via_apb
 
 # Use the tidelink_top flist — it has tidelink_apb_regs, tidelink_fifo,

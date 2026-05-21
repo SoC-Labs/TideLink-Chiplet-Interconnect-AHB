@@ -35,7 +35,7 @@ module tidelink_perf #(
     // --- Congestion estimator (see CONGESTION_AWARE_ROUTING.md) ---
     parameter EWMA_ALPHA_SHIFT  = 4,     // alpha = 1/16, tau ~= 16 cycles
     parameter DERIV_WINDOW_LOG  = 8,     // sample derivative every 256 cycles
-    parameter LOCAL_LINK_STATE_WIDTH = 5  // {starve, trend[1:0], level[1:0]}
+    parameter LOCAL_LINK_STATE_W = 5     // {starve, trend[1:0], level[1:0]}
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -99,7 +99,7 @@ module tidelink_perf #(
     // Congestion sideband output (to tidechart_controller)
     // See CONGESTION_AWARE_ROUTING.md for field semantics.
     // --------------------------------------------------------------------------
-    output wire [LOCAL_LINK_STATE_WIDTH-1:0] local_link_state_o,
+    output wire [LOCAL_LINK_STATE_W-1:0] local_link_state_o,
     output wire                          link_state_change_o,
     output wire [RAM_ADDR_W-2:0]         ewma_credit_o,      // debug only
     input  wire                          bcast_ack_i,        // clears starve sticky
@@ -335,10 +335,10 @@ module tidelink_perf #(
     logic                         credit_starve_sticky_r;
     logic                         ewma_primed_r;   // first-cycle fast-seed flag
 
-    wire [LOCAL_LINK_STATE_WIDTH-1:0] local_link_state_w =
+    wire [LOCAL_LINK_STATE_W-1:0] local_link_state_w =
         {credit_starve_sticky_r, trend_r, level_r};
 
-    logic [LOCAL_LINK_STATE_WIDTH-1:0] local_link_state_prev_r;
+    logic [LOCAL_LINK_STATE_W-1:0] local_link_state_prev_r;
 
     assign local_link_state_o  = local_link_state_w;
     assign ewma_credit_o       = ewma_q_r;

@@ -475,11 +475,15 @@ class AxilSlave:
                 dut.m_axil_arready.value = 1
                 # Compose rdata
                 if state == ST_NEGO_MASK_RD_DATA and txn == 1:  # TXN_DATA
-                    # DATA-register read pops one byte from the rd FIFO
+                    # DATA-register read pops one byte from the rd FIFO.
+                    # Mirror real i2c_master_axil.v behaviour: [8]=data_valid
+                    # MUST be set when a byte is returned, else the FSM's
+                    # I2C_DATA_VALID gate (added in candidate-#3 fix) refuses
+                    # to capture the byte into peer_*_lane_mask_r.
                     byte_idx = self._mask_data_byte_idx % 4
                     rd = self.read_data_bytes[byte_idx] & 0xFF
                     self._mask_data_byte_idx += 1
-                    dut.m_axil_rdata.value = rd
+                    dut.m_axil_rdata.value = rd | (1 << 8)  # data_valid=1
                 else:
                     # STATUS register read (TXN_POLL → CHECK loop)
                     self._poll_count += 1

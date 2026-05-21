@@ -47,7 +47,12 @@ update_compile_order -fileset sources_1
 # the Xilinx-specific `(* mark_debug = ... *)` attributes in the chiplet
 # RTL. The ASIC flow doesn't define this macro, so the same RTL synthesises
 # cleanly on Design Compiler / Fusion Compiler.
-set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
+#
+# 2026-05-21: TEMPORARILY DISABLED — see fpga/build_design.tcl for full
+# explanation. ILA insertion on pad_clk_rx creates a 596 ps hold violation
+# that breaks lane lock. Re-enable when the probe-domain or hold-fix is in
+# place.
+# set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
 
 # STEP 1: Package the project as IP
 ipx::package_project -root_dir $component_lib \

@@ -125,7 +125,17 @@ update_compile_order -fileset sources_1
 # (Design Compiler / Fusion Compiler / Genus) never see the vendor-specific
 # attribute. Defining it here keeps the marks live for Vivado's
 # insert_debug_core flow (controlled separately by FPGA_INSERT_DEBUG_CORE).
-set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
+#
+# 2026-05-21: TEMPORARILY DISABLED — when defined, Vivado infers ila_rx on
+# the pad_clk_rx domain (per mark_debug attrs on autoneg / I2C signals).
+# That ILA introduces a hold-timing violation
+# (WHS = -596 ps on tidelink_design_i/ila_rx/inst/PROBE_PIPE.shift_probes_reg[0][0]/D
+#  with source pad_clk_rx) which corrupts the recovered-clock domain's
+# flops -> all lanes fail to lock (0/16 on bridge1).
+# Re-enable once: (a) the ILA probe taps are moved off pad_clk_rx, OR
+# (b) hold-fix constraints are applied around the ILA probe pipe.
+# See docs/V2_DEFERRALS.md (new Bug #4 entry).
+# set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
 
 # STEP 8: Synthesis
 puts "Starting synthesis..."

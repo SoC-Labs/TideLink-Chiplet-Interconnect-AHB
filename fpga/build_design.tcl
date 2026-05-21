@@ -126,16 +126,16 @@ update_compile_order -fileset sources_1
 # attribute. Defining it here keeps the marks live for Vivado's
 # insert_debug_core flow (controlled separately by FPGA_INSERT_DEBUG_CORE).
 #
-# 2026-05-21: TEMPORARILY DISABLED — when defined, Vivado infers ila_rx on
-# the pad_clk_rx domain (per mark_debug attrs on autoneg / I2C signals).
-# That ILA introduces a hold-timing violation
-# (WHS = -596 ps on tidelink_design_i/ila_rx/inst/PROBE_PIPE.shift_probes_reg[0][0]/D
-#  with source pad_clk_rx) which corrupts the recovered-clock domain's
-# flops -> all lanes fail to lock (0/16 on bridge1).
-# Re-enable once: (a) the ILA probe taps are moved off pad_clk_rx, OR
-# (b) hold-fix constraints are applied around the ILA probe pipe.
-# See docs/V2_DEFERRALS.md (new Bug #4 entry).
-# set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
+# 2026-05-21: Re-enabled after adding set_false_path to the auto-inserted
+# ILA probe pipes (Option A from the ILA hold-timing investigation).
+# When defined, Vivado infers ila_rx on the pad_clk_rx domain via the
+# mark_debug attrs (now ifdef-gated). The ILA's PROBE_PIPE was failing
+# hold timing (WHS = -596 ps) which broke lane lock. The constraints in
+# pynq_z2_tidelink_timing.xdc:
+#   set_false_path -to [get_pins -hierarchical *ila_rx/inst/PROBE_PIPE*]
+# tell Vivado the probe is async-by-design (Xilinx UG903 §"Constraining
+# ILAs" pattern). Functional path unaffected.
+set_property verilog_define {FPGA_DEBUG_ILA=1} [current_fileset]
 
 # STEP 8: Synthesis
 puts "Starting synthesis..."

@@ -283,3 +283,9 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 # (The primary severity downgrade lives in *_tidelink_drc.xdc so it survives
 #  save_constraints round-trips during debug-core insertion.)
 set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
+
+#-----------------------------------------------------------------------------
+# [8] ILA probe-pipe false-path (Option A — keep ILA debug AND meet timing)
+# Mirror of pair-all timing XDC. See pair-all variant for full rationale.
+#-----------------------------------------------------------------------------
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*ila_*/inst/PROBE_PIPE*"}]

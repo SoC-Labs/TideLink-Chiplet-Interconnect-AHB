@@ -60,7 +60,7 @@ class test_throughput_latency extends tidelink_system_base_test;
       read_packet(SIDE_B, pkt_size, read_data);
       repeat (30) @(posedge tb_if.clk);
 
-      total_words += pkt_size + 1; // +1 for length header
+      total_words += pkt_size + 2; // +2 for 2-word header (BUG-22)
     end
 
     end_time = $time / (CLK_PERIOD);

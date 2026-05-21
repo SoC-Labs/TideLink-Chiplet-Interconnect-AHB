@@ -76,13 +76,14 @@ class tidelink_single_packet_test extends tidelink_base_test;
     if (rd_seq.rdata[STATUS_PACKET_COMMITTED] !== 1'b1)
       `uvm_error("TEST", "Expected packet_committed bit set in STATUS")
 
-    // Check credit count decreased (5 credits consumed: 1 length + 4 data)
+    // Check credit count decreased (6 credits consumed: 2-word header + 4 data,
+    // see tidelink_fifo_ctrl.sv packet_delta = length + 2)
     rd_seq = apb_read_sequence::type_id::create("rd_credits_after_wr");
     rd_seq.addr = REG_CREDIT_COUNT;
     rd_seq.start(env.apb_agt.sequencer);
     `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
-      rd_seq.rdata, MAX_CREDITS - 5), UVM_LOW)
-    if (rd_seq.rdata !== (MAX_CREDITS - 5))
+      rd_seq.rdata, MAX_CREDITS - 6), UVM_LOW)
+    if (rd_seq.rdata !== (MAX_CREDITS - 6))
       `uvm_error("TEST", "CREDIT_COUNT mismatch after write")
 
     // ---------------------------------------------------------------

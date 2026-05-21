@@ -59,13 +59,14 @@ class tidelink_stall_test extends tidelink_base_test;
       wr_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (5) @(posedge vif.clk);
 
-      // Check credits consumed
+      // Check credits consumed (6 credits: 2-word header + 4 data,
+      // see tidelink_fifo_ctrl.sv packet_delta = length + 2)
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_1a");
       apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
       `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_CREDITS - 5), UVM_LOW)
-      if (apb_rd_seq.rdata !== (MAX_CREDITS - 5))
+        apb_rd_seq.rdata, MAX_CREDITS - 6), UVM_LOW)
+      if (apb_rd_seq.rdata !== (MAX_CREDITS - 6))
         `uvm_error("TEST", "Test 1: CREDIT_COUNT mismatch after write")
 
       gapped_rd_seq = ahb_gapped_packet_read_sequence::type_id::create("rd_gapped_1");
@@ -99,13 +100,14 @@ class tidelink_stall_test extends tidelink_base_test;
       gapped_wr_seq.start(env.fifo_ahb_sys_env.master[0].sequencer);
       repeat (5) @(posedge vif.clk);
 
-      // Check credits consumed (7 credits: 1 length + 6 data)
+      // Check credits consumed (8 credits: 2-word header + 6 data,
+      // see tidelink_fifo_ctrl.sv packet_delta = length + 2)
       apb_rd_seq = apb_read_sequence::type_id::create("rd_tk_2a");
       apb_rd_seq.addr = REG_CREDIT_COUNT;
       apb_rd_seq.start(env.apb_agt.sequencer);
       `uvm_info("TEST", $sformatf("CREDIT_COUNT after gapped write = %0d (expected %0d)",
-        apb_rd_seq.rdata, MAX_CREDITS - 7), UVM_LOW)
-      if (apb_rd_seq.rdata !== (MAX_CREDITS - 7))
+        apb_rd_seq.rdata, MAX_CREDITS - 8), UVM_LOW)
+      if (apb_rd_seq.rdata !== (MAX_CREDITS - 8))
         `uvm_error("TEST", "Test 2: CREDIT_COUNT mismatch after gapped write")
 
       rd_seq = ahb_packet_read_sequence::type_id::create("rd_b2b_1");

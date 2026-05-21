@@ -54,11 +54,12 @@ class test_single_packet extends tidelink_system_base_test;
     if (reg_data[STATUS_PACKET_COMMITTED] !== 1'b1)
       `uvm_error("TEST", "Expected packet_committed bit set in B's STATUS")
 
-    // Step 5: Check B's credit count decreased (5 words: 1 length + 4 data)
+    // Step 5: Check B's credit count decreased (6 credits: 2-word header + 4 data,
+    //         see tidelink_fifo_ctrl.sv packet_delta = length + 2)
     read_cfg_reg(SIDE_B, REG_CREDIT_COUNT, reg_data);
     `uvm_info("TEST", $sformatf("B CREDIT_COUNT after write = %0d (expected %0d)",
-      reg_data, MAX_CREDITS - 5), UVM_LOW)
-    if (reg_data !== (MAX_CREDITS - 5))
+      reg_data, MAX_CREDITS - 6), UVM_LOW)
+    if (reg_data !== (MAX_CREDITS - 6))
       `uvm_error("TEST", "B CREDIT_COUNT mismatch after write")
 
     // Step 6: Read the packet from B's RX FIFO

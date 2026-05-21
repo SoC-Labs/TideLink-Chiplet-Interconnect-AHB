@@ -74,11 +74,12 @@ class tidelink_integration_loopback_test extends tidelink_integration_base_test;
     if (reg_data[STATUS_PACKET_COMMITTED] !== 1'b1)
       `uvm_error("TEST", "Expected packet_committed bit set in STATUS")
 
-    // Check credit count decreased (5 credits consumed: 1 length + 4 data)
+    // Check credit count decreased (6 credits consumed: 2-word header + 4 data,
+    // see tidelink_fifo_ctrl.sv packet_delta = length + 2)
     read_cfg_reg(REG_CREDIT_COUNT, reg_data);
     `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
-      reg_data, MAX_CREDITS - 5), UVM_LOW)
-    if (reg_data !== (MAX_CREDITS - 5))
+      reg_data, MAX_CREDITS - 6), UVM_LOW)
+    if (reg_data !== (MAX_CREDITS - 6))
       `uvm_error("TEST", "CREDIT_COUNT mismatch after write")
 
     // ---------------------------------------------------------------

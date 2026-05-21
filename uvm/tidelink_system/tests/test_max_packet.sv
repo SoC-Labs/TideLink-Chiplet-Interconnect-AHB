@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Maximum size packet test: fill the entire FIFO with a single packet.
 // Verifies:
-//   - FIFO can accept MAX_CREDITS-1 data words (plus length word = MAX_CREDITS)
+//   - FIFO can accept MAX_CREDITS-2 data words (plus 2-word header = MAX_CREDITS)
 //   - No overflow when filling to capacity
 //   - All data reads back correctly after maximum fill
 //   - Credit count drops to zero and recovers fully
@@ -18,7 +18,7 @@ class test_max_packet extends tidelink_system_base_test;
   `uvm_component_utils(test_max_packet)
 
   // Use a smaller max to keep simulation reasonable
-  // Full FIFO = 4096 words, packet = 4095 data + 1 length
+  // Full FIFO = 4096 words, packet = 4094 data + 2-word header (BUG-22)
   // Use 256 words for practical testing (override if needed)
   int unsigned max_pkt_words = 256;
 
@@ -54,8 +54,9 @@ class test_max_packet extends tidelink_system_base_test;
     // Wait for all words to traverse FC crossover
     repeat (max_pkt_words + 50) @(posedge tb_if.clk);
 
-    // Check B's credit count (should be MAX - (max_pkt_words + 1))
-    expected_credits = MAX_CREDITS - (max_pkt_words + 1);
+    // Check B's credit count (should be MAX - (max_pkt_words + 2))
+    // 2-word header + N data — see tidelink_fifo_ctrl.sv packet_delta = length + 2
+    expected_credits = MAX_CREDITS - (max_pkt_words + 2);
     read_cfg_reg(SIDE_B, REG_CREDIT_COUNT, reg_data);
     `uvm_info("TEST", $sformatf("B CREDIT_COUNT = %0d (expected %0d)",
       reg_data, expected_credits), UVM_LOW)

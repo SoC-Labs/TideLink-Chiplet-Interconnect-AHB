@@ -57,7 +57,8 @@ class test_credit_exhaustion extends tidelink_system_base_test;
         pkt_data[w] = {16'(pkt), 16'(w)};
 
       write_packet(SIDE_A, pkt_data);
-      total_words_consumed += (words_per_pkt + 1); // data + length
+      total_words_consumed += (words_per_pkt + 2); // 2-word header + N data
+                                                    // (tidelink_fifo_ctrl.sv packet_delta = length + 2)
 
       // Minimal wait for FC crossover
       repeat (words_per_pkt + 10) @(posedge tb_if.clk);

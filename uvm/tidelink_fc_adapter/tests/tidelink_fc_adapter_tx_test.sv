@@ -23,24 +23,44 @@ class fc_adapter_tx_write_sequence extends uvm_sequence #(ahb_tx_seq_item);
   // Configurable number of writes
   int unsigned num_writes = 8;
 
-  // Stored items for scoreboard prediction
+  // Stored items for scoreboard prediction.
+  // BUG-22 fix: items are now pre-randomized in pre_generate() (see below)
+  // BEFORE body() drives them, so the test can register predictions on
+  // the scoreboard before the first FC TX is observed. Otherwise the
+  // first AHB write triggers an FC TX before the test loops over
+  // sent_items[] to call predict_fc_tx(), producing "Unexpected FC TX"
+  // errors followed by N predicted-but-never-observed errors.
   ahb_tx_seq_item sent_items[$];
 
   function new(string name = "fc_adapter_tx_write_sequence");
     super.new(name);
   endfunction
 
-  virtual task body();
+  // Pre-randomize all items into sent_items[] without driving them.
+  // The caller invokes this BEFORE start() so predictions can be
+  // registered against a frozen item set.
+  virtual function void pre_generate();
+    sent_items.delete();
     for (int i = 0; i < num_writes; i++) begin
       ahb_tx_seq_item item;
       item = ahb_tx_seq_item::type_id::create($sformatf("tx_wr_%0d", i));
-      start_item(item);
       if (!item.randomize() with {
         addr[13:2] == i[11:0];  // Sequential word addresses
         delay == 0;
       }) `uvm_fatal("RAND", "Randomization failed")
-      finish_item(item);
       sent_items.push_back(item);
+    end
+  endfunction
+
+  virtual task body();
+    // If the caller did not pre-generate, fall back to in-line generation
+    // (preserves backwards compatibility with any other consumers).
+    if (sent_items.size() == 0)
+      pre_generate();
+    foreach (sent_items[i]) begin
+      ahb_tx_seq_item item = sent_items[i];
+      start_item(item);
+      finish_item(item);
     end
   endtask
 
@@ -65,17 +85,19 @@ class tidelink_fc_adapter_tx_test extends tidelink_fc_adapter_base_test;
     `uvm_info("TEST", "=== FC Adapter TX Aperture Test ===", UVM_LOW)
 
     // ---------------------------------------------------------------
-    // Step 1: Send writes through TX aperture
+    // Step 1: Pre-randomize the sequence so predictions can be
+    //         registered against a frozen item set BEFORE driving.
+    //         (BUG-22 race fix — see fc_adapter_tx_write_sequence above.)
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 1: Writing to TX aperture", UVM_LOW)
+    `uvm_info("TEST", "Step 1: Pre-randomizing TX items", UVM_LOW)
     tx_seq = fc_adapter_tx_write_sequence::type_id::create("tx_seq");
     tx_seq.num_writes = 8;
-    tx_seq.start(env.tx_agt.sequencer);
+    tx_seq.pre_generate();
 
     // ---------------------------------------------------------------
-    // Step 2: Add scoreboard predictions
+    // Step 2: Register scoreboard predictions BEFORE any TX is driven
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 2: Adding scoreboard predictions", UVM_LOW)
+    `uvm_info("TEST", "Step 2: Adding scoreboard predictions (pre-drive)", UVM_LOW)
     foreach (tx_seq.sent_items[i]) begin
       fc_seq_item exp;
       exp = fc_seq_item::type_id::create($sformatf("exp_tx_%0d", i));
@@ -84,6 +106,12 @@ class tidelink_fc_adapter_tx_test extends tidelink_fc_adapter_base_test;
       exp.payload     = tx_seq.sent_items[i].data;
       env.sb.predict_fc_tx(exp);
     end
+
+    // ---------------------------------------------------------------
+    // Step 3: Drive the pre-generated items
+    // ---------------------------------------------------------------
+    `uvm_info("TEST", "Step 3: Driving TX writes", UVM_LOW)
+    tx_seq.start(env.tx_agt.sequencer);
 
     // Wait for all FC TX to complete
     repeat (50) @(posedge vif.clk);

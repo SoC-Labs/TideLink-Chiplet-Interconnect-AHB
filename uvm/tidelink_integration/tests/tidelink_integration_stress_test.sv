@@ -69,7 +69,8 @@ class tidelink_integration_stress_test extends tidelink_integration_base_test;
       repeat (20) @(posedge tb_if.clk);
 
       // Verify credits consumed
-      expected_credits_consumed = words_per_pkt + 1; // data + length word
+      expected_credits_consumed = words_per_pkt + 2; // 2-word header + N data
+                                                      // (tidelink_fifo_ctrl.sv packet_delta = length + 2)
       read_cfg_reg(REG_CREDIT_COUNT, reg_data);
       `uvm_info("TEST", $sformatf("CREDIT_COUNT after write %0d = %0d (expected %0d)",
         pkt, reg_data, credits_initial - expected_credits_consumed), UVM_MEDIUM)

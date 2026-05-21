@@ -491,11 +491,11 @@ module tidelink_perf #(
                     3'h1: perf_reg_rdata = credit_starve_count_r;
                     3'h2: perf_reg_rdata = sample_count_r;
                     3'h3: perf_reg_rdata = {
-                        {(SYS_DATA_W-15){1'b0}},
-                        fc_rx_valid,               // [14]
-                        fc_tx_valid,               // [13]
-                        credit_count,              // [12:0] (RAM_ADDR_W-1 bits)
-                        tx_router_idle             // [0] — shifted by credit width
+                        {(SYS_DATA_W-16){1'b0}}, // [31:16] reserved
+                        fc_rx_valid,             // [15]
+                        fc_tx_valid,             // [14]
+                        credit_count,            // [13:1] (RAM_ADDR_W-1 = 13 bits)
+                        tx_router_idle           // [0]
                     };
                     3'h4: perf_reg_rdata = {16'b0, tx_inflight_r};
                     3'h5: perf_reg_rdata = {16'b0, rx_inflight_r};

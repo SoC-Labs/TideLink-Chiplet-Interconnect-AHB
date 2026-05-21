@@ -179,8 +179,6 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
-	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
-	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	vivado -mode batch -source $(FPGA_DIR)/build_design.tcl \
 	    -log $(BUILD_RUN_DIR)/build_design.log \
 	    -journal $(BUILD_RUN_DIR)/build_design.jou

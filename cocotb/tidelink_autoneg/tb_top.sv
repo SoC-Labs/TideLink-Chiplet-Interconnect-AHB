@@ -151,28 +151,27 @@ module tb_top (
         .peer_rx_lane_mask_o  (peer_rx_lane_mask_o),
         .mask_hs_local_match  (mask_hs_local_match),
         .mask_hs_local_fail   (mask_hs_local_fail),
-        .mask_hs_auto_en      (mask_hs_auto_en),
-        // Phase 3 I²C-train coordination
-        .train_auto_en             (train_auto_en),
-        .train_sw_step             (train_sw_step),
-        .train_retrain_req         (train_retrain_req),
-        .train_poll_timeout        (train_poll_timeout),
-        .train_fsm_wait_hi         (train_fsm_wait_hi),
-        .local_swi_lane_locked_i   (local_swi_lane_locked_i),
-        .local_swi_lane_fault_i    (local_swi_lane_fault_i),
-        .local_calibration_done_i  (local_calibration_done_i),
-        .local_training_mode_set   (local_training_mode_set),
-        .local_training_mode_clr   (local_training_mode_clr),
-        .local_swreset_pulse       (local_swreset_pulse),
-        .train_state_o             (train_state_o),
-        .train_ok_o                (train_ok_o),
-        .train_fail_o              (train_fail_o),
-        .train_in_progress_o       (train_in_progress_o),
-        .train_peer_nack_o         (train_peer_nack_o),
-        .train_peer_lane_locked_o  (train_peer_lane_locked_o),
-        .train_peer_lane_fault_o   (train_peer_lane_fault_o),
-        .train_local_lane_fault_o  (train_local_lane_fault_o),
-        .train_fail_irq_o          (train_fail_irq_o)
+        .mask_hs_auto_en      (mask_hs_auto_en)
+        // Phase 3 I²C-train coordination ports are not present on this branch
+        // (added in a later commit). Tie-offs of the unconnected tb_top
+        // train_* I/Os below keep the harness pin-compatible with sister
+        // testbenches without binding into the DUT.
     );
+
+    // Drive constant 0 onto the test-bench tb_top train_* outputs so cocotb
+    // can still read them (matches the harness ABI for the other autoneg
+    // testbenches in the tree). These are NOT connected to the DUT.
+    assign local_training_mode_set  = 1'b0;
+    assign local_training_mode_clr  = 1'b0;
+    assign local_swreset_pulse      = 1'b0;
+    assign train_state_o            = 4'd0;
+    assign train_ok_o               = 1'b0;
+    assign train_fail_o             = 1'b0;
+    assign train_in_progress_o      = 1'b0;
+    assign train_peer_nack_o        = 1'b0;
+    assign train_peer_lane_locked_o = 8'd0;
+    assign train_peer_lane_fault_o  = 8'd0;
+    assign train_local_lane_fault_o = 8'd0;
+    assign train_fail_irq_o         = 1'b0;
 
 endmodule

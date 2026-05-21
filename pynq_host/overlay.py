@@ -235,12 +235,14 @@ class TidelinkOverlay(Overlay):
         local_role = self.get_role()
 
         # Wlink lane configuration
+        # Wlink.v:844 packs LaneMask as {16'h0, rx_mask[7:0], tx_mask[7:0]}.
+        # Wlink.v:899 packs ActiveLanes as {24'h0, active_rx[3:0], active_tx[3:0]}.
         lane_mask_reg = self.apb.read(WLINK_LANE_MASK_OFF)
-        tx_lane_mask = lane_mask_reg & 0xFFFF
-        rx_lane_mask = (lane_mask_reg >> 16) & 0xFFFF
+        tx_lane_mask = lane_mask_reg & 0xFF
+        rx_lane_mask = (lane_mask_reg >> 8) & 0xFF
         active_lanes_reg = self.apb.read(WLINK_ACTIVE_LANES_OFF)
-        tx_active_lanes = (active_lanes_reg & 0xFFFF) + 1
-        rx_active_lanes = ((active_lanes_reg >> 16) & 0xFFFF) + 1
+        tx_active_lanes = (active_lanes_reg & 0xF) + 1
+        rx_active_lanes = ((active_lanes_reg >> 4) & 0xF) + 1
 
         # Tidelink-side credit counters
         current_credits = self.apb.read(0x0c)
@@ -301,9 +303,10 @@ class TidelinkOverlay(Overlay):
         lane. On pynq-z2-pair the synthesised lane count is 8, so masks
         come up as 0xFF after reset (all lanes enabled).
         """
+        # Wlink.v:844 packs as {16'h0, rx_mask[7:0], tx_mask[7:0]}.
         v = self.apb.read(WLINK_LANE_MASK_OFF)
-        tx = v & 0xFFFF
-        rx = (v >> 16) & 0xFFFF
+        tx = v & 0xFF
+        rx = (v >> 8) & 0xFF
         return tx, rx
 
     def get_active_lanes(self):
@@ -312,9 +315,10 @@ class TidelinkOverlay(Overlay):
         Reads the LinkActiveLanes register (RO) which the hardware drives
         as ``popcount(lane_mask) - 1``. Add 1 to get the lane count.
         """
+        # Wlink.v:899 packs as {24'h0, active_rx[3:0], active_tx[3:0]}.
         v = self.apb.read(WLINK_ACTIVE_LANES_OFF)
-        tx = (v & 0xFFFF) + 1
-        rx = ((v >> 16) & 0xFFFF) + 1
+        tx = (v & 0xF) + 1
+        rx = ((v >> 4) & 0xF) + 1
         return tx, rx
 
     def set_lane_mask(self, tx_mask, rx_mask=None):
@@ -345,7 +349,8 @@ class TidelinkOverlay(Overlay):
             raise ValueError(
                 "lane_mask=0 is illegal (link cannot operate); "
                 "tx=0x{:x} rx=0x{:x}".format(tx_mask, rx_mask))
-        self.apb.write(WLINK_LANE_MASK_OFF, tx | (rx << 16))
+        # Wlink.v:1889/1896 decodes pwdata[7:0]=tx_mask, pwdata[15:8]=rx_mask.
+        self.apb.write(WLINK_LANE_MASK_OFF, tx | (rx << 8))
 
     def assert_link_safe_for_tx(self):
         """Raise RuntimeError unless the link is safe for an AHB_TX write.

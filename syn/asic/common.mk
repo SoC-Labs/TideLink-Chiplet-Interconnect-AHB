@@ -40,10 +40,12 @@ export TARGET_LIB     ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp/sc12_bas
 # remain as backwards-compat aliases for the DC + RTLA flows.
 export MEM_BASE       ?= /research/precompiled_mems/TSMC65
 export RF_16K_DB_SS   ?= $(MEM_BASE)/rf_16k/rf_16k_ss_1p08v_1p08v_125c.db
+export RF_16K_DB_TT   ?= $(MEM_BASE)/rf_16k/rf_16k_tt_1p20v_1p20v_25c.db
 export RF_16K_DB_FF   ?= $(MEM_BASE)/rf_16k/rf_16k_ff_1p32v_1p32v_m40c.db
 
-# Aggregate slow/fast macro library lists for link_library
+# Aggregate slow/typical/fast macro library lists for link_library
 export MEM_DBS_SS     := $(RF_16K_DB_SS)
+export MEM_DBS_TT     := $(RF_16K_DB_TT)
 export MEM_DBS_FF     := $(RF_16K_DB_FF)
 
 # Backwards-compat aliases (DC + RTLA flow + FC.read_design.tcl)
@@ -54,21 +56,49 @@ export MEM_DB_FF      ?= $(RF_16K_DB_FF)
 # Link libraries — target + every macro corner present
 export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DBS_SS)
 
-# TF/Milkyway — physical reference for floorplan estimation (TSMC 65nm, 1p9m_6x2z)
-export PHYS_IP_PATH   ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
+# TF/Milkyway — physical reference (TSMC 65nm, 1p9m_6x2z).
+# PHYS_IP_PATH is the legacy /research/AAA root. STANDARD_CELL_BASE_PATH
+# is the SoC-Labs project-wide canonical name and resolves to the same
+# location; both are exported so downstream scripts can use either.
+export PHYS_IP_PATH            ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
+export STANDARD_CELL_BASE_PATH ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
+export IO_BASE_PATH            ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital
+export CLN65LP_TECH_PATH       ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital/Back_End
+export PMK_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_pmk_svt_c24/r2p0
+export RET_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_rklo_lvt_svt_c20_c24/r1p0
 
 # Standard cell Verilog simulation models (for gate-level simulation)
-export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
+export STDCELL_VERILOG ?= $(STANDARD_CELL_BASE_PATH)
+# Arm-vendor TF for fc_shell (the cln65lp_tech_file from TSMCHOME is
+# also defined in scripts/tech_paths.tcl as the canonical TCL var; this
+# Makefile-side TF_FILE remains the Arm-vendor TF since the foundry
+# TSMCHOME install isn't on every dev box).
 export TF_FILE        ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/sc12_tech.tf
-export MW_REF_LIB     ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/milkyway/1p9m_6x2z/sc12_cln65lp_base_rvt
+export MW_REF_LIB     ?= $(STANDARD_CELL_BASE_PATH)/milkyway/1p9m_6x2z/sc12_cln65lp_base_rvt
 
 # ── RTLA Reference Methodology ──────���─────────────────���───────────────────
 export RTLA_RM_PATH   ?= /research/synopsys/RTLA-RM_U-2022.12
 
-# ── Multi-corner .db libraries (for RTLA CLIB on-the-fly creation) ────────
-export DB_PATH        ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/db
+# ── Multi-corner .db libraries (SS = max-delay, TT = typical, FF = min-delay)
+# Three corners are now stocked. SS feeds the existing sc12 link_library
+# (TARGET_LIB above is the SS .db); TT and FF are available for MCMM
+# scenario closure. Variable names retain the SoC-Labs project-wide
+# operating-point convention (0p72/0p80/0p88V labels) even though the
+# .db files at this library cut are 1p08/1p20/1p32V — the labels track
+# the foundry voltage of a sibling node, kept consistent so chip-top
+# scripts can pick a corner set with a single switch.
+export DB_PATH        ?= $(STANDARD_CELL_BASE_PATH)/db
 export DB_SS          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
+export DB_TT          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_tt_typical_max_1p20v_25c.db
 export DB_FF          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m40c.db
+
+# SoC-Labs-style aliases (mirror tech_paths.tcl var names exactly so any
+# downstream make snippet can read either spelling).
+export STANDARD_CELL_DB_FILE_SS_0P72V_125C ?= $(DB_SS)
+export STANDARD_CELL_DB_FILE_TT_0P80V_25C  ?= $(DB_TT)
+export STANDARD_CELL_DB_FILE_FF_0P88V_M40C ?= $(DB_FF)
+export STANDARD_CELL_LEF_FILE              ?= $(STANDARD_CELL_BASE_PATH)/lef/sc12_cln65lp_base_rvt.lef
+export STANDARD_CELL_GDS_FILE              ?= $(STANDARD_CELL_BASE_PATH)/gds2/sc12_cln65lp_base_rvt.gds2
 
 # ── TLU+ parasitic extraction models ─────────────────────────────────────
 export TLUPLUS_PATH   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/synopsys_tluplus/1p9m_6x2z
@@ -82,7 +112,7 @@ export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
 # shapes the FC flow created — chip-top would have to merge the
 # std-cell + rf_16k GDS itself at LVS time.
 export GDS_LAYER_MAP   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/stream_out_layer_map
-export GDS_STDCELL     ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/gds2/sc12_cln65lp_base_rvt.gds2
+export GDS_STDCELL     ?= $(STANDARD_CELL_GDS_FILE)
 export GDS_MEM_RF16K   ?= $(MEM_BASE)/rf_16k/rf_16k.gds2
 export GDS_MERGE_FILES ?= $(GDS_STDCELL) $(GDS_MEM_RF16K)
 

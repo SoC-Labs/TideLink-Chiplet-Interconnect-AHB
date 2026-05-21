@@ -7,6 +7,18 @@
 
 set_host_options -max_cores 8 -num_processes 8
 
+#-----------------------------------------------------------------------------
+# Canonical SoC-Labs tech-path TCL variables — sourced here so every FC
+# stage script (and downstream pt_shell / fm_shell scripts that source
+# setup.tcl directly) has standard_cell_db_file_*, io_*, RF_16K_*, etc.
+# available by their project-wide names. The Make-side mirror in
+# common.mk provides the same paths via env vars.
+#-----------------------------------------------------------------------------
+if {[info exists ::env(SHARED_SCRIPTS)]} {
+    set _tech_paths_tcl $::env(SHARED_SCRIPTS)/tech_paths.tcl
+    if {[file exists $_tech_paths_tcl]} { source $_tech_paths_tcl }
+}
+
 # ── Power-domain nets (single-domain partition; chip-top adds VDDIO/VDDACC)
 set PG_NETS    [list VDD VSS]
 set CORE_VOLTAGE 1.08

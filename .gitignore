@@ -94,6 +94,7 @@ imp/*
 !imp/ASIC/
 imp/ASIC/*
 !imp/ASIC/Makefile
+!imp/ASIC/README.md
 
 # Fusion Compiler
 *.gz

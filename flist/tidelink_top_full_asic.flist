@@ -21,8 +21,13 @@
 //     SDFFRPQ_X1M_A12TR's hold time exceeds the clock-to-Q + skew
 //     available, and FC's placer drops the two flops too close.
 //
-// v1.1 fix: insert a BUF_X*M_A12TR between u_f1.Q and u_f2.D inside
-// each WavDemet*.v `ifdef ASIC_TSMC65 arm, then re-enable this gate.
+// v1.1 attempt 3 (2026-05-21): inserted 2× BUF_X1M_A12TR between
+// u_f1.Q and u_f2.D inside each WavDemet*.v `ifdef ASIC_TSMC65 arm.
+// Result: scen_fast hold WNS -4.76 ns (barely improved from -4.85).
+// 160 ps of explicit BUF delay is nowhere near enough — the failure
+// is NOT a localised f1→f2 hold-margin issue. Real root cause needs
+// per-endpoint analysis (where the violations actually are) — see
+// INTEGRATION_CHANGES.md §3 attempt-3 record. Define remains off.
 //+define+ASIC_TSMC65
 
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)

@@ -31,6 +31,7 @@ set phys_ip_path $::env(PHYS_IP_PATH)
 set tf_file      $::env(TF_FILE)
 set db_ss        $::env(DB_SS)
 set db_ff        $::env(DB_FF)
+set db_tt        [expr {[info exists ::env(DB_TT)] ? $::env(DB_TT) : ""}]
 
 if {[info exists ::env(MEM_BASE)] && $::env(MEM_BASE) ne ""} {
     set mem_base $::env(MEM_BASE)
@@ -38,7 +39,14 @@ if {[info exists ::env(MEM_BASE)] && $::env(MEM_BASE) ne ""} {
     set mem_base [file dirname $::env(MEM_PATH)]
 }
 
-set stdcell_lef "${phys_ip_path}/sc12_base_rvt/r0p0/lef/sc12_cln65lp_base_rvt.lef"
+# tcbn65lp 9-track stdcell LEF (9lm_T2 stack). STANDARD_CELL_LEF_FILE is
+# the canonical SoC-Labs name; falls back to a build inferred from
+# PHYS_IP_PATH so an unset env doesn't break the script.
+if {[info exists ::env(STANDARD_CELL_LEF_FILE)] && $::env(STANDARD_CELL_LEF_FILE) ne ""} {
+    set stdcell_lef $::env(STANDARD_CELL_LEF_FILE)
+} else {
+    set stdcell_lef "${phys_ip_path}/Back_End/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef"
+}
 
 # Memory LEFs — only rf_16k is currently instantiated, but include the
 # sibling rf_*k frames so additional macro flavours can drop in without
@@ -49,11 +57,11 @@ set mem_lefs [list \
     "${mem_base}/rf_16k/rf_16k.lef"]
 
 if {[info exists ::env(FUSION_LIB)] && $::env(FUSION_LIB) ne ""} {
-    set output_lib_sc12 $::env(FUSION_LIB)
+    set output_lib_stdcell $::env(FUSION_LIB)
 } else {
-    set output_lib_sc12 "./fusion_lib/sc12_lib"
+    set output_lib_stdcell "./fusion_lib/stdcell_lib"
 }
-set output_dir     [file dirname $output_lib_sc12]
+set output_dir     [file dirname $output_lib_stdcell]
 set output_lib_mem "${output_dir}/mem_frame_lib"
 file mkdir $output_dir
 
@@ -65,23 +73,29 @@ file mkdir $output_dir
 set_message_info -id NDM-032 -limit 5
 
 #-----------------------------------------------------------------------------
-# 1) sc12_lib — std cells, normal flow (LEF + Liberty bundled into NDM)
+# 1) stdcell_lib — tcbn65lp 9-track std cells, normal flow w/ Liberty.
+#    All three corners (bc/tc/wc) bundled so fc_shell's MCMM has every
+#    operating point available at link time.
 #-----------------------------------------------------------------------------
-puts "INFO: \[lib\] Building sc12_lib (std cells, normal flow w/ Liberty)"
+puts "INFO: \[lib\] Building stdcell_lib (tcbn65lp std cells w/ Liberty)"
 puts "INFO: \[lib\]   LEF : $stdcell_lef"
 puts "INFO: \[lib\]   .db : $db_ss / $db_ff"
-puts "INFO: \[lib\]   Out : $output_lib_sc12"
+if {$db_tt ne ""} { puts "INFO: \[lib\]   .db : $db_tt (TT)" }
+puts "INFO: \[lib\]   Out : $output_lib_stdcell"
 
-file delete -force $output_lib_sc12
+file delete -force $output_lib_stdcell
 # Explicit `-flow normal` is required for the leading-positional form to
 # parse — the implicit/default form rejects the `<name>` positional with
 # CMD-012 "extra positional option" in U-2022.12.
-create_workspace sc12_ws -technology $tf_file -flow normal
+create_workspace stdcell_ws -technology $tf_file -flow normal
 read_lef $stdcell_lef
 read_db $db_ss
 read_db $db_ff
+if {$db_tt ne "" && [file exists $db_tt]} {
+    read_db $db_tt
+}
 check_workspace
-commit_workspace -output $output_lib_sc12
+commit_workspace -output $output_lib_stdcell
 
 #-----------------------------------------------------------------------------
 # 2) mem_frame_lib — memory macros, frame-only (LEFs only).

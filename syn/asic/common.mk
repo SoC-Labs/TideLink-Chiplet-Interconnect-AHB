@@ -27,11 +27,14 @@ ASIC_FLIST_PATH := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
 export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flist/$(MODULE).flist)
 export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 
-# ── Cell libraries (update paths to match your PDK installation) ───────��───
-# Target library (.db) — used for mapping and optimization
-# export TARGET_LIB     ?= /eda/pdk/example/std_cell.db
-# Defaultly using the 65nm Library
-export TARGET_LIB     ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp/sc12_base_rvt/r0p0/db/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
+# ── Cell libraries — TSMC tcbn65lp 9-track 9lm_T2 stack ────────────────────
+# Switched from Arm sc12_base_rvt (12-track) to TSMC tcbn65lp_220a (9-track)
+# on 2026-05-21. The user-canonical TSMCHOME install lives under
+# /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/. Three corners now stocked:
+#   tcbn65lpwc — worst case (max-delay) = SS corner equivalent
+#   tcbn65lptc — typical case            = TT corner
+#   tcbn65lpbc — best  case (min-delay)  = FF corner equivalent
+export TARGET_LIB     ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital/Front_End/timing_power_noise/NLDM/tcbn65lp_220a/tcbn65lpwc.db
 
 # ── Memory macro libraries (compiled register file) ─────────────────────
 # tidelink_top instantiates a single rf_16k (FIFO mem). MEM_BASE is the
@@ -56,53 +59,60 @@ export MEM_DB_FF      ?= $(RF_16K_DB_FF)
 # Link libraries — target + every macro corner present
 export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DBS_SS)
 
-# TF/Milkyway — physical reference (TSMC 65nm, 1p9m_6x2z).
-# PHYS_IP_PATH is the legacy /research/AAA root. STANDARD_CELL_BASE_PATH
-# is the SoC-Labs project-wide canonical name and resolves to the same
-# location; both are exported so downstream scripts can use either.
-export PHYS_IP_PATH            ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
-export STANDARD_CELL_BASE_PATH ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0
+# TF/Milkyway — physical reference (TSMC65 LP, 9-layer T2 stack).
+# Canonical SoC-Labs paths under /home/dwn1c21/.../TSMC/65/CMOS/LP/ —
+# 9-track tcbn65lp_220a. Override on a per-system basis via the env
+# var of the same name (e.g. STANDARD_CELL_BASE_PATH=…).
+export STANDARD_CELL_BASE_PATH ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital
 export IO_BASE_PATH            ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital
-export CLN65LP_TECH_PATH       ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital/Back_End
+export CLN65LP_TECH_PATH       ?= $(STANDARD_CELL_BASE_PATH)/Back_End
 export PMK_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_pmk_svt_c24/r2p0
 export RET_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_rklo_lvt_svt_c20_c24/r1p0
 
+# Legacy alias (some downstream scripts still grep PHYS_IP_PATH).
+export PHYS_IP_PATH            ?= $(STANDARD_CELL_BASE_PATH)
+
 # Standard cell Verilog simulation models (for gate-level simulation)
-export STDCELL_VERILOG ?= $(STANDARD_CELL_BASE_PATH)
-# Arm-vendor TF for fc_shell (the cln65lp_tech_file from TSMCHOME is
-# also defined in scripts/tech_paths.tcl as the canonical TCL var; this
-# Makefile-side TF_FILE remains the Arm-vendor TF since the foundry
-# TSMCHOME install isn't on every dev box).
-export TF_FILE        ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/sc12_tech.tf
-export MW_REF_LIB     ?= $(STANDARD_CELL_BASE_PATH)/milkyway/1p9m_6x2z/sc12_cln65lp_base_rvt
+export STDCELL_VERILOG ?= $(STANDARD_CELL_BASE_PATH)/Front_End/verilog/tcbn65lp_200a
+# Foundry Milkyway TF (9-layer T2 stack) and LEF for fc_shell.
+export TF_FILE        ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/techfiles/tsmcn65_9lmT2.tf
+export MW_REF_LIB     ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/frame_only/tcbn65lp
 
 # ── RTLA Reference Methodology ──────���─────────────────���───────────────────
 export RTLA_RM_PATH   ?= /research/synopsys/RTLA-RM_U-2022.12
 
-# ── Multi-corner .db libraries (SS = max-delay, TT = typical, FF = min-delay)
-# Three corners are now stocked. SS feeds the existing sc12 link_library
-# (TARGET_LIB above is the SS .db); TT and FF are available for MCMM
-# scenario closure. Variable names retain the SoC-Labs project-wide
-# operating-point convention (0p72/0p80/0p88V labels) even though the
-# .db files at this library cut are 1p08/1p20/1p32V — the labels track
-# the foundry voltage of a sibling node, kept consistent so chip-top
-# scripts can pick a corner set with a single switch.
-export DB_PATH        ?= $(STANDARD_CELL_BASE_PATH)/db
-export DB_SS          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
-export DB_TT          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_tt_typical_max_1p20v_25c.db
-export DB_FF          ?= $(DB_PATH)/sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m40c.db
+# ── Multi-corner .db libraries (tcbn65lp 220a NLDM) ────────────────────────
+# Mapping TSMC corner labels → SoC-Labs SS/TT/FF nomenclature:
+#   tcbn65lpwc — worst case (V_LO, T_HI, slow)  ↔ SS (max-delay)
+#   tcbn65lptc — typical case                    ↔ TT
+#   tcbn65lpbc — best  case (V_HI, T_LO, fast)  ↔ FF (min-delay)
+# Variable names keep the SoC-Labs project-wide 0p72/0p80/0p88V label
+# convention; the actual tcbn65lp .db operating points are the foundry
+# canonical values (BCCOM/NCCOM/WCCOM — see lib_file headers).
+export DB_PATH        ?= $(STANDARD_CELL_BASE_PATH)/Front_End/timing_power_noise/NLDM/tcbn65lp_220a
+export DB_SS          ?= $(DB_PATH)/tcbn65lpwc.db
+export DB_TT          ?= $(DB_PATH)/tcbn65lptc.db
+export DB_FF          ?= $(DB_PATH)/tcbn65lpbc.db
 
 # SoC-Labs-style aliases (mirror tech_paths.tcl var names exactly so any
 # downstream make snippet can read either spelling).
 export STANDARD_CELL_DB_FILE_SS_0P72V_125C ?= $(DB_SS)
 export STANDARD_CELL_DB_FILE_TT_0P80V_25C  ?= $(DB_TT)
 export STANDARD_CELL_DB_FILE_FF_0P88V_M40C ?= $(DB_FF)
-export STANDARD_CELL_LEF_FILE              ?= $(STANDARD_CELL_BASE_PATH)/lef/sc12_cln65lp_base_rvt.lef
-export STANDARD_CELL_GDS_FILE              ?= $(STANDARD_CELL_BASE_PATH)/gds2/sc12_cln65lp_base_rvt.gds2
+export STANDARD_CELL_LEF_FILE              ?= $(STANDARD_CELL_BASE_PATH)/Back_End/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef
+# No .gds2 file ships in TSMCHOME — chip-top is expected to merge the
+# library GDS at LVS time from the foundry's signoff package. Leave empty
+# so write_gds in 6_partition_export.tcl skips the std-cell merge.
+export STANDARD_CELL_GDS_FILE              ?=
 
-# ── TLU+ parasitic extraction models ─────────────────────────────────────
-export TLUPLUS_PATH   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/synopsys_tluplus/1p9m_6x2z
-export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
+# ── TLU+ parasitic extraction models (cln65lp 1p09m+alrdl, top2 = 9lm_T2)
+# The tcbn65lp tluplus directory ships top1/top2 variants for each
+# operating-point combination (cbest/cworst/rcbest/rcworst/typical).
+# top2 matches the 1p09m+alrdl 9lm_T2 stack we picked for TF_FILE.
+# The star.map_9M layer-mapping file is the canonical map for the 9-metal
+# stack — provides the Star-RC / TLU+ layer name → number translation.
+export TLUPLUS_PATH   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/techfiles/tluplus
+export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/star.map_9M
 
 # ── FC GDS stream-out — layer map + macro/stdcell GDS to merge ─────────────
 # write_gds in 6_partition_export.tcl needs (a) a Synopsys-format layer
@@ -111,10 +121,12 @@ export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/tluplus.map
 # Without -merge_files the partition GDS contains only the metal/via
 # shapes the FC flow created — chip-top would have to merge the
 # std-cell + rf_16k GDS itself at LVS time.
-export GDS_LAYER_MAP   ?= $(PHYS_IP_PATH)/arm_tech/r2p0/milkyway/1p9m_6x2z/stream_out_layer_map
+export GDS_LAYER_MAP   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/gdsout_3X2Z.map
 export GDS_STDCELL     ?= $(STANDARD_CELL_GDS_FILE)
 export GDS_MEM_RF16K   ?= $(MEM_BASE)/rf_16k/rf_16k.gds2
-export GDS_MERGE_FILES ?= $(GDS_STDCELL) $(GDS_MEM_RF16K)
+# write_gds with -merge_files expects only files that exist on disk —
+# strip the empty GDS_STDCELL out of the merge list when it isn't set.
+export GDS_MERGE_FILES ?= $(strip $(if $(GDS_STDCELL),$(GDS_STDCELL))) $(GDS_MEM_RF16K)
 
 # ── Design constraints ─────────────────────────��───────────────────────────
 # TideLink top has two boundary clocks (hclk + phc_clk) plus a Wlink

@@ -102,13 +102,13 @@ if {[info exists ::env(FC_PRESERVE_WLINK_FCSM)] && $::env(FC_PRESERVE_WLINK_FCSM
 }
 
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
-    puts "INFO: \[setup\] FC_CLOCK_GATING=off — banning PREICG_* cells"
-    set icg_cells [get_lib_cells -quiet */PREICG_*]
+    puts "INFO: \[setup\] FC_CLOCK_GATING=off — banning CKLNQD*/CKLHQD* cells"
+    set icg_cells [get_lib_cells -quiet "*/CKLNQD* */CKLHQD*"]
     if {[sizeof_collection $icg_cells] > 0} {
         set_dont_use $icg_cells
         puts "INFO: \[setup\]   set_dont_use on [sizeof_collection $icg_cells] ICG cells"
     } else {
-        puts "WARN: \[setup\]   no PREICG_* cells matched — check the library"
+        puts "WARN: \[setup\]   no CKLNQD*/CKLHQD* cells matched — check the library"
     }
     # `power.clock_gating.enable` and `compile.flow.gate_clock` are both
     # invalid app_option names in U-2022.12 — set_dont_use on the ICG

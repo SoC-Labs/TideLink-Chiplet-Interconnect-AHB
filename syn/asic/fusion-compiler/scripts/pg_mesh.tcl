@@ -56,11 +56,13 @@ puts "INFO: \[pg_mesh\] connect_pg_net -automatic"
 connect_pg_net -automatic
 
 # ── Step 3: M1 follow-pin pattern (std-cell rails) ───────────────────────
-# sc12 std cells carry their own M1 PG rails by construction; this
-# pattern tells compile_pg to use them so it drops via stacks from the
-# M5 mesh down to M1 at every crossing. rail_width 0.18 matches the sc12
-# M1 PG rail width and keeps via stacks from the M5 mesh landing on the
-# rails correctly.
+# tcbn65lp 9-track std cells carry their own M1 PG rails by construction;
+# this pattern tells compile_pg to use them so it drops via stacks from
+# the M5 mesh down to M1 at every crossing. rail_width 0.18 is the
+# follow-pin nominal that lands via stacks correctly on both
+# tcbn65lp 9-track and Arm sc12 cells (same rough M1 PG rail
+# geometry); a tighter value can be set in pg_mesh.tcl if the foundry
+# rail width differs materially.
 puts "INFO: \[pg_mesh\] creating M1 follow-pin pattern"
 create_pg_std_cell_conn_pattern std_cell_rail \
     -layers {M1} \

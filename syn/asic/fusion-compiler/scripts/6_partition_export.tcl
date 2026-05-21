@@ -254,11 +254,11 @@ puts $mf "| Cell internal power | $pwr_internal |"
 puts $mf "| Net switching power | $pwr_switching |"
 puts $mf "| Total dynamic power | $pwr_dynamic @ $::env(CLK_PERIOD) ns |"
 puts $mf "| Cell leakage power | $pwr_leakage |"
-puts $mf "| Library | TSMC65 sc12_base_rvt (single-Vt, single-bit DFFs) |"
+puts $mf "| Library | TSMC65 tcbn65lp 9-track 9lm_T2 (220a release, RVT) |"
 # Compute knob status strings outside the heredoc to dodge Tcl quoting issues.
-set cg_status "on (PREICG_*) min_bitwidth=2"
+set cg_status "on (CKLNQD*/CKLHQD*) min_bitwidth=2"
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
-    set cg_status "off (PREICG_* set_dont_use, +area for LEC parity)"
+    set cg_status "off (CKLNQD*/CKLHQD* set_dont_use, +area for LEC parity)"
 }
 # Pull the live LEC don't-verify count from the most recent Formality
 # summary if one exists, so the manifest never ships a stale number.

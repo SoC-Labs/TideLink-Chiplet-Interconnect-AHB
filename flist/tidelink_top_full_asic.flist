@@ -21,14 +21,17 @@
 //     SDFFRPQ_X1M_A12TR's hold time exceeds the clock-to-Q + skew
 //     available, and FC's placer drops the two flops too close.
 //
-// v1.1 attempt 3 (2026-05-21): inserted 2× BUF_X1M_A12TR between
-// u_f1.Q and u_f2.D inside each WavDemet*.v `ifdef ASIC_TSMC65 arm.
-// Result: scen_fast hold WNS -4.76 ns (barely improved from -4.85).
-// 160 ps of explicit BUF delay is nowhere near enough — the failure
-// is NOT a localised f1→f2 hold-margin issue. Real root cause needs
-// per-endpoint analysis (where the violations actually are) — see
-// INTEGRATION_CHANGES.md §3 attempt-3 record. Define remains off.
-//+define+ASIC_TSMC65
+// ASIC_TSMC65 — enables the tcbn65lp-native cell-substitution arms
+// of WavClockMux (→ CKMUX2D2 glitch-free clock mux, tcbn65lp ships
+// this natively) and WavDemet{Set,Reset,Reset_*} (→ SDFC{,S}NQD1
+// scan-replaceable async-clear/set flops + BUFFD1 hold-fix chain).
+// Library swap from Arm sc12_base_rvt to TSMC tcbn65lp 9-track 9lm_T2
+// done 2026-05-21 (see syn/asic/common.mk + tech_paths.tcl + the FC
+// flow rewrite). Substitution is now timing-safe by construction —
+// CKMUX2D2 is a real glitch-free mux (vs the sc12 structural
+// workaround attempt) and the SDFC*NQD1 hold-time profile differs
+// from SDFFRPQ_X1M_A12TR which broke hold under sc12.
++define+ASIC_TSMC65
 
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v

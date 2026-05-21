@@ -10,7 +10,7 @@ TIDELINK_HOME ?= $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 ASIC_MODULE ?= tidelink_top_full
 
 # --- top-level entry points -----------------------------------------------
-.PHONY: fc gdsii fc_lec fc_etm fc_all asic_stage asic_clean
+.PHONY: fc gdsii fc_lec fc_etm fc_calibre_drc fc_calibre_lvs fc_all asic_stage asic_clean
 
 # Run the FC partition flow through to fc_abstract (hard-macro deliverables).
 fc:
@@ -27,6 +27,13 @@ fc_lec:
 # PrimeTime boundary ETM.
 fc_etm:
 	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_etm MODULE=$(ASIC_MODULE)
+
+# Calibre foundry-deck sign-off DRC + LVS.
+fc_calibre_drc:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_calibre_drc MODULE=$(ASIC_MODULE)
+
+fc_calibre_lvs:
+	$(MAKE) -C $(TIDELINK_HOME)/syn/asic/fusion-compiler fc_calibre_lvs MODULE=$(ASIC_MODULE)
 
 # fc + LEC (CI / tape-in).
 fc_all:

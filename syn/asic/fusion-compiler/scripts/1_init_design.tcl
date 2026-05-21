@@ -10,7 +10,7 @@
 #   FC_DIR, SHARED_SCRIPTS,
 #   FC_LIBS, FC_LOGS, FC_REPORTS      - flow paths
 #   TF_FILE                           - Milkyway technology file
-#   FUSION_LIB                        - NDM ref-lib (sc12_lib)
+#   FUSION_LIB                        - NDM ref-lib (stdcell_lib)
 #   CLK_NAME, CLK_PERIOD, …           - top-level clock constraints
 #   FC_ASPECT_RATIO,                  - partition floorplan target
 #   FC_CORE_UTILIZATION,
@@ -56,13 +56,13 @@ puts "INFO: \[fc_init\] link_library = [get_app_var link_library]"
 
 #-----------------------------------------------------------------------------
 # Create the design library backed by per-library NDMs:
-#   sc12_lib       (std cells, LEF + Liberty bundled — full lib)
-#   mem_frame_lib  (rf_16k LEF — frames only; Liberty via link_library
-#                   set above)
+#   stdcell_lib   (tcbn65lp 9-track std cells, LEF + 3-corner Liberty)
+#   mem_frame_lib (rf_16k LEF — frames only; Liberty via link_library
+#                  set above)
 #-----------------------------------------------------------------------------
 set lib_dir [file dirname $fusion_lib]
 set ref_libs [list]
-foreach lib {sc12_lib mem_frame_lib} {
+foreach lib {stdcell_lib mem_frame_lib} {
     set p ${lib_dir}/${lib}
     if {[file isdirectory $p]} { lappend ref_libs $p }
 }

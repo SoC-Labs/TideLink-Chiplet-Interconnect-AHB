@@ -82,10 +82,10 @@ ICC2_BIN_DIR = /eda/synopsys/2022-23/RHELx86/ICC2_2022.12/bin
 LC_BIN_DIR   = /eda/synopsys/2022-23/RHELx86/LC_2022.12/bin
 export PATH := $(FC_BIN_DIR):$(ICC2_BIN_DIR):$(LC_BIN_DIR):$(PATH)
 
-# ── Library / fusion-lib ──────────────────────────────────────────────────
-LEF_FILE     = $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/lef/sc12_cln65lp_base_rvt.lef
+# ── Library / fusion-lib (tcbn65lp 9-track) ───────────────────────────────
+LEF_FILE     = $(STANDARD_CELL_LEF_FILE)
 export LEF_FILE
-export FUSION_LIB := $(FC_DIR)/libs/sc12_lib
+export FUSION_LIB := $(FC_DIR)/libs/stdcell_lib
 
 # Stage checkpoint blocks (FC save_block aliases inside the design library)
 INIT_BLOCK     = init.design
@@ -110,9 +110,11 @@ ETM_DONE       = $(FC_WORK)/.etm.done
 
 FC_SHELL = fc_shell
 
-# Sibling Formality + PrimeTime trees — fc_lec / fc_etm delegate here.
-FM_FLOW_DIR = $(TIDELINK_HOME)/syn/asic/formality
-PT_FLOW_DIR = $(TIDELINK_HOME)/syn/asic/primetime
+# Sibling Formality + PrimeTime + Calibre trees — fc_lec / fc_etm /
+# fc_calibre_drc / fc_calibre_lvs delegate to them.
+FM_FLOW_DIR  = $(TIDELINK_HOME)/syn/asic/formality
+PT_FLOW_DIR  = $(TIDELINK_HOME)/syn/asic/primetime
+CAL_FLOW_DIR = $(TIDELINK_HOME)/syn/asic/calibre
 
 # Memory FF .db dir for build_mem_ff_db.tcl (no-op on the precompiled
 # rf_16k macro — FF .db's are already shipped — but kept as the
@@ -120,7 +122,8 @@ PT_FLOW_DIR = $(TIDELINK_HOME)/syn/asic/primetime
 export MEM_FF_DB_DIR  ?= $(TIDELINK_HOME)/syn/asic/libs/mem_ff
 
 .PHONY: fc fc_all fc_init fc_synth fc_cts fc_route fc_pg fc_signoff \
-        fc_drc fc_abstract fc_lec fc_etm fc_pg_deepdive drc_summary \
+        fc_drc fc_abstract fc_lec fc_etm fc_pg_deepdive \
+        fc_calibre_drc fc_calibre_lvs drc_summary \
         mem_ff_db gdsii synth_netlist gui clean help dirs fusion_lib
 
 # ── Workspace setup ───────────────────────────────────────────────────────
@@ -279,6 +282,19 @@ $(ETM_DONE): $(ABSTRACT_DONE)
 
 fc_etm: $(ETM_DONE)
 
+# ── Calibre sign-off DRC / LVS (post-export, foundry deck) ───────────────
+# fc_calibre_drc / fc_calibre_lvs delegate to ../calibre. Both need
+# fc_abstract to have run (they consume outputs/<TOP>.gds and .pg.v).
+# No sentinel for these — each Calibre run is independent of the others
+# and the wrapper script enforces its own success-marker check.
+fc_calibre_drc: $(ABSTRACT_DONE)
+	@echo "INFO: [Phase 8] Calibre sign-off DRC (foundry deck)"
+	$(MAKE) -C $(CAL_FLOW_DIR) drc
+
+fc_calibre_lvs: $(ABSTRACT_DONE)
+	@echo "INFO: [Phase 8] Calibre sign-off LVS (layout vs gate netlist)"
+	$(MAKE) -C $(CAL_FLOW_DIR) lvs
+
 # Memory FF .db build hook (no-op for the shipped rf_16k macro).
 LC_SHELL = lc_shell
 mem_ff_db: | dirs
@@ -359,6 +375,8 @@ help:
 	@echo "                              SDC/UPF + per-scenario SPEF/SDF + manifest"
 	@echo "  make fc_lec             - Formality LEC (delegates to ../formality)"
 	@echo "  make fc_etm             - PrimeTime ETM (delegates to ../primetime)"
+	@echo "  make fc_calibre_drc     - Calibre sign-off DRC (delegates to ../calibre)"
+	@echo "  make fc_calibre_lvs     - Calibre sign-off LVS (delegates to ../calibre)"
 	@echo "  make fusion_lib         - Build fusion ref lib only"
 	@echo "  make mem_ff_db          - Rebuild any missing FF mem .db's"
 	@echo "  make gui                - fc_shell -gui"

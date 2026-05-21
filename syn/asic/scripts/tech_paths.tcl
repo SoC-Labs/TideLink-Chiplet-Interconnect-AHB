@@ -26,10 +26,10 @@ proc env_or_default {var def} {
 # Override on a per-system basis via the env var of the same name (uppercase)
 # — e.g. CLN65LP_TECH_PATH=/path/to/TSMCHOME/Back_End make fc.
 #-----------------------------------------------------------------------------
-set cln65lp_tech_path        [env_or_default CLN65LP_TECH_PATH \
-    /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital/Back_End]
 set standard_cell_base_path  [env_or_default STANDARD_CELL_BASE_PATH \
-    /research/AAA/phys_ip_library/arm/tsmc/cln65lp/sc12_base_rvt/r0p0]
+    /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital]
+set cln65lp_tech_path        [env_or_default CLN65LP_TECH_PATH \
+    ${standard_cell_base_path}/Back_End]
 set io_base_path             [env_or_default IO_BASE_PATH \
     /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital]
 set pmk_base_path            [env_or_default PMK_BASE_PATH \
@@ -38,29 +38,27 @@ set ret_base_path            [env_or_default RET_BASE_PATH \
     /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_rklo_lvt_svt_c20_c24/r1p0]
 
 #-----------------------------------------------------------------------------
-# cln65lp technology files (foundry TSMC home install).
+# cln65lp technology files — TSMC tcbn65lp 9-layer T2 stack.
 #-----------------------------------------------------------------------------
-set cln65lp_tech_file       ${cln65lp_tech_path}/milkyway/tcbn65lpbwp12t_200a/techfiles/tsmcn65_9lmT2.tf
-set cln65lp_lef_file        ${cln65lp_tech_path}/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef
+set cln65lp_tech_file       ${cln65lp_tech_path}/milkyway/tcbn65lp_200a/techfiles/tsmcn65_9lmT2.tf
+set cln65lp_lef_file        ${cln65lp_tech_path}/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef
 
 #-----------------------------------------------------------------------------
-# Standard-cell library (sc12_base_rvt, /research/AAA install).
-# Three corners — SS (max-delay), TT (typical), FF (min-delay). The variable
-# names retain the SoC-Labs project-wide convention (operating-point in the
-# label as 0p72/0p80/0p88) even though the .db filenames are the standard
-# 1p08/1p20/1p32V cuts on this library — keeping the names consistent across
-# SoC-Labs projects matters more than physical accuracy of the label.
+# Standard-cell library (tcbn65lp 9-track / 220a release).
+# Three corners (TSMC NLDM library names):
+#   tcbn65lpwc — worst case (max-delay) ↔ SS in SoC-Labs nomenclature
+#   tcbn65lptc — typical case            ↔ TT
+#   tcbn65lpbc — best case (min-delay)  ↔ FF
+# Variable names keep the SoC-Labs project-wide 0p72/0p80/0p88V label
+# convention so chip-top scripts can pick the right corner-set by name.
 #-----------------------------------------------------------------------------
-set standard_cell_lef_file                  ${standard_cell_base_path}/lef/sc12_cln65lp_base_rvt.lef
-set standard_cell_gds_file                  ${standard_cell_base_path}/gds2/sc12_cln65lp_base_rvt.gds2
-set standard_cell_db_file_ss_0p72v_125C     ${standard_cell_base_path}/db/sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c.db
-set standard_cell_db_file_tt_0p80v_25C      ${standard_cell_base_path}/db/sc12_cln65lp_base_rvt_tt_typical_max_1p20v_25c.db
-set standard_cell_db_file_ff_0p88v_m40C     ${standard_cell_base_path}/db/sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m40c.db
-# NOTE: this antenna file path uses the SoC-Labs project-wide convention
-# from a sibling 16FCLL project — the actual cln65lp antenna .clf, if needed,
-# lives elsewhere. Off-path by default; override with STANDARD_CELL_ANTENNA_FILE.
-set standard_cell_antenna_file              [env_or_default STANDARD_CELL_ANTENNA_FILE \
-    ${standard_cell_base_path}/milkyway/9m_2xa1xd3xe2z_utrdl/sc9mcpp96c_cln16fcll001_base_svt_c24_antenna.clf]
+set standard_cell_lef_file                  ${cln65lp_lef_file}
+set standard_cell_gds_file                  ""
+set _std_db_path                            ${standard_cell_base_path}/Front_End/timing_power_noise/NLDM/tcbn65lp_220a
+set standard_cell_db_file_ss_0p72v_125C     ${_std_db_path}/tcbn65lpwc.db
+set standard_cell_db_file_tt_0p80v_25C      ${_std_db_path}/tcbn65lptc.db
+set standard_cell_db_file_ff_0p88v_m40C     ${_std_db_path}/tcbn65lpbc.db
+set standard_cell_antenna_file              [env_or_default STANDARD_CELL_ANTENNA_FILE ""]
 
 #-----------------------------------------------------------------------------
 # Arm IO library (chip-top pad ring — NOT used by the tidelink partition,

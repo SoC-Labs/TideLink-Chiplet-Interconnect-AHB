@@ -132,7 +132,11 @@ elaborate $top_module
 set_top_module $top_module
 
 #-----------------------------------------------------------------------------
-# MCMM (Multi-Corner Multi-Mode) setup
+# MCMM (Multi-Corner Multi-Mode) setup — tcbn65lp 220a operating conditions.
+#   tcbn65lpwc  worst case  V_LO T_HI  → SS (max-delay)  → scen_slow
+#   tcbn65lptc  typical case            → TT             → scen_typ (optional)
+#   tcbn65lpbc  best  case  V_HI T_LO  → FF (min-delay)  → scen_fast
+# Library names per the Liberty header `library (tcbn65lp{bc,tc,wc})`.
 #-----------------------------------------------------------------------------
 echo "FC_RTL_SCRIPT: MCMM"
 
@@ -141,22 +145,26 @@ create_corner slow
 create_scenario -mode func -corner slow -name scen_slow
 set_operating_conditions \
     -analysis_type on_chip_variation \
-    -max ss_typical_max_1p08v_125c -min ss_typical_max_1p08v_125c \
-    -library sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c
+    -max WCCOM -min WCCOM \
+    -library tcbn65lpwc
 
 create_corner fast
 create_scenario -mode func -corner fast -name scen_fast
 set_operating_conditions \
     -analysis_type on_chip_variation \
-    -max ff_typical_min_1p32v_m40c -min ff_typical_min_1p32v_m40c \
-    -library sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m40c
+    -max BCCOM -min BCCOM \
+    -library tcbn65lpbc
 
 #-----------------------------------------------------------------------------
-# Parasitic extraction (TLU+)
+# Parasitic extraction (TLU+) — cln65lp 1p09m+alrdl, top2 = 9lm_T2 stack.
+# tcbn65lp ships per-corner TLU+ files with the cln65lp_1p09m+alrdl_<corner>_top2
+# naming. Map our SoC-Labs "typical / rcbest / rcworst" labels onto that
+# explicit stack so set_parasitic_parameters can pick them.
 #-----------------------------------------------------------------------------
-read_parasitic_tech -name typical -tlup ${tluplus_path}/typical.tluplus -layermap ${tluplus_map}
-read_parasitic_tech -name rcbest  -tlup ${tluplus_path}/rcbest.tluplus  -layermap ${tluplus_map}
-read_parasitic_tech -name rcworst -tlup ${tluplus_path}/rcworst.tluplus -layermap ${tluplus_map}
+set _stack cln65lp_1p09m+alrdl
+read_parasitic_tech -name typical -tlup ${tluplus_path}/${_stack}_typical_top2.tluplus -layermap ${tluplus_map}
+read_parasitic_tech -name rcbest  -tlup ${tluplus_path}/${_stack}_rcbest_top2.tluplus  -layermap ${tluplus_map}
+read_parasitic_tech -name rcworst -tlup ${tluplus_path}/${_stack}_rcworst_top2.tluplus -layermap ${tluplus_map}
 
 set_parasitic_parameters -corners slow \
     -early_spec rcworst -early_temperature -40 \

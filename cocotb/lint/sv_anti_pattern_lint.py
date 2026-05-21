@@ -61,6 +61,31 @@ WHITELIST_BASENAMES = {
     "axi4_if.sv",
 }
 
+# Path-substring allow-list for vendor / third-party IP. Findings inside any
+# of these subtrees are still scanned and reported under --vendor-show, but
+# do NOT fail the lint (exit 1 / count toward the failure total). This keeps
+# first-party RTL gated cleanly while still surfacing the cosmetic vendor
+# findings documented in docs/SV_ANTIPATTERN_SWEEP_REPORT.md.
+#
+# Anchor the substrings on a `/`-separated path fragment so a refactor that
+# moves the submodule still matches.
+VENDOR_PATH_FRAGMENTS = (
+    # Forencich I2C core (https://github.com/alexforencich/verilog-i2c)
+    "deps/axi-chiplet-controller/logical/i2c/rtl/",
+    # Bluespec-generated AXI bridge (auto-generated; do not hand-edit)
+    "deps/axi-chiplet-controller/logical/bridges/",
+    # Vivado BD-generated wlink wrappers
+    "deps/axi-chiplet-controller/logical/wlink/",
+    # Vendor PHY models
+    "deps/axi-chiplet-controller/logical/PHY/",
+)
+
+
+def _is_vendor(path: Path) -> bool:
+    """Return True if `path` lives under a vendor-IP allow-list fragment."""
+    posix = path.as_posix()
+    return any(frag in posix for frag in VENDOR_PATH_FRAGMENTS)
+
 
 def _strip_comments(src: str) -> str:
     """Drop // line comments and /* block */ comments but keep line count."""
@@ -613,11 +638,15 @@ def scan_file(path: Path) -> List[Finding]:
     return findings
 
 
-def iter_sources(paths: Iterable[str]) -> Iterable[Path]:
+def iter_sources(paths: Iterable[str], include_v: bool = False) -> Iterable[Path]:
     for p in paths:
         pp = Path(p)
         if pp.is_dir():
-            for sv in sorted(pp.rglob("*.sv")):
+            patterns = ("*.sv",) if not include_v else ("*.sv", "*.v")
+            all_files: List[Path] = []
+            for pat in patterns:
+                all_files.extend(pp.rglob(pat))
+            for sv in sorted(all_files):
                 if sv.name in WHITELIST_BASENAMES:
                     continue
                 yield sv
@@ -635,27 +664,63 @@ def main(argv: List[str]) -> int:
         default=[],
         help="Basename to skip (additional to built-in whitelist)",
     )
+    ap.add_argument(
+        "--include-v",
+        action="store_true",
+        help="Also scan Verilog .v files (vendor IP). Findings inside the "
+             "built-in VENDOR_PATH_FRAGMENTS allow-list are reported but do "
+             "not fail the lint.",
+    )
+    ap.add_argument(
+        "--vendor-show",
+        action="store_true",
+        help="Print vendor-allow-listed findings (default: count-only).",
+    )
     args = ap.parse_args(argv)
 
     extra_whitelist = set(args.allow_file)
 
-    total: List[Finding] = []
+    fp_findings: List[Finding] = []   # first-party (gating)
+    vendor_findings: List[Finding] = []  # allow-listed
     n_files = 0
-    for sv in iter_sources(args.paths):
+    n_vendor_files = 0
+    for sv in iter_sources(args.paths, include_v=args.include_v):
         if sv.name in extra_whitelist:
             continue
         n_files += 1
-        total.extend(scan_file(sv))
+        is_vendor = _is_vendor(sv)
+        if is_vendor:
+            n_vendor_files += 1
+        for f in scan_file(sv):
+            if is_vendor:
+                vendor_findings.append(f)
+            else:
+                fp_findings.append(f)
 
     if not args.quiet:
-        print(f"scanned {n_files} SystemVerilog file(s)")
-    if not total:
+        print(f"scanned {n_files} source file(s) "
+              f"({n_vendor_files} vendor-allow-listed)")
+
+    # Vendor block: count or print, never gates.
+    if vendor_findings:
+        if args.vendor_show:
+            print("--- vendor (allow-listed, non-gating) ---")
+            for f in vendor_findings:
+                print(str(f))
+            print(f"--- {len(vendor_findings)} vendor finding(s) "
+                  f"(see docs/SV_ANTIPATTERN_SWEEP_REPORT.md) ---")
+        elif not args.quiet:
+            print(f"vendor allow-list: {len(vendor_findings)} cosmetic "
+                  f"finding(s) suppressed (use --vendor-show to inspect)")
+
+    if not fp_findings:
         if not args.quiet:
-            print("OK — no anti-patterns detected")
+            print("OK — no anti-patterns detected in first-party RTL")
         return 0
-    for f in total:
+    for f in fp_findings:
         print(str(f))
-    print(f"FAIL — {len(total)} finding(s) across {n_files} file(s)")
+    print(f"FAIL — {len(fp_findings)} first-party finding(s) "
+          f"across {n_files} file(s)")
     return 1
 
 

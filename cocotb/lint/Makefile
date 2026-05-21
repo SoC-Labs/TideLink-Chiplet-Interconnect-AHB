@@ -27,7 +27,18 @@ LINT_PATHS := \
 	$(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/apb_control \
 	$(TIDELINK_HOME)/src/rtl
 
-.PHONY: all lint selftest clean
+# Extended lint scope: also includes Verilog .v IP (i2c, wlink, bridges, PHY).
+# Vendor IP is allow-listed by path inside the linter — extended runs print
+# vendor findings non-gating, so CI can still fail-fast on first-party regressions
+# while keeping vendor findings visible. See docs/SV_ANTIPATTERN_SWEEP_REPORT.md.
+LINT_EXT_PATHS := \
+	$(LINT_PATHS) \
+	$(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/i2c \
+	$(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/bridges \
+	$(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/wlink \
+	$(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/PHY
+
+.PHONY: all lint lint-extended lint-vendor selftest clean
 all: selftest lint
 
 lint:
@@ -35,6 +46,20 @@ lint:
 	@echo " sv_anti_pattern_lint over first-party RTL"
 	@echo "========================================"
 	$(LINTER) $(LINT_PATHS)
+
+# Extended lint: scan .sv + .v across vendor IP. Vendor findings are
+# allow-listed (counted, not gating). Use lint-vendor to print them.
+lint-extended:
+	@echo "========================================"
+	@echo " sv_anti_pattern_lint (extended .sv + .v)"
+	@echo "========================================"
+	$(LINTER) --include-v $(LINT_EXT_PATHS)
+
+lint-vendor:
+	@echo "========================================"
+	@echo " sv_anti_pattern_lint (vendor findings shown)"
+	@echo "========================================"
+	$(LINTER) --include-v --vendor-show $(LINT_EXT_PATHS)
 
 selftest:
 	@echo "========================================"

@@ -224,8 +224,25 @@ module tidelink_phy_align_calibrator #(
     output logic [3:0]  state                      // ILA visibility
 );
 
+    // HAL USEPAR @104: anchor NUM_LANES to the hand-rolled 8-lane code.
+    // The body still uses literal `8` because lane_locked[7:0] and
+    // bit_slip[23:0]=3*8 are fixed-width ports; this elab-time assertion
+    // turns a stray instantiation-time override into a $fatal instead of
+    // a silent miscompile.
+    initial begin
+        if (NUM_LANES != 8) begin
+            $fatal(1, "tidelink_phy_align_calibrator: NUM_LANES=%0d not supported (must be 8)", NUM_LANES);
+        end
+    end
+
     // -------------------------------------------------------------------------
     // State encoding (4-bit so it fits the `state[3:0]` debug output)
+    //
+    // HAL ENMNFU @136: only 6 of the 16 4-bit encodings are named. The width
+    // is intentionally 4 bits to expose the FSM state on `state[3:0]` for the
+    // ILA / pynq debug path. Codes 4'd6..4'd15 are reserved for future
+    // states (e.g. S_HOLD on the v1.1 branch) and treated as `default:` in
+    // the next-state logic below — see `default: nxt_state = S_IDLE;` arm.
     // -------------------------------------------------------------------------
     typedef enum logic [3:0] {
         S_IDLE       = 4'd0,   // Waiting for role_locked rising / first sweep
@@ -646,7 +663,12 @@ module tidelink_phy_align_calibrator #(
                             sweep_slip <= sweep_slip + 3'd1;
                         end
                     end else begin
-                        dwell_ctr <= dwell_ctr + 1'b1;
+                        // HAL PADMSB+UELOPR @288: width-match the increment
+                        // to dwell_ctr ($clog2(DWELL_CYCLES+1) bits) so the
+                        // RHS does not zero-pad a 1-bit literal across an
+                        // unequal-length operand.
+                        dwell_ctr <= dwell_ctr +
+                                     {{($clog2(DWELL_CYCLES+1)-1){1'b0}}, 1'b1};
                     end
                 end
 

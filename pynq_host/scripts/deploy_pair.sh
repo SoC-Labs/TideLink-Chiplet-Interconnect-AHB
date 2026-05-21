@@ -92,24 +92,69 @@ SSHCOMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLev
 
 echo "==== $LABEL @ $BOARD_IP — role=$ROLE strap=$STRAP ctrl=$CTRL bitstream=$BIN ===="
 
-# 1. Copy artefacts (renaming on the board to the canonical name so
-#    fpga_manager always loads from /lib/firmware/tidelink.bin).
-sshpass -p "$PASS" scp $SSHCOMMON \
-    "$ARTEFACTS/$BIN" \
-    "xilinx@$BOARD_IP:/tmp/tidelink.bin"
-sshpass -p "$PASS" scp $SSHCOMMON \
-    "$ARTEFACTS/$HWH" \
-    "xilinx@$BOARD_IP:/tmp/tidelink.hwh"
-
-# 2. Load bitstream via Linux fpga_manager
-sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
-    "echo '$PASS' | sudo -S sh -c '
-        cp /tmp/tidelink.bin /lib/firmware/tidelink.bin
-        cp /tmp/tidelink.hwh /lib/firmware/tidelink.hwh
-        echo tidelink.bin > /sys/class/fpga_manager/fpga0/firmware
-        sleep 1
-        printf \"  fpga_manager: %s\n\" \"\$(cat /sys/class/fpga_manager/fpga0/state)\"
-    '"
+# 1+2. Copy artefacts + load bitstream via fpga_manager, with verify+retry.
+#
+# Bug #12 (deploy-race misread as silicon): sshpass+scp/ssh is single-shot;
+# a transient ssh failure used to leave the board with NO bitstream loaded
+# but deploy_pair.sh would still exit 0 because `set -e` only catches the
+# final command's rc, and any caller running deploy_pair under
+# `>/dev/null 2>&1` (e.g. bringup_pair_converge.sh::deploy_one) would
+# silently misread the resulting dead board as a silicon/RTL bug.
+#
+# Fix: explicit verify of /sys/class/fpga_manager/fpga0/state == "operating"
+# after load_overlay, with up to MAX_LOAD_ATTEMPTS retries. Failures are
+# echoed to STDERR (not stdout) so wrappers that do `>/dev/null` but not
+# `2>&1` (the recommended pattern) still see them. Final hard-fail with
+# distinctive marker so log-greppers can spot it from miles away.
+MAX_LOAD_ATTEMPTS="${MAX_LOAD_ATTEMPTS:-2}"
+load_attempt=1
+loaded=0
+while [ "$load_attempt" -le "$MAX_LOAD_ATTEMPTS" ]; do
+    # 1. Copy artefacts (renaming on the board to the canonical name so
+    #    fpga_manager always loads from /lib/firmware/tidelink.bin).
+    if ! sshpass -p "$PASS" scp $SSHCOMMON \
+            "$ARTEFACTS/$BIN" \
+            "xilinx@$BOARD_IP:/tmp/tidelink.bin" >&2; then
+        echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: scp .bin attempt $load_attempt/$MAX_LOAD_ATTEMPTS failed" >&2
+        load_attempt=$((load_attempt+1)); continue
+    fi
+    if ! sshpass -p "$PASS" scp $SSHCOMMON \
+            "$ARTEFACTS/$HWH" \
+            "xilinx@$BOARD_IP:/tmp/tidelink.hwh" >&2; then
+        echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: scp .hwh attempt $load_attempt/$MAX_LOAD_ATTEMPTS failed" >&2
+        load_attempt=$((load_attempt+1)); continue
+    fi
+    # 2. Load bitstream via Linux fpga_manager
+    if ! sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+            "echo '$PASS' | sudo -S sh -c '
+                cp /tmp/tidelink.bin /lib/firmware/tidelink.bin
+                cp /tmp/tidelink.hwh /lib/firmware/tidelink.hwh
+                echo tidelink.bin > /sys/class/fpga_manager/fpga0/firmware
+                sleep 1
+                printf \"  fpga_manager: %s\n\" \"\$(cat /sys/class/fpga_manager/fpga0/state)\"
+            '"; then
+        echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: load_overlay ssh attempt $load_attempt/$MAX_LOAD_ATTEMPTS failed" >&2
+        load_attempt=$((load_attempt+1)); continue
+    fi
+    # Bug #12 verify: re-read fpga_manager state out-of-band. The printf
+    # above is informational only; this read is the load-of-record. We use
+    # a fresh ssh so any cached/buffered transport problem fails here, not
+    # silently in the load step above.
+    state=$(sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+        "cat /sys/class/fpga_manager/fpga0/state 2>/dev/null" 2>/dev/null \
+        | tr -d '[:space:]')
+    if [ "$state" = "operating" ]; then
+        loaded=1
+        break
+    fi
+    echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: fpga_manager state='$state' (expected 'operating') attempt $load_attempt/$MAX_LOAD_ATTEMPTS" >&2
+    load_attempt=$((load_attempt+1))
+    sleep 1
+done
+if [ "$loaded" -ne 1 ]; then
+    echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: GIVING UP after $MAX_LOAD_ATTEMPTS load attempts — board NOT in 'operating' state" >&2
+    exit 3
+fi
 
 # 3. Configure role + lock + address translator. PAIR_BASE_ADDR is the
 #    base address the local FC uses when sending doorbell / credit

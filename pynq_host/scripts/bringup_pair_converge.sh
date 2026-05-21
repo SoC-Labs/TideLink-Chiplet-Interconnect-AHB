@@ -173,9 +173,16 @@ recal_cycle() {
 
 # Deploy one board for a given role. deploy_pair.sh maps ROLE->bitstream
 # (die_a=tidelink.bin non-flip, die_b=tidelink-flip.bin) + strap + phase.
+#
+# Bug #12 wrapper: deploy_pair.sh's chatty stdout is uninteresting per
+# iteration (PHY_CTRL/PAIR_BASE/ROLE_CFG echo) so we drop stdout, but we
+# DELIBERATELY KEEP STDERR so "DEPLOY-FAIL: ..." markers from the verify+
+# retry block reach the iteration log. v1 of this wrapper had >/dev/null
+# 2>&1 which silently hid scp/load failures and made dead boards look
+# like silicon bugs ("deploy-race misread as silicon").
 deploy_one() {  # IP ROLE PHASEVAL
     PHASE_OVERRIDE=$(printf 0x%08x "$3") \
-        bash "$DEPLOY_PAIR" "$1" z2_$2 "$2" "$ARTEFACTS" >/dev/null 2>&1
+        bash "$DEPLOY_PAIR" "$1" z2_$2 "$2" "$ARTEFACTS" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -223,12 +230,22 @@ for it in $(seq 1 "$MAX_RETRIES"); do
     # reloads the bitstream (fresh POR) and re-asserts role_lock, so
     # WavD2DGpioRx.count is re-rolled — the one variable that actually
     # gates word alignment and that recal alone cannot move.
-    deploy_one "$A_IP" die_a "$MPV" & ap=$!
-    deploy_one "$B_IP" die_b "$SPV" & bp=$!
-    wait $ap; arc=$?
-    wait $bp; brc=$?
-    [ $arc -eq 0 ] || echo "  WARN it=$it: die_a@$A_IP deploy rc=$arc"
-    [ $brc -eq 0 ] || echo "  WARN it=$it: die_b@$B_IP deploy rc=$brc"
+    # Bug #13: persist per-child rc via tempfile so completion ORDER does
+    # not matter. The previous `wait $ap; arc=$?; wait $bp; brc=$?` pattern
+    # returned rc=127 ("not a child of this shell") for whichever finished
+    # FIRST if its PID was already reaped by the second `wait`. That made
+    # the WARN line cosmetic-noisy and indistinguishable from a real deploy
+    # failure. The tempfile pattern (subshell writes its rc into a known
+    # file) is robust against any completion order and against `set -u`.
+    rc_a=$(mktemp -t tdli_a_rc.XXXXXX); rc_b=$(mktemp -t tdli_b_rc.XXXXXX)
+    ( deploy_one "$A_IP" die_a "$MPV" ; echo $? > "$rc_a" ) & ap=$!
+    ( deploy_one "$B_IP" die_b "$SPV" ; echo $? > "$rc_b" ) & bp=$!
+    wait "$ap" "$bp"
+    arc=$(cat "$rc_a" 2>/dev/null); brc=$(cat "$rc_b" 2>/dev/null)
+    rm -f "$rc_a" "$rc_b"
+    : "${arc:=99}"; : "${brc:=99}"
+    [ "$arc" -eq 0 ] || echo "  WARN it=$it: die_a@$A_IP deploy rc=$arc"
+    [ "$brc" -eq 0 ] || echo "  WARN it=$it: die_b@$B_IP deploy rc=$brc"
     sleep 1
     recal_cycle
     AR=$(best_read "$A_IP")

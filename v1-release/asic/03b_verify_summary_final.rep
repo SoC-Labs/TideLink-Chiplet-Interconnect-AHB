@@ -1,0 +1,28 @@
+**************************************************
+Report         : status
+
+Reference      : r:/WORK/tidelink_top
+Implementation : i:/WORK/tidelink_top
+Version        : U-2022.12
+Date           : Wed May 20 22:33:07 2026
+**************************************************
+
+
+********************************* Verification Results *********************************
+Verification SUCCEEDED
+   ATTENTION: RTL interpretation messages were produced during link
+              of reference design.
+              Verification results may disagree with a logic simulator.
+-----------------------------------------------------------------------
+ Reference design: r:/WORK/tidelink_top
+ Implementation design: i:/WORK/tidelink_top
+ 18531 Passing compare points
+----------------------------------------------------------------------------------------
+Matched Compare Points     BBPin    Loop   BBNet     Cut    Port     DFF     LAT   TOTAL
+----------------------------------------------------------------------------------------
+Passing (equivalent)          85       0       0       0     506   17936       4   18531
+Failing (not equivalent)       0       0       0       0       0       0       0       0
+Not Compared
+  Don't verify                 0       0       0       0       0     256       0     256
+****************************************************************************************
+1

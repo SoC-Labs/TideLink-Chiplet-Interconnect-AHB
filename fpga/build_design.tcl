@@ -209,15 +209,29 @@ if { $drc_xdc ne "" } {
 # which another agent owns). Carries the IODELAY_GROUP binding for the
 # per-lane IDELAYE2 + IDELAYCTRL and the IOB-policy for pad_rx[*]. Applied
 # in BOTH synth and impl so the IODELAY_GROUP string attribute on the cells
-# is honoured by the placer/router. No-op (empty get_cells) on a
-# USE_IDELAY=0 build, so adding it unconditionally is safe.
+# is honoured by the placer/router.
+#
+# INCLUSION GATE (2026-05-21, fix/xdc-declarative): on a USE_IDELAY=0 build
+# there are NO IDELAYE2 / IDELAYCTRL cells, so the get_cells selectors inside
+# the XDC would return empty and the msg gate would hard-fail with
+# Common 17-55 / Vivado 12-1411. Add the file ONLY when FPGA_USE_IDELAY=1.
+# Default = 0 (preserves current pair-all/pair-flip-all behaviour where the
+# RTL parameter USE_IDELAY defaults to 0). Set FPGA_USE_IDELAY=1 in the
+# environment (Makefile) on builds that instantiate IDELAYE2.
+set fpga_use_idelay 0
+if { [info exists env(FPGA_USE_IDELAY)] && $env(FPGA_USE_IDELAY) == "1" } {
+    set fpga_use_idelay 1
+}
 set idelay_xdc [lindex [glob -nocomplain $target_dir/*_tidelink_idelay.xdc] 0]
-if { $idelay_xdc ne "" } {
+if { $idelay_xdc ne "" && $fpga_use_idelay == 1 } {
     add_files -fileset constrs_1 $idelay_xdc
     set_property USED_IN_SYNTHESIS true \
         [get_files $idelay_xdc]
     set_property USED_IN_IMPLEMENTATION true \
         [get_files $idelay_xdc]
+    puts "INFO: FPGA_USE_IDELAY=1 - including $idelay_xdc"
+} elseif { $idelay_xdc ne "" } {
+    puts "INFO: FPGA_USE_IDELAY!=1 - skipping $idelay_xdc (no IDELAYE2 cells expected)"
 }
 
 # STEP 6: Generate block design outputs

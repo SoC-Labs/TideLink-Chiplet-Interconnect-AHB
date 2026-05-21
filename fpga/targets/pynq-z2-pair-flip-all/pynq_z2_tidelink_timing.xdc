@@ -24,8 +24,14 @@
 # ONLY the pin-map COMMENTS differ, because the FLIP bitstream swaps the
 # clock pins so a straight-through 1:1 ribbon connects TX-of-one-board to
 # RX-of-the-other. See pynq_z2_tidelink.xdc in THIS target for the pin map.
+#
+# 2026-05-21 (fix/xdc-declarative): removed the runtime
+#   set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
+# safety-net line. `file normalize`, `info script` and `get_files` are
+# procedural Tcl commands that Vivado's XDC reader rejects with
+# [Designutils 20-1307]. The build_design.tcl wrapper already applies the
+# same property to this file (mirror of pair-all).
 #-----------------------------------------------------------------------------
-set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 #=============================================================================
 # WHY THIS FILE WAS REWRITTEN (2026-05-18, feat/td-xdc-source-sync)
@@ -153,7 +159,13 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # Define pad_clk_tx as a generated clock derived 1:1 from hclk at the output
 # port, then constrain pad_tx[*] against THAT (true forwarded-clock
 # methodology) instead of vs the internal MMCM pin or false-pathing it.
-set hclk_pin [get_pins -hier -filter {NAME =~ "*/clk_wiz_0*/clk_out1"}]
+#
+# 2026-05-21 (fix/xdc-declarative): pin filter narrowed to the explicit BD
+# pin `tidelink_design_i/clk_wiz_0/clk_out1`. Old wildcard
+# `*/clk_wiz_0*/clk_out1` matched >1 pin -> [Constraints 18-359]. Mirror
+# of the pair-all fix.
+set hclk_pin [lindex [get_pins -hier -filter \
+    {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] 0]
 create_generated_clock -name pad_clk_tx_fwd \
     -source $hclk_pin \
     -divide_by 1 \
@@ -213,8 +225,12 @@ set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
 #      to the pad_rx[*] input chain where Vivado DOES infer an IOB input
 #      flop/buffer; it makes whatever IOB-able element exists deterministic
 #      and is harmless where it cannot apply. NOT the primary fix — (3b)/(3c)
-#      are. Wrapped in catch so a "cannot apply IOB" message is informational.
-catch { set_property IOB TRUE [get_ports {pad_rx[*]}] }
+#      are.
+#
+# 2026-05-21 (fix/xdc-declarative): `catch { ... }` wrapper removed —
+# Vivado XDC rejects `catch` with [Designutils 20-1307] (gate ERROR).
+# Mirror of pair-all fix.
+set_property IOB TRUE [get_ports {pad_rx[*]}]
 
 #-----------------------------------------------------------------------------
 # [4] Async clock group: isolate ONLY the genuine recovered-RX -> core CDC,

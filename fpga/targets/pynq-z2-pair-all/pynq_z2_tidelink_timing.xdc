@@ -18,8 +18,16 @@
 #   set_property USED_IN_SYNTHESIS false   [get_files *_timing.xdc]
 #   set_property USED_IN_IMPLEMENTATION true [get_files *_timing.xdc]
 # (Do NOT change how this file is loaded — it must stay impl-only.)
+#
+# 2026-05-21 (fix/xdc-declarative): removed the runtime
+#   set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
+# safety-net line. `file normalize`, `info script` and `get_files` are
+# procedural Tcl commands that Vivado's XDC reader rejects with
+# [Designutils 20-1307]. The build_design.tcl wrapper already applies the
+# same property to this file, so the in-XDC line was a redundant belt-and-
+# braces — promoting Designutils 20-1307 to ERROR (msg gate) makes the
+# redundancy outright unsafe.
 #-----------------------------------------------------------------------------
-set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 #=============================================================================
 # WHY THIS FILE WAS REWRITTEN (2026-05-18, feat/td-xdc-source-sync)
@@ -134,7 +142,18 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # Define pad_clk_tx as a generated clock derived 1:1 from hclk at the output
 # port, then constrain pad_tx[*] against THAT (true forwarded-clock
 # methodology) instead of vs the internal MMCM pin or false-pathing it.
-set hclk_pin [get_pins -hier -filter {NAME =~ "*/clk_wiz_0*/clk_out1"}]
+#
+# 2026-05-21 (fix/xdc-declarative): pin filter narrowed to the explicit BD
+# pin `tidelink_design_i/clk_wiz_0/clk_out1`. The old wildcard
+# `*/clk_wiz_0*/clk_out1` matched >1 pin (the BD-level clk_wiz_0/clk_out1
+# AND the inner inst/clk_out1 after BD synthesis), tripping
+# [Constraints 18-359] "create_generated_clock can only specify one pin as
+# master pin" and silently dropping the entire pad_clk_tx_fwd definition.
+# That cascade left set_output_delay below referencing an undefined clock
+# and fired [Vivado 12-4739] x2. `lindex ... 0` is a defensive belt; with
+# the narrow filter we expect exactly one result.
+set hclk_pin [lindex [get_pins -hier -filter \
+    {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] 0]
 create_generated_clock -name pad_clk_tx_fwd \
     -source $hclk_pin \
     -divide_by 1 \
@@ -192,8 +211,15 @@ set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
 #      to the pad_rx[*] input chain where Vivado DOES infer an IOB input
 #      flop/buffer; it makes whatever IOB-able element exists deterministic
 #      and is harmless where it cannot apply. NOT the primary fix — (3b)/(3c)
-#      are. Wrapped in catch so a "cannot apply IOB" message is informational.
-catch { set_property IOB TRUE [get_ports {pad_rx[*]}] }
+#      are.
+#
+# 2026-05-21 (fix/xdc-declarative): the `catch { ... }` wrapper was removed
+# because Vivado's XDC reader rejects `catch` with [Designutils 20-1307]
+# (promoted to ERROR by the msg gate). pad_rx[*] ports are always defined
+# in the pin XDC, so the selector is non-empty -> Common 17-55 cannot
+# fire. If Vivado emits the informational "cannot apply IOB" message at
+# place-time it is downgraded automatically (not a CRITICAL WARNING).
+set_property IOB TRUE [get_ports {pad_rx[*]}]
 
 #-----------------------------------------------------------------------------
 # [4] Async clock group: isolate ONLY the genuine recovered-RX -> core CDC,

@@ -8,11 +8,12 @@
 ###
 ### Copyright (C) 2026, SoC Labs (www.soclabs.org)
 ###-----------------------------------------------------------------------------
-### SoC Labs §9 structural fix (2026-05-18) — IDELAY-specific constraints ONLY.
+### SoC Labs §9 structural fix (2026-05-18, declarative rewrite 2026-05-21) —
+### IDELAY-specific constraints ONLY.
 ###
 ### This is a SEPARATE XDC (NOT *_timing.xdc — that file is owned by another
 ### agent and must not be touched). Wired into build_design.tcl exactly like
-### *_drc.xdc (USED_IN_SYNTHESIS false, USED_IN_IMPLEMENTATION true).
+### *_drc.xdc (USED_IN_SYNTHESIS true, USED_IN_IMPLEMENTATION true).
 ###
 ### Purpose: tie every per-lane IDELAYE2 (in tidelink_idelay_rx, USE_IDELAY=1)
 ### to its bank IDELAYCTRL via a shared IODELAY_GROUP, and document the
@@ -26,6 +27,13 @@
 ### Applied during BOTH synthesis and implementation so the IODELAY_GROUP
 ### string attribute on the cells is honoured by placer/router (it must match
 ### the IODELAY_GROUP="tidelink_rx_idelay" parameter in tidelink_idelay_rx.sv).
+###
+### 2026-05-21: rewritten in pure-declarative form (no `if`/`catch`) to pass
+### the Vivado msg gate (Designutils 20-1307 promotion). This file is now
+### inclusion-gated by build_design.tcl: it is only added to the project when
+### USE_IDELAY=1 builds are configured, so the selectors below are guaranteed
+### non-empty (no Common 17-55 / Vivado 12-1411). On USE_IDELAY=0 builds this
+### file is simply not added.
 ###-----------------------------------------------------------------------------
 
 #-----------------------------------------------------------------------------
@@ -36,28 +44,13 @@
 #    The string attribute is ALREADY set in RTL (the (* IODELAY_GROUP *)
 #    attribute on each IDELAYE2/IDELAYCTRL instance). These XDC lines are the
 #    belt-and-braces equivalent so the group survives if synthesis drops the
-#    RTL attribute (it has, historically, on some Vivado versions). The wildcard
-#    matches the generate-block instance names; if synthesis flattens the
-#    names differently the get_cells returns empty and these are harmless
-#    no-ops (the RTL attribute still carries the group).
+#    RTL attribute (it has, historically, on some Vivado versions).
 #-----------------------------------------------------------------------------
-set _idelay_grp "tidelink_rx_idelay"
+set_property IODELAY_GROUP tidelink_rx_idelay \
+    [get_cells -hierarchical -filter {REF_NAME == IDELAYE2}]
 
-set _idelaye2_cells [get_cells -hierarchical -quiet \
-    -filter {REF_NAME == IDELAYE2 || PRIMITIVE_TYPE =~ IO.*.IDELAYE2}]
-if { [llength $_idelaye2_cells] > 0 } {
-    set_property IODELAY_GROUP $_idelay_grp $_idelaye2_cells
-    puts "tidelink_idelay.xdc: IODELAY_GROUP set on [llength $_idelaye2_cells] IDELAYE2 cell(s)"
-} else {
-    puts "tidelink_idelay.xdc: no IDELAYE2 cells found (USE_IDELAY=0 build?) — skipping"
-}
-
-set _idelayctrl_cells [get_cells -hierarchical -quiet \
-    -filter {REF_NAME == IDELAYCTRL || PRIMITIVE_TYPE =~ IO.*.IDELAYCTRL}]
-if { [llength $_idelayctrl_cells] > 0 } {
-    set_property IODELAY_GROUP $_idelay_grp $_idelayctrl_cells
-    puts "tidelink_idelay.xdc: IODELAY_GROUP set on [llength $_idelayctrl_cells] IDELAYCTRL cell(s)"
-}
+set_property IODELAY_GROUP tidelink_rx_idelay \
+    [get_cells -hierarchical -filter {REF_NAME == IDELAYCTRL}]
 
 #-----------------------------------------------------------------------------
 # 2. IDELAYCTRL reference clock.
@@ -71,18 +64,6 @@ if { [llength $_idelayctrl_cells] > 0 } {
 #    AUTO-CREATES the clock object from the MMCM (create_generated_clock is
 #    emitted by the clk_wiz IP's own constraints). DO NOT add a manual
 #    create_clock here — that would double-define and over-constrain it.
-#
-#    If (and only if) the supervising session instead feeds idelay_ref_clk
-#    from a free-running top-level input pin (no MMCM), uncomment:
-#       # create_clock -name idelay_ref_clk -period 5.000 \
-#       #     [get_ports idelay_ref_clk]
-#    5.000 ns = 200 MHz. The RTL REFCLK_FREQUENCY parameter (200.0) MUST
-#    equal the actual frequency or the IDELAY tap calibration is wrong.
-#
-#    The IDELAYCTRL→core relationship is asynchronous (the calibrated taps are
-#    static w.r.t. the recovered RX clock); the BD clk_wiz already groups its
-#    outputs. No extra clock-group statement is added here so this file stays
-#    strictly IDELAY-scoped and never collides with *_timing.xdc.
 #-----------------------------------------------------------------------------
 # (intentionally no create_clock — see rationale above)
 
@@ -93,7 +74,4 @@ if { [llength $_idelayctrl_cells] > 0 } {
 #    IOB on these pins (the IDELAYE2 occupies the IOB input-delay resource;
 #    an IOB input FF would conflict / defeat the explicit delay line).
 #-----------------------------------------------------------------------------
-set _padrx_ports [get_ports -quiet {pad_rx[*]}]
-if { [llength $_padrx_ports] > 0 } {
-    set_property IOB FALSE $_padrx_ports
-}
+set_property IOB FALSE [get_ports {pad_rx[*]}]

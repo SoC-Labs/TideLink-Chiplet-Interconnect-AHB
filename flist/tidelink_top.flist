@@ -28,12 +28,6 @@ ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
 
-// FPGA-only primitive wrappers (quarantined under fpga/rtl/). USE_IDELAY=0
-// / USE_CLKBUF=0 defaults → bit-exact passthrough, no Xilinx primitive
-// referenced. tidelink_top_full_asic.flist also references these (same
-// pruning); the ASIC tapeout swaps them for foundry cells.
-${TIDELINK_HOME}/fpga/rtl/tidelink_idelay_rx.sv
-${TIDELINK_HOME}/fpga/rtl/tidelink_rxclk_buf.sv
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv

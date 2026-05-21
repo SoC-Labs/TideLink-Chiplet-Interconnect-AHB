@@ -55,23 +55,7 @@ module tidelink_top #(
 
     // PHC lock gate for multi-hop PTP chaining
     // 0 = no gating (backward compat), 1 = gate HW sync on phc_locked_i
-    parameter PHC_LOCK_GATE_EN = 0,
-
-    // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element driven
-    // by the calibrator. 0 (default) = bit-exact passthrough, no Xilinx
-    // primitive (sim / ASIC). The FPGA IP wrapper overrides to 1 (carried in
-    // the packaged IP's component.xml — no preprocessor define needed; see
-    // tidelink_idelay_rx.sv header for why the old `ifdef was removed).
-    parameter USE_IDELAY = 1'b0,
-    // §9 clock fix: recovered-RX-clock BUFG forward (sim/ASIC default 0;
-    // FPGA wrapper sets 1, carried in component.xml). tidelink_rxclk_buf.sv.
-    parameter USE_CLKBUF = 1'b0,
-    // §9 T3a (2026-05-19): per-lane self-aligning RX comma hunt (sim/ASIC
-    // default 0; FPGA wrapper sets 1, carried in component.xml). Each
-    // WavD2DGpioRx slips its `count` once per io_por_reset to align to the
-    // peer's training-byte boundary, killing the per-deploy 16-cycle phase
-    // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
-    parameter USE_T3A    = 1'b0
+    parameter PHC_LOCK_GATE_EN = 0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -185,11 +169,6 @@ module tidelink_top #(
     output wire        [NUM_PHY_LANES-1:0]   pad_tx,
     input  wire                              pad_clk_rx,
     input  wire        [NUM_PHY_LANES-1:0]   pad_rx,
-
-    // SoC Labs §9 IDELAYE2 RX delay: 200 MHz IDELAYCTRL reference clock.
-    // Used only when USE_IDELAY=1 (FPGA). Tie 1'b0 in sim / ASIC — the
-    // controller's tidelink_idelay_rx is pure passthrough then.
-    input  wire                              idelay_ref_clk,
 
     // --------------------------------------------------------------------------
     // AHB Subordinate — PTP TX Write Port
@@ -507,12 +486,9 @@ module tidelink_top #(
     wire            [2:0]  mbox_reg_addr;
     wire [SYS_DATA_W-1:0] mbox_reg_wdata;
 
-    // Chiplet controller register interface (APB regs Regions 4 + 8 ↔ controller).
-    // ctrl_reg_addr widened from 3 to 4 bits for Region 8 (PHY-align / I2C-train).
-    // bit[3]=0 → Region 4 (slots 0..7, 0x080..0x09C);
-    // bit[3]=1 → Region 8 (slots 0..7, 0x100..0x11C).
+    // Chiplet controller register interface (APB regs Region 4 ↔ controller)
     wire                   ctrl_reg_write;
-    wire            [3:0]  ctrl_reg_addr;
+    wire            [2:0]  ctrl_reg_addr;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -1387,14 +1363,6 @@ module tidelink_top #(
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
     axi_chiplet_controller #(
         .AUTOCAL_ENABLE(1'b1)
-        // NOTE 2026-05-20: USE_IDELAY/USE_CLKBUF/USE_T3A overrides dropped
-        // because the submodule pin (f902acc) is on the
-        // feat/i2c-autonomous-lock lineage which provides per-lane
-        // bit-slip/training (cf6b805) — superseding the td-idelay-slaveclk
-        // self-aligning-RX (USE_T3A) and IDELAYE2 (USE_IDELAY) experiments.
-        // The top-level params at lines 65-74 are retained for FPGA IP
-        // wrapper compatibility (component.xml threading) but now go
-        // unused at this instance.
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
@@ -1606,12 +1574,6 @@ module tidelink_top #(
         .pad_tx                     (pad_tx),
         .pad_clk_rx                 (pad_clk_rx),
         .pad_rx                     (pad_rx)
-        // NOTE 2026-05-20: idelay_ref_clk / idelay_rst port connections
-        // dropped because the submodule pin (f902acc, i2c-autonomous-lock
-        // lineage) has no per-lane IDELAYE2 wrapper inside the controller.
-        // The top-level idelay_ref_clk / idelay_rst signals are still
-        // declared at the parent module port (~line 190) for FPGA-wrapper
-        // compatibility, but they fan out to nothing in this build.
     );
 
     // =========================================================================

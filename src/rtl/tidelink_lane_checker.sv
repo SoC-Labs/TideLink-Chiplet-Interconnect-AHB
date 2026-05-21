@@ -1,5 +1,5 @@
 // =============================================================================
-// tidelink_lane_checker.sv — Per-lane training-pattern lock detector
+// wlink_lane_checker.sv — Per-lane training-pattern lock detector
 // =============================================================================
 //
 // BRINGUP_REPORT.md §9 RTL changes for FPGA bring-up.
@@ -15,7 +15,7 @@
 // "aligned" output is byte-aligned when both upper and lower bytes match the
 // expected pattern. Any other slip value leaves the word unequal.
 //
-// The wrapper `tidelink_lane_checker` instantiates 8 of these in parallel, one
+// The wrapper `wlink_lane_checker` instantiates 8 of these in parallel, one
 // per lane, and packs the per-lane `locked` outputs into `lane_locked[7:0]`.
 // =============================================================================
 

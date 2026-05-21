@@ -85,13 +85,9 @@ module tidelink_apb_regs #(
     output logic              [2:0] mbox_reg_addr,
     output logic [SYS_DATA_W-1:0]  mbox_reg_wdata,
 
-    // Chiplet controller register pass-through (Regions 4 + 8).
-    // ctrl_reg_addr is widened from 3 to 4 bits: bits[2:0] are the slot
-    // within the region, bit[3] selects between Region 4 (paddr[8]=0,
-    // slots 0..7 -> 0x080..0x09C) and Region 8 (paddr[8]=1, slots 0..7
-    // remapped to ctrl_reg_addr bits [3:0] = 4'b1000..4'b1111 -> 0x100..0x11C).
+    // Chiplet controller register pass-through (Region 4)
     output logic                    ctrl_reg_write,
-    output logic              [3:0] ctrl_reg_addr,
+    output logic              [2:0] ctrl_reg_addr,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
 
@@ -130,26 +126,10 @@ module tidelink_apb_regs #(
     //   0x040: HW_SYNC_CTRL            (RW) - [0] enable, [1] seq_clear (W1C), [2] force_en
     //   0x044: HW_SYNC_INTERVAL        (RW) - pass-through to tidelink_ptp
     //   0x048: HW_SYNC_STATUS          (RO) - [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
-    //
-    // Region 8 (paddr[8:5]=1000, offsets 0x100-0x11F): Chiplet Extended.
-    //   PHY-alignment and I2C-training registers. See
-    //   staging/apb_redesign/PROPOSAL.md for layout.
-    //
-    //   0x100: SWI_TRAINING_MODE        (RW) - [0] training-mode enable
-    //   0x104: SWI_BIT_SLIP_LO          (RW) - [23:0] per-lane bit-slip
-    //   0x108: SWI_LANE_STATUS          (RO) - [7:0] locked, [15:8] fault, [16] cal_done
-    //   0x10C: NEGO_TRAIN_CFG           (RW) - training handshake config
-    //   0x110: NEGO_TRAIN_STATUS        (RO) - training FSM status
-    //   0x114: NEGO_TRAIN_STEP          (RW) - W1P single-step pulse
-    //   0x118: SWI_PHASE_OFFSET         (RW) - [31:0] per-lane sub-bit phase (8 x 4-bit, §9.7)
-    //   0x11C: PHY_ALIGN_ID             (RO) - 0x5041_0100
     // -------------------------------------------------------------------------
 
-    // APB decode. Widen region select to paddr[8:5] (4-bit) so that
-    // paddr[8]=1 enters the new Region 8 block. Regions 0..7 keep their
-    // original 3-bit decode (paddr[8]=0, paddr[7:5]=000..111).
-    wire [3:0] apb_region       = paddr[8:5];
-    wire       apb_region_is_ext = paddr[8];  // 1 = Region 8+ (extended)
+    // APB decode
+    wire [2:0] apb_region = paddr[7:5];
     wire apb_write  = psel && penable && pwrite;
     wire apb_read   = psel && penable && !pwrite;
 
@@ -176,7 +156,7 @@ module tidelink_apb_regs #(
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
 
-            if (apb_write && (apb_region == 4'b0000) && paddr[4:2] == 3'h7) begin
+            if (apb_write && (apb_region == 3'b000) && paddr[4:2] == 3'h7) begin
                 if (pwdata[1])
                     ctrl_flush_r <= 1'b1;
                 // LOCK is write-once: can only be set, never cleared by software
@@ -194,7 +174,7 @@ module tidelink_apb_regs #(
         end else begin
             doorbell_trigger <= 1'b0;
 
-            if (apb_write && (apb_region == 4'b0000)) begin
+            if (apb_write && (apb_region == 3'b000)) begin
                 case (paddr[4:2])
                     // Shortcoming #25: pair_base_addr and release_threshold
                     // gated by lock bit
@@ -256,8 +236,8 @@ module tidelink_apb_regs #(
     // a single bit), so the simultaneous case cannot occur. This explicit handling
     // is defensive — if a future integration adds a second write port, the incoming
     // write value is retained rather than silently lost.
-    wire acc0_read  = apb_read  && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
-    wire acc0_write = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
+    wire acc0_read  = apb_read  && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
+    wire acc0_write = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -283,8 +263,8 @@ module tidelink_apb_regs #(
     logic [15:0] doorbell_response_acc;
 
     // Same defensive handling as released_credits_acc (Shortcoming #8)
-    wire acc1_read  = apb_read  && (apb_region == 4'b0001) && paddr[4:2] == 3'h1;
-    wire acc1_write = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h1;
+    wire acc1_read  = apb_read  && (apb_region == 3'b001) && paddr[4:2] == 3'h1;
+    wire acc1_write = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h1;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -309,15 +289,15 @@ module tidelink_apb_regs #(
     logic [SYS_DATA_W-1:0] pair_credit_counter;
     logic                  pair_credit_counter_en;
 
-    wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
-    wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;
+    wire pair_counter_increment = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h0;
+    wire pair_counter_decrement = apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h3;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pair_credit_counter    <= '0;
             pair_credit_counter_en <= 1'b1;
         end else begin
-            if (apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h4) begin
+            if (apb_write && (apb_region == 3'b001) && paddr[4:2] == 3'h4) begin
                 pair_credit_counter_en <= pwdata[0];
             end
 
@@ -408,37 +388,30 @@ module tidelink_apb_regs #(
     // PTP basic registers occupy Region 1 offsets 0x034/0x038/0x03C (paddr[4:2] = 5/6/7).
     // PTP HW sync registers occupy Region 2 offsets 0x040/0x044/0x048 (paddr[4:2] = 0/1/2).
     // Write/read decode is forwarded to the tidelink_ptp module via direct wires.
-    assign ptp_reg_write  = (apb_write && (apb_region == 4'b0001) && (paddr[4:2] >= 3'h5)) ||
-                            (apb_write && (apb_region == 4'b0010) && (paddr[4:2] <= 3'h2));
+    assign ptp_reg_write  = (apb_write && (apb_region == 3'b001) && (paddr[4:2] >= 3'h5)) ||
+                            (apb_write && (apb_region == 3'b010) && (paddr[4:2] <= 3'h2));
     assign ptp_reg_addr   = paddr[4:2];
     assign ptp_reg_wdata  = pwdata;
-    assign ptp_reg_region = (apb_region == 4'b0010);
+    assign ptp_reg_region = (apb_region == 3'b010);
 
     // Servo config: Region 2 addr 3-7 (offsets 0x04C-0x05C) → servo_reg_addr 0-4
     // Servo status: Region 3 addr 0-1 (offsets 0x060-0x064) → servo_reg_addr 5-6
-    assign servo_reg_write = apb_write && (apb_region == 4'b0010) && (paddr[4:2] >= 3'h3);
-    assign servo_reg_addr  = (apb_region == 4'b0011) ? (3'h5 + paddr[4:2]) : (paddr[4:2] - 3'h3);
+    assign servo_reg_write = apb_write && (apb_region == 3'b010) && (paddr[4:2] >= 3'h3);
+    assign servo_reg_addr  = (apb_region == 3'b011) ? (3'h5 + paddr[4:2]) : (paddr[4:2] - 3'h3);
     assign servo_reg_wdata = pwdata;
 
     // Timestamp mailbox: Region 3 (offsets 0x060-0x07C, written by FC SIDEBAND)
-    assign mbox_reg_write = apb_write && (apb_region == 4'b0011);
+    assign mbox_reg_write = apb_write && (apb_region == 3'b011);
     assign mbox_reg_addr  = paddr[4:2];
     assign mbox_reg_wdata = pwdata;
 
-    // Chiplet controller: Region 4 (0x080-0x09C) AND Region 8 (0x100-0x11C).
-    //   ctrl_reg_addr[3] selects between them.
-    //   Region 4: ctrl_reg_addr = {1'b0, paddr[4:2]}, slots 0..7 (0x080..0x09C)
-    //   Region 8: ctrl_reg_addr = {1'b1, paddr[4:2]}, slots 8..15 (0x100..0x11C)
-    assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
-                                           (apb_region == 4'b1000));
-    assign ctrl_reg_addr  = {apb_region_is_ext, paddr[4:2]};
+    // Chiplet controller: Region 4 (offsets 0x080-0x09C)
+    assign ctrl_reg_write = apb_write && (apb_region == 3'b100);
+    assign ctrl_reg_addr  = paddr[4:2];
     assign ctrl_reg_wdata = pwdata;
 
-    // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC).
-    //   Compared against the wider region select; Region 8+ is NOT perf
-    //   (it's the chiplet-extended block); guard with bounds.
-    assign perf_reg_write  = apb_write && (apb_region >= 4'b0101) &&
-                                          (apb_region <= 4'b0111);
+    // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC)
+    assign perf_reg_write  = apb_write && (apb_region >= 3'b101);
     assign perf_reg_addr   = paddr[4:2];
     assign perf_reg_wdata  = pwdata;
     assign perf_reg_region = apb_region[1:0];
@@ -448,7 +421,7 @@ module tidelink_apb_regs #(
     always_comb begin
         prdata = '0;
         case (apb_region)
-            4'b0000: begin // Region 0: Configuration and Status
+            3'b000: begin // Region 0: Configuration and Status
                 case (paddr[4:2])
                     3'h0:    prdata = pair_base_addr;
                     3'h1:    prdata = release_threshold;
@@ -473,7 +446,7 @@ module tidelink_apb_regs #(
                     default: ;
                 endcase
             end
-            4'b0001: begin // Region 1: Credits + PTP Basic
+            3'b001: begin // Region 1: Credits + PTP Basic
                 case (paddr[4:2])
                     3'h0:    prdata = {{16{1'b0}}, released_credits_acc};
                     3'h1:    prdata = {{16{1'b0}}, doorbell_response_acc};
@@ -485,27 +458,21 @@ module tidelink_apb_regs #(
                     default: ;
                 endcase
             end
-            4'b0010: begin // Region 2: PTP HW Sync (addr 0-2) + Servo Config (addr 3-7)
+            3'b010: begin // Region 2: PTP HW Sync (addr 0-2) + Servo Config (addr 3-7)
                 if (paddr[4:2] >= 3'h3)
                     prdata = servo_reg_rdata;
                 else
                     prdata = ptp_reg_rdata;
             end
-            4'b0011: begin // Region 3: Servo status + Mailbox (read-only)
+            3'b011: begin // Region 3: Servo status + Mailbox (read-only)
                 prdata = servo_reg_rdata;
             end
-            4'b0100: begin // Region 4: Chiplet controller role config (pass-through)
+            3'b100: begin // Region 4: Chiplet controller role config (pass-through)
                 prdata = ctrl_reg_rdata;
             end
-            4'b0101: prdata = perf_reg_rdata;
-            4'b0110: prdata = perf_reg_rdata;
-            4'b0111: prdata = perf_reg_rdata;
-            4'b1000: begin // Region 8: Chiplet Extended (PHY align + I2C train)
-                //   Same ctrl_reg_rdata pass-through path; the chiplet
-                //   controller's read mux distinguishes Region 4 vs Region 8
-                //   via ctrl_reg_addr[3].
-                prdata = ctrl_reg_rdata;
-            end
+            3'b101: prdata = perf_reg_rdata;
+            3'b110: prdata = perf_reg_rdata;
+            3'b111: prdata = perf_reg_rdata;
             default: ;
         endcase
     end
@@ -519,7 +486,7 @@ module tidelink_apb_regs #(
         pslverr_comb = 1'b0;
         if (psel && penable) begin
             case (apb_region)
-                4'b0000: begin
+                3'b000: begin
                     if (pwrite) begin
                         case (paddr[4:2])
                             3'h2, 3'h3, 3'h4, 3'h6: pslverr_comb = 1'b1; // Write to RO: PKT_WORD_LEN, CREDIT_COUNT, STATUS, REL_ACC
@@ -527,19 +494,11 @@ module tidelink_apb_regs #(
                         endcase
                     end
                 end
-                4'b0001: begin
+                3'b001: begin
                     if (pwrite && paddr[4:2] == 3'h2)
                         pslverr_comb = 1'b1; // Write to RO: PAIR_CREDIT_COUNTER
                     if (!pwrite && paddr[4:2] == 3'h3)
                         pslverr_comb = 1'b1; // Read from WO: PAIR_CREDIT_CONSUME
-                end
-                4'b1000: begin // Region 8 RO slots
-                    if (pwrite) begin
-                        case (paddr[4:2])
-                            3'h2, 3'h4, 3'h7: pslverr_comb = 1'b1; // SWI_LANE_STATUS, NEGO_TRAIN_STATUS, PHY_ALIGN_ID
-                            default: ;
-                        endcase
-                    end
                 end
                 default: ;
             endcase

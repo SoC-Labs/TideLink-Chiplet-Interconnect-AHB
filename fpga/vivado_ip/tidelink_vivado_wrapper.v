@@ -50,27 +50,7 @@ module tidelink_vivado_wrapper #(
     // Default pair base address
     parameter [31:0] TIDELINK_PAIR_BASE = 32'h0,
     // PHC lock gate enable
-    parameter PHC_LOCK_GATE_EN = 0,
-    // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element.
-    // Defaults to 1 here (this is the FPGA IP wrapper — the only place the
-    // Xilinx IDELAYE2 is wanted). This default is captured into the packaged
-    // IP's component.xml by ipx::package_project and is the SOLE gate for the
-    // IDELAY path — no preprocessor define is involved (the old
-    // `ifdef TIDELINK_USE_IDELAY was unreachable in OOC synth and was
-    // removed; see tidelink_idelay_rx.sv header).
-    // Override to 0 to build the FPGA image with passthrough RX (A/B
-    // determinism comparison).
-    parameter USE_IDELAY = 1'b1,
-    // §9 clock fix: FPGA defaults the recovered-RX-clock BUFG ON (carried
-    // in component.xml → reaches OOC synth, no `define). Override to 0 for
-    // an A/B determinism comparison. See tidelink_rxclk_buf.sv.
-    parameter USE_CLKBUF = 1'b1,
-    // §9 T3a (2026-05-19): self-aligning RX comma hunt. FPGA default ON
-    // (carried in component.xml). Each WavD2DGpioRx slips its `count` once
-    // per io_por_reset to align to the peer's training-byte boundary,
-    // killing the per-deploy 16-cycle count-phase lottery that anti-
-    // correlated master/slave 0xff hits. Override to 0 for A/B comparison.
-    parameter USE_T3A    = 1'b1
+    parameter PHC_LOCK_GATE_EN = 0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -102,14 +82,6 @@ module tidelink_vivado_wrapper #(
 
     // Wlink PLL reference clock (discrete — no IPI auto-connect needed)
     input  wire        user_ref_clk,
-
-    // SoC Labs §9 IDELAYE2 RX delay: 200 MHz IDELAYCTRL reference clock.
-    // Marked as a clock interface so the BD connects a clk_wiz 200 MHz
-    // output. Only meaningful when USE_IDELAY=1. The MMCM/PLL freq-check
-    // DRC is already suppressed for this IP (package_tidelink_ip.tcl).
-    (* X_INTERFACE_INFO      = "xilinx.com:signal:clock:1.0 CLK.IDELAY_REF_CLK CLK" *)
-    (* X_INTERFACE_PARAMETER = "XIL_INTERFACENAME CLK.IDELAY_REF_CLK, FREQ_HZ 200000000, FREQ_TOLERANCE_HZ 0, INSERT_VIP 0, PHASE 0.0" *)
-    input  wire        idelay_ref_clk,
 
     // =========================================================================
     // AHB-Lite Slave — ahb_sub (regular chiplet access, 32-bit address)
@@ -412,13 +384,7 @@ module tidelink_vivado_wrapper #(
         .FC_DATA_W           (FC_DATA_W),
         .NUM_PHY_LANES       (NUM_PHY_LANES),
         .TIDELINK_PAIR_BASE  (TIDELINK_PAIR_BASE),
-        .PHC_LOCK_GATE_EN    (PHC_LOCK_GATE_EN),
-        // §9 structural fix: per-lane IDELAYE2 RX delay (FPGA wants it on).
-        .USE_IDELAY          (USE_IDELAY),
-        // §9 clock fix: recovered-RX-clock global BUFG (FPGA wants it on).
-        .USE_CLKBUF          (USE_CLKBUF),
-        // §9 T3a: self-aligning RX comma hunt (FPGA wants it on).
-        .USE_T3A             (USE_T3A)
+        .PHC_LOCK_GATE_EN    (PHC_LOCK_GATE_EN)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),
@@ -516,9 +482,6 @@ module tidelink_vivado_wrapper #(
         .pad_tx                     (pad_tx),
         .pad_clk_rx                 (pad_clk_rx),
         .pad_rx                     (pad_rx),
-
-        // §9 IDELAYE2 RX delay: 200 MHz IDELAYCTRL reference clock
-        .idelay_ref_clk             (idelay_ref_clk),
 
         // PHC interface
         .phc_hw_capture             (phc_hw_capture),

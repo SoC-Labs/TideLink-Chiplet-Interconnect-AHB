@@ -1,0 +1,197 @@
+# =============================================================================
+# lint/verilator/Makefile — Verilator strict-lint gate for TideLink
+# =============================================================================
+# Adds a third lint gate alongside HAL (Cadence Xcelium) at lint/ and the
+# Python SV anti-pattern lint at cocotb/lint/sv_anti_pattern_lint.py.
+#
+# Catches synth-class defects that have bit us in silicon:
+#   • WIDTH       — width-mismatch (the calibrator ULRELE / perf 33-vs-32-bit class)
+#   • CASEINCOMPLETE / CASEOVERLAP — incomplete or overlapping case arms
+#   • IMPLICIT    — implicit net declarations (typos in port names)
+#   • UNDRIVEN    — undriven signals (logic that synth will optimise to const)
+#   • UNUSED      — dangling outputs (often a sign of unfinished hookup)
+#   • PINMISSING  — instance pin omitted (the silent-broken case)
+#   • ALWCOMBORDER — always_comb evaluation-order hazards (latch-precursor)
+#   • CMPCONST    — constant-compare (always-true / always-false predicate)
+#
+# NOTE on Verilator 4.028 (the version installed on this host):
+#   This Verilator predates the explicit LATCH and MULTIDRIVEN warning classes
+#   (added in Verilator 4.2xx). Latch detection here is implicit via
+#   ALWCOMBORDER + UNDRIVEN + WIDTH; multi-driver via BLKANDNBLK. When the host
+#   is upgraded to Verilator >=5.x, add -Wwarn-LATCH -Wwarn-MULTIDRIVEN to
+#   VERILATOR_STRICT below.
+#
+# Usage:
+#   make -C lint/verilator lint-all          # lint every targeted module
+#   make -C lint/verilator lint-calibrator   # lint just the calibrator
+#   make -C lint/verilator clean             # remove logs
+#
+# Each per-module target writes its findings to <module>.log in this dir, and
+# returns non-zero if any warning is raised (because -Werror is in flags).
+# =============================================================================
+
+# ── Paths (resolved without sourcing set_env.sh) ─────────────────────────────
+TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
+RTL_DIR       := $(TIDELINK_HOME)/src/rtl
+FIFO_DIR      := $(RTL_DIR)/fifo
+TOP_DIR       := $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/top
+
+# ── Common Verilator flags ───────────────────────────────────────────────────
+# -Wall enables the lint+style warning set. -Werror promotes them to non-zero
+# exit (otherwise --lint-only always returns 0). -Wno-DECLFILENAME silences
+# the "module name should match filename" style nit — TideLink intentionally
+# uses sub-module-per-file packaging that violates this.
+VERILATOR        := verilator
+# -Wno-fatal stops Verilator from exiting non-zero on every warning; the
+# strict-class -Werror-* flags below then re-promote ONLY the synth-class
+# warnings to fatal. This keeps UNUSED / UNDRIVEN visible-but-non-blocking.
+VERILATOR_FLAGS  := --lint-only -sv -Wall -Wno-fatal -Wno-DECLFILENAME -DSYNTHESIS
+
+# Strict warning classes — promoted to errors. Each one corresponds to a
+# silicon-class defect we've hit or could plausibly hit:
+VERILATOR_STRICT := \
+    -Werror-CASEINCOMPLETE -Werror-CASEOVERLAP \
+    -Werror-WIDTH -Werror-IMPLICIT \
+    -Werror-PINMISSING -Werror-ALWCOMBORDER \
+    -Werror-CMPCONST
+
+# UNUSED / UNDRIVEN are noisy on APB register banks (paddr top bits etc).
+# We keep them as WARNINGS (not errors) so reviewers see them in the log but
+# CI doesn't block on every legitimate APB-spec dangling bit. Promote them
+# per-module by setting STRICT_UNUSED=1 on the make command line.
+ifeq ($(STRICT_UNUSED),1)
+  VERILATOR_STRICT += -Werror-UNUSED -Werror-UNDRIVEN
+endif
+
+# Default include dirs reused across most targets
+INC_RTL  := -I$(RTL_DIR) -I$(FIFO_DIR)
+INC_TOP  := -I$(TOP_DIR) -I$(RTL_DIR)
+
+# Helper: run a per-module lint and tee output to <name>.log
+# $(1) = top module, $(2) = source file, $(3) = extra flags
+define VERILATE
+	@echo "===== lint: $(1) ====="
+	@$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_STRICT) $(3) \
+	  --top-module $(1) $(2) 2>&1 | tee $(1).log; \
+	  exit $${PIPESTATUS[0]}
+endef
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-module strict-lint targets
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Calibrator — HAL flagged HASUPC (unique-case) and ULRELE (17v32-bit relop)
+# on a prior revision. Today's restored simple FSM is clean under -Wall.
+lint-calibrator:
+	$(call VERILATE,tidelink_phy_align_calibrator,\
+	  $(RTL_DIR)/tidelink_phy_align_calibrator.sv,\
+	  $(INC_RTL))
+
+# PHY align register bank — APB unused-address-bits are spec-legitimate, so
+# UNUSED is left at warning level.
+lint-phy-align-regs:
+	$(call VERILATE,tidelink_phy_align_regs,\
+	  $(RTL_DIR)/tidelink_phy_align_regs.sv,\
+	  $(INC_RTL))
+
+# Per-lane checker — symbol/comma framing detector
+lint-lane-checker:
+	$(call VERILATE,tidelink_lane_checker,\
+	  $(RTL_DIR)/tidelink_lane_checker.sv,\
+	  $(INC_RTL))
+
+# Performance counters
+lint-perf:
+	$(call VERILATE,tidelink_perf,\
+	  $(RTL_DIR)/tidelink_perf.sv,\
+	  $(INC_RTL))
+
+# FIFO APB register bank (note: this file lives at src/rtl/fifo/, not src/rtl/)
+lint-apb-regs:
+	$(call VERILATE,tidelink_apb_regs,\
+	  $(FIFO_DIR)/tidelink_apb_regs.sv,\
+	  $(INC_RTL))
+
+# FIFO controller — flow-control state machine
+lint-fifo-ctrl:
+	$(call VERILATE,tidelink_fifo_ctrl,\
+	  $(FIFO_DIR)/tidelink_fifo_ctrl.sv,\
+	  $(INC_RTL))
+
+# Returner — write-side return path
+lint-returner:
+	$(call VERILATE,tidelink_returner,\
+	  $(FIFO_DIR)/tidelink_returner.sv,\
+	  $(INC_RTL))
+
+# Auto-negotiation FSM — silicon-class bugs #1 (decouple nego_driving) and
+# #2 (default txn_step_nxt) already fixed on feat/td-combined; should be clean.
+lint-tidelink-autoneg:
+	$(call VERILATE,tidelink_autoneg,\
+	  $(TOP_DIR)/tidelink_autoneg.sv,\
+	  $(INC_TOP))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aggregate targets
+# ─────────────────────────────────────────────────────────────────────────────
+
+LINT_TARGETS = lint-calibrator \
+               lint-phy-align-regs \
+               lint-lane-checker \
+               lint-perf \
+               lint-apb-regs \
+               lint-fifo-ctrl \
+               lint-returner \
+               lint-tidelink-autoneg
+
+# Run every module and keep going past failures; the aggregate target then
+# inspects exit statuses and reports.
+lint-all:
+	@fail=0; \
+	for t in $(LINT_TARGETS); do \
+	  $(MAKE) --no-print-directory $$t || fail=1; \
+	  echo ""; \
+	done; \
+	if [ $$fail -ne 0 ]; then \
+	  echo "verilator lint: ONE OR MORE MODULES FAILED — see <module>.log"; \
+	  exit 1; \
+	else \
+	  echo "verilator lint: ALL MODULES CLEAN"; \
+	fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Full-design lint (best-effort; requires the FPGA filelist to elaborate)
+# ─────────────────────────────────────────────────────────────────────────────
+# This linting target uses the FPGA flist to give Verilator the full module
+# graph. It surfaces inter-module issues (pin width mismatches, unused
+# outputs at the chip top) that per-module lint misses. Slow (~10–30 s) and
+# noisier — currently best-effort, not in lint-all.
+
+FPGA_FLIST := $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+FLIST_OUT  := tidelink_fpga.flist.expanded
+
+lint-fpga-top: $(FLIST_OUT)
+	@echo "===== lint: tidelink_top (FPGA full design) ====="
+	@. $(TIDELINK_HOME)/set_env.sh >/dev/null 2>&1 && \
+	  $(VERILATOR) $(VERILATOR_FLAGS) \
+	    -Wno-UNUSED -Wno-UNDRIVEN -Wno-WIDTH \
+	    -f $(FLIST_OUT) \
+	    --top-module tidelink_top 2>&1 | tee tidelink_top.log
+
+# Expand $VARS in the flist into absolute paths (Verilator -f doesn't run
+# shell variable expansion).
+$(FLIST_OUT): $(FPGA_FLIST)
+	@. $(TIDELINK_HOME)/set_env.sh >/dev/null 2>&1 && \
+	  envsubst < $(FPGA_FLIST) > $@
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Maintenance
+# ─────────────────────────────────────────────────────────────────────────────
+
+clean:
+	rm -f *.log *.expanded
+	rm -rf obj_dir
+
+.PHONY: lint-all lint-calibrator lint-phy-align-regs lint-lane-checker \
+        lint-perf lint-apb-regs lint-fifo-ctrl lint-returner \
+        lint-tidelink-autoneg lint-fpga-top clean

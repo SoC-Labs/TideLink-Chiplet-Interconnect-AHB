@@ -48,12 +48,7 @@ set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_
 set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
-# LANE-7 REMAP (mirror of pynq-z2-pair-all): B19/F20 bad → spare V7/W9.
-# 2026-05-21: SLEW FAST DRIVE 8 -> SLEW SLOW DRIVE 4 on V7 (slave mirror
-# of master W9 change). Reduces lane-7 TX crosstalk into adjacent
-# forwarded TX clock @ Y7 same I/O tile. See pair-all variant for full
-# rationale.
-set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports {pad_tx[7]}]  ;# was F20 (bad), then SLEW FAST DRIVE 8
+set_property -dict {PACKAGE_PIN F20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
 
 #-- RX side (inputs to this board ← straight-through ribbon ← peer's TX) -----
 # Mirror of pynq-z2-pair: clocks on Y7/Y9 (both P-side clock-capable).
@@ -65,22 +60,7 @@ set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
 set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
 set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
-set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
-
-#-- Inter-board I2C (autonomous lane-mask coordination) — OFF-RIBBON ---------
-# Mirror of pynq-z2-pair-all. I2C runs OFF the J13 ribbon, on the
-# dedicated PYNQ-Z2 Arduino I2C pads P15=SCL / P16=SDA (TUL on-board
-# pull-ups). 3-wire Dupont harness between the two boards' Arduino
-# shield headers (SDA<->SDA, SCL<->SCL, GND<->GND); I2C is symmetric so
-# no flip/cross. Full rationale (incl. why the prior on-ribbon W9/V7
-# choice was abandoned after the 2026-05-19 HW result) is in
-# pynq-z2-pair-all/pynq_z2_tidelink.xdc and
-# staging/i2c_train/HW_VALIDATION_RESULTS.md.
-# UNCONDITIONAL (no Tcl guard): XDC does not support `if` ([Designutils
-# 20-1307]); BD Edit 1 always exposes these ports in both pair-all and
-# -flip-all so constrain unconditionally.
-set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports i2c_sda_io]
-set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33} [get_ports i2c_scl_io]
+set_property -dict {PACKAGE_PIN B19 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]

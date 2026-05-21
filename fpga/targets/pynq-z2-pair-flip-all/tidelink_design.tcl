@@ -103,18 +103,6 @@ proc create_root_design { parentCell } {
     create_bd_port -dir I           pad_clk_rx
     create_bd_port -dir I -from 7 -to 0 pad_rx
 
-    # Inter-board I2C sideband (BD Edit 1, SHORTCOMINGS-14a/14b) — expose
-    # the chiplet's I2C tristate pins as external BD ports so the board
-    # wrapper can IOBUF them onto J13 W9/V7. Mirrors the proven mps3
-    # target (tidelink_ip_0 -> here tidelink_0). Purely additive — the
-    # pins were unconnected (Vivado default), no constant driver existed.
-    create_bd_port -dir I           i2c_scl_i
-    create_bd_port -dir O           i2c_scl_o
-    create_bd_port -dir O           i2c_scl_t
-    create_bd_port -dir I           i2c_sda_i
-    create_bd_port -dir O           i2c_sda_o
-    create_bd_port -dir O           i2c_sda_t
-
     # Board LEDs (accent green, active-high)
     create_bd_port -dir O           led0
     create_bd_port -dir O           led1
@@ -163,23 +151,12 @@ proc create_root_design { parentCell } {
     # Active-low reset (resetn) from PS FCLK_RESET0_N.
     #--------------------------------------------------------------------------
     set clk_wiz [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk_wiz_0]
-    # SoC Labs §9 structural fix (2026-05-18): CLKOUT3 = 200 MHz added as the
-    # IDELAYCTRL reference clock for the per-lane IDELAYE2 RX delay elements
-    # (tidelink_idelay_rx, USE_IDELAY=1). One MMCM with three synchronous
-    # outputs: 25 / 25 / 200 MHz from a 100 MHz input is well inside the
-    # xc7z020-1 MMCM range (VCO settles ~1000 MHz: ÷40→25, ÷5→200). The
-    # 200 MHz net is BD-internal so the clk_wiz IP emits its own
-    # create_generated_clock — the *_idelay.xdc deliberately adds NO manual
-    # create_clock for it (see that file's rationale).
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
         CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \
-        CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {200.000} \
-        CONFIG.CLKOUT3_USED              {true} \
-        CONFIG.NUM_OUT_CLKS              {3} \
         CONFIG.USE_LOCKED                {true} \
         CONFIG.USE_RESET                 {true} \
         CONFIG.RESET_TYPE                {ACTIVE_LOW} \
@@ -354,51 +331,34 @@ proc create_root_design { parentCell } {
         CONFIG.CONST_VAL   {42405} \
     ] $const_puf_seed
 
-    # SoC Labs bring-up patch (2026-05-06, un-tied 2026-05-14):
-    # mask_hs_bypass_i was previously tied HIGH; now driven LOW so the
-    # autoneg-driven peer-mask handshake gates role_lock. The xlconstant
-    # is retained so reverting is a one-line CONFIG.CONST_VAL change.
-    # See pynq-z2-pair-all for full rationale and SW prerequisites.
-    #
-    # REQUIRES PHYSICAL I2C JUMPERS between the two Pynq-Z2 boards (SDA/SCL
-    # + GND on the PMOD sideband — see PHYSICAL_WIRING.md). With bypass=0
-    # and no jumpers the link HANGS waiting for the peer-mask handshake.
-    # Also gated by the autoneg I2C wedge SHORTCOMINGS-14a until that fix
-    # lands. Do NOT treat this bitstream as bring-up-ready without the
-    # jumpers + 14a.
+    # SoC Labs bring-up patch (2026-05-06): tie mask_hs_bypass_i HIGH so the
+    # peer-mask handshake gate is open and role_lock_reg latches immediately
+    # on ROLE_CFG write. See pynq-z2-pair-all for full rationale.
     set const_mask_bypass [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_mask_hs_bypass]
     set_property -dict [list \
         CONFIG.CONST_WIDTH {1} \
-        CONFIG.CONST_VAL   {0} \
+        CONFIG.CONST_VAL   {1} \
     ] $const_mask_bypass
 
     #--------------------------------------------------------------------------
-    # NOTE (2026-05-19): the ila_rx / ila_pad cores that used to probe the
-    # raw pad_rx IBUF were REMOVED. They are vestigial — RO APB observability
-    # (submodule 250f1cf, Region-8 SWI_LANE_STATUS) replaced them — and they
-    # are fundamentally incompatible with the §9 real IDELAYE2 RX delay:
-    # IDELAYE2 with DELAY_SRC("IDATAIN") needs the dedicated IBUF->IDELAYE2
-    # route, so the pad_rx IBUF cannot also fan into ILA fabric (route_design
-    # fails: all 8 pad_rx_IBUF nets unroutable). For an explicit pad-domain
-    # ILA build use the dedicated `pynq-z2-pair-ila` target instead.
+    # ILA — capture pad_clk_rx + pad_rx[7:0] (signals coming FROM the slave).
+    # Sampled in the local hclk (50 MHz) domain; the goal is to see whether
+    # the slave's pad_tx pins are alive (toggling, stuck high, stuck low,
+    # floating) on the master's RX pads.
+    #
+    # Clock = pad_clk_rx itself (the recovered clock from the slave). If the
+    # slave's pad_clk_tx is dead, this domain will be too — which is itself
+    # the diagnostic. We connect pad_clk_rx to ILA's clk through a BUFG so
+    # Vivado sees it as a real clock; pad_rx[7:0] is the 8-bit data probe.
+    # If pad_clk_rx is dead, the ILA never samples — try the second ILA on
+    # the hclk (50 MHz) domain to capture the raw pin value asynchronously.
     #--------------------------------------------------------------------------
-
-    # Third ILA — capture the inter-board I2C sideband (W9/V7) to isolate
-    # whether the autoneg I2C master physically drives the pads and whether
-    # the peer receives. Stable 50 MHz clk_wiz domain (I2C ~tens of kHz at
-    # PRESCALE=200, heavily oversampled). Probes: 0 scl_o 1 scl_t 2 scl_i
-    # 3 sda_o 4 sda_t 5 sda_i. Master CLAIM => scl/sda _o/_t toggle; slave
-    # _i mirrors them iff W9/V7 physically carries the signal.
-    set ila_i2c [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_i2c]
+    set ila_rx [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_rx]
     set_property -dict [list \
-        CONFIG.C_NUM_OF_PROBES   {6} \
+        CONFIG.C_NUM_OF_PROBES   {2} \
         CONFIG.C_PROBE0_WIDTH    {1} \
-        CONFIG.C_PROBE1_WIDTH    {1} \
-        CONFIG.C_PROBE2_WIDTH    {1} \
-        CONFIG.C_PROBE3_WIDTH    {1} \
-        CONFIG.C_PROBE4_WIDTH    {1} \
-        CONFIG.C_PROBE5_WIDTH    {1} \
+        CONFIG.C_PROBE1_WIDTH    {8} \
         CONFIG.C_DATA_DEPTH      {4096} \
         CONFIG.C_INPUT_PIPE_STAGES {2} \
         CONFIG.C_EN_STRG_QUAL    {0} \
@@ -407,7 +367,24 @@ proc create_root_design { parentCell } {
         CONFIG.C_TRIGOUT_EN      {false} \
         CONFIG.C_TRIGIN_EN       {false} \
         CONFIG.C_ADV_TRIGGER     {false} \
-    ] $ila_i2c
+    ] $ila_rx
+
+    # Second ILA in the hclk (50 MHz) domain — captures pad_clk_rx as data
+    # so we can see whether the pad is even toggling at all.
+    set ila_pad [create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_pad]
+    set_property -dict [list \
+        CONFIG.C_NUM_OF_PROBES   {2} \
+        CONFIG.C_PROBE0_WIDTH    {1} \
+        CONFIG.C_PROBE1_WIDTH    {8} \
+        CONFIG.C_DATA_DEPTH      {4096} \
+        CONFIG.C_INPUT_PIPE_STAGES {2} \
+        CONFIG.C_EN_STRG_QUAL    {0} \
+        CONFIG.ALL_PROBE_SAME_MU {true} \
+        CONFIG.ALL_PROBE_SAME_MU_CNT {2} \
+        CONFIG.C_TRIGOUT_EN      {false} \
+        CONFIG.C_TRIGIN_EN       {false} \
+        CONFIG.C_ADV_TRIGGER     {false} \
+    ] $ila_pad
 
     ###########################################################################
     # CONNECTIONS
@@ -449,11 +426,6 @@ proc create_root_design { parentCell } {
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
                    [get_bd_pins tidelink_0/phc_clk]
-
-    #-- SoC Labs §9 structural fix: clk_wiz clk_out3 (200 MHz) -> IDELAYCTRL
-    #   reference clock for the per-lane IDELAYE2 RX delay elements.
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out3] \
-                   [get_bd_pins tidelink_0/idelay_ref_clk]
 
     #-- Reset fan-out (active-low peripheral_aresetn)
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
@@ -515,36 +487,25 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins axi_gpio_debug_unlock/gpio_io_o] \
                    [get_bd_pins tidelink_0/apb_debug_unlock_i]
 
-    #-- GPIO PHY pads -> external ports
+    #-- GPIO PHY pads -> external ports (with ILA taps on RX side)
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_ports pad_clk_tx]
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
     connect_bd_net [get_bd_ports pad_clk_rx]            [get_bd_pins tidelink_0/pad_clk_rx]
     connect_bd_net [get_bd_ports pad_rx]                [get_bd_pins tidelink_0/pad_rx]
 
-    #-- BD Edit 1: chiplet I2C sideband -> external BD ports (mirrors mps3
-    #   tidelink_design.tcl:631-636). Wrapper IOBUFs these onto P15/P16
-    #   (Arduino dedicated I2C — repinned off W9/V7 by 3de5ebe).
-    connect_bd_net [get_bd_ports i2c_scl_i] [get_bd_pins tidelink_0/i2c_scl_i]
-    connect_bd_net [get_bd_pins tidelink_0/i2c_scl_o] [get_bd_ports i2c_scl_o]
-    connect_bd_net [get_bd_pins tidelink_0/i2c_scl_t] [get_bd_ports i2c_scl_t]
-    connect_bd_net [get_bd_ports i2c_sda_i] [get_bd_pins tidelink_0/i2c_sda_i]
-    connect_bd_net [get_bd_pins tidelink_0/i2c_sda_o] [get_bd_ports i2c_sda_o]
-    connect_bd_net [get_bd_pins tidelink_0/i2c_sda_t] [get_bd_ports i2c_sda_t]
+    #-- ILA probes
+    # ila_rx samples in the recovered-clock domain. Clock = pad_clk_rx
+    # (taps the same external port). Probe0 = pad_clk_rx (1-bit, mostly
+    # for trigger reference), probe1 = pad_rx[7:0].
+    connect_bd_net [get_bd_ports pad_clk_rx] [get_bd_pins ila_rx/clk]
+    connect_bd_net [get_bd_ports pad_clk_rx] [get_bd_pins ila_rx/probe0]
+    connect_bd_net [get_bd_ports pad_rx]      [get_bd_pins ila_rx/probe1]
 
-    #-- (ila_rx / ila_pad probes removed 2026-05-19 — see NOTE above; the
-    #--  raw-pad ILA is incompatible with the real IDELAYE2 IDATAIN route.
-    #--  RO APB SWI_LANE_STATUS is the observability path now.)
-
-    # ila_i2c: stable 50 MHz domain; taps the W9/V7 I2C BD-port nets
-    # (additional sinks on the existing tidelink_0 i2c nets, like ila_rx
-    # taps pad_rx).
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins ila_i2c/clk]
-    connect_bd_net [get_bd_ports i2c_scl_o] [get_bd_pins ila_i2c/probe0]
-    connect_bd_net [get_bd_ports i2c_scl_t] [get_bd_pins ila_i2c/probe1]
-    connect_bd_net [get_bd_ports i2c_scl_i] [get_bd_pins ila_i2c/probe2]
-    connect_bd_net [get_bd_ports i2c_sda_o] [get_bd_pins ila_i2c/probe3]
-    connect_bd_net [get_bd_ports i2c_sda_t] [get_bd_pins ila_i2c/probe4]
-    connect_bd_net [get_bd_ports i2c_sda_i] [get_bd_pins ila_i2c/probe5]
+    # ila_pad samples in the local hclk (50 MHz) domain — survives even
+    # when pad_clk_rx is dead. Lets us see the raw pin level / toggling.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins ila_pad/clk]
+    connect_bd_net [get_bd_ports pad_clk_rx]         [get_bd_pins ila_pad/probe0]
+    connect_bd_net [get_bd_ports pad_rx]              [get_bd_pins ila_pad/probe1]
 
     #-- LEDs -> external ports
     #   led0 = link_active    (lit when D2D link is up)

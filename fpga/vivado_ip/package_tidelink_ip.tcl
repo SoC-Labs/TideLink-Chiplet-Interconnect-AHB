@@ -19,6 +19,30 @@
 ###   FPGA_CORE_REV           - IP core revision number (default: 1)
 ###-----------------------------------------------------------------------------
 
+###-----------------------------------------------------------------------------
+### Vivado message gate (mirror of fpga/build_design.tcl)
+###-----------------------------------------------------------------------------
+### The OOC synth context Vivado uses for `ipx::package_project` is a
+### separate Tcl interpreter from the top-level build_design.tcl, so the
+### same set_msg_config -> ERROR promotions must be installed here.
+### See fpga/build_design.tcl and fpga/docs/VIVADO_MSG_GATE.md for the
+### canonical rationale and the full list of message IDs.
+###-----------------------------------------------------------------------------
+if {![info exists ::tidelink_msg_gate_installed]} {
+    # [Constraints 18-359] create_generated_clock: > 1 master pin matched
+    set_msg_config -id "Constraints 18-359"  -new_severity ERROR
+    # [Vivado 12-4739] set_input/output_delay: No valid object(s)
+    set_msg_config -id "Vivado 12-4739"      -new_severity ERROR
+    # [Designutils 20-1307] Procedural TCL not supported in XDC
+    set_msg_config -id "Designutils 20-1307" -new_severity ERROR
+    # [Common 17-55] 'set_property' expects at least one object
+    set_msg_config -id "Common 17-55"        -new_severity ERROR
+    # [Vivado 12-1411] Empty filter result from get_pins/get_cells/get_ports
+    set_msg_config -id "Vivado 12-1411"      -new_severity ERROR
+
+    set ::tidelink_msg_gate_installed 1
+}
+
 set component_lib $env(FPGA_COMPONENT_LIB)
 
 # Use defaults for optional env vars (Vivado TCL has no 'env_default' helper)

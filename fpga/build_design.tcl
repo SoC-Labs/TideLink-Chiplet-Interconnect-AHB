@@ -19,7 +19,117 @@
 ###   FPGA_TARGET_DIR  - Path to target-specific files (BD TCL, wrapper, XDC)
 ###   FPGA_OUTPUT_DIR  - Path for final outputs (.bit, .hwh, .xsa)
 ###   FPGA_NUM_JOBS    - Number of parallel jobs for synthesis/implementation
+###
+### Optional environment variables:
+###   FPGA_ALLOW_CRITICAL_WARNINGS=1
+###       Disables the generic post-phase CRITICAL_WARNING count check
+###       (intended for exploratory / legacy builds). Does NOT disable
+###       the per-message ERROR promotions below - those are always fatal
+###       because they have been observed to cause silent constraint
+###       regressions (e.g. 0/16 lane lock on hardware after a build that
+###       otherwise "succeeded"). See fpga/docs/VIVADO_MSG_GATE.md.
 ###-----------------------------------------------------------------------------
+
+###-----------------------------------------------------------------------------
+### Vivado message gate
+###-----------------------------------------------------------------------------
+### Background: 2026-05-21 we lost a day to a silent constraint failure.
+### Multiple CRITICAL WARNING classes were emitted at synth/impl time, the
+### build still "PASSED", and the resulting bitstream produced 0/16 lane
+### lock on hardware vs 14/16 on the previous bitstream. Observed in the
+### broken build log (synth_1 + impl_1 runme.log):
+###   [Constraints 18-359]  create_generated_clock: > 1 master pin matched
+###   [Vivado 12-4739]      set_input/output_delay: No valid object(s)
+###   [Designutils 20-1307] Command 'if'/'catch'/'file'/'info'/'get_files'
+###                         not supported in XDC -> silently skipped
+###   [Common 17-55]        set_property: empty selector
+###   [Vivado 12-1411]      get_pins/get_cells empty filter result
+###
+### These are all classes of "the constraint was silently dropped". Treat
+### them as hard errors so the build dies at the source, not on the bench.
+###
+### Gate has TWO layers:
+###   1. set_msg_config -severity ERROR for each known-bad message ID
+###      (always on, cannot be disabled by env-var; the IDs are surgical).
+###   2. Post-synth / post-impl CRITICAL_WARNING count check (skippable via
+###      FPGA_ALLOW_CRITICAL_WARNINGS=1 for exploratory builds).
+###
+### To add a new promotion: append to the list below with a comment
+### explaining the failure mode it guards. To intentionally suppress a
+### legitimate CRITICAL WARNING: use `set_msg_config -id <ID> -suppress`
+### immediately after the promotion block, with a justification comment.
+###
+### See fpga/docs/VIVADO_MSG_GATE.md for the canonical list + rationale.
+###-----------------------------------------------------------------------------
+if {![info exists ::tidelink_msg_gate_installed]} {
+    puts "==========================================="
+    puts " Installing TideLink Vivado message gate"
+    puts "==========================================="
+
+    # [Constraints 18-359] create_generated_clock: > 1 master pin matched
+    # -> derived clock is silently NOT created, downstream timing breaks.
+    set_msg_config -id "Constraints 18-359"  -new_severity ERROR
+
+    # [Vivado 12-4739] set_input/output_delay: No valid object(s) for -clock
+    # or -ports -> the constraint becomes a no-op (clock or port unknown).
+    set_msg_config -id "Vivado 12-4739"      -new_severity ERROR
+
+    # [Designutils 20-1307] Procedural TCL ('if' / 'catch' / 'file' / 'info'
+    # / 'get_files') is not supported inside an XDC. Anything guarded by
+    # these is silently skipped.
+    set_msg_config -id "Designutils 20-1307" -new_severity ERROR
+
+    # [Common 17-55] 'set_property' expects at least one object - happens
+    # when the selector (get_cells / get_nets / get_ports) returned empty
+    # and the property therefore lands on nothing.
+    set_msg_config -id "Common 17-55"        -new_severity ERROR
+
+    # [Vivado 12-1411] Empty result from get_pins / get_cells / get_ports
+    # filter that then propagates as a silent no-op constraint.
+    set_msg_config -id "Vivado 12-1411"      -new_severity ERROR
+
+    set ::tidelink_msg_gate_installed 1
+}
+
+# Helper: check CRITICAL_WARNING count after a phase. Honours
+# FPGA_ALLOW_CRITICAL_WARNINGS=1 to allow legacy/exploratory builds.
+# The per-message ERROR promotions above are NOT bypassed by this env-var.
+proc tidelink_check_cw_count { phase_name } {
+    set cw_count [get_msg_config -count -severity {CRITICAL WARNING}]
+    puts "\[tidelink_msg_gate\] CRITICAL_WARNING count after $phase_name : $cw_count"
+
+    if { $cw_count <= 0 } {
+        return
+    }
+
+    if { [info exists ::env(FPGA_ALLOW_CRITICAL_WARNINGS)]
+         && $::env(FPGA_ALLOW_CRITICAL_WARNINGS) == "1" } {
+        puts "\[tidelink_msg_gate\] FPGA_ALLOW_CRITICAL_WARNINGS=1 set - proceeding despite $cw_count CRITICAL WARNING(s)."
+        return
+    }
+
+    puts "==========================================="
+    puts " TideLink Vivado message gate FAILED"
+    puts " Phase   : $phase_name"
+    puts " CW count: $cw_count"
+    puts "-------------------------------------------"
+    puts " Dumping WARNING + CRITICAL WARNING rules"
+    puts " (look in $phase_name/runme.log for the"
+    puts "  exact messages and their IDs)."
+    puts "-------------------------------------------"
+    if { [catch { puts [get_msg_config -rules] } _err] } {
+        puts "(get_msg_config -rules unavailable: $_err)"
+    }
+    puts "-------------------------------------------"
+    puts " To bypass this check for an exploratory"
+    puts " build, set FPGA_ALLOW_CRITICAL_WARNINGS=1"
+    puts " in the environment. This does NOT disable"
+    puts " the per-message ERROR promotions - those"
+    puts " IDs will still hard-fail the build."
+    puts " See fpga/docs/VIVADO_MSG_GATE.md."
+    puts "==========================================="
+    exit 1
+}
 
 set part        $env(FPGA_PART)
 set project_dir $env(FPGA_PROJECT_DIR)
@@ -149,6 +259,12 @@ if { [string match "*ERROR*" $synth_status] } {
     exit 1
 }
 
+# Message gate: fail-fast if any CRITICAL WARNING slipped through synth.
+# Per-message ERROR promotions above will already have hard-errored the
+# run; this count check catches the long tail of CW classes we have not
+# yet enumerated. Bypassable via FPGA_ALLOW_CRITICAL_WARNINGS=1.
+tidelink_check_cw_count "synth_1"
+
 # STEP 8.5: Insert ILA debug core for nets marked (* mark_debug = "true" *).
 # Skipped silently if no marks present.
 if { [info exists env(FPGA_INSERT_DEBUG_CORE)] && $env(FPGA_INSERT_DEBUG_CORE) == "1" } {
@@ -170,6 +286,12 @@ if { [string match "*ERROR*" $impl_status] } {
     puts "ERROR: Implementation failed!"
     exit 1
 }
+
+# Message gate: fail-fast if any CRITICAL WARNING slipped through impl.
+# Impl re-evaluates the *_timing.xdc and *_drc.xdc constraints, so a new
+# crop of constraint-mismatch CWs can appear here that did not in synth.
+# Bypassable via FPGA_ALLOW_CRITICAL_WARNINGS=1.
+tidelink_check_cw_count "impl_1"
 
 # STEP 10: Export outputs (.bit, .hwh for PYNQ, .xsa for Vitis)
 file mkdir $output_dir

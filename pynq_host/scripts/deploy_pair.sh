@@ -7,9 +7,25 @@
 # $ARTEFACTS_DIR (defaults to /tmp/tidelink_deploy).
 #
 # Usage:
-#   deploy_pair.sh BOARD_IP BOARD_LABEL ROLE [ARTEFACTS_DIR]
+#   deploy_pair.sh BOARD_IP BOARD_LABEL ROLE [ARTEFACTS_DIR] [options]
 #     ROLE = die_a | die_b   (controls strap polarity — die_a -> master)
 #     ARTEFACTS_DIR optional; defaults to /tmp/tidelink_deploy
+#
+#   Provenance options (Bug #32 — wrong-bitstream guard):
+#     --expect-sha256 <hex>   abort unless the staged .bin matches this hash
+#     --manifest <path>       read expected sha256 (+ label/commit) from a
+#                             <bitstream>.manifest.json; default looked up as
+#                             <ARTEFACTS>/<bin>.manifest.json if it exists
+#     --no-verify             explicit escape hatch: deploy WITHOUT a hash
+#                             check (otherwise an unverified deploy is loud)
+#     --check-only            do NOT flash; read back the MD5 of the bitstream
+#                             already loaded on the board and compare to the
+#                             manifest/expected hash, then exit (Layer 4)
+#
+#   The May-6 phase-v2 mixup (Bug #32): a known-0/16 build (MD5 188ebdd8)
+#   was left in the shared volatile staging dir by a population test and
+#   deployed BLINDLY into the v1 release + every post-cycle test. With a
+#   manifest or --expect-sha256 the wrong .bin now ABORTS instead of flashing.
 #
 # Example workflow on mapstone-dev:
 #   mkdir -p /tmp/tidelink_deploy
@@ -43,8 +59,31 @@ set -e
 BOARD_IP="$1"
 LABEL="$2"
 ROLE="$3"
-ARTEFACTS="${4:-/tmp/tidelink_deploy}"
+# 4th positional is ARTEFACTS_DIR only if it does not start with '-' (so the
+# legacy 4-positional callers keep working while new --flags are accepted).
+if [ -n "${4:-}" ] && [ "${4#-}" = "$4" ]; then
+    ARTEFACTS="$4"; shift 4
+else
+    ARTEFACTS="/tmp/tidelink_deploy"; [ "$#" -ge 3 ] && shift 3
+fi
 PASS="${TIDELINK_BOARD_PASS:-xilinx}"
+
+# --- Provenance-guard option parsing (Bug #32) -----------------------------
+EXPECT_SHA=""        # explicit --expect-sha256 value (highest precedence)
+MANIFEST=""          # explicit --manifest path
+NO_VERIFY=0          # --no-verify escape hatch
+CHECK_ONLY=0         # --check-only (Layer 4: read-back, no flash)
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --expect-sha256) EXPECT_SHA="$2"; shift 2 ;;
+        --expect-sha256=*) EXPECT_SHA="${1#*=}"; shift ;;
+        --manifest) MANIFEST="$2"; shift 2 ;;
+        --manifest=*) MANIFEST="${1#*=}"; shift ;;
+        --no-verify) NO_VERIFY=1; shift ;;
+        --check-only) CHECK_ONLY=1; shift ;;
+        *) echo "deploy_pair.sh: unknown option '$1'" >&2; exit 2 ;;
+    esac
+done
 
 # When using a STRAIGHT-THROUGH RPi GPIO ribbon (1:1 cable, e.g. The
 # Pi Hut 40-pin), the two boards need MIRRORED pin maps so that one
@@ -89,6 +128,97 @@ fi
     sed -n '4,18p' "$0" | sed 's/^# *//'; exit 2; }
 
 SSHCOMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+# === Provenance guard (Bug #32) ============================================
+# Resolve the EXPECTED sha256 for the bitstream we are about to deploy, in
+# precedence order: explicit --expect-sha256 > explicit --manifest >
+# auto-discovered "<ARTEFACTS>/<BIN>.manifest.json". The manifest is a small
+# JSON: {sha256, source_commit, build_host, build_date, target,
+# expected_lock_min, label}. We extract sha256 + label with a portable grep
+# (no jq dependency on the board-network host).
+STAGED_BIN="$ARTEFACTS/$BIN"
+MANIFEST_LABEL=""; MANIFEST_COMMIT=""; MANIFEST_LOCKMIN=""
+
+manifest_field() {  # FILE FIELD  -> value (string, quotes stripped) or ""
+    [ -f "$1" ] || { echo ""; return; }
+    grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$1" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//'
+}
+manifest_num() {    # FILE FIELD  -> numeric value or ""
+    [ -f "$1" ] || { echo ""; return; }
+    grep -o "\"$2\"[[:space:]]*:[[:space:]]*[0-9][0-9]*" "$1" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*//'
+}
+
+# Auto-discover a manifest next to the staged bitstream if none was given.
+if [ -z "$MANIFEST" ] && [ -f "${STAGED_BIN}.manifest.json" ]; then
+    MANIFEST="${STAGED_BIN}.manifest.json"
+fi
+if [ -n "$MANIFEST" ]; then
+    if [ ! -f "$MANIFEST" ]; then
+        echo "DEPLOY-ABORT: manifest not found: $MANIFEST" >&2; exit 4
+    fi
+    MANIFEST_LABEL=$(manifest_field "$MANIFEST" label)
+    MANIFEST_COMMIT=$(manifest_field "$MANIFEST" source_commit)
+    MANIFEST_LOCKMIN=$(manifest_num "$MANIFEST" expected_lock_min)
+    [ -z "$EXPECT_SHA" ] && EXPECT_SHA=$(manifest_field "$MANIFEST" sha256)
+fi
+
+# Compute the actual sha256 of the staged bitstream (fast, ~4 MB).
+ACTUAL_SHA=""
+if [ -f "$STAGED_BIN" ]; then
+    ACTUAL_SHA=$(sha256sum "$STAGED_BIN" 2>/dev/null | awk '{print $1}')
+fi
+
+# --- Layer 4: --check-only (read back what is loaded, do NOT flash) --------
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    echo "==== CHECK-ONLY $LABEL @ $BOARD_IP — bitstream=$BIN ===="
+    [ -n "$MANIFEST" ] && echo "  manifest: $MANIFEST (label=${MANIFEST_LABEL:-?} commit=${MANIFEST_COMMIT:-?})"
+    echo "  staged   sha256 = ${ACTUAL_SHA:-<no staged file>}"
+    [ -n "$EXPECT_SHA" ] && echo "  expected sha256 = $EXPECT_SHA"
+    loaded_md5=$(sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+        "md5sum /lib/firmware/tidelink.bin 2>/dev/null" 2>/dev/null | awk '{print $1}')
+    echo "  on-board /lib/firmware/tidelink.bin MD5 = ${loaded_md5:-<unreadable>}"
+    if [ -n "$EXPECT_SHA" ] && [ -n "$ACTUAL_SHA" ]; then
+        # The board exposes MD5 not SHA256; we cross-check the staged bin's
+        # MD5 against the board so an operator can confirm same-file identity.
+        staged_md5=$(md5sum "$STAGED_BIN" 2>/dev/null | awk '{print $1}')
+        if [ -n "$loaded_md5" ] && [ "$loaded_md5" = "$staged_md5" ]; then
+            echo "  RESULT: on-board bitstream MATCHES staged ($staged_md5)"
+            if [ "$ACTUAL_SHA" = "$EXPECT_SHA" ]; then
+                echo "  RESULT: staged sha256 MATCHES manifest — provenance OK"; exit 0
+            else
+                echo "DEPLOY-ABORT: staged sha256 mismatch vs manifest — expected $EXPECT_SHA, got $ACTUAL_SHA" >&2; exit 5
+            fi
+        else
+            echo "DEPLOY-ABORT: on-board MD5 ($loaded_md5) != staged MD5 ($staged_md5) — board is running a DIFFERENT bitstream" >&2; exit 5
+        fi
+    fi
+    echo "  (no expected hash given — readback only, provenance NOT verified)" >&2
+    exit 0
+fi
+
+# --- Layer 1: pre-flash sha256 verification --------------------------------
+if [ -n "$EXPECT_SHA" ]; then
+    if [ -z "$ACTUAL_SHA" ]; then
+        echo "DEPLOY-ABORT: cannot hash staged bitstream $STAGED_BIN (missing/unreadable) — refusing to flash" >&2
+        exit 4
+    fi
+    if [ "$ACTUAL_SHA" != "$EXPECT_SHA" ]; then
+        echo "DEPLOY-ABORT: bitstream SHA mismatch — expected $EXPECT_SHA, got $ACTUAL_SHA (refusing to flash wrong bitstream)" >&2
+        exit 4
+    fi
+    SHA12="${ACTUAL_SHA:0:12}"
+    echo "  provenance OK: $BIN sha256 ${SHA12}… matches ${MANIFEST:+manifest }${MANIFEST_LABEL:+(label=$MANIFEST_LABEL) }expected"
+elif [ "$NO_VERIFY" -eq 1 ]; then
+    echo "WARNING: --no-verify set — flashing $BIN WITHOUT provenance check (sha256=${ACTUAL_SHA:-?})" >&2
+else
+    echo "WARNING: UNVERIFIED DEPLOY — no --expect-sha256 or --manifest given." >&2
+    echo "WARNING: flashing $STAGED_BIN (sha256=${ACTUAL_SHA:-?}) with NO provenance guard." >&2
+    echo "WARNING: this is exactly how Bug #32 (wrong-bitstream mixup) happened." >&2
+    echo "WARNING: pass --manifest <f>.manifest.json or --no-verify to silence this." >&2
+fi
+# ===========================================================================
 
 echo "==== $LABEL @ $BOARD_IP — role=$ROLE strap=$STRAP ctrl=$CTRL bitstream=$BIN ===="
 
@@ -217,4 +347,17 @@ print(\"  PAIR_BASE_ADDR = 0x{:08x}\".format(pba))
 print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={})\".format(val,(val>>1)&1,val&1))
 '"
 
-echo "==== $LABEL done ===="
+# --- Layer 3: provenance ledger ------------------------------------------
+# Append one JSON line per deploy to <ARTEFACTS>/deployed.json so "what is
+# actually loaded right now" is always answerable after the fact. Best-effort:
+# a ledger write must never fail an otherwise-good deploy.
+LEDGER="${TIDELINK_LEDGER:-$ARTEFACTS/deployed.json}"
+{
+    printf '{"timestamp":"%s","board":"%s","ip":"%s","role":"%s","bin":"%s","sha256":"%s","source_path":"%s","label":"%s","commit":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LABEL" "$BOARD_IP" "$ROLE" \
+        "$BIN" "${ACTUAL_SHA:-unknown}" "$STAGED_BIN" \
+        "${MANIFEST_LABEL:-unverified}" "${MANIFEST_COMMIT:-unknown}" \
+        >> "$LEDGER"
+} 2>/dev/null || echo "WARNING: could not write provenance ledger $LEDGER" >&2
+
+echo "==== $LABEL done (sha256=${ACTUAL_SHA:0:12}… label=${MANIFEST_LABEL:-unverified}) ===="

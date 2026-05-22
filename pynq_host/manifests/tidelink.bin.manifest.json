@@ -1,0 +1,10 @@
+{
+  "sha256": "FILL-ON-MAPSTONE-DEV-run-make_bitstream_manifest.sh-on-the-real-bin",
+  "md5": "86aa3a95",
+  "source_commit": "feat/td-combined",
+  "build_host": "mapstone-dev",
+  "build_date": "2026-05-20",
+  "target": "pynq-z2-pair",
+  "expected_lock_min": 14,
+  "label": "morning-v1"
+}

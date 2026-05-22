@@ -221,6 +221,47 @@ for ip in "$A_IP" "$B_IP"; do
         || fail "board $ip unreachable over SSH (check lease GRANTED + board up)"
 done
 
+# --- Provenance banner (Bug #32) -------------------------------------------
+# Before the deploy loop, show EXACTLY what is about to be flashed: the
+# sha256 (first 12) of each staged bitstream and, if a sibling manifest
+# exists, its label/commit/expected_lock_min. This is the loud answer to
+# "are we deploying the right bitstream?" that was missing when the May-6
+# phase-v2 (MD5 188ebdd8, known-0/16) build got deployed blindly.
+mf_field() {  # FILE FIELD -> string value or ""
+    [ -f "$1" ] || { echo ""; return; }
+    grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$1" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//'
+}
+mf_num() {   # FILE FIELD -> numeric value or ""
+    [ -f "$1" ] || { echo ""; return; }
+    grep -o "\"$2\"[[:space:]]*:[[:space:]]*[0-9][0-9]*" "$1" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*//'
+}
+banner_for() {  # BINNAME
+    local bin="$1" path="$ARTEFACTS/$1" mf sha label commit lockmin
+    if [ ! -f "$path" ]; then echo "  $bin: <NOT STAGED in $ARTEFACTS>"; return; fi
+    sha=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+    mf="${path}.manifest.json"
+    if [ -f "$mf" ]; then
+        label=$(mf_field "$mf" label); commit=$(mf_field "$mf" source_commit)
+        lockmin=$(mf_num "$mf" expected_lock_min)
+        local mfsha; mfsha=$(mf_field "$mf" sha256)
+        if [ -n "$mfsha" ] && [ "$mfsha" != "$sha" ]; then
+            echo "  $bin: sha256 ${sha:0:12}… ** MISMATCHES MANIFEST ${mfsha:0:12}… ** (label=${label:-?})"
+            echo "  *** WARNING: staged $bin does NOT match its manifest — deploy will ABORT (Bug #32 guard) ***" >&2
+        else
+            echo "  $bin: sha256 ${sha:0:12}…  label=${label:-?}  commit=${commit:-?}  expect_lock>=${lockmin:-?}"
+        fi
+    else
+        echo "  $bin: sha256 ${sha:0:12}…  (NO MANIFEST — provenance UNVERIFIED)"
+    fi
+}
+echo "=============================================================="
+echo " PROVENANCE — bitstreams about to be deployed (from $ARTEFACTS):"
+banner_for tidelink.bin
+[ -f "$ARTEFACTS/tidelink-flip.bin" ] && banner_for tidelink-flip.bin
+echo "=============================================================="
+
 printf '%-4s | %-30s | %-30s | %s\n' IT \
     "die_a@${A_IP##*.} lk/ft cal# fs cr" "die_b@${B_IP##*.} lk/ft cal# fs cr" "tot/16"
 

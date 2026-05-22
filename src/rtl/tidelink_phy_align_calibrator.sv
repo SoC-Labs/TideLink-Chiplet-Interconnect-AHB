@@ -406,7 +406,12 @@ module tidelink_phy_align_calibrator #(
     // -------------------------------------------------------------------------
     always_comb begin
         nxt_state = cur_state;
-        unique case (cur_state)
+        // Bug #7 synth-safety (from fix/calibrator-structural): plain `case`
+        // + explicit default (below) instead of `unique case`, so synth cannot
+        // treat it as a parallel-case/full-case license and prune state arms
+        // (same defect class as the Bug #1/#2 latches). nxt_state defaults to
+        // cur_state above, so an undecoded state holds.
+        case (cur_state)
             S_IDLE: begin
                 if (trigger_now)        nxt_state = S_ARM;
             end
@@ -538,7 +543,8 @@ module tidelink_phy_align_calibrator #(
                 best_phase[i] <= 4'd0;
             end
         end else begin
-            unique case (cur_state)
+            // Bug #7 synth-safety: plain `case` + explicit default (below).
+            case (cur_state)
                 S_ARM: begin
                     // Fresh sweep — clear all state. cur_state==S_ARM
                     // persists for exactly one cycle (S_ARM → S_SWEEP or

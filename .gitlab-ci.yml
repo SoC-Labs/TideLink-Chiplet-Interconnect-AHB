@@ -221,14 +221,10 @@ spyglass-cdc:
     - python3 -m pip install --user --no-deps -e "$WORK_DIR/python" --quiet
     - find "$WORK_DIR" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     - python3 -m pip install --user cocotb cocotbext-ahb systemrdl-compiler --quiet
-    # fpgahub-sdk provides fpgahub_sdk.testkit.HALBridge (Phase 7B): the
-    # byte-identical de-duplicated replacement for the old copy-pasted
-    # cocotb/common/hal_bridge.py. Install from the SoC Labs GitLab so CI
-    # runners (which do NOT have a sibling ../fpgahub checkout) can
-    # resolve it reproducibly. The previous editable-relative-path
-    # install ("$WORK_DIR/../fpgahub") only worked on dev boxes and
-    # broke all 7 cocotb jobs in CI (see docs/CI_FAILURE_TRIAGE.md §2-A).
-    - python3 -m pip install --user "fpgahub @ git+https://git.soton.ac.uk/soclabs/fpgahub.git" --quiet
+    # fpgahub_sdk.testkit (HALBridge) is vendored in cocotb/common/fpgahub_sdk/
+    # — no pip install needed. The pip-install approach broke CI because
+    # fpgahub requires-python >=3.11 but the runner is older (see
+    # docs/CI_FAILURE_TRIAGE.md §2-A and §2-B).
 
 .vcs_uvm_setup: &vcs_uvm_setup
   before_script:

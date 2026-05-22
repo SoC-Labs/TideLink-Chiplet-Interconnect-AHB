@@ -19,14 +19,11 @@ from cocotb.triggers import RisingEdge, ClockCycles
 
 from cocotbext.ahb import AHBBus, AHBLiteMaster, AHBLiteSlaveRAM
 
-# HALBridge moved verbatim into the fpgahub SDK (Phase 7B) — byte-identical
-# shadow-buffer/snapshot-diff replay algorithm, legacy ahb_read/ahb_write
-# constructor preserved (see fpgahub_sdk.testkit). De-duplicated from the
-# old copy-pasted cocotb/common/hal_bridge.py.
-from fpgahub_sdk.testkit import HALBridge
-
-# Add common directory to path (still needed for tidelink_regs_meta)
+# common/ provides tidelink_regs_meta and the vendored fpgahub_sdk.testkit
+# package (cocotb/common/fpgahub_sdk/). Must come before the fpgahub import.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common'))
+
+from fpgahub_sdk.testkit import HALBridge
 import tidelink_regs_meta as meta
 
 CLK_PERIOD_NS = 10

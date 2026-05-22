@@ -108,7 +108,7 @@ def main():
 
     log_files = sorted(log_dir.glob("*.log"))
     # Filter out VCS internal logs (compile, coverage, debug)
-    skip_names = {"compile.log", "cm.log", "tr_db.log"}
+    skip_names = {"compile.log", "cm.log", "tr_db.log", "unifiedInference.log"}
     log_files = [f for f in log_files if f.name not in skip_names]
 
     if not log_files:

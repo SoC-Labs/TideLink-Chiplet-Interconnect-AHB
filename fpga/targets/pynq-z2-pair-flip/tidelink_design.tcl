@@ -281,9 +281,14 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     # TideLink IP (packaged by Wave A3)
     # VLNV: soclabs.org:user:tidelink_vivado_wrapper:1.0
+    #
+    # USE_IDELAY=0 override — see twin note in pynq-z2-pair/tidelink_design.tcl.
     #--------------------------------------------------------------------------
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
+    set_property -dict [list \
+        CONFIG.USE_IDELAY {0} \
+    ] $tl
 
     #--------------------------------------------------------------------------
     # PHC Hardware Clock IP — replaces the old xlconstant tie-offs.

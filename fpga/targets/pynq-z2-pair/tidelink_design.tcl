@@ -281,9 +281,18 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     # TideLink IP (packaged by Wave A3)
     # VLNV: soclabs.org:user:tidelink_vivado_wrapper:1.0
+    #
+    # Override USE_IDELAY=0 on this non-production target so we don't need a
+    # 200 MHz IDELAYCTRL reference clock from the MMCM (the -all variants
+    # add CLKOUT3=200 MHz for that). The PHC integration this BD validates
+    # is orthogonal to per-lane RX delay tuning, and the test plan campaign
+    # ultimately runs on the -all targets where USE_IDELAY=1 is wired up.
     #--------------------------------------------------------------------------
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
+    set_property -dict [list \
+        CONFIG.USE_IDELAY {0} \
+    ] $tl
 
     #--------------------------------------------------------------------------
     # PHC Hardware Clock IP — replaces the old xlconstant tie-offs.

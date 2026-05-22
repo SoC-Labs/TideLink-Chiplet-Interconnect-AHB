@@ -7,9 +7,18 @@
 ## What this is
 
 The first release-candidate bundle for the TideLink chiplet subsystem. It packages
-the **already-validated** FPGA bitstream (re-confirmed today at **14.40/16** mean
-lane lock) and the **signoff-clean** ASIC handoff (Setup WNS = 0 ns, Hold = 0 ns,
-0 net DRCs, Formality LEC SUCCEEDED) as a self-contained deliverable.
+the **confirmed-locking** FPGA bitstream `tl_v7` (**13/16 best** lane lock,
+HW-validated pre- and post-power-cycle on 2026-05-22, `cal_done=1`) and the
+**signoff-clean** ASIC handoff (Setup WNS = 0 ns, Hold = 0 ns, 0 net DRCs,
+Formality LEC SUCCEEDED) as a self-contained deliverable.
+
+> **Provenance correction (2026-05-22, Bug #34):** earlier drafts of this bundle
+> claimed a **14.40/16** FPGA artifact attributed to a "morning" build. That
+> attribution was FALSE — the blob it pointed to (md5 `86aa3a95`, .bit build-date
+> 2026-05-20 23:41 *evening*) actually measures **0/16 on healthy hardware** and
+> has been relabelled `hwval-eve-NONLOCKING` in the artifact store. The true
+> 14.40/16 build is currently **unidentified** (open provenance investigation,
+> Bug #35). The shipped FPGA artifact is now `tl_v7` at an honest **13/16 best**.
 
 See `PROVENANCE.md` for exactly how every artifact was produced and `KNOWN_ISSUES.md`
 for what's deferred to v2.
@@ -37,12 +46,14 @@ v1-release/
 ├── KNOWN_ISSUES.md        ← v1 limitations and v2-deferred bugs (#3, #5/#25, #10, #16, #22, #24)
 ├── PROVENANCE.md          ← exact commits, build hosts, dates for every artifact
 ├── CHECKSUMS.sha256       ← SHA256 of every binary/netlist in this tree
-├── reliability.log        ← 20-iter HW re-test of the morning bitstream
-├── bitstreams/            ← morning-preserved FPGA artifacts (the v1 FPGA deliverable)
-│   ├── tidelink.bin       (4 045 516 bytes)
-│   ├── tidelink.hwh       (   748 272 bytes)
-│   ├── tidelink-flip.bin  (4 045 516 bytes, opposite pin assignment for slave)
-│   └── tidelink-flip.hwh  (   748 272 bytes)
+├── reliability.log        ← 20-iter HW re-test log (historical)
+├── bitstreams/            ← tl_v7 FPGA artifacts (the v1 FPGA deliverable, 13/16 confirmed)
+│   ├── tidelink.bin                  (4 045 516 bytes, md5 b0633476 / sha256 3cedd3ba)
+│   ├── tidelink.hwh                  (   749 353 bytes, tl_v7 BD memory map)
+│   ├── tidelink-flip.bin             (4 045 516 bytes, opposite pin assignment for slave)
+│   ├── tidelink-flip.hwh             (   749 353 bytes)
+│   ├── tidelink.bin.manifest.json    (deploy-guard provenance sidecar, label tl_v7)
+│   └── tidelink-flip.bin.manifest.json
 ├── asic/                  ← ASIC chip-top handoff (May-14 fusion-compiler signoff)
 │   ├── tidelink_top.v / .pg.v          ← gate-level netlists (logic-only and PG)
 │   ├── tidelink_top.sdc                ← boundary timing constraints
@@ -57,10 +68,12 @@ v1-release/
 
 ## TL;DR
 
-- **FPGA artifact** = morning bitstream preserved on `mapstone-dev:/tmp/tidelink_deploy/`
-  at 2026-05-20 11:10, byte-identical copy in `bitstreams/`. Re-tested today and is
-  the only build that currently produces a working link (see Bug #5/#25 in
-  KNOWN_ISSUES — env regression on srv04936 source-rebuild path, deferred to v2).
+- **FPGA artifact** = `tl_v7` bitstream (master md5 `b0633476` / sha256 `3cedd3ba`),
+  byte-identical copy in `bitstreams/`, also stored in the content-addressed
+  artifact store (`mapstone-dev:~/tidelink-artifacts/`, tag `tl_v7`). HW-validated
+  **13/16 best, cal_done=1**, confirmed both pre- and post-power-cycle on
+  2026-05-22. This is the highest *confirmed-locking* build available; source
+  rebuild on srv04936 still regresses to 0/16 (Bug #25, deferred to v2).
 - **ASIC artifact** = May-14 fusion-compiler `outputs_preserve/` (sc12_cln65lp_base_rvt
   library, 250 MHz hclk, signoff-clean). The ASIC track is **independent** of the
   FPGA env regression — it ships clean.

@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
-<EDKSYSTEM EDWVERSION="1.2" TIMESTAMP="Wed May  6 13:49:37 2026" VIVADOVERSION="2024.1">
+<EDKSYSTEM EDWVERSION="1.2" TIMESTAMP="Mon May 18 14:25:04 2026" VIVADOVERSION="2024.1">
 
   <SYSTEMINFO ARCH="zynq" DEVICE="7z020" NAME="tidelink_design" PACKAGE="clg400" SPEEDGRADE="-1"/>
 
@@ -12738,7 +12738,7 @@
         <PORT DIR="O" LEFT="2" NAME="ahb_mng_hburst" RIGHT="0" SIGIS="undef"/>
         <PORT DIR="O" LEFT="6" NAME="ahb_mng_hprot" RIGHT="0" SIGIS="undef"/>
         <PORT DIR="I" LEFT="31" NAME="ahb_mng_hrdata" RIGHT="0" SIGIS="undef"/>
-        <PORT DIR="O" NAME="ahb_mng_hready" SIGIS="undef"/>
+        <PORT DIR="I" NAME="ahb_mng_hready" SIGIS="undef"/>
         <PORT DIR="I" NAME="ahb_mng_hresp" SIGIS="undef"/>
         <PORT DIR="O" LEFT="2" NAME="ahb_mng_hsize" RIGHT="0" SIGIS="undef"/>
         <PORT DIR="O" LEFT="1" NAME="ahb_mng_htrans" RIGHT="0" SIGIS="undef"/>
@@ -12956,6 +12956,11 @@
         <PORT DIR="O" NAME="link_active" SIGIS="undef" SIGNAME="tidelink_0_link_active">
           <CONNECTIONS>
             <CONNECTION INSTANCE="External_Ports" PORT="led0"/>
+          </CONNECTIONS>
+        </PORT>
+        <PORT DIR="I" NAME="mask_hs_bypass_i" SIGIS="undef" SIGNAME="xlconst_mask_hs_bypass_dout">
+          <CONNECTIONS>
+            <CONNECTION INSTANCE="xlconst_mask_hs_bypass" PORT="dout"/>
           </CONNECTIONS>
         </PORT>
         <PORT DIR="O" NAME="nego_error_irq" SENSITIVITY="LEVEL_HIGH" SIGIS="INTERRUPT"/>
@@ -13500,6 +13505,23 @@
         <PORT DIR="O" LEFT="5" NAME="dout" RIGHT="0" SIGIS="undef" SIGNAME="xlconcat_irq_dout">
           <CONNECTIONS>
             <CONNECTION INSTANCE="processing_system7_0" PORT="IRQ_F2P"/>
+          </CONNECTIONS>
+        </PORT>
+      </PORTS>
+      <BUSINTERFACES/>
+    </MODULE>
+    <MODULE COREREVISION="9" FULLNAME="/xlconst_mask_hs_bypass" HWVERSION="1.1" INSTANCE="xlconst_mask_hs_bypass" IPTYPE="PERIPHERAL" IS_ENABLE="1" MODCLASS="PERIPHERAL" MODTYPE="xlconstant" VLNV="xilinx.com:ip:xlconstant:1.1">
+      <DOCUMENTS/>
+      <PARAMETERS>
+        <PARAMETER NAME="CONST_VAL" VALUE="0x0"/>
+        <PARAMETER NAME="CONST_WIDTH" VALUE="1"/>
+        <PARAMETER NAME="Component_Name" VALUE="tidelink_design_xlconst_mask_hs_bypass_0"/>
+        <PARAMETER NAME="EDK_IPTYPE" VALUE="PERIPHERAL"/>
+      </PARAMETERS>
+      <PORTS>
+        <PORT DIR="O" LEFT="0" NAME="dout" RIGHT="0" SIGIS="undef" SIGNAME="xlconst_mask_hs_bypass_dout">
+          <CONNECTIONS>
+            <CONNECTION INSTANCE="tidelink_0" PORT="mask_hs_bypass_i"/>
           </CONNECTIONS>
         </PORT>
       </PORTS>

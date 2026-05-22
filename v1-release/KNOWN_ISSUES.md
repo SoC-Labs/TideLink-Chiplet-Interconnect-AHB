@@ -3,6 +3,24 @@
 This document lists all open items at v1 RC1 cut-off and their deferred-to-v2
 status. Full historical context is in the source repo at `docs/BUG_TRACKER.md`.
 
+## FPGA artifact: honest lock rate (read this first)
+
+The v1 FPGA deliverable is the **`tl_v7`** bitstream: **13/16 best lane lock**,
+`cal_done=1`, HW-validated both before and after a power cycle on 2026-05-22.
+It is NOT a 16/16 build and we do not claim one.
+
+**The "14.40/16" figure is retired (Bug #34).** Earlier bundle drafts attributed
+14.40/16 to a "morning-v1" build (artifact-store blob md5 `86aa3a95` / sha256
+`40f6477c`). On 2026-05-22 that exact blob measured **0/16 on healthy hardware**;
+its `.bit` build-date is 2026-05-20 **23:41 (evening)**, not the 11:10 morning
+build. It has been relabelled `hwval-eve-NONLOCKING` in the artifact store and its
+false lock history retracted.
+
+**The true 14.40/16 build is currently UNIDENTIFIED (Bug #35).** A separate
+provenance investigation will try to recover it (most likely by rebuilding the
+best-known commit on srv03335, which builds clean). Until then, `tl_v7` (13/16)
+is what ships. 14.40/16 is aspirational, not a shipped number.
+
 ## Blocking-but-mitigated for v1 (2)
 
 ### Bug #27 — bridge1 slave board (pynq_z2_03) PS-eth unreachable (transient lab HW failure)
@@ -18,17 +36,19 @@ bitstream during this session. The release bundle itself is fully assembled
 and verifiable; only the live re-run-with-fresh-data row of the reliability
 log could not be produced.
 
-**Empirical backstop** (substituting for the blocked live re-test):
-- Earlier same-day test 2026-05-21 ~14:49: `tl_v7s` preserved historical
-  bitstream → 11/16 best, mean 6.10/16 (cal_done=1, FCSM running).
-- Earlier same-day test 2026-05-21 ~14:53: `tl_v7` preserved historical
-  bitstream → 13/16 best, mean 7.60/16 (cal_done=1, FCSM running).
-- Historical 2026-05-20 morning baseline: 14.40/16 mean lane lock with
-  the bitstreams in `bitstreams/` (byte-identical SHA256, see CHECKSUMS).
+**Empirical backstop** (now superseded by the 2026-05-22 power-cycle retest):
+- 2026-05-21 ~14:49: `tl_v7s` → 11/16 best, mean 6.10/16 (cal_done=1).
+- 2026-05-21 ~14:53: `tl_v7` → 13/16 best (cal_done=1).
+- 2026-05-22: `tl_v7` re-confirmed **13/16 best, cal_done=1 after a full power
+  cycle** — identical to the pre-cycle result. This is the shipped artifact and
+  is the definitive backstop; it also closes Bug #28 (the suspected ribbon
+  damage was a false alarm — the HW is healthy).
+- The previously-cited "14.40/16 morning baseline" has been WITHDRAWN (Bug #34):
+  the blob it referred to is non-locking (0/16). See the honest-lock-rate note
+  at the top of this file.
 
-These empirically confirm the bitstreams + FSM + calibrator path lock on
-real silicon when the boards are healthy. Once the slave board is power
-cycled (physical access required), the live re-test can be run on demand.
+These empirically confirm the bitstream + FSM + calibrator path lock on real
+silicon when the boards are healthy.
 
 **Mitigation for v1**: ship the release bundle as-is; the bitstreams have
 provenance + checksums + same-day successful tests from other preserved
@@ -41,11 +61,11 @@ gating step.
 converges 0/16 lanes (`cal_done=0`, `ft=0x00`) every deploy, byte-different from
 the morning preserved bitstream.
 
-**Mitigation in v1**: ship the morning preserved bitstream (`bitstreams/*.bin/.hwh`)
-as the FPGA deliverable. The morning artifact re-tested today at 14.40/16 lane
-lock — it is byte-identical to the 2026-05-20 11:10 build and is known-good.
+**Mitigation in v1**: ship the preserved `tl_v7` bitstream (`bitstreams/*.bin/.hwh`)
+as the FPGA deliverable. `tl_v7` re-tested 2026-05-22 at **13/16 best, cal_done=1**,
+confirmed pre- and post-power-cycle — it is known-good (honest 13/16, not 16/16).
 
-**Status**: deferred to v2 (root-cause investigation tracked as Bug #25).
+**Status**: deferred to v2 (root-cause investigation tracked as Bug #25, still open).
 
 ### Bug #25 — srv04936 build-environment regression (root cause investigation)
 

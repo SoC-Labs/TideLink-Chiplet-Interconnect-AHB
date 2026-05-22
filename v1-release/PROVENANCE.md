@@ -13,42 +13,48 @@ Exact provenance for every artifact in this bundle. Hashes are in `CHECKSUMS.sha
 The release branch is created LOCAL and NOT pushed. The user initiates push +
 tag publication when ready.
 
-## bitstreams/
+## bitstreams/  (artifact = `tl_v7`, corrected 2026-05-22 — Bug #31/#33/#34)
 
-| File | Bytes | SHA256 | Provenance |
-|---|---|---|---|
-| `tidelink.bin` | 4 045 516 | `606e1648ff841bb2839a668be51df67435bcce1b814d202a42f65aa3d3f5cd2d` | 2026-05-20 11:10 build, byte-identical with the version on `mapstone-dev:/tmp/tidelink_deploy/` |
-| `tidelink.hwh` | 748 272 | `a2e962e73d91f8deac41bf90763f885a9aa8aaac3617bb0e7c3872e01630eb67` | "" |
-| `tidelink-flip.bin` | 4 045 516 | `d0efcf1392eeb20cf496c12ee20d94f3a99c9d502ed1cd9089d4c1ce908af72d` | "" |
-| `tidelink-flip.hwh` | 748 272 | `bc1aaca9c18793100bd8f0955e7ccdaf550814514dae9c1ba91a4ca3249a4f3b` | "" |
+| File | Bytes | SHA256 | MD5 | Provenance |
+|---|---|---|---|---|
+| `tidelink.bin` | 4 045 516 | `3cedd3ba42ccb5e65f6419dcb414255c401e128ec5764743d2e8289a5377e033` | `b0633476131e4e2f1ce1585f200b0300` | `tl_v7` master, from `mapstone-dev:/tmp/tl_v7_tidelink.bin` + artifact-store tag `tl_v7` |
+| `tidelink.hwh` | 749 353 | `9860f4f39ee76ed2dbcd8c603556029531e21d8f34e61b84e5bf38e74b98c13a` | `98f2a48d3dfd07bbd311d3e8a08ca39e` | `tl_v7` blob BD memory map |
+| `tidelink-flip.bin` | 4 045 516 | `60b84430a5da24dd208cfacd01fa29e1d6161e5743f294f98298afb01870e0e7` | `d5f4218031817e530f1c6849f3bf4815` | `tl_v7` slave (mirrored RPi-GPIO pin map, same build) |
+| `tidelink-flip.hwh` | 749 353 | `0b6b17d041ddbce266399843fff08fd1f9463cde8060325fd3a0abc27bd115c7` | `33cd0261ac5744c9177bfd0196f09550` | "" |
+| `tidelink.bin.manifest.json` | — | (see CHECKSUMS) | — | deploy-guard provenance sidecar, label `tl_v7`, `expected_lock_min=12` |
+| `tidelink-flip.bin.manifest.json` | — | (see CHECKSUMS) | — | "" |
 
-**How they were built** (history): `make build_pair_farmed` against the
-`pynq-z2-pair-all` Vivado target at commit `8bc6051` ("fpga: concurrent
-independent-job build farm (build_pair_farmed)") / submodule `de44db6`,
-on srv04936, 2026-05-20 ~10:00 BST. Built artifacts were captured onto
-mapstone-dev at 11:10 BST and have been there since.
+**IMPORTANT — provenance correction (Bug #34).** An earlier draft of this bundle
+shipped the `phase-v2` bitstream (master md5 `188ebdd8` / sha256 `606e1648`) and
+described it as a "morning 14.40/16" artifact. BOTH of those were wrong:
+`phase-v2` is a **known-bad 0/16** build, and the separate `morning-v1`
+artifact-store tag (blob md5 `86aa3a95` / sha256 `40f6477c`) that carried the
+"14.40/16" label is *also* non-locking (**0/16 on healthy HW 2026-05-22**, .bit
+build-date 2026-05-20 23:41 *evening*, not the 11:10 morning build). That tag has
+been relabelled `hwval-eve-NONLOCKING`. The true 14.40/16 build is **unidentified**
+(Bug #35). This bundle now ships the **`tl_v7`** bitstream, which is the highest
+*confirmed-locking* artifact we actually possess.
 
-**How they were copied into this bundle**: `scp mapstone-dev:/tmp/tidelink_deploy/<f>`
-(after stripping the 18-byte `Agent pid NNNNNNN\n` profile-banner pollution from
-ssh stdout — confirmed byte-identical to remote `sha256sum`).
+**How `tl_v7` was validated (2026-05-22)**:
+- 13/16 best, mean ~8/16, `cal_done=1` — measured **before** a power cycle (14:53)
+  AND re-confirmed **after** the power cycle. This pre+post-cycle agreement is also
+  what proves Bug #28 (suspected ribbon-cable damage) was a FALSE ALARM: the
+  hardware is fine.
+- `tl_v7s` (sha256 `e92d6596`) is a sibling at 11/16 best — also confirmed locking.
+- Lock history is recorded in the artifact store: `td-artifact show tl_v7`.
 
-**How they were re-validated today (2026-05-21)**:
-- Today's morning HW test: 14.40/16 mean lock across multiple deploys.
-- 10-iter HW re-test attempt during release flow: see
-  `reliability/morning_n10_full.log`. The run aborted at iteration 4 because
-  the slave board's PS-side ethernet became unreachable mid-session (Bug #27 —
-  transient lab HW failure requiring physical power cycle, unrelated to the
-  bitstream). Iterations 1-3 returned 0/16 because the slave SSH timed out on
-  the very first probe; the run kept executing against an unreachable target,
-  not because the bitstream regressed. Earlier same-day deploys against the
-  preserved historical bitstreams (`tl_v7` 13/16, `tl_v7s` 11/16) confirm the
-  silicon path is alive when both boards are healthy — see Empirical backstop
-  in `KNOWN_ISSUES.md` Bug #27.
+**How they were copied into this bundle (2026-05-22)**: `ssh mapstone-dev 'cat <f>'`
+streamed to local files (scp is broken on mapstone-dev). The 18-byte
+`Agent pid NNNNNNN\n` ssh-agent profile-banner prefix was stripped from each
+stream and every file was re-verified against the canonical `tl_v7` blob
+sha256/md5 — all four match byte-for-byte. The `.hwh` files were taken directly
+from the `tl_v7` blob (`mapstone-dev:~/tidelink-artifacts/blobs/3cedd3ba.../`)
+so the BD memory map matches the shipped `.bin`.
 
-**Note on why these are the FPGA artifact and not a source rebuild**: source-level
-rebuilds on srv04936 today produce a 0/16 bitstream from byte-identical sources
-— this is Bug #5/#25 (deferred to v2). The morning preserved bitstream still
-converges fine on real hardware, so v1 ships the bitstream itself.
+**Note on why this is the FPGA artifact and not a source rebuild**: source-level
+rebuilds on srv04936 still produce a 0/16 bitstream from byte-identical sources —
+this is Bug #25 (deferred to v2). `tl_v7` converges on real hardware, so v1 ships
+the preserved bitstream itself. Honest lock rate: **13/16 best**, not 16/16.
 
 ## asic/
 
@@ -100,13 +106,12 @@ Each entry pins a specific commit SHA.
 
 ## reliability.log
 
-The 20-iter HW re-test performed during this release flow against the
-`bitstreams/` artifacts (re-staged onto `mapstone-dev:/tmp/tidelink_deploy/`
-to guard against other agents overwriting). Format: per-iter popcount lines
-plus a mean/distribution summary. If the bridge1 lease could not be acquired
-within the release-window timeout, this file documents the skip reason and
-references today's earlier 14.40/16 mean re-confirmation as the empirical
-backstop.
+Historical HW re-test log captured during the 2026-05-21 release flow. NOTE: any
+"14.40/16" figure recorded in this log refers to the build now known to be
+mislabelled (Bug #34) and should NOT be read as the `tl_v7` lock rate. The
+authoritative, current lock history for the shipped artifact lives in the
+artifact store (`td-artifact show tl_v7`): **13/16 best, cal_done=1, confirmed
+pre+post power-cycle 2026-05-22**.
 
 ## Build hosts at-a-glance
 

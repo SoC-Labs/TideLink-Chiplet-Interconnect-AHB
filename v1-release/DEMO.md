@@ -1,7 +1,10 @@
 # DEMO — How to bring up a TideLink pair on PYNQ-Z2
 
-Tested 2026-05-21 against the bridge1 pair (`pynq_z2_02_pl` + `pynq_z2_03_pl`).
-Result: 14.40 / 16 lanes mean lock, 16/16 on best deploy.
+Tested 2026-05-22 against the bridge1 pair (`pynq_z2_02_pl` + `pynq_z2_03_pl`)
+with the shipped `tl_v7` bitstream.
+Result: **13 / 16 lanes best lock** (mean ~8/16, cal_done=1), confirmed both
+pre- and post-power-cycle. (Note: an earlier "14.40/16" figure was attributed to
+a different build that is now known to be non-locking — see KNOWN_ISSUES.md.)
 
 ## Prereqs
 

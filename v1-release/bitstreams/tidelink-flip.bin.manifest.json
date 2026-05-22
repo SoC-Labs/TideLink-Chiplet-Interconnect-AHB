@@ -1,0 +1,9 @@
+{
+  "sha256": "60b84430a5da24dd208cfacd01fa29e1d6161e5743f294f98298afb01870e0e7",
+  "source_commit": "-",
+  "build_host": "srv03335",
+  "build_date": "2026-05-18",
+  "target": "pynq-z2-pair-flip",
+  "expected_lock_min": 12,
+  "label": "tl_v7"
+}

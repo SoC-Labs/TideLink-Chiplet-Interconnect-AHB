@@ -1,0 +1,9 @@
+{
+  "sha256": "3cedd3ba42ccb5e65f6419dcb414255c401e128ec5764743d2e8289a5377e033",
+  "source_commit": "-",
+  "build_host": "srv03335",
+  "build_date": "2026-05-18",
+  "target": "pynq-z2-pair",
+  "expected_lock_min": 12,
+  "label": "tl_v7"
+}

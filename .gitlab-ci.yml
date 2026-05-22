@@ -569,10 +569,14 @@ uvm-system:
   tags:
     - vcs
   allow_failure: true
+  timeout: 90m
   <<: *vcs_uvm_setup
   script:
     - echo "Running 12 UVM tidelink_system tests"
-    - make -C "$WORK_DIR/uvm/tidelink_system" run_all || true
+    # UVM_LOW suppresses SVT AHB VIP's verbose end_of_elaboration psdisplay
+    # (printed at UVM_MEDIUM); without this each test emits ~300 KB of VIP
+    # config dump, exhausting GitLab's 4 MB job-log cap before sim completes.
+    - make -C "$WORK_DIR/uvm/tidelink_system" run_all VERBOSITY=UVM_LOW || true
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_system/sim_build"
         "$WORK_DIR/uvm/tidelink_system/results.xml"

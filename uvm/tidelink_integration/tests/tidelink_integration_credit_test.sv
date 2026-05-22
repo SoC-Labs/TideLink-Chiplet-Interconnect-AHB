@@ -67,11 +67,11 @@ class tidelink_integration_credit_test extends tidelink_integration_base_test;
     // Wait for loopback delivery
     repeat (30) @(posedge tb_if.clk);
 
-    // Check credits consumed (3 words: 1 length + 2 data)
+    // Check credits consumed (4 words: 2-word header (length + dest_addr) + 2 payload)
     read_cfg_reg(REG_CREDIT_COUNT, credits_after);
     `uvm_info("TEST", $sformatf("CREDIT_COUNT after write = %0d (expected %0d)",
-      credits_after, credits_before - 3), UVM_LOW)
-    if (credits_after !== (credits_before - 3))
+      credits_after, credits_before - 4), UVM_LOW)
+    if (credits_after !== (credits_before - 4))
       `uvm_error("TEST", "CREDIT_COUNT not decremented correctly after write")
 
     // ---------------------------------------------------------------

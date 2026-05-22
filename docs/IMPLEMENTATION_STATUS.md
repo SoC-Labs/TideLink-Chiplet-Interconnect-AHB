@@ -296,3 +296,43 @@ sign-off deferred, tcbn65lp QoR re-run pending, chip-top assembly downstream.
 - **RTL:** functionally mature, broadly verified — **NOT frozen** (unify-and-revalidate gap).
 - **FPGA:** **v1 sign-off-clean and HW-validated 16/16** at `72c280b` (WNS +0.409 / WHS +0.051); residual silicon checks + unified rebuild remain.
 - **ASIC:** **partition complete through GDSII + LEC + ETM**, delivered as a chip-top hard macro — **NOT tape-out-ready** (foundry DRC/LVS/IR/EM deferred, tcbn65lp QoR re-run pending, chip-top assembly downstream).
+
+---
+
+## Addendum — branch fold-loop + reliability correction (autonomous closeout)
+
+**Branch consolidation:** local branches 62 → 9. Deleted 28 folded + the
+already-folded `feat/td-asic-determinism-docs` + 3 throwaway experiments
+(`slow-clock-obs` 12.5 MHz, `td-bisect-a2-out` IDELAY-disable,
+`worktree-agent-acec76b…` pin-swap diag).
+
+**Calibrator fold (Bug #7, commit `a0df658`):** folded ONLY the synth-safety
+change `unique case` → `case`+default (both calibrator FSM case statements
+already have explicit defaults; `nxt_state` defaults to `cur_state`). The
+regressive parts of `fix/calibrator-structural` (`4504861`) were REJECTED — it
+predates the best-of-sweep calibrator and would have dropped the per-lane
+`phase_offset_internal` / sweep-live path that drives IDELAY for lane lock.
+The folded build's bitstream is **byte-identical** (md5 `976341f1`/`06d6a29a`,
+sha256 `df0c5dbb`/`eb89d5ac`) to the validated build, confirming the change is
+synth-neutral (zero netlist impact). HW: converges 16/16 (iter 1).
+
+**Reliability characterization correction:** the FPGA build **converges to
+16/16 deterministically** (closed-loop `bringup_pair_converge.sh`, reached at
+iteration 1 in every run). The **single-shot, no-retry** rate has run-to-run
+lottery variance (role_lock/count skew): observed means 14.80 / 15.05 / 16.00 /
+15.30 across N=20/20/20/10 sweeps of byte-identical bitstreams; perfect-16/16
+single-shot 20–100% per run. Earlier wording of "100% deterministic single-shot"
+referred to one favourable N=20 run and is corrected here: deterministic =
+converge-with-retries; single-shot = high-but-variable.
+
+**Deferred unique-unmerged branches (not folded):**
+- `feat/i2c-autonomous-lock` / `-integ` — autoneg core (`tidelink_autoneg.sv`,
+  ST_TRAIN FSM) is already on main (submodule `2f602d1`); the branches are
+  entangled pre-consolidation lineage, not cleanly separable. Functional gap
+  audit pending before deletion.
+- `feat/v1.1-fixes` — superseded (its only genuinely-unique piece was
+  calibrator-structural, now folded); deletable.
+- `fix/bug10-sv-anti-pattern-allow-list` — target lint files
+  (`cocotb/lint/Makefile`, `sv_anti_pattern_lint.py`) were removed from main in
+  consolidation; needs the lint tooling reintroduced or the allow-list
+  re-authored before it can be folded.

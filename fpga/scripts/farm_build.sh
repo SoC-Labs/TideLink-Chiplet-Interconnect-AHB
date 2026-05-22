@@ -100,6 +100,8 @@ build_env_prefix() {
         "$ARM_IP_LIBRARY_PATH" "$CMSDK_DIR" "$CMSDK_FPGA_SRAM_V"
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && \
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
+    [ -n "$FPGA_USE_IDELAY" ] && \
+        printf 'export FPGA_USE_IDELAY=%q; ' "$FPGA_USE_IDELAY"
 }
 
 ###----------------------------------------------------------------- LOCAL ----
@@ -113,6 +115,7 @@ if is_local; then
     # shellcheck disable=SC1091
     source "$TIDELINK_HOME/set_env.sh" >/dev/null 2>&1 || true
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && export FPGA_INSERT_DEBUG_CORE
+    [ -n "$FPGA_USE_IDELAY" ] && export FPGA_USE_IDELAY
     if make -C "$FPGA_DIR" build_design \
             TARGET="$TARGET" SKIP_PACKAGE_IP=1 FPGA_NUM_JOBS="$JOBS"; then
         say "local build OK -> $TIDELINK_HOME/imp/fpga/output/$TARGET/tidelink.bit"

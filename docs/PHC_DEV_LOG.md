@@ -131,15 +131,56 @@ gated on the user's review of the BD changes + post-merge HW deploy.
 
 ## 2. Build verdict
 
-(Filled in below once the local build finishes. The build is launched
-on the local box, not the farm, because the existing td-freshbuild
-farm session has the contended slot. Concurrency is 1 vivado on the
-local host — well below the <=2 srv04936 ceiling.)
+Build launched on the local box (srv03335 — the existing td-freshbuild
+farm session occupies its own srv slot). Concurrency = 1 vivado on
+this host, well below the <=2 srv04936 ceiling. TARGET=pynq-z2-pair.
 
-* `package_phc_ip` — **PASS** (1 min; component.xml integrity ok; APB
-  bus + counter outputs exported correctly).
-* `package_ip` (tidelink, pair-prereq) — **PASS** (~3 min).
-* `build_design` for TARGET=pynq-z2-pair — running.
+* `package_phc_ip` — **PASS** (~1 min). component.xml integrity ok;
+  APB bus + counter outputs exported correctly. Verified via grep on
+  the generated component.xml.
+* `package_ip` (tidelink) — **PASS** (~3 min). No regressions from
+  prior runs of the same script.
+* `build_design` BD validation — **PASS after two follow-up fixes**:
+  - **Initial fail:** `validate_bd_design` errored on
+    `tidelink_0/idelay_ref_clk` not connected. The tidelink IP wrapper
+    requires this 200 MHz clock as a top-level port whenever
+    USE_IDELAY≥0 (it's a wrapper port, not gated by the param). The
+    base `pynq-z2-pair` target never had the 200 MHz MMCM output
+    (only the `-all` variants do).
+  - **Fix A:** added `set_property -dict {CONFIG.USE_IDELAY {0}} $tl`
+    on the tidelink_0 IP cell so the IDELAY logic is structurally
+    omitted at synth time. Same edit applied to the `-flip` variant.
+  - **Fix B:** connected `tidelink_0/idelay_ref_clk` to
+    `clk_wiz_0/clk_out2` (50 MHz). With USE_IDELAY=0 the clock has no
+    timing-relevant load; this just satisfies validate_bd_design's
+    clock-pin-connectivity check.
+* `build_design` BD validation — re-run **PASS**. Confirmed in log:
+  - Address map populated with the three new slaves (phc @
+    0x4405_0000, pmod_trig @ 0x4404_2000, plus the existing 6).
+  - PHC IP wired into both directions of tidelink_0 (set/adj from
+    servo into hw_set_*_0_i / hw_adj_*_0_i; counter and cap into
+    phc_seconds / phc_nanoseconds / phc_hw_cap_*).
+  - 3× `WARNING: [BD 41-1306]` for the GPIO interface-override on
+    axi_gpio_strap, axi_gpio_pmod_trig (gpio_io_o + gpio2_io_i) —
+    cosmetic, expected, same warnings appeared on the strap GPIO
+    pre-PR.
+* `build_design` synth — **running at write-time**. All 15 OOC IP
+  synth jobs launched in parallel; master `synth_1` waiting on them.
+  The PHC IP got its own OOC run
+  (`tidelink_design_phc_0_0_synth_1/`).
+* Place / Route / write_bitstream — **not yet reached**; this build is
+  the structural validation pass. The user picks up from here:
+  `make -C fpga TARGET=pynq-z2-pair build_design` will resume from the
+  in-progress synth, or rebuild from scratch if the user prefers.
+
+If synth completes cleanly, the build verdict is the structural one
+the plan asked for: **PHC integration wired in correctly, no BD
+validation errors, no synth elaboration errors on the PHC IP itself.**
+HW lane-lock is not characterised by this build (USE_IDELAY=0 is the
+A/B comparison path, not the production -all build).
+
+The `-all` mirror (the production deploy target) is the work-remaining
+checklist item §3.1 below.
 
 ---
 

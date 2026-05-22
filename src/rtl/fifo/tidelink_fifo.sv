@@ -96,10 +96,11 @@ module tidelink_fifo #(
     output wire    [SYS_DATA_W-1:0] mbox_reg_wdata,
 
     // --------------------------------------------------------------------------
-    // Chiplet Controller Register Pass-Through (Region 4)
+    // Chiplet Controller Register Pass-Through (Regions 4 & 8 — see
+    // src/rtl/fifo/tidelink_apb_regs.sv for the 4-bit addr encoding).
     // --------------------------------------------------------------------------
     output wire                     ctrl_reg_write,
-    output wire               [2:0] ctrl_reg_addr,
+    output wire               [3:0] ctrl_reg_addr,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 

@@ -317,4 +317,261 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
         prescale->hw = r;
     };
     i2c_prescale_reg i2c_prescale @ 0x08C;
+
+    // =========================================================================
+    // Region 4 (continued): Auto-negotiation control (paddr[7:5]=100, slot[4:7])
+    // (Existing registers — no change from current chiplet-controller layout
+    //  in axi_chiplet_controller.sv:419-422; declared here for RDL parity.)
+    // =========================================================================
+
+    reg nego_cfg_reg {
+        name = "Auto-Negotiation Configuration";
+        desc = "Configuration bits for the autoneg FSM.
+                bit[0] = nego_en, bit[6] = mask_hs_auto_en.";
+        field {} cfg[7] = 0;
+        cfg->sw = rw;
+        cfg->hw = r;
+    };
+    nego_cfg_reg nego_cfg @ 0x090;
+
+    reg nego_status_reg {
+        name = "Auto-Negotiation Status";
+        desc = "Live status of the autoneg FSM. Read-only.";
+        field {} state[4] = 0;
+        state->sw = r;
+        state->hw = w;
+        field {} done[1] = 0;
+        done->sw = r;
+        done->hw = w;
+        field {} error[1] = 0;
+        error->sw = r;
+        error->hw = w;
+        field {} won[1] = 0;
+        won->sw = r;
+        won->hw = w;
+        field {} lost[1] = 0;
+        lost->sw = r;
+        lost->hw = w;
+        field {} sda_start_seen[1] = 0;
+        sda_start_seen->sw = r;
+        sda_start_seen->hw = w;
+        field {} mask_mismatch[1] = 0;
+        mask_mismatch->sw = r;
+        mask_mismatch->hw = w;
+    };
+    nego_status_reg nego_status @ 0x094;
+
+    reg nego_priority_reg {
+        name = "Auto-Negotiation Priority";
+        desc = "16-bit priority value sent during NEGO_CLAIM. Lower wins.";
+        field {} priority_value[16] = 16'hFFFF;
+        priority_value->sw = rw;
+        priority_value->hw = r;
+    };
+    nego_priority_reg nego_priority @ 0x098;
+
+    reg nego_timeout_reg {
+        name = "Auto-Negotiation Timeout";
+        desc = "Cycle-count timeout for the autoneg FSM.";
+        field {} timeout[32] = 32'd131_082_000;
+        timeout->sw = rw;
+        timeout->hw = r;
+    };
+    nego_timeout_reg nego_timeout @ 0x09C;
+
+    // =========================================================================
+    // Region 8: Chiplet Extended -- PHY Alignment & I2C Training
+    //   paddr[8:5] = 4'b1000, offsets 0x100..0x11F.
+    //   Decoded by a 4-bit region select (paddr[8:5]); existing Regions 0..7
+    //   keep their 3-bit decode (paddr[7:5] with paddr[8]=0).
+    //   See staging/apb_redesign/PROPOSAL.md for full design rationale.
+    // =========================================================================
+
+    reg swi_training_mode_reg {
+        name = "SWI Training Mode";
+        desc = "Drives the Wlink GPIO PHY's training pattern + lane-checker
+                enable. Writable from both local APB and the I2C-slave AXIL
+                bridge (peer-driven). POR-only reset domain (survives warm
+                hresetn so training state persists across system reset).";
+        field {} swi_training_mode[1] = 0;
+        swi_training_mode->sw = rw;
+        swi_training_mode->hw = r;
+        swi_training_mode->desc = "1 = TX serialiser emits per-lane training
+                                    pattern; lane-checker FSM evaluates;
+                                    LL TX/RX held off via swi_lltx/llrx gating.";
+    };
+    swi_training_mode_reg swi_training_mode @ 0x100;
+
+    reg swi_bit_slip_lo_reg {
+        name = "SWI Bit Slip (Low)";
+        desc = "Per-lane bit-slip for the 8 PHY RX lanes, packed 3 bits per
+                lane (lane K at bits [3K+2:3K]). SW override of the
+                autonomous calibration FSM's per-lane slip value.";
+        field {} bit_slip[24] = 0;
+        bit_slip->sw = rw;
+        bit_slip->hw = r;
+        bit_slip->desc = "8 lanes x 3-bit right-rotation amount.";
+    };
+    swi_bit_slip_lo_reg swi_bit_slip_lo @ 0x104;
+
+    reg swi_lane_status_reg {
+        name = "SWI Lane Status + Credit-Path Status";
+        desc = "Read-only per-lane lock + fault + calibration done status
+                (legacy [16:0]) plus CREDIT_PATH_STATUS observability packed
+                into the otherwise-free upper bits [31:17]. The legacy field
+                positions are unchanged. CREDIT_PATH_STATUS replaces the ILA
+                debug core: it surfaces the Wlink LL_RX -> cr_pkt -> FCSM
+                credit-path internals, 2-flop-synced from the FCSM/recovered-
+                RX-link clock domains into apb_clk.";
+        field {} lane_locked[8] = 0;
+        lane_locked->sw = r;
+        lane_locked->hw = w;
+        lane_locked->desc = "Per-lane lock status from the wlink_lane_checker.";
+        field {} lane_fault[8] = 0;
+        lane_fault->sw = r;
+        lane_fault->hw = w;
+        lane_fault->desc = "Per-lane sticky fault from the cal FSM.";
+        field {} calibration_done[1] = 0;
+        calibration_done->sw = r;
+        calibration_done->hw = w;
+        calibration_done->desc = "Set by the cal FSM at convergence.";
+        field {} fcsm_state[4] = 0;          // [20:17]
+        fcsm_state->sw = r;
+        fcsm_state->hw = w;
+        fcsm_state->desc = "WlinkGenericFCSM_6.state (3b; bit[20] always 0).
+                            Wedges at 1 in the credit-path bring-up failure.";
+        field {} llrx_state[2] = 0;          // [22:21]
+        llrx_state->sw = r;
+        llrx_state->hw = w;
+        llrx_state->desc = "WlinkRxLinkLayer byte-align FSM state (==2 -> err).";
+        field {} cr_pkt_seen_rx[1] = 0;      // [23]
+        cr_pkt_seen_rx->sw = r;
+        cr_pkt_seen_rx->hw = w;
+        cr_pkt_seen_rx->desc = "Sticky cr-pkt-seen (FCSM, 0e126b0).";
+        field {} crack_pkt_seen_rx[1] = 0;   // [24]
+        crack_pkt_seen_rx->sw = r;
+        crack_pkt_seen_rx->hw = w;
+        crack_pkt_seen_rx->desc = "Sticky crack-pkt-seen (FCSM).";
+        field {} is_short_pkt[1] = 0;        // [25]
+        is_short_pkt->sw = r;
+        is_short_pkt->hw = w;
+        field {} is_long_pkt[1] = 0;         // [26]
+        is_long_pkt->sw = r;
+        is_long_pkt->hw = w;
+        field {} pkt_is_cr_pkt[1] = 0;       // [27]
+        pkt_is_cr_pkt->sw = r;
+        pkt_is_cr_pkt->hw = w;
+        field {} pkt_is_crack_pkt[1] = 0;    // [28]
+        pkt_is_crack_pkt->sw = r;
+        pkt_is_crack_pkt->hw = w;
+        field {} llrx_valid[1] = 0;          // [29]
+        llrx_valid->sw = r;
+        llrx_valid->hw = w;
+        llrx_valid->desc = "WlinkRxLinkLayer has a valid packet.";
+        // [31:30] reserved (read 0).
+    };
+    swi_lane_status_reg swi_lane_status @ 0x108;
+
+    reg nego_train_cfg_reg {
+        name = "Nego Train Configuration";
+        desc = "I2C-coordinated training-mode handshake configuration.";
+        field {} train_auto_en[1] = 0;
+        train_auto_en->sw = rw;
+        train_auto_en->hw = r;
+        field {} train_sw_step[1] = 0;
+        train_sw_step->sw = rw;
+        train_sw_step->hw = r;
+        field {} train_retrain[1] = 0;
+        train_retrain->sw = rw;
+        train_retrain->hw = r;
+        train_retrain->singlepulse;
+        field {} train_poll_timeout[4] = 0;
+        train_poll_timeout->sw = rw;
+        train_poll_timeout->hw = r;
+        field {} train_fsm_wait_hi[8] = 0;
+        train_fsm_wait_hi->sw = rw;
+        train_fsm_wait_hi->hw = r;
+    };
+    nego_train_cfg_reg nego_train_cfg @ 0x10C;
+
+    reg nego_train_status_reg {
+        name = "Nego Train Status";
+        desc = "Live status of the training sub-flow + last-captured peer
+                fault/lock values.";
+        field {} train_ok[1] = 0;
+        train_ok->sw = r;
+        train_ok->hw = w;
+        field {} train_fail[1] = 0;
+        train_fail->sw = r;
+        train_fail->hw = w;
+        field {} train_in_progress[1] = 0;
+        train_in_progress->sw = r;
+        train_in_progress->hw = w;
+        field {} train_peer_nack[1] = 0;
+        train_peer_nack->sw = r;
+        train_peer_nack->hw = w;
+        field {} train_state[4] = 0;
+        train_state->sw = r;
+        train_state->hw = w;
+        field {} train_peer_lane_locked[8] = 0;
+        train_peer_lane_locked->sw = r;
+        train_peer_lane_locked->hw = w;
+        field {} train_peer_lane_fault[8] = 0;
+        train_peer_lane_fault->sw = r;
+        train_peer_lane_fault->hw = w;
+    };
+    nego_train_status_reg nego_train_status @ 0x110;
+
+    // Slot 5 (0x114): the read path is repurposed for ECC_COUNTERS (was
+    // NEGO_TRAIN_STEP whose read returned a constant 0). The W1P single-
+    // step write path is functionally unchanged (still ignored — it was
+    // never implemented). Two 16-bit saturating ECC event counters in the
+    // recovered-RX-link-clock domain, 2-flop-synced into apb_clk. Replaces
+    // the ILA debug core's "is ECC failing every word?" view.
+    reg ecc_counters_reg {
+        name = "ECC Counters (Credit-Path Observability)";
+        desc = "RO. Saturating (0xFFFF) counts of the WlinkRxLinkLayer
+                ecc_check_corrupted / ecc_check_corrected event pulses,
+                sampled in the recovered-RX-link-clock domain and 2-flop-
+                synced into apb_clk. The slot's legacy W1P NEGO_TRAIN_STEP
+                write path is retained and still ignored.";
+        field {} ecc_corrupted_cnt[16] = 0;   // [15:0]
+        ecc_corrupted_cnt->sw = r;
+        ecc_corrupted_cnt->hw = w;
+        ecc_corrupted_cnt->desc = "Saturating count of ECC-corrupted words.";
+        field {} ecc_corrected_cnt[16] = 0;   // [31:16]
+        ecc_corrected_cnt->sw = r;
+        ecc_corrected_cnt->hw = w;
+        ecc_corrected_cnt->desc = "Saturating count of ECC-corrected words.";
+    };
+    ecc_counters_reg ecc_counters @ 0x114;
+
+    reg swi_phase_offset_reg {
+        name = "SWI Phase Offset";
+        desc = "Per-lane sub-bit (1/16) sample-point phase for the 8 PHY
+                RX lanes, packed 4 bits per lane (lane K at bits
+                [4K+3:4K]). SW override of the autonomous calibrator's
+                per-lane phase sweep (slip 0..7 x phase 0..15).
+                OR-merged with the calibrator phase bus into the Wlink
+                swi_phase_offset_in port, then OR-merged per-lane inside
+                WavD2DGpio with the legacy single-global APB phase reg
+                (Wlink PHY-ctrl bits[20:17]) so a lane left at 0 still
+                inherits the global phase (bit-slip and phase compose).
+                This slot was the reserved SWI_BIT_SLIP_HI (16-lane
+                builds); repurposed for the 8-lane FPGA bring-up (S9.7).";
+        field {} phase_offset[32] = 0;
+        phase_offset->sw = rw;
+        phase_offset->hw = r;
+        phase_offset->desc = "8 lanes x 4-bit sub-bit phase offset.";
+    };
+    swi_phase_offset_reg swi_phase_offset @ 0x118;
+
+    reg phy_align_id_reg {
+        name = "PHY Alignment Block ID";
+        desc = "Read-only identification. 0x5041_0100 = 'PA' v1.0.";
+        field {} id[32] = 32'h50410100;
+        id->sw = r;
+        id->hw = na;
+    };
+    phy_align_id_reg phy_align_id @ 0x11C;
 };

@@ -210,9 +210,10 @@ module tb_top #(
     wire  [31:0] s_apb_prdata;
     wire         s_apb_pready, s_apb_pslverr;
 
-    // ----- ctrl_reg interface (used for ROLE_CFG lock) ------------------------
+    // ----- ctrl_reg interface (used for ROLE_CFG lock + Region 8 §9) ----------
+    // ctrl_reg_addr widened 3→4 bits: bit[3]=0 Region 4, bit[3]=1 Region 8.
     logic        m_ctrl_reg_write,  s_ctrl_reg_write;
-    logic [2:0]  m_ctrl_reg_addr,   s_ctrl_reg_addr;
+    logic [3:0]  m_ctrl_reg_addr,   s_ctrl_reg_addr;
     logic [31:0] m_ctrl_reg_wdata,  s_ctrl_reg_wdata;
     wire  [31:0] m_ctrl_reg_rdata,  s_ctrl_reg_rdata;
 

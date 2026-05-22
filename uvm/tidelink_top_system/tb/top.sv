@@ -1651,4 +1651,59 @@ module test_top;
       release u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.swi_training_mode;
   end
 
+  // =================================================================
+  // Phase 3 — I²C-train scenario injection hooks (Agent #4, RETARGETED
+  // by the §9 integration: forces the REAL trunk calibrator/lane-checker
+  // nets, not #4's deleted placeholder regs).
+  //   swi_lane_locked_in       → lane_locked_w          (tidelink_lane_checker)
+  //   swi_lane_fault_in        → cal_lane_fault_w       (tidelink_phy_align_calibrator)
+  //   swi_calibration_done_in  → cal_calibration_done_w (tidelink_phy_align_calibrator)
+  // Default (force_en=0) is a release; tests set the values then assert
+  // force_en to lock them. Hierarchical references live in module scope
+  // (not package scope) so they don't trip SV-LCM-HRP.
+  // =================================================================
+  always @(*) begin
+    if (tb_if.a_train_force_en) begin
+      force u_tidelink_top_a.u_chiplet_controller.lane_locked_w          = tb_if.a_train_lane_locked;
+      force u_tidelink_top_a.u_chiplet_controller.cal_lane_fault_w       = tb_if.a_train_lane_fault;
+      force u_tidelink_top_a.u_chiplet_controller.cal_calibration_done_w = tb_if.a_train_cal_done;
+    end else begin
+      release u_tidelink_top_a.u_chiplet_controller.lane_locked_w;
+      release u_tidelink_top_a.u_chiplet_controller.cal_lane_fault_w;
+      release u_tidelink_top_a.u_chiplet_controller.cal_calibration_done_w;
+    end
+  end
+
+  always @(*) begin
+    if (tb_if.b_train_force_en) begin
+      force u_tidelink_top_b.u_chiplet_controller.lane_locked_w          = tb_if.b_train_lane_locked;
+      force u_tidelink_top_b.u_chiplet_controller.cal_lane_fault_w       = tb_if.b_train_lane_fault;
+      force u_tidelink_top_b.u_chiplet_controller.cal_calibration_done_w = tb_if.b_train_cal_done;
+    end else begin
+      release u_tidelink_top_b.u_chiplet_controller.lane_locked_w;
+      release u_tidelink_top_b.u_chiplet_controller.cal_lane_fault_w;
+      release u_tidelink_top_b.u_chiplet_controller.cal_calibration_done_w;
+    end
+  end
+
+  // Slave I²C-slave-core disable for test_train_no_peer_response.
+  always @(*) begin
+    if (tb_if.b_i2c_slv_disable)
+      force u_tidelink_top_b.u_chiplet_controller.i2c_slv_reset = 1'b1;
+    else
+      release u_tidelink_top_b.u_chiplet_controller.i2c_slv_reset;
+  end
+
+  // Mirror master-side training-status wires into tb_if (module-scope refs
+  // — not allowed from package context).
+  assign tb_if.a_train_state_obs             = u_tidelink_top_a.u_chiplet_controller.train_state_w;
+  assign tb_if.a_train_ok_obs                = u_tidelink_top_a.u_chiplet_controller.train_ok_w;
+  assign tb_if.a_train_fail_obs              = u_tidelink_top_a.u_chiplet_controller.train_fail_w;
+  assign tb_if.a_train_in_progress_obs       = u_tidelink_top_a.u_chiplet_controller.train_in_progress_w;
+  assign tb_if.a_train_peer_nack_obs         = u_tidelink_top_a.u_chiplet_controller.train_peer_nack_w;
+  assign tb_if.a_train_peer_lane_locked_obs  = u_tidelink_top_a.u_chiplet_controller.train_peer_lane_locked_w;
+  assign tb_if.a_train_peer_lane_fault_obs   = u_tidelink_top_a.u_chiplet_controller.train_peer_lane_fault_w;
+  assign tb_if.a_train_local_lane_fault_obs  = u_tidelink_top_a.u_chiplet_controller.train_local_lane_fault_w;
+  assign tb_if.a_nego_train_cfg_obs          = u_tidelink_top_a.u_chiplet_controller.nego_train_cfg_r;
+
 endmodule

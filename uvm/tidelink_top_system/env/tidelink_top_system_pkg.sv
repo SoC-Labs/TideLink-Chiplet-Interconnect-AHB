@@ -156,6 +156,14 @@ package tidelink_top_system_pkg;
   `include "test_align_one_dead_lane.sv"
   `include "test_align_recalibration_after_link_drop.sv"
 
+  // Phase 3 — I²C-coordinated training-mode entry/exit (Agent #4).
+  `include "test_top_train_base.sv"
+  `include "test_train_i2c_handshake.sv"
+  `include "test_train_lane_fault.sv"
+  `include "test_train_no_peer_response.sv"
+  `include "test_train_async_re_train.sv"
+  `include "test_train_with_apb_override.sv"
+
 endpackage
 
 `endif // GUARD_TIDELINK_TOP_SYSTEM_PKG_SV

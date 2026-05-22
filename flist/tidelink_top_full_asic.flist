@@ -1,38 +1,6 @@
 +incdir+${TIDELINK_HOME}/src/rtl
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 
-// ASIC TSMC65 cell-substitution gate (gaps B + C of
-// docs/ASIC_HARD_IP_INVENTORY.md). When defined:
-//   * tsmc/WavClockMux_tsmc65.v structural glitch-free clock mux
-//   * SDFFRPQ/SDFFSRPQ_X1M_A12TR scan-replaceable async-reset flops
-//     replace the behavioural model in
-//     WavDemet{Set,Reset,Reset_7,_27,_107,_124,_129}.v
-//
-// CURRENTLY DORMANT in v1. Two integration attempts (2026-05-20 + 21)
-// both regressed scen_fast hold by ~-4.7 to -4.85 ns. Investigation:
-//   * Attempt 1: enabled raw, no false_path on R/SN.
-//     Failure mode: hypothesised reset-tree imbalance.
-//   * Attempt 2: enabled with set_false_path -to [R/SN pins] applied
-//     to 840 endpoints in 1_init_design.tcl (still in-tree, harmless
-//     when this define is off).
-//     Result: setup PASS (-0.00 ns), hold still -4.85 ns.
-//     Real failure mode: the back-to-back u_f1 / u_f2 demet flops
-//     have a direct Q→D net with no logic between them.
-//     SDFFRPQ_X1M_A12TR's hold time exceeds the clock-to-Q + skew
-//     available, and FC's placer drops the two flops too close.
-//
-// ASIC_TSMC65 — enables the tcbn65lp-native cell-substitution arms
-// of WavClockMux (→ CKMUX2D2 glitch-free clock mux, tcbn65lp ships
-// this natively) and WavDemet{Set,Reset,Reset_*} (→ SDFC{,S}NQD1
-// scan-replaceable async-clear/set flops + BUFFD1 hold-fix chain).
-// Library swap from Arm sc12_base_rvt to TSMC tcbn65lp 9-track 9lm_T2
-// done 2026-05-21 (see syn/asic/common.mk + tech_paths.tcl + the FC
-// flow rewrite). Substitution is now timing-safe by construction —
-// CKMUX2D2 is a real glitch-free mux (vs the sc12 structural
-// workaround attempt) and the SDFC*NQD1 hold-time profile differs
-// from SDFFRPQ_X1M_A12TR which broke hold under sc12.
-+define+ASIC_TSMC65
-
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
@@ -107,7 +75,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/TideLinkToWlink.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/tsmc/WavClockMux_tsmc65.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpio.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioRx.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioTx.v
@@ -211,10 +179,19 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
-// §9 PHY alignment APB regs + per-lane lock checker + auto-cal FSM
-${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
+// §9 PHY alignment: per-lane lock checker + auto-cal FSM
+//   (Interim shim tidelink_phy_align_regs.sv removed — registers moved to
+//    Region 8 of the TideLink config APB @ MMIO 0x4403_2100.)
 ${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+// §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0
+// (TIDELINK_USE_IDELAY undefined) → pure passthrough; the Xilinx
+// IDELAYE2/IDELAYCTRL primitive text is never seen by the ASIC
+// elaborator. The ASIC equivalent (a programmable per-lane delay cell
+// driven by the same calibrator phase) is documented for the future
+// ASIC target — see the agent report / ASIC source-sync guidance.
+${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 

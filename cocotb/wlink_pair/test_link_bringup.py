@@ -82,6 +82,18 @@ async def ctrl_write(dut, side, addr, data):
     sig_w.value = 0
 
 
+async def ctrl_read(dut, side, addr):
+    """Combinational ctrl_reg read. ctrl_reg_rdata is comb on ctrl_reg_addr;
+    drive the 4-bit addr (bit[3]=1 selects Region 8) and sample after a
+    settle edge."""
+    sig_a = getattr(dut, f"{side}_ctrl_reg_addr")
+    sig_r = getattr(dut, f"{side}_ctrl_reg_rdata")
+    await RisingEdge(dut.apb_clk)
+    sig_a.value = addr
+    await RisingEdge(dut.apb_clk)
+    return int(sig_r.value)
+
+
 async def lock_master(dut):
     await ctrl_write(dut, 'm', 0, 0x02)  # role=0 (master), lock=1
 

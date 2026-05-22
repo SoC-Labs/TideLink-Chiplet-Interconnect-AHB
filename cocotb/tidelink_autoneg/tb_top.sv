@@ -60,13 +60,44 @@ module tb_top (
     output logic        nego_set_role_lock,
 
     // ── Status outputs ─────────────────────────────────────────────────
-    output logic  [2:0] nego_state,
+    output logic  [3:0] nego_state,
     output logic        nego_done,
     output logic        nego_error,
     output logic        nego_won,
     output logic        nego_lost,
     output logic        sda_start_seen,
-    output logic        nego_error_irq
+    output logic        nego_error_irq,
+
+    // ── Phase 2 mask-handshake (tied off for autoneg-only tests) ───────
+    input  logic        mask_hs_auto_en,
+    input  logic  [7:0] local_tx_lane_mask_i,
+    input  logic  [7:0] local_rx_lane_mask_i,
+    output logic  [7:0] peer_tx_lane_mask_o,
+    output logic  [7:0] peer_rx_lane_mask_o,
+    output logic        mask_hs_local_match,
+    output logic        mask_hs_local_fail,
+
+    // ── Phase 3 I²C-train coordination (tied off for autoneg-only tests) ─
+    input  logic        train_auto_en,
+    input  logic        train_sw_step,
+    input  logic        train_retrain_req,
+    input  logic  [3:0] train_poll_timeout,
+    input  logic  [7:0] train_fsm_wait_hi,
+    input  logic  [7:0] local_swi_lane_locked_i,
+    input  logic  [7:0] local_swi_lane_fault_i,
+    input  logic        local_calibration_done_i,
+    output logic        local_training_mode_set,
+    output logic        local_training_mode_clr,
+    output logic        local_swreset_pulse,
+    output logic  [3:0] train_state_o,
+    output logic        train_ok_o,
+    output logic        train_fail_o,
+    output logic        train_in_progress_o,
+    output logic        train_peer_nack_o,
+    output logic  [7:0] train_peer_lane_locked_o,
+    output logic  [7:0] train_peer_lane_fault_o,
+    output logic  [7:0] train_local_lane_fault_o,
+    output logic        train_fail_irq_o
 );
 
     tidelink_autoneg u_dut (
@@ -112,7 +143,36 @@ module tb_top (
         .nego_won           (nego_won),
         .nego_lost          (nego_lost),
         .sda_start_seen     (sda_start_seen),
-        .nego_error_irq     (nego_error_irq)
+        .nego_error_irq     (nego_error_irq),
+        // Phase 2 mask-handshake
+        .local_tx_lane_mask_i (local_tx_lane_mask_i),
+        .local_rx_lane_mask_i (local_rx_lane_mask_i),
+        .peer_tx_lane_mask_o  (peer_tx_lane_mask_o),
+        .peer_rx_lane_mask_o  (peer_rx_lane_mask_o),
+        .mask_hs_local_match  (mask_hs_local_match),
+        .mask_hs_local_fail   (mask_hs_local_fail),
+        .mask_hs_auto_en      (mask_hs_auto_en),
+        // Phase 3 I²C-train coordination
+        .train_auto_en             (train_auto_en),
+        .train_sw_step             (train_sw_step),
+        .train_retrain_req         (train_retrain_req),
+        .train_poll_timeout        (train_poll_timeout),
+        .train_fsm_wait_hi         (train_fsm_wait_hi),
+        .local_swi_lane_locked_i   (local_swi_lane_locked_i),
+        .local_swi_lane_fault_i    (local_swi_lane_fault_i),
+        .local_calibration_done_i  (local_calibration_done_i),
+        .local_training_mode_set   (local_training_mode_set),
+        .local_training_mode_clr   (local_training_mode_clr),
+        .local_swreset_pulse       (local_swreset_pulse),
+        .train_state_o             (train_state_o),
+        .train_ok_o                (train_ok_o),
+        .train_fail_o              (train_fail_o),
+        .train_in_progress_o       (train_in_progress_o),
+        .train_peer_nack_o         (train_peer_nack_o),
+        .train_peer_lane_locked_o  (train_peer_lane_locked_o),
+        .train_peer_lane_fault_o   (train_peer_lane_fault_o),
+        .train_local_lane_fault_o  (train_local_lane_fault_o),
+        .train_fail_irq_o          (train_fail_irq_o)
     );
 
 endmodule

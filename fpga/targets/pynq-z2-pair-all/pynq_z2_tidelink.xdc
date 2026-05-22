@@ -83,7 +83,11 @@ set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_
 set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
 set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
-set_property -dict {PACKAGE_PIN B19 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
+# LANE-7 REMAP: v4 diag-swap proved B19/F20 physically bad (fault followed
+# pin F20, not lane index). Moved to spare W9/V7 = J13 pins 13/37 — carried
+# by the 1:1 ribbon, NOT in the 12 cut conductors, driven by no other XDC.
+# Mirror preserved with pynq-z2-pair-flip-all.
+set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was B19 (bad)
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 
@@ -102,7 +106,7 @@ set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
 set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
-set_property -dict {PACKAGE_PIN F20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
+set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was F20 (bad) — LANE-7 REMAP
 
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established

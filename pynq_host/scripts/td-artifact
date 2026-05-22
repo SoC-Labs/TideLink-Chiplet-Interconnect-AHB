@@ -1,0 +1,9 @@
+#!/bin/bash
+# Thin wrapper for the TideLink artifact-store CLI.
+#   td-artifact <command> [args...]
+# Delegates to pynq_host/td_artifact.py (one dir up from this script).
+# Store root defaults to ~/tidelink-artifacts (override via $TIDELINK_ARTIFACTS
+# or the --root flag).
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$HERE/../td_artifact.py" "$@"

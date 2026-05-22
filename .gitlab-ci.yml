@@ -25,6 +25,7 @@ stages:
   - coverage
   - pages
   - cleanup
+  - hwtest
 
 variables:
   # Disable GitLab's built-in checkout -- we clone manually
@@ -992,3 +993,102 @@ cleanup:
   script:
     - rm -rf "$WORK_DIR" || true
     - echo "Cleaned up $WORK_DIR"
+
+# ============================================================================
+# Stage 11 (new): HW Test Suite — manual / nightly
+# ============================================================================
+# Runs pynq_host/scripts/hwtest/run_all.sh against the bridge1 PYNQ-Z2 pair.
+# Manual trigger by default; can be put on a nightly schedule via a CI/CD
+# scheduled pipeline (rules below check for SCHEDULE_HWTEST=1).
+#
+# This stage does NOT modify the existing `fpga` stage — that one runs the
+# ci_pair_role_aware test; hwtest is the broader register/AHB/PTP suite.
+# Both can coexist; they share the same fpgahub lease mechanism.
+#
+# Safety: run_all.sh defaults to HWTEST_INCLUDE=1,2,3,4,6,7,8,10,11,12 — the
+# safe subset (no AHB_TX storm, no PTP HW sync, no long soak). Heavier
+# subsets are opt-in via the HWTEST_INCLUDE pipeline variable.
+
+hwtest:safe:
+  stage: hwtest
+  tags:
+    - bridge1-runner   # must have mapstone-dev SSH access + fpgahub
+  when: manual
+  rules:
+    # Manual on any branch, OR auto if SCHEDULE_HWTEST=1 (e.g. nightly schedule)
+    - if: '$SCHEDULE_HWTEST == "1"'
+      when: always
+    - when: manual
+  variables:
+    HWTEST_INCLUDE: "safe"
+    HWTEST_ACQUIRE_LEASE: "1"
+    HWTEST_LEASE_TTL: "3600"
+    HWTEST_BAIL_ON_FAIL: "0"
+  script:
+    - echo "Running TideLink HW test suite (subset=$HWTEST_INCLUDE)"
+    - bash pynq_host/scripts/hwtest/run_all.sh
+  after_script:
+    - mkdir -p hwtest-logs
+    - cp -r /tmp/tidelink_hwtest_logs/* hwtest-logs/ 2>/dev/null || true
+  artifacts:
+    name: "hwtest-${CI_PIPELINE_ID}"
+    paths:
+      - hwtest-logs/
+    expire_in: 30 days
+    when: always
+  allow_failure: false
+
+# Heavier variant — includes AHB_TX storm + PTP HW sync. Manual only,
+# never auto-scheduled, because cat 5 requires a 100%-verified-up link.
+hwtest:full:
+  stage: hwtest
+  tags:
+    - bridge1-runner
+  when: manual
+  variables:
+    HWTEST_INCLUDE: "all"
+    HWTEST_EXCLUDE: "13"    # exclude long soak from "full" manual run
+    HWTEST_ACQUIRE_LEASE: "1"
+    HWTEST_LEASE_TTL: "7200"
+    AHB_TX_TIMEOUT_S: "5"
+    N_AHB_TX: "64"
+  script:
+    - echo "Running FULL TideLink HW test suite (cat 1-12, ex. 13)"
+    - echo "WARNING: this includes AHB_TX storm — link must be 16/16 before running"
+    - bash pynq_host/scripts/hwtest/run_all.sh
+  after_script:
+    - mkdir -p hwtest-logs
+    - cp -r /tmp/tidelink_hwtest_logs/* hwtest-logs/ 2>/dev/null || true
+  artifacts:
+    name: "hwtest-full-${CI_PIPELINE_ID}"
+    paths:
+      - hwtest-logs/
+    expire_in: 30 days
+    when: always
+  allow_failure: false
+
+# Long-soak variant — runs cat 13 only, configurable duration.
+hwtest:soak:
+  stage: hwtest
+  tags:
+    - bridge1-runner
+  when: manual
+  variables:
+    HWTEST_INCLUDE: "13"
+    HWTEST_ACQUIRE_LEASE: "1"
+    HWTEST_LEASE_TTL: "32400"   # 9h, slightly over the default 8h soak
+    SOAK_SECS: "28800"          # 8h
+    SAMPLE_GAP_S: "30"
+  script:
+    - echo "Running TideLink HW soak ($SOAK_SECS s)"
+    - bash pynq_host/scripts/hwtest/run_all.sh
+  after_script:
+    - mkdir -p hwtest-logs
+    - cp -r /tmp/tidelink_hwtest_logs/* hwtest-logs/ 2>/dev/null || true
+  artifacts:
+    name: "hwtest-soak-${CI_PIPELINE_ID}"
+    paths:
+      - hwtest-logs/
+    expire_in: 30 days
+    when: always
+  allow_failure: false

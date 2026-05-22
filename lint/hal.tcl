@@ -39,6 +39,18 @@
 -nocheck NBGEND
 // Empty default case statements — intentional no-op for completeness
 -nocheck EMPSTM
+// Small integer literals (e.g. +2 for header overhead) in arithmetic — idiomatic SV
+-nocheck CONSBS
+// Expressions in port connections (e.g. zero-extend {2'b0, hwdata[31:20]}) —
+// intentional boundary width coercions between 32-bit AHB and narrower internal buses
+-nocheck EXPIPC
+// Bit-select on unsigned — same set of boundary lines as EXPIPC
+-nocheck BITUNS
+// Function naming — repo does not use a func_ prefix convention
+-nocheck FUNCNM
+// Coded default case (empty default: ;) — intentional no-op when default
+// assignment precedes the case statement; fully covered case is correct SV
+-nocheck CDEFCV
 // AMBA-mandated combinational input -> output paths. The structural equivalents
 // CBPAHI/TPOUNR/SYNPRT/FDTHRU are already waived as design correctness items;
 // IOCOMB is the same class (e.g. APB pready/pslverr or AHB hready combinational

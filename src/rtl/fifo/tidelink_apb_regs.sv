@@ -513,31 +513,30 @@ module tidelink_apb_regs #(
 
     assign pready  = 1'b1;
 
-    // Shortcoming #12 fix: assert pslverr for invalid accesses
-    // (writes to RO registers, reads from WO registers)
-    logic pslverr_comb;
+    // Assert pslverr for invalid accesses (writes to RO regs, reads from WO regs).
+    // Output port driven directly from always_comb to avoid HAL REVROP.
     always_comb begin
-        pslverr_comb = 1'b0;
+        pslverr = 1'b0;
         if (psel && penable) begin
             case (apb_region)
                 4'b0000: begin
                     if (pwrite) begin
                         case (paddr[4:2])
-                            3'h2, 3'h3, 3'h4, 3'h6: pslverr_comb = 1'b1; // Write to RO: PKT_WORD_LEN, CREDIT_COUNT, STATUS, REL_ACC
+                            3'h2, 3'h3, 3'h4, 3'h6: pslverr = 1'b1; // Write to RO: PKT_WORD_LEN, CREDIT_COUNT, STATUS, REL_ACC
                             default: ;
                         endcase
                     end
                 end
                 4'b0001: begin
                     if (pwrite && paddr[4:2] == 3'h2)
-                        pslverr_comb = 1'b1; // Write to RO: PAIR_CREDIT_COUNTER
+                        pslverr = 1'b1; // Write to RO: PAIR_CREDIT_COUNTER
                     if (!pwrite && paddr[4:2] == 3'h3)
-                        pslverr_comb = 1'b1; // Read from WO: PAIR_CREDIT_CONSUME
+                        pslverr = 1'b1; // Read from WO: PAIR_CREDIT_CONSUME
                 end
                 4'b1000: begin // Region 8 RO slots
                     if (pwrite) begin
                         case (paddr[4:2])
-                            3'h2, 3'h4, 3'h7: pslverr_comb = 1'b1; // SWI_LANE_STATUS, NEGO_TRAIN_STATUS, PHY_ALIGN_ID
+                            3'h2, 3'h4, 3'h7: pslverr = 1'b1; // SWI_LANE_STATUS, NEGO_TRAIN_STATUS, PHY_ALIGN_ID
                             default: ;
                         endcase
                     end
@@ -546,6 +545,5 @@ module tidelink_apb_regs #(
             endcase
         end
     end
-    assign pslverr = pslverr_comb;
 
 endmodule

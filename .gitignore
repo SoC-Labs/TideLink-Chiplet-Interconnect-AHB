@@ -39,6 +39,11 @@ syn/asic/fusion-compiler/libs*/
 syn/asic/fusion-compiler/logs*/
 syn/asic/fusion-compiler/reports*/
 syn/asic/fusion-compiler/outputs*/
+# Primetime ETM flow scratch/products (Makefile + scripts/ are tracked)
+syn/asic/primetime/outputs*/
+syn/asic/primetime/logs*/
+syn/asic/primetime/reports*/
+syn/asic/primetime/work*/
 # lm_shell / fc_shell scratch that lands at the flow root
 syn/asic/fusion-compiler/PreFrameCheck/
 syn/asic/fusion-compiler/check_workspace.ems

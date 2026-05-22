@@ -407,10 +407,11 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/user_ref_clk] \
                    [get_bd_pins tidelink_0/scan_clk]
 
-    #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
-    #   Drives both the tidelink PHC CDC bridge and the PHC IP itself.
+    #-- phc_clk: clk_wiz clk_out2 (50 MHz; same MMCM — phase-aligned to hclk)
+    #   Also connects to idelay_ref_clk — see twin comment in pair BD.
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
                    [get_bd_pins tidelink_0/phc_clk] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk] \
                    [get_bd_pins phc_0/clk]
 
     #-- Reset fan-out (active-low peripheral_aresetn)

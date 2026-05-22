@@ -413,8 +413,13 @@ proc create_root_design { parentCell } {
 
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     #   Drives both the tidelink PHC CDC bridge and the PHC IP itself.
+    #   Also connects to idelay_ref_clk — USE_IDELAY=0 on this target means
+    #   that path is logically unused, but validate_bd_design still requires
+    #   the clock port to be connected. -all targets drive idelay_ref_clk
+    #   from a dedicated 200 MHz MMCM output.
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
                    [get_bd_pins tidelink_0/phc_clk] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk] \
                    [get_bd_pins phc_0/clk]
 
     #-- Reset fan-out (active-low peripheral_aresetn)

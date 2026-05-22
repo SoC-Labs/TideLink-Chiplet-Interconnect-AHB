@@ -216,8 +216,9 @@ module tidelink_apb_regs #(
     logic [2:0] debounce_count_r;
     logic debounce_stable_r;
 
-    // Raw edge: synchronised reset just deasserted
-    wire reset_n_raw_edge = reset_n_d1 & ~reset_n_d2;
+    // (HAL URDWIR cleanup: the unused wire `reset_n_raw_edge` previously here
+    // was an unreferenced intermediate; the debouncer uses reset_n_d1/d2
+    // directly via `debounce_count_r`.)
 
     // Pulse only fires after stable for 4 consecutive cycles
     assign reset_deassert_pulse = debounce_stable_r;

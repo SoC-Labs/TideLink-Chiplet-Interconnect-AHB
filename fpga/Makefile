@@ -149,14 +149,23 @@ endif
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
         resolve_board farm_check farm_build build_pair_concurrent \
-        build_pair_farmed help
+        build_pair_farmed check-wrapper-params help
 
 all: build_design
 
 #-----------------------------------------------------------------------------
+# Pre-flight guard: catch the 51b5169-class regression (USE_CLKBUF/USE_IDELAY
+# wrapper-param strip) BEFORE Vivado packages the IP, instead of letting the
+# silent-XDC-drop / LUT-on-clock cascade reach silicon. See
+# docs/LANE_LOCK_ROOT_CAUSE.md and docs/SIM_GUARD_FEASIBILITY.md.
+#-----------------------------------------------------------------------------
+check-wrapper-params:
+	@$(FPGA_DIR)/scripts/check_wrapper_params.sh
+
+#-----------------------------------------------------------------------------
 # Step 1: Package tidelink RTL as Vivado XCI IP
 #-----------------------------------------------------------------------------
-package_ip:
+package_ip: check-wrapper-params
 	@mkdir -p $(RUN_DIR) $(IP_OUTPUT_DIR)
 	cd $(RUN_DIR) && \
 	export FPGA_COMPONENT_FILELIST=$(FPGA_DIR)/filelist.tcl && \

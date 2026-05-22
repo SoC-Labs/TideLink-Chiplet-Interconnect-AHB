@@ -39,6 +39,12 @@
 -nocheck NBGEND
 // Empty default case statements — intentional no-op for completeness
 -nocheck EMPSTM
+// AMBA-mandated combinational input -> output paths. The structural equivalents
+// CBPAHI/TPOUNR/SYNPRT/FDTHRU are already waived as design correctness items;
+// IOCOMB is the same class (e.g. APB pready/pslverr or AHB hready combinational
+// fan-out) and was the dominant noise source in the May/post-consolidation HAL
+// runs (~110 of ~140 warnings). Waive to surface the genuine findings.
+-nocheck IOCOMB
 // Numeric suffix in identifiers (e.g. pending_0, interrupt_1) — by design
 -nocheck NUMSUF
 // Separate line for each signal declaration — acceptable grouping

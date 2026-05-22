@@ -84,11 +84,10 @@ module tidelink_fifo_mem #(
     // PUF read: lowest priority — only when FC and AHB are both idle
     wire puf_can_read = puf_req && !fc_active && !ahb_sram_cs;
 
-    // Final SRAM signals (muxed between FC, AHB, and PUF paths)
-    wire [RAM_ADDR_W-3:0] sram_addr  = fc_active    ? fc_translated_addr[RAM_ADDR_W-1:2] :
-                                        ahb_sram_cs  ? ahb_sram_addr :
-                                        puf_can_read ? puf_addr :
-                                                       ahb_sram_addr;
+    // Final SRAM signals (muxed between FC, AHB, and PUF paths).
+    // (HAL URDWIR cleanup: a `sram_addr` mux wire previously here was unused —
+    // the SRAM port is driven via `ahb_sram_addr` directly at the instance
+    // below, with FC/PUF addresses muxed at their respective ports.)
     wire [RAM_DATA_W-1:0] sram_wdata = fc_active ? fc_wr_wdata                        : ahb_sram_wdata;
     wire            [3:0] sram_wen   = fc_active    ? 4'b1111 :
                                         puf_can_read ? 4'b0000 :

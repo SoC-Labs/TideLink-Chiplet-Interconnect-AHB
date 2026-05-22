@@ -715,6 +715,55 @@ fpga-pair:
       junit: fpga/ci_logs/results.xml
     expire_in: 30 days
 
+# ----------------------------------------------------------------------------
+# PHC PTP hardware test campaign — manual / scheduled only.
+#
+# The bringup_ptp_*.sh scripts each take ~minutes to hours; gating this
+# behind `when: manual` (and the nightly scheduled-pipeline trigger) keeps
+# main-branch pushes fast. The job acquires the same bridge1 chassis lease
+# as fpga-pair via ci/fpga_run_ptp_pair.sh and runs the four scripts in
+# order, stopping at the first failure.
+#
+# Pre-conditions enforced inside ci/fpga_run_ptp_pair.sh:
+#   1. Lease GRANTED (not queued) on bridge1.
+#   2. bringup_pair_converge.sh succeeds (16/16 + cal_done both sides).
+#   3. Bitstream deployed (PHC-in-BD variant — feat/phc-hw-test).
+# ----------------------------------------------------------------------------
+fpga-ptp-pair:
+  stage: fpga
+  needs: [clone, preflight]
+  tags: [fpga]
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_COMMIT_BRANCH == "feat/phc-hw-test"'
+      when: manual
+  variables:
+    FPGAHUB_PAIR_CHASSIS: "pynq_z2_02"
+    FPGAHUB_LEASE_TTL_S:  "10800"     # 3 h (PTP sync+freq+offset+short soak)
+    FPGAHUB_LEASE_WAIT_S: "10800"
+    FPGAHUB_MAX_REVOKES:  "3"
+    FPGAHUB_BIN:          "/opt/fpgahub/bin/fpgahub"
+    # Defaults — override via web-pipeline variables when needed.
+    PTP_SOAK_HOURS:       "1"
+    PTP_DURATION:         "60"
+  before_script:
+    - export PATH="/opt/fpgahub/bin:$PATH"
+    - '"$FPGAHUB_BIN" --version'
+  script:
+    - cd "$WORK_DIR"
+    - bash ci/fpga_run_ptp_pair.sh
+  after_script:
+    - mkdir -p fpga/ci_logs/ptp
+    - cp -r "$WORK_DIR/fpga/ci_logs/ptp/." fpga/ci_logs/ptp/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - fpga/ci_logs/ptp/
+    expire_in: 30 days
+
 # ============================================================================
 # Stage 7: Synthesis
 # ============================================================================

@@ -29,24 +29,41 @@
 ###   - TideLink IP (soclabs.org:user:tidelink_vivado_wrapper:1.0)
 ###
 ### Address map (PS7 M_AXI_GP0 address space):
-###   0x4000_0000 .. 0x43FF_FFFF  ahb_sub  (64 MB — transparent chiplet window)
-###   0x4400_0000 .. 0x4400_FFFF  ahb_tx   (64 KB  — TX aperture, RAM_ADDR_W=14)
-###   0x4401_0000 .. 0x4401_FFFF  ahb_fifo (64 KB  — RX FIFO window)
-###   0x4402_0000 .. 0x4402_0FFF  ahb_ptp  (4 KB   — PTP TX write port)
-###   0x4403_0000 .. 0x4403_7FFF  apb      (32 KB  — unified config registers)
-###   0x4404_0000 .. 0x4404_0FFF  strap    (4 KB   — AXI GPIO; bit 0 = role_strap_i)
+###   0x4000_0000 .. 0x43FF_FFFF  ahb_sub   (64 MB — transparent chiplet window)
+###   0x4400_0000 .. 0x4400_FFFF  ahb_tx    (64 KB — TX aperture, RAM_ADDR_W=14)
+###   0x4401_0000 .. 0x4401_FFFF  ahb_fifo  (64 KB — RX FIFO window)
+###   0x4402_0000 .. 0x4402_0FFF  ahb_ptp   (4 KB  — PTP TX write port)
+###   0x4403_0000 .. 0x4403_7FFF  apb       (32 KB — unified config registers)
+###   0x4404_0000 .. 0x4404_0FFF  strap     (4 KB  — AXI GPIO; bit 0 = role_strap_i)
+###   0x4404_2000 .. 0x4404_2FFF  pmod_trig (4 KB  — AXI GPIO; PMOD-B trig out+in)
+###   0x4405_0000 .. 0x4405_0FFF  phc       (4 KB  — PHC hardware clock APB)
 ###
-### NOTE (Q4 / PHC tie-off):
-###   For first bring-up the PHC interface is driven by tie-off constants:
-###     phc_clk         = clk_wiz 50 MHz output (shared with hclk)
-###     phc_resetn      = proc_sys_reset peripheral_aresetn
-###     phc_nanoseconds = 30'h0  (zeros — no free-running counter in BD)
-###     phc_seconds     = 48'h0
-###     phc_pps         = 1'b0
-###     phc_hw_cap_*    = 0
-###     phc_locked_i    = 1'b0
-###   A proper PHC IP instance will replace these in Q4 once
-###   ptp-hardware-clock-ahb is integrated.
+### NOTE (PHC integration — 2026-05-22 feat/phc-hw-test):
+###   The PHC hardware clock IP (soclabs.org:user:phc_vivado_wrapper:1.0,
+###   packaged from ~/SoCLabs/ptp-hardware-clock-ahb by fpga/vivado_ip/phc)
+###   is instantiated in this BD and replaces the previous xlconstant
+###   tie-offs that lived at lines 39-49 / 262-308. Connections:
+###     phc_clk           = clk_wiz clk_out2 (50 MHz, shared MMCM with hclk)
+###     phc_resetn        = proc_sys_reset peripheral_aresetn
+###     phc/apb           = AXI SmartConnect M06 -> axi_apb_bridge -> phc.apb
+###     hw_capture_0_i    = tidelink_0/phc_hw_capture OR pmod_b_trig_i  (one-shot OR)
+###     hw_cap_*_0_o      -> tidelink_0/phc_hw_cap_*
+###     hw_set_*_0_i      <- tidelink_0/phc_hw_set_*  (servo phase step)
+###     hw_adj_*_0_i      <- tidelink_0/phc_hw_adj_*  (servo freq steer)
+###     seconds_o / nanoseconds_o -> tidelink_0/phc_seconds, phc_nanoseconds
+###     pps_o             -> tidelink_0/phc_pps + led1 OR'd with role indicator
+###     pps_irq / alarm_irq  -> aggregated alongside ptp_irq (future expansion)
+###   The default NS_INCR (4) is for 250 MHz ASIC silicon. FPGA bring-up
+###   scripts MUST program NS_INCR=20 before CTRL.EN — see
+###   docs/PTP_HW_TEST_PLAN.md §7 R2.
+###
+### NOTE (PMOD-B cross-board trigger):
+###   PMOD-B pin 1 (FPGA ball Y16, JB1 on PYNQ-Z2 v1.0) is wired as a
+###   board-to-board jumper between the two PYNQ-Z2s. The same pin is BOTH
+###   driven (output) and sensed (input) via an axi_gpio at 0x4404_2000 —
+###   one board pulses, the other captures. The signal is ALSO OR'd into the
+###   PHC's hw_capture_0_i so the trigger edge latches the local PHC time on
+###   both sides simultaneously. See docs/PTP_HW_TEST_PLAN.md §3.1 (Option A).
 ###
 ### NOTE (role_strap_i):
 ###   Driven by an AXI GPIO at 0x4404_0000 (bit 0). The PYNQ runtime
@@ -108,6 +125,14 @@ proc create_root_design { parentCell } {
     create_bd_port -dir O           led1
     create_bd_port -dir O           led2
     create_bd_port -dir O           led3
+
+    # PMOD-B cross-board trigger (Option A capture mechanism).
+    # Bidirectional — same pin is driven AND sensed via an IOBUF in the
+    # board wrapper. The BD exposes separate _o (drive) and _i (sense)
+    # ports; the board wrapper allocates one PMOD pin to a tristate I/O
+    # with the _t = '0' when this board is the trigger driver.
+    create_bd_port -dir O           pmod_b_trig_o
+    create_bd_port -dir I           pmod_b_trig_i
 
     # DDR3 and Fixed IO (Zynq PS pass-through)
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:ddrx_rtl:1.0 DDR
@@ -171,19 +196,21 @@ proc create_root_design { parentCell } {
         -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0]
 
     #--------------------------------------------------------------------------
-    # AXI SmartConnect: 1 PS master -> 6 slaves (paired adds the strap GPIO)
+    # AXI SmartConnect: 1 PS master -> 8 slaves (PHC integration adds 2 ports)
     #   M00 -> axi_ahb_sub
     #   M01 -> axi_ahb_tx
     #   M02 -> axi_ahb_fifo
     #   M03 -> axi_ahb_ptp
     #   M04 -> axi_apb
-    #   M05 -> axi_gpio_strap   (paired-only; selects role_strap_i at runtime)
+    #   M05 -> axi_gpio_strap     (paired-only; selects role_strap_i at runtime)
+    #   M06 -> axi_apb_phc        (PHC hardware clock APB)
+    #   M07 -> axi_gpio_pmod_trig (PMOD-B cross-board trigger: out+in)
     #--------------------------------------------------------------------------
     set smc [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc]
     set_property -dict [list \
         CONFIG.NUM_SI   {1} \
-        CONFIG.NUM_MI   {6} \
+        CONFIG.NUM_MI   {8} \
         CONFIG.NUM_CLKS {1} \
     ] $smc
 
@@ -254,50 +281,81 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     # TideLink IP (packaged by Wave A3)
     # VLNV: soclabs.org:user:tidelink_vivado_wrapper:1.0
+    #
+    # Override USE_IDELAY=0 on this non-production target so we don't need a
+    # 200 MHz IDELAYCTRL reference clock from the MMCM (the -all variants
+    # add CLKOUT3=200 MHz for that). The PHC integration this BD validates
+    # is orthogonal to per-lane RX delay tuning, and the test plan campaign
+    # ultimately runs on the -all targets where USE_IDELAY=1 is wired up.
     #--------------------------------------------------------------------------
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
-
-    # Discrete tie-offs via xlconstant cells
-    # PHC nanoseconds (30-bit zero)
-    set const_ns [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_ns]
     set_property -dict [list \
-        CONFIG.CONST_WIDTH {30} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_ns
+        CONFIG.USE_IDELAY {0} \
+    ] $tl
 
-    # PHC seconds (48-bit zero)
-    set const_sec [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_sec]
-    set_property -dict [list \
-        CONFIG.CONST_WIDTH {48} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_sec
+    #--------------------------------------------------------------------------
+    # PHC Hardware Clock IP — replaces the old xlconstant tie-offs.
+    # APB slave on M06; outputs feed tidelink_0/phc_* inputs; inputs receive
+    # tidelink_0/phc_hw_set_* and phc_hw_adj_* (autonomous servo).
+    # Address: 4 KB at 0x4405_0000.
+    #--------------------------------------------------------------------------
+    set phc [create_bd_cell -type ip \
+        -vlnv soclabs.org:user:phc_vivado_wrapper:1.0 phc_0]
 
-    # PHC hw_cap_seconds (48-bit zero)
-    set const_cap_sec [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_cap_sec]
+    #--------------------------------------------------------------------------
+    # AXI4-Lite -> APB bridge for the PHC. Separate from the existing apb
+    # bridge so the PHC's 12-bit address space is decoded independently of
+    # the unified TideLink config bus.
+    #--------------------------------------------------------------------------
+    set phc_apb_bridge [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:axi_apb_bridge:3.0 axi_apb_phc]
     set_property -dict [list \
-        CONFIG.CONST_WIDTH {48} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_cap_sec
+        CONFIG.C_APB_NUM_SLAVES  {1} \
+        CONFIG.C_M_APB_PROTOCOL  {apb4} \
+    ] $phc_apb_bridge
 
-    # PHC hw_cap_nanoseconds (30-bit zero)
-    set const_cap_ns [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_cap_ns]
+    #--------------------------------------------------------------------------
+    # PMOD-B cross-board trigger GPIO. Single AXI GPIO, dual-channel.
+    #   ch1 (1-bit OUTPUT) drives pmod_b_trig_o (the wire to the peer board).
+    #   ch2 (1-bit INPUT)  senses pmod_b_trig_i (incoming from peer board).
+    # Host software pulses ch1, the peer reads ch2 and/or its PHC HW_CAP.
+    # The pmod_b_trig_i signal is ALSO OR'd into PHC hw_capture_0_i so the
+    # local PHC latches its time when the peer pulses (Option A, §3.1).
+    #--------------------------------------------------------------------------
+    set pmod_gpio [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_pmod_trig]
     set_property -dict [list \
-        CONFIG.CONST_WIDTH {30} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_cap_ns
+        CONFIG.C_GPIO_WIDTH    {1} \
+        CONFIG.C_GPIO2_WIDTH   {1} \
+        CONFIG.C_ALL_OUTPUTS   {1} \
+        CONFIG.C_ALL_INPUTS_2  {1} \
+        CONFIG.C_IS_DUAL       {1} \
+        CONFIG.C_DOUT_DEFAULT  {0x00000000} \
+    ] $pmod_gpio
 
-    # PHC hw_cap_sub_nanoseconds (32-bit zero)
-    set const_cap_subns [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_cap_subns]
+    #--------------------------------------------------------------------------
+    # PHC hw_capture_0_i is OR'd from two sources:
+    #   * tidelink_0/phc_hw_capture (TideLink PTP FC handshake)
+    #   * pmod_b_trig_i  (cross-board trigger, sense side)
+    # Use a 2-input xlconcat + util_reduced_logic (OR) — or simply rely on
+    # an xlslice combination. Simplest: xlconcat to gather, util_reduced_logic
+    # to OR-reduce.
+    #--------------------------------------------------------------------------
+    set hw_cap_concat [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_phc_hw_cap]
     set_property -dict [list \
-        CONFIG.CONST_WIDTH {32} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_cap_subns
+        CONFIG.NUM_PORTS  {2} \
+        CONFIG.IN0_WIDTH  {1} \
+        CONFIG.IN1_WIDTH  {1} \
+    ] $hw_cap_concat
+
+    set hw_cap_or [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:util_reduced_logic:2.0 util_reduced_logic_hw_cap]
+    set_property -dict [list \
+        CONFIG.C_OPERATION {or} \
+        CONFIG.C_SIZE      {2} \
+    ] $hw_cap_or
 
     # nego_priority_i (16-bit mid-priority = 0x8000)
     set const_nego [create_bd_cell -type ip \
@@ -346,14 +404,23 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_ahb_fifo/s_axi_aclk] \
                    [get_bd_pins axi_ahb_ptp/s_axi_aclk] \
                    [get_bd_pins axi_apb/s_axi_aclk] \
+                   [get_bd_pins axi_apb_phc/s_axi_aclk] \
                    [get_bd_pins axi_gpio_strap/s_axi_aclk] \
+                   [get_bd_pins axi_gpio_pmod_trig/s_axi_aclk] \
                    [get_bd_pins tidelink_0/hclk] \
                    [get_bd_pins tidelink_0/user_ref_clk] \
                    [get_bd_pins tidelink_0/scan_clk]
 
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
+    #   Drives both the tidelink PHC CDC bridge and the PHC IP itself.
+    #   Also connects to idelay_ref_clk — USE_IDELAY=0 on this target means
+    #   that path is logically unused, but validate_bd_design still requires
+    #   the clock port to be connected. -all targets drive idelay_ref_clk
+    #   from a dedicated 200 MHz MMCM output.
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
-                   [get_bd_pins tidelink_0/phc_clk]
+                   [get_bd_pins tidelink_0/phc_clk] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk] \
+                   [get_bd_pins phc_0/clk]
 
     #-- Reset fan-out (active-low peripheral_aresetn)
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
@@ -363,10 +430,13 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_ahb_fifo/s_axi_aresetn] \
                    [get_bd_pins axi_ahb_ptp/s_axi_aresetn] \
                    [get_bd_pins axi_apb/s_axi_aresetn] \
+                   [get_bd_pins axi_apb_phc/s_axi_aresetn] \
                    [get_bd_pins axi_gpio_strap/s_axi_aresetn] \
+                   [get_bd_pins axi_gpio_pmod_trig/s_axi_aresetn] \
                    [get_bd_pins tidelink_0/hresetn] \
                    [get_bd_pins tidelink_0/poresetn] \
-                   [get_bd_pins tidelink_0/phc_resetn]
+                   [get_bd_pins tidelink_0/phc_resetn] \
+                   [get_bd_pins phc_0/resetn]
 
     #-- AXI: PS M_AXI_GP0 -> SmartConnect slave
     connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
@@ -408,6 +478,20 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins axi_gpio_strap/gpio_io_o] \
                    [get_bd_pins tidelink_0/role_strap_i]
 
+    #-- AXI: SmartConnect M06 -> APB bridge -> phc_0/apb
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M06_AXI] \
+                        [get_bd_intf_pins axi_apb_phc/AXI4_LITE]
+    connect_bd_intf_net [get_bd_intf_pins axi_apb_phc/APB_M] \
+                        [get_bd_intf_pins phc_0/apb]
+
+    #-- AXI: SmartConnect M07 -> AXI GPIO PMOD-B trigger (out + sense)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M07_AXI] \
+                        [get_bd_intf_pins axi_gpio_pmod_trig/S_AXI]
+    connect_bd_net [get_bd_pins axi_gpio_pmod_trig/gpio_io_o] \
+                   [get_bd_ports pmod_b_trig_o]
+    connect_bd_net [get_bd_ports pmod_b_trig_i] \
+                   [get_bd_pins axi_gpio_pmod_trig/gpio2_io_i]
+
     #-- GPIO PHY pads -> external ports
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_ports pad_clk_tx]
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
@@ -448,13 +532,45 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins xlconcat_irq/dout] \
                    [get_bd_pins processing_system7_0/IRQ_F2P]
 
-    #-- PHC tie-offs (first bring-up — Q4 to replace with PHC IP)
-    connect_bd_net [get_bd_pins xlconst_phc_ns/dout]      [get_bd_pins tidelink_0/phc_nanoseconds]
-    connect_bd_net [get_bd_pins xlconst_phc_sec/dout]     [get_bd_pins tidelink_0/phc_seconds]
-    connect_bd_net [get_bd_pins xlconst_phc_cap_sec/dout] [get_bd_pins tidelink_0/phc_hw_cap_seconds]
-    connect_bd_net [get_bd_pins xlconst_phc_cap_ns/dout]  [get_bd_pins tidelink_0/phc_hw_cap_nanoseconds]
-    connect_bd_net [get_bd_pins xlconst_phc_cap_subns/dout] \
+    #-- PHC IP <-> tidelink_0 wiring (replaces former xlconstant tie-offs)
+    #
+    # Counter outputs: PHC -> tidelink (HW sync initiator timing + PPS)
+    connect_bd_net [get_bd_pins phc_0/nanoseconds_o] \
+                   [get_bd_pins tidelink_0/phc_nanoseconds]
+    connect_bd_net [get_bd_pins phc_0/seconds_o] \
+                   [get_bd_pins tidelink_0/phc_seconds]
+    connect_bd_net [get_bd_pins phc_0/pps_o] \
+                   [get_bd_pins tidelink_0/phc_pps]
+
+    # HW capture readouts: PHC -> tidelink
+    connect_bd_net [get_bd_pins phc_0/hw_cap_seconds_0_o] \
+                   [get_bd_pins tidelink_0/phc_hw_cap_seconds]
+    connect_bd_net [get_bd_pins phc_0/hw_cap_nanoseconds_0_o] \
+                   [get_bd_pins tidelink_0/phc_hw_cap_nanoseconds]
+    connect_bd_net [get_bd_pins phc_0/hw_cap_sub_nanoseconds_0_o] \
                    [get_bd_pins tidelink_0/phc_hw_cap_sub_nanoseconds]
+
+    # Servo phase-step + frequency-steer: tidelink -> PHC
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_time] \
+                   [get_bd_pins phc_0/hw_set_time_0_i]
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_seconds] \
+                   [get_bd_pins phc_0/hw_set_seconds_0_i]
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_nanoseconds] \
+                   [get_bd_pins phc_0/hw_set_nanoseconds_0_i]
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_adj_valid] \
+                   [get_bd_pins phc_0/hw_adj_valid_0_i]
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_adj_ns_incr_frac] \
+                   [get_bd_pins phc_0/hw_adj_ns_incr_frac_0_i]
+
+    # hw_capture_0_i = tidelink_0/phc_hw_capture OR pmod_b_trig_i
+    connect_bd_net [get_bd_pins tidelink_0/phc_hw_capture] \
+                   [get_bd_pins xlconcat_phc_hw_cap/In0]
+    connect_bd_net [get_bd_ports pmod_b_trig_i] \
+                   [get_bd_pins xlconcat_phc_hw_cap/In1]
+    connect_bd_net [get_bd_pins xlconcat_phc_hw_cap/dout] \
+                   [get_bd_pins util_reduced_logic_hw_cap/Op1]
+    connect_bd_net [get_bd_pins util_reduced_logic_hw_cap/Res] \
+                   [get_bd_pins phc_0/hw_capture_0_i]
 
     #-- Misc tie-offs (discrete scalar 1-bit values handled in wrapper,
     #   but multi-bit constants are easier as xlconstant in the BD)
@@ -501,6 +617,14 @@ proc create_root_design { parentCell } {
     # strap GPIO: 4 KB at 0x4404_0000 (paired-only)
     assign_bd_address -offset 0x44040000 -range 0x00001000 \
         [get_bd_addr_segs {axi_gpio_strap/S_AXI/Reg}]
+
+    # pmod-trig GPIO: 4 KB at 0x4404_2000 (cross-board trigger out+in)
+    assign_bd_address -offset 0x44042000 -range 0x00001000 \
+        [get_bd_addr_segs {axi_gpio_pmod_trig/S_AXI/Reg}]
+
+    # phc apb: 4 KB at 0x4405_0000 (APB_ADDR_W=12)
+    assign_bd_address -offset 0x44050000 -range 0x00001000 \
+        [get_bd_addr_segs {phc_0/apb/Reg}]
 
     ###########################################################################
     # VALIDATE AND SAVE

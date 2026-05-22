@@ -105,9 +105,14 @@ endif
 # Build output directories
 BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
+PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
 RUN_DIR         := $(BUILD_DIR)/run
 PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
 OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
+
+# PHC sibling repo (sourced by package_phc_ip; defaults assume the parallel
+# SoC Labs checkout, override with PHC_REPO_DIR for CI / alternate layouts).
+PHC_REPO_DIR    ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb
 # Per-TARGET Vivado working dir. build_design cd's here and writes its
 # -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
 # concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
@@ -142,10 +147,10 @@ SKIP_PACKAGE_IP   ?=
 ifeq ($(SKIP_PACKAGE_IP),1)
 BUILD_DESIGN_DEPS :=
 else
-BUILD_DESIGN_DEPS := package_ip
+BUILD_DESIGN_DEPS := package_ip package_phc_ip
 endif
 
-.PHONY: all package_ip build_design clean program deploy \
+.PHONY: all package_ip package_phc_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
         resolve_board farm_check farm_build build_pair_concurrent \
@@ -177,6 +182,27 @@ package_ip: check-wrapper-params
 	    -journal $(RUN_DIR)/package_ip.jou
 
 #-----------------------------------------------------------------------------
+# Step 1b: Package PHC (ptp-hardware-clock-ahb) as a Vivado XCI IP
+# The PHC source repo is a sibling checkout (PHC_REPO_DIR). Outputs a separate
+# IP repo so the build_design step can add it alongside FPGA_IP_REPO.
+#-----------------------------------------------------------------------------
+package_phc_ip:
+	@if [ ! -d "$(PHC_REPO_DIR)" ]; then \
+	    echo "ERROR: PHC_REPO_DIR=$(PHC_REPO_DIR) not found." >&2; \
+	    echo "       Clone ptp-hardware-clock-ahb next to tidelink, or set PHC_REPO_DIR." >&2; \
+	    exit 2; \
+	fi
+	@mkdir -p $(RUN_DIR) $(PHC_IP_OUTPUT_DIR)
+	cd $(RUN_DIR) && \
+	export PHC_REPO_DIR=$(PHC_REPO_DIR) && \
+	export PHC_COMPONENT_LIB=$(PHC_IP_OUTPUT_DIR) && \
+	export FPGA_VENDOR=$(FPGA_VENDOR) && \
+	export FPGA_CORE_REV=$(FPGA_CORE_REV) && \
+	vivado -mode batch -source $(VIVADO_IP_DIR)/phc/package_phc_ip.tcl \
+	    -log $(RUN_DIR)/package_phc_ip.log \
+	    -journal $(RUN_DIR)/package_phc_ip.jou
+
+#-----------------------------------------------------------------------------
 # Step 2: Build block design + synthesis + implementation + bitstream
 #-----------------------------------------------------------------------------
 build_design: $(BUILD_DESIGN_DEPS)
@@ -185,6 +211,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_PART=$(XILINX_PART) && \
 	export FPGA_PROJECT_DIR=$(PROJECT_DIR) && \
 	export FPGA_IP_REPO=$(IP_OUTPUT_DIR) && \
+	export FPGA_PHC_IP_REPO=$(PHC_IP_OUTPUT_DIR) && \
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \

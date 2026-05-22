@@ -134,6 +134,14 @@ proc tidelink_check_cw_count { phase_name } {
 set part        $env(FPGA_PART)
 set project_dir $env(FPGA_PROJECT_DIR)
 set ip_repo     $env(FPGA_IP_REPO)
+# PHC IP repo (packaged separately from tidelink). Optional — if unset, the
+# PHC IP is assumed absent and the BD's PHC tie-off path is used. Block
+# designs that instantiate the PHC IP will fail update_ip_catalog without it.
+if { [info exists env(FPGA_PHC_IP_REPO)] && $env(FPGA_PHC_IP_REPO) ne "" } {
+    set phc_ip_repo $env(FPGA_PHC_IP_REPO)
+} else {
+    set phc_ip_repo ""
+}
 set target_dir  $env(FPGA_TARGET_DIR)
 set output_dir  $env(FPGA_OUTPUT_DIR)
 
@@ -156,8 +164,12 @@ puts "==========================================="
 # STEP 1: Create Vivado project
 create_project tidelink_project $project_dir -part $part -force
 
-# STEP 2: Add IP repository
-set_property ip_repo_paths $ip_repo [current_project]
+# STEP 2: Add IP repositories (tidelink + optional PHC)
+if { $phc_ip_repo ne "" } {
+    set_property ip_repo_paths [list $ip_repo $phc_ip_repo] [current_project]
+} else {
+    set_property ip_repo_paths $ip_repo [current_project]
+}
 update_ip_catalog
 
 # STEP 3: Source block design

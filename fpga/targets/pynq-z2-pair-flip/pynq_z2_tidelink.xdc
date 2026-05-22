@@ -62,6 +62,10 @@ set_property -dict { PACKAGE_PIN W8  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[5]
 set_property -dict { PACKAGE_PIN V6  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6]}]  ;# J13 pin 8   (peer pad_tx[6])
 set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}]  ;# J13 pin 36  (peer pad_tx[7])
 
+#-- PMOD-B cross-board trigger (Option A capture, identical pin on both sides)
+# JB1 / Y16 — bidirectional, PULLDOWN keeps idle low.
+set_property -dict { PACKAGE_PIN Y16 IOSTANDARD LVCMOS33 PULLDOWN TRUE } [get_ports pmod_b_trig]
+
 #-- Board LEDs (unchanged from pynq-z2-pair) ----------------------------------
 set_property -dict { PACKAGE_PIN R14 IOSTANDARD LVCMOS33 } [get_ports led0]         ;# LD0 — link_active
 set_property -dict { PACKAGE_PIN P14 IOSTANDARD LVCMOS33 } [get_ports led1]         ;# LD1 — role_is_master

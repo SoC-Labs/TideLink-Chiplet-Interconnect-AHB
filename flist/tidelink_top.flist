@@ -24,6 +24,7 @@ ${TIDELINK_HOME}/src/rtl/tl_addr_trans_cam.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
 
 // PTP timestamp bridge and autonomous servo
+${TIDELINK_HOME}/src/rtl/tidelink_mul_iter.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
@@ -34,6 +35,11 @@ ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 // Recovered-RX-clock global BUFG (§9 clock fix; instantiated by the chiplet
 // controller; USE_CLKBUF=0 default → bit-exact passthrough, no primitive).
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
+// §9 PHY alignment: per-lane lock checker + auto-calibration FSM
+// (instantiated by axi_chiplet_controller, defined in TideLink src/rtl)
+${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv

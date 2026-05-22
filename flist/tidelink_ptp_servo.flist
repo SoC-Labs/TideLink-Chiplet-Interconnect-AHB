@@ -1,0 +1,3 @@
++incdir+${TIDELINK_HOME}/src/rtl
+${TIDELINK_HOME}/src/rtl/tidelink_mul_iter.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv

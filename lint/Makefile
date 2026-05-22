@@ -14,11 +14,32 @@ export CMSDK_FPGA_SRAM_V
 MODULE ?= tidelink
 
 # ── All lintable modules ─────────────────────────────────────────
-# Standalone modules (no external IP dependencies)
-STANDALONE_MODULES = tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs
+# Standalone modules — no CMSDK; deps submodule (axi-chiplet-controller)
+# is always present via git submodule, so apb4_if-dependent modules live here.
+STANDALONE_MODULES = \
+  tidelink_fifo_ctrl \
+  tidelink_returner \
+  tidelink_apb_regs \
+  tidelink_fc_adapter \
+  tidelink_apb_addr_ctrl \
+  tidelink_clkfreq_check \
+  tidelink_idelay_rx \
+  tidelink_lane_checker \
+  tidelink_mul_iter \
+  tidelink_perf \
+  tidelink_phc_cdc \
+  tidelink_phy_align_regs \
+  tidelink_phy_align_calibrator \
+  tidelink_ptp \
+  tidelink_ptp_servo \
+  tidelink_rxclk_buf \
+  tidelink_addr_translation \
+  tl_addr_trans_cam \
+  tl_addr_trans_regs \
+  tidelink_addr_translator
 
-# Modules requiring CMSDK IP (cmsdk_ahb_to_sram, cmsdk_fpga_sram)
-CMSDK_MODULES = tidelink_fifo tidelink
+# Modules requiring CMSDK IP (cmsdk_ahb_to_sram / cmsdk_ahb_to_apb)
+CMSDK_MODULES = tidelink_fifo tidelink tidelink_ahb tidelink_fifo_ahb
 
 # ── Module-to-top mapping ────────────────────────────────────────
 # Flist basenames and SV module names diverge after the FIFO rename.
@@ -132,11 +153,11 @@ help:
 	@echo "  make gui                       - Open report browser"
 	@echo "  make clean                     - Remove generated files"
 	@echo ""
-	@echo "Standalone modules (no external deps):"
-	@echo "  $(STANDALONE_MODULES)"
+	@echo "Standalone modules (no CMSDK; deps submodule required for apb4_if):"
+	@printf '  %s\n' $(STANDALONE_MODULES)
 	@echo ""
 	@echo "CMSDK-dependent modules:"
-	@echo "  $(CMSDK_MODULES)"
+	@printf '  %s\n' $(CMSDK_MODULES)
 	@echo ""
 	@echo "CMSDK_DIR: $(CMSDK_DIR)"
 	@echo ""

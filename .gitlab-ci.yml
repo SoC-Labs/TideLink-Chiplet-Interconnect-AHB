@@ -171,9 +171,9 @@ hal-lint:
     - export TIDELINK_HOME="$WORK_DIR"
   script:
     - echo "HAL version:" && hal -version 2>&1 | head -1
-    # Lint all standalone FIFO modules (no CMSDK dependency)
+    # Lint all standalone modules (no CMSDK; covers ~20 TideLink modules)
     - make -C "$WORK_DIR/lint" lint-standalone
-    # Lint CMSDK-dependent modules (tidelink_fifo, tidelink)
+    # Lint all modules including CMSDK-dependent (full design coverage)
     - make -C "$WORK_DIR/lint" lint-each
   after_script:
     - cp -r "$WORK_DIR/lint/"*_hal.log "$WORK_DIR/lint/"*_hal.xml . 2>/dev/null || true

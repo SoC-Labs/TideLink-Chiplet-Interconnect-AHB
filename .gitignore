@@ -117,3 +117,6 @@ imp/ASIC/*
 *.map
 *.tdm
 *.attach
+
+spyglass.time
+spyglass.out

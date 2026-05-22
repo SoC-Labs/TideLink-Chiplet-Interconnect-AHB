@@ -53,6 +53,23 @@ set_property IODELAY_GROUP tidelink_rx_idelay \
     [get_cells -hierarchical -filter {REF_NAME == IDELAYCTRL}]
 
 #-----------------------------------------------------------------------------
+# 1b. Quasi-static IDELAYE2 tap-load path (CNTVALUEIN) — false path.
+#
+#    The per-lane delay tap (CNTVALUEIN) is driven from the calibrator's
+#    swi_phase_offset register on the 25 MHz core clock (clk_out1) into the
+#    IDELAYE2, which for VAR_LOAD is timed against the 200 MHz IDELAYCTRL ref
+#    (clk_out3). Vivado times this as a tight single-cycle 25->200 MHz crossing
+#    (5 ns req) it cannot meet (~-0.3 ns). But the tap is QUASI-STATIC: the
+#    calibrator drives it, holds it stable, pulses load, and it does not change
+#    again until the next (link-down) recalibration — so this is a false path,
+#    not a real single-cycle CDC. Without it the build shows a spurious setup
+#    violation on CNTVALUEIN[*] (functionally benign — stable when latched —
+#    but it fails timing sign-off / the msg gate).
+#-----------------------------------------------------------------------------
+set_false_path -to [get_pins -filter {REF_PIN_NAME =~ CNTVALUEIN[*]} \
+    -of_objects [get_cells -hierarchical -filter {REF_NAME == IDELAYE2}]]
+
+#-----------------------------------------------------------------------------
 # 2. IDELAYCTRL reference clock.
 #
 #    IDELAYCTRL.REFCLK requires a stable 200 MHz clock (REFCLK_FREQUENCY=200.0

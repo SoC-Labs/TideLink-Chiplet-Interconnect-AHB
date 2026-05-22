@@ -164,10 +164,11 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # pin `tidelink_design_i/clk_wiz_0/clk_out1`. Old wildcard
 # `*/clk_wiz_0*/clk_out1` matched >1 pin -> [Constraints 18-359]. Mirror
 # of the pair-all fix.
-set hclk_pin [lindex [get_pins -hier -filter \
-    {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] 0]
+# Declarative: inline the get_pins (no `lindex`/`set`, which Vivado rejects in
+# XDC -> Designutils 20-1307 -> the whole pad_clk_tx_fwd stanza was silently
+# dropped). The exact (wildcard-free) NAME filter resolves to exactly one pin.
 create_generated_clock -name pad_clk_tx_fwd \
-    -source $hclk_pin \
+    -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] \
     -divide_by 1 \
     [get_ports pad_clk_tx]
 

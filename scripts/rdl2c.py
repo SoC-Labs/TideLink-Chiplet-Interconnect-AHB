@@ -74,8 +74,9 @@ RE_DYN_BOOL = re.compile(
     r'^(\s*)(\w+)\s*->\s*(\w+)\s*;\s*$'
 )
 # Field declaration:  field {} name[width] = reset;  or  field {} name[hi:lo] = reset;
+# Trailing // comment (e.g. "// [20:17]") is allowed and ignored.
 RE_FIELD_DECL = re.compile(
-    r'^(\s*)field\s*\{([^}]*)\}\s*(\w+)\s*(\[[^\]]+\])?\s*(=\s*.+?)?\s*;\s*$'
+    r'^(\s*)field\s*\{([^}]*)\}\s*(\w+)\s*(\[[^\]]+\])?\s*(=\s*.+?)?\s*;(\s*//.*)?$'
 )
 
 
@@ -104,7 +105,7 @@ def preprocess_rdl(source: str) -> str:
         # Check for field declaration
         m = RE_FIELD_DECL.match(line)
         if m:
-            indent, existing_body, fname, width_part, reset_part = m.groups()
+            indent, existing_body, fname, width_part, reset_part, _comment = m.groups()
             existing_body = (existing_body or '').strip()
             width_part = width_part or ''
             reset_part = reset_part or ''

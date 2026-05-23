@@ -238,7 +238,16 @@ module tidelink_ptp #(
                     tx_state_next = TX_WAIT_IDLE;
             end
             TX_WAIT_IDLE: begin
-                if (tx_router_idle && tx_data_latched_r)
+                // tx_router_idle is sourced from the Wlink LL TX `link_idle`
+                // signal in the tx_link_clk domain. In FPGA bring-up the link
+                // carries periodic LP-state (preq/pstate) frames that hold
+                // link_idle low for long bursts, so the original hard gate
+                // can deadlock the PTP TX path. The force_en bit (HW_SYNC_CTRL
+                // bit[2]) lets software bypass the gate when sub-cycle TX
+                // timestamp jitter is acceptable (typical bring-up). Cocotb
+                // gate-tests (PTP-03/14/15) leave force_en=0 so they still
+                // exercise the original behaviour.
+                if ((tx_router_idle || hw_sync_force_en_r) && tx_data_latched_r)
                     tx_state_next = TX_SEND;
             end
             TX_SEND: begin

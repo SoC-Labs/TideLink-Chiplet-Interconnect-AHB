@@ -104,8 +104,13 @@ apb_w "$SLAVE_IP"  $APB_OFF_SERVO_KI          8388608      >/dev/null  # 0x0080_
 apb_w "$SLAVE_IP"  $APB_OFF_SERVO_STEP_THRESH 1000000      >/dev/null  # 1 ms
 
 # 5. Start HW sync initiator on master
-echo "[5] Starting HW_SYNC initiator on master"
-apb_w "$MASTER_IP" $APB_OFF_HW_SYNC_CTRL      1            >/dev/null
+# HW_SYNC_CTRL = {[2]=force_en, [1]=seq_clear (W1C), [0]=enable}
+# force_en=1 bypasses both the phc_locked_i gate AND the tx_router_idle TX gate,
+# the latter of which holds low for long bursts under Wlink LP-state traffic in
+# FPGA bring-up (would otherwise deadlock the PTP TX FSM in TX_WAIT_IDLE — see
+# docs/PHC_PHASE1_HW_REPORT.md §"Phase-1 closeout").
+echo "[5] Starting HW_SYNC initiator on master (force_en | enable = 0x5)"
+apb_w "$MASTER_IP" $APB_OFF_HW_SYNC_CTRL      5            >/dev/null
 
 # 6. Convergence loop
 echo "[6] Convergence loop (up to ${DURATION}s)"

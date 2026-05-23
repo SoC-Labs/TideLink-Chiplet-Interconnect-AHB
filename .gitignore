@@ -120,3 +120,13 @@ imp/ASIC/*
 
 spyglass.time
 spyglass.out
+# 2026-05-23 — repo-simplification §3-C: cover cdc/ workspace dirs of any
+# module (was just cdc/tidelink_top before; the new sign-off flow also
+# creates cdc/tidelink_top_new etc.).
+cdc/tidelink_top*
+
+# 2026-05-23 — repo-simplification §1-C: root Vivado scratch logs (these
+# already get untracked-on-disk but were not in the ignore set, so any
+# accidental `git add .` would pick them up).
+/vivado.log
+/vivado_*.log

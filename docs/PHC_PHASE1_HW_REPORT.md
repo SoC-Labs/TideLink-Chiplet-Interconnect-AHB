@@ -385,6 +385,144 @@ provably did so).
 
 ---
 
+## Build #9 retry #2 (2026-05-23 18:21, handoff brief)
+
+Acquired bridge1 lease (`XDYpIjMhwuVphA1ddRJnPQ`, released cleanly).
+Restaged build #9 bitstreams (md5 `1feb92375b3e…` / `27d4b5271d07…`)
+from `~/td_milestone_stage/` into `/tmp/tidelink_deploy/` — the stale
+older bins (`65ad6caf…` / `e4f4e48f…`) that were already there would
+have produced wrong-build results.
+
+### Results
+| Step | Verdict | Evidence |
+|---|---|---|
+| **B0** Converge | **PASS** iter 1 (16/16 both sides) | `die_a/die_b lk=0xff cd=1` |
+| **B1** PHC sync | **FAIL** | `locked_streak=0`, slave RX captures 0 packets after 30 s |
+| B2–B4 | BLOCKED | precondition fail |
+
+### Diagnostic data captured
+
+| Probe | Master | Slave |
+|---|---|---|
+| `HW_SYNC_STATUS` after 30 s | `0x00002be1` (seq≈2752) | `0x00000000` |
+| `HW_SYNC_STATUS` 3 s sample | `0x00019dc5` (seq≈26225) | n/a |
+| Sustained seq rate | ~870/s (much higher than 128 Hz interval) | — |
+| `PTP_CTRL` (immediately after step [4]) | `0x1` (enabled) | `0x1` (enabled, readback confirmed) |
+| `PTP_RX_PAYLOAD` (post-test) | — | `0x0` (no PTP RX packet ever latched) |
+| `LinkInterrupts` (cleared then re-read after 3 s) | `0x00020202` — `ecc_corrected` bit[8] set (slave→master RX is alive) | `0x00000000` — no RX-side activity at all |
+| Wlink `EnableReset` (cfg `0x44030208`) | `0x00027f07` (enable + lltx_en + llrx_en + spmax=0x7f + preq=0x2) | same `0x00027f07` |
+
+### Root-cause analysis
+
+Master is generating + presenting short packets (data_id `0x50`) to
+its TX router at high rate. Master's RX path is logging
+`ecc_corrected` events from slave-originated traffic — so the
+slave→master link direction works, the lower lanes/ECC machinery is
+sound, and the slave's TX router is alive.
+
+The **slave never logs a single PTP RX packet**: slave's
+`LinkInterrupts.crc_errors / ecc_corrupted / ecc_corrected` all stay
+at zero AND `PTP_RX_PAYLOAD` stays at zero AND the servo's WAIT_SYNC
+state never advances. The asymmetry is unambiguous: master→slave
+short-packet traffic is being dropped *somewhere on the slave* before
+it reaches the slave's `ShortPacketToWlink` adapter's RX FIFO.
+
+Candidate failure points (ranked by likelihood after this session):
+
+1. **Slave's short-packet RX path is silently dropping the packet
+    at the link layer.** `WlinkRxLinkLayer.is_short_pkt` requires
+    `corrected_ph(7,0) <= swi_short_packet_max && != 0 && ~corrupted`.
+    `swi_short_packet_max` reads `0x7f` on both sides; `0x50 < 0x7f`
+    passes. ECC check is per-packet — the ECC byte for SYNC short
+    packets is computed by `lltx` from the data_id and 16-bit payload.
+    Possible RTL gap: slave's `WlinkRxLinkLayer` saw the packet but
+    `is_short_pkt_prev` debounce or the active-lanes counter
+    misclassified it. **No observability today** — no APB register
+    surfaces `WlinkRxLinkLayer` packet counters or per-data-id RX
+    counts, which is exactly what we need.
+2. **Slave's `ShortPacketToWlink.rx_pkt_valid` is firing but the
+    async FIFO read pointer never advances** because `rx_accept` (=
+    `ptp_sp_rx_valid & ptp_enable_r`) is held low. We *did* set
+    `PTP_CTRL=1` and read it back as 1 in the test window — but post-
+    test the slave wedged and we lost the live-test confirmation.
+3. **Slave board wedge under APB-burst load** — the slave (z2_03)
+    became fully unresponsive (`No route to host`, no SSH, no ping)
+    midway through our diagnostic probes. `fpgahub board reset
+    pynq_z2_03_pl --list` shows **zero configured reset methods** —
+    same pattern that blocked the first build #9 attempt on z2_02.
+    This board state alone explains the post-test "PTP_CTRL reads 0"
+    readings; do NOT take those as evidence of an RTL latch bug
+    (initial post-step-[4] readback DID show 1).
+
+### What the next session needs
+
+1. **Restore slave board (z2_03) to ping-able state** — physical
+    power-cycle. There is no remote recovery path; the previous
+    z2_02 recovery required the same.
+2. **Instrument the short-packet RX path** before re-running. Useful
+    observability that does NOT exist today:
+    - Wlink RX short-packet count (per data_id, or just total) at an
+      APB-readable register.
+    - `ShortPacketToWlink.rx_fifo.wfull / rempty` flags exposed.
+    - A "last-received data_id" sticky register.
+    Without these, every retry is blind. The minimal RTL add is a
+    16-bit RX counter in `ShortPacketToWlink` (rx_link_clk domain) +
+    a 2-FF synchronizer to an APB-readable slot in TideLink Region 3.
+    That's a single-file Scala change + a 1-reg add in
+    `tidelink_apb_regs.sv` + a wire pass-through in `tidelink_top.sv`.
+3. **Alternatively** — try the **smallest possible script-only
+    workaround first** before any rebuild: re-issue `PTP_CTRL=1` on
+    the slave *during* the convergence loop (every iteration) to
+    rule out the slave's `ptp_enable_r` getting silently cleared
+    between step [4] and the actual SYNC arrival window. ETA 5 min,
+    no rebuild needed; if it works we've isolated to a sticky-bit
+    issue and a 1-line script fix is the close-out.
+4. **Provisionally** — apply Bug-#3-style `(* keep *) (* dont_touch *)`
+    annotation to `ptp_enable_r`'s declaration in `tidelink_ptp.sv` —
+    if synth pruned the FF the same way it pruned `mask_hs_auto_en`,
+    that would explain a non-sticky CTRL write. Speculative — needs
+    re-test on a recovered slave to confirm.
+
+### Process notes for the next agent
+
+- The `_ptp_common.sh` `apb_w` helper sends one SSH per write. The
+  `bringup_ptp_sync.sh` step [4] alone fires ≥8 SSH bursts in <2 s on
+  the slave; the convergence loop adds ~4 reads per 250 ms sample.
+  Empirically this is enough to wedge a z2 PYNQ board under
+  marginal conditions. Coalescing multiple register writes into one
+  SSH session (single sudo python multiplexed mmap) would
+  meaningfully reduce wedge-rate. Defer if not critical.
+- Suggested debug recipe (post-power-cycle):
+  ```sh
+  fpgahub pair lease acquire bridge1 --ttl 3600
+  ssh mapstone-dev "cp ~/td_milestone_stage/tidelink*.bin* \
+                       /tmp/tidelink_deploy/"
+  ssh mapstone-dev "cd ~/SoCLabs/tidelink && \
+      bash pynq_host/scripts/bringup_pair_converge.sh \
+           STABLE=3 MAX_RETRIES=15"
+  # before bringup_ptp_sync.sh: prove slave PTP_CTRL is sticky
+  ssh mapstone-dev "ssh xilinx@192.168.6.101 \
+      'echo xilinx|sudo -S devmem 0x44032034 32 1; \
+       echo xilinx|sudo -S devmem 0x44032034'"
+  # expected: 0x00000001
+  bash pynq_host/scripts/bringup_ptp_sync.sh
+  ```
+
+### Verdict — what `b61c84a` + this session collectively prove
+
+- Master TX FSM advances and emits short packets. ✓
+- Link is bidirectionally healthy at the byte/lane layer. ✓
+- Master→slave short-packet delivery is **non-functional** at the
+  slave end. No observability today distinguishes "link layer drops
+  ECC-fail" from "RX FIFO write blocked" from "FSM disabled". RTL
+  observability needs to be added before any more bisects.
+- Time budget exhausted (~90 min of the 120-min cap) **before**
+  applying any code fix, because slave HW recovery + observability-
+  add are blocking. Releasing bridge1 lease (`XDYpIjMhwuVphA1ddRJnPQ`)
+  to free the rig.
+
+---
+
 ## Sim reproduction (2026-05-23)
 
 The HW slave-RX gap reproduces in pure simulation, breaking the

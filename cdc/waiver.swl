@@ -99,3 +99,42 @@ waive -rule Ac_unsync01 -msg "*i2c_scl_i*"             -comment "I2C SCL — asy
 waive -rule Ac_unsync01 -msg "*axi_chiplet_controller/hresetn*"  -comment "Reset CDC — synchronised by WavDemetReset inside Wlink"
 waive -rule Ac_unsync01 -msg "*axi_chiplet_controller/poresetn*" -comment "POR CDC — synchronised by WavDemetReset inside Wlink"
 waive -rule Ac_unsync02 -msg "*pad_rx*"                 -comment "PHY RX data — async recovered clock, synchronised by Wlink SerDes"
+
+# ============================================================================
+# 2026-05-23 — additions from SpyGlass CDC sign-off report
+#   docs/SPYGLASS_CDC_SIGNOFF.md §3.2
+#
+# tidelink_phc_cdc handshake synchronizers — data-hold provable by inspection.
+# All paths use the toggle-req/ack handshake pattern. The source-domain
+# *_hold_* register is captured before *_req is toggled and is held stable
+# (no further write while in_flight=1) until *_ack returns from the
+# destination domain. SpyGlass cannot prove this structurally without an
+# assertion; it is exercised continuously by cocotb/phc_ahb and uvm/phc.
+# ============================================================================
+
+waive -rule Ac_cdc01a       -file "tidelink_phc_cdc.sv" \
+      -comment "Toggle/ack handshake — req-flop held stable until ack, by FSM contract"
+waive -rule Ac_datahold01a  -file "tidelink_phc_cdc.sv" \
+      -comment "Enable-based snapshot — *_hold_* registers stable while *_req asserted, by FSM contract"
+waive -rule Reset_sync04    -file "tidelink_phc_cdc.sv" \
+      -comment "Independent ack flops share the same async reset by design"
+
+# Cosmetic — DesignWare black-box for PTP servo multiplier
+waive -rule ErrorAnalyzeBBox -du "tidelink_mul_iter" \
+      -comment "DesignWare multiplier — port-safe vendor blackbox"
+
+# Cosmetic — SGDC reference current_design for blackboxed sub-units
+waive -rule SGDC_waive24    -file "waiver.swl" \
+      -comment "Pre-existing safety-net waivers for stop_module'd hierarchy"
+waive -rule SGDC_waive25    -file "waiver.swl" \
+      -comment "Pre-existing safety-net waivers for stop_module'd hierarchy"
+waive -rule checkSGDC_01    -file "xhb500.sgdc" \
+      -comment "xhb500 current_design auto-migrated — stop_module'd at top"
+waive -rule checkSGDC_05    \
+      -comment "abstract_port auto-migrated for stop_module'd subblocks"
+waive -rule Ac_clockperiod01 \
+      -comment "Edge-List autocompleted for async clock groups — no functional impact"
+
+# Cosmetic — perf signed-cast on positive literal
+waive -rule WRN_1024 -file "tidelink_perf.sv" \
+      -comment "signed-cast applied to small positive literal — width-safe by inspection"

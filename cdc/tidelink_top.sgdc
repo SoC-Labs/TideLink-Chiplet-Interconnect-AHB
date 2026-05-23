@@ -86,6 +86,17 @@ abstract_port -ports "s_i2c_axi_*"   -clock hclk
 # PHY receive data — recovered from remote side (pad_clk_rx domain)
 abstract_port -ports "pad_rx[*]"     -clock pad_clk_rx
 
+# AHB manager — hclk-domain inputs (hready back from the SoC bus)
+abstract_port -ports "ahb_mng_hready"    -clock hclk
+
+# Chiplet-controller hclk-domain inputs not yet declared
+abstract_port -ports "puf_ready"            -clock hclk
+abstract_port -ports "apb_debug_unlock_i"   -clock hclk
+
+# IDELAYE2 calibration reference clock (200 MHz, FPGA target only on ASIC
+# this port ties off — see imp/ASIC SDC).
+clock -name idelay_ref_clk -domain idelay_domain -period 5.0
+
 # ============================================================================
 # Quasi-Static / Asynchronous External Inputs
 # ============================================================================
@@ -93,6 +104,18 @@ abstract_port -ports "pad_rx[*]"     -clock pad_clk_rx
 
 # Role strap — hardware pin, stable before reset deassertion
 quasi_static -name "role_strap_i"
+
+# PUF + autoneg config straps — stable before bring-up, never re-driven
+# during functional operation.
+quasi_static -name "puf_seed*"
+quasi_static -name "nego_priority_i*"
+quasi_static -name "mask_hs_bypass_i"
+
+# I2C bus lines — truly asynchronous external signals, synchronised inside
+# the chiplet-controller blackbox via dedicated WavDemetReset cells (the
+# `i2c_*_sync` blocks at the top of axi_chiplet_controller.sv).
+quasi_static -name "i2c_scl_i"
+quasi_static -name "i2c_sda_i"
 
 # DFT scan_clk — held inactive during functional mode
 set_case_analysis -name scan_clk -value 0

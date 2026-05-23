@@ -79,10 +79,22 @@ if {![info exists ::tidelink_msg_gate_installed]} {
     # these is silently skipped.
     set_msg_config -id "Designutils 20-1307" -new_severity ERROR
 
-    # [Common 17-55] 'set_property' expects at least one object - happens
-    # when the selector (get_cells / get_nets / get_ports) returned empty
-    # and the property therefore lands on nothing.
-    set_msg_config -id "Common 17-55"        -new_severity ERROR
+    # [Common 17-55] 'set_property' expects at least one object - originally
+    # promoted here for the same silent-drop class, but it has false-positives
+    # at scale: Xilinx XPM IP (xpm_memory_xdc.tcl etc.) emits many benign
+    # 17-55s during OOC IP synth. Symptomatic from 9+ SmartConnect MIs (see
+    # docs/PHC_ALL_MIRROR_LOG.md). The other 4 promotions above
+    # (Designutils 20-1307, Vivado 12-4739, 12-1411, Constraints 18-359) are
+    # surgical and caught every real silent-drop seen in the lane-lock saga:
+    #   - lindex/get_files in user XDC -> Designutils 20-1307
+    #   - cascade from a dropped clock  -> Vivado 12-4739
+    #   - empty get_pins/get_cells      -> Vivado 12-1411
+    #   - multi-master generated_clock  -> Constraints 18-359
+    # Common 17-55 adds little surgical coverage on top, so suppress it to
+    # let Xilinx-IP OOC synth scale cleanly. Removing the ERROR promotion is
+    # not enough on its own: tidelink_check_cw_count counts all CWs, and the
+    # Xilinx-IP 17-55s would tip the count over 0 at scale too.
+    set_msg_config -id "Common 17-55"        -suppress
 
     # [Vivado 12-1411] Empty result from get_pins / get_cells / get_ports
     # filter that then propagates as a silent no-op constraint.

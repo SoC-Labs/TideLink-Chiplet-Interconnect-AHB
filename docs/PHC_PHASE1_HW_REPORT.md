@@ -188,3 +188,75 @@ HW-debug pass.
    declaration to add `phc_clk` to the existing async group, (b) gate
    PHC IRQ during link initial-lock window, (c) move PHC reset
    release to after `link_active` instead of after `poresetn`.
+
+---
+
+## Build #8 re-run, post-provenance-fix (2026-05-23 11:56-11:58)
+
+Following `docs/LINK_DECAY_BISECT.md`'s finding (link decay was a stale
+bin in `/tmp/tidelink_deploy/`), regenerated build-#8 manifests with
+`pynq_host/scripts/make_bitstream_manifest.sh` and restaged. Verified
+that the deployed bin sha256 now matches build #8 (`a25534…` /
+`5951958…`, both 2c9a1a5/main HEAD).
+
+### Re-measured outcomes
+
+| Step | Result | Evidence |
+|---|---|---|
+| **B0** Converge (manifest provenance enforced) | **PASS** | `RESULT: CONVERGED — full 16/16 bidirectional link at iteration 1` at 11:56:54 |
+| **Link stability** | **PASS — no decay** | Per docs/LINK_DECAY_BISECT.md hold-poll, link held `0xff/0xff` across the entire 60 s `bringup_ptp_sync.sh` convergence loop. The earlier "decay" observation was the rc2 bin mis-deployment. |
+| **B1** PHC sync | **FAIL — but NOT a link issue** | locked_streak=0 / required 10. Master TX'ing sync (HW_SYNC_STATUS=0x3), slave NOT receiving (HW_SYNC_STATUS=0x0), servo not running (SERVO_STATUS=0x0). |
+
+### Real Phase-1 gap
+
+```
+HW_SYNC_STATUS (master): 0x00000003   (= sync_active | sync_initiator)
+HW_SYNC_STATUS (slave):  0x00000000   (= idle — NOT receiving sync)
+SERVO_STATUS   (slave):  0x00000000   (= no measurements feeding servo)
+```
+
+The link (data plane) is 16/16. The PHC IP on both boards is wired and
+APB-readable. The master correctly enters HW_SYNC initiator mode.
+**The slave never sees the master's sync packets** — its
+`HW_SYNC_STATUS` stays at 0x0 for the full 60 s window.
+
+Candidate root causes, ranked by likelihood:
+1. **PTP packet routing not configured.** The HW_SYNC packets ride the
+   FIFO/FC adapter path; the slave's FIFO RX may not be accepting them
+   (FIFO disabled, packet type filter, addr-trans not set up).
+2. **Master-side sync address wrong.** `bringup_ptp_sync.sh` sets
+   PTP_SYNC_DEST_ADDR but the slave's PTP_SYNC_RX_ADDR may not match.
+3. **PHC `hw_capture` not seeing the sync packet's RX timestamp** even
+   when the packet arrives — `tidelink_phc_cdc.sv`'s hw-capture inputs
+   not connected to the right RX-side hook.
+4. **HW_SYNC interval set too fast** (128 Hz default) for the link's
+   actual round-trip time — slave drops every packet because the
+   previous one hasn't finished.
+
+B2 (freq track) / B3 (offset track) / B4 (soak) were gated on B1 PASS
+and so did not run. They will all hit the same servo-not-locked gate
+until B1 closes.
+
+### Decision — Phase-1 status update
+
+PHC Phase-1 is **architecturally validated** (PHC IP present + APB-
+readable + master initiator wiring correct + link stable) but **does
+NOT functionally close** because the master→slave HW_SYNC packet path
+does not deliver. This is a real software / register-program /
+configuration gap, NOT a HW or RTL regression.
+
+Recommended next-step debug agent: trace the HW_SYNC packet path end-
+to-end through master TX → FC adapter TX → link → slave FC adapter
+RX → slave HW_SYNC RX, with an instrumented packet count at each
+hop. The right tool for this is `pynq_host/scripts/hwtest/` cat-5
+(servo) which exercises the same path with logging.
+
+### Build #8 final HW-validation summary
+
+|  | Result |
+|---|---|
+| Build #8 farm-build (pair-all + pair-flip-all -all) | PASS (43m50s) |
+| Bridge1 lane lock (16/16) | PASS iter 1 |
+| Link stability (no decay) | PASS (per LINK_DECAY_BISECT.md) |
+| PHC IP wired + APB-readable | PASS (PHC_STATUS = 0x0 reads cleanly) |
+| PHC sync convergence | FAIL — Phase-1 gap (master TX OK / slave RX 0) |

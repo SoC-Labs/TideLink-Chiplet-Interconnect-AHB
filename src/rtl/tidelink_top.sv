@@ -476,14 +476,17 @@ module tidelink_top #(
     // =========================================================================
     // PTP Short Packet wiring (PTP module ↔ Chiplet Controller)
     // =========================================================================
-    wire                   ptp_sp_tx_valid;
-    wire            [7:0]  ptp_sp_tx_data_id;
-    wire           [15:0]  ptp_sp_tx_payload;
-    wire                   ptp_sp_tx_ready;
-    wire                   ptp_sp_rx_valid;
-    wire            [7:0]  ptp_sp_rx_data_id;
-    wire           [15:0]  ptp_sp_rx_payload;
-    wire                   ptp_sp_rx_accept;
+    // mark_debug on PHC short-packet boundary nets — ILA capture per
+    // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3"
+    // (feat/phc-ila-debug). hclk-domain, captured by insert_debug_core.tcl.
+    (* mark_debug = "true" *) wire                   ptp_sp_tx_valid;
+    (* mark_debug = "true" *) wire            [7:0]  ptp_sp_tx_data_id;
+    (* mark_debug = "true" *) wire           [15:0]  ptp_sp_tx_payload;
+    (* mark_debug = "true" *) wire                   ptp_sp_tx_ready;
+    (* mark_debug = "true" *) wire                   ptp_sp_rx_valid;
+    (* mark_debug = "true" *) wire            [7:0]  ptp_sp_rx_data_id;
+    (* mark_debug = "true" *) wire           [15:0]  ptp_sp_rx_payload;
+    (* mark_debug = "true" *) wire                   ptp_sp_rx_accept;
 
     // TX link idle signal from chiplet controller (Wlink tx_link_idle output)
     // Directly driven by .tx_link_idle port on the Wlink instance

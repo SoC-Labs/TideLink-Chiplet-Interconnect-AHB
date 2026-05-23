@@ -135,8 +135,11 @@ module tidelink_ptp #(
     // =========================================================================
     // PTP Control Register (offset 0x034, mapped at ptp_reg_addr = 3'h5)
     // =========================================================================
-    logic        ptp_enable_r;
-    logic        ptp_rx_valid_r;
+    // mark_debug on PTP control FF + RX valid pulse — ILA capture per
+    // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3" and Agent Q's
+    // §2.6/2.7 audit (feat/phc-ila-debug).
+    (* mark_debug = "true" *) logic        ptp_enable_r;
+    (* mark_debug = "true" *) logic        ptp_rx_valid_r;
     logic [3:0]  ptp_rx_msg_type_r;
 
     // RX payload register (offset 0x038, mapped at ptp_reg_addr = 3'h6)

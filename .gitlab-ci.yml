@@ -222,6 +222,7 @@ spyglass-cdc:
     - python3 -m pip install --user --no-deps -e "$WORK_DIR/python" --quiet
     - find "$WORK_DIR" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     - python3 -m pip install --user cocotb cocotbext-ahb systemrdl-compiler --quiet
+    - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
     # fpgahub_sdk.testkit (HALBridge) is vendored in cocotb/common/fpgahub_sdk/
     # — no pip install needed. The pip-install approach broke CI because
     # fpgahub requires-python >=3.11 but the runner is older (see
@@ -233,6 +234,7 @@ spyglass-cdc:
     - export CMSDK_DIR="$CMSDK_DIR"
     - export TIDELINK_HOME="$WORK_DIR"
     - export DESIGNWARE_HOME="$VIP_HOME"
+    - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
 
 cocotb-regression:
   stage: regression

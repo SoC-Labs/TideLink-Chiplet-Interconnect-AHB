@@ -260,3 +260,53 @@ hop. The right tool for this is `pynq_host/scripts/hwtest/` cat-5
 | Link stability (no decay) | PASS (per LINK_DECAY_BISECT.md) |
 | PHC IP wired + APB-readable | PASS (PHC_STATUS = 0x0 reads cleanly) |
 | PHC sync convergence | FAIL — Phase-1 gap (master TX OK / slave RX 0) |
+
+---
+
+## Build #9 attempt (2026-05-23 ~16:00, post b61c84a PHC fix)
+
+**Build verdict:** PASS. Both targets built clean in 39m24s on
+commit `4e693b5` (= `b61c84a` PHC fix + post-fix doc/CI commits).
+
+  - `tidelink.bin` md5 `1feb92375b3ea3d131267aaefc4e60d6`
+  - `tidelink-flip.bin` md5 `27d4b5271d0706908763117312f5eb1c`
+  - sha256 in `~/td_milestone_stage/*.manifest.json`
+    (`a7f52bc4…` / `ee125ee6e5…`)
+  - bitstreams + manifests staged on `mapstone-dev:~/td_milestone_stage/`
+
+**HW validation: BLOCKED** — master board (z2_02 / 192.168.4.101) is
+hardware-unresponsive:
+  - 100% ping packet loss from mapstone-dev
+  - SSH connect timeout
+  - `fpgahub board reset pynq_z2_02_pl --list` shows ZERO reset methods
+    configured (no remote power-cycle path)
+  - Slave (z2_03 / 192.168.6.101) responds normally
+
+The bridge1 pair lease was granted (`Q5bfNuTY1UwDX1eN_Gdh2g`,
+2026-05-23 16:02 → 17:02 UTC) and released cleanly. The chain ran
+B0-B4 in ~12 s total because every step ssh-failed at `check_link_up`
+on the unreachable master.
+
+### Next-step recipe
+
+When the master board is physically power-cycled (lab attendant / user):
+
+```sh
+fpgahub pair lease acquire bridge1 --ttl 3600   # verify GRANTED
+ssh mapstone-dev "ping -c 2 -W 2 192.168.4.101"   # confirm reachable
+ssh mapstone-dev "cd ~/SoCLabs/tidelink && \
+    bash pynq_host/scripts/bringup_pair_converge.sh STABLE=3 MAX_RETRIES=15 && \
+    bash pynq_host/scripts/bringup_ptp_sync.sh"
+```
+
+Acceptance criterion for closing Phase-1: `RESULT: PASS` from B1
+(`locked_streak >= 10` within the 60 s window) — at that point B2-B4
+unblock and produce freq / offset / soak metrics.
+
+### What this proves about build #9
+
+The Vivado build itself, the bitstream provenance flow (manifest sha
+matches and was verified at deploy time per the 7e6aac6 hard-abort
+guard), and the staging pipeline (rsync-free cat-over-ssh transfer to
+mapstone-dev) all work end-to-end. The only outstanding gate is the
+physical board state, and that is independent of any commit on `main`.

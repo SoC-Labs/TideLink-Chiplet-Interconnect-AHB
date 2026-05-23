@@ -142,6 +142,9 @@ module tidelink_ptp #(
     // RX payload register (offset 0x038, mapped at ptp_reg_addr = 3'h6)
     logic [SYS_DATA_W-1:0] ptp_rx_payload_r;
 
+    // HW sync control register bit [2]: force-enable, bypasses phc_locked_i gate
+    logic        hw_sync_force_en_r;
+
     // =========================================================================
     // HW Sync Initiator — Forward Declarations
     // =========================================================================

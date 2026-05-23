@@ -4,8 +4,8 @@
 // **Design only — not for direct compilation.** This file is an annotated
 // reference showing the additions the integrator must merge into
 // `deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv` to add
-// I²C-coordinated training-mode entry/exit (Layer 2 per
-// docs/PHY_ALIGN_NEXT_STEPS.md §2.3).
+// I²C-coordinated training-mode entry/exit (Layer 2 — see
+// docs/TIDELINK_SPECIFICATION.md §9.10 for the as-built integration).
 //
 // Every block carries a comment indicating WHERE in `tidelink_autoneg.sv`
 // it plugs in. Search for "EXISTING:" tags below to locate the host file

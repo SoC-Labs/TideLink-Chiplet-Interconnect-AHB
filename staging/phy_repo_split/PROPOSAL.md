@@ -6,7 +6,7 @@
 **Builds on (extends, does not duplicate):**
 [`deps/axi-chiplet-controller/logical/phy-align/README.md`](../../deps/axi-chiplet-controller/logical/phy-align/README.md),
 [`PATCHES.md`](../../deps/axi-chiplet-controller/logical/phy-align/PATCHES.md),
-[`docs/PHY_ALIGN_NEXT_STEPS.md §2.6`](../../docs/PHY_ALIGN_NEXT_STEPS.md),
+[`docs/TIDELINK_SPECIFICATION.md §9.10.4` (don't extract preemptively)](../../docs/TIDELINK_SPECIFICATION.md),
 [`BRINGUP_REPORT.md §8.3 / §8.3b / §9`](../../BRINGUP_REPORT.md)
 
 ---
@@ -347,7 +347,7 @@ in-place* path and for Wavious-regen reconciliation (§9), not for normal builds
 ## 6. Migration sequence (validation-gated, rollback at each step)
 
 **Hard constraint:** must not block or conflict with the in-flight §9
-integration in `docs/PHY_ALIGN_INTEGRATION_PLAN.md` / `PHY_ALIGN_NEXT_STEPS.md`
+integration captured in `docs/TIDELINK_SPECIFICATION.md` §9.10
 (APB plumbing 2.1, autocal FSM 2.2 — *already partly landed*: regs+calibrator
 exist in trunk). The §9 work and the extraction are **sequenced, not parallel**:
 finish §9 functional acceptance *first* on the entangled tree, then extract
@@ -356,7 +356,7 @@ a feature.
 
 | Step | What moves | Validates it | Rollback |
 |---|---|---|---|
-| **M0. Gate** | nothing | §9 acceptance met on entangled tree: `PHY_ALIGN_NEXT_STEPS.md §6` criteria — UVM `test_align_uniform_skew` PASS end-to-end, cocotb autocal PASS, FPGA pair links up. **Do not start M1 until this is green.** | n/a (precondition) |
+| **M0. Gate** | nothing | §9 acceptance met on entangled tree: `docs/TIDELINK_SPECIFICATION.md §9.10` as-built criteria — UVM `test_align_uniform_skew` PASS end-to-end, cocotb autocal PASS, FPGA pair links up. **Do not start M1 until this is green.** | n/a (precondition) |
 | **M1. Create repo, copy-only** | New `wlink-phy` repo; **copy** (not move) pristine `WlinkGPIOPHY.v`+`WavD2DGpio*.v` + the three `tidelink_phy_align_*.sv` (renamed). Write `wlink_phy_top.sv` + `wlink_phy_gpio_align.sv` wrapper replicating exactly the `axi_chiplet_controller.sv:932–1032` wiring. TideLink **still uses its own copies** (flists unchanged). | `wlink-phy/cocotb/phy_only` passes standalone (ports of existing `cocotb/phy_align` tests). Bit-exact vs trunk RTL sim. | Delete repo. TideLink untouched. |
 | **M2. Add submodule, dual-build** | Add `wlink-phy` as `deps/wlink-phy` submodule. Add `filelist.tcl` `-f` recursion. Create `flist/tidelink_fpga.flist.phy_split` (a *copy* pointing at the PHY flist) — do **not** switch the default flist yet. | Build TideLink FPGA + run full cocotb/UVM with the `.phy_split` flist; diff against the default-flist run: **identical pass set + identical waveforms on the Link2PHY bundle**. | Use default flist; `.phy_split` is inert. |
 | **M3. Cut over flists** | Switch `flist/tidelink_fpga.flist` + `tidelink_top_full_asic.flist` + cocotb/UVM Makefiles to the PHY-repo `-f` line. Remove the now-dead `WlinkGPIOPHY.v`/`WavD2DGpio*.v`/`tidelink_phy_align_*.sv` lines from TideLink flists (files still physically present in submodule, just not compiled). | Full regression: cocotb `wlink_pair`+`phy_align` (14 tests), UVM align suite, ASIC synth+LEC (the `tidelink_top_full_asic.flist` path — LEC must show **zero new** non-equivalence vs M2). FPGA pair deploy. | `git revert` the flist commit; submodule stays, harmless. |
@@ -446,8 +446,8 @@ That is the entire payoff of doing the extraction with the right seam now.
 | 2 | M4 reverts in-place edits in the **submodule** (`axi-chiplet-controller`) — a submodule the human may not control write access to | The §9 in-place edits and the `axi_chiplet_controller.sv` wrapper block are *committed in the submodule's working tree* (`git status` shows `m deps/axi-chiplet-controller`). M4 needs a submodule branch/MR. | Confirm push rights / fork strategy for `axi-chiplet-controller` before M4. If no write access: keep the submodule's `Wlink.v` pass-through ports (they're harmless tie-able inputs) and only remove the *wrapper block*; accept the pass-through ports as permanent benign Wavious-fork delta documented in `upstream_regen.md`. |
 | 3 | `Wlink.v` instantiates `WlinkGPIOPHY` by **name**; flist-order module resolution to substitute the `wlink-phy` copy is fragile across tools | Verilator/Vivado/synth resolve duplicate module names differently; some error on duplicate, some take first-in-flist. | Make it explicit, not order-dependent: M3 *removes* the submodule's `WlinkGPIOPHY.v` from TideLink flists entirely (one definition only). Tested per-tool at M2/M3 gates. Documented as open verification item per front-end. |
 | 4 | SERDES BlackBox fill is **vendor-proprietary and not in hand** | All 4 SERDES primitives undefined in the Wavious deliverable. The "swap day" runbook is unexecutable until a real SERDES IP exists. | Accept: the proposal makes the *structure* ready (M1 builds the SERDES arm + stubs now), so the swap is a 1-day integration when IP arrives — not an architecture change. Track as a dependency, not a blocker. |
-| 5 | Repo name: `wlink-phy` couples it to Wlink; a future non-Wlink protocol consumer (README's stated extraction trigger) would find the name misleading | The Link2PHY contract *is* Wlink-shaped; honest to name it so. | Keep `wlink-phy`. If a non-Wlink consumer appears, that's a contract generalisation (new MAJOR), nameable then. Don't over-abstract pre-emptively (matches `PHY_ALIGN_NEXT_STEPS.md §4 decision 5: don't extract preemptively`). |
-| 6 | Timing: `PHY_ALIGN_NEXT_STEPS.md §2.6` says "don't extract until a real trigger; ~1 day work" | This proposal is bigger than 1 day because the entanglement grew (§0). The trigger discipline still applies. | **This document is the plan, not the trigger.** Hold execution until a trigger fires (Wavious upgrade arriving / second PHY consumer / SERDES IP delivery / IP release). Then M0–M5 is ~3–4 days, not 1. |
+| 5 | Repo name: `wlink-phy` couples it to Wlink; a future non-Wlink protocol consumer (README's stated extraction trigger) would find the name misleading | The Link2PHY contract *is* Wlink-shaped; honest to name it so. | Keep `wlink-phy`. If a non-Wlink consumer appears, that's a contract generalisation (new MAJOR), nameable then. Don't over-abstract pre-emptively (matches `docs/TIDELINK_SPECIFICATION.md §9.10.4`: don't extract preemptively). |
+| 6 | Timing: `docs/TIDELINK_SPECIFICATION.md §9.10.4` says don't extract until a real trigger (~1 day work in the original plan) | This proposal is bigger than 1 day because the entanglement grew (§0). The trigger discipline still applies. | **This document is the plan, not the trigger.** Hold execution until a trigger fires (Wavious upgrade arriving / second PHY consumer / SERDES IP delivery / IP release). Then M0–M5 is ~3–4 days, not 1. |
 
 ---
 

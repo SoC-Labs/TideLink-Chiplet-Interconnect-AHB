@@ -883,6 +883,125 @@ The TideLink FC node must be connected inside Wlink's TX and RX routers (WlinkTx
 
 **Tier 2 — Hardware request engine (planned)**: An autonomous FSM on the device side services descriptors without CPU intervention, eliminating ISR overhead for bulk data-plane transfers. The packet format is unchanged; Tier 2 differs only in descriptor servicing. Both tiers use identical TideLink RTL — tier selection is a software and integration choice, not a hardware parameter.
 
+### 9.10 PHY-Align: Integration Notes
+
+The §9 PHY-Align subsystem (`tidelink_phy_align_calibrator.sv` +
+`tidelink_lane_checker.sv` + the `swi_bit_slip[23:0]` / `swi_phase_offset` /
+`swi_training_mode` / `swi_lane_locked[7:0]` / `swi_lane_fault[7:0]` /
+`swi_calibration_done` register surface) has landed on `main`. This
+subsection captures the design decisions whose only previous home was
+the 2026-05-14 PHY-Align integration plan and next-steps docs (both
+removed; their novel content is folded here and superseded by the
+as-built RTL + this spec entry + the FPGA bring-up artefacts
+`docs/PHC_PHASE1_HW_REPORT.md`, `docs/CDC_AUDIT_REPORT.md`,
+`docs/SPYGLASS_CDC_SIGNOFF.md`).
+
+**9.10.1 Sub-step ordering and what it bought us.** The PHY-align work
+was sequenced in five gates, in order, each one validated before the
+next was started:
+
+1. **Layer 1 RTL prototype** — soft-strap regs (`swi_bit_slip`,
+   `swi_training_mode`) in `WavD2DGpio*.v`; per-lane 16-bit right-rotation
+   in `WavD2DGpioRx.v`; per-lane training-pattern mux in
+   `WavD2DGpioTx.v`. Period-8 training bytes
+   `0xA3,0xB5,0xC9,0xD3,0x65,0x4B,0x59,0x2D` were chosen to avoid the
+   period-4 aliasing that the originally-proposed `(N+1)*0x11`
+   pattern produced (slip=k and slip=k+4 would have been
+   indistinguishable). **Do not revert to the (N+1)*0x11 pattern.**
+2. **Cocotb sandbox** (8 PASS scenarios incl. uniform / asymmetric /
+   partial-failure / retraining / asymmetric master+slave). Hierarchical
+   force on the soft-strap regs — sufficient for the alignment proof but
+   not for production sequencing.
+3. **UVM integration** — surfaced the production-sequencing finding
+   (`BRINGUP_REPORT.md §9.8`): asserting `swi_training_mode=1` before
+   `role_lock` blocks LL_RX clock recovery because the training
+   pattern displaces the cr_pkt traffic the receiver-side LinkLayer
+   needs. **Cocotb papered over this via backdoor POR/clock force; UVM
+   exercises the real APB-driven `strap → role_lock → swreset → cr_pkt`
+   chain and catches it.** Any future calibration-related change must
+   re-walk the UVM sequence, not just cocotb.
+4. **APB plumbing** for the 5 control/status registers (now in Region 8
+   at MMIO `0x4403_2100..0x4403_211F` — `tidelink_apb_regs.sv` Region 8
+   carve, `ctrl_reg_addr` widened 3→4, `tidelink_fifo.sv` truncation
+   fix). The interim shim at `0x4403_1000` has been deleted; the
+   `tidelink_fifo.sv` `ctrl_reg_addr` widening is **critical** — without
+   it Region 8 writes alias to Region 4.
+5. **Autonomous calibration FSM in a TideLink-level wrapper** (not
+   inside `WavD2DGpio.v`) so the Wavious source remains diff-clean. The
+   FSM fires on `role_lock` rising, holds `swi_lltx_enable` off until
+   `swi_calibration_done` asserts, and re-triggers on `swreset`.
+
+**9.10.2 Calibrator skew-window vs search-window split (rationale).**
+The calibrator has two distinct knobs and they bound two different
+things:
+
+- **Bit-slip [0..7]** is whole-bit (whole-UI) realignment. One slip
+  step = one `pad_clk_rx` period (40 ns at the validated 25 MHz FPGA
+  bench / one UI on ASIC). This is the **search window** — the range of
+  byte-boundary misalignment the calibrator can recover from. It
+  determines how unaligned the layout is *allowed to be* at static.
+- **Phase [0..15]** is sub-bit sample-point adjust (`swi_phase_offset`,
+  4 bits/lane). One phase step ≈ `T_UI/16`. This is the **skew window**
+  — the granularity at which the calibrator can centre the eye within
+  one UI. It determines the maximum *spread* of per-lane skew that can
+  be absorbed while still hitting a common operating point.
+
+The constraint job (`docs/ASIC_TIMING_CONSTRAINTS.md`) is to keep the
+**static + PVT** spread inside one phase step (≤ `T_UI/16`) — the
+calibrator centres the rest dynamically. The constraint job is **not**
+to keep the absolute skew at zero, because the calibrator does that for
+free; it is to keep the *variance* small enough that one (slip,phase)
+solution survives PVT corners and build-to-build re-runs. The
+2026-05-14 finding `swi_phase_offset proven insufficient` refers to the
+fact that on the *FPGA* the DLL is a pass-through placeholder
+(`WavD2DRxDLL: assign clk_o = clk_i`), so phase is currently quantised
+to whole `pad_clk_rx` periods — bit-slip carries the alignment, phase
+re-indexes. On ASIC, phase must be a real sub-UI tap; otherwise the
+skew window collapses to the slip step and the determinism requirement
+is unmet. See §9.10.3.
+
+**9.10.3 IDELAYE2 vs MMCM decision.** Two structural options were
+considered for the per-lane phase tap:
+
+- **MMCM-based per-lane phase shift**: rejected. An MMCM can produce 8
+  phase-shifted versions of the recovered clock, but the per-lane phase
+  becomes a *clock* selection, not a *data-tap* selection: 8 lane
+  capture domains each on a different clock phase explode the CDC
+  surface and require 8 independent synchroniser trees back to the
+  Wlink core. The implementation cost is large and the result is harder
+  to characterise across PVT.
+- **IDELAYE2 per `pad_rx[n]` driven by the calibrator** (FPGA;
+  characterised programmable-delay-cell equivalent on ASIC): selected.
+  The clock remains single-domain (one `pad_clk_rx` capture clock for
+  all 8 lanes — keeps the CDC count constant); the calibrator's
+  per-lane `swi_phase_offset[4*N +: 4]` drives an explicit, characterised
+  delay line per data lane. This is the structure documented in
+  `docs/ASIC_TIMING_CONSTRAINTS.md` Part A §4.3 (ASIC analogue) and the
+  disabled-stanza Part B §3.5 (FPGA hook, pending the RTL-driver
+  finalisation).
+
+The decision is not negotiable for the determinism argument: an MMCM
+phase-fanout structure would force `set_clock_groups -asynchronous`
+between every lane and the others, re-creating exactly the
+async-everything defect the constraint document warns against (see
+`docs/ASIC_TIMING_CONSTRAINTS.md` Part A §3). The per-lane data delay
+keeps the source-sync `pad_rx[*] → capture` arc intact.
+
+**9.10.4 What we will NOT do (preserved invariants).** From the
+2026-05-14 plan, still binding:
+
+- Do not rewrite the GPIO PHY with `ISERDESE2` — Xilinx-specific, does
+  not translate to ASIC.
+- Do not change the Wlink wire protocol — breaks the Wavious contract.
+- Do not replace `swi_phase_offset` — it composes with bit-slip and is
+  the ASIC-target lever for sub-UI margin (see §9.10.3).
+- Do not drive calibration over the high-speed link itself
+  (chicken-and-egg — the link is what we are aligning).
+- Do not extract the PHY into its own repo preemptively. Wait for a
+  concrete trigger (another consumer / Wavious upgrade / IP delivery).
+- Do not gate the `LOCK_THRESHOLD` constant. Keep it at **16** — validated
+  across the cocotb scenarios; bump only if hardware shows bit errors.
+
 ---
 
 ## 10. Integration Guide

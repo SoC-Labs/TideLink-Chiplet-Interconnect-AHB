@@ -20,7 +20,7 @@ addresses/semantics for ROLE/I²C/NEGO/PTP/perf-profiling registers.
 | `tidelink_apb_regs` decodes only `paddr[7:5]` → 3-bit region select; uses `paddr[4:2]` for the slot within a region. | `tidelink_apb_regs.sv:132` | A 4th region-select bit (`paddr[8]`) is currently ignored. Promoting it adds a new "upper bank" at offsets 0x100..0x1FF with no conflict. |
 | The TideLink top-level APB block (`tidelink_apb_regs` at MMIO `0x4403_2000`) has a 12-bit local paddr → 4KB of addressable space; the existing register file occupies the bottom 256 bytes only. | `tidelink_top.sv:577-579` | Plenty of headroom in the upper half. |
 | I²C agent's spec at `I2C_TRAIN_PROTOCOL.md §3.1` proposed offsets `0x090, 0x094, 0x098, 0x09C, 0x0A0, 0x0A4, 0x0A8` — **all conflict** with existing NEGO_* (0x090..0x09C) and PERF_* (0x0A0..0x0A8). | I²C agent | Must re-offset the I²C-train spec; published RTL sketch (`tidelink_autoneg_train_states.sv:140-146`) needs corresponding update. |
-| The §9 spec lists 5 registers: `SWI_BIT_SLIP[23:0]`, `SWI_TRAINING_MODE`, `SWI_LANE_LOCKED[7:0]`, `SWI_LANE_FAULT[7:0]`, `SWI_CALIBRATION_DONE`. The interim shim packs only the first two. | `docs/PHY_ALIGN_NEXT_STEPS.md §2.1`, `BRINGUP_REPORT.md §9` | Need 4-5 RW/RO slots. The I²C-train spec adds `NEGO_TRAIN_CFG`, `NEGO_TRAIN_STATUS`, `NEGO_TRAIN_STEP`, and reuses `SWI_TRAINING_MODE/LANE_LOCKED/LANE_FAULT/BIT_SLIP_LO`. After dedup: 4 §9 + 3 I²C-train-specific = **7 new slots**. |
+| The §9 spec lists 5 registers: `SWI_BIT_SLIP[23:0]`, `SWI_TRAINING_MODE`, `SWI_LANE_LOCKED[7:0]`, `SWI_LANE_FAULT[7:0]`, `SWI_CALIBRATION_DONE`. The interim shim packs only the first two. | `docs/TIDELINK_SPECIFICATION.md §9.10.1` (sub-step 4 — APB plumbing), `BRINGUP_REPORT.md §9` | Need 4-5 RW/RO slots. The I²C-train spec adds `NEGO_TRAIN_CFG`, `NEGO_TRAIN_STATUS`, `NEGO_TRAIN_STEP`, and reuses `SWI_TRAINING_MODE/LANE_LOCKED/LANE_FAULT/BIT_SLIP_LO`. After dedup: 4 §9 + 3 I²C-train-specific = **7 new slots**. |
 
 ---
 
@@ -278,7 +278,7 @@ now in place, that integration drops in cleanly at the offsets given here.
 
 ### Step 5 — Documentation
 - Update `docs/REGISTER_MAP.md` with Region 8 added; perf section unchanged.
-- Update `docs/PHY_ALIGN_NEXT_STEPS.md` §2.1 to point at the new offsets.
+- Update `docs/TIDELINK_SPECIFICATION.md` §9.10.1 (sub-step 4) to confirm the new offsets.
 - Add a short note to `BRINGUP_REPORT.md` §9 referencing the final
   register-map location.
 
@@ -482,7 +482,7 @@ regions × 32 bytes = 768 bytes of headroom without further redesign).
 | `cocotb/phy_align/test_apb_drive.py` | Retarget APB writes to new offsets |
 | `uvm/tidelink_top_system/tests/*` | Retarget APB-driven training tests |
 | `docs/REGISTER_MAP.md` | Add Region 8 section |
-| `docs/PHY_ALIGN_NEXT_STEPS.md` | §2.1 final-state addresses |
+| `docs/TIDELINK_SPECIFICATION.md` | §9.10.1 sub-step 4 — final-state addresses |
 | `staging/i2c_train/tidelink_autoneg_train_states.sv` | Update localparams (one-step before merge) |
 | `staging/i2c_train/I2C_TRAIN_PROTOCOL.md` | §3.1 offset table updated |
 | `flist/tidelink_top_full_asic.flist` | Remove `tidelink_phy_align_regs.sv` entry (after Step 3) |

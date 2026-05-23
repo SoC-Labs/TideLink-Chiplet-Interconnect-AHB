@@ -23,7 +23,7 @@ known-good Region 8 layout.
 1. **Read these three docs front to back before touching code:**
    - `staging/apb_redesign/PROPOSAL.md` (this redesign)
    - `staging/i2c_train/I2C_TRAIN_PROTOCOL.md` (I²C-train spec; offsets in §3.1 are SUPERSEDED by this redesign — apply the address map in PROPOSAL.md §5)
-   - `docs/PHY_ALIGN_NEXT_STEPS.md` §2.1 + §2.3
+   - `docs/TIDELINK_SPECIFICATION.md` §9.10 (the PHY-Align integration is now landed; the §2.1/§2.3 gaps from the historical plan are closed — read §9.10.1 sub-step 4 for the APB register surface and §9.10.4 for invariants)
 
 2. **Confirm baseline:** the interim shim at MMIO `0x4403_1000+` is currently
    passing the FPGA bring-up (per `BRINGUP_REPORT.md` §9 closure when it
@@ -227,8 +227,8 @@ Region 8.
     - Remove any reference to MMIO `0x4403_1000+` (interim shim).
     - Update §1 introduction to note the 4-bit region select.
 
-28. **Update `docs/PHY_ALIGN_NEXT_STEPS.md` §2.1:**
-    - Acceptance criteria: replace MMIO `0x4403_1000+` with `0x4403_2100+`.
+28. **Reflect Region 8 final state in `docs/TIDELINK_SPECIFICATION.md` §9.10:**
+    - Acceptance criteria: confirm MMIO `0x4403_2100+` (interim `0x4403_1000+` deleted).
     - Add "as-built" note pointing at PROPOSAL.md.
 
 29. **Update `BRINGUP_REPORT.md` §9.8:**
@@ -258,7 +258,7 @@ Region 8.
 | 4 | Cocotb + UVM regression (SW retargeted to Region 8); FPGA `wlink_probe.sh` cross-check | All PASS; values identical |
 | 5 | Cocotb + UVM + FPGA build + FPGA deploy | All PASS; pair bidirectional |
 | 6 | UVM autoneg-train suite + FPGA I²C-coordinated bring-up | All PASS; `mask_hs_bypass_i=0` |
-| 7 | Doc lint / review | PROPOSAL.md, REGISTER_MAP.md, PHY_ALIGN_NEXT_STEPS.md consistent |
+| 7 | Doc lint / review | PROPOSAL.md, REGISTER_MAP.md, TIDELINK_SPECIFICATION.md §9.10 consistent |
 
 ## Failure rollback
 

@@ -10,7 +10,7 @@ the current SW-driven sweep.
 
 References:
 - `BRINGUP_REPORT.md` §9.6 (FSM sketch) and §9.8 (sequencing requirement)
-- `docs/PHY_ALIGN_NEXT_STEPS.md` §2.2 (gap definition)
+- `docs/TIDELINK_SPECIFICATION.md` §9.10 (as-built PHY-Align integration notes; the §2.2 gap is now closed)
 - `deps/axi-chiplet-controller/logical/phy-align/README.md` (where this work
   lives architecturally once extracted into the PHY repo)
 

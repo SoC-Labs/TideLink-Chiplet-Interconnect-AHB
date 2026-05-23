@@ -2,9 +2,9 @@
 // wlink_phy_align_calibrator.sv — Autonomous per-lane bit-slip calibration FSM
 // =============================================================================
 //
-// STAGING — not yet integrated into trunk RTL. This module is a prototype of
-// the §9.6 "auto-staging FSM" called out in BRINGUP_REPORT.md and the §2.2
-// gap in docs/PHY_ALIGN_NEXT_STEPS.md. It replaces the SW-driven calibration
+// This module is the §9.6 "auto-staging FSM" described in BRINGUP_REPORT.md
+// and now folded into docs/TIDELINK_SPECIFICATION.md §9.10 (PHY-Align:
+// Integration Notes). It replaces the SW-driven calibration
 // sweep (cocotb / UVM hierarchical-ref writes to swi_bit_slip and
 // swi_training_mode) with a deterministic in-RTL sequencer that runs the
 // per-lane slip search on its own, with no firmware involvement.

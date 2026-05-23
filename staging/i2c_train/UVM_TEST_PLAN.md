@@ -1,6 +1,6 @@
 # UVM Test Plan — I²C-Coordinated Training-Mode Protocol
 
-**Status:** Design only. Tests are to be authored by the UVM-test author (see staffing in `docs/PHY_ALIGN_NEXT_STEPS.md`).
+**Status:** Design only. Tests are to be authored by the UVM-test author (PHY-Align integration as-built is in `docs/TIDELINK_SPECIFICATION.md §9.10`).
 **Target testbench:** `uvm/tidelink_top_system/` (pair-back-to-back instantiation).
 **Companion spec:** [`I2C_TRAIN_PROTOCOL.md`](I2C_TRAIN_PROTOCOL.md).
 **RTL under test:** the extended `tidelink_autoneg` FSM with `ST_TRAIN_*` states (sketched in [`tidelink_autoneg_train_states.sv`](tidelink_autoneg_train_states.sv)), plus the autonomous calibration FSM (separate agent), plus the APB register block extensions at offsets `0x090..0x0A8`.
@@ -18,7 +18,7 @@ Two short Verilog files in `uvm/tidelink_top_system/tb/` (sit alongside existing
 
 ### Common infrastructure B — Force-injection points
 
-Tests need to inject lane skid (existing `pad_skid.sv` mechanism, already extended for per-lane in §1.3 of `PHY_ALIGN_NEXT_STEPS.md`) and selectively force a lane checker to never lock. Two existing hierarchical-ref points:
+Tests need to inject lane skid (existing `pad_skid.sv` mechanism, the per-lane extension is captured in `docs/TIDELINK_SPECIFICATION.md §9.10.1` sub-step 2) and selectively force a lane checker to never lock. Two existing hierarchical-ref points:
 
 - `top.dut_a.u_wlink.u_phy.lane_locked_r[k]` — force to 0 to simulate a stuck lane.
 - `pad_skid_per_lane[k]` parameters — set at instantiation.

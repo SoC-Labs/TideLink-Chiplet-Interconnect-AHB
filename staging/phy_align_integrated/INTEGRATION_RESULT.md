@@ -2,7 +2,7 @@
 
 Worktree: `/home/dam1n19/SoCLabs/tidelink/.claude/worktrees/agent-acec76b893b90a1e4`
 Branch: `worktree-agent-acec76b893b90a1e4`
-Plan: `docs/PHY_ALIGN_INTEGRATION_PLAN.md`
+Plan: superseded — see `docs/TIDELINK_SPECIFICATION.md` §9.10 for the as-built integration
 Status: **Steps 1-6 COMPLETE, all gates PASS. Step 7 = hand-off (not executed).**
 
 ## Sources

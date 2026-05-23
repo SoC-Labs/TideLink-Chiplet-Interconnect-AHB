@@ -2,7 +2,7 @@
 
 **Status:** Design-only. Not integrated. See report-back at end of this directory's README pending integration.
 **Branch (intended target):** `feat/fpga-flow`
-**Layer:** Layer 2 of the TideLink bring-up alignment fix (see [`docs/PHY_ALIGN_NEXT_STEPS.md`](../../docs/PHY_ALIGN_NEXT_STEPS.md) §2.3 and [`~/.claude/plans/tidelink-bit-slip-i2c-coordination.md`](../../../.claude/plans/tidelink-bit-slip-i2c-coordination.md) §4 — this document refines those).
+**Layer:** Layer 2 of the TideLink bring-up alignment fix (see [`docs/TIDELINK_SPECIFICATION.md §9.10`](../../docs/TIDELINK_SPECIFICATION.md) for the as-built integration; the §2.3 gap from the historical plan is captured in §9.10.1 sub-step ordering. Also [`~/.claude/plans/tidelink-bit-slip-i2c-coordination.md`](../../../.claude/plans/tidelink-bit-slip-i2c-coordination.md) §4 — this document refines those).
 **Author:** Claude Code working under dam1n19's design brief.
 
 This document is the contract between:
@@ -24,7 +24,7 @@ Per [`BRINGUP_REPORT.md`](../../BRINGUP_REPORT.md) §9.8, asserting `swi_trainin
 7. Drop `swi_training_mode = 0`.
 8. Re-toggle `swreset` to re-init FCSM; cr_pkt exchange now works; FCSM → state 4.
 
-Steps 4 and 7 must happen **on both peers within a bounded skew**. The autonomous cal FSM (§2.2 of `PHY_ALIGN_NEXT_STEPS.md`) handles the per-side timing internally, but it does *not* synchronise entry/exit across the link. The high-speed link itself is not aligned at this point — it cannot be used to coordinate alignment (chicken-and-egg). I²C, the existing sideband, is the natural carrier.
+Steps 4 and 7 must happen **on both peers within a bounded skew**. The autonomous cal FSM (`docs/TIDELINK_SPECIFICATION.md §9.10.1` sub-step 5) handles the per-side timing internally, but it does *not* synchronise entry/exit across the link. The high-speed link itself is not aligned at this point — it cannot be used to coordinate alignment (chicken-and-egg). I²C, the existing sideband, is the natural carrier.
 
 The autoneg FSM at `deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv` already provides the I²C transaction primitives (`ST_NEGO_MASK_RD_ADDR`, `ST_NEGO_MASK_RD_DATA`, `ST_NEGO_MASK_RES_TX`). The new `ST_TRAIN_*` states reuse the same AXI-Lite sub-state-machine pattern.
 
@@ -355,6 +355,6 @@ This protocol is exercised by:
 - [`Wlink.scala`](../../deps/axi-chiplet-controller/wav-wlink-hw/src/main/scala/Wlink.scala) lines 162-168 + 329-333 — existing I²C-mediated peer-write pattern for lane mask.
 - [`tidelink_regs.rdl`](../../src/rdl/tidelink_regs.rdl) lines 240-320 — existing register block this design extends.
 - [`tidelink_top.sv`](../../src/rtl/tidelink_top.sv) lines 288-352 — I²C ports + AXI-slave port.
-- [`docs/PHY_ALIGN_NEXT_STEPS.md`](../../docs/PHY_ALIGN_NEXT_STEPS.md) §2.3 — the gap this design fills.
+- [`docs/TIDELINK_SPECIFICATION.md §9.10`](../../docs/TIDELINK_SPECIFICATION.md) — as-built PHY-Align integration; the historical §2.3 gap is captured under sub-step ordering (§9.10.1).
 - [`BRINGUP_REPORT.md`](../../BRINGUP_REPORT.md) §9.8 — sequencing requirement motivating the design.
 - [`~/.claude/plans/tidelink-bit-slip-i2c-coordination.md`](../../../.claude/plans/tidelink-bit-slip-i2c-coordination.md) §4 — original plan; this document refines.

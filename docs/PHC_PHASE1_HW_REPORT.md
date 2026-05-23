@@ -734,3 +734,75 @@ PHC sync packet drop is somewhere between master's TX and slave's
 - All other branches (mark_debug, tidelink-integration, cdc-fix-wip)
   unaffected.
 - Bridge1 lease (`HXBRPeDCXDjomL9R9iI8UQ`) released cleanly.
+
+---
+
+## Build #11 (2026-05-23 20:08, feat/phc-rx-counters)
+
+### Build verdict
+
+PASS both targets (35m50s) after the build #10 fix `154e298` (drop the
+vestigial `dbg_int + dbg_hub` stanzas from both -all DRC XDCs — they
+were probing the `mark_debug` nets that Agent M's
+`feat/remove-mark-debug` disabled, so the probes had no valid endpoints
+and impl errored on `Chipscope 16-213 unconnected channels`).
+
+Bitstreams:
+  - `tidelink.bin` md5 `ec48010ff90de9c6ab38cf8d7928eadd`
+  - `tidelink-flip.bin` md5 `453ab6e861e7e66dffd78ec16e9da7cd`
+  - manifests: `commit=154e298…`, label `build11-…`
+
+### B0 converge: PASS (16/16 iter 1)
+
+### B1 PHC sync: STILL FAIL — slave HW_SYNC_STATUS=0x0
+
+```
+HW_SYNC_STATUS (master): 0x000047f5      (TX FSM advancing through sync)
+HW_SYNC_STATUS (slave):  0x00000000      (silent)
+SERVO_STATUS   (slave):  0x00000000
+PTP_CTRL       (master): 0x00000001
+PTP_CTRL       (slave):  0x00000001
+```
+
+### RX_DIAG counter read — slave-side observability is BROKEN
+
+Read Region 3 counters at the new offsets (0x44032074 / 0x44032078 /
+0x4403207C):
+
+| Side    | LL_VALID_CNT      | SHORT_PKT_CNT  | PHC_ACCEPT_CNT |
+|---------|-------------------|----------------|----------------|
+| master  | 19660 (0x4ccc)    | 1000 (0x3e8)   | 2 (0x2)        |
+| slave   | 8388608 (0x800000)| 1000000 (0xf4240) | 0 (0x0)     |
+
+Master's values are within 16-bit range and look plausible (master's
+TX self-loopback would explain some count). **Slave's values are
+nonsense:** 8388608 = 2²³ exact, 1000000 = exact decimal — both well
+beyond 16-bit saturation, AND they do not clear on a write to the
+clear-register address. Either:
+
+1. The slave bitstream's Region 3 address decode points at a different
+   register than the counter, OR
+2. The counter saturation logic is broken on the slave-side hierarchy
+   (synth optimised it differently from master), OR
+3. The clear-on-write path is not wired on slave
+
+The slave-side counter is therefore not a usable diagnostic on this
+build. **`feat/phc-rx-counters` is NOT merged to main** — until the
+slave-side observability also works, the branch provides no actionable
+data over the existing per-cycle sim instrumentation (`cocotb/phc_pair/
+test_phc_diag.py`).
+
+### Phase-1 PHC status — autonomous loop exhausted
+
+Three HW retry cycles + sim repro + RTL counter add + four candidate
+fixes attempted (Bug-#3 ruled out, APB-write ruled out, TB-helper
+race fixed in sim, RX counter add inconclusive). The closeout
+genuinely needs the next-tier debug primitive — an oscilloscope on
+the GPIO pad_rx_* signals or a working ChipScope on the slave's
+ll_rx boundary — and ideally a focused human review of the chiplet
+controller's RX FSM. Documented for the next session.
+
+### Build #11 bridge1 lease
+
+Acquired `0P-Gm2FHP0Bc49JCane_bw` 2026-05-23 19:44 → released cleanly
+20:50.

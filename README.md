@@ -2,6 +2,86 @@
 
 TideLink is a **chiplet interconnect subsystem** developed by SoC Labs that enables reliable die-to-die communication between AHB-based SoCs. It wraps a complete chiplet link stack — Wlink (open-source D2D PHY/link layer), XHB500 AHB-to-AXI bridges, an address translator, and a credit-based packet FIFO — into a single integration-ready module (`tidelink_top`).
 
+## Quick-start
+
+**Sim (cocotb regression):**
+```sh
+cd cocotb
+make regression        # runs ENVS list (see cocotb/README.md for the inventory)
+```
+
+**Sim (single UVM env):**
+```sh
+cd uvm/<env>
+make run_all           # default 4-test suite for fc_adapter; full_test
+                       # is excluded from CI pending scoreboard-race fix
+```
+
+**FPGA build (single-board, fastest):**
+```sh
+source set_env.sh
+make -C fpga build_design TARGET=pynq-z2-pair
+```
+
+**FPGA build (HW-validated -all pair — recommended for sign-off):**
+```sh
+source set_env.sh
+bash fpga/scripts/build_farm.sh \
+    pynq-z2-pair-all@local \
+    pynq-z2-pair-flip-all@srv04936
+```
+Each target ~40-45 min Vivado; runs in parallel. Bitstreams land in
+`imp/fpga/output/<TARGET>/tidelink.bit`.
+
+**FPGA HW validation on bridge1 (PYNQ-Z2 pair):**
+```sh
+# 1. Convert .bit -> .bin, generate provenance manifest, stage
+python3 fpga/scripts/bit2bin.py imp/fpga/output/pynq-z2-pair-all/tidelink.bit ~/td_milestone_stage/tidelink.bin
+python3 fpga/scripts/bit2bin.py imp/fpga/output/pynq-z2-pair-flip-all/tidelink.bit ~/td_milestone_stage/tidelink-flip.bin
+cp imp/fpga/output/pynq-z2-pair-all/tidelink.hwh           ~/td_milestone_stage/tidelink.hwh
+cp imp/fpga/output/pynq-z2-pair-flip-all/tidelink.hwh      ~/td_milestone_stage/tidelink-flip.hwh
+bash pynq_host/scripts/make_bitstream_manifest.sh ~/td_milestone_stage/tidelink.bin      --commit "$(git rev-parse HEAD)" --target pynq-z2-pair      --lock-min 14
+bash pynq_host/scripts/make_bitstream_manifest.sh ~/td_milestone_stage/tidelink-flip.bin --commit "$(git rev-parse HEAD)" --target pynq-z2-pair-flip --lock-min 14
+
+# 2. Lease the pair (verify GRANTED, not queued)
+fpgahub pair lease acquire bridge1 --ttl 3600
+
+# 3. Push artefacts to mapstone-dev (cat-over-ssh because rsync trips
+#    the remote bashrc Agent-pid banner)
+for f in tidelink.bin tidelink.hwh tidelink-flip.bin tidelink-flip.hwh \
+         tidelink.bin.manifest.json tidelink-flip.bin.manifest.json; do
+    cat ~/td_milestone_stage/$f | \
+        ssh -o LogLevel=ERROR mapstone-dev "cat > ~/td_milestone_stage/$f"
+done
+
+# 4. Converge + lock (auto-uses the manifest; UNVERIFIED deploys now ABORT)
+ssh -o LogLevel=ERROR mapstone-dev \
+    "cd ~/SoCLabs/tidelink && bash pynq_host/scripts/bringup_pair_converge.sh STABLE=3 MAX_RETRIES=15"
+```
+
+Acceptance criterion: `RESULT: CONVERGED — full 16/16 bidirectional
+link at iteration N` for some N ≤ MAX_RETRIES.
+
+**Lint flows:**
+```sh
+make -C lint lint-each            # Cadence HAL — full RTL lint coverage
+make -C cdc cdc                   # SpyGlass CDC — see docs/SPYGLASS_CDC_SIGNOFF.md
+```
+
+## Documentation map
+
+- [`docs/TIDELINK_SPECIFICATION.md`](docs/TIDELINK_SPECIFICATION.md) — authoritative architecture spec
+- [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — submodule + tool dependencies + update recipe
+- [`docs/CDC_AUDIT_REPORT.md`](docs/CDC_AUDIT_REPORT.md) + [`docs/SPYGLASS_CDC_SIGNOFF.md`](docs/SPYGLASS_CDC_SIGNOFF.md) — CDC sign-off (GO for TideLink RTL)
+- [`docs/PHC_PHASE1_HW_REPORT.md`](docs/PHC_PHASE1_HW_REPORT.md) — PHC Phase-1 HW characterisation status
+- [`docs/LINK_DECAY_BISECT.md`](docs/LINK_DECAY_BISECT.md) — the 2026-05-23 deploy-provenance Bug #32 recurrence (and the hard-abort guard that closed it)
+- [`cocotb/README.md`](cocotb/README.md) — cocotb env inventory + known-excluded list
+- [`docs/REPO_SIMPLIFICATION_IMPACT.md`](docs/REPO_SIMPLIFICATION_IMPACT.md) — repo-hygiene roadmap
+- [`docs/PHY_LAYER_ABSTRACTION_IMPACT.md`](docs/PHY_LAYER_ABSTRACTION_IMPACT.md) — PHY-layer refactor impact assessment
+
+---
+
+
 TideLink solves a fundamental problem: **AHB is a blocking protocol** that cannot issue outstanding transactions, making transparent bridging over high-latency die-to-die links impractical. TideLink provides two parallel communication paths:
 
 - **Path 1 — Transparent AHB bridge**: For control-plane access, configuration writes, and direct memory-mapped reads. Uses XHB500 → AXI → Wlink → AXI → XHB500. Reads block the bus (acceptable for short config accesses).

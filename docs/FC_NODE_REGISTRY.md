@@ -56,7 +56,7 @@ should pick from this list and update the table above.
 2. Reserve a data_id by editing this file in the same branch as the
    new node's Scala / SystemVerilog source.
 3. Update the relevant SoC Labs spec document (e.g. your IP's
-   `docs/SPECIFICATION.md`) referencing the assigned ID.
+   `docs/TIDELINK_SPECIFICATION.md`) referencing the assigned ID.
 4. Check for collisions with short-packet IDs if your node uses any.
 
 ## Notes

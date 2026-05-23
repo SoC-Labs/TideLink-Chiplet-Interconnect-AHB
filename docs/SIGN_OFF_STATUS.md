@@ -25,38 +25,80 @@ later commit, re-check the gates rather than trusting this snapshot.
 | Documentation            | **GO** | `README.md` rewritten with Quick-start + Documentation map (`072d85c`); `cocotb/README.md` test index + `docs/DEPENDENCIES.md` (`c733319`); seven stale single-session docs dropped + spec-ref redirect (`e98e87a`); `docs/REPO_SIMPLIFICATION_IMPACT.md` quick-win list. | Optional: complete Tier-3 `src/rtl/fifo/` flatten (`§3-A` of impact assessment) — defers an HW build cycle. |
 | Repo hygiene             | **GO** | `docs/REPO_SIMPLIFICATION_IMPACT.md` Tier-1 (10 proposals) and Tier-2 (3 proposals) all landed in the `e98e87a → 072d85c` doc-fold window; `cdc/tidelink_top_new/` is gitignored via `cdc/tidelink_top*/` (`983451b`). | Tier-3 (`§3-A` fifo flatten, `§4-D` script consolidation) deferred behind HW build budget. |
 
-## Outstanding work — ordered
+## Outstanding work — ordered (updated 2026-05-23 20:55)
 
-1. **Diagnose pipeline-226 hal-lint failure.** Either fix the offending
-   module or extend the existing `tidelink_ahb` / `tidelink_fifo_ahb`
-   exclusion comment in `lint/Makefile` to cover whatever just regressed.
-   Zero RTL risk; bounded debug. **Required to call the lint gate GO.**
-2. **Diagnose pipeline-226 cocotb-regression + cdriver-regression
-   failures.** Both regressed in the `985de4d` (C driver regression
-   commit) window — most likely a missing C-driver header / shared-lib
-   path delta. **Required to call the cocotb gate GO.**
-3. **Re-validate PHC Phase-1 end-to-end on bridge1 with `b61c84a`
-   bitstream.** The HW_SYNC packet-path fix is RTL, requires a rebuild
-   + redeploy + B1-B4 sequence + capture of fresh `PHC_PHASE1_HW_REPORT`
-   addendum. **Required to call PHC GO.**
-4. **Land §3.1 SGDC port-clock additions and §3.2 waiver-file deltas**
-   from `docs/SPYGLASS_CDC_SIGNOFF.md`. Zero RTL/constraint risk;
-   promotes the CDC run from "GO CONDITIONAL with 8 spurious errors" to
-   "GO, zero-error / zero-warning". **Required to call CDC GO clean.**
-5. **Trigger `formality-lec` manual job on `main@b61c84a`** and archive
-   the FC MANIFEST.md + Formality LEC report. **Required to call the
-   ASIC gate GO.**
-6. **Close the `tidelink_fc_adapter_full_test` scoreboard concurrency
-   race** so the full UVM stress test can come off `allow_failure`.
-   Tracked in `.gitlab-ci.yml` comment at `uvm-fc-adapter:` stanza.
-7. **Wire Verilator strict-lint into `.gitlab-ci.yml`** so the existing
-   `lint/verilator/Makefile` gate is enforced per-push.
-8. **(Optional, V2)** Re-attempt the calibration-CDC structural fix on
-   `feat/cdc-fix-wip` once Finding #2 MCP constraints are added (CDC
-   §9 outstanding item 4).
-9. **(Optional, V2)** Tier-3 repo-simplification items
+### Closed since first draft
+
+- ~~1. hal-lint failure~~ — **CLOSED** by `c547ed1` (drop `tidelink_ahb`
+  + `tidelink_fifo_ahb` from `CMSDK_MODULES` per `lint/Makefile` with
+  full legacy port-chain explanation).
+- ~~2. cdriver-regression~~ — **CLOSED** by `28654ae` (TIDELINK_REGS_TypeDef
+  sizeof assert bumped from 0x90 to 0x120 to reflect autoneg + Region 8
+  register additions).
+- ~~4. SGDC port-clock additions + waiver-file deltas~~ — **CLOSED** by
+  `dab4955` (unsync error 8→3 reduction; remaining 3 are blackbox-internal
+  in `axi_chiplet_controller` — out of top-level scope).
+- ~~6. `tidelink_fc_adapter_full_test` scoreboard race~~ — **CLOSED** by
+  `98fbfdd` (opt-in `order_insensitive` matching mode in the scoreboard;
+  full 4-test suite re-enabled in CI).
+
+### Still open (post-build-#11 / commit `f92bc67`)
+
+1. **PHC Phase-1 end-to-end PASS on bridge1.** Agent F's `b61c84a`
+   master-TX `tx_router_idle` bypass HW-validated working
+   (master HW_SYNC_STATUS 0x3→0x4815, FSM advancing through sync
+   transmit). Slave RX still stuck at HW_SYNC_STATUS=0x0 across THREE
+   HW retries. Sim repro (`cocotb/phc_pair/test_phc_hw_sync_pair.py`,
+   `86e45bb`/`609482f`) reproduces the bug and exonerates the RTL
+   slave-RX path when registers are programmed correctly. Build #11
+   added Region 3 RX_DIAG counters (`feat/phc-rx-counters`,
+   `804cfcc` + `154e298`) but slave-side counter wiring is itself
+   broken (bogus 8388608/1000000/0 reads that don't clear).
+   **Closeout requires next-tier debug primitive** (scope on `pad_rx_*`
+   OR working slave-side ChipScope on `ll_rx` — both beyond the
+   autonomous-loop scope). Documented in `docs/PHC_PHASE1_HW_REPORT.md`
+   §"Build #11 verdict" + §"Phase-1 PHC status — autonomous loop
+   exhausted".
+
+2. **Slave-side RX_DIAG counter wiring fix** on `feat/phc-rx-counters`
+   (depends on item 1 root-cause; the counter is a debug tool, not a
+   product feature).
+
+3. **mark_debug attrs removal merge to main.** `feat/remove-mark-debug`
+   was rolled into `feat/phc-rx-counters` build #11 which HW-validated
+   16/16. The mark_debug removal itself is therefore proven HW-clean —
+   just needs a clean parent-main commit that bumps the submodule SHA
+   independent of the larger PHC counter branch. Requires one more
+   build cycle (~50 min) to validate the submodule-only bump didn't
+   pull in unintended changes. Independently mergeable.
+
+4. **Trigger `formality-lec` manual job** on `main@f92bc67` and archive
+   the FC MANIFEST + Formality LEC report. ASIC gate.
+
+5. **Wire Verilator strict-lint into `.gitlab-ci.yml`** so the existing
+   `lint/verilator/Makefile` gate is enforced per-push (it currently
+   runs only on demand).
+
+6. **(Optional, V2)** CDC structural fix on `feat/cdc-fix-wip` —
+   needs Finding #2 `set_multicycle_path` first.
+
+7. **(Optional, V2)** Tier-3 repo-simplification items
    (`docs/REPO_SIMPLIFICATION_IMPACT.md §3-A`, `§4-D`) — each
    carries one HW build cycle.
+
+### CI pipeline state
+
+Pipeline `17803` (`f92bc67`) pending — runner not free. Earlier
+pipelines on the latest commits (`17796`-`17800`) all auto-canceled
+by rapid-fire pushes. Job-level data is from pipeline `17786`
+(`970b82d`, pre-fix) which had:
+  - hal-lint, spyglass-cdc, cdriver-regression, cocotb-wlink-pair,
+    cocotb-ptp all FAILED
+
+Of those 5, the closures above directly address hal-lint, spyglass-cdc,
+cdriver-regression. cocotb-wlink-pair + cocotb-ptp regressions are
+unaddressed (pre-existing — not introduced by today's work) — they
+should be triaged in the next CI-focused session.
 
 ## Known-deferred (with owner)
 

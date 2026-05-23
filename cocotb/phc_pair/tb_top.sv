@@ -30,6 +30,24 @@ module tb_top;
     logic apb_clk;
     assign apb_clk = master_clk;
 
+    // §9 FPGA-models mode: when PHC_PAIR_USE_FPGA_MODELS is defined the
+    // axi_chiplet_controller instances are parameterised with USE_IDELAY=1
+    // and USE_CLKBUF=1 — i.e. exactly what the pynq-z2-pair-all bitstream
+    // builds. Real Xilinx IDELAYE2 / IDELAYCTRL / BUFG unisim cells are
+    // referenced; the Makefile must pull them in (+y unisims, glbl.v).
+    // A 200 MHz reference clock is generated for IDELAYCTRL.
+    logic idelay_ref_clk = 1'b0;
+    logic idelay_rst     = 1'b1;
+    initial begin
+        // 200 MHz reference (5 ns period)
+        forever #2.5 idelay_ref_clk = ~idelay_ref_clk;
+    end
+    initial begin
+        // Release after 200 ns so the BUFG/IDELAYCTRL settle before
+        // master/slave hresetn deasserts (cocotb releases that ~1us in).
+        #200 idelay_rst = 1'b0;
+    end
+
     logic m_poresetn = 1'b0, m_hresetn = 1'b0;
     logic s_poresetn = 1'b0, s_hresetn = 1'b0;
 
@@ -323,7 +341,12 @@ module tb_top;
         .interrupt(m_interrupt),
 
         .pad_clk_tx(m_pad_clk_tx), .pad_tx(m_pad_tx),
-        .pad_clk_rx(s_pad_clk_tx),  .pad_rx(s_pad_tx)
+        .pad_clk_rx(s_pad_clk_tx),  .pad_rx(s_pad_tx),
+
+        // §9 IDELAYE2 RX delay reference (used only with USE_IDELAY=1).
+        // Tied to live ref/rst — harmless when USE_IDELAY=0.
+        .idelay_ref_clk(idelay_ref_clk),
+        .idelay_rst(idelay_rst)
     );
 
     // ----- Slave Wlink ------------------------------------------------------
@@ -420,8 +443,23 @@ module tb_top;
         .interrupt(s_interrupt),
 
         .pad_clk_tx(s_pad_clk_tx), .pad_tx(s_pad_tx),
-        .pad_clk_rx(m_pad_clk_tx),  .pad_rx(m_pad_tx)
+        .pad_clk_rx(m_pad_clk_tx),  .pad_rx(m_pad_tx),
+
+        // §9 IDELAYE2 RX delay reference (used only with USE_IDELAY=1).
+        .idelay_ref_clk(idelay_ref_clk),
+        .idelay_rst(idelay_rst)
     );
+
+`ifdef PHC_PAIR_USE_FPGA_MODELS
+    // §9 FPGA-models mode: force the parameter overrides on both Wlink
+    // instances so the IDELAYE2 + BUFG generate-if branches elaborate
+    // (mirrors the pynq-z2-pair-all bitstream config). Requires Vivado
+    // unisim+glbl.v in the compile (see Makefile).
+    defparam u_master.USE_IDELAY = 1'b1;
+    defparam u_master.USE_CLKBUF = 1'b1;
+    defparam u_slave.USE_IDELAY  = 1'b1;
+    defparam u_slave.USE_CLKBUF  = 1'b1;
+`endif
 
     // VCD dump
     initial begin

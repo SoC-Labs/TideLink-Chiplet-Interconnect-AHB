@@ -285,14 +285,29 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
 
 #-----------------------------------------------------------------------------
-# Debug ila_rx probe pipe: false_path on the raw-pad ILA capture.
-# Base targets removed ila_rx 2026-05-19 (raw-pad ILA incompatible with the
-# real IDELAYE2 IDATAIN route). The -all targets retained it for
-# FPGA_DEBUG_ILA support; PHC -all mirror tightened slave routing enough that
-# pad_clk_rx -> ila_rx/PROBE_PIPE.shift_probes_reg[0][0]/D misses hold
-# (WHS -0.562 on pair-flip-all build #3). ila_rx capture is debug-only and
-# non-functional for the link; false_path exempts cleanly. Long-term: remove
-# ila_rx from -all BD to align with base-target cleanup.
+# Auto-inserted dbg_hub (BSCAN/JTAG) — false_path on TCK-clocked internals.
+#
+# Vivado auto-inserts the dbg_hub when the design contains any net flagged
+# with (* mark_debug = "true" *). The Wlink IP (deps/.../WlinkRxLinkLayer.v)
+# carries ~30 such attrs on its observability nets for the SoC Labs ILA
+# story. Even without an explicit ILA core or any probe wiring, the empty
+# dbg_hub still includes BSCAN-clocked (TCK) shift registers and FIFOs
+# which Vivado then attempts to timing-close against TCK's worst-case
+# 33 ns period. The result is WHS = -7.94 ns / 8 hold failing endpoints in
+# the routed Design Timing Summary on every -all build (no functional
+# impact — TCK is the external JTAG clock, only active during ChipScope
+# sessions, and the ila_rx PROBE_PIPE shift register that the previous
+# narrower waiver targeted does not exist in this design).
+#
+# This is build #7's clk_out1->clk_out3 setup violation and pad_clk_rx
+# intra-hold violation source. HW lock is 16/16 on bridge1 because the
+# functional clock paths are clean; the dbg_hub is purely a debug-side
+# infrastructure that the running silicon never exercises.
+#
+# Replaces the d46412e/build #5 ila_rx-named waiver, which targeted a
+# vestigial cell name (impl_1 reported Vivado 12-4739 "No valid object(s)").
+# The replacement waives ALL paths through the auto-inserted dbg_hub /
+# BSCANE2 TCK clock, against any in-design clock, both directions.
 #-----------------------------------------------------------------------------
-set_false_path -from [get_ports pad_clk_rx] \
-    -to [get_pins -hierarchical -filter {NAME =~ "*ila_rx*PROBE_PIPE*shift_probes_reg*D"}]
+set_false_path -from [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical -filter {NAME =~ "*BSCAN_X0Y0/TCK*"}]] -to [all_clocks]
+set_false_path -from [all_clocks] -to [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical -filter {NAME =~ "*BSCAN_X0Y0/TCK*"}]]

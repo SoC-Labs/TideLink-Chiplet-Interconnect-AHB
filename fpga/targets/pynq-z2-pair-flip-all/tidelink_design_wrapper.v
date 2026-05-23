@@ -75,8 +75,27 @@ module tidelink_design_wrapper (
     output wire        led0,              // LD0 / R14 — link_active
     output wire        led1,              // LD1 / P14 — role_is_master
     output wire        led2,              // LD2 / N16 — wlink_irq
-    output wire        led3               // LD3 / M14 — released_credits_irq
+    output wire        led3,              // LD3 / M14 — released_credits_irq
+
+    // PMOD-B cross-board trigger (bidirectional). Wired board-to-board by
+    // a short jumper. The driving board pulses high; the sense-side reads
+    // it via AXI GPIO ch2 and the PHC latches its time (Option A capture).
+    // Idle = '0' (PULLDOWN in XDC); driving side sets gpio_o=1 briefly.
+    inout  wire        pmod_b_trig        // JB1 / Y16 (PMOD-B pin 1)
 );
+
+    //=========================================================================
+    // PMOD-B trigger IOBUF — single pad both drives and senses.
+    //=========================================================================
+    wire pmod_b_trig_o_w;
+    wire pmod_b_trig_i_w;
+
+    IOBUF u_pmod_b_trig_iobuf (
+        .I  (pmod_b_trig_o_w),
+        .O  (pmod_b_trig_i_w),
+        .T  (~pmod_b_trig_o_w),       // tristate when not driving high
+        .IO (pmod_b_trig)
+    );
 
     //=========================================================================
     // Block Design Instance
@@ -117,10 +136,14 @@ module tidelink_design_wrapper (
         .led0                     (led0),
         .led1                     (led1),
         .led2                     (led2),
-        .led3                     (led3)
+        .led3                     (led3),
 
-        // All other tie-offs (tl_bcast_ack_i, phc_pps, phc_locked_i,
-        // tc_axis_*, tc_qos_priority, user_ref_clk, scan_*, i2c_*, ahb_mng_*,
+        // PMOD-B cross-board trigger (split out for the IOBUF above)
+        .pmod_b_trig_o            (pmod_b_trig_o_w),
+        .pmod_b_trig_i            (pmod_b_trig_i_w)
+
+        // All other tie-offs (tl_bcast_ack_i, phc_locked_i, tc_axis_*,
+        // tc_qos_priority, user_ref_clk, scan_*, i2c_*, ahb_mng_*,
         // s_i2c_axi_*) are driven INSIDE the block design via xlconstant
         // cells in tidelink_design.tcl. They are not exposed as BD external
         // ports, so they do not appear in this instantiation.

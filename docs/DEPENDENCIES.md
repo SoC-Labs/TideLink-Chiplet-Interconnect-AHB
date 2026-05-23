@@ -8,6 +8,16 @@ mostly).
 
 **Upstream:** `git@git.soton.ac.uk:soclabs/chiplets/axi-chiplet-controller.git`
 **Recorded SHA on `main`:** see `git ls-tree HEAD deps/axi-chiplet-controller`
+**Tracked branch in `.gitmodules`:** `main` (current). A
+`feat/tidelink-integration` branch also exists on the submodule's
+`origin` and points at the same recorded SHA TideLink consumes
+(`2f602d1` as of 2026-05-23). It is the named pointer for the
+TideLink-integrated state of the submodule, created per
+`/home/dam1n19/SoCLabs/td-bisect/axi-chiplet-controller_main_rewrite_plan.md`
+(non-destructive half only — the plan's destructive `main` rewrite +
+force-push is DEFERRED). Switching `.gitmodules` to track
+`feat/tidelink-integration` is cosmetic and intentionally not done
+yet; the recorded SHA resolves regardless of branch.
 **Provides:**
 
 - `logical/wlink/` — the Wavious Wlink IP (LL + TL + GPIO PHY,

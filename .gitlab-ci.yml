@@ -1103,7 +1103,7 @@ hwtest:full:
     N_AHB_TX: "64"
   script:
     - echo "Running FULL TideLink HW test suite (cat 1-12, ex. 13)"
-    - echo "WARNING: this includes AHB_TX storm — link must be 16/16 before running"
+    - echo "WARNING: this includes AHB_TX storm - link must be 16/16 before running"
     - bash pynq_host/scripts/hwtest/run_all.sh
   after_script:
     - mkdir -p hwtest-logs

@@ -299,39 +299,7 @@ sign-off deferred, tcbn65lp QoR re-run pending, chip-top assembly downstream.
 
 ---
 
-## Addendum A — RTL optimisation and CDC work (2026-05-23)
-
-The following items were completed in the 2026-05-22/23 analysis session:
-
-### RTL fixes applied (commits pending)
-
-| Fix | File | Change |
-|---|---|---|
-| Calibrator mux merge | `src/rtl/tidelink_phy_align_calibrator.sv` | Two-level `phase_offset` mux chain merged to single 3-input select; removes intermediate wire flagged by CDC tools |
-| CAM priority encoder | `src/rtl/tl_addr_trans_cam.sv` | Ascending `!found` guard replaced with descending overwrite; allows parallel priority mux tree synthesis |
-| Lint Makefile | `cocotb/lint/Makefile.synth` | Removed `tidelink_addr_translation.sv` (unused alternative — was accidental synthesis inclusion risk) |
-| Alt-impl header | `src/rtl/tidelink_addr_translation.sv` | Marked as alternative (not active) with CAM area comparison |
-
-### New analysis documents
-
-| Document | Content |
-|---|---|
-| `docs/CDC_AUDIT_REPORT.md` | Full CDC audit: 2 quasi-static violations on `swi_phase_offset` (hclk/link_clk → pad_clk_rx); all Wlink-internal crossings found correct. Action plan: `set_false_path` waivers + SVA assertion |
-| `docs/RESET_DISTRIBUTION_PLAN.md` | Reset tree analysis: AASD pattern is correct given integration contract; items to close = port documentation, `set_max_fanout` in DC script, SpyGlass reset run, ICG DFT audit |
-| `docs/PHY_LAYER_ABSTRACTION.md` | PHY separation plan: updated §9 with "still needed?" evaluation — Phase 1+2 high value before next ASIC run |
-| `docs/RTL_OPTIMISATION_ANALYSIS.md` | ASIC-primary optimisation analysis (FPGA Vivado timing used as proxy) |
-| `docs/REPO_SIMPLIFICATION_ASSESSMENT.md` | Repository tidying guide (dead code, doc consolidation, structure) |
-
-### ASIC pre-tapeout items added by this session
-
-Added to the §4.2(c) tape-out list:
-- Run SpyGlass CDC; apply `set_false_path` waivers for `swi_phase_offset` and `role_locked`; add SVA quasi-static assertion (CDC_AUDIT_REPORT.md §6)
-- Add integration contract comment to `tidelink_top.sv` reset ports; verify `set_max_fanout` in DC synthesis script (RESET_DISTRIBUTION_PLAN.md §4)
-- ICG DFT test-enable audit for `wav_latch_model.sv` cells (RESET_DISTRIBUTION_PLAN.md §4.4)
-
----
-
-## Addendum B — branch fold-loop + reliability correction (autonomous closeout)
+## Addendum — branch fold-loop + reliability correction (autonomous closeout)
 
 **Branch consolidation:** local branches 62 → 9. Deleted 28 folded + the
 already-folded `feat/td-asic-determinism-docs` + 3 throwaway experiments

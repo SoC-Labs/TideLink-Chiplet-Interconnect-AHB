@@ -705,30 +705,36 @@ module tidelink_phy_align_calibrator #(
     // best_slip/best_phase or to the just-observed (sweep_slip,sweep_phase)
     // if its lane_score exceeded best_score. Lanes with best_score below
     // LOCK_THRESH set lane_fault and hold their last iterator value.
-    // Single 3-input select: apb_override → lane_done mux → sweep.
-    // Merges the former two-level combinational chain into one always_comb
-    // block, removing the intermediate phase_offset_internal wire that
-    // caused CDC tools to flag two separate crossing points for the same signal.
+    logic [23:0] bit_slip_internal;
+    logic [31:0] phase_offset_internal;
     always_comb begin
-        bit_slip         = 24'h0;
-        phase_offset     = 32'h0;
-        training_mode    = 1'b0;
-        calibration_done = 1'b1;
+        bit_slip_internal     = 24'h0;
+        phase_offset_internal = 32'h0;
+        for (int i = 0; i < 8; i++) begin
+            if (lane_done[i]) begin
+                bit_slip_internal[3*i +: 3]     = slip[i];
+                phase_offset_internal[4*i +: 4] = phase[i];
+            end else begin
+                bit_slip_internal[3*i +: 3]     = sweep_slip;
+                phase_offset_internal[4*i +: 4] = sweep_phase;
+            end
+        end
+    end
+
+    // APB override: drive bit_slip directly from the override register and
+    // force the FSM's "no calibration in progress" outputs. In this mode the
+    // PHY behaves exactly as the existing soft-strap design — SW is in
+    // charge of slip selection. phase_offset is forced to 0 so the global
+    // APB phase path (WavD2DGpio PHY-ctrl reg) keeps full control.
+    always_comb begin
         if (apb_override_enable) begin
             bit_slip         = apb_bit_slip_override;
             phase_offset     = 32'h0;
             training_mode    = 1'b0;
             calibration_done = 1'b1;
         end else begin
-            for (int i = 0; i < 8; i++) begin
-                if (lane_done[i]) begin
-                    bit_slip[3*i +: 3]     = slip[i];
-                    phase_offset[4*i +: 4] = phase[i];
-                end else begin
-                    bit_slip[3*i +: 3]     = sweep_slip;
-                    phase_offset[4*i +: 4] = sweep_phase;
-                end
-            end
+            bit_slip         = bit_slip_internal;
+            phase_offset     = phase_offset_internal;
             training_mode    = (cur_state == S_ARM) || (cur_state == S_SWEEP)
                             || (cur_state == S_HOLD);   // T3.2: hold pattern
             calibration_done = (cur_state == S_DONE);

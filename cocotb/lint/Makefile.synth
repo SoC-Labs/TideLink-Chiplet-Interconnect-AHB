@@ -50,6 +50,7 @@ WRAPPER_EXCLUDES := \
 	tidelink_apb_regs.sv \
 	tidelink_addr_translator.sv \
 	tidelink_apb_addr_ctrl.sv \
+	tidelink_addr_translation.sv \
 	tidelink_fc_adapter.sv \
 	tidelink_fifo_ctrl.sv
 

@@ -8,16 +8,33 @@ mostly).
 
 **Upstream:** `git@git.soton.ac.uk:soclabs/chiplets/axi-chiplet-controller.git`
 **Recorded SHA on `main`:** see `git ls-tree HEAD deps/axi-chiplet-controller`
-**Tracked branch in `.gitmodules`:** `main` (current). A
-`feat/tidelink-integration` branch also exists on the submodule's
-`origin` and points at the same recorded SHA TideLink consumes
-(`2f602d1` as of 2026-05-23). It is the named pointer for the
-TideLink-integrated state of the submodule, created per
-`/home/dam1n19/SoCLabs/td-bisect/axi-chiplet-controller_main_rewrite_plan.md`
-(non-destructive half only — the plan's destructive `main` rewrite +
-force-push is DEFERRED). Switching `.gitmodules` to track
-`feat/tidelink-integration` is cosmetic and intentionally not done
-yet; the recorded SHA resolves regardless of branch.
+**Tracked branch in `.gitmodules`:** `main` (current). Two feature
+branches also exist on the submodule's `origin`:
+
+  - **`feat/tidelink-integration`** (`a9ec909a` as of 2026-05-23): the
+    named pointer for the TideLink-integrated state of the submodule,
+    created per
+    `/home/dam1n19/SoCLabs/td-bisect/axi-chiplet-controller_main_rewrite_plan.md`
+    (non-destructive half only — the plan's destructive `main` rewrite +
+    force-push is DEFERRED). The branch currently sits one commit ahead
+    of `main` (= `2f602d1`) because it was fast-forwarded onto the
+    `feat/remove-mark-debug` tip (`a9ec909a`). That's a one-commit
+    forward-look at the `mark_debug` cleanup; it is functionally
+    equivalent to the `main`-recorded state for the RTL TideLink builds
+    out of (mark_debug attrs do not synthesize), but is NOT yet
+    HW-validated.
+  - **`feat/remove-mark-debug`** (`a9ec909a`): disables the 15 active
+    `(* mark_debug = "true" *)` attrs in `WlinkRxLinkLayer.v` to remove
+    the auto-inserted dbg_hub at source (cleans the persistent WHS noise
+    that the three prior XDC waiver attempts couldn't catch). Parked
+    awaiting bridge1 lease for 16/16 lock HW validation before merge.
+  - **`feat/cdc-fix-wip`** (`0086e1b`): the structural `tl_calibration_cdc`
+    instantiation. Not needed for V1 per CDC audit §9; parked
+    indefinitely.
+
+Switching `.gitmodules` to track `feat/tidelink-integration` is cosmetic
+and intentionally not done yet; the recorded SHA on parent `main`
+(`2f602d1`) resolves regardless of branch.
 **Provides:**
 
 - `logical/wlink/` — the Wavious Wlink IP (LL + TL + GPIO PHY,

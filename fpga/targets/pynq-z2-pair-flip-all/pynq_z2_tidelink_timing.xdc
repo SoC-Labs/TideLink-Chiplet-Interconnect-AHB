@@ -296,33 +296,31 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 # (The primary severity downgrade lives in *_tidelink_drc.xdc so it survives
 #  save_constraints round-trips during debug-core insertion.)
 set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
-
 #-----------------------------------------------------------------------------
-# Auto-inserted dbg_hub (BSCAN/JTAG) — false_path on TCK-clocked internals.
+# dbg_hub (BSCAN/JTAG) WHS noise — known non-issue, no waiver.
 #
-# Vivado auto-inserts the dbg_hub when the design contains any net flagged
-# with (* mark_debug = "true" *). The Wlink IP (deps/.../WlinkRxLinkLayer.v)
-# carries ~30 such attrs on its observability nets for the SoC Labs ILA
-# story. Even without an explicit ILA core or any probe wiring, the empty
-# dbg_hub still includes BSCAN-clocked (TCK) shift registers and FIFOs
-# which Vivado then attempts to timing-close against TCK's worst-case
-# 33 ns period. The result is WHS = -7.94 ns / 8 hold failing endpoints in
-# the routed Design Timing Summary on every -all build (no functional
-# impact — TCK is the external JTAG clock, only active during ChipScope
-# sessions; the ila_rx PROBE_PIPE shift register that earlier waivers
-# targeted does not exist in this design — that name is vestigial).
+# Vivado auto-inserts the dbg_hub when the design contains any
+# (* mark_debug = "true" *) net. The Wlink IP (deps/.../WlinkRxLinkLayer.v)
+# carries ~30 such attrs on its observability nets. Even without explicit
+# ILA / probe wiring, the empty dbg_hub still includes BSCAN-clocked (TCK)
+# shift registers + FIFOs that Vivado tries to timing-close against TCK's
+# worst-case 33 ns period. Result: WHS ~= -7.94 ns / 8 hold + WNS ~= -0.83 ns
+# / 3 setup endpoints in routed Design Timing Summary. None of those paths
+# are functionally active during normal operation — TCK is the external
+# JTAG clock, only toggled during ChipScope sessions.
 #
-# This is the build #7 clk_out1->clk_out3 setup violation and pad_clk_rx
-# intra-hold violation source. HW lock is 16/16 on bridge1 because the
-# functional clock paths are clean; the dbg_hub is purely a debug-side
-# infrastructure that the running silicon never exercises.
+# Build #7 + #8 HW result: bridge1 link converges 16/16 on iteration 1
+# with the WHS noise present. Two prior waiver attempts (d46412e
+# ila_rx-named, build #5 get_clocks form, build #8 BSCAN_X0Y0/TCK form)
+# all targeted cell/pin names that do not resolve at constraint-load time
+# and only generated Vivado 12-4739 "No valid object(s) found" errors of
+# their own. The dbg_hub names are auto-generated post-synthesis from the
+# inserted debug-core hierarchy and there is no stable XDC pattern that
+# Vivado will resolve against the un-elaborated netlist.
 #
-# Replaces the earlier ila_rx-named waivers (d46412e and the build #5
-# get_clocks/get_cells revision). Both targeted vestigial cell names — the
-# impl runme.log showed Vivado 12-4739 "No valid object(s) found" on the
-# pair-all instance. The replacement waives ALL paths through the
-# auto-inserted dbg_hub / BSCANE2 TCK clock, against any in-design clock,
-# both directions.
+# Long-term fix (Agent E §1-A track): remove the mark_debug attrs from
+# Wlink RTL — the SoC Labs ILA observability story has been replaced by
+# RO APB observability (Region 8 SWI_LANE_STATUS, submodule 250f1cf).
+# With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
+# disappears at source.
 #-----------------------------------------------------------------------------
-set_false_path -from [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical -filter {NAME =~ "*BSCAN_X0Y0/TCK*"}]] -to [all_clocks]
-set_false_path -from [all_clocks] -to [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical -filter {NAME =~ "*BSCAN_X0Y0/TCK*"}]]

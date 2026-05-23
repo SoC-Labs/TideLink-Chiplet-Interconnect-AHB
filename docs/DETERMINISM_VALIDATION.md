@@ -14,7 +14,7 @@ build-to-build PHY lane-lock nondeterminism (e.g. v5 locked both boards
 per-lane routing skew vs the runtime calibrator's finite
 bit-slip(0..7)×phase(0..15) window — see
 `/tmp/timing_determinism_investigation_brief.md` and, for the ASIC
-target, `docs/ASIC_SOURCE_SYNC_CONSTRAINTS.md`. WNS alone does **not**
+target, `docs/ASIC_TIMING_CONSTRAINTS.md`. WNS alone does **not**
 capture this; the metric below does.
 
 ---
@@ -180,4 +180,4 @@ change is only an improvement if this metric says PASS; a WNS
 improvement with this metric still FAIL is not a determinism fix. For
 the ASIC target the same metric concept applies across PVT corners /
 units instead of build seeds — see
-`docs/ASIC_SOURCE_SYNC_CONSTRAINTS.md` §1 and the final checklist item.
+`docs/ASIC_TIMING_CONSTRAINTS.md` Part A §1 and the Part B §9 checklist.

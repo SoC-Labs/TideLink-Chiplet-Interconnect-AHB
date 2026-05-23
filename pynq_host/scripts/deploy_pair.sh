@@ -213,10 +213,24 @@ if [ -n "$EXPECT_SHA" ]; then
 elif [ "$NO_VERIFY" -eq 1 ]; then
     echo "WARNING: --no-verify set — flashing $BIN WITHOUT provenance check (sha256=${ACTUAL_SHA:-?})" >&2
 else
-    echo "WARNING: UNVERIFIED DEPLOY — no --expect-sha256 or --manifest given." >&2
-    echo "WARNING: flashing $STAGED_BIN (sha256=${ACTUAL_SHA:-?}) with NO provenance guard." >&2
-    echo "WARNING: this is exactly how Bug #32 (wrong-bitstream mixup) happened." >&2
-    echo "WARNING: pass --manifest <f>.manifest.json or --no-verify to silence this." >&2
+    # Hard abort on UNVERIFIED DEPLOY — recommended by 2026-05-23 link-decay
+    # bisect (docs/LINK_DECAY_BISECT.md). The same class of bug as #32
+    # bit twice today: build #8 bins were staged into ~/td_milestone_stage/
+    # but /tmp/tidelink_deploy/ on the boards still held rc2, and the
+    # WARNING-only path let PHC Phase-1 read rc2's marginal link as a
+    # build-#8 regression for ~3 hours. WARNINGs do not stop the deploy,
+    # and bus-y operators (especially in setsid-detached form) don't read
+    # them. Aborting forces every deploy to declare provenance up front.
+    #
+    # Bypass: pass --no-verify EXPLICITLY when you genuinely want to deploy
+    # without checking (e.g. local sandbox experiments). Or generate a
+    # sibling .manifest.json with make_bitstream_manifest.sh.
+    echo "DEPLOY-ABORT: UNVERIFIED DEPLOY — no --expect-sha256, --manifest or --no-verify given." >&2
+    echo "  Refusing to flash $STAGED_BIN (sha256=${ACTUAL_SHA:-?}) with no provenance guard." >&2
+    echo "  This is the Bug #32 class of mistake — see docs/LINK_DECAY_BISECT.md for" >&2
+    echo "  today's recurrence (build #8 bins staged but rc2 deployed by mistake)." >&2
+    echo "  Fix: pass --manifest <f>.manifest.json (preferred) or --no-verify (explicit)." >&2
+    exit 5
 fi
 # ===========================================================================
 

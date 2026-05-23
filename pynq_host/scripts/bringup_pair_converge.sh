@@ -181,8 +181,23 @@ recal_cycle() {
 # 2>&1 which silently hid scp/load failures and made dead boards look
 # like silicon bugs ("deploy-race misread as silicon").
 deploy_one() {  # IP ROLE PHASEVAL
+    # Force the deploy to use the staged manifest if one is present (the
+    # default location). This kills the Bug #32 / 2026-05-23 link-decay-
+    # bisect class of "wrong bin in /tmp/tidelink_deploy/" bug at source:
+    # deploy_pair.sh either matches the manifest sha and proceeds, or
+    # aborts with rc=4 / 5 and the iteration is FAIL — never a silent
+    # flash of the stale bin. To deploy without a manifest, set
+    # DEPLOY_PAIR_NOVERIFY=1 explicitly (e.g. local sandbox experiments).
+    local _bin="tidelink.bin"
+    [ "$2" = "die_b" ] && _bin="tidelink-flip.bin"
+    local _manifest_flag=""
+    if [ -f "$ARTEFACTS/$_bin.manifest.json" ]; then
+        _manifest_flag="--manifest $ARTEFACTS/$_bin.manifest.json"
+    elif [ "${DEPLOY_PAIR_NOVERIFY:-0}" = "1" ]; then
+        _manifest_flag="--no-verify"
+    fi
     PHASE_OVERRIDE=$(printf 0x%08x "$3") \
-        bash "$DEPLOY_PAIR" "$1" z2_$2 "$2" "$ARTEFACTS" >/dev/null
+        bash "$DEPLOY_PAIR" "$1" z2_$2 "$2" "$ARTEFACTS" $_manifest_flag >/dev/null
 }
 
 # ---------------------------------------------------------------------------

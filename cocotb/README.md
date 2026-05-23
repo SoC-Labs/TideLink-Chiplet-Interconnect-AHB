@@ -1,52 +1,97 @@
-# `cocotb/phy_align/` — PHY-layer alignment tests
+# TideLink — cocotb test index
 
-These tests exercise the per-lane bit-slip + training-pattern alignment
-mechanism (BRINGUP_REPORT.md §9). They are physically separated from the
-`cocotb/wlink_pair/` integration tests so the alignment work is *extraction-
-ready* — see [`deps/axi-chiplet-controller/logical/phy-align/README.md`](../../deps/axi-chiplet-controller/logical/phy-align/README.md)
-for the future repo split.
+cocotb-based simulation suite for the TideLink chiplet-interconnect
+subsystem. Each subdirectory is a self-contained test environment with
+its own `Makefile`, `tb_top.sv` (or `tb_top` from a flist), and one or
+more `test_*.py` files. The top-level `cocotb/Makefile` defines the
+`ENVS` list that `make regression` walks.
 
-## Contents
-
-| File | Purpose |
-|---|---|
-| `wlink_lane_checker.sv` | Per-lane training-pattern lock detector (8-lane wrapper + single-lane core). Inputs `lane_data[127:0]` (8 × 16-bit per-lane words from the deserialiser); outputs `lane_locked[7:0]`. Compares each lane against a period-8 byte pattern; asserts the lane's `locked` after 16 consecutive matches. Used by `tb_top.sv` to expose per-lane alignment status to the cocotb test. |
-| `test_pair_align.py` | The §9 calibration test. Sweeps per-lane bit_slip 0..7 looking for `lane_locked` on each side, applies the calibrated slips, exits training mode, asserts FCSM advances to state=4 with cr_pkt_seen_rx on both sides. |
-| `Makefile` | Delegates to `../wlink_pair/Makefile` (which owns the testbench top compile) with the correct `MODULE` + `PYTHONPATH`. |
-
-## Run
+## Quick-start
 
 ```sh
-cd cocotb/phy_align
-make SKID_BITS=3         # default test, skid amount 3 — the FPGA-observed shift
-make SKID_BITS=5 MODULE=test_pair_align
+# Single env
+cd cocotb/tidelink_fifo
+make
+
+# All envs (CI's cocotb-regression job)
+cd cocotb
+make regression
 ```
 
-Tested SKID_BITS values: 0, 1, 3, 5, 7 — all PASS (calibration converges, link
-comes up with FCSM advancing to state=4).
+The CI invocation is `make -C cocotb regression`. Each env emits a
+`run.log` + `.result` + `results.xml` under itself; coverage gets
+collected into `cocotb/<env>/coverage.vdb` and aggregated into
+`coverage_report/`.
 
-## How this relates to the §9 RTL changes
+## Environments
 
-`wlink_lane_checker.sv` here is **the receive-side checker** — a wrapper module
-that watches the deserialiser's output. It works alongside the in-place edits to
-`WavD2DGpio.v`, `WavD2DGpioRx.v`, `WavD2DGpioTx.v` in the Wavious Wlink generated
-Verilog tree. Those edits add:
+### Module / unit tests
 
-- `swi_bit_slip[23:0]` — 8 lanes × 3 bits, per-lane right-rotation amount.
-- `swi_training_mode` — when high, TX serialiser sources fixed per-lane training
-  bytes instead of LL data.
-- Per-lane training byte selection (period-8 bytes, see `wlink_lane_checker.sv`
-  inline comments for the rationale on rotational-period choice).
+| Env | Module under test | What it exercises |
+|---|---|---|
+| [`tidelink_fifo`](tidelink_fifo/) | `tidelink_fifo_mem` | FIFO mem + ctrl + APB regs together as the FIFO subsystem |
+| [`tidelink_returner`](tidelink_returner/) | `tidelink_returner` | Credit-return AHB-master state machine |
+| [`tidelink_apb_regs`](tidelink_apb_regs/) | `tidelink_apb_regs` | APB register file |
+| [`tidelink_fc_adapter`](tidelink_fc_adapter/) | `tidelink_fc_adapter` | FC TX / RX + sideband adapter (single-stream tests; `full_test` excluded from CI pending scoreboard-race fix) |
+| [`tidelink_ptp`](tidelink_ptp/) | `tidelink_ptp` | Single-phase PTP state machine |
+| [`tidelink_ptp_servo`](tidelink_ptp_servo/) | `tidelink_ptp_servo` | PTP servo block |
+| [`tidelink_phc_cdc`](tidelink_phc_cdc/) | `tidelink_phc_cdc` | PHC ↔ AHB handshake CDC |
+| [`tidelink_addr_translator`](tidelink_addr_translator/) | `tidelink_addr_translator` | CAM-based address translation |
+| [`tidelink_autoneg`](tidelink_autoneg/) | `tidelink_autoneg` (in chiplet controller) | Autoneg FSM, role lock, I²C arbitration |
+| [`tidelink_mul_iter`](tidelink_mul_iter/) | `tidelink_mul_iter` | 32×32 iterative signed-×-unsigned multiplier (used by PTP servo) |
+| [`tidelink_perf`](tidelink_perf/) | `tidelink_perf` | Perf counter block |
+| [`tidelink_perf_cdriver`](tidelink_perf_cdriver/) | `tidelink_perf` + C-driver | Compiled-C driver in the loop against `tidelink_perf` |
+| [`tidelink_perf_congestion`](tidelink_perf_congestion/) | `tidelink_perf` congestion estimator | Phase-1 congestion-estimator characterisation |
+| [`tidelink_idelay_rx`](tidelink_idelay_rx/) | `tidelink_idelay_rx` | Per-lane IDELAYE2 wrapper passthrough check |
+| [`tidelink_rxclk_buf`](tidelink_rxclk_buf/) | `tidelink_rxclk_buf` | Recovered-RX-clock BUFG wrapper |
+| [`tidelink_clkfreq_check`](tidelink_clkfreq_check/) | clock-freq-check helper | Sanity check on the FPGA clk_wiz output |
+| [`tidelink_phy_align_calibrator`](tidelink_phy_align_calibrator/) | `tidelink_phy_align_calibrator` | §9.9 best-of-sweep widest-eye selection unit test |
 
-The current `cocotb/phy_align/` test reaches into the DUT hierarchy via cocotb
-to drive `swi_bit_slip` and `swi_training_mode` directly; the production version
-would drive these from APB. See BRINGUP_REPORT.md §9 for the full design.
+### Integration / system tests
 
-## Extraction plan
+| Env | What it exercises |
+|---|---|
+| [`tidelink`](tidelink/) | `tidelink` top-level (the legacy `src/rtl/tidelink.sv` wrapper — TOP=`tidelink_fifo` per `lint/Makefile`'s `TOP_tidelink`) |
+| [`tidelink_ahb`](tidelink_ahb/) | `tidelink_ahb` wrapper + AHB-to-APB bridge (excluded from CI hal-lint pending repo-simplification tier-2 §1-A) |
+| [`tidelink_top`](tidelink_top/) | `tidelink_top` full integration (chiplet controller + FIFO + FC adapter + PTP + addr trans) |
+| [`tidelink_system`](tidelink_system/) | Full-system integration test |
+| [`tidelink_py_pair`](tidelink_py_pair/) | Python-driven paired-board sim |
+| [`wlink_pair`](wlink_pair/) | Two-Wlink-instance pair-bringup sim |
+| [`phy_align`](phy_align/) | **§9 PHY-alignment story** — per-lane bit-slip + training-pattern + calibrator search window CONTRACT. See [`phy_align/README.md`](phy_align/README.md) for the full §9 calibrator skew-window contract pin. |
+| [`i2c_clkstretch`](i2c_clkstretch/) | Real `i2c_master_axil` + `i2c_slave_axil_master` cores wired together for I²C clock-stretching characterisation |
+| [`i2c_mask_selflock`](i2c_mask_selflock/) | Fix B — autonomous SLAVE self-lock via the real `0x21C` lane-mask-handshake |
+| [`bank_asymmetry`](bank_asymmetry/) | Per-bank RX asymmetry adversarial test |
+| [`axi_chiplet_controller`](axi_chiplet_controller/) | Adversarial tests for the chiplet controller |
+| [`sim_robust`](sim_robust/) | Sim-robustness regression set |
 
-When the PHY moves to its own repo (`wlink-phy-align/` or similar) this
-directory becomes the PHY repo's cocotb entry point. The current
-`test_pair_align.py` is a *pair-level* test (master+slave Wlink full stack) and
-would live in the TideLink-side repo; PHY-only tests (drive pad bundle on one
-side, observe Link2PHY bundle on the other) would be added here. The
-`wlink_lane_checker.sv` module is fully self-contained and moves cleanly.
+### Lint flow (not a cocotb test env)
+
+| Dir | Purpose |
+|---|---|
+| [`lint/`](lint/) | Verilator strict-lint wrapper (separate from `cocotb/Makefile regression`) |
+
+## Verification plan + coverage
+
+The authoritative scope + acceptance criteria for each env lives in
+[`VERIFICATION_PLAN.md`](VERIFICATION_PLAN.md). Coverage aggregation is
+under `coverage_report/` (generated by the CI `coverage-merge` job; do
+not edit by hand).
+
+## Known-excluded-from-CI
+
+Two envs are intentionally skipped by CI to keep the pipeline green:
+
+1. **`tidelink_ahb`** — CI hal-lint can't elaborate the module because
+   `src/rtl/tidelink.sv` uses the legacy port interface of
+   `tidelink_fifo` / `tidelink_apb_regs` (hsel/hready/htrans/
+   packet_word_length_out/overrun/underrun/enable/flush). The active
+   modules in `src/rtl/fifo/` use the prefixed `ahbs_*`/`ahbm_*`
+   multi-AHB interface. The cocotb env itself runs fine when invoked
+   by hand.
+2. **`tidelink_fc_adapter` → `tidelink_fc_adapter_full_test`** — fails
+   with ~31 scoreboard mismatches under interleaved TX+RX+sideband
+   traffic. The TX-only, RX-only, sideband-only single-stream tests
+   (also in this env) pass and run in CI; only the full stress test
+   is excluded.
+
+Both are tracked in `docs/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).

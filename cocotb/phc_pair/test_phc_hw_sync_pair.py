@@ -1,25 +1,31 @@
-"""PHC HW_SYNC pair-sim reproduction of the HW slave-RX gap.
+"""PHC HW_SYNC pair-sim: positive end-to-end assertion for the slave RX path.
 
-Background
-----------
-docs/PHC_PHASE1_HW_REPORT.md, §"Build #9 retry" (around line 270):
-   master HW_SYNC_STATUS = 0x4815 (FSM advancing)
-   slave  HW_SYNC_STATUS = 0x0    (never receives sync packets)
-The b61c84a master-TX fix is in; the slave-RX path still drops PHC short
-packets on the floor on real hardware.
+History
+-------
+This test originally `expect_fail=True` to reproduce the HW PHC slave-RX
+gap from docs/PHC_PHASE1_HW_REPORT.md §"Build #9 retry". Diagnostic
+instrumentation (test_phc_diag.py) localised the drop to the slave-side
+`tidelink_ptp.ptp_enable_r` FF — `rx_accept = ptp_sp_rx_valid &
+ptp_enable_r` was held low because the slave's PTP_CTRL register write
+pulse was being lost in the cocotb scheduling race between simultaneously-
+edging master_clk and slave_clk (master succeeded, slave silently failed
+with identical helper code).
 
-This sim exercises the analogous path with the same two-Wlink + tidelink_ptp
-topology (no ASIC, no GPIO physical link), at sim speed:
+Per-cycle counts over 50 000 slave_clk cycles confirmed the layer:
+   master sp2wl ll_tx.sop && data_id=0x50  = 7984
+   slave  sp2wl ll_rx.valid && sop         = 8183
+   slave  llrx.is_short_pkt                = 8176  ← classifier OK
+   slave  sp2wl.rx_pkt_valid               = 7968  ← match + valid OK
+   slave  sp2wl.rx_fifo.winc               =   64  ← FIFO writes blocked
+   slave  sp2wl.rx_fifo.wfull              = 49481 ← because rx_accept=0
+   slave  ptp_enable_r                     =    0  ← root cause
 
-   master tidelink_ptp.HW_SYNC fires -> master Wlink.ptp_in
-   -> master TX -> GPIO PHY (cross-wired in tb_top) -> slave Wlink RX
-   -> slave Wlink.ptp_out -> slave tidelink_ptp.ptp_sp_rx_valid
-   -> slave sync_rx_done pulse / PTP_CTRL[2] rx_valid
+Fix: ptp_reg_write now aligns to the side's hclk and holds the write
+pulse for two rising edges. With ptp_enable_r reliably set, the RX FIFO
+drains correctly and sync_rx_done pulses fire end-to-end.
 
-If the bug is the same in sim (slave never sees the packet) the test xfails.
-Once the slave-RX gap is fixed (in Wlink ptp_out wiring or in tidelink_ptp's
-RX glue), the xfail will flip to xpass; remove the xfail decorator at that
-point and convert it to a positive assertion.
+This test now asserts the slave receives at least one SYNC short packet
+per master HW_SYNC interval, end-to-end through both Wlinks.
 """
 import cocotb
 import pytest
@@ -111,12 +117,24 @@ async def lock_slave(dut):
 # tidelink_ptp register helpers (ptp_reg_* backdoor — same as cocotb/tidelink_ptp)
 # -------------------------------------------------------------------------
 async def ptp_reg_write(dut, side, addr, data, region=0):
+    """Drive the tidelink_ptp register pulse synchronously to the side's hclk.
+
+    Hold the write for two rising edges so it is reliably captured even when
+    the master/slave clocks are simultaneously edging — cocotb's value-
+    scheduling can lose a one-cycle pulse against the second of two
+    aligned clocks (seen empirically on the slave side: m_ptp_enable_r=1
+    after one pulse but s_ptp_enable_r=0 with identical helper code).
+    """
     clk = getattr(dut, f"{'master' if side == 'm' else 'slave'}_clk")
+    # Align to a fresh edge before driving so the scheduled-write race
+    # against simultaneous master/slave edges is avoided.
+    await RisingEdge(clk)
     getattr(dut, f"{side}_ptp_reg_addr").value   = addr
     getattr(dut, f"{side}_ptp_reg_wdata").value  = data
     getattr(dut, f"{side}_ptp_reg_region").value = region
     getattr(dut, f"{side}_ptp_reg_write").value  = 1
-    await RisingEdge(clk)
+    await RisingEdge(clk)  # FF samples write=1 here
+    await RisingEdge(clk)  # hold one extra cycle as belt-and-braces
     getattr(dut, f"{side}_ptp_reg_write").value  = 0
     getattr(dut, f"{side}_ptp_reg_region").value = 0
 
@@ -159,20 +177,15 @@ async def drive_phc(dut, side, ns_per_tick=20, seed_seconds=0, seed_ns=0):
 # -------------------------------------------------------------------------
 # Test
 # -------------------------------------------------------------------------
-@cocotb.test(expect_fail=True)
+@cocotb.test()
 async def test_phc_hw_sync_pair(dut):
-    """REPRODUCES the HW PHC slave-RX gap.
+    """End-to-end SYNC short-packet RX assertion (pair-sim).
 
     Programs master HW_SYNC initiator (Region 2: INTERVAL + EN|FORCE_EN, the
     same `0x5` write performed by `bringup_ptp_sync.sh` step [5]). Polls slave
-    `PTP_CTRL[2]` (rx_valid) and `sync_rx_done` for evidence that a PHC short
-    packet ever arrived. On HW this never happens — slave HW_SYNC_STATUS stays
-    0x0 because the master's HW_SYNC packets never traverse the slave Wlink
-    RX path to slave tidelink_ptp.
-
-    expect_fail=True until the slave-RX gap closes. When sim shows
-    `slave_rx_seen=True`, flip expect_fail off and convert this into a
-    positive assertion that the path works end-to-end.
+    `PTP_CTRL[2]` (rx_valid) and `sync_rx_done` for evidence that the PHC
+    short packets routed through master Wlink -> GPIO PHY -> slave Wlink ->
+    slave tidelink_ptp.ptp_sp_rx_valid are accepted and latched.
     """
     await setup(dut)
 

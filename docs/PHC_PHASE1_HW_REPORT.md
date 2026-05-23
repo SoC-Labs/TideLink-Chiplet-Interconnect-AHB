@@ -581,3 +581,83 @@ make
    that the slave observes at least one SYNC short packet per
    master HW_SYNC interval.
 4. Add the test to the CI matrix for `cocotb/phc_pair`.
+
+---
+
+## Sim root-cause closure (2026-05-23, post-c8f418c)
+
+### Diagnostic
+
+Added `cocotb/phc_pair/test_phc_diag.py` to instrument the slave RX path
+per-cycle over 50 000 slave_clk cycles. The probes walked the candidate
+boundaries from the §"Build #9 retry #2" handoff:
+
+| Probe (slave hierarchy)                              | Count   | Verdict |
+|------------------------------------------------------|---------|---------|
+| master `sp2wl ll_tx.sop && data_id=0x50`             |  7984   | TX OK   |
+| slave  `sp2wl ll_rx.valid && sop`                    |  8183   | RX seen |
+| slave  `llrx.is_short_pkt`                           |  8176   | classifier OK (Candidate 1 ruled out) |
+| slave  `llrx.is_long_pkt`                            |     0   | no misclassification |
+| slave  `sp2wl.dataIdMatch`                           | 49785   | data_id 0x50 matches |
+| slave  `sp2wl.rx_pkt_valid` (sop&&valid&&match)      |  7968   | adapter OK |
+| slave  `sp2wl.rx_fifo.winc`                          |    64   | **DROP — FIFO blocked** |
+| slave  `sp2wl.rx_fifo.wfull`                         | 49481   | FIFO full almost always |
+| slave  `tidelink_ptp.ptp_enable_r`                   |     0   | **gate held low** |
+| master `tidelink_ptp.ptp_enable_r`                   |     1   | (control: same helper) |
+
+The 7968→64 drop at `rx_fifo.winc` is caused by `rx_accept =
+ptp_sp_rx_valid & ptp_enable_r` being held low — so the RX FIFO fills
+up and ~99 % of incoming SYNC packets are dropped on the floor at the
+slave adapter's FIFO write-enable.
+
+This rules out **Candidate 1** (link-layer classifier — 8176/8183 = OK)
+and **Candidate 2** (FIFO blocked downstream — it's blocked upstream
+of the FIFO read side, by the write-enable gate not by the read pointer).
+It is **Candidate 3 in spirit** — `ptp_enable_r` not being 1 — though the
+underlying cause is *not* synth pruning. It's a cocotb scheduling race in
+the test bench's register-write helper: master succeeded with a single-
+edge pulse but slave silently failed with identical helper code, because
+when both clocks edge at the same instant cocotb's queued value-writes
+can land after the FF has already evaluated the older value.
+
+### Fix
+
+`cocotb/phc_pair/test_phc_hw_sync_pair.py` — `ptp_reg_write` helper
+now aligns to a fresh rising edge before driving and holds the write
+pulse for two rising edges (belt-and-braces). With this in place the
+slave's `ptp_enable_r` reliably latches to 1 and the RX FIFO drains.
+
+Post-fix run:
+```
+slave  PTP_CTRL       = 0x00000005 (rx_valid=1, enable=1)
+slave  sync_rx_done pulses observed = 3
+slave  PTP_CTRL[2] rx_valid latched = True
+slave  sp2wl.rx_fifo.winc           = 7968  (matches rx_pkt_valid)
+slave  sp2wl.rx_fifo.wfull          = 0
+test_phc_hw_sync_pair.test_phc_hw_sync_pair   PASS
+```
+
+`expect_fail=True` removed; the test is now a positive end-to-end
+assertion that the slave receives ≥ 1 SYNC per master HW_SYNC interval.
+
+### HW implication (still pending board recovery)
+
+The sim and HW fail with the *same external signature* (slave never
+latches RX) but the sim root cause is a TB-helper race, not an RTL bug.
+The HW path uses APB→`tidelink_apb_regs.ptp_reg_write` rather than the
+backdoor `ptp_reg_*` ports, so this exact race cannot manifest on
+silicon. Still, two things to verify when z2_03 returns:
+
+1. Re-confirm slave `PTP_CTRL=0x1` via devmem *during the active SYNC
+   window* (not only immediately after step [4]), to rule out a
+   sticky-bit pruning issue on the APB write path itself. This is
+   exactly the §"Build #9 retry #2 → What the next session needs (3)"
+   workaround.
+2. If (1) shows `PTP_CTRL=0x0` mid-test, then Candidate 3 (Bug-#3-class
+   synth pruning of the slave-side `ptp_enable_r` FF) IS the real HW
+   root cause and needs the `(* keep *) (* dont_touch *)` annotation
+   on the FF declaration in `tidelink_ptp.sv`.
+
+The sim now provides the diagnostic harness (test_phc_diag.py) to
+prove the slave RX path is RTL-clean from `ll_rx` through `rx_fifo`
+end-to-end — that exonerates Candidates 1 and 2 on HW as well.

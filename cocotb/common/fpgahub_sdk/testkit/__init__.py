@@ -23,8 +23,6 @@ so this re-export stays safe with the toolchain absent — exactly the
 Vendored copy — canonical source: ~/SoCLabs/fpgahub/src/fpgahub_sdk/testkit/
 """
 
-from __future__ import annotations
-
 from ._bridge import HALBridge
 from .buses import CocotbAhbBus, JtagAxiBus, PynqMmioBus, RegBus, RegBusBase
 

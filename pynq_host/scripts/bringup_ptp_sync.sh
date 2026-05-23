@@ -162,4 +162,12 @@ echo "  Diagnostics:"
 echo "    HW_SYNC_STATUS (master): 0x$(printf '%08x' "$(apb_r "$MASTER_IP" $APB_OFF_HW_SYNC_STATUS)")"
 echo "    HW_SYNC_STATUS (slave):  0x$(printf '%08x' "$(apb_r "$SLAVE_IP"  $APB_OFF_HW_SYNC_STATUS)")"
 echo "    SERVO_STATUS   (slave):  0x$(printf '%08x' "$(apb_r "$SLAVE_IP"  $APB_OFF_SERVO_STATUS)")"
+# 2026-05-23: per docs/PHC_PHASE1_HW_REPORT.md § "Sim root-cause closure"
+# follow-up — read PTP_CTRL mid-test to discriminate APB-write-OK from
+# Bug-#3-class synth pruning of slave ptp_enable_r. If master shows
+# PTP_CTRL=0x1 but slave shows 0x0 during the sync window, the APB write
+# is not sticking and the slave `tidelink_ptp.ptp_enable_r` FF needs the
+# `(* keep *) (* dont_touch *)` annotation (see feat/keep-ptp-enable-r).
+echo "    PTP_CTRL       (master): 0x$(printf '%08x' "$(apb_r "$MASTER_IP" $APB_OFF_PTP_CTRL)")"
+echo "    PTP_CTRL       (slave):  0x$(printf '%08x' "$(apb_r "$SLAVE_IP"  $APB_OFF_PTP_CTRL)")"
 exit 1

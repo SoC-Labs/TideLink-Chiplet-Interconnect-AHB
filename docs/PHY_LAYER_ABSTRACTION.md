@@ -454,3 +454,59 @@ flist/
 The existing `tidelink_fpga.flist` becomes a composition of `tidelink_common.flist` and
 `tidelink_phy_gpio.flist`. For the v1 ASIC the GPIO PHY is retained; future ASIC builds use
 `tidelink_phy_serdes.flist` without any changes to the link-layer RTL.
+
+---
+
+## 9. Does this work still need doing? (evaluation as of 2026-05-23)
+
+**Yes — but Phase 1 and 2 are the highest-value steps; Phases 3–5 are medium-term.**
+
+### Why this matters now
+
+The CDC audit (`docs/CDC_AUDIT_REPORT.md`) found that `swi_phase_offset` crosses
+from hclk and link_clk into pad_clk_rx without synchronization. This is
+structurally caused by the calibration signals being wired at the controller level
+rather than inside a PHY wrapper. Phases 1–4 of this plan would move those signals
+into `tl_phy_gpio.sv`, making the CDC crossing local to the PHY wrapper and
+easier to close with a constrained synchronizer.
+
+Similarly, the reset distribution analysis (`docs/RESET_DISTRIBUTION_PLAN.md`)
+notes that the reset fan-out is difficult to audit because the reset tree fans out
+to all RTL including the GPIO PHY internals. Wrapping the PHY behind a formal
+boundary isolates the reset tree analysis.
+
+### Priority assessment
+
+| Phase | Blocks v1 tapeout? | Value | Effort |
+|---|---|---|---|
+| Phase 1 — Define interface (pass-through wrapper) | No | High (enables unit tests) | 1–2 days |
+| Phase 2 — Model PHY + link-layer tests | No | High (test coverage) | 3–5 days |
+| Phase 3 — Expose Wlink PHY boundary | No | High (CDC cleanup) | 3–5 days |
+| Phase 4 — Move calibration registers into PHY wrapper | No | Medium (cleaner CDC boundary) | 2–3 days |
+| Phase 5 — SerDes PHY wrapper | No (v1 uses GPIO) | Medium (required for v2) | 5–10 days |
+
+**Recommended sequencing:**
+1. Do Phase 1 and 2 before the next ASIC synthesis run — the model PHY enables
+   link-layer tests that do not depend on real GPIO timing, which speeds up
+   regression cycles significantly.
+2. Do Phase 3 and 4 alongside the CDC fix (CDC_AUDIT_REPORT.md §6), because
+   they share the same code region and a combined change is cleaner than two
+   separate patches.
+3. Defer Phase 5 until SerDes PHY integration is scheduled.
+
+### What is already in place
+
+- `phy_link_rx_rx_link_data[127:0]` and `phy_link_rx_rx_link_clk` are already
+  exposed through `axi_chiplet_controller.sv` to the calibrator and lane checker.
+  Phase 1 wraps what already exists — no new signal routing needed.
+- `WavD2DSerdesRx/Tx` modules exist in `deps/axi-chiplet-controller/logical/PHY/serdes/`.
+  Phase 5 only needs the wrapper; the underlying HDL is present.
+
+### What must not be disturbed
+
+- `USE_CLKBUF`, `USE_IDELAY`, `USE_T3A` parameter guards on FPGA-specific cells
+  must remain intact through all phases — they control which physical cells are
+  instantiated and must not be collapsed into the PHY wrapper without verifying
+  FPGA and ASIC build equivalence.
+- The existing cocotb regression suite must pass bit-for-bit after each phase
+  before the next phase begins.

@@ -382,3 +382,64 @@ advancing, but slave RX is not. The remaining work is the slave-side
 RX-config-or-RTL-wiring gap which is independent of `b61c84a` (that
 fix only addressed the master-TX `tx_router_idle` deadlock and
 provably did so).
+
+---
+
+## Sim reproduction (2026-05-23)
+
+The HW slave-RX gap reproduces in pure simulation, breaking the
+hardware-loop dependency. A new cocotb env was added so iteration
+on the slave-RX fix no longer requires a bridge1 lease.
+
+**Env:** `cocotb/phc_pair/`
+  - `tb_top.sv` — two `axi_chiplet_controller` (Wlink) instances
+    cross-wired through GPIO PHY pads (same topology as
+    `cocotb/wlink_pair/`), with a `tidelink_ptp` on each side wired to
+    that Wlink's `ptp_in`/`ptp_out` short-packet interface.
+  - `test_phc_hw_sync_pair.py` — programs master Region 2 HW_SYNC
+    initiator (INTERVAL + EN|FORCE_EN = `0x5`, identical to
+    `pynq_host/scripts/bringup_ptp_sync.sh` step [5]) and polls slave
+    `sync_rx_done` + `PTP_CTRL[2]` (rx_valid) over ~1 ms sim time.
+
+**Verdict:** `cocotb.test(expect_fail=True)` — reproduces the HW bug
+exactly:
+  - Master HW_SYNC fires cleanly: `HW_SYNC_STATUS = 0x000407d9`
+    (seq_num=502 after the poll window, FSM is firing once per
+    interval just like build #9 on silicon).
+  - Slave never sees the packets: `sync_rx_done` pulses = 0,
+    `PTP_CTRL[2]` rx_valid never latches, slave `PTP_CTRL = 0x0`.
+  - Test reports `PASS` (failed-as-expected) and the regression
+    summary line is:
+    `test_phc_hw_sync_pair.test_phc_hw_sync_pair   PASS  …  RATIO  49320 ns/s`
+
+**Why this is the right repro:** master's TX path is the same RTL
+that runs on silicon (`tidelink_ptp` + Wlink `ptp_in`), the cross-
+wiring through the Wlink GPIO PHY is the same RTL that the wlink_pair
+suite already certifies (`test_link_bringup` PASS, 6/6), and the
+slave's RX glue (`Wlink.ptp_out` → `tidelink_ptp.ptp_sp_rx_*`) is the
+exact code path that fails on the bench. The sim therefore exonerates
+every other layer (master TX, PHY transport, Wlink autoneg) and
+narrows the bug to the Wlink-`ptp_out` / `tidelink_ptp.ptp_sp_rx`
+boundary on the slave side.
+
+**Run it:**
+```sh
+cd cocotb/phc_pair
+make
+# completes in ~20 s wall-clock; xfails as expected
+```
+
+**How to flip xfail → xpass once the bug is fixed:**
+
+1. Apply the slave-RX fix (most likely a one-bit wiring repair in
+   Wlink `ptp_out` decode or a missing enable in `tidelink_ptp`'s RX
+   accept logic — diagnose by waveform on `cocotb/phc_pair/waves.vcd`,
+   probing `u_slave.u_wlink.…ptp_out` vs `s_ptp_sp_rx_valid`).
+2. Re-run `make` in `cocotb/phc_pair/` — the test will switch from
+   `failed as expected` to a real `FAIL` (because `expect_fail=True`
+   inverts an actual pass into a regression failure).
+3. Remove `expect_fail=True` from the `@cocotb.test()` decorator in
+   `test_phc_hw_sync_pair.py`. The test becomes a positive assertion
+   that the slave observes at least one SYNC short packet per
+   master HW_SYNC interval.
+4. Add the test to the CI matrix for `cocotb/phc_pair`.

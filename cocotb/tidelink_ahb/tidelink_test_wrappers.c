@@ -11,7 +11,10 @@
 
 /* ── Struct Layout Assertions ───────────────────────────────────────────── */
 
-_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x090,
+/* Updated 2026-05-23: register map grew past 0x090 with the autoneg
+ * block (0x090-0x09C) and the Region 8 phy-align block (0x100-0x11C).
+ * Last register is PHY_ALIGN_ID at 0x11C (uint32_t) so struct end is 0x120. */
+_Static_assert(sizeof(TIDELINK_REGS_TypeDef) == 0x120,
                "TIDELINK_REGS_TypeDef size mismatch");
 _Static_assert(offsetof(TIDELINK_REGS_TypeDef, PAIR_BASE_ADDR) == 0x000,
                "PAIR_BASE_ADDR offset mismatch");
@@ -23,6 +26,12 @@ _Static_assert(offsetof(TIDELINK_REGS_TypeDef, RELEASED_CREDITS_ACC) == 0x020,
                "RELEASED_CREDITS_ACC offset mismatch");
 _Static_assert(offsetof(TIDELINK_REGS_TypeDef, PAIR_CREDIT_COUNTER_EN) == 0x030,
                "PAIR_CREDIT_COUNTER_EN offset mismatch");
+_Static_assert(offsetof(TIDELINK_REGS_TypeDef, NEGO_CFG) == 0x090,
+               "NEGO_CFG offset mismatch");
+_Static_assert(offsetof(TIDELINK_REGS_TypeDef, SWI_TRAINING_MODE) == 0x100,
+               "SWI_TRAINING_MODE offset mismatch");
+_Static_assert(offsetof(TIDELINK_REGS_TypeDef, PHY_ALIGN_ID) == 0x11C,
+               "PHY_ALIGN_ID offset mismatch");
 
 /* ── 64-bit safe init wrapper ───────────────────────────────────────────── */
 

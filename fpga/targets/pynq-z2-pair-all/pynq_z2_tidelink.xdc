@@ -108,6 +108,14 @@ set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
 set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was F20 (bad) — LANE-7 REMAP
 
+#-- PMOD-B cross-board trigger -----------------------------------------------
+# PMOD-B header (JB) on PYNQ-Z2 v1.0 — pin 1 = Y16 (bank 13 LVCMOS33).
+# Bidirectional pad: driven high by the controlling board, sensed by the peer.
+# PULLDOWN keeps the line at '0' when no board is driving (idle state).
+# Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation — well
+# below the PHC quantisation (20 ns at 50 MHz).
+set_property -dict { PACKAGE_PIN Y16 IOSTANDARD LVCMOS33 PULLDOWN TRUE } [get_ports pmod_b_trig]
+
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established
 # LD1 (P14) = role_is_master_o — lit when this node won the master role

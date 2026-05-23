@@ -102,6 +102,10 @@ build_env_prefix() {
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
     [ -n "$FPGA_USE_IDELAY" ] && \
         printf 'export FPGA_USE_IDELAY=%q; ' "$FPGA_USE_IDELAY"
+    # PHC IP sibling repo (used by package_phc_ip). Optional — older trees
+    # without PHC integration leave this unset and skip the PHC IP package.
+    [ -n "$PHC_REPO_DIR" ] && \
+        printf 'export PHC_REPO_DIR=%q; ' "$PHC_REPO_DIR"
 }
 
 ###----------------------------------------------------------------- LOCAL ----
@@ -155,6 +159,12 @@ say "remote package_ip + build_design $TARGET (jobs=$JOBS)"
 REMOTE_CMD="set -e; cd $(printf %q "$RTREE"); $(build_env_prefix)"
 REMOTE_CMD+="source set_env.sh >/dev/null 2>&1 || true; "
 REMOTE_CMD+="make -C fpga package_ip; "
+# Package the PHC IP on the remote too, if its sibling repo is present.
+# Mirrors the local 'package_phc_ip (once)' step in build_farm.sh; without
+# this the BD on -all / pair targets hits [BD 5-390] for the PHC VLNV. The
+# remote is expected to have ~/SoCLabs/ptp-hardware-clock-ahb (or PHC_REPO_DIR
+# pre-exported via build_env_prefix above); if not, skip and proceed.
+REMOTE_CMD+="if [ -d \"\${PHC_REPO_DIR:-\$HOME/SoCLabs/ptp-hardware-clock-ahb}\" ]; then make -C fpga package_phc_ip; else echo '[farm_build] PHC_REPO_DIR not present on remote - skipping package_phc_ip'; fi; "
 REMOTE_CMD+="make -C fpga build_design TARGET=$(printf %q "$TARGET") SKIP_PACKAGE_IP=1 FPGA_NUM_JOBS=$(printf %q "$JOBS")"
 build_rc=0
 printf '%s\n' "$REMOTE_CMD" | "${SSH[@]}" "$HOST" bash -s || build_rc=$?

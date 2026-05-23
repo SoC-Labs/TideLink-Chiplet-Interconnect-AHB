@@ -90,6 +90,26 @@ if [ "$ANY_LOCAL" -eq 1 ]; then
         exit 1
     fi
     echo "[$(ts)] package_ip OK"
+    # Also package the PHC IP (sibling repo) once. The BD on -all + base
+    # targets uses the PHC IP from the local PHC_IP_OUTPUT_DIR; per-target
+    # builds run with SKIP_PACKAGE_IP=1 and would otherwise hit
+    # `[BD 5-390] IP definition not found for VLNV soclabs.org:user:phc_vivado_wrapper:1.0`
+    # at create_bd_cell time. Skipped if PHC_REPO_DIR isn't set/present
+    # (older trees without the PHC integration still build).
+    PHC_REPO_DIR_DEFAULT="${PHC_REPO_DIR:-$HOME/SoCLabs/ptp-hardware-clock-ahb}"
+    if [ -d "$PHC_REPO_DIR_DEFAULT" ]; then
+        echo "[$(ts)] package_phc_ip (once, local) ..."
+        PHC_PKG_LOG="$LOG_DIR/package_phc_ip.$STAMP.log"
+        if ! PHC_REPO_DIR="$PHC_REPO_DIR_DEFAULT" \
+             make -C "$FPGA_DIR" package_phc_ip > "$PHC_PKG_LOG" 2>&1; then
+            echo "ERROR: local package_phc_ip failed — see $PHC_PKG_LOG" >&2
+            tail -n 25 "$PHC_PKG_LOG" >&2
+            exit 1
+        fi
+        echo "[$(ts)] package_phc_ip OK"
+    else
+        echo "[$(ts)] package_phc_ip skipped (PHC_REPO_DIR=$PHC_REPO_DIR_DEFAULT not present)"
+    fi
 fi
 
 # ---- fan out: one farm_build.sh per job, all concurrent --------------------

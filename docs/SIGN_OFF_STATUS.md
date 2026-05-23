@@ -64,25 +64,26 @@ later commit, re-check the gates rather than trusting this snapshot.
    (depends on item 1 root-cause; the counter is a debug tool, not a
    product feature).
 
-3. **mark_debug attrs removal merge to main.** `feat/remove-mark-debug`
-   was rolled into `feat/phc-rx-counters` build #11 which HW-validated
-   16/16. The mark_debug removal itself is therefore proven HW-clean —
-   just needs a clean parent-main commit that bumps the submodule SHA
-   independent of the larger PHC counter branch. Requires one more
-   build cycle (~50 min) to validate the submodule-only bump didn't
-   pull in unintended changes. Independently mergeable.
+- ~~3. mark_debug attrs removal merge to main~~ — **CLOSED** by
+  build #12 + merge `f751d1c` (2026-05-23 21:38). Isolated branch
+  `feat/mark-debug-clean` (submodule SHA bump `2f602d1`→`a9ec909` +
+  DRC XDC strip) built clean and HW-validated 16/16 iter 1 on
+  bridge1 with verified build-#12 provenance (bin sha256
+  `db6159642d3d…` / `18e875722c09…`). The dbg_hub WHS noise that
+  three prior waiver attempts couldn't catch is now eliminated at
+  source — no XDC waiver needed for future builds.
 
-4. **Trigger `formality-lec` manual job** on `main@f92bc67` and archive
+3. **Trigger `formality-lec` manual job** on `main@f92bc67` and archive
    the FC MANIFEST + Formality LEC report. ASIC gate.
 
-5. **Wire Verilator strict-lint into `.gitlab-ci.yml`** so the existing
+4. **Wire Verilator strict-lint into `.gitlab-ci.yml`** so the existing
    `lint/verilator/Makefile` gate is enforced per-push (it currently
    runs only on demand).
 
-6. **(Optional, V2)** CDC structural fix on `feat/cdc-fix-wip` —
+5. **(Optional, V2)** CDC structural fix on `feat/cdc-fix-wip` —
    needs Finding #2 `set_multicycle_path` first.
 
-7. **(Optional, V2)** Tier-3 repo-simplification items
+6. **(Optional, V2)** Tier-3 repo-simplification items
    (`docs/REPO_SIMPLIFICATION_IMPACT.md §3-A`, `§4-D`) — each
    carries one HW build cycle.
 

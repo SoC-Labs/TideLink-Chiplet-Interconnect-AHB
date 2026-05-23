@@ -310,3 +310,75 @@ matches and was verified at deploy time per the 7e6aac6 hard-abort
 guard), and the staging pipeline (rsync-free cat-over-ssh transfer to
 mapstone-dev) all work end-to-end. The only outstanding gate is the
 physical board state, and that is independent of any commit on `main`.
+
+---
+
+## Build #9 retry (2026-05-23 18:08, z2_02 recovered)
+
+After the master board (z2_02) was physically power-cycled, ran the
+full B0-B4 chain against build #9's bitstream (md5 `1feb92375b3e…` /
+`27d4b5271d07…`, commit `4e693b5` = `b61c84a` PHC fix + post-fix docs).
+
+### Results
+
+| Step | Verdict | Evidence |
+|---|---|---|
+| **B0** Converge | **PASS** | 16/16 iter 1 at 18:08:30 |
+| **B1** PHC sync | **FAIL (closer)** | `locked_streak=0/10` over 60 s window. **Master HW_SYNC_STATUS = 0x4815 (was 0x0003)** — bits 4, 11, 14 now also set, meaning the master FSM advances past the `tx_router_idle` gate (Agent F's `force_en` fix is working as intended). **Slave HW_SYNC_STATUS = 0x0 (unchanged)**. Offset stays at ~+97.9 s baseline, fluctuates ±2 s RTT, never converges. |
+| **B2** freq-track | **BLOCKED** | precondition fail (slave SERVO_STATUS=0x0) |
+| **B3** offset-track | **BLOCKED** | same |
+| **B4** soak | **BLOCKED** | same |
+
+### Diagnosis update — what `b61c84a` fixed, what's still open
+
+**Before `b61c84a` (build #8):**
+  - Master HW_SYNC_STATUS = 0x0003 — stuck in `TX_WAIT_IDLE`,
+    `tx_router_idle` never asserts because Wlink LL inserts LP
+    frames at delay_cycles=1700.
+  - Slave HW_SYNC_STATUS = 0x0.
+  - **Master FSM never advances → no sync packets ever generated.**
+
+**After `b61c84a` (build #9):**
+  - Master HW_SYNC_STATUS = 0x4815 — FSM is advancing through sync
+    states. The `force_en | enable = 0x5` register write in
+    `bringup_ptp_sync.sh` is wired through to bypass the
+    `tx_router_idle` gate as the commit intended.
+  - Slave HW_SYNC_STATUS = 0x0 — **slave RX path still not seeing
+    the packets.** This is the next layer of the same gap.
+
+### What still needs investigating
+
+Master is generating + queueing sync packets but the slave's
+`HW_SYNC` RX path never observes them. Candidate causes (narrowed
+from the original four after this retry):
+
+1. **(MOST LIKELY)** The PHC sync packet is going out on the wrong
+   FC node, OR the slave's FC adapter doesn't have a configured RX
+   filter for the PHC sync `data_id` (0xa2 per
+   `docs/FC_NODE_REGISTRY.md`).
+2. The slave's `tidelink_phc_cdc.sv` `hw_capture` input is not
+   connected to whatever the FC adapter emits when an
+   incoming packet's `data_id` matches PHC.
+3. `bringup_ptp_sync.sh` step [4] sets up the master's PTP_SYNC
+   path but does NOT set up the corresponding slave-side RX
+   configuration (e.g. enable the PHC's hw_capture, route the
+   incoming FC node to the slave PHC's RX timestamping).
+
+Recommended next debug agent task:
+  - Diff master vs slave APB register state immediately before
+    `bringup_ptp_sync.sh` step [5] (the HW_SYNC start). Slave should
+    have the PHC-RX path armed; if it doesn't, the script needs a
+    new step. If it does, the gap is RTL (FC-adapter → PHC `hw_capture`
+    wiring or the PHC's RX `data_id` filter).
+  - Look at `src/rtl/tidelink_fc_adapter.sv` for the FC-RX-side
+    `data_id` match logic + which output port goes to PHC. The
+    `tidelink_ptp.sv` TX FSM was the master-side fix; the
+    corresponding slave-side path likely needs analogous attention.
+
+### Status
+
+PHC Phase-1 is now **half-closed** — link is healthy, master TX is
+advancing, but slave RX is not. The remaining work is the slave-side
+RX-config-or-RTL-wiring gap which is independent of `b61c84a` (that
+fix only addressed the master-TX `tx_router_idle` deadlock and
+provably did so).

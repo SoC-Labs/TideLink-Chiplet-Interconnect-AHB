@@ -303,9 +303,21 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # real IDELAYE2 IDATAIN route). The -all targets retained it for
 # FPGA_DEBUG_ILA support; PHC -all mirror tightened slave routing enough that
 # pad_clk_rx -> ila_rx/PROBE_PIPE.shift_probes_reg[0][0]/D misses hold
-# (WHS -0.562 on pair-flip-all build #3). ila_rx capture is debug-only and
-# non-functional for the link; false_path exempts cleanly. Long-term: remove
-# ila_rx from -all BD to align with base-target cleanup.
+# (WHS -0.562 on pair-flip-all build #3 + #4). ila_rx capture is debug-only
+# and non-functional for the link; false_path exempts cleanly. Long-term:
+# remove ila_rx from -all BD to align with base-target cleanup.
+#
+# Build #5 fix: path Source in the timing report is "pad_clk_rx (clock source
+# 'pad_clk_rx')" — i.e. the port pin is being USED AS A CLOCK in this path,
+# so `-from [get_ports pad_clk_rx]` (port-as-data) didn't match and the
+# router warning "[Route 35-419] Router was unable to fix hold violation"
+# fired against an ATTEMPTED-but-failed hold-fix. The correct form is to
+# target the clock domain (`get_clocks pad_clk_rx`) and the destination
+# cells directly (so the constraint engine resolves to the FF endpoint
+# rather than a hierarchical pin filter that Vivado may not expand
+# reliably through the ILA BD wrapper).
 #-----------------------------------------------------------------------------
-set_false_path -from [get_ports pad_clk_rx] \
-    -to [get_pins -hierarchical -filter {NAME =~ "*ila_rx*PROBE_PIPE*shift_probes_reg*D"}]
+set_false_path \
+    -from [get_clocks pad_clk_rx] \
+    -to   [get_cells -hierarchical -filter \
+            {NAME =~ "*ila_rx*PROBE_PIPE*shift_probes_reg*"}]

@@ -62,6 +62,7 @@ ARM_IP_LIBRARY_PATH="${ARM_IP_LIBRARY_PATH:-/research/AAA/ip_library}"
 CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
 CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
 FPGA_INSERT_DEBUG_CORE="${FPGA_INSERT_DEBUG_CORE:-}"
+FPGA_USE_IDELAY="${FPGA_USE_IDELAY:-}"
 
 # rsync: ship the whole repo tree EXCEPT host-specific build outputs and
 # bulky sim/coverage debris. Keep deps/ (submodule working tree + the

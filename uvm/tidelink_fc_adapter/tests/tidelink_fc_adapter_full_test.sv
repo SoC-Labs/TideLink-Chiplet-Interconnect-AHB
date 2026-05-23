@@ -26,23 +26,33 @@ class fc_adapter_random_tx_sequence extends uvm_sequence #(ahb_tx_seq_item);
   `uvm_object_utils(fc_adapter_random_tx_sequence)
 
   int unsigned num_writes = 16;
+  // BUG-22 fix: pre_generate() freezes items before driving.
   ahb_tx_seq_item sent_items[$];
 
   function new(string name = "fc_adapter_random_tx_sequence");
     super.new(name);
   endfunction
 
-  virtual task body();
+  virtual function void pre_generate();
+    sent_items.delete();
     for (int i = 0; i < num_writes; i++) begin
       ahb_tx_seq_item item;
       item = ahb_tx_seq_item::type_id::create($sformatf("rand_tx_%0d", i));
-      start_item(item);
       if (!item.randomize() with {
         addr[13:0] inside {[14'h0000:14'h3FFC]};
         delay inside {[0:3]};
       }) `uvm_fatal("RAND", "Randomization failed")
-      finish_item(item);
       sent_items.push_back(item);
+    end
+  endfunction
+
+  virtual task body();
+    if (sent_items.size() == 0)
+      pre_generate();
+    foreach (sent_items[i]) begin
+      ahb_tx_seq_item item = sent_items[i];
+      start_item(item);
+      finish_item(item);
     end
   endtask
 
@@ -56,24 +66,34 @@ class fc_adapter_random_rtn_sequence extends uvm_sequence #(ahb_tx_seq_item);
   `uvm_object_utils(fc_adapter_random_rtn_sequence)
 
   int unsigned num_writes = 8;
+  // BUG-22 fix: pre_generate() freezes items before driving.
   ahb_tx_seq_item sent_items[$];
 
   function new(string name = "fc_adapter_random_rtn_sequence");
     super.new(name);
   endfunction
 
-  virtual task body();
+  virtual function void pre_generate();
     bit [31:0] rtn_addrs[$] = '{32'h0000_0020, 32'h0000_0024, 32'h0000_0014};
+    sent_items.delete();
     for (int i = 0; i < num_writes; i++) begin
       ahb_tx_seq_item item;
       item = ahb_tx_seq_item::type_id::create($sformatf("rand_rtn_%0d", i));
-      start_item(item);
       if (!item.randomize() with {
         addr == rtn_addrs[i % 3];
         delay inside {[0:5]};
       }) `uvm_fatal("RAND", "Randomization failed")
-      finish_item(item);
       sent_items.push_back(item);
+    end
+  endfunction
+
+  virtual task body();
+    if (sent_items.size() == 0)
+      pre_generate();
+    foreach (sent_items[i]) begin
+      ahb_tx_seq_item item = sent_items[i];
+      start_item(item);
+      finish_item(item);
     end
   endtask
 
@@ -87,22 +107,32 @@ class fc_adapter_random_rx_sequence extends uvm_sequence #(fc_seq_item);
   `uvm_object_utils(fc_adapter_random_rx_sequence)
 
   int unsigned num_words = 12;
+  // BUG-22 fix: pre_generate() freezes items before driving.
   fc_seq_item sent_items[$];
 
   function new(string name = "fc_adapter_random_rx_sequence");
     super.new(name);
   endfunction
 
-  virtual task body();
+  virtual function void pre_generate();
+    sent_items.delete();
     for (int i = 0; i < num_words; i++) begin
       fc_seq_item item;
       item = fc_seq_item::type_id::create($sformatf("rand_fc_rx_%0d", i));
-      start_item(item);
       if (!item.randomize() with {
         delay inside {[0:3]};
       }) `uvm_fatal("RAND", "Randomization failed")
-      finish_item(item);
       sent_items.push_back(item);
+    end
+  endfunction
+
+  virtual task body();
+    if (sent_items.size() == 0)
+      pre_generate();
+    foreach (sent_items[i]) begin
+      fc_seq_item item = sent_items[i];
+      start_item(item);
+      finish_item(item);
     end
   endtask
 
@@ -134,44 +164,22 @@ class tidelink_fc_adapter_full_test extends tidelink_fc_adapter_base_test;
 
     `uvm_info("TEST", "=== FC Adapter Full Mixed-Traffic Stress Test ===", UVM_LOW)
 
-    // Create sequences
+    // ---------------------------------------------------------------
+    // BUG-22 fix: pre-generate all items so predictions can be
+    // registered BEFORE any sequence drives the DUT.
+    // ---------------------------------------------------------------
     tx_seq  = fc_adapter_random_tx_sequence::type_id::create("tx_seq");
     rtn_seq = fc_adapter_random_rtn_sequence::type_id::create("rtn_seq");
     rx_seq  = fc_adapter_random_rx_sequence::type_id::create("rx_seq");
 
-    // ---------------------------------------------------------------
-    // Run all three paths concurrently
-    // ---------------------------------------------------------------
-    fork
-      // TX aperture writes
-      begin
-        `uvm_info("TEST", "Starting TX aperture sequence", UVM_LOW)
-        tx_seq.start(env.tx_agt.sequencer);
-        `uvm_info("TEST", "TX aperture sequence done", UVM_LOW)
-      end
-
-      // Returner sideband writes
-      begin
-        `uvm_info("TEST", "Starting returner sequence", UVM_LOW)
-        rtn_seq.start(env.rtn_agt.sequencer);
-        `uvm_info("TEST", "Returner sequence done", UVM_LOW)
-      end
-
-      // FC RX input
-      begin
-        `uvm_info("TEST", "Starting FC RX sequence", UVM_LOW)
-        rx_seq.start(env.fc_agt.sequencer);
-        `uvm_info("TEST", "FC RX sequence done", UVM_LOW)
-      end
-    join
+    tx_seq.pre_generate();
+    rtn_seq.pre_generate();
+    rx_seq.pre_generate();
 
     // ---------------------------------------------------------------
-    // Add scoreboard predictions for TX path
-    // (Note: with concurrent TX+RTN and priority arbitration,
-    //  the interleaving order is non-deterministic. We predict
-    //  separately and rely on the scoreboard's queue-based matching.)
+    // Add all scoreboard predictions BEFORE any driving starts
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Adding TX path predictions", UVM_LOW)
+    `uvm_info("TEST", "Adding scoreboard predictions (pre-drive)", UVM_LOW)
     foreach (tx_seq.sent_items[i]) begin
       fc_seq_item exp;
       exp = fc_seq_item::type_id::create($sformatf("exp_tx_%0d", i));
@@ -190,7 +198,6 @@ class tidelink_fc_adapter_full_test extends tidelink_fc_adapter_base_test;
       env.sb.predict_fc_tx(exp);
     end
 
-    // Add RX predictions
     foreach (rx_seq.sent_items[i]) begin
       if (rx_seq.sent_items[i].pkt_type == fc_seq_item::PKT_FIFO_DATA) begin
         env.sb.predict_rx_fifo(
@@ -204,6 +211,28 @@ class tidelink_fc_adapter_full_test extends tidelink_fc_adapter_base_test;
         );
       end
     end
+
+    // ---------------------------------------------------------------
+    // Run all three paths concurrently (predictions already loaded)
+    // ---------------------------------------------------------------
+    `uvm_info("TEST", "Driving all three paths concurrently", UVM_LOW)
+    fork
+      begin
+        `uvm_info("TEST", "Starting TX aperture sequence", UVM_LOW)
+        tx_seq.start(env.tx_agt.sequencer);
+        `uvm_info("TEST", "TX aperture sequence done", UVM_LOW)
+      end
+      begin
+        `uvm_info("TEST", "Starting returner sequence", UVM_LOW)
+        rtn_seq.start(env.rtn_agt.sequencer);
+        `uvm_info("TEST", "Returner sequence done", UVM_LOW)
+      end
+      begin
+        `uvm_info("TEST", "Starting FC RX sequence", UVM_LOW)
+        rx_seq.start(env.fc_agt.sequencer);
+        `uvm_info("TEST", "FC RX sequence done", UVM_LOW)
+      end
+    join
 
     // Wait for all activity to settle
     repeat (100) @(posedge vif.clk);

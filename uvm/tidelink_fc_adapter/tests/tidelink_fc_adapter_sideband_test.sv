@@ -23,7 +23,9 @@ class fc_adapter_rtn_write_sequence extends uvm_sequence #(ahb_tx_seq_item);
   // Typical returner target addresses (register offsets within pair)
   bit [31:0] target_addrs[$];
 
-  // Stored items for scoreboard prediction
+  // Stored items for scoreboard prediction.
+  // BUG-22 fix: pre_generate() freezes items before driving so predictions
+  // can be registered before the first FC TX is observed.
   ahb_tx_seq_item sent_items[$];
 
   function new(string name = "fc_adapter_rtn_write_sequence");
@@ -32,17 +34,27 @@ class fc_adapter_rtn_write_sequence extends uvm_sequence #(ahb_tx_seq_item);
     target_addrs = '{32'h0000_0020, 32'h0000_0024, 32'h0000_0014};
   endfunction
 
-  virtual task body();
+  // Pre-randomize all items without driving them.
+  virtual function void pre_generate();
+    sent_items.delete();
     foreach (target_addrs[i]) begin
       ahb_tx_seq_item item;
       item = ahb_tx_seq_item::type_id::create($sformatf("rtn_wr_%0d", i));
-      start_item(item);
       if (!item.randomize() with {
         addr == target_addrs[i];
         delay == 0;
       }) `uvm_fatal("RAND", "Randomization failed")
-      finish_item(item);
       sent_items.push_back(item);
+    end
+  endfunction
+
+  virtual task body();
+    if (sent_items.size() == 0)
+      pre_generate();
+    foreach (sent_items[i]) begin
+      ahb_tx_seq_item item = sent_items[i];
+      start_item(item);
+      finish_item(item);
     end
   endtask
 
@@ -67,16 +79,16 @@ class tidelink_fc_adapter_sideband_test extends tidelink_fc_adapter_base_test;
     `uvm_info("TEST", "=== FC Adapter Sideband Test ===", UVM_LOW)
 
     // ---------------------------------------------------------------
-    // Step 1: Send returner-style writes
+    // Step 1: Pre-randomize so predictions are registered BEFORE driving
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 1: Sending returner writes", UVM_LOW)
+    `uvm_info("TEST", "Step 1: Pre-randomizing returner items", UVM_LOW)
     rtn_seq = fc_adapter_rtn_write_sequence::type_id::create("rtn_seq");
-    rtn_seq.start(env.rtn_agt.sequencer);
+    rtn_seq.pre_generate();
 
     // ---------------------------------------------------------------
-    // Step 2: Add scoreboard predictions
+    // Step 2: Add scoreboard predictions BEFORE driving
     // ---------------------------------------------------------------
-    `uvm_info("TEST", "Step 2: Adding scoreboard predictions", UVM_LOW)
+    `uvm_info("TEST", "Step 2: Adding scoreboard predictions (pre-drive)", UVM_LOW)
     foreach (rtn_seq.sent_items[i]) begin
       fc_seq_item exp;
       exp = fc_seq_item::type_id::create($sformatf("exp_rtn_%0d", i));
@@ -85,6 +97,12 @@ class tidelink_fc_adapter_sideband_test extends tidelink_fc_adapter_base_test;
       exp.payload     = rtn_seq.sent_items[i].data;
       env.sb.predict_fc_tx(exp);
     end
+
+    // ---------------------------------------------------------------
+    // Step 3: Drive the pre-generated items
+    // ---------------------------------------------------------------
+    `uvm_info("TEST", "Step 3: Sending returner writes", UVM_LOW)
+    rtn_seq.start(env.rtn_agt.sequencer);
 
     // Wait for all FC TX to complete
     repeat (50) @(posedge vif.clk);

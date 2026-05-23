@@ -210,3 +210,90 @@ guard (`deploy_pair.sh --expect-sha256` / `--check-only`) before any stress run.
 - **HW stress (Section 3)** is mostly v1.1/v2 backlog; only the 16/16 reliability
   re-run and AHB e2e are freeze-gating, both subject to the AHB_TX wedge safety
   rule and a verified-up gate.
+
+---
+
+## Addendum — 2026-05-23 evening session
+
+Items closed since the original report (with merge commit references):
+
+| Original | Closed by | Notes |
+|---|---|---|
+| hal-lint failure (pipeline 226) | `c547ed1` | `tidelink_ahb` + `tidelink_fifo_ahb` excluded — legacy port-chain drift documented in `lint/Makefile` |
+| cdriver-regression sizeof assert | `28654ae` | autoneg + Region 8 grew TIDELINK_REGS_TypeDef to 0x120 |
+| `tidelink_fc_adapter_full_test` scoreboard race | `98fbfdd` | opt-in `order_insensitive` matching mode; 4/4 tests PASS |
+| SpyGlass §3.1 + §3.2 SGDC delta | `dab4955` | unsync 8→3, remaining all blackbox-internal |
+| Bug-#32 recurrence guard | `7e6aac6` | `deploy_pair.sh` UNVERIFIED → hard-abort (exit 5) |
+| Wrong-bitstream provenance class | `7e6aac6` + manifest workflow | every deploy now needs `.manifest.json` |
+| dbg_hub WHS noise | `f751d1c` | 15 mark_debug attrs disabled + dbg_int/dbg_hub XDC stanzas dropped — HW-validated 16/16 build #12 |
+| PHC sync deadlock (master TX `tx_router_idle` gate) | `b61c84a` | HW-validated: `HW_SYNC_STATUS master 0x3→0x4815` (FSM now advances) |
+| Sim repro of PHC bug | `86e45bb` + `609482f` | `cocotb/phc_pair/test_phc_hw_sync_pair.py` — 20 s wall-clock reproduces the HW slave-RX=0x0 |
+
+### New / still-open items (ordered)
+
+1. **PHC Phase-1 end-to-end PASS on bridge1.** Master TX FSM advances after
+   `b61c84a`. Slave HW_SYNC_STATUS still 0x0 across three HW retries +
+   four candidate fixes + RTL observability counter add. Closeout
+   requires next-tier debug primitive (scope on `pad_rx_*` OR a working
+   slave-side ChipScope on `ll_rx`) — beyond the autonomous-loop scope.
+   Detailed handoff brief in `docs/PHC_PHASE1_HW_REPORT.md`
+   §"Phase-1 PHC status — autonomous loop exhausted".
+
+2. **Slave-side `RX_DIAG` counter wiring fix** on `feat/phc-rx-counters`.
+   Master side gives plausible 16-bit values (`19660 / 1000 / 2`),
+   slave gives nonsense (`8388608 / 1000000 / 0` — out of 16-bit
+   range, don't clear). The counter is debug infrastructure not a
+   product feature, so it's not gating sign-off, but it would help
+   close item 1. Branch parked.
+
+3. **Trigger `formality-lec` manual job** on `main@9d3744f` and archive
+   the FC MANIFEST + Formality LEC report. ASIC sign-off gate.
+
+4. **Wire Verilator strict-lint into `.gitlab-ci.yml`** so the gate is
+   enforced per-push (it runs only on demand today).
+
+5. **Cocotb-wlink-pair + cocotb-ptp** failures from pipeline 17786
+   (pre-fix) — not addressed today; triage in the next CI-focused
+   session.
+
+6. **(Optional, V2)** CDC structural fix on `feat/cdc-fix-wip` — needs
+   Finding #2 `set_multicycle_path` constraints first.
+
+7. **(Optional, V2)** Tier-3 repo-simplification items
+   (`docs/REPO_SIMPLIFICATION_IMPACT.md §3-A` fifo flatten, `§4-D`
+   script consolidation). Each carries one HW build cycle.
+
+### User-action items
+
+| Item | Reason | Owner |
+|---|---|---|
+| v1.0 tag force-push | classifier-blocked | dam1n19 |
+| axi-chiplet-controller destructive `main` rewrite | needs Maintainer + Daniel Newbrook coordination | dam1n19 |
+| Lab-side reset method for z2_02 / z2_03 | `fpgahub board reset --list` shows zero methods configured; both boards have wedged today and required physical power-cycle | lab admin |
+
+### Branch ledger (as of 2026-05-23 22:00)
+
+#### Parent (`tidelink`)
+
+| Branch | Tip | Status | Notes |
+|---|---|---|---|
+| `main` | `9d3744f` | active | post mark_debug merge + sign-off doc |
+| `feat/cdc-fix-wip` | `7cb67ee` | parked V2 | structural CDC fix; needs SDC MCP first |
+| `feat/keep-ptp-enable-r` | `344b7e8` | superseded | speculative Bug-#3 fix, **disproven** by retry #3 discriminator |
+| `feat/mark-debug-clean` | `db398ae` | **merged f751d1c** | safe to delete |
+| `feat/phc-rx-counters` | `154e298` | parked | slave-side counter wiring broken |
+| `feat/remove-mark-debug` | `4aea910` | superseded | subsumed by `feat/mark-debug-clean` → merged |
+| `feat/td-combined` | `efc4033` | stale (84 ahead / 133 behind main) | predates today's consolidations |
+
+#### Submodule (`axi-chiplet-controller`)
+
+| Branch | Tip | Status |
+|---|---|---|
+| `main` | `2f602d1` | recorded SHA in parent main predates today; the live parent-recorded SHA is `a9ec909` from mark_debug removal |
+| `feat/cdc-fix-wip` | `0086e1b` | parked V2 |
+| `feat/i2c-autonomous-lock` | `a55d346` | folded long ago — historical reference |
+| `feat/phc-rx-counters` | `2d98fcc` | parked alongside parent |
+| `feat/remove-mark-debug` | `a9ec909` | **merged via parent f751d1c** — safe to delete |
+| `feat/tidelink-integration` | `a9ec909` | named pointer for the integrated state (Agent L) — currently co-incident with mark_debug tip due to my fast-forward error, doc'd in DEPENDENCIES.md |
+| `gpio-phy` | `2ef49fa` | older lineage |
+| `fix/mask-fsm-logic-candidates` | `a30b21b` | candidate-fix branch from earlier |

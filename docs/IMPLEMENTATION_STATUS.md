@@ -336,3 +336,58 @@ converge-with-retries; single-shot = high-but-variable.
   (`cocotb/lint/Makefile`, `sv_anti_pattern_lint.py`) were removed from main in
   consolidation; needs the lint tooling reintroduced or the allow-list
   re-authored before it can be folded.
+
+---
+
+## Addendum — 2026-05-23 evening session (PHC + CI + repo simplification close)
+
+**Main HEAD:** `9d3744f` (post merge of `feat/mark-debug-clean`).
+**Submodule recorded on parent main:** `a9ec909a` (post mark_debug removal).
+
+### New on main since last addendum
+
+| Commit | Change |
+|---|---|
+| `dab4955` | SpyGlass §3.1+§3.2 SGDC delta — unsync 8→3 |
+| `c547ed1` | hal-lint: drop legacy `tidelink_ahb` + `tidelink_fifo_ahb` (port-chain drift) |
+| `28654ae` | cdriver: bump TIDELINK_REGS_TypeDef sizeof 0x90→0x120 |
+| `98fbfdd` | UVM: order-insensitive scoreboard, `tidelink_fc_adapter_full_test` re-enabled |
+| `7e6aac6` | UNVERIFIED DEPLOY now hard-aborts (Bug-#32 recurrence guard) |
+| `2c9a1a5` | Drop broken dbg_hub BSCAN waiver (explanatory note only) |
+| `b61c84a` | Master-TX `tx_router_idle` bypass via `force_en` — PHC sync deadlock |
+| `86e45bb` + `609482f` | `cocotb/phc_pair/` sim repro of PHC HW bug; TB helper race fixed |
+| `108f646` | `docs/SIGN_OFF_STATUS.md` consolidated gate-status snapshot |
+| `c733319` | `cocotb/README.md` test index + `docs/DEPENDENCIES.md` |
+| `c4826de` | `docs/ASIC_TIMING_CONSTRAINTS.md` (merged source-sync rationale) |
+| `0208493` | `docs/TIDELINK_SPECIFICATION.md §9.10` (folded PHY_ALIGN plans) |
+| `e98e87a` | Drop 7 stale single-session debug docs |
+| `f751d1c` | **Merge feat/mark-debug-clean — disables 15 mark_debug attrs + drops dbg_int/dbg_hub XDC stanzas — eliminates dbg_hub WHS noise at source** |
+
+### Build cycles run today
+
+| Build | Branch | Verdict | Bridge1 |
+|---|---|---|---|
+| #5 | working tree CDC structural | FAIL timing (-1.143 WNS, missing SDC MCP) | n/a — parked on `feat/cdc-fix-wip` |
+| #6 | safe + dbg_hub waiver | PASS | (z2_02 was wedged) |
+| #7 | post-revert 65472ff | PASS | 16/16 iter 1, link held |
+| #8 | dbg_hub TCK waiver | PASS | 16/16 iter 1 (waiver didn't match — non-functional) |
+| #9 | b61c84a master-TX fix | PASS | 16/16 iter 1, **HW_SYNC_STATUS master 0x3→0x4815 (FSM unblocked)** |
+| #10 | feat/phc-rx-counters (first) | FAIL impl (Chipscope 16-213 — dbg_int orphan) | n/a |
+| #11 | feat/phc-rx-counters + DRC fix | PASS | 16/16 iter 1; **slave-side RX_DIAG counters broken** |
+| #12 | feat/mark-debug-clean (isolated) | PASS | **16/16 iter 1 with verified build-#12 provenance — merged to main** |
+
+### Gate state snapshot
+
+| Gate | State |
+|---|---|
+| RTL / CDC | **GO** — SpyGlass clean apart from 3 blackbox-internal unsync errors |
+| FPGA HW lane lock | **GO** — bridge1 holds 16/16 iter 1, no decay (Bug #32 provenance class closed) |
+| PHC Phase-1 sync convergence | **CONDITIONAL** — master TX path fixed, slave-RX path still 0x0 across three retries; closeout needs next-tier debug primitive |
+| ASIC SDC + Fusion synth | **CONDITIONAL** — set_clock_groups landed, formality-lec not yet triggered |
+| Lint (HAL) | **GO** — legacy modules documented + excluded |
+| Lint (Verilator) | **GO (manual)** — not yet wired into CI per-push |
+| UVM regression | **GO** — full 4-test fc_adapter suite restored |
+| Cocotb regression | **GO** (pending CI confirmation) — cdriver sizeof assert closed |
+| CI pipeline overall | **PENDING** — 17807 queued, runner busy |
+| Documentation | **GO** — README quick-start, DEPENDENCIES, sign-off doc all current |
+| Repo hygiene | **GO** — Tier-1 simplification (≈10 proposals) + Tier-2 §1-B applied |

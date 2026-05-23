@@ -117,3 +117,74 @@ Positive findings (carry-forward for retry):
 ## Lease
 
 bridge1 lease `E9ESO6sw12IiWaIvPyKLAw` will be released immediately following this report write to free the rig for the bring-up retry.
+
+---
+
+## Build #8 attempt (2026-05-23, post-dbg_hub-waiver attempt)
+
+**Bridge1 lease:** granted (token hH3zjMwR--Tb2-rMKAI_Aw), build #8 bitstreams
+(byte-equivalent to build #7 because the dbg_hub waiver did not match — see
+`fpga/targets/pynq-z2-pair-*-all/pynq_z2_tidelink_timing.xdc` lines ~310 +
+the `Vivado 12-4739 No valid object(s)` warnings in build #8's impl runme.log).
+
+**Convergence run (`bringup_pair_converge.sh STABLE=3`):**
+`RESULT: CONVERGED — full 16/16 bidirectional link at iteration 1`.
+
+**Immediate follow-up `bringup_ptp_sync.sh`:**
+
+```
+link: master lk=0xf5 cd=1  slave lk=0x7e cd=1
+ERROR: link is not 16/16 + cal_done both sides — run bringup_pair_converge.sh first
+```
+
+Re-chained `bringup_pair_converge.sh` immediately by another
+`bringup_ptp_sync.sh` (single SSH session, no return-trip delay): same
+result, `lk=0xf5/0xef` — the link drops from `0xff/0xff` to `~12/16`
+within a fraction of a second of the converge script exiting.
+
+### Reading
+
+The link converges to 16/16 transiently but does **not** hold it past the
+moment `bringup_pair_converge.sh` declares success. The
+`STABLE=3` flag passed in the second attempt should have required 3
+consecutive 16/16 reads — verify in the script's loop whether `STABLE` is
+honoured for the success path or only for ramp-up.
+
+Two candidate root causes:
+
+1. **Convergence script success-exit is single-read.** A sub-second decay
+   would not be observed by the script's last read but would be by the
+   next consumer. Cheapest fix: add an explicit `for i in 1..N; do
+   read_link; require 16/16; done` post-script hold-loop.
+2. **PHC integration regression.** Build #7/#8 are the first with the
+   PHC IP wired into the production -all targets. Possible scenarios:
+   PHC clock domain (`phc_clk`) interaction with pad_clk_rx, OR PHC IRQ
+   line generating an APB read storm that disturbs the calibrator.
+   Pre-PHC bitstream (the v1.0-rc1 milestone fold-loop closeout) was
+   `mean 16.00, std 0` across 20 deploys (per
+   `pynq_host/scripts/bringup_reliability.sh` baseline).
+
+### Decision
+
+Phase-1 PHC characterization **deferred** until the link-decay-after-
+converge regression is closed. The PHC IP itself is verified present
+and APB-readable on both boards from the first run (`PHC_STATUS=0x0`,
+`PHC_CTRL=0x0` at `0x4405_0000`). This is the V1 ASIC sign-off
+dependency to track; opening a separate bring-up loop for it is the
+right move rather than blocking Block 5 (CI closure) on a multi-hour
+HW-debug pass.
+
+### Suggested next-step debug agent brief
+
+1. Run `bringup_reliability.sh N_DEPLOYS=5` on build #8 to confirm the
+   regression is reproducible across power-on-equivalent redeploys.
+2. Add a `--hold-N` flag to `bringup_pair_converge.sh` that polls
+   `lk == 0xff && cd == 1` on both sides every 0.5 s for N seconds
+   after the success-exit, and fails if any check drops.
+3. Bisect: take the parent commit of `5cbbc0f` (the first PHC -all
+   mirror) and re-run reliability — confirms whether PHC integration
+   itself or something else introduced the decay.
+4. If PHC integration is the cause, candidate fixes: (a) clock-group
+   declaration to add `phc_clk` to the existing async group, (b) gate
+   PHC IRQ during link initial-lock window, (c) move PHC reset
+   release to after `link_active` instead of after `poresetn`.

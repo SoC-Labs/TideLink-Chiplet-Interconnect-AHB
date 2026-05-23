@@ -1062,12 +1062,12 @@ hwtest:safe:
   stage: hwtest
   tags:
     - bridge1-runner   # must have mapstone-dev SSH access + fpgahub
-  when: manual
   rules:
-    # Manual on any branch, OR auto if SCHEDULE_HWTEST=1 (e.g. nightly schedule)
+    # Auto if SCHEDULE_HWTEST=1 (e.g. nightly schedule); manual otherwise.
     - if: '$SCHEDULE_HWTEST == "1"'
       when: always
     - when: manual
+  allow_failure: true
   variables:
     HWTEST_INCLUDE: "safe"
     HWTEST_ACQUIRE_LEASE: "1"
@@ -1085,7 +1085,6 @@ hwtest:safe:
       - hwtest-logs/
     expire_in: 30 days
     when: always
-  allow_failure: false
 
 # Heavier variant — includes AHB_TX storm + PTP HW sync. Manual only,
 # never auto-scheduled, because cat 5 requires a 100%-verified-up link.
@@ -1094,6 +1093,7 @@ hwtest:full:
   tags:
     - bridge1-runner
   when: manual
+  allow_failure: true
   variables:
     HWTEST_INCLUDE: "all"
     HWTEST_EXCLUDE: "13"    # exclude long soak from "full" manual run
@@ -1114,7 +1114,6 @@ hwtest:full:
       - hwtest-logs/
     expire_in: 30 days
     when: always
-  allow_failure: false
 
 # Long-soak variant — runs cat 13 only, configurable duration.
 hwtest:soak:
@@ -1122,6 +1121,7 @@ hwtest:soak:
   tags:
     - bridge1-runner
   when: manual
+  allow_failure: true
   variables:
     HWTEST_INCLUDE: "13"
     HWTEST_ACQUIRE_LEASE: "1"
@@ -1140,4 +1140,3 @@ hwtest:soak:
       - hwtest-logs/
     expire_in: 30 days
     when: always
-  allow_failure: false

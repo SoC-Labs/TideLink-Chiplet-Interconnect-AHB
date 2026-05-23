@@ -661,3 +661,76 @@ silicon. Still, two things to verify when z2_03 returns:
 The sim now provides the diagnostic harness (test_phc_diag.py) to
 prove the slave RX path is RTL-clean from `ll_rx` through `rx_fifo`
 end-to-end — that exonerates Candidates 1 and 2 on HW as well.
+
+---
+
+## Build #9 retry #3 (2026-05-23 19:17, post z2_03 recovery + diagnostic)
+
+After z2_03 recovered, ran B0 + B1 with the new PTP_CTRL discriminator
+log (commit `4367a71`) — designed per the §"Sim root-cause closure"
+recipe to discriminate (a) APB-write-doesn't-reach vs (b) Bug-#3
+synth-pruning of slave `ptp_enable_r`.
+
+### Verdict — both prior HW candidates RULED OUT
+
+```
+PTP_CTRL       (master): 0x00000001
+PTP_CTRL       (slave):  0x00000001   ← APB write OK, ptp_enable_r IS 1
+HW_SYNC_STATUS (master): 0x00004831   ← master TX FSM advancing
+HW_SYNC_STATUS (slave):  0x00000000   ← slave RX path silent
+SERVO_STATUS   (slave):  0x00000000
+```
+
+Slave reads `PTP_CTRL=0x1` mid-test, so:
+  - **(a) APB write reaches slave**: confirmed (otherwise readback would
+    show 0x0).
+  - **(b) Bug-#3 synth pruning of slave `ptp_enable_r`**: ruled out
+    (FF is holding the written value per readback).
+
+The `feat/keep-ptp-enable-r` speculative fix branch (commit `344b7e8`)
+is therefore NOT the right fix. Parking it indefinitely — keep around
+for cross-reference but it is not the closeout candidate.
+
+### New theory — gap is between master TX and slave's `ll_rx`
+
+Sim (cocotb/phc_pair) showed slave's `ll_rx.valid && sop` = 8183 hits
+when master fired 7984 short pkts. Sim used the same Wlink + GPIO PHY
+cross-wire topology as HW. In HW, with the link at 16/16 lock and
+master HW_SYNC_STATUS advancing through 0x4831 (FSM in sync transmit),
+slave should see SOMETHING at `ll_rx`. But slave HW_SYNC_STATUS stays
+0x0 and `PTP_RX_PAYLOAD` stays 0 (per Agent J's retry #2 observation).
+
+Suspect candidates, ranked:
+  1. **Master HW_SYNC TX path not actually pushing short pkts onto
+     the link.** Master FSM advancing (0x4831 = bits 0,4,5,11,14 set)
+     proves the FSM is running, but doesn't prove it's getting through
+     the chiplet controller's TX arbiter onto Wlink TX → GPIO PHY. The
+     `tx_router_idle` bypass landed (b61c84a) but maybe a secondary
+     gate (FC-adapter priority, TX path enable, etc.) is silently
+     blocking.
+  2. **Slave's link-layer decode of the incoming PHC sync data_id
+     differs from sim.** Sim used `data_id=0x50` (per Agent N's
+     diagnostic). HW might be using a different ID, or the slave's
+     decode threshold differs.
+  3. **Slave RX FIFO clock-domain / reset state**: maybe FIFO has
+     never come out of reset on slave side after deploy.
+
+### Next debug steps (when a fresh session is run)
+
+The right diagnostic is an APB-readable RX-side packet counter
+(per Agent J's recommendation in §"Build #9 retry #2"). That requires
+RTL plus a rebuild. Without it, every retry is blind.
+
+For now: **Phase-1 partial closeout** — link healthy, PHC IP wired,
+APB working both sides, master TX FSM advancing, but the master→slave
+PHC sync packet drop is somewhere between master's TX and slave's
+`ll_rx`. Three candidate fixes remain (none speculative-buildable).
+
+### Status after this retry
+
+- `feat/keep-ptp-enable-r` parent branch: superseded (incorrect
+  candidate per the discriminator), but retained on remote as historical
+  reference.
+- All other branches (mark_debug, tidelink-integration, cdc-fix-wip)
+  unaffected.
+- Bridge1 lease (`HXBRPeDCXDjomL9R9iI8UQ`) released cleanly.

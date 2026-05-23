@@ -1096,14 +1096,13 @@ hwtest:full:
   allow_failure: true
   variables:
     HWTEST_INCLUDE: "all"
-    HWTEST_EXCLUDE: "13"    # exclude long soak from "full" manual run
+    HWTEST_EXCLUDE: "13"
     HWTEST_ACQUIRE_LEASE: "1"
     HWTEST_LEASE_TTL: "7200"
     AHB_TX_TIMEOUT_S: "5"
     N_AHB_TX: "64"
   script:
-    - echo "Running FULL TideLink HW test suite (cat 1-12, ex. 13)"
-    - echo "WARNING: this includes AHB_TX storm - link must be 16/16 before running"
+    - echo "Running FULL TideLink HW test suite"
     - bash pynq_host/scripts/hwtest/run_all.sh
   after_script:
     - mkdir -p hwtest-logs

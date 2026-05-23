@@ -296,3 +296,16 @@ set_false_path -to [get_ports {led0 led1 led2 led3}]
 # (The primary severity downgrade lives in *_tidelink_drc.xdc so it survives
 #  save_constraints round-trips during debug-core insertion.)
 set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
+
+#-----------------------------------------------------------------------------
+# Debug ila_rx probe pipe: false_path on the raw-pad ILA capture.
+# Base targets removed ila_rx 2026-05-19 (raw-pad ILA incompatible with the
+# real IDELAYE2 IDATAIN route). The -all targets retained it for
+# FPGA_DEBUG_ILA support; PHC -all mirror tightened slave routing enough that
+# pad_clk_rx -> ila_rx/PROBE_PIPE.shift_probes_reg[0][0]/D misses hold
+# (WHS -0.562 on pair-flip-all build #3). ila_rx capture is debug-only and
+# non-functional for the link; false_path exempts cleanly. Long-term: remove
+# ila_rx from -all BD to align with base-target cleanup.
+#-----------------------------------------------------------------------------
+set_false_path -from [get_ports pad_clk_rx] \
+    -to [get_pins -hierarchical -filter {NAME =~ "*ila_rx*PROBE_PIPE*shift_probes_reg*D"}]

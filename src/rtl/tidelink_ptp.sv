@@ -152,7 +152,6 @@ module tidelink_ptp #(
     // a SYNC message into the TX path (defined in full below).
     wire hw_sync_trigger;
     wire [15:0] hw_seq_num_r;
-    logic hw_sync_force_en_r;   // force-enable, bypasses phc_locked_i gate
 
     // =========================================================================
     // TX Path — AHB Slave / HW Sync → Wait for Idle → Short Packet TX + PHC Capture

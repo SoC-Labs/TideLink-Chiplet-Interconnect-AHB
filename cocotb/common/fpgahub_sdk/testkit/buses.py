@@ -43,8 +43,6 @@ Copyright 2026, SoC Labs (www.soclabs.org)
 Vendored copy — canonical source: ~/SoCLabs/fpgahub/src/fpgahub_sdk/testkit/buses.py
 """
 
-from __future__ import annotations
-
 import shutil
 from typing import Protocol, runtime_checkable
 

@@ -29,8 +29,6 @@ Copyright 2026, SoC Labs (www.soclabs.org)
 Vendored copy — canonical source: ~/SoCLabs/fpgahub/src/fpgahub_sdk/testkit/_bridge.py
 """
 
-from __future__ import annotations
-
 import ctypes
 import copy  # noqa: F401 — kept verbatim from canonical source
 

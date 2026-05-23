@@ -1,6 +1,14 @@
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink Segment-Based Address Translation
 //
+// ALTERNATIVE IMPLEMENTATION — NOT INSTANTIATED IN THE ACTIVE DESIGN.
+//
+// The active address translation uses tl_addr_trans_cam.sv (8-rule CAM,
+// via tidelink_addr_translator.sv). Use this module instead only if more
+// than 8 simultaneously active address ranges are required. Note: at
+// NUM_SEGS=256 this synthesises to an ~1,500-cell mux tree versus the CAM's
+// ~80 cells — only justified by the larger rule count.
+//
 // Combinational address remapping block. Replaces the upper segment-index
 // bits of an incoming address with a value looked up from a software-
 // programmed segment table. Lower (passthrough) bits are forwarded

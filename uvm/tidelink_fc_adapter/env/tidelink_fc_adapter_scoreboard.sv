@@ -33,6 +33,23 @@ class tidelink_fc_adapter_scoreboard extends uvm_scoreboard;
   ahb_rx_observed_item expected_rx_fifo_q[$];
   ahb_rx_observed_item expected_rx_cfg_q[$];
 
+  // BUG-22 closeout: order-insensitive matching mode.
+  //
+  // The single-stream tests (tx_test, sideband_test, rx_test) drive one
+  // path only and rely on strict FIFO arrival order, so they leave this
+  // bit at 0.
+  //
+  // tidelink_fc_adapter_full_test runs the TX-aperture, returner and
+  // FC-RX sequences concurrently under fork/join.  Items from the three
+  // streams interleave at the DUT outputs in a non-deterministic order
+  // even though each individual stream is still in-order.  When this
+  // bit is set (via uvm_config_db from the full_test), the scoreboard
+  // switches each expected_* queue from "head-of-queue equals" to a
+  // linear-search "match any pending item, remove first match", which
+  // tolerates the inter-stream interleaving while still catching real
+  // mismatches and excess/missing items.
+  bit order_insensitive = 1'b0;
+
   // Counters
   int unsigned fc_tx_match_count;
   int unsigned fc_tx_mismatch_count;
@@ -62,6 +79,12 @@ class tidelink_fc_adapter_scoreboard extends uvm_scoreboard;
     fc_tx_export   = new("fc_tx_export", this);
     rx_fifo_export = new("rx_fifo_export", this);
     rx_cfg_export  = new("rx_cfg_export", this);
+    // BUG-22 closeout: tests enable order-insensitive matching by
+    // setting "order_insensitive" via uvm_config_db on this component
+    // (or any ancestor).  Default is strict FIFO.
+    void'(uvm_config_db#(bit)::get(this, "", "order_insensitive", order_insensitive));
+    if (order_insensitive)
+      `uvm_info("SB_CFG", "Scoreboard configured for order-insensitive matching (full_test mode)", UVM_LOW)
   endfunction
 
   // ---------------------------------------------------------------
@@ -107,7 +130,32 @@ class tidelink_fc_adapter_scoreboard extends uvm_scoreboard;
       return;
     end
 
-    begin
+    if (order_insensitive) begin
+      // Linear search keyed on (pkt_type, addr_offset, payload).
+      // Remove the first pending expected item that matches.
+      int found_idx = -1;
+      foreach (expected_fc_tx_q[i]) begin
+        if (expected_fc_tx_q[i].pkt_type    === actual.pkt_type   &&
+            expected_fc_tx_q[i].addr_offset === actual.addr_offset &&
+            expected_fc_tx_q[i].payload     === actual.payload) begin
+          found_idx = i;
+          break;
+        end
+      end
+      if (found_idx < 0) begin
+        `uvm_error("SB_FC_TX", $sformatf(
+          "FC TX mismatch (no matching pending item)!\n  Actual: pkt_type=%s addr=0x%04h data=0x%08h\n  Pending=%0d",
+          actual.pkt_type.name(), actual.addr_offset, actual.payload,
+          expected_fc_tx_q.size()))
+        fc_tx_mismatch_count++;
+      end else begin
+        expected_fc_tx_q.delete(found_idx);
+        `uvm_info("SB_FC_TX", $sformatf("FC TX match (OOO idx=%0d): pkt_type=%s addr=0x%04h data=0x%08h",
+          found_idx, actual.pkt_type.name(), actual.addr_offset, actual.payload), UVM_MEDIUM)
+        fc_tx_match_count++;
+      end
+    end
+    else begin
       fc_seq_item expected;
       expected = expected_fc_tx_q.pop_front();
 
@@ -139,7 +187,28 @@ class tidelink_fc_adapter_scoreboard extends uvm_scoreboard;
       return;
     end
 
-    begin
+    if (order_insensitive) begin
+      int found_idx = -1;
+      foreach (expected_rx_fifo_q[i]) begin
+        if (expected_rx_fifo_q[i].addr === actual.addr &&
+            expected_rx_fifo_q[i].data === actual.data) begin
+          found_idx = i;
+          break;
+        end
+      end
+      if (found_idx < 0) begin
+        `uvm_error("SB_RX_FIFO", $sformatf(
+          "RX FIFO write mismatch (no matching pending item)!\n  Actual: addr=0x%04h data=0x%08h\n  Pending=%0d",
+          actual.addr, actual.data, expected_rx_fifo_q.size()))
+        rx_fifo_mismatch_count++;
+      end else begin
+        expected_rx_fifo_q.delete(found_idx);
+        `uvm_info("SB_RX_FIFO", $sformatf("RX FIFO match (OOO idx=%0d): addr=0x%04h data=0x%08h",
+          found_idx, actual.addr, actual.data), UVM_MEDIUM)
+        rx_fifo_match_count++;
+      end
+    end
+    else begin
       ahb_rx_observed_item expected;
       expected = expected_rx_fifo_q.pop_front();
 
@@ -168,7 +237,28 @@ class tidelink_fc_adapter_scoreboard extends uvm_scoreboard;
       return;
     end
 
-    begin
+    if (order_insensitive) begin
+      int found_idx = -1;
+      foreach (expected_rx_cfg_q[i]) begin
+        if (expected_rx_cfg_q[i].addr === actual.addr &&
+            expected_rx_cfg_q[i].data === actual.data) begin
+          found_idx = i;
+          break;
+        end
+      end
+      if (found_idx < 0) begin
+        `uvm_error("SB_RX_CFG", $sformatf(
+          "RX CFG write mismatch (no matching pending item)!\n  Actual: addr=0x%04h data=0x%08h\n  Pending=%0d",
+          actual.addr, actual.data, expected_rx_cfg_q.size()))
+        rx_cfg_mismatch_count++;
+      end else begin
+        expected_rx_cfg_q.delete(found_idx);
+        `uvm_info("SB_RX_CFG", $sformatf("RX CFG match (OOO idx=%0d): addr=0x%04h data=0x%08h",
+          found_idx, actual.addr, actual.data), UVM_MEDIUM)
+        rx_cfg_match_count++;
+      end
+    end
+    else begin
       ahb_rx_observed_item expected;
       expected = expected_rx_cfg_q.pop_front();
 

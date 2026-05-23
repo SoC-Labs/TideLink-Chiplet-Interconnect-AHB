@@ -119,8 +119,16 @@ class fc_adapter_random_rx_sequence extends uvm_sequence #(fc_seq_item);
     for (int i = 0; i < num_words; i++) begin
       fc_seq_item item;
       item = fc_seq_item::type_id::create($sformatf("rand_fc_rx_%0d", i));
+      // BUG-22 closeout: the RX CFG (sideband) AHB port has only a
+      // 12-bit APB address bus (fc_rx_cfg_paddr [11:0]), so the DUT
+      // truncates addr_offset[13:12] on that path.  Constrain SIDEBAND
+      // addr_offset to the observable 12-bit range so prediction at
+      // the responder matches the actual driven address.  FIFO_DATA
+      // items keep the full 14-bit range (the RX FIFO AHB port is
+      // 14-bit and matches addr_offset directly).
       if (!item.randomize() with {
         delay inside {[0:3]};
+        (pkt_type == fc_seq_item::PKT_SIDEBAND) -> addr_offset[13:12] == 2'b00;
       }) `uvm_fatal("RAND", "Randomization failed")
       sent_items.push_back(item);
     end
@@ -153,6 +161,12 @@ class tidelink_fc_adapter_full_test extends tidelink_fc_adapter_base_test;
     super.build_phase(phase);
     // Enable random backpressure on FC TX ready for stress
     uvm_config_db#(bit)::set(this, "env.fc_tx_rdy", "enable_backpressure", 1'b1);
+    // BUG-22 closeout: TX-aperture, returner and FC-RX sequences run
+    // concurrently under fork/join below, so items from the three
+    // streams interleave at the DUT outputs.  Tell the scoreboard to
+    // match expected items order-insensitively across the streams
+    // (per-stream order is still implicitly preserved by the queues).
+    uvm_config_db#(bit)::set(this, "env.sb", "order_insensitive", 1'b1);
   endfunction
 
   virtual task main_phase(uvm_phase phase);

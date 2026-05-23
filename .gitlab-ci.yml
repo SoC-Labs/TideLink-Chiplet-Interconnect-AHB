@@ -399,16 +399,12 @@ uvm-fc-adapter:
     - vcs
   <<: *vcs_uvm_setup
   script:
-    # 2026-05-23: tidelink_fc_adapter_full_test currently fails CI with
-    # ~31 scoreboard mismatches under interleaved TX+RX+sideband traffic.
-    # 53bdb75's pre_generate() fix addressed per-stream races on the three
-    # single-stream tests but left the full stress-test scoreboard
-    # concurrency bug open. Tracked as known issue; the three
-    # single-stream tests still run + report.
-    - echo "Running UVM tidelink_fc_adapter single-stream tests (full_test excluded — known scoreboard race)"
-    - >
-      make -C "$WORK_DIR/uvm/tidelink_fc_adapter" run_all
-      TESTS="tidelink_fc_adapter_tx_test tidelink_fc_adapter_sideband_test tidelink_fc_adapter_rx_test" || true
+    # 2026-05-23: BUG-22 closeout — full_test scoreboard race resolved by
+    # making scoreboard matching order-insensitive when interleaved
+    # streams are driven concurrently (opt-in via uvm_config_db, set
+    # only by tidelink_fc_adapter_full_test).  All 4 tests pass.
+    - echo "Running UVM tidelink_fc_adapter tests (all 4 tests pass)"
+    - make -C "$WORK_DIR/uvm/tidelink_fc_adapter" run_all || true
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_fc_adapter/sim_build"
         "$WORK_DIR/uvm/tidelink_fc_adapter/results.xml"

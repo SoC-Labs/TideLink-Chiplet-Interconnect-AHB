@@ -114,15 +114,83 @@ sources the target's `tidelink_design.tcl`, calls
 
 ## Full-build verdict — pynq-z2-pair-all
 
-Build launched on `srv04936` with:
+### Attempt 1 — farm (srv04936) — INFRASTRUCTURE FAIL
 ```
 FPGA_USE_IDELAY=1 make farm_build \
     FARM_JOBS="pynq-z2-pair-all@srv04936"
 ```
+Failed in `create_root_design`:
+```
+ERROR: [BD 5-390] IP definition not found for VLNV:
+  soclabs.org:user:phc_vivado_wrapper:1.0
+```
+**Root cause:** `fpga/scripts/farm_build.sh` runs only
+`make -C fpga package_ip` on the remote, **not** `package_phc_ip`.
+The PHC IP repo is therefore absent on the farm host. This is a
+PRE-EXISTING gap in the farm script that the base PHC merge
+(`20c1eaa`) didn't surface because base builds were validated locally,
+not over the farm. Tracked as work-remaining; out of scope for this
+mirror branch.
 
-Log: `/tmp/td_phc_all_mirror_logs/build_pair_all.log`
-Build outcome: (see Build verdict section below — populated when the
-remote farm build completes).
+### Attempt 2 — local — RAN; failed at synth_1 on a known message-gate
+trip (PRE-EXISTING / scale-dependent, not introduced by this mirror)
+```
+FPGA_USE_IDELAY=1 make build_design TARGET=pynq-z2-pair-all FPGA_NUM_JOBS=4
+```
+Result:
+ - `package_ip` PASS
+ - `package_phc_ip` (cached) PASS
+ - `create_bd_design` + `create_root_design` PASS
+ - `validate_bd_design` PASS (already validated, BD generation OK)
+ - `generate_target all` PASS — all 16 BD IP instances generated
+   including `phc_0`, `axi_apb_phc`, `axi_gpio_pmod_trig`,
+   `xlconcat_phc_hw_cap`, `util_reduced_logic_hw_cap`
+ - `launch_runs synth_1` PASS — 16 IP-synth jobs dispatched in
+   parallel
+ - `wait_on_run synth_1` FAIL —
+   `tidelink_design_axi_smc_0_synth_1` aborted at:
+```
+ERROR: [Common 17-14] Message 'Common 17-55' appears 100 times and
+  further instances of the messages will be disabled.
+  [/apps/Xilinx/Vivado/2024.1/data/ip/xpm/xpm_memory/tcl/xpm_memory_xdc.tcl:55]
+ERROR: [Project 1-581] Command stopped due to earlier errors.
+```
+**Root cause:** The TideLink Vivado message gate
+(`fpga/build_design.tcl`, installed by commit `f9a76d7`) promotes
+`Common 17-55` ('set_property: empty selector') to ERROR to catch
+silent-XDC-dropping regressions. Xilinx's own
+`xpm_memory_xdc.tcl` emits this warning benignly for empty
+selector returns. With 8 SmartConnect ports the count stays under
+100; with 9 ports (M00..M08) the SmartConnect emits enough
+per-port XDC parses that the count exceeds 100 and meta-message
+`Common 17-14` errors out.
+
+**This is a PRE-EXISTING msg-gate scaling issue, not a structural
+defect introduced by the PHC mirror.** Per the task brief, no
+iterating fixes that risk regressing — captured for follow-up.
+
+Recommended follow-up (outside this branch's scope):
+ - Either narrow the `Common 17-55` promotion to file-path-scoped
+   (exclude `xpm_memory_xdc.tcl`), or add a per-build
+   `set_msg_config -id "Common 17-55" -suppress` block during smc
+   IP synthesis only. Both are documented patterns in
+   `fpga/docs/VIVADO_MSG_GATE.md` lines 39, 72-74.
+
+Build log: `/tmp/td_phc_all_mirror_logs/build_pair_all_local.log`
+IP synth log: `imp/fpga/project/pynq-z2-pair-all/tidelink_project.runs/tidelink_design_axi_smc_0_synth_1/runme.log`
+
+### Bitstream md5
+
+Not produced (synth failed). No bitstream md5 to capture.
+
+### Concurrency note
+
+A second concurrent build was accidentally started from this
+session and killed before reaching synth (parent PIDs 2078089 /
+2078109 -KILL9'd at ~01:35). The IP repo cache was not corrupted
+(the killed build was still in package_ip, the first build had
+already finished package_ip). The synth_1 failure above is
+independent of the kill.
 
 ## Commits on this branch
 
@@ -145,11 +213,20 @@ remote farm build completes).
 
 ## Work remaining
 
- - Build verdict for `pynq-z2-pair-all` (running in background).
- - Decide whether to also farm-build `pynq-z2-pair-flip-all` once
-   pair-all completes — out of scope per the task brief (build-only
-   on pair-all is enough to attest structural correctness of the
-   mirror; -flip-all will be exercised by the user's normal
-   `build_pair_farmed` flow after merge).
- - Phase-1 HW silicon sanity (PHC counts up, PPS LED 1 Hz) — explicit
-   post-merge user-reviewed step per task brief; not attempted here.
+ - **Msg-gate scaling for `Common 17-55`** — promotion is firing on
+   Xilinx's xpm_memory_xdc.tcl when SmartConnect has 9 MIs (was OK
+   at 6/7/8). Needs a scoped suppression — see "Recommended
+   follow-up" above. Out of scope here (would risk regressing the
+   silent-XDC-failure guard the gate was built for).
+ - **Farm-script PHC gap** — `scripts/farm_build.sh` does not run
+   `package_phc_ip` on the remote host, so PHC-using targets can't
+   be farm-built. Affects both base and -all targets. Pre-existing.
+   Out of scope here.
+ - **`pynq-z2-pair-flip-all` full-build** — not attempted here. The
+   `flip-all` variant is structurally identical (same SmartConnect
+   topology, same 17-55 trigger), so the synth_1 outcome is
+   expected to be identical until the msg-gate fix lands. BD
+   validate PASS is recorded above.
+ - **Phase-1 HW silicon sanity** (PHC counts up, PPS LED 1 Hz) —
+   explicit post-merge user-reviewed step per the task brief; not
+   attempted here.

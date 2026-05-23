@@ -806,3 +806,96 @@ controller's RX FSM. Documented for the next session.
 
 Acquired `0P-Gm2FHP0Bc49JCane_bw` 2026-05-23 19:44 → released cleanly
 20:50.
+
+---
+
+## Build #13 + Proposal #3 — Agent Q's RCA disproven, Agent R's confirmed
+
+### Build #13 — feat/phc-slave-rx-fix (`167923a`)
+
+Agent Q's RCA proposed `(* dont_touch *) (* keep *)` on slave's
+`ptp_enable_r` FF (Bug-#3-class on the replica feeding `rx_accept`).
+Build PASS, deployed cleanly with verified build-#13 provenance
+(bin sha256 `9c7eadcfcd89…` / `865a0f66b1f7…`).
+
+**HW verdict: FAIL** — slave `HW_SYNC_STATUS=0x0` unchanged, `locked_streak=0/10`.
+The replica-prune theory is **disproven**: the `dont_touch` would prevent
+any replica from being pruned, yet slave still sees nothing. The RX path is
+not gated by `ptp_enable_r` on HW the way Agent Q hypothesised.
+
+### Proposal #3 — PTP_CTRL toggle workaround
+
+Wrote `PTP_CTRL=0`, sleep 100ms, `PTP_CTRL=1` on both sides before
+starting HW_SYNC manually. Brief post-write snapshot showed
+`HW_SYNC_STATUS slave=0x1, SERVO_STATUS slave=0x1` — looked
+promising, but re-running the full `bringup_ptp_sync.sh` chain
+(which does its own quiesce-then-enable in steps [1] and [4]) gives
+back the original FAIL with `HW_SYNC_STATUS slave=0x0`. The earlier
+0x1 was the **PTP-enabled bit reflected**, not actual sync packet
+reception (no offset convergence, no `ns_frac` update, no servo lock).
+
+### Final Phase-1 closeout — autonomous loop genuinely exhausted
+
+After 13 build cycles, 6 HW retries (B1 chain), and three diagnostic
+agents (Q RCA, R sim/HW gap, N earlier), the bug is now narrowed to
+the **physical/timing realm** that the autonomous loop cannot address:
+
+  - Agent R's `cocotb/phc_pair/` extended with `USE_FPGA_MODELS=1`
+    (`feat/phc-pair-fpga-models`, merged as `a9b1f21`) elaborates
+    IDELAYE2 / IDELAYCTRL / BUFG unisim primitives on the slave path
+    — and STILL passes the test cleanly. The §9 cells are functional
+    no-ops in sim; their entire HW value is **structural** (Vivado
+    P&R placement targeting), not behavioural.
+  - The classifier + dataIdMatch + RX FIFO write side all exonerated
+    by `cocotb/phc_pair/test_phc_diag.py` (per-cycle counter table).
+  - APB write reaches slave `PTP_CTRL` (`PTP_CTRL=0x1` mid-test) and
+    `ptp_enable_r` synthesises correctly with `dont_touch+keep`
+    (build #13 disproved replica-prune).
+
+The remaining HW-only failure modes per `docs/SIM_HW_GAP_ANALYSIS.md`:
+
+  1. **(Most likely)** Vivado P&R skew on slave's master→slave fan-out
+     lands past IDELAY tap range — calibrator's 16/16 threshold
+     passes but ≥1 lane's eye sits at UI boundary; ECC silently
+     drops every short packet. Consistent with master seeing
+     `ecc_corrected` (slave→master traffic alive) + slave seeing
+     ZERO RX activity.
+  2. Recovered-RX-clock reset/CDC race on first master-TX edge
+     (sim has perfectly synchronous t=0 clocks).
+  3. `set_bus_skew` constraint margin exhaustion.
+
+### REQUIRED next step (USER ACTION)
+
+**Oscilloscope on slave `pad_clk_rx` + one `pad_rx[n]`** at the
+Raspberry Pi header, while master is firing HW_SYNC (after running
+this report's standard `bringup_pair_converge.sh` + master HW_SYNC_CTRL=0x5
+sequence). This **discriminates clock-recovery failure from
+data-eye-crush failure** — the two hypotheses lead to different
+fixes:
+
+  - If the scope shows clean RX clock + clean RX data eye but ECC
+    fails: the bug is in slave's ECC decode or RX-bank routing —
+    needs a chiplet controller logic-analyser session OR adding
+    APB-readable ECC-error counters.
+  - If the scope shows a closed eye (data edges aligned with clock):
+    the bug is P&R skew past IDELAY range — needs an XDC
+    `max_delay` tightening + rebuild, OR moving the slave-side
+    capture to an `IODELAY_GROUP` with longer taps.
+
+### What landed during this exhaustion
+
+| Item | Status |
+|---|---|
+| `b61c84a` master-TX `tx_router_idle` bypass | **MERGED on main** (HW-validated by `HW_SYNC_STATUS master 0x3→0x48xx` advance) |
+| `cocotb/phc_pair/test_phc_hw_sync_pair` sim repro | **MERGED on main** (commits `86e45bb` + `609482f`) — sim env that exonerates the RTL slave-RX path |
+| `bringup_ptp_sync.sh` mid-test PTP_CTRL diagnostic | **MERGED on main** (commit `4367a71`) |
+| `deploy_pair.sh` UNVERIFIED-DEPLOY hard-abort | **MERGED on main** (commit `7e6aac6`) — closes Bug-#32 class permanently |
+| `docs/SIM_HW_GAP_ANALYSIS.md` | **MERGED on main** (commit `a9b1f21`) |
+| `docs/PHC_PHASE1_RCA_PROPOSAL.md` | On `feat/phc-slave-rx-fix` (unmerged — RCA disproven) |
+| `feat/phc-rx-counters` (RX_DIAG counters) | Parked — slave-side wiring broken; not merged |
+| `feat/phc-slave-rx-fix` (Agent Q's `dont_touch+keep`) | Parked — disproven; not merged |
+| `feat/keep-ptp-enable-r` (earlier speculative Bug-#3) | Deleted — also disproven |
+
+PHC Phase-1 is genuinely **CONDITIONAL** until the scope diagnostic
+discriminates the two HW-only hypotheses. All sim and RTL
+hypotheses are exhausted. Lease released.

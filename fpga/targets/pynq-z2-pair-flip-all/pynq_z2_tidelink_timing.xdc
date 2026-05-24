@@ -206,7 +206,10 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 #      lane so it cannot wander build-to-build. 8.0 ns is ~1/5 of the 40 ns
 #      period — comfortably inside the calibrator window — and is a ceiling,
 #      not a target, so P&R is not forced to pad short lanes.
-set rx_cap_cells [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+# 2026-05-24 Agent T: mirror master-side fix for §9 T3a realign FFs.
+set rx_cap_cells [get_cells -hier -filter \
+    {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]" || \
+     NAME =~ "*gpiorx_*/g_t3a_realign.realign_shifter_reg[*]"}]
 set_max_delay -datapath_only 8.000 \
     -from [get_ports {pad_rx[*]}] \
     -to   $rx_cap_cells

@@ -138,7 +138,22 @@ module tidelink_ptp #(
     // mark_debug on PTP control FF + RX valid pulse — ILA capture per
     // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3" and Agent Q's
     // §2.6/2.7 audit (feat/phc-ila-debug).
-    (* mark_debug = "true" *) logic        ptp_enable_r;
+    //
+    // Build #20 (feat/phc-slave-rx-fix-b20): Agent Q's Bug-#3-class replica
+    // defence — `(* keep *) (* dont_touch *)` prevents Vivado from splitting
+    // ptp_enable_r into per-fanout-sink replicas where the rx_accept gate
+    // copy could be pruned independently of the APB readback copy (the
+    // build #13 RCA: readback=1, rx_accept-replica behaves as if=0). Build
+    // #13 disproved this in ISOLATION while master-TX was still stuck
+    // (tx_state_r=TX_IDLE, valid=0, FSM frozen by handshake bug). Build
+    // #19 (99c9d58) repaired the master TX with the (valid && ready)
+    // handshake gate; this build re-applies Agent Q's slave-side defence
+    // ON TOP so the now-functional master TX can be evaluated against the
+    // now-defended slave RX gate — the combined RCA was never previously
+    // testable because b13's negative result was sampled while the master
+    // never emitted a single SP on the wire.
+    (* mark_debug = "true" *) (* keep = "true" *) (* dont_touch = "true" *)
+    logic        ptp_enable_r;
     (* mark_debug = "true" *) logic        ptp_rx_valid_r;
     logic [3:0]  ptp_rx_msg_type_r;
 
@@ -220,7 +235,14 @@ module tidelink_ptp #(
                     end
                 end
                 TX_SEND: begin
-                    if (ptp_sp_tx_ready) begin
+                    // Build #19/#20 minimal master-side fix (Agent R RCA):
+                    // require a REAL handshake (valid && ready), not ready
+                    // alone. If a replicated ptp_enable_r=0 copy gates
+                    // ptp_sp_tx_valid low (builds #14-17 master-TX-stuck
+                    // symptom), the original `ready`-only check silently
+                    // "completes" without ever asserting valid on the wire.
+                    // See docs/PHC_PHASE1_HW_REPORT.md §"Build #19".
+                    if (ptp_sp_tx_valid && ptp_sp_tx_ready) begin
                         tx_pending_r <= 1'b0;
                     end
                 end
@@ -284,9 +306,17 @@ module tidelink_ptp #(
     // RX Path — Short Packet RX → PHC Capture + Payload Latch + IRQ
     // =========================================================================
 
-    // Accept SP RX whenever valid and PTP is enabled
+    // Accept SP RX whenever valid and PTP is enabled.
+    // Build #20 (feat/phc-slave-rx-fix-b20): pair with `(* keep *) (* dont_touch *)`
+    // on ptp_enable_r above. `(* keep *)` here prevents Vivado from merging
+    // or sinking this gate into the downstream rx_fifo read-pointer
+    // increment logic, so the dont_touch on the upstream FF actually has
+    // an observable sink in the netlist. Together they pin both ends of
+    // the original Bug-#3 replica-prune path on the slave RX gate.
+    (* keep = "true" *)
     wire rx_accept = ptp_sp_rx_valid & ptp_enable_r;
 
+    (* keep = "true" *)
     assign ptp_sp_rx_accept = rx_accept;
 
     // Decode received short packet: data_id → msg_type

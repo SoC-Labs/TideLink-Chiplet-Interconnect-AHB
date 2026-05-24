@@ -138,8 +138,16 @@ module tidelink_ptp #(
     // mark_debug on PTP control FF + RX valid pulse — ILA capture per
     // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3" and Agent Q's
     // §2.6/2.7 audit (feat/phc-ila-debug).
-    (* mark_debug = "true" *) logic        ptp_enable_r;
-    (* mark_debug = "true" *) logic        ptp_rx_valid_r;
+    // Agent R 2026-05-24 build #18: defensive keep + dont_touch on
+    // ptp_enable_r. This FF fans out to (a) APB readback mux, (b) ptp_sp_tx_valid
+    // gate, (c) servo dreq trigger gate, (d) AHB hreadyout, (e) HW_SYNC trigger
+    // gate (new this build). If synth replicates the FF for fanout, all
+    // replicas must share the same D-input. dont_touch prevents synth from
+    // splitting the replicas into different driver logic.
+    (* mark_debug = "true" *) (* keep = "true" *) (* dont_touch = "true" *)
+    logic        ptp_enable_r;
+    (* mark_debug = "true" *) (* keep = "true" *)
+    logic        ptp_rx_valid_r;
     logic [3:0]  ptp_rx_msg_type_r;
 
     // RX payload register (offset 0x038, mapped at ptp_reg_addr = 3'h6)
@@ -220,8 +228,19 @@ module tidelink_ptp #(
                     end
                 end
                 TX_SEND: begin
-                    if (ptp_sp_tx_ready) begin
-                        tx_pending_r <= 1'b0;
+                    // Agent R 2026-05-24 build #18 fix: complete the handshake
+                    // ONLY on valid && ready, not on ready alone. The
+                    // ptp_sp_tx_valid signal is gated by ptp_enable_r (line
+                    // ~286), so if ptp_enable_r is 0 on a synth-replicated copy
+                    // (Agent R hypothesis #4) the prior code would silently
+                    // complete the SP TX, clear tx_pending_r and return to
+                    // TX_IDLE without ever asserting valid on the wire.
+                    // That precisely matches the HW symptom: master TX FSM
+                    // appears to cycle (seq_num++) but no SYNC ever reaches
+                    // the slave because valid never asserts.
+                    if (ptp_sp_tx_valid && ptp_sp_tx_ready) begin
+                        tx_pending_r       <= 1'b0;
+                        tx_data_latched_r  <= 1'b0; // belt-and-braces: clear on real handshake
                     end
                 end
                 default: ;
@@ -257,7 +276,10 @@ module tidelink_ptp #(
                     tx_state_next = TX_SEND;
             end
             TX_SEND: begin
-                if (ptp_sp_tx_ready)
+                // Agent R 2026-05-24 build #18 fix: matches the always_ff
+                // change above — only advance back to TX_IDLE on a REAL
+                // handshake (valid && ready), not on ready alone.
+                if (ptp_sp_tx_valid && ptp_sp_tx_ready)
                     tx_state_next = TX_IDLE;
             end
             default: tx_state_next = TX_IDLE;
@@ -412,9 +434,16 @@ module tidelink_ptp #(
         end
     end
 
-    // HW sync trigger: asserted for one cycle in FIRE state when TX FSM is idle
+    // HW sync trigger: asserted for one cycle in FIRE state when TX FSM is idle.
+    // Agent R 2026-05-24 build #18: ALSO gate on ptp_enable_r so the HW_SYNC
+    // FSM does not advance through WAIT_TX (incrementing seq_num) while the
+    // TX path is muted (ptp_sp_tx_valid gated by ptp_enable_r at line ~286).
+    // Without this, HW_SYNC and TX disagree about "enabled" and the FSM
+    // silently advances seq_num without ever transmitting — exactly the HW
+    // symptom on builds #14-#17.
     assign hw_sync_trigger = (hw_sync_state_r == HW_SYNC_FIRE) &&
                              (tx_state_r == TX_IDLE) &&
+                             ptp_enable_r &&
                              !tx_valid_addr_phase;  // AHB has priority
 
     // HW sync FSM — state transitions

@@ -194,7 +194,16 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 #      lane so it cannot wander build-to-build. 8.0 ns is ~1/5 of the 40 ns
 #      period — comfortably inside the calibrator window — and is a ceiling,
 #      not a target, so P&R is not forced to pad short lanes.
-set rx_cap_cells [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+# 2026-05-24 (Agent T): §9 T3a g_t3a_realign.realign_shifter_reg[*] is ALSO an
+# io_pad capture FF on pad_clk_rx (added 2026-05-19 to WavD2DGpioRx.v). It MUST
+# live in the same source-synchronous datapath-group as link_data_pad_clk_reg,
+# otherwise Vivado runs naive intra-clock hold and the 5.87 ns BUFG insertion
+# + IDELAYE2 -4.0 ns input delay -> -7.94 ns slack (8 lanes -> THS -61.8 ns).
+# Identical regression across builds #14-#17. See docs/PHC_PHASE1_HW_REPORT.md
+# §"Build #17". This is a separate issue from the PHC TX-valid bug.
+set rx_cap_cells [get_cells -hier -filter \
+    {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]" || \
+     NAME =~ "*gpiorx_*/g_t3a_realign.realign_shifter_reg[*]"}]
 set_max_delay -datapath_only 8.000 \
     -from [get_ports {pad_rx[*]}] \
     -to   $rx_cap_cells

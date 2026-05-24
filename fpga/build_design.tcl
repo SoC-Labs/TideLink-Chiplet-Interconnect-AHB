@@ -339,6 +339,23 @@ if { $hwh_file ne "" } {
 # bundle (the .xsa is just a zip containing .bit + .hwh + metadata).
 write_hw_platform -fixed -include_bit -force $output_dir/tidelink_design.xsa
 
+# 2026-05-24 (Agent C recommendation): preserve the routed DCP + timing
+# summary report alongside the bitstream, so post-build report_timing
+# analysis works without needing to re-run the build. The next build's
+# launch_runs would otherwise wipe these from tidelink_project.runs/impl_1/
+# (Agent C found build #18 DCP was already lost to build #19's startup
+# the same day).
+set routed_dcp [glob -nocomplain $project_dir/tidelink_project.runs/impl_1/*_routed.dcp]
+if { $routed_dcp ne "" } {
+    file copy -force [lindex $routed_dcp 0] $output_dir/tidelink_design_wrapper_routed.dcp
+    puts "Routed DCP copied to $output_dir/tidelink_design_wrapper_routed.dcp"
+}
+set timing_rpt [glob -nocomplain $project_dir/tidelink_project.runs/impl_1/*_timing_summary_routed.rpt]
+if { $timing_rpt ne "" } {
+    file copy -force [lindex $timing_rpt 0] $output_dir/tidelink_design_wrapper_timing_summary_routed.rpt
+    puts "Timing summary copied to $output_dir/tidelink_design_wrapper_timing_summary_routed.rpt"
+}
+
 puts "==========================================="
 puts " Build complete!"
 puts " Bitstream: $output_dir/tidelink.bit"

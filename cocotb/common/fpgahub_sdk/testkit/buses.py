@@ -44,7 +44,11 @@ Vendored copy — canonical source: ~/SoCLabs/fpgahub/src/fpgahub_sdk/testkit/bu
 """
 
 import shutil
-from typing import Protocol, runtime_checkable
+try:
+    from typing import Protocol, runtime_checkable
+except ImportError:
+    from typing_extensions import Protocol
+    from typing import runtime_checkable
 
 
 @runtime_checkable

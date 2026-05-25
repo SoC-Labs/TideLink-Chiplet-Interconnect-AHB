@@ -1804,7 +1804,56 @@ module Wlink #(
   assign lltx_io_swi_err_inj_bit = out_prepend_swi_err_inj_bit; // @[SW.scala 117:16]
   assign lltx_io_ll_tx_valid = phy_link_tx_tx_ready; // @[Wlink.scala 186:43]
   assign llrx_clock = phy_link_rx_rx_link_clk; // @[Wlink.scala 213:58]
-  assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out; // @[Wlink.scala 214:64]
+  // ===================================================================
+  // SoC Labs tdif-08 L4 option (c) (2026-05-25): hold llrx_reset HIGH for
+  // the entire training/recal window so the slave's LL_RX byte-align FSM
+  // never sees the asymmetric training-mode filler bytes that latch
+  // state==1 prematurely.
+  //
+  // Root cause (commit 7a6427d on tdif-bisect-ll-rx): the slave LL framer
+  // (WlinkRxLinkLayer.state) is released from reset while the master is
+  // still emitting training-mode filler. Some filler bytes have
+  // ph[7:0]>0x7F (is_long_pkt=1), so state 0→1 latches mid-training and
+  // the framer is stuck pointing at filler instead of the first real CR
+  // packet once the master drops training and enters FC data mode.
+  //
+  // The prior L4 attempt (commit 92c2ec7 — first_short_pkt_seen sticky
+  // gate inside WlinkRxLinkLayer.v) was a *consumer-side* heuristic that
+  // partially worked (5/12 fuzz PASS) but couldn't survive every clock
+  // alignment. Option (c) is a *producer-side* gate: keep llrx_reset
+  // asserted while swi_training_mode_in is high. By the time it
+  // deasserts, the master TX is already in FC data mode and the first
+  // valid byte on the wire is the CR short packet — state→0 is the only
+  // possible transition.
+  //
+  // CDC: swi_training_mode_in is an apb_clk-domain signal (sourced from
+  // axi_chiplet_controller.sv swi_training_mode_r OR'd with autocal's
+  // cal_training_mode_w). It must be 2-flop-synced into
+  // phy_link_rx_rx_link_clk (== llrx_clock) before being OR'd into
+  // llrx_reset. The reset OR uses the *synced* signal so transitions are
+  // safe in the rx_link_clk domain.
+  //
+  // Scope note: swi_recal_r (slot0 bit[1]) is NOT exposed to Wlink — it
+  // only reaches the autocal calibrator inside axi_chiplet_controller.sv.
+  // Since the bringup sequence is set_slot0=0x3 → 0x1 → 0x0, the
+  // training_mode bit (slot0 bit[0]) is held HIGH for the entire window
+  // that recal is non-zero, so swi_training_mode_in alone covers the
+  // same gating window. Modifying axi_chiplet_controller.sv to also pipe
+  // swi_recal in is out of scope for this override (see task
+  // constraints).
+  // ===================================================================
+  reg  swi_training_mode_rxsync_0;
+  reg  swi_training_mode_rxsync_1;
+  always @(posedge phy_link_rx_rx_link_clk or posedge por_reset) begin
+    if (por_reset) begin
+      swi_training_mode_rxsync_0 <= 1'b1;  // safe default: hold gate HIGH out of POR
+      swi_training_mode_rxsync_1 <= 1'b1;
+    end else begin
+      swi_training_mode_rxsync_0 <= swi_training_mode_in;
+      swi_training_mode_rxsync_1 <= swi_training_mode_rxsync_0;
+    end
+  end
+  assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out | swi_training_mode_rxsync_1; // @[Wlink.scala 214:64] SoC Labs L4 option (c)
   assign llrx_io_enable = out_prepend_swi_lltx_enable_1; // @[Wlink.scala 174:49 SW.scala 117:16]
   assign llrx_io_swi_short_packet_max = out_prepend_swi_short_packet_max; // @[Wlink.scala 170:49 SW.scala 117:16]
   assign llrx_io_active_lanes = {{4'd0}, active_rx_lanes}; // @[Wlink.scala 169:48]

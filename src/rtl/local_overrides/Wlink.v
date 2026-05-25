@@ -232,15 +232,25 @@ module Wlink #(
   //   axi_chiplet_controller.sv. Declared up here (before first use) so
   //   the assignments below the instances can reference them.
   // ===================================================================
-  wire [1:0] llrx_io_obs_state;
-  wire       llrx_io_obs_is_short_pkt;
-  wire       llrx_io_obs_is_long_pkt;
-  wire       llrx_io_obs_valid;
-  wire [2:0] tl2wl_io_obs_fcsm_state;
-  wire       tl2wl_io_obs_cr_pkt_seen_rx;
-  wire       tl2wl_io_obs_crack_pkt_seen_rx;
-  wire       tl2wl_io_obs_pkt_is_cr_pkt;
-  wire       tl2wl_io_obs_pkt_is_crack_pkt;
+  // tdif-10 visibility (2026-05-25): mark_debug at the Wlink scope so the
+  // ILA picks these up without having to bind into WlinkRxLinkLayer. The
+  // underlying llrx instance already mark_debugs `state`/`is_long_pkt`/
+  // `is_short_pkt`/`valid` internally; promoting at this scope adds a
+  // second tap that survives even if Vivado flattens the llrx internals.
+  (* mark_debug = "true" *) wire [1:0] llrx_io_obs_state;
+  (* mark_debug = "true" *) wire       llrx_io_obs_is_short_pkt;
+  (* mark_debug = "true" *) wire       llrx_io_obs_is_long_pkt;
+  (* mark_debug = "true" *) wire       llrx_io_obs_valid;
+  // tdif-10 visibility (2026-05-25): the FCSM observability outputs
+  // expose the master-side credit-handshake state that lets us see CR/CRACK
+  // packets being received and the FCSM's own state advance. These nets
+  // are already wired up to APB obs registers; promoting them to mark_debug
+  // gives per-cycle ILA visibility (the APB version is poll-rate only).
+  (* mark_debug = "true" *) wire [2:0] tl2wl_io_obs_fcsm_state;          // tdif-10 ILA — FCSM state
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_cr_pkt_seen_rx;      // tdif-10 ILA — sticky CR-rx
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_crack_pkt_seen_rx;   // tdif-10 ILA — sticky CRACK-rx
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_pkt_is_cr_pkt;       // tdif-10 ILA — combinational CR-detect
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_pkt_is_crack_pkt;    // tdif-10 ILA — combinational CRACK-detect
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // Port stubs — read-only mirror of the lane-mask registers.
@@ -1842,8 +1852,16 @@ module Wlink #(
   // swi_recal in is out of scope for this override (see task
   // constraints).
   // ===================================================================
-  reg  swi_training_mode_rxsync_0;
-  reg  swi_training_mode_rxsync_1;
+  // tdif-10 visibility (2026-05-25): expose the option (c) CDC sync chain
+  // (pre-CDC swi_training_mode_in, both rxsync stages, and the OR'd
+  // llrx_reset itself) to the ILA so we can confirm on real silicon that:
+  //   1. swi_training_mode_in is asserted/deasserted as expected by SW
+  //   2. the 2-flop CDC fires in the rx_link_clk domain
+  //   3. llrx_reset deasserts at the right moment relative to peer TX
+  // mark_debug attributes apply at the declaration site; the always block
+  // is unmodified.
+  (* mark_debug = "true" *) reg  swi_training_mode_rxsync_0;     // tdif-10 ILA — CDC stage 1
+  (* mark_debug = "true" *) reg  swi_training_mode_rxsync_1;     // tdif-10 ILA — CDC stage 2 (drives reset OR)
   always @(posedge phy_link_rx_rx_link_clk or posedge por_reset) begin
     if (por_reset) begin
       swi_training_mode_rxsync_0 <= 1'b1;  // safe default: hold gate HIGH out of POR
@@ -1853,6 +1871,23 @@ module Wlink #(
       swi_training_mode_rxsync_1 <= swi_training_mode_rxsync_0;
     end
   end
+
+  // tdif-10 visibility (2026-05-25): pre-CDC swi_training_mode_in
+  // (apb_clk domain) and the OR'd llrx_reset (rx_link_clk domain) -- mirror
+  // these into mark_debug-attributed nets so they appear in the ILA
+  // alongside the CDC chain. The mirrors are pure wires; synthesis flattens
+  // them but keeps the mark_debug attribute on the resolved net.
+  (* mark_debug = "true" *) wire dbg_swi_training_mode_in   = swi_training_mode_in;        // tdif-10 ILA — pre-CDC (apb_clk)
+  (* mark_debug = "true" *) wire dbg_llrx_reset_out;                                       // tdif-10 ILA — final reset (rx_link_clk)
+  // Cross-die trigger: framer is stuck post-training-drop when state==1
+  // (long-pkt branch latched) AND swi_training_mode_rxsync_1 has fallen
+  // back to 0 (gate released). Both dies compute this identically. ILA can
+  // trigger on this signal directly in Vivado HW Manager -- no physical pin
+  // is needed for the trigger because the dbg_hub is JTAG-only; a SW poll
+  // of dbg_framer_stuck across both dies via JTAG gives the same evidence.
+  // The signal is also routed through llrx instance hierarchy so it can be
+  // used as ILA trigger condition on either side independently.
+  (* mark_debug = "true" *) wire dbg_framer_stuck = (llrx_io_obs_state == 2'h1) & ~swi_training_mode_rxsync_1; // tdif-10 ILA — cross-die framer-stuck flag (drives via existing llrx obs output)
   // ===================================================================
   // SoC Labs tdif-08 L4 option (c) BILATERAL ATTEMPT (2026-05-25):
   // negative result -- falling-edge holdoff counter does NOT close the
@@ -1906,6 +1941,7 @@ module Wlink #(
   // 6/12 fuzz failures as a protocol-extension follow-up.
   // ===================================================================
   assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out | swi_training_mode_rxsync_1; // @[Wlink.scala 214:64] SoC Labs L4 option (c)
+  assign dbg_llrx_reset_out = llrx_reset;  // tdif-10 ILA mirror — see declaration above
   assign llrx_io_enable = out_prepend_swi_lltx_enable_1; // @[Wlink.scala 174:49 SW.scala 117:16]
   assign llrx_io_swi_short_packet_max = out_prepend_swi_short_packet_max; // @[Wlink.scala 170:49 SW.scala 117:16]
   assign llrx_io_active_lanes = {{4'd0}, active_rx_lanes}; // @[Wlink.scala 169:48]

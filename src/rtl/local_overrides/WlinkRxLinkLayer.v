@@ -126,7 +126,11 @@ module WlinkRxLinkLayer(
   // flist preserves the (* mark_debug = "true" *) attributes used by
   // the ILA capture pipeline (see reference_phc_ila_capture.md). The
   // dead `first_short_pkt_seen` reg will be pruned by synthesis.
-  reg       first_short_pkt_seen;
+  // tdif-10 visibility (2026-05-25): expose first_short_pkt_seen to the
+  // ILA. The bit is currently a no-op (long_pkt_gate forced to 1) but
+  // observing it on HW confirms whether the framer has ever seen a real
+  // short CR packet (1) or has been stuck on filler the whole time (0).
+  (* mark_debug = "true" *) reg       first_short_pkt_seen;        // tdif-10 ILA — L4-v3 gate witness
   wire      long_pkt_gate = 1'b1;  // L4-v3 disabled -- option (c) supersedes (combo experiment did not help)
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
@@ -152,14 +156,21 @@ module WlinkRxLinkLayer(
   reg [7:0] ll_byte_index_19; // @[LinkLayer.scala 622:32]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte0_reg; // @[LinkLayer.scala 633:36]  SoC Labs ILA
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte1_reg; // @[LinkLayer.scala 635:36]  SoC Labs ILA
-  wire  valid_byte_reg = |byte0_reg | |byte1_reg; // @[LinkLayer.scala 636:43]
+  // tdif-10 visibility (2026-05-25): valid_byte_reg gates every framer
+  // state transition. ILA-visible so we can correlate state==1 hangs with
+  // whether the framer is still receiving bytes from the deser front-end.
+  (* mark_debug = "true" *) wire  valid_byte_reg = |byte0_reg | |byte1_reg; // @[LinkLayer.scala 636:43]  tdif-10 ILA — byte-valid gate
   (* mark_debug = "true" *) wire [23:0] corrected_ph = ecc_check_corrected_ph; // @[LinkLayer.scala 641:33 LinkLayer.scala 642:27]  SoC Labs ILA — corrected packet header (feat/phc-ila-debug)
   wire  _is_short_pkt_T_5 = ~ecc_check_corrupted; // @[LinkLayer.scala 643:111]
   (* mark_debug = "true" *) wire  is_short_pkt = corrected_ph[7:0] <= io_swi_short_packet_max & corrected_ph[7:0] != 8'h0 & ~ecc_check_corrupted; // @[LinkLayer.scala 643:108]  SoC Labs ILA — short packet detect (feat/phc-ila-debug)
   (* mark_debug = "true" *) wire  is_long_pkt = corrected_ph[7:0] > io_swi_short_packet_max & _is_short_pkt_T_5; // @[LinkLayer.scala 644:76]  SoC Labs ILA — long packet detect (feat/phc-ila-debug)
   (* mark_debug = "true" *) reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
   (* mark_debug = "true" *) reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
-  reg [15:0] word_count; // @[LinkLayer.scala 652:36]
+  // tdif-10 visibility (2026-05-25): word_count is the framer's "how far
+  // through the long packet am I" counter -- when state latches state==1 on
+  // training filler this counts up toward word_count_in (~163 for filler
+  // 0xa3) and never wraps. ILA-visible so we see the false-long-pkt depth.
+  (* mark_debug = "true" *) reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
   reg [16:0] byte_count; // @[LinkLayer.scala 657:36]
   wire [7:0] _bytesPerCycle_T_1 = io_active_lanes + 8'h1; // @[LinkLayer.scala 658:44]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)

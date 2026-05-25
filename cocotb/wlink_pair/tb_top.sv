@@ -438,6 +438,61 @@ module tb_top #(
         .pad_clk_rx(m_pad_clk_tx_skid), .pad_rx(m_pad_tx_skid)
     );
 
+    // =========================================================================
+    // tdif-10 sim<->HW parity taps (2026-05-25)
+    //
+    // Mirror the exact signals that ILA captures on FPGA into top-level
+    // tb_top wires, so cocotb tests can probe them by short, stable names
+    // (`u_tdif10_taps.dbg_*`) instead of long hier paths into Wlink/llrx.
+    // This is the sim-equivalent of the FPGA ILA -- same signal set, same
+    // name, same logical meaning, so a sim test can be written 1:1 against
+    // the post-capture HW waveform analysis.
+    //
+    // Signal map (all signals appear on BOTH master and slave dies):
+    //   m_/s_dbg_state           : WlinkRxLinkLayer byte-align FSM state
+    //   m_/s_dbg_is_long_pkt     : framer says "this is a long packet"
+    //   m_/s_dbg_is_short_pkt    : framer says "this is a short CR packet"
+    //   m_/s_dbg_corrected_ph    : ECC-corrected packet header (full 24 bits)
+    //   m_/s_dbg_ecc_corrupted   : framer ECC fail
+    //   m_/s_dbg_ecc_corrected   : framer ECC corrected (1-bit error)
+    //   m_/s_dbg_word_count      : framer's long-pkt progress counter
+    //   m_/s_dbg_valid_byte_reg  : byte-valid gate (from deserialiser)
+    //   m_/s_dbg_first_short_pkt_seen : L4-v3 sticky (no-op but witness)
+    //   m_/s_dbg_swi_training_mode_in       : pre-CDC training (apb_clk)
+    //   m_/s_dbg_swi_training_mode_rxsync_0 : CDC stage 1 (rx_link_clk)
+    //   m_/s_dbg_swi_training_mode_rxsync_1 : CDC stage 2 (rx_link_clk)
+    //   m_/s_dbg_llrx_reset                 : final OR'd LL_RX reset
+    //   m_/s_dbg_framer_stuck    : cross-die framer-stuck flag (HW trigger)
+    //   m_/s_dbg_obs_pkt_is_cr_pkt   : FCSM CR-pkt combinational detect
+    //   m_/s_dbg_obs_cr_pkt_seen_rx  : FCSM sticky CR-rx
+    //   m_/s_dbg_obs_pkt_is_crack_pkt   : FCSM CRACK-pkt combinational
+    //   m_/s_dbg_obs_crack_pkt_seen_rx  : FCSM sticky CRACK-rx
+    //   m_/s_dbg_obs_fcsm_state  : FCSM state machine state [2:0]
+    // =========================================================================
+    `define TDIF10_DBG_TAPS(SIDE, INST) \
+        wire [1:0]  SIDE``_dbg_state                       = INST.u_wlink.llrx.state; \
+        wire        SIDE``_dbg_is_long_pkt                 = INST.u_wlink.llrx.is_long_pkt; \
+        wire        SIDE``_dbg_is_short_pkt               = INST.u_wlink.llrx.is_short_pkt; \
+        wire [23:0] SIDE``_dbg_corrected_ph               = INST.u_wlink.llrx.corrected_ph; \
+        wire        SIDE``_dbg_ecc_corrupted              = INST.u_wlink.llrx.ecc_check_corrupted; \
+        wire        SIDE``_dbg_ecc_corrected              = INST.u_wlink.llrx.ecc_check_corrected; \
+        wire [15:0] SIDE``_dbg_word_count                 = INST.u_wlink.llrx.word_count; \
+        wire        SIDE``_dbg_valid_byte_reg             = INST.u_wlink.llrx.valid_byte_reg; \
+        wire        SIDE``_dbg_first_short_pkt_seen       = INST.u_wlink.llrx.first_short_pkt_seen; \
+        wire        SIDE``_dbg_swi_training_mode_in       = INST.u_wlink.swi_training_mode_in; \
+        wire        SIDE``_dbg_swi_training_mode_rxsync_0 = INST.u_wlink.swi_training_mode_rxsync_0; \
+        wire        SIDE``_dbg_swi_training_mode_rxsync_1 = INST.u_wlink.swi_training_mode_rxsync_1; \
+        wire        SIDE``_dbg_llrx_reset                 = INST.u_wlink.llrx_reset; \
+        wire        SIDE``_dbg_framer_stuck               = INST.u_wlink.dbg_framer_stuck; \
+        wire        SIDE``_dbg_obs_pkt_is_cr_pkt          = INST.u_wlink.tl2wl_io_obs_pkt_is_cr_pkt; \
+        wire        SIDE``_dbg_obs_cr_pkt_seen_rx         = INST.u_wlink.tl2wl_io_obs_cr_pkt_seen_rx; \
+        wire        SIDE``_dbg_obs_pkt_is_crack_pkt       = INST.u_wlink.tl2wl_io_obs_pkt_is_crack_pkt; \
+        wire        SIDE``_dbg_obs_crack_pkt_seen_rx      = INST.u_wlink.tl2wl_io_obs_crack_pkt_seen_rx; \
+        wire [2:0]  SIDE``_dbg_obs_fcsm_state             = INST.u_wlink.tl2wl_io_obs_fcsm_state;
+
+    `TDIF10_DBG_TAPS(m, u_master)
+    `TDIF10_DBG_TAPS(s, u_slave)
+
     // VCD dump
     initial begin
         $dumpfile("waves.vcd");

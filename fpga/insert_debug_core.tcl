@@ -92,6 +92,38 @@ set_property C_INPUT_PIPE_STAGES  1 [get_debug_cores u_dbg_int]
 set_property port_width 1 [get_debug_ports u_dbg_int/clk]
 connect_debug_port u_dbg_int/clk [list $ila_clk]
 
+# Tell the auto-inserted dbg_hub the TRUE clock frequency. The default that
+# Vivado picks for create_debug_core is 300 MHz; if our hclk (clk_wiz_0/
+# clk_out1) is actually 25 MHz, the 12x mismatch corrupts dbg_hub's
+# BSCAN frame counter at waveform readback time:
+#     ERROR: [Xicom 50-38] No trigger mark in any sample in window: 0
+#     ERROR: [Xicom 50-41] Waveform data ... is corrupted
+# and the subsequent wait_on_hw_ila hangs (observed in b22 build). The
+# clk_wiz CLKOUT1_REQUESTED_OUT_FREQ is the source of truth — for the
+# pynq-z2-pair-flip-all target it is 25 MHz. The pynq-z2-loopback target
+# is 50 MHz. We probe the actual generated clock period so the value is
+# always right regardless of target.
+set ila_clk_freq_hz 25000000
+if {[catch {
+    set clk_obj [get_clocks -quiet -of_objects $ila_clk]
+    if {[llength $clk_obj] > 0} {
+        set period_ns [get_property PERIOD [lindex $clk_obj 0]]
+        # PERIOD is in ns; convert to Hz, round to nearest integer
+        set ila_clk_freq_hz [expr {int(round(1.0e9 / $period_ns))}]
+    }
+} probe_err]} {
+    puts "INSTRUMENT: WARN — could not auto-detect clk freq ($probe_err); defaulting to ${ila_clk_freq_hz} Hz"
+}
+puts "INSTRUMENT: setting C_CLK_INPUT_FREQ_HZ = $ila_clk_freq_hz on u_dbg_int"
+# C_CLK_INPUT_FREQ_HZ on the ILA propagates to the dbg_hub that Vivado
+# auto-instantiates during implement_debug_core.
+catch { set_property C_CLK_INPUT_FREQ_HZ $ila_clk_freq_hz [get_debug_cores u_dbg_int] }
+# Also belt-and-braces: if an existing dbg_hub is already present in the
+# netlist, override its property directly.
+if {[llength [get_debug_cores -quiet dbg_hub]] > 0} {
+    catch { set_property C_CLK_INPUT_FREQ_HZ $ila_clk_freq_hz [get_debug_cores dbg_hub] }
+}
+
 # Iterate probe groups, creating one probe per base
 set probe_idx 0
 foreach base [array names probe_groups] {

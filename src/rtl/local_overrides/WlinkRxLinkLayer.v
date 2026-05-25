@@ -111,18 +111,23 @@ module WlinkRxLinkLayer(
   (* mark_debug = "true" *) wire  ecc_check_corrupted; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC fail flag (feat/phc-ila-debug)
   (* mark_debug = "true" *) reg [1:0] state; // @[LinkLayer.scala 611:44]  SoC Labs ILA (feat/phc-ila-debug)
   // SoC Labs tdif-08 L4 fix v3 (2026-05-25): "first_short_pkt_seen" gate.
-  // The v1/v2 hunt_holdoff approach had a 1-cycle race in scenarios with
-  // bursty filler (some filler bytes have ph[7:0] < 0x7F → is_long_pkt=0):
-  // counter drained during the lo-cycles, then a hi-cycle landed in the
-  // same cycle as holdoff_ready, transitioning state→1. v3 replaces the
-  // counter with a sticky "first_short_pkt_seen" flag — long-packet entry
-  // is GATED until at least one valid SHORT packet has been decoded.
-  // First real bringup packet is CR (ph=0x44=swi_cr_id, short), so this
-  // bootstraps cleanly: filler bytes can't latch state==1, but the real CR
-  // → cr_pkt_seen → first_short_pkt_seen → subsequent long packets fine.
-  // Reset clears the flag (POR + LL swreset both wire here).
+  // ----- NEUTRALISED 2026-05-25 by option (c) in Wlink.v override -----
+  // The v3 consumer-side gate (commit 92c2ec7) was partial (5/12 fuzz
+  // PASS). Superseded by producer-side fix: Wlink.v override now holds
+  // llrx_reset HIGH for the entire training/recal window
+  // (swi_training_mode_rxsync_1). By the time reset deasserts, the
+  // master TX is in FC data mode, so the long_pkt_gate is no longer
+  // necessary -- the very first observable byte is a real CR short
+  // packet.
+  //
+  // We keep the register declaration so the always-block below still
+  // synthesises, but force `long_pkt_gate=1'b1` so this file becomes a
+  // functional no-op vs the base Wlink RTL. Keeping the file in the
+  // flist preserves the (* mark_debug = "true" *) attributes used by
+  // the ILA capture pipeline (see reference_phc_ila_capture.md). The
+  // dead `first_short_pkt_seen` reg will be pruned by synthesis.
   reg       first_short_pkt_seen;
-  wire      long_pkt_gate = first_short_pkt_seen;
+  wire      long_pkt_gate = 1'b1;  // L4-v3 disabled -- option (c) supersedes
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id

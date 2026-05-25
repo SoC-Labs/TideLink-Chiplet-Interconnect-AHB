@@ -32,10 +32,19 @@ export TIDELINK_HOME
 
 # DUT + helpers — WavD2DGpioRx pulls in WavClockInv, WavClockMux and
 # WavResetSync from the same wlink directory.
-WLINK_DIR := $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/wlink
+WLINK_DIR    := $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/wlink
+OVERRIDE_DIR := $(TIDELINK_HOME)/src/rtl/local_overrides
 
+# SoC Labs tdif-04 (2026-05-25): switch from the base dep RTL to the
+# local override at src/rtl/local_overrides/WavD2DGpioRx.v which adds the
+# T3A_CONTINUOUS parameter. Default T3A_CONTINUOUS=0 (one-shot terminal
+# S_LOCKED, byte-identical base RTL) preserves the existing
+# test_t3a_invariance pass. Setting T3A_CONT=1 from this Makefile threads
+# a `+define+T3A_CONT=1` into VCS which the tb_top instantiates each DUT
+# with — see comment in tb_top.sv.
+T3A_CONT ?= 0
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
-                  $(WLINK_DIR)/WavD2DGpioRx.v \
+                  $(OVERRIDE_DIR)/WavD2DGpioRx.v \
                   $(WLINK_DIR)/WavClockInv.v \
                   $(WLINK_DIR)/WavClockMux.v \
                   $(WLINK_DIR)/WavResetSync.v \
@@ -45,7 +54,14 @@ VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
 TOPLEVEL = tb_top
 MODULE  ?= test_t3a_realign
 
-COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb \
+                +define+T3A_CONT=$(T3A_CONT)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# Convenience target: build+run the T3A_CONTINUOUS=1 variant in a separate
+# sim_build dir so it doesn't collide with the default one-shot build.
+.PHONY: sim_cont
+sim_cont:
+	$(MAKE) -C $(CURDIR) SIM_BUILD=sim_build_cont T3A_CONT=1 MODULE=test_t3a_realign

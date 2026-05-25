@@ -1,33 +1,67 @@
 // =============================================================================
-// tidelink_phy_align_regs.sv — APB-decoded shim for §9 PHY alignment controls
+// tidelink_phy_align_regs.sv — APB debug shim for FCSM credit-handshake
+//                              observability (Phase 2 of
+//                              docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4).
 // =============================================================================
 //
-// Provides a small APB-writable register block exposing:
-//   - swi_bit_slip[23:0]      (8 lanes × 3 bits, per-lane bit-slip SW override)
-//   - swi_training_mode       (1 bit, TX serialiser training-pattern SW override)
+// HISTORY: this module was originally an APB-decoded shim for the §9 PHY
+// alignment soft-straps (swi_bit_slip, swi_training_mode). Those registers
+// were promoted into Region 8 of the chiplet-controller APB block (MMIO
+// 0x4403_2100..0x4403_211C). The shim was kept in the tree but became
+// orphaned — no longer instantiated.
 //
-// And RO status registers driven by the on-chip auto-calibration FSM
-// (tidelink_phy_align_calibrator):
-//   - swi_lane_locked[7:0]    (per-lane locked status from lane checker)
-//   - swi_lane_fault[7:0]     (sticky per-lane fault from calibrator)
-//   - swi_calibration_done    (calibration FSM has completed the sweep)
+// PHASE 2 REPURPOSE: the shim has been re-tasked as a dedicated debug
+// register bank that surfaces the master-side TideLink FCSM's credit-
+// handshake internals into APB-readable counters and sticky bits. The
+// upstream signals are sourced via a SystemVerilog `bind` of
+// tidelink_fcsm_debug to the master FCSM (u_chiplet_controller.u_wlink.
+// tl2wl.wlink_tidelinktl); this shim exposes the resulting counts and
+// stickies as three new APB slots that live in the currently-unused
+// 0x120-0x13F window of the TideLink config APB region (paddr[8:5]=4'b1001,
+// "Region 9" in the apb_region decode of tidelink_apb_regs.sv).
 //
-// The SW-writable swi_bit_slip / swi_training_mode regs act as SW OVERRIDE for
-// the autocal FSM: the chiplet-controller ORs the calibrator's outputs with
-// these SW registers before driving Wlink, so SW can either (a) leave them at
-// 0 and let the autocal FSM run (production / autonomous bring-up), or
-// (b) write non-zero values for debug / characterisation. The cocotb sandbox
-// (which uses hierarchical-force into WavD2DGpio.swi_bit_slip) is unaffected:
-// the WavD2DGpio-internal OR-mux already merges hierarchical writes with the
-// external port chain.
+// APB layout (local paddr offsets — see tidelink_apb_regs.sv for the
+// region 0x120-0x13F redirect, MMIO base 0x4403_2000):
+//   +0x28  CR_CRACK_COUNTS  (RO)
+//          [7:0]   = cr_rx_count_i      — saturating 8-bit count of
+//                                         pkt_is_cr_pkt rising edges (rx)
+//          [15:8]  = cr_tx_count_i      — saturating 8-bit count of
+//                                         cr_pkt_seen_rx rising edges
+//                                         (sticky into TX domain)
+//          [23:16] = crack_rx_count_i   — same for pkt_is_crack_pkt (rx)
+//          [31:24] = crack_tx_count_i   — same for crack_pkt_seen_rx
 //
-// APB layout (offsets relative to base address — typical 0x4403_1xxx on master):
-//   +0x00  SWI_BIT_SLIP            RW  [23:0]  per-lane bit-slip SW override, packed 8×3
-//   +0x04  SWI_TRAINING_MODE       RW  [0]     training-mode SW override
-//   +0x08  SWI_LANE_LOCKED         RO  [7:0]   per-lane locked status (from checker)
-//   +0x0C  SWI_LANE_FAULT          RO  [7:0]   per-lane sticky fault (from calibrator)
-//   +0x10  SWI_CALIBRATION_DONE    RO  [0]     calibration FSM done flag
-//                                              [8]=calibration_done, [15:8]=cal state[3:0]
+//   +0x30  FCSM_STICKY      (RO)
+//          [0]  ever_pkt_is_cr_rx      — sticky: pkt_is_cr_pkt was 1
+//          [1]  ever_pkt_is_crack_rx   — sticky: pkt_is_crack_pkt was 1
+//          [2]  ever_cr_pkt_seen_rx    — sticky: cr_pkt_seen_rx was 1
+//          [3]  ever_crack_pkt_seen_rx — sticky: crack_pkt_seen_rx was 1
+//          [4]  ever_fe_tx_credit_max_loaded — sticky: fe_tx_credit_max
+//                                         became non-zero at any point
+//          [31:5] reserved (0)
+//
+//   +0x38  CMD_FCSM_RETRY   (WO/W1P)
+//          [0]  retry_pulse — write 1 to assert a 2-cycle pulse. See
+//                              cmd_retry_pulse_o.
+//
+//          *** HARDWARE NOTE — SUBMODULE-READ-ONLY CONSTRAINT ***
+//          The task spec requested that this pulse "reset the master
+//          TideLink FCSM state register to 0/IDLE for 2 cycles". On HW
+//          this would require driving `state <= 3'h0` inside the FCSM
+//          (deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_6.v
+//          line 163). The submodule is read-only per the work-package
+//          constraints, and SystemVerilog `force` is sim-only (not
+//          synthesised by Vivado). The bind module in tidelink_fcsm_debug
+//          therefore RECEIVES this pulse and uses it to CLEAR the local
+//          debug counters + stickies (giving SW a way to start a fresh
+//          observation window) but does NOT actually reset the FCSM. The
+//          full reset-injection path is a Phase-3 deliverable requiring
+//          a submodule bump (add a one-bit FCSM swreset port).
+//
+// All accesses are single-cycle (pready=1, pslverr=0). Writes to RO regs
+// (slots +0x28 / +0x30) silently no-op; reads from CMD_FCSM_RETRY return
+// the current cmd_retry_pulse_o level (debug-friendly: SW sees the pulse
+// has self-cleared on the next read).
 //
 // =============================================================================
 
@@ -35,31 +69,43 @@
 
 module tidelink_phy_align_regs (
     input  wire        clk,
-    input  wire        rstn,           // active-low reset
+    input  wire        rstn,           // active-low system reset (hresetn)
 
-    // APB slave (32-bit data, byte-strobed)
+    // APB slave (32-bit data, byte-strobed). paddr is the LOCAL offset
+    // within the 0x120-0x13F window — see tidelink_apb_regs.sv for the
+    // redirect path. Only paddr[5:3] is decoded here (8-byte slot stride).
     input  wire        psel,
     input  wire        penable,
     input  wire        pwrite,
-    input  wire [11:0] paddr,          // local offset within this block
-    input  wire [31:0] pwdata,
-    input  wire [3:0]  pstrb,
+    /* verilator lint_off UNUSED */
+    input  wire [11:0] paddr,   // only paddr[5:3] decoded (slot index)
+    input  wire [31:0] pwdata,  // only pwdata[0] used (CMD_FCSM_RETRY trigger)
+    input  wire [3:0]  pstrb,   // ignored — RO/W1P registers don't byte-strobe
+    /* verilator lint_on UNUSED */
     output reg  [31:0] prdata,
     output wire        pready,
     output wire        pslverr,
 
-    // SW-override outputs (OR'd with calibrator outputs in the chiplet
-    // controller before driving Wlink's swi_bit_slip_in / swi_training_mode_in).
-    output wire [23:0] swi_bit_slip_o,
-    output wire        swi_training_mode_o,
+    // -----------------------------------------------------------------
+    // Counter / sticky inputs from tidelink_fcsm_debug (bind target).
+    // All driven in the hclk domain by tidelink_fcsm_debug after its
+    // internal 2-flop CDC; this shim does NOT need to re-sync them.
+    // -----------------------------------------------------------------
+    input  wire [7:0]  cr_rx_count_i,
+    input  wire [7:0]  cr_tx_count_i,
+    input  wire [7:0]  crack_rx_count_i,
+    input  wire [7:0]  crack_tx_count_i,
 
-    // RO status inputs from the autocal FSM / lane checker.
-    // Resampled into the apb_clk domain via a 2-flop synchroniser below —
-    // these inputs are nominally in the link_rx_clk domain.
-    input  wire [7:0]  lane_locked_in,
-    input  wire [7:0]  lane_fault_in,
-    input  wire        calibration_done_in,
-    input  wire [3:0]  cal_state_in
+    input  wire        ever_pkt_is_cr_rx_i,
+    input  wire        ever_pkt_is_crack_rx_i,
+    input  wire        ever_cr_pkt_seen_rx_i,
+    input  wire        ever_crack_pkt_seen_rx_i,
+    input  wire        ever_fe_tx_credit_max_loaded_i,
+
+    // CMD_FCSM_RETRY output: 2-cycle pulse, asserted after a write of
+    // 1'b1 to paddr offset +0x38. Consumed by tidelink_fcsm_debug to
+    // clear its local debug counters / stickies (see HW note above).
+    output wire        cmd_retry_pulse_o
 );
 
     // Single-cycle APB slave (always ready, no error)
@@ -70,72 +116,56 @@ module tidelink_phy_align_regs (
     wire write_strobe = access_phase & pwrite;
 
     // -------------------------------------------------------------------------
-    // CDC: status signals come from the link-rx clock; resample for APB reads.
-    // 2-flop synchroniser per bit. The signals are slow-changing so simple
-    // flop-flop CDC is sufficient.
+    // Slot decode — 8-byte slot stride (paddr[5:3]):
+    //   3'b101 → +0x28 CR_CRACK_COUNTS  (RO)
+    //   3'b110 → +0x30 FCSM_STICKY      (RO)
+    //   3'b111 → +0x38 CMD_FCSM_RETRY   (W1P)
+    // The tidelink_apb_regs decoder only forwards paddr in 0x120-0x13F
+    // to this shim, so paddr[8:6] is don't-care here.
     // -------------------------------------------------------------------------
-    reg [7:0]  lane_locked_sync0,  lane_locked_sync1;
-    reg [7:0]  lane_fault_sync0,   lane_fault_sync1;
-    reg        cal_done_sync0,     cal_done_sync1;
-    reg [3:0]  cal_state_sync0,    cal_state_sync1;
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            lane_locked_sync0 <= 8'h0;
-            lane_locked_sync1 <= 8'h0;
-            lane_fault_sync0  <= 8'h0;
-            lane_fault_sync1  <= 8'h0;
-            cal_done_sync0    <= 1'b0;
-            cal_done_sync1    <= 1'b0;
-            cal_state_sync0   <= 4'h0;
-            cal_state_sync1   <= 4'h0;
-        end else begin
-            lane_locked_sync0 <= lane_locked_in;
-            lane_locked_sync1 <= lane_locked_sync0;
-            lane_fault_sync0  <= lane_fault_in;
-            lane_fault_sync1  <= lane_fault_sync0;
-            cal_done_sync0    <= calibration_done_in;
-            cal_done_sync1    <= cal_done_sync0;
-            cal_state_sync0   <= cal_state_in;
-            cal_state_sync1   <= cal_state_sync0;
-        end
-    end
+    wire [2:0] slot_sel = paddr[5:3];
 
-    // Register storage (SW override)
-    reg [23:0] swi_bit_slip_r;
-    reg        swi_training_mode_r;
+    // -------------------------------------------------------------------------
+    // CMD_FCSM_RETRY — 2-cycle pulse generator.
+    //   Write 1 to bit[0] → asserts cmd_retry_pulse_o for 2 hclk cycles,
+    //   then self-clears. Re-arms on the next write-1.
+    //   The two-cycle width is enough to (a) span the 2-flop CDC into
+    //   the FCSM clock domain inside tidelink_fcsm_debug and (b) leave
+    //   a clean falling edge for any downstream consumer.
+    // -------------------------------------------------------------------------
+    reg [1:0] retry_pulse_cnt;
+    wire      retry_write = write_strobe && (slot_sel == 3'b111) && pwdata[0];
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            swi_bit_slip_r      <= 24'h0;
-            swi_training_mode_r <= 1'b0;
-        end else if (write_strobe) begin
-            case (paddr[4:2])  // 4-byte stride, 5 offsets used
-                3'b000: begin   // +0x00 SWI_BIT_SLIP
-                    if (pstrb[0]) swi_bit_slip_r[7:0]   <= pwdata[7:0];
-                    if (pstrb[1]) swi_bit_slip_r[15:8]  <= pwdata[15:8];
-                    if (pstrb[2]) swi_bit_slip_r[23:16] <= pwdata[23:16];
-                end
-                3'b001: begin   // +0x04 SWI_TRAINING_MODE
-                    if (pstrb[0]) swi_training_mode_r <= pwdata[0];
-                end
-                default: ;
-            endcase
+            retry_pulse_cnt <= 2'b00;
+        end else if (retry_write) begin
+            retry_pulse_cnt <= 2'b10;       // load 2 → 2-cycle pulse
+        end else if (retry_pulse_cnt != 2'b00) begin
+            retry_pulse_cnt <= retry_pulse_cnt - 2'b01;
         end
     end
 
-    // Read mux
+    assign cmd_retry_pulse_o = |retry_pulse_cnt;
+
+    // -------------------------------------------------------------------------
+    // APB read mux
+    // -------------------------------------------------------------------------
     always @* begin
-        case (paddr[4:2])
-            3'b000:  prdata = {8'h0, swi_bit_slip_r};
-            3'b001:  prdata = {31'h0, swi_training_mode_r};
-            3'b010:  prdata = {24'h0, lane_locked_sync1};
-            3'b011:  prdata = {24'h0, lane_fault_sync1};
-            3'b100:  prdata = {16'h0, 4'h0, cal_state_sync1, 7'h0, cal_done_sync1};
+        case (slot_sel)
+            3'b101: prdata = {crack_tx_count_i,                                 // [31:24]
+                              crack_rx_count_i,                                 // [23:16]
+                              cr_tx_count_i,                                    // [15:8]
+                              cr_rx_count_i};                                   // [7:0]
+            3'b110: prdata = {27'h0,
+                              ever_fe_tx_credit_max_loaded_i,                   // [4]
+                              ever_crack_pkt_seen_rx_i,                         // [3]
+                              ever_cr_pkt_seen_rx_i,                            // [2]
+                              ever_pkt_is_crack_rx_i,                           // [1]
+                              ever_pkt_is_cr_rx_i};                             // [0]
+            3'b111: prdata = {31'h0, cmd_retry_pulse_o};                       // CMD_FCSM_RETRY readback (live pulse)
             default: prdata = 32'h0;
         endcase
     end
-
-    assign swi_bit_slip_o      = swi_bit_slip_r;
-    assign swi_training_mode_o = swi_training_mode_r;
 
 endmodule

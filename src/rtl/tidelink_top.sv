@@ -71,7 +71,30 @@ module tidelink_top #(
     // WavD2DGpioRx slips its `count` once per io_por_reset to align to the
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
-    parameter USE_T3A    = 1'b0
+    parameter USE_T3A    = 1'b0,
+    // Tier 2 RTL hardening (2026-05-25): force swi_enable=1 on any APB write
+    // that asserts swi_swreset=1 to Wlink register 0x208. Protects the 7
+    // FCSMs from buggy SW that writes {swreset=1, swi_enable=0} together —
+    // without this guard such a write returns all FCSMs to IDLE and loses
+    // CR/CRACK sticky state per FC.scala:619. Default 1 (ON) on FPGA/ASIC
+    // — bit-exact-safe because the OR engages ONLY when SW already toggles
+    // swreset, leaving the well-behaved swreset W1S→W1C sequence unaffected.
+    // See docs/TIDELINK_PHASE0_OBS_20260524_2109.md §9.
+    parameter HARDEN_SWI_ENABLE = 1'b1,
+
+    // Interface-debug stubs (Phase 3 of TIDELINK_INTERFACE_DEBUG_PLAN §5).
+    // When asserted, the corresponding module is replaced by tie-offs to
+    // minimise the implicated logic surface for ILA debug bitstreams.
+    // Defaults to 0 → normal instantiation (this change is a no-op).
+    //   STUB_SERVO        — replaces u_servo (tidelink_ptp_servo)
+    //   STUB_PERF         — replaces u_perf  (tidelink_perf)
+    //   STUB_PTP          — replaces u_ptp   (tidelink_ptp); REQUIRES
+    //                       STUB_SERVO=1 (servo waits on dreq_tx_done from PTP)
+    //   BYPASS_ADDR_XLAT  — replaces u_addr_translator with passthrough
+    parameter STUB_SERVO       = 1'b0,
+    parameter STUB_PERF        = 1'b0,
+    parameter STUB_PTP         = 1'b0,
+    parameter BYPASS_ADDR_XLAT = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -657,6 +680,100 @@ module tidelink_top #(
     assign tl_apb_pwrite  = fc_cfg_apb_active ? fc_cfg_apb_pwrite  : apb_pwrite;
     assign tl_apb_pwdata  = fc_cfg_apb_active ? fc_cfg_apb_pwdata  : apb_pwdata;
 
+    // =========================================================================
+    // Interface-debug shim: tidelink_phy_align_regs (Phase 2 of
+    // docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4).
+    //
+    // Carves out paddr 0x120-0x13F (paddr[8:5]=4'b1001, "Region 9" in the
+    // tidelink_apb_regs decode) within the TideLink config APB region for
+    // FCSM credit-handshake debug observability. tidelink_apb_regs returns
+    // 0 for this range (no decode hit), so we OR the shim's prdata into
+    // tl_apb_prdata via the dbg_shim_sel selector below.
+    //
+    // The shim's input counters/stickies come from tidelink_fcsm_debug,
+    // which is `bind`-instantiated into the master FCSM further below.
+    // =========================================================================
+    wire dbg_shim_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1001);
+
+    wire [SYS_DATA_W-1:0]  dbg_shim_prdata;
+    wire                    dbg_shim_pready;
+    wire                    dbg_shim_pslverr;
+
+    // Counter / sticky / pulse nets — driven by the bind module
+    // (tidelink_fcsm_debug, see bind statement below) which lives inside
+    // the master TideLink FCSM. We read its internal regs via downward
+    // hierarchical reference; Vivado treats these as synthesizable
+    // dataflow paths.
+    wire [7:0]  dbg_cr_rx_count_w;
+    wire [7:0]  dbg_cr_tx_count_w;
+    wire [7:0]  dbg_crack_rx_count_w;
+    wire [7:0]  dbg_crack_tx_count_w;
+    wire        dbg_ever_pkt_is_cr_rx_w;
+    wire        dbg_ever_pkt_is_crack_rx_w;
+    wire        dbg_ever_cr_pkt_seen_rx_w;
+    wire        dbg_ever_crack_pkt_seen_rx_w;
+    wire        dbg_ever_fe_tx_credit_max_loaded_w;
+    wire        dbg_cmd_retry_pulse_w;
+
+    // Hierarchical-reference assignments to the bind-target tidelink_fcsm_debug
+    // u_fcsm_debug were disabled 2026-05-25 — Vivado synth cannot resolve
+    // 'u_chiplet_controller' from inside this IP boundary (the parent is in
+    // the BD, not in the tidelink_top IP). To re-enable, refactor the bind
+    // to expose the debug nets via the Wlink's port list (requires submodule
+    // regen) OR move the bind statement up to tidelink_vivado_wrapper.v scope.
+    //
+    // For now, tie the dbg_*_w wires to 0 so the build synthesises cleanly.
+    // The new APB slots (0x2128/0x2130/0x2138) will read 0; existing
+    // observability (cr_pkt_seen_rx@bit23 in SWI_LANE_STATUS@0x2108) still
+    // works and is sufficient for tomorrow's HW test.
+    assign dbg_cr_rx_count_w                 = 8'h0;
+    assign dbg_cr_tx_count_w                 = 8'h0;
+    assign dbg_crack_rx_count_w              = 8'h0;
+    assign dbg_crack_tx_count_w              = 8'h0;
+    assign dbg_ever_pkt_is_cr_rx_w           = 1'b0;
+    assign dbg_ever_pkt_is_crack_rx_w        = 1'b0;
+    assign dbg_ever_cr_pkt_seen_rx_w         = 1'b0;
+    assign dbg_ever_crack_pkt_seen_rx_w      = 1'b0;
+    assign dbg_ever_fe_tx_credit_max_loaded_w = 1'b0;
+
+    tidelink_phy_align_regs u_fcsm_dbg_regs (
+        .clk        (hclk),
+        .rstn       (hresetn),
+
+        .psel       (dbg_shim_sel),
+        .penable    (tl_apb_penable),
+        .pwrite     (tl_apb_pwrite),
+        .paddr      (tl_apb_paddr),
+        .pwdata     (tl_apb_pwdata),
+        .pstrb      (apb_pstrb),
+        .prdata     (dbg_shim_prdata),
+        .pready     (dbg_shim_pready),
+        .pslverr    (dbg_shim_pslverr),
+
+        .cr_rx_count_i                     (dbg_cr_rx_count_w),
+        .cr_tx_count_i                     (dbg_cr_tx_count_w),
+        .crack_rx_count_i                  (dbg_crack_rx_count_w),
+        .crack_tx_count_i                  (dbg_crack_tx_count_w),
+
+        .ever_pkt_is_cr_rx_i               (dbg_ever_pkt_is_cr_rx_w),
+        .ever_pkt_is_crack_rx_i            (dbg_ever_pkt_is_crack_rx_w),
+        .ever_cr_pkt_seen_rx_i             (dbg_ever_cr_pkt_seen_rx_w),
+        .ever_crack_pkt_seen_rx_i          (dbg_ever_crack_pkt_seen_rx_w),
+        .ever_fe_tx_credit_max_loaded_i    (dbg_ever_fe_tx_credit_max_loaded_w),
+
+        .cmd_retry_pulse_o                 (dbg_cmd_retry_pulse_w)
+    );
+
+    // tl_apb_prdata mux: when the shim is selected, return its rdata;
+    // otherwise return u_tidelink's APB rdata (tidelink_internal_prdata).
+    wire [SYS_DATA_W-1:0]  tidelink_internal_prdata;
+    wire                    tidelink_internal_pready;
+    wire                    tidelink_internal_pslverr;
+
+    assign tl_apb_prdata  = dbg_shim_sel ? dbg_shim_prdata  : tidelink_internal_prdata;
+    assign tl_apb_pready  = dbg_shim_sel ? dbg_shim_pready  : tidelink_internal_pready;
+    assign tl_apb_pslverr = dbg_shim_sel ? dbg_shim_pslverr : tidelink_internal_pslverr;
+
     // Route APB responses back to both sources
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
     assign fc_cfg_apb_pready  = tl_apb_pready;
@@ -767,14 +884,17 @@ module tidelink_top #(
         .ahbs_hrdata       (ahb_fifo_hrdata),
 
         // APB Slave — Config registers (via APB mux: FC adapter + external APB)
+        // prdata/pready/pslverr now go through tidelink_internal_* so the
+        // debug shim (tidelink_phy_align_regs, paddr 0x120-0x13F) can
+        // arbitrate; see the dbg_shim block above.
         .apbs_psel         (tl_apb_psel),
         .apbs_penable      (tl_apb_penable),
         .apbs_pwrite       (tl_apb_pwrite),
         .apbs_paddr        (tl_apb_paddr),
         .apbs_pwdata       (tl_apb_pwdata),
-        .apbs_prdata       (tl_apb_prdata),
-        .apbs_pready       (tl_apb_pready),
-        .apbs_pslverr      (tl_apb_pslverr),
+        .apbs_prdata       (tidelink_internal_prdata),
+        .apbs_pready       (tidelink_internal_pready),
+        .apbs_pslverr      (tidelink_internal_pslverr),
 
         // AHB Master — Returner (routed to FC adapter, NOT external bus)
         .ahbm_haddr        (rtn_haddr),
@@ -930,124 +1050,190 @@ module tidelink_top #(
     //     - TX path: AHB slave → wait for tx_router_idle → Short Packet TX
     //     - RX path: Short Packet RX → payload latch + PHC hw_capture
     //     - Registers: PTP_CTRL/PTP_RX_PAYLOAD/PTP_STATUS via APB pass-through
+    //
+    // Interface-debug stub: when STUB_PTP=1 the module is replaced by tie-offs
+    // (see header parameter block). Stub also asserts ahb_ptp_hreadyout=1 so
+    // the PTP slave port doesn't stall the local bus.
     // =========================================================================
-    tidelink_ptp #(
-        .SYS_DATA_W       (SYS_DATA_W),
-        .PHC_LOCK_GATE_EN (PHC_LOCK_GATE_EN)
-    ) u_ptp (
-        .hclk              (hclk),
-        .hresetn           (hresetn),
+    // Elaboration-time safety check for invalid stub combinations.
+    initial begin
+        if (STUB_PTP == 1'b1 && STUB_SERVO == 1'b0) begin
+            $error("STUB_PTP=1 requires STUB_SERVO=1 (servo waits on dreq_tx_done from ptp)");
+        end
+    end
 
-        // TX router idle (from chiplet controller)
-        .tx_router_idle    (tx_router_idle),
+    generate if (STUB_PTP == 1'b0) begin : gen_ptp_real
+        tidelink_ptp #(
+            .SYS_DATA_W       (SYS_DATA_W),
+            .PHC_LOCK_GATE_EN (PHC_LOCK_GATE_EN)
+        ) u_ptp (
+            .hclk              (hclk),
+            .hresetn           (hresetn),
 
-        // PTP Short Packet TX interface
-        .ptp_sp_tx_valid   (ptp_sp_tx_valid),
-        .ptp_sp_tx_data_id (ptp_sp_tx_data_id),
-        .ptp_sp_tx_payload (ptp_sp_tx_payload),
-        .ptp_sp_tx_ready   (ptp_sp_tx_ready),
+            // TX router idle (from chiplet controller)
+            .tx_router_idle    (tx_router_idle),
 
-        // PTP Short Packet RX interface
-        .ptp_sp_rx_valid   (ptp_sp_rx_valid),
-        .ptp_sp_rx_data_id (ptp_sp_rx_data_id),
-        .ptp_sp_rx_payload (ptp_sp_rx_payload),
-        .ptp_sp_rx_accept  (ptp_sp_rx_accept),
+            // PTP Short Packet TX interface
+            .ptp_sp_tx_valid   (ptp_sp_tx_valid),
+            .ptp_sp_tx_data_id (ptp_sp_tx_data_id),
+            .ptp_sp_tx_payload (ptp_sp_tx_payload),
+            .ptp_sp_tx_ready   (ptp_sp_tx_ready),
 
-        // PHC hardware capture
-        .phc_hw_capture    (phc_hw_capture_raw),
+            // PTP Short Packet RX interface
+            .ptp_sp_rx_valid   (ptp_sp_rx_valid),
+            .ptp_sp_rx_data_id (ptp_sp_rx_data_id),
+            .ptp_sp_rx_payload (ptp_sp_rx_payload),
+            .ptp_sp_rx_accept  (ptp_sp_rx_accept),
 
-        // PHC time inputs (for hardware sync initiator, via CDC)
-        .phc_nanoseconds   (phc_nanoseconds_sync),
-        .phc_seconds        (phc_seconds_sync),
-        .phc_pps            (phc_pps_sync),
+            // PHC hardware capture
+            .phc_hw_capture    (phc_hw_capture_raw),
 
-        // AHB slave — PTP TX write port
-        .ahb_ptp_hsel      (ahb_ptp_hsel),
-        .ahb_ptp_haddr     (ahb_ptp_haddr),
-        .ahb_ptp_htrans    (ahb_ptp_htrans),
-        .ahb_ptp_hsize     (ahb_ptp_hsize),
-        .ahb_ptp_hwrite    (ahb_ptp_hwrite),
-        .ahb_ptp_hwdata    (ahb_ptp_hwdata),
-        .ahb_ptp_hready    (ahb_ptp_hready),
-        .ahb_ptp_hrdata    (ahb_ptp_hrdata),
-        .ahb_ptp_hresp     (ahb_ptp_hresp),
-        .ahb_ptp_hreadyout (ahb_ptp_hreadyout),
+            // PHC time inputs (for hardware sync initiator, via CDC)
+            .phc_nanoseconds   (phc_nanoseconds_sync),
+            .phc_seconds        (phc_seconds_sync),
+            .phc_pps            (phc_pps_sync),
 
-        // Register interface (from APB regs pass-through)
-        .ptp_reg_write     (ptp_reg_write),
-        .ptp_reg_addr      (ptp_reg_addr),
-        .ptp_reg_wdata     (ptp_reg_wdata),
-        .ptp_reg_rdata     (ptp_reg_rdata),
-        .ptp_reg_region    (ptp_reg_region),
+            // AHB slave — PTP TX write port
+            .ahb_ptp_hsel      (ahb_ptp_hsel),
+            .ahb_ptp_haddr     (ahb_ptp_haddr),
+            .ahb_ptp_htrans    (ahb_ptp_htrans),
+            .ahb_ptp_hsize     (ahb_ptp_hsize),
+            .ahb_ptp_hwrite    (ahb_ptp_hwrite),
+            .ahb_ptp_hwdata    (ahb_ptp_hwdata),
+            .ahb_ptp_hready    (ahb_ptp_hready),
+            .ahb_ptp_hrdata    (ahb_ptp_hrdata),
+            .ahb_ptp_hresp     (ahb_ptp_hresp),
+            .ahb_ptp_hreadyout (ahb_ptp_hreadyout),
 
-        // Servo event outputs
-        .sync_tx_done      (sync_tx_done),
-        .dreq_tx_done      (dreq_tx_done),
-        .sync_rx_done      (sync_rx_done),
-        .dreq_rx_done      (dreq_rx_done),
+            // Register interface (from APB regs pass-through)
+            .ptp_reg_write     (ptp_reg_write),
+            .ptp_reg_addr      (ptp_reg_addr),
+            .ptp_reg_wdata     (ptp_reg_wdata),
+            .ptp_reg_rdata     (ptp_reg_rdata),
+            .ptp_reg_region    (ptp_reg_region),
 
-        // Servo DELAY_REQ injection
-        .servo_dreq_trigger (servo_dreq_trigger),
+            // Servo event outputs
+            .sync_tx_done      (sync_tx_done),
+            .dreq_tx_done      (dreq_tx_done),
+            .sync_rx_done      (sync_rx_done),
+            .dreq_rx_done      (dreq_rx_done),
 
-        // External PHC lock gate (for multi-hop chaining)
-        .phc_locked_i      (phc_locked_i),
+            // Servo DELAY_REQ injection
+            .servo_dreq_trigger (servo_dreq_trigger),
 
-        // Interrupt
-        .ptp_irq           (ptp_irq)
-    );
+            // External PHC lock gate (for multi-hop chaining)
+            .phc_locked_i      (phc_locked_i),
+
+            // Interrupt
+            .ptp_irq           (ptp_irq)
+        );
+    end else begin : gen_ptp_stub
+        // Short-packet TX interface — quiescent (never request a packet)
+        assign ptp_sp_tx_valid   = 1'b0;
+        assign ptp_sp_tx_data_id = 8'h00;
+        assign ptp_sp_tx_payload = 16'h0000;
+        // Short-packet RX accept — held high so the controller sinks any RX
+        // beats without backpressure (we don't care about RX payload here).
+        assign ptp_sp_rx_accept  = 1'b1;
+
+        // PHC hw_capture — never pulse
+        assign phc_hw_capture_raw = 1'b0;
+
+        // Servo event pulses — never fire
+        assign sync_tx_done = 1'b0;
+        assign dreq_tx_done = 1'b0;
+        assign sync_rx_done = 1'b0;
+        assign dreq_rx_done = 1'b0;
+
+        // AHB PTP slave — reply OKAY/READY immediately, zero rdata
+        assign ahb_ptp_hrdata    = '0;
+        assign ahb_ptp_hresp     = 1'b0;
+        assign ahb_ptp_hreadyout = 1'b1;
+
+        // PTP APB register read-back — zero
+        assign ptp_reg_rdata = '0;
+
+        // Interrupt — never assert
+        assign ptp_irq = 1'b0;
+    end endgenerate
 
     // =========================================================================
     // 2c. TideLink PTP Servo (Autonomous Clock Synchronisation)
     //     - Grandmaster: captures t1/t4, sends via FC SIDEBAND to Subordinate
     //     - Subordinate: captures t2/t3, receives t1/t4, computes offset,
     //       adjusts PHC via SET_TIME or NS_INCR_FRAC
+    //
+    // Interface-debug stub: when STUB_SERVO=1 the module is replaced by
+    // tie-offs (see header parameter block).
     // =========================================================================
-    tidelink_ptp_servo #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .FC_DATA_W  (FC_DATA_W)
-    ) u_servo (
-        .clk                    (hclk),
-        .resetn                 (hresetn),
+    generate if (STUB_SERVO == 1'b0) begin : gen_servo_real
+        tidelink_ptp_servo #(
+            .SYS_DATA_W (SYS_DATA_W),
+            .FC_DATA_W  (FC_DATA_W)
+        ) u_servo (
+            .clk                    (hclk),
+            .resetn                 (hresetn),
 
-        // Register interface (from APB regs, Region 2 addr 3-7 + Region 3)
-        .servo_reg_write        (servo_reg_write),
-        .servo_reg_addr         (servo_reg_addr),
-        .servo_reg_wdata        (servo_reg_wdata),
-        .servo_reg_rdata        (servo_reg_rdata),
+            // Register interface (from APB regs, Region 2 addr 3-7 + Region 3)
+            .servo_reg_write        (servo_reg_write),
+            .servo_reg_addr         (servo_reg_addr),
+            .servo_reg_wdata        (servo_reg_wdata),
+            .servo_reg_rdata        (servo_reg_rdata),
 
-        // PTP event inputs
-        .sync_tx_done           (sync_tx_done),
-        .dreq_tx_done           (dreq_tx_done),
-        .sync_rx_done           (sync_rx_done),
-        .dreq_rx_done           (dreq_rx_done),
+            // PTP event inputs
+            .sync_tx_done           (sync_tx_done),
+            .dreq_tx_done           (dreq_tx_done),
+            .sync_rx_done           (sync_rx_done),
+            .dreq_rx_done           (dreq_rx_done),
 
-        // PHC hardware capture (via CDC from PHC)
-        .hw_cap_seconds         (phc_hw_cap_seconds_sync),
-        .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds_sync),
+            // PHC hardware capture (via CDC from PHC)
+            .hw_cap_seconds         (phc_hw_cap_seconds_sync),
+            .hw_cap_nanoseconds     (phc_hw_cap_nanoseconds_sync),
 
-        // FC SIDEBAND injection (to FC adapter)
-        .servo_fc_valid         (servo_fc_valid),
-        .servo_fc_data          (servo_fc_data),
-        .servo_fc_ready         (servo_fc_ready),
+            // FC SIDEBAND injection (to FC adapter)
+            .servo_fc_valid         (servo_fc_valid),
+            .servo_fc_data          (servo_fc_data),
+            .servo_fc_ready         (servo_fc_ready),
 
-        // Timestamp mailbox (from FC RX config path via APB)
-        .mbox_reg_write         (mbox_reg_write),
-        .mbox_reg_addr          (mbox_reg_addr),
-        .mbox_reg_wdata         (mbox_reg_wdata),
+            // Timestamp mailbox (from FC RX config path via APB)
+            .mbox_reg_write         (mbox_reg_write),
+            .mbox_reg_addr          (mbox_reg_addr),
+            .mbox_reg_wdata         (mbox_reg_wdata),
 
-        // DELAY_REQ trigger (to PTP TX path)
-        .servo_dreq_trigger     (servo_dreq_trigger),
+            // DELAY_REQ trigger (to PTP TX path)
+            .servo_dreq_trigger     (servo_dreq_trigger),
 
-        // PHC adjustment outputs (via CDC to external PHC)
-        .phc_hw_set_time        (phc_hw_set_time_raw),
-        .phc_hw_set_seconds     (phc_hw_set_seconds_raw),
-        .phc_hw_set_nanoseconds (phc_hw_set_nanoseconds_raw),
-        .phc_hw_adj_valid       (phc_hw_adj_valid_raw),
-        .phc_hw_adj_ns_incr_frac(phc_hw_adj_ns_incr_frac_raw),
+            // PHC adjustment outputs (via CDC to external PHC)
+            .phc_hw_set_time        (phc_hw_set_time_raw),
+            .phc_hw_set_seconds     (phc_hw_set_seconds_raw),
+            .phc_hw_set_nanoseconds (phc_hw_set_nanoseconds_raw),
+            .phc_hw_adj_valid       (phc_hw_adj_valid_raw),
+            .phc_hw_adj_ns_incr_frac(phc_hw_adj_ns_incr_frac_raw),
 
-        // Status
-        .servo_locked           (servo_locked)
-    );
+            // Status
+            .servo_locked           (servo_locked)
+        );
+    end else begin : gen_servo_stub
+        // Servo register read-back — zero
+        assign servo_reg_rdata = '0;
+
+        // FC SIDEBAND injection — never request
+        assign servo_fc_valid = 1'b0;
+        assign servo_fc_data  = '0;
+
+        // DELAY_REQ trigger to PTP — never fire
+        assign servo_dreq_trigger = 1'b0;
+
+        // PHC adjustment outputs — idle (no SET_TIME / no NS_INCR_FRAC update)
+        assign phc_hw_set_time_raw        = 1'b0;
+        assign phc_hw_set_seconds_raw     = '0;
+        assign phc_hw_set_nanoseconds_raw = '0;
+        assign phc_hw_adj_valid_raw       = 1'b0;
+        assign phc_hw_adj_ns_incr_frac_raw = '0;
+
+        // Status — never locked
+        assign servo_locked = 1'b0;
+    end endgenerate
 
     // =========================================================================
     // 2c. PHC Clock Domain Crossing Bridge
@@ -1115,59 +1301,75 @@ module tidelink_top #(
     wire fc_rx_is_first  = fc_rx_is_data & (tl_fc_l2a_data[45:32] == '0);
     wire tx_pkt_start    = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite & (ahb_tx_haddr == '0);
 
-    tidelink_perf #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .RAM_ADDR_W (RAM_ADDR_W),
-        .FC_DATA_W  (FC_DATA_W)
-    ) u_perf (
-        .hclk              (hclk),
-        .hresetn           (hresetn),
+    // Interface-debug stub: when STUB_PERF=1 the module is replaced by
+    // tie-offs (see header parameter block). Perf is a passive observer, so
+    // stubbing it is structurally safe.
+    generate if (STUB_PERF == 1'b0) begin : gen_perf_real
+        tidelink_perf #(
+            .SYS_DATA_W (SYS_DATA_W),
+            .RAM_ADDR_W (RAM_ADDR_W),
+            .FC_DATA_W  (FC_DATA_W)
+        ) u_perf (
+            .hclk              (hclk),
+            .hresetn           (hresetn),
 
-        // Register interface (from APB regs, Regions 5-7)
-        .perf_reg_write    (perf_reg_write),
-        .perf_reg_addr     (perf_reg_addr),
-        .perf_reg_wdata    (perf_reg_wdata),
-        .perf_reg_rdata    (perf_reg_rdata),
-        .perf_reg_region   (perf_reg_region),
+            // Register interface (from APB regs, Regions 5-7)
+            .perf_reg_write    (perf_reg_write),
+            .perf_reg_addr     (perf_reg_addr),
+            .perf_reg_wdata    (perf_reg_wdata),
+            .perf_reg_rdata    (perf_reg_rdata),
+            .perf_reg_region   (perf_reg_region),
 
-        // Free-running PHC time (hclk domain, from CDC Path 2)
-        .phc_nanoseconds   (phc_nanoseconds_sync[29:0]),
-        .phc_seconds       (phc_seconds_sync[31:0]),
+            // Free-running PHC time (hclk domain, from CDC Path 2)
+            .phc_nanoseconds   (phc_nanoseconds_sync[29:0]),
+            .phc_seconds       (phc_seconds_sync[31:0]),
 
-        // FC TX observation
-        .fc_tx_handshake   (fc_tx_handshake),
-        .fc_tx_is_data     (fc_tx_is_data),
+            // FC TX observation
+            .fc_tx_handshake   (fc_tx_handshake),
+            .fc_tx_is_data     (fc_tx_is_data),
 
-        // FC RX observation
-        .fc_rx_handshake   (fc_rx_handshake),
-        .fc_rx_is_data     (fc_rx_is_data),
-        .fc_rx_is_first    (fc_rx_is_first),
+            // FC RX observation
+            .fc_rx_handshake   (fc_rx_handshake),
+            .fc_rx_is_data     (fc_rx_is_data),
+            .fc_rx_is_first    (fc_rx_is_first),
 
-        // TX aperture observation
-        .tx_pkt_start      (tx_pkt_start),
+            // TX aperture observation
+            .tx_pkt_start      (tx_pkt_start),
 
-        // RX FIFO observation
-        .rx_pkt_committed  (packet_committed_irq),
+            // RX FIFO observation
+            .rx_pkt_committed  (packet_committed_irq),
 
-        // Link status
-        .tx_router_idle    (tx_router_idle),
-        .fc_tx_valid       (tl_fc_a2l_valid),
-        .fc_tx_ready       (tl_fc_a2l_ready),
-        .fc_rx_valid       (tl_fc_l2a_valid),
-        .fc_rx_accept      (tl_fc_l2a_accept),
+            // Link status
+            .tx_router_idle    (tx_router_idle),
+            .fc_tx_valid       (tl_fc_a2l_valid),
+            .fc_tx_ready       (tl_fc_a2l_ready),
+            .fc_rx_valid       (tl_fc_l2a_valid),
+            .fc_rx_accept      (tl_fc_l2a_accept),
 
-        // Credit observation
-        .credit_count      (perf_credit_count),
+            // Credit observation
+            .credit_count      (perf_credit_count),
 
-        // Congestion sideband (Phase 1 — see CONGESTION_AWARE_ROUTING.md)
-        .local_link_state_o  (tl_local_link_state_o),
-        .link_state_change_o (tl_link_state_change_o),
-        .ewma_credit_o       (tl_ewma_credit_o),
-        .bcast_ack_i         (tl_bcast_ack_i),
+            // Congestion sideband (Phase 1 — see CONGESTION_AWARE_ROUTING.md)
+            .local_link_state_o  (tl_local_link_state_o),
+            .link_state_change_o (tl_link_state_change_o),
+            .ewma_credit_o       (tl_ewma_credit_o),
+            .bcast_ack_i         (tl_bcast_ack_i),
 
-        // Interrupt
-        .perf_irq          (perf_irq)
-    );
+            // Interrupt
+            .perf_irq          (perf_irq)
+        );
+    end else begin : gen_perf_stub
+        // Perf APB register read-back — zero
+        assign perf_reg_rdata = '0;
+
+        // Congestion sideband — idle / no change
+        assign tl_local_link_state_o  = 5'b0;
+        assign tl_link_state_change_o = 1'b0;
+        assign tl_ewma_credit_o       = '0;
+
+        // Interrupt — never assert
+        assign perf_irq = 1'b0;
+    end endgenerate
 
     // =========================================================================
     // 3. XHB500 AHB-to-AXI Bridge (subordinate path: AHB → AXI → Wlink)
@@ -1349,33 +1551,47 @@ module tidelink_top #(
     // 5. Address Translator
     //    APB-configurable address remapping for the regular AHB bridge path
     //    Config accessed via unified APB port, region 2 (0x4000-0x5FFF)
+    //
+    // Interface-debug bypass: when BYPASS_ADDR_XLAT=1 the translator is
+    // replaced by a pure passthrough — translated_sub_haddr = ahb_sub_haddr,
+    // and the APB slave responds READY/OKAY with zero rdata.
     // =========================================================================
-    tidelink_addr_translator #(
-        .NUM_CHANNELS (1)
-    ) u_addr_translator (
-        .CLK               (hclk),
-        .RESETn            (hresetn),
+    generate if (BYPASS_ADDR_XLAT == 1'b0) begin : gen_addr_xlat_real
+        tidelink_addr_translator #(
+            .NUM_CHANNELS (1)
+        ) u_addr_translator (
+            .CLK               (hclk),
+            .RESETn            (hresetn),
 
-        // APB slave for address translator configuration
-        .chp_adr_paddr     ({3'b000, apb_paddr[12:0]}),
-        .chp_adr_psel      (apb_sel_addr_xlat),
-        .chp_adr_penable   (apb_penable),
-        .chp_adr_pwrite    (apb_pwrite),
-        .chp_adr_pwdata    (apb_pwdata),
-        .chp_adr_pstrb     (apb_pstrb),
-        .chp_adr_pprot     (apb_pprot),
-        .chp_adr_prdata    (adr_xlat_prdata),
-        .chp_adr_pready    (adr_xlat_pready),
-        .chp_adr_pslverr   (adr_xlat_pslverr),
+            // APB slave for address translator configuration
+            .chp_adr_paddr     ({3'b000, apb_paddr[12:0]}),
+            .chp_adr_psel      (apb_sel_addr_xlat),
+            .chp_adr_penable   (apb_penable),
+            .chp_adr_pwrite    (apb_pwrite),
+            .chp_adr_pwdata    (apb_pwdata),
+            .chp_adr_pstrb     (apb_pstrb),
+            .chp_adr_pprot     (apb_pprot),
+            .chp_adr_prdata    (adr_xlat_prdata),
+            .chp_adr_pready    (adr_xlat_pready),
+            .chp_adr_pslverr   (adr_xlat_pslverr),
 
-        // Address translation: input from ahb_sub, output to XHB500
-        .chp0_ahb_haddr_i  (ahb_sub_haddr),
-        .chp0_ahb_haddr_o  (translated_sub_haddr),
+            // Address translation: input from ahb_sub, output to XHB500
+            .chp0_ahb_haddr_i  (ahb_sub_haddr),
+            .chp0_ahb_haddr_o  (translated_sub_haddr),
 
-        // Second translation port unused (tie off)
-        .chp1_ahb_haddr_i  (32'h0),
-        .chp1_ahb_haddr_o  ()
-    );
+            // Second translation port unused (tie off)
+            .chp1_ahb_haddr_i  (32'h0),
+            .chp1_ahb_haddr_o  ()
+        );
+    end else begin : gen_addr_xlat_bypass
+        // Passthrough — no translation
+        assign translated_sub_haddr = ahb_sub_haddr;
+
+        // APB slave — immediate OKAY/READY, zero rdata
+        assign adr_xlat_prdata  = '0;
+        assign adr_xlat_pready  = 1'b1;
+        assign adr_xlat_pslverr = 1'b0;
+    end endgenerate
 
     // =========================================================================
     // 6. Chiplet Controller (Wlink with TideLink FC node)
@@ -1383,6 +1599,28 @@ module tidelink_top #(
     //    Generated module: Wlink (Chisel output)
     //    Note: Wlink uses active-high resets
     // =========================================================================
+
+    // ── Tier 2 RTL hardening: swi_enable guard on swreset ────────────────────
+    // Intercept the APB pwdata flowing into u_chiplet_controller. When the
+    // write targets Wlink register 0x208 with pwdata[3]==1 (swi_swreset
+    // asserted), force pwdata[0]=1 so the Wlink's swi_enable register stays
+    // HIGH across the swreset. Protects the 7 FCSMs from buggy SW that drops
+    // swi_enable to 0 during a swreset cycle (which would otherwise reset
+    // every FCSM to IDLE and lose CR/CRACK sticky state).
+    // Gate is conservative: needs apb_sel_wlink && apb_pwrite && paddr==0x208
+    // && pwdata[3]==1, so a normal swreset W1C (pwdata[3]==0) or any write
+    // to a different register is bit-exact unchanged. HARDEN_SWI_ENABLE=0
+    // disables the override entirely (passthrough).
+    wire [SYS_DATA_W-1:0] apb_pwdata_to_chip;
+    wire harden_swi_apply = HARDEN_SWI_ENABLE
+                          & apb_sel_wlink
+                          & apb_pwrite
+                          & (apb_paddr[12:0] == 13'h208)
+                          & apb_pwdata[3];
+    assign apb_pwdata_to_chip = harden_swi_apply
+                              ? (apb_pwdata | {{(SYS_DATA_W-1){1'b0}}, 1'b1})
+                              : apb_pwdata;
+
     // SoC Labs §9 auto-cal: enable the in-RTL per-lane calibration FSM at
     // the TideLink integration level. The chiplet controller defaults to
     // 0 (disabled) so the cocotb wlink_pair sweep tests keep their
@@ -1432,7 +1670,8 @@ module tidelink_top #(
         .apb_pprot                  (apb_pprot),
         .apb_pstrb                  (apb_pstrb),
         .apb_pwrite                 (apb_pwrite),
-        .apb_pwdata                 (apb_pwdata),
+        // Tier 2 hardening: swi_enable forced HIGH on swreset writes
+        .apb_pwdata                 (apb_pwdata_to_chip),
         .apb_prdata                 (wlink_prdata),
         .apb_pready                 (wlink_pready),
         .apb_pslverr                (wlink_pslverr),
@@ -1619,5 +1858,51 @@ module tidelink_top #(
     // Link active status — role_locked_o indicates Wlink link is operational
     // =========================================================================
     assign link_active = role_locked_o;
+
+    // =========================================================================
+    // Phase 2 interface debug: bind tidelink_fcsm_debug to every instance
+    // of the master TideLink FCSM module (WlinkGenericFCSM_6). The
+    // design instantiates only ONE WlinkGenericFCSM_6 — at
+    //   u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
+    // (WlinkGenericFCSM_6 → instance `wlink_tidelinktl` inside
+    // TideLinkToWlink → instance `tl2wl` inside Wlink → instance
+    // `u_wlink` inside axi_chiplet_controller → instance
+    // `u_chiplet_controller` here) — so `bind WlinkGenericFCSM_6 ...`
+    // is unambiguous. Module-form bind preferred over instance-form
+    // for Verilator 4.028 compatibility.
+    //
+    // Source-signal verification (WlinkGenericFCSM_6.v):
+    //   wlink_tidelinktl.pkt_is_cr_pkt        @ line 174 (wire)
+    //   wlink_tidelinktl.pkt_is_crack_pkt     @ line 176 (wire)
+    //   wlink_tidelinktl.cr_pkt_seen_rx       @ line 183 (reg)
+    //   wlink_tidelinktl.crack_pkt_seen_rx    @ line 184 (reg)
+    //   wlink_tidelinktl.fe_tx_credit_max     @ line 190 (reg [7:0])
+    //
+    // PORT-MAP RESOLUTION — port expressions on the bind instantiation
+    // are elaborated in the BOUND-MODULE scope (FCSM_6). Unqualified
+    // names (pkt_is_cr_pkt, etc.) resolve to FCSM internal nets.
+    // Qualified names (tidelink_top.hclk, etc.) reach UP to the
+    // binding scope here for clock / reset / pulse routing.
+    //
+    // The bind module exposes its internal counter and sticky regs via
+    // downward hierarchical reference (see the `assign dbg_*_w = ...`
+    // block above the shim instantiation). The bind module itself has
+    // no output ports.
+    // =========================================================================
+    // Bind to WlinkGenericFCSM_6 was disabled 2026-05-25 — it depends on
+    // upward-hier-ref to tidelink_top scope which crosses the IP boundary
+    // and breaks Vivado synth. The bind+observer pattern is preserved in
+    // src/rtl/tidelink_fcsm_debug.sv for future re-enablement; the proper
+    // fix is to either expose the observability nets via the Wlink's port
+    // list (needs submodule Chisel regen) or move the bind up to the BD
+    // scope where u_chiplet_controller is visible.
+    //
+    // For tomorrow's HW test, the existing SWI_LANE_STATUS@0x2108[23:24]
+    // (cr_pkt_seen_rx + crack_pkt_seen_rx sticky bits) is sufficient.
+    //
+    // bind WlinkGenericFCSM_6
+    //     tidelink_fcsm_debug u_fcsm_debug (
+    //         ... see prior versions for the binding details ...
+    //     );
 
 endmodule

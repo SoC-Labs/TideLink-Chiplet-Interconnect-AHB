@@ -101,9 +101,26 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpio.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioRx.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioTx.v
+// SoC Labs Bug-FC1 fix 2026-05-25: WavD2DGpio.v replaced with local override
+// adding post_train_hold_ctr_r so effective_training_mode stays high for N
+// link-word cycles past the falling edge of swi_training_mode. Submodule
+// copy stays clean for review. See src/rtl/local_overrides/WavD2DGpio.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpio.v
+// SoC Labs tdif-04 (2026-05-25, Layer 3): WavD2DGpioRx.v REPLACED by local
+// override. Adds T3A_CONTINUOUS parameter (default 1) so the comma-hunt FSM
+// re-arms (S_LOCKED → S_HUNT) instead of staying terminal — peer re-entering
+// training mode (e.g. after training→FC handoff disturbance) gets re-aligned
+// without io_por_reset. The submodule path is OMITTED below to prevent
+// duplicate module definitions. See src/rtl/local_overrides/WavD2DGpioRx.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioRx.v
+// SoC Labs tdif-03 (2026-05-25): WavD2DGpioTx.v REPLACED by local override.
+// The override adds per-lane word-aligned latching of io_training_mode using
+// the instance's own `count` register: the mux only switches between training
+// pattern and live link data at a 16-bit word boundary (count: f -> 0). The
+// submodule path is OMITTED here (a duplicate module definition would cause
+// elaboration errors). Submodule copy at deps/.../WavD2DGpioTx.v stays clean
+// for review. See src/rtl/local_overrides/WavD2DGpioTx.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioTx.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_124.v
@@ -168,7 +185,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_6.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxLinkLayer.v
+// SoC Labs tdif-08 L4: route LL_RX framer through local override that adds
+// a post-reset hunt_holdoff gate on the is_long_pkt → state==1 transition,
+// killing the slave-side asymmetric stuck-at-state==1 bug triggered by
+// training filler bytes. See src/rtl/local_overrides/WlinkRxLinkLayer.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v
+# Comment-out original via shebang-style: ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxLinkLayer.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxRouter.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxLinkLayer.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxPstateCtrl.v
@@ -190,7 +212,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbu
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbus_gb_l2a_32x4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_a2l_48x16.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_l2a_48x16.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/Wlink.v
+// SoC Labs tdif-04 (2026-05-25, Layer 2): Wlink.v REPLACED by local override.
+// Changes the reset value of `swi_delay_cycles` (PSTATE delay) from 16'h6a4
+// (=1700) to 16'h0, avoiding the WlinkTxPstateCtrl PSTATE deadlock at the
+// training→FC handoff. The submodule path is OMITTED below to prevent
+// duplicate module definitions. SW can still write a non-zero value via APB
+// at runtime for future PSTATE testing. See src/rtl/local_overrides/Wlink.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/Wlink.v
 
 // ── Chiplet controller wrapper (I2C, role selection, autoneg, Wlink gating) ──
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
@@ -214,11 +242,21 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // ── §9 PHY alignment: per-lane training-pattern lock checker + auto-cal FSM ──
-//   (Interim shim tidelink_phy_align_regs.sv removed — its registers moved to
-//    Region 8 of the TideLink config APB @ MMIO 0x4403_2100. See
-//    docs/REGISTER_MAP.md "Region 8" and src/rdl/tidelink_regs.rdl.)
+//   (Original interim shim tidelink_phy_align_regs.sv was once removed —
+//    its §9 PHY-align registers moved to Region 8 of the TideLink config
+//    APB @ MMIO 0x4403_2100. The shim file has been REPURPOSED in Phase 2
+//    of docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4 as the APB read-mux for
+//    FCSM credit-handshake debug observability — see header in
+//    src/rtl/tidelink_phy_align_regs.sv and src/rtl/tidelink_fcsm_debug.sv.)
 ${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+
+// ── Phase 2 interface-debug instrumentation (TIDELINK_INTERFACE_DEBUG_PLAN §4)
+//   tidelink_fcsm_debug is `bind`-attached to WlinkGenericFCSM_6 in
+//   tidelink_top.sv; tidelink_phy_align_regs is the APB read-mux for the
+//   resulting counters / sticky bits / CMD_FCSM_RETRY pulse.
+${TIDELINK_HOME}/src/rtl/tidelink_fcsm_debug.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 
 // ── Performance profiling ────────────────────────────────────────────────────
 ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv

@@ -46,8 +46,13 @@ r,ro=mm(0x44032000,0x400)
 struct.pack_into(\"<I\",r,ro+0x100,0)            # drop SWI_TRAINING_MODE+RECAL -> data
 w,o=mm(0x44030000,0x2000)
 struct.pack_into(\"<I\",w,o+0x214,$MV); time.sleep(0.005)
-struct.pack_into(\"<I\",w,o+0x208,0x00027f08); time.sleep(0.01)  # LL swreset
-struct.pack_into(\"<I\",w,o+0x208,0x00027f00); time.sleep(0.01)
+# 2026-05-25: changed from 0x27f08/00/07 -> 0x27f09/01/07 to keep
+# swi_enable=1 throughout the swreset cycle. Per FC.scala:619-621,
+# swi_enable=0 resets all 7 FCSMs to IDLE and clears cr_pkt_seen
+# sticky bits, which on HW left the link unable to enter data mode.
+# See docs/TIDELINK_PHASE0_OBS_20260524_2109.md S9 for full diagnosis.
+struct.pack_into(\"<I\",w,o+0x208,0x00027f09); time.sleep(0.01)  # LL swreset, swi_enable kept high
+struct.pack_into(\"<I\",w,o+0x208,0x00027f01); time.sleep(0.01)  # release swreset, swi_enable kept high
 struct.pack_into(\"<I\",w,o+0x208,0x00027f07)                    # swi+lltx enable
 print(\"lane_mask=0x%08x active=0x%08x\"%(struct.unpack_from(\"<I\",w,o+0x214)[0],struct.unpack_from(\"<I\",w,o+0x210)[0]))'" 2>/dev/null
 }

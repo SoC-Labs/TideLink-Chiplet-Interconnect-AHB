@@ -33,6 +33,15 @@
 `timescale 1ns/1ps
 `default_nettype none
 
+// SoC Labs tdif-04 (2026-05-25): elaborate the T3A_CONTINUOUS parameter
+// from the +define+T3A_CONT=<0|1> compile-time switch the Makefile passes.
+// Default 0 (one-shot terminal S_LOCKED) preserves the existing
+// test_t3a_invariance contract bit-exact. Set via `make sim_cont` to 1
+// to elaborate the continuous re-arm path under test.
+`ifndef T3A_CONT
+  `define T3A_CONT 0
+`endif
+
 module tb_top (
     // Shared inputs.
     input  wire        io_pad_clk,
@@ -43,6 +52,11 @@ module tb_top (
     output wire [7:0]  io_link_clk,
     output wire [127:0] io_link_data
 );
+
+    // Expose the elaborated T3A_CONTINUOUS value to cocotb so the Python
+    // tests can self-assert which variant they are running against.
+    // Hierarchical access path: tb_top.T3A_CONTINUOUS_EFF.
+    localparam T3A_CONTINUOUS_EFF = `T3A_CONT;
 
     // Same per-lane training bytes as WavD2DGpio.v wires up to gpiotx_<N>.
     // Period-8 aperiodic (unique under cyclic rotation) — see WavD2DGpio.v
@@ -85,9 +99,10 @@ module tb_top (
                                   (lane == 6) ? LANE_BYTE_6 :
                                                 LANE_BYTE_7;
             WavD2DGpioRx #(
-                .USE_CLKBUF    (1'b0),
-                .TRAINING_BYTE (LB),
-                .USE_T3A       (1'b1)
+                .T3A_CONTINUOUS (T3A_CONTINUOUS_EFF[0:0]),
+                .USE_CLKBUF     (1'b0),
+                .TRAINING_BYTE  (LB),
+                .USE_T3A        (1'b1)
             ) u_dut (
                 .io_scan_mode          (scan_mode),
                 .io_scan_asyncrst_ctrl (scan_asyncrst_ctrl),

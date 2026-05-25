@@ -70,7 +70,26 @@ module tidelink_vivado_wrapper #(
     // per io_por_reset to align to the peer's training-byte boundary,
     // killing the per-deploy 16-cycle count-phase lottery that anti-
     // correlated master/slave 0xff hits. Override to 0 for A/B comparison.
-    parameter USE_T3A    = 1'b1
+    parameter USE_T3A    = 1'b1,
+    // Tier 2 RTL hardening (2026-05-25): force swi_enable=1 on any APB write
+    // that asserts swi_swreset=1 to Wlink register 0x208. FPGA default ON.
+    // Set to 0 in the IPI customize dialog for A/B comparison against an
+    // unprotected SW-driven swreset sequence.
+    parameter HARDEN_SWI_ENABLE = 1'b1,
+
+    // Interface-debug stubs (Phase 3 of TIDELINK_INTERFACE_DEBUG_PLAN §5).
+    // All default to 0 (normal instantiation). Set to 1 in the IPI customize
+    // dialog (or via `set_property CONFIG.STUB_* 1 [get_bd_cells …]`) to
+    // replace the matching tidelink_top child with tie-offs.
+    //   STUB_SERVO        — replaces u_servo  (tidelink_ptp_servo)
+    //   STUB_PERF         — replaces u_perf   (tidelink_perf)
+    //   STUB_PTP          — replaces u_ptp    (tidelink_ptp); STUB_PTP=1
+    //                       REQUIRES STUB_SERVO=1 (servo waits on dreq_tx_done)
+    //   BYPASS_ADDR_XLAT  — replaces u_addr_translator with passthrough
+    parameter STUB_SERVO       = 1'b0,
+    parameter STUB_PERF        = 1'b0,
+    parameter STUB_PTP         = 1'b0,
+    parameter BYPASS_ADDR_XLAT = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -418,7 +437,14 @@ module tidelink_vivado_wrapper #(
         // §9 clock fix: recovered-RX-clock global BUFG (FPGA wants it on).
         .USE_CLKBUF          (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt (FPGA wants it on).
-        .USE_T3A             (USE_T3A)
+        .USE_T3A             (USE_T3A),
+        // Tier 2 hardening: force swi_enable=1 on swreset writes (FPGA: ON).
+        .HARDEN_SWI_ENABLE   (HARDEN_SWI_ENABLE),
+        // Interface-debug stubs — forward verbatim (default 0 = no-op)
+        .STUB_SERVO          (STUB_SERVO),
+        .STUB_PERF           (STUB_PERF),
+        .STUB_PTP            (STUB_PTP),
+        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

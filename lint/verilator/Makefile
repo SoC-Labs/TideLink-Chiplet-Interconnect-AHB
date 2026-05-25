@@ -94,6 +94,14 @@ lint-phy-align-regs:
 	  $(RTL_DIR)/tidelink_phy_align_regs.sv,\
 	  $(INC_RTL))
 
+# Phase 2 FCSM credit-handshake debug observer (bind target). The
+# counter/sticky regs are read via hier-ref from tidelink_top, hence the
+# in-file lint_off UNUSED guards.
+lint-fcsm-debug:
+	$(call VERILATE,tidelink_fcsm_debug,\
+	  $(RTL_DIR)/tidelink_fcsm_debug.sv,\
+	  $(INC_RTL))
+
 # Per-lane checker — symbol/comma framing detector
 lint-lane-checker:
 	$(call VERILATE,tidelink_lane_checker,\
@@ -137,6 +145,7 @@ lint-tidelink-autoneg:
 
 LINT_TARGETS = lint-calibrator \
                lint-phy-align-regs \
+               lint-fcsm-debug \
                lint-lane-checker \
                lint-perf \
                lint-apb-regs \
@@ -192,6 +201,6 @@ clean:
 	rm -f *.log *.expanded
 	rm -rf obj_dir
 
-.PHONY: lint-all lint-calibrator lint-phy-align-regs lint-lane-checker \
-        lint-perf lint-apb-regs lint-fifo-ctrl lint-returner \
-        lint-tidelink-autoneg lint-fpga-top clean
+.PHONY: lint-all lint-calibrator lint-phy-align-regs lint-fcsm-debug \
+        lint-lane-checker lint-perf lint-apb-regs lint-fifo-ctrl \
+        lint-returner lint-tidelink-autoneg lint-fpga-top clean

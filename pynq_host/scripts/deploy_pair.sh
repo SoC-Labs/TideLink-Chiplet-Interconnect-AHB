@@ -348,9 +348,14 @@ struct.pack_into(\"<I\",r,ro+0x80,$CTRL)        # ROLE_CFG (incl. role_lock)
 # the lltx paths bootstraps the link layer. WL+0x208 layout:
 #   bit[0] swi_enable, bit[1] lltx_enable, bit[2] lltx_enable_1, bit[3] swreset
 import time as _t
-struct.pack_into(\"<I\",w,wo+0x208,0x00027f08)  # swreset on, enables off
+# 2026-05-25: changed from 0x27f08/00/07 -> 0x27f09/01/07 to keep
+# swi_enable=1 throughout the swreset cycle. Per FC.scala:619-621,
+# swi_enable=0 resets all 7 FCSMs to IDLE and clears cr_pkt_seen
+# sticky bits, which on HW left the link unable to enter data mode.
+# See docs/TIDELINK_PHASE0_OBS_20260524_2109.md S9 for full diagnosis.
+struct.pack_into(\"<I\",w,wo+0x208,0x00027f09)  # swreset on, swi_enable kept high
 _t.sleep(0.005)
-struct.pack_into(\"<I\",w,wo+0x208,0x00027f00)  # release swreset
+struct.pack_into(\"<I\",w,wo+0x208,0x00027f01)  # release swreset, swi_enable kept high
 _t.sleep(0.005)
 struct.pack_into(\"<I\",w,wo+0x208,0x00027f07)  # re-enable swi+lltx+lltx_1
 phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]

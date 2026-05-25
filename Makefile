@@ -1,6 +1,6 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_formal clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
-        synth_lint_selftest robust_all
+        synth_lint_selftest robust_all sim-repro sim-repro-skid3
 
 # =============================================================================
 # Silicon-replication test gates (feat/cocotb-robust-silicon-replication)
@@ -56,6 +56,38 @@ robust_all: xdc_lint_selftest synth_lint_selftest xdc_lint sim_synth_mode sim_ro
 	@echo "========================================"
 	@echo " ALL ROBUST GATES PASSED"
 	@echo "========================================"
+
+# =============================================================================
+# sim-repro — HW-bug regression gate (added 2026-05-24)
+#
+# Mandatory before any HW deploy in Phase 4 of the TideLink interface debug
+# (see docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §X). Runs the cocotb assertions
+# that mirror the Phase 0 HW observations:
+#   * cr_pkt_seen_rx latches on BOTH sides
+#   * crack_pkt_seen_rx latches on BOTH sides
+#   * FCSM reaches LINK_DATA (>=4) on BOTH sides
+#   * fe_tx_credit_max_loaded on BOTH sides
+#
+# Today these PASS in sim (the bug is FPGA-only). If/when the sim model gets
+# patched to reproduce the bug (e.g. random count phase in WavD2DGpioRx),
+# these tests will START failing — that is the diagnostic signal we want.
+#
+# sim-repro-skid3 also runs with SKID_BITS=3 (FPGA-like 3-bit data shift).
+# =============================================================================
+
+sim-repro:
+	@echo "========================================"
+	@echo " sim-repro — HW regression gates (default SKID=0)"
+	@echo "========================================"
+	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates
+	$(MAKE) -C cocotb/wlink_pair MODULE=test_assert_bringup
+
+sim-repro-skid3:
+	@echo "========================================"
+	@echo " sim-repro with SKID_BITS=3 (FPGA-like skew)"
+	@echo "========================================"
+	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
+
 
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────

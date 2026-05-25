@@ -15,11 +15,16 @@
 #   2. I2C_PRESCALE    (ctrl_reg idx3, +0x8C) — optional; RTL reset default
 #      is now 128 (safe for the on-ribbon W9/V7 weak internal pull). Only
 #      written if I2C_PRESCALE env is set.
-#   3. NEGO_CFG        (ctrl_reg idx4, +0x90) = 0x61
+#   3. NEGO_TRAIN_CFG  (Region 8 slot 3, +0x10C) = 0x0001 (train_auto_en=1)
+#      Drives autoneg through ST_TRAIN_ENTER→RUN→POLL→EXIT so the link
+#      actually transitions OUT of training mode. Without this, autoneg
+#      locks role/mask then parks in ST_NEGO_DONE with both sides still in
+#      training mode → no traffic. See tidelink_autoneg.sv:887-908.
+#   4. NEGO_CFG        (ctrl_reg idx4, +0x90) = 0x61
 #        bit0 nego_en | bit5 nego_force_lock | bit6 mask_hs_auto_en
 #      0x41 (no force_lock) negotiates but never latches role_lock — the
 #      classic gotcha; 0x61 is the proven value (cocotb e2e + Edit 4).
-#   4. Poll ROLE_STATUS (idx1,+0x84) bit[1]=role_locked and NEGO_STATUS
+#   5. Poll ROLE_STATUS (idx1,+0x84) bit[1]=role_locked and NEGO_STATUS
 #      (idx5,+0x94) until lock or timeout.
 # It does NOT write ROLE_CFG[1] (that is the manual lock path this
 # replaces) and needs NO apb_debug_unlock (ctrl_reg is the controller's
@@ -120,6 +125,11 @@ def wr(off,v): struct.pack_into("<I",r,o+off,v);
 CR=0x80                                  # ctrl_reg window base in TideLink APB
 ROLE_CFG=CR+0x00; ROLE_STS=CR+0x04; I2C_PSC=CR+0x0C
 NEGO_CFG=CR+0x10; NEGO_STS=CR+0x14
+# Region 8 chiplet-extended (paddr[8:5]=1000 → byte offsets 0x100..0x11C).
+# NEGO_TRAIN_CFG @ slot 3 = 0x10C — see docs/REGISTER_MAP.md §Region 8 and
+# axi_chiplet_controller.sv:565 (bit[0]=auto_en, bit[1]=sw_step, bit[2]=W1P
+# retrain, bits[7:4]=poll_timeout, bits[15:8]=fsm_wait_hi).
+NEGO_TRAIN_CFG=0x10C
 ver=rd(0x14)
 if ver==0 or ver==0xFFFFFFFF:
     print("  ABORT: TIDELINK_VERSION reads 0x%08x — bitstream not loaded "
@@ -132,6 +142,21 @@ psc=rd(I2C_PSC) & 0xFFFF
 if psc < 64:
     print("  WARN: I2C_PRESCALE=%d is fast for the W9/V7 weak internal "
           "pull (want >=128). Set I2C_PRESCALE env if the bus NACKs." % psc)
+# 2026-05-25: write NEGO_TRAIN_CFG.train_auto_en=1 so autoneg performs
+# the full training entry/exit sequence (ST_TRAIN_ENTER→RUN→POLL→EXIT)
+# instead of skipping to ST_NEGO_DONE. Without this, the link locks
+# but never transitions out of training mode (cr_pkt_seen=0 sticky on
+# slave, doorbells don't cross). See tidelink_autoneg.sv:887-908
+# and docs/TIDELINK_PHASE0_OBS_20260524_2109.md §9.
+# MUST be written BEFORE NEGO_CFG.nego_en, because the autoneg FSM
+# samples train_auto_en at the ST_NEGO_DONE_PRE → ST_TRAIN_ENTER
+# branch point (autoneg.sv:890).
+wr(NEGO_TRAIN_CFG,0x0001)                # train_auto_en=1
+ntcfg=rd(NEGO_TRAIN_CFG) & 0xFFFF
+if (ntcfg & 0x1) != 0x1:
+    print("  ABORT: NEGO_TRAIN_CFG readback=0x%04x — train_auto_en did not "
+          "land (Region 8 not present? wrong bitstream?)" % ntcfg); sys.exit(8)
+print("  NEGO_TRAIN_CFG=0x%04x (train_auto_en=1) armed" % ntcfg)
 wr(NEGO_CFG,0x61)                        # en | force_lock | mask_hs_auto_en
 ncfg=rd(NEGO_CFG) & 0x7F
 print("  TIDELINK_VERSION=0x%08x  PAIR_BASE_ADDR=0x%08x  I2C_PRESCALE=%d"

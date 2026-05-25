@@ -1317,6 +1317,15 @@ module Wlink #(
     .auto_out_crc(llrx_auto_out_crc),
     .io_enable(llrx_io_enable),
     .io_swi_short_packet_max(llrx_io_swi_short_packet_max),
+    // SoC Labs L5 whitelist (tdif-10, 2026-05-25): bringup-packet data_id
+    // gate for first_short_pkt_seen. Hard-tied to FCSM compile-time defaults
+    // (WlinkGenericFCSM_6.v sets these on reset and SW never rewrites them
+    // before LL bringup completes). If a future revision allows runtime SW
+    // remapping of these IDs, route the FCSM swi_*_id regs out instead.
+    .io_swi_cr_id(8'h44),
+    .io_swi_crack_id(8'h45),
+    .io_swi_ack_id(8'h46),
+    .io_swi_nack_id(8'h47),
     .io_active_lanes(llrx_io_active_lanes),
     .io_lane_mask(llrx_io_lane_mask),
     .io_ecc_corrected(llrx_io_ecc_corrected),

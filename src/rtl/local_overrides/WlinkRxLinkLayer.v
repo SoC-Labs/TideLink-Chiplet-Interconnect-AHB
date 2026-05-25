@@ -4,6 +4,28 @@
 // Override reason (tdif-08, Layer 4 fix): post-reset hunt-holdoff for the
 // byte-align FSM to prevent the slave-side asymmetric stuck-at-state==1 bug.
 //
+// L5 strengthening (tdif-10, 2026-05-25)
+// --------------------------------------
+// The L4-v3 "first_short_pkt_seen" sticky gate was previously bootstrapping
+// on stray bytes (e.g. corrected_ph[7:0]=0x0c) which are NOT in the SWI
+// data_id whitelist {cr_id=0x44, crack_id=0x45, ack_id=0x46, nack_id=0x47}.
+// Assessment test_05 in feat/assessment-driven-tests proved this: the framer
+// committed to long-packet state on garbage, master's cr_pkt_seen then failed
+// to latch, link diverged asymmetric.
+//
+// L5 fix: strengthen first_short_pkt_seen update so it ONLY latches when:
+//   (1) state==0 (bootstrap window)
+//   (2) is_short_pkt asserted (length <= short_packet_max)
+//   (3) ecc_check_corrupted is FALSE (clean OR ECC-corrected header)
+//   (4) corrected_ph[7:0] matches one of the four SWI bringup IDs
+// Condition (3) is already in is_short_pkt; condition (4) is the new gate.
+//
+// Module now exposes io_swi_cr_id / io_swi_crack_id / io_swi_ack_id /
+// io_swi_nack_id input ports; the single instance in Wlink.v wires these
+// to the FCSM compile-time defaults (0x44/0x45/0x46/0x47) which matches
+// WlinkGenericFCSM_6 reset values for swi_cr_id, out_prepend_swi_crack_id,
+// out_prepend_swi_ack_id, out_prepend_swi_nack_id.
+//
 // Background
 // ----------
 // The bringup sequence is: set training mode, recal cycle, drop training,
@@ -52,6 +74,13 @@ module WlinkRxLinkLayer(
   output [15:0]  auto_out_crc,
   input          io_enable,
   input  [7:0]   io_swi_short_packet_max,
+  // SoC Labs L5 (tdif-10, 2026-05-25): SWI bringup-packet data_id whitelist
+  // — gates first_short_pkt_seen so only real CR/CRACK/ACK/NACK shorts can
+  // bootstrap the framer (not stray bytes like 0x0c that happen to be < 0x7F).
+  input  [7:0]   io_swi_cr_id,
+  input  [7:0]   io_swi_crack_id,
+  input  [7:0]   io_swi_ack_id,
+  input  [7:0]   io_swi_nack_id,
   input  [7:0]   io_active_lanes,
   input  [7:0]   io_lane_mask,
   output         io_ecc_corrected,
@@ -131,7 +160,10 @@ module WlinkRxLinkLayer(
   // observing it on HW confirms whether the framer has ever seen a real
   // short CR packet (1) or has been stuck on filler the whole time (0).
   (* mark_debug = "true" *) reg       first_short_pkt_seen;        // tdif-10 ILA — L4-v3 gate witness
-  wire      long_pkt_gate = 1'b1;  // L4-v3 disabled -- option (c) supersedes (combo experiment did not help)
+  // L5 (tdif-10, 2026-05-25): re-enable the v3 sticky gate. Long-packet
+  // entry is gated until a whitelisted SHORT bringup packet has been
+  // observed in state==0 — see strengthened latch logic below.
+  wire      long_pkt_gate = first_short_pkt_seen;
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
@@ -1022,18 +1054,30 @@ module WlinkRxLinkLayer(
   assign ecc_check_ph_in = state == 2'h0 ? _GEN_65 : 24'h0; // @[LinkLayer.scala 693:40 LinkLayer.scala 690:29]
   assign ecc_check_rx_ecc = state == 2'h0 ? _GEN_66 : 8'h0; // @[LinkLayer.scala 693:40 LinkLayer.scala 691:29]
   // SoC Labs tdif-08 L4 fix v3: first_short_pkt_seen sticky gate.
-  // Sticky flag latches when a valid SHORT packet is first decoded in
-  // state==0. Until that happens, the state==0 → state==1 long-packet
-  // transition is GATED OFF. This bootstraps cleanly: the first real
-  // bringup packet is CR (ph[7:0]=0x44=swi_cr_id, short), so filler
-  // bytes (ph[7:0]>0x7F) cannot latch state==1 BEFORE the first CR is
-  // decoded. After the first CR (or any short pkt), long-packet entry
-  // is allowed normally. `reset` (POR + LL swreset) clears the flag so
-  // each bringup window re-bootstraps from short pkts.
+  // L5 strengthening (tdif-10, 2026-05-25): added data_id whitelist.
+  // ---------------------------------------------------------------
+  // The v3 latch (state==0 && is_short_pkt) bootstrapped on ANY value
+  // <=short_packet_max, including stray bytes like 0x0c that survive ECC
+  // but are not bringup packets. Assessment test_05 proved the framer then
+  // committed to a phony long-packet branch on subsequent garbage and
+  // master->slave CR/CRACK never converged.
+  //
+  // L5: latch ONLY when corrected_ph[7:0] matches a real bringup data_id
+  // (cr_id / crack_id / ack_id / nack_id). `is_short_pkt` already includes
+  // (~ecc_check_corrupted) so the ECC-validity gate is implicit. Whitelist
+  // values come from io_swi_* inputs (set to 0x44/0x45/0x46/0x47 by the
+  // single Wlink.v instantiation -- matches FCSM defaults).
+  //
+  // `reset` (POR + LL swreset) clears the flag so each bringup window
+  // re-bootstraps from a whitelisted short pkt.
+  wire whitelisted_short_data_id = (corrected_ph[7:0] == io_swi_cr_id) ||
+                                   (corrected_ph[7:0] == io_swi_crack_id) ||
+                                   (corrected_ph[7:0] == io_swi_ack_id) ||
+                                   (corrected_ph[7:0] == io_swi_nack_id);
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       first_short_pkt_seen <= 1'b0;
-    end else if (state == 2'h0 && is_short_pkt) begin
+    end else if (state == 2'h0 && is_short_pkt && whitelisted_short_data_id) begin
       first_short_pkt_seen <= 1'b1;
     end
   end

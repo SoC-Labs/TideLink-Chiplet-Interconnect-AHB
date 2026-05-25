@@ -47,8 +47,9 @@ import shutil
 try:
     from typing import Protocol, runtime_checkable
 except ImportError:
-    from typing_extensions import Protocol
-    from typing import runtime_checkable
+    # Python 3.6: neither Protocol nor runtime_checkable exist in
+    # ``typing``; both live in ``typing_extensions``.
+    from typing_extensions import Protocol, runtime_checkable
 
 
 @runtime_checkable

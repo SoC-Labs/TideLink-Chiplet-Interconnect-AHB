@@ -127,7 +127,7 @@ module WlinkRxLinkLayer(
   // the ILA capture pipeline (see reference_phc_ila_capture.md). The
   // dead `first_short_pkt_seen` reg will be pruned by synthesis.
   reg       first_short_pkt_seen;
-  wire      long_pkt_gate = 1'b1;  // L4-v3 disabled -- option (c) supersedes
+  wire      long_pkt_gate = 1'b1;  // L4-v3 disabled -- option (c) supersedes (combo experiment did not help)
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id

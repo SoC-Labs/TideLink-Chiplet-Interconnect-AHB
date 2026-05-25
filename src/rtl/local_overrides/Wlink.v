@@ -1853,6 +1853,58 @@ module Wlink #(
       swi_training_mode_rxsync_1 <= swi_training_mode_rxsync_0;
     end
   end
+  // ===================================================================
+  // SoC Labs tdif-08 L4 option (c) BILATERAL ATTEMPT (2026-05-25):
+  // negative result -- falling-edge holdoff counter does NOT close the
+  // bilateral hole. Keeping bare option (c) as the committed behaviour
+  // and documenting the failed experiment so future agents don't repeat
+  // it without new evidence.
+  //
+  // Problem statement: bare option (c) leaves 6/12 fuzz scenarios with
+  // m.cr=0 s.cr=1 (master-side framer broken). The hypothesis was that
+  // when side-A drops training before side-B, A's llrx releases while B
+  // is still emitting training-mode filler on the wire -- A's framer
+  // latches state==1 on filler.
+  //
+  // Attempted fix: hold llrx_reset HIGH for N cycles AFTER the falling
+  // edge of swi_training_mode_rxsync_1 to cover the peer's worst-case
+  // lingering filler. Sized a 10-bit counter (1024 link_clks @ 50 MHz =
+  // 20 us) -- comfortably > 1000-cycle stagger but < the 3000-cycle
+  // observation window. Also tried 8/11/12-bit widths.
+  //
+  // Observed failure mode of the holdoff: every counter width (8 -> 12
+  // bits) caused the FCSM to get stuck at SEND_CREDITS1 in nearly all
+  // scenarios. The reason is *subtler* than the original hypothesis:
+  //   * Holding llrx_reset past the falling edge of training causes the
+  //     local LL_RX framer to miss the *initial* alignment window.
+  //   * When llrx_reset releases DURING peer's FC data mode, the framer
+  //     may align on the wrong byte of a real packet (instead of the
+  //     first CR short packet that was on the wire at training drop).
+  //   * Net effect: the holdoff *prevents* the slave-side bug option (c)
+  //     was designed for but *causes* a new "framer-aligned-mid-packet"
+  //     failure.
+  //
+  // Combo experiment (option (c) + L4-v3 first_short_pkt_seen re-enabled
+  // in WlinkRxLinkLayer.v): no improvement -- same 6/12 scenarios fail
+  // with same polarity. The L4-v3 gate alone latches on the very first
+  // short packet which can still be a stale filler byte that happens to
+  // have bit[7]=0 (training patterns 0x65/0x4B/0x59/0x2D all do).
+  //
+  // CONCLUSION: the bilateral structure cannot be resolved by either a
+  // per-side time-based gate or a per-side first-short-packet heuristic.
+  // A real fix needs one of:
+  //   1. Cross-link peer-ready handshake (peer signals "I dropped training
+  //      and my TX has flushed filler") -- requires protocol extension.
+  //   2. Wire-level alignment beacon (periodic SYNC byte irrespective of
+  //      training state) -- requires Wlink RTL change outside overrides.
+  //   3. SW orchestration that guarantees BOTH sides drop training within
+  //      one PHY clock cycle -- impossible across two independent dies.
+  // None are achievable inside the local_overrides scope of this task.
+  //
+  // Recommendation: take option (c) bare to HW (closes the symmetric
+  // bringup case which was the original bug) and treat the remaining
+  // 6/12 fuzz failures as a protocol-extension follow-up.
+  // ===================================================================
   assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out | swi_training_mode_rxsync_1; // @[Wlink.scala 214:64] SoC Labs L4 option (c)
   assign llrx_io_enable = out_prepend_swi_lltx_enable_1; // @[Wlink.scala 174:49 SW.scala 117:16]
   assign llrx_io_swi_short_packet_max = out_prepend_swi_short_packet_max; // @[Wlink.scala 170:49 SW.scala 117:16]

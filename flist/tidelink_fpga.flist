@@ -184,7 +184,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_6.v
+// SoC Labs L6 producer-side fix 2026-05-26: WlinkGenericFCSM_6.v REPLACED by
+// local override. Adds socl_l6_cr_emit_count counter + gate on _GEN_34 (state
+// 1 -> state 2) so the FCSM emits a minimum number of CR(0x44) packets in
+// state==1 before allowing exit to state==2, ensuring the asymmetric peer's
+// RX framer has time to byte-align onto a CR.  See file header in
+// src/rtl/local_overrides/WlinkGenericFCSM_6.v.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
 // SoC Labs tdif-08 L4: route LL_RX framer through local override that adds
 // a post-reset hunt_holdoff gate on the is_long_pkt → state==1 transition,
 // killing the slave-side asymmetric stuck-at-state==1 bug triggered by

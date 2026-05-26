@@ -44,7 +44,14 @@ module Wlink #(
   parameter USE_CLKBUF = 1'b0,
   // SoC Labs §9 T3a: pass-through to WlinkGPIOPHY.USE_T3A. Default 0
   // (sim/ASIC bit-exact); FPGA wrapper sets 1 via threading.
-  parameter USE_T3A   = 1'b0
+  parameter USE_T3A   = 1'b0,
+  // SoC Labs L11 (2026-05-26): pass-through to WlinkGPIOPHY.T3A_REARM_ON_TRAIN.
+  // DEFAULT FOLLOWS USE_T3A: when the parent (axi_chiplet_controller, a
+  // submodule we do NOT modify) overrides USE_T3A=1 (FPGA), T3A_REARM_ON_TRAIN
+  // also becomes 1 automatically. When USE_T3A=0 (sim/ASIC/UVM), this stays
+  // 0 — bit-exact passthrough. The submodule's `Wlink #(.USE_CLKBUF, .USE_T3A)`
+  // map does NOT touch T3A_REARM_ON_TRAIN, so this default propagates.
+  parameter T3A_REARM_ON_TRAIN = USE_T3A
 ) (
   input         apb_clk,
   input         apb_reset,
@@ -1102,7 +1109,7 @@ module Wlink #(
     .auto_out_0_pready(xbar_auto_out_0_pready),
     .auto_out_0_prdata(xbar_auto_out_0_prdata)
   );
-  WlinkGPIOPHY #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A)) phy ( // @[Wlink.scala 87:27]
+  WlinkGPIOPHY #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN)) phy ( // @[Wlink.scala 87:27]
     .clock(phy_clock),
     .reset(phy_reset),
     .auto_in_psel(phy_auto_in_psel),

@@ -105,6 +105,24 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 COMPILE_ARGS += $(SKID_PER_LANE_DEFINES)
+
+# ---------------------------------------------------------------------------
+# Demo-quality RTL patches (feat/td-demo-rtl-patches, 2026-05-26).
+# Set DEMO_PATCHES to a space- or comma-separated list of A, B, C to enable
+# the matching `+define+TD_DEMO_PATCH_X` at compile time. Each patch is
+# self-contained; combine to taste. Examples:
+#   make MODULE=test_link_idle_advance_with_payload DEMO_PATCHES=A
+#   make MODULE=test_link_idle_advance_with_payload DEMO_PATCHES="A B"
+# ---------------------------------------------------------------------------
+DEMO_PATCHES ?=
+empty :=
+space := $(empty) $(empty)
+comma := ,
+DEMO_PATCH_DEFINES :=
+$(foreach p,$(subst $(comma),$(space),$(DEMO_PATCHES)), \
+  $(eval DEMO_PATCH_DEFINES += +define+TD_DEMO_PATCH_$(p)))
+COMPILE_ARGS += $(DEMO_PATCH_DEFINES)
+
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

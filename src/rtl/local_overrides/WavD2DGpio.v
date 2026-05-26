@@ -9,7 +9,16 @@ module WavD2DGpio #(
   // overrides on the gpiorx_<N> instances below (matching the constants
   // wired to gpiotx_<N>.io_training_pattern — lane 0 = 0xA3, ..., lane 7 =
   // 0x2D). Default 0 (sim/ASIC bit-exact); FPGA wrapper sets 1.
-  parameter USE_T3A   = 1'b0
+  parameter USE_T3A   = 1'b0,
+  // SoC Labs L11 (2026-05-26): pass-through to per-lane WavD2DGpioRx.
+  // When 1, each per-lane RX re-arms its T3A FSM and resets its `count`
+  // register on the rising edge of effective_training_mode (level-
+  // triggered: held in re-arm while training_mode is high). This solves
+  // the post-bringup byte-align loss seen on HW after a recal cycle
+  // (slot0=0x3 -> 0x0 + LL swreset) destroys the POR-acquired comma
+  // alignment. Default 0 (bit-exact); FPGA wrapper sets 1 alongside
+  // USE_T3A.
+  parameter T3A_REARM_ON_TRAIN = 1'b0
 ) (
   input          clock,
   input          reset,
@@ -633,12 +642,13 @@ module WavD2DGpio #(
     .io_pad(gpiotx_7_io_pad),
     .io_pad_clk(gpiotx_7_io_pad_clk)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hA3)) gpiorx_0 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'hA3)) gpiorx_0 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_0_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_0_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_0_io_scan_clk),
     .io_scan_out(gpiorx_0_io_scan_out),
     .io_por_reset(gpiorx_0_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_0_io_pol),
     .io_phase_offset(effective_phase_offset[3:0]),
     .io_bit_slip(effective_bit_slip[2:0]),
@@ -647,12 +657,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_0_io_pad_clk),
     .io_pad(gpiorx_0_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hB5)) gpiorx_1 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'hB5)) gpiorx_1 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_1_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_1_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_1_io_scan_clk),
     .io_scan_out(gpiorx_1_io_scan_out),
     .io_por_reset(gpiorx_1_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_1_io_pol),
     .io_phase_offset(effective_phase_offset[7:4]),
     .io_bit_slip(effective_bit_slip[5:3]),
@@ -661,12 +672,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_1_io_pad_clk),
     .io_pad(gpiorx_1_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hC9)) gpiorx_2 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'hC9)) gpiorx_2 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_2_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_2_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_2_io_scan_clk),
     .io_scan_out(gpiorx_2_io_scan_out),
     .io_por_reset(gpiorx_2_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_2_io_pol),
     .io_phase_offset(effective_phase_offset[11:8]),
     .io_bit_slip(effective_bit_slip[8:6]),
@@ -675,12 +687,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_2_io_pad_clk),
     .io_pad(gpiorx_2_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hD3)) gpiorx_3 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'hD3)) gpiorx_3 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_3_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_3_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_3_io_scan_clk),
     .io_scan_out(gpiorx_3_io_scan_out),
     .io_por_reset(gpiorx_3_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_3_io_pol),
     .io_phase_offset(effective_phase_offset[15:12]),
     .io_bit_slip(effective_bit_slip[11:9]),
@@ -689,12 +702,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_3_io_pad_clk),
     .io_pad(gpiorx_3_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h65)) gpiorx_4 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'h65)) gpiorx_4 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_4_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_4_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_4_io_scan_clk),
     .io_scan_out(gpiorx_4_io_scan_out),
     .io_por_reset(gpiorx_4_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_4_io_pol),
     .io_phase_offset(effective_phase_offset[19:16]),
     .io_bit_slip(effective_bit_slip[14:12]),
@@ -703,12 +717,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_4_io_pad_clk),
     .io_pad(gpiorx_4_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h4B)) gpiorx_5 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'h4B)) gpiorx_5 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_5_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_5_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_5_io_scan_clk),
     .io_scan_out(gpiorx_5_io_scan_out),
     .io_por_reset(gpiorx_5_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_5_io_pol),
     .io_phase_offset(effective_phase_offset[23:20]),
     .io_bit_slip(effective_bit_slip[17:15]),
@@ -717,12 +732,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_5_io_pad_clk),
     .io_pad(gpiorx_5_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h59)) gpiorx_6 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'h59)) gpiorx_6 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_6_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_6_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_6_io_scan_clk),
     .io_scan_out(gpiorx_6_io_scan_out),
     .io_por_reset(gpiorx_6_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_6_io_pol),
     .io_phase_offset(effective_phase_offset[27:24]),
     .io_bit_slip(effective_bit_slip[20:18]),
@@ -731,12 +747,13 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_6_io_pad_clk),
     .io_pad(gpiorx_6_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h2D)) gpiorx_7 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .T3A_REARM_ON_TRAIN(T3A_REARM_ON_TRAIN), .TRAINING_BYTE(8'h2D)) gpiorx_7 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_7_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_7_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_7_io_scan_clk),
     .io_scan_out(gpiorx_7_io_scan_out),
     .io_por_reset(gpiorx_7_io_por_reset),
+    .io_train_rearm(effective_training_mode),  // SoC Labs L11 (2026-05-26) per-lane T3A rearm pulse
     .io_pol(gpiorx_7_io_pol),
     .io_phase_offset(effective_phase_offset[31:28]),
     .io_bit_slip(effective_bit_slip[23:21]),

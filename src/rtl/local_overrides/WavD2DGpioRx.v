@@ -118,13 +118,46 @@ module WavD2DGpioRx #(
   // would be 0, i.e. no-op, so USE_T3A=1 with a zero TRAINING_BYTE is
   // still bit-exact passthrough of the legacy free-run behaviour).
   parameter [7:0] TRAINING_BYTE = 8'h00,
-  parameter USE_T3A = 1'b0
+  parameter USE_T3A = 1'b0,
+  // SoC Labs L11 (2026-05-26): re-arm T3A and reset `count` whenever the
+  // training-mode signal is asserted (level-triggered). This solves the
+  // post-bringup byte-align loss we see on HW: after the first recal cycle
+  // (slot0=0x3 -> 0x0 + swreset), `count` and the T3A FSM both keep their
+  // POR-set alignment, but the slave's effective byte boundary on the wire
+  // has shifted (per the calibrator's bit_slip/phase_offset sweep result)
+  // and/or the slave's framer is wedged on training filler. By re-armming
+  // T3A on every fresh training window, the FSM gets a chance to re-find
+  // the comma against the CURRENT bit alignment, with the calibrator's
+  // current bit_slip/phase_offset taps in effect.
+  //   T3A_REARM_ON_TRAIN=0 (default, sim/ASIC bit-exact) -> behaviour
+  //     identical to the prior file: T3A is one-shot, only re-arms on POR.
+  //   T3A_REARM_ON_TRAIN=1 (FPGA only, paired with USE_T3A=1) -> while
+  //     `io_train_rearm` is HIGH, `count` is held at 4'hf and the T3A FSM
+  //     is held in S_SETTLE. On the falling edge of io_train_rearm, the
+  //     FSM proceeds through S_SETTLE -> S_HUNT -> S_LOCKED in the normal
+  //     way, but on the CURRENT training byte stream (i.e. with whatever
+  //     phase_offset/bit_slip the calibrator has settled by then).
+  //
+  // Note: T3A_REARM_ON_TRAIN=1 is a NO-OP for the FC data path: the rearm
+  // only triggers while training_mode is asserted. Once SW drops
+  // training_mode (slot0=0x0 + swreset), the FSM is in S_LOCKED with the
+  // freshly-acquired slip; subsequent FC data is byte-aligned identically
+  // to the bit-exact path.
+  parameter T3A_REARM_ON_TRAIN = 1'b0
 ) (
   input         io_scan_mode,
   input         io_scan_asyncrst_ctrl,
   input         io_scan_clk,
   output        io_scan_out,
   input         io_por_reset,
+  // SoC Labs L11 (2026-05-26): level-triggered "re-arm T3A" pulse. Tie 0
+  // for legacy / sim / ASIC paths (T3A_REARM_ON_TRAIN=0 also gates the
+  // entire rearm block so this input is unused — synth optimises out).
+  // On FPGA bring-up, drive from effective_training_mode (the OR of
+  // calibrator-driven and APB-driven training-mode signals), synced into
+  // w_cnt_clk domain at the per-lane RX level. CDC is per-lane in this
+  // module to keep the override self-contained.
+  input         io_train_rearm,
   input         io_pol,
   // SoC Labs alignment patch (2026-05-05): software-programmable phase
   // offset added to the deserialiser's bit-position selector. Default 0
@@ -348,6 +381,37 @@ module WavD2DGpioRx #(
   // TRAINING_BYTE under the convention: rot=k means the byte was sent
   // starting `k` bit-positions ahead of where we currently align — i.e.
   // the lane is "k" bits ahead, so we slip count BACK by k to realign.
+  // ==========================================================================
+  // SoC Labs L11 (2026-05-26): per-lane CDC sync of io_train_rearm into the
+  // w_cnt_clk domain. io_train_rearm is sourced upstream from
+  // effective_training_mode (apb_clk-ish domain at the chiplet-controller
+  // level). The 2-flop synchroniser is gated by the T3A_REARM_ON_TRAIN
+  // parameter so it costs ZERO flops when the feature is disabled
+  // (sim/ASIC path). Default reset value is 0 so an unused tie-down at the
+  // top-level driver is bit-exact passthrough.
+  // ==========================================================================
+  wire train_rearm_sync;
+  generate
+    if (T3A_REARM_ON_TRAIN) begin : g_rearm_sync
+      reg train_rearm_sync_0;
+      reg train_rearm_sync_1;
+      always @(posedge w_cnt_clk or posedge io_por_reset) begin
+        if (io_por_reset) begin
+          train_rearm_sync_0 <= 1'b0;
+          train_rearm_sync_1 <= 1'b0;
+        end else begin
+          train_rearm_sync_0 <= io_train_rearm;
+          train_rearm_sync_1 <= train_rearm_sync_0;
+        end
+      end
+      assign train_rearm_sync = train_rearm_sync_1;
+    end else begin : g_rearm_passthru
+      // Bit-exact path: rearm always 0. The signal is unused so synth
+      // prunes any downstream gating.
+      assign train_rearm_sync = 1'b0;
+    end
+  endgenerate
+
   generate
     if (USE_T3A) begin : g_t3a_realign
       reg [7:0]   realign_shifter;
@@ -397,9 +461,30 @@ module WavD2DGpioRx #(
       end
 
       // Shifter + FSM. Async-reset on io_por_reset so re-init re-arms T3a.
+      // SoC Labs L11 (2026-05-26): sync re-arm path. When train_rearm_sync
+      // is HIGH, force the FSM back to S_SETTLE and clear all the slip /
+      // hunt state. Held high for the duration of training_mode (level
+      // signal), so on the falling edge of training_mode the FSM is in
+      // S_SETTLE at hunt_cnt=0 — the first MAX_HUNT-window of post-rearm
+      // bytes will be observed against TRAINING_BYTE. While
+      // training_mode is high those bytes ARE the training pattern, so
+      // hunt should succeed and lock before training drops.
       always @(posedge w_cnt_clk or posedge io_por_reset) begin
         if (io_por_reset) begin
           realign_shifter <= 8'h00;
+          align_state     <= S_SETTLE;
+          settle_cnt      <= 7'd0;
+          hunt_cnt        <= 10'd0;
+          slip_amt        <= 3'd0;
+          do_slip         <= 1'b0;
+          dwell_cnt       <= 6'd0;
+        end else if (train_rearm_sync) begin
+          // L11 sync rearm: parallel to async-reset behaviour, but the
+          // shifter keeps sampling so on the falling edge of
+          // train_rearm_sync the shifter already holds the LAST 8 bits
+          // of the training pattern — letting the FSM lock within a few
+          // cycles of S_HUNT instead of needing SETTLE+8 cycles to fill.
+          realign_shifter <= {realign_shifter[6:0], io_pad};
           align_state     <= S_SETTLE;
           settle_cnt      <= 7'd0;
           hunt_cnt        <= 10'd0;
@@ -470,8 +555,13 @@ module WavD2DGpioRx #(
       // very next cycle. Subtract-by-rotation is correct because the
       // shifter saw byte-bit-0 at position `rot` cycles into the past —
       // shifting count back by `rot` rewinds it to "0 at byte-bit-0".
+      // SoC Labs L11 (2026-05-26): sync rearm — hold count at 4'hf while
+      // train_rearm_sync is asserted so the FSM and count are aligned at
+      // the rearm release moment and the FSM's slip applies cleanly.
       always @(posedge w_cnt_clk or posedge io_por_reset) begin
         if (io_por_reset) begin
+          count <= 4'hf;
+        end else if (train_rearm_sync) begin
           count <= 4'hf;
         end else if (do_slip) begin
           // count + 1 - slip_amt, mod 16. {1'b0,slip_amt} → 4-bit operand.
@@ -483,8 +573,17 @@ module WavD2DGpioRx #(
     end else begin : g_t3a_passthru
       // Bit-exact legacy: count free-runs from 4'hf, +1 every cycle. No
       // shifter, no FSM, no hunt counter — the generate-if prunes them.
+      // SoC Labs L11 (2026-05-26): keep count async-reset only path in
+      // the passthru branch. Without T3A enabled, training rearm has no
+      // FSM to drive — the count signal can still be held at 4'hf while
+      // rearm is asserted so the count phase becomes deterministic at
+      // rearm release, which is harmless to USE_T3A=0 sim/ASIC because
+      // T3A_REARM_ON_TRAIN defaults to 0 there. When both are 0, this
+      // entire branch reduces to the original free-run.
       always @(posedge w_cnt_clk or posedge io_por_reset) begin
         if (io_por_reset) begin
+          count <= 4'hf;
+        end else if (train_rearm_sync) begin
           count <= 4'hf;
         end else begin
           count <= count + 4'h1;

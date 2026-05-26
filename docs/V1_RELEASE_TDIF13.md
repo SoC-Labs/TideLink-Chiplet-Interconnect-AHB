@@ -137,12 +137,29 @@ The asymmetric CR-loss class that wedged tdif-05 is gone in tdif-13.
 
 ## 3. Known limitations (the bug v1 does NOT fix)
 
-> **Diagnosis updated 2026-05-26 09:30 BST after PTP HW test ruled out
-> the credit-gate hypothesis.** Earlier analysis suggested the remaining
-> bug was a credit-gate deadlock in `tidelink_fc_adapter.sv`. Subsequent
-> PTP HW evidence refuted that and re-localized the bug to slave's
-> LL_RX byte-align post-bringup. The limitations below have been
-> rewritten accordingly.
+> **Diagnosis evolved 2026-05-26 09:30 → 10:00 BST. Latest position:
+> TWO INDEPENDENT BUGS likely exist.**
+>
+> 1. **Credit-pool=0 in FCSM** (real RTL bug at `_GEN_42` in
+>    `WlinkGenericFCSM_6.v`): the second-emit CRACK protocol emits
+>    `word_count=0x0000` under asymmetric bringup timing, which the
+>    peer then loads as `fe_rx_credit_max=0`. FCSM gate
+>    `~fe_rx_is_full` evaluates false, no FC traffic ever crosses.
+>    Affects: doorbells, AHB peer-writes via FC, TideLink FC channel.
+>    L10 fix (commit `8783885` on `feat/td-interface-debug-l10-credit-bootstrap`)
+>    clamps the WC=0 value to 0x1f at the receiver — sim-clean.
+>
+> 2. **PTP RX silent** (separate, unconfirmed): master fires 64 PTP
+>    SYNCs at 32 Hz with `phc_locked=1`, slave's `PTP_RX_PAYLOAD=0`.
+>    PTP transport BYPASSES the FCSM credit gate (separate
+>    `ShortPacketToWlink` module), so this failure is independent of
+>    bug #1. Hypothesis: slave LL_RX byte-align lost post-bringup at
+>    the `WavD2DGpioRx` layer. Awaiting ILA capture DURING PTP TX to
+>    confirm — current ILA captures were during credit-gated doorbell
+>    flood (no master TX activity), so byte-align could not be tested.
+>
+> Both bugs need to be fixed (or one shown to be a consequence of
+> the other) before PHC Phase-1 can close.
 
 1. **Slave LL_RX byte-align is LOST post-bringup.** ILA capture during a
    200-doorbell flood (HW exploration 2026-05-26) showed slave's

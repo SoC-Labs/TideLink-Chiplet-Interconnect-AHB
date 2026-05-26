@@ -1,4 +1,36 @@
 // =============================================================================
+// SoC Labs L8 v2 narrow send_ack_req bringup mask (2026-05-26).
+// -----------------------------------------------------------------------------
+// L8 v1 (commit 9bbb4d6 on branch feat/td-interface-debug-l8-link-data-trigger)
+// AND-cleared the ENTIRE send_ack_req next-state with ~socl_l7_bringup_forgive,
+// mirroring L7's send_nack_req treatment.  On HW tdif-14 this REGRESSED the
+// post-L6+L7 handshake from {M FCSM=4, S FCSM=4} symmetric LINK_IDLE back to
+// {M=2 SEND_CREDITS2, S=1 SEND_CREDITS1} because the blanket gate also
+// suppressed the LEGITIMATE first-time ACK trigger (isExpPacket from slave's
+// first reset packet).  Without master's first ACK reaching the peer, the
+// credit/ack handshake never completes and the link reseeds backward.
+//
+// L8 v2 narrows the mask to the ACTUAL spurious re-trigger only:
+//
+//   wire l2a_raddr_update_gated = l2a_fifo_raddr_txclk_update
+//                                  & ~socl_l7_bringup_forgive;
+//
+// and substitutes l2a_raddr_update_gated for l2a_fifo_raddr_txclk_update in
+// EVERY send_ack_req set-input expression (the four always-block state-
+// dispatch branches AND the four _GEN_xx terms that fan into _GEN_178 used
+// by the else branch: _GEN_62, _GEN_77, _GEN_111, _GEN_167).  isExpPacket is
+// LEFT UNTOUCHED — that path is the legitimate first-time-ACK trigger and
+// must fire for LINK_IDLE -> ACK -> ... to make forward progress.
+//
+// Disarm: once the FCSM reaches state 5 (LINK_DATA), socl_l7_reached_link_data
+// latches and socl_l7_bringup_forgive deasserts permanently, restoring
+// upstream l2a_fifo_raddr_txclk_update behaviour for steady state.
+//
+// Safety: only the addr-sync CDC re-trigger pulse is suppressed during the
+// bringup window.  The first ACK still fires via isExpPacket; subsequent ACK
+// re-arms during bringup just have to wait for another isExpPacket pulse OR
+// for forgive to disarm.  send_nack_req handling (L7) is untouched.
+// =============================================================================
 // SoC Labs L7 sticky-NACK bringup recovery (2026-05-26): forgive send_nack_req
 // during the credit-handshake window so a transient isNotExpPacket from the
 // bringup recal sequence cannot wedge the FCSM at SEND_NACK (state 7).
@@ -385,6 +417,23 @@ module WlinkGenericFCSM_6 #(
   // bringup-transient notifier so it cannot re-latch send_nack_req on the
   // same cycle the synchronous AND-clear is applied.
   wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
+  // SoC Labs L8 v2 (2026-05-26): narrow send_ack_req mask.
+  // L8 v1 blanket-ANDed (~socl_l7_bringup_forgive) onto the entire
+  // send_ack_req next-state and broke L7's LINK_IDLE achievement on tdif-14
+  // because it suppressed the LEGITIMATE first-time ACK trigger
+  // (isExpPacket from slave's first reset packet). The peer never received
+  // the master's ACK, so the credit/ack handshake regressed from state 4
+  // back to state 2 / state 1.
+  //
+  // L8 v2 narrows the mask: only the SPURIOUS re-trigger
+  //   l2a_fifo_raddr_txclk_update
+  // (which pulses each time slave consumes a master ACK via the
+  // l2a addr-sync CDC round-trip) is gated. isExpPacket is left
+  // untouched so the first ACK still fires and completes the
+  // credit-handshake -> LINK_IDLE advance. Once state 5 (LINK_DATA)
+  // is reached once, socl_l7_reached_link_data latches, bringup_forgive
+  // disarms, and the gate is permanently transparent.
+  wire l2a_raddr_update_gated = l2a_fifo_raddr_txclk_update & ~socl_l7_bringup_forgive;
   // Original Chisel-emitted _GEN_34 (kept as comment for review):
   //   wire [2:0] _GEN_34 = crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out ? 3'h2 : state;
   // Patched: only allow state 1 -> state 2 once minimum CR-emit count reached.
@@ -428,7 +477,7 @@ module WlinkGenericFCSM_6 #(
   wire [55:0] _GEN_58 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? _link_data_in_T : link_data; // @[FC.scala 523:63 FC.scala 528:39 FC.scala 430:39]
   wire [7:0] _GEN_59 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? ne_rx_ptr_next : ne_rx_ptr; // @[FC.scala 523:63 FC.scala 530:39 FC.scala 434:39]
   wire [2:0] _GEN_60 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? 3'h5 : state; // @[FC.scala 523:63 FC.scala 531:39 FC.scala 424:39]
-  wire  _GEN_62 = send_ack_req & _T_54 ? 1'h0 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 514:50 FC.scala 516:39 FC.scala 438:39]
+  wire  _GEN_62 = send_ack_req & _T_54 ? 1'h0 : send_ack_req | (isExpPacket | l2a_raddr_update_gated); // @[FC.scala 514:50 FC.scala 516:39 FC.scala 438:39] SoC Labs L8 v2 narrowed l2a-raddr gate
   wire  _GEN_63 = send_ack_req & _T_54 | _GEN_55; // @[FC.scala 514:50 FC.scala 517:39]
   wire [7:0] _GEN_64 = send_ack_req & _T_54 ? out_prepend_swi_ack_id : _GEN_56; // @[FC.scala 514:50 FC.scala 518:39]
   wire [15:0] _GEN_65 = send_ack_req & _T_54 ? {{3'd0}, _word_count_in_T_4} : _GEN_57; // @[FC.scala 514:50 FC.scala 519:39]
@@ -442,7 +491,7 @@ module WlinkGenericFCSM_6 #(
   wire [15:0] _GEN_74 = send_nack_req ? {{3'd0}, _word_count_in_T_4} : _GEN_65; // @[FC.scala 505:28 FC.scala 510:39]
   wire [55:0] _GEN_75 = send_nack_req ? 56'h0 : _GEN_66; // @[FC.scala 505:28 FC.scala 511:39]
   wire [2:0] _GEN_76 = send_nack_req ? 3'h7 : _GEN_67; // @[FC.scala 505:28 FC.scala 512:39]
-  wire  _GEN_77 = send_nack_req ? send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update) : _GEN_62; // @[FC.scala 505:28 FC.scala 438:39]
+  wire  _GEN_77 = send_nack_req ? send_ack_req | (isExpPacket | l2a_raddr_update_gated) : _GEN_62; // @[FC.scala 505:28 FC.scala 438:39] SoC Labs L8 v2 narrowed l2a-raddr gate
   wire  _GEN_78 = send_nack_req ? 1'h0 : _GEN_68; // @[FC.scala 505:28 FC.scala 441:39]
   wire [7:0] _GEN_79 = send_nack_req ? ne_rx_ptr : _GEN_69; // @[FC.scala 505:28 FC.scala 434:39]
   wire [2:0] _GEN_85 = _T_59 ? 3'h5 : 3'h4; // @[FC.scala 555:65 FC.scala 563:39 FC.scala 566:39]
@@ -456,7 +505,7 @@ module WlinkGenericFCSM_6 #(
   wire [15:0] _GEN_108 = auto_tx_out_advance ? _GEN_74 : word_count; // @[FC.scala 537:28 FC.scala 429:39]
   wire [55:0] _GEN_109 = auto_tx_out_advance ? _GEN_75 : link_data; // @[FC.scala 537:28 FC.scala 430:39]
   wire [2:0] _GEN_110 = auto_tx_out_advance ? _GEN_100 : state; // @[FC.scala 537:28 FC.scala 424:39]
-  wire  _GEN_111 = auto_tx_out_advance ? _GEN_77 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 537:28 FC.scala 438:39]
+  wire  _GEN_111 = auto_tx_out_advance ? _GEN_77 : send_ack_req | (isExpPacket | l2a_raddr_update_gated); // @[FC.scala 537:28 FC.scala 438:39] SoC Labs L8 v2 narrowed l2a-raddr gate
   wire  _GEN_112 = auto_tx_out_advance & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
   wire [7:0] _GEN_113 = auto_tx_out_advance ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
   wire  _GEN_114 = auto_tx_out_advance ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
@@ -502,7 +551,7 @@ module WlinkGenericFCSM_6 #(
   wire [15:0] _GEN_164 = state == 3'h5 ? _GEN_108 : _GEN_155; // @[FC.scala 534:58]
   wire [55:0] _GEN_165 = state == 3'h5 ? _GEN_109 : _GEN_156; // @[FC.scala 534:58]
   wire [2:0] _GEN_166 = state == 3'h5 ? _GEN_110 : _GEN_150; // @[FC.scala 534:58]
-  wire  _GEN_167 = state == 3'h5 ? _GEN_111 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 534:58 FC.scala 438:39]
+  wire  _GEN_167 = state == 3'h5 ? _GEN_111 : send_ack_req | (isExpPacket | l2a_raddr_update_gated); // @[FC.scala 534:58 FC.scala 438:39] SoC Labs L8 v2 narrowed l2a-raddr gate
   wire  _GEN_168 = state == 3'h5 ? _GEN_112 : _GEN_157; // @[FC.scala 534:58]
   wire [7:0] _GEN_169 = state == 3'h5 ? _GEN_113 : _GEN_158; // @[FC.scala 534:58]
   wire [7:0] _GEN_170 = state == 3'h4 ? _count_in_T_5 : _GEN_159; // @[FC.scala 501:58 FC.scala 504:39]
@@ -1049,13 +1098,13 @@ module WlinkGenericFCSM_6 #(
     if (io_tx_reset) begin
       send_ack_req <= 1'h0;
     end else if (_ack_seen_before_T) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= send_ack_req | (isExpPacket | l2a_raddr_update_gated); // SoC Labs L8 v2 narrowed l2a-raddr gate
     end else if (state == 3'h1) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= send_ack_req | (isExpPacket | l2a_raddr_update_gated); // SoC Labs L8 v2 narrowed l2a-raddr gate
     end else if (state == 3'h2) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= send_ack_req | (isExpPacket | l2a_raddr_update_gated); // SoC Labs L8 v2 narrowed l2a-raddr gate
     end else if (state == 3'h3) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= send_ack_req | (isExpPacket | l2a_raddr_update_gated); // SoC Labs L8 v2 narrowed l2a-raddr gate
     end else begin
       send_ack_req <= _GEN_178;
     end

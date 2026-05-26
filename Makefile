@@ -89,6 +89,33 @@ sim-repro-skid3:
 	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
 
 
+# =============================================================================
+# Paired tidelink_top regression — deterministic sim of the HW bringup chain.
+#
+# Two full tidelink_top instances cross-wired through GPIO PHY pads. Six tests
+# walk the same sequence as deploy_pair.sh + bringup_pair_converge.sh, from
+# role_lock through cr/crack exchange through doorbell crossing.
+#
+# Expected baseline outcome (matching tdif-13/15 HW state):
+#   test_01 PASS  role_lock + cal_done assert on both sides
+#   test_02 PASS  training_mode read-back
+#   test_03 PASS  cr_pkt_seen + crack_pkt_seen symmetric (bilateral LINK_IDLE)
+#   test_04 FAIL  PAIR_CREDIT_COUNTER stays 0 — the HW symptom locked in
+#   test_05 FAIL  doorbell master→slave doesn't cross — same as HW
+#   test_06 PASS  doorbell slave→master DOES cross (asymmetry, also HW-faithful)
+#
+# Any RTL fix that closes the credit-path bug should flip test_04 and test_05
+# green. Runtime ~6 min wall-clock on a typical workstation (vs ~50 min for an
+# FPGA build), so this is sim-gate viable per the project policy.
+# =============================================================================
+
+sim-regression:
+	@echo "========================================"
+	@echo " sim-regression — paired tidelink_top HW-symptom regression"
+	@echo "========================================"
+	$(MAKE) -C cocotb/tidelink_top_pair
+
+
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────
 # Exposes `make fc`, `make gdsii`, `make fc_lec`, `make fc_etm`, `make

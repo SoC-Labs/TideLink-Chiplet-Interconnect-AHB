@@ -24,9 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAT_NAME="03_ahb_sub_e2e"
 tt_log "=== $CAT_NAME start ==="
 
-# AHB SUB aperture address — TIDELINK_AHB_SUB_BASE per address map. Bridge1
-# build exposes it at 0x4401_0000 (32 KB) per the chiplet-extended sys_desc.
-: "${AHB_SUB_BASE:=0x44010000}"
+# AHB SUB aperture address — TIDELINK_AHB_SUB_BASE per address map.
+# CORRECTED 2026-05-26: previous value 0x44010000 was WRONG — that's the
+# LOCAL RX FIFO read window (ahb_fifo), not the peer aperture.
+# Per fpga/targets/pynq-z2-pair-flip/tidelink_design.tcl:580-607,
+# ahb_sub (the 64 MB peer transparent window) lives at 0x40000000.
+# Writes here route through the FC adapter and cross the wire to the peer.
+: "${AHB_SUB_BASE:=0x40000000}"
 : "${AHB_SUB_NWORDS:=64}"
 
 # Pattern generator: deterministic, easy to spot wrong-data in dumps.

@@ -19,13 +19,21 @@ export TIDELINK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CMSDK_DIR="${CMSDK_DIR:-${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0}"
 
 # cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install used in CI;
-# fall back to the standalone BP210 install when not present in CMSDK_DIR.
+# fall back to alternative locations when not present in CMSDK_DIR.
 if [ -z "${CMSDK_FPGA_SRAM_V}" ]; then
-    if [ -f "${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v" ]; then
-        export CMSDK_FPGA_SRAM_V="${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v"
-    else
-        export CMSDK_FPGA_SRAM_V="${ARM_IP_LIBRARY_PATH}/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
-    fi
+    _cmsdk_sram_candidates=(
+        "${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v"
+        "${ARM_IP_LIBRARY_PATH}/latest/Corstone-101/logical/models/memories/cmsdk_fpga_sram.v"
+        "/research/AAA/ip_library/latest/Corstone-101/logical/models/memories/cmsdk_fpga_sram.v"
+        "${ARM_IP_LIBRARY_PATH}/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
+    )
+    for _f in "${_cmsdk_sram_candidates[@]}"; do
+        if [ -f "$_f" ]; then
+            export CMSDK_FPGA_SRAM_V="$_f"
+            break
+        fi
+    done
+    unset _cmsdk_sram_candidates _f
 fi
 
 # XHB500 source IP (Arm XHB-500 Generic Global Bundle)

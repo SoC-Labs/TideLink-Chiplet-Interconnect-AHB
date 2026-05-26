@@ -905,13 +905,45 @@ module WlinkGenericFCSM_6 #(
       last_good_pkt <= exp_pkt_num;
     end
   end
+  // SoC Labs L10 credit-bootstrap fix (2026-05-26):
+  // The Chisel-emitted GEN_42 (line 460 here) sets word_count to 16'h0 in the
+  // CRACK packet whenever the local peer has ALREADY observed the remote
+  // peer's CRACK (via crack_pkt_seen_tx_demet_io_out) before emitting its own
+  // CRACK. Under symmetric POR both peers emit CRACK simultaneously and both
+  // load credit_max=0x1f. But under FPGA bring-up (post-recal_cycle or
+  // asymmetric clk_wiz lock), one peer wins the race: it sends CRACK first
+  // with 0x1f1f, then observes its peer's CRACK and emits a SECOND CRACK with
+  // 0x0000 (the GEN_42 branch). The peer that received the original 0x1f1f
+  // CRACK is fine, but the FIRST peer's *next* CR/CRACK from peer ALSO
+  // arrives with word_count=0 (because peer is now in state 3 LINK_DATA_WAIT
+  // and emits CRACK with WC=0). Net: at least one peer ends up with
+  // fe_rx_credit_max=0 / fe_tx_credit_max=0 — credit pool stays at 0 for
+  // operational data, FCSM never advances past LINK_IDLE for app traffic.
+  //
+  // Fix: clamp the loaded credit_max to a minimum of 8'h1f (=31 packets)
+  // whenever a CR/CRACK packet arrives. If the on-wire word_count is 0x00
+  // (post-handshake artifact), substitute the design default 0x1f. This
+  // preserves the original behaviour for any non-zero advertisement (peer's
+  // policy honoured) and only repairs the corner case where the protocol
+  // intentionally sends WC=0 in the second-emit CRACK.
+  //
+  // Safety: peer-controlled credit advertisement is preserved for any
+  // non-zero value, so a constrained peer can still advertise credit_max <
+  // 0x1f via the swi/Chisel path. Only the corner case where peer signals
+  // "0 credits" is overridden, and "0 credits" was already non-functional
+  // (pool stays at 0 → no data ever flows), so this strictly relaxes the
+  // gate. Verified in cocotb wlink_pair sim suite (see test_assert_bringup
+  // / test_asymmetric_failure_fuzz / test_link_idle_advance_with_payload).
+  wire [7:0] socl_l10_rx_credit_max_in = (auto_rx_in_word_count[15:8] == 8'h0)
+                                       ? 8'h1f
+                                       : auto_rx_in_word_count[15:8];
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
     if (io_rx_reset) begin
       fe_rx_credit_max <= 8'h0;
     end else if (_fe_tx_credit_max_in_T) begin
       fe_rx_credit_max <= 8'h0;
     end else if (_fe_tx_credit_max_in_T_1) begin
-      fe_rx_credit_max <= auto_rx_in_word_count[15:8];
+      fe_rx_credit_max <= socl_l10_rx_credit_max_in;
     end
   end
   // SoC Labs (FPGA bring-up fix, 2026-05-08): make cr_pkt_seen_rx and
@@ -953,13 +985,19 @@ module WlinkGenericFCSM_6 #(
       end
     end
   end
+  // SoC Labs L10 credit-bootstrap fix (2026-05-26):
+  // Same rationale as fe_rx_credit_max above. Clamp to 8'h1f minimum on
+  // CR/CRACK to avoid the WC=0 corner-case load that wedges the credit pool.
+  wire [7:0] socl_l10_tx_credit_max_in = (auto_rx_in_word_count[7:0] == 8'h0)
+                                       ? 8'h1f
+                                       : auto_rx_in_word_count[7:0];
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
     if (io_rx_reset) begin
       fe_tx_credit_max <= 8'h0;
     end else if (~en_ff2_rx_demet_io_out) begin
       fe_tx_credit_max <= 8'h0;
     end else if (pkt_is_cr_pkt | pkt_is_crack_pkt) begin
-      fe_tx_credit_max <= auto_rx_in_word_count[7:0];
+      fe_tx_credit_max <= socl_l10_tx_credit_max_in;
     end
   end
   // SoC Labs L6 producer-side fix: CR-emit counter.  Increments on every

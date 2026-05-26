@@ -1,4 +1,24 @@
 // =============================================================================
+// SoC Labs L8 sticky-ACK bringup recovery (2026-05-26): mirror of L7 for
+// send_ack_req.  After L6 (CR-emit hold) and L7 (NACK forgive) eliminated
+// the asymmetric-CR and sticky-NACK wedge classes, tdif-13 HW observed a
+// THIRD wedge: both FCSMs reach LINK_IDLE symmetric (state=4 on each side,
+// cr/crack stickies high, PHY clean) but data still does not cross.
+// M_TIDELINK_FC_active=0 (master a2l replay FIFO has words queued) but
+// FCSM never advances past LINK_IDLE.
+//
+// Root cause: state-4 transition priority is {nack, ack, data}.  In post-L7
+// HW, send_nack_req is forgiven, but send_ack_req is constantly re-asserted
+// by isExpPacket / l2a_fifo_raddr_txclk_update from slave's bringup traffic
+// (slave's own reset_deassert_pulse + ACK round-trip).  Master keeps cycling
+// 4 -> 6 (ACK) -> 4 without ever firing 4 -> 5 (LINK_DATA), so the queued
+// a2l word never drains and slave never receives a data packet.
+//
+// L8 reuses the L7 socl_l7_bringup_forgive gate to AND-clear send_ack_req
+// in every state.  Once state 5 is reached (the L7 sticky latches),
+// bringup_forgive disarms and ACK behaviour matches upstream.  No new
+// signals; same safety properties as L7.
+// =============================================================================
 // SoC Labs L7 sticky-NACK bringup recovery (2026-05-26): forgive send_nack_req
 // during the credit-handshake window so a transient isNotExpPacket from the
 // bringup recal sequence cannot wedge the FCSM at SEND_NACK (state 7).
@@ -1045,19 +1065,47 @@ module WlinkGenericFCSM_6 #(
       l2a_fifo_raddr_txclk_prev <= l2a_fifo_addr_to_tx_r_addr;
     end
   end
+  // SoC Labs L8 (2026-05-26): mirror L7's bringup_forgive AND-clear, but for
+  // send_ack_req.  Failure mode observed on tdif-13 (post-L6+L7 build, both
+  // FCSMs reach LINK_IDLE symmetric with cr/crack seen, PHY clean, but data
+  // does not cross):
+  //
+  //   * Master a2l_replay_link_empty=0 (returner reset_deassert_pulse word
+  //     queued in master a2l FIFO).
+  //   * Master FCSM stays at state==4 forever; never reaches LINK_DATA.
+  //   * Slave's reset packet has master receiving an exp_pkt notifier ->
+  //     enqueued to ack_nack_fifo -> isExpPacket=1 -> send_ack_req latched.
+  //   * State-4 priority: send_ack_req && count==0 -> state 6 (ACK).  This
+  //     ALWAYS wins over the state -> 5 transition gated on a2l_valid.
+  //   * After the ACK fires, master returns to state 4, but slave's l2a
+  //     drain on the ACK round-trip causes l2a_fifo_raddr_txclk_update to
+  //     pulse, re-asserting send_ack_req before a2l can win.
+  //
+  // Fix: AND-clear send_ack_req every cycle while socl_l7_bringup_forgive
+  // is asserted (same gate as L7 — both peers' cr+crack stickies high AND
+  // FCSM has never reached LINK_DATA).  This allows the queued a2l data
+  // word to advance state 4 -> 5 on the first cycle send_ack_req is clear.
+  // Once state 5 is observed once, reached_link_data latches and forgive
+  // disarms permanently, restoring upstream ACK behaviour for steady state.
+  //
+  // Safety: this is identical-shape to L7's send_nack_req fix, with the
+  // same disarm condition and the same disable-after-LINK_DATA semantics.
+  // No new clock-domain crossings.  Worst case: master delays its first
+  // ACK by N cycles during bringup, where N is the bringup-forgive window
+  // (which closes the moment state 5 is reached the first time).
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       send_ack_req <= 1'h0;
     end else if (_ack_seen_before_T) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= (send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h1) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= (send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h2) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= (send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h3) begin
-      send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
+      send_ack_req <= (send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update)) & ~socl_l7_bringup_forgive;
     end else begin
-      send_ack_req <= _GEN_178;
+      send_ack_req <= _GEN_178 & ~socl_l7_bringup_forgive;
     end
   end
   // SoC Labs L7: AND-clear send_nack_req every cycle while bringup_forgive

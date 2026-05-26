@@ -66,7 +66,7 @@ module WavD2DGpioRx #(
   // FC data, S_HUNT's MAX_HUNT timeout returns to S_LOCKED with do_slip=0
   // (count preserved). During re-training with new phase, the next match
   // applies the correct slip. Sim coverage in cocotb/wavd2d_gpiorx_t3a.
-  parameter T3A_CONTINUOUS = 1'b1,
+  parameter T3A_CONTINUOUS = 1'b0,
   // SoC Labs §9 clock fix (2026-05-19): per-lane clean recovered-clock path.
   // Netlist evidence (Place 30-568 ×7 on pynq-z2-pair-all) proved the
   // WavClockMux io_pol/scan muxes + the ~adj_count[3] divided word-clock

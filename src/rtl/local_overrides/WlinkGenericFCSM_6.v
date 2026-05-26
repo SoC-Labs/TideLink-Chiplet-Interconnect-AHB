@@ -1,4 +1,73 @@
 // =============================================================================
+// SoC Labs L7 sticky-NACK bringup recovery (2026-05-26): forgive send_nack_req
+// during the credit-handshake window so a transient isNotExpPacket from the
+// bringup recal sequence cannot wedge the FCSM at SEND_NACK (state 7).
+// -----------------------------------------------------------------------------
+// HW failure mode observed on tdif-12 (sub 1353f83 + L6 producer fix, build
+// post-2026-05-26 bringup_pair_converge):
+//   * Both peers now exchange CR + CRACK successfully (cr_pkt_seen_rx=1 and
+//     crack_pkt_seen_rx=1 on both sides — the asymmetric CR-loss class from
+//     L6 is eliminated).
+//   * BUT master FCSM wedges at state 7 (SEND_NACK) with CRC error counter =
+//     0.  Slave FCSM sits at state 4 (LINK_IDLE) waiting for master to leave
+//     SEND_NACK.  Polarity flipped vs tdif-05 (which had slave stuck at 7).
+//   * Both sides observe NO actual CRC error and NO actual packet corruption
+//     in the steady-state baseline — yet send_nack_req is latched high.
+//
+// Root cause (FC.scala lines ~439, 505, 538, 571, 586; this file lines
+// ~911-925 of upstream and ~981-995 here):
+//   reg send_nack_req;
+//   always @(posedge io_tx_clk) begin
+//     if (_ack_seen_before_T) send_nack_req <= send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */;
+//     else if (state == 3'h1) ... same OR-only set ...
+//     else if (state == 3'h2) ... same ...
+//     else if (state == 3'h3) ... same ...
+//     else                    send_nack_req <= _GEN_172;  // GEN_172 only clears in state==4
+//   end
+// Whenever the rx framer transitions during bringup (slot0 recal flip, IDELAY
+// re-tap, demet metastability), the rx_pkt sequence can momentarily decode
+// as not-the-expected-sequence-position.  The FC layer enqueues a notifier
+// with pkttypenotifier=3'h1 into ack_nack_fifo.  Once that readout fires
+// (`ack_nack_fifo_io_rinc = ack_nack_fifo_valid & state != 3'h0`),
+// `isNotExpPacket` pulses for one cycle and latches `send_nack_req <= 1`.
+//
+// The recovery path (state 4 → state 7 → emit NACK → auto_tx_out_advance →
+// state 4 → _GEN_71 clears send_nack_req) IS implemented, but on HW it does
+// not converge because:
+//   (a) bringup_pair_converge's recal cycle keeps pushing fresh isNotExpPacket
+//       notifiers into the fifo faster than state 7 can drain them, AND
+//   (b) the peer is at LINK_IDLE waiting to see normal data-id traffic, so
+//       it does not acknowledge NACK packets in a way that lets either side
+//       progress to LINK_DATA — the link is bidirectionally healthy but the
+//       FCSM is wedged on a stale bringup artifact.
+//
+// L7 fix: introduce a "bringup forgive" gate that
+//   (1) latches `socl_l7_reached_link_data` once FCSM has ever observed
+//       state == LINK_DATA (state 5) — this permanently disarms the gate
+//       after a successful initial bringup, so steady-state errors behave
+//       exactly like upstream.
+//   (2) computes `socl_l7_bringup_forgive = !reached_link_data &
+//                 cr_pkt_seen_tx_demet_io_out & crack_pkt_seen_tx_demet_io_out`
+//       — only forgives once the bidirectional credit-handshake observation
+//       sticky bits prove the link is structurally healthy.
+//   (3) AND-clears `send_nack_req` synchronously in ALL states whenever
+//       forgive is asserted, draining the bringup latches.
+//   (4) ALSO masks `isNotExpPacket` while forgive is asserted, so a fresh
+//       readout from a stale fifo entry cannot re-latch send_nack_req on
+//       the same cycle.  `crcCorruptSeen` is NOT masked — a real CRC error
+//       during bringup still latches NACK (correct behaviour).
+//
+// Safety properties:
+//   * Steady-state behaviour unchanged once state 5 has been observed once.
+//   * Genuine CRC errors during bringup still latch send_nack_req.
+//   * The forgive gate is gated on the same observation sticky bits that
+//     proved the asymmetric-CR-loss bug is gone — so L7 only activates in
+//     a regime where the link IS already healthy and the NACK is a stale
+//     bringup artifact.
+//   * No new clock domain crossings: forgive is driven from existing
+//     io_tx_clk-domain synchronized sticky bits.
+//
+// =============================================================================
 // SoC Labs L6 producer-side fix (2026-05-26): minimum CR-emit hold in state==1
 // -----------------------------------------------------------------------------
 // Bug class observed in cocotb wlink_pair fuzz (6/12 scenarios fail):
@@ -303,6 +372,19 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L6 producer-side fix: count CR emissions in state==1, gate exit.
   reg  [7:0] socl_l6_cr_emit_count; // counts (advance & sop) cycles while state==1
   wire socl_l6_cr_emit_gate_ok = (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
+  // SoC Labs L7 sticky-NACK bringup recovery:
+  //   * socl_l7_reached_link_data : once high, disarms the forgive gate
+  //     permanently for the lifetime of this reset cycle (steady-state).
+  //   * socl_l7_bringup_forgive   : combinational; when high, clear
+  //     send_nack_req and mask isNotExpPacket. See header comment.
+  reg  socl_l7_reached_link_data;
+  wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)
+                                 & cr_pkt_seen_tx_demet_io_out
+                                 & crack_pkt_seen_tx_demet_io_out;
+  // Masked isNotExpPacket: while forgive is active, suppress the spurious
+  // bringup-transient notifier so it cannot re-latch send_nack_req on the
+  // same cycle the synchronous AND-clear is applied.
+  wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
   // Original Chisel-emitted _GEN_34 (kept as comment for review):
   //   wire [2:0] _GEN_34 = crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out ? 3'h2 : state;
   // Patched: only allow state 1 -> state 2 once minimum CR-emit count reached.
@@ -354,7 +436,7 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] _GEN_67 = send_ack_req & _T_54 ? 3'h6 : _GEN_60; // @[FC.scala 514:50 FC.scala 521:39]
   wire  _GEN_68 = send_ack_req & _T_54 ? 1'h0 : _T_59; // @[FC.scala 514:50 FC.scala 441:39]
   wire [7:0] _GEN_69 = send_ack_req & _T_54 ? ne_rx_ptr : _GEN_59; // @[FC.scala 514:50 FC.scala 434:39]
-  wire  _GEN_71 = send_nack_req ? 1'h0 : send_nack_req | (crcCorruptSeen | isNotExpPacket); // @[FC.scala 505:28 FC.scala 507:39 FC.scala 439:39]
+  wire  _GEN_71 = send_nack_req ? 1'h0 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 505:28 FC.scala 507:39 FC.scala 439:39]
   wire  _GEN_72 = send_nack_req | _GEN_63; // @[FC.scala 505:28 FC.scala 508:39]
   wire [7:0] _GEN_73 = send_nack_req ? out_prepend_swi_nack_id : _GEN_64; // @[FC.scala 505:28 FC.scala 509:39]
   wire [15:0] _GEN_74 = send_nack_req ? {{3'd0}, _word_count_in_T_4} : _GEN_65; // @[FC.scala 505:28 FC.scala 510:39]
@@ -368,7 +450,7 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] _GEN_92 = _T_57 ? 3'h6 : _GEN_85; // @[FC.scala 546:52 FC.scala 553:39]
   wire  _GEN_96 = send_nack_req | _GEN_88; // @[FC.scala 538:30 FC.scala 541:39]
   wire [2:0] _GEN_100 = send_nack_req ? 3'h7 : _GEN_92; // @[FC.scala 538:30 FC.scala 545:39]
-  wire  _GEN_105 = auto_tx_out_advance ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket); // @[FC.scala 537:28 FC.scala 439:39]
+  wire  _GEN_105 = auto_tx_out_advance ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 537:28 FC.scala 439:39]
   wire  _GEN_106 = auto_tx_out_advance ? _GEN_96 : sop; // @[FC.scala 537:28 FC.scala 427:39]
   wire [7:0] _GEN_107 = auto_tx_out_advance ? _GEN_73 : data_id; // @[FC.scala 537:28 FC.scala 428:39]
   wire [15:0] _GEN_108 = auto_tx_out_advance ? _GEN_74 : word_count; // @[FC.scala 537:28 FC.scala 429:39]
@@ -396,7 +478,7 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_137 = auto_tx_out_advance & _GEN_128; // @[FC.scala 582:28 FC.scala 441:39]
   wire [7:0] _GEN_138 = auto_tx_out_advance ? _GEN_129 : ne_rx_ptr; // @[FC.scala 582:28 FC.scala 434:39]
   wire [7:0] _GEN_139 = state == 3'h6 ? _GEN_130 : count; // @[FC.scala 578:57 FC.scala 425:39]
-  wire  _GEN_141 = state == 3'h6 ? _GEN_105 : send_nack_req | (crcCorruptSeen | isNotExpPacket); // @[FC.scala 578:57 FC.scala 439:39]
+  wire  _GEN_141 = state == 3'h6 ? _GEN_105 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 578:57 FC.scala 439:39]
   wire  _GEN_142 = state == 3'h6 ? _GEN_132 : sop; // @[FC.scala 578:57 FC.scala 427:39]
   wire [7:0] _GEN_143 = state == 3'h6 ? _GEN_133 : data_id; // @[FC.scala 578:57 FC.scala 428:39]
   wire [15:0] _GEN_144 = state == 3'h6 ? _GEN_134 : word_count; // @[FC.scala 578:57 FC.scala 429:39]
@@ -407,7 +489,7 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_149 = state == 3'h7 ? _GEN_114 : _GEN_142; // @[FC.scala 571:58]
   wire [2:0] _GEN_150 = state == 3'h7 ? _GEN_115 : _GEN_146; // @[FC.scala 571:58]
   wire [7:0] _GEN_151 = state == 3'h7 ? count : _GEN_139; // @[FC.scala 571:58 FC.scala 425:39]
-  wire  _GEN_153 = state == 3'h7 ? send_nack_req | (crcCorruptSeen | isNotExpPacket) : _GEN_141; // @[FC.scala 571:58 FC.scala 439:39]
+  wire  _GEN_153 = state == 3'h7 ? send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */ : _GEN_141; // @[FC.scala 571:58 FC.scala 439:39]
   wire [7:0] _GEN_154 = state == 3'h7 ? data_id : _GEN_143; // @[FC.scala 571:58 FC.scala 428:39]
   wire [15:0] _GEN_155 = state == 3'h7 ? word_count : _GEN_144; // @[FC.scala 571:58 FC.scala 429:39]
   wire [55:0] _GEN_156 = state == 3'h7 ? link_data : _GEN_145; // @[FC.scala 571:58 FC.scala 430:39]
@@ -978,19 +1060,32 @@ module WlinkGenericFCSM_6 #(
       send_ack_req <= _GEN_178;
     end
   end
+  // SoC Labs L7: AND-clear send_nack_req every cycle while bringup_forgive
+  // is asserted, in every state.  This ensures a stale isNotExpPacket fifo
+  // readout that latched before forgive armed still gets cleared.
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       send_nack_req <= 1'h0;
     end else if (_ack_seen_before_T) begin
-      send_nack_req <= send_nack_req | (crcCorruptSeen | isNotExpPacket);
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h1) begin
-      send_nack_req <= send_nack_req | (crcCorruptSeen | isNotExpPacket);
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h2) begin
-      send_nack_req <= send_nack_req | (crcCorruptSeen | isNotExpPacket);
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
     end else if (state == 3'h3) begin
-      send_nack_req <= send_nack_req | (crcCorruptSeen | isNotExpPacket);
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
     end else begin
-      send_nack_req <= _GEN_172;
+      send_nack_req <= _GEN_172 & ~socl_l7_bringup_forgive;
+    end
+  end
+  // SoC Labs L7: sticky "have we ever reached LINK_DATA" register.  Latches
+  // on the first cycle FCSM observes state==5.  Permanently disarms the
+  // bringup_forgive gate so steady-state behaviour matches upstream.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_reached_link_data <= 1'h0;
+    end else if (state == 3'h5) begin
+      socl_l7_reached_link_data <= 1'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin

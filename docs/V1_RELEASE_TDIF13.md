@@ -137,29 +137,64 @@ The asymmetric CR-loss class that wedged tdif-05 is gone in tdif-13.
 
 ## 3. Known limitations (the bug v1 does NOT fix)
 
-> **Diagnosis evolved 2026-05-26 09:30 → 10:00 BST. Latest position:
-> TWO INDEPENDENT BUGS likely exist.**
+> **Diagnosis evolved 2026-05-26 09:30 → 11:00 BST through three iterations.
+> Final position: one bug (slave-side byte-align loss post-bringup) — credit-gate
+> hypothesis was HW-INVALIDATED by tdif-17 PTP test.**
 >
-> 1. **Credit-pool=0 in FCSM** (real RTL bug at `_GEN_42` in
->    `WlinkGenericFCSM_6.v`): the second-emit CRACK protocol emits
->    `word_count=0x0000` under asymmetric bringup timing, which the
->    peer then loads as `fe_rx_credit_max=0`. FCSM gate
->    `~fe_rx_is_full` evaluates false, no FC traffic ever crosses.
->    Affects: doorbells, AHB peer-writes via FC, TideLink FC channel.
->    L10 fix (commit `8783885` on `feat/td-interface-debug-l10-credit-bootstrap`)
->    clamps the WC=0 value to 0x1f at the receiver — sim-clean.
+> ### tdif-17 HW test result (2026-05-26 10:30 BST)
 >
-> 2. **PTP RX silent** (separate, unconfirmed): master fires 64 PTP
->    SYNCs at 32 Hz with `phc_locked=1`, slave's `PTP_RX_PAYLOAD=0`.
->    PTP transport BYPASSES the FCSM credit gate (separate
->    `ShortPacketToWlink` module), so this failure is independent of
->    bug #1. Hypothesis: slave LL_RX byte-align lost post-bringup at
->    the `WavD2DGpioRx` layer. Awaiting ILA capture DURING PTP TX to
->    confirm — current ILA captures were during credit-gated doorbell
->    flood (no master TX activity), so byte-align could not be tested.
+> Built tdif-17 = L1+L2+L3+L4+L5+Option(c)+L6+L7+L8v2+L9+**L10 credit-gate clamp**
+> with mark_debug ILA taps on `fe_*_credit_max`, `auto_rx_in_word_count`,
+> `tl_fc_a2l_valid/ready`. Deployed to bridge1, ran:
 >
-> Both bugs need to be fixed (or one shown to be a consequence of
-> the other) before PHC Phase-1 can close.
+> - bringup_pair_converge → CONVERGED bilateral LINK_IDLE, cr+crack=1/1
+> - 8 doorbells → counters stay 0 (FC channel still doesn't cross)
+> - **PHC-initialized PTP sync (60s, 128 Hz SYNC rate)** → slave `locked=0`,
+>   `delay=0`, offsets diverge. **Slave received ZERO packets from master via
+>   PTP path** (master HW_SYNC was firing — confirmed earlier).
+> - Peer-write to 0x40000000 (the correct `ahb_sub` aperture) → wedged master's
+>   AXI bus (required power cycle of z2_02). Same wedge hazard class as 0x44000000
+>   when FC TX is blocked.
+>
+> **PTP architecturally bypasses the FCSM credit gate** (separate `ShortPacketToWlink`
+> module). So PTP failing PROVES the credit-gate is NOT the blocker. L10's
+> `_GEN_42` WC=0 clamp is a real RTL bug fix, but it's not what's wedging the
+> link in steady state.
+>
+> ### Wavious upstream analysis (parallel investigation 2026-05-26 11:00 BST)
+>
+> Public Wavious repos `wav-d2d-hw` + `wav-wlink-hw` are dormant since
+> Oct 2021. Critically: **the GPIO PHY isn't in the upstream**. Only the
+> analog SerDes is. Our entire `WavD2DGpio*` chain — T3A comma-hunt, IDELAY,
+> USE_CLKBUF, training pattern, calibrator — is SoC Labs invention layered
+> on top. Upstream `WlinkRxLinkLayer` has no `training_mode` input, no
+> framer reset, no byte-align state machine. Their architectural assumption:
+> ASIC silicon is byte-aligned BY CONSTRUCTION (deterministic padring +
+> RPLL deskew), so the link layer never needs to recover.
+>
+> Implication: **we own the PHY design space**. No upstream fix is coming.
+> The post-bringup byte-align loss is OUR design hole and we have to close
+> it ourselves. L11 (in flight) is the targeted fix.
+>
+> ### Final diagnosis
+>
+> One bug, narrowed to:
+>
+> **Slave-side `WavD2DGpioRx` byte-align loss post-bringup**. The
+> `bringup_pair_converge.sh` recal cycle (slot0=0x3 → 0x1 → 0x0 +
+> LL swreset) succeeds in latching cr/crack sticky bits during the
+> brief recal-pulse window, but the byte-alignment achieved during
+> that window does NOT survive the to_data_mode transition on real
+> silicon. L1 (TX word-aligned mux) and Option (c) (CDC training_mode
+> gate on llrx_reset) were SUPPOSED to address this. Sim shows them
+> working. HW shows they're insufficient — most likely due to clk_wiz
+> lock skew + IDELAY tap variance + recovered-clock metastability at
+> training-mode drop, none of which are modeled in cocotb's bit-perfect
+> deterministic TB.
+>
+> L10's credit-gate fix (commit `8783885`) addresses a real but
+> SECONDARY bug. L11 (in flight on `feat/td-interface-debug-l11-byte-align`)
+> targets the actual primary bug.
 
 1. **Slave LL_RX byte-align is LOST post-bringup.** ILA capture during a
    200-doorbell flood (HW exploration 2026-05-26) showed slave's

@@ -410,7 +410,21 @@ module WlinkGenericFCSM_6 #(
   //   * socl_l7_bringup_forgive   : combinational; when high, clear
   //     send_nack_req and mask isNotExpPacket. See header comment.
   reg  socl_l7_reached_link_data;
+  // SoC Labs L9 (2026-05-26): time-bounded bringup_forgive watchdog.
+  // L7+L8v2 alone has a chicken-and-egg: bringup_forgive blocks state==5,
+  // reached_link_data only sets in state==5, so forgive can never disarm
+  // if there's no other path to state==5. The peer ack hand-shake should
+  // eventually fire isExpPacket which advances 4→6→4→5, but on tdif-15 HW
+  // the state stays at 4 indefinitely (per L9 investigation commit f6f16f3).
+  // Watchdog: after socl_l9_forgive_max_ticks cycles of forgive being held
+  // high, force-disarm by latching reached_link_data. This breaks the
+  // deadlock without affecting steady-state behaviour (reached_link_data
+  // also latches on state==5 naturally).
+  reg  [12:0] socl_l9_forgive_ticks;  // 13-bit = up to 8191
+  localparam [12:0] SOCL_L9_FORGIVE_MAX = 13'd4096;
+  wire socl_l9_forgive_timeout = (socl_l9_forgive_ticks == SOCL_L9_FORGIVE_MAX);
   wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)
+                                 & ~socl_l9_forgive_timeout
                                  & cr_pkt_seen_tx_demet_io_out
                                  & crack_pkt_seen_tx_demet_io_out;
   // Masked isNotExpPacket: while forgive is active, suppress the spurious
@@ -1135,6 +1149,22 @@ module WlinkGenericFCSM_6 #(
       socl_l7_reached_link_data <= 1'h0;
     end else if (state == 3'h5) begin
       socl_l7_reached_link_data <= 1'h1;
+    end else if (socl_l9_forgive_timeout) begin
+      // L9 watchdog: force-disarm forgive after timeout to break deadlock
+      socl_l7_reached_link_data <= 1'h1;
+    end
+  end
+  // L9 watchdog tick counter — increments while bringup_forgive is held high,
+  // resets on reset. Once timer hits SOCL_L9_FORGIVE_MAX, forgive permanently
+  // disarms via socl_l7_reached_link_data latch above. Holds at MAX after timeout.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l9_forgive_ticks <= 13'h0;
+    end else if (~socl_l7_reached_link_data &&
+                 cr_pkt_seen_tx_demet_io_out &&
+                 crack_pkt_seen_tx_demet_io_out &&
+                 ~socl_l9_forgive_timeout) begin
+      socl_l9_forgive_ticks <= socl_l9_forgive_ticks + 13'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin

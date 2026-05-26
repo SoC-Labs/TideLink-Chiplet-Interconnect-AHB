@@ -489,10 +489,10 @@ module tidelink_top #(
     // TideLink FC Node wiring (FC adapter ↔ Chiplet Controller)
     // =========================================================================
     // Separate valid/ready/data signals (used by FC adapter)
-    wire                   tl_fc_a2l_valid;
+    (* mark_debug = "true" *) wire                   tl_fc_a2l_valid;  // SoC Labs ILA L10 tap
     wire [FC_DATA_W-1:0]   tl_fc_a2l_data;
-    wire                   tl_fc_a2l_ready;
-    wire                   tl_fc_l2a_valid;
+    (* mark_debug = "true" *) wire                   tl_fc_a2l_ready;  // SoC Labs ILA L10 tap
+    (* mark_debug = "true" *) wire                   tl_fc_l2a_valid;  // SoC Labs ILA L10 tap
     wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
     wire                   tl_fc_l2a_accept;
 

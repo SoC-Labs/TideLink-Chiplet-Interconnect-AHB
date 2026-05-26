@@ -156,7 +156,7 @@ module WlinkGenericFCSM_6 #(
   output [31:0] auto_in_prdata,
   input         auto_rx_in_sop,
   input  [7:0]  auto_rx_in_data_id,
-  input  [15:0] auto_rx_in_word_count,
+  (* mark_debug = "true" *) input  [15:0] auto_rx_in_word_count,  // SoC Labs ILA L10 tap
   input  [55:0] auto_rx_in_data,
   input         auto_rx_in_valid,
   input  [15:0] auto_rx_in_crc,
@@ -324,7 +324,7 @@ module WlinkGenericFCSM_6 #(
   reg [7:0] out_prepend_swi_nack_id; // @[SW.scala 83:22]
   wire  pkt_is_nack_pkt = _crc_corrupt_T & auto_rx_in_data_id == out_prepend_swi_nack_id; // @[FC.scala 172:50]
   reg [7:0] last_good_pkt; // @[FC.scala 179:107]
-  reg [7:0] fe_rx_credit_max; // @[FC.scala 183:107]
+  (* mark_debug = "true" *) reg [7:0] fe_rx_credit_max; // @[FC.scala 183:107]  SoC Labs ILA L10 tap
   reg  cr_pkt_seen_rx; // @[FC.scala 186:107]
   reg  crack_pkt_seen_rx; // @[FC.scala 188:107]
   reg [7:0] exp_pkt_num; // @[FC.scala 193:44]
@@ -332,7 +332,7 @@ module WlinkGenericFCSM_6 #(
   wire [15:0] _crc_errors_in_T_3 = crc_errors == 16'hffff ? crc_errors : _crc_errors_in_T_2; // @[FC.scala 196:73]
   wire [15:0] _crc_errors_in_T_4 = crc_corrupt ? _crc_errors_in_T_3 : crc_errors; // @[FC.scala 196:56]
   wire [15:0] crc_errors_in = en_ff2_rx_demet_io_out ? _crc_errors_in_T_4 : 16'h0; // @[FC.scala 196:41]
-  reg [7:0] fe_tx_credit_max; // @[FC.scala 200:44]
+  (* mark_debug = "true" *) reg [7:0] fe_tx_credit_max; // @[FC.scala 200:44]  SoC Labs ILA L10 tap
   wire  _fe_tx_credit_max_in_T = ~en_ff2_rx_demet_io_out; // @[FC.scala 201:42]
   wire  _fe_tx_credit_max_in_T_1 = pkt_is_cr_pkt | pkt_is_crack_pkt; // @[FC.scala 201:77]
   wire  exp_pkt_seen = pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num; // @[FC.scala 210:54]

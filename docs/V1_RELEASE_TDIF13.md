@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| Release candidate | v1.0-rc4-phc-deferred |
+| Release candidate | v1.0-rc4-phc-deferred (PHC Phase-1 + byte-align fix — see §5) |
 | RTL commit | `07af0c1` ("td-l7-nack-recovery: forgive send_nack_req during bringup credit window") |
 | RTL branch | `feat/td-interface-debug-l7-nack-recovery` (in `td-bisect/td-l4-option-c` worktree) |
 | Bitstream | `/tmp/tidelink_deploy/tdif-13/tidelink.bin` (mapstone-dev), `.hwh`, `.ltx`, plus `tidelink-flip.{bin,hwh,ltx}` polarity counterpart |
@@ -137,22 +137,47 @@ The asymmetric CR-loss class that wedged tdif-05 is gone in tdif-13.
 
 ## 3. Known limitations (the bug v1 does NOT fix)
 
-1. **`pair_credit_counter == 0` post-bringup**: although the LL/FCSM layer
-   has reached bilateral LINK_IDLE, the FC-credit handshake at the
-   `tidelink_fc_adapter.sv` boundary never produces a non-zero credit
-   counter. The credit-gate consequently holds TX gated and no FC data
-   packets ever cross the link in steady state.
-2. **No user traffic crosses post-bringup**: doorbells, AHB writes, and
-   any other FC-mediated transactions stay buffered behind the credit gate.
-3. **The remaining bug is in `tidelink_fc_adapter.sv` or the upstream
-   credit-handshake logic, NOT in the LL/FCSM layer.** All L1–L7 fixes are
-   correct and well-scoped to LL/FCSM; chasing the credit issue inside
-   FCSM (which is what L8/L8v2/L9 tried) only widens the forgive gate
-   without addressing the actual credit bootstrap.
-4. **0x44010000 is NOT a valid peer-aperture test**: peer-side AHB writes
+> **Diagnosis updated 2026-05-26 09:30 BST after PTP HW test ruled out
+> the credit-gate hypothesis.** Earlier analysis suggested the remaining
+> bug was a credit-gate deadlock in `tidelink_fc_adapter.sv`. Subsequent
+> PTP HW evidence refuted that and re-localized the bug to slave's
+> LL_RX byte-align post-bringup. The limitations below have been
+> rewritten accordingly.
+
+1. **Slave LL_RX byte-align is LOST post-bringup.** ILA capture during a
+   200-doorbell flood (HW exploration 2026-05-26) showed slave's
+   `llrx/state=iSTATE` and `valid_byte_reg=0` for all 4096 samples —
+   slave's WavD2DGpio framer is not decoding ANY bytes after the recal
+   cycle completes, despite cr/crack sticky bits latching DURING bringup.
+   PTP HW test (2026-05-26 08:30 BST) drove 64 SYNC packets from master
+   at 32 Hz with `phc_locked=1`; slave's `PTP_RX_PAYLOAD` stayed at 0
+   and `rx_valid` never asserted. PTP **bypasses the FCSM credit gate**
+   (separate `ptp_in/out` port, `ShortPacketToWlink` module), so the
+   lack of cross-channel evidence proves the bug is **upstream of FCSM
+   credit logic** — at the LL_RX byte-stream layer itself.
+2. **`pair_credit_counter == 0` is a SYMPTOM, not the bug.** Because
+   slave never decodes incoming credit-release packets, the per-channel
+   credit counter on master never increments. The original "credit-gate
+   deadlock" framing inverted cause and effect: credits don't move
+   because bytes don't decode, not because the gate logic is wrong.
+3. **No user traffic crosses post-bringup**: doorbells, AHB writes, and
+   PTP packets all fail at the same point — slave's framer never sees
+   them as valid bytes.
+4. **The remaining bug is at the link-layer RX byte-align path on
+   slave, NOT in `tidelink_fc_adapter.sv` and NOT in the LL/FCSM layer.**
+   All L1–L7 fixes are correct and well-scoped, but L1 (TX word-aligned
+   mux) + Option (c) (CDC-gated llrx_reset) together do not survive the
+   recal→data-mode transition on real silicon. Sim ↔ HW divergence:
+   sim shows the L1+Option (c) stack achieves stable RX byte-align;
+   HW shows it is briefly correct during bringup (cr/crack latch) and
+   then breaks. The post-bringup HW signature is what v2 must fix.
+5. **0x44010000 is NOT a valid peer-aperture test**: peer-side AHB writes
    should target `0x40000000` (the `ahb_sub` region) on the remote chiplet.
-   `0x44010000` belongs to the local APB controller window and does not
-   exercise the FC data path.
+   `0x44010000` belongs to the local FIFO read window (`ahb_fifo`) and
+   does not exercise any cross-die data path. Several hwtest scripts
+   (notably `pynq_host/scripts/hwtest/03_ahb_sub_e2e.sh`) carry the
+   misnamed `AHB_SUB_BASE:=0x44010000`; these need to be corrected
+   independently of the RTL work.
 
 ---
 
@@ -162,9 +187,11 @@ The asymmetric CR-loss class that wedged tdif-05 is gone in tdif-13.
   attempt either had asymmetric CR loss (tdif-05), lane-lock regression
   (tdif-04 / tdif-11 with T3A_CONTINUOUS=1), or a wedged SEND_NACK (tdif-12).
   tdif-13 is the first that lands bilateral LINK_IDLE with PHY clean.
-- **Provides a clean reference point for v2 credit-gate work.** With the
-  LL/FCSM layer known-good on HW, any post-bringup misbehaviour can be
-  attributed unambiguously to the FC adapter / credit logic.
+- **Provides a clean reference point for v2 byte-align robustness
+  work.** With the LL/FCSM layer known-good on HW (cr/crack symmetric,
+  bilateral LINK_IDLE), any post-bringup misbehaviour can be attributed
+  unambiguously to the WavD2DGpioRx byte-align / framer-decode path.
+  v2 work can use tdif-13 as the baseline + ILA-capture target.
 - **Ships the full sim infrastructure** that grew alongside the L1–L7
   investigation: 50+ cocotb tests covering paired-die bringup, asymmetric
   failure fuzz, HW regression gates, TX gated by training, LINK_IDLE →
@@ -179,16 +206,31 @@ The asymmetric CR-loss class that wedged tdif-05 is gone in tdif-13.
 
 ## 5. v2 scope — deferred items
 
-1. **Credit-gate bootstrap (L10 in flight)**: investigate why
-   `pair_credit_counter` never increments after bilateral LINK_IDLE. This
-   is the actual root cause of the remaining HW symptom. Branch
-   `feat/td-interface-debug-l10-credit-bootstrap` is live; if it produces
-   an HW-validatable fix it lands as v1.1 or v2.0 depending on scope.
-2. **PHC Phase-1 master → slave sync packet path**: cannot be brought up
-   until the credit gate is open in steady state. Defers behind v2 credit
-   work. See `docs/PHC_PHASE1_HW_REPORT.md` and
-   `docs/PHC_PHASE1_HISTORY_BISECT.md` for the existing state.
-3. **Bilateral leak edge cases (tdif-04 polarity flip)**: the master
+1. **Slave LL_RX byte-align robustness post-bringup (PRIMARY)**: ILA + PTP
+   HW evidence (2026-05-26) shows slave's `WavD2DGpioRx` framer stops
+   decoding after the recal cycle completes — `valid_byte_reg=0` for
+   4096 samples during master TX. Master TX confirmed working (64 PTP
+   SYNCs fired with `phc_locked=1`). The L1 + Option (c) fixes were
+   insufficient on HW even though sim showed them working. v2 needs to
+   re-derive the byte-align loss mechanism with full ILA observability
+   on `WavD2DGpioRx` count register, IDELAY tap, and per-lane bit
+   boundaries during the to_data_mode transition. The credit-gate
+   hypothesis explored on tdif-15/16 (L9 watchdog) was a wrong turn —
+   credits stay at 0 because bytes never decode, not because the gate
+   is broken.
+2. **Add ILA mark_debug to `tl_fc_a2l_*` and `tl_fc_l2a_*`** in the FC
+   adapter (and to the WavD2DGpioRx `count` register on slave) so the
+   next HW build can ILA-capture exactly where bytes stop. Currently the
+   tdif-10 visibility taps are heavily LL_RX-focused but miss the
+   post-bringup byte-align loss observation point.
+3. **PHC Phase-1 master → slave sync packet path**: cannot be brought up
+   until slave LL_RX byte-align survives the recal cycle. Bringup script
+   `bringup_ptp_sync.sh` is staged on mapstone-dev and ready to run
+   immediately once #1 lands. PTP transport architecture is independent
+   from FC channel (separate `ShortPacketToWlink` module) so PHC test
+   will be a direct read of `PTP_RX_PAYLOAD` once master TX bytes
+   actually reach slave's framer.
+4. **Bilateral leak edge cases (tdif-04 polarity flip)**: the master
    vs slave wedge polarity flipped between tdif-04 and tdif-12. With L7
    in place this is masked, but the underlying race may resurface under
    different timing (different boards, different IDELAY taps). v2 should

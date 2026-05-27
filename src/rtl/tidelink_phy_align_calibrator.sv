@@ -466,6 +466,17 @@ module tidelink_phy_align_calibrator #(
     logic [3:0]             best_run_start_phase   [0:7];
     logic [2:0]             best_run_slip          [0:7];
     logic [7:0]             probe_lane_pass_q;
+    // §9.11b single-point fallback: first (slip, phase) seen during S_SWEEP
+    // where the lane scored >= LOCK_THRESH. Used as the LAST-RESORT safety
+    // net in S_FINALIZE when (a) no MIN_LOCK_DWELLS-wide eye exists AND
+    // (b) the (0,0) probe verdict also failed. Restores the §9.10
+    // "any single passing point wins" coverage for narrow-eye corners
+    // (per-lane delay, single-point cocotb PHY models, marginal-margin
+    // silicon) without weakening the §9.11 eye-centre policy when an
+    // eye exists. ~64 added flops (8 lanes × (3+4+1)).
+    logic [7:0] any_pass_valid;
+    logic [2:0] any_pass_slip  [0:7];
+    logic [3:0] any_pass_phase [0:7];
     localparam logic [5:0] LANE_SCORE_MAX = 6'h3F;
     // Promote LOCK_THRESH to the 6-bit score width safely.
     wire   [5:0] lock_thresh_6b   = LOCK_THRESH[5:0];
@@ -686,6 +697,7 @@ module tidelink_phy_align_calibrator #(
             sweep_slip           <= 3'd0;
             sweep_phase          <= 4'd0;
             probe_lane_pass_q    <= 8'h00;
+            any_pass_valid       <= 8'h00;
             for (int i = 0; i < 8; i++) begin
                 slip[i]                  <= 3'd0;
                 phase[i]                 <= 4'd0;
@@ -695,6 +707,8 @@ module tidelink_phy_align_calibrator #(
                 cur_run_start_phase[i]   <= 4'd0;
                 best_run_start_phase[i]  <= 4'd0;
                 best_run_slip[i]         <= 3'd0;
+                any_pass_slip[i]         <= 3'd0;
+                any_pass_phase[i]        <= 4'd0;
             end
         end else begin
             // Bug #7 synth-safety: plain `case` + explicit default (below).
@@ -709,6 +723,7 @@ module tidelink_phy_align_calibrator #(
                     sweep_slip           <= 3'd0;
                     sweep_phase          <= 4'd0;
                     probe_lane_pass_q    <= 8'h00;
+                    any_pass_valid       <= 8'h00;
                     for (int i = 0; i < 8; i++) begin
                         slip[i]                  <= 3'd0;
                         phase[i]                 <= 4'd0;
@@ -718,6 +733,8 @@ module tidelink_phy_align_calibrator #(
                         cur_run_start_phase[i]   <= 4'd0;
                         best_run_start_phase[i]  <= 4'd0;
                         best_run_slip[i]         <= 3'd0;
+                        any_pass_slip[i]         <= 3'd0;
+                        any_pass_phase[i]        <= 4'd0;
                     end
                 end
 
@@ -817,6 +834,16 @@ module tidelink_phy_align_calibrator #(
                             // the full DWELL_CYCLES and now equals its
                             // in-dwell final value (saturated at 6'h3F).
                             if (lane_score[i] >= lock_thresh_6b) begin
+                                // §9.11b safety net: record the FIRST passing
+                                // (slip, phase) per lane. Used by S_FINALIZE
+                                // as the last-resort fallback when no
+                                // MIN_LOCK_DWELLS-wide run exists AND the
+                                // (0,0) probe verdict also failed.
+                                if (!any_pass_valid[i]) begin
+                                    any_pass_valid[i] <= 1'b1;
+                                    any_pass_slip[i]  <= sweep_slip;
+                                    any_pass_phase[i] <= sweep_phase;
+                                end
                                 // Pass — extend or open a run at this slip.
                                 // If we're at the FIRST passing phase of a
                                 // new run, remember its starting phase.
@@ -906,31 +933,46 @@ module tidelink_phy_align_calibrator #(
                 S_FINALIZE: begin
                     for (int i = 0; i < 8; i++) begin
                         if (best_run[i] >= min_lock_dwells_eff) begin
-                            // best_run is at least MIN_LOCK_DWELLS wide;
-                            // latch the run centre. (best_run - 1) >> 1
-                            // is the floor of (run/2 - 1/2), i.e. the
-                            // index of the centre point relative to the
-                            // run start. best_run is 5b, the shifted
-                            // result is at most 7 (best_run<=16, (15>>1)=7),
-                            // so the 4-bit truncation is safe and the
-                            // sum start+centre is at most 15.
+                            // BEST: §9.11 eye centre. best_run is at least
+                            // MIN_LOCK_DWELLS wide; latch the run centre.
+                            // (best_run - 1) >> 1 is the floor of
+                            // (run/2 - 1/2), i.e. the index of the centre
+                            // point relative to the run start. best_run is
+                            // 5b, the shifted result is at most 7 (best_run
+                            // <=16, (15>>1)=7), so the 4-bit truncation is
+                            // safe and the sum start+centre is at most 15.
                             automatic logic [3:0] centre_off;
                             centre_off = (best_run[i] - 5'd1) >> 1;
                             slip[i]      <= best_run_slip[i];
                             phase[i]     <= best_run_start_phase[i] + centre_off;
                             lane_done[i] <= 1'b1;
                         end else if (probe_lane_pass_q[i]) begin
-                            // Fallback: degraded-eye safety net.
-                            // S_PROBE confirmed (0,0) locks but no
-                            // MIN_LOCK_DWELLS-wide run exists anywhere
-                            // on the grid. Accept (0,0).
+                            // FALLBACK 1: S_PROBE @ (0,0) verdict.
+                            // No MIN_LOCK_DWELLS-wide run, but (0,0) locked
+                            // during the dedicated probe dwell. Accept (0,0)
+                            // — the §9.10 semantics, kept for bit-exact
+                            // cocotb PHYs where (0,0) is the trivial-correct
+                            // alignment.
                             slip[i]  <= 3'd0;
                             phase[i] <= 4'd0;
                             lane_done[i] <= 1'b1;
+                        end else if (any_pass_valid[i]) begin
+                            // FALLBACK 2: §9.11b single-point safety net.
+                            // No wide run, (0,0) didn't lock during probe,
+                            // but at least ONE sweep dwell passed
+                            // LOCK_THRESH. Accept the FIRST such (slip,
+                            // phase) — gives §9.10-equivalent "any-passing-
+                            // point" coverage for narrow-eye corners
+                            // (per-lane skew, marginal-margin silicon, the
+                            // cocotb skewed env). Deterministic across M/S
+                            // because both calibrators walk the same sweep
+                            // order and latch first-passing.
+                            slip[i]      <= any_pass_slip[i];
+                            phase[i]     <= any_pass_phase[i];
+                            lane_done[i] <= 1'b1;
                         end else begin
-                            // Lane could not lock at MIN_LOCK_DWELLS-wide
-                            // centring AND did not pass S_PROBE — true
-                            // fault. Mark and exit; T3 retry budget at
+                            // Lane could not lock anywhere on the grid —
+                            // true fault. Mark and exit; T3 retry budget at
                             // S_FINISH decides whether to re-sweep.
                             lane_fault_q[i] <= 1'b1;
                             lane_done[i]    <= 1'b1;

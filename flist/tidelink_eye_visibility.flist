@@ -1,0 +1,13 @@
+// Eye visibility v2 (docs/EYE_VISIBILITY_RTL_PROPOSAL.md) — RTL collateral
+// needed to compile the cocotb/tidelink_phy_align_calibrator/test_eye_*.py
+// tests + the cocotb/tidelink_peer_aperture/* test.
+//
+// Both `tidelink_eye_regs.sv` (NEW) and the v2-extended
+// `tidelink_phy_align_calibrator.sv` (eye-mode ports) are produced by the
+// parallel agent on feat/eye-rtl-impl. Until that branch merges, `make
+// compile` from this flist will fail at the `tidelink_eye_regs` ref —
+// the test files themselves are harness-complete pending the merge.
++incdir+${TIDELINK_HOME}/src/rtl
+${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
+${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
+${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv

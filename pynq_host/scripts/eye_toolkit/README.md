@@ -143,11 +143,60 @@ python3 eye_sweep.py --diff /tmp/eye_runs/pre-fix-2026-05-27_master.csv \\
                             /tmp/eye_runs/post-fix-2026-05-27_master.csv
 ```
 
+## Deep mode (v2)
+
+Deep mode captures the full per-lane 2D eye exposed by the v2 Region
+10 RTL (`docs/EYE_VISIBILITY_RTL_PROPOSAL.md`). Each lane is swept
+across all 128 `(slip × phase)` points and the 6-bit lane-score grid
+is read back via APB — giving an actual 2D heatmap per lane, vs the
+v1 global 16-point clock-data phase sweep.
+
+```bash
+# Bilateral capture from a single PYNQ host using the peer aperture
+ssh mapstone-dev "python3 .../eye_toolkit/eye_sweep.py \
+    --mode deep \
+    --master 192.168.4.101 \
+    --peer-aperture \
+    --label tdif-26-deep-eye"
+
+# Single-die deep eye on one PYNQ (use 100 ms dwell)
+ssh mapstone-dev "python3 .../eye_toolkit/eye_sweep.py \
+    --mode deep --master 192.168.4.101 \
+    --dwell-us 100000 --label deep-master-only"
+
+# One-shot bilateral via the worked-example script
+ssh mapstone-dev "python3 .../eye_toolkit/eye_dump_bilateral.py \
+    --master 192.168.4.101 --label bilateral-deep"
+
+# Single lane (faster, useful for debugging one bad lane)
+... eye_sweep.py --mode deep --master 192.168.4.101 --lane 3 ...
+
+# AUTO_INCREMENT_LANE — one ENTER, 8 lane sweeps back-to-back
+... eye_sweep.py --mode deep --master 192.168.4.101 --auto-increment ...
+```
+
+Deep mode requires the **Region 10 eye-visibility RTL** to be present
+on the bitstream (see `docs/EYE_VISIBILITY_RTL_PROPOSAL.md`). On a
+bitstream without Region 10, `SWI_EYE_STATUS` will read back as `0x0`
+and the polling loop will time out after `2 × dwell_us`.
+
+The `--peer-aperture` flag re-bases Region 10 accesses from the local
+`0x44032140` to the peer aperture at `0x40032140` — die_a's host
+drains die_b's eye over the existing TideLink peer pipe. WARNING: do
+not confuse `0x40000000` (peer aperture) with `0x44010000` (local RX
+FIFO) — they are different fabrics; the test
+`test_peer_aperture_uses_0x40032140` exists to guard this.
+
+Outputs for deep mode:
+
+```
+<outdir>/<L>.json           — run metadata (label, dwell, lanes, peer flag)
+<outdir>/<L>_deep.json      — {board: {lane: [128 scores]}} as JSON
+<outdir>/<L>_deep.png       — 4×2 lane heatmap per board (matplotlib)
+```
+
 ## Future extensions
 
-- **`--mode deep`** (pending Option C RTL change) — full per-lane 128-
-  point sweep instead of 16-point global sweep, generates 8 per-lane
-  heatmaps showing the actual 2D (slip × phase) eye.
 - **`--soak-bits N`** — after each phase write, ring the doorbell N
   times and count `DOORBELL_RESP_ACC` increments, giving "real-data"
   bit-equivalent passing rate per phase (not just training-pattern
@@ -178,14 +227,19 @@ open http://localhost:8088/
 ## Files
 
 - `eye_sweep.py` — the CLI toolkit + library (also drives `web/`).
+- `eye_dump_bilateral.py` — worked example: capture both dies via the
+  peer aperture from one PYNQ host.
+- `tests/test_deep_mode.py` — mocked-IO unit tests for deep mode.
 - `web/` — the FastAPI live-eye browser front-end.
 - `README.md` — this file.
 
 ## Related
 
+- `docs/EYE_VISIBILITY_RTL_PROPOSAL.md` — **v2 design doc, source of
+  truth for the Region 10 register map and the deep-mode protocol.**
 - `docs/EYE_VISUALISATION_2026_05_27.md` — first eye captured this
   way + analysis.
-- `docs/OPTION_C_LANE_SCORE_APB_EXPOSE.md` — RTL change spec to
-  enable the future `--mode deep` per-lane sweep.
+- `docs/OPTION_C_LANE_SCORE_APB_EXPOSE.md` — earlier draft, subsumed
+  by v2 above.
 - `docs/CALIBRATOR_BUG_HANDOFF_2026_05_26.md` — bug context + sim
   evidence the toolkit complements with HW evidence.

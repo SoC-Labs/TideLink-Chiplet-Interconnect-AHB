@@ -370,7 +370,8 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_gpio_strap/s_axi_aclk] \
                    [get_bd_pins tidelink_0/hclk] \
                    [get_bd_pins tidelink_0/user_ref_clk] \
-                   [get_bd_pins tidelink_0/scan_clk]
+                   [get_bd_pins tidelink_0/scan_clk] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk]
 
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \

@@ -14,8 +14,13 @@
 #
 # Applied via build_design.tcl:
 #   set_property USED_IN_SYNTHESIS false [get_files *_timing.xdc]
+# (Do NOT add a runtime `set_property USED_IN_SYNTHESIS false [get_files
+#  [file normalize [info script]]]` line here — Vivado's XDC parser rejects
+#  procedural Tcl commands inside .xdc files; the synth-vs-impl gating
+#  must come from build_design.tcl as documented above. Bug fix
+#  2026-05-27 (overnight §9.11e session) — see CALIBRATOR_9_11D_HW_MILESTONE
+#  for context.)
 #-----------------------------------------------------------------------------
-set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
 
 #-----------------------------------------------------------------------------
 # GPIO PHY pad clocks

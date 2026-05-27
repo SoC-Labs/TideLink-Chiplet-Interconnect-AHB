@@ -64,7 +64,13 @@ module WavD2DGpioTx #(
   // switches between training-pattern and live io_link_data on a 16-bit
   // word boundary. Default 1 = enabled (FPGA bring-up target). Set to 0 to
   // get bit-exact base behaviour (sim regression A/B).
-  parameter WORD_ALIGN_MUX = 1'b1
+  parameter WORD_ALIGN_MUX = 1'b1,
+  // SoC Labs eye-data (2026-05-28): training stream is a PRBS-7 sequence
+  // XORed with the per-lane io_training_pattern (byte-cyclic, 8-bit tag),
+  // so the calibrator scores eyes against arbitrary-bit data, not a
+  // constant period-2 byte. PRBS-7 poly: x^7 + x^6 + 1.
+  // USE_PRBS_TRAINING=0 = byte-identical legacy {pattern,pattern} stream.
+  parameter USE_PRBS_TRAINING = 1'b1
 ) (
   input         io_scan_mode,
   input         io_scan_asyncrst_ctrl,
@@ -134,10 +140,104 @@ module WavD2DGpioTx #(
   // behaviour, byte-identical to original RTL).
   wire io_training_mode_mux = WORD_ALIGN_MUX ? io_training_mode_q
                                              : io_training_mode;
+
+  // ---------------------------------------------------------------------------
+  // SoC Labs eye-data (2026-05-28): PRBS-7 training stream.
+  //
+  // Maximum-length 7-bit LFSR (poly x^7 + x^6 + 1, taps state[6]^state[5]).
+  // Seed = io_training_pattern[7:1] | 7'h01 (guard against all-zero stuck
+  // state; PATTERNS values used in the wrapper are all non-zero so the OR
+  // is a paranoia belt-and-braces). The LFSR is seeded ONCE on reset and
+  // then runs free at the io_clk-rate-derived advance: every count==4'hf
+  // we advance by 16 bits in one cycle (combinational 16-step unroll) to
+  // load the next training word, so the serial output is a continuous
+  // PRBS bit-stream when training_mode is held high.
+  //
+  // Per-lane uniqueness: the LFSR output is XORed with the per-lane
+  // io_training_pattern repeated twice (lane-tag XOR). Two lanes with the
+  // SAME PRBS seed (impossible — seeds derive from per-lane pattern) would
+  // still differ in stream because the lane-tag XOR mask differs. Two
+  // lanes with DIFFERENT seeds differ in PRBS phase too. The lane-checker
+  // predictor strips the lane-tag XOR before re-seeding from observed
+  // data, so a wrong-lane stream will fail to predict subsequent words.
+  //
+  // PRBS-7 period = 127 cycles (= 127/16 ≈ 8 word-periods). Coprime with
+  // the 16-bit word, so word-level patterns repeat every 127*16 = 2032
+  // bits → 127 words; no short-period byte alias.
+  // ---------------------------------------------------------------------------
+  reg  [6:0] prbs_lfsr;
+  wire [6:0] prbs_seed = ((io_training_pattern >> 1) & 7'h7F) | 7'h01;
+
+  // 16-step combinational unroll of LFSR (poly x^7 + x^6 + 1).
+  // adv[k] = LFSR state AFTER k advances (adv[0] = current state).
+  // Bit emitted at step k = adv[k][6].
+  function automatic [6:0] prbs7_next;
+    input [6:0] s;
+    begin
+      prbs7_next = {s[5:0], s[6] ^ s[5]};
+    end
+  endfunction
+
+  wire [6:0] adv_0  = prbs_lfsr;
+  wire [6:0] adv_1  = prbs7_next(adv_0);
+  wire [6:0] adv_2  = prbs7_next(adv_1);
+  wire [6:0] adv_3  = prbs7_next(adv_2);
+  wire [6:0] adv_4  = prbs7_next(adv_3);
+  wire [6:0] adv_5  = prbs7_next(adv_4);
+  wire [6:0] adv_6  = prbs7_next(adv_5);
+  wire [6:0] adv_7  = prbs7_next(adv_6);
+  wire [6:0] adv_8  = prbs7_next(adv_7);
+  wire [6:0] adv_9  = prbs7_next(adv_8);
+  wire [6:0] adv_10 = prbs7_next(adv_9);
+  wire [6:0] adv_11 = prbs7_next(adv_10);
+  wire [6:0] adv_12 = prbs7_next(adv_11);
+  wire [6:0] adv_13 = prbs7_next(adv_12);
+  wire [6:0] adv_14 = prbs7_next(adv_13);
+  wire [6:0] adv_15 = prbs7_next(adv_14);
+  wire [6:0] adv_16 = prbs7_next(adv_15);  // state after 16 advances
+
+  // bit emitted at sub-cycle k (count==k) corresponds to step k.
+  wire [15:0] prbs_word_raw = {adv_15[6], adv_14[6], adv_13[6], adv_12[6],
+                               adv_11[6], adv_10[6], adv_9[6],  adv_8[6],
+                               adv_7[6],  adv_6[6],  adv_5[6],  adv_4[6],
+                               adv_3[6],  adv_2[6],  adv_1[6],  adv_0[6]};
+  // Lane-tag XOR: byte-repeated io_training_pattern keeps per-lane streams
+  // distinguishable even at identical PRBS seeds.
+  wire [15:0] prbs_word_tagged = prbs_word_raw
+                                 ^ {io_training_pattern, io_training_pattern};
+
+  // Advance LFSR by 16 bits per word period (at count==4'hf so the next
+  // count==0 starts on a fresh word).
+  always @(posedge io_clk or posedge hs_reset_scan_wrs_io_reset_out) begin
+    if (hs_reset_scan_wrs_io_reset_out) begin
+      prbs_lfsr <= prbs_seed;
+    end else if (count == 4'hf) begin
+      prbs_lfsr <= adv_16;
+    end
+  end
+
+  // Latched training word: held steady across the 16-bit word period so the
+  // bit serialiser at line ~158 below sees a stable _link_data_eff.
+  reg [15:0] prbs_word_q;
+  always @(posedge io_clk or posedge hs_reset_scan_wrs_io_reset_out) begin
+    if (hs_reset_scan_wrs_io_reset_out) begin
+      prbs_word_q <= 16'h0;
+    end else if (count == 4'hf) begin
+      prbs_word_q <= prbs_word_tagged;
+    end
+  end
+
+  // Training-source select: PRBS stream (USE_PRBS_TRAINING=1) or legacy
+  // {pattern,pattern} constant (USE_PRBS_TRAINING=0, byte-identical to
+  // pre-eye-data behaviour for sim regression A/B).
+  wire [15:0] training_word = USE_PRBS_TRAINING
+                              ? prbs_word_q
+                              : {io_training_pattern, io_training_pattern};
+
   // SoC Labs training-mode patch: when io_training_mode_mux=1, the 16-bit
-  // link word is replaced with {pattern, pattern}. Default = passthrough.
+  // link word is replaced with the training_word. Default = passthrough.
   wire [15:0] _link_data_eff = io_training_mode_mux
-                              ? {io_training_pattern, io_training_pattern}
+                              ? training_word
                               : io_link_data;
   wire  tx_pad_array_0 = _link_data_eff[0]; // @[GPIO.scala 76:38]
   wire  tx_pad_array_1 = _link_data_eff[1]; // @[GPIO.scala 76:38]
@@ -265,6 +365,10 @@ initial begin
   end
   if (hs_reset_scan_wrs_io_reset_out) begin
     io_training_mode_q = 1'h0;
+  end
+  if (hs_reset_scan_wrs_io_reset_out) begin
+    prbs_lfsr   = prbs_seed;
+    prbs_word_q = 16'h0;
   end
   `endif // RANDOMIZE
 end // initial

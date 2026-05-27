@@ -16,6 +16,13 @@
 // calibrator runs its own sweep against its own lane_locked stim from
 // cocotb.
 //
+// Port-name reconciliation (post-integration, 2026-05-27)
+// -------------------------------------------------------
+// The cocotb-side initial port draft used unpacked separate signals
+// (eye_enter_pulse, eye_reset_pulse, etc.). The RTL agent's implementation
+// packed these into swi_eye_ctrl[31:0] / eye_status[31:0]. Cocotb tests
+// drive APB only — the bundle macros below match the actual RTL contract.
+//
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic
 // Access license.
 //
@@ -69,32 +76,22 @@ module tb_top #(
     output logic        b_calibration_done
 );
 
-    // Per-side internal nets between eye_regs and calibrator
+    // Per-side internal nets between eye_regs and calibrator (RTL names).
     `define EYE_BUNDLE(P) \
-        logic [2:0]  P``_eye_lane_sel; \
-        logic [31:0] P``_eye_dwell_us; \
-        logic        P``_eye_enter_pulse; \
-        logic        P``_eye_reset_pulse; \
-        logic [1:0]  P``_eye_mode; \
-        logic        P``_eye_force_full_sweep; \
-        logic        P``_eye_auto_increment_lane; \
-        logic        P``_eye_force_phase_en; \
-        logic        P``_eye_skip_calibrator; \
-        logic        P``_eye_freeze_on_cal_done; \
-        logic [31:0] P``_eye_force_phase_val; \
-        logic [23:0] P``_eye_force_slip_val; \
-        logic [2:0]  P``_eye_state; \
-        logic [2:0]  P``_eye_last_swept_lane; \
-        logic        P``_eye_capture_valid; \
-        logic [3:0]  P``_eye_cal_state_mirror; \
-        logic [3:0]  P``_eye_sweep_phase_mirror; \
-        logic [15:0] P``_eye_dwell_remaining_ms; \
-        logic [6:0]  P``_score_rd_idx; \
-        logic [5:0]  P``_score_rd_data; \
-        logic        P``_score_lane_passed; \
-        logic [5:0]  P``_score_best; \
-        logic [2:0]  P``_score_best_slip; \
-        logic [3:0]  P``_score_best_phase
+        logic [2:0]  P``_swi_eye_lane_sel_w; \
+        logic [31:0] P``_swi_eye_dwell_us_w; \
+        logic [31:0] P``_swi_eye_ctrl_w; \
+        logic [31:0] P``_eye_status_w; \
+        logic [6:0]  P``_eye_score_idx_w; \
+        logic [5:0]  P``_eye_score_data_w; \
+        logic        P``_eye_score_lane_passed_w; \
+        logic [5:0]  P``_eye_score_best_w; \
+        logic [2:0]  P``_eye_score_best_slip_w; \
+        logic [3:0]  P``_eye_score_best_phase_w; \
+        logic [31:0] P``_swi_force_phase_en_w; \
+        logic [31:0] P``_swi_force_phase_val_w; \
+        logic [31:0] P``_swi_force_slip_val_w; \
+        logic        P``_eye_crc_err_cnt_clr_w
 
     `EYE_BUNDLE(a);
     `EYE_BUNDLE(b);
@@ -123,41 +120,32 @@ module tb_top #(
         .role_locked            (a_role_locked),
         .swreset                (a_swreset),
         .lane_locked            (a_lane_locked),
-        .apb_bit_slip_override  (a_eye_force_slip_val),
-        .apb_override_enable    (a_eye_force_phase_en),
+        .apb_bit_slip_override  (a_swi_force_slip_val_w[23:0]),
+        .apb_override_enable    (a_swi_force_phase_en_w[0]),
         .bit_slip               (a_bit_slip),
         .phase_offset           (a_phase_offset),
         .training_mode          (a_training_mode),
         .calibration_done       (a_calibration_done),
         .lane_fault             (a_lane_fault),
         .state                  (a_state),
-        .eye_lane_sel            (a_eye_lane_sel),
-        .eye_dwell_us            (a_eye_dwell_us),
-        .eye_enter_pulse         (a_eye_enter_pulse),
-        .eye_reset_pulse         (a_eye_reset_pulse),
-        .eye_mode                (a_eye_mode),
-        .eye_force_full_sweep    (a_eye_force_full_sweep),
-        .eye_auto_increment_lane (a_eye_auto_increment_lane),
-        .eye_skip_calibrator     (a_eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (a_eye_freeze_on_cal_done),
-        .eye_force_phase_val     (a_eye_force_phase_val),
-        .eye_state               (a_eye_state),
-        .eye_last_swept_lane     (a_eye_last_swept_lane),
-        .eye_capture_valid       (a_eye_capture_valid),
-        .eye_cal_state_mirror    (a_eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (a_eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (a_eye_dwell_remaining_ms),
-        .score_rd_idx            (a_score_rd_idx),
-        .score_rd_data           (a_score_rd_data),
-        .score_lane_passed       (a_score_lane_passed),
-        .score_best              (a_score_best),
-        .score_best_slip         (a_score_best_slip),
-        .score_best_phase        (a_score_best_phase)
+        .swi_eye_lane_sel       (a_swi_eye_lane_sel_w),
+        .swi_eye_dwell_us       (a_swi_eye_dwell_us_w),
+        .swi_eye_ctrl           (a_swi_eye_ctrl_w),
+        .eye_status             (a_eye_status_w),
+        .eye_score_idx          (a_eye_score_idx_w),
+        .eye_score_data         (a_eye_score_data_w),
+        .eye_score_lane_passed  (a_eye_score_lane_passed_w),
+        .eye_score_best         (a_eye_score_best_w),
+        .eye_score_best_slip    (a_eye_score_best_slip_w),
+        .eye_score_best_phase   (a_eye_score_best_phase_w)
     );
 
-    tidelink_eye_regs u_a_eye_regs (
-        .clk         (clk),
-        .rstn        (~rst),
+    tidelink_eye_regs #(
+        .APB_ADDR_W (12),
+        .SYS_DATA_W (32)
+    ) u_a_eye_regs (
+        .hclk        (clk),
+        .hresetn     (~rst),
         .psel        (a_psel),
         .penable     (a_penable),
         .pwrite      (a_pwrite),
@@ -166,30 +154,30 @@ module tb_top #(
         .prdata      (a_prdata),
         .pready      (a_pready),
         .pslverr     (a_pslverr),
-        .eye_lane_sel            (a_eye_lane_sel),
-        .eye_dwell_us            (a_eye_dwell_us),
-        .eye_enter_pulse         (a_eye_enter_pulse),
-        .eye_reset_pulse         (a_eye_reset_pulse),
-        .eye_mode                (a_eye_mode),
-        .eye_force_full_sweep    (a_eye_force_full_sweep),
-        .eye_auto_increment_lane (a_eye_auto_increment_lane),
-        .eye_force_phase_en      (a_eye_force_phase_en),
-        .eye_skip_calibrator     (a_eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (a_eye_freeze_on_cal_done),
-        .eye_force_phase_val     (a_eye_force_phase_val),
-        .eye_force_slip_val      (a_eye_force_slip_val),
-        .eye_state               (a_eye_state),
-        .eye_last_swept_lane     (a_eye_last_swept_lane),
-        .eye_capture_valid       (a_eye_capture_valid),
-        .eye_cal_state_mirror    (a_eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (a_eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (a_eye_dwell_remaining_ms),
-        .score_rd_idx            (a_score_rd_idx),
-        .score_rd_data           (a_score_rd_data),
-        .score_lane_passed       (a_score_lane_passed),
-        .score_best              (a_score_best),
-        .score_best_slip         (a_score_best_slip),
-        .score_best_phase        (a_score_best_phase)
+        .swi_eye_lane_sel        (a_swi_eye_lane_sel_w),
+        .swi_eye_dwell_us        (a_swi_eye_dwell_us_w),
+        .swi_eye_ctrl            (a_swi_eye_ctrl_w),
+        .eye_status_i            (a_eye_status_w),
+        .eye_score_idx           (a_eye_score_idx_w),
+        .eye_score_data_i        (a_eye_score_data_w),
+        .eye_score_lane_passed_i (a_eye_score_lane_passed_w),
+        .eye_score_best_i        (a_eye_score_best_w),
+        .eye_score_best_slip_i   (a_eye_score_best_slip_w),
+        .eye_score_best_phase_i  (a_eye_score_best_phase_w),
+        .swi_force_phase_en      (a_swi_force_phase_en_w),
+        .swi_force_phase_val     (a_swi_force_phase_val_w),
+        .swi_force_slip_val      (a_swi_force_slip_val_w),
+        .lane_crc_err_cnt_0_i    (8'h0),
+        .lane_crc_err_cnt_1_i    (8'h0),
+        .lane_crc_err_cnt_2_i    (8'h0),
+        .lane_crc_err_cnt_3_i    (8'h0),
+        .lane_crc_err_cnt_4_i    (8'h0),
+        .lane_crc_err_cnt_5_i    (8'h0),
+        .lane_crc_err_cnt_6_i    (8'h0),
+        .lane_crc_err_cnt_7_i    (8'h0),
+        .lane_crc_err_cnt_clr_o  (a_eye_crc_err_cnt_clr_w),
+        .eye_last_slip_i         (a_bit_slip),
+        .eye_last_lane_fault_i   (a_lane_fault)
     );
 
     // -------------------------------------------------------------------------
@@ -208,41 +196,32 @@ module tb_top #(
         .role_locked            (b_role_locked),
         .swreset                (b_swreset),
         .lane_locked            (b_lane_locked),
-        .apb_bit_slip_override  (b_eye_force_slip_val),
-        .apb_override_enable    (b_eye_force_phase_en),
+        .apb_bit_slip_override  (b_swi_force_slip_val_w[23:0]),
+        .apb_override_enable    (b_swi_force_phase_en_w[0]),
         .bit_slip               (b_bit_slip),
         .phase_offset           (b_phase_offset),
         .training_mode          (b_training_mode),
         .calibration_done       (b_calibration_done),
         .lane_fault             (b_lane_fault),
         .state                  (b_state),
-        .eye_lane_sel            (b_eye_lane_sel),
-        .eye_dwell_us            (b_eye_dwell_us),
-        .eye_enter_pulse         (b_eye_enter_pulse),
-        .eye_reset_pulse         (b_eye_reset_pulse),
-        .eye_mode                (b_eye_mode),
-        .eye_force_full_sweep    (b_eye_force_full_sweep),
-        .eye_auto_increment_lane (b_eye_auto_increment_lane),
-        .eye_skip_calibrator     (b_eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (b_eye_freeze_on_cal_done),
-        .eye_force_phase_val     (b_eye_force_phase_val),
-        .eye_state               (b_eye_state),
-        .eye_last_swept_lane     (b_eye_last_swept_lane),
-        .eye_capture_valid       (b_eye_capture_valid),
-        .eye_cal_state_mirror    (b_eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (b_eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (b_eye_dwell_remaining_ms),
-        .score_rd_idx            (b_score_rd_idx),
-        .score_rd_data           (b_score_rd_data),
-        .score_lane_passed       (b_score_lane_passed),
-        .score_best              (b_score_best),
-        .score_best_slip         (b_score_best_slip),
-        .score_best_phase        (b_score_best_phase)
+        .swi_eye_lane_sel       (b_swi_eye_lane_sel_w),
+        .swi_eye_dwell_us       (b_swi_eye_dwell_us_w),
+        .swi_eye_ctrl           (b_swi_eye_ctrl_w),
+        .eye_status             (b_eye_status_w),
+        .eye_score_idx          (b_eye_score_idx_w),
+        .eye_score_data         (b_eye_score_data_w),
+        .eye_score_lane_passed  (b_eye_score_lane_passed_w),
+        .eye_score_best         (b_eye_score_best_w),
+        .eye_score_best_slip    (b_eye_score_best_slip_w),
+        .eye_score_best_phase   (b_eye_score_best_phase_w)
     );
 
-    tidelink_eye_regs u_b_eye_regs (
-        .clk         (clk),
-        .rstn        (~rst),
+    tidelink_eye_regs #(
+        .APB_ADDR_W (12),
+        .SYS_DATA_W (32)
+    ) u_b_eye_regs (
+        .hclk        (clk),
+        .hresetn     (~rst),
         .psel        (b_psel),
         .penable     (b_penable),
         .pwrite      (b_pwrite),
@@ -251,30 +230,30 @@ module tb_top #(
         .prdata      (b_prdata),
         .pready      (b_pready),
         .pslverr     (b_pslverr),
-        .eye_lane_sel            (b_eye_lane_sel),
-        .eye_dwell_us            (b_eye_dwell_us),
-        .eye_enter_pulse         (b_eye_enter_pulse),
-        .eye_reset_pulse         (b_eye_reset_pulse),
-        .eye_mode                (b_eye_mode),
-        .eye_force_full_sweep    (b_eye_force_full_sweep),
-        .eye_auto_increment_lane (b_eye_auto_increment_lane),
-        .eye_force_phase_en      (b_eye_force_phase_en),
-        .eye_skip_calibrator     (b_eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (b_eye_freeze_on_cal_done),
-        .eye_force_phase_val     (b_eye_force_phase_val),
-        .eye_force_slip_val      (b_eye_force_slip_val),
-        .eye_state               (b_eye_state),
-        .eye_last_swept_lane     (b_eye_last_swept_lane),
-        .eye_capture_valid       (b_eye_capture_valid),
-        .eye_cal_state_mirror    (b_eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (b_eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (b_eye_dwell_remaining_ms),
-        .score_rd_idx            (b_score_rd_idx),
-        .score_rd_data           (b_score_rd_data),
-        .score_lane_passed       (b_score_lane_passed),
-        .score_best              (b_score_best),
-        .score_best_slip         (b_score_best_slip),
-        .score_best_phase        (b_score_best_phase)
+        .swi_eye_lane_sel        (b_swi_eye_lane_sel_w),
+        .swi_eye_dwell_us        (b_swi_eye_dwell_us_w),
+        .swi_eye_ctrl            (b_swi_eye_ctrl_w),
+        .eye_status_i            (b_eye_status_w),
+        .eye_score_idx           (b_eye_score_idx_w),
+        .eye_score_data_i        (b_eye_score_data_w),
+        .eye_score_lane_passed_i (b_eye_score_lane_passed_w),
+        .eye_score_best_i        (b_eye_score_best_w),
+        .eye_score_best_slip_i   (b_eye_score_best_slip_w),
+        .eye_score_best_phase_i  (b_eye_score_best_phase_w),
+        .swi_force_phase_en      (b_swi_force_phase_en_w),
+        .swi_force_phase_val     (b_swi_force_phase_val_w),
+        .swi_force_slip_val      (b_swi_force_slip_val_w),
+        .lane_crc_err_cnt_0_i    (8'h0),
+        .lane_crc_err_cnt_1_i    (8'h0),
+        .lane_crc_err_cnt_2_i    (8'h0),
+        .lane_crc_err_cnt_3_i    (8'h0),
+        .lane_crc_err_cnt_4_i    (8'h0),
+        .lane_crc_err_cnt_5_i    (8'h0),
+        .lane_crc_err_cnt_6_i    (8'h0),
+        .lane_crc_err_cnt_7_i    (8'h0),
+        .lane_crc_err_cnt_clr_o  (b_eye_crc_err_cnt_clr_w),
+        .eye_last_slip_i         (b_bit_slip),
+        .eye_last_lane_fault_i   (b_lane_fault)
     );
 
     initial begin

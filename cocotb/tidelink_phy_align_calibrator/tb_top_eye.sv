@@ -3,26 +3,21 @@
 //                 (docs/EYE_VISIBILITY_RTL_PROPOSAL.md).
 // =============================================================================
 //
-// Wraps a single tidelink_phy_align_calibrator together with the new
+// Wraps a single tidelink_phy_align_calibrator together with the
 // tidelink_eye_regs.sv APB shim (Region 10, MMIO 0x4403_2140..0x4403_217F).
 // The cocotb test drives APB on this side and observes the calibrator's
 // score buffer via the eye_regs read mux + via hierarchical xref into
 // u_dut.score_buf.
 //
-// IMPORTANT — DEPENDS ON RTL FROM A PARALLEL AGENT
-// ------------------------------------------------
-// The RTL surfaces consumed by this testbench are added by
-// `feat/eye-rtl-impl`:
-//
-//   * `tidelink_phy_align_calibrator` gains five new ports
-//     (eye_lane_sel, eye_dwell_us, eye_enter_pulse, eye_force_phase_*,
-//     eye_state, eye_last_swept_lane, score_buf — see proposal §6).
-//   * `tidelink_eye_regs.sv`: NEW APB shim implementing the §5 register map.
-//
-// Until that branch merges, this tb compiles ONLY if both files exist —
-// the test files (test_eye_*.py) are harness-complete but require the RTL
-// surface to run. The flist `flist/tidelink_eye_visibility.flist` is the
-// merge point for both modules.
+// Port-name reconciliation (post-integration, 2026-05-27)
+// -------------------------------------------------------
+// The cocotb-side initial port draft used unpacked separate signals
+// (eye_enter_pulse, eye_reset_pulse, eye_mode[1:0], eye_force_full_sweep,
+// eye_auto_increment_lane, eye_state[2:0], etc.). The RTL agent's
+// implementation packed these into 32-bit registers exposed through the
+// Region 10 shim — swi_eye_ctrl[31:0] and eye_status[31:0]. The cocotb
+// tests are APB-driver-only (eye_common.py reads/writes Region 10), so
+// reconciling at the wrapper boundary keeps the tests untouched.
 //
 // We override DWELL_CYCLES / HOLD_CYCLES to small values so the simulated
 // 128-point sweep completes in <1 ms of wall clock. CLK_MHZ_PARAM is
@@ -80,44 +75,36 @@ module tb_top #(
 );
 
     // -------------------------------------------------------------------------
-    // Wires between eye_regs shim and the calibrator (v2 proposal §6 ports).
-    // The RTL agent's calibrator picks these names up; if any rename is
-    // required at merge time, this wrapper is the single place to adapt.
+    // Bridge wires between eye_regs shim and the calibrator.
+    // Names follow the RTL agent's actual port list
+    // (tidelink_phy_align_calibrator.sv + tidelink_eye_regs.sv).
     // -------------------------------------------------------------------------
-    logic [2:0]  eye_lane_sel;
-    logic [31:0] eye_dwell_us;
-    logic        eye_enter_pulse;
-    logic        eye_reset_pulse;
-    logic [1:0]  eye_mode;
-    logic        eye_force_full_sweep;
-    logic        eye_auto_increment_lane;
-    logic [31:0] eye_force_phase_val;     // per-lane 4 b, lane N at [4N+3:4N]
-    logic [23:0] eye_force_slip_val;      // per-lane 3 b
-    logic        eye_force_phase_en;
-    logic        eye_skip_calibrator;
-    logic        eye_freeze_on_cal_done;
-    logic [2:0]  eye_state;               // 0=IDLE 1=SWEEPING 2=DONE 3=TIMED_OUT 4=DRAINING
-    logic [2:0]  eye_last_swept_lane;
-    logic        eye_capture_valid;
-    logic [3:0]  eye_cal_state_mirror;
-    logic [3:0]  eye_sweep_phase_mirror;
-    logic [15:0] eye_dwell_remaining_ms;
+    logic [2:0]  swi_eye_lane_sel_w;
+    logic [31:0] swi_eye_dwell_us_w;
+    logic [31:0] swi_eye_ctrl_w;
+    logic [31:0] eye_status_w;
+    logic [6:0]  eye_score_idx_w;
+    logic [5:0]  eye_score_data_w;
+    logic        eye_score_lane_passed_w;
+    logic [5:0]  eye_score_best_w;
+    logic [2:0]  eye_score_best_slip_w;
+    logic [3:0]  eye_score_best_phase_w;
 
-    // Score buffer read port driven by the eye_regs shim into the
-    // calibrator. The shim emits a 7-bit index (slip[2:0],phase[3:0])
-    // selected against the LANE_SEL register; the calibrator returns the
-    // packed score word.
-    logic [6:0]  score_rd_idx;
-    logic [5:0]  score_rd_data;
-    logic        score_lane_passed;
-    logic [5:0]  score_best;
-    logic [2:0]  score_best_slip;
-    logic [3:0]  score_best_phase;
+    // Force-phase / force-slip overrides driven by the shim. SWI_FORCE_PHASE_EN
+    // packs three control bits (override / skip-cal / freeze-done — see
+    // proposal §5 + eye_common.FORCE_EN_*). The calibrator only uses the
+    // low bit today; the rest are reserved.
+    logic [31:0] swi_force_phase_en_w;
+    logic [31:0] swi_force_phase_val_w;
+    logic [31:0] swi_force_slip_val_w;
+
+    // Per-lane CRC error counters: in standalone calibrator TB there is no
+    // lane_checker, so the counters are tied to 0. The read-clear strobe
+    // is observable on `eye_crc_err_cnt_clr_w` if a test wants to assert it.
+    logic        eye_crc_err_cnt_clr_w;
 
     // -------------------------------------------------------------------------
-    // DUT — calibrator. The new ports below (prefixed `eye_`) are added on
-    // the feat/eye-rtl-impl branch; tests will not compile until that
-    // branch merges.
+    // DUT — calibrator.
     // -------------------------------------------------------------------------
     tidelink_phy_align_calibrator #(
         .DWELL_CYCLES             (DWELL_CYCLES),
@@ -132,8 +119,8 @@ module tb_top #(
         .role_locked            (role_locked),
         .swreset                (swreset),
         .lane_locked            (lane_locked),
-        .apb_bit_slip_override  (eye_force_slip_val),
-        .apb_override_enable    (eye_force_phase_en),
+        .apb_bit_slip_override  (swi_force_slip_val_w[23:0]),
+        .apb_override_enable    (swi_force_phase_en_w[0]),
         .bit_slip               (bit_slip),
         .phase_offset           (phase_offset),
         .training_mode          (training_mode),
@@ -141,37 +128,28 @@ module tb_top #(
         .lane_fault             (lane_fault),
         .state                  (state),
 
-        // ── v2 eye-visibility surface (added by feat/eye-rtl-impl) ────────
-        .eye_lane_sel            (eye_lane_sel),
-        .eye_dwell_us            (eye_dwell_us),
-        .eye_enter_pulse         (eye_enter_pulse),
-        .eye_reset_pulse         (eye_reset_pulse),
-        .eye_mode                (eye_mode),
-        .eye_force_full_sweep    (eye_force_full_sweep),
-        .eye_auto_increment_lane (eye_auto_increment_lane),
-        .eye_skip_calibrator     (eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (eye_freeze_on_cal_done),
-        .eye_force_phase_val     (eye_force_phase_val),
-        .eye_state               (eye_state),
-        .eye_last_swept_lane     (eye_last_swept_lane),
-        .eye_capture_valid       (eye_capture_valid),
-        .eye_cal_state_mirror    (eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (eye_dwell_remaining_ms),
-        .score_rd_idx            (score_rd_idx),
-        .score_rd_data           (score_rd_data),
-        .score_lane_passed       (score_lane_passed),
-        .score_best              (score_best),
-        .score_best_slip         (score_best_slip),
-        .score_best_phase        (score_best_phase)
+        // ── v2 eye-visibility surface ────────────────────────────────────
+        .swi_eye_lane_sel       (swi_eye_lane_sel_w),
+        .swi_eye_dwell_us       (swi_eye_dwell_us_w),
+        .swi_eye_ctrl           (swi_eye_ctrl_w),
+        .eye_status             (eye_status_w),
+        .eye_score_idx          (eye_score_idx_w),
+        .eye_score_data         (eye_score_data_w),
+        .eye_score_lane_passed  (eye_score_lane_passed_w),
+        .eye_score_best         (eye_score_best_w),
+        .eye_score_best_slip    (eye_score_best_slip_w),
+        .eye_score_best_phase   (eye_score_best_phase_w)
     );
 
     // -------------------------------------------------------------------------
-    // Eye regs APB shim (Region 10). Added by feat/eye-rtl-impl.
+    // Eye regs APB shim (Region 10).
     // -------------------------------------------------------------------------
-    tidelink_eye_regs u_eye_regs (
-        .clk         (clk),
-        .rstn        (~rst),
+    tidelink_eye_regs #(
+        .APB_ADDR_W (12),
+        .SYS_DATA_W (32)
+    ) u_eye_regs (
+        .hclk        (clk),
+        .hresetn     (~rst),
 
         .psel        (psel),
         .penable     (penable),
@@ -183,34 +161,34 @@ module tb_top #(
         .pslverr     (pslverr),
 
         // Outputs to calibrator
-        .eye_lane_sel            (eye_lane_sel),
-        .eye_dwell_us            (eye_dwell_us),
-        .eye_enter_pulse         (eye_enter_pulse),
-        .eye_reset_pulse         (eye_reset_pulse),
-        .eye_mode                (eye_mode),
-        .eye_force_full_sweep    (eye_force_full_sweep),
-        .eye_auto_increment_lane (eye_auto_increment_lane),
-        .eye_force_phase_en      (eye_force_phase_en),
-        .eye_skip_calibrator     (eye_skip_calibrator),
-        .eye_freeze_on_cal_done  (eye_freeze_on_cal_done),
-        .eye_force_phase_val     (eye_force_phase_val),
-        .eye_force_slip_val      (eye_force_slip_val),
+        .swi_eye_lane_sel        (swi_eye_lane_sel_w),
+        .swi_eye_dwell_us        (swi_eye_dwell_us_w),
+        .swi_eye_ctrl            (swi_eye_ctrl_w),
+        .eye_status_i            (eye_status_w),
+        .eye_score_idx           (eye_score_idx_w),
+        .eye_score_data_i        (eye_score_data_w),
+        .eye_score_lane_passed_i (eye_score_lane_passed_w),
+        .eye_score_best_i        (eye_score_best_w),
+        .eye_score_best_slip_i   (eye_score_best_slip_w),
+        .eye_score_best_phase_i  (eye_score_best_phase_w),
 
-        // Inputs back from calibrator
-        .eye_state               (eye_state),
-        .eye_last_swept_lane     (eye_last_swept_lane),
-        .eye_capture_valid       (eye_capture_valid),
-        .eye_cal_state_mirror    (eye_cal_state_mirror),
-        .eye_sweep_phase_mirror  (eye_sweep_phase_mirror),
-        .eye_dwell_remaining_ms  (eye_dwell_remaining_ms),
+        .swi_force_phase_en      (swi_force_phase_en_w),
+        .swi_force_phase_val     (swi_force_phase_val_w),
+        .swi_force_slip_val      (swi_force_slip_val_w),
 
-        // Indirect/burst data path
-        .score_rd_idx            (score_rd_idx),
-        .score_rd_data           (score_rd_data),
-        .score_lane_passed       (score_lane_passed),
-        .score_best              (score_best),
-        .score_best_slip         (score_best_slip),
-        .score_best_phase        (score_best_phase)
+        // No lane_checker in this standalone TB: tie counters to 0.
+        .lane_crc_err_cnt_0_i    (8'h0),
+        .lane_crc_err_cnt_1_i    (8'h0),
+        .lane_crc_err_cnt_2_i    (8'h0),
+        .lane_crc_err_cnt_3_i    (8'h0),
+        .lane_crc_err_cnt_4_i    (8'h0),
+        .lane_crc_err_cnt_5_i    (8'h0),
+        .lane_crc_err_cnt_6_i    (8'h0),
+        .lane_crc_err_cnt_7_i    (8'h0),
+        .lane_crc_err_cnt_clr_o  (eye_crc_err_cnt_clr_w),
+
+        .eye_last_slip_i         (bit_slip),
+        .eye_last_lane_fault_i   (lane_fault)
     );
 
     initial begin

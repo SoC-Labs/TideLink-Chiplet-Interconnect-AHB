@@ -202,7 +202,8 @@ ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
+// §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 
 // Performance profiling
 ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv

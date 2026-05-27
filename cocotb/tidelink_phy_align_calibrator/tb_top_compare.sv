@@ -86,6 +86,8 @@ module tb_top #(
         .lane_locked           (lane_locked),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
+        .min_lock_dwells_i     (4'h0),
+        .cr_pkt_seen_i         (1'b1),    // §9.11d: tie HIGH to bypass S_VALIDATE in unit TB
         .bit_slip              (best_bit_slip),
         .phase_offset          (best_phase_offset),
         .training_mode         (best_training_mode),
@@ -109,6 +111,8 @@ module tb_top #(
         .lane_locked           (lane_locked),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
+        .min_lock_dwells_i     (4'h0),
+        .cr_pkt_seen_i         (1'b1),    // §9.11d: tie HIGH to bypass S_VALIDATE in unit TB
         .bit_slip              (first_bit_slip),
         .phase_offset          (first_phase_offset),
         .training_mode         (first_training_mode),

@@ -90,6 +90,14 @@ module tb_top #(
         .lane_locked            (lane_locked),
         .apb_bit_slip_override  (apb_bit_slip_override),
         .apb_override_enable    (apb_override_enable),
+        // §9.11c: drive 0 to use the synth-time MIN_LOCK_DWELLS parameter
+        // default. Cocotb tests can hierarchically force this if they
+        // want to exercise the runtime override.
+        .min_lock_dwells_i      (4'h0),
+        // §9.11d: tie cr_pkt_seen_i HIGH so S_VALIDATE auto-passes in unit
+        // tests (the standalone TB has no FCSM to generate a CR_PKT).
+        // Real-data validation is exercised at the tidelink_top_pair level.
+        .cr_pkt_seen_i          (1'b1),
         .bit_slip               (bit_slip),
         .phase_offset           (phase_offset),
         .training_mode          (training_mode),

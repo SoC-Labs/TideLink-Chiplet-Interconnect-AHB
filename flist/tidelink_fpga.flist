@@ -244,7 +244,10 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 //    TIDELINK_USE_IDELAY. ──
 ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
+// §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob
+// (Region 8 slot 3'h0 bits[7:4] = SWI_CAL_MIN_DWELLS) wired to
+// u_calibrator.min_lock_dwells_i. Otherwise identical to upstream.
+${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // ── §9 PHY alignment: per-lane training-pattern lock checker + auto-cal FSM ──

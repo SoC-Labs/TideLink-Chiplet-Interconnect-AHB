@@ -48,7 +48,8 @@ ${TIDELINK_HOME}/src/rtl/tidelink_fcsm_debug.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv
+// §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFOL1.v

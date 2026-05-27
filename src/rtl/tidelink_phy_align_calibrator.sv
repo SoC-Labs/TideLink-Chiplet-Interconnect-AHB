@@ -256,7 +256,17 @@ module tidelink_phy_align_calibrator #(
     // centring; lower (down to 1) reduces the policy to "earliest passing
     // point wins" (the §9.9 race-to-tie returns at 1). Bounded 1..15 by
     // the 4-bit APB override register on the chiplet-controller side.
-    parameter int MIN_LOCK_DWELLS = 4
+    parameter int MIN_LOCK_DWELLS = 4,
+    // §9.11d Fix A1 (post-S_HOLD real-data validation): after S_HOLD
+    // expires we enter S_VALIDATE with training_mode=0 (letting the FCSM
+    // emit a CR_PKT). We wait up to VALIDATION_TIMEOUT cycles for our
+    // local cr_pkt_seen_rx to assert (confirming our RX correctly decoded
+    // the peer's CR_PKT — real-data validation of the latched per-lane
+    // slip/phase, not just the training-byte criterion). On timeout we
+    // re-arm (T3 retry budget applies) so the calibrator can try a
+    // different (slip, phase). Default 4096 ≈ 80 µs at 50 MHz link_clk
+    // — plenty for an FCSM CR exchange round trip.
+    parameter int VALIDATION_TIMEOUT = 4096
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -269,6 +279,26 @@ module tidelink_phy_align_calibrator #(
     // SW debug override (optional)
     input  logic [23:0] apb_bit_slip_override,
     input  logic        apb_override_enable,
+
+    // §9.11c APB runtime MIN_LOCK_DWELLS override (Region 8 slot 3'h0
+    // bits[7:4] via the axi_chiplet_controller local override). 0 = use
+    // synth-time parameter default; 1..15 = override at runtime. Lets SW
+    // tune the eye-centre policy's contiguity requirement without
+    // re-elaboration. Slow APB-domain signal sampled in the calibrator
+    // clock domain — see CDC note at the chiplet_controller instantiation.
+    input  logic [3:0]  min_lock_dwells_i,
+
+    // §9.11d Fix A1 real-data validation input.
+    // Driven from axi_chiplet_controller's `obs_cr_pkt_seen_rx_w` — the
+    // local Wlink FCSM's "saw the peer's CR_PKT on our RX" flag, sticky-
+    // high once the credit-request packet has been decoded. Same clock
+    // domain as the calibrator (recovered RX link clock) so no CDC.
+    // Used by S_VALIDATE: if asserted during the validation window, the
+    // latched per-lane (slip, phase) is confirmed working on real data
+    // (not just training pattern) → S_DONE. If not asserted within
+    // VALIDATION_TIMEOUT cycles, the latched values fail real-data decode
+    // (OVERNIGHT_2026_05_27 "training too lenient" prediction) → re-arm.
+    input  logic        cr_pkt_seen_i,
 
     // Outputs to PHY
     output logic [23:0] bit_slip,
@@ -341,7 +371,29 @@ module tidelink_phy_align_calibrator #(
         //   * else:
         //       lane_fault_q[i] <= 1; lane_done[i] <= 1
         // -------------------------------------------------------------------
-        S_FINALIZE   = 4'd8
+        S_FINALIZE   = 4'd8,
+        // -------------------------------------------------------------------
+        // §9.11d Fix A1 — post-S_HOLD real-data validation state.
+        //
+        // Entered from S_HOLD after HOLD_CYCLES expire. Drops training_mode
+        // (so the FCSM can emit a CR_PKT — the start of bilateral credit
+        // exchange that the bug regression test_05 needs). Waits up to
+        // VALIDATION_TIMEOUT cycles for cr_pkt_seen_i to assert, meaning
+        // our local RX (configured by the latched (slip, phase) per lane)
+        // correctly decoded the peer's CR_PKT bytes.
+        //
+        //   * cr_pkt_seen_i asserts within timeout → S_DONE (latched values
+        //     validated on REAL data, not just training pattern)
+        //   * timeout without cr_pkt_seen → S_ARM (re-arm sweep with T3
+        //     retry budget; the (slip, phase) was a training-pattern false-
+        //     positive per OVERNIGHT_2026_05_27 prediction)
+        //
+        // Addresses the gap §9.11/§9.11b leaves: passing LOCK_THRESH on the
+        // training byte is NECESSARY but not SUFFICIENT for stable data
+        // decode (per OVERNIGHT_2026_05_27 SW-sweep evidence — 6/16 (M,S)
+        // phase combos reached LINK_IDLE but doorbells didn't cross).
+        // -------------------------------------------------------------------
+        S_VALIDATE   = 4'd9
     } state_t;
 
     state_t cur_state, nxt_state;
@@ -480,13 +532,17 @@ module tidelink_phy_align_calibrator #(
     localparam logic [5:0] LANE_SCORE_MAX = 6'h3F;
     // Promote LOCK_THRESH to the 6-bit score width safely.
     wire   [5:0] lock_thresh_6b   = LOCK_THRESH[5:0];
-    // Effective MIN_LOCK_DWELLS — synth-time parameter for now. A runtime
-    // APB override (e.g. Region 8 SWI_CAL_MIN_DWELLS[3:0]) can be wired in
-    // a follow-on patch via a local_overrides axi_chiplet_controller; the
-    // calibrator port is omitted for now to keep the bring-up RTL change
-    // limited to this file. Default 4 = ~25% margin on the 16-phase axis.
+    // §9.11c effective MIN_LOCK_DWELLS — APB runtime override beats synth
+    // param. min_lock_dwells_i is 4 bits driven from
+    // axi_chiplet_controller's swi_cal_min_dwells_r (Region 8 slot 3'h0
+    // bits[7:4]). Reading 4'd0 in this port forces the synth-time param
+    // default; non-zero overrides at runtime. Lets SW tune the centring
+    // requirement live (e.g. lower to 1 if real silicon's eye is single-
+    // point and the eye-centre policy can't find a 4-wide run).
     wire [EYE_WIDTH_W-1:0] min_lock_dwells_eff =
-        MIN_LOCK_DWELLS[EYE_WIDTH_W-1:0];
+        (min_lock_dwells_i == 4'd0) ?
+            MIN_LOCK_DWELLS[EYE_WIDTH_W-1:0] :
+            {1'b0, min_lock_dwells_i};
 
     // Have we latched a lock for a lane that wasn't already done?
     // (Only used by the EARLY_EXIT path; best-of-sweep ignores it.)
@@ -539,6 +595,12 @@ module tidelink_phy_align_calibrator #(
     // T3.2 peer-aware training-hold counter (cycles spent in S_HOLD).
     localparam int HOLD_MAX = HOLD_CYCLES - 1;
     logic [$clog2(HOLD_CYCLES+1)-1:0] hold_ctr;
+
+    // §9.11d Fix A1 — validation-timeout counter (cycles in S_VALIDATE).
+    // Saturates at VALIDATION_TIMEOUT-1; S_VALIDATE → S_ARM (re-sweep) on
+    // saturation if cr_pkt_seen_i didn't assert.
+    localparam int VAL_MAX = VALIDATION_TIMEOUT - 1;
+    logic [$clog2(VALIDATION_TIMEOUT+1)-1:0] val_ctr;
 
     // -------------------------------------------------------------------------
     // FSM next-state logic
@@ -635,10 +697,35 @@ module tidelink_phy_align_calibrator #(
                 // NOT react to lane_locked here: our (slip,phase) is latched
                 // and physically correct; the peer switching to real data on
                 // its own release will (correctly) drop our lane_checker,
-                // which must NOT trigger a re-sweep. S_DONE is sticky.
+                // which must NOT trigger a re-sweep.
+                //
+                // §9.11d Fix A1: at HOLD_CYCLES expire, instead of going
+                // straight to S_DONE, enter S_VALIDATE to confirm the
+                // latched (slip, phase) actually decodes the peer's CR_PKT
+                // on real data (not just training pattern).
                 if (swreset)                   nxt_state = S_CANCEL;
                 else if (!role_locked)         nxt_state = S_DONE;
-                else if (hold_ctr >= HOLD_MAX) nxt_state = S_DONE;
+                else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
+            end
+            S_VALIDATE: begin
+                // §9.11d Fix A1 real-data validation.
+                //
+                // training_mode is now LOW (see output mux below — S_VALIDATE
+                // intentionally NOT in the training-mode assert list). The
+                // FCSM is free to emit its CR_PKT. Our local FCSM signals
+                // cr_pkt_seen_rx (= cr_pkt_seen_i input here) when it
+                // successfully decodes the peer's CR_PKT.
+                //
+                //   * cr_pkt_seen_i within timeout → S_DONE (real-data
+                //     validated)
+                //   * timeout without cr_pkt_seen → re-arm sweep (T3
+                //     retry budget governs whether to give up via
+                //     retry_exhausted, same path as a normal lane fault).
+                if (swreset)                  nxt_state = S_CANCEL;
+                else if (!role_locked)        nxt_state = S_DONE;
+                else if (cr_pkt_seen_i)       nxt_state = S_DONE;
+                else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
+                    nxt_state = retry_exhausted ? S_DONE : S_ARM;
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -678,6 +765,15 @@ module tidelink_phy_align_calibrator #(
         else if (cur_state != S_HOLD)  hold_ctr <= '0;
         else if (hold_ctr < HOLD_MAX[$clog2(HOLD_CYCLES+1)-1:0])
                                        hold_ctr <= hold_ctr + 1'b1;
+    end
+
+    // §9.11d Fix A1 — validation-timeout counter. Cleared whenever NOT in
+    // S_VALIDATE; saturates at VAL_MAX while in S_VALIDATE.
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                          val_ctr <= '0;
+        else if (cur_state != S_VALIDATE) val_ctr <= '0;
+        else if (val_ctr < VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
+                                          val_ctr <= val_ctr + 1'b1;
     end
 
     // -------------------------------------------------------------------------

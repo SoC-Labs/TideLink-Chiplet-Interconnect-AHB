@@ -1,5 +1,5 @@
 ###-----------------------------------------------------------------------------
-### TideLink Chiplet Bridge - Pynq-Z2 Paired GPIO-Bridge Block Design TCL (Wave B2)
+### TideLink Chiplet Bridge - Pynq-Z2 Single-Board INTERNAL Loopback Block Design
 ### A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
 ###
 ### Contributors
@@ -8,14 +8,17 @@
 ###
 ### Copyright (C) 2026, SoC Labs (www.soclabs.org)
 ###-----------------------------------------------------------------------------
-### Creates a Vivado block design named "tidelink_design" for the Pynq-Z2
-### (Zynq XC7Z020CLG400-1) in paired configuration. The same bitstream
-### programs both boards in a TideLink GPIO-bridge pair; role is selected
-### at runtime via an AXI GPIO at 0x4404_0000 (bit 0 = role_strap_i).
-### The PYNQ runtime reads $FPGAHUB_LOCAL_ROLE (injected by fpgahub when
-### the action runs against a paired board) and writes:
-###   $FPGAHUB_LOCAL_ROLE == "die_a"  -> strap = 0 (slave)
-###   $FPGAHUB_LOCAL_ROLE == "die_b"  -> strap = 1 (master)
+### Variant A of the bring-up diagnostic pair (sibling: pynq-z2-loopback-ext).
+### Creates a Vivado block design "tidelink_design" for the Pynq-Z2
+### (Zynq XC7Z020CLG400-1) where pad_clk_tx/pad_tx[*] are tied to
+### pad_clk_rx/pad_rx[*] INSIDE THE FABRIC by the board wrapper — the
+### PHY pads never reach the FPGA balls. This isolates the TideLink RTL /
+### BD glue / FCSM / credit machinery from the pad / IDELAY / board-cable
+### layer; if this image works but pynq-z2-loopback-ext fails on the same
+### board, the bug is in the IO path.
+###
+### Role: strap GPIO at 0x4404_0000 is still present so SW can force
+### master at runtime (no peer to negotiate with).
 ###
 ### Design contents (vs single-instance: + 1 AXI GPIO for the strap):
 ###   - Zynq PS7 (FCLK_CLK0=100MHz, M_AXI_GP0 enabled, IRQ_F2P[5:0])
@@ -258,6 +261,33 @@ proc create_root_design { parentCell } {
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
 
+    # Internal-loopback variant: force USE_IDELAY=0 on the IP. The IP's
+    # default is 1, which instantiates IDELAYE2 cells whose IDATAIN must
+    # be driven by IBUFs (IO pads). In this build pad_rx is sourced from
+    # the same fabric net that drives pad_tx (LUT-driven loopback inside
+    # the wrapper) — never reaches an IO pin — so a placer 30-650
+    # "Non IO buffer ... driving IDATAIN" fires unless the IDELAY branch
+    # of tidelink_idelay_rx's generate is pruned. With USE_IDELAY=0 the
+    # cells are removed; pad_rx_o = pad_rx_i straight through.
+    set_property -dict [list CONFIG.USE_IDELAY {0}] $tl
+
+    # Bypass the peer-mask handshake gate. In pair-all this input is tied
+    # LOW so role_lock requires either (a) the autoneg/I2C peer-mask FSM
+    # to complete, or (b) SW asserting apb_debug_unlock_i via the
+    # debug_unlock GPIO. The simple loopback BD has neither path — no
+    # peer to negotiate with, no debug_unlock GPIO at 0x44041000 — so
+    # role_lock_reg never latches and ROLE_CFG.role_lock reads back 0
+    # however many times SW writes 1 to it. Tie mask_hs_bypass_i HIGH
+    # to open the gate unconditionally; SW W1S of ROLE_CFG[1] then
+    # latches role_lock on the next clock (see axi_chiplet_controller.sv
+    # mask_hs_gate_open).
+    set const_mask_bypass [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_mask_hs_bypass]
+    set_property -dict [list \
+        CONFIG.CONST_WIDTH {1} \
+        CONFIG.CONST_VAL   {1} \
+    ] $const_mask_bypass
+
     # Discrete tie-offs via xlconstant cells
     # PHC nanoseconds (30-bit zero)
     set const_ns [create_bd_cell -type ip \
@@ -349,7 +379,8 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_gpio_strap/s_axi_aclk] \
                    [get_bd_pins tidelink_0/hclk] \
                    [get_bd_pins tidelink_0/user_ref_clk] \
-                   [get_bd_pins tidelink_0/scan_clk]
+                   [get_bd_pins tidelink_0/scan_clk] \
+                   [get_bd_pins tidelink_0/idelay_ref_clk]
 
     #-- phc_clk: clk_wiz clk_out2 (50 MHz, same MMCM — phase-aligned to hclk)
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
@@ -462,6 +493,9 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/nego_priority_i]
     connect_bd_net [get_bd_pins xlconst_puf_seed/dout] \
                    [get_bd_pins tidelink_0/puf_seed]
+
+    connect_bd_net [get_bd_pins xlconst_mask_hs_bypass/dout] \
+                   [get_bd_pins tidelink_0/mask_hs_bypass_i]
 
     ###########################################################################
     # ADDRESS MAP

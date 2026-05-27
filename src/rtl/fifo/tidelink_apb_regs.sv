@@ -143,6 +143,17 @@ module tidelink_apb_regs #(
     //   0x114: NEGO_TRAIN_STEP          (RW) - W1P single-step pulse
     //   0x118: SWI_PHASE_OFFSET         (RW) - [31:0] per-lane sub-bit phase (8 x 4-bit, §9.7)
     //   0x11C: PHY_ALIGN_ID             (RO) - 0x5041_0100
+    //
+    // Region 9 (paddr[8:5]=1001, offsets 0x120-0x13F): FCSM debug shim.
+    //   Owned by tidelink_phy_align_regs (instantiated in tidelink_top.sv);
+    //   this APB block returns 0/READY for the range and the parent OR-mux
+    //   substitutes the shim's prdata.  Listed here for context.
+    //
+    // Region 10 (paddr[8:5]=1010, offsets 0x140-0x17F): Eye visibility v2.
+    //   Owned by tidelink_eye_regs (instantiated in tidelink_top.sv).  As
+    //   with Region 9 the parent OR-mux substitutes the shim's prdata;
+    //   the local read-mux entry returns 0 / READY so a peer-aperture
+    //   transaction does not see a decode hole.
     // -------------------------------------------------------------------------
 
     // APB decode. Widen region select to paddr[8:5] (4-bit) so that
@@ -507,6 +518,12 @@ module tidelink_apb_regs #(
                 //   via ctrl_reg_addr[3].
                 prdata = ctrl_reg_rdata;
             end
+            4'b1010: begin // Region 10: Eye visibility v2 (tidelink_eye_regs)
+                //   Read mux returns 0 — the parent (tidelink_top.sv)
+                //   substitutes prdata from tidelink_eye_regs via the
+                //   eye_shim_sel OR-mux, identical to the Region 9 pattern.
+                prdata = '0;
+            end
             default: ;
         endcase
     end
@@ -540,6 +557,11 @@ module tidelink_apb_regs #(
                             default: ;
                         endcase
                     end
+                end
+                4'b1010: begin
+                    // Region 10 owns its own pslverr (RO write + MODE=10
+                    // decode-err) inside tidelink_eye_regs.  Parent OR-mux
+                    // substitutes that pslverr; leave the local entry 0.
                 end
                 default: ;
             endcase

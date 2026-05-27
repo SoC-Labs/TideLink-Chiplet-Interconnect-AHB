@@ -198,7 +198,16 @@ module tidelink_phy_align_calibrator #(
     //     cocotb/UVM tests whose timing assumptions depend on the early
     //     exit set this to 1 (via the tb_early_exit_force_q hierarchical-
     //     force hook below) without re-elaborating the design.
-    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b0
+    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b0,
+    // v2 EYE: clock-rate constant (MHz) used to convert the
+    // SWI_EYE_DWELL_US APB value into a cycle count. FPGA app_clk runs at
+    // 250 MHz; TSMC65 ASIC at ~100 MHz. Set at elaboration.
+    parameter int CLK_MHZ = 250,
+    // v2 EYE: when 1, expand score_buf from [0:127] (one lane) to
+    // [0:7][0:127] (all lanes). Default 0 keeps the 768-bit single-lane
+    // footprint (Option A). Wide mode is reserved for chiplet variants
+    // with spare area; SW exposed via SWI_EYE_LANE_SEL[3] "all-lanes".
+    parameter int EYE_BUF_WIDE = 0
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -221,7 +230,31 @@ module tidelink_phy_align_calibrator #(
     output logic        training_mode,
     output logic        calibration_done,
     output logic [7:0]  lane_fault,
-    output logic [3:0]  state                      // ILA visibility
+    output logic [3:0]  state,                     // ILA visibility
+
+    // ---------------------------------------------------------------------
+    // v2 EYE VISIBILITY interface (Region 10 — tidelink_eye_regs.sv).
+    //
+    // The new datapath is gated entirely on swi_eye_ctrl[5:4] == 2'b01
+    // (single-lane Option A) and the ENTER pulse, so a zeroed control
+    // word leaves every existing signal untouched (MODE=00 = bit-identical
+    // to the pre-v2 RTL).  Integrators that don't yet drive these ports
+    // should tie them to 0.
+    // ---------------------------------------------------------------------
+    input  logic [2:0]  swi_eye_lane_sel,
+    input  logic [31:0] swi_eye_dwell_us,
+    input  logic [31:0] swi_eye_ctrl,
+    output logic [31:0] eye_status,
+    // Score-buffer read port.  EYE_SCORE_IDX selects a point (slip[2:0] in
+    // [6:4], phase[3:0] in [3:0]); EYE_SCORE_DATA returns the 6-bit lane
+    // score at that point of the currently selected lane.  The selection
+    // outputs (best_*) report the chosen point for the captured lane.
+    input  logic [6:0]  eye_score_idx,
+    output logic [5:0]  eye_score_data,
+    output logic        eye_score_lane_passed,
+    output logic [5:0]  eye_score_best,
+    output logic [2:0]  eye_score_best_slip,
+    output logic [3:0]  eye_score_best_phase
 );
 
     // HAL USEPAR @104: anchor NUM_LANES to the hand-rolled 8-lane code.
@@ -690,6 +723,160 @@ module tidelink_phy_align_calibrator #(
             endcase
         end
     end
+
+    // -------------------------------------------------------------------------
+    // v2 EYE VISIBILITY datapath (proposal §6 + §13).
+    //
+    //   swi_eye_ctrl bit layout (re-stated here for the gating logic):
+    //     [0]   ENTER          — W1P from APB; one-cycle arm pulse
+    //     [1]   RESET          — W1P from APB; clears capture_valid + buf
+    //     [5:4] MODE           — 2'b00 off, 2'b01 single-lane (Option A)
+    //     [7]   REMOTE_TRIG_EN — reserved (Mechanism β, RAZ in v2)
+    //     [8]   FORCE_FULL_SWEEP — informational mirror only here
+    //     [9]   AUTO_INC_LANE — auto-advance lane_sel after each DONE
+    //
+    //   eye_status packing (§5 register map):
+    //     [2:0]   state (0=IDLE, 1=SWEEPING, 2=DONE, 3=TIMED_OUT)
+    //     [6:4]   last_swept_lane_id
+    //     [7]     capture_valid (sticky, cleared by RESET)
+    //     [11:8]  calibrator cur_state mirror
+    //     [15:12] sweep_phase mirror
+    //     [31:16] dwell_remaining_ms (saturating)
+    // -------------------------------------------------------------------------
+    wire eye_enter_pulse = swi_eye_ctrl[0];
+    wire eye_reset_pulse = swi_eye_ctrl[1];
+    wire [1:0] eye_mode  = swi_eye_ctrl[5:4];
+    wire eye_auto_inc    = swi_eye_ctrl[9];
+    wire eye_mode_single = (eye_mode == 2'b01);
+
+    // 48-bit dwell countdown — large enough for 10 s @ 250 MHz × 1000
+    // safety margin.  Loaded on ENTER from DWELL_US × CLK_MHZ.
+    logic [47:0] dwell_ctr_us;
+    wire  [47:0] dwell_load_val = {16'd0, swi_eye_dwell_us} *
+                                  48'(CLK_MHZ);
+
+    // Sticky-arm latch: ENTER pulse arms a sweep; cleared when sweep
+    // completes (cur_state→S_DONE) or on RESET / forced timeout.
+    logic eye_arm_q;
+    logic eye_capture_valid_q;
+    logic eye_timed_out_q;
+    logic [2:0] eye_lane_sel_q;     // latched at ENTER; auto-incs in §13.3
+
+    // EYE state for SW (matches eye_status[2:0]):
+    //   3'd0 IDLE — eye_mode_single=0 or never armed
+    //   3'd1 SWEEPING
+    //   3'd2 DONE
+    //   3'd3 TIMED_OUT
+    logic [2:0] eye_state_q;
+
+    // Single-lane Option A score buffer.  Wide-mode (EYE_BUF_WIDE=1)
+    // extends to per-lane along a generate.  Index encoding matches
+    // EYE_SCORE_IDX: idx[6:4]=slip, idx[3:0]=phase.
+    logic [5:0] score_buf [0:127];
+    generate if (EYE_BUF_WIDE) begin : g_wide_buf
+        // Reserved wide-mode storage (Option A wide variant).  Each lane
+        // owns its own 768-bit buffer; the read mux uses eye_lane_sel_q
+        // as the row select.  Same no-reset policy as the single-lane
+        // buffer (Verilator 4.028 cannot NBA an array under a for-loop).
+        logic [5:0] score_buf_wide [0:7][0:127];
+        always_ff @(posedge clk) begin
+            if (eye_arm_q && (cur_state == S_SWEEP) && dwell_expire) begin
+                for (int i = 0; i < 8; i++)
+                    score_buf_wide[i][{sweep_slip, sweep_phase}] <= lane_score[i];
+            end
+        end
+    end endgenerate
+
+    // -------------------------------------------------------------------------
+    // Eye arm / state machine.
+    // -------------------------------------------------------------------------
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            eye_arm_q           <= 1'b0;
+            eye_capture_valid_q <= 1'b0;
+            eye_timed_out_q     <= 1'b0;
+            eye_lane_sel_q      <= 3'd0;
+            eye_state_q         <= 3'd0;
+            dwell_ctr_us        <= 48'd0;
+        end else begin
+            // RESET pulse: clears valid + timeout, returns to IDLE.
+            if (eye_reset_pulse) begin
+                eye_arm_q           <= 1'b0;
+                eye_capture_valid_q <= 1'b0;
+                eye_timed_out_q     <= 1'b0;
+                eye_state_q         <= 3'd0;
+                dwell_ctr_us        <= 48'd0;
+            end else if (eye_enter_pulse && eye_mode_single) begin
+                // ENTER pulse: capture lane_sel, load dwell, arm sweep.
+                eye_arm_q           <= 1'b1;
+                eye_lane_sel_q      <= swi_eye_lane_sel;
+                eye_timed_out_q     <= 1'b0;
+                eye_state_q         <= 3'd1;       // SWEEPING
+                dwell_ctr_us        <= dwell_load_val;
+            end else if (eye_arm_q) begin
+                // While armed, count down dwell and watch for completion.
+                if (dwell_ctr_us != 48'd0)
+                    dwell_ctr_us <= dwell_ctr_us - 48'd1;
+
+                if (cur_state == S_DONE) begin
+                    eye_arm_q           <= 1'b0;
+                    eye_capture_valid_q <= 1'b1;
+                    eye_state_q         <= 3'd2;   // DONE
+                    if (eye_auto_inc)
+                        eye_lane_sel_q <= eye_lane_sel_q + 3'd1;
+                end else if (dwell_ctr_us == 48'd0) begin
+                    // Dwell timer expired without DONE → force timeout.
+                    eye_arm_q       <= 1'b0;
+                    eye_timed_out_q <= 1'b1;
+                    eye_state_q     <= 3'd3;       // TIMED_OUT
+                end
+            end
+        end
+    end
+
+    // Score-buffer write port (single-lane Option A).  Only writes when
+    // we are in the SWEEP state with a dwell-window expiry and the eye
+    // capture is armed.  Buffer contents are NOT zeroed on reset — SW
+    // is expected to gate reads on eye_status.capture_valid; in
+    // synthesisable form this maps onto a distributed RAM that does
+    // not require an array-wide reset.  Verilator 4.028 cannot NBA an
+    // array inside a for-loop, so we deliberately omit the clear.
+    always_ff @(posedge clk) begin
+        if (eye_arm_q && (cur_state == S_SWEEP) && dwell_expire) begin
+            score_buf[{sweep_slip, sweep_phase}] <=
+                lane_score[eye_lane_sel_q];
+        end
+    end
+
+    // EYE_SCORE_DATA read port: combinational read from the single-lane
+    // buffer.  In wide-mode the parent design's read mux is responsible
+    // for picking the right row.
+    assign eye_score_data        = score_buf[eye_score_idx];
+    // best_score / best_slip / best_phase / lane_passed mirror the
+    // existing per-lane sweep result for the selected lane.
+    assign eye_score_best        = best_score [eye_lane_sel_q];
+    assign eye_score_best_slip   = best_slip  [eye_lane_sel_q];
+    assign eye_score_best_phase  = best_phase [eye_lane_sel_q];
+    assign eye_score_lane_passed = (best_score[eye_lane_sel_q] >= lock_thresh_6b);
+
+    // dwell_remaining_ms saturates at 16'hFFFF; ms = us/1000, computed
+    // from the 48-bit counter divided by 1000*CLK_MHZ.  Synthesises to a
+    // small constant divider — only used for SW progress display.
+    wire [47:0] dwell_remaining_ms_w = dwell_ctr_us /
+                                        (48'(CLK_MHZ) * 48'd1000);
+    wire [15:0] dwell_remaining_ms   = (dwell_remaining_ms_w > 48'hFFFF) ?
+                                       16'hFFFF :
+                                       dwell_remaining_ms_w[15:0];
+
+    assign eye_status = {
+        dwell_remaining_ms,             // [31:16]
+        sweep_phase,                    // [15:12]
+        cur_state,                      // [11:8]
+        eye_capture_valid_q,            // [7]
+        eye_lane_sel_q,                 // [6:4]
+        1'b0,                           // [3] reserved
+        eye_state_q                     // [2:0]
+    };
 
     // -------------------------------------------------------------------------
     // Output drivers

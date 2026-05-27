@@ -28,7 +28,14 @@ module tidelink_lane_checker_single #(
     input  logic        rst,         // active-high
     input  logic [15:0] word_in,
     input  logic [7:0]  expected_byte,
-    output logic        locked
+    output logic        locked,
+    // v2 EYE: one-cycle pulse on every mismatch — ANDable with the
+    // calibrator's (sweep_slip, sweep_phase) to score per-cell fails.
+    output logic        mismatch_pulse,
+    // v2 EYE: saturating 8-bit CRC-error counter (mismatch run-length
+    // proxy; resets on clear).  Reaches 0xFF and holds.
+    input  logic        crc_err_cnt_clr,
+    output logic [7:0]  crc_err_cnt
 );
 
     logic [4:0] match_count;
@@ -46,7 +53,21 @@ module tidelink_lane_checker_single #(
         end
     end
 
-    assign locked = (match_count >= LOCK_THRESH[4:0]);
+    assign locked         = (match_count >= LOCK_THRESH[4:0]);
+    assign mismatch_pulse = ~is_match;
+
+    // Saturating 8-bit mismatch counter.  Increments on every mismatch
+    // pulse; cleared on the RC strobe from tidelink_eye_regs.
+    logic [7:0] crc_err_cnt_r;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            crc_err_cnt_r <= 8'd0;
+        else if (crc_err_cnt_clr)
+            crc_err_cnt_r <= 8'd0;
+        else if (mismatch_pulse && (crc_err_cnt_r != 8'hFF))
+            crc_err_cnt_r <= crc_err_cnt_r + 8'd1;
+    end
+    assign crc_err_cnt = crc_err_cnt_r;
 
 endmodule
 
@@ -58,7 +79,23 @@ module tidelink_lane_checker #(
     input  logic         rst,
     // Per-lane deserialised 16-bit words (one per lane, 8 lanes).
     input  logic [127:0] lane_data,   // {lane7_word, ..., lane0_word}, each 16 bits
-    output logic [7:0]   lane_locked
+    output logic [7:0]   lane_locked,
+    // v2 EYE: per-lane mismatch pulse (one cycle per mismatch).  Drives
+    // the calibrator's score scratchpad in conjunction with the live
+    // (sweep_slip, sweep_phase) iterator.
+    output logic [7:0]   mismatch_pulse,
+    // v2 EYE: per-lane saturating 8-bit CRC-error counters and the
+    // RC clear strobe from tidelink_eye_regs.  Packed as one word per
+    // lane: lane N at bits [8*(N%4)+7 : 8*(N%4)].
+    input  logic         crc_err_cnt_clr,
+    output logic [7:0]   lane_crc_err_cnt_0,
+    output logic [7:0]   lane_crc_err_cnt_1,
+    output logic [7:0]   lane_crc_err_cnt_2,
+    output logic [7:0]   lane_crc_err_cnt_3,
+    output logic [7:0]   lane_crc_err_cnt_4,
+    output logic [7:0]   lane_crc_err_cnt_5,
+    output logic [7:0]   lane_crc_err_cnt_6,
+    output logic [7:0]   lane_crc_err_cnt_7
 );
 
     // Per-lane training patterns — must match WavD2DGpio's hard-wired
@@ -74,17 +111,31 @@ module tidelink_lane_checker #(
         8'h65, 8'h4B, 8'h59, 8'h2D
     };
 
+    wire [7:0] crc_err_cnt_w [0:7];
+
     genvar i;
     generate
         for (i = 0; i < 8; i++) begin : g_lane
             tidelink_lane_checker_single #(.LOCK_THRESH(LOCK_THRESH)) u_check (
-                .clk          (clk),
-                .rst          (rst),
-                .word_in      (lane_data[16*i +: 16]),
-                .expected_byte(PATTERNS[i]),
-                .locked       (lane_locked[i])
+                .clk            (clk),
+                .rst            (rst),
+                .word_in        (lane_data[16*i +: 16]),
+                .expected_byte  (PATTERNS[i]),
+                .locked         (lane_locked[i]),
+                .mismatch_pulse (mismatch_pulse[i]),
+                .crc_err_cnt_clr(crc_err_cnt_clr),
+                .crc_err_cnt    (crc_err_cnt_w[i])
             );
         end
     endgenerate
+
+    assign lane_crc_err_cnt_0 = crc_err_cnt_w[0];
+    assign lane_crc_err_cnt_1 = crc_err_cnt_w[1];
+    assign lane_crc_err_cnt_2 = crc_err_cnt_w[2];
+    assign lane_crc_err_cnt_3 = crc_err_cnt_w[3];
+    assign lane_crc_err_cnt_4 = crc_err_cnt_w[4];
+    assign lane_crc_err_cnt_5 = crc_err_cnt_w[5];
+    assign lane_crc_err_cnt_6 = crc_err_cnt_w[6];
+    assign lane_crc_err_cnt_7 = crc_err_cnt_w[7];
 
 endmodule

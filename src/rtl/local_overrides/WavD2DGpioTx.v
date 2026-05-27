@@ -134,30 +134,10 @@ module WavD2DGpioTx #(
   // behaviour, byte-identical to original RTL).
   wire io_training_mode_mux = WORD_ALIGN_MUX ? io_training_mode_q
                                              : io_training_mode;
-  // SoC Labs §9.11e (2026-05-28): training-pattern ISI fix.
-  // ----------------------------------------------------------
-  // Original (§9.7-§9.11d) emitted {P, P} during training — same byte
-  // repeated, period 8 on the wire. This locks the lane_checker at the
-  // correct slip/phase but DOES NOT exercise the high-ISI byte-boundary
-  // transitions that real packet data has. Independent 3-agent analysis
-  // 2026-05-27 + HW SW-sweep (0/16 phases crossed doorbell despite
-  // bilateral LINK_IDLE) confirmed: calibrator picks a (slip, phase) that
-  // training passes but real data fails (OVERNIGHT_2026_05_27 Layer-2).
-  //
-  // §9.11e fix: emit {P, ~P} instead. The bitwise complement at the
-  // byte boundary GUARANTEES an 8-bit transition every 16-bit word
-  // (~P[7] → P[0] always flips), exercising the same ISI conditions
-  // real data sees. The calibrator is forced to find a (slip, phase)
-  // robust to byte-boundary transitions, not just a same-byte-repeat eye.
-  //
-  // Rotation uniqueness preserved: {P, ~P} has period exactly 16 (no
-  // period-8 sub-period unless P == ~P, which requires P=0x00 or 0xFF
-  // — neither of our 8 per-lane patterns is degenerate). Only one slip
-  // value matches; lane_checker behaviour is unchanged at the protocol
-  // level. Local-override tidelink_lane_checker.sv has the matching
-  // {P, ~P} expected pattern.
+  // SoC Labs training-mode patch: when io_training_mode_mux=1, the 16-bit
+  // link word is replaced with {pattern, pattern}. Default = passthrough.
   wire [15:0] _link_data_eff = io_training_mode_mux
-                              ? {io_training_pattern, ~io_training_pattern}
+                              ? {io_training_pattern, io_training_pattern}
                               : io_link_data;
   wire  tx_pad_array_0 = _link_data_eff[0]; // @[GPIO.scala 76:38]
   wire  tx_pad_array_1 = _link_data_eff[1]; // @[GPIO.scala 76:38]

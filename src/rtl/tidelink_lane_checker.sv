@@ -32,13 +32,7 @@ module tidelink_lane_checker_single #(
 );
 
     logic [4:0] match_count;
-    // §9.11e (2026-05-28): match {P, ~P} instead of {P, P} to align with
-    // WavD2DGpioTx's new training emission. The complement at the
-    // byte-boundary forces an always-transition 8-bit pattern, exercising
-    // the high-ISI conditions real data has. Lock criterion preserved:
-    // 16 consecutive 16-bit-word matches (=256 consecutive correctly-
-    // decoded bits) — same protocol, only the expected sequence changes.
-    wire  [15:0] expected_word = {expected_byte, ~expected_byte};
+    wire  [15:0] expected_word = {expected_byte, expected_byte};
     wire         is_match      = (word_in == expected_word);
 
     always_ff @(posedge clk or posedge rst) begin

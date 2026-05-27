@@ -107,33 +107,71 @@
 //             dwell DWELL_CYCLES; score each lane's lock duration
 //
 // -----------------------------------------------------------------------------
-// Selection policy — BEST-OF-SWEEP widest-eye latch (§9.9, 2026-05-20)
+// Selection policy — EYE-CENTRE via MIN_LOCK_DWELLS (§9.11, 2026-05-27)
 // -----------------------------------------------------------------------------
 //
-// FIELD MOTIVATION: with first-match-wins (the §9.7 policy) the chosen
-// (slip,phase) for a marginal lane was the FIRST eye edge encountered in
-// the sweep order, not the eye CENTRE. Lanes that just barely cleared the
-// 16-consec-match LOCK_THRESH at the eye edge bounced in/out of lock in
-// steady state — see bringup_health_probe trajectories oscillating
-// 0xf5/0xfd/0xd5/0xd7 (master) and 0xce/0x7f/0xee (slave).
+// FIELD MOTIVATION (history-of-policies):
+//   §9.7  first-match-wins      — picked the FIRST passing point; latched the
+//                                 eye EDGE → bringup_health_probe oscillated.
+//   §9.9  best-of-sweep         — picked the highest-scoring per-dwell run
+//                                 length; race-to-tie on bit-exact PHYs meant
+//                                 M and S converged to DIFFERENT points (Agent
+//                                 D: M=(0,0), S=(1,1)). Broke M→S decode.
+//   §9.10 S_PROBE bias-to-(0,0) — Agent F's sim-fix: latch (0,0) on every
+//                                 lane that locks at (0,0); fall through if
+//                                 not. Passed cocotb 5/6 but is a sim-only win
+//                                 — tdif-21 HW build proved (0,0) does NOT
+//                                 lock on real silicon (no-op fix). Also
+//                                 inverts the §9.9 eye-CENTRE intent: even
+//                                 when the eye is centred ELSEWHERE the
+//                                 policy clamps to (0,0).
 //
-// New policy: at every dwell window we score each lane's lock-count
-// behaviour at the current (slip,phase) and remember the BEST scoring
-// pair per lane. The sweep ALWAYS walks the full 128-point space (no
-// per-lane freeze on first lock); at sweep exhaustion each lane's
-// outputs latch to its best-scoring (slip,phase). The score is the
-// run-length of consecutive lane_locked=1 cycles captured during the
-// dwell window (saturating at 6 bits, i.e. DWELL_CYCLES <= 63 contributes
-// linearly, longer is clamped).
+// §9.11 NEW POLICY — eye-centre via MIN_LOCK_DWELLS contiguity along the
+// PHASE axis:
 //
-// CORRECTNESS / COMPAT: the legacy first-match-wins behaviour is
-// available via parameter `EARLY_EXIT_ON_ALL_LOCKED` (or its runtime
-// hook `tb_early_exit_force_q`) — when set, a lane freezes on its first
-// lock just as in §9.7. This is provided for cocotb/UVM tests whose
-// timing assumptions depend on first-match wall time.
+//   * Sweep order is slip-OUTER, phase-INNER (was phase-outer, slip-inner
+//     in §9.7/§9.9). The phase axis is the actual sub-bit sample-point eye
+//     dimension on this GPIO-PHY; bit_slip is a 16-bit-window rotation
+//     (typically one slip value is "right"). Walking phase inner-most so
+//     that contiguous passing dwells = adjacent eye points.
 //
-// A lane is faulted only after the full 128-point space is exhausted
-// AND its best_score never reached LOCK_THRESH.
+//   * At each dwell-expire, per lane, decide whether THIS (slip, phase)
+//     "passes" — defined as in-dwell lane_score >= LOCK_THRESH. Track a
+//     running contiguous-phase-pass count `run_len[lane]`; reset to 0 when
+//     phase wraps 15→0 (new slip) or when a phase fails.
+//
+//   * Maintain per-lane `best_run[lane]` — the longest contiguous PHASE run
+//     seen anywhere on the sweep grid — together with the run's start
+//     phase and the slip it was found at.
+//
+//   * At sweep exhaustion the FSM enters S_FINALIZE (one extra cycle); for
+//     every lane whose `best_run >= MIN_LOCK_DWELLS`, latch
+//     phase[i] = best_run_start_phase + (best_run-1)/2  (run CENTRE)
+//     slip[i]  = best_run_slip                          (slip the run was at)
+//     This puts the deserialiser AT THE CENTRE OF THE WIDEST EYE, not at
+//     the edge — defeating both the §9.7 oscillation AND the §9.9 race-
+//     to-tie (eye-centre is deterministic given identical lock maps).
+//
+//   * S_PROBE is RETAINED but DEMOTED to advisory: it records
+//     `probe_lane_pass_q[lane]` for any lane that locks at (0,0) but does
+//     NOT set lane_done. The full sweep ALWAYS runs. S_FINALIZE consults
+//     probe_lane_pass_q ONLY as a fallback when no MIN_LOCK_DWELLS-wide
+//     run was found anywhere on the grid (degenerate-eye safety net for
+//     silicon at marginal margin).
+//
+// MIN_LOCK_DWELLS sizing: default 4 gives 25% margin on the 16-phase axis,
+// matches the empirical eye width observed on tdif-22 (~6/16 phase combos
+// passed). APB-runtime tunable via `min_lock_dwells_i[3:0]` so silicon
+// deploys can raise it without re-synth.
+//
+// CORRECTNESS / COMPAT: the legacy first-match-wins (§9.7) behaviour is
+// available via parameter `EARLY_EXIT_ON_ALL_LOCKED` (or its runtime hook
+// `tb_early_exit_force_q`) — when set, a lane freezes on its first lock
+// just as in §9.7 and S_FINALIZE is skipped. Provided for cocotb/UVM
+// tests whose timing assumptions depend on first-match wall time.
+//
+// A lane is faulted only after the full 128-point space is exhausted AND
+// `best_run < MIN_LOCK_DWELLS` AND `probe_lane_pass_q == 0`.
 //
 // If `swreset` asserts mid-sweep, the FSM cancels and waits for swreset to
 // deassert; that falling edge re-triggers the sweep from scratch.
@@ -143,19 +181,29 @@
 // -----------------------------------------------------------------------------
 //
 // Parallel sweep, DWELL_CYCLES=64 by default (4× the 16-cycle LOCK_THRESH
-// in the wlink_lane_checker; raised from 32 in §9.9 so the per-dwell
-// score has more dynamic range without ballooning sweep time). Worst
-// case under the best-of-sweep policy is the FULL 128-point space every
-// time, 16 phase × 8 slip × 64 cycles = 8192 cycles, plus settle margin.
-// At a 250 MHz link clock that is ~33 µs.
+// in the wlink_lane_checker). Worst case under §9.11 eye-centre policy is
+// the FULL 128-point space every sweep + 1 cycle for S_FINALIZE, i.e.
+// 16 phase × 8 slip × 64 cycles + 1 = 8193 cycles. At a 250 MHz link
+// clock that is ~33 µs.
 //
-// Added flop budget vs §9.7 (8 lanes):
-//   - best_score[i]    6b × 8 = 48 flops
-//   - best_slip[i]     3b × 8 = 24 flops
-//   - best_phase[i]    4b × 8 = 32 flops
-//   - lane_score[i]    6b × 8 = 48 flops
-// Total ≈ 150 new flops. Combinational cost: one 6-bit comparator + one
-// 6-bit add per lane (4 cycles slack to LOCK_THRESH clearance, generous).
+// Flop budget vs §9.9 (8 lanes):
+//   §9.11 NEW state for eye-centre selection:
+//     - run_len[i]              5b × 8 = 40   (current contiguous phase run)
+//     - best_run[i]             5b × 8 = 40   (longest run seen this sweep)
+//     - best_run_start_phase[i] 4b × 8 = 32
+//     - best_run_slip[i]        3b × 8 = 24
+//     - cur_run_start_phase[i]  4b × 8 = 32
+//     - probe_lane_pass_q[i]    1b × 8 =  8   (S_PROBE advisory verdict)
+//   Removed from §9.9 (replaced by run-length tracking):
+//     - best_score[i]           6b × 8 = 48   (was: dwell run-length)
+//     - best_slip[i]            3b × 8 = 24
+//     - best_phase[i]           4b × 8 = 32
+//   Kept (still used by §9.11 dwell pass-check):
+//     - lane_score[i]           6b × 8 = 48   (in-dwell lock count)
+// Net delta: +72 flops (176 new − 104 removed). Combinational cost: one
+// (lane_score >= LOCK_THRESH) comparator + run-length update per lane at
+// each dwell-expire, plus a single combinational centre-of-run mux at
+// S_FINALIZE.
 // =============================================================================
 
 `timescale 1ns/1ps
@@ -188,17 +236,27 @@ module tidelink_phy_align_calibrator #(
     // Default = 8 full sweep periods (1 sweep = 128 × DWELL_CYCLES).
     parameter int HOLD_CYCLES  = 8 * 128 * DWELL_CYCLES,
     // §9.9 best-of-sweep selection toggle:
-    //   0 (silicon default) — sweep ALL 128 (slip,phase) per sweep, pick
-    //     the per-lane (slip,phase) with the LONGEST in-dwell run of
-    //     lane_locked=1, latch at sweep exhaustion. Defeats marginal-eye
-    //     oscillation seen in HW (bringup_health_probe).
+    //   0 (silicon default) — §9.11 EYE-CENTRE policy via MIN_LOCK_DWELLS
+    //     contiguity along phase axis. Sweep walks all 128 points; the
+    //     latched (slip,phase) is the CENTRE of the widest contiguous
+    //     phase-run that passed LOCK_THRESH. Defeats both the §9.7
+    //     edge-of-eye oscillation AND the §9.9 race-to-tie that broke
+    //     M→S decode on sim/HW with bit-exact-passing-everywhere PHYs.
     //   1 (compat / sim) — restore the §9.7 first-match-wins behaviour:
     //     a lane freezes on its first dwell with lane_locked rising and
     //     the sweep terminates early when all lanes are done. Existing
     //     cocotb/UVM tests whose timing assumptions depend on the early
     //     exit set this to 1 (via the tb_early_exit_force_q hierarchical-
     //     force hook below) without re-elaborating the design.
-    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b0
+    parameter logic EARLY_EXIT_ON_ALL_LOCKED = 1'b0,
+    // §9.11 eye-centre policy: minimum contiguous-passing-phase run length
+    // for a (slip,phase) point to be accepted as the lane's latched eye
+    // centre. Default 4 = 25% of the 16-phase axis, matches the empirical
+    // tdif-22 eye width (~6/16 phase combos passing). Raise for tighter
+    // centring; lower (down to 1) reduces the policy to "earliest passing
+    // point wins" (the §9.9 race-to-tie returns at 1). Bounded 1..15 by
+    // the 4-bit APB override register on the chiplet-controller side.
+    parameter int MIN_LOCK_DWELLS = 4
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -254,24 +312,36 @@ module tidelink_phy_align_calibrator #(
         S_HOLD       = 4'd6,   // T3.2: locked locally; keep training_mode
                                //       high HOLD_CYCLES so the peer converges
         // -------------------------------------------------------------------
-        // §9.10 Agent-F "bias to (0,0)" probe state — see also
-        // docs/agent_f_fix_attempt.md and CALIBRATOR_BUG_HANDOFF_2026_05_26.md.
+        // §9.10/§9.11 S_PROBE — advisory (0,0) probe state.
         //
         // S_PROBE dwells DWELL_CYCLES at (sweep_slip=0, sweep_phase=0) — i.e.
         // the natural / un-shifted RX deserialiser configuration — and per-
-        // lane checks whether the lane_checker locks on this rotation. For
-        // every lane that DOES lock at (0,0), we immediately latch slip[i]=0,
-        // phase[i]=0 and mark lane_done[i]=1 so the subsequent S_SWEEP cannot
-        // displace it. Lanes that don't lock at (0,0) fall through into the
-        // normal best-of-sweep S_SWEEP search. This makes both master and
-        // slave deterministically converge on the SAME (slip,phase) tuple per
-        // lane (and specifically (0,0)) whenever the un-shifted alignment
-        // works — which it does in cocotb's bit-exact GPIO crossbar AND on
-        // any silicon where IDELAY + slave-clock distribution has been tuned
-        // such that the eye is centred at the (0,0) sample point. Defeats
-        // the M=(0,0) S=(1,1) split documented in agent_d_probe_findings.md.
+        // lane records whether the lane_checker locks on this rotation in
+        // `probe_lane_pass_q[lane]`. The full S_SWEEP ALWAYS runs after; the
+        // probe verdict is consulted by S_FINALIZE ONLY as a fallback when
+        // no MIN_LOCK_DWELLS-wide eye is found anywhere on the grid for that
+        // lane. §9.10 (Agent F) gave the probe ABSOLUTE priority — that was
+        // a sim-only win, no-op on HW (tdif-21). §9.11 demotes it to
+        // advisory so the eye-centre selection wins whenever it has a
+        // valid run, and the probe is the degraded-margin safety net.
         // -------------------------------------------------------------------
-        S_PROBE      = 4'd7
+        S_PROBE      = 4'd7,
+        // -------------------------------------------------------------------
+        // §9.11 S_FINALIZE — single-cycle eye-centre selection.
+        //
+        // Entered when S_SWEEP exhausts (sweep_phase==15, sweep_slip==7,
+        // dwell_expire). For every lane:
+        //   * if best_run[i] >= min_lock_dwells_eff:
+        //       phase[i] <= best_run_start_phase[i] + (best_run[i]-1)/2
+        //       slip[i]  <= best_run_slip[i]
+        //       lane_done[i] <= 1
+        //   * elsif probe_lane_pass_q[i]:
+        //       phase[i] <= 0; slip[i] <= 0;
+        //       lane_done[i] <= 1
+        //   * else:
+        //       lane_fault_q[i] <= 1; lane_done[i] <= 1
+        // -------------------------------------------------------------------
+        S_FINALIZE   = 4'd8
     } state_t;
 
     state_t cur_state, nxt_state;
@@ -320,67 +390,92 @@ module tidelink_phy_align_calibrator #(
     // Per-lane sweep state
     //
     // Each lane tracks:
-    //   - slip[lane]  : LATCHED slip (loaded from best_slip at sweep end,
+    //   - slip[lane]  : LATCHED slip (loaded from best_run_slip at S_FINALIZE,
     //                   or — in EARLY_EXIT mode — captured on first lock)
-    //   - phase[lane] : LATCHED phase (same)
+    //   - phase[lane] : LATCHED phase (run-centre at S_FINALIZE, or first-lock
+    //                   iterator value in EARLY_EXIT mode)
     //   - done[lane]  : lane has either locked-and-latched (EARLY_EXIT
-    //                   mode) or the sweep has ended and the lane was
-    //                   scored or faulted out
+    //                   mode) or S_FINALIZE has assigned its (slip,phase)
     //
-    // §9.9 best-of-sweep adds:
-    //   - lane_score[lane]  : 6-bit run-length counter of consecutive
-    //                         lane_locked=1 cycles within the CURRENT
-    //                         dwell window. Resets on dwell-window entry.
-    //                         Saturates at 6'h3F.
-    //   - best_score[lane]  : 6-bit best run-length seen at any
-    //                         (slip,phase) so far this sweep
-    //   - best_slip[lane]   : 3-bit slip value at which best_score was
-    //                         achieved
-    //   - best_phase[lane]  : 4-bit phase value at which best_score was
-    //                         achieved
+    // §9.11 eye-centre tracking (§9.9 best_score replaced):
+    //   - lane_score[lane]          : 6-bit run-length counter of consecutive
+    //                                 lane_locked=1 cycles within the CURRENT
+    //                                 dwell window. Saturates at 6'h3F. Used
+    //                                 only for the "dwell passed LOCK_THRESH"
+    //                                 check at dwell_expire.
+    //   - run_len[lane]             : 5-bit current contiguous-passing-phase
+    //                                 count at the current slip. Resets on a
+    //                                 failing dwell or when phase wraps 15→0
+    //                                 (new slip).
+    //   - cur_run_start_phase[lane] : phase at which the current run started.
+    //   - best_run[lane]            : 5-bit longest passing-phase run seen
+    //                                 anywhere on the sweep grid this sweep.
+    //   - best_run_start_phase[lane]: phase where best_run started.
+    //   - best_run_slip[lane]       : slip at which best_run was found.
+    //   - probe_lane_pass_q[lane]   : 1-bit S_PROBE advisory verdict: 1 iff
+    //                                 the lane locked at (slip=0, phase=0)
+    //                                 during S_PROBE. Used as fallback in
+    //                                 S_FINALIZE when best_run < MIN_LOCK_DWELLS.
     //
-    // A SINGLE SHARED (phase,slip) iterator (sweep_phase, sweep_slip) plus a
+    // A SINGLE SHARED (slip,phase) iterator (sweep_slip, sweep_phase) plus a
     // shared dwell counter walks the search space — the sweep is fully
-    // parallel.
+    // parallel across lanes.
     //
-    // Iteration order is phase-outer, slip-inner: sweep_slip cycles 0→7,
-    // and only when it wraps 7→0 does sweep_phase advance. With phase=0
-    // the inner slip loop is byte-for-byte the original slip-only sweep.
+    // Iteration order is slip-OUTER, phase-INNER (§9.11; was phase-outer,
+    // slip-inner in §9.7/§9.9): sweep_phase cycles 0→15, and only when it
+    // wraps 15→0 does sweep_slip advance. Walking phase inner-most makes
+    // contiguous passing dwells = adjacent eye points on the actual
+    // sub-bit-sample-point axis, so the run-length tracker measures REAL
+    // eye width and not a slip-rotation artefact.
     //
-    // SELECTION POLICY (when early_exit_en_w==0, silicon default):
+    // SELECTION POLICY (when early_exit_en_w==0, silicon default — §9.11):
     //   - lane_done[i] STAYS LOW for the entire sweep — every lane walks
-    //     all 128 points. At each dwell-window expiry we compare
-    //     lane_score[i] vs best_score[i]; if greater, update
-    //     best_{score,slip,phase}[i].
-    //   - At sweep exhaustion (phase==15, slip==7, dwell expired) we
-    //     LATCH slip[i]/phase[i] from best_slip/best_phase for every lane
-    //     whose best_score >= LOCK_THRESH; lanes that never made the
-    //     LOCK_THRESH bar set lane_fault[i].
+    //     all 128 points. At each dwell-window expiry we check whether
+    //     lane_score[i] >= LOCK_THRESH; if yes, extend run_len[i] and
+    //     update best_run[i] if the run is now wider; if no (or on
+    //     slip-change), close the run.
+    //   - At sweep exhaustion the FSM transitions S_SWEEP → S_FINALIZE.
+    //     In S_FINALIZE each lane's outputs are assigned:
+    //       best_run[i] >= min_lock_dwells_eff  → eye centre of best_run
+    //       elsif probe_lane_pass_q[i]          → (slip=0, phase=0)
+    //       else                                → lane_fault[i] := 1
     //
     // LEGACY POLICY (early_exit_en_w==1):
     //   - lane_done[i] is set on the first dwell where lane_locked[i]
     //     rises, and slip[i]/phase[i] capture the iterator's current
     //     (slip,phase). Sweep terminates early when all lanes are done.
-    //     Matches §9.7 first-match-wins exactly.
+    //     Matches §9.7 first-match-wins exactly. S_FINALIZE is bypassed.
     // -------------------------------------------------------------------------
     logic [2:0] slip      [0:7];   // per-lane latched output slip
     logic [3:0] phase     [0:7];   // per-lane latched output phase
     logic [7:0] lane_done;         // sticky during a sweep
     logic [7:0] lane_fault_q;
-    // Shared search iterator (phase-outer, slip-inner).
+    // Shared search iterator (slip-OUTER, phase-INNER per §9.11).
     logic [2:0] sweep_slip;        // 0..7
     logic [3:0] sweep_phase;       // 0..15
     logic [$clog2(DWELL_CYCLES+1)-1:0] dwell_ctr;
     localparam int DWELL_MAX = DWELL_CYCLES - 1;
 
-    // §9.9 best-of-sweep tracking
-    logic [5:0] lane_score  [0:7];   // per-lane in-dwell run-length, saturating
-    logic [5:0] best_score  [0:7];   // best run-length seen this sweep
-    logic [2:0] best_slip   [0:7];
-    logic [3:0] best_phase  [0:7];
+    // §9.11 eye-centre tracking
+    // EYE_WIDTH_W = ceil(log2(16+1)) = 5; phase axis is 0..15 + saturation.
+    localparam int EYE_WIDTH_W = 5;
+    logic [5:0]             lane_score             [0:7]; // in-dwell run, sat 6'h3F
+    logic [EYE_WIDTH_W-1:0] run_len                [0:7]; // current phase run
+    logic [EYE_WIDTH_W-1:0] best_run               [0:7]; // longest phase run
+    logic [3:0]             cur_run_start_phase    [0:7];
+    logic [3:0]             best_run_start_phase   [0:7];
+    logic [2:0]             best_run_slip          [0:7];
+    logic [7:0]             probe_lane_pass_q;
     localparam logic [5:0] LANE_SCORE_MAX = 6'h3F;
     // Promote LOCK_THRESH to the 6-bit score width safely.
     wire   [5:0] lock_thresh_6b   = LOCK_THRESH[5:0];
+    // Effective MIN_LOCK_DWELLS — synth-time parameter for now. A runtime
+    // APB override (e.g. Region 8 SWI_CAL_MIN_DWELLS[3:0]) can be wired in
+    // a follow-on patch via a local_overrides axi_chiplet_controller; the
+    // calibrator port is omitted for now to keep the bring-up RTL change
+    // limited to this file. Default 4 = ~25% margin on the 16-phase axis.
+    wire [EYE_WIDTH_W-1:0] min_lock_dwells_eff =
+        MIN_LOCK_DWELLS[EYE_WIDTH_W-1:0];
 
     // Have we latched a lock for a lane that wasn't already done?
     // (Only used by the EARLY_EXIT path; best-of-sweep ignores it.)
@@ -455,27 +550,35 @@ module tidelink_phy_align_calibrator #(
                 else                    nxt_state = S_PROBE;
             end
             S_PROBE: begin
-                // Agent-F §9.10: dwell at (0,0) for DWELL_CYCLES. The score-
-                // capture in the datapath finalises which lanes locked at
-                // (0,0) on dwell_expire — those lanes get slip[i]/phase[i]
-                // latched to 0 and lane_done[i]=1. Then proceed to S_SWEEP
-                // for any remaining lanes. If ALL lanes locked at (0,0),
-                // skip the sweep and go straight to S_FINISH.
+                // §9.11: S_PROBE is now ADVISORY. Dwell at (0,0) for
+                // DWELL_CYCLES; the datapath records probe_lane_pass_q[i]
+                // for any lane that locked at (0,0). At dwell_expire,
+                // ALWAYS proceed to S_SWEEP — the full sweep runs so the
+                // eye-centre selection has a real measurement to work
+                // with. The probe verdict is consulted only in S_FINALIZE
+                // as a fallback when no MIN_LOCK_DWELLS-wide eye exists.
                 if (swreset)                       nxt_state = S_CANCEL;
-                else if (dwell_expire) begin
-                    if (probe_all_locked)          nxt_state = S_FINISH;
-                    else                           nxt_state = S_SWEEP;
-                end
+                else if (dwell_expire)             nxt_state = S_SWEEP;
             end
             S_SWEEP: begin
-                // §9.9: in best-of-sweep mode the sweep ALWAYS walks the
-                // full 128-point space — the datapath sets the dedicated
-                // sweep_exhausted strobe on the final dwell-window expiry.
-                // In EARLY_EXIT compat mode the sweep terminates as soon
-                // as every lane is locked (or faulted), matching §9.7.
+                // §9.11: best-of-sweep walks the full 128-point space and
+                // transitions to S_FINALIZE on sweep_exhausted (one cycle
+                // to compute per-lane eye-centre latches). EARLY_EXIT compat
+                // mode keeps the §9.7 first-match-wins early termination
+                // and bypasses S_FINALIZE — its per-lane latches happened
+                // at first-lock in the datapath, lane_done is already set.
                 if (swreset)                                   nxt_state = S_CANCEL;
                 else if (early_exit_en_w && all_done)          nxt_state = S_FINISH;
-                else if (sweep_exhausted)                      nxt_state = S_FINISH;
+                else if (sweep_exhausted)                      nxt_state = S_FINALIZE;
+            end
+            S_FINALIZE: begin
+                // §9.11: single-cycle state. Datapath assigns per-lane
+                // slip[i]/phase[i] (run centre), lane_done[i], or
+                // lane_fault_q[i]. Transitions to S_FINISH unconditionally
+                // (except swreset). All work happens in the datapath this
+                // same cycle.
+                if (swreset) nxt_state = S_CANCEL;
+                else         nxt_state = S_FINISH;
             end
             S_FINISH: begin
                 // T3 lottery fix. Release to the link (→ S_DONE →
@@ -577,50 +680,60 @@ module tidelink_phy_align_calibrator #(
     // S_SWEEP until the cycle after S_ARM (see next-state logic).
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            dwell_ctr    <= '0;
-            lane_done    <= 8'h00;
-            lane_fault_q <= 8'h00;
-            sweep_slip   <= 3'd0;
-            sweep_phase  <= 4'd0;
+            dwell_ctr            <= '0;
+            lane_done            <= 8'h00;
+            lane_fault_q         <= 8'h00;
+            sweep_slip           <= 3'd0;
+            sweep_phase          <= 4'd0;
+            probe_lane_pass_q    <= 8'h00;
             for (int i = 0; i < 8; i++) begin
-                slip[i]       <= 3'd0;
-                phase[i]      <= 4'd0;
-                lane_score[i] <= 6'd0;
-                best_score[i] <= 6'd0;
-                best_slip[i]  <= 3'd0;
-                best_phase[i] <= 4'd0;
+                slip[i]                  <= 3'd0;
+                phase[i]                 <= 4'd0;
+                lane_score[i]            <= 6'd0;
+                run_len[i]               <= '0;
+                best_run[i]              <= '0;
+                cur_run_start_phase[i]   <= 4'd0;
+                best_run_start_phase[i]  <= 4'd0;
+                best_run_slip[i]         <= 3'd0;
             end
         end else begin
             // Bug #7 synth-safety: plain `case` + explicit default (below).
             case (cur_state)
                 S_ARM: begin
-                    // Fresh sweep — clear all state. cur_state==S_ARM
-                    // persists for exactly one cycle (S_ARM → S_SWEEP or
+                    // Fresh sweep — clear all per-sweep state. cur_state==S_ARM
+                    // persists for exactly one cycle (S_ARM → S_PROBE or
                     // S_CANCEL), so this fires once per sweep launch.
-                    dwell_ctr    <= '0;
-                    lane_done    <= 8'h00;
-                    lane_fault_q <= 8'h00;
-                    sweep_slip   <= 3'd0;
-                    sweep_phase  <= 4'd0;
+                    dwell_ctr            <= '0;
+                    lane_done            <= 8'h00;
+                    lane_fault_q         <= 8'h00;
+                    sweep_slip           <= 3'd0;
+                    sweep_phase          <= 4'd0;
+                    probe_lane_pass_q    <= 8'h00;
                     for (int i = 0; i < 8; i++) begin
-                        slip[i]       <= 3'd0;
-                        phase[i]      <= 4'd0;
-                        lane_score[i] <= 6'd0;
-                        best_score[i] <= 6'd0;
-                        best_slip[i]  <= 3'd0;
-                        best_phase[i] <= 4'd0;
+                        slip[i]                  <= 3'd0;
+                        phase[i]                 <= 4'd0;
+                        lane_score[i]            <= 6'd0;
+                        run_len[i]               <= '0;
+                        best_run[i]              <= '0;
+                        cur_run_start_phase[i]   <= 4'd0;
+                        best_run_start_phase[i]  <= 4'd0;
+                        best_run_slip[i]         <= 3'd0;
                     end
                 end
 
                 // -----------------------------------------------------------
-                // Agent-F §9.10: S_PROBE — dwell DWELL_CYCLES at the natural
-                // (slip=0, phase=0) point and lock lanes that pass the
-                // LOCK_THRESH bar onto (0,0) before the full sweep begins.
-                // sweep_slip/sweep_phase are already 0 (cleared in S_ARM),
-                // so the existing output mux drives (0,0) on every lane.
+                // §9.10/§9.11 S_PROBE — dwell DWELL_CYCLES at the natural
+                // (slip=0, phase=0) point and RECORD per-lane whether the
+                // lane_checker locks at (0,0) into probe_lane_pass_q[]. Do
+                // NOT set lane_done; the full S_SWEEP always runs and the
+                // probe verdict is consulted by S_FINALIZE only as a
+                // fallback when no MIN_LOCK_DWELLS-wide eye exists.
+                //
+                // sweep_slip/sweep_phase are 0 (cleared in S_ARM), so the
+                // output mux drives (0,0) on every lane during S_PROBE.
                 // -----------------------------------------------------------
                 S_PROBE: begin
-                    // Same run-length score accumulator as S_SWEEP.
+                    // In-dwell lock counter (saturating).
                     for (int i = 0; i < 8; i++) begin
                         if (lane_locked[i]) begin
                             if (lane_score[i] != LANE_SCORE_MAX)
@@ -631,30 +744,21 @@ module tidelink_phy_align_calibrator #(
                     end
 
                     if (dwell_expire) begin
-                        // Probe verdict: for every lane that reached
-                        // LOCK_THRESH at (0,0), latch (0,0) and mark
-                        // lane_done so the subsequent sweep cannot displace
-                        // it. Lanes that did NOT lock at (0,0) leave
-                        // lane_done=0 and fall through into S_SWEEP for the
-                        // full 128-point search.
+                        // §9.11: probe is ADVISORY. Latch the per-lane
+                        // pass/fail verdict at (0,0); subsequent S_SWEEP
+                        // runs the full grid and S_FINALIZE picks the
+                        // eye centre (preferring it over this verdict).
                         for (int i = 0; i < 8; i++) begin
-                            if (lane_score[i] >= lock_thresh_6b) begin
-                                slip[i]       <= 3'd0;
-                                phase[i]      <= 4'd0;
-                                lane_done[i]  <= 1'b1;
-                                // Seed best_* with (0,0) so that any
-                                // downstream code (e.g. lane_fault scoring
-                                // at sweep exhaustion) sees a valid best.
-                                best_score[i] <= lock_thresh_6b;
-                                best_slip[i]  <= 3'd0;
-                                best_phase[i] <= 4'd0;
-                            end
-                            // Fresh dwell window starts in the next state.
+                            probe_lane_pass_q[i] <= (lane_score[i] >= lock_thresh_6b);
+                            // Fresh dwell window starts in S_SWEEP.
                             lane_score[i] <= 6'd0;
                         end
-                        dwell_ctr  <= '0;
+                        dwell_ctr <= '0;
                         // sweep_slip/sweep_phase remain at 0 — S_SWEEP will
-                        // begin at the natural sweep entry.
+                        // begin scoring at (slip=0, phase=0). Note: this
+                        // means (0,0) is re-measured at the start of
+                        // S_SWEEP, which is harmless — the run-length
+                        // tracker just sees a fresh lane_score window.
                     end else begin
                         dwell_ctr <= dwell_ctr +
                                      {{($clog2(DWELL_CYCLES+1)-1){1'b0}}, 1'b1};
@@ -662,27 +766,16 @@ module tidelink_phy_align_calibrator #(
                 end
 
                 S_SWEEP: begin
-                    // ----- Per-lane run-length score -----------------------
+                    // ----- Per-lane in-dwell lock counter ------------------
                     // Count consecutive lane_locked=1 cycles within the
                     // current dwell window; reset to 0 on any de-assert,
                     // saturate at LANE_SCORE_MAX. Cleared on dwell-window
-                    // entry (see dwell_expire branch below).
-                    //
-                    // Agent-F §9.10: skip the score update for lanes that
-                    // were already locked at (0,0) in S_PROBE — their
-                    // slip[i]/phase[i] are already latched and the
-                    // lane_done[i]=1 output-mux gate drives (0,0) to the
-                    // PHY regardless of what the sweep iterator is doing
-                    // for OTHER lanes. Keeping lane_score frozen at 0 also
-                    // means the final-dwell latch below cannot promote a
-                    // late-sweep accidental hit ahead of (0,0).
+                    // expiry (see dwell_expire branch below). §9.11 removes
+                    // the lane_done freeze that §9.10 used to lock (0,0)
+                    // pre-emptively — every lane scores at every point so
+                    // the run-length tracker can find the widest eye.
                     for (int i = 0; i < 8; i++) begin
-                        if (lane_done[i]) begin
-                            // Locked at (0,0); keep score at 0 so the
-                            // best-of-sweep comparator below never fires
-                            // for this lane.
-                            lane_score[i] <= 6'd0;
-                        end else if (lane_locked[i]) begin
+                        if (lane_locked[i]) begin
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
@@ -693,7 +786,7 @@ module tidelink_phy_align_calibrator #(
                     // ----- EARLY_EXIT compat path --------------------------
                     // Capture (slip,phase) on the first dwell where a
                     // not-done lane sees lane_locked rise. Sweep terminates
-                    // early when every lane is done.
+                    // early when every lane is done. Bypasses S_FINALIZE.
                     if (early_exit_en_w) begin
                         for (int i = 0; i < 8; i++) begin
                             if (lane_new_lock[i]) begin
@@ -705,100 +798,85 @@ module tidelink_phy_align_calibrator #(
                     end
 
                     if (dwell_expire) begin
-                        // ----- Best-of-sweep score capture -----------------
-                        // At dwell-window expiry, compare this lane's
-                        // in-window run-length against its running best
-                        // and update best_{score,slip,phase} if greater.
-                        // Done unconditionally so the legacy path also
-                        // populates best_* (harmless side effect — outputs
-                        // still come from slip[]/phase[]).
+                        // ----- §9.11 run-length update -------------------
+                        // For each lane: classify this dwell as pass/fail
+                        // against LOCK_THRESH. If pass: extend the current
+                        // phase-axis run; if the extended run exceeds the
+                        // running best AND meets min_lock_dwells_eff,
+                        // promote it. If fail: close the run.
                         //
-                        // Agent-F §9.10: skip the update for lanes that were
-                        // pre-locked at (0,0) by S_PROBE. Their best_* is
-                        // already (0,0,lock_thresh_6b); their slip[]/phase[]
-                        // is already (0,0); leaving them alone here keeps
-                        // the bias intact through sweep exhaustion.
+                        // We do NOT gate this on lane_done — §9.11 removed
+                        // the S_PROBE freeze, so every lane scores at every
+                        // point. (early_exit_en_w bypass uses lane_done to
+                        // suppress in the same cycle as iter advance; the
+                        // run-length tracker is harmless work in that mode.)
                         for (int i = 0; i < 8; i++) begin
-                            if (!lane_done[i]) begin
-                                if (lane_score[i] > best_score[i]) begin
-                                    best_score[i] <= lane_score[i];
-                                    best_slip[i]  <= sweep_slip;
-                                    best_phase[i] <= sweep_phase;
+                            // Combinational "this dwell passes" predicate.
+                            // Using the JUST-incremented lane_score value is
+                            // fine because lane_score has been counting for
+                            // the full DWELL_CYCLES and now equals its
+                            // in-dwell final value (saturated at 6'h3F).
+                            if (lane_score[i] >= lock_thresh_6b) begin
+                                // Pass — extend or open a run at this slip.
+                                // If we're at the FIRST passing phase of a
+                                // new run, remember its starting phase.
+                                if (run_len[i] == '0) begin
+                                    cur_run_start_phase[i] <= sweep_phase;
                                 end
+                                // Increment run length (saturating at
+                                // 5'd16 — the phase axis maxes at 16 wide).
+                                if (run_len[i] != 5'd16) begin
+                                    run_len[i] <= run_len[i] + 5'd1;
+                                end
+                                // Update best_run if the EXTENDED run is
+                                // wider than the prior best AND clears
+                                // min_lock_dwells_eff. The new run length
+                                // is (run_len[i] + 1); we compute that as
+                                // a 5-bit value here to compare safely.
+                                if ((run_len[i] + 5'd1) >= min_lock_dwells_eff &&
+                                    (run_len[i] + 5'd1) >  best_run[i]) begin
+                                    best_run[i]             <= run_len[i] + 5'd1;
+                                    // If run_len was 0 we just opened the
+                                    // run at sweep_phase; otherwise the
+                                    // start phase is already in cur_run_*.
+                                    best_run_start_phase[i] <=
+                                        (run_len[i] == '0) ? sweep_phase
+                                                           : cur_run_start_phase[i];
+                                    best_run_slip[i]        <= sweep_slip;
+                                end
+                            end else begin
+                                // Fail — close the run.
+                                run_len[i] <= '0;
                             end
                             // Fresh dwell window next cycle.
                             lane_score[i] <= 6'd0;
                         end
 
                         // Dwell expired — advance the SHARED iterator
-                        // (phase-outer, slip-inner). On the FINAL point
-                        // (iter_at_end), finalise per-lane outputs.
+                        // (§9.11: slip-OUTER, phase-INNER). On the FINAL
+                        // point (iter_at_end), the FSM transitions to
+                        // S_FINALIZE next cycle and the per-lane assigns
+                        // happen there.
                         dwell_ctr <= '0;
-                        if (sweep_slip == 3'd7) begin
-                            sweep_slip <= 3'd0;
-                            if (sweep_phase == 4'd15) begin
-                                // ----- Sweep exhaustion --------------------
-                                // Best-of-sweep latch: for every lane whose
-                                // best_score met LOCK_THRESH, load slip[]/
-                                // phase[] from best_*; lanes that never met
-                                // the bar fault out. In EARLY_EXIT mode the
-                                // not-already-done lanes also fault, since
-                                // sweep_phase==15&&slip==7 with no lock
-                                // means the full space yielded no first-
-                                // match — same fault semantics as §9.7.
-                                // sweep_phase holds at 15.
-                                for (int i = 0; i < 8; i++) begin
-                                    if (early_exit_en_w) begin
-                                        // §9.7 fault rule preserved.
-                                        if (!lane_done[i] && !lane_new_lock[i]) begin
-                                            lane_fault_q[i] <= 1'b1;
-                                            lane_done[i]    <= 1'b1;
-                                        end
-                                    end else if (!lane_done[i]) begin
-                                        // §9.9 best-of-sweep latch — Agent-F
-                                        // §9.10 always latches from best_*
-                                        // (never from the live iterator) so
-                                        // that the per-lane policy is "pick
-                                        // the earliest sweep position that
-                                        // scored >= LOCK_THRESH" instead of
-                                        // "pick the highest-scoring", which
-                                        // resolves the M=(0,0) vs S=(1,1)
-                                        // split between independently
-                                        // sweeping calibrators. The
-                                        // score-capture above will already
-                                        // have updated best_* if the final
-                                        // dwell happened to be the highest
-                                        // scoring position — but for lanes
-                                        // pre-locked by S_PROBE this branch
-                                        // is gated off (the outer
-                                        // !lane_done[i] check) so the
-                                        // probe verdict is preserved.
-                                        if (best_score[i] >= lock_thresh_6b) begin
-                                            slip[i]  <= best_slip[i];
-                                            phase[i] <= best_phase[i];
-                                        end else if (lane_score[i] >= lock_thresh_6b) begin
-                                            // Best update for THIS dwell
-                                            // would have promoted best_* to
-                                            // the live iterator on the next
-                                            // NBA edge, but our latch reads
-                                            // best_* in the same cycle
-                                            // (PRE-update). Capture the
-                                            // live iterator directly so a
-                                            // first-locking-at-final-dwell
-                                            // lane still latches correctly.
-                                            slip[i]  <= sweep_slip;
-                                            phase[i] <= sweep_phase;
-                                        end else begin
-                                            lane_fault_q[i] <= 1'b1;
-                                        end
-                                        lane_done[i] <= 1'b1;
-                                    end
-                                end
+                        if (sweep_phase == 4'd15) begin
+                            // End-of-phase-scan for this slip — runs at
+                            // this slip are closed. Reset run_len for the
+                            // next slip's fresh scan (best_run is preserved).
+                            sweep_phase <= 4'd0;
+                            for (int i = 0; i < 8; i++) begin
+                                run_len[i] <= '0;
+                            end
+                            if (sweep_slip == 3'd7) begin
+                                // iter_at_end. FSM next-state goes to
+                                // S_FINALIZE; we hold sweep_slip at 7,
+                                // sweep_phase at 0 (post-wrap). No per-
+                                // lane assigns here — they happen in
+                                // S_FINALIZE.
                             end else begin
-                                sweep_phase <= sweep_phase + 4'd1;
+                                sweep_slip <= sweep_slip + 3'd1;
                             end
                         end else begin
-                            sweep_slip <= sweep_slip + 3'd1;
+                            sweep_phase <= sweep_phase + 4'd1;
                         end
                     end else begin
                         // HAL PADMSB+UELOPR @288: width-match the increment
@@ -807,6 +885,56 @@ module tidelink_phy_align_calibrator #(
                         // unequal-length operand.
                         dwell_ctr <= dwell_ctr +
                                      {{($clog2(DWELL_CYCLES+1)-1){1'b0}}, 1'b1};
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // §9.11 S_FINALIZE — one-cycle per-lane eye-centre latch.
+                //
+                // Entered from S_SWEEP on sweep_exhausted. For every lane,
+                // assign the final (slip, phase) tuple and mark lane_done:
+                //   * best_run[i] >= min_lock_dwells_eff → eye centre
+                //   * elsif probe_lane_pass_q[i]        → (slip=0, phase=0)
+                //   * else                              → lane_fault
+                //
+                // Eye centre = best_run_start_phase[i] + (best_run[i]-1)/2,
+                // computed combinationally. The floor-of-midpoint puts the
+                // sample point at or just before the middle of the widest
+                // contiguous phase run, giving maximum margin to either
+                // edge.
+                // -----------------------------------------------------------
+                S_FINALIZE: begin
+                    for (int i = 0; i < 8; i++) begin
+                        if (best_run[i] >= min_lock_dwells_eff) begin
+                            // best_run is at least MIN_LOCK_DWELLS wide;
+                            // latch the run centre. (best_run - 1) >> 1
+                            // is the floor of (run/2 - 1/2), i.e. the
+                            // index of the centre point relative to the
+                            // run start. best_run is 5b, the shifted
+                            // result is at most 7 (best_run<=16, (15>>1)=7),
+                            // so the 4-bit truncation is safe and the
+                            // sum start+centre is at most 15.
+                            automatic logic [3:0] centre_off;
+                            centre_off = (best_run[i] - 5'd1) >> 1;
+                            slip[i]      <= best_run_slip[i];
+                            phase[i]     <= best_run_start_phase[i] + centre_off;
+                            lane_done[i] <= 1'b1;
+                        end else if (probe_lane_pass_q[i]) begin
+                            // Fallback: degraded-eye safety net.
+                            // S_PROBE confirmed (0,0) locks but no
+                            // MIN_LOCK_DWELLS-wide run exists anywhere
+                            // on the grid. Accept (0,0).
+                            slip[i]  <= 3'd0;
+                            phase[i] <= 4'd0;
+                            lane_done[i] <= 1'b1;
+                        end else begin
+                            // Lane could not lock at MIN_LOCK_DWELLS-wide
+                            // centring AND did not pass S_PROBE — true
+                            // fault. Mark and exit; T3 retry budget at
+                            // S_FINISH decides whether to re-sweep.
+                            lane_fault_q[i] <= 1'b1;
+                            lane_done[i]    <= 1'b1;
+                        end
                     end
                 end
 
@@ -827,16 +955,19 @@ module tidelink_phy_align_calibrator #(
     // Output drivers
     // -------------------------------------------------------------------------
     // Per lane, the PHY must see:
-    //   - the lane's LATCHED (slip,phase) once it is done — that is, after
-    //     sweep exhaustion in best-of-sweep mode, or after the first lock
-    //     in EARLY_EXIT mode;
+    //   - the lane's LATCHED (slip,phase) once lane_done[i]=1 — that is,
+    //     after S_FINALIZE in §9.11 eye-centre mode, or after the first
+    //     lock in §9.7 EARLY_EXIT compat mode;
     //   - the LIVE shared iterator (sweep_phase,sweep_slip) while the
     //     sweep is still walking.
-    // In best-of-sweep mode all lanes flip to "done" together (one cycle
-    // after the final dwell-window expires) and their outputs latch to
-    // best_slip/best_phase or to the just-observed (sweep_slip,sweep_phase)
-    // if its lane_score exceeded best_score. Lanes with best_score below
-    // LOCK_THRESH set lane_fault and hold their last iterator value.
+    // In §9.11 eye-centre mode all not-faulted lanes flip to "done"
+    // together in S_FINALIZE (one cycle after the final dwell-window
+    // expires); their outputs latch to the run-centre (best_run_start_phase
+    // + (best_run-1)/2 at best_run_slip), or to (0,0) if probe_lane_pass_q
+    // was set and no MIN_LOCK_DWELLS-wide run existed. Lanes with neither
+    // a wide-enough run nor probe pass set lane_fault and hold their last
+    // iterator value (sweep_slip=7, sweep_phase=0 — the post-iter-wrap
+    // resting state).
     logic [23:0] bit_slip_internal;
     logic [31:0] phase_offset_internal;
     always_comb begin
@@ -867,11 +998,14 @@ module tidelink_phy_align_calibrator #(
         end else begin
             bit_slip         = bit_slip_internal;
             phase_offset     = phase_offset_internal;
-            training_mode    = (cur_state == S_ARM)   || (cur_state == S_PROBE)
-                            || (cur_state == S_SWEEP) || (cur_state == S_HOLD);
-                                                        // S_PROBE = Agent-F
-                                                        // §9.10 (0,0) probe;
-                                                        // S_HOLD  = T3.2.
+            training_mode    = (cur_state == S_ARM)
+                            || (cur_state == S_PROBE)
+                            || (cur_state == S_SWEEP)
+                            || (cur_state == S_FINALIZE)
+                            || (cur_state == S_HOLD);
+                                                        // S_PROBE    = §9.10/11 (0,0) advisory probe
+                                                        // S_FINALIZE = §9.11 single-cycle latch
+                                                        // S_HOLD     = T3.2 peer-aware
             calibration_done = (cur_state == S_DONE);
         end
     end

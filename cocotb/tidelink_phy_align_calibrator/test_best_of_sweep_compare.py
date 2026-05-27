@@ -1,10 +1,10 @@
-"""§9.9 best-of-sweep widest-eye selection — unit test.
+"""§9.11 eye-centre selection — unit test (upgraded from §9.9 widest-eye).
 
 Drives a single tb_top that instantiates TWO copies of
 `tidelink_phy_align_calibrator`:
 
   * u_dut_best  — EARLY_EXIT_ON_ALL_LOCKED = 1'b0  (silicon default,
-                  best-of-sweep widest-eye latch)
+                  §9.11 eye-centre via MIN_LOCK_DWELLS contiguity)
   * u_dut_first — EARLY_EXIT_ON_ALL_LOCKED = 1'b1  (legacy §9.7
                   first-match-wins behaviour)
 
@@ -13,27 +13,34 @@ The cocotb driver computes that trajectory from the BEST DUT's current
 sweep iterator (sweep_slip, sweep_phase, dwell_ctr) so we can paint
 deterministic per-(slip,phase) lock-duration patterns:
 
-  * Lanes 1..7  — lane_locked held HIGH every cycle.  Both DUTs lock
-    them at the FIRST iterator point (slip=0, phase=0).  No difference
-    in selection between policies for these lanes — the score at (0,0)
-    saturates DWELL_CYCLES; later points tie and `lane_score > best_score`
-    is strict, so best_slip/best_phase do not move.
+  * Lanes 1..7  — lane_locked held HIGH every cycle. Under §9.11 both
+    DUTs see every (slip,phase) point pass; the best-DUT's per-lane run
+    spans the full phase axis at slip=0 (length 16, the first slip in
+    sweep order), so it latches the CENTRE (slip=0, phase=7). The
+    first-match DUT still picks (0,0) — its first lock-rising dwell.
+    This is the §9.11-vs-§9.7 difference for a "wide-everywhere" lane.
 
-  * Lane 0      — the "eye-edge marginal" lane.  HIGH for ONLY 18
-    consecutive cycles at (slip=0, phase=0) (just over LOCK_THRESH=16),
-    then drops.  HIGH for the FULL DWELL_CYCLES (32) at (slip=3, phase=5).
-    LOW everywhere else.
+  * Lane 0      — the "eye-edge-marginal vs centred-real-eye" lane.
+    HIGH for ONLY 18 consecutive cycles at (slip=0, phase=0) (just over
+    LOCK_THRESH=16) — a SINGLE eye-edge point. Also HIGH for the FULL
+    DWELL_CYCLES (32) at FOUR contiguous phase points (slip=3, phase=4..7)
+    — a 4-wide real eye centred at phase=5/6 boundary.
 
-  Expected outcome:
-    first-match picks (slip=0, phase=0)  — first eye edge it sees
-    best-of-sweep picks (slip=3, phase=5)  — widest eye (longest run)
+    Under §9.11 with MIN_LOCK_DWELLS=4:
+      best-of-sweep   picks (slip=3, phase=5)  — centre of 4-wide run
+                      (start=4, len=4, centre=4+(4-1)/2 = 5).
+                      The marginal (0,0) point produces run_len=1 only —
+                      below MIN_LOCK_DWELLS=4, so the run never promotes.
+    Under §9.7:
+      first-match     picks (slip=0, phase=0)  — first eye edge it sees.
 
-That difference is the entire point of the §9.9 change: a marginal lane
-that JUST barely clears LOCK_THRESH at the first eye edge no longer
-locks the calibrator to that edge for the rest of the link lifetime.
+That difference is the §9.11 eye-CENTRE intent: a marginal lane that
+JUST barely clears LOCK_THRESH at the first edge no longer locks the
+calibrator to that edge — instead, the centre of the widest 4-contiguous
+run wins, giving maximum margin on either side.
 
 Invocation (from cocotb/phy_align_calibrator/):
-    rm -rf sim_build && make
+    rm -rf sim_build && make TB_VARIANT=compare
 """
 
 import cocotb
@@ -46,29 +53,48 @@ DWELL_CYCLES = 32
 LOCK_THRESH  = 16
 
 # Marginal lane stimulus: lane 0 locked for 18 cycles at (0,0), then drops.
+# This produces lane_score=18 > LOCK_THRESH=16 at the single point (0,0) —
+# a 1-wide phase run. With MIN_LOCK_DWELLS=4 this NEVER promotes to best_run,
+# so §9.11 ignores it. (Under §9.9 it would have saturated the score
+# comparator and locked the calibrator to (0,0).)
 MARGINAL_RUN_LEN = 18
 MARGINAL_SLIP    = 0
 MARGINAL_PHASE   = 0
 
-# Widest-eye stimulus: lane 0 locked for the full dwell at (3, 5).
+# Widest-eye stimulus: lane 0 locked for the full dwell at 4 contiguous
+# phase points at slip=3 (phase=4,5,6,7). §9.11 promotes a 4-wide run
+# (>= MIN_LOCK_DWELLS=4) and latches the run centre = 4 + (4-1)/2 = 5.
 WIDE_SLIP        = 3
-WIDE_PHASE       = 5
+WIDE_PHASE_START = 4
+WIDE_PHASE_END   = 7        # inclusive
+WIDE_PHASE       = 5        # centre = start + (len-1)/2 = 4 + (4-1)/2 = 5
 
 
 def _lane_locked_for(sweep_slip, sweep_phase, dwell_ctr):
     """Compute lane_locked[7:0] for the BEST DUT's current iterator value.
 
-    Lanes 1..7 always HIGH (uninteresting — both policies agree).
-    Lane 0 is the eye-edge-marginal lane (see module docstring).
+    Lanes 1..7 always HIGH — under §9.11 these latch at the eye CENTRE
+    (phase=7, slip=0 — the centre of the full-passing strip at the first
+    swept slip).
+    Lane 0 is the eye-edge-marginal vs centred-real-eye lane:
+      - MARGINAL point (0,0): HIGH for the first 18 cycles of the dwell
+        only. lane_score reaches 18 > LOCK_THRESH=16 → that single point
+        passes. But it's a 1-wide phase run, below MIN_LOCK_DWELLS=4.
+        §9.11 does NOT promote.
+      - WIDE run (slip=3, phase=4..7): HIGH for the full DWELL_CYCLES at
+        each of the 4 contiguous phases. §9.11 promotes a 4-wide run.
+        Run centre = 4 + (4-1)/2 = 5, so latched (slip=3, phase=5).
     """
     vec = 0xFE  # bits 7..1 always HIGH
     lane0 = 0
     if sweep_slip == MARGINAL_SLIP and sweep_phase == MARGINAL_PHASE:
         # Eye-edge marginal: HIGH for the first MARGINAL_RUN_LEN cycles of
-        # the dwell, then drop.
+        # the dwell, then drop. Single phase point only.
         if dwell_ctr < MARGINAL_RUN_LEN:
             lane0 = 1
-    elif sweep_slip == WIDE_SLIP and sweep_phase == WIDE_PHASE:
+    elif sweep_slip == WIDE_SLIP and (
+            WIDE_PHASE_START <= sweep_phase <= WIDE_PHASE_END):
+        # 4-wide contiguous phase eye at slip=3.
         lane0 = 1
     vec |= lane0 & 0x1
     return vec
@@ -116,29 +142,38 @@ async def test_best_of_sweep_picks_widest_eye(dut):
     dut.role_locked.value = 1
 
     # --- Wait for the best-of-sweep DUT to finish its sweep ------------
-    # Full sweep = 128 iterator points × DWELL_CYCLES = 128*32 = 4096 cycles.
-    # Add settle margin (a few extra dwells) — the best-of-sweep DUT then
-    # transitions S_SWEEP → S_FINISH → S_HOLD (no fault on lane 0 since
-    # WIDE pair always meets LOCK_THRESH).  Wait until state>=3 (FINISH
-    # or HOLD or DONE).
-    settle_budget = 128 * DWELL_CYCLES + 200
+    # Full sweep = 128 iterator points × DWELL_CYCLES = 128*32 = 4096 cycles,
+    # PLUS S_PROBE adds one extra dwell (32 cy) at the front, PLUS S_FINALIZE
+    # is one extra cycle. Add settle margin — the best-of-sweep DUT then
+    # transitions S_SWEEP → S_FINALIZE → S_FINISH → S_HOLD (no fault on lane
+    # 0 since WIDE pair always meets LOCK_THRESH=16).
+    #
+    # State codes (must match the calibrator typedef):
+    #   S_IDLE=0, S_ARM=1, S_SWEEP=2, S_FINISH=3, S_DONE=4,
+    #   S_CANCEL=5, S_HOLD=6, S_PROBE=7, S_FINALIZE=8
+    # "Done with the sweep" means cur_state ∈ {S_FINISH, S_DONE, S_HOLD}.
+    # The naive `state >= 3` check matches S_PROBE (7) and S_FINALIZE (8) —
+    # both of which the FSM passes through DURING the sweep — so it would
+    # exit instantly without the sweep having run. Use an explicit allow-list.
+    SWEEP_COMPLETE_STATES = {3, 4, 6}    # S_FINISH, S_DONE, S_HOLD
+    settle_budget = 128 * DWELL_CYCLES + 400  # +S_PROBE+S_FINALIZE+slack
     best_state = 0
     for _ in range(settle_budget):
         await RisingEdge(dut.clk)
         best_state = int(dut.best_state.value)
-        if best_state >= 3:   # S_FINISH or beyond
+        if best_state in SWEEP_COMPLETE_STATES:
             break
-    assert best_state >= 3, (
+    assert best_state in SWEEP_COMPLETE_STATES, (
         f"best-of-sweep DUT did not exit S_SWEEP within {settle_budget} cycles "
-        f"(state={best_state})"
+        f"(state={best_state}, expected one of {SWEEP_COMPLETE_STATES})"
     )
 
     # First-match DUT exits the sweep much earlier — by this point it has
     # been in S_HOLD for a while.  Verify it's done sweeping too.
     first_state = int(dut.first_state.value)
-    assert first_state >= 3, (
+    assert first_state in SWEEP_COMPLETE_STATES, (
         f"first-match DUT also expected to be past sweep "
-        f"(state={first_state})"
+        f"(state={first_state}, expected one of {SWEEP_COMPLETE_STATES})"
     )
 
     drv.cancel()
@@ -195,13 +230,18 @@ async def test_best_of_sweep_picks_widest_eye(dut):
         f"first-match DUT spuriously faulted lane 0 (fault=0x{first_fault:02x})"
     )
 
-    # Sanity: lanes 1..7 should latch (0,0) for both DUTs (both score
-    # saturates at the first iterator point; strict-gt comparator means
-    # later equal-score points don't displace).
+    # Sanity: lanes 1..7 — both DUTs see them always-locked.
+    #   first-match: latches first point = (0,0)
+    #   best-of-sweep §9.11: latches centre of the full-passing strip at
+    #       slip=0 (first slip in the slip-outer iteration), centre of
+    #       phase [0..15] = phase 7. So (slip=0, phase=7).
     for ln in range(1, 8):
         bs_ln = (_lane_field(best_bs, ln, 3),   _lane_field(best_po, ln, 4))
         fs_ln = (_lane_field(first_bs, ln, 3),  _lane_field(first_po, ln, 4))
-        assert bs_ln == (0, 0), f"best  lane {ln} latched ({bs_ln}), expected (0,0)"
+        assert bs_ln == (0, 7), (
+            f"best  lane {ln} latched ({bs_ln}), expected (0,7) — centre of "
+            f"always-passing strip at slip=0 (§9.11 eye-centre policy)"
+        )
         assert fs_ln == (0, 0), f"first lane {ln} latched ({fs_ln}), expected (0,0)"
 
 
@@ -246,7 +286,7 @@ async def test_best_of_sweep_picks_widest_eye(dut):
 
     for _ in range(settle_budget):
         await RisingEdge(dut.clk)
-        if int(dut.best_state.value) >= 3:
+        if int(dut.best_state.value) in SWEEP_COMPLETE_STATES:
             break
 
     drv2.cancel()

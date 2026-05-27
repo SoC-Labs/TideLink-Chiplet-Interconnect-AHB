@@ -48,7 +48,14 @@ module tb_top #(
     // it directly so the cocotb test has a known small bound.
     parameter int HOLD_CYCLES  = 2 * 128 * DWELL_CYCLES,
     // T3: 0 = retry while role_locked (cold bring-up default).
-    parameter int MAX_RESWEEPS = 0
+    parameter int MAX_RESWEEPS = 0,
+    // §9.11 eye-centre contiguity. Production silicon default is 4 (25%
+    // of the 16-phase axis), but the test_eye_offcenter / placeholder
+    // stimuli use 3×3 eyes which give phase-axis runs of 3, so we lower
+    // the unit-test default to 3 here. test_eye_offcenter assertions
+    // are written for "the widest eye wins"; with this default a 3-wide
+    // phase run promotes correctly.
+    parameter int MIN_LOCK_DWELLS = 3
 ) (
     input  logic        clk,
     input  logic        rst,
@@ -70,10 +77,11 @@ module tb_top #(
         .LOCK_THRESH  (LOCK_THRESH),
         .HOLD_CYCLES  (HOLD_CYCLES),
         .MAX_RESWEEPS (MAX_RESWEEPS),
-        // Best-of-sweep (silicon default). EARLY_EXIT compat mode is
+        // §9.11 eye-centre (silicon default). EARLY_EXIT compat mode is
         // exercised by the integrated phy_align tests; this unit TB
         // focuses on the silicon FSM behaviour.
-        .EARLY_EXIT_ON_ALL_LOCKED (1'b0)
+        .EARLY_EXIT_ON_ALL_LOCKED (1'b0),
+        .MIN_LOCK_DWELLS          (MIN_LOCK_DWELLS)
     ) u_dut (
         .clk                    (clk),
         .rst                    (rst),

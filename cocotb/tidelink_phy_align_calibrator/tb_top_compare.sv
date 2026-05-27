@@ -40,7 +40,12 @@ module tb_top #(
     // is independent of DWELL_CYCLES so long as the marginal lock
     // duration is shorter than DWELL_CYCLES (i.e. doesn't reach the run-
     // length cap). 32 leaves plenty of room.
-    parameter int DWELL_CYCLES = 32
+    parameter int DWELL_CYCLES = 32,
+    // §9.11: lower than silicon default 4 so the test stimulus' 4-wide
+    // contiguous phase run (slip=3, phase=4..7) promotes to best_run.
+    // Set to 4 to mirror silicon default; the stimulus paints a 4-wide
+    // eye explicitly.
+    parameter int MIN_LOCK_DWELLS = 4
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -71,7 +76,8 @@ module tb_top #(
     tidelink_phy_align_calibrator #(
         .DWELL_CYCLES              (DWELL_CYCLES),
         .LOCK_THRESH               (LOCK_THRESH),
-        .EARLY_EXIT_ON_ALL_LOCKED  (1'b0)
+        .EARLY_EXIT_ON_ALL_LOCKED  (1'b0),
+        .MIN_LOCK_DWELLS           (MIN_LOCK_DWELLS)
     ) u_dut_best (
         .clk                   (clk),
         .rst                   (rst),

@@ -251,8 +251,27 @@ module tidelink_phy_align_calibrator #(
         S_FINISH     = 4'd3,   // All lanes done; decide release vs re-sweep
         S_DONE       = 4'd4,   // Calibration complete; idle until re-trigger
         S_CANCEL     = 4'd5,   // swreset asserted mid-sweep; wait for deassert
-        S_HOLD       = 4'd6    // T3.2: locked locally; keep training_mode
+        S_HOLD       = 4'd6,   // T3.2: locked locally; keep training_mode
                                //       high HOLD_CYCLES so the peer converges
+        // -------------------------------------------------------------------
+        // §9.10 Agent-F "bias to (0,0)" probe state — see also
+        // docs/agent_f_fix_attempt.md and CALIBRATOR_BUG_HANDOFF_2026_05_26.md.
+        //
+        // S_PROBE dwells DWELL_CYCLES at (sweep_slip=0, sweep_phase=0) — i.e.
+        // the natural / un-shifted RX deserialiser configuration — and per-
+        // lane checks whether the lane_checker locks on this rotation. For
+        // every lane that DOES lock at (0,0), we immediately latch slip[i]=0,
+        // phase[i]=0 and mark lane_done[i]=1 so the subsequent S_SWEEP cannot
+        // displace it. Lanes that don't lock at (0,0) fall through into the
+        // normal best-of-sweep S_SWEEP search. This makes both master and
+        // slave deterministically converge on the SAME (slip,phase) tuple per
+        // lane (and specifically (0,0)) whenever the un-shifted alignment
+        // works — which it does in cocotb's bit-exact GPIO crossbar AND on
+        // any silicon where IDELAY + slave-clock distribution has been tuned
+        // such that the eye is centred at the (0,0) sample point. Defeats
+        // the M=(0,0) S=(1,1) split documented in agent_d_probe_findings.md.
+        // -------------------------------------------------------------------
+        S_PROBE      = 4'd7
     } state_t;
 
     state_t cur_state, nxt_state;
@@ -384,6 +403,20 @@ module tidelink_phy_align_calibrator #(
     wire iter_at_end     = (sweep_slip == 3'd7) && (sweep_phase == 4'd15);
     wire sweep_exhausted = (cur_state == S_SWEEP) && dwell_expire && iter_at_end;
 
+    // Agent-F §9.10: at S_PROBE dwell_expire, are ALL 8 lanes locked at
+    // (slip=0, phase=0)? lane_score[i] reaches LOCK_THRESH iff the lane
+    // saw >= LOCK_THRESH consecutive lane_locked=1 cycles within this dwell.
+    // If all 8 lanes pass, the sweep can be skipped entirely.
+    wire [7:0] probe_lane_pass_w;
+    genvar gprobe;
+    generate
+        for (gprobe = 0; gprobe < 8; gprobe = gprobe + 1) begin : g_probe_pass
+            assign probe_lane_pass_w[gprobe] =
+                (lane_score[gprobe] >= lock_thresh_6b);
+        end
+    endgenerate
+    wire probe_all_locked = &probe_lane_pass_w;
+
     // T3: a sweep is a genuine SUCCESS only if NO lane faulted (every lane
     // found a locking (phase,slip)). lane_fault_q is bounce-immune, unlike
     // &lane_locked. The per-deploy lottery failure mode is all_done=1 with
@@ -416,8 +449,23 @@ module tidelink_phy_align_calibrator #(
                 if (trigger_now)        nxt_state = S_ARM;
             end
             S_ARM: begin
+                // Agent-F §9.10: enter S_PROBE first to test (slip=0, phase=0)
+                // before the full 128-point sweep. See state-encoding comment.
                 if (swreset)            nxt_state = S_CANCEL;
-                else                    nxt_state = S_SWEEP;
+                else                    nxt_state = S_PROBE;
+            end
+            S_PROBE: begin
+                // Agent-F §9.10: dwell at (0,0) for DWELL_CYCLES. The score-
+                // capture in the datapath finalises which lanes locked at
+                // (0,0) on dwell_expire — those lanes get slip[i]/phase[i]
+                // latched to 0 and lane_done[i]=1. Then proceed to S_SWEEP
+                // for any remaining lanes. If ALL lanes locked at (0,0),
+                // skip the sweep and go straight to S_FINISH.
+                if (swreset)                       nxt_state = S_CANCEL;
+                else if (dwell_expire) begin
+                    if (probe_all_locked)          nxt_state = S_FINISH;
+                    else                           nxt_state = S_SWEEP;
+                end
             end
             S_SWEEP: begin
                 // §9.9: in best-of-sweep mode the sweep ALWAYS walks the
@@ -564,14 +612,77 @@ module tidelink_phy_align_calibrator #(
                     end
                 end
 
+                // -----------------------------------------------------------
+                // Agent-F §9.10: S_PROBE — dwell DWELL_CYCLES at the natural
+                // (slip=0, phase=0) point and lock lanes that pass the
+                // LOCK_THRESH bar onto (0,0) before the full sweep begins.
+                // sweep_slip/sweep_phase are already 0 (cleared in S_ARM),
+                // so the existing output mux drives (0,0) on every lane.
+                // -----------------------------------------------------------
+                S_PROBE: begin
+                    // Same run-length score accumulator as S_SWEEP.
+                    for (int i = 0; i < 8; i++) begin
+                        if (lane_locked[i]) begin
+                            if (lane_score[i] != LANE_SCORE_MAX)
+                                lane_score[i] <= lane_score[i] + 6'd1;
+                        end else begin
+                            lane_score[i] <= 6'd0;
+                        end
+                    end
+
+                    if (dwell_expire) begin
+                        // Probe verdict: for every lane that reached
+                        // LOCK_THRESH at (0,0), latch (0,0) and mark
+                        // lane_done so the subsequent sweep cannot displace
+                        // it. Lanes that did NOT lock at (0,0) leave
+                        // lane_done=0 and fall through into S_SWEEP for the
+                        // full 128-point search.
+                        for (int i = 0; i < 8; i++) begin
+                            if (lane_score[i] >= lock_thresh_6b) begin
+                                slip[i]       <= 3'd0;
+                                phase[i]      <= 4'd0;
+                                lane_done[i]  <= 1'b1;
+                                // Seed best_* with (0,0) so that any
+                                // downstream code (e.g. lane_fault scoring
+                                // at sweep exhaustion) sees a valid best.
+                                best_score[i] <= lock_thresh_6b;
+                                best_slip[i]  <= 3'd0;
+                                best_phase[i] <= 4'd0;
+                            end
+                            // Fresh dwell window starts in the next state.
+                            lane_score[i] <= 6'd0;
+                        end
+                        dwell_ctr  <= '0;
+                        // sweep_slip/sweep_phase remain at 0 — S_SWEEP will
+                        // begin at the natural sweep entry.
+                    end else begin
+                        dwell_ctr <= dwell_ctr +
+                                     {{($clog2(DWELL_CYCLES+1)-1){1'b0}}, 1'b1};
+                    end
+                end
+
                 S_SWEEP: begin
                     // ----- Per-lane run-length score -----------------------
                     // Count consecutive lane_locked=1 cycles within the
                     // current dwell window; reset to 0 on any de-assert,
                     // saturate at LANE_SCORE_MAX. Cleared on dwell-window
                     // entry (see dwell_expire branch below).
+                    //
+                    // Agent-F §9.10: skip the score update for lanes that
+                    // were already locked at (0,0) in S_PROBE — their
+                    // slip[i]/phase[i] are already latched and the
+                    // lane_done[i]=1 output-mux gate drives (0,0) to the
+                    // PHY regardless of what the sweep iterator is doing
+                    // for OTHER lanes. Keeping lane_score frozen at 0 also
+                    // means the final-dwell latch below cannot promote a
+                    // late-sweep accidental hit ahead of (0,0).
                     for (int i = 0; i < 8; i++) begin
-                        if (lane_locked[i]) begin
+                        if (lane_done[i]) begin
+                            // Locked at (0,0); keep score at 0 so the
+                            // best-of-sweep comparator below never fires
+                            // for this lane.
+                            lane_score[i] <= 6'd0;
+                        end else if (lane_locked[i]) begin
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
@@ -601,11 +712,19 @@ module tidelink_phy_align_calibrator #(
                         // Done unconditionally so the legacy path also
                         // populates best_* (harmless side effect — outputs
                         // still come from slip[]/phase[]).
+                        //
+                        // Agent-F §9.10: skip the update for lanes that were
+                        // pre-locked at (0,0) by S_PROBE. Their best_* is
+                        // already (0,0,lock_thresh_6b); their slip[]/phase[]
+                        // is already (0,0); leaving them alone here keeps
+                        // the bias intact through sweep exhaustion.
                         for (int i = 0; i < 8; i++) begin
-                            if (lane_score[i] > best_score[i]) begin
-                                best_score[i] <= lane_score[i];
-                                best_slip[i]  <= sweep_slip;
-                                best_phase[i] <= sweep_phase;
+                            if (!lane_done[i]) begin
+                                if (lane_score[i] > best_score[i]) begin
+                                    best_score[i] <= lane_score[i];
+                                    best_slip[i]  <= sweep_slip;
+                                    best_phase[i] <= sweep_phase;
+                                end
                             end
                             // Fresh dwell window next cycle.
                             lane_score[i] <= 6'd0;
@@ -635,29 +754,42 @@ module tidelink_phy_align_calibrator #(
                                             lane_fault_q[i] <= 1'b1;
                                             lane_done[i]    <= 1'b1;
                                         end
-                                    end else begin
-                                        // §9.9 best-of-sweep latch.
-                                        // best_score updated above in the
-                                        // same cycle takes precedence (the
-                                        // NBA on best_score is for NEXT
-                                        // cycle, so the load uses the
-                                        // PRE-update value plus the just-
-                                        // observed lane_score if greater).
-                                        // Encode that decision here directly.
-                                        if (lane_score[i] > best_score[i]) begin
-                                            if (lane_score[i] >= lock_thresh_6b) begin
-                                                slip[i]  <= sweep_slip;
-                                                phase[i] <= sweep_phase;
-                                            end else begin
-                                                lane_fault_q[i] <= 1'b1;
-                                            end
+                                    end else if (!lane_done[i]) begin
+                                        // §9.9 best-of-sweep latch — Agent-F
+                                        // §9.10 always latches from best_*
+                                        // (never from the live iterator) so
+                                        // that the per-lane policy is "pick
+                                        // the earliest sweep position that
+                                        // scored >= LOCK_THRESH" instead of
+                                        // "pick the highest-scoring", which
+                                        // resolves the M=(0,0) vs S=(1,1)
+                                        // split between independently
+                                        // sweeping calibrators. The
+                                        // score-capture above will already
+                                        // have updated best_* if the final
+                                        // dwell happened to be the highest
+                                        // scoring position — but for lanes
+                                        // pre-locked by S_PROBE this branch
+                                        // is gated off (the outer
+                                        // !lane_done[i] check) so the
+                                        // probe verdict is preserved.
+                                        if (best_score[i] >= lock_thresh_6b) begin
+                                            slip[i]  <= best_slip[i];
+                                            phase[i] <= best_phase[i];
+                                        end else if (lane_score[i] >= lock_thresh_6b) begin
+                                            // Best update for THIS dwell
+                                            // would have promoted best_* to
+                                            // the live iterator on the next
+                                            // NBA edge, but our latch reads
+                                            // best_* in the same cycle
+                                            // (PRE-update). Capture the
+                                            // live iterator directly so a
+                                            // first-locking-at-final-dwell
+                                            // lane still latches correctly.
+                                            slip[i]  <= sweep_slip;
+                                            phase[i] <= sweep_phase;
                                         end else begin
-                                            if (best_score[i] >= lock_thresh_6b) begin
-                                                slip[i]  <= best_slip[i];
-                                                phase[i] <= best_phase[i];
-                                            end else begin
-                                                lane_fault_q[i] <= 1'b1;
-                                            end
+                                            lane_fault_q[i] <= 1'b1;
                                         end
                                         lane_done[i] <= 1'b1;
                                     end
@@ -735,8 +867,11 @@ module tidelink_phy_align_calibrator #(
         end else begin
             bit_slip         = bit_slip_internal;
             phase_offset     = phase_offset_internal;
-            training_mode    = (cur_state == S_ARM) || (cur_state == S_SWEEP)
-                            || (cur_state == S_HOLD);   // T3.2: hold pattern
+            training_mode    = (cur_state == S_ARM)   || (cur_state == S_PROBE)
+                            || (cur_state == S_SWEEP) || (cur_state == S_HOLD);
+                                                        // S_PROBE = Agent-F
+                                                        // §9.10 (0,0) probe;
+                                                        // S_HOLD  = T3.2.
             calibration_done = (cur_state == S_DONE);
         end
     end

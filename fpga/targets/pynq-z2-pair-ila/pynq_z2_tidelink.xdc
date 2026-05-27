@@ -73,17 +73,17 @@
 #   used as master's pad_clk_rx; Y9 (SRCC P) carries master's pad_clk_tx
 #   so that slave's pad_clk_rx (also Y9 via the cable) is also on a P-side
 #   clock-capable site.
-set_property -dict { PACKAGE_PIN Y9  IOSTANDARD LVCMOS33 } [get_ports pad_clk_tx]   ;# J13 pin 40  (SRCC_13 P)
+set_property -dict {PACKAGE_PIN Y9 IOSTANDARD LVCMOS33} [get_ports pad_clk_tx]
 
 # pad_tx[7:0]: TX data lanes
-set_property -dict { PACKAGE_PIN F19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[0]}]  ;# J13 pin 24
-set_property -dict { PACKAGE_PIN V10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[1]}]  ;# J13 pin 21
-set_property -dict { PACKAGE_PIN V8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[2]}]  ;# J13 pin 19
-set_property -dict { PACKAGE_PIN W10 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[3]}]  ;# J13 pin 23
-set_property -dict { PACKAGE_PIN B20 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[4]}]  ;# J13 pin 32
-set_property -dict { PACKAGE_PIN W8  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[5]}]  ;# J13 pin 33
-set_property -dict { PACKAGE_PIN V6  IOSTANDARD LVCMOS33 } [get_ports {pad_tx[6]}]  ;# J13 pin 8
-set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]}]  ;# J13 pin 36
+set_property -dict {PACKAGE_PIN F19 IOSTANDARD LVCMOS33} [get_ports {pad_tx[0]}]
+set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33} [get_ports {pad_tx[1]}]
+set_property -dict {PACKAGE_PIN V8 IOSTANDARD LVCMOS33} [get_ports {pad_tx[2]}]
+set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33} [get_ports {pad_tx[3]}]
+set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33} [get_ports {pad_tx[4]}]
+set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_tx[5]}]
+set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_tx[6]}]
+set_property -dict {PACKAGE_PIN B19 IOSTANDARD LVCMOS33} [get_ports {pad_tx[7]}]
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 
@@ -92,28 +92,29 @@ set_property -dict { PACKAGE_PIN B19 IOSTANDARD LVCMOS33 } [get_ports {pad_tx[7]
 #   available input clock pin on the J13 RPi header. Vivado infers a BUFG
 #   automatically and the dedicated clock network distributes the recovered
 #   clock to all pad_rx[*] sample registers.
-set_property -dict { PACKAGE_PIN Y7  IOSTANDARD LVCMOS33 } [get_ports pad_clk_rx]   ;# J13 pin 18  (MRCC_13 P)
+set_property -dict {PACKAGE_PIN Y7 IOSTANDARD LVCMOS33} [get_ports pad_clk_rx]
 
 # pad_rx[7:0]: RX data lanes
-set_property -dict { PACKAGE_PIN U7  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[0]}]  ;# J13 pin 11
-set_property -dict { PACKAGE_PIN C20 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[1]}]  ;# J13 pin 12
-set_property -dict { PACKAGE_PIN Y8  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[2]}]  ;# J13 pin 35
-set_property -dict { PACKAGE_PIN A20 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[3]}]  ;# J13 pin 38
-set_property -dict { PACKAGE_PIN U8  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[4]}]  ;# J13 pin 15
-set_property -dict { PACKAGE_PIN W6  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[5]}]  ;# J13 pin 16
-set_property -dict { PACKAGE_PIN Y6  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6]}]  ;# J13 pin 10  (MRCC N — input data, not clock)
-set_property -dict { PACKAGE_PIN F20 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}]  ;# J13 pin 22
+set_property -dict {PACKAGE_PIN U7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[0]}]
+set_property -dict {PACKAGE_PIN C20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[1]}]
+set_property -dict {PACKAGE_PIN Y8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[2]}]
+set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
+set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
+set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
+set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
+set_property -dict {PACKAGE_PIN F20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established
 # LD1 (P14) = role_is_master_o — lit when this node won the master role
 # LD2 (N16) = wlink_irq        — strobes on Wlink PHY events
 # LD3 (M14) = released_credits_irq — strobes on credit release events
-set_property -dict { PACKAGE_PIN R14 IOSTANDARD LVCMOS33 } [get_ports led0]         ;# LD0 — link_active
-set_property -dict { PACKAGE_PIN P14 IOSTANDARD LVCMOS33 } [get_ports led1]         ;# LD1 — role_is_master
-set_property -dict { PACKAGE_PIN N16 IOSTANDARD LVCMOS33 } [get_ports led2]         ;# LD2 — wlink_irq
-set_property -dict { PACKAGE_PIN M14 IOSTANDARD LVCMOS33 } [get_ports led3]         ;# LD3 — released_credits_irq
+set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]
+set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS33} [get_ports led1]
+set_property -dict {PACKAGE_PIN N16 IOSTANDARD LVCMOS33} [get_ports led2]
+set_property -dict {PACKAGE_PIN M14 IOSTANDARD LVCMOS33} [get_ports led3]
 
 #-- Bitstream configuration ---------------------------------------------------
-set_property CFGBVS         VCCO [current_design]
-set_property CONFIG_VOLTAGE 3.3  [current_design]
+set_property CFGBVS VCCO [current_design]
+set_property CONFIG_VOLTAGE 3.3 [current_design]
+

@@ -499,18 +499,55 @@ module WavD2DGpio #(
   // internal `count` register so the mux flip happens at THAT lane's word
   // boundary, independent of any cross-lane phase variation.
   wire        effective_training_mode_tx = effective_training_mode_tx_raw;
-  // SoC Labs §9.7 per-lane phase: OR-merge the per-lane phase input with
-  // the broadcast global APB swi_phase_offset reg. Done per-lane (4-bit
-  // nibble each) so a lane the calibrator drives non-zero overrides, while
-  // a lane left at 0 still inherits the global APB phase (legacy path).
+  // SoC Labs §9.7 per-lane phase + §9.11d hardening (2026-05-27):
+  // ------------------------------------------------------------------
+  // §9.7 original intent: per-lane phase (io_swi_phase_offset_in,
+  // driven by chiplet_controller from cal_phase_offset_w OR'd with
+  // Region 8 swi_phase_offset_r) AND the broadcast global APB
+  // swi_phase_offset reg (PHY-CTRL[20:17], legacy single-phase path).
+  //
+  // §9.11d Agent 3 finding (independent assessment, 2026-05-27): the
+  // unconditional bitwise OR between per-lane and global was a latent
+  // hazard. Example: calibrator picks lane-5 phase = 0x3 = 0011, SW
+  // had previously written global = 0x5 = 0101 to the legacy PHY-CTRL
+  // reg → effective lane-5 phase = 0011 | 0101 = 0111 = 0x7. The PHY
+  // samples at the WRONG sub-bit point, the byte aligns by training-
+  // pattern still passes (16-bit equality is too lax for this), but
+  // real-data CRC fails — exactly the OVERNIGHT_2026_05_27 "training
+  // criterion vs real-data eye" signature.
+  //
+  // Verified by APB probe on the §9.11 deployed bitstream: global
+  // swi_phase_offset reads 0x0 on both M and S, so the OR was benign
+  // for that specific deploy. But ANY future SW write to PHY-CTRL
+  // [20:17] would re-introduce the corruption.
+  //
+  // Fix: AND-CLAMP semantics. If ANY per-lane nibble is non-zero
+  // (meaning per-lane control is in play — calibrator and/or
+  // Region 8 SW override is driving), the global broadcast is
+  // SUPPRESSED for ALL lanes. Only when per-lane is uniformly zero
+  // does the legacy global broadcast through. Preserves legacy
+  // global behaviour for purely-global-driven flows; defeats the
+  // OR-corruption when per-lane is active.
+  //
+  // Edge case: if the calibrator deterministically chooses
+  // (0,0,0,0,0,0,0,0) for every lane AND a non-zero global has been
+  // written, the global STILL broadcasts. Document and accept — in
+  // normal operation global is 0 and this never fires.
+  //
   // Default io_swi_phase_offset_in=0 + swi_phase_offset=0 → bit-exact
   // original behaviour (all lanes phase 0). Mirrors effective_bit_slip.
+  wire        any_per_lane_phase_set = |io_swi_phase_offset_in;
+  wire [3:0]  effective_global_phase =
+                  any_per_lane_phase_set ? 4'h0 : swi_phase_offset;
   wire [31:0] effective_phase_offset;
   genvar gl;
   generate
     for (gl = 0; gl < 8; gl = gl + 1) begin : g_phase_lane
+      // Per-lane wins when set; global is the legacy broadcast
+      // fallback (suppressed by AND-clamp above when any per-lane
+      // nibble is non-zero, preventing the bitwise-OR corruption).
       assign effective_phase_offset[4*gl +: 4] =
-               io_swi_phase_offset_in[4*gl +: 4] | swi_phase_offset;
+               io_swi_phase_offset_in[4*gl +: 4] | effective_global_phase;
     end
   endgenerate
   WavD2DGpioTx gpiotx_0 ( // @[GPIO.scala 190:61]

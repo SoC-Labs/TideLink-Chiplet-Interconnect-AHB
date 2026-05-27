@@ -880,30 +880,53 @@ module tidelink_phy_align_calibrator #(
                         end
 
                         // Dwell expired — advance the SHARED iterator
-                        // (§9.11: slip-OUTER, phase-INNER). On the FINAL
-                        // point (iter_at_end), the FSM transitions to
-                        // S_FINALIZE next cycle and the per-lane assigns
-                        // happen there.
+                        // (§9.11c REVERTED to §9.7/§9.9 order: phase-OUTER,
+                        // slip-INNER). Agent's independent assessment
+                        // 2026-05-27: slip-OUTER iteration (§9.11/§9.11b)
+                        // made the M/S sweep-window overlap unrealistic on
+                        // real silicon — each calibrator fixated on a
+                        // single slip for 128 dwells (16k cycles) before
+                        // moving on, so M at slip=2 and S at slip=5
+                        // couldn't agree on a compatible (slip,phase) pair
+                        // for ms at a time. With phase-OUTER iteration,
+                        // BOTH calibrators cycle through all 8 rotations
+                        // every 8 dwells (~512 cycles) — frequent crossings
+                        // of compatible (slip,phase) pairs even when M/S
+                        // role_lock triggers were ms-skewed by autoneg I²C.
+                        //
+                        // Trade-off: the run_len[i] metric now tracks
+                        // SLIP-axis contiguity (less meaningful as an "eye
+                        // width" measurement — slip is rotation, not
+                        // adjacent eye points). With MIN_LOCK_DWELLS=4 on
+                        // typical per-lane skew where only ONE slip is the
+                        // correct rotation, run_len rarely exceeds 1 and
+                        // the §9.11b any_pass_valid fallback fires instead.
+                        // S_PROBE@(0,0) advisory and the centre-of-best-run
+                        // logic remain in place for cocotb / wider-eye HW.
+                        //
+                        // On iter_at_end the FSM transitions to S_FINALIZE
+                        // next cycle and the per-lane assigns happen there.
                         dwell_ctr <= '0;
-                        if (sweep_phase == 4'd15) begin
-                            // End-of-phase-scan for this slip — runs at
-                            // this slip are closed. Reset run_len for the
-                            // next slip's fresh scan (best_run is preserved).
-                            sweep_phase <= 4'd0;
+                        if (sweep_slip == 3'd7) begin
+                            // End-of-slip-scan for this phase — runs of
+                            // contiguous slips at this phase are closed.
+                            // Reset run_len for the next phase's fresh
+                            // inner-slip scan (best_run is preserved).
+                            sweep_slip <= 3'd0;
                             for (int i = 0; i < 8; i++) begin
                                 run_len[i] <= '0;
                             end
-                            if (sweep_slip == 3'd7) begin
+                            if (sweep_phase == 4'd15) begin
                                 // iter_at_end. FSM next-state goes to
-                                // S_FINALIZE; we hold sweep_slip at 7,
-                                // sweep_phase at 0 (post-wrap). No per-
+                                // S_FINALIZE; we hold sweep_phase at 15,
+                                // sweep_slip at 0 (post-wrap). No per-
                                 // lane assigns here — they happen in
                                 // S_FINALIZE.
                             end else begin
-                                sweep_slip <= sweep_slip + 3'd1;
+                                sweep_phase <= sweep_phase + 4'd1;
                             end
                         end else begin
-                            sweep_phase <= sweep_phase + 4'd1;
+                            sweep_slip <= sweep_slip + 3'd1;
                         end
                     end else begin
                         // HAL PADMSB+UELOPR @288: width-match the increment

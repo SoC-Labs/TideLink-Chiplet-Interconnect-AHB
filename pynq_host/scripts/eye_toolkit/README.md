@@ -157,9 +157,28 @@ python3 eye_sweep.py --diff /tmp/eye_runs/pre-fix-2026-05-27_master.csv \\
 - **`--compare-rtls dir`** — multi-run diff: scan all CSVs in a dir,
   produce a regression grid showing eye-width-per-build over time.
 
+## Live mode (browser UI)
+
+A FastAPI + Plotly toolkit that wraps the v1 sweep behind a single
+page. Acquires `bridge1`, deploys, converges, sweeps both boards in
+parallel, and streams per-phase rows to the browser via SSE.
+
+See [`web/README.md`](web/README.md) for run instructions, API
+surface, and the SSH-tunnel exposure model.
+
+Quick start:
+
+```bash
+cd ~/SoCLabs/tidelink/pynq_host
+make install-web && systemctl --user enable --now tideeye-web
+ssh -L 8088:localhost:8088 mapstone-dev   # from your laptop
+open http://localhost:8088/
+```
+
 ## Files
 
-- `eye_sweep.py` — the toolkit. CLI + library.
+- `eye_sweep.py` — the CLI toolkit + library (also drives `web/`).
+- `web/` — the FastAPI live-eye browser front-end.
 - `README.md` — this file.
 
 ## Related

@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-loopback mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -97,6 +97,8 @@ XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-loopback)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-loopback-ext)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
@@ -558,8 +560,9 @@ help:
 	@echo "  pynq-z2-single     Digilent Pynq-Z2 — single-node    (xc7z020clg400-1)"
 	@echo "  pynq-z2-pair       Digilent Pynq-Z2 — paired         (xc7z020clg400-1)"
 	@echo "  pynq-z2-pair-flip  Digilent Pynq-Z2 — paired (mirror)(xc7z020clg400-1)"
-	@echo "  pynq-z2-loopback   Digilent Pynq-Z2 — internal TX→RX (xc7z020clg400-1)"
-	@echo "  mps3               MPS3 / Arm baseboard              (xcku115-flvb1760-1-c)"
+	@echo "  pynq-z2-loopback     Digilent Pynq-Z2 — internal TX→RX  (xc7z020clg400-1)"
+	@echo "  pynq-z2-loopback-ext Digilent Pynq-Z2 — external jumper (xc7z020clg400-1)"
+	@echo "  mps3                 MPS3 / Arm baseboard               (xcku115-flvb1760-1-c)"
 	@echo ""
 	@echo "Build targets:"
 	@echo "  all               Full flow: package_ip -> build_design (default)"

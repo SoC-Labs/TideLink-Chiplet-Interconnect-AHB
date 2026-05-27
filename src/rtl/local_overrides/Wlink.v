@@ -232,15 +232,25 @@ module Wlink #(
   //   axi_chiplet_controller.sv. Declared up here (before first use) so
   //   the assignments below the instances can reference them.
   // ===================================================================
-  wire [1:0] llrx_io_obs_state;
-  wire       llrx_io_obs_is_short_pkt;
-  wire       llrx_io_obs_is_long_pkt;
-  wire       llrx_io_obs_valid;
-  wire [2:0] tl2wl_io_obs_fcsm_state;
-  wire       tl2wl_io_obs_cr_pkt_seen_rx;
-  wire       tl2wl_io_obs_crack_pkt_seen_rx;
-  wire       tl2wl_io_obs_pkt_is_cr_pkt;
-  wire       tl2wl_io_obs_pkt_is_crack_pkt;
+  // tdif-10 visibility (2026-05-25): mark_debug at the Wlink scope so the
+  // ILA picks these up without having to bind into WlinkRxLinkLayer. The
+  // underlying llrx instance already mark_debugs `state`/`is_long_pkt`/
+  // `is_short_pkt`/`valid` internally; promoting at this scope adds a
+  // second tap that survives even if Vivado flattens the llrx internals.
+  (* mark_debug = "true" *) wire [1:0] llrx_io_obs_state;
+  (* mark_debug = "true" *) wire       llrx_io_obs_is_short_pkt;
+  (* mark_debug = "true" *) wire       llrx_io_obs_is_long_pkt;
+  (* mark_debug = "true" *) wire       llrx_io_obs_valid;
+  // tdif-10 visibility (2026-05-25): the FCSM observability outputs
+  // expose the master-side credit-handshake state that lets us see CR/CRACK
+  // packets being received and the FCSM's own state advance. These nets
+  // are already wired up to APB obs registers; promoting them to mark_debug
+  // gives per-cycle ILA visibility (the APB version is poll-rate only).
+  (* mark_debug = "true" *) wire [2:0] tl2wl_io_obs_fcsm_state;          // tdif-10 ILA — FCSM state
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_cr_pkt_seen_rx;      // tdif-10 ILA — sticky CR-rx
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_crack_pkt_seen_rx;   // tdif-10 ILA — sticky CRACK-rx
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_pkt_is_cr_pkt;       // tdif-10 ILA — combinational CR-detect
+  (* mark_debug = "true" *) wire       tl2wl_io_obs_pkt_is_crack_pkt;    // tdif-10 ILA — combinational CRACK-detect
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // Port stubs — read-only mirror of the lane-mask registers.
@@ -1307,6 +1317,15 @@ module Wlink #(
     .auto_out_crc(llrx_auto_out_crc),
     .io_enable(llrx_io_enable),
     .io_swi_short_packet_max(llrx_io_swi_short_packet_max),
+    // SoC Labs L5 whitelist (tdif-10, 2026-05-25): bringup-packet data_id
+    // gate for first_short_pkt_seen. Hard-tied to FCSM compile-time defaults
+    // (WlinkGenericFCSM_6.v sets these on reset and SW never rewrites them
+    // before LL bringup completes). If a future revision allows runtime SW
+    // remapping of these IDs, route the FCSM swi_*_id regs out instead.
+    .io_swi_cr_id(8'h44),
+    .io_swi_crack_id(8'h45),
+    .io_swi_ack_id(8'h46),
+    .io_swi_nack_id(8'h47),
     .io_active_lanes(llrx_io_active_lanes),
     .io_lane_mask(llrx_io_lane_mask),
     .io_ecc_corrected(llrx_io_ecc_corrected),
@@ -1804,7 +1823,134 @@ module Wlink #(
   assign lltx_io_swi_err_inj_bit = out_prepend_swi_err_inj_bit; // @[SW.scala 117:16]
   assign lltx_io_ll_tx_valid = phy_link_tx_tx_ready; // @[Wlink.scala 186:43]
   assign llrx_clock = phy_link_rx_rx_link_clk; // @[Wlink.scala 213:58]
-  assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out; // @[Wlink.scala 214:64]
+  // ===================================================================
+  // SoC Labs tdif-08 L4 option (c) (2026-05-25): hold llrx_reset HIGH for
+  // the entire training/recal window so the slave's LL_RX byte-align FSM
+  // never sees the asymmetric training-mode filler bytes that latch
+  // state==1 prematurely.
+  //
+  // Root cause (commit 7a6427d on tdif-bisect-ll-rx): the slave LL framer
+  // (WlinkRxLinkLayer.state) is released from reset while the master is
+  // still emitting training-mode filler. Some filler bytes have
+  // ph[7:0]>0x7F (is_long_pkt=1), so state 0->1 latches mid-training and
+  // the framer is stuck pointing at filler instead of the first real CR
+  // packet once the master drops training and enters FC data mode.
+  //
+  // The prior L4 attempt (commit 92c2ec7 -- first_short_pkt_seen sticky
+  // gate inside WlinkRxLinkLayer.v) was a *consumer-side* heuristic that
+  // partially worked (5/12 fuzz PASS) but couldn't survive every clock
+  // alignment. Option (c) is a *producer-side* gate: keep llrx_reset
+  // asserted while swi_training_mode_in is high. By the time it
+  // deasserts, the master TX is already in FC data mode and the first
+  // valid byte on the wire is the CR short packet -- state->0 is the only
+  // possible transition.
+  //
+  // CDC: swi_training_mode_in is an apb_clk-domain signal (sourced from
+  // axi_chiplet_controller.sv swi_training_mode_r OR'd with autocal's
+  // cal_training_mode_w). It must be 2-flop-synced into
+  // phy_link_rx_rx_link_clk (== llrx_clock) before being OR'd into
+  // llrx_reset. The reset OR uses the *synced* signal so transitions are
+  // safe in the rx_link_clk domain.
+  //
+  // Scope note: swi_recal_r (slot0 bit[1]) is NOT exposed to Wlink -- it
+  // only reaches the autocal calibrator inside axi_chiplet_controller.sv.
+  // Since the bringup sequence is set_slot0=0x3 -> 0x1 -> 0x0, the
+  // training_mode bit (slot0 bit[0]) is held HIGH for the entire window
+  // that recal is non-zero, so swi_training_mode_in alone covers the
+  // same gating window. Modifying axi_chiplet_controller.sv to also pipe
+  // swi_recal in is out of scope for this override (see task
+  // constraints).
+  // ===================================================================
+  // tdif-10 visibility (2026-05-25): expose the option (c) CDC sync chain
+  // (pre-CDC swi_training_mode_in, both rxsync stages, and the OR'd
+  // llrx_reset itself) to the ILA so we can confirm on real silicon that:
+  //   1. swi_training_mode_in is asserted/deasserted as expected by SW
+  //   2. the 2-flop CDC fires in the rx_link_clk domain
+  //   3. llrx_reset deasserts at the right moment relative to peer TX
+  // mark_debug attributes apply at the declaration site; the always block
+  // is unmodified.
+  (* mark_debug = "true" *) reg  swi_training_mode_rxsync_0;     // tdif-10 ILA — CDC stage 1
+  (* mark_debug = "true" *) reg  swi_training_mode_rxsync_1;     // tdif-10 ILA — CDC stage 2 (drives reset OR)
+  always @(posedge phy_link_rx_rx_link_clk or posedge por_reset) begin
+    if (por_reset) begin
+      swi_training_mode_rxsync_0 <= 1'b1;  // safe default: hold gate HIGH out of POR
+      swi_training_mode_rxsync_1 <= 1'b1;
+    end else begin
+      swi_training_mode_rxsync_0 <= swi_training_mode_in;
+      swi_training_mode_rxsync_1 <= swi_training_mode_rxsync_0;
+    end
+  end
+
+  // tdif-10 visibility (2026-05-25): pre-CDC swi_training_mode_in
+  // (apb_clk domain) and the OR'd llrx_reset (rx_link_clk domain) -- mirror
+  // these into mark_debug-attributed nets so they appear in the ILA
+  // alongside the CDC chain. The mirrors are pure wires; synthesis flattens
+  // them but keeps the mark_debug attribute on the resolved net.
+  (* mark_debug = "true" *) wire dbg_swi_training_mode_in   = swi_training_mode_in;        // tdif-10 ILA — pre-CDC (apb_clk)
+  (* mark_debug = "true" *) wire dbg_llrx_reset_out;                                       // tdif-10 ILA — final reset (rx_link_clk)
+  // Cross-die trigger: framer is stuck post-training-drop when state==1
+  // (long-pkt branch latched) AND swi_training_mode_rxsync_1 has fallen
+  // back to 0 (gate released). Both dies compute this identically. ILA can
+  // trigger on this signal directly in Vivado HW Manager -- no physical pin
+  // is needed for the trigger because the dbg_hub is JTAG-only; a SW poll
+  // of dbg_framer_stuck across both dies via JTAG gives the same evidence.
+  // The signal is also routed through llrx instance hierarchy so it can be
+  // used as ILA trigger condition on either side independently.
+  (* mark_debug = "true" *) wire dbg_framer_stuck = (llrx_io_obs_state == 2'h1) & ~swi_training_mode_rxsync_1; // tdif-10 ILA — cross-die framer-stuck flag (drives via existing llrx obs output)
+  // ===================================================================
+  // SoC Labs tdif-08 L4 option (c) BILATERAL ATTEMPT (2026-05-25):
+  // negative result -- falling-edge holdoff counter does NOT close the
+  // bilateral hole. Keeping bare option (c) as the committed behaviour
+  // and documenting the failed experiment so future agents don't repeat
+  // it without new evidence.
+  //
+  // Problem statement: bare option (c) leaves 6/12 fuzz scenarios with
+  // m.cr=0 s.cr=1 (master-side framer broken). The hypothesis was that
+  // when side-A drops training before side-B, A's llrx releases while B
+  // is still emitting training-mode filler on the wire -- A's framer
+  // latches state==1 on filler.
+  //
+  // Attempted fix: hold llrx_reset HIGH for N cycles AFTER the falling
+  // edge of swi_training_mode_rxsync_1 to cover the peer's worst-case
+  // lingering filler. Sized a 10-bit counter (1024 link_clks @ 50 MHz =
+  // 20 us) -- comfortably > 1000-cycle stagger but < the 3000-cycle
+  // observation window. Also tried 8/11/12-bit widths.
+  //
+  // Observed failure mode of the holdoff: every counter width (8 -> 12
+  // bits) caused the FCSM to get stuck at SEND_CREDITS1 in nearly all
+  // scenarios. The reason is *subtler* than the original hypothesis:
+  //   * Holding llrx_reset past the falling edge of training causes the
+  //     local LL_RX framer to miss the *initial* alignment window.
+  //   * When llrx_reset releases DURING peer's FC data mode, the framer
+  //     may align on the wrong byte of a real packet (instead of the
+  //     first CR short packet that was on the wire at training drop).
+  //   * Net effect: the holdoff *prevents* the slave-side bug option (c)
+  //     was designed for but *causes* a new "framer-aligned-mid-packet"
+  //     failure.
+  //
+  // Combo experiment (option (c) + L4-v3 first_short_pkt_seen re-enabled
+  // in WlinkRxLinkLayer.v): no improvement -- same 6/12 scenarios fail
+  // with same polarity. The L4-v3 gate alone latches on the very first
+  // short packet which can still be a stale filler byte that happens to
+  // have bit[7]=0 (training patterns 0x65/0x4B/0x59/0x2D all do).
+  //
+  // CONCLUSION: the bilateral structure cannot be resolved by either a
+  // per-side time-based gate or a per-side first-short-packet heuristic.
+  // A real fix needs one of:
+  //   1. Cross-link peer-ready handshake (peer signals "I dropped training
+  //      and my TX has flushed filler") -- requires protocol extension.
+  //   2. Wire-level alignment beacon (periodic SYNC byte irrespective of
+  //      training state) -- requires Wlink RTL change outside overrides.
+  //   3. SW orchestration that guarantees BOTH sides drop training within
+  //      one PHY clock cycle -- impossible across two independent dies.
+  // None are achievable inside the local_overrides scope of this task.
+  //
+  // Recommendation: take option (c) bare to HW (closes the symmetric
+  // bringup case which was the original bug) and treat the remaining
+  // 6/12 fuzz failures as a protocol-extension follow-up.
+  // ===================================================================
+  assign llrx_reset = rx_link_clk_reset_wrs_io_reset_out | swi_training_mode_rxsync_1; // @[Wlink.scala 214:64] SoC Labs L4 option (c)
+  assign dbg_llrx_reset_out = llrx_reset;  // tdif-10 ILA mirror — see declaration above
   assign llrx_io_enable = out_prepend_swi_lltx_enable_1; // @[Wlink.scala 174:49 SW.scala 117:16]
   assign llrx_io_swi_short_packet_max = out_prepend_swi_short_packet_max; // @[Wlink.scala 170:49 SW.scala 117:16]
   assign llrx_io_active_lanes = {{4'd0}, active_rx_lanes}; // @[Wlink.scala 169:48]

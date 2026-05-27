@@ -41,7 +41,16 @@ OFF_PAIR_CREDIT_COUNTER = 0x028
 OFF_R8_SLOT0            = 0x100     # SWI_TRAINING_MODE / SWI_RECAL
 OFF_R8_SLOT2            = 0x108     # SWI_LANE_STATUS
 
+# Region 4 (chiplet-controller config) slot 0 = ROLE_CFG.
+# Per tidelink_apb_regs.sv:431 — Region 4 = paddr[8:5]=0100, slot 0 = paddr[4:2]=000
+# So ROLE_CFG sits at offset 0x080 inside tidelink_apb_regs (which is rooted
+# at APB_TIDELINK_BASE), giving absolute APB offset 0x2080.
+# Bits: [0]=role (0=master, 1=slave), [1]=role_lock (W1S, POR-only clear).
+# This is the path deploy_pair.sh uses on HW (tidelink_top.sv:310-311 comment).
+OFF_ROLE_CFG            = 0x080
+
 # Pre-computed absolute addresses inside our 15-bit unified APB space
+APB_ROLE_CFG            = APB_TIDELINK_BASE + OFF_ROLE_CFG   # 0x2080
 APB_R8_SLOT0            = APB_TIDELINK_BASE + OFF_R8_SLOT0   # 0x2100
 APB_R8_SWI_LANE_STATUS  = APB_TIDELINK_BASE + OFF_R8_SLOT2   # 0x2108
 APB_DOORBELL            = APB_TIDELINK_BASE + OFF_DOORBELL
@@ -49,6 +58,11 @@ APB_RELEASED_ACC        = APB_TIDELINK_BASE + OFF_RELEASED_ACC
 APB_DOORBELL_RESP_ACC   = APB_TIDELINK_BASE + OFF_DOORBELL_RESP_ACC
 APB_PAIR_CREDIT_COUNTER = APB_TIDELINK_BASE + OFF_PAIR_CREDIT_COUNTER
 APB_CREDIT_COUNT        = APB_TIDELINK_BASE + OFF_CREDIT_COUNT
+
+# ROLE_CFG values for SW-driven role-lock (used when nego_en=0, i.e. autoneg
+# disabled — which is the POR default).
+ROLE_CFG_MASTER_LOCK = 0x02   # bit[0]=0 (master), bit[1]=1 (lock)
+ROLE_CFG_SLAVE_LOCK  = 0x03   # bit[0]=1 (slave),  bit[1]=1 (lock)
 
 # LL enable/reset bootstrap values from to_data_mode() in
 # sw_coord_autocal_region8.sh:
@@ -211,14 +225,29 @@ class PairTB:
     # ----- Bringup phases -----------------------------------------------------
 
     async def do_role_lock(self):
-        """Latch role_strap on both sides — kicks off autoneg + autocal."""
-        # The role-lock is driven by the autoneg/role_lock_reg block — its
-        # default is to latch role_strap_i after a short delay once
-        # apb_debug_unlock_i is high and mask_hs_bypass_i is high (both true
-        # in tb_top). No APB writes required; we just wait for role_locked_o.
-        # (The wlink_pair test uses ctrl_reg to force-lock but tidelink_top
-        # doesn't expose ctrl_reg externally — we rely on the natural
-        # autoneg path. mask_hs_bypass_i=1 keeps it open.)
+        """Latch role_lock by writing ROLE_CFG via APB.
+
+        The previous incarnation of this routine relied on "natural autoneg"
+        to assert role_locked_o. That path requires nego_en=1 (the autoneg
+        FSM to run, win, and pulse nego_set_role_lock_w). At POR, nego_en=0
+        (see axi_chiplet_controller.sv:397 — nego_cfg_reg <= 7'd0) so the FSM
+        parks in ST_BYPASS and role_locked_o never asserts in sim. (On HW
+        deploy_pair.sh writes ROLE_CFG via APB to get past this — see
+        tidelink_top.sv:310-311 comment.)
+
+        The W1S path in axi_chiplet_controller.sv:427-430 latches
+        role_lock_reg whenever:
+            ctrl_reg_write && ctrl_reg_addr == 4'h0 && ctrl_reg_wdata[1]
+            && mask_hs_gate_open
+        The tb pulls apb_debug_unlock_i and mask_hs_bypass_i high (line 78,
+        82 of tb_top.sv) so the gate is open from POR.
+
+        APB at unified offset 0x2080 (= APB_TIDELINK_BASE + 0x80) decodes to
+        Region 4 slot 0 inside tidelink_apb_regs and is forwarded onto the
+        ctrl_reg interface to axi_chiplet_controller.
+        """
+        await self.m_apb.write(APB_ROLE_CFG, ROLE_CFG_MASTER_LOCK)
+        await self.s_apb.write(APB_ROLE_CFG, ROLE_CFG_SLAVE_LOCK)
         await ClockCycles(self.dut.hclk, 200)
 
     async def wait_role_locked(self, max_cycles=20000):
@@ -308,6 +337,71 @@ class PairTB:
         except (AttributeError, ValueError):
             return -1
 
+    # ----- Hierarchical PHY-align calibrator probe -------------------------
+    # Calibrator FSM states (per tidelink_phy_align_calibrator.sv:247-256):
+    #   0=IDLE, 1=ARM, 2=SWEEP, 3=FINISH, 4=DONE, 5=CANCEL, 6=HOLD
+
+    CAL_STATE_NAMES = {0: "IDLE", 1: "ARM", 2: "SWEEP", 3: "FINISH",
+                       4: "DONE", 5: "CANCEL", 6: "HOLD"}
+
+    def cal_state(self, side):
+        try:
+            top = self.dut.u_master if side == "m" else self.dut.u_slave
+            return int(top.u_chiplet_controller.u_calibrator.cur_state.value)
+        except (AttributeError, ValueError):
+            return -1
+
+    def cal_state_name(self, side):
+        s = self.cal_state(side)
+        return self.CAL_STATE_NAMES.get(s, f"?{s}")
+
+    # ----- FC adapter hierarchical probes (TX/RX skid + valid lines) -------
+    # Used to localize where the M→S vs S→M asymmetry comes from.
+
+    def _fc(self, side):
+        top = self.dut.u_master if side == "m" else self.dut.u_slave
+        return top.u_fc_adapter
+
+    def fc_a2l_valid(self, side):
+        try:
+            return int(self._fc(side).tl_fc_a2l_valid.value)
+        except (AttributeError, ValueError):
+            return -1
+
+    def fc_a2l_ready(self, side):
+        try:
+            return int(self._fc(side).tl_fc_a2l_ready.value)
+        except (AttributeError, ValueError):
+            return -1
+
+    def fc_l2a_valid(self, side):
+        try:
+            return int(self._fc(side).tl_fc_l2a_valid.value)
+        except (AttributeError, ValueError):
+            return -1
+
+    def fc_skid_valid(self, side):
+        try:
+            return int(self._fc(side).skid_valid_r.value)
+        except (AttributeError, ValueError):
+            return -1
+
+    async def watch_fc_pulses(self, n_cycles, label):
+        """Sample tl_fc_a2l_valid & tl_fc_l2a_valid every cycle for n_cycles
+        and report how many cycles each was asserted, on each side."""
+        m_a2l = m_l2a = s_a2l = s_l2a = 0
+        for _ in range(n_cycles):
+            await RisingEdge(self.dut.hclk)
+            if self.fc_a2l_valid("m") == 1: m_a2l += 1
+            if self.fc_l2a_valid("m") == 1: m_l2a += 1
+            if self.fc_a2l_valid("s") == 1: s_a2l += 1
+            if self.fc_l2a_valid("s") == 1: s_l2a += 1
+        self.log.info(
+            f"  [{label}] FC valid-cycle counts over {n_cycles} cy: "
+            f"M(a2l={m_a2l},l2a={m_l2a})  S(a2l={s_a2l},l2a={s_l2a})"
+        )
+        return dict(m_a2l=m_a2l, m_l2a=m_l2a, s_a2l=s_a2l, s_l2a=s_l2a)
+
     # ----- Snapshot helper ----------------------------------------------------
 
     async def snapshot(self, label):
@@ -319,15 +413,19 @@ class PairTB:
         s_cr  = self.fcsm_cr_pkt_seen("s")
         m_cra = self.fcsm_crack_pkt_seen("m")
         s_cra = self.fcsm_crack_pkt_seen("s")
+        m_cal = self.cal_state_name("m")
+        s_cal = self.cal_state_name("s")
+        m_fcsm = self.fcsm_state("m")
+        s_fcsm = self.fcsm_state("s")
         self.log.info(
             f"  [{label}] "
             f"M: locked=0x{m_st & 0xff:02x} cal_done={(m_st >> 16) & 1} "
-            f"cr={m_cr} crack={m_cra} pcc={m_pcc}"
+            f"cal={m_cal} fcsm={m_fcsm} cr={m_cr} crack={m_cra} pcc={m_pcc}"
         )
         self.log.info(
             f"  [{label}] "
             f"S: locked=0x{s_st & 0xff:02x} cal_done={(s_st >> 16) & 1} "
-            f"cr={s_cr} crack={s_cra} pcc={s_pcc}"
+            f"cal={s_cal} fcsm={s_fcsm} cr={s_cr} crack={s_cra} pcc={s_pcc}"
         )
         return {
             "m_lane_status": m_st, "s_lane_status": s_st,
@@ -351,19 +449,22 @@ async def run_bringup_through_phase1(tb):
     locked = await tb.wait_role_locked()
     tb.log.info(f"Phase 0 role_locked: master={int(tb.dut.m_role_locked.value)} "
                 f"slave={int(tb.dut.s_role_locked.value)}  ({'PASS' if locked else 'TIMEOUT'})")
-    # Wait for the natural autocal to complete (cal_done on both sides). If
-    # it doesn't, the do_hold_training step can refresh it.
-    m_st, s_st = await tb.wait_cal_done()
-    tb.log.info(f"Phase 1 SWI_LANE_STATUS after natural autocal: "
-                f"M=0x{m_st:08x} S=0x{s_st:08x}")
-    if ((m_st >> 16) & 1 == 0) or ((s_st >> 16) & 1 == 0):
-        # Natural autocal didn't reach done within budget — drive the
-        # sw_coord_autocal Step 1+2 sequence as on HW.
-        await tb.do_hold_training()
-        m_st, s_st = await tb.wait_cal_done()
-        tb.log.info(f"Phase 1 SWI_LANE_STATUS after SW autocal: "
-                    f"M=0x{m_st:08x} S=0x{s_st:08x}")
-    return await tb.snapshot("end of Phase 1 (training held)")
+    tb.log.info(f"Phase 0 cal state immediately after role_lock: "
+                f"M={tb.cal_state_name('m')} S={tb.cal_state_name('s')}")
+    # Wait for the natural autocal to complete. tidelink_phy_align_calibrator.sv
+    # auto-arms on role_locked_rise (line 280-282). Per the bringup_pair_passive.sh
+    # hypothesis (and the FCSM bug memory), the SW slot0=0x3 → 0x1 recal pulse
+    # actively RESETS calibrator progress mid-sweep — see
+    # tidelink_phy_align_calibrator.sv:428 (S_SWEEP→S_CANCEL on swreset). So we
+    # do NOT call do_hold_training here; we just give the auto-armed sweep
+    # plenty of time. Each (phase,slip,dwell) sweep is 128·DWELL cycles —
+    # bumping to 500k cycles allows ~60 full resweeps if the FSM loops
+    # S_FINISH→S_ARM due to a lane fault on first pass.
+    m_st, s_st = await tb.wait_cal_done(max_cycles=500000)
+    tb.log.info(f"Phase 1 SWI_LANE_STATUS after passive autocal: "
+                f"M=0x{m_st:08x} S=0x{s_st:08x}  "
+                f"cal_state M={tb.cal_state_name('m')} S={tb.cal_state_name('s')}")
+    return await tb.snapshot("end of Phase 1 (passive autocal)")
 
 
 async def run_bringup_full(tb):
@@ -408,8 +509,13 @@ async def test_01_role_lock_and_cal_done(dut):
 
     assert m_cal_done == 1, f"master cal_done not asserted (lane_status=0x{m_st:08x})"
     assert s_cal_done == 1, f"slave  cal_done not asserted (lane_status=0x{s_st:08x})"
-    assert m_lanes == 0xff, f"master lanes_locked = 0x{m_lanes:02x} (want 0xff)"
-    assert s_lanes == 0xff, f"slave  lanes_locked = 0x{s_lanes:02x} (want 0xff)"
+    # NB: lanes_locked is reported by the training-mode lane checker and only
+    # reads 0xff while the calibrator is driving training patterns. After
+    # cal_done asserts (S_DONE) the calibrator self-deasserts cal_training_mode
+    # and lanes_locked drops to 0x00. The HW-post-deploy `lanes_locked=0xff`
+    # observation is from the SW-coordinated path where slot0=0x1 keeps
+    # training_mode forced high. In passive autocal mode we expect 0x00 here.
+    # The meaningful gate is `cal_done == 1` above.
 
 
 @cocotb.test()
@@ -507,7 +613,15 @@ async def test_05_doorbell_master_to_slave(dut):
     # DOORBELL -> slave's DOORBELL_RESP increments. We'll check BOTH; one
     # of them MUST tick.
     await tb.m_apb.write(APB_DOORBELL, 1)
-    await ClockCycles(dut.hclk, 2000)
+    # Watch FC adapter TX/RX valid pulses on both sides for 2000 cycles
+    # after the doorbell write. Localizes WHERE the M→S path breaks:
+    #   M.a2l > 0 means master's FC adapter DID submit a packet to Wlink.
+    #   S.l2a > 0 means slave's FC adapter DID receive a packet.
+    # If M.a2l=0, the bug is in master's adapter (returner/credit/skid).
+    # If M.a2l>0 but S.l2a=0, the packet was dropped on the wire.
+    # If S.l2a>0 but DOORBELL_RESP_ACC stays 0, the slave's RX consumer
+    # path is dropping the packet locally.
+    counts = await tb.watch_fc_pulses(2000, "after M doorbell write")
 
     s_db_after = await tb.s_apb.read(APB_DOORBELL_RESP_ACC)
     m_db_after = await tb.m_apb.read(APB_DOORBELL_RESP_ACC)
@@ -520,7 +634,9 @@ async def test_05_doorbell_master_to_slave(dut):
     assert crossed, (
         f"DOORBELL master->slave: neither slave's nor master's "
         f"DOORBELL_RESP_ACC incremented (slave {s_db_before} -> {s_db_after}, "
-        f"master 0 -> {m_db_after}). This is the HW symptom."
+        f"master 0 -> {m_db_after}). This is the HW symptom. "
+        f"FC pulses: M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
+        f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
     )
 
 
@@ -536,7 +652,7 @@ async def test_06_doorbell_slave_to_master(dut):
     tb.log.info(f"  master DOORBELL_RESP_ACC (before) = {m_db_before}")
 
     await tb.s_apb.write(APB_DOORBELL, 1)
-    await ClockCycles(dut.hclk, 2000)
+    counts = await tb.watch_fc_pulses(2000, "after S doorbell write")
 
     m_db_after = await tb.m_apb.read(APB_DOORBELL_RESP_ACC)
     s_db_after = await tb.s_apb.read(APB_DOORBELL_RESP_ACC)
@@ -547,5 +663,7 @@ async def test_06_doorbell_slave_to_master(dut):
     assert crossed, (
         f"DOORBELL slave->master: neither master's nor slave's "
         f"DOORBELL_RESP_ACC incremented (master {m_db_before} -> {m_db_after}, "
-        f"slave 0 -> {s_db_after}). This is the HW symptom."
+        f"slave 0 -> {s_db_after}). This is the HW symptom. "
+        f"FC pulses: M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
+        f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
     )

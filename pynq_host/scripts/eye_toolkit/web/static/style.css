@@ -1,0 +1,120 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  background: #0e1116;
+  color: #e6edf3;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1rem; margin: 0.25rem 0; font-weight: 500; }
+h2 .ip { color: #8b949e; font-weight: 400; font-size: 0.85rem; margin-left: 0.5em; }
+
+.lease-pill {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  background: #21262d;
+}
+.lease-pill.state-held { background: #1f6feb22; color: #58a6ff; }
+.lease-pill.state-free { background: #23863622; color: #56d364; }
+.lease-pill.state-partial { background: #d2992211; color: #d29922; }
+
+.controls {
+  padding: 1rem 1.5rem;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+.controls .row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.controls .row:last-child { margin-bottom: 0; align-items: center; }
+.controls label {
+  font-size: 0.85rem;
+  color: #8b949e;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.controls label:has(input[type="checkbox"]) {
+  flex-direction: row;
+  gap: 0.4rem;
+  align-items: center;
+  color: #e6edf3;
+}
+.controls input[type="text"] {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  font-family: ui-monospace, monospace;
+  min-width: 12rem;
+}
+.controls button {
+  background: #238636;
+  color: white;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.controls button:disabled {
+  background: #2d333b;
+  color: #6e7681;
+  cursor: not-allowed;
+}
+#abort-btn:not(:disabled) { background: #da3633; }
+#refresh-lease-btn { background: #1f6feb; }
+
+.banner {
+  margin: 0;
+  padding: 0.75rem 1.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+  border-bottom: 1px solid #30363d;
+}
+.banner.state-idle { background: #161b22; color: #8b949e; }
+.banner.state-lease_acquiring,
+.banner.state-lease_queued { background: #1f6feb22; color: #58a6ff; }
+.banner.state-deploying,
+.banner.state-converging { background: #d2992222; color: #d29922; }
+.banner.state-sweeping { background: #1f6feb44; color: #58a6ff; }
+.banner.state-done { background: #23863622; color: #56d364; }
+.banner.state-failed { background: #da363322; color: #ff7b72; }
+.banner.state-aborted { background: #6e768122; color: #8b949e; }
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+}
+.heatmap { background: #161b22; border: 1px solid #30363d; padding: 0.75rem; border-radius: 6px; }
+.plot { width: 100%; height: 360px; }
+
+.log {
+  padding: 0 1.5rem 2rem;
+}
+.log summary { color: #8b949e; cursor: pointer; }
+.log pre {
+  background: #161b22;
+  color: #c9d1d9;
+  padding: 0.75rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  max-height: 240px;
+  overflow: auto;
+}

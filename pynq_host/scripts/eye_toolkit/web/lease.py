@@ -146,21 +146,18 @@ class LeaseClient:
             await self._http.aclose()
 
     async def _scope_for(self, board: str) -> str:
-        """Resolve whether `board` lives under /links/{id} or
-        /boards/{id}. Cached after first probe."""
+        """Resolve whether `board` lives under /pairs/{id}, /chassis/{id},
+        /boards/{id}, or /links/{id} (legacy). Cached after first probe."""
         if board in self._scope_cache:
             return self._scope_cache[board]
-        r = await self._http.get(f"/links/{board}/lease")
-        if r.status_code != 404:
-            self._scope_cache[board] = "links"
-            return "links"
-        r = await self._http.get(f"/boards/{board}/lease")
-        if r.status_code != 404:
-            self._scope_cache[board] = "boards"
-            return "boards"
+        for scope in ("pairs", "chassis", "boards", "links"):
+            r = await self._http.get(f"/{scope}/{board}/lease")
+            if r.status_code != 404:
+                self._scope_cache[board] = scope
+                return scope
         raise LeaseError(
-            f"{board!r} is not a known fpgahub link or board (404 from both "
-            "/links/{id}/lease and /boards/{id}/lease)"
+            f"{board!r} is not a known fpgahub pair, chassis, board, or link "
+            "(404 from /pairs, /chassis, /boards, /links lease endpoints)"
         )
 
     async def acquire(self, board: str, ttl: int = DEFAULT_TTL_S):

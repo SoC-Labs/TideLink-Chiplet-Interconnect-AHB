@@ -93,9 +93,10 @@ def mock_transport(fake_lease_state):
         if path.startswith("/api/v1/"):
             path = path[len("/api/v1"):]
 
-        # /links/{id}/lease* and /boards/{id}/lease* — accept both;
-        # /links is the modern alias, /boards is the legacy.
-        for prefix in ("/links/", "/boards/"):
+        # Lab fpgahubd exposes /pairs/{id} for paired-board resources
+        # (bridge1, etc.) plus /chassis/{id}, /boards/{id}, and legacy
+        # /links/{id}. The wrapper probes them in that priority.
+        for prefix in ("/pairs/", "/chassis/", "/boards/", "/links/"):
             if not path.startswith(prefix):
                 continue
             rest = path[len(prefix):]

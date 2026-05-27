@@ -14,7 +14,7 @@ async def test_acquire_granted(lease_client):
     assert tok.board == "bridge1"
     assert tok.token.startswith("tok-")
     assert tok.holder == "testh"
-    assert tok.scope == "links"
+    assert tok.scope == "pairs"
 
 
 async def test_acquire_queued_when_held(lease_client, fake_lease_state):

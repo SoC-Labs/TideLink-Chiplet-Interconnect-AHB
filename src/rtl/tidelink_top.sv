@@ -785,10 +785,8 @@ module tidelink_top #(
     wire                    eye_shim_pready;
     wire                    eye_shim_pslverr;
 
-    // Calibrator-facing wires.  Until the chiplet-controller submodule
-    // adds matching ports these connect to the local tidelink_top scope
-    // only; SW writes still latch, the calibrator just sees its old
-    // pre-v2 behaviour (MODE=00 = no-op).
+    // Calibrator-facing wires.  Connected through axi_chiplet_controller's
+    // new v2 eye-visibility ports (deps/axi-chiplet-controller@ed3bd0f).
     wire [2:0]  eye_swi_lane_sel_w;
     wire [31:0] eye_swi_dwell_us_w;
     wire [31:0] eye_swi_ctrl_w;
@@ -804,14 +802,15 @@ module tidelink_top #(
     wire [31:0] eye_force_slip_val_w;
     wire        eye_crc_err_cnt_clr_w;
 
-    // Tie-off: calibrator-data side until chiplet controller is regenerated.
-    // See follow-on commit "wire eye_regs to calibrator inside chiplet ctlr".
-    assign eye_status_w            = 32'h0;
-    assign eye_score_data_w        = 6'h0;
-    assign eye_score_lane_passed_w = 1'b0;
-    assign eye_score_best_w        = 6'h0;
-    assign eye_score_best_slip_w   = 3'h0;
-    assign eye_score_best_phase_w  = 4'h0;
+    // Per-lane CRC error counters + EYE_LAST_LATCHED mirror — sourced from
+    // u_chiplet_controller (see below). Declared here so the shim's input
+    // pins can resolve in any source order.
+    wire [7:0]  lane_crc_err_cnt_0_w, lane_crc_err_cnt_1_w;
+    wire [7:0]  lane_crc_err_cnt_2_w, lane_crc_err_cnt_3_w;
+    wire [7:0]  lane_crc_err_cnt_4_w, lane_crc_err_cnt_5_w;
+    wire [7:0]  lane_crc_err_cnt_6_w, lane_crc_err_cnt_7_w;
+    wire [23:0] eye_last_slip_w;
+    wire [7:0]  eye_last_lane_fault_w;
 
     // CLK_MHZ = 250 (FPGA app_clk) — same constant as the calibrator's
     // CLK_MHZ default.  Used here only to document the timing assumption
@@ -848,30 +847,28 @@ module tidelink_top #(
         .swi_force_phase_val     (eye_force_phase_val_w),
         .swi_force_slip_val      (eye_force_slip_val_w),
 
-        // Per-lane CRC counters: tied to 0 until the chiplet controller
-        // wires up its tidelink_lane_checker exports.  Drains a read-clear
-        // strobe back through eye_crc_err_cnt_clr_w.
-        .lane_crc_err_cnt_0_i    (8'h0),
-        .lane_crc_err_cnt_1_i    (8'h0),
-        .lane_crc_err_cnt_2_i    (8'h0),
-        .lane_crc_err_cnt_3_i    (8'h0),
-        .lane_crc_err_cnt_4_i    (8'h0),
-        .lane_crc_err_cnt_5_i    (8'h0),
-        .lane_crc_err_cnt_6_i    (8'h0),
-        .lane_crc_err_cnt_7_i    (8'h0),
+        // Per-lane CRC counters: sourced from tidelink_lane_checker inside
+        // u_chiplet_controller via the new v2 eye-visibility ports.
+        .lane_crc_err_cnt_0_i    (lane_crc_err_cnt_0_w),
+        .lane_crc_err_cnt_1_i    (lane_crc_err_cnt_1_w),
+        .lane_crc_err_cnt_2_i    (lane_crc_err_cnt_2_w),
+        .lane_crc_err_cnt_3_i    (lane_crc_err_cnt_3_w),
+        .lane_crc_err_cnt_4_i    (lane_crc_err_cnt_4_w),
+        .lane_crc_err_cnt_5_i    (lane_crc_err_cnt_5_w),
+        .lane_crc_err_cnt_6_i    (lane_crc_err_cnt_6_w),
+        .lane_crc_err_cnt_7_i    (lane_crc_err_cnt_7_w),
         .lane_crc_err_cnt_clr_o  (eye_crc_err_cnt_clr_w),
 
-        .eye_last_slip_i         (24'h0),
-        .eye_last_lane_fault_i   (8'h0)
+        .eye_last_slip_i         (eye_last_slip_w),
+        .eye_last_lane_fault_i   (eye_last_lane_fault_w)
     );
 
-    // Soak up the unused outputs so Verilator does not warn about
-    // unused drivers until the chiplet-controller wiring lands.
+    // SWI_FORCE_PHASE_EN/VAL/SLIP_VAL are reserved register slots (proposal
+    // §5); the calibrator does not consume them in v2 — kept as drivable
+    // RW shadows for SW.  Mark as intentionally unused at this scope.
     /* verilator lint_off UNUSED */
-    wire _unused_eye_outputs = |{eye_swi_lane_sel_w, eye_swi_dwell_us_w,
-                                  eye_swi_ctrl_w, eye_score_idx_w,
-                                  eye_force_phase_en_w, eye_force_phase_val_w,
-                                  eye_force_slip_val_w, eye_crc_err_cnt_clr_w};
+    wire _unused_eye_force = |{eye_force_phase_en_w, eye_force_phase_val_w,
+                                eye_force_slip_val_w};
     /* verilator lint_on UNUSED */
 
     // tl_apb_prdata mux: when a shim is selected, return its rdata;
@@ -1968,7 +1965,30 @@ module tidelink_top #(
         // (derived from poresetn). Unused inside the controller when
         // USE_IDELAY=0 (pure passthrough).
         .idelay_ref_clk             (idelay_ref_clk),
-        .idelay_rst                 (~poresetn)
+        .idelay_rst                 (~poresetn),
+
+        // v2 Eye visibility — driven by u_eye_regs shim at this scope.
+        .swi_eye_lane_sel_i         (eye_swi_lane_sel_w),
+        .swi_eye_dwell_us_i         (eye_swi_dwell_us_w),
+        .swi_eye_ctrl_i             (eye_swi_ctrl_w),
+        .eye_score_idx_i            (eye_score_idx_w),
+        .eye_status_o               (eye_status_w),
+        .eye_score_data_o           (eye_score_data_w),
+        .eye_score_lane_passed_o    (eye_score_lane_passed_w),
+        .eye_score_best_o           (eye_score_best_w),
+        .eye_score_best_slip_o      (eye_score_best_slip_w),
+        .eye_score_best_phase_o     (eye_score_best_phase_w),
+        .lane_crc_err_cnt_clr_i     (eye_crc_err_cnt_clr_w),
+        .lane_crc_err_cnt_0_o       (lane_crc_err_cnt_0_w),
+        .lane_crc_err_cnt_1_o       (lane_crc_err_cnt_1_w),
+        .lane_crc_err_cnt_2_o       (lane_crc_err_cnt_2_w),
+        .lane_crc_err_cnt_3_o       (lane_crc_err_cnt_3_w),
+        .lane_crc_err_cnt_4_o       (lane_crc_err_cnt_4_w),
+        .lane_crc_err_cnt_5_o       (lane_crc_err_cnt_5_w),
+        .lane_crc_err_cnt_6_o       (lane_crc_err_cnt_6_w),
+        .lane_crc_err_cnt_7_o       (lane_crc_err_cnt_7_w),
+        .eye_last_slip_o            (eye_last_slip_w),
+        .eye_last_lane_fault_o      (eye_last_lane_fault_w)
     );
 
     // =========================================================================

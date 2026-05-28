@@ -1,7 +1,20 @@
 module WavD2DGpio #(
   // SoC Labs §9 clock fix: pass-through to per-lane WavD2DGpioRx.USE_CLKBUF
   // (default 0 = sim/ASIC bit-exact; FPGA wrapper sets 1 via threading).
-  parameter USE_CLKBUF = 1'b0,
+  //
+  // Target A (2026-05-28, see docs/TARGET_A_MMCM_BYPASS_DRAFT_2026_05_28.md):
+  // USE_CLKBUF is now a DEPRECATED combined alias. It still works (callers
+  // setting only USE_CLKBUF=1 get both BUFGs as before), but the new split
+  // is USE_CAP_CLKBUF (BUFG on io_pad_clk capture path) and USE_LNK_CLKBUF
+  // (BUFG on the derived word-clock ~adj_count[3]). The Target A FPGA
+  // bring-up wants USE_CAP_CLKBUF=0 (BD handles the pad-clock BUFG via a
+  // single IBUFG→BUFG so the slave's pad_clk_rx pin sees ~one BUFG-input
+  // worth of load instead of 8) and USE_LNK_CLKBUF=1 (the fabric-derived
+  // /16 word-clock still needs a per-lane BUFG to avoid LUT-driving-clock
+  // warnings).
+  parameter USE_CLKBUF     = 1'b0,
+  parameter USE_CAP_CLKBUF = USE_CLKBUF,
+  parameter USE_LNK_CLKBUF = USE_CLKBUF,
   // SoC Labs §9 T3a (2026-05-19): self-aligning RX comma hunt. Per-lane
   // WavD2DGpioRx hunts for the per-lane training byte in the io_pad bit
   // stream and slips `count` to align to the byte boundary. The per-lane
@@ -670,7 +683,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_7_io_pad),
     .io_pad_clk(gpiotx_7_io_pad_clk)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hA3)) gpiorx_0 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hA3)) gpiorx_0 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_0_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_0_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_0_io_scan_clk),
@@ -684,7 +697,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_0_io_pad_clk),
     .io_pad(gpiorx_0_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hB5)) gpiorx_1 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hB5)) gpiorx_1 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_1_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_1_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_1_io_scan_clk),
@@ -698,7 +711,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_1_io_pad_clk),
     .io_pad(gpiorx_1_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hC9)) gpiorx_2 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hC9)) gpiorx_2 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_2_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_2_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_2_io_scan_clk),
@@ -712,7 +725,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_2_io_pad_clk),
     .io_pad(gpiorx_2_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hD3)) gpiorx_3 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'hD3)) gpiorx_3 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_3_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_3_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_3_io_scan_clk),
@@ -726,7 +739,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_3_io_pad_clk),
     .io_pad(gpiorx_3_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h65)) gpiorx_4 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h65)) gpiorx_4 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_4_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_4_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_4_io_scan_clk),
@@ -740,7 +753,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_4_io_pad_clk),
     .io_pad(gpiorx_4_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h4B)) gpiorx_5 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h4B)) gpiorx_5 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_5_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_5_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_5_io_scan_clk),
@@ -754,7 +767,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_5_io_pad_clk),
     .io_pad(gpiorx_5_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h59)) gpiorx_6 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h59)) gpiorx_6 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_6_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_6_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_6_io_scan_clk),
@@ -768,7 +781,7 @@ module WavD2DGpio #(
     .io_pad_clk(gpiorx_6_io_pad_clk),
     .io_pad(gpiorx_6_io_pad)
   );
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h2D)) gpiorx_7 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(USE_T3A), .TRAINING_BYTE(8'h2D)) gpiorx_7 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_7_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_7_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_7_io_scan_clk),

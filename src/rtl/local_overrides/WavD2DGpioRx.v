@@ -86,7 +86,32 @@ module WavD2DGpioRx #(
   // tidelink_top / axi_chiplet_controller / Wlink / WlinkGPIOPHY /
   // WavD2DGpio — same mechanism that put tidelink_rxclk_buf's BUFG on
   // the IP boundary; carried via the packaged IP's component.xml.
-  parameter USE_CLKBUF = 1'b0,
+  //
+  // Target A (2026-05-28, see docs/TARGET_A_MMCM_BYPASS_DRAFT_2026_05_28.md):
+  //   USE_CLKBUF is now a backward-compat DEPRECATED ALIAS that sets BOTH
+  //   USE_CAP_CLKBUF and USE_LNK_CLKBUF when the latter aren't overridden.
+  //   Splitting the parameter lets the BD do a single IBUFG→BUFG on
+  //   pad_clk_rx at the boundary (one global clock net, low pad load),
+  //   while still keeping the divided word-clock per-lane BUFG which is
+  //   driven by a fabric-derived signal (~adj_count[3]) and therefore
+  //   still needs its own BUFG inside each lane.
+  //
+  //   New parameters:
+  //     USE_CAP_CLKBUF (default = USE_CLKBUF) — BUFG on io_pad_clk
+  //                    (capture clock). Set 0 when the BD already routes
+  //                    pad_clk_rx through a single global IBUFG→BUFG so
+  //                    we don't multiply the pad capacitive load.
+  //     USE_LNK_CLKBUF (default = USE_CLKBUF) — BUFG on ~adj_count[3]
+  //                    (derived word clock). Keep 1 for FPGA (the
+  //                    divided clock is fabric-LUT-driven and otherwise
+  //                    triggers Place 30-568 LUT-driving-clock warnings).
+  //
+  //   Existing callers passing USE_CLKBUF=1 alone still get the legacy
+  //   both-BUFG behaviour; Target A passes the new params directly with
+  //   USE_CAP_CLKBUF=0 + USE_LNK_CLKBUF=1.
+  parameter USE_CLKBUF     = 1'b0,
+  parameter USE_CAP_CLKBUF = USE_CLKBUF,
+  parameter USE_LNK_CLKBUF = USE_CLKBUF,
   // SoC Labs §9 T3a self-aligning RX (2026-05-19): comma-hunt word-boundary
   // realignment. The per-lane count free-runs mod-16 starting from
   // io_por_reset, so the relative byte-boundary phase between master and
@@ -284,25 +309,42 @@ module WavD2DGpioRx #(
   // ==========================================================================
   // w_cnt_clk / w_pad_clk / w_lnk_clk are declared explicitly at the top of
   // the assigns block above (before first use). The generate block below
-  // drives them from exactly one of the two branches (USE_CLKBUF=1: BUFG-
-  // backed; USE_CLKBUF=0: aliased to the original WavClockMux outputs).
+  // drives each one from exactly one of two branches per axis. Target A
+  // (2026-05-28) split the BUFG decision into two independent axes —
+  // USE_CAP_CLKBUF (io_pad_clk capture-side) and USE_LNK_CLKBUF (derived
+  // word-clock). Backwards-compat: when the deprecated combined
+  // USE_CLKBUF is set, both new params default to its value, so:
+  //   USE_CLKBUF=0 → CAP=0,LNK=0 → both passthrough (original sim/ASIC).
+  //   USE_CLKBUF=1 → CAP=1,LNK=1 → both BUFG-backed (legacy FPGA).
+  // The new Target A combo CAP=0,LNK=1 lets the BD do a single IBUFG→BUFG
+  // on the pad_clk_rx pin (cuts ~40 pF off the pad load from 8×BUFG-input
+  // fan-in) while still keeping the fabric-derived word-clock on a
+  // dedicated BUFG net per lane.
   generate
-    if (USE_CLKBUF) begin : g_clkbuf
+    // ----- capture-clock axis: USE_CAP_CLKBUF ---------------------------
+    if (USE_CAP_CLKBUF) begin : g_cap_bufg
 `ifndef TIDELINK_RXCLK_NO_PRIMITIVE
-      BUFG u_cap_bufg (.I(io_pad_clk),    .O(w_cnt_clk));
+      BUFG u_cap_bufg (.I(io_pad_clk), .O(w_cnt_clk));
       assign w_pad_clk = w_cnt_clk;        // io_pol=0, scan=0 ⇒ same edge
-      BUFG u_lnk_bufg (.I(~adj_count[3]), .O(w_lnk_clk));
 `else
       // Belt-and-braces opt-out (mirrors tidelink_idelay_rx/tidelink_rxclk_buf):
-      // a non-Vivado flow that forces USE_CLKBUF=1 without a unisim library
+      // a non-Vivado flow that forces USE_CAP_CLKBUF=1 without a unisim library
       // can define TIDELINK_RXCLK_NO_PRIMITIVE to fall back to passthrough.
       assign w_cnt_clk = pad_clk_scan_mux_io_o_z;
       assign w_pad_clk = pad_clk_inv_scan_mux_1_io_o_z;
-      assign w_lnk_clk = io_link_clk_mux_io_o_z;
 `endif
-    end else begin : g_passthru
+    end else begin : g_cap_passthrough
       assign w_cnt_clk = pad_clk_scan_mux_io_o_z;
       assign w_pad_clk = pad_clk_inv_scan_mux_1_io_o_z;
+    end
+    // ----- derived word-clock axis: USE_LNK_CLKBUF ----------------------
+    if (USE_LNK_CLKBUF) begin : g_lnk_bufg
+`ifndef TIDELINK_RXCLK_NO_PRIMITIVE
+      BUFG u_lnk_bufg (.I(~adj_count[3]), .O(w_lnk_clk));
+`else
+      assign w_lnk_clk = io_link_clk_mux_io_o_z;
+`endif
+    end else begin : g_lnk_passthrough
       assign w_lnk_clk = io_link_clk_mux_io_o_z;
     end
   endgenerate

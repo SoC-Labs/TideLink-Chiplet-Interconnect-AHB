@@ -563,7 +563,14 @@ module WavD2DGpio #(
                io_swi_phase_offset_in[4*gl +: 4] | effective_global_phase;
     end
   endgenerate
-  WavD2DGpioTx gpiotx_0 ( // @[GPIO.scala 190:61]
+  // SoC Labs 16bittag (2026-05-28): per-lane TRAINING_PATTERN_HI bytes
+  // selected so each lane's 16-bit XOR mask {HI, lo} has period 16 under
+  // barrel rotation AND no two lanes' 16 rotations overlap (exhaustively
+  // verified). LO bytes are unchanged → PRBS-7 seeds = (lo>>1)|1 remain
+  // distinct per-lane. Tags chosen (lane:tag16):
+  //   0:0x7BA3  1:0x4FB5  2:0x84C9  3:0x7CD3
+  //   4:0xF665  5:0x654B  6:0xFC59  7:0xC82D
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'h7B)) gpiotx_0 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_0_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_0_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_0_io_scan_clk),
@@ -578,7 +585,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_0_io_pad),
     .io_pad_clk(gpiotx_0_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_1 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'h4F)) gpiotx_1 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_1_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_1_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_1_io_scan_clk),
@@ -593,7 +600,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_1_io_pad),
     .io_pad_clk(gpiotx_1_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_2 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'h84)) gpiotx_2 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_2_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_2_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_2_io_scan_clk),
@@ -608,7 +615,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_2_io_pad),
     .io_pad_clk(gpiotx_2_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_3 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'h7C)) gpiotx_3 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_3_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_3_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_3_io_scan_clk),
@@ -623,7 +630,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_3_io_pad),
     .io_pad_clk(gpiotx_3_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_4 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'hF6)) gpiotx_4 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_4_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_4_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_4_io_scan_clk),
@@ -638,7 +645,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_4_io_pad),
     .io_pad_clk(gpiotx_4_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_5 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'h65)) gpiotx_5 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_5_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_5_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_5_io_scan_clk),
@@ -653,7 +660,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_5_io_pad),
     .io_pad_clk(gpiotx_5_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_6 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'hFC)) gpiotx_6 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_6_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_6_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_6_io_scan_clk),
@@ -668,7 +675,7 @@ module WavD2DGpio #(
     .io_pad(gpiotx_6_io_pad),
     .io_pad_clk(gpiotx_6_io_pad_clk)
   );
-  WavD2DGpioTx gpiotx_7 ( // @[GPIO.scala 190:61]
+  WavD2DGpioTx #(.USE_TAG_PAIR(1'b1), .TRAINING_PATTERN_HI(8'hC8)) gpiotx_7 ( // @[GPIO.scala 190:61]
     .io_scan_mode(gpiotx_7_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiotx_7_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiotx_7_io_scan_clk),

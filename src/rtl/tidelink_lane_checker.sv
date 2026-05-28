@@ -63,9 +63,13 @@ endmodule
 
 module tidelink_lane_checker_single #(
     parameter int       LOCK_THRESH = 16,
-    // Per-lane LANE_TAG: 8-bit constant XORed into the predicted/observed
-    // word as {tag, tag}. Must match the TX-side io_training_pattern.
-    parameter logic [7:0] LANE_TAG  = 8'h00
+    // 16bittag (2026-05-28): LANE_TAG is now a TRUE 16-bit XOR mask
+    // matching the TX-side {TRAINING_PATTERN_HI, io_training_pattern}.
+    // The mask is applied DIRECTLY (no doubling); when callers pass a
+    // legacy 8-bit value duplicated as 16'hXXXX the result is identical
+    // to the pre-16bittag {tag,tag} behaviour. The PRBS-7 seed below is
+    // still derived from LANE_TAG[7:0] so seeds remain distinct per-lane.
+    parameter logic [15:0] LANE_TAG = 16'h0000
 )(
     input  logic        clk,
     input  logic        rst,         // active-high
@@ -80,10 +84,14 @@ module tidelink_lane_checker_single #(
     output logic [7:0]  crc_err_cnt
 );
 
-    // Initial PRBS-7 seed = (LANE_TAG >> 1) | 7'h01 (matches TX guard).
-    localparam logic [7:0] _seed_full = (LANE_TAG >> 1) | 8'h01;
+    // Initial PRBS-7 seed = (LANE_TAG[7:0] >> 1) | 7'h01 (matches TX guard
+    // which seeds from io_training_pattern, i.e. LANE_TAG's LOW byte).
+    localparam logic [7:0] _seed_full = (LANE_TAG[7:0] >> 1) | 8'h01;
     localparam logic [6:0] PRBS_SEED_INIT = _seed_full[6:0];
-    localparam logic [15:0] LANE_TAG_WORD = {LANE_TAG, LANE_TAG};
+    // 16bittag (2026-05-28): mask applied directly (was {LANE_TAG, LANE_TAG}
+    // when LANE_TAG was 8 bits). For lanes whose TX uses USE_TAG_PAIR=0 the
+    // wrapper PATTERNS array should pass 16'h{tag,tag} to stay byte-exact.
+    localparam logic [15:0] LANE_TAG_WORD = LANE_TAG;
 
     logic [6:0]  prbs_state;
     logic [15:0] predicted_word;
@@ -167,15 +175,17 @@ module tidelink_lane_checker #(
     output logic [7:0]   lane_crc_err_cnt_7
 );
 
-    // Per-lane training patterns — must match WavD2DGpio's hard-wired
-    // io_training_pattern values. We use period-8 bytes (no byte equals any
-    // of its rotations by 1..7) so the per-lane LANE_TAG XOR mask gives
-    // unambiguous lane-stream identification (the calibrator's slip sweep
-    // disambiguates byte alignment; the PRBS predictor's re-seed logic
-    // disambiguates lane identity via the tag-XOR strip step).
-    localparam logic [7:0] PATTERNS [0:7] = '{
-        8'hA3, 8'hB5, 8'hC9, 8'hD3,
-        8'h65, 8'h4B, 8'h59, 8'h2D
+    // 16bittag (2026-05-28): per-lane 16-bit XOR mask = {HI, LO} matching
+    // the TX's {TRAINING_PATTERN_HI, io_training_pattern} wiring in
+    // WavD2DGpio.v. Each tag has period 16 under barrel rotation, AND all
+    // eight rotation orbits are pairwise disjoint, so the lane_checker
+    // locks for exactly ONE of 16 io_phase_offset settings per lane —
+    // turning the phase sweep into an unambiguous eye-centre oracle.
+    // (Pre-16bittag was an 8-bit array of {LO,LO}; LOs are unchanged so
+    // PRBS-7 seeds remain distinct per-lane.)
+    localparam logic [15:0] PATTERNS [0:7] = '{
+        16'h7BA3, 16'h4FB5, 16'h84C9, 16'h7CD3,
+        16'hF665, 16'h654B, 16'hFC59, 16'hC82D
     };
 
     wire [7:0] crc_err_cnt_w [0:7];

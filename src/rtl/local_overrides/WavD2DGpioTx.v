@@ -70,7 +70,17 @@ module WavD2DGpioTx #(
   // so the calibrator scores eyes against arbitrary-bit data, not a
   // constant period-2 byte. PRBS-7 poly: x^7 + x^6 + 1.
   // USE_PRBS_TRAINING=0 = byte-identical legacy {pattern,pattern} stream.
-  parameter USE_PRBS_TRAINING = 1'b1
+  parameter USE_PRBS_TRAINING = 1'b1,
+  // SoC Labs 16bittag (2026-05-28): widen the lane-tag XOR mask from the
+  // legacy {tag,tag} (8-bit value duplicated, period 8 under barrel
+  // rotation) to a TRUE 16-bit {TRAINING_PATTERN_HI, io_training_pattern}
+  // when USE_TAG_PAIR=1. With period-16 tags chosen so no two lanes'
+  // 16 rotations overlap, the lane_checker oracle locks for exactly 1 of
+  // 16 io_phase_offset settings per lane — collapsing the period-8 phase
+  // ambiguity into a unique eye-centre. Default USE_TAG_PAIR=0 →
+  // byte-identical to pre-16bittag legacy ({pattern,pattern}).
+  parameter USE_TAG_PAIR        = 1'b0,
+  parameter [7:0] TRAINING_PATTERN_HI = 8'h00
 ) (
   input         io_scan_mode,
   input         io_scan_asyncrst_ctrl,
@@ -201,10 +211,13 @@ module WavD2DGpioTx #(
                                adv_11[6], adv_10[6], adv_9[6],  adv_8[6],
                                adv_7[6],  adv_6[6],  adv_5[6],  adv_4[6],
                                adv_3[6],  adv_2[6],  adv_1[6],  adv_0[6]};
-  // Lane-tag XOR: byte-repeated io_training_pattern keeps per-lane streams
-  // distinguishable even at identical PRBS seeds.
+  // Lane-tag XOR mask: byte-repeated io_training_pattern (USE_TAG_PAIR=0,
+  // legacy {tag,tag} period-8) OR the wider {TRAINING_PATTERN_HI, lo} per-
+  // lane 16-bit tag (USE_TAG_PAIR=1, period-16; see param header).
+  wire [7:0] tag_hi_eff = USE_TAG_PAIR ? TRAINING_PATTERN_HI
+                                       : io_training_pattern;
   wire [15:0] prbs_word_tagged = prbs_word_raw
-                                 ^ {io_training_pattern, io_training_pattern};
+                                 ^ {tag_hi_eff, io_training_pattern};
 
   // Advance LFSR by 16 bits per word period (at count==4'hf so the next
   // count==0 starts on a fresh word).
@@ -227,12 +240,14 @@ module WavD2DGpioTx #(
     end
   end
 
-  // Training-source select: PRBS stream (USE_PRBS_TRAINING=1) or legacy
-  // {pattern,pattern} constant (USE_PRBS_TRAINING=0, byte-identical to
-  // pre-eye-data behaviour for sim regression A/B).
+  // Training-source select: PRBS stream (USE_PRBS_TRAINING=1) or constant
+  // {tag_hi_eff, io_training_pattern} (USE_PRBS_TRAINING=0). The constant
+  // path uses the same tag-pair mask as the PRBS XOR so both paths share
+  // the lane-uniqueness story; with USE_TAG_PAIR=0 (default) this is
+  // byte-identical to the legacy {pattern,pattern} constant for sim A/B.
   wire [15:0] training_word = USE_PRBS_TRAINING
                               ? prbs_word_q
-                              : {io_training_pattern, io_training_pattern};
+                              : {tag_hi_eff, io_training_pattern};
 
   // SoC Labs training-mode patch: when io_training_mode_mux=1, the 16-bit
   // link word is replaced with the training_word. Default = passthrough.

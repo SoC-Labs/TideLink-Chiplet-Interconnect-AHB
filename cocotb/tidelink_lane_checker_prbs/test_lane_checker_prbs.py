@@ -31,13 +31,20 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge
 
 
-PATTERNS = [0xA3, 0xB5, 0xC9, 0xD3, 0x65, 0x4B, 0x59, 0x2D]
+# 16bittag (2026-05-28): per-lane 16-bit XOR mask = {HI, LO}. LO byte matches
+# legacy io_training_pattern (PRBS seed source); HI byte is the new per-lane
+# constant added to collapse phase-rotation ambiguity. Must match the RTL
+# PATTERNS array in tidelink_lane_checker.sv and the per-instance
+# TRAINING_PATTERN_HI in WavD2DGpio.v.
+PATTERNS    = [0x7BA3, 0x4FB5, 0x84C9, 0x7CD3, 0xF665, 0x654B, 0xFC59, 0xC82D]
+PATTERN_LOS = [p & 0xFF for p in PATTERNS]
 LOCK_THRESH = 4  # matches tb_top.sv
 
 
 def _seed_for(tag):
-    """PRBS-7 seed for a given lane tag, matching the TX/RX initial seed."""
-    return ((tag >> 1) & 0x7F) | 0x01
+    """PRBS-7 seed for a given lane tag — uses LOW byte (matches TX which
+    seeds from io_training_pattern)."""
+    return (((tag & 0xFF) >> 1) & 0x7F) | 0x01
 
 
 def _prbs7_advance(state):
@@ -64,11 +71,21 @@ def _next_prbs_word(state):
 
 
 class PrbsLane:
-    """Free-running per-lane PRBS-7 generator, output XORed with {tag,tag}."""
+    """Free-running per-lane PRBS-7 generator, output XORed with the lane's
+    full 16-bit tag mask (was {tag,tag} pre-16bittag; now {HI,LO} directly)."""
     def __init__(self, tag):
-        self.tag    = tag & 0xFF
+        # `tag` may be either an 8-bit legacy LO byte (pre-16bittag) or a
+        # 16-bit value. Always treat the LO byte as the PRBS seed source.
+        self.tag    = tag & 0xFFFF
         self.state  = _seed_for(self.tag)
-        self.tagw16 = (self.tag << 8) | self.tag
+        # If caller passed an 8-bit value, duplicate (legacy {tag,tag}); else
+        # use the 16-bit value directly. Detect by upper-byte == 0 (PATTERNS
+        # values all have non-zero HI, so the duplication path only fires for
+        # legacy test inputs).
+        if (self.tag >> 8) == 0:
+            self.tagw16 = ((self.tag & 0xFF) << 8) | (self.tag & 0xFF)
+        else:
+            self.tagw16 = self.tag
 
     def next_word(self):
         word, self.state = _next_prbs_word(self.state)
@@ -124,7 +141,7 @@ async def test_01_locks_on_matching_prbs_stream(dut):
             if locked_at[i] is None and ((ll >> i) & 0x1):
                 locked_at[i] = cyc
                 dut._log.info(
-                    f"lane {i} (tag=0x{PATTERNS[i]:02X}) locked at cycle {cyc}"
+                    f"lane {i} (tag=0x{PATTERNS[i]:04X}) locked at cycle {cyc}"
                 )
 
     fails = [i for i in range(8) if locked_at[i] is None]
@@ -207,9 +224,11 @@ async def test_03_cross_lane_stream_rejected(dut):
 async def test_04_constant_pattern_does_not_lock(dut):
     await _start_and_reset(dut, init_words_packed=0)
 
-    # Drive each lane with the static {pattern, pattern} word (the
-    # pre-eye-data behaviour). The new PRBS predictor should reject this.
-    constant_words = [(PATTERNS[i] << 8) | PATTERNS[i] for i in range(8)]
+    # Drive each lane with the static {lo, lo} word (the pre-eye-data
+    # behaviour, using the LO byte of the 16-bit tag for backwards-compat
+    # with the original test intent). The new PRBS predictor should reject
+    # this.
+    constant_words = [((p & 0xFF) << 8) | (p & 0xFF) for p in PATTERNS]
 
     seen_locked = 0x00
     for _ in range(256):

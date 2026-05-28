@@ -270,5 +270,8 @@ ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 // ── Performance profiling ────────────────────────────────────────────────────
 ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
 
+// ── Eye visibility regs (v2) — must come before tidelink_top.sv which instantiates it
+${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
+
 // ── Top-level wrapper ────────────────────────────────────────────────────────
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

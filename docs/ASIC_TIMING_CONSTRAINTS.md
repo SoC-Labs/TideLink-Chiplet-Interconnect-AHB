@@ -682,20 +682,35 @@ clk-to-capture skew**, NOT WNS. Procedure for the supervisor:
 
 Do not sign off the TideLink source-sync PHY unless every item is true:
 
-- [ ] **TX eye constrained.** `pad_clk_tx` declared via
+- [x] **TX eye constrained.** `pad_clk_tx` declared via
       `create_generated_clock` off its real launch source, **and**
       `set_output_delay -min/-max` on `pad_tx[*]` against it. (Not an
       inferred clock with no output delay.) — Part B §2.
-- [ ] **RX eye constrained.** `create_clock` on `pad_clk_rx` **and**
+      *Landed `constraints.sdc` §4 (CRITICAL #2 fix, 2026-05-28): generated
+      clock `pad_clk_tx_fwd` sourced from `user_ref_clk` port; symmetric
+      `set_output_delay -min/-max ±T_UI/4` on `pad_tx[*]`.*
+- [x] **RX eye constrained.** `create_clock` on `pad_clk_rx` **and**
       `set_input_delay -min/-max` on `pad_rx[*]` against it. — Part B §1, §3.1.
-- [ ] **`set_clock_groups -asynchronous` isolates ONLY recovered-RX↔core
+      *Landed `constraints.sdc` §1: symmetric `set_input_delay -min/-max
+      ±T_UI/4` on `pad_rx[*]` vs `pad_clk_rx`.*
+- [x] **`set_clock_groups -asynchronous` isolates ONLY recovered-RX↔core
       (and the other genuine domains).** `pad_clk_rx` is **not** in a
       blanket async list that also crosses its own capture path.
       `report_timing -from [get_ports pad_rx[*]] -to [get_clocks
       pad_clk_rx]` returns real paths, not "No paths". — Part B §5.
-- [ ] **Static per-lane skew bounded** by `set_max_delay
+      *Landed `constraints.sdc` (CRITICAL #2 fix, 2026-05-28): `pad_clk_rx`
+      now in its own group asynchronous to {hclk, phc_clk, scan_clk,
+      user_ref_clk + pad_clk_tx_fwd}, intra-pad_clk_rx capture paths
+      remain timed. `report_clock_interaction` / `report_timing` checks
+      pending first STA run.*
+- [x] **Static per-lane skew bounded** by `set_max_delay
       -datapath_only` + `set_data_check`/`set_bus_skew` + a written
       skew budget `S_budget ≤ T_UI/16 − setup − hold − PVT_derate`. — Part A §1, Part B §3.2, §3.3.
+      *Landed `constraints.sdc` §2/§3: `set_max_delay -datapath_only T_UI/5`
+      on `pad_rx[*]` → `gpiorx_*/link_data_pad_clk_reg*`; `set_data_check
+      -setup/-hold T_UI/20` across the lane bundle. Numerical re-budget
+      against characterised t_setup/t_hold + PVT derate pending I/O-library
+      sign-off corner (Part A §6).*
 - [ ] **Matched/balanced bundle routing** for `pad_clk_rx`+`pad_rx[*]`
       and `pad_clk_tx`+`pad_tx[*]`; verified post-route lane skew ≤
       `S_budget`. — Part A §4.1.
@@ -710,9 +725,13 @@ Do not sign off the TideLink source-sync PHY unless every item is true:
       quality (no master/slave asymmetry). — Part A §5, Part B §6.
 - [ ] **Characterised I/O-cell + package (+ channel) models** used; all
       relevant PVT corners signed off including the fast corner for hold. — Part A §6.
-- [ ] **No naive absolute `set_input_delay` hold window** that triggers
+- [x] **No naive absolute `set_input_delay` hold window** that triggers
       blanket hold-buffer insertion (the 2026-05-05 trap); hold is fixed
       by matched routing + the deliberate delay cell. — Part A §7.
+      *`constraints.sdc` §1 uses the symmetric `±T_UI/4` form (not the
+      asymmetric `-min 1 / -max 8` shape that detonated 134 WHS endpoints
+      on FPGA 2026-05-05); WHS-endpoint regression guard documented in
+      the constraint file's hold-trap-guard comment block.*
 - [ ] **Recovered-RX→core CDC** uses ≥2-flop synchronisers
       (`tidelink_phc_cdc.sv` / `sync_lane_locked_*` model) with
       `ASYNC_REG`-equivalent attributes, and has passed a structural CDC

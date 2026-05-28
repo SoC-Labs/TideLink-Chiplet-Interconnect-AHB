@@ -21,6 +21,14 @@ current_design axi_chiplet_controller
 # Clock: app_clk is connected to hclk at the top level
 clock -name app_clk -domain hclk_domain -period 4.0
 
+# Recovered RX clock — divided-down (÷16) version of pad_clk_rx, generated
+# inside the chiplet controller (deps/axi-chiplet-controller@3e0e711). It is
+# exposed through link_rx_clk_o so the top-level tidelink_gpio_phy_apb_regs
+# slave can use it as the destination domain for the new per-lane CDC paths.
+# We name the local clock object after the output port so the alias resolves
+# inside the blackboxed design unit.
+clock -name link_rx_clk_o -domain link_rx_domain -period 64.0
+
 # All output ports are in the app_clk (hclk) domain
 abstract_port -ports "tidelink_out[*]"     -clock app_clk
 abstract_port -ports "ptp_out[*]"          -clock app_clk
@@ -52,3 +60,53 @@ abstract_port -ports "apb_pwdata[*]"       -clock app_clk
 abstract_port -ports "ctrl_reg_write"      -clock app_clk
 abstract_port -ports "ctrl_reg_addr[*]"    -clock app_clk
 abstract_port -ports "ctrl_reg_wdata[*]"   -clock app_clk
+# Chiplet-controller hclk-domain inputs (§3.1 of prior sign-off)
+abstract_port -ports "puf_ready"           -clock app_clk
+abstract_port -ports "apb_debug_unlock_i"  -clock app_clk
+abstract_port -ports "idelay_rst"          -clock app_clk
+
+# v2 eye-visibility surface — driven by tidelink_eye_regs at top (hclk domain).
+# Outputs from the controller calibrator are also exposed back to eye_regs in
+# the app_clk domain (the calibrator FSM lives in app_clk inside the
+# controller).
+abstract_port -ports "swi_eye_lane_sel_i[*]"   -clock app_clk
+abstract_port -ports "swi_eye_dwell_us_i[*]"   -clock app_clk
+abstract_port -ports "swi_eye_ctrl_i[*]"       -clock app_clk
+abstract_port -ports "eye_score_idx_i[*]"      -clock app_clk
+abstract_port -ports "eye_status_o[*]"         -clock app_clk
+abstract_port -ports "eye_score_data_o[*]"     -clock app_clk
+abstract_port -ports "eye_score_lane_passed_o" -clock app_clk
+abstract_port -ports "eye_score_best_o[*]"     -clock app_clk
+abstract_port -ports "eye_score_best_slip_o[*]" -clock app_clk
+abstract_port -ports "eye_score_best_phase_o[*]" -clock app_clk
+abstract_port -ports "eye_last_slip_o[*]"      -clock app_clk
+abstract_port -ports "eye_last_lane_fault_o[*]" -clock app_clk
+
+# ── New ports introduced by tidelink-gpio-phy integration ──────────────────
+# (deps/axi-chiplet-controller@68d625d ports + @3e0e711 link_rx_clk_o)
+#
+# All eleven lane_*_o output ports are driven from the link_rx_clk domain
+# inside the controller (the new lane_checker lives entirely in link_rx_clk).
+# The two control inputs (lane_lock_thresh_i, lane_clear_noise_i) are
+# *consumed* inside the controller in the link_rx_clk domain (they come from
+# u_gpio_phy_apb_regs.lock_thresh_o / clear_noise_pulse_o which are themselves
+# the OUTPUTS of the 2-FF/3-FF synchronizer chains running on link_rx_clk).
+# Declaring the port domain as link_rx_clk_o avoids a spurious crossing-into-
+# app_clk error at the chiplet-controller boundary.
+abstract_port -ports "lane_lock_thresh_i[*]"   -clock link_rx_clk_o
+abstract_port -ports "lane_clear_noise_i"      -clock link_rx_clk_o
+abstract_port -ports "lane_mismatch_pulse_o[*]" -clock link_rx_clk_o
+abstract_port -ports "lane_wire_status_o[*]"   -clock link_rx_clk_o
+abstract_port -ports "lane_dist_raw_o[*]"      -clock link_rx_clk_o
+abstract_port -ports "lane_dist_voted_o[*]"    -clock link_rx_clk_o
+abstract_port -ports "lane_dwell_min_dist_o[*]" -clock link_rx_clk_o
+abstract_port -ports "lane_noise_min_o[*]"     -clock link_rx_clk_o
+abstract_port -ports "lane_noise_max_o[*]"     -clock link_rx_clk_o
+abstract_port -ports "lane_noise_mean_o[*]"    -clock link_rx_clk_o
+abstract_port -ports "lane_noise_current_o[*]" -clock link_rx_clk_o
+abstract_port -ports "lane_canary_pass_o[*]"   -clock link_rx_clk_o
+abstract_port -ports "lane_canary_valid_o[*]"  -clock link_rx_clk_o
+
+# link_rx_clk_o is itself the generated clock — already declared above via
+# `clock -name link_rx_clk_o`. SpyGlass propagates the domain through the
+# top-level net into the tidelink_gpio_phy_apb_regs.link_rx_clk pin.

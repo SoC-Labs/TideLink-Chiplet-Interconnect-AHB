@@ -138,3 +138,54 @@ waive -rule Ac_clockperiod01 \
 # Cosmetic — perf signed-cast on positive literal
 waive -rule WRN_1024 -file "tidelink_perf.sv" \
       -comment "signed-cast applied to small positive literal — width-safe by inspection"
+
+# ============================================================================
+# 2026-05-28 — tidelink-gpio-phy submodule integration
+#
+# Four new CDC paths surface inside the top-level tidelink_gpio_phy_apb_regs
+# slave (deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv) once the
+# axi_chiplet_controller link_rx_clk_o domain is correctly declared in the
+# SGDC.  Waiver rationale per docs/SPYGLASS_CDC_RE_RUN_2026_05_28.md §4.
+#
+#   (1) hclk → link_rx_clk : 24-bit lock_thresh, 2-bit noise_mode (2-FF)
+#       Slow-changing quasi-static config — APB writes once at bring-up,
+#       value stable for thousands of link_rx_clk cycles.  Per spec §6.1
+#       the lane_checker re-reads every cycle and a temporary mixed-bit
+#       value during one write is consumed for at most a single
+#       sub-threshold dwell-count window.  Gray encoding not applicable.
+#
+#   (2) hclk → link_rx_clk : 1-bit clear_noise (3-FF toggle handshake)
+#       Edge-detect on toggle_sync2 ^ toggle_sync3 produces a one-cycle
+#       pulse in link_rx_clk.  Single-bit toggle is gray-encoded by
+#       construction; data-hold is enforced by the self-clearing
+#       clear_noise_apb one-shot in the source domain (line 102).
+#
+#   (3) link_rx_clk → hclk : per-lane observability (~272 bits, 2-FF)
+#       Read-only diagnostic counters; per spec §6.1 transient mid-update
+#       values are acceptable for SW polling.  No functional control path.
+#
+#   (4) Reset crossing : role_locked_o (app_clk) resets the link_rx_clk
+#       synchronizer flops.  Per INTEGRATION_GUIDE §5.2 role_locked is
+#       a quasi-static enable — once asserted it remains stable for the
+#       entire functional lifetime of the link; deassertion only occurs
+#       during link-loss tear-down which intentionally resets all RX-side
+#       state.
+# ============================================================================
+
+waive -rule Ac_cdc01a -file "tidelink_gpio_phy_apb_regs.sv" \
+      -comment "2-FF/3-FF sync — quasi-static thresholds / mode / self-clearing toggle, per spec §6.1"
+waive -rule Ac_conv04 -file "tidelink_gpio_phy_apb_regs.sv" \
+      -comment "Multi-bit observability + quasi-static config — gray encoding inapplicable, per spec §6.1"
+waive -rule Reset_sync02 -file "tidelink_gpio_phy_apb_regs.sv" \
+      -comment "role_locked_o reset is quasi-static (INTEGRATION_GUIDE §5.2) — stable for link lifetime"
+waive -rule Reset_sync04 -file "tidelink_gpio_phy_apb_regs.sv" \
+      -comment "Independent observability sync flops share the same hresetn by design"
+
+# Pre-existing finding from SPYGLASS_CDC_SIGNOFF.md §2.3 [12D] — poresetn is
+# the power-on reset, declared as `reset -name poresetn` at top scope, and
+# is synchronized inside u_chiplet_controller by the WavDemetReset cells
+# (Wlink internal). The chiplet controller's idelay_rst port consumes it
+# directly because IDELAYE2 is async-reset-only. Covered by the
+# set_clock_groups -asynchronous declaration in syn/asic.
+waive -rule Ac_unsync01 -msg "*idelay_rst*" \
+      -comment "POR reset to chiplet controller idelay_rst — sync'd by WavDemetReset inside Wlink"

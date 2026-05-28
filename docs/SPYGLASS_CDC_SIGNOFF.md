@@ -1,8 +1,27 @@
 # TideLink SpyGlass CDC Sign-off Report
 
-**Date:** 2026-05-23
-**Author:** SpyGlass CDC sign-off run against `main` HEAD `dbf17d7`
-(RTL unchanged since `034376f`; subsequent commits are docs/HAL-lint only)
+**Date:** 2026-05-28 (re-run vs feat/td-gpio-phy-integration @ `6666c1b`)
+**History:** Original 2026-05-23 run against `main` HEAD `dbf17d7` documented
+the baseline. The 2026-05-28 re-run with the `tidelink-gpio-phy` submodule
+**visible** (no longer blackboxed at the submodule boundary) is recorded in
+detail in [`SPYGLASS_CDC_RE_RUN_2026_05_28.md`](SPYGLASS_CDC_RE_RUN_2026_05_28.md);
+this file retains the dbf17d7 evidence below.
+
+**Re-run summary (2026-05-28):**
+
+* Integration SHA `6666c1be` · `deps/tidelink-gpio-phy @ d00dd88` ·
+  `deps/axi-chiplet-controller @ c0a69ff`
+* Four new CDC paths from `tidelink_gpio_phy_apb_regs.sv` graded and waived
+  with documented rationale (24-bit `lock_thresh` + 2-bit `noise_mode` 2-FF,
+  1-bit `clear_noise` 3-FF toggle, ~272-bit observability 2-FF, plus the
+  `role_locked_o` quasi-static enable-as-reset).
+* All §3.1 SGDC port-clock additions from this report applied; v2 eye-
+  visibility ports added to `axi_chiplet_controller.sgdc`.
+* Tool summary: **0 fatals, 0 errors, 4 warnings (none CDC), 0 unsynchronized
+  crossings, 0 convergences.**
+* **Verdict: GO** — CRITICAL #5 of `ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md`
+  is closed.
+
 **Tool:** SpyGlass `vT-2022.06-SP2` (`/eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2`)
 **Flow:** `make -C cdc cdc MODULE=tidelink_top`
 **Goal:** `cdc/cdc_verify`
@@ -10,6 +29,8 @@
 **Companion:** [`docs/CDC_AUDIT_REPORT.md`](CDC_AUDIT_REPORT.md) — manual audit + §9 assessment-vs-main
 
 ---
+
+## 2026-05-23 sign-off (baseline, dbf17d7)
 
 ## 1. Executive summary
 

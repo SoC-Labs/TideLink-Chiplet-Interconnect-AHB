@@ -44,6 +44,11 @@ reset -name hresetn    -value 0
 reset -name poresetn   -value 0
 reset -name phc_resetn -value 0
 
+# Wlink-link-up enable used as functional reset for the new
+# tidelink_gpio_phy_apb_regs link_rx_clk-side synchronizers per
+# INTEGRATION_GUIDE §5.2 ("Connect .rst_n(role_locked) directly — NO inverter").
+reset -name role_locked_o -value 0
+
 # ============================================================================
 # Constant / DFT Ports
 # ============================================================================
@@ -96,6 +101,13 @@ abstract_port -ports "apb_debug_unlock_i"   -clock hclk
 # IDELAYE2 calibration reference clock (200 MHz, FPGA target only on ASIC
 # this port ties off — see imp/ASIC SDC).
 clock -name idelay_ref_clk -domain idelay_domain -period 5.0
+
+# Recovered RX-side link clock — generated inside u_chiplet_controller as
+# pad_clk_rx divided by 16 and exposed via link_rx_clk_o. The clock object
+# itself is declared on the chiplet-controller blackbox boundary in
+# axi_chiplet_controller.sgdc (clock -name link_rx_clk_o ... -period 64.0);
+# SpyGlass propagates that through the top-level gpio_phy_link_rx_clk_w net
+# into the link_rx_clk pin of u_gpio_phy_apb_regs.
 
 # ============================================================================
 # Quasi-Static / Asynchronous External Inputs

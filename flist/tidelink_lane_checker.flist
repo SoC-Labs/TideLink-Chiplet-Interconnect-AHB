@@ -1,2 +1,18 @@
-+incdir+${TIDELINK_HOME}/src/rtl
-${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
+// tidelink_lane_checker.flist
+//
+// Re-points the historical lane_checker flist at the new
+// tidelink-gpio-phy submodule. The submodule provides:
+//   - tidelink_training_patterns.svh    (PATTERN_W constants)
+//   - tidelink_popcount16.sv            (16-bit popcount helper)
+//   - tidelink_lane_checker_single.sv   (single-lane matcher + canary)
+//   - tidelink_lane_checker.sv          (8-lane wrapper)
+//   - tidelink_gpio_phy_apb_regs.sv     (APB slave for thresholds + obs)
+//
+// See deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md and
+// INTEGRATION_GUIDE.md for the design rationale.
+
++incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv

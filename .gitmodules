@@ -1,3 +1,6 @@
 [submodule "deps/axi-chiplet-controller"]
 	path = deps/axi-chiplet-controller
 	url = https://git.soton.ac.uk/soclabs/chiplets/axi-chiplet-controller.git
+[submodule "deps/tidelink-gpio-phy"]
+	path = deps/tidelink-gpio-phy
+	url = git@git.soton.ac.uk:soclabs/tidelink-gpio-phy.git

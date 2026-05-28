@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -99,6 +99,10 @@ XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-flip-all)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-oddr-all)
+XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-oddr-flip-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-loopback)
 XILINX_PART     := xc7z020clg400-1

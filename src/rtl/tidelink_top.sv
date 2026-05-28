@@ -860,16 +860,18 @@ module tidelink_top #(
         .swi_force_phase_val     (eye_force_phase_val_w),
         .swi_force_slip_val      (eye_force_slip_val_w),
 
-        // Per-lane CRC counters: sourced from tidelink_lane_checker inside
-        // u_chiplet_controller via the new v2 eye-visibility ports.
-        .lane_crc_err_cnt_0_i    (lane_crc_err_cnt_0_w),
-        .lane_crc_err_cnt_1_i    (lane_crc_err_cnt_1_w),
-        .lane_crc_err_cnt_2_i    (lane_crc_err_cnt_2_w),
-        .lane_crc_err_cnt_3_i    (lane_crc_err_cnt_3_w),
-        .lane_crc_err_cnt_4_i    (lane_crc_err_cnt_4_w),
-        .lane_crc_err_cnt_5_i    (lane_crc_err_cnt_5_w),
-        .lane_crc_err_cnt_6_i    (lane_crc_err_cnt_6_w),
-        .lane_crc_err_cnt_7_i    (lane_crc_err_cnt_7_w),
+        // Legacy CRC counters tied to 0 — eye-toolkit web GUI migrates per
+        // deps/tidelink-gpio-phy/docs/INTEGRATION_GUIDE.md §6.2 to consume
+        // SWI_LANE_NOISE_VOTED_* from the new tidelink_gpio_phy_apb_regs slave
+        // instantiated below (paddr[8:5]==4'b1011, relative offset 0x160).
+        .lane_crc_err_cnt_0_i    (8'h0),
+        .lane_crc_err_cnt_1_i    (8'h0),
+        .lane_crc_err_cnt_2_i    (8'h0),
+        .lane_crc_err_cnt_3_i    (8'h0),
+        .lane_crc_err_cnt_4_i    (8'h0),
+        .lane_crc_err_cnt_5_i    (8'h0),
+        .lane_crc_err_cnt_6_i    (8'h0),
+        .lane_crc_err_cnt_7_i    (8'h0),
         .lane_crc_err_cnt_clr_o  (eye_crc_err_cnt_clr_w),
 
         .eye_last_slip_i         (eye_last_slip_w),
@@ -879,27 +881,130 @@ module tidelink_top #(
     // SWI_FORCE_PHASE_EN/VAL/SLIP_VAL are reserved register slots (proposal
     // §5); the calibrator does not consume them in v2 — kept as drivable
     // RW shadows for SW.  Mark as intentionally unused at this scope.
+    // eye_crc_err_cnt_clr_w is still produced by tidelink_eye_regs but the
+    // counters it used to clear were removed by the lane-checker rewrite
+    // (deps/tidelink-gpio-phy, INTEGRATION_GUIDE §6.2); marked unused at
+    // this scope until the eye_regs slot is repurposed or deprecated.
     /* verilator lint_off UNUSED */
     wire _unused_eye_force = |{eye_force_phase_en_w, eye_force_phase_val_w,
                                 eye_force_slip_val_w};
+    wire _unused_eye_crc_clr = eye_crc_err_cnt_clr_w;
+    /* verilator lint_on UNUSED */
+
+    // =========================================================================
+    // tidelink-gpio-phy APB slave (Region 11, paddr 0x160-0x17F).
+    //
+    // Instantiated per deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md §6.1
+    // and INTEGRATION_GUIDE.md §5/§6.3. Carries the per-lane noise
+    // observability + SW-writable lock threshold + wiring/canary status that
+    // replace the legacy crc_err_cnt counters now sourced from the new
+    // u_chiplet_controller observability bus (see below). Same OR-mux pattern
+    // as the dbg_shim and eye_shim blocks above.
+    //
+    // SPEC DEVIATION: the spec quotes absolute address 0x4403_2120 (§6.1),
+    // implying offset 0x120 inside the tidelink APB region. The dbg shim
+    // already owns paddr[8:5]==4'b1001 (0x120-0x13F), and eye_regs owns
+    // 4'b1010 (0x140-0x15F), so the next free 32-byte aperture is 4'b1011
+    // (0x160-0x17F). The internal register map (THRESH at slave-paddr 0x20
+    // through CANARY at 0x3C) is preserved by synthesising the slave-facing
+    // paddr as {3'b001, tl_apb_paddr[4:0]} so its address decode still
+    // matches.
+    //
+    // CLOCK DOMAIN NOTE: the spec's CDC (apb_clk ↔ link_rx_clk) is preserved
+    // structurally (the slave still instantiates 2-flop synchronisers), but
+    // link_rx_clk is not currently exposed on the axi_chiplet_controller
+    // boundary — it lives inside the controller as phy_link_rx_rx_link_clk_w.
+    // For this stage we drive both the slave's apb_clk and link_rx_clk from
+    // hclk; the lane_checker's observability outputs exit the controller on
+    // synchronous boundaries (see deps/axi-chiplet-controller §5.3 for the
+    // 2-flop sync chain), so feeding hclk into both ports degrades the slave
+    // CDC to functional 2-FF buffers (still safe, simpler timing) rather
+    // than gaining nothing. Exposing link_rx_clk as a new controller output
+    // is a follow-up (verification agent).
+    //
+    // rst_n is driven directly from role_locked per INTEGRATION_GUIDE §5.2
+    // ("Connect .rst_n(role_locked) directly — NO inverter"). apb_rst_n is
+    // the standard hresetn.
+    // =========================================================================
+    wire gpio_phy_apb_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1011);
+
+    wire [SYS_DATA_W-1:0]  gpio_phy_apb_prdata;
+    wire                    gpio_phy_apb_pready;
+    wire                    gpio_phy_apb_pslverr;
+
+    tidelink_gpio_phy_apb_regs u_gpio_phy_apb_regs (
+        // APB clock / reset
+        .apb_clk             (hclk),
+        .apb_rst_n           (hresetn),
+
+        // APB3 interface — paddr synthesised so the slave's internal
+        // localparams (8'h20..8'h3C) line up with the four LSB-bits of
+        // tl_apb_paddr inside the 0x160-0x17F aperture.
+        .psel                (gpio_phy_apb_sel),
+        .penable             (tl_apb_penable),
+        .pwrite              (tl_apb_pwrite),
+        .paddr               ({3'b001, tl_apb_paddr[4:0]}),
+        .pwdata              (tl_apb_pwdata),
+        .prdata              (gpio_phy_apb_prdata),
+        .pready              (gpio_phy_apb_pready),
+        .pslverr             (gpio_phy_apb_pslverr),
+
+        // link_rx_clk domain — see CLOCK DOMAIN NOTE above. role_locked is
+        // active-high, connected directly to rst_n per INTEGRATION_GUIDE §5.2.
+        .link_rx_clk         (hclk),
+        .link_rx_rst_n       (role_locked_o),
+
+        // CDC outputs → u_chiplet_controller (consumed by the new lane_checker
+        // through the controller's lane_lock_thresh_i / lane_clear_noise_i
+        // ports added in deps/axi-chiplet-controller@68d625d).
+        .lock_thresh_o       (lane_lock_thresh_w),
+        .noise_mode_o        (/* unused at tidelink_top scope */),
+        .clear_noise_pulse_o (lane_clear_noise_w),
+
+        // Per-lane observability inputs — driven by u_chiplet_controller's
+        // new lane_*_o outputs (see u_chiplet_controller instantiation below).
+        .noise_min_i         (lane_noise_min_w),
+        .noise_max_i         (lane_noise_max_w),
+        .noise_mean_i        (lane_noise_mean_w),
+        .noise_current_i     (lane_noise_current_w),
+        .dist_raw_i          (lane_dist_raw_w),
+        .dist_voted_i        (lane_dist_voted_w),
+        .wire_status_i       (lane_wire_status_w),
+        .canary_pass_i       (lane_canary_pass_w),
+        .canary_valid_i      (lane_canary_valid_w)
+    );
+
+    // Observability-bus outputs from u_chiplet_controller that the new APB
+    // slave does NOT directly consume (mismatch_pulse_o, dwell_min_dist_o).
+    // mismatch_pulse_o is consumed by the eye-toolkit GUI via aggregated
+    // readback (INTEGRATION_GUIDE §6.2); dwell_min_dist_o feeds the
+    // calibrator (internal to the controller). Both are pinned to the
+    // observability bus here for downstream consumers / future bind probes
+    // and marked intentionally unused at this scope.
+    /* verilator lint_off UNUSED */
+    wire _unused_lane_obs = |{lane_mismatch_pulse_w, lane_dwell_min_dist_w};
     /* verilator lint_on UNUSED */
 
     // tl_apb_prdata mux: when a shim is selected, return its rdata;
     // otherwise return u_tidelink's APB rdata (tidelink_internal_prdata).
-    // Order: Region 9 (dbg) > Region 10 (eye) > everything else.
+    // Order: Region 9 (dbg) > Region 10 (eye) > Region 11 (gpio_phy) >
+    // everything else.
     wire [SYS_DATA_W-1:0]  tidelink_internal_prdata;
     wire                    tidelink_internal_pready;
     wire                    tidelink_internal_pslverr;
 
-    assign tl_apb_prdata  = dbg_shim_sel ? dbg_shim_prdata  :
-                            eye_shim_sel ? eye_shim_prdata  :
-                                           tidelink_internal_prdata;
-    assign tl_apb_pready  = dbg_shim_sel ? dbg_shim_pready  :
-                            eye_shim_sel ? eye_shim_pready  :
-                                           tidelink_internal_pready;
-    assign tl_apb_pslverr = dbg_shim_sel ? dbg_shim_pslverr :
-                            eye_shim_sel ? eye_shim_pslverr :
-                                           tidelink_internal_pslverr;
+    assign tl_apb_prdata  = dbg_shim_sel       ? dbg_shim_prdata       :
+                            eye_shim_sel       ? eye_shim_prdata       :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
+                                                 tidelink_internal_prdata;
+    assign tl_apb_pready  = dbg_shim_sel       ? dbg_shim_pready       :
+                            eye_shim_sel       ? eye_shim_pready       :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
+                                                 tidelink_internal_pready;
+    assign tl_apb_pslverr = dbg_shim_sel       ? dbg_shim_pslverr      :
+                            eye_shim_sel       ? eye_shim_pslverr      :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
+                                                 tidelink_internal_pslverr;
 
     // Route APB responses back to both sources
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
@@ -2012,15 +2117,27 @@ module tidelink_top #(
         .eye_score_best_o           (eye_score_best_w),
         .eye_score_best_slip_o      (eye_score_best_slip_w),
         .eye_score_best_phase_o     (eye_score_best_phase_w),
-        .lane_crc_err_cnt_clr_i     (eye_crc_err_cnt_clr_w),
-        .lane_crc_err_cnt_0_o       (lane_crc_err_cnt_0_w),
-        .lane_crc_err_cnt_1_o       (lane_crc_err_cnt_1_w),
-        .lane_crc_err_cnt_2_o       (lane_crc_err_cnt_2_w),
-        .lane_crc_err_cnt_3_o       (lane_crc_err_cnt_3_w),
-        .lane_crc_err_cnt_4_o       (lane_crc_err_cnt_4_w),
-        .lane_crc_err_cnt_5_o       (lane_crc_err_cnt_5_w),
-        .lane_crc_err_cnt_6_o       (lane_crc_err_cnt_6_w),
-        .lane_crc_err_cnt_7_o       (lane_crc_err_cnt_7_w),
+        // tidelink-gpio-phy lane_checker observability bus (replaces the
+        // legacy per-lane crc_err_cnt counters; see deps/axi-chiplet-controller
+        // @68d625d and deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md §6).
+        // Control inputs (lane_lock_thresh_i, lane_clear_noise_i) are driven
+        // by the new tidelink_gpio_phy_apb_regs slave above; the 13
+        // observability outputs are consumed by that slave (noise/wire/canary
+        // fields) and by downstream calibrator/eye-toolkit logic (mismatch
+        // pulse, dwell-min distance).
+        .lane_lock_thresh_i         (lane_lock_thresh_w),
+        .lane_clear_noise_i         (lane_clear_noise_w),
+        .lane_mismatch_pulse_o      (lane_mismatch_pulse_w),
+        .lane_wire_status_o         (lane_wire_status_w),
+        .lane_dist_raw_o            (lane_dist_raw_w),
+        .lane_dist_voted_o          (lane_dist_voted_w),
+        .lane_dwell_min_dist_o      (lane_dwell_min_dist_w),
+        .lane_noise_min_o           (lane_noise_min_w),
+        .lane_noise_max_o           (lane_noise_max_w),
+        .lane_noise_mean_o          (lane_noise_mean_w),
+        .lane_noise_current_o       (lane_noise_current_w),
+        .lane_canary_pass_o         (lane_canary_pass_w),
+        .lane_canary_valid_o        (lane_canary_valid_w),
         .eye_last_slip_o            (eye_last_slip_w),
         .eye_last_lane_fault_o      (eye_last_lane_fault_w)
     );

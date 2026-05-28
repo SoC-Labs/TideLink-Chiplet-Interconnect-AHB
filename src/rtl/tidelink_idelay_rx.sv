@@ -97,7 +97,13 @@ module tidelink_idelay_rx #(
     // IDELAYCTRL reference-clock frequency in MHz. 200.0 is the standard
     // 7-series value (≈ 78 ps/tap at 200 MHz, 32 taps). Must equal the
     // actual frequency of idelay_ref_clk and the create_clock in the XDC.
-    parameter real         REFCLK_MHZ = 200.0
+    // NOTE: Was 'real' for FPGA build; changed to integer for ASIC FC2
+    // elaboration (VER-177: real declarations are not supported by
+    // synthesis). The only downstream use is at IDELAYE2.REFCLK_FREQUENCY
+    // inside the `ifndef TIDELINK_IDELAY_NO_PRIMITIVE` arm which the ASIC
+    // build does not exercise. Vivado XPM accepts integer-valued
+    // REFCLK_FREQUENCY (200 == 200.0).
+    parameter integer      REFCLK_MHZ = 200
 ) (
     // 200 MHz IDELAYCTRL reference clock (from clk_wiz). Tie to 1'b0 in
     // environments where USE_IDELAY=0 — it is then completely unused.

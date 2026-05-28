@@ -281,7 +281,34 @@ module axi_chiplet_controller #(
     // sim / ASIC. The FPGA BD drives idelay_ref_clk from a clk_wiz 200 MHz
     // output (see tidelink_design.tcl change spec in the agent report).
     input  wire             idelay_ref_clk,
-    input  wire             idelay_rst
+    input  wire             idelay_rst,
+
+    // ── v2 Eye visibility (docs/EYE_VISIBILITY_RTL_PROPOSAL.md) ───────────
+    // Calibrator control surface (driven by tidelink_eye_regs at top level).
+    input  wire  [2:0]      swi_eye_lane_sel_i,
+    input  wire  [31:0]     swi_eye_dwell_us_i,
+    input  wire  [31:0]     swi_eye_ctrl_i,
+    input  wire  [6:0]      eye_score_idx_i,
+    // Calibrator status / score readouts back to the eye_regs shim.
+    output wire  [31:0]     eye_status_o,
+    output wire  [5:0]      eye_score_data_o,
+    output wire             eye_score_lane_passed_o,
+    output wire  [5:0]      eye_score_best_o,
+    output wire  [2:0]      eye_score_best_slip_o,
+    output wire  [3:0]      eye_score_best_phase_o,
+    // Per-lane CRC error counters from tidelink_lane_checker (RC strobe in).
+    input  wire             lane_crc_err_cnt_clr_i,
+    output wire  [7:0]      lane_crc_err_cnt_0_o,
+    output wire  [7:0]      lane_crc_err_cnt_1_o,
+    output wire  [7:0]      lane_crc_err_cnt_2_o,
+    output wire  [7:0]      lane_crc_err_cnt_3_o,
+    output wire  [7:0]      lane_crc_err_cnt_4_o,
+    output wire  [7:0]      lane_crc_err_cnt_5_o,
+    output wire  [7:0]      lane_crc_err_cnt_6_o,
+    output wire  [7:0]      lane_crc_err_cnt_7_o,
+    // EYE_LAST_LATCHED mirror (current calibrator outputs).
+    output wire  [23:0]     eye_last_slip_o,
+    output wire  [7:0]      eye_last_lane_fault_o
 );
 
     // =====================================================================
@@ -549,15 +576,6 @@ module axi_chiplet_controller #(
     // re-triggers a fresh sweep that clears lane_fault — now against a live
     // peer pattern. POR-only domain, same as training_mode.
     reg        swi_recal_r;
-    // Slot 0 bits[7:4] — SWI_CAL_MIN_DWELLS (§9.11c TideLink local override):
-    // runtime APB-tunable MIN_LOCK_DWELLS for the calibrator's eye-centre
-    // policy. 4-bit value, 0 = use synth-time parameter default, 1..15 =
-    // override. Wired into u_calibrator.min_lock_dwells_i below. Lets SW
-    // tune the centring requirement on real silicon without re-elaboration
-    // — e.g. lower to 1 if the per-lane phase eye is single-point and the
-    // eye-centre policy can't find a 4-wide run. POR-reset (same domain as
-    // training_mode and recal).
-    reg [3:0]  swi_cal_min_dwells_r;
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
     // Slot 6 — SWI_PHASE_OFFSET bits[31:0] (8 × 4-bit per-lane sub-bit
@@ -683,7 +701,6 @@ module axi_chiplet_controller #(
         if (!poresetn) begin
             swi_training_mode_r      <= 1'b0;
             swi_recal_r              <= 1'b0;
-            swi_cal_min_dwells_r     <= 4'h0;  // §9.11c: 0 = use synth param
             swi_bit_slip_lo_r        <= 24'h0;
             swi_phase_offset_r       <= 32'h0;
             nego_train_cfg_r         <= 16'h0;
@@ -701,9 +718,8 @@ module axi_chiplet_controller #(
             if (region8_write) begin
                 case (ctrl_reg_addr[2:0])
                     3'h0: begin                                                // SWI_TRAINING_MODE
-                        swi_training_mode_r  <= ctrl_reg_wdata[0];
-                        swi_recal_r          <= ctrl_reg_wdata[1];            // SWI_RECAL (level → calibrator swreset)
-                        swi_cal_min_dwells_r <= ctrl_reg_wdata[7:4];          // §9.11c: SWI_CAL_MIN_DWELLS runtime override
+                        swi_training_mode_r <= ctrl_reg_wdata[0];
+                        swi_recal_r         <= ctrl_reg_wdata[1];             // SWI_RECAL (level → calibrator swreset)
                     end
                     3'h1: swi_bit_slip_lo_r   <= ctrl_reg_wdata[23:0];        // SWI_BIT_SLIP_LO
                     3'h3: begin                                                // NEGO_TRAIN_CFG
@@ -723,9 +739,7 @@ module axi_chiplet_controller #(
 
     // Region 8 read mux
     assign region8_rdata =
-        (ctrl_reg_addr[2:0] == 3'h0) ? {24'h0, swi_cal_min_dwells_r,                // [7:4] §9.11c
-                                        2'b00, swi_recal_r, swi_training_mode_r} :  // [3:0]
-
+        (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h0, swi_bit_slip_lo_r}    :
         (ctrl_reg_addr[2:0] == 3'h2) ? {2'h0,                            // [31:30] reserved
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
@@ -1316,10 +1330,22 @@ module axi_chiplet_controller #(
     // bit-exact passthrough).
     // =====================================================================
     tidelink_lane_checker u_lane_checker (
-        .clk        (phy_link_rx_rx_link_clk_w),
-        .rst        (~role_locked),  // hold checker in reset until role locked
-        .lane_data  (phy_link_rx_rx_link_data_w),
-        .lane_locked(lane_locked_w)
+        .clk                 (phy_link_rx_rx_link_clk_w),
+        .rst                 (~role_locked),  // hold in reset until role locked
+        .lane_data           (phy_link_rx_rx_link_data_w),
+        .lane_locked         (lane_locked_w),
+        // v2 Eye visibility: per-lane mismatch pulse + saturating CRC error
+        // counters surfaced through the new module ports.
+        .mismatch_pulse      (/* unused at this scope */),
+        .crc_err_cnt_clr     (lane_crc_err_cnt_clr_i),
+        .lane_crc_err_cnt_0  (lane_crc_err_cnt_0_o),
+        .lane_crc_err_cnt_1  (lane_crc_err_cnt_1_o),
+        .lane_crc_err_cnt_2  (lane_crc_err_cnt_2_o),
+        .lane_crc_err_cnt_3  (lane_crc_err_cnt_3_o),
+        .lane_crc_err_cnt_4  (lane_crc_err_cnt_4_o),
+        .lane_crc_err_cnt_5  (lane_crc_err_cnt_5_o),
+        .lane_crc_err_cnt_6  (lane_crc_err_cnt_6_o),
+        .lane_crc_err_cnt_7  (lane_crc_err_cnt_7_o)
     );
 
     // Calibrator role_locked trigger: gated by AUTOCAL_ENABLE (parameter,
@@ -1359,28 +1385,31 @@ module axi_chiplet_controller #(
         // together).
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
-        // §9.11c runtime MIN_LOCK_DWELLS override (Region 8 slot 3'h0
-        // bits[7:4]). 0 = use synth-time parameter default; non-zero
-        // overrides it at runtime. CDC: this is apb_clk-domain, sampled
-        // by the calibrator on phy_link_rx_rx_link_clk_w. The value
-        // changes slowly (SW writes once and stops), so a 4-bit MSB
-        // glitch across the boundary is acceptable for bring-up; if a
-        // glitch on a single rx-link cycle picks an in-between value
-        // it's only used by the next end-of-sweep latch, which is a
-        // 65k-cycle event. CDC sync flops are NOT added for this slow
-        // tuning knob (same rationale as swi_bit_slip_lo_r below).
-        .min_lock_dwells_i     (swi_cal_min_dwells_r),
-        // §9.11d Fix A1: post-S_HOLD real-data validation. Drive from the
-        // local Wlink FCSM's "saw the peer's CR_PKT on our RX" sticky flag.
-        // Same clock domain as the calibrator (rx_link_clk) so no CDC.
-        .cr_pkt_seen_i         (obs_cr_pkt_seen_rx_w),
         .bit_slip              (cal_bit_slip_w),
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),
         .calibration_done      (cal_calibration_done_w),
         .lane_fault            (cal_lane_fault_w),
-        .state                 (cal_state_w)
+        .state                 (cal_state_w),
+        // v2 Eye visibility surface — driven by tidelink_eye_regs at the
+        // tidelink_top boundary, plumbed in/out through the new
+        // axi_chiplet_controller ports above.
+        .swi_eye_lane_sel      (swi_eye_lane_sel_i),
+        .swi_eye_dwell_us      (swi_eye_dwell_us_i),
+        .swi_eye_ctrl          (swi_eye_ctrl_i),
+        .eye_status            (eye_status_o),
+        .eye_score_idx         (eye_score_idx_i),
+        .eye_score_data        (eye_score_data_o),
+        .eye_score_lane_passed (eye_score_lane_passed_o),
+        .eye_score_best        (eye_score_best_o),
+        .eye_score_best_slip   (eye_score_best_slip_o),
+        .eye_score_best_phase  (eye_score_best_phase_o)
     );
+
+    // EYE_LAST_LATCHED mirror — surface the current calibrator slip vector
+    // and lane_fault to the eye_regs shim at top level.
+    assign eye_last_slip_o       = cal_bit_slip_w;
+    assign eye_last_lane_fault_o = cal_lane_fault_w;
 
     // SW-override OR-mux: calibrator OR Region 8 SW-override regs
     // (swi_bit_slip_lo_r / swi_training_mode_r) → swi_bit_slip_in /

@@ -629,8 +629,11 @@ proc create_root_design { parentCell } {
     #-- See tidelink_clk_tx_oddr.v in this target dir.
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_pins clk_tx_oddr/clk_in]
     connect_bd_net [get_bd_pins clk_tx_oddr/pad_out]   [get_bd_ports pad_clk_tx]
-    connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_reset] \
-                   [get_bd_pins clk_tx_oddr/reset]
+    # Tie ODDR reset low via xlconstant — ODDR INIT=1'b0 already provides POR
+    # state. Avoids depending on proc_sys_reset_0/peripheral_reset pin name.
+    set _const_zero_tx [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_zero_tx_oddr]
+    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $_const_zero_tx
+    connect_bd_net [get_bd_pins const_zero_tx_oddr/dout] [get_bd_pins clk_tx_oddr/reset]
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
 
     #-- pad_clk_rx routing (Target A, 2026-05-28):

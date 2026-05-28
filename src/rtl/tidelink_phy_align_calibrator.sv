@@ -1275,10 +1275,14 @@ module tidelink_phy_align_calibrator #(
     assign eye_score_data        = score_buf[eye_score_idx];
     // best_score / best_slip / best_phase / lane_passed mirror the
     // existing per-lane sweep result for the selected lane.
-    assign eye_score_best        = best_score [eye_lane_sel_q];
-    assign eye_score_best_slip   = best_slip  [eye_lane_sel_q];
-    assign eye_score_best_phase  = best_phase [eye_lane_sel_q];
-    assign eye_score_lane_passed = (best_score[eye_lane_sel_q] >= lock_thresh_6b);
+    // §9.11: best_score/best_slip/best_phase were renamed to
+    // best_run/best_run_slip/best_run_start_phase during the eye-centre
+    // rewrite. best_run is EYE_WIDTH_W (5b); zero-extend to 6b for the APB
+    // eye_score output. best_run_slip / best_run_start_phase widths match.
+    assign eye_score_best        = {1'b0, best_run             [eye_lane_sel_q]};
+    assign eye_score_best_slip   =        best_run_slip        [eye_lane_sel_q];
+    assign eye_score_best_phase  =        best_run_start_phase [eye_lane_sel_q];
+    assign eye_score_lane_passed = ({1'b0, best_run[eye_lane_sel_q]} >= lock_thresh_6b);
 
     // dwell_remaining_ms saturates at 16'hFFFF; ms = us/1000, computed
     // from the 48-bit counter divided by 1000*CLK_MHZ.  Synthesises to a

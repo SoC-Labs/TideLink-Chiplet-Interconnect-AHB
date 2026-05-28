@@ -1714,26 +1714,47 @@ module tidelink_top #(
     //    Note: Wlink uses active-high resets
     // =========================================================================
 
-    // ── Tier 2 RTL hardening: swi_enable guard on swreset ────────────────────
-    // Intercept the APB pwdata flowing into u_chiplet_controller. When the
-    // write targets Wlink register 0x208 with pwdata[3]==1 (swi_swreset
-    // asserted), force pwdata[0]=1 so the Wlink's swi_enable register stays
-    // HIGH across the swreset. Protects the 7 FCSMs from buggy SW that drops
-    // swi_enable to 0 during a swreset cycle (which would otherwise reset
-    // every FCSM to IDLE and lose CR/CRACK sticky state).
-    // Gate is conservative: needs apb_sel_wlink && apb_pwrite && paddr==0x208
-    // && pwdata[3]==1, so a normal swreset W1C (pwdata[3]==0) or any write
-    // to a different register is bit-exact unchanged. HARDEN_SWI_ENABLE=0
-    // disables the override entirely (passthrough).
+    // ── Tier 2 RTL hardening: swi_enable guard + swreset block on 0x208 ──────
+    // Intercept the APB pwdata flowing into u_chiplet_controller for writes
+    // to Wlink register 0x208 (swi_enable[0], lltx_enable[1], lltx_enable_1[2],
+    // swreset[3]).
+    //
+    // Behaviour:
+    //   (a) Force pwdata[0]=1 — keep swi_enable HIGH across any 0x208 write
+    //       so the 7 FCSMs don't get dropped to IDLE / lose CR/CRACK sticky
+    //       state when SW pulses other bits in this register.
+    //   (b) Force pwdata[3]=0 — block the swreset bit from ever reaching
+    //       Wlink. swreset feeds app_clk_reset_scan_wrs_io_reset_in which
+    //       resets axi2wl (the Wlink AXI target). If SW pulses swreset while
+    //       an AHB-sub transaction is in flight at the xhb500 AHB->AXI bridge,
+    //       axi2wl resets mid-burst, BVALID never returns, the PS7
+    //       M_AXI_GP0 SmartConnect SI port saturates, and the whole PL slave
+    //       set wedges until USB power-cycle. Blocking swreset at the
+    //       hardening shim is cheap and unblocks bring-up; SW recovery of a
+    //       stale LL_TX FIFO needs a different mechanism (e.g. slot0=0x3→0x1).
+    //
+    // Gate predicate covers (a): apb_sel_wlink && apb_pwrite && paddr==0x208
+    // && pwdata[3]==1. (b) reuses the same address+direction predicate via
+    // harden_swi_block_swreset (no pwdata[3] dependence — we mask whether the
+    // bit is asserted or not, but the bit is W1C inside Wlink so a 0 write
+    // is a no-op anyway). Address writes to other registers and reads are
+    // bit-exact unchanged. HARDEN_SWI_ENABLE=0 disables both overrides.
     wire [SYS_DATA_W-1:0] apb_pwdata_to_chip;
+    wire harden_swi_addr_match = apb_sel_wlink
+                               & apb_pwrite
+                               & (apb_paddr[12:0] == 13'h208);
     wire harden_swi_apply = HARDEN_SWI_ENABLE
-                          & apb_sel_wlink
-                          & apb_pwrite
-                          & (apb_paddr[12:0] == 13'h208)
+                          & harden_swi_addr_match
                           & apb_pwdata[3];
-    assign apb_pwdata_to_chip = harden_swi_apply
-                              ? (apb_pwdata | {{(SYS_DATA_W-1){1'b0}}, 1'b1})
-                              : apb_pwdata;
+    wire harden_swi_block_swreset = HARDEN_SWI_ENABLE
+                                  & harden_swi_addr_match;
+    // (a) OR-force bit[0]=1 when swreset bit would otherwise be set
+    //     and (b) AND-mask bit[3]=0 on every write to 0x208
+    wire [SYS_DATA_W-1:0] swi_enable_or_mask   = {{(SYS_DATA_W-1){1'b0}}, 1'b1};
+    wire [SYS_DATA_W-1:0] swreset_clear_mask   = ~({{(SYS_DATA_W-4){1'b0}}, 1'b1, 3'b000});
+    assign apb_pwdata_to_chip =
+        (harden_swi_apply         ? (apb_pwdata | swi_enable_or_mask) : apb_pwdata)
+        & (harden_swi_block_swreset ? swreset_clear_mask : {SYS_DATA_W{1'b1}});
 
     // SoC Labs §9 auto-cal: enable the in-RTL per-lane calibration FSM at
     // the TideLink integration level. The chiplet controller defaults to

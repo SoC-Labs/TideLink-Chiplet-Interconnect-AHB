@@ -824,6 +824,10 @@ module tidelink_top #(
     wire [39:0] lane_noise_current_w;
     wire [7:0]  lane_canary_pass_w;
     wire [7:0]  lane_canary_valid_w;
+    // Recovered RX clock surfaced from u_chiplet_controller.link_rx_clk_o
+    // (deps/axi-chiplet-controller@3e0e711) for the new gpio_phy_apb_regs
+    // slave's link_rx_clk port.
+    wire        gpio_phy_link_rx_clk_w;
 
     // CLK_MHZ = 250 (FPGA app_clk) — same constant as the calibrator's
     // CLK_MHZ default.  Used here only to document the timing assumption
@@ -910,17 +914,11 @@ module tidelink_top #(
     // paddr as {3'b001, tl_apb_paddr[4:0]} so its address decode still
     // matches.
     //
-    // CLOCK DOMAIN NOTE: the spec's CDC (apb_clk ↔ link_rx_clk) is preserved
-    // structurally (the slave still instantiates 2-flop synchronisers), but
-    // link_rx_clk is not currently exposed on the axi_chiplet_controller
-    // boundary — it lives inside the controller as phy_link_rx_rx_link_clk_w.
-    // For this stage we drive both the slave's apb_clk and link_rx_clk from
-    // hclk; the lane_checker's observability outputs exit the controller on
-    // synchronous boundaries (see deps/axi-chiplet-controller §5.3 for the
-    // 2-flop sync chain), so feeding hclk into both ports degrades the slave
-    // CDC to functional 2-FF buffers (still safe, simpler timing) rather
-    // than gaining nothing. Exposing link_rx_clk as a new controller output
-    // is a follow-up (verification agent).
+    // CLOCK DOMAIN NOTE: the spec's CDC (apb_clk ↔ link_rx_clk) is satisfied
+    // by wiring the slave's link_rx_clk to the controller's new link_rx_clk_o
+    // output (added in deps/axi-chiplet-controller@3e0e711). The slave's
+    // 2-flop synchronisers now operate across genuine hclk → recovered RX
+    // clock boundaries per spec §6.
     //
     // rst_n is driven directly from role_locked per INTEGRATION_GUIDE §5.2
     // ("Connect .rst_n(role_locked) directly — NO inverter"). apb_rst_n is
@@ -949,9 +947,10 @@ module tidelink_top #(
         .pready              (gpio_phy_apb_pready),
         .pslverr             (gpio_phy_apb_pslverr),
 
-        // link_rx_clk domain — see CLOCK DOMAIN NOTE above. role_locked is
-        // active-high, connected directly to rst_n per INTEGRATION_GUIDE §5.2.
-        .link_rx_clk         (hclk),
+        // link_rx_clk domain — recovered RX clock exposed on the controller
+        // (deps/axi-chiplet-controller@3e0e711). role_locked is active-high,
+        // connected directly to rst_n per INTEGRATION_GUIDE §5.2.
+        .link_rx_clk         (gpio_phy_link_rx_clk_w),
         .link_rx_rst_n       (role_locked_o),
 
         // CDC outputs → u_chiplet_controller (consumed by the new lane_checker
@@ -2138,6 +2137,9 @@ module tidelink_top #(
         .lane_noise_current_o       (lane_noise_current_w),
         .lane_canary_pass_o         (lane_canary_pass_w),
         .lane_canary_valid_o        (lane_canary_valid_w),
+        // Recovered RX clock — fed to the gpio_phy_apb_regs slave's
+        // link_rx_clk port (deps/axi-chiplet-controller@3e0e711).
+        .link_rx_clk_o              (gpio_phy_link_rx_clk_w),
         .eye_last_slip_o            (eye_last_slip_w),
         .eye_last_lane_fault_o      (eye_last_lane_fault_w)
     );

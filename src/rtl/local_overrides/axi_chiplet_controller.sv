@@ -296,16 +296,24 @@ module axi_chiplet_controller #(
     output wire  [5:0]      eye_score_best_o,
     output wire  [2:0]      eye_score_best_slip_o,
     output wire  [3:0]      eye_score_best_phase_o,
-    // Per-lane CRC error counters from tidelink_lane_checker (RC strobe in).
-    input  wire             lane_crc_err_cnt_clr_i,
-    output wire  [7:0]      lane_crc_err_cnt_0_o,
-    output wire  [7:0]      lane_crc_err_cnt_1_o,
-    output wire  [7:0]      lane_crc_err_cnt_2_o,
-    output wire  [7:0]      lane_crc_err_cnt_3_o,
-    output wire  [7:0]      lane_crc_err_cnt_4_o,
-    output wire  [7:0]      lane_crc_err_cnt_5_o,
-    output wire  [7:0]      lane_crc_err_cnt_6_o,
-    output wire  [7:0]      lane_crc_err_cnt_7_o,
+    // tidelink-gpio-phy lane_checker control & observability (replaces the
+    // pre-rewrite crc_err_cnt counters; see deps/tidelink-gpio-phy spec §6, §10).
+    input  wire  [23:0]     lane_lock_thresh_i,        // 8 × 3-bit per lane
+    input  wire             lane_clear_noise_i,        // 1-cycle pulse from APB
+    output wire  [7:0]      lane_mismatch_pulse_o,     // 1-cycle pulse per lane
+    output wire  [15:0]     lane_wire_status_o,        // 8 × 2-bit wire status
+    output wire  [39:0]     lane_dist_raw_o,           // 8 × 5-bit
+    output wire  [39:0]     lane_dist_voted_o,         // 8 × 5-bit
+    output wire  [39:0]     lane_dwell_min_dist_o,     // 8 × 5-bit
+    output wire  [39:0]     lane_noise_min_o,          // 8 × 5-bit
+    output wire  [39:0]     lane_noise_max_o,          // 8 × 5-bit
+    output wire  [39:0]     lane_noise_mean_o,         // 8 × 5-bit
+    output wire  [39:0]     lane_noise_current_o,      // 8 × 5-bit
+    output wire  [7:0]      lane_canary_pass_o,        // bit-order canary
+    output wire  [7:0]      lane_canary_valid_o,       // canary measurement done
+    // Recovered RX clock — for the tidelink-gpio-phy APB slave's link_rx_clk
+    // port at tidelink_top scope (spec §6 CDC contract; spec §10).
+    output wire             link_rx_clk_o,
     // EYE_LAST_LATCHED mirror (current calibrator outputs).
     output wire  [23:0]     eye_last_slip_o,
     output wire  [7:0]      eye_last_lane_fault_o
@@ -498,6 +506,10 @@ module axi_chiplet_controller #(
     wire        cal_calibration_done_w;
     wire [7:0]  cal_lane_fault_w;
     wire [3:0]  cal_state_w;
+    // Forward declarations — definitions below; needed early so the
+    // tidelink-gpio-phy lane_checker instantiation can wire them in.
+    wire [31:0] swi_phase_offset_w;
+    wire        swi_training_mode_w;
     wire [7:0]  lane_locked_w;
     // Wlink-exposed recovered link clock + per-lane 16-bit deserialised data.
     wire [127:0] phy_link_rx_rx_link_data_w;
@@ -1329,23 +1341,35 @@ module axi_chiplet_controller #(
     // (default SW-override = 0, default cal-not-running output = 0 →
     // bit-exact passthrough).
     // =====================================================================
+    // tidelink-gpio-phy lane_checker (from deps/tidelink-gpio-phy submodule).
+    // Spec: deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md §3-7.
+    // Reset polarity: rst_n is active-low; role_locked is the natural enable
+    // so connect directly (INTEGRATION_GUIDE.md §5.2). sweep_active is
+    // derived from cal_state_w[2:0] == S_SWEEP (3'd2 in the calibrator's
+    // state enum).
+    wire sweep_active_w = (cal_state_w == 4'd2);
+    assign link_rx_clk_o = phy_link_rx_rx_link_clk_w;
+
     tidelink_lane_checker u_lane_checker (
         .clk                 (phy_link_rx_rx_link_clk_w),
-        .rst                 (~role_locked),  // hold in reset until role locked
-        .lane_data           (phy_link_rx_rx_link_data_w),
-        .lane_locked         (lane_locked_w),
-        // v2 Eye visibility: per-lane mismatch pulse + saturating CRC error
-        // counters surfaced through the new module ports.
-        .mismatch_pulse      (/* unused at this scope */),
-        .crc_err_cnt_clr     (lane_crc_err_cnt_clr_i),
-        .lane_crc_err_cnt_0  (lane_crc_err_cnt_0_o),
-        .lane_crc_err_cnt_1  (lane_crc_err_cnt_1_o),
-        .lane_crc_err_cnt_2  (lane_crc_err_cnt_2_o),
-        .lane_crc_err_cnt_3  (lane_crc_err_cnt_3_o),
-        .lane_crc_err_cnt_4  (lane_crc_err_cnt_4_o),
-        .lane_crc_err_cnt_5  (lane_crc_err_cnt_5_o),
-        .lane_crc_err_cnt_6  (lane_crc_err_cnt_6_o),
-        .lane_crc_err_cnt_7  (lane_crc_err_cnt_7_o)
+        .rst_n               (role_locked),               // active-low; spec §5.2
+        .lane_data_i         (phy_link_rx_rx_link_data_w),
+        .lock_thresh_i       (lane_lock_thresh_i),        // from APB regs at tidelink_top
+        .training_mode_w_i   (swi_training_mode_w),       // OR-merge of cal + SW
+        .sweep_active_i      (sweep_active_w),
+        .clear_noise_i       (lane_clear_noise_i),
+        .lane_locked_o       (lane_locked_w),
+        .mismatch_pulse_o    (lane_mismatch_pulse_o),
+        .wire_status_o       (lane_wire_status_o),
+        .dist_raw_o          (lane_dist_raw_o),
+        .dist_voted_o        (lane_dist_voted_o),
+        .dwell_min_dist_o    (lane_dwell_min_dist_o),     // for calibrator scoring (Stage 6)
+        .noise_min_o         (lane_noise_min_o),
+        .noise_max_o         (lane_noise_max_o),
+        .noise_mean_o        (lane_noise_mean_o),
+        .noise_current_o     (lane_noise_current_o),
+        .canary_pass_o       (lane_canary_pass_o),
+        .canary_valid_o      (lane_canary_valid_o)
     );
 
     // Calibrator role_locked trigger: gated by AUTOCAL_ENABLE (parameter,
@@ -1378,6 +1402,11 @@ module axi_chiplet_controller #(
         // training pattern held HIGH on both boards.
         .swreset               (swi_recal_r),
         .lane_locked           (lane_locked_w),
+        // tidelink-gpio-phy scoring (spec §7.1): the calibrator now uses a
+        // continuous min-distance metric per dwell for eye-centre selection,
+        // not just binary lane_locked. The new lane_checker drives this bus
+        // from the per-lane voted Hamming distance (5-bit, 0..16).
+        .dwell_min_dist_i      (lane_dwell_min_dist_o),
         // APB override of the calibrator is implemented in the OR-mux below
         // rather than inside the calibrator (the calibrator's APB override
         // gate is left disabled here to keep the calibrator running even
@@ -1391,6 +1420,11 @@ module axi_chiplet_controller #(
         .calibration_done      (cal_calibration_done_w),
         .lane_fault            (cal_lane_fault_w),
         .state                 (cal_state_w),
+        // sweep_active_o = (cur_state == S_SWEEP). Functionally equivalent
+        // to (cal_state_w == 4'd2) which is what the lane_checker's
+        // sweep_active_i still consumes; this output is reserved for any
+        // future consumer wanting an isolated decode.
+        .sweep_active_o        (/* tied to sweep_active_w by decode above */),
         // v2 Eye visibility surface — driven by tidelink_eye_regs at the
         // tidelink_top boundary, plumbed in/out through the new
         // axi_chiplet_controller ports above.
@@ -1425,8 +1459,8 @@ module axi_chiplet_controller #(
     // swi_bit_slip_w (both sides zero at boot → the per-lane OR-merge
     // inside WavD2DGpio falls back to the global APB phase, so the
     // pre-§9.7 single-global-phase behaviour is bit-exact preserved).
-    wire [31:0] swi_phase_offset_w  = cal_phase_offset_w  | swi_phase_offset_r;
-    wire        swi_training_mode_w = cal_training_mode_w | swi_training_mode_r;
+    assign      swi_phase_offset_w  = cal_phase_offset_w  | swi_phase_offset_r;
+    assign      swi_training_mode_w = cal_training_mode_w | swi_training_mode_r;
 
     // =====================================================================
     // SoC Labs §9 structural fix (2026-05-18): per-lane IDELAYE2 RX delay

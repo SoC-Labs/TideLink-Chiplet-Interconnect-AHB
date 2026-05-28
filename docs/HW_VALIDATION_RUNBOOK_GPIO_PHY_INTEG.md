@@ -1,7 +1,8 @@
 # Hardware Validation Runbook — tidelink-gpio-phy Integration
 
 **Branch:** `feat/td-gpio-phy-integration`
-**Submodule pins:** `tidelink-gpio-phy@469a1ec` (main), `axi-chiplet-controller@68d625d` (`feat/td-gpio-phy-integration`)
+**Submodule pins:** `tidelink-gpio-phy@d23a8cd` (main), `axi-chiplet-controller@c0a69ff` (`feat/td-gpio-phy-integration`)
+**Parent HEAD:** `886e28f` (post-verification + cr_pkt_seen_i/min_lock_dwells_i reconnect fix)
 **Target hardware:** pynq-z2 pair via fpgahub (mapstone-dev ProxyJump per [reference_pynq_boards](../../.claude/projects/-home-dam1n19-SoCLabs-tidelink/memory/reference_pynq_boards.md))
 
 **Pre-conditions** — every item below MUST be green before scheduling a Vivado build (Vivado synth ≈ 45-60 min × 2 builds for the pair; do not burn it on a broken sim):

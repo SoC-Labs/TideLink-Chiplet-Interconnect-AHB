@@ -802,15 +802,28 @@ module tidelink_top #(
     wire [31:0] eye_force_slip_val_w;
     wire        eye_crc_err_cnt_clr_w;
 
-    // Per-lane CRC error counters + EYE_LAST_LATCHED mirror — sourced from
-    // u_chiplet_controller (see below). Declared here so the shim's input
-    // pins can resolve in any source order.
-    wire [7:0]  lane_crc_err_cnt_0_w, lane_crc_err_cnt_1_w;
-    wire [7:0]  lane_crc_err_cnt_2_w, lane_crc_err_cnt_3_w;
-    wire [7:0]  lane_crc_err_cnt_4_w, lane_crc_err_cnt_5_w;
-    wire [7:0]  lane_crc_err_cnt_6_w, lane_crc_err_cnt_7_w;
+    // EYE_LAST_LATCHED mirror — sourced from u_chiplet_controller (see below).
     wire [23:0] eye_last_slip_w;
     wire [7:0]  eye_last_lane_fault_w;
+
+    // tidelink-gpio-phy observability bus from the new lane_checker (replaces
+    // the legacy 8x crc_err_cnt counters; see
+    // deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md §6, INTEGRATION_GUIDE
+    // §6.2). Each per-lane signal packs 5/2/1 bits/lane × 8 lanes as documented
+    // in the submodule's RTL_ARCHITECTURE.md.
+    wire [23:0] lane_lock_thresh_w;       // APB regs → checker
+    wire        lane_clear_noise_w;       // APB regs → checker (1-cycle pulse)
+    wire [7:0]  lane_mismatch_pulse_w;
+    wire [15:0] lane_wire_status_w;
+    wire [39:0] lane_dist_raw_w;
+    wire [39:0] lane_dist_voted_w;
+    wire [39:0] lane_dwell_min_dist_w;
+    wire [39:0] lane_noise_min_w;
+    wire [39:0] lane_noise_max_w;
+    wire [39:0] lane_noise_mean_w;
+    wire [39:0] lane_noise_current_w;
+    wire [7:0]  lane_canary_pass_w;
+    wire [7:0]  lane_canary_valid_w;
 
     // CLK_MHZ = 250 (FPGA app_clk) — same constant as the calibrator's
     // CLK_MHZ default.  Used here only to document the timing assumption

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TideLink live-eye</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>TideLink live-eye</h1>
+    <div id="lease-info" class="lease-pill state-unknown">lease: <span id="lease-holder">…</span></div>
+  </header>
+
+  <section class="controls">
+    <form id="run-form" autocomplete="off">
+      <div class="row">
+        <label>Stage dir
+          <input id="stage-dir" type="text" value="/tmp/tidelink_deploy">
+        </label>
+        <label>Master IP
+          <input id="master-ip" type="text" value="192.168.4.101">
+        </label>
+        <label>Slave IP
+          <input id="slave-ip" type="text" value="192.168.6.101">
+        </label>
+        <label>Board
+          <input id="board" type="text" value="bridge1">
+        </label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="skip-deploy"> Use currently deployed</label>
+        <label><input type="checkbox" id="skip-converge"> Skip converge</label>
+        <button type="submit" id="run-btn">Run</button>
+        <button type="button" id="abort-btn" disabled>Abort</button>
+        <button type="button" id="refresh-lease-btn">Refresh lease</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="banner" class="banner state-idle">Idle. Click Run to start a sweep.</section>
+
+  <section class="grid">
+    <div class="heatmap">
+      <h2>Master <span class="ip" id="master-label"></span></h2>
+      <div id="plot-master" class="plot"></div>
+    </div>
+    <div class="heatmap">
+      <h2>Slave <span class="ip" id="slave-label"></span></h2>
+      <div id="plot-slave" class="plot"></div>
+    </div>
+  </section>
+
+  <section class="log">
+    <details>
+      <summary>Event log</summary>
+      <pre id="event-log"></pre>
+    </details>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

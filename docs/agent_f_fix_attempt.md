@@ -143,6 +143,61 @@ README's expected-baseline table. It is a separate credit-path residual
 that does not interact with the calibrator latch and is out of scope for
 this fix.
 
+## Probe-dump verification (post-fix M / S symmetry)
+
+`cocotb/tidelink_top_pair/test_calibrator_probe_dump.py` was re-run AFTER
+the RTL fix landed. Direct cocotb log line evidence:
+
+```
+8501600.00ns INFO cocotb.tb_top  Calibrator latched M phase=[0, 0, 0, 0, 0, 0, 0, 0] slip=[0, 0, 0, 0, 0, 0, 0, 0]
+8501600.00ns INFO cocotb.tb_top  Calibrator latched S phase=[0, 0, 0, 0, 0, 0, 0, 0] slip=[0, 0, 0, 0, 0, 0, 0, 0]
+8501720.00ns INFO cocotb.tb_top  Pre-doorbell  DOORBELL_RESP_ACC: M=0 S=0
+8541900.00ns INFO cocotb.tb_top  Post-doorbell DOORBELL_RESP_ACC: M=0 S=4096
+```
+
+So the per-lane latched (slip, phase) values dumped at S_DONE on both
+calibrators are now SYMMETRIC across all 8 lanes — both sides converged
+to (slip=0, phase=0) per lane:
+
+| lane | M phase | S phase | M slip | S slip | match? |
+|------|---------|---------|--------|--------|--------|
+| 0    | 0       | 0       | 0      | 0      | YES    |
+| 1    | 0       | 0       | 0      | 0      | YES    |
+| 2    | 0       | 0       | 0      | 0      | YES    |
+| 3    | 0       | 0       | 0      | 0      | YES    |
+| 4    | 0       | 0       | 0      | 0      | YES    |
+| 5    | 0       | 0       | 0      | 0      | YES    |
+| 6    | 0       | 0       | 0      | 0      | YES    |
+| 7    | 0       | 0       | 0      | 0      | YES    |
+
+Compare to the pre-fix dump (Agent D, `docs/agent_d_probe_findings.md`)
+where M=(0, 0) on every lane but S=(1, 1) on every lane — 8 of 8 lanes
+mismatched. The new dump shows zero mismatches.
+
+The DOORBELL_RESP_ACC counter on the slave went from 0 to 4096 in the
+2000-cycle window following the M→S doorbell write — direct corroboration
+that M→S data packets are now decoded correctly by the slave's RX path.
+
+The post-fix dump is committed as `docs/agent_f_probe_dump_post_fix.log`.
+
+## Doorbell test sim-log evidence
+
+Cocotb regression summary from `/tmp/agent_f_doorbell.log`:
+
+```
+** test_tidelink_pair_doorbell.test_01_role_lock_and_cal_done        PASS  **
+** test_tidelink_pair_doorbell.test_02_training_held_pre_release     PASS  **
+** test_tidelink_pair_doorbell.test_03_to_data_mode_cr_crack_latch   PASS  **
+** test_tidelink_pair_doorbell.test_04_pair_credit_counter_nonzero   FAIL  **
+** test_tidelink_pair_doorbell.test_05_doorbell_master_to_slave      PASS  **
+** test_tidelink_pair_doorbell.test_06_doorbell_slave_to_master      PASS  **
+** TESTS=6 PASS=5 FAIL=1 SKIP=0 **
+```
+
+test_05 and test_06 (the hard-pass criteria) both PASSED. test_04 was a
+pre-existing fail in the baseline (PAIR_CREDIT_COUNTER credit-path
+residual) and is out of scope for this calibrator fix.
+
 ## Pass/Fail verdict
 
 **PASS.** The asymmetric M→S corruption bug described in

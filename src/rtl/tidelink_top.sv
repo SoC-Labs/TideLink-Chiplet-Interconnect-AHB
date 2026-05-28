@@ -764,15 +764,129 @@ module tidelink_top #(
         .cmd_retry_pulse_o                 (dbg_cmd_retry_pulse_w)
     );
 
-    // tl_apb_prdata mux: when the shim is selected, return its rdata;
+    // =========================================================================
+    // v2 Eye visibility shim: tidelink_eye_regs (Region 10, paddr 0x140-0x17F).
+    //
+    // Same OR-mux pattern as the FCSM debug shim above: tidelink_apb_regs
+    // returns 0 for the Region 10 range and the shim's prdata/pready/
+    // pslverr are substituted at this scope when eye_shim_sel matches.
+    //
+    // The calibrator-side ports (swi_eye_*, eye_*) are wired through to
+    // the calibrator inside u_chiplet_controller.  Until that submodule
+    // is regenerated to expose the new ports on its boundary, the
+    // calibrator-data inputs to the shim (eye_status_i and friends) are
+    // tied off to 0 and the control outputs (swi_eye_ctrl, etc.) are
+    // routed into the top-level so a follow-on commit can wire them via
+    // hierarchical reference or via new chiplet-controller ports.
+    // =========================================================================
+    wire eye_shim_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1010);
+
+    wire [SYS_DATA_W-1:0]  eye_shim_prdata;
+    wire                    eye_shim_pready;
+    wire                    eye_shim_pslverr;
+
+    // Calibrator-facing wires.  Connected through axi_chiplet_controller's
+    // new v2 eye-visibility ports (deps/axi-chiplet-controller@ed3bd0f).
+    wire [2:0]  eye_swi_lane_sel_w;
+    wire [31:0] eye_swi_dwell_us_w;
+    wire [31:0] eye_swi_ctrl_w;
+    wire [31:0] eye_status_w;
+    wire [6:0]  eye_score_idx_w;
+    wire [5:0]  eye_score_data_w;
+    wire        eye_score_lane_passed_w;
+    wire [5:0]  eye_score_best_w;
+    wire [2:0]  eye_score_best_slip_w;
+    wire [3:0]  eye_score_best_phase_w;
+    wire [31:0] eye_force_phase_en_w;
+    wire [31:0] eye_force_phase_val_w;
+    wire [31:0] eye_force_slip_val_w;
+    wire        eye_crc_err_cnt_clr_w;
+
+    // Per-lane CRC error counters + EYE_LAST_LATCHED mirror — sourced from
+    // u_chiplet_controller (see below). Declared here so the shim's input
+    // pins can resolve in any source order.
+    wire [7:0]  lane_crc_err_cnt_0_w, lane_crc_err_cnt_1_w;
+    wire [7:0]  lane_crc_err_cnt_2_w, lane_crc_err_cnt_3_w;
+    wire [7:0]  lane_crc_err_cnt_4_w, lane_crc_err_cnt_5_w;
+    wire [7:0]  lane_crc_err_cnt_6_w, lane_crc_err_cnt_7_w;
+    wire [23:0] eye_last_slip_w;
+    wire [7:0]  eye_last_lane_fault_w;
+
+    // CLK_MHZ = 250 (FPGA app_clk) — same constant as the calibrator's
+    // CLK_MHZ default.  Used here only to document the timing assumption
+    // shared by the dwell-counter conversion in tidelink_phy_align_calibrator.
+
+    tidelink_eye_regs #(
+        .APB_ADDR_W (APB_ADDR_W),
+        .SYS_DATA_W (SYS_DATA_W)
+    ) u_eye_regs (
+        .hclk                    (hclk),
+        .hresetn                 (hresetn),
+
+        .psel                    (eye_shim_sel),
+        .penable                 (tl_apb_penable),
+        .pwrite                  (tl_apb_pwrite),
+        .paddr                   (tl_apb_paddr),
+        .pwdata                  (tl_apb_pwdata),
+        .prdata                  (eye_shim_prdata),
+        .pready                  (eye_shim_pready),
+        .pslverr                 (eye_shim_pslverr),
+
+        .swi_eye_lane_sel        (eye_swi_lane_sel_w),
+        .swi_eye_dwell_us        (eye_swi_dwell_us_w),
+        .swi_eye_ctrl            (eye_swi_ctrl_w),
+        .eye_status_i            (eye_status_w),
+        .eye_score_idx           (eye_score_idx_w),
+        .eye_score_data_i        (eye_score_data_w),
+        .eye_score_lane_passed_i (eye_score_lane_passed_w),
+        .eye_score_best_i        (eye_score_best_w),
+        .eye_score_best_slip_i   (eye_score_best_slip_w),
+        .eye_score_best_phase_i  (eye_score_best_phase_w),
+
+        .swi_force_phase_en      (eye_force_phase_en_w),
+        .swi_force_phase_val     (eye_force_phase_val_w),
+        .swi_force_slip_val      (eye_force_slip_val_w),
+
+        // Per-lane CRC counters: sourced from tidelink_lane_checker inside
+        // u_chiplet_controller via the new v2 eye-visibility ports.
+        .lane_crc_err_cnt_0_i    (lane_crc_err_cnt_0_w),
+        .lane_crc_err_cnt_1_i    (lane_crc_err_cnt_1_w),
+        .lane_crc_err_cnt_2_i    (lane_crc_err_cnt_2_w),
+        .lane_crc_err_cnt_3_i    (lane_crc_err_cnt_3_w),
+        .lane_crc_err_cnt_4_i    (lane_crc_err_cnt_4_w),
+        .lane_crc_err_cnt_5_i    (lane_crc_err_cnt_5_w),
+        .lane_crc_err_cnt_6_i    (lane_crc_err_cnt_6_w),
+        .lane_crc_err_cnt_7_i    (lane_crc_err_cnt_7_w),
+        .lane_crc_err_cnt_clr_o  (eye_crc_err_cnt_clr_w),
+
+        .eye_last_slip_i         (eye_last_slip_w),
+        .eye_last_lane_fault_i   (eye_last_lane_fault_w)
+    );
+
+    // SWI_FORCE_PHASE_EN/VAL/SLIP_VAL are reserved register slots (proposal
+    // §5); the calibrator does not consume them in v2 — kept as drivable
+    // RW shadows for SW.  Mark as intentionally unused at this scope.
+    /* verilator lint_off UNUSED */
+    wire _unused_eye_force = |{eye_force_phase_en_w, eye_force_phase_val_w,
+                                eye_force_slip_val_w};
+    /* verilator lint_on UNUSED */
+
+    // tl_apb_prdata mux: when a shim is selected, return its rdata;
     // otherwise return u_tidelink's APB rdata (tidelink_internal_prdata).
+    // Order: Region 9 (dbg) > Region 10 (eye) > everything else.
     wire [SYS_DATA_W-1:0]  tidelink_internal_prdata;
     wire                    tidelink_internal_pready;
     wire                    tidelink_internal_pslverr;
 
-    assign tl_apb_prdata  = dbg_shim_sel ? dbg_shim_prdata  : tidelink_internal_prdata;
-    assign tl_apb_pready  = dbg_shim_sel ? dbg_shim_pready  : tidelink_internal_pready;
-    assign tl_apb_pslverr = dbg_shim_sel ? dbg_shim_pslverr : tidelink_internal_pslverr;
+    assign tl_apb_prdata  = dbg_shim_sel ? dbg_shim_prdata  :
+                            eye_shim_sel ? eye_shim_prdata  :
+                                           tidelink_internal_prdata;
+    assign tl_apb_pready  = dbg_shim_sel ? dbg_shim_pready  :
+                            eye_shim_sel ? eye_shim_pready  :
+                                           tidelink_internal_pready;
+    assign tl_apb_pslverr = dbg_shim_sel ? dbg_shim_pslverr :
+                            eye_shim_sel ? eye_shim_pslverr :
+                                           tidelink_internal_pslverr;
 
     // Route APB responses back to both sources
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
@@ -1851,7 +1965,30 @@ module tidelink_top #(
         // (derived from poresetn). Unused inside the controller when
         // USE_IDELAY=0 (pure passthrough).
         .idelay_ref_clk             (idelay_ref_clk),
-        .idelay_rst                 (~poresetn)
+        .idelay_rst                 (~poresetn),
+
+        // v2 Eye visibility — driven by u_eye_regs shim at this scope.
+        .swi_eye_lane_sel_i         (eye_swi_lane_sel_w),
+        .swi_eye_dwell_us_i         (eye_swi_dwell_us_w),
+        .swi_eye_ctrl_i             (eye_swi_ctrl_w),
+        .eye_score_idx_i            (eye_score_idx_w),
+        .eye_status_o               (eye_status_w),
+        .eye_score_data_o           (eye_score_data_w),
+        .eye_score_lane_passed_o    (eye_score_lane_passed_w),
+        .eye_score_best_o           (eye_score_best_w),
+        .eye_score_best_slip_o      (eye_score_best_slip_w),
+        .eye_score_best_phase_o     (eye_score_best_phase_w),
+        .lane_crc_err_cnt_clr_i     (eye_crc_err_cnt_clr_w),
+        .lane_crc_err_cnt_0_o       (lane_crc_err_cnt_0_w),
+        .lane_crc_err_cnt_1_o       (lane_crc_err_cnt_1_w),
+        .lane_crc_err_cnt_2_o       (lane_crc_err_cnt_2_w),
+        .lane_crc_err_cnt_3_o       (lane_crc_err_cnt_3_w),
+        .lane_crc_err_cnt_4_o       (lane_crc_err_cnt_4_w),
+        .lane_crc_err_cnt_5_o       (lane_crc_err_cnt_5_w),
+        .lane_crc_err_cnt_6_o       (lane_crc_err_cnt_6_w),
+        .lane_crc_err_cnt_7_o       (lane_crc_err_cnt_7_w),
+        .eye_last_slip_o            (eye_last_slip_w),
+        .eye_last_lane_fault_o      (eye_last_lane_fault_w)
     );
 
     // =========================================================================

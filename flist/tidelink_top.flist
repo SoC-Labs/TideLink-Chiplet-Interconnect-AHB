@@ -47,6 +47,11 @@ ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fcsm_debug.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 
+// v2 Eye visibility (docs/EYE_VISIBILITY_RTL_PROPOSAL.md): Region 10 APB
+// shim instantiated in tidelink_top.sv; pairs with the new eye ports on
+// tidelink_phy_align_calibrator.sv.
+${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
+
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv

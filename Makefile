@@ -1,6 +1,7 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_formal clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
-        synth_lint_selftest robust_all sim-repro sim-repro-skid3
+        synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
+        sim-regression
 
 # =============================================================================
 # Silicon-replication test gates (feat/cocotb-robust-silicon-replication)

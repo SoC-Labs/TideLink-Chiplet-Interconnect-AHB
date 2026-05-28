@@ -93,19 +93,33 @@ HAL_FLAGS = -64bit \
 # Add any waivers from the rule file
 HAL_FLAGS += -file $(TIDELINK_HOME)/lint/hal.tcl
 
+# ── Per-module extra include directories ─────────────────────────
+# HAL's `-f <flist>` does NOT honour `+incdir+` directives embedded in the
+# flist (verified locally 2026-05-28 against HAL bundled with Xcelium 23.x).
+# Any module whose RTL contains `\`include "..."` against a non-default
+# search path needs an explicit -incdir on the HAL command line.
+#
+# tidelink_lane_checker (sourced from the tidelink-gpio-phy submodule)
+# `includes tidelink_training_patterns.svh from the same directory; add the
+# submodule's rtl/ to the HAL include path so the parse can find it.
+EXTRA_INCDIRS_tidelink_lane_checker = $(TIDELINK_HOME)/deps/tidelink-gpio-phy/rtl
+EXTRA_INCDIRS = $(EXTRA_INCDIRS_$(MODULE))
+# Translate to HAL syntax: one `-incdir <dir>` per directory.
+HAL_INCDIR_FLAGS = $(foreach d,$(EXTRA_INCDIRS),-incdir $(d))
+
 .PHONY: lint lint-synth lint-all lint-standalone lint-each report gui clean help
 
 # Default target: RTL lint checks for a single module
 lint:
-	$(HAL) $(HAL_FLAGS) -f $(FLIST)
+	$(HAL) $(HAL_FLAGS) $(HAL_INCDIR_FLAGS) -f $(FLIST)
 
 # Synthesizability-focused checks only
 lint-synth:
-	$(HAL) $(HAL_FLAGS) -nohalcheck -f $(FLIST)
+	$(HAL) $(HAL_FLAGS) $(HAL_INCDIR_FLAGS) -nohalcheck -f $(FLIST)
 
 # All checks (RTL + structural + synthesizability) for a single module
 lint-all:
-	$(HAL) $(HAL_FLAGS) -check ALL -f $(FLIST)
+	$(HAL) $(HAL_FLAGS) $(HAL_INCDIR_FLAGS) -check ALL -f $(FLIST)
 
 # Lint all standalone modules (no CMSDK dependency)
 lint-standalone:

@@ -36,8 +36,20 @@ ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 // controller; USE_CLKBUF=0 default → bit-exact passthrough, no primitive).
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // §9 PHY alignment: per-lane lock checker + auto-calibration FSM
-// (instantiated by axi_chiplet_controller, defined in TideLink src/rtl)
-${TIDELINK_HOME}/src/rtl/tidelink_lane_checker.sv
+// (instantiated by axi_chiplet_controller)
+//
+// Integration (feat/td-gpio-phy-integration): tidelink_lane_checker.sv was
+// deleted from src/rtl/ in commit d043909 and superseded by the
+// tidelink-gpio-phy submodule. The four submodule files + include dir are
+// listed inline here (rather than via -f) so this flist remains parseable by
+// flat tools (simple-grep based flow scripts, Vivado read_verilog, etc.).
+// Mirror of deps/tidelink-gpio-phy/rtl/ — keep in sync with
+// flist/tidelink_lane_checker.flist if files are added there.
++incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
 
 // Phase 2 interface-debug instrumentation (TIDELINK_INTERFACE_DEBUG_PLAN §4)

@@ -13,6 +13,35 @@
 #   8. coverage   - Merge VCS coverage from all runs
 #   9. pages      - Dashboard generation
 #  10. cleanup    - Remove workspace
+#
+# Integration-branch pin map (feat/td-gpio-phy-integration)
+# ---------------------------------------------------------
+# The new GPIO-PHY training-pattern subsystem is wired in via two submodules.
+# When working on this branch, the three repos must move together:
+#
+#   parent td-gpio-phy-integ      @ feat/td-gpio-phy-integration
+#   tidelink-gpio-phy submodule   @ main         (>= commit 469a1ec)
+#   axi-chiplet-controller        @ feat/td-gpio-phy-integration
+#                                                 (>= commit 68d625d)
+#
+# What this pipeline picks up automatically:
+#   * `clone` runs `git submodule update --init --recursive`, so both
+#     submodule pointers come along with the parent commit.
+#   * `hal-lint` (stage: lint) runs `lint-standalone` which includes
+#     `tidelink_lane_checker` — the flist `flist/tidelink_lane_checker.flist`
+#     points at deps/tidelink-gpio-phy/rtl/*.sv so the submodule RTL is
+#     covered on every push.
+#   * `cocotb-regression` (stage: regression) instantiates tidelink_top via
+#     `cocotb/tidelink_top/`, which in turn flists in the submodule RTL via
+#     `tidelink_lane_checker.flist`. The new eye-visibility port block in
+#     deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv is
+#     therefore exercised by the existing tidelink_top + tidelink_system
+#     cocotb envs.
+#
+# The submodules also have their own minimal CI (see
+# deps/tidelink-gpio-phy/.github/workflows/ci.yml and
+# deps/axi-chiplet-controller/.github/workflows/lint.yml) so each push to a
+# submodule branch gets its own lint feedback before parent integration.
 
 stages:
   - setup

@@ -1414,6 +1414,21 @@ module axi_chiplet_controller #(
         // together).
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
+        // §9.11c — drive 0 to use the synth-time MIN_LOCK_DWELLS parameter
+        // default. The full APB-tunable register (Region 8 slot 0 bits[7:4])
+        // landed in commit f467ced but was dropped during the eye-visibility
+        // submodule sync (commit b4e27ff); tying to 0 keeps the synth default
+        // in force without re-introducing the lost register. Re-add a 4-bit
+        // swi_cal_min_dwells_r reg if SW-tunable centring is needed again.
+        .min_lock_dwells_i     (4'h0),
+        // §9.11d Fix A1 — post-S_HOLD real-data validation. Drive from the
+        // local Wlink FCSM's "saw the peer's CR_PKT on our RX" sticky flag.
+        // Same clock domain as the calibrator (rx_link_clk) so no CDC. WITHOUT
+        // this wiring the calibrator's S_VALIDATE state stalls on an undriven
+        // cr_pkt_seen_i (X-propagation in sim, floating in synth) — observed
+        // as cal_done=0 stuck-in-HOLD in cocotb/tidelink_top_pair test_01
+        // after the eye-visibility submodule sync regressed this connection.
+        .cr_pkt_seen_i         (obs_cr_pkt_seen_rx_w),
         .bit_slip              (cal_bit_slip_w),
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),

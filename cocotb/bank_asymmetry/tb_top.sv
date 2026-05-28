@@ -246,6 +246,18 @@ module tb_top #(
 
     assign synth_lane_locked = synth_lane_locked_q;
 
+    // Synthesised dwell_min_dist from synth_lane_locked_q (spec §7.1).
+    // Both DUTs see the same synthesised binary lock vector, so they
+    // share the same continuous-distance metric. locked → 5'd0,
+    // unlocked → 5'd16 so the FSM's new lane_dist_pass_w predicate
+    // reproduces the legacy lane_locked-driven pass/fail decisions.
+    logic [39:0] dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++)
+            dwell_min_dist_synth[5*li +: 5] =
+                synth_lane_locked_q[li] ? 5'd0 : 5'd16;
+    end
+
     // -------------------------------------------------------------------------
     // Best-of-sweep DUT — silicon default (EARLY_EXIT_ON_ALL_LOCKED = 0).
     // The cocotb test does NOT touch tb_early_exit_force_q here, so the FSM
@@ -264,14 +276,29 @@ module tb_top #(
         .role_locked           (role_locked),
         .swreset               (swreset),
         .lane_locked           (synth_lane_locked_q),
+        // Spec §7.1: synthesised from synth_lane_locked_q (see decl).
+        .dwell_min_dist_i      (dwell_min_dist_synth),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
+        .min_lock_dwells_i     (4'h0),
+        .cr_pkt_seen_i         (1'b1),
         .bit_slip              (best_bit_slip),
         .phase_offset          (best_phase_offset),
         .training_mode         (best_training_mode),
         .calibration_done      (best_calibration_done),
         .lane_fault            (best_lane_fault),
-        .state                 (best_state)
+        .state                 (best_state),
+        .sweep_active_o        (/* unconnected */),
+        .swi_eye_lane_sel      (3'd0),
+        .swi_eye_dwell_us      (32'd0),
+        .swi_eye_ctrl          (32'd0),
+        .eye_status            (/* unconnected */),
+        .eye_score_idx         (7'd0),
+        .eye_score_data        (/* unconnected */),
+        .eye_score_lane_passed (/* unconnected */),
+        .eye_score_best        (/* unconnected */),
+        .eye_score_best_slip   (/* unconnected */),
+        .eye_score_best_phase  (/* unconnected */)
     );
 
     // -------------------------------------------------------------------------
@@ -290,14 +317,29 @@ module tb_top #(
         .role_locked           (role_locked),
         .swreset               (swreset),
         .lane_locked           (synth_lane_locked_q),
+        // Spec §7.1: synthesised from synth_lane_locked_q (see decl).
+        .dwell_min_dist_i      (dwell_min_dist_synth),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
+        .min_lock_dwells_i     (4'h0),
+        .cr_pkt_seen_i         (1'b1),
         .bit_slip              (first_bit_slip),
         .phase_offset          (first_phase_offset),
         .training_mode         (first_training_mode),
         .calibration_done      (first_calibration_done),
         .lane_fault            (first_lane_fault),
-        .state                 (first_state)
+        .state                 (first_state),
+        .sweep_active_o        (/* unconnected */),
+        .swi_eye_lane_sel      (3'd0),
+        .swi_eye_dwell_us      (32'd0),
+        .swi_eye_ctrl          (32'd0),
+        .eye_status            (/* unconnected */),
+        .eye_score_idx         (7'd0),
+        .eye_score_data        (/* unconnected */),
+        .eye_score_lane_passed (/* unconnected */),
+        .eye_score_best        (/* unconnected */),
+        .eye_score_best_slip   (/* unconnected */),
+        .eye_score_best_phase  (/* unconnected */)
     );
 
 `ifndef VERILATOR

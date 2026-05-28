@@ -70,6 +70,15 @@ module tb_top #(
     output wire [3:0]  first_state
 );
 
+    // Synthesised dwell_min_dist from lane_locked (spec §7.1). Both DUTs
+    // share the same lane_locked stimulus, so they share the synthesised
+    // metric.  locked → 5'd0 (best); unlocked → 5'd16 (worst).
+    logic [39:0] dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++)
+            dwell_min_dist_synth[5*li +: 5] = lane_locked[li] ? 5'd0 : 5'd16;
+    end
+
     // -----------------------------------------------------------------------
     // Best-of-sweep DUT (silicon default — EARLY_EXIT_ON_ALL_LOCKED = 0)
     // -----------------------------------------------------------------------
@@ -84,6 +93,8 @@ module tb_top #(
         .role_locked           (role_locked),
         .swreset               (swreset),
         .lane_locked           (lane_locked),
+        // Spec §7.1: synthesised from lane_locked (see header comment).
+        .dwell_min_dist_i      (dwell_min_dist_synth),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
         .min_lock_dwells_i     (4'h0),
@@ -93,7 +104,19 @@ module tb_top #(
         .training_mode         (best_training_mode),
         .calibration_done      (best_calibration_done),
         .lane_fault            (best_lane_fault),
-        .state                 (best_state)
+        .state                 (best_state),
+        .sweep_active_o        (/* unconnected */),
+        // v2 eye-visibility — tie to safe defaults.
+        .swi_eye_lane_sel      (3'd0),
+        .swi_eye_dwell_us      (32'd0),
+        .swi_eye_ctrl          (32'd0),
+        .eye_status            (/* unconnected */),
+        .eye_score_idx         (7'd0),
+        .eye_score_data        (/* unconnected */),
+        .eye_score_lane_passed (/* unconnected */),
+        .eye_score_best        (/* unconnected */),
+        .eye_score_best_slip   (/* unconnected */),
+        .eye_score_best_phase  (/* unconnected */)
     );
 
     // -----------------------------------------------------------------------
@@ -109,6 +132,8 @@ module tb_top #(
         .role_locked           (role_locked),
         .swreset               (swreset),
         .lane_locked           (lane_locked),
+        // Spec §7.1: synthesised from lane_locked (see header comment).
+        .dwell_min_dist_i      (dwell_min_dist_synth),
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
         .min_lock_dwells_i     (4'h0),
@@ -118,7 +143,19 @@ module tb_top #(
         .training_mode         (first_training_mode),
         .calibration_done      (first_calibration_done),
         .lane_fault            (first_lane_fault),
-        .state                 (first_state)
+        .state                 (first_state),
+        .sweep_active_o        (/* unconnected */),
+        // v2 eye-visibility — tie to safe defaults.
+        .swi_eye_lane_sel      (3'd0),
+        .swi_eye_dwell_us      (32'd0),
+        .swi_eye_ctrl          (32'd0),
+        .eye_status            (/* unconnected */),
+        .eye_score_idx         (7'd0),
+        .eye_score_data        (/* unconnected */),
+        .eye_score_lane_passed (/* unconnected */),
+        .eye_score_best        (/* unconnected */),
+        .eye_score_best_slip   (/* unconnected */),
+        .eye_score_best_phase  (/* unconnected */)
     );
 
     initial begin

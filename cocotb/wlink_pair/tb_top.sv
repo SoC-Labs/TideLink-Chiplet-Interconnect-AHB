@@ -169,27 +169,69 @@ module tb_top #(
     wire [127:0] s_rx_lane_data  = u_slave.u_wlink.phy.gpio.io_link_rx_rx_link_data;
     wire         s_rx_link_clk   = u_slave.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
 
-    // Checker reset: hold while POR is asserted. The bit-slip/training-mode
-    // registers default to zero on power-up, so this naturally behaves like
-    // a pre-training "no-lock" state.
-    wire m_checker_rst = ~m_poresetn;
-    wire s_checker_rst = ~s_poresetn;
+    // Checker reset: hold while POR is asserted. The new lane_checker uses
+    // active-low rst_n. The bit-slip/training-mode registers default to zero
+    // on power-up, so this naturally behaves like a pre-training "no-lock"
+    // state.
+    // tidelink-gpio-phy lane_checker port-set update (2026-05-28):
+    //   * clk + rst_n (active-low; rst -> ~rst)
+    //   * lane_data_i  (was lane_data)
+    //   * lock_thresh_i [23:0] — 8 lanes × 3-bit threshold; default 3 per lane
+    //   * training_mode_w_i / sweep_active_i / clear_noise_i — drive to
+    //     keep the checker in steady-state matching mode for this TB
+    //   * lane_locked_o + observability outputs left unconnected (this TB
+    //     only consumes lane_locked_o for the cocotb sweep).
+    wire m_checker_rst_n = m_poresetn;
+    wire s_checker_rst_n = s_poresetn;
+
+    // Per-lane threshold: pack 8×3'd3 → 24-bit (spec §4.2 default).
+    wire [23:0] checker_lock_thresh = {8{3'd3}};
 
     wire [7:0] master_lane_locked;
     wire [7:0] slave_lane_locked;
 
     tidelink_lane_checker u_master_checker (
-        .clk        (m_rx_link_clk),
-        .rst        (m_checker_rst),
-        .lane_data  (m_rx_lane_data),
-        .lane_locked(master_lane_locked)
+        .clk                (m_rx_link_clk),
+        .rst_n              (m_checker_rst_n),
+        .lane_data_i        (m_rx_lane_data),
+        .lock_thresh_i      (checker_lock_thresh),
+        .training_mode_w_i  (1'b1),
+        .sweep_active_i     (1'b0),
+        .clear_noise_i      (1'b0),
+        .lane_locked_o      (master_lane_locked),
+        .mismatch_pulse_o   (/* unconnected */),
+        .wire_status_o      (/* unconnected */),
+        .dist_raw_o         (/* unconnected */),
+        .dist_voted_o       (/* unconnected */),
+        .dwell_min_dist_o   (/* unconnected */),
+        .noise_min_o        (/* unconnected */),
+        .noise_max_o        (/* unconnected */),
+        .noise_mean_o       (/* unconnected */),
+        .noise_current_o    (/* unconnected */),
+        .canary_pass_o      (/* unconnected */),
+        .canary_valid_o     (/* unconnected */)
     );
 
     tidelink_lane_checker u_slave_checker (
-        .clk        (s_rx_link_clk),
-        .rst        (s_checker_rst),
-        .lane_data  (s_rx_lane_data),
-        .lane_locked(slave_lane_locked)
+        .clk                (s_rx_link_clk),
+        .rst_n              (s_checker_rst_n),
+        .lane_data_i        (s_rx_lane_data),
+        .lock_thresh_i      (checker_lock_thresh),
+        .training_mode_w_i  (1'b1),
+        .sweep_active_i     (1'b0),
+        .clear_noise_i      (1'b0),
+        .lane_locked_o      (slave_lane_locked),
+        .mismatch_pulse_o   (/* unconnected */),
+        .wire_status_o      (/* unconnected */),
+        .dist_raw_o         (/* unconnected */),
+        .dist_voted_o       (/* unconnected */),
+        .dwell_min_dist_o   (/* unconnected */),
+        .noise_min_o        (/* unconnected */),
+        .noise_max_o        (/* unconnected */),
+        .noise_mean_o       (/* unconnected */),
+        .noise_current_o    (/* unconnected */),
+        .canary_pass_o      (/* unconnected */),
+        .canary_valid_o     (/* unconnected */)
     );
 
     // ----- APB master/slave interface (cocotb drives via DUT_M / DUT_S) -------

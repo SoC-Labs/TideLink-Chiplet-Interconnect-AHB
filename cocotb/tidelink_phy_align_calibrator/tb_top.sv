@@ -72,6 +72,19 @@ module tb_top #(
     output logic [3:0]  state
 );
 
+    // Synthesised dwell_min_dist from lane_locked. Spec §7.1 changed the
+    // calibrator's per-lane scoring input from binary lane_locked to a
+    // 5-bit Hamming distance. For this standalone TB (no lane_checker)
+    // we map locked=1 → 5'd0 (best) and locked=0 → 5'd16 (worst), so the
+    // FSM's S_PROBE / S_SWEEP gating predicate `lane_dist_pass_w[i] =
+    // (dwell_min_dist_i[i] <= LOCK_DIST_THRESHOLD)` reproduces the legacy
+    // pass/fail decisions driven by lane_locked.
+    logic [39:0] dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++)
+            dwell_min_dist_synth[5*li +: 5] = lane_locked[li] ? 5'd0 : 5'd16;
+    end
+
     tidelink_phy_align_calibrator #(
         .DWELL_CYCLES (DWELL_CYCLES),
         .LOCK_THRESH  (LOCK_THRESH),
@@ -88,6 +101,15 @@ module tb_top #(
         .role_locked            (role_locked),
         .swreset                (swreset),
         .lane_locked            (lane_locked),
+        // Spec §7.1: per-lane dwell_min_dist from the new lane_checker.
+        // Standalone calibrator TB has no lane_checker — synthesise the
+        // continuous metric from lane_locked so the FSM's S_PROBE /
+        // S_SWEEP arms (which now key on lane_dist_pass_w =
+        // (dwell_min_dist_i <= LOCK_DIST_THRESHOLD)) follow the same
+        // pass/fail decisions as the legacy binary lane_locked input.
+        // Mapping: locked → 5'd0 (perfect); unlocked → 5'd16 (worst).
+        // dwell_min_dist_synth is a TB-local wire computed below.
+        .dwell_min_dist_i       (dwell_min_dist_synth),
         .apb_bit_slip_override  (apb_bit_slip_override),
         .apb_override_enable    (apb_override_enable),
         // §9.11c: drive 0 to use the synth-time MIN_LOCK_DWELLS parameter
@@ -103,7 +125,22 @@ module tb_top #(
         .training_mode          (training_mode),
         .calibration_done       (calibration_done),
         .lane_fault             (lane_fault),
-        .state                  (state)
+        .state                  (state),
+        // Spec §7.2: gates lane_checker vote during S_SWEEP. Unused in this
+        // standalone TB (no lane_checker instantiated); leave unconnected.
+        .sweep_active_o         (/* unconnected */),
+        // v2 eye-visibility ports — tie to safe defaults (MODE=00) so the
+        // datapath stays bit-identical to the pre-v2 RTL.
+        .swi_eye_lane_sel       (3'd0),
+        .swi_eye_dwell_us       (32'd0),
+        .swi_eye_ctrl           (32'd0),
+        .eye_status             (/* unconnected */),
+        .eye_score_idx          (7'd0),
+        .eye_score_data         (/* unconnected */),
+        .eye_score_lane_passed  (/* unconnected */),
+        .eye_score_best         (/* unconnected */),
+        .eye_score_best_slip    (/* unconnected */),
+        .eye_score_best_phase   (/* unconnected */)
     );
 
     initial begin

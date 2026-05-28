@@ -194,7 +194,39 @@ module tb_top #(
         .pad_clk_rx(s_pad_clk_tx_skid), .pad_rx(s_pad_tx_skid),
 
         // IDELAY ports — sim/ASIC bypass (USE_IDELAY=0 default)
-        .idelay_ref_clk(1'b0), .idelay_rst(1'b0)
+        .idelay_ref_clk(1'b0), .idelay_rst(1'b0),
+
+        // v2 eye-visibility surface (tie off — not exercised here)
+        .swi_eye_lane_sel_i      (3'd0),
+        .swi_eye_dwell_us_i      (32'd0),
+        .swi_eye_ctrl_i          (32'd0),
+        .swi_force_phase_en_i    (32'd0),
+        .swi_force_phase_val_i   (32'd0),
+        .swi_force_slip_val_i    (32'd0),
+        .eye_status_o            (),
+        .eye_score_idx_i         (7'd0),
+        .eye_score_data_o        (),
+        .eye_score_lane_passed_o (),
+        .eye_score_best_o        (),
+        .eye_score_best_slip_o   (),
+        .eye_score_best_phase_o  (),
+        // tidelink-gpio-phy lane_checker control + observability (spec §6)
+        .lane_lock_thresh_i      ({8{3'd3}}),
+        .lane_clear_noise_i      (1'b0),
+        .lane_mismatch_pulse_o   (),
+        .lane_wire_status_o      (),
+        .lane_dist_raw_o         (),
+        .lane_dist_voted_o       (),
+        .lane_dwell_min_dist_o   (),
+        .lane_noise_min_o        (),
+        .lane_noise_max_o        (),
+        .lane_noise_mean_o       (),
+        .lane_noise_current_o    (),
+        .lane_canary_pass_o      (),
+        .lane_canary_valid_o     (),
+        .link_rx_clk_o           (),
+        .eye_last_slip_o         (),
+        .eye_last_lane_fault_o   ()
     );
 
     // ----- Slave ─────────────────────────────────────────────────────────────
@@ -295,7 +327,39 @@ module tb_top #(
         .pad_clk_tx(s_pad_clk_tx), .pad_tx(s_pad_tx),
         .pad_clk_rx(m_pad_clk_tx_skid), .pad_rx(m_pad_tx_skid),
 
-        .idelay_ref_clk(1'b0), .idelay_rst(1'b0)
+        .idelay_ref_clk(1'b0), .idelay_rst(1'b0),
+
+        // v2 eye-visibility surface (tie off — not exercised here)
+        .swi_eye_lane_sel_i      (3'd0),
+        .swi_eye_dwell_us_i      (32'd0),
+        .swi_eye_ctrl_i          (32'd0),
+        .swi_force_phase_en_i    (32'd0),
+        .swi_force_phase_val_i   (32'd0),
+        .swi_force_slip_val_i    (32'd0),
+        .eye_status_o            (),
+        .eye_score_idx_i         (7'd0),
+        .eye_score_data_o        (),
+        .eye_score_lane_passed_o (),
+        .eye_score_best_o        (),
+        .eye_score_best_slip_o   (),
+        .eye_score_best_phase_o  (),
+        // tidelink-gpio-phy lane_checker control + observability (spec §6)
+        .lane_lock_thresh_i      ({8{3'd3}}),
+        .lane_clear_noise_i      (1'b0),
+        .lane_mismatch_pulse_o   (),
+        .lane_wire_status_o      (),
+        .lane_dist_raw_o         (),
+        .lane_dist_voted_o       (),
+        .lane_dwell_min_dist_o   (),
+        .lane_noise_min_o        (),
+        .lane_noise_max_o        (),
+        .lane_noise_mean_o       (),
+        .lane_noise_current_o    (),
+        .lane_canary_pass_o      (),
+        .lane_canary_valid_o     (),
+        .link_rx_clk_o           (),
+        .eye_last_slip_o         (),
+        .eye_last_lane_fault_o   ()
     );
 
     // ---------------------------------------------------------------

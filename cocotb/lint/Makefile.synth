@@ -51,7 +51,8 @@ WRAPPER_EXCLUDES := \
 	tidelink_addr_translator.sv \
 	tidelink_apb_addr_ctrl.sv \
 	tidelink_fc_adapter.sv \
-	tidelink_fifo_ctrl.sv
+	tidelink_fifo_ctrl.sv \
+	axi_chiplet_controller.sv
 
 # We deliberately suppress UNUSEDSIGNAL/UNUSEDPARAM — those are very common
 # in our top-level wrappers and not in the silicon-bug class. The signals

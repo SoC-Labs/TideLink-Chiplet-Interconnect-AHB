@@ -45,6 +45,16 @@ module tb_calibrator_robust #(
     output logic [3:0]  state
 );
 
+    // Synthesised dwell_min_dist from lane_locked (spec §7.1). No
+    // lane_checker in this robustness TB; map locked→5'd0,
+    // unlocked→5'd16 so the FSM's continuous-metric scoring path
+    // reproduces the legacy binary-lane_locked semantics.
+    logic [39:0] dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++)
+            dwell_min_dist_synth[5*li +: 5] = lane_locked[li] ? 5'd0 : 5'd16;
+    end
+
     tidelink_phy_align_calibrator #(
         .DWELL_CYCLES (DWELL_CYCLES),
         .NUM_LANES    (NUM_LANES)
@@ -54,13 +64,29 @@ module tb_calibrator_robust #(
         .role_locked            (role_locked),
         .swreset                (swreset),
         .lane_locked            (lane_locked),
+        // Spec §7.1: synthesised from lane_locked (see declaration above).
+        .dwell_min_dist_i       (dwell_min_dist_synth),
         .apb_bit_slip_override  (apb_bit_slip_override),
         .apb_override_enable    (apb_override_enable),
+        .min_lock_dwells_i      (4'h0),
+        .cr_pkt_seen_i          (1'b1),
         .bit_slip               (bit_slip),
+        .phase_offset           (/* unconnected */),
         .training_mode          (training_mode),
         .calibration_done       (calibration_done),
         .lane_fault             (lane_fault),
-        .state                  (state)
+        .state                  (state),
+        .sweep_active_o         (/* unconnected */),
+        .swi_eye_lane_sel       (3'd0),
+        .swi_eye_dwell_us       (32'd0),
+        .swi_eye_ctrl           (32'd0),
+        .eye_status             (/* unconnected */),
+        .eye_score_idx          (7'd0),
+        .eye_score_data         (/* unconnected */),
+        .eye_score_lane_passed  (/* unconnected */),
+        .eye_score_best         (/* unconnected */),
+        .eye_score_best_slip    (/* unconnected */),
+        .eye_score_best_phase   (/* unconnected */)
     );
 
     initial begin

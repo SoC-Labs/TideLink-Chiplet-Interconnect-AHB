@@ -104,6 +104,19 @@ module tb_top #(
     logic        a_training_mode, b_training_mode;
     logic [7:0]  a_lane_fault, b_lane_fault;
 
+    // Synthesised dwell_min_dist from lane_locked (spec §7.1). No
+    // lane_checker in this paired calibrator TB; map locked→5'd0,
+    // unlocked→5'd16 per side so the FSM's continuous-metric scoring
+    // path reproduces the legacy binary-lane_locked semantics.
+    logic [39:0] a_dwell_min_dist_synth;
+    logic [39:0] b_dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++) begin
+            a_dwell_min_dist_synth[5*li +: 5] = a_lane_locked[li] ? 5'd0 : 5'd16;
+            b_dwell_min_dist_synth[5*li +: 5] = b_lane_locked[li] ? 5'd0 : 5'd16;
+        end
+    end
+
     // -------------------------------------------------------------------------
     // Side A
     // -------------------------------------------------------------------------
@@ -120,14 +133,19 @@ module tb_top #(
         .role_locked            (a_role_locked),
         .swreset                (a_swreset),
         .lane_locked            (a_lane_locked),
+        // Spec §7.1: synthesised from a_lane_locked (see header comment).
+        .dwell_min_dist_i       (a_dwell_min_dist_synth),
         .apb_bit_slip_override  (a_swi_force_slip_val_w[23:0]),
         .apb_override_enable    (a_swi_force_phase_en_w[0]),
+        .min_lock_dwells_i      (4'h0),
+        .cr_pkt_seen_i          (1'b1),
         .bit_slip               (a_bit_slip),
         .phase_offset           (a_phase_offset),
         .training_mode          (a_training_mode),
         .calibration_done       (a_calibration_done),
         .lane_fault             (a_lane_fault),
         .state                  (a_state),
+        .sweep_active_o         (/* unconnected */),
         .swi_eye_lane_sel       (a_swi_eye_lane_sel_w),
         .swi_eye_dwell_us       (a_swi_eye_dwell_us_w),
         .swi_eye_ctrl           (a_swi_eye_ctrl_w),
@@ -196,14 +214,19 @@ module tb_top #(
         .role_locked            (b_role_locked),
         .swreset                (b_swreset),
         .lane_locked            (b_lane_locked),
+        // Spec §7.1: synthesised from b_lane_locked (see header comment).
+        .dwell_min_dist_i       (b_dwell_min_dist_synth),
         .apb_bit_slip_override  (b_swi_force_slip_val_w[23:0]),
         .apb_override_enable    (b_swi_force_phase_en_w[0]),
+        .min_lock_dwells_i      (4'h0),
+        .cr_pkt_seen_i          (1'b1),
         .bit_slip               (b_bit_slip),
         .phase_offset           (b_phase_offset),
         .training_mode          (b_training_mode),
         .calibration_done       (b_calibration_done),
         .lane_fault             (b_lane_fault),
         .state                  (b_state),
+        .sweep_active_o         (/* unconnected */),
         .swi_eye_lane_sel       (b_swi_eye_lane_sel_w),
         .swi_eye_dwell_us       (b_swi_eye_dwell_us_w),
         .swi_eye_ctrl           (b_swi_eye_ctrl_w),

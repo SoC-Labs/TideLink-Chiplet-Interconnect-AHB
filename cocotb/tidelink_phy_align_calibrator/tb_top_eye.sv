@@ -103,6 +103,17 @@ module tb_top #(
     // is observable on `eye_crc_err_cnt_clr_w` if a test wants to assert it.
     logic        eye_crc_err_cnt_clr_w;
 
+    // Synthesised dwell_min_dist from lane_locked (spec §7.1). No
+    // lane_checker is instantiated in this TB; map locked→5'd0,
+    // unlocked→5'd16 so the FSM's continuous-metric scoring path
+    // (lane_dist_pass_w) reproduces the legacy binary-lane_locked
+    // pass/fail behaviour that the existing eye tests stimulate.
+    logic [39:0] dwell_min_dist_synth;
+    always_comb begin
+        for (int li = 0; li < 8; li++)
+            dwell_min_dist_synth[5*li +: 5] = lane_locked[li] ? 5'd0 : 5'd16;
+    end
+
     // -------------------------------------------------------------------------
     // DUT — calibrator.
     // -------------------------------------------------------------------------
@@ -119,14 +130,26 @@ module tb_top #(
         .role_locked            (role_locked),
         .swreset                (swreset),
         .lane_locked            (lane_locked),
+        // Spec §7.1: per-lane dwell_min_dist input from new lane_checker.
+        // No lane_checker in this TB → synthesise the continuous metric
+        // from lane_locked so the new FSM scoring (lane_dist_pass_w =
+        // (dwell_min_dist_i <= LOCK_DIST_THRESHOLD)) follows the legacy
+        // binary lane_locked semantics that the eye tests still drive.
+        .dwell_min_dist_i       (dwell_min_dist_synth),
         .apb_bit_slip_override  (swi_force_slip_val_w[23:0]),
         .apb_override_enable    (swi_force_phase_en_w[0]),
+        // §9.11c / §9.11d unit-test defaults (no APB tune, auto-pass S_VALIDATE).
+        .min_lock_dwells_i      (4'h0),
+        .cr_pkt_seen_i          (1'b1),
         .bit_slip               (bit_slip),
         .phase_offset           (phase_offset),
         .training_mode          (training_mode),
         .calibration_done       (calibration_done),
         .lane_fault             (lane_fault),
         .state                  (state),
+        // Spec §7.2: gates lane_checker vote during S_SWEEP. No lane_checker
+        // here → leave unconnected.
+        .sweep_active_o         (/* unconnected */),
 
         // ── v2 eye-visibility surface ────────────────────────────────────
         .swi_eye_lane_sel       (swi_eye_lane_sel_w),

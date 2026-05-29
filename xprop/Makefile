@@ -8,7 +8,8 @@
 # Standalone modules (no CMSDK dependency)
 STANDALONE_ENVS = tidelink_fifo_ctrl tidelink_returner tidelink_apb_regs \
                   tidelink_phc_cdc tidelink_perf tidelink_mul_iter \
-                  tidelink_apb_addr_ctrl tl_addr_trans_cam tl_addr_trans_regs
+                  tidelink_apb_addr_ctrl tl_addr_trans_cam tl_addr_trans_regs \
+                  tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check
 
 # CMSDK-dependent modules
 CMSDK_ENVS = tidelink_fifo tidelink

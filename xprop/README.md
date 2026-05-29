@@ -13,7 +13,7 @@ actually here.
 
 ## Scope
 
-X-propagation runs are checked in for the following 11 modules:
+X-propagation runs are checked in for the following 14 modules:
 
 | Module | Subdir | Notes |
 | --- | --- | --- |
@@ -28,6 +28,9 @@ X-propagation runs are checked in for the following 11 modules:
 | `tidelink_apb_addr_ctrl` | `tidelink_apb_addr_ctrl/` | Standalone, segment-table APB regfile |
 | `tl_addr_trans_cam` | `tl_addr_trans_cam/` | Standalone, combinational priority-encoded CAM |
 | `tl_addr_trans_regs` | `tl_addr_trans_regs/` | Standalone, CAM-translator APB regfile |
+| `tidelink_idelay_rx` | `tidelink_idelay_rx/` | Standalone, ASIC-passthrough mode (USE_IDELAY=0) |
+| `tidelink_rxclk_buf` | `tidelink_rxclk_buf/` | Standalone, ASIC-passthrough mode (USE_CLKBUF=0) |
+| `tidelink_clkfreq_check` | `tidelink_clkfreq_check/` | Standalone, dual-clock window-based ratio checker |
 
 ## NOT covered
 

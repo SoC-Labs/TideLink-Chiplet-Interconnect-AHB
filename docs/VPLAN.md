@@ -68,9 +68,9 @@ Health legend:
 | `tidelink_phc_cdc` | `tidelink_phc_cdc` | — | `tidelink_phc_cdc` | GREEN |
 | `tidelink_perf` | `tidelink_perf`, `tidelink_perf_congestion` | — | `tidelink_perf` | GREEN |
 | `tidelink_phy_align_calibrator` | `tidelink_phy_align_calibrator` (CI unit env — T3/T3.2 + S_PROBE skip, 7 tests), `debug/tidelink_phy_align_calibrator` (scenario-pinned best-of-sweep + eye-visibility), `debug/phy_align`, `debug/calibrator_force_bisect` | `tidelink_top_system` (`test_align_*`) | — | GREEN |
-| `tidelink_idelay_rx` | `tidelink_idelay_rx` | — | — | YELLOW |
-| `tidelink_rxclk_buf` | `tidelink_rxclk_buf` | — | — | YELLOW |
-| `tidelink_clkfreq_check` | `tidelink_clkfreq_check` | — | — | YELLOW |
+| `tidelink_idelay_rx` | `tidelink_idelay_rx` | — | `tidelink_idelay_rx` (ASIC-passthrough mode) | GREEN |
+| `tidelink_rxclk_buf` | `tidelink_rxclk_buf` | — | `tidelink_rxclk_buf` (ASIC-passthrough mode) | GREEN |
+| `tidelink_clkfreq_check` | `tidelink_clkfreq_check` | — | `tidelink_clkfreq_check` | GREEN |
 | `tidelink_mul_iter` | `tidelink_mul_iter` | — | `tidelink_mul_iter` | GREEN |
 | `tidelink_eye_regs` | `tidelink_eye_regs` | — | — | GREEN |
 | **`src/rtl/fifo/` family** | | | | |
@@ -81,10 +81,12 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 21 GREEN, 2 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 24 GREEN, 0 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
-ctrl).
+ctrl). The 1 RED (`tidelink_addr_translation`) is an accepted waiver —
+the module self-documents as "ALTERNATIVE IMPLEMENTATION — NOT
+INSTANTIATED IN THE ACTIVE DESIGN".
 
 ---
 
@@ -336,8 +338,11 @@ which is now scope-banner'd as the FIFO-area test index.
   selection + bit-exact passthrough); `tidelink_rxclk_buf` (4 tests —
   passthru/optout branch selection + bit-exact for each);
   `tidelink_clkfreq_check` (5 tests — matched, mismatch 2:1 / 1:2, ppm
-  drift, link-down silence).
-- **Known gaps:** ASIC build does not exercise these (FPGA-only).
+  drift, link-down silence). xprop now covers all three in their
+  ASIC-passthrough configuration (`USE_IDELAY=0` / `USE_CLKBUF=0` /
+  no FPGA-specific params) — closing the historical "ASIC build does
+  not exercise these" gap. The Xilinx-primitive arms (USE_IDELAY=1,
+  USE_CLKBUF=1) remain FPGA-only and are exercised by Vivado post-route.
 
 ### 3.16 `tidelink_mul_iter` — 32×32 iterative multiplier (PTP servo)
 
@@ -453,10 +458,12 @@ covers only 6 of the 26 envs and is stale — do not cite without re-running.
 
 ### XPROP (Synopsys VC Formal — NOT FPV)
 
-- 11 modules covered: `tidelink` (top, full hierarchy), `tidelink_fifo`,
+- 14 modules covered: `tidelink` (top, full hierarchy), `tidelink_fifo`,
   `tidelink_fifo_ctrl`, `tidelink_apb_regs`, `tidelink_returner`,
   `tidelink_phc_cdc`, `tidelink_perf`, `tidelink_mul_iter`,
-  `tidelink_apb_addr_ctrl`, `tl_addr_trans_cam`, `tl_addr_trans_regs`.
+  `tidelink_apb_addr_ctrl`, `tl_addr_trans_cam`, `tl_addr_trans_regs`,
+  `tidelink_idelay_rx` (ASIC-passthrough mode), `tidelink_rxclk_buf`
+  (ASIC-passthrough mode), `tidelink_clkfreq_check`.
 - Driver: `xprop/Makefile`. Per-module makefiles expose `make xprop`,
   `make gui`, `make clean`. Top-level: `make regression`, `make standalone`.
 - **Explicit scope statement** from `xprop/README.md`: this is xprop only,

@@ -1,5 +1,5 @@
 [Unit]
-Description=TideLink live-eye browser
+Description=TideLink live-lane-phase browser (per-lane phase-vs-lock heatmap)
 After=network.target
 
 [Service]

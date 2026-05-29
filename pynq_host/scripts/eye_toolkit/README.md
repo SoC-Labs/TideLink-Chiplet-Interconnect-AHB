@@ -1,9 +1,18 @@
-# TideLink PHY Eye Toolkit
+# TideLink PHY live-lane-phase Toolkit
 
 A reusable Python toolkit for visualising the per-phase lane lock
 behaviour of the TideLink Wlink PHY on real hardware. Designed to be
 invoked against successive RTL builds (especially calibrator-related
-changes) to objectively measure whether eye-margin has improved.
+changes) to objectively measure whether per-lane phase margin has
+improved.
+
+> **Naming note.** The directory and Python module names
+> (`eye_toolkit/`, `eye_sweep.py`) are retained for historical
+> reasons and to avoid breaking import paths / systemd units.
+> User-visible labels have been updated to **live-lane-phase**,
+> which more accurately describes what is rendered: a per-lane
+> `swi_phase_offset` 0..15 vs lane-locked heatmap, not a
+> conventional time-domain eye diagram.
 
 ## What it measures (v1)
 
@@ -206,7 +215,7 @@ Outputs for deep mode:
 - **`--compare-rtls dir`** — multi-run diff: scan all CSVs in a dir,
   produce a regression grid showing eye-width-per-build over time.
 
-## Live mode (browser UI)
+## Live mode (browser UI — "live-lane-phase")
 
 A FastAPI + Plotly toolkit that wraps the v1 sweep behind a single
 page. Acquires `bridge1`, deploys, converges, sweeps both boards in
@@ -230,7 +239,7 @@ open http://localhost:8088/
 - `eye_dump_bilateral.py` — worked example: capture both dies via the
   peer aperture from one PYNQ host.
 - `tests/test_deep_mode.py` — mocked-IO unit tests for deep mode.
-- `web/` — the FastAPI live-eye browser front-end.
+- `web/` — the FastAPI live-lane-phase browser front-end.
 - `README.md` — this file.
 
 ## Related

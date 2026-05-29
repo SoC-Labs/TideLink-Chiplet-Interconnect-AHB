@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""eye_sweep.py — TideLink PHY eye visualisation toolkit.
+"""eye_sweep.py — TideLink PHY live-lane-phase visualisation toolkit.
+
+Despite the legacy "eye" name in this file and its parent directory,
+what this tool actually emits is a per-lane heatmap of `lane_locked`
+across the 16 possible global `swi_phase_offset` values. It is NOT a
+conventional time-domain eye diagram. The file/module names are kept
+for backwards compatibility with import paths and shipped systemd
+units; user-visible labels in the web UI use "live-lane-phase".
 
 Sweeps the global `swi_phase_offset[3:0]` (PHY_CTRL register bits[20:17])
 on one or two PYNQ-Z2 boards, observes per-lane lock status at each

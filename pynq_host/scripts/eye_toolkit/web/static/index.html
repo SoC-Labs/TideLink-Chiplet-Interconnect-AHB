@@ -3,15 +3,94 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TideLink live-eye</title>
+  <title>TideLink live-lane-phase</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>TideLink live-eye</h1>
+    <h1>TideLink live-lane-phase</h1>
     <div id="lease-info" class="lease-pill state-unknown">lease: <span id="lease-holder">…</span></div>
   </header>
+
+  <section class="about">
+    <details>
+      <summary>About this tool / how to read the heatmap</summary>
+      <div class="about-body">
+        <h3>What this tool is for</h3>
+        <p>
+          The TideLink GPIO PHY has <strong>8 lanes per direction</strong>; each
+          lane has a 4-bit <code>swi_phase_offset</code> that selects which cycle
+          of the 16-cycle deserialiser word writes each bit position. The correct
+          phase per lane depends on physical channel skew, which is heterogeneous
+          across lanes and changes per deploy (count-skew lottery). This tool
+          sweeps the global <code>swi_phase_offset</code> from 0..15 and renders
+          per-lane lock state, exposing the per-lane eye margin and revealing
+          whether the calibrator picked good per-lane phases. Despite the
+          historical "live-eye" name, this is <em>not</em> a conventional
+          time-domain eye diagram — it is a per-lane phase-vs-lock heatmap.
+        </p>
+
+        <h3>What each control does</h3>
+        <ul>
+          <li><strong>Stage dir</strong> — where the bitstream files
+            (<code>tidelink.bin</code>, <code>tidelink-flip.bin</code>) live on
+            mapstone-dev. Default <code>/tmp/tidelink_deploy</code>.</li>
+          <li><strong>Master IP / Slave IP</strong> — SSH endpoints for the two
+            paired boards (typically <code>192.168.4.101</code> and
+            <code>192.168.6.101</code>).</li>
+          <li><strong>Board</strong> — fpgahub board name for the lease and
+            bitstream loading (e.g. <code>pynq_z2_02</code> or
+            <code>pynq_z2_03</code>).</li>
+          <li><strong>Use currently deployed</strong> (checkbox) — assume the
+            bitstream is already loaded; skip the JTAG/USB-IP load step. Use
+            when you have manually deployed and want to sweep without
+            re-flashing.</li>
+          <li><strong>Skip converge</strong> (checkbox) — assume the link is
+            already in 16/16 <code>LINK_IDLE</code> state; skip the
+            <code>bringup_pair_converge.sh</code> loop. Use when the link is
+            already up.</li>
+          <li><strong>Run</strong> (button) — start the sweep. If checkboxes
+            are clear, will deploy + converge first. Acquires the
+            <code>bridge1</code> lease via fpgahub.</li>
+          <li><strong>Abort</strong> (button) — stops the in-progress sweep at
+            the next safe phase boundary. Lease is held until released.</li>
+          <li><strong>Refresh lease</strong> (button) — re-acquires the
+            <code>bridge1</code> lease (4-hour TTL) without re-deploying. Use
+            when your lease is about to expire mid-investigation.</li>
+          <li><strong>State indicator</strong> — shows the workflow stage
+            (<code>idle</code> / <code>leasing</code> / <code>deploying</code> /
+            <code>converging</code> / <code>sweeping</code> / <code>done</code>
+            / <code>error</code>).</li>
+          <li><strong>Lease badge</strong> (top right) — shows the current
+            <code>bridge1</code> lease holder. <code>lease: free</code> means
+            the boards are available. <code>lease: &lt;user&gt;</code> means
+            someone holds it. <code>queue: N</code> is the FCFS queue depth
+            waiting for the lease.</li>
+        </ul>
+
+        <h3>How to read the heatmap</h3>
+        <ul>
+          <li><strong>X-axis</strong>: lanes L0-L7.</li>
+          <li><strong>Y-axis</strong>: <code>swi_phase_offset</code> value
+            (0 at top, 15 at bottom).</li>
+          <li><strong>Green cell</strong>: at this phase, this lane was
+            reported <code>lane_locked = 1</code> (the matcher locked within
+            tolerance).</li>
+          <li><strong>Red cell</strong>: at this phase, the lane was NOT
+            locked (matcher saw d &ge; 4).</li>
+          <li><strong>Healthy pattern</strong>: one ROW all-green (the correct
+            global phase locks all 8 lanes), all other rows all-red.</li>
+          <li><strong>Per-lane heterogeneity pattern</strong> (different
+            green rows for different lanes, no single all-green row): the
+            calibrator did NOT pick a wide-margin eye centre, and lanes need
+            different phases. Often visible as a symptom of the
+            <code>dwell_min_dist</code> calibrator bug (see
+            <code>docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md</code>).</li>
+        </ul>
+      </div>
+    </details>
+  </section>
 
   <section class="controls">
     <form id="run-form" autocomplete="off">

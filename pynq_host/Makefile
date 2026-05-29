@@ -7,9 +7,9 @@ UNIT := tideeye-web.service
 .PHONY: help install-web uninstall-web start-web stop-web
 
 help:
-	@echo "TideLink pynq_host targets:"
+	@echo "TideLink pynq_host targets (live-lane-phase browser):"
 	@echo "  install-web    install $(UNIT) under $(SYSTEMD_USER_DIR)"
-	@echo "  start-web      systemctl --user start tideeye-web"
+	@echo "  start-web      systemctl --user start tideeye-web   # live-lane-phase web UI"
 	@echo "  stop-web       systemctl --user stop tideeye-web"
 	@echo "  uninstall-web  remove the user unit"
 

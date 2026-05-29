@@ -1,4 +1,4 @@
-// TideLink live-eye browser client.
+// TideLink live-lane-phase browser client.
 // Vanilla JS + Plotly. ~250 LoC. No build step.
 "use strict";
 

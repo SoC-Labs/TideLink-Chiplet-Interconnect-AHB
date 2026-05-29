@@ -1,8 +1,17 @@
-# TideLink live-eye browser (web)
+# TideLink live-lane-phase browser (web)
 
 A FastAPI + Plotly toolkit that turns the 4-step manual ritual
-(lease bridge1 -> stage bitstream -> SSH deploy+converge -> SSH eye
-sweep) into "open a URL, click Run, watch the eye render live."
+(lease bridge1 -> stage bitstream -> SSH deploy+converge -> SSH phase
+sweep) into "open a URL, click Run, watch the per-lane phase-vs-lock
+heatmap render live."
+
+Despite the historical "live-eye" name in module / file paths
+(`eye_toolkit/`, `eye_sweep.py`, `tideeye-web.service`), what this
+tool actually renders is a per-lane `swi_phase_offset` 0..15 vs
+lane-locked heatmap — not a conventional time-domain eye diagram.
+The directory and module names are kept stable to avoid breaking
+import paths and the running systemd unit; only user-visible labels
+have been updated.
 
 Reuses the v1 16-phase global sweep in `../eye_sweep.py` (now a
 generator); the future `--mode deep` (per-lane 128-point score grid
@@ -48,7 +57,7 @@ The unit binds `127.0.0.1:8088` and uses `WorkingDirectory=%h/SoCLabs/tidelink`.
 
 ## **DO NOT expose publicly**
 
-> The live-eye server has **no** authentication on its HTTP surface.
+> The live-lane-phase server has **no** authentication on its HTTP surface.
 > The systemd unit binds `127.0.0.1`; any change to `0.0.0.0` would
 > let any host on the lab network drive deploys and consume the
 > `bridge1` lease. The entry-point CLI hard-refuses `--host 0.0.0.0`

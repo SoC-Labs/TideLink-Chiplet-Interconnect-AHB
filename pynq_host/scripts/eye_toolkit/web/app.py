@@ -1,4 +1,4 @@
-"""FastAPI app exposing the live-eye runner via HTTP + SSE."""
+"""FastAPI app exposing the live-lane-phase runner via HTTP + SSE."""
 from __future__ import annotations
 
 import argparse
@@ -54,7 +54,7 @@ def create_app(
     deploy_factory=None,
     sweep_factory=None,
 ) -> FastAPI:
-    app = FastAPI(title="TideLink live-eye", version="1.0.0")
+    app = FastAPI(title="TideLink live-lane-phase", version="1.0.0")
     state = AppState()
     state.lease_client = lease_client
     state.deploy_factory = deploy_factory
@@ -197,14 +197,14 @@ app = create_app()
 
 def main():
     ap = argparse.ArgumentParser(
-        description="TideLink live-eye web server")
+        description="TideLink live-lane-phase web server")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8088)
     args = ap.parse_args()
     if args.host == "0.0.0.0":
         raise SystemExit(
-            "refusing to bind 0.0.0.0 — the live-eye server is loopback-"
-            "only; reach it via `ssh -L 8088:localhost:8088`")
+            "refusing to bind 0.0.0.0 — the live-lane-phase server is "
+            "loopback-only; reach it via `ssh -L 8088:localhost:8088`")
     import uvicorn
     uvicorn.run(
         "pynq_host.scripts.eye_toolkit.web.app:app",

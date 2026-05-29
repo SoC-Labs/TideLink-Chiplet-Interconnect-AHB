@@ -249,7 +249,7 @@ tidelink/
 │   └── tidelink_ptp_stress/         # PTP jitter characterisation UVM env
 ├── flist/                           # Synopsys file lists per module
 ├── syn/asic/                        # ASIC synthesis (Design Compiler, RTL Architect)
-├── formal/                          # Formal verification (xprop)
+├── xprop/                           # X-propagation runs via VC Formal (NOT FPV)
 ├── lint/                            # HAL (Cadence) RTL lint
 ├── docs/
 │   ├── TIDELINK_SPECIFICATION.md    # Full specification and design justification

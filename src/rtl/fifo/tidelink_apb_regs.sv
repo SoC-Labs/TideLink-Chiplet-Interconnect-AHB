@@ -144,10 +144,7 @@ module tidelink_apb_regs #(
     //   0x118: SWI_PHASE_OFFSET         (RW) - [31:0] per-lane sub-bit phase (8 x 4-bit, §9.7)
     //   0x11C: PHY_ALIGN_ID             (RO) - 0x5041_0100
     //
-    // Region 9 (paddr[8:5]=1001, offsets 0x120-0x13F): FCSM debug shim.
-    //   Owned by tidelink_phy_align_regs (instantiated in tidelink_top.sv);
-    //   this APB block returns 0/READY for the range and the parent OR-mux
-    //   substitutes the shim's prdata.  Listed here for context.
+    // Region 9 (paddr[8:5]=1001, offsets 0x120-0x13F): RESERVED, reads 0.
     //
     // Region 10 (paddr[8:5]=1010, offsets 0x140-0x17F): Eye visibility v2.
     //   Owned by tidelink_eye_regs (instantiated in tidelink_top.sv).  As
@@ -521,7 +518,7 @@ module tidelink_apb_regs #(
             4'b1010: begin // Region 10: Eye visibility v2 (tidelink_eye_regs)
                 //   Read mux returns 0 — the parent (tidelink_top.sv)
                 //   substitutes prdata from tidelink_eye_regs via the
-                //   eye_shim_sel OR-mux, identical to the Region 9 pattern.
+                //   eye_shim_sel OR-mux.
                 prdata = '0;
             end
             default: ;

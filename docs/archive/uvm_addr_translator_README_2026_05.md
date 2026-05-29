@@ -1,4 +1,12 @@
-# TideLink Address Translator UVM Verification Plan
+> **ARCHIVED 2026-05-29** — Companion to `uvm_addr_translator_vplan_2026_05.md`.
+> Describes a UVM testbench architecture for the **legacy segment-table design**
+> that no longer exists in RTL. The current CAM-based RTL is verified via
+> cocotb at `cocotb/tidelink_addr_translator/`. Preserved here for design-intent
+> reference (architecture diagram, scoreboard structure, coverage groups).
+
+---
+
+# TideLink Address Translator UVM Verification Plan (legacy segment-table design)
 
 ## 1. Overview
 

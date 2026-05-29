@@ -183,7 +183,6 @@ As of `feat/td-combined` tip 57c2810:
 | Module                       | Findings                                                  |
 |------------------------------|-----------------------------------------------------------|
 | `tidelink_phy_align_calibrator` | clean                                                     |
-| `tidelink_phy_align_regs`    | 3× `UNUSED` (APB `paddr`/`pwdata`/`pstrb` upper bits) — legitimate |
 | `tidelink_lane_checker`      | clean                                                     |
 | **`tidelink_perf`**          | **1× `WIDTH` ERROR at line 493** — 33-bit RHS into 32-bit `perf_reg_rdata`. Real bug; layout comment doesn't match actual width |
 | `tidelink_apb_regs` (FIFO)   | 2× `UNUSED` — APB `paddr` + `reset_n_raw_edge` (intentional CDC edge detect, not consumed) |

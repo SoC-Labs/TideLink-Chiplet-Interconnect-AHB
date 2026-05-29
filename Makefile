@@ -1,4 +1,4 @@
-.PHONY: clean_all clean_uvm clean_cocotb clean_formal clean_lint clean_syn \
+.PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
         synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
         sim-regression
@@ -126,7 +126,7 @@ sim-regression:
 include flows/makefile.asic
 
 # Clean all verification, lint, and synthesis directories
-clean_all: clean_uvm clean_cocotb clean_formal clean_lint clean_syn
+clean_all: clean_uvm clean_cocotb clean_xprop clean_lint clean_syn
 	@echo "All clean targets completed"
 
 # Clean UVM directories
@@ -156,15 +156,15 @@ clean_cocotb:
 	$(MAKE) -C cocotb/tidelink_ptp clean
 	@echo "cocotb clean completed"
 
-# Clean formal verification directories
-clean_formal:
-	@echo "Cleaning formal verification directories..."
-	$(MAKE) -C formal/tidelink clean
-	$(MAKE) -C formal/tidelink_fifo clean
-	$(MAKE) -C formal/tidelink_fifo_ctrl clean
-	$(MAKE) -C formal/tidelink_apb_regs clean
-	$(MAKE) -C formal/tidelink_returner clean
-	@echo "Formal verification clean completed"
+# Clean xprop (X-propagation via VC Formal) directories
+clean_xprop:
+	@echo "Cleaning xprop directories..."
+	$(MAKE) -C xprop/tidelink clean
+	$(MAKE) -C xprop/tidelink_fifo clean
+	$(MAKE) -C xprop/tidelink_fifo_ctrl clean
+	$(MAKE) -C xprop/tidelink_apb_regs clean
+	$(MAKE) -C xprop/tidelink_returner clean
+	@echo "xprop clean completed"
 
 # Clean lint directory
 clean_lint:

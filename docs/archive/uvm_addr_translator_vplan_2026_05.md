@@ -1,4 +1,30 @@
-# TideLink Address Translator Verification Plan
+> **ARCHIVED 2026-05-29** — This vplan describes the **legacy 256-entry segment-table**
+> design (`address_translation` block, 64 segment registers, 256 entries per channel).
+> The RTL was rewritten in commit `04f62c4` ("improving area utilisation by re-writing
+> a number of the address translation components") to a **CAM-based 8-rule match/replace**
+> design (`tl_addr_trans_cam` + `tl_addr_trans_regs`) for area efficiency
+> (~2048 FFs/ch -> ~169 FFs/ch). The associated UVM env was never scaffolded
+> (paper-only directory under `uvm/tidelink_addr_translator/` removed).
+>
+> Equivalent functional verification for the current CAM-based design is
+> implemented in cocotb at `cocotb/tidelink_addr_translator/` (34 tests
+> covering reset, register RW, single/multi-rule translation, priority,
+> global enable, base offset wrap, channel independence, edge cases, rapid
+> reconfiguration, and unmapped-register defaults).
+>
+> Items in this vplan that DO NOT map to current RTL: F3 "64 segment
+> registers/256 entries", F4 "identity mapping on reset", F12 "PSLVERR on
+> ports 2-15" (lightweight mux now only instantiates `NUM_CHANNELS` ports),
+> XF2/XF6 "256:1 for-loop mux xprop". Items still relevant in spirit are
+> covered by the cocotb suite.
+>
+> Preserved here so future engineers can mine design intent (xprop strategy,
+> coverage targets, scoreboard 4-state reference model) if a UVM env is
+> revived for the CAM design.
+
+---
+
+# TideLink Address Translator Verification Plan (legacy segment-table design)
 
 ## 1. Overview
 
@@ -356,8 +382,8 @@ For xprop-specific tests, the testbench uses `force`/`release` via the virtual i
 
 ### 9.3 Future Enhancements
 
-- Formal verification of translation function correctness via VC Formal `check_xprop` (matching the existing `formal/tidelink/xprop.tcl` pattern)
-- Create a dedicated `formal/tidelink_addr_translator/xprop.tcl` for bounded xprop proof of the address translation block
+- Formal verification of translation function correctness via VC Formal `check_xprop` (matching the existing `xprop/tidelink/xprop.tcl` pattern)
+- Create a dedicated `xprop/tidelink_addr_translator/xprop.tcl` for bounded xprop proof of the address translation block
 - Constrained-random segment table programming with coverage-driven closure
 - Integration-level xprop tests exercising address translation within full `tidelink_top` system
 - Gate-level xprop simulation post-synthesis to verify X-optimism assumptions hold

@@ -180,29 +180,16 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_mast
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // §9 PHY alignment: per-lane lock checker + auto-cal FSM
-//   (The original §9 PHY-align shim tidelink_phy_align_regs.sv had its
-//    soft-strap registers moved to Region 8 of the TideLink config APB
-//    @ MMIO 0x4403_2100. The shim file has since been REPURPOSED in
-//    Phase 2 of docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4 as the APB
-//    read-mux for FCSM credit-handshake debug observability — see
-//    headers in src/rtl/tidelink_phy_align_regs.sv and
-//    src/rtl/tidelink_fcsm_debug.sv.)
-//
-// Integration (feat/td-gpio-phy-integration): tidelink_lane_checker.sv was
-// deleted from src/rtl/ in commit d043909 and superseded by the
-// tidelink-gpio-phy submodule. The four submodule files + include dir are
-// listed inline (mirror of flist/tidelink_lane_checker.flist — keep in sync
-// if files are added there).
+//   tidelink_lane_checker.sv was deleted from src/rtl/ in commit d043909 and
+//   superseded by the tidelink-gpio-phy submodule. The four submodule files +
+//   include dir are listed inline (mirror of flist/tidelink_lane_checker.flist
+//   — keep in sync if files are added there).
 +incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
-// Phase 2 interface-debug instrumentation (bind target + APB shim).
-// On ASIC this is harmless extra synth area, well below the noise floor.
-${TIDELINK_HOME}/src/rtl/tidelink_fcsm_debug.sv
-${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 // v2 Eye visibility shim — APB Region 10 read-mux (paddr 0x140..0x17F).
 ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
 // §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0

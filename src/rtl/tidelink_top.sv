@@ -681,90 +681,6 @@ module tidelink_top #(
     assign tl_apb_pwdata  = fc_cfg_apb_active ? fc_cfg_apb_pwdata  : apb_pwdata;
 
     // =========================================================================
-    // Interface-debug shim: tidelink_phy_align_regs (Phase 2 of
-    // docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4).
-    //
-    // Carves out paddr 0x120-0x13F (paddr[8:5]=4'b1001, "Region 9" in the
-    // tidelink_apb_regs decode) within the TideLink config APB region for
-    // FCSM credit-handshake debug observability. tidelink_apb_regs returns
-    // 0 for this range (no decode hit), so we OR the shim's prdata into
-    // tl_apb_prdata via the dbg_shim_sel selector below.
-    //
-    // The shim's input counters/stickies come from tidelink_fcsm_debug,
-    // which is `bind`-instantiated into the master FCSM further below.
-    // =========================================================================
-    wire dbg_shim_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1001);
-
-    wire [SYS_DATA_W-1:0]  dbg_shim_prdata;
-    wire                    dbg_shim_pready;
-    wire                    dbg_shim_pslverr;
-
-    // Counter / sticky / pulse nets — driven by the bind module
-    // (tidelink_fcsm_debug, see bind statement below) which lives inside
-    // the master TideLink FCSM. We read its internal regs via downward
-    // hierarchical reference; Vivado treats these as synthesizable
-    // dataflow paths.
-    wire [7:0]  dbg_cr_rx_count_w;
-    wire [7:0]  dbg_cr_tx_count_w;
-    wire [7:0]  dbg_crack_rx_count_w;
-    wire [7:0]  dbg_crack_tx_count_w;
-    wire        dbg_ever_pkt_is_cr_rx_w;
-    wire        dbg_ever_pkt_is_crack_rx_w;
-    wire        dbg_ever_cr_pkt_seen_rx_w;
-    wire        dbg_ever_crack_pkt_seen_rx_w;
-    wire        dbg_ever_fe_tx_credit_max_loaded_w;
-    wire        dbg_cmd_retry_pulse_w;
-
-    // Hierarchical-reference assignments to the bind-target tidelink_fcsm_debug
-    // u_fcsm_debug were disabled 2026-05-25 — Vivado synth cannot resolve
-    // 'u_chiplet_controller' from inside this IP boundary (the parent is in
-    // the BD, not in the tidelink_top IP). To re-enable, refactor the bind
-    // to expose the debug nets via the Wlink's port list (requires submodule
-    // regen) OR move the bind statement up to tidelink_vivado_wrapper.v scope.
-    //
-    // For now, tie the dbg_*_w wires to 0 so the build synthesises cleanly.
-    // The new APB slots (0x2128/0x2130/0x2138) will read 0; existing
-    // observability (cr_pkt_seen_rx@bit23 in SWI_LANE_STATUS@0x2108) still
-    // works and is sufficient for tomorrow's HW test.
-    assign dbg_cr_rx_count_w                 = 8'h0;
-    assign dbg_cr_tx_count_w                 = 8'h0;
-    assign dbg_crack_rx_count_w              = 8'h0;
-    assign dbg_crack_tx_count_w              = 8'h0;
-    assign dbg_ever_pkt_is_cr_rx_w           = 1'b0;
-    assign dbg_ever_pkt_is_crack_rx_w        = 1'b0;
-    assign dbg_ever_cr_pkt_seen_rx_w         = 1'b0;
-    assign dbg_ever_crack_pkt_seen_rx_w      = 1'b0;
-    assign dbg_ever_fe_tx_credit_max_loaded_w = 1'b0;
-
-    tidelink_phy_align_regs u_fcsm_dbg_regs (
-        .clk        (hclk),
-        .rstn       (hresetn),
-
-        .psel       (dbg_shim_sel),
-        .penable    (tl_apb_penable),
-        .pwrite     (tl_apb_pwrite),
-        .paddr      (tl_apb_paddr),
-        .pwdata     (tl_apb_pwdata),
-        .pstrb      (apb_pstrb),
-        .prdata     (dbg_shim_prdata),
-        .pready     (dbg_shim_pready),
-        .pslverr    (dbg_shim_pslverr),
-
-        .cr_rx_count_i                     (dbg_cr_rx_count_w),
-        .cr_tx_count_i                     (dbg_cr_tx_count_w),
-        .crack_rx_count_i                  (dbg_crack_rx_count_w),
-        .crack_tx_count_i                  (dbg_crack_tx_count_w),
-
-        .ever_pkt_is_cr_rx_i               (dbg_ever_pkt_is_cr_rx_w),
-        .ever_pkt_is_crack_rx_i            (dbg_ever_pkt_is_crack_rx_w),
-        .ever_cr_pkt_seen_rx_i             (dbg_ever_cr_pkt_seen_rx_w),
-        .ever_crack_pkt_seen_rx_i          (dbg_ever_crack_pkt_seen_rx_w),
-        .ever_fe_tx_credit_max_loaded_i    (dbg_ever_fe_tx_credit_max_loaded_w),
-
-        .cmd_retry_pulse_o                 (dbg_cmd_retry_pulse_w)
-    );
-
-    // =========================================================================
     // v2 Eye visibility shim: tidelink_eye_regs (Region 10, paddr 0x140-0x17F).
     //
     // Same OR-mux pattern as the FCSM debug shim above: tidelink_apb_regs
@@ -986,22 +902,18 @@ module tidelink_top #(
 
     // tl_apb_prdata mux: when a shim is selected, return its rdata;
     // otherwise return u_tidelink's APB rdata (tidelink_internal_prdata).
-    // Order: Region 9 (dbg) > Region 10 (eye) > Region 11 (gpio_phy) >
-    // everything else.
+    // Order: Region 10 (eye) > Region 11 (gpio_phy) > everything else.
     wire [SYS_DATA_W-1:0]  tidelink_internal_prdata;
     wire                    tidelink_internal_pready;
     wire                    tidelink_internal_pslverr;
 
-    assign tl_apb_prdata  = dbg_shim_sel       ? dbg_shim_prdata       :
-                            eye_shim_sel       ? eye_shim_prdata       :
+    assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = dbg_shim_sel       ? dbg_shim_pready       :
-                            eye_shim_sel       ? eye_shim_pready       :
+    assign tl_apb_pready  = eye_shim_sel       ? eye_shim_pready       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = dbg_shim_sel       ? dbg_shim_pslverr      :
-                            eye_shim_sel       ? eye_shim_pslverr      :
+    assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
 
@@ -1115,9 +1027,9 @@ module tidelink_top #(
         .ahbs_hrdata       (ahb_fifo_hrdata),
 
         // APB Slave — Config registers (via APB mux: FC adapter + external APB)
-        // prdata/pready/pslverr now go through tidelink_internal_* so the
-        // debug shim (tidelink_phy_align_regs, paddr 0x120-0x13F) can
-        // arbitrate; see the dbg_shim block above.
+        // prdata/pready/pslverr go through tidelink_internal_* so the eye
+        // (Region 10) and gpio_phy (Region 11) shims can arbitrate via the
+        // tl_apb_prdata mux above.
         .apbs_psel         (tl_apb_psel),
         .apbs_penable      (tl_apb_penable),
         .apbs_pwrite       (tl_apb_pwrite),
@@ -2161,51 +2073,5 @@ module tidelink_top #(
     // Link active status — role_locked_o indicates Wlink link is operational
     // =========================================================================
     assign link_active = role_locked_o;
-
-    // =========================================================================
-    // Phase 2 interface debug: bind tidelink_fcsm_debug to every instance
-    // of the master TideLink FCSM module (WlinkGenericFCSM_6). The
-    // design instantiates only ONE WlinkGenericFCSM_6 — at
-    //   u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
-    // (WlinkGenericFCSM_6 → instance `wlink_tidelinktl` inside
-    // TideLinkToWlink → instance `tl2wl` inside Wlink → instance
-    // `u_wlink` inside axi_chiplet_controller → instance
-    // `u_chiplet_controller` here) — so `bind WlinkGenericFCSM_6 ...`
-    // is unambiguous. Module-form bind preferred over instance-form
-    // for Verilator 4.028 compatibility.
-    //
-    // Source-signal verification (WlinkGenericFCSM_6.v):
-    //   wlink_tidelinktl.pkt_is_cr_pkt        @ line 174 (wire)
-    //   wlink_tidelinktl.pkt_is_crack_pkt     @ line 176 (wire)
-    //   wlink_tidelinktl.cr_pkt_seen_rx       @ line 183 (reg)
-    //   wlink_tidelinktl.crack_pkt_seen_rx    @ line 184 (reg)
-    //   wlink_tidelinktl.fe_tx_credit_max     @ line 190 (reg [7:0])
-    //
-    // PORT-MAP RESOLUTION — port expressions on the bind instantiation
-    // are elaborated in the BOUND-MODULE scope (FCSM_6). Unqualified
-    // names (pkt_is_cr_pkt, etc.) resolve to FCSM internal nets.
-    // Qualified names (tidelink_top.hclk, etc.) reach UP to the
-    // binding scope here for clock / reset / pulse routing.
-    //
-    // The bind module exposes its internal counter and sticky regs via
-    // downward hierarchical reference (see the `assign dbg_*_w = ...`
-    // block above the shim instantiation). The bind module itself has
-    // no output ports.
-    // =========================================================================
-    // Bind to WlinkGenericFCSM_6 was disabled 2026-05-25 — it depends on
-    // upward-hier-ref to tidelink_top scope which crosses the IP boundary
-    // and breaks Vivado synth. The bind+observer pattern is preserved in
-    // src/rtl/tidelink_fcsm_debug.sv for future re-enablement; the proper
-    // fix is to either expose the observability nets via the Wlink's port
-    // list (needs submodule Chisel regen) or move the bind up to the BD
-    // scope where u_chiplet_controller is visible.
-    //
-    // For tomorrow's HW test, the existing SWI_LANE_STATUS@0x2108[23:24]
-    // (cr_pkt_seen_rx + crack_pkt_seen_rx sticky bits) is sufficient.
-    //
-    // bind WlinkGenericFCSM_6
-    //     tidelink_fcsm_debug u_fcsm_debug (
-    //         ... see prior versions for the binding details ...
-    //     );
 
 endmodule

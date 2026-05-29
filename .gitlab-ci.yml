@@ -279,7 +279,7 @@ cocotb-regression:
     - make -C "$WORK_DIR/cocotb" coverage
   after_script:
     - mkdir -p cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
         mkdir -p "cocotb/$env";
         cp "$WORK_DIR/cocotb/$env/run.log"      "cocotb/$env/" 2>/dev/null || true;
         cp "$WORK_DIR/cocotb/$env/.result"       "cocotb/$env/" 2>/dev/null || true;
@@ -288,7 +288,7 @@ cocotb-regression:
     - cp -r "$WORK_DIR/cocotb/coverage_report" cocotb/ 2>/dev/null || true
     # Collect VDB coverage databases for final merge
     - mkdir -p coverage_vdbs/cocotb
-    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink tidelink_ahb tidelink_py_pair tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
+    - for env in tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl tidelink tidelink_ahb tidelink_py_pair tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp_servo; do
         cp -r "$WORK_DIR/cocotb/$env/coverage.vdb" "coverage_vdbs/cocotb/${env}.vdb" 2>/dev/null || true;
         cp -r "$WORK_DIR/cocotb/$env/sim_build/simv.vdb" "coverage_vdbs/cocotb/${env}_simv.vdb" 2>/dev/null || true;
       done

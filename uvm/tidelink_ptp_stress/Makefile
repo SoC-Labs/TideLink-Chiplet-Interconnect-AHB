@@ -141,7 +141,6 @@ VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
 
 # TideLink performance counters
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_regs.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_lane_checker.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
 

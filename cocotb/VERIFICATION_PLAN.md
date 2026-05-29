@@ -1,8 +1,19 @@
 # TideLink Verification Plan
 
-This document defines the comprehensive verification plan for the TideLink
-credit-based FIFO interface. It covers unit-level, integration-level, and
-system-level tests required to fully verify the design.
+> **Scope note (last refreshed 2026-05-29):** this document is the
+> **FIFO-era test index only**. It covers the FIFO / APB regs / returner /
+> AHB wrapper / `tidelink_py_pair` / PTP / PTP-servo / PHC-CDC / iterative
+> multiplier areas of the design. It does **not** cover the full
+> `tidelink_top` integration or the PHY / autoneg / calibrator / IDELAY /
+> RX-clock-buf / perf / address-translator / FC-adapter / clkfreq-check
+> modules that landed after this doc was last refreshed. See the
+> "Out of scope for this document" section at the bottom for the explicit
+> list, and the (planned) module-indexed `docs/VPLAN.md` for the
+> authoritative full-design vplan.
+
+This document defines the verification plan for the TideLink FIFO-era
+credit-based interface. It covers unit-level, integration-level, and
+system-level tests for the modules listed above.
 
 ## Architecture Overview
 
@@ -279,60 +290,6 @@ The servo test suite has been updated to reflect servo area optimisations:
 
 See `cocotb/tidelink_ptp_servo/SERVO_OPT_VPLAN.md` for the full servo optimisation verification plan.
 
-### 10. tidelink_tidechart (TideChart / PUF Integration Tests)
-
-Tests target the TideChart AXI-Stream interface (`tc_axis_*`) on `tidelink_top` and the PUF
-SRAM read mechanism in `tidelink_fc_adapter`.
-
-#### 10a. PUF Local Read Handler Tests
-
-| ID      | Test Name                           | Description                                                                 | Status |
-|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
-| TC-01   | PUF read single word                | Send PUF_READ_REQ (subtype=0x0020), verify PUF_READ_RSP (subtype=0x0021) on tc_axis_tx with correct SRAM data | New |
-| TC-02   | PUF read multiple addresses         | Issue PUF_READ_REQ for several SRAM addresses, verify each returns correct data | New |
-| TC-03   | PUF read local only                 | Verify PUF_READ_REQ does not produce any FC TX activity (no die-to-die traffic) | New |
-| TC-04   | PUF read does not appear on tc_axis_tx as REQ | Verify PUF_READ_REQ is intercepted locally and not forwarded to tc_axis_tx | New |
-| TC-05   | PUF read after SRAM write           | Write known data to SRAM via FIFO path, then PUF read same address — returns written data (not PUF entropy) | New |
-
-#### 10b. Remote PKT_EXT Forwarding Tests
-
-| ID      | Test Name                           | Description                                                                 | Status |
-|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
-| TC-06   | PKT_EXT RX to tc_axis_tx           | Inject PKT_EXT FC word on FC RX, verify it appears on tc_axis_tx_tvalid/tdata | New |
-| TC-07   | PKT_EXT tc_axis_rx to FC TX        | Drive PKT_EXT on tc_axis_rx, verify it appears on FC TX interface           | New |
-| TC-08   | PKT_EXT round-trip                  | Send PKT_EXT through FC TX, loopback, verify arrival on tc_axis_tx          | New |
-| TC-09   | PKT_EXT subtype preserved           | Verify subtype field is preserved end-to-end for non-PUF subtypes           | New |
-| TC-10   | PKT_EXT payload integrity           | Randomised payloads, verify bit-exact preservation                          | New |
-| TC-11   | PKT_EXT concurrent with FIFO_DATA   | Send PKT_EXT and FIFO_DATA simultaneously, verify both paths operate correctly | New |
-
-#### 10c. SRAM Arbiter Priority Tests
-
-| ID      | Test Name                           | Description                                                                 | Status |
-|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
-| TC-12   | FC write priority over AHB read     | Concurrent FC write and CPU AHB read, verify FC completes first (CPU stalled) | New |
-| TC-13   | FC write priority over PUF read     | Concurrent FC write and PUF read, verify FC completes first (PUF stalled)   | New |
-| TC-14   | AHB priority over PUF read          | Concurrent AHB read and PUF read, verify AHB completes first               | New |
-| TC-15   | PUF read completes when idle        | No FC or AHB activity, verify PUF read completes without stall              | New |
-| TC-16   | Sustained FC writes delay PUF       | Burst of FC writes during PUF read, verify PUF eventually completes         | New |
-
-#### 10d. tc_axis Backpressure Tests
-
-| ID      | Test Name                           | Description                                                                 | Status |
-|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
-| TC-17   | tc_axis_tx backpressure             | Deassert tc_axis_tx_tready, verify PKT_EXT held and FC RX stalled           | New |
-| TC-18   | tc_axis_tx tready reassert          | Deassert then reassert tready, verify held PKT_EXT delivered correctly      | New |
-| TC-19   | tc_axis_rx backpressure             | Drive tc_axis_rx_tvalid while TC TX arbiter is busy, verify tready deasserts | New |
-| TC-20   | tc_axis_rx back-to-back             | Two consecutive PKT_EXT packets on tc_axis_rx, verify both transmitted      | New |
-
-#### 10e. PUF Isolation Tests
-
-| ID      | Test Name                           | Description                                                                 | Status |
-|---------|-------------------------------------|-----------------------------------------------------------------------------|--------|
-| TC-21   | PUF does not corrupt FIFO pointers  | Issue PUF reads, verify FIFO write_ptr and read_ptr unchanged               | New |
-| TC-22   | PUF does not corrupt credit count   | Issue PUF reads, verify credit_count unchanged                              | New |
-| TC-23   | PUF does not affect FIFO data       | Write packet to FIFO, PUF read different address, read back FIFO packet — data intact | New |
-| TC-24   | FIFO operation after PUF reads      | Complete PUF reads, then full FIFO write/read cycle, verify normal operation | New |
-
 ## Known Bugs
 
 ### BUG-002: No credit underflow protection
@@ -356,21 +313,31 @@ corrupt.
 | BUG-003 | Dead code — `ptr_offset` register computed but unused | Fixed: `ptr_offset` removed from `tidelink_fifo_ctrl`. |
 | BUG-004 | Channel 0 delta and channel 1 total wrote to same address | Fixed: channel 0 targets `PAIR_RELEASED_CREDITS_ADDR` (0x020), channel 1 targets `PAIR_DOORBELL_RESPONSE_ADDR` (0x024) — separate accumulators. Proven by TOP-07, AHBW-10. |
 | BUG-005 | CDC Path 2 handshake deadlock — `tidelink_phc_cdc.sv` Path 2 (free-running PHC time) used req/ack handshake where both toggle signals reset to 0. Neither side initiates the first transfer, so `h_phc_nanoseconds`/`h_phc_seconds` stay at 0 forever after reset. | Fixed: reset `time_req_toggle_h` to `1'b1` to kick-start the handshake. Proven by LG-02 (gate allows arm when PHC time advances). |
-| BUG-004 | Channel 0 delta and channel 1 total wrote to same address | Fixed: channel 0 targets `PAIR_RELEASED_CREDITS_ADDR` (0x020), channel 1 targets `PAIR_DOORBELL_RESPONSE_ADDR` (0x024) — separate accumulators. Proven by TOP-07, AHBW-10. |
 
 ## Running Tests
 
+`make regression` from `cocotb/` runs the full env list declared in
+`cocotb/Makefile`'s `ENVS` variable. **As of 2026-05-29 that list has 17
+environments**; the per-suite test counts above (~201 tests) only cover
+the **subset of envs documented in this file** (FIFO / returner / APB
+regs / `tidelink` / AHB wrapper / `py_pair` / PTP / PTP-servo / multiplier).
+The other envs in `ENVS` (PHY / autoneg / calibrator / IDELAY / RX-clock-buf /
+perf / address-translator / FC-adapter / `phc_cdc` / `clkfreq_check`) are
+**out of scope for this document** — see the section at the bottom.
+
 ```bash
-# Run all test suites (9 environments, 168 tests)
+# Run the full env list (17 envs as of 2026-05-29 — see cocotb/Makefile ENVS)
 cd cocotb && make regression
 
-# Run individual suites
+# Run individual suites documented in this file
 cd cocotb/tidelink_fifo && make
 cd cocotb/tidelink_returner && make
 cd cocotb/tidelink_apb_regs && make
 cd cocotb/tidelink && make
 cd cocotb/tidelink_ahb && make
 cd cocotb/tidelink_py_pair && make
+cd cocotb/tidelink_ptp_servo && make
+cd cocotb/tidelink_mul_iter && make
 
 # Run full regression with VCS code coverage collection
 cd cocotb && make coverage
@@ -385,7 +352,13 @@ VCS code coverage is collected via `make coverage` at the top-level cocotb
 Makefile. Each environment is compiled and simulated with `-cm line+cond+fsm+tgl+branch`,
 and per-environment reports are generated with `urg` under `coverage_report/<env>/`.
 
-### Coverage Summary (as of 2026-03-29)
+### Coverage Summary (snapshot from 2026-03-29 — STALE, re-run `make coverage`)
+
+> The numbers below are the last published coverage snapshot. They cover
+> only **6 of the 17 envs** currently in `cocotb/Makefile`'s `ENVS` list
+> and were captured before any of the post-2026-03-29 envs were added.
+> Re-run `make coverage` to regenerate `coverage_report/<env>/dashboard.txt`
+> per environment, then refresh this table from those reports.
 
 | Environment       | Score | Line   | Cond  | Toggle | FSM   | Branch |
 |-------------------|-------|--------|-------|--------|-------|--------|
@@ -404,3 +377,25 @@ and per-environment reports are generated with `urg` under `coverage_report/<env
 | FSM `ST_ADDR_PHASE → ST_IDLE` | `tidelink_returner` | Unusual AHB error-abort edge case; low priority |
 | `cmsdk_ahb_to_apb` bridge low coverage | `tidelink_ahb` | Add coverage tests to `tidelink_ahb` environment (wait states, error injection via AHB config port) |
 | Condition coverage on `valid_transfer` sub-expressions | `tidelink_fifo_ctrl` | Tests with hsel=0 or htrans=IDLE mid-transfer |
+
+## Out of scope for this document
+
+The following modules are part of the current design but are **not covered
+here**. They have either their own cocotb env under `cocotb/<env>/` (run by
+`make regression` via `cocotb/Makefile`'s `ENVS` list) or no committed env
+yet. They will be folded into the planned module-indexed `docs/VPLAN.md`
+when that document lands; until then, treat this list as the pointer.
+
+- `tidelink_top` — top-level chiplet wrapper (env: `cocotb/tidelink_top/`)
+- `tidelink_fc_adapter` — FC TX/RX + sideband adapter (env: `cocotb/tidelink_fc_adapter/`; `full_test` excluded from CI)
+- `tidelink_addr_translator` — CAM-based address translation (env: `cocotb/tidelink_addr_translator/`)
+- `tidelink_autoneg` — autoneg FSM, role lock, I²C arbitration (env: `cocotb/tidelink_autoneg/`)
+- `tidelink_perf*` — perf counter block + congestion estimator + C-driver (envs: `cocotb/tidelink_perf/`, `tidelink_perf_cdriver/`, `tidelink_perf_congestion/`)
+- `tidelink_phy_align_calibrator` — §9.9 best-of-sweep widest-eye selection (env: `cocotb/tidelink_phy_align_calibrator/`)
+- `tidelink_idelay_rx` — per-lane IDELAYE2 wrapper (env: `cocotb/tidelink_idelay_rx/`)
+- `tidelink_rxclk_buf` — recovered-RX-clock BUFG wrapper (env: `cocotb/tidelink_rxclk_buf/`)
+- `tidelink_clkfreq_check` — FPGA clk_wiz output sanity check (env: `cocotb/tidelink_clkfreq_check/`)
+- `tidelink_phc_cdc` — PHC ↔ AHB handshake CDC (env: `cocotb/tidelink_phc_cdc/`)
+
+For the broader index of all envs (including pair-bringup / phy_align /
+i2c / sim_robust / etc.) see `cocotb/README.md`.

@@ -251,30 +251,16 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
 
 // ── §9 PHY alignment: per-lane training-pattern lock checker + auto-cal FSM ──
-//   (Original interim shim tidelink_phy_align_regs.sv was once removed —
-//    its §9 PHY-align registers moved to Region 8 of the TideLink config
-//    APB @ MMIO 0x4403_2100. The shim file has been REPURPOSED in Phase 2
-//    of docs/TIDELINK_INTERFACE_DEBUG_PLAN.md §4 as the APB read-mux for
-//    FCSM credit-handshake debug observability — see header in
-//    src/rtl/tidelink_phy_align_regs.sv and src/rtl/tidelink_fcsm_debug.sv.)
-// Integration (feat/td-gpio-phy-integration): tidelink_lane_checker.sv was
-// deleted from src/rtl/ in commit d043909 and superseded by the
-// tidelink-gpio-phy submodule. The four submodule files + include dir are
-// listed inline (mirror of flist/tidelink_lane_checker.flist — keep in sync
-// if files are added there).
+//   tidelink_lane_checker.sv was deleted from src/rtl/ in commit d043909 and
+//   superseded by the tidelink-gpio-phy submodule. The four submodule files +
+//   include dir are listed inline (mirror of flist/tidelink_lane_checker.flist
+//   — keep in sync if files are added there).
 +incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
-
-// ── Phase 2 interface-debug instrumentation (TIDELINK_INTERFACE_DEBUG_PLAN §4)
-//   tidelink_fcsm_debug is `bind`-attached to WlinkGenericFCSM_6 in
-//   tidelink_top.sv; tidelink_phy_align_regs is the APB read-mux for the
-//   resulting counters / sticky bits / CMD_FCSM_RETRY pulse.
-${TIDELINK_HOME}/src/rtl/tidelink_fcsm_debug.sv
-${TIDELINK_HOME}/src/rtl/tidelink_phy_align_regs.sv
 
 // ── Performance profiling ────────────────────────────────────────────────────
 ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv

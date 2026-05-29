@@ -28,7 +28,6 @@ STANDALONE_MODULES = \
   tidelink_mul_iter \
   tidelink_perf \
   tidelink_phc_cdc \
-  tidelink_phy_align_regs \
   tidelink_phy_align_calibrator \
   tidelink_ptp \
   tidelink_ptp_servo \

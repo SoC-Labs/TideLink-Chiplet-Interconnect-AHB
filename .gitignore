@@ -2,6 +2,7 @@ sim/*
 !Makefile
 cocotb/*/__pycache__/
 cocotb/*/sim_build/
+cocotb/*/sim_build_*/
 *.vcd
 *.log
 *.key

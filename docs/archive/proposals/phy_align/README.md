@@ -1,4 +1,4 @@
-# `staging/phy_align/` — Autonomous calibration FSM (DESIGN PROTOTYPE)
+# `docs/archive/proposals/phy_align/` — Autonomous calibration FSM (DESIGN PROTOTYPE)
 
 This directory contains a design-only prototype of the §9.6 / §2.2
 autonomous PHY-align calibration FSM for the TideLink Wlink PHY. It is
@@ -26,7 +26,7 @@ References:
 To run:
 
 ```
-$ cd staging/phy_align
+$ cd docs/archive/proposals/phy_align
 $ make
 ```
 

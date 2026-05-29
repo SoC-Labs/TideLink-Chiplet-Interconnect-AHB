@@ -11,7 +11,7 @@ TideLink's I2C autonomy stack has three operational layers:
 2. **Mask handshake** — verifies peer lane masks match. **Operational on silicon** after Bug #3 fix.
 3. **I2C-coordinated training** — synchronizes `SWI_TRAINING_MODE` entry/exit. **Design-only, not in RTL.**
 
-Build #3 today still requires three SW pokes after deploy: `SWI_TRAINING_MODE=1` on each side, wait for cal, then `SWI_TRAINING_MODE=0` + swreset. For ASIC autonomy, the missing piece is **automated training-mode entry/exit on both sides within bounded I2C-coordinated skew** — the protocol is fully designed in [staging/i2c_train/I2C_TRAIN_PROTOCOL.md](staging/i2c_train/I2C_TRAIN_PROTOCOL.md), the reference state RTL is in [staging/i2c_train/tidelink_autoneg_train_states.sv](staging/i2c_train/tidelink_autoneg_train_states.sv), but the state machine is not yet integrated into `axi_chiplet_controller.sv`.
+Build #3 today still requires three SW pokes after deploy: `SWI_TRAINING_MODE=1` on each side, wait for cal, then `SWI_TRAINING_MODE=0` + swreset. For ASIC autonomy, the missing piece is **automated training-mode entry/exit on both sides within bounded I2C-coordinated skew** — the protocol is fully designed in [docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md](docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md), the reference state RTL is in [docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv](docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv), but the state machine is not yet integrated into `axi_chiplet_controller.sv`.
 
 ## 1. What exists today
 
@@ -59,7 +59,7 @@ Branch tip a657306 (2026-05-20) is a submodule mark_debug bump. The real work is
 Bug #3 (d06d495) was a **third** fix that surfaced after the memory entry was written.
 
 ### Training-mode coordination (designed, not RTL)
-- **Spec:** [staging/i2c_train/I2C_TRAIN_PROTOCOL.md](staging/i2c_train/I2C_TRAIN_PROTOCOL.md)
+- **Spec:** [docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md](docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md)
 - Master-driven FSM: `ST_TRAIN_ENTER → ST_TRAIN_RUN → ST_TRAIN_POLL_PEER → ST_TRAIN_EXIT → ST_TRAIN_DONE`
 - 1. ENTER: master I2C-writes peer's `SWI_TRAINING_MODE := 1` AND writes own locally
 - 2. RUN: calibrator FSMs sweep; master dwells `T_TRAIN_FSM = 4096 apb_clk ≈ 41 µs`
@@ -69,7 +69,7 @@ Bug #3 (d06d495) was a **third** fix that surfaced after the memory entry was wr
 - **Timing:** ~2.8 ms typical, ~17 ms worst-case. Well below 5-second deploy budget.
 - **New registers (§3.1):** `NEGO_TRAIN_CFG@0x090`, `NEGO_TRAIN_STATUS@0x094`, `SWI_TRAINING_MODE@0x098` (dual-write), `SWI_LANE_LOCKED@0x0A0` (dual-read), `SWI_LANE_FAULT@0x0A4`, `SWI_BIT_SLIP_LO@0x0A8`
 - **Cocotb scaffolding:** `cocotb/i2c_mask_selflock/`, `cocotb/i2c_clkstretch/`
-- **Reference RTL skeleton:** [staging/i2c_train/tidelink_autoneg_train_states.sv](staging/i2c_train/tidelink_autoneg_train_states.sv) — defines `ST_TRAIN_*` states but not wired into main FSM
+- **Reference RTL skeleton:** [docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv](docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv) — defines `ST_TRAIN_*` states but not wired into main FSM
 
 ## 3. Gap analysis — FPGA pokes vs ASIC autonomy
 
@@ -104,7 +104,7 @@ Bug #3 (d06d495) was a **third** fix that surfaced after the memory entry was wr
 - **Unblocks training-mode exit and FCSM state advance**
 
 ### Phase B — Port training FSM to RTL (3-5 days)
-1. Extend `tidelink_autoneg.sv` with `ST_NEGO_DONE_PRE` + 5 `ST_TRAIN_*` states (copy skeleton from `staging/i2c_train/tidelink_autoneg_train_states.sv`)
+1. Extend `tidelink_autoneg.sv` with `ST_NEGO_DONE_PRE` + 5 `ST_TRAIN_*` states (copy skeleton from `docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv`)
 2. Update register block (`tidelink_regs.rdl`) — new registers per protocol §3.1
 3. Gate on `train_auto_en` from `NEGO_TRAIN_CFG[0]` for backward compatibility
 4. Cocotb regression:
@@ -171,8 +171,8 @@ If user wants ASIC autonomy:
 
 - `deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv` (autoneg FSM)
 - `deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v` (I2C master)
-- `staging/i2c_train/I2C_TRAIN_PROTOCOL.md` (training spec)
-- `staging/i2c_train/tidelink_autoneg_train_states.sv` (state skeleton)
+- `docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md` (training spec)
+- `docs/archive/proposals/i2c_train/tidelink_autoneg_train_states.sv` (state skeleton)
 - `pynq_host/scripts/deploy_pair.sh` (current APB pokes)
 - `docs/BRINGUP_DETERMINISM_I2C_PLAN_2026_05_28.md` (original proposal)
 - Memory: `project_tidelink_i2c_autonomy.md`

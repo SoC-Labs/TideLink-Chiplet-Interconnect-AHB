@@ -1,5 +1,5 @@
 # =============================================================================
-# staging/phy_align — standalone cocotb test for wlink_phy_align_calibrator
+# docs/archive/proposals/phy_align — standalone cocotb test for wlink_phy_align_calibrator
 # =============================================================================
 #
 # This sim builds ONLY the FSM under test; no Wlink stack, no chiplet

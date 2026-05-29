@@ -130,9 +130,15 @@ module axi_chiplet_controller #(
     // ── Controller Register Pass-Through (from tidelink_apb_regs) ────────
     //   ctrl_reg_addr[3]=0 → Region 4 (legacy: ROLE/I²C/NEGO @ 0x080-0x09C)
     //   ctrl_reg_addr[3]=1 → Region 8 (new:    SWI_*/NEGO_TRAIN_* @ 0x100-0x11C)
-    input  wire             ctrl_reg_write,
-    input  wire  [3:0]      ctrl_reg_addr,
-    input  wire  [31:0]     ctrl_reg_wdata,
+    //
+    // Bug N2 fix (2026-05-29): the input ports were renamed to
+    // `apb_ctrl_reg_*` (external CPU/AHB→APB master from tidelink_apb_regs).
+    // Internal nets `ctrl_reg_*` are OR-merged below with a slv_apb_*
+    // (I²C-driven) decode so that the peer's I²C-write to Region 4/8 lands
+    // on the same decoder. See block titled "Bug N2 fix" below.
+    input  wire             apb_ctrl_reg_write,
+    input  wire  [3:0]      apb_ctrl_reg_addr,
+    input  wire  [31:0]     apb_ctrl_reg_wdata,
     output logic [31:0]     ctrl_reg_rdata,
 
     // ── Wlink APB (external, from tidelink_top decode) ───────────────────
@@ -377,6 +383,85 @@ module axi_chiplet_controller #(
     // =====================================================================
     wire apb_reset     = ~hresetn;
     wire app_clk_reset = ~hresetn;
+
+    // =====================================================================
+    // Bug N2 fix (2026-05-29) — slv_apb_* fan-out to Region 4/8 + readback
+    //
+    // Diagnosis (docs/BUG_N2_DIAGNOSIS.md): the slave's I²C-driven APB ingress
+    // (slv_apb_*) used to be muxed solely onto the Wlink core (wl_apb_*).
+    // Region 4 / Region 8 chiplet-controller registers (ROLE_CFG, NEGO_*,
+    // SWI_TRAINING_MODE @ 0x100, SWI_LANE_STATUS @ 0x108, …) sit BEHIND
+    // ctrl_reg_write / ctrl_reg_addr / ctrl_reg_wdata, which up to now
+    // were driven ONLY by the external CPU/AHB→APB master (renamed to
+    // apb_ctrl_reg_* on this module's input port). The peer-side I²C
+    // burst from the master autoneg FSM (ST_TRAIN_ENTER, etc.) therefore
+    // never reached the slave's chiplet-controller register decoder, so
+    // swi_training_mode_r stayed at 0 and ST_TRAIN_POLL_PEER timed out.
+    //
+    // Fix shape (Shape B from the diagnosis): inside this module, decode
+    // slv_apb_* and OR-merge a locally-generated ctrl_reg_* path with the
+    // external (apb_ctrl_reg_*) path. The merged ctrl_reg_* nets feed all
+    // the existing Region 4 and Region 8 write logic untouched, so this
+    // change is a strict fan-in widening — Wlink keeps owning every
+    // address that does NOT decode to Region 4 / Region 8.
+    //
+    // Forward declarations: slv_apb_* are driven by the AXIL→APB bridge
+    // instance below (u_axil2apb), but are needed up here so the merged
+    // ctrl_reg_* wires can be referenced from the Role / Region-4 /
+    // Region-8 logic that follows.
+    // =====================================================================
+    wire            slv_apb_psel;
+    wire [12:0]     slv_apb_paddr;
+    wire            slv_apb_penable;
+    wire [2:0]      slv_apb_pprot;
+    wire            slv_apb_pwrite;
+    wire [31:0]     slv_apb_pwdata;
+    wire [3:0]      slv_apb_pstrb;
+
+    // slv_apb_* targets the chiplet-controller register decoder when its
+    // address falls in Region 4 (paddr[8:5]=4'b0100 → 0x080-0x09C) or
+    // Region 8 (paddr[8:5]=4'b1000 → 0x100-0x11C). Mirrors the external
+    // path's decode in tidelink_apb_regs.sv:443-445.
+    //
+    // Note: no need to gate on !role_is_master here — the i2c_slave core
+    // (drives slv_apb_*) is held in reset whenever role_is_master=1
+    // (see i2c_slv_reset below: `~hresetn | role_is_master`). So
+    // slv_apb_psel never pulses while we are master, and we avoid a
+    // forward-reference to role_is_master.
+    wire slv_apb_ctrl_region4 = (slv_apb_paddr[8:5] == 4'b0100);
+    wire slv_apb_ctrl_region8 = (slv_apb_paddr[8:5] == 4'b1000);
+    wire slv_apb_ctrl_hit     = slv_apb_psel &&
+                                (slv_apb_ctrl_region4 || slv_apb_ctrl_region8);
+    // Single-beat APB write completion: psel & penable & pwrite — one cycle.
+    wire slv_apb_ctrl_write   = slv_apb_ctrl_hit && slv_apb_penable && slv_apb_pwrite;
+
+    // ctrl_reg_addr layout (see tidelink_apb_regs.sv:445):
+    //   {apb_region_is_ext, paddr[4:2]} where apb_region_is_ext = paddr[8]
+    // For Region 4 paddr[8]=0; for Region 8 paddr[8]=1. Identical here.
+    wire [3:0]  slv_ctrl_reg_addr  = {slv_apb_paddr[8], slv_apb_paddr[4:2]};
+    wire [31:0] slv_ctrl_reg_wdata = slv_apb_pwdata;
+
+    // OR-merge the external APB-driven ctrl_reg_* path with the I²C-driven
+    // (slv_apb_*) path. The external CPU is idle during autonomous bring-up,
+    // so cycle-level conflict is not expected; if both fired together the
+    // slv_apb path wins on write data (mux-after-OR semantics) and the FSM
+    // would observe a single ctrl_reg_write strobe. In practice the external
+    // path is quiescent during ST_TRAIN_ENTER, so the priority is moot —
+    // documented here so a future arbitration scheme can replace the OR if
+    // needed.
+    //
+    // IMPORTANT: ctrl_reg_addr must be driven from slv_apb_* whenever the
+    // I²C path is targeting Region 4/8 — INCLUDING READS — because the
+    // combinational ctrl_reg_rdata mux below uses ctrl_reg_addr[3] to pick
+    // Region 4 vs Region 8, and region[4|8]_rdata indexes off
+    // ctrl_reg_addr[2:0]. The WRITE strobe (ctrl_reg_write) on the other
+    // hand stays gated on penable & pwrite so the always_ff blocks below
+    // only fire on a real write completion.
+    wire        ctrl_reg_write = apb_ctrl_reg_write || slv_apb_ctrl_write;
+    wire [3:0]  ctrl_reg_addr  = slv_apb_ctrl_hit ? slv_ctrl_reg_addr
+                                                  : apb_ctrl_reg_addr;
+    wire [31:0] ctrl_reg_wdata = slv_apb_ctrl_write ? slv_ctrl_reg_wdata
+                                                    : apb_ctrl_reg_wdata;
 
     // =====================================================================
     // Role Register Block
@@ -1258,18 +1343,24 @@ module axi_chiplet_controller #(
     );
 
     // AXI-Lite to APB bridge for I2C slave path
-    wire            slv_apb_psel;
-    wire [12:0]     slv_apb_paddr;
-    wire            slv_apb_penable;
-    wire [2:0]      slv_apb_pprot;
-    wire            slv_apb_pwrite;
-    wire [31:0]     slv_apb_pwdata;
-    wire [3:0]      slv_apb_pstrb;
+    // (slv_apb_* declarations hoisted above — see "Bug N2 fix" block.)
 
     // Wlink APB response wires — declared before first use (bridge outputs drive these)
     wire [31:0]     wl_apb_prdata;
     wire            wl_apb_pready;
     wire            wl_apb_pslverr;
+
+    // Bug N2 fix: AXIL→APB bridge response gated by the slv_apb hit decode.
+    // When slv_apb_* targets Region 4/8, the response is sourced from the
+    // chiplet-controller's combinational ctrl_reg_rdata mux and PREADY is
+    // asserted unconditionally (single-cycle ack, matching Wlink semantics).
+    // Otherwise we pass Wlink's response through, exactly as before.
+    wire [31:0]     slv_apb_bridge_prdata  = slv_apb_ctrl_hit ? ctrl_reg_rdata
+                                                              : wl_apb_prdata;
+    wire            slv_apb_bridge_pready  = slv_apb_ctrl_hit ? 1'b1
+                                                              : wl_apb_pready;
+    wire            slv_apb_bridge_pslverr = slv_apb_ctrl_hit ? 1'b0
+                                                              : wl_apb_pslverr;
 
     mkaxil2apb_bridge u_axil2apb (
         .CLK                (apb_clk),
@@ -1302,9 +1393,12 @@ module axi_chiplet_controller #(
         .APB_PWDATA         (slv_apb_pwdata),
         .APB_PSTRB          (slv_apb_pstrb),
         .APB_PSEL           (slv_apb_psel),
-        .APB_PREADY         (wl_apb_pready),
-        .APB_PRDATA         (wl_apb_prdata),
-        .APB_PSLVERR        (wl_apb_pslverr)
+        // Bug N2 fix: response now sourced from a mux between the
+        // chiplet-controller register decoder (Region 4/8 hits) and Wlink
+        // (everything else). See slv_apb_bridge_* wires above.
+        .APB_PREADY         (slv_apb_bridge_pready),
+        .APB_PRDATA         (slv_apb_bridge_prdata),
+        .APB_PSLVERR        (slv_apb_bridge_pslverr)
     );
 
     // =====================================================================
@@ -1444,6 +1538,13 @@ module axi_chiplet_controller #(
     // Slave mode: I2C path active when psel asserted
     wire slv_apb_active = slv_apb_psel && !role_is_master;
 
+    // Bug N2 fix: slv_apb_* drives Wlink only when the address is NOT in
+    // the chiplet-controller's register space (Region 4/8). When
+    // slv_apb_ctrl_hit is asserted, the AXIL→APB bridge response comes
+    // from ctrl_reg_rdata (see slv_apb_bridge_* mux above) and Wlink is
+    // not poked, so PSEL must be held low for that case.
+    wire slv_apb_to_wlink = slv_apb_active && !slv_apb_ctrl_hit;
+
     always_comb begin
         if (role_is_master) begin
             // Master mode: external APB direct to Wlink
@@ -1454,8 +1555,9 @@ module axi_chiplet_controller #(
             wl_apb_pstrb   = apb_pstrb;
             wl_apb_pwrite  = apb_pwrite;
             wl_apb_pwdata  = apb_pwdata;
-        end else if (slv_apb_active) begin
-            // Slave mode, I2C path active: I2C drives Wlink
+        end else if (slv_apb_to_wlink) begin
+            // Slave mode, I2C path active, NOT targeting chiplet-controller
+            // Region 4/8: forward to Wlink as before.
             wl_apb_psel    = slv_apb_psel;
             wl_apb_paddr   = slv_apb_paddr;
             wl_apb_penable = slv_apb_penable;
@@ -1463,6 +1565,17 @@ module axi_chiplet_controller #(
             wl_apb_pstrb   = slv_apb_pstrb;
             wl_apb_pwrite  = slv_apb_pwrite;
             wl_apb_pwdata  = slv_apb_pwdata;
+        end else if (slv_apb_active) begin
+            // Slave mode, I2C path active, targets chiplet-controller (Bug N2
+            // fix path). Don't poke Wlink — hold psel low. The bridge gets
+            // its response from slv_apb_bridge_* (ctrl_reg_rdata).
+            wl_apb_psel    = 1'b0;
+            wl_apb_paddr   = '0;
+            wl_apb_penable = 1'b0;
+            wl_apb_pprot   = '0;
+            wl_apb_pstrb   = '0;
+            wl_apb_pwrite  = 1'b0;
+            wl_apb_pwdata  = '0;
         end else if (apb_debug_unlock_i) begin
             // Slave mode + debug strap asserted: pass external APB through
             // *with* writes enabled. Bring-up debug — lets slave's PYNQ

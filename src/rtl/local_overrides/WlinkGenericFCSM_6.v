@@ -108,9 +108,72 @@
 // cycles in the failing fuzz scenario, so 32 is comfortably within that
 // window and adds <5% to the bring-up critical path).  Synthesizable as a
 // localparam.
+//
+// =============================================================================
+// SoC Labs F-1 state-7 watchdog (2026-05-29): self-recovering NACK clear
+// -----------------------------------------------------------------------------
+// HW failure mode observed on build #4 (ILA-inserted, 5/5 deploys wedged):
+//   * Master FCSM wedges at state 7 (SEND_NACK), slave at state 4, both
+//     sides report 0 real CRC errors -- send_nack_req latched by a spurious
+//     bring-up isNotExpPacket notifier that the L7 forgive gate above did
+//     NOT manage to clear in time.
+//   * The existing L7 `socl_l7_bringup_forgive` gate ANDs two rx-domain
+//     demet stickies (cr_pkt_seen_tx_demet & crack_pkt_seen_tx_demet).
+//     Build #4's P&R/ILA-insertion placement moved master's crack_pkt_seen_rx
+//     latch downstream of slave's state-2 exit, so the AND never fires.
+//     Build #3 won the routing lottery; build #4 lost it.  ASIC will draw
+//     a fresh ticket: the existing gate is not reliable post-CTS.
+//   * See docs/BUILD4_HW_VALIDATION_2026_05_29.md and
+//     docs/FCSM_L7_WEDGE_FIX_PROPOSAL_2026_05_29.md.
+//
+// Watchdog mechanism:
+//   (1) `socl_l7_real_crc_seen` is a sticky bit that latches if a real
+//       crcCorruptSeen pulse is ever observed in any state since reset.
+//       Once high, stays high until reset -- production silicon with
+//       genuine link errors disarms the watchdog permanently.
+//   (2) `socl_l7_wdog_cnt` is a 16-bit counter that increments while
+//       state == 3'h7 AND the real-CRC sticky is low.  The counter resets
+//       to 0 the cycle state != 3'h7, and saturates at the threshold.
+//       (Saturating rather than wrapping avoids a second false-trip.)
+//   (3) `socl_l7_wdog_force_clear` fires when the counter reaches
+//       SOCL_L7_WDOG_THRESHOLD = 16'h4000 (~660 us @ 100 MHz; ~30 us @
+//       2 GHz ASIC) and the real-CRC sticky is still low.  When asserted,
+//       it AND-clears send_nack_req in the synchronous state machine.
+//
+// Threshold rationale (16'h4000 = 16384 cycles):
+//   * State 7 dwell on a healthy link is ~tens of cycles (emit NACK,
+//     auto_tx_out_advance, fall to state 4).  16'h4000 is ~500x that
+//     dwell, so legitimate NACK transmissions are never affected.
+//   * 660 us @ 100 MHz is well above PHY-align settling time (single
+//     digit ms typical) and well below any reasonable upper-layer
+//     timeout, so the recovery is invisible to AHB/AXI fabric.
+//
+// Why crcCorruptSeen masks the watchdog:
+//   * `crcCorruptSeen` (line 322) is the only ack_nack_fifo dequeue tag
+//     (3'h4) that proves a real link error (CRC mismatch).  If ANY real
+//     CRC error has ever occurred since reset, the watchdog stays disarmed
+//     forever -- so the SEND_NACK state is never spuriously short-circuited
+//     in production silicon with genuine link corruption.
+//   * `isNotExpPacket` (tag 3'h1) is NOT a CRC error -- it is a pkt-num
+//     sequencing notifier that can fire spuriously during bring-up while
+//     the demet/framer is settling.  The watchdog is designed to clear
+//     exactly that spurious-NACK class.
+//
+// Steady-state safety:
+//   * The watchdog only ticks while state == 3'h7.  On a healthy link,
+//     state 7 is exited within tens of cycles, the counter resets, and
+//     the watchdog never fires.
+//   * After the first state-5 visit (LINK_DATA reached), the existing
+//     `socl_l7_reached_link_data` sticky also disarms the bringup_forgive
+//     gate.  Behaviour is identical to upstream once steady state begins.
+//   * If a real CRC error EVER occurs (even after first LINK_DATA),
+//     `socl_l7_real_crc_seen` latches and the watchdog stays disarmed
+//     for the lifetime of the reset cycle.
+//
 // =============================================================================
 module WlinkGenericFCSM_6 #(
-  parameter [7:0] SOCL_L6_MIN_CR_EMITS = 8'd32
+  parameter [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32,
+  parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000
 ) (
   input         clock,
   input         reset,
@@ -385,6 +448,15 @@ module WlinkGenericFCSM_6 #(
   // bringup-transient notifier so it cannot re-latch send_nack_req on the
   // same cycle the synchronous AND-clear is applied.
   wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
+  // SoC Labs F-1 state-7 watchdog: see header comment.  Backup recovery
+  // path for the case where the demet stickies fail to align (P&R lottery
+  // / ILA insertion / ASIC post-CTS).  Forward declarations; sequential
+  // logic lives in the always blocks below.
+  reg         socl_l7_real_crc_seen;   // sticky: any real CRC error since reset
+  reg  [15:0] socl_l7_wdog_cnt;        // saturating counter, ticks in state 7
+  wire        socl_l7_wdog_force_clear =
+                (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
+                & ~socl_l7_real_crc_seen;
   // Original Chisel-emitted _GEN_34 (kept as comment for review):
   //   wire [2:0] _GEN_34 = crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out ? 3'h2 : state;
   // Patched: only allow state 1 -> state 2 once minimum CR-emit count reached.
@@ -1063,19 +1135,25 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L7: AND-clear send_nack_req every cycle while bringup_forgive
   // is asserted, in every state.  This ensures a stale isNotExpPacket fifo
   // readout that latched before forgive armed still gets cleared.
+  //
+  // SoC Labs F-1: ALSO AND-clear with ~socl_l7_wdog_force_clear so the
+  // state-7 watchdog provides a routing-insensitive backup recovery path
+  // for the case where the demet stickies fail to align in time.  Real
+  // CRC errors disarm the watchdog via socl_l7_real_crc_seen so this AND
+  // is harmless once any genuine link error has been observed.
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       send_nack_req <= 1'h0;
     end else if (_ack_seen_before_T) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h1) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h2) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h3) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else begin
-      send_nack_req <= _GEN_172 & ~socl_l7_bringup_forgive;
+      send_nack_req <= _GEN_172 & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end
   end
   // SoC Labs L7: sticky "have we ever reached LINK_DATA" register.  Latches
@@ -1086,6 +1164,35 @@ module WlinkGenericFCSM_6 #(
       socl_l7_reached_link_data <= 1'h0;
     end else if (state == 3'h5) begin
       socl_l7_reached_link_data <= 1'h1;
+    end
+  end
+  // SoC Labs F-1: sticky "real CRC error ever observed" register.
+  // Latches on the first cycle the ack_nack_fifo dequeues a 3'h4 tag
+  // (crcCorruptSeen).  Once high, permanently disarms the state-7
+  // watchdog for the lifetime of this reset cycle -- production silicon
+  // with genuine link errors continues to NACK exactly per upstream.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_real_crc_seen <= 1'h0;
+    end else if (crcCorruptSeen) begin
+      socl_l7_real_crc_seen <= 1'h1;
+    end
+  end
+  // SoC Labs F-1: state-7 dwell counter.  Increments every cycle the FCSM
+  // is in state 7 with no real CRC observed since reset.  Resets to 0
+  // whenever state != 3'h7 -- so a transient legitimate visit to state 7
+  // never accumulates count.  Saturates at SOCL_L7_WDOG_THRESHOLD so the
+  // force-clear holds steady until the FCSM advances out of state 7,
+  // then the counter resets back to 0 on the next cycle.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_wdog_cnt <= 16'h0;
+    end else if (state != 3'h7) begin
+      socl_l7_wdog_cnt <= 16'h0;
+    end else if (socl_l7_real_crc_seen) begin
+      socl_l7_wdog_cnt <= 16'h0;
+    end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
+      socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin

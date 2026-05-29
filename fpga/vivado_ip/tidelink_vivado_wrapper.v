@@ -47,8 +47,18 @@ module tidelink_vivado_wrapper #(
     parameter FC_DATA_W      = 48,
     // Number of GPIO PHY lanes
     parameter NUM_PHY_LANES  = 8,
-    // Default pair base address
-    parameter [31:0] TIDELINK_PAIR_BASE = 32'h0,
+    // Default pair base address.
+    //
+    // PHASE 5 AUTONOMY (2026-05-29): default set to 0x44032000 — the FPGA's
+    // TideLink-APB base on both paired boards. Previously the BD left this
+    // at 0 and deploy_pair.sh wrote the value at deploy ("r,ro+0x00 =
+    // 0x44032000"). With this default the FPGA's tidelink_apb_regs pair-base
+    // register POR-initialises to the correct value, and the SW write is
+    // redundant. The corresponding write is deleted from deploy_pair.sh.
+    //
+    // To override (multi-chip topologies where peer-APB sits elsewhere),
+    // set CONFIG.TIDELINK_PAIR_BASE on the BD instance.
+    parameter [31:0] TIDELINK_PAIR_BASE = 32'h44032000,
     // PHC lock gate enable
     parameter PHC_LOCK_GATE_EN = 0,
     // SoC Labs §9 structural fix: per-lane IDELAYE2 RX delay element.

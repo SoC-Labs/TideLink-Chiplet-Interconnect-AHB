@@ -109,17 +109,26 @@ fi
 
 # PHASE = swi_phase_offset (Wlink PHY ctrl reg WL+0x0000, bits[20:17]).
 # SHORTCOMINGS-14b: in strap-driven init, master's POR releases first;
-# slave's RX deserialiser counter ends up ~3 pad_clks ahead of master's
-# TX framing. Setting phase=3 on slave realigns adj_count to 0.
+# slave's RX deserialiser counter ended up ~3 pad_clks ahead of master's
+# TX framing — setting phase=3 on slave realigned adj_count to 0.
 # Encoded as the full 32-bit register value: phase << 17.
+#
+# PHASE 5 AUTONOMY: the static SW write of swi_phase_offset has been
+# DELETED — the autoneg→training path hands phase convergence to the
+# calibrator (cal_phase_offset_w OR'd into swi_phase_offset_w at
+# axi_chiplet_controller.sv:1554). The PHASE shell variable below is
+# kept as a no-op so the legacy case-statement still parses ROLE and
+# downstream debug operators have a documented place to set
+# PHASE_OVERRIDE if they need to manually re-inject the workaround via
+# an out-of-band APB poke.
 case "$ROLE" in
-    die_a) STRAP=0 ; CTRL=0x2 ; PHASE=0x00000000 ;;   # master, phase=0
-    die_b) STRAP=1 ; CTRL=0x3 ; PHASE=0x00060000 ;;   # slave,  phase=3
+    die_a) STRAP=0 ; CTRL=0x2 ; PHASE=0x00000000 ;;   # master, phase=0 (legacy)
+    die_b) STRAP=1 ; CTRL=0x3 ; PHASE=0x00060000 ;;   # slave,  phase=3 (legacy)
     *) echo "ROLE must be die_a or die_b (got '$ROLE')" >&2; exit 2 ;;
 esac
 
-# Optional override: PHASE_OVERRIDE env var (full 32-bit register value).
-# Used for empirical phase sweeps during bring-up debug.
+# Legacy phase-override env var (no longer wired into the deploy heredoc,
+# kept for operator-facing documentation / out-of-band debug use).
 if [ -n "${PHASE_OVERRIDE:-}" ]; then
     PHASE="$PHASE_OVERRIDE"
 fi
@@ -321,7 +330,19 @@ fi
 #      change, restore the 0x208 triplet — that indicates the FCSM
 #      reset is still needed and the autoneg FSM should also drive
 #      Wlink swreset (Discovery 1 hypothesis (b) — a new gap).
-#    - Straps + swi_phase_offset + PAIR_BASE_ADDR kept (Phases 4-5).
+#    - Straps kept (Phase 6 → bond-pad emulation).
+#
+#    PHASE 4 AUTONOMY (in this commit set, awaiting HW gate):
+#    - apb_debug_unlock GPIO write at 0x44041000 REMOVED. The autoneg
+#      FSM's mask_hs_local_match path closes the gate autonomously.
+#
+#    PHASE 5 AUTONOMY (in this commit set, awaiting HW gate):
+#    - PAIR_BASE_ADDR (0x44032000+0x00) runtime write REMOVED. The FPGA
+#      Vivado wrapper now defaults TIDELINK_PAIR_BASE = 32'h44032000,
+#      so the register POR-initialises correctly.
+#    - swi_phase_offset (0x44030000+0x00) runtime write REMOVED. The
+#      calibrator's cal_phase_offset_w drives the per-lane phase
+#      autonomously during the training arm.
 sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
     "echo '$PASS' | sudo -S python3 -c '
 import mmap,struct,os
@@ -342,26 +363,36 @@ struct.pack_into(\"<I\",s,so,$STRAP)
 # isn't closing on this die and the debug strap is still needed.
 r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
 w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
-struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR (Phase 5: → TIDELINK_PAIR_BASE param)
-# SHORTCOMINGS-14b: write swi_phase_offset BEFORE role_lock asserts.
-# Two reset domains:
-#   - swi_phase_offset reg has reset = apb_reset (~hresetn) — always low
-#     during normal operation, so APB writes ALWAYS land regardless of
-#     role_lock state.
-#   - WavD2DGpioRx.count reg has reset = io_por_reset (= wlink_por =
-#     ~poresetn | ~role_locked). Resets to 4hF while role_lock=0;
-#     starts incrementing the moment role_lock=1.
-# So the only chance to influence the deserialiser counter alignment
-# is to have the right swi_phase_offset value LOADED before role_lock
-# asserts. With Phase 3 autonomy, role_lock now asserts ~10-20 ms after
-# this script writes the phase offset (autoneg I²C latency), so the
-# ordering still holds — phase is loaded long before role_lock fires.
-struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset (Phase 5: → calibrator output or strap)
+# PHASE 5 AUTONOMY (PAIR_BASE_ADDR write deleted):
+#   The tidelink_apb_regs pair-base register now POR-initialises to
+#   0x44032000 via the TIDELINK_PAIR_BASE parameter default set in
+#   fpga/vivado_ip/tidelink_vivado_wrapper.v (Phase 5 commit). The
+#   runtime write of \"r,ro+0x00 = 0x44032000\" is therefore redundant
+#   on the FPGA bitstream. The local APB and the peer-targeted base
+#   address coincide on both paired boards (both have TideLink APB at
+#   0x44032000), so a single POR-default covers both dies.
+#
+# PHASE 5 AUTONOMY (swi_phase_offset write deleted):
+#   SHORTCOMINGS-14b: the deserialiser-count vs framing race used to
+#   require slave-side phase=3 (encoded as 0x00060000 in
+#   PHY_CTRL[20:17]) loaded BEFORE role_lock asserts. With the
+#   autonomous training path (Phase 2-bis NEGO_CFG_RESET=0x61 +
+#   NEGO_TRAIN_CFG_RESET=0x0001), training_mode is held HIGH on both
+#   dies through ST_TRAIN_RUN while the calibrator (u_phy_align_-
+#   calibrator) converges per-lane phase. The calibrator's
+#   cal_phase_offset_w output is OR-merged into swi_phase_offset_w at
+#   axi_chiplet_controller.sv:1554, so the static SW write is
+#   redundant. AUTONOMY_PHASE0_AUDIT.md test_01 confirms cal_done=1
+#   autonomously on both dies in sim with no APB phase write. If HW
+#   shows the slave deserialiser misaligned (lane_locked != 0xFF) post
+#   training, restore the PHASE write — that indicates the calibrator
+#   isn't converging on silicon and the static bias is still needed
+#   as a fallback.
 phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]
 pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]
 val=struct.unpack_from(\"<I\",r,ro+0x80)[0]
-print(\"  PHY_CTRL       = 0x{:08x} (swi_phase_offset={})\".format(phy,(phy>>17)&0xF))
-print(\"  PAIR_BASE_ADDR = 0x{:08x}\".format(pba))
+print(\"  PHY_CTRL       = 0x{:08x} (swi_phase_offset={}) — calibrator-driven; expect 0 here, cal_phase_offset OR-merged below\".format(phy,(phy>>17)&0xF))
+print(\"  PAIR_BASE_ADDR = 0x{:08x} (POR default via TIDELINK_PAIR_BASE param; expect 0x44032000)\".format(pba))
 print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={}) — expect lock=0 here; autoneg FSM latches it ~10-20 ms post-deploy\".format(val,(val>>1)&1,val&1))
 '"
 

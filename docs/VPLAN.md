@@ -77,11 +77,11 @@ Health legend:
 | `tidelink_fifo` (and `tidelink_fifo_mem`) | `tidelink_fifo`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | `tidelink`, `tidelink_system`, `tidelink_integration` | `tidelink_fifo` | GREEN |
 | `tidelink_fifo_ctrl` | (DUT of `tidelink_fifo_mem` in `tidelink_fifo` env) | (integ) | `tidelink_fifo_ctrl` | GREEN |
 | `tidelink_fifo_mem` | `tidelink_fifo` (TOPLEVEL) | (integ) | (via `tidelink_fifo`) | GREEN |
-| `tidelink_fifo_ahb` | `tidelink_ahb` | — | — | YELLOW (CI-excluded) |
+| `tidelink_fifo_ahb` | `tidelink_ahb` | — | — | GREEN |
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 14 GREEN, 9 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 15 GREEN, 8 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).

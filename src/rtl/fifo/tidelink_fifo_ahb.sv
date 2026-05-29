@@ -216,7 +216,17 @@ module tidelink_fifo_ahb #(
         // Mbox register pass-through (tied off)
         .mbox_reg_write      (),
         .mbox_reg_addr       (),
-        .mbox_reg_wdata      ()
+        .mbox_reg_wdata      (),
+
+        // Ctrl/Perf register read-back peers (tied off — this wrapper exposes
+        // only the FIFO/APB/returner surface; the ctrl/perf regfile peers
+        // live in tidelink_top, not here).
+        .ctrl_reg_rdata      ({SYS_DATA_W{1'b0}}),
+        .perf_reg_rdata      ({SYS_DATA_W{1'b0}}),
+
+        // PUF read-port (tied off — no PUF instance in the AHB-only wrapper).
+        .puf_addr            ({(RAM_ADDR_W-2){1'b0}}),
+        .puf_req             (1'b0)
     );
 
 endmodule

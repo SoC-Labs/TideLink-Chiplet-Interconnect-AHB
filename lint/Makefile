@@ -46,9 +46,13 @@ STANDALONE_MODULES = \
 # tidelink.sv is now added to flist/tidelink_ahb.flist so HAL can resolve
 # the u_tidelink instance inside tidelink_ahb. HAL: 0 errors.
 #
-# tidelink_fifo_ahb still has no dedicated flist; its port surface is lint-
-# covered via the tidelink_top flist instead, so no separate entry here.
-CMSDK_MODULES = tidelink_fifo tidelink tidelink_ahb
+# NOTE (2026-05-29): tidelink_fifo_ahb re-enabled. The wrapper had 4 UNCONI
+# errors on inputs added to tidelink_fifo after the wrapper was last touched
+# (ctrl_reg_rdata, perf_reg_rdata, puf_addr, puf_req). Those peers live in
+# tidelink_top (regfile / PUF), not in this AHB-only wrapper, so they are
+# tied to 0 at the u_tidelink_fifo instance. A dedicated flist now lives at
+# flist/tidelink_fifo_ahb.flist. HAL: 0 errors.
+CMSDK_MODULES = tidelink_fifo tidelink tidelink_ahb tidelink_fifo_ahb
 
 # ── Module-to-top mapping ────────────────────────────────────────
 # Flist basenames and SV module names diverge after the FIFO rename.

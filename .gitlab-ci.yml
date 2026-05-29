@@ -430,12 +430,15 @@ uvm-fc-adapter:
     - vcs
   <<: *vcs_uvm_setup
   script:
-    # 2026-05-23: BUG-22 closeout — full_test scoreboard race resolved by
-    # making scoreboard matching order-insensitive when interleaved
-    # streams are driven concurrently (opt-in via uvm_config_db, set
-    # only by tidelink_fc_adapter_full_test).  All 4 tests pass.
-    - echo "Running UVM tidelink_fc_adapter tests (all 4 tests pass)"
-    - make -C "$WORK_DIR/uvm/tidelink_fc_adapter" run_all || true
+    # 2026-05-23: BUG-22 closeout — scoreboard matching switched to
+    # order-insensitive when interleaved streams are driven concurrently
+    # (opt-in via uvm_config_db, set only by tidelink_fc_adapter_full_test).
+    # 2026-05-29: full_test flake fully resolved by AHB-driver settle-gap
+    # in env/{rtn,ahb_tx}_driver.sv — see docs/VPLAN.md §3.6.  All 4 tests
+    # pass deterministically (50/50 random-seed runs verified).  The
+    # `|| true` fallback was removed so true regressions now fail CI.
+    - echo "Running UVM tidelink_fc_adapter tests (all 4 tests in regression)"
+    - make -C "$WORK_DIR/uvm/tidelink_fc_adapter" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_fc_adapter/sim_build"
         "$WORK_DIR/uvm/tidelink_fc_adapter/results.xml"

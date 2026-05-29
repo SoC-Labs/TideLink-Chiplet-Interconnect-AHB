@@ -100,17 +100,26 @@ not edit by hand).
 
 ## Known-excluded-from-CI
 
-One env is intentionally skipped by CI to keep the pipeline green:
+(None as of 2026-05-29.)
 
-1. **`tidelink_fc_adapter` → `tidelink_fc_adapter_full_test`** — fails
-   with ~31 scoreboard mismatches under interleaved TX+RX+sideband
-   traffic. The TX-only, RX-only, sideband-only single-stream tests
-   (also in this env) pass and run in CI; only the full stress test
-   is excluded.
-
-(Resolved 2026-05-29: `tidelink_ahb` HAL lint is now clean — legacy
-`src/rtl/tidelink.sv` was modernised to wrap the current `tidelink_fifo`
-with tie-offs for the new pass-through ports, and was added to
-`flist/tidelink_ahb.flist` so HAL can resolve `u_tidelink`.)
+Resolved 2026-05-29:
+- `tidelink_ahb` HAL lint is now clean — legacy `src/rtl/tidelink.sv`
+  was modernised to wrap the current `tidelink_fifo` with tie-offs for
+  the new pass-through ports, and was added to
+  `flist/tidelink_ahb.flist` so HAL can resolve `u_tidelink`.
+- `tidelink_fc_adapter` → `tidelink_fc_adapter_full_test` (UVM) was
+  previously flaky (~31 scoreboard mismatches under interleaved
+  TX+RX+sideband stress) and excluded from CI.  Root cause: DUT
+  corner case where, when the AHB master pipelines a new address
+  phase in the same cycle the skid accepts the previous item, the
+  latch is overwritten while `*_pending_r` stays asserted — and on
+  the following cycle the skid samples a SECOND time with the new
+  address paired with stale `hwdata` (master's clocking-block
+  `output #1` NBA fires at +1ns, after the skid sample).  Fixed in
+  the UVM testbench (`uvm/tidelink_fc_adapter/env/{rtn,ahb_tx}_driver.sv`)
+  by waiting for pre-edge `hready=1` plus one settle cycle before
+  re-arming the address phase, guaranteeing the FSM has cleanly
+  transitioned through `pending=1 -> 0` before the next handshake.
+  50/50 random seeds pass.
 
 Tracked in `docs/archive/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).

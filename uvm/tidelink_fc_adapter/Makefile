@@ -106,13 +106,12 @@ endif
 # ---------------------------------------------------------------
 # Test suite
 # ---------------------------------------------------------------
-# Default test suite. Override with TESTS=<list> on the command line —
-# CI uses CI_TESTS_FC_ADAPTER (defined in .gitlab-ci.yml) to exclude
-# tidelink_fc_adapter_full_test, which currently fails with ~31 scoreboard
-# mismatches under interleaved TX+RX+sideband traffic. The fix in 53bdb75
-# (pre_generate() across all sequences) addressed the simpler races on
-# the individual TX/RX/sideband tests but left the full stress test
-# scoreboard concurrency bug open. Tracked as a known issue.
+# Default test suite. Override with TESTS=<list> on the command line.
+# All four tests (tx, sideband, rx, full) are in CI as of 2026-05-29
+# after the AHB-driver settle-gap fix landed in env/{rtn,ahb_tx}_driver.sv
+# — see docs/VPLAN.md §3.6 and cocotb/README.md "Known-excluded-from-CI"
+# for the full diagnosis (DUT pending_r/skid sample race vs the master
+# clocking-block hwdata `output #1` skew under backpressure).
 TESTS ?= tidelink_fc_adapter_tx_test \
         tidelink_fc_adapter_sideband_test \
         tidelink_fc_adapter_rx_test \

@@ -48,8 +48,26 @@ class ahb_tx_driver extends uvm_driver #(ahb_tx_seq_item);
     // Optional delay
     repeat (item.delay) @(posedge vif.clk);
 
-    // Address phase: drive NONSEQ write
+    // BUG-22 full_test scoreboard race fix (testbench-side workaround):
+    //
+    // The DUT's TX-aperture FSM (`src/rtl/tidelink_fc_adapter.sv`
+    // lines 181-194) has the same corner case as the returner port —
+    // if a NEW address phase arrives in the SAME cycle the skid is
+    // accepting the previous item, the latch is overwritten while
+    // tx_data_phase_r stays asserted, causing a SECOND skid sample on
+    // the following cycle with the new addr paired with stale hwdata
+    // (master's hwdata clocking-block NBA fires at +1ns).  See
+    // env/rtn_driver.sv for the full diagnosis.
+    //
+    // Workaround: wait for hreadyout pre-edge=1 plus one settle cycle
+    // before re-arming the address phase, so the DUT's tx_data_phase_r
+    // has clearly transitioned through 1 -> 0 before we start the
+    // next transaction.
     @(posedge vif.clk);
+    while (!vif.ahb_tx_drv_cb.ahb_tx_hreadyout) @(posedge vif.clk);
+    @(posedge vif.clk);  // settle gap
+
+    // Address phase: drive NONSEQ write
     vif.ahb_tx_drv_cb.ahb_tx_hsel   <= 1'b1;
     vif.ahb_tx_drv_cb.ahb_tx_htrans <= 2'b10;  // NONSEQ
     vif.ahb_tx_drv_cb.ahb_tx_hwrite <= 1'b1;

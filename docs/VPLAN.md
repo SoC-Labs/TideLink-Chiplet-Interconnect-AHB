@@ -56,7 +56,7 @@ Health legend:
 | `tidelink_top` | `tidelink_top`, `tidelink_top_pair*`, `tidelink_system` | `tidelink_top_system`, `tidelink_integration` | — | GREEN |
 | `tidelink` (legacy FIFO wrapper) | `tidelink`, `tidelink_ahb`, `tidelink_py_pair` | `tidelink` | `tidelink` | GREEN |
 | `tidelink_ahb` (AHB-wrap of `tidelink`) | `tidelink_ahb` | — | — | GREEN |
-| `tidelink_fc_adapter` | `tidelink_fc_adapter`, integ via `tidelink_top*` | `tidelink_fc_adapter` | — | YELLOW (`full_test` excluded from CI) |
+| `tidelink_fc_adapter` | `tidelink_fc_adapter`, integ via `tidelink_top*` | `tidelink_fc_adapter` | — | GREEN |
 | `tidelink_addr_translator` | `tidelink_addr_translator`, integ via `tidelink_top*` | integ via `tidelink_top_system` | — | GREEN |
 | `tl_addr_trans_cam` | (via `tidelink_addr_translator`) | (integ) | — | YELLOW |
 | `tl_addr_trans_regs` | (via `tidelink_addr_translator`) | (integ) | — | YELLOW |
@@ -81,7 +81,7 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 13 GREEN, 10 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 14 GREEN, 9 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).
@@ -193,10 +193,19 @@ which is now scope-banner'd as the FIFO-area test index.
 - **Test envs:** cocotb `tidelink_fc_adapter` (44 tests across
   `test_tidelink_fc_adapter.py` and `test_rx_pkt_type_decode.py`); UVM
   `tidelink_fc_adapter` (`base`, `tx`, `rx`, `sideband`, `full`).
-- **Known gaps:** `tidelink_fc_adapter_full_test` (UVM) is excluded from
-  CI — interleaved TX+RX+sideband stress produces ~31 scoreboard
-  mismatches (see `cocotb/README.md` §"Known-excluded-from-CI"); the
-  single-stream tests pass and are in regression.
+- **Known gaps:** none.  The previously-flaky
+  `tidelink_fc_adapter_full_test` (UVM) is now stable in CI after
+  fixing a DUT/testbench timing race on the AHB-master ports
+  (driver-side workaround in `env/{rtn,ahb_tx}_driver.sv` — wait for
+  pre-edge `hready=1` plus one settle cycle before re-arming the
+  address phase, so the DUT FSM has cleanly transitioned through
+  `pending=1 -> 0` and the skid sample no longer races the master's
+  clocking-block `output #1` hwdata NBA).  50/50 random seeds pass;
+  `make run_all` shows 4/4.  The underlying DUT corner case in
+  `src/rtl/tidelink_fc_adapter.sv` lines 181-194 / 226-238 (overlapping
+  address phase + skid drain leaves `*_pending_r` asserted with stale
+  hwdata for one cycle) remains; it does not fire under any
+  protocol-compliant master that observes hready between transactions.
 
 ### 3.7 `tidelink_addr_translator` + `tl_addr_trans_cam` + `tl_addr_trans_regs`
 
@@ -390,8 +399,8 @@ Total in-tree cocotb test functions across all envs (in + out of CI):
 - `cocotb/tidelink_top_pair`, `tidelink_top_pair_drift`,
   `tidelink_top_pair_skewed` — paired-die scenario envs driven by hand
   during PHY/cal investigation (not in `ENVS`).
-- UVM `tidelink_fc_adapter_full_test` (within an otherwise-CI'd env) —
-  see §3.6.
+- (None as of 2026-05-29: UVM `tidelink_fc_adapter_full_test` was
+  previously excluded but is now stable in CI — see §3.6.)
 
 ### CI loop locations
 

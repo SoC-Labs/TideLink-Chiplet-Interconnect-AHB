@@ -47,8 +47,31 @@ class rtn_driver extends uvm_driver #(ahb_tx_seq_item);
     // Optional delay
     repeat (item.delay) @(posedge vif.clk);
 
-    // Address phase: drive NONSEQ write
+    // BUG-22 full_test scoreboard race fix (testbench-side workaround):
+    //
+    // The DUT (`src/rtl/tidelink_fc_adapter.sv` lines 226-238) has a
+    // corner case in the returner FSM where, if a NEW address phase
+    // arrives in the SAME cycle that the OLD pending item is being
+    // accepted by the skid, the latch is overwritten BUT rtn_pending_r
+    // stays asserted — causing the skid to sample a SECOND time in the
+    // following cycle with the new addr paired with stale hwdata
+    // (because the master's hwdata clocking-block NBA fires at +1ns
+    // due to output #1 skew, after the skid's posedge sample).  Under
+    // full_test backpressure (random tl_fc_a2l_ready drops), this race
+    // fires reliably and produces "extra" spurious SIDEBAND packets
+    // with no matching prediction.
+    //
+    // The DUT is out of scope to modify here.  Workaround: don't drive
+    // a new address phase NBA on the same cycle the skid might be
+    // accepting the previous item.  We wait until `rtn_hready` is 1
+    // AT THE PRE-EDGE (i.e. the DUT was idle, not just-accepting),
+    // then add one extra cycle of IDLE so the FSM has clearly moved
+    // through pending=1 -> pending=0 before we re-arm htrans.
     @(posedge vif.clk);
+    while (!vif.rtn_drv_cb.rtn_hready) @(posedge vif.clk);
+    @(posedge vif.clk);  // settle gap
+
+    // Address phase: drive NONSEQ write
     vif.rtn_drv_cb.rtn_htrans <= 2'b10;  // NONSEQ
     vif.rtn_drv_cb.rtn_hwrite <= 1'b1;
     vif.rtn_drv_cb.rtn_haddr  <= item.addr;

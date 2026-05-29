@@ -33,11 +33,15 @@ APB_WL_LINK_ENABLE_RESET = 0x0208   # Wlink LL ctrl    (HW 0x44030208)
 APB_TIDELINK_BASE        = 0x2000   # TideLink config base
 
 # TideLink register offsets (from python/tidelink/regs.py)
+OFF_PKT_WORD_LEN        = 0x008     # RO: packet word length sideband from FIFO
 OFF_CREDIT_COUNT        = 0x00C
 OFF_DOORBELL            = 0x014
 OFF_RELEASED_ACC        = 0x020
 OFF_DOORBELL_RESP_ACC   = 0x024
 OFF_PAIR_CREDIT_COUNTER = 0x028
+OFF_PTP_CTRL            = 0x034     # RW: PTP control (pass-through to tidelink_ptp)
+OFF_HW_SYNC_CTRL        = 0x040     # RW: [0] enable, [1] seq_clear(W1C), [2] force_en
+OFF_HW_SYNC_STATUS      = 0x048     # RO: [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
 OFF_R8_SLOT0            = 0x100     # SWI_TRAINING_MODE / SWI_RECAL
 OFF_R8_SLOT2            = 0x108     # SWI_LANE_STATUS
 
@@ -58,6 +62,10 @@ APB_RELEASED_ACC        = APB_TIDELINK_BASE + OFF_RELEASED_ACC
 APB_DOORBELL_RESP_ACC   = APB_TIDELINK_BASE + OFF_DOORBELL_RESP_ACC
 APB_PAIR_CREDIT_COUNTER = APB_TIDELINK_BASE + OFF_PAIR_CREDIT_COUNTER
 APB_CREDIT_COUNT        = APB_TIDELINK_BASE + OFF_CREDIT_COUNT
+APB_PKT_WORD_LEN        = APB_TIDELINK_BASE + OFF_PKT_WORD_LEN
+APB_PTP_CTRL            = APB_TIDELINK_BASE + OFF_PTP_CTRL
+APB_HW_SYNC_CTRL        = APB_TIDELINK_BASE + OFF_HW_SYNC_CTRL
+APB_HW_SYNC_STATUS      = APB_TIDELINK_BASE + OFF_HW_SYNC_STATUS
 
 # ROLE_CFG values for SW-driven role-lock (used when nego_en=0, i.e. autoneg
 # disabled — which is the POR default).
@@ -210,6 +218,102 @@ class PairTB:
 
         self.m_apb = APBMaster(dut, dut.hclk, "m")
         self.s_apb = APBMaster(dut, dut.hclk, "s")
+
+    # ----- AHB TX / FIFO signal-level helpers ---------------------------------
+    # The pair tb does NOT wire cocotbext-ahb to the m_/s_ prefixed AHB ports
+    # (the pair test originally only ran APB / no application traffic). We
+    # add a minimal signal-level AHB master here so the new repro tests can
+    # drive m_/s_ AHB TX writes and read back from the m_/s_ FIFO read port.
+    #
+    # Bus is AHB-Lite (HTRANS=2 for NONSEQ, HSIZE=2 for word, address phase
+    # 1 cycle, data phase stalls on hready). RAM_ADDR_W=14 so only the low
+    # 14 bits of the absolute 0x44000000-base address are presented.
+
+    async def _ahb_tx_write_word(self, side, byte_addr, data):
+        """Drive a single AHB-Lite write on the m_/s_ ahb_tx_* aperture."""
+        dut = self.dut
+        hsel    = getattr(dut, f"{side}_ahb_tx_hsel")
+        haddr   = getattr(dut, f"{side}_ahb_tx_haddr")
+        htrans  = getattr(dut, f"{side}_ahb_tx_htrans")
+        hsize   = getattr(dut, f"{side}_ahb_tx_hsize")
+        hwrite  = getattr(dut, f"{side}_ahb_tx_hwrite")
+        hwdata  = getattr(dut, f"{side}_ahb_tx_hwdata")
+        hready  = getattr(dut, f"{side}_ahb_tx_hready")  # slave hreadyout
+
+        # Address phase
+        await RisingEdge(dut.hclk)
+        # Stall until prior data phase drained.
+        for _ in range(50):
+            try:
+                if int(hready.value):
+                    break
+            except ValueError:
+                pass
+            await RisingEdge(dut.hclk)
+        hsel.value   = 1
+        htrans.value = 2          # NONSEQ
+        hsize.value  = 2          # word
+        hwrite.value = 1
+        haddr.value  = byte_addr & ((1 << 14) - 1)
+        await RisingEdge(dut.hclk)
+        # Data phase
+        hsel.value   = 0
+        htrans.value = 0
+        hwrite.value = 0
+        hwdata.value = data & 0xFFFFFFFF
+        for _ in range(50):
+            try:
+                if int(hready.value):
+                    break
+            except ValueError:
+                pass
+            await RisingEdge(dut.hclk)
+        hwdata.value = 0
+
+    async def ahb_tx_write_packet(self, side, words):
+        """Write a sequence of words to the side's AHB_TX aperture.
+
+        words[0] = packed Word 0 (length+pkt_type+ids), words[1] = dest_addr,
+        words[2..] = payload — i.e. the FifoPacket.all_words layout. Each
+        word is committed via a separate AHB-Lite single transfer at the
+        next-word byte offset (0, 4, 8, ...).
+        """
+        for i, w in enumerate(words):
+            await self._ahb_tx_write_word(side, i * 4, w)
+            # Inter-word gap so the FC adapter's TX FSM can pop the SRAM.
+            await ClockCycles(self.dut.hclk, 4)
+
+    async def ahb_fifo_read_word(self, side, byte_addr):
+        """Single AHB-Lite read from the side's FIFO data port."""
+        dut = self.dut
+        hsel    = getattr(dut, f"{side}_ahb_fifo_hsel")
+        haddr   = getattr(dut, f"{side}_ahb_fifo_haddr")
+        htrans  = getattr(dut, f"{side}_ahb_fifo_htrans")
+        hsize   = getattr(dut, f"{side}_ahb_fifo_hsize")
+        hwrite  = getattr(dut, f"{side}_ahb_fifo_hwrite")
+        hready  = getattr(dut, f"{side}_ahb_fifo_hready")
+        hrdata  = getattr(dut, f"{side}_ahb_fifo_hrdata")
+
+        await RisingEdge(dut.hclk)
+        hsel.value   = 1
+        htrans.value = 2
+        hsize.value  = 2
+        hwrite.value = 0
+        haddr.value  = byte_addr & ((1 << 14) - 1)
+        await RisingEdge(dut.hclk)
+        hsel.value   = 0
+        htrans.value = 0
+        for _ in range(50):
+            try:
+                if int(hready.value):
+                    break
+            except ValueError:
+                pass
+            await RisingEdge(dut.hclk)
+        try:
+            return int(hrdata.value)
+        except ValueError:
+            return 0
 
     # ----- Reset --------------------------------------------------------------
 
@@ -665,5 +769,167 @@ async def test_06_doorbell_slave_to_master(dut):
         f"DOORBELL_RESP_ACC incremented (master {m_db_before} -> {m_db_after}, "
         f"slave 0 -> {s_db_after}). This is the HW symptom. "
         f"FC pulses: M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
+        f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
+    )
+
+
+# ===========================================================================
+# New repro tests (added 2026-05-29 per DEMUX_ISSUE_DETAILED_REPORT)
+#
+# Goal: drive the silicon bug into sim. Build #3 silicon shows:
+#   - LANE_STATUS = 0x018900ff (16/16 lock + cal_done) on BOTH sides
+#   - PAIR_CREDIT_COUNTER = 0 on BOTH sides   <- root cause
+#   - AHB packet RX at slave never lands
+#   - PTP HW_SYNC at slave never lands
+# Both AHB and PTP failures are downstream of the PAIR_CREDIT_COUNTER=0
+# gate (no credits => no application traffic flows).
+#
+# These three tests are expected to FAIL when run today — if they fail,
+# we have an isolated sim repro and can attach FCSM ILA-equivalent probes
+# in cocotb. If any of them PASS, that's a sim-vs-RTL gap.
+# ===========================================================================
+
+
+@cocotb.test()
+async def test_07_paircredit_nonzero_after_bringup(dut):
+    """Build #3 HW symptom: after full bringup, PAIR_CREDIT_COUNTER reads 0
+    on BOTH sides. Per FCSM design it should be non-zero after the cr/crack
+    exchange has populated the local credit ledger from the peer's CR
+    packet.
+
+    Expected: FAIL (both sides read 0 — reproducing the silicon bug).
+    """
+    tb = PairTB(dut)
+    snap_p1, snap_p2 = await run_bringup_full(tb)
+
+    # Settle for the FCSM credit handshake to complete.
+    await ClockCycles(tb.dut.hclk, 2000)
+    m_pcc = await tb.m_apb.read(APB_PAIR_CREDIT_COUNTER)
+    s_pcc = await tb.s_apb.read(APB_PAIR_CREDIT_COUNTER)
+    tb.log.info(f"  master PAIR_CREDIT_COUNTER = 0x{m_pcc:08x}")
+    tb.log.info(f"  slave  PAIR_CREDIT_COUNTER = 0x{s_pcc:08x}")
+
+    assert m_pcc != 0, (
+        f"master PAIR_CREDIT_COUNTER stuck at 0x{m_pcc:08x} "
+        "(silicon bug reproduced in sim)"
+    )
+    assert s_pcc != 0, (
+        f"slave  PAIR_CREDIT_COUNTER stuck at 0x{s_pcc:08x} "
+        "(silicon bug reproduced in sim)"
+    )
+
+
+@cocotb.test()
+async def test_08_ahb_packet_master_to_slave(dut):
+    """Drive an AHB packet from master TX aperture and check it arrives in
+    the slave's RX FIFO. Per the report this is one of the two HW-visible
+    downstream failures of PAIR_CREDIT=0.
+
+    Master writes a packet with:
+        word(0) = encoded header for length=2  (WR_REQ form)
+        word(1) = 0 (dest_addr)
+        word(2) = 0xDEADBEEF
+        word(3) = 0xCAFEBABE
+
+    Then we ask the slave: REG_PKT_LEN should read 2 (sideband from FIFO).
+    Then read the slave AHB FIFO data port at offsets 0x08, 0x0C — should
+    return the two payload words.
+
+    Expected: FAIL (slave REG_PKT_LEN reads 0, FIFO reads return 0 — bug).
+    """
+    from tidelink.packet import encode_word0, PKT_WR_REQ
+
+    tb = PairTB(dut)
+    await run_bringup_full(tb)
+
+    # to_data_mode() already drops training. Make sure no residual.
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await ClockCycles(tb.dut.hclk, 200)
+
+    payload = [0xDEADBEEF, 0xCAFEBABE]
+    word0 = encode_word0(length=len(payload), pkt_type=PKT_WR_REQ,
+                         src_id=0, dest_id=0, tag=0)
+    words = [word0, 0x0] + payload
+    tb.log.info(f"  master TX packet: word0=0x{word0:08x} dest=0x0 "
+                f"payload=[0x{payload[0]:08x}, 0x{payload[1]:08x}]")
+    await tb.ahb_tx_write_packet("m", words)
+
+    # Wait for the packet to traverse the FC link.
+    await ClockCycles(tb.dut.hclk, 2000)
+
+    s_pkt_len = await tb.s_apb.read(APB_PKT_WORD_LEN)
+    tb.log.info(f"  slave REG_PKT_WORD_LEN = 0x{s_pkt_len:08x}")
+
+    # Read slave's RX FIFO: payload words are at offsets 0x08, 0x0C.
+    s_w0 = await tb.ahb_fifo_read_word("s", 0x00)
+    s_w1 = await tb.ahb_fifo_read_word("s", 0x04)
+    s_w2 = await tb.ahb_fifo_read_word("s", 0x08)
+    s_w3 = await tb.ahb_fifo_read_word("s", 0x0C)
+    tb.log.info(f"  slave FIFO read: w0=0x{s_w0:08x} w1=0x{s_w1:08x} "
+                f"w2=0x{s_w2:08x} w3=0x{s_w3:08x}")
+
+    # Look at FC valid pulses post-tx for a localisation trace.
+    counts = await tb.watch_fc_pulses(500, "post AHB TX M->S")
+
+    assert s_pkt_len == 2, (
+        f"slave REG_PKT_WORD_LEN = {s_pkt_len} (expected 2). HW symptom: "
+        f"packet did not cross the link. FC pulses: "
+        f"M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
+        f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
+    )
+    assert s_w2 == payload[0] and s_w3 == payload[1], (
+        f"slave FIFO payload mismatch: read [0x{s_w2:08x}, 0x{s_w3:08x}], "
+        f"expected [0x{payload[0]:08x}, 0x{payload[1]:08x}]."
+    )
+
+
+@cocotb.test()
+async def test_09_ptp_hw_sync_slave_status(dut):
+    """Enable PTP on both sides, fire HW_SYNC on master, check slave's
+    HW_SYNC_STATUS is non-zero (slave received and processed sync packets).
+
+    Per src/rtl/tidelink_ptp.sv:349 + :521 — HW_SYNC_STATUS encodes:
+      [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
+    so a non-zero read means the PTP state machine observed activity.
+
+    Expected: FAIL — slave HW_SYNC_STATUS reads 0 because the PTP sync
+    payload sits on the same FC application channel as AHB packets and
+    starves on PAIR_CREDIT=0.
+    """
+    tb = PairTB(dut)
+    await run_bringup_full(tb)
+
+    # Ensure data mode.
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await ClockCycles(tb.dut.hclk, 200)
+
+    # Slave first — accept incoming sync. ptp_enable + bit 2.
+    await tb.s_apb.write(APB_PTP_CTRL, 0x05)
+    # Master: ptp_enable + bit 2 + GM bit (bit 3) — 0x0d.
+    await tb.m_apb.write(APB_PTP_CTRL, 0x0d)
+    await ClockCycles(tb.dut.hclk, 100)
+
+    # Kick HW_SYNC on master.
+    await tb.m_apb.write(APB_HW_SYNC_CTRL, 0x05)   # force_en + enable
+    tb.log.info("  master HW_SYNC_CTRL <= 0x05 (force_en + enable)")
+
+    # Wait for the master to emit one or more sync packets and the slave
+    # to process them.
+    await ClockCycles(tb.dut.hclk, 5000)
+
+    s_status = await tb.s_apb.read(APB_HW_SYNC_STATUS)
+    m_status = await tb.m_apb.read(APB_HW_SYNC_STATUS)
+    tb.log.info(f"  slave  HW_SYNC_STATUS = 0x{s_status:08x}")
+    tb.log.info(f"  master HW_SYNC_STATUS = 0x{m_status:08x}")
+
+    counts = await tb.watch_fc_pulses(500, "post HW_SYNC fire")
+
+    assert s_status != 0, (
+        f"slave HW_SYNC_STATUS = 0x{s_status:08x} (expected != 0). "
+        "HW symptom reproduced in sim: PTP sync payloads never reached "
+        f"slave. FC pulses: "
+        f"M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
         f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
     )

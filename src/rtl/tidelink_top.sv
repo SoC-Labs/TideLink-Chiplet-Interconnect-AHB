@@ -1863,9 +1863,13 @@ module tidelink_top #(
         .train_fail_irq_o           (train_fail_irq),
 
         // Controller register pass-through (from APB regs Region 4)
-        .ctrl_reg_write             (ctrl_reg_write),
-        .ctrl_reg_addr              (ctrl_reg_addr),
-        .ctrl_reg_wdata             (ctrl_reg_wdata),
+        // Bug N2 fix: input ports renamed to apb_ctrl_reg_* on the chiplet
+        // controller side so a parallel I²C-driven (slv_apb_*) path can
+        // OR-merge inside it. ctrl_reg_rdata stays as-is (combinational
+        // mux output for both external APB and slv_apb readbacks).
+        .apb_ctrl_reg_write         (ctrl_reg_write),
+        .apb_ctrl_reg_addr          (ctrl_reg_addr),
+        .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 
         // APB control interface (from unified APB port, Wlink region)

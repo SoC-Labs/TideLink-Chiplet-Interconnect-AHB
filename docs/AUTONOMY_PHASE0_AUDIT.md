@@ -157,7 +157,57 @@ Run `cocotb/tidelink_top_pair/test_tidelink_pair_doorbell.py::test_01_role_lock_
 
 ### Result
 
-*[populated after sim completes]*
+**PASS** — sim build `b8skyvazo`, completed 2026-05-29 16:56 BST.
+
+```
+test_tidelink_pair_doorbell.test_01_role_lock_and_cal_done
+  STATUS = PASS
+  SIM TIME = 8,403,400 ns (8.4 ms)
+  REAL TIME = 582 s (~9.7 min)
+  RATIO = 14,437 ns/s
+  VCS compile = 9.4 s; elab = 0.75 s; link = 0.5 s
+```
+
+End-state snapshot (both dies):
+
+| Metric | Master | Slave |
+|---|---|---|
+| `cal_done` | 1 | 1 |
+| `lane_locked` | 0x00 | 0x00 (expected — training_mode cleared) |
+| `fcsm_state` | 3 (data mode) | 3 (data mode) |
+| `cr_pkt_seen` | 1 | 1 |
+| `crack_pkt_seen` | 1 | 1 |
+| `pair_credit_counter` | 0 | 0 (SW-managed observability — not the actual ledger; see Bug A errata) |
+
+**Caveat: test_01 does NOT exercise the ST_TRAIN_* arms.** The testbench's autoneg drives both dies into `ST_BYPASS` (state 5'd6) — autoneg is sim-bypassed and roles are forced by the testbench. So this baseline confirms:
+
+- Env compiles ✓
+- Calibrator self-fires on `role_locked` rising ✓
+- Both sides reach `cal_done=1` autonomously ✓
+- FCSM advances to data mode after credit exchange ✓
+
+It does NOT yet confirm `ST_TRAIN_*` arms work end-to-end in sim. That requires Phase 0c (see below).
+
+### Sim caveats
+
+- VCS `cfs_ident_exec` segfault during the Verdi KDB indexer step. Non-fatal — sim ran to completion. This is a Verdi tooling artefact, not an RTL issue. Tracking only.
+
+### Phase 0c — recommended follow-up (NOT yet executed)
+
+Per the autonomy plan, Phase 0 also calls for:
+
+> *"Write one exploratory cocotb that simply force-writes `nego_train_cfg @ 0x10C = 0x1` on both sides at POR and observes the train FSM. No assertion yet — capture `state_r` traces, `local_training_mode_set/clr` strobes, `local_swreset_pulse` window, and the I²C bus."*
+
+This is the **definitive Phase 0 acceptance gate** — confirms the FSM actually walks `ST_NEGO_DONE_PRE → ST_TRAIN_ENTER → ST_TRAIN_RUN → ST_TRAIN_POLL_PEER → ST_TRAIN_EXIT → ST_TRAIN_DONE` in sim before any RTL changes happen.
+
+**Suggested deferral:** flag as "Phase 0c" and run it as the first concrete deliverable of Phase 1's work, given:
+- The static audit already shows the FSM arms are well-formed.
+- The testbench in `tidelink_top_pair` forces autoneg into ST_BYPASS today — exercising ST_TRAIN_* requires testbench rework to remove the bypass force-and-allow the I²C between dies.
+- That testbench rework is essentially Phase 7a's new test (`test_10_autonomous_train_post_por.py`) — pulling it forward into Phase 0c is reasonable but extends Phase 0 from 1 day to ~2 days.
+
+**Decision needed (see bottom of doc).**
+
+---
 
 ---
 
@@ -181,7 +231,11 @@ Audit-updated: Phase 1 = 2 days. Half-day added for `train_fail_irq_w` wiring + 
 
 ## Decision needed before Phase 1 commences
 
-- [ ] User approval to proceed to Phase 1 RTL changes on this branch
-- [ ] Confirm whether to fold the `train_fail_irq_w` wiring into Phase 1 or defer (separate sub-phase)
+- [ ] **User approval to proceed to Phase 1 RTL changes** on this branch
+- [ ] Confirm whether to fold the `train_fail_irq_w` wiring (G1b) into Phase 1 or defer (separate sub-phase)
+- [ ] Decide Phase 0c policy:
+  - **Option A:** Pull the FSM-end-to-end sim into Phase 0c (1 extra day before any RTL change) — strongest verification gate before RTL
+  - **Option B:** Defer FSM-end-to-end sim into Phase 1's cocotb regression — faster start, slight risk that an unknown FSM hole surfaces during Phase 1 instead of before it
+  - **Recommendation:** Option B. The static audit shows no skeleton holes; the cocotb test is essentially Phase 7a's `test_10_autonomous_train_post_por.py` and combining it with the Phase 1 wiring is more efficient.
 
-No RTL has been touched on this branch yet.
+No RTL has been touched on this branch yet. Phase 0 baseline complete; awaiting direction.

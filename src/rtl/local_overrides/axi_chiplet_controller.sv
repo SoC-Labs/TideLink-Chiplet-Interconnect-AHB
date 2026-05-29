@@ -489,7 +489,23 @@ module axi_chiplet_controller #(
             i2c_slv_addr_reg       <= 7'h7E;  // default to autoneg slave address so
                                                 // post-role_lock device_address mux
                                                 // doesn't NACK in-flight claim writes
-            i2c_prescale_reg       <= 16'd1;
+            // Bug N1 second-cause fix (2026-05-29): POR default i2c_prescale=1
+            // produces ~12.5 MHz I²C SCL at 50 MHz apb_clk, far above any
+            // sensible bus rate. The slave's bit-detection FSM cannot track
+            // those edges, so the address byte is mis-shifted, the slave
+            // wedges holding SDA low, and the master's i2c_master_axil
+            // bus_active_reg stays asserted forever (STATE_START_WAIT loop).
+            // The autoneg FSM in turn polls TXN_POLL → TXN_CHECK → TXN_POLL
+            // indefinitely because I2C_STS_BUSY never clears.
+            //
+            // 16'd125 yields 50 MHz / (125 * 4) = 100 kHz — the I²C standard
+            // bus rate — which is the lowest spec-compliant value and gives
+            // the slave's start/stop/bit detector ample margin. The TXN_PRESCALE
+            // sub-step at ST_NEGO_CLAIM writes this value into the master's
+            // PRESCALE register before the first CLAIM transaction, so the
+            // entire autoneg mask-handshake runs at 100 kHz from cold boot.
+            // See probe trace in test_13_bug_n1_second_cause_probe.py.
+            i2c_prescale_reg       <= 16'd125;
             nego_cfg_reg           <= NEGO_CFG_RESET;
             nego_priority_reg      <= 16'hFFFF;
             nego_timeout_reg       <= 32'd131_082_000;
@@ -1096,12 +1112,29 @@ module axi_chiplet_controller #(
     // Also force nego_driving high after role_lock when train_in_progress
     // is asserted, because once role_lock latches role_in_nego goes low
     // and the AXIL mux would otherwise hand the bus back to the bridge.
+    //
+    // Bug N1 fix (2026-05-29): mask-handshake states 8/9/10 also need
+    // post-lock coverage. When nego_won=1, role_lock_reg latches on the
+    // SAME edge the FSM advances 4 (POLL) → 8 (MASK_RES_TX) — i.e. while
+    // the FSM is in the middle of an I²C transaction with TXN_DATA /
+    // AXL_WR_RESP in flight. role_in_nego falls to 0, dropping nego_driving
+    // to 0 and handing the AXIL bus back to the bridge mid-write. The FSM
+    // sits forever waiting for m_axil_bvalid the bridge will never source.
+    // train_in_progress_w covers 11-15 but not 8-10. mask_hs_in_progress
+    // closes the gap; the prior diagnosis is in
+    // docs/AUTONOMY_PHASE0C_SIM_TRACE.md and the regression at
+    // cocotb/tidelink_top_pair/test_12_bug_n1_mask_handshake_advance.py
+    // exercises it.
+    wire mask_hs_in_progress = (nego_state_w == 4'd8) ||
+                               (nego_state_w == 4'd9) ||
+                               (nego_state_w == 4'd10);
     assign nego_driving = (role_in_nego && ((nego_state_w == 4'd2) ||
                                              (nego_state_w == 4'd3) ||
                                              (nego_state_w == 4'd4) ||
                                              (nego_state_w == 4'd8) ||
                                              (nego_state_w == 4'd9) ||
                                              (nego_state_w == 4'd10))) ||
+                          mask_hs_in_progress ||
                           train_in_progress_w;
 
     assign mst_axil_awaddr  = nego_driving ? fsm_axil_awaddr  : bridge_axil_awaddr;

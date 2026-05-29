@@ -1879,16 +1879,20 @@ module tidelink_top #(
     // hierarchical-force semantics; turning it on here means every TideLink
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
     axi_chiplet_controller #(
-        // ILA iteration (2026-05-29 morning HW validation): S_PROBE empirically
-        // does NOT eliminate the AUTOCAL=1 M->S asymmetric corruption on real
-        // silicon (PTP sync fails, doorbell M->S intermittent) despite the
-        // sim test_05 PASS. Forcing AUTOCAL=0 here re-engages the verified-
-        // good workaround documented in
-        // project_autocal0_hw_workaround_2026_05_27. Calibrator freezes at
-        // S_IDLE; (slip, phase) come from SWI_BIT_SLIP_LO / SWI_PHASE_OFFSET
-        // SW-writable knobs. Keeps the lane_checker + new APB observability
-        // fully alive so we can ILA-debug what S_PROBE is doing.
-        .AUTOCAL_ENABLE(1'b0),
+        // Re-enabled for build #3 (Fix A2 + Fix B per
+        // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md). The
+        // workaround AUTOCAL=0 (commit f2ab31c) is reverted here because
+        // the audit identified the real root cause: the calibrator's
+        // Step 6 (8409d6b) score predicate latched onto the lane_checker's
+        // monotonic dwell_min_dist_o (no per-dwell reset) and went
+        // sticky-true after dwell 1, so every (slip, phase) sweep point
+        // looked like a pass and the calibrator returned iterator-reset
+        // artefacts instead of a measured eye centre. Reverting that
+        // predicate to lane_locked[i] (Fix A2) restores real per-dwell
+        // semantics; reverting iteration to phase-INNER (Fix B) restores
+        // run_len = adjacent-phase eye width. AUTOCAL=1 is needed to
+        // actually exercise the calibrator on silicon and validate.
+        .AUTOCAL_ENABLE(1'b1),
         // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
         // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
         .USE_IDELAY    (USE_IDELAY),

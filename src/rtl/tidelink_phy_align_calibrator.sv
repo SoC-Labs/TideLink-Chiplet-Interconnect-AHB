@@ -648,9 +648,17 @@ module tidelink_phy_align_calibrator #(
 
     // Per-lane "this cycle passes" predicate using the new dist-score
     // metric. lane_dist_pass[i] = (dwell_min_dist_i for lane i is at or
-    // below the LOCK_DIST_THRESHOLD). Used by S_PROBE and S_SWEEP score
-    // accumulators in lieu of the legacy lane_locked[i] gating.
+    // below the LOCK_DIST_THRESHOLD).
+    //
+    // Fix A2 (audit 2026-05-29): no longer consumed by S_PROBE / S_SWEEP
+    // because dwell_min_dist_o doesn't reset per dwell (see
+    // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md H1). Kept for
+    // observability / future use once the lane_checker grows a per-dwell
+    // reset; the dwell_min_dist_i port and the LOCK_DIST_THRESHOLD
+    // localparam are retained likewise.
+    /* verilator lint_off UNUSED */
     wire [7:0] lane_dist_pass_w;
+    /* verilator lint_on UNUSED */
     genvar gdist;
     generate
         for (gdist = 0; gdist < 8; gdist = gdist + 1) begin : g_dist_pass
@@ -1001,13 +1009,23 @@ module tidelink_phy_align_calibrator #(
                 // -----------------------------------------------------------
                 S_PROBE: begin
                     // In-dwell lock counter (saturating).
-                    // Spec §7.1: gate on the continuous dist-score
-                    // predicate (lane_dist_pass_w) rather than the binary
-                    // lane_locked input. lane_score still serves as the
-                    // run-length counter; the score gate (>= lock_thresh)
-                    // is unchanged.
+                    // Fix A2 (audit 2026-05-29, see
+                    // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md):
+                    // REVERTED from Step 6 (8409d6b) lane_dist_pass_w
+                    // gating back to the binary lane_locked[i]. The
+                    // lane_checker's dwell_min_dist_o is a monotonic
+                    // running minimum that only resets on clear_noise or
+                    // training_mode_rise (NOT per dwell), so
+                    // lane_dist_pass_w[i] is sticky-true after dwell 1
+                    // and lane_score saturates at every (slip, phase) —
+                    // the calibrator can no longer distinguish a real
+                    // eye from a transient hit. lane_locked[i] comes
+                    // from a saturating consecutive-match counter inside
+                    // tidelink_lane_checker_single which DOES reset on
+                    // any miss within the cycle, giving correct per-
+                    // dwell semantics.
                     for (int i = 0; i < 8; i++) begin
-                        if (lane_dist_pass_w[i]) begin
+                        if (lane_locked[i]) begin
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
@@ -1065,13 +1083,19 @@ module tidelink_phy_align_calibrator #(
                 end
 
                 S_SWEEP: begin
-                    // ----- Per-lane in-dwell score (spec §7.1) -------------
-                    // Count consecutive cycles whose continuous
-                    // dist-score (dwell_min_dist_i[5*i +: 5]) is
-                    // <= LOCK_DIST_THRESHOLD within the current dwell
-                    // window; reset on any miss, saturate at
-                    // LANE_SCORE_MAX. Cleared on dwell-window expiry
-                    // (see dwell_expire branch below).
+                    // ----- Per-lane in-dwell score -------------------------
+                    // Fix A2 (audit 2026-05-29, see
+                    // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md):
+                    // REVERTED from Step 6 (8409d6b) lane_dist_pass_w
+                    // gating back to the binary lane_locked[i]. See the
+                    // matching S_PROBE comment for the dwell-boundary
+                    // reset bug: lane_checker's dwell_min_dist_o is a
+                    // since-training-start monotonic minimum (no per-
+                    // dwell reset), so the dist-pass predicate was
+                    // sticky-true and the calibrator could not measure
+                    // real eye quality. lane_locked[i] is the right per-
+                    // dwell signal — saturating consecutive-match counter
+                    // that resets on miss.
                     //
                     // f900e07 lane-done freeze (restored from advisory
                     // §9.11): for lanes that already latched (0,0) in
@@ -1084,7 +1108,7 @@ module tidelink_phy_align_calibrator #(
                     for (int i = 0; i < 8; i++) begin
                         if (lane_done[i]) begin
                             lane_score[i] <= 6'd0;
-                        end else if (lane_dist_pass_w[i]) begin
+                        end else if (lane_locked[i]) begin
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
@@ -1180,54 +1204,44 @@ module tidelink_phy_align_calibrator #(
                             lane_score[i] <= 6'd0;
                         end
 
-                        // Dwell expired — advance the SHARED iterator
-                        // (§9.11c REVERTED to §9.7/§9.9 order: phase-OUTER,
-                        // slip-INNER). Agent's independent assessment
-                        // 2026-05-27: slip-OUTER iteration (§9.11/§9.11b)
-                        // made the M/S sweep-window overlap unrealistic on
-                        // real silicon — each calibrator fixated on a
-                        // single slip for 128 dwells (16k cycles) before
-                        // moving on, so M at slip=2 and S at slip=5
-                        // couldn't agree on a compatible (slip,phase) pair
-                        // for ms at a time. With phase-OUTER iteration,
-                        // BOTH calibrators cycle through all 8 rotations
-                        // every 8 dwells (~512 cycles) — frequent crossings
-                        // of compatible (slip,phase) pairs even when M/S
-                        // role_lock triggers were ms-skewed by autoneg I²C.
+                        // Dwell expired — advance the SHARED iterator.
                         //
-                        // Trade-off: the run_len[i] metric now tracks
-                        // SLIP-axis contiguity (less meaningful as an "eye
-                        // width" measurement — slip is rotation, not
-                        // adjacent eye points). With MIN_LOCK_DWELLS=4 on
-                        // typical per-lane skew where only ONE slip is the
-                        // correct rotation, run_len rarely exceeds 1 and
-                        // the §9.11b any_pass_valid fallback fires instead.
-                        // S_PROBE@(0,0) advisory and the centre-of-best-run
-                        // logic remain in place for cocotb / wider-eye HW.
+                        // Fix B (audit 2026-05-29, see
+                        // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md):
+                        // REVERTED §9.11c (phase-OUTER / slip-INNER) back
+                        // to §9.11 phase-INNER / slip-OUTER ordering. With
+                        // Fix A2 restoring real per-dwell scoring, run_len
+                        // again measures contiguous PHASE points (the
+                        // actual sub-bit eye axis) instead of slip
+                        // rotations. The §9.11c motivation (M/S sweep
+                        // overlap) was a workaround for the broken sticky
+                        // score path — once A2 lands, eye-centre selection
+                        // can find the real eye on a single slip without
+                        // needing both calibrators to cross-cycle slips.
                         //
                         // On iter_at_end the FSM transitions to S_FINALIZE
                         // next cycle and the per-lane assigns happen there.
                         dwell_ctr <= '0;
-                        if (sweep_slip == 3'd7) begin
-                            // End-of-slip-scan for this phase — runs of
-                            // contiguous slips at this phase are closed.
-                            // Reset run_len for the next phase's fresh
-                            // inner-slip scan (best_run is preserved).
-                            sweep_slip <= 3'd0;
+                        if (sweep_phase == 4'd15) begin
+                            // End-of-phase-scan for this slip — runs of
+                            // contiguous phases at this slip are closed.
+                            // Reset run_len for the next slip's fresh
+                            // inner-phase scan (best_run is preserved).
+                            sweep_phase <= 4'd0;
                             for (int i = 0; i < 8; i++) begin
                                 run_len[i] <= '0;
                             end
-                            if (sweep_phase == 4'd15) begin
+                            if (sweep_slip == 3'd7) begin
                                 // iter_at_end. FSM next-state goes to
-                                // S_FINALIZE; we hold sweep_phase at 15,
-                                // sweep_slip at 0 (post-wrap). No per-
+                                // S_FINALIZE; we hold sweep_slip at 7,
+                                // sweep_phase at 0 (post-wrap). No per-
                                 // lane assigns here — they happen in
                                 // S_FINALIZE.
                             end else begin
-                                sweep_phase <= sweep_phase + 4'd1;
+                                sweep_slip <= sweep_slip + 3'd1;
                             end
                         end else begin
-                            sweep_slip <= sweep_slip + 3'd1;
+                            sweep_phase <= sweep_phase + 4'd1;
                         end
                     end else begin
                         // HAL PADMSB+UELOPR @288: width-match the increment

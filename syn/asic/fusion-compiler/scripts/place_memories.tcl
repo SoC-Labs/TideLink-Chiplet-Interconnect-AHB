@@ -5,9 +5,11 @@
 # somewhere in the interior, which fragments std-cell space and hurts the
 # area-tight (0.85 util) floorplan.
 #
-# Layout strategy (aspect 1.0 partition):
+# Layout strategy (wide partition, aspect ~2.0):
 #   Bottom-right corner — 1× rf_16k (~312 × 285 μm)
 #   Std cells           — fill the L-shape left + top
+#   AHB on bottom (long edge) keeps FIFO RAM adjacent to AHB pin row.
+#   Offset is scalable, so this still works if aspect ratio changes.
 #
 # Sourced by 1_init_design.tcl AFTER initialize_floorplan and BEFORE the
 # pre-compile sanity check.

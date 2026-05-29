@@ -57,7 +57,7 @@ export FC_BLOCK_DIR   = $(FC_WORK)/$(MODULE).dlib
 # area that 0.78 hits PLACE-006 over-utilization at compile_fusion's
 # logic_opto pre-placement. 0.70 gives the placer the headroom to
 # absorb the PG-mesh blockages and keeps the partition timing-clean.
-export FC_ASPECT_RATIO     ?= 1.0
+export FC_ASPECT_RATIO     ?= 2.0
 export FC_CORE_UTILIZATION ?= 0.70
 export FC_CORE_OFFSET      ?= 8
 

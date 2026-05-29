@@ -249,23 +249,48 @@ fpgahub board status <name>         # synthesised status
 
 **Wedge-safety rule:** anything that writes AHB_TX (0x4400_0000) can lock the PS in build #1/#2. In build #3 the wedge primitive is gone, but the rule still stands as belt-and-braces.
 
-## 9. Things that might cause the bugs (initial speculation, agent will refine)
+## 9. Bug diagnoses (from dedicated diagnostic agent)
 
-The diagnostic agent (currently running) will fill in this section with a ranked hypothesis bank and concrete experiments. As placeholders until it returns, the top candidates I currently see for each bug:
+**Full hypothesis bank with concrete experiments:** [docs/BUG_DIAGNOSES_2026_05_29.md](BUG_DIAGNOSES_2026_05_29.md). 173 lines, technical. Read it before opening RTL.
 
-**Bug A — AHB packet RX empty at slave:**
-- A1: `fc_l2a_valid` never asserts at slave's FC adapter (RX path silent — packet dropped at link layer between ShortPacket and FC node demux)
-- A2: FC packet arrives but slave's returner doesn't bind to the AHB_FIFO write path (returner config issue)
-- A3: Channel-ID mismatch — master sends on FC channel X, slave decodes/listens on Y
-- A4: Initial credit-advertisement at link-up never completed, master TX queues stalled (despite link being "up")
+### Three independent FC channels confirmed
 
-**Bug B — PTP HW_SYNC RX empty at slave:**
-- B1: Master `ptp_sp_tx_valid` never asserts (master PTP TX path silent — PHC state machine issue)
-- B2: Master sends but slave's `rx_fifo` in ShortPacketToWlink never gets `winc` (byte-aligner skew, PHC Phase-1 family)
-- B3: Slave receives packets in rx_fifo but PHC RX consumer doesn't drain them
-- B4: CRC corruption silently drops valid sync packets
+1. **TideLink FC node** (`tl2wl`, data_id≈0xa1) — AHB packets. 48-bit packed: `pkt_type[47:46]` + `addr_offset[45:32]` + `payload[31:0]`. **No application-level TX credit gate.**
+2. **ShortPacketToWlink** (data_ids 0x50=SYNC, 0x51=DELAY_REQ) — PTP. RX hard-filter on `dataIdMatch` at line 57.
+3. **AXI initiator/target** — XHB500 remote bursts.
 
-**Diagnostic agent output will replace this placeholder.** When it arrives, also revisit whether A and B might share a deeper root cause (e.g. a global timing/alignment issue affecting both FC node and ShortPacket node).
+### Bug A leading hypothesis (60%) — A-1: FC RX FSM rx_pkt_type misdecode
+
+Slave's `rx_pkt_type = rx_fc_word_r[47:46]` may be picking up `SIDEBAND` (01) instead of `FIFO_DATA` (00) on AHB packets. That would explain:
+- AHB packets are getting routed to `fc_rx_cfg_*` (APB writes) instead of `fc_rx_fifo_*`
+- The 0x5000 bumps at slave 0x024 may be **misrouted FIFO_DATA word 0** masquerading as sideband
+- Master HREADY returns cleanly because TX skid drains normally (slave accepts at link layer)
+
+**ILA experiment** to confirm or refute: probe slave `tidelink_top.u_fc_adapter.{rx_fc_word_r[47:46], rx_pkt_type, fc_rx_fifo_valid, fc_rx_cfg_psel, fc_rx_cfg_paddr}` while master writes AHB N=1. Expected ~2h wall.
+
+Other A-candidates ranked: A-2 packet_active_r race (25%), A-3 master TX address-clipping (10%), A-4 reset-glitch FSM wedge (5%).
+
+### Bug B: WE'VE BEEN READING THE WRONG REGISTER
+
+Critical finding: **`HW_SYNC_STATUS` at offset 0x048 on the slave is `hw_sync_en_r`** — the **initiator-side enable**, not a receive counter. Slave never enabled HW_SYNC, so `HW_SYNC_STATUS=0` is **expected behaviour**, not a bug.
+
+For slave-RX visibility, read instead:
+- `PTP_STATUS` at offset 0x03C bit[2] = `ptp_rx_valid_r`
+- `PTP_RX_PAYLOAD` at offset 0x038 — the received sync payload
+
+This means **the sandwich script's `HW_SYNC_STATUS` poll on the slave was a false-positive bug indicator**. The actual question is whether `PTP_STATUS[2]` and `PTP_RX_PAYLOAD` change on slave during master HW_SYNC. **Re-test required** before declaring Bug B exists at all — could be a measurement bug.
+
+(If Bug B does exist on re-test, the ShortPacketToWlink path is the next candidate: `rx_fifo_io_winc = rx_pkt_valid & ~rx_fifo_io_wfull` at line 57, gated by dataIdMatch. Probe master's `tx_fifo_io_wfull`, master's `tx_valid`, slave's `rx_pkt_valid`, slave's `rx_fifo_io_winc`.)
+
+### A and B may share a root cause
+
+If A-1 is real (FC RX FSM rx_pkt_type misdecode), it could ALSO affect short-packet decoding if the ShortPacket dataId arrives at the same RX demux pre-filter. But ShortPacket and FC node are split BEFORE rx_pkt_type decode (separate Wlink lanes), so probably independent. The agent gives them as independent.
+
+### Recommended experiment ordering (max info gain first)
+
+1. **Re-measure Bug B with the right register** (`PTP_STATUS` 0x03C bit[2], `PTP_RX_PAYLOAD` 0x038). Effort: 10 min. May eliminate Bug B entirely.
+2. **ILA for A-1 (rx_pkt_type misdecode)**. Effort: ~2 h. Highest probability hypothesis.
+3. **Sim instrumentation of FCSM** (already-failing sim test_07/08 gives ~6 min iteration loop). Could catch A-1 in sim if probes added in the same place.
 
 ## 10. Open questions for the next engineer
 

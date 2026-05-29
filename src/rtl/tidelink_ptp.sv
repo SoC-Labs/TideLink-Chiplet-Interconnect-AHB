@@ -140,21 +140,24 @@ module tidelink_ptp #(
     // §2.6/2.7 audit (feat/phc-ila-debug).
     (* mark_debug = "true" *) logic        ptp_enable_r;
     (* mark_debug = "true" *) logic        ptp_rx_valid_r;
-    logic [3:0]  ptp_rx_msg_type_r;
+    // mark_debug — Bug B probe (confirm SYNC vs DELAY_REQ decode at slave) per audit §4
+    (* mark_debug = "true" *) logic [3:0]  ptp_rx_msg_type_r;
 
     // RX payload register (offset 0x038, mapped at ptp_reg_addr = 3'h6)
     logic [SYS_DATA_W-1:0] ptp_rx_payload_r;
 
     // HW sync control register bit [2]: force-enable, bypasses phc_locked_i gate
-    logic        hw_sync_force_en_r;
+    // mark_debug — Bug B probe (shows whether phc_locked_i gate was bypassed)
+    (* mark_debug = "true" *) logic        hw_sync_force_en_r;
 
     // =========================================================================
     // HW Sync Initiator — Forward Declarations
     // =========================================================================
     // hw_sync_trigger is asserted by the HW sync FSM when it wants to inject
     // a SYNC message into the TX path (defined in full below).
-    wire hw_sync_trigger;
-    wire [15:0] hw_seq_num_r;
+    // mark_debug — Bug B probes (HW_SYNC FSM fires + sequence-number match) per audit §4
+    (* mark_debug = "true" *) wire hw_sync_trigger;
+    (* mark_debug = "true" *) wire [15:0] hw_seq_num_r;
 
     // =========================================================================
     // TX Path — AHB Slave / HW Sync → Wait for Idle → Short Packet TX + PHC Capture
@@ -166,7 +169,8 @@ module tidelink_ptp #(
 
     // Registered state from address phase
     logic [3:0]  tx_msg_type_r;
-    logic        tx_pending_r;
+    // mark_debug — Bug B probe (TX state held) per audit §4
+    (* mark_debug = "true" *) logic        tx_pending_r;
 
     // TX FSM states
     typedef enum logic [1:0] {

@@ -632,9 +632,15 @@ module tb_top #(
     );
 
     // ----- Waveform dump ------------------------------------------------------
+    // Gated by TB_TOP_DUMP_WAVES so probe-only tests can opt out (the VCD
+    // grows ~1 GB / minute under multi-test cocotb runs, OOMing the host).
+    // Default ON to preserve prior behaviour; add +define+TB_TOP_NO_DUMP=1 to
+    // disable. Run with: COMPILE_ARGS+="+define+TB_TOP_NO_DUMP" make ...
+    `ifndef TB_TOP_NO_DUMP
     initial begin
         $dumpfile("waves.vcd");
         $dumpvars(0, tb_top);
     end
+    `endif
 
 endmodule

@@ -489,12 +489,15 @@ module tidelink_top #(
     // TideLink FC Node wiring (FC adapter ↔ Chiplet Controller)
     // =========================================================================
     // Separate valid/ready/data signals (used by FC adapter)
-    wire                   tl_fc_a2l_valid;
-    wire [FC_DATA_W-1:0]   tl_fc_a2l_data;
-    wire                   tl_fc_a2l_ready;
-    wire                   tl_fc_l2a_valid;
-    wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
-    wire                   tl_fc_l2a_accept;
+    // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3
+    // (master FC TX boundary + slave FC RX boundary). hclk-native, captured by
+    // u_dbg_int via insert_debug_core.tcl auto-scrape.
+    (* mark_debug = "true" *) wire                   tl_fc_a2l_valid;
+    (* mark_debug = "true" *) wire [FC_DATA_W-1:0]   tl_fc_a2l_data;
+    (* mark_debug = "true" *) wire                   tl_fc_a2l_ready;
+    (* mark_debug = "true" *) wire                   tl_fc_l2a_valid;
+    (* mark_debug = "true" *) wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
+    (* mark_debug = "true" *) wire                   tl_fc_l2a_accept;
 
     // =========================================================================
     // PTP Short Packet wiring (PTP module ↔ Chiplet Controller)
@@ -513,7 +516,8 @@ module tidelink_top #(
 
     // TX link idle signal from chiplet controller (Wlink tx_link_idle output)
     // Directly driven by .tx_link_idle port on the Wlink instance
-    wire                   tx_router_idle;
+    // mark_debug — Bug B probe (HW_SYNC defer gate) per audit §4
+    (* mark_debug = "true" *) wire                   tx_router_idle;
 
     // PTP register interface (PTP module ↔ APB regs, via pass-through)
     wire                   ptp_reg_write;
@@ -599,7 +603,8 @@ module tidelink_top #(
     wire                    fc_rx_fifo_write;
     wire [RAM_ADDR_W-1:0]  fc_rx_fifo_addr;
     wire [SYS_DATA_W-1:0]  fc_rx_fifo_wdata;
-    wire                    fc_rx_fifo_ready;
+    // mark_debug — Bug A probe (back-pressure from FIFO controller) per audit §3
+    (* mark_debug = "true" *) wire                    fc_rx_fifo_ready;
 
     // PUF SRAM read path (FC adapter ↔ FIFO)
     wire [RAM_ADDR_W-3:0]  puf_addr;

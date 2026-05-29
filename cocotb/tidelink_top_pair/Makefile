@@ -22,7 +22,15 @@ export SKID_BITS
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
+
+# Wave dump (gated). Probe-only tests can opt out via TB_TOP_NO_DUMP=1 — the
+# VCD grew >4 GB on the 4-test credit-ledger probe run and OOM'd the host.
+TB_TOP_NO_DUMP ?= 0
+ifeq ($(TB_TOP_NO_DUMP),1)
+COMPILE_ARGS += +define+TB_TOP_NO_DUMP
+else
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
+endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 

@@ -314,8 +314,11 @@ module tidelink_apb_regs #(
 
     // ── Region 1: Pair Credit Counter (0x028 / 0x02C / 0x030) ─────────────────
 
-    logic [SYS_DATA_W-1:0] pair_credit_counter;
-    logic                  pair_credit_counter_en;
+    // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3.
+    // pclk-domain (async to hclk u_dbg_int sampling clock) — accept CDC skew
+    // for visibility of live update pattern vs polled APB snapshots.
+    (* mark_debug = "true" *) logic [SYS_DATA_W-1:0] pair_credit_counter;
+    (* mark_debug = "true" *) logic                  pair_credit_counter_en;
 
     wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
     wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;

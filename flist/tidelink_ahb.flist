@@ -10,4 +10,5 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_returner.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_apb_regs.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
+${TIDELINK_HOME}/src/rtl/tidelink.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_ahb.sv

@@ -39,30 +39,16 @@ STANDALONE_MODULES = \
 
 # Modules requiring CMSDK IP (cmsdk_ahb_to_sram / cmsdk_ahb_to_apb)
 #
-# NOTE (2026-05-23): tidelink_ahb and tidelink_fifo_ahb are excluded from CI
-# hal-lint:
+# NOTE (2026-05-29): tidelink_ahb re-enabled. The legacy src/rtl/tidelink.sv
+# wrapper was modernised to instantiate the active tidelink_fifo (which now
+# subsumes the FIFO memory, APB register block and Returner) and tie off the
+# new pass-through ports (PTP / servo / mbox / ctrl / perf / fc_wr / puf).
+# tidelink.sv is now added to flist/tidelink_ahb.flist so HAL can resolve
+# the u_tidelink instance inside tidelink_ahb. HAL: 0 errors.
 #
-#  - tidelink_ahb: instantiates src/rtl/tidelink.sv which wires to the
-#    *legacy* port interface of tidelink_fifo / tidelink_apb_regs
-#    (hsel/hready/htrans/packet_word_length_out /overrun/underrun/enable
-#    /flush). The active modules in src/rtl/fifo/ use the prefixed
-#    ahbs_*/ahbm_* multi-AHB interface. Adding src/rtl/tidelink.sv to
-#    tidelink_ahb.flist surfaces the mismatch as E,CUVPOM port-name
-#    errors. The two coexist because cocotb/tidelink_ahb is the only
-#    consumer of src/rtl/tidelink.sv (no FPGA / ASIC build references it).
-#
-#  - tidelink_fifo_ahb: instantiates the active tidelink_fifo (from
-#    src/rtl/fifo/) but does not connect four newer input ports
-#    (ctrl_reg_rdata, perf_reg_rdata, puf_addr, puf_req). HAL elaborates
-#    correctly but flags E,UNCONI on those four inputs. This is a real
-#    bug in tidelink_fifo_ahb that should be fixed (tie off or wire),
-#    not a flist artefact.
-#
-# A future repo-simplification fold (Agent E §1-A + retiring
-# tidelink_ahb cocotb env + completing tidelink_fifo_ahb port wiring)
-# will drop both exclusions. Tracked in
-# docs/REPO_SIMPLIFICATION_IMPACT.md §1-A.
-CMSDK_MODULES = tidelink_fifo tidelink
+# tidelink_fifo_ahb still has no dedicated flist; its port surface is lint-
+# covered via the tidelink_top flist instead, so no separate entry here.
+CMSDK_MODULES = tidelink_fifo tidelink tidelink_ahb
 
 # ── Module-to-top mapping ────────────────────────────────────────
 # Flist basenames and SV module names diverge after the FIFO rename.

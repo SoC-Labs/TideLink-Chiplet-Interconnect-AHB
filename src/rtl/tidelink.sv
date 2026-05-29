@@ -1,9 +1,22 @@
 //-----------------------------------------------------------------------------
-// SoCLabs TideLink Top-Level Module
-// - Wraps a TideLink FIFO (AHB slave), a TideLink Returner
-//   (AHB master), and an APB slave register interface for configuration
-//   and status.
-// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access license.
+// SoCLabs TideLink Top-Level Module (legacy thin wrapper)
+//
+// Historical role: this module was the FIFO + Returner + APB-regs assembly
+// before that combination was hoisted into src/rtl/fifo/tidelink_fifo.sv.
+//
+// Modern role: it is kept purely as a back-compat wrapper for
+// src/rtl/tidelink_ahb.sv (and its cocotb env). It exposes the legacy port
+// surface (clock/reset, single AHB slave + AHB master + APB slave + 3 IRQs)
+// and internally instantiates the active tidelink_fifo, tying off the new
+// pass-through ports (PTP / servo / mbox / ctrl / perf / fc_wr / puf) that
+// the legacy port list does not carry.
+//
+// Live FPGA / ASIC builds use tidelink_top.sv -> tidelink_fifo_ahb.sv
+// directly and never reach this file. See lint/Makefile near line 42 for the
+// history of why this module exists.
+//
+// A joint work commissioned on behalf of SoC Labs, under Arm Academic Access
+// license.
 //
 // Contributors
 //
@@ -27,7 +40,7 @@ module tidelink #(
     input  logic                    hresetn,
 
     // --------------------------------------------------------------------------
-    // AHB Slave Interface (to TideLink FIFO)
+    // AHB Slave Interface (FIFO data path)
     // --------------------------------------------------------------------------
     input  logic                    ahbs_hsel,
     input  logic                    ahbs_hready,
@@ -41,7 +54,7 @@ module tidelink #(
     output wire    [SYS_DATA_W-1:0] ahbs_hrdata,
 
     // --------------------------------------------------------------------------
-    // AHB Master Interface (from TideLink Returner)
+    // AHB Master Interface (Returner)
     // --------------------------------------------------------------------------
     output wire    [SYS_ADDR_W-1:0] ahbm_haddr,
     output wire    [SYS_DATA_W-1:0] ahbm_hwdata,
@@ -68,166 +81,112 @@ module tidelink #(
     // Interrupt Outputs
     // --------------------------------------------------------------------------
     output wire                     released_credits_irq,  // Pair freed credits (channel 0 deltas)
-    output wire                     doorbell_irq,         // Pair responded to doorbell (channel 1 totals)
-    output wire                     packet_committed_irq  // Packet committed to FIFO (cleared on read addr 0)
+    output wire                     doorbell_irq,          // Pair responded to doorbell (channel 1 totals)
+    output wire                     packet_committed_irq   // Packet committed to FIFO
 );
 
     // --------------------------------------------------------------------------
-    // Internal Wiring
-    // --------------------------------------------------------------------------
-
-    // FIFO sideband signals
-    logic                  read_complete;
-    logic [RAM_ADDR_W-2:0] current_credit_count;
-    logic [RAM_ADDR_W-1:0] packet_word_length;
-
-    // FIFO error flags
-    logic                   fifo_overrun;
-    logic                   fifo_underrun;
-
-    // Control signals (from APB regs to FIFO and returner)
-    logic                   ctrl_enable;
-    logic                   ctrl_flush;
-
-    // Returner status
-    logic                   returner_busy;
-    logic                   master_error;
-
-    // APB register outputs → returner
-    logic                    doorbell_trigger;
-    logic                    reset_deassert_pulse;
-    logic [SYS_DATA_W-1:0]  credit_delta_data;
-    logic [SYS_DATA_W-1:0]  credit_count_data;
-    logic [SYS_ADDR_W-1:0]  pair_base_addr;
-    logic                    release_credits_trigger;
-
-    // Paired tidelink's target addresses (derived from RW pair_base_addr register)
-    wire [SYS_ADDR_W-1:0] PAIR_RELEASED_CREDITS_ADDR    = pair_base_addr + SYS_ADDR_W'(32'h0000_0020);
-    wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_RESPONSE_ADDR  = pair_base_addr + SYS_ADDR_W'(32'h0000_0024);
-    wire [SYS_ADDR_W-1:0] PAIR_DOORBELL_ADDR           = pair_base_addr + SYS_ADDR_W'(32'h0000_0014);
-
-    // --------------------------------------------------------------------------
-    // TideLink FIFO Instance
+    // tidelink_fifo subsumes the FIFO memory, APB register block, and the
+    // Returner. The legacy port surface above does not carry the newer
+    // PTP / servo / mbox / ctrl / perf / fc-direct-write / PUF pass-throughs,
+    // so they are tied off locally here. Any future user of this wrapper
+    // that needs those subsystems should instantiate tidelink_fifo_ahb or
+    // tidelink_top directly.
     // --------------------------------------------------------------------------
     tidelink_fifo #(
-        .SYS_DATA_W (SYS_DATA_W),
-        .RAM_ADDR_W (RAM_ADDR_W),
-        .RAM_DATA_W (RAM_DATA_W)
-    ) u_fifo (
-        .hclk                   (hclk),
-        .hresetn                (hresetn),
-        .hsel                   (ahbs_hsel),
-        .hready                 (ahbs_hready),
-        .htrans                 (ahbs_htrans),
-        .hsize                  (ahbs_hsize),
-        .hwrite                 (ahbs_hwrite),
-        .haddr                  (ahbs_haddr),
-        .hwdata                 (ahbs_hwdata),
-        .hreadyout              (ahbs_hreadyout),
-        .hresp                  (ahbs_hresp),
-        .hrdata                 (ahbs_hrdata),
-        .read_complete          (read_complete),
-        .current_credit_count    (current_credit_count),
-        .packet_word_length_out (packet_word_length),
-        .packet_committed_irq   (packet_committed_irq),
-        .overrun                (fifo_overrun),
-        .underrun               (fifo_underrun),
-        .enable                 (ctrl_enable),
-        .flush                  (ctrl_flush)
-    );
-
-    // --------------------------------------------------------------------------
-    // APB Register Interface Instance
-    // --------------------------------------------------------------------------
-    tidelink_apb_regs #(
-        .SYS_ADDR_W       (SYS_ADDR_W),
-        .SYS_DATA_W       (SYS_DATA_W),
-        .RAM_ADDR_W       (RAM_ADDR_W),
-        .APB_ADDR_W       (APB_ADDR_W),
+        .SYS_ADDR_W        (SYS_ADDR_W),
+        .SYS_DATA_W        (SYS_DATA_W),
+        .RAM_ADDR_W        (RAM_ADDR_W),
+        .RAM_DATA_W        (RAM_DATA_W),
+        .APB_ADDR_W        (APB_ADDR_W),
         .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
-    ) u_apb_regs (
-        .hclk                (hclk),
-        .hresetn             (hresetn),
-        // APB slave
-        .psel                (apbs_psel),
-        .penable             (apbs_penable),
-        .pwrite              (apbs_pwrite),
-        .paddr               (apbs_paddr),
-        .pwdata              (apbs_pwdata),
-        .prdata              (apbs_prdata),
-        .pready              (apbs_pready),
-        .pslverr             (apbs_pslverr),
-        // FIFO sideband
-        .packet_word_length  (packet_word_length),
-        .current_credit_count (current_credit_count),
-        .read_complete       (read_complete),
-        // Returner status
-        .returner_busy       (returner_busy),
-        // Error flags
-        .fifo_overrun        (fifo_overrun),
-        .fifo_underrun       (fifo_underrun),
-        .master_error        (master_error),
-        // Packet committed (for STATUS[4] polling)
-        .packet_committed    (packet_committed_irq),
-        // Control outputs (to FIFO and returner)
-        .ctrl_enable         (ctrl_enable),
-        .ctrl_flush          (ctrl_flush),
-        // Returner control
-        .doorbell_trigger    (doorbell_trigger),
-        .reset_deassert_pulse(reset_deassert_pulse),
-        .credit_delta_data    (credit_delta_data),
-        .credit_count_data    (credit_count_data),
-        .release_credits_trigger(release_credits_trigger),
-        // Pair base address
-        .pair_base_addr      (pair_base_addr),
-        // IRQs
+    ) u_fifo (
+        .hclk                 (hclk),
+        .hresetn              (hresetn),
+
+        // AHB slave (FIFO data path)
+        .ahbs_hsel            (ahbs_hsel),
+        .ahbs_hready          (ahbs_hready),
+        .ahbs_htrans          (ahbs_htrans),
+        .ahbs_hsize           (ahbs_hsize),
+        .ahbs_hwrite          (ahbs_hwrite),
+        .ahbs_haddr           (ahbs_haddr),
+        .ahbs_hwdata          (ahbs_hwdata),
+        .ahbs_hreadyout       (ahbs_hreadyout),
+        .ahbs_hresp           (ahbs_hresp),
+        .ahbs_hrdata          (ahbs_hrdata),
+
+        // AHB master (Returner)
+        .ahbm_haddr           (ahbm_haddr),
+        .ahbm_hwdata          (ahbm_hwdata),
+        .ahbm_htrans          (ahbm_htrans),
+        .ahbm_hsize           (ahbm_hsize),
+        .ahbm_hwrite          (ahbm_hwrite),
+        .ahbm_hready          (ahbm_hready),
+        .ahbm_hresp           (ahbm_hresp),
+        .ahbm_hrdata          (ahbm_hrdata),
+
+        // APB slave (config / status)
+        .apbs_psel            (apbs_psel),
+        .apbs_penable         (apbs_penable),
+        .apbs_pwrite          (apbs_pwrite),
+        .apbs_paddr           (apbs_paddr),
+        .apbs_pwdata          (apbs_pwdata),
+        .apbs_prdata          (apbs_prdata),
+        .apbs_pready          (apbs_pready),
+        .apbs_pslverr         (apbs_pslverr),
+
+        // Interrupts
         .released_credits_irq (released_credits_irq),
-        .doorbell_irq        (doorbell_irq)
-    );
+        .doorbell_irq         (doorbell_irq),
+        .packet_committed_irq (packet_committed_irq),
 
-    // --------------------------------------------------------------------------
-    // TideLink Returner Instance
-    // --------------------------------------------------------------------------
-    // Channel 0 (highest priority): release credits on read completion
-    //   → writes DELTA to pair's released credits accumulator (0x020)
-    // Channel 1: doorbell — triggered by software OR by pair's reset
-    //   → writes TOTAL free credits to pair's doorbell response accumulator (0x024)
-    // Channel 2 (lowest priority): reset doorbell — fires on reset deassertion
-    //   → rings pair's doorbell register (0x014)
-    tidelink_returner #(
-        .SYS_ADDR_W (SYS_ADDR_W),
-        .SYS_DATA_W (SYS_DATA_W)
-    ) u_returner (
-        .hclk        (hclk),
-        .hresetn     (hresetn),
+        // PTP register pass-through — not exposed by this legacy wrapper
+        .ptp_reg_write        (/* unused */),
+        .ptp_reg_addr         (/* unused */),
+        .ptp_reg_wdata        (/* unused */),
+        .ptp_reg_rdata        ({SYS_DATA_W{1'b0}}),
+        .ptp_reg_region       (/* unused */),
 
-        // Channel 0: release credits (gated by threshold accumulator)
-        .interrupt_0 (release_credits_trigger),
-        .write_addr_0(PAIR_RELEASED_CREDITS_ADDR),
-        .write_data_0(credit_delta_data),
+        // Servo register pass-through — not exposed
+        .servo_reg_write      (/* unused */),
+        .servo_reg_addr       (/* unused */),
+        .servo_reg_wdata      (/* unused */),
+        .servo_reg_rdata      ({SYS_DATA_W{1'b0}}),
 
-        // Channel 1: doorbell response
-        .interrupt_1 (doorbell_trigger),
-        .write_addr_1(PAIR_DOORBELL_RESPONSE_ADDR),
-        .write_data_1(credit_count_data),
+        // Timestamp mailbox pass-through — not exposed
+        .mbox_reg_write       (/* unused */),
+        .mbox_reg_addr        (/* unused */),
+        .mbox_reg_wdata       (/* unused */),
 
-        // Channel 2: reset doorbell
-        .interrupt_2 (reset_deassert_pulse),
-        .write_addr_2(PAIR_DOORBELL_ADDR),
-        .write_data_2(32'h0000_0001),
+        // Chiplet controller register pass-through — not exposed
+        .ctrl_reg_write       (/* unused */),
+        .ctrl_reg_addr        (/* unused */),
+        .ctrl_reg_wdata       (/* unused */),
+        .ctrl_reg_rdata       ({SYS_DATA_W{1'b0}}),
 
-        // AHB Master
-        .haddr       (ahbm_haddr),
-        .hwdata      (ahbm_hwdata),
-        .htrans      (ahbm_htrans),
-        .hsize       (ahbm_hsize),
-        .hwrite      (ahbm_hwrite),
-        .hready      (ahbm_hready),
-        .hresp       (ahbm_hresp),
-        .hrdata      (ahbm_hrdata),
-        .busy        (returner_busy),
-        .master_error(master_error),
-        .flush       (ctrl_flush)
+        // Performance profiling register pass-through — not exposed
+        .perf_reg_write       (/* unused */),
+        .perf_reg_addr        (/* unused */),
+        .perf_reg_wdata       (/* unused */),
+        .perf_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        .perf_reg_region      (/* unused */),
+
+        // Credit count observation (debug-only output) — not exposed
+        .perf_credit_count    (/* unused */),
+
+        // FC direct write interface — tied inactive (legacy wrapper has no FC)
+        .fc_wr_valid          (1'b0),
+        .fc_wr_write          (1'b0),
+        .fc_wr_addr           ({RAM_ADDR_W{1'b0}}),
+        .fc_wr_wdata          ({SYS_DATA_W{1'b0}}),
+        .fc_wr_ready          (/* unused */),
+
+        // PUF SRAM read interface — tied inactive
+        .puf_addr             ({(RAM_ADDR_W-2){1'b0}}),
+        .puf_req              (1'b0),
+        .puf_rdata            (/* unused */),
+        .puf_ack              (/* unused */)
     );
 
 endmodule

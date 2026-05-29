@@ -55,7 +55,7 @@ collected into `cocotb/<env>/coverage.vdb` and aggregated into
 | Env | What it exercises |
 |---|---|
 | [`tidelink`](tidelink/) | `tidelink` top-level (the legacy `src/rtl/tidelink.sv` wrapper — TOP=`tidelink_fifo` per `lint/Makefile`'s `TOP_tidelink`) |
-| [`tidelink_ahb`](tidelink_ahb/) | `tidelink_ahb` wrapper + AHB-to-APB bridge (excluded from CI hal-lint pending repo-simplification tier-2 §1-A) |
+| [`tidelink_ahb`](tidelink_ahb/) | `tidelink_ahb` wrapper + AHB-to-APB bridge (cocotb + HAL lint clean 2026-05-29) |
 | [`tidelink_top`](tidelink_top/) | `tidelink_top` full integration (chiplet controller + FIFO + FC adapter + PTP + addr trans) |
 | [`tidelink_system`](tidelink_system/) | Full-system integration test |
 | [`tidelink_py_pair`](tidelink_py_pair/) | Python-driven paired-board sim |
@@ -100,19 +100,17 @@ not edit by hand).
 
 ## Known-excluded-from-CI
 
-Two envs are intentionally skipped by CI to keep the pipeline green:
+One env is intentionally skipped by CI to keep the pipeline green:
 
-1. **`tidelink_ahb`** — CI hal-lint can't elaborate the module because
-   `src/rtl/tidelink.sv` uses the legacy port interface of
-   `tidelink_fifo` / `tidelink_apb_regs` (hsel/hready/htrans/
-   packet_word_length_out/overrun/underrun/enable/flush). The active
-   modules in `src/rtl/fifo/` use the prefixed `ahbs_*`/`ahbm_*`
-   multi-AHB interface. The cocotb env itself runs fine when invoked
-   by hand.
-2. **`tidelink_fc_adapter` → `tidelink_fc_adapter_full_test`** — fails
+1. **`tidelink_fc_adapter` → `tidelink_fc_adapter_full_test`** — fails
    with ~31 scoreboard mismatches under interleaved TX+RX+sideband
    traffic. The TX-only, RX-only, sideband-only single-stream tests
    (also in this env) pass and run in CI; only the full stress test
    is excluded.
 
-Both are tracked in `docs/archive/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).
+(Resolved 2026-05-29: `tidelink_ahb` HAL lint is now clean — legacy
+`src/rtl/tidelink.sv` was modernised to wrap the current `tidelink_fifo`
+with tie-offs for the new pass-through ports, and was added to
+`flist/tidelink_ahb.flist` so HAL can resolve `u_tidelink`.)
+
+Tracked in `docs/archive/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).

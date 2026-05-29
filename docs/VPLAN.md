@@ -55,7 +55,7 @@ Health legend:
 |---|---|---|---|---|
 | `tidelink_top` | `tidelink_top`, `tidelink_top_pair*`, `tidelink_system` | `tidelink_top_system`, `tidelink_integration` | — | GREEN |
 | `tidelink` (legacy FIFO wrapper) | `tidelink`, `tidelink_ahb`, `tidelink_py_pair` | `tidelink` | `tidelink` | GREEN |
-| `tidelink_ahb` (AHB-wrap of `tidelink`) | `tidelink_ahb` | — | — | YELLOW (CI-excluded, see §4) |
+| `tidelink_ahb` (AHB-wrap of `tidelink`) | `tidelink_ahb` | — | — | GREEN |
 | `tidelink_fc_adapter` | `tidelink_fc_adapter`, integ via `tidelink_top*` | `tidelink_fc_adapter` | — | YELLOW (`full_test` excluded from CI) |
 | `tidelink_addr_translator` | `tidelink_addr_translator`, integ via `tidelink_top*` | integ via `tidelink_top_system` | — | GREEN |
 | `tl_addr_trans_cam` | (via `tidelink_addr_translator`) | (integ) | — | YELLOW |
@@ -81,7 +81,7 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 11 GREEN, 12 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 12 GREEN, 11 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).
@@ -507,7 +507,7 @@ sign-off, and vice versa.
 | `tidelink_apb_regs` | `tidelink_apb_regs` | APB register file (standalone) |
 | `tidelink_apb_addr_ctrl` | `tidelink_apb_addr_ctrl` | APB regfile for segment-table addr translator |
 | `tidelink` | `tidelink` (legacy FIFO wrapper) | Pre-`tidelink_top` integration (TOP=`tidelink_fifo`) |
-| `tidelink_ahb` | `tidelink_ahb` | `tidelink` + AHB-to-APB bridge (CI hal-lint excluded — see `cocotb/README.md`) |
+| `tidelink_ahb` | `tidelink_ahb` | `tidelink` + AHB-to-APB bridge (cocotb + HAL lint clean as of 2026-05-29) |
 | `tidelink_py_pair` | `tidelink` + Python pair model | Python-driven paired-board sim |
 | `tidelink_fc_adapter` | `tidelink_fc_adapter` | FC TX/RX + sideband adapter; single-stream only in CI |
 | `tidelink_top` | `tidelink_top` | Top-level chiplet single-die FC-loopback |

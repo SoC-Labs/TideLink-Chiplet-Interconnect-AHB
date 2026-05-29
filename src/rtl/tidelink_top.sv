@@ -338,6 +338,12 @@ module tidelink_top #(
     input  wire [15:0]              puf_seed,           // From TideChart PUF sampler
     input  wire                     puf_ready,          // PUF sampling complete
     output wire                     nego_error_irq,     // Negotiation error interrupt
+    // Phase 1 autonomy G1b: sticky IRQ asserted when the autoneg FSM enters
+    // ST_TRAIN_FAIL (see deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+    // line 1665). Latched and W1C-cleared inside u_chiplet_controller —
+    // Region 8 slot 3'h3 bit[16] (MMIO 0x4403_210C). Kept separate from
+    // nego_error_irq so existing handlers don't get re-routed.
+    output wire                     train_fail_irq,
 
     // --------------------------------------------------------------------------
     // I2C Sideband (open-drain tristate)
@@ -1838,6 +1844,8 @@ module tidelink_top #(
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),
         .nego_error_irq             (nego_error_irq),
+        // Phase 1 autonomy G1b — sticky train-fail IRQ (W1C @ slot 3'h3 bit[16])
+        .train_fail_irq_o           (train_fail_irq),
 
         // Controller register pass-through (from APB regs Region 4)
         .ctrl_reg_write             (ctrl_reg_write),

@@ -83,6 +83,12 @@ module axi_chiplet_controller #(
     input  wire [15:0]      puf_seed,            // From TideChart PUF sampler
     input  wire             puf_ready,           // PUF sampling complete
     output wire             nego_error_irq,      // Negotiation error interrupt
+    // Phase 1 G1b: sticky IRQ asserted when the autoneg FSM enters
+    // ST_TRAIN_FAIL. Latches on the rising edge of train_fail_irq_w and
+    // is cleared by a W1C to Region 8 slot 3'h3 (NEGO_TRAIN_CFG)
+    // bit[16]. Held separately from `nego_error_irq` so existing handlers
+    // don't get re-routed.
+    output wire             train_fail_irq_o,
 
     // ── Controller Register Pass-Through (from tidelink_apb_regs) ────────
     //   ctrl_reg_addr[3]=0 → Region 4 (legacy: ROLE/I²C/NEGO @ 0x080-0x09C)
@@ -607,6 +613,14 @@ module axi_chiplet_controller #(
     reg [15:0] nego_train_cfg_r;
     reg        nego_train_retrain_pulse;  // 1-cycle pulse on W1P write
 
+    // Phase 1 G1b — sticky train-fail IRQ. Latches on train_fail_irq_w
+    // rising-edge (the FSM holds it stable for the duration of
+    // ST_TRAIN_FAIL); SW reads it via Region 8 slot 3'h3 bit[16] and
+    // clears with W1C to the same bit position. The dead-ended
+    // `_unused_phase3_b` wire is replaced by this register.
+    reg        train_fail_irq_r;
+    reg        train_fail_irq_w_d;   // 1-cycle delay for edge-detect
+
     // Forward decls — driven by the autoneg FSM (Step 4 wires these up).
     wire [3:0] train_state_w;
     wire       train_ok_w, train_fail_w, train_in_progress_w, train_peer_nack_w;
@@ -717,6 +731,8 @@ module axi_chiplet_controller #(
             swi_phase_offset_r       <= 32'h0;
             nego_train_cfg_r         <= 16'h0;
             nego_train_retrain_pulse <= 1'b0;
+            train_fail_irq_r         <= 1'b0;
+            train_fail_irq_w_d       <= 1'b0;
         end else begin
             // Default — retrain pulse self-clears every cycle
             nego_train_retrain_pulse <= 1'b0;
@@ -725,6 +741,24 @@ module axi_chiplet_controller #(
                 swi_training_mode_r <= 1'b1;
             else if (local_training_mode_clr_w)
                 swi_training_mode_r <= 1'b0;
+
+            // Phase 1 G1b — sticky train-fail IRQ. Latch on rising edge of
+            // train_fail_irq_w; clear (with priority) on W1C to slot 3'h3
+            // bit[16]. The edge-detect protects against a SW ack racing
+            // with a re-entered ST_TRAIN_FAIL: the same FSM-stable level
+            // can only re-arm after the FSM passes through ST_NEGO_DONE_PRE
+            // (which deasserts train_fail_r at line 887-907 of
+            // tidelink_autoneg.sv).
+            train_fail_irq_w_d <= train_fail_irq_w;
+            if (region8_write && (ctrl_reg_addr[2:0] == 3'h3) && ctrl_reg_wdata[16]) begin
+                // W1C clear wins over a same-cycle rising edge (SW ack
+                // path is the priority; the next FSM entry into
+                // ST_TRAIN_FAIL will re-arm the latch).
+                train_fail_irq_r <= 1'b0;
+            end else if (train_fail_irq_w && !train_fail_irq_w_d) begin
+                train_fail_irq_r <= 1'b1;
+            end
+
             // APB-side writes — both local APB and slave-AXIL bridge
             // converge here via ctrl_reg_write.
             if (region8_write) begin
@@ -738,6 +772,7 @@ module axi_chiplet_controller #(
                         nego_train_cfg_r <= ctrl_reg_wdata[15:0];
                         if (ctrl_reg_wdata[2])  // retrain W1P
                             nego_train_retrain_pulse <= 1'b1;
+                        // bit[16] is the train_fail_irq W1C; handled above.
                     end
                     3'h5: begin                                                // NEGO_TRAIN_STEP (W1P, ignored in v1)
                         // Reserved for SW-step debug; not implemented.
@@ -748,6 +783,11 @@ module axi_chiplet_controller #(
             end
         end
     end
+
+    // Phase 1 G1b — drive the sticky IRQ output. Held HIGH until SW
+    // acknowledges via W1C to slot 3'h3 bit[16]. No CDC needed: same
+    // apb_clk as the consumer (top-level IRQ pin).
+    assign train_fail_irq_o = train_fail_irq_r;
 
     // Region 8 read mux
     assign region8_rdata =
@@ -766,7 +806,10 @@ module axi_chiplet_controller #(
                                         sync_cal_done_1,                // [16]    calibration_done
                                         sync_lane_fault_1,              // [15:8]  lane_fault
                                         sync_lane_locked_1}         :  // [7:0] lane_locked — SWI_LANE_STATUS + CREDIT_PATH_STATUS
-        (ctrl_reg_addr[2:0] == 3'h3) ? {16'h0, nego_train_cfg_r}    :
+        (ctrl_reg_addr[2:0] == 3'h3) ? {15'h0,                       // [31:17] reserved
+                                        train_fail_irq_r,            // [16]    Phase 1 G1b sticky IRQ (W1C via wdata[16])
+                                        nego_train_cfg_r}           : // [15:0]  NEGO_TRAIN_CFG
+
         (ctrl_reg_addr[2:0] == 3'h4) ? {train_local_lane_fault_w,       // [31:24]
                                         train_peer_lane_fault_w,        // [23:16]
                                         train_peer_lane_locked_w,       // [15:8]
@@ -1232,14 +1275,16 @@ module axi_chiplet_controller #(
         .train_fail_irq_o          (train_fail_irq_w)
     );
 
-    // Mark remaining Phase-3 outputs as deliberately unused at this level
-    // so lint doesn't complain. The training-coordination signals are
-    // consumed either by Wlink (via `swi_training_mode_r`) or by the
-    // calibrator (`local_swreset_pulse_w` → u_calibrator.swreset, wired
-    // in Phase 1 G1).
-    /* verilator lint_off UNUSED */
-    wire _unused_phase3_b = train_fail_irq_w;
-    /* verilator lint_on UNUSED */
+    // Phase 1 (G1, G1b) closure: all training-coordination outputs are
+    // now consumed at this scope:
+    //   * local_training_mode_set_w / clr_w → swi_training_mode_r mux
+    //   * local_swreset_pulse_w           → u_calibrator.swreset (OR-merge
+    //                                       with swi_recal_r, G1)
+    //   * train_fail_irq_w                → train_fail_irq_r sticky reg
+    //                                       (W1C via Region 8 slot 3'h3
+    //                                       bit[16]; exported as
+    //                                       train_fail_irq_o, G1b)
+    // No `_unused_phase3_*` dead-end wires remain.
 
     // OR the FSM's error pulse with the sticky mask-mismatch flag so SW sees
     // either cause through the same IRQ line.

@@ -101,7 +101,11 @@ module tidelink_top #(
     // ASIC, FPGA and sim all enter the autonomous training arm out of
     // reset with no SW config write. Cocotb wrappers that need to test
     // the legacy bypass (train_auto_en=0) override this to 16'h0000.
-    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001,
+    // NEGO_CFG POR value (companion to NEGO_TRAIN_CFG_RESET).
+    // 7'h61 = nego_en + nego_force_lock + mask_hs_auto_en
+    // ASIC + FPGA POR boot directly into autonomous bring-up.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h61
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1831,7 +1835,8 @@ module tidelink_top #(
         .USE_T3A       (USE_T3A),
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
-        .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET)
+        .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
+        .NEGO_CFG_RESET       (NEGO_CFG_RESET)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

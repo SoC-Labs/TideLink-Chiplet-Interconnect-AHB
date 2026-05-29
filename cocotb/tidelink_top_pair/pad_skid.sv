@@ -1,1 +1,1 @@
-../wlink_pair/pad_skid.sv
+../debug/wlink_pair/pad_skid.sv

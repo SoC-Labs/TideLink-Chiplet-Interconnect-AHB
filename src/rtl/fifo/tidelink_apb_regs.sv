@@ -132,8 +132,7 @@ module tidelink_apb_regs #(
     //   0x048: HW_SYNC_STATUS          (RO) - [0] active, [1] busy, [17:2] seq_num, [18] phc_locked
     //
     // Region 8 (paddr[8:5]=1000, offsets 0x100-0x11F): Chiplet Extended.
-    //   PHY-alignment and I2C-training registers. See
-    //   staging/apb_redesign/PROPOSAL.md for layout.
+    //   PHY-alignment and I2C-training registers.
     //
     //   0x100: SWI_TRAINING_MODE        (RW) - [0] training-mode enable
     //   0x104: SWI_BIT_SLIP_LO          (RW) - [23:0] per-lane bit-slip

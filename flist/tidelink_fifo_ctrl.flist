@@ -1,3 +1,0 @@
-+incdir+${TIDELINK_HOME}/src/rtl
-+incdir+${TIDELINK_HOME}/src/rtl/fifo
-${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ctrl.sv

@@ -1,2 +1,0 @@
-+incdir+${TIDELINK_HOME}/src/rtl
-${TIDELINK_HOME}/src/rtl/tidelink_perf.sv

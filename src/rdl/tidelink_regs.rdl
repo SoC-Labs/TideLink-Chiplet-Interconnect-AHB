@@ -384,7 +384,6 @@ addrmap tidelink_regs #(longint unsigned TIDELINK_PAIR_BASE = 0) {
     //   paddr[8:5] = 4'b1000, offsets 0x100..0x11F.
     //   Decoded by a 4-bit region select (paddr[8:5]); existing Regions 0..7
     //   keep their 3-bit decode (paddr[7:5] with paddr[8]=0).
-    //   See staging/apb_redesign/PROPOSAL.md for full design rationale.
     // =========================================================================
 
     reg swi_training_mode_reg {

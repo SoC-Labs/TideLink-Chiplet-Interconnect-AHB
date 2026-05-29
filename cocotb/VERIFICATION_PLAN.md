@@ -8,7 +8,7 @@
 > RX-clock-buf / perf / address-translator / FC-adapter / clkfreq-check
 > modules that landed after this doc was last refreshed. See the
 > "Out of scope for this document" section at the bottom for the explicit
-> list, and the (planned) module-indexed `docs/VPLAN.md` for the
+> list, and the module-indexed [`docs/VPLAN.md`](../docs/VPLAN.md) for the
 > authoritative full-design vplan.
 
 This document defines the verification plan for the TideLink FIFO-era

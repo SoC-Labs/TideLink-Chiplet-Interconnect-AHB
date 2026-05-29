@@ -300,33 +300,46 @@ if [ "$loaded" -ne 1 ]; then
     exit 3
 fi
 
-# 3. Configure role + lock + address translator. PAIR_BASE_ADDR is the
-#    base address the local FC uses when sending doorbell / credit
+# 3. Configure straps + address translator + per-lane phase. PAIR_BASE_ADDR
+#    is the base address the local FC uses when sending doorbell / credit
 #    frames to the peer (frame target = pair_base_addr + reg_offset).
 #    Both boards have TideLink APB at the SAME local address 0x44032000,
 #    so each peer's PAIR_BASE_ADDR points to that same value.
-#    Without this step, frames are addressed to peer-DDR (0x00000000+offset)
-#    and the peer's DOORBELL_RESP_ACC / RELEASED_ACC registers never tick.
-#    AXI GPIO strap at 0x4404_0000 sets the strap bit; APB ROLE_CFG at
-#    0x4403_2080 latches bit[1] = role_lock (W1S, POR-only clear).
+#
+#    PHASE 3 AUTONOMY CHANGES (awaiting HW gate, see Phase 3 of
+#    docs/ASIC_FPGA_IDENTICAL_AUTONOMOUS_BRINGUP_PLAN_2026_05_29.md):
+#    - ROLE_CFG W1S write (was 0x44032080) REMOVED. The autoneg FSM
+#      now drives role_lock autonomously after the I²C mask handshake
+#      (NEGO_CFG_RESET=0x61 + NEGO_TRAIN_CFG_RESET=0x0001 at POR —
+#      see commits fb4d70d / fe95c46).
+#    - Wlink 0x208 swreset triplet REMOVED. The autoneg FSM's
+#      local_swreset_pulse_w re-arms the calibrator inside the chiplet
+#      controller (commit fb4d70d). Discovery 1 hypothesis: the 5 ms
+#      0x208[3] pulse this script used to issue was an FCSM-level
+#      recovery rendered obsolete by the calibrator fix at 85f0e48
+#      (Fix A2+B). If HW deploy shows the link wedged after this
+#      change, restore the 0x208 triplet — that indicates the FCSM
+#      reset is still needed and the autoneg FSM should also drive
+#      Wlink swreset (Discovery 1 hypothesis (b) — a new gap).
+#    - Straps + swi_phase_offset + PAIR_BASE_ADDR kept (Phases 4-5).
 sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
     "echo '$PASS' | sudo -S python3 -c '
 import mmap,struct,os
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a):
     b=a&~(P-1); return mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),(a-b)
-s,so=mm(0x44040000)              # strap GPIO
+s,so=mm(0x44040000)              # strap GPIO (Phase 6: bond-pad emulation)
 struct.pack_into(\"<I\",s,so,$STRAP)
-# In slave mode, axi_chiplet_controller gates external APB writes to
-# Wlink (wl_apb_pwrite forced 0). Asserting apb_debug_unlock_i via
-# axi_gpio_debug_unlock at 0x44041000 lets the local PYNQ APB through
-# so SW can write swi_phase_offset on slave. Master is unaffected
-# (master path is always open).
+# Phase 4 deletion candidate: debug_unlock GPIO. Production silicon ties
+# apb_debug_unlock_i to 0; FPGA today asserts it so the local PYNQ APB
+# can reach Wlink on the slave side. Kept pending HW verification that
+# the autoneg-driven role_lock + mask_hs_match path leaves the debug
+# strap unused.
 d,do=mm(0x44041000)              # debug_unlock GPIO
 struct.pack_into(\"<I\",d,do,1)
 r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
 w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
-struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR
+struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR (Phase 5: → TIDELINK_PAIR_BASE param)
 # SHORTCOMINGS-14b: write swi_phase_offset BEFORE role_lock asserts.
 # Two reset domains:
 #   - swi_phase_offset reg has reset = apb_reset (~hresetn) — always low
@@ -337,33 +350,16 @@ struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR
 #     starts incrementing the moment role_lock=1.
 # So the only chance to influence the deserialiser counter alignment
 # is to have the right swi_phase_offset value LOADED before role_lock
-# asserts, so adj_count = count + phase is correct from cycle 0.
-# Setting phase AFTER role_lock only shifts the bit-select but does
-# not re-sync the counter (which has already locked at the wrong phase).
-struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset
-struct.pack_into(\"<I\",r,ro+0x80,$CTRL)        # ROLE_CFG (incl. role_lock)
-# 2026-05-09 fix: drain stuck TideLink FC TX FIFO via swreset+lltx toggle.
-# After role_lock, the LL_TX state machine is sometimes wedged with the
-# initial cr_pkt queued but not draining. Pulsing swreset and re-enabling
-# the lltx paths bootstraps the link layer. WL+0x208 layout:
-#   bit[0] swi_enable, bit[1] lltx_enable, bit[2] lltx_enable_1, bit[3] swreset
-import time as _t
-# 2026-05-25: changed from 0x27f08/00/07 -> 0x27f09/01/07 to keep
-# swi_enable=1 throughout the swreset cycle. Per FC.scala:619-621,
-# swi_enable=0 resets all 7 FCSMs to IDLE and clears cr_pkt_seen
-# sticky bits, which on HW left the link unable to enter data mode.
-# See docs/TIDELINK_PHASE0_OBS_20260524_2109.md S9 for full diagnosis.
-struct.pack_into(\"<I\",w,wo+0x208,0x00027f09)  # swreset on, swi_enable kept high
-_t.sleep(0.005)
-struct.pack_into(\"<I\",w,wo+0x208,0x00027f01)  # release swreset, swi_enable kept high
-_t.sleep(0.005)
-struct.pack_into(\"<I\",w,wo+0x208,0x00027f07)  # re-enable swi+lltx+lltx_1
+# asserts. With Phase 3 autonomy, role_lock now asserts ~10-20 ms after
+# this script writes the phase offset (autoneg I²C latency), so the
+# ordering still holds — phase is loaded long before role_lock fires.
+struct.pack_into(\"<I\",w,wo+0x00,$PHASE)        # PHY ctrl swi_phase_offset (Phase 5: → calibrator output or strap)
 phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]
 pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]
 val=struct.unpack_from(\"<I\",r,ro+0x80)[0]
 print(\"  PHY_CTRL       = 0x{:08x} (swi_phase_offset={})\".format(phy,(phy>>17)&0xF))
 print(\"  PAIR_BASE_ADDR = 0x{:08x}\".format(pba))
-print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={})\".format(val,(val>>1)&1,val&1))
+print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={}) — expect lock=0 here; autoneg FSM latches it ~10-20 ms post-deploy\".format(val,(val>>1)&1,val&1))
 '"
 
 # --- Layer 3: provenance ledger ------------------------------------------

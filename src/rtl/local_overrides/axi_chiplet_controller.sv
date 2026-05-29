@@ -57,7 +57,15 @@ module axi_chiplet_controller #(
     // matching the v1 autonomy contract. Cocotb tests that need the legacy
     // train_auto_en=0 path (where the FSM legacy-bypasses to ST_NEGO_DONE
     // directly) override this parameter via the testbench wrapper.
-    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001,
+    // NEGO_CFG POR value.
+    // 7'h61 = nego_en[0]=1 + nego_force_lock[5]=1 + mask_hs_auto_en[6]=1
+    //   → autoneg FSM engages out of POR, latches role_lock on completion,
+    //     and runs the mask-handshake states (gates ST_NEGO_DONE_PRE).
+    // Companion to NEGO_TRAIN_CFG_RESET — the two together make the chiplet
+    // POR-boot directly into autonomous bring-up without any SW write.
+    // Cocotb tests that need the legacy SW-driven path override to 7'h00.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h61
 ) (
 
     // ── Clocks and Resets ────────────────────────────────────────────────
@@ -458,7 +466,7 @@ module axi_chiplet_controller #(
                                                 // post-role_lock device_address mux
                                                 // doesn't NACK in-flight claim writes
             i2c_prescale_reg       <= 16'd1;
-            nego_cfg_reg           <= 7'd0;
+            nego_cfg_reg           <= NEGO_CFG_RESET;
             nego_priority_reg      <= 16'hFFFF;
             nego_timeout_reg       <= 32'd131_082_000;
             nego_lock_pending_reg  <= 1'b0;

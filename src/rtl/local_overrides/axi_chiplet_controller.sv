@@ -1287,13 +1287,12 @@ module axi_chiplet_controller #(
         .train_fail_irq_o          (train_fail_irq_w)
     );
 
-    // Mark Phase-3 outputs as deliberately unused at this level so lint
-    // doesn't complain. The training-coordination signals are consumed
-    // either by Wlink (via `swi_training_mode_r`) or by the autocal FSM
-    // (via local_swreset_pulse_w → not currently wired through Wlink's
-    // swreset; future integration step).
+    // Mark remaining Phase-3 outputs as deliberately unused at this level
+    // so lint doesn't complain. The training-coordination signals are
+    // consumed either by Wlink (via `swi_training_mode_r`) or by the
+    // calibrator (`local_swreset_pulse_w` → u_calibrator.swreset, wired
+    // in Phase 1 G1).
     /* verilator lint_off UNUSED */
-    wire _unused_phase3_a = local_swreset_pulse_w;
     wire _unused_phase3_b = train_fail_irq_w;
     /* verilator lint_on UNUSED */
 
@@ -1459,7 +1458,16 @@ module axi_chiplet_controller #(
         // cold-boot role_locked edge sweeps in a staggered, non-overlapping
         // window under SSH deploy; SWI_RECAL lets SW re-arm with the
         // training pattern held HIGH on both boards.
-        .swreset               (swi_recal_r),
+        //
+        // Phase 1 autonomy (G1): OR-merge the autoneg FSM's
+        // `local_swreset_pulse_w` so ST_TRAIN_EXIT's T_SWRESET_HOLD (127-cycle)
+        // pulse re-triggers a calibrator sweep without SW intervention. The
+        // pulse is wholly inside the chiplet-controller scope and never flows
+        // through the APB pwdata path, so the Tier-2 hardening shim in
+        // tidelink_top.sv (AND-mask on 0x208 bit[3]) does NOT see this signal
+        // — exactly what we want for an autonomous bring-up. SWI_RECAL keeps
+        // working in parallel for SW-driven manual recovery.
+        .swreset               (swi_recal_r | local_swreset_pulse_w),
         .lane_locked           (lane_locked_w),
         // tidelink-gpio-phy scoring (spec §7.1): the calibrator now uses a
         // continuous min-distance metric per dwell for eye-centre selection,

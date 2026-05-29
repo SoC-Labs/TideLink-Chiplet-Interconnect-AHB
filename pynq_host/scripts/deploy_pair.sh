@@ -42,6 +42,22 @@
 # If you change the role or want to retry the link, the bitstream must be
 # reloaded — role_lock_reg is W1S with POR-only clear.
 #
+# PHASE 6 AUTONOMY — role_strap GPIO is the ASIC bond-pad emulation.
+# The 0x44040000 write below is the FPGA emulation of the ASIC's role_strap_i
+# bond pad. On the chiplet this is wired at packaging — one of:
+#   - VSS bond = die_a (master)
+#   - VDD bond = die_b (slave)
+# On FPGA we emulate the bond decision once at bitstream-load via
+# this GPIO. Calling deploy_pair.sh with role=die_a vs role=die_b
+# corresponds to the bond choice. This is NOT a runtime poke.
+#
+# All other runtime APB writes have been retired by Phases 3–5:
+#   - Phase 3: ROLE_CFG W1S + Wlink 0x208 swreset triplet
+#   - Phase 4: apb_debug_unlock GPIO @ 0x44041000
+#   - Phase 5: PAIR_BASE_ADDR @ 0x44032000+0x00, swi_phase_offset @ 0x44030000
+# leaving this script with the single bond-pad-emulation strap write plus
+# status readbacks.
+#
 # **HAZARD — DO NOT WRITE TO AHB_TX (0x4400_0000) FROM PS UNTIL THE LINK
 # IS VERIFIED UP.**  If the Wlink TX FC node is wedged (RX deserializer
 # unsynced, ribbon wiring wrong, RX clock unusable), the FC adapter never
@@ -349,7 +365,12 @@ import mmap,struct,os
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a):
     b=a&~(P-1); return mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),(a-b)
-s,so=mm(0x44040000)              # strap GPIO (Phase 6: bond-pad emulation)
+s,so=mm(0x44040000)              # role_strap GPIO — FPGA emulation of the
+                                  # ASIC bond pad. See \"PHASE 6 AUTONOMY\"
+                                  # block at the top of this script. This
+                                  # is NOT a runtime poke — it is the once-
+                                  # per-bitstream bond decision (die_a→VSS,
+                                  # die_b→VDD on production silicon).
 struct.pack_into(\"<I\",s,so,$STRAP)
 # PHASE 4 AUTONOMY (apb_debug_unlock GPIO @ 0x44041000 NO LONGER ASSERTED):
 # Production silicon ties apb_debug_unlock_i to 0; the strap is reserved
@@ -394,6 +415,15 @@ val=struct.unpack_from(\"<I\",r,ro+0x80)[0]
 print(\"  PHY_CTRL       = 0x{:08x} (swi_phase_offset={}) — calibrator-driven; expect 0 here, cal_phase_offset OR-merged below\".format(phy,(phy>>17)&0xF))
 print(\"  PAIR_BASE_ADDR = 0x{:08x} (POR default via TIDELINK_PAIR_BASE param; expect 0x44032000)\".format(pba))
 print(\"  ROLE_CFG       = 0x{:02x} (lock={}, cfg={}) — expect lock=0 here; autoneg FSM latches it ~10-20 ms post-deploy\".format(val,(val>>1)&1,val&1))
+print(\"  --- autonomous bring-up sequence (POR → link up) ---\")
+print(\"   1. role_strap GPIO (0x44040000) → bond-pad emulation; selects die_a/die_b\")
+print(\"   2. POR releases on FPGA — NEGO_CFG_RESET=0x61 latches nego_en+force_lock+mask_hs_auto_en\")
+print(\"   3. Autoneg FSM walks ST_NEGO_INIT → CLAIM → POLL → MASK_RES_TX → MASK_RD_*\")
+print(\"   4. NEGO_TRAIN_CFG_RESET=0x0001 latches train_auto_en → FSM enters ST_TRAIN_ENTER\")
+print(\"   5. Calibrator converges per-lane phase/delay during ST_TRAIN_RUN (~41 µs)\")
+print(\"   6. ST_TRAIN_POLL_PEER cross-checks lane_locked + cal_done on both dies via I²C\")
+print(\"   7. ST_TRAIN_EXIT → ST_TRAIN_DONE → role_lock latches → link active\")
+print(\"   No SW APB writes required after deploy. Verify with: probe_link.sh\")
 '"
 
 # --- Layer 3: provenance ledger ------------------------------------------

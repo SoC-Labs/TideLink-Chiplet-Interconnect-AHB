@@ -13,7 +13,7 @@ actually here.
 
 ## Scope
 
-X-propagation runs are checked in for the following 5 modules:
+X-propagation runs are checked in for the following 11 modules:
 
 | Module | Subdir | Notes |
 | --- | --- | --- |
@@ -22,6 +22,12 @@ X-propagation runs are checked in for the following 5 modules:
 | `tidelink_fifo_ctrl` | `tidelink_fifo_ctrl/` | Standalone |
 | `tidelink_apb_regs` | `tidelink_apb_regs/` | Standalone |
 | `tidelink_returner` | `tidelink_returner/` | Standalone |
+| `tidelink_phc_cdc` | `tidelink_phc_cdc/` | Standalone, dual-clock (hclk + phc_clk) |
+| `tidelink_perf` | `tidelink_perf/` | Standalone, perf counters + congestion estimator |
+| `tidelink_mul_iter` | `tidelink_mul_iter/` | Standalone, 32×32 iterative multiplier |
+| `tidelink_apb_addr_ctrl` | `tidelink_apb_addr_ctrl/` | Standalone, segment-table APB regfile |
+| `tl_addr_trans_cam` | `tl_addr_trans_cam/` | Standalone, combinational priority-encoded CAM |
+| `tl_addr_trans_regs` | `tl_addr_trans_regs/` | Standalone, CAM-translator APB regfile |
 
 ## NOT covered
 
@@ -30,11 +36,12 @@ The following blocks have **no** xprop run in this directory:
 - `axi_chiplet_controller` (Wlink wrapper)
 - `tidelink_phy_align_calibrator` and the lane checker / wire-FSM
 - `tidelink_fc_adapter`
-- `tidelink_addr_translator`
+- `tidelink_addr_translator` (top — but its sub-blocks `tl_addr_trans_cam`
+  and `tl_addr_trans_regs` are each covered standalone above)
 - The eye-visibility / phase registers
 - The PTP capture pipeline (`tidelink_ptp`)
 
-See `docs/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md` for the full gap list.
+See `docs/archive/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md` for the full gap list.
 
 ## How to run
 

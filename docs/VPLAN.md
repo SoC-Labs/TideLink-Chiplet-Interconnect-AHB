@@ -58,20 +58,20 @@ Health legend:
 | `tidelink_ahb` (AHB-wrap of `tidelink`) | `tidelink_ahb` | — | — | GREEN |
 | `tidelink_fc_adapter` | `tidelink_fc_adapter`, integ via `tidelink_top*` | `tidelink_fc_adapter` | — | GREEN |
 | `tidelink_addr_translator` | `tidelink_addr_translator`, integ via `tidelink_top*` | integ via `tidelink_top_system` | — | GREEN |
-| `tl_addr_trans_cam` | (via `tidelink_addr_translator`) | (integ) | — | YELLOW |
-| `tl_addr_trans_regs` | (via `tidelink_addr_translator`) | (integ) | — | YELLOW |
+| `tl_addr_trans_cam` | (via `tidelink_addr_translator`) | (integ) | `tl_addr_trans_cam` | GREEN |
+| `tl_addr_trans_regs` | (via `tidelink_addr_translator`) | (integ) | `tl_addr_trans_regs` | GREEN |
 | `tidelink_addr_translation` | — | — | — | RED (alternative impl — not instantiated; see header comment) |
-| `tidelink_apb_addr_ctrl` | `tidelink_apb_addr_ctrl` | — | — | YELLOW |
+| `tidelink_apb_addr_ctrl` | `tidelink_apb_addr_ctrl` | — | `tidelink_apb_addr_ctrl` | GREEN |
 | `tidelink_autoneg` (in chiplet-controller subtree) | `tidelink_autoneg`, integ via `tidelink_top_system` | `tidelink_top_system` (`test_top_autoneg_*`) | — | GREEN |
 | `tidelink_ptp` | `tidelink_ptp` (incl. lock-gate variant), `debug/phc_pair`, integ via `tidelink_top*` | `tidelink_ptp_chain`, `tidelink_ptp_stress` | — | GREEN |
 | `tidelink_ptp_servo` | `tidelink_ptp_servo` | (integ via chain/stress) | — | GREEN |
-| `tidelink_phc_cdc` | `tidelink_phc_cdc` | — | — | YELLOW |
-| `tidelink_perf` | `tidelink_perf`, `tidelink_perf_congestion` | — | — | YELLOW |
+| `tidelink_phc_cdc` | `tidelink_phc_cdc` | — | `tidelink_phc_cdc` | GREEN |
+| `tidelink_perf` | `tidelink_perf`, `tidelink_perf_congestion` | — | `tidelink_perf` | GREEN |
 | `tidelink_phy_align_calibrator` | `tidelink_phy_align_calibrator` (CI unit env — T3/T3.2 + S_PROBE skip, 7 tests), `debug/tidelink_phy_align_calibrator` (scenario-pinned best-of-sweep + eye-visibility), `debug/phy_align`, `debug/calibrator_force_bisect` | `tidelink_top_system` (`test_align_*`) | — | GREEN |
 | `tidelink_idelay_rx` | `tidelink_idelay_rx` | — | — | YELLOW |
 | `tidelink_rxclk_buf` | `tidelink_rxclk_buf` | — | — | YELLOW |
 | `tidelink_clkfreq_check` | `tidelink_clkfreq_check` | — | — | YELLOW |
-| `tidelink_mul_iter` | `tidelink_mul_iter` | — | — | YELLOW |
+| `tidelink_mul_iter` | `tidelink_mul_iter` | — | `tidelink_mul_iter` | GREEN |
 | `tidelink_eye_regs` | `tidelink_eye_regs` | — | — | GREEN |
 | **`src/rtl/fifo/` family** | | | | |
 | `tidelink_fifo` (and `tidelink_fifo_mem`) | `tidelink_fifo`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | `tidelink`, `tidelink_system`, `tidelink_integration` | `tidelink_fifo` | GREEN |
@@ -81,7 +81,7 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 15 GREEN, 8 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 21 GREEN, 2 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).
@@ -453,8 +453,10 @@ covers only 6 of the 26 envs and is stale — do not cite without re-running.
 
 ### XPROP (Synopsys VC Formal — NOT FPV)
 
-- 5 modules covered: `tidelink` (top, full hierarchy), `tidelink_fifo`,
-  `tidelink_fifo_ctrl`, `tidelink_apb_regs`, `tidelink_returner`.
+- 11 modules covered: `tidelink` (top, full hierarchy), `tidelink_fifo`,
+  `tidelink_fifo_ctrl`, `tidelink_apb_regs`, `tidelink_returner`,
+  `tidelink_phc_cdc`, `tidelink_perf`, `tidelink_mul_iter`,
+  `tidelink_apb_addr_ctrl`, `tl_addr_trans_cam`, `tl_addr_trans_regs`.
 - Driver: `xprop/Makefile`. Per-module makefiles expose `make xprop`,
   `make gui`, `make clean`. Top-level: `make regression`, `make standalone`.
 - **Explicit scope statement** from `xprop/README.md`: this is xprop only,
@@ -463,9 +465,11 @@ covers only 6 of the 26 envs and is stale — do not cite without re-running.
   pointer logic — see xprop/README.md §"Future work".
 - Modules with **no xprop coverage** (and no FPV): `axi_chiplet_controller`,
   `tidelink_phy_align_calibrator` + lane checker + wire FSM,
-  `tidelink_fc_adapter`, `tidelink_addr_translator`, `tidelink_eye_regs`,
-  `tidelink_ptp`. See `docs/archive/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md`
-  for the full gap list.
+  `tidelink_fc_adapter`, `tidelink_addr_translator` (top — but its
+  sub-blocks `tl_addr_trans_cam` and `tl_addr_trans_regs` are each
+  covered standalone), `tidelink_eye_regs`, `tidelink_ptp`. See
+  `docs/archive/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md` for the
+  full gap list.
 
 ---
 
@@ -474,7 +478,7 @@ covers only 6 of the 26 envs and is stale — do not cite without re-running.
 ### Per-module (sim)
 
 - **GREEN-health modules** (§2): regression must pass; xprop must pass on
-  the 5 modules listed in §5; coverage targets per VCS metric:
+  the 11 modules listed in §5; coverage targets per VCS metric:
   line ≥ 95%, condition ≥ 80%, FSM ≥ 90%, branch ≥ 90%, toggle ≥ 60%.
   These are the targets implied by the FIFO-era snapshot (which already
   exceeds line and branch); raise to ≥ 95% on toggle once the test
@@ -504,7 +508,7 @@ covers only 6 of the 26 envs and is stale — do not cite without re-running.
 - `cocotb/lint` (SV anti-pattern): exit 0.
 - `cdc/Makefile`: all SGDC modules clean modulo `cdc/waiver.swl` and the
   two accepted findings in `docs/CDC_AUDIT_REPORT.md`.
-- `xprop/Makefile`: 5 modules pass.
+- `xprop/Makefile`: 11 modules pass.
 
 ### HW sign-off
 
@@ -575,10 +579,13 @@ sign-off, and vice versa.
 (`uvm/tidelink_addr_translator/` was removed pre-2026-05; the
 `addr_translate` coverage now lives inside `tidelink_top_system`.)
 
-### xprop (5 modules)
+### xprop (11 modules)
 
 `xprop/tidelink/`, `xprop/tidelink_fifo/`, `xprop/tidelink_fifo_ctrl/`,
-`xprop/tidelink_apb_regs/`, `xprop/tidelink_returner/`. Driven by
+`xprop/tidelink_apb_regs/`, `xprop/tidelink_returner/`,
+`xprop/tidelink_phc_cdc/`, `xprop/tidelink_perf/`,
+`xprop/tidelink_mul_iter/`, `xprop/tidelink_apb_addr_ctrl/`,
+`xprop/tl_addr_trans_cam/`, `xprop/tl_addr_trans_regs/`. Driven by
 `xprop/Makefile`. **No SVA / FPV proofs in tree.**
 
 ---

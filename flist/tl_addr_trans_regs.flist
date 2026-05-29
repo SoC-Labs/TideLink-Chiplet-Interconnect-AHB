@@ -1,0 +1,3 @@
++incdir+${TIDELINK_HOME}/src/rtl
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
+${TIDELINK_HOME}/src/rtl/tl_addr_trans_regs.sv

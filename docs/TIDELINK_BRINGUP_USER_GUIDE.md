@@ -9,11 +9,11 @@
 **Cross-references:**
 - Authoritative register definitions: [`docs/REGISTER_MAP.md`](REGISTER_MAP.md)
 - Existing user-level reference: [`docs/USER_GUIDE.md`](USER_GUIDE.md)
-- Full HW test catalogue: [`docs/HW_TEST_SUITE.md`](HW_TEST_SUITE.md), [`docs/HW_TEST_SUITE_DEV_LOG.md`](HW_TEST_SUITE_DEV_LOG.md)
+- Full HW test catalogue: [`docs/HW_TEST_SUITE.md`](HW_TEST_SUITE.md), [`docs/archive/HW_TEST_SUITE_DEV_LOG.md`](archive/HW_TEST_SUITE_DEV_LOG.md)
 - ASIC sign-off rules: [`docs/ASIC_TIMING_CONSTRAINTS.md`](ASIC_TIMING_CONSTRAINTS.md)
 - Autoneg protocol (I2C role coordination): [`docs/AUTONEG_PROTOCOL.md`](AUTONEG_PROTOCOL.md)
-- PHY abstraction (GPIO vs SerDes swap): [`docs/PHY_LAYER_ABSTRACTION.md`](PHY_LAYER_ABSTRACTION.md)
-- Most recent interface debug session: [`docs/TIDELINK_INTERFACE_DEBUG_PLAN.md`](TIDELINK_INTERFACE_DEBUG_PLAN.md), [`docs/TIDELINK_PHASE0_OBS_20260524_2109.md`](TIDELINK_PHASE0_OBS_20260524_2109.md)
+- PHY abstraction (GPIO vs SerDes swap): [`docs/archive/PHY_LAYER_ABSTRACTION.md`](archive/PHY_LAYER_ABSTRACTION.md)
+- Most recent interface debug session: [`docs/TIDELINK_INTERFACE_DEBUG_PLAN.md`](TIDELINK_INTERFACE_DEBUG_PLAN.md), [`docs/archive/TIDELINK_PHASE0_OBS_20260524_2109.md`](archive/TIDELINK_PHASE0_OBS_20260524_2109.md)
 
 ---
 
@@ -120,10 +120,10 @@ TideLink rides on Wlink's FC node multiplex. Allocations cited from `pynq_host/s
 
 - [ ] **GDS / OASIS handoff sha256** matched against the tape-out manifest.
 - [ ] **Target node confirmed** (TSMC65 for v1) — characterised I/O cell library, package model, channel model loaded into the STA flow (`ASIC_TIMING_CONSTRAINTS.md §6`).
-- [ ] **Sign-off gates green** — see `docs/SIGN_OFF_STATUS.md` and the [`ASIC_TIMING_CONSTRAINTS.md §9 checklist`](ASIC_TIMING_CONSTRAINTS.md). Specifically:
+- [ ] **Sign-off gates green** — see `docs/archive/SIGN_OFF_STATUS.md` and the [`ASIC_TIMING_CONSTRAINTS.md §9 checklist`](ASIC_TIMING_CONSTRAINTS.md). Specifically:
   - STA at all PVT corners (TT/SS/FF) with the source-sync arcs analysed
-  - CDC sign-off (Spyglass, `docs/SPYGLASS_CDC_SIGNOFF.md`)
-  - Per-lane skew determinism metric per `docs/DETERMINISM_VALIDATION.md`
+  - CDC sign-off (Spyglass, `docs/archive/SPYGLASS_CDC_SIGNOFF.md`)
+  - Per-lane skew determinism metric per `docs/archive/DETERMINISM_VALIDATION.md`
 - [ ] **Characterisation lab bench** ready with:
   - Bench probe access to `pad_clk_rx` and `pad_rx[7:0]` (for eye margin)
   - I2C bus access on the chiplet pair (autoneg or manual role configuration)
@@ -297,12 +297,12 @@ The order matches a top-down bringup. At each step, read the register, check the
 | 4 | Calibrator converged | `SWI_LANE_STATUS @ 0x44032108` | `lane_locked[7:0] = 0xff`, `lane_fault[15:8] = 0x00`, `cal_done[16] = 1` | If `cal_done=0`: calibrator stuck in S_SWEEP/S_ARM — per-lane skew exceeds calibrator window. Check `lane_fault` byte for which lanes are stuck. If `lane_locked < 0xff` but `cal_done=1`: a calibrator latched at the eye edge. Run coordinated recal (slot0 `0x3 → 0x1`). | `hwtest/01_wlink_layer.sh` |
 | 5 | Training mode dropped | `SWI_TRAINING_MODE @ 0x44032100` | `0x00000000` | If non-zero, the link is still emitting the training pattern and the queued initial CR packet has never drained. **This is the load-bearing step — see [Pitfall 1](#pitfall-1-link-stuck-in-training-mode-2026-05-24).** | n/a — direct read after `to_data_mode()` |
 | 6 | LL_TX/RX/SWI enabled | `WL_EnableReset @ 0x44030208` | `0x00027f07` (`swi+lltx+lltx_1 = 1`, `swreset = 0`) | Wlink link layer not enabled. Re-run the swreset bootstrap. | `wlink_probe.sh` LinkCRC region dump |
-| 7 | CR packet received by peer | `SWI_LANE_STATUS @ 0x44032108` bit[23] = `cr_pkt_seen_rx` | `1` on BOTH sides | If `0` on either side: that side's FCSM never received the master's initial Credit-Release. Credit window never opens. **Symptoms downstream**: PAIR_CREDIT_COUNTER stays at 0, doorbells don't cross, PHC sync fails, AHB_SUB peer-write returns 0. Cross-reference [`TIDELINK_PHASE0_OBS_20260524_2109.md §4.2`](TIDELINK_PHASE0_OBS_20260524_2109.md). | `hwtest/01_wlink_layer.sh §1b` |
+| 7 | CR packet received by peer | `SWI_LANE_STATUS @ 0x44032108` bit[23] = `cr_pkt_seen_rx` | `1` on BOTH sides | If `0` on either side: that side's FCSM never received the master's initial Credit-Release. Credit window never opens. **Symptoms downstream**: PAIR_CREDIT_COUNTER stays at 0, doorbells don't cross, PHC sync fails, AHB_SUB peer-write returns 0. Cross-reference [`TIDELINK_PHASE0_OBS_20260524_2109.md §4.2`](archive/TIDELINK_PHASE0_OBS_20260524_2109.md). | `hwtest/01_wlink_layer.sh §1b` |
 | 8 | Credit handshake complete | `PAIR_CREDIT_COUNTER @ 0x44032028` | non-zero on BOTH sides | If zero: same root cause as step 7 — FCSM never opened. Even with PHY 100% clean and ECC=0/0. | `hwtest/04_ahb_mng_incoming.sh §4c` |
 | 9 | Local FIFO healthy | `CURRENT_CREDITS @ 0x4403200C` | `0x00001000` (4096) at idle | Below 4096 with no TX: stuck packet or queue not draining. | `hwtest/06_ahb_fifo.sh` |
 | 10 | No sticky errors | `TideLink STATUS @ 0x44032010` | `0x00000000` ideally; `bit[2]=fifo_underrun` may set during boot transients | Sticky errors after stable boot indicate a real FIFO miss. Use `CTRL.FLUSH` to clear. | `hwtest/02_tidelink_top_regs.sh §2g` |
 | 11 | ECC counters quiet | `ECC_COUNTERS @ 0x44032114` | `0x00000000` (corrupted lo / corrected hi both 0) | Non-zero `corrupted` count = PHY/byte-align fail. Non-zero `corrected` = link is recovering single-bit errors (acceptable at low rate). | `hwtest/01_wlink_layer.sh §1d` |
-| 12 | FC TideLink CRC clean | `FC_TIDELINK_CRC_Errors @ 0x44031720` | `0` both sides | FC-layer CRC corruption = physical-layer problem. Escalate to per-lane skew / IDELAY tap / pad map. | New register — was unread until [Phase 0 obs 2026-05-24](TIDELINK_PHASE0_OBS_20260524_2109.md) |
+| 12 | FC TideLink CRC clean | `FC_TIDELINK_CRC_Errors @ 0x44031720` | `0` both sides | FC-layer CRC corruption = physical-layer problem. Escalate to per-lane skew / IDELAY tap / pad map. | New register — was unread until [Phase 0 obs 2026-05-24](archive/TIDELINK_PHASE0_OBS_20260524_2109.md) |
 | 13 | Wlink link healthy | `WL_LinkStatus @ 0x44030234` | `bit[4]=rx_data_valid=1`, `bit[2]=in_error_state=0` | `in_error_state=1` is the Wlink-level "give up". Power-cycle, recheck XDC / pad map. | `wlink_probe.sh` LinkCRC region |
 | 14 | Peer-visible AHB write | `hwtest/03_ahb_sub_e2e.sh §3d` — master writes `0xDEADBEEF` to `0x44010000`, slave reads same offset | slave reads `0xDEADBEEF` | If slave reads `0x00000000`: credit window did not open. Same root cause as step 7. **Do not try AHB_TX (0x4400_0000)** as a fallback — wedge hazard. | `hwtest/03_ahb_sub_e2e.sh` |
 | 15 | Doorbell crosses | Master writes 8x `DOORBELL @ 0x44032014`, slave reads `DOORBELL_RESPONSE_ACC @ 0x44032024` | slave reads `~8` (read clears) | Same root cause as step 14. | `hwtest/04_ahb_mng_incoming.sh §4b` |
@@ -350,7 +350,7 @@ The link is half-handshaked at POR with byte alignment intact. `bringup_pair_con
 1. **(SW only, simplest)** Skip `bringup_pair_converge.sh` entirely. If POR-alignment is sufficient, no RTL change is needed.
 2. **(RTL defensive)** Word-aligned mux transition. Local override at [`src/rtl/local_overrides/WavD2DGpio.v`](../src/rtl/local_overrides/WavD2DGpio.v) (commit `5477e60` on `feat/td-interface-debug`). A 4-bit mirror counter `mux_align_count_r` tracks `WavD2DGpioTx.count`; the TX-side training_mode signal samples only at `count==4'hf` (word boundary). The mux only flips at clean word boundaries, producing valid ECC headers across the transition.
 
-Cross-ref: [docs/TIDELINK_PHASE0_OBS_20260524_2109.md §11](TIDELINK_PHASE0_OBS_20260524_2109.md) for the full diagnostic chain.
+Cross-ref: [docs/archive/TIDELINK_PHASE0_OBS_20260524_2109.md §11](archive/TIDELINK_PHASE0_OBS_20260524_2109.md) for the full diagnostic chain.
 
 **Earlier proposed fix that does NOT work**: the `sw_coord_autocal_region8_FIX.sh` script (which changed the swreset cycle to `0x27f09→0x27f01→0x27f07` to keep swi_enable=1) was tested on HW and made no difference. The swi_enable transient was a red herring. The SW workaround is NOT the right path — the bug is in the WAV TX RTL.
 
@@ -387,7 +387,7 @@ On orphan cleanup: `pkill -9` the WHOLE deploy tree, not just the parent — `se
 
 **Symptom.** Operator builds bitstream A; bench team deploys, gets weird results. Hours of debug. Eventually discover `/tmp/tidelink_deploy/tidelink.bin` is bitstream B from a prior test — sha mismatches.
 
-**Root cause.** Bug #32, first hit 2026-05-06 (`docs/LINK_DECAY_BISECT.md`), bit again 2026-05-23 — the same volatile staging dir was reused by two different test cycles; the WARNING-only verify message was ignored four times in a row.
+**Root cause.** Bug #32, first hit 2026-05-06 (`docs/archive/LINK_DECAY_BISECT.md`), bit again 2026-05-23 — the same volatile staging dir was reused by two different test cycles; the WARNING-only verify message was ignored four times in a row.
 
 **Fix.** `deploy_pair.sh:228` now hard-aborts (exit 5) on UNVERIFIED DEPLOY. To deploy without manifest you must pass `--no-verify` explicitly. Bench convention: every build emits `bitstream.bin.manifest.json` via `pynq_host/scripts/make_bitstream_manifest.sh`. `bringup_pair_converge.sh:191-200` enforces this automatically.
 
@@ -521,29 +521,29 @@ ssh mapstone-dev "pkill -9 -f deploy_pair.sh; pkill -9 -f sshpass"
 
 | Goal | Resource |
 |------|----------|
-| PHC time sync between master and slave | `pynq_host/scripts/bringup_ptp_sync.sh`, then `bringup_ptp_track_freq.sh`, `bringup_ptp_track_offset.sh`, `bringup_ptp_soak.sh`. See [`docs/PTP_PROTOCOL.md`](PTP_PROTOCOL.md), [`docs/PTP_HW_TEST_PLAN.md`](PTP_HW_TEST_PLAN.md). |
+| PHC time sync between master and slave | `pynq_host/scripts/bringup_ptp_sync.sh`, then `bringup_ptp_track_freq.sh`, `bringup_ptp_track_offset.sh`, `bringup_ptp_soak.sh`. See [`docs/PTP_PROTOCOL.md`](PTP_PROTOCOL.md), [`docs/archive/PTP_HW_TEST_PLAN.md`](archive/PTP_HW_TEST_PLAN.md). |
 | Performance counters (perf-tx, perf-rx, debug) | `hwtest/11_perf_counters.sh` — snapshot 24 slots, drive light traffic, snapshot again, report which slots advanced. |
 | ILA capture for credit-path debug | `pynq_host/scripts/phc_ila_capture.{sh,tcl}` + the `.ltx` staged on mapstone-dev. See [`reference_phc_ila_capture.md`](../../.claude/projects/-home-dam1n19-SoCLabs-tidelink/memory/reference_phc_ila_capture.md). |
 | Multi-hour soak | `hwtest/13_long_soak.sh SOAK_SECS=28800` for 8h, or `bringup_ptp_soak.sh`. Acceptance: 0 drops, 0 sticky events. |
 | Reliability across re-deploys | `hwtest/01_wlink_layer.sh RUN_RELIABILITY=1` — opt-in mini-sweep. |
-| Determinism characterisation | `pynq_host/scripts/determinism_metric.sh` — inter-build per-lane skew variance, per [`docs/DETERMINISM_VALIDATION.md`](DETERMINISM_VALIDATION.md). |
+| Determinism characterisation | `pynq_host/scripts/determinism_metric.sh` — inter-build per-lane skew variance, per [`docs/archive/DETERMINISM_VALIDATION.md`](archive/DETERMINISM_VALIDATION.md). |
 
 ### 8.2 For ASIC path
 
 | Goal | Resource |
 |------|----------|
 | STA sign-off | [`docs/ASIC_TIMING_CONSTRAINTS.md §9 checklist`](ASIC_TIMING_CONSTRAINTS.md). Source-sync arcs must be analysed at every PVT corner; per-lane skew bounded by `set_max_delay -datapath_only` + `set_data_check`. |
-| CDC sign-off | [`docs/CDC_AUDIT_REPORT.md`](CDC_AUDIT_REPORT.md), [`docs/SPYGLASS_CDC_SIGNOFF.md`](SPYGLASS_CDC_SIGNOFF.md). Recovered-RX → core CDC must use the established `tidelink_phc_cdc.sv` SYNC_STAGES pattern. |
+| CDC sign-off | [`docs/CDC_AUDIT_REPORT.md`](CDC_AUDIT_REPORT.md), [`docs/archive/SPYGLASS_CDC_SIGNOFF.md`](archive/SPYGLASS_CDC_SIGNOFF.md). Recovered-RX → core CDC must use the established `tidelink_phc_cdc.sv` SYNC_STAGES pattern. |
 | Characterisation lab | Per-lane eye margin, BER curve, voltage/temperature sweep, comparison to STA sign-off corner. Bench setup not yet documented in repo — first-silicon will need new docs. |
 | Bring-up bench docs | Not yet written. After v1 first-silicon, document the actual lab procedure (POR sequence, bench probe points, oscilloscope captures) in a new `docs/ASIC_BRINGUP_BENCH.md`. |
 
 ### 8.3 Cross-reference index
 
-- Active debug session: [`docs/TIDELINK_INTERFACE_DEBUG_PLAN.md`](TIDELINK_INTERFACE_DEBUG_PLAN.md), [`docs/TIDELINK_PHASE0_OBS_20260524_2109.md`](TIDELINK_PHASE0_OBS_20260524_2109.md)
-- Sign-off status snapshot: [`docs/SIGN_OFF_STATUS.md`](SIGN_OFF_STATUS.md)
-- Known shortcomings / open work: [`docs/SHORTCOMINGS.md`](SHORTCOMINGS.md), [`docs/OUTSTANDING_WORK_REPORT.md`](OUTSTANDING_WORK_REPORT.md)
+- Active debug session: [`docs/TIDELINK_INTERFACE_DEBUG_PLAN.md`](TIDELINK_INTERFACE_DEBUG_PLAN.md), [`docs/archive/TIDELINK_PHASE0_OBS_20260524_2109.md`](archive/TIDELINK_PHASE0_OBS_20260524_2109.md)
+- Sign-off status snapshot: [`docs/archive/SIGN_OFF_STATUS.md`](archive/SIGN_OFF_STATUS.md)
+- Known shortcomings / open work: [`docs/SHORTCOMINGS.md`](SHORTCOMINGS.md), [`docs/archive/OUTSTANDING_WORK_REPORT.md`](archive/OUTSTANDING_WORK_REPORT.md)
 - Bug tracker: [`docs/BUG_TRACKER.md`](BUG_TRACKER.md)
-- Repo simplification (deletion candidates): [`docs/REPO_SIMPLIFICATION_ASSESSMENT.md`](REPO_SIMPLIFICATION_ASSESSMENT.md)
+- Repo simplification (deletion candidates): [`docs/archive/REPO_SIMPLIFICATION_ASSESSMENT.md`](archive/REPO_SIMPLIFICATION_ASSESSMENT.md)
 
 ---
 

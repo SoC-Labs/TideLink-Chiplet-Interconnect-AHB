@@ -35,7 +35,7 @@ constraints land in the actual files:
   `src/rtl/tidelink_phc_cdc.sv` (`SYNC_STAGES` shift-register chain) —
   this is the model for the recovered-RX→core CDC sign-off.
 - Determinism measurement of any candidate fix:
-  `docs/DETERMINISM_VALIDATION.md` +
+  `docs/archive/DETERMINISM_VALIDATION.md` +
   `pynq_host/scripts/determinism_metric.sh`.
 
 ---
@@ -379,7 +379,7 @@ to `pad_clk_rx` (§3):
   is **only valid once the CDC tool has signed off that the crossing is
   structurally safe** — STA-ignore without CDC sign-off is how
   metastability ships. See `docs/CDC_AUDIT_REPORT.md` and
-  `docs/SPYGLASS_CDC_SIGNOFF.md` for the live sign-off state.
+  `docs/archive/SPYGLASS_CDC_SIGNOFF.md` for the live sign-off state.
 
 ---
 
@@ -739,7 +739,7 @@ Do not sign off the TideLink source-sync PHY unless every item is true:
       allowed to make STA ignore it. — Part A §8, `docs/CDC_AUDIT_REPORT.md`.
 - [ ] **Determinism re-validated.** After the constraint/delay-cell
       changes, the determinism metric
-      (`docs/DETERMINISM_VALIDATION.md`) shows a stable both-sides-good
+      (`docs/archive/DETERMINISM_VALIDATION.md`) shows a stable both-sides-good
       operating point across builds/corners — i.e. the fix actually
       reduced skew-spread variance, not just WNS.
 

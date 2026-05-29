@@ -65,19 +65,19 @@ link at iteration N` for some N ≤ MAX_RETRIES.
 **Lint flows:**
 ```sh
 make -C lint lint-each            # Cadence HAL — full RTL lint coverage
-make -C cdc cdc                   # SpyGlass CDC — see docs/SPYGLASS_CDC_SIGNOFF.md
+make -C cdc cdc                   # SpyGlass CDC — see docs/archive/SPYGLASS_CDC_SIGNOFF.md
 ```
 
 ## Documentation map
 
 - [`docs/TIDELINK_SPECIFICATION.md`](docs/TIDELINK_SPECIFICATION.md) — authoritative architecture spec
 - [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — submodule + tool dependencies + update recipe
-- [`docs/CDC_AUDIT_REPORT.md`](docs/CDC_AUDIT_REPORT.md) + [`docs/SPYGLASS_CDC_SIGNOFF.md`](docs/SPYGLASS_CDC_SIGNOFF.md) — CDC sign-off (GO for TideLink RTL)
-- [`docs/PHC_PHASE1_HW_REPORT.md`](docs/PHC_PHASE1_HW_REPORT.md) — PHC Phase-1 HW characterisation status
-- [`docs/LINK_DECAY_BISECT.md`](docs/LINK_DECAY_BISECT.md) — the 2026-05-23 deploy-provenance Bug #32 recurrence (and the hard-abort guard that closed it)
+- [`docs/CDC_AUDIT_REPORT.md`](docs/CDC_AUDIT_REPORT.md) + [`docs/archive/SPYGLASS_CDC_SIGNOFF.md`](docs/archive/SPYGLASS_CDC_SIGNOFF.md) — CDC sign-off (GO for TideLink RTL)
+- [`docs/archive/PHC_PHASE1_HW_REPORT.md`](docs/archive/PHC_PHASE1_HW_REPORT.md) — PHC Phase-1 HW characterisation status
+- [`docs/archive/LINK_DECAY_BISECT.md`](docs/archive/LINK_DECAY_BISECT.md) — the 2026-05-23 deploy-provenance Bug #32 recurrence (and the hard-abort guard that closed it)
 - [`cocotb/README.md`](cocotb/README.md) — cocotb env inventory + known-excluded list
-- [`docs/REPO_SIMPLIFICATION_IMPACT.md`](docs/REPO_SIMPLIFICATION_IMPACT.md) — repo-hygiene roadmap
-- [`docs/PHY_LAYER_ABSTRACTION_IMPACT.md`](docs/PHY_LAYER_ABSTRACTION_IMPACT.md) — PHY-layer refactor impact assessment
+- [`docs/archive/REPO_SIMPLIFICATION_IMPACT.md`](docs/archive/REPO_SIMPLIFICATION_IMPACT.md) — repo-hygiene roadmap
+- [`docs/archive/PHY_LAYER_ABSTRACTION_IMPACT.md`](docs/archive/PHY_LAYER_ABSTRACTION_IMPACT.md) — PHY-layer refactor impact assessment
 
 ---
 

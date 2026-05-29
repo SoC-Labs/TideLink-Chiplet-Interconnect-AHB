@@ -141,7 +141,7 @@ When a submodule is updated (e.g. a Wlink Chisel regen drops in):
 1. Cherry-pick / re-apply any TideLink-specific patches to the
    regenerated tree.
 2. Run `make -C cdc cdc` (SpyGlass CDC) — should be clean per
-   `docs/SPYGLASS_CDC_SIGNOFF.md`.
+   `docs/archive/SPYGLASS_CDC_SIGNOFF.md`.
 3. Run `make -C cocotb regression` — should be green per
    [`cocotb/README.md`](../cocotb/README.md) "Known-excluded-from-CI".
 4. Run a `-all` farm build + bridge1 16/16 lock validation

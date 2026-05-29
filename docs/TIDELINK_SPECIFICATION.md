@@ -893,8 +893,8 @@ subsection captures the design decisions whose only previous home was
 the 2026-05-14 PHY-Align integration plan and next-steps docs (both
 removed; their novel content is folded here and superseded by the
 as-built RTL + this spec entry + the FPGA bring-up artefacts
-`docs/PHC_PHASE1_HW_REPORT.md`, `docs/CDC_AUDIT_REPORT.md`,
-`docs/SPYGLASS_CDC_SIGNOFF.md`).
+`docs/archive/PHC_PHASE1_HW_REPORT.md`, `docs/CDC_AUDIT_REPORT.md`,
+`docs/archive/SPYGLASS_CDC_SIGNOFF.md`).
 
 **9.10.1 Sub-step ordering and what it bought us.** The PHY-align work
 was sequenced in five gates, in order, each one validated before the

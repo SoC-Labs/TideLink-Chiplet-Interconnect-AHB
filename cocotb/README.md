@@ -94,4 +94,4 @@ Two envs are intentionally skipped by CI to keep the pipeline green:
    (also in this env) pass and run in CI; only the full stress test
    is excluded.
 
-Both are tracked in `docs/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).
+Both are tracked in `docs/archive/REPO_SIMPLIFICATION_IMPACT.md` (tier-2 §1-A).

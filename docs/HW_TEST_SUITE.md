@@ -6,7 +6,7 @@ Generated 2026-05-23 on `feat/hw-test-suite` (isolation worktree
 Companion to:
 - `pynq_host/scripts/hwtest/README.md` — usage + env vars
 - `pynq_host/scripts/hwtest/REG_INVENTORY.md` — register coverage
-- `docs/OUTSTANDING_WORK_REPORT.md` §3 — HW stress program scoping
+- `docs/archive/OUTSTANDING_WORK_REPORT.md` §3 — HW stress program scoping
 - `docs/PTP_PROTOCOL.md` — PTP single-phase protocol (HW sync side)
 - `src/rtl/fifo/tidelink_apb_regs.sv` — authoritative APB reg map
 
@@ -182,7 +182,7 @@ arm/send bits; PTP_RX_PAYLOAD + PTP_STATUS RO sanity.
 
 ### Cat 9 — PTP HW Sync (GATED on PHC image)
 
-**Rationale.** Reference `docs/PTP_HW_TEST_PLAN.md`. PHC integration is in
+**Rationale.** Reference `docs/archive/PTP_HW_TEST_PLAN.md`. PHC integration is in
 development in the sibling worktree `~/SoCLabs/td-phc-dev`. We detect PHC
 presence by reading `HW_SYNC_STATUS` and skipping if it always reads 0xFF...
 

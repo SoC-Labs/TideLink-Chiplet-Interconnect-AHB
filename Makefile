@@ -17,7 +17,7 @@
 #   synth_lint_selftest— Prove the Verilator gate catches CASEINCOMPLETE,
 #                        WIDTH-truncate, BLKANDNBLK on seeded fixtures.
 #   sim_robust         — Bug #1/#3/#7 fingerprints + reset/CDC stress.
-#                        cocotb tests under cocotb/sim_robust/.
+#                        cocotb tests under cocotb/debug/sim_robust/.
 #   robust_all         — meta-target: run every gate (lints + sim).
 #
 # All targets are pre-silicon — no farm builds, no HW dependency.
@@ -51,7 +51,7 @@ sim_robust:
 	@echo "========================================"
 	@echo " sim_robust adversarial cocotb tests"
 	@echo "========================================"
-	$(MAKE) -C cocotb/sim_robust sim_robust
+	$(MAKE) -C cocotb/debug/sim_robust sim_robust
 
 robust_all: xdc_lint_selftest synth_lint_selftest xdc_lint sim_synth_mode sim_robust
 	@echo "========================================"

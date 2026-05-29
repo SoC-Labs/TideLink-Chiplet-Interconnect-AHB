@@ -40,12 +40,15 @@ collected into `cocotb/<env>/coverage.vdb` and aggregated into
 | [`tidelink_autoneg`](tidelink_autoneg/) | `tidelink_autoneg` (in chiplet controller) | Autoneg FSM, role lock, I²C arbitration |
 | [`tidelink_mul_iter`](tidelink_mul_iter/) | `tidelink_mul_iter` | 32×32 iterative signed-×-unsigned multiplier (used by PTP servo) |
 | [`tidelink_perf`](tidelink_perf/) | `tidelink_perf` | Perf counter block |
-| [`tidelink_perf_cdriver`](tidelink_perf_cdriver/) | `tidelink_perf` + C-driver | Compiled-C driver in the loop against `tidelink_perf` |
 | [`tidelink_perf_congestion`](tidelink_perf_congestion/) | `tidelink_perf` congestion estimator | Phase-1 congestion-estimator characterisation |
 | [`tidelink_idelay_rx`](tidelink_idelay_rx/) | `tidelink_idelay_rx` | Per-lane IDELAYE2 wrapper passthrough check |
 | [`tidelink_rxclk_buf`](tidelink_rxclk_buf/) | `tidelink_rxclk_buf` | Recovered-RX-clock BUFG wrapper |
 | [`tidelink_clkfreq_check`](tidelink_clkfreq_check/) | clock-freq-check helper | Sanity check on the FPGA clk_wiz output |
-| [`tidelink_phy_align_calibrator`](tidelink_phy_align_calibrator/) | `tidelink_phy_align_calibrator` | §9.9 best-of-sweep widest-eye selection unit test |
+| [`wav_d2d_gpio_tx`](wav_d2d_gpio_tx/) | `WavD2DGpioTx` | Training-pattern mux passthrough |
+| [`wavd2d_gpiorx_clkbuf`](wavd2d_gpiorx_clkbuf/) | `WavD2DGpioRx` | §9 in-PHY BUFG restructure (USE_CLKBUF=0 bit-exact) |
+| [`wavd2d_gpiorx_t3a`](wavd2d_gpiorx_t3a/) | `WavD2DGpioRx` | §9 T3a self-aligning RX comma-hunt |
+| [`wavd2d_gpiorx_t3a_off`](wavd2d_gpiorx_t3a_off/) | `WavD2DGpioRx` | §9 T3a USE_T3A=0 legacy-passthrough pin |
+| [`wavd2d_gpiorx_t3a_timeout`](wavd2d_gpiorx_t3a_timeout/) | `WavD2DGpioRx` | §9 T3a silent-peer MAX_HUNT timeout fallback |
 
 ### Integration / system tests
 
@@ -56,19 +59,37 @@ collected into `cocotb/<env>/coverage.vdb` and aggregated into
 | [`tidelink_top`](tidelink_top/) | `tidelink_top` full integration (chiplet controller + FIFO + FC adapter + PTP + addr trans) |
 | [`tidelink_system`](tidelink_system/) | Full-system integration test |
 | [`tidelink_py_pair`](tidelink_py_pair/) | Python-driven paired-board sim |
-| [`wlink_pair`](wlink_pair/) | Two-Wlink-instance pair-bringup sim |
-| [`phy_align`](phy_align/) | **§9 PHY-alignment story** — per-lane bit-slip + training-pattern + calibrator search window CONTRACT. See [`phy_align/README.md`](phy_align/README.md) for the full §9 calibrator skew-window contract pin. |
-| [`i2c_clkstretch`](i2c_clkstretch/) | Real `i2c_master_axil` + `i2c_slave_axil_master` cores wired together for I²C clock-stretching characterisation |
-| [`i2c_mask_selflock`](i2c_mask_selflock/) | Fix B — autonomous SLAVE self-lock via the real `0x21C` lane-mask-handshake |
-| [`bank_asymmetry`](bank_asymmetry/) | Per-bank RX asymmetry adversarial test |
-| [`axi_chiplet_controller`](axi_chiplet_controller/) | Adversarial tests for the chiplet controller |
-| [`sim_robust`](sim_robust/) | Sim-robustness regression set |
 
 ### Lint flow (not a cocotb test env)
 
 | Dir | Purpose |
 |---|---|
 | [`lint/`](lint/) | Verilator strict-lint wrapper (separate from `cocotb/Makefile regression`) |
+
+### Debug envs (`debug/`, NOT in regression)
+
+[`debug/`](debug/) holds bug-bisect probes, force-injection harnesses,
+silicon-fingerprint reproducers, and integration sims that are too slow
+or too scenario-specific for the per-commit CI loop. They are kept under
+source control because they remain useful when a related class of bug
+re-appears, but they are deliberately excluded from `make regression` so
+the CI pipeline stays green and fast.
+
+| Env | Why debug-only |
+|---|---|
+| [`debug/calibrator_force_bisect/`](debug/calibrator_force_bisect/) | Hierarchical-force bisect harness used to isolate the AUTOCAL=1 M→S corruption (`f900e07`) |
+| [`debug/tidelink_chiplet_pair_autocal/`](debug/tidelink_chiplet_pair_autocal/) | Two-chiplet AUTOCAL_ENABLE=1 sim used during the same calibrator investigation |
+| [`debug/tidelink_phy_align_calibrator/`](debug/tidelink_phy_align_calibrator/) | Calibrator FSM unit harness; default `MODULE` (`test_calibrator_t3`) currently fails an S_SWEEP-cycles assertion against the post-merge RTL — pending a re-pin |
+| [`debug/phy_align/`](debug/phy_align/) | §9 PHY-align story — mix of contract pins (`test_calibrator_skew_window`) and asymmetric/staggered fault-injection probes |
+| [`debug/wlink_pair/`](debug/wlink_pair/) | Two-Wlink pair-bringup sim with the L4/L6/FCSM/FPGA-repro test family from the 2026-05-2x interface-FCSM debug session |
+| [`debug/wlink_tx_pstate_ctrl/`](debug/wlink_tx_pstate_ctrl/) | WlinkTxPstateCtrl FSM deadlock hypothesis probe (debug session 289bb42) |
+| [`debug/wav_d2d_gpio_tx_prbs/`](debug/wav_d2d_gpio_tx_prbs/) | `feat/calibrator-prbs` PRBS-7 training stream investigation (now superseded by the constant-pattern checker in `deps/tidelink-gpio-phy`) |
+| [`debug/bank_asymmetry/`](debug/bank_asymmetry/) | Synthetic per-bank RX asymmetry reproducer for the ~14/16 lane-lock plateau |
+| [`debug/sim_robust/`](debug/sim_robust/) | Adversarial Cat-3/Cat-6 silicon-fingerprint reproducer set (Bug #1/#3/#7). Driven by the top-level `make sim_robust` target. |
+| [`debug/phc_pair/`](debug/phc_pair/) | Two-Wlink + tidelink_ptp pair sim built to reproduce the PHC Phase-1 slave-RX gap |
+| [`debug/tidelink_peer_aperture/`](debug/tidelink_peer_aperture/) | Cross-link extraction sim for the v2 Eye Visibility proposal (speculative RTL path) |
+| [`debug/i2c_clkstretch/`](debug/i2c_clkstretch/) | SHORTCOMINGS-14a I²C clock-stretching reproducer + fix proof |
+| [`debug/i2c_mask_selflock/`](debug/i2c_mask_selflock/) | Fix B autonomous SLAVE self-lock via the real `0x21C` lane-mask-handshake (shares the `wlink_pair` testbench) |
 
 ## Verification plan + coverage
 

@@ -1879,7 +1879,16 @@ module tidelink_top #(
     // hierarchical-force semantics; turning it on here means every TideLink
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
     axi_chiplet_controller #(
-        .AUTOCAL_ENABLE(1'b1),
+        // ILA iteration (2026-05-29 morning HW validation): S_PROBE empirically
+        // does NOT eliminate the AUTOCAL=1 M->S asymmetric corruption on real
+        // silicon (PTP sync fails, doorbell M->S intermittent) despite the
+        // sim test_05 PASS. Forcing AUTOCAL=0 here re-engages the verified-
+        // good workaround documented in
+        // project_autocal0_hw_workaround_2026_05_27. Calibrator freezes at
+        // S_IDLE; (slip, phase) come from SWI_BIT_SLIP_LO / SWI_PHASE_OFFSET
+        // SW-writable knobs. Keeps the lane_checker + new APB observability
+        // fully alive so we can ILA-debug what S_PROBE is doing.
+        .AUTOCAL_ENABLE(1'b0),
         // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
         // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
         .USE_IDELAY    (USE_IDELAY),

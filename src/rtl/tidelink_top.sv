@@ -94,7 +94,14 @@ module tidelink_top #(
     parameter STUB_SERVO       = 1'b0,
     parameter STUB_PERF        = 1'b0,
     parameter STUB_PTP         = 1'b0,
-    parameter BYPASS_ADDR_XLAT = 1'b0
+    parameter BYPASS_ADDR_XLAT = 1'b0,
+
+    // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG @ 0x4403_210C.
+    // 16'h0001 = train_auto_en=1; all timers fall back to FSM defaults.
+    // ASIC, FPGA and sim all enter the autonomous training arm out of
+    // reset with no SW config write. Cocotb wrappers that need to test
+    // the legacy bypass (train_auto_en=0) override this to 16'h0000.
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1821,7 +1828,10 @@ module tidelink_top #(
         .USE_IDELAY    (USE_IDELAY),
         .USE_CLKBUF    (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
-        .USE_T3A       (USE_T3A)
+        .USE_T3A       (USE_T3A),
+        // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
+        // parameter declaration for semantics.
+        .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

@@ -44,7 +44,20 @@ module axi_chiplet_controller #(
     // align to the byte boundary, killing the per-deploy 16-cycle count-phase
     // lottery that left master/slave anti-correlated. Default 0 = bit-exact
     // passthrough (sim/ASIC/UVM); FPGA wrapper sets 1 via component.xml.
-    parameter USE_T3A        = 1'b0
+    parameter USE_T3A        = 1'b0,
+
+    // Phase 2 autonomy — POR-default value for NEGO_TRAIN_CFG (Region 8 slot
+    // 3'h3, MMIO 0x4403_210C). Bit[0]=train_auto_en, bit[1]=train_sw_step,
+    // bits[7:4]=poll_timeout (FSM uses T_POLL_TIMEOUT_DEFAULT when 0),
+    // bits[15:8]=fsm_wait_hi (FSM uses T_TRAIN_FSM_DEFAULT when 0).
+    //
+    // Default 16'h0001 → train_auto_en=1 at POR, all timers fall back to
+    // FSM-baked defaults. This makes the ASIC + FPGA + sim all enter the
+    // autonomous training arm out of reset without any SW config write,
+    // matching the v1 autonomy contract. Cocotb tests that need the legacy
+    // train_auto_en=0 path (where the FSM legacy-bypasses to ST_NEGO_DONE
+    // directly) override this parameter via the testbench wrapper.
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
 ) (
 
     // ── Clocks and Resets ────────────────────────────────────────────────
@@ -729,7 +742,10 @@ module axi_chiplet_controller #(
             swi_recal_r              <= 1'b0;
             swi_bit_slip_lo_r        <= 24'h0;
             swi_phase_offset_r       <= 32'h0;
-            nego_train_cfg_r         <= 16'h0;
+            // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
+            // Wrapper (tidelink_top.sv) sets train_auto_en=1 by default;
+            // cocotb wrappers override the parameter for legacy tests.
+            nego_train_cfg_r         <= NEGO_TRAIN_CFG_RESET;
             nego_train_retrain_pulse <= 1'b0;
             train_fail_irq_r         <= 1'b0;
             train_fail_irq_w_d       <= 1'b0;

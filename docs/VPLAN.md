@@ -72,7 +72,7 @@ Health legend:
 | `tidelink_rxclk_buf` | `tidelink_rxclk_buf` | — | — | YELLOW |
 | `tidelink_clkfreq_check` | `tidelink_clkfreq_check` | — | — | YELLOW |
 | `tidelink_mul_iter` | `tidelink_mul_iter` | — | — | YELLOW |
-| `tidelink_eye_regs` | — | — | — | RED (APB regfile for v2 eye-visibility proposal; no env yet) |
+| `tidelink_eye_regs` | `tidelink_eye_regs` | — | — | GREEN |
 | **`src/rtl/fifo/` family** | | | | |
 | `tidelink_fifo` (and `tidelink_fifo_mem`) | `tidelink_fifo`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | `tidelink`, `tidelink_system`, `tidelink_integration` | `tidelink_fifo` | GREEN |
 | `tidelink_fifo_ctrl` | (DUT of `tidelink_fifo_mem` in `tidelink_fifo` env) | (integ) | `tidelink_fifo_ctrl` | GREEN |
@@ -81,7 +81,7 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 10 GREEN, 12 YELLOW, 2 RED, **out of 24 first-party RTL
+**Counts:** 11 GREEN, 12 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).
@@ -339,17 +339,21 @@ which is now scope-banner'd as the FIFO-area test index.
 
 ### 3.18 `tidelink_eye_regs` — v2 eye-visibility APB regfile
 
-- **Purpose:** APB Region 10 regfile for the v2 PHY eye-sweep proposal.
-- **Test envs:** none committed.
-- **Known gaps:** **RED** — no env. Related speculative-path sim is in
-  `cocotb/debug/tidelink_peer_aperture/`. Block until the v2 RTL is
-  promoted out of debug.
+- **Purpose:** APB Region 10 regfile for the v2 PHY eye-sweep proposal
+  (docs/EYE_VISIBILITY_RTL_PROPOSAL.md §5). Peer aperture maps Region 10
+  to `0x40032140` on the remote die.
+- **Test envs:** cocotb `tidelink_eye_regs` (19 tests — reset defaults /
+  APB protocol smoke / RW slot coverage / RO write-ignore / §13.5
+  MODE=10 pslverr / §13.6 DWELL_US floor-clamp / reserved-DDR RAZ-WI /
+  back-to-back burst / CTRL W1P pulse + sticky bits / SCORE_IDX
+  auto-increment / CRC RC clear-strobe). Related speculative-path sim
+  remains in `cocotb/debug/tidelink_peer_aperture/`.
 
 ---
 
 ## 4. Regression and CI
 
-### Canonical `ENVS` (from `cocotb/Makefile`, 2026-05-29 — 26 envs)
+### Canonical `ENVS` (from `cocotb/Makefile`, 2026-05-29 — 27 envs)
 
 ```
 tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl
@@ -357,7 +361,7 @@ tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top
 tidelink_system tidelink_perf tidelink_perf_congestion
 tidelink_addr_translator tidelink_autoneg tidelink_mul_iter
 tidelink_phc_cdc tidelink_ptp tidelink_ptp_servo tidelink_idelay_rx
-tidelink_rxclk_buf tidelink_clkfreq_check wav_d2d_gpio_tx
+tidelink_rxclk_buf tidelink_clkfreq_check tidelink_eye_regs wav_d2d_gpio_tx
 wavd2d_gpiorx_clkbuf wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off
 wavd2d_gpiorx_t3a_timeout
 ```

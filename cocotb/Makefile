@@ -6,7 +6,7 @@
 
 ENVS = tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion \
        tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp tidelink_ptp_servo \
-       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check \
+       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check tidelink_eye_regs tidelink_phy_align_calibrator \
        wav_d2d_gpio_tx wavd2d_gpiorx_clkbuf wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off wavd2d_gpiorx_t3a_timeout
 
 # ── Per-environment targets ──────────────────────────────────────────────────

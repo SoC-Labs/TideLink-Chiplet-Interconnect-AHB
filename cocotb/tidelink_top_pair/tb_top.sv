@@ -727,6 +727,26 @@ module tb_top #(
             force `S_CTRL.nego_cfg_reg      = 7'h61;
             force `S_CTRL.nego_train_cfg_r  = 16'h00F1;
             force `S_CTRL.nego_priority_reg = 16'h0002;
+            // ─── Bug N1 (2026-05-29) — known RTL bug, see docs ─────────────
+            // Bug N1: when nego completes with mask_hs_auto_en=1, the FSM
+            // walks 4 (POLL) → 9 (MASK_RD_ADDR), and on the same edge
+            // role_lock_reg latches → role_in_nego falls 0 → the
+            // axi_chiplet_controller.sv:1045 `nego_driving` mux disconnects
+            // the autoneg FSM from the i2c_master_axil bus. The FSM is then
+            // stuck in TXN_DATA / AXL_WR_RESP forever (m_axil_bvalid never
+            // arrives because the AXIL bus is muxed to the bridge).
+            //
+            // The training-state extension `train_in_progress_w` (autoneg.sv
+            // :1656) covers states 11/12/13/14/15 but NOT 8/9/10 (the
+            // mask-handshake states). RTL fix needed in
+            // local_overrides/axi_chiplet_controller.sv:1045 — extend
+            // nego_driving to also cover mask-handshake states post-lock.
+            //
+            // We deliberately do NOT force a workaround here because the
+            // tb-side fix would mask the bug. Diagnostic test
+            // cocotb/tidelink_top_pair/test_11_i2c_mask_rd_addr_probe.py
+            // reproduces the hang with dense per-cycle probes of axl_state_r,
+            // i2c_master state, and the bus pins.
             // Hold the force long enough that hresetn has been high for many
             // cycles and the FSM has fully sampled nego_en. After that, let
             // SW (or the FSM's own NEGO_TRAIN_CFG W1P retrain path) drive

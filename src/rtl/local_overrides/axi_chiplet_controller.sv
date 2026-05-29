@@ -89,6 +89,17 @@ module axi_chiplet_controller #(
     //                mode. Lets the slave's PYNQ Linux drive Wlink config
     //                directly, without I2C from the master. Bring-up debug
     //                only — not for production silicon.
+    //
+    //                DEBUG STRAP, tied to 0 in production, TAP-driven in
+    //                debug only. As of Phase 4 of the autonomy plan
+    //                (docs/ASIC_FPGA_IDENTICAL_AUTONOMOUS_BRINGUP_PLAN_*),
+    //                the FPGA bring-up flow (deploy_pair.sh) no longer
+    //                asserts this strap at deploy: the autoneg FSM's
+    //                mask_hs_local_match path drives mask_hs_match=1
+    //                autonomously (see line 433). The AXI GPIO at
+    //                0x4404_1000 is retained on the FPGA bitstream for
+    //                future TAP-style debug poke, but is not written by
+    //                the standard deploy script.
     input  wire             apb_debug_unlock_i,
 
     // ── Mask-handshake bypass strap: when 1, the peer-mask gate on
@@ -97,6 +108,11 @@ module axi_chiplet_controller #(
     //                this to 0 to enforce the handshake. Bring-up flows
     //                that don't yet drive the handshake (UVM, current
     //                FPGA bring-up scripts) tie it to 1.
+    //
+    //                DEBUG STRAP, tied to 0 in production, TAP-driven in
+    //                debug only. Sibling of apb_debug_unlock_i — both are
+    //                hardwired off on the chiplet bond pads and only
+    //                asserted via a JTAG/TAP path for bench debug.
     input  wire             mask_hs_bypass_i,
 
     // ── Auto-Negotiation ────────────────────────────────────────────────
@@ -428,6 +444,14 @@ module axi_chiplet_controller #(
     //   apb_debug_unlock_i bypasses the gate entirely (existing debug strap;
     //   used by the UVM testbench and bring-up flows that don't yet drive
     //   the handshake).
+    //
+    //   Phase 4 autonomy update: apb_debug_unlock_i and mask_hs_bypass_i are
+    //   both DEBUG STRAPS — tied to 0 in production silicon, TAP-driven for
+    //   bench debug only. The autoneg FSM's mask_hs_local_match path (line
+    //   428 below, driven by u_autoneg at lines 1272-1273) now closes the
+    //   handshake without SW intervention, so the standard FPGA deploy
+    //   script (pynq_host/scripts/deploy_pair.sh) no longer asserts the
+    //   AXI GPIO at 0x4404_1000 (apb_debug_unlock) at deploy time.
     // ====================================================================
     wire [1:0] wlink_mask_hs_result;  // [0]=peer_says_match, [1]=peer_says_fail
 

@@ -330,13 +330,16 @@ def mm(a):
     b=a&~(P-1); return mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),(a-b)
 s,so=mm(0x44040000)              # strap GPIO (Phase 6: bond-pad emulation)
 struct.pack_into(\"<I\",s,so,$STRAP)
-# Phase 4 deletion candidate: debug_unlock GPIO. Production silicon ties
-# apb_debug_unlock_i to 0; FPGA today asserts it so the local PYNQ APB
-# can reach Wlink on the slave side. Kept pending HW verification that
-# the autoneg-driven role_lock + mask_hs_match path leaves the debug
-# strap unused.
-d,do=mm(0x44041000)              # debug_unlock GPIO
-struct.pack_into(\"<I\",d,do,1)
+# PHASE 4 AUTONOMY (apb_debug_unlock GPIO @ 0x44041000 NO LONGER ASSERTED):
+# Production silicon ties apb_debug_unlock_i to 0; the strap is reserved
+# for TAP-driven bench debug only. The autoneg FSM's mask_hs_local_match
+# path (axi_chiplet_controller.sv:428,433) closes the mask handshake
+# autonomously, so the slave-side mask-handshake gate opens without SW
+# asserting apb_debug_unlock_i. The 0x44041000 AXI GPIO remains in the
+# bitstream (operator-pokeable for emergency debug) but is no longer
+# touched here. If HW deploy wedges at role_lock=0 after this change,
+# restore the write — that indicates the autoneg mask-handshake path
+# isn't closing on this die and the debug strap is still needed.
 r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
 w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
 struct.pack_into(\"<I\",r,ro+0x00,0x44032000)   # PAIR_BASE_ADDR (Phase 5: → TIDELINK_PAIR_BASE param)

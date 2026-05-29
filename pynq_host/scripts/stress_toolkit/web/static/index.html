@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TideLink stress-test</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>TideLink stress-test</h1>
+    <div id="lease-info" class="lease-pill state-unknown">lease: <span id="lease-holder">...</span></div>
+  </header>
+
+  <section class="about">
+    <details>
+      <summary>About this tool / what each test mode does</summary>
+      <div class="about-body">
+        <h3>What this tool is for</h3>
+        <p>
+          A sibling to the <code>live-lane-phase</code> GUI (port 8088), focused
+          on <strong>functional stress testing</strong> rather than channel
+          characterisation. Picks a test mode, opens the
+          <code>bridge1</code> lease, optionally redeploys + converges, then
+          runs the mode and streams live progress + pass/fail stats over SSE.
+        </p>
+        <p>
+          A passive PHY-health monitor runs in the background of the AHB /
+          doorbell / PTP / auto modes — if it sees a canary fail, wiring
+          alarm, or structured-noise alarm, it sets a kill-switch and the
+          main test stops cleanly.
+        </p>
+
+        <h3>Test modes</h3>
+        <ul>
+          <li><strong>AHB packet stress</strong> — write packets to the
+            <code>AHB_TX</code> aperture, read them back on the peer's
+            <code>AHB_FIFO</code>, verify bit-exact roundtrip + credit
+            accounting. Tunable packet size (1..1024 words) and count
+            (1..100k). Direction: M-&gt;S, S-&gt;M, or both alternating.</li>
+          <li><strong>Doorbell volume</strong> — flood APB
+            <code>REG_DOORBELL</code> (offset 0x14) and verify peer's
+            <code>DOORBELL_RESP_ACC</code> grew by N x MAX_CREDITS
+            (4096). APB writes are wedge-safe — this test is usable even
+            on a partially broken link.</li>
+          <li><strong>PTP HW sync</strong> — port of
+            <code>bringup_ptp_sync.sh</code>. Programmes both PHCs with
+            distinct initial times, enables PTP RX + the autonomous
+            HW_SYNC initiator at 128 Hz, and tracks |slave-master|
+            offset vs time on a Plotly line chart. Pass = locked AND
+            |offset| &lt; 500 ns for 10 consecutive samples.</li>
+          <li><strong>PHY health</strong> — passive 1 Hz poll of the
+            new <code>tidelink_gpio_phy_apb_regs</code> slave at
+            <code>0x4403_2160</code>. Per-lane noise (raw / voted),
+            wiring status, canary pass/fail, structured-noise alarm.
+            Useful as a baseline before any test or as a soak monitor.</li>
+          <li><strong>FCSM monitor</strong> — 10 Hz poll of
+            <code>SWI_LANE_STATUS @ 0x4403_2108</code>. Tracks locked
+            count, fault count, cal_done, FCSM state, LL_RX state, ECC
+            counters. Used as a sentinel — any drift away from
+            <code>LINK_IDLE</code> trips the alarm.</li>
+          <li><strong>AUTO</strong> — randomised mix of the above 5
+            for a user-picked duration. Maintains a running pass/fail
+            table by test type.</li>
+        </ul>
+
+        <h3>Safety</h3>
+        <ul>
+          <li><strong>AHB_TX writes are wedge-prone</strong> — the AHB
+            stress test gates on link-up first (16/16 + cal_done +
+            FCSM == LINK_IDLE). If the FCSM sentinel detects a state
+            change away from LINK_IDLE mid-test, the test aborts
+            immediately.</li>
+          <li>All other modes (doorbell, PTP, PHY health, FCSM) only
+            write APB / PHC / PMOD — they never touch
+            <code>AHB_TX</code> so they are wedge-safe even on a bad
+            link.</li>
+          <li>The lease is held for the duration of the run; the
+            heartbeat keeps it alive. Click <code>Refresh lease</code>
+            to extend it without re-running.</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+
+  <section class="controls">
+    <form id="run-form" autocomplete="off">
+      <div class="row">
+        <label>Stage dir
+          <input id="stage-dir" type="text" value="/tmp/tidelink_deploy">
+        </label>
+        <label>Master IP
+          <input id="master-ip" type="text" value="192.168.4.101">
+        </label>
+        <label>Slave IP
+          <input id="slave-ip" type="text" value="192.168.6.101">
+        </label>
+        <label>Board
+          <input id="board" type="text" value="bridge1">
+        </label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="skip-deploy" checked> Use currently deployed</label>
+        <label><input type="checkbox" id="skip-converge" checked> Skip converge</label>
+        <label><input type="checkbox" id="phy-sentinel" checked> Run PHY-health sentinel</label>
+      </div>
+
+      <div class="tabs" id="tabs">
+        <button type="button" class="tab active" data-mode="packet">AHB</button>
+        <button type="button" class="tab" data-mode="doorbell">Doorbell</button>
+        <button type="button" class="tab" data-mode="ptp">PTP</button>
+        <button type="button" class="tab" data-mode="phy">PHY Health</button>
+        <button type="button" class="tab" data-mode="fcsm">FCSM</button>
+        <button type="button" class="tab" data-mode="auto">AUTO</button>
+      </div>
+
+      <div class="tab-panel" data-mode="packet">
+        <div class="row">
+          <label>Packet size (words)
+            <input id="pkt-size" type="number" min="1" max="1024" value="16">
+          </label>
+          <label>Packet count
+            <input id="pkt-count" type="number" min="1" max="100000" value="100">
+          </label>
+          <label>Direction
+            <select id="pkt-direction">
+              <option value="m2s">M -&gt; S</option>
+              <option value="s2m">S -&gt; M</option>
+              <option value="both" selected>Both</option>
+              <option value="alternating">Alternating</option>
+            </select>
+          </label>
+          <label>Inter-packet delay (us)
+            <input id="pkt-gap-us" type="number" min="0" max="100000" step="1" value="0">
+          </label>
+        </div>
+        <div class="row presets">
+          Presets:
+          <button type="button" class="preset" data-size="1">1</button>
+          <button type="button" class="preset" data-size="4">4</button>
+          <button type="button" class="preset" data-size="16">16</button>
+          <button type="button" class="preset" data-size="64">64</button>
+          <button type="button" class="preset" data-size="256">256</button>
+          <button type="button" class="preset" data-size="1024">1024</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-mode="doorbell" hidden>
+        <div class="row">
+          <label>Doorbell count
+            <input id="db-count" type="number" min="1" max="10000" value="100">
+          </label>
+          <label>Rate (rings / s)
+            <input id="db-rate" type="number" min="1" max="10000" value="100">
+          </label>
+          <label>Direction
+            <select id="db-direction">
+              <option value="m2s" selected>M -&gt; S</option>
+              <option value="s2m">S -&gt; M</option>
+              <option value="alternating">Alternating</option>
+              <option value="both">Both</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-mode="ptp" hidden>
+        <div class="row">
+          <label>Duration (s)
+            <input id="ptp-duration" type="number" min="5" max="3600" value="60">
+          </label>
+          <label>Sample period (s)
+            <input id="ptp-period" type="number" min="0.05" max="2" step="0.05" value="0.25">
+          </label>
+          <label>|offset| pass-threshold (ns)
+            <input id="ptp-thresh" type="number" min="10" max="100000" value="500">
+          </label>
+          <label>Lock-hold samples
+            <input id="ptp-hold" type="number" min="1" max="100" value="10">
+          </label>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-mode="phy" hidden>
+        <div class="row">
+          <label>Poll period (s)
+            <input id="phy-period" type="number" min="0.1" max="10" step="0.1" value="1">
+          </label>
+          <label>Duration (s, 0=forever)
+            <input id="phy-duration" type="number" min="0" max="86400" value="0">
+          </label>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-mode="fcsm" hidden>
+        <div class="row">
+          <label>Poll period (s)
+            <input id="fcsm-period" type="number" min="0.01" max="2" step="0.01" value="0.1">
+          </label>
+          <label>Duration (s, 0=forever)
+            <input id="fcsm-duration" type="number" min="0" max="86400" value="0">
+          </label>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-mode="auto" hidden>
+        <div class="row">
+          <label>Duration (s)
+            <input id="auto-duration" type="number" min="30" max="86400" value="300">
+          </label>
+          <label>RNG seed
+            <input id="auto-seed" type="number" min="0" max="9999999" value="0">
+          </label>
+        </div>
+      </div>
+
+      <div class="row buttons">
+        <button type="submit" id="run-btn">Run</button>
+        <button type="button" id="abort-btn" disabled>Abort</button>
+        <button type="button" id="refresh-lease-btn">Refresh lease</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="banner" class="banner state-idle">Idle. Pick a mode and click Run.</section>
+
+  <section class="grid">
+    <div class="card stats">
+      <h2>Live stats</h2>
+      <table id="stats-table">
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card chart">
+      <h2 id="chart-title">Chart</h2>
+      <div id="plot-main" class="plot"></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>FCSM state (master)</h2>
+      <pre id="fcsm-master">--</pre>
+    </div>
+    <div class="card">
+      <h2>FCSM state (slave)</h2>
+      <pre id="fcsm-slave">--</pre>
+    </div>
+  </section>
+
+  <section class="log">
+    <details>
+      <summary>Event log</summary>
+      <pre id="event-log"></pre>
+    </details>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

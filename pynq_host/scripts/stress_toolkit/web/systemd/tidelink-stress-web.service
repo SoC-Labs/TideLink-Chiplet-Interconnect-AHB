@@ -1,0 +1,17 @@
+[Unit]
+Description=TideLink stress-test browser (comprehensive functional stress: AHB / doorbell / PTP / PHY health / FCSM / auto)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/SoCLabs/tidelink
+ExecStart=/usr/bin/env python3 -m uvicorn pynq_host.scripts.stress_toolkit.web.app:app --host 127.0.0.1 --port 8089
+Restart=on-failure
+RestartSec=5
+# Uncomment if /run/fpgahub/fpgahub.sock is not accessible to the
+# service user and a bearer token is preferred:
+# Environment=FPGAHUB_TOKEN=__SET_ME__
+# Environment=FPGAHUB_ADDR=127.0.0.1:7245
+
+[Install]
+WantedBy=default.target

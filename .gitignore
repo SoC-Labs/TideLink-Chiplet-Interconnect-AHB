@@ -130,3 +130,9 @@ cdc/tidelink_top*
 # accidental `git add .` would pick them up).
 /vivado.log
 /vivado_*.log
+
+# Release-bundle binaries — kept out of git, fetched/rebuilt per
+# v1-release/bitstreams/BITSTREAMS.md and v1-release/asic/BINARIES.md
+v1-release/bitstreams/*.bin
+v1-release/bitstreams/*.hwh
+v1-release/bitstreams/*.bin.manifest.json

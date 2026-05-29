@@ -27,11 +27,14 @@ for what's deferred to v2.
 
 This release exists in two byte-identical forms:
 
-1. **In-repo, on the `release/v1.0-rc2` branch**: docs + small artifacts + bitstreams.
-   The large ASIC binaries (~116 MB, with a 66.6 MB DEF) are referenced by path
-   in `asic/BINARIES.md` to avoid blowing past per-file size limits.
-2. **On-disk full bundle**: same tree plus the large ASIC binaries. Use this form
-   if you want a single `sha256sum -c CHECKSUMS.sha256` self-check covering everything.
+1. **In-repo, on the `release/v1.0-rc2` branch**: docs + small artifacts. The
+   ~8 MB FPGA bitstream pair is referenced by path in `bitstreams/BITSTREAMS.md`
+   (with rebuild + fetch instructions); the large ASIC binaries (~116 MB, with
+   a 66.6 MB DEF) are referenced by path in `asic/BINARIES.md`. Both kinds of
+   binaries are kept out of git so the source repo stays clone-friendly.
+2. **On-disk full bundle**: same tree plus the FPGA bitstreams and the large
+   ASIC binaries. Use this form if you want a single `sha256sum -c CHECKSUMS.sha256`
+   self-check covering everything.
 
 `CHECKSUMS.sha256` in this directory covers both forms — the large-binary lines
 reference the on-disk bundle paths explicitly.
@@ -47,12 +50,8 @@ v1-release/
 ├── CHECKSUMS.sha256       ← SHA256 of every binary/netlist in this tree
 ├── reliability.log        ← N-deploy HW reliability distribution (16/16 build)
 ├── bitstreams/            ← 72c280b FPGA artifacts (the v1 FPGA deliverable, 16/16)
-│   ├── tidelink.bin                  (4 045 516 bytes, md5 e2bd4d9f / sha256 dd54203b)
-│   ├── tidelink.hwh                  (  387 968 bytes, BD memory map)
-│   ├── tidelink-flip.bin             (4 045 516 bytes, md5 0f752a05 / sha256 b50553bf)
-│   ├── tidelink-flip.hwh             (  387 968 bytes)
-│   ├── tidelink.bin.manifest.json    (deploy-guard sidecar, expected_lock_min=16)
-│   └── tidelink-flip.bin.manifest.json
+│   └── BITSTREAMS.md                 ← fetch / rebuild instructions; binaries are NOT in git
+│       (tidelink{,-flip}.bin, .hwh, .bin.manifest.json — SHA256s in ../CHECKSUMS.sha256)
 ├── asic/                  ← ASIC chip-top handoff (May-14 fusion-compiler signoff)
 │   ├── tidelink_top.v / .pg.v          ← gate-level netlists (logic-only and PG)
 │   ├── tidelink_top.sdc                ← boundary timing constraints

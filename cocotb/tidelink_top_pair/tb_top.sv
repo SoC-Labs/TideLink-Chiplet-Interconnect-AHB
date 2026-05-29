@@ -52,6 +52,39 @@ module tb_top #(
     // skew.
     parameter int SKID_BITS = `ifdef TB_TOP_SKID_BITS `TB_TOP_SKID_BITS `else 0 `endif,
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // BYPASS_AUTONEG (Phase 0c — autonomy plan)
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1 (default, legacy) ─ the autoneg FSM stays in ST_BYPASS at POR.
+    //   Mechanism: `nego_cfg_reg` resets to 7'd0 in the integration wrapper
+    //   (axi_chiplet_controller.sv:432) → `nego_en=0` → ST_IDLE goes straight
+    //   to ST_BYPASS (tidelink_autoneg.sv:590). All the existing tests
+    //   (test_01..test_09) use this mode and drive role-lock by writing
+    //   ROLE_CFG via APB through the W1S path (the `mask_hs_bypass_i=1` strap
+    //   below opens the gate).
+    //
+    // 0 (autonomy) ─ at time 0 the tb forces `nego_cfg_reg=7'h41` and
+    //   `nego_train_cfg_r=16'h0001` on both dies so the FSM runs without any
+    //   APB stimulus. nego_cfg_reg[0]=1 enables nego, [6]=1 enables the
+    //   mask-handshake auto path, and nego_train_cfg_r[0]=1 enables the
+    //   training sub-flow. The forces release after a few cycles so the
+    //   regs behave normally for the rest of sim — the autoneg FSM samples
+    //   them while we're forcing and is committed to walking the
+    //   ST_NEGO_INIT → … → ST_TRAIN_DONE chain. Used by
+    //   `test_10_autonomous_train_post_por.py` and any future Phase 7
+    //   autonomy tests. Select via Makefile:
+    //     make MODULE=test_10_autonomous_train_post_por \
+    //          COMPILE_ARGS+=+define+TB_TOP_BYPASS_AUTONEG=0 ...
+    //
+    // NOTE: the tb's `m_mask_hs_bypass`/`s_mask_hs_bypass` straps remain at 1
+    // in BOTH modes — they gate the post-mask-handshake ROLE_CFG W1S latch
+    // path on the APB side (so legacy tests can write ROLE_CFG), and they do
+    // NOT short-circuit the autoneg FSM itself. In BYPASS_AUTONEG=0 mode the
+    // FSM still walks the full mask-handshake states; the strap just means
+    // the resulting role_lock can land via either the FSM's
+    // `nego_set_role_lock_w` path or an APB W1S, whichever fires first.
+    parameter int BYPASS_AUTONEG = `ifdef TB_TOP_BYPASS_AUTONEG `TB_TOP_BYPASS_AUTONEG `else 1 `endif,
+
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
     parameter SYS_ADDR_W    = 32,
@@ -630,6 +663,84 @@ module tb_top #(
         .perf_irq             (s_perf_irq),
         .wlink_irq            (s_wlink_irq)
     );
+
+    // -------------------------------------------------------------------------
+    // BYPASS_AUTONEG=0 — Phase 0c autonomous-training engagement
+    // -------------------------------------------------------------------------
+    // Force `nego_cfg_reg` and `nego_train_cfg_r` non-zero on both dies at
+    // time 0 so the autoneg FSM runs the full ST_NEGO_INIT → ST_TRAIN_DONE
+    // chain without any APB stimulus. Mirrors the production behaviour the
+    // RTL agent will land via `NEGO_TRAIN_CFG_RESET` parameter override and
+    // a future `NEGO_CFG_RESET` strap. Until that lands, the tb-side force
+    // here is the simplest way to exercise the FSM in sim.
+    //
+    //   nego_cfg_reg bits ─ from axi_chiplet_controller.sv:1153-1207
+    //     [0] nego_en           ← 1 (run autoneg)
+    //     [1] nego_start        ← 0 (level-only; ST_NEGO_WAIT advances on
+    //                              backoff timer regardless)
+    //     [3:2] nego_pri_sel    ← 2'b00 (use `nego_priority_reg` ─ POR 0,
+    //                              but the testbench `nego_priority_i` strap
+    //                              feeds the FSM via the [1] mux when
+    //                              nego_pri_sel=1; we leave it at 0 so the
+    //                              backoff_delay term comes out trivial and
+    //                              the FSM doesn't sit in ST_NEGO_WAIT for
+    //                              eons)
+    //     [4] nego_fallback     ← 0
+    //     [5] nego_force_lock   ← 1 (latch role_locked on nego completion)
+    //     [6] mask_hs_auto_en   ← 1 (run the mask-handshake states; required
+    //                              before NEGO_DONE_PRE branches into
+    //                              ST_TRAIN_ENTER)
+    //
+    //   nego_train_cfg_r ─ from axi_chiplet_controller.sv:1213-1217
+    //     [0] train_auto_en     ← 1 (engage ST_TRAIN_ENTER on the master after
+    //                              the mask handshake matches)
+    //     [7:4] train_poll_timeout ← 0xF (15 polls before fail — full default)
+    //     [15:8] train_fsm_wait_hi ← 0x00 (use the 4095-cycle default dwell)
+    //
+    //   nego_priority_reg also forced — without it the priority-mux gets
+    //   selected_priority=0 and the backoff_delay computation in
+    //   tidelink_autoneg.sv:377 still yields the NEGO_BASE_DELAY floor, but
+    //   we want a tiny non-zero priority on the master and a slightly
+    //   higher one on the slave so the natural ST_NEGO_WAIT timer always
+    //   picks ONE side as the I²C claimer (instead of both sides racing).
+    //
+    // The forces last for the entire sim. Releasing them is unnecessary —
+    // the FSM only samples cfg bits in the gated arms (e.g. ST_IDLE checks
+    // nego_en) and the chiplet controller's APB-write logic can still
+    // override at any time (the simulator merges force + driver, with
+    // force taking priority). For Phase 0c we just need the regs to stay
+    // hot for the full bring-up window.
+    `define M_CTRL u_master.u_chiplet_controller
+    `define S_CTRL u_slave.u_chiplet_controller
+    initial begin
+        if (BYPASS_AUTONEG == 0) begin
+            $display("[%0t] tb_top: BYPASS_AUTONEG=0 — forcing autoneg+train at POR", $time);
+            // Force at time 0 — before poresetn rises. The chiplet controller's
+            // POR-reset clause (axi_chiplet_controller.sv:432) will try to set
+            // nego_cfg_reg<=7'd0 on the (!poresetn) branch; force overrides
+            // that assignment, so when poresetn rises the regs are already at
+            // our target value. The autoneg FSM samples nego_en in ST_IDLE
+            // and immediately advances to ST_NEGO_INIT.
+            force `M_CTRL.nego_cfg_reg      = 7'h61;  // bits [6]=1, [5]=1, [0]=1
+            force `M_CTRL.nego_train_cfg_r  = 16'h00F1;
+            force `M_CTRL.nego_priority_reg = 16'h0001;
+            force `S_CTRL.nego_cfg_reg      = 7'h61;
+            force `S_CTRL.nego_train_cfg_r  = 16'h00F1;
+            force `S_CTRL.nego_priority_reg = 16'h0002;
+            // Hold the force long enough that hresetn has been high for many
+            // cycles and the FSM has fully sampled nego_en. After that, let
+            // SW (or the FSM's own NEGO_TRAIN_CFG W1P retrain path) drive
+            // the regs normally. 5000 ns @ 50 MHz hclk = 250 cycles.
+            #5000;
+            release `M_CTRL.nego_cfg_reg;
+            release `M_CTRL.nego_train_cfg_r;
+            release `M_CTRL.nego_priority_reg;
+            release `S_CTRL.nego_cfg_reg;
+            release `S_CTRL.nego_train_cfg_r;
+            release `S_CTRL.nego_priority_reg;
+            $display("[%0t] tb_top: BYPASS_AUTONEG=0 — autoneg forces released", $time);
+        end
+    end
 
     // ----- Waveform dump ------------------------------------------------------
     // Gated by TB_TOP_DUMP_WAVES so probe-only tests can opt out (the VCD

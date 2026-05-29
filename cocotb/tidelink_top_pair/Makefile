@@ -23,6 +23,16 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# BYPASS_AUTONEG (Phase 0c autonomy plan)
+#   1 = legacy behaviour: autoneg parks in ST_BYPASS at POR, role-lock is
+#       SW-driven via APB ROLE_CFG W1S. Default for test_01..test_09.
+#   0 = autonomy: tb forces nego_cfg_reg + nego_train_cfg_r at time 0 so the
+#       FSM walks ST_NEGO_INIT → ST_TRAIN_DONE without any SW writes. Used
+#       by test_10_autonomous_train_post_por and any future Phase 7 tests.
+# Default = 1 (preserve existing tests).
+BYPASS_AUTONEG ?= 1
+COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
+
 # Wave dump (gated). Probe-only tests can opt out via TB_TOP_NO_DUMP=1 — the
 # VCD grew >4 GB on the 4-test credit-ledger probe run and OOM'd the host.
 TB_TOP_NO_DUMP ?= 0

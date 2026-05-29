@@ -87,7 +87,7 @@ set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_p
 # pin F20, not lane index). Moved to spare W9/V7 = J13 pins 13/37 — carried
 # by the 1:1 ribbon, NOT in the 12 cut conductors, driven by no other XDC.
 # Mirror preserved with pynq-z2-pair-flip-all.
-set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was B19 (bad)
+set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
 
 #-- RX side (inputs to TideLink) ---------------------------------------------
 
@@ -106,7 +106,7 @@ set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
 set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
-set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was F20 (bad) — LANE-7 REMAP
+set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 
 #-- PMOD-B cross-board trigger -----------------------------------------------
 # PMOD-B header (JB) on PYNQ-Z2 v1.0 — pin 1 = Y16 (bank 13 LVCMOS33).
@@ -114,7 +114,9 @@ set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}] 
 # PULLDOWN keeps the line at '0' when no board is driving (idle state).
 # Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation — well
 # below the PHC quantisation (20 ns at 50 MHz).
-set_property -dict { PACKAGE_PIN Y16 IOSTANDARD LVCMOS33 PULLDOWN TRUE } [get_ports pmod_b_trig]
+set_property PACKAGE_PIN Y16 [get_ports pmod_b_trig]
+set_property IOSTANDARD LVCMOS33 [get_ports pmod_b_trig]
+set_property PULLTYPE PULLDOWN [get_ports pmod_b_trig]
 
 #-- Board LEDs ----------------------------------------------------------------
 # LD0 (R14) = link_active      — lit when the D2D link is established
@@ -129,6 +131,9 @@ set_property -dict {PACKAGE_PIN M14 IOSTANDARD LVCMOS33} [get_ports led3]
 #-- Bitstream configuration ---------------------------------------------------
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
+
+
+
 
 
 

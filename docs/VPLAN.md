@@ -67,7 +67,7 @@ Health legend:
 | `tidelink_ptp_servo` | `tidelink_ptp_servo` | (integ via chain/stress) | — | GREEN |
 | `tidelink_phc_cdc` | `tidelink_phc_cdc` | — | — | YELLOW |
 | `tidelink_perf` | `tidelink_perf`, `tidelink_perf_congestion` | — | — | YELLOW |
-| `tidelink_phy_align_calibrator` | `debug/tidelink_phy_align_calibrator`, `debug/phy_align`, `debug/calibrator_force_bisect` | `tidelink_top_system` (`test_align_*`) | — | YELLOW (no CI-regressed unit env; covered in integ + debug) |
+| `tidelink_phy_align_calibrator` | `tidelink_phy_align_calibrator` (CI unit env — T3/T3.2 + S_PROBE skip, 7 tests), `debug/tidelink_phy_align_calibrator` (scenario-pinned best-of-sweep + eye-visibility), `debug/phy_align`, `debug/calibrator_force_bisect` | `tidelink_top_system` (`test_align_*`) | — | GREEN |
 | `tidelink_idelay_rx` | `tidelink_idelay_rx` | — | — | YELLOW |
 | `tidelink_rxclk_buf` | `tidelink_rxclk_buf` | — | — | YELLOW |
 | `tidelink_clkfreq_check` | `tidelink_clkfreq_check` | — | — | YELLOW |
@@ -81,7 +81,7 @@ Health legend:
 | `tidelink_apb_regs` | `tidelink_apb_regs`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, `tidelink`, `tidelink_ahb`, `tidelink_py_pair`, integ via `tidelink_top*` | (integ) | `tidelink_returner` | GREEN |
 
-**Counts:** 12 GREEN, 11 YELLOW, 1 RED, **out of 24 first-party RTL
+**Counts:** 13 GREEN, 10 YELLOW, 1 RED, **out of 24 first-party RTL
 modules** covered above (19 chiplet-level + 5 FIFO-family standalone
 modules; `tidelink_fifo_mem` is the unit testbench wrapper for the FIFO
 ctrl).
@@ -291,13 +291,22 @@ which is now scope-banner'd as the FIFO-area test index.
   calibration FSM. Replaces SW-driven calibration.
 - **Spec ref:** TIDELINK_SPECIFICATION.md §9.6, §9.9, §9.10.
 - **Test envs:**
-  - **In CI regression:** none directly. Covered via the §3.1 integ envs
-    and via `uvm/tidelink_top_system/test_align_*` (uniform skew,
-    asymmetric skew, dead lane, recalibration-after-link-drop).
+  - **In CI regression:** `cocotb/tidelink_phy_align_calibrator/` — CI unit
+    env covering the T3 continuous re-sweep + T3.2 peer-aware S_HOLD FSM
+    transitions (`test_calibrator_t3`, 4 tests; commits 1e5f4e0, 50f7869)
+    and the S_PROBE → S_FINISH skip path (`test_calibrator_s_probe_skip`,
+    3 tests; commit f900e07). 7 `@cocotb.test` functions total against
+    `tb_top.sv` with DWELL_CYCLES/HOLD_CYCLES parameter-shrunk for sim
+    speed. Broader integ coverage via §3.1 envs +
+    `uvm/tidelink_top_system/test_align_*` (uniform skew, asymmetric
+    skew, dead lane, recalibration-after-link-drop).
   - **Debug-only (not in CI):**
-    - `cocotb/debug/tidelink_phy_align_calibrator/` — calibrator FSM unit
-      harness (default `test_calibrator_t3` currently asserts on S_SWEEP
-      cycles against the post-merge RTL — pending re-pin).
+    - `cocotb/debug/tidelink_phy_align_calibrator/` — scenario-pinned
+      best-of-sweep policy comparator (`test_best_of_sweep_compare` —
+      `TB_VARIANT=compare`), eye-visibility wrappers
+      (`test_eye_*` — `TB_VARIANT=eye`/`eye_paired`), and the
+      `test_best_of_sweep_placeholder` future-Agent-A regression slot
+      (currently asserts against the post-merge RTL — pending re-pin).
     - `cocotb/debug/phy_align/` — `test_autocal_integrated`,
       `test_best_of_sweep`, `test_calibrator_skew_window`,
       `test_capture_timing_margin`, `test_credit_path_observability`.
@@ -305,9 +314,10 @@ which is now scope-banner'd as the FIFO-area test index.
       that isolated the AUTOCAL=1 M→S corruption (f900e07).
     - `cocotb/debug/tidelink_chiplet_pair_autocal/` — two-chiplet AUTOCAL=1
       sim used in the same investigation.
-- **Known gaps:** no in-CI unit env; the debug envs are scenario-pinned.
-  Calibrator regression for new structural fixes goes via paired
-  `tidelink_top_pair*` runs.
+- **Known gaps:** debug envs remain scenario-pinned; the CI unit env is
+  intentionally narrow (FSM-only, no full-sweep policy or eye-visibility
+  coverage). Structural-fix regression for those paths still goes via
+  paired `tidelink_top_pair*` runs.
 
 ### 3.15 `tidelink_idelay_rx` / `tidelink_rxclk_buf` / `tidelink_clkfreq_check`
 
@@ -361,9 +371,9 @@ tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top
 tidelink_system tidelink_perf tidelink_perf_congestion
 tidelink_addr_translator tidelink_autoneg tidelink_mul_iter
 tidelink_phc_cdc tidelink_ptp tidelink_ptp_servo tidelink_idelay_rx
-tidelink_rxclk_buf tidelink_clkfreq_check tidelink_eye_regs wav_d2d_gpio_tx
-wavd2d_gpiorx_clkbuf wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off
-wavd2d_gpiorx_t3a_timeout
+tidelink_rxclk_buf tidelink_clkfreq_check tidelink_eye_regs
+tidelink_phy_align_calibrator wav_d2d_gpio_tx wavd2d_gpiorx_clkbuf
+wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off wavd2d_gpiorx_t3a_timeout
 ```
 
 Total in-tree cocotb test functions across all envs (in + out of CI):

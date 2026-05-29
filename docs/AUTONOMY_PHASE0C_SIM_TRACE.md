@@ -82,9 +82,77 @@ wire i2c_sda = (m_i2c_sda_t ? 1'b1 : m_i2c_sda_o) & (s_i2c_sda_t ? 1'b1 : s_i2c_
 
 Both dies' `i2c_scl_i`/`i2c_sda_i` ports already see this wire. So the FSM's I²C master writes on the master should land in the slave die's I²C-slave AXIL bridge with no extra plumbing.
 
-## Sim trace observations
+## Sim trace observations — 2026-05-29 18:34 BST (90-min run)
 
-Pending — sim is in flight. The cocotb env is the same one used for the Phase 0b baseline (test_01 PASS at sim build `b8skyvazo`), so any failure here is in the autoneg/training arms, not the env. Append a section with the actual state trace once the run completes.
+Sim was launched against `feat/td-autonomy` HEAD `a379457` (post-Phase 3 deploy_pair.sh + Phase 2-bis NEGO_CFG_RESET). Hit the 90-min `timeout` cap (`EXIT=124`) at sim time 100 ms with **master stuck at ST_NEGO_MASK_RD_ADDR**. Trace data is `/tmp/td_autonomy_sim_183400.log`.
+
+### Master state machine timeline
+
+| Sim t (µs) | State transition | Verdicts |
+|---|---|---|
+| 0.020 | x → 0 (ST_IDLE) | — |
+| 0.420 | 0 → 1 (ST_NEGO_INIT) | — |
+| 0.440 | 1 → 2 (ST_NEGO_WAIT) | — |
+| 60.460 | 2 → 3 (ST_NEGO_CLAIM) | — |
+| 61.020 | 3 → 4 (ST_NEGO_POLL) | — |
+| 65.120 | **4 → 9 (ST_NEGO_MASK_RD_ADDR)** | **won=1, done=1** |
+| 100,061 | (no further transition) | stuck |
+
+Master autoneg: ST_IDLE → ST_NEGO_INIT → ST_NEGO_WAIT → ST_NEGO_CLAIM → ST_NEGO_POLL (won) → **ST_NEGO_MASK_RD_ADDR — stuck**.
+
+### Slave state machine timeline
+
+| Sim t (µs) | State transition | Verdicts |
+|---|---|---|
+| 0.020 | x → 0 (ST_IDLE) | — |
+| 0.420 | 0 → 1 (ST_NEGO_INIT) | — |
+| 0.440 | 1 → 2 (ST_NEGO_WAIT) | — |
+| 61.060 | **2 → 5 (ST_NEGO_DONE)** | **lost=1, done=1** |
+
+Slave: ST_IDLE → ST_NEGO_INIT → ST_NEGO_WAIT → **ST_NEGO_DONE (lost)**.
+
+### What works (autonomy proven on these axes)
+
+| Axis | Result |
+|---|---|
+| POR-boot of `nego_cfg=0x61` + `train_cfg=0x00f1` | ✅ both dies (NEGO_CFG_RESET + NEGO_TRAIN_CFG_RESET parameters verified) |
+| I²C bus arbitration → clean master/slave split | ✅ master=won, slave=lost |
+| `role_lock` latches autonomously on slave (61.5 µs) | ✅ `s_locked=1` with no SW write |
+| `role_lock` latches autonomously on master (≤100 ms) | ✅ `m_locked=1` (caught in snapshot at 100.06 ms) |
+| Master FCSM advances post role_lock | ✅ `fcsm=4` at snapshot |
+| Slave FCSM advances post role_lock | ✅ `fcsm=5` at snapshot |
+
+### What's broken — new finding
+
+**Bug N1 (new):** Master autoneg FSM stuck at `ST_NEGO_MASK_RD_ADDR` (state 9) for ≥35 ms of sim time after entering it at t=65 ms. Slave is at terminal `ST_NEGO_DONE`. I²C bus snapshot at t=100 ms: `scl=1, sda=0` — SDA pulled low (someone is clock-stretching or holding the bus).
+
+**Likely cause hypotheses:**
+
+1. **Slave-side I²C-slave block isn't servicing the master's mask-read request.** The slave's autoneg FSM has terminated to ST_NEGO_DONE; the I²C slave AXIL bridge is meant to be the responder, independent of the autoneg FSM state. If the I²C slave block has a precondition tied to the autoneg FSM being in a specific state (e.g. ST_NEGO_MASK_RES_TX), it won't respond from ST_NEGO_DONE. Investigate `i2c_slave_axil_master.v` arbitration.
+
+2. **Testbench I²C cross-wire model issue.** `tb_top.sv:205-209` uses an open-drain wire-AND. If both sides' tristate enables don't properly release after addressed transactions, SDA stays low. Check whether the slave's I²C tristate output (`s_i2c_sda_t`) deasserts after the slave ACKs.
+
+3. **mask-handshake protocol mismatch.** The autoneg report's protocol says the master writes its result byte to peer (state 8 = MASK_RES_TX) and reads peer's mask (state 9 = MASK_RD_ADDR → state 10 = MASK_RD_DATA). If slave's protocol expected a different sequence (e.g. master should have first written its own mask register before reading peer's), the sequence wedges.
+
+This is a **simulation-environment finding, not a guaranteed silicon bug.** Build #5 silicon evidence in [docs/I2C_AUTONOMOUS_BRINGUP_REPORT_2026_05_29.md](I2C_AUTONOMOUS_BRINGUP_REPORT_2026_05_29.md) reports master `NEGO_STATUS=0x055` (DONE/won) and slave `0x195` (DONE/lost) — so the FSMs **do reach DONE on silicon**, which is consistent with the master successfully completing the mask handshake on HW. The simulation snag is therefore likely a testbench/model mismatch, not a missing RTL transition.
+
+### Implications for the autonomy plan
+
+- The Phase 1+2 RTL changes work as designed for the autoneg→role_lock path. Both dies' `role_lock` latched without SW.
+- The Phase 0c sim env is **not yet able to drive the FSM to ST_TRAIN_DONE** because of Bug N1. This is a sim-side issue (probably testbench-model), not an RTL gap.
+- Recommend a follow-up debug pass on the I²C model in `tb_top.sv` to unstick Bug N1 before the cocotb autonomy regression can be a CI gate.
+- The Phase 3 deploy_pair.sh edits remain HW-gated. Build #3 silicon already proved autoneg + mask handshake works on hardware end-to-end (per the I²C report).
+- Bug N1 does **not** block Phase 3 HW deploy — it's a sim infrastructure debug, parallel to HW work.
+
+### Compile health
+
+VCS Verdi `cfs_ident_exec` segfaulted during the KDB index step (same artefact as test_01 Phase 0b run). Non-fatal — sim ran to elaboration cleanly. Tracking only.
+
+### Files
+
+- Trace log: `/tmp/td_autonomy_sim_183400.log` (60 KB)
+- Wave dump: disabled (`TB_TOP_NO_DUMP=1`)
+- Sim build dir: `cocotb/tidelink_top_pair/sim_build/`
 
 ## Phase 7a audit
 

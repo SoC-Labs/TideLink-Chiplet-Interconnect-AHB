@@ -1625,7 +1625,90 @@ module axi_chiplet_controller #(
     wire autocal_enable_w        = AUTOCAL_ENABLE | autocal_force_enable_q;
     wire calibrator_role_locked  = role_locked & autocal_enable_w;
 
-    tidelink_phy_align_calibrator u_calibrator (
+    // =====================================================================
+    // Bug N3 fix (2026-05-30): re-arm calibrator when autoneg FSM enables
+    // training-mode on this side.
+    //
+    // Symptom (test_10_autonomous_train_post_por, post Bug N1+N2 fixes):
+    //   t≈ 61 µs  slave role_locked rises → calibrator's only trigger
+    //             (role_locked_rise) fires → calibrator sweeps against
+    //             master's NON-training traffic → finds no eye → parks
+    //             in S_DONE with calibration_done=0.
+    //   t≈ 2.3 ms master's I²C-write of slave's SWI_TRAINING_MODE=1
+    //             lands (Bug N2 fix path) → slave's swi_training_mode_w
+    //             rises → lane_checker now decodes the live training
+    //             pattern → lane_locked_w=0xFF.
+    //             BUT the calibrator is parked in S_DONE and has no
+    //             re-arm trigger — `local_swreset_pulse_w` is only
+    //             generated at ST_TRAIN_EXIT (post-success), not at
+    //             ST_TRAIN_ENTER/RUN.
+    //   t≈14461 ms master times out POLL_PEER on peer_cal_done=0 →
+    //             ST_TRAIN_FAIL.
+    //
+    // Fix: detect `swi_training_mode_r` 0→1 rising edge and stretch it
+    // into a T_SWRESET_HOLD-wide level pulse (127 apb_clk cycles, matches
+    // the FSM's ST_TRAIN_EXIT pulse width). OR this into the calibrator's
+    // swreset port. The calibrator's swreset_fall edge detector fires
+    // when the pulse falls (with role_locked still high), re-triggering
+    // a fresh sweep — this time against the live training pattern.
+    //
+    // CRITICAL — first-revision lesson learned: a prior version of this
+    // fix triggered on `local_training_mode_set_w` (the autoneg FSM's
+    // ST_TRAIN_ENTER ACK pulse). That signal fires on the MASTER's
+    // chiplet only, because slave's autoneg FSM goes 4→5 (ST_NEGO_DONE)
+    // directly upon losing — it never enters ST_TRAIN_ENTER. The SLAVE's
+    // swi_training_mode_r is set by the I²C-driven APB write (Bug N2
+    // fix path), not by local_training_mode_set_w. Detecting the rising
+    // edge of swi_training_mode_r catches BOTH sides — master's
+    // FSM-driven pulse AND slave's APB-write-driven pulse — without
+    // coupling to the autoneg topology.
+    //
+    // Same clock domain (apb_clk) as the existing local_swreset_pulse_w
+    // and swi_recal_r OR-merged into the same port, so the calibrator's
+    // internal swreset_q edge-detect (rx_link_clk domain) sees the same
+    // SW-paced ms-scale level it has always tolerated.
+    // =====================================================================
+    reg swi_training_mode_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) swi_training_mode_q <= 1'b0;
+        else           swi_training_mode_q <= swi_training_mode_r;
+    end
+    wire swi_training_mode_rise = swi_training_mode_r & ~swi_training_mode_q;
+
+    reg [6:0] training_mode_swreset_hold_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            training_mode_swreset_hold_r <= 7'd0;
+        else if (swi_training_mode_rise)
+            training_mode_swreset_hold_r <= 7'd127;  // matches T_SWRESET_HOLD
+        else if (training_mode_swreset_hold_r != 7'd0)
+            training_mode_swreset_hold_r <= training_mode_swreset_hold_r - 7'd1;
+    end
+    wire training_mode_set_swreset_w = (training_mode_swreset_hold_r != 7'd0);
+
+    // Path B — Bug N4 HW-real fix (2026-05-30): reduce HOLD_CYCLES default.
+    //
+    // The calibrator's HOLD_CYCLES default is 8 * 128 * DWELL_CYCLES =
+    // 65536 link_rx_clk cycles. At HW (link_rx_clk = pad_clk/16 = ~1.5 MHz)
+    // that's 43 ms of S_HOLD before S_VALIDATE/S_DONE. The autoneg FSM's
+    // POLL_PEER timeout is 15 polls × ~600 µs ≈ 9 ms — way too short for
+    // the calibrator's slave side to reach S_DONE within the FSM's poll
+    // window, so master times out → ST_TRAIN_FAIL even though the slave's
+    // (slip, phase) has been latched correctly and lanes ARE locked.
+    //
+    // 8 sweep-periods of HOLD was designed for FREE-RUNNING bring-up where
+    // the peer's calibrator needed time to converge independently. Under
+    // autoneg coordination, the master holds peer's training_mode HIGH via
+    // its I²C-write (Bug N2 fix path); the peer's TX is reliably emitting
+    // training pattern throughout ST_TRAIN_RUN + ST_TRAIN_POLL_PEER, so the
+    // long mutual-overlap dwell is unnecessary.
+    //
+    // Reduce to 1024 link_rx_clk cycles (≈ 683 µs at HW, ≈ 340 µs in sim).
+    // Keeps a small overlap margin but fits comfortably inside the autoneg
+    // poll budget.
+    tidelink_phy_align_calibrator #(
+        .HOLD_CYCLES(1024)
+    ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
         .rst                   (~poresetn),
         .role_locked           (calibrator_role_locked),
@@ -1647,7 +1730,14 @@ module axi_chiplet_controller #(
         // tidelink_top.sv (AND-mask on 0x208 bit[3]) does NOT see this signal
         // — exactly what we want for an autonomous bring-up. SWI_RECAL keeps
         // working in parallel for SW-driven manual recovery.
-        .swreset               (swi_recal_r | local_swreset_pulse_w),
+        //
+        // Bug N3 (2026-05-30): also OR in `training_mode_set_swreset_w` —
+        // a 127-cycle stretch of `local_training_mode_set_w` rising edge —
+        // so the calibrator re-arms at ST_TRAIN_ENTER ACK (when this side's
+        // training-mode comes up mid-run), not just at ST_TRAIN_EXIT. See
+        // the swreset-hold counter block above for the full root-cause
+        // analysis.
+        .swreset               (swi_recal_r | local_swreset_pulse_w | training_mode_set_swreset_w),
         .lane_locked           (lane_locked_w),
         // tidelink-gpio-phy scoring (spec §7.1): the calibrator now uses a
         // continuous min-distance metric per dwell for eye-centre selection,

@@ -759,6 +759,29 @@ module tb_top #(
             release `S_CTRL.nego_train_cfg_r;
             release `S_CTRL.nego_priority_reg;
             $display("[%0t] tb_top: BYPASS_AUTONEG=0 — autoneg forces released", $time);
+
+            // ─── Path A — Bug N4 sim-budget workaround (2026-05-30) ─────────
+            // HOLD_CYCLES default in tidelink_phy_align_calibrator.sv is
+            // 8 * 128 * DWELL_CYCLES = 65536 link_rx_clk cycles ≈ 21 ms in sim
+            // (43 ms at HW link_rx_clk = pad_clk/16). The autoneg FSM's
+            // POLL_PEER timeout is 15 × ~600 µs ≈ 9 ms — way too short for
+            // the calibrator to reach S_DONE. Even Path-B HOLD_CYCLES
+            // reduction can't get the sim wall-time down to a useful test
+            // cadence without also forcing the calibrator's tb-early-exit
+            // hierarchical override.
+            //
+            // `tb_early_exit_force_q` is the calibrator's documented sim
+            // hook (lines 169, 249, 509 in tidelink_phy_align_calibrator.sv)
+            // designed exactly for this: when set, a lane freezes on its
+            // first lock AND the S_FINISH→S_HOLD step is skipped (S_FINISH
+            // goes straight to S_DONE on sweep_success). Production silicon
+            // ties this hook UNDRIVEN (=0) and keeps the T3.2 hold.
+            //
+            // Forces are NEVER released — they persist for the whole sim so
+            // late-life events (re-trains, swreset cycles) also skip S_HOLD.
+            force u_master.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+            force u_slave.u_chiplet_controller.u_calibrator.tb_early_exit_force_q  = 1'b1;
+            $display("[%0t] tb_top: BYPASS_AUTONEG=0 — tb_early_exit_force_q armed on both calibrators (S_HOLD bypass)", $time);
         end
     end
 

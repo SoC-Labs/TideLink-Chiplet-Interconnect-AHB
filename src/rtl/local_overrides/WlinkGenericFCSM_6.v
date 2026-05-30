@@ -834,6 +834,22 @@ module WlinkGenericFCSM_6 #(
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       state <= 3'h0;
+    // -------------------------------------------------------------------------
+    // SoC Labs F-1.5 — force state -> LINK_IDLE on watchdog fire.
+    // F-1 alone clears send_nack_req but the state register only transitions
+    // via _GEN_115 = auto_tx_out_advance ? 3'h4 : state. On HW build #5 the
+    // peer FCSM sits at LINK_IDLE waiting for the NACK to be drained, so
+    // auto_tx_out_advance never fires and state stays at 3'h7 forever.
+    // Sim-confirmed by docs/BUILD5_POSTWATCHDOG_SIM_REPRO_2026_05_30.md:
+    // state 7 x 80/80 cycles post-Force-release with F-1 only; doorbells
+    // 0/10. F-1.5 short-circuits the wait by directly forcing state -> 4
+    // when (a) the watchdog asserted and (b) the FCSM is at the SEND_NACK
+    // trap. socl_l7_wdog_force_clear only asserts when send_nack_req was
+    // set by a transient bringup glitch (not a real CRC) so this transition
+    // is safe: there is no real NACK packet that the peer is waiting for.
+    // -------------------------------------------------------------------------
+    end else if (socl_l7_wdog_force_clear && state == 3'h7) begin
+      state <= 3'h4;
     end else if (_fe_rx_ptr_in_T) begin
       state <= 3'h0;
     end else if (_ack_seen_before_T) begin

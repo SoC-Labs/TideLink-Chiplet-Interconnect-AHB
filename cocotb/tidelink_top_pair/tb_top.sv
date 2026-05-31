@@ -85,6 +85,22 @@ module tb_top #(
     // `nego_set_role_lock_w` path or an APB W1S, whichever fires first.
     parameter int BYPASS_AUTONEG = `ifdef TB_TOP_BYPASS_AUTONEG `TB_TOP_BYPASS_AUTONEG `else 1 `endif,
 
+    // RELY_ON_RTL_PRIO_DEFAULTS (Bug N7 regression — test_18)
+    //   0 = tb force-injects nego_priority_reg = master:0x0001, slave:0x0002
+    //       at POR (legacy behaviour for test_10/test_16). This MASKS the
+    //       Bug N7 priority deadlock because the priorities are made
+    //       asymmetric by the testbench, not by RTL.
+    //   1 = tb leaves nego_priority_reg alone. The RTL's POR default decides.
+    //       On pre-Bug-N7-fix RTL the POR default is 16'hFFFF on both dies,
+    //       so the FSMs deadlock in ST_NEGO_WAIT → time out to ST_ERROR.
+    //       On post-fix RTL the default derives from role_strap_i:
+    //         strap=0 (master) → 16'h0001
+    //         strap=1 (slave)  → 16'h0002
+    //       which is exactly what the legacy force was doing — confirming
+    //       the RTL fix preserves the existing autoneg behaviour.
+    //   Default = 0 (preserve existing tests).
+    parameter int RELY_ON_RTL_PRIO_DEFAULTS = `ifdef TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `else 0 `endif,
+
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
     parameter SYS_ADDR_W    = 32,
@@ -723,10 +739,19 @@ module tb_top #(
             // and immediately advances to ST_NEGO_INIT.
             force `M_CTRL.nego_cfg_reg      = 7'h61;  // bits [6]=1, [5]=1, [0]=1
             force `M_CTRL.nego_train_cfg_r  = 16'h00F1;
-            force `M_CTRL.nego_priority_reg = 16'h0001;
             force `S_CTRL.nego_cfg_reg      = 7'h61;
             force `S_CTRL.nego_train_cfg_r  = 16'h00F1;
-            force `S_CTRL.nego_priority_reg = 16'h0002;
+            // ─── nego_priority_reg force — Bug N7 regression gate ──────────
+            // When RELY_ON_RTL_PRIO_DEFAULTS=0 (legacy), force priorities
+            // asymmetric (master=1, slave=2) so the existing autoneg tests
+            // remain deterministic regardless of the RTL POR default.
+            // When =1 (test_18), leave the regs alone so the RTL POR default
+            // (16'hFFFF pre-fix; role_strap-derived post-fix) is what the FSM
+            // sees. This is the path that exercises Bug N7.
+            if (RELY_ON_RTL_PRIO_DEFAULTS == 0) begin
+                force `M_CTRL.nego_priority_reg = 16'h0001;
+                force `S_CTRL.nego_priority_reg = 16'h0002;
+            end
             // ─── Bug N1 (2026-05-29) — known RTL bug, see docs ─────────────
             // Bug N1: when nego completes with mask_hs_auto_en=1, the FSM
             // walks 4 (POLL) → 9 (MASK_RD_ADDR), and on the same edge
@@ -754,10 +779,12 @@ module tb_top #(
             #5000;
             release `M_CTRL.nego_cfg_reg;
             release `M_CTRL.nego_train_cfg_r;
-            release `M_CTRL.nego_priority_reg;
             release `S_CTRL.nego_cfg_reg;
             release `S_CTRL.nego_train_cfg_r;
-            release `S_CTRL.nego_priority_reg;
+            if (RELY_ON_RTL_PRIO_DEFAULTS == 0) begin
+                release `M_CTRL.nego_priority_reg;
+                release `S_CTRL.nego_priority_reg;
+            end
             $display("[%0t] tb_top: BYPASS_AUTONEG=0 — autoneg forces released", $time);
 
             // ─── Path A — Bug N4 sim-budget workaround (2026-05-30) ─────────

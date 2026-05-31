@@ -267,10 +267,16 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     set strap_gpio [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_strap]
+    # Bug N7 fix (2026-06-01): pair-flip-all is die_b (slave). DOUT default
+    # 1 means role_strap_i is HIGH at FPGA POR — before any SW write of the
+    # strap GPIO. The chiplet then POR-loads nego_priority_reg=16'h0002 (per
+    # axi_chiplet_controller.sv:585 strap-derived default), giving slave the
+    # HIGHER backoff so master claims the autoneg bus first. Without this
+    # the AXI GPIO defaults to 0 on both dies and autoneg deadlocks (Bug N7).
     set_property -dict [list \
         CONFIG.C_GPIO_WIDTH    {1} \
         CONFIG.C_ALL_OUTPUTS   {1} \
-        CONFIG.C_DOUT_DEFAULT  {0x00000000} \
+        CONFIG.C_DOUT_DEFAULT  {0x00000001} \
         CONFIG.C_IS_DUAL       {0} \
     ] $strap_gpio
 

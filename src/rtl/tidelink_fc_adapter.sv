@@ -178,6 +178,23 @@ module tidelink_fc_adapter #(
     logic [RAM_ADDR_W-1:0] tx_addr_r;
     logic                  tx_data_phase_r;  // Flag: data phase pending
 
+    // L10/L11: wedge-break watchdog. Counts consecutive cycles HREADYOUT is
+    // forced low by skid back-pressure. After WEDGE_LIMIT cycles, force
+    // HREADYOUT=1 for FORCE_READY_WIDTH cycles (L11 extension — 1-cy pulse
+    // wasn't enough to propagate cleanly through axi_ahblite_bridge → AXI
+    // BVALID → SmartConnect → PS outstanding-write counter; Build #7
+    // showed wedge on 2nd AHB write). 4-cy hold gives bridge time to latch
+    // BVALID. Bump tx_dropped_cnt_r per drop. Prevents PS AXI hang when
+    // slave RX is wedged (Bug A primitive — see
+    // docs/BUG_A_WEDGE_INVESTIGATION_2026_05_31.md +
+    // docs/BUILD7_HW_VALIDATION_2026_05_31.md).
+    localparam int unsigned WEDGE_LIMIT        = 16;
+    localparam int unsigned FORCE_READY_WIDTH  = 4;
+    logic [4:0]  wedge_cnt_r;
+    logic [2:0]  wedge_force_ready_cnt_r;
+    wire         wedge_force_ready_w = (wedge_force_ready_cnt_r != 3'd0);
+    logic [15:0] tx_dropped_cnt_r;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             tx_addr_r       <= '0;
@@ -186,9 +203,38 @@ module tidelink_fc_adapter #(
             if (tx_valid_addr_phase) begin
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
-            end else if (tx_data_phase_r && skid_can_accept && !sideband_grant) begin
-                // Data phase completed, skid buffer accepted the word
+            end else if (tx_data_phase_r && ((skid_can_accept && !sideband_grant) || wedge_force_ready_w)) begin
+                // Data phase completed (either skid accepted, or L10/L11 watchdog dropped)
                 tx_data_phase_r <= 1'b0;
+            end
+        end
+    end
+
+    // L10/L11 wedge watchdog + drop-and-count.
+    // L11 widens the force_ready pulse to FORCE_READY_WIDTH=4 cy so that
+    // axi_ahblite_bridge has time to latch BVALID cleanly even under
+    // back-to-back AHB writes from PS.
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            wedge_cnt_r             <= '0;
+            wedge_force_ready_cnt_r <= '0;
+            tx_dropped_cnt_r        <= '0;
+        end else begin
+            // Force-ready pulse countdown
+            if (wedge_force_ready_cnt_r != 3'd0)
+                wedge_force_ready_cnt_r <= wedge_force_ready_cnt_r - 3'd1;
+
+            if (tx_data_phase_r && !(skid_can_accept & ~sideband_grant) && !wedge_force_ready_w) begin
+                if (wedge_cnt_r == WEDGE_LIMIT[4:0]) begin
+                    wedge_force_ready_cnt_r <= FORCE_READY_WIDTH[2:0];
+                    wedge_cnt_r             <= '0;
+                    if (tx_dropped_cnt_r != 16'hFFFF)
+                        tx_dropped_cnt_r <= tx_dropped_cnt_r + 16'd1;
+                end else begin
+                    wedge_cnt_r <= wedge_cnt_r + 5'd1;
+                end
+            end else if (!tx_data_phase_r) begin
+                wedge_cnt_r <= '0;
             end
         end
     end
@@ -198,8 +244,13 @@ module tidelink_fc_adapter #(
     wire                 tx_fc_valid = tx_data_phase_r;
 
     // TX aperture HREADY: stall when in data phase and skid buffer full,
-    // or when sideband has priority on the arbiter (unless starved)
-    assign ahb_tx_hreadyout = tx_data_phase_r ? (skid_can_accept & ~sideband_grant) : 1'b1;
+    // or when sideband has priority on the arbiter (unless starved).
+    // L10 wedge-break: if back-pressure persists ≥ WEDGE_LIMIT cy, the
+    // watchdog forces HREADYOUT=1 (drops the word, bumps tx_dropped_cnt_r)
+    // to prevent PS AXI hang when slave RX is wedged.
+    assign ahb_tx_hreadyout = tx_data_phase_r
+                              ? (wedge_force_ready_w | (skid_can_accept & ~sideband_grant))
+                              : 1'b1;
     assign ahb_tx_hresp     = 1'b0;  // No error responses
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only
 

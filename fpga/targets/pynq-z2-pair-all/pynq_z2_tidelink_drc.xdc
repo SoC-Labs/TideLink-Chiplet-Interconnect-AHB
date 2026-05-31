@@ -26,6 +26,15 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 
 
 
+
+connect_debug_port u_dbg_int/probe8 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_interval_r[29]}]]
+connect_debug_port u_dbg_int/probe29 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[29]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[30]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[31]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[32]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[33]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[34]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[35]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[36]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[37]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[38]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[39]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[40]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[41]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[42]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[43]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[44]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[45]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[46]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_seconds_r[47]}]]
+connect_debug_port u_dbg_int/probe36 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/phc_time_reached]]
+connect_debug_port u_dbg_int/probe41 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/target_ns_r[29]}]]
+connect_debug_port u_dbg_int/probe48 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/tx_state_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/tx_state_r[1]}]]
+
+
+
 create_debug_core u_dbg_int ila
 set_property ALL_PROBE_SAME_MU true [get_debug_cores u_dbg_int]
 set_property ALL_PROBE_SAME_MU_CNT 1 [get_debug_cores u_dbg_int]
@@ -38,156 +47,156 @@ set_property C_TRIGOUT_EN false [get_debug_cores u_dbg_int]
 set_property port_width 1 [get_debug_ports u_dbg_int/clk]
 connect_debug_port u_dbg_int/clk [get_nets [list tidelink_design_i/clk_wiz_0_clk_out1]]
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe0]
-set_property port_width 16 [get_debug_ports u_dbg_int/probe0]
-connect_debug_port u_dbg_int/probe0 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[15]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe0]
+connect_debug_port u_dbg_int/probe0 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_llrx_reset_out]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe1]
-set_property port_width 3 [get_debug_ports u_dbg_int/probe1]
-connect_debug_port u_dbg_int/probe1 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[2]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe1]
+connect_debug_port u_dbg_int/probe1 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_accept]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe2]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe2]
-connect_debug_port u_dbg_int/probe2 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/swi_training_mode_rxsync_0]]
+set_property port_width 48 [get_debug_ports u_dbg_int/probe2]
+connect_debug_port u_dbg_int/probe2 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[29]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[30]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[31]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[32]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[33]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[34]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[35]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[36]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[37]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[38]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[39]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[40]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[41]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[42]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[43]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[44]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[45]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[46]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_data[47]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe3]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe3]
-connect_debug_port u_dbg_int/probe3 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_llrx_reset_out]]
+connect_debug_port u_dbg_int/probe3 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/first_short_pkt_seen]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe4]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe4]
-connect_debug_port u_dbg_int/probe4 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_accept]]
+connect_debug_port u_dbg_int/probe4 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/auto_tx_out_sop]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe5]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe5]
-connect_debug_port u_dbg_int/probe5 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/first_short_pkt_seen]]
+connect_debug_port u_dbg_int/probe5 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_is_long_pkt]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe6]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe6]
-connect_debug_port u_dbg_int/probe6 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrupted]]
+set_property port_width 8 [get_debug_ports u_dbg_int/probe6]
+connect_debug_port u_dbg_int/probe6 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[7]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe7]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe7]
-connect_debug_port u_dbg_int/probe7 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/swi_training_mode_rxsync_1]]
+connect_debug_port u_dbg_int/probe7 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/_T_54]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe8]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe8]
-connect_debug_port u_dbg_int/probe8 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/valid_byte_reg]]
+connect_debug_port u_dbg_int/probe8 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_short_pkt_prev]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe9]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe9]
-connect_debug_port u_dbg_int/probe9 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/valid]]
+connect_debug_port u_dbg_int/probe9 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_accept]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe10]
-set_property port_width 16 [get_debug_ports u_dbg_int/probe10]
-connect_debug_port u_dbg_int/probe10 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[15]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe10]
+connect_debug_port u_dbg_int/probe10 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter_en]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe11]
-set_property port_width 2 [get_debug_ports u_dbg_int/probe11]
-connect_debug_port u_dbg_int/probe11 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/state[1]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe11]
+connect_debug_port u_dbg_int/probe11 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe12]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe12]
-connect_debug_port u_dbg_int/probe12 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_long_pkt]]
+connect_debug_port u_dbg_int/probe12 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe13]
-set_property port_width 24 [get_debug_ports u_dbg_int/probe13]
-connect_debug_port u_dbg_int/probe13 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[23]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe13]
+connect_debug_port u_dbg_int/probe13 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_enable_r]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe14]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe14]
-connect_debug_port u_dbg_int/probe14 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_framer_stuck]]
+connect_debug_port u_dbg_int/probe14 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/fc_rx_fifo_ready]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe15]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe15]
-connect_debug_port u_dbg_int/probe15 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_winc]]
+connect_debug_port u_dbg_int/probe15 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/tx_router_idle]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe16]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe16]
-connect_debug_port u_dbg_int/probe16 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_rempty]]
+connect_debug_port u_dbg_int/probe16 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_pkt_is_cr_pkt]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe17]
-set_property port_width 24 [get_debug_ports u_dbg_int/probe17]
-connect_debug_port u_dbg_int/probe17 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[23]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe17]
+connect_debug_port u_dbg_int/probe17 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/dataIdMatch]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe18]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe18]
-connect_debug_port u_dbg_int/probe18 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_valid]]
+set_property port_width 14 [get_debug_ports u_dbg_int/probe18]
+connect_debug_port u_dbg_int/probe18 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/fc_rx_fifo_addr[13]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe19]
-set_property port_width 16 [get_debug_ports u_dbg_int/probe19]
-connect_debug_port u_dbg_int/probe19 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[15]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe19]
+connect_debug_port u_dbg_int/probe19 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/socl_l7_bringup_forgive]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe20]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe20]
-connect_debug_port u_dbg_int/probe20 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_valid_r]]
+set_property port_width 16 [get_debug_ports u_dbg_int/probe20]
+connect_debug_port u_dbg_int/probe20 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/word_count[15]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe21]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe21]
-connect_debug_port u_dbg_int/probe21 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_cr_pkt_seen_rx]]
+connect_debug_port u_dbg_int/probe21 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe22]
-set_property port_width 2 [get_debug_ports u_dbg_int/probe22]
-connect_debug_port u_dbg_int/probe22 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_state[1]}]]
+set_property port_width 3 [get_debug_ports u_dbg_int/probe22]
+connect_debug_port u_dbg_int/probe22 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_fcsm_state[2]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe23]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe23]
-connect_debug_port u_dbg_int/probe23 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_is_long_pkt]]
+set_property port_width 48 [get_debug_ports u_dbg_int/probe23]
+connect_debug_port u_dbg_int/probe23 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[29]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[30]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[31]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[32]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[33]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[34]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[35]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[36]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[37]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[38]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[39]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[40]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[41]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[42]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[43]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[44]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[45]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[46]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_data[47]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe24]
-set_property port_width 8 [get_debug_ports u_dbg_int/probe24]
-connect_debug_port u_dbg_int/probe24 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_data_id[7]}]]
+set_property port_width 16 [get_debug_ports u_dbg_int/probe24]
+connect_debug_port u_dbg_int/probe24 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_payload[15]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe25]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe25]
-connect_debug_port u_dbg_int/probe25 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_pkt_valid]]
+connect_debug_port u_dbg_int/probe25 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe26]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe26]
-connect_debug_port u_dbg_int/probe26 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_rinc]]
+connect_debug_port u_dbg_int/probe26 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_force_en_r]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe27]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe27]
-connect_debug_port u_dbg_int/probe27 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_short_pkt_prev]]
+connect_debug_port u_dbg_int/probe27 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_framer_stuck]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe28]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe28]
-connect_debug_port u_dbg_int/probe28 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_ready]]
+set_property port_width 24 [get_debug_ports u_dbg_int/probe28]
+connect_debug_port u_dbg_int/probe28 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrected_ph[23]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe29]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe29]
-connect_debug_port u_dbg_int/probe29 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_accept]]
+connect_debug_port u_dbg_int/probe29 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_winc]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe30]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe30]
-connect_debug_port u_dbg_int/probe30 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_valid]]
+connect_debug_port u_dbg_int/probe30 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe31]
-set_property port_width 8 [get_debug_ports u_dbg_int/probe31]
-connect_debug_port u_dbg_int/probe31 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[7]}]]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe31]
+connect_debug_port u_dbg_int/probe31 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_cr_pkt_seen_rx]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe32]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe32]
-connect_debug_port u_dbg_int/probe32 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_pkt_is_crack_pkt]]
+connect_debug_port u_dbg_int/probe32 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_pkt_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe33]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe33]
-connect_debug_port u_dbg_int/probe33 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_valid]]
+connect_debug_port u_dbg_int/probe33 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_rinc]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe34]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe34]
-connect_debug_port u_dbg_int/probe34 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_enable_r]]
+connect_debug_port u_dbg_int/probe34 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_ready]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe35]
-set_property port_width 1 [get_debug_ports u_dbg_int/probe35]
-connect_debug_port u_dbg_int/probe35 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_short_pkt]]
+set_property port_width 8 [get_debug_ports u_dbg_int/probe35]
+connect_debug_port u_dbg_int/probe35 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_data_id[7]}]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe36]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe36]
-connect_debug_port u_dbg_int/probe36 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_pkt_is_cr_pkt]]
+connect_debug_port u_dbg_int/probe36 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_rx_valid]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe37]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe37]
-connect_debug_port u_dbg_int/probe37 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/dataIdMatch]]
+connect_debug_port u_dbg_int/probe37 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_crack_pkt_seen_rx]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe38]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe38]
@@ -195,19 +204,147 @@ connect_debug_port u_dbg_int/probe38 [get_nets [list tidelink_design_i/tidelink_
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe39]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe39]
-connect_debug_port u_dbg_int/probe39 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_crack_pkt_seen_rx]]
+connect_debug_port u_dbg_int/probe39 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/pkt_is_data_pkt]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe40]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe40]
-connect_debug_port u_dbg_int/probe40 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_wfull]]
+connect_debug_port u_dbg_int/probe40 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/isExpPacket]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe41]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe41]
-connect_debug_port u_dbg_int/probe41 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_is_short_pkt]]
+connect_debug_port u_dbg_int/probe41 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/crcCorruptSeen]]
 create_debug_port u_dbg_int probe
 set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe42]
 set_property port_width 1 [get_debug_ports u_dbg_int/probe42]
-connect_debug_port u_dbg_int/probe42 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_swi_training_mode_in]]
+connect_debug_port u_dbg_int/probe42 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/tx_fifo_io_wfull]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe43]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe43]
+connect_debug_port u_dbg_int/probe43 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_valid]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe44]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe44]
+connect_debug_port u_dbg_int/probe44 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/tx_pending_r]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe45]
+set_property port_width 2 [get_debug_ports u_dbg_int/probe45]
+connect_debug_port u_dbg_int/probe45 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/rx_state_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/rx_state_r[1]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe46]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe46]
+connect_debug_port u_dbg_int/probe46 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/send_nack_req]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe47]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe47]
+connect_debug_port u_dbg_int/probe47 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_long_pkt]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe48]
+set_property port_width 16 [get_debug_ports u_dbg_int/probe48]
+connect_debug_port u_dbg_int/probe48 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/ptp_sp_tx_payload[15]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe49]
+set_property port_width 4 [get_debug_ports u_dbg_int/probe49]
+connect_debug_port u_dbg_int/probe49 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_msg_type_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_msg_type_r[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_msg_type_r[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_msg_type_r[3]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe50]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe50]
+connect_debug_port u_dbg_int/probe50 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/ptp_rx_valid_r]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe51]
+set_property port_width 16 [get_debug_ports u_dbg_int/probe51]
+connect_debug_port u_dbg_int/probe51 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_seq_num_r[15]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe52]
+set_property port_width 32 [get_debug_ports u_dbg_int/probe52]
+connect_debug_port u_dbg_int/probe52 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[23]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[24]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[25]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[26]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[27]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[28]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[29]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[30]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_tidelink_fifo/u_apb_regs/pair_credit_counter[31]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe53]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe53]
+connect_debug_port u_dbg_int/probe53 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/socl_l7_reached_link_data]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe54]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe54]
+connect_debug_port u_dbg_int/probe54 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl_io_obs_pkt_is_crack_pkt]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe55]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe55]
+connect_debug_port u_dbg_int/probe55 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_a2l_ready]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe56]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe56]
+connect_debug_port u_dbg_int/probe56 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_wfull]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe57]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe57]
+connect_debug_port u_dbg_int/probe57 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_is_short_pkt]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe58]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe58]
+connect_debug_port u_dbg_int/probe58 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/rx_is_fifo]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe59]
+set_property port_width 2 [get_debug_ports u_dbg_int/probe59]
+connect_debug_port u_dbg_int/probe59 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/rx_pkt_type[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_fc_adapter/rx_pkt_type[1]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe60]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe60]
+connect_debug_port u_dbg_int/probe60 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/tl2wl/wlink_tidelinktl/isNotExpPacket_l7]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe61]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe61]
+connect_debug_port u_dbg_int/probe61 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/swi_training_mode_rxsync_0]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe62]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe62]
+connect_debug_port u_dbg_int/probe62 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/swi_training_mode_rxsync_1]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe63]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe63]
+connect_debug_port u_dbg_int/probe63 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/ecc_check_corrupted]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe64]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe64]
+connect_debug_port u_dbg_int/probe64 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/valid_byte_reg]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe65]
+set_property port_width 2 [get_debug_ports u_dbg_int/probe65]
+connect_debug_port u_dbg_int/probe65 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/state[1]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe66]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe66]
+connect_debug_port u_dbg_int/probe66 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/rx_fifo_io_rempty]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe67]
+set_property port_width 24 [get_debug_ports u_dbg_int/probe67]
+connect_debug_port u_dbg_int/probe67 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[1]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[2]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[3]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[4]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[5]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[6]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[7]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[8]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[9]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[10]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[11]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[12]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[13]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[14]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[15]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[16]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[17]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[18]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[19]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[20]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[21]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[22]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/corrected_ph[23]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe68]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe68]
+connect_debug_port u_dbg_int/probe68 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/gen_ptp_real.u_ptp/hw_sync_trigger]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe69]
+set_property port_width 2 [get_debug_ports u_dbg_int/probe69]
+connect_debug_port u_dbg_int/probe69 [get_nets [list {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_state[0]} {tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx_io_obs_state[1]}]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe70]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe70]
+connect_debug_port u_dbg_int/probe70 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/tx_fifo_io_rempty]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe71]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe71]
+connect_debug_port u_dbg_int/probe71 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/tl_fc_l2a_accept]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe72]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe72]
+connect_debug_port u_dbg_int/probe72 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/llrx/is_short_pkt]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe73]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe73]
+connect_debug_port u_dbg_int/probe73 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/sp2wl/auto_tx_out_advance]]
+create_debug_port u_dbg_int probe
+set_property PROBE_TYPE DATA_AND_TRIGGER [get_debug_ports u_dbg_int/probe74]
+set_property port_width 1 [get_debug_ports u_dbg_int/probe74]
+connect_debug_port u_dbg_int/probe74 [get_nets [list tidelink_design_i/tidelink_0/inst/u_tidelink_top/u_chiplet_controller/u_wlink/dbg_swi_training_mode_in]]
 set_property C_CLK_INPUT_FREQ_HZ 25000000 [get_debug_cores dbg_hub]
 set_property C_ENABLE_CLK_DIVIDER false [get_debug_cores dbg_hub]
 set_property C_USER_SCAN_CHAIN 1 [get_debug_cores dbg_hub]

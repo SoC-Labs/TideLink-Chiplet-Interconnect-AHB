@@ -374,14 +374,14 @@ s,so=mm(0x44040000)              # role_strap GPIO — FPGA emulation of the
 struct.pack_into(\"<I\",s,so,$STRAP)
 # PHASE 4 AUTONOMY (apb_debug_unlock GPIO @ 0x44041000 NO LONGER ASSERTED):
 # Production silicon ties apb_debug_unlock_i to 0; the strap is reserved
-# for TAP-driven bench debug only. The autoneg FSM's mask_hs_local_match
+# for TAP-driven bench debug only. The autoneg FSM mask_hs_local_match
 # path (axi_chiplet_controller.sv:428,433) closes the mask handshake
 # autonomously, so the slave-side mask-handshake gate opens without SW
 # asserting apb_debug_unlock_i. The 0x44041000 AXI GPIO remains in the
 # bitstream (operator-pokeable for emergency debug) but is no longer
 # touched here. If HW deploy wedges at role_lock=0 after this change,
 # restore the write — that indicates the autoneg mask-handshake path
-# isn't closing on this die and the debug strap is still needed.
+# is not closing on this die and the debug strap is still needed.
 r,ro=mm(0x44032000)              # TideLink APB (chiplet-controller @+0x80)
 w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
 # PHASE 5 AUTONOMY (PAIR_BASE_ADDR write deleted):
@@ -400,14 +400,14 @@ w,wo=mm(0x44030000)              # Wlink APB (PHY ctrl @+0x00)
 #   autonomous training path (Phase 2-bis NEGO_CFG_RESET=0x61 +
 #   NEGO_TRAIN_CFG_RESET=0x0001), training_mode is held HIGH on both
 #   dies through ST_TRAIN_RUN while the calibrator (u_phy_align_-
-#   calibrator) converges per-lane phase. The calibrator's
+#   calibrator) converges per-lane phase. The calibrator
 #   cal_phase_offset_w output is OR-merged into swi_phase_offset_w at
 #   axi_chiplet_controller.sv:1554, so the static SW write is
 #   redundant. AUTONOMY_PHASE0_AUDIT.md test_01 confirms cal_done=1
 #   autonomously on both dies in sim with no APB phase write. If HW
 #   shows the slave deserialiser misaligned (lane_locked != 0xFF) post
 #   training, restore the PHASE write — that indicates the calibrator
-#   isn't converging on silicon and the static bias is still needed
+#   is not converging on silicon and the static bias is still needed
 #   as a fallback.
 phy=struct.unpack_from(\"<I\",w,wo+0x00)[0]
 pba=struct.unpack_from(\"<I\",r,ro+0x00)[0]

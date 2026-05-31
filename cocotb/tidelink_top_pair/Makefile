@@ -40,6 +40,15 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 BYPASS_AUTONEG ?= 1
 COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
 
+# RELY_ON_RTL_PRIO_DEFAULTS (Bug N7 regression — test_18)
+#   0 = tb force-injects nego_priority_reg = master:0x0001, slave:0x0002
+#       (legacy behaviour; masks Bug N7).
+#   1 = tb leaves nego_priority_reg alone — RTL POR default decides.
+#       Used only by test_18_bug_n7_priority_deadlock.
+# Default = 0 (preserve existing tests).
+RELY_ON_RTL_PRIO_DEFAULTS ?= 0
+COMPILE_ARGS += +define+TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS=$(RELY_ON_RTL_PRIO_DEFAULTS)
+
 # Wave dump (gated). Probe-only tests can opt out via TB_TOP_NO_DUMP=1 — the
 # VCD grew >4 GB on the 4-test credit-ledger probe run and OOM'd the host.
 TB_TOP_NO_DUMP ?= 0

@@ -171,9 +171,90 @@
 //     for the lifetime of the reset cycle.
 //
 // =============================================================================
+// SoC Labs F-2 TX-starvation watchdog (2026-05-31): self-recovering force
+// `auto_tx_out_advance` when LINK_IDLE has work to push but the framer is
+// not draining it.  Targets Bug A/B/C (unified) — slave-side TideLink FC TX
+// path never drains a2l SIDEBAND/data packets, so doorbells (and credit
+// returns, and PTP sync packets) never cross the link.
+// -----------------------------------------------------------------------------
+// HW failure mode (build #3/#4/#5 ILA bisect, see BUGC_HW_BISECT_2026_05_30
+// and BUGC_RTL_ANALYSIS_2026_05_30):
+//   * Slave FCSM lands at state 4 (LINK_IDLE) after cr/crack exchange.
+//   * Slave returner asserts `tl_fc_a2l_valid` (host has data to send).
+//   * BUT `auto_tx_out_advance` from the LL_TX framer never asserts, so
+//     the FCSM never transitions out of LINK_IDLE into the data/sideband
+//     packet emission arc.  Net effect: 0 packets cross M->S OR S->M.
+//   * Sim (cocotb test_bug_c_doorbell_asymmetry) reproduces bidirectional:
+//     M->S: master FCSM ends state=5 (tx-blocked), slave state=7 (NACK).
+//     S->M: slave FCSM ends state=5 (tx-blocked), master state=7 (NACK).
+//     Role-swap test passes, so the bug binds to the master/slave role
+//     latch — but the resulting wedge is the same TX-starvation symptom.
+//
+// Mechanism (extension of F-1 pattern):
+//   (1) `socl_l7_tx_starv_cnt` is a 16-bit saturating counter that ticks
+//       every cycle that:
+//         state == 3'h4 (LINK_IDLE)
+//         AND io_app_a2l_valid (a2l has data ready to drain — the host
+//             is presenting a packet)
+//         AND ~auto_tx_out_advance (LL_TX framer is NOT advancing)
+//         AND ~socl_l7_real_crc_seen (no real link error — reuse F-1
+//             sticky so the watchdog never fires in production silicon
+//             with genuine link issues; let upstream handle retransmit).
+//       Resets to 0 the cycle ANY of those conditions go false (the
+//       advance has fired naturally, the host de-asserted valid, or the
+//       FCSM left LINK_IDLE through some other arc).
+//   (2) `socl_l7_wdog_force_advance` asserts for ONE cycle when the
+//       counter saturates at SOCL_L7_TX_STARV_THRESHOLD = 16'h4000.
+//       It then resets via the cnt-reset condition (the wrapped
+//       `auto_tx_out_advance_w` will fire that same cycle).
+//   (3) `auto_tx_out_advance_w = auto_tx_out_advance | socl_l7_wdog_force_advance`
+//       is the consumed signal for ALL internal FCSM state/companion-reg
+//       updates inside this module.  The module's external input port
+//       `auto_tx_out_advance` is unchanged.
+//
+// Why Option B (OR-gate on the consumer side) and NOT direct state force
+// (the build #6 catastrophe):
+//   * Build #6's F-1.5 patch added a priority `else if` to the state
+//     always-block forcing state <- LINK_IDLE directly, then bypassed
+//     `auto_tx_out_advance` on the same cycle.  Companion registers
+//     (sop, link_data, data_id, word_count, count, ne_rx_ptr,
+//     last_ack_pkt_sent, send_ack_req, send_nack_req) were NOT updated
+//     atomically; the FSM landed in an INCONSISTENT multi-bit state and
+//     the PS kernel hung.  See commit cbcd4ef revert message.
+//   * Option B (this patch) keeps all transition arcs intact — the
+//     wrapped advance signal feeds EVERY `_GEN_*` mux and EVERY
+//     companion-reg always-block uniformly, so the FCSM follows its
+//     OWN well-tested transition arc.  No single-driver violation, no
+//     priority-clause hazard.
+//
+// Threshold rationale (16'h4000 = 16384 cycles, mirrors F-1):
+//   * Legitimate LINK_IDLE-with-a2l-valid-but-no-advance dwell is at
+//     most a handful of cycles (advance is gated on a2l_valid &
+//     ~fe_rx_is_full; the L7 _GEN_60 transition fires the next cycle).
+//   * 16'h4000 is ~500x that dwell -> healthy traffic never trips it.
+//   * 660 us @ 100 MHz FPGA, ~30 us @ 2 GHz ASIC — invisible to AHB
+//     fabric, well below any reasonable upper-layer software timeout.
+//
+// Steady-state safety:
+//   * Watchdog only ticks when state == LINK_IDLE AND a2l_valid AND
+//     ~advance AND ~real_crc.  All four must hold simultaneously for
+//     16K cycles -> only fires on the documented wedge class.
+//   * Once `socl_l7_real_crc_seen` latches, watchdog stays disarmed
+//     permanently for the reset cycle — production silicon with genuine
+//     link errors falls back to the upstream retransmit flow exactly.
+//   * Single-driver invariant: state/sop/link_data/etc. are still written
+//     by their existing always-blocks alone; the only thing this patch
+//     adds upstream is one OR-gate on the consumed `auto_tx_out_advance`
+//     signal that flows uniformly into every mux/always.
+//
+// ASIC sign-off impact: zero new ports, zero new CDC, ~10 lines of
+// sequential logic.  `SOCL_L7_TX_STARV_THRESHOLD` is a localparam
+// tunable per target without RTL edit.
+// =============================================================================
 module WlinkGenericFCSM_6 #(
-  parameter [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32,
-  parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000
+  parameter [7:0]  SOCL_L6_MIN_CR_EMITS         = 8'd32,
+  parameter [15:0] SOCL_L7_WDOG_THRESHOLD       = 16'h4000,
+  parameter [15:0] SOCL_L7_TX_STARV_THRESHOLD   = 16'h4000
 ) (
   input         clock,
   input         reset,
@@ -344,7 +425,7 @@ module WlinkGenericFCSM_6 #(
   wire  crc_corrupt = auto_rx_in_sop & auto_rx_in_valid & auto_rx_in_data_id == swi_data_id_1 & ~
     out_prepend_swi_disable_crc & rx_crc_computed_crcgen_io_out != auto_rx_in_crc; // @[FC.scala 157:40]
   reg [15:0] crc_errors; // @[FC.scala 160:107]
-  wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]
+  (* mark_debug = "true" *) wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]  BUILD #6 Bug-A probe
   wire  valid_rx_pkt_crc_err = _crc_corrupt_T_2 & crc_corrupt; // @[FC.scala 167:85]
   reg [7:0] swi_cr_id; // @[SW.scala 83:22]
   wire  pkt_is_cr_pkt = _crc_corrupt_T & auto_rx_in_data_id == swi_cr_id; // @[FC.scala 169:50]
@@ -378,11 +459,11 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]
   wire [18:0] _ack_nack_fifo_io_wdata_T_1 = {pkttypenotifier,auto_rx_in_word_count}; // @[Cat.scala 30:58]
   wire [18:0] _ack_nack_fifo_io_wdata_T_2 = {pkttypenotifier,8'h0,last_good_pkt_in}; // @[Cat.scala 30:58]
-  wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]
+  (* mark_debug = "true" *) wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]  BUILD #6 Bug-A probe
   wire  isNotExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h1 & ack_nack_fifo_valid; // @[FC.scala 288:73]
   wire  isAckPacket = ack_nack_fifo_io_rdata[18:16] == 3'h2 & ack_nack_fifo_valid; // @[FC.scala 289:73]
   wire  isNackPacket = ack_nack_fifo_io_rdata[18:16] == 3'h3 & ack_nack_fifo_valid; // @[FC.scala 290:73]
-  wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]
+  (* mark_debug = "true" *) wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]  BUILD #6 Bug-A probe
   reg  sop; // @[FC.scala 318:48]
   reg [7:0] data_id; // @[FC.scala 320:48]
   reg [15:0] word_count; // @[FC.scala 322:48]
@@ -426,7 +507,7 @@ module WlinkGenericFCSM_6 #(
   wire [4:0] l2a_fifo_raddr_txclk = l2a_fifo_addr_to_tx_r_addr; // @[FC.scala 240:41 FC.scala 249:35]
   wire  l2a_fifo_raddr_txclk_update = l2a_fifo_raddr_txclk_prev != l2a_fifo_raddr_txclk; // @[FC.scala 401:67]
   reg  send_ack_req; // @[FC.scala 407:48]
-  reg  send_nack_req; // @[FC.scala 409:48]
+  (* mark_debug = "true" *) reg  send_nack_req; // @[FC.scala 409:48]  BUILD #6 Bug-A probe
   reg [7:0] last_good_pkt_from_rx; // @[FC.scala 414:48]
   wire [7:0] _last_good_pkt_from_rx_in_T_2 = isExpPacket ? ack_nack_fifo_io_rdata[7:0] : last_good_pkt_from_rx; // @[FC.scala 415:66]
   wire [7:0] last_good_pkt_from_rx_in = _fe_rx_ptr_in_T ? 8'h0 : _last_good_pkt_from_rx_in_T_2; // @[FC.scala 415:45]
@@ -440,14 +521,14 @@ module WlinkGenericFCSM_6 #(
   //     permanently for the lifetime of this reset cycle (steady-state).
   //   * socl_l7_bringup_forgive   : combinational; when high, clear
   //     send_nack_req and mask isNotExpPacket. See header comment.
-  reg  socl_l7_reached_link_data;
-  wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)
+  (* mark_debug = "true" *) reg  socl_l7_reached_link_data;  // BUILD #6 Bug-A probe
+  (* mark_debug = "true" *) wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)  // BUILD #6 Bug-A probe
                                  & cr_pkt_seen_tx_demet_io_out
                                  & crack_pkt_seen_tx_demet_io_out;
   // Masked isNotExpPacket: while forgive is active, suppress the spurious
   // bringup-transient notifier so it cannot re-latch send_nack_req on the
   // same cycle the synchronous AND-clear is applied.
-  wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
+  (* mark_debug = "true" *) wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;  // BUILD #6 Bug-A probe
   // SoC Labs F-1 state-7 watchdog: see header comment.  Backup recovery
   // path for the case where the demet stickies fail to align (P&R lottery
   // / ILA insertion / ASIC post-CTS).  Forward declarations; sequential
@@ -457,21 +538,38 @@ module WlinkGenericFCSM_6 #(
   wire        socl_l7_wdog_force_clear =
                 (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
                 & ~socl_l7_real_crc_seen;
+  // SoC Labs F-2 TX-starvation watchdog: see header comment.  Counter ticks
+  // when LINK_IDLE has data ready but the framer is not advancing.  When
+  // saturated, OR-gates `socl_l7_wdog_force_advance` into the consumer-side
+  // `auto_tx_out_advance_w` so the FCSM follows its OWN transition arc out
+  // of LINK_IDLE without any direct multi-bit force.  Sequential logic
+  // lives below alongside the F-1 watchdog counter.
+  reg  [15:0] socl_l7_tx_starv_cnt;    // saturating counter, ticks in state 4
+  wire        socl_l7_wdog_force_advance =
+                (socl_l7_tx_starv_cnt == SOCL_L7_TX_STARV_THRESHOLD)
+                & ~socl_l7_real_crc_seen;
+  // Wrapped advance: every internal FCSM transition / companion-reg always
+  // block reads `auto_tx_out_advance_w` instead of the raw input port, so a
+  // single OR-gate uniformly forces one advance pulse through the WHOLE
+  // FCSM atomic update.  External output ports `auto_tx_out_sop` /
+  // `auto_tx_out_data` etc. are unaffected — they still mirror the
+  // companion regs.
+  wire        auto_tx_out_advance_w = auto_tx_out_advance | socl_l7_wdog_force_advance;
   // Original Chisel-emitted _GEN_34 (kept as comment for review):
   //   wire [2:0] _GEN_34 = crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out ? 3'h2 : state;
   // Patched: only allow state 1 -> state 2 once minimum CR-emit count reached.
   wire [2:0] _GEN_34 = (crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out) & socl_l6_cr_emit_gate_ok
                        ? 3'h2 : state; // SoC Labs L6 gate
-  wire  _GEN_35 = auto_tx_out_advance | sop; // @[FC.scala 459:28 FC.scala 427:39]
-  wire [55:0] _GEN_38 = auto_tx_out_advance ? 56'h0 : link_data; // @[FC.scala 459:28 FC.scala 430:39]
+  wire  _GEN_35 = auto_tx_out_advance_w | sop; // @[FC.scala 459:28 FC.scala 427:39]
+  wire [55:0] _GEN_38 = auto_tx_out_advance_w ? 56'h0 : link_data; // @[FC.scala 459:28 FC.scala 430:39]
   wire  _GEN_40 = crack_pkt_seen_tx_demet_io_out ? 1'h0 : 1'h1; // @[FC.scala 476:34 FC.scala 477:39 FC.scala 484:39]
   wire [7:0] _GEN_41 = crack_pkt_seen_tx_demet_io_out ? 8'h0 : out_prepend_swi_crack_id; // @[FC.scala 476:34 FC.scala 478:39 FC.scala 485:39]
   wire [15:0] _GEN_42 = crack_pkt_seen_tx_demet_io_out ? 16'h0 : 16'h1f1f; // @[FC.scala 476:34 FC.scala 479:39 FC.scala 486:39]
   reg [7:0] swi_link_en_wait; // @[SW.scala 83:22]
   wire [7:0] _GEN_44 = crack_pkt_seen_tx_demet_io_out ? swi_link_en_wait : count; // @[FC.scala 476:34 FC.scala 481:39 FC.scala 425:39]
   wire [2:0] _GEN_45 = crack_pkt_seen_tx_demet_io_out ? 3'h3 : state; // @[FC.scala 476:34 FC.scala 482:39 FC.scala 424:39]
-  wire [2:0] _GEN_51 = auto_tx_out_advance ? _GEN_45 : state; // @[FC.scala 475:28 FC.scala 424:39]
-  wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]
+  wire [2:0] _GEN_51 = auto_tx_out_advance_w ? _GEN_45 : state; // @[FC.scala 475:28 FC.scala 424:39]
+  (* mark_debug = "true" *) wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]  BUILD #6 Bug-A probe
   wire [7:0] _count_in_T_1 = count - 8'h1; // @[FC.scala 498:48]
   wire [2:0] _GEN_52 = count == 8'h0 ? 3'h4 : state; // @[FC.scala 495:28 FC.scala 496:39 FC.scala 424:39]
   wire [7:0] _GEN_53 = count == 8'h0 ? count : _count_in_T_1; // @[FC.scala 495:28 FC.scala 425:39 FC.scala 498:39]
@@ -479,9 +577,9 @@ module WlinkGenericFCSM_6 #(
   wire  _T_57 = send_ack_req & _T_54; // @[FC.scala 514:33]
   wire [7:0] _GEN_61 = send_ack_req & _T_54 ? last_good_pkt_from_rx_in : last_ack_pkt_sent; // @[FC.scala 514:50 FC.scala 515:39 FC.scala 436:39]
   wire [7:0] _GEN_70 = send_nack_req ? last_good_pkt_from_rx_in : _GEN_61; // @[FC.scala 505:28 FC.scala 506:39]
-  wire [7:0] _GEN_104 = auto_tx_out_advance ? _GEN_70 : last_ack_pkt_sent; // @[FC.scala 537:28 FC.scala 436:39]
+  wire [7:0] _GEN_104 = auto_tx_out_advance_w ? _GEN_70 : last_ack_pkt_sent; // @[FC.scala 537:28 FC.scala 436:39]
   wire [7:0] _GEN_122 = send_nack_req ? last_good_pkt_from_rx_in : last_ack_pkt_sent; // @[FC.scala 586:30 FC.scala 587:39 FC.scala 436:39]
-  wire [7:0] _GEN_131 = auto_tx_out_advance ? _GEN_122 : last_ack_pkt_sent; // @[FC.scala 582:28 FC.scala 436:39]
+  wire [7:0] _GEN_131 = auto_tx_out_advance_w ? _GEN_122 : last_ack_pkt_sent; // @[FC.scala 582:28 FC.scala 436:39]
   wire [7:0] _GEN_140 = state == 3'h6 ? _GEN_131 : last_ack_pkt_sent; // @[FC.scala 578:57 FC.scala 436:39]
   wire [7:0] _GEN_152 = state == 3'h7 ? last_ack_pkt_sent : _GEN_140; // @[FC.scala 571:58 FC.scala 436:39]
   wire [7:0] _GEN_160 = state == 3'h5 ? _GEN_104 : _GEN_152; // @[FC.scala 534:58]
@@ -522,17 +620,17 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] _GEN_92 = _T_57 ? 3'h6 : _GEN_85; // @[FC.scala 546:52 FC.scala 553:39]
   wire  _GEN_96 = send_nack_req | _GEN_88; // @[FC.scala 538:30 FC.scala 541:39]
   wire [2:0] _GEN_100 = send_nack_req ? 3'h7 : _GEN_92; // @[FC.scala 538:30 FC.scala 545:39]
-  wire  _GEN_105 = auto_tx_out_advance ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 537:28 FC.scala 439:39]
-  wire  _GEN_106 = auto_tx_out_advance ? _GEN_96 : sop; // @[FC.scala 537:28 FC.scala 427:39]
-  wire [7:0] _GEN_107 = auto_tx_out_advance ? _GEN_73 : data_id; // @[FC.scala 537:28 FC.scala 428:39]
-  wire [15:0] _GEN_108 = auto_tx_out_advance ? _GEN_74 : word_count; // @[FC.scala 537:28 FC.scala 429:39]
-  wire [55:0] _GEN_109 = auto_tx_out_advance ? _GEN_75 : link_data; // @[FC.scala 537:28 FC.scala 430:39]
-  wire [2:0] _GEN_110 = auto_tx_out_advance ? _GEN_100 : state; // @[FC.scala 537:28 FC.scala 424:39]
-  wire  _GEN_111 = auto_tx_out_advance ? _GEN_77 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 537:28 FC.scala 438:39]
-  wire  _GEN_112 = auto_tx_out_advance & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
-  wire [7:0] _GEN_113 = auto_tx_out_advance ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
-  wire  _GEN_114 = auto_tx_out_advance ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
-  wire [2:0] _GEN_115 = auto_tx_out_advance ? 3'h4 : state; // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
+  wire  _GEN_105 = auto_tx_out_advance_w ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 537:28 FC.scala 439:39]
+  wire  _GEN_106 = auto_tx_out_advance_w ? _GEN_96 : sop; // @[FC.scala 537:28 FC.scala 427:39]
+  wire [7:0] _GEN_107 = auto_tx_out_advance_w ? _GEN_73 : data_id; // @[FC.scala 537:28 FC.scala 428:39]
+  wire [15:0] _GEN_108 = auto_tx_out_advance_w ? _GEN_74 : word_count; // @[FC.scala 537:28 FC.scala 429:39]
+  wire [55:0] _GEN_109 = auto_tx_out_advance_w ? _GEN_75 : link_data; // @[FC.scala 537:28 FC.scala 430:39]
+  wire [2:0] _GEN_110 = auto_tx_out_advance_w ? _GEN_100 : state; // @[FC.scala 537:28 FC.scala 424:39]
+  wire  _GEN_111 = auto_tx_out_advance_w ? _GEN_77 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 537:28 FC.scala 438:39]
+  wire  _GEN_112 = auto_tx_out_advance_w & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
+  wire [7:0] _GEN_113 = auto_tx_out_advance_w ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
+  wire  _GEN_114 = auto_tx_out_advance_w ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
+  wire [2:0] _GEN_115 = auto_tx_out_advance_w ? 3'h4 : state; // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
   wire  _GEN_123 = send_nack_req | _T_59; // @[FC.scala 586:30 FC.scala 589:39]
   wire [7:0] _GEN_124 = send_nack_req ? out_prepend_swi_nack_id : _GEN_56; // @[FC.scala 586:30 FC.scala 590:39]
   wire [15:0] _GEN_125 = send_nack_req ? {{3'd0}, _word_count_in_T_4} : _GEN_57; // @[FC.scala 586:30 FC.scala 591:39]
@@ -541,14 +639,14 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_128 = send_nack_req ? 1'h0 : _T_59; // @[FC.scala 586:30 FC.scala 441:39]
   wire [7:0] _GEN_129 = send_nack_req ? ne_rx_ptr : _GEN_59; // @[FC.scala 586:30 FC.scala 434:39]
   reg [7:0] out_prepend_swi_ack_dly_count; // @[SW.scala 83:22]
-  wire [7:0] _GEN_130 = auto_tx_out_advance ? out_prepend_swi_ack_dly_count : count; // @[FC.scala 582:28 FC.scala 584:39 FC.scala 425:39]
-  wire  _GEN_132 = auto_tx_out_advance ? _GEN_123 : sop; // @[FC.scala 582:28 FC.scala 427:39]
-  wire [7:0] _GEN_133 = auto_tx_out_advance ? _GEN_124 : data_id; // @[FC.scala 582:28 FC.scala 428:39]
-  wire [15:0] _GEN_134 = auto_tx_out_advance ? _GEN_125 : word_count; // @[FC.scala 582:28 FC.scala 429:39]
-  wire [55:0] _GEN_135 = auto_tx_out_advance ? _GEN_126 : link_data; // @[FC.scala 582:28 FC.scala 430:39]
-  wire [2:0] _GEN_136 = auto_tx_out_advance ? _GEN_127 : state; // @[FC.scala 582:28 FC.scala 424:39]
-  wire  _GEN_137 = auto_tx_out_advance & _GEN_128; // @[FC.scala 582:28 FC.scala 441:39]
-  wire [7:0] _GEN_138 = auto_tx_out_advance ? _GEN_129 : ne_rx_ptr; // @[FC.scala 582:28 FC.scala 434:39]
+  wire [7:0] _GEN_130 = auto_tx_out_advance_w ? out_prepend_swi_ack_dly_count : count; // @[FC.scala 582:28 FC.scala 584:39 FC.scala 425:39]
+  wire  _GEN_132 = auto_tx_out_advance_w ? _GEN_123 : sop; // @[FC.scala 582:28 FC.scala 427:39]
+  wire [7:0] _GEN_133 = auto_tx_out_advance_w ? _GEN_124 : data_id; // @[FC.scala 582:28 FC.scala 428:39]
+  wire [15:0] _GEN_134 = auto_tx_out_advance_w ? _GEN_125 : word_count; // @[FC.scala 582:28 FC.scala 429:39]
+  wire [55:0] _GEN_135 = auto_tx_out_advance_w ? _GEN_126 : link_data; // @[FC.scala 582:28 FC.scala 430:39]
+  wire [2:0] _GEN_136 = auto_tx_out_advance_w ? _GEN_127 : state; // @[FC.scala 582:28 FC.scala 424:39]
+  wire  _GEN_137 = auto_tx_out_advance_w & _GEN_128; // @[FC.scala 582:28 FC.scala 441:39]
+  wire [7:0] _GEN_138 = auto_tx_out_advance_w ? _GEN_129 : ne_rx_ptr; // @[FC.scala 582:28 FC.scala 434:39]
   wire [7:0] _GEN_139 = state == 3'h6 ? _GEN_130 : count; // @[FC.scala 578:57 FC.scala 425:39]
   wire  _GEN_141 = state == 3'h6 ? _GEN_105 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 578:57 FC.scala 439:39]
   wire  _GEN_142 = state == 3'h6 ? _GEN_132 : sop; // @[FC.scala 578:57 FC.scala 427:39]
@@ -841,7 +939,7 @@ module WlinkGenericFCSM_6 #(
         state <= 3'h1;
       end
     end else if (state == 3'h1) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         state <= _GEN_34;
       end
     end else if (state == 3'h2) begin
@@ -988,7 +1086,7 @@ module WlinkGenericFCSM_6 #(
       socl_l6_cr_emit_count <= 8'h0;
     end else if (state != 3'h1) begin
       socl_l6_cr_emit_count <= 8'h0;
-    end else if (auto_tx_out_advance & sop) begin
+    end else if (auto_tx_out_advance_w & sop) begin
       if (socl_l6_cr_emit_count != 8'hff)
         socl_l6_cr_emit_count <= socl_l6_cr_emit_count + 8'h1;
     end
@@ -1001,7 +1099,7 @@ module WlinkGenericFCSM_6 #(
     end else if (state == 3'h1) begin
       sop <= _GEN_35;
     end else if (state == 3'h2) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         sop <= _GEN_40;
       end
     end else if (!(state == 3'h3)) begin
@@ -1016,7 +1114,7 @@ module WlinkGenericFCSM_6 #(
         data_id <= swi_cr_id;
       end
     end else if (state == 3'h1) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         // SoC Labs L6: keep emitting CR while the L6 min-emit gate is
         // un-met, even if cr_seen/crack_seen have already latched on the
         // synchronizer.  Once the gate is met the original Chisel mux
@@ -1029,7 +1127,7 @@ module WlinkGenericFCSM_6 #(
         end
       end
     end else if (state == 3'h2) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         data_id <= _GEN_41;
       end
     end else if (!(state == 3'h3)) begin
@@ -1044,11 +1142,11 @@ module WlinkGenericFCSM_6 #(
         word_count <= 16'h1f1f;
       end
     end else if (state == 3'h1) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         word_count <= 16'h1f1f;
       end
     end else if (state == 3'h2) begin
-      if (auto_tx_out_advance) begin
+      if (auto_tx_out_advance_w) begin
         word_count <= _GEN_42;
       end
     end else if (!(state == 3'h3)) begin
@@ -1076,7 +1174,7 @@ module WlinkGenericFCSM_6 #(
     end else if (!(_ack_seen_before_T)) begin
       if (!(state == 3'h1)) begin
         if (state == 3'h2) begin
-          if (auto_tx_out_advance) begin
+          if (auto_tx_out_advance_w) begin
             count <= _GEN_44;
           end
         end else if (state == 3'h3) begin
@@ -1201,6 +1299,35 @@ module WlinkGenericFCSM_6 #(
       socl_l7_wdog_cnt <= 16'h0;
     end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
       socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
+    end
+  end
+  // SoC Labs F-2 TX-starvation watchdog counter.  Ticks every cycle that:
+  //   * FCSM sits in state 4 (LINK_IDLE), AND
+  //   * io_app_a2l_valid (host has a packet ready to send), AND
+  //   * raw auto_tx_out_advance is low (LL_TX framer is NOT draining), AND
+  //   * no real CRC error has ever been seen since reset.
+  // Resets to 0 whenever any of those conditions go false (FCSM left
+  // LINK_IDLE through some other arc, host de-asserted valid, the framer
+  // finally advanced, OR a real CRC error armed the F-1 disarm sticky).
+  // Saturates at SOCL_L7_TX_STARV_THRESHOLD; the saturation cycle is
+  // exactly when `socl_l7_wdog_force_advance` fires, which OR-gates into
+  // `auto_tx_out_advance_w` and lets the FCSM follow its OWN transition
+  // arc out of LINK_IDLE.  The wrapped advance also resets this counter
+  // on the next cycle (the FCSM leaves state 4 via _GEN_60 / _GEN_67 /
+  // _GEN_85 etc., depending on send_ack_req / send_nack_req / a2l data).
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_tx_starv_cnt <= 16'h0;
+    end else if (state != 3'h4) begin
+      socl_l7_tx_starv_cnt <= 16'h0;
+    end else if (~io_app_a2l_valid) begin
+      socl_l7_tx_starv_cnt <= 16'h0;
+    end else if (auto_tx_out_advance) begin
+      socl_l7_tx_starv_cnt <= 16'h0;
+    end else if (socl_l7_real_crc_seen) begin
+      socl_l7_tx_starv_cnt <= 16'h0;
+    end else if (socl_l7_tx_starv_cnt != SOCL_L7_TX_STARV_THRESHOLD) begin
+      socl_l7_tx_starv_cnt <= socl_l7_tx_starv_cnt + 16'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin

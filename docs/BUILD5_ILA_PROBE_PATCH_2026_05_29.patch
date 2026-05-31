@@ -1,0 +1,146 @@
+# BUILD5 surgical ILA-probe patch
+#
+# Date: 2026-05-29
+# Baseline: HEAD (= ebbde0e + cleanup commits) — build #4 RTL
+# Target:   Build #5 RTL with build #4 R-1 risk REMOVED and Bug-B sim
+#           probes ADDED.
+#
+# This is a *documentation* patch — apply with `git apply` after review.
+# Do NOT auto-apply: the parent agent must review before kicking off.
+#
+# Two surgical changes vs build #4:
+#   (1) REMOVE mark_debug from `pair_credit_counter` + `pair_credit_counter_en`
+#       in tidelink_apb_regs.sv — these are the R-1 (~45%) regression
+#       suspects per docs/BUILD4_HW_VALIDATION_2026_05_29.md.
+#       Rationale: pclk-domain regs sampled by hclk u_dbg_int; declaring
+#       them mark_debug forbids the synth fold that previously let the
+#       APB read mux share state with the returner credit path. The doc
+#       explicitly recommends this revert in §"R-1 (~45%)" "Test:".
+#
+#   (2) ADD mark_debug for the Bug-B sim-agent probe set in tidelink_ptp.sv —
+#       hw_sync_state_r[1:0], phc_time_reached, target_ns_r[29:0],
+#       target_seconds_r[7:0] (low byte only — full 48 bits would blow
+#       probe budget), hw_sync_interval_r[29:0], tx_state_r[1:0],
+#       plus phc_nanoseconds[29:0] input net at u_ptp instance.
+#       These come from
+#       cocotb/tidelink_top_pair/test_master_ptp_tx_router.py and are
+#       what isolates Bug B's "stuck-in-ARMED" failure mode.
+#
+# Probes deliberately NOT added (already covered in build #4 net set):
+#   - FCSM state / cr_pkt_seen_rx / crack_pkt_seen_rx — already mark_debug
+#     at local_overrides/Wlink.v:240-253 via tl2wl_io_obs_* aliases.
+#   - tl_fc_a2l_{valid,data,ready} + tl_fc_l2a_{valid,data,accept} — already
+#     mark_debug at tidelink_top.sv:495-500 (build #4 ebbde0e).
+#   - ptp_sp_tx_*, ptp_sp_rx_* — already mark_debug at tidelink_top.sv:508-515.
+#   - ptp_enable_r / ptp_rx_valid_r / ptp_rx_msg_type_r / hw_sync_force_en_r /
+#     hw_sync_trigger / hw_seq_num_r / tx_pending_r — already mark_debug at
+#     tidelink_ptp.sv:141-173 (build #4 ebbde0e).
+#   - llrx_io_obs_* (LL_RX state + valid + pkt-type) — already mark_debug at
+#     local_overrides/Wlink.v:240-243.
+#
+# Probes deliberately NOT touched (build #4 RTL kept):
+#   - tl_fc_a2l_{valid,data,ready} / tl_fc_l2a_{valid,data,accept} (Bug A §3)
+#   - fc_rx_fifo_valid / fc_rx_fifo_addr / fc_rx_fifo_ready (Bug A §3)
+#   - rx_state_r / rx_pkt_type / rx_is_fifo (Bug A §3, slave RX FSM)
+#   - tx_router_idle (Bug B §4)
+#   - tidelink_ptp.sv attrs added in build #4 (low risk — all in u_ptp scope)
+#   - ShortPacketToWlink.v submodule attrs (4) — keep as-is on submodule branch
+#     ila-mark-debug-tx-shortpacket @ 9ad2570; not touched here.
+#   - local_overrides/Wlink.v attrs (FCSM + LL_RX) — keep as-is.
+#
+# Why this is "surgical": removes ONLY the two highest-risk attrs (R-1
+# candidate); adds ONLY the registers proven by sim to be the Bug-B
+# smoking guns. Everything else from build #4 stays exactly the same so
+# the comparison build #5-vs-#4 isolates the R-1 hypothesis directly.
+
+diff --git a/src/rtl/fifo/tidelink_apb_regs.sv b/src/rtl/fifo/tidelink_apb_regs.sv
+--- a/src/rtl/fifo/tidelink_apb_regs.sv
++++ b/src/rtl/fifo/tidelink_apb_regs.sv
+@@ -314,11 +314,12 @@ module tidelink_apb_regs #(
+
+     // ── Region 1: Pair Credit Counter (0x028 / 0x02C / 0x030) ─────────────────
+
+-    // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3.
+-    // pclk-domain (async to hclk u_dbg_int sampling clock) — accept CDC skew
+-    // for visibility of live update pattern vs polled APB snapshots.
+-    (* mark_debug = "true" *) logic [SYS_DATA_W-1:0] pair_credit_counter;
+-    (* mark_debug = "true" *) logic                  pair_credit_counter_en;
++    // BUILD #5: mark_debug REMOVED here (was build #4 ebbde0e).
++    // R-1 hypothesis per docs/BUILD4_HW_VALIDATION_2026_05_29.md (~45%):
++    // declaring these pclk-domain FFs mark_debug forbade a synth fold that
++    // kept the returner busy-clear in sync with the APB read mux. SW-managed
++    // counter, polled via APB anyway — losing live ILA view is acceptable.
++    logic [SYS_DATA_W-1:0] pair_credit_counter;
++    logic                  pair_credit_counter_en;
+
+     wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
+     wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;
+diff --git a/src/rtl/tidelink_ptp.sv b/src/rtl/tidelink_ptp.sv
+--- a/src/rtl/tidelink_ptp.sv
++++ b/src/rtl/tidelink_ptp.sv
+@@ -179,7 +179,8 @@ module tidelink_ptp #(
+         TX_SEND       = 2'b10    // FC valid asserted, waiting for ready
+     } tx_state_t;
+
+-    tx_state_t tx_state_r, tx_state_next;
++    // BUILD #5 Bug-B probe — TX FSM state (test_master_ptp_tx_router oracle)
++    (* mark_debug = "true" *) tx_state_t tx_state_r;
++    tx_state_t tx_state_next;
+
+     // Registered payload from AHB data phase (16 bits for short packet)
+     logic [15:0] tx_payload_r;
+@@ -361,7 +362,8 @@ module tidelink_ptp #(
+     // HW sync registers
+     logic        hw_sync_en_r;
+     logic        hw_sync_en_prev_r;    // for rising-edge detection
+-    logic [29:0] hw_sync_interval_r;
++    // BUILD #5 Bug-B probe — programmed interval (sim agent: differential gate)
++    (* mark_debug = "true" *) logic [29:0] hw_sync_interval_r;
+     logic [15:0] hw_seq_num_int_r;
+
+     assign hw_seq_num_r = hw_seq_num_int_r;
+@@ -376,8 +378,9 @@ module tidelink_ptp #(
+     logic hw_sync_gate_prev_r;
+
+     // Target timestamp for next SYNC fire
+-    logic [47:0] target_seconds_r;
+-    logic [29:0] target_ns_r;
++    // BUILD #5 Bug-B probes — target time the FSM is waiting on
++    (* mark_debug = "true" *) logic [47:0] target_seconds_r;
++    (* mark_debug = "true" *) logic [29:0] target_ns_r;
+
+     // HW sync FSM states
+     typedef enum logic [1:0] {
+@@ -388,16 +391,18 @@ module tidelink_ptp #(
+         HW_SYNC_WAIT_TX = 2'b11
+     } hw_sync_state_t;
+
+-    hw_sync_state_t hw_sync_state_r, hw_sync_state_next;
++    // BUILD #5 Bug-B probe — HW_SYNC FSM state (PRIMARY smoking gun for Bug B)
++    (* mark_debug = "true" *) hw_sync_state_t hw_sync_state_r;
++    hw_sync_state_t hw_sync_state_next;
+
+     // Rising edge of hw_sync_en
+     wire hw_sync_en_rising = hw_sync_en_r & ~hw_sync_en_prev_r;
+
+     // Rising edge of gate (phc_locked_i or force_en asserted while enable held high)
+     wire hw_sync_gate_rising = hw_sync_gate & ~hw_sync_gate_prev_r;
+
+     // PHC time comparison: current time >= target time
+-    wire phc_time_reached = (phc_seconds > target_seconds_r) ||
++    // BUILD #5 Bug-B probe — gate from ARMED → FIRE; sim verdict signal
++    (* mark_debug = "true" *) wire phc_time_reached = (phc_seconds > target_seconds_r) ||
+                             (phc_seconds == target_seconds_r &&
+                              phc_nanoseconds >= target_ns_r);
+
+# Optional: also probe phc_nanoseconds[29:0] input. This is already an
+# input PORT on u_ptp, so adding mark_debug on the wire at the tidelink_top
+# instance net would be the natural place. The phc_nanoseconds bus is already
+# 30 bits wide and lives on the BD top — Vivado normally lets us probe it
+# without RTL changes via the netlist `set_property MARK_DEBUG true [get_nets]`
+# in insert_debug_core.tcl, but that's a separate scope-change. For build #5
+# we skip the input probe (the BD tie-off is already visible at APB
+# PTP_RX_PAYLOAD on the master), and rely on target_ns_r/target_seconds_r
+# moving on the first hw_sync_en write as proof the input is live.
+
+# End of patch.

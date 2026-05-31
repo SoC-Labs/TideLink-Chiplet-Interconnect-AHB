@@ -1,0 +1,167 @@
+# BUILD6 surgical ILA-probe patch — Bug A deeper RX-framer wedge
+#
+# Date:     2026-05-29
+# Baseline: HEAD of feat/td-gpio-phy-integration (post build #5 RTL)
+# Target:   Bug A round-2 — slave RX framer NACK-worthy decode path
+#
+# This is a *documentation* patch — apply with `git apply` after review.
+# Do NOT auto-apply: build #5 is still in-flight; parent must gate on its
+# verdict and review this patch before kicking off build #6.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Strategy: SURGICAL ADD ONLY (do NOT touch any build #5 mark_debug)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Build #5 fixes the master FCSM-stuck-at-7 surface (L8 fix) but V1's
+# diagnosis predicts the slave RX FIFO still stays empty because the slave
+# RX framer NACK-worthy-decodes the master's packet → latches send_nack_req
+# → bounces FCSM back to state 4. The signals below resolve which branch
+# of the decode predicate trips (was the packet seen as a data pkt? was the
+# packet number not the expected one? did CRC fail? did the L7 forgive gate
+# actually re-arm?).
+#
+# All probes are added INSIDE WlinkGenericFCSM_6.v at their existing
+# wire/reg declarations. No new ports, no observer aliases, no Wlink.v
+# changes. Vivado's mark_debug on a Verilog wire declaration is preserved
+# through the local_overrides → flist path because the override file is
+# read instead of the upstream Wlink.v (same as the build #4/#5 LL_RX
+# probes already in tree).
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Probe set — 8 net-bits total (well under the 30-bit headroom)
+# ──────────────────────────────────────────────────────────────────────────
+#
+#  File: src/rtl/local_overrides/WlinkGenericFCSM_6.v
+#
+#  Line  Signal                       Bits  Clock        Risk  Why
+#  284   pkt_is_data_pkt              1     io_rx_clk    LOW   "is the master pkt being decoded as a data pkt at all?" — V1 Bug A predicate. Pure combinational wire of (sop & valid & data_id==swi_data_id_1 & ~crc_corrupt). hclk-asynchronous but native to io_rx_clk just like llrx_io_obs_valid (already mark_debug'd).
+#  318   isExpPacket                  1     io_tx_clk    LOW   FIFO-side predicate — was the packet pulled out of the rx→tx hand-off FIFO classified as the expected pktnum? Pure combinational wire of ack_nack_fifo_io_rdata[18:16] decode.
+#  402   _T_54                        1     io_tx_clk    LOW   FCSM byte counter == 0 — gates state transitions out of LINK_DATA back to 4. V1 calls this out as the FCSM decode predicate; pure combinational wire of `count` reg.
+#  322   crcCorruptSeen               1     io_tx_clk    LOW   FIFO-side classified-as-CRC-corrupt — one of the two drivers that re-arms send_nack_req in steady state. Combinational wire of FIFO rdata decode.
+#  387   isNotExpPacket_l7            1     io_tx_clk    LOW   The other steady-state driver — combinational mask of isNotExpPacket gated by the L7 forgive bit. If this stays high in steady state, the L7 fix didn't fully suppress the bringup transient.
+#  366   send_nack_req                1     io_tx_clk    LOW   The signal that pushes the slave FCSM into state==7 and bounces back to 4. NOT SW-managed, NOT CDC-crossed-into-pclk — same domain as `state` (already mark_debug'd). io_tx_clk reg.
+#  380   socl_l7_reached_link_data    1     io_tx_clk    LOW   L7 sticky witness — once state==5 is observed it latches and disarms the forgive gate. Confirms whether bringup ever reached LINK_DATA on this side.
+#  381   socl_l7_bringup_forgive      1     io_tx_clk    LOW   Combinational gate that nulls send_nack_req in all states. Probing this confirms whether the L7 fix is active when send_nack_req re-arms.
+#
+#  Total: 8 net-bits added. No removals. Build #5 probe set kept verbatim.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Risk classification
+# ──────────────────────────────────────────────────────────────────────────
+#
+#   LOW  (top-scope or clock-native wire — no fold hazard)
+#     All 8 probes. They are pure combinational wires (5) or regs (3) sitting
+#     in the same clock domain as already-mark_debug'd FCSM state. No CDC
+#     crossing, no SW-managed APB regs, no returner-busy-clear path, no
+#     pclk/hclk handshake. Closest precedent: the existing
+#     tl2wl_io_obs_pkt_is_cr_pkt / pkt_is_crack_pkt mark_debug aliases in
+#     Wlink.v:252-253 — those are siblings of pkt_is_data_pkt in the same
+#     FCSM scope, mark_debug, and build #4 did NOT regress on those.
+#
+#   MEDIUM (pclk/hclk reg potentially folding with build #5 set)
+#     None.
+#
+#   HIGH  (SW-managed / returner busy-clear / known build #4 R-1 class)
+#     None. Specifically AVOIDED:
+#       - pair_credit_counter (build #5 already removes this)
+#       - any returner_busy or skid path
+#       - any APB read-mux path
+#       - any pclk-domain reg
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Probes NOT included (deliberately — under V1 spec but absent in RTL)
+# ──────────────────────────────────────────────────────────────────────────
+#
+#   - `send_nack_req_pending` — V1's spec named this signal but it does NOT
+#     exist in WlinkGenericFCSM_6.v under that name. The actual path that
+#     pushes the slave back to state 4 is `send_nack_req` itself (the
+#     io_tx_clk reg at :366) which transitions state→7→4. We probe that
+#     reg directly — the "_pending" suffix V1 invoked corresponds to the
+#     reg's pre-clock value but Vivado captures the reg output anyway.
+#
+#   - Sticky-on-(valid && data_id==0xa1) version of pkt_is_data_pkt — V1's
+#     description was approximate; in the actual Verilog the signal is
+#     combinational (line 284), not sticky. The combinational version is
+#     what feeds the FCSM and the FIFO write enable, so probing the live
+#     wire is correct.
+#
+#   - `_T_54` in WlinkRxLinkLayer.v (line 911) — distinct signal, 17-bit
+#     byte_count + 4 arithmetic; collides in Chisel name but is unrelated
+#     to the FCSM decode predicate. NOT probed.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Manual Edit recipe (fallback if `git apply` of the unified diff below
+# bobbles its @@ line counts — known recurring header bug in this tree)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# All edits are to: src/rtl/local_overrides/WlinkGenericFCSM_6.v
+# All edits are: prepend "(* mark_debug = \"true\" *) " to an existing
+# declaration line. No structural change. Use the Edit tool with these
+# exact old_string / new_string pairs (each is unique in the file):
+#
+# EDIT 1 — line 284
+#   OLD: `  wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]`
+#   NEW: `  (* mark_debug = "true" *) wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]  BUILD #6 Bug-A probe`
+#
+# EDIT 2 — line 318
+#   OLD: `  wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]`
+#   NEW: `  (* mark_debug = "true" *) wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]  BUILD #6 Bug-A probe`
+#
+# EDIT 3 — line 322
+#   OLD: `  wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]`
+#   NEW: `  (* mark_debug = "true" *) wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]  BUILD #6 Bug-A probe`
+#
+# EDIT 4 — line 366
+#   OLD: `  reg  send_nack_req; // @[FC.scala 409:48]`
+#   NEW: `  (* mark_debug = "true" *) reg  send_nack_req; // @[FC.scala 409:48]  BUILD #6 Bug-A probe`
+#
+# EDIT 5 — line 380
+#   OLD: `  reg  socl_l7_reached_link_data;`
+#   NEW: `  (* mark_debug = "true" *) reg  socl_l7_reached_link_data;  // BUILD #6 Bug-A probe`
+#
+# EDIT 6 — line 381 (multi-line declaration — replace only the wire keyword line; attribute applies to whole declaration)
+#   OLD: `  wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)`
+#   NEW: `  (* mark_debug = "true" *) wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)  // BUILD #6 Bug-A probe`
+#
+# EDIT 7 — line 387
+#   OLD: `  wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;`
+#   NEW: `  (* mark_debug = "true" *) wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;  // BUILD #6 Bug-A probe`
+#
+# EDIT 8 — line 402
+#   OLD: `  wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]`
+#   NEW: `  (* mark_debug = "true" *) wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]  BUILD #6 Bug-A probe`
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Unified diff (preferred apply path; fall back to recipe above on bobble)
+# ──────────────────────────────────────────────────────────────────────────
+
+diff --git a/src/rtl/local_overrides/WlinkGenericFCSM_6.v b/src/rtl/local_overrides/WlinkGenericFCSM_6.v
+--- a/src/rtl/local_overrides/WlinkGenericFCSM_6.v
++++ b/src/rtl/local_overrides/WlinkGenericFCSM_6.v
+@@
+-  wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]
++  (* mark_debug = "true" *) wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]  BUILD #6 Bug-A probe
+@@
+-  wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]
++  (* mark_debug = "true" *) wire  isExpPacket = ack_nack_fifo_io_rdata[18:16] == 3'h0 & ack_nack_fifo_valid; // @[FC.scala 287:73]  BUILD #6 Bug-A probe
+@@
+-  wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]
++  (* mark_debug = "true" *) wire  crcCorruptSeen = ack_nack_fifo_io_rdata[18:16] == 3'h4 & ack_nack_fifo_valid; // @[FC.scala 291:73]  BUILD #6 Bug-A probe
+@@
+-  reg  send_nack_req; // @[FC.scala 409:48]
++  (* mark_debug = "true" *) reg  send_nack_req; // @[FC.scala 409:48]  BUILD #6 Bug-A probe
+@@
+-  reg  socl_l7_reached_link_data;
+-  wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)
++  (* mark_debug = "true" *) reg  socl_l7_reached_link_data;  // BUILD #6 Bug-A probe
++  (* mark_debug = "true" *) wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)  // BUILD #6 Bug-A probe
+                                  & cr_pkt_seen_tx_demet_io_out
+                                  & crack_pkt_seen_tx_demet_io_out;
+@@
+-  wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
++  (* mark_debug = "true" *) wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;  // BUILD #6 Bug-A probe
+@@
+-  wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]
++  (* mark_debug = "true" *) wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]  BUILD #6 Bug-A probe
+
+# End of patch.

@@ -1,0 +1,205 @@
+// =============================================================================
+// Bug A proposed RTL fix (L8) — PATCH (NOT YET APPLIED)
+// File: src/rtl/local_overrides/WlinkGenericFCSM_6.v
+// Date: 2026-05-29
+// Author: Bug A investigation (RTL audit, not run)
+// Status: DRAFT — review before applying. DO NOT auto-apply.
+// =============================================================================
+//
+// SUMMARY
+// -------
+// The state==4 (LINK_IDLE) -> state==5 (LINK_DATA) transition fires ONLY on
+// `a2l_fc_replay.link.valid && ~fe_rx_is_full` (FC.scala:523, _GEN_60 at line
+// 430 of the local override). This is a *producer-side* gate: the FCSM only
+// moves to LINK_DATA when ITS OWN application has FC data to send.
+//
+// In the pair-sim Bug A repro and on HW (build #3), the slave's app does NOT
+// drive a2l traffic. As a result the slave FCSM rests at state 4 forever, even
+// though the master is sending data packets. The RX framer combinational
+// outputs (l2a_fc_replay_app_valid at line 719) DO sample regardless of
+// state, but the FCSM staying at 4 keeps the SOP/data_id/word_count regs
+// quiescent on the slave's TX side; the upstream Wlink expects the FCSM to be
+// in state 5 to ack with credit. So practically the link is wedged.
+//
+// FIX (L8 consumer-side analogue of L7):
+//   1. Latch a sticky observation that the *peer is sending data* — proxy:
+//        socl_l8_peer_data_seen <= pkt_is_data_pkt | socl_l8_peer_data_seen
+//      (io_rx_clk-domain register; cleared only on `reset` like cr/crack
+//      sticky bits in the L6 fix at lines 866-879).
+//   2. Synchronize that sticky into io_tx_clk via a 2-flop demet
+//      (use an inline pair of regs identical in style to
+//      cr_pkt_seen_tx_demet).
+//   3. Compute a bring-up forgive gate analogous to L7:
+//        wire socl_l8_consumer_data_ready =
+//             cr_pkt_seen_tx_demet_io_out
+//           & crack_pkt_seen_tx_demet_io_out
+//           & socl_l8_peer_data_seen_tx_demet_io_out
+//           & ~send_nack_req
+//           & ~socl_l8_reached_link_data;
+//   4. Override _GEN_60 (the state==4 next-state expression) so that the
+//      forgive gate forces 3'h5:
+//        wire [2:0] _GEN_60 = socl_l8_consumer_data_ready ? 3'h5
+//                            : (a2l_fc_replay_link_valid & ~fe_rx_is_full)
+//                              ? 3'h5 : state;
+//   5. Mirror the L7 "reached_link_data" sticky for L8 so the gate disarms
+//      permanently once state 5 has been seen once:
+//        reg socl_l8_reached_link_data;
+//        always @(posedge io_tx_clk or posedge io_tx_reset)
+//          if (io_tx_reset) socl_l8_reached_link_data <= 0;
+//          else if (state == 3'h5) socl_l8_reached_link_data <= 1'b1;
+//
+// SAFETY
+// ------
+//   * Once state 5 is observed even once, the L8 gate is permanently disarmed
+//     until reset — steady-state behaviour matches upstream.
+//   * The L8 gate is GATED on cr/crack having been observed AND on having
+//     seen a real data packet from the peer — so it cannot fire before the
+//     link is structurally healthy.
+//   * The natural upstream path (a2l_fc_replay_link_valid && ~fe_rx_is_full)
+//     still fires when the local app has data. L8 is purely an *additional*
+//     trigger.
+//   * Once in state 5, the upstream `nstate := LINK_IDLE` fall-back (Chisel
+//     line 565-566) returns the FSM to state 4 when there's no TX work.  But
+//     because socl_l8_reached_link_data is now sticky, the L8 gate will not
+//     re-fire — so the FSM will only re-enter state 5 via the natural a2l
+//     path, exactly like upstream. This avoids a state 4 <-> 5 thrash.
+//   * L8 does NOT modify the state==1 / state==2 / state==3 branches. The L6
+//     producer-side fix on state==1 is untouched. The L7 send_nack_req clear
+//     remains valid in every state.
+//
+// RISKS
+// -----
+//   * If the data packet decoder produces false positives during bringup
+//     (e.g. mid-byte mis-align decoding a CR as data), socl_l8_peer_data_seen
+//     could latch spuriously. Mitigation: we gate L8 on cr/crack having
+//     already been observed.  If desired, AND-in
+//     `~socl_l7_bringup_forgive` to delay L8 until L7 has retired.
+//   * If both peers reach state 4 at exactly the same cycle, both could fire
+//     L8 to state 5 simultaneously — but that is also the steady-state
+//     desired outcome. No deadlock.
+//   * On WlinkGenericFCSM_4.v (sister generated module, different state
+//     encoding): NOT patched here. If FCSM_4 is also used in the pair link
+//     RTL, audit independently before claiming the fix is complete.
+//
+// =============================================================================
+// PROPOSED UNIFIED DIFF (git-apply against src/rtl/local_overrides/
+// WlinkGenericFCSM_6.v at current HEAD). Apply manually after review.
+// =============================================================================
+
+--- a/src/rtl/local_overrides/WlinkGenericFCSM_6.v
++++ b/src/rtl/local_overrides/WlinkGenericFCSM_6.v
+@@ -296,6 +296,11 @@
+   reg [7:0] fe_rx_credit_max; // @[FC.scala 183:107]
+   reg  cr_pkt_seen_rx; // @[FC.scala 186:107]
+   reg  crack_pkt_seen_rx; // @[FC.scala 188:107]
++  // SoC Labs L8 consumer-side fix (2026-05-29): sticky "have we seen a data
++  // packet from the peer" marker. Used to force LINK_IDLE -> LINK_DATA on the
++  // consumer side. Reset by reset only (same convention as L6 sticky cr/crack
++  // — see comment at line 854).
++  reg  socl_l8_peer_data_seen_rx;
+   reg [7:0] exp_pkt_num; // @[FC.scala 193:44]
+   wire [15:0] _crc_errors_in_T_2 = crc_errors + 16'h1; // @[FC.scala 196:123]
+   wire [15:0] _crc_errors_in_T_3 = crc_errors == 16'hffff ? crc_errors : _crc_errors_in_T_2; // @[FC.scala 196:73]
+@@ -270,6 +275,12 @@
+   wire  crack_pkt_seen_tx_demet_reset; // @[Stdcell.scala 58:23]
+   wire  crack_pkt_seen_tx_demet_io_in; // @[Stdcell.scala 58:23]
+   wire  crack_pkt_seen_tx_demet_io_out; // @[Stdcell.scala 58:23]
++  // SoC Labs L8: 2-flop demet for socl_l8_peer_data_seen_rx into io_tx_clk
++  // (matching style of cr_pkt_seen_tx_demet / crack_pkt_seen_tx_demet).
++  wire  socl_l8_peer_data_seen_tx_demet_clock;
++  wire  socl_l8_peer_data_seen_tx_demet_reset;
++  wire  socl_l8_peer_data_seen_tx_demet_io_in;
++  wire  socl_l8_peer_data_seen_tx_demet_io_out;
+   wire [55:0] bundleOut_0_crc_crcgen_io_in; // @[LinkLayer.scala 1274:24]
+   wire [15:0] bundleOut_0_crc_crcgen_io_out; // @[LinkLayer.scala 1274:24]
+   wire [7:0] ll_rx_pktnum = auto_rx_in_data[7:0]; // @[FC.scala 123:33]
+@@ -425,9 +436,29 @@
+   wire [7:0] _GEN_57 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? 16'h7 : word_count; // @[FC.scala 523:63 FC.scala 527:39 FC.scala 429:39]
+   wire [55:0] _GEN_58 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? _link_data_in_T : link_data; // @[FC.scala 523:63 FC.scala 528:39 FC.scala 430:39]
+   wire [7:0] _GEN_59 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? ne_rx_ptr_next : ne_rx_ptr; // @[FC.scala 523:63 FC.scala 530:39 FC.scala 434:39]
+-  wire [2:0] _GEN_60 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? 3'h5 : state; // @[FC.scala 523:63 FC.scala 531:39 FC.scala 424:39]
++  // SoC Labs L8 consumer-side fix (2026-05-29): force LINK_IDLE -> LINK_DATA
++  // when peer is healthily sending data AND CR/CRACK have completed AND L7
++  // is not in NACK-clear mode.  Disarmed permanently after first observation
++  // of state==5 by socl_l8_reached_link_data sticky.  See L8 header block.
++  reg  socl_l8_reached_link_data;
++  wire socl_l8_consumer_data_ready =
++         cr_pkt_seen_tx_demet_io_out
++       & crack_pkt_seen_tx_demet_io_out
++       & socl_l8_peer_data_seen_tx_demet_io_out
++       & ~send_nack_req
++       & ~socl_l7_bringup_forgive
++       & ~socl_l8_reached_link_data;
++  // Original upstream:
++  //   wire [2:0] _GEN_60 = a2l_fc_replay_link_valid & ~fe_rx_is_full ? 3'h5 : state;
++  // L8-patched:
++  wire [2:0] _GEN_60 = (a2l_fc_replay_link_valid & ~fe_rx_is_full)
++                       ? 3'h5
++                       : (socl_l8_consumer_data_ready ? 3'h5 : state);
+   wire  _GEN_62 = send_ack_req & _T_54 ? 1'h0 : send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update); // @[FC.scala 514:50 FC.scala 516:39 FC.scala 438:39]
+   wire  _GEN_63 = send_ack_req & _T_54 | _GEN_55; // @[FC.scala 514:50 FC.scala 517:39]
+   wire [7:0] _GEN_64 = send_ack_req & _T_54 ? out_prepend_swi_ack_id : _GEN_56; // @[FC.scala 514:50 FC.scala 518:39]
+@@ -880,6 +911,33 @@
+       crack_pkt_seen_rx <= pkt_is_crack_pkt | crack_pkt_seen_rx;
+     end
+   end
++  // SoC Labs L8 consumer-side fix: sticky "peer has sent a data packet".
++  // Same reset convention as L6 cr/crack sticky bits above — POR-only clear
++  // so a transient io_rx_reset re-pulse during bring-up cannot wipe it.
++  always @(posedge io_rx_clk or posedge reset) begin
++    if (reset) begin
++      socl_l8_peer_data_seen_rx <= 1'h0;
++    end else begin
++      socl_l8_peer_data_seen_rx <= pkt_is_data_pkt | socl_l8_peer_data_seen_rx;
++    end
++  end
++  // SoC Labs L8: 2-flop sync of socl_l8_peer_data_seen_rx into io_tx_clk.
++  // Implementation mirrors cr_pkt_seen_tx_demet / crack_pkt_seen_tx_demet
++  // (existing WavDemetReset module).
++  WavDemetReset socl_l8_peer_data_seen_tx_demet (
++    .clock(socl_l8_peer_data_seen_tx_demet_clock),
++    .reset(socl_l8_peer_data_seen_tx_demet_reset),
++    .io_in(socl_l8_peer_data_seen_tx_demet_io_in),
++    .io_out(socl_l8_peer_data_seen_tx_demet_io_out)
++  );
++  // SoC Labs L8: sticky "have we ever reached LINK_DATA" companion to L7.
++  always @(posedge io_tx_clk or posedge io_tx_reset) begin
++    if (io_tx_reset) begin
++      socl_l8_reached_link_data <= 1'h0;
++    end else if (state == 3'h5) begin
++      socl_l8_reached_link_data <= 1'h1;
++    end
++  end
+   always @(posedge io_rx_clk or posedge io_rx_reset) begin
+     if (io_rx_reset) begin
+       exp_pkt_num <= 8'h0;
+@@ -760,6 +818,11 @@
+   assign cr_pkt_seen_tx_demet_io_in = cr_pkt_seen_rx; // @[Stdcell.scala 59:17]
+   assign crack_pkt_seen_tx_demet_clock = io_tx_clk; // @[FC.scala 314:33]
+   assign crack_pkt_seen_tx_demet_reset = io_tx_reset; // @[FC.scala 314:54]
++  // SoC Labs L8 demet wiring.
++  assign socl_l8_peer_data_seen_tx_demet_clock = io_tx_clk;
++  assign socl_l8_peer_data_seen_tx_demet_reset = io_tx_reset;
++  assign socl_l8_peer_data_seen_tx_demet_io_in = socl_l8_peer_data_seen_rx;
+   assign crack_pkt_seen_tx_demet_io_in = crack_pkt_seen_rx; // @[Stdcell.scala 59:17]
+
+// =============================================================================
+// END OF PROPOSED PATCH
+// =============================================================================
+//
+// Notes for the implementer applying this patch:
+//   * The hunk line numbers above are approximate — they target the current
+//     HEAD of feat/td-gpio-phy-integration. If applying after another commit
+//     touches WlinkGenericFCSM_6.v, regenerate offsets with `diff -u`.
+//   * Some hunks land near existing comments; keep the L6/L7 comment blocks
+//     intact and add L8 commentary at the top of the file in the same style.
+//   * Equivalent patch needed for upstream (deps/axi-chiplet-controller/
+//     logical/wlink/WlinkGenericFCSM_6.v) ONLY if we want the upstream copy
+//     usable; otherwise leave upstream alone and rely on local_overrides
+//     precedence in the flist. RECOMMENDATION: patch local_overrides only
+//     for the first iteration, validate in sim+HW, then upstream once stable.
+//   * WlinkGenericFCSM_4.v — separate module, different state encoding —
+//     NOT touched by this patch. Audit before claiming the fix is complete
+//     if pair link RTL also instantiates FCSM_4.
+//
+// =============================================================================

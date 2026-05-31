@@ -1,0 +1,90 @@
+# Bug B fix — make hw_sync_force_en_r bypass phc_time_reached (Option A)
+#
+# Rationale
+# ---------
+# The semantic intent of HW_SYNC_CTRL bit[2] (force_en) is "fire now,
+# don't wait" — see tidelink_ptp.sv:149-151 ("force-enable, bypasses
+# phc_locked_i gate") and the comment block at lines 252-259 explaining
+# how force_en also bypasses the tx_router_idle gate.
+#
+# Today the FSM honours force_en in two of three gates:
+#   1. HW_SYNC_IDLE → ARMED gate (hw_sync_gate, line 372) — force_en honoured
+#   2. TX_WAIT_IDLE → TX_SEND gate (line 260)             — force_en honoured
+#   3. HW_SYNC_ARMED → FIRE gate (phc_time_reached, 436)  — force_en IGNORED
+#
+# The third gate is the wedge. With the BD/sim tie-off
+# phc_nanoseconds = 30'h0 and the reset default hw_sync_interval_r =
+# 999_999_999 (line 359), target_ns_r becomes 999_999_999 on the IDLE→ARMED
+# entry (lines 494-500) and phc_time_reached is permanently false
+# (line 399-401). The HW_SYNC FSM wedges in ARMED forever and
+# ptp_sp_tx_valid never asserts.
+#
+# This patch makes the third gate honour force_en just like the other
+# two: in ARMED, transition to FIRE if (hw_sync_force_en_r ||
+# phc_time_reached). The semantics match the existing comments and the
+# existing top-level pair tests that already write HW_SYNC_CTRL = 0x05
+# under the expectation that the sync fires immediately.
+#
+# Testing
+# -------
+#   * Unit:    cocotb/tidelink_ptp/test_tidelink_ptp.py — all eight
+#              existing hw_sync_* tests leave force_en = 0 and rely on
+#              advancing phc_nanoseconds to trip phc_time_reached. The
+#              patch only changes behaviour when force_en = 1, so all
+#              existing tests remain unaffected.
+#   * Integ:   cocotb/tidelink_top_pair/test_bugb_fix_force_en.py (new)
+#              writes HW_SYNC_CTRL = 0x05 with the pair tb_top's
+#              phc_nanoseconds tie-off = 0 and asserts master
+#              ptp_sp_tx_valid pulses + slave ptp_rx_valid_r asserts.
+#
+# Risks
+# -----
+#   * The PTP servo loop (tidelink_servo.sv if present) consumes the
+#     event outputs sync_tx_done / sync_rx_done. It does not gate on
+#     phc_time_reached today, so a fire-now behaviour just produces
+#     servo events sooner — no functional regression expected.
+#   * Backward compatibility: existing SW that writes force_en = 1
+#     specifically to "bypass phc_locked_i but still wait for PHC time"
+#     would see new behaviour. Such usage is not documented and the
+#     "force_en = fire now" reading is the natural one. The
+#     test_master_ptp_tx_router.py / test_ptp_corrected_regs.py probes
+#     (which today expect HW_SYNC_CTRL = 0x05 to fire) align with the
+#     new semantics.
+#
+# Separate BD-level finding (NOT fixed here)
+# ------------------------------------------
+# The BD tie-off phc_nanoseconds = 30'h0 in
+# fpga/targets/pynq-z2-pair-flip-ila/tidelink_design.tcl (lines 43-44,
+# 480-481) and the same in the sim tb_top.sv (line 315, 526) means even
+# with a sane HW_SYNC_INTERVAL, PHC time never advances on silicon. With
+# this RTL patch, force_en = 1 will fire sync packets regardless. To
+# also unblock the natural (non-force_en) HW sync schedule the BD must
+# get a free-running ns counter wired to phc_nanoseconds. See
+# docs/BUG_B_FIX_PLAN_2026_05_29.md §"BD-level follow-up".
+
+diff --git a/src/rtl/tidelink_ptp.sv b/src/rtl/tidelink_ptp.sv
+--- a/src/rtl/tidelink_ptp.sv
++++ b/src/rtl/tidelink_ptp.sv
+@@ -395,9 +395,15 @@
+     // Rising edge of gate (phc_locked_i or force_en asserted while enable held high)
+     wire hw_sync_gate_rising = hw_sync_gate & ~hw_sync_gate_prev_r;
+
+-    // PHC time comparison: current time >= target time
+-    wire phc_time_reached = (phc_seconds > target_seconds_r) ||
+-                            (phc_seconds == target_seconds_r &&
+-                             phc_nanoseconds >= target_ns_r);
++    // PHC time comparison: current time >= target time.
++    //
++    // hw_sync_force_en_r forces an immediate fire, mirroring the
++    // bypass behaviour of the TX_WAIT_IDLE→TX_SEND gate (line 260)
++    // and the IDLE→ARMED PHC-lock gate (line 372). Without this,
++    // a BD/sim that ties phc_nanoseconds = 30'h0 (FPGA Q4 PHC
++    // tie-off, pair-tb tb_top.sv:315) leaves the ARMED state wedged
++    // forever because target_ns_r = hw_sync_interval_r (default
++    // 999_999_999) and phc_nanoseconds < target_ns_r is permanent.
++    wire phc_time_reached = hw_sync_force_en_r ||
++                            (phc_seconds > target_seconds_r) ||
++                            (phc_seconds == target_seconds_r &&
++                             phc_nanoseconds >= target_ns_r);
+
+     // Advance target by interval (with nanosecond rollover)

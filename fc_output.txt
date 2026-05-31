@@ -1,0 +1,106 @@
+ 
+                              Fusion Compiler (TM)
+
+                  Version U-2022.12 for linux64 - Dec 11, 2022
+  This release has significant feature enhancements. Please review the Release
+                       Notes associated with this release.
+
+                    Copyright (c) 1988 - 2022 Synopsys, Inc.
+   This software and the associated documentation are proprietary to Synopsys,
+ Inc. This software may only be used in accordance with the terms and conditions
+ of a written license agreement with Synopsys, Inc. All other use, reproduction,
+   or distribution of this software is strictly prohibited.  Licensed Products
+     communicate with Synopsys servers for the purpose of providing software
+    updates, detecting software piracy and verifying that customers are using
+    Licensed Products in conformity with the applicable License Key for such
+  Licensed Products. Synopsys will use information gathered in connection with
+    this process to deliver software updates and pursue software pirates and
+                                   infringers.
+
+ Inclusivity & Diversity - Visit SolvNetPlus to read the "Synopsys Statement on
+            Inclusivity and Diversity" (Refer to article 000036315 at
+                        https://solvnetplus.synopsys.com)
+
+set fc_dir /home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler
+/home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler
+open_lib  ${fc_dir}/work/tidelink_top_full.dlib
+Information: Loading library file '/home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler/work/tidelink_top_full.dlib' (FILE-007)
+Information: Loading library file '/home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler/libs/stdcell_lib' (FILE-007)
+Information: Loading library file '/home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler/work/CLIBs/RF_LIB_16K_c.ndm' (FILE-007)
+Information: Loading library file '/home/dam1n19/SoCLabs/tidelink/syn/asic/fusion-compiler/work/CLIBs/RF_LIB_16K_c_physical_only.ndm' (FILE-007)
+Information: Auto created reference libraries are up-to-date, no need to rebuild. (LIB-084)
+{tidelink_top_full.dlib}
+open_block tidelink_top/route.design
+Information: User units loaded from library 'stdcell_lib' (LNK-040)
+Opening block 'tidelink_top_full.dlib:tidelink_top/route.design' in edit mode
+{tidelink_top_full.dlib:tidelink_top/route.design}
+# Find the link_data_pad_clk capture flops and report their physical location
+set caps [get_cells -hier -filter "full_name =~ *gpiorx_*/link_data_pad_clk_reg*"]
+Using libraries: tidelink_top_full.dlib stdcell_lib RF_LIB_16K_ss_1p08v_1p08v_125c RF_LIB_16K_c_physical_only
+Visiting block tidelink_top_full.dlib:tidelink_top/route.design
+Information: The command 'load_upf' cleared the undo history. (UNDO-016)
+Design 'tidelink_top' was successfully linked.
+{{u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_1/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_2/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_3/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_4/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[5]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[4]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[3]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[2]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[1]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[0]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[15]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[14]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[13]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[12]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[10]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[9]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[8]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[7]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[6]} {u_chiplet_controller/u_wlink/phy/gpio/gpiorx_6/link_data_pad_clk_reg[5]} ...}
+puts "=== Found [sizeof_collection $caps] link_data_pad_clk capture flops ==="
+=== Found 128 link_data_pad_clk capture flops ===
+set xs [list]
+foreach_in_collection c $caps {
+    set bbox [get_attribute $c bbox]
+    set xmin [lindex $bbox 0 0]
+    lappend xs $xmin
+}
+set xs [lsort -real $xs]
+187.8000 187.8000 188.0000 189.2000 190.2000 190.6000 192.6000 193.0000 197.6000 199.4000 200.0000 200.2000 200.6000 200.8000 200.8000 201.0000 201.0000 201.2000 201.6000 202.0000 202.2000 203.8000 204.2000 205.2000 207.6000 209.2000 209.6000 210.2000 210.4000 210.4000 210.6000 210.6000 210.8000 210.8000 211.0000 211.2000 211.4000 211.8000 212.0000 213.8000 217.2000 218.2000 218.4000 218.4000 218.4000 218.4000 218.6000 218.6000 218.8000 218.8000 219.0000 219.2000 219.6000 219.6000 219.8000 222.0000 225.8000 226.2000 226.4000 226.8000 226.8000 227.0000 227.0000 227.2000 227.4000 227.4000 227.4000 228.8000 229.2000 229.6000 230.4000 230.6000 231.2000 232.0000 232.4000 232.6000 234.2000 234.6000 234.8000 235.2000 235.2000 236.6000 237.2000 237.6000 237.8000 238.0000 239.0000 240.0000 240.2000 240.2000 242.4000 242.6000 245.4000 246.6000 247.6000 248.4000 249.4000 249.8000 250.0000 253.0000 254.2000 254.4000 254.6000 254.8000 255.4000 255.4000 255.4000 255.6000 255.8000 256.4000 257.2000 257.6000 257.8000 257.8000 258.2000 261.0000 261.0000 263.0000 263.0000 263.2000 263.2000 264.4000 264.6000 265.0000 265.6000 265.6000 265.6000 268.6000
+set xmin_overall [lindex $xs 0]
+187.8000
+set xmax_overall [lindex $xs end]
+268.6000
+set xmed_overall [lindex $xs [expr {[llength $xs]/2}]]
+227.4000
+puts [format "  X range:   %.1f .. %.1f   (median %.1f)" $xmin_overall $xmax_overall $xmed_overall]
+  X range:   187.8 .. 268.6   (median 227.4)
+puts ""
+
+puts "=== pad_clk_rx pin location ==="
+=== pad_clk_rx pin location ===
+set pcr [get_ports pad_clk_rx]
+{pad_clk_rx}
+puts "  bbox: [get_attribute $pcr bbox]"
+  bbox: {0.0000 231.7500} {0.5200 231.8500}
+puts ""
+
+puts "=== block bbox ==="
+=== block bbox ===
+puts "  bbox: [get_attribute [current_block] bbox]"
+  bbox: {0.0000 0.0000} {1034.8000 525.4000}
+puts ""
+
+puts "=== Worst-hold path clock network delay ==="
+=== Worst-hold path clock network delay ===
+if {[sizeof_collection [get_scenarios -quiet scen_fast]] > 0} {
+    current_scenario scen_fast
+}
+{scen_fast}
+report_timing -delay min -nworst 1 -max_paths 1 \
+              -to [get_pins u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[13]/D] \
+              -path_type full_clock | grep -E "clock network delay|slack|input external|library hold|^  Point"
+Error: extra positional option 'grep' (CMD-012)
+Error: unknown option '-E' (CMD-010)
+Error: extra positional option 'clock network delay|slack|input external|library hold|^  Point' (CMD-012)
+Error: Cannot specify 'timing_path_list' with '-nworst'. (CMD-001)
+Error: Cannot specify 'timing_path_list' with '-max_paths'. (CMD-001)
+Error: Cannot specify 'timing_path_list' with '-delay_type'. (CMD-001)
+Information: script '/tmp/td_check_gpio_loc.tcl'
+                stopped at line 35 due to error. (CMD-081)
+Extended error info:
+
+    while executing
+"report_timing -delay min -nworst 1 -max_paths 1 \
+              -to [get_pins u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[13]..."
+    (file "/tmp/td_check_gpio_loc.tcl" line 35)
+ -- End Extended Error Info
+fc_shell> Maximum memory usage for this session: 775.51 MB
+Maximum memory usage for this session including child processes: 775.51 MB
+CPU usage for this session:     13 seconds (  0.00 hours)
+Elapsed time for this session:     44 seconds (  0.01 hours)
+Thank you for using Fusion Compiler.

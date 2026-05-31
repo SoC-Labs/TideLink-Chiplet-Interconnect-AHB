@@ -395,8 +395,22 @@ module tidelink_ptp #(
     // Rising edge of gate (phc_locked_i or force_en asserted while enable held high)
     wire hw_sync_gate_rising = hw_sync_gate & ~hw_sync_gate_prev_r;
 
-    // PHC time comparison: current time >= target time
-    wire phc_time_reached = (phc_seconds > target_seconds_r) ||
+    // PHC time comparison: current time >= target time.
+    //
+    // hw_sync_force_en_r forces an immediate fire, mirroring the
+    // bypass behaviour of the TX_WAIT_IDLE->TX_SEND gate (line 260)
+    // and the IDLE->ARMED PHC-lock gate (line 372). Without this,
+    // a BD/sim that ties phc_nanoseconds = 30'h0 (FPGA Q4 PHC
+    // tie-off, pair-tb tb_top.sv:315) leaves the ARMED state wedged
+    // forever because target_ns_r = hw_sync_interval_r (default
+    // 999_999_999) and phc_nanoseconds < target_ns_r is permanent.
+    //
+    // See docs/BUG_B_FIX_PLAN_2026_05_29.md. SW saturation note:
+    // force_en held high causes ~1 SYNC pkt per 12-30 hclk cy
+    // (~3.6 Mpps at 100 MHz). Use force_en as a one-shot: write
+    // CTRL=0x05, observe seq increment, then write CTRL=0x01.
+    wire phc_time_reached = hw_sync_force_en_r ||
+                            (phc_seconds > target_seconds_r) ||
                             (phc_seconds == target_seconds_r &&
                              phc_nanoseconds >= target_ns_r);
 

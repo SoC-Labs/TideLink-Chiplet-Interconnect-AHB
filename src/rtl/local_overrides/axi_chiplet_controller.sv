@@ -592,7 +592,18 @@ module axi_chiplet_controller #(
             // See probe trace in test_13_bug_n1_second_cause_probe.py.
             i2c_prescale_reg       <= 16'd125;
             nego_cfg_reg           <= NEGO_CFG_RESET;
-            nego_priority_reg      <= 16'hFFFF;
+            // Bug N7 fix (2026-06-01): role_strap-derived asymmetric POR.
+            // Identical priority on both dies (16'hFFFF default) made the
+            // autoneg ST_NEGO_WAIT backoff timer compute identical delays
+            // → neither claims first → both timeout → ST_ERROR with
+            // sda_start_seen=0. test_18 reproduces it in sim (1258 s wall
+            // pre-fix). The strap bit differentiates the two dies at FPGA
+            // POR (axi_gpio_strap DOUT default per-target — die_a=0,
+            // die_b=1), so this POR value is correct at the moment the
+            // autoneg FSM samples nego_priority_reg.
+            //   strap=0 (die_a / master) → priority=1 → low backoff → claims first
+            //   strap=1 (die_b / slave)  → priority=2 → higher backoff → defers
+            nego_priority_reg      <= role_strap_i ? 16'h0002 : 16'h0001;
             nego_timeout_reg       <= 32'd131_082_000;
             nego_lock_pending_reg  <= 1'b0;
             nego_mask_mismatch_reg <= 1'b0;

@@ -368,12 +368,15 @@ module WlinkGenericFCSM_6 #(
   wire  _fe_tx_credit_max_in_T_1 = pkt_is_cr_pkt | pkt_is_crack_pkt; // @[FC.scala 201:77]
   wire  exp_pkt_seen = pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num; // @[FC.scala 210:54]
   wire  exp_pkt_not_seen = pkt_is_data_pkt & ll_rx_pktnum != exp_pkt_num; // @[FC.scala 211:54]
+  // SoC Labs L9: suppress spurious mismatch enqueue on the resync cycle so
+  // the ack_nack_fifo does not carry a stale isNotExpPacket entry forward.
+  wire exp_pkt_not_seen_l9 = exp_pkt_not_seen & ~socl_l9_resync_now;
   wire [7:0] _exp_pkt_num_in_T_3 = exp_pkt_num + 8'h1; // @[FC.scala 212:132]
   wire [7:0] _last_good_pkt_in_T_1 = exp_pkt_seen ? exp_pkt_num : last_good_pkt; // @[FC.scala 213:62]
   wire [7:0] last_good_pkt_in = _fe_tx_credit_max_in_T ? 8'h0 : _last_good_pkt_in_T_1; // @[FC.scala 213:41]
   wire  ack_nack_fifo_valid = ~ack_nack_fifo_io_rempty; // @[FC.scala 261:35]
   wire  _ack_nack_fifo_io_winc_T = pkt_is_ack_pkt | pkt_is_nack_pkt; // @[FC.scala 264:51]
-  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen}; // @[FC.scala 276:42]
+  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9}; // SoC Labs L9 masked mismatch
   wire [2:0] _pkttypenotifier_T_2 = pkt_is_nack_pkt ? 3'h3 : _pkttypenotifier_T_1; // @[FC.scala 275:40]
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]
   wire [18:0] _ack_nack_fifo_io_wdata_T_1 = {pkttypenotifier,auto_rx_in_word_count}; // @[Cat.scala 30:58]
@@ -448,6 +451,13 @@ module WlinkGenericFCSM_6 #(
   // bringup-transient notifier so it cannot re-latch send_nack_req on the
   // same cycle the synchronous AND-clear is applied.
   wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
+  // SoC Labs L9 consumer-side pktnum resync (2026-05-31): one-shot fast-
+  // forward of exp_pkt_num to first observed ll_rx_pktnum + 1. Closes the
+  // exp_pkt_num re-zero-vs-link_cur_addr race that latches send_nack_req
+  // post L7 disarm. See docs/BUG_A_L9_FIX_DESIGN_2026_05_31.md §2 + §4.
+  reg  socl_l9_first_data_seen_rx;
+  wire socl_l9_resync_now = pkt_is_data_pkt & ~socl_l9_first_data_seen_rx;
+  wire isNotExpPacket_l9  = isNotExpPacket_l7 & ~socl_l9_resync_now;
   // SoC Labs F-1 state-7 watchdog: see header comment.  Backup recovery
   // path for the case where the demet stickies fail to align (P&R lottery
   // / ILA insertion / ASIC post-CTS).  Forward declarations; sequential
@@ -508,7 +518,7 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] _GEN_67 = send_ack_req & _T_54 ? 3'h6 : _GEN_60; // @[FC.scala 514:50 FC.scala 521:39]
   wire  _GEN_68 = send_ack_req & _T_54 ? 1'h0 : _T_59; // @[FC.scala 514:50 FC.scala 441:39]
   wire [7:0] _GEN_69 = send_ack_req & _T_54 ? ne_rx_ptr : _GEN_59; // @[FC.scala 514:50 FC.scala 434:39]
-  wire  _GEN_71 = send_nack_req ? 1'h0 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 505:28 FC.scala 507:39 FC.scala 439:39]
+  wire  _GEN_71 = send_nack_req ? 1'h0 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l9) /* SoC Labs L7 masked NotExp */; // @[FC.scala 505:28 FC.scala 507:39 FC.scala 439:39]
   wire  _GEN_72 = send_nack_req | _GEN_63; // @[FC.scala 505:28 FC.scala 508:39]
   wire [7:0] _GEN_73 = send_nack_req ? out_prepend_swi_nack_id : _GEN_64; // @[FC.scala 505:28 FC.scala 509:39]
   wire [15:0] _GEN_74 = send_nack_req ? {{3'd0}, _word_count_in_T_4} : _GEN_65; // @[FC.scala 505:28 FC.scala 510:39]
@@ -522,7 +532,7 @@ module WlinkGenericFCSM_6 #(
   wire [2:0] _GEN_92 = _T_57 ? 3'h6 : _GEN_85; // @[FC.scala 546:52 FC.scala 553:39]
   wire  _GEN_96 = send_nack_req | _GEN_88; // @[FC.scala 538:30 FC.scala 541:39]
   wire [2:0] _GEN_100 = send_nack_req ? 3'h7 : _GEN_92; // @[FC.scala 538:30 FC.scala 545:39]
-  wire  _GEN_105 = auto_tx_out_advance ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 537:28 FC.scala 439:39]
+  wire  _GEN_105 = auto_tx_out_advance ? _GEN_71 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l9) /* SoC Labs L7 masked NotExp */; // @[FC.scala 537:28 FC.scala 439:39]
   wire  _GEN_106 = auto_tx_out_advance ? _GEN_96 : sop; // @[FC.scala 537:28 FC.scala 427:39]
   wire [7:0] _GEN_107 = auto_tx_out_advance ? _GEN_73 : data_id; // @[FC.scala 537:28 FC.scala 428:39]
   wire [15:0] _GEN_108 = auto_tx_out_advance ? _GEN_74 : word_count; // @[FC.scala 537:28 FC.scala 429:39]
@@ -550,7 +560,7 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_137 = auto_tx_out_advance & _GEN_128; // @[FC.scala 582:28 FC.scala 441:39]
   wire [7:0] _GEN_138 = auto_tx_out_advance ? _GEN_129 : ne_rx_ptr; // @[FC.scala 582:28 FC.scala 434:39]
   wire [7:0] _GEN_139 = state == 3'h6 ? _GEN_130 : count; // @[FC.scala 578:57 FC.scala 425:39]
-  wire  _GEN_141 = state == 3'h6 ? _GEN_105 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */; // @[FC.scala 578:57 FC.scala 439:39]
+  wire  _GEN_141 = state == 3'h6 ? _GEN_105 : send_nack_req | (crcCorruptSeen | isNotExpPacket_l9) /* SoC Labs L7 masked NotExp */; // @[FC.scala 578:57 FC.scala 439:39]
   wire  _GEN_142 = state == 3'h6 ? _GEN_132 : sop; // @[FC.scala 578:57 FC.scala 427:39]
   wire [7:0] _GEN_143 = state == 3'h6 ? _GEN_133 : data_id; // @[FC.scala 578:57 FC.scala 428:39]
   wire [15:0] _GEN_144 = state == 3'h6 ? _GEN_134 : word_count; // @[FC.scala 578:57 FC.scala 429:39]
@@ -561,7 +571,7 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_149 = state == 3'h7 ? _GEN_114 : _GEN_142; // @[FC.scala 571:58]
   wire [2:0] _GEN_150 = state == 3'h7 ? _GEN_115 : _GEN_146; // @[FC.scala 571:58]
   wire [7:0] _GEN_151 = state == 3'h7 ? count : _GEN_139; // @[FC.scala 571:58 FC.scala 425:39]
-  wire  _GEN_153 = state == 3'h7 ? send_nack_req | (crcCorruptSeen | isNotExpPacket_l7) /* SoC Labs L7 masked NotExp */ : _GEN_141; // @[FC.scala 571:58 FC.scala 439:39]
+  wire  _GEN_153 = state == 3'h7 ? send_nack_req | (crcCorruptSeen | isNotExpPacket_l9) /* SoC Labs L7 masked NotExp */ : _GEN_141; // @[FC.scala 571:58 FC.scala 439:39]
   wire [7:0] _GEN_154 = state == 3'h7 ? data_id : _GEN_143; // @[FC.scala 571:58 FC.scala 428:39]
   wire [15:0] _GEN_155 = state == 3'h7 ? word_count : _GEN_144; // @[FC.scala 571:58 FC.scala 429:39]
   wire [55:0] _GEN_156 = state == 3'h7 ? link_data : _GEN_145; // @[FC.scala 571:58 FC.scala 430:39]
@@ -788,7 +798,10 @@ module WlinkGenericFCSM_6 #(
   assign l2a_fc_replay_app_reset = io_rx_reset; // @[FC.scala 221:35]
   assign l2a_fc_replay_app_enable = io_app_enable; // @[FC.scala 222:35]
   assign l2a_fc_replay_app_data = auto_rx_in_data[55:8]; // @[FC.scala 122:33]
-  assign l2a_fc_replay_app_valid = pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num; // @[FC.scala 210:54]
+  // SoC Labs L9: accept the FIRST observed DATA pkt regardless of pktnum
+  // alignment so the resync write lands in the L2A FIFO.
+  assign l2a_fc_replay_app_valid = (pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num)
+                                  | socl_l9_resync_now;
   assign l2a_fc_replay_link_clk = io_app_clk; // @[FC.scala 227:35]
   assign l2a_fc_replay_link_reset = io_app_reset; // @[FC.scala 228:35]
   assign l2a_fc_replay_link_ack_addr = l2a_fc_replay_link_cur_addr; // @[FC.scala 237:35]
@@ -962,12 +975,30 @@ module WlinkGenericFCSM_6 #(
       exp_pkt_num <= 8'h0;
     end else if (_fe_tx_credit_max_in_T) begin
       exp_pkt_num <= 8'h0;
+    end else if (socl_l9_resync_now) begin
+      // SoC Labs L9: jump exp_pkt_num to ll_rx_pktnum + 1 (wrap on fe_tx_credit_max).
+      if (ll_rx_pktnum == fe_tx_credit_max) begin
+        exp_pkt_num <= 8'h0;
+      end else begin
+        exp_pkt_num <= ll_rx_pktnum + 8'h1;
+      end
     end else if (exp_pkt_seen) begin
       if (exp_pkt_num == fe_tx_credit_max) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= _exp_pkt_num_in_T_3;
       end
+    end
+  end
+  // SoC Labs L9: sticky "have we ever seen a DATA pkt from the peer".
+  // POR-only clear matches the L6 cr/crack sticky convention; a transient
+  // io_rx_reset re-pulse during bringup cannot wipe it.
+  always @(posedge io_rx_clk or posedge reset) begin
+    if (reset) begin
+      socl_l9_first_data_seen_rx <= 1'h0;
+    end else begin
+      socl_l9_first_data_seen_rx <= pkt_is_data_pkt
+                                    | socl_l9_first_data_seen_rx;
     end
   end
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
@@ -1153,13 +1184,13 @@ module WlinkGenericFCSM_6 #(
     if (io_tx_reset) begin
       send_nack_req <= 1'h0;
     end else if (_ack_seen_before_T) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l9)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h1) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l9)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h2) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l9)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else if (state == 3'h3) begin
-      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l7)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
+      send_nack_req <= (send_nack_req | (crcCorruptSeen | isNotExpPacket_l9)) & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end else begin
       send_nack_req <= _GEN_172 & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear;
     end
@@ -1458,6 +1489,12 @@ initial begin
   end
   if (reset) begin
     taken = 1'h0;
+  end
+  // SoC Labs L9: sticky reg POR-init (RANDOMIZE_REG_INIT clean — matches
+  // socl_l7_reached_link_data convention; no _RAND_NN needed because the
+  // sticky tracks a strictly monotonic observation).
+  if (reset) begin
+    socl_l9_first_data_seen_rx = 1'h0;
   end
   `endif // RANDOMIZE
 end // initial

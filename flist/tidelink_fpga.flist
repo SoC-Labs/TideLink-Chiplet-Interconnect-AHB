@@ -258,7 +258,10 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
 // Bug N7/N8 silicon observability override: adds status_o[3:0] output port
 // (mirror of AXIL STATUS reg @ 0x00). No functional behaviour change.
 ${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
+// Bug N7/N8 silicon observability override: mark_debug on state_reg /
+// phy_state_reg / bus_active_reg / s_axis_cmd_ready_reg / start_bit / stop_bit.
+// Inert unless FPGA_INSERT_DEBUG_CORE=1 (pynq-z2-pair-i2c-ila target).
+${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 // ── §9 structural fix: per-lane IDELAYE2 RX delay element (calibrator-

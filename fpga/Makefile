@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -92,6 +92,13 @@ else ifeq ($(TARGET),pynq-z2-pair-ila)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip-ila)
 XILINX_PART     := xc7z020clg400-1
+else ifeq ($(TARGET),pynq-z2-pair-i2c-ila)
+XILINX_PART     := xc7z020clg400-1
+# Bug N7/N8 i2c-ILA target — auto-enable insert_debug_core for this TARGET so
+# callers don't have to remember the env-var. mark_debug attrs in the
+# local_overrides RTL are inert without this flag.
+FPGA_INSERT_DEBUG_CORE := 1
+export FPGA_INSERT_DEBUG_CORE
 else ifeq ($(TARGET),pynq-z2-pair-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip-all)
@@ -227,6 +234,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
+	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \
 	vivado -mode batch -source $(FPGA_DIR)/build_design.tcl \
 	    -log $(BUILD_RUN_DIR)/build_design.log \
 	    -journal $(BUILD_RUN_DIR)/build_design.jou

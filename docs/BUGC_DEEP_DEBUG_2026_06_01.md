@@ -128,8 +128,8 @@ the entire 8.8 ms run. L9 is dormant when it would actually help.
 **Goal**: make L9 RE-ARM whenever `exp_pkt_num` gets reset, so the next
 observed data pkt fast-forwards exp_pkt_num to its correct value.
 
-### §3.1 — Patch A: re-arm `first_data_seen_rx` on `io_rx_reset` and on
-`_fe_tx_credit_max_in_T` (the two paths that re-zero exp_pkt_num)
+### §3.1 — Patch A (RECOMMENDED): change `first_data_seen_rx` reset domain
+to match `exp_pkt_num` (so the two regs are guaranteed to clear together)
 
 **Before** (`WlinkGenericFCSM_6.v:1003-1009`):
 
@@ -146,18 +146,19 @@ end
 **After**:
 
 ```verilog
-// SoC Labs L9b (2026-06-01): re-arm first_data_seen_rx whenever
-// exp_pkt_num gets re-zeroed by io_rx_reset OR by the app-enable
-// demet de-asserting (_fe_tx_credit_max_in_T). Without this re-arm,
-// L9 is a strict one-shot and cannot recover from a post-bringup
-// LL-swreset pulse that zeroes exp_pkt_num while the POR-domain
-// sticky persists. See docs/BUGC_DEEP_DEBUG_2026_06_01.md §2.
-always @(posedge io_rx_clk or posedge reset) begin
-    if (reset) begin
+// SoC Labs L9b (2026-06-01): bind first_data_seen_rx reset domain to
+// io_rx_reset (matching the exp_pkt_num always block at L980).  Without
+// this, an LL-swreset pulse during bringup re-zeros exp_pkt_num while
+// leaving the POR-domain sticky high -> L9 is permanently disarmed at
+// exactly the moment it's needed.  Also re-arm on the sync app-enable
+// demet de-assertion, which is the other path that re-zeros exp_pkt_num.
+// See docs/BUGC_DEEP_DEBUG_2026_06_01.md §2.
+always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
         socl_l9_first_data_seen_rx <= 1'h0;
-    end else if (io_rx_reset | _fe_tx_credit_max_in_T) begin
-        // exp_pkt_num is being / has been re-zeroed -- re-arm L9 so the
-        // next observed data pkt fast-forwards us back into sync.
+    end else if (_fe_tx_credit_max_in_T) begin
+        // exp_pkt_num is being re-zeroed sync (app-enable demet low) --
+        // also re-arm L9 so the next observed data pkt fast-forwards.
         socl_l9_first_data_seen_rx <= 1'h0;
     end else begin
         socl_l9_first_data_seen_rx <= pkt_is_data_pkt | socl_l9_first_data_seen_rx;
@@ -165,19 +166,34 @@ always @(posedge io_rx_clk or posedge reset) begin
 end
 ```
 
-NOTE: `io_rx_reset` is mixed-domain WRT this always block (it's the reset
-of the OTHER always block, not this one). In Chisel-generated RTL, this
-is normal (the `_fe_tx_credit_max_in_T` signal in the same `io_rx_clk`
-domain is the actual synchronous indicator). To be safe and stay
-purely-synchronous, we can drop the `io_rx_reset` term — `_fe_tx_credit_max_in_T`
-covers the swreset case as well, because swreset cycling will drive
-`io_app_enable` through `en_ff2_rx_demet`. Probably safest single-term version:
+Both reset sources used here exactly match the two zero-paths in the
+exp_pkt_num always block at L980-984 (io_rx_reset, _fe_tx_credit_max_in_T),
+guaranteeing the two regs clear together.  POR is still implicit via the
+io_rx_reset wiring (TideLinkToWlink.v:168 routes Wlink's io_rx_reset which
+includes POR + swreset).
+
+### §3.1.1 — Patch A-minimal alternative
+
+If the reset-domain change is considered too invasive, the smaller change
+is to add only the synchronous re-arm term (keeping POR reset):
 
 ```verilog
-end else if (_fe_tx_credit_max_in_T) begin
-    socl_l9_first_data_seen_rx <= 1'h0;
-end else begin
+always @(posedge io_rx_clk or posedge reset) begin
+    if (reset) begin
+        socl_l9_first_data_seen_rx <= 1'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
+        socl_l9_first_data_seen_rx <= 1'h0;       // NEW: sync re-arm
+    end else begin
+        socl_l9_first_data_seen_rx <= pkt_is_data_pkt | socl_l9_first_data_seen_rx;
+    end
+end
 ```
+
+This handles only the `_fe_tx_credit_max_in_T` path. If the bringup-time
+zeroing is actually triggered by `io_rx_reset` (swreset pulse) rather than
+`_fe_tx_credit_max_in_T`, this alternative is INSUFFICIENT.  Recommend
+Patch A (full) over Patch A-minimal until §3.2 step 3 confirms which path
+is the culprit.
 
 ### §3.2 — Sim verification plan
 

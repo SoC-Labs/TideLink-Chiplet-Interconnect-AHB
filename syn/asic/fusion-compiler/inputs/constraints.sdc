@@ -177,8 +177,14 @@ set_input_delay -clock pad_clk_rx -min -$RX_INPUT_DELAY_SYMM [get_ports {pad_rx[
 # component, so it cannot trigger per-endpoint hold-buffer insertion.
 # Splits into setup (data stable BEFORE strobe) and hold (data stable
 # AFTER strobe), each within RX_BUS_SKEW_NS.
-set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -setup $RX_BUS_SKEW_NS
-set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -hold  $RX_BUS_SKEW_NS
+#
+# IMPORTANT: previously inline here as
+#   set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -setup ...
+# but fc_shell's set_data_check `-to` accepts a SINGLE pin/port — the
+# bus collection [get_ports {pad_rx[*]}] returns 24 ports and trips
+# "bad value specified for option -to" (CMD-013), stopping SDC parsing
+# for the rest of this file. Moved to 1_init_design.tcl right next to
+# the §2 set_max_delay block, iterating per pad_rx bit (24 commands).
 
 # ── §4. TX eye — pad_tx[*] vs pad_clk_tx_fwd ─────────────────────────────
 # pad_clk_tx_fwd is declared above (with the other create_clock /

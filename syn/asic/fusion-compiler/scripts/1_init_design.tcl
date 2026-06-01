@@ -132,18 +132,24 @@ foreach scen_name {scen_slow scen_fast} {
     }
 }
 
-# pad_rx[*] -> gpiorx_*/link_data_pad_clk_reg* — set_max_delay -datapath_only
+# pad_rx[*] -> gpiorx_*/link_data_pad_clk_reg* — bounded datapath delay.
 #
-# Moved out of constraints.sdc (line 158 in older revisions) because the SDC
-# parser rejects `get_cells -hier -filter` syntax with CMD-010 "unknown option
-# -filter", and when the parse failed it silently stopped the rest of
-# constraints.sdc (§3 set_data_check, §4 TX eye, §5 PHC output delay) too —
-# producing the -0.59 ns scen_fast hold WNS / 130 NVE failure in 9 aspect-2.0
-# builds. See ASIC_TIMING_CONSTRAINTS Part B §3.2 for the rationale: bounds
-# pad->capture datapath delay (no clock skew, no hold component), preventing
-# any one lane from drifting more than RX_DATAPATH_MAX_NS over the spec.
-# Falls back to a CRITICAL WARNING if a future Wlink/Chisel regen renames
-# link_data_pad_clk_reg — fail-safe, not a wrong constraint.
+# Moved out of constraints.sdc (line 158 in older revisions) because the
+# SDC parser rejects `get_cells -hier -filter` syntax with CMD-010
+# "unknown option -filter", and when the parse failed it silently stopped
+# the rest of constraints.sdc (§3 set_data_check, §4 TX eye, §5 PHC
+# output delay) too — producing the -0.59 ns scen_fast hold WNS / 130 NVE
+# failure in 9 aspect-2.0 builds. See ASIC_TIMING_CONSTRAINTS Part B §3.2
+# for the rationale.
+#
+# fc_shell U-2022.12 NOTES (probed via `help -verbose set_max_delay`):
+#   - The PrimeTime-style `-datapath_only` flag is REJECTED here (CMD-010
+#     "unknown option"). The closest fc_shell equivalent is
+#     `-ignore_clock_latency`, which excludes clock-tree latency from the
+#     bound — same intent as -datapath_only's "no clock skew, no hold
+#     component" behaviour.
+#   - Falls back to a CRITICAL WARNING if a future Wlink/Chisel regen
+#     renames link_data_pad_clk_reg — fail-safe, not a wrong constraint.
 foreach scen_name {scen_slow scen_fast} {
     if {[sizeof_collection [get_scenarios -quiet $scen_name]] == 0} { continue }
     current_scenario $scen_name
@@ -155,13 +161,37 @@ foreach scen_name {scen_slow scen_fast} {
         # as CLK_PERIOD/CLK_DIV (typically 4.0). Re-derive here so this
         # block does not depend on a Tcl variable set by constraints.sdc.
         set _rx_dp_max 0.8
-        set_max_delay -datapath_only $_rx_dp_max \
+        set_max_delay -ignore_clock_latency $_rx_dp_max \
             -from [get_ports {pad_rx[*]}] \
             -to   $_rx_caps
-        puts [format "INFO: \[fc_init\] %s: set_max_delay -datapath_only %.2f ns from pad_rx -> %d link_data_pad_clk_reg caps" \
+        puts [format "INFO: \[fc_init\] %s: set_max_delay -ignore_clock_latency %.2f ns from pad_rx -> %d link_data_pad_clk_reg caps" \
                 $scen_name $_rx_dp_max [sizeof_collection $_rx_caps]]
     } else {
         puts "CRITICAL WARNING: \[fc_init\] $scen_name: pad_rx capture flop selector matched 0 cells — set_max_delay skipped"
+    }
+
+    # §3 lane-bundle skew (set_data_check) was at constraints.sdc:180-181
+    # but fc_shell's set_data_check `-to` takes a SINGLE pin/port — the
+    # bus collection `[get_ports {pad_rx[*]}]` returns multiple objects
+    # and trips "bad value specified for option -to". Iterate per bit
+    # instead. RX_BUS_SKEW_NS = T_UI_NS/20 per constraints.sdc:76, ~0.2 ns
+    # at the canonical 4 ns user_ref_clk period. Hard-coded here to keep
+    # this block independent of the SDC's Tcl variables (the SDC may abort
+    # earlier and never set them).
+    set _rx_bus_skew 0.2
+    set _rx_pad_clk  [get_ports pad_clk_rx -quiet]
+    set _rx_pad_bits [get_ports {pad_rx[*]} -quiet]
+    if {[sizeof_collection $_rx_pad_clk] > 0 && [sizeof_collection $_rx_pad_bits] > 0} {
+        set _n_skew 0
+        foreach_in_collection _p $_rx_pad_bits {
+            set_data_check -from $_rx_pad_clk -to $_p -setup $_rx_bus_skew
+            set_data_check -from $_rx_pad_clk -to $_p -hold  $_rx_bus_skew
+            incr _n_skew
+        }
+        puts [format "INFO: \[fc_init\] %s: set_data_check (setup+hold) %.2f ns on %d pad_rx bits vs pad_clk_rx" \
+                $scen_name $_rx_bus_skew $_n_skew]
+    } else {
+        puts "CRITICAL WARNING: \[fc_init\] $scen_name: pad_clk_rx or pad_rx[*] not resolved — set_data_check skipped"
     }
 }
 

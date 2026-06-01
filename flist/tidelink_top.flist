@@ -60,12 +60,15 @@ ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+// Bug N7/N8 silicon observability override: adds obs_*_o output ports for
+// APB Region C readback. No functional behaviour change.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_autoneg.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFOL1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxi2axil_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxil2apb_bridge.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
+// Bug N7/N8 silicon observability override: adds status_o[3:0] output port.
+${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v

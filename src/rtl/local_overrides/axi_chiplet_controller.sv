@@ -128,8 +128,11 @@ module axi_chiplet_controller #(
     output wire             train_fail_irq_o,
 
     // ── Controller Register Pass-Through (from tidelink_apb_regs) ────────
-    //   ctrl_reg_addr[3]=0 → Region 4 (legacy: ROLE/I²C/NEGO @ 0x080-0x09C)
-    //   ctrl_reg_addr[3]=1 → Region 8 (new:    SWI_*/NEGO_TRAIN_* @ 0x100-0x11C)
+    //   ctrl_reg_addr widened to 5 bits (Bug N7/N8 silicon observability,
+    //   2026-06-01). bits[4:3] now selects between three regions:
+    //     2'b01 → Region 4 (ROLE/I²C/NEGO   @ 0x080-0x09C)
+    //     2'b10 → Region 8 (SWI_*/NEGO_TRAIN_* @ 0x100-0x11C)
+    //     2'b11 → Region C (autoneg observability @ 0x180-0x19C, RO)
     //
     // Bug N2 fix (2026-05-29): the input ports were renamed to
     // `apb_ctrl_reg_*` (external CPU/AHB→APB master from tidelink_apb_regs).
@@ -137,7 +140,7 @@ module axi_chiplet_controller #(
     // (I²C-driven) decode so that the peer's I²C-write to Region 4/8 lands
     // on the same decoder. See block titled "Bug N2 fix" below.
     input  wire             apb_ctrl_reg_write,
-    input  wire  [3:0]      apb_ctrl_reg_addr,
+    input  wire  [4:0]      apb_ctrl_reg_addr,
     input  wire  [31:0]     apb_ctrl_reg_wdata,
     output logic [31:0]     ctrl_reg_rdata,
 
@@ -420,15 +423,18 @@ module axi_chiplet_controller #(
     // forward-reference to role_is_master.
     wire slv_apb_ctrl_region4 = (slv_apb_paddr[8:5] == 4'b0100);
     wire slv_apb_ctrl_region8 = (slv_apb_paddr[8:5] == 4'b1000);
+    wire slv_apb_ctrl_regionC = (slv_apb_paddr[8:5] == 4'b1100);
     wire slv_apb_ctrl_hit     = slv_apb_psel &&
-                                (slv_apb_ctrl_region4 || slv_apb_ctrl_region8);
+                                (slv_apb_ctrl_region4 || slv_apb_ctrl_region8 || slv_apb_ctrl_regionC);
     // Single-beat APB write completion: psel & penable & pwrite — one cycle.
     wire slv_apb_ctrl_write   = slv_apb_ctrl_hit && slv_apb_penable && slv_apb_pwrite;
 
-    // ctrl_reg_addr layout (see tidelink_apb_regs.sv:445):
-    //   {apb_region_is_ext, paddr[4:2]} where apb_region_is_ext = paddr[8]
-    // For Region 4 paddr[8]=0; for Region 8 paddr[8]=1. Identical here.
-    wire [3:0]  slv_ctrl_reg_addr  = {slv_apb_paddr[8], slv_apb_paddr[4:2]};
+    // ctrl_reg_addr layout (see tidelink_apb_regs.sv).
+    //   ctrl_reg_addr = {paddr[8:7], paddr[4:2]} (5 bits)
+    //     bits[4:3] = 2'b01 → Region 4
+    //     bits[4:3] = 2'b10 → Region 8
+    //     bits[4:3] = 2'b11 → Region C (Bug N7/N8 observability, RO)
+    wire [4:0]  slv_ctrl_reg_addr  = {slv_apb_paddr[8:7], slv_apb_paddr[4:2]};
     wire [31:0] slv_ctrl_reg_wdata = slv_apb_pwdata;
 
     // OR-merge the external APB-driven ctrl_reg_* path with the I²C-driven
@@ -441,14 +447,14 @@ module axi_chiplet_controller #(
     // needed.
     //
     // IMPORTANT: ctrl_reg_addr must be driven from slv_apb_* whenever the
-    // I²C path is targeting Region 4/8 — INCLUDING READS — because the
-    // combinational ctrl_reg_rdata mux below uses ctrl_reg_addr[3] to pick
-    // Region 4 vs Region 8, and region[4|8]_rdata indexes off
-    // ctrl_reg_addr[2:0]. The WRITE strobe (ctrl_reg_write) on the other
-    // hand stays gated on penable & pwrite so the always_ff blocks below
-    // only fire on a real write completion.
+    // I²C path is targeting Region 4/8/C — INCLUDING READS — because the
+    // combinational ctrl_reg_rdata mux below uses ctrl_reg_addr[4:3] to
+    // pick Region 4 / Region 8 / Region C, and region{4,8,C}_rdata index
+    // off ctrl_reg_addr[2:0]. The WRITE strobe (ctrl_reg_write) on the
+    // other hand stays gated on penable & pwrite so the always_ff blocks
+    // below only fire on a real write completion.
     wire        ctrl_reg_write = apb_ctrl_reg_write || slv_apb_ctrl_write;
-    wire [3:0]  ctrl_reg_addr  = slv_apb_ctrl_hit ? slv_ctrl_reg_addr
+    wire [4:0]  ctrl_reg_addr  = slv_apb_ctrl_hit ? slv_ctrl_reg_addr
                                                   : apb_ctrl_reg_addr;
     wire [31:0] ctrl_reg_wdata = slv_apb_ctrl_write ? slv_ctrl_reg_wdata
                                                     : apb_ctrl_reg_wdata;
@@ -607,7 +613,7 @@ module axi_chiplet_controller #(
             // the lock intent across cycles while waiting for the
             // mask-handshake gate to open.
             if (nego_set_role_lock_w ||
-                (ctrl_reg_write && !role_locked && ctrl_reg_addr == 4'h0 && ctrl_reg_wdata[1]))
+                (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000 && ctrl_reg_wdata[1]))
                 nego_lock_pending_reg <= 1'b1;
             else if (nego_lock_pending_reg && mask_hs_gate_open)
                 nego_lock_pending_reg <= 1'b0;
@@ -622,13 +628,14 @@ module axi_chiplet_controller #(
             // the mask gate is open.
             if (nego_lock_pending_reg && mask_hs_gate_open) begin
                 role_lock_reg <= 1'b1;
-            end else if (ctrl_reg_write && !role_locked && ctrl_reg_addr == 4'h0) begin
+            end else if (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000) begin
                 role_cfg_reg  <= ctrl_reg_wdata[0];
                 if (ctrl_reg_wdata[1] && mask_hs_gate_open)
                     role_lock_reg <= 1'b1;
-            end else if (ctrl_reg_write && !role_locked && ctrl_reg_addr != 4'h0 &&
-                         !ctrl_reg_addr[3]) begin
-                // ROLE_CFG (4'h0) handled above with mask gate; remaining
+            end else if (ctrl_reg_write && !role_locked &&
+                         (ctrl_reg_addr[4:3] == 2'b01) &&
+                         (ctrl_reg_addr[2:0] != 3'h0)) begin
+                // Slot 0 (ROLE_CFG) handled above with mask gate; remaining
                 // pre-lock writable Region-4 registers handled here.
                 case (ctrl_reg_addr[2:0])
                     3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
@@ -638,7 +645,8 @@ module axi_chiplet_controller #(
                     3'h7: nego_timeout_reg  <= ctrl_reg_wdata[31:0];
                     default: ;
                 endcase
-            end else if (ctrl_reg_write && role_locked && !ctrl_reg_addr[3]) begin
+            end else if (ctrl_reg_write && role_locked &&
+                         (ctrl_reg_addr[4:3] == 2'b01)) begin
                 // After lock, only I2C slave address, prescale, and nego regs remain writable
                 case (ctrl_reg_addr[2:0])
                     3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
@@ -721,11 +729,19 @@ module axi_chiplet_controller #(
     end
 
     // Region 8 read mux is driven by the Phase 3 phy_align + I²C-train
-    // register block instantiated below. ctrl_reg_rdata picks Region 4 or
-    // Region 8 based on ctrl_reg_addr[3].
+    // register block instantiated below. Region C is the Bug N7/N8
+    // autoneg observability bank (autoneg internal counters and i2c_master
+    // STATUS). ctrl_reg_rdata picks Region 4 / Region 8 / Region C based on
+    // ctrl_reg_addr[4:3].
     wire [31:0] region8_rdata;
+    wire [31:0] regionC_rdata;
     always_comb begin
-        ctrl_reg_rdata = ctrl_reg_addr[3] ? region8_rdata : region4_rdata;
+        unique case (ctrl_reg_addr[4:3])
+            2'b01:   ctrl_reg_rdata = region4_rdata;
+            2'b10:   ctrl_reg_rdata = region8_rdata;
+            2'b11:   ctrl_reg_rdata = regionC_rdata;
+            default: ctrl_reg_rdata = 32'b0;
+        endcase
     end
 
     // =====================================================================
@@ -878,7 +894,7 @@ module axi_chiplet_controller #(
 
     // Writeable Region-8 register storage. POR-only reset for
     // training-related state so it survives warm reset.
-    wire region8_write = ctrl_reg_write && ctrl_reg_addr[3];
+    wire region8_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b10);
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -982,6 +998,53 @@ module axi_chiplet_controller #(
                                         sync_obs_ecc_corrupt_1}      : // [15:0]  ECC-corrupted sat. count — ECC_COUNTERS (was NEGO_TRAIN_STEP RO=0; W1P write path unchanged)
         (ctrl_reg_addr[2:0] == 3'h6) ? swi_phase_offset_r            : // SWI_PHASE_OFFSET (8 × 4-bit per-lane phase)
         (ctrl_reg_addr[2:0] == 3'h7) ? 32'h5041_0100                  : // PHY_ALIGN_ID = "PA" v1.0
+                                       32'h0;
+
+    // =====================================================================
+    // Region C — Autoneg silicon observability (Bug N7/N8 probes)
+    //   MMIO 0x44032180..0x4403219C (paddr 0x180..0x19C). All slots RO.
+    //   Surfaces internal tidelink_autoneg counters/state + i2c_master
+    //   STATUS so the silicon-debug path can see WHERE the FSM is wedged
+    //   pre-CLAIM. Mirror only — no behaviour change.
+    //
+    //   Slot layout:
+    //     3'h0  OBS_DELAY_CTR        — autoneg.delay_ctr_r[31:0]
+    //     3'h1  OBS_TIMEOUT_CTR      — autoneg.timeout_ctr_r[31:0]
+    //     3'h2  OBS_FSM_SUBSTATE     — packed:
+    //              [31]    reserved
+    //              [22:18] reserved
+    //              [17:13] autoneg.init_wait_r[4:0]    (5b)
+    //              [12:10] autoneg.axl_state_r[2:0]    (3b)
+    //              [ 9: 7] autoneg.txn_step_r[2:0]     (3b)
+    //              [ 6: 3] reserved
+    //              [ 2: 0] reserved
+    //              ── packing chosen so each field sits on a recognisable
+    //              ── nibble boundary when read in hex
+    //     3'h3  OBS_I2C_MST_STATUS   — {28'h0, i2c_master.status_o[3:0]}
+    //                                  [3]=missed_ack [2]=bus_active
+    //                                  [1]=bus_cont(0) [0]=busy
+    //     3'h4  OBS_OBS_ID          — "OB" v1.0 marker = 0x4F42_0100
+    //     3'h5..3'h7 reserved (return 0)
+    //
+    //   See deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+    //   and src/rtl/local_overrides/i2c_master_axil.v for the register
+    //   sources.
+    // =====================================================================
+    wire [31:0] obs_delay_ctr_w;
+    wire [31:0] obs_timeout_ctr_w;
+    wire  [4:0] obs_init_wait_w;
+    wire  [2:0] obs_axl_state_w;
+    wire  [2:0] obs_txn_step_w;
+    wire  [3:0] obs_i2c_mst_status_w;
+
+    assign regionC_rdata =
+        (ctrl_reg_addr[2:0] == 3'h0) ? obs_delay_ctr_w                     :
+        (ctrl_reg_addr[2:0] == 3'h1) ? obs_timeout_ctr_w                   :
+        (ctrl_reg_addr[2:0] == 3'h2) ? {14'h0, obs_init_wait_w,
+                                        obs_axl_state_w, obs_txn_step_w,
+                                        7'h0}                              :
+        (ctrl_reg_addr[2:0] == 3'h3) ? {28'h0, obs_i2c_mst_status_w}       :
+        (ctrl_reg_addr[2:0] == 3'h4) ? 32'h4F42_0100                       : // "OB" v1.0
                                        32'h0;
 
     // =====================================================================
@@ -1228,7 +1291,9 @@ module axi_chiplet_controller #(
         .i2c_scl_t          (mst_scl_t),
         .i2c_sda_i          (i2c_sda_i),
         .i2c_sda_o          (mst_sda_o),
-        .i2c_sda_t          (mst_sda_t)
+        .i2c_sda_t          (mst_sda_t),
+        // Bug N7/N8 silicon observability — Region C i2c_master STATUS probe
+        .status_o           (obs_i2c_mst_status_w)
     );
 
     // =====================================================================
@@ -1458,7 +1523,14 @@ module axi_chiplet_controller #(
         .train_peer_lane_locked_o  (train_peer_lane_locked_w),
         .train_peer_lane_fault_o   (train_peer_lane_fault_w),
         .train_local_lane_fault_o  (train_local_lane_fault_w),
-        .train_fail_irq_o          (train_fail_irq_w)
+        .train_fail_irq_o          (train_fail_irq_w),
+
+        // Bug N7/N8 silicon observability — Region C probes
+        .obs_delay_ctr_o           (obs_delay_ctr_w),
+        .obs_timeout_ctr_o         (obs_timeout_ctr_w),
+        .obs_init_wait_o           (obs_init_wait_w),
+        .obs_axl_state_o           (obs_axl_state_w),
+        .obs_txn_step_o            (obs_txn_step_w)
     );
 
     // Phase 1 (G1, G1b) closure: all training-coordination outputs are

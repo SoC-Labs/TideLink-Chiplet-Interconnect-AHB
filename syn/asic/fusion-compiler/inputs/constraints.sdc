@@ -152,16 +152,23 @@ set_input_delay -clock pad_clk_rx -min -$RX_INPUT_DELAY_SYMM [get_ports {pad_rx[
 # (Part B §3.2).
 #
 # Selector: capture flop is `link_data_pad_clk[*]` inside each per-lane
-# WavD2DGpioRx instance (gpiorx_0..7 in WavD2DGpio.v). Falls back to a
-# no-op (with a CRITICAL WARNING) if a future Wlink/Chisel regen renames
-# the cell — fail-safe, not a wrong constraint (Part B §8 risk 2).
-if {[sizeof_collection [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg*"}]] > 0} {
-    set_max_delay -datapath_only $RX_DATAPATH_MAX_NS \
-        -from [get_ports {pad_rx[*]}] \
-        -to   [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg*"}]
-} else {
-    puts "CRITICAL WARNING: pad_rx capture flop selector returned 0 cells — set_max_delay skipped. Check WavD2DGpioRx cell naming."
-}
+# WavD2DGpioRx instance (gpiorx_0..7 in WavD2DGpio.v).
+#
+# IMPORTANT: This block was previously inline here using
+#   if {[sizeof_collection [get_cells -hier -filter {...}]] > 0} { ... }
+# which fc_shell's SDC parser rejects (CMD-010 "unknown option -filter").
+# When the parse failed, processing of THIS WHOLE FILE stopped at this
+# line — silently skipping §3 (set_data_check), §4 (TX eye), §5 (PHC
+# output delay), and the §2 set_max_delay itself. The 130-NVE / -0.59 ns
+# scen_fast hold WNS failure in 9 consecutive aspect-2.0 builds was
+# attributable to this regression: without set_max_delay -datapath_only,
+# FC timed the pad_rx -> link_data_pad_clk arc with the full source-sync
+# pessimism the original constraint was designed to bound.
+#
+# Resolution: the set_max_delay block now lives in 1_init_design.tcl
+# in the post-overlay full-Tcl section (next to the existing R/SN async-
+# reset false_path block) where get_cells -hier -filter works. Same
+# pattern documented at the bottom of this file (NOTE near §6).
 
 # ── §3. Lane-bundle skew — set_data_check (ASIC form of set_bus_skew) ────
 # This is THE key fix per Part B §3.3 — it bounds the lane-to-lane

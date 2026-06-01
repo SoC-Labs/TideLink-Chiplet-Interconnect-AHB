@@ -96,11 +96,18 @@ module tidelink_fifo #(
     output wire    [SYS_DATA_W-1:0] mbox_reg_wdata,
 
     // --------------------------------------------------------------------------
-    // Chiplet Controller Register Pass-Through (Regions 4 & 8 — see
-    // src/rtl/fifo/tidelink_apb_regs.sv for the 4-bit addr encoding).
+    // Chiplet Controller Register Pass-Through (Regions 4 & 8 & C — see
+    // src/rtl/fifo/tidelink_apb_regs.sv for the 5-bit addr encoding).
+    //
+    // ctrl_reg_addr widened from [3:0] to [4:0] on 2026-06-01 to carry the
+    // Region C (autoneg observability) decode bit. Previously the high bit
+    // (paddr[8]) was truncated at this port boundary, so any read of
+    // 0x44032180..0x4403219C aliased back to Region 4 in the chiplet
+    // controller's read mux (which switches on ctrl_reg_addr[4:3]).
+    // See docs/BUG_N7_SILICON_STATUS_2026_06_01.md.
     // --------------------------------------------------------------------------
     output wire                     ctrl_reg_write,
-    output wire               [3:0] ctrl_reg_addr,
+    output wire               [4:0] ctrl_reg_addr,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 

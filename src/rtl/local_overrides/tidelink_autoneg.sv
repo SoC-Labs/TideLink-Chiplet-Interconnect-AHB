@@ -344,9 +344,14 @@ module tidelink_autoneg #(
     reg        peer_cal_done_capture_en;
 
     // AXI-Lite sub-state
-    reg [2:0]  axl_state_r,     axl_state_nxt;
-    reg [2:0]  txn_step_r,      txn_step_nxt;
-    reg        axl_done_r,      axl_done_nxt;       // Pulse when AXL transaction completes
+    // Bug N7/N8 silicon observability: mark_debug on the AXL sub-FSM regs.
+    // Inert unless FPGA_INSERT_DEBUG_CORE=1 (pynq-z2-pair-i2c-ila target).
+    (* mark_debug = "true" *) reg [2:0]  axl_state_r;
+                              reg [2:0]  axl_state_nxt;
+    (* mark_debug = "true" *) reg [2:0]  txn_step_r;
+                              reg [2:0]  txn_step_nxt;
+    (* mark_debug = "true" *) reg        axl_done_r;
+                              reg        axl_done_nxt;       // Pulse when AXL transaction completes
     reg [31:0] axl_rdata_r,     axl_rdata_nxt;      // Captured read data
 
     // SDA edge detection
@@ -486,6 +491,18 @@ module tidelink_autoneg #(
         nego_lost_nxt      = nego_lost_r;
         sda_start_seen_nxt = sda_start_seen_r;
         mask_byte_cnt_nxt  = mask_byte_cnt_r;
+        // Bug N8 fix (2026-06-01): hold-default for txn_step_nxt.
+        // Without this default, Vivado infers a latch (warning [Synth 8-327]
+        // at tidelink_autoneg.sv:637). Sim sees X-propagation; silicon sees a
+        // real latch that holds stale values across cycles where no explicit
+        // txn_step_nxt assignment fires. Symptom on v9 silicon: master's
+        // i2c_master_axil core's busy_int never asserts during ST_NEGO_CLAIM
+        // because the FSM's TXN_PRESCALE→TXN_DATA→TXN_COMMAND walk
+        // is corrupted, dropping the COMMAND write and leaving the i2c
+        // master idle. cocotb tests pass because sim X-prop happens to
+        // match expected behaviour. Fix matches commit be5eed2 on the
+        // historical feat/i2c-autonomous-lock-integ branch.
+        txn_step_nxt       = txn_step_r;
         // busy_seen is sticky-1 within a single transaction (so TXN_CHECK
         // can distinguish "early-read sees idle" from "transaction done").
         // It is reset by default any cycle the FSM is NOT in a transaction

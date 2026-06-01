@@ -480,16 +480,20 @@ module axi_chiplet_controller #(
     logic [31:0] nego_timeout_reg;   // NEGO_TIMEOUT[31:0]
 
     // Auto-negotiation FSM wire forward declarations (instantiated later)
-    wire [3:0]  nego_state_w;
+    // Bug N7/N8 silicon observability: mark_debug on FSM-side AXIL bus + role-
+    // arbitration nets. Inert unless FPGA_INSERT_DEBUG_CORE=1 at build time.
+    (* mark_debug = "true" *) wire [3:0]  nego_state_w;
     wire        nego_done_w, nego_error_w, nego_won_w, nego_lost_w, nego_sda_start_seen;
     wire        nego_role_w;
     wire        nego_set_role_cfg_w, nego_role_value_w, nego_set_role_lock_w;
-    wire [7:0]  fsm_axil_awaddr, fsm_axil_araddr;
-    wire        fsm_axil_awvalid, fsm_axil_wvalid, fsm_axil_bready;
+    (* mark_debug = "true" *) wire [7:0]  fsm_axil_awaddr;
+                              wire [7:0]  fsm_axil_araddr;
+    (* mark_debug = "true" *) wire        fsm_axil_awvalid;
+                              wire        fsm_axil_wvalid, fsm_axil_bready;
     wire        fsm_axil_arvalid, fsm_axil_rready;
-    wire [31:0] fsm_axil_wdata;
+    (* mark_debug = "true" *) wire [31:0] fsm_axil_wdata;
     wire [3:0]  fsm_axil_wstrb;
-    wire        nego_driving;
+    (* mark_debug = "true" *) wire        nego_driving;
 
     wire         role_locked   = role_lock_reg;
     wire         nego_en       = nego_cfg_reg[0];
@@ -1104,6 +1108,8 @@ module axi_chiplet_controller #(
     wire        bridge_axil_rready;
 
     // Muxed AXI-Lite wires (to I2C master)
+    // Bug N7/N8 silicon observability: mark_debug on the I²C-master-facing
+    // AXI-Lite. Inert unless FPGA_INSERT_DEBUG_CORE=1 at build time.
     wire [7:0]  mst_axil_awaddr;
     wire        mst_axil_awvalid;
     wire        mst_axil_awready;
@@ -1112,14 +1118,14 @@ module axi_chiplet_controller #(
     wire        mst_axil_wvalid;
     wire        mst_axil_wready;
     wire [1:0]  mst_axil_bresp;
-    wire        mst_axil_bvalid;
+    (* mark_debug = "true" *) wire        mst_axil_bvalid;
     wire        mst_axil_bready;
     wire [7:0]  mst_axil_araddr;
     wire        mst_axil_arvalid;
-    wire        mst_axil_arready;
-    wire [31:0] mst_axil_rdata;
+    (* mark_debug = "true" *) wire        mst_axil_arready;
+    (* mark_debug = "true" *) wire [31:0] mst_axil_rdata;
     wire [1:0]  mst_axil_rresp;
-    wire        mst_axil_rvalid;
+    (* mark_debug = "true" *) wire        mst_axil_rvalid;
     wire        mst_axil_rready;
 
     wire        mst_scl_i, mst_scl_o, mst_scl_t;

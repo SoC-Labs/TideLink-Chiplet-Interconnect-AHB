@@ -1807,9 +1807,18 @@ module tidelink_top #(
         // artefacts instead of a measured eye centre. Reverting that
         // predicate to lane_locked[i] (Fix A2) restores real per-dwell
         // semantics; reverting iteration to phase-INNER (Fix B) restores
-        // run_len = adjacent-phase eye width. AUTOCAL=1 is needed to
-        // actually exercise the calibrator on silicon and validate.
-        .AUTOCAL_ENABLE(1'b1),
+        // run_len = adjacent-phase eye width.
+        //
+        // Build #10 (2026-06-01): force AUTOCAL_ENABLE=1'b0. Memory entry
+        // ★★★ AUTOCAL=0 HW workaround 2026-05-27 confirms: the running
+        // calibrator on silicon causes M->S asymmetric corruption that
+        // wedges the FC layer (Build #9 HW reproduced the wedge bilaterally
+        // even with L11+L9+L9b+BugB sim-PASS). S_PROBE fix exists but
+        // empirically broken on HW per deps/tidelink-gpio-phy/docs/
+        // INTEGRATION_DEEPDIVE.md §F ("NO — workaround still needed unless
+        // S_PROBE is ported"). PHY locks fine without runtime recal —
+        // POR-time calibration through phase/slip is sufficient.
+        .AUTOCAL_ENABLE(1'b0),
         // §9 structural fix: forward the IDELAYE2 enable. Default 0 keeps
         // sim/ASIC bit-exact; the FPGA vivado wrapper sets this to 1.
         .USE_IDELAY    (USE_IDELAY),

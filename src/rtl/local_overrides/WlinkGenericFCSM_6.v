@@ -345,6 +345,15 @@ module WlinkGenericFCSM_6 #(
     out_prepend_swi_disable_crc & rx_crc_computed_crcgen_io_out != auto_rx_in_crc; // @[FC.scala 157:40]
   reg [15:0] crc_errors; // @[FC.scala 160:107]
   wire  pkt_is_data_pkt = _crc_corrupt_T_2 & ~crc_corrupt; // @[FC.scala 166:85]
+  // SoC Labs L9 consumer-side pktnum resync (2026-05-31): one-shot fast-
+  // forward of exp_pkt_num to first observed ll_rx_pktnum + 1. Closes the
+  // exp_pkt_num re-zero-vs-link_cur_addr race that latches send_nack_req
+  // post L7 disarm. The masked-isNotExpPacket wire lives near the
+  // isNotExpPacket_l7 declaration (see L450 region). Reg+wire declared
+  // here for forward-reference by exp_pkt_not_seen_l9 at L373 and the
+  // l2a_fc_replay_app_valid OR at L803.
+  reg  socl_l9_first_data_seen_rx;
+  wire socl_l9_resync_now = pkt_is_data_pkt & ~socl_l9_first_data_seen_rx;
   wire  valid_rx_pkt_crc_err = _crc_corrupt_T_2 & crc_corrupt; // @[FC.scala 167:85]
   reg [7:0] swi_cr_id; // @[SW.scala 83:22]
   wire  pkt_is_cr_pkt = _crc_corrupt_T & auto_rx_in_data_id == swi_cr_id; // @[FC.scala 169:50]
@@ -451,12 +460,10 @@ module WlinkGenericFCSM_6 #(
   // bringup-transient notifier so it cannot re-latch send_nack_req on the
   // same cycle the synchronous AND-clear is applied.
   wire isNotExpPacket_l7 = isNotExpPacket & ~socl_l7_bringup_forgive;
-  // SoC Labs L9 consumer-side pktnum resync (2026-05-31): one-shot fast-
-  // forward of exp_pkt_num to first observed ll_rx_pktnum + 1. Closes the
-  // exp_pkt_num re-zero-vs-link_cur_addr race that latches send_nack_req
-  // post L7 disarm. See docs/BUG_A_L9_FIX_DESIGN_2026_05_31.md §2 + §4.
-  reg  socl_l9_first_data_seen_rx;
-  wire socl_l9_resync_now = pkt_is_data_pkt & ~socl_l9_first_data_seen_rx;
+  // SoC Labs L9: isNotExpPacket masked with resync-now (sticky+wire
+  // declarations live earlier in the file, near pkt_is_data_pkt at L347,
+  // for declaration-before-use ordering — VCS strict on
+  // `default_nettype none`).
   wire isNotExpPacket_l9  = isNotExpPacket_l7 & ~socl_l9_resync_now;
   // SoC Labs F-1 state-7 watchdog: see header comment.  Backup recovery
   // path for the case where the demet stickies fail to align (P&R lottery
@@ -990,11 +997,20 @@ module WlinkGenericFCSM_6 #(
       end
     end
   end
-  // SoC Labs L9: sticky "have we ever seen a DATA pkt from the peer".
-  // POR-only clear matches the L6 cr/crack sticky convention; a transient
-  // io_rx_reset re-pulse during bringup cannot wipe it.
-  always @(posedge io_rx_clk or posedge reset) begin
-    if (reset) begin
+  // SoC Labs L9b (2026-06-01): bind first_data_seen_rx reset domain to
+  // io_rx_reset (matching the exp_pkt_num always block at L980). Without
+  // this, an LL-swreset pulse during bringup re-zeros exp_pkt_num while
+  // leaving the POR-domain sticky high -> L9 is permanently disarmed at
+  // exactly the moment it's needed. Also re-arm on the sync app-enable
+  // demet de-assertion, which is the other path that re-zeros exp_pkt_num.
+  // Both reset sources here exactly match the two zero-paths in the
+  // exp_pkt_num always block so the two regs are guaranteed to clear
+  // together. POR is still implicit via io_rx_reset wiring.
+  // See docs/BUGC_DEEP_DEBUG_2026_06_01.md §3.1.
+  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
+      socl_l9_first_data_seen_rx <= 1'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
       socl_l9_first_data_seen_rx <= 1'h0;
     end else begin
       socl_l9_first_data_seen_rx <= pkt_is_data_pkt

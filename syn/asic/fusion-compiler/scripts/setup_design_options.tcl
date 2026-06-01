@@ -116,3 +116,40 @@ if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
     # ICG cells available, compile_fusion's CG inserter has nothing to
     # instantiate and silently skips the pass.
 }
+
+#-----------------------------------------------------------------------------
+# CTS cell purpose — force clock_opt to use CK-prefixed clock-characterized
+# cells for the clock fanin.
+#
+# Why: under aspect-2.0 floorplan, compile_fusion/clock_opt picked regular
+# signal cells (MUX2D*, BUFFD*) for the pad_clk_inv_scan_mux + driver chain
+# in u_wlink/phy/gpio/gpiorx_*/, producing 0.41 ns of OCV-asymmetric hold
+# uncertainty that breaks the -1.00 ns input_delay -min source-sync budget
+# (-0.59 ns scen_fast hold WNS, 130 NVEs at PG gate). FC2 aspect-1.0 closed
+# clean because clock_opt happened to swap to CK cells (CKBD4, CKMUX2D1) for
+# the same path.
+#
+# Verified via /tmp/td_struct_compare2.tcl on the worst-hold path
+#   u_chiplet_controller/u_wlink/phy/gpio/gpiorx_5/link_data_pad_clk_reg[13]/CP:
+#     FC2 fanin (7 cells):
+#       CKBD4 + CKLNQD1 + CKMUX2D1 + CKND16 + MUX2D0 + SDFSNQD2 + SEDFCNQD0
+#     build #8 fanin (8 cells):
+#       BUFFD12 + BUFFD8 + CKLNQD1 + CKND16 + MUX2D2 + MUX2D4 + SDFSNQD2 + SEDFCNQD0
+#
+# Mechanism: set_lib_cell_purpose -exclude cts on the regular signal
+# variants stops clock_opt from picking them as clock-tree cells. The same
+# cells stay available for normal signal paths (the exclusion is purpose-
+# scoped, not a global set_dont_use). CK-prefixed clock cells already
+# carry the default 'cts' purpose, so no -include is needed for them.
+#
+# fc_shell U-2022.12: probed via `help -verbose set_lib_cell_purpose` —
+# -exclude values are {all, cts, hold, none, optimization, power}.
+set _non_ck_signal_cells [get_lib_cells -quiet \
+    "*/MUX2D* */BUFFD* */INVD*"]
+if {[sizeof_collection $_non_ck_signal_cells] > 0} {
+    set_lib_cell_purpose -exclude cts $_non_ck_signal_cells
+    puts [format "INFO: \[setup\] excluded %d non-CK signal cells (MUX2D*/BUFFD*/INVD*) from cts purpose — clock_opt restricted to CK cells" \
+            [sizeof_collection $_non_ck_signal_cells]]
+} else {
+    puts "WARN: \[setup\] no MUX2D*/BUFFD*/INVD* cells found in libs — CK-only CTS restriction not applied"
+}

@@ -184,10 +184,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxi2axil_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxil2apb_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
+// Bug N7/N8 silicon observability override: adds status_o[3:0] output port.
+${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+// Bug N7/N8 silicon observability override: adds obs_*_o output ports.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_autoneg.sv
 
 // §9 PHY alignment: per-lane lock checker + auto-cal FSM
 //   tidelink_lane_checker.sv was deleted from src/rtl/ in commit d043909 and

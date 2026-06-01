@@ -255,7 +255,9 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFOL1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxi2axil_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxil2apb_bridge.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master_axil.v
+// Bug N7/N8 silicon observability override: adds status_o[3:0] output port
+// (mirror of AXIL STATUS reg @ 0x00). No functional behaviour change.
+${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
@@ -271,7 +273,10 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // (Region 8 slot 3'h0 bits[7:4] = SWI_CAL_MIN_DWELLS) wired to
 // u_calibrator.min_lock_dwells_i. Otherwise identical to upstream.
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
+// Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
+// init_wait,axl_state,txn_step}_o output ports for APB Region C readback.
+// No functional behaviour change vs the deps/ source.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_autoneg.sv
 
 // ── §9 PHY alignment: per-lane training-pattern lock checker + auto-cal FSM ──
 //   tidelink_lane_checker.sv was deleted from src/rtl/ in commit d043909 and

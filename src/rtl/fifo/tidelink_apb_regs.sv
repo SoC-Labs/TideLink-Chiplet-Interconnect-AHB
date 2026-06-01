@@ -85,13 +85,18 @@ module tidelink_apb_regs #(
     output logic              [2:0] mbox_reg_addr,
     output logic [SYS_DATA_W-1:0]  mbox_reg_wdata,
 
-    // Chiplet controller register pass-through (Regions 4 + 8).
-    // ctrl_reg_addr is widened from 3 to 4 bits: bits[2:0] are the slot
-    // within the region, bit[3] selects between Region 4 (paddr[8]=0,
-    // slots 0..7 -> 0x080..0x09C) and Region 8 (paddr[8]=1, slots 0..7
-    // remapped to ctrl_reg_addr bits [3:0] = 4'b1000..4'b1111 -> 0x100..0x11C).
+    // Chiplet controller register pass-through (Regions 4 + 8 + C).
+    // ctrl_reg_addr is widened to 5 bits: bits[2:0] are the slot
+    // within the region, bits[4:3] select between Region 4 (paddr[8:5]=4'b0100,
+    // slots 0..7 -> 0x080..0x09C), Region 8 (paddr[8:5]=4'b1000, slots 0..7
+    // -> 0x100..0x11C) and Region C (paddr[8:5]=4'b1100, slots 0..7
+    // -> 0x180..0x19C, autoneg observability — Bug N7/N8 silicon probes,
+    // 2026-06-01). Encoding:
+    //   ctrl_reg_addr[4:3] = 2'b01 → Region 4
+    //   ctrl_reg_addr[4:3] = 2'b10 → Region 8
+    //   ctrl_reg_addr[4:3] = 2'b11 → Region C (read-only observability)
     output logic                    ctrl_reg_write,
-    output logic              [3:0] ctrl_reg_addr,
+    output logic              [4:0] ctrl_reg_addr,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
 
@@ -436,13 +441,19 @@ module tidelink_apb_regs #(
     assign mbox_reg_addr  = paddr[4:2];
     assign mbox_reg_wdata = pwdata;
 
-    // Chiplet controller: Region 4 (0x080-0x09C) AND Region 8 (0x100-0x11C).
-    //   ctrl_reg_addr[3] selects between them.
-    //   Region 4: ctrl_reg_addr = {1'b0, paddr[4:2]}, slots 0..7 (0x080..0x09C)
-    //   Region 8: ctrl_reg_addr = {1'b1, paddr[4:2]}, slots 8..15 (0x100..0x11C)
+    // Chiplet controller: Region 4 (0x080-0x09C), Region 8 (0x100-0x11C),
+    // and Region C (0x180-0x19C, RO observability).
+    //   ctrl_reg_addr[4:3] selects between them:
+    //     2'b01 = Region 4 (apb_region == 4'b0100)
+    //     2'b10 = Region 8 (apb_region == 4'b1000)
+    //     2'b11 = Region C (apb_region == 4'b1100) — Bug N7/N8 silicon probes
+    //   Writes to Region C are accepted at the strobe but have no
+    //   effect (the controller decoder ignores any ctrl_reg_addr[4]=1
+    //   writes; reads return the autoneg observability mirror).
     assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
-                                           (apb_region == 4'b1000));
-    assign ctrl_reg_addr  = {apb_region_is_ext, paddr[4:2]};
+                                           (apb_region == 4'b1000) ||
+                                           (apb_region == 4'b1100));
+    assign ctrl_reg_addr  = {apb_region[3:2], paddr[4:2]};
     assign ctrl_reg_wdata = pwdata;
 
     // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC).
@@ -513,8 +524,18 @@ module tidelink_apb_regs #(
             4'b0111: prdata = perf_reg_rdata;
             4'b1000: begin // Region 8: Chiplet Extended (PHY align + I2C train)
                 //   Same ctrl_reg_rdata pass-through path; the chiplet
-                //   controller's read mux distinguishes Region 4 vs Region 8
-                //   via ctrl_reg_addr[3].
+                //   controller's read mux distinguishes Region 4 / Region 8
+                //   / Region C via ctrl_reg_addr[4:3].
+                prdata = ctrl_reg_rdata;
+            end
+            4'b1100: begin // Region C: Autoneg silicon observability (RO)
+                //   Bug N7/N8 probes — delay_ctr, timeout_ctr, init_wait,
+                //   axl_state, txn_step, i2c_master STATUS. Shares the
+                //   ctrl_reg_rdata pass-through bus; the chiplet
+                //   controller's read mux picks Region C via
+                //   ctrl_reg_addr[4:3] == 2'b11. See
+                //   src/rtl/local_overrides/axi_chiplet_controller.sv
+                //   "Region C — Autoneg Observability" block.
                 prdata = ctrl_reg_rdata;
             end
             4'b1010: begin // Region 10: Eye visibility v2 (tidelink_eye_regs)
@@ -556,6 +577,9 @@ module tidelink_apb_regs #(
                             default: ;
                         endcase
                     end
+                end
+                4'b1100: begin // Region C: all slots RO (Bug N7/N8 observability)
+                    if (pwrite) pslverr = 1'b1;
                 end
                 4'b1010: begin
                     // Region 10 owns its own pslverr (RO write + MODE=10

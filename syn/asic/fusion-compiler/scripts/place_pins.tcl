@@ -2,11 +2,12 @@
 # Port-to-side assignment for tidelink_top as a chip-top partition.
 #
 # Convention (wide-rectangle partition, aspect ~2.0):
-#   LEFT   — external chiplet interface: PHY pads (pad_*) + I2C (i2c_*)
-#   RIGHT  — system APB bus (register access)
-#   TOP    — PHC time inputs/outputs + clocks, resets, DFT scan
-#   BOTTOM — system AHB bus (regular subordinate + manager + TX aperture
-#            + FIFO data window + PTP write port)
+#   LEFT   — external chiplet interface: PHY pads (pad_*) + I2C
+#            + user_ref_clk (TideLink/Wlink reference clock, drives PHY logic)
+#   RIGHT  — system APB bus + hclk + hresetn + poresetn + apb_debug_unlock_i
+#   TOP    — PHC time interface (phc_*) + phc_clk + phc_resetn + phc_locked_i
+#   BOTTOM — system AHB bus + scan_clk + scan_mode + scan_asyncrst_ctrl
+#            + scan_shift + scan_in + scan_out (DFT chain)
 #
 # Sourced by 1_init_design.tcl AFTER place_memories.tcl and BEFORE the
 # pre-compile sanity check. Constraints attach to ports via
@@ -30,7 +31,7 @@ proc constrain_pins_on_side {patterns side_name label} {
     puts "INFO: \[place_pins\] $label : [sizeof_collection $ports] ports -> $side_name (side $side)"
 }
 
-# ── LEFT — external chiplet interface: PHY pads + I2C ────────────────────
+# ── LEFT — PHY pads + I2C + user_ref_clk ─────────────────────────────────
 constrain_pins_on_side {
     pad_clk_tx
     pad_clk_rx
@@ -44,27 +45,34 @@ constrain_pins_on_side {
     i2c_sda_t
     i2c_nbsy_irq
     i2c_nrd_empty_irq
-} left "PHY pads + I2C"
+    user_ref_clk
+} left "PHY pads + I2C + user_ref_clk"
 
-# ── BOTTOM — AHB busses ──────────────────────────────────────────────────
+# ── BOTTOM — AHB busses + DFT scan ───────────────────────────────────────
 constrain_pins_on_side {
     ahb_sub_*
     ahb_tx_*
     ahb_fifo_*
     ahb_mng_*
     ahb_ptp_*
-} bottom "AHB busses"
+    scan_clk
+    scan_mode
+    scan_asyncrst_ctrl
+    scan_shift
+    scan_in
+    scan_out
+} bottom "AHB busses + DFT scan"
 
-# ── RIGHT — APB register bus ─────────────────────────────────────────────
+# ── RIGHT — APB register bus + hclk + system resets ──────────────────────
 constrain_pins_on_side {
     apb_*
-} right "APB bus"
+    apb_debug_unlock_i
+    hclk
+    hresetn
+    poresetn
+} right "APB bus + hclk + system resets"
 
-# ── TOP — PHC time interface + clocks / resets / DFT ─────────────────────
-# PHC bus signals + small clock/reset/DFT cluster share the long top
-# edge. PHC is the biggest pin group (~300 pins after bus expansion),
-# so it needs a long edge; clocks/resets/DFT (~12 pins) tuck in
-# alongside.
+# ── TOP — PHC time interface + PHC clock/reset ───────────────────────────
 constrain_pins_on_side {
     phc_clk
     phc_resetn
@@ -76,18 +84,7 @@ constrain_pins_on_side {
     phc_hw_set_*
     phc_hw_adj_*
     phc_locked_i
-    apb_debug_unlock_i
-    hclk
-    hresetn
-    poresetn
-    user_ref_clk
-    scan_mode
-    scan_asyncrst_ctrl
-    scan_clk
-    scan_shift
-    scan_in
-    scan_out
-} top "PHC time + clocks + resets + DFT"
+} top "PHC time interface + phc_clk"
 
 #-----------------------------------------------------------------------------
 # Run the pin placer now so the assignments are baked into init.design and

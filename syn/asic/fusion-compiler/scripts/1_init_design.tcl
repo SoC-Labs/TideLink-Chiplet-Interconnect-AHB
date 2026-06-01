@@ -132,6 +132,22 @@ foreach scen_name {scen_slow scen_fast} {
     }
 }
 
+# After RTL bump to tidelink-gpio-phy @ 32e8d38, lane_checker_single
+# decodes a training_mode_rise pulse from training_mode_w_q and fans it
+# out to ~8 reset endpoints per instance. Cut the rise-pulse hold mass.
+foreach scen_name {scen_slow scen_fast} {
+    if {[sizeof_collection [get_scenarios -quiet $scen_name]] == 0} { continue }
+    current_scenario $scen_name
+    set _tm_q_cells [get_cells -hier -quiet \
+        -filter "full_name =~ *u_lane_checker*training_mode_w_q_reg"]
+    if {[sizeof_collection $_tm_q_cells] > 0} {
+        set_false_path -hold -from $_tm_q_cells
+        puts "INFO: \[fc_init\] $scen_name: [sizeof_collection $_tm_q_cells] training_mode_w_q register(s) hold-cut"
+    } else {
+        puts "WARN: \[fc_init\] $scen_name: no training_mode_w_q register(s) found — fanout hold-cut not applied"
+    }
+}
+
 #-----------------------------------------------------------------------------
 # Initialise floorplan — partition target: aspect 1.0, util 0.85
 #-----------------------------------------------------------------------------
@@ -154,8 +170,16 @@ initialize_floorplan \
 source ${fc_dir}/scripts/place_memories.tcl
 
 #-----------------------------------------------------------------------------
-# Port-to-edge assignment — Wlink PHY on TOP, AHB busses on BOTTOM,
-# APB + PHC time on LEFT, clocks/resets/DFT on RIGHT.
+# Logic region constraints — hard-anchor the source-sync RX capture flops
+# (gpiorx_*/link_data_pad_clk_reg*) to a 9% strip at the LEFT edge so
+# pad_clk_rx → capture clock latency fits the input_delay -min budget.
+# See place_logic.tcl header for the full diagnosis and the build-#6
+# soft-bound experiment that motivated the surgical/hard upgrade.
+#-----------------------------------------------------------------------------
+source ${fc_dir}/scripts/place_logic.tcl
+
+#-----------------------------------------------------------------------------
+# Port-to-edge assignment — see place_pins.tcl header for edge convention.
 #-----------------------------------------------------------------------------
 source ${fc_dir}/scripts/place_pins.tcl
 

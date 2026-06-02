@@ -161,7 +161,7 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # generated forwarded clock is defined at the output port with -source on the
 # ODDR's C pin so the propagation delay of the ODDR itself is accounted for in
 # the forwarded-clock-arrival analysis used by set_output_delay below.
-create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*clk_tx_oddr*/C"}] -divide_by 1 [get_ports pad_clk_tx]
+create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*/clk_tx_oddr/u_oddr/C"}] -divide_by 1 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-5 ns
 # of the 40 ns period for board trace + peer setup/hold. This is a SYMMETRIC

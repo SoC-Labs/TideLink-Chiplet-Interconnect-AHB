@@ -1820,6 +1820,107 @@ module axi_chiplet_controller #(
     wire autocal_enable_w        = AUTOCAL_ENABLE | autocal_force_enable_q;
     wire calibrator_role_locked  = role_locked & autocal_enable_w;
 
+    // =====================================================================
+    // Bug N3 fix (2026-05-30): re-arm calibrator when autoneg FSM enables
+    // training-mode on this side.
+    //
+    // Symptom (test_10_autonomous_train_post_por, post Bug N1+N2 fixes):
+    //   t≈ 61 µs  slave role_locked rises → calibrator's only trigger
+    //             (role_locked_rise) fires → calibrator sweeps against
+    //             master's NON-training traffic → finds no eye → parks
+    //             in S_DONE with calibration_done=0.
+    //   t≈ 2.3 ms master's I²C-write of slave's SWI_TRAINING_MODE=1
+    //             lands (Bug N2 fix path) → slave's swi_training_mode_w
+    //             rises → lane_checker now decodes the live training
+    //             pattern → lane_locked_w=0xFF.
+    //             BUT the calibrator is parked in S_DONE and has no
+    //             re-arm trigger — `local_swreset_pulse_w` is only
+    //             generated at ST_TRAIN_EXIT (post-success), not at
+    //             ST_TRAIN_ENTER/RUN.
+    //   t≈14461 ms master times out POLL_PEER on peer_cal_done=0 →
+    //             ST_TRAIN_FAIL.
+    //
+    // Fix: detect `swi_training_mode_r` 0→1 rising edge and stretch it
+    // into a T_SWRESET_HOLD-wide level pulse (127 apb_clk cycles, matches
+    // the FSM's ST_TRAIN_EXIT pulse width). OR this into the calibrator's
+    // swreset port. The calibrator's swreset_fall edge detector fires
+    // when the pulse falls (with role_locked still high), re-triggering
+    // a fresh sweep — this time against the live training pattern.
+    //
+    // CRITICAL — first-revision lesson learned: a prior version of this
+    // fix triggered on `local_training_mode_set_w` (the autoneg FSM's
+    // ST_TRAIN_ENTER ACK pulse). That signal fires on the MASTER's
+    // chiplet only, because slave's autoneg FSM goes 4→5 (ST_NEGO_DONE)
+    // directly upon losing — it never enters ST_TRAIN_ENTER. The SLAVE's
+    // swi_training_mode_r is set by the I²C-driven APB write (Bug N2
+    // fix path), not by local_training_mode_set_w. Detecting the rising
+    // edge of swi_training_mode_r catches BOTH sides — master's
+    // FSM-driven pulse AND slave's APB-write-driven pulse — without
+    // coupling to the autoneg topology.
+    //
+    // Same clock domain (apb_clk) as the existing local_swreset_pulse_w
+    // and swi_recal_r OR-merged into the same port, so the calibrator's
+    // internal swreset_q edge-detect (rx_link_clk domain) sees the same
+    // SW-paced ms-scale level it has always tolerated.
+    // =====================================================================
+    reg swi_training_mode_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) swi_training_mode_q <= 1'b0;
+        else           swi_training_mode_q <= swi_training_mode_r;
+    end
+    wire swi_training_mode_rise = swi_training_mode_r & ~swi_training_mode_q;
+
+    // Bug N14b widening (2026-06-02): the 127-cycle apb_clk pulse below
+    // crosses into the rx_link_clk domain at the calibrator's swreset
+    // input (line ~1881). On v1 ASIC silicon (apb_clk≈50 MHz,
+    // link_rx_clk = pad_clk/16 ≈ 6.25 MHz), 127 apb_clk cycles = ~16
+    // link_rx_clk cycles — adequate margin in nominal timing but
+    // marginal once OCV / clock skew on the rx-recovered domain is
+    // factored in. Silicon v13 showed master-on-lost-path with
+    // lane_locked stuck at 0x00 and cal_done=0, consistent with the
+    // re-arm pulse never propagating into the calibrator's rx_link_clk
+    // swreset_q edge detector (Path B per docs/BUG_N14B…).
+    //
+    // Sim (cocotb/tidelink_top_pair/test_26) does NOT reproduce the
+    // wedge — master converges in ~2 ms via the natural pre-TRAIN_ENTER
+    // free-running sweep — so this widening is a defensive HW-only
+    // backstop with zero impact on the sim regression suite. The pulse
+    // is purely additive on the calibrator's swreset port (OR'd with
+    // swi_recal_r and local_swreset_pulse_w), so a wider HIGH window
+    // can only make S_CANCEL→S_ARM more reliable, never less. Widen to
+    // 10-bit counter (1023 cycles ≈ 20.5 µs ≈ 128 link_rx_clk cycles at
+    // ASIC speeds) — eight bits of headroom over the prior 127.
+    reg [9:0] training_mode_swreset_hold_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            training_mode_swreset_hold_r <= 10'd0;
+        else if (swi_training_mode_rise)
+            training_mode_swreset_hold_r <= 10'd1023;  // 8× T_SWRESET_HOLD
+        else if (training_mode_swreset_hold_r != 10'd0)
+            training_mode_swreset_hold_r <= training_mode_swreset_hold_r - 10'd1;
+    end
+    wire training_mode_set_swreset_w = (training_mode_swreset_hold_r != 10'd0);
+
+    // Path B — Bug N4 HW-real fix (2026-05-30): reduce HOLD_CYCLES default.
+    //
+    // The calibrator's HOLD_CYCLES default is 8 * 128 * DWELL_CYCLES =
+    // 65536 link_rx_clk cycles. At HW (link_rx_clk = pad_clk/16 = ~1.5 MHz)
+    // that's 43 ms of S_HOLD before S_VALIDATE/S_DONE. The autoneg FSM's
+    // POLL_PEER timeout is 15 polls × ~600 µs ≈ 9 ms — way too short for
+    // the calibrator's slave side to reach S_DONE within the FSM's poll
+    // window, so master times out → ST_TRAIN_FAIL even though the slave's
+    // (slip, phase) has been latched correctly and lanes ARE locked.
+    //
+    // 8 sweep-periods of HOLD was designed for FREE-RUNNING bring-up where
+    // the peer's calibrator needed time to converge independently. Under
+    // autoneg coordination, the master holds peer's training_mode HIGH via
+    // its I²C-write (Bug N2 fix path); the peer's TX is reliably emitting
+    // training pattern throughout ST_TRAIN_RUN + ST_TRAIN_POLL_PEER, so the
+    // long mutual-overlap dwell is unnecessary.
+    //
+    // Reduce to 1024 link_rx_clk cycles (≈ 683 µs at HW, ≈ 340 µs in sim).
+    // Keeps a small overlap margin but fits comfortably inside the autoneg
+    // poll budget.
     tidelink_phy_align_calibrator #(
         .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
                                         //      was 1024 (163μs, <1 sweep) which left master no time.

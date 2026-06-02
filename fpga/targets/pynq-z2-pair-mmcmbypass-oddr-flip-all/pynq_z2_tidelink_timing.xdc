@@ -174,7 +174,7 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # ODDR's C pin so the ODDR propagation delay is accounted for in the
 # forwarded-clock-arrival analysis used by set_output_delay below.
 create_generated_clock -name pad_clk_tx_fwd \
-    -source [get_pins -hier -filter {NAME =~ "*/clk_tx_oddr/u_oddr/C"}] \
+    -source [get_pins -hier -filter {NAME =~ "*clk_tx_oddr*/C"}] \
     -divide_by 1 \
     [get_ports pad_clk_tx]
 

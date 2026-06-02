@@ -380,9 +380,13 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
+    # 2026-06-02 SI fix: USE_CAP_CLKBUF/USE_LNK_CLKBUF were silently ignored
+    # (the packaged IP only exposes the unified USE_CLKBUF param). The cap
+    # reduction the user remembered was never effective. Setting
+    # USE_CLKBUF=1'b0 disables the in-IP per-lane BUFGs on io_pad_clk so the
+    # external clk_rx_buf wrapper is the sole load (~8 pF instead of ~48 pF).
     set_property -dict [list \
-        CONFIG.USE_CAP_CLKBUF {1'b0} \
-        CONFIG.USE_LNK_CLKBUF {1'b1} \
+        CONFIG.USE_CLKBUF {1'b0} \
     ] $tl
 
     #--------------------------------------------------------------------------

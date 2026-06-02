@@ -73,16 +73,16 @@
 #   used as master's pad_clk_rx; Y9 (SRCC P) carries master's pad_clk_tx
 #   so that slave's pad_clk_rx (also Y9 via the cable) is also on a P-side
 #   clock-capable site.
-set_property -dict {PACKAGE_PIN Y9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports pad_clk_tx]
+set_property -dict {PACKAGE_PIN Y9 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports pad_clk_tx]
 
 # pad_tx[7:0]: TX data lanes
-set_property -dict {PACKAGE_PIN F19 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[0]}]
-set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[1]}]
-set_property -dict {PACKAGE_PIN V8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[2]}]
-set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[3]}]
-set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[4]}]
-set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[5]}]
-set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[6]}]
+set_property -dict {PACKAGE_PIN F19 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[0]}]
+set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[1]}]
+set_property -dict {PACKAGE_PIN V8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[2]}]
+set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[3]}]
+set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
+set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
+set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
 # LANE-7 REMAP: v4 diag-swap proved B19/F20 physically bad (fault followed
 # pin F20, not lane index). Moved to spare W9/V7 = J13 pins 13/37 — carried
 # by the 1:1 ribbon, NOT in the 12 cut conductors, driven by no other XDC.

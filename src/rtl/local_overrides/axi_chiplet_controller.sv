@@ -1054,7 +1054,17 @@ module axi_chiplet_controller #(
     //                                  [3]=missed_ack [2]=bus_active
     //                                  [1]=bus_cont(0) [0]=busy
     //     3'h4  OBS_OBS_ID          — "OB" v1.0 marker = 0x4F42_0100
-    //     3'h5..3'h7 reserved (return 0)
+    //     3'h5  OBS_MASK_HS          — packed mask-handshake internals (2026-06-02)
+    //              [ 7: 0] autoneg.peer_tx_lane_mask_r  (slave's capture of master's tx_mask)
+    //              [15: 8] autoneg.peer_rx_lane_mask_r  (slave's capture of master's rx_mask)
+    //              [16]    autoneg.mask_hs_local_match_r (sticky, MASK_RES_TX→DONE)
+    //              [17]    autoneg.mask_hs_local_fail_r  (sticky)
+    //              [18]    controller.nego_lock_pending_reg
+    //              [19]    controller.mask_hs_match      (combined wlink|autoneg)
+    //              [20]    controller.mask_hs_gate_open  (incl. bypass straps)
+    //              [22:21] controller.wlink_mask_hs_result[1:0]
+    //              [31:23] reserved
+    //     3'h6..3'h7 reserved (return 0)
     //
     //   See deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
     //   and src/rtl/local_overrides/i2c_master_axil.v for the register
@@ -1067,6 +1077,21 @@ module axi_chiplet_controller #(
     wire  [2:0] obs_txn_step_w;
     wire  [3:0] obs_i2c_mst_status_w;
 
+    // OBS_MASK_HS (slot 3'h5) — pack mask-handshake internals. peer_*_lane_mask
+    // and autoneg_mask_hs_local_match/fail are sticky-latched inside the FSM
+    // (tidelink_autoneg.sv ~line 448-468); nego_lock_pending_reg is the
+    // controller's sticky bit; the remaining fields are combinational mirrors
+    // of wires already used by the gating logic above.
+    wire [31:0] obs_mask_hs_w = {9'h0,                                // [31:23] reserved
+                                 wlink_mask_hs_result,                // [22:21]
+                                 mask_hs_gate_open,                   // [20]
+                                 mask_hs_match,                       // [19]
+                                 nego_lock_pending_reg,               // [18]
+                                 autoneg_mask_hs_local_fail,          // [17]
+                                 autoneg_mask_hs_local_match,         // [16]
+                                 autoneg_peer_rx_lane_mask,           // [15: 8]
+                                 autoneg_peer_tx_lane_mask};          // [ 7: 0]
+
     assign regionC_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? obs_delay_ctr_w                     :
         (ctrl_reg_addr[2:0] == 3'h1) ? obs_timeout_ctr_w                   :
@@ -1075,6 +1100,7 @@ module axi_chiplet_controller #(
                                         7'h0}                              :
         (ctrl_reg_addr[2:0] == 3'h3) ? {28'h0, obs_i2c_mst_status_w}       :
         (ctrl_reg_addr[2:0] == 3'h4) ? 32'h4F42_0100                       : // "OB" v1.0
+        (ctrl_reg_addr[2:0] == 3'h5) ? obs_mask_hs_w                       :
                                        32'h0;
 
     // =====================================================================

@@ -386,7 +386,7 @@ proc create_root_design { parentCell } {
     # USE_CLKBUF=1'b0 disables the in-IP per-lane BUFGs on io_pad_clk so the
     # external clk_rx_buf wrapper is the sole load (~8 pF instead of ~48 pF).
     set_property -dict [list \
-        CONFIG.USE_CLKBUF {1'b0} \
+        CONFIG.USE_CLKBUF {1'b1} \
     ] $tl
 
     #--------------------------------------------------------------------------

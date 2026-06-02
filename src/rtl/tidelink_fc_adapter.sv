@@ -176,6 +176,7 @@ module tidelink_fc_adapter #(
 
     // Registered address from address phase (valid in data phase)
     logic [RAM_ADDR_W-1:0] tx_addr_r;
+    // tx_data_phase_r: latches in addr phase, drops when data phase completes.
     logic                  tx_data_phase_r;  // Flag: data phase pending
 
     // L10/L11: wedge-break watchdog. Counts consecutive cycles HREADYOUT is
@@ -195,6 +196,9 @@ module tidelink_fc_adapter #(
     wire         wedge_force_ready_w = (wedge_force_ready_cnt_r != 3'd0);
     logic [15:0] tx_dropped_cnt_r;
 
+    // REVERTED L13/L13v2 — back to original 1-cycle data phase pending HW ILA evidence
+    // that confirms the actual bridge timing behavior. Original combinational
+    // ahb_tx_hwdata in tx_fc_word at skid load edge.
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             tx_addr_r       <= '0;
@@ -204,7 +208,6 @@ module tidelink_fc_adapter #(
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
             end else if (tx_data_phase_r && ((skid_can_accept && !sideband_grant) || wedge_force_ready_w)) begin
-                // Data phase completed (either skid accepted, or L10/L11 watchdog dropped)
                 tx_data_phase_r <= 1'b0;
             end
         end
@@ -239,9 +242,27 @@ module tidelink_fc_adapter #(
         end
     end
 
-    // TX aperture FC word (available during data phase)
-    wire [FC_DATA_W-1:0] tx_fc_word  = {PKT_FIFO_DATA, tx_addr_r, ahb_tx_hwdata};
-    wire                 tx_fc_valid = tx_data_phase_r;
+    // Observability probes — keep + mark_debug to survive synth + show in ILA.
+    (* mark_debug = "true", keep = "true" *) logic [FC_DATA_W-1:0] tx_fc_word_dbg;
+    (* mark_debug = "true", keep = "true" *) logic                 tx_fc_valid_dbg;
+    (* mark_debug = "true", keep = "true" *) logic [SYS_DATA_W-1:0] ahb_tx_hwdata_dbg;
+    (* mark_debug = "true", keep = "true" *) logic [13:0]           ahb_tx_haddr_dbg;
+    (* mark_debug = "true", keep = "true" *) logic                  ahb_tx_hsel_dbg;
+    (* mark_debug = "true", keep = "true" *) logic [1:0]            ahb_tx_htrans_dbg;
+    (* mark_debug = "true", keep = "true" *) logic                  ahb_tx_hwrite_dbg;
+    (* mark_debug = "true", keep = "true" *) logic                  ahb_tx_hreadyout_dbg;
+    always_comb begin
+        tx_fc_word_dbg       = {PKT_FIFO_DATA, tx_addr_r, ahb_tx_hwdata};
+        tx_fc_valid_dbg      = tx_data_phase_r;
+        ahb_tx_hwdata_dbg    = ahb_tx_hwdata;
+        ahb_tx_haddr_dbg     = ahb_tx_haddr[13:0];
+        ahb_tx_hsel_dbg      = ahb_tx_hsel;
+        ahb_tx_htrans_dbg    = ahb_tx_htrans;
+        ahb_tx_hwrite_dbg    = ahb_tx_hwrite;
+        ahb_tx_hreadyout_dbg = ahb_tx_hreadyout;
+    end
+    wire [FC_DATA_W-1:0] tx_fc_word  = tx_fc_word_dbg;
+    wire                 tx_fc_valid = tx_fc_valid_dbg;
 
     // TX aperture HREADY: stall when in data phase and skid buffer full,
     // or when sideband has priority on the arbiter (unless starved).

@@ -321,6 +321,32 @@ if { $bit_file ne "" } {
     puts "Bitstream copied to $output_dir/tidelink.bit"
 }
 
+# STEP 10b: Refresh .ltx from POST-IMPL design state (Build #10 fix).
+# The previous .ltx was written inside insert_debug_core.tcl during the
+# synth stage, BEFORE impl_1 placed/routed the debug core. Impl can
+# renumber probes and drop unrouted ones, leaving a stale .ltx that
+# triggers HW Manager "design has no supported soft debug core" +
+# "probes file mismatch" errors. Open the impl_1 routed DCP and emit a
+# fresh .ltx that matches what's actually on the device.
+if { [info exists env(FPGA_INSERT_DEBUG_CORE)] && $env(FPGA_INSERT_DEBUG_CORE) == "1" } {
+    set routed_dcp [glob -nocomplain $project_dir/tidelink_project.runs/impl_1/*_routed.dcp]
+    if { [llength $routed_dcp] > 0 } {
+        puts "Refreshing .ltx from post-impl design state..."
+        # Close the current in-memory project + open the routed DCP so
+        # get_debug_cores / write_debug_probes operate on the FINAL netlist.
+        if {[catch {
+            close_design -quiet
+            open_checkpoint [lindex $routed_dcp 0]
+            write_debug_probes -force [file join $output_dir tidelink_design_wrapper.ltx]
+            puts "Refreshed .ltx written to $output_dir/tidelink_design_wrapper.ltx"
+            close_design -quiet
+        } refresh_err]} {
+            puts "WARN: post-impl .ltx refresh failed: $refresh_err"
+            puts "WARN: continuing with synth-stage .ltx (may mismatch device)"
+        }
+    }
+}
+
 # .hwh is required for PYNQ - it's the IP-XACT flat hardware description.
 # Look for it in the BD's hw_handoff directory.
 set hwh_file [glob -nocomplain $project_dir/tidelink_project.gen/sources_1/bd/$design_name/hw_handoff/${design_name}.hwh]

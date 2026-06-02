@@ -268,6 +268,12 @@ class PairTB:
             except ValueError:
                 pass
             await RisingEdge(dut.hclk)
+        # Hold hwdata 1 more cycle so the FC adapter's skid latches the
+        # value before the BFM clears it. AHB-Lite spec: hwdata must remain
+        # valid through the data phase HREADY ack. Without this hold, the
+        # skid captured 0 and slave RX FIFO wrote zero payloads (Bug A
+        # sim-only artifact, fixed 2026-06-01).
+        await RisingEdge(dut.hclk)
         hwdata.value = 0
 
     async def ahb_tx_write_packet(self, side, words):

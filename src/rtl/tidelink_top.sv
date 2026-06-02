@@ -602,7 +602,7 @@ module tidelink_top #(
     wire                    fc_rx_fifo_valid;
     wire                    fc_rx_fifo_write;
     wire [RAM_ADDR_W-1:0]  fc_rx_fifo_addr;
-    wire [SYS_DATA_W-1:0]  fc_rx_fifo_wdata;
+    (* mark_debug = "true" *) wire [SYS_DATA_W-1:0]  fc_rx_fifo_wdata;
     // mark_debug — Bug A probe (back-pressure from FIFO controller) per audit §3
     (* mark_debug = "true" *) wire                    fc_rx_fifo_ready;
 

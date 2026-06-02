@@ -314,11 +314,16 @@ module tidelink_apb_regs #(
 
     // ── Region 1: Pair Credit Counter (0x028 / 0x02C / 0x030) ─────────────────
 
-    // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3.
-    // pclk-domain (async to hclk u_dbg_int sampling clock) — accept CDC skew
-    // for visibility of live update pattern vs polled APB snapshots.
-    (* mark_debug = "true" *) logic [SYS_DATA_W-1:0] pair_credit_counter;
-    (* mark_debug = "true" *) logic                  pair_credit_counter_en;
+    // BUILD #12 R-1 fix RE-APPLIED 2026-06-01: mark_debug REMOVED from these
+    // two pclk-domain FFs. Reason: declaring them mark_debug forbids the
+    // synth fold that keeps returner busy-clear in sync with the APB read
+    // mux. Symptom on Build #4 + Build #11 silicon: master REG_STATUS bit[0]
+    // (returner_busy) stuck high from POR — contaminating all TX tests.
+    // See docs/BUILD4_HW_VALIDATION_2026_05_29.md R-1 hypothesis (~45%)
+    // + docs/BUILD5_HW_VALIDATION_2026_05_30.md confirms fix. SW polls PCC
+    // via APB read so live ILA observability not needed.
+    logic [SYS_DATA_W-1:0] pair_credit_counter;
+    logic                  pair_credit_counter_en;
 
     wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
     wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;

@@ -169,7 +169,7 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # asymmetric absolute window vs an internal clock), so it does not recreate
 # the 2026-05-05 hold explosion: launch and capture reference are the same
 # forwarded edge, so Vivado balances rather than hold-pads every lane.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max  5.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 5.000 [get_ports {pad_tx[*]}]
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
@@ -308,6 +308,10 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
 # disappears at source.
 #-----------------------------------------------------------------------------
+
+
+
+
 
 
 

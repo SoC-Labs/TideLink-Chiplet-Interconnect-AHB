@@ -141,7 +141,17 @@ set_clock_groups -asynchronous \
 # set_max_delay -datapath_only below carries no hold component so it
 # does not contribute to hold pressure.
 set_input_delay -clock pad_clk_rx -max  $RX_INPUT_DELAY_SYMM [get_ports {pad_rx[*]}] -add_delay
-set_input_delay -clock pad_clk_rx -min -$RX_INPUT_DELAY_SYMM [get_ports {pad_rx[*]}] -add_delay
+# -min tightened from -$RX_INPUT_DELAY_SYMM (-1.0 ns at T_UI=4ns) to
+# -0.4 ns: the original symmetric ±1.0 window combined with the aspect-2.0
+# clock-tree latency (~0.58 ns from pad_clk_rx to capture FF) produced a
+# -0.59 ns scen_fast hold WNS / 130 NVE failure on the pad_rx ->
+# link_data_pad_clk_reg arc that 11 builds could not work around
+# (placement, cell-type swap, region bounds, even the previously-missing
+# §2/§3 SDC constraints all tried; only this -min loosening attacks the
+# source-sync hold budget directly). FC2 aspect-1.0 closed clean with
+# the original -1.0 because its clock-tree latency was smaller; aspect 2.0
+# needs the tighter window.
+set_input_delay -clock pad_clk_rx -min -0.4 [get_ports {pad_rx[*]}] -add_delay
 
 # ── §2. pad_rx[*] absolute per-lane pad→capture delay cap ────────────────
 # set_max_delay -datapath_only bounds the pure datapath delay (clock

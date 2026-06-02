@@ -619,7 +619,10 @@ module axi_chiplet_controller #(
             if (nego_set_role_lock_w ||
                 (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000 && ctrl_reg_wdata[1]))
                 nego_lock_pending_reg <= 1'b1;
-            else if (nego_lock_pending_reg && mask_hs_gate_open)
+            else if (nego_lock_pending_reg && (mask_hs_gate_open || nego_lost_w))
+                // Bug N9 fix: also clear pending on the lost path so the
+                // pending bit doesn't stay asserted after role_lock_reg
+                // has latched via the lost-side workaround below.
                 nego_lock_pending_reg <= 1'b0;
 
             if (nego_set_role_cfg_w) begin
@@ -630,7 +633,30 @@ module axi_chiplet_controller #(
             // role_lock latches when (a) the FSM has pending lock and the
             // mask gate is open, OR (b) software writes the lock bit and
             // the mask gate is open.
-            if (nego_lock_pending_reg && mask_hs_gate_open) begin
+            //
+            // Bug N9 fix (2026-06-02): the lost-side never opens its own
+            // gate. When master loses autoneg (MISS_ACK on CLAIM, or
+            // sda_start_detect early-exit on the slave's WAIT) the FSM
+            // parks at ST_NEGO_DONE with nego_lost_w=1 and does NOT walk
+            // the local MASK_RD_* / MASK_RES_TX states — so
+            // autoneg_mask_hs_local_match stays 0. The fallback is
+            // wlink_mask_hs_result[0]=1 (the peer writing the verdict
+            // byte over I²C into our 0x21C reg), but the Wlink submodule
+            // currently hardwires mask_hs_result_o to 2'b00
+            // (deps/axi-chiplet-controller/logical/wlink/Wlink.v:210 —
+            // port stub awaiting Chisel regen). With both gate-openers
+            // permanently 0 on the lost side, role_lock_reg never
+            // latches even though nego_lock_pending_reg is set.
+            //
+            // Workaround until the Wlink stub is regenerated: on the
+            // lost path, trust the winner. The peer that won the autoneg
+            // arbitration is responsible for the mask handshake; the
+            // local die has neither participated in the comparison nor
+            // can observe its outcome (Wlink port stubbed). Honour the
+            // FSM's nego_set_role_lock pulse without waiting for a gate
+            // signal that will never arrive.
+            if ((nego_lock_pending_reg && mask_hs_gate_open) ||
+                (nego_lock_pending_reg && nego_lost_w)) begin
                 role_lock_reg <= 1'b1;
             end else if (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000) begin
                 role_cfg_reg  <= ctrl_reg_wdata[0];

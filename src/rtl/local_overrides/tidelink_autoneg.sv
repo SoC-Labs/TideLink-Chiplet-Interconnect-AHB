@@ -1123,9 +1123,31 @@ module tidelink_autoneg #(
                                             // here, causing the silicon
                                             // ST_TRAIN_FAIL fingerprint
                                             // observed on z2_03 build v10.
+                                            //
+                                            // Bug N14a (2026-06-02): silicon
+                                            // v13 hits the same timeout path
+                                            // with SWI_LANE_STATUS=0x000200FF
+                                            // — i.e. lane_locked[7:0]=0xFF
+                                            // and lane_fault=0 but
+                                            // local_calibration_done_i=0.
+                                            // The calibrator parks in S_DONE
+                                            // without re-asserting
+                                            // calibration_done after the
+                                            // role_locked_rise edge has been
+                                            // consumed. The user-visible
+                                            // "training succeeded" signal is
+                                            // lane_locked=0xFF AND
+                                            // lane_fault=0; cal_done is the
+                                            // calibrator's internal
+                                            // bookkeeping (used to gate
+                                            // lltx_enable, which is no
+                                            // longer needed once lanes are
+                                            // already locked). Drop the
+                                            // local_calibration_done_i term
+                                            // from the bypass so this is
+                                            // silicon-survivable.
                                             if (!peer_cal_done_r &&
                                                 (local_swi_lane_locked_i == 8'hFF) &&
-                                                local_calibration_done_i &&
                                                 (local_swi_lane_fault_i == 8'h00)) begin
                                                 mask_byte_cnt_nxt      = 3'd0;
                                                 train_target_value_nxt = 1'b0;

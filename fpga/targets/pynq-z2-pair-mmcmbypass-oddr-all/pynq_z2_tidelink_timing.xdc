@@ -161,7 +161,18 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # generated forwarded clock is defined at the output port with -source on the
 # ODDR's C pin so the propagation delay of the ODDR itself is accounted for in
 # the forwarded-clock-arrival analysis used by set_output_delay below.
-create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*clk_tx_oddr*/C"}] -divide_by 1 [get_ports pad_clk_tx]
+#
+# 2026-06-02 DROPPED via bench ablation: keeping this constraint live (R2 of
+# commit 9c073e4) makes Vivado attach the set_output_delay below and optimise
+# pad_tx[*] lane placement under the skew budget. Empirically that picks a
+# layout that BREAKS slave RX cap-clock calibration (slave cal_done stuck at
+# 0, no CR/CRACK handshake — 4096/4096 ILA samples confirmed). The R2off
+# ablation bitstream pair (this constraint removed, R1 DRIVE 12 + R3
+# USE_CLKBUF=0 kept) recovers bilateral 8/8 lane lock on bridge1.
+# The ODDR primitive itself still drives pad_clk_tx in silicon — only this
+# timer-driven optimisation is removed. See memory landmark
+# project_si_r1r3_verified_good_2026_06_02.md.
+# create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*clk_tx_oddr*/C"}] -divide_by 1 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-5 ns
 # of the 40 ns period for board trace + peer setup/hold. This is a SYMMETRIC
@@ -169,8 +180,10 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # asymmetric absolute window vs an internal clock), so it does not recreate
 # the 2026-05-05 hold explosion: launch and capture reference are the same
 # forwarded edge, so Vivado balances rather than hold-pads every lane.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max  5.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
+#
+# 2026-06-02 DROPPED with the pad_clk_tx_fwd block above.
+# set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max  5.000 [get_ports {pad_tx[*]}]
+# set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded

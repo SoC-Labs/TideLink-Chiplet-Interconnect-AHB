@@ -72,7 +72,10 @@ if {![info exists ::tidelink_msg_gate_installed]} {
 
     # [Vivado 12-4739] set_input/output_delay: No valid object(s) for -clock
     # or -ports -> the constraint becomes a no-op (clock or port unknown).
-    set_msg_config -id "Vivado 12-4739"      -new_severity ERROR
+    # ABLATE-R2off: demoted to WARNING because this ablation intentionally
+    # re-introduces the zero-matching */clk_tx_oddr/u_oddr/C pattern to
+    # test SI contribution. Production builds must keep this at ERROR.
+    set_msg_config -id "Vivado 12-4739"      -new_severity WARNING
 
     # [Designutils 20-1307] Procedural TCL ('if' / 'catch' / 'file' / 'info'
     # / 'get_files') is not supported inside an XDC. Anything guarded by

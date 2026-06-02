@@ -132,39 +132,6 @@ foreach scen_name {scen_slow scen_fast} {
     }
 }
 
-# pad_rx[*] -> gpiorx_*/link_data_pad_clk_reg* — set_max_delay -datapath_only
-#
-# Moved out of constraints.sdc (line 158 in older revisions) because the SDC
-# parser rejects `get_cells -hier -filter` syntax with CMD-010 "unknown option
-# -filter", and when the parse failed it silently stopped the rest of
-# constraints.sdc (§3 set_data_check, §4 TX eye, §5 PHC output delay) too —
-# producing the -0.59 ns scen_fast hold WNS / 130 NVE failure in 9 aspect-2.0
-# builds. See ASIC_TIMING_CONSTRAINTS Part B §3.2 for the rationale: bounds
-# pad->capture datapath delay (no clock skew, no hold component), preventing
-# any one lane from drifting more than RX_DATAPATH_MAX_NS over the spec.
-# Falls back to a CRITICAL WARNING if a future Wlink/Chisel regen renames
-# link_data_pad_clk_reg — fail-safe, not a wrong constraint.
-foreach scen_name {scen_slow scen_fast} {
-    if {[sizeof_collection [get_scenarios -quiet $scen_name]] == 0} { continue }
-    current_scenario $scen_name
-    set _rx_caps [get_cells -hier -quiet \
-        -filter "full_name =~ *gpiorx_*/link_data_pad_clk_reg*"]
-    if {[sizeof_collection $_rx_caps] > 0} {
-        # RX_DATAPATH_MAX_NS = T_UI_NS/5 (see constraints.sdc). T_UI_NS is
-        # the user_ref_clk period, defined in the shared FC.read_design.tcl
-        # as CLK_PERIOD/CLK_DIV (typically 4.0). Re-derive here so this
-        # block does not depend on a Tcl variable set by constraints.sdc.
-        set _rx_dp_max 0.8
-        set_max_delay -datapath_only $_rx_dp_max \
-            -from [get_ports {pad_rx[*]}] \
-            -to   $_rx_caps
-        puts [format "INFO: \[fc_init\] %s: set_max_delay -datapath_only %.2f ns from pad_rx -> %d link_data_pad_clk_reg caps" \
-                $scen_name $_rx_dp_max [sizeof_collection $_rx_caps]]
-    } else {
-        puts "CRITICAL WARNING: \[fc_init\] $scen_name: pad_rx capture flop selector matched 0 cells — set_max_delay skipped"
-    }
-}
-
 #-----------------------------------------------------------------------------
 # Initialise floorplan — partition target: aspect 1.0, util 0.85
 #-----------------------------------------------------------------------------

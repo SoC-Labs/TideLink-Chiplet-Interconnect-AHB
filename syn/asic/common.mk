@@ -60,11 +60,15 @@ export MEM_DB_FF      ?= $(RF_16K_DB_FF)
 export LINK_LIBS      ?= $(TARGET_LIB) $(MEM_DBS_SS)
 
 # TF/Milkyway — physical reference (TSMC65 LP, 9-layer T2 stack).
-# Canonical SoC-Labs paths under /home/dwn1c21/.../TSMC/65/CMOS/LP/ —
-# 9-track tcbn65lp_220a. Override on a per-system basis via the env
-# var of the same name (e.g. STANDARD_CELL_BASE_PATH=…).
-export STANDARD_CELL_BASE_PATH ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital
-export IO_BASE_PATH            ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital
+# Canonical SoC-Labs paths under /tsmc65pdk/65/CMOS/LP/ — 12-track
+# tcbn65lpbwp12t_200b. Override on a per-system basis via the env var
+# of the same name (e.g. STANDARD_CELL_BASE_PATH=…).
+#
+# 9-track tcbn65lp_220a (legacy) lived under
+# /home/dwn1c21/.../9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital
+# and can be restored with: STANDARD_CELL_BASE_PATH=<that path>.
+export STANDARD_CELL_BASE_PATH ?= /tsmc65pdk/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital
+export IO_BASE_PATH            ?= /tsmc65pdk/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital
 export CLN65LP_TECH_PATH       ?= $(STANDARD_CELL_BASE_PATH)/Back_End
 export PMK_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_pmk_svt_c24/r2p0
 export RET_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_rklo_lvt_svt_c20_c24/r1p0
@@ -72,11 +76,14 @@ export RET_BASE_PATH           ?= /research/AAA/phys_ip_library/arm/tsmc/cln16fc
 # Legacy alias (some downstream scripts still grep PHYS_IP_PATH).
 export PHYS_IP_PATH            ?= $(STANDARD_CELL_BASE_PATH)
 
-# Standard cell Verilog simulation models (for gate-level simulation)
-export STDCELL_VERILOG ?= $(STANDARD_CELL_BASE_PATH)/Front_End/verilog/tcbn65lp_200a
+# Standard cell Verilog simulation models (for gate-level simulation).
+# 12-track release: Front_End/verilog/tcbn65lpbwp12t_200a/
+export STDCELL_VERILOG ?= $(STANDARD_CELL_BASE_PATH)/Front_End/verilog/tcbn65lpbwp12t_200a
 # Foundry Milkyway TF (9-layer T2 stack) and LEF for fc_shell.
-export TF_FILE        ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/techfiles/tsmcn65_9lmT2.tf
-export MW_REF_LIB     ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/frame_only/tcbn65lp
+# 12-track milkyway: Back_End/milkyway/tcbn65lpbwp12t_200a/
+# 12-track LEF:      Back_End/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef
+export TF_FILE        ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lpbwp12t_200a/techfiles/tsmcn65_9lmT2.tf
+export MW_REF_LIB     ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lpbwp12t_200a/frame_only/tcbn65lpbwp12t
 
 # ── RTLA Reference Methodology ──────���─────────────────���───────────────────
 export RTLA_RM_PATH   ?= /research/synopsys/RTLA-RM_U-2022.12
@@ -89,17 +96,19 @@ export RTLA_RM_PATH   ?= /research/synopsys/RTLA-RM_U-2022.12
 # Variable names keep the SoC-Labs project-wide 0p72/0p80/0p88V label
 # convention; the actual tcbn65lp .db operating points are the foundry
 # canonical values (BCCOM/NCCOM/WCCOM — see lib_file headers).
-export DB_PATH        ?= $(STANDARD_CELL_BASE_PATH)/Front_End/timing_power_noise/NLDM/tcbn65lp_220a
-export DB_SS          ?= $(DB_PATH)/tcbn65lpwc.db
-export DB_TT          ?= $(DB_PATH)/tcbn65lptc.db
-export DB_FF          ?= $(DB_PATH)/tcbn65lpbc.db
+# 12-track tcbn65lpbwp12t corners (NLDM, NCCOM / WCCOM / BCCOM).
+# 9-track legacy was: tcbn65lp_220a/tcbn65lp{wc,tc,bc}.db.
+export DB_PATH        ?= $(STANDARD_CELL_BASE_PATH)/Front_End/timing_power_noise/NLDM/tcbn65lpbwp12t_200a
+export DB_SS          ?= $(DB_PATH)/tcbn65lpbwp12twc.db
+export DB_TT          ?= $(DB_PATH)/tcbn65lpbwp12ttc.db
+export DB_FF          ?= $(DB_PATH)/tcbn65lpbwp12tbc.db
 
 # SoC-Labs-style aliases (mirror tech_paths.tcl var names exactly so any
 # downstream make snippet can read either spelling).
 export STANDARD_CELL_DB_FILE_SS_0P72V_125C ?= $(DB_SS)
 export STANDARD_CELL_DB_FILE_TT_0P80V_25C  ?= $(DB_TT)
 export STANDARD_CELL_DB_FILE_FF_0P88V_M40C ?= $(DB_FF)
-export STANDARD_CELL_LEF_FILE              ?= $(STANDARD_CELL_BASE_PATH)/Back_End/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef
+export STANDARD_CELL_LEF_FILE              ?= $(STANDARD_CELL_BASE_PATH)/Back_End/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef
 # No .gds2 file ships in TSMCHOME — chip-top is expected to merge the
 # library GDS at LVS time from the foundry's signoff package. Leave empty
 # so write_gds in 6_partition_export.tcl skips the std-cell merge.

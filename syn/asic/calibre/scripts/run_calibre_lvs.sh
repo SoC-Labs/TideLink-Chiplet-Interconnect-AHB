@@ -41,7 +41,7 @@ echo "INFO: [calibre_lvs] running v2lvs $netlist -> $spice_netlist"
 /eda/mentor/calibre/bin/v2lvs \
     -v "$netlist" \
     -o "$spice_netlist" \
-    -lsp /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/pdk/Calibre/lvs/source.added \
+    -lsp /tsmc65pdk/65/CMOS/LP/pdk/Calibre/lvs/source.added \
     2>&1 | tail -20 || true
 if [ ! -s "$spice_netlist" ]; then
     echo "ERROR: v2lvs produced empty/missing $spice_netlist"

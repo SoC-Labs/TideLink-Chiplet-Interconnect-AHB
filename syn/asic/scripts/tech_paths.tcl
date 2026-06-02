@@ -27,37 +27,39 @@ proc env_or_default {var def} {
 # — e.g. CLN65LP_TECH_PATH=/path/to/TSMCHOME/Back_End make fc.
 #-----------------------------------------------------------------------------
 set standard_cell_base_path  [env_or_default STANDARD_CELL_BASE_PATH \
-    /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital]
+    /tsmc65pdk/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital]
 set cln65lp_tech_path        [env_or_default CLN65LP_TECH_PATH \
     ${standard_cell_base_path}/Back_End]
 set io_base_path             [env_or_default IO_BASE_PATH \
-    /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital]
+    /tsmc65pdk/65/CMOS/LP/IO2.5V/iolib/linear/tpdn65lpnv2od3_200a_FE/TSMCHOME/digital]
 set pmk_base_path            [env_or_default PMK_BASE_PATH \
     /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_pmk_svt_c24/r2p0]
 set ret_base_path            [env_or_default RET_BASE_PATH \
     /research/AAA/phys_ip_library/arm/tsmc/cln16fcll001/sc9mcpp96c_rklo_lvt_svt_c20_c24/r1p0]
 
 #-----------------------------------------------------------------------------
-# cln65lp technology files — TSMC tcbn65lp 9-layer T2 stack.
+# cln65lp technology files — TSMC tcbn65lpbwp12t 9-layer T2 stack.
+# LEF release dir is `_140b`, milkyway release dir is `_200a` (this
+# asymmetry is foundry-shipped; verified against the /tsmc65pdk tree).
 #-----------------------------------------------------------------------------
-set cln65lp_tech_file       ${cln65lp_tech_path}/milkyway/tcbn65lp_200a/techfiles/tsmcn65_9lmT2.tf
-set cln65lp_lef_file        ${cln65lp_tech_path}/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef
+set cln65lp_tech_file       ${cln65lp_tech_path}/milkyway/tcbn65lpbwp12t_200a/techfiles/tsmcn65_9lmT2.tf
+set cln65lp_lef_file        ${cln65lp_tech_path}/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef
 
 #-----------------------------------------------------------------------------
-# Standard-cell library (tcbn65lp 9-track / 220a release).
+# Standard-cell library (tcbn65lpbwp12t 12-track / 200b release).
 # Three corners (TSMC NLDM library names):
-#   tcbn65lpwc — worst case (max-delay) ↔ SS in SoC-Labs nomenclature
-#   tcbn65lptc — typical case            ↔ TT
-#   tcbn65lpbc — best case (min-delay)  ↔ FF
+#   tcbn65lpbwp12twc — worst case (max-delay) ↔ SS in SoC-Labs nomenclature
+#   tcbn65lpbwp12ttc — typical case            ↔ TT
+#   tcbn65lpbwp12tbc — best case (min-delay)  ↔ FF
 # Variable names keep the SoC-Labs project-wide 0p72/0p80/0p88V label
 # convention so chip-top scripts can pick the right corner-set by name.
 #-----------------------------------------------------------------------------
 set standard_cell_lef_file                  ${cln65lp_lef_file}
 set standard_cell_gds_file                  ""
-set _std_db_path                            ${standard_cell_base_path}/Front_End/timing_power_noise/NLDM/tcbn65lp_220a
-set standard_cell_db_file_ss_0p72v_125C     ${_std_db_path}/tcbn65lpwc.db
-set standard_cell_db_file_tt_0p80v_25C      ${_std_db_path}/tcbn65lptc.db
-set standard_cell_db_file_ff_0p88v_m40C     ${_std_db_path}/tcbn65lpbc.db
+set _std_db_path                            ${standard_cell_base_path}/Front_End/timing_power_noise/NLDM/tcbn65lpbwp12t_200a
+set standard_cell_db_file_ss_0p72v_125C     ${_std_db_path}/tcbn65lpbwp12twc.db
+set standard_cell_db_file_tt_0p80v_25C      ${_std_db_path}/tcbn65lpbwp12ttc.db
+set standard_cell_db_file_ff_0p88v_m40C     ${_std_db_path}/tcbn65lpbwp12tbc.db
 set standard_cell_antenna_file              [env_or_default STANDARD_CELL_ANTENNA_FILE ""]
 
 #-----------------------------------------------------------------------------

@@ -22,10 +22,12 @@ export FC_OUTPUTS  = $(FC_DIR)/outputs
 # ── Foundry decks (override via env on a per-system basis) ────────────────
 # DRC: TSMC MAIN_DECK CALIBRE_FLOW, nonUTM, 9m metal (matches our 9lm_T2
 # stack in TF_FILE). Comprehensive DFM/LVS/RC + DRC combined deck.
-export CALIBRE_DRC_DECK ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/util/MAIN_DECK/CALIBRE_FLOW/nonUTM/DFM_LVS_RC_CAL_N65_ALRDL_noU_v16a.9m
+# Decks now sourced from /tsmc65pdk consistent with the 12-track lib
+# switch; same deck files as the legacy /home/dwn1c21 paths.
+export CALIBRE_DRC_DECK ?= /tsmc65pdk/65/CMOS/util/MAIN_DECK/CALIBRE_FLOW/nonUTM/DFM_LVS_RC_CAL_N65_ALRDL_noU_v16a.9m
 
 # LVS: PDK-bundled calibre.lvs (the simpler stand-alone LVS deck).
-export CALIBRE_LVS_DECK ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/pdk/Calibre/lvs/calibre.lvs
+export CALIBRE_LVS_DECK ?= /tsmc65pdk/65/CMOS/LP/pdk/Calibre/lvs/calibre.lvs
 
 # ── Tool binary ───────────────────────────────────────────────────────────
 CAL_BIN     ?= /eda/mentor/calibre/bin/calibre

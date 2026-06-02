@@ -102,8 +102,9 @@ if {[info exists ::env(FC_PRESERVE_WLINK_FCSM)] && $::env(FC_PRESERVE_WLINK_FCSM
 }
 
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
-    puts "INFO: \[setup\] FC_CLOCK_GATING=off — banning CKLNQD*/CKLHQD* cells"
-    set icg_cells [get_lib_cells -quiet "*/CKLNQD* */CKLHQD*"]
+    puts "INFO: \[setup\] FC_CLOCK_GATING=off — banning CKLNQD*/CKLHQD* (incl. BWP12T variants) cells"
+    set icg_cells [get_lib_cells -quiet \
+        "*/CKLNQD* */CKLHQD* */CKLNQ*BWP12T* */CKLHQ*BWP12T*"]
     if {[sizeof_collection $icg_cells] > 0} {
         set_dont_use $icg_cells
         puts "INFO: \[setup\]   set_dont_use on [sizeof_collection $icg_cells] ICG cells"
@@ -144,11 +145,16 @@ if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {
 #
 # fc_shell U-2022.12: probed via `help -verbose set_lib_cell_purpose` —
 # -exclude values are {all, cts, hold, none, optimization, power}.
+# 12-track tcbn65lpbwp12t cell names carry a BWP12T suffix
+# (MUX2D1 -> MU2D1BWP12T, BUFFD8 -> BUFFD8BWP12T etc.). Patterns
+# below match both the legacy 9-track unsuffixed names and the
+# 12-track BWP12T-suffixed names so the same restriction works
+# under either STANDARD_CELL_BASE_PATH.
 set _non_ck_signal_cells [get_lib_cells -quiet \
-    "*/MUX2D* */BUFFD* */INVD*"]
+    "*/MUX2D* */BUFFD* */INVD* */MU2D*BWP12T* */BUFFD*BWP12T* */INVD*BWP12T*"]
 if {[sizeof_collection $_non_ck_signal_cells] > 0} {
     set_lib_cell_purpose -exclude cts $_non_ck_signal_cells
-    puts [format "INFO: \[setup\] excluded %d non-CK signal cells (MUX2D*/BUFFD*/INVD*) from cts purpose — clock_opt restricted to CK cells" \
+    puts [format "INFO: \[setup\] excluded %d non-CK signal cells (MUX2D*/BUFFD*/INVD* +BWP12T) from cts purpose — clock_opt restricted to CK cells" \
             [sizeof_collection $_non_ck_signal_cells]]
 } else {
     puts "WARN: \[setup\] no MUX2D*/BUFFD*/INVD* cells found in libs — CK-only CTS restriction not applied"

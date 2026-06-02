@@ -455,15 +455,32 @@ module tidelink_autoneg #(
             if (peer_rx_capture_en)
                 peer_rx_lane_mask_r <= axl_rdata_r[7:0];
             // Sticky local-match / local-fail: latched only when the
-            // result-write transaction completes (MASK_RES_TX → DONE).
-            // Latching earlier (e.g. on entry to MASK_RES_TX) would
-            // open the mask-handshake gate while the FSM is still
+            // result-write transaction completes. Latching earlier
+            // (e.g. on entry to MASK_RES_TX) would open the
+            // mask-handshake gate while the FSM is still
             // mid-transaction; with force_lock=1 the wrapper would
             // immediately latch role_lock_reg, deassert nego_driving,
             // and hand the I2C-master AXIL bus back to the bridge —
             // dropping bvalid before the FSM's WR_RESP can capture it.
+            //
+            // Bug N13 fix (2026-06-02): the FSM exits MASK_RES_TX
+            // via TXN_CHECK to ST_NEGO_DONE_PRE (line ~896), NEVER
+            // directly to ST_NEGO_DONE. The original predicate
+            // `state_nxt == ST_NEGO_DONE` therefore never fires for
+            // the winner on production silicon, and mask_hs_local_match_r
+            // stays 0 even when masks actually match. Sim tests pass
+            // because tb_top.sv ties apb_debug_unlock_i =
+            // mask_hs_bypass_i = 1'b1, opening mask_hs_gate_open
+            // regardless of this latch. Silicon (straps tied 0)
+            // exposes the broken predicate: master captures peer
+            // masks as 0xFF but never latches local_match, gate
+            // stays closed, role_lock_reg can never set. Accept
+            // both ST_NEGO_DONE (no-train legacy path) and
+            // ST_NEGO_DONE_PRE (train-enabled path) as valid exit
+            // targets for the latch.
             if (state_r == ST_NEGO_MASK_RES_TX &&
-                state_nxt == ST_NEGO_DONE) begin
+                (state_nxt == ST_NEGO_DONE ||
+                 state_nxt == ST_NEGO_DONE_PRE)) begin
                 mask_hs_local_match_r <= mask_match_w;
                 mask_hs_local_fail_r  <= mask_fail_w;
             end

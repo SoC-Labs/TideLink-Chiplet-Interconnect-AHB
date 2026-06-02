@@ -132,13 +132,22 @@ elaborate $top_module
 set_top_module $top_module
 
 #-----------------------------------------------------------------------------
-# MCMM (Multi-Corner Multi-Mode) setup — tcbn65lp 220a operating conditions.
-#   tcbn65lpwc  worst case  V_LO T_HI  → SS (max-delay)  → scen_slow
-#   tcbn65lptc  typical case            → TT             → scen_typ (optional)
-#   tcbn65lpbc  best  case  V_HI T_LO  → FF (min-delay)  → scen_fast
-# Library names per the Liberty header `library (tcbn65lp{bc,tc,wc})`.
+# MCMM (Multi-Corner Multi-Mode) setup — tcbn65lpbwp12t 200a operating
+# conditions (12-track).
+#   tcbn65lpbwp12twc  worst case  V_LO T_HI  → SS (max-delay) → scen_slow
+#   tcbn65lpbwp12ttc  typical case            → TT             → scen_typ
+#   tcbn65lpbwp12tbc  best  case  V_HI T_LO  → FF (min-delay) → scen_fast
+# Library names match the .db filenames (without extension); env-
+# overridable via FC_LIB_NAME_SS / FC_LIB_NAME_FF if STANDARD_CELL_BASE_PATH
+# is repointed at the legacy 9-track install (tcbn65lpwc/tcbn65lpbc).
+# Operating-condition labels WCCOM/BCCOM are foundry-standard, same for
+# 9-track and 12-track libraries.
 #-----------------------------------------------------------------------------
 echo "FC_RTL_SCRIPT: MCMM"
+
+set _lib_name_ss [expr {[info exists ::env(FC_LIB_NAME_SS)] && $::env(FC_LIB_NAME_SS) ne "" ? $::env(FC_LIB_NAME_SS) : "tcbn65lpbwp12twc"}]
+set _lib_name_ff [expr {[info exists ::env(FC_LIB_NAME_FF)] && $::env(FC_LIB_NAME_FF) ne "" ? $::env(FC_LIB_NAME_FF) : "tcbn65lpbwp12tbc"}]
+puts "INFO: \[MCMM\] -library SS=$_lib_name_ss  FF=$_lib_name_ff"
 
 create_mode func
 create_corner slow
@@ -146,22 +155,24 @@ create_scenario -mode func -corner slow -name scen_slow
 set_operating_conditions \
     -analysis_type on_chip_variation \
     -max WCCOM -min WCCOM \
-    -library tcbn65lpwc
+    -library $_lib_name_ss
 
 create_corner fast
 create_scenario -mode func -corner fast -name scen_fast
 set_operating_conditions \
     -analysis_type on_chip_variation \
     -max BCCOM -min BCCOM \
-    -library tcbn65lpbc
+    -library $_lib_name_ff
 
 #-----------------------------------------------------------------------------
-# Parasitic extraction (TLU+) — cln65lp 1p09m+alrdl, top2 = 9lm_T2 stack.
-# tcbn65lp ships per-corner TLU+ files with the cln65lp_1p09m+alrdl_<corner>_top2
-# naming. Map our SoC-Labs "typical / rcbest / rcworst" labels onto that
-# explicit stack so set_parasitic_parameters can pick them.
+# Parasitic extraction (TLU+) — cln65lp 1p05m+alrdl, top2 = 9lm_T2 stack
+# (12-track tcbn65lpbwp12t convention; 9-track tcbn65lp shipped as
+# 1p09m+alrdl). Env-overridable via FC_TLU_STACK if you re-point
+# STANDARD_CELL_BASE_PATH at a library family that uses a different
+# stack name.
 #-----------------------------------------------------------------------------
-set _stack cln65lp_1p09m+alrdl
+set _stack [expr {[info exists ::env(FC_TLU_STACK)] && $::env(FC_TLU_STACK) ne "" ? $::env(FC_TLU_STACK) : "cln65lp_1p05m+alrdl"}]
+puts "INFO: \[MCMM\] TLU+ stack = $_stack"
 read_parasitic_tech -name typical -tlup ${tluplus_path}/${_stack}_typical_top2.tluplus -layermap ${tluplus_map}
 read_parasitic_tech -name rcbest  -tlup ${tluplus_path}/${_stack}_rcbest_top2.tluplus  -layermap ${tluplus_map}
 read_parasitic_tech -name rcworst -tlup ${tluplus_path}/${_stack}_rcworst_top2.tluplus -layermap ${tluplus_map}

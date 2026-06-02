@@ -27,14 +27,14 @@ ASIC_FLIST_PATH := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
 export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flist/$(MODULE).flist)
 export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
 
-# ── Cell libraries — TSMC tcbn65lp 9-track 9lm_T2 stack ────────────────────
-# Switched from Arm sc12_base_rvt (12-track) to TSMC tcbn65lp_220a (9-track)
-# on 2026-05-21. The user-canonical TSMCHOME install lives under
-# /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/. Three corners now stocked:
-#   tcbn65lpwc — worst case (max-delay) = SS corner equivalent
-#   tcbn65lptc — typical case            = TT corner
-#   tcbn65lpbc — best  case (min-delay)  = FF corner equivalent
-export TARGET_LIB     ?= /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/stclib/9-track/tcbn65lp-set/tcbn65lp_220a_FE/TSMCHOME/digital/Front_End/timing_power_noise/NLDM/tcbn65lp_220a/tcbn65lpwc.db
+# ── Cell libraries — TSMC tcbn65lpbwp12t 12-track 9lm_T2 stack ─────────────
+# Switched on 2026-06-02 from 9-track tcbn65lp_220a (legacy under
+# /home/dwn1c21/...) to 12-track tcbn65lpbwp12t_200b under /tsmc65pdk.
+# Three corners stocked:
+#   tcbn65lpbwp12twc — worst case (max-delay) = SS corner equivalent
+#   tcbn65lpbwp12ttc — typical case            = TT corner
+#   tcbn65lpbwp12tbc — best  case (min-delay)  = FF corner equivalent
+export TARGET_LIB     ?= /tsmc65pdk/65/CMOS/LP/stclib/12-track/tcbn65lpbwp12t-set/tcbn65lpbwp12t_200b_FE/TSMCHOME/digital/Front_End/timing_power_noise/NLDM/tcbn65lpbwp12t_200a/tcbn65lpbwp12twc.db
 
 # ── Memory macro libraries (compiled register file) ─────────────────────
 # tidelink_top instantiates a single rf_16k (FIFO mem). MEM_BASE is the
@@ -120,7 +120,7 @@ export STANDARD_CELL_GDS_FILE              ?=
 # top2 matches the 1p09m+alrdl 9lm_T2 stack we picked for TF_FILE.
 # The star.map_9M layer-mapping file is the canonical map for the 9-metal
 # stack — provides the Star-RC / TLU+ layer name → number translation.
-export TLUPLUS_PATH   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/techfiles/tluplus
+export TLUPLUS_PATH   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lpbwp12t_200a/techfiles/tluplus
 export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/star.map_9M
 
 # ── FC GDS stream-out — layer map + macro/stdcell GDS to merge ─────────────
@@ -130,7 +130,7 @@ export TLUPLUS_MAP    ?= $(TLUPLUS_PATH)/star.map_9M
 # Without -merge_files the partition GDS contains only the metal/via
 # shapes the FC flow created — chip-top would have to merge the
 # std-cell + rf_16k GDS itself at LVS time.
-export GDS_LAYER_MAP   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lp_200a/gdsout_3X2Z.map
+export GDS_LAYER_MAP   ?= $(STANDARD_CELL_BASE_PATH)/Back_End/milkyway/tcbn65lpbwp12t_200a/gdsout_3X2Z.map
 export GDS_STDCELL     ?= $(STANDARD_CELL_GDS_FILE)
 export GDS_MEM_RF16K   ?= $(MEM_BASE)/rf_16k/rf_16k.gds2
 # write_gds with -merge_files expects only files that exist on disk —

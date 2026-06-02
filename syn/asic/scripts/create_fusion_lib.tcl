@@ -45,7 +45,7 @@ if {[info exists ::env(MEM_BASE)] && $::env(MEM_BASE) ne ""} {
 if {[info exists ::env(STANDARD_CELL_LEF_FILE)] && $::env(STANDARD_CELL_LEF_FILE) ne ""} {
     set stdcell_lef $::env(STANDARD_CELL_LEF_FILE)
 } else {
-    set stdcell_lef "${phys_ip_path}/Back_End/lef/tcbn65lp_200a/lef/tcbn65lp_9lmT2.lef"
+    set stdcell_lef "${phys_ip_path}/Back_End/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef"
 }
 
 # Memory LEFs — only rf_16k is currently instantiated, but include the

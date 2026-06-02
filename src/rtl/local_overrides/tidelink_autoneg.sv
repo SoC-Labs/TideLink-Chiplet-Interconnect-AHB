@@ -1088,10 +1088,38 @@ module tidelink_autoneg #(
                                                      ((train_poll_timeout == 4'd0)
                                                       ? T_POLL_TIMEOUT_DEFAULT
                                                       : train_poll_timeout)) begin
-                                            // Poll timeout reached
-                                            local_lane_fault_snapshot_nxt = local_swi_lane_fault_i;
-                                            train_fail_nxt                = 1'b1;
-                                            state_nxt                     = ST_TRAIN_FAIL;
+                                            // Poll timeout reached.
+                                            // Bug N10 (2026-06-02): when peer
+                                            // is in ST_NEGO_DONE-lost (came
+                                            // up alone first, never trained)
+                                            // its calibrator never engages
+                                            // and peer_cal_done remains 0 for
+                                            // the entire poll budget even
+                                            // though local lanes have locked.
+                                            // Accept local-only training as
+                                            // success in that case (peer
+                                            // unresponsive AND local fully
+                                            // healthy) — fall through to
+                                            // ST_TRAIN_EXIT same as the
+                                            // primary success path. Pre-fix
+                                            // RTL blanket-tripped train_fail
+                                            // here, causing the silicon
+                                            // ST_TRAIN_FAIL fingerprint
+                                            // observed on z2_03 build v10.
+                                            if (!peer_cal_done_r &&
+                                                (local_swi_lane_locked_i == 8'hFF) &&
+                                                local_calibration_done_i &&
+                                                (local_swi_lane_fault_i == 8'h00)) begin
+                                                mask_byte_cnt_nxt      = 3'd0;
+                                                train_target_value_nxt = 1'b0;
+                                                txn_step_nxt           = TXN_DATA;
+                                                train_poll_phase_nxt   = 1'b0;
+                                                state_nxt              = ST_TRAIN_EXIT;
+                                            end else begin
+                                                local_lane_fault_snapshot_nxt = local_swi_lane_fault_i;
+                                                train_fail_nxt                = 1'b1;
+                                                state_nxt                     = ST_TRAIN_FAIL;
+                                            end
                                         end else begin
                                             // Re-poll: increment attempt,
                                             // re-arm address-write sub-phase.

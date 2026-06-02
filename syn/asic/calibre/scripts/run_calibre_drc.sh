@@ -55,7 +55,14 @@ perl -i -pe '
     s|^LAYOUT PATH "lvs_top\.gds"|LAYOUT PATH "'"$gds"'"|;
     s|^DRC RESULTS DATABASE "calibre_drc\.db" ASCII.*|DRC RESULTS DATABASE "'"$err_db"'" ASCII|;
     s|^DRC SUMMARY REPORT "calibre_drc\.sum"|DRC SUMMARY REPORT "'"$summary"'"|;
+    s|^PRECISION 1000$|PRECISION 10000|;
 ' "$local_deck"
+
+# FC writes GDS with database precision 10000 (0.1 nm grid) so the deck
+# PRECISION must match. TSMC65 deck ships with PRECISION 1000 (1 nm),
+# which produces "Rule file precision 1000 is not consistent with
+# database precision 10000" against FC's GDS. Bump to 10000 in the
+# substitution above.
 
 # Sanity-check the substitutions actually landed (the deck file may
 # evolve and the placeholders may rename — fail loudly if so).

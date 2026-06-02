@@ -31,20 +31,36 @@ local_deck="$work/$(basename "$deck").tidelink"
 report="$work/${top}_lvs.rep"
 svdb_dir="$work/svdb"
 log="$logs/calibre_lvs.log"
+spice_netlist="$work/${top}.cdl"
+
+# SVRF does not support SOURCE SYSTEM VERILOG — the deck's LVS engine
+# expects a SPICE/CDL source. Pre-convert the gate-level Verilog netlist
+# with Calibre's v2lvs utility (ships with the install). Standard
+# tcbn65lp v2lvs invocation: -v <netlist.v> -o <out.cdl> -s <suppress_list>.
+echo "INFO: [calibre_lvs] running v2lvs $netlist -> $spice_netlist"
+/eda/mentor/calibre/bin/v2lvs \
+    -v "$netlist" \
+    -o "$spice_netlist" \
+    -lsp /home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/pdk/Calibre/lvs/source.added \
+    2>&1 | tail -20 || true
+if [ ! -s "$spice_netlist" ]; then
+    echo "ERROR: v2lvs produced empty/missing $spice_netlist"
+    exit 1
+fi
 
 # Make a writable copy of the deck and substitute the placeholders.
 # The TSMC LVS deck (calibre.lvs) carries the same lvs_top placeholders
 # in its top-level LAYOUT / SOURCE / LVS REPORT statements as the DRC
 # deck does. Rewrite each to point at tidelink_top + this build's GDS
-# + the FC pg-aware netlist.
+# + the v2lvs-extracted SPICE/CDL source.
 cp "$deck" "$local_deck"
 perl -i -pe '
     s|^LAYOUT PRIMARY "lvs_top"|LAYOUT PRIMARY "'"$top"'"|;
     s|^LAYOUT PATH "lvs_top\.gds"|LAYOUT PATH "'"$gds"'"|;
     s|^SOURCE PRIMARY "lvs_top"|SOURCE PRIMARY "'"$top"'"|;
-    s|^SOURCE PATH "lvs_top\.cdl"|SOURCE PATH "'"$netlist"'"|;
-    s|^SOURCE SYSTEM SPICE|SOURCE SYSTEM VERILOG|;
+    s|^SOURCE PATH "lvs_top\.cdl"|SOURCE PATH "'"$spice_netlist"'"|;
     s|^LVS REPORT "lvs\.rep"|LVS REPORT "'"$report"'"|;
+    s|^PRECISION 1000$|PRECISION 10000|;
 ' "$local_deck"
 
 if ! grep -q "LAYOUT PRIMARY \"$top\"" "$local_deck"; then

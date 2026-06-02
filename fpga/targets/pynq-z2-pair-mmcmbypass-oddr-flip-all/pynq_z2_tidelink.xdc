@@ -40,14 +40,14 @@
 # This XDC takes the upper half (idx 15..23) for TX so a 1:1 ribbon
 # carries the signals onto the peer pair board's RX (idx 15..23).
 # TX side: same J13 pins as pynq-z2-pair's RX side (straight-through cable).
-set_property -dict {PACKAGE_PIN Y7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports pad_clk_tx]
-set_property -dict {PACKAGE_PIN U7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[0]}]
-set_property -dict {PACKAGE_PIN C20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[1]}]
-set_property -dict {PACKAGE_PIN Y8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[2]}]
-set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[3]}]
-set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
-set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
-set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
+set_property -dict {PACKAGE_PIN Y7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports pad_clk_tx]
+set_property -dict {PACKAGE_PIN U7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[0]}]
+set_property -dict {PACKAGE_PIN C20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[1]}]
+set_property -dict {PACKAGE_PIN Y8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[2]}]
+set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[3]}]
+set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[4]}]
+set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[5]}]
+set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get_ports {pad_tx[6]}]
 # LANE-7 REMAP (mirror of pynq-z2-pair-all): B19/F20 bad → spare V7/W9.
 set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was F20 (bad)
 

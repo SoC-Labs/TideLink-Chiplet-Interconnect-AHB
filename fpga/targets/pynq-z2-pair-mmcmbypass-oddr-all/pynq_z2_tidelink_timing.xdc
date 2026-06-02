@@ -161,10 +161,7 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # generated forwarded clock is defined at the output port with -source on the
 # ODDR's C pin so the propagation delay of the ODDR itself is accounted for in
 # the forwarded-clock-arrival analysis used by set_output_delay below.
-create_generated_clock -name pad_clk_tx_fwd \
-    -source [get_pins -hier -filter {NAME =~ "*/clk_tx_oddr/u_oddr/C"}] \
-    -divide_by 1 \
-    [get_ports pad_clk_tx]
+create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*clk_tx_oddr*/C"}] -divide_by 1 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-5 ns
 # of the 40 ns period for board trace + peer setup/hold. This is a SYMMETRIC
@@ -191,7 +188,7 @@ set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_
 #      reference for (3b)/(3c); it is intentionally generous (the calibrator
 #      handles dynamic skew — constraints only need to bound the STATIC,
 #      build-varying part).
-set_input_delay -clock [get_clocks pad_clk_rx] -max  4.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -max 4.000 [get_ports {pad_rx[*]}]
 set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]}]
 
 # (3b) Bound the pad_rx[n] -> first-stage capture flop path as a pure
@@ -200,10 +197,8 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 #      lane so it cannot wander build-to-build. 8.0 ns is ~1/5 of the 40 ns
 #      period — comfortably inside the calibrator window — and is a ceiling,
 #      not a target, so P&R is not forced to pad short lanes.
-set rx_cap_cells [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
-set_max_delay -datapath_only 8.000 \
-    -from [get_ports {pad_rx[*]}] \
-    -to   $rx_cap_cells
+set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
 # (3c) THE key build-to-build determinism constraint. set_bus_skew forces
 #      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
@@ -211,7 +206,7 @@ set_max_delay -datapath_only 8.000 \
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
+set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -248,9 +243,7 @@ set_property IOB TRUE [get_ports {pad_rx[*]}]
 # WavClockInv + functional scan-mux to the gpiorx_*/link_data_pad_clk_reg
 # clock pins, so referencing the master clock [get_clocks pad_clk_rx] in [3]
 # covers the (possibly inverted) capture clock too.
-set_clock_groups -asynchronous \
-    -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects $hclk_pin]
+set_clock_groups -asynchronous -group [get_clocks pad_clk_rx] -group [get_clocks -of_objects $hclk_pin]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job
@@ -264,10 +257,8 @@ set_clock_groups -asynchronous \
 # reviewed alongside the rest of the source-sync set. When the RTL lands,
 # the owning agent enables this and removes the catch'd IOB request in [3d].
 #
-# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter \
-# #     {NAME =~ "*gpiorx_*/*IDELAYE2*"}]
-# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter \
-# #     {REF_NAME == IDELAYCTRL}]
+# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter # #     {NAME =~ "*gpiorx_*/*IDELAYE2*"}]
+# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter # #     {REF_NAME == IDELAYCTRL}]
 # # (IDELAYCTRL ref clock: a 200 MHz source is required; the current BD has
 # #  no 200 MHz net — adding one is part of the RTL-hook agent's scope.)
 
@@ -317,3 +308,7 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
 # disappears at source.
 #-----------------------------------------------------------------------------
+
+
+
+

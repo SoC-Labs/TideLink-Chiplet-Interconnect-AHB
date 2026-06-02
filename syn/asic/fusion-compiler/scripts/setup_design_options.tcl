@@ -14,12 +14,17 @@
 #     gates wherever slack permits.
 #-----------------------------------------------------------------------------
 
-# Match the dense floorplan target (FC_CORE_UTILIZATION = 0.85 in Makefile).
-set_app_options -name place.coarse.congestion_driven_max_util -value 0.85
-
-# Keep placement effort up so the dense pack doesn't strand routing.
-set_app_options -name compile.final_place.placement_congestion_effort   -value medium
-set_app_options -name compile.initial_opto.placement_congestion_effort -value medium
+# 12-track tcbn65lpbwp12t bring-up (2026-06-02): the previous 9-track
+# build closed routes clean at congestion_driven_max_util=0.85 and
+# placement_congestion_effort=medium. The 12-track BWP12T cells are
+# physically taller (12 vs 9 routing tracks) so even at the same nominal
+# util the per-row routing channel pressure is higher; Build #14 on
+# 12-track hit 4 unresolvable metal shorts that 200-iter ECO route
+# couldn't clear. Bump effort to high and ease util to 0.80 to give
+# the router more channels.
+set_app_options -name place.coarse.congestion_driven_max_util -value 0.80
+set_app_options -name compile.final_place.placement_congestion_effort   -value high
+set_app_options -name compile.initial_opto.placement_congestion_effort -value high
 
 # Area is squeezed primarily by FC_CORE_UTILIZATION (Makefile-level),
 # clock-gating insertion (FC default), and the dense floorplan with the

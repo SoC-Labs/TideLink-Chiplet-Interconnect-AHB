@@ -1816,16 +1816,36 @@ module axi_chiplet_controller #(
     end
     wire swi_training_mode_rise = swi_training_mode_r & ~swi_training_mode_q;
 
-    reg [6:0] training_mode_swreset_hold_r;
+    // Bug N14b widening (2026-06-02): the 127-cycle apb_clk pulse below
+    // crosses into the rx_link_clk domain at the calibrator's swreset
+    // input (line ~1881). On v1 ASIC silicon (apb_clk≈50 MHz,
+    // link_rx_clk = pad_clk/16 ≈ 6.25 MHz), 127 apb_clk cycles = ~16
+    // link_rx_clk cycles — adequate margin in nominal timing but
+    // marginal once OCV / clock skew on the rx-recovered domain is
+    // factored in. Silicon v13 showed master-on-lost-path with
+    // lane_locked stuck at 0x00 and cal_done=0, consistent with the
+    // re-arm pulse never propagating into the calibrator's rx_link_clk
+    // swreset_q edge detector (Path B per docs/BUG_N14B…).
+    //
+    // Sim (cocotb/tidelink_top_pair/test_26) does NOT reproduce the
+    // wedge — master converges in ~2 ms via the natural pre-TRAIN_ENTER
+    // free-running sweep — so this widening is a defensive HW-only
+    // backstop with zero impact on the sim regression suite. The pulse
+    // is purely additive on the calibrator's swreset port (OR'd with
+    // swi_recal_r and local_swreset_pulse_w), so a wider HIGH window
+    // can only make S_CANCEL→S_ARM more reliable, never less. Widen to
+    // 10-bit counter (1023 cycles ≈ 20.5 µs ≈ 128 link_rx_clk cycles at
+    // ASIC speeds) — eight bits of headroom over the prior 127.
+    reg [9:0] training_mode_swreset_hold_r;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
-            training_mode_swreset_hold_r <= 7'd0;
+            training_mode_swreset_hold_r <= 10'd0;
         else if (swi_training_mode_rise)
-            training_mode_swreset_hold_r <= 7'd127;  // matches T_SWRESET_HOLD
-        else if (training_mode_swreset_hold_r != 7'd0)
-            training_mode_swreset_hold_r <= training_mode_swreset_hold_r - 7'd1;
+            training_mode_swreset_hold_r <= 10'd1023;  // 8× T_SWRESET_HOLD
+        else if (training_mode_swreset_hold_r != 10'd0)
+            training_mode_swreset_hold_r <= training_mode_swreset_hold_r - 10'd1;
     end
-    wire training_mode_set_swreset_w = (training_mode_swreset_hold_r != 7'd0);
+    wire training_mode_set_swreset_w = (training_mode_swreset_hold_r != 10'd0);
 
     // Path B — Bug N4 HW-real fix (2026-05-30): reduce HOLD_CYCLES default.
     //

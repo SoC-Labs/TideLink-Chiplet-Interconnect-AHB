@@ -26,23 +26,18 @@ set_app_options -name place.coarse.congestion_driven_max_util -value 0.80
 set_app_options -name compile.final_place.placement_congestion_effort   -value high
 set_app_options -name compile.initial_opto.placement_congestion_effort -value high
 
-# 12-track short-cleanup levers (Build #17 attempt): util=0.80 was the
-# placement sweet spot (Build #15: 2 shorts, util=0.75 made it 6).
-# Add route-side options to attack the remaining 2 shorts directly:
-#   * repair_shorts_over_macros_effort_level=high — targeted short
-#     repair pass during route_eco. The rf_16k macro sits at the
-#     bottom-right; any shorts in its routing shadow get extra effort.
-#   * post_eco_route_fix_soft_violations=true — run an additional soft-
-#     violation fix pass after route_eco completes, catching anything
-#     the main ECO missed.
-# Both wrapped in catch so build doesn't die if an option name shifted
-# between fc_shell releases.
-if {[catch {set_app_options -name route.detail.repair_shorts_over_macros_effort_level -value high} err]} {
-    puts "WARN: \[setup\] route.detail.repair_shorts_over_macros_effort_level not set: $err"
-}
-if {[catch {set_app_options -name route.common.post_eco_route_fix_soft_violations -value true} err]} {
-    puts "WARN: \[setup\] route.common.post_eco_route_fix_soft_violations not set: $err"
-}
+# 4-build 12-track placement/route sweep (2026-06-02/03):
+#   Build #14: util=0.85, effort=medium      → 4 shorts, hold  0.00
+#   Build #15: util=0.80, effort=high        → 2 shorts, hold -0.03  ← BEST
+#   Build #16: util=0.75, effort=high        → 6 viols,  hold -0.07, setup -0.11
+#   Build #17: util=0.80 + repair_shorts_over_macros=high
+#                       + post_eco_route_fix_soft_violations=true
+#                                            → 3 shorts, hold -0.06
+# All knob-tuning beyond #15's settings made things worse. The 2 stuck
+# shorts in #15 are a structural geometry property of the 12-track
+# tcbn65lpbwp12t first-spin that fc_shell can't escape via app options.
+# Build #15 is the 12-track baseline; a future fix would need a
+# placement-blockage or manual via re-route, not more knob tuning.
 
 # Area is squeezed primarily by FC_CORE_UTILIZATION (Makefile-level),
 # clock-gating insertion (FC default), and the dense floorplan with the

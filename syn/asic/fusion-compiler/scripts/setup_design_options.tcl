@@ -22,9 +22,27 @@
 # 12-track hit 4 unresolvable metal shorts that 200-iter ECO route
 # couldn't clear. Bump effort to high and ease util to 0.80 to give
 # the router more channels.
-set_app_options -name place.coarse.congestion_driven_max_util -value 0.75
+set_app_options -name place.coarse.congestion_driven_max_util -value 0.80
 set_app_options -name compile.final_place.placement_congestion_effort   -value high
 set_app_options -name compile.initial_opto.placement_congestion_effort -value high
+
+# 12-track short-cleanup levers (Build #17 attempt): util=0.80 was the
+# placement sweet spot (Build #15: 2 shorts, util=0.75 made it 6).
+# Add route-side options to attack the remaining 2 shorts directly:
+#   * repair_shorts_over_macros_effort_level=high — targeted short
+#     repair pass during route_eco. The rf_16k macro sits at the
+#     bottom-right; any shorts in its routing shadow get extra effort.
+#   * post_eco_route_fix_soft_violations=true — run an additional soft-
+#     violation fix pass after route_eco completes, catching anything
+#     the main ECO missed.
+# Both wrapped in catch so build doesn't die if an option name shifted
+# between fc_shell releases.
+if {[catch {set_app_options -name route.detail.repair_shorts_over_macros_effort_level -value high} err]} {
+    puts "WARN: \[setup\] route.detail.repair_shorts_over_macros_effort_level not set: $err"
+}
+if {[catch {set_app_options -name route.common.post_eco_route_fix_soft_violations -value true} err]} {
+    puts "WARN: \[setup\] route.common.post_eco_route_fix_soft_violations not set: $err"
+}
 
 # Area is squeezed primarily by FC_CORE_UTILIZATION (Makefile-level),
 # clock-gating insertion (FC default), and the dense floorplan with the

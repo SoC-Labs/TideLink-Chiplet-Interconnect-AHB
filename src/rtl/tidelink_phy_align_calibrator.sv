@@ -832,16 +832,7 @@ module tidelink_phy_align_calibrator #(
                 else                      nxt_state = S_DONE;
             end
             S_DONE: begin
-                // SoC Labs Bug N14b (2026-06-03): level-triggered escape on
-                // swreset HIGH (not just trigger_now's fall edge). Closes the
-                // race where the long apb_clk-domain swreset hold pulse from
-                // training_mode_swreset_hold_r arrives via the single-flop
-                // CDC into rx_link_clk and the fall-edge detector loses the
-                // pulse to metastability. S_CANCEL still waits for !swreset
-                // before advancing to S_ARM, so the rearm round-trip matches
-                // the pre-existing fall-edge path — just guaranteed to fire.
                 if (trigger_now)        nxt_state = S_ARM;
-                else if (swreset)       nxt_state = S_CANCEL;
             end
             S_CANCEL: begin
                 if (!swreset)           nxt_state = S_ARM;   // restart fresh

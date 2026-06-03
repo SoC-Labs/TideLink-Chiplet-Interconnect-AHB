@@ -453,33 +453,6 @@ module WavD2DGpio #(
                 input_training_mode_w | (post_train_hold_ctr_r != 7'd0);
   wire        effective_training_mode    = effective_training_mode_rx;
 
-  // SoC Labs Bug N14b (2026-06-03): sticky "have-ever-trained" latch keeps
-  // the per-lane TX serialiser clock-enable alive after the first training
-  // window completes, so the peer's recovered link_rx_clk stays alive across
-  // every subsequent autoneg / training transition.
-  //
-  // Silicon failure mode (v14 build cc11496): slave (autoneg winner) hits
-  // Bug N10/N14a's TRAIN_POLL_PEER timeout bypass and drops training_mode
-  // BEFORE its Wlink TX pstate FSM latches LINK_ACTIVE (io_link_tx_tx_en=1).
-  // With (tx_en=0, effective_training_mode=0, postcount=0) the gating
-  // expression below collapses to 0 — slave's pad_clk_tx stops toggling,
-  // master's recovered link_rx_clk dies, master's rx-clk-domain calibrator
-  // and lane_checker freeze. Visible on silicon as master cal_done=0 and
-  // lane_locked=0x00 indefinitely despite role_lock=1.
-  //
-  // Fix: once we've ever been clocked through a training window (or seen
-  // a real LINK_ACTIVE tx_en assertion), free-run the pad clock forever.
-  // Idle bytes on the wire are harmless: the peer's Wlink RX framer
-  // already filters everything that isn't a valid packet header.
-  reg         ever_clocked_r;
-  always @(posedge io_link_tx_tx_link_clk or posedge por_reset_scan_wrs_io_reset_out) begin
-    if (por_reset_scan_wrs_io_reset_out) begin
-      ever_clocked_r <= 1'b0;
-    end else if (io_link_tx_tx_en | effective_training_mode) begin
-      ever_clocked_r <= 1'b1;
-    end
-  end
-
   // ---------------------------------------------------------------------------
   // SoC Labs WORD-ALIGNED training-mux transition (tdif-02 -> tdif-03)
   //
@@ -888,56 +861,56 @@ module WavD2DGpio #(
   assign gpiotx_0_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_0_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_0_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_0_io_link_data = tx_lane_en ? tx_lane_data : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_1_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_1_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_1_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_1_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_1_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_1_io_link_data = tx_lane_en_1 ? tx_lane_data_1 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_2_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_2_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_2_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_2_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_2_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_2_io_link_data = tx_lane_en_2 ? tx_lane_data_2 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_3_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_3_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_3_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_3_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_3_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_3_io_link_data = tx_lane_en_3 ? tx_lane_data_3 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_4_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_4_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_4_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_4_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_4_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_4_io_link_data = tx_lane_en_4 ? tx_lane_data_4 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_5_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_5_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_5_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_5_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_5_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_5_io_link_data = tx_lane_en_5 ? tx_lane_data_5 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_6_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_6_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_6_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_6_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_6_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_6_io_link_data = tx_lane_en_6 ? tx_lane_data_6 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiotx_7_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_7_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_7_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_7_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_7_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | ever_clocked_r; // SoC Labs §9: keep serialiser clocked during training + Bug N14b: free-run after first training window
+  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_7_io_link_data = tx_lane_en_7 ? tx_lane_data_7 : 16'h0; // @[GPIO.scala 213:37]
   assign gpiorx_0_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiorx_0_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]

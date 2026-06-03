@@ -22,7 +22,7 @@
 # 12-track hit 4 unresolvable metal shorts that 200-iter ECO route
 # couldn't clear. Bump effort to high and ease util to 0.80 to give
 # the router more channels.
-set_app_options -name place.coarse.congestion_driven_max_util -value 0.80
+set_app_options -name place.coarse.congestion_driven_max_util -value 0.75
 set_app_options -name compile.final_place.placement_congestion_effort   -value high
 set_app_options -name compile.initial_opto.placement_congestion_effort -value high
 

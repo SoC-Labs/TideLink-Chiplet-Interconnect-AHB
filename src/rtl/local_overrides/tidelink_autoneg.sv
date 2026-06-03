@@ -303,18 +303,8 @@ module tidelink_autoneg #(
 
     // Poll timeout default — number of poll-and-evaluate cycles before
     // giving up. Each cycle reads peer's SWI_LANE_STATUS and re-evaluates
-    // the all-locked predicate (~600 us per cycle at 100 kHz I²C).
-    //
-    // SoC Labs Bug N14b (2026-06-03): widened 4'd15 (~9 ms total budget) →
-    // 8'd150 (~90 ms total). Silicon v14 showed the slave hitting the
-    // Bug N10/N14a timeout bypass after ~9 ms, dropping training_mode
-    // BEFORE master's calibrator could find sweep_success against the
-    // training pattern (silicon SI / sweep-time margins are tighter than
-    // sim). Holding training_mode high for ~90 ms gives master's calibrator
-    // a far larger window to converge before slave declares bypass success.
-    // The 4-bit SW override (NEGO_TRAIN_CFG[7:4]) is unchanged — that path
-    // still picks 1..15 small budgets for fast-fail tests.
-    localparam [7:0]  T_POLL_TIMEOUT_DEFAULT = 8'd150;
+    // the all-locked predicate.
+    localparam [3:0]  T_POLL_TIMEOUT_DEFAULT = 4'd15;
 
     // SW reset pulse width during ST_TRAIN_EXIT. Held high for this many
     // apb_clk cycles before transitioning to ST_TRAIN_DONE.
@@ -333,9 +323,7 @@ module tidelink_autoneg #(
 
     // Phase 3 — training-mode coordination registers
     reg [11:0] train_wait_r,        train_wait_nxt;
-    // Bug N14b (2026-06-03): widened 4→8 bits to match T_POLL_TIMEOUT_DEFAULT
-    // 8'd150 (~90 ms POLL_PEER budget vs. prior ~9 ms).
-    reg [7:0]  poll_attempt_r,      poll_attempt_nxt;
+    reg [3:0]  poll_attempt_r,      poll_attempt_nxt;
     reg [6:0]  swreset_hold_r,      swreset_hold_nxt;
     reg [7:0]  peer_lane_locked_r,  peer_lane_locked_nxt;
     reg [7:0]  peer_lane_fault_r,   peer_lane_fault_nxt;
@@ -1116,7 +1104,7 @@ module tidelink_autoneg #(
                                         end else if (poll_attempt_r ==
                                                      ((train_poll_timeout == 4'd0)
                                                       ? T_POLL_TIMEOUT_DEFAULT
-                                                      : {4'd0, train_poll_timeout})) begin
+                                                      : train_poll_timeout)) begin
                                             // Poll timeout reached.
                                             // Bug N10 (2026-06-02): when peer
                                             // is in ST_NEGO_DONE-lost (came
@@ -1174,7 +1162,7 @@ module tidelink_autoneg #(
                                         end else begin
                                             // Re-poll: increment attempt,
                                             // re-arm address-write sub-phase.
-                                            poll_attempt_nxt    = poll_attempt_r + 8'd1;
+                                            poll_attempt_nxt    = poll_attempt_r + 4'd1;
                                             mask_byte_cnt_nxt   = 3'd0;
                                             txn_step_nxt        = TXN_DATA;
                                             train_poll_phase_nxt = 1'b0;

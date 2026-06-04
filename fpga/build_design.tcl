@@ -292,6 +292,19 @@ if { [info exists env(FPGA_INSERT_DEBUG_CORE)] && $env(FPGA_INSERT_DEBUG_CORE) =
         puts "Inserting debug core via $debug_tcl..."
         source $debug_tcl
     }
+} else {
+    # NO-ILA build: the RTL's (* mark_debug *) attrs survive into the synth DCP
+    # and opt_design auto-processes them; a constant-foldable marked net (e.g.
+    # after the 2026-06-03 deskew rewire folded an FC-word path) then aborts
+    # impl_1 with Chipscope 16-213 ("probeN has 48 unconnected channels").
+    # Strip MARK_DEBUG just before opt_design via an impl_1 pre-hook so no
+    # auto-debug core forms. Scoped here (else-branch) so ILA targets are
+    # unaffected. See fpga/strip_mark_debug.tcl.
+    set strip_tcl [file join [file dirname [info script]] strip_mark_debug.tcl]
+    if { [file exists $strip_tcl] } {
+        set_property STEPS.OPT_DESIGN.TCL.PRE $strip_tcl [get_runs impl_1]
+        puts "No-ILA build: MARK_DEBUG strip hook set on impl_1 opt_design pre-step ($strip_tcl)."
+    }
 }
 
 # STEP 9: Implementation + Bitstream

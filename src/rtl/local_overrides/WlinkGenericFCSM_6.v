@@ -226,7 +226,23 @@ module WlinkGenericFCSM_6 #(
   output        io_obs_cr_pkt_seen_rx,
   output        io_obs_crack_pkt_seen_rx,
   output        io_obs_pkt_is_cr_pkt,
-  output        io_obs_pkt_is_crack_pkt
+  output        io_obs_pkt_is_crack_pkt,
+  // SoC Labs Bug-A FCSM observation 2026-06-02: expose the three signals that
+  // gate the state 4→5 (LINK_IDLE → LINK_DATA) transition. Build #15 ILA
+  // showed FCSM stuck at state 4 with skid loaded but ~ready; need to know
+  // which gate is the cause.
+  //   io_obs_a2l_replay_link_valid : link-clock-domain validity of TX FIFO
+  //                                  data (a2l_fc_replay_link_valid, L321).
+  //   io_obs_fe_rx_credit_max[7:0] : captured fe_rx_credit_max from CR/CRACK
+  //                                  (rx-clk domain reg, L367).
+  //   io_obs_fe_rx_is_full         : combinational full-gate (L436).
+  output        io_obs_a2l_replay_link_valid,
+  output [7:0]  io_obs_fe_rx_credit_max,
+  output        io_obs_fe_rx_is_full,
+  // SoC Labs Bug-A FCSM observation 2026-06-03: APP side of the a2l FIFO.
+  // Build #20 showed link side stuck at 0; need app side to know whether
+  // master fc_adapter is pushing pulses that the FIFO CDC then drops.
+  output        io_obs_a2l_replay_app_valid
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -797,6 +813,12 @@ module WlinkGenericFCSM_6 #(
   assign io_obs_crack_pkt_seen_rx = crack_pkt_seen_rx;
   assign io_obs_pkt_is_cr_pkt     = pkt_is_cr_pkt;
   assign io_obs_pkt_is_crack_pkt  = pkt_is_crack_pkt;
+  // SoC Labs Bug-A FCSM observation 2026-06-02
+  assign io_obs_a2l_replay_link_valid = a2l_fc_replay_link_valid;
+  assign io_obs_fe_rx_credit_max      = fe_rx_credit_max;
+  assign io_obs_fe_rx_is_full         = fe_rx_is_full;
+  // SoC Labs Bug-A FCSM observation 2026-06-03
+  assign io_obs_a2l_replay_app_valid  = a2l_fc_replay_app_valid;
   assign rx_crc_computed_crcgen_io_in = auto_rx_in_data; // @[Nodes.scala 1210:84 LazyModule.scala 309:16]
   assign en_ff2_rx_demet_clock = io_rx_clk; // @[FC.scala 191:33]
   assign en_ff2_rx_demet_reset = io_rx_reset; // @[FC.scala 191:54]

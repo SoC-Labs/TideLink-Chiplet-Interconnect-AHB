@@ -308,8 +308,67 @@ module WavD2DGpio #(
   wire [15:0] rx_link_data_6 = rx_lane_en_6 ? gpiorx_6_io_link_data : 16'h0; // @[GPIO.scala 243:37]
   wire  rx_lane_en_7 = io_link_rx_rx_lane_mask[7]; // @[GPIO.scala 242:56]
   wire [15:0] rx_link_data_7 = rx_lane_en_7 ? gpiorx_7_io_link_data : 16'h0; // @[GPIO.scala 243:37]
-  wire [63:0] io_link_rx_rx_link_data_lo = {rx_link_data_3,rx_link_data_2,rx_link_data_1,rx_link_data_0}; // @[GPIO.scala 246:47]
-  wire [63:0] io_link_rx_rx_link_data_hi = {rx_link_data_7,rx_link_data_6,rx_link_data_5,rx_link_data_4}; // @[GPIO.scala 246:47]
+  // ---------------------------------------------------------------------------
+  // SoC Labs Bug A causal-chain fix (2026-06-03) — cross-lane deskew.
+  // See docs/PHY_LANE_DESKEW_DESIGN_2026_06_03.md.
+  //
+  // Each WavD2DGpioRx lane runs its own mod-16 word counter on the shared
+  // pad_clk, deriving its OWN word clock (gpiorx_N_io_link_clk). Per-lane
+  // calibration/slip timing leaves the 8 word clocks with persistent phase
+  // offsets of up to ~7 word-periods. The original code flat-concatenated the
+  // 8 per-lane 16-bit words combinationally and the framer sampled all of them
+  // on lane-0's clock only — so on real FPGA skew the assembled 128-bit word
+  // mixed bytes from DIFFERENT TX words, the framer never found a SOP, and the
+  // link stayed dead (Bug A). This is invisible in the bit-perfect zero-skew
+  // sim but is a leading FPGA bring-up blocker.
+  //
+  // tidelink_lane_deskew is a per-lane elastic FIFO with a common read pointer
+  // into lane-0's clock domain: it pops one word from each lane only once ALL
+  // 8 lanes have a buffered word (all_ready = &lane_has_data), reassembling a
+  // time-aligned 128-bit bus. training_mode gates the FIFO writes off during
+  // training so each FIFO's entry [0] is the first DATA word post-training.
+  //
+  // BYPASS during training: the calibrator's per-lane lane_checker oracle
+  // validates the training pattern by slicing the assembled 128-bit bus into
+  // per-lane 16-bit windows. During training the FIFOs are held empty (writes
+  // gated off), so we MUST feed the flat concat through to the framer/oracle
+  // while effective_training_mode_rx=1, and only switch to the deskewed output
+  // for data mode. This also makes the change a functional NO-OP for the
+  // zero-skew sim baseline: in data mode with zero skew, all 8 lanes present
+  // word [0] on the same lane-0 edge, all_ready asserts immediately, and the
+  // deskew output equals the flat concat (one out_clk of pipeline latency,
+  // absorbed by the credit handshake) — so the working baseline is preserved.
+  //
+  // effective_training_mode_rx is DRIVEN further below (~line 452); forward-
+  // declare it here so it can gate the bypass mux at the assembly site.
+  // ---------------------------------------------------------------------------
+  wire        effective_training_mode_rx;
+  wire [127:0] flat_concat_data = {rx_link_data_7,rx_link_data_6,
+                                   rx_link_data_5,rx_link_data_4,
+                                   rx_link_data_3,rx_link_data_2,
+                                   rx_link_data_1,rx_link_data_0};
+  wire [127:0] deskew_aligned_data;
+  tidelink_lane_deskew #(
+      .LANES(8), .WIDTH(16), .DEPTH_LOG(3)
+  ) u_deskew (
+      .rst_n         (~io_por_reset),
+      .lane_clk      ({gpiorx_7_io_link_clk, gpiorx_6_io_link_clk,
+                       gpiorx_5_io_link_clk, gpiorx_4_io_link_clk,
+                       gpiorx_3_io_link_clk, gpiorx_2_io_link_clk,
+                       gpiorx_1_io_link_clk, gpiorx_0_io_link_clk}),
+      .lane_data     ({rx_link_data_7, rx_link_data_6,
+                       rx_link_data_5, rx_link_data_4,
+                       rx_link_data_3, rx_link_data_2,
+                       rx_link_data_1, rx_link_data_0}),
+      .training_mode (effective_training_mode_rx),
+      .out_clk       (gpiorx_0_io_link_clk),
+      .out_data      (deskew_aligned_data)
+  );
+  wire [127:0] assembled_link_data = effective_training_mode_rx
+                                       ? flat_concat_data
+                                       : deskew_aligned_data;
+  wire [63:0] io_link_rx_rx_link_data_lo = assembled_link_data[63:0];   // @[GPIO.scala 245:50]
+  wire [63:0] io_link_rx_rx_link_data_hi = assembled_link_data[127:64]; // @[GPIO.scala 245:50]
   reg  out_prepend_swi_polarity; // @[SW.scala 83:22]
   // SoC Labs alignment patch (2026-05-05): per-PHY 4-bit deserialiser phase
   // offset, exposed at PHY Control register bits[20:17]. Default 0 matches
@@ -449,7 +508,10 @@ module WavD2DGpio #(
   // explicit per-instance wiring below uses the _tx variant for the per-
   // lane mux and keeps the held signal for io_clk_en.
   wire        effective_training_mode_tx_raw = input_training_mode_w;
-  wire        effective_training_mode_rx =
+  // NOTE: effective_training_mode_rx is forward-declared (bare wire) at the
+  // deskew instance above (~line 311) so it can gate the bypass mux; drive it
+  // here with a continuous assign rather than re-declaring it.
+  assign      effective_training_mode_rx =
                 input_training_mode_w | (post_train_hold_ctr_r != 7'd0);
   wire        effective_training_mode    = effective_training_mode_rx;
 

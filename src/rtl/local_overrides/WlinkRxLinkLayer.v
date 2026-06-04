@@ -135,10 +135,10 @@ module WlinkRxLinkLayer(
   wire [23:0] ecc_check_ph_in; // @[LinkLayer.scala 639:35]
   wire [7:0] ecc_check_rx_ecc; // @[LinkLayer.scala 639:35]
   wire [7:0] ecc_check_calc_ecc; // @[LinkLayer.scala 639:35]
-  (* mark_debug = "true" *) wire [23:0] ecc_check_corrected_ph; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC-corrected PH (feat/phc-ila-debug)
-  (* mark_debug = "true" *) wire  ecc_check_corrected; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC corrected flag (feat/phc-ila-debug)
-  (* mark_debug = "true" *) wire  ecc_check_corrupted; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC fail flag (feat/phc-ila-debug)
-  (* mark_debug = "true" *) reg [1:0] state; // @[LinkLayer.scala 611:44]  SoC Labs ILA (feat/phc-ila-debug)
+  wire [23:0] ecc_check_corrected_ph; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC-corrected PH (feat/phc-ila-debug)
+  wire  ecc_check_corrected; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC corrected flag (feat/phc-ila-debug)
+  wire  ecc_check_corrupted; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC fail flag (feat/phc-ila-debug)
+  reg [1:0] state; // @[LinkLayer.scala 611:44]  SoC Labs ILA (feat/phc-ila-debug)
   // SoC Labs tdif-08 L4 fix v3 (2026-05-25): "first_short_pkt_seen" gate.
   // ----- NEUTRALISED 2026-05-25 by option (c) in Wlink.v override -----
   // The v3 consumer-side gate (commit 92c2ec7) was partial (5/12 fuzz
@@ -152,14 +152,14 @@ module WlinkRxLinkLayer(
   // We keep the register declaration so the always-block below still
   // synthesises, but force `long_pkt_gate=1'b1` so this file becomes a
   // functional no-op vs the base Wlink RTL. Keeping the file in the
-  // flist preserves the (* mark_debug = "true" *) attributes used by
+  // flist preserves the attributes used by
   // the ILA capture pipeline (see reference_phc_ila_capture.md). The
   // dead `first_short_pkt_seen` reg will be pruned by synthesis.
   // tdif-10 visibility (2026-05-25): expose first_short_pkt_seen to the
   // ILA. The bit is currently a no-op (long_pkt_gate forced to 1) but
   // observing it on HW confirms whether the framer has ever seen a real
   // short CR packet (1) or has been stuck on filler the whole time (0).
-  (* mark_debug = "true" *) reg       first_short_pkt_seen;        // tdif-10 ILA — L4-v3 gate witness
+  reg       first_short_pkt_seen;        // tdif-10 ILA — L4-v3 gate witness
   // L5 (tdif-10, 2026-05-25): re-enable the v3 sticky gate. Long-packet
   // entry is gated until a whitelisted SHORT bringup packet has been
   // observed in state==0 — see strengthened latch logic below.
@@ -191,18 +191,36 @@ module WlinkRxLinkLayer(
   // tdif-10 visibility (2026-05-25): valid_byte_reg gates every framer
   // state transition. ILA-visible so we can correlate state==1 hangs with
   // whether the framer is still receiving bytes from the deser front-end.
-  (* mark_debug = "true" *) wire  valid_byte_reg = |byte0_reg | |byte1_reg; // @[LinkLayer.scala 636:43]  tdif-10 ILA — byte-valid gate
-  (* mark_debug = "true" *) wire [23:0] corrected_ph = ecc_check_corrected_ph; // @[LinkLayer.scala 641:33 LinkLayer.scala 642:27]  SoC Labs ILA — corrected packet header (feat/phc-ila-debug)
+  wire  valid_byte_reg = |byte0_reg | |byte1_reg; // @[LinkLayer.scala 636:43]  tdif-10 ILA — byte-valid gate
+  wire [23:0] corrected_ph = ecc_check_corrected_ph; // @[LinkLayer.scala 641:33 LinkLayer.scala 642:27]  SoC Labs ILA — corrected packet header (feat/phc-ila-debug)
   wire  _is_short_pkt_T_5 = ~ecc_check_corrupted; // @[LinkLayer.scala 643:111]
-  (* mark_debug = "true" *) wire  is_short_pkt = corrected_ph[7:0] <= io_swi_short_packet_max & corrected_ph[7:0] != 8'h0 & ~ecc_check_corrupted; // @[LinkLayer.scala 643:108]  SoC Labs ILA — short packet detect (feat/phc-ila-debug)
-  (* mark_debug = "true" *) wire  is_long_pkt = corrected_ph[7:0] > io_swi_short_packet_max & _is_short_pkt_T_5; // @[LinkLayer.scala 644:76]  SoC Labs ILA — long packet detect (feat/phc-ila-debug)
-  (* mark_debug = "true" *) reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
-  (* mark_debug = "true" *) reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
+  wire  is_short_pkt = corrected_ph[7:0] <= io_swi_short_packet_max & corrected_ph[7:0] != 8'h0 & ~ecc_check_corrupted; // @[LinkLayer.scala 643:108]  SoC Labs ILA — short packet detect (feat/phc-ila-debug)
+  wire  is_long_pkt = corrected_ph[7:0] > io_swi_short_packet_max & _is_short_pkt_T_5; // @[LinkLayer.scala 644:76]  SoC Labs ILA — long packet detect (feat/phc-ila-debug)
+  // SoC Labs S->M framer-wedge fix (2026-06-03): bound the candidate
+  // long-packet word_count before allowing the framer to commit to
+  // state==1 (long-packet mode). Root cause: the MASTER's framer latched
+  // a TRAINING-FILLER word as a giant long packet with a phantom
+  // word_count (~60180). Its only exit (endOfPacket) needs ~word_count+6
+  // bytes (~20k cycles) so the framer never returned to hunt (state 0),
+  // auto_out_valid never asserted, and the master never decoded slave
+  // packets (tl_fc_l2a_valid=0, pair_credit_counter stuck at 0).
+  //
+  // The candidate length about to be loaded into word_count is
+  // ecc_check_corrected_ph[23:8] (see _GEN_8/_GEN_38). The real link's
+  // max packet is small (FCSM credit/FIFO depth is a handful of words),
+  // so any header claiming more words than LONG_PKT_WORD_MAX is a
+  // mis-aligned filler, not a legitimate long packet. 64 words is a
+  // comfortable bound above the largest legal AHB burst payload while
+  // still rejecting the ~60k phantom lengths seen on filler.
+  localparam [15:0] LONG_PKT_WORD_MAX = 16'd64; // S->M wedge guard
+  wire long_pkt_len_ok = ecc_check_corrected_ph[23:8] <= LONG_PKT_WORD_MAX; // candidate word_count plausible
+  reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
+  reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
   // tdif-10 visibility (2026-05-25): word_count is the framer's "how far
   // through the long packet am I" counter -- when state latches state==1 on
   // training filler this counts up toward word_count_in (~163 for filler
   // 0xa3) and never wraps. ILA-visible so we see the false-long-pkt depth.
-  (* mark_debug = "true" *) reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
+  reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
   reg [16:0] byte_count; // @[LinkLayer.scala 657:36]
   wire [7:0] _bytesPerCycle_T_1 = io_active_lanes + 8'h1; // @[LinkLayer.scala 658:44]
   /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)
@@ -1092,14 +1110,26 @@ module WlinkRxLinkLayer(
             // _GEN_9 = is_long_pkt & ~is_short_pkt_prev ? 2'h1 : state, so
             // an unguarded long-packet entry can still latch state==1 in
             // the 0-lane code path; force-keep state if gate is closed.
-            state <= long_pkt_gate ? _GEN_9 : state;
+            // S->M wedge fix (2026-06-03): also require a plausible
+            // candidate word_count (long_pkt_len_ok) before entering
+            // long-packet mode, else hold state to keep hunting.
+            state <= (long_pkt_gate && long_pkt_len_ok) ? _GEN_9 : state;
           end
-        end else if (is_long_pkt && long_pkt_gate) begin  // SoC Labs tdif-08 L4 v3: gated
+        end else if (is_long_pkt && long_pkt_gate && long_pkt_len_ok) begin  // SoC Labs tdif-08 L4 v3: gated; +S->M len bound 2026-06-03
           state <= {{1'd0}, _nstate_T};
         end
       end
     end else if (state == 2'h1) begin
-      state <= _GEN_428;
+      // SoC Labs S->M wedge fix (Option A belt-and-braces, 2026-06-03):
+      // if an implausible long packet did get latched (word_count beyond
+      // LONG_PKT_WORD_MAX), self-recover to hunt (state 0) immediately
+      // instead of waiting ~20k cycles for an endOfPacket that may never
+      // come during the brief real S->M data window.
+      if (word_count > LONG_PKT_WORD_MAX) begin
+        state <= 2'h0;
+      end else begin
+        state <= _GEN_428;
+      end
     end else if (_io_in_error_state_T) begin
       state <= 2'h2;
     end else begin

@@ -76,9 +76,9 @@ module tidelink_fc_adapter #(
     // Single-cycle valid/addr/data, bypasses AHB for 2x throughput.
     // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3
     // --------------------------------------------------------------------------
-    (* mark_debug = "true" *) output wire                     fc_rx_fifo_valid,
+    output wire                     fc_rx_fifo_valid,
     output wire                     fc_rx_fifo_write,
-    (* mark_debug = "true" *) output wire   [RAM_ADDR_W-1:0]  fc_rx_fifo_addr,
+    output wire   [RAM_ADDR_W-1:0]  fc_rx_fifo_addr,
     output wire   [SYS_DATA_W-1:0]  fc_rx_fifo_wdata,
     input  wire                     fc_rx_fifo_ready,
 
@@ -472,7 +472,7 @@ module tidelink_fc_adapter #(
     } rx_state_t;
 
     // mark_debug — Bug A probe (RX FSM state) per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3
-    (* mark_debug = "true" *) rx_state_t rx_state_r;
+    rx_state_t rx_state_r;
     rx_state_t rx_state_next;
 
     // Latch FC RX word when accepted
@@ -481,13 +481,13 @@ module tidelink_fc_adapter #(
 
     // Decoded fields from latched FC word
     // mark_debug — Bug A probe (decode of pkt_type, scopes mis-decode vs FIFO drop)
-    (* mark_debug = "true" *) wire  [1:0]            rx_pkt_type    = rx_fc_word_r[47:46];
+    wire  [1:0]            rx_pkt_type    = rx_fc_word_r[47:46];
     wire  [13:0]           rx_addr_offset = rx_fc_word_r[45:32];
     wire  [SYS_DATA_W-1:0] rx_payload    = rx_fc_word_r[31:0];
 
     // Route selection: which destination to drive
     // mark_debug — Bug A probe (should pulse with every FIFO write)
-    (* mark_debug = "true" *) wire rx_is_fifo = (rx_pkt_type == PKT_FIFO_DATA);
+    wire rx_is_fifo = (rx_pkt_type == PKT_FIFO_DATA);
     wire rx_is_ext  = (rx_pkt_type == PKT_EXT);
 
     // Ready from the active target port (direct for FIFO, APB for config)

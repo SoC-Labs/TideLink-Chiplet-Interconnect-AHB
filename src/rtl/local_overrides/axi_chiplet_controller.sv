@@ -316,7 +316,17 @@ module axi_chiplet_controller #(
     output wire             link_rx_clk_o,
     // EYE_LAST_LATCHED mirror (current calibrator outputs).
     output wire  [23:0]     eye_last_slip_o,
-    output wire  [7:0]      eye_last_lane_fault_o
+    output wire  [7:0]      eye_last_lane_fault_o,
+    // SoC Labs Bug-A FCSM observation 2026-06-02 — surface the three FCSM
+    // gate signals up to tidelink_top so mark_debug at top level can route
+    // them through the dbg_hub for ILA capture. (mark_debug inside the IP
+    // package gets stripped by the IP-packaging step; doing it at top
+    // works — see fc_rx_fifo_wdata pattern.)
+    output wire             obs_a2l_replay_link_valid_o,
+    output wire  [7:0]      obs_fe_rx_credit_max_o,
+    output wire             obs_fe_rx_is_full_o,
+    // SoC Labs Bug-A FCSM observation 2026-06-03
+    output wire             obs_a2l_replay_app_valid_o
 );
 
     // =====================================================================
@@ -538,6 +548,12 @@ module axi_chiplet_controller #(
     wire        obs_llrx_valid_w;
     wire [15:0] obs_ecc_corrupted_cnt_w;
     wire [15:0] obs_ecc_corrected_cnt_w;
+    // SoC Labs Bug-A FCSM observation 2026-06-02
+    wire        obs_a2l_replay_link_valid_w;
+    wire [7:0]  obs_fe_rx_credit_max_w;
+    wire        obs_fe_rx_is_full_w;
+    // SoC Labs Bug-A FCSM observation 2026-06-03
+    wire        obs_a2l_replay_app_valid_w;
 
     // Role/Region-4 register read mux. Region 8 reads served below the
     // region8_rdata mux and OR-merged into ctrl_reg_rdata.
@@ -649,6 +665,19 @@ module axi_chiplet_controller #(
     reg        sync_obs_llrx_valid_0,   sync_obs_llrx_valid_1;
     reg [15:0] sync_obs_ecc_corrupt_0,  sync_obs_ecc_corrupt_1;
     reg [15:0] sync_obs_ecc_correct_0,  sync_obs_ecc_correct_1;
+    // SoC Labs Bug-A FCSM observation 2026-06-02. dont_touch + mark_debug
+    // needed on the apb_clk-synced flops because the signal chain feeding
+    // them has no logical sink (only the dbg_hub) — without dont_touch,
+    // synth opt prunes the entire chain back to constant zero.
+    reg                                                                sync_obs_a2l_replay_v_0;
+    reg                 sync_obs_a2l_replay_v_1;
+    reg [7:0]                                                          sync_obs_fe_rx_cred_0;
+    reg [7:0]           sync_obs_fe_rx_cred_1;
+    reg                                                                sync_obs_fe_rx_full_0;
+    reg                 sync_obs_fe_rx_full_1;
+    // SoC Labs Bug-A FCSM observation 2026-06-03
+    reg                                                                sync_obs_a2l_app_v_0;
+    reg                 sync_obs_a2l_app_v_1;
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
         if (!hresetn) begin
@@ -669,6 +698,12 @@ module axi_chiplet_controller #(
             sync_obs_llrx_valid_0  <= 1'b0;  sync_obs_llrx_valid_1  <= 1'b0;
             sync_obs_ecc_corrupt_0 <= 16'h0; sync_obs_ecc_corrupt_1 <= 16'h0;
             sync_obs_ecc_correct_0 <= 16'h0; sync_obs_ecc_correct_1 <= 16'h0;
+            // SoC Labs Bug-A FCSM observation 2026-06-02
+            sync_obs_a2l_replay_v_0 <= 1'b0;  sync_obs_a2l_replay_v_1 <= 1'b0;
+            sync_obs_fe_rx_cred_0   <= 8'h0;  sync_obs_fe_rx_cred_1   <= 8'h0;
+            sync_obs_fe_rx_full_0   <= 1'b0;  sync_obs_fe_rx_full_1   <= 1'b0;
+            // SoC Labs Bug-A FCSM observation 2026-06-03
+            sync_obs_a2l_app_v_0    <= 1'b0;  sync_obs_a2l_app_v_1    <= 1'b0;
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
             // swi_lane_locked_in=8'hFF / swi_lane_fault_in=8'h00 /
@@ -702,6 +737,16 @@ module axi_chiplet_controller #(
             sync_obs_ecc_corrupt_1 <= sync_obs_ecc_corrupt_0;
             sync_obs_ecc_correct_0 <= obs_ecc_corrected_cnt_w;
             sync_obs_ecc_correct_1 <= sync_obs_ecc_correct_0;
+            // SoC Labs Bug-A FCSM observation 2026-06-02
+            sync_obs_a2l_replay_v_0 <= obs_a2l_replay_link_valid_w;
+            sync_obs_a2l_replay_v_1 <= sync_obs_a2l_replay_v_0;
+            sync_obs_fe_rx_cred_0   <= obs_fe_rx_credit_max_w;
+            sync_obs_fe_rx_cred_1   <= sync_obs_fe_rx_cred_0;
+            sync_obs_fe_rx_full_0   <= obs_fe_rx_is_full_w;
+            sync_obs_fe_rx_full_1   <= sync_obs_fe_rx_full_0;
+            // SoC Labs Bug-A FCSM observation 2026-06-03
+            sync_obs_a2l_app_v_0    <= obs_a2l_replay_app_valid_w;
+            sync_obs_a2l_app_v_1    <= sync_obs_a2l_app_v_0;
         end
     end
 
@@ -1459,6 +1504,13 @@ module axi_chiplet_controller #(
     // and lane_fault to the eye_regs shim at top level.
     assign eye_last_slip_o       = cal_bit_slip_w;
     assign eye_last_lane_fault_o = cal_lane_fault_w;
+    // SoC Labs Bug-A FCSM observation 2026-06-02 — drive the new module
+    // outputs from the apb_clk-synced 2-flop CDC registers.
+    assign obs_a2l_replay_link_valid_o = sync_obs_a2l_replay_v_1;
+    assign obs_fe_rx_credit_max_o      = sync_obs_fe_rx_cred_1;
+    assign obs_fe_rx_is_full_o         = sync_obs_fe_rx_full_1;
+    // SoC Labs Bug-A FCSM observation 2026-06-03
+    assign obs_a2l_replay_app_valid_o  = sync_obs_a2l_app_v_1;
 
     // SW-override OR-mux: calibrator OR Region 8 SW-override regs
     // (swi_bit_slip_lo_r / swi_training_mode_r) → swi_bit_slip_in /
@@ -1732,7 +1784,13 @@ module axi_chiplet_controller #(
         .obs_is_long_pkt_o          (obs_is_long_pkt_w),
         .obs_llrx_valid_o           (obs_llrx_valid_w),
         .obs_ecc_corrupted_cnt_o    (obs_ecc_corrupted_cnt_w),
-        .obs_ecc_corrected_cnt_o    (obs_ecc_corrected_cnt_w)
+        .obs_ecc_corrected_cnt_o    (obs_ecc_corrected_cnt_w),
+        // SoC Labs Bug-A FCSM observation 2026-06-02
+        .obs_a2l_replay_link_valid_o (obs_a2l_replay_link_valid_w),
+        .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
+        .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
+        // SoC Labs Bug-A FCSM observation 2026-06-03
+        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
     );
 
 endmodule

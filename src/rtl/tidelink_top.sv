@@ -492,12 +492,12 @@ module tidelink_top #(
     // mark_debug — Bug A probes per docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3
     // (master FC TX boundary + slave FC RX boundary). hclk-native, captured by
     // u_dbg_int via insert_debug_core.tcl auto-scrape.
-    (* mark_debug = "true" *) wire                   tl_fc_a2l_valid;
-    (* mark_debug = "true" *) wire [FC_DATA_W-1:0]   tl_fc_a2l_data;
-    (* mark_debug = "true" *) wire                   tl_fc_a2l_ready;
-    (* mark_debug = "true" *) wire                   tl_fc_l2a_valid;
-    (* mark_debug = "true" *) wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
-    (* mark_debug = "true" *) wire                   tl_fc_l2a_accept;
+    wire                   tl_fc_a2l_valid;
+    wire [FC_DATA_W-1:0]   tl_fc_a2l_data;
+    wire                   tl_fc_a2l_ready;
+    wire                   tl_fc_l2a_valid;
+    wire [FC_DATA_W-1:0]   tl_fc_l2a_data;
+    wire                   tl_fc_l2a_accept;
 
     // =========================================================================
     // PTP Short Packet wiring (PTP module ↔ Chiplet Controller)
@@ -505,19 +505,19 @@ module tidelink_top #(
     // mark_debug on PHC short-packet boundary nets — ILA capture per
     // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3"
     // (feat/phc-ila-debug). hclk-domain, captured by insert_debug_core.tcl.
-    (* mark_debug = "true" *) wire                   ptp_sp_tx_valid;
-    (* mark_debug = "true" *) wire            [7:0]  ptp_sp_tx_data_id;
-    (* mark_debug = "true" *) wire           [15:0]  ptp_sp_tx_payload;
-    (* mark_debug = "true" *) wire                   ptp_sp_tx_ready;
-    (* mark_debug = "true" *) wire                   ptp_sp_rx_valid;
-    (* mark_debug = "true" *) wire            [7:0]  ptp_sp_rx_data_id;
-    (* mark_debug = "true" *) wire           [15:0]  ptp_sp_rx_payload;
-    (* mark_debug = "true" *) wire                   ptp_sp_rx_accept;
+    wire                   ptp_sp_tx_valid;
+    wire            [7:0]  ptp_sp_tx_data_id;
+    wire           [15:0]  ptp_sp_tx_payload;
+    wire                   ptp_sp_tx_ready;
+    wire                   ptp_sp_rx_valid;
+    wire            [7:0]  ptp_sp_rx_data_id;
+    wire           [15:0]  ptp_sp_rx_payload;
+    wire                   ptp_sp_rx_accept;
 
     // TX link idle signal from chiplet controller (Wlink tx_link_idle output)
     // Directly driven by .tx_link_idle port on the Wlink instance
     // mark_debug — Bug B probe (HW_SYNC defer gate) per audit §4
-    (* mark_debug = "true" *) wire                   tx_router_idle;
+    wire                   tx_router_idle;
 
     // PTP register interface (PTP module ↔ APB regs, via pass-through)
     wire                   ptp_reg_write;
@@ -604,7 +604,20 @@ module tidelink_top #(
     wire [RAM_ADDR_W-1:0]  fc_rx_fifo_addr;
     wire [SYS_DATA_W-1:0]  fc_rx_fifo_wdata;
     // mark_debug — Bug A probe (back-pressure from FIFO controller) per audit §3
-    (* mark_debug = "true" *) wire                    fc_rx_fifo_ready;
+    wire                    fc_rx_fifo_ready;
+
+    // SoC Labs Bug-A FCSM observation 2026-06-02 — apb_clk synced gate
+    // signals for the FCSM state-4 → state-5 transition, exposed by
+    // u_chiplet_controller. mark_debug + dont_touch + keep_hierarchy is
+    // needed because the signal chain from WlinkGenericFCSM_6 has no
+    // logical sink outside dbg_hub — without dont_touch Vivado optimizes
+    // the whole chain away. (mark_debug alone works for fc_rx_fifo_wdata
+    // because it has real downstream logic sinks; obs_* don't.)
+    wire        obs_a2l_replay_link_valid_w;
+    wire [7:0]  obs_fe_rx_credit_max_w;
+    wire        obs_fe_rx_is_full_w;
+    // SoC Labs Bug-A FCSM observation 2026-06-03
+    wire        obs_a2l_replay_app_valid_w;
 
     // PUF SRAM read path (FC adapter ↔ FIFO)
     wire [RAM_ADDR_W-3:0]  puf_addr;
@@ -2071,7 +2084,16 @@ module tidelink_top #(
         // link_rx_clk port (deps/axi-chiplet-controller@3e0e711).
         .link_rx_clk_o              (gpio_phy_link_rx_clk_w),
         .eye_last_slip_o            (eye_last_slip_w),
-        .eye_last_lane_fault_o      (eye_last_lane_fault_w)
+        .eye_last_lane_fault_o      (eye_last_lane_fault_w),
+        // SoC Labs Bug-A FCSM observation 2026-06-02 — wire to top-level
+        // probes with mark_debug; the IP-internal mark_debug is stripped by
+        // packaging, but tidelink_top is the OUTER scope (FPGA wrapper)
+        // where probes survive (see fc_rx_fifo_wdata pattern).
+        .obs_a2l_replay_link_valid_o (obs_a2l_replay_link_valid_w),
+        .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
+        .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
+        // SoC Labs Bug-A FCSM observation 2026-06-03
+        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
     );
 
     // =========================================================================

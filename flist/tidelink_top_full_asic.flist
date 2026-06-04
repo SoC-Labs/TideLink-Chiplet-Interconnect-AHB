@@ -165,7 +165,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbu
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbus_gb_l2a_32x4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_a2l_48x16.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_l2a_48x16.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/Wlink.v
+// Local override Wlink.v — adds obs_fe_rx_is_full_o + obs_a2l_replay_app_valid_o
+// observability ports consumed by local_overrides/axi_chiplet_controller.sv.
+// Submodule Wlink.v at deps/axi-chiplet-controller/logical/wlink/Wlink.v lacks
+// these ports, so loading the override avoids unresolved-reference link
+// errors during set_top_module (DES-220).
+${TIDELINK_HOME}/src/rtl/local_overrides/Wlink.v
 
 // Chiplet controller wrapper (I2C, role selection, bridges)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v

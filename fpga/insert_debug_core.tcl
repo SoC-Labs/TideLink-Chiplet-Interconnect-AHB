@@ -124,6 +124,28 @@ if {[llength [get_debug_cores -quiet dbg_hub]] > 0} {
     catch { set_property C_CLK_INPUT_FREQ_HZ $ila_clk_freq_hz [get_debug_cores dbg_hub] }
 }
 
+# Guard against Chipscope 16-213 ("debug port probeN has K unconnected
+# channels"). implement_debug_core connects the probe pins to the marked
+# nets while open_run synth_1 is loaded, but impl_1 runs opt_design AFTER
+# that — and opt_design's constant-propagation / sweep can collapse a marked
+# net (replace its bits with <const0>/GND), which disconnects the ILA probe
+# input pins and hard-fails opt_design. This first bit us on 2026-06-03 after
+# the tidelink_lane_deskew rewire in WavD2DGpio.v reshuffled the LL_RX data
+# path: the FC-word nets (tl_fc_a2l_data / tl_fc_l2a_data, 48b = FC_DATA_W)
+# became constant-foldable on the training-mode path, so a 48-bit probe ended
+# up with all 48 channels unconnected. Pinning every probed net DONT_TOUCH
+# forbids opt_design from optimizing it away, so the probe stays connected.
+# (DONT_TOUCH is the Xilinx-recommended guard for exactly this Chipscope class.)
+# Pin only the nets we actually intend to probe (the grouped set), not the raw
+# marked list — keeps the guard scoped to the probe pins we are about to wire.
+set pinned 0
+foreach base [array names probe_groups] {
+    foreach net $probe_groups($base) {
+        if { ![catch { set_property DONT_TOUCH true $net }] } { incr pinned }
+    }
+}
+puts "INSTRUMENT: pinned $pinned probed nets DONT_TOUCH (opt_design strip guard)"
+
 # Iterate probe groups, creating one probe per base
 set probe_idx 0
 foreach base [array names probe_groups] {
@@ -135,6 +157,28 @@ foreach base [array names probe_groups] {
     set sorted_nets [list]
     foreach i $order { lappend sorted_nets [lindex $nets $i] }
     set width [llength $sorted_nets]
+    # Belt-and-braces: never build a probe whose net has no source at all. A
+    # truly source-less net here would survive into impl as unconnected
+    # channels (Chipscope 16-213) and hard-fail opt_design, so skip the whole
+    # group with a loud warning instead. Conservative on purpose: we only skip
+    # when the net has NEITHER a driver pin NOR any connected pin/port (i.e.
+    # it is genuinely dangling). Any net with real connectivity is kept so no
+    # probe intent is lost — the DONT_TOUCH pin above is the primary guard;
+    # this is only a fallback for nets that vanished entirely.
+    set driverless 0
+    foreach n $sorted_nets {
+        set drv  [get_pins  -quiet -leaf -of_objects $n -filter {DIRECTION == OUT}]
+        set port [get_ports -quiet            -of_objects $n]
+        set anypin [get_pins -quiet -of_objects $n]
+        if { [llength $drv] == 0 && [llength $port] == 0 && [llength $anypin] == 0 } {
+            set driverless 1
+            break
+        }
+    }
+    if { $driverless } {
+        puts "INSTRUMENT: WARN — skipping probe group '$base' (width $width): a net in this group is dangling (no driver/pin/port) — would cause Chipscope 16-213 unconnected channels"
+        continue
+    }
     if { $probe_idx > 0 } {
         create_debug_port u_dbg_int probe
     }

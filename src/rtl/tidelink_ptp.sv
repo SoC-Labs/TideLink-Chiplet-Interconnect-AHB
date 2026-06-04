@@ -138,17 +138,17 @@ module tidelink_ptp #(
     // mark_debug on PTP control FF + RX valid pulse — ILA capture per
     // docs/PHC_PHASE1_HW_REPORT.md §"Build #13 + Proposal #3" and Agent Q's
     // §2.6/2.7 audit (feat/phc-ila-debug).
-    (* mark_debug = "true" *) logic        ptp_enable_r;
-    (* mark_debug = "true" *) logic        ptp_rx_valid_r;
+    logic        ptp_enable_r;
+    logic        ptp_rx_valid_r;
     // mark_debug — Bug B probe (confirm SYNC vs DELAY_REQ decode at slave) per audit §4
-    (* mark_debug = "true" *) logic [3:0]  ptp_rx_msg_type_r;
+    logic [3:0]  ptp_rx_msg_type_r;
 
     // RX payload register (offset 0x038, mapped at ptp_reg_addr = 3'h6)
     logic [SYS_DATA_W-1:0] ptp_rx_payload_r;
 
     // HW sync control register bit [2]: force-enable, bypasses phc_locked_i gate
     // mark_debug — Bug B probe (shows whether phc_locked_i gate was bypassed)
-    (* mark_debug = "true" *) logic        hw_sync_force_en_r;
+    logic        hw_sync_force_en_r;
 
     // =========================================================================
     // HW Sync Initiator — Forward Declarations
@@ -156,8 +156,8 @@ module tidelink_ptp #(
     // hw_sync_trigger is asserted by the HW sync FSM when it wants to inject
     // a SYNC message into the TX path (defined in full below).
     // mark_debug — Bug B probes (HW_SYNC FSM fires + sequence-number match) per audit §4
-    (* mark_debug = "true" *) wire hw_sync_trigger;
-    (* mark_debug = "true" *) wire [15:0] hw_seq_num_r;
+    wire hw_sync_trigger;
+    wire [15:0] hw_seq_num_r;
 
     // =========================================================================
     // TX Path — AHB Slave / HW Sync → Wait for Idle → Short Packet TX + PHC Capture
@@ -170,7 +170,7 @@ module tidelink_ptp #(
     // Registered state from address phase
     logic [3:0]  tx_msg_type_r;
     // mark_debug — Bug B probe (TX state held) per audit §4
-    (* mark_debug = "true" *) logic        tx_pending_r;
+    logic        tx_pending_r;
 
     // TX FSM states
     typedef enum logic [1:0] {

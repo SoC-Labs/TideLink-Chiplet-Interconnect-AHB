@@ -225,7 +225,17 @@ set_max_delay -datapath_only 8.000 \
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
+#
+# 2026-06-02 (fix/xdc-set-bus-skew-and-hclk-cut): -from changed from
+# [get_ports {pad_rx[*]}] to the IBUF output pins. Vivado rejects (port)
+# objects as the -from of set_bus_skew (it accepts pin|cell|clock only),
+# silently dropping the entire constraint with [Constraints 18-611] +
+# [Constraints 18-612]. The IBUF output pin is the first internal pin in
+# the pad_rx[n] capture path, so this preserves the original intent
+# (equalise pad-to-capture-flop skew across the 8 lanes) while satisfying
+# the object-type rule. Discovered via DCP audit of build #9. Mirror of
+# pair-all fix.
+set_bus_skew -from [get_pins -hier -filter {NAME =~ "*pad_rx_IBUF[*]/O"}] -to $rx_cap_cells 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -259,9 +269,18 @@ set_property IOB TRUE [get_ports {pad_rx[*]}]
 # WavClockInv + functional scan-mux to the gpiorx_*/link_data_pad_clk_reg
 # clock pins, so referencing the master clock [get_clocks pad_clk_rx] in [3]
 # covers the (possibly inverted) capture clock too.
+# 2026-06-02 (fix/xdc-set-bus-skew-and-hclk-cut): $hclk_pin was an undefined
+# Tcl variable, so the entire set_clock_groups silently failed with
+# [Common 17-1548] "can't read \"hclk_pin\": no such variable" and the
+# pad_clk_rx <-> hclk async cut was never applied. Replaced the variable
+# with an explicit get_pins selector on the BD-level clk_wiz_0/clk_out1
+# pin (== hclk — see header §[2] and pair-all tidelink_design.tcl:200,546).
+# Same narrow filter pattern used by pad_clk_tx_fwd's -source above, so it
+# is known to resolve to exactly one pin. Discovered via DCP audit of
+# build #9. Mirror of pair-all fix.
 set_clock_groups -asynchronous \
     -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects $hclk_pin]
+    -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ "*clk_wiz_0/clk_out1"}]]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job

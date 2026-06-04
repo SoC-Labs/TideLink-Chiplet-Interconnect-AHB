@@ -1474,6 +1474,10 @@ module axi_chiplet_controller #(
         // as cal_done=0 stuck-in-HOLD in cocotb/tidelink_top_pair test_01
         // after the eye-visibility submodule sync regressed this connection.
         .cr_pkt_seen_i         (obs_cr_pkt_seen_rx_w),
+        // Fix A2 (2026-06-04): CRACK companion to cr_pkt_seen_i. The master's
+        // RX only ever decodes the peer's CRACK (late framer byte-align), so
+        // S_VALIDATE must accept it too — same rx_link_clk domain, no CDC.
+        .crack_pkt_seen_i      (obs_crack_pkt_seen_rx_w),
         .bit_slip              (cal_bit_slip_w),
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),

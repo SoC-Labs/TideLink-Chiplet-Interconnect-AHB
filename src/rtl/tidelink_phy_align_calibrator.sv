@@ -323,6 +323,23 @@ module tidelink_phy_align_calibrator #(
     // (OVERNIGHT_2026_05_27 "training too lenient" prediction) → re-arm.
     input  logic        cr_pkt_seen_i,
 
+    // §9.11d Fix A2 (2026-06-04) real-data validation — CRACK companion.
+    // Driven from axi_chiplet_controller's `obs_crack_pkt_seen_rx_w` (the
+    // local FCSM's "saw the peer's CRACK_PKT on our RX" sticky flag). The
+    // credit-init handshake is symmetric (both dies emit CR then CRACK), but
+    // the master's RX framer byte-aligns AFTER the slave has already left
+    // FCSM state 1 and switched to emitting CRACK-only — so on the master,
+    // cr_pkt_seen never latches while crack_pkt_seen does. The Wlink FCSM
+    // already tolerates this (it advances on cr OR crack, _GEN_34); this
+    // input lets S_VALIDATE use the SAME criterion. Reaching FCSM state 4
+    // with crack_pkt_seen=1 is conclusive proof the latched (slip,phase)
+    // decodes real packets — the cr-vs-crack distinction is a timing
+    // artifact, not a datapath-health signal. Without this, the master
+    // hangs in S_VALIDATE (cal_done=0) while its FCSM is happy at state 4 —
+    // the observed silicon symptom (cal_done=0, crack=1, FCSM=4).
+    // Same clock domain as the calibrator (recovered RX link clock) → no CDC.
+    input  logic        crack_pkt_seen_i,
+
     // Outputs to PHY
     output logic [23:0] bit_slip,
     // Per-lane 4-bit phase offset, 8 lanes × 4 bits (lane N at bits
@@ -870,7 +887,11 @@ module tidelink_phy_align_calibrator #(
                 //     retry_exhausted, same path as a normal lane fault).
                 if (swreset)                  nxt_state = S_CANCEL;
                 else if (!role_locked)        nxt_state = S_DONE;
-                else if (cr_pkt_seen_i)       nxt_state = S_DONE;
+                // Fix A2: accept CR *or* CRACK (match FCSM _GEN_34). The
+                // master only ever decodes the peer's CRACK (late framer
+                // byte-align); validating on CRACK lets it reach S_DONE/
+                // cal_done=1 exactly as its FCSM already reaches state 4.
+                else if (cr_pkt_seen_i || crack_pkt_seen_i) nxt_state = S_DONE;
                 else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
                     nxt_state = retry_exhausted ? S_DONE : S_ARM;
             end

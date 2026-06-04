@@ -1,75 +1,90 @@
 # =============================================================================
-# test_deskew_bubble.py — DEMONSTRATES the tidelink_lane_deskew bubble bug.
+# test_deskew_bubble.py — RED->GREEN gate for the tidelink_lane_deskew bubble bug.
 #
-# Bug (root-caused): deps/tidelink-gpio-phy/rtl/tidelink_lane_deskew.sv read
-# side (lines ~137-148) advances rd_ptr / updates out_data ONLY when the
-# internal `all_ready = &lane_has_data` is true; when all_ready is FALSE it
-# HOLDS out_data (re-presents the previous 128-bit word). The downstream framer
-# (WlinkRxLinkLayer, clocked by out_clk via WavD2DGpio.v:364 / Wlink.v:1849)
-# has NO valid/flow-control input and consumes one word per out_clk edge
-# unconditionally. So whenever a lane FIFO momentarily empties under per-lane
-# phase skew, the framer RE-CONSUMES the held word as a DUPLICATE (bubble),
-# advancing its byte_count without a real TX word -> SOP/EOP desync.
+# REAL-HW SCENARIO modelled here: the 8 per-lane recovered word clocks are
+# FREQUENCY-LOCKED (one forwarded pad_clk divided by 16 -> identical average
+# rate) and differ only in PHASE (each lane's count counter starts at a
+# different pad_clk cycle during calibration). This is NOT a frequency-drift
+# scenario; all lanes and out_clk share the SAME period, lane k merely delayed
+# by k*LANE_PHASE ns.
 #
-# This UNIT test drives 8 frequency-locked but PHASE-OFFSET lane write clocks
-# and a free-running out_clk (the framer clock, no back-pressure). It writes a
-# KNOWN MONOTONIC word sequence per lane and captures out_data on every out_clk
-# edge. It then ASSERTS the bug: out_data contains consecutive DUPLICATE words
-# (the framer would consume more words than were ever written per lane), and
-# every duplicate coincides with all_ready being LOW.
+# BUG (root-caused): deps/tidelink-gpio-phy/rtl/tidelink_lane_deskew.sv read
+# side originally started advancing rd_ptr as soon as `all_ready =
+# &lane_has_data` was true, i.e. when each lane FIFO held >=1 word. The
+# phase-late lane then sat at occupancy ~1 and emptied for part of every word
+# period, so all_ready GLITCHED LOW recurrently; on each low cycle the read
+# HELD out_data and the downstream framer (out_clk-clocked, NO flow control)
+# re-consumed the held word as a DUPLICATE/bubble -> byte_count desync -> SOP/
+# EOP break. Even frequency-locked, the phase offset alone triggers it.
+#
+# FIX (prime-and-continuous): the read side primes a per-lane cushion
+# (>= PRIME_THRESH words) before the first read, then reads continuously gated
+# by all_ready. Because rd-rate==wr-rate the occupancy holds ~PRIME_THRESH so
+# all_ready stays HIGH for the whole burst -> zero bubbles, no clock gating.
+#
+# This UNIT test drives the frequency-locked phase-offset clocks, captures
+# out_data on every out_clk edge, and asserts: post-prime there are ZERO
+# all_ready-low cycles AND ZERO duplicate out_data words.
+#   - UNFIXED RTL: MUST FAIL (bubbles present; all_ready glitches low).
+#   - FIXED  RTL : MUST PASS (0 bubbles; all_ready stays high post-prime).
 # =============================================================================
 import cocotb
+import random
 from cocotb.triggers import Timer, RisingEdge
 from cocotb.clock import Clock
 
 LANES = 8
 WIDTH = 16
 
-# Timing (ns). All clocks share the SAME period (frequency-locked); lanes are
-# only PHASE-shifted. out_clk is the free-running consumer (framer) clock.
-PERIOD      = 16      # nominal word-clock period for out_clk + most lanes
-LANE_PHASE  = 2       # lane k starts delayed by k*LANE_PHASE ns (skew offset)
-# Per-lane recovered word clocks are NOT perfectly frequency-locked on silicon:
-# each lane derives its own count from its own pad-clock alignment, so a
-# trailing lane drifts a fraction of a word-period slower. We model that with a
-# small per-lane period stretch on the trailing lanes. This makes the trailing
-# lane's FIFO drain recurrently relative to the (faster) framer out_clk ->
-# all_ready glitches low -> out_data is HELD -> the free-running framer
-# re-consumes the held word as a DUPLICATE/bubble. (See module header: "lanes'
-# count counters reset/start at different pad_clk cycles".)
-LANE_PERIOD = {        # lane -> its own word-clock period (ns)
-    0: 16, 1: 16, 2: 16, 3: 16,
-    4: 17, 5: 17, 6: 18, 7: 18,   # trailing lanes run slightly slower
-}
-N_WORDS     = 60      # distinct words pushed per lane
+# Timing. FREQUENCY-LOCKED: every lane AND out_clk share the SAME nominal PERIOD
+# (one forwarded pad_clk / 16). Lanes differ only in PHASE: a fixed per-lane
+# offset (lane k delayed by k*LANE_PHASE ns) PLUS bounded, ZERO-MEAN per-edge
+# phase JITTER that models recovered-clock dither. The jitter is zero-mean and
+# bounded (|j| <= JITTER_PS) so the long-run average period is EXACTLY PERIOD —
+# i.e. the lanes stay frequency-locked, there is NO cumulative frequency drift;
+# the trailing lane only dithers in phase across the out_clk sampling boundary.
+# That phase dither is precisely what makes a lane sitting at occupancy ~1
+# (the UNFIXED occupancy-1 read start) momentarily underrun -> all_ready glitches
+# low -> out_data HELD -> the free-running framer re-consumes a duplicate.
+PERIOD     = 16      # ns nominal word-clock period for out_clk AND all 8 lanes
+LANE_PHASE = 2       # ns: lane k base phase offset = k*LANE_PHASE
+JITTER_PS  = 5000    # ps: per-edge zero-mean phase jitter bound (~0.31*PERIOD)
+N_WORDS    = 80      # distinct words pushed per lane
 
 
 def word_for(lane, tag):
-    # Distinct, monotonic per (lane, tag): high byte = tag, low nibble = lane.
-    # tag is shared across lanes for a given source word so the assembled
-    # 128-bit out_data word is unambiguous and a "duplicate" is unmistakable.
+    # Distinct, monotonic per (lane, tag): high bits = tag, low nibble = lane.
     return ((tag & 0xFFF) << 4) | (lane & 0xF)
 
 
-async def lane_clock(dut, lane, period, phase_delay):
-    """Generate one lane's phase-shifted write clock + drive its monotonic data
-    on each rising edge. Each lane has its OWN scalar clk/data handle, so no
-    cross-task read-modify-write race on a packed bus."""
+async def lane_clock(dut, lane, base_phase_ns):
+    """One lane's frequency-locked, phase-offset+jittered write clock with
+    monotonic data on each rising edge. Rising edges are scheduled at ABSOLUTE
+    nominal times (n*PERIOD + base_phase) plus bounded ZERO-MEAN jitter, so the
+    average rate is exactly PERIOD (frequency-locked) but a trailing lane's edge
+    dithers across the out_clk boundary. Each lane has its OWN scalar clk/data
+    handle (no packed-bus RMW race)."""
     clk_sig  = getattr(dut, f"lane_clk_{lane}")
     data_sig = getattr(dut, f"lane_data_{lane}")
-    if phase_delay > 0:
-        await Timer(phase_delay, units="ns")
-    tag = 0
+    rng      = random.Random(1000 + lane)
+    base_ps  = base_phase_ns * 1000
+    half_ps  = (PERIOD * 1000) // 2
+    prev_ps  = 0
+    tag      = 0
     while True:
-        # present this lane's data BEFORE its rising edge samples it
+        j = rng.randint(-JITTER_PS, JITTER_PS) if JITTER_PS > 0 else 0
+        target = base_ps + tag * PERIOD * 1000 + j   # absolute rising-edge time
+        dt = target - prev_ps
+        if dt > 0:
+            await Timer(dt, units="ps")
+        prev_ps = target
         if tag < N_WORDS:
             data_sig.value = word_for(lane, tag)
         clk_sig.value = 1
-        await Timer(period // 2, units="ns")
+        await Timer(half_ps, units="ps")
         clk_sig.value = 0
-        await Timer(period - period // 2, units="ns")
-        if tag < N_WORDS:
-            tag += 1
+        prev_ps += half_ps
+        tag += 1
 
 
 @cocotb.test()
@@ -86,30 +101,22 @@ async def test_deskew_bubble(dut):
     dut.rst_n.value = 1
     await Timer(20, units="ns")
 
-    # Drop training FIRST so the very first lane edges capture FIFO[0] as data.
+    # Drop training FIRST so the first lane edges capture FIFO[0] as data.
     dut.training_mode.value = 0
     await Timer(4, units="ns")
 
-    # Start per-lane phase-shifted write clocks. Lanes 1..7 are progressively
-    # phase-delayed AND the trailing lanes run a fraction slower (LANE_PERIOD)
-    # -> the trailing lane's FIFO drains recurrently relative to the framer
-    # clock, exactly the per-lane skew/drift the deskew is meant to absorb.
+    # Start per-lane FREQUENCY-LOCKED, PHASE-OFFSET (+ bounded jitter) clocks.
     for k in range(LANES):
-        cocotb.start_soon(lane_clock(dut, k, LANE_PERIOD[k], k * LANE_PHASE))
+        cocotb.start_soon(lane_clock(dut, k, k * LANE_PHASE))
 
-    # The framer consumer clock (out_clk) is lane-0's word clock in real RTL
-    # (WavD2DGpio.v:364 / Wlink.v:1849). Here it free-runs at lane-0's nominal
-    # rate with NO read-cushion head-start; when a trailing lane has drained,
-    # the deskew read STALLS (all_ready low) and HOLDS out_data, and this
-    # free-running consumer re-samples the held word as a BUBBLE/duplicate.
+    # Free-running framer consume clock (out_clk). Same PERIOD as the lanes.
     cocotb.start_soon(Clock(dut.out_clk, PERIOD, units="ns").start())
 
-    # ---- capture out_data on every out_clk rising edge (free-running consume) ----
-    # Bound the capture to the STREAMING window only: stop a few cycles before
-    # the slowest lane would exhaust its N_WORDS writes, so end-of-stream
-    # repetition (a test artefact, not the bug) does not pollute the count.
-    slow_period = max(LANE_PERIOD.values())
-    stream_end_ns = (LANES - 1) * LANE_PHASE + (N_WORDS - 2) * slow_period
+    # ---- capture out_data on every out_clk rising edge (free-running consume) --
+    # Bound to the streaming window: stop a few cycles before the slowest lane
+    # exhausts its N_WORDS writes so end-of-stream repetition (a test artefact,
+    # not the bug) does not pollute the count.
+    stream_end_ns = (LANES - 1) * LANE_PHASE + (N_WORDS - 2) * PERIOD
     cycles = max(8, int(stream_end_ns // PERIOD))
 
     seen = []            # list of (cycle, out_data, all_ready, has_data)
@@ -119,12 +126,13 @@ async def test_deskew_bubble(dut):
         ar = int(dut.all_ready_o.value)
         hd = int(dut.lane_has_data_o.value)
         seen.append((c, od, ar, hd))
-        if ar == 0:
-            dut._log.info(f"  all_ready LOW @ out_clk cycle {c:3d}  "
-                          f"has_data=0x{hd:02x} (read STALLS, out_data HELD)")
 
     # ---- analysis ----
-    # Drop the leading zero/settle words (before first real data appears).
+    # The first non-zero out_data edge marks the first real READ. On the FIXED
+    # RTL nothing is read until the per-lane cushion is primed, so this edge is
+    # the prime-complete point; on the UNFIXED RTL it is the occupancy-1 start.
+    # Either way it is the start of the real stream; bubbles are counted from
+    # here on (the pre-data settle window is excluded as a test artefact).
     first_real = None
     for i, (c, od, ar, hd) in enumerate(seen):
         if od != 0:
@@ -132,14 +140,16 @@ async def test_deskew_bubble(dut):
             break
     assert first_real is not None, "out_data never produced non-zero data"
 
+    prime_cycle = seen[first_real][0]   # out_clk cycle of the first real read
     stream = seen[first_real:]
     total_consumes = len(stream)
 
-    # A BUBBLE = a consume edge c whose out_data equals the previous edge's
-    # out_data. The HOLD that produced it happened because all_ready was LOW at
-    # the PREVIOUS edge (c-1): the read side did not advance rd_ptr/out_data, so
-    # the free-running consumer re-sampled the held word. We therefore correlate
-    # each bubble with all_ready at edge c-1.
+    # all_ready-low cycles DURING streaming (post first real word). On the fixed
+    # RTL this MUST be 0; on the unfixed RTL the phase-late lane drives it >0.
+    ar_low_streaming = [s for s in stream if s[2] == 0]
+
+    # A BUBBLE = a consume edge whose out_data equals the previous edge's, caused
+    # by the read HOLDING (all_ready was low at the prior edge).
     bubbles = []                 # (cycle, value, all_ready_at_prev_edge)
     for i in range(1, len(stream)):
         c, od, ar, hd = stream[i]
@@ -151,11 +161,17 @@ async def test_deskew_bubble(dut):
     bubbles_caused_by_ar_low = [b for b in bubbles if b[2] == 0]
 
     dut._log.info("=" * 74)
-    dut._log.info("tidelink_lane_deskew BUBBLE / duplicate-word demonstration")
+    dut._log.info("tidelink_lane_deskew prime-and-continuous bubble gate "
+                  "(FREQUENCY-LOCKED, phase-offset)")
     dut._log.info("=" * 74)
+    dut._log.info(f"per-lane / out_clk period (ns)     : {PERIOD} "
+                  f"(frequency-locked); phase step = {LANE_PHASE} ns; "
+                  f"jitter = +-{JITTER_PS} ps (zero-mean)")
     dut._log.info(f"words WRITTEN per lane              : {N_WORDS}")
+    dut._log.info(f"PRIME latency (first read @ out_clk): cycle {prime_cycle}")
     dut._log.info(f"out_clk consume edges (streaming)  : {total_consumes}")
     dut._log.info(f"DISTINCT words seen at out_data     : {n_distinct}")
+    dut._log.info(f"all_ready-LOW cycles (streaming)    : {len(ar_low_streaming)}")
     dut._log.info(f"DUPLICATE/BUBBLE consume edges      : {len(bubbles)}")
     dut._log.info("-" * 74)
     for (c, od, par) in bubbles[:24]:
@@ -170,35 +186,33 @@ async def test_deskew_bubble(dut):
         f"{len(bubbles_caused_by_ar_low)}"
     )
     dut._log.info(
-        f"DEMONSTRATED: a free-running framer would consume {total_consumes} "
-        f"words but only {n_distinct} distinct TX words exist => "
-        f"{total_consumes - n_distinct} PHANTOM (bubble) consumes that advance "
-        f"byte_count without a real TX word -> SOP/EOP desync."
+        f"words consumed = {total_consumes}, distinct TX words = {n_distinct}, "
+        f"phantom (bubble) consumes = {total_consumes - n_distinct}"
     )
     dut._log.info("=" * 74)
 
-    # ---- SANITY: the duplicates we counted must be attributable to the bug ----
-    # Every counted bubble is explained by all_ready being LOW at the prior
-    # (hold) edge. If this ever fails, the demonstration's attribution is wrong
-    # (a different cause), so we guard it before tripping the regression gate.
+    # ---- SANITY: counted duplicates must be attributable to the bug ----
     assert len(bubbles_caused_by_ar_low) == len(bubbles), (
         f"{len(bubbles) - len(bubbles_caused_by_ar_low)} duplicate(s) NOT "
         "explained by an all_ready-low hold edge -> attribution mismatch."
     )
 
     # ---- REGRESSION GATE ----
-    # On the CURRENT (buggy) RTL this MUST trip: the all_ready-gated hold at
-    # tidelink_lane_deskew.sv:141/147 (the `else: hold out_data` branch), feeding
-    # a free-running framer with NO out_valid/flow-control port, inserts bubble
-    # duplicates. The fix (add an out_valid the framer honours, or de-gate the
-    # read) must drive bubbles -> 0, at which point this assertion PASSES.
+    # Frequency-locked, phase-offset only:
+    #   UNFIXED RTL -> phase-late lane glitches all_ready low -> bubbles > 0 (FAIL)
+    #   FIXED   RTL -> primed cushion holds all_ready high     -> bubbles = 0 (PASS)
+    assert len(ar_low_streaming) == 0, (
+        f"DESKEW BUBBLE BUG present: {len(ar_low_streaming)} all_ready-LOW "
+        f"cycle(s) during sustained streaming -> the read HELD out_data and the "
+        f"free-running framer re-consumed it. Frequency-locked lanes should hold "
+        f"occupancy steady post-prime; any low cycle means the read started "
+        f"before priming a cushion (occupancy-1 start). Apply prime-and-"
+        f"continuous fix."
+    )
     assert len(bubbles) == 0, (
         f"DESKEW BUBBLE BUG present: {len(bubbles)} duplicate out_data word(s) "
-        f"in the streaming window, all caused by the all_ready-gated hold "
-        f"(tidelink_lane_deskew.sv:141/147) re-presenting the previous 128-bit "
-        f"word to the free-running framer. {total_consumes} consume edges vs "
-        f"{n_distinct} distinct TX words => "
-        f"{total_consumes - n_distinct} phantom consumes. The module exposes NO "
-        f"out_valid port, so the framer cannot skip the held word -> SOP/EOP "
-        f"desync. Fix the deskew read/valid handshake to clear this gate."
+        f"in the streaming window (phantom consumes = "
+        f"{total_consumes - n_distinct}), all from the all_ready-gated hold "
+        f"re-presenting the previous 128-bit word to the free-running framer. "
+        f"Prime-and-continuous read must keep all_ready high and clear bubbles."
     )

@@ -1,19 +1,22 @@
 // =============================================================================
-// tb_top.sv — UNIT testbench for tidelink_lane_deskew (Bug A bubble demo)
+// tb_top.sv — UNIT testbench for tidelink_lane_deskew (bubble-bug red->green)
 //
 // Instantiates tidelink_lane_deskew alone (LANES=8, WIDTH=16, DEPTH_LOG=3).
-// The cocotb driver supplies 8 frequency-locked but PHASE-OFFSET lane write
-// clocks plus a free-running out_clk (the framer's word clock). Because the
-// downstream framer (WlinkRxLinkLayer) is clocked by out_clk and has NO
-// valid/flow-control input, this TB intentionally has NO back-pressure either:
-// every out_clk edge is a "framer consume". The deskew module HOLDS out_data
-// when its internal all_ready is low, so a free-running consumer re-samples the
-// same word — a DUPLICATE / bubble. This TB exposes the internal all_ready and
-// lane_has_data so cocotb can correlate each bubble with an all_ready-low edge.
+// The cocotb driver supplies 8 FREQUENCY-LOCKED but PHASE-OFFSET (+ bounded
+// zero-mean jitter) lane write clocks plus a free-running out_clk (the framer's
+// word clock). Because the downstream framer (WlinkRxLinkLayer) is clocked by
+// out_clk and has NO valid/flow-control input, this TB has NO back-pressure
+// either: every out_clk edge is a "framer consume". When the deskew read holds
+// out_data (all_ready low), a free-running consumer re-samples the same word —
+// a DUPLICATE/bubble. This TB exposes the internal all_ready, lane_has_data and
+// primed so cocotb can correlate each bubble with an all_ready-low edge and
+// confirm the prime-and-continuous fix keeps all_ready high post-prime.
 //
-// The deskew RTL is NOT modified — all_ready is surfaced as a TB output via a
-// hierarchical wire alias so the absence of a real out_valid port is itself the
-// demonstrated defect.
+// This TB references ONLY ports/internals that exist in BOTH the unfixed and
+// fixed RTL (all_ready, lane_has_data, wr_ptr_sync1, rd_ptr) so the SAME TB
+// elaborates against either version for the red->green gate. The fixed RTL's
+// `primed` flag is NOT aliased here (it is absent in the unfixed RTL); the
+// cocotb test infers prime latency from the first real read instead.
 // =============================================================================
 `default_nettype none
 `timescale 1ns/1ps
@@ -47,7 +50,8 @@ module tb_top #(
     output wire [LANES*WIDTH-1:0]     out_data,
     // surfaced internals (the DUT has no out_valid port — that is the bug)
     output wire                       all_ready_o,
-    output wire [LANES-1:0]           lane_has_data_o
+    output wire [LANES-1:0]           lane_has_data_o,
+    output wire [4*LANES-1:0]         occ_o
 );
 
     wire [LANES-1:0]       lane_clk  = {lane_clk_7, lane_clk_6, lane_clk_5,
@@ -70,10 +74,18 @@ module tb_top #(
         .out_data      (out_data)
     );
 
-    // Hierarchical alias to the DUT-internal combinational gate / has-data vec.
-    // Read-only; does not alter DUT behaviour.
+    // Hierarchical aliases to DUT internals. Read-only; do not alter behaviour.
     assign all_ready_o     = u_deskew.all_ready;
     assign lane_has_data_o = u_deskew.lane_has_data;
+
+    // Per-lane synced occupancy (wr_ptr_sync1 - rd_ptr), for diagnostics.
+    genvar oi;
+    generate
+        for (oi = 0; oi < LANES; oi = oi + 1) begin : g_occ
+            assign occ_o[oi*4 +: 4] =
+                (u_deskew.wr_ptr_sync1[oi] - u_deskew.rd_ptr);
+        end
+    endgenerate
 
 endmodule
 

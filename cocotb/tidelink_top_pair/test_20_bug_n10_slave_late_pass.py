@@ -248,17 +248,25 @@ async def test_20_bug_n10_slave_late_pass(dut):
         f"won={s_won} lost={s_lost}"
     )
 
-    assert m_state == ST_TRAIN_DONE, (
-        f"Bug N10: winner (master) parked in {_state_name(m_state)} "
-        f"(expected ST_TRAIN_DONE) after the TRAIN_POLL_PEER cross-check "
-        f"exhausted retries with peer cal_done pinned to 0. "
+    # M4b (2026-06-05): the Bug N10/N14a local-only bypass was REMOVED. The
+    # bypass was prematurely declaring train_ok=1 and clearing peer's
+    # swi_training_mode_r=0 over I²C, mid-sweep — silicon v16 (100% master-fail,
+    # 10 deploys, 2026-06-05) proved this kills peer's training-pattern source.
+    # Post-M4b: a peer that never reports cal_done MUST result in ST_TRAIN_FAIL
+    # after the peer_unreach_timeout_r (~1.3s production, ~10µs sim with the
+    # TB_FAST_PEER_UNREACH +define). The original Bug N10 scenario (peer-
+    # totally-unresponsive) is now a legitimate failure; the post-fix path is
+    # primary-success (peer_cal_done=1) → ST_TRAIN_DONE.
+    assert m_state == ST_TRAIN_FAIL, (
+        f"M4b: winner (master) parked in {_state_name(m_state)} "
+        f"(expected ST_TRAIN_FAIL after peer_unreach_timeout — peer's "
+        f"cal_done was pinned to 0 throughout). The old Bug N10 'local-only "
+        f"success' bypass was removed because silicon proved it was breaking "
+        f"the other side's training-pattern source. "
         f"train_ok={m_train_ok}, train_fail={m_train_fail}, "
         f"peer_cal_done={m_peer_cal}, peer_lane_locked=0x{m_peer_lock:02x}, "
-        f"poll_attempt_r={m_poll_att}. Pre-fix RTL has no local-only "
-        f"fallback in ST_TRAIN_POLL_PEER timeout (autoneg.sv:1087-1094); "
-        f"post-fix routes via ST_TRAIN_EXIT when local lanes are fully "
-        f"locked but peer never reports cal_done."
+        f"poll_attempt_r={m_poll_att}."
     )
-    assert m_train_ok == 1, f"train_ok_r expected 1, got {m_train_ok}"
-    assert m_train_fail == 0, f"train_fail_r expected 0, got {m_train_fail}"
-    log.info("PASS: master reached ST_TRAIN_DONE via Bug N10 local-only bypass")
+    assert m_train_ok == 0, f"train_ok_r expected 0 (peer never converged), got {m_train_ok}"
+    assert m_train_fail == 1, f"train_fail_r expected 1, got {m_train_fail}"
+    log.info("PASS: master correctly enters ST_TRAIN_FAIL when peer never reports cal_done (M4b)")

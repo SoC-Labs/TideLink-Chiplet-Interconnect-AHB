@@ -325,6 +325,35 @@ module tidelink_autoneg #(
     reg [11:0] train_wait_r,        train_wait_nxt;
     reg [3:0]  poll_attempt_r,      poll_attempt_nxt;
     reg [6:0]  swreset_hold_r,      swreset_hold_nxt;
+
+    // M4b (2026-06-05): peer-unreachable escape hatch.
+    // Counts apb_clk cycles spent in ST_TRAIN_POLL_PEER without ever observing
+    // peer_cal_done=1. Reset on peer_cal_done observed, or on FSM leaving the
+    // POLL_PEER state. When peer_unreach_timeout_r asserts, the FSM falls
+    // through to ST_TRAIN_FAIL instead of re-arming poll forever.
+    //
+    // Silicon characterization v16 (2026-06-05): with the prior Bug N14a
+    // bypass, slave would prematurely declare train_ok=1 and write peer's
+    // swi_training_mode_r=0 over I²C while peer's calibrator was still
+    // sweeping → peer's RX loses training pattern → 100% master-only-fail.
+    // M4b removes that bypass; the only paths out of ST_TRAIN_POLL_PEER are
+    // (a) primary success (peer_cal_done=1 AND local fully healthy) →
+    // ST_TRAIN_EXIT, (b) this timeout → ST_TRAIN_FAIL. Production ≈ 1.3s at
+    // 100MHz apb_clk / 2.6s at 50MHz — bounded fail-fast for a genuinely
+    // broken peer; far longer than the prior poll budget so a slow peer
+    // still has time to converge.
+    //
+    // Sim override: cocotb Makefile passes +define+TB_FAST_PEER_UNREACH so
+    // tests don't run for 1.3s of sim time waiting for the timeout. Set to
+    // 1000 cycles (~10µs at 100MHz) so tests verifying M4b's fail path can
+    // hit the timeout in reasonable wall time.
+`ifdef TB_FAST_PEER_UNREACH
+    localparam [26:0] T_PEER_UNREACH_DEFAULT = 27'd1000;
+`else
+    localparam [26:0] T_PEER_UNREACH_DEFAULT = 27'd130_000_000;
+`endif
+    reg [26:0] peer_unreach_ctr_r,      peer_unreach_ctr_nxt;
+    reg        peer_unreach_timeout_r,  peer_unreach_timeout_nxt;
     reg [7:0]  peer_lane_locked_r,  peer_lane_locked_nxt;
     reg [7:0]  peer_lane_fault_r,   peer_lane_fault_nxt;
     reg        peer_cal_done_r,     peer_cal_done_nxt;
@@ -581,6 +610,27 @@ module tidelink_autoneg #(
         train_wait_nxt                = train_wait_r;
         poll_attempt_nxt              = poll_attempt_r;
         swreset_hold_nxt              = swreset_hold_r;
+        peer_unreach_ctr_nxt          = peer_unreach_ctr_r;
+        peer_unreach_timeout_nxt      = peer_unreach_timeout_r;
+
+        // M4b peer-unreachable counter: countdown while in POLL_PEER without
+        // peer_cal_done observed; reset on peer_cal_done observed; reset
+        // outside the POLL_PEER state so each TRAIN attempt gets a fresh
+        // ~1.3s budget.
+        if (peer_cal_done_r) begin
+            peer_unreach_ctr_nxt     = T_PEER_UNREACH_DEFAULT;
+            peer_unreach_timeout_nxt = 1'b0;
+        end else if (state_r == ST_TRAIN_POLL_PEER) begin
+            if (peer_unreach_ctr_r == 27'd0) begin
+                peer_unreach_timeout_nxt = 1'b1;
+            end else begin
+                peer_unreach_ctr_nxt = peer_unreach_ctr_r - 27'd1;
+            end
+        end else if (state_r != ST_TRAIN_EXIT) begin
+            // Outside POLL_PEER/EXIT: reload counter, clear timeout flag.
+            peer_unreach_ctr_nxt     = T_PEER_UNREACH_DEFAULT;
+            peer_unreach_timeout_nxt = 1'b0;
+        end
         peer_lane_locked_nxt          = peer_lane_locked_r;
         peer_lane_fault_nxt           = peer_lane_fault_r;
         peer_cal_done_nxt             = peer_cal_done_r;
@@ -1105,59 +1155,50 @@ module tidelink_autoneg #(
                                                      ((train_poll_timeout == 4'd0)
                                                       ? T_POLL_TIMEOUT_DEFAULT
                                                       : train_poll_timeout)) begin
-                                            // Poll timeout reached.
-                                            // Bug N10 (2026-06-02): when peer
-                                            // is in ST_NEGO_DONE-lost (came
-                                            // up alone first, never trained)
-                                            // its calibrator never engages
-                                            // and peer_cal_done remains 0 for
-                                            // the entire poll budget even
-                                            // though local lanes have locked.
-                                            // Accept local-only training as
-                                            // success in that case (peer
-                                            // unresponsive AND local fully
-                                            // healthy) — fall through to
-                                            // ST_TRAIN_EXIT same as the
-                                            // primary success path. Pre-fix
-                                            // RTL blanket-tripped train_fail
-                                            // here, causing the silicon
-                                            // ST_TRAIN_FAIL fingerprint
-                                            // observed on z2_03 build v10.
+                                            // Poll-budget timeout reached.
                                             //
-                                            // Bug N14a (2026-06-02): silicon
-                                            // v13 hits the same timeout path
-                                            // with SWI_LANE_STATUS=0x000200FF
-                                            // — i.e. lane_locked[7:0]=0xFF
-                                            // and lane_fault=0 but
-                                            // local_calibration_done_i=0.
-                                            // The calibrator parks in S_DONE
-                                            // without re-asserting
-                                            // calibration_done after the
-                                            // role_locked_rise edge has been
-                                            // consumed. The user-visible
-                                            // "training succeeded" signal is
-                                            // lane_locked=0xFF AND
-                                            // lane_fault=0; cal_done is the
-                                            // calibrator's internal
-                                            // bookkeeping (used to gate
-                                            // lltx_enable, which is no
-                                            // longer needed once lanes are
-                                            // already locked). Drop the
-                                            // local_calibration_done_i term
-                                            // from the bypass so this is
-                                            // silicon-survivable.
-                                            if (!peer_cal_done_r &&
-                                                (local_swi_lane_locked_i == 8'hFF) &&
-                                                (local_swi_lane_fault_i == 8'h00)) begin
-                                                mask_byte_cnt_nxt      = 3'd0;
-                                                train_target_value_nxt = 1'b0;
-                                                txn_step_nxt           = TXN_DATA;
-                                                train_poll_phase_nxt   = 1'b0;
-                                                state_nxt              = ST_TRAIN_EXIT;
-                                            end else begin
+                                            // M4b (2026-06-05): peer-coordinated
+                                            // training_mode release. The prior
+                                            // Bug N10/N14a bypass declared
+                                            // train_ok=1 here whenever local
+                                            // lanes were healthy (lane_locked=0xFF,
+                                            // lane_fault=0) but peer_cal_done
+                                            // was still 0. ST_TRAIN_EXIT then
+                                            // issued an I²C write clearing
+                                            // peer's swi_training_mode_r → peer
+                                            // lost the training pattern from us
+                                            // mid-sweep → peer never converged.
+                                            //
+                                            // Silicon v16 (10 deploys, 2026-06-05)
+                                            // showed 100% master-only-fail: slave
+                                            // ran the bypass, wrote master's
+                                            // swi_training_mode_r=0, master's
+                                            // calibrator spent ~2970 retries in
+                                            // S_SWEEP unable to lock against the
+                                            // resulting idle data. An APB
+                                            // experiment (force SWI_TRAINING_MODE=1
+                                            // on both dies) instantly recovered
+                                            // master's lane_locked=0xFF →
+                                            // mechanism proven.
+                                            //
+                                            // New behavior: don't bypass here.
+                                            // Re-arm the poll budget and keep our
+                                            // local training_mode high. The only
+                                            // exits from POLL_PEER are now:
+                                            //   - primary success (block above)
+                                            //   - peer_unreach_timeout_r (~1.3s)
+                                            //     → ST_TRAIN_FAIL (broken peer)
+                                            if (peer_unreach_timeout_r) begin
                                                 local_lane_fault_snapshot_nxt = local_swi_lane_fault_i;
                                                 train_fail_nxt                = 1'b1;
                                                 state_nxt                     = ST_TRAIN_FAIL;
+                                            end else begin
+                                                // Re-arm poll budget; keep
+                                                // training_mode high.
+                                                poll_attempt_nxt     = 4'd0;
+                                                mask_byte_cnt_nxt    = 3'd0;
+                                                txn_step_nxt         = TXN_DATA;
+                                                train_poll_phase_nxt = 1'b0;
                                             end
                                         end else begin
                                             // Re-poll: increment attempt,
@@ -1665,6 +1706,8 @@ module tidelink_autoneg #(
             train_wait_r                <= '0;
             poll_attempt_r              <= '0;
             swreset_hold_r              <= '0;
+            peer_unreach_ctr_r          <= T_PEER_UNREACH_DEFAULT;
+            peer_unreach_timeout_r      <= 1'b0;
             peer_lane_locked_r          <= 8'h00;
             peer_lane_fault_r           <= 8'h00;
             peer_cal_done_r             <= 1'b0;
@@ -1698,6 +1741,8 @@ module tidelink_autoneg #(
             train_wait_r         <= train_wait_nxt;
             poll_attempt_r       <= poll_attempt_nxt;
             swreset_hold_r       <= swreset_hold_nxt;
+            peer_unreach_ctr_r     <= peer_unreach_ctr_nxt;
+            peer_unreach_timeout_r <= peer_unreach_timeout_nxt;
             // Peer-byte captures: if capture_en pulses, latch axl_rdata_r[7:0];
             // otherwise hold (or take the _nxt assignment from the main_comb).
             if (peer_lane_locked_capture_en)

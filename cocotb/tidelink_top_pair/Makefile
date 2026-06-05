@@ -23,6 +23,10 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# M4b (2026-06-05): force fast peer-unreachable timeout in sim. Production
+# silicon waits ~1.3s before TRAIN_FAIL; sim cannot afford that wall time.
+COMPILE_ARGS += +define+TB_FAST_PEER_UNREACH
+
 # BYPASS_AUTONEG (Phase 0c autonomy plan)
 #   1 = legacy behaviour: autoneg parks in ST_BYPASS at POR, role-lock is
 #       SW-driven via APB ROLE_CFG W1S. Default for test_01..test_09.

@@ -381,6 +381,15 @@ module WlinkGenericFCSM_6 #(
   wire  pkt_is_nack_pkt = _crc_corrupt_T & auto_rx_in_data_id == out_prepend_swi_nack_id; // @[FC.scala 172:50]
   reg [7:0] last_good_pkt; // @[FC.scala 179:107]
   reg [7:0] fe_rx_credit_max; // @[FC.scala 183:107]
+  // SoC Labs credit-ring CDC fix (Bug-C, 2026-06-05): fe_rx_credit_max is
+  // WRITTEN in the io_rx_clk domain (loaded from the CR/CRACK 0x1f1f word_count)
+  // but READ in the io_tx_clk domain to size the ne_rx_ptr / fe_rx_ptr credit
+  // ring (ne_rx_ptr_next + fe_rx_ptr_msb below). That cross-domain read had NO
+  // synchronizer. Add a 2-flop io_tx_clk synchronizer and route the tx-domain
+  // ring math through fe_rx_credit_max_txsync so the ring modulus is sampled
+  // cleanly in the tx domain.
+  reg [7:0] fe_rx_credit_max_txsync_meta;
+  reg [7:0] fe_rx_credit_max_txsync;
   reg  cr_pkt_seen_rx; // @[FC.scala 186:107]
   reg  crack_pkt_seen_rx; // @[FC.scala 188:107]
   reg [7:0] exp_pkt_num; // @[FC.scala 193:44]
@@ -426,13 +435,16 @@ module WlinkGenericFCSM_6 #(
   wire  _fe_rx_ptr_in_T = ~en_ff2_tx_demet_io_out; // @[FC.scala 363:46]
   reg [7:0] ne_rx_ptr; // @[FC.scala 366:48]
   wire [7:0] _ne_rx_ptr_next_T_2 = ne_rx_ptr + 8'h1; // @[FC.scala 368:95]
-  wire [7:0] ne_rx_ptr_next = ne_rx_ptr == fe_rx_credit_max ? 8'h0 : _ne_rx_ptr_next_T_2; // @[FC.scala 368:45]
-  wire [1:0] _GEN_2 = fe_rx_credit_max[2] ? 2'h2 : {{1'd0}, fe_rx_credit_max[1]}; // @[FC.scala 376:34 FC.scala 377:39]
-  wire [1:0] _GEN_3 = fe_rx_credit_max[3] ? 2'h3 : _GEN_2; // @[FC.scala 376:34 FC.scala 377:39]
-  wire [2:0] _GEN_4 = fe_rx_credit_max[4] ? 3'h4 : {{1'd0}, _GEN_3}; // @[FC.scala 376:34 FC.scala 377:39]
-  wire [2:0] _GEN_5 = fe_rx_credit_max[5] ? 3'h5 : _GEN_4; // @[FC.scala 376:34 FC.scala 377:39]
-  wire [2:0] _GEN_6 = fe_rx_credit_max[6] ? 3'h6 : _GEN_5; // @[FC.scala 376:34 FC.scala 377:39]
-  wire [2:0] fe_rx_ptr_msb = fe_rx_credit_max[7] ? 3'h7 : _GEN_6; // @[FC.scala 376:34 FC.scala 377:39]
+  // SoC Labs credit-ring CDC fix: tx-domain credit ring math reads the
+  // io_tx_clk-synchronized copy fe_rx_credit_max_txsync (NOT the raw io_rx_clk
+  // register fe_rx_credit_max) so the ring modulus is stable in the tx domain.
+  wire [7:0] ne_rx_ptr_next = ne_rx_ptr == fe_rx_credit_max_txsync ? 8'h0 : _ne_rx_ptr_next_T_2; // @[FC.scala 368:45]
+  wire [1:0] _GEN_2 = fe_rx_credit_max_txsync[2] ? 2'h2 : {{1'd0}, fe_rx_credit_max_txsync[1]}; // @[FC.scala 376:34 FC.scala 377:39]
+  wire [1:0] _GEN_3 = fe_rx_credit_max_txsync[3] ? 2'h3 : _GEN_2; // @[FC.scala 376:34 FC.scala 377:39]
+  wire [2:0] _GEN_4 = fe_rx_credit_max_txsync[4] ? 3'h4 : {{1'd0}, _GEN_3}; // @[FC.scala 376:34 FC.scala 377:39]
+  wire [2:0] _GEN_5 = fe_rx_credit_max_txsync[5] ? 3'h5 : _GEN_4; // @[FC.scala 376:34 FC.scala 377:39]
+  wire [2:0] _GEN_6 = fe_rx_credit_max_txsync[6] ? 3'h6 : _GEN_5; // @[FC.scala 376:34 FC.scala 377:39]
+  wire [2:0] fe_rx_ptr_msb = fe_rx_credit_max_txsync[7] ? 3'h7 : _GEN_6; // @[FC.scala 376:34 FC.scala 377:39]
   wire  _GEN_8 = ne_rx_ptr_next[0] != fe_rx_ptr[0] ? 1'h0 : 1'h1; // @[FC.scala 387:51 FC.scala 388:41 FC.scala 384:39]
   wire  _GEN_9 = 3'h0 < fe_rx_ptr_msb ? _GEN_8 : 1'h1; // @[FC.scala 386:39 FC.scala 384:39]
   wire  _GEN_10 = ne_rx_ptr_next[1] != fe_rx_ptr[1] ? 1'h0 : _GEN_9; // @[FC.scala 387:51 FC.scala 388:41]
@@ -967,10 +979,30 @@ module WlinkGenericFCSM_6 #(
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
     if (io_rx_reset) begin
       fe_rx_credit_max <= 8'h0;
-    end else if (_fe_tx_credit_max_in_T) begin
-      fe_rx_credit_max <= 8'h0;
+    // SoC Labs credit-ring fix (Bug-C, 2026-06-05): the synchronous re-zero
+    //   end else if (_fe_tx_credit_max_in_T) fe_rx_credit_max <= 8'h0;
+    // (where _fe_tx_credit_max_in_T = ~en_ff2_rx_demet_io_out, the demet'd
+    // app-enable) is REMOVED. On silicon swi_enable can dip low for a few
+    // cycles during the LL-swreset / data-mode bootstrap AFTER the CR/CRACK
+    // grant (0x1f) has loaded the ring; the re-zero then collapsed the credit
+    // ring to 0 and sustained delivery wedged ("credit decays, never
+    // replenishes"). The grant is established by CR/CRACK and only a real
+    // io_rx_reset or a fresh CR/CRACK should change it.
     end else if (_fe_tx_credit_max_in_T_1) begin
       fe_rx_credit_max <= auto_rx_in_word_count[15:8];
+    end
+  end
+  // SoC Labs credit-ring CDC fix: 2-flop io_tx_clk synchronizer for the
+  // rx-written credit modulus. The tx-domain ring math (ne_rx_ptr_next /
+  // fe_rx_ptr_msb above) reads fe_rx_credit_max_txsync, never the raw
+  // fe_rx_credit_max register, which crosses from io_rx_clk to io_tx_clk.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      fe_rx_credit_max_txsync_meta <= 8'h0;
+      fe_rx_credit_max_txsync      <= 8'h0;
+    end else begin
+      fe_rx_credit_max_txsync_meta <= fe_rx_credit_max;
+      fe_rx_credit_max_txsync      <= fe_rx_credit_max_txsync_meta;
     end
   end
   // SoC Labs (FPGA bring-up fix, 2026-05-08): make cr_pkt_seen_rx and
@@ -1387,6 +1419,8 @@ initial begin
   last_good_pkt = _RAND_8[7:0];
   _RAND_9 = {1{`RANDOM}};
   fe_rx_credit_max = _RAND_9[7:0];
+  fe_rx_credit_max_txsync_meta = _RAND_9[7:0];
+  fe_rx_credit_max_txsync = _RAND_9[7:0];
   _RAND_10 = {1{`RANDOM}};
   cr_pkt_seen_rx = _RAND_10[0:0];
   _RAND_11 = {1{`RANDOM}};
@@ -1461,6 +1495,10 @@ initial begin
   end
   if (io_rx_reset) begin
     fe_rx_credit_max = 8'h0;
+  end
+  if (io_tx_reset) begin
+    fe_rx_credit_max_txsync_meta = 8'h0;
+    fe_rx_credit_max_txsync = 8'h0;
   end
   if (io_rx_reset) begin
     cr_pkt_seen_rx = 1'h0;

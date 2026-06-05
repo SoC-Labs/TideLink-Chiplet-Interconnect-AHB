@@ -20,6 +20,7 @@ driver style).
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
+from cocotb.handle import Force, Release
 
 # ---------------------------------------------------------------------------
 # Register addresses — mirrors of the HW MMIO layout used in
@@ -944,32 +945,62 @@ async def test_06_doorbell_slave_to_master(dut):
 
 
 @cocotb.test()
-async def test_07_paircredit_nonzero_after_bringup(dut):
-    """Build #3 HW symptom: after full bringup, PAIR_CREDIT_COUNTER reads 0
-    on BOTH sides. Per FCSM design it should be non-zero after the cr/crack
-    exchange has populated the local credit ledger from the peer's CR
-    packet.
+async def test_07_credit_ring_loaded_after_bringup(dut):
+    """Post-bringup link-layer credit invariant.
 
-    Expected: FAIL (both sides read 0 — reproducing the silicon bug).
+    CORRECTED 2026-06-05. The original test asserted PAIR_CREDIT_COUNTER
+    (APB 0x28) != 0 immediately after bringup with NO traffic. That
+    expectation is WRONG by construction: 0x28 is a software/sideband
+    observability ledger (tidelink_apb_regs.sv:323-349) that is bumped ONLY
+    by an incoming credit-release sideband write from the peer's returner,
+    which fires only after a real RX-FIFO read completion. With zero
+    application traffic there is nothing to release, so 0x28 correctly reads
+    0 — while the FUNCTIONAL link-layer credit (fe_rx_credit_max, loaded from
+    the CR/CRACK 0x1f1f word_count) is already 0x1f. (test_04 exercises the
+    0x28 sideband round-trip; it goes non-zero there.)
+
+    The meaningful post-bringup invariant the original test was groping for
+    is therefore: the FCSM credit RING is loaded (fe_rx_credit_max == 0x1f)
+    on BOTH sides AND its io_tx_clk synchronized copy (the credit-CDC fix)
+    has settled to the same value, AND the ring is not falsely full. A
+    regression of either the CR/CRACK grant decode OR the rx->tx credit CDC
+    (Bug-C re-zero) trips this gate.
     """
     tb = PairTB(dut)
     snap_p1, snap_p2 = await run_bringup_full(tb)
 
-    # Settle for the FCSM credit handshake to complete.
+    # Settle for the FCSM credit handshake + the 2-flop tx synchronizer.
     await ClockCycles(tb.dut.hclk, 2000)
+
+    def _i(sig):
+        try:
+            return int(sig.value)
+        except Exception:
+            return -1
+
+    # APB 0x28 observability ledger — documented to stay 0 with no traffic.
     m_pcc = await tb.m_apb.read(APB_PAIR_CREDIT_COUNTER)
     s_pcc = await tb.s_apb.read(APB_PAIR_CREDIT_COUNTER)
-    tb.log.info(f"  master PAIR_CREDIT_COUNTER = 0x{m_pcc:08x}")
-    tb.log.info(f"  slave  PAIR_CREDIT_COUNTER = 0x{s_pcc:08x}")
+    tb.log.info(f"  PAIR_CREDIT_COUNTER (0x28, observability): "
+                f"m=0x{m_pcc:08x} s=0x{s_pcc:08x} (0 w/o traffic is correct)")
 
-    assert m_pcc != 0, (
-        f"master PAIR_CREDIT_COUNTER stuck at 0x{m_pcc:08x} "
-        "(silicon bug reproduced in sim)"
-    )
-    assert s_pcc != 0, (
-        f"slave  PAIR_CREDIT_COUNTER stuck at 0x{s_pcc:08x} "
-        "(silicon bug reproduced in sim)"
-    )
+    for side in ("m", "s"):
+        f = tb.fcsm(side)
+        cmax = _i(f.fe_rx_credit_max)
+        csync = _i(f.fe_rx_credit_max_txsync)
+        cfull = _i(f.fe_rx_is_full)
+        tb.log.info(
+            f"  [{side}] fe_rx_credit_max=0x{cmax:02x} "
+            f"fe_rx_credit_max_txsync=0x{csync:02x} fe_rx_is_full={cfull}")
+        assert cmax == 0x1f, (
+            f"[{side}] FCSM credit ring NOT loaded from CR/CRACK "
+            f"(fe_rx_credit_max=0x{cmax:02x}, want 0x1f) — silicon credit bug")
+        assert csync == 0x1f, (
+            f"[{side}] tx-domain credit modulus did not synchronize "
+            f"(fe_rx_credit_max_txsync=0x{csync:02x}, want 0x1f) — rx->tx CDC "
+            "fix did not converge")
+        assert cfull == 0, (
+            f"[{side}] credit ring reports full at idle (fe_rx_is_full={cfull})")
 
 
 @cocotb.test()
@@ -1092,3 +1123,344 @@ async def test_09_ptp_hw_sync_slave_status(dut):
         f"M(a2l={counts['m_a2l']},l2a={counts['m_l2a']}) "
         f"S(a2l={counts['s_a2l']},l2a={counts['s_l2a']})."
     )
+
+
+# ===========================================================================
+# Sustained-traffic credit-replenishment gate (2026-06-05)
+#
+# Root-cause context (see report):
+#   * The link-layer flow-control credit lives in the FCSM as
+#     fe_rx_credit_max (loaded = 0x1f from the CR/CRACK 0x1f1f word_count) plus
+#     the ne_rx_ptr / fe_rx_ptr ring pointers. A sender consumes one credit per
+#     data packet (ne_rx_ptr advances) and the receiver replenishes it by
+#     ACKing (fe_rx_ptr advances). fe_rx_is_full = ring full => state 4->5 gate
+#     closes => sustained TX stalls if credit never comes back.
+#   * fe_rx_credit_max is WRITTEN in io_rx_clk but READ in io_tx_clk to size the
+#     ring; the original emit had NO synchronizer and a swi_enable-dip
+#     synchronous re-zero (Bug-C). On silicon that wedged sustained delivery
+#     ("credit decays, never replenishes") even though a single packet crossed.
+#   * PAIR_CREDIT_COUNTER (APB 0x28) is a SEPARATE software/sideband-maintained
+#     observability ledger; it is NOT the functional credit (proven: bringup
+#     shows fe_rx_credit_max=0x1f while 0x28=0). test_04 exercises the 0x28
+#     sideband path; THIS test exercises the link-layer credit RING through
+#     depletion + replenishment, which a single packet (test_04/05) never
+#     reaches (ring depth = 31).
+#
+# Gate: ring the doorbell in BATCHES whose TOTAL count >> the credit ring depth
+# (31). Each batch read-clears the receiver's DOORBELL_RESPONSE_ACC, rings K
+# doorbells, then asserts the receiver acc incremented. If the credit ring ever
+# failed to replenish, a later batch (after the ring is exhausted) would show
+# ZERO delivery and the test fails. Bilateral (M->S and S->M).
+# ===========================================================================
+
+
+@cocotb.test()
+async def test_10_sustained_doorbell_replenish(dut):
+    """Sustained bilateral doorbell traffic past the credit ring depth (31)
+    must keep delivering — i.e. the FCSM credit ring replenishes via ACKs.
+
+    This is the real silicon gate for the "sustained traffic decays /
+    credit never replenishes" symptom. It depletes and re-fills the
+    link-layer credit ring many times; the rx->tx CDC + the removal of the
+    enable-dip re-zero on fe_rx_credit_max keep the ring modulus stable.
+    """
+    tb = PairTB(dut)
+    await run_bringup_full(tb)
+
+    # Ensure data mode (no residual training).
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await ClockCycles(tb.dut.hclk, 200)
+
+    # --- Probe the FCSM credit ring health on both sides (should be loaded). --
+    def _i(sig):
+        try:
+            return int(sig.value)
+        except Exception:
+            return -1
+
+    for side in ("m", "s"):
+        f = tb.fcsm(side)
+        tb.log.info(
+            f"  [{side}] fe_rx_credit_max=0x{_i(f.fe_rx_credit_max):02x} "
+            f"fe_rx_credit_max_txsync=0x{_i(f.fe_rx_credit_max_txsync):02x} "
+            f"fe_rx_is_full={_i(f.fe_rx_is_full)} state={_i(f.state)}"
+        )
+        assert _i(f.fe_rx_credit_max) == 0x1f, (
+            f"[{side}] fe_rx_credit_max not loaded from CR/CRACK "
+            f"(=0x{_i(f.fe_rx_credit_max):02x}, want 0x1f)")
+        assert _i(f.fe_rx_credit_max_txsync) == 0x1f, (
+            f"[{side}] tx-synchronized credit ring modulus not settled "
+            f"(=0x{_i(f.fe_rx_credit_max_txsync):02x}, want 0x1f) — CDC fix "
+            "did not converge")
+
+    BATCHES = 8         # 8 batches ...
+    RINGS_PER_BATCH = 6  # ... x 6 rings = 48 total >> credit ring depth 31
+
+    async def _drain_run(label, ring_side, recv_apb):
+        """Ring RINGS_PER_BATCH doorbells from ring_side, settle, then read the
+        receiver's read-to-clear DOORBELL_RESPONSE_ACC. Returns the acc value
+        observed for this batch (one increment per delivered doorbell)."""
+        ring_apb = tb.m_apb if ring_side == "m" else tb.s_apb
+        # Clear receiver acc first (read-to-clear).
+        await recv_apb.read(APB_DOORBELL_RESP_ACC)
+        await ClockCycles(tb.dut.hclk, 20)
+        for _ in range(RINGS_PER_BATCH):
+            await ring_apb.write(APB_DOORBELL, 1)
+            # Space rings so each crosses as its own FC data packet, exercising
+            # ne_rx_ptr advance + ACK return per packet.
+            await ClockCycles(tb.dut.hclk, 150)
+        # Let the last rings + their ACKs settle.
+        await ClockCycles(tb.dut.hclk, 600)
+        acc = await recv_apb.read(APB_DOORBELL_RESP_ACC)
+        tb.log.info(f"  [{label}] batch DOORBELL_RESP_ACC = {acc}")
+        return acc
+
+    # ---- M -> S sustained ----------------------------------------------------
+    ms_total_delivered = 0
+    for b in range(BATCHES):
+        acc = await _drain_run(f"M->S b{b}", "m", tb.s_apb)
+        # A non-zero acc means the batch delivered (acc accumulates the
+        # per-doorbell payload, saturating at 0xFFFF — value irrelevant, only
+        # that it is non-zero, i.e. delivery did NOT stall this batch).
+        assert acc != 0, (
+            f"M->S sustained delivery STALLED at batch {b} "
+            f"(after {b * RINGS_PER_BATCH} prior rings): receiver acc=0. "
+            "Credit ring did not replenish.")
+        ms_total_delivered += 1
+        # Re-confirm the credit ring did not get re-zeroed mid-run.
+        cm = _i(tb.fcsm("m").fe_rx_credit_max_txsync)
+        assert cm == 0x1f, (
+            f"master tx credit modulus collapsed to 0x{cm:02x} during sustained "
+            "run (Bug-C re-zero regression)")
+
+    # ---- S -> M sustained ----------------------------------------------------
+    sm_total_delivered = 0
+    for b in range(BATCHES):
+        acc = await _drain_run(f"S->M b{b}", "s", tb.m_apb)
+        assert acc != 0, (
+            f"S->M sustained delivery STALLED at batch {b} "
+            f"(after {b * RINGS_PER_BATCH} prior rings): receiver acc=0. "
+            "Credit ring did not replenish.")
+        sm_total_delivered += 1
+
+    tb.log.info(
+        f"  sustained OK: M->S delivered all {ms_total_delivered}/{BATCHES} "
+        f"batches, S->M {sm_total_delivered}/{BATCHES} "
+        f"({BATCHES * RINGS_PER_BATCH} rings each way, ring depth 31)")
+
+    assert ms_total_delivered == BATCHES and sm_total_delivered == BATCHES
+
+
+# ===========================================================================
+# Enable-dip credit-survival gate (2026-06-05) — red regression for the
+# Bug-C re-zero in WlinkGenericFCSM_6.v.
+#
+# Root cause (pre-fix RTL): the FCSM re-zeroes the link-layer credit ring
+# SYNCHRONOUSLY whenever the demet'd app-enable dips low:
+#       end else if (_fe_tx_credit_max_in_T) begin   // = ~en_ff2_rx_demet_io_out
+#         fe_rx_credit_max <= 8'h0;
+#       end
+# `en_ff2_rx_demet_io_in = io_app_enable` (FCSM L844), and the FCSM's
+# io_app_enable is driven by Wlink's `swi_enable` register
+# (Wlink.v:1899 `tl2wl_io_app_enable = swi_enable`,
+#  Wlink.v:2028 `swi_enable <= bundleIn_0_pwdata[0]` at the LL enable/reset
+# register, our APB offset 0x208 bit[0]). On silicon swi_enable can glitch
+# low for a few cycles during the LL-swreset / data-mode bootstrap *after*
+# the CR/CRACK packet has loaded the 0x1f grant; the pre-fix RTL then
+# collapses fe_rx_credit_max to 0 and sustained delivery dies.
+#
+# The post-fix RTL REMOVES that re-zero branch (only a real async io_rx_reset
+# or a fresh CR/CRACK can change fe_rx_credit_max), so the ring survives the
+# dip at 0x1f and sustained delivery keeps working.
+#
+# Faithful reproduction: drive the SAME APB register bringup uses — write
+# 0x208 = 0x00027f00 (swi_enable bit[0]=0) then 0x00027f07 (bit[0]=1). This
+# walks the exact swi_enable -> io_app_enable -> en_ff2_rx_demet path that the
+# documented silicon enable glitch exercises. If, in zero-skew sim, the APB
+# path does not drive en_ff2_rx_demet_io_out low long enough to trip the
+# pre-fix branch, we fall back to a direct cocotb force on the FCSM leaf input
+# io_app_enable (held low for ~50 link clocks) — which faithfully reproduces
+# the documented glitch at the exact net the pre-fix RTL samples.
+# ===========================================================================
+
+# LL enable/reset register (0x208) values for the enable dip. Bit[0] is
+# swi_enable -> io_app_enable. Keep lltx_en/llrx_en/swreset bits identical to
+# LL_BOOTSTRAP_ENABLE so only swi_enable toggles.
+LL_BOOTSTRAP_ENABLE_OFF = 0x00027f06   # == 0x00027f07 with bit[0] (swi_en) cleared
+
+
+@cocotb.test()
+async def test_11_credit_survives_enable_dip(dut):
+    """A brief app-enable (swi_enable) dip must NOT collapse the link-layer
+    credit ring.
+
+    PRE-fix RTL: the dip drives en_ff2_rx_demet_io_out low, which fires the
+    `_fe_tx_credit_max_in_T` branch and synchronously re-zeros
+    fe_rx_credit_max -> 0. The ring modulus collapses and sustained doorbell
+    delivery stalls. This test goes RED.
+
+    POST-fix RTL: the re-zero branch is removed; fe_rx_credit_max stays 0x1f
+    (only io_rx_reset or a fresh CR/CRACK can change it), the tx-synced copy
+    stays 0x1f, the ring is not full, and a doorbell batch still delivers.
+    This test goes GREEN.
+    """
+    tb = PairTB(dut)
+    await run_bringup_full(tb)
+
+    # Ensure data mode (no residual training) so the credit ring is settled.
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_OFF)
+    await ClockCycles(tb.dut.hclk, 200)
+
+    def _i(sig):
+        try:
+            return int(sig.value)
+        except Exception:
+            return -1
+
+    def _opt(handle, name):
+        """Read an OPTIONAL hierarchical signal by name. Returns its int value,
+        or None if the signal does not exist in this build. fe_rx_credit_max
+        exists in BOTH the pre-fix and post-fix RTL; fe_rx_credit_max_txsync is
+        added by the fix, so on the pre-fix RTL it is absent — we must not let
+        that absence crash the test (the test must fail on the credit COLLAPSE,
+        not on a missing observability signal)."""
+        try:
+            return int(getattr(handle, name).value)
+        except Exception:
+            return None
+
+    # ---- Pre-dip invariant: the ring is loaded at 0x1f on both sides. -------
+    for side in ("m", "s"):
+        f = tb.fcsm(side)
+        cmax = _i(f.fe_rx_credit_max)
+        csync = _opt(f, "fe_rx_credit_max_txsync")
+        cfull = _i(f.fe_rx_is_full)
+        tb.log.info(
+            f"  [pre-dip {side}] fe_rx_credit_max=0x{cmax:02x} "
+            f"fe_rx_credit_max_txsync={'absent' if csync is None else f'0x{csync:02x}'} "
+            f"fe_rx_is_full={cfull}")
+        assert cmax == 0x1f, (
+            f"[pre-dip {side}] credit ring NOT loaded from CR/CRACK "
+            f"(fe_rx_credit_max=0x{cmax:02x}, want 0x1f) — bringup did not "
+            "reach the steady credit state, cannot test the dip")
+
+    # ---- Dip the app-enable LOW then HIGH on BOTH sides. --------------------
+    # Preferred path: the real APB swi_enable register (0x208 bit[0]).
+    tb.log.info("  enable-dip via APB 0x208: swi_enable 1 -> 0 -> 1 (both sides)")
+    await tb.m_apb.write(APB_WL_LINK_ENABLE_RESET, LL_BOOTSTRAP_ENABLE_OFF)
+    await tb.s_apb.write(APB_WL_LINK_ENABLE_RESET, LL_BOOTSTRAP_ENABLE_OFF)
+    # Hold low long enough for the en_ff2_rx_demet 2-flop synchronizer (io_rx_clk)
+    # to propagate the low and the pre-fix synchronous re-zero to fire.
+    await ClockCycles(tb.dut.hclk, 60)
+    await tb.m_apb.write(APB_WL_LINK_ENABLE_RESET, LL_BOOTSTRAP_ENABLE)
+    await tb.s_apb.write(APB_WL_LINK_ENABLE_RESET, LL_BOOTSTRAP_ENABLE)
+    await ClockCycles(tb.dut.hclk, 200)
+
+    # If the APB path did not drive the demet low long enough to trip the
+    # pre-fix branch (zero-skew sim cadence), FORCE the demet OUTPUT directly.
+    #
+    # Why the demet OUTPUT and not io_app_enable: the FCSM samples the credit
+    # re-zero on `_fe_tx_credit_max_in_T = ~en_ff2_rx_demet_io_out`, where
+    # en_ff2_rx_demet is a 2-flop WavDemetReset clocked by io_rx_clk
+    # (FCSM L823-825). io_rx_clk is the recovered LINK clock (io_hsclk/16 ÷
+    # the link cadence) — MUCH slower than hclk, so a ~50-hclk force on the
+    # io_app_enable leaf never survives the 2-flop synchronizer to reach the
+    # io_rx_clk always-block that owns fe_rx_credit_max. Forcing the demet
+    # output (the exact net the re-zero samples) reproduces the documented
+    # silicon glitch — swi_enable dipped, en_ff2_rx_demet_io_out went low — at
+    # its sampling point, independent of the rx-clock cadence. We hold the
+    # force until at least one io_rx_clk edge has sampled it (poll the pre-fix
+    # collapse, generous hclk budget), then RELEASE so steady-state resumes.
+    # dip_min[side] records the MINIMUM fe_rx_credit_max observed across the
+    # whole enable-dip window (while the demet is held low). This is the real
+    # discriminator and the silicon-faithful measurement: on the pre-fix RTL
+    # the io_rx_clk re-zero branch drives fe_rx_credit_max to 0 the moment the
+    # demet'd enable is low; on the post-fix RTL the branch is gone so it never
+    # leaves 0x1f. (Sampling only AFTER release is insufficient because the
+    # live CR/CRACK stream reloads the ring on the next cr/crack packet, masking
+    # the transient pre-fix collapse — on silicon the dip during data-mode,
+    # when CR/CRACK is no longer streaming, makes it persistent.)
+    dip_min = {"m": 0x1f, "s": 0x1f}
+
+    def _capture_dip():
+        for s in ("m", "s"):
+            v = _i(tb.fcsm(s).fe_rx_credit_max)
+            if 0 <= v < dip_min[s]:
+                dip_min[s] = v
+
+    collapsed_by_apb = any(
+        _i(tb.fcsm(s).fe_rx_credit_max) != 0x1f for s in ("m", "s"))
+    _capture_dip()
+    if not collapsed_by_apb:
+        tb.log.info("  APB dip did not perturb the ring; forcing FCSM "
+                    "en_ff2_rx_demet_io_out LOW directly (the exact net the "
+                    "pre-fix re-zero samples) for several io_rx_clk edges")
+        for s in ("m", "s"):
+            tb.fcsm(s).en_ff2_rx_demet_io_out.set(Force(0))
+        # Hold across a SHORT window — io_rx_clk measures 128 ns (= 6.4 hclk),
+        # so ~6 io_rx_clk edges (40 hclk) is ample for the io_rx_clk
+        # always-block to sample the pre-fix re-zero (measured: collapses after
+        # 5 hclk). Capture the minimum credit each cycle DURING the hold; the
+        # window is kept short so the post-fix RTL — which never collapses
+        # fe_rx_credit_max — minimally disturbs the separate fe_tx_credit_max
+        # reg (which also re-zeros on ~demet but reloads from the live CR/CRACK
+        # stream after release).
+        for _ in range(8):
+            await ClockCycles(tb.dut.hclk, 5)
+            _capture_dip()
+        tb.log.info(f"  during forced demet-low: min fe_rx_credit_max seen "
+                    f"M=0x{dip_min['m']:02x} S=0x{dip_min['s']:02x}")
+        for s in ("m", "s"):
+            tb.fcsm(s).en_ff2_rx_demet_io_out.set(Release())
+        await ClockCycles(tb.dut.hclk, 400)
+
+    # ---- In-dip invariant: the ring SURVIVED the dip. -----------------------
+    # The ALWAYS-PRESENT gate is fe_rx_credit_max (exists in both pre/post RTL):
+    # pre-fix it collapses to 0 the moment the demet'd enable is low; post-fix
+    # it stays 0x1f throughout. We assert on the MIN seen during the dip window
+    # (dip_min), which captures the transient pre-fix collapse the post-release
+    # CR/CRACK reload would otherwise hide. We also log the settled post-dip
+    # state + the txsync copy (present only post-fix) for completeness.
+    for side in ("m", "s"):
+        f = tb.fcsm(side)
+        cmax = _i(f.fe_rx_credit_max)
+        csync = _opt(f, "fe_rx_credit_max_txsync")
+        cfull = _i(f.fe_rx_is_full)
+        tb.log.info(
+            f"  [post-dip {side}] fe_rx_credit_max=0x{cmax:02x} "
+            f"(min-during-dip=0x{dip_min[side]:02x}) "
+            f"fe_rx_credit_max_txsync={'absent' if csync is None else f'0x{csync:02x}'} "
+            f"fe_rx_is_full={cfull}")
+        assert dip_min[side] == 0x1f, (
+            f"[{side}] credit ring COLLAPSED during the enable dip "
+            f"(min fe_rx_credit_max=0x{dip_min[side]:02x}, want 0x1f) — Bug-C "
+            "re-zero: the pre-fix RTL synchronously zeros fe_rx_credit_max when "
+            "the demet'd app-enable dips low. The fix removes that branch so the "
+            "ring modulus survives the glitch.")
+        if csync is not None:
+            assert csync == 0x1f, (
+                f"[post-dip {side}] tx-domain credit modulus collapsed after the "
+                f"enable dip (fe_rx_credit_max_txsync=0x{csync:02x}, want 0x1f)")
+        assert cfull == 0, (
+            f"[post-dip {side}] credit ring reports full after the dip "
+            f"(fe_rx_is_full={cfull})")
+
+    # ---- Sustained delivery still works after the dip. ----------------------
+    # Ring a batch of doorbells M->S; the receiver acc must increment (delivery
+    # survives). Clear-first (read-to-clear), ring K, then read one increment.
+    K = 6
+    await tb.s_apb.read(APB_DOORBELL_RESP_ACC)   # clear receiver acc
+    await ClockCycles(tb.dut.hclk, 20)
+    for _ in range(K):
+        await tb.m_apb.write(APB_DOORBELL, 1)
+        await ClockCycles(tb.dut.hclk, 150)
+    await ClockCycles(tb.dut.hclk, 600)
+    s_acc = await tb.s_apb.read(APB_DOORBELL_RESP_ACC)
+    tb.log.info(f"  post-dip M->S doorbell batch ({K} rings): "
+                f"slave DOORBELL_RESP_ACC = {s_acc}")
+    assert s_acc > 0, (
+        f"post-dip M->S sustained delivery STALLED: slave "
+        f"DOORBELL_RESP_ACC={s_acc} after {K} doorbell rings. The enable dip "
+        "collapsed the credit ring (Bug-C re-zero) so no data crosses the link.")

@@ -173,7 +173,13 @@
 // =============================================================================
 module WlinkGenericFCSM_6 #(
   parameter [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32,
-  parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000
+  parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000,
+  // SoC Labs credit-recovery (2026-06-05): receiver-side periodic ACK
+  // re-emission idle threshold (io_tx_clk cycles). Chosen comfortably larger
+  // than the healthy ACK cadence (~tens of io_tx_clk cycles between data
+  // packets) so it only fires after the credit-return stream has truly stopped
+  // (sustained ACK loss), never disturbing a live link.
+  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100
 ) (
   input         clock,
   input         reset,
@@ -502,6 +508,73 @@ module WlinkGenericFCSM_6 #(
   wire        socl_l7_wdog_force_clear =
                 (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
                 & ~socl_l7_real_crc_seen;
+  // ===========================================================================
+  // SoC Labs credit-recovery: receiver-side periodic ACK re-emission
+  //   (2026-06-05).
+  //
+  // Problem class (test_14_sustained_ack_drop_wedge):
+  //   The credit-return ACK is CUMULATIVE and the sender applies it ABSOLUTELY
+  //   (fe_rx_ptr <= ack_nack_fifo_io_rdata[15:8] at the fe_rx_ptr always-block).
+  //   Recovery from a *single* dropped ACK is automatic because fresh M->S data
+  //   keeps minting fresh cumulative ACKs (test_13). But a SUSTAINED loss of the
+  //   S->M credit-return stream is fatal: with every ACK lost, the sender's
+  //   fe_rx_ptr never advances, the credit ring fills, fe_rx_is_full latches,
+  //   the sender STOPS emitting data -> the receiver gets no new data -> the
+  //   receiver mints NO fresh ACK -> the link is PERMANENTLY WEDGED with no
+  //   escape (the state-7 NACK watchdog only recovers from CRC / unexpected-pkt
+  //   errors, not from a silently-vanished ACK).
+  //
+  // Fix (RECEIVER side, IDEMPOTENT, SAFE):
+  //   Periodically RE-EMIT the cumulative last_good ACK that this side already
+  //   owns once (a) this receiver has accepted in-order data it can re-ACK
+  //   (last_good_pkt_from_rx != 0) AND (b) no ACK has been emitted and no fresh
+  //   data has arrived for a long idle window (SOCL_REACK_THRESHOLD io_tx_clk
+  //   cycles). It re-emits AT MOST ONCE per idle window (socl_reack_fired
+  //   sticky) so it does not spam a healthy-but-quiescent link.
+  //
+  // Why it is safe:
+  //   * It re-sends an ACK carrying the EXISTING last_good_pkt_from_rx value
+  //     (the highest IN-ORDER packet this receiver actually got). It NEVER
+  //     fabricates a higher number, so it can NEVER advance the peer's
+  //     fe_rx_ptr past data the receiver did not receive, and NEVER frees
+  //     credit for un-received packets. Re-emitting the same cumulative value
+  //     the peer already holds is a harmless idempotent no-op write.
+  //   * It only RE-ARMS send_ack_req (ORed into the existing assignment); the
+  //     normal state-5 -> state-6 emit path, ack payload (last_good_pkt_from_rx)
+  //     and last_ack_pkt_sent bookkeeping are unchanged.
+  //   * The threshold is far larger than the healthy ACK cadence and the idle
+  //     counter is reset by every fresh-data event, so on a live link -- where
+  //     data and ACKs keep flowing -- the counter never reaches threshold and
+  //     the re-arm NEVER fires.
+  //
+  // The counter lives in the io_tx_clk domain (same as send_ack_req / state /
+  // last_ack_pkt_sent). It is reset whenever fresh in-order data arrives
+  // (socl_reack_fresh_data) or the FCSM leaves the data-phase states (4/5); it
+  // saturates at SOCL_REACK_THRESHOLD.
+  // ---------------------------------------------------------------------------
+  reg  [15:0] socl_reack_idle_cnt;     // io_tx_clk idle counter since last ACK/data
+  // "have we received in-order data we can re-ACK": last_good_pkt_from_rx != 0
+  // means this receiver has accepted at least one in-order data packet whose
+  // cumulative ACK it owns and can safely RE-EMIT.  We deliberately do NOT gate
+  // on (last_good_pkt_from_rx != last_ack_pkt_sent): under sustained ACK loss
+  // the receiver has ALREADY "sent" the ACK (last_ack_pkt_sent == last_good)
+  // from its own viewpoint -- the peer simply never received it -- so that
+  // predicate is false exactly when we most need to re-emit.  Re-emitting the
+  // SAME cumulative value is IDEMPOTENT (it can only re-write the peer's
+  // fe_rx_ptr to a value the receiver already legitimately owns, never higher),
+  // so it is safe to re-emit unconditionally.
+  wire socl_reack_have_rx = (last_good_pkt_from_rx != 8'h0);
+  // Fresh in-order data / l2a progress -- the normal send_ack_req arming event.
+  wire socl_reack_fresh_data  = isExpPacket | l2a_fifo_raddr_txclk_update;
+  // Sticky: a re-emit has fired since the last fresh-data / real-ACK activity.
+  // Limits the periodic re-emit to AT MOST ONCE per idle window so a healthy
+  // but quiescent link is never spammed -- it re-emits a single refresh ACK to
+  // unstick the peer, then waits for the peer to resume (fresh data -> real ACK
+  // -> this sticky clears).  Declared here; cleared/set in the always block.
+  reg  socl_reack_fired;
+  // socl_reack_ack_emitted / socl_reack_rearm depend on _T_57 (declared later,
+  // VCS default_nettype none requires declaration-before-use) -- see below,
+  // just after the _T_57 definition.
   // Original Chisel-emitted _GEN_34 (kept as comment for review):
   //   wire [2:0] _GEN_34 = crack_pkt_seen_tx_demet_io_out | cr_pkt_seen_tx_demet_io_out ? 3'h2 : state;
   // Patched: only allow state 1 -> state 2 once minimum CR-emit count reached.
@@ -522,6 +595,20 @@ module WlinkGenericFCSM_6 #(
   wire [7:0] _GEN_53 = count == 8'h0 ? count : _count_in_T_1; // @[FC.scala 495:28 FC.scala 425:39 FC.scala 498:39]
   wire [7:0] _count_in_T_5 = _T_54 ? 8'h0 : _count_in_T_1; // @[FC.scala 504:45]
   wire  _T_57 = send_ack_req & _T_54; // @[FC.scala 514:33]
+  // SoC Labs credit-recovery (2026-06-05): deferred re-ACK re-arm (needs _T_57
+  // indirectly via send_ack_req gating; declared here after _T_57 for VCS
+  // declaration-before-use under default_nettype none).
+  // Re-arm pulse: idle window elapsed AND we own received data to re-ACK AND we
+  // have not already fired a refresh this idle window.  Only in data-phase
+  // states (>=4); never during bring-up (states 0..3); suppressed while a NACK
+  // is pending (NACK already re-syncs) or send_ack_req is already armed.
+  wire socl_reack_rearm =
+         (socl_reack_idle_cnt == SOCL_REACK_THRESHOLD)
+         & socl_reack_have_rx
+         & ~socl_reack_fired
+         & (state >= 3'h4)
+         & ~send_nack_req
+         & ~send_ack_req;
   wire [7:0] _GEN_61 = send_ack_req & _T_54 ? last_good_pkt_from_rx_in : last_ack_pkt_sent; // @[FC.scala 514:50 FC.scala 515:39 FC.scala 436:39]
   wire [7:0] _GEN_70 = send_nack_req ? last_good_pkt_from_rx_in : _GEN_61; // @[FC.scala 505:28 FC.scala 506:39]
   wire [7:0] _GEN_104 = auto_tx_out_advance ? _GEN_70 : last_ack_pkt_sent; // @[FC.scala 537:28 FC.scala 436:39]
@@ -1238,7 +1325,13 @@ module WlinkGenericFCSM_6 #(
     end else if (state == 3'h3) begin
       send_ack_req <= send_ack_req | (isExpPacket | l2a_fifo_raddr_txclk_update);
     end else begin
-      send_ack_req <= _GEN_178;
+      // SoC Labs credit-recovery (2026-06-05): OR the periodic re-emit re-arm
+      // into the data-state send_ack_req assignment.  socl_reack_rearm only
+      // pulses in states >=4 once the idle window elapses AND the peer is
+      // behind (un-acked received packets) AND no NACK is pending -- so it
+      // re-arms a fresh cumulative-ACK emit carrying last_good_pkt_from_rx,
+      // unsticking the peer's fe_rx_ptr without advancing it past real data.
+      send_ack_req <= _GEN_178 | socl_reack_rearm;
     end
   end
   // SoC Labs L7: AND-clear send_nack_req every cycle while bringup_forgive
@@ -1302,6 +1395,43 @@ module WlinkGenericFCSM_6 #(
       socl_l7_wdog_cnt <= 16'h0;
     end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
       socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
+    end
+  end
+  // SoC Labs credit-recovery (2026-06-05): receiver-side periodic ACK
+  // re-emission idle counter (io_tx_clk domain).  Counts only while the link is
+  // in a data state (>=4) and this side owns received data to re-ACK
+  // (socl_reack_have_rx).  Resets to 0 whenever fresh in-order data arrives
+  // (socl_reack_fresh_data) -- i.e. whenever the credit-return stream is alive
+  // and minting fresh cumulative ACKs.  Crucially it does NOT reset on a
+  // re-emitted ACK alone, so once the idle window elapses the saturated count
+  // holds and socl_reack_rearm pulses (gated to at most once per window by the
+  // socl_reack_fired sticky).  Saturates at SOCL_REACK_THRESHOLD.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_reack_idle_cnt <= 16'h0;
+    end else if (socl_reack_fresh_data | (state != 3'h4 & state != 3'h5)) begin
+      // Reset whenever fresh in-order data arrives (credit-return stream alive)
+      // or we leave the data-phase states (4/5). have_rx is enforced only at
+      // re-arm time, not here, to keep this reset path purely a function of
+      // defined registers.
+      socl_reack_idle_cnt <= 16'h0;
+    end else if (socl_reack_idle_cnt != SOCL_REACK_THRESHOLD) begin
+      socl_reack_idle_cnt <= socl_reack_idle_cnt + 16'h1;
+    end
+  end
+  // SoC Labs credit-recovery (2026-06-05): "refresh already fired this idle
+  // window" sticky.  SET when a re-emit re-arm fires (socl_reack_rearm), so the
+  // periodic refresh emits AT MOST ONCE per idle window and never spams a
+  // healthy-but-quiescent link.  CLEARED whenever fresh in-order data arrives
+  // (the peer has resumed and is minting real ACKs again) -- arming the next
+  // refresh only if the stall recurs.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_reack_fired <= 1'h0;
+    end else if (socl_reack_fresh_data | (state < 3'h4)) begin
+      socl_reack_fired <= 1'h0;
+    end else if (socl_reack_rearm) begin
+      socl_reack_fired <= 1'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
@@ -1533,6 +1663,10 @@ initial begin
   if (io_tx_reset) begin
     fe_rx_ptr = 8'h0;
   end
+  // SoC Labs credit-recovery (2026-06-05): init the periodic re-ACK regs so
+  // they hold defined values from time 0 even before the first io_tx_reset.
+  socl_reack_idle_cnt = 16'h0;
+  socl_reack_fired    = 1'h0;
   if (io_tx_reset) begin
     ne_rx_ptr = 8'h0;
   end

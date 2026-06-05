@@ -333,6 +333,12 @@ module tidelink_phy_align_calibrator #(
     output logic        calibration_done,
     output logic [7:0]  lane_fault,
     output logic [3:0]  state,                     // ILA visibility
+    // SoC Labs M7 (2026-06-05): expose auto-retry counter for silicon
+    // observability. Increments on every S_FINISH→S_ARM auto-retry,
+    // cleared on trigger_now. Non-zero on a die that's stuck cycling
+    // through sweeps without convergence (the slave-only-fail mode
+    // characterized at v14 silicon, 30% failure rate over 10 deploys).
+    output logic [15:0] resweep_ctr_o,
 
     // -----------------------------------------------------------------
     // Spec §7.2: sweep_active_o gates the new lane_checker's voting
@@ -480,25 +486,44 @@ module tidelink_phy_align_calibrator #(
     // -------------------------------------------------------------------------
     // Trigger detection: rising edge of role_locked, OR falling edge of swreset
     // while role_locked is high.
+    //
+    // SoC Labs M1 CDC fix (2026-06-05): role_locked and swreset both originate
+    // in the apb_clk domain (controller scope). The calibrator runs on
+    // phy_link_rx_rx_link_clk_w (peer's recovered TX clock). The previous
+    // single-FF synchroniser at this site was vulnerable to metastable
+    // sampling — silicon characterization (10x deploy variance, 2026-06-05)
+    // showed 30%/10% slave/master sweep-failure rates with this single-FF
+    // path. Promoted to a 2-FF synchroniser per source signal; edge detect
+    // now operates on the second-stage flop (sync) compared to its prior
+    // value (q). Adds one cycle of latency on edge sampling — negligible
+    // at deploy timescales (ms), eliminates metastable miss-of-rising-edge.
     // -------------------------------------------------------------------------
-    logic role_locked_q;
-    logic swreset_q;
+    logic role_locked_meta, role_locked_sync, role_locked_q;
+    logic swreset_meta,     swreset_sync,     swreset_q;
     logic trigger_now;
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            role_locked_q <= 1'b0;
-            swreset_q     <= 1'b0;
+            role_locked_meta <= 1'b0;
+            role_locked_sync <= 1'b0;
+            role_locked_q    <= 1'b0;
+            swreset_meta     <= 1'b0;
+            swreset_sync     <= 1'b0;
+            swreset_q        <= 1'b0;
         end else begin
-            role_locked_q <= role_locked;
-            swreset_q     <= swreset;
+            role_locked_meta <= role_locked;
+            role_locked_sync <= role_locked_meta;
+            role_locked_q    <= role_locked_sync;
+            swreset_meta     <= swreset;
+            swreset_sync     <= swreset_meta;
+            swreset_q        <= swreset_sync;
         end
     end
 
     // Rising edge of role_locked, or falling edge of swreset while role_locked
-    // is asserted.
-    wire role_locked_rise = role_locked & ~role_locked_q;
-    wire swreset_fall     = ~swreset    &  swreset_q;
-    assign trigger_now = role_locked_rise | (swreset_fall & role_locked);
+    // is asserted. Edge detect on synced stage.
+    wire role_locked_rise = role_locked_sync & ~role_locked_q;
+    wire swreset_fall     = ~swreset_sync    &  swreset_q;
+    assign trigger_now = role_locked_rise | (swreset_fall & role_locked_sync);
 
     // -------------------------------------------------------------------------
     // §9.9 runtime EARLY_EXIT override hook (cocotb/UVM compat).
@@ -901,6 +926,9 @@ module tidelink_phy_align_calibrator #(
         else if ((cur_state == S_FINISH) &&
                  (nxt_state  == S_ARM))           resweep_ctr <= resweep_ctr + 16'd1;
     end
+
+    // M7 observability: expose internal resweep_ctr at module port.
+    assign resweep_ctr_o = resweep_ctr;
 
     // -------------------------------------------------------------------------
     // T3.2 hold counter: cycles spent in S_HOLD. Reset whenever NOT in

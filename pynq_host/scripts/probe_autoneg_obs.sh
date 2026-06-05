@@ -86,13 +86,15 @@ train_sts  = rd(0x110)
 # when it's actually normal loser FSM behaviour. Always read 0x108.
 swi_lane_sts  = rd(0x108)
 
-# Region C (Bug N7 obs + new mask-hs slot)
+# Region C (Bug N7 obs + new mask-hs slot + M7 OBS_CAL slot)
 obs_delay     = rd(0x180)
 obs_timeout   = rd(0x184)
 obs_substate  = rd(0x188)
 obs_i2c_sta   = rd(0x18C)
 obs_id        = rd(0x190)
 obs_mask_hs   = rd(0x194)
+# M7 OBS_CAL @ 0x198 — calibrator FSM state + resweep counter
+obs_cal       = rd(0x198)
 
 # Wlink AHB aperture
 wl_lane_mask  = rdw(0x214)
@@ -158,6 +160,15 @@ else:
     print(\"    nego_lock_pending={} mask_hs_match={} mask_hs_gate_open={}\".format(lock_pend, mh_match, mh_open))
     print(\"    wlink_mask_hs_result=0b{:02b} (peer_says_match=bit0={} peer_says_fail=bit1={})\".format(
         wl_hsr, wl_hsr&1, (wl_hsr>>1)&1))
+    # M7 OBS_CAL — calibrator FSM state + resweep counter (discriminates H1/H2/H3)
+    cal_state_names = {0:\"IDLE\",1:\"ARM\",2:\"SWEEP\",3:\"FINISH\",4:\"DONE\",
+                       5:\"CANCEL\",6:\"HOLD\",7:\"PROBE\",8:\"FINALIZE\",9:\"VALIDATE\"}
+    cal_st     =  obs_cal        & 0xF
+    cal_rsw    = (obs_cal >> 4)  & 0xFFFF
+    cal_tm     = (obs_cal >> 20) & 1
+    print(\"  obs_cal           0x{:08x}\".format(obs_cal))
+    print(\"    cal_state={} ({})  resweep_ctr={}  training_mode={}\".format(
+        cal_st, cal_state_names.get(cal_st, '?'), cal_rsw, cal_tm))
 print(\"--- Wlink AHB (0x44030000) ---\")
 print(\"  link_lane_mask    0x{:08x}  @0x44030214  (tx[7:0] rx[15:8])\".format(wl_lane_mask))
 print(\"  link_hs_result    0x{:08x}  @0x4403021C  (peer-mask handshake verdict)\".format(wl_hs_result))

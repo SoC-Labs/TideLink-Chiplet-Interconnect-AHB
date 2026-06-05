@@ -254,29 +254,28 @@ async def test_25_bug_n14a_cal_done_stuck(dut):
     )
     log.info(f"FINAL SLAVE: state={s_state}({_state_name(s_state)}) won={s_won}")
 
-    # M4b (2026-06-05): the Bug N14a relaxed bypass (drop local_calibration_done_i)
-    # was REMOVED with the rest of the Bug N10 bypass. Silicon v16 (2026-06-05)
-    # proved the bypass was the actual bug — slave's bypass cleared peer's
-    # swi_training_mode_r mid-sweep, killing peer's training-pattern source.
-    # Post-M4b: peer-cal-done=0 at poll-budget-exhaustion → re-arm poll budget
-    # (keep training_mode high), and only ST_TRAIN_FAIL after peer_unreach_timeout
-    # (~10µs sim / ~1.3s silicon). The N14a 'stuck cal_done' scenario now
-    # correctly results in a real failure rather than a silent claim of success.
-    assert m_state == ST_TRAIN_FAIL, (
-        f"M4b: winner (master) parked in {_state_name(m_state)} "
-        f"(expected ST_TRAIN_FAIL after peer_unreach_timeout — local_cal_done "
-        f"was pinned to 0 throughout, so peer (slave) never observes cal_done "
-        f"from us via I²C poll). "
+    # M4e (2026-06-05): primary-success predicate relaxed — bilateral
+    # lane_locked=0xFF + no faults is sufficient; cal_done requirements
+    # dropped. The Bug N14a hypothesis was correct ('cal_done is internal
+    # bookkeeping; lane_locked is the real success signal') but applied at
+    # the wrong place (timeout bypass). M4e applies the same insight to
+    # the PRIMARY success predicate. With local_cal_done pinned to 0 but
+    # lanes naturally locking via the sim's lane_checker, the FSM now
+    # correctly reaches ST_TRAIN_DONE — this is the same scenario the
+    # original N14a fix targeted, now structurally correct.
+    assert m_state == ST_TRAIN_DONE, (
+        f"M4e: winner (master) parked in {_state_name(m_state)} "
+        f"(expected ST_TRAIN_DONE — bilateral lane_locked=0xFF with no faults "
+        f"is sufficient, cal_done not required). "
         f"train_ok={m_train_ok}, train_fail={m_train_fail}, "
         f"local_lane_locked=0x{m_local_lock:02x}, "
         f"local_lane_fault=0x{m_local_fault:02x}, "
         f"local_cal_done={m_local_cal}, poll_attempt_r={m_poll_att}."
     )
-    assert m_train_ok == 0, f"train_ok_r expected 0, got {m_train_ok}"
-    assert m_train_fail == 1, f"train_fail_r expected 1, got {m_train_fail}"
+    assert m_train_ok == 1, f"train_ok_r expected 1, got {m_train_ok}"
+    assert m_train_fail == 0, f"train_fail_r expected 0, got {m_train_fail}"
     log.info(
-        "PASS: master correctly enters ST_TRAIN_FAIL when local_cal_done is "
-        "pinned to 0 (so peer can never observe our cal_done via I²C poll). "
-        "M4b replaces the N14a 'silent local-only success' bypass with a "
-        "real failure path."
+        "PASS: master reaches ST_TRAIN_DONE on bilateral lane_locked=0xFF "
+        "with local_cal_done forced 0 — M4e primary-success applies N14a's "
+        "lane-lock-only insight at the right place."
     )

@@ -1139,13 +1139,49 @@ module tidelink_autoneg #(
                                         // cycles, so their *_r values are
                                         // already up-to-date). Byte 3 is
                                         // reserved padding and not used.
+                                        // M4e (2026-06-05): primary success
+                                        // predicate relaxed — declare TRAIN
+                                        // success on bilateral lane-lock
+                                        // alone (drop both peer_cal_done_r
+                                        // AND local_calibration_done_i).
+                                        //
+                                        // Rationale (silicon v17, 2026-06-05):
+                                        // With M4b's removal of the N14a
+                                        // bypass, slave's autoneg cannot
+                                        // reach TRAIN_EXIT until peer AND
+                                        // local cal_done are observed. But
+                                        // cal_done requires S_VALIDATE→S_DONE
+                                        // which requires cr_pkt_seen_i which
+                                        // requires the peer's FCSM to emit a
+                                        // CR_PKT — which it cannot do while
+                                        // its swi_training_mode_r=1 forces
+                                        // the TX MUX to training-pattern.
+                                        // → chicken-and-egg deadlock.
+                                        //
+                                        // The lane_locked=0xFF condition is
+                                        // the actual "training succeeded"
+                                        // signal (per N14a's analysis); the
+                                        // cal_done bit is downstream of S_HOLD
+                                        // / S_VALIDATE which serve POST-
+                                        // training-mode validation. Once both
+                                        // dies' lane_checkers report 0xFF
+                                        // (sustained match against training
+                                        // pattern) and no faults, it is safe
+                                        // to TRAIN_EXIT — dropping training_
+                                        // mode unblocks the FCSMs to exchange
+                                        // CR/CRACK and both calibrators then
+                                        // naturally complete S_VALIDATE.
+                                        //
+                                        // M4b's escape timeout still guards
+                                        // a genuinely broken peer (lane_locked
+                                        // never reaches 0xFF).
                                         if ((peer_lane_locked_r == 8'hFF) &&
-                                            peer_cal_done_r &&
                                             (local_swi_lane_locked_i == 8'hFF) &&
-                                            local_calibration_done_i &&
                                             (peer_lane_fault_r == 8'h00) &&
                                             (local_swi_lane_fault_i == 8'h00)) begin
-                                            // Success → EXIT
+                                            // Bilateral lane-lock achieved
+                                            // — release training_mode via
+                                            // TRAIN_EXIT.
                                             mask_byte_cnt_nxt      = 3'd0;
                                             train_target_value_nxt = 1'b0;
                                             txn_step_nxt           = TXN_DATA;

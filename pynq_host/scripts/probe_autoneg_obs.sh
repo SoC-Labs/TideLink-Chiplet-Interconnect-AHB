@@ -76,9 +76,15 @@ nego_sts   = rd(0x94)
 nego_pri   = rd(0x98)
 nego_to    = rd(0x9C)
 
-# Region 8 (training cfg + status)
+# Region 8 (training cfg + status + lane-status snapshot)
 train_cfg  = rd(0x10C)
 train_sts  = rd(0x110)
+# Bug N14b post-mortem (2026-06-05): SWI_LANE_STATUS @ 0x108 carries the
+# REAL local cal_done + lane_locked + lane_fault. The "master cal_done=0"
+# Bug N14b investigation was built on probe-script blindness — without
+# this register, master's loser-side nego_train_status=0 reads as "wedge"
+# when it's actually normal loser FSM behaviour. Always read 0x108.
+swi_lane_sts  = rd(0x108)
 
 # Region C (Bug N7 obs + new mask-hs slot)
 obs_delay     = rd(0x180)
@@ -104,6 +110,14 @@ print(\"  nego_priority     0x{:08x}\".format(nego_pri))
 print(\"  nego_timeout      0x{:08x}\".format(nego_to))
 print(\"--- Region 8 ---\")
 print(\"  nego_train_cfg    0x{:08x}  train_auto_en={}\".format(train_cfg, train_cfg&1))
+sl_locked  =  swi_lane_sts        & 0xFF
+sl_fault   = (swi_lane_sts >> 8)  & 0xFF
+sl_caldone = (swi_lane_sts >> 16) & 1
+sl_fcsm    = (swi_lane_sts >> 17) & 0x7
+sl_llrx    = (swi_lane_sts >> 21) & 0x3
+print(\"  swi_lane_status   0x{:08x}\".format(swi_lane_sts))
+print(\"    lane_locked=0x{:02x} lane_fault=0x{:02x} cal_done={} fcsm_state={} llrx_state={}\".format(
+    sl_locked, sl_fault, sl_caldone, sl_fcsm, sl_llrx))
 t_ok      =  train_sts        & 1
 t_fail    = (train_sts >> 1)  & 1
 t_inprog  = (train_sts >> 2)  & 1

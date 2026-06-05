@@ -23,6 +23,13 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# Per-lane differential skew injection (S3-A repro, 2026-06-05). Pass e.g.
+#   EXTRA_DEFINES="+define+TB_TOP_SKID_L1=1 +define+TB_TOP_SKID_L2=2 ..."
+# to drive DIFFERENTIAL per-lane pad-clk-period skew through pad_skid, exciting
+# the cross-lane deskew bubble bug. Empty by default => uniform SKID_BITS only.
+EXTRA_DEFINES ?=
+COMPILE_ARGS += $(EXTRA_DEFINES)
+
 # Wave dump (gated). Probe-only tests can opt out via TB_TOP_NO_DUMP=1 — the
 # VCD grew >4 GB on the 4-test credit-ledger probe run and OOM'd the host.
 TB_TOP_NO_DUMP ?= 0

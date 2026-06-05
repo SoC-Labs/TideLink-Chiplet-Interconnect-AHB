@@ -51,6 +51,18 @@ module tb_top #(
     // silicon; in sim we want the protocol-level path stripped of that
     // skew.
     parameter int SKID_BITS = `ifdef TB_TOP_SKID_BITS `TB_TOP_SKID_BITS `else 0 `endif,
+    // Per-lane skid overrides (S3-A repro). Each defaults to the uniform
+    // SKID_BITS so legacy tests are unchanged. Set these via +define+ to inject
+    // DIFFERENTIAL per-lane skew — the condition that makes the cross-lane
+    // deskew FIFO glitch all_ready and inject bubble words (deskew-bubble bug).
+    parameter int SKID_L0 = `ifdef TB_TOP_SKID_L0 `TB_TOP_SKID_L0 `else SKID_BITS `endif,
+    parameter int SKID_L1 = `ifdef TB_TOP_SKID_L1 `TB_TOP_SKID_L1 `else SKID_BITS `endif,
+    parameter int SKID_L2 = `ifdef TB_TOP_SKID_L2 `TB_TOP_SKID_L2 `else SKID_BITS `endif,
+    parameter int SKID_L3 = `ifdef TB_TOP_SKID_L3 `TB_TOP_SKID_L3 `else SKID_BITS `endif,
+    parameter int SKID_L4 = `ifdef TB_TOP_SKID_L4 `TB_TOP_SKID_L4 `else SKID_BITS `endif,
+    parameter int SKID_L5 = `ifdef TB_TOP_SKID_L5 `TB_TOP_SKID_L5 `else SKID_BITS `endif,
+    parameter int SKID_L6 = `ifdef TB_TOP_SKID_L6 `TB_TOP_SKID_L6 `else SKID_BITS `endif,
+    parameter int SKID_L7 = `ifdef TB_TOP_SKID_L7 `TB_TOP_SKID_L7 `else SKID_BITS `endif,
 
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
@@ -93,7 +105,11 @@ module tb_top #(
     wire [NUM_PHY_LANES-1:0]      m_pad_tx_skid,     s_pad_tx_skid;
 
     pad_skid #(
-        .SKID_BITS(SKID_BITS), .LANES(NUM_PHY_LANES)
+        .SKID_BITS(SKID_BITS), .LANES(NUM_PHY_LANES),
+        .SKID_BITS_LANE0(SKID_L0), .SKID_BITS_LANE1(SKID_L1),
+        .SKID_BITS_LANE2(SKID_L2), .SKID_BITS_LANE3(SKID_L3),
+        .SKID_BITS_LANE4(SKID_L4), .SKID_BITS_LANE5(SKID_L5),
+        .SKID_BITS_LANE6(SKID_L6), .SKID_BITS_LANE7(SKID_L7)
     ) u_skid_m2s (
         .pad_clk_in   (m_pad_clk_tx),
         .pad_data_in  (m_pad_tx),
@@ -102,7 +118,11 @@ module tb_top #(
     );
 
     pad_skid #(
-        .SKID_BITS(SKID_BITS), .LANES(NUM_PHY_LANES)
+        .SKID_BITS(SKID_BITS), .LANES(NUM_PHY_LANES),
+        .SKID_BITS_LANE0(SKID_L0), .SKID_BITS_LANE1(SKID_L1),
+        .SKID_BITS_LANE2(SKID_L2), .SKID_BITS_LANE3(SKID_L3),
+        .SKID_BITS_LANE4(SKID_L4), .SKID_BITS_LANE5(SKID_L5),
+        .SKID_BITS_LANE6(SKID_L6), .SKID_BITS_LANE7(SKID_L7)
     ) u_skid_s2m (
         .pad_clk_in   (s_pad_clk_tx),
         .pad_data_in  (s_pad_tx),

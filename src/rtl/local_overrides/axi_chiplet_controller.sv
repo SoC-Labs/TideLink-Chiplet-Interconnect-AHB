@@ -717,6 +717,8 @@ module axi_chiplet_controller #(
     wire        cal_calibration_done_w;
     wire [7:0]  cal_lane_fault_w;
     wire [3:0]  cal_state_w;
+    // M7 (2026-06-05): calibrator auto-retry counter for silicon observability
+    wire [15:0] cal_resweep_ctr_w;
     // Forward declarations — definitions below; needed early so the
     // tidelink-gpio-phy lane_checker instantiation can wire them in.
     wire [31:0] swi_phase_offset_w;
@@ -1146,6 +1148,22 @@ module axi_chiplet_controller #(
                                  autoneg_peer_rx_lane_mask,           // [15: 8]
                                  autoneg_peer_tx_lane_mask};          // [ 7: 0]
 
+    // OBS_CAL (slot 3'h6 @ 0x44032198) — M7 (2026-06-05): silicon observability
+    // for the slave-only-failure mode characterised at v14 (30%/10% slave/master
+    // sweep-failure rates over 10 deploys). Layout:
+    //   [ 3: 0] cal_state_w       — calibrator FSM state (4 bits)
+    //   [19: 4] cal_resweep_ctr_w — auto-retry counter (non-zero = stuck cycling)
+    //   [20]    swi_training_mode_w   — live training-mode (OR of cal + SW)
+    //   [31:21] reserved
+    // (M1/M2 sync verifier bits were originally planned here but the sync
+    // registers are declared later in the file — forward reference. Could
+    // be added in a future iteration; cal_state + resweep_ctr are
+    // sufficient to discriminate H1/H2/H3 hypotheses.)
+    wire [31:0] obs_cal_w = {11'h0,
+                             swi_training_mode_w,
+                             cal_resweep_ctr_w,
+                             cal_state_w};
+
     assign regionC_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? obs_delay_ctr_w                     :
         (ctrl_reg_addr[2:0] == 3'h1) ? obs_timeout_ctr_w                   :
@@ -1155,6 +1173,7 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {28'h0, obs_i2c_mst_status_w}       :
         (ctrl_reg_addr[2:0] == 3'h4) ? 32'h4F42_0100                       : // "OB" v1.0
         (ctrl_reg_addr[2:0] == 3'h5) ? obs_mask_hs_w                       :
+        (ctrl_reg_addr[2:0] == 3'h6) ? obs_cal_w                           : // M7 OBS_CAL
                                        32'h0;
 
     // =====================================================================
@@ -1783,12 +1802,50 @@ module axi_chiplet_controller #(
     wire sweep_active_w = (cal_state_w == 4'd2);
     assign link_rx_clk_o = phy_link_rx_rx_link_clk_w;
 
+    // SoC Labs M2 (2026-06-05): reset synchroniser on lane_checker.rst_n.
+    // Previous code wired `role_locked` (apb_clk-domain register) directly to
+    // the 8-instance lane_checker reset tree clocked by phy_link_rx_rx_link_clk_w.
+    // Without per-instance reset synchronisation the 8 checkers can deassert
+    // reset on different cycles → some lanes start mid-pattern with stale
+    // match_count, producing the silicon-only "slave fails to converge"
+    // signature observed at v14 (30% over 10 deploys).
+    // Pattern: async-assert / sync-deassert. role_locked falling instantly
+    // re-asserts reset (POR), rising propagates through 2 FFs.
+    reg lane_checker_rst_n_meta_r, lane_checker_rst_n_sync_r;
+    always @(posedge phy_link_rx_rx_link_clk_w or negedge role_locked) begin
+        if (!role_locked) begin
+            lane_checker_rst_n_meta_r <= 1'b0;
+            lane_checker_rst_n_sync_r <= 1'b0;
+        end else begin
+            lane_checker_rst_n_meta_r <= 1'b1;
+            lane_checker_rst_n_sync_r <= lane_checker_rst_n_meta_r;
+        end
+    end
+
+    // SoC Labs M1 third-leg (2026-06-05): synchronise swi_training_mode_w
+    // into rx_link_clk before feeding the lane_checker's training_mode_w_i.
+    // The lane_checker's internal training_mode_rise edge detect was the
+    // primary failure-mode candidate H1 — a missed rising-edge skips the
+    // match_count clear and the lane can never lock. 2-FF sync ensures the
+    // edge presents as a clean 0→1 transition in the checker's clock
+    // domain regardless of apb_clk phase relationship per deploy.
+    reg swi_training_mode_lc_meta_r, swi_training_mode_lc_sync_r;
+    always @(posedge phy_link_rx_rx_link_clk_w or negedge poresetn) begin
+        if (!poresetn) begin
+            swi_training_mode_lc_meta_r <= 1'b0;
+            swi_training_mode_lc_sync_r <= 1'b0;
+        end else begin
+            swi_training_mode_lc_meta_r <= swi_training_mode_w;
+            swi_training_mode_lc_sync_r <= swi_training_mode_lc_meta_r;
+        end
+    end
+
     tidelink_lane_checker u_lane_checker (
         .clk                 (phy_link_rx_rx_link_clk_w),
-        .rst_n               (role_locked),               // active-low; spec §5.2
+        .rst_n               (lane_checker_rst_n_sync_r), // M2: sync'd from role_locked
         .lane_data_i         (phy_link_rx_rx_link_data_w),
         .lock_thresh_i       (lane_lock_thresh_i),        // from APB regs at tidelink_top
-        .training_mode_w_i   (swi_training_mode_w),       // OR-merge of cal + SW
+        .training_mode_w_i   (swi_training_mode_lc_sync_r), // M1: sync'd from swi_training_mode_w
         .sweep_active_i      (sweep_active_w),
         .clear_noise_i       (lane_clear_noise_i),
         .lane_locked_o       (lane_locked_w),
@@ -1986,6 +2043,10 @@ module axi_chiplet_controller #(
         .calibration_done      (cal_calibration_done_w),
         .lane_fault            (cal_lane_fault_w),
         .state                 (cal_state_w),
+        // M7 observability (2026-06-05): auto-retry counter for stuck-sweep
+        // diagnosis. Non-zero on a die cycling through sweeps without
+        // convergence. Wired to Region C slot 3'h6 (MMIO 0x44032198).
+        .resweep_ctr_o         (cal_resweep_ctr_w),
         // sweep_active_o = (cur_state == S_SWEEP). Functionally equivalent
         // to (cal_state_w == 4'd2) which is what the lane_checker's
         // sweep_active_i still consumes; this output is reserved for any

@@ -326,21 +326,6 @@ module tidelink_autoneg #(
     reg [3:0]  poll_attempt_r,      poll_attempt_nxt;
     reg [6:0]  swreset_hold_r,      swreset_hold_nxt;
 
-    // M4f (2026-06-05): sustained-lock gating to close the v18 20% residual.
-    // Counts CONSECUTIVE poll-evaluations where both peer_lane_locked_r==0xFF
-    // AND local_swi_lane_locked_i==0xFF (with no faults). Resets on any drop.
-    // Primary-success requires this counter to reach M4F_LOCK_DWELL_MIN — i.e.
-    // bilateral lane-lock must hold across N consecutive I²C polls (~600 µs
-    // each) before TRAIN_EXIT fires. v18 silicon showed 20% master-only-fail
-    // where slave's autoneg fired TRAIN_EXIT on a TRANSIENT lane_locked=0xFF
-    // glitch mid-sweep (before slave's calibrator reached S_HOLD); the
-    // resulting peer-clear I²C write dropped peer's training pattern source,
-    // killing slave's own calibrator convergence. Requiring N=4 sustained
-    // polls (~2.4 ms total) gives the local calibrator time to settle into
-    // S_HOLD before declaring training done.
-    localparam [3:0] M4F_LOCK_DWELL_MIN = 4'd4;
-    reg [3:0]  consec_locked_polls_r,  consec_locked_polls_nxt;
-
     // M4b (2026-06-05): peer-unreachable escape hatch.
     // Counts apb_clk cycles spent in ST_TRAIN_POLL_PEER without ever observing
     // peer_cal_done=1. Reset on peer_cal_done observed, or on FSM leaving the
@@ -627,7 +612,6 @@ module tidelink_autoneg #(
         swreset_hold_nxt              = swreset_hold_r;
         peer_unreach_ctr_nxt          = peer_unreach_ctr_r;
         peer_unreach_timeout_nxt      = peer_unreach_timeout_r;
-        consec_locked_polls_nxt       = consec_locked_polls_r;
 
         // M4b peer-unreachable counter: countdown while in POLL_PEER without
         // peer_cal_done observed; reset on peer_cal_done observed; reset
@@ -1191,42 +1175,18 @@ module tidelink_autoneg #(
                                         // M4b's escape timeout still guards
                                         // a genuinely broken peer (lane_locked
                                         // never reaches 0xFF).
-                                        // M4f (2026-06-05): sustained-lock
-                                        // gating. The bilateral lane-lock
-                                        // observation must hold across at
-                                        // least M4F_LOCK_DWELL_MIN consecutive
-                                        // polls (~600 µs each) before
-                                        // declaring TRAIN_EXIT. Bumps the
-                                        // counter on each consistent poll;
-                                        // resets to 0 on ANY drop. Closes
-                                        // the v18 20% residual where slave
-                                        // fired TRAIN_EXIT on a transient
-                                        // mid-sweep lane_locked=0xFF glitch.
                                         if ((peer_lane_locked_r == 8'hFF) &&
                                             (local_swi_lane_locked_i == 8'hFF) &&
                                             (peer_lane_fault_r == 8'h00) &&
                                             (local_swi_lane_fault_i == 8'h00)) begin
-                                            // Bilateral lane-lock present at
-                                            // this poll. Either bump the
-                                            // dwell counter or proceed.
-                                            if (consec_locked_polls_r >= M4F_LOCK_DWELL_MIN - 4'd1) begin
-                                                // Lock has been stable for
-                                                // M4F_LOCK_DWELL_MIN polls —
-                                                // safe to TRAIN_EXIT.
-                                                mask_byte_cnt_nxt      = 3'd0;
-                                                train_target_value_nxt = 1'b0;
-                                                txn_step_nxt           = TXN_DATA;
-                                                train_poll_phase_nxt   = 1'b0;
-                                                consec_locked_polls_nxt = 4'd0;
-                                                state_nxt              = ST_TRAIN_EXIT;
-                                            end else begin
-                                                // Bump dwell; re-arm poll.
-                                                consec_locked_polls_nxt = consec_locked_polls_r + 4'd1;
-                                                poll_attempt_nxt     = 4'd0;
-                                                mask_byte_cnt_nxt    = 3'd0;
-                                                txn_step_nxt         = TXN_DATA;
-                                                train_poll_phase_nxt = 1'b0;
-                                            end
+                                            // Bilateral lane-lock achieved
+                                            // — release training_mode via
+                                            // TRAIN_EXIT.
+                                            mask_byte_cnt_nxt      = 3'd0;
+                                            train_target_value_nxt = 1'b0;
+                                            txn_step_nxt           = TXN_DATA;
+                                            train_poll_phase_nxt   = 1'b0;
+                                            state_nxt              = ST_TRAIN_EXIT;
                                         end else if (poll_attempt_r ==
                                                      ((train_poll_timeout == 4'd0)
                                                       ? T_POLL_TIMEOUT_DEFAULT
@@ -1271,9 +1231,6 @@ module tidelink_autoneg #(
                                             end else begin
                                                 // Re-arm poll budget; keep
                                                 // training_mode high.
-                                                // M4f: lock dwell counter
-                                                // resets on lock drop.
-                                                consec_locked_polls_nxt = 4'd0;
                                                 poll_attempt_nxt     = 4'd0;
                                                 mask_byte_cnt_nxt    = 3'd0;
                                                 txn_step_nxt         = TXN_DATA;
@@ -1282,11 +1239,6 @@ module tidelink_autoneg #(
                                         end else begin
                                             // Re-poll: increment attempt,
                                             // re-arm address-write sub-phase.
-                                            // M4f: lock dwell counter resets
-                                            // on lock drop (we got here
-                                            // because the bilateral-lock
-                                            // predicate above failed).
-                                            consec_locked_polls_nxt = 4'd0;
                                             poll_attempt_nxt    = poll_attempt_r + 4'd1;
                                             mask_byte_cnt_nxt   = 3'd0;
                                             txn_step_nxt        = TXN_DATA;
@@ -1792,7 +1744,6 @@ module tidelink_autoneg #(
             swreset_hold_r              <= '0;
             peer_unreach_ctr_r          <= T_PEER_UNREACH_DEFAULT;
             peer_unreach_timeout_r      <= 1'b0;
-            consec_locked_polls_r       <= 4'd0;
             peer_lane_locked_r          <= 8'h00;
             peer_lane_fault_r           <= 8'h00;
             peer_cal_done_r             <= 1'b0;
@@ -1828,7 +1779,6 @@ module tidelink_autoneg #(
             swreset_hold_r       <= swreset_hold_nxt;
             peer_unreach_ctr_r     <= peer_unreach_ctr_nxt;
             peer_unreach_timeout_r <= peer_unreach_timeout_nxt;
-            consec_locked_polls_r  <= consec_locked_polls_nxt;
             // Peer-byte captures: if capture_en pulses, latch axl_rdata_r[7:0];
             // otherwise hold (or take the _nxt assignment from the main_comb).
             if (peer_lane_locked_capture_en)

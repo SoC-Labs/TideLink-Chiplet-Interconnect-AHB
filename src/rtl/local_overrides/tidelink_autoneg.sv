@@ -338,13 +338,7 @@ module tidelink_autoneg #(
     // killing slave's own calibrator convergence. Requiring N=4 sustained
     // polls (~2.4 ms total) gives the local calibrator time to settle into
     // S_HOLD before declaring training done.
-    // M4f N=4 was too strict on silicon (v19, 100% neither — lane_locked
-    // bounces between 0xFF and 0xFE on transient single-lane misses → counter
-    // resets every poll → TRAIN_EXIT never fires). Reduced to N=2 (one
-    // re-confirmation poll on top of the initial lock observation). Still
-    // distinguishes the transient mid-sweep glitch case (1 poll) from a
-    // settled lock (2 consecutive polls = ~1.2 ms sustained).
-    localparam [3:0] M4F_LOCK_DWELL_MIN = 4'd2;
+    localparam [3:0] M4F_LOCK_DWELL_MIN = 4'd4;
     reg [3:0]  consec_locked_polls_r,  consec_locked_polls_nxt;
 
     // M4b (2026-06-05): peer-unreachable escape hatch.

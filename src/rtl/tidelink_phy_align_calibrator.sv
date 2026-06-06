@@ -1057,7 +1057,14 @@ module tidelink_phy_align_calibrator #(
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
-                            lane_score[i] <= 6'd0;
+                            // Leaky decrement (M5): single-cycle miss costs 1
+                            // point rather than zeroing the accumulator.
+                            // Tolerates occasional noise on marginal-margin
+                            // silicon (residual 20% v18 failure) while
+                            // genuinely bad lanes still score ≤0 and fail.
+                            lane_score[i] <= (lane_score[i] > 6'd0)
+                                             ? lane_score[i] - 6'd1
+                                             : 6'd0;
                         end
                     end
 
@@ -1140,7 +1147,10 @@ module tidelink_phy_align_calibrator #(
                             if (lane_score[i] != LANE_SCORE_MAX)
                                 lane_score[i] <= lane_score[i] + 6'd1;
                         end else begin
-                            lane_score[i] <= 6'd0;
+                            // Leaky decrement (M5): same as S_PROBE above.
+                            lane_score[i] <= (lane_score[i] > 6'd0)
+                                             ? lane_score[i] - 6'd1
+                                             : 6'd0;
                         end
                     end
 

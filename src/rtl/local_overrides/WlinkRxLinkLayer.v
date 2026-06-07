@@ -255,7 +255,46 @@ module WlinkRxLinkLayer(
   wire [3:0] rxLaneCount = _rxLaneCount_T_12 + _rxLaneCount_T_18; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_891 = {{1'd0}, rxLanePos_6}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_97 = _GEN_891 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_7 = io_link_data[127:112]; // @[LinkLayer.scala 781:46]
+  // ===========================================================================
+  // SoC Labs SYNC re-align (2026-06-06): periodic in-band re-sync delimiter.
+  //
+  // ROOT CAUSE (silicon, sustained load): this RX framer locks byte-alignment
+  // once via the byte-counter FSM (state/byte_count/word_count) and has NO
+  // delimiter to re-hunt with. A single mid-stream word SLIP (deskew bubble /
+  // dropped word) permanently desyncs byte_count; thereafter every packet —
+  // including the credit-return ACKs — is mis-framed and silently dropped
+  // (ECC stays 0, it is NOT corruption). The credit ring then fills and the
+  // link wedges.
+  //
+  // FIX (Interlaken metaframe / Aurora sync-header / 802.3 alignment-marker
+  // class): the TX glue (WavD2DGpio.v) injects ONE payload-unique 128-bit
+  // SYNC word every N link words during DATA mode, in an idle/gap slot so it
+  // never displaces real data. Here on RX we detect that exact word, and on a
+  // match we (a) STRIP it (substitute an all-zero idle word so it is never
+  // framed — low byte 0x00 makes is_short_pkt=0 and is_long_pkt=0), and (b)
+  // pulse `sync_resync` for one cycle, which synchronously resets state /
+  // byte_count / word_count back to the hunt/packet-start. The very next
+  // real link word therefore re-aligns to a known packet boundary.
+  //
+  // SYNC_WORD payload-uniqueness: a real link word produced by the LL TX
+  // always carries a valid ECC-checkable Wlink header in its low bytes
+  // (data_id ∈ {0x44 cr, 0x45 crack, 0x46 ack, 0x47 nack, 0xa1 data} with a
+  // matching length+ECC). SYNC_WORD's low byte is 0x00 (an invalid length, so
+  // it cannot be a legitimate header) and the upper 120 bits are a fixed
+  // descending nibble ramp the encoder never emits — so the full 128-bit
+  // constant cannot collide with any encodable packet word.
+  // ===========================================================================
+  localparam [127:0] SYNC_WORD =
+      128'hF1E2_D3C4_B5A6_9788_796A_5B4C_3D2E_1F00;
+  wire        sync_detected = (io_link_data == SYNC_WORD);
+  // Re-sync pulse: only meaningful in data mode (io_enable high, training
+  // gating is upstream in the PHY glue — SYNC is never injected during
+  // training so this is naturally quiescent then).
+  wire        sync_resync   = sync_detected & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
+  // Strip: feed the framer an all-zero idle word on the SYNC cycle so the
+  // delimiter itself is never interpreted as packet bytes.
+  wire [127:0] effective_link_data = sync_detected ? 128'h0 : io_link_data;
+  wire [15:0] link_data_lane_index_7 = effective_link_data[127:112]; // @[LinkLayer.scala 781:46]
   wire [1:0] _rxLanePos_T_42 = io_lane_mask[1] + io_lane_mask[2]; // @[Bitwise.scala 47:55]
   wire [1:0] _GEN_892 = {{1'd0}, io_lane_mask[0]}; // @[Bitwise.scala 47:55]
   wire [2:0] _rxLanePos_T_44 = _GEN_892 + _rxLanePos_T_42; // @[Bitwise.scala 47:55]
@@ -265,7 +304,7 @@ module WlinkRxLinkLayer(
   wire [2:0] rxLanePos_5 = _rxLanePos_T_44[1:0] + _rxLanePos_T_48[1:0]; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_894 = {{1'd0}, rxLanePos_5}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_94 = _GEN_894 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_6 = io_link_data[111:96]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_6 = effective_link_data[111:96]; // @[LinkLayer.scala 781:46]
   wire [1:0] _rxLanePos_T_28 = io_lane_mask[0] + io_lane_mask[1]; // @[Bitwise.scala 47:55]
   wire [1:0] _rxLanePos_T_30 = io_lane_mask[3] + io_lane_mask[4]; // @[Bitwise.scala 47:55]
   wire [1:0] _GEN_895 = {{1'd0}, io_lane_mask[2]}; // @[Bitwise.scala 47:55]
@@ -273,29 +312,29 @@ module WlinkRxLinkLayer(
   wire [2:0] rxLanePos_4 = _rxLanePos_T_28 + _rxLanePos_T_32[1:0]; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_896 = {{1'd0}, rxLanePos_4}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_91 = _GEN_896 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_5 = io_link_data[95:80]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_5 = effective_link_data[95:80]; // @[LinkLayer.scala 781:46]
   wire [1:0] _rxLanePos_T_17 = io_lane_mask[0] + io_lane_mask[1]; // @[Bitwise.scala 47:55]
   wire [1:0] _rxLanePos_T_19 = io_lane_mask[2] + io_lane_mask[3]; // @[Bitwise.scala 47:55]
   wire [2:0] rxLanePos_3 = _rxLanePos_T_17 + _rxLanePos_T_19; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_897 = {{1'd0}, rxLanePos_3}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_88 = _GEN_897 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_4 = io_link_data[79:64]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_4 = effective_link_data[79:64]; // @[LinkLayer.scala 781:46]
   wire [1:0] _rxLanePos_T_9 = io_lane_mask[1] + io_lane_mask[2]; // @[Bitwise.scala 47:55]
   wire [1:0] _GEN_898 = {{1'd0}, io_lane_mask[0]}; // @[Bitwise.scala 47:55]
   wire [2:0] _rxLanePos_T_11 = _GEN_898 + _rxLanePos_T_9; // @[Bitwise.scala 47:55]
   wire [1:0] rxLanePos_2 = _rxLanePos_T_11[1:0]; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_899 = {{2'd0}, rxLanePos_2}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_85 = _GEN_899 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_3 = io_link_data[63:48]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_3 = effective_link_data[63:48]; // @[LinkLayer.scala 781:46]
   wire [1:0] rxLanePos_1 = io_lane_mask[0] + io_lane_mask[1]; // @[Bitwise.scala 47:55]
   wire [3:0] _GEN_900 = {{2'd0}, rxLanePos_1}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_82 = _GEN_900 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_2 = io_link_data[47:32]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_2 = effective_link_data[47:32]; // @[LinkLayer.scala 781:46]
   wire [3:0] _GEN_901 = {{3'd0}, io_lane_mask[0]}; // @[LinkLayer.scala 774:44]
   wire [3:0] _T_79 = _GEN_901 + rxLaneCount; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_1 = io_link_data[31:16]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_1 = effective_link_data[31:16]; // @[LinkLayer.scala 781:46]
   wire [4:0] _T_75 = {{1'd0}, rxLaneCount}; // @[LinkLayer.scala 774:44]
-  wire [15:0] link_data_lane_index_0 = io_link_data[15:0]; // @[LinkLayer.scala 781:46]
+  wire [15:0] link_data_lane_index_0 = effective_link_data[15:0]; // @[LinkLayer.scala 781:46]
   wire [7:0] _GEN_479 = 4'h0 == _T_75[3:0] ? link_data_lane_index_0[15:8] : link_data_lane_index_0[7:0]; // @[LinkLayer.scala 774:59 LinkLayer.scala 774:59 LinkLayer.scala 773:59]
   wire [7:0] _GEN_495 = io_lane_mask[0] ? _GEN_479 : 8'h0; // @[LinkLayer.scala 772:32 LinkLayer.scala 628:72]
   wire [7:0] _GEN_511 = ~io_lane_mask[0] ? link_data_lane_index_1[7:0] : _GEN_495; // @[LinkLayer.scala 773:59 LinkLayer.scala 773:59]
@@ -1102,6 +1141,10 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       state <= 2'h0;
+    end else if (sync_resync) begin
+      // SoC Labs SYNC re-align (2026-06-06): a SYNC delimiter forces the
+      // byte-align FSM back to hunt (state 0) at a known packet boundary.
+      state <= 2'h0;
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
         if (io_active_lanes == 8'h0) begin
@@ -1684,6 +1727,8 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       word_count <= 16'h0;
+    end else if (sync_resync) begin
+      word_count <= 16'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
         if (io_active_lanes == 8'h0) begin
@@ -1699,6 +1744,8 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       byte_count <= 17'h0;
+    end else if (sync_resync) begin
+      byte_count <= 17'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
         if (io_active_lanes == 8'h0) begin

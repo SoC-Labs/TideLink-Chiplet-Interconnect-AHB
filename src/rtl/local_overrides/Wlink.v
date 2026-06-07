@@ -1136,6 +1136,7 @@ module Wlink #(
     .scan_out(phy_scan_out),
     .por_reset(phy_por_reset),
     .link_tx_tx_en(phy_link_tx_tx_en),
+    .link_tx_tx_idle(lltx_io_link_idle), // SoC Labs 2026-06-06: LL idle -> PHY gates SYNC insertion to inter-packet slots
     .link_tx_tx_ready(phy_link_tx_tx_ready),
     .link_tx_tx_link_data(phy_link_tx_tx_link_data),
     .link_tx_tx_lane_mask(phy_link_tx_tx_lane_mask),

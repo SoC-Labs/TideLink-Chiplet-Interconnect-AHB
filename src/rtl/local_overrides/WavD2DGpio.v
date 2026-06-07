@@ -38,6 +38,7 @@ module WavD2DGpio #(
   input          io_scan_clk,
   output         io_scan_out,
   input          io_link_tx_tx_en,
+  input          io_link_tx_tx_idle,   // SoC Labs 2026-06-06: LL "no packet in flight" — gates SYNC insertion to inter-packet slots
   output         io_link_tx_tx_ready,
   input  [127:0] io_link_tx_tx_link_data,
   input  [7:0]   io_link_tx_tx_lane_mask,
@@ -574,6 +575,43 @@ module WavD2DGpio #(
   // internal `count` register so the mux flip happens at THAT lane's word
   // boundary, independent of any cross-lane phase variation.
   wire        effective_training_mode_tx = effective_training_mode_tx_raw;
+  // ===========================================================================
+  // SoC Labs SYNC re-align — TX insertion (2026-06-06).
+  //
+  // Companion to the RX SYNC detect/strip/resync in WlinkRxLinkLayer.v. A
+  // free-running word counter (on the TX link-word clock) emits ONE
+  // payload-unique 128-bit SYNC word every SYNC_PERIOD words, but ONLY in an
+  // idle/gap slot (io_link_tx_tx_en low) and ONLY in DATA mode
+  // (effective_training_mode low). Inserting in an idle slot guarantees the
+  // SYNC never displaces real LL data; gating to data mode keeps the
+  // calibrator's training stream untouched (test_01).
+  //
+  // The 128-bit SYNC_WORD here MUST bit-match the RX SYNC_WORD in
+  // WlinkRxLinkLayer.v. Lane N carries SYNC_WORD[16*N+15 : 16*N]; the per-lane
+  // serialiser ships its 16-bit slice, so the assembled 128-bit RX word equals
+  // SYNC_WORD when all eight lanes are active (lane_mask=0xff in data mode).
+  // ===========================================================================
+  localparam [127:0] PHY_SYNC_WORD =
+      128'hF1E2_D3C4_B5A6_9788_796A_5B4C_3D2E_1F00;
+  localparam [5:0]   SYNC_PERIOD = 6'd32;  // emit a SYNC every 32 link words
+  reg  [5:0]  sync_word_ctr_r;
+  // Insert only when the link is idle (no real word being launched) AND we are
+  // past training (data mode). One-word pulse aligned to the counter wrap.
+  wire        sync_insert =
+        (sync_word_ctr_r == 6'd0) & io_link_tx_tx_idle & (io_link_tx_tx_link_data == 128'h0) & ~effective_training_mode; // SoC Labs 2026-06-07 (3-agent root-cause): io_link_idle does NOT imply the data bus is clear — WlinkTxLinkLayer holds the last assembled word in link_data_reg (cleared only on reset), so idle==1 can coexist with a REAL packet word still on the bus. Inserting then OVERWRITES that word (2 packets lost in test_15). Also require the 128b data bus to be genuinely zero, so SYNC only ever replaces a true idle flit AND lands strictly between packets (no mid-packet overwrite, no mid-packet re-sync reset)
+  always @(posedge io_link_tx_tx_link_clk or posedge por_reset_scan_wrs_io_reset_out) begin
+    if (por_reset_scan_wrs_io_reset_out) begin
+      sync_word_ctr_r <= SYNC_PERIOD - 6'd1;
+    end else if (effective_training_mode) begin
+      // Hold disarmed through training so no SYNC ever lands in the training
+      // stream; re-arm to a full period at the training→data transition.
+      sync_word_ctr_r <= SYNC_PERIOD - 6'd1;
+    end else if (sync_word_ctr_r == 6'd0) begin
+      sync_word_ctr_r <= SYNC_PERIOD - 6'd1;
+    end else begin
+      sync_word_ctr_r <= sync_word_ctr_r - 6'd1;
+    end
+  end
   // SoC Labs §9.7 per-lane phase + §9.11d hardening (2026-05-27):
   // ------------------------------------------------------------------
   // §9.7 original intent: per-lane phase (io_swi_phase_offset_in,
@@ -923,57 +961,57 @@ module WavD2DGpio #(
   assign gpiotx_0_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_0_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_0_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_0_io_link_data = tx_lane_en ? tx_lane_data : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_0_io_link_data = sync_insert ? 16'h1F00 : (tx_lane_en ? tx_lane_data : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_1_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_1_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_1_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_1_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_1_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_1_io_link_data = tx_lane_en_1 ? tx_lane_data_1 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_1_io_link_data = sync_insert ? 16'h3D2E : (tx_lane_en_1 ? tx_lane_data_1 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_2_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_2_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_2_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_2_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_2_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_2_io_link_data = tx_lane_en_2 ? tx_lane_data_2 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_2_io_link_data = sync_insert ? 16'h5B4C : (tx_lane_en_2 ? tx_lane_data_2 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_3_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_3_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_3_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_3_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_3_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_3_io_link_data = tx_lane_en_3 ? tx_lane_data_3 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_3_io_link_data = sync_insert ? 16'h796A : (tx_lane_en_3 ? tx_lane_data_3 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_4_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_4_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_4_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_4_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_4_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_4_io_link_data = tx_lane_en_4 ? tx_lane_data_4 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_4_io_link_data = sync_insert ? 16'h9788 : (tx_lane_en_4 ? tx_lane_data_4 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_5_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_5_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_5_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_5_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_5_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_5_io_link_data = tx_lane_en_5 ? tx_lane_data_5 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_5_io_link_data = sync_insert ? 16'hB5A6 : (tx_lane_en_5 ? tx_lane_data_5 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_6_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_6_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_6_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_6_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_6_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_6_io_link_data = tx_lane_en_6 ? tx_lane_data_6 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_6_io_link_data = sync_insert ? 16'hD3C4 : (tx_lane_en_6 ? tx_lane_data_6 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiotx_7_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_7_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_7_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_7_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_7_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
-  assign gpiotx_7_io_link_data = tx_lane_en_7 ? tx_lane_data_7 : 16'h0; // @[GPIO.scala 213:37]
+  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | sync_insert; // SoC Labs §9 + SYNC insert 2026-06-06
+  assign gpiotx_7_io_link_data = sync_insert ? 16'hF1E2 : (tx_lane_en_7 ? tx_lane_data_7 : 16'h0); // @[GPIO.scala 213:37] +SoC Labs SYNC insert 2026-06-06
   assign gpiorx_0_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiorx_0_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiorx_0_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]

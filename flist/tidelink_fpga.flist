@@ -168,7 +168,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGPIOPHY.v
+// SoC Labs 2026-06-07: WlinkGPIOPHY replaced with local override — adds the
+// io_link_tx_tx_idle passthrough (Wlink lltx idle -> WavD2DGpio) that gates the
+// SYNC re-align delimiter to true inter-packet slots. Deps copy stays clean.
+// ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGPIOPHY.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGPIOPHY.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v

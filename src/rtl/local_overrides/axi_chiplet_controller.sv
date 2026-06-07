@@ -1925,7 +1925,8 @@ module axi_chiplet_controller #(
     // Keeps a small overlap margin but fits comfortably inside the autoneg
     // poll budget.
     tidelink_phy_align_calibrator #(
-        .HOLD_CYCLES(1024)
+        .HOLD_CYCLES(1024),
+        .VALIDATION_TIMEOUT(2_000_000)  // 320ms at 6.25MHz FPGA link clk (default 4096=655µs too short for FCSM credit exchange)
     ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
         .rst                   (~poresetn),

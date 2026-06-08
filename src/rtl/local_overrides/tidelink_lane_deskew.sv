@@ -446,30 +446,65 @@ module tidelink_lane_deskew #(
         end
     endgenerate
 
-    // Earliest lane = the one with the MAX d0 (it leads lane 0 the most). Offset
-    // of lane gi = (d0[gi] - d0_max) mod 2^MW, taken into the low DEPTH_LOG bits.
-    reg [MW-1:0] d0_max, d0_min;
+    // Reference lane: the one with the SMALLEST spf (least data in FIFO at SYNC
+    // time = started writing LATEST = most delayed by cross-lane skew).
+    //
+    // BUG FIX (SoC Labs 2026-06-08): the previous code used d0_max - d0[gi]
+    // (treating the MOST-advanced lane as reference). This is wrong in two ways:
+    //   (a) d_spread = d0_max_unsigned - d0_min_unsigned = 15 for a 1-word skew
+    //       when the lagging lane's d0 wraps (e.g. -1 = 15 mod 16), so
+    //       skew_present was always FALSE for any backward-skewed lane and the
+    //       entire correction silently became a no-op.
+    //   (b) Even when skew_present was TRUE, d0_max - d0[gi] gave offsets in the
+    //       WRONG direction: the most-advanced lane (off=0) should instead be the
+    //       LEAST-advanced lane; applying reversed offsets left the slave FIFO
+    //       garbled, sync_det_cnt=0, and FCSM stuck at LINK_IDLE_4.
+    //
+    // CORRECT formula: off[gi] = d0[gi] - d0_min_signed, where d0_min_signed is
+    // the MOST NEGATIVE d0 across all lanes (= smallest wr_ptr at SYNC time =
+    // reference lane with off=0).  In the (DEPTH_LOG+1)-bit modular space, lanes
+    // that started writing LATER have NEGATIVE d0 (wrapped to [2^MW-DEPTH+1..
+    // 2^MW-1] = [9..15] for DEPTH=8).  The signed minimum is the smallest-valued
+    // entry in that negative range (most-lagging lane); if no lane has bit[MW-1]
+    // set, all d0 are non-negative and lane 0 is the reference (Case A).
+    //
+    // PRIME_THRESH clamp removed: since off_raw[gi] is in [0, DEPTH-1] and the
+    // primed/all_ready gates already guard against underrun, the clamp is
+    // redundant and incorrectly zero'd valid large offsets.
+    reg [MW-1:0] d0_min_s;
     integer si;
     always @* begin
-        d0_max = d0[0];
-        d0_min = d0[0];
-        for (si = 1; si < LANES; si = si + 1) begin
-            if (d0[si] > d0_max) d0_max = d0[si];
-            if (d0[si] < d0_min) d0_min = d0[si];
+        d0_min_s = {MW{1'b0}};   // Default: lane 0 as reference (Case A)
+        for (si = 0; si < LANES; si = si + 1) begin
+            // Prefer any negative entry; among negatives pick the smallest unsigned
+            // value (= most negative signed = most lagging lane).
+            if (d0[si][MW-1] & (~d0_min_s[MW-1] | (d0[si] < d0_min_s)))
+                d0_min_s = d0[si];
         end
     end
-    // Spread in the modular space (real word-skew magnitude). For skews < DEPTH
-    // this equals the true max-min word skew.
-    wire [MW-1:0] d_spread   = d0_max - d0_min;
-    wire          skew_present = (d_spread >= 2) & (d_spread < DEPTH[MW-1:0]);
+
+    // off_raw[gi] = (d0[gi] - d0_min_s) mod 2^MW, lower DEPTH_LOG bits.
+    wire [DEPTH_LOG-1:0] off_raw [LANES-1:0];
+    generate
+        for (gi = 0; gi < LANES; gi = gi + 1) begin : g_offraw
+            wire [MW-1:0] diff_r = d0[gi] - d0_min_s;
+            assign off_raw[gi] = diff_r[DEPTH_LOG-1:0];
+        end
+    endgenerate
+
+    // d_spread = max(off_raw) = true worst-case cross-lane word skew.
+    reg [DEPTH_LOG-1:0] d_spread_v;
+    always @* begin
+        d_spread_v = {DEPTH_LOG{1'b0}};
+        for (si = 0; si < LANES; si = si + 1)
+            if (off_raw[si] > d_spread_v) d_spread_v = off_raw[si];
+    end
+    wire skew_present = (d_spread_v >= 2);   // 3-bit max=7 < DEPTH=8 always
 
     wire [DEPTH_LOG-1:0] off_cand [LANES-1:0];
     generate
         for (gi = 0; gi < LANES; gi = gi + 1) begin : g_offcand
-            wire [MW-1:0] raw = d0_max - d0[gi];           // 0 for earliest lane
-            assign off_cand[gi] =
-                (skew_present && (raw < PRIME_THRESH[MW-1:0])) ?
-                    raw[DEPTH_LOG-1:0] : {DEPTH_LOG{1'b0}};
+            assign off_cand[gi] = skew_present ? off_raw[gi] : {DEPTH_LOG{1'b0}};
         end
     endgenerate
 

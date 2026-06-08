@@ -486,7 +486,7 @@ class PairTB:
     #   0=IDLE, 1=ARM, 2=SWEEP, 3=FINISH, 4=DONE, 5=CANCEL, 6=HOLD
 
     CAL_STATE_NAMES = {0: "IDLE", 1: "ARM", 2: "SWEEP", 3: "FINISH",
-                       4: "DONE", 5: "CANCEL", 6: "HOLD"}
+                       4: "DONE", 5: "CANCEL", 6: "HOLD", 9: "VALIDATE"}
 
     def cal_state(self, side):
         try:
@@ -498,6 +498,25 @@ class PairTB:
     def cal_state_name(self, side):
         s = self.cal_state(side)
         return self.CAL_STATE_NAMES.get(s, f"?{s}")
+
+    def force_calibrator_sim_bypass(self):
+        """Force tb_early_exit_force_q=1 on both calibrators so S_FINISH→S_DONE
+        directly (bypasses S_HOLD + S_VALIDATE). Required with M6+M8: M6 sets
+        VALIDATION_TIMEOUT=2M link cycles (320ms HW) which far exceeds the sim
+        budget; M8's training_mode=1 in S_VALIDATE also blocks FCSM CR exchange
+        in sim. Without this bypass the wait_cal_done budget (500k hclk) is
+        exhausted while both calibrators are stuck in S_VALIDATE.
+
+        (Ported from the tidelink_top_pair_wordskew copy 2026-06-08 — the main
+        pair harness predated the M6+M8 calibrator landing and so hung in
+        S_VALIDATE with cal_done=0 on EVERY test, regardless of the deskew RTL.)
+        """
+        for side in ("m", "s"):
+            top = self.dut.u_master if side == "m" else self.dut.u_slave
+            try:
+                top.u_chiplet_controller.u_calibrator.tb_early_exit_force_q.value = 1
+            except AttributeError:
+                self.log.warning(f"  [{side}] tb_early_exit_force_q not found — M8 bypass not applied")
 
     # ----- FC adapter hierarchical probes (TX/RX skid + valid lines) -------
     # Used to localize where the M→S vs S→M asymmetry comes from.
@@ -589,6 +608,11 @@ async def run_bringup_through_phase1(tb):
     Returns a snapshot of the state at the end of Phase 1.
     """
     await tb.reset()
+    # M6+M8 sim bypass: S_VALIDATE uses VALIDATION_TIMEOUT=2M link cycles (320ms
+    # HW wall time) and keeps training_mode=1 so FCSM CR can't fire; without the
+    # bypass the 500k-cycle sim budget is exhausted before S_VALIDATE expires and
+    # cal_done never asserts. Must be set before role_locked rises.
+    tb.force_calibrator_sim_bypass()
     await tb.do_role_lock()
     locked = await tb.wait_role_locked()
     tb.log.info(f"Phase 0 role_locked: master={int(tb.dut.m_role_locked.value)} "

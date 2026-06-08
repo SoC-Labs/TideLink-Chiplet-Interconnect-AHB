@@ -96,7 +96,13 @@ module WlinkRxLinkLayer(
   output [1:0]   io_obs_state,        // byte-align FSM state (==2 -> error)
   output         io_obs_is_short_pkt, // short-packet detect
   output         io_obs_is_long_pkt,  // long-packet detect
-  output         io_obs_valid         // LL_RX has a valid packet
+  output         io_obs_valid,        // LL_RX has a valid packet
+  // SoC Labs 2026-06-08: cross-lane-skew observability. One-cycle pulse each
+  // time the assembled 128-bit RX word equals the PHY SYNC delimiter
+  // (sync_detected, :289). Lets SW confirm the RX ever sees a COHERENT SYNC on
+  // HW — the direct indicator that the lane-deskew is delivering aligned words.
+  // Counted (16-bit saturating) in the RX-link-clock domain up in Wlink.v.
+  output         io_obs_sync_detected // assembled word == SYNC_WORD (1-cy pulse)
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -1105,6 +1111,10 @@ module WlinkRxLinkLayer(
   assign io_obs_is_short_pkt = is_short_pkt;
   assign io_obs_is_long_pkt  = is_long_pkt;
   assign io_obs_valid        = valid;
+  // SoC Labs 2026-06-08: SYNC-word seen on the assembled RX bus (sync_detected
+  // is combinational, :289). Saturating-counted in the RX link-clock domain in
+  // Wlink.v and 2-flop-synced to apb_clk for SW read.
+  assign io_obs_sync_detected = sync_detected;
   assign enable_ff2_demet_clock = clock;
   assign enable_ff2_demet_reset = reset;
   assign enable_ff2_demet_io_in = io_enable; // @[Stdcell.scala 59:17]

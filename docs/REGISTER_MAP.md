@@ -162,7 +162,7 @@ slots 0..7 remapped to 0x100..0x11C).
 | 0x2108 | SWI_LANE_STATUS   | RO     | 0           | [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done; [31:17] = CREDIT_PATH_STATUS (see below) |
 | 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | I²C training handshake config (auto/sw_step/retrain + timing)  |
 | 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | Training FSM live status + last-captured peer values           |
-| 0x2114 | ECC_COUNTERS      | RO     | 0           | [15:0] ecc_corrupted sat-cnt, [31:16] ecc_corrected sat-cnt (was NEGO_TRAIN_STEP RO=0; W1P write path unchanged & still ignored) |
+| 0x2114 | SYNC_DET / ECC    | RO     | 0           | [31:16] **sync_detected** sat-cnt (cross-lane-deskew health; SoC Labs 2026-06-08; replaces the DEAD ecc_corrected field), [15:0] ecc_corrupted sat-cnt (also DEAD/0). Was ECC_COUNTERS / NEGO_TRAIN_STEP RO=0; W1P write path unchanged & still ignored. |
 | 0x2118 | SWI_PHASE_OFFSET  | RW     | 0           | bits[31:0] = per-lane sub-bit phase (8 lanes × 4 bits) — §9.7  |
 | 0x211C | PHY_ALIGN_ID      | RO     | 0x5041_0100 | "PA" v1.0 — SW probes for Region 8 presence                    |
 
@@ -197,17 +197,15 @@ pre-existing live field moves**:
   | [29]    | llrx_valid        | `WlinkRxLinkLayer.valid`                             |
   | [31:30] | reserved          | 0                                                    |
 
-* **ECC_COUNTERS** repurposes the read path of slot 5 (0x2114, was
-  `NEGO_TRAIN_STEP` which read a constant `32'h0`; its W1P write path is
-  untouched and still ignored, so no functional change). Two 16-bit
-  saturating counters in the recovered-RX-link-clock domain, counting the
-  `WlinkRxLinkLayer.ecc_check_corrupted` / `ecc_check_corrected` event
-  pulses (saturate at 0xFFFF):
+* **SYNC_DET / ECC** is the read path of slot 5 (0x2114, was `NEGO_TRAIN_STEP`
+  which read a constant `32'h0`; its W1P write path is untouched and still
+  ignored, so no functional change). 16-bit saturating counters in the
+  recovered-RX-link-clock domain (saturate at 0xFFFF):
 
-  | Bit     | Name              | Description                                  |
-  |---------|-------------------|----------------------------------------------|
-  | [15:0]  | ecc_corrupted_cnt | saturating count of ECC-corrupted words      |
-  | [31:16] | ecc_corrected_cnt | saturating count of ECC-corrected words      |
+  | Bit     | Name               | Description                                                                                   |
+  |---------|--------------------|-----------------------------------------------------------------------------------------------|
+  | [15:0]  | ecc_corrupted_cnt  | saturating count of ECC-corrupted words. **DEAD** — `WlinkEccSyndrome.v:299-308` ties corrupted=0; reads 0. |
+  | [31:16] | sync_detected_cnt  | **SoC Labs 2026-06-08.** Saturating count of `WlinkRxLinkLayer.sync_detected` (assembled 128-bit RX bus == PHY SYNC_WORD). A HW read **>0 proves the RX assembled a COHERENT SYNC word**, i.e. the cross-lane lane-deskew is delivering aligned words; **=0** means the RX never sees a coherent SYNC (lanes still mis-aligned / link dead). Replaces the equally-DEAD ecc_corrected field. |
 
 All sources cross from the FCSM (`io_tx_clk`) / recovered-RX-link
 (`phy_link_rx_rx_link_clk`) domains into `apb_clk` via a 2-flop

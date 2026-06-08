@@ -220,6 +220,10 @@ module Wlink #(
   output         obs_llrx_valid_o,        // LL_RX has valid pkt (rx)
   output [15:0]  obs_ecc_corrupted_cnt_o, // sat. ECC-corrupt count (rx)
   output [15:0]  obs_ecc_corrected_cnt_o, // sat. ECC-corrected count (rx)
+  // SoC Labs 2026-06-08: saturating count of SYNC-word detections on the
+  // assembled RX bus (cross-lane-deskew health). RX-link-clock domain;
+  // 2-flop-synced to apb_clk in axi_chiplet_controller.sv.
+  output [15:0]  obs_sync_detected_cnt_o, // sat. SYNC-detected count (rx)
   // SoC Labs Bug-A FCSM observation 2026-06-02 — gate signals for state 4→5.
   output         obs_a2l_replay_link_valid_o, // tx domain
   output [7:0]   obs_fe_rx_credit_max_o,      // rx domain
@@ -247,6 +251,8 @@ module Wlink #(
   wire       llrx_io_obs_is_short_pkt;
   wire       llrx_io_obs_is_long_pkt;
   wire       llrx_io_obs_valid;
+  // SoC Labs 2026-06-08: SYNC-detected pulse from llrx (RX link-clock domain).
+  wire       llrx_io_obs_sync_detected;
   // tdif-10 visibility (2026-05-25): the FCSM observability outputs
   // expose the master-side credit-handshake state that lets us see CR/CRACK
   // packets being received and the FCSM's own state advance. These nets
@@ -265,6 +271,8 @@ module Wlink #(
   wire       tl2wl_io_obs_a2l_replay_app_valid;
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
+  // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
+  reg [15:0] obs_sync_detected_cnt_q;
   // Port stubs — read-only mirror of the lane-mask registers.
   // mask_hs_result_o tied to 0; peer_*_lane_mask_i intentionally unused
   // (would feed a LaneMaskPeer reg in the regenerated RTL).
@@ -874,11 +882,20 @@ module Wlink #(
     if (rx_link_clk_reset_wrs_io_reset_out) begin
       obs_ecc_corrupted_cnt_q <= 16'h0;
       obs_ecc_corrected_cnt_q <= 16'h0;
+      obs_sync_detected_cnt_q <= 16'h0;
     end else begin
       if (llrx_io_ecc_corrupted && (obs_ecc_corrupted_cnt_q != 16'hffff))
         obs_ecc_corrupted_cnt_q <= obs_ecc_corrupted_cnt_q + 16'h1;
       if (llrx_io_ecc_corrected && (obs_ecc_corrected_cnt_q != 16'hffff))
         obs_ecc_corrected_cnt_q <= obs_ecc_corrected_cnt_q + 16'h1;
+      // SoC Labs 2026-06-08: SYNC-detected saturating counter. sync_detected is
+      // a per-RX-word combinational level (held 1 for the whole word period the
+      // assembled bus equals SYNC_WORD), and the RX framer samples one word per
+      // phy_link_rx_rx_link_clk, so one increment per SYNC word seen. Saturates
+      // at 0xFFFF; a HW read of >0 proves the RX assembles a COHERENT SYNC word
+      // (i.e. the cross-lane deskew is aligning lanes), 0 means it never does.
+      if (llrx_io_obs_sync_detected && (obs_sync_detected_cnt_q != 16'hffff))
+        obs_sync_detected_cnt_q <= obs_sync_detected_cnt_q + 16'h1;
     end
   end
   // Surface the observability bundle as Wlink outputs (pure combinational
@@ -900,6 +917,7 @@ module Wlink #(
   assign obs_llrx_valid_o        = llrx_io_obs_valid;
   assign obs_ecc_corrupted_cnt_o = obs_ecc_corrupted_cnt_q;
   assign obs_ecc_corrected_cnt_o = obs_ecc_corrected_cnt_q;
+  assign obs_sync_detected_cnt_o = obs_sync_detected_cnt_q;
   reg  out_prepend_swi_swreset; // @[SW.scala 83:22]
   wire  axi2wl_io_tx_reset_tx_link_clk_reset = tx_link_clk_reset_wrs_io_reset_out; // @[Wlink.scala 124:36 Wlink.scala 179:43]
   wire  swi_sb_reset_in_muxed = muxed_pre_mux_io_o_z; // @[Wlink.scala 172:49 SW.scala 374:11]
@@ -1354,7 +1372,8 @@ module Wlink #(
     .io_obs_state(llrx_io_obs_state),
     .io_obs_is_short_pkt(llrx_io_obs_is_short_pkt),
     .io_obs_is_long_pkt(llrx_io_obs_is_long_pkt),
-    .io_obs_valid(llrx_io_obs_valid)
+    .io_obs_valid(llrx_io_obs_valid),
+    .io_obs_sync_detected(llrx_io_obs_sync_detected) // SoC Labs 2026-06-08
   );
   AXI4ToWlink axi2wl ( // @[AXI.scala 99:31]
     .clock(axi2wl_clock),

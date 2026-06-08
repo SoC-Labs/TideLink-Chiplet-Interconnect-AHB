@@ -110,7 +110,15 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
 // 8 per-lane gpiorx outputs and the assembled 128-bit io_link_data bus.
 // Listed BEFORE WavD2DGpio.v so the module is defined before its instance.
 // See docs/PHY_LANE_DESKEW_DESIGN_2026_06_03.md.
-${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_deskew.sv
+//
+// SoC Labs 2026-06-08: REPLACED with local override adding SYNC-content-anchored
+// re-prime (each lane anchors FIFO[0] on its own slice of the 128-bit SYNC word
+// the TX ships simultaneously on all lanes) so cross-lane WORD skew is corrected
+// in steady state, not just at the training edge. Submodule copy stays pristine.
+// See src/rtl/local_overrides/tidelink_lane_deskew.sv. Word-skew sim proof:
+// cocotb/tidelink_top_pair_wordskew test_08 (broken-before / works-after).
+// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_deskew.sv
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_lane_deskew.sv
 
 // SoC Labs Bug-FC1 fix 2026-05-25: WavD2DGpio.v replaced with local override
 // adding post_train_hold_ctr_r so effective_training_mode stays high for N

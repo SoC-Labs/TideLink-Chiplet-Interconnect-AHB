@@ -82,8 +82,8 @@ train_sts  = rd(0x110)
 # Bug N14b post-mortem (2026-06-05): SWI_LANE_STATUS @ 0x108 carries the
 # REAL local cal_done + lane_locked + lane_fault. The "master cal_done=0"
 # Bug N14b investigation was built on probe-script blindness — without
-# this register, master's loser-side nego_train_status=0 reads as "wedge"
-# when it's actually normal loser FSM behaviour. Always read 0x108.
+# this register, master loser-side nego_train_status=0 reads as "wedge"
+# when its actually normal loser FSM behaviour. Always read 0x108.
 swi_lane_sts  = rd(0x108)
 
 # Region C (Bug N7 obs + new mask-hs slot + M7 OBS_CAL slot)
@@ -168,7 +168,7 @@ else:
     cal_tm     = (obs_cal >> 20) & 1
     print(\"  obs_cal           0x{:08x}\".format(obs_cal))
     print(\"    cal_state={} ({})  resweep_ctr={}  training_mode={}\".format(
-        cal_st, cal_state_names.get(cal_st, '?'), cal_rsw, cal_tm))
+        cal_st, cal_state_names.get(cal_st, \"?\"), cal_rsw, cal_tm))
 print(\"--- Wlink AHB (0x44030000) ---\")
 print(\"  link_lane_mask    0x{:08x}  @0x44030214  (tx[7:0] rx[15:8])\".format(wl_lane_mask))
 print(\"  link_hs_result    0x{:08x}  @0x4403021C  (peer-mask handshake verdict)\".format(wl_hs_result))

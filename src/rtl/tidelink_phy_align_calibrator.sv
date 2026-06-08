@@ -880,24 +880,31 @@ module tidelink_phy_align_calibrator #(
                 else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
-                // §9.11d Fix A1 real-data validation.
+                // §9.11d Fix A1 real-data validation — M8 revision.
                 //
-                // training_mode is now LOW (see output mux below — S_VALIDATE
-                // intentionally NOT in the training-mode assert list). The
-                // FCSM is free to emit its CR_PKT. Our local FCSM signals
-                // cr_pkt_seen_rx (= cr_pkt_seen_i input here) when it
-                // successfully decodes the peer's CR_PKT.
+                // training_mode is now HIGH during S_VALIDATE (see output mux
+                // below — S_VALIDATE added to training-mode assert list). This
+                // fixes a bilateral deadlock that M6's 2M-cycle timeout
+                // exposed: the slower-calibrating peer (master) could never
+                // lock because the faster peer (slave) dropped training_mode
+                // for the entire 320ms S_VALIDATE window. With training_mode=1
+                // here, slave TX keeps emitting the training pattern; master
+                // can complete its sweep and reach its own S_VALIDATE.
                 //
-                //   * cr_pkt_seen_i within timeout → S_DONE (real-data
-                //     validated)
-                //   * timeout without cr_pkt_seen → re-arm sweep (T3
-                //     retry budget governs whether to give up via
-                //     retry_exhausted, same path as a normal lane fault).
+                // Exit sequence:
+                //   * cr_pkt_seen_i within timeout  → S_DONE (fast path; fires
+                //     when peer drops training_mode and FCSM sends CR)
+                //   * val_ctr ≥ VAL_MAX             → S_DONE always (no S_ARM
+                //     retry: training_mode=1 means our FCSM is silent so
+                //     cr_pkt_seen can never arrive while we are here; the peer
+                //     will activate its FCSM only after it exits its own
+                //     S_VALIDATE, at which point it will send CR and we should
+                //     already be in S_DONE ready to receive it)
                 if (swreset)                  nxt_state = S_CANCEL;
                 else if (!role_locked)        nxt_state = S_DONE;
                 else if (cr_pkt_seen_i)       nxt_state = S_DONE;
                 else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
-                    nxt_state = retry_exhausted ? S_DONE : S_ARM;
+                    nxt_state = S_DONE;   // M8: always S_DONE (never S_ARM)
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -1576,10 +1583,15 @@ module tidelink_phy_align_calibrator #(
                             || (cur_state == S_PROBE)
                             || (cur_state == S_SWEEP)
                             || (cur_state == S_FINALIZE)
-                            || (cur_state == S_HOLD);
+                            || (cur_state == S_HOLD)
+                            || (cur_state == S_VALIDATE);  // M8: keep TX training while validating
                                                         // S_PROBE    = §9.10/11 (0,0) advisory probe
                                                         // S_FINALIZE = §9.11 single-cycle latch
                                                         // S_HOLD     = T3.2 peer-aware
+                                                        // S_VALIDATE = M8 — peer must stay in training
+                                                        //   so slower side can still lock; exits via
+                                                        //   timer only (cr_pkt_seen fires after both
+                                                        //   sides exit S_VALIDATE and FCSMs activate)
             calibration_done = (cur_state == S_DONE);
         end
     end

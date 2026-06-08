@@ -597,8 +597,24 @@ module WavD2DGpio #(
   reg  [5:0]  sync_word_ctr_r;
   // Insert only when the link is idle (no real word being launched) AND we are
   // past training (data mode). One-word pulse aligned to the counter wrap.
+  //
+  // SoC Labs 2026-06-08 SYNC-guard fix:
+  //   The original guard required (io_link_tx_tx_link_data == 128'h0) to prevent
+  //   overwriting an in-flight packet word (test_15 root cause: WlinkTxLinkLayer
+  //   asserts idle before the serialiser drains postcount). But link_data_reg is
+  //   "cleared only on reset" — after the FIRST packet (CR/CRACK), it is
+  //   permanently non-zero. The link_data==0 guard therefore permanently blocks
+  //   SYNC insertion after link setup, which prevents the deskew SYNC re-prime
+  //   from ever firing → slave sync_det stays 0.
+  //
+  //   Correct guard: (postcount == 8'h0). postcount is the serialiser drain
+  //   counter — it is 0 both before any packet AND after the serialiser has
+  //   fully drained. "idle=1 but serialiser not finished" is EXACTLY the case
+  //   postcount != 0. So (postcount==0) gates SYNC correctly: fires between
+  //   real packet transmissions once the serialiser is idle, regardless of any
+  //   stale value in link_data_reg.
   wire        sync_insert =
-        (sync_word_ctr_r == 6'd0) & io_link_tx_tx_idle & (io_link_tx_tx_link_data == 128'h0) & ~effective_training_mode; // SoC Labs 2026-06-07 (3-agent root-cause): io_link_idle does NOT imply the data bus is clear — WlinkTxLinkLayer holds the last assembled word in link_data_reg (cleared only on reset), so idle==1 can coexist with a REAL packet word still on the bus. Inserting then OVERWRITES that word (2 packets lost in test_15). Also require the 128b data bus to be genuinely zero, so SYNC only ever replaces a true idle flit AND lands strictly between packets (no mid-packet overwrite, no mid-packet re-sync reset)
+        (sync_word_ctr_r == 6'd0) & io_link_tx_tx_idle & (postcount == 8'h0) & ~effective_training_mode; // SoC Labs 2026-06-08: replaced link_data==0 with postcount==0 (serialiser-drain guard). postcount==0 fires correctly between packets. link_data==0 was "cleared only on reset" and blocked SYNC permanently after first packet (CR/CRACK).
   always @(posedge io_link_tx_tx_link_clk or posedge por_reset_scan_wrs_io_reset_out) begin
     if (por_reset_scan_wrs_io_reset_out) begin
       sync_word_ctr_r <= SYNC_PERIOD - 6'd1;

@@ -548,6 +548,8 @@ module axi_chiplet_controller #(
     wire        obs_llrx_valid_w;
     wire [15:0] obs_ecc_corrupted_cnt_w;
     wire [15:0] obs_ecc_corrected_cnt_w;
+    // SoC Labs 2026-06-08: SYNC-detected saturating counter (cross-lane-skew obs)
+    wire [15:0] obs_sync_detected_cnt_w;
     // SoC Labs Bug-A FCSM observation 2026-06-02
     wire        obs_a2l_replay_link_valid_w;
     wire [7:0]  obs_fe_rx_credit_max_w;
@@ -665,6 +667,8 @@ module axi_chiplet_controller #(
     reg        sync_obs_llrx_valid_0,   sync_obs_llrx_valid_1;
     reg [15:0] sync_obs_ecc_corrupt_0,  sync_obs_ecc_corrupt_1;
     reg [15:0] sync_obs_ecc_correct_0,  sync_obs_ecc_correct_1;
+    // SoC Labs 2026-06-08: SYNC-detected saturating count, 2-flop apb_clk sync.
+    reg [15:0] sync_obs_sync_det_0,     sync_obs_sync_det_1;
     // SoC Labs Bug-A FCSM observation 2026-06-02. dont_touch + mark_debug
     // needed on the apb_clk-synced flops because the signal chain feeding
     // them has no logical sink (only the dbg_hub) — without dont_touch,
@@ -698,6 +702,7 @@ module axi_chiplet_controller #(
             sync_obs_llrx_valid_0  <= 1'b0;  sync_obs_llrx_valid_1  <= 1'b0;
             sync_obs_ecc_corrupt_0 <= 16'h0; sync_obs_ecc_corrupt_1 <= 16'h0;
             sync_obs_ecc_correct_0 <= 16'h0; sync_obs_ecc_correct_1 <= 16'h0;
+            sync_obs_sync_det_0    <= 16'h0; sync_obs_sync_det_1    <= 16'h0;
             // SoC Labs Bug-A FCSM observation 2026-06-02
             sync_obs_a2l_replay_v_0 <= 1'b0;  sync_obs_a2l_replay_v_1 <= 1'b0;
             sync_obs_fe_rx_cred_0   <= 8'h0;  sync_obs_fe_rx_cred_1   <= 8'h0;
@@ -737,6 +742,9 @@ module axi_chiplet_controller #(
             sync_obs_ecc_corrupt_1 <= sync_obs_ecc_corrupt_0;
             sync_obs_ecc_correct_0 <= obs_ecc_corrected_cnt_w;
             sync_obs_ecc_correct_1 <= sync_obs_ecc_correct_0;
+            // SoC Labs 2026-06-08: SYNC-detected count apb_clk sync.
+            sync_obs_sync_det_0    <= obs_sync_detected_cnt_w;
+            sync_obs_sync_det_1    <= sync_obs_sync_det_0;
             // SoC Labs Bug-A FCSM observation 2026-06-02
             sync_obs_a2l_replay_v_0 <= obs_a2l_replay_link_valid_w;
             sync_obs_a2l_replay_v_1 <= sync_obs_a2l_replay_v_0;
@@ -820,8 +828,8 @@ module axi_chiplet_controller #(
                                         train_in_progress_w,            // [2]
                                         train_fail_w,                   // [1]
                                         train_ok_w}                  :  // [0]
-        (ctrl_reg_addr[2:0] == 3'h5) ? {sync_obs_ecc_correct_1,          // [31:16] ECC-corrected sat. count
-                                        sync_obs_ecc_corrupt_1}      : // [15:0]  ECC-corrupted sat. count — ECC_COUNTERS (was NEGO_TRAIN_STEP RO=0; W1P write path unchanged)
+        (ctrl_reg_addr[2:0] == 3'h5) ? {sync_obs_sync_det_1,             // [31:16] SYNC-detected sat. count — SoC Labs 2026-06-08 (cross-lane-deskew health). Replaces the DEAD ECC-corrected field ([31:16] was sync_obs_ecc_correct_1, always 0 because WlinkEccSyndrome.v ties corrected=0). RX>0 proves a COHERENT SYNC word reassembled.
+                                        sync_obs_ecc_corrupt_1}      : // [15:0]  ECC-corrupted sat. count (also DEAD/0) — SYNC_DETECTED_COUNTER reg (was ECC_COUNTERS; was NEGO_TRAIN_STEP RO=0; W1P write path unchanged)
         (ctrl_reg_addr[2:0] == 3'h6) ? swi_phase_offset_r            : // SWI_PHASE_OFFSET (8 × 4-bit per-lane phase)
         (ctrl_reg_addr[2:0] == 3'h7) ? 32'h5041_0100                  : // PHY_ALIGN_ID = "PA" v1.0
                                        32'h0;
@@ -1432,7 +1440,10 @@ module axi_chiplet_controller #(
     wire autocal_enable_w        = AUTOCAL_ENABLE | autocal_force_enable_q;
     wire calibrator_role_locked  = role_locked & autocal_enable_w;
 
-    tidelink_phy_align_calibrator u_calibrator (
+    tidelink_phy_align_calibrator #(
+        .HOLD_CYCLES(1024),
+        .VALIDATION_TIMEOUT(2_000_000)  // M6: 320ms at 6.25MHz FPGA link clk; M8: timer expires→S_DONE (training_mode=1 throughout)
+    ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
         .rst                   (~poresetn),
         .role_locked           (calibrator_role_locked),
@@ -1789,6 +1800,8 @@ module axi_chiplet_controller #(
         .obs_llrx_valid_o           (obs_llrx_valid_w),
         .obs_ecc_corrupted_cnt_o    (obs_ecc_corrupted_cnt_w),
         .obs_ecc_corrected_cnt_o    (obs_ecc_corrected_cnt_w),
+        // SoC Labs 2026-06-08: SYNC-detected saturating count (cross-lane-skew).
+        .obs_sync_detected_cnt_o    (obs_sync_detected_cnt_w),
         // SoC Labs Bug-A FCSM observation 2026-06-02
         .obs_a2l_replay_link_valid_o (obs_a2l_replay_link_valid_w),
         .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),

@@ -893,7 +893,7 @@ module tidelink_phy_align_calibrator #(
                 // cal_done=1 exactly as its FCSM already reaches state 4.
                 else if (cr_pkt_seen_i || crack_pkt_seen_i) nxt_state = S_DONE;
                 else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
-                    nxt_state = retry_exhausted ? S_DONE : S_ARM;
+                    nxt_state = S_DONE;   // M8: always S_DONE; with training_mode=1 in S_VALIDATE the FCSM is inactive so cr_pkt_seen can't fire here
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -1569,7 +1569,8 @@ module tidelink_phy_align_calibrator #(
                             || (cur_state == S_PROBE)
                             || (cur_state == S_SWEEP)
                             || (cur_state == S_FINALIZE)
-                            || (cur_state == S_HOLD);
+                            || (cur_state == S_HOLD)
+                            || (cur_state == S_VALIDATE);  // M8: keep TX training while validating so peer can lock
                                                         // S_PROBE    = §9.10/11 (0,0) advisory probe
                                                         // S_FINALIZE = §9.11 single-cycle latch
                                                         // S_HOLD     = T3.2 peer-aware

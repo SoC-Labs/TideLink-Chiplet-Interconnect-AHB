@@ -1441,8 +1441,9 @@ module axi_chiplet_controller #(
     wire calibrator_role_locked  = role_locked & autocal_enable_w;
 
     tidelink_phy_align_calibrator #(
-        .HOLD_CYCLES(1024),
-        .VALIDATION_TIMEOUT(2_000_000)  // M6: 320ms at 6.25MHz FPGA link clk; M8: timer expires→S_DONE (training_mode=1 throughout)
+        .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
+                                        //      was 1024 (163μs, <1 sweep) which left master no time.
+        .VALIDATION_TIMEOUT(2_000_000)  // M6: 320ms at 6.25MHz FPGA link clk
     ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
         .rst                   (~poresetn),

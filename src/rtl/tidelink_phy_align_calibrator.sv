@@ -896,15 +896,15 @@ module tidelink_phy_align_calibrator #(
                 else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
-                // §9.11d Fix A1 + M8 + M9.
+                // §9.11d Fix A1 + M9 + M10.
                 //
-                // training_mode is HIGH (M8 — S_VALIDATE IS in the
-                // training_mode assert list). FCSM is inactive; the peer
-                // uses this window to lock. cr_pkt_seen_i / crack_pkt_seen_i
-                // cannot fire while training_mode=1 but the arms are kept for
-                // completeness / future relaxation.
+                // training_mode is LOW (M10 reverts M8 — S_VALIDATE is NOT
+                // in the training_mode assert list). FCSM is ACTIVE; both
+                // peers emit CR packets and validate the latched (slip,phase)
+                // on REAL data. The peer had HOLD_CYCLES (now 32768 cyc =
+                // ~5ms = 4 full sweeps) to lock before training dropped.
                 //
-                //   * cr_pkt_seen_i within timeout → S_DONE (genuine lock)
+                //   * cr/crack_pkt_seen_i within timeout → S_DONE (genuine)
                 //   * timeout, retry budget left  → S_ARM (M9 re-arm)
                 //   * timeout, budget exhausted   → S_DONE (give up)
                 if (swreset)                  nxt_state = S_CANCEL;
@@ -1627,8 +1627,13 @@ module tidelink_phy_align_calibrator #(
                             || (cur_state == S_PROBE)
                             || (cur_state == S_SWEEP)
                             || (cur_state == S_FINALIZE)
-                            || (cur_state == S_HOLD)
-                            || (cur_state == S_VALIDATE);  // M8: keep TX training while validating so peer can lock
+                            || (cur_state == S_HOLD);
+                                                        // S_VALIDATE intentionally NOT here (M10: revert M8).
+                                                        // training_mode=0 in S_VALIDATE lets the FCSM emit
+                                                        // CR_PKT so the peer's cr_pkt_seen validates the latched
+                                                        // (slip,phase) on REAL data. The HOLD_CYCLES window
+                                                        // (now 32768 cyc = ~5ms) gives the peer enough sweep
+                                                        // time before training drops.
                                                         // S_PROBE    = §9.10/11 (0,0) advisory probe
                                                         // S_FINALIZE = §9.11 single-cycle latch
                                                         // S_HOLD     = T3.2 peer-aware

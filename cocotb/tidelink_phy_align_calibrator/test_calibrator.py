@@ -219,9 +219,9 @@ async def test_hold_training_mode(dut):
             break
     assert not saw_resweep, "S_HOLD must NOT re-sweep when lane_locked drops"
     assert int(dut.state.value) == S_VALIDATE, "S_HOLD must advance to S_VALIDATE"
-    # training_mode stays HIGH in S_VALIDATE too (M8 behaviour).
-    assert int(dut.training_mode.value) == 1, "training_mode HIGH in S_VALIDATE (M8)"
-    dut._log.info("[hold] PASS: S_HOLD sticky against lane drop -> S_VALIDATE, training_mode stays HIGH")
+    # M10: training_mode is LOW in S_VALIDATE (FCSM active for phase validation).
+    assert int(dut.training_mode.value) == 0, "training_mode LOW in S_VALIDATE (M10: FCSM active)"
+    dut._log.info("[hold] PASS: S_HOLD sticky against lane drop -> S_VALIDATE, training_mode LOW (M10)")
 
 
 def _opt_int(dut, name):

@@ -93,7 +93,11 @@
 module tidelink_lane_deskew #(
     parameter int LANES     = 8,
     parameter int WIDTH     = 16,
-    parameter int DEPTH_LOG = 3,           // FIFO depth = 1<<DEPTH_LOG = 8 entries
+    parameter int DEPTH_LOG = 4,           // FIFO depth = 1<<DEPTH_LOG = 16 entries
+                                           // (must hold PRIME_THRESH cushion + the
+                                           //  worst-case ~7-word cross-lane skew +
+                                           //  the 2-flop wr_ptr CDC lag; DEPTH=8 was
+                                           //  too shallow -> skewed lane never primed)
     // 128-bit SYNC word shipped by the TX (WavD2DGpio.v PHY_SYNC_WORD). Lane N
     // carries SYNC_WORD[16*N+15 : 16*N]. MUST bit-match the TX constant and the
     // RX framer SYNC_WORD (WlinkRxLinkLayer.v).
@@ -390,7 +394,10 @@ module tidelink_lane_deskew #(
     // case phase jitter. DEPTH/2 (=4 for DEPTH=8) gives 2 words of margin.
     // Occupancy is now computed per lane against that lane's own read pointer.
     // -----------------------------------------------------------------
-    localparam int PRIME_THRESH = DEPTH / 2;
+    // PRIME_THRESH is the read-start cushion. It is HELD AT 4 (not DEPTH/2): with
+    // DEPTH=16 a DEPTH/2=8 cushion plus a 7-word offset plus the 2-flop lag could
+    // not coexist in the FIFO. 4 leaves room for off<=DEPTH-PRIME_THRESH-3 (=9).
+    localparam int PRIME_THRESH = 4;
 
     reg primed;
 
@@ -503,10 +510,22 @@ module tidelink_lane_deskew #(
     end
     wire skew_present = (d_spread_v >= 2);   // 3-bit max=7 < DEPTH=8 always
 
+    // CLAMP the applied offset so (PRIME_THRESH + 2-flop CDC lag + off) stays
+    // within DEPTH-1 — i.e. off <= DEPTH-PRIME_THRESH-3. With DEPTH=16,
+    // PRIME_THRESH=4 this caps off at 9, comfortably >= the worst-case real skew
+    // (7), so a skewed lane can ALWAYS build occ >= PRIME_THRESH inside the FIFO
+    // and prime. The header has long PROMISED this clamp ("CLAMPED < PRIME_THRESH")
+    // but it was never implemented; its absence made any lane_off >= ~2 unprimable
+    // on DEPTH=8 -> all_primed never asserted -> out_data never updated on silicon
+    // (0 packets delivered). SoC Labs 2026-06-09.
+    localparam int OFF_MAX = DEPTH - PRIME_THRESH - 3;   // = 9 for DEPTH=16
     wire [DEPTH_LOG-1:0] off_cand [LANES-1:0];
     generate
         for (gi = 0; gi < LANES; gi = gi + 1) begin : g_offcand
-            assign off_cand[gi] = skew_present ? off_raw[gi] : {DEPTH_LOG{1'b0}};
+            assign off_cand[gi] =
+                ~skew_present                          ? {DEPTH_LOG{1'b0}} :
+                (off_raw[gi] > OFF_MAX[DEPTH_LOG-1:0]) ? OFF_MAX[DEPTH_LOG-1:0] :
+                                                         off_raw[gi];
         end
     endgenerate
 

@@ -348,6 +348,19 @@ module tidelink_phy_align_calibrator #(
     output logic [31:0] phase_offset,
     output logic        training_mode,
     output logic        calibration_done,
+    // §9.11d Fix A3 (2026-06-09): distinguish a GENUINE-lock S_DONE from a
+    // S_VALIDATE-TIMEOUT S_DONE. M8 made S_VALIDATE always exit to S_DONE on
+    // timeout AND kept training_mode=1 in S_VALIDATE (so the FCSM is inactive
+    // and cr/crack can never assert during the validation window) — meaning
+    // EVERY validation exits via the timeout and calibration_done asserts even
+    // when no lane ever locked on real data. On silicon this left the slave
+    // with cal_done=1 while SWI_LANE_STATUS=0x00 and the FCSM wedged. This
+    // sticky bit is HIGH iff the current S_DONE was reached via the validation
+    // timeout WITHOUT a cr/crack real-data confirmation; SW/FCSM gate "trust
+    // the link" on (calibration_done && !validation_timed_out). Cleared on a
+    // fresh trigger and on a genuine cr/crack-confirmed S_DONE. Does NOT change
+    // the FSM path (no re-introduction of the M8-fixed infinite resweep).
+    output logic        validation_timed_out,
     output logic [7:0]  lane_fault,
     output logic [3:0]  state,                     // ILA visibility
 
@@ -942,6 +955,31 @@ module tidelink_phy_align_calibrator #(
         else if (cur_state != S_VALIDATE) val_ctr <= '0;
         else if (val_ctr < VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
                                           val_ctr <= val_ctr + 1'b1;
+    end
+
+    // §9.11d Fix A3 (2026-06-09) — validation_timed_out sticky status.
+    //
+    // Set HIGH on the S_VALIDATE→S_DONE edge that was taken via the timeout
+    // (val_ctr saturated) WITHOUT a cr/crack real-data confirmation. Set LOW
+    // on the S_VALIDATE→S_DONE edge that was taken because cr_pkt_seen_i ||
+    // crack_pkt_seen_i asserted (a genuine real-data validation). Cleared on
+    // reset and on a fresh trigger (trigger_now) so a re-armed sweep starts
+    // with a clean verdict.
+    //
+    // The val_timeout_edge / val_genuine_edge predicates mirror the EXACT
+    // S_VALIDATE next-state arms in the FSM above so the flag tracks how
+    // S_DONE was actually reached. role_locked-drop and swreset exits leave
+    // the flag unchanged (those are external cancels, not lock verdicts).
+    wire val_genuine_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
+                            (cr_pkt_seen_i || crack_pkt_seen_i);
+    wire val_timeout_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
+                            !(cr_pkt_seen_i || crack_pkt_seen_i) &&
+                            (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                  validation_timed_out <= 1'b0;
+        else if (trigger_now)     validation_timed_out <= 1'b0;
+        else if (val_genuine_edge) validation_timed_out <= 1'b0;
+        else if (val_timeout_edge) validation_timed_out <= 1'b1;
     end
 
     // -------------------------------------------------------------------------

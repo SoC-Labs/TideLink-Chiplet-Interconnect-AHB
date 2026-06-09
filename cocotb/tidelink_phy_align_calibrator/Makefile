@@ -23,11 +23,24 @@ TOPLEVEL_LANG   = verilog
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
+# Default TOPLEVEL/wrapper. The cal_done-without-lock invariant test
+# (test_calibrator.py) needs cr_pkt_seen_i / crack_pkt_seen_i as DRIVABLE
+# ports and a small VALIDATION_TIMEOUT override — tb_top.sv ties cr_pkt_seen_i
+# high and omits crack_pkt_seen_i, so it cannot reach the S_VALIDATE timeout.
+# tb_calibrator.sv exposes both validation inputs + a VALIDATION_TIMEOUT knob.
+#
+# The legacy T3 / S_PROBE-skip envs still build against tb_top.sv via:
+#   make TOPLEVEL=tb_top MODULE=test_calibrator_t3,test_calibrator_s_probe_skip
+TOPLEVEL ?= tb_calibrator
+ifeq ($(TOPLEVEL),tb_top)
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
                   $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
-
-TOPLEVEL = tb_top
 MODULE  ?= test_calibrator_t3,test_calibrator_s_probe_skip
+else
+VERILOG_SOURCES = $(CURDIR)/tb_calibrator.sv \
+                  $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
+MODULE  ?= test_calibrator
+endif
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 SIM_ARGS     += +vcs+dumpvars+waves.vcd

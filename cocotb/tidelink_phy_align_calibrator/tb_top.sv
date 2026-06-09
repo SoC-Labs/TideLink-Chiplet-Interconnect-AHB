@@ -68,6 +68,7 @@ module tb_top #(
     output logic [31:0] phase_offset,
     output logic        training_mode,
     output logic        calibration_done,
+    output logic        validation_timed_out,
     output logic [7:0]  lane_fault,
     output logic [3:0]  state
 );
@@ -124,6 +125,7 @@ module tb_top #(
         .phase_offset           (phase_offset),
         .training_mode          (training_mode),
         .calibration_done       (calibration_done),
+        .validation_timed_out   (validation_timed_out),
         .lane_fault             (lane_fault),
         .state                  (state),
         // Spec §7.2: gates lane_checker vote during S_SWEEP. Unused in this

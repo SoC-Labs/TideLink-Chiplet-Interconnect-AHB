@@ -21,9 +21,10 @@ module tb_calibrator #(
     parameter int DWELL_CYCLES       = 16,
     parameter int LOCK_THRESH        = 8,
     parameter int HOLD_CYCLES        = 64,
-    parameter int VALIDATION_TIMEOUT = 256,
-    parameter int MIN_LOCK_DWELLS    = 4,
-    parameter int MAX_RESWEEPS       = 0
+    parameter int VALIDATION_TIMEOUT   = 256,
+    parameter int MIN_LOCK_DWELLS      = 4,
+    parameter int MAX_RESWEEPS         = 0,
+    parameter int MAX_VALIDATE_RETRIES = 2   // keep test fast: 2 retries before give-up
 )(
     input  wire        clk,
     input  wire        rst,
@@ -62,6 +63,7 @@ module tb_calibrator #(
         .EARLY_EXIT_ON_ALL_LOCKED(1'b0),
         .MIN_LOCK_DWELLS         (MIN_LOCK_DWELLS),
         .VALIDATION_TIMEOUT      (VALIDATION_TIMEOUT),
+        .MAX_VALIDATE_RETRIES    (MAX_VALIDATE_RETRIES),
         .CLK_MHZ                 (250),
         .EYE_BUF_WIDE            (0)
     ) u_dut (

@@ -267,6 +267,11 @@ module tidelink_phy_align_calibrator #(
     // different (slip, phase). Default 4096 ≈ 80 µs at 50 MHz link_clk
     // — plenty for an FCSM CR exchange round trip.
     parameter int VALIDATION_TIMEOUT = 4096,
+    // M9 (2026-06-09) — S_VALIDATE may re-arm up to this many times before
+    // giving up (→ S_DONE). Defeats the M8 one-shot deadlock on boards where
+    // the peer needs multiple 320 ms windows to lock. 0 = M8 behaviour (no
+    // retries). Default 8 gives 8 × VALIDATION_TIMEOUT cycles total.
+    parameter int MAX_VALIDATE_RETRIES = 8,
     // v2 EYE: clock-rate constant (MHz) used to convert the
     // SWI_EYE_DWELL_US APB value into a cycle count. FPGA app_clk runs at
     // 250 MHz; TSMC65 ASIC at ~100 MHz. Set at elaboration.
@@ -761,10 +766,16 @@ module tidelink_phy_align_calibrator #(
     logic [$clog2(HOLD_CYCLES+1)-1:0] hold_ctr;
 
     // §9.11d Fix A1 — validation-timeout counter (cycles in S_VALIDATE).
-    // Saturates at VALIDATION_TIMEOUT-1; S_VALIDATE → S_ARM (re-sweep) on
-    // saturation if cr_pkt_seen_i didn't assert.
+    // Saturates at VALIDATION_TIMEOUT-1; on saturation S_VALIDATE → S_ARM
+    // if val_retry_ctr < MAX_VALIDATE_RETRIES (M9), else → S_DONE.
     localparam int VAL_MAX = VALIDATION_TIMEOUT - 1;
     logic [$clog2(VALIDATION_TIMEOUT+1)-1:0] val_ctr;
+
+    // M9: validate-retry counter. Counts S_VALIDATE→S_ARM re-arms since
+    // last trigger_now; exhausted when val_retry_ctr >= MAX_VALIDATE_RETRIES.
+    logic [3:0] val_retry_ctr;
+    wire val_retry_exhausted = (MAX_VALIDATE_RETRIES != 0) &&
+                               (val_retry_ctr >= MAX_VALIDATE_RETRIES[3:0]);
 
     // -------------------------------------------------------------------------
     // FSM next-state logic
@@ -885,19 +896,17 @@ module tidelink_phy_align_calibrator #(
                 else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
-                // §9.11d Fix A1 real-data validation.
+                // §9.11d Fix A1 + M8 + M9.
                 //
-                // training_mode is now LOW (see output mux below — S_VALIDATE
-                // intentionally NOT in the training-mode assert list). The
-                // FCSM is free to emit its CR_PKT. Our local FCSM signals
-                // cr_pkt_seen_rx (= cr_pkt_seen_i input here) when it
-                // successfully decodes the peer's CR_PKT.
+                // training_mode is HIGH (M8 — S_VALIDATE IS in the
+                // training_mode assert list). FCSM is inactive; the peer
+                // uses this window to lock. cr_pkt_seen_i / crack_pkt_seen_i
+                // cannot fire while training_mode=1 but the arms are kept for
+                // completeness / future relaxation.
                 //
-                //   * cr_pkt_seen_i within timeout → S_DONE (real-data
-                //     validated)
-                //   * timeout without cr_pkt_seen → re-arm sweep (T3
-                //     retry budget governs whether to give up via
-                //     retry_exhausted, same path as a normal lane fault).
+                //   * cr_pkt_seen_i within timeout → S_DONE (genuine lock)
+                //   * timeout, retry budget left  → S_ARM (M9 re-arm)
+                //   * timeout, budget exhausted   → S_DONE (give up)
                 if (swreset)                  nxt_state = S_CANCEL;
                 else if (!role_locked)        nxt_state = S_DONE;
                 // Fix A2: accept CR *or* CRACK (match FCSM _GEN_34). The
@@ -906,7 +915,7 @@ module tidelink_phy_align_calibrator #(
                 // cal_done=1 exactly as its FCSM already reaches state 4.
                 else if (cr_pkt_seen_i || crack_pkt_seen_i) nxt_state = S_DONE;
                 else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
-                    nxt_state = S_DONE;   // M8: always S_DONE; with training_mode=1 in S_VALIDATE the FCSM is inactive so cr_pkt_seen can't fire here
+                    nxt_state = val_retry_exhausted ? S_DONE : S_ARM;  // M9: retry until budget exhausted
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -930,10 +939,20 @@ module tidelink_phy_align_calibrator #(
     // MAX_RESWEEPS=0 ⇒ this just free-runs and retry_exhausted stays 0.
     // -------------------------------------------------------------------------
     always_ff @(posedge clk or posedge rst) begin
-        if (rst)                                  resweep_ctr <= 16'd0;
-        else if (trigger_now)                     resweep_ctr <= 16'd0;
-        else if ((cur_state == S_FINISH) &&
-                 (nxt_state  == S_ARM))           resweep_ctr <= resweep_ctr + 16'd1;
+        if (rst)           resweep_ctr <= 16'd0;
+        else if (trigger_now)  resweep_ctr <= 16'd0;
+        else if (nxt_state == S_ARM &&
+                 (cur_state == S_FINISH || cur_state == S_VALIDATE))
+                           resweep_ctr <= resweep_ctr + 16'd1;
+    end
+
+    // M9: validate-retry counter. Reset on trigger_now; incremented on each
+    // S_VALIDATE→S_ARM re-arm (not on S_FINISH→S_ARM which is a full resweep).
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)           val_retry_ctr <= 4'd0;
+        else if (trigger_now)  val_retry_ctr <= 4'd0;
+        else if ((cur_state == S_VALIDATE) && (nxt_state == S_ARM))
+                           val_retry_ctr <= val_retry_ctr + 4'd1;
     end
 
     // -------------------------------------------------------------------------
@@ -974,7 +993,8 @@ module tidelink_phy_align_calibrator #(
                             (cr_pkt_seen_i || crack_pkt_seen_i);
     wire val_timeout_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
                             !(cr_pkt_seen_i || crack_pkt_seen_i) &&
-                            (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);
+                            (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]) &&
+                            val_retry_exhausted;  // M9: only flag give-up S_DONE, not retries
     always_ff @(posedge clk or posedge rst) begin
         if (rst)                  validation_timed_out <= 1'b0;
         else if (trigger_now)     validation_timed_out <= 1'b0;

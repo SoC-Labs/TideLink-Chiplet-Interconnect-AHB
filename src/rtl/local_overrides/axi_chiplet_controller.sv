@@ -806,7 +806,8 @@ module axi_chiplet_controller #(
     assign region8_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h0, swi_bit_slip_lo_r}    :
-        (ctrl_reg_addr[2:0] == 3'h2) ? {2'h0,                            // [31:30] reserved
+        (ctrl_reg_addr[2:0] == 3'h2) ? {sync_obs_fe_rx_full_1,          // [31]    fe_rx_is_full   — FCSM 4->5 SEND credit gate (SoC Labs 2026-06-09)
+                                        sync_obs_a2l_replay_v_1,        // [30]    a2l_fc_replay_link_valid — FCSM 4->5 SEND app-valid gate (link side)
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
                                         sync_obs_pkt_crack_1,           // [28]    pkt_is_crack_pkt
                                         sync_obs_pkt_cr_1,              // [27]    pkt_is_cr_pkt
@@ -815,10 +816,11 @@ module axi_chiplet_controller #(
                                         sync_obs_crack_seen_1,          // [24]    crack_pkt_seen_rx
                                         sync_obs_cr_seen_1,             // [23]    cr_pkt_seen_rx
                                         sync_obs_llrx_state_1,          // [22:21] LL_RX byte-align FSM state
-                                        1'b0, sync_obs_fcsm_state_1,    // [20:17] FCSM state (bit20=0, 3b)
+                                        sync_obs_a2l_app_v_1,           // [20]    a2l_replay_app_valid — app side (distinguishes skid-empty vs CDC-stuck)
+                                        sync_obs_fcsm_state_1,          // [19:17] FCSM state (3b)
                                         sync_cal_done_1,                // [16]    calibration_done
                                         sync_lane_fault_1,              // [15:8]  lane_fault
-                                        sync_lane_locked_1}         :  // [7:0] lane_locked — SWI_LANE_STATUS + CREDIT_PATH_STATUS
+                                        sync_lane_locked_1}         :  // [7:0] lane_locked — SWI_LANE_STATUS + SEND-GATE OBS
         (ctrl_reg_addr[2:0] == 3'h3) ? {16'h0, nego_train_cfg_r}    :
         (ctrl_reg_addr[2:0] == 3'h4) ? {train_local_lane_fault_w,       // [31:24]
                                         train_peer_lane_fault_w,        // [23:16]

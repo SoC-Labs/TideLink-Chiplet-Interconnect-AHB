@@ -256,7 +256,7 @@ module tidelink_phy_align_calibrator #(
     // centring; lower (down to 1) reduces the policy to "earliest passing
     // point wins" (the §9.9 race-to-tie returns at 1). Bounded 1..15 by
     // the 4-bit APB override register on the chiplet-controller side.
-    parameter int MIN_LOCK_DWELLS = 4,
+    parameter int MIN_LOCK_DWELLS = 2,   // M11: was 4; die_a marginal eye has only 2-3 consecutive passing phases
     // §9.11d Fix A1 (post-S_HOLD real-data validation): after S_HOLD
     // expires we enter S_VALIDATE with training_mode=0 (letting the FCSM
     // emit a CR_PKT). We wait up to VALIDATION_TIMEOUT cycles for our

@@ -350,7 +350,7 @@ module WavD2DGpio #(
                                    rx_link_data_1,rx_link_data_0};
   wire [127:0] deskew_aligned_data;
   tidelink_lane_deskew #(
-      .LANES(8), .WIDTH(16), .DEPTH_LOG(3)
+      .LANES(8), .WIDTH(16), .DEPTH_LOG(4)
   ) u_deskew (
       .rst_n         (~io_por_reset),
       .lane_clk      ({gpiorx_7_io_link_clk, gpiorx_6_io_link_clk,

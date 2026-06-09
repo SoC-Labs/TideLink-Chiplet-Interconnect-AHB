@@ -461,24 +461,26 @@ module tidelink_lane_deskew #(
     //       garbled, sync_det_cnt=0, and FCSM stuck at LINK_IDLE_4.
     //
     // CORRECT formula: off[gi] = d0[gi] - d0_min_signed, where d0_min_signed is
-    // the MOST NEGATIVE d0 across all lanes (= smallest wr_ptr at SYNC time =
-    // reference lane with off=0).  In the (DEPTH_LOG+1)-bit modular space, lanes
-    // that started writing LATER have NEGATIVE d0 (wrapped to [2^MW-DEPTH+1..
-    // 2^MW-1] = [9..15] for DEPTH=8).  The signed minimum is the smallest-valued
-    // entry in that negative range (most-lagging lane); if no lane has bit[MW-1]
-    // set, all d0 are non-negative and lane 0 is the reference (Case A).
+    // the MOST NEGATIVE (smallest signed) d0 across all lanes.  In the MW-bit
+    // modular space, lanes that started writing LATER have NEGATIVE d0 (wrapped to
+    // [2^MW-DEPTH+1..2^MW-1] = [9..15] for DEPTH=8, MW=4).  We find the signed
+    // minimum using $signed comparison — this correctly handles both:
+    //   Case A (no real skew, all d0 near 0): d0_min_s = actual min d0 → off_raw
+    //           = spread from minimum → d_spread = real range (0 for uniform d0).
+    //   Case B (real skew, some d0 wrap negative): $signed treats wrapped values as
+    //           negative → finds the most-lagging lane → off_raw = correct offsets.
     //
-    // PRIME_THRESH clamp removed: since off_raw[gi] is in [0, DEPTH-1] and the
-    // primed/all_ready gates already guard against underrun, the clamp is
-    // redundant and incorrectly zero'd valid large offsets.
+    // BUG FIX (2026-06-09): the previous init `d0_min_s = {MW{1'b0}}` (zero) caused
+    // the loop to never update for Case A, leaving d0_min_s=0 instead of the actual
+    // minimum.  For zero-skew boards with uniform d0={2,2,...} the result was
+    // off_raw={2,2,...}, d_spread_v=2 >= 2 → skew_present=TRUE, spurious offsets
+    // applied → FIFO read-pointer mis-aligned → SYNC never detected → sync_det=0.
     reg [MW-1:0] d0_min_s;
     integer si;
     always @* begin
-        d0_min_s = {MW{1'b0}};   // Default: lane 0 as reference (Case A)
-        for (si = 0; si < LANES; si = si + 1) begin
-            // Prefer any negative entry; among negatives pick the smallest unsigned
-            // value (= most negative signed = most lagging lane).
-            if (d0[si][MW-1] & (~d0_min_s[MW-1] | (d0[si] < d0_min_s)))
+        d0_min_s = d0[0];   // seed with lane 0; loop picks the signed minimum
+        for (si = 1; si < LANES; si = si + 1) begin
+            if ($signed(d0[si]) < $signed(d0_min_s))
                 d0_min_s = d0[si];
         end
     end

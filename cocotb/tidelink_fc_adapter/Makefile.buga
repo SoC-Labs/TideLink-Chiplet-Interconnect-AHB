@@ -1,0 +1,27 @@
+# =============================================================================
+# Bug-A reproduction unit test for tidelink_fc_adapter.sv
+#   Drives AHB single-writes into the TX aperture and asserts tl_fc_a2l_valid
+#   pulses with the matching FC word. Reuses tb_top.sv (full DUT wrapper).
+#
+#   Usage:
+#     make -f Makefile.buga                  # run Bug-A repro suite
+#     make -f Makefile.buga MODULE=test_buga
+# =============================================================================
+SIM             = vcs
+TOPLEVEL_LANG   = verilog
+
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+export TIDELINK_HOME
+
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv
+
+TOPLEVEL = tb_top
+MODULE  ?= test_buga
+
+COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+COMPILE_ARGS += +incdir+$(TIDELINK_HOME)/src/rtl
+COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_fc_adapter.sv
+
+SIM_BUILD ?= sim_build_buga
+
+include $(shell cocotb-config --makefiles)/Makefile.sim

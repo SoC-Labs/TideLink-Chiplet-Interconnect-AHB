@@ -178,22 +178,29 @@ module tidelink_fc_adapter #(
     logic [RAM_ADDR_W-1:0] tx_addr_r;
     logic                  tx_data_phase_r;  // Flag: data phase pending
 
-    // L10/L11: wedge-break watchdog. Counts consecutive cycles HREADYOUT is
-    // forced low by skid back-pressure. After WEDGE_LIMIT cycles, force
-    // HREADYOUT=1 for FORCE_READY_WIDTH cycles (L11 extension — 1-cy pulse
-    // wasn't enough to propagate cleanly through axi_ahblite_bridge → AXI
-    // BVALID → SmartConnect → PS outstanding-write counter; Build #7
-    // showed wedge on 2nd AHB write). 4-cy hold gives bridge time to latch
-    // BVALID. Bump tx_dropped_cnt_r per drop. Prevents PS AXI hang when
-    // slave RX is wedged (Bug A primitive — see
-    // docs/BUG_A_WEDGE_INVESTIGATION_2026_05_31.md +
-    // docs/BUILD7_HW_VALIDATION_2026_05_31.md).
-    localparam int unsigned WEDGE_LIMIT        = 16;
-    localparam int unsigned FORCE_READY_WIDTH  = 4;
-    logic [4:0]  wedge_cnt_r;
-    logic [2:0]  wedge_force_ready_cnt_r;
-    wire         wedge_force_ready_w = (wedge_force_ready_cnt_r != 3'd0);
-    logic [15:0] tx_dropped_cnt_r;
+    // -------------------------------------------------------------------------
+    // Bug-A fix (2026-06-09): the AHB-TX data phase completes ONLY when the
+    // skid genuinely accepts the word. The old L10/L11 "wedge watchdog" forced
+    // HREADYOUT=1 (acking the AHB beat to the PS) after WEDGE_LIMIT=16 cycles of
+    // skid back-pressure *even though the 1-entry skid was still full* — and the
+    // skid load condition (arb_valid && skid_can_accept) then refused the word.
+    // Result: every CPU burst beat after the first was SILENTLY DROPPED whenever
+    // tl_fc_a2l_ready stayed low for >16 cy. That is the normal bilateral
+    // bring-up condition (FCSM in LINK_IDLE awaiting credit), so the app->link
+    // replay FIFO never filled past one word and the master FCSM never advanced.
+    // Reproduced by cocotb/tidelink_fc_adapter/test_buga.py
+    //   ::test_watchdog_drops_second_write (tx_dropped_cnt=2, 3/4 beats lost).
+    //
+    // Correct behaviour for a 1-entry skid feeding a flow-controlled FC link:
+    // HONESTLY back-pressure the CPU (hold HREADYOUT low) until the skid drains.
+    // The link is a live consumer; transient not-ready is real, recoverable
+    // back-pressure, not a wedge. A genuine permanent wedge is now handled at
+    // the PS/AXI layer (axi_ahblite_bridge timeout) rather than by corrupting
+    // the data stream here. tx_dropped_cnt_r retained for observability and is
+    // now expected to read 0 in normal operation; any non-zero value flags a
+    // genuine sustained wedge for software to inspect.
+    logic [15:0] tx_dropped_cnt_r;  // observability only; never incremented on
+                                    // healthy back-pressure (kept for HW probes)
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -203,53 +210,33 @@ module tidelink_fc_adapter #(
             if (tx_valid_addr_phase) begin
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
-            end else if (tx_data_phase_r && ((skid_can_accept && !sideband_grant) || wedge_force_ready_w)) begin
-                // Data phase completed (either skid accepted, or L10/L11 watchdog dropped)
+            end else if (tx_data_phase_r && skid_can_accept && !sideband_grant) begin
+                // Data phase completes ONLY when the skid actually accepts the
+                // word — never on a watchdog-forced ready (that dropped words).
                 tx_data_phase_r <= 1'b0;
             end
         end
     end
 
-    // L10/L11 wedge watchdog + drop-and-count.
-    // L11 widens the force_ready pulse to FORCE_READY_WIDTH=4 cy so that
-    // axi_ahblite_bridge has time to latch BVALID cleanly even under
-    // back-to-back AHB writes from PS.
+    // tx_dropped_cnt_r is no longer driven by a force-ready drop path; it stays
+    // at its reset value (0) in normal operation. Held for ILA/SW probe ABI
+    // compatibility (docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3).
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn) begin
-            wedge_cnt_r             <= '0;
-            wedge_force_ready_cnt_r <= '0;
-            tx_dropped_cnt_r        <= '0;
-        end else begin
-            // Force-ready pulse countdown
-            if (wedge_force_ready_cnt_r != 3'd0)
-                wedge_force_ready_cnt_r <= wedge_force_ready_cnt_r - 3'd1;
-
-            if (tx_data_phase_r && !(skid_can_accept & ~sideband_grant) && !wedge_force_ready_w) begin
-                if (wedge_cnt_r == WEDGE_LIMIT[4:0]) begin
-                    wedge_force_ready_cnt_r <= FORCE_READY_WIDTH[2:0];
-                    wedge_cnt_r             <= '0;
-                    if (tx_dropped_cnt_r != 16'hFFFF)
-                        tx_dropped_cnt_r <= tx_dropped_cnt_r + 16'd1;
-                end else begin
-                    wedge_cnt_r <= wedge_cnt_r + 5'd1;
-                end
-            end else if (!tx_data_phase_r) begin
-                wedge_cnt_r <= '0;
-            end
-        end
+        if (!hresetn)
+            tx_dropped_cnt_r <= '0;
     end
 
     // TX aperture FC word (available during data phase)
     wire [FC_DATA_W-1:0] tx_fc_word  = {PKT_FIFO_DATA, tx_addr_r, ahb_tx_hwdata};
     wire                 tx_fc_valid = tx_data_phase_r;
 
-    // TX aperture HREADY: stall when in data phase and skid buffer full,
-    // or when sideband has priority on the arbiter (unless starved).
-    // L10 wedge-break: if back-pressure persists ≥ WEDGE_LIMIT cy, the
-    // watchdog forces HREADYOUT=1 (drops the word, bumps tx_dropped_cnt_r)
-    // to prevent PS AXI hang when slave RX is wedged.
+    // TX aperture HREADY: stall (back-pressure the CPU) while in the data phase
+    // and the skid buffer can't accept the word, or while sideband has arbiter
+    // priority. No watchdog-forced ready: a word is acked to the PS iff it is
+    // actually captured into the skid, so a compliant AHB burst never loses a
+    // beat (Bug-A fix, 2026-06-09).
     assign ahb_tx_hreadyout = tx_data_phase_r
-                              ? (wedge_force_ready_w | (skid_can_accept & ~sideband_grant))
+                              ? (skid_can_accept & ~sideband_grant)
                               : 1'b1;
     assign ahb_tx_hresp     = 1'b0;  // No error responses
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only

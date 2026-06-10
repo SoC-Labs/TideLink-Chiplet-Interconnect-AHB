@@ -183,6 +183,51 @@ The FC adapter has priority (`fc_rx_cfg_active = fc_rx_cfg_htrans[1]`). When the
 
 Both muxes are purely combinational and located in `tidelink_top`. There is no external `ahb_fc_rx_*` AHB master port -- all FC adapter RX traffic is routed internally through these muxes.
 
+### 3.7 Traffic Plane Model
+
+TideLink traffic separates into four planes, distinguished by **which FC node / `data_id` carries it across the link** and **which local interface sources it**. The planes are independently flow-controlled and, in the case of the time plane, ride a physically separate FC node so that timing traffic cannot be backpressured by bulk data.
+
+| Plane | Local interface (chip-internal) | Link carrier (chip-to-chip) | `data_id` |
+|---|---|---|---|
+| **Data** | `ahb_sub_*` (remote mem access, addr-translated), `ahb_tx_*` (TX aperture), `ahb_fifo_*` (local RX FIFO read), `ahb_mng_*` (return path), `tc_axis_*` (TideChart `PKT_EXT`) | TideLink FC node (mailbox) + AXI FC nodes (transparent bridge via XHB500) | **0xa1** (TideLink, `PKT_FIFO_DATA`/`PKT_EXT`, 48-bit); **0x80–0x84** (AXI AW/W/B/AR/R) |
+| **Control** | Returner logic + `fc_adapter` (credit return, doorbell); link bring-up FSM | `PKT_SIDEBAND` words on the TideLink node (credit deltas, doorbell triggers, peer-relative address offsets); CR/CRACK/ACK/NACK short packets for link training/handshake | **0xa1** (`PKT_SIDEBAND`); short pkts **0x44–0x47** (TideLink), **0x40–0x43** (GeneralBus) |
+| **Management** | `apb_*` (unified config), `role_strap_i`/`nego_priority_i`/PUF, I2C sideband (`i2c_*`, `s_i2c_axi_*`), scan/DFT | **Does not cross the data link.** Local APB config only; cross-chiplet role negotiation uses the out-of-band I2C sideband | n/a (APB regions 0x2000 / 0x2080 / 0x2100; I2C bus) |
+| **Time** | `ahb_ptp_*` (CPU triggers PTP messages), `phc_*` PHC integration (`phc_hw_capture` pulse, free-running time in, servo set/adjust out) | **Dedicated PTP FC node**: SYNC / DELAY_REQ short packets; servo (t1,t4) exchange as `PKT_SIDEBAND` | **0xa2** (PTP, 48-bit); short pkts **0x50** (SYNC) / **0x51** (DELAY_REQ) |
+
+```
+                          TideLink plane → carrier mapping
+  ┌──────────────┬──────────────────────────────┬───────────────────────────┐
+  │  PLANE       │  LOCAL INTERFACE             │  CROSSES LINK AS          │
+  ├──────────────┼──────────────────────────────┼───────────────────────────┤
+  │  DATA        │  ahb_sub_*  (transparent) ───┼─► AXI FC 0x80–0x84        │
+  │              │  ahb_tx_*   (mailbox TX)  ───┼─┐                         │
+  │              │  ahb_fifo_* (mailbox RX)  ◄──┼─┤ TideLink FC 0xa1        │
+  │              │  tc_axis_*  (PKT_EXT)     ───┼─┘  (PKT_FIFO_DATA / EXT)  │
+  ├──────────────┼──────────────────────────────┼───────────────────────────┤
+  │  CONTROL     │  returner / fc_adapter    ───┼─► TideLink FC 0xa1        │
+  │              │  (credits, doorbells)        │    (PKT_SIDEBAND)         │
+  │              │  link bring-up FSM        ───┼─► short pkts 0x44–0x47    │
+  │              │                              │    (CR/CRACK/ACK/NACK)    │
+  ├──────────────┼──────────────────────────────┼───────────────────────────┤
+  │  MANAGEMENT  │  apb_* (config regs)         │   ── does NOT cross the   │
+  │              │  role straps / nego / PUF    │      data link ──         │
+  │              │  i2c_* / s_i2c_axi_*      ───┼─► I2C sideband (OOB)      │
+  ├──────────────┼──────────────────────────────┼───────────────────────────┤
+  │  TIME        │  ahb_ptp_*  (msg trigger) ───┼─► PTP FC 0xa2             │
+  │              │  phc_* (capture/servo)       │    short pkts 0x50/0x51   │
+  │              │                              │    + servo PKT_SIDEBAND   │
+  └──────────────┴──────────────────────────────┴───────────────────────────┘
+        All four planes share one die-to-die PHY (pad_clk_tx/rx, pad_tx/rx[7:0]);
+        each is independently flow-controlled. The TIME plane uses a separate FC
+        node (0xa2) so PTP timing is isolated from DATA-plane backpressure.
+```
+
+**FC node inventory.** Per the canonical allocation in [`FC_NODE_REGISTRY.md`](FC_NODE_REGISTRY.md), ten long-packet FC nodes are allocated across the ecosystem. Of these, the Wlink instance inside `tidelink_top` (`u_chiplet_controller`) carries: 5× AXI (AW/W/B/AR/R, 0x80–0x84) and 1× APB initiator (0x90) for the transparent-bridge data plane; 1× GeneralBus (0xa0, present but tied off — TideLink's `gb_in`/`gb_out` were removed in `strip-generalbus-irq`); **1× TideLink (0xa1)** for the data/control planes; and **1× PTP (0xa2)** for the time plane. The Chiplet IRQC node (0xa3, 64-bit) is a separate IP (`ahb-chiplet-interrupt-controller`) and is not instantiated inside `tidelink_top`.
+
+**TideLink itself owns two dedicated FC nodes — 0xa1 (data + control) and 0xa2 (time)** — layered on top of the AXI/APB/GeneralBus nodes inherited from the chiplet controller. The PTP node is what makes the time plane physically independent of the data plane.
+
+> **Note on AXI credit IDs.** `REGISTER_MAP.md` describes the AXI channels as *sharing* credit `data_id` 0x80, whereas `FC_NODE_REGISTRY.md` (authoritative for ID allocation) lists distinct 0x80–0x84. The registry governs allocation; the per-channel credit-sharing behaviour should be confirmed against the Wlink Scala source (`AXI.scala`) before relying on it in a downstream spec.
+
 ---
 
 ## 4. Component Descriptions

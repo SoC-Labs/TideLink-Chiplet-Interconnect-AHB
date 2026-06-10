@@ -131,7 +131,7 @@ r,ro=mm(0x44032000,0x400); struct.pack_into(\"<I\",r,ro+0x100,$VAL)'" 2>/dev/nul
 # Emits: "lkHex ftHex calDone popcount fcsm crSeen"  (or "" on failure)
 read_status() {  # IP
     local IP=$1
-    sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
+    timeout 6 sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
       "echo '$PASS' | sudo -S python3 -c '
 import mmap,struct,os
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
@@ -169,6 +169,61 @@ recal_cycle() {
     sleep "$RECAL_HOLD"
     set_slot0 "$MASTER_IP" 0x1 & set_slot0 "$SLAVE_IP" 0x1 & wait
     sleep "$SETTLE"
+}
+
+# ---------------------------------------------------------------------------
+# sync_bootstrap: SYNC re-prime fix for the deskew BOOTSTRAP alignment issue.
+#
+# ROOT CAUSE: After training_mode drops, the deskew BOOTSTRAP uses zero
+# offsets, but per-lane training_mode_sync falls at different times (due to
+# cross-lane word skew). The assembled 128-bit word mixes data from different
+# TX cycles -> garbled CR/CRACK packets -> FCSM stuck at SEND_CREDITS2 (state 2)
+# without bilateral LINK_IDLE (state 4).
+#
+# FIX: While swi_enable=0 (FCSM→IDLE, TX idle), the SYNC word fires within
+# ~5µs (sync_word_ctr counts from SYNC_PERIOD-1=31 to 0 at 6.25MHz).
+# The peer RX deskew detects the SYNC slice per lane and computes the correct
+# per-lane word offsets. When swi_enable is re-asserted on both boards
+# simultaneously, the FCSM restarts with correct deskew alignment and the
+# CR/CRACK handshake succeeds bilaterally.
+#
+# Call AFTER calibration converges (locked=0xff + cal_done=1 on both boards).
+# ---------------------------------------------------------------------------
+set_ctrl() {  # IP VAL
+    local IP=$1 VAL=$2
+    sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
+      "echo '$PASS' | sudo -S python3 -c '
+import mmap,struct,os
+P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
+def mm(a,sz=4096):
+ b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
+ return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
+w,wo=mm(0x44030000,0x400); struct.pack_into(\"<I\",w,wo+0x208,$VAL)'" 2>/dev/null
+}
+
+sync_bootstrap() {
+    # CTRL values (0x44030000+0x208):
+    #   bit[0]=swi_enable, bit[1]=lltx_enable, bit[2]=lltx_enable_1, bits[31:8]=credit/timeout
+    local CTRL_FULL=0x00027f07   # swi_enable|lltx_enable|lltx_enable_1 + credit config
+    local CTRL_DIS=0x00027f00    # swi_enable=0; FCSMs→IDLE, TX goes idle
+    echo "  >> sync_bootstrap: disabling FCSMs on both boards..."
+    set_ctrl "$MASTER_IP" $CTRL_DIS & set_ctrl "$SLAVE_IP" $CTRL_DIS & wait
+    # Wait for SYNC word to fire on both TXs (sync_word_ctr wraps in 32 link-word
+    # cycles = 5.12µs @6.25MHz; use 20ms for margin including SSH RTT).
+    sleep 0.02
+    echo "  >> sync_bootstrap: re-enabling FCSMs; deskew offsets now corrected..."
+    set_ctrl "$MASTER_IP" $CTRL_FULL & set_ctrl "$SLAVE_IP" $CTRL_FULL & wait
+    # §M12: After CTRL_FULL, the calibrator is in S_DONE (cal_done=1) which
+    # clears cal_training_mode_w=0, BUT the SW recal_cycle left
+    # swi_training_mode=1 at 0x44032100.  The combined OR keeps training_mode=1
+    # → LL_RX stays in reset → CR/CRACK never exchanged → FCSM stuck at 1/2.
+    # Fix: clear swi_training_mode on both boards simultaneously so the combined
+    # training_mode drops and the FCSM can complete the CR/CRACK handshake.
+    sleep 0.1
+    echo "  >> sync_bootstrap: clearing swi_training_mode (§M12 fix)..."
+    set_slot0 "$MASTER_IP" 0x0 & set_slot0 "$SLAVE_IP" 0x0 & wait
+    # Allow FCSM CR/CRACK handshake to complete (LINK_EN_WAIT + transitions)
+    sleep 1.0
 }
 
 # Deploy one board for a given role. deploy_pair.sh maps ROLE->bitstream
@@ -331,10 +386,43 @@ done
 
 echo "=============================================================="
 if [ "$conv_it" -gt 0 ]; then
-    echo "RESULT: CONVERGED — full 16/16 bidirectional link at iteration $conv_it"
+    echo "RESULT: CAL CONVERGED — full 16/16 bidirectional cal+lock at iteration $conv_it"
     echo "  $best_line"
-    echo "  (Doorbell / AHB_TX end-to-end is a SEPARATE step — wedge hazard.)"
-    exit 0
+    echo ""
+    # sync_bootstrap: skip when both boards already reached LINK_IDLE (fs>=4) with cr=1.
+    # cr=1 proves the credit exchange completed during calibration, which requires S->M ACK
+    # delivery, which requires master deskew to already be calibrated.  Running
+    # sync_bootstrap in that state is harmful: CTRL_DIS zeros the deskew offsets and
+    # io_link_tx_tx_idle stays 0 (lltx_enable=0 != TX idle), so SYNC never fires during
+    # the 20ms window.  After CTRL_FULL the FCSM restarts, die_a sends a credit packet,
+    # die_b goes to SEND_ACK=6 and tries to ACK S->M with a deskew-blind master -> die_b
+    # wedged at FCSM=6, master sync_det=0, S->M broken permanently.
+    # Only invoke sync_bootstrap when cr=0 or fs<4 (deskew not yet calibrated).
+    if [ "${acr:-0}" -eq 1 ] && [ "${bcr:-0}" -eq 1 ] \
+       && [ "${afs:-0}" -ge 4 ] 2>/dev/null && [ "${bfs:-0}" -ge 4 ] 2>/dev/null; then
+        echo "  >> sync_bootstrap SKIPPED -- both boards at fs${afs}/fs${bfs} cr=1"
+        echo "     (deskew already calibrated by converge loop; CTRL_DIS would break S->M)"
+    else
+        sync_bootstrap
+    fi
+    # Re-read FCSM state (read_status has 6s timeout so deadlock-safe)
+    echo "  >> Probing FCSM state..."
+    AR2=$(best_read "$A_IP")
+    BR2=$(best_read "$B_IP")
+    afs2=$(echo "$AR2" | awk '{print $5+0}')
+    bfs2=$(echo "$BR2" | awk '{print $5+0}')
+    echo "  die_a FCSM=${afs2:-?}  die_b FCSM=${bfs2:-?}"
+    if [ "${afs2:-0}" -ge 4 ] 2>/dev/null && [ "${bfs2:-0}" -ge 4 ] 2>/dev/null; then
+        echo "  LINK_IDLE (state 4) BILATERAL — FCSM handshake complete."
+        echo "  (Doorbell / AHB_TX end-to-end is a SEPARATE step — wedge hazard.)"
+        exit 0
+    else
+        echo "  WARNING: FCSM not yet at LINK_IDLE on one or both boards after sync_bootstrap."
+        echo "  die_a[@$A_IP]: $AR2"
+        echo "  die_b[@$B_IP]: $BR2"
+        echo "  Try re-running with increased MAX_RETRIES or check hardware."
+        exit 2
+    fi
 else
     echo "RESULT: NOT CONVERGED in $MAX_RETRIES re-deploys ($MODE)."
     echo "  Best seen: ${best}/16 at iteration $best_it"

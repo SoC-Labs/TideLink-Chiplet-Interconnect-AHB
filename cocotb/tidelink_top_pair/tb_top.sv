@@ -134,6 +134,21 @@ module tb_top #(
     logic poresetn = 1'b0;
     logic hresetn  = 1'b0;
 
+    // ── I2 per-die POR skew injection (PLAN_TIDELINK_INTEGRATION §3 I2) ──
+    // cocotb holds {m,s}_por_gate low to delay one die's reset release
+    // relative to the other (asymmetric-POR / deploy-skew emulation,
+    // test_24_por_skew_sweep). Default 1 → per-die resets follow the
+    // shared poresetn/hresetn bit-exactly, so every existing test is
+    // unchanged. The pad gates squash the in-reset die's PHY outputs to 0
+    // (real pads are driven-low/Hi-Z under reset; in sim they would X-poison
+    // the live peer's RX).
+    logic m_por_gate = 1'b1;
+    logic s_por_gate = 1'b1;
+    wire  m_poresetn_w = poresetn & m_por_gate;
+    wire  m_hresetn_w  = hresetn  & m_por_gate;
+    wire  s_poresetn_w = poresetn & s_por_gate;
+    wire  s_hresetn_w  = hresetn  & s_por_gate;
+
     // Per-side debug strap (cocotb drives high to ungate slave APB writes
     // before role_lock — same role as fpga gpio 0x44041000).
     logic m_apb_debug_unlock = 1'b1;
@@ -291,8 +306,8 @@ module tb_top #(
         .TIDELINK_PAIR_BASE(M_PAIR_BASE)
     ) u_master (
         .hclk              (hclk),
-        .hresetn           (hresetn),
-        .poresetn          (poresetn),
+        .hresetn           (m_hresetn_w),
+        .poresetn          (m_poresetn_w),
 
         // AHB Sub — TIED OFF (not exercised; XHB500 path)
         .ahb_sub_hsel      (1'b0),
@@ -369,11 +384,12 @@ module tb_top #(
         // Wlink PLL reference
         .user_ref_clk      (ref_clk),
 
-        // PHY pads — cross-wired via skid blocks
+        // PHY pads — cross-wired via skid blocks (gated to 0 while the
+        // driving die is held in reset — see I2 POR-skew block above)
         .pad_clk_tx        (m_pad_clk_tx),
         .pad_tx            (m_pad_tx),
-        .pad_clk_rx        (s_pad_clk_tx_skid),
-        .pad_rx            (s_pad_tx_skid),
+        .pad_clk_rx        (s_pad_clk_tx_skid & s_por_gate),
+        .pad_rx            (s_pad_tx_skid & {NUM_PHY_LANES{s_por_gate}}),
 
         // §9 IDELAYE2 RX delay ref clock (USE_IDELAY=0 default -> passthrough)
         .idelay_ref_clk    (1'b0),
@@ -514,8 +530,8 @@ module tb_top #(
         .TIDELINK_PAIR_BASE(S_PAIR_BASE)
     ) u_slave (
         .hclk              (hclk),
-        .hresetn           (hresetn),
-        .poresetn          (poresetn),
+        .hresetn           (s_hresetn_w),
+        .poresetn          (s_poresetn_w),
 
         .ahb_sub_hsel      (1'b0),
         .ahb_sub_haddr     (32'h0),
@@ -585,8 +601,8 @@ module tb_top #(
 
         .pad_clk_tx        (s_pad_clk_tx),
         .pad_tx            (s_pad_tx),
-        .pad_clk_rx        (m_pad_clk_tx_skid),
-        .pad_rx            (m_pad_tx_skid),
+        .pad_clk_rx        (m_pad_clk_tx_skid & m_por_gate),
+        .pad_rx            (m_pad_tx_skid & {NUM_PHY_LANES{m_por_gate}}),
 
         .idelay_ref_clk    (1'b0),
 

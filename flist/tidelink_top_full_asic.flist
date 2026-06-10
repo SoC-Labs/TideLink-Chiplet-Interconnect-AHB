@@ -70,15 +70,20 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/AXI4ToWlink.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/GeneralBusToWlink.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/ShortPacketToWlink.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/TideLinkToWlink.v
+// Local overrides (2026-06-10 ASIC<->FPGA flist reconcile): the FPGA flist
+// has carried silicon-validated fixes in src/rtl/local_overrides/ that the
+// ASIC list was missing — the two lists now reference the SAME RTL. All
+// Xilinx primitives in these files are generate-gated (USE_CLKBUF/USE_IDELAY
+// default 0) so the ASIC elaborator never sees them.
+${TIDELINK_HOME}/src/rtl/local_overrides/ShortPacketToWlink.v
+${TIDELINK_HOME}/src/rtl/local_overrides/TideLinkToWlink.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpio.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioRx.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavD2DGpioTx.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpio.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioRx.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioTx.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_124.v
@@ -115,7 +120,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGPIOPHY.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGPIOPHY.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v
@@ -142,8 +147,8 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_6.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxLinkLayer.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxRouter.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxLinkLayer.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxPstateCtrl.v
@@ -194,6 +199,10 @@ ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
+// Cross-lane word deskew — required by local_overrides/WavD2DGpio.v
+// (instantiated with .DEPTH_LOG(4), e6ccc0b). Local override carries the
+// content-anchored SYNC re-prime + 4-stage pipelined offset computation.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_lane_deskew.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_phy_align_calibrator.sv
 // v2 Eye visibility shim — APB Region 10 read-mux (paddr 0x140..0x17F).
 ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv

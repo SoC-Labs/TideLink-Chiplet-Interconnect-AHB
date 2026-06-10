@@ -834,6 +834,9 @@ module axi_chiplet_controller #(
     //          bit[2]=retrain (W1P), bits[7:4]=poll_timeout,
     //          bits[15:8]=fsm_wait_hi.
     reg [15:0] nego_train_cfg_r;
+    // M11b: calibrator MIN_LOCK_DWELLS runtime override — slot 3 [23:20].
+    // Separate from nego_train_cfg_r[7:4] (= autoneg train_poll_timeout).
+    reg [3:0]  min_lock_dwells_r;
     reg        nego_train_retrain_pulse;  // 1-cycle pulse on W1P write
 
     // Phase 1 G1b — sticky train-fail IRQ. Latches on train_fail_irq_w
@@ -991,6 +994,12 @@ module axi_chiplet_controller #(
             // Wrapper (tidelink_top.sv) sets train_auto_en=1 by default;
             // cocotb wrappers override the parameter for legacy tests.
             nego_train_cfg_r         <= NEGO_TRAIN_CFG_RESET;
+            // M11b (2026-06-10): calibrator MIN_LOCK_DWELLS runtime override
+            // moved out of nego_train_cfg_r[7:4] — that nibble is the autoneg
+            // FSM's train_poll_timeout (consumed at u_autoneg, and the tb/SW
+            // value 0x00F1 was silently forcing MIN_LOCK_DWELLS=15). Own
+            // 4-bit field at slot 3 [23:20]; 0 = use the RTL parameter.
+            min_lock_dwells_r        <= 4'd0;
             nego_train_retrain_pulse <= 1'b0;
             train_fail_irq_r         <= 1'b0;
             train_fail_irq_w_d       <= 1'b0;
@@ -1031,6 +1040,9 @@ module axi_chiplet_controller #(
                     3'h1: swi_bit_slip_lo_r   <= ctrl_reg_wdata[23:0];        // SWI_BIT_SLIP_LO
                     3'h3: begin                                                // NEGO_TRAIN_CFG
                         nego_train_cfg_r <= ctrl_reg_wdata[15:0];
+                        // M11b: [23:20] = calibrator MIN_LOCK_DWELLS override
+                        // (0 = RTL parameter default)
+                        min_lock_dwells_r <= ctrl_reg_wdata[23:20];
                         if (ctrl_reg_wdata[2])  // retrain W1P
                             nego_train_retrain_pulse <= 1'b1;
                         // bit[16] is the train_fail_irq W1C; handled above.
@@ -1069,7 +1081,9 @@ module axi_chiplet_controller #(
                                         sync_cal_done_1,                // [16]    calibration_done
                                         sync_lane_fault_1,              // [15:8]  lane_fault
                                         sync_lane_locked_1}         :  // [7:0] lane_locked — SWI_LANE_STATUS + SEND-GATE OBS
-        (ctrl_reg_addr[2:0] == 3'h3) ? {15'h0,                       // [31:17] reserved
+        (ctrl_reg_addr[2:0] == 3'h3) ? {8'h0,                        // [31:24] reserved
+                                        min_lock_dwells_r,           // [23:20] M11b MIN_LOCK_DWELLS override (0=param)
+                                        3'h0,                        // [19:17] reserved
                                         train_fail_irq_r,            // [16]    Phase 1 G1b sticky IRQ (W1C via wdata[16])
                                         nego_train_cfg_r}           : // [15:0]  NEGO_TRAIN_CFG
         (ctrl_reg_addr[2:0] == 3'h4) ? {train_local_lane_fault_w,       // [31:24]
@@ -2018,13 +2032,14 @@ module axi_chiplet_controller #(
         // together).
         .apb_bit_slip_override (24'h0),
         .apb_override_enable   (1'b0),
-        // §9.11c — drive 0 to use the synth-time MIN_LOCK_DWELLS parameter
-        // default. The full APB-tunable register (Region 8 slot 0 bits[7:4])
-        // M11 (2026-06-10): wire NEGO_TRAIN_CFG[7:4] → calibrator min_lock_dwells_i.
+        // §9.11c / M11b (2026-06-10): runtime MIN_LOCK_DWELLS override from
+        // Region 8 slot 3 bits [23:20] (min_lock_dwells_r). NOT
+        // nego_train_cfg_r[7:4] — that nibble is the autoneg FSM's
+        // train_poll_timeout.
         // 0 = use parameter default (now MIN_LOCK_DWELLS=2); 1..15 = runtime override.
         // Allows SW to lower the eye-centre contiguity requirement on marginal-eye
         // hardware (die_a 2-3 consecutive passing phases < old default of 4).
-        .min_lock_dwells_i     (nego_train_cfg_r[7:4]),
+        .min_lock_dwells_i     (min_lock_dwells_r),
         // §9.11d Fix A1 — post-S_HOLD real-data validation. Drive from the
         // local Wlink FCSM's "saw the peer's CR_PKT on our RX" sticky flag.
         // Same clock domain as the calibrator (rx_link_clk) so no CDC. WITHOUT

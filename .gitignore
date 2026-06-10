@@ -136,3 +136,11 @@ cdc/tidelink_top*
 v1-release/bitstreams/*.bin
 v1-release/bitstreams/*.hwh
 v1-release/bitstreams/*.bin.manifest.json
+
+# Added 2026-06-10: consolidation cleanup
+cocotb/*/sim_build_*/
+cocotb/*/modelsim.ini
+syn/asic/_flow/
+syn/asic/calibre/work/
+*_bak
+fc_output.txt

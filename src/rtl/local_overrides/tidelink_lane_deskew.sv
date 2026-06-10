@@ -417,7 +417,7 @@ module tidelink_lane_deskew #(
     wire all_primed = &lane_primed;
 
     // -----------------------------------------------------------------
-    // Wrap/jitter-immune relative skew-offset computation (combinational).
+    // Wrap/jitter-immune relative skew-offset computation — PIPELINED.
     //
     // The SAME source SYNC word lands at write position (S + delta[gi]) in each
     // lane, where delta[gi] is lane gi's cross-lane WORD SKEW. spf_synced[gi] is
@@ -443,91 +443,132 @@ module tidelink_lane_deskew #(
     // the largest as the "earliest" (it wrote its SYNC first, deepest FIFO); all
     // other lanes measure a smaller-or-equal distance from it, so offsets are
     // >= 0 and bounded by the true skew.
+    //
+    // *** FPGA TIMING (2026-06-10): at DEPTH_LOG=4 (DEPTH=16) the single-cycle
+    // combinational chain
+    //   spf_synced -> d0 (8x sub) -> d0_min_s (linear signed-min/8) ->
+    //   off_raw (8x sub) -> d_spread (linear max/8) -> off_cand (clamp) ->
+    //   lane_off load / off_changed
+    // is the MASTER critical path (WNS = -1.16 ns on the ~25 MHz out_clk/link
+    // domain). DEPTH=8 closed; the wider 5-bit (MW=DEPTH_LOG+1) math at DEPTH=16
+    // added the levels that broke it. KEY INSIGHT: lane_off only changes on a
+    // sync_reprime, which fires at most once per SYNC period (~32 out_clk), and
+    // spf_synced is STABLE for ~32 out_clk after each SYNC toggle (see g_spf_cdc
+    // header). So the expensive recompute need NOT be single-cycle — it is spread
+    // across a 4-stage out_clk PIPELINE that continuously tracks spf_synced. Each
+    // stage registers one reduction so no single combinational path spans the
+    // whole chain. The registered result off_cand_r[gi] is what sync_reprime
+    // latches into lane_off. Because spf_synced holds for ~32 cycles >> the 4-cy
+    // pipeline latency, off_cand_r is always settled to the current SYNC instance
+    // long before sync_reprime fires (the collector window adds further delay),
+    // so the pipelined result is bit-identical to the old combinational one.
+    //
+    //   Stage 1 (d0_r):       d0[gi]    = spf_synced[gi] - spf_synced[0]
+    //   Stage 2 (d0_min_r):   d0_min_s  = signed-min over d0_r  (+ pipe d0_r->d0_r2)
+    //   Stage 3 (off_raw_r):  off_raw   = d0_r2 - d0_min_r
+    //   Stage 4 (off_cand_r): d_spread/skew_present/clamp -> off_cand
     // -----------------------------------------------------------------
     localparam int MW = DEPTH_LOG + 1;          // modular width (full wr_ptr)
-    // Distance of each lane from lane 0, modulo 2^MW (0..DEPTH-1 for real skew).
-    wire [MW-1:0] d0 [LANES-1:0];
-    generate
-        for (gi = 0; gi < LANES; gi = gi + 1) begin : g_d0
-            assign d0[gi] = spf_synced[gi] - spf_synced[0];   // mod 2^MW
-        end
-    endgenerate
 
+    // --- Stage 1: register d0[gi] = spf_synced[gi] - spf_synced[0] (mod 2^MW) ---
+    reg [MW-1:0] d0_r [LANES-1:0];
+    integer s1;
+    always @(posedge out_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (s1 = 0; s1 < LANES; s1 = s1 + 1)
+                d0_r[s1] <= {MW{1'b0}};
+        end else begin
+            for (s1 = 0; s1 < LANES; s1 = s1 + 1)
+                d0_r[s1] <= spf_synced[s1] - spf_synced[0];   // mod 2^MW
+        end
+    end
+
+    // --- Stage 2: register the SIGNED MINIMUM of d0_r (reference lane), and
+    //     pipe d0_r forward (d0_r2) so stage 3 subtracts time-aligned operands. ---
+    //
     // Reference lane: the one with the SMALLEST spf (least data in FIFO at SYNC
     // time = started writing LATEST = most delayed by cross-lane skew).
-    //
-    // BUG FIX (SoC Labs 2026-06-08): the previous code used d0_max - d0[gi]
-    // (treating the MOST-advanced lane as reference). This is wrong in two ways:
-    //   (a) d_spread = d0_max_unsigned - d0_min_unsigned = 15 for a 1-word skew
-    //       when the lagging lane's d0 wraps (e.g. -1 = 15 mod 16), so
-    //       skew_present was always FALSE for any backward-skewed lane and the
-    //       entire correction silently became a no-op.
-    //   (b) Even when skew_present was TRUE, d0_max - d0[gi] gave offsets in the
-    //       WRONG direction: the most-advanced lane (off=0) should instead be the
-    //       LEAST-advanced lane; applying reversed offsets left the slave FIFO
-    //       garbled, sync_det_cnt=0, and FCSM stuck at LINK_IDLE_4.
     //
     // CORRECT formula: off[gi] = d0[gi] - d0_min_signed, where d0_min_signed is
     // the MOST NEGATIVE (smallest signed) d0 across all lanes.  In the MW-bit
     // modular space, lanes that started writing LATER have NEGATIVE d0 (wrapped to
-    // [2^MW-DEPTH+1..2^MW-1] = [9..15] for DEPTH=8, MW=4).  We find the signed
-    // minimum using $signed comparison — this correctly handles both:
+    // [2^MW-DEPTH+1..2^MW-1]).  We find the signed minimum using $signed
+    // comparison — this correctly handles both:
     //   Case A (no real skew, all d0 near 0): d0_min_s = actual min d0 → off_raw
     //           = spread from minimum → d_spread = real range (0 for uniform d0).
     //   Case B (real skew, some d0 wrap negative): $signed treats wrapped values as
     //           negative → finds the most-lagging lane → off_raw = correct offsets.
-    //
-    // BUG FIX (2026-06-09): the previous init `d0_min_s = {MW{1'b0}}` (zero) caused
-    // the loop to never update for Case A, leaving d0_min_s=0 instead of the actual
-    // minimum.  For zero-skew boards with uniform d0={2,2,...} the result was
-    // off_raw={2,2,...}, d_spread_v=2 >= 2 → skew_present=TRUE, spurious offsets
-    // applied → FIFO read-pointer mis-aligned → SYNC never detected → sync_det=0.
-    reg [MW-1:0] d0_min_s;
+    //   Seed with d0_r[0] (NOT zero): a zero seed leaves d0_min_s=0 for uniform
+    //   d0 (e.g. {2,2,...}) → spurious offsets → SYNC mis-aligned. SoC Labs.
+    reg [MW-1:0] d0_min_r;
+    reg [MW-1:0] d0_r2 [LANES-1:0];
     integer si;
-    always @* begin
-        d0_min_s = d0[0];   // seed with lane 0; loop picks the signed minimum
-        for (si = 1; si < LANES; si = si + 1) begin
-            if ($signed(d0[si]) < $signed(d0_min_s))
-                d0_min_s = d0[si];
+    integer s2;
+    reg [MW-1:0] d0_min_v;
+    always @(posedge out_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            d0_min_r <= {MW{1'b0}};
+            for (s2 = 0; s2 < LANES; s2 = s2 + 1)
+                d0_r2[s2] <= {MW{1'b0}};
+        end else begin
+            d0_min_v = d0_r[0];   // seed with lane 0; loop picks the signed minimum
+            for (si = 1; si < LANES; si = si + 1) begin
+                if ($signed(d0_r[si]) < $signed(d0_min_v))
+                    d0_min_v = d0_r[si];
+            end
+            d0_min_r <= d0_min_v;
+            for (s2 = 0; s2 < LANES; s2 = s2 + 1)
+                d0_r2[s2] <= d0_r[s2];
         end
     end
 
-    // off_raw[gi] = (d0[gi] - d0_min_s) mod 2^MW, lower DEPTH_LOG bits.
-    wire [DEPTH_LOG-1:0] off_raw [LANES-1:0];
-    generate
-        for (gi = 0; gi < LANES; gi = gi + 1) begin : g_offraw
-            wire [MW-1:0] diff_r = d0[gi] - d0_min_s;
-            assign off_raw[gi] = diff_r[DEPTH_LOG-1:0];
+    // --- Stage 3: register off_raw[gi] = (d0_r2[gi] - d0_min_r) mod 2^MW (lower
+    //     DEPTH_LOG bits). ---
+    reg [DEPTH_LOG-1:0] off_raw_r [LANES-1:0];
+    integer s3;
+    reg [MW-1:0] diff3;
+    always @(posedge out_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (s3 = 0; s3 < LANES; s3 = s3 + 1)
+                off_raw_r[s3] <= {DEPTH_LOG{1'b0}};
+        end else begin
+            for (s3 = 0; s3 < LANES; s3 = s3 + 1) begin
+                diff3 = d0_r2[s3] - d0_min_r;
+                off_raw_r[s3] <= diff3[DEPTH_LOG-1:0];
+            end
         end
-    endgenerate
-
-    // d_spread = max(off_raw) = true worst-case cross-lane word skew.
-    reg [DEPTH_LOG-1:0] d_spread_v;
-    always @* begin
-        d_spread_v = {DEPTH_LOG{1'b0}};
-        for (si = 0; si < LANES; si = si + 1)
-            if (off_raw[si] > d_spread_v) d_spread_v = off_raw[si];
     end
-    wire skew_present = (d_spread_v >= 2);   // 3-bit max=7 < DEPTH=8 always
 
+    // --- Stage 4: register the d_spread reduction, the spread gate, the clamp,
+    //     and the final per-lane candidate offset off_cand_r[gi]. ---
+    // d_spread = max(off_raw) = true worst-case cross-lane word skew. skew_present
+    // gates the whole correction off (force offsets to 0) when the spread is <= 1.
     // CLAMP the applied offset so (PRIME_THRESH + 2-flop CDC lag + off) stays
     // within DEPTH-1 — i.e. off <= DEPTH-PRIME_THRESH-3. With DEPTH=16,
     // PRIME_THRESH=4 this caps off at 9, comfortably >= the worst-case real skew
-    // (7), so a skewed lane can ALWAYS build occ >= PRIME_THRESH inside the FIFO
-    // and prime. The header has long PROMISED this clamp ("CLAMPED < PRIME_THRESH")
-    // but it was never implemented; its absence made any lane_off >= ~2 unprimable
-    // on DEPTH=8 -> all_primed never asserted -> out_data never updated on silicon
-    // (0 packets delivered). SoC Labs 2026-06-09.
+    // (7), so a skewed lane can ALWAYS build occ >= PRIME_THRESH and prime.
     localparam int OFF_MAX = DEPTH - PRIME_THRESH - 3;   // = 9 for DEPTH=16
-    wire [DEPTH_LOG-1:0] off_cand [LANES-1:0];
-    generate
-        for (gi = 0; gi < LANES; gi = gi + 1) begin : g_offcand
-            assign off_cand[gi] =
-                ~skew_present                          ? {DEPTH_LOG{1'b0}} :
-                (off_raw[gi] > OFF_MAX[DEPTH_LOG-1:0]) ? OFF_MAX[DEPTH_LOG-1:0] :
-                                                         off_raw[gi];
+    reg [DEPTH_LOG-1:0] off_cand_r [LANES-1:0];
+    integer s4;
+    reg [DEPTH_LOG-1:0] dspread4;
+    reg                 skew4;
+    always @(posedge out_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (s4 = 0; s4 < LANES; s4 = s4 + 1)
+                off_cand_r[s4] <= {DEPTH_LOG{1'b0}};
+        end else begin
+            dspread4 = {DEPTH_LOG{1'b0}};
+            for (s4 = 0; s4 < LANES; s4 = s4 + 1)
+                if (off_raw_r[s4] > dspread4) dspread4 = off_raw_r[s4];
+            skew4 = (dspread4 >= 2);   // <=1 within +/-1 CDC jitter => no-op
+            for (s4 = 0; s4 < LANES; s4 = s4 + 1) begin
+                off_cand_r[s4] <=
+                    ~skew4                                   ? {DEPTH_LOG{1'b0}} :
+                    (off_raw_r[s4] > OFF_MAX[DEPTH_LOG-1:0]) ? OFF_MAX[DEPTH_LOG-1:0] :
+                                                              off_raw_r[s4];
+            end
         end
-    endgenerate
+    end
 
     // 2-flop synchronize training_mode into the out_clk domain so the read side
     // re-primes from scratch on every training->data cycle.
@@ -553,9 +594,11 @@ module tidelink_lane_deskew #(
     //   4. all_ready                 -> one word per out_clk (advance rd_ptr)
     //   else                         -> underrun safety, hold out_data
     //
-    // On sync_reprime: lane_off[gi] <= off_cand[gi] (the wrap-immune,
+    // On sync_reprime: lane_off[gi] <= off_cand_r[gi] (the wrap-immune,
     // spread-gated, cushion-clamped relative word skew of lane gi versus the
-    // earliest-writing lane at the SAME source SYNC word). Reading lane gi at
+    // earliest-writing lane at the SAME source SYNC word — now the REGISTERED
+    // output of the 4-stage pipeline, settled to the current SYNC instance long
+    // before sync_reprime fires). Reading lane gi at
     // (rd_ptr + lane_off[gi]) then presents every lane's copy of the SAME source
     // word on one out_clk -> coherent 128-bit assembly, incl. the SYNC itself
     // (which the framer strips + re-syncs on). Because the correction is purely
@@ -570,14 +613,14 @@ module tidelink_lane_deskew #(
     // that breaks sustained delivery. So gate the alignment STALL on an actual
     // offset change; an unchanged re-prime falls straight through to normal
     // reads (true no-op).
-    wire off_changed = (|({off_cand[0]} ^ {lane_off[0]})) |
-                       (|({off_cand[1]} ^ {lane_off[1]})) |
-                       (|({off_cand[2]} ^ {lane_off[2]})) |
-                       (|({off_cand[3]} ^ {lane_off[3]})) |
-                       (|({off_cand[4]} ^ {lane_off[4]})) |
-                       (|({off_cand[5]} ^ {lane_off[5]})) |
-                       (|({off_cand[6]} ^ {lane_off[6]})) |
-                       (|({off_cand[7]} ^ {lane_off[7]}));
+    wire off_changed = (|({off_cand_r[0]} ^ {lane_off[0]})) |
+                       (|({off_cand_r[1]} ^ {lane_off[1]})) |
+                       (|({off_cand_r[2]} ^ {lane_off[2]})) |
+                       (|({off_cand_r[3]} ^ {lane_off[3]})) |
+                       (|({off_cand_r[4]} ^ {lane_off[4]})) |
+                       (|({off_cand_r[5]} ^ {lane_off[5]})) |
+                       (|({off_cand_r[6]} ^ {lane_off[6]})) |
+                       (|({off_cand_r[7]} ^ {lane_off[7]}));
     wire do_realign = sync_reprime & off_changed;
 
     integer ri;
@@ -603,7 +646,7 @@ module tidelink_lane_deskew #(
             // step never emits a torn word. In zero skew off_changed is 0 so
             // this branch is never taken (no bubble).
             for (rj = 0; rj < LANES; rj = rj + 1)
-                lane_off[rj] <= off_cand[rj];
+                lane_off[rj] <= off_cand_r[rj];
         end else if (!primed) begin
             // Build the cushion before the first read; latch primed once every
             // lane has >= PRIME_THRESH synced words. No out_data update yet.

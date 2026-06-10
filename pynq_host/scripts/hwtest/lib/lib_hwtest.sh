@@ -157,15 +157,28 @@ tt_link_popcount() {
 # Outputs a one-line summary regardless. Caller is responsible for the
 # absolute gating (do NOT proceed to AHB_TX writes if non-zero return).
 tt_verify_link_up() {
-    local M S MP SP MCD SCD MFT SFT
+    local M S MP SP MCD SCD MFT SFT MFS SFS
     M=$(tt_read_lane_status "$MASTER_IP")
     S=$(tt_read_lane_status "$SLAVE_IP")
     MP=$(echo "$M" | awk '{print $4+0}'); SP=$(echo "$S" | awk '{print $4+0}')
     MCD=$(echo "$M" | awk '{print $3+0}'); SCD=$(echo "$S" | awk '{print $3+0}')
     MFT=$(echo "$M" | awk '{print $2}');  SFT=$(echo "$S" | awk '{print $2}')
-    tt_info "link: master=${MP}/8 cal_done=${MCD} fault=${MFT}   slave=${SP}/8 cal_done=${SCD} fault=${SFT}"
+    MFS=$(echo "$M" | awk '{print $5+0}'); SFS=$(echo "$S" | awk '{print $5+0}')
+    tt_info "link: master=${MP}/8 cal_done=${MCD} fault=${MFT} fcsm=${MFS}   slave=${SP}/8 cal_done=${SCD} fault=${SFT} fcsm=${SFS}"
+    # Criterion A (training-mode): all 8 lanes report locked + cal_done.
     if [ "${MP:-0}" -eq 8 ] && [ "${SP:-0}" -eq 8 ] && \
        [ "${MCD:-0}" -eq 1 ] && [ "${SCD:-0}" -eq 1 ]; then
+        return 0
+    fi
+    # Criterion B (data-mode, post-M12): after swi_training_mode clears,
+    # lane_locked drops to 0 by design (the checker only matches training
+    # patterns — see docs/AUTOCAL_CLOSURE_2026_06_10.md residual #2). Link
+    # health is then FCSM: 4=LINK_IDLE / 5=LINK_DATA mean CR/CRACK credits
+    # are exchanged and the AHB_TX path is armed.
+    if [ "${MCD:-0}" -eq 1 ] && [ "${SCD:-0}" -eq 1 ] && \
+       { [ "${MFS:-0}" -eq 4 ] || [ "${MFS:-0}" -eq 5 ]; } && \
+       { [ "${SFS:-0}" -eq 4 ] || [ "${SFS:-0}" -eq 5 ]; }; then
+        tt_info "link-up via criterion B (FCSM=${MFS}/${SFS}, post-training lk=0 expected)"
         return 0
     fi
     return 1

@@ -23,11 +23,22 @@ and what is deliberately **not** being fixed in the old stack.
 | nightly (sim) | `cocotb/tidelink_phy_align_calibrator` | 7/7 PASS (T3 re-sweep ×4, S_PROBE skip ×3) |
 | 2026-06-10 (sim) | `cocotb/tidelink_lane_deskew` | 7/7 PASS incl. `index_skew_large` (7-word worst case) with the 4-stage pipelined offset computation |
 
-**Deferred:** a second M→S crossing + doorbell (hwtest 4b) reproducibility run.
-The boards were taken under lease at 16:25 for the new-PHY lane-drop
-investigation (`PLAN_LANE_DROP.md` in the PHY repo). Run when the boards free
-up; the link-layer state (FCSM=4 bilateral, post-M12) was re-confirmed the
-same day, so this defers *re-demonstration*, not *unknown function*.
+**Reproducibility run (2026-06-10 ~22:30, boards freed):**
+
+| Step | Result |
+|---|---|
+| Full re-converge (`bringup_pair_converge.sh`, M12) | **16/16 at iteration 1, FCSM=4 bilateral** — second clean converge of the day; M12 path is 2-for-2 |
+| hwtest 5a — single AHB_TX word M→S | **PASS** (write completed inside the 5 s gate) |
+| Slave RX FIFO readback (0x44010000) | **`0xc0ffee00`, `0xc0ffee01` byte-perfect** — M→S crossing REPRODUCED; slave healthy after (cal=1 fcsm=4 cr=1 ck=1) |
+| hwtest 5b — 8-word storm | Stalled at word 4; master AHB write blocked → **z2_02 PS hard-wedged** (SSH dead, needs JTAG `rst -system` via xsdb on mapstone-dev:3121, target `*Z2_02*`) |
+| hwtest 4b — doorbell M→S | Blocked on the z2_02 reset; run after recovery |
+
+The storm result is a clean characterization of residual #1/#5 below: the
+~4-word budget matches the initial credit allocation; S→M credit return does
+not replenish reliably, so sustained M→S traffic back-pressures into the
+Bug-A wedge. Single-word and small-burst M→S traffic crosses fine. The
+hwtest link-up gate was updated to accept the post-M12 data-mode state
+(criterion B: cal_done + FCSM∈{4,5}; `lk=0` is expected — residual #2).
 
 Note on hwtest `03_ahb_sub_e2e.sh` test 3d: it pokes `0x44010000`, which on
 the current build is **local SRAM on each die** (not FC-forwarded). The real

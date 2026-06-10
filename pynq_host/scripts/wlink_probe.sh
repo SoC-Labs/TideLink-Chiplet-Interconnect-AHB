@@ -124,9 +124,11 @@ print("    pkt_is_cr_pkt   : {}".format((v>>27)&1))
 print("    pkt_is_crack    : {}".format((v>>28)&1))
 print("    llrx_valid      : {}".format((v>>29)&1))
 e=rd(0x114)
-print("  ECC_COUNTERS (0x114, was NEGO_TRAIN_STEP RO=0):")
+print("  SYNC_DETECTED_COUNTER (0x114):")
+print("    sync_detected_cnt : {}{}".format((e>>16)&0xFFFF, " (SATURATED)" if ((e>>16)&0xFFFF)==0xFFFF else ""))
 print("    ecc_corrupted_cnt : {}{}".format(e&0xFFFF, " (SATURATED)" if (e&0xFFFF)==0xFFFF else ""))
-print("    ecc_corrected_cnt : {}{}".format((e>>16)&0xFFFF, " (SATURATED)" if ((e>>16)&0xFFFF)==0xFFFF else ""))
+if (e>>16)&0xFFFF == 0:
+    print("    >>> sync_detected=0 — SYNC words not reaching WlinkRxLL; deskew output may be garbled or training_mode_rx hold not expired")
 if (e&0xFFFF)==0xFFFF:
     print("    >>> ECC corrupted SATURATED — ECC is failing on (nearly) every word; PHY/byte-align not delivering clean packets to the FCSM")
 # Legacy interim shim addresses (delete after Phase 5 migration completes).

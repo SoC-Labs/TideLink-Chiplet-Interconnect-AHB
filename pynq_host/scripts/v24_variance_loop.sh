@@ -32,15 +32,24 @@ COOLDOWN="${COOLDOWN:-30}"   # seconds between attempts
 SETTLE="${SETTLE:-90}"       # 90s — M8 S_VALIDATE timer is 320ms (<<90s),
                              # but autoneg + I2C coordination adds seconds
 
+# Per-board IDELAY phase override (env MASTER_PHASE / SLAVE_PHASE).
+# deploy_pair.sh default: master=0x00000000 (ph=0), slave=0x00060000 (ph=3).
+# z2_03 silicon (2026-06-09 session) locks only at ph=4 (0x00080000); no
+# lockable IDELAY point at ph=3 -> calibrator times out -> cal_done=1 w/o lock.
+# Override: SLAVE_PHASE=0x00080000 bash v24_variance_loop.sh
+# (MASTER_PHASE left unset to use deploy_pair.sh default unless empirically needed)
+_MASTER_PHASE="${MASTER_PHASE:-}"
+_SLAVE_PHASE="${SLAVE_PHASE:-}"
+
 both=0 master_only=0 slave_only=0 neither=0
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
     echo "=== attempt $attempt / $ATTEMPTS ($(date -u +%H:%M:%SZ)) ==="
 
     # Deploy both boards concurrently (non-flip to A, flip to B)
-    bash "$DEPLOY" "$BOARD_A" z2_02 die_a "$ARTEFACTS" &
+    PHASE_OVERRIDE="$_MASTER_PHASE" bash "$DEPLOY" "$BOARD_A" z2_02 die_a "$ARTEFACTS" &
     PID_A=$!
-    bash "$DEPLOY" "$BOARD_B" z2_03 die_b "$ARTEFACTS" &
+    PHASE_OVERRIDE="$_SLAVE_PHASE" bash "$DEPLOY" "$BOARD_B" z2_03 die_b "$ARTEFACTS" &
     PID_B=$!
     wait "$PID_A" || true
     wait "$PID_B" || true

@@ -82,7 +82,9 @@ module tb_top #(
         .SYS_DATA_W(SYS_DATA_W),
         .RAM_ADDR_W(RAM_ADDR_W),
         .APB_ADDR_W(APB_ADDR_W),
-        .FC_DATA_W (FC_DATA_W)
+        .FC_DATA_W (FC_DATA_W),
+        // Small stall-timeout for sim (2^8 = 256 cy); HW default is 2^16.
+        .TX_STALL_TIMEOUT_LOG2(8)
     ) u_dut (
         .hclk              (hclk),
         .hresetn           (hresetn),

@@ -316,3 +316,116 @@ async def test_watchdog_drops_second_write(dut):
           f"{'PASS' if ok else 'FAIL (Bug-A REPRODUCED: L11 watchdog dropped beats; FCSM-bound words lost)'}")
     assert ok, (f"L11 watchdog dropped {len(exp)-len(got)} of {len(exp)} beats "
                 f"(tx_dropped_cnt={dropped}); only the first survived -- this is Bug-A")
+
+
+# ---------------------------------------------------------------------------
+# Wedge-mechanism fix (2026-06-11): bounded stall + AHB ERROR response.
+# tb_top overrides TX_STALL_TIMEOUT_LOG2=8 -> timeout fires when the stall
+# counter reaches 2^8 = 256 cycles of continuous data-phase back-pressure.
+# ---------------------------------------------------------------------------
+
+async def ahb_write_watch_error(dut, addr, data, max_cycles=600):
+    """Single AHB write; stay in the data phase until HREADYOUT=1, recording
+    HRESP each cycle. Returns (cycles, saw_err1, saw_err2) where err1 is the
+    HRESP=1/HREADYOUT=0 cycle and err2 the HRESP=1/HREADYOUT=1 terminator."""
+    while True:
+        await RisingEdge(dut.hclk)
+        await ReadOnly()
+        if int(dut.ahb_tx_hreadyout.value) == 1:
+            break
+    await FallingEdge(dut.hclk)
+    dut.ahb_tx_hsel.value = 1
+    dut.ahb_tx_haddr.value = addr
+    dut.ahb_tx_htrans.value = HTRANS_NONSEQ
+    dut.ahb_tx_hwrite.value = 1
+    dut.ahb_tx_hsize.value = HSIZE_WORD
+    await RisingEdge(dut.hclk)
+    await FallingEdge(dut.hclk)
+    dut.ahb_tx_hsel.value = 0
+    dut.ahb_tx_htrans.value = HTRANS_IDLE
+    dut.ahb_tx_hwrite.value = 0
+    dut.ahb_tx_hwdata.value = data
+
+    cycles, saw_err1, saw_err2 = 0, False, False
+    while cycles < max_cycles:
+        await ReadOnly()
+        hr  = int(dut.ahb_tx_hreadyout.value)
+        hrs = int(dut.ahb_tx_hresp.value)
+        if hrs == 1 and hr == 0:
+            saw_err1 = True
+        if hrs == 1 and hr == 1:
+            saw_err2 = True
+        await RisingEdge(dut.hclk)
+        cycles += 1
+        if hr == 1:
+            break
+    await FallingEdge(dut.hclk)
+    dut.ahb_tx_hwdata.value = 0
+    return cycles, saw_err1, saw_err2
+
+
+@cocotb.test()
+async def test_stall_timeout_error_response(dut):
+    """Dead link (a2l_ready stuck low): the stalled TX write must terminate
+    in the two-cycle AHB ERROR response instead of stalling forever (the PS
+    deadlock that hard-wedged z2_02), and tx_dropped_cnt_r must count it."""
+    cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
+    await reset(dut)
+    dut.tl_fc_a2l_ready.value = 0   # link dead
+
+    # First write lands in the 1-entry skid and completes cleanly; the
+    # SECOND write is the one that stalls behind the dead link (matches
+    # the bench storm, which absorbed the first words into skid+FIFO).
+    c0, p1, p2 = await ahb_write_watch_error(dut, 0x0000, 0xDEAD0000)
+    assert not p1 and not p2, "skid-absorbed first write must not error"
+    cycles, e1, e2 = await ahb_write_watch_error(dut, 0x0004, 0xDEAD0001)
+    assert e1 and e2, f"expected two-cycle ERROR response, got err1={e1} err2={e2}"
+    assert 250 <= cycles <= 300, f"ERROR should fire at the ~256-cy timeout, took {cycles}"
+    dropped = int(dut.u_dut.tx_dropped_cnt_r.value)
+    assert dropped == 1, f"tx_dropped_cnt_r={dropped}, expected 1"
+
+    # The aborted word must NOT have entered the FC stream.
+    assert int(dut.tl_fc_a2l_valid.value) == 0 or int(dut.tl_fc_a2l_ready.value) == 0
+
+
+@cocotb.test()
+async def test_healthy_backpressure_still_clean(dut):
+    """Back-pressure shorter than the timeout: no error, no drop — the beat
+    completes when the skid drains (Bug-A 2026-06-09 contract preserved)."""
+    cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
+    await reset(dut)
+    dut.tl_fc_a2l_ready.value = 0
+    await ahb_write_watch_error(dut, 0x0000, 0xDEAD0001)   # fills the skid
+
+    async def release_later():
+        for _ in range(100):           # < 256-cy timeout
+            await RisingEdge(dut.hclk)
+        dut.tl_fc_a2l_ready.value = 1
+
+    cocotb.start_soon(release_later())
+    cycles, e1, e2 = await ahb_write_watch_error(dut, 0x0004, 0xDEAD0002)
+    assert not e1 and not e2, "healthy back-pressure must not raise ERROR"
+    assert cycles < 256, f"beat should complete once drained, took {cycles}"
+    dropped = int(dut.u_dut.tx_dropped_cnt_r.value)
+    assert dropped == 0, f"tx_dropped_cnt_r={dropped}, expected 0"
+
+
+@cocotb.test()
+async def test_recovery_after_timeout_abort(dut):
+    """After a timeout-abort the adapter must accept fresh writes once the
+    link returns: the error path is per-beat, not a latched lockout."""
+    cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
+    await reset(dut)
+    dut.tl_fc_a2l_ready.value = 0
+    await ahb_write_watch_error(dut, 0x0008, 0xDEAD0002)   # fills the skid
+    _, e1, e2 = await ahb_write_watch_error(dut, 0x000C, 0xDEAD0003)
+    assert e1 and e2, "precondition: stalled write aborts with ERROR"
+
+    dut.tl_fc_a2l_ready.value = 1   # link recovers
+    for _ in range(4):
+        await RisingEdge(dut.hclk)
+    cycles, e1b, e2b = await ahb_write_watch_error(dut, 0x0010, 0xCAFE0004)
+    assert not e1b and not e2b, "post-recovery write must complete cleanly"
+    assert cycles <= 20, f"post-recovery write should be fast, took {cycles}"
+    dropped = int(dut.u_dut.tx_dropped_cnt_r.value)
+    assert dropped == 1, f"tx_dropped_cnt_r={dropped}, expected 1 (only the aborted beat)"

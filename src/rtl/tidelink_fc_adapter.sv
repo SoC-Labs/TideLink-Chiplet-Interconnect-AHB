@@ -36,7 +36,12 @@ module tidelink_fc_adapter #(
     parameter SYS_DATA_W = 32,
     parameter RAM_ADDR_W = 14,       // FIFO aperture address width
     parameter APB_ADDR_W = 12,       // APB config address width
-    parameter FC_DATA_W  = 48        // FC node data width
+    parameter FC_DATA_W  = 48,       // FC node data width
+    // Bug-A wedge-mechanism fix (2026-06-11): bound the TX-aperture stall.
+    // 2^16 hclk = ~1.3 ms @ 50 MHz — orders beyond healthy credit-return
+    // latency; only a genuinely dead/stalled link reaches it. Sim overrides
+    // this small (cocotb/tidelink_fc_adapter/test_buga.py).
+    parameter TX_STALL_TIMEOUT_LOG2 = 16
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -202,28 +207,70 @@ module tidelink_fc_adapter #(
     logic [15:0] tx_dropped_cnt_r;  // observability only; never incremented on
                                     // healthy back-pressure (kept for HW probes)
 
+    // ── Bug-A wedge-mechanism fix (2026-06-11): bounded stall + AHB ERROR ──
+    // Honest back-pressure (hold HREADYOUT low) is correct for transient
+    // skid-full, but holding it FOREVER converts a dead link into a PS AXI
+    // deadlock: bench-confirmed on z2_02 (hwtest 5b storm, 2026-06-10 —
+    // SSH death, JTAG rst -system required). The earlier assumption that
+    // "the axi_ahblite_bridge timeout handles a permanent wedge" is FALSE
+    // on Zynq-7000: the PS interconnect has no such timeout.
+    //
+    // After TX_STALL_TIMEOUT cycles of continuous data-phase back-pressure,
+    // terminate the in-flight transfer with the standard AHB two-cycle
+    // ERROR response (cy1: HREADYOUT=0 + HRESP=1; cy2: HREADYOUT=1 +
+    // HRESP=1). The beat is dropped EXPLICITLY — the master sees ERROR
+    // (the L11 watchdog's sin was dropping with OKAY) — and
+    // tx_dropped_cnt_r increments, matching its documented "non-zero flags
+    // a genuine sustained wedge" semantic. Healthy back-pressure below the
+    // timeout is untouched: no error, no drop, the beat completes when the
+    // skid drains.
+    logic [TX_STALL_TIMEOUT_LOG2:0] tx_stall_ctr_r;
+    logic                           tx_err1_r, tx_err2_r;
+    wire tx_stalled = tx_data_phase_r && !(skid_can_accept && !sideband_grant);
+    wire tx_stall_expired = tx_stall_ctr_r[TX_STALL_TIMEOUT_LOG2];
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             tx_addr_r       <= '0;
             tx_data_phase_r <= 1'b0;
+            tx_stall_ctr_r  <= '0;
+            tx_err1_r       <= 1'b0;
+            tx_err2_r       <= 1'b0;
         end else begin
+            tx_err2_r <= tx_err1_r;
+            tx_err1_r <= 1'b0;
             if (tx_valid_addr_phase) begin
                 tx_addr_r       <= ahb_tx_haddr;
                 tx_data_phase_r <= 1'b1;
+                tx_stall_ctr_r  <= '0;
             end else if (tx_data_phase_r && skid_can_accept && !sideband_grant) begin
                 // Data phase completes ONLY when the skid actually accepts the
                 // word — never on a watchdog-forced ready (that dropped words).
                 tx_data_phase_r <= 1'b0;
+                tx_stall_ctr_r  <= '0;
+            end else if (tx_stalled) begin
+                if (tx_stall_expired) begin
+                    // Abandon the beat with an explicit ERROR response.
+                    tx_data_phase_r <= 1'b0;
+                    tx_stall_ctr_r  <= '0;
+                    tx_err1_r       <= 1'b1;
+                end else begin
+                    tx_stall_ctr_r <= tx_stall_ctr_r + 1'b1;
+                end
             end
         end
     end
 
-    // tx_dropped_cnt_r is no longer driven by a force-ready drop path; it stays
-    // at its reset value (0) in normal operation. Held for ILA/SW probe ABI
-    // compatibility (docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3).
+    // tx_dropped_cnt_r counts timeout-aborted beats (saturating). Zero in
+    // normal operation INCLUDING healthy back-pressure; non-zero means the
+    // link stalled past TX_STALL_TIMEOUT with a write in flight — the
+    // documented "genuine sustained wedge" flag for software/ILA
+    // (docs/ILA_PLACEMENT_AUDIT_2026_05_29.md §3).
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn)
             tx_dropped_cnt_r <= '0;
+        else if (tx_err1_r && tx_dropped_cnt_r != 16'hFFFF)
+            tx_dropped_cnt_r <= tx_dropped_cnt_r + 16'd1;
     end
 
     // TX aperture FC word (available during data phase)
@@ -234,11 +281,15 @@ module tidelink_fc_adapter #(
     // and the skid buffer can't accept the word, or while sideband has arbiter
     // priority. No watchdog-forced ready: a word is acked to the PS iff it is
     // actually captured into the skid, so a compliant AHB burst never loses a
-    // beat (Bug-A fix, 2026-06-09).
-    assign ahb_tx_hreadyout = tx_data_phase_r
+    // beat (Bug-A fix, 2026-06-09). A stall that outlives TX_STALL_TIMEOUT
+    // terminates in the two-cycle AHB ERROR response instead of a PS deadlock
+    // (wedge-mechanism fix, 2026-06-11).
+    assign ahb_tx_hreadyout = tx_err1_r ? 1'b0 :
+                              tx_err2_r ? 1'b1 :
+                              tx_data_phase_r
                               ? (skid_can_accept & ~sideband_grant)
                               : 1'b1;
-    assign ahb_tx_hresp     = 1'b0;  // No error responses
+    assign ahb_tx_hresp     = tx_err1_r | tx_err2_r;  // ERROR on stall timeout
     assign ahb_tx_hrdata    = '0;    // TX aperture is write-only
 
     // =========================================================================

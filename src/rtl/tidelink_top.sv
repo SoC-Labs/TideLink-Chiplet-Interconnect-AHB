@@ -797,6 +797,7 @@ module tidelink_top #(
     // CLK_MHZ default.  Used here only to document the timing assumption
     // shared by the dwell-counter conversion in tidelink_phy_align_calibrator.
 
+`ifndef TIDELINK_PHY_V2
     tidelink_eye_regs #(
         .APB_ADDR_W (APB_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W)
@@ -845,6 +846,24 @@ module tidelink_top #(
         .eye_last_slip_i         (eye_last_slip_w),
         .eye_last_lane_fault_i   (eye_last_lane_fault_w)
     );
+`else
+    // S3 PHY swap: eye-vis retired (AUDIT #17) — tidelink_eye_regs is absent
+    // from the V2 flist. Tie every net the instance drove. Region 10 APB
+    // reads return 0 with no wait states; the eye control/force surface is
+    // inert. (lane_lock_thresh_w / lane_clear_noise_w are unaffected — they
+    // come from the tidelink_gpio_phy_apb_regs slave, which remains.)
+    assign eye_shim_prdata        = {SYS_DATA_W{1'b0}};
+    assign eye_shim_pready        = 1'b1;
+    assign eye_shim_pslverr       = 1'b0;
+    assign eye_swi_lane_sel_w     = 3'h0;
+    assign eye_swi_dwell_us_w     = 32'h0;
+    assign eye_swi_ctrl_w         = 32'h0;
+    assign eye_score_idx_w        = 7'h0;
+    assign eye_force_phase_en_w   = 1'b0;
+    assign eye_force_phase_val_w  = 4'h0;
+    assign eye_force_slip_val_w   = 3'h0;
+    assign eye_crc_err_cnt_clr_w  = 1'b0;
+`endif
 
     // SWI_FORCE_PHASE_EN/VAL/SLIP_VAL are reserved register slots (proposal
     // §5); the calibrator does not consume them in v2 — kept as drivable

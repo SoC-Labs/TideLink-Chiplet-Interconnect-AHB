@@ -123,6 +123,18 @@ print("    is_long_pkt     : {}".format((v>>26)&1))
 print("    pkt_is_cr_pkt   : {}".format((v>>27)&1))
 print("    pkt_is_crack    : {}".format((v>>28)&1))
 print("    llrx_valid      : {}".format((v>>29)&1))
+print("    a2l_replay_link_valid : {}  (word held at app->link FIFO)".format((v>>30)&1))
+print("    fe_rx_is_full         : {}  (credit gate; 1 = no credits)".format((v>>31)&1))
+# FC-node jam signature (root-caused 2026-06-11, docs/archive/
+# AUTOCAL_CLOSURE_2026_06_10.md residual #6): an un-ACKed in-flight LONG
+# packet jams the node when its NACK/ACK return is lost on the marginal
+# direction. NOT credit starvation. Every later word (data AND sideband/
+# doorbell) queues behind it forever — the protocol has no node timeout.
+if ((v>>17)&0xF)==5 and ((v>>30)&1)==1 and ((v>>31)&1)==0:
+    print("    >>> FC NODE JAMMED: fcsm=LINK_DATA + a2l_lnk=1 + fe_full=0 —")
+    print("    >>> un-ACKed long packet stuck (Bug-A anatomy, residual #6).")
+    print("    >>> Recover: pynq_host/scripts/unjam_fc_node.sh <BOARD_IP>")
+    print("    >>> (CTRL_DIS -> CTRL_FULL + clear swi_training_mode).")
 e=rd(0x114)
 print("  SYNC_DETECTED_COUNTER (0x114):")
 print("    sync_detected_cnt : {}{}".format((e>>16)&0xFFFF, " (SATURATED)" if ((e>>16)&0xFFFF)==0xFFFF else ""))

@@ -1,0 +1,273 @@
+// =============================================================================
+// tidelink_top_full_asic_v2.flist — S3 PHY-swap build variant (V2)
+//
+// V2 = the NEW shared GPIO-PHY component (deps/tidelink-phy, the
+// silicon-validated FIX-N..R serdes fork + new lane-mask-aware calibrator)
+// in place of the V1 local_overrides/tidelink-gpio-phy composition.
+//
+// The new component's serdes forks share module names with the V1 sources
+// (WavD2DGpio, WavD2DGpioRx, WavD2DGpioTx, WlinkGPIOPHY, tidelink_lane_deskew,
+// tidelink_phy_align_calibrator, tidelink_lane_checker*) so the two trees
+// CANNOT co-compile — V2 is selected by compiling THIS flist, which:
+//   1. defines TIDELINK_PHY_V2 (activates the `ifdef arms in the shared RTL:
+//      src/rtl/local_overrides/Wlink.v, axi_chiplet_controller.sv and
+//      src/rtl/tidelink_top.sv);
+//   2. swaps the serdes/deskew/calibrator/checker sources to
+//      deps/tidelink-phy/rtl;
+//   3. adds the PHY-owned TX/RX lane front-end blocks the new WavD2DGpio
+//      instantiates (tx_segmenter / tx_mask / rx_demask);
+//   4. drops src/rtl/tidelink_eye_regs.sv (eye-vis retired in V2, AUDIT #17 —
+//      Region 10 APB reads return 0 via the tidelink_top RAZ tie).
+//
+// The V1 flist (tidelink_top_full_asic.flist) MUST NOT be edited as part of
+// this change: with TIDELINK_PHY_V2 undefined every shared-RTL `ifdef arm
+// compiles the old code, keeping the default V1 build bit-identical.
+//
+// NOT included (deliberate): tidelink_gpio_phy_rx/tx wrappers,
+// tidelink_phy_sync_insert/detect (beacon is opt-in/deferred) and the BIST
+// files — the silicon-proven composition (PHY-BIST core) puts the checker +
+// calibrator at controller level on the 128-bit link data.
+// =============================================================================
++define+TIDELINK_PHY_V2
++incdir+${TIDELINK_HOME}/src/rtl
++incdir+${TIDELINK_HOME}/src/rtl/fifo
++incdir+${TIDELINK_HOME}/deps/tidelink-phy/rtl
+
+// FIFO subsystem -- ASIC variant (compiled SRAM macro)
+${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
+${TIDELINK_HOME}/src/rtl/fifo/asic/tidelink_sram.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ctrl.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_mem.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_returner.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_apb_regs.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
+
+// FC adapter
+${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
+
+// PTP subsystem
+${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv
+${TIDELINK_HOME}/src/rtl/tidelink_mul_iter.sv
+${TIDELINK_HOME}/src/rtl/tidelink_ptp_servo.sv
+${TIDELINK_HOME}/src/rtl/tidelink_phc_cdc.sv
+
+// Address translator (CAM-based) and APB dependencies
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/interfaces/apb4_if.sv
+${CMSDK_DIR}/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
+${TIDELINK_HOME}/src/rtl/tl_addr_trans_regs.sv
+${TIDELINK_HOME}/src/rtl/tl_addr_trans_cam.sv
+${TIDELINK_HOME}/src/rtl/tidelink_addr_translator.sv
+
+// XHB500 AHB-to-AXI bridge (subordinate path)
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_flop.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_or.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_sync.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_xor.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_reverse_regd_slice_rst_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_hazard_list.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_strb.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_addr.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_wdata.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_resp.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv.sv
+
+// XHB500 AXI-to-AHB bridge (manager path)
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_flop.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_or.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_sync.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_xor.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_pkg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_hreg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_xreg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_b.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_r.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_h_xout.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst.sv
+
+// Wlink chiplet controller (Chisel-generated)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wav_latch_model.sv
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/APBFanout_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/AXI4ToWlink.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/GeneralBusToWlink.v
+// Local overrides (2026-06-10 ASIC<->FPGA flist reconcile): the FPGA flist
+// has carried silicon-validated fixes in src/rtl/local_overrides/ that the
+// ASIC list was missing — the two lists now reference the SAME RTL. All
+// Xilinx primitives in these files are generate-gated (USE_CLKBUF/USE_IDELAY
+// default 0) so the ASIC elaborator never sees them.
+${TIDELINK_HOME}/src/rtl/local_overrides/ShortPacketToWlink.v
+${TIDELINK_HOME}/src/rtl/local_overrides/TideLinkToWlink.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
+// V2 PHY SWAP: serdes lane fork from the shared PHY component (FIX-N..R,
+// silicon-validated 2026-06-10) replaces src/rtl/local_overrides/{WavD2DGpio,
+// WavD2DGpioRx,WavD2DGpioTx}.v. Same module names — never co-compile with V1.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpio.v
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
+// V2 PHY SWAP: PHY-owned TX/RX lane front-end blocks instantiated by the new
+// WavD2DGpio (128b<->8x16b segmentation + Option-A lane mask zero-fill).
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_segmenter.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_124.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_129.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_27.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_7.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetSet.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_11.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_12.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_14.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_15.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_17.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_20.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_21.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_23.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_5.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_6.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_9.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_15.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavResetSync.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavSyncPulse.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_10.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_4.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
+// V2 PHY SWAP: GPIO PHY wrapper from the shared PHY component — adds the
+// swi_word_pin_in / swi_word_pin_auto_en FIX-R ports (consumed by the
+// TIDELINK_PHY_V2 arm of local_overrides/Wlink.v) and drops link_tx_tx_idle.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WlinkGPIOPHY.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_15.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_12.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_13.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxRouter.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxLinkLayer.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxPstateCtrl.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxRouter.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOMem.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_arFC_a2l_101x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_arFC_l2a_101x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_awFC_a2l_101x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_awFC_l2a_101x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_bFC_a2l_14x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_bFC_l2a_14x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_rFC_a2l_47x32.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_rFC_l2a_47x32.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_wFC_a2l_37x32.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_wFC_l2a_37x32.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbus_gb_a2l_32x4.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_generalbus_gb_l2a_32x4.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_a2l_48x16.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_l2a_48x16.v
+// Local override Wlink.v — adds obs_fe_rx_is_full_o + obs_a2l_replay_app_valid_o
+// observability ports consumed by local_overrides/axi_chiplet_controller.sv.
+// Submodule Wlink.v at deps/axi-chiplet-controller/logical/wlink/Wlink.v lacks
+// these ports, so loading the override avoids unresolved-reference link
+// errors during set_top_module (DES-220).
+// V2: the TIDELINK_PHY_V2 arm inside routes swi_word_pin_in/_auto_en to the
+// new WlinkGPIOPHY and drops the retired link_tx_tx_idle connection.
+${TIDELINK_HOME}/src/rtl/local_overrides/Wlink.v
+
+// Chiplet controller wrapper (I2C, role selection, bridges)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFOL1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxi2axil_bridge.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/mkaxil2apb_bridge.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_master.v
+// Bug N7/N8 silicon observability override: adds status_o[3:0] output port.
+${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
+// Bug N7/N8 silicon observability override: adds obs_*_o output ports.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_autoneg.sv
+
+// §9 PHY alignment: per-lane lock checker + auto-cal FSM
+// V2 PHY SWAP: checker + popcount + APB regs come from deps/tidelink-phy
+// (same module names/port surface as the deps/tidelink-gpio-phy V1 copies;
+// the new checker additionally exposes lane_match_o, left unconnected).
+// +incdir+${TIDELINK_HOME}/deps/tidelink-phy/rtl is at the top of this file
+// (tidelink_training_patterns.svh / tidelink_sync_word.svh).
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_popcount16.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker_single.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_apb_regs.sv
+// Cross-lane word deskew — V2 PHY SWAP: shared-component copy (instantiated
+// by the new WavD2DGpio with its own depth/offset handling).
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+// V2 PHY SWAP: new lane-mask-aware calibrator (S_PROBE/eye-centre + M8/M9/M11
+// lineage + FIX-E/H/J hooks) replaces src/rtl/tidelink_phy_align_calibrator.sv.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv
+// V2: src/rtl/tidelink_eye_regs.sv REMOVED (eye-vis retired, AUDIT #17).
+// tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
+// §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0
+// (TIDELINK_USE_IDELAY undefined) → pure passthrough; the Xilinx
+// IDELAYE2/IDELAYCTRL primitive text is never seen by the ASIC
+// elaborator. The ASIC equivalent (a programmable per-lane delay cell
+// driven by the same calibrator phase) is documented for the future
+// ASIC target — see the agent report / ASIC source-sync guidance.
+${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
+${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
+
+// §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
+
+// Performance profiling
+${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
+
+// Top-level wrapper
+${TIDELINK_HOME}/src/rtl/tidelink_top.sv

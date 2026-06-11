@@ -251,7 +251,7 @@ tidelink/
 │   ├── tidelink_integration/        # Loopback UVM env (3 tests)
 │   ├── tidelink_system/             # Paired system UVM env (12 tests, vplan)
 │   └── tidelink_ptp_stress/         # PTP jitter characterisation UVM env
-├── flist/                           # Synopsys file lists per module
+├── flists/                           # Synopsys file lists per module
 ├── syn/asic/                        # ASIC synthesis (Design Compiler, RTL Architect)
 ├── xprop/                           # X-propagation runs via VC Formal (NOT FPV)
 ├── lint/                            # HAL (Cadence) RTL lint

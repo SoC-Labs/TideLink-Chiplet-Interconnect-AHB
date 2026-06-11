@@ -144,3 +144,8 @@ syn/asic/_flow/
 syn/asic/calibre/work/
 *_bak
 fc_output.txt
+
+# Added 2026-06-11: repo cleanup (see docs/REPO_CLEANUP_ASSESSMENT_2026_06_11.md)
+/.Xil/
+/.pytest_cache/
+**/verdi_config_file

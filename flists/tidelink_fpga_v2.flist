@@ -35,7 +35,11 @@
 // =============================================================================
 // Define carried by per-file shims (src/rtl/v2shims/) — NOT a +define+:
 // Vivado IP packaging drops fileset defines, synth-run options and global
-// includes (all three proven 2026-06-11). VCS also honours the shims.
+// includes (all three proven 2026-06-11). VCS compiles the shims directly;
+// fpga/filelist.tcl MATERIALISES each shim into a standalone copy under
+// imp/fpga/gen_v2/ (full original text + prepended `define) because
+// ipx::package_project also drops `include-only shims from the packaged
+// file set (fourth mechanism proven dropped, 2026-06-11).
 +incdir+${TIDELINK_HOME}/src/rtl/local_overrides
 
 // Prerequisite: source set_env.sh to set TIDELINK_HOME and CMSDK_DIR before

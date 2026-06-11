@@ -31,7 +31,7 @@ and what is deliberately **not** being fixed in the old stack.
 | hwtest 5a — single AHB_TX word M→S | **PASS** (write completed inside the 5 s gate) |
 | Slave RX FIFO readback (0x44010000) | **`0xc0ffee00`, `0xc0ffee01` byte-perfect** — M→S crossing REPRODUCED; slave healthy after (cal=1 fcsm=4 cr=1 ck=1) |
 | hwtest 5b — 8-word storm | Stalled at word 4; master AHB write blocked → **z2_02 PS hard-wedged** (SSH dead, needs JTAG `rst -system` via xsdb on mapstone-dev:3121, target `*Z2_02*`) |
-| hwtest 4b — doorbell M→S | Blocked on the z2_02 reset; run after recovery |
+| hwtest 4b — doorbell M→S | **Run 2026-06-11 after board reboot + fresh converge (16/16 it-1, cr=1 both): FAIL — doorbell sideband inert on HW.** Both dies read `DOORBELL_RESP_ACC=0x1000` once post-link-up (residue = the 4096 credit grant echoed into the acc); after read-clear, 8 master rings accumulate nothing on either die. Sim is green on the same RTL (doorbell suite 11/11 incl. test_04/test_10 sustained replenish), so this is an HW-only sideband TX/RX gap — same family as the historical sideband-consumer findings. Needs ILA on the sideband path. Logged as residual #6. Other 4x sub-tests: 6/7 pass (credit counter mechanics + master CURRENT_CREDITS=4096 healthy). |
 
 The storm result is a clean characterization of residual #1/#5 below: the
 ~4-word budget matches the initial credit allocation; S→M credit return does
@@ -96,6 +96,11 @@ Earlier foundational fixes (S_PROBE `f900e07`, cr-OR-crack `f99ec48`, XDC port
    correctness)** when `fe_full=1`; the safe M→S path is the AHB_TX mailbox
    with an `fe_full` check. FC-side rework lands with the new PHY/link-mgmt
    refactor, not here.
+6. **Doorbell sideband is inert on HW** (2026-06-11): rings accumulate no
+   response on either die despite the cocotb doorbell suite passing 11/11
+   on identical RTL; both dies show a one-shot `0x1000` link-up residue in
+   `DOORBELL_RESP_ACC`. HW-only sideband TX/RX gap — needs ILA. Data-plane
+   M→S (AHB_TX) is unaffected (crossing reproduced same night).
 
 ## 5. Hand-off to the new PHY
 

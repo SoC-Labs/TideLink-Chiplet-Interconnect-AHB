@@ -36,25 +36,33 @@ d0=$(tt_devmem_read "$SLAVE_IP" 0x44032024)  # doorbell_response_acc
 c0=$(tt_devmem_read "$SLAVE_IP" 0x44032028)  # pair_credit_counter
 tt_info "4a baseline slave: REL_ACC=$m0 DBELL_ACC=$d0 PAIR_CTR=$c0"
 
-# --- 4b ring N doorbells from master, observe slave-side accumulation ---
+# --- 4b ring N doorbells from master, observe RINGER-side response acc ---
+# DOORBELL_RESP_ACC (0x024) is a W-add/R-clear accumulator (tidelink_apb_
+# regs.sv:294). The response to a ring lands on the RINGER, so assert there
+# (the original assertion read the rung peer — wrong on both theories).
+# bridge1 2026-06-11 finding: BOTH dies read 0x1000 on the first post-
+# converge read (link-up residue = the 4096 credit grant echoed into the
+# acc); after read-clear, rings accumulate NOTHING on either die — the HW
+# doorbell sideband is inert despite the cocotb doorbell suite passing
+# 11/11 on the same RTL. Needs ILA on the sideband TX/RX path. Baseline
+# read added below so residue can't masquerade as responses again.
 N_DBELL="${N_DBELL:-8}"
+m_base=$(tt_devmem_read "$MASTER_IP" 0x44032024)   # read-clear baseline
 for i in $(seq 1 "$N_DBELL"); do
     tt_devmem_write "$MASTER_IP" 0x44032014 0x1
     sleep 0.05
 done
 sleep 0.5
-d_after=$(tt_devmem_read "$SLAVE_IP" 0x44032024)
+d_after=$(tt_devmem_read "$MASTER_IP" 0x44032024)
 d_after_dec=$(( d_after ))
-if [ "$d_after_dec" -gt 0 ] && [ "$d_after_dec" -le "$N_DBELL" ]; then
-    tt_pass "4b slave DOORBELL_RESP_ACC=$d_after_dec after $N_DBELL master doorbells"
+if [ "$d_after_dec" -gt 0 ]; then
+    tt_pass "4b master DOORBELL_RESP_ACC=$d_after (cleared baseline $m_base) after $N_DBELL rings — M->S ring + S->M response round-trip alive"
 else
-    # An ACC value > N is possible only if a previous run left residue +
-    # the read above didn't clear (raw acc is W-add/R-clear). Report.
-    tt_fail "4b slave DOORBELL_RESP_ACC=$d_after_dec unexpected (rang $N_DBELL)"
+    tt_fail "4b master DOORBELL_RESP_ACC=0 after $N_DBELL rings (baseline $m_base) — no responses returned"
 fi
 
 # Read-clear: should read 0 next time
-d_clear=$(tt_devmem_read "$SLAVE_IP" 0x44032024)
+d_clear=$(tt_devmem_read "$MASTER_IP" 0x44032024)
 tt_assert_eq "0x00000000" "$d_clear" "4b DOORBELL_RESP_ACC read-clears"
 
 # --- 4c PAIR_CREDIT_COUNTER (Region 1 0x028) — write to PAIR_CREDIT_CONSUME

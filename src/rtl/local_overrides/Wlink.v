@@ -193,6 +193,13 @@ module Wlink #(
   // at bits [4N+3:4N]). Pass-through to WlinkGPIOPHY, mirroring
   // swi_bit_slip_in. Tie 0 → legacy single-global-phase APB path.
   input  [31:0] swi_phase_offset_in,
+`ifdef TIDELINK_PHY_V2
+  // S3 PHY swap (2026-06-11): the deps/tidelink-phy WlinkGPIOPHY fork adds a
+  // global word-window pin + its autonomous-mode select (FIX-R/FIX-R-proper).
+  // Routed from the chiplet controller. V1 builds never see these ports.
+  input   [3:0] swi_word_pin_in,
+  input         swi_word_pin_auto_en,
+`endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
   // instantiate the lane-checker + calibrator FSM outside Wlink. These are
@@ -1154,7 +1161,9 @@ module Wlink #(
     .scan_out(phy_scan_out),
     .por_reset(phy_por_reset),
     .link_tx_tx_en(phy_link_tx_tx_en),
-    .link_tx_tx_idle(lltx_io_link_idle), // SoC Labs 2026-06-06: LL idle -> PHY gates SYNC insertion to inter-packet slots
+`ifndef TIDELINK_PHY_V2
+    .link_tx_tx_idle(lltx_io_link_idle), // SoC Labs 2026-06-06: LL idle -> PHY gates SYNC insertion to inter-packet slots (V1 fork only; V2 fork has no such port)
+`endif
     .link_tx_tx_ready(phy_link_tx_tx_ready),
     .link_tx_tx_link_data(phy_link_tx_tx_link_data),
     .link_tx_tx_lane_mask(phy_link_tx_tx_lane_mask),
@@ -1186,7 +1195,15 @@ module Wlink #(
     // APB regs at offsets 0x244/0x248 are disabled until decode issue resolved.
     .swi_bit_slip_in(swi_bit_slip_in),
     .swi_training_mode_in(swi_training_mode_in),
+`ifdef TIDELINK_PHY_V2
+    // S3 PHY swap: V2 fork adds the word-pin pair (FIX-R). Its missing
+    // link_tx_tx_idle port is guarded at that connection's own site above.
+    .swi_phase_offset_in(swi_phase_offset_in),
+    .swi_word_pin_in(swi_word_pin_in),
+    .swi_word_pin_auto_en(swi_word_pin_auto_en)
+`else
     .swi_phase_offset_in(swi_phase_offset_in)
+`endif
   );
   WlinkTxRouter txrouter ( // @[Wlink.scala 89:27]
     .clock(txrouter_clock),

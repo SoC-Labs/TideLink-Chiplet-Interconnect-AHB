@@ -1813,7 +1813,13 @@ module axi_chiplet_controller #(
     // so connect directly (INTEGRATION_GUIDE.md §5.2). sweep_active is
     // derived from cal_state_w[2:0] == S_SWEEP (3'd2 in the calibrator's
     // state enum).
+`ifdef TIDELINK_PHY_V2
+    // S3 PHY swap: the V2 calibrator (always-on FSM) has different state
+    // encodings — use its dedicated sweep_active_o output, not a decode.
+    wire sweep_active_w;
+`else
     wire sweep_active_w = (cal_state_w == 4'd2);
+`endif
     assign link_rx_clk_o = phy_link_rx_rx_link_clk_w;
 
     // SoC Labs M2 (2026-06-05): reset synchroniser on lane_checker.rst_n.
@@ -1992,6 +1998,54 @@ module axi_chiplet_controller #(
     // Reduce to 1024 link_rx_clk cycles (≈ 683 µs at HW, ≈ 340 µs in sim).
     // Keeps a small overlap margin but fits comfortably inside the autoneg
     // poll budget.
+`ifdef TIDELINK_PHY_V2
+    // =====================================================================
+    // S3 PHY swap (2026-06-11): deps/tidelink-phy calibrator (FIX-series,
+    // always-on FSM, silicon-validated with the FIX-N..R serdes). Instance
+    // name u_calibrator preserved — cocotb hierarchical force paths depend
+    // on it. Port-map deltas vs V1 (see docs of feat/s3-phy-swap):
+    //   cr_pkt_seen_i  <= cr | crack   (preserves the V1 A2 oracle)
+    //   swi_training_hold_i <= swi_training_mode_r (Region 8 bit = hold,
+    //                          mirroring the BIST CTRL[6] semantics; the
+    //                          OR-merge into the PHY drive remains below)
+    //   lane_mask      <= wlink_rx_lane_mask (resets 8'hFF pre-handshake)
+    //   sync/lane_synced/pin_converge: opt-in BIST features, tied off
+    //   RETIRED: dwell_min_dist_i, min_lock_dwells_i (M11b knob — register
+    //   retained, consumer V1-only), crack_pkt_seen_i, resweep_ctr_o,
+    //   eye-vis surface (AUDIT #17) — Region C OBS_CAL + eye outputs RAZ.
+    // =====================================================================
+    tidelink_phy_align_calibrator u_calibrator (
+        .clk                    (phy_link_rx_rx_link_clk_w),
+        .rst                    (~poresetn),
+        .role_locked            (calibrator_role_locked),
+        .swreset                (swi_recal_r | local_swreset_pulse_w),
+        .lane_locked            (lane_locked_w),
+        .lane_mask              (wlink_rx_lane_mask),
+        .apb_bit_slip_override  (24'h0),
+        .apb_override_enable    (1'b0),
+        .swi_training_hold_i    (swi_training_mode_r),
+        .cr_pkt_seen_i          (obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w),
+        .sync_seen_i            (1'b0),
+        .lane_synced_i          (8'h00),
+        .lane_pin_converge_en_i (1'b0),
+        .bit_slip               (cal_bit_slip_w),
+        .phase_offset           (cal_phase_offset_w),
+        .training_mode          (cal_training_mode_w),
+        .calibration_done       (cal_calibration_done_w),
+        .validation_timed_out   (),
+        .lane_fault             (cal_lane_fault_w),
+        .state                  (cal_state_w),
+        .sweep_active_o         (sweep_active_w)
+    );
+    // Retired V1 surfaces — keep the module outputs driven (RAZ).
+    assign cal_resweep_ctr_w        = 16'h0;
+    assign eye_status_o             = 32'h0;
+    assign eye_score_data_o         = 6'h0;
+    assign eye_score_lane_passed_o  = 1'b0;
+    assign eye_score_best_o         = 6'h0;
+    assign eye_score_best_slip_o    = 3'h0;
+    assign eye_score_best_phase_o   = 4'h0;
+`else
     tidelink_phy_align_calibrator #(
         .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
                                         //      was 1024 (163μs, <1 sweep) which left master no time.
@@ -2081,6 +2135,7 @@ module axi_chiplet_controller #(
         .eye_score_best_slip   (eye_score_best_slip_o),
         .eye_score_best_phase  (eye_score_best_phase_o)
     );
+`endif
 
     // EYE_LAST_LATCHED mirror — surface the current calibrator slip vector
     // and lane_fault to the eye_regs shim at top level.
@@ -2347,6 +2402,13 @@ module axi_chiplet_controller #(
         // 0x4403_2100), the autoneg I²C training FSM also driving the
         // Region 8 training_mode reg.
         .swi_bit_slip_in            (swi_bit_slip_w),
+`ifdef TIDELINK_PHY_V2
+        // S3 PHY swap: global word-window pin. The serdes' WORD_PIN_AUTO
+        // matcher is autonomous (FIX-R-proper, the silicon-validated
+        // default); manual pin held at 0.
+        .swi_word_pin_in            (4'h0),
+        .swi_word_pin_auto_en       (1'b1),
+`endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8
         // SWI_PHASE_OFFSET (MMIO 0x4403_2118).

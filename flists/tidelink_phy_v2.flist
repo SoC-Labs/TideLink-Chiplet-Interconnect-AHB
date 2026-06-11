@@ -1,0 +1,45 @@
+// tidelink_phy_v2.flist
+//
+// L2 sources of the NEW shared PHY component (deps/tidelink-phy, the
+// feat/phy-refactor line of tidelink-gpio-phy — see
+// tidelink-gpio-phy-deskew/docs/archive/PLAN_TIDELINK_INTEGRATION.md §1/§5,
+// step S2). This is the in-path PHY that will replace the current
+// WavD2DGpio datapath behind tidelink_top's USE_PHY_V2 parameter.
+//
+// *** NOT YET INCLUDED FROM ANY LIVE FLIST. ***
+// This flist is consumed when USE_PHY_V2 elaboration begins (S3: the
+// g_phy_v2 generate arm in src/rtl/tidelink_top.sv gets its drop-in).
+// Until then USE_PHY_V2=0 everywhere and these sources never elaborate.
+//
+// Deliberately EXCLUDED (BIST-repo-only, not part of the consumed L2):
+//   tidelink_phy_bist_core.sv / tidelink_phy_bist_prbs.sv /
+//   tidelink_phy_bist_regs.sv / tidelink_gpio_phy_apb_regs.sv /
+//   tidelink_phy_align_calibrator.sv (AUDIT 4b rewrite lands in S3)
+//
+// NOTE: deps/tidelink-gpio-phy (feat/standalone-phy-bist line) already
+// provides tidelink_popcount16 / tidelink_lane_checker* /
+// tidelink_lane_deskew via tidelink_lane_checker.flist and friends.
+// Do NOT load this flist together with those in one elaboration —
+// module names collide by design (same component, newer line).
+
+// Headers (tidelink_sync_word.svh, tidelink_training_patterns.svh)
++incdir+${TIDELINK_HOME}/deps/tidelink-phy/rtl
+
+// Helpers / leaves
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_popcount16.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker_single.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker.sv
+
+// TX path
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_segmenter.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_insert.sv
+
+// RX path
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_detect.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
+
+// Top-level TX/RX wrappers
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_tx.sv
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_rx.sv

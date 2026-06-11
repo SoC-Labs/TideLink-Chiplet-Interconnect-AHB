@@ -96,11 +96,18 @@ Earlier foundational fixes (S_PROBE `f900e07`, cr-OR-crack `f99ec48`, XDC port
    correctness)** when `fe_full=1`; the safe M→S path is the AHB_TX mailbox
    with an `fe_full` check. FC-side rework lands with the new PHY/link-mgmt
    refactor, not here.
-6. **Doorbell sideband is inert on HW** (2026-06-11): rings accumulate no
-   response on either die despite the cocotb doorbell suite passing 11/11
-   on identical RTL; both dies show a one-shot `0x1000` link-up residue in
-   `DOORBELL_RESP_ACC`. HW-only sideband TX/RX gap — needs ILA. Data-plane
-   M→S (AHB_TX) is unaffected (crossing reproduced same night).
+6. **Doorbell sideband dies after link-up** (2026-06-11, refined): the
+   protocol decode shows the `0x1000` values are NOT residue — they are the
+   doorbell round-trip *working*: each die's reset-doorbell (returner ch2,
+   queued in the a2l FIFO while the link trained) rang the peer at link-up
+   flush, and the peer's ch1 response (its credit count, 0x1000) crossed
+   back. Both directions delivered. Rings issued ~6 min later accumulate
+   nothing, with returner STATUS clean (busy=0, master_error=0) — the
+   sideband TX path goes quiet after the bring-up window. Suspects:
+   (a) marginal-eye direction degrading post-idle, (b) Wlink TX pstate
+   gating after LINK_IDLE quiesce (`WlinkTxPstateCtrl`). Needs ILA on the
+   a2l/sideband path; further HW probing tonight was blocked by bring-up
+   lottery variance. Data-plane M→S (AHB_TX) unaffected.
 
 ## 5. Hand-off to the new PHY
 

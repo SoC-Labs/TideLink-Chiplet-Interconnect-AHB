@@ -72,6 +72,16 @@ module tidelink_top #(
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
     parameter USE_T3A    = 1'b0,
+    // S2 scaffold (PLAN_TIDELINK_INTEGRATION, 2026-06-10): select the NEW
+    // shared PHY component (deps/tidelink-phy, feat/phy-refactor line) in
+    // place of the current WavD2DGpio datapath inside u_chiplet_controller.
+    // 0 (default, EVERYWHERE today) = bit-identical to the pre-scaffold RTL:
+    // the g_phy_v2 generate arm (see u_chiplet_controller site below)
+    // elaborates empty and nothing else is touched. 1 = reserved for the S3
+    // drop-in; sources come from flists/tidelink_phy_v2.flist (not yet
+    // included by any live flist). Do NOT set to 1 yet — the arm is a
+    // placeholder, not a functional PHY.
+    parameter logic USE_PHY_V2 = 1'b0,
     // Tier 2 RTL hardening (2026-05-25): force swi_enable=1 on any APB write
     // that asserts swi_swreset=1 to Wlink register 0x208. Protects the 7
     // FCSMs from buggy SW that writes {swreset=1, swi_enable=0} together —
@@ -1822,6 +1832,30 @@ module tidelink_top #(
     assign apb_pwdata_to_chip =
         (harden_swi_apply         ? (apb_pwdata | swi_enable_or_mask) : apb_pwdata)
         & (harden_swi_block_swreset ? swreset_clear_mask : {SYS_DATA_W{1'b1}});
+
+    // =========================================================================
+    // S2 scaffold — PHY v2 swap site (PLAN_TIDELINK_INTEGRATION §1/§5, S2→S3)
+    //
+    // This generate arm marks WHERE the new shared PHY component
+    // (deps/tidelink-phy @ feat/phy-refactor; sources enumerated in
+    // flists/tidelink_phy_v2.flist) drops in: it will replace the
+    // WavD2DGpio serdes datapath that today lives INSIDE
+    // u_chiplet_controller, leaving the L3 surface (role block, I2C,
+    // training FSM, Wlink POR gating) untouched and driving the new L2
+    // through the alignment contract (swi_*/status bundle —
+    // tidelink_phy_align_if once it lands).
+    //
+    // S2 contract: with USE_PHY_V2=0 (the only supported value today) this
+    // arm elaborates EMPTY and the build is bit-identical to pre-scaffold
+    // RTL. The S3 drop-in fills g_phy_v2 with tidelink_gpio_phy_tx/rx (+
+    // deskew/checker/mask stack), muxes the pad_* and link-clock
+    // connections away from the controller-internal PHY, and ties the new
+    // calibrator/contract surface into the existing swi_* APB plumbing.
+    // =========================================================================
+    if (USE_PHY_V2) begin : g_phy_v2
+        // S3 drop-in site; see docs (PLAN_TIDELINK_INTEGRATION S3 / AUDIT 4b)
+        // and flists/tidelink_phy_v2.flist. Intentionally empty in S2.
+    end
 
     // SoC Labs §9 auto-cal: enable the in-RTL per-lane calibration FSM at
     // the TideLink integration level. The chiplet controller defaults to

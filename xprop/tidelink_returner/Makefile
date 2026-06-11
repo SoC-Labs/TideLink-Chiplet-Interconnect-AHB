@@ -8,7 +8,7 @@ WORKDIR = work
 LOGFILE = xprop.log
 
 VC_FORMAL      = vc_formal
-VC_FORMAL_FLAGS = -f $(TIDELINK_HOME)/flist/$(MODULE).flist
+VC_FORMAL_FLAGS = -f $(TIDELINK_HOME)/flists/$(MODULE).flist
 
 .PHONY: xprop clean gui help
 

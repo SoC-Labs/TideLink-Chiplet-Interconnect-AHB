@@ -11,7 +11,7 @@ TOPLEVEL = tb_top
 MODULE   = test_tidelink
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # ── Code coverage ───────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ export PHYS_IP_PATH   ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
 export STDCELL_VERILOG ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog
 export MEM_PATH       ?= /research/precompiled_mems/TSMC65/rf_16k
 
-NETLIST_FLIST = $(TIDELINK_HOME)/flist/tidelink_netlist.flist
+NETLIST_FLIST = $(TIDELINK_HOME)/flists/tidelink_netlist.flist
 
 .PHONY: gui sim_rtl_saif sim_asic sim_saif
 gui: $(SIM_BUILD)/simv

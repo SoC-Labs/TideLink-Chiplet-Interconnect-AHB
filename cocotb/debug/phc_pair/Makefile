@@ -19,7 +19,7 @@ TOPLEVEL = tb_top
 MODULE  ?= test_phc_hw_sync_pair
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_ptp.sv
 
 # ---------------------------------------------------------------------------

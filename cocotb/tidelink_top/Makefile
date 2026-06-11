@@ -11,7 +11,7 @@ TOPLEVEL = tb_top
 MODULE   = test_tidelink_top
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_ahb.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_ahb.flist
 COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_fc_adapter.sv
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 

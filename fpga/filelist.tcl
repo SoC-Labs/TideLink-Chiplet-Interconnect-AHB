@@ -8,7 +8,7 @@
 ###
 ### Copyright (C) 2026, SoC Labs (www.soclabs.org)
 ###-----------------------------------------------------------------------------
-### RTL source manifest for IP packaging. Reads flist/tidelink_fpga.flist
+### RTL source manifest for IP packaging. Reads flists/tidelink_fpga.flist
 ### (created by Agent A2) via SOCLABS_TIDELINK_DIR.
 ###
 ### Required environment variables:

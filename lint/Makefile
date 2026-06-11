@@ -43,7 +43,7 @@ STANDALONE_MODULES = \
 # wrapper was modernised to instantiate the active tidelink_fifo (which now
 # subsumes the FIFO memory, APB register block and Returner) and tie off the
 # new pass-through ports (PTP / servo / mbox / ctrl / perf / fc_wr / puf).
-# tidelink.sv is now added to flist/tidelink_ahb.flist so HAL can resolve
+# tidelink.sv is now added to flists/tidelink_ahb.flist so HAL can resolve
 # the u_tidelink instance inside tidelink_ahb. HAL: 0 errors.
 #
 # NOTE (2026-05-29): tidelink_fifo_ahb re-enabled. The wrapper had 4 UNCONI
@@ -51,7 +51,7 @@ STANDALONE_MODULES = \
 # (ctrl_reg_rdata, perf_reg_rdata, puf_addr, puf_req). Those peers live in
 # tidelink_top (regfile / PUF), not in this AHB-only wrapper, so they are
 # tied to 0 at the u_tidelink_fifo instance. A dedicated flist now lives at
-# flist/tidelink_fifo_ahb.flist. HAL: 0 errors.
+# flists/tidelink_fifo_ahb.flist. HAL: 0 errors.
 CMSDK_MODULES = tidelink_fifo tidelink tidelink_ahb tidelink_fifo_ahb
 
 # ── Module-to-top mapping ────────────────────────────────────────
@@ -62,7 +62,7 @@ TOP_tidelink_fifo     = tidelink_fifo_mem
 TOP ?= $(or $(TOP_$(MODULE)),$(MODULE))
 
 # ── Paths ─────────────────────────────────────────────────────────
-FLIST   = $(TIDELINK_HOME)/flist/$(MODULE).flist
+FLIST   = $(TIDELINK_HOME)/flists/$(MODULE).flist
 LOGFILE = $(MODULE)_hal.log
 XMLFILE = $(MODULE)_hal.xml
 RPTFILE = $(MODULE)_hal_report.txt

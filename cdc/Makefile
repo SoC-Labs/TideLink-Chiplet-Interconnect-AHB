@@ -21,7 +21,7 @@ TOP_tidelink_fifo = tidelink_fifo_mem
 TOP ?= $(or $(TOP_$(MODULE)),$(MODULE))
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-export FLIST  := $(TIDELINK_HOME)/flist/$(MODULE).flist
+export FLIST  := $(TIDELINK_HOME)/flists/$(MODULE).flist
 export SGDC   := $(TIDELINK_HOME)/cdc/tidelink_top.sgdc
 export SWL    := $(TIDELINK_HOME)/cdc/waiver.swl
 export SG_TOP := $(TOP)

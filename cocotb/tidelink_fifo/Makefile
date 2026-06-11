@@ -11,7 +11,7 @@ TOPLEVEL = tb_top
 MODULE   = test_tidelink_fifo
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fifo.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # ── Code coverage ───────────────────────────────────────────────────────

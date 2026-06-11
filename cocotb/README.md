@@ -106,7 +106,7 @@ Resolved 2026-05-29:
 - `tidelink_ahb` HAL lint is now clean — legacy `src/rtl/tidelink.sv`
   was modernised to wrap the current `tidelink_fifo` with tie-offs for
   the new pass-through ports, and was added to
-  `flist/tidelink_ahb.flist` so HAL can resolve `u_tidelink`.
+  `flists/tidelink_ahb.flist` so HAL can resolve `u_tidelink`.
 - `tidelink_fc_adapter` → `tidelink_fc_adapter_full_test` (UVM) was
   previously flaky (~31 scoreboard mismatches under interleaved
   TX+RX+sideband stress) and excluded from CI.  Root cause: DUT

@@ -44,7 +44,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // listed inline here (rather than via -f) so this flist remains parseable by
 // flat tools (simple-grep based flow scripts, Vivado read_verilog, etc.).
 // Mirror of deps/tidelink-gpio-phy/rtl/ — keep in sync with
-// flist/tidelink_lane_checker.flist if files are added there.
+// flists/tidelink_lane_checker.flist if files are added there.
 +incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv

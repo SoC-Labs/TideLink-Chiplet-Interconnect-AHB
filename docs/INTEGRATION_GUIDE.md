@@ -74,7 +74,7 @@ patches — re-apply them on any Chisel regen (see
 ```
 src/rtl/        tidelink_top.sv + fc_adapter + addr_translator + fifo/ + local_overrides/
 deps/           axi-chiplet-controller, xhb500, tidelink-gpio-phy
-flist/          Synopsys filelists, one per module + per-target (see §3)
+flists/          Synopsys filelists, one per module + per-target (see §3)
 fpga/           targets/, scripts/, Vivado Makefile
 syn/asic/       Design Compiler + RTL Architect; flows/makefile.asic at root
 cocotb/ uvm/    verification environments
@@ -90,7 +90,7 @@ Full module hierarchy and packet format are in the root
 
 ## 3. Flists — picking a build target
 
-Flists live in `flist/` and reference RTL via `${TIDELINK_HOME}`/`${CMSDK_DIR}`,
+Flists live in `flists/` and reference RTL via `${TIDELINK_HOME}`/`${CMSDK_DIR}`,
 so `set_env.sh` must be sourced first. The top-level ones:
 
 | Flist | Use |

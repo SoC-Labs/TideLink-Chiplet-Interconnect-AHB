@@ -25,7 +25,7 @@ SKID_BITS ?= 0
 export SKID_BITS
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 # VCD dumping is OFF by default in the skewed variant — a 6 GB+ VCD over the
 # calibrator sweep window dominates wall time. Enable with `make VCD=1`.

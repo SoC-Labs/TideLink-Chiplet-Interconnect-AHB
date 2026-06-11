@@ -15,7 +15,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
 # Force the ASIC flist regardless of common.mk's wildcard fallback —
 # Formality must compare what FC actually saw.
-override FLIST := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
+override FLIST := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
 export FLIST
 
 # ── Paths ──────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
 # Force the ASIC flist (same convention as the FC + Formality + PrimeTime
 # siblings) so the .v / .gds we DRC against match what FC built.
-override FLIST := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
+override FLIST := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
 export FLIST
 
 # ── Paths ─────────────────────────────────────────────────────────────────

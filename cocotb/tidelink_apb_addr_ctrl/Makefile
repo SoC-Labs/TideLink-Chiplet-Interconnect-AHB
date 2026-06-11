@@ -10,7 +10,7 @@ TOPLEVEL = tb_top
 MODULE   = test_tidelink_apb_addr_ctrl
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_apb_addr_ctrl.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_apb_addr_ctrl.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # -- Code coverage -----------------------------------------------------------

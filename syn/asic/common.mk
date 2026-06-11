@@ -23,9 +23,9 @@ export TOP := $(or $(TOP_$(MODULE)),$(MODULE))
 # ── File lists ───────────────────────────────────────────────────────────
 # Use ASIC-specific flist if it exists (swaps FPGA SRAM for compiled macro),
 # otherwise fall back to the default flist.
-ASIC_FLIST_PATH := $(TIDELINK_HOME)/flist/$(MODULE)_asic.flist
-export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flist/$(MODULE).flist)
-export ASIC_FLIST := $(TIDELINK_HOME)/flist/tidelink_asic.flist
+ASIC_FLIST_PATH := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
+export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flists/$(MODULE).flist)
+export ASIC_FLIST := $(TIDELINK_HOME)/flists/tidelink_asic.flist
 
 # ── Cell libraries — TSMC tcbn65lpbwp12t 12-track 9lm_T2 stack ─────────────
 # Switched on 2026-06-02 from 9-track tcbn65lp_220a (legacy under

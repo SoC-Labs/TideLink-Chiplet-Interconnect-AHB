@@ -134,7 +134,7 @@ Total in-tree cocotb test functions across all envs (in + out of CI):
 | `tidelink_top_pair_wordskew` | **experimental** | 19 tests + many `sim_build_*` scratch dirs and `.log` artifacts — calibrator/word-skew probe sandbox; **not pinned, has `*_orig_bak` files** |
 | `tidelink_lane_deskew` | **experimental** | 8 tests; multiple `sim_build_{fix,gate,pipe,syncfix}` + `results_fix.xml` — cross-lane deskew FIFO bring-up sandbox (PHY-v2 work) |
 | `tidelink_deskew_bubble` | **experimental** | 1 test — deskew bubble probe |
-| `cocotb/debug/*` (13) | bug-bisect / fault-injection | `bank_asymmetry`, `calibrator_force_bisect`, `i2c_clkstretch`, `i2c_mask_selflock`, `phc_pair`, `phy_align`, `sim_robust`, `tidelink_chiplet_pair_autocal`, `tidelink_peer_aperture`, `tidelink_phy_align_calibrator`, `wav_d2d_gpio_tx_prbs`, `wlink_pair`, `wlink_tx_pstate_ctrl` — see `cocotb/README.md` §"Debug envs" |
+| `cocotb/debug/*` (12) | bug-bisect / fault-injection | `bank_asymmetry`, `calibrator_force_bisect`, `i2c_clkstretch`, `i2c_mask_selflock`, `phc_pair`, `phy_align`, `sim_robust`, `tidelink_chiplet_pair_autocal`, `tidelink_peer_aperture`, `tidelink_phy_align_calibrator`, `wlink_pair`, `wlink_tx_pstate_ctrl` — see `cocotb/README.md` §"Debug envs" |
 
 > The `tidelink_top_pair*`, `tidelink_lane_deskew`, `tidelink_deskew_bubble` and
 > `tidelink_top_pair_wordskew` envs exist on disk but are **not in the CI

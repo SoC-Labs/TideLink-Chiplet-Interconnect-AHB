@@ -83,7 +83,6 @@ the CI pipeline stays green and fast.
 | [`debug/phy_align/`](debug/phy_align/) | §9 PHY-align story — mix of contract pins (`test_calibrator_skew_window`) and asymmetric/staggered fault-injection probes |
 | [`debug/wlink_pair/`](debug/wlink_pair/) | Two-Wlink pair-bringup sim with the L4/L6/FCSM/FPGA-repro test family from the 2026-05-2x interface-FCSM debug session |
 | [`debug/wlink_tx_pstate_ctrl/`](debug/wlink_tx_pstate_ctrl/) | WlinkTxPstateCtrl FSM deadlock hypothesis probe (debug session 289bb42) |
-| [`debug/wav_d2d_gpio_tx_prbs/`](debug/wav_d2d_gpio_tx_prbs/) | `feat/calibrator-prbs` PRBS-7 training stream investigation (now superseded by the constant-pattern checker in `deps/tidelink-gpio-phy`) |
 | [`debug/bank_asymmetry/`](debug/bank_asymmetry/) | Synthetic per-bank RX asymmetry reproducer for the ~14/16 lane-lock plateau |
 | [`debug/sim_robust/`](debug/sim_robust/) | Adversarial Cat-3/Cat-6 silicon-fingerprint reproducer set (Bug #1/#3/#7). Driven by the top-level `make sim_robust` target. |
 | [`debug/phc_pair/`](debug/phc_pair/) | Two-Wlink + tidelink_ptp pair sim built to reproduce the PHC Phase-1 slave-RX gap |

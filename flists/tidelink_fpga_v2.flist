@@ -33,7 +33,10 @@
 // Tie-offs / stubs: no separate PUF SRAM — PUF reads share the FIFO SRAM
 //   (same tidelink_sram instance inside tidelink_fifo_mem). No scan ports.
 // =============================================================================
-+define+TIDELINK_PHY_V2
+// Define carried by per-file shims (src/rtl/v2shims/) — NOT a +define+:
+// Vivado IP packaging drops fileset defines, synth-run options and global
+// includes (all three proven 2026-06-11). VCS also honours the shims.
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
 
 // Prerequisite: source set_env.sh to set TIDELINK_HOME and CMSDK_DIR before
 // invoking Vivado or any other tool with this filelist.
@@ -258,7 +261,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_
 // at runtime for future PSTATE testing. See src/rtl/local_overrides/Wlink.v.
 // V2: the TIDELINK_PHY_V2 arm inside routes swi_word_pin_in/_auto_en to the
 // new WlinkGPIOPHY and drops the retired link_tx_tx_idle connection.
-${TIDELINK_HOME}/src/rtl/local_overrides/Wlink.v
+${TIDELINK_HOME}/src/rtl/v2shims/v2_Wlink.v
 
 // ── Chiplet controller wrapper (I2C, role selection, autoneg, Wlink gating) ──
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/bridges/FIFO2.v
@@ -286,7 +289,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob
 // (Region 8 slot 3'h0 bits[7:4] = SWI_CAL_MIN_DWELLS) wired to
 // u_calibrator.min_lock_dwells_i. Otherwise identical to upstream.
-${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
+${TIDELINK_HOME}/src/rtl/v2shims/v2_axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
 // init_wait,axl_state,txn_step}_o output ports for APB Region C readback.
 // No functional behaviour change vs the deps/ source.
@@ -313,4 +316,4 @@ ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
 // tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
 
 // ── Top-level wrapper ────────────────────────────────────────────────────────
-${TIDELINK_HOME}/src/rtl/tidelink_top.sv
+${TIDELINK_HOME}/src/rtl/v2shims/v2_tidelink_top.sv

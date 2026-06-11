@@ -96,18 +96,35 @@ Earlier foundational fixes (S_PROBE `f900e07`, cr-OR-crack `f99ec48`, XDC port
    correctness)** when `fe_full=1`; the safe M→S path is the AHB_TX mailbox
    with an `fe_full` check. FC-side rework lands with the new PHY/link-mgmt
    refactor, not here.
-6. **Doorbell sideband dies after link-up** (2026-06-11, refined): the
-   protocol decode shows the `0x1000` values are NOT residue — they are the
-   doorbell round-trip *working*: each die's reset-doorbell (returner ch2,
-   queued in the a2l FIFO while the link trained) rang the peer at link-up
-   flush, and the peer's ch1 response (its credit count, 0x1000) crossed
-   back. Both directions delivered. Rings issued ~6 min later accumulate
-   nothing, with returner STATUS clean (busy=0, master_error=0) — the
-   sideband TX path goes quiet after the bring-up window. Suspects:
-   (a) marginal-eye direction degrading post-idle, (b) Wlink TX pstate
-   gating after LINK_IDLE quiesce (`WlinkTxPstateCtrl`). Needs ILA on the
-   a2l/sideband path; further HW probing tonight was blocked by bring-up
-   lottery variance. Data-plane M→S (AHB_TX) unaffected.
+6. **"Doorbell inertness" SOLVED (2026-06-11 time-decay experiment) — it is
+   Bug-A's link-poisoning, not a sideband fault.** APB-only experiment on a
+   fresh it-1 link (no ILA needed):
+   - Pstate ruled out: `0x44030230[15:0]=0` live on both dies (the
+     2026-05-25 local-override POR fix is active in v33).
+   - Single rings delivered **continuously T+2 s through T+240 s** — no
+     time decay, sideband short packets are reliable.
+   - A **single AHB_TX long packet** on the otherwise-quiet link then
+     poisoned it: slave FCSM hit 7 (SEND_NACK) and recovered to 4; master
+     stuck at **fs=5 (LINK_DATA) with `a2l_lnk=1` and `fe_full=0`** — an
+     un-ACKed in-flight long packet jamming the FC node (NOT credit
+     starvation). The NACK/ACK return rides the marginal S→M direction and
+     was lost → node-level sequence desync, permanent jam; every later
+     sideband word queues behind it. This is the complete Bug-A anatomy,
+     pinned end-to-end from APB. Last night's "inert" 4b = the same storm
+     triggered by 8 rapid rings × replay amplification.
+   - Detection signature for SW: `fcsm=5 && a2l_lnk(0x108[30])=1 &&
+     fe_full(0x108[31])=0` persisting → node jammed; recovery = the known
+     LL swreset cycle. The fc_adapter stall-timeout (4c0a51a) keeps the PS
+     alive through it.
+7. **Wlink replay is NOT idempotent at the receiver** (2026-06-11): each
+   single doorbell ring deposited **3–5 copies** of the response
+   (`RESP_ACC` = 0x3000–0x5000 instead of 0x1000) — link-layer replays of
+   the same FC word are re-applied by the RX side. On this marginal PHY it
+   corrupts every W-add accumulator and would duplicate RX FIFO data words.
+   With the new PHY replays become rare, but the non-idempotency is latent
+   Wlink/L3 architecture debt: any transient error → duplicated delivery.
+   Register as a Wlink-layer work item (sequence-number dedup at RX, or
+   make FC consumers idempotent).
 
 ## 5. Hand-off to the new PHY
 

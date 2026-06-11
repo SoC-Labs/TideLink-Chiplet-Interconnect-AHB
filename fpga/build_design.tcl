@@ -268,6 +268,17 @@ update_compile_order -fileset sources_1
 
 # STEP 8: Synthesis
 puts "Starting synthesis..."
+# S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 must reach the IP's OOC synth.
+# Fileset verilog_define does NOT bake into packaged IP (proven 2026-05-19,
+# see package_tidelink_ip.tcl) — inject at the synth-run level instead, on
+# every synthesis run (top + OOC IP runs).
+if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
+    foreach _r [get_runs -filter {IS_SYNTHESIS}] {
+        set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
+            -value {-verilog_define TIDELINK_PHY_V2} -objects $_r
+        puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
+    }
+}
 launch_runs synth_1 -jobs $num_jobs
 wait_on_run synth_1
 

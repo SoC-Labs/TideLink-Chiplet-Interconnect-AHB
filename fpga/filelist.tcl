@@ -41,6 +41,12 @@ if { [info exists env(CMSDK_FPGA_SRAM_V)] && $env(CMSDK_FPGA_SRAM_V) ne "" } {
 set _phy_v2 0
 if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
 set _flist_name [expr { $_phy_v2 ? "tidelink_fpga_v2.flist" : "tidelink_fpga.flist" }]
+if { $_phy_v2 } {
+    # Global include = the only define mechanism that survives IP packaging.
+    set _v2vh [file join $TIDELINK_HOME fpga vivado_ip tidelink_phy_v2_global.vh]
+    add_files -norecurse $_v2vh
+    set_property is_global_include true [get_files $_v2vh]
+}
 set fpga_flist [file join $TIDELINK_HOME flists $_flist_name]
 if { ![file exists $fpga_flist] } {
     error "$_flist_name not found at $fpga_flist"

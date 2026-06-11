@@ -60,6 +60,7 @@ set_property include_dirs [list \
 # literal references to ${TIDELINK_HOME}, ${CMSDK_DIR}, ${XHB500_IP_DIR}.
 set fh [open $fpga_flist r]
 set extra_incdirs {}
+set extra_defines {}
 while { [gets $fh line] >= 0 } {
     set line [string trim $line]
     if { $line eq "" } { continue }
@@ -70,11 +71,21 @@ while { [gets $fh line] >= 0 } {
     if { [string match "+incdir+*" $resolved] } {
         set incdir [string range $resolved 8 end]
         lappend extra_incdirs $incdir
+    } elseif { [string match "+define+*" $resolved] } {
+        # e.g. +define+TIDELINK_PHY_V2 (the V2 flist carries its define
+        # inline) -> verilog_define on the fileset.
+        lappend extra_defines [string range $resolved 8 end]
     } else {
         read_verilog -sv $resolved
     }
 }
 close $fh
+
+# Apply any +define+ entries found in the flist
+if { [llength $extra_defines] > 0 } {
+    set existing_defs [get_property verilog_define [current_fileset]]
+    set_property verilog_define [concat $existing_defs $extra_defines] [current_fileset]
+}
 
 # Append any +incdir+ entries found in the flist
 if { [llength $extra_incdirs] > 0 } {

@@ -23,11 +23,11 @@ SKID_BITS ?= 0
 export SKID_BITS
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 # Eye visibility RTL collateral. Until feat/eye-rtl-impl merges, the
 # tidelink_eye_regs.sv file does not exist and elaboration will fail at
 # the calibrator's new port list.
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_eye_visibility.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_eye_visibility.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 

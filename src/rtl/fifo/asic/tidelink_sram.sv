@@ -7,7 +7,7 @@
 //     * Active-low GWEN (global write) ← low when any write is active
 //     * EMA/EMAW/RET1N  tied to default (normal operation, no retention)
 //
-// For ASIC: swap this file into the filelist via flist/tidelink_asic.flist.
+// For ASIC: swap this file into the filelist via flists/tidelink_asic.flist.
 // The interface is identical to the FPGA and generic variants — only the
 // internal implementation changes.
 //

@@ -64,13 +64,13 @@ else ifeq ($(TB_VARIANT),eye)
   # pulls in tidelink_eye_regs.sv (NEW from feat/eye-rtl-impl) and the
   # v2-extended tidelink_phy_align_calibrator.sv.
   VERILOG_SOURCES = $(CURDIR)/tb_top_eye.sv
-  COMPILE_ARGS   += -f $(TIDELINK_HOME)/flist/tidelink_eye_visibility.flist
+  COMPILE_ARGS   += -f $(TIDELINK_HOME)/flists/tidelink_eye_visibility.flist
   TOPLEVEL = tb_top
   MODULE  ?= test_eye_lane_sel_capture,test_eye_dwell_timeout,test_eye_force_phase_override,test_eye_skip_calibrator,test_eye_apb_burst_readout
 else ifeq ($(TB_VARIANT),eye_paired)
   # Two-calibrator testbench for Mechanism α (paired-manual + dwell).
   VERILOG_SOURCES = $(CURDIR)/tb_top_eye_paired.sv
-  COMPILE_ARGS   += -f $(TIDELINK_HOME)/flist/tidelink_eye_visibility.flist
+  COMPILE_ARGS   += -f $(TIDELINK_HOME)/flists/tidelink_eye_visibility.flist
   TOPLEVEL = tb_top
   MODULE  ?= test_eye_paired_entry
 else

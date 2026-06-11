@@ -1,7 +1,7 @@
 // =============================================================================
 // tidelink_lane_deskew.sv — 8-lane cross-lane deskew FIFO
 //   *** LOCAL OVERRIDE of deps/tidelink-gpio-phy/rtl/tidelink_lane_deskew.sv ***
-//   (flist/tidelink_fpga.flist points here; the submodule copy is left pristine.)
+//   (flists/tidelink_fpga.flist points here; the submodule copy is left pristine.)
 //
 // Each lane (gpiorx_N) deserialises 16 bits onto its own io_link_clk_N word
 // clock. Because lanes' count counters reset/start at different pad_clk cycles

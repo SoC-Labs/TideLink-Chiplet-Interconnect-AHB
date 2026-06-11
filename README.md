@@ -70,14 +70,18 @@ make -C cdc cdc                   # SpyGlass CDC — see docs/archive/SPYGLASS_C
 
 ## Documentation map
 
-- [`docs/TIDELINK_SPECIFICATION.md`](docs/TIDELINK_SPECIFICATION.md) — authoritative architecture spec
-- [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — submodule + tool dependencies + update recipe
-- [`docs/CDC_AUDIT_REPORT.md`](docs/CDC_AUDIT_REPORT.md) + [`docs/archive/SPYGLASS_CDC_SIGNOFF.md`](docs/archive/SPYGLASS_CDC_SIGNOFF.md) — CDC sign-off (GO for TideLink RTL)
-- [`docs/archive/PHC_PHASE1_HW_REPORT.md`](docs/archive/PHC_PHASE1_HW_REPORT.md) — PHC Phase-1 HW characterisation status
-- [`docs/archive/LINK_DECAY_BISECT.md`](docs/archive/LINK_DECAY_BISECT.md) — the 2026-05-23 deploy-provenance Bug #32 recurrence (and the hard-abort guard that closed it)
+The product documentation set lives in [`docs/`](docs/) — start at
+[`docs/README.md`](docs/README.md):
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — component/module map, ports, clock/reset/CDC, bring-up status
+- [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) — functional spec (data path, flow control, autoneg, deskew, PTP)
+- [`docs/REGISTER_MAP.md`](docs/REGISTER_MAP.md) — the unified APB register map
+- [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) — environment, flists, host-SoC wiring, FPGA/ASIC build & bring-up
+- [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) — cocotb/UVM matrices, HW suite, known-issue backlog, sign-off
 - [`cocotb/README.md`](cocotb/README.md) — cocotb env inventory + known-excluded list
-- [`docs/archive/REPO_SIMPLIFICATION_IMPACT.md`](docs/archive/REPO_SIMPLIFICATION_IMPACT.md) — repo-hygiene roadmap
-- [`docs/archive/PHY_LAYER_ABSTRACTION_IMPACT.md`](docs/archive/PHY_LAYER_ABSTRACTION_IMPACT.md) — PHY-layer refactor impact assessment
+
+Point-in-time bring-up, audit, and debug notes are retained under
+[`docs/archive/`](docs/archive/) (indexed, not maintained).
 
 ---
 

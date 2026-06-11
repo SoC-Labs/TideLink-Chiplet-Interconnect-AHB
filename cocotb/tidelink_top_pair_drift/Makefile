@@ -22,7 +22,7 @@ SKID_BITS ?= 0
 export SKID_BITS
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 

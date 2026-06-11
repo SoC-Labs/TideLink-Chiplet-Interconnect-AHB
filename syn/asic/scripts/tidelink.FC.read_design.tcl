@@ -20,7 +20,7 @@
 #-----------------------------------------------------------------------------
 
 set tidelink_home $::env(TIDELINK_HOME)
-# TOP is the elaboration top; MODULE is the flist/partition name.
+# TOP is the elaboration top; MODULE is the flists/partition name.
 # common.mk maps MODULE → TOP (e.g. tidelink_top_full → tidelink_top).
 set top_module    $::env(TOP)
 set flist         $::env(FLIST)

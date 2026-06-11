@@ -159,7 +159,7 @@ lint-all:
 # outputs at the chip top) that per-module lint misses. Slow (~10–30 s) and
 # noisier — currently best-effort, not in lint-all.
 
-FPGA_FLIST := $(TIDELINK_HOME)/flist/tidelink_fpga.flist
+FPGA_FLIST := $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 FLIST_OUT  := tidelink_fpga.flist.expanded
 
 lint-fpga-top: $(FLIST_OUT)

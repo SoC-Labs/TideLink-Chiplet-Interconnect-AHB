@@ -13,7 +13,7 @@ TOPLEVEL = tb_top
 MODULE = test_doorbell,test_credit_flow,test_bug_regression,test_pair_credit_counter
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # ── Code coverage ───────────────────────────────────────────────────────

@@ -194,7 +194,7 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_autoneg.sv
 // §9 PHY alignment: per-lane lock checker + auto-cal FSM
 //   tidelink_lane_checker.sv was deleted from src/rtl/ in commit d043909 and
 //   superseded by the tidelink-gpio-phy submodule. The four submodule files +
-//   include dir are listed inline (mirror of flist/tidelink_lane_checker.flist
+//   include dir are listed inline (mirror of flists/tidelink_lane_checker.flist
 //   — keep in sync if files are added there).
 +incdir+${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl
 ${TIDELINK_HOME}/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv

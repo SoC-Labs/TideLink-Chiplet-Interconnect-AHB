@@ -52,13 +52,13 @@ asic_clean:
 
 # --- flist generator (DC-style) -------------------------------------------
 # Optional Synopsys-style flist generator — emitted under
-# imp/ASIC/$(MODULE)/flist/ when the soctools_flow `filelist_compile.py`
+# imp/ASIC/$(MODULE)/flists/ when the soctools_flow `filelist_compile.py`
 # helper is available on PATH. Mirrors ahb_qspi/flows/makefile.asic's
 # `flist_synopsys` target. Off by default — the FC flow consumes the
 # Verilog flist directly, but a chip-top DC re-synth pass can use this.
 TCL_ASIC_FLIST_DIR        := $(TIDELINK_HOME)/imp/ASIC/$(ASIC_MODULE)/flist
 DC_OUTPUT_FILELIST        := $(TCL_ASIC_FLIST_DIR)/dc_flist.tcl
-DESIGN_VC                 ?= $(TIDELINK_HOME)/flist/$(ASIC_MODULE)_asic.flist
+DESIGN_VC                 ?= $(TIDELINK_HOME)/flists/$(ASIC_MODULE)_asic.flist
 
 .PHONY: flist_synopsys
 flist_synopsys:

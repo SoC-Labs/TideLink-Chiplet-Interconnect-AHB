@@ -82,7 +82,7 @@ environment, and keeps the lease alive for the duration of subsequent
 fpga/
 ├── Makefile                    # parameterised by TARGET
 ├── build_design.tcl            # Vivado project/synth/impl/bitstream driver
-├── filelist.tcl                # RTL manifest (reads flist/tidelink_fpga.flist — Agent A2)
+├── filelist.tcl                # RTL manifest (reads flists/tidelink_fpga.flist — Agent A2)
 ├── program_bitstream.tcl       # JTAG programmer, accepts optional device arg
 ├── scripts/bit2bin.py          # .bit → .bin converter for Linux fpga_manager
 ├── targets/

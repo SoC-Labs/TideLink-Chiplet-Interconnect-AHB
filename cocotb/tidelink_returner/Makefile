@@ -10,7 +10,7 @@ TOPLEVEL = tb_top
 MODULE   = test_tidelink_returner
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flist/tidelink_returner.flist
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_returner.flist
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # ── Code coverage ───────────────────────────────────────────────────────

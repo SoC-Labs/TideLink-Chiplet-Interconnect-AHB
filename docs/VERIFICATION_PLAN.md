@@ -6,10 +6,10 @@ cocotb), **integration** (paired-die cocotb + UVM), **system** (full chiplet),
 and **HW bring-up** (PYNQ-Z2 pair). Includes the test matrices, the known-issue
 backlog, and sign-off criteria.
 
-Companion docs: [TIDELINK_SPECIFICATION.md](TIDELINK_SPECIFICATION.md) (module
+Companion docs: [TIDELINK_SPECIFICATION.md](archive/TIDELINK_SPECIFICATION.md) (module
 reference + block diagram), [REGISTER_MAP.md](REGISTER_MAP.md),
-[AUTONEG_PROTOCOL.md](AUTONEG_PROTOCOL.md), [PTP_PROTOCOL.md](PTP_PROTOCOL.md),
-[CDC_AUDIT_REPORT.md](CDC_AUDIT_REPORT.md), [BUG_TRACKER.md](BUG_TRACKER.md).
+[AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md), [PTP_PROTOCOL.md](archive/PTP_PROTOCOL.md),
+[CDC_AUDIT_REPORT.md](archive/CDC_AUDIT_REPORT.md), [BUG_TRACKER.md](archive/BUG_TRACKER.md).
 
 > **Re-baseline status:** Module-to-env mappings reflect the live tree as of
 > 2026-05-29 and should be re-verified before any sign-off use. The deep
@@ -74,7 +74,7 @@ sim env exercises the module directly.
 | `tidelink_apb_regs` | `tidelink_apb_regs`, + FIFO-era envs | integ | `tidelink_apb_regs` | GREEN |
 | `tidelink_returner` | `tidelink_returner`, + FIFO-era envs | integ | `tidelink_returner` | GREEN |
 
-**Counts:** 24 GREEN, 1 RED, out of 24 first-party modules. The single RED
+**Counts:** 24 GREEN, 1 RED, out of 25 first-party modules. The single RED
 (`tidelink_addr_translation`) is an accepted waiver — its header banner reads
 "ALTERNATIVE IMPLEMENTATION — NOT INSTANTIATED IN THE ACTIVE DESIGN".
 
@@ -131,7 +131,7 @@ Total in-tree cocotb test functions across all envs (in + out of CI):
 | `tidelink_top_pair` | manual paired-die | Pad-skid two-die TB; doorbell / calibrator-probe / credit-ledger / lane-swap / bit-order-canary scenario tests, driven by hand during PHY/cal bring-up |
 | `tidelink_top_pair_drift` | manual / PHY-stress | Slave on independent +500 ppm clock + phase offset (M→S/S→M asymmetry repro) |
 | `tidelink_top_pair_skewed` | manual / PHY-stress | Cross-lane word-skew injection |
-| `tidelink_top_pair_wordskew` | **experimental** | 19 tests + many `sim_build_*` scratch dirs and `.log` artifacts — calibrator/word-skew probe sandbox; **not pinned, has `*_orig_bak` files** |
+| `tidelink_top_pair_wordskew` | **experimental** | 12 tests (default `MODULE=test_tidelink_pair_doorbell`; a 1-test `test_calibrator_probe_dump` also present) + 8 `sim_build_*` scratch dirs and `.log` artifacts — calibrator/word-skew probe sandbox; **not pinned** |
 | `tidelink_lane_deskew` | **experimental** | 8 tests; multiple `sim_build_{fix,gate,pipe,syncfix}` + `results_fix.xml` — cross-lane deskew FIFO bring-up sandbox (PHY-v2 work) |
 | `tidelink_deskew_bubble` | **experimental** | 1 test — deskew bubble probe |
 | `cocotb/debug/*` (12) | bug-bisect / fault-injection | `bank_asymmetry`, `calibrator_force_bisect`, `i2c_clkstretch`, `i2c_mask_selflock`, `phc_pair`, `phy_align`, `sim_robust`, `tidelink_chiplet_pair_autocal`, `tidelink_peer_aperture`, `tidelink_phy_align_calibrator`, `wlink_pair`, `wlink_tx_pstate_ctrl` — see `cocotb/README.md` §"Debug envs" |
@@ -174,7 +174,7 @@ introduce a new transport. Detail in `archive/HW_TEST_SUITE.md`.
 | 3 | AHB SUB e2e | 100% local integrity; peer-visible if link up | SUB is documented-safe, no gate |
 | 4 | AHB MNG accounting | DOORBELL_RESP_ACC in [1,N]; PAIR counter saturate-at-0 (Bug #7) | APB + doorbell |
 | **5** | **AHB TX (wedge hazard)** | no timeout; sticky clears; link still 16/16 | **`tt_gate_ahb_tx()` mandatory + per-write `timeout`** |
-| 6 | AHB FIFO | CURRENT_CREDITS near-full idle; FLUSH + threshold + IRQ-acc clear | APB-only |
+| 6 | AHB FIFO | CREDIT_COUNT near-full idle; FLUSH + threshold + IRQ-acc clear | APB-only |
 | 7 | Address translation | PAIR_BASE round-trip; CAM slots 1..7 RW/RO; restore | APB-only |
 | 8 | PTP basic | PTP_CTRL round-trip; RX_PAYLOAD/STATUS RO | APB-only |
 | 9 | PTP HW sync | seq_num advances; STATUS.active=1; soak no drops | **gated on PHC image** |

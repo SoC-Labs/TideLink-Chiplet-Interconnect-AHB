@@ -7,21 +7,29 @@ translator registers, and the Wlink chiplet controller registers.
 ## Address Space Overview
 
 TideLink exposes a single unified APB port (`apb_*`, 15-bit address) for all
-configuration registers, plus a separate AHB port for the address translator:
+configuration registers — including the address translator. The decode in
+`tidelink_top.sv` (lines 660-667) routes by `paddr[14:13]`:
 
-| Interface | Protocol | Address Width | Description |
-|---|---|---|---|
-| `apb_*` | APB | 15-bit | Unified config port (Wlink + TideLink registers) |
-| `ahb_adr_*` | AHB (bridged to APB) | 32-bit | Address translator configuration |
+| `paddr[14:13]` | Address Range | Region |
+|---|---|---|
+| `00` | 0x0000 - 0x1FFF | Wlink chiplet controller registers (`paddr[12:0]`) |
+| `01` | 0x2000 - 0x3FFF | TideLink config / PTP / role / extended registers (`paddr[8:2]` decoded) |
+| `10` | 0x4000 - 0x5FFF | Address translator configuration (`paddr[12:0]`) |
+| `11` | 0x6000 - 0x7FFF | Reserved |
 
-### Unified APB Address Map
+### Unified APB Address Map (TideLink region, base 0x2000)
 
 | Address Range | Region |
 |---|---|
-| 0x0000 - 0x1FFF | Wlink chiplet controller registers |
-| 0x2000 - 0x203F | TideLink configuration + PTP registers |
-| 0x2040 - 0x207F | PTP HW Sync, Servo config, Servo status, Timestamp mailbox |
-| 0x2080 - 0x208F | Chiplet controller role configuration |
+| 0x2000 - 0x201F | Region 0: TideLink configuration + status |
+| 0x2020 - 0x203F | Region 1: Incoming credit receivers + PTP basic |
+| 0x2040 - 0x205F | Region 2: PTP HW Sync + Servo config |
+| 0x2060 - 0x207F | Region 3: Servo status + Timestamp mailbox |
+| 0x2080 - 0x209F | Region 4: Chiplet controller role + autoneg config |
+| 0x20A0 - 0x20FF | Regions 5-7: Performance profiling |
+| 0x2100 - 0x211F | Region 8: Chiplet extended — PHY alignment + I²C training |
+| 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) |
+| 0x2180 - 0x219F | Region C: Autoneg silicon observability (RO) |
 
 > **Note:** PHC registers are external to tidelink_top and accessed via their
 > own APB port on the `ptp-hardware-clock-ahb` IP.
@@ -34,21 +42,23 @@ configuration registers, plus a separate AHB port for the address translator:
 **RDL Source:** `src/rdl/tidelink_regs.rdl`, `src/rdl/tidelink_ptp_regs.rdl`
 **Access:** Unified APB port (`apb_*`), base offset 0x2000
 
-Address decoding uses `paddr[5]` as the region select and `paddr[4:2]` as
-the register select within each region.
+Address decoding uses `paddr[8:5]` as the 4-bit region select (`apb_region`)
+and `paddr[4:2]` as the register select within each region
+(`tidelink_apb_regs.sv:163`). Regions 0..7 are reachable with `paddr[8]=0`
+(3-bit `paddr[7:5]`); Regions 8/10/C use `paddr[8]=1`.
 
-### Region 0: Configuration and Status (paddr[5] = 0)
+### Region 0: Configuration and Status (apb_region = 0)
 
 | Offset | Name | Access | Reset | Description |
 |--------|------|--------|-------|-------------|
-| 0x2000 | PAIR_BASE_ADDR | RW | `TIDELINK_PAIR_BASE` param | Base address of the paired TideLink's APB register space. Used by the returner to derive target addresses. |
-| 0x2004 | RELEASE_THRESHOLD | RW | 0x14 (20) | Minimum credits to accumulate before the returner fires a release-credits packet. 0 = release immediately. |
-| 0x2008 | PACKET_WORD_LENGTH | RO | 0 | Current packet word length from FIFO controller (0 when idle). |
-| 0x200C | CREDIT_COUNT | RO | 0 | Current free credit count in the local FIFO. |
+| 0x2000 | PAIR_BASE_ADDR | RW | `TIDELINK_PAIR_BASE` param | Base address of the paired TideLink's APB register space. Used by the returner to derive target addresses. Writes blocked once CTRL.LOCK is set. |
+| 0x2004 | RELEASE_THRESHOLD | RW | 0x14 (20) | Minimum credits to accumulate before the returner fires a release-credits packet. 0 = release immediately. Writes blocked once CTRL.LOCK is set. |
+| 0x2008 | PACKET_WORD_LENGTH | RO | 0 | Current packet word length from FIFO controller (0 when idle). 14-bit. |
+| 0x200C | CREDIT_COUNT | RO | 0 | Current free credit count in the local FIFO. 13-bit. |
 | 0x2010 | STATUS | RO | 0 | Status and sticky fault flags (see below). |
-| 0x2014 | DOORBELL | WO | 0 | Write any value to trigger a doorbell. Self-clearing. |
+| 0x2014 | DOORBELL / ID | WO (write) / RO (read) | — | **Write** any value triggers a doorbell (self-clearing). **Read** returns the peripheral ID `0x544C_0100` ("TL" v1.0) — Shortcoming #11 (`tidelink_apb_regs.sv:492`). |
 | 0x2018 | RELEASE_ACC | RO | 0 | Debug: credits freed but not yet released (below threshold). |
-| 0x201C | CTRL | RW | 0 | Block enable and flush control (see below). |
+| 0x201C | CTRL | RW | 0 | Flush and write-once lock control (see below). |
 
 #### STATUS Register (0x2010) Fields
 
@@ -62,17 +72,18 @@ the register select within each region.
 
 #### CTRL Register (0x201C) Fields
 
-| Bit | Name | Description |
-|-----|------|-------------|
-| [0] | EN | Block enable. When 0, AHB data window accesses are gated. |
-| [1] | FLUSH | Write 1 to reset pointers, packet state, and sticky errors. Self-clearing. EN must be 0. |
+| Bit | Name | Access | Description |
+|-----|------|--------|-------------|
+| [0] | EN | RO (reads 0) | **Reserved.** Formerly gated AHB data window accesses; the RTL no longer implements an enable (`tidelink_apb_regs.sv:173`). Reads back 0. |
+| [1] | FLUSH | W1P | Write 1 to reset pointers, packet state, release accumulator, and sticky errors. Self-clearing. Reads back 0. |
+| [2] | LOCK | W1S | Write-once lock (Shortcoming #25). Once set, blocks further writes to PAIR_BASE_ADDR (0x2000) and RELEASE_THRESHOLD (0x2004). Cleared only by reset (`tidelink_apb_regs.sv:191-196`). |
 
-### Region 1: Incoming Credit Receivers (paddr[5] = 1)
+### Region 1: Incoming Credit Receivers (apb_region = 1)
 
 | Offset | Name | Access | Reset | Description |
 |--------|------|--------|-------|-------------|
-| 0x2020 | RELEASED_CREDITS_ACC | W-add / R-clear | 0 | Receives credit delta values from paired TideLink. Writes accumulate; reads return total and clear. IRQ: `released_credits_irq`. |
-| 0x2024 | DOORBELL_RESPONSE_ACC | W-add / R-clear | 0 | Receives doorbell responses from paired TideLink. Writes accumulate; reads return total and clear. IRQ: `doorbell_irq`. |
+| 0x2020 | RELEASED_CREDITS_ACC | W-add / R-clear | 0 | Receives credit delta values from paired TideLink. Writes saturating-add (16-bit, clamps at 0xFFFF); reads return total and clear. IRQ: `released_credits_irq`. A write to this register also increments PAIR_CREDIT_COUNTER. |
+| 0x2024 | DOORBELL_RESPONSE_ACC | W-add / R-clear | 0 | Receives doorbell responses from paired TideLink. Writes saturating-add (16-bit, clamps at 0xFFFF); reads return total and clear. IRQ: `doorbell_irq`. |
 | 0x2028 | PAIR_CREDIT_COUNTER | RO | 0 | Running count of available credits on paired side. Incremented by writes to RELEASED_CREDITS_ACC, decremented by PAIR_CREDIT_CONSUME. |
 | 0x202C | PAIR_CREDIT_CONSUME | WO | 0 | Write the number of credits being consumed. Subtracted from PAIR_CREDIT_COUNTER. |
 | 0x2030 | PAIR_CREDIT_COUNTER_EN | RW | 1 | Bit[0]: enable pair credit counter updates. When 0, counter freezes. |
@@ -101,7 +112,31 @@ the register select within each region.
 | [0] | tx_idle | Mirror of tx_router_idle. 1 = no in-flight FC packet. |
 | [1] | tx_pending | 1 = PTP TX word waiting, stalled on tx_router_idle. |
 
-### Region 4: Chiplet Controller Role Configuration (paddr[7:5] = 100)
+### Region 2: PTP HW Sync Initiator + Servo Config (apb_region = 2)
+
+Slots 0..2 pass through to `tidelink_ptp` (HW sync initiator FSM); slots 3..7
+pass through to the servo register block (`servo_reg_*` interface,
+`tidelink_apb_regs.sv:435-437`).
+
+| Offset | Name | Access | Reset | Description |
+|--------|------|--------|-------|-------------|
+| 0x2040 | HW_SYNC_CTRL | RW | 0 | [0] enable, [1] seq_clear (W1C), [2] force_en (bypasses `phc_locked` gate). See `tidelink_ptp.sv:353`. |
+| 0x2044 | HW_SYNC_INTERVAL | RW | 0 | [29:0] sync interval in nanoseconds. |
+| 0x2048 | HW_SYNC_STATUS | RO | 0 | [0] active, [1] busy, [17:2] seq_num, [18] phc_locked (`tidelink_ptp.sv:355`). |
+| 0x204C-0x205C | SERVO_CFG[0..4] | RW | 0 | Servo configuration (servo_reg_addr 0..4). Pass-through to servo block. |
+
+### Region 3: Servo Status + Timestamp Mailbox (apb_region = 3)
+
+Reads return servo status (`servo_reg_rdata`). Writes are the timestamp
+mailbox path, written by the FC SIDEBAND node (`mbox_reg_*` interface,
+`tidelink_apb_regs.sv:440-442`).
+
+| Offset | Name | Access | Reset | Description |
+|--------|------|--------|-------|-------------|
+| 0x2060-0x2064 | SERVO_STATUS[0..1] | RO | 0 | Servo status (servo_reg_addr 5..6 on read). |
+| 0x2060-0x207C | TS_MAILBOX[0..7] | WO (FC sideband) | 0 | Timestamp mailbox slots, written by the FC SIDEBAND node. |
+
+### Region 4: Chiplet Controller Role Configuration (apb_region = 4, paddr[8:5] = 0100)
 
 These registers control the master/slave role selection of the generic
 chiplet controller (`axi_chiplet_controller`). They are passed through from
@@ -111,19 +146,30 @@ chiplet controller (`axi_chiplet_controller`). They are passed through from
 reset). System reset (`hresetn`) preserves them, allowing warm reset
 without re-negotiating the link role.
 
+Slot select is `paddr[4:2]`; in the controller these reach `ctrl_reg_addr`
+with `ctrl_reg_addr[4:3] = 2'b01` (`axi_chiplet_controller.sv:443-446`).
+
 | Offset | Name | Access | Reset | Description |
 |--------|------|--------|-------|-------------|
 | 0x2080 | ROLE_CFG | RW | 0 | Role select and lock (see below). |
-| 0x2084 | ROLE_STATUS | RO | strap | Live role status and I2C state. |
-| 0x2088 | I2C_SLV_ADDR | RW | 0x00 | 7-bit I2C slave device address. |
-| 0x208C | I2C_PRESCALE | RW | 0x0001 | 16-bit I2C master clock prescaler. |
+| 0x2084 | ROLE_STATUS | RO | strap | Live role status and I2C state (see below). |
+| 0x2088 | I2C_SLV_ADDR | RW | 0x7E | 7-bit I2C slave device address. RTL POR default `7'h7E` (autoneg slave address) — `axi_chiplet_controller.sv:584`. |
+| 0x208C | I2C_PRESCALE | RW | 0x007D (125) | 16-bit I2C master clock prescaler. RTL POR default `16'd125` → 100 kHz SCL at 50 MHz apb_clk (Bug N1 fix, `axi_chiplet_controller.sv:603`). |
+| 0x2090 | NEGO_CFG | RW | 0x61 | Auto-negotiation config. [0] nego_en, [5] nego_force_lock, [6] mask_hs_auto_en. POR default `7'h61` (`NEGO_CFG_RESET`, `axi_chiplet_controller.sv:68`). |
+| 0x2094 | NEGO_STATUS | RO | 0 | Autoneg FSM live status: [3:0] state, [4] done, [5] error, [6] won, [7] lost, [8] sda_start_seen, [9] mask_mismatch (`axi_chiplet_controller.sv:774`). |
+| 0x2098 | NEGO_PRIORITY | RW | 1 or 2 (strap) | 16-bit autoneg priority (lower wins). POR default is strap-derived: master/strap=0 → `0x0001`, slave/strap=1 → `0x0002` (Bug N7, `axi_chiplet_controller.sv:616`). |
+| 0x209C | NEGO_TIMEOUT | RW | 131082000 | 32-bit autoneg FSM cycle-count timeout (`axi_chiplet_controller.sv:617`). |
+
+> **Note:** The RDL (`tidelink_regs.rdl:367`) lists NEGO_PRIORITY reset as
+> `0xFFFF`, but the instantiated RTL overrides it to the strap-derived 1/2 at
+> POR. RTL wins.
 
 #### ROLE_CFG Register (0x2080) Fields
 
 | Bit | Name | Access | Description |
 |-----|------|--------|-------------|
-| [0] | role | RW | 0 = master, 1 = slave. Only writable while role_lock == 0. |
-| [1] | role_lock | W1S | Write-1-to-set. Locks the role and releases Wlink POR. Cleared only by poresetn. |
+| [0] | role | RW | 0 = master, 1 = slave. Only writable while role_lock == 0 (`axi_chiplet_controller.sv:671-672`). |
+| [1] | role_lock | W1S | Write-1-to-set. Locks the role and releases Wlink POR. Latches only when the mask-handshake gate is open (or via the autoneg FSM / lost-side workaround). Cleared only by poresetn (`axi_chiplet_controller.sv:668-674`). |
 
 #### ROLE_STATUS Register (0x2084) Fields
 
@@ -160,8 +206,8 @@ slots 0..7 remapped to 0x100..0x11C).
 | 0x2100 | SWI_TRAINING_MODE | RW     | 0           | bit[0] = training-mode enable                                  |
 | 0x2104 | SWI_BIT_SLIP_LO   | RW     | 0           | bits[23:0] = per-lane bit-slip (8 lanes × 3 bits)              |
 | 0x2108 | SWI_LANE_STATUS   | RO     | 0           | [7:0] lane_locked, [15:8] lane_fault, [16] calibration_done; [31:17] = CREDIT_PATH_STATUS (see below) |
-| 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | I²C training handshake config (auto/sw_step/retrain + timing)  |
-| 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | Training FSM live status + last-captured peer values           |
+| 0x210C | NEGO_TRAIN_CFG    | RW     | 0           | [15:0] training handshake config (auto/sw_step/retrain + timing); [16] train_fail_irq (sticky, W1C via wdata[16]); [23:20] MIN_LOCK_DWELLS override (M11b, 0=param). See `axi_chiplet_controller.sv:1084-1088` |
+| 0x2110 | NEGO_TRAIN_STATUS | RO     | 0           | [0] train_ok, [1] train_fail, [2] train_in_progress, [3] train_peer_nack, [7:4] train_state, [15:8] train_peer_lane_locked, [23:16] train_peer_lane_fault, [31:24] train_local_lane_fault (`axi_chiplet_controller.sv:1089-1096`) |
 | 0x2114 | SYNC_DET / ECC    | RO     | 0           | [31:16] **sync_detected** sat-cnt (cross-lane-deskew health; SoC Labs 2026-06-08; replaces the DEAD ecc_corrected field), [15:0] ecc_corrupted sat-cnt (also DEAD/0). Was ECC_COUNTERS / NEGO_TRAIN_STEP RO=0; W1P write path unchanged & still ignored. |
 | 0x2118 | SWI_PHASE_OFFSET  | RW     | 0           | bits[31:0] = per-lane sub-bit phase (8 lanes × 4 bits) — §9.7  |
 | 0x211C | PHY_ALIGN_ID      | RO     | 0x5041_0100 | "PA" v1.0 — SW probes for Region 8 presence                    |
@@ -183,19 +229,29 @@ pre-existing live field moves**:
   (`lane_locked`/`lane_fault`/`calibration_done`) are byte-for-byte
   unchanged.
 
-  | Bit     | Name              | Source (Wlink hierarchy)                              |
-  |---------|-------------------|------------------------------------------------------|
-  | [16:0]  | (legacy)          | lane_locked / lane_fault / calibration_done          |
-  | [20:17] | fcsm_state        | `WlinkGenericFCSM_6.state` (3b; bit[20] always 0)    |
-  | [22:21] | llrx_state        | `WlinkRxLinkLayer.state` (byte-align FSM, ==2 → err) |
-  | [23]    | cr_pkt_seen_rx    | `WlinkGenericFCSM_6.cr_pkt_seen_rx` (sticky, 0e126b0)|
-  | [24]    | crack_pkt_seen_rx | `WlinkGenericFCSM_6.crack_pkt_seen_rx` (sticky)      |
-  | [25]    | is_short_pkt      | `WlinkRxLinkLayer.is_short_pkt`                      |
-  | [26]    | is_long_pkt       | `WlinkRxLinkLayer.is_long_pkt`                       |
-  | [27]    | pkt_is_cr_pkt     | `WlinkGenericFCSM_6.pkt_is_cr_pkt`                   |
-  | [28]    | pkt_is_crack_pkt  | `WlinkGenericFCSM_6.pkt_is_crack_pkt`                |
-  | [29]    | llrx_valid        | `WlinkRxLinkLayer.valid`                             |
-  | [31:30] | reserved          | 0                                                    |
+  Current silicon packing (`axi_chiplet_controller.sv:1069-1083`,
+  SEND-GATE-OBS, SoC Labs 2026-06-09 — note bits [20] and [31:30] were
+  repurposed from the earlier "reserved/always-0" layout):
+
+  | Bit     | Name                      | Source (Wlink hierarchy)                              |
+  |---------|---------------------------|------------------------------------------------------|
+  | [16:0]  | (legacy)                  | lane_locked / lane_fault / calibration_done          |
+  | [19:17] | fcsm_state                | `WlinkGenericFCSM_6.state` (3b)                       |
+  | [20]    | a2l_replay_app_valid      | app-side replay valid (skid-empty vs CDC-stuck)      |
+  | [22:21] | llrx_state                | `WlinkRxLinkLayer.state` (byte-align FSM, ==2 → err) |
+  | [23]    | cr_pkt_seen_rx            | `WlinkGenericFCSM_6.cr_pkt_seen_rx` (sticky, 0e126b0)|
+  | [24]    | crack_pkt_seen_rx         | `WlinkGenericFCSM_6.crack_pkt_seen_rx` (sticky)      |
+  | [25]    | is_short_pkt              | `WlinkRxLinkLayer.is_short_pkt`                      |
+  | [26]    | is_long_pkt               | `WlinkRxLinkLayer.is_long_pkt`                       |
+  | [27]    | pkt_is_cr_pkt             | `WlinkGenericFCSM_6.pkt_is_cr_pkt`                   |
+  | [28]    | pkt_is_crack_pkt          | `WlinkGenericFCSM_6.pkt_is_crack_pkt`                |
+  | [29]    | llrx_valid                | `WlinkRxLinkLayer.valid`                             |
+  | [30]    | a2l_fc_replay_link_valid  | FCSM 4→5 SEND app-valid gate (link side)             |
+  | [31]    | fe_rx_is_full             | FCSM 4→5 SEND credit gate (SoC Labs 2026-06-09)      |
+
+  > **RTL/RDL divergence:** the RDL (`tidelink_regs.rdl:437-470`) still
+  > documents the older packing (fcsm_state at [20:17], bits [31:30]
+  > reserved). The instantiated RTL above is authoritative.
 
 * **SYNC_DET / ECC** is the read path of slot 5 (0x2114, was `NEGO_TRAIN_STEP`
   which read a constant `32'h0`; its W1P write path is untouched and still
@@ -222,6 +278,7 @@ the Chisel-generated wrappers). The ECC saturating counters live in
 | Bit | Name              | Access | Description |
 |-----|-------------------|--------|-------------|
 | [0] | swi_training_mode | RW     | When 1, drives the Wlink GPIO PHY's training pattern + lane checker. |
+| [1] | swi_recal         | RW     | Recalibration request strobe. Read path `{swi_recal_r, swi_training_mode_r}` (`axi_chiplet_controller.sv:1067`). |
 
 POR-only reset domain — survives warm `hresetn` so training state persists
 across system reset cycles. Writable from both local APB and the I²C-slave
@@ -264,6 +321,48 @@ still inherits the global phase (bit-slip and phase compose; the global
 path is not broken). This slot was the reserved `SWI_BIT_SLIP_HI`
 (16-lane builds); repurposed for the 8-lane FPGA bring-up. Defaults 0 →
 behaviour bit-exact to the pre-§9.7 single-global-phase design.
+
+### Region 10: Eye Visibility v2 (paddr[8:5] = 1010, offsets 0x140-0x17F)
+
+**Module:** `tidelink_eye_regs` (instantiated in `tidelink_top.sv`, routed by
+`eye_shim_sel = tl_apb_paddr[8:5] == 4'b1010`, `tidelink_top.sv:736`).
+The parent OR-mux substitutes this block's `prdata`/`pready`/`pslverr`; the
+`tidelink_apb_regs` read mux returns 0 for region 10. Slot = `paddr[5:2]`.
+
+| Offset | Name              | Access     | Reset       | Description |
+|--------|-------------------|------------|-------------|-------------|
+| 0x2140 | SWI_EYE_CTRL      | RW (W1P [0]/[1]) | 0     | [0] ENTER (W1P), [1] RESET (W1P), [5:4] MODE, [8] FORCE_FULL_SWEEP, [9] AUTO_INCREMENT_LANE, [16] capture_arm alias→ENTER. MODE=2'b10 → pslverr. |
+| 0x2144 | SWI_EYE_LANE_SEL  | RW         | 0           | [2:0] lane select, [3] all-lanes (EYE_BUF_WIDE only). |
+| 0x2148 | SWI_EYE_DWELL_US  | RW         | 0x2710 (10 ms) | Dwell us; writes floor-clamped to 6000 (§13.6). |
+| 0x214C | SWI_EYE_STATUS    | RO         | 0           | Calibrator eye-sweep status (`eye_status_i`). |
+| 0x2150 | SWI_FORCE_PHASE_EN| RW         | 0           | Per-lane force-phase enable mask. |
+| 0x2154 | SWI_FORCE_PHASE_VAL | RW       | 0           | Per-lane force-phase value. |
+| 0x2158 | SWI_FORCE_SLIP_VAL| RW         | 0           | Per-lane force-slip value. |
+| 0x215C | EYE_CRC_ERR_LANE_LO | RC       | 0           | Lanes 0-3 saturating 8-bit CRC error counts. Read clears. |
+| 0x2160 | EYE_CRC_ERR_LANE_HI | RC       | 0           | Lanes 4-7 saturating 8-bit CRC error counts. Read clears. |
+| 0x2164 | EYE_SCORE_IDX     | RW         | 0           | [6:0] point index, [16] auto-increment after EYE_SCORE_DATA read. |
+| 0x2168 | EYE_SCORE_DATA    | RO         | 0           | [5:0] score, [8] lane_passed, [15:10] best score, [18:16] best_slip, [22:19] best_phase. |
+| 0x216C | EYE_BURST_DATA    | RO         | 0           | Five packed 6-bit scores; read increments idx by 5. |
+| 0x2170 | EYE_LAST_LATCHED  | RO         | 0           | [23:0] last slip vector, [31:24] last lane_fault. |
+| 0x2174 | PHY_EYE_ID        | RO         | 0x5045_0200 | "PE" v2.0 block ID. |
+| 0x2178 / 0x217C | reserved (v2.1 DDR) | RAZ/WI | 0       | Reserved. |
+
+### Region C: Autoneg Silicon Observability (paddr[8:5] = 1100, offsets 0x180-0x19F)
+
+Read-only mirror of internal `tidelink_autoneg` counters/state + `i2c_master`
+STATUS (Bug N7/N8 silicon probes). Pass-through via `ctrl_reg_*` with
+`ctrl_reg_addr[4:3] = 2'b11`; all slots RO (writes → pslverr).
+See `axi_chiplet_controller.sv:1103-1140`.
+
+| Offset | Name              | Access | Description |
+|--------|-------------------|--------|-------------|
+| 0x2180 | OBS_DELAY_CTR     | RO     | `autoneg.delay_ctr_r[31:0]`. |
+| 0x2184 | OBS_TIMEOUT_CTR   | RO     | `autoneg.timeout_ctr_r[31:0]`. |
+| 0x2188 | OBS_FSM_SUBSTATE  | RO     | [17:13] init_wait, [12:10] axl_state, [9:7] txn_step (nibble-packed). |
+| 0x218C | OBS_I2C_MST_STATUS| RO     | [3] missed_ack, [2] bus_active, [1] bus_cont(0), [0] busy. |
+| 0x2190 | OBS_OBS_ID        | RO     | "OB" v1.0 marker = 0x4F42_0100. |
+| 0x2194 | OBS_MASK_HS       | RO     | Packed mask-handshake internals (peer masks, local match/fail, lock_pending, gate_open, wlink result). |
+| 0x2198 / 0x219C | reserved | RO    | Return 0. |
 
 ---
 
@@ -371,9 +470,9 @@ layout at offsets relative to the node's base address:
 |---------|------|-----------|------------|-----|------|------|
 | AXI AW | 0x1000 | 0x08 | 0x09 | 0x0A | 0x0B | 0x80 |
 | AXI W | 0x1100 | 0x0C | 0x0D | 0x0E | 0x0F | 0x81 |
-| AXI B | 0x1200 | 0x08 | 0x09 | 0x0A | 0x0B | 0x80 |
-| AXI AR | 0x1300 | 0x08 | 0x09 | 0x0A | 0x0B | 0x80 |
-| AXI R | 0x1400 | 0x08 | 0x09 | 0x0A | 0x0B | 0x80 |
+| AXI B | 0x1200 | 0x10 | 0x11 | 0x12 | 0x13 | 0x82 |
+| AXI AR | 0x1300 | 0x14 | 0x15 | 0x16 | 0x17 | 0x83 |
+| AXI R | 0x1400 | 0x18 | 0x19 | 0x1A | 0x1B | 0x84 |
 | GeneralBus | 0x1600 | - | - | - | - | - |
 | TideLink | 0x1700 | - | - | - | - | - |
 
@@ -425,21 +524,34 @@ captured at FC TX/RX handshake moments.
 
 ---
 
-## 4. Address Translator Registers (`ahb_adr_*`)
+## 4. Address Translator Registers (unified APB region 0x4000)
 
-**Module:** `tidelink_addr_translator`
+**Module:** `tidelink_addr_translator` → per-channel `tl_addr_trans_regs`
 **RDL Source:** `src/rdl/tidelink_addr_translator_regs.rdl`
-**Access:** AHB subordinate, bridged internally via `cmsdk_ahb_to_apb`
+**Access:** Unified APB port, `paddr[14:13] == 2'b10` (0x4000-0x5FFF) — **not**
+a separate `ahb_adr_*` AHB port. Routed in `tidelink_top.sv:667` /
+`tidelink_top.sv:1741` (`tidelink_addr_translator` with `NUM_CHANNELS=1`).
 
-Two independent channels, each with this register layout. High address bits
-select the channel.
+The translator is **CAM-based rule matching** (not a 256/64-entry segment
+table). The decode subtracts BASE_OFFSET from the input address, then compares
+`addr[31:24]` against each enabled rule's match byte; the lowest-index matching
+rule replaces `addr[31:24]` with its replace byte. `addr[23:0]` always passes
+through. With `enable=0`, all addresses pass through unchanged.
 
-### Per-Channel Registers
+Channel select is `paddr[15:12]`: `4'h0` = channel 0, `4'h1` = channel 1
+(`tidelink_addr_translator.sv:89`). Only channel 0 is instantiated in
+`tidelink_top` (NUM_CHANNELS=1); channel 1 returns pslverr.
+
+### Per-Channel Registers (`tl_addr_trans_regs.sv`)
 
 | Offset | Name | Access | Reset | Description |
 |--------|------|--------|-------|-------------|
-| 0x000 | BASE_OFFSET | RW | 0 | 32-bit value subtracted from input address before segment lookup. |
-| 0x004-0x100 | SEGMENT_TABLE[64] | RW | identity | 64 registers, each packing 4 x 8-bit segment entries. seg[k] maps input addr[31:24]=k to the stored value. Reset: seg[k]=k. |
-| 0xFD0-0xFDC | PIDR4-7 | RO | 0x00 | ARM PrimeCell peripheral ID (upper). |
-| 0xFE0-0xFEC | PIDR0-3 | RO | varies | ARM PrimeCell peripheral ID (lower). PIDR0=0x59, PIDR1=0x16, PIDR2=0x15. |
+| 0x000 | BASE_OFFSET | RW | 0 | 32-bit value subtracted from the input address before rule matching. |
+| 0x004 | CTRL | RW | 0 | [0] global_enable. 0 = identity passthrough, 1 = rule matching active. |
+| 0x010-0x02C | RULE[0..7] | RW | 0 | 8 match/replace rules. Per rule: [0] enable, [15:8] match byte, [23:16] replace byte; [7:1] and [31:24] reserved. Rule 0 has highest priority. |
+| 0xFD0-0xFDC | PIDR4-7 | RO | 0x00 | ARM PrimeCell peripheral ID (upper). All 0x00. |
+| 0xFE0-0xFEC | PIDR0-3 | RO | varies | ARM PrimeCell peripheral ID (lower). PIDR0=0x59, PIDR1=0x16, PIDR2=0x15, PIDR3=0x00. |
 | 0xFF0-0xFFC | CIDR0-3 | RO | varies | ARM PrimeCell component ID. CIDR0=0x50, CIDR1=0x51, CIDR2=0x4C, CIDR3=0x54. |
+
+> Unmapped reads in the 0x030-0xFCC gap return `0xCAFECAFE`
+> (`tl_addr_trans_regs.sv:190`).

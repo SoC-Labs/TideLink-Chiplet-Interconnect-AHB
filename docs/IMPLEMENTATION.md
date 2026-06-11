@@ -8,8 +8,8 @@ and lane masking inside the PHY, and the single-phase PTP timestamp path.
 
 Companion docs: [REGISTER_MAP.md](REGISTER_MAP.md) (authoritative APB/register
 addresses — this doc links, it does not duplicate),
-[TIDELINK_BRINGUP_USER_GUIDE.md](TIDELINK_BRINGUP_USER_GUIDE.md) (cold-POR
-bring-up procedure and pitfalls), [ASIC_TIMING_CONSTRAINTS.md](ASIC_TIMING_CONSTRAINTS.md)
+[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) (cold-POR
+bring-up procedure and pitfalls), [ASIC_TIMING_CONSTRAINTS.md](archive/ASIC_TIMING_CONSTRAINTS.md)
 (sign-off). The GPIO PHY's own training/matcher/calibrator internals are
 specified separately in the `tidelink-gpio-phy` repo.
 
@@ -43,15 +43,19 @@ I²C auto-negotiation (§4).
 
 ### 1.2 The `data_id` space
 
-TideLink rides on Wlink's FC-node multiplex:
+TideLink rides on Wlink's FC-node multiplex. Each FC/short-packet node owns a
+contiguous `data_id` block: the long-packet
+data ID carries payload, and four short IDs (`+0` CR, `+1` CRACK, `+2` ACK,
+`+3` NACK) carry that node's own credit/replay management. The blocks as
+instantiated (`WlinkConfigs.scala`, default params throughout):
 
 | `data_id` | Channel |
 |---|---|
-| `0x40`–`0x43` | Reserved Wlink credit-management range (`0x40` Credit-Release, `0x41` Credit-Release-Ack) — internal to Wlink FCSM |
-| `0x80`–`0x84` | AXI AW/W/B/AR/R through `XHB500` |
-| `0xa1` | TideLink general 48-bit FC node — the `data_id` for AHB_TX, doorbell, credit-release, FIFO data |
-| `0xa2` | PTP short-packet sideband (PHC sync); short-packet variant on the wire (see §7) |
-| `0xa3` | IRQ controller short-packet notifications (reserved, not yet exercised on HW) |
+| `0x40`–`0x43` | **GeneralBus** node's short-packet block (`0x40` CR, `0x41` CRACK, `0x42` ACK, `0x43` NACK). GeneralBus long-packet data = `0xa0`. |
+| `0x44`–`0x47` | **TideLink** FC node's short-packet block (`0x44` CR, `0x45` CRACK, `0x46` ACK, `0x47` NACK) — the per-node credit handshake for the `0xa1` long-packet stream |
+| `0x50`, `0x51` | PTP short packets — `0x50` SYNC, `0x51` DELAY_REQ (see §7) |
+| `0x80`–`0x84` | AXI AW/W/B/AR/R long packets through `XHB500` |
+| `0xa1` | TideLink general 48-bit FC node — the long-packet `data_id` for AHB_TX, doorbell, application credit-return (returner sideband), and FIFO data. (Distinct from the FCSM-internal CR/CRACK on `0x44`/`0x45`.) |
 
 ### 1.3 Block dataflow (master CPU → ribbon → peer)
 
@@ -92,10 +96,14 @@ Two packet classes ride the link:
 
 - **Long packets (FC, `data_id=0xa1`):** carry AHB_TX payload, credit-release,
   and doorbell traffic. These go through the full Wlink FC state machine (FCSM) —
-  credits, replay buffer, CRC/ECC. The FC adapter packs `hwdata` into a 48-bit FC
-  word. (Historical bug: a one-cycle data-phase mismatch in the adapter read
-  `hwdata` after the bridge released it; the as-built adapter holds a 2-cycle data
-  phase.)
+  credits, replay buffer, CRC/ECC. The FC adapter packs the access into a 48-bit FC
+  word: `[47:46]` pkt_type (`00`=FIFO_DATA, `01`=SIDEBAND, `10`=EXT/TideChart),
+  `[45:32]` 14-bit addr_offset, `[31:0]` payload. A 1-entry skid buffer decouples
+  the Wlink FC `ready` from the AHB critical path; when the skid is full the
+  adapter **honestly back-pressures** the CPU (`ahb_tx_hreadyout=0`) until it
+  drains. (As-built per the Bug-A fix, 2026-06-09: the older L10/L11 "wedge
+  watchdog" that force-acked beats after 16 stalled cycles silently dropped burst
+  beats and was removed; `tx_dropped_cnt_r` is retained read-0 for observability.)
 - **Short packets (32-bit on wire):** carry PTP SYNC/DELAY_REQ (§7). They bypass
   the FCSM — no credits, replay, or CRC — for low-jitter, low-overhead delivery.
 
@@ -123,13 +131,15 @@ returned as the FIFO drains.
 ### 3.1 Credit handshake bootstrap
 
 At link-up each side's FCSM must exchange an initial **Credit-Release (CR)**
-packet (`data_id=0x40`) and its **Credit-Release-Ack (CRACK)** (`data_id=0x41`).
+packet (`data_id=0x44`) and its **Credit-Release-Ack (CRACK)** (`data_id=0x45`)
+on the TideLink FC node. (These IDs are `startingShortDataId + 0/+1` for the
+node; the `0x40`/`0x41` pair belongs to the separate GeneralBus node — see §1.2.)
 Until that exchange completes the credit window never opens and *all* downstream
 traffic stalls — `PAIR_CREDIT_COUNTER` stays 0, doorbells do not cross, peer AHB
 writes read back 0, PTP sync never advances. The proof of a healthy handshake is
 `cr_pkt_seen_rx = 1` on **both** sides and `PAIR_CREDIT_COUNTER` non-zero on both
 (see the bring-up verification table in
-[TIDELINK_BRINGUP_USER_GUIDE.md](TIDELINK_BRINGUP_USER_GUIDE.md) §4).
+[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) §4).
 
 ### 3.2 Credit accounting registers
 
@@ -138,7 +148,7 @@ The credit/FIFO observability registers live in the TideLink APB block (Regions
 
 | Mechanism | Behaviour |
 |---|---|
-| `CURRENT_CREDITS` | Local FIFO free-credit count; near-full (e.g. 4096) at idle |
+| `CREDIT_COUNT` | Local FIFO free-credit count; near-full at idle |
 | `PAIR_CREDIT_COUNTER` | Credits held against the peer; non-zero = handshake complete; **saturates at 0** on consume underflow (guard for Bug #7) |
 | `RELEASED_CREDITS_ACC` | Accumulates credits returned to peer as the FIFO drains; clear-on-read |
 | `STATUS` | Sticky `fifo_overrun` / `fifo_underrun` / `master_error`; cleared by `CTRL.FLUSH` |
@@ -157,9 +167,13 @@ notification.
 
 ## 4. I²C auto-negotiation & role arbitration
 
-> Full spec retained in [archive/AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md)
-> — that document is the proposal-grade design with hardware-cost analysis and the
-> SRAM-PUF priority source. Signal/state names below are taken verbatim from it.
+> Auto-negotiation is **implemented** as the synthesised FSM
+> `tidelink_autoneg` (`src/rtl/local_overrides/tidelink_autoneg.sv`) — it is the
+> as-built RTL, not a proposal. The original design rationale (hardware-cost
+> analysis, the SRAM-PUF priority source) is retained in
+> [archive/AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md); where that archive
+> and the RTL disagree, the RTL wins. The state names below are taken from the
+> RTL `localparam` block.
 
 ### 4.1 Why it exists
 
@@ -188,16 +202,25 @@ so negotiation must complete and lock the role before the link can train.
 
 ### 4.3 FSM states (`tidelink_autoneg`)
 
+The `state_r` register is **5 bits** wide (widened from the original 4 bits to host
+the mask-handshake and I²C-training sub-flows). The core role-arbitration states:
+
 | State | Description |
 |---|---|
-| `IDLE` | Waiting for negotiation enable |
-| `NEGO_INIT` | Both cores up; I²C slave active; timers running |
-| `NEGO_WAIT` | Counting down the priority-based backoff; monitoring SDA |
-| `NEGO_CLAIM` | Switched to I²C master; issuing the "claim master" I²C write |
-| `NEGO_POLL` | Waiting for the I²C transaction; checking ACK/NACK/arbitration |
-| `NEGO_DONE` | Role decided; writes `role_cfg_reg` + `role_lock_reg` |
-| `NEGO_BYPASS` | Auto-neg disabled; static-assignment path active |
-| `NEGO_ERROR` | Timeout / unresolvable; role forced from `NEGO_FALLBACK` |
+| `ST_IDLE` | Waiting for negotiation enable |
+| `ST_NEGO_INIT` | Both cores up; I²C slave active; timers running (waits for `puf_ready` if PUF-sourced) |
+| `ST_NEGO_WAIT` | Counting down the priority-based backoff; monitoring SDA |
+| `ST_NEGO_CLAIM` | Switched to I²C master; issuing the "claim master" I²C write |
+| `ST_NEGO_POLL` | Waiting for the I²C transaction; checking ACK/NACK/arbitration |
+| `ST_NEGO_DONE` | Role decided; writes `role_cfg_reg` (+ `role_lock_reg` when `nego_force_lock`) |
+| `ST_BYPASS` | Auto-neg disabled; static-assignment path active |
+| `ST_ERROR` | Timeout / unresolvable; role forced from the `nego_fallback` config bit |
+
+After `ST_NEGO_POLL` the master winner optionally walks the Phase-2 mask-handshake
+states (`ST_NEGO_MASK_RD_ADDR` → `ST_NEGO_MASK_RD_DATA` → `ST_NEGO_MASK_RES_TX`,
+gated by `mask_hs_auto_en`) and then `ST_NEGO_DONE_PRE`, which branches into the
+Phase-3 I²C-training sub-flow (§5) when `train_auto_en=1`. The slave parks in
+`ST_NEGO_DONE`.
 
 ### 4.4 Priority backoff + tie-break
 
@@ -208,9 +231,9 @@ Each side computes a backoff delay before claiming:
 (OTP/UID), **SRAM PUF** (die-unique power-on SRAM XOR-folded to 16 bits, reusing
 the TideChart PUF sampler), or hardware default `0xFFFF`.
 
-- **Early back-off:** during `NEGO_WAIT`, if SDA goes low (peer issued an I²C
+- **Early back-off:** during `ST_NEGO_WAIT`, if SDA goes low (peer issued an I²C
   START) before the local timer expires, the side immediately becomes slave
-  (`NEGO_DONE`, `role_cfg_reg=1`).
+  (`ST_NEGO_DONE`, `role_cfg_reg=1`).
 - **Multi-master tie:** equal priorities collide → standard I²C bit-level
   arbitration on SDA resolves it; the loser releases the bus and becomes slave.
   Depends on the I²C master IP implementing arbitration-loss detection.
@@ -220,7 +243,7 @@ the TideChart PUF sampler), or hardware default `0xFFFF`.
 
 ### 4.5 Software bypass & boot integration
 
-`nego_en=0` (reset default) → `NEGO_BYPASS`, identical to pre-feature behaviour;
+`nego_en=0` (reset default) → `ST_BYPASS`, identical to pre-feature behaviour;
 firmware writes `ROLE_CFG` directly. With `nego_en=1` the FSM writes `ROLE_CFG`
 and locks automatically (if `nego_force_lock=1`). Negotiation runs exactly once
 per `poresetn`; renegotiation requires a full power cycle (renegotiating a trained
@@ -237,10 +260,11 @@ link would invert roles mid-flight). Register additions (`NEGO_CFG`,
 Per-lane training must enter and exit on **both peers within a bounded skew**, but
 the high-speed link is not yet aligned and cannot coordinate itself
 (chicken-and-egg). I²C — the already-present sideband — carries the coordination.
-This handshake is a sub-flow of `tidelink_autoneg`: it runs only after autoneg
-reaches `NEGO_DONE` with the lane-mask handshake matched and `train_auto_en` set.
-The **master** walks the `ST_TRAIN_*` states; the slave stays in `NEGO_DONE` and
-reacts to its `SWI_TRAINING_MODE` register being written over I²C.
+This handshake is a sub-flow of `tidelink_autoneg`: from `ST_NEGO_DONE_PRE` (the
+branch point reached after the optional mask handshake) the master enters the
+training states when `train_auto_en=1`. The **master** walks the `ST_TRAIN_*`
+states; the slave parks in `ST_NEGO_DONE` and reacts to its `SWI_TRAINING_MODE`
+register being written over I²C.
 
 ### 5.1 Sequence
 
@@ -305,20 +329,31 @@ skew).
 
 `tidelink_lane_deskew` sits between the 8 lane outputs and the assembled 128-bit
 bus, inside `WavD2DGpio`. Per lane it has an independent write port on that lane's
-word clock; a shared read pointer on the common `out_clk` advances **only when all
-8 lanes hold a buffered word** (`all_ready = AND of (wr_ptr_sync != rd_ptr)`),
-guaranteeing every output beat carries 8 words from the same time-point.
+word clock; the read side uses **one common read pointer plus a per-lane read
+offset** so each lane is read at `(rd_ptr + lane_off[gi])`, presenting every
+lane's copy of the *same* source word on one `out_clk` edge. The common `rd_ptr`
+advances one word per `out_clk` while every lane holds a buffered word
+(`all_ready = &lane_has_data`); a prime cushion (`PRIME_THRESH=4` synced words on
+every lane) must build before the first read.
 
-- **Mechanics:** `DEPTH=8 × WIDTH=16`, per-lane binary `wr_ptr` 2-flop-synced into
-  `out_clk`, one shared `rd_ptr`. Alignment is primed once at cold start (read
-  begins when the slowest lane's first word appears) and self-maintains because
-  writes and reads both advance +1 per word-period at the frequency-locked rate.
+- **Mechanics:** `DEPTH_LOG=4` → **`DEPTH=16` × `WIDTH=16`** per lane. Each lane's
+  binary `wr_ptr` is 2-flop-synced into `out_clk`. The per-lane offsets are
+  recomputed from where a periodic 128-bit `SYNC_WORD` lands in each lane's FIFO:
+  the offset is each lane's recorded SYNC slot minus the earliest lane's, gated so
+  it only applies when the cross-lane spread `≥ 2` and clamped to
+  `OFF_MAX = DEPTH − PRIME_THRESH − 3 = 9`. With zero skew every offset is 0, so
+  every lane reads `mem[rd_ptr]` — bit-identical to a single shared read pointer.
+- **SYNC re-prime:** a bounded collector window (`SYNC_WIN=16`) requires **all 8**
+  lanes to report a fresh SYNC before `sync_reprime` fires; a partial set is
+  discarded. The re-prime is **non-destructive** — it only reloads `lane_off[]`;
+  `rd_ptr` never jumps and reads never stall (the offset recompute is a 4-stage
+  `out_clk` pipeline closed for FPGA timing). A training-mode 1→0 edge bootstraps
+  the initial alignment (`rd_ptr`/offsets cleared, write side re-zeroes `wr_ptr`).
 - **CDC:** lane clocks and `out_clk` are frequency-locked (same pad ÷16, phase
   only). The 2-flop synchroniser sees a stable binary value; Gray code is not
-  needed. (A later analysis notes the 2-flop sync costs ~2 word-periods of
-  effective depth, so usable cross-lane skew ≈ `DEPTH − sync_latency − 1`; the ASIC
-  ~1-word-period operating point sits well inside it.)
-- **Cost:** 8×8×16 = 1024 bits storage + small pointer/control logic — negligible.
+  needed.
+- **Cost:** 8 × `DEPTH` × `WIDTH` = 8×16×16 = 2048 bits storage + pointer/offset
+  pipeline logic.
 
 ### 6.3 Lane masking
 
@@ -401,7 +436,7 @@ only. PTP registers (`PTP_CTRL`/`PTP_RX_PAYLOAD`/`PTP_STATUS`,
 ## 8. Bring-up & verification at a glance
 
 Cold-POR to traffic, in order (full procedure + pitfalls in
-[TIDELINK_BRINGUP_USER_GUIDE.md](TIDELINK_BRINGUP_USER_GUIDE.md)):
+[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md)):
 
 1. Assign role (strap / SW / I²C autoneg §4) and write `role_lock` → Wlink POR
    deasserts, calibrator sweeps per-lane (slip × phase).

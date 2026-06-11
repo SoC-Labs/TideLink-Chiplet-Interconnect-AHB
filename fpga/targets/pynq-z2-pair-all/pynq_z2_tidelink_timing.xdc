@@ -100,13 +100,16 @@
 #=============================================================================
 
 #-----------------------------------------------------------------------------
-# [1] GPIO PHY pad clocks (link runs at 25 MHz / 40 ns — CORRECTED)
+# [1] GPIO PHY pad clocks (link runs at 6.25 MHz / 160 ns — v36 LINK-RATE DROP)
 #-----------------------------------------------------------------------------
-# The TideLink GPIO PHY is source-synchronous and runs at 25 MHz:
-#   tidelink_design.tcl  -> CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000}
-#   this file            -> create_clock -period 40.000
-# (The "50 MHz / 20 ns" text that used to be in this header was STALE and
-#  has been removed — there is no 50 MHz domain in this design.)
+# The TideLink GPIO PHY is source-synchronous. v36 (2026-06-12) DROPS the link
+# rate 4x to match the silicon-validated PHY-BIST config (6.25 MHz / 160 ns,
+# link_up 3/3 + 30-min soak on these boards):
+#   tidelink_design.tcl  -> CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {6.250}
+#   this file            -> create_clock -period 160.000
+# Was 25 MHz / 40 ns in v35; the new PHY's exact-16-bit WORD_PIN_AUTO aligner
+# (WavD2DGpioRx wpa_match) could not close the marginal B->A eye at 40 ns.
+# pad clock == user_ref_clk (1:1), so 6.25 MHz user_hsclk -> 160 ns pad period.
 #
 # Pin map (verify against pynq_z2_tidelink.xdc in this same target):
 #   pad_clk_rx -> Y7  (IO_L13P_T2_MRCC_13)  — multi-region clock-capable in,
@@ -121,7 +124,7 @@
 # pad_rx[*] sampling registers (gpiorx_*/link_data_pad_clk_reg). KEEP this
 # create_clock — pad_clk_rx must remain a real, timed clock so the
 # pad_rx[*] -> capture relationship can be analysed (constraint [3]/[4]).
-create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -157,14 +160,17 @@ create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # dropped). The exact (wildcard-free) NAME filter resolves to exactly one pin.
 create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] -divide_by 1 [get_ports pad_clk_tx]
 
-# Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-5 ns
-# of the 40 ns period for board trace + peer setup/hold. This is a SYMMETRIC
-# window measured against the forwarded clock pad_clk_tx_fwd (NOT an
-# asymmetric absolute window vs an internal clock), so it does not recreate
-# the 2026-05-05 hold explosion: launch and capture reference are the same
-# forwarded edge, so Vivado balances rather than hold-pads every lane.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 5.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
+# Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns
+# of the 160 ns period for board trace + peer setup/hold (v36: scaled 4x with
+# the link-rate drop from the v35 +/-5 ns at 40 ns -- same 12.5%-of-period
+# fraction). SYMMETRIC window measured against the forwarded clock
+# pad_clk_tx_fwd (NOT an asymmetric absolute window vs an internal clock), so
+# it does not recreate the 2026-05-05 hold explosion: launch and capture
+# reference are the same forwarded edge, so Vivado balances rather than
+# hold-pads every lane. The far die samples MID-CELL (80 ns from either pad
+# transition), so +/-20 ns leaves >=60 ns of true eye margin each side.
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded
@@ -177,7 +183,9 @@ set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_
 #      window. Symmetric -min/-max about the launch edge does NOT create the
 #      one-sided hold pressure that the old asymmetric `-min 1.0 -max 8.0`
 #      did; it tells Vivado the data is centre-aligned to the forwarded
-#      clock (which, for a 1:1 <10 cm ribbon at 25 MHz, it nominally is) and
+#      clock (which, for a 1:1 <10 cm ribbon at 6.25 MHz, it nominally is —
+#      v36 kept these +/-4 ns absolute board-trace skews unchanged, matching
+#      the silicon-validated BIST which also holds +/-4 ns at 160 ns) and
 #      lets the calibrator absorb the residual. The window is the analysis
 #      reference for (3b)/(3c); it is intentionally generous (the calibrator
 #      handles dynamic skew — constraints only need to bound the STATIC,
@@ -188,9 +196,11 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 # (3b) Bound the pad_rx[n] -> first-stage capture flop path as a pure
 #      datapath delay (NOT a clocked setup/hold check -> no hold-fix
 #      insertion). This caps the ABSOLUTE clk-to-capture routing delay per
-#      lane so it cannot wander build-to-build. 8.0 ns is ~1/5 of the 40 ns
-#      period — comfortably inside the calibrator window — and is a ceiling,
-#      not a target, so P&R is not forced to pad short lanes.
+#      lane so it cannot wander build-to-build. 8.0 ns is now ~1/20 of the
+#      160 ns period (v36) — comfortably inside the calibrator window — and is
+#      a ceiling, not a target, so P&R is not forced to pad short lanes. Kept
+#      at 8.0 ns (absolute datapath ceiling, not period-scaled), matching the
+#      silicon-validated BIST.
 set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 

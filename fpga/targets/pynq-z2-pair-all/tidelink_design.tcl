@@ -182,11 +182,23 @@ proc create_root_design { parentCell } {
     ] $ps7
 
     #--------------------------------------------------------------------------
-    # Clocking Wizard: 100 MHz -> 50 MHz
-    # Single MMCM, two synchronous outputs both at 50 MHz:
-    #   clk_out1 = hclk   (AHB/APB domain, SmartConnect, IP)
-    #   clk_out2 = phc_clk (shared with hclk for first bring-up; no CDC issue
-    #              because both outputs are phase-aligned from the same MMCM)
+    # Clocking Wizard: 100 MHz -> 6.25 / 25 / 200 MHz
+    # Single MMCM, three synchronous outputs:
+    #   clk_out1 = hclk + user_ref_clk (PHY hi-speed bit clock) + scan_clk
+    #              -> 6.25 MHz (v36 LINK-RATE DROP 2026-06-12). Was 25 MHz.
+    #              The PHY pad clock == user_ref_clk (1:1), so the link/pad
+    #              rate is 6.25 MHz / 160 ns — matching the silicon-validated
+    #              PHY-BIST config (pynq-z2-phy-bist-pair clk_out1 = 6.250),
+    #              which ran autonomous bilateral link_up 3/3 + 30-min soak on
+    #              THESE boards. v35 (25 MHz / 40 ns, 4x faster) could not
+    #              close the marginal B->A eye for the new PHY's exact-16-bit
+    #              WORD_PIN_AUTO aligner (WavD2DGpioRx wpa_match). Dropping the
+    #              link 4x re-opens that eye. hclk/AHB/APB also drop to 6.25 MHz
+    #              -- the BIST runs its whole stack at 6.25 MHz, proven fine.
+    #   clk_out2 = phc_clk (25 MHz, phase-aligned; PHC is NOT in the link path
+    #              and is not exercised in this bring-up, so it is deliberately
+    #              left at 25 MHz to avoid disturbing NS_INCR/PPS behaviour).
+    #   clk_out3 = 200 MHz IDELAYCTRL reference (per-lane IDELAYE2).
     # Active-low reset (resetn) from PS FCLK_RESET0_N.
     #--------------------------------------------------------------------------
     set clk_wiz [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk_wiz_0]
@@ -200,7 +212,7 @@ proc create_root_design { parentCell } {
     # create_clock for it (see that file's rationale).
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
-        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000} \
+        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {6.250} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \

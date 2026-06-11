@@ -168,11 +168,16 @@ proc create_root_design { parentCell } {
     ] $ps7
 
     #--------------------------------------------------------------------------
-    # Clocking Wizard: 100 MHz -> 50 MHz
-    # Single MMCM, two synchronous outputs both at 50 MHz:
-    #   clk_out1 = hclk   (AHB/APB domain, SmartConnect, IP)
-    #   clk_out2 = phc_clk (shared with hclk for first bring-up; no CDC issue
-    #              because both outputs are phase-aligned from the same MMCM)
+    # Clocking Wizard: 100 MHz -> 6.25 / 25 / 200 MHz
+    #   clk_out1 = hclk + user_ref_clk (PHY hi-speed bit clock) + scan_clk
+    #              -> 6.25 MHz (v36 LINK-RATE DROP 2026-06-12). Was 25 MHz.
+    #              PHY pad clock == user_ref_clk (1:1) => link/pad = 6.25 MHz /
+    #              160 ns, matching the silicon-validated PHY-BIST config
+    #              (link_up 3/3 + 30-min soak on these boards). v35 ran 25 MHz /
+    #              40 ns (4x faster) and could not close the marginal B->A eye
+    #              for the new PHY's exact-16-bit WORD_PIN_AUTO aligner.
+    #   clk_out2 = phc_clk (25 MHz, unchanged -- PHC not in the link path).
+    #   clk_out3 = 200 MHz IDELAYCTRL reference.
     # Active-low reset (resetn) from PS FCLK_RESET0_N.
     #--------------------------------------------------------------------------
     set clk_wiz [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk_wiz_0]
@@ -186,7 +191,7 @@ proc create_root_design { parentCell } {
     # create_clock for it (see that file's rationale).
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
-        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000} \
+        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {6.250} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \

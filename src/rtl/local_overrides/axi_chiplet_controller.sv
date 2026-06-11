@@ -819,6 +819,12 @@ module axi_chiplet_controller #(
     reg        swi_recal_r;
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
+`ifdef TIDELINK_PHY_V2
+    // V2 word-pin override (mirrors BIST BIT_SLIP_OVR[28:24]). V2-only so the
+    // V1 build stays bit-identical. Captured from SWI_BIT_SLIP_LO writes.
+    reg [3:0]  swi_word_pin_ovr_r;       // [27:24] manual global word pin
+    reg        swi_word_pin_auto_dis_r;  // [28] 1 = force manual (auto off)
+`endif
     // Slot 6 — SWI_PHASE_OFFSET bits[31:0] (8 × 4-bit per-lane sub-bit
     // sample-point phase). §9.7: SW override of the calibrator's per-lane
     // phase sweep, OR-merged with cal_phase_offset_w into the Wlink
@@ -989,6 +995,10 @@ module axi_chiplet_controller #(
             swi_training_mode_r      <= 1'b0;
             swi_recal_r              <= 1'b0;
             swi_bit_slip_lo_r        <= 24'h0;
+`ifdef TIDELINK_PHY_V2
+            swi_word_pin_ovr_r       <= 4'h0;
+            swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
+`endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
             // Wrapper (tidelink_top.sv) sets train_auto_en=1 by default;
@@ -1037,7 +1047,13 @@ module axi_chiplet_controller #(
                         swi_training_mode_r <= ctrl_reg_wdata[0];
                         swi_recal_r         <= ctrl_reg_wdata[1];             // SWI_RECAL (level → calibrator swreset)
                     end
-                    3'h1: swi_bit_slip_lo_r   <= ctrl_reg_wdata[23:0];        // SWI_BIT_SLIP_LO
+                    3'h1: begin
+                        swi_bit_slip_lo_r   <= ctrl_reg_wdata[23:0];          // SWI_BIT_SLIP_LO
+`ifdef TIDELINK_PHY_V2
+                        swi_word_pin_ovr_r      <= ctrl_reg_wdata[27:24];     // V2 word-pin override
+                        swi_word_pin_auto_dis_r <= ctrl_reg_wdata[28];        // V2 auto-disable chicken bit
+`endif
+                    end
                     3'h3: begin                                                // NEGO_TRAIN_CFG
                         nego_train_cfg_r <= ctrl_reg_wdata[15:0];
                         // M11b: [23:20] = calibrator MIN_LOCK_DWELLS override
@@ -1065,7 +1081,12 @@ module axi_chiplet_controller #(
     // Region 8 read mux
     assign region8_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
+`ifdef TIDELINK_PHY_V2
+        (ctrl_reg_addr[2:0] == 3'h1) ? {3'h0, swi_word_pin_auto_dis_r,
+                                        swi_word_pin_ovr_r, swi_bit_slip_lo_r} :
+`else
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h0, swi_bit_slip_lo_r}    :
+`endif
         (ctrl_reg_addr[2:0] == 3'h2) ? {sync_obs_fe_rx_full_1,          // [31]    fe_rx_is_full   — FCSM 4->5 SEND credit gate (SoC Labs 2026-06-09)
                                         sync_obs_a2l_replay_v_1,        // [30]    a2l_fc_replay_link_valid — FCSM 4->5 SEND app-valid gate (link side)
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
@@ -2403,11 +2424,13 @@ module axi_chiplet_controller #(
         // Region 8 training_mode reg.
         .swi_bit_slip_in            (swi_bit_slip_w),
 `ifdef TIDELINK_PHY_V2
-        // S3 PHY swap: global word-window pin. The serdes' WORD_PIN_AUTO
-        // matcher is autonomous (FIX-R-proper, the silicon-validated
-        // default); manual pin held at 0.
-        .swi_word_pin_in            (4'h0),
-        .swi_word_pin_auto_en       (1'b1),
+        // S3 PHY swap: global word-window pin. Default = autonomous
+        // WORD_PIN_AUTO (FIX-R-proper). SW override (mirrors the proven BIST
+        // BIT_SLIP_OVR[28:24] layout) for the marginal-direction word-phase
+        // that auto's exact-match can't commit on silicon (v36 finding):
+        //   SWI_BIT_SLIP_LO[27:24] = manual word pin, [28] = auto-disable.
+        .swi_word_pin_in            (swi_word_pin_ovr_r),
+        .swi_word_pin_auto_en       (~swi_word_pin_auto_dis_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

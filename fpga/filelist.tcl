@@ -34,10 +34,16 @@ if { [info exists env(CMSDK_FPGA_SRAM_V)] && $env(CMSDK_FPGA_SRAM_V) ne "" } {
     set CMSDK_FPGA_SRAM_V [file join $CMSDK_DIR logical models memories cmsdk_fpga_sram.v]
 }
 
-# flist written by Agent A2
-set fpga_flist [file join $TIDELINK_HOME flist tidelink_fpga.flist]
+# Flist selection. Default = the V1 list. TIDELINK_PHY_V2=1 in the
+# environment selects the V2 (deps/tidelink-phy shared component) list —
+# same knob as cocotb/tidelink_top_pair. (Also fixes the flist/->flists/
+# rename, which this file-join form silently missed.)
+set _phy_v2 0
+if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
+set _flist_name [expr { $_phy_v2 ? "tidelink_fpga_v2.flist" : "tidelink_fpga.flist" }]
+set fpga_flist [file join $TIDELINK_HOME flists $_flist_name]
 if { ![file exists $fpga_flist] } {
-    error "tidelink_fpga.flist not found at $fpga_flist — run Agent A2 first"
+    error "$_flist_name not found at $fpga_flist"
 }
 
 # Include paths: CMSDK and XHB500 verilog headers

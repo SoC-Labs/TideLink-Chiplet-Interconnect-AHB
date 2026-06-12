@@ -1,0 +1,24 @@
+[Unit]
+Description=TideLink throughput-characterization web GUI (:8090)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/SoCLabs/tidelink
+# venv per the sibling toolkits' pattern (~/.venvs/tidethroughput);
+# see pynq_host/throughput_gui/README.md for setup.
+ExecStart=%h/.venvs/tidethroughput/bin/uvicorn pynq_host.throughput_gui.app:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=5
+# Defaults: store ~/tidelink_throughput_runs, artefacts ~/tidelink_artefacts.
+# Environment=TIDELINK_THROUGHPUT_STORE=%h/tidelink_throughput_runs
+# Environment=TIDELINK_THROUGHPUT_ARTEFACTS=%h/tidelink_artefacts
+# Environment=TIDELINK_THROUGHPUT_VERSION=v37
+# Uncomment for fpgahubd Bearer-token auth instead of the unix socket:
+# Environment=FPGAHUB_TOKEN=__SET_ME__
+# Environment=FPGAHUB_ADDR=127.0.0.1:7245
+# DEV ONLY — fake backend, no boards:
+# Environment=TIDELINK_THROUGHPUT_FAKE=1
+
+[Install]
+WantedBy=default.target

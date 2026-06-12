@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TideLink throughput</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- vendored so the GUI works when the browser host has no internet;
+       falls back to the CDN if the vendor copy is missing -->
+  <script src="/static/vendor/plotly.min.js"></script>
+  <script>
+    if (typeof Plotly === "undefined") {
+      document.write('<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"><\/script>');
+    }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>TideLink throughput characterization</h1>
+    <span id="mode-badge" class="badge"></span>
+  </header>
+
+  <div id="banner" class="banner state-idle">idle</div>
+
+  <main>
+    <section class="panel" id="control-panel">
+      <h2>M&rarr;S sustained throughput</h2>
+      <form id="run-form">
+        <label>burst_words
+          <input type="number" id="p-burst" value="16" min="1" max="256">
+        </label>
+        <label>duration_s
+          <input type="number" id="p-duration" value="10" min="0.5"
+                 max="600" step="0.5">
+        </label>
+        <label>win_s
+          <input type="number" id="p-win" value="0.5" min="0.1" max="10"
+                 step="0.1">
+        </label>
+        <label>rate_pps (0 = unthrottled)
+          <input type="number" id="p-rate" value="0" min="0" step="100">
+        </label>
+        <label>artefact_version
+          <input type="text" id="p-version" placeholder="(server default)">
+        </label>
+        <div class="buttons">
+          <button type="submit" id="run-btn">Start run</button>
+          <button type="button" id="abort-btn" disabled>Abort</button>
+          <a id="csv-link" class="hidden" href="#" download>samples.csv</a>
+        </div>
+      </form>
+      <div id="gate-reason" class="gate-reason"></div>
+
+      <h3>Link status <button type="button" id="link-refresh">refresh</button></h3>
+      <pre id="link-status">(not checked)</pre>
+
+      <h3>Provenance</h3>
+      <pre id="provenance">(no run)</pre>
+    </section>
+
+    <section class="panel grow">
+      <div id="chart-tput" class="chart"></div>
+      <div id="chart-credit" class="chart"></div>
+      <h3>Event log</h3>
+      <pre id="event-log"></pre>
+    </section>
+  </main>
+
+  <footer>
+    loopback-only :8090 &middot; reach via
+    <code>ssh -L 8090:localhost:8090 mapstone-dev</code> &middot;
+    P0 walking skeleton &middot; plan: docs/THROUGHPUT_GUI_PLAN_2026_06_12.md
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

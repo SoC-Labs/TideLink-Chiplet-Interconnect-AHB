@@ -1,0 +1,66 @@
+/* TideLink throughput GUI — dark theme matching the sibling toolkits. */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #0b0e13; color: #c8d2e0;
+  font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: #11151c;
+  border-bottom: 1px solid #222a36;
+}
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 14px; margin: 4px 0 10px; }
+h3 { font-size: 12px; margin: 14px 0 6px; text-transform: uppercase;
+     letter-spacing: .06em; color: #8696ac; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+.badge.fake { background: #5a3a86; color: #e8dcff; }
+.badge.real { background: #1d4ed8; color: #dbe8ff; }
+
+.banner { padding: 6px 16px; font-weight: 600; }
+.state-idle    { background: #1a212c; }
+.state-running { background: #14406b; }
+.state-done    { background: #14532d; }
+.state-failed  { background: #6b1414; }
+.state-aborted { background: #6b4b14; }
+
+main { display: flex; gap: 14px; padding: 14px 16px; }
+.panel {
+  background: #11151c; border: 1px solid #222a36; border-radius: 8px;
+  padding: 12px 14px; min-width: 320px;
+}
+.panel.grow { flex: 1; }
+
+form label { display: block; margin-bottom: 8px; color: #8696ac; }
+form input {
+  display: block; width: 100%; margin-top: 2px; padding: 5px 8px;
+  background: #0b0e13; color: #c8d2e0; border: 1px solid #2c374a;
+  border-radius: 4px;
+}
+.buttons { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+button {
+  padding: 6px 14px; border: 0; border-radius: 5px; cursor: pointer;
+  background: #1d4ed8; color: #fff; font-weight: 600;
+}
+button:disabled { background: #2c374a; color: #66758c; cursor: default; }
+#abort-btn { background: #b91c1c; }
+#abort-btn:disabled { background: #2c374a; }
+#link-refresh { padding: 1px 8px; font-size: 11px; background: #2c374a; }
+
+.gate-reason { color: #f87171; margin-top: 8px; min-height: 16px; }
+.hidden { display: none; }
+a#csv-link { color: #4ea1ff; }
+
+pre {
+  background: #0b0e13; border: 1px solid #222a36; border-radius: 5px;
+  padding: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap;
+  word-break: break-all;
+}
+#event-log { max-height: 220px; }
+.chart { width: 100%; height: 280px; margin-bottom: 12px; }
+
+footer {
+  padding: 8px 16px; color: #66758c; border-top: 1px solid #222a36;
+  font-size: 11px;
+}
+code { color: #8fb4e8; }

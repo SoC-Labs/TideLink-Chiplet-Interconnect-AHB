@@ -94,7 +94,13 @@ EXTRA_DEFINES ?=
 COMPILE_ARGS += $(EXTRA_DEFINES)
 
 # Keep each profile's objects separate so profile switches always recompile.
-SIM_BUILD ?= sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)
+# MUST be := (not ?=): cocotb's Makefile.inc exports SIM_BUILD, so under the
+# v2_gate recursion the parent make's value (sim_build_zero) arrives in the
+# sub-make's ENVIRONMENT and a ?= would silently keep it — every stage would
+# rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
+# banner is the canary). A plain := beats the environment; an explicit
+# SIM_BUILD=... on the command line still wins.
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

@@ -117,6 +117,29 @@ sim-regression:
 	$(MAKE) -C cocotb/tidelink_top_pair
 
 
+# =============================================================================
+# Paired V2 (TIDELINK_PHY_V2) regression — the v38 pre-silicon gate.
+#
+# Two V2-stack tidelink_top instances (flists/tidelink_fpga_v2.flist,
+# deps/tidelink-phy @ c332722 epoch-deskew anchor) with per-lane WHOLE-WORD
+# epoch skew between the dies — the v37 silicon defect class that no other
+# integrated sim can see (docs/V37_FINAL_DIAGNOSIS_2026_06_12.md). Four
+# stages, each a fresh compile (~2 min wall total):
+#   1. EPOCH_PROFILE=zero       bilateral link-up + M<->S packet delivery
+#   2. EPOCH_PROFILE=staircase  0..7 whole-word lane epochs, both directions
+#   3. EPOCH_PROFILE=silicon    v37 fingerprint (3..7 words on master's RX)
+#   4. negative control         EPOCH_ANCHOR_EN=0 -> asserts the v37
+#                               directional data-loss signature is detected
+# See cocotb/tidelink_top_pair_v2/README.md for the discrimination matrix.
+# =============================================================================
+
+sim-regression-v2:
+	@echo "========================================"
+	@echo " sim-regression-v2 — paired V2 epoch-skew gate (v38)"
+	@echo "========================================"
+	$(MAKE) -C cocotb/tidelink_top_pair_v2 v2_gate
+
+
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────
 # Exposes `make fc`, `make gdsii`, `make fc_lec`, `make fc_etm`, `make

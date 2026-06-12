@@ -177,6 +177,7 @@ module tidelink_fifo #(
     // Delay trigger by 1 cycle so credit_delta_data is stable when the
     // returner captures it (both are registered on release_credits_trigger).
     logic                    release_credits_trigger_d;
+    wire                     returner_capture_0_w;   // credit-leak fix
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) release_credits_trigger_d <= 1'b0;
         else          release_credits_trigger_d <= release_credits_trigger;
@@ -266,6 +267,7 @@ module tidelink_fifo #(
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
         .credit_delta_data    (credit_delta_data),
+        .credit_delta_captured(returner_capture_0_w),
         .credit_count_data    (credit_count_data),
         .release_credits_trigger(release_credits_trigger),
         // Pair base address
@@ -318,6 +320,7 @@ module tidelink_fifo #(
         .hresetn     (hresetn),
 
         // Channel 0: release credits (delayed 1 cycle so credit_delta_data is stable)
+        .capture_0_pulse (returner_capture_0_w),
         .interrupt_0 (release_credits_trigger_d),
         .write_addr_0(PAIR_RELEASED_CREDITS_ADDR),
         .write_data_0(credit_delta_data),

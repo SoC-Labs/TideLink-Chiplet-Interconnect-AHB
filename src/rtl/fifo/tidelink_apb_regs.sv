@@ -57,6 +57,9 @@ module tidelink_apb_regs #(
     output logic                    doorbell_trigger,
     output logic                    reset_deassert_pulse,
     output logic [SYS_DATA_W-1:0]   credit_delta_data,
+    // Credit-leak fix (2026-06-12): pulse from the returner the cycle it
+    // captures write_data_0, so the delta can accumulate until truly sent.
+    input  logic                    credit_delta_captured,
     output logic [SYS_DATA_W-1:0]   credit_count_data,
     output logic                    release_credits_trigger,
 
@@ -410,11 +413,22 @@ module tidelink_apb_regs #(
             release_acc <= release_acc_next;
     end
 
+    // Credit-leak fix (2026-06-12): credit_delta_data ACCUMULATES across
+    // triggers while the returner has not yet captured it. Previously a
+    // second trigger (returner busy / sideband backpressure) OVERWROTE the
+    // unsent delta and release_acc had already been zeroed — those credits
+    // were never returned to the peer (permanent leak; starvation under
+    // sustained load). Capture and trigger on the same cycle: the returner
+    // latched the OLD value this cycle, so load just the new delta.
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn)
             credit_delta_data <= '0;
-        else if (release_credits_trigger)
+        else if (credit_delta_captured && release_credits_trigger)
             credit_delta_data <= effective_acc_d1;
+        else if (credit_delta_captured)
+            credit_delta_data <= '0;
+        else if (release_credits_trigger)
+            credit_delta_data <= credit_delta_data + effective_acc_d1;
     end
 
     // Total free credits (combinational)

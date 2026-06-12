@@ -1,0 +1,7 @@
+sim_build*/
+results.xml
+sim.log
+waves.vcd
+*.fsdb
+novas*
+verdiLog/

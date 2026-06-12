@@ -426,6 +426,61 @@ print(\"   7. ST_TRAIN_EXIT → ST_TRAIN_DONE → role_lock latches → link act
 print(\"   No SW APB writes required after deploy. Verify with: probe_link.sh\")
 '"
 
+# 3b. AXI-firewall timeout bootstrap (commit 957c942 — GP1-split BDs only).
+#
+#     The two AXI firewalls' five MAX_*_WAITS timeout registers are RUNTIME
+#     registers, not synth parameters; they reset to 0xFFFF wait strobes
+#     (~10.5 ms @ 6.25 MHz). The intended trip point is 0x2710 (10 000
+#     strobes ~ 1.6 ms @ 6.25 MHz), per the BD header NOTE in
+#     fpga/targets/pynq-z2-pair{,-flip}-all/tidelink_design.tcl:
+#
+#       fw_data CTL @ 0x44060000  (GP1 data-plane firewall; CTL cross-wired
+#                                  onto the GP0 control plane)
+#       fw_ctrl CTL @ 0x84020000  (GP0 control-plane firewall; CTL cross-
+#                                  wired onto the GP1 data plane)
+#       CTL+0x30 MAX_CONTINUOUS_RTRANSFERS_WAITS   CTL+0x34 MAX_WRITE_TO_BVALID_WAITS
+#       CTL+0x38 MAX_AR_WAITS   CTL+0x3C MAX_AW_WAITS   CTL+0x40 MAX_W_WAITS
+#
+#     OLD IMAGES (anything pre-957c942) have no firewall at these addresses:
+#     the probe read SIGBUSes (DECERR) or hangs. That MUST NOT break the
+#     deploy — each firewall is probed in its OWN timeout-wrapped python
+#     process; a dead probe only kills that process, and a missing/insane
+#     readback (expect the 16-bit default 0xFFFF, or 0x2710 if already set)
+#     skips that firewall with a note. Override value via FW_TIMEOUT_VAL.
+FW_TIMEOUT_VAL="${FW_TIMEOUT_VAL:-0x2710}"
+firewall_cfg() {  # NAME CTL_BASE
+    local fw_name="$1" fw_ctl="$2" fw_out=""
+    fw_out=$(sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+        "echo '$PASS' | sudo -S timeout 6 python3 -c '
+import mmap,struct,os
+P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
+ctl=$fw_ctl; b=ctl&~(P-1); o=ctl-b
+m=mmap.mmap(fd,P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b)
+def rd(off): return struct.unpack_from(\"<I\",m,o+off)[0]
+def wr(off,v): struct.pack_into(\"<I\",m,o+off,v)
+v=rd(0x30)   # sanity probe: default 0xFFFF or an already-set 16-bit value
+if v==0 or (v>>16)!=0:
+    print(\"FW-ABSENT 0x%08x\"%v)
+else:
+    for off in (0x30,0x34,0x38,0x3C,0x40): wr(off,$FW_TIMEOUT_VAL)
+    rb=[rd(off) for off in (0x30,0x34,0x38,0x3C,0x40)]
+    tag=\"FW-SET\" if all(x==$FW_TIMEOUT_VAL for x in rb) else \"FW-VERIFY-FAIL\"
+    print(tag+\" \"+\" \".join(\"0x%04x\"%x for x in rb))
+' 2>/dev/null" 2>/dev/null) || true
+    case "$fw_out" in
+        *FW-SET*)
+            echo "  firewall $fw_name @ $fw_ctl: MAX_*_WAITS = $FW_TIMEOUT_VAL (+0x30..0x40, verified: ${fw_out#*FW-SET })" ;;
+        *FW-ABSENT*)
+            echo "  firewall $fw_name @ $fw_ctl: readback ${fw_out#*FW-ABSENT } not a sane timeout reg — old image without firewalls? skipping" ;;
+        *FW-VERIFY-FAIL*)
+            echo "WARNING: firewall $fw_name @ $fw_ctl: wrote $FW_TIMEOUT_VAL but readback mismatch (${fw_out#*FW-VERIFY-FAIL }) — timeouts NOT confirmed" >&2 ;;
+        *)
+            echo "  firewall $fw_name @ $fw_ctl: probe died/timed out (SIGBUS/hang — pre-firewall image or plane down), skipping" ;;
+    esac
+}
+firewall_cfg "fw_data(GP1 data plane)"    0x44060000
+firewall_cfg "fw_ctrl(GP0 control plane)" 0x84020000
+
 # --- Layer 3: provenance ledger ------------------------------------------
 # Append one JSON line per deploy to <ARTEFACTS>/deployed.json so "what is
 # actually loaded right now" is always answerable after the fact. Best-effort:

@@ -28,16 +28,37 @@
 ###   - 1x xlconcat (IRQ aggregator -> PS IRQ_F2P[5:0])
 ###   - TideLink IP (soclabs.org:user:tidelink_vivado_wrapper:1.0)
 ###
-### Address map (PS7 M_AXI_GP0 address space):
+### Address map — GP1 control/data-path split (2026-06-12, ARCH_ANALYSIS §4):
+###
+###   The high-rate data apertures (ahb_tx, ahb_fifo) ride PS7 M_AXI_GP1 in
+###   their OWN ordering domain so a backpressured/wedged AHB_TX write can no
+###   longer stall control-plane (APB) polls behind it on GP0. Zynq-7000 GP
+###   master windows are HARD (GP0 = 0x4000_0000..0x7FFF_FFFF, GP1 =
+###   0x8000_0000..0xBFFF_FFFF), so the data apertures RELOCATE:
+###   *** NEW DATA ADDRESSES: aperture = old + 0x4000_0000 ***
+###
+### PS7 M_AXI_GP0 address space (control plane + low-rate paths — unchanged):
 ###   0x4000_0000 .. 0x43FF_FFFF  ahb_sub   (64 MB — transparent chiplet window)
-###   0x4400_0000 .. 0x4400_FFFF  ahb_tx    (64 KB — TX aperture, RAM_ADDR_W=14)
-###   0x4401_0000 .. 0x4401_FFFF  ahb_fifo  (64 KB — RX FIFO window)
 ###   0x4402_0000 .. 0x4402_0FFF  ahb_ptp   (4 KB  — PTP TX write port)
 ###   0x4403_0000 .. 0x4403_7FFF  apb       (32 KB — unified config registers)
 ###   0x4404_0000 .. 0x4404_0FFF  strap     (4 KB  — AXI GPIO; bit 0 = role_strap_i)
 ###   0x4404_1000 .. 0x4404_1FFF  dbg_unlk  (4 KB  — AXI GPIO; bit 0 = debug-unlock)
 ###   0x4404_2000 .. 0x4404_2FFF  pmod_trig (4 KB  — AXI GPIO; PMOD-B trig out+in)
 ###   0x4405_0000 .. 0x4405_0FFF  phc       (4 KB  — PHC hardware clock APB)
+###
+### PS7 M_AXI_GP1 address space (data plane — RELOCATED, was 0x4400_xxxx):
+###   0x8400_0000 .. 0x8400_FFFF  ahb_tx    (64 KB — TX aperture, RAM_ADDR_W=14)
+###   0x8401_0000 .. 0x8401_FFFF  ahb_fifo  (64 KB — RX FIFO window)
+###
+### NOTE (GP1 split residual): ahb_sub stays on GP0 — its full address is
+###   forwarded over the link for peer-side decode, so relocating it to the
+###   GP1 window would change the forwarded address bits (NOT a BD-only
+###   change) and break the 0x4000_0000 peer-aperture contract everywhere.
+###   A wedged ahb_sub access can therefore still stall GP0; the bench
+###   wedge/backpressure path (AHB_TX, T6 class) is fully isolated.
+###   Host scripts: export TIDELINK_TX_BASE=0x84000000 and
+###   TIDELINK_RXFIFO_BASE=0x84010000 against bitstreams built from this BD
+###   (defaults remain the old 0x4400_0000/0x4401_0000 for old bitstreams).
 ###
 ### NOTE (PHC integration — 2026-05-22 feat/phc-hw-test, -all mirror 2026-05-23):
 ###   The PHC hardware clock IP (soclabs.org:user:phc_vivado_wrapper:1.0,
@@ -46,7 +67,7 @@
 ###   tie-offs. Connections:
 ###     phc_clk           = clk_wiz clk_out2 (50 MHz, shared MMCM with hclk)
 ###     phc_resetn        = proc_sys_reset peripheral_aresetn
-###     phc/apb           = AXI SmartConnect M07 -> axi_apb_bridge -> phc.apb
+###     phc/apb           = AXI SmartConnect M05 -> axi_apb_bridge -> phc.apb
 ###     hw_capture_0_i    = tidelink_0/phc_hw_capture OR pmod_b_trig_i  (one-shot OR)
 ###     hw_cap_*_0_o      -> tidelink_0/phc_hw_cap_*
 ###     hw_set_*_0_i      <- tidelink_0/phc_hw_set_*  (servo phase step)
@@ -160,7 +181,10 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     # Zynq Processing System 7
     # FCLK_CLK0 = 100 MHz feeds the Clocking Wizard.
-    # M_AXI_GP0 is the PL fabric master (PYNQ MMIO).
+    # M_AXI_GP0 is the control-plane PL master (APB/config/GPIO MMIO).
+    # M_AXI_GP1 is the data-plane PL master (ahb_tx + ahb_fifo apertures) —
+    #   enabled 2026-06-12 so data backpressure cannot stall control polls
+    #   (GP0/GP1 are independent ordering domains in the PS7).
     # IRQ_F2P[5:0] connected to xlconcat output for 6 TideLink IRQs.
     #--------------------------------------------------------------------------
     set ps7 [create_bd_cell -type ip \
@@ -171,6 +195,7 @@ proc create_root_design { parentCell } {
         CONFIG.PCW_EN_CLK0_PORT             {1} \
         CONFIG.PCW_EN_RST0_PORT             {1} \
         CONFIG.PCW_USE_M_AXI_GP0            {1} \
+        CONFIG.PCW_USE_M_AXI_GP1            {1} \
         CONFIG.PCW_USE_FABRIC_INTERRUPT     {1} \
         CONFIG.PCW_IRQ_F2P_INTR            {1} \
         CONFIG.PCW_UART0_PERIPHERAL_ENABLE  {1} \
@@ -233,24 +258,39 @@ proc create_root_design { parentCell } {
         -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0]
 
     #--------------------------------------------------------------------------
-    # AXI SmartConnect: 1 PS master -> 9 slaves (PHC integration adds 2 ports)
-    #   M00 -> axi_ahb_sub
-    #   M01 -> axi_ahb_tx
-    #   M02 -> axi_ahb_fifo
-    #   M03 -> axi_ahb_ptp
-    #   M04 -> axi_apb
-    #   M05 -> axi_gpio_strap        (paired-only; selects role_strap_i at runtime)
-    #   M06 -> axi_gpio_debug_unlock (debug strap; ungates slave Wlink APB writes)
-    #   M07 -> axi_apb_phc           (PHC hardware clock APB)
-    #   M08 -> axi_gpio_pmod_trig    (PMOD-B cross-board trigger: out+in)
+    # AXI SmartConnect (control plane, GP0): 1 PS master -> 7 slaves.
+    # GP1 split 2026-06-12: ahb_tx + ahb_fifo moved off this interconnect to
+    # axi_smc_data on M_AXI_GP1 (own ordering domain — see header NOTE).
+    #   M00 -> axi_ahb_sub           (transparent chiplet window — see residual NOTE)
+    #   M01 -> axi_ahb_ptp           (PTP TX write port, low-rate)
+    #   M02 -> axi_apb               (TideLink unified config — THE control surface)
+    #   M03 -> axi_gpio_strap        (paired-only; selects role_strap_i at runtime)
+    #   M04 -> axi_gpio_debug_unlock (debug strap; ungates slave Wlink APB writes)
+    #   M05 -> axi_apb_phc           (PHC hardware clock APB)
+    #   M06 -> axi_gpio_pmod_trig    (PMOD-B cross-board trigger: out+in)
     #--------------------------------------------------------------------------
     set smc [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc]
     set_property -dict [list \
         CONFIG.NUM_SI   {1} \
-        CONFIG.NUM_MI   {9} \
+        CONFIG.NUM_MI   {7} \
         CONFIG.NUM_CLKS {1} \
     ] $smc
+
+    #--------------------------------------------------------------------------
+    # AXI SmartConnect (data plane, GP1): 1 PS master -> 2 slaves.
+    #   M00 -> axi_ahb_tx    (TX aperture  — 0x8400_0000, was 0x4400_0000)
+    #   M01 -> axi_ahb_fifo  (RX FIFO      — 0x8401_0000, was 0x4401_0000)
+    # A stalled/wedged AHB_TX write now only blocks GP1; APB polls on GP0
+    # keep flowing (ARCH_ANALYSIS_2026_06_12.md §4 / roadmap item 5).
+    #--------------------------------------------------------------------------
+    set smc_data [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc_data]
+    set_property -dict [list \
+        CONFIG.NUM_SI   {1} \
+        CONFIG.NUM_MI   {2} \
+        CONFIG.NUM_CLKS {1} \
+    ] $smc_data
 
     #--------------------------------------------------------------------------
     # AXI4-Lite -> AHB-Lite bridges (one per AHB slave port)
@@ -340,7 +380,7 @@ proc create_root_design { parentCell } {
 
     #--------------------------------------------------------------------------
     # PHC Hardware Clock IP — replaces the old xlconstant tie-offs.
-    # APB slave on M07; outputs feed tidelink_0/phc_* inputs; inputs receive
+    # APB slave on M05; outputs feed tidelink_0/phc_* inputs; inputs receive
     # tidelink_0/phc_hw_set_* and phc_hw_adj_* (autonomous servo).
     # Address: 4 KB at 0x4405_0000.
     #--------------------------------------------------------------------------
@@ -477,7 +517,9 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
                    [get_bd_pins proc_sys_reset_0/slowest_sync_clk] \
                    [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
+                   [get_bd_pins processing_system7_0/M_AXI_GP1_ACLK] \
                    [get_bd_pins axi_smc/aclk] \
+                   [get_bd_pins axi_smc_data/aclk] \
                    [get_bd_pins axi_ahb_sub/s_axi_aclk] \
                    [get_bd_pins axi_ahb_tx/s_axi_aclk] \
                    [get_bd_pins axi_ahb_fifo/s_axi_aclk] \
@@ -505,6 +547,7 @@ proc create_root_design { parentCell } {
     #-- Reset fan-out (active-low peripheral_aresetn)
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
                    [get_bd_pins axi_smc/aresetn] \
+                   [get_bd_pins axi_smc_data/aresetn] \
                    [get_bd_pins axi_ahb_sub/s_axi_aresetn] \
                    [get_bd_pins axi_ahb_tx/s_axi_aresetn] \
                    [get_bd_pins axi_ahb_fifo/s_axi_aresetn] \
@@ -519,9 +562,13 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/phc_resetn] \
                    [get_bd_pins phc_0/resetn]
 
-    #-- AXI: PS M_AXI_GP0 -> SmartConnect slave
+    #-- AXI: PS M_AXI_GP0 -> control-plane SmartConnect slave
     connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
                         [get_bd_intf_pins axi_smc/S00_AXI]
+
+    #-- AXI: PS M_AXI_GP1 -> data-plane SmartConnect slave (GP1 split)
+    connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP1] \
+                        [get_bd_intf_pins axi_smc_data/S00_AXI]
 
     #-- AXI: SmartConnect M00 -> AHB sub bridge -> tidelink ahb_sub
     connect_bd_intf_net [get_bd_intf_pins axi_smc/M00_AXI] \
@@ -529,50 +576,50 @@ proc create_root_design { parentCell } {
     connect_bd_intf_net [get_bd_intf_pins axi_ahb_sub/M_AHB] \
                         [get_bd_intf_pins tidelink_0/ahb_sub]
 
-    #-- AXI: SmartConnect M01 -> AHB tx bridge -> tidelink ahb_tx
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M01_AXI] \
+    #-- AXI: data SmartConnect M00 -> AHB tx bridge -> tidelink ahb_tx (GP1)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc_data/M00_AXI] \
                         [get_bd_intf_pins axi_ahb_tx/AXI4]
     connect_bd_intf_net [get_bd_intf_pins axi_ahb_tx/M_AHB] \
                         [get_bd_intf_pins tidelink_0/ahb_tx]
 
-    #-- AXI: SmartConnect M02 -> AHB fifo bridge -> tidelink ahb_fifo
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M02_AXI] \
+    #-- AXI: data SmartConnect M01 -> AHB fifo bridge -> tidelink ahb_fifo (GP1)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc_data/M01_AXI] \
                         [get_bd_intf_pins axi_ahb_fifo/AXI4]
     connect_bd_intf_net [get_bd_intf_pins axi_ahb_fifo/M_AHB] \
                         [get_bd_intf_pins tidelink_0/ahb_fifo]
 
-    #-- AXI: SmartConnect M03 -> AHB ptp bridge -> tidelink ahb_ptp
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M03_AXI] \
+    #-- AXI: SmartConnect M01 -> AHB ptp bridge -> tidelink ahb_ptp
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M01_AXI] \
                         [get_bd_intf_pins axi_ahb_ptp/AXI4]
     connect_bd_intf_net [get_bd_intf_pins axi_ahb_ptp/M_AHB] \
                         [get_bd_intf_pins tidelink_0/ahb_ptp]
 
-    #-- AXI: SmartConnect M04 -> APB bridge -> tidelink apb
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M04_AXI] \
+    #-- AXI: SmartConnect M02 -> APB bridge -> tidelink apb
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M02_AXI] \
                         [get_bd_intf_pins axi_apb/AXI4_LITE]
     connect_bd_intf_net [get_bd_intf_pins axi_apb/APB_M] \
                         [get_bd_intf_pins tidelink_0/apb]
 
-    #-- AXI: SmartConnect M05 -> AXI GPIO strap (1-bit -> role_strap_i)
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M05_AXI] \
+    #-- AXI: SmartConnect M03 -> AXI GPIO strap (1-bit -> role_strap_i)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M03_AXI] \
                         [get_bd_intf_pins axi_gpio_strap/S_AXI]
     connect_bd_net [get_bd_pins axi_gpio_strap/gpio_io_o] \
                    [get_bd_pins tidelink_0/role_strap_i]
 
-    #-- AXI: SmartConnect M06 -> AXI GPIO debug-unlock (1-bit -> apb_debug_unlock_i)
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M06_AXI] \
+    #-- AXI: SmartConnect M04 -> AXI GPIO debug-unlock (1-bit -> apb_debug_unlock_i)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M04_AXI] \
                         [get_bd_intf_pins axi_gpio_debug_unlock/S_AXI]
     connect_bd_net [get_bd_pins axi_gpio_debug_unlock/gpio_io_o] \
                    [get_bd_pins tidelink_0/apb_debug_unlock_i]
 
-    #-- AXI: SmartConnect M07 -> APB bridge -> phc_0/apb
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M07_AXI] \
+    #-- AXI: SmartConnect M05 -> APB bridge -> phc_0/apb
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M05_AXI] \
                         [get_bd_intf_pins axi_apb_phc/AXI4_LITE]
     connect_bd_intf_net [get_bd_intf_pins axi_apb_phc/APB_M] \
                         [get_bd_intf_pins phc_0/apb]
 
-    #-- AXI: SmartConnect M08 -> AXI GPIO PMOD-B trigger (out + sense)
-    connect_bd_intf_net [get_bd_intf_pins axi_smc/M08_AXI] \
+    #-- AXI: SmartConnect M06 -> AXI GPIO PMOD-B trigger (out + sense)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M06_AXI] \
                         [get_bd_intf_pins axi_gpio_pmod_trig/S_AXI]
     connect_bd_net [get_bd_pins axi_gpio_pmod_trig/gpio_io_o] \
                    [get_bd_ports pmod_b_trig_o]
@@ -685,28 +732,33 @@ proc create_root_design { parentCell } {
     ###########################################################################
     # ADDRESS MAP
     #
-    # Offset and range assigned within the PS7 M_AXI_GP0 (32-bit) space.
+    # GP1 split (2026-06-12): control plane on M_AXI_GP0 (hard window
+    # 0x4000_0000..0x7FFF_FFFF), data plane on M_AXI_GP1 (hard window
+    # 0x8000_0000..0xBFFF_FFFF). The PS7 windows are FIXED in silicon, so
+    # the data apertures relocate: NEW = OLD + 0x4000_0000.
     # Vivado SmartConnect requires power-of-two ranges >= 4 KB.
     #
+    #   GP0 (control, unchanged):
     #   ahb_sub  : 0x4000_0000   64 MB — transparent chiplet data window
-    #   ahb_tx   : 0x4400_0000   64 KB — TX aperture (RAM_ADDR_W=14)
-    #   ahb_fifo : 0x4401_0000   64 KB — RX FIFO window
     #   ahb_ptp  : 0x4402_0000    4 KB — PTP TX write port (16 B internal)
     #   apb      : 0x4403_0000   32 KB — unified config registers (15-bit PADDR)
+    #
+    #   GP1 (data, RELOCATED — was 0x4400_0000 / 0x4401_0000):
+    #   ahb_tx   : 0x8400_0000   64 KB — TX aperture (RAM_ADDR_W=14)
+    #   ahb_fifo : 0x8401_0000   64 KB — RX FIFO window
     ###########################################################################
 
     # ahb_sub: 256 MB window starting at 0x4000_0000
-    # ahb_sub: 64 MB at 0x4000_0000 (covers 0x4000_0000 .. 0x43FF_FFFF;
-    # the next slave at 0x4400_0000 is intentionally just past this region).
+    # ahb_sub: 64 MB at 0x4000_0000 (covers 0x4000_0000 .. 0x43FF_FFFF).
     assign_bd_address -offset 0x40000000 -range 0x04000000 \
         [get_bd_addr_segs {tidelink_0/ahb_sub/Reg}]
 
-    # ahb_tx: 64 KB at 0x4400_0000
-    assign_bd_address -offset 0x44000000 -range 0x00010000 \
+    # ahb_tx: 64 KB at 0x8400_0000 (GP1 — was 0x4400_0000 on GP0)
+    assign_bd_address -offset 0x84000000 -range 0x00010000 \
         [get_bd_addr_segs {tidelink_0/ahb_tx/Reg}]
 
-    # ahb_fifo: 64 KB at 0x4401_0000
-    assign_bd_address -offset 0x44010000 -range 0x00010000 \
+    # ahb_fifo: 64 KB at 0x8401_0000 (GP1 — was 0x4401_0000 on GP0)
+    assign_bd_address -offset 0x84010000 -range 0x00010000 \
         [get_bd_addr_segs {tidelink_0/ahb_fifo/Reg}]
 
     # ahb_ptp: 4 KB at 0x4402_0000 (internal decode is 4 bits / 16 B)

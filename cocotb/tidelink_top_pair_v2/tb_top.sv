@@ -241,6 +241,17 @@ module tb_top #(
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
 `endif
 
+    // Elaboration self-check: print the anchor enable actually compiled into
+    // the deskew of each die (guards against a silently-ignored defparam).
+    initial begin
+        #1;
+        $display("[tb_top] EPOCH_ANCHOR_EN: master=%0d slave=%0d (deskew: m=%0d s=%0d)",
+                 u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN,
+                 u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN,
+                 u_master.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.EPOCH_ANCHOR_EN,
+                 u_slave.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.EPOCH_ANCHOR_EN);
+    end
+
     // -------------------------------------------------------------------------
     // AHB TX aperture interface — driven per-side by cocotbext-ahb's
     // AHBLiteMaster. We expose the full set of AHB-Lite signals (cocotbext

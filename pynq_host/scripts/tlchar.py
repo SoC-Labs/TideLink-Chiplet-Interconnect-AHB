@@ -63,14 +63,24 @@ def pctiles(vals):
             "p99": p(.99), "max": s[-1], "mean": sum(s) / n}
 
 def probe():
+    # SWI_LANE_STATUS packing per REGISTER_MAP.md (RTL authoritative, not RDL):
+    # [19:17] fcsm  [20] a2l_replay_app_valid  [22:21] llrx_state  [23] cr_seen
+    # [24] crack_seen  [25] short  [26] long  [29] llrx_valid
+    # [30] a2l_fc_replay_link_valid  [31] fe_rx_is_full
     ls = rd(R_LANE_STATUS)
     return {"credit_count": rd(R_CREDIT_COUNT),
             "pair_credits": rd(R_PAIR_CREDIT),
             "status": rd(R_STATUS),
             "lane_status": "0x%08x" % ls,
-            "fcsm": (ls >> 17) & 0xF,
+            "fcsm": (ls >> 17) & 0x7,
             "cal_done": (ls >> 16) & 1,
-            "fe_full": (ls >> 31) & 1}
+            "a2l_replay_app_valid": (ls >> 20) & 1,
+            "llrx_state": (ls >> 21) & 0x3,
+            "cr_seen": (ls >> 23) & 1,
+            "crack_seen": (ls >> 24) & 1,
+            "llrx_valid": (ls >> 29) & 1,
+            "a2l_fc_replay_link_valid": (ls >> 30) & 1,
+            "fe_rx_is_full": (ls >> 31) & 1}
 
 def cmd_ping(n, gap_ms):
     rd(R_DB_RESP_ACC)                       # clear

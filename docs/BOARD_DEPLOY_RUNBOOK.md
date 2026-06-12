@@ -218,6 +218,17 @@ bash ~/SoCLabs/tidelink/pynq_host/scripts/wlink_probe.sh 192.168.4.101
 ```
 
 Interpretation notes that save hours:
+- **GP1-split bitstreams (2026-06-12+) RELOCATE the data apertures**: images
+  built from the GP1 control/data-split BD (`pair-all`/`flip-all` after
+  2026-06-12) put AHB_TX at **0x8400_0000** (was 0x4400_0000) and the RX
+  FIFO at **0x8401_0000** (was 0x4401_0000) on PS7 `M_AXI_GP1`. ALL control
+  addresses (APB 0x4403_xxxx, straps 0x4404_xxxx, PHC 0x4405_0000, peer
+  aperture 0x4000_0000) are UNCHANGED. Host scripts default to the OLD data
+  addresses — against GP1-split images export
+  `TIDELINK_TX_BASE=0x84000000 TIDELINK_RXFIFO_BASE=0x84010000`.
+  A read/write to 0x4400_xxxx on a GP1-split image hits an unmapped GP0
+  hole (DECERR/SIGBUS), and 0x8400_xxxx on an old image likewise — match
+  the bases to the bitstream generation.
 - **`lk=0x00` after training is EXPECTED** once `swi_training_mode` clears —
   the lane checker only matches training patterns. Judge link health by
   FCSM + cr/ck, not lane lock (criterion B in `hwtest/lib/lib_hwtest.sh`).

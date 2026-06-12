@@ -34,6 +34,15 @@ configuration registers — including the address translator. The decode in
 > **Note:** PHC registers are external to tidelink_top and accessed via their
 > own APB port on the `ptp-hardware-clock-ahb` IP.
 
+> **FPGA BD apertures (GP1 control/data split, 2026-06-12):** on the PYNQ-Z2
+> `pair-all`/`pair-flip-all` block designs the PS-visible apertures are:
+> APB config 0x4403_0000 (TideLink region at 0x4403_2000) and peer window
+> 0x4000_0000 on `M_AXI_GP0` (unchanged); the data apertures moved to
+> `M_AXI_GP1` — **AHB_TX 0x8400_0000** (was 0x4400_0000) and
+> **RX FIFO 0x8401_0000** (was 0x4401_0000). Zynq-7000 GP windows are hard
+> (GP1 = 0x8000_0000..0xBFFF_FFFF), hence the relocation. Host scripts:
+> `TIDELINK_TX_BASE` / `TIDELINK_RXFIFO_BASE` env overrides (old defaults).
+
 ---
 
 ## 1. TideLink Configuration Registers (APB base 0x2000)

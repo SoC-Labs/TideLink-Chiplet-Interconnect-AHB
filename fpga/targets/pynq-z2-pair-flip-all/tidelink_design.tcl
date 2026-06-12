@@ -21,7 +21,8 @@
 ###   - Zynq PS7 (FCLK_CLK0=100MHz, M_AXI_GP0 enabled, IRQ_F2P[5:0])
 ###   - Clocking Wizard (100 MHz -> 50 MHz; one MMCM, two sync outputs)
 ###   - Processor System Reset (synchronised to 50 MHz domain)
-###   - AXI SmartConnect (1 master, 7 slaves — extra port for axi_gpio_strap)
+###   - AXI SmartConnect (1 master, 8 slaves — strap GPIO + fw_data CTL)
+###   - 2x AXI Firewall (PS-wedge immunity, one per GP port — see NOTE)
 ###   - 4x AXI4-Lite -> AHB-Lite bridges (ahb_sub, ahb_tx, ahb_fifo, ahb_ptp)
 ###   - 1x AXI4-Lite -> APB bridge (apb config)
 ###   - 1x AXI GPIO (1-bit output -> tidelink_0/role_strap_i)
@@ -45,10 +46,12 @@
 ###   0x4404_1000 .. 0x4404_1FFF  dbg_unlk  (4 KB  — AXI GPIO; bit 0 = debug-unlock)
 ###   0x4404_2000 .. 0x4404_2FFF  pmod_trig (4 KB  — AXI GPIO; PMOD-B trig out+in)
 ###   0x4405_0000 .. 0x4405_0FFF  phc       (4 KB  — PHC hardware clock APB)
+###   0x4406_0000 .. 0x4406_0FFF  fw_data CTL (4 KB — GP1 firewall control regs)
 ###
 ### PS7 M_AXI_GP1 address space (data plane — RELOCATED, was 0x4400_xxxx):
 ###   0x8400_0000 .. 0x8400_FFFF  ahb_tx    (64 KB — TX aperture, RAM_ADDR_W=14)
 ###   0x8401_0000 .. 0x8401_FFFF  ahb_fifo  (64 KB — RX FIFO window)
+###   0x8402_0000 .. 0x8402_0FFF  fw_ctrl CTL (4 KB — GP0 firewall control regs)
 ###
 ### NOTE (GP1 split residual): ahb_sub stays on GP0 — its full address is
 ###   forwarded over the link for peer-side decode, so relocating it to the
@@ -59,6 +62,23 @@
 ###   Host scripts: export TIDELINK_TX_BASE=0x84000000 and
 ###   TIDELINK_RXFIFO_BASE=0x84010000 against bitstreams built from this BD
 ###   (defaults remain the old 0x4400_0000/0x4401_0000 for old bitstreams).
+###
+### NOTE (AXI firewall PS-wedge immunity — 2026-06-12):
+###   Both PS GP master ports pass through an xilinx.com:ip:axi_firewall:1.2
+###   before reaching their SmartConnect:
+###     PS M_AXI_GP0 -> axi_fw_ctrl -> axi_smc       (control plane)
+###     PS M_AXI_GP1 -> axi_fw_data -> axi_smc_data  (data plane)
+###   A downstream AHB transaction that never completes (Bug-A class FCSM
+###   deadlock, held replay) used to hard-wedge the PS AXI port. The
+###   firewall's timeout checks trip on a stalled channel and complete the
+###   transaction toward the PS with SLVERR — Linux sees a bus error, not
+###   a hang. Timeouts are RUNTIME registers (reset default 0xFFFF hclk
+###   cycles ~ finite bound); bootstrap SW writes 0x2710 (10000 cycles) to
+###   CTL+0x30..0x40 for the ~10k target. CTL ports are CROSS-WIRED:
+###   fw_data CTL on GP0 @0x4406_0000, fw_ctrl CTL on GP1 @0x8402_0000.
+###   ip2intc_irpt / mi_w_error / mi_r_error left unconnected by design
+###   (IRQ inert until SW sets glob_irpt_en; poll CTL STATUS @+0x000).
+###   See pynq-z2-pair-all header for the full register map + rationale.
 ###
 ### NOTE (PHC integration — 2026-05-22 feat/phc-hw-test, -all mirror 2026-05-23):
 ###   The PHC hardware clock IP (soclabs.org:user:phc_vivado_wrapper:1.0)
@@ -247,19 +267,23 @@ proc create_root_design { parentCell } {
     #   M04 -> axi_gpio_debug_unlock (debug strap; ungates slave Wlink APB writes)
     #   M05 -> axi_apb_phc           (PHC hardware clock APB)
     #   M06 -> axi_gpio_pmod_trig    (PMOD-B cross-board trigger: out+in)
+    #   M07 -> axi_fw_data/S_AXI_CTL (GP1 firewall control — cross-wired so a
+    #                                 tripped DATA plane is recoverable here)
     #--------------------------------------------------------------------------
     set smc [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc]
     set_property -dict [list \
         CONFIG.NUM_SI   {1} \
-        CONFIG.NUM_MI   {7} \
+        CONFIG.NUM_MI   {8} \
         CONFIG.NUM_CLKS {1} \
     ] $smc
 
     #--------------------------------------------------------------------------
-    # AXI SmartConnect (data plane, GP1): 1 PS master -> 2 slaves.
+    # AXI SmartConnect (data plane, GP1): 1 PS master -> 3 slaves.
     #   M00 -> axi_ahb_tx    (TX aperture  — 0x8400_0000, was 0x4400_0000)
     #   M01 -> axi_ahb_fifo  (RX FIFO      — 0x8401_0000, was 0x4401_0000)
+    #   M02 -> axi_fw_ctrl/S_AXI_CTL (GP0 firewall control — cross-wired so a
+    #                                 tripped CONTROL plane is recoverable here)
     # A stalled/wedged AHB_TX write now only blocks GP1; APB polls on GP0
     # keep flowing (ARCH_ANALYSIS_2026_06_12.md §4 / roadmap item 5).
     #--------------------------------------------------------------------------
@@ -267,9 +291,29 @@ proc create_root_design { parentCell } {
         -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc_data]
     set_property -dict [list \
         CONFIG.NUM_SI   {1} \
-        CONFIG.NUM_MI   {2} \
+        CONFIG.NUM_MI   {3} \
         CONFIG.NUM_CLKS {1} \
     ] $smc_data
+
+    #--------------------------------------------------------------------------
+    # AXI Firewalls (PS-wedge immunity — see header NOTE).
+    # One per PS GP master port, inserted between the PS and its
+    # SmartConnect. FIREWALL_MODE=MI_SIDE (default): everything downstream
+    # (SmartConnect + AXI->AHB bridges + TideLink) is "the slave" being
+    # policed; a stalled channel trips the timeout checks and the firewall
+    # answers the PS with SLVERR instead of letting it hang.
+    # Protocol/width/ID parameters are left to IPI propagation from the
+    # attached PS7 GP port (AXI3, 32-bit data, 12-bit ID).
+    # ENABLE_CTL_CLOCK=0 (default): S_AXI_CTL shares aclk — the whole BD is
+    # one hclk domain.
+    # Timeout values are runtime CTL registers (defaults 0xFFFF strobes);
+    # bootstrap pokes 0x2710 (10000) into CTL+0x30..0x40 — header NOTE.
+    #--------------------------------------------------------------------------
+    set fw_ctrl [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:axi_firewall:1.2 axi_fw_ctrl]
+
+    set fw_data [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:axi_firewall:1.2 axi_fw_data]
 
     #--------------------------------------------------------------------------
     # AXI4-Lite -> AHB-Lite bridges (one per AHB slave port)
@@ -500,6 +544,8 @@ proc create_root_design { parentCell } {
                    [get_bd_pins processing_system7_0/M_AXI_GP1_ACLK] \
                    [get_bd_pins axi_smc/aclk] \
                    [get_bd_pins axi_smc_data/aclk] \
+                   [get_bd_pins axi_fw_ctrl/aclk] \
+                   [get_bd_pins axi_fw_data/aclk] \
                    [get_bd_pins axi_ahb_sub/s_axi_aclk] \
                    [get_bd_pins axi_ahb_tx/s_axi_aclk] \
                    [get_bd_pins axi_ahb_fifo/s_axi_aclk] \
@@ -528,6 +574,8 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
                    [get_bd_pins axi_smc/aresetn] \
                    [get_bd_pins axi_smc_data/aresetn] \
+                   [get_bd_pins axi_fw_ctrl/aresetn] \
+                   [get_bd_pins axi_fw_data/aresetn] \
                    [get_bd_pins axi_ahb_sub/s_axi_aresetn] \
                    [get_bd_pins axi_ahb_tx/s_axi_aresetn] \
                    [get_bd_pins axi_ahb_fifo/s_axi_aresetn] \
@@ -542,13 +590,25 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/phc_resetn] \
                    [get_bd_pins phc_0/resetn]
 
-    #-- AXI: PS M_AXI_GP0 -> control-plane SmartConnect slave
+    #-- AXI: PS M_AXI_GP0 -> control firewall -> control-plane SmartConnect
+    #   (wedge immunity — see header NOTE)
     connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
+                        [get_bd_intf_pins axi_fw_ctrl/S_AXI]
+    connect_bd_intf_net [get_bd_intf_pins axi_fw_ctrl/M_AXI] \
                         [get_bd_intf_pins axi_smc/S00_AXI]
 
-    #-- AXI: PS M_AXI_GP1 -> data-plane SmartConnect slave (GP1 split)
+    #-- AXI: PS M_AXI_GP1 -> data firewall -> data-plane SmartConnect (GP1 split)
     connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP1] \
+                        [get_bd_intf_pins axi_fw_data/S_AXI]
+    connect_bd_intf_net [get_bd_intf_pins axi_fw_data/M_AXI] \
                         [get_bd_intf_pins axi_smc_data/S00_AXI]
+
+    #-- AXI: firewall CTL ports, cross-wired (data fw on control plane,
+    #   control fw on data plane — see header NOTE for the recovery story)
+    connect_bd_intf_net [get_bd_intf_pins axi_smc/M07_AXI] \
+                        [get_bd_intf_pins axi_fw_data/S_AXI_CTL]
+    connect_bd_intf_net [get_bd_intf_pins axi_smc_data/M02_AXI] \
+                        [get_bd_intf_pins axi_fw_ctrl/S_AXI_CTL]
 
     #-- AXI: SmartConnect M00 -> AHB sub bridge -> tidelink ahb_sub
     connect_bd_intf_net [get_bd_intf_pins axi_smc/M00_AXI] \
@@ -764,6 +824,17 @@ proc create_root_design { parentCell } {
     # phc apb: 4 KB at 0x4405_0000 (APB_ADDR_W=12)
     assign_bd_address -offset 0x44050000 -range 0x00001000 \
         [get_bd_addr_segs {phc_0/apb/Reg}]
+
+    # GP1 (data) firewall control regs: 4 KB at 0x4406_0000 on the GP0
+    # control plane (cross-wired — see header NOTE). STATUS @+0x000,
+    # UNBLOCK @+0x008, MAX_*_WAITS @+0x030..0x040.
+    assign_bd_address -offset 0x44060000 -range 0x00001000 \
+        [get_bd_addr_segs {axi_fw_data/S_AXI_CTL/Control}]
+
+    # GP0 (control) firewall control regs: 4 KB at 0x8402_0000 on the GP1
+    # data plane (cross-wired).
+    assign_bd_address -offset 0x84020000 -range 0x00001000 \
+        [get_bd_addr_segs {axi_fw_ctrl/S_AXI_CTL/Control}]
 
     ###########################################################################
     # VALIDATE AND SAVE

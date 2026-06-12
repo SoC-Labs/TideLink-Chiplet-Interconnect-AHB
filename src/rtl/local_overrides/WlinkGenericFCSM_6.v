@@ -248,7 +248,13 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs Bug-A FCSM observation 2026-06-03: APP side of the a2l FIFO.
   // Build #20 showed link side stuck at 0; need app side to know whether
   // master fc_adapter is pushing pulses that the FIFO CDC then drops.
-  output        io_obs_a2l_replay_app_valid
+  output        io_obs_a2l_replay_app_valid,
+  // SoC Labs FC credit observation 2026-06-12: far-end RX credit pointer
+  // (io_tx_clk domain reg, updated from ACK/NACK packets at L1293). Together
+  // with io_obs_fe_rx_credit_max this lets SW see a CR credit value that
+  // garbled to a SMALL NONZERO number (fe_rx_is_full only flags the ==0
+  // case) — the link "works" for 1-4 packets then wedges.
+  output [7:0]  io_obs_fe_rx_ptr
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -918,6 +924,8 @@ module WlinkGenericFCSM_6 #(
   assign io_obs_fe_rx_is_full         = fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign io_obs_a2l_replay_app_valid  = a2l_fc_replay_app_valid;
+  // SoC Labs FC credit observation 2026-06-12
+  assign io_obs_fe_rx_ptr             = fe_rx_ptr;
   assign rx_crc_computed_crcgen_io_in = auto_rx_in_data; // @[Nodes.scala 1210:84 LazyModule.scala 309:16]
   assign en_ff2_rx_demet_clock = io_rx_clk; // @[FC.scala 191:33]
   assign en_ff2_rx_demet_reset = io_rx_reset; // @[FC.scala 191:54]

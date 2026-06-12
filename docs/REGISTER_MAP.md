@@ -256,7 +256,7 @@ pre-existing live field moves**:
   | [28]    | pkt_is_crack_pkt          | `WlinkGenericFCSM_6.pkt_is_crack_pkt`                |
   | [29]    | llrx_valid                | `WlinkRxLinkLayer.valid`                             |
   | [30]    | a2l_fc_replay_link_valid  | FCSM 4→5 SEND app-valid gate (link side)             |
-  | [31]    | fe_rx_is_full             | FCSM 4→5 SEND credit gate (SoC Labs 2026-06-09)      |
+  | [31]    | fe_rx_is_full             | FCSM 4→5 SEND credit gate (SoC Labs 2026-06-09). Only flags `fe_rx_credit_max == 0`; for the garbled-to-small-nonzero credit case read OBS_FC_CREDIT @ 0x219C. |
 
   > **RTL/RDL divergence:** the RDL (`tidelink_regs.rdl:437-470`) still
   > documents the older packing (fcsm_state at [20:17], bits [31:30]
@@ -371,7 +371,8 @@ See `axi_chiplet_controller.sv:1103-1140`.
 | 0x218C | OBS_I2C_MST_STATUS| RO     | [3] missed_ack, [2] bus_active, [1] bus_cont(0), [0] busy. |
 | 0x2190 | OBS_OBS_ID        | RO     | "OB" v1.0 marker = 0x4F42_0100. |
 | 0x2194 | OBS_MASK_HS       | RO     | Packed mask-handshake internals (peer masks, local match/fail, lock_pending, gate_open, wlink result). |
-| 0x2198 / 0x219C | reserved | RO    | Return 0. |
+| 0x2198 | OBS_CAL           | RO     | M7 calibrator obs (2026-06-05): [3:0] cal_state, [19:4] cal_resweep_ctr, [20] live training_mode (cal OR SW). (Was documented "reserved"; live since M7.) |
+| 0x219C | OBS_FC_CREDIT     | RO     | FE credit obs (2026-06-12): [7:0] `fe_rx_credit_max` (captured from CR/CRACK `word_count[15:8]`; catches credit garbled to small NONZERO — `fe_rx_is_full` @0x2108[31] only flags ==0), [15:8] `fe_rx_ptr` (credit-return pointer from ACK/NACK), [16] `fe_rx_is_full` mirror, [23:17] reserved, [31:24] presence marker 0xFC (reads 0x0000_0000 on older images). All fields 2-flop apb-synced. MMIO 0x4403219C. |
 
 ---
 

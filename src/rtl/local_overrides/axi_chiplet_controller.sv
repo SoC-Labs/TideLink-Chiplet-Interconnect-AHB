@@ -759,6 +759,9 @@ module axi_chiplet_controller #(
     wire        obs_fe_rx_is_full_w;
     // SoC Labs Bug-A FCSM observation 2026-06-03
     wire        obs_a2l_replay_app_valid_w;
+    // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
+    // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
+    wire [7:0]  obs_fe_rx_ptr_w;
 
     // Role/Region-4 register read mux. Region 8 reads served below the
     // region8_rdata mux and OR-merged into ctrl_reg_rdata.
@@ -910,6 +913,11 @@ module axi_chiplet_controller #(
     // SoC Labs Bug-A FCSM observation 2026-06-03
     reg                                                                sync_obs_a2l_app_v_0;
     reg                 sync_obs_a2l_app_v_1;
+    // SoC Labs FC credit observation 2026-06-12 — same 2-flop apb_clk
+    // treatment as sync_obs_fe_rx_cred (quasi-static obs snapshot; per-bit
+    // coherence not guaranteed mid-update, fine for poll-rate debug reads).
+    reg [7:0]                                                          sync_obs_fe_rx_ptr_0;
+    reg [7:0]           sync_obs_fe_rx_ptr_1;
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
         if (!hresetn) begin
@@ -937,6 +945,8 @@ module axi_chiplet_controller #(
             sync_obs_fe_rx_full_0   <= 1'b0;  sync_obs_fe_rx_full_1   <= 1'b0;
             // SoC Labs Bug-A FCSM observation 2026-06-03
             sync_obs_a2l_app_v_0    <= 1'b0;  sync_obs_a2l_app_v_1    <= 1'b0;
+            // SoC Labs FC credit observation 2026-06-12
+            sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
             // swi_lane_locked_in=8'hFF / swi_lane_fault_in=8'h00 /
@@ -983,6 +993,9 @@ module axi_chiplet_controller #(
             // SoC Labs Bug-A FCSM observation 2026-06-03
             sync_obs_a2l_app_v_0    <= obs_a2l_replay_app_valid_w;
             sync_obs_a2l_app_v_1    <= sync_obs_a2l_app_v_0;
+            // SoC Labs FC credit observation 2026-06-12
+            sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
+            sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
         end
     end
 
@@ -1155,7 +1168,10 @@ module axi_chiplet_controller #(
     //              [20]    controller.mask_hs_gate_open  (incl. bypass straps)
     //              [22:21] controller.wlink_mask_hs_result[1:0]
     //              [31:23] reserved
-    //     3'h6..3'h7 reserved (return 0)
+    //     3'h6  OBS_CAL             — M7 calibrator state/resweep obs (see
+    //                                 obs_cal_w below)
+    //     3'h7  OBS_FC_CREDIT       — FE credit obs (see obs_fc_credit_w
+    //                                 below; SoC Labs 2026-06-12)
     //
     //   See deps/axi-chiplet-controller/logical/top/tidelink_autoneg.sv
     //   and src/rtl/local_overrides/i2c_master_axil.v for the register
@@ -1199,6 +1215,32 @@ module axi_chiplet_controller #(
                              cal_resweep_ctr_w,
                              cal_state_w};
 
+    // OBS_FC_CREDIT (slot 3'h7 @ 0x4403219C) — SoC Labs 2026-06-12: the CR
+    // packet's FE credit value intermittently garbles on RX (deskew ~97%
+    // coherence residual). SWI_LANE_STATUS[31] fe_rx_is_full only flags the
+    // garbled-to-ZERO case; a credit garbled to a SMALL NONZERO value lets
+    // 1-4 packets through then wedges, invisible to fe_rx_is_full. Expose
+    // the captured credit max (loaded from CR/CRACK
+    // auto_rx_in_word_count[15:8], WlinkGenericFCSM_6.v) + the far-end RX
+    // credit pointer so SW can compare against the peer's programmed value.
+    //   [ 7: 0] fe_rx_credit_max  — apb-synced FCSM rx-clk reg (expect peer's
+    //                               programmed credit count, e.g. 0x1f)
+    //   [15: 8] fe_rx_ptr         — apb-synced FCSM tx-clk reg (credit-return
+    //                               pointer from ACK/NACK packets)
+    //   [16]    fe_rx_is_full     — apb-synced full gate (mirror of
+    //                               SWI_LANE_STATUS[31])
+    //   [23:17] reserved (0)
+    //   [31:24] 8'hFC             — presence marker: old images return
+    //                               0x00000000 here (slot was reserved/0), so
+    //                               SW can detect whether the obs is live.
+    // CDC: same 2-flop apb_clk treatment as the other sync_obs_* signals;
+    // no raw cross-domain sampling.
+    wire [31:0] obs_fc_credit_w = {8'hFC,                  // [31:24] marker
+                                   7'h0,                   // [23:17] reserved
+                                   sync_obs_fe_rx_full_1,  // [16]
+                                   sync_obs_fe_rx_ptr_1,   // [15:8]
+                                   sync_obs_fe_rx_cred_1}; // [7:0]
+
     assign regionC_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? obs_delay_ctr_w                     :
         (ctrl_reg_addr[2:0] == 3'h1) ? obs_timeout_ctr_w                   :
@@ -1209,6 +1251,7 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h4) ? 32'h4F42_0100                       : // "OB" v1.0
         (ctrl_reg_addr[2:0] == 3'h5) ? obs_mask_hs_w                       :
         (ctrl_reg_addr[2:0] == 3'h6) ? obs_cal_w                           : // M7 OBS_CAL
+        (ctrl_reg_addr[2:0] == 3'h7) ? obs_fc_credit_w                     : // OBS_FC_CREDIT
                                        32'h0;
 
     // =====================================================================
@@ -2459,7 +2502,9 @@ module axi_chiplet_controller #(
         .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
-        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
+        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w),
+        // SoC Labs FC credit observation 2026-06-12
+        .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w)
     );
 
 endmodule

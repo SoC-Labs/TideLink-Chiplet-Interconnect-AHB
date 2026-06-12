@@ -44,7 +44,9 @@ module TideLinkToWlink(
   output [7:0]  io_obs_fe_rx_credit_max,
   output        io_obs_fe_rx_is_full,
   // SoC Labs Bug-A FCSM observation 2026-06-03
-  output        io_obs_a2l_replay_app_valid
+  output        io_obs_a2l_replay_app_valid,
+  // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
+  output [7:0]  io_obs_fe_rx_ptr
 );
   // SoC Labs observability nets from the FCSM instance.
   wire [2:0] wlink_tidelinktl_io_obs_state;
@@ -58,6 +60,8 @@ module TideLinkToWlink(
   wire       wlink_tidelinktl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   wire       wlink_tidelinktl_io_obs_a2l_replay_app_valid;
+  // SoC Labs FC credit observation 2026-06-12
+  wire [7:0] wlink_tidelinktl_io_obs_fe_rx_ptr;
   wire  wlink_tidelinktl_clock; // @[TideLink.scala 177:22]
   wire  wlink_tidelinktl_reset; // @[TideLink.scala 177:22]
   wire  wlink_tidelinktl_auto_in_psel; // @[TideLink.scala 177:22]
@@ -143,7 +147,9 @@ module TideLinkToWlink(
     .io_obs_fe_rx_credit_max(wlink_tidelinktl_io_obs_fe_rx_credit_max),
     .io_obs_fe_rx_is_full(wlink_tidelinktl_io_obs_fe_rx_is_full),
     // SoC Labs Bug-A FCSM observation 2026-06-03
-    .io_obs_a2l_replay_app_valid(wlink_tidelinktl_io_obs_a2l_replay_app_valid)
+    .io_obs_a2l_replay_app_valid(wlink_tidelinktl_io_obs_a2l_replay_app_valid),
+    // SoC Labs FC credit observation 2026-06-12
+    .io_obs_fe_rx_ptr(wlink_tidelinktl_io_obs_fe_rx_ptr)
   );
   // SoC Labs credit-path observability pass-through.
   assign io_obs_fcsm_state        = wlink_tidelinktl_io_obs_state;
@@ -157,6 +163,8 @@ module TideLinkToWlink(
   assign io_obs_fe_rx_is_full         = wlink_tidelinktl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign io_obs_a2l_replay_app_valid  = wlink_tidelinktl_io_obs_a2l_replay_app_valid;
+  // SoC Labs FC credit observation 2026-06-12
+  assign io_obs_fe_rx_ptr             = wlink_tidelinktl_io_obs_fe_rx_ptr;
   assign auto_wlink_tidelinktl_tx_out_sop = wlink_tidelinktl_auto_tx_out_sop; // @[LazyModule.scala 311:12]
   assign auto_wlink_tidelinktl_tx_out_data_id = wlink_tidelinktl_auto_tx_out_data_id; // @[LazyModule.scala 311:12]
   assign auto_wlink_tidelinktl_tx_out_word_count = wlink_tidelinktl_auto_tx_out_word_count; // @[LazyModule.scala 311:12]

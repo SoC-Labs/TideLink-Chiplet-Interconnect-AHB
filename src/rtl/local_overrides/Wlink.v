@@ -236,7 +236,9 @@ module Wlink #(
   output [7:0]   obs_fe_rx_credit_max_o,      // rx domain
   output         obs_fe_rx_is_full_o,         // rx domain
   // SoC Labs Bug-A FCSM observation 2026-06-03
-  output         obs_a2l_replay_app_valid_o   // app domain
+  output         obs_a2l_replay_app_valid_o,  // app domain
+  // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
+  output [7:0]   obs_fe_rx_ptr_o              // tx domain
 );
   // ===================================================================
   // SoC Labs credit-path observability wiring.
@@ -276,6 +278,8 @@ module Wlink #(
   wire       tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   wire       tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs FC credit observation 2026-06-12
+  wire [7:0] tl2wl_io_obs_fe_rx_ptr;
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
@@ -918,6 +922,8 @@ module Wlink #(
   assign obs_fe_rx_is_full_o         = tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign obs_a2l_replay_app_valid_o  = tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs FC credit observation 2026-06-12
+  assign obs_fe_rx_ptr_o             = tl2wl_io_obs_fe_rx_ptr;
   assign obs_llrx_state_o        = llrx_io_obs_state;
   assign obs_is_short_pkt_o      = llrx_io_obs_is_short_pkt;
   assign obs_is_long_pkt_o       = llrx_io_obs_is_long_pkt;
@@ -1623,7 +1629,9 @@ module Wlink #(
     .io_obs_fe_rx_credit_max(tl2wl_io_obs_fe_rx_credit_max),
     .io_obs_fe_rx_is_full(tl2wl_io_obs_fe_rx_is_full),
     // SoC Labs Bug-A FCSM observation 2026-06-03
-    .io_obs_a2l_replay_app_valid(tl2wl_io_obs_a2l_replay_app_valid)
+    .io_obs_a2l_replay_app_valid(tl2wl_io_obs_a2l_replay_app_valid),
+    // SoC Labs FC credit observation 2026-06-12
+    .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr)
   );
   ShortPacketToWlink sp2wl ( // @[ShortPacket.scala 87:30]
     .auto_rx_in_sop(sp2wl_auto_rx_in_sop),

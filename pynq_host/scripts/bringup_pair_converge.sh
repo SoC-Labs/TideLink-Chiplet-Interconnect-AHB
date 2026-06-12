@@ -127,7 +127,9 @@ r,ro=mm(0x44032000,0x400); struct.pack_into(\"<I\",r,ro+0x100,$VAL)'" 2>/dev/nul
 }
 
 # Read SWI_LANE_STATUS (0x44032000+0x108): locked[7:0] fault[15:8]
-# cal_done[16] FCSM[20:17] LL_RX[22:21] cr[23] crack[24].
+# cal_done[16] FCSM[19:17] (3 bits — [20] is a2l_replay_app_valid since
+# 154fe46; the old &0xF decode misread fcsm=4 + app_valid as "FCSM=12",
+# see tlchar.py / 5319820) LL_RX[22:21] cr[23] crack[24].
 # Emits: "lkHex ftHex calDone popcount fcsm crSeen"  (or "" on failure)
 read_status() {  # IP
     local IP=$1
@@ -140,7 +142,24 @@ def mm(a,sz=4096):
  return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
 r,o=mm(0x44032000,0x400); s=struct.unpack_from(\"<I\",r,o+0x108)[0]
 lk=s&0xff; ft=(s>>8)&0xff
-print(\"0x%02x 0x%02x %d %d %d %d\"%(lk,ft,(s>>16)&1,bin(lk).count(\"1\"),(s>>17)&0xF,(s>>23)&1))'" 2>/dev/null
+print(\"0x%02x 0x%02x %d %d %d %d\"%(lk,ft,(s>>16)&1,bin(lk).count(\"1\"),(s>>17)&0x7,(s>>23)&1))'" 2>/dev/null
+}
+
+# Release post-verify read: SWI_TRAINING_MODE (0x44032100 bit0) +
+# SWI_LANE_STATUS. Emits: "training lkHex fcsm"  (or "" on failure)
+read_release() {  # IP
+    local IP=$1
+    timeout 6 sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
+      "echo '$PASS' | sudo -S python3 -c '
+import mmap,struct,os
+P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
+def mm(a,sz=4096):
+ b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
+ return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
+r,o=mm(0x44032000,0x400)
+t=struct.unpack_from(\"<I\",r,o+0x100)[0]&1
+s=struct.unpack_from(\"<I\",r,o+0x108)[0]
+print(\"%d 0x%02x %d\"%(t,s&0xff,(s>>17)&0x7))'" 2>/dev/null
 }
 
 # Best-of-N read. `locked` legitimately bounces every read (the calibrator
@@ -223,6 +242,34 @@ sync_bootstrap() {
     echo "  >> sync_bootstrap: clearing swi_training_mode (§M12 fix)..."
     set_slot0 "$MASTER_IP" 0x0 & set_slot0 "$SLAVE_IP" 0x0 & wait
     # Allow FCSM CR/CRACK handshake to complete (LINK_EN_WAIT + transitions)
+    sleep 1.0
+}
+
+# ---------------------------------------------------------------------------
+# release_link: MANDATORY success-path teardown (2026-06-12).
+#
+# Every recal_cycle iteration ends with slot0=0x1 — swi_training_mode LEFT
+# SET at 0x44032100. The "sync_bootstrap SKIPPED" fast path (both already
+# at fs4 cr=1) previously exited WITHOUT clearing it, handing later stages
+# a link that is "up" but still in training (LL_RX held / OR-merge live) —
+# the exact converge-then-wedge fingerprint. ANY success path must now end
+# with this coordinated release:
+#   CTRL_DIS (0x44030208=0x00027f00) -> settle -> CTRL_FULL (0x00027f07)
+#   -> clear swi_training_mode (slot0=0x0, M12) on BOTH boards
+# — the same proven cycle as unjam_fc_node.sh / sync_bootstrap's tail —
+# followed by a post-verify that PRINTS the training=0 / lk evidence.
+# (lk=0x00 after release is EXPECTED: lanes only score during training.)
+# ---------------------------------------------------------------------------
+release_link() {
+    local CTRL_FULL=0x00027f07
+    local CTRL_DIS=0x00027f00
+    echo "  >> release_link: CTRL_DIS/CTRL_FULL re-handshake (both boards)..."
+    set_ctrl "$MASTER_IP" $CTRL_DIS & set_ctrl "$SLAVE_IP" $CTRL_DIS & wait
+    sleep 0.02
+    set_ctrl "$MASTER_IP" $CTRL_FULL & set_ctrl "$SLAVE_IP" $CTRL_FULL & wait
+    sleep 0.1
+    echo "  >> release_link: clearing swi_training_mode on both boards (M12)..."
+    set_slot0 "$MASTER_IP" 0x0 & set_slot0 "$SLAVE_IP" 0x0 & wait
     sleep 1.0
 }
 
@@ -401,25 +448,44 @@ if [ "$conv_it" -gt 0 ]; then
     if [ "${acr:-0}" -eq 1 ] && [ "${bcr:-0}" -eq 1 ] \
        && [ "${afs:-0}" -ge 4 ] 2>/dev/null && [ "${bfs:-0}" -ge 4 ] 2>/dev/null; then
         echo "  >> sync_bootstrap SKIPPED -- both boards at fs${afs}/fs${bfs} cr=1"
-        echo "     (deskew already calibrated by converge loop; CTRL_DIS would break S->M)"
+        echo "     (deskew already calibrated by converge loop)"
+        # NOTE (2026-06-12): this skip previously ended the script with
+        # swi_training_mode STILL SET (recal_cycle leaves slot0=0x1) — the
+        # release below is unconditional, so the skip only avoids the
+        # full sync_bootstrap deskew re-prime, not the link release.
     else
         sync_bootstrap
     fi
-    # Re-read FCSM state (read_status has 6s timeout so deadlock-safe)
-    echo "  >> Probing FCSM state..."
+    # MANDATORY teardown on EVERY success path (2026-06-12): coordinated
+    # CTRL_DIS/CTRL_FULL re-handshake + swi_training_mode clear, then
+    # post-verify with printed evidence. Idempotent after sync_bootstrap
+    # (whose tail performs the same cycle).
+    release_link
+    # Post-verify (read_status/read_release have 6s timeouts — deadlock-safe)
+    echo "  >> Post-release verify (training MUST be 0; lk=0x00 EXPECTED)..."
     AR2=$(best_read "$A_IP")
     BR2=$(best_read "$B_IP")
     afs2=$(echo "$AR2" | awk '{print $5+0}')
     bfs2=$(echo "$BR2" | awk '{print $5+0}')
-    echo "  die_a FCSM=${afs2:-?}  die_b FCSM=${bfs2:-?}"
-    if [ "${afs2:-0}" -ge 4 ] 2>/dev/null && [ "${bfs2:-0}" -ge 4 ] 2>/dev/null; then
-        echo "  LINK_IDLE (state 4) BILATERAL — FCSM handshake complete."
-        echo "  (Doorbell / AHB_TX end-to-end is a SEPARATE step — wedge hazard.)"
+    REL_A=$(read_release "$A_IP")
+    REL_B=$(read_release "$B_IP")
+    atrn=$(echo "$REL_A" | awk '{print $1}'); alk2=$(echo "$REL_A" | awk '{print $2}')
+    btrn=$(echo "$REL_B" | awk '{print $1}'); blk2=$(echo "$REL_B" | awk '{print $2}')
+    echo "  die_a FCSM=${afs2:-?} training=${atrn:-?} lk=${alk2:-?}"
+    echo "  die_b FCSM=${bfs2:-?} training=${btrn:-?} lk=${blk2:-?}"
+    if [ "${afs2:-0}" -ge 4 ] 2>/dev/null && [ "${bfs2:-0}" -ge 4 ] 2>/dev/null \
+       && [ "${atrn:-1}" = "0" ] && [ "${btrn:-1}" = "0" ]; then
+        echo "  LINK_IDLE (state 4) BILATERAL + training RELEASED (training=0 both,"
+        echo "  lk=${alk2:-?}/${blk2:-?} — lk=0x00 is the expected released-link signature)."
+        echo "  (Doorbell / AHB_TX end-to-end is a SEPARATE step — see"
+        echo "   link_delivery_proof.sh for the one-packet delivery gate.)"
         exit 0
     else
-        echo "  WARNING: FCSM not yet at LINK_IDLE on one or both boards after sync_bootstrap."
-        echo "  die_a[@$A_IP]: $AR2"
-        echo "  die_b[@$B_IP]: $BR2"
+        echo "  WARNING: post-release verify FAILED —"
+        echo "    FCSM not LINK_IDLE on both (a=${afs2:-?} b=${bfs2:-?})"
+        echo "    or swi_training_mode still set (a=${atrn:-?} b=${btrn:-?})."
+        echo "  die_a[@$A_IP]: status[$AR2] release[$REL_A]"
+        echo "  die_b[@$B_IP]: status[$BR2] release[$REL_B]"
         echo "  Try re-running with increased MAX_RETRIES or check hardware."
         exit 2
     fi

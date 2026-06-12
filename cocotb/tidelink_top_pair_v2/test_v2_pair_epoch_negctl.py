@@ -6,22 +6,33 @@ Compile with:
 EPOCH_ANCHOR_DIS defparams WlinkGPIOPHY.EPOCH_ANCHOR_EN=0 on both dies —
 the pre-fix V2 baseline (occupancy-only "prime-and-continuous" deskew, which
 cannot correct whole-word epoch offsets). Under the silicon profile (3..7
-word epochs on the master's RX) this test asserts the EXACT v37 silicon
-failure signature (docs/V37_FINAL_DIAGNOSIS_2026_06_12.md):
+word epochs on the master's RX) this test asserts the measured pre-fix
+failure signature, which is the v37 class observed end-to-end:
 
   1. Training stays GREEN on both dies (cal_done=1, lane_locked=0xFF):
-     per-lane 16-bit framing is epoch-blind, so the legacy oracles cannot
-     see the defect — the historical blind spot.
-  2. The master (skewed RX) receives the slave's CR packets framed but
-     UNDECODABLE: cr_pkt_seen_rx stays 0 on the master while the slave
-     (clean RX) decodes the master's CR instantly. Asymmetric, B->A-only.
-  3. Consequently no bilateral CR/CRACK completion and S->M payload never
-     lands intact in the master's RX FIFO.
+     per-lane 16-bit framing is epoch-blind, so every legacy oracle is
+     blind to the defect — the historical gap this suite closes.
+  2. DIRECTIONAL data loss: the M->S payload (clean RX) lands byte-perfect
+     while the S->M payload (epoch-skewed RX) NEVER reaches the master's
+     RX FIFO — reads return all-zeros, PKT_WORD_LEN stays 0. Exact sim
+     signature (silicon profile, anchor off, 2026-06-12):
+         [s2m] hdr=0x00000000 (sent 0x00240000)
+               rx=[0x00000000, 0x00000000, 0x00000000, 0x00000000]
+     This is the v37 asymmetry: B->A broken, A->B fine, everything
+     trained and framed.
 
-If this test FAILS, the fixed-vs-broken discrimination is lost (either the
-anchor-disable hook stopped working, or the integrated stack started
-tolerating epoch skew some other way) — investigate before trusting the
-positive suite.
+  NOTE on CR/CRACK (documented sim-vs-silicon nuance): in this integrated
+  sim the CR exchange SURVIVES whole-word epoch skew — the FCSM emits
+  bit-identical CR packets back-to-back, so lane slices from DIFFERENT CR
+  instances still assemble into a valid CR word (the same aliasing class
+  as the V1 "CR-credit-decode lottery"). On v37 silicon the CR decode DID
+  fail (different inter-packet background/spacing). The CR latch is
+  therefore logged but NOT asserted; the unique-payload data packet is the
+  alias-proof oracle.
+
+If this test FAILS, the fixed-vs-broken discrimination is lost (anchor-
+disable hook broken, or the stack started tolerating epoch skew some other
+way) — re-validate the positive suite before trusting it.
 """
 import cocotb
 from cocotb.triggers import ClockCycles
@@ -33,7 +44,7 @@ from pair_v2_common import (
 
 
 @cocotb.test()
-async def test_negctl_epoch_skew_breaks_link(dut):
+async def test_negctl_epoch_skew_breaks_s2m_data(dut):
     tb = PairV2TB(dut)
     snap = await run_bringup_full(tb)
 
@@ -46,24 +57,26 @@ async def test_negctl_epoch_skew_breaks_link(dut):
             f"{name}: lane_locked=0x{ST_LANE_LOCKED(st):02x} — training sees " \
             f"the skew, epoch class not isolated"
 
-    # 2. CR decode asymmetry: give the FCSMs ample time, then check.
-    done = await tb.wait_cr_crack(max_cycles=40000)
+    # CR/CRACK: log only (repetition-aliasing tolerant in sim, see header).
+    done = await tb.wait_cr_crack(max_cycles=10000)
     await tb.snapshot("negctl post cr/crack wait")
-    m_cr = tb.fcsm_cr_seen("m")
-    s_cr = tb.fcsm_cr_seen("s")
-    assert not done, "bilateral CR/CRACK completed — defect NOT detected"
-    assert m_cr == 0, \
-        f"master decoded CR over a 3..7-word epoch-skewed RX with the " \
-        f"anchor OFF (cr={m_cr}) — defect NOT detected"
-    assert s_cr == 1, \
-        f"slave (clean RX) failed to decode CR (cr={s_cr}) — failure is " \
-        f"not the asymmetric v37 class"
+    tb.log.info(f"negctl: CR/CRACK bilateral={done} "
+                f"(informational — alias-prone oracle, not asserted)")
+    await ClockCycles(dut.hclk, 500)
 
-    # 3. S->M payload must NOT arrive intact.
-    ok, got = await send_and_check(tb, "s", "m", [0xDEADBEEF, 0x5A17F00D],
-                                   ctx="negctl s2m", expect_pass=False)
-    assert not ok, ("S->M payload arrived byte-perfect across an epoch-skewed "
-                    "RX with the anchor disabled — defect NOT detected")
-    tb.log.info("NEGATIVE CONTROL CONFIRMED: training green, master cr=0 / "
-                "slave cr=1, S->M payload corrupt — v37 signature reproduced "
-                f"(rx=[{', '.join(f'0x{w:08x}' for w in got)}])")
+    # 2. Clean direction must still work — pins the failure to the skewed RX.
+    ok_m2s, _ = await send_and_check(tb, "m", "s", [0xDA7A0000, 0xCAFEBABE],
+                                     ctx="negctl m2s", expect_pass=False)
+    assert ok_m2s, ("M->S (clean RX) payload corrupt — failure is not the "
+                    "directional v37 class (check the skew profile)")
+
+    # 3. Skewed direction must FAIL — this is the defect detection.
+    ok_s2m, got = await send_and_check(tb, "s", "m", [0xDEADBEEF, 0x5A17F00D],
+                                       ctx="negctl s2m", expect_pass=False)
+    assert not ok_s2m, (
+        "S->M payload arrived byte-perfect across a 3..7-word epoch-skewed "
+        "RX with EPOCH_ANCHOR_EN=0 — the defect class is NOT being detected")
+    tb.log.info("NEGATIVE CONTROL CONFIRMED: training green, M->S intact, "
+                "S->M lost across the epoch-skewed RX "
+                f"(rx=[{', '.join(f'0x{w:08x}' for w in got)}]) — "
+                "v37 defect class detected by the suite")

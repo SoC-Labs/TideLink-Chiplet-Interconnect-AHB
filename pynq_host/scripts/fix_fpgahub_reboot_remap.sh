@@ -70,8 +70,8 @@ systemctl is-active --quiet "$SVC" || rollback "daemon crash-looping after confi
 fpgahub health >/dev/null 2>&1 || rollback "fpgahub health failed after config edit"
 echo "      daemon healthy."
 
-echo "[4/7] fpgahub apply (regenerate udev rules from corrected config) ..."
-fpgahub apply 2>&1 | tail -3
+echo "[4/7] fpgahub apply --role both (regenerate udev rules from corrected config) ..."
+fpgahub apply --role both 2>&1 | tail -4 || rollback "fpgahub apply --role both failed"
 
 echo "[5/7] rename board NICs + reload networkd (assign host IPs) ..."
 udevadm control --reload-rules

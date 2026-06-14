@@ -1016,7 +1016,13 @@ module WlinkGenericFCSM_6 #(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      out_prepend_swi_disable_crc <= 1'h0;
+      // SoC Labs 2026-06-14: default disable_crc=1 (GPIO-speed deployment).
+      // Silicon-confirmed: V2 long DATA packets arrive but header-CRC fails
+      // (crc_errors saturates) -> FCSM SEND_NACK -> no enqueue. At 6.25 MHz the
+      // BER is negligible so CRC is pure overhead (REGISTER_MAP.md "key register
+      // for GPIO-speed deployments"). Default-on also sidesteps die_b's
+      // hardware-unwritable SM Control reg. SW can still re-enable via bit[16].
+      out_prepend_swi_disable_crc <= 1'h1;
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end

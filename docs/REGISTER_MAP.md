@@ -28,7 +28,8 @@ configuration registers — including the address translator. The decode in
 | 0x2080 - 0x209F | Region 4: Chiplet controller role + autoneg config |
 | 0x20A0 - 0x20FF | Regions 5-7: Performance profiling |
 | 0x2100 - 0x211F | Region 8: Chiplet extended — PHY alignment + I²C training |
-| 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) |
+| 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) — V1 only. In V2 (`TIDELINK_PHY_V2`) Region 10 is retired (eye-vis AUDIT #17); the single word at **0x2140** is repurposed as **SWI_EPOCH_STATUS** (RO) from the `tidelink_gpio_phy_apb_regs` slave: `[0]`=epoch_anchored, `[6:1]`=epoch_span (words, 0..24). The rest of 0x2140-0x215F reads 0. |
+| 0x2160 - 0x217F | Region 11: tidelink-gpio-phy APB slave (`tidelink_gpio_phy_apb_regs`, slave-paddr 0x20-0x3F) |
 | 0x2180 - 0x219F | Region C: Autoneg silicon observability (RO) |
 
 > **Note:** PHC registers are external to tidelink_top and accessed via their

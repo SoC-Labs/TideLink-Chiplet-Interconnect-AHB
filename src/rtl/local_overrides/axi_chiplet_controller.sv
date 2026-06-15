@@ -780,6 +780,12 @@ module axi_chiplet_controller #(
     wire [15:0] obs_tx_sync_ins_cnt_w;
     wire        obs_tx_link_idle_level_w;
     wire        obs_tx_training_level_w;
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1) — raw probe
+    // from the V2 WlinkGPIOPHY fork (post-deskew word, rx-link-clk domain).
+    // 2-flop synced to apb_clk below (sync_obs_sync_seen_*). Read at the new
+    // SYNC-DETECT register (SoC MMIO 0x4403_2124). V2-only.
+    wire [15:0] obs_sync_seen_cnt_w;
+    wire [7:0]  obs_sync_seen_lane_w;
 `endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
@@ -866,6 +872,18 @@ module axi_chiplet_controller #(
     // production behaviour (bit-identical when SWI_SYNC_INSERT_EN is also 0).
     // V2-only so the V1 build stays bit-identical.
     reg        swi_sync_force_always_r;
+    // Slot 0 bit[4] — SWI_SYNC_ROBUST_DETECT: DEFAULT-OFF selectable robust framer
+    // re-hunt (PART 2, 2026-06-15). Reset 0. When 0 the framer re-hunt is the
+    // legacy full-128 exact compare only (bit-identical). When 1 the PHY's
+    // mask-aware per-lane SYNC detector also drives the re-hunt (the silicon fix
+    // for the full-128 compare never firing). SoC addr = Region 8 slot 0 =
+    // 0x44032100, bit[4]. V2-only so the V1 build stays bit-identical.
+    reg        swi_sync_robust_detect_r;
+    // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — 8-bit
+    // SW-writable per-lane mask feeding the PHY detector's lane_mask_i, so the
+    // operator can mask marginal lanes on silicon. Reset 0xFF (all lanes in).
+    // SoC addr = Region 9 slot 2 = 0x44032128. V2-only.
+    reg [7:0]  swi_sync_lane_mask_r;
 `endif
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
@@ -973,6 +991,12 @@ module axi_chiplet_controller #(
     reg [15:0]          sync_obs_tx_sync_ins_0,   sync_obs_tx_sync_ins_1;
     reg                 sync_obs_tx_idle_0,       sync_obs_tx_idle_1;
     reg                 sync_obs_tx_train_0,      sync_obs_tx_train_1;
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1) — same
+    // 2-flop apb_clk treatment. The 16-bit count is a quasi-static saturating
+    // snapshot; the 8-bit lane vector is a sticky "ever-matched" set. Read at the
+    // SYNC-DETECT register (SoC MMIO 0x4403_2124).
+    reg [15:0]          sync_obs_sync_seen_cnt_0, sync_obs_sync_seen_cnt_1;
+    reg [7:0]           sync_obs_sync_seen_lane_0, sync_obs_sync_seen_lane_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1008,6 +1032,9 @@ module axi_chiplet_controller #(
             sync_obs_tx_sync_ins_0  <= 16'h0; sync_obs_tx_sync_ins_1  <= 16'h0;
             sync_obs_tx_idle_0      <= 1'b0;  sync_obs_tx_idle_1      <= 1'b0;
             sync_obs_tx_train_0     <= 1'b0;  sync_obs_tx_train_1     <= 1'b0;
+            // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1)
+            sync_obs_sync_seen_cnt_0  <= 16'h0; sync_obs_sync_seen_cnt_1  <= 16'h0;
+            sync_obs_sync_seen_lane_0 <= 8'h0;  sync_obs_sync_seen_lane_1 <= 8'h0;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1067,6 +1094,12 @@ module axi_chiplet_controller #(
             sync_obs_tx_idle_1      <= sync_obs_tx_idle_0;
             sync_obs_tx_train_0     <= obs_tx_training_level_w;
             sync_obs_tx_train_1     <= sync_obs_tx_train_0;
+            // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1) —
+            // 2-flop sync of the rx-link-clk-domain probe into apb_clk.
+            sync_obs_sync_seen_cnt_0  <= obs_sync_seen_cnt_w;
+            sync_obs_sync_seen_cnt_1  <= sync_obs_sync_seen_cnt_0;
+            sync_obs_sync_seen_lane_0 <= obs_sync_seen_lane_w;
+            sync_obs_sync_seen_lane_1 <= sync_obs_sync_seen_lane_0;
 `endif
         end
     end
@@ -1074,6 +1107,12 @@ module axi_chiplet_controller #(
     // Writeable Region-8 register storage. POR-only reset for
     // training-related state so it survives warm reset.
     wire region8_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b10);
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
+    // (ctrl_reg_addr[4:3]==2'b00) is the SYNC-OBS/CTRL bank. Slot 2 (0x44032128)
+    // is the SW-writable detector lane mask. V2-only; V1 leaves Region 9 read-0.
+    wire region9_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00);
+`endif
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -1083,6 +1122,8 @@ module axi_chiplet_controller #(
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
+            swi_sync_robust_detect_r <= 1'b0;   // POR = robust re-hunt OFF (PART2; bit-identical)
+            swi_sync_lane_mask_r     <= 8'hFF;  // POR = all lanes in (PART3 detector mask default)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
 `endif
@@ -1136,6 +1177,7 @@ module axi_chiplet_controller #(
 `ifdef TIDELINK_PHY_V2
                         swi_sync_insert_en_r    <= ctrl_reg_wdata[2];        // SWI_SYNC_INSERT_EN (V2 PHY SYNC beacon, DEFAULT 0)
                         swi_sync_force_always_r <= ctrl_reg_wdata[3];        // SWI_SYNC_FORCE_ALWAYS (PART2 gate fix, DEFAULT 0)
+                        swi_sync_robust_detect_r <= ctrl_reg_wdata[4];       // SWI_SYNC_ROBUST_DETECT (PART2 robust re-hunt, DEFAULT 0)
 `endif
                     end
                     3'h1: begin
@@ -1161,6 +1203,12 @@ module axi_chiplet_controller #(
                     default: ;
                 endcase
             end
+`ifdef TIDELINK_PHY_V2
+            // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
+            // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
+            if (region9_write && (ctrl_reg_addr[2:0] == 3'h2))
+                swi_sync_lane_mask_r <= ctrl_reg_wdata[7:0];
+`endif
         end
     end
 
@@ -1190,23 +1238,47 @@ module axi_chiplet_controller #(
     //     [31:24] 0x5C               — presence marker (old images read 0 here)
     //   All fields are apb_clk 2-flop-synced from the TX-link-clk domain.
     // =====================================================================
+    // =====================================================================
+    // Region 9 — RX mask-aware SYNC-DETECT (SoC Labs 2026-06-15, PART 1)
+    //   SoC MMIO 0x4403_2124 (slot 3'h1). Read-only. THE KEY DIAGNOSTIC for the
+    //   silicon "TX inserts but RX never detects" defect: the mask-aware per-lane
+    //   detector on the post-deskew word.
+    //     [15: 0] sync_seen_cnt        — 16-bit saturating count of mask-aware
+    //                                    SYNC matches (>0 proves RX sees coherent
+    //                                    SYNC — the full-128 compare at 0x2114
+    //                                    [31:16] can read 0 while THIS climbs)
+    //     [23:16] sync_seen_lane_sticky — 8-bit per-lane "ever-matched" vector
+    //                                    (which lanes delivered their SYNC slice;
+    //                                    THE load-bearing per-lane diagnostic)
+    //     [31:24] 0x5D                 — presence marker (old images read 0)
+    //   All fields apb_clk 2-flop-synced from the rx-link-clk domain.
+    //
+    // Region 9 — RX SYNC-detect SW LANE_MASK (PART 3)
+    //   SoC MMIO 0x4403_2128 (slot 3'h2). RW, default 0xFF. Feeds the detector's
+    //   lane_mask_i so the operator can mask marginal lanes on silicon.
+    //     [ 7: 0] swi_sync_lane_mask   — per-lane detector enable (1=in)
+    // =====================================================================
 `ifdef TIDELINK_PHY_V2
     assign region9_sync_obs_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? {8'h5C,                    // [31:24] marker
                                         6'h0,                     // [23:18] reserved
                                         sync_obs_tx_train_1,      // [17]    training level
                                         sync_obs_tx_idle_1,       // [16]    tx_idle level
-                                        sync_obs_tx_sync_ins_1}   // [15:0]  SYNC-insert sat. count
+                                        sync_obs_tx_sync_ins_1} : // [15:0]  SYNC-insert sat. count
+        (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5D,                    // [31:24] marker (PART1 SYNC-DETECT)
+                                        sync_obs_sync_seen_lane_1,// [23:16] per-lane sticky "ever-matched"
+                                        sync_obs_sync_seen_cnt_1} : // [15:0] mask-aware SYNC-detect sat. count
+        (ctrl_reg_addr[2:0] == 3'h2) ? {24'h0, swi_sync_lane_mask_r} // [7:0] PART3 SW LANE_MASK (RW)
                                      : 32'h0;
 `else
-    // V1: no V2 SYNC inserter; region-select 2'b00 reads 0 (bit-identical).
+    // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
     assign region9_sync_obs_rdata = 32'h0;
 `endif
 
     // Region 8 read mux
     assign region8_rdata =
 `ifdef TIDELINK_PHY_V2
-        (ctrl_reg_addr[2:0] == 3'h0) ? {28'h0, swi_sync_force_always_r, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
+        (ctrl_reg_addr[2:0] == 3'h0) ? {27'h0, swi_sync_robust_detect_r, swi_sync_force_always_r, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
 `else
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
 `endif
@@ -2601,6 +2673,12 @@ module axi_chiplet_controller #(
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
         .swi_sync_force_always_in   (swi_sync_force_always_r),
+        // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
+        // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
+        // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
+        // (mask=0xFF, robust=0) -> bit-identical datapath.
+        .swi_sync_lane_mask_in      (swi_sync_lane_mask_r),
+        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8
@@ -2643,7 +2721,12 @@ module axi_chiplet_controller #(
         // at the new SYNC-OBS register (SoC MMIO 0x4403_2120).
         .obs_tx_sync_ins_cnt_o       (obs_tx_sync_ins_cnt_w),
         .obs_tx_link_idle_level_o    (obs_tx_link_idle_level_w),
-        .obs_tx_training_level_o     (obs_tx_training_level_w)
+        .obs_tx_training_level_o     (obs_tx_training_level_w),
+        // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1): raw
+        // rx-link-clk-domain probe; double-synced to apb_clk below and read at
+        // the new SYNC-DETECT register (SoC MMIO 0x4403_2124).
+        .obs_sync_seen_cnt_o         (obs_sync_seen_cnt_w),
+        .obs_sync_seen_lane_o        (obs_sync_seen_lane_w)
 `endif
     );
 

@@ -86,6 +86,20 @@ module WlinkRxLinkLayer(
   output         io_ecc_corrected,
   output         io_ecc_corrupted,
   input  [127:0] io_link_data,
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 2) — DEFAULT-OFF
+  // ROBUST framer re-hunt source. The internal full-128 sync_detected (:295)
+  // never fires on silicon if any lane's SYNC slice is off the eye. The PHY's
+  // mask-aware per-lane detector (tidelink_phy_sync_detect, on the same
+  // post-deskew word) fires even then, and Wlink.v gates its pulse by the
+  // SWI_SYNC_ROBUST_DETECT control bit (Region 8 slot 0 bit[4], default 0)
+  // before driving this port. With it 0 the port is held 0 (Wlink.v drives 0),
+  // so sync_resync (:299) is BIT-IDENTICAL to the full-128-only behaviour. When
+  // 1 a mask-aware match additionally triggers the framer re-hunt — but never
+  // STRIPS the word (effective_link_data still keys off the local full-128
+  // sync_detected only), so a robust-but-not-exact match re-aligns the framer
+  // without zeroing a beat. Tie 0 in environments without the chiplet
+  // controller (V1 / cocotb default) — preserves legacy behaviour exactly.
+  input          io_robust_sync_seen,
   output         io_in_error_state,
   // SoC Labs credit-path observability (read-only APB exposure of the
   // byte-align FSM internals — replaces the ILA debug core). These mirror
@@ -296,7 +310,12 @@ module WlinkRxLinkLayer(
   // Re-sync pulse: only meaningful in data mode (io_enable high, training
   // gating is upstream in the PHY glue — SYNC is never injected during
   // training so this is naturally quiescent then).
-  wire        sync_resync   = sync_detected & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
+  // SoC Labs PART 2 (2026-06-15): OR the PHY's mask-aware per-lane SYNC match
+  // (io_robust_sync_seen, already gated by SWI_SYNC_ROBUST_DETECT up in Wlink.v
+  // — held 0 by default) into the re-hunt term ONLY. The full-128 sync_detected
+  // still solely drives the STRIP (effective_link_data below), so a robust match
+  // re-aligns the framer without zeroing a beat. Default 0 -> bit-identical.
+  wire        sync_resync   = (sync_detected | io_robust_sync_seen) & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
   // Strip: feed the framer an all-zero idle word on the SYNC cycle so the
   // delimiter itself is never interpreted as packet bytes.
   wire [127:0] effective_link_data = sync_detected ? 128'h0 : io_link_data;

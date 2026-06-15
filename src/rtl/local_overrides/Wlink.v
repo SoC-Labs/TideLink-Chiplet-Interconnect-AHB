@@ -211,6 +211,13 @@ module Wlink #(
   // its idle-gated production behaviour (bit-identical). When 1 the idle gate is
   // dropped so the beacon fires on enable alone (still self-gates ~training).
   input         swi_sync_force_always_in,
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) — SW
+  // LANE_MASK strap for the PHY's RX SYNC detector (PART 3, default 0xFF,
+  // Region 9 slot 2 SoC addr 0x44032128), routed from the chiplet controller.
+  // SWI_SYNC_ROBUST_DETECT (PART 2, Region 8 slot 0 bit[4]) selects whether the
+  // detector's per-lane match is OR'd into the framer re-hunt below.
+  input  [7:0]  swi_sync_lane_mask_in,
+  input         swi_sync_robust_detect_in,
 `endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
@@ -268,7 +275,15 @@ module Wlink #(
   // Read at the new SYNC-OBS register (SoC MMIO 0x4403_2120). V1 never sees these.
   output [15:0]  obs_tx_sync_ins_cnt_o,       // tx-link-clk dom: SYNC-insert sat. count
   output         obs_tx_link_idle_level_o,    // tx-link-clk dom: live tx_idle
-  output         obs_tx_training_level_o      // tx-link-clk dom: live training
+  output         obs_tx_training_level_o,     // tx-link-clk dom: live training
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1) — the V2
+  // WlinkGPIOPHY fork exports the mask-aware per-lane SYNC detector on the
+  // post-deskew word. 16-bit saturating count + 8-bit sticky "ever-matched"
+  // per-lane vector (THE key diagnostic). rx-link-clk domain; 2-flop-synced to
+  // apb_clk in axi_chiplet_controller.sv. Read at the SYNC-DETECT register
+  // (SoC MMIO 0x4403_2124). V1 never sees these.
+  output [15:0]  obs_sync_seen_cnt_o,         // rx-link-clk dom: mask-aware sat. count
+  output [7:0]   obs_sync_seen_lane_o         // rx-link-clk dom: per-lane sticky vector
 `endif
 );
   // ===================================================================
@@ -293,6 +308,14 @@ module Wlink #(
   wire       llrx_io_obs_valid;
   // SoC Labs 2026-06-08: SYNC-detected pulse from llrx (RX link-clock domain).
   wire       llrx_io_obs_sync_detected;
+`ifdef TIDELINK_PHY_V2
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2) — live
+  // 1-cycle mask-aware match from the PHY detector (post-deskew word, RX
+  // link-clock domain). PART 2: OR'd into the framer re-hunt below ONLY when
+  // swi_sync_robust_detect_in=1 (default 0 -> bit-identical). Declared here so
+  // the PHY instance can drive it and the llrx instance can consume it.
+  wire       phy_io_sync_seen_pulse;
+`endif
   // tdif-10 visibility (2026-05-25): the FCSM observability outputs
   // expose the master-side credit-handshake state that lets us see CR/CRACK
   // packets being received and the FCSM's own state advance. These nets
@@ -1241,6 +1264,12 @@ module Wlink #(
     .link_tx_tx_idle(lltx_io_link_idle),       // SYNC-insert: LL inter-packet idle gate (V2)
     .swi_sync_insert_en(swi_sync_insert_en_in),// SYNC-insert: APB feature enable (DEFAULT 0)
     .swi_sync_force_always(swi_sync_force_always_in), // PART2 gate fix: drop idle term (DEFAULT 0)
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2/3): SW
+    // LANE_MASK strap in, mask-aware per-lane detect outputs out.
+    .sync_lane_mask_in(swi_sync_lane_mask_in), // PART3 SW LANE_MASK strap (default 0xFF)
+    .sync_seen_cnt(obs_sync_seen_cnt_o),       // PART1 obs: mask-aware sat. count
+    .sync_seen_lane(obs_sync_seen_lane_o),     // PART1 obs: per-lane sticky vector
+    .sync_seen_pulse(phy_io_sync_seen_pulse),  // PART2 robust re-hunt source
     .swi_phase_offset_in(swi_phase_offset_in),
     .swi_word_pin_in(swi_word_pin_in),
     .swi_word_pin_auto_en(swi_word_pin_auto_en),
@@ -1437,6 +1466,15 @@ module Wlink #(
     .io_ecc_corrected(llrx_io_ecc_corrected),
     .io_ecc_corrupted(llrx_io_ecc_corrupted),
     .io_link_data(llrx_io_link_data),
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 2) — robust
+    // re-hunt source, gated by SWI_SYNC_ROBUST_DETECT (default 0 -> 0 here ->
+    // bit-identical). When the bit is 1, the PHY's mask-aware per-lane match
+    // (phy_io_sync_seen_pulse) additionally triggers the framer re-hunt.
+    .io_robust_sync_seen(phy_io_sync_seen_pulse & swi_sync_robust_detect_in),
+`else
+    .io_robust_sync_seen(1'b0), // V1: no PHY detector -> bit-identical re-hunt
+`endif
     .io_in_error_state(llrx_io_in_error_state),
     .io_obs_state(llrx_io_obs_state),
     .io_obs_is_short_pkt(llrx_io_obs_is_short_pkt),

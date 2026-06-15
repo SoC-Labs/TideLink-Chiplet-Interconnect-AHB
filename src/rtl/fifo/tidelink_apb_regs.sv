@@ -558,11 +558,15 @@ module tidelink_apb_regs #(
                 //   / Region C via ctrl_reg_addr[4:3].
                 prdata = ctrl_reg_rdata;
             end
-            4'b1001: begin // Region 9: SYNC-insert TX observability (RO, V2)
-                //   SoC Labs 2026-06-15 (PART 1). 0x4403_2120 = SYNC-OBS.
-                //   Same ctrl_reg_rdata pass-through; the chiplet controller
-                //   decodes the SYNC-OBS bank on region-select 2'b00 (ctrl_reg_addr
-                //   special-cased above). V2-only data; reads 0 in V1.
+            4'b1001: begin // Region 9: SYNC TX-obs + RX SYNC-DETECT + LANE_MASK (V2)
+                //   SoC Labs 2026-06-15. Slot 0 (0x4403_2120) = SYNC-insert TX
+                //   obs (RO, PART 1). Slot 1 (0x4403_2124) = RX mask-aware
+                //   SYNC-DETECT count + per-lane sticky vector (RO, PART 1 — the
+                //   key diagnostic). Slot 2 (0x4403_2128) = SW LANE_MASK for the
+                //   RX detector (RW, default 0xFF, PART 3). Same ctrl_reg_rdata
+                //   pass-through; the chiplet controller decodes this bank on
+                //   region-select 2'b00 (ctrl_reg_addr special-cased above).
+                //   V2-only data; reads 0 in V1.
                 prdata = ctrl_reg_rdata;
             end
             4'b1100: begin // Region C: Autoneg silicon observability (RO)
@@ -615,8 +619,11 @@ module tidelink_apb_regs #(
                         endcase
                     end
                 end
-                4'b1001: begin // Region 9: SYNC-insert TX obs — all slots RO
-                    if (pwrite) pslverr = 1'b1;
+                4'b1001: begin // Region 9: SYNC TX-obs (slot0) + SYNC-DETECT
+                    // (slot1) are RO; slot2 (0x4403_2128) is the RW SW LANE_MASK
+                    // for the RX SYNC detector (PART 3, 2026-06-15). Writes to
+                    // any other Region 9 slot raise pslverr.
+                    if (pwrite && (paddr[4:2] != 3'h2)) pslverr = 1'b1;
                 end
                 4'b1100: begin // Region C: all slots RO (Bug N7/N8 observability)
                     if (pwrite) pslverr = 1'b1;

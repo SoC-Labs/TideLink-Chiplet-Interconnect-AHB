@@ -159,6 +159,11 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
 // inserter instantiated inside WavD2DGpio TX path. Includes tidelink_sync_word.svh
 // (+incdir .../deps/tidelink-phy/rtl above). Bit-identical with APB enable=0.
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_insert.sv
+// SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2/3): the
+// detector instantiated inside WavD2DGpio on the post-deskew word. Includes
+// tidelink_sync_word.svh (+incdir above). Pure read-side observability — V1 /
+// default-V2 datapath bit-identical (sync_en_i tied 1, never gates the path).
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_detect.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v

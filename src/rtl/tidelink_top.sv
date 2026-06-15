@@ -907,11 +907,35 @@ module tidelink_top #(
     // ("Connect .rst_n(role_locked) directly — NO inverter"). apb_rst_n is
     // the standard hresetn.
     // =========================================================================
+    // Region 11 gpio_phy slave: SoC 0x2160-0x217F (paddr[8:5]==4'b1011) ->
+    // slave-internal 0x20-0x3F. The slave also defines SWI_EPOCH_STATUS at
+    // slave-paddr 0x40, which does NOT fit the 32-byte 0x1011 window (Region C
+    // autoneg owns 0x2180+). In V2 the eye_regs block (Region 10, paddr[8:5]==
+    // 4'b1010, SoC 0x2140-0x215F) is ABSENT, so its first word at SoC 0x2140 is
+    // free; we route exactly that word to slave-paddr 0x40. SWI_EPOCH_STATUS is
+    // therefore readable at SoC 0x4403_2140 in V2 (matches the PHY REGISTER_MAP).
+`ifdef TIDELINK_PHY_V2
+    wire gpio_phy_epoch_sel = tl_apb_psel && (tl_apb_paddr[8:0] == 9'h140);
+    wire gpio_phy_apb_sel   = (tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1011))
+                              || gpio_phy_epoch_sel;
+`else
     wire gpio_phy_apb_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1011);
+`endif
 
     wire [SYS_DATA_W-1:0]  gpio_phy_apb_prdata;
     wire                    gpio_phy_apb_pready;
     wire                    gpio_phy_apb_pslverr;
+
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs V2 epoch-anchor engagement obs 2026-06-14. Driven by
+    // u_chiplet_controller (WlinkGPIOPHY lane-deskew anchor state, in the
+    // recovered link_rx_rx_link_clk domain) and consumed by the
+    // tidelink_gpio_phy_apb_regs slave below, which 2-flop-syncs into apb_clk
+    // and exposes them at SWI_EPOCH_STATUS (paddr 0x40 -> SoC MMIO 0x4403_2140:
+    // [0]=epoch_anchored, [6:1]=epoch_span). V1 builds never see these.
+    wire                    gpio_phy_epoch_anchored_w;
+    wire [5:0]              gpio_phy_epoch_span_w;
+`endif
 
     tidelink_gpio_phy_apb_regs u_gpio_phy_apb_regs (
         // APB clock / reset
@@ -924,7 +948,14 @@ module tidelink_top #(
         .psel                (gpio_phy_apb_sel),
         .penable             (tl_apb_penable),
         .pwrite              (tl_apb_pwrite),
+`ifdef TIDELINK_PHY_V2
+        // SoC 0x2140 (freed eye word, V2-only) -> slave-paddr 0x40
+        // (SWI_EPOCH_STATUS); the Region 11 window 0x2160-0x217F maps as before.
+        .paddr               (gpio_phy_epoch_sel ? 8'h40
+                                                 : {3'b001, tl_apb_paddr[4:0]}),
+`else
         .paddr               ({3'b001, tl_apb_paddr[4:0]}),
+`endif
         .pwdata              (tl_apb_pwdata),
         .prdata              (gpio_phy_apb_prdata),
         .pready              (gpio_phy_apb_pready),
@@ -954,6 +985,14 @@ module tidelink_top #(
         .wire_status_i       (lane_wire_status_w),
         .canary_pass_i       (lane_canary_pass_w),
         .canary_valid_i      (lane_canary_valid_w)
+`ifdef TIDELINK_PHY_V2
+        // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state from the
+        // WlinkGPIOPHY lane-deskew engine (via u_chiplet_controller). Read at
+        // SWI_EPOCH_STATUS (paddr 0x40 -> SoC MMIO 0x4403_2140).
+        ,
+        .epoch_anchored_i    (gpio_phy_epoch_anchored_w),
+        .epoch_span_i        (gpio_phy_epoch_span_w)
+`endif
     );
 
     // Observability-bus outputs from u_chiplet_controller that the new APB
@@ -974,6 +1013,21 @@ module tidelink_top #(
     wire                    tidelink_internal_pready;
     wire                    tidelink_internal_pslverr;
 
+`ifdef TIDELINK_PHY_V2
+    // V2: SoC 0x2140 (gpio_phy_epoch_sel) lives inside the eye_shim_sel address
+    // range (0x2140-0x215F), so the gpio_phy slave must win that single word.
+    // eye_shim returns 0 in V2 anyway (Region 10 retired), so checking the
+    // gpio slave first is safe for every other address too.
+    assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
+                            eye_shim_sel       ? eye_shim_prdata       :
+                                                 tidelink_internal_prdata;
+    assign tl_apb_pready  = gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
+                            eye_shim_sel       ? eye_shim_pready       :
+                                                 tidelink_internal_pready;
+    assign tl_apb_pslverr = gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
+                            eye_shim_sel       ? eye_shim_pslverr      :
+                                                 tidelink_internal_pslverr;
+`else
     assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
@@ -983,6 +1037,7 @@ module tidelink_top #(
     assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
+`endif
 
     // Route APB responses back to both sources
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
@@ -2177,6 +2232,13 @@ module tidelink_top #(
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
         .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
+`ifdef TIDELINK_PHY_V2
+        // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state out to the
+        // tidelink_gpio_phy_apb_regs slave (SWI_EPOCH_STATUS @ 0x4403_2140).
+        ,
+        .obs_epoch_anchored_o        (gpio_phy_epoch_anchored_w),
+        .obs_epoch_span_o            (gpio_phy_epoch_span_w)
+`endif
     );
 
     // =========================================================================

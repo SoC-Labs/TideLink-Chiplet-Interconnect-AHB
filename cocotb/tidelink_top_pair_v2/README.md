@@ -59,15 +59,65 @@ Exact pre-fix failure signature (silicon profile, anchor off):
 while training stays green bilaterally (cal_done=1, lane_locked=0xFF) and
 M→S is byte-perfect — the v37 directional fingerprint.
 
+## MARGINAL-EYE anchor-ON reproduction (silicon condition)
+
+The clean whole-word `pad_skid` skew is *corrected* by `EPOCH_ANCHOR_EN=1` —
+the silicon profile PASSES in sim (the anchor latches the right per-lane
+offsets). But deployed silicon with the anchor ON STILL loses S→M data. The
+ideal sim PHY does not model the missing ingredient: the **marginal eye** —
+per-lane bit errors that corrupt the **training-exit content edge** the anchor
+keys on.
+
+`eye_fault.sv` (compile with `EYE_FAULT=1`) inserts a cocotb-driven bit-error
+injector on the S→M path (post-skid, pre-master-RX). `test_v2_marginal_eye.py`
+brings the link up CLEAN (training green, `cal_done=1`, `lane_locked=0xFF`),
+then fires a short, lane-targeted error window across the training-exit / data
+transition, with the anchor STILL ENABLED, and probes
+`tidelink_lane_deskew.sv` internals.
+
+```
+make EPOCH_PROFILE=silicon EYE_FAULT=1 MODULE=test_v2_marginal_eye
+```
+
+Measured (VCS 2022.06-SP2, cocotb 2.0.1, 2026-06-15):
+
+| Test | Injection (S→M) | Result | Anchor evidence |
+|---|---|---|---|
+| baseline (eye off) | none | S→M perfect | `lane_off_e=[4,0,2,3,1,4,0,2]` (correct) |
+| **1L-b5** | L1, 5-bit burst/word | **garble, no commit** | L1 `ep_anchor_idx 12→9`, `lane_off_e[1] 0→3` |
+| **3L-b5** | L1,4,6, 5-bit burst/word | **garble, no commit** | 3 lanes mis-latch early |
+| 1L-b4-sp | L1, 4-bit burst /4 words | S→M intact | anchor latches correctly |
+
+Failure signature (1L-b5): training green bilaterally, CR/CRACK OK, but
+`hdr=0x5a17f00d (sent 0x00240000)`, `PKT_WORD_LEN=0x5a1` (garbage),
+`packet_committed` never fires — the exact silicon S→M loss WITH the anchor
+reporting `anchored=1` (it THINKS it won).
+
+**Mechanism (file:line):** `tidelink_lane_deskew.sv:381-389` — the write-side
+matcher counts a saturating `ep_streak` of pattern matches and, on the first
+NON-match after `ep_streak >= EPOCH_STREAK_MIN(8)`, latches
+`ep_anchor_idx <= wr_ptr_l` (line 385). A >3-bit-error burst on a LATE
+training word reads as a non-match (`ep_dist > EPOCH_MATCH_THRESH=3`,
+line 370) while the streak is still ≥8, so that lane latches its exit index
+EARLY. The read side (line 617 `ep_delta`, line 664 `lane_off_e`) then derives
+a WRONG per-lane offset from the corrupted index → the assembled 128-bit FC
+word mixes epochs → garbled addr → no `write_complete`
+(`src/rtl/fifo/tidelink_fifo_ctrl.sv:98,213`). The all-fresh/settle/span gates
+(lines 583,603,626) do NOT catch it: a single corrupted edge is internally
+self-consistent (one fresh, coherent, in-budget set), so it applies as a
+clean one-shot.
+
 ## Files
 
 | File | Role |
 |---|---|
-| `tb_top.sv` | V1 pair tb + per-direction `TB_TOP_EPOCH_{M2S,S2M}_L<n>` word offsets + `TB_TOP_EPOCH_ANCHOR_DIS` defparam hook |
+| `tb_top.sv` | V1 pair tb + per-direction `TB_TOP_EPOCH_{M2S,S2M}_L<n>` word offsets + `TB_TOP_EPOCH_ANCHOR_DIS` defparam hook + optional `TB_TOP_EYE_FAULT` S→M injector insert |
 | `pad_skid.sv` | unchanged copy (arbitrary-depth per-lane shift register) |
+| `eye_fault.sv` | **(harness)** cocotb-driven per-lane bit-error injector (marginal-eye repro) |
 | `pair_v2_common.py` | APB/AHB drivers + V2 bring-up (role_lock W1S → passive autocal w/ `tb_early_exit_force_q` → to_data_mode) |
 | `test_v2_pair_data.py` | link-up + M→S + S→M packet delivery (profile-agnostic) |
 | `test_v2_pair_epoch_negctl.py` | negative control (run with `EPOCH_ANCHOR_DIS=1`) |
+| `test_v2_marginal_eye.py` | **anchor-ON marginal-eye repro** (run with `EYE_FAULT=1`); probes anchor internals, asserts the mis-anchor signature |
 
 Bring-up notes: the V2 calibrator auto-arms on the role_locked rising edge
 (`AUTOCAL_ENABLE=1` at tidelink_top); `tb_early_exit_force_q` (the PHY

@@ -187,6 +187,8 @@ module tb_top #(
     wire [NUM_PHY_LANES-1:0]      m_pad_tx,     s_pad_tx;
     wire                          m_pad_clk_tx_skid, s_pad_clk_tx_skid;
     wire [NUM_PHY_LANES-1:0]      m_pad_tx_skid,     s_pad_tx_skid;
+    // Raw S->M skid output, fed into the (optional) marginal-eye injector.
+    wire [NUM_PHY_LANES-1:0]      s_pad_tx_skid_raw;
 
     // Per-direction lane delay = legacy bit skid + 16 pad_clk cycles per
     // whole-word epoch offset. A word-multiple delay shifts the lane's
@@ -222,8 +224,29 @@ module tb_top #(
         .pad_clk_in   (s_pad_clk_tx),
         .pad_data_in  (s_pad_tx),
         .pad_clk_out  (s_pad_clk_tx_skid),
+        .pad_data_out (s_pad_tx_skid_raw)
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARGINAL-EYE fault injector on the S->M path (post-skid, pre-master-RX).
+    // HARNESS ONLY. Default OFF (compile without TB_TOP_EYE_FAULT => the
+    // raw skid output passes straight through, every existing test unchanged).
+    // When TB_TOP_EYE_FAULT is defined, the injector is inserted and its
+    // controls (err_en/err_mask/err_burst/err_period) are driven by cocotb
+    // (hierarchical force) to corrupt the training-exit content edge and/or
+    // sustained data on the master's RX — modelling the silicon eye that the
+    // clean whole-word pad_skid does not.
+    // ─────────────────────────────────────────────────────────────────────────
+`ifdef TB_TOP_EYE_FAULT
+    eye_fault #(.LANES(NUM_PHY_LANES)) u_eye_s2m (
+        .pad_clk_in   (s_pad_clk_tx_skid),
+        .pad_data_in  (s_pad_tx_skid_raw),
+        .pad_clk_out  (/* unused: clk already forwarded by skid */),
         .pad_data_out (s_pad_tx_skid)
     );
+`else
+    assign s_pad_tx_skid = s_pad_tx_skid_raw;
+`endif
 
     // ─────────────────────────────────────────────────────────────────────────
     // NEGATIVE CONTROL hook (step 3 of the v38 gate): force the V2 epoch-

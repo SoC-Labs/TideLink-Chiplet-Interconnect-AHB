@@ -38,7 +38,7 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
-VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv $(CURDIR)/eye_fault.sv
 
 TOPLEVEL = tb_top
 MODULE  ?= test_v2_pair_data
@@ -89,6 +89,15 @@ ifeq ($(EPOCH_ANCHOR_DIS),1)
 COMPILE_ARGS += +define+TB_TOP_EPOCH_ANCHOR_DIS
 endif
 
+# ── Marginal-eye fault injector on the S->M path (anchor-ON repro) ──────────
+# EYE_FAULT=1 inserts eye_fault between u_skid_s2m and the master RX so cocotb
+# can corrupt the training-exit content edge / sustained data with the anchor
+# STILL ENABLED (EPOCH_ANCHOR_EN=1). Default OFF (bit-identical otherwise).
+EYE_FAULT ?= 0
+ifeq ($(EYE_FAULT),1)
+COMPILE_ARGS += +define+TB_TOP_EYE_FAULT
+endif
+
 # Extra ad-hoc defines (e.g. per-lane overrides) — passthrough.
 EXTRA_DEFINES ?=
 COMPILE_ARGS += $(EXTRA_DEFINES)
@@ -100,7 +109,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

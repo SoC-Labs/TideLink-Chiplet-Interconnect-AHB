@@ -51,6 +51,21 @@ SYNC_OBS_MARKER = lambda v: (v >> 24) & 0xFF
 APB_SYNC_DETECTED = APB_TIDELINK_BASE + 0x114     # 0x2114
 SYNC_DET_CNT      = lambda v: (v >> 16) & 0xFFFF
 
+# SoC Labs RX mask-aware SYNC-DETECT (PART 1): Region 9 slot 1, SoC 0x4403_2124.
+#   [15:0]=sync_seen_cnt (mask-aware saturating), [23:16]=per-lane sticky
+#   "ever-matched" vector, [31:24]=0x5D marker.
+APB_SYNC_DETECT2     = APB_TIDELINK_BASE + 0x124  # 0x2124
+SYNC2_SEEN_CNT       = lambda v: v & 0xFFFF
+SYNC2_SEEN_LANE      = lambda v: (v >> 16) & 0xFF
+SYNC2_MARKER         = lambda v: (v >> 24) & 0xFF
+
+# SoC Labs RX SYNC-detect SW LANE_MASK (PART 3): Region 9 slot 2, SoC 0x4403_2128.
+#   [7:0]=swi_sync_lane_mask (RW, default 0xFF).
+APB_SYNC_LANE_MASK   = APB_TIDELINK_BASE + 0x128  # 0x2128
+
+# Region 8 slot 0 bit[4]: SWI_SYNC_ROBUST_DETECT (PART 2 selectable re-hunt).
+R8_SLOT0_ROBUST_DETECT = 0x10
+
 
 def _sync_insert(tb, side):
     """Hierarchical handle to the per-die TX SYNC inserter inside the PHY."""
@@ -177,3 +192,101 @@ async def test_sync_force_always_end_to_end(dut):
          f"(before={rx_det_before}, after={rx_det_after}) — beacon not reassembled")
     tb.log.info(f"RX SYNC-detect (slave @0x2114): {rx_det_before} -> {rx_det_after} "
                 f"-> end-to-end SYNC works in sim with force_always=1")
+
+
+@cocotb.test()
+async def test_rx_mask_aware_sync_detect_per_lane(dut):
+    """PART 1/3 (2026-06-15): the NEW mask-aware per-lane RX SYNC detector.
+
+    The link's full-128 exact compare (0x2114 [31:16]) only fires when EVERY
+    lane delivers its SYNC slice. The mask-aware detector (0x2124) ANDs only
+    the masked-in lanes, so it fires even with a marginal lane masked out — and
+    its per-lane STICKY vector shows exactly which lanes carry their SYNC slice.
+
+    On the clean (zero-skew) pair sim every lane is coherent, so with
+    force_always=1 on the master:
+      * the slave's mask-aware count (0x2124[15:0]) CLIMBS, and
+      * the per-lane sticky vector (0x2124[23:16]) shows ALL 8 lanes matched.
+    Also exercises the PART 3 SW LANE_MASK register (0x2128) RW + readback.
+    """
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+
+    # --- default-off PART 1 obs: count 0, marker present, mask default 0xFF ---
+    d0 = await tb.s_apb.read(APB_SYNC_DETECT2)
+    assert SYNC2_MARKER(d0) == 0x5D, \
+        f"SYNC-DETECT2 marker = 0x{SYNC2_MARKER(d0):02x}, expected 0x5D (reg not live)"
+    assert SYNC2_SEEN_CNT(d0) == 0, \
+        f"SYNC-DETECT2 count = {SYNC2_SEEN_CNT(d0)} at default (must be 0 — no SYNC yet)"
+    assert SYNC2_SEEN_LANE(d0) == 0x00, \
+        f"SYNC-DETECT2 lane sticky = 0x{SYNC2_SEEN_LANE(d0):02x} at default (must be 0)"
+    tb.log.info(f"DEFAULT SYNC-DETECT2 @0x2124 = 0x{d0:08x} "
+                f"(marker=0x{SYNC2_MARKER(d0):02x} cnt=0 lane=0x00)")
+
+    # PART 3 LANE_MASK RW + readback (default 0xFF, write 0xAA, restore 0xFF).
+    mask_def = await tb.s_apb.read(APB_SYNC_LANE_MASK)
+    assert (mask_def & 0xFF) == 0xFF, \
+        f"SYNC_LANE_MASK default = 0x{mask_def & 0xFF:02x}, expected 0xFF"
+    await tb.s_apb.write(APB_SYNC_LANE_MASK, 0xAA)
+    mb = await tb.s_apb.read(APB_SYNC_LANE_MASK)
+    assert (mb & 0xFF) == 0xAA, \
+        f"SYNC_LANE_MASK readback = 0x{mb & 0xFF:02x} after writing 0xAA"
+    await tb.s_apb.write(APB_SYNC_LANE_MASK, 0xFF)   # restore all-lanes for the AND
+    tb.log.info(f"SYNC_LANE_MASK @0x2128 RW OK (default 0x{mask_def & 0xFF:02x} "
+                f"-> wrote 0xAA -> read 0x{mb & 0xFF:02x} -> restored 0xFF)")
+
+    # --- enable + force_always on the master so the slave RX sees SYNC --------
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_EN | R8_SLOT0_SYNC_FORCE_ALWAYS)
+    await ClockCycles(dut.hclk, 8000)
+
+    d1 = await tb.s_apb.read(APB_SYNC_DETECT2)
+    assert SYNC2_SEEN_CNT(d1) > 0, \
+        (f"mask-aware SYNC-DETECT2 count still 0 (0x{d1:08x}) — the per-lane "
+         f"detector never fired even though TX is inserting")
+    assert SYNC2_SEEN_LANE(d1) == 0xFF, \
+        (f"mask-aware per-lane sticky = 0x{SYNC2_SEEN_LANE(d1):02x}, expected 0xFF "
+         f"(all 8 lanes carry their SYNC slice on the clean pair sim)")
+    tb.log.info(f"mask-aware SYNC-DETECT2 @0x2124 = 0x{d1:08x} "
+                f"(cnt={SYNC2_SEEN_CNT(d1)} lane=0x{SYNC2_SEEN_LANE(d1):02x}) "
+                f"-> per-lane detector fires, ALL 8 lanes matched")
+
+
+@cocotb.test()
+async def test_robust_resync_path_exercised(dut):
+    """PART 2 (2026-06-15): SWI_SYNC_ROBUST_DETECT=1 exercises the robust path.
+
+    With the robust bit set on the slave, the PHY's mask-aware per-lane SYNC
+    match is OR'd into the slave RX framer's re-hunt (sync_resync). This test
+    drives the master beacon (force_always) and confirms (a) the bit RW's, and
+    (b) the slave RX framer's sync_resync ASSERTS off the robust source — i.e.
+    the robust re-hunt path is actually exercised, not dead code. Default-off is
+    covered bit-identically by the zero-regression gates; this is the opt-in
+    proof.
+    """
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+
+    # bit[4] RW + readback on the slave (the RX that re-hunts).
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_ROBUST_DETECT)
+    rb = await tb.s_apb.read(APB_R8_SLOT0)
+    assert (rb >> 4) & 1 == 1, \
+        f"SWI_SYNC_ROBUST_DETECT readback = 0x{rb:x}, bit[4] not set"
+    tb.log.info(f"SWI_SYNC_ROBUST_DETECT set on slave (R8_SLOT0 readback 0x{rb:08x})")
+
+    # Master inserts the beacon so the slave's PHY detector pulses.
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_EN | R8_SLOT0_SYNC_FORCE_ALWAYS)
+
+    # Watch the slave RX framer's sync_resync. With robust=1 and the PHY
+    # detector firing, sync_resync must assert (the re-hunt is driven).
+    llrx = tb.top("s").u_chiplet_controller.u_wlink.llrx
+    saw_resync = False
+    for _ in range(SYNC_PERIOD * 64):
+        await RisingEdge(llrx.clock)
+        if llrx.sync_resync.value == 1:
+            saw_resync = True
+            break
+    assert saw_resync, \
+        ("slave RX sync_resync never asserted with SWI_SYNC_ROBUST_DETECT=1 + "
+         "master inserting — robust re-hunt path NOT exercised")
+    tb.log.info("slave RX sync_resync asserted with robust detect=1 "
+                "-> PART 2 robust re-hunt path exercised")

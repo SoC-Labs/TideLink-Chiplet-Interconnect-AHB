@@ -379,6 +379,16 @@ module axi_chiplet_controller #(
     output wire             obs_fe_rx_is_full_o,
     // SoC Labs Bug-A FCSM observation 2026-06-03
     output wire             obs_a2l_replay_app_valid_o
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs V2 epoch-anchor engagement obs 2026-06-14 — pass-through of the
+    // WlinkGPIOPHY lane-deskew anchor state up to tidelink_top's
+    // tidelink_gpio_phy_apb_regs.epoch_*_i (SWI_EPOCH_STATUS @ 0x4403_2140).
+    // link_rx_rx_link_clk domain; the APB slave 2-flop-syncs into apb_clk
+    // itself, so NO sync here. V1 builds never see these ports.
+    ,
+    output wire             obs_epoch_anchored_o,
+    output wire  [5:0]      obs_epoch_span_o
+`endif
 );
 
     // =====================================================================
@@ -2505,6 +2515,13 @@ module axi_chiplet_controller #(
         .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w),
         // SoC Labs FC credit observation 2026-06-12
         .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w)
+`ifdef TIDELINK_PHY_V2
+        // SoC Labs V2 epoch-anchor obs 2026-06-14: pass straight through to the
+        // controller's output ports -> tidelink_gpio_phy_apb_regs.epoch_*_i.
+        ,
+        .obs_epoch_anchored_o        (obs_epoch_anchored_o),
+        .obs_epoch_span_o            (obs_epoch_span_o)
+`endif
     );
 
 endmodule

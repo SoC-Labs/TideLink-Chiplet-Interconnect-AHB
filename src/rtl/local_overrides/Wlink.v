@@ -239,6 +239,16 @@ module Wlink #(
   output         obs_a2l_replay_app_valid_o,  // app domain
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
   output [7:0]   obs_fe_rx_ptr_o              // tx domain
+`ifdef TIDELINK_PHY_V2
+  // SoC Labs V2 epoch-anchor engagement observable 2026-06-14 — the
+  // WlinkGPIOPHY (deps/tidelink-phy fork) exports the cross-lane word-EPOCH
+  // anchor state from its lane-deskew engine. Routed up through the chiplet
+  // controller and 2-flop-synced to apb_clk for read at SWI_EPOCH_STATUS
+  // (SoC MMIO 0x4403_2140). link_rx_rx_link_clk domain. V1 never sees these.
+  ,
+  output         obs_epoch_anchored_o,        // rx-link-clk dom: anchor engaged
+  output [5:0]   obs_epoch_span_o             // rx-link-clk dom: measured span
+`endif
 );
   // ===================================================================
   // SoC Labs credit-path observability wiring.
@@ -1206,7 +1216,11 @@ module Wlink #(
     // link_tx_tx_idle port is guarded at that connection's own site above.
     .swi_phase_offset_in(swi_phase_offset_in),
     .swi_word_pin_in(swi_word_pin_in),
-    .swi_word_pin_auto_en(swi_word_pin_auto_en)
+    .swi_word_pin_auto_en(swi_word_pin_auto_en),
+    // SoC Labs V2 epoch-anchor obs 2026-06-14: route the WlinkGPIOPHY anchor
+    // engagement state out to the chiplet controller -> SWI_EPOCH_STATUS.
+    .epoch_anchored(obs_epoch_anchored_o),
+    .epoch_span(obs_epoch_span_o)
 `else
     .swi_phase_offset_in(swi_phase_offset_in)
 `endif

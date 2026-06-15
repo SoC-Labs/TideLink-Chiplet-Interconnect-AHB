@@ -786,6 +786,14 @@ module axi_chiplet_controller #(
     // SYNC-DETECT register (SoC MMIO 0x4403_2124). V2-only.
     wire [15:0] obs_sync_seen_cnt_w;
     wire [7:0]  obs_sync_seen_lane_w;
+    // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs) — raw probes
+    // from the V2 WlinkGPIOPHY fork (post-deskew word, rx-link-clk domain).
+    // 2-flop synced to apb_clk below (dbg_obs_*). Read at Region 9 slots 3..7
+    // (SoC MMIO 0x4403_212C..0x4403_213C). V2-only.
+    wire [127:0] obs_dbg_raw_word_w;
+    wire [7:0]   obs_dbg_lane_any_match_w;
+    wire [3:0]   obs_dbg_best_popcount_w;
+    wire [31:0]  obs_dbg_slice_idx_w;
 `endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
@@ -997,6 +1005,16 @@ module axi_chiplet_controller #(
     // SYNC-DETECT register (SoC MMIO 0x4403_2124).
     reg [15:0]          sync_obs_sync_seen_cnt_0, sync_obs_sync_seen_cnt_1;
     reg [7:0]           sync_obs_sync_seen_lane_0, sync_obs_sync_seen_lane_1;
+    // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs) — same 2-flop
+    // apb_clk treatment. These are STICKY snapshots in the rx-link-clk domain
+    // (the raw word + slice map only re-latch on a new fixed-position best-match,
+    // i.e. essentially quasi-static at the APB poll rate; the match vector +
+    // popcount move with them). Read at Region 9 slots 3..7 (SoC MMIO
+    // 0x4403_212C..0x4403_213C). Pure observability — never fed back.
+    reg [127:0]         dbg_obs_raw_word_0,   dbg_obs_raw_word_1;
+    reg [7:0]           dbg_obs_lane_match_0, dbg_obs_lane_match_1;
+    reg [3:0]           dbg_obs_popcount_0,   dbg_obs_popcount_1;
+    reg [31:0]          dbg_obs_slice_idx_0,  dbg_obs_slice_idx_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1035,6 +1053,11 @@ module axi_chiplet_controller #(
             // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1)
             sync_obs_sync_seen_cnt_0  <= 16'h0; sync_obs_sync_seen_cnt_1  <= 16'h0;
             sync_obs_sync_seen_lane_0 <= 8'h0;  sync_obs_sync_seen_lane_1 <= 8'h0;
+            // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs)
+            dbg_obs_raw_word_0   <= 128'h0;        dbg_obs_raw_word_1   <= 128'h0;
+            dbg_obs_lane_match_0 <= 8'h0;          dbg_obs_lane_match_1 <= 8'h0;
+            dbg_obs_popcount_0   <= 4'h0;          dbg_obs_popcount_1   <= 4'h0;
+            dbg_obs_slice_idx_0  <= 32'hFFFF_FFFF; dbg_obs_slice_idx_1  <= 32'hFFFF_FFFF;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1100,6 +1123,18 @@ module axi_chiplet_controller #(
             sync_obs_sync_seen_cnt_1  <= sync_obs_sync_seen_cnt_0;
             sync_obs_sync_seen_lane_0 <= obs_sync_seen_lane_w;
             sync_obs_sync_seen_lane_1 <= sync_obs_sync_seen_lane_0;
+            // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs) —
+            // 2-flop sync of the rx-link-clk-domain sticky snapshots into apb_clk.
+            // Quasi-static (re-latch only on a new best-match), so the multi-bit
+            // 2-flop is the same accepted treatment as the lane vector above.
+            dbg_obs_raw_word_0   <= obs_dbg_raw_word_w;
+            dbg_obs_raw_word_1   <= dbg_obs_raw_word_0;
+            dbg_obs_lane_match_0 <= obs_dbg_lane_any_match_w;
+            dbg_obs_lane_match_1 <= dbg_obs_lane_match_0;
+            dbg_obs_popcount_0   <= obs_dbg_best_popcount_w;
+            dbg_obs_popcount_1   <= dbg_obs_popcount_0;
+            dbg_obs_slice_idx_0  <= obs_dbg_slice_idx_w;
+            dbg_obs_slice_idx_1  <= dbg_obs_slice_idx_0;
 `endif
         end
     end
@@ -1268,7 +1303,21 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5D,                    // [31:24] marker (PART1 SYNC-DETECT)
                                         sync_obs_sync_seen_lane_1,// [23:16] per-lane sticky "ever-matched"
                                         sync_obs_sync_seen_cnt_1} : // [15:0] mask-aware SYNC-detect sat. count
-        (ctrl_reg_addr[2:0] == 3'h2) ? {24'h0, swi_sync_lane_mask_r} // [7:0] PART3 SW LANE_MASK (RW)
+        (ctrl_reg_addr[2:0] == 3'h2) ? {24'h0, swi_sync_lane_mask_r} : // [7:0] PART3 SW LANE_MASK (RW)
+        // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs). Slots 3..7
+        // fill the rest of Region 9 (the bank's last free word is slot 7). All RO.
+        (ctrl_reg_addr[2:0] == 3'h3) ? dbg_obs_raw_word_1[ 31:  0] : // 0x212C raw word [31:0]
+        (ctrl_reg_addr[2:0] == 3'h4) ? dbg_obs_raw_word_1[ 63: 32] : // 0x2130 raw word [63:32]
+        (ctrl_reg_addr[2:0] == 3'h5) ? dbg_obs_raw_word_1[ 95: 64] : // 0x2134 raw word [95:64]
+        (ctrl_reg_addr[2:0] == 3'h6) ? dbg_obs_raw_word_1[127: 96] : // 0x2138 raw word [127:96]
+        // Slot 7 (0x213C): the DECISIVE per-RX-lane carried-slice-index map +
+        // companion popcount + presence marker, packed. The 8x4-bit slice map
+        // needs all 32 bits, so the explicit match-vector/popcount get a SECOND
+        // packed word would need a 9th slot the bank does not have — instead the
+        // match vector is FULLY recoverable from the slice map in SW
+        // (lane_any_match[i] = (slice_idx[i]==i); best_popcount = popcount of
+        // those), and slot 7 carries the raw slice map verbatim.
+        (ctrl_reg_addr[2:0] == 3'h7) ? dbg_obs_slice_idx_1          // 0x213C [31:0] 8x4-bit slice map
                                      : 32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -2726,7 +2775,14 @@ module axi_chiplet_controller #(
         // rx-link-clk-domain probe; double-synced to apb_clk below and read at
         // the new SYNC-DETECT register (SoC MMIO 0x4403_2124).
         .obs_sync_seen_cnt_o         (obs_sync_seen_cnt_w),
-        .obs_sync_seen_lane_o        (obs_sync_seen_lane_w)
+        .obs_sync_seen_lane_o        (obs_sync_seen_lane_w),
+        // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs): raw
+        // rx-link-clk-domain probes; double-synced to apb_clk below and read at
+        // Region 9 slots 3..7 (SoC MMIO 0x4403_212C..0x4403_213C).
+        .obs_dbg_raw_word_o          (obs_dbg_raw_word_w),
+        .obs_dbg_lane_any_match_o    (obs_dbg_lane_any_match_w),
+        .obs_dbg_best_popcount_o     (obs_dbg_best_popcount_w),
+        .obs_dbg_slice_idx_o         (obs_dbg_slice_idx_w)
 `endif
     );
 

@@ -283,7 +283,17 @@ module Wlink #(
   // apb_clk in axi_chiplet_controller.sv. Read at the SYNC-DETECT register
   // (SoC MMIO 0x4403_2124). V1 never sees these.
   output [15:0]  obs_sync_seen_cnt_o,         // rx-link-clk dom: mask-aware sat. count
-  output [7:0]   obs_sync_seen_lane_o         // rx-link-clk dom: per-lane sticky vector
+  output [7:0]   obs_sync_seen_lane_o,        // rx-link-clk dom: per-lane sticky vector
+  // SoC Labs RX RAW-WORD + PERMUTATION observability (2026-06-15, rawobs) — the
+  // V2 WlinkGPIOPHY fork exports a BEST-MATCH-latched raw post-deskew word + a
+  // per-RX-lane carried-slice-index map, to decode WHY obs_sync_seen_lane_o
+  // reads 0 on silicon (content-transform: permutation vs bit-rotation). All
+  // rx-link-clk domain; CDC'd to apb_clk in axi_chiplet_controller.sv. Read at
+  // Region 9 slots 3..7 (SoC MMIO 0x4403_212C..0x4403_213C). V1 never sees these.
+  output [127:0] obs_dbg_raw_word_o,          // rx-link-clk dom: best-match raw word
+  output [7:0]   obs_dbg_lane_any_match_o,    // rx-link-clk dom: fixed-pos match vector
+  output [3:0]   obs_dbg_best_popcount_o,     // rx-link-clk dom: popcount of that vector
+  output [31:0]  obs_dbg_slice_idx_o          // rx-link-clk dom: per-lane carried-slice map
 `endif
 );
   // ===================================================================
@@ -1270,6 +1280,11 @@ module Wlink #(
     .sync_seen_cnt(obs_sync_seen_cnt_o),       // PART1 obs: mask-aware sat. count
     .sync_seen_lane(obs_sync_seen_lane_o),     // PART1 obs: per-lane sticky vector
     .sync_seen_pulse(phy_io_sync_seen_pulse),  // PART2 robust re-hunt source
+    // rawobs: BEST-MATCH raw post-deskew word + per-lane carried-slice map.
+    .dbg_raw_word(obs_dbg_raw_word_o),         // rawobs: best-match raw word
+    .dbg_lane_any_match(obs_dbg_lane_any_match_o), // rawobs: fixed-pos match vector
+    .dbg_best_popcount(obs_dbg_best_popcount_o),   // rawobs: popcount of that vector
+    .dbg_slice_idx(obs_dbg_slice_idx_o),       // rawobs: per-lane carried-slice map
     .swi_phase_offset_in(swi_phase_offset_in),
     .swi_word_pin_in(swi_word_pin_in),
     .swi_word_pin_auto_en(swi_word_pin_auto_en),

@@ -66,6 +66,24 @@ APB_SYNC_LANE_MASK   = APB_TIDELINK_BASE + 0x128  # 0x2128
 # Region 8 slot 0 bit[4]: SWI_SYNC_ROBUST_DETECT (PART 2 selectable re-hunt).
 R8_SLOT0_ROBUST_DETECT = 0x10
 
+# SoC Labs RX RAW-WORD + PERMUTATION observability (2026-06-15, rawobs):
+# Region 9 slots 3..7. The BEST-MATCH-latched post-deskew word (closest-to-SYNC
+# word the RX actually reassembled) + the per-RX-lane carried-slice-index map
+# that DECODES identity vs permutation vs bit-rotation.
+#   0x212C..0x2138: dbg_raw_word[31:0] / [63:32] / [95:64] / [127:96]
+#   0x213C        : 8 x 4-bit slice-index map (RX lane i -> TX slice j, 0xF=none).
+#                   Identity (lane i carries slice i) packs to 0x76543210.
+APB_DBG_RAW_W0   = APB_TIDELINK_BASE + 0x12C  # 0x212C raw word [31:0]
+APB_DBG_RAW_W1   = APB_TIDELINK_BASE + 0x130  # 0x2130 raw word [63:32]
+APB_DBG_RAW_W2   = APB_TIDELINK_BASE + 0x134  # 0x2134 raw word [95:64]
+APB_DBG_RAW_W3   = APB_TIDELINK_BASE + 0x138  # 0x2138 raw word [127:96]
+APB_DBG_SLICE_IDX = APB_TIDELINK_BASE + 0x13C # 0x213C 8x4-bit slice map
+
+# Identity slice map: RX lane i carries TX slice i for all 8 lanes ->
+# nibble[i]=i -> 0x76543210. Anything else = permutation (a clean reorder) or a
+# 0xF nibble = no slice match for that lane (bit-rotation / garbage).
+SLICE_MAP_IDENTITY = 0x7654_3210
+
 
 def _sync_insert(tb, side):
     """Hierarchical handle to the per-die TX SYNC inserter inside the PHY."""
@@ -290,3 +308,60 @@ async def test_robust_resync_path_exercised(dut):
          "master inserting — robust re-hunt path NOT exercised")
     tb.log.info("slave RX sync_resync asserted with robust detect=1 "
                 "-> PART 2 robust re-hunt path exercised")
+
+
+@cocotb.test()
+async def test_rx_rawobs_word_and_slice_map_identity(dut):
+    """rawobs (2026-06-15): the RAW-WORD latch + PERMUTATION/slice-index decoder.
+
+    Decisive read-only observability for the silicon "TX inserts SYNC but RX
+    per_lane_sticky=0x00" defect. On the CLEAN (zero-skew) pair sim the link is
+    coherent, so once the master inserts SYNC:
+      * the slave's BEST-MATCH raw-word latch (0x212C..0x2138) captures the exact
+        cross-lane SYNC_WORD, and
+      * the slice-index map (0x213C) reads IDENTITY (0x76543210 — RX lane i
+        carries TX slice i, no transform).
+    This PROVES the obs works; on silicon the same regs will instead show the
+    real transform (a permutation map, or 0xF nibbles for bit-rotation).
+
+    Default-state sanity: before any SYNC, the raw word reads 0 and the slice map
+    reads 0xFFFFFFFF (POR "no match" sentinel — distinct from an old image's 0).
+    """
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+
+    # --- default state: no SYNC seen yet -------------------------------------
+    raw0 = (await tb.s_apb.read(APB_DBG_RAW_W0))
+    smap0 = (await tb.s_apb.read(APB_DBG_SLICE_IDX)) & 0xFFFFFFFF
+    assert raw0 == 0, f"raw-word[31:0] = 0x{raw0:08x} at default (expected 0)"
+    assert smap0 == 0xFFFFFFFF, \
+        (f"slice map = 0x{smap0:08x} at default (expected 0xFFFFFFFF POR sentinel "
+         f"= no lane matched yet)")
+    tb.log.info(f"DEFAULT rawobs: raw[31:0]=0x{raw0:08x} slice_map=0x{smap0:08x} "
+                f"(POR 'no match' sentinel)")
+
+    # --- enable + force_always on the master so the slave RX reassembles SYNC --
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_EN | R8_SLOT0_SYNC_FORCE_ALWAYS)
+    await ClockCycles(dut.hclk, 8000)
+
+    # --- read back the 128-bit BEST-MATCH raw word ---------------------------
+    w0 = (await tb.s_apb.read(APB_DBG_RAW_W0)) & 0xFFFFFFFF
+    w1 = (await tb.s_apb.read(APB_DBG_RAW_W1)) & 0xFFFFFFFF
+    w2 = (await tb.s_apb.read(APB_DBG_RAW_W2)) & 0xFFFFFFFF
+    w3 = (await tb.s_apb.read(APB_DBG_RAW_W3)) & 0xFFFFFFFF
+    raw = (w3 << 96) | (w2 << 64) | (w1 << 32) | w0
+    assert raw == SYNC_WORD, \
+        (f"BEST-MATCH raw word = 0x{raw:032x}, expected SYNC_WORD "
+         f"0x{SYNC_WORD:032x} (clean sim should reassemble SYNC exactly)")
+    tb.log.info(f"rawobs raw word @0x212C-0x2138 = 0x{raw:032x} (== SYNC_WORD)")
+
+    # --- read back the slice-index map: must be IDENTITY on the clean pair ----
+    smap = (await tb.s_apb.read(APB_DBG_SLICE_IDX)) & 0xFFFFFFFF
+    assert smap == SLICE_MAP_IDENTITY, \
+        (f"slice-index map = 0x{smap:08x}, expected IDENTITY 0x{SLICE_MAP_IDENTITY:08x} "
+         f"(RX lane i carries TX slice i on the clean zero-skew sim; any other "
+         f"value = permutation, a 0xF nibble = bit-rotation/no-match)")
+    # per-lane decode for the log (lane i -> slice nibble i)
+    lanes = [(smap >> (4 * i)) & 0xF for i in range(8)]
+    tb.log.info(f"rawobs slice map @0x213C = 0x{smap:08x} -> per-RX-lane carried "
+                f"TX-slice = {lanes} (IDENTITY -> no transform, obs proven)")

@@ -108,12 +108,15 @@ async def test_v2_smoke_reset_and_apb(dut):
     assert align_id == PHY_ALIGN_ID_EXPECT, \
         f"PHY_ALIGN_ID: got 0x{align_id:08x}, expected 0x{PHY_ALIGN_ID_EXPECT:08x}"
 
-    # 3. Region 10 RAZ — eye-vis retired in V2 (AUDIT #17). The read must
-    #    COMPLETE (the RAZ tie drives pready=1) and return 0. A V1 build
+    # 3. SoC 0x2140 — in V2 the eye-vis Region 10 is retired (AUDIT #17) and
+    #    this word is repurposed as SWI_EPOCH_STATUS (the gpio_phy slave's
+    #    paddr 0x40: [0]=epoch_anchored, [6:1]=epoch_span). With no link
+    #    partner and no training, the lane-deskew anchor never engages, so the
+    #    register reads 0 — the read must still COMPLETE (pready=1). A V1 build
     #    would return the eye-regs POR defaults here.
     r10 = await apb.read(APB_R10_BASE)
-    dut._log.info(f"Region 10 @0x{APB_R10_BASE:04x} = 0x{r10:08x}")
-    assert r10 == 0, f"Region 10 expected RAZ (0) in V2, got 0x{r10:08x}"
+    dut._log.info(f"SWI_EPOCH_STATUS @0x{APB_R10_BASE:04x} = 0x{r10:08x}")
+    assert r10 == 0, f"SWI_EPOCH_STATUS expected 0 (unanchored) in V2, got 0x{r10:08x}"
 
     # 4. SWI_BIT_SLIP_LO write/read-back — proves a Region 8 RW register
     #    survives the swap (the V2 controller arm keeps the Region 8 SW

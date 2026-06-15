@@ -155,6 +155,10 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
 // WavD2DGpio (128b<->8x16b segmentation + Option-A lane mask zero-fill).
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_segmenter.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
+// SoC Labs SYNC-insert (V2 LL re-hunt beacon, 2026-06-15): DEFAULT-OFF SYNC
+// inserter instantiated inside WavD2DGpio TX path. Includes tidelink_sync_word.svh
+// (+incdir .../deps/tidelink-phy/rtl above). Bit-identical with APB enable=0.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_insert.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v

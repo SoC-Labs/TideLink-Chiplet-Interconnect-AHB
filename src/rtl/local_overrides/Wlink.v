@@ -199,6 +199,12 @@ module Wlink #(
   // Routed from the chiplet controller. V1 builds never see these ports.
   input   [3:0] swi_word_pin_in,
   input         swi_word_pin_auto_en,
+  // SoC Labs SYNC-insert (V2 LL re-hunt beacon, 2026-06-15) — DEFAULT-OFF APB
+  // enable strap, routed from the chiplet controller (Region 8 slot 0 bit[2]
+  // SWI_SYNC_INSERT_EN, SoC addr 0x44032100). When 0 the PHY's SYNC inserter is
+  // a pure passthrough so the TX datapath is bit-identical to today. V1 builds
+  // never see this port (the V1 PHY does its own idle-gated SYNC insertion).
+  input         swi_sync_insert_en_in,
 `endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
@@ -1212,8 +1218,13 @@ module Wlink #(
     .swi_bit_slip_in(swi_bit_slip_in),
     .swi_training_mode_in(swi_training_mode_in),
 `ifdef TIDELINK_PHY_V2
-    // S3 PHY swap: V2 fork adds the word-pin pair (FIX-R). Its missing
-    // link_tx_tx_idle port is guarded at that connection's own site above.
+    // S3 PHY swap: V2 fork adds the word-pin pair (FIX-R) and (2026-06-15) the
+    // DEFAULT-OFF SYNC-insert re-hunt beacon. The V2 WlinkGPIOPHY fork now
+    // exposes link_tx_tx_idle (mirroring the V1 connection at line ~1181) so the
+    // LL inter-packet idle gates SYNC insertion to idle slots only, plus the
+    // APB enable strap swi_sync_insert_en (DEFAULT 0 -> bit-identical TX).
+    .link_tx_tx_idle(lltx_io_link_idle),       // SYNC-insert: LL inter-packet idle gate (V2)
+    .swi_sync_insert_en(swi_sync_insert_en_in),// SYNC-insert: APB feature enable (DEFAULT 0)
     .swi_phase_offset_in(swi_phase_offset_in),
     .swi_word_pin_in(swi_word_pin_in),
     .swi_word_pin_auto_en(swi_word_pin_auto_en),

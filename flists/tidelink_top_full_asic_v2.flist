@@ -23,10 +23,14 @@
 // this change: with TIDELINK_PHY_V2 undefined every shared-RTL `ifdef arm
 // compiles the old code, keeping the default V1 build bit-identical.
 //
-// NOT included (deliberate): tidelink_gpio_phy_rx/tx wrappers,
-// tidelink_phy_sync_insert/detect (beacon is opt-in/deferred) and the BIST
-// files — the silicon-proven composition (PHY-BIST core) puts the checker +
-// calibrator at controller level on the 128-bit link data.
+// tidelink_phy_sync_insert IS now included (2026-06-15): the DEFAULT-OFF LL
+// re-hunt beacon inserter sits in the WavD2DGpio TX path, gated by APB
+// SWI_SYNC_INSERT_EN (Region 8 slot 0 bit[2], 0x4403_2100) which resets 0 ->
+// pure passthrough / bit-identical until SW opts in. NOT included (deliberate):
+// tidelink_gpio_phy_rx/tx wrappers, tidelink_phy_sync_detect (RX SYNC strip is
+// the intact WlinkRxLinkLayer path) and the BIST files — the silicon-proven
+// composition (PHY-BIST core) puts the checker + calibrator at controller
+// level on the 128-bit link data.
 // =============================================================================
 +define+TIDELINK_PHY_V2
 +incdir+${TIDELINK_HOME}/src/rtl
@@ -123,6 +127,10 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
 // WavD2DGpio (128b<->8x16b segmentation + Option-A lane mask zero-fill).
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_segmenter.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
+// SoC Labs SYNC-insert (V2 LL re-hunt beacon, 2026-06-15): DEFAULT-OFF SYNC
+// inserter instantiated inside WavD2DGpio TX path. Bit-identical with APB
+// enable=0; includes tidelink_sync_word.svh via +incdir .../deps/tidelink-phy/rtl.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_insert.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v

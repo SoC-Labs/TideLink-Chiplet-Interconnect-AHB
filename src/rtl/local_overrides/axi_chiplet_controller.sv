@@ -830,6 +830,17 @@ module axi_chiplet_controller #(
     // re-triggers a fresh sweep that clears lane_fault — now against a live
     // peer pattern. POR-only domain, same as training_mode.
     reg        swi_recal_r;
+`ifdef TIDELINK_PHY_V2
+    // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
+    // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
+    // Wlink RX framer is a byte-counter with no SOP; on silicon die_a can lock
+    // the wrong packet byte-phase and never decode the peer CR. SYNC gives the
+    // framer a periodic re-hunt beacon. SoC addr = Region 8 slot 0 = 0x44032100,
+    // bit[2]. Reset 0 -> the PHY inserter is a pure passthrough so the TX
+    // datapath is bit-identical to today (zero-regression default). V2-only so
+    // the V1 build stays bit-identical (V1 has its own idle-gated insertion).
+    reg        swi_sync_insert_en_r;
+`endif
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
 `ifdef TIDELINK_PHY_V2
@@ -1019,6 +1030,7 @@ module axi_chiplet_controller #(
             swi_recal_r              <= 1'b0;
             swi_bit_slip_lo_r        <= 24'h0;
 `ifdef TIDELINK_PHY_V2
+            swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
 `endif
@@ -1069,6 +1081,9 @@ module axi_chiplet_controller #(
                     3'h0: begin                                                // SWI_TRAINING_MODE
                         swi_training_mode_r <= ctrl_reg_wdata[0];
                         swi_recal_r         <= ctrl_reg_wdata[1];             // SWI_RECAL (level → calibrator swreset)
+`ifdef TIDELINK_PHY_V2
+                        swi_sync_insert_en_r <= ctrl_reg_wdata[2];           // SWI_SYNC_INSERT_EN (V2 PHY SYNC beacon, DEFAULT 0)
+`endif
                     end
                     3'h1: begin
                         swi_bit_slip_lo_r   <= ctrl_reg_wdata[23:0];          // SWI_BIT_SLIP_LO
@@ -1103,7 +1118,11 @@ module axi_chiplet_controller #(
 
     // Region 8 read mux
     assign region8_rdata =
+`ifdef TIDELINK_PHY_V2
+        (ctrl_reg_addr[2:0] == 3'h0) ? {29'h0, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
+`else
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
+`endif
 `ifdef TIDELINK_PHY_V2
         (ctrl_reg_addr[2:0] == 3'h1) ? {3'h0, swi_word_pin_auto_dis_r,
                                         swi_word_pin_ovr_r, swi_bit_slip_lo_r} :
@@ -2484,6 +2503,11 @@ module axi_chiplet_controller #(
         //   SWI_BIT_SLIP_LO[27:24] = manual word pin, [28] = auto-disable.
         .swi_word_pin_in            (swi_word_pin_ovr_r),
         .swi_word_pin_auto_en       (~swi_word_pin_auto_dis_r),
+        // SoC Labs SYNC-insert (V2 LL re-hunt beacon, 2026-06-15) — DEFAULT-OFF.
+        // Region 8 slot 0 bit[2] SWI_SYNC_INSERT_EN (MMIO 0x4403_2100). When 0
+        // the PHY SYNC inserter is a pure passthrough so the TX datapath is
+        // bit-identical to today. No calibrator OR-merge — pure SW strap.
+        .swi_sync_insert_en_in      (swi_sync_insert_en_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

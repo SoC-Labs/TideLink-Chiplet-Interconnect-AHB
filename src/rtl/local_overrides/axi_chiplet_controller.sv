@@ -772,6 +772,15 @@ module axi_chiplet_controller #(
     // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
     // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
     wire [7:0]  obs_fe_rx_ptr_w;
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — raw probe from
+    // the V2 WlinkGPIOPHY fork, io_link_tx_tx_link_clk domain. 2-flop synced to
+    // apb_clk below (sync_obs_tx_sync_*). Read at the new SYNC-OBS register
+    // (SoC MMIO 0x4403_2120). V2-only (the V1 PHY fork has no such ports).
+    wire [15:0] obs_tx_sync_ins_cnt_w;
+    wire        obs_tx_link_idle_level_w;
+    wire        obs_tx_training_level_w;
+`endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
     // region8_rdata mux and OR-merged into ctrl_reg_rdata.
@@ -798,8 +807,15 @@ module axi_chiplet_controller #(
     // ctrl_reg_addr[4:3].
     wire [31:0] region8_rdata;
     wire [31:0] regionC_rdata;
+    // SoC Labs SYNC-insert TX obs 2026-06-15 (PART 1): the previously unused
+    // region-select 2'b00 carries the new SYNC-OBS register bank (Region 9, SoC
+    // MMIO 0x4403_2120-0x4403_213C). tidelink_apb_regs.sv maps apb_region
+    // 4'b1001 onto ctrl_reg_addr[4:3]==2'b00. In V1 this bank is tied 0 so the
+    // legacy default-0 read for that select is preserved.
+    wire [31:0] region9_sync_obs_rdata;
     always_comb begin
         unique case (ctrl_reg_addr[4:3])
+            2'b00:   ctrl_reg_rdata = region9_sync_obs_rdata;
             2'b01:   ctrl_reg_rdata = region4_rdata;
             2'b10:   ctrl_reg_rdata = region8_rdata;
             2'b11:   ctrl_reg_rdata = regionC_rdata;
@@ -840,6 +856,16 @@ module axi_chiplet_controller #(
     // datapath is bit-identical to today (zero-regression default). V2-only so
     // the V1 build stays bit-identical (V1 has its own idle-gated insertion).
     reg        swi_sync_insert_en_r;
+    // Slot 0 bit[3] — SWI_SYNC_FORCE_ALWAYS: DEFAULT-OFF gate-fix control for the
+    // V2 PHY's SYNC beacon (PART 2, 2026-06-15). The inserter is gated by
+    // io_link_tx_tx_idle, which is sparse during the FC handshake and rarely
+    // coincides with the 1-in-32 inserter counter on silicon (RX SYNC-detect
+    // count stays 0). With this bit set the PHY DROPS the idle term so the beacon
+    // fires on enable alone (it still self-gates on ~training internally). SoC
+    // addr = Region 8 slot 0 = 0x44032100, bit[3]. Reset 0 -> original idle-gated
+    // production behaviour (bit-identical when SWI_SYNC_INSERT_EN is also 0).
+    // V2-only so the V1 build stays bit-identical.
+    reg        swi_sync_force_always_r;
 `endif
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
@@ -939,6 +965,15 @@ module axi_chiplet_controller #(
     // coherence not guaranteed mid-update, fine for poll-rate debug reads).
     reg [7:0]                                                          sync_obs_fe_rx_ptr_0;
     reg [7:0]           sync_obs_fe_rx_ptr_1;
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — same 2-flop
+    // apb_clk treatment as sync_obs_sync_det. The 16-bit count is a quasi-static
+    // snapshot (saturating, monotonic at poll rate); the two level bits are
+    // slow-moving status. Read at the SYNC-OBS register (SoC MMIO 0x4403_2120).
+    reg [15:0]          sync_obs_tx_sync_ins_0,   sync_obs_tx_sync_ins_1;
+    reg                 sync_obs_tx_idle_0,       sync_obs_tx_idle_1;
+    reg                 sync_obs_tx_train_0,      sync_obs_tx_train_1;
+`endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
         if (!hresetn) begin
@@ -968,6 +1003,12 @@ module axi_chiplet_controller #(
             sync_obs_a2l_app_v_0    <= 1'b0;  sync_obs_a2l_app_v_1    <= 1'b0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
+`ifdef TIDELINK_PHY_V2
+            // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1)
+            sync_obs_tx_sync_ins_0  <= 16'h0; sync_obs_tx_sync_ins_1  <= 16'h0;
+            sync_obs_tx_idle_0      <= 1'b0;  sync_obs_tx_idle_1      <= 1'b0;
+            sync_obs_tx_train_0     <= 1'b0;  sync_obs_tx_train_1     <= 1'b0;
+`endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
             // swi_lane_locked_in=8'hFF / swi_lane_fault_in=8'h00 /
@@ -1017,6 +1058,16 @@ module axi_chiplet_controller #(
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
             sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
+`ifdef TIDELINK_PHY_V2
+            // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — 2-flop
+            // sync of the TX-link-clk-domain probe into apb_clk.
+            sync_obs_tx_sync_ins_0  <= obs_tx_sync_ins_cnt_w;
+            sync_obs_tx_sync_ins_1  <= sync_obs_tx_sync_ins_0;
+            sync_obs_tx_idle_0      <= obs_tx_link_idle_level_w;
+            sync_obs_tx_idle_1      <= sync_obs_tx_idle_0;
+            sync_obs_tx_train_0     <= obs_tx_training_level_w;
+            sync_obs_tx_train_1     <= sync_obs_tx_train_0;
+`endif
         end
     end
 
@@ -1031,6 +1082,7 @@ module axi_chiplet_controller #(
             swi_bit_slip_lo_r        <= 24'h0;
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
+            swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
 `endif
@@ -1082,7 +1134,8 @@ module axi_chiplet_controller #(
                         swi_training_mode_r <= ctrl_reg_wdata[0];
                         swi_recal_r         <= ctrl_reg_wdata[1];             // SWI_RECAL (level → calibrator swreset)
 `ifdef TIDELINK_PHY_V2
-                        swi_sync_insert_en_r <= ctrl_reg_wdata[2];           // SWI_SYNC_INSERT_EN (V2 PHY SYNC beacon, DEFAULT 0)
+                        swi_sync_insert_en_r    <= ctrl_reg_wdata[2];        // SWI_SYNC_INSERT_EN (V2 PHY SYNC beacon, DEFAULT 0)
+                        swi_sync_force_always_r <= ctrl_reg_wdata[3];        // SWI_SYNC_FORCE_ALWAYS (PART2 gate fix, DEFAULT 0)
 `endif
                     end
                     3'h1: begin
@@ -1116,10 +1169,44 @@ module axi_chiplet_controller #(
     // apb_clk as the consumer (top-level IRQ pin).
     assign train_fail_irq_o = train_fail_irq_r;
 
+    // =====================================================================
+    // Region 9 — SYNC-insert TX OBSERVABILITY (SoC Labs 2026-06-15, PART 1)
+    //   SoC MMIO 0x4403_2120 (apb_region 4'b1001 -> ctrl_reg_addr[4:3]==2'b00,
+    //   slot 3'h0). Read-only. Decodes the new, previously-unused region-select
+    //   2'b00 (see tidelink_apb_regs.sv Region 9 routing). The intended slot for
+    //   this register per the integration spec was 0x4403_2118, but that address
+    //   is ALREADY ASSIGNED to SWI_PHASE_OFFSET (Region 8 slot 6); Region 8 and
+    //   Region C are both fully populated (all 8 slots each), so a fresh region
+    //   was allocated instead of clobbering a live RW register. 0x2120 was the
+    //   reserved/reads-0 Region 9 window in tidelink_apb_regs.sv.
+    //
+    //   SYNC-OBS layout (slot 3'h0):
+    //     [15: 0] tx_sync_ins_cnt    — 16-bit saturating count of TX word-clk
+    //                                  cycles the PHY drove a SYNC word (>0 proves
+    //                                  the inserter is physically firing)
+    //     [16]    tx_link_idle_level — live io_link_tx_tx_idle (the production gate)
+    //     [17]    tx_training_level  — live effective_training_mode_tx
+    //     [23:18] reserved (0)
+    //     [31:24] 0x5C               — presence marker (old images read 0 here)
+    //   All fields are apb_clk 2-flop-synced from the TX-link-clk domain.
+    // =====================================================================
+`ifdef TIDELINK_PHY_V2
+    assign region9_sync_obs_rdata =
+        (ctrl_reg_addr[2:0] == 3'h0) ? {8'h5C,                    // [31:24] marker
+                                        6'h0,                     // [23:18] reserved
+                                        sync_obs_tx_train_1,      // [17]    training level
+                                        sync_obs_tx_idle_1,       // [16]    tx_idle level
+                                        sync_obs_tx_sync_ins_1}   // [15:0]  SYNC-insert sat. count
+                                     : 32'h0;
+`else
+    // V1: no V2 SYNC inserter; region-select 2'b00 reads 0 (bit-identical).
+    assign region9_sync_obs_rdata = 32'h0;
+`endif
+
     // Region 8 read mux
     assign region8_rdata =
 `ifdef TIDELINK_PHY_V2
-        (ctrl_reg_addr[2:0] == 3'h0) ? {29'h0, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
+        (ctrl_reg_addr[2:0] == 3'h0) ? {28'h0, swi_sync_force_always_r, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
 `else
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
 `endif
@@ -2508,6 +2595,12 @@ module axi_chiplet_controller #(
         // the PHY SYNC inserter is a pure passthrough so the TX datapath is
         // bit-identical to today. No calibrator OR-merge — pure SW strap.
         .swi_sync_insert_en_in      (swi_sync_insert_en_r),
+        // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
+        // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
+        // 0 the SYNC beacon keeps its idle-gated production behaviour
+        // (bit-identical); when 1 the PHY drops the idle gate so the beacon
+        // fires on enable alone (still self-gates ~training). Pure SW strap.
+        .swi_sync_force_always_in   (swi_sync_force_always_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8
@@ -2544,7 +2637,13 @@ module axi_chiplet_controller #(
         // controller's output ports -> tidelink_gpio_phy_apb_regs.epoch_*_i.
         ,
         .obs_epoch_anchored_o        (obs_epoch_anchored_o),
-        .obs_epoch_span_o            (obs_epoch_span_o)
+        .obs_epoch_span_o            (obs_epoch_span_o),
+        // SoC Labs SYNC-insert TX obs 2026-06-15 (PART 1): raw TX-link-clk-domain
+        // probe; double-synced to apb_clk below (sync_obs_tx_sync_* regs) and read
+        // at the new SYNC-OBS register (SoC MMIO 0x4403_2120).
+        .obs_tx_sync_ins_cnt_o       (obs_tx_sync_ins_cnt_w),
+        .obs_tx_link_idle_level_o    (obs_tx_link_idle_level_w),
+        .obs_tx_training_level_o     (obs_tx_training_level_w)
 `endif
     );
 

@@ -205,6 +205,12 @@ module Wlink #(
   // a pure passthrough so the TX datapath is bit-identical to today. V1 builds
   // never see this port (the V1 PHY does its own idle-gated SYNC insertion).
   input         swi_sync_insert_en_in,
+  // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF APB control
+  // strap, routed from the chiplet controller (Region 8 slot 0 bit[3]
+  // SWI_SYNC_FORCE_ALWAYS, SoC addr 0x44032100). When 0 the SYNC beacon keeps
+  // its idle-gated production behaviour (bit-identical). When 1 the idle gate is
+  // dropped so the beacon fires on enable alone (still self-gates ~training).
+  input         swi_sync_force_always_in,
 `endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
@@ -253,7 +259,16 @@ module Wlink #(
   // (SoC MMIO 0x4403_2140). link_rx_rx_link_clk domain. V1 never sees these.
   ,
   output         obs_epoch_anchored_o,        // rx-link-clk dom: anchor engaged
-  output [5:0]   obs_epoch_span_o             // rx-link-clk dom: measured span
+  output [5:0]   obs_epoch_span_o,            // rx-link-clk dom: measured span
+  // SoC Labs SYNC-insert TX OBSERVABILITY (2026-06-15, PART 1) — the V2
+  // WlinkGPIOPHY fork exports the TX-side SYNC-insert probe (16-bit saturating
+  // count of cycles the PHY physically drove a SYNC word + two live level bits:
+  // tx_idle and effective_training_mode). io_link_tx_tx_link_clk domain; 2-flop
+  // synced to apb_clk in axi_chiplet_controller.sv (mirrors obs_sync_detected_cnt).
+  // Read at the new SYNC-OBS register (SoC MMIO 0x4403_2120). V1 never sees these.
+  output [15:0]  obs_tx_sync_ins_cnt_o,       // tx-link-clk dom: SYNC-insert sat. count
+  output         obs_tx_link_idle_level_o,    // tx-link-clk dom: live tx_idle
+  output         obs_tx_training_level_o      // tx-link-clk dom: live training
 `endif
 );
   // ===================================================================
@@ -1225,13 +1240,19 @@ module Wlink #(
     // APB enable strap swi_sync_insert_en (DEFAULT 0 -> bit-identical TX).
     .link_tx_tx_idle(lltx_io_link_idle),       // SYNC-insert: LL inter-packet idle gate (V2)
     .swi_sync_insert_en(swi_sync_insert_en_in),// SYNC-insert: APB feature enable (DEFAULT 0)
+    .swi_sync_force_always(swi_sync_force_always_in), // PART2 gate fix: drop idle term (DEFAULT 0)
     .swi_phase_offset_in(swi_phase_offset_in),
     .swi_word_pin_in(swi_word_pin_in),
     .swi_word_pin_auto_en(swi_word_pin_auto_en),
     // SoC Labs V2 epoch-anchor obs 2026-06-14: route the WlinkGPIOPHY anchor
     // engagement state out to the chiplet controller -> SWI_EPOCH_STATUS.
     .epoch_anchored(obs_epoch_anchored_o),
-    .epoch_span(obs_epoch_span_o)
+    .epoch_span(obs_epoch_span_o),
+    // SoC Labs SYNC-insert TX obs 2026-06-15 (PART 1): route the PHY's TX-side
+    // SYNC-insert probe out to the chiplet controller -> SoC MMIO 0x4403_2120.
+    .tx_sync_ins_cnt(obs_tx_sync_ins_cnt_o),
+    .tx_link_idle_level(obs_tx_link_idle_level_o),
+    .tx_training_level(obs_tx_training_level_o)
 `else
     .swi_phase_offset_in(swi_phase_offset_in)
 `endif

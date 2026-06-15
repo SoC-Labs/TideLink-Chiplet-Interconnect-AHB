@@ -151,7 +151,12 @@ module tidelink_apb_regs #(
     //   0x118: SWI_PHASE_OFFSET         (RW) - [31:0] per-lane sub-bit phase (8 x 4-bit, §9.7)
     //   0x11C: PHY_ALIGN_ID             (RO) - 0x5041_0100
     //
-    // Region 9 (paddr[8:5]=1001, offsets 0x120-0x13F): RESERVED, reads 0.
+    // Region 9 (paddr[8:5]=1001, offsets 0x120-0x13F): SYNC-insert TX
+    //   observability (SoC Labs 2026-06-15, PART 1; RO). Routed to the chiplet
+    //   controller's SYNC-OBS bank on region-select 2'b00.
+    //   0x120: SYNC_OBS  (RO) - [15:0] tx_sync_ins_cnt, [16] tx_link_idle_level,
+    //                            [17] tx_training_level, [31:24] 0x5C marker.
+    //   V2-only data; reads 0 in V1 (region was previously RESERVED/reads-0).
     //
     // Region 10 (paddr[8:5]=1010, offsets 0x140-0x17F): Eye visibility v2.
     //   Owned by tidelink_eye_regs (instantiated in tidelink_top.sv).  As
@@ -464,10 +469,21 @@ module tidelink_apb_regs #(
     //   Writes to Region C are accepted at the strobe but have no
     //   effect (the controller decoder ignores any ctrl_reg_addr[4]=1
     //   writes; reads return the autoneg observability mirror).
+    //
+    // SoC Labs SYNC-insert TX obs 2026-06-15 (PART 1): NEW Region 9
+    // (apb_region == 4'b1001, SoC 0x4403_2120-0x213C) routes the V2 SYNC-OBS
+    // bank into the SAME ctrl_reg bus on the previously-unused region-select
+    // ctrl_reg_addr[4:3]==2'b00 (the chiplet controller decodes 2'b00 as the
+    // SYNC-OBS bank). The naive {apb_region[3:2],...} would map region 9 onto
+    // 2'b10 (== Region 8) and alias it, so region 9 is special-cased to 2'b00.
+    // Region 9 was RESERVED/reads-0 before, and the V1 controller ties the
+    // 2'b00 bank to 0, so V1 reads of 0x2120 still return 0 (bit-identical).
     assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
                                            (apb_region == 4'b1000) ||
+                                           (apb_region == 4'b1001) ||
                                            (apb_region == 4'b1100));
-    assign ctrl_reg_addr  = {apb_region[3:2], paddr[4:2]};
+    assign ctrl_reg_addr  = (apb_region == 4'b1001) ? {2'b00, paddr[4:2]}
+                                                    : {apb_region[3:2], paddr[4:2]};
     assign ctrl_reg_wdata = pwdata;
 
     // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC).
@@ -542,6 +558,13 @@ module tidelink_apb_regs #(
                 //   / Region C via ctrl_reg_addr[4:3].
                 prdata = ctrl_reg_rdata;
             end
+            4'b1001: begin // Region 9: SYNC-insert TX observability (RO, V2)
+                //   SoC Labs 2026-06-15 (PART 1). 0x4403_2120 = SYNC-OBS.
+                //   Same ctrl_reg_rdata pass-through; the chiplet controller
+                //   decodes the SYNC-OBS bank on region-select 2'b00 (ctrl_reg_addr
+                //   special-cased above). V2-only data; reads 0 in V1.
+                prdata = ctrl_reg_rdata;
+            end
             4'b1100: begin // Region C: Autoneg silicon observability (RO)
                 //   Bug N7/N8 probes — delay_ctr, timeout_ctr, init_wait,
                 //   axl_state, txn_step, i2c_master STATUS. Shares the
@@ -591,6 +614,9 @@ module tidelink_apb_regs #(
                             default: ;
                         endcase
                     end
+                end
+                4'b1001: begin // Region 9: SYNC-insert TX obs — all slots RO
+                    if (pwrite) pslverr = 1'b1;
                 end
                 4'b1100: begin // Region C: all slots RO (Bug N7/N8 observability)
                     if (pwrite) pslverr = 1'b1;

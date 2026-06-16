@@ -84,6 +84,28 @@ APB_DBG_SLICE_IDX = APB_TIDELINK_BASE + 0x13C # 0x213C 8x4-bit slice map
 # 0xF nibble = no slice match for that lane (bit-rotation / garbage).
 SLICE_MAP_IDENTITY = 0x7654_3210
 
+# SoC Labs PER-LANE SYNC-match SWEEP ORACLE + word-pin override (2026-06-16,
+# perlane-wp). The clearable per-lane match oracle + the per-lane word-pin SW
+# override — the per-lane diagnose+fix tool for the data-corruption bug.
+#
+#   SWI_SYNC_OBS_CLR  : Region 8 slot 0 bit[5] (SoC 0x4403_2100[5]). W1-PULSE,
+#                       self-clearing. Clears the per-lane LIVE/sticky match +
+#                       the rawobs best-match latch so the operator can
+#                       clear-then-observe per sweep step.
+#   SYNC_LANE_LIVE    : Region 10 slot 1 (SoC 0x4403_2144). RO. [7:0] = live
+#                       per-lane "matched since last clear" vector; [31:24]=0x5E
+#                       presence marker. THE sweep oracle.
+#   WORD_PIN_PERLANE  : Region 10 slot 2 (SoC 0x4403_2148). RW. 8x4-bit per-lane
+#                       word-pin override value (lane L at [4L+3:4L]).
+#   WORD_PIN_PERLANE_EN : Region 10 slot 3 (SoC 0x4403_214C). RW. [7:0] per-lane
+#                       override enable (lane L at bit L). Default 0 = legacy.
+R8_SLOT0_SYNC_OBS_CLR = 0x20                        # bit[5]
+APB_SYNC_LANE_LIVE  = APB_TIDELINK_BASE + 0x144     # 0x2144
+LIVE_VEC            = lambda v: v & 0xFF
+LIVE_MARKER         = lambda v: (v >> 24) & 0xFF
+APB_WORD_PIN_PERLANE    = APB_TIDELINK_BASE + 0x148  # 0x2148
+APB_WORD_PIN_PERLANE_EN = APB_TIDELINK_BASE + 0x14C  # 0x214C
+
 
 def _sync_insert(tb, side):
     """Hierarchical handle to the per-die TX SYNC inserter inside the PHY."""
@@ -365,3 +387,185 @@ async def test_rx_rawobs_word_and_slice_map_identity(dut):
     lanes = [(smap >> (4 * i)) & 0xF for i in range(8)]
     tb.log.info(f"rawobs slice map @0x213C = 0x{smap:08x} -> per-RX-lane carried "
                 f"TX-slice = {lanes} (IDENTITY -> no transform, obs proven)")
+
+
+async def _enable_master_beacon(tb):
+    """Make the master insert SYNC so the slave RX sees the beacon every period."""
+    await tb.m_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_EN | R8_SLOT0_SYNC_FORCE_ALWAYS)
+
+
+@cocotb.test()
+async def test_perlane_clear_oracle(dut):
+    """perlane-wp PART A: the CLEARABLE per-lane SYNC-match LIVE oracle.
+
+    The legacy sticky vector (0x2124[23:16]) is POR-only — useless for a sweep.
+    This proves the NEW live oracle (0x2144) + the clear pulse (0x2100[5]):
+
+      * default-state sanity: live vector 0, presence marker 0x5E.
+      * master inserts SYNC -> the slave's live vector climbs to ALL 8 lanes
+        (clean zero-skew pair).
+      * write the W1-pulse CLEAR -> the live vector resets toward 0 (current
+        state, not ever-state), then RE-ACCUMULATES back to 0xFF as new beacons
+        arrive. THIS is the sweep oracle: clear, wait, read which lanes match NOW.
+    """
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+
+    # --- default: live vector 0, marker present ------------------------------
+    l0 = await tb.s_apb.read(APB_SYNC_LANE_LIVE)
+    assert LIVE_MARKER(l0) == 0x5E, \
+        f"SYNC_LANE_LIVE marker = 0x{LIVE_MARKER(l0):02x}, expected 0x5E (reg not live)"
+    assert LIVE_VEC(l0) == 0x00, \
+        f"SYNC_LANE_LIVE = 0x{LIVE_VEC(l0):02x} at default (must be 0 — no SYNC yet)"
+    tb.log.info(f"DEFAULT SYNC_LANE_LIVE @0x2144 = 0x{l0:08x} "
+                f"(marker=0x{LIVE_MARKER(l0):02x} live=0x00)")
+
+    # --- master inserts SYNC -> the live oracle climbs to all 8 lanes --------
+    await _enable_master_beacon(tb)
+    await ClockCycles(dut.hclk, 8000)
+    l1 = LIVE_VEC(await tb.s_apb.read(APB_SYNC_LANE_LIVE))
+    s1 = SYNC2_SEEN_LANE(await tb.s_apb.read(APB_SYNC_DETECT2))   # mask-aware sticky vector
+    assert l1 == 0xFF, \
+        (f"SYNC_LANE_LIVE = 0x{l1:02x} after beacon enable, expected 0xFF "
+         f"(all 8 lanes carry their SYNC slice on the clean pair)")
+    assert s1 == 0xFF, f"sticky vector = 0x{s1:02x}, expected 0xFF after beacon"
+    tb.log.info(f"beacon on: live=0x{l1:02x} sticky=0x{s1:02x} (all 8 lanes match)")
+
+    # --- park ONE lane off-window, then CLEAR -> the CLEARABLE proof ----------
+    # Override lane LANE_BRK with a window where it does NOT match (found by a
+    # short sweep), enable only that lane, then pulse CLEAR. The LIVE oracle
+    # (0x2144) is a PER-LANE RAW slice compare (mask-independent), so after the
+    # clear it reads 0 for the parked lane and 1 for the 7 untouched lanes — i.e.
+    # it pinpoints WHICH lane is off-window, which is the whole point. (The legacy
+    # 0x2124 sticky is the mask-aware FULL-WORD detector: one off-window lane
+    # makes the all-8 qualifier fail, so its per-lane vector collapses to 0x00 —
+    # exactly why the per-lane LIVE oracle is needed for the sweep.) The parked
+    # lane read 1 in the live vector before the clear, so the software-controlled
+    # 1->0 IS the proof the oracle is CLEARABLE/current-state, not sticky-ever.
+    LANE_BRK = 3
+    OTHER = 0xFF & ~(1 << LANE_BRK)
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 1 << LANE_BRK)
+    brk_pin = None
+    for pin in range(16):
+        await tb.s_apb.write(APB_WORD_PIN_PERLANE, pin << (4 * LANE_BRK))
+        await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_OBS_CLR)  # clear-then-observe
+        await ClockCycles(dut.hclk, 6000)
+        v = LIVE_VEC(await tb.s_apb.read(APB_SYNC_LANE_LIVE))
+        if (v & (1 << LANE_BRK)) == 0:
+            brk_pin = pin
+            break
+    assert brk_pin is not None, \
+        f"no override pin broke lane {LANE_BRK} — override not reaching the window"
+    live_brk = LIVE_VEC(await tb.s_apb.read(APB_SYNC_LANE_LIVE))
+    assert (live_brk & (1 << LANE_BRK)) == 0, \
+        (f"live lane {LANE_BRK} still set (0x{live_brk:02x}) after clear+park — the "
+         f"clear did not reset the live oracle, or the override did not move the "
+         f"window")
+    assert (live_brk & OTHER) == OTHER, \
+        (f"other lanes regressed in the LIVE oracle (0x{live_brk:02x}) — only lane "
+         f"{LANE_BRK} was parked; the per-lane oracle must isolate it (the other 7 "
+         f"re-match post-clear)")
+    tb.log.info(f"parked lane {LANE_BRK} (pin={brk_pin}) + CLEAR: live=0x{live_brk:02x} "
+                f"-> the per-lane LIVE oracle pinpoints lane {LANE_BRK} OFF and the "
+                f"other 7 ON (clearable, current-state, per-lane resolved)")
+
+    # --- remove the override + CLEAR -> the oracle RE-ACCUMULATES to 0xFF -----
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 0)   # back to auto pins
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE, 0)
+    await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_OBS_CLR)  # clear, then watch refill
+    await ClockCycles(dut.hclk, 8000)
+    l2 = LIVE_VEC(await tb.s_apb.read(APB_SYNC_LANE_LIVE))
+    assert l2 == 0xFF, \
+        (f"SYNC_LANE_LIVE = 0x{l2:02x} after re-accumulate, expected 0xFF "
+         f"(the oracle must re-fill as new beacons arrive post-clear)")
+    tb.log.info(f"re-accumulated: SYNC_LANE_LIVE = 0x{l2:02x} "
+                f"-> CLEARABLE per-lane oracle works (fill -> clear -> refill)")
+
+
+@cocotb.test()
+async def test_perlane_word_pin_override(dut):
+    """perlane-wp PART B: the PER-LANE word-pin SW override.
+
+    Proves the per-lane window override (0x2148 value + 0x214C enable) actually
+    moves ONE lane's word window, independently of the rest, using the live
+    oracle as the witness:
+
+      * default RW: override regs read 0, RW back the value/enable.
+      * master inserts SYNC -> all 8 lanes match (live = 0xFF).
+      * enable a WRONG per-lane pin on lane 3 only (override value far from the
+        committed auto pin) -> lane 3's window shifts -> after a CLEAR + settle,
+        the live oracle shows lane 3 STOPPED matching while the others still do.
+      * restore (disable lane 3's override) -> after CLEAR + settle, lane 3
+        matches again (corrective value restores the slice).
+    The other 7 lanes are untouched throughout (per-lane independence).
+    """
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+
+    LANE = 3
+    OTHER_MASK = 0xFF & ~(1 << LANE)
+
+    # --- default RW of the override registers --------------------------------
+    assert (await tb.s_apb.read(APB_WORD_PIN_PERLANE)) == 0, \
+        "WORD_PIN_PERLANE default != 0"
+    assert (await tb.s_apb.read(APB_WORD_PIN_PERLANE_EN)) & 0xFF == 0, \
+        "WORD_PIN_PERLANE_EN default != 0"
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE, 0x1234_5678)
+    assert (await tb.s_apb.read(APB_WORD_PIN_PERLANE)) == 0x1234_5678, \
+        "WORD_PIN_PERLANE RW readback mismatch"
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE, 0)        # restore for the sweep
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 0xA5)
+    assert (await tb.s_apb.read(APB_WORD_PIN_PERLANE_EN)) & 0xFF == 0xA5, \
+        "WORD_PIN_PERLANE_EN RW readback mismatch"
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 0)     # restore all-legacy
+    tb.log.info("WORD_PIN_PERLANE / _EN RW readback OK (default 0 -> RW -> restored 0)")
+
+    async def clear_and_sample():
+        # Pulse the clear (keep the master beacon on) then settle + read live.
+        await tb.s_apb.write(APB_R8_SLOT0, R8_SLOT0_SYNC_OBS_CLR)
+        await ClockCycles(dut.hclk, 8000)
+        return LIVE_VEC(await tb.s_apb.read(APB_SYNC_LANE_LIVE))
+
+    # --- baseline: all lanes match with auto pins ----------------------------
+    await _enable_master_beacon(tb)
+    base = await clear_and_sample()
+    assert base == 0xFF, \
+        f"baseline live vector = 0x{base:02x}, expected 0xFF (all lanes auto-match)"
+    tb.log.info(f"baseline (auto pins): live = 0x{base:02x} (all 8 match)")
+
+    # --- sweep lane-3's per-lane override -> SOME pin shifts its window off ---
+    # We don't need the exact committed auto pin: enabling the override forces
+    # lane 3's window to the SW value, and at least one of the 16 settings cuts
+    # the 16-cell window off the coherent SYNC slice (only the value equal to the
+    # true window keeps it matching). Throughout, the other 7 lanes stay on auto
+    # and MUST keep matching — that is the per-lane independence proof.
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 1 << LANE)  # enable lane 3 only
+    bad_pin = None
+    bad = 0xFF
+    for pin in range(16):
+        await tb.s_apb.write(APB_WORD_PIN_PERLANE, pin << (4 * LANE))
+        v = await clear_and_sample()
+        # other 7 lanes must never regress while we move lane 3's window
+        assert (v & OTHER_MASK) == OTHER_MASK, \
+            (f"other lanes regressed (live=0x{v:02x}) while sweeping lane {LANE} "
+             f"pin={pin} — the override is NOT per-lane independent")
+        if (v & (1 << LANE)) == 0:
+            bad_pin, bad = pin, v
+            break
+    assert bad_pin is not None, \
+        (f"no per-lane override value for lane {LANE} broke its SYNC match — the "
+         f"override is not reaching the lane window")
+    tb.log.info(f"lane {LANE} override pin={bad_pin}: live = 0x{bad:02x} "
+                f"(lane {LANE} stopped matching, the other 7 held -> per-lane "
+                f"override moves ONE lane's window independently)")
+
+    # --- restore (disable lane 3 override) -> lane 3 matches again ------------
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE_EN, 0)
+    await tb.s_apb.write(APB_WORD_PIN_PERLANE, 0)
+    good = await clear_and_sample()
+    assert good == 0xFF, \
+        (f"live vector = 0x{good:02x} after disabling the override, expected 0xFF "
+         f"(lane {LANE} must match again with its auto pin restored)")
+    tb.log.info(f"override disabled: live = 0x{good:02x} "
+                f"-> per-lane word-pin override moves ONE lane's window and "
+                f"restores cleanly (the sweep fix knob works)")

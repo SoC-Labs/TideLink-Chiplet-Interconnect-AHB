@@ -108,6 +108,9 @@ module tidelink_fifo #(
     // --------------------------------------------------------------------------
     output wire                     ctrl_reg_write,
     output wire               [4:0] ctrl_reg_addr,
+    // SoC Labs perlane-wp (2026-06-16): Region 10 select pass-through (sweep
+    // oracle + per-lane word-pin regs, SoC 0x2144/0x2148/0x214C). V1 ties low.
+    output wire                     ctrl_reg_r10,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 
@@ -293,6 +296,7 @@ module tidelink_fifo #(
         // Chiplet controller register pass-through
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
         // Performance profiling register pass-through

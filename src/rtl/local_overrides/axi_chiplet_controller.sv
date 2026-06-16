@@ -141,6 +141,14 @@ module axi_chiplet_controller #(
     // on the same decoder. See block titled "Bug N2 fix" below.
     input  wire             apb_ctrl_reg_write,
     input  wire  [4:0]      apb_ctrl_reg_addr,
+    // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (2026-06-16,
+    // perlane-wp): Region 10 select (main APB port). High when the access is to
+    // SoC 0x4403_2144/0x4403_2148/0x4403_214C (the new sweep-oracle / per-lane
+    // word-pin registers). apb_region 4'b1010 would otherwise alias Region 8 on
+    // ctrl_reg_addr[4:3]==2'b10, so the select rides a dedicated flag; the slot
+    // (paddr[4:2]) is on ctrl_reg_addr[2:0] (folded onto the 2'b00 bank). V1 ties
+    // this 0 -> the Region-10 bank is inert (bit-identical).
+    input  wire             apb_ctrl_reg_r10,
     input  wire  [31:0]     apb_ctrl_reg_wdata,
     output logic [31:0]     ctrl_reg_rdata,
 
@@ -794,6 +802,11 @@ module axi_chiplet_controller #(
     wire [7:0]   obs_dbg_lane_any_match_w;
     wire [3:0]   obs_dbg_best_popcount_w;
     wire [31:0]  obs_dbg_slice_idx_w;
+    // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp) — raw
+    // rx-link-clk-domain "matched since last clear" per-lane vector from the V2
+    // WlinkGPIOPHY fork. 2-flop synced to apb_clk below (sync_obs_lane_live_*).
+    // Read at the new LIVE-MATCH register (SoC MMIO 0x4403_2144). V2-only.
+    wire [7:0]   obs_sync_lane_live_w;
 `endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
@@ -827,9 +840,13 @@ module axi_chiplet_controller #(
     // 4'b1001 onto ctrl_reg_addr[4:3]==2'b00. In V1 this bank is tied 0 so the
     // legacy default-0 read for that select is preserved.
     wire [31:0] region9_sync_obs_rdata;
+    // SoC Labs perlane-wp (2026-06-16): Region 10 (SoC 0x2144/0x2148/0x214C)
+    // shares the 2'b00 select with Region 9; apb_ctrl_reg_r10 picks Region 10.
+    wire [31:0] region10_rdata;
     always_comb begin
         unique case (ctrl_reg_addr[4:3])
-            2'b00:   ctrl_reg_rdata = region9_sync_obs_rdata;
+            2'b00:   ctrl_reg_rdata = apb_ctrl_reg_r10 ? region10_rdata
+                                                       : region9_sync_obs_rdata;
             2'b01:   ctrl_reg_rdata = region4_rdata;
             2'b10:   ctrl_reg_rdata = region8_rdata;
             2'b11:   ctrl_reg_rdata = regionC_rdata;
@@ -892,6 +909,24 @@ module axi_chiplet_controller #(
     // operator can mask marginal lanes on silicon. Reset 0xFF (all lanes in).
     // SoC addr = Region 9 slot 2 = 0x44032128. V2-only.
     reg [7:0]  swi_sync_lane_mask_r;
+    // SoC Labs PER-LANE SYNC-match SWEEP ORACLE + word-pin override (2026-06-16,
+    // perlane-wp). All V2-only so the V1 build stays bit-identical.
+    //   swi_sync_obs_clr_r        : Region 8 slot 0 bit[5] SWI_SYNC_OBS_CLR
+    //                               (SoC 0x44032100[5]). W1-PULSE, self-clearing —
+    //                               held high for exactly one apb_clk on a wdata
+    //                               bit[5]=1 write, then auto-clears. The PHY
+    //                               2-flop-syncs + edge-detects it (one clear per
+    //                               write) to reset the per-lane live/sticky/raw
+    //                               obs. Reset 0 (no clear) -> bit-identical.
+    //   swi_word_pin_perlane_r    : 8 x 4-bit per-lane word-pin override value,
+    //                               lane L at [4L+3:4L] (SoC 0x44032148 [31:0]).
+    //   swi_word_pin_perlane_en_r : 8-bit per-lane override enable, lane L at
+    //                               bit L (SoC 0x4403214C [7:0]). Reset all-0 so
+    //                               every lane keeps its legacy auto/global pin
+    //                               (bit-identical datapath).
+    reg        swi_sync_obs_clr_r;
+    reg [31:0] swi_word_pin_perlane_r;
+    reg [7:0]  swi_word_pin_perlane_en_r;
 `endif
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
@@ -1015,6 +1050,10 @@ module axi_chiplet_controller #(
     reg [7:0]           dbg_obs_lane_match_0, dbg_obs_lane_match_1;
     reg [3:0]           dbg_obs_popcount_0,   dbg_obs_popcount_1;
     reg [31:0]          dbg_obs_slice_idx_0,  dbg_obs_slice_idx_1;
+    // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp) — same
+    // 2-flop apb_clk treatment as the sticky lane vector. Read at the LIVE-MATCH
+    // register (SoC MMIO 0x4403_2144).
+    reg [7:0]           sync_obs_lane_live_0, sync_obs_lane_live_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1058,6 +1097,8 @@ module axi_chiplet_controller #(
             dbg_obs_lane_match_0 <= 8'h0;          dbg_obs_lane_match_1 <= 8'h0;
             dbg_obs_popcount_0   <= 4'h0;          dbg_obs_popcount_1   <= 4'h0;
             dbg_obs_slice_idx_0  <= 32'hFFFF_FFFF; dbg_obs_slice_idx_1  <= 32'hFFFF_FFFF;
+            // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp)
+            sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1135,6 +1176,10 @@ module axi_chiplet_controller #(
             dbg_obs_popcount_1   <= dbg_obs_popcount_0;
             dbg_obs_slice_idx_0  <= obs_dbg_slice_idx_w;
             dbg_obs_slice_idx_1  <= dbg_obs_slice_idx_0;
+            // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp) —
+            // 2-flop sync of the rx-link-clk-domain live vector into apb_clk.
+            sync_obs_lane_live_0 <= obs_sync_lane_live_w;
+            sync_obs_lane_live_1 <= sync_obs_lane_live_0;
 `endif
         end
     end
@@ -1146,7 +1191,13 @@ module axi_chiplet_controller #(
     // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
     // (ctrl_reg_addr[4:3]==2'b00) is the SYNC-OBS/CTRL bank. Slot 2 (0x44032128)
     // is the SW-writable detector lane mask. V2-only; V1 leaves Region 9 read-0.
-    wire region9_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00);
+    wire region9_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
+                         && !apb_ctrl_reg_r10;
+    // SoC Labs perlane-wp (2026-06-16): Region 10 write (SoC 0x2148/0x214C). It
+    // shares the 2'b00 select with Region 9; apb_ctrl_reg_r10 disambiguates so a
+    // Region-10 write never aliases a Region-9 slot (and vice versa, above).
+    wire region10_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
+                          && apb_ctrl_reg_r10;
 `endif
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
@@ -1161,6 +1212,11 @@ module axi_chiplet_controller #(
             swi_sync_lane_mask_r     <= 8'hFF;  // POR = all lanes in (PART3 detector mask default)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
+            // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override
+            // (2026-06-16, perlane-wp). All reset to the legacy default.
+            swi_sync_obs_clr_r       <= 1'b0;   // W1-pulse — never held
+            swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
+            swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1179,6 +1235,13 @@ module axi_chiplet_controller #(
         end else begin
             // Default — retrain pulse self-clears every cycle
             nego_train_retrain_pulse <= 1'b0;
+`ifdef TIDELINK_PHY_V2
+            // SoC Labs perlane-wp (2026-06-16): SWI_SYNC_OBS_CLR is a W1-PULSE.
+            // It self-clears every cycle; a slot-0 bit[5] write re-asserts it for
+            // exactly one apb_clk below. The PHY 2-flop-syncs + edge-detects it,
+            // so a single pulse produces exactly one clear of the per-lane obs.
+            swi_sync_obs_clr_r <= 1'b0;
+`endif
             // Local FSM-driven strobes (autoneg's ENTER/EXIT)
             if (local_training_mode_set_w)
                 swi_training_mode_r <= 1'b1;
@@ -1213,6 +1276,7 @@ module axi_chiplet_controller #(
                         swi_sync_insert_en_r    <= ctrl_reg_wdata[2];        // SWI_SYNC_INSERT_EN (V2 PHY SYNC beacon, DEFAULT 0)
                         swi_sync_force_always_r <= ctrl_reg_wdata[3];        // SWI_SYNC_FORCE_ALWAYS (PART2 gate fix, DEFAULT 0)
                         swi_sync_robust_detect_r <= ctrl_reg_wdata[4];       // SWI_SYNC_ROBUST_DETECT (PART2 robust re-hunt, DEFAULT 0)
+                        swi_sync_obs_clr_r      <= ctrl_reg_wdata[5];        // SWI_SYNC_OBS_CLR (perlane-wp W1-pulse; self-clears next cycle)
 `endif
                     end
                     3'h1: begin
@@ -1243,6 +1307,12 @@ module axi_chiplet_controller #(
             // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
             if (region9_write && (ctrl_reg_addr[2:0] == 3'h2))
                 swi_sync_lane_mask_r <= ctrl_reg_wdata[7:0];
+            // SoC Labs PER-LANE word-pin override (perlane-wp) — Region 10 slot 2
+            // (0x2148) value, slot 3 (0x214C) enable. RW; default 0 (legacy).
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h2))
+                swi_word_pin_perlane_r    <= ctrl_reg_wdata[31:0];
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h3))
+                swi_word_pin_perlane_en_r <= ctrl_reg_wdata[7:0];
 `endif
         end
     end
@@ -1319,9 +1389,34 @@ module axi_chiplet_controller #(
         // those), and slot 7 carries the raw slice map verbatim.
         (ctrl_reg_addr[2:0] == 3'h7) ? dbg_obs_slice_idx_1          // 0x213C [31:0] 8x4-bit slice map
                                      : 32'h0;
+    // =====================================================================
+    // Region 10 — PER-LANE SYNC-match SWEEP ORACLE + word-pin override
+    //   (SoC Labs 2026-06-16, perlane-wp). Shares the 2'b00 controller select
+    //   with Region 9; apb_ctrl_reg_r10 disambiguates. Slot 0 (0x2140) is the
+    //   gpio_phy EPOCH_STATUS word (served elsewhere) and is NOT decoded here.
+    //
+    //     slot 1 (0x4403_2144) — SYNC_LANE_LIVE (RO). THE sweep oracle.
+    //        [ 7: 0] live per-lane "matched since last clear" vector (1=lane L
+    //                currently carries its SYNC slice). Cleared by the W1-pulse
+    //                SWI_SYNC_OBS_CLR (0x44032100[5]); re-accumulates after.
+    //        [31:24] 0x5E presence marker (old/V1 images read 0 here).
+    //     slot 2 (0x4403_2148) — WORD_PIN_PERLANE (RW). 8 x 4-bit per-lane window
+    //                pin value (lane L at [4L+3:4L]). Applied to a lane only when
+    //                its enable bit (slot 3) is set. Reset 0.
+    //     slot 3 (0x4403_214C) — WORD_PIN_PERLANE_EN (RW). [7:0] per-lane override
+    //                enable (lane L at bit L). 1 = lane L uses WORD_PIN_PERLANE[L]
+    //                for its word window (overrides auto/global pin); 0 = legacy.
+    //                Reset 0 -> bit-identical datapath.
+    // =====================================================================
+    assign region10_rdata =
+        (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5E, 16'h0, sync_obs_lane_live_1} :  // 0x2144 live match (RO)
+        (ctrl_reg_addr[2:0] == 3'h2) ? swi_word_pin_perlane_r              :  // 0x2148 per-lane pin (RW)
+        (ctrl_reg_addr[2:0] == 3'h3) ? {24'h0, swi_word_pin_perlane_en_r}  :  // 0x214C per-lane enable (RW)
+                                       32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
     assign region9_sync_obs_rdata = 32'h0;
+    assign region10_rdata          = 32'h0;
 `endif
 
     // Region 8 read mux
@@ -2782,7 +2877,16 @@ module axi_chiplet_controller #(
         .obs_dbg_raw_word_o          (obs_dbg_raw_word_w),
         .obs_dbg_lane_any_match_o    (obs_dbg_lane_any_match_w),
         .obs_dbg_best_popcount_o     (obs_dbg_best_popcount_w),
-        .obs_dbg_slice_idx_o         (obs_dbg_slice_idx_w)
+        .obs_dbg_slice_idx_o         (obs_dbg_slice_idx_w),
+        // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override
+        // (2026-06-16, perlane-wp). Clear pulse (Region 8 slot 0 bit[5],
+        // SoC 0x44032100[5]) + live per-lane match vector (SoC 0x44032144) +
+        // per-lane word-pin override (8x4b value + 8b enable, SoC 0x44032148).
+        // Default (clr=0, ovr=0, en=0) -> bit-identical datapath.
+        .swi_sync_obs_clr_in         (swi_sync_obs_clr_r),
+        .obs_sync_lane_live_o        (obs_sync_lane_live_w),
+        .swi_word_pin_ovr_in         (swi_word_pin_perlane_r),
+        .swi_word_pin_ovr_en_in      (swi_word_pin_perlane_en_r)
 `endif
     );
 

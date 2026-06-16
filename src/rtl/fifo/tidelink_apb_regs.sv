@@ -100,6 +100,16 @@ module tidelink_apb_regs #(
     //   ctrl_reg_addr[4:3] = 2'b11 → Region C (read-only observability)
     output logic                    ctrl_reg_write,
     output logic              [4:0] ctrl_reg_addr,
+    // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (2026-06-16,
+    // perlane-wp): Region 10 (apb_region 4'b1010, SoC 0x4403_2144-0x4403_214C)
+    // select. The naive {apb_region[3:2],...} maps Region 10 onto Region 8's
+    // 2'b10 select and aliases it (same family as the Region 9 special-case), so
+    // Region 10 is carried as a SEPARATE 1-bit select alongside the normal
+    // ctrl_reg_addr; the controller decodes its 3 slots off ctrl_reg_addr[2:0]
+    // when this bit is high. 0x2140 (EPOCH_STATUS, paddr 0x140 slot 0) stays
+    // routed to the gpio_phy slave in tidelink_top — only 0x2144/0x2148/0x214C
+    // (slots 1/2/3) are claimed here. V1 ties this low (bit-identical).
+    output logic                    ctrl_reg_r10,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
 
@@ -478,12 +488,35 @@ module tidelink_apb_regs #(
     // 2'b10 (== Region 8) and alias it, so region 9 is special-cased to 2'b00.
     // Region 9 was RESERVED/reads-0 before, and the V1 controller ties the
     // 2'b00 bank to 0, so V1 reads of 0x2120 still return 0 (bit-identical).
+    // SoC Labs perlane-wp (2026-06-16): Region 10 slots 1/2/3 (SoC 0x2144/0x2148/
+    // 0x214C) are the new sweep-oracle / per-lane word-pin registers. Slot 0
+    // (0x2140) stays the EPOCH_STATUS gpio_phy word (routed separately in
+    // tidelink_top), so it is excluded here. The Region-10 select is a separate
+    // 1-bit flag (ctrl_reg_r10) because apb_region 4'b1010 would otherwise alias
+    // Region 8 on ctrl_reg_addr[4:3]==2'b10.
+    // NOTE: TIDELINK_PHY_V2 is NOT visible in this file — the define is carried
+    // by the per-file v2shims (src/rtl/v2shims/) which only wrap Wlink.v /
+    // axi_chiplet_controller.sv / tidelink_top.sv, and apb_regs is compiled
+    // BEFORE them. So region10_hit is UNCONDITIONAL here, exactly like the
+    // Region 9 routing above (line ~507). V1 safety is provided downstream: the
+    // controller ties region10_rdata = 0 in V1 (the read), and tidelink_top's V1
+    // prdata mux lets eye_shim win Region 10 (so 0x2148 reads still hit eye_regs).
+    // The ctrl_reg_write strobe that this adds for Region 10 lands on no V1
+    // register (region10_write is V2-only in the controller) — inert, the same
+    // as the always-routed Region 9 strobe.
+    wire region10_hit = (apb_region == 4'b1010) && (paddr[4:2] != 3'h0);
+    assign ctrl_reg_r10   = region10_hit;
     assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
                                            (apb_region == 4'b1000) ||
                                            (apb_region == 4'b1001) ||
-                                           (apb_region == 4'b1100));
-    assign ctrl_reg_addr  = (apb_region == 4'b1001) ? {2'b00, paddr[4:2]}
-                                                    : {apb_region[3:2], paddr[4:2]};
+                                           (apb_region == 4'b1100) ||
+                                           region10_hit);
+    // Region 9 and Region 10 both fold onto ctrl_reg_addr[4:3]==2'b00 (the
+    // controller disambiguates Region 10 via ctrl_reg_r10); the slot index
+    // (paddr[4:2]) selects the word within each bank.
+    assign ctrl_reg_addr  = ((apb_region == 4'b1001) || region10_hit)
+                                ? {2'b00, paddr[4:2]}
+                                : {apb_region[3:2], paddr[4:2]};
     assign ctrl_reg_wdata = pwdata;
 
     // Performance profiling: Regions 5-7 (offsets 0x0A0-0x0FC).
@@ -579,11 +612,17 @@ module tidelink_apb_regs #(
                 //   "Region C — Autoneg Observability" block.
                 prdata = ctrl_reg_rdata;
             end
-            4'b1010: begin // Region 10: Eye visibility v2 (tidelink_eye_regs)
-                //   Read mux returns 0 — the parent (tidelink_top.sv)
+            4'b1010: begin // Region 10: Eye visibility v2 (V1) / perlane-wp (V2)
+                //   V1: read mux returns 0 — the parent (tidelink_top.sv)
                 //   substitutes prdata from tidelink_eye_regs via the
                 //   eye_shim_sel OR-mux.
-                prdata = '0;
+                //   V2 (perlane-wp, 2026-06-16): the eye_regs block is absent;
+                //   slots 1/2/3 (SoC 0x2144/0x2148/0x214C) carry the new sweep
+                //   oracle + per-lane word-pin registers from the chiplet
+                //   controller (ctrl_reg_rdata, decoded via ctrl_reg_r10). Slot 0
+                //   (0x2140 = EPOCH_STATUS) is served by the gpio_phy OR-mux in
+                //   tidelink_top, so it is left at 0 here.
+                prdata = region10_hit ? ctrl_reg_rdata : '0;
             end
             default: ;
         endcase

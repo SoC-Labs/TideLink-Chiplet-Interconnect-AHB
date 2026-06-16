@@ -293,7 +293,18 @@ module Wlink #(
   output [127:0] obs_dbg_raw_word_o,          // rx-link-clk dom: best-match raw word
   output [7:0]   obs_dbg_lane_any_match_o,    // rx-link-clk dom: fixed-pos match vector
   output [3:0]   obs_dbg_best_popcount_o,     // rx-link-clk dom: popcount of that vector
-  output [31:0]  obs_dbg_slice_idx_o          // rx-link-clk dom: per-lane carried-slice map
+  output [31:0]  obs_dbg_slice_idx_o,         // rx-link-clk dom: per-lane carried-slice map
+  // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (2026-06-16,
+  // perlane-wp) — the V2 WlinkGPIOPHY fork adds a CLEARABLE per-lane live-match
+  // oracle (clear pulse in + live vector out) and a per-lane word-pin SW
+  // override (8x4-bit + 8-bit enable). swi_sync_obs_clr_in is the APB W1-pulse
+  // (SoC 0x44032100[5]); obs_sync_lane_live_o is the live "matched since clear"
+  // vector (SoC 0x44032144); swi_word_pin_ovr_in / swi_word_pin_ovr_en_in are
+  // the per-lane override (SoC 0x44032148). Tie {clr=0,ovr=0,en=0} = legacy.
+  input          swi_sync_obs_clr_in,         // apb-clk strap: clearable-oracle clear pulse
+  output [7:0]   obs_sync_lane_live_o,        // rx-link-clk dom: live per-lane match vector
+  input  [31:0]  swi_word_pin_ovr_in,         // apb-clk strap: 8x4b per-lane window pin
+  input  [7:0]   swi_word_pin_ovr_en_in       // apb-clk strap: 8b per-lane override enable
 `endif
 );
   // ===================================================================
@@ -1296,7 +1307,12 @@ module Wlink #(
     // SYNC-insert probe out to the chiplet controller -> SoC MMIO 0x4403_2120.
     .tx_sync_ins_cnt(obs_tx_sync_ins_cnt_o),
     .tx_link_idle_level(obs_tx_link_idle_level_o),
-    .tx_training_level(obs_tx_training_level_o)
+    .tx_training_level(obs_tx_training_level_o),
+    // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (perlane-wp)
+    .sync_obs_clr_in(swi_sync_obs_clr_in),         // clearable-oracle clear pulse
+    .sync_lane_live(obs_sync_lane_live_o),         // live per-lane match vector
+    .word_pin_ovr_in(swi_word_pin_ovr_in),         // 8x4b per-lane window pin
+    .word_pin_ovr_en_in(swi_word_pin_ovr_en_in)    // 8b per-lane override enable
 `else
     .swi_phase_offset_in(swi_phase_offset_in)
 `endif

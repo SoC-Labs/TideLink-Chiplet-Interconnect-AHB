@@ -573,6 +573,10 @@ module tidelink_top #(
     //                     observability — autoneg probe registers, RO)
     wire                   ctrl_reg_write;
     wire            [4:0]  ctrl_reg_addr;
+    // SoC Labs perlane-wp (2026-06-16): Region 10 (SoC 0x2144/0x2148/0x214C)
+    // select from tidelink_apb_regs into the chiplet controller (the sweep
+    // oracle + per-lane word-pin registers). V1 ties it low (bit-identical).
+    wire                   ctrl_reg_r10;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -1018,14 +1022,26 @@ module tidelink_top #(
     // range (0x2140-0x215F), so the gpio_phy slave must win that single word.
     // eye_shim returns 0 in V2 anyway (Region 10 retired), so checking the
     // gpio slave first is safe for every other address too.
+    //
+    // SoC Labs perlane-wp (2026-06-16): the new sweep-oracle / per-lane word-pin
+    // registers also live in the eye_shim address range (SoC 0x2144/0x2148/
+    // 0x214C). They are served by the chiplet controller via tidelink_internal_*
+    // (ctrl_reg path), so they must fall THROUGH eye_shim — exclude them here,
+    // exactly like gpio_phy_epoch_sel excludes 0x2140.
+    wire perlane_wp_sel = tl_apb_psel
+                          && (tl_apb_paddr[8:5] == 4'b1010)
+                          && ((tl_apb_paddr[4:0] == 5'h04)    // 0x2144 SYNC_LANE_LIVE
+                           || (tl_apb_paddr[4:0] == 5'h08)    // 0x2148 WORD_PIN_PERLANE
+                           || (tl_apb_paddr[4:0] == 5'h0C));  // 0x214C WORD_PIN_PERLANE_EN
+    wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
     assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
-                            eye_shim_sel       ? eye_shim_prdata       :
+                            eye_shim_sel_eff   ? eye_shim_prdata       :
                                                  tidelink_internal_prdata;
     assign tl_apb_pready  = gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
-                            eye_shim_sel       ? eye_shim_pready       :
+                            eye_shim_sel_eff   ? eye_shim_pready       :
                                                  tidelink_internal_pready;
     assign tl_apb_pslverr = gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
-                            eye_shim_sel       ? eye_shim_pslverr      :
+                            eye_shim_sel_eff   ? eye_shim_pslverr      :
                                                  tidelink_internal_pslverr;
 `else
     assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
@@ -1197,6 +1213,7 @@ module tidelink_top #(
         // Chiplet controller register pass-through
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
@@ -1993,6 +2010,7 @@ module tidelink_top #(
         // mux output for both external APB and slv_apb readbacks).
         .apb_ctrl_reg_write         (ctrl_reg_write),
         .apb_ctrl_reg_addr          (ctrl_reg_addr),
+        .apb_ctrl_reg_r10           (ctrl_reg_r10),   // perlane-wp Region-10 select
         .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 

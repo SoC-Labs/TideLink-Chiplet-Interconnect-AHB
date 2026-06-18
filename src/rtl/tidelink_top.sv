@@ -1028,11 +1028,22 @@ module tidelink_top #(
     // 0x214C). They are served by the chiplet controller via tidelink_internal_*
     // (ctrl_reg path), so they must fall THROUGH eye_shim — exclude them here,
     // exactly like gpio_phy_epoch_sel excludes 0x2140.
+    // EYE-WIDTH OBS DECODE FIX (2026-06-17): slot 4 (SoC 0x2150, paddr[4:0]=5'h10)
+    // is the EYE_WIDTH_SEL diagnostic. It is decoded in the chiplet controller's
+    // region10_rdata (ctrl_reg_r10 path) and reaches this scope via
+    // tidelink_internal_prdata. Like 0x2144/0x2148/0x214C it MUST be excluded
+    // from eye_shim_sel_eff so it falls through to tidelink_internal_prdata;
+    // otherwise eye_shim (tied to 0 in V2) wins and 0x2150 reads 0x00000000 with
+    // NO 0xE7 marker — the silicon symptom. region10_hit in tidelink_apb_regs
+    // already routes 0x2150 (paddr[4:2]=3'h4 != 0) to ctrl_reg_r10, so the
+    // controller serves {0xE7,...,sync_eye_width_1} once eye_shim is excluded.
     wire perlane_wp_sel = tl_apb_psel
                           && (tl_apb_paddr[8:5] == 4'b1010)
                           && ((tl_apb_paddr[4:0] == 5'h04)    // 0x2144 SYNC_LANE_LIVE
                            || (tl_apb_paddr[4:0] == 5'h08)    // 0x2148 WORD_PIN_PERLANE
-                           || (tl_apb_paddr[4:0] == 5'h0C));  // 0x214C WORD_PIN_PERLANE_EN
+                           || (tl_apb_paddr[4:0] == 5'h0C)    // 0x214C WORD_PIN_PERLANE_EN
+                           || (tl_apb_paddr[4:0] == 5'h10)    // 0x2150 EYE_WIDTH_SEL (RO)
+                           || (tl_apb_paddr[4:0] == 5'h14));  // 0x2154 EYE_LANE_SEL (RW, Task 3)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
     assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :

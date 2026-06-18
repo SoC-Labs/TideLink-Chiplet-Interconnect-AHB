@@ -319,6 +319,24 @@ if { [info exists env(FPGA_INSERT_DEBUG_CORE)] && $env(FPGA_INSERT_DEBUG_CORE) =
 }
 
 # STEP 9: Implementation + Bitstream
+#
+# SoC Labs 2026-06-16 (RX-capture-skew determinism fix): enable phys_opt_design
+# (post-place + post-route) on impl_1. The pad_rx[n] -> IDELAYE2 -> capture path
+# (set_max_delay 8 ns, xdc (3b)) violates on the NON-FLIP target because the
+# IDELAY output net `pad_rx_o[n]` has fanout ~17 (feeds the calibrator AND every
+# lane's link_data_pad_clk capture reg), giving a ~4 ns route that pushes the
+# absolute capture delay past 8 ns. Whether the captured sample lands inside the
+# calibrator's centred eye then depends on per-build placement -> the per-deploy
+# link-up "lottery" (die_a aligns <1%/load) and the per-lane data corruption.
+# phys_opt_design replicates the high-fanout driver and re-times/re-places the
+# critical net, shrinking that route so the 8 ns ceiling is met deterministically
+# -> eye-centre is reproducible -> link aligns every load. AggressiveExplore +
+# AlternateReplication specifically target high-fanout-net replication.
+set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+
 puts "Starting implementation..."
 launch_runs impl_1 -to_step write_bitstream -jobs $num_jobs
 wait_on_run impl_1

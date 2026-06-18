@@ -314,10 +314,19 @@ class PairV2TB:
                 pass
         g("hwdata").value = 0
 
-    async def ahb_tx_write_packet(self, side, words):
+    async def ahb_tx_write_packet(self, side, words, gap=4):
         for i, w in enumerate(words):
             await self.ahb_tx_write_word(side, i * 4, w)
-            await ClockCycles(self.dut.hclk, 4)
+            if gap:
+                await ClockCycles(self.dut.hclk, gap)
+
+    async def ahb_tx_write_packet_b2b(self, side, words):
+        """Back-to-back variant: no inter-word idle gap. Drives the FC TX
+        aperture with consecutive AHB writes so the Wlink LL framer packs
+        adjacent FC words into back-to-back long packets with NO inter-packet
+        idle slot. This is the gate that exposes the V2 packet-boundary slip
+        (the spaced ahb_tx_write_packet hid it). See test_v2_pair_b2b.py."""
+        await self.ahb_tx_write_packet(side, words, gap=0)
 
     async def ahb_fifo_read_word(self, side, byte_addr):
         dut = self.dut
@@ -401,4 +410,26 @@ async def send_and_check(tb, src, dst, payload, ctx, expect_pass=True):
                     f"sent hdr=0x{words[0]:08x} payload="
                     f"[0x{payload[0]:08x},0x{payload[1]:08x}] got "
                     f"[{', '.join(f'0x{w:08x}' for w in got)}] len=0x{pkt_len:x}")
+    return ok, got
+
+
+async def send_and_check_b2b(tb, src, dst, words, ctx, expect_pass=True):
+    """Send `words` (a raw FIFO-data word list) src->dst with NO inter-word
+    idle gap, then byte-compare every word against the dst RX FIFO at the same
+    byte offset. This is the back-to-back gate: the FC adapter maps AHB word i
+    to FC FIFO_DATA at addr i*4, and the Wlink LL framer packs adjacent FC
+    words into back-to-back long packets. Without packet-boundary re-alignment,
+    the second-and-later packets' headers land mid-link-word and the RX never
+    re-syncs (no SYNC in V2) -> CRC saturates, no enqueue. Returns (ok, got)."""
+    await tb.ahb_tx_write_packet_b2b(src, words)
+    await ClockCycles(tb.dut.hclk, 4000)
+    got = [await tb.ahb_fifo_read_word(dst, i * 4) for i in range(len(words))]
+    tb.log.info(f"  [{ctx}] {src}->{dst} B2B: sent="
+                f"[{', '.join(f'0x{w:08x}' for w in words)}] "
+                f"rx=[{', '.join(f'0x{w:08x}' for w in got)}]")
+    ok = all(got[i] == words[i] for i in range(len(words)))
+    if expect_pass:
+        assert ok, (f"{ctx} {src}->{dst} back-to-back corrupt/undelivered: "
+                    f"sent [{', '.join(f'0x{w:08x}' for w in words)}] "
+                    f"got [{', '.join(f'0x{w:08x}' for w in got)}]")
     return ok, got

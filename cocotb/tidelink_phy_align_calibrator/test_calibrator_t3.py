@@ -102,6 +102,12 @@ async def _start(dut):
     dut.lane_locked.value           = 0
     dut.apb_bit_slip_override.value = 0
     dut.apb_override_enable.value   = 0
+    # deps wrapper (tb_top_deps) exposes the centering knob + eye-sel as ports.
+    # Drive them to their safe defaults so centering_mode stays 0 (probe path).
+    if hasattr(dut, "min_lock_dwells_i"):
+        dut.min_lock_dwells_i.value = 0
+    if hasattr(dut, "eye_lane_sel"):
+        dut.eye_lane_sel.value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 8)
     dut.rst.value = 0
@@ -394,9 +400,11 @@ async def test_t3_resweep_advances_counter(dut):
     dut.role_locked.value = 0
     await ClockCycles(dut.clk, 8)
     dut.role_locked.value = 1
-    # trigger_now is registered on the next clock; resweep_ctr is
-    # cleared on the same edge.
-    await ClockCycles(dut.clk, 2)
+    # trigger_now is the rising edge of the 2-flop-SYNCHRONISED role_locked
+    # (role_locked_s2 & ~role_locked_s3), so it does not pulse until ~3 clocks
+    # after the async re-assert. Wait long enough (deps CDC chain) for the
+    # synchronised rising edge to fire and clear resweep_ctr on that edge.
+    await ClockCycles(dut.clk, 6)
     ctr_after_trigger = int(dut.u_dut.resweep_ctr.value)
     assert ctr_after_trigger == 0, (
         f"After re-trigger (role_locked rising), resweep_ctr = "

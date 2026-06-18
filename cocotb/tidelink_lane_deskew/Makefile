@@ -11,13 +11,25 @@ TOPLEVEL_LANG   = verilog
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
-VERILOG_SOURCES = $(TIDELINK_HOME)/src/rtl/local_overrides/tidelink_lane_deskew.sv \
+# 2026-06-17: target the V2 deskew (deps/tidelink-phy) — the file the V2 stack
+# (pair_v2 sim + FPGA/ASIC builds) actually compiles, and the one carrying the
+# REDUCED-LANE lane_mask fix. It needs the SYNC/training-pattern $unit includes
+# and tidelink_popcount16 (used by the EPOCH_ANCHOR_EN=1 matcher). The +incdir
+# resolves the `include "tidelink_sync_word.svh" / "..._training_patterns.svh".
+PHY_RTL = $(TIDELINK_HOME)/deps/tidelink-phy/rtl
+VERILOG_SOURCES = $(PHY_RTL)/tidelink_popcount16.sv \
+                  $(PHY_RTL)/tidelink_lane_deskew.sv \
                   $(CURDIR)/tb_deskew.sv
 
 TOPLEVEL = tb_deskew
-MODULE  ?= test_lane_deskew
+MODULE  ?= test_lane_deskew_mask
+
+# Exercise the mask-aware EPOCH anchor too (the V2 default in the real build).
+TB_EPOCH_ANCHOR_EN ?= 1
+COMPILE_ARGS += -pvalue+tb_deskew/EPOCH_ANCHOR_EN=$(TB_EPOCH_ANCHOR_EN)
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+COMPILE_ARGS += +incdir+$(PHY_RTL)
 
 # Wave dump (gated; off by default — keeps the run light).
 TB_NO_DUMP ?= 1

@@ -737,6 +737,22 @@ module axi_chiplet_controller #(
     wire [3:0]  cal_state_w;
     // M7 (2026-06-05): calibrator auto-retry counter for silicon observability
     wire [15:0] cal_resweep_ctr_w;
+    // EYE-WIDTH VISIBILITY (2026-06-17): per-lane-selected eye-width read from
+    // the deps calibrator (rx_link_clk domain; CDC-synced to apb_clk before the
+    // APB read mux). best = matched-window WIDTH (taps) of the SWI_EYE_LANE_SEL
+    // lane; start (slip,phase) of that run; passed = best >= LOCK_THRESH.
+    wire [5:0]  cal_eye_best_w;
+    wire [3:0]  cal_eye_best_phase_w;
+    wire [2:0]  cal_eye_best_slip_w;
+    wire        cal_eye_lane_passed_w;
+    // Task 3 (2026-06-17): effective eye-width lane select. In V2 the APB-writable
+    // swi_eye_lane_sel_r (Region 10 slot 5, SoC 0x2154) drives it so all 8 lanes
+    // scan remotely; in V1 it falls back to the swi_eye_lane_sel_i input port
+    // (driven by tidelink_eye_regs at top level — bit-identical). The wire is
+    // declared here; its continuous assignment lives below the swi_eye_lane_sel_r
+    // declaration (VCS forbids forward reference to a reg under
+    // `default_nettype none`).
+    wire [2:0]  eye_lane_sel_eff;
     // Forward declarations — definitions below; needed early so the
     // tidelink-gpio-phy lane_checker instantiation can wire them in.
     wire [31:0] swi_phase_offset_w;
@@ -909,6 +925,14 @@ module axi_chiplet_controller #(
     // operator can mask marginal lanes on silicon. Reset 0xFF (all lanes in).
     // SoC addr = Region 9 slot 2 = 0x44032128. V2-only.
     reg [7:0]  swi_sync_lane_mask_r;
+    // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17) — 5-bit SW-writable
+    // per-lane SYNC-slice Hamming budget feeding the PHY detector's sync_tol_i
+    // (and the 0x2144 live-match oracle). Lets the operator sweep 0..5 on
+    // marginal-eye silicon so a lane that drops 1 bit/word in its SYNC slice
+    // still matches and the framer re-anchor engages. Reset 0 (EXACT match ->
+    // bit-identical to all prior images). Shares the LANE_MASK register: SoC
+    // addr = Region 9 slot 2 = 0x44032128 [12:8]. V2-only.
+    reg [4:0]  swi_sync_tol_r;
     // SoC Labs PER-LANE SYNC-match SWEEP ORACLE + word-pin override (2026-06-16,
     // perlane-wp). All V2-only so the V1 build stays bit-identical.
     //   swi_sync_obs_clr_r        : Region 8 slot 0 bit[5] SWI_SYNC_OBS_CLR
@@ -927,6 +951,19 @@ module axi_chiplet_controller #(
     reg        swi_sync_obs_clr_r;
     reg [31:0] swi_word_pin_perlane_r;
     reg [7:0]  swi_word_pin_perlane_en_r;
+    // EYE-WIDTH LANE SELECT (2026-06-17, Task 3). APB-writable 3-bit field that
+    // picks WHICH lane's eye-width the 0x2150 EYE_WIDTH_SEL register reports, so
+    // ALL 8 lanes can be scanned remotely from one register pair. Was hardwired
+    // 3'h0 at tidelink_top.sv (only lane 0 readable). Region 10 slot 5
+    // (SoC 0x4403_2154 [2:0]). Reset = lane 0 (bit-identical to the old tie).
+    reg [2:0]  swi_eye_lane_sel_r;
+`endif
+    // Task 3 effective-select assignment (placed after swi_eye_lane_sel_r so the
+    // reg reference is BACKWARD, satisfying VCS under `default_nettype none).
+`ifdef TIDELINK_PHY_V2
+    assign eye_lane_sel_eff = swi_eye_lane_sel_r;
+`else
+    assign eye_lane_sel_eff = swi_eye_lane_sel_i;
 `endif
     // Slot 1 — SWI_BIT_SLIP_LO bits[23:0] (8 × 3-bit per-lane slip)
     reg [23:0] swi_bit_slip_lo_r;
@@ -1054,6 +1091,11 @@ module axi_chiplet_controller #(
     // 2-flop apb_clk treatment as the sticky lane vector. Read at the LIVE-MATCH
     // register (SoC MMIO 0x4403_2144).
     reg [7:0]           sync_obs_lane_live_0, sync_obs_lane_live_1;
+    // EYE-WIDTH VISIBILITY (2026-06-17) — 2-flop apb_clk sync of the selected
+    // lane's eye-width fields, packed 14-bit {passed, slip[2:0], phase[3:0],
+    // best[5:0]} from the rx_link_clk-domain calibrator. Same treatment as the
+    // live SYNC vector above. Read at 0x4403_2150.
+    reg [13:0]          sync_eye_width_0, sync_eye_width_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1099,6 +1141,7 @@ module axi_chiplet_controller #(
             dbg_obs_slice_idx_0  <= 32'hFFFF_FFFF; dbg_obs_slice_idx_1  <= 32'hFFFF_FFFF;
             // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp)
             sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
+            sync_eye_width_0     <= 14'h0;         sync_eye_width_1     <= 14'h0;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1180,6 +1223,11 @@ module axi_chiplet_controller #(
             // 2-flop sync of the rx-link-clk-domain live vector into apb_clk.
             sync_obs_lane_live_0 <= obs_sync_lane_live_w;
             sync_obs_lane_live_1 <= sync_obs_lane_live_0;
+            // EYE-WIDTH VISIBILITY (2026-06-17): 2-flop sync of the selected
+            // lane's eye-width pack into apb_clk. Quasi-static after a sweep.
+            sync_eye_width_0     <= {cal_eye_lane_passed_w, cal_eye_best_slip_w,
+                                     cal_eye_best_phase_w,  cal_eye_best_w};
+            sync_eye_width_1     <= sync_eye_width_0;
 `endif
         end
     end
@@ -1210,6 +1258,7 @@ module axi_chiplet_controller #(
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
             swi_sync_robust_detect_r <= 1'b0;   // POR = robust re-hunt OFF (PART2; bit-identical)
             swi_sync_lane_mask_r     <= 8'hFF;  // POR = all lanes in (PART3 detector mask default)
+            swi_sync_tol_r           <= 5'h00;  // POR = EXACT match (Hamming tol 0 -> bit-identical)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
             // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override
@@ -1217,6 +1266,7 @@ module axi_chiplet_controller #(
             swi_sync_obs_clr_r       <= 1'b0;   // W1-pulse — never held
             swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
             swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
+            swi_eye_lane_sel_r       <= 3'h0;   // Task 3: eye-width lane sel, reset lane 0
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1305,14 +1355,24 @@ module axi_chiplet_controller #(
 `ifdef TIDELINK_PHY_V2
             // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
             // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
-            if (region9_write && (ctrl_reg_addr[2:0] == 3'h2))
+            if (region9_write && (ctrl_reg_addr[2:0] == 3'h2)) begin
                 swi_sync_lane_mask_r <= ctrl_reg_wdata[7:0];
+                // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17) — shares
+                // the LANE_MASK word: [12:8] = SWI_SYNC_TOL (0 = exact). The same
+                // write carries both fields; reset/default 0 -> bit-identical.
+                swi_sync_tol_r       <= ctrl_reg_wdata[12:8];
+            end
             // SoC Labs PER-LANE word-pin override (perlane-wp) — Region 10 slot 2
             // (0x2148) value, slot 3 (0x214C) enable. RW; default 0 (legacy).
             if (region10_write && (ctrl_reg_addr[2:0] == 3'h2))
                 swi_word_pin_perlane_r    <= ctrl_reg_wdata[31:0];
             if (region10_write && (ctrl_reg_addr[2:0] == 3'h3))
                 swi_word_pin_perlane_en_r <= ctrl_reg_wdata[7:0];
+            // Task 3 (2026-06-17): EYE_WIDTH_SEL lane select — Region 10 slot 5
+            // (SoC 0x4403_2154 [2:0]). Picks the lane the 0x2150 eye-width read
+            // reports, so all 8 lanes scan remotely from one bitstream.
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h5))
+                swi_eye_lane_sel_r        <= ctrl_reg_wdata[2:0];
 `endif
         end
     end
@@ -1362,6 +1422,8 @@ module axi_chiplet_controller #(
     //   SoC MMIO 0x4403_2128 (slot 3'h2). RW, default 0xFF. Feeds the detector's
     //   lane_mask_i so the operator can mask marginal lanes on silicon.
     //     [ 7: 0] swi_sync_lane_mask   — per-lane detector enable (1=in)
+    //     [12: 8] swi_sync_tol         — SYNC-slice Hamming tolerance (2026-06-17,
+    //                                    0 = exact; sweep 0..5 on marginal silicon)
     // =====================================================================
 `ifdef TIDELINK_PHY_V2
     assign region9_sync_obs_rdata =
@@ -1373,7 +1435,8 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5D,                    // [31:24] marker (PART1 SYNC-DETECT)
                                         sync_obs_sync_seen_lane_1,// [23:16] per-lane sticky "ever-matched"
                                         sync_obs_sync_seen_cnt_1} : // [15:0] mask-aware SYNC-detect sat. count
-        (ctrl_reg_addr[2:0] == 3'h2) ? {24'h0, swi_sync_lane_mask_r} : // [7:0] PART3 SW LANE_MASK (RW)
+        (ctrl_reg_addr[2:0] == 3'h2) ? {19'h0, swi_sync_tol_r,         // [12:8] Hamming tol (RW, 2026-06-17)
+                                        swi_sync_lane_mask_r} :        // [ 7:0] PART3 SW LANE_MASK (RW)
         // SoC Labs RX RAW-WORD + PERMUTATION obs (2026-06-15, rawobs). Slots 3..7
         // fill the rest of Region 9 (the bank's last free word is slot 7). All RO.
         (ctrl_reg_addr[2:0] == 3'h3) ? dbg_obs_raw_word_1[ 31:  0] : // 0x212C raw word [31:0]
@@ -1412,6 +1475,20 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5E, 16'h0, sync_obs_lane_live_1} :  // 0x2144 live match (RO)
         (ctrl_reg_addr[2:0] == 3'h2) ? swi_word_pin_perlane_r              :  // 0x2148 per-lane pin (RW)
         (ctrl_reg_addr[2:0] == 3'h3) ? {24'h0, swi_word_pin_perlane_en_r}  :  // 0x214C per-lane enable (RW)
+        // EYE-WIDTH VISIBILITY (2026-06-17) — slot 4 (0x4403_2150) EYE_WIDTH_SEL
+        // (RO). The DECISIVE per-lane eye-quality diagnostic: read the matched-
+        // window WIDTH (IDELAY/phase taps) of the lane selected by
+        // SWI_EYE_LANE_SEL after a sweep. A wide eye = healthy lane; a narrow/
+        // zero eye = the marginal-RX die's off-centre lane. Packed:
+        //   [ 5: 0] best_run  (eye width, 0..16)
+        //   [ 9: 6] best_run_start_phase
+        //   [12:10] best_run_slip
+        //   [13]    lane_passed (best_run >= LOCK_THRESH)
+        //   [31:24] 0xE7 presence marker (old/V1 images read 0 here)
+        (ctrl_reg_addr[2:0] == 3'h4) ? {8'hE7, 10'h0, sync_eye_width_1}    :  // 0x2150 eye width (RO)
+        // Task 3 (2026-06-17) — slot 5 (0x4403_2154) EYE_WIDTH_SEL lane select
+        // (RW, readback). [2:0] selected lane; [31:24] 0xE8 presence marker.
+        (ctrl_reg_addr[2:0] == 3'h5) ? {8'hE8, 21'h0, swi_eye_lane_sel_r}  :  // 0x2154 eye lane sel (RW)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -2410,7 +2487,17 @@ module axi_chiplet_controller #(
     //   retained, consumer V1-only), crack_pkt_seen_i, resweep_ctr_o,
     //   eye-vis surface (AUDIT #17) — Region C OBS_CAL + eye outputs RAZ.
     // =====================================================================
-    tidelink_phy_align_calibrator u_calibrator (
+    // SoC Labs 2026-06-18 — VAL_TIMEOUT_TO_DONE(1'b1): break the cal_done/lltx
+    // deadlock seen on silicon. wlink_lltx_enable is gated by calibration_done,
+    // but the S_VALIDATE oracle is the FCSM CR handshake which needs lltx — a
+    // pure circular deadlock (both peers sit in S_VALIDATE forever, cal_done
+    // never asserts, no CR). With VAL_TIMEOUT_TO_DONE=1 (MAX_RESWEEPS=0 default),
+    // a val_ctr timeout WITHOUT validate_confirm latches terminal S_DONE,
+    // asserting calibration_done so lltx enables and CR can run. HW equivalent
+    // of the sim tb_early_exit_force_q bypass. M8 give-up policy; sim-clean.
+    tidelink_phy_align_calibrator #(
+        .VAL_TIMEOUT_TO_DONE (1'b1)
+    ) u_calibrator (
         .clk                    (phy_link_rx_rx_link_clk_w),
         .rst                    (~poresetn),
         .role_locked            (calibrator_role_locked),
@@ -2419,6 +2506,13 @@ module axi_chiplet_controller #(
         .lane_mask              (wlink_rx_lane_mask),
         .apb_bit_slip_override  (24'h0),
         .apb_override_enable    (1'b0),
+        // EYE-CENTRE (2026-06-17): runtime MIN_LOCK_DWELLS override from
+        // Region 8 slot 3 bits [23:20] (min_lock_dwells_r). 0 = use the
+        // synth-time param default (MIN_LOCK_DWELLS=2); 1..15 = runtime
+        // override. Lets SW tune the eye-centre contiguity requirement (and,
+        // at a large value, DISABLE the eye-centre arm for a bit-identical
+        // build) without re-synth.
+        .min_lock_dwells_i      (min_lock_dwells_r),
         .swi_training_hold_i    (swi_training_mode_r),
         .cr_pkt_seen_i          (obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w),
         .sync_seen_i            (1'b0),
@@ -2431,16 +2525,32 @@ module axi_chiplet_controller #(
         .validation_timed_out   (),
         .lane_fault             (cal_lane_fault_w),
         .state                  (cal_state_w),
-        .sweep_active_o         (sweep_active_w)
+        .sweep_active_o         (sweep_active_w),
+        // EYE-WIDTH VISIBILITY (2026-06-17): real per-lane eye-width read
+        // surface replacing the V1 RAZ tie-offs. eye_lane_sel picks the lane —
+        // Task 3: in V2 from the APB-writable swi_eye_lane_sel_r (0x2154) so all
+        // 8 lanes scan remotely; in V1 from the swi_eye_lane_sel_i input. The
+        // outputs report that lane's matched-window WIDTH + start (slip,phase).
+        // Combinational reads of FSM regs in the rx_link_clk domain → CDC-synced
+        // to apb_clk below before the APB read mux.
+        .eye_lane_sel           (eye_lane_sel_eff),
+        .eye_score_best         (cal_eye_best_w),
+        .eye_score_best_phase   (cal_eye_best_phase_w),
+        .eye_score_best_slip    (cal_eye_best_slip_w),
+        .eye_score_lane_passed  (cal_eye_lane_passed_w)
     );
-    // Retired V1 surfaces — keep the module outputs driven (RAZ).
+    // Retired V1 surfaces still RAZ (resweep/eye_status/eye_score_data not
+    // produced by the deps calibrator).
     assign cal_resweep_ctr_w        = 16'h0;
     assign eye_status_o             = 32'h0;
     assign eye_score_data_o         = 6'h0;
-    assign eye_score_lane_passed_o  = 1'b0;
-    assign eye_score_best_o         = 6'h0;
-    assign eye_score_best_slip_o    = 3'h0;
-    assign eye_score_best_phase_o   = 4'h0;
+    // EYE-WIDTH VISIBILITY: drive the top-level eye_score_* observability
+    // ports from the real calibrator wires (was RAZ). These feed the existing
+    // eye_regs shim AND the new 0x2150 obs slot below.
+    assign eye_score_lane_passed_o  = cal_eye_lane_passed_w;
+    assign eye_score_best_o         = cal_eye_best_w;
+    assign eye_score_best_slip_o    = cal_eye_best_slip_w;
+    assign eye_score_best_phase_o   = cal_eye_best_phase_w;
 `else
     tidelink_phy_align_calibrator #(
         .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
@@ -2822,6 +2932,9 @@ module axi_chiplet_controller #(
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
         // (mask=0xFF, robust=0) -> bit-identical datapath.
         .swi_sync_lane_mask_in      (swi_sync_lane_mask_r),
+        // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17). SoC 0x44032128
+        // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
+        .swi_sync_tol_in            (swi_sync_tol_r),
         .swi_sync_robust_detect_in  (swi_sync_robust_detect_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),

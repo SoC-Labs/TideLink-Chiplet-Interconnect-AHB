@@ -9,14 +9,24 @@
 // out_data is exposed split per-lane too for convenient checking, plus the raw
 // 128-bit out_data for whole-word compares.
 //
+// 2026-06-17: targets the V2 deskew (deps/tidelink-phy/rtl/tidelink_lane_deskew
+// .sv). Adds the new lane_mask input (REDUCED-LANE link) and surfaces out_valid
+// + the epoch observables so the masked-subset readiness fix is testable. The
+// DUT's training-mode port is `training_mode_i`; the EPOCH_ANCHOR_EN param is
+// overridable via TB_EPOCH_ANCHOR_EN (default 0 = occupancy-only path).
+//
 // Pure structural — no behaviour added. Faithful to the DUT.
 // =============================================================================
 `default_nettype none
 
-module tb_deskew (
+module tb_deskew #(
+    parameter bit EPOCH_ANCHOR_EN = 1'b0
+) (
     input  wire        rst_n,
     input  wire        training_mode,
     input  wire        out_clk,
+
+    input  wire [7:0]  lane_mask,
 
     input  wire        lane_clk0, lane_clk1, lane_clk2, lane_clk3,
     input  wire        lane_clk4, lane_clk5, lane_clk6, lane_clk7,
@@ -24,7 +34,10 @@ module tb_deskew (
     input  wire [15:0] lane_data0, lane_data1, lane_data2, lane_data3,
     input  wire [15:0] lane_data4, lane_data5, lane_data6, lane_data7,
 
-    output wire [127:0] out_data
+    output wire [127:0] out_data,
+    output wire         out_valid,
+    output wire         epoch_anchored,
+    output wire [5:0]   epoch_span
 );
 
     wire [7:0]   lane_clk  = { lane_clk7, lane_clk6, lane_clk5, lane_clk4,
@@ -33,13 +46,19 @@ module tb_deskew (
     wire [127:0] lane_data = { lane_data7, lane_data6, lane_data5, lane_data4,
                                lane_data3, lane_data2, lane_data1, lane_data0 };
 
-    tidelink_lane_deskew u_dut (
-        .rst_n         (rst_n),
-        .lane_clk      (lane_clk),
-        .lane_data     (lane_data),
-        .training_mode (training_mode),
-        .out_clk       (out_clk),
-        .out_data      (out_data)
+    tidelink_lane_deskew #(
+        .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN)
+    ) u_dut (
+        .rst_n           (rst_n),
+        .lane_clk        (lane_clk),
+        .lane_data       (lane_data),
+        .training_mode_i (training_mode),
+        .lane_mask       (lane_mask),
+        .out_clk         (out_clk),
+        .out_data        (out_data),
+        .out_valid       (out_valid),
+        .epoch_anchored_o(epoch_anchored),
+        .epoch_span_o    (epoch_span)
     );
 
 endmodule

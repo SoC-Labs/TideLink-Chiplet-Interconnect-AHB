@@ -218,6 +218,10 @@ module Wlink #(
   // detector's per-lane match is OR'd into the framer re-hunt below.
   input  [7:0]  swi_sync_lane_mask_in,
   input         swi_sync_robust_detect_in,
+  // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17) — Region 9 slot 2
+  // SoC addr 0x44032128 [12:8]. 0 = EXACT (bit-identical). Pass-through to the
+  // WlinkGPIOPHY fork's sync_tol_in.
+  input  [4:0]  swi_sync_tol_in,
 `endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
@@ -1288,6 +1292,7 @@ module Wlink #(
     // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2/3): SW
     // LANE_MASK strap in, mask-aware per-lane detect outputs out.
     .sync_lane_mask_in(swi_sync_lane_mask_in), // PART3 SW LANE_MASK strap (default 0xFF)
+    .sync_tol_in(swi_sync_tol_in),             // 2026-06-17 Hamming tolerance (0=exact)
     .sync_seen_cnt(obs_sync_seen_cnt_o),       // PART1 obs: mask-aware sat. count
     .sync_seen_lane(obs_sync_seen_lane_o),     // PART1 obs: per-lane sticky vector
     .sync_seen_pulse(phy_io_sync_seen_pulse),  // PART2 robust re-hunt source

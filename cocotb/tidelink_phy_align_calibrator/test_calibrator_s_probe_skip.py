@@ -61,6 +61,12 @@ async def _start(dut):
     dut.lane_locked.value           = 0
     dut.apb_bit_slip_override.value = 0
     dut.apb_override_enable.value   = 0
+    # deps wrapper (tb_top_deps) exposes the centering knob + eye-sel as ports.
+    # Drive them to their safe defaults so centering_mode stays 0 (probe path).
+    if hasattr(dut, "min_lock_dwells_i"):
+        dut.min_lock_dwells_i.value = 0
+    if hasattr(dut, "eye_lane_sel"):
+        dut.eye_lane_sel.value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 8)
     dut.rst.value = 0

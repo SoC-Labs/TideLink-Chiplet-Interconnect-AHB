@@ -139,7 +139,7 @@
 # pad_rx[*] sampling registers (gpiorx_*/link_data_pad_clk_reg). KEEP this
 # create_clock — pad_clk_rx must remain a real, timed clock so the
 # pad_rx[*] -> capture relationship can be analysed (constraint [3]/[4]).
-create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 213.333 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -169,10 +169,7 @@ create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
 # Declarative: inline the get_pins (no `lindex`/`set`, which Vivado rejects in
 # XDC -> Designutils 20-1307 -> the whole pad_clk_tx_fwd stanza was silently
 # dropped). The exact (wildcard-free) NAME filter resolves to exactly one pin.
-create_generated_clock -name pad_clk_tx_fwd \
-    -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] \
-    -divide_by 1 \
-    [get_ports pad_clk_tx]
+create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] -divide_by 1 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns
 # of the 160 ns period for board trace + peer setup/hold (v36: scaled 4x with
@@ -183,7 +180,7 @@ create_generated_clock -name pad_clk_tx_fwd \
 # reference are the same forwarded edge, so Vivado balances rather than
 # hold-pads every lane. Far die samples MID-CELL (80 ns from either pad edge),
 # so +/-20 ns leaves >=60 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max  20.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
@@ -204,7 +201,7 @@ set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad
 #      reference for (3b)/(3c); it is intentionally generous (the calibrator
 #      handles dynamic skew — constraints only need to bound the STATIC,
 #      build-varying part).
-set_input_delay -clock [get_clocks pad_clk_rx] -max  4.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -max 4.000 [get_ports {pad_rx[*]}]
 set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]}]
 
 # (3b) Bound the pad_rx[n] -> first-stage capture flop path as a pure
@@ -214,10 +211,8 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 #      160 ns period (v36) — comfortably inside the calibrator window — and is
 #      a ceiling, not a target. Kept at 8.0 ns (absolute datapath ceiling, not
 #      period-scaled), matching the silicon-validated BIST.
-set rx_cap_cells [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
-set_max_delay -datapath_only 8.000 \
-    -from [get_ports {pad_rx[*]}] \
-    -to   $rx_cap_cells
+set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
 # (3c) THE key build-to-build determinism constraint. set_bus_skew forces
 #      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
@@ -227,7 +222,7 @@ set_max_delay -datapath_only 8.000 \
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to $rx_cap_cells 2.000
+set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -261,9 +256,7 @@ set_property IOB TRUE [get_ports {pad_rx[*]}]
 # WavClockInv + functional scan-mux to the gpiorx_*/link_data_pad_clk_reg
 # clock pins, so referencing the master clock [get_clocks pad_clk_rx] in [3]
 # covers the (possibly inverted) capture clock too.
-set_clock_groups -asynchronous \
-    -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects $hclk_pin]
+set_clock_groups -asynchronous -group [get_clocks pad_clk_rx] -group [get_clocks -of_objects $hclk_pin]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job
@@ -277,10 +270,8 @@ set_clock_groups -asynchronous \
 # reviewed alongside the rest of the source-sync set. When the RTL lands,
 # the owning agent enables this and removes the catch'd IOB request in [3d].
 #
-# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter \
-# #     {NAME =~ "*gpiorx_*/*IDELAYE2*"}]
-# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter \
-# #     {REF_NAME == IDELAYCTRL}]
+# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter # #     {NAME =~ "*gpiorx_*/*IDELAYE2*"}]
+# # set_property IODELAY_GROUP tl_rx_idly [get_cells -hier -filter # #     {REF_NAME == IDELAYCTRL}]
 # # (IDELAYCTRL ref clock: a 200 MHz source is required; the current BD has
 # #  no 200 MHz net — adding one is part of the RTL-hook agent's scope.)
 
@@ -332,3 +323,4 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
 # disappears at source.
 #-----------------------------------------------------------------------------
+

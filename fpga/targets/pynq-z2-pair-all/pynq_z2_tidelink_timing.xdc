@@ -124,7 +124,7 @@
 # pad_rx[*] sampling registers (gpiorx_*/link_data_pad_clk_reg). KEEP this
 # create_clock — pad_clk_rx must remain a real, timed clock so the
 # pad_rx[*] -> capture relationship can be analysed (constraint [3]/[4]).
-create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 213.333 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -312,6 +312,7 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
 # disappears at source.
 #-----------------------------------------------------------------------------
+
 
 
 

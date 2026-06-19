@@ -279,6 +279,19 @@ if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
         puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
     }
 }
+# SoC Labs 2026-06-19 (HEADROOM): the xc7z020 is slice-packed at 97% (LUTs only
+# 72%) — the design is spread thin, leaving phys_opt_design no room to place the
+# replicated pad_rx_o -> capture drivers near the pads, so the 8 ns set_max_delay
+# (xdc 3b) stays marginal and the per-lane RX capture corrupts -> calibrator
+# never sustains lock -> cal_done never asserts (the v2 bring-up blocker, 2026-06-19).
+# AreaOptimized_high shrinks the logic (denser LUT-combining) to free slices so
+# phys_opt's high-fanout replication has placement room. The design has large
+# timing slack on every clock except the routing-bound pad_clk_rx, so the area
+# directive's small logic-depth cost is harmless here.
+foreach _r [get_runs -filter {IS_SYNTHESIS}] {
+    set_property STEPS.SYNTH_DESIGN.ARGS.DIRECTIVE AreaOptimized_high $_r
+    puts "HEADROOM: SYNTH_DESIGN DIRECTIVE=AreaOptimized_high on run $_r (free slices for phys_opt)"
+}
 launch_runs synth_1 -jobs $num_jobs
 wait_on_run synth_1
 
@@ -332,6 +345,11 @@ if { [info exists env(FPGA_INSERT_DEBUG_CORE)] && $env(FPGA_INSERT_DEBUG_CORE) =
 # critical net, shrinking that route so the 8 ns ceiling is met deterministically
 # -> eye-centre is reproducible -> link aligns every load. AggressiveExplore +
 # AlternateReplication specifically target high-fanout-net replication.
+# HEADROOM (2026-06-19): with slices freed by AreaOptimized_high synth, push the
+# placer harder on the routing-bound pad_clk_rx capture paths so the 8 ns
+# set_max_delay closes and the per-lane sample lands inside the calibrator eye.
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE ExtraTimingOpt [get_runs impl_1]
+set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]

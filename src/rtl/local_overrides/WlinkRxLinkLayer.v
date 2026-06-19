@@ -158,7 +158,7 @@ module WlinkRxLinkLayer(
   wire [23:0] ecc_check_corrected_ph; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC-corrected PH (feat/phc-ila-debug)
   wire  ecc_check_corrected; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC corrected flag (feat/phc-ila-debug)
   wire  ecc_check_corrupted; // @[LinkLayer.scala 639:35]  SoC Labs ILA — ECC fail flag (feat/phc-ila-debug)
-  reg [1:0] state; // @[LinkLayer.scala 611:44]  SoC Labs ILA (feat/phc-ila-debug)
+  (* mark_debug = "true" *) reg [1:0] state; // @[LinkLayer.scala 611:44]  SoC Labs ILA (feat/phc-ila-debug)
   // SoC Labs tdif-08 L4 fix v3 (2026-05-25): "first_short_pkt_seen" gate.
   // ----- NEUTRALISED 2026-05-25 by option (c) in Wlink.v override -----
   // The v3 consumer-side gate (commit 92c2ec7) was partial (5/12 fuzz
@@ -185,10 +185,10 @@ module WlinkRxLinkLayer(
   // observed in state==0 — see strengthened latch logic below.
   wire      long_pkt_gate = first_short_pkt_seen;
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
-  reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_1; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_2; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
+  (* mark_debug = "true" *) reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
+  (* mark_debug = "true" *) reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
+  (* mark_debug = "true" *) reg [7:0] ll_byte_index_1; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
+  (* mark_debug = "true" *) reg [7:0] ll_byte_index_2; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
   reg [7:0] ll_byte_index_3; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_4; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_5; // @[LinkLayer.scala 622:32]
@@ -206,8 +206,8 @@ module WlinkRxLinkLayer(
   reg [7:0] ll_byte_index_17; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_18; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_19; // @[LinkLayer.scala 622:32]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte0_reg; // @[LinkLayer.scala 633:36]  SoC Labs ILA
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte1_reg; // @[LinkLayer.scala 635:36]  SoC Labs ILA
+  (* mark_debug = "true" *) reg [7:0] byte0_reg; // @[LinkLayer.scala 633:36]  SoC Labs ILA
+  (* mark_debug = "true" *) reg [7:0] byte1_reg; // @[LinkLayer.scala 635:36]  SoC Labs ILA
   // tdif-10 visibility (2026-05-25): valid_byte_reg gates every framer
   // state transition. ILA-visible so we can correlate state==1 hangs with
   // whether the framer is still receiving bytes from the deser front-end.
@@ -234,16 +234,16 @@ module WlinkRxLinkLayer(
   // still rejecting the ~60k phantom lengths seen on filler.
   localparam [15:0] LONG_PKT_WORD_MAX = 16'd64; // S->M wedge guard
   wire long_pkt_len_ok = ecc_check_corrected_ph[23:8] <= LONG_PKT_WORD_MAX; // candidate word_count plausible
-  reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
+  (* mark_debug = "true" *) reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
   reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
   // tdif-10 visibility (2026-05-25): word_count is the framer's "how far
   // through the long packet am I" counter -- when state latches state==1 on
   // training filler this counts up toward word_count_in (~163 for filler
   // 0xa3) and never wraps. ILA-visible so we see the false-long-pkt depth.
-  reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
-  reg [16:0] byte_count; // @[LinkLayer.scala 657:36]
+  (* mark_debug = "true" *) reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
+  (* mark_debug = "true" *) reg [16:0] byte_count; // @[LinkLayer.scala 657:36]
   wire [7:0] _bytesPerCycle_T_1 = io_active_lanes + 8'h1; // @[LinkLayer.scala 658:44]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)
+  (* mark_debug = "true" *) wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)
   wire  _T = state == 2'h0; // @[LinkLayer.scala 693:16]
   wire  _T_5 = ~is_short_pkt_prev; // @[LinkLayer.scala 706:33]
   wire [15:0] _GEN_8 = is_long_pkt & ~is_short_pkt_prev ? ecc_check_corrected_ph[23:8] : word_count; // @[LinkLayer.scala 706:52 LinkLayer.scala 711:37 LinkLayer.scala 686:29]
@@ -1789,6 +1789,54 @@ module WlinkRxLinkLayer(
       end
     end else if (state == 2'h1) begin
       byte_count <= _byte_count_in_T_2;
+    end
+  end
+  // ===========================================================================
+  // SoC Labs ILA snapshot regs (feat/phy-v2-integration, 2026-06-18)
+  // ---------------------------------------------------------------------------
+  // Purely OBSERVATIONAL: register-snapshots of the framer's combinational
+  // header-decode nets so they can be probed by the auto-inserted ILA debug
+  // core (fpga/insert_debug_core.tcl gathers MARK_DEBUG==1 nets, sets
+  // DONT_TOUCH, and wires one probe per base reg). NONE of these feed back
+  // into functional logic — they only drive the ILA. Same clock/reset domain
+  // (RX link clock `clock`, async active-high `reset`) as every other always
+  // block in this module. Question under investigation: does the die_b CR
+  // header data_id 0x44 ever land on link_data_byte_index_0 on die_a, and what
+  // does is_short/is_long/ECC decode it as (vs the CRACK 0x45 which frames OK)?
+  // ===========================================================================
+  (* mark_debug = "true" *) reg [7:0]  dbg_link_data_byte_index_0; // gathered header data_id byte
+  (* mark_debug = "true" *) reg        dbg_is_short_pkt;
+  (* mark_debug = "true" *) reg        dbg_is_long_pkt;
+  (* mark_debug = "true" *) reg        dbg_sync_detected;
+  (* mark_debug = "true" *) reg        dbg_sync_resync;
+  (* mark_debug = "true" *) reg        dbg_ecc_check_corrupted;
+  (* mark_debug = "true" *) reg [7:0]  dbg_ecc_corrected_ph;       // corrected header data_id (ph[7:0])
+  (* mark_debug = "true" *) reg [7:0]  dbg_io_lane_mask;
+  (* mark_debug = "true" *) reg        dbg_io_robust_sync_seen;
+  (* mark_debug = "true" *) reg [23:0] dbg_io_link_data_lo;        // low 3 header bytes pre-gather
+  always @(posedge clock or posedge reset) begin
+    if (reset) begin
+      dbg_link_data_byte_index_0 <= 8'h0;
+      dbg_is_short_pkt           <= 1'h0;
+      dbg_is_long_pkt            <= 1'h0;
+      dbg_sync_detected          <= 1'h0;
+      dbg_sync_resync            <= 1'h0;
+      dbg_ecc_check_corrupted    <= 1'h0;
+      dbg_ecc_corrected_ph       <= 8'h0;
+      dbg_io_lane_mask           <= 8'h0;
+      dbg_io_robust_sync_seen    <= 1'h0;
+      dbg_io_link_data_lo        <= 24'h0;
+    end else begin
+      dbg_link_data_byte_index_0 <= link_data_byte_index_0;
+      dbg_is_short_pkt           <= is_short_pkt;
+      dbg_is_long_pkt            <= is_long_pkt;
+      dbg_sync_detected          <= sync_detected;
+      dbg_sync_resync            <= sync_resync;
+      dbg_ecc_check_corrupted    <= ecc_check_corrupted;
+      dbg_ecc_corrected_ph       <= ecc_check_corrected_ph[7:0];
+      dbg_io_lane_mask           <= io_lane_mask;
+      dbg_io_robust_sync_seen    <= io_robust_sync_seen;
+      dbg_io_link_data_lo        <= io_link_data[23:0];
     end
   end
 // Register and memory initialization

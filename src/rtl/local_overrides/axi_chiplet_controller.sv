@@ -65,7 +65,18 @@ module axi_chiplet_controller #(
     // Companion to NEGO_TRAIN_CFG_RESET — the two together make the chiplet
     // POR-boot directly into autonomous bring-up without any SW write.
     // Cocotb tests that need the legacy SW-driven path override to 7'h00.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h61
+    //
+    // SoC Labs 2026-06-18 — REDUCED-LANE BRING-UP: default to 7'h00 (autoneg
+    // OFF, SW-driven path). With autoneg ON the SLAVE die's Wlink config block
+    // (incl. the lane mask) is owned by the autoneg I2C path and ignores SW
+    // GP0 writes, and the mask handshake is bypassed — so the slave is stuck
+    // at the default 8-lane mask 0xff while the master masks to a reduced lane
+    // set, mis-framing master->slave CR. Disabling autoneg lets SW set ROLE_CFG
+    // + the lane mask on BOTH dies (the master path is already SW-writable),
+    // exactly like the pair_v2 sim recipe. REVISIT for production: re-enable
+    // autoneg (7'h61) once the mask handshake propagates the reduced mask to
+    // the slave (wire peer_rx_lane_mask_i / un-bypass mask_hs).
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
 ) (
 
     // ── Clocks and Resets ────────────────────────────────────────────────

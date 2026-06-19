@@ -115,7 +115,12 @@ module tidelink_top #(
     // NEGO_CFG POR value (companion to NEGO_TRAIN_CFG_RESET).
     // 7'h61 = nego_en + nego_force_lock + mask_hs_auto_en
     // ASIC + FPGA POR boot directly into autonomous bring-up.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h61
+    // SoC Labs 2026-06-18: default 7'h00 (autoneg OFF, SW-driven) for the
+    // reduced-lane bring-up — see axi_chiplet_controller NEGO_CFG_RESET note.
+    // The slave's lane mask is autoneg-locked at 0xff under 7'h61; SW-driven
+    // lets both dies set their mask. Revisit 7'h61 once mask-handshake
+    // propagates the reduced mask to the slave.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2005,8 +2010,15 @@ module tidelink_top #(
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),
         .role_locked_o              (role_locked_o),
-        .apb_debug_unlock_i         (apb_debug_unlock_i),
-        .mask_hs_bypass_i           (mask_hs_bypass_i),
+        // SoC Labs 2026-06-18 — REDUCED-LANE SW-driven bring-up (autoneg off):
+        // force both to 1. mask_hs_bypass opens mask_hs_gate_open so the SW
+        // ROLE_CFG W1S role-lock latches WITHOUT the autoneg mask handshake
+        // (else role_locked never asserts -> Wlink held in reset -> link dead).
+        // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
+        // lane mask) on the non-master die. Bench-debug straps; revisit when
+        // re-enabling autoneg for production.
+        .apb_debug_unlock_i         (1'b1),
+        .mask_hs_bypass_i           (1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),

@@ -173,6 +173,9 @@
 // =============================================================================
 module WlinkGenericFCSM_6 #(
   parameter [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32,
+  // SoC Labs L7 (2026-06-19): minimum CRACK-emit hold, symmetric to the L6
+  // min-CR-emit gate. See socl_l7_crack_release below for the deadlock it fixes.
+  parameter [7:0]  SOCL_L7_MIN_CRACK_EMITS = 8'd32,
   parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000,
   // SoC Labs credit-recovery (2026-06-05): receiver-side periodic ACK
   // re-emission idle threshold (io_tx_clk cycles). Chosen comfortably larger
@@ -487,6 +490,23 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L6 producer-side fix: count CR emissions in state==1, gate exit.
   reg  [7:0] socl_l6_cr_emit_count; // counts (advance & sop) cycles while state==1
   wire socl_l6_cr_emit_gate_ok = (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
+  // SoC Labs L7 (2026-06-19): minimum-CRACK-emit hold (mirror of the L6 gate).
+  // ROOT CAUSE (4-agent root-cause + adversarial verify, clean-PHY bilateral
+  // deadlock a[fcsm=4 cr=0 ck=1] b[fcsm=2 cr=1 ck=0]): the state-1->2 exit fires
+  // on (cr_seen | crack_seen) (the OR-term in _GEN_34), but the state-2->3 exit
+  // (_GEN_45) releases the instant crack_seen latches, with NO emit floor. A die
+  // that left state 1 because it had ALREADY latched the peer's CRACK enters
+  // state 2 with crack_pkt_seen already HIGH, so it emits exactly ONE CRACK then
+  // runs 2->3->4 and parks in LINK_IDLE -- which never re-emits CRACK. That
+  // one-shot CRACK is too short for the peer's (independently, later-aligning) RX
+  // framer to capture, so the peer wedges in state 2 forever awaiting a CRACK
+  // that is never re-sent. Fix: hold state 2 (and keep emitting CRACK) until BOTH
+  // crack_seen AND a guaranteed minimum CRACK-emit count, exactly as the L6 gate
+  // hardened the CR direction. socl_l7_crack_release replaces the bare
+  // crack_pkt_seen_tx_demet_io_out in the state-2 advance muxes (_GEN_40..45).
+  reg  [7:0] socl_l7_crack_emit_count; // counts (advance & sop) cycles while state==2
+  wire socl_l7_crack_emit_gate_ok = (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS);
+  wire socl_l7_crack_release = crack_pkt_seen_tx_demet_io_out & socl_l7_crack_emit_gate_ok;
   // SoC Labs L7 sticky-NACK bringup recovery:
   //   * socl_l7_reached_link_data : once high, disarms the forgive gate
   //     permanently for the lifetime of this reset cycle (steady-state).
@@ -588,12 +608,16 @@ module WlinkGenericFCSM_6 #(
                        ? 3'h2 : state; // SoC Labs L6 gate
   wire  _GEN_35 = auto_tx_out_advance | sop; // @[FC.scala 459:28 FC.scala 427:39]
   wire [55:0] _GEN_38 = auto_tx_out_advance ? 56'h0 : link_data; // @[FC.scala 459:28 FC.scala 430:39]
-  wire  _GEN_40 = crack_pkt_seen_tx_demet_io_out ? 1'h0 : 1'h1; // @[FC.scala 476:34 FC.scala 477:39 FC.scala 484:39]
-  wire [7:0] _GEN_41 = crack_pkt_seen_tx_demet_io_out ? 8'h0 : out_prepend_swi_crack_id; // @[FC.scala 476:34 FC.scala 478:39 FC.scala 485:39]
-  wire [15:0] _GEN_42 = crack_pkt_seen_tx_demet_io_out ? 16'h0 : 16'h1f1f; // @[FC.scala 476:34 FC.scala 479:39 FC.scala 486:39]
+  // SoC Labs L7: the state-2 advance muxes are gated on socl_l7_crack_release
+  // (= crack_seen & min-CRACK-emit-met) instead of the bare crack_seen, so the
+  // die keeps emitting CRACK (sop/data_id/word_count) and holds state 2 until the
+  // CRACK-emit floor is reached. Mirrors the L6 fix to _GEN_34 / state-1 data_id.
+  wire  _GEN_40 = socl_l7_crack_release ? 1'h0 : 1'h1; // @[FC.scala 476:34 FC.scala 477:39 FC.scala 484:39]
+  wire [7:0] _GEN_41 = socl_l7_crack_release ? 8'h0 : out_prepend_swi_crack_id; // @[FC.scala 476:34 FC.scala 478:39 FC.scala 485:39]
+  wire [15:0] _GEN_42 = socl_l7_crack_release ? 16'h0 : 16'h1f1f; // @[FC.scala 476:34 FC.scala 479:39 FC.scala 486:39]
   reg [7:0] swi_link_en_wait; // @[SW.scala 83:22]
-  wire [7:0] _GEN_44 = crack_pkt_seen_tx_demet_io_out ? swi_link_en_wait : count; // @[FC.scala 476:34 FC.scala 481:39 FC.scala 425:39]
-  wire [2:0] _GEN_45 = crack_pkt_seen_tx_demet_io_out ? 3'h3 : state; // @[FC.scala 476:34 FC.scala 482:39 FC.scala 424:39]
+  wire [7:0] _GEN_44 = socl_l7_crack_release ? swi_link_en_wait : count; // @[FC.scala 476:34 FC.scala 481:39 FC.scala 425:39]
+  wire [2:0] _GEN_45 = socl_l7_crack_release ? 3'h3 : state; // @[FC.scala 476:34 FC.scala 482:39 FC.scala 424:39]
   wire [2:0] _GEN_51 = auto_tx_out_advance ? _GEN_45 : state; // @[FC.scala 475:28 FC.scala 424:39]
   wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]
   wire [7:0] _count_in_T_1 = count - 8'h1; // @[FC.scala 498:48]
@@ -1193,6 +1217,19 @@ module WlinkGenericFCSM_6 #(
     end else if (auto_tx_out_advance & sop) begin
       if (socl_l6_cr_emit_count != 8'hff)
         socl_l6_cr_emit_count <= socl_l6_cr_emit_count + 8'h1;
+    end
+  end
+  // SoC Labs L7 min-CRACK-emit counter (mirror of socl_l6_cr_emit_count):
+  // counts (auto_tx_out_advance & sop) cycles while state==2, saturates at 0xFF,
+  // resets to 0 whenever the FCSM is not in state 2 (so a fresh entry re-arms it).
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_crack_emit_count <= 8'h0;
+    end else if (state != 3'h2) begin
+      socl_l7_crack_emit_count <= 8'h0;
+    end else if (auto_tx_out_advance & sop) begin
+      if (socl_l7_crack_emit_count != 8'hff)
+        socl_l7_crack_emit_count <= socl_l7_crack_emit_count + 8'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin

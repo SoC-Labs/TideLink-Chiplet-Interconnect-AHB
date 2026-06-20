@@ -198,7 +198,7 @@ localparam [4:0]
 
 // Bug N7/N8 silicon observability override: mark_debug on host FSM + PHY FSM +
 // control nets. No functional behaviour change vs upstream deps/ source.
-(* mark_debug = "true" *) reg [4:0] state_reg = STATE_IDLE;
+reg [4:0] state_reg = STATE_IDLE;
                           reg [4:0] state_next;
 
 localparam [4:0]
@@ -219,7 +219,7 @@ localparam [4:0]
     PHY_STATE_STOP_2 = 5'd14,
     PHY_STATE_STOP_3 = 5'd15;
 
-(* mark_debug = "true" *) reg [4:0] phy_state_reg = STATE_IDLE;
+reg [4:0] phy_state_reg = STATE_IDLE;
                           reg [4:0] phy_state_next;
 
 reg phy_start_bit;
@@ -246,7 +246,7 @@ reg delay_sda_reg = 1'b0, delay_sda_next;
 
 reg [3:0] bit_count_reg = 4'd0, bit_count_next;
 
-(* mark_debug = "true" *) reg s_axis_cmd_ready_reg = 1'b0;
+reg s_axis_cmd_ready_reg = 1'b0;
                           reg s_axis_cmd_ready_next;
 
 reg s_axis_data_tready_reg = 1'b0, s_axis_data_tready_next;
@@ -265,7 +265,7 @@ reg last_scl_i_reg = 1'b1;
 reg last_sda_i_reg = 1'b1;
 
                           reg busy_reg = 1'b0;
-(* mark_debug = "true" *) reg bus_active_reg = 1'b0;
+reg bus_active_reg = 1'b0;
 reg bus_control_reg = 1'b0, bus_control_next;
 reg missed_ack_reg = 1'b0, missed_ack_next;
 
@@ -292,8 +292,8 @@ wire scl_negedge = ~scl_i_reg & last_scl_i_reg;
 wire sda_posedge = sda_i_reg & ~last_sda_i_reg;
 wire sda_negedge = ~sda_i_reg & last_sda_i_reg;
 
-(* mark_debug = "true" *) wire start_bit = sda_negedge & scl_i_reg;
-(* mark_debug = "true" *) wire stop_bit = sda_posedge & scl_i_reg;
+wire start_bit = sda_negedge & scl_i_reg;
+wire stop_bit = sda_posedge & scl_i_reg;
 
 always @* begin
     state_next = STATE_IDLE;

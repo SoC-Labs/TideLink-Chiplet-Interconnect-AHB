@@ -318,17 +318,17 @@ reg s_axil_rvalid_reg = 1'b0, s_axil_rvalid_next;
 
 // Bug N7/N8 silicon observability: mark_debug on AXIL→core command shadow regs
 // + FIFO output handshake. Inert unless FPGA_INSERT_DEBUG_CORE=1 at build time.
-(* mark_debug = "true" *) reg [6:0] cmd_address_reg = 7'd0;
+reg [6:0] cmd_address_reg = 7'd0;
                           reg [6:0] cmd_address_next;
-(* mark_debug = "true" *) reg cmd_start_reg = 1'b0;
+reg cmd_start_reg = 1'b0;
                           reg cmd_start_next;
 reg cmd_read_reg = 1'b0, cmd_read_next;
-(* mark_debug = "true" *) reg cmd_write_reg = 1'b0;
+reg cmd_write_reg = 1'b0;
                           reg cmd_write_next;
 reg cmd_write_multiple_reg = 1'b0, cmd_write_multiple_next;
-(* mark_debug = "true" *) reg cmd_stop_reg = 1'b0;
+reg cmd_stop_reg = 1'b0;
                           reg cmd_stop_next;
-(* mark_debug = "true" *) reg cmd_valid_reg = 1'b0;
+reg cmd_valid_reg = 1'b0;
                           reg cmd_valid_next;
 wire cmd_ready;
 
@@ -342,7 +342,7 @@ wire data_out_valid;
 reg data_out_ready_reg = 1'b0, data_out_ready_next;
 wire data_out_last;
 
-(* mark_debug = "true" *) reg [15:0] prescale_reg = DEFAULT_PRESCALE;
+reg [15:0] prescale_reg = DEFAULT_PRESCALE;
                           reg [15:0] prescale_next;
 
 reg missed_ack_reg = 1'b0, missed_ack_next;
@@ -362,8 +362,8 @@ wire cmd_read_int;
 wire cmd_write_int;
 wire cmd_write_multiple_int;
 wire cmd_stop_int;
-(* mark_debug = "true" *) wire cmd_valid_int;
-(* mark_debug = "true" *) wire cmd_ready_int;
+wire cmd_valid_int;
+wire cmd_ready_int;
 
 wire [7:0] data_in_int;
 wire data_in_valid_int;

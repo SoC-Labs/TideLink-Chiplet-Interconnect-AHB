@@ -77,11 +77,7 @@ module tidelink_design_wrapper (
     output wire        led2,              // LD2 / N16 — wlink_irq
     output wire        led3,              // LD3 / M14 — released_credits_irq
 
-    // PMOD-B cross-board trigger (bidirectional). Wired board-to-board by
-    // a short jumper. The driving board pulses high; the sense-side reads
-    // it via AXI GPIO ch2 and the PHC latches its time (Option A capture).
-    // Idle = '0' (PULLDOWN in XDC); driving side sets gpio_o=1 briefly.
-    inout  wire        pmod_b_trig,       // JB1 / Y16 (PMOD-B pin 1)
+    // PMOD-B cross-board trigger + PHC removed 2026-06-19 (slice headroom).
 
     // Inter-board I2C sideband (BD Edit 1, SHORTCOMINGS-14a/14b). XDC
     // (Phase 4 autonomy) pins these to Arduino dedicated I2C (P15/P16)
@@ -90,19 +86,6 @@ module tidelink_design_wrapper (
     inout  wire        i2c_scl_io,
     inout  wire        i2c_sda_io
 );
-
-    //=========================================================================
-    // PMOD-B trigger IOBUF -- single pad both drives and senses.
-    //=========================================================================
-    wire pmod_b_trig_o_w;
-    wire pmod_b_trig_i_w;
-
-    IOBUF u_pmod_b_trig_iobuf (
-        .I  (pmod_b_trig_o_w),
-        .O  (pmod_b_trig_i_w),
-        .T  (~pmod_b_trig_o_w),       // tristate when not driving high
-        .IO (pmod_b_trig)
-    );
 
     //=========================================================================
     // I2C open-drain tristate (Vivado convention: _t=1 => Hi-Z).
@@ -157,8 +140,6 @@ module tidelink_design_wrapper (
         .led3                     (led3),
 
         // PMOD-B cross-board trigger (split out for the IOBUF above)
-        .pmod_b_trig_o            (pmod_b_trig_o_w),
-        .pmod_b_trig_i            (pmod_b_trig_i_w),
 
         // Inter-board I2C sideband (BD Edit 1) -- exposed as external
         // BD ports (see tidelink_design.tcl create_bd_port/connect_bd_net);

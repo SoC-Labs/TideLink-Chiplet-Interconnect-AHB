@@ -325,3 +325,15 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 #-----------------------------------------------------------------------------
 
 
+
+#-----------------------------------------------------------------------------
+# [RX-CAPTURE FLOORPLAN v3] 2026-06-20 — targeted: pin ONLY the 4 ACTIVE-lane
+# (mask 0xe4 = lanes 2,5,6,7) capture flops HARD to the pad/BUFG region X0Y0:X0Y1.
+# DCP showed die_b's pad_clk_rx fans through 8 per-lane BUFGs (X0Y0..X0Y7) with
+# ~4ns inter-capture clock skew because the flops scatter to X1Y2; co-locating the
+# ACTIVE captures with their BUFGs shortens+equalises the clock routes (kills the
+# skew that blinds the SRCC-side RX) WITHOUT the over-congestion of pinning all 128.
+create_pblock pblock_rx_act
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
+set_property IS_SOFT false [get_pblocks pblock_rx_act]

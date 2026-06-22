@@ -247,7 +247,36 @@ set_property IOB TRUE [get_ports {pad_rx[*]}]
 # WavClockInv + functional scan-mux to the gpiorx_*/link_data_pad_clk_reg
 # clock pins, so referencing the master clock [get_clocks pad_clk_rx] in [3]
 # covers the (possibly inverted) capture clock too.
-set_clock_groups -asynchronous -group [get_clocks pad_clk_rx] -group [get_clocks -of_objects $hclk_pin]
+# SoC Labs 2026-06-21: $hclk_pin was UNDEFINED here -> this whole set_clock_groups threw
+# "can't read hclk_pin" and was SILENTLY DROPPED. Define it (= clk_wiz hclk/clk_out1).
+set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}]
+
+#-----------------------------------------------------------------------------
+# [4b] TX WORD CLOCK (gpiotx_0 = local hsclk/16). PORTED from the PHY-BIST
+#   word_handoff.xdc (NEVER carried into the integrated build — build_design.tcl
+#   only globs *_tidelink_timing.xdc). WITHOUT a create_generated_clock the /16
+#   TX word clock is an unconstrained, ungated fabric net: the nearby SYNC-insert
+#   counter toggles, but the DEEP Wlink a2l-read FIFO pointers + their WavResetSync
+#   (async-set / sync-RELEASE -> deassert needs a clean edge at those flops) sit
+#   far away on the high-fanout LUT route and never get a clean edge -> io_rreset
+#   never sync-deasserts -> a2l read side held in reset -> link_empty=1 ALWAYS ->
+#   FCSM never drains -> NO V2 DATA TX. Declaring the clock makes Vivado TIME the
+#   domain and route the 285-fanout net on a global clock buffer.
+#-----------------------------------------------------------------------------
+create_generated_clock -name gpiotx0_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/Q"}]
+# FIX-O handoff margin: word-domain regs -> count==7 mid-word capture (link_data_stage)
+# is a half-word-period datapath transfer, not edge-aligned.
+set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
+set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
+
+# Three-group async isolation: recovered-RX, core hclk, TX word clock — mutually
+# asynchronous (each crossing is 2-flop synchronised in RTL).
+set_clock_groups -asynchronous \
+    -group [get_clocks pad_clk_rx] \
+    -group [get_clocks -of_objects $hclk_pin] \
+    -group [get_clocks gpiotx0_word_clk]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job

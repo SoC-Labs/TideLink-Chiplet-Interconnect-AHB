@@ -23,7 +23,7 @@ The anchor lives on the MASTER's RX (S->M skewed direction); we probe and
 corrupt u_master's deskew.
 """
 import cocotb
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, RisingEdge
 
 from pair_v2_common import (
     PairV2TB, send_and_check, ST_LANE_LOCKED, ST_CAL_DONE, APB_PKT_WORD_LEN,
@@ -281,3 +281,156 @@ async def test_exit_window_1lane_burst4_sparse(dut):
     assert ok, ("sparse BER also broke S->M — the failure is not specific to "
                 "the exit-edge corruption (re-tune the margin)")
     dut._log.info("SURVIVE-CONTROL 1L-b4-sp: light BER tolerated, S->M intact")
+
+
+# ---------------------------------------------------------------------------
+# MECHANISM-2 repro: sustained DATA-WINDOW eye (the actual silicon blocker).
+# Distinct from the anchor mis-latch above (which fix3 already corrects -> those
+# exit-window tests now FAIL = data succeeds). Here the anchor latches CLEAN
+# (eye OFF through bring-up), THEN the eye is armed DURING the data send so
+# per-beat bit errors corrupt the DATA PACKET itself. On today's RAW link (ECC
+# bypassed, CRC off, no replay) a corrupted data beat -> no commit -> the exact
+# silicon symptom (die_b STATUS not committed, RX FIFO empty, sender fe_full).
+#
+# This is the GATE for the reliability re-enable (un-bypass ECC + disable_crc=0
+# + working replay): with that layer ON this test should flip to PASS because
+# the eye errors are SEC-corrected / NACK-retried. DO the re-enable sim-first
+# against THIS test before any silicon build (a prior reliability change caused
+# a PS kernel-hang — never deploy a reliability change unvalidated).
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_data_window_eye_s2m(dut):
+    """Anchor latches clean, then eye armed across the S->M data send: a RAW
+    link must DROP the packet (no commit). Asserts the repro (not ok). When the
+    Wlink reliability layer is re-enabled this should become PASS."""
+    from pair_v2_common import run_bringup_full
+    tb = PairV2TB(dut)
+    set_eye(dut, en=False)
+    await run_bringup_full(tb)                     # CLEAN bring-up -> anchor correct
+    assert await tb.wait_cr_crack(), "no bilateral CR/CRACK"
+    await ClockCycles(dut.hclk, 500)
+    # Arm sustained per-beat errors on active lanes DURING the send (not the
+    # exit edge). Dense burst so the brief data window is reliably corrupted.
+    set_eye(dut, en=True, mask=0x24, burst=3, period=4)
+    tb.log.info("  [data-window-eye] eye ARMED across S->M data send "
+                "(mask=0x24 burst=3 period=4)")
+    ok, got = await send_and_check(tb, "s", "m", [0xDEADBEEF, 0x5A17F00D],
+                                   ctx="data-window-eye s2m", expect_pass=False)
+    set_eye(dut, en=False)
+    tb.log.info(f"  [data-window-eye] ok={ok} got={['0x%08x' % w for w in got]}")
+    if not ok:
+        tb.log.info("*** MECHANISM-2 REPRODUCED: RAW link drops the data packet "
+                    "under a data-window eye (= the silicon blocker). Re-enable "
+                    "ECC+CRC+replay and re-run this test to verify the fix.")
+    assert not ok, ("data survived the data-window eye on a RAW link — repro "
+                    "lost (eye too light, OR reliability is somehow already "
+                    "masking it). Re-tune mask/burst/period.")
+
+
+def _mfcsm(tb, side):
+    return tb.top(side).u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
+
+
+def _mwlink(tb, side):
+    return tb.top(side).u_chiplet_controller.u_wlink
+
+
+async def _probe_rx_reliability(tb, dst, cycles, label):
+    """Sample the receiver's framer + FCSM + commit while a packet crosses, to
+    see WHERE a corrupted long packet dies: header mis-classify (no llrx valid /
+    wrong data_id) vs payload CRC error (valid + crc_errors + NACK state)."""
+    dut = tb.dut
+    w = _mwlink(tb, dst)
+    f = _mfcsm(tb, dst)
+    llrx = getattr(w, "llrx", None)
+    try:
+        fc_ctrl = tb.top(dst).u_tidelink_fifo.u_fifo_mem.u_fifo_ctrl
+    except Exception:
+        fc_ctrl = None
+
+    def gi(obj, name):
+        h = getattr(obj, name, None)
+        if h is None:
+            return None
+        try:
+            return int(h.value)
+        except Exception:
+            return None
+
+    seen_did, seen_st = set(), set()
+    max_crc, val_cy, wc_cy, nack_cy = 0, 0, 0, 0
+    dcrc = None
+    for _ in range(cycles):
+        await RisingEdge(dut.hclk)
+        if llrx is not None and gi(llrx, "auto_out_valid") == 1:
+            val_cy += 1
+            d = gi(llrx, "auto_out_data_id")
+            if d is not None:
+                seen_did.add(d)
+        c = gi(f, "crc_errors")
+        if c is not None and c > max_crc:
+            max_crc = c
+        s = gi(f, "state")
+        if s is not None:
+            seen_st.add(s)
+            if s in (6, 7):
+                nack_cy += 1
+        dcrc = gi(f, "out_prepend_swi_disable_crc")
+        if fc_ctrl is not None and gi(fc_ctrl, "write_complete") == 1:
+            wc_cy += 1
+    tb.log.info(
+        f"  [{label}] PROBE: llrx_valid_cy={val_cy} "
+        f"data_ids={[hex(x) for x in sorted(seen_did)]} max_crc_errors={max_crc} "
+        f"fcsm_states={sorted(seen_st)} nack_state_cy={nack_cy} "
+        f"write_complete_cy={wc_cy} disable_crc={dcrc}")
+
+
+def set_disable_crc(tb, side, val):
+    """Force the FCSM's disable_crc arm (APB bit16 path). val=0 turns CRC ON."""
+    try:
+        _mfcsm(tb, side).out_prepend_swi_disable_crc.value = val
+        tb.log.info(f"  disable_crc[{side}]={val}")
+    except Exception as e:                              # noqa: BLE001
+        tb.log.warning(f"set disable_crc[{side}] failed: {e}")
+
+
+@cocotb.test()
+async def test_data_eye_crc_replay_s2m(dut):
+    """RELIABILITY-FIX candidate (the actual fix experiment).
+
+    Clean bring-up (anchor latches correct), enable CRC on BOTH dies
+    (disable_crc=0), then corrupt ONLY the first transmission window with a
+    one-shot eye and go clean. If the Wlink NACK->replay path works, the
+    payload-corrupted first packet is detected by CRC, NACK'd, and retransmitted
+    intact -> data DELIVERS. This models an intermittent marginal eye (the
+    silicon reality: CR/CRACK get through, so some windows ARE clean). PASS here
+    (ok=True) is the sim proof that re-enabling CRC+replay is the data fix and
+    needs no ECC decoder fix."""
+    from pair_v2_common import run_bringup_full
+    tb = PairV2TB(dut)
+    set_eye(dut, en=False)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no bilateral CR/CRACK"
+    set_disable_crc(tb, "m", 0)
+    set_disable_crc(tb, "s", 0)
+    await ClockCycles(dut.hclk, 50)
+    set_eye(dut, en=True, mask=0x24, burst=3, period=4)
+    tb.log.info("  [crc-replay] CRC ON + one-shot eye over first transmit")
+
+    async def _disarm_after(n):
+        await ClockCycles(dut.hclk, n)
+        set_eye(dut, en=False)
+        tb.log.info(f"  [crc-replay] eye DISARMED after {n}cy -> retries clean")
+
+    cocotb.start_soon(_disarm_after(500))
+    cocotb.start_soon(_probe_rx_reliability(tb, "m", 2800, "crc-replay"))
+    ok, got = await send_and_check(tb, "s", "m", [0xDEADBEEF, 0x5A17F00D],
+                                   ctx="crc-replay s2m", expect_pass=False)
+    set_eye(dut, en=False)
+    tb.log.info(f"  [crc-replay] ok={ok} got={['0x%08x' % w for w in got]}")
+    if ok:
+        tb.log.info("*** CRC+REPLAY RECOVERS the data after a corrupted first "
+                    "transmit -> reliability re-enable (CRC on, no ECC) is the FIX.")
+    else:
+        tb.log.info("XXX CRC+replay did NOT recover -> header ECC needed and/or "
+                    "replay loop broken; next probe send_nack_req + replay FIFO.")

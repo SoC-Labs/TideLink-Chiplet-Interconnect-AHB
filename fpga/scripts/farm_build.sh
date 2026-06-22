@@ -111,7 +111,7 @@ build_env_prefix() {
 
 ###----------------------------------------------------------------- LOCAL ----
 if is_local; then
-    JOBS="${FPGA_NUM_JOBS:-4}"
+    JOBS="${FPGA_NUM_JOBS:-8}"   # SoC Labs 2026-06-21: 4->8 (overlap OOC sub-IP synth; QoR-neutral)
     say "local build start (jobs=$JOBS, SKIP_PACKAGE_IP=1)"
     # set_env.sh sets XHB500_IP_DIR (Makefile env-guard needs it); it honours
     # our pre-exported CMSDK_DIR. Source under set +e — its XHB500 codepath

@@ -582,6 +582,10 @@ module tidelink_top #(
     // select from tidelink_apb_regs into the chiplet controller (the sweep
     // oracle + per-lane word-pin registers). V1 ties it low (bit-identical).
     wire                   ctrl_reg_r10;
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap): Region D
+    // (SoC 0x4403_21A0-0x4403_21A8) select from tidelink_apb_regs into the
+    // chiplet controller. V1 ties it low (bit-identical).
+    wire                   ctrl_reg_rd;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -1048,7 +1052,14 @@ module tidelink_top #(
                            || (tl_apb_paddr[4:0] == 5'h08)    // 0x2148 WORD_PIN_PERLANE
                            || (tl_apb_paddr[4:0] == 5'h0C)    // 0x214C WORD_PIN_PERLANE_EN
                            || (tl_apb_paddr[4:0] == 5'h10)    // 0x2150 EYE_WIDTH_SEL (RO)
-                           || (tl_apb_paddr[4:0] == 5'h14));  // 0x2154 EYE_LANE_SEL (RW, Task 3)
+                           || (tl_apb_paddr[4:0] == 5'h14)    // 0x2154 EYE_LANE_SEL (RW, Task 3)
+                           // SoC Labs V2 data-send obs 2026-06-21: 0x2158 is the
+                           // A2L_REPLAY_OBS RO word (Region 10 slot 6), served by the
+                           // chiplet controller's region10_rdata. Exclude it from
+                           // eye_shim so it falls through to tidelink_internal_prdata;
+                           // otherwise eye_shim (tied 0 in V2) wins and 0x2158 reads
+                           // 0x00000000 with NO 0xA2 marker (same trap as 0x2150).
+                           || (tl_apb_paddr[4:0] == 5'h18));  // 0x2158 A2L_REPLAY_OBS (RO)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
     assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :
@@ -1230,6 +1241,7 @@ module tidelink_top #(
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
+        .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
@@ -2034,6 +2046,7 @@ module tidelink_top #(
         .apb_ctrl_reg_write         (ctrl_reg_write),
         .apb_ctrl_reg_addr          (ctrl_reg_addr),
         .apb_ctrl_reg_r10           (ctrl_reg_r10),   // perlane-wp Region-10 select
+        .apb_ctrl_reg_rd            (ctrl_reg_rd),    // rxcap Region-D select
         .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 

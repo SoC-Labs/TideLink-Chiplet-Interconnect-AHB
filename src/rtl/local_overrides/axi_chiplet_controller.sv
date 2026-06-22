@@ -160,6 +160,11 @@ module axi_chiplet_controller #(
     // (paddr[4:2]) is on ctrl_reg_addr[2:0] (folded onto the 2'b00 bank). V1 ties
     // this 0 -> the Region-10 bank is inert (bit-identical).
     input  wire             apb_ctrl_reg_r10,
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — Region D
+    // disambiguator. Region D (paddr[8:5]=4'b1101, SoC 0x4403_21A0+) folds onto
+    // ctrl_reg_addr[4:3]==2'b00 (same as Region 9/10); this 1-bit flag from
+    // tidelink_apb_regs.sv picks Region D, exactly mirroring apb_ctrl_reg_r10.
+    input  wire             apb_ctrl_reg_rd,
     input  wire  [31:0]     apb_ctrl_reg_wdata,
     output logic [31:0]     ctrl_reg_rdata,
 
@@ -414,7 +419,14 @@ module axi_chiplet_controller #(
     // Internal resets (Wlink uses active-high)
     // =====================================================================
     wire apb_reset     = ~hresetn;
-    wire app_clk_reset = ~hresetn;
+    // SoC Labs 2026-06-21: app_clk_reset assigned below (after role_locked decl) so it
+    // can mirror wlink_por_reset's ~role_locked gating. This makes the a2l replay FIFO's
+    // app/write-side reset release COHERENTLY with its link/read-side reset (which is
+    // already held by ~role_locked), eliminating the asymmetric reset-RELEASE skew that
+    // desyncs the replay ACK-pointer synchronizer (silicon: a2l_full=1 / link_empty=1 on
+    // the first AHB_TX write -> FCSM wedged state 4 -> die_b RXW=0). NOT apb_reset, which
+    // must stay alive pre-role_locked so SW can drive the bring-up recipe + read OBS taps.
+    wire app_clk_reset;
 
     // =====================================================================
     // Bug N2 fix (2026-05-29) — slv_apb_* fan-out to Region 4/8 + readback
@@ -794,6 +806,13 @@ module axi_chiplet_controller #(
     wire        obs_is_short_pkt_w;
     wire        obs_is_long_pkt_w;
     wire        obs_llrx_valid_w;
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
+    // sticky framer (llrx) + FCSM (tl2wl) words from the Wlink obs bundle.
+    // rx-link-clk / io_rx_clk domains; 2-flop-synced to apb_clk below and read
+    // at the new Region D (SoC MMIO 0x4403_21A0/0x4403_21A4/0x4403_21A8) in V2.
+    wire [31:0] obs_rxcap0_w;
+    wire [31:0] obs_rxcap1_w;
+    wire [31:0] obs_fcsmcap_w;
     wire [15:0] obs_ecc_corrupted_cnt_w;
     wire [15:0] obs_ecc_corrected_cnt_w;
     // SoC Labs 2026-06-08: SYNC-detected saturating counter (cross-lane-skew obs)
@@ -804,6 +823,29 @@ module axi_chiplet_controller #(
     wire        obs_fe_rx_is_full_w;
     // SoC Labs Bug-A FCSM observation 2026-06-03
     wire        obs_a2l_replay_app_valid_w;
+    // SoC Labs V2 data-send observation 2026-06-21 — a2l replay buffer true
+    // app_ready (app-clk domain) and link_empty (link-clk domain). Both are
+    // pure read-only fan-outs of existing FCSM/replay nets, 2-flop synced to
+    // apb_clk below and read at Region 10 slots 6/7 (SoC 0x4403_2158/0x215C).
+    wire        obs_a2l_replay_app_ready_w;
+    wire        obs_a2l_replay_link_empty_w;
+    // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — a2l replay
+    // buffer raw write ptr / app-clk-synced ACK ptr / false-FULL flag / enable
+    // demet term of app_ready. All app-clk domain, pure read-only fan-outs of
+    // existing replay-buffer nets; 2-flop synced to apb_clk below and PACKED
+    // into the spare bits of the 0x2158 A2L_REPLAY_OBS word.
+    wire [4:0]  obs_a2l_wptr_w;
+    wire [4:0]  obs_a2l_synced_ack_w;
+    wire        obs_a2l_full_w;
+    wire        obs_a2l_enable_app_demet_w;
+    // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+    // — a2l replay buffer read-side reset (== fifo_io_rreset) and LINK read
+    // binary pointer (== link_cur_addr). Link-clk domain, pure read-only fan-outs
+    // of existing replay-buffer nets; 2-flop synced to apb_clk below and PACKED
+    // into the spare bits of the 0x2158 A2L_REPLAY_OBS word (rptr [18:14],
+    // rreset [19]).
+    wire        obs_a2l_rreset_w;
+    wire [4:0]  obs_a2l_rptr_w;
     // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
     // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
     wire [7:0]  obs_fe_rx_ptr_w;
@@ -870,9 +912,15 @@ module axi_chiplet_controller #(
     // SoC Labs perlane-wp (2026-06-16): Region 10 (SoC 0x2144/0x2148/0x214C)
     // shares the 2'b00 select with Region 9; apb_ctrl_reg_r10 picks Region 10.
     wire [31:0] region10_rdata;
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — Region D
+    // (rxcap) read data. Folds onto the same 2'b00 controller select as Region
+    // 9/10; apb_ctrl_reg_rd disambiguates (takes priority over r10/r9 because
+    // tidelink_apb_regs.sv asserts at most one of {rd, r10} for a given paddr).
+    wire [31:0] regionD_rxcap_rdata;
     always_comb begin
         unique case (ctrl_reg_addr[4:3])
-            2'b00:   ctrl_reg_rdata = apb_ctrl_reg_r10 ? region10_rdata
+            2'b00:   ctrl_reg_rdata = apb_ctrl_reg_rd  ? regionD_rxcap_rdata
+                                    : apb_ctrl_reg_r10 ? region10_rdata
                                                        : region9_sync_obs_rdata;
             2'b01:   ctrl_reg_rdata = region4_rdata;
             2'b10:   ctrl_reg_rdata = region8_rdata;
@@ -1069,6 +1117,31 @@ module axi_chiplet_controller #(
     // SoC Labs Bug-A FCSM observation 2026-06-03
     reg                                                                sync_obs_a2l_app_v_0;
     reg                 sync_obs_a2l_app_v_1;
+    // SoC Labs V2 data-send observation 2026-06-21 — 2-flop apb_clk sync of the
+    // a2l replay app_ready (app-clk) and link_empty (link-clk) taps. Same
+    // quasi-static-snapshot treatment as the other obs bits.
+    reg                                                                sync_obs_a2l_app_rdy_0;
+    reg                 sync_obs_a2l_app_rdy_1;
+    reg                                                                sync_obs_a2l_lnk_empty_0;
+    reg                 sync_obs_a2l_lnk_empty_1;
+    // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — 2-flop apb_clk
+    // sync of the a2l replay raw write ptr / synced ACK ptr / full / enable
+    // demet taps. Same quasi-static-snapshot treatment as the other obs bits.
+    reg [4:0]           sync_obs_a2l_wptr_0;
+    reg [4:0]           sync_obs_a2l_wptr_1;
+    reg [4:0]           sync_obs_a2l_sack_0;
+    reg [4:0]           sync_obs_a2l_sack_1;
+    reg                 sync_obs_a2l_full_0;
+    reg                 sync_obs_a2l_full_1;
+    reg                 sync_obs_a2l_endem_0;
+    reg                 sync_obs_a2l_endem_1;
+    // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+    // — 2-flop apb_clk sync of the a2l replay read-side reset (link-clk) and the
+    // LINK read binary pointer (link-clk). Same quasi-static-snapshot treatment.
+    reg                 sync_obs_a2l_rreset_0;
+    reg                 sync_obs_a2l_rreset_1;
+    reg [4:0]           sync_obs_a2l_rptr_0;
+    reg [4:0]           sync_obs_a2l_rptr_1;
     // SoC Labs FC credit observation 2026-06-12 — same 2-flop apb_clk
     // treatment as sync_obs_fe_rx_cred (quasi-static obs snapshot; per-bit
     // coherence not guaranteed mid-update, fine for poll-rate debug reads).
@@ -1107,6 +1180,15 @@ module axi_chiplet_controller #(
     // best[5:0]} from the rx_link_clk-domain calibrator. Same treatment as the
     // live SYNC vector above. Read at 0x4403_2150.
     reg [13:0]          sync_eye_width_0, sync_eye_width_1;
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — 2-flop
+    // apb_clk sync of the three packed sticky words from the Wlink obs bundle
+    // (rx-link-clk / io_rx_clk domain). Each word is a sticky / capture-once /
+    // saturating snapshot, so the per-word multi-bit 2-flop is the same accepted
+    // quasi-static treatment as the raw-word/eye-width snapshots above. Read at
+    // Region D (SoC 0x4403_21A0/0x4403_21A4/0x4403_21A8).
+    reg [31:0]          sync_obs_rxcap0_0, sync_obs_rxcap0_1;
+    reg [31:0]          sync_obs_rxcap1_0, sync_obs_rxcap1_1;
+    reg [31:0]          sync_obs_fcsmcap_0, sync_obs_fcsmcap_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1135,6 +1217,17 @@ module axi_chiplet_controller #(
             sync_obs_fe_rx_full_0   <= 1'b0;  sync_obs_fe_rx_full_1   <= 1'b0;
             // SoC Labs Bug-A FCSM observation 2026-06-03
             sync_obs_a2l_app_v_0    <= 1'b0;  sync_obs_a2l_app_v_1    <= 1'b0;
+            // SoC Labs V2 data-send observation 2026-06-21
+            sync_obs_a2l_app_rdy_0  <= 1'b0;  sync_obs_a2l_app_rdy_1  <= 1'b0;
+            sync_obs_a2l_lnk_empty_0 <= 1'b0; sync_obs_a2l_lnk_empty_1 <= 1'b0;
+            // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+            sync_obs_a2l_wptr_0     <= 5'h0;  sync_obs_a2l_wptr_1     <= 5'h0;
+            sync_obs_a2l_sack_0     <= 5'h0;  sync_obs_a2l_sack_1     <= 5'h0;
+            sync_obs_a2l_full_0     <= 1'b0;  sync_obs_a2l_full_1     <= 1'b0;
+            sync_obs_a2l_endem_0    <= 1'b0;  sync_obs_a2l_endem_1    <= 1'b0;
+            // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+            sync_obs_a2l_rreset_0   <= 1'b0;  sync_obs_a2l_rreset_1   <= 1'b0;
+            sync_obs_a2l_rptr_0     <= 5'h0;  sync_obs_a2l_rptr_1     <= 5'h0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
 `ifdef TIDELINK_PHY_V2
@@ -1153,6 +1246,10 @@ module axi_chiplet_controller #(
             // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp)
             sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
             sync_eye_width_0     <= 14'h0;         sync_eye_width_1     <= 14'h0;
+            // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
+            sync_obs_rxcap0_0    <= 32'h0;         sync_obs_rxcap0_1    <= 32'h0;
+            sync_obs_rxcap1_0    <= 32'h0;         sync_obs_rxcap1_1    <= 32'h0;
+            sync_obs_fcsmcap_0   <= 32'h0;         sync_obs_fcsmcap_1   <= 32'h0;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1200,6 +1297,25 @@ module axi_chiplet_controller #(
             // SoC Labs Bug-A FCSM observation 2026-06-03
             sync_obs_a2l_app_v_0    <= obs_a2l_replay_app_valid_w;
             sync_obs_a2l_app_v_1    <= sync_obs_a2l_app_v_0;
+            // SoC Labs V2 data-send observation 2026-06-21
+            sync_obs_a2l_app_rdy_0  <= obs_a2l_replay_app_ready_w;
+            sync_obs_a2l_app_rdy_1  <= sync_obs_a2l_app_rdy_0;
+            sync_obs_a2l_lnk_empty_0 <= obs_a2l_replay_link_empty_w;
+            sync_obs_a2l_lnk_empty_1 <= sync_obs_a2l_lnk_empty_0;
+            // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+            sync_obs_a2l_wptr_0     <= obs_a2l_wptr_w;
+            sync_obs_a2l_wptr_1     <= sync_obs_a2l_wptr_0;
+            sync_obs_a2l_sack_0     <= obs_a2l_synced_ack_w;
+            sync_obs_a2l_sack_1     <= sync_obs_a2l_sack_0;
+            sync_obs_a2l_full_0     <= obs_a2l_full_w;
+            sync_obs_a2l_full_1     <= sync_obs_a2l_full_0;
+            sync_obs_a2l_endem_0    <= obs_a2l_enable_app_demet_w;
+            sync_obs_a2l_endem_1    <= sync_obs_a2l_endem_0;
+            // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+            sync_obs_a2l_rreset_0   <= obs_a2l_rreset_w;
+            sync_obs_a2l_rreset_1   <= sync_obs_a2l_rreset_0;
+            sync_obs_a2l_rptr_0     <= obs_a2l_rptr_w;
+            sync_obs_a2l_rptr_1     <= sync_obs_a2l_rptr_0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
             sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
@@ -1239,6 +1355,14 @@ module axi_chiplet_controller #(
             sync_eye_width_0     <= {cal_eye_lane_passed_w, cal_eye_best_slip_w,
                                      cal_eye_best_phase_w,  cal_eye_best_w};
             sync_eye_width_1     <= sync_eye_width_0;
+            // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) —
+            // 2-flop sync of the three packed sticky words into apb_clk.
+            sync_obs_rxcap0_0    <= obs_rxcap0_w;
+            sync_obs_rxcap0_1    <= sync_obs_rxcap0_0;
+            sync_obs_rxcap1_0    <= obs_rxcap1_w;
+            sync_obs_rxcap1_1    <= sync_obs_rxcap1_0;
+            sync_obs_fcsmcap_0   <= obs_fcsmcap_w;
+            sync_obs_fcsmcap_1   <= sync_obs_fcsmcap_0;
 `endif
         end
     end
@@ -1500,11 +1624,100 @@ module axi_chiplet_controller #(
         // Task 3 (2026-06-17) — slot 5 (0x4403_2154) EYE_WIDTH_SEL lane select
         // (RW, readback). [2:0] selected lane; [31:24] 0xE8 presence marker.
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'hE8, 21'h0, swi_eye_lane_sel_r}  :  // 0x2154 eye lane sel (RW)
+        // SoC Labs V2 data-send observation 2026-06-21 — slot 6 (0x4403_2158)
+        // A2L_REPLAY_OBS (RO). THE diagnostic for the V2 data-send blocker
+        // (a2l_fc_replay_link_valid stuck 0 while a2l_replay_app_valid=1): the
+        // a2l replay buffer's true app_ready and link_empty, 2-flop synced to
+        // apb_clk. Both are pure read-only fan-outs — no datapath change.
+        //   [ 0] a2l_replay_app_ready  — replay buffer app_ready (FIFO accepts
+        //                                the app write; if 0 the word never
+        //                                crosses into the a2l async FIFO).
+        //   [ 1] a2l_replay_link_empty — replay buffer link side empty (1 = no
+        //                                word available on the link/TX side).
+        //   [31:24] 0xA2 presence marker (old/V1 images read 0 here).
+        //
+        // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — the raw
+        // a2l replay internals packed into the previously-spare bits so silicon
+        // can compute the false-FULL mechanism directly (app_ready alone did not
+        // localize it; two sim-proven fixes failed on silicon). All app-clk
+        // domain, 2-flop synced to apb_clk. EXACT 0x4403_2158 BIT MAP:
+        //   [ 0]    app_ready              (= ~a2l_full & enable_app_clk_demet)
+        //   [ 1]    link_empty
+        //   [ 6: 2] a2l_wptr[4:0]          (app-clk WRITE binary pointer)
+        //   [11: 7] a2l_synced_ack[4:0]    (ACK pointer synced into app-clk)
+        //   [12]    a2l_full               (the false-FULL flag)
+        //   [13]    enable_app_clk_demet   (other term of app_ready)
+        //   [18:14] a2l_rptr[4:0]          (LINK read binary pointer)
+        //   [19]    a2l_rreset             (read-side FIFO reset, == fifo_io_rreset)
+        //   [23:20] spare (reads 0)
+        //   [31:24] 0xA2 presence marker
+        // Decode: if a2l_full=1 it is the pointer issue — compare wptr vs
+        // synced_ack for the lap (e.g. ack=0b10001 vs wptr=0). If a2l_full=0 but
+        // app_ready=0 then enable_app_clk_demet=0 (a different bug). If
+        // a2l_rreset=1 the read side is HELD in reset (link_empty stuck 1). If
+        // a2l_rreset=0 and a2l_rptr is stuck while a2l_wptr advances, the write-
+        // ptr Gray sync into the read domain is broken.
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'hA2, 4'h0,                        // [31:24] marker, [23:20] spare
+                                        sync_obs_a2l_rreset_1,               // [19]    a2l_rreset
+                                        sync_obs_a2l_rptr_1,                 // [18:14] a2l_rptr[4:0]
+                                        sync_obs_a2l_endem_1,                // [13]    enable_app_clk_demet
+                                        sync_obs_a2l_full_1,                 // [12]    a2l_full
+                                        sync_obs_a2l_sack_1,                 // [11:7]  a2l_synced_ack[4:0]
+                                        sync_obs_a2l_wptr_1,                 // [6:2]   a2l_wptr[4:0]
+                                        sync_obs_a2l_lnk_empty_1,            // [1]     link_empty
+                                        sync_obs_a2l_app_rdy_1}           :  // [0]     app_ready (0x2158, RO)
+                                       32'h0;
+    // =====================================================================
+    // Region D — RX-FRAMER long-DATA STICKY CAPTURE (SoC Labs 2026-06-21,
+    //   rxcap). paddr[8:5]=4'b1101, SoC MMIO 0x4403_21A0-0x4403_21A8. All RO.
+    //   THE decisive die_b (RECEIVER) capture: localises exactly WHERE a
+    //   sustained A->B multi-beat long-DATA packet dies. Sticky in the rx-link-
+    //   clk / io_rx_clk domain (survives the slow APB poll), 2-flop-synced here.
+    //
+    //   slot 0 (0x4403_21A0) RXCAP0 — RX framer (WlinkRxLinkLayer):
+    //     [31:24] 0xC0 presence marker (old/V1 images read 0)
+    //     [23]    is_long_ever        — framer EVER saw a long packet
+    //     [22]    eop_ever            — endOfPacket EVER fired
+    //     [21]    err_ever            — framer error-state (==2) EVER
+    //     [20]    valid_ever          — LL_RX valid EVER
+    //     [19:18] state               — live framer FSM state
+    //     [15:0]  ph_at_first_long    — corrected_ph[15:0] captured at the FIRST
+    //                                   is_long ([7:0]=header length byte,
+    //                                   [15:8]=low candidate word_count)
+    //   slot 1 (0x4403_21A4) RXCAP1 — RX framer depth:
+    //     [31:15] max_byte_count[16:0]— deepest byte_count the framer reached
+    //     [14:0]  long_start_cnt      — saturating count of long-packet starts
+    //   slot 2 (0x4403_21A8) FCSMCAP — FCSM delivery (WlinkGenericFCSM_6):
+    //     [31:24] 0xC1 presence marker
+    //     [23]    data_ever           — DATA pkt (data_id 0xa1) EVER decoded
+    //     [22]    l9_resync_ever       — L9 one-shot resync EVER fired
+    //     [21]    pktnum_mismatch_ever — data-pkt pktnum mismatch (post-resync) EVER
+    //     [20]    l2a_valid_ever       — L2A replay app_valid EVER (word enqueued)
+    //     [15:8]  first_pktnum         — first observed ll_rx_pktnum
+    //     [ 7:0]  last_exp_pktnum      — last exp_pkt_num at a data pkt
+    //
+    //   DECODE (one capture distinguishes the three hypotheses):
+    //     (a) EYE corruption     : RXCAP0 is_long_ever=0 (or ph_at_first_long
+    //                              garbage / max_byte_count stalls far below
+    //                              (len+1)*16) AND FCSMCAP data_ever=0.
+    //     (b) FCSM one-shot resync: RXCAP0 is_long_ever=1 + eop_ever=1 (frames
+    //                              fine) BUT FCSMCAP data_ever=1, l9_resync_ever=1,
+    //                              pktnum_mismatch_ever=1, l2a_valid_ever=0 (only
+    //                              the 1st pkt enqueued) -> RTL resync fix.
+    //     (c) commit-gate mis-target: FCSMCAP l2a_valid_ever=1 (delivery fine);
+    //                              then read fifo_ctrl fc_wr_addr vs
+    //                              write_target_addr (0x44032010 STATUS[4]).
+    // =====================================================================
+    assign regionD_rxcap_rdata =
+        (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
+        (ctrl_reg_addr[2:0] == 3'h1) ? sync_obs_rxcap1_1  : // 0x21A4 RXCAP1
+        (ctrl_reg_addr[2:0] == 3'h2) ? sync_obs_fcsmcap_1 : // 0x21A8 FCSMCAP
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
     assign region9_sync_obs_rdata = 32'h0;
     assign region10_rdata          = 32'h0;
+    assign regionD_rxcap_rdata     = 32'h0;
 `endif
 
     // Region 8 read mux
@@ -1681,6 +1894,11 @@ module axi_chiplet_controller #(
     //   once por_reset deasserts.
     // =====================================================================
     wire wlink_por_reset = ~poresetn | ~role_locked;
+    // SoC Labs 2026-06-21: coherent a2l replay-FIFO reset (see app_clk_reset decl ~:417).
+    // Hold the app/write side until role_locked, matching the link/read side (por_reset),
+    // so both replay-FIFO reset domains deassert on the same bring-up event and the gray
+    // ACK-pointer synchronizer (WlinkGenericFCReplayV2_13.v:54) initializes consistently.
+    assign app_clk_reset = ~hresetn | ~role_locked;
 
     // Lane-mask handshake plumbing.
     //   wlink_*_lane_mask  — local mask, exposed by Wlink as a read-only mirror
@@ -2976,8 +3194,28 @@ module axi_chiplet_controller #(
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
         .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w),
+        // SoC Labs V2 data-send observation 2026-06-21 — a2l replay app_ready /
+        // link_empty taps (read-only; consumed by the Region 10 APB read mux).
+        .obs_a2l_replay_app_ready_o  (obs_a2l_replay_app_ready_w),
+        .obs_a2l_replay_link_empty_o (obs_a2l_replay_link_empty_w),
+        // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — a2l replay
+        // raw write ptr / synced ACK ptr / full / enable demet (read-only;
+        // packed into the spare bits of the 0x2158 word by the Region 10 mux).
+        .obs_a2l_wptr_o              (obs_a2l_wptr_w),
+        .obs_a2l_synced_ack_o        (obs_a2l_synced_ack_w),
+        .obs_a2l_full_o              (obs_a2l_full_w),
+        .obs_a2l_enable_app_demet_o  (obs_a2l_enable_app_demet_w),
+        // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation
+        // 2026-06-21 — a2l replay read-side reset / LINK read ptr (read-only;
+        // packed into the spare bits of the 0x2158 word by the Region 10 mux).
+        .obs_a2l_rreset_o            (obs_a2l_rreset_w),
+        .obs_a2l_rptr_o              (obs_a2l_rptr_w),
         // SoC Labs FC credit observation 2026-06-12
-        .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w)
+        .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w),
+        // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
+        .obs_rxcap0_o                (obs_rxcap0_w),
+        .obs_rxcap1_o                (obs_rxcap1_w),
+        .obs_fcsmcap_o               (obs_fcsmcap_w)
 `ifdef TIDELINK_PHY_V2
         // SoC Labs V2 epoch-anchor obs 2026-06-14: pass straight through to the
         // controller's output ports -> tidelink_gpio_phy_apb_regs.epoch_*_i.

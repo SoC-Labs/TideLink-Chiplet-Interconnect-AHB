@@ -260,8 +260,32 @@ module Wlink #(
   output         obs_fe_rx_is_full_o,         // rx domain
   // SoC Labs Bug-A FCSM observation 2026-06-03
   output         obs_a2l_replay_app_valid_o,  // app domain
+  // SoC Labs V2 data-send observation 2026-06-21 — a2l replay buffer's true
+  // app_ready (app-clk domain) and link_empty (link-clk domain). Read-only.
+  output         obs_a2l_replay_app_ready_o,  // app domain
+  output         obs_a2l_replay_link_empty_o, // link domain
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — a2l replay
+  // buffer raw write ptr / app-clk-synced ACK ptr / false-FULL flag / enable
+  // demet term of app_ready. All app-clk domain, read-only fan-outs.
+  output [4:0]   obs_a2l_wptr_o,              // app domain (write bin ptr)
+  output [4:0]   obs_a2l_synced_ack_o,        // app domain (synced ACK ptr)
+  output         obs_a2l_full_o,              // app domain (false-FULL flag)
+  output         obs_a2l_enable_app_demet_o,  // app domain (other app_ready term)
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  // — a2l replay buffer read-side reset (== fifo_io_rreset) and LINK read binary
+  // pointer (== link_cur_addr). Both link-clk domain, read-only fan-outs.
+  output         obs_a2l_rreset_o,            // link domain (read-side FIFO reset)
+  output [4:0]   obs_a2l_rptr_o,              // link domain (LINK read bin ptr)
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
-  output [7:0]   obs_fe_rx_ptr_o              // tx domain
+  output [7:0]   obs_fe_rx_ptr_o,             // tx domain
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky framer (llrx) + FCSM (tl2wl) words that localise where a sustained
+  // A->B long-DATA packet dies. rx-link-clk / io_rx_clk domains; pure read-only
+  // fan-outs. Present in V1 + V2 (the framer/FCSM are shared); only the V2
+  // controller decodes them to APB (Region D), so V1 stays bit-identical.
+  output [31:0]  obs_rxcap0_o,                // {marker,ever,state,ph@first_long}
+  output [31:0]  obs_rxcap1_o,                // {max_byte_count, long_start_cnt}
+  output [31:0]  obs_fcsmcap_o                // {marker,ever,first/last pktnum}
 `ifdef TIDELINK_PHY_V2
   // SoC Labs V2 epoch-anchor engagement observable 2026-06-14 — the
   // WlinkGPIOPHY (deps/tidelink-phy fork) exports the cross-lane word-EPOCH
@@ -333,6 +357,11 @@ module Wlink #(
   wire       llrx_io_obs_valid;
   // SoC Labs 2026-06-08: SYNC-detected pulse from llrx (RX link-clock domain).
   wire       llrx_io_obs_sync_detected;
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky framer words from llrx (rx-link-clk domain), forwarded to Wlink
+  // outputs below.
+  wire [31:0] llrx_io_obs_rxcap0;
+  wire [31:0] llrx_io_obs_rxcap1;
 `ifdef TIDELINK_PHY_V2
   // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2) — live
   // 1-cycle mask-aware match from the PHY detector (post-deskew word, RX
@@ -357,8 +386,22 @@ module Wlink #(
   wire       tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   wire       tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs V2 data-send observation 2026-06-21
+  wire       tl2wl_io_obs_a2l_replay_app_ready;
+  wire       tl2wl_io_obs_a2l_replay_link_empty;
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+  wire [4:0] tl2wl_io_obs_a2l_wptr;
+  wire [4:0] tl2wl_io_obs_a2l_synced_ack;
+  wire       tl2wl_io_obs_a2l_full;
+  wire       tl2wl_io_obs_a2l_enable_app_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  wire       tl2wl_io_obs_a2l_rreset;
+  wire [4:0] tl2wl_io_obs_a2l_rptr;
   // SoC Labs FC credit observation 2026-06-12
   wire [7:0] tl2wl_io_obs_fe_rx_ptr;
+  // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky FCSM word from tl2wl (io_rx_clk domain), forwarded to Wlink output.
+  wire [31:0] tl2wl_io_obs_fcsmcap;
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
@@ -1001,12 +1044,27 @@ module Wlink #(
   assign obs_fe_rx_is_full_o         = tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign obs_a2l_replay_app_valid_o  = tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs V2 data-send observation 2026-06-21 (read-only fan-out)
+  assign obs_a2l_replay_app_ready_o  = tl2wl_io_obs_a2l_replay_app_ready;
+  assign obs_a2l_replay_link_empty_o = tl2wl_io_obs_a2l_replay_link_empty;
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only fan-out)
+  assign obs_a2l_wptr_o              = tl2wl_io_obs_a2l_wptr;
+  assign obs_a2l_synced_ack_o        = tl2wl_io_obs_a2l_synced_ack;
+  assign obs_a2l_full_o              = tl2wl_io_obs_a2l_full;
+  assign obs_a2l_enable_app_demet_o  = tl2wl_io_obs_a2l_enable_app_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO fan-out)
+  assign obs_a2l_rreset_o            = tl2wl_io_obs_a2l_rreset;
+  assign obs_a2l_rptr_o              = tl2wl_io_obs_a2l_rptr;
   // SoC Labs FC credit observation 2026-06-12
   assign obs_fe_rx_ptr_o             = tl2wl_io_obs_fe_rx_ptr;
   assign obs_llrx_state_o        = llrx_io_obs_state;
   assign obs_is_short_pkt_o      = llrx_io_obs_is_short_pkt;
   assign obs_is_long_pkt_o       = llrx_io_obs_is_long_pkt;
   assign obs_llrx_valid_o        = llrx_io_obs_valid;
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap, RO fan-out)
+  assign obs_rxcap0_o            = llrx_io_obs_rxcap0;
+  assign obs_rxcap1_o            = llrx_io_obs_rxcap1;
+  assign obs_fcsmcap_o           = tl2wl_io_obs_fcsmcap;
   assign obs_ecc_corrupted_cnt_o = obs_ecc_corrupted_cnt_q;
   assign obs_ecc_corrected_cnt_o = obs_ecc_corrected_cnt_q;
   assign obs_sync_detected_cnt_o = obs_sync_detected_cnt_q;
@@ -1516,7 +1574,10 @@ module Wlink #(
     .io_obs_is_short_pkt(llrx_io_obs_is_short_pkt),
     .io_obs_is_long_pkt(llrx_io_obs_is_long_pkt),
     .io_obs_valid(llrx_io_obs_valid),
-    .io_obs_sync_detected(llrx_io_obs_sync_detected) // SoC Labs 2026-06-08
+    .io_obs_sync_detected(llrx_io_obs_sync_detected), // SoC Labs 2026-06-08
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
+    .io_obs_rxcap0(llrx_io_obs_rxcap0),
+    .io_obs_rxcap1(llrx_io_obs_rxcap1)
   );
   AXI4ToWlink axi2wl ( // @[AXI.scala 99:31]
     .clock(axi2wl_clock),
@@ -1750,8 +1811,21 @@ module Wlink #(
     .io_obs_fe_rx_is_full(tl2wl_io_obs_fe_rx_is_full),
     // SoC Labs Bug-A FCSM observation 2026-06-03
     .io_obs_a2l_replay_app_valid(tl2wl_io_obs_a2l_replay_app_valid),
+    // SoC Labs V2 data-send observation 2026-06-21
+    .io_obs_a2l_replay_app_ready(tl2wl_io_obs_a2l_replay_app_ready),
+    .io_obs_a2l_replay_link_empty(tl2wl_io_obs_a2l_replay_link_empty),
+    // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+    .io_obs_a2l_wptr(tl2wl_io_obs_a2l_wptr),
+    .io_obs_a2l_synced_ack(tl2wl_io_obs_a2l_synced_ack),
+    .io_obs_a2l_full(tl2wl_io_obs_a2l_full),
+    .io_obs_a2l_enable_app_demet(tl2wl_io_obs_a2l_enable_app_demet),
+    // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+    .io_obs_a2l_rreset(tl2wl_io_obs_a2l_rreset),
+    .io_obs_a2l_rptr(tl2wl_io_obs_a2l_rptr),
     // SoC Labs FC credit observation 2026-06-12
-    .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr)
+    .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr),
+    // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
+    .io_obs_fcsmcap(tl2wl_io_obs_fcsmcap)
   );
   ShortPacketToWlink sp2wl ( // @[ShortPacket.scala 87:30]
     .auto_rx_in_sop(sp2wl_auto_rx_in_sop),

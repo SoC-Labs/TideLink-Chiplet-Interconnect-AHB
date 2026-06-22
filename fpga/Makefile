@@ -139,7 +139,14 @@ BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)
 # IP metadata
 FPGA_VENDOR     := soclabs.org
 FPGA_CORE_REV   := 1
-FPGA_NUM_JOBS   ?= 4
+# SoC Labs 2026-06-21 (turnaround): 4->8 so the ~4-5m OOC sub-IP synth runs overlap
+# fully (host has 16 cores; lower it for smaller farm hosts). QoR-neutral.
+FPGA_NUM_JOBS   ?= 8
+# Shared persistent Vivado IP cache (build_design.tcl config_ip_cache). Reused across
+# builds so unchanged static Xilinx OOC IP is fetched, not re-synthesised. Outside the
+# create_project -force project dir; under imp/ (already gitignored). Override to share
+# one cache across farm hosts. Empty = disabled (old behaviour).
+FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache)
 
 # Vivado-native remote-host farming (launch_runs -host). Empty = local build.
 # "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".
@@ -232,6 +239,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
+	export FPGA_IP_CACHE_DIR=$(FPGA_IP_CACHE_DIR) && \
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \

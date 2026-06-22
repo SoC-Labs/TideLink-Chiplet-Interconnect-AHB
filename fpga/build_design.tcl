@@ -175,6 +175,8 @@ puts "==========================================="
 
 # STEP 1: Create Vivado project
 create_project tidelink_project $project_dir -part $part -force
+# SoC Labs 2026-06-21 (turnaround): let synth/impl use more host threads (QoR-neutral).
+set_param general.maxThreads 8
 
 # STEP 2: Add IP repositories (tidelink + optional PHC)
 if { $phc_ip_repo ne "" } {
@@ -183,6 +185,18 @@ if { $phc_ip_repo ne "" } {
     set_property ip_repo_paths $ip_repo [current_project]
 }
 update_ip_catalog
+
+# SoC Labs 2026-06-21 (turnaround): shared persistent IP cache so unchanged Xilinx
+# OOC sub-IP (axi_smc ~4m52s, axi_smc_data ~3m43s, PS7, clk_wiz, ahb bridges) is
+# REUSED across builds instead of re-synthesised on every `create_project -force`.
+# Survives the project wipe (cache lives outside the project dir). Keyed on IP
+# config+part+tool, so a genuine IP-config change correctly misses. Zero effect on
+# placement/routing/timing (the pad_clk_rx eye is untouched). NEVER under /research/AAA.
+if { [info exists ::env(FPGA_IP_CACHE_DIR)] && $::env(FPGA_IP_CACHE_DIR) ne "" } {
+    file mkdir $::env(FPGA_IP_CACHE_DIR)
+    config_ip_cache -use_cache_location $::env(FPGA_IP_CACHE_DIR)
+    puts "IP CACHE: using $::env(FPGA_IP_CACHE_DIR)"
+}
 
 # STEP 3: Source block design
 source $target_dir/tidelink_design.tcl

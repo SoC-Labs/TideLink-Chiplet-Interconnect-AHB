@@ -110,6 +110,11 @@ module tidelink_apb_regs #(
     // routed to the gpio_phy slave in tidelink_top — only 0x2144/0x2148/0x214C
     // (slots 1/2/3) are claimed here. V1 ties this low (bit-identical).
     output logic                    ctrl_reg_r10,
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap): Region D
+    // (apb_region 4'b1101, SoC 0x4403_21A0-0x4403_21A8) select. Like Region 10
+    // it folds onto the controller's 2'b00 select; this 1-bit flag (mirroring
+    // ctrl_reg_r10) disambiguates. RO; V1 ties it low (bit-identical).
+    output logic                    ctrl_reg_rd,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
 
@@ -505,16 +510,22 @@ module tidelink_apb_regs #(
     // register (region10_write is V2-only in the controller) — inert, the same
     // as the always-routed Region 9 strobe.
     wire region10_hit = (apb_region == 4'b1010) && (paddr[4:2] != 3'h0);
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap): Region D
+    // (paddr[8:5]=4'b1101, SoC 0x4403_21A0-0x4403_21BF) -> controller Region D.
+    // RO observability; all 8 slots map (no slot-0 carve-out, unlike Region 10).
+    wire regionD_hit = (apb_region == 4'b1101);
     assign ctrl_reg_r10   = region10_hit;
+    assign ctrl_reg_rd    = regionD_hit;
     assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
                                            (apb_region == 4'b1000) ||
                                            (apb_region == 4'b1001) ||
                                            (apb_region == 4'b1100) ||
-                                           region10_hit);
-    // Region 9 and Region 10 both fold onto ctrl_reg_addr[4:3]==2'b00 (the
-    // controller disambiguates Region 10 via ctrl_reg_r10); the slot index
-    // (paddr[4:2]) selects the word within each bank.
-    assign ctrl_reg_addr  = ((apb_region == 4'b1001) || region10_hit)
+                                           region10_hit ||
+                                           regionD_hit);
+    // Region 9, Region 10 and Region D all fold onto ctrl_reg_addr[4:3]==2'b00
+    // (the controller disambiguates 10 via ctrl_reg_r10 and D via ctrl_reg_rd);
+    // the slot index (paddr[4:2]) selects the word within each bank.
+    assign ctrl_reg_addr  = ((apb_region == 4'b1001) || region10_hit || regionD_hit)
                                 ? {2'b00, paddr[4:2]}
                                 : {apb_region[3:2], paddr[4:2]};
     assign ctrl_reg_wdata = pwdata;
@@ -624,6 +635,14 @@ module tidelink_apb_regs #(
                 //   tidelink_top, so it is left at 0 here.
                 prdata = region10_hit ? ctrl_reg_rdata : '0;
             end
+            4'b1101: begin // Region D: RX-FRAMER long-DATA STICKY CAPTURE (rxcap)
+                //   SoC Labs 2026-06-21. Slots 0/1/2 (SoC 0x4403_21A0/21A4/21A8)
+                //   = RXCAP0 / RXCAP1 / FCSMCAP — the die_b receiver sticky-OBS
+                //   words. RO. Same ctrl_reg_rdata pass-through; the chiplet
+                //   controller decodes this bank on region-select 2'b00
+                //   (ctrl_reg_rd special-cased above). V2-only data; reads 0 in V1.
+                prdata = ctrl_reg_rdata;
+            end
             default: ;
         endcase
     end
@@ -671,6 +690,9 @@ module tidelink_apb_regs #(
                     // Region 10 owns its own pslverr (RO write + MODE=10
                     // decode-err) inside tidelink_eye_regs.  Parent OR-mux
                     // substitutes that pslverr; leave the local entry 0.
+                end
+                4'b1101: begin // Region D: rxcap sticky-OBS — all slots RO
+                    if (pwrite) pslverr = 1'b1;
                 end
                 default: ;
             endcase

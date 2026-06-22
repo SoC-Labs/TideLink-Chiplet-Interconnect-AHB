@@ -15,12 +15,18 @@
 // DUT's training-mode port is `training_mode_i`; the EPOCH_ANCHOR_EN param is
 // overridable via TB_EPOCH_ANCHOR_EN (default 0 = occupancy-only path).
 //
+// 2026-06-22: surface SYNC_REANCHOR_EN (overridable via TB_SYNC_REANCHOR_EN,
+// default 0) so the SYNC-beacon re-anchor path can be unit-tested directly. It
+// is MUTUALLY EXCLUSIVE with EPOCH_ANCHOR_EN (the DUT $fatal's if both are set),
+// so a SYNC_REANCHOR build must pass TB_EPOCH_ANCHOR_EN=0.
+//
 // Pure structural — no behaviour added. Faithful to the DUT.
 // =============================================================================
 `default_nettype none
 
 module tb_deskew #(
-    parameter bit EPOCH_ANCHOR_EN = 1'b0
+    parameter bit EPOCH_ANCHOR_EN  = 1'b0,
+    parameter bit SYNC_REANCHOR_EN = 1'b0
 ) (
     input  wire        rst_n,
     input  wire        training_mode,
@@ -47,7 +53,8 @@ module tb_deskew #(
                                lane_data3, lane_data2, lane_data1, lane_data0 };
 
     tidelink_lane_deskew #(
-        .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN)
+        .EPOCH_ANCHOR_EN  (EPOCH_ANCHOR_EN),
+        .SYNC_REANCHOR_EN (SYNC_REANCHOR_EN)
     ) u_dut (
         .rst_n           (rst_n),
         .lane_clk        (lane_clk),

@@ -1,6 +1,26 @@
-# TideLink — Pynq-Z2 Paired GPIO-Bridge Target
+# TideLink — Pynq-Z2 Paired GPIO-Bridge Target (FLIP / die_b)
 
 Same Vivado design as `pynq-z2-single` plus an AXI GPIO at `0x4404_0000` whose bit 0 drives `role_strap_i`. The same bitstream programs **both** boards in a paired set; role is selected at runtime from the `FPGAHUB_LOCAL_ROLE` env var that fpgahub injects into the action subprocess (`die_a` → 0, `die_b` → 1).
+
+## pad_clk_rx BUFG fix (die_b A→B, 2026-06-23)
+
+This FLIP target's `pad_clk_rx` lands on **Y9** (`IO_L14P_T2_SRCC_13`, the weaker single-region clock pin) vs the straight target's Y7 (MRCC). The packaged TideLink IP's internal BUFG (`USE_CLKBUF=1`) is built out-of-context **inside** the IP, so the top-level IO clock placer cannot see it on the ~97%-packed die; top-level BUFG inference on the SRCC pin then fails and Vivado falls back to a LUT-routed clock (WHS −21.7 ns) — the diagnosed die_b A→B failure.
+
+The fix mirrors the PHY-BIST flip target (which closed clean, WHS +0.05):
+
+- **`tidelink_clk_rx_buf.v`** — explicit top-level `IBUFG`+`BUFG` instantiated in the BD (`clk_rx_buf`) between the `pad_clk_rx` port and `tidelink_0/pad_clk_rx`.
+- **`tidelink_design.tcl`** — IPI override `CONFIG.USE_CLKBUF {1'b0}` on `tidelink_0` so the IP's internal per-lane BUFGs are pruned (the BD's single BUFG is the only one; no illegal BUFG-cascade).
+- **`pynq_z2_tidelink_drc.xdc`** — `set_property CLOCK_DEDICATED_ROUTE TRUE` on the `pad_clk_rx` net so the BUFG must use the dedicated clock network from the clock-capable Y9 pin (a regression to a LUT route becomes a hard placer error, not a silent eye killer).
+- **`pynq_z2_tidelink_timing.xdc` [4c]** — per-lane recovered RX word clocks (`gpiorx0..7_word_clk`, pad_clk_rx /16) + the bit→word handoff `set_max_delay` + a 3-group async `set_clock_groups` (recovered-RX / hclk / TX word clock). With `USE_CLKBUF=0` the RTL prunes the per-lane word-clock BUFG, so the /16 word domain must be declared here or it routes as an untimed "no_clock" fabric net.
+
+### Build setting: `FPGA_USE_IDELAY=0`
+
+Build this target with **`FPGA_USE_IDELAY=0`** (the default — do **not** set it to 1). The PHY-BIST flip target closed timing **without** the per-lane `IDELAYE2` line, and `USE_IDELAY` defaults to `0` in the RTL/IP. With `FPGA_USE_IDELAY=0`, `build_design.tcl` skips `pynq_z2_tidelink_idelay.xdc` entirely (its `get_cells {REF_NAME == IDELAYE2}` selectors would otherwise be empty and trip the Vivado message gate, and its `IOB FALSE` would conflict with the `IOB TRUE` request the timing XDC makes on `pad_rx[*]`). `pynq_z2_tidelink_idelay.xdc` is **kept** in the target dir (not deleted) so an `FPGA_USE_IDELAY=1` experiment is a one-flag change.
+
+```bash
+# This target — explicit FPGA_USE_IDELAY=0 (also the default):
+make -C fpga TARGET=pynq-z2-pair-flip-all FPGA_USE_IDELAY=0 build_design
+```
 
 The two boards are wired together by a flat ribbon cable plugged into both Raspberry Pi headers (J13 on each Pynq-Z2). The ribbon is the cross-strap: the bitstream's `pad_tx[*]` exits each board on the same RPi pin, and the cable physically swaps TX↔RX so Board-A's `pad_tx[n]` lands on Board-B's `pad_rx[n]` (and vice versa). See `ribbon_wiring.md` for the full wire chart.
 

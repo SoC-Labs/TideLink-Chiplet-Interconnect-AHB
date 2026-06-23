@@ -24,3 +24,20 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # adding headroom for phys_opt's pad_rx->capture placement. Regenerate via
 # fpga/scripts/insert_debug_core.tcl (FPGA_INSERT_DEBUG_CORE=1) + save_constraints
 # if a hardware ILA capture is needed (or restore from git commit 61ce19b).
+
+# pad_clk_rx dedicated clock route (die_b A->B fix, 2026-06-23).
+# REQUIRE the forwarded RX clock to use the dedicated clock network from the
+# clock-capable pin (Y9 / IO_L14P_T2_SRCC_13) through the explicit top-level
+# IBUFG+BUFG in tidelink_clk_rx_buf (see tidelink_design.tcl clk_rx_buf cell +
+# the USE_CLKBUF=1'b0 IP override). TRUE is the Vivado default; we set it
+# explicitly so a regression that pushes the BUFG off the dedicated network is
+# a hard placer error rather than a silent LUT-routed clock (the diagnosed
+# die_b flip-build root cause: WHS -21.7 ns). NOTE: this is the OPPOSITE of the
+# legacy pynq-z2-single workaround (CLOCK_DEDICATED_ROUTE FALSE) — that target's
+# pad_clk_rx was on a NON-clock-capable RPi pin (W18) where no dedicated route
+# exists, so it had to fall back to fabric. Y9 here IS clock-capable (SRCC), so
+# the dedicated route is available and is what we must force. Applied in synth +
+# impl (this file is USED_IN_SYNTHESIS/IMPLEMENTATION true) so it survives the
+# save_constraints round-trip during any debug-core insertion.
+# Net selector mirrors pynq-z2-single: the net driven BY the top-level port.
+set_property CLOCK_DEDICATED_ROUTE TRUE [get_nets -of_objects [get_ports pad_clk_rx]]

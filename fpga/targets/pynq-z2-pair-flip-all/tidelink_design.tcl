@@ -350,11 +350,53 @@ proc create_root_design { parentCell } {
     ] $irq_concat
 
     #--------------------------------------------------------------------------
+    # pad_clk_rx single IBUFG+BUFG wrapper (die_b A->B fix, 2026-06-23).
+    # tidelink_clk_rx_buf.v is a tiny Verilog module containing one IBUFG +
+    # one BUFG. It sits between the BD port pad_clk_rx and tidelink_0's
+    # pad_clk_rx port so the forwarded RX clock reaches the IP through an
+    # EXPLICIT top-level global clock buffer (visible to the IO clock placer)
+    # instead of relying on the IP's internal, out-of-context BUFG which the
+    # top placer cannot see on the ~97%-packed die. Mirrors the proven
+    # pynq-z2-pair-mmcmbypass(-oddr)-flip-all + PHY-BIST flip targets.
+    #
+    # The .v file lives alongside this BD TCL in the target directory;
+    # FPGA_TARGET_DIR is exported by fpga/Makefile via build_design.tcl.
+    #--------------------------------------------------------------------------
+    if { [info exists ::env(FPGA_TARGET_DIR)] } {
+        set _tgt_dir $::env(FPGA_TARGET_DIR)
+    } else {
+        # Fallback for ad-hoc TCL sourcing (no env var set).
+        set _tgt_dir [file dirname [info script]]
+    }
+    set _clk_rx_buf_v [file join $_tgt_dir tidelink_clk_rx_buf.v]
+    if { [llength [get_files -quiet $_clk_rx_buf_v]] == 0 } {
+        add_files -norecurse $_clk_rx_buf_v
+    }
+    update_compile_order -fileset sources_1
+
+    set clk_rx_buf [create_bd_cell -type module \
+        -reference tidelink_clk_rx_buf clk_rx_buf]
+
+    #--------------------------------------------------------------------------
     # TideLink IP (packaged by Wave A3)
     # VLNV: soclabs.org:user:tidelink_vivado_wrapper:1.0
+    #
+    # pad_clk_rx BUFG fix IPI override (2026-06-23): USE_CLKBUF=1'b0 disables
+    # the IP's internal per-lane BUFGs on io_pad_clk (8x). The BD now wires a
+    # global clock net (BUFG.O of clk_rx_buf) into tidelink_0/pad_clk_rx, so
+    # per-instance cap BUFGs would be illegal BUFG-cascades. The packaged IP
+    # exposes ONLY the unified USE_CLKBUF param (the USE_CAP_CLKBUF /
+    # USE_LNK_CLKBUF RTL split is not in the packaged component.xml); the RTL
+    # defaults USE_CAP_CLKBUF = USE_LNK_CLKBUF = USE_CLKBUF, so 0 prunes both
+    # the capture-side and the derived word-clock BUFGs to passthrough. The
+    # word-clock domain is then declared/timed by pynq_z2_tidelink_timing.xdc
+    # [4c] (mirrors the PHY-BIST word_handoff.xdc).
     #--------------------------------------------------------------------------
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
+    set_property -dict [list \
+        CONFIG.USE_CLKBUF {1'b0} \
+    ] $tl
 
     #--------------------------------------------------------------------------
     # PHC subsystem REMOVED 2026-06-19 (phc_0, axi_apb_phc, axi_gpio_pmod_trig,
@@ -564,7 +606,13 @@ proc create_root_design { parentCell } {
     #-- GPIO PHY pads -> external ports
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_ports pad_clk_tx]
     connect_bd_net [get_bd_pins tidelink_0/pad_tx]     [get_bd_ports pad_tx]
-    connect_bd_net [get_bd_ports pad_clk_rx]            [get_bd_pins tidelink_0/pad_clk_rx]
+    #-- pad_clk_rx routing (die_b A->B fix, 2026-06-23):
+    #--   pad_clk_rx (port) -> clk_rx_buf/pad_in (IBUFG) -> BUFG ->
+    #--   clk_rx_buf/clk_out -> tidelink_0/pad_clk_rx
+    #-- See tidelink_clk_rx_buf.v in this target dir and the USE_CLKBUF=1'b0
+    #-- IPI override on $tl above.
+    connect_bd_net [get_bd_ports pad_clk_rx]           [get_bd_pins clk_rx_buf/pad_in]
+    connect_bd_net [get_bd_pins clk_rx_buf/clk_out]    [get_bd_pins tidelink_0/pad_clk_rx]
     connect_bd_net [get_bd_ports pad_rx]                [get_bd_pins tidelink_0/pad_rx]
 
     #-- BD Edit 1: chiplet I2C sideband -> external BD ports (mirrors mps3

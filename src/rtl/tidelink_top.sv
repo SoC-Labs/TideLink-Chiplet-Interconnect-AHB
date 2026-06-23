@@ -1059,7 +1059,14 @@ module tidelink_top #(
                            // eye_shim so it falls through to tidelink_internal_prdata;
                            // otherwise eye_shim (tied 0 in V2) wins and 0x2158 reads
                            // 0x00000000 with NO 0xA2 marker (same trap as 0x2150).
-                           || (tl_apb_paddr[4:0] == 5'h18));  // 0x2158 A2L_REPLAY_OBS (RO)
+                           || (tl_apb_paddr[4:0] == 5'h18)    // 0x2158 A2L_REPLAY_OBS (RO)
+                           // STICKY-POISON sync_seen obs 2026-06-23: 0x215C is the
+                           // SYNC_SEEN_VEC RO word (Region 10 slot 7), served by the
+                           // chiplet controller's region10_rdata. Exclude it from
+                           // eye_shim so it falls through to tidelink_internal_prdata;
+                           // otherwise eye_shim (tied 0 in V2) wins and 0x215C reads
+                           // 0x00000000 with NO 0x5F marker (same trap as 0x2150/0x2158).
+                           || (tl_apb_paddr[4:0] == 5'h1C));  // 0x215C SYNC_SEEN_VEC (RO)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
     assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :

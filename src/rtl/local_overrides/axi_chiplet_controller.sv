@@ -876,6 +876,12 @@ module axi_chiplet_controller #(
     // WlinkGPIOPHY fork. 2-flop synced to apb_clk below (sync_obs_lane_live_*).
     // Read at the new LIVE-MATCH register (SoC MMIO 0x4403_2144). V2-only.
     wire [7:0]   obs_sync_lane_live_w;
+    // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23) — raw
+    // rx-link-clk-domain per-lane "SYNC re-anchor committed" vector from the V2
+    // WlinkGPIOPHY fork (deskew sync_seen_vec_o). 2-flop synced to apb_clk below
+    // (sync_obs_seen_vec_*). Read at the new SYNC-SEEN register (SoC MMIO
+    // 0x4403_215C, Region 10 slot 7, RO). V2-only.
+    wire [7:0]   obs_sync_seen_vec_w;
 `endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
@@ -1175,6 +1181,10 @@ module axi_chiplet_controller #(
     // 2-flop apb_clk treatment as the sticky lane vector. Read at the LIVE-MATCH
     // register (SoC MMIO 0x4403_2144).
     reg [7:0]           sync_obs_lane_live_0, sync_obs_lane_live_1;
+    // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23) — same
+    // 2-flop apb_clk treatment. Per-lane "SYNC re-anchor committed a periodic-
+    // confirmed index". Read at the SYNC-SEEN register (SoC MMIO 0x4403_215C).
+    reg [7:0]           sync_obs_seen_vec_0, sync_obs_seen_vec_1;
     // EYE-WIDTH VISIBILITY (2026-06-17) — 2-flop apb_clk sync of the selected
     // lane's eye-width fields, packed 14-bit {passed, slip[2:0], phase[3:0],
     // best[5:0]} from the rx_link_clk-domain calibrator. Same treatment as the
@@ -1245,6 +1255,8 @@ module axi_chiplet_controller #(
             dbg_obs_slice_idx_0  <= 32'hFFFF_FFFF; dbg_obs_slice_idx_1  <= 32'hFFFF_FFFF;
             // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp)
             sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
+            // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23)
+            sync_obs_seen_vec_0  <= 8'h0;          sync_obs_seen_vec_1  <= 8'h0;
             sync_eye_width_0     <= 14'h0;         sync_eye_width_1     <= 14'h0;
             // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
             sync_obs_rxcap0_0    <= 32'h0;         sync_obs_rxcap0_1    <= 32'h0;
@@ -1350,6 +1362,11 @@ module axi_chiplet_controller #(
             // 2-flop sync of the rx-link-clk-domain live vector into apb_clk.
             sync_obs_lane_live_0 <= obs_sync_lane_live_w;
             sync_obs_lane_live_1 <= sync_obs_lane_live_0;
+            // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23)
+            // — 2-flop sync of the rx-link-clk-domain per-lane sync_seen vector
+            // into apb_clk (each bit independent + quasi-static = tear-immune).
+            sync_obs_seen_vec_0  <= obs_sync_seen_vec_w;
+            sync_obs_seen_vec_1  <= sync_obs_seen_vec_0;
             // EYE-WIDTH VISIBILITY (2026-06-17): 2-flop sync of the selected
             // lane's eye-width pack into apb_clk. Quasi-static after a sweep.
             sync_eye_width_0     <= {cal_eye_lane_passed_w, cal_eye_best_slip_w,
@@ -1666,6 +1683,18 @@ module axi_chiplet_controller #(
                                         sync_obs_a2l_wptr_1,                 // [6:2]   a2l_wptr[4:0]
                                         sync_obs_a2l_lnk_empty_1,            // [1]     link_empty
                                         sync_obs_a2l_app_rdy_1}           :  // [0]     app_ready (0x2158, RO)
+        // SoC Labs STICKY-POISON per-lane deskew sync_seen vector 2026-06-23 —
+        // slot 7 (0x4403_215C) SYNC_SEEN_VEC (RO). The instrument the prior agent
+        // left as a TODO: per-lane deskew SYNC re-anchor "committed a periodic-
+        // confirmed SYNC index" vector. Lets a silicon read distinguish:
+        //   0x00            -> NO lane armed (self-gating has rejected everything
+        //                      so far / no clean periodic SYNC yet);
+        //   set, EPOCH_STATUS(0x2140 bit0 reanchored)=0 -> lanes armed but indices
+        //                      INCONSISTENT (the re-anchor latch has not engaged);
+        //   set AND reanchored=1 -> armed + coherent (the healthy state).
+        //   [ 7: 0] per-lane sync_seen (lane L at bit L)
+        //   [31:24] 0x5F presence marker (old/V1 images read 0 here)
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'h5F, 16'h0, sync_obs_seen_vec_1} :  // 0x215C sync_seen vec (RO)
                                        32'h0;
     // =====================================================================
     // Region D — RX-FRAMER long-DATA STICKY CAPTURE (SoC Labs 2026-06-21,
@@ -3248,7 +3277,11 @@ module axi_chiplet_controller #(
         .swi_sync_obs_clr_in         (swi_sync_obs_clr_r),
         .obs_sync_lane_live_o        (obs_sync_lane_live_w),
         .swi_word_pin_ovr_in         (swi_word_pin_perlane_r),
-        .swi_word_pin_ovr_en_in      (swi_word_pin_perlane_en_r)
+        .swi_word_pin_ovr_en_in      (swi_word_pin_perlane_en_r),
+        // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23):
+        // raw rx-link-clk-domain probe; double-synced to apb_clk below and read
+        // at Region 10 slot 7 (SoC MMIO 0x4403_215C, RO).
+        .obs_sync_seen_vec_o         (obs_sync_seen_vec_w)
 `endif
     );
 

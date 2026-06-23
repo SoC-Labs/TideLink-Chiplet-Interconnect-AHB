@@ -26,13 +26,27 @@
 
 module tb_deskew #(
     parameter bit EPOCH_ANCHOR_EN  = 1'b0,
-    parameter bit SYNC_REANCHOR_EN = 1'b0
+    parameter bit SYNC_REANCHOR_EN = 1'b0,
+    // 2026-06-22: expose the re-anchor's per-lane SYNC-slice Hamming tolerance so
+    // the marginal-eye test can prove EXACT (TOL=0) FAILS while TOLERANT (TOL=4)
+    // COHERES on the same bit-errored SYNC slices. Default 4 = the DUT default.
+    parameter int unsigned SYNC_REANCHOR_TOL = 4,
+    // 2026-06-23: expose the self-gating periodic-confirm depth so the poison test
+    // can prove K>=2 REJECTS the pre-SYNC poison (coheres without any SW clear)
+    // while K=1 (degenerate first-arrival latch) STILL breaks under poison — the
+    // negative control proving the consecutive-consistent gate is the fix.
+    parameter int unsigned SYNC_CONFIRM = 2
 ) (
     input  wire        rst_n,
     input  wire        training_mode,
     input  wire        out_clk,
 
     input  wire [7:0]  lane_mask,
+
+    // 2026-06-23: STICKY-POISON re-arm clear pulse (out_clk domain), the unit-
+    // test model of WavD2DGpio's sync_obs_clr_pulse (SoC 0x44032100[5]). Default
+    // 0 (do_reset drives it) => bit-identical to the pre-fix capture.
+    input  wire        sync_obs_clr,
 
     input  wire        lane_clk0, lane_clk1, lane_clk2, lane_clk3,
     input  wire        lane_clk4, lane_clk5, lane_clk6, lane_clk7,
@@ -43,7 +57,20 @@ module tb_deskew #(
     output wire [127:0] out_data,
     output wire         out_valid,
     output wire         epoch_anchored,
-    output wire [5:0]   epoch_span
+    output wire [5:0]   epoch_span,
+    output wire [7:0]   sync_seen_vec,   // 2026-06-23 per-lane out_clk-synced sync_seen
+
+    // 2026-06-23: SYNC re-anchor INTERNAL observation taps (read-only hierarchical
+    // refs) so the silicon-debug experiments can see WHY the latch does/does not
+    // fire: per-lane write-side sync_seen, the out_clk-synced seen vector, the
+    // all_sync_seen fold, the rd-pointer/span safety gate, and the reanchored
+    // latch. All gated to 0 when SYNC_REANCHOR_EN=0 (the g_reanchor block is
+    // pruned). Pure observation — does not alter DUT behaviour.
+    output wire [7:0]   obs_sync_seen_wr,    // write-side per-lane sync_seen_l
+    output wire [7:0]   obs_sync_seen_sync1, // out_clk-synced per-lane seen
+    output wire         obs_all_sync_seen,   // &(seen | ~mask)
+    output wire         obs_sr_rd_safe,      // rd_ptr >= span gate
+    output wire         obs_reanchored       // the latch
 );
 
     wire [7:0]   lane_clk  = { lane_clk7, lane_clk6, lane_clk5, lane_clk4,
@@ -53,8 +80,10 @@ module tb_deskew #(
                                lane_data3, lane_data2, lane_data1, lane_data0 };
 
     tidelink_lane_deskew #(
-        .EPOCH_ANCHOR_EN  (EPOCH_ANCHOR_EN),
-        .SYNC_REANCHOR_EN (SYNC_REANCHOR_EN)
+        .EPOCH_ANCHOR_EN   (EPOCH_ANCHOR_EN),
+        .SYNC_REANCHOR_EN  (SYNC_REANCHOR_EN),
+        .SYNC_REANCHOR_TOL (SYNC_REANCHOR_TOL),
+        .SYNC_CONFIRM      (SYNC_CONFIRM)
     ) u_dut (
         .rst_n           (rst_n),
         .lane_clk        (lane_clk),
@@ -62,11 +91,37 @@ module tb_deskew #(
         .training_mode_i (training_mode),
         .lane_mask       (lane_mask),
         .out_clk         (out_clk),
+        .sync_obs_clr_i  (sync_obs_clr),
         .out_data        (out_data),
         .out_valid       (out_valid),
         .epoch_anchored_o(epoch_anchored),
-        .epoch_span_o    (epoch_span)
+        .epoch_span_o    (epoch_span),
+        .sync_seen_vec_o (sync_seen_vec)
     );
+
+    // ---- SYNC re-anchor observation taps (hierarchical, read-only) ----------
+    // Guarded by SYNC_REANCHOR_EN: the g_sync_capture / g_reanchor scopes only
+    // exist when enabled; tie the taps to 0 otherwise so the OFF/EPOCH builds
+    // still elaborate.
+    genvar oi;
+    generate
+        if (SYNC_REANCHOR_EN) begin : g_obs
+            for (oi = 0; oi < 8; oi = oi + 1) begin : g_obs_lane
+                assign obs_sync_seen_wr[oi] =
+                    u_dut.g_lane_write[oi].g_sync_capture.sync_seen_l;
+            end
+            assign obs_sync_seen_sync1 = u_dut.sync_seen_sync1;
+            assign obs_all_sync_seen   = u_dut.g_reanchor.all_sync_seen;
+            assign obs_sr_rd_safe      = u_dut.g_reanchor.sr_rd_safe;
+            assign obs_reanchored      = u_dut.g_reanchor.reanchored;
+        end else begin : g_obs_off
+            assign obs_sync_seen_wr    = 8'h00;
+            assign obs_sync_seen_sync1 = 8'h00;
+            assign obs_all_sync_seen   = 1'b0;
+            assign obs_sr_rd_safe      = 1'b0;
+            assign obs_reanchored      = 1'b0;
+        end
+    endgenerate
 
 endmodule
 

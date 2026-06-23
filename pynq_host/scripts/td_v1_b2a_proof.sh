@@ -28,6 +28,8 @@
 #   ./td_v1_b2a_proof.sh --program       # full: program both dies first, then prove
 #   ./td_v1_b2a_proof.sh --dir AtoB      # try the (currently-broken) A->B direction
 #   ./td_v1_b2a_proof.sh --rolls 15 -v   # more lottery rolls, verbose per-roll status
+#   ./td_v1_b2a_proof.sh --program --release   # self-cleaning: program, prove, then free the lease
+#   ./td_v1_b2a_proof.sh --release       # standalone: free a lease left by a prior --program run
 #
 # Env overrides: A_IP B_IP A_NAME B_NAME BIT_A BIT_B TIDELINK_BOARD_PASS
 #                PAIR FPGAHUB TX_BASE RX_BASE MAX_ROLLS DWELL
@@ -45,7 +47,8 @@ FPGAHUB="${FPGAHUB:-/opt/fpgahub/bin/fpgahub}"
 TX="${TX_BASE:-0x84000000}"      # GP1 AHB_TX aperture (sender side)
 RX="${RX_BASE:-0x84010000}"      # GP1 RX FIFO aperture (receiver side)
 MAX_ROLLS="${MAX_ROLLS:-10}"; DWELL="${DWELL:-9}"
-DO_PROGRAM=0; DIR="BtoA"; VERB=0
+DO_PROGRAM=0; DIR="BtoA"; VERB=0; RELEASE=0
+LEASE_TOKEN_FILE="${TMPDIR:-/tmp}/td_v1_lease_${PAIR}.token"   # --program captures the pair-lease token here; --release frees it
 
 # TideLink APB register map (SoC base 0x44032000)
 LS=0x44032108     # SWI_LANE_STATUS: [16]cal_done [19:17]fcsm [23]cr [24]crack [31]fe_full
@@ -59,6 +62,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --dir) DIR="$2"; shift 2;;
   --rolls) MAX_ROLLS="$2"; shift 2;;
   -v|--verbose) VERB=1; shift;;
+  --release) RELEASE=1; shift;;
   -h|--help) sed -n '2,40p' "$0" | sed 's/^# \?//'; exit 0;;
   *) echo "unknown arg: $1 (try --help)" >&2; exit 2;;
 esac; done
@@ -80,6 +84,18 @@ linkup(){ local v; v=$(rdr "$1" $LS); v=$((${v:-0})); [ $(((v>>16)&1)) = 1 ] && 
 credok(){ local c; c=$(rdr "$1" $CRED); [ -n "$c" ] && [ "${c: -2}" != "00" ]; }
 statline(){ printf 'die_a[LS=%s cred=%s] die_b[LS=%s cred=%s]' "$(rdr "$A_IP" $LS)" "$(rdr "$A_IP" $CRED)" "$(rdr "$B_IP" $LS)" "$(rdr "$B_IP" $CRED)"; }
 
+# lease release helper (--release): frees the pair lease captured during --program
+release_lease(){
+  local tok; tok=$(cat "$LEASE_TOKEN_FILE" 2>/dev/null)
+  [ -n "$tok" ] || { vlog "[release] no captured lease token at $LEASE_TOKEN_FILE"; return 0; }
+  log "[release] freeing $PAIR lease"
+  $FPGAHUB pair lease release "$PAIR" --token "$tok" >/dev/null 2>&1 && rm -f "$LEASE_TOKEN_FILE"
+}
+# release-only mode: `--release` alone frees a lease left by a prior `--program` run, then exits
+if [ "$RELEASE" = 1 ] && [ "$DO_PROGRAM" = 0 ]; then release_lease; exit 0; fi
+# self-cleaning: with `--program --release`, free the lease on ANY exit (incl. fail())
+[ "$RELEASE" = 1 ] && trap release_lease EXIT
+
 # direction -> sender/receiver
 case "$DIR" in
   BtoA) SND_IP=$B_IP; RCV_IP=$A_IP; SND=die_b; RCV=die_a;;
@@ -92,6 +108,9 @@ log "TideLink V1 delivery proof — pair=$PAIR  dir=$DIR ($SND -> $RCV)  TX=$TX 
 if [ "$DO_PROGRAM" = 1 ]; then
   log "[program] $FPGAHUB pair up $PAIR (lease + attach + boot)"
   $FPGAHUB pair up "$PAIR" --ttl 3600 >/dev/null 2>&1 || fail "fpgahub pair up $PAIR failed"
+  # capture a releasable lease token (pair up emits none; a same-holder acquire returns a usable token)
+  LEASE_TOKEN=$($FPGAHUB pair lease acquire "$PAIR" --ttl 3600 --json 2>/dev/null | sed -nE 's/.*"token"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1)
+  if [ -n "$LEASE_TOKEN" ]; then printf '%s' "$LEASE_TOKEN" > "$LEASE_TOKEN_FILE"; log "[program] lease token captured -> $LEASE_TOKEN_FILE (run with --release to free)"; else log "[program] WARN: could not capture lease token (--release won't free it)"; fi
   for pe in "$A_NAME|$BIT_A|$A_IP" "$B_NAME|$BIT_B|$B_IP"; do
     IFS='|' read -r nm bit ip <<EOF
 $pe

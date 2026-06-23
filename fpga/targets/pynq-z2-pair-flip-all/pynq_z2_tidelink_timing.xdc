@@ -278,7 +278,14 @@ create_generated_clock -name gpiotx0_word_clk \
 # FIX-O handoff margin: word-domain regs -> count==7 mid-word capture (link_data_stage)
 # is a half-word-period datapath transfer, not edge-aligned.
 set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
-set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
+# Guard: link_data_stage_reg is absent in V1 WavD2DGpioTx (FIX-O staging reg lives only in the
+# PHY-BIST core). Pre-existing constraint inherited from pair-all; guarded so an empty match
+# warns instead of risking a build abort.
+if {[llength $_fixo_stage_regs] > 0} {
+    set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
+} else {
+    puts "WARNING (tidelink flip XDC \[4b\]): no *gpiotx_*/link_data_stage_reg\[*\] cells — FIX-O TX handoff set_max_delay SKIPPED (pre-existing; link_data_stage absent in V1 TX)"
+}
 
 #-----------------------------------------------------------------------------
 # [4c] PER-LANE RECOVERED RX WORD CLOCKS (gpiorx_N = pad_clk_rx / 16).
@@ -339,7 +346,15 @@ create_generated_clock -name gpiorx7_word_clk \
 #   transfer, exclude clock pessimism/hold.
 set _rx_word_src  [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set _rx_word_dst  [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_reg_reg[*]"}]
-set_max_delay -datapath_only -from $_rx_word_src -to $_rx_word_dst 100.000
+# Guard: link_data_reg synthesizes to link_data_reg_reg by Vivado convention, but if the synth
+# name differs the get_cells is empty — guard so it warns instead of aborting the (~7h) build.
+# The create_generated_clock declarations above (the load-bearing timing of the RX word domain)
+# always apply; this set_max_delay is the secondary handoff bound.
+if {[llength $_rx_word_src] > 0 && [llength $_rx_word_dst] > 0} {
+    set_max_delay -datapath_only -from $_rx_word_src -to $_rx_word_dst 100.000
+} else {
+    puts "WARNING (tidelink flip XDC \[4c2\]): RX word-handoff cells not found (src=[llength $_rx_word_src] dst=[llength $_rx_word_dst]) — set_max_delay SKIPPED; verify link_data_pad_clk_reg/link_data_reg_reg synth names"
+}
 
 # Async isolation: recovered-RX (pad_clk_rx + the 8 derived /16 word clocks),
 # core hclk, and the TX word clock are mutually asynchronous (each crossing is

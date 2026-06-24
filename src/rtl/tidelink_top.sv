@@ -1071,13 +1071,27 @@ module tidelink_top #(
                             eye_shim_sel_eff   ? eye_shim_pslverr      :
                                                  tidelink_internal_pslverr;
 `else
-    assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
+    // SoC Labs V1 word_pin fix (2026-06-24): the word_pin config regs
+    //   0x2148 WORD_PIN_PERLANE  (paddr[4:0]=5'h08)
+    //   0x214C WORD_PIN_PERLANE_EN (paddr[4:0]=5'h0C)
+    // MUST reach the chiplet controller (RW, decoded in region10_write/_rdata),
+    // NOT tidelink_eye_regs. In eye_regs, 0x214C aliases slot 3 = RO EYE_STATUS,
+    // so a write asserts pslverr -> AXI SLVERR -> SIGBUS on silicon (the word_pin
+    // enable can never be set; 0x2148 silently lands on the RW dwell slot). The
+    // V2 arm above already excludes these via perlane_wp_sel; that exclusion was
+    // never mirrored here. Minimal scope (only the two wp regs) keeps every other
+    // V1 Region-10 readback owned by eye_regs exactly as before.
+    wire wp_cfg_sel = eye_shim_sel
+                      && ((tl_apb_paddr[4:0] == 5'h08)     // 0x2148 WORD_PIN_PERLANE
+                       || (tl_apb_paddr[4:0] == 5'h0C));   // 0x214C WORD_PIN_PERLANE_EN
+    wire eye_shim_sel_v1 = eye_shim_sel && !wp_cfg_sel;
+    assign tl_apb_prdata  = eye_shim_sel_v1    ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = eye_shim_sel       ? eye_shim_pready       :
+    assign tl_apb_pready  = eye_shim_sel_v1    ? eye_shim_pready       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
+    assign tl_apb_pslverr = eye_shim_sel_v1    ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
 `endif

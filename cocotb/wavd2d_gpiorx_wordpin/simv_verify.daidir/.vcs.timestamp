@@ -1,0 +1,165 @@
+0
+27
+-Mamsrun=
+-Masflags=
+-Mcc=gcc
+-Mcfl= -pipe -fPIC -O -I/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/include
+-Mcplusplus=g++
+-Mcrt0=
+-Mcrtn=
+-Mcsrc=
+-Mexternalobj=
+-Mldflags= -rdynamic
+-Mobjects= /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libvirsim.so /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/liberrorinf.so /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libsnpsmalloc.so /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libvfs.so
+-Mout=simv_verify
+-Msaverestoreobj=/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/vcs_save_restore_new.o
+-Msyslibs=-ldl
+-Mvcsaceobjs=
+-Mxcflags= -pipe -fPIC -I/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/include
+-Mxllcflags=
+-full64
+-gen_obj
+-o simv_verify
+-picarchive
+-q
+-sverilog
+-timescale=1ns/1ps
+/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/bin/vcs1
+simv_verify
+wp_verify_model.sv
+124
+which_declare=declare -f
+_CE_M=
+_CE_CONDA=
+XHB500_SLV_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated/xhb_chiplet_slv
+XHB500_MST_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated/xhb_chiplet_mst
+XHB500_IP_DIR=/research/AAA/ip_library/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500
+XHB500_GEN_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated
+XDG_DATA_DIRS=/home/dam1n19/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop
+VSCODE_RECONNECTION_GRACE_TIME=10800000
+VSCODE_NLS_CONFIG={"userLocale":"en","osLocale":"en","resolvedLanguage":"en","defaultMessagesFile":"/home/dam1n19/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/out/nls.messages.json","locale":"en","availableLanguages":{}}
+VSCODE_L10N_BUNDLE_LOCATION=
+VSCODE_IPC_HOOK_CLI=/tmpdir/vscode-ipc-72c4724c-8f9b-47da-acf1-5b4edc156f4a.sock
+VSCODE_HANDLES_UNCAUGHT_ERRORS=true
+VSCODE_HANDLES_SIGPIPE=true
+VSCODE_ESM_ENTRYPOINT=vs/workbench/api/node/extensionHostProcess
+VSCODE_CWD=/home/dam1n19
+VSCODE_CLI_REQUIRE_TOKEN=ce86136b-b993-4f44-9127-f5b472de838c
+VSCODE_AGENT_FOLDER=/home/dam1n19/.vscode-server
+VMR_MODE_FLAG=64
+VIP_HOME=/eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+VERDI_HOME=/eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
+VCS_TARGET_ARCH=amd64
+VCS_PATHMAP_PRELOAD_DONE=1
+VCS_MX_HOME_INTERNAL=1
+VCS_MODE_FLAG=64
+VCS_HOME=/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
+VCS_EXEC_DONE=1
+VCS_DEPTH=0
+VCS_ARG_ADDED_FOR_TMP=1
+VCS_ARCH=linux64
+UNAME=/bin/uname
+TOOL_HOME=/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64
+TIDELINK_HOME=/home/dam1n19/SoCLabs/td-bisect/v1-word-window
+TANNER_PATH=/eda/mentor/tanner
+SYNOPSYS_SYN_ROOT=/eda/synopsys/syn/
+SYNOPSYS_LC_ROOT=/eda/synopsys/lc/
+SYNOPSYS=/eda/synopsys/syn/
+SSH_CONNECTION=10.22.25.255 55007 152.78.136.77 22
+SSH_CLIENT=10.22.25.255 55007 22
+SSH_ASKPASS=/usr/libexec/openssh/gnome-ssh-askpass
+SNPS_VCS_CLANG_PATH=/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/clang
+SNPS_INTERNAL_VCS_LINUX_OS=linux
+SELINUX_USE_CURRENT_RANGE=
+SELINUX_ROLE_REQUESTED=
+SELINUX_LEVEL_REQUESTED=
+SCRNAME=vcs
+SCRIPT_NAME=vcs
+PROMPT_DIRTRIM=2
+PROMPT_COMMAND=prompt_command
+OVA_UUM=0
+OS_LDFLAGS=
+OA_UNSUPPORTED_PLAT=linux_rhel50_gcc48x
+NoDefaultCurrentDirectoryInExePath=1
+NOVAS_HOME=/opt/synopsys/verdi/Verdi_N-2017.12
+MXC_BIN_DIR=/home/dam1n19/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node_modules/@microsoft/mxc-sdk/bin
+MODULESHOME=/usr/share/lmod/lmod
+MODULEPATH_ROOT=/usr/share/modulefiles
+MODULEPATH=/etc/modulefiles:/usr/share/modulefiles:/usr/share/modulefiles/Linux:/usr/share/modulefiles/Core:/usr/share/lmod/lmod/modulefiles/Core
+MGLS_LICENSE_FILE=1717@mentorlm.soton.ac.uk
+MGC_HOME=/eda/mentor/calibre
+MFLAGS=-w
+MCP_CONNECTION_NONBLOCKING=true
+MAKELEVEL=1
+MAKEFLAGS=w
+LMOD_sys=Linux
+LMOD_VERSION=8.7.65
+LMOD_SETTARG_FULL_SUPPORT=no
+LMOD_ROOT=/usr/share/lmod
+LMOD_PKG=/usr/share/lmod/lmod
+LMOD_DIR=/usr/share/lmod/lmod/libexec
+LMOD_CMD=/usr/share/lmod/lmod/libexec/lmod
+LESSOPEN=||/usr/bin/lesspipe.sh %s
+LC_ALL=C
+IUSDIR=/eda/cadence/incisiv
+HISTCONTROL=ignoredups
+GIT_EDITOR=true
+GIT_CONFIG_VALUE_0=explicit
+GIT_CONFIG_KEY_0=safe.bareRepository
+GIT_CONFIG_COUNT=1
+FPATH=/usr/share/lmod/lmod/init/ksh_funcs
+ELECTRON_RUN_AS_NODE=1
+DESIGN=/home/dam1n19/Design
+COREPACK_ENABLE_AUTO_PIN=0
+COPILOT_OTEL_FILE_EXPORTER_PATH=/dev/null
+CONDA_SHLVL=1
+CONDA_PYTHON_EXE=/home/dam1n19/miniconda3/bin/python
+CONDA_PROMPT_MODIFIER=(base) 
+CONDA_PREFIX=/home/dam1n19/miniconda3
+CONDA_EXE=/home/dam1n19/miniconda3/bin/conda
+CONDA_DEFAULT_ENV=base
+CMSDK_FPGA_SRAM_V=/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v
+CMSDK_DIR=/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+CLAUDE_EFFORT=max
+CLAUDE_CODE_SESSION_ID=c508e1e0-d157-4874-896f-9482aa567f99
+CLAUDE_CODE_EXECPATH=/home/dam1n19/.vscode-server/extensions/anthropic.claude-code-2.1.186-linux-x64/resources/native-binary/claude
+CLAUDE_CODE_ENTRYPOINT=claude-vscode
+CLAUDE_CODE_ENABLE_TASKS=0
+CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true
+CLAUDE_CODE_CHILD_SESSION=1
+CLAUDE_AGENT_SDK_VERSION=0.3.186
+CLAUDECODE=1
+CDS_LIC_FILE=5280@cadencelm3.soton.ac.uk:5280@licserv10.soton.ac.uk
+CDS_AUTO_64BIT=ALL
+CDSHOME=/eda/cadence/ic
+CDSDIR=/eda/cadence/ic
+CALIBRE_HOME=/eda/mentor/calibre
+CAD_HOME=/opt/magic-8.1
+BASH_FUNC_which%%=() {  ( alias;_ eval ${which_declare} ) | /usr/bin/which --tty-only --read-alias --read-functions --show-tilde --show-dot $@_}
+BASH_FUNC_module%%=() {  if [ -z "${LMOD_SH_DBG_ON+x}" ]; then_ case "$-" in _ *v*x*)_ __lmod_sh_dbg='vx'_ ;;_ *v*)_ __lmod_sh_dbg='v'_ ;;_ *x*)_ __lmod_sh_dbg='x'_ ;;_ esac;_ fi;_ if [ -n "${__lmod_sh_dbg:-}" ]; then_ set +$__lmod_sh_dbg;_ echo "Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output" 1>&2;_ fi;_ eval "$($LMOD_CMD shell "$@")" && eval "$(${LMOD_SETTARG_CMD:-:} -s sh)";_ __lmod_my_status=$?;_ if [ -n "${__lmod_sh_dbg:-}" ]; then_ echo "Shell debugging restarted" 1>&2;_ set -$__lmod_sh_dbg;_ fi;_ unset __lmod_sh_dbg;_ return $__lmod_my_status_}
+BASH_FUNC_ml%%=() {  eval "$($LMOD_DIR/ml_cmd "$@")"_}
+BASH_ENV=/usr/share/lmod/lmod/init/bash
+ASSURAHOME=/eda/cadence/assura
+ARM_TOOL_VARIANT=gold
+ARM_PRODUCT_PATH=/apps/arm/developmentstudio-2021.0/sw/mappings
+ARM_IP_LIBRARY_PATH=/research/AAA/ip_library
+ARMLMD_LICENSE_FILE=27050@ArmLM1.soton.ac.uk:27050@ArmLM2.soton.ac.uk:27050@ArmLM3.soton.ac.uk
+APPLICATION_INSIGHTS_NO_STATSBEAT=true
+APPLICATION_INSIGHTS_NO_DIAGNOSTIC_CHANNEL=1
+AOCL_BOARD_PACKAGE_ROOT=/srv/intelFPGA/16.1/hld/board/s5_ref
+AMS_DIR=/opt/cad/designkits/ams/v410
+ALTOS_64=1
+ALTOSHOME=/eda/cadence/2016-17/RHELx86/LIBERATE_15.14.070
+ALTERAOCLSDKROOT=/srv/intelFPGA/16.1/hld
+AI_AGENT=claude-code_2-1-186_agent
+0
+0
+1
+1782268887 wp_verify_model.sv
+4
+1669783182 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libvirsim.so
+1669782209 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/liberrorinf.so
+1669782120 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libsnpsmalloc.so
+1669782200 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libvfs.so
+1782269061 simv_verify.daidir
+-1 partitionlib

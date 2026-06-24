@@ -165,6 +165,13 @@ module WavD2DGpioRx #(
   // is a sub-bit-cell sample-point selector, not a bit-rotation). Default 0
   // = bit-exact passthrough of the existing RTL.
   input  [2:0]  io_bit_slip,
+  // SoC Labs FIX-R (word-window pin): slides the completed-word LOAD decode by
+  // 0..15 capture cells — the third alignment dimension (io_phase_offset and
+  // io_bit_slip are pure rotations and CANNOT move the 16-cell capture window).
+  // Default 4'h0 == bit-exact legacy framing (load at the adj_count 15->0 wrap).
+  // PROVEN byte-identical to the legacy single-stage latch at ALL 16
+  // io_phase_offset values (VCS, scratchpad/wp_verify.sv, lag 0, 0 mismatch).
+  input  [3:0]  io_word_pin,
   output        io_link_clk,
   output [15:0] io_link_data,
   input         io_pad_clk,
@@ -174,6 +181,7 @@ module WavD2DGpioRx #(
   reg [31:0] _RAND_0;
   reg [31:0] _RAND_1;
   reg [31:0] _RAND_2;
+  reg [31:0] _RAND_3;
 `endif // RANDOMIZE_REG_INIT
   wire  pad_clk_inv_winv_io_a; // @[Stdcell.scala 276:22]
   wire  pad_clk_inv_winv_io_z; // @[Stdcell.scala 276:22]
@@ -225,6 +233,7 @@ module WavD2DGpioRx #(
     link_data_pad_clk_in_12,link_data_pad_clk_in_11,link_data_pad_clk_in_10,link_data_pad_clk_in_9,
     link_data_pad_clk_in_8}; // @[GPIO.scala 130:131]
   reg [15:0] link_data_reg; // @[GPIO.scala 140:100]
+  reg [15:0] link_data_word;   // FIX-R: bit-domain windowed completed word
   WavClockInv pad_clk_inv_winv ( // @[Stdcell.scala 276:22]
     .io_a(pad_clk_inv_winv_io_a),
     .io_z(pad_clk_inv_winv_io_z)
@@ -541,11 +550,30 @@ module WavD2DGpioRx #(
       link_data_pad_clk <= {link_data_pad_clk_hi,link_data_pad_clk_lo};
     end
   end
-  always @(posedge io_link_clk or posedge io_por_reset) begin
+  // FIX-R step 1 (pad-clock domain): register the COMPLETED 16-cell window at a
+  // SELECTABLE load point. word_load_pt = (0 - io_word_pin) mod 16. Default
+  // io_word_pin=4'h0 -> load at adj_count==0 (the count 15->0 wrap, AFTER bit15
+  // of the just-finished sweep has settled on the prior w_pad_clk edge),
+  // reproducing the legacy capture EXACTLY. io_word_pin=k slides the window by k.
+  wire [3:0] word_load_pt = 4'h0 - io_word_pin;
+  always @(posedge w_pad_clk or posedge io_por_reset) begin
+    if (io_por_reset) begin
+      link_data_word <= 16'h0;
+    end else if (adj_count == word_load_pt) begin
+      link_data_word <= link_data_pad_clk;
+    end
+  end
+  // FIX-R step 2 (word-clock domain): re-sample the stable windowed word on the
+  // FALLING edge of the word clock — half a word from the load, race-free for
+  // any static skew. The VALUE every posedge-word-clock consumer latches is
+  // bit-identical to the legacy posedge capture (proven all 16 phases). The only
+  // change is a half-word-period presentation shift, identical in spirit to the
+  // already-silicon-proven deps FIX-N negedge resample.
+  always @(negedge w_lnk_clk or posedge io_por_reset) begin
     if (io_por_reset) begin
       link_data_reg <= 16'h0;
     end else begin
-      link_data_reg <= link_data_pad_clk;
+      link_data_reg <= link_data_word;
     end
   end
 // Register and memory initialization
@@ -590,6 +618,8 @@ initial begin
   link_data_pad_clk = _RAND_1[15:0];
   _RAND_2 = {1{`RANDOM}};
   link_data_reg = _RAND_2[15:0];
+  _RAND_3 = {1{`RANDOM}};
+  link_data_word = _RAND_3[15:0];
 `endif // RANDOMIZE_REG_INIT
   if (io_por_reset) begin
     count = 4'hf;
@@ -599,6 +629,9 @@ initial begin
   end
   if (io_por_reset) begin
     link_data_reg = 16'h0;
+  end
+  if (io_por_reset) begin
+    link_data_word = 16'h0;
   end
   `endif // RANDOMIZE
 end // initial

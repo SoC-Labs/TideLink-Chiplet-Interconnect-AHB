@@ -56,7 +56,12 @@ module WlinkGPIOPHY #(
   // SoC Labs §9.7: per-lane 4-bit phase offset, 8 lanes x 4 bits (lane N
   // at bits [4N+3:4N]). Pass-through to WavD2DGpio, mirroring
   // swi_bit_slip_in. Tie 0 → legacy single-global-phase APB path.
-  input  [31:0]  swi_phase_offset_in
+  input  [31:0]  swi_phase_offset_in,
+  // SoC Labs FIX-R (word-window pin, 2026-06-23): per-lane 4-bit word-window
+  // pin (8x4b) + per-lane enable. Pass-through to WavD2DGpio, mirroring
+  // swi_phase_offset_in. Tie 0 -> legacy framing (bit-exact default).
+  input  [31:0]  swi_word_pin_perlane_in,
+  input  [7:0]   swi_word_pin_perlane_en_in
 );
   wire  gpio_clock; // @[PHY.scala 376:27]
   wire  gpio_reset; // @[PHY.scala 376:27]
@@ -150,7 +155,10 @@ module WlinkGPIOPHY #(
     // works via the OR-mux inside WavD2DGpio.
     .io_swi_bit_slip_in(swi_bit_slip_in),
     .io_swi_training_mode_in(swi_training_mode_in),
-    .io_swi_phase_offset_in(swi_phase_offset_in)
+    .io_swi_phase_offset_in(swi_phase_offset_in),
+    // SoC Labs FIX-R (word-window pin, 2026-06-23): per-lane word-pin + enable.
+    .io_swi_word_pin_perlane_in(swi_word_pin_perlane_in),
+    .io_swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in)
   );
   assign auto_in_pready = gpio_auto_in_pready; // @[Nodes.scala 1207:84 LazyModule.scala 298:16]
   assign auto_in_prdata = gpio_auto_in_prdata; // @[Nodes.scala 1207:84 LazyModule.scala 298:16]

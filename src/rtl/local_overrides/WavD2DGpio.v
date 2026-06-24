@@ -91,7 +91,14 @@ module WavD2DGpio #(
   // global APB phase. Tie to 0 in environments without the chiplet
   // controller — default keeps the legacy single-global-phase
   // behaviour bit-exact.
-  input  [31:0]  io_swi_phase_offset_in
+  input  [31:0]  io_swi_phase_offset_in,
+  // SoC Labs FIX-R (word-window pin, 2026-06-23): per-lane 4-bit word-window
+  // pin (8 lanes x 4 bits, lane N at [4N+3:4N]) + per-lane enable. Mirrors the
+  // io_swi_phase_offset_in per-lane packing. Gated by the enable; default 0 ->
+  // io_word_pin=4'h0 on every lane -> bit-exact legacy framing. Tie 0 in
+  // environments without the chiplet controller.
+  input  [31:0]  io_swi_word_pin_perlane_in,
+  input  [7:0]   io_swi_word_pin_perlane_en_in
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -688,6 +695,18 @@ module WavD2DGpio #(
                io_swi_phase_offset_in[4*gl +: 4] | effective_global_phase;
     end
   endgenerate
+  // SoC Labs FIX-R (word-window pin, 2026-06-23): per-lane effective word-pin.
+  // word_pin needs NO global fallback — just gate the per-lane value by its
+  // enable. Default (en=0) -> 4'h0 -> bit-exact legacy framing in WavD2DGpioRx.
+  wire [31:0] effective_word_pin;
+  genvar gw;
+  generate
+    for (gw = 0; gw < 8; gw = gw + 1) begin : g_wordpin_lane
+      assign effective_word_pin[4*gw +: 4] =
+               io_swi_word_pin_perlane_en_in[gw] ?
+                 io_swi_word_pin_perlane_in[4*gw +: 4] : 4'h0;
+    end
+  endgenerate
   // SoC Labs tidelink-gpio-phy integration (2026-05-28): per-lane training
   // patterns set to alternating P / ~P with P = 0x12EB per
   // deps/tidelink-gpio-phy/docs/TRAINING_MODULE_SPEC.md §2.3-2.4 and
@@ -842,6 +861,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_0_io_pol),
     .io_phase_offset(effective_phase_offset[3:0]),
     .io_bit_slip(effective_bit_slip[2:0]),
+    .io_word_pin(effective_word_pin[3:0]),
     .io_link_clk(gpiorx_0_io_link_clk),
     .io_link_data(gpiorx_0_io_link_data),
     .io_pad_clk(gpiorx_0_io_pad_clk),
@@ -857,6 +877,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_1_io_pol),
     .io_phase_offset(effective_phase_offset[7:4]),
     .io_bit_slip(effective_bit_slip[5:3]),
+    .io_word_pin(effective_word_pin[7:4]),
     .io_link_clk(gpiorx_1_io_link_clk),
     .io_link_data(gpiorx_1_io_link_data),
     .io_pad_clk(gpiorx_1_io_pad_clk),
@@ -872,6 +893,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_2_io_pol),
     .io_phase_offset(effective_phase_offset[11:8]),
     .io_bit_slip(effective_bit_slip[8:6]),
+    .io_word_pin(effective_word_pin[11:8]),
     .io_link_clk(gpiorx_2_io_link_clk),
     .io_link_data(gpiorx_2_io_link_data),
     .io_pad_clk(gpiorx_2_io_pad_clk),
@@ -887,6 +909,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_3_io_pol),
     .io_phase_offset(effective_phase_offset[15:12]),
     .io_bit_slip(effective_bit_slip[11:9]),
+    .io_word_pin(effective_word_pin[15:12]),
     .io_link_clk(gpiorx_3_io_link_clk),
     .io_link_data(gpiorx_3_io_link_data),
     .io_pad_clk(gpiorx_3_io_pad_clk),
@@ -902,6 +925,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_4_io_pol),
     .io_phase_offset(effective_phase_offset[19:16]),
     .io_bit_slip(effective_bit_slip[14:12]),
+    .io_word_pin(effective_word_pin[19:16]),
     .io_link_clk(gpiorx_4_io_link_clk),
     .io_link_data(gpiorx_4_io_link_data),
     .io_pad_clk(gpiorx_4_io_pad_clk),
@@ -917,6 +941,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_5_io_pol),
     .io_phase_offset(effective_phase_offset[23:20]),
     .io_bit_slip(effective_bit_slip[17:15]),
+    .io_word_pin(effective_word_pin[23:20]),
     .io_link_clk(gpiorx_5_io_link_clk),
     .io_link_data(gpiorx_5_io_link_data),
     .io_pad_clk(gpiorx_5_io_pad_clk),
@@ -932,6 +957,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_6_io_pol),
     .io_phase_offset(effective_phase_offset[27:24]),
     .io_bit_slip(effective_bit_slip[20:18]),
+    .io_word_pin(effective_word_pin[27:24]),
     .io_link_clk(gpiorx_6_io_link_clk),
     .io_link_data(gpiorx_6_io_link_data),
     .io_pad_clk(gpiorx_6_io_pad_clk),
@@ -947,6 +973,7 @@ module WavD2DGpio #(
     .io_pol(gpiorx_7_io_pol),
     .io_phase_offset(effective_phase_offset[31:28]),
     .io_bit_slip(effective_bit_slip[23:21]),
+    .io_word_pin(effective_word_pin[31:28]),
     .io_link_clk(gpiorx_7_io_link_clk),
     .io_link_data(gpiorx_7_io_link_data),
     .io_pad_clk(gpiorx_7_io_pad_clk),

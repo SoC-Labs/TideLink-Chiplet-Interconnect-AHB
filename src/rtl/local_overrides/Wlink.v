@@ -193,6 +193,13 @@ module Wlink #(
   // at bits [4N+3:4N]). Pass-through to WlinkGPIOPHY, mirroring
   // swi_bit_slip_in. Tie 0 → legacy single-global-phase APB path.
   input  [31:0] swi_phase_offset_in,
+  // SoC Labs FIX-R (word-window pin, 2026-06-23): V1-VISIBLE per-lane word-window
+  // pin (8x4b value + 8b enable). Threaded to the V1 WlinkGPIOPHY -> WavD2DGpio
+  // -> WavD2DGpioRx.io_word_pin path. Default 0 -> bit-exact legacy framing.
+  // Declared OUTSIDE the TIDELINK_PHY_V2 ifdef on purpose (the V2 fork uses its
+  // own swi_word_pin_ovr_in pair below; this V1 pair feeds the local_overrides RX).
+  input  [31:0] swi_word_pin_perlane_in,
+  input  [7:0]  swi_word_pin_perlane_en_in,
 `ifdef TIDELINK_PHY_V2
   // S3 PHY swap (2026-06-11): the deps/tidelink-phy WlinkGPIOPHY fork adds a
   // global word-window pin + its autonomous-mode select (FIX-R/FIX-R-proper).
@@ -1377,7 +1384,10 @@ module Wlink #(
     .word_pin_ovr_in(swi_word_pin_ovr_in),         // 8x4b per-lane window pin
     .word_pin_ovr_en_in(swi_word_pin_ovr_en_in)    // 8b per-lane override enable
 `else
-    .swi_phase_offset_in(swi_phase_offset_in)
+    .swi_phase_offset_in(swi_phase_offset_in),
+    // SoC Labs FIX-R (word-window pin, 2026-06-23): V1 per-lane word-pin path.
+    .swi_word_pin_perlane_in(swi_word_pin_perlane_in),
+    .swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in)
 `endif
   );
   WlinkTxRouter txrouter ( // @[Wlink.scala 89:27]

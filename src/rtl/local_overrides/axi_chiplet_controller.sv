@@ -952,6 +952,19 @@ module axi_chiplet_controller #(
     // re-triggers a fresh sweep that clears lane_fault — now against a live
     // peer pattern. POR-only domain, same as training_mode.
     reg        swi_recal_r;
+    // SoC Labs FIX-R (word-window pin, 2026-06-23): HOISTED OUT of the
+    // TIDELINK_PHY_V2 ifdef so the V1 build can write/read/route them. These two
+    // regs back the per-lane word-window pin path into the V1 local_overrides RX
+    // (WavD2DGpioRx.io_word_pin). Reset all-0 -> every lane keeps legacy framing
+    // (bit-identical datapath). In V2 they ALSO feed the deps fork's
+    // swi_word_pin_ovr_in pair (see the Wlink instance), so they must be declared
+    // exactly ONCE — here, unconditionally — to avoid a double-declaration.
+    //   swi_word_pin_perlane_r    : 8 x 4-bit per-lane pin, lane L at [4L+3:4L]
+    //                               (SoC 0x44032148 [31:0]).
+    //   swi_word_pin_perlane_en_r : 8-bit per-lane enable, lane L at bit L
+    //                               (SoC 0x4403214C [7:0]).
+    reg [31:0] swi_word_pin_perlane_r;
+    reg [7:0]  swi_word_pin_perlane_en_r;
 `ifdef TIDELINK_PHY_V2
     // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
     // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
@@ -1001,15 +1014,10 @@ module axi_chiplet_controller #(
     //                               2-flop-syncs + edge-detects it (one clear per
     //                               write) to reset the per-lane live/sticky/raw
     //                               obs. Reset 0 (no clear) -> bit-identical.
-    //   swi_word_pin_perlane_r    : 8 x 4-bit per-lane word-pin override value,
-    //                               lane L at [4L+3:4L] (SoC 0x44032148 [31:0]).
-    //   swi_word_pin_perlane_en_r : 8-bit per-lane override enable, lane L at
-    //                               bit L (SoC 0x4403214C [7:0]). Reset all-0 so
-    //                               every lane keeps its legacy auto/global pin
-    //                               (bit-identical datapath).
+    //   swi_word_pin_perlane_r / _en_r : per-lane word-pin value + enable.
+    //                               HOISTED above the ifdef (2026-06-23, FIX-R) so
+    //                               the V1 build can use them; declared there ONCE.
     reg        swi_sync_obs_clr_r;
-    reg [31:0] swi_word_pin_perlane_r;
-    reg [7:0]  swi_word_pin_perlane_en_r;
     // EYE-WIDTH LANE SELECT (2026-06-17, Task 3). APB-writable 3-bit field that
     // picks WHICH lane's eye-width the 0x2150 EYE_WIDTH_SEL register reports, so
     // ALL 8 lanes can be scanned remotely from one register pair. Was hardwired
@@ -1370,17 +1378,20 @@ module axi_chiplet_controller #(
     // Writeable Region-8 register storage. POR-only reset for
     // training-related state so it survives warm reset.
     wire region8_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b10);
+    // SoC Labs perlane-wp (2026-06-16): Region 10 write (SoC 0x2148/0x214C). It
+    // shares the 2'b00 select with Region 9; apb_ctrl_reg_r10 disambiguates so a
+    // Region-10 write never aliases a Region-9 slot (and vice versa).
+    // HOISTED OUT of the TIDELINK_PHY_V2 ifdef (2026-06-23, FIX-R) so the V1 build
+    // can write the per-lane word-pin regs. apb_ctrl_reg_r10 is an unconditional
+    // module input, so this is V1-safe.
+    wire region10_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
+                          && apb_ctrl_reg_r10;
 `ifdef TIDELINK_PHY_V2
     // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
     // (ctrl_reg_addr[4:3]==2'b00) is the SYNC-OBS/CTRL bank. Slot 2 (0x44032128)
     // is the SW-writable detector lane mask. V2-only; V1 leaves Region 9 read-0.
     wire region9_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
                          && !apb_ctrl_reg_r10;
-    // SoC Labs perlane-wp (2026-06-16): Region 10 write (SoC 0x2148/0x214C). It
-    // shares the 2'b00 select with Region 9; apb_ctrl_reg_r10 disambiguates so a
-    // Region-10 write never aliases a Region-9 slot (and vice versa, above).
-    wire region10_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
-                          && apb_ctrl_reg_r10;
 `endif
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
@@ -1388,6 +1399,11 @@ module axi_chiplet_controller #(
             swi_training_mode_r      <= 1'b0;
             swi_recal_r              <= 1'b0;
             swi_bit_slip_lo_r        <= 24'h0;
+            // SoC Labs FIX-R (word-window pin, 2026-06-23): HOISTED reset. Both
+            // reset to 0 -> every lane keeps legacy framing (bit-identical
+            // datapath at default). Unconditional so the V1 build resets them too.
+            swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
+            swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
@@ -1396,11 +1412,9 @@ module axi_chiplet_controller #(
             swi_sync_tol_r           <= 5'h00;  // POR = EXACT match (Hamming tol 0 -> bit-identical)
             swi_word_pin_ovr_r       <= 4'h0;
             swi_word_pin_auto_dis_r  <= 1'b0;   // POR = autonomous word-pin
-            // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override
-            // (2026-06-16, perlane-wp). All reset to the legacy default.
+            // SoC Labs PER-LANE SYNC-match sweep oracle (2026-06-16, perlane-wp).
+            // (word-pin perlane reset hoisted above the ifdef — FIX-R 2026-06-23.)
             swi_sync_obs_clr_r       <= 1'b0;   // W1-pulse — never held
-            swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
-            swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
             swi_eye_lane_sel_r       <= 3'h0;   // Task 3: eye-width lane sel, reset lane 0
 `endif
             swi_phase_offset_r       <= 32'h0;
@@ -1487,6 +1501,14 @@ module axi_chiplet_controller #(
                     default: ;
                 endcase
             end
+            // SoC Labs PER-LANE word-pin override (perlane-wp) — Region 10 slot 2
+            // (0x2148) value, slot 3 (0x214C) enable. RW; default 0 (legacy).
+            // HOISTED OUT of the TIDELINK_PHY_V2 ifdef (2026-06-23, FIX-R) so the
+            // V1 build's APB writes land (the regs + region10_write are V1-visible).
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h2))
+                swi_word_pin_perlane_r    <= ctrl_reg_wdata[31:0];
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h3))
+                swi_word_pin_perlane_en_r <= ctrl_reg_wdata[7:0];
 `ifdef TIDELINK_PHY_V2
             // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
             // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
@@ -1497,12 +1519,6 @@ module axi_chiplet_controller #(
                 // write carries both fields; reset/default 0 -> bit-identical.
                 swi_sync_tol_r       <= ctrl_reg_wdata[12:8];
             end
-            // SoC Labs PER-LANE word-pin override (perlane-wp) — Region 10 slot 2
-            // (0x2148) value, slot 3 (0x214C) enable. RW; default 0 (legacy).
-            if (region10_write && (ctrl_reg_addr[2:0] == 3'h2))
-                swi_word_pin_perlane_r    <= ctrl_reg_wdata[31:0];
-            if (region10_write && (ctrl_reg_addr[2:0] == 3'h3))
-                swi_word_pin_perlane_en_r <= ctrl_reg_wdata[7:0];
             // Task 3 (2026-06-17): EYE_WIDTH_SEL lane select — Region 10 slot 5
             // (SoC 0x4403_2154 [2:0]). Picks the lane the 0x2150 eye-width read
             // reports, so all 8 lanes scan remotely from one bitstream.
@@ -1714,9 +1730,16 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h2) ? sync_obs_fcsmcap_1 : // 0x21A8 FCSMCAP
                                        32'h0;
 `else
-    // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
+    // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical)
+    // EXCEPT the FIX-R per-lane word-pin regs (2026-06-23), which are V1-visible.
+    // Region 10 slot 2 (0x2148) value + slot 3 (0x214C) enable read back so the
+    // bring-up sweep can confirm the write landed; all other Region 10 slots read
+    // 0 (no V2 oracle/eye observability in V1). Regions 9 and D stay 0.
     assign region9_sync_obs_rdata = 32'h0;
-    assign region10_rdata          = 32'h0;
+    assign region10_rdata =
+        (ctrl_reg_addr[2:0] == 3'h2) ? swi_word_pin_perlane_r              :  // 0x2148 per-lane pin (RW)
+        (ctrl_reg_addr[2:0] == 3'h3) ? {24'h0, swi_word_pin_perlane_en_r}  :  // 0x214C per-lane enable (RW)
+                                       32'h0;
     assign regionD_rxcap_rdata     = 32'h0;
 `endif
 
@@ -3170,6 +3193,13 @@ module axi_chiplet_controller #(
         // §9.7: per-lane phase offset = calibrator OR Region 8
         // SWI_PHASE_OFFSET (MMIO 0x4403_2118).
         .swi_phase_offset_in        (swi_phase_offset_w),
+        // SoC Labs FIX-R (word-window pin, 2026-06-23): V1-VISIBLE per-lane word-
+        // pin pair (8x4b value + 8b enable) -> Wlink V1 WlinkGPIOPHY -> WavD2DGpio
+        // -> WavD2DGpioRx.io_word_pin. Reset 0 -> bit-exact legacy framing. These
+        // Wlink ports are declared outside the V2 ifdef (V1 path). NOTE: in V2 the
+        // SAME regs ALSO feed the deps fork via .swi_word_pin_ovr_in below.
+        .swi_word_pin_perlane_in    (swi_word_pin_perlane_r),     // 8x4b, reset 0
+        .swi_word_pin_perlane_en_in (swi_word_pin_perlane_en_r),  // 8b, reset 0
         // SoC Labs §9 auto-cal: expose internal recovered RX clock + 128-bit
         // deserialised lane data for the lane_checker + calibrator instances.
         .phy_link_rx_rx_link_data_o (phy_link_rx_rx_link_data_w),

@@ -34,14 +34,10 @@ WavD2DGpioRx_BASE.v
 /home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/axi-chiplet-controller/logical/wlink/WavResetSync.v
 /home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/axi-chiplet-controller/logical/wlink/WavDemetSet.v
 /home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
-124
+115
 which_declare=declare -f
 _CE_M=
 _CE_CONDA=
-XHB500_SLV_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated/xhb_chiplet_slv
-XHB500_MST_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated/xhb_chiplet_mst
-XHB500_IP_DIR=/research/AAA/ip_library/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500
-XHB500_GEN_DIR=/home/dam1n19/SoCLabs/td-bisect/v1-word-window/deps/xhb500/generated
 XDG_DATA_DIRS=/home/dam1n19/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop
 VSCODE_RECONNECTION_GRACE_TIME=10800000
 VSCODE_NLS_CONFIG={"userLocale":"en","osLocale":"en","resolvedLanguage":"en","defaultMessagesFile":"/home/dam1n19/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/out/nls.messages.json","locale":"en","availableLanguages":{}}
@@ -54,8 +50,6 @@ VSCODE_CWD=/home/dam1n19
 VSCODE_CLI_REQUIRE_TOKEN=ce86136b-b993-4f44-9127-f5b472de838c
 VSCODE_AGENT_FOLDER=/home/dam1n19/.vscode-server
 VMR_MODE_FLAG=64
-VIP_HOME=/eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
-VERDI_HOME=/eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
 VCS_TARGET_ARCH=amd64
 VCS_PATHMAP_PRELOAD_DONE=1
 VCS_MX_HOME_INTERNAL=1
@@ -67,7 +61,6 @@ VCS_ARG_ADDED_FOR_TMP=1
 VCS_ARCH=linux64
 UNAME=/bin/uname
 TOOL_HOME=/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64
-TIDELINK_HOME=/home/dam1n19/SoCLabs/td-bisect/v1-word-window
 TANNER_PATH=/eda/mentor/tanner
 SYNOPSYS_SYN_ROOT=/eda/synopsys/syn/
 SYNOPSYS_LC_ROOT=/eda/synopsys/lc/
@@ -95,10 +88,10 @@ MODULEPATH_ROOT=/usr/share/modulefiles
 MODULEPATH=/etc/modulefiles:/usr/share/modulefiles:/usr/share/modulefiles/Linux:/usr/share/modulefiles/Core:/usr/share/lmod/lmod/modulefiles/Core
 MGLS_LICENSE_FILE=1717@mentorlm.soton.ac.uk
 MGC_HOME=/eda/mentor/calibre
-MFLAGS=-w
+MFLAGS=
 MCP_CONNECTION_NONBLOCKING=true
 MAKELEVEL=1
-MAKEFLAGS=w
+MAKEFLAGS=
 LMOD_sys=Linux
 LMOD_VERSION=8.7.65
 LMOD_SETTARG_FULL_SUPPORT=no
@@ -125,8 +118,6 @@ CONDA_PROMPT_MODIFIER=(base)
 CONDA_PREFIX=/home/dam1n19/miniconda3
 CONDA_EXE=/home/dam1n19/miniconda3/bin/conda
 CONDA_DEFAULT_ENV=base
-CMSDK_FPGA_SRAM_V=/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v
-CMSDK_DIR=/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 CLAUDE_EFFORT=max
 CLAUDE_CODE_SESSION_ID=c508e1e0-d157-4874-896f-9482aa567f99
 CLAUDE_CODE_EXECPATH=/home/dam1n19/.vscode-server/extensions/anthropic.claude-code-2.1.186-linux-x64/resources/native-binary/claude
@@ -175,5 +166,5 @@ AI_AGENT=claude-code_2-1-186_agent
 1669782209 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/liberrorinf.so
 1669782120 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libsnpsmalloc.so
 1669782200 /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2/linux64/lib/libvfs.so
-1782269058 simv_equiv.daidir
+1782270132 simv_equiv.daidir
 -1 partitionlib

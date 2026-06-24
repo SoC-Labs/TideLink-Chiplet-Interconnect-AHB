@@ -43,6 +43,13 @@
 # deps/axi-chiplet-controller/.github/workflows/lint.yml) so each push to a
 # submodule branch gets its own lint feedback before parent integration.
 
+# V1 silicon bilateral regression flow (build -> deploy -> test).
+# Self-contained child pipeline; see ci/regression-flow.gitlab-ci.yml and
+# docs/CI_REGRESSION.md. Adds v1-sim-gate (per-push) + v1-build-flip /
+# v1-deploy-test (manual / nightly schedule, board-bound).
+include:
+  - local: ci/regression-flow.gitlab-ci.yml
+
 stages:
   - setup
   - lint
@@ -55,6 +62,9 @@ stages:
   - pages
   - cleanup
   - hwtest
+  # --- V1 silicon bilateral regression flow (ci/regression-flow.gitlab-ci.yml) ---
+  - v1_build
+  - v1_deploy_test
 
 variables:
   # Disable GitLab's built-in checkout -- we clone manually

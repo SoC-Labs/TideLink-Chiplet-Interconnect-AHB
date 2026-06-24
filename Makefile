@@ -1,7 +1,7 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
         synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
-        sim-regression
+        sim-regression regression regression-program regression-deploy
 
 # =============================================================================
 # Silicon-replication test gates (feat/cocotb-robust-silicon-replication)
@@ -116,7 +116,53 @@ sim-regression:
 	@echo "========================================"
 	$(MAKE) -C cocotb/tidelink_top_pair
 
+# =============================================================================
+# V1 silicon BILATERAL regression — manual fallback for the CI deploy_test
+# stage (docs/CI_REGRESSION.md). RUN ON mapstone-dev (board routes + fpgahub).
+#
+#   make regression          run the gate against an ALREADY-deployed pair
+#                            (lease held). PROOF=link, B->A gate + A->B x15
+#                            need >=ATOB_MIN. Override ATOB_MIN/ATOB_RUNS/etc.
+#   make regression-program  full cold flow: program both dies from BIT_A/BIT_B
+#                            (default ~/td_v1_deploy/{tidelink,tidelink-flip}.bit),
+#                            then run the gate. Captures + releases the lease.
+#   make regression-deploy   stage built bitstreams to mapstone-dev + run the
+#                            gate via the CI wrapper ci/v1_deploy_test.sh (uses
+#                            imp/fpga/output by default; needs the mapstone-dev
+#                            SSH alias). This is what the CI v1-deploy-test job
+#                            runs.
+#
+# After the die_b flip-XDC BUFG / word-window fix lands, set ATOB_MIN=12 to
+# gate on A->B *reliability* (see docs/CI_REGRESSION.md §3).
+# =============================================================================
+ATOB_MIN  ?= 1
+ATOB_RUNS ?= 15
+ROLLS     ?= 15
 
+regression:
+	@echo "========================================"
+	@echo " regression — V1 silicon BILATERAL gate (pair already deployed)"
+	@echo "   ATOB_MIN=$(ATOB_MIN) ATOB_RUNS=$(ATOB_RUNS) ROLLS=$(ROLLS)"
+	@echo "========================================"
+	ATOB_MIN=$(ATOB_MIN) ATOB_RUNS=$(ATOB_RUNS) ROLLS=$(ROLLS) \
+	  pynq_host/scripts/td_bilateral_regression.sh
+
+regression-program:
+	@echo "========================================"
+	@echo " regression-program — program both dies, then BILATERAL gate"
+	@echo "========================================"
+	PROOF=program ATOB_MIN=$(ATOB_MIN) ATOB_RUNS=$(ATOB_RUNS) ROLLS=$(ROLLS) \
+	  pynq_host/scripts/td_bilateral_regression.sh
+
+regression-deploy:
+	@echo "========================================"
+	@echo " regression-deploy — stage built bits to mapstone-dev + run gate"
+	@echo "========================================"
+	ARTIFACT_DIR=imp/fpga/output \
+	BIT_A_SRC=imp/fpga/output/pynq-z2-pair-all/tidelink.bit \
+	BIT_B_SRC=imp/fpga/output/pynq-z2-pair-flip-all/tidelink.bit \
+	ATOB_MIN=$(ATOB_MIN) ATOB_RUNS=$(ATOB_RUNS) ROLLS=$(ROLLS) \
+	  bash ci/v1_deploy_test.sh
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────
 # Exposes `make fc`, `make gdsii`, `make fc_lec`, `make fc_etm`, `make

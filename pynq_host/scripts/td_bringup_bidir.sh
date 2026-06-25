@@ -64,6 +64,7 @@ TX="${TX_BASE:-0x84000000}"      # GP1 AHB_TX aperture (sender side)
 RX="${RX_BASE:-0x84010000}"      # GP1 RX FIFO aperture (receiver side)
 MAX_ROLLS="${MAX_ROLLS:-10}"; DWELL="${DWELL:-9}"
 SENDS="${SENDS:-12}"             # held-link sends per direction
+PROBE_K="${PROBE_K:-4}"          # roll accept needs PROBE_K consecutive hits EACH dir (filters marginal PORs)
 WORD_PIN="${WORD_PIN:-}"         # optional die_b word_pin window (0..15); empty = leave OFF
 DO_PROGRAM=0; VERB=0; RELEASE=0
 LEASE_TOKEN_FILE="${TMPDIR:-/tmp}/td_v1_lease_${PAIR}.token"   # --program captures the pair-lease token here; --release frees it
@@ -125,6 +126,10 @@ send_probe(){
   if [ -n "$hit" ]; then vlog "  probe $snd_ip->$rcv_ip [$u0,$u1] -> $hit"; echo "PASS $hit"; return 0; fi
   vlog "  probe $snd_ip->$rcv_ip [$u0,$u1] -> MISS  FIFO:$dump"; echo "FAIL"; return 1
 }
+
+# PROBE_K consecutive deliveries snd->rcv (ALL must pass). A single probe passes
+# on a marginal eye by luck; K-in-a-row selects a STRONGLY-good sample phase.
+pk_ok(){ local s=$1 d=$2 k; for k in $(seq 1 "$PROBE_K"); do send_probe "$s" "$d" >/dev/null || return 1; done; return 0; }
 
 # lease release helper (--release): frees the pair lease captured during --program
 release_lease(){
@@ -191,16 +196,11 @@ for r in $(seq 1 "$MAX_ROLLS"); do
     vlog "roll $r: link/credit not clean — re-POR"
     continue
   fi
-  # (c) B->A probe
-  if ! send_probe "$B_IP" "$A_IP" >/dev/null; then
-    vlog "roll $r: link up but B->A probe MISSED — re-POR"
-    continue
-  fi
-  # (d) A->B probe — the direction the B->A-only proof never checked
-  if ! send_probe "$A_IP" "$B_IP" >/dev/null; then
-    vlog "roll $r: link up + B->A ok but A->B probe MISSED (bad sample phase) — re-POR"
-    continue
-  fi
+  # (c)+(d) require PROBE_K consecutive deliveries EACH direction. A single probe
+  # passes on a MARGINAL eye by luck (held sends then flicker, as roll-14 showed);
+  # K-in-a-row selects a STRONGLY-good sample phase where A->B is stably open.
+  if ! pk_ok "$B_IP" "$A_IP"; then vlog "roll $r: B->A not $PROBE_K/$PROBE_K — re-POR"; continue; fi
+  if ! pk_ok "$A_IP" "$B_IP"; then vlog "roll $r: A->B not $PROBE_K/$PROBE_K (marginal phase) — re-POR"; continue; fi
   log "[roll] CLEAN BIDIRECTIONAL on roll $r — link up both ways + B->A AND A->B both delivered"
   log "        $(statline)"
   clean=1; break

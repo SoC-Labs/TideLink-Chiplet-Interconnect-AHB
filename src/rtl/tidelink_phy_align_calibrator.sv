@@ -280,7 +280,43 @@ module tidelink_phy_align_calibrator #(
     // [0:7][0:127] (all lanes). Default 0 keeps the 768-bit single-lane
     // footprint (Option A). Wide mode is reserved for chiplet variants
     // with spare area; SW exposed via SWI_EYE_LANE_SEL[3] "all-lanes".
-    parameter int EYE_BUF_WIDE = 0
+    parameter int EYE_BUF_WIDE = 0,
+    // =====================================================================
+    // WI-2 EYESCAN INTEGRATION (2026-06-25) — FIX-J / FIX-L port.
+    //
+    // ALL of the following are DEFAULT-OFF. With PRBS_EYESCAN=0 AND
+    // LANE_PIN_CONVERGE=0 (and VAL_TIMEOUT_TO_DONE=0) the new logic is fully
+    // inert: pin_converge_en is constant 0, escan_en is constant 0, and the
+    // S_VALIDATE next-state / datapath reduce EXACTLY to the pre-port
+    // behaviour. The module is then BIT-IDENTICAL to the proven 8ab846ba
+    // image. See docs/EYESCAN_INTEGRATION_DESIGN_2026_06_25.md §4 / §5.
+    // =====================================================================
+    // Task G: when 1, a correctly-aligned SYNC beacon (sync_seen_i) may ALSO
+    // confirm S_VALIDATE (OR-merged into validate_confirm). DEFAULT 0 =>
+    // sync_seen_i is ignored => behaviour identical to today.
+    parameter bit USE_SYNC_VALIDATE = 1'b0,
+    // VAL_TIMEOUT_TO_DONE (FIX-J bounded-terminal): when 1, a S_VALIDATE
+    // val_ctr timeout WITHOUT validate_confirm latches to S_DONE (terminal)
+    // INSTEAD of an S_ARM re-sweep, but ONLY once the re-sweep budget is
+    // spent (retry_exhausted) OR re-sweep is disabled (MAX_RESWEEPS==0). It
+    // NEVER short-circuits the re-sweep escape while budget remains.
+    // DEFAULT 0 = behaviour IDENTICAL to today.
+    parameter bit VAL_TIMEOUT_TO_DONE = 1'b0,
+    // FIX-H: enable per-lane PRBS-sync PINNING (so multi-lane searches with
+    // per-lane-distinct PRBS-valid phases converge). DEFAULT 0 =
+    // bit-identical (lane_synced_i ignored).
+    parameter bit LANE_PIN_CONVERGE = 1'b0,
+    // FIX-J: IN-S_VALIDATE PRBS phase EYESCAN. While S_VALIDATE (training LOW
+    // => PRBS on the wire, both peers validating), walk each still-unpinned
+    // lane's DRIVEN (slip,phase) across the 128-point space, dwelling
+    // EYESCAN_DWELL cycles per point, and PIN each lane (FIX-L debounce) the
+    // instant lane_synced_i[i] is HELD. Scans WITH PRBS live, inside ONE held
+    // S_VALIDATE — never re-asserts training mid-scan (the FIX-H cure).
+    // Requires pin_converge_en AND PRBS_EYESCAN. DEFAULT 0 = bit-identical.
+    parameter bit PRBS_EYESCAN = 1'b0,
+    // FIX-J per-phase dwell (cycles). Must exceed the PRBS checker's seed+sync
+    // latency. Default 64. PIN_CONFIRM reuses this sizing.
+    parameter int EYESCAN_DWELL = 64
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -289,6 +325,13 @@ module tidelink_phy_align_calibrator #(
     input  logic        role_locked,
     input  logic        swreset,
     input  logic [7:0]  lane_locked,
+
+    // WI-2 LANE-MASK awareness (default-off). Quasi-static per-lane active
+    // mask: bit i=1 => lane i in use, bit i=0 => masked. Used only by the
+    // FIX-J/L eyescan/pin guards. With lane_mask=8'hFF (the v1 default and
+    // every existing TB) every mask term reduces EXACTLY to the pre-mask
+    // expression. Integrators that don't drive it tie it to 8'hFF.
+    input  logic [7:0]  lane_mask,
 
     // -----------------------------------------------------------------
     // Spec §7.1: per-lane continuous in-dwell minimum distance from the
@@ -344,6 +387,34 @@ module tidelink_phy_align_calibrator #(
     // the observed silicon symptom (cal_done=0, crack=1, FCSM=4).
     // Same clock domain as the calibrator (recovered RX link clock) → no CDC.
     input  logic        crack_pkt_seen_i,
+
+    // -----------------------------------------------------------------
+    // WI-2 EYESCAN INTEGRATION inputs (FIX-J / FIX-L) — all default-off.
+    // -----------------------------------------------------------------
+    // FIX E: SW-hold gate for bilateral coordinated release. When 1, the
+    // S_HOLD -> S_VALIDATE transition is suppressed regardless of hold_ctr.
+    // Registered one cycle before use. When 0 (default) S_HOLD advances
+    // normally — no effect on any other state. Tie to 0 if unused.
+    input  logic        swi_training_hold_i,
+    // Task G: PHY SYNC-beacon "seen" pulse (same recovered RX link-clock
+    // domain). Only consulted when USE_SYNC_VALIDATE=1; OR-merged into the
+    // S_VALIDATE confirm. With USE_SYNC_VALIDATE=0 this input is ignored and
+    // behaviour is identical to today. Tie to 0 if unused.
+    input  logic        sync_seen_i,
+    // FIX-H: per-lane PRBS-sync feedback (same recovered RX link-clock
+    // domain; driven from the BIST core's lane_synced_w). When
+    // pin_converge_en=1, a lane observed PRBS-synced during S_VALIDATE is
+    // PINNED (its latched (slip,phase) is frozen). With pin_converge_en=0
+    // (default) this input is IGNORED and behaviour is bit-identical. Tie to
+    // 8'h00 if unused.
+    input  logic [7:0]  lane_synced_i,
+    // FIX-H APB RUNTIME enable for pin-converge. The effective enable is
+    // (LANE_PIN_CONVERGE | lane_pin_converge_en_i): the compile param keeps a
+    // default-OFF synth knob while this SW bit lets ONE build A/B pin-converge
+    // OFF vs ON. Reset/default 0 => pin_converge_en=0 => bit-identical to
+    // pre-FIX-H. Quasi-static (a 2-flop bit-sync upstream suffices). Tie to 0
+    // if unused.
+    input  logic        lane_pin_converge_en_i,
 
     // Outputs to PHY
     output logic [23:0] bit_slip,
@@ -802,6 +873,92 @@ module tidelink_phy_align_calibrator #(
     wire val_retry_exhausted = (MAX_VALIDATE_RETRIES != 0) &&
                                (val_retry_ctr >= MAX_VALIDATE_RETRIES[3:0]);
 
+    // =========================================================================
+    // WI-2 EYESCAN INTEGRATION (FIX-J / FIX-L) — additive, DEFAULT-OFF.
+    //
+    // Every signal below collapses to a constant 0 (or is dead) when
+    // PRBS_EYESCAN=0 AND LANE_PIN_CONVERGE=0 AND lane_pin_converge_en_i=0,
+    // so the FSM/datapath are bit-identical to the pre-port behaviour. See
+    // docs/EYESCAN_INTEGRATION_DESIGN_2026_06_25.md §4 / §5.
+    // =========================================================================
+    // FIX E: single-cycle register for the slow APB swi_training_hold_i input.
+    logic swi_training_mode_r;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) swi_training_mode_r <= 1'b0;
+        else     swi_training_mode_r <= swi_training_hold_i;
+    end
+
+    // FIX-H effective enable: compile param OR the CDC'd APB runtime bit.
+    // Every pin-converge gate uses THIS, not the bare param, so the feature
+    // can be toggled live by an APB poke. When both are 0 (default)
+    // pin_converge_en is constant 0 and the whole FIX-H/J datapath collapses.
+    wire pin_converge_en = LANE_PIN_CONVERGE | lane_pin_converge_en_i;
+
+    // FIX-H sticky per-lane PIN + captured (slip,phase). lane_pinned[i] is set
+    // when lane i is observed PRBS-synced (debounced) during S_VALIDATE.
+    logic [7:0] lane_pinned;
+    logic [2:0] pin_slip  [0:7];
+    logic [3:0] pin_phase [0:7];
+    // FIX-L per-lane PIN DEBOUNCE counter. lane_synced_i[i] must be HELD at a
+    // FROZEN phase for PIN_CONFIRM cycles before the pin latches — a frozen
+    // overshoot phase drops sync and resets this counter, so a
+    // pinned-but-never-synced lane is impossible.
+    localparam int PIN_CONFIRM = EYESCAN_DWELL;
+    logic [$clog2(EYESCAN_DWELL+1)-1:0] pin_confirm_ctr [0:7];
+
+    // FIX-J in-S_VALIDATE PRBS (slip,phase) EYESCAN cursor.
+    // escan_en gates the whole feature: pin_converge_en && PRBS_EYESCAN.
+    // The eyescan only DRIVES unpinned lanes; pinned lanes hold their frozen
+    // (slip,phase). Because the scan stays inside S_VALIDATE (never
+    // re-asserting training), it never drops the bilateral PRBS carrier.
+    wire escan_en = pin_converge_en & PRBS_EYESCAN;
+    localparam int ESCAN_MAX = EYESCAN_DWELL - 1;
+    // FIX-J in-place rescan budget (windows the eyescan holds S_VALIDATE,
+    // carrier UP, before the bounded terminal). Matches the donor localparam:
+    // sized so a slow bilateral-drift rendezvous can converge while a genuine
+    // no-eye die still terminates. NOT a module parameter (donor parity).
+    localparam int ESCAN_MAX_PASSES = 512;
+    logic [3:0]                            escan_phase;
+    logic [2:0]                            escan_slip;
+    logic [$clog2(EYESCAN_DWELL+1)-1:0]    escan_dwell_ctr;
+    // Count of in-place rescan windows consumed since this S_VALIDATE
+    // rendezvous began (reset only when S_VALIDATE is left). Bounds the
+    // carrier-up hold (the FIX-J bounded terminal).
+    logic [$clog2(ESCAN_MAX_PASSES+1)-1:0] escan_passes;
+    wire escan_window_timeout =
+            (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);
+    wire escan_scan_exhausted =
+            (escan_passes >= ESCAN_MAX_PASSES[$clog2(ESCAN_MAX_PASSES+1)-1:0]);
+
+    // S_VALIDATE confirm source. Real-data oracle (cr/crack) OR, when
+    // USE_SYNC_VALIDATE=1, an aligned SYNC beacon. With USE_SYNC_VALIDATE=0
+    // the SYNC term is constant 0 (synthesised away) so this is bit-identical.
+    wire validate_confirm = cr_pkt_seen_i | crack_pkt_seen_i |
+                            (USE_SYNC_VALIDATE & sync_seen_i);
+
+    // FIX-K EYESCAN-mode confirm DEBOUNCE: while the eyescan is enabled, a
+    // momentary validate_confirm (a partial-mask flicker-sync as the cursor
+    // sweeps past a lane's PRBS-valid phase) must NOT terminate the scan —
+    // require validate_confirm HELD for a full EYESCAN_DWELL window. Inert
+    // unless escan_en, so the non-eyescan S_VALIDATE path is bit-identical.
+    localparam int CONFIRM_STABLE = EYESCAN_DWELL;
+    logic [$clog2(EYESCAN_DWELL+1)-1:0] confirm_ctr;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                           confirm_ctr <= '0;
+        else if (cur_state != S_VALIDATE)  confirm_ctr <= '0;
+        else if (!validate_confirm)        confirm_ctr <= '0;
+        else if (confirm_ctr < CONFIRM_STABLE[$clog2(EYESCAN_DWELL+1)-1:0])
+                                           confirm_ctr <= confirm_ctr + 1'b1;
+    end
+    wire confirm_stable = (confirm_ctr >= CONFIRM_STABLE[$clog2(EYESCAN_DWELL+1)-1:0]);
+    wire escan_confirm  = validate_confirm & confirm_stable;
+
+    // FIX-J in-place rescan pulse: per-window timeout, eyescan running, budget
+    // remains, not yet confirmed. The FSM STAYS in S_VALIDATE (carrier UP);
+    // val_ctr restarts and the escan cursor continues.
+    wire escan_rescan = escan_en && escan_window_timeout && !escan_scan_exhausted
+                        && !validate_confirm && role_locked_sync && !swreset_sync;
+
     // -------------------------------------------------------------------------
     // FSM next-state logic
     // -------------------------------------------------------------------------
@@ -918,7 +1075,13 @@ module tidelink_phy_align_calibrator #(
                 // on real data (not just training pattern).
                 if (swreset)                   nxt_state = S_CANCEL;
                 else if (!role_locked)         nxt_state = S_DONE;
-                else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
+                // FIX E: gate S_HOLD -> S_VALIDATE on swi_training_mode_r so
+                // both peers can be held in S_HOLD until SW clears the hold
+                // bit on both (bilateral coordinated release). With
+                // swi_training_hold_i=0 (default) swi_training_mode_r=0, so
+                // !swi_training_mode_r=1 and this arm is bit-identical.
+                else if (hold_ctr >= HOLD_MAX && !swi_training_mode_r)
+                                               nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
                 // §9.11d Fix A1 + M9 + M10.
@@ -934,13 +1097,43 @@ module tidelink_phy_align_calibrator #(
                 //   * timeout, budget exhausted   → S_DONE (give up)
                 if (swreset)                  nxt_state = S_CANCEL;
                 else if (!role_locked)        nxt_state = S_DONE;
-                // Fix A2: accept CR *or* CRACK (match FCSM _GEN_34). The
-                // master only ever decodes the peer's CRACK (late framer
-                // byte-align); validating on CRACK lets it reach S_DONE/
-                // cal_done=1 exactly as its FCSM already reaches state 4.
-                else if (cr_pkt_seen_i || crack_pkt_seen_i) nxt_state = S_DONE;
+                // FIX-K: in eyescan mode a momentary validate_confirm
+                // (partial-mask flicker-sync) must NOT terminate the scan —
+                // require the confirm HELD a full EYESCAN_DWELL (escan_confirm).
+                // The non-eyescan path keeps the bare validate_confirm
+                // (== cr_pkt_seen_i || crack_pkt_seen_i when USE_SYNC_VALIDATE=0,
+                // i.e. bit-identical to today's "accept CR or CRACK").
+                else if (escan_en ? escan_confirm : validate_confirm)
+                                              nxt_state = S_DONE;
+                // FIX-J: when the eyescan is enabled (escan_en) it NEVER
+                // re-arms. Re-arming re-asserts training_mode (S_ARM/S_SWEEP)
+                // and DROPS this die's PRBS carrier — the FIX-H starvation. The
+                // eyescan already covers all 128 (slip,phase) points WITHIN
+                // S_VALIDATE, so on a per-window timeout the FSM STAYS in
+                // S_VALIDATE and re-scans in place (carrier held UP). The bound
+                // escan_scan_exhausted caps the carrier-up hold; once spent the
+                // die latches a TERMINAL S_DONE WITHOUT re-sweeping (the
+                // carrier-starvation-free give-up — coarse-park, never
+                // lane_done/pinned at an unconfirmed phase). escan_en is
+                // constant 0 by default, so this entire branch is dead and the
+                // legacy timeout arm below runs unchanged.
+                else if (escan_en) begin
+                    if (escan_scan_exhausted &&
+                        (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]))
+                        nxt_state = S_DONE;        // bounded terminal, no re-sweep
+                    else
+                        nxt_state = S_VALIDATE;    // keep scanning, carrier UP
+                end
                 else if (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
-                    nxt_state = val_retry_exhausted ? S_DONE : S_ARM;  // M9: retry until budget exhausted
+                    // M9: retry until budget exhausted. FIX-J bounded terminal:
+                    // when VAL_TIMEOUT_TO_DONE, ALSO latch terminal once the
+                    // re-sweep budget is spent OR re-sweep is disabled
+                    // (MAX_RESWEEPS==0). With VAL_TIMEOUT_TO_DONE=0 (default)
+                    // this reduces EXACTLY to the prior
+                    // (val_retry_exhausted ? S_DONE : S_ARM) arm.
+                    nxt_state = (val_retry_exhausted ||
+                                 (VAL_TIMEOUT_TO_DONE && (MAX_RESWEEPS == 0)))
+                                  ? S_DONE : S_ARM;
             end
             default: nxt_state = S_IDLE;
         endcase
@@ -1000,8 +1193,69 @@ module tidelink_phy_align_calibrator #(
     always_ff @(posedge clk or posedge rst) begin
         if (rst)                          val_ctr <= '0;
         else if (cur_state != S_VALIDATE) val_ctr <= '0;
+        // FIX-J: on an in-place eyescan rescan, restart the window timer so each
+        // budgeted rescan gets a fresh VALIDATION_TIMEOUT (the FSM stays in
+        // S_VALIDATE, carrier up). escan_rescan is constant 0 by default, so
+        // this arm is dead and the counter is bit-identical to today.
+        else if (escan_rescan)            val_ctr <= '0;
         else if (val_ctr < VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0])
                                           val_ctr <= val_ctr + 1'b1;
+    end
+
+    // -------------------------------------------------------------------------
+    // FIX-H / FIX-L — per-lane PRBS-sync PIN latch with debounce.
+    //
+    // During S_VALIDATE the latched (slip,phase) drives the deserialiser and
+    // PRBS is on the wire, so lane_synced_i[i] tells us which lanes' alignment
+    // is PRBS-valid. FIX-L: require lane_synced_i[i] HELD at a FROZEN phase for
+    // PIN_CONFIRM cycles before pinning. A frozen overshoot phase is NOT the
+    // eye, so the checker drops sync within its latency and the debounce never
+    // completes => "pinned-but-never-synced" is structurally impossible. Never
+    // pins from training-pattern lock (lane_synced_i is the PRBS-sync bus, not
+    // lane_locked). Lifetime: cleared on rst / trigger_now / S_CANCEL.
+    // Gated by pin_converge_en so the default build is bit-identical (this
+    // whole block is dead when pin_converge_en=0).
+    // -------------------------------------------------------------------------
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            lane_pinned <= 8'h00;
+            for (int i = 0; i < 8; i++) begin
+                pin_slip[i]        <= 3'd0;
+                pin_phase[i]       <= 4'd0;
+                pin_confirm_ctr[i] <= '0;
+            end
+        end else if (trigger_now || (cur_state == S_CANCEL)) begin
+            lane_pinned <= 8'h00;
+            for (int i = 0; i < 8; i++) begin
+                pin_slip[i]        <= 3'd0;
+                pin_phase[i]       <= 4'd0;
+                pin_confirm_ctr[i] <= '0;
+            end
+        end else if (pin_converge_en && (cur_state == S_VALIDATE)) begin
+            for (int i = 0; i < 8; i++) begin
+                // LANE-MASK: a MASKED lane carries no PRBS and is parked at
+                // (0,0) — never attempt to pin it. At lane_mask=0xFF this guard
+                // is always false (bit-identical).
+                if (!lane_mask[i]) begin
+                    // masked — never pin.
+                end else if (lane_pinned[i]) begin
+                    // already pinned — hold.
+                end else if (!lane_synced_i[i]) begin
+                    // FIX-L: lost (or not yet) sync — restart the debounce.
+                    pin_confirm_ctr[i] <= '0;
+                end else if (pin_confirm_ctr[i] <
+                             PIN_CONFIRM[$clog2(EYESCAN_DWELL+1)-1:0] - 1'b1) begin
+                    // FIX-L: synced AND phase frozen (the eyescan holds phase[i]
+                    // while lane_synced_i[i]) — count the held window.
+                    pin_confirm_ctr[i] <= pin_confirm_ctr[i] + 1'b1;
+                end else begin
+                    // Debounce complete at a stably-synced, frozen phase: PIN.
+                    lane_pinned[i] <= 1'b1;
+                    pin_slip[i]    <= slip[i];
+                    pin_phase[i]   <= phase[i];
+                end
+            end
+        end
     end
 
     // §9.11d Fix A3 (2026-06-09) — validation_timed_out sticky status.
@@ -1019,10 +1273,22 @@ module tidelink_phy_align_calibrator #(
     // the flag unchanged (those are external cancels, not lock verdicts).
     wire val_genuine_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
                             (cr_pkt_seen_i || crack_pkt_seen_i);
-    wire val_timeout_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
+    // FIX-J: the eyescan bounded terminal is ALSO a give-up S_DONE — flag it so
+    // SW can tell a coarse-park give-up from a real validation. escan_en is
+    // constant 0 by default, so this term is dead (bit-identical).
+    wire escan_giveup_edge = escan_en && escan_scan_exhausted &&
+                             (cur_state == S_VALIDATE) && role_locked && !swreset &&
+                             !validate_confirm &&
+                             (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);
+    wire val_timeout_edge = ((cur_state == S_VALIDATE) && role_locked && !swreset &&
                             !(cr_pkt_seen_i || crack_pkt_seen_i) &&
                             (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]) &&
-                            val_retry_exhausted;  // M9: only flag give-up S_DONE, not retries
+                            // M9: flag give-up S_DONE (budget spent or, with
+                            // VAL_TIMEOUT_TO_DONE, the MAX_RESWEEPS==0 case);
+                            // VAL_TIMEOUT_TO_DONE=0 default => unchanged.
+                            (val_retry_exhausted ||
+                             (VAL_TIMEOUT_TO_DONE && (MAX_RESWEEPS == 0))))
+                            || escan_giveup_edge;
     always_ff @(posedge clk or posedge rst) begin
         if (rst)                  validation_timed_out <= 1'b0;
         else if (trigger_now)     validation_timed_out <= 1'b0;
@@ -1048,6 +1314,11 @@ module tidelink_phy_align_calibrator #(
             sweep_phase          <= 4'd0;
             probe_lane_pass_q    <= 8'h00;
             any_pass_valid       <= 8'h00;
+            // FIX-J eyescan cursor reset.
+            escan_phase          <= 4'd0;
+            escan_slip           <= 3'd0;
+            escan_dwell_ctr      <= '0;
+            escan_passes         <= '0;
             for (int i = 0; i < 8; i++) begin
                 slip[i]                  <= 3'd0;
                 phase[i]                 <= 4'd0;
@@ -1433,6 +1704,63 @@ module tidelink_phy_align_calibrator #(
                     end
                 end
 
+                // -----------------------------------------------------------
+                // FIX-J: in-S_VALIDATE PRBS (slip,phase) EYESCAN.
+                //
+                // PRBS is on the wire here (training_mode LOW in S_VALIDATE).
+                // Walk every still-UNPINNED, still-UNSYNCED, ACTIVE lane's
+                // DRIVEN (slip,phase) across the 128-point space, dwelling
+                // EYESCAN_DWELL cycles per point so the peer's PRBS checker can
+                // seed+sync. The FIX-L pin latch fires the instant
+                // lane_synced_i[i] is held, freezing slip[i]/phase[i] at the
+                // syncing alignment (its freeze gate is also !lane_synced_i[i],
+                // so it stops chasing the cursor on sync — latency-robust). The
+                // scan never leaves S_VALIDATE, so it never drops the bilateral
+                // PRBS carrier between trials — the architectural FIX-H cure.
+                //
+                // Inert unless escan_en (pin_converge_en && PRBS_EYESCAN); the
+                // default build never enters this branch's body.
+                // -----------------------------------------------------------
+                S_VALIDATE: begin
+                    if (escan_en) begin
+                        for (int i = 0; i < 8; i++) begin
+                            // Drive only active, unpinned, unsynced lanes at the
+                            // full (slip,phase) cursor. A synced-but-unpinned or
+                            // pinned lane HOLDS slip[i]/phase[i] (no assignment)
+                            // so the pin captures the syncing alignment, not the
+                            // next cursor step. lane_done[i] stays 1 so the
+                            // output mux forwards slip[i]/phase[i] to the PHY.
+                            // At lane_mask=0xFF the mask guard is always true.
+                            if (lane_mask[i] && !lane_pinned[i] && !lane_synced_i[i]) begin
+                                slip[i]  <= escan_slip;
+                                phase[i] <= escan_phase;
+                            end
+                        end
+                        // Per-point dwell, then advance the 128-point cursor:
+                        // phase inner (mod-16); slip advances on the phase wrap.
+                        // The walk is CONTINUOUS across rescan windows (cursor
+                        // not reset on a rescan), so a short VALIDATION_TIMEOUT
+                        // still covers the whole space over successive windows
+                        // while holding the carrier UP.
+                        if (escan_rescan) begin
+                            escan_passes <= escan_passes + 1'b1;
+                            if (escan_dwell_ctr >= ESCAN_MAX[$clog2(EYESCAN_DWELL+1)-1:0]) begin
+                                escan_dwell_ctr <= '0;
+                                escan_phase     <= escan_phase + 4'd1;
+                                if (escan_phase == 4'd15) escan_slip <= escan_slip + 3'd1;
+                            end else begin
+                                escan_dwell_ctr <= escan_dwell_ctr + 1'b1;
+                            end
+                        end else if (escan_dwell_ctr >= ESCAN_MAX[$clog2(EYESCAN_DWELL+1)-1:0]) begin
+                            escan_dwell_ctr <= '0;
+                            escan_phase     <= escan_phase + 4'd1;
+                            if (escan_phase == 4'd15) escan_slip <= escan_slip + 3'd1;
+                        end else begin
+                            escan_dwell_ctr <= escan_dwell_ctr + 1'b1;
+                        end
+                    end
+                end
+
                 S_CANCEL: begin
                     // Hold state; no advances. Iterator/latched values
                     // retained for ILA.
@@ -1441,6 +1769,14 @@ module tidelink_phy_align_calibrator #(
                 default: begin
                     // S_IDLE / S_FINISH / S_DONE / S_HOLD — no datapath
                     // activity (clears handled in S_ARM branch above).
+                    // FIX-J: hold the eyescan cursor reset to (slip 0, phase 0)
+                    // in every non-S_VALIDATE state so each S_VALIDATE entry
+                    // starts a fresh full 128-point scan. (S_HOLD is the state
+                    // immediately before S_VALIDATE, guaranteeing a clean start.)
+                    escan_phase     <= 4'd0;
+                    escan_slip      <= 3'd0;
+                    escan_dwell_ctr <= '0;
+                    escan_passes    <= '0;
                 end
             endcase
         end

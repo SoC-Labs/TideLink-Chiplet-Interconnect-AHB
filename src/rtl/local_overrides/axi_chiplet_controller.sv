@@ -849,6 +849,11 @@ module axi_chiplet_controller #(
     // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
     // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
     wire [7:0]  obs_fe_rx_ptr_w;
+    // SoC Labs eyescan FIX #4 (OBSERVABILITY, 2026-06-26): per-lane PRBS-sync
+    // bus produced by the 8 RX checkers (rx_link_clk domain). Declared here (with
+    // the other obs nets) so the apb_clk 2-flop sync below can reference it; the
+    // checker generate that DRIVES it lives further down. arm=0 -> stays 0.
+    wire [7:0]  lane_synced_w;
 `ifdef TIDELINK_PHY_V2
     // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — raw probe from
     // the V2 WlinkGPIOPHY fork, io_link_tx_tx_link_clk domain. 2-flop synced to
@@ -1165,6 +1170,11 @@ module axi_chiplet_controller #(
     // coherence not guaranteed mid-update, fine for poll-rate debug reads).
     reg [7:0]                                                          sync_obs_fe_rx_ptr_0;
     reg [7:0]           sync_obs_fe_rx_ptr_1;
+    // SoC Labs eyescan FIX #4 (OBSERVABILITY, 2026-06-26): per-lane PRBS-sync
+    // vector (lane_synced_w), 2-flop apb_clk synced. Declared in V1-COMMON scope
+    // (NOT under `ifdef TIDELINK_PHY_V2) because the eyescan + its OBS_CAL surface
+    // are V1-path features. Read at OBS_CAL[28:21] (0x2198). arm=0 -> 0.
+    reg [7:0]           sync_lane_synced_0, sync_lane_synced_1;
 `ifdef TIDELINK_PHY_V2
     // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — same 2-flop
     // apb_clk treatment as sync_obs_sync_det. The 16-bit count is a quasi-static
@@ -1193,6 +1203,7 @@ module axi_chiplet_controller #(
     // 2-flop apb_clk treatment as the sticky lane vector. Read at the LIVE-MATCH
     // register (SoC MMIO 0x4403_2144).
     reg [7:0]           sync_obs_lane_live_0, sync_obs_lane_live_1;
+    // (sync_lane_synced_0/1 declared above in V1-common scope — FIX #4.)
     // EYE-WIDTH VISIBILITY (2026-06-17) — 2-flop apb_clk sync of the selected
     // lane's eye-width fields, packed 14-bit {passed, slip[2:0], phase[3:0],
     // best[5:0]} from the rx_link_clk-domain calibrator. Same treatment as the
@@ -1248,6 +1259,8 @@ module axi_chiplet_controller #(
             sync_obs_a2l_rptr_0     <= 5'h0;  sync_obs_a2l_rptr_1     <= 5'h0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
+            // SoC Labs eyescan FIX #4 (OBSERVABILITY, 2026-06-26) — V1-common reset
+            sync_lane_synced_0      <= 8'h0;  sync_lane_synced_1      <= 8'h0;
 `ifdef TIDELINK_PHY_V2
             // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1)
             sync_obs_tx_sync_ins_0  <= 16'h0; sync_obs_tx_sync_ins_1  <= 16'h0;
@@ -1263,6 +1276,7 @@ module axi_chiplet_controller #(
             dbg_obs_slice_idx_0  <= 32'hFFFF_FFFF; dbg_obs_slice_idx_1  <= 32'hFFFF_FFFF;
             // SoC Labs PER-LANE SYNC-match LIVE oracle (2026-06-16, perlane-wp)
             sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
+            // (sync_lane_synced_0/1 reset in V1-common scope above — FIX #4.)
             sync_eye_width_0     <= 14'h0;         sync_eye_width_1     <= 14'h0;
             // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
             sync_obs_rxcap0_0    <= 32'h0;         sync_obs_rxcap0_1    <= 32'h0;
@@ -1337,6 +1351,15 @@ module axi_chiplet_controller #(
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
             sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
+            // SoC Labs eyescan FIX #4 (OBSERVABILITY, 2026-06-26) — 2-flop
+            // apb_clk sync of the per-lane PRBS-sync vector (rx_link_clk domain,
+            // the FIX-J/L oracle). Quasi-static during a scan (held EYESCAN_DWELL),
+            // so the multi-bit 2-flop is the same accepted treatment as the other
+            // per-lane vectors above. Surfaced in OBS_CAL bits [28:21]. With
+            // arm=0 lane_synced_w is 0 (RX checkers gated off) -> reads 0, the
+            // bits were reserved before, so this is read-back-compatible.
+            sync_lane_synced_0      <= lane_synced_w;
+            sync_lane_synced_1      <= sync_lane_synced_0;
 `ifdef TIDELINK_PHY_V2
             // SoC Labs SYNC-insert TX observability 2026-06-15 (PART 1) — 2-flop
             // sync of the TX-link-clk-domain probe into apb_clk.
@@ -1884,12 +1907,13 @@ module axi_chiplet_controller #(
     //   [ 3: 0] cal_state_w       — calibrator FSM state (4 bits)
     //   [19: 4] cal_resweep_ctr_w — auto-retry counter (non-zero = stuck cycling)
     //   [20]    swi_training_mode_w   — live training-mode (OR of cal + SW)
-    //   [31:21] reserved
-    // (M1/M2 sync verifier bits were originally planned here but the sync
-    // registers are declared later in the file — forward reference. Could
-    // be added in a future iteration; cal_state + resweep_ctr are
-    // sufficient to discriminate H1/H2/H3 hypotheses.)
-    wire [31:0] obs_cal_w = {11'h0,
+    //   [28:21] sync_lane_synced_1    — SoC Labs eyescan FIX #4 (2026-06-26):
+    //              per-lane PRBS-sync vector (apb-synced lane_synced_w). Lets
+    //              silicon confirm the eyescan PRBS reached sync per lane (the
+    //              blind spot that hid the armed-eyescan failure). arm=0 -> 0.
+    //   [31:29] reserved
+    wire [31:0] obs_cal_w = {3'h0,
+                             sync_lane_synced_1,
                              swi_training_mode_w,
                              cal_resweep_ctr_w,
                              cal_state_w};
@@ -2651,12 +2675,20 @@ module axi_chiplet_controller #(
     // =====================================================================
     localparam [3:0] CAL_S_VALIDATE = 4'd9;   // mirror tidelink_phy_align_calibrator S_VALIDATE
     wire cal_window_w   = (cal_state_w == CAL_S_VALIDATE) & ~cal_calibration_done_w;
-    // TX escan enable: cal window AND armed. Threaded out to WlinkGPIOPHY where
-    // it is 2-flop synced into the TX link clock before gating the PRBS gen.
-    wire escan_tx_en_w  = cal_window_w & eyescan_arm_r;
+    // TX escan enable: cal window AND armed, DROPPED the moment a real CR/CRACK
+    // is seen on RX. SoC Labs eyescan FIX #3 (CLEAN HANDOFF, 2026-06-26): once
+    // the peer's first real CR/CRACK arrives the eyescan has done its job (the
+    // lane is synced, the calibrator will confirm + terminate) — keep emitting
+    // PRBS-15 and we would corrupt the FC handshake on the wire. Gate off on the
+    // sticky obs_cr/crack so the wire hands cleanly back to LL_TX for the CR/CRACK
+    // rendezvous. obs_*_rx_w are rx_link_clk-domain (same as cal_window_w), no CDC.
+    // arm=0 -> escan_tx_en_w=0 regardless, bit-identical to 8ab846ba.
+    wire escan_tx_en_w  = cal_window_w & eyescan_arm_r &
+                          ~(obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w);
 
-    // Per-lane PRBS sync bus produced by the 8 RX checkers (rx_link_clk domain).
-    wire [7:0] lane_synced_w;
+    // Per-lane PRBS sync bus (lane_synced_w) is declared up with the other obs
+    // nets (near obs_fe_rx_ptr_w) so the apb_clk obs-sync block can reference it;
+    // the 8 RX checkers that DRIVE it are instantiated just below.
 
     // RX checker gate/clear, synced into rx_link_clk (copy of BIST CDC
     // tidelink_phy_bist_core.sv:966-992). The gate is the armed cal window; a
@@ -2900,9 +2932,29 @@ module axi_chiplet_controller #(
     assign eye_score_best_phase_o   = cal_eye_best_phase_w;
 `else
     tidelink_phy_align_calibrator #(
+        // SoC Labs eyescan ENGAGED-SIM scaling (2026-06-26): the silicon
+        // VALIDATION_TIMEOUT(2M)/HOLD_CYCLES(32768) are far too long to run the
+        // S_VALIDATE eyescan inside a cocotb budget. TIDELINK_ESCAN_SIM_FAST
+        // (defined ONLY by the engaged-sim build) shrinks them so the eyescan
+        // can be EXERCISED (not bypassed). UNDEFINED for every production/FPGA
+        // build -> the silicon values stand -> bit-identical to 8ab846ba. arm=0
+        // never enters S_VALIDATE (the M6/M8 bypass / S_FINISH path), so this
+        // scaling is invisible to the arm=0 no-regression path either way.
+`ifdef TIDELINK_ESCAN_SIM_FAST
+        .HOLD_CYCLES(256),              // engaged-sim: ~1 short hold before S_VALIDATE
+        // engaged-sim: long enough for the eyescan to find + PIN the eye (the
+        // FIX-L debounce is EYESCAN_DWELL cycles of HELD sync) and for the
+        // CR/CRACK rendezvous to complete via the genuine escan_confirm path,
+        // BEFORE the VAL_TIMEOUT_TO_DONE deadlock-escape fires (the escape is a
+        // last resort, not the primary convergence path).
+        .VALIDATION_TIMEOUT(131072),
+        .EYESCAN_DWELL(16),             // engaged-sim: shorter pin-debounce so the
+                                        //   pin can latch inside the sim sync window
+`else
         .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
                                         //      was 1024 (163μs, <1 sweep) which left master no time.
         .VALIDATION_TIMEOUT(2_000_000), // M6: 320ms at 6.25MHz FPGA link clk
+`endif
         // SoC Labs eyescan integration (WI-3, 2026-06-25). The FIX-J/L eyescan
         // is COMPILED-IN but RUNTIME-GATED by eyescan_arm_r (via
         // lane_pin_converge_en_i). escan_en = (LANE_PIN_CONVERGE |

@@ -372,7 +372,7 @@ See `axi_chiplet_controller.sv:1103-1140`.
 | 0x218C | OBS_I2C_MST_STATUS| RO     | [3] missed_ack, [2] bus_active, [1] bus_cont(0), [0] busy. |
 | 0x2190 | OBS_OBS_ID        | RO     | "OB" v1.0 marker = 0x4F42_0100. |
 | 0x2194 | OBS_MASK_HS       | RO     | Packed mask-handshake internals (peer masks, local match/fail, lock_pending, gate_open, wlink result). |
-| 0x2198 | OBS_CAL           | RO     | M7 calibrator obs (2026-06-05): [3:0] cal_state, [19:4] cal_resweep_ctr, [20] live training_mode (cal OR SW). (Was documented "reserved"; live since M7.) |
+| 0x2198 | OBS_CAL           | RO     | M7 calibrator obs (2026-06-05): [3:0] cal_state, [19:4] cal_resweep_ctr, [20] live training_mode (cal OR SW). Eyescan FIX #4 (2026-06-26): [28:21] lane_synced[7:0] — per-lane PRBS-sync vector (apb-synced; nonzero only when eyescan_arm=1 and the eyescan PRBS synced that lane). [31:29] reserved. (Was documented "reserved"; live since M7.) |
 | 0x219C | OBS_FC_CREDIT     | RO     | FE credit obs (2026-06-12): [7:0] `fe_rx_credit_max` (captured from CR/CRACK `word_count[15:8]`; catches credit garbled to small NONZERO — `fe_rx_is_full` @0x2108[31] only flags ==0), [15:8] `fe_rx_ptr` (credit-return pointer from ACK/NACK), [16] `fe_rx_is_full` mirror, [23:17] reserved, [31:24] presence marker 0xFC (reads 0x0000_0000 on older images). All fields 2-flop apb-synced. MMIO 0x4403219C. |
 
 ---

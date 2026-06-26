@@ -1118,8 +1118,24 @@ module tidelink_phy_align_calibrator #(
                 // constant 0 by default, so this entire branch is dead and the
                 // legacy timeout arm below runs unchanged.
                 else if (escan_en) begin
-                    if (escan_scan_exhausted &&
-                        (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]))
+                    // SoC Labs eyescan FIX #2 (HARDEN, 2026-06-26): restore the
+                    // VAL_TIMEOUT_TO_DONE escape under arm. The armed escan_en
+                    // branch is checked BEFORE the legacy VAL_TIMEOUT_TO_DONE arm
+                    // (:1127), so without this the armed path could sit
+                    // carrier-up scanning until escan_scan_exhausted (512
+                    // windows) — long enough to bypass the documented
+                    // cal_done<->lltx deadlock terminal and leave a die never
+                    // asserting cal_done -> FC never releases (the silicon
+                    // symptom: cal_done=1 both but fcsm asymmetric / FC stuck).
+                    // With VAL_TIMEOUT_TO_DONE=1, a single per-window val_ctr
+                    // timeout WITHOUT confirm latches terminal S_DONE (coarse-
+                    // park, no re-sweep) so cal_done always asserts and lltx/FC
+                    // can run — exactly the HW deadlock escape the non-escan arm
+                    // below provides. VAL_TIMEOUT_TO_DONE=0 (default) -> this
+                    // collapses to the original (escan_scan_exhausted-only)
+                    // bounded terminal, bit-identical.
+                    if ((val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]) &&
+                        (escan_scan_exhausted || VAL_TIMEOUT_TO_DONE))
                         nxt_state = S_DONE;        // bounded terminal, no re-sweep
                     else
                         nxt_state = S_VALIDATE;    // keep scanning, carrier UP
@@ -1276,7 +1292,13 @@ module tidelink_phy_align_calibrator #(
     // FIX-J: the eyescan bounded terminal is ALSO a give-up S_DONE — flag it so
     // SW can tell a coarse-park give-up from a real validation. escan_en is
     // constant 0 by default, so this term is dead (bit-identical).
-    wire escan_giveup_edge = escan_en && escan_scan_exhausted &&
+    // FIX #2 (2026-06-26): mirror the broadened FSM terminal condition —
+    // (escan_scan_exhausted || VAL_TIMEOUT_TO_DONE) on a window timeout — so the
+    // validation_timed_out flag is accurate when the VAL_TIMEOUT_TO_DONE escape
+    // latches terminal before the scan budget is spent. VAL_TIMEOUT_TO_DONE=0
+    // (default) -> reduces to the original escan_scan_exhausted-only term.
+    wire escan_giveup_edge = escan_en &&
+                             (escan_scan_exhausted || VAL_TIMEOUT_TO_DONE) &&
                              (cur_state == S_VALIDATE) && role_locked && !swreset &&
                              !validate_confirm &&
                              (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);

@@ -98,7 +98,17 @@ module WavD2DGpio #(
   // io_word_pin=4'h0 on every lane -> bit-exact legacy framing. Tie 0 in
   // environments without the chiplet controller.
   input  [31:0]  io_swi_word_pin_perlane_in,
-  input  [7:0]   io_swi_word_pin_perlane_en_in
+  input  [7:0]   io_swi_word_pin_perlane_en_in,
+  // SoC Labs eyescan FIX #1b (2026-06-26): armed cal-window keep-alive level
+  // (escan_gate_tx1 from WlinkGPIOPHY, TX-link-clk domain). When HIGH the
+  // eyescan owns the TX wire (PRBS-15 is muxed onto io_link_tx_tx_link_data
+  // upstream). The autonomous SYNC-beacon insert (sync_insert) must be
+  // SUPPRESSED for the duration, otherwise it periodically overwrites a PRBS
+  // word with the SYNC pattern (16'h1F00...) — the descrambler then sees a
+  // non-PRBS word, drops `synced`, and the FIX-L pin can never debounce
+  // (root-caused in the engaged sim: lane_synced toggled, pinned stayed 0x00).
+  // Tie 0 (POR / arm=0) -> bit-identical to 8ab846ba.
+  input          io_escan_active
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -629,8 +639,15 @@ module WavD2DGpio #(
   //   postcount != 0. So (postcount==0) gates SYNC correctly: fires between
   //   real packet transmissions once the serialiser is idle, regardless of any
   //   stale value in link_data_reg.
+  // SoC Labs eyescan FIX #1b 2026-06-26: ~io_escan_active suppresses the SYNC
+  // beacon while the eyescan owns the wire — defensive against the LL-idle SYNC
+  // insert overwriting a PRBS word (which would drop the descrambler `synced`
+  // and stall the FIX-L pin debounce). arm=0 -> io_escan_active=0 ->
+  // bit-identical. (In the shared-clock pair sim the cal-window SYNC beacon
+  // never fires — io_link_tx_tx_idle is not asserted there — so this is a
+  // silicon-side guard, harmless and inert in sim.)
   wire        sync_insert =
-        (sync_word_ctr_r == 6'd0) & io_link_tx_tx_idle & (postcount == 8'h0) & ~effective_training_mode; // SoC Labs 2026-06-08: replaced link_data==0 with postcount==0 (serialiser-drain guard). postcount==0 fires correctly between packets. link_data==0 was "cleared only on reset" and blocked SYNC permanently after first packet (CR/CRACK).
+        (sync_word_ctr_r == 6'd0) & io_link_tx_tx_idle & (postcount == 8'h0) & ~effective_training_mode & ~io_escan_active; // SoC Labs 2026-06-08: postcount==0 serialiser-drain guard. FIX #1b: ~io_escan_active.
   always @(posedge io_link_tx_tx_link_clk or posedge por_reset_scan_wrs_io_reset_out) begin
     if (por_reset_scan_wrs_io_reset_out) begin
       sync_word_ctr_r <= SYNC_PERIOD - 6'd1;

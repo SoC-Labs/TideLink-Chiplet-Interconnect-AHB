@@ -85,6 +85,11 @@ module WlinkGPIOPHY #(
   wire  gpio_io_scan_clk; // @[PHY.scala 376:27]
   wire  gpio_io_scan_out; // @[PHY.scala 376:27]
   wire  gpio_io_link_tx_tx_en; // @[PHY.scala 376:27]
+  // SoC Labs eyescan FIX #1b (2026-06-26): forward-declare the TX-link-clk-synced
+  // armed cal-window level so it can be connected to the WavD2DGpio instance
+  // (io_escan_active) BELOW its always-block definition. VCS infers an implicit
+  // net at first port use otherwise, clashing with the reg declaration.
+  reg   escan_gate_tx1;
   wire  gpio_io_link_tx_tx_idle; // SoC Labs 2026-06-06
   wire  gpio_io_link_tx_tx_ready; // @[PHY.scala 376:27]
   wire [127:0] gpio_io_link_tx_tx_link_data; // @[PHY.scala 376:27]
@@ -166,7 +171,11 @@ module WlinkGPIOPHY #(
     .io_swi_phase_offset_in(swi_phase_offset_in),
     // SoC Labs FIX-R (word-window pin, 2026-06-23): per-lane word-pin + enable.
     .io_swi_word_pin_perlane_in(swi_word_pin_perlane_in),
-    .io_swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in)
+    .io_swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in),
+    // SoC Labs eyescan FIX #1b (2026-06-26): suppress the SYNC beacon while the
+    // eyescan PRBS owns the wire. escan_gate_tx1 is the TX-link-clk-synced armed
+    // cal-window level (declared below). arm=0 -> 0 -> bit-identical.
+    .io_escan_active(escan_gate_tx1)
   );
   // ==========================================================================
   // SoC Labs eyescan PRBS-15 TX instrument (WI-1, 2026-06-25).
@@ -200,7 +209,7 @@ module WlinkGPIOPHY #(
   // 2-flop sync of escan_tx_en (hclk-domain level) into the TX link-clk domain,
   // plus a 3-stage edge-detect for a one-shot reload pulse on the arm rising
   // edge (so a re-arm restarts the PRBS sequence under a freshly-seeded LFSR).
-  reg escan_gate_tx0, escan_gate_tx1;
+  reg escan_gate_tx0;   // escan_gate_tx1 forward-declared above (FIX #1b)
   reg escan_arm_tx0, escan_arm_tx1, escan_arm_tx2;
   always @(posedge escan_tx_clk or posedge escan_tx_rst) begin
     if (escan_tx_rst) begin
@@ -214,9 +223,28 @@ module WlinkGPIOPHY #(
   end
   wire escan_tx_load = escan_arm_tx1 & ~escan_arm_tx2;     // 1 link-clk reload pulse
 
-  // tx_beat = a word was accepted this link-clk (link_tx_tx_en & tx_ready).
-  // gen_en advances the LFSR by one 128-bit word only while gated AND accepted.
-  wire escan_tx_beat = link_tx_tx_en & gpio_io_link_tx_tx_ready;
+  // SoC Labs eyescan FIX #1 (PRIMARY, 2026-06-26): keep the PHY TX clocking
+  // alive across the armed cal window. The ROOT-CAUSE bug WI-1 missed: during
+  // S_VALIDATE the live LL is idle so link_tx_tx_en (=txpstate_io_tx_en) is
+  // LOW. WavD2DGpio gates io_clk_en OFF (serializer stops -> the peer's
+  // rx_link_clk dies) and forces io_link_tx_tx_ready=0 whenever io_link_tx_tx_en
+  // is low (WavD2DGpio.v:998,1016). So with the old gpio_io_link_tx_tx_en =
+  // link_tx_tx_en, no PRBS ever reaches the wire -> lane_synced stays 0 ->
+  // the eyescan can never converge. Mirror the BIST ctrl_run contract: OR the
+  // synced cal-window keep-alive (escan_gate_tx1) into the PHY TX enable so the
+  // serializer runs and tx_ready keeps pulsing once/word for the whole armed
+  // window. escan_gate_tx1=0 at POR / arm=0 -> bit-identical to 8ab846ba.
+  // (Silicon-necessary: cures the serializer clock-gating that kills the peer's
+  // recovered rx_link_clk. The shared-clock pair sim shares the RX clock so it
+  // cannot reproduce that mode — this fix is validated on silicon, not in sim.)
+  wire gpio_io_link_tx_tx_en_w = link_tx_tx_en | escan_gate_tx1;
+
+  // tx_beat = a word was accepted this link-clk. Derived from the GATED TX
+  // enable (gpio_io_link_tx_tx_en_w) so the LFSR advances exactly once per
+  // accepted word during the cal window (when link_tx_tx_en alone is low but
+  // the keep-alive holds the serializer running). gen_en advances the LFSR by
+  // one 128-bit word only while gated AND accepted.
+  wire escan_tx_beat = gpio_io_link_tx_tx_en_w & gpio_io_link_tx_tx_ready;
   wire escan_gen_en  = escan_tx_beat & escan_gate_tx1;
 
   wire [ESCAN_WORD_W-1:0] escan_prbs_word;
@@ -265,7 +293,11 @@ module WlinkGPIOPHY #(
   assign gpio_io_scan_mode = scan_mode; // @[Bundles.scala 19:19]
   assign gpio_io_scan_asyncrst_ctrl = scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpio_io_scan_clk = scan_clk; // @[Bundles.scala 21:19]
-  assign gpio_io_link_tx_tx_en = link_tx_tx_en; // @[PHY.scala 408:32]
+  // SoC Labs eyescan FIX #1 (PRIMARY): keep TX clocking alive over the armed
+  // cal window (see escan_tx_beat above). gpio_io_link_tx_tx_en_w =
+  // link_tx_tx_en | escan_gate_tx1. arm=0 / POR -> escan_gate_tx1=0 -> identical
+  // to the prior pure passthrough.
+  assign gpio_io_link_tx_tx_en = gpio_io_link_tx_tx_en_w; // @[PHY.scala 408:32]
   assign gpio_io_link_tx_tx_idle = link_tx_tx_idle; // SoC Labs 2026-06-06
   // SoC Labs eyescan (WI-1): muxed link data (PRBS-15 in the cal window, else
   // the live LL_TX word). escan_gate_tx1=0 at POR -> == link_tx_tx_link_data.

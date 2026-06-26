@@ -29,7 +29,8 @@ Mechanism: project mode, so the hook is `set_property INCREMENTAL_CHECKPOINT <dc
 - **Keep `phys_opt_design` ON and the read directive at default (`TimingClosure`), NOT `RuntimeOptimized`.** The AggressiveExplore phys_opt (`build_design.tcl:349-352`) is what makes the RX-capture eye deterministic; skipping it route-matches but regresses the eye (silent on-silicon lottery). `RuntimeOptimized` can leave WNS worse than baseline on this marginal design — it's for "does it route" smoke runs only, not a shipping bitstream.
 
 ## Reuse expectations for the eyescan iterations
-- **Calibrator-internal edits (WI-2 c451d72, FIX-R b081e4d):** localized, arm=0-gated → **>90% reuse, fast, incremental-safe.** The sweet spot.
+- **SMALL calibrator edits (param flip, a few lines of logic — e.g. FIX-R b081e4d's min-hold counter):** localized, arm=0-gated → **>90% reuse, fast, incremental-safe.** The sweet spot.
+- **STRUCTURAL calibrator edits (new register banks, FSM restructure, OUTPUT-MUX rewiring — e.g. FIX-CENTER fdd460a, +172 lines, new esync_run/best_* regs + routing pin_phase live to the PHY):** OBSERVED to drop reuse below Vivado's auto-threshold → **"Incremental flow is disabled. No incremental reuse Info to report." → silent FULL P&R fallback (~3.4hr, correct bitstream, NO speedup).** "Calibrator-internal" is NOT a reliable proxy for high reuse — line count + new sequential cells + mux/output changes are what matter. Grep the log for `Incremental flow is disabled` / `report_incremental_reuse` to confirm whether it actually engaged.
 - **PRBS instrument (WI-1/WI-3 5eef2c3):** RIPPLE — adds link-tx-clock sequential logic + CDC syncs + MMIO → **lower reuse, verify-before-trust.** Once it's in the reference, subsequent PRBS-internal tweaks return to high reuse.
 
 ## "Safe to deploy" gate for an incremental bitstream

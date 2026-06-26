@@ -51,6 +51,17 @@ else
   TOP_TOP        = tb_top
 endif
 
+# -- FIX-CENTER eyescan run-centring env --------------------------------------
+# ESCAN=1 builds the eyescan-engaged wrapper (tb_calibrator_escan.sv) against
+# the src/ reference calibrator with PRBS_EYESCAN=1, so the FIX-CENTER
+# contiguous-synced-run centring can be driven with a modeled lane_synced
+# window and the CENTRE pin observed. Independent of DEPS (uses src/ RTL).
+ESCAN ?= 0
+ifeq ($(ESCAN),1)
+TOPLEVEL = tb_calibrator_escan
+VERILOG_SOURCES = $(CURDIR)/tb_calibrator_escan.sv $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
+MODULE  ?= test_calibrator_escan_centering
+else
 TOPLEVEL ?= $(TOP_CALIBRATOR)
 ifeq ($(TOPLEVEL),$(TOP_TOP))
 VERILOG_SOURCES = $(TB_TOP) $(CAL_RTL)
@@ -58,6 +69,7 @@ MODULE  ?= test_calibrator_t3,test_calibrator_s_probe_skip
 else
 VERILOG_SOURCES = $(TB_CALIBRATOR) $(CAL_RTL)
 MODULE  ?= test_calibrator
+endif
 endif
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb

@@ -28,13 +28,14 @@ wrr(){ bsh "$1" "/usr/bin/devmem2 $2 w $3 >/dev/null"; }
 lk(){ local v; v=$(rdr "$1" $LS); v=$((${v:-0})); [ $(((v>>16)&1)) = 1 ] && [ $(((v>>17)&7)) = 4 ] && [ $(((v>>23)&1)) = 1 ] && [ $(((v>>24)&1)) = 1 ]; }
 cred(){ local c; c=$(rdr "$1" $CRED); [ -n "$c" ] && [ "${c: -2}" != "00" ]; }
 arm(){ rdr "$1" $ARM; }
-# batched send: 4 TX writes in one SSH, 8 FIFO reads in one SSH
-send(){ local s=$1 r=$2 u0 u1 dump
+# send: PROVEN mechanism (host-computed hex addrs, separate devmem2 per word) —
+# robust vs board-side $((hex)) arithmetic. 4 TX writes + per-offset FIFO reads.
+send(){ local s=$1 r=$2 u0 u1 off addr w
   u0=$(printf '0xC0DE%04X' $((RANDOM&0xFFFF))); u1=$(printf '0xFEED%04X' $((RANDOM&0xFFFF)))
-  bsh "$s" "/usr/bin/devmem2 $TX w 0x00240000>/dev/null;/usr/bin/devmem2 $TX w 0x0>/dev/null;/usr/bin/devmem2 $TX w $u0>/dev/null;/usr/bin/devmem2 $TX w $u1>/dev/null"
+  wrr "$s" "$TX" 0x00240000; wrr "$s" "$TX" 0x00000000; wrr "$s" "$TX" "$u0"; wrr "$s" "$TX" "$u1"
   sleep 2
-  dump=$(bsh "$r" "for o in 0 4 8 12 16 20 24 28; do /usr/bin/devmem2 \$(($RX+o)) w; done" | grep -oE '0x[0-9A-Fa-f]+')
-  echo "$dump" | grep -qiE "${u0#0x}|${u1#0x}"; }
+  for off in 0 4 8 12 16 20 24 28; do addr=$(printf '0x%X' $(( RX + off ))); w=$(rdr "$r" "$addr")
+    { [ "$w" = "$u0" ] || [ "$w" = "$u1" ]; } && return 0; done; return 1; }
 trap '"$PROOF" --release >/dev/null 2>&1 || true' EXIT
 
 echo "=================================================================="

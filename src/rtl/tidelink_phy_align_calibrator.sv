@@ -943,6 +943,40 @@ module tidelink_phy_align_calibrator #(
     localparam int PIN_CONFIRM = EYESCAN_DWELL;
     logic [$clog2(EYESCAN_DWELL+1)-1:0] pin_confirm_ctr [0:7];
 
+    // -------------------------------------------------------------------------
+    // FIX-CENTER (2026-06-26) — eyescan CONTIGUOUS-SYNCED-RUN centring.
+    //
+    // The FIX-L pin (above) froze each lane's (slip,phase) at the FIRST phase
+    // where lane_synced_i[i] asserted — i.e. the eye LEADING EDGE, near-zero
+    // margin. On silicon that edge decodes the slow FC handshake (cal_done,
+    // fcsm=4, lane_synced=0xFF) but bit-errors arbitrary AHB payload because the
+    // sample point sits on the eye boundary, not its centre.
+    //
+    // FIX-CENTER mirrors the PROVEN S_FINALIZE §9.11 centring: instead of
+    // freezing at the edge, KEEP WALKING the cursor while the lane stays synced,
+    // TRACK the contiguous synced PHASE run (esync_run_*), remember the WIDEST
+    // run seen (esync_best_*), and when that run ENDS (sync drops) or the scan
+    // exhausts, PIN the run CENTRE:
+    //     pin_phase[i] = esync_best_start_phase[i] + (esync_best_run[i]-1)>>1
+    //     pin_slip[i]  = esync_best_slip[i]
+    // exactly as S_FINALIZE computes best_run_start_phase + (best_run-1)>>1.
+    // The centred (slip,phase) is then routed into slip[i]/phase[i] (the
+    // signals the output mux forwards to the PHY) the instant lane_pinned[i]
+    // latches. Whole block is gated by escan_en — constant 0 when arm=0, so the
+    // default build is bit-identical to 8ab846ba (these flops fold away).
+    //
+    // The synced-run trackers are sampled at the per-point dwell-window
+    // boundary (escan_pt_advance) — the same cadence the cursor advances — so
+    // each contiguous phase the lane held sync extends the run by exactly one,
+    // mirroring the S_SWEEP run_len/best_run cadence keyed on lane_score.
+    // -------------------------------------------------------------------------
+    logic [EYE_WIDTH_W-1:0] esync_run_len          [0:7]; // current synced run
+    logic [EYE_WIDTH_W-1:0] esync_best_run         [0:7]; // widest synced run
+    logic [3:0]             esync_run_start_phase  [0:7];
+    logic [3:0]             esync_best_start_phase [0:7];
+    logic [2:0]             esync_run_slip         [0:7];
+    logic [2:0]             esync_best_slip        [0:7];
+
     // FIX-J in-S_VALIDATE PRBS (slip,phase) EYESCAN cursor.
     // escan_en gates the whole feature: pin_converge_en && PRBS_EYESCAN.
     // The eyescan only DRIVES unpinned lanes; pinned lanes hold their frozen
@@ -1015,6 +1049,14 @@ module tidelink_phy_align_calibrator #(
     end
     wire confirm_stable = (confirm_ctr >= CONFIRM_STABLE[$clog2(EYESCAN_DWELL+1)-1:0]);
     wire escan_confirm  = validate_confirm & confirm_stable;
+
+    // FIX-CENTER per-point advance pulse: HIGH for the single cycle the eyescan
+    // cursor finishes a dwell window and is about to step to the next phase
+    // point. The synced-run trackers sample lane_synced_i on THIS edge (one
+    // sample per phase point), the same cadence the cursor advances escan_phase.
+    // escan_en=0 => constant 0 (the run-tracker block is dead, bit-identical).
+    wire escan_pt_advance = escan_en && (cur_state == S_VALIDATE) &&
+                            (escan_dwell_ctr >= ESCAN_MAX[$clog2(EYESCAN_DWELL+1)-1:0]);
 
     // FIX-J in-place rescan pulse: per-window timeout, eyescan running, budget
     // remains, not yet confirmed. The FSM STAYS in S_VALIDATE (carrier UP);
@@ -1303,22 +1345,123 @@ module tidelink_phy_align_calibrator #(
     // Gated by pin_converge_en so the default build is bit-identical (this
     // whole block is dead when pin_converge_en=0).
     // -------------------------------------------------------------------------
+    // FIX-CENTER: combinational run-centre = run_start + (run_len-1)>>1,
+    // EXACTLY the §9.11 S_FINALIZE eye-centre arithmetic (floor of midpoint,
+    // maximum margin to either edge). esync_best_run is 5b (<=16), so
+    // (best_run-1)>>1 <= 7 and start+centre <= 15 — the 4-bit phase sum is safe.
+    function automatic logic [3:0] esync_centre_phase(
+            input logic [3:0]             start_phase,
+            input logic [EYE_WIDTH_W-1:0] run);
+        logic [3:0] centre_off;
+        centre_off = (run - 5'd1) >> 1;
+        return start_phase + centre_off;
+    endfunction
+
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             lane_pinned <= 8'h00;
             for (int i = 0; i < 8; i++) begin
-                pin_slip[i]        <= 3'd0;
-                pin_phase[i]       <= 4'd0;
-                pin_confirm_ctr[i] <= '0;
+                pin_slip[i]               <= 3'd0;
+                pin_phase[i]              <= 4'd0;
+                pin_confirm_ctr[i]        <= '0;
+                esync_run_len[i]          <= '0;
+                esync_best_run[i]         <= '0;
+                esync_run_start_phase[i]  <= 4'd0;
+                esync_best_start_phase[i] <= 4'd0;
+                esync_run_slip[i]         <= 3'd0;
+                esync_best_slip[i]        <= 3'd0;
             end
         end else if (trigger_now || (cur_state == S_CANCEL)) begin
             lane_pinned <= 8'h00;
             for (int i = 0; i < 8; i++) begin
-                pin_slip[i]        <= 3'd0;
-                pin_phase[i]       <= 4'd0;
-                pin_confirm_ctr[i] <= '0;
+                pin_slip[i]               <= 3'd0;
+                pin_phase[i]              <= 4'd0;
+                pin_confirm_ctr[i]        <= '0;
+                esync_run_len[i]          <= '0;
+                esync_best_run[i]         <= '0;
+                esync_run_start_phase[i]  <= 4'd0;
+                esync_best_start_phase[i] <= 4'd0;
+                esync_run_slip[i]         <= 3'd0;
+                esync_best_slip[i]        <= 3'd0;
+            end
+        end else if (escan_en && (cur_state == S_VALIDATE)) begin
+            // -----------------------------------------------------------------
+            // FIX-CENTER: eyescan is WALKING — track the contiguous synced
+            // PHASE run per lane and pin its CENTRE (mirrors S_FINALIZE best_run
+            // centring). This branch is only reached when escan_en (=> arm=1),
+            // so it is dead in the default build (bit-identical to 8ab846ba).
+            // -----------------------------------------------------------------
+            for (int i = 0; i < 8; i++) begin
+                // LANE-MASK: a masked lane carries no PRBS — never pin.
+                if (!lane_mask[i]) begin
+                    // masked — never pin, never track.
+                end else if (lane_pinned[i]) begin
+                    // already pinned — hold.
+                end else if (escan_pt_advance) begin
+                    // One sample per cursor phase point, taken as the dwell
+                    // window closes (same cadence escan_phase advances). The
+                    // sampled (escan_slip,escan_phase) IS the alignment that was
+                    // on the wire for the window just ending.
+                    if (lane_synced_i[i]) begin
+                        // This phase point held sync — extend the contiguous run.
+                        if (esync_run_len[i] == '0) begin
+                            // Opening a fresh run: anchor its start (slip,phase).
+                            esync_run_start_phase[i] <= escan_phase;
+                            esync_run_slip[i]        <= escan_slip;
+                        end
+                        if (esync_run_len[i] != 5'd16)
+                            esync_run_len[i] <= esync_run_len[i] + 5'd1;
+                        // Promote to best as soon as the EXTENDED run is the
+                        // widest seen (compute the extended length inline, as
+                        // the +1 register write has not landed yet).
+                        if ((esync_run_len[i] + 5'd1) > esync_best_run[i]) begin
+                            esync_best_run[i]         <= esync_run_len[i] + 5'd1;
+                            esync_best_start_phase[i] <=
+                                (esync_run_len[i] == '0) ? escan_phase
+                                                         : esync_run_start_phase[i];
+                            esync_best_slip[i]        <=
+                                (esync_run_len[i] == '0) ? escan_slip
+                                                         : esync_run_slip[i];
+                        end
+                    end else begin
+                        // Sync DROPPED at this phase point. If a run was open,
+                        // it just ENDED. The widest run is recorded in
+                        // esync_best_*; if it is non-empty PIN ITS CENTRE now,
+                        // routing the centred (slip,phase) straight into the
+                        // live PHY signals (slip[i]/phase[i], the output mux
+                        // source). Otherwise just close the (empty) run.
+                        esync_run_len[i] <= '0;
+                        if (esync_best_run[i] != '0) begin
+                            // PIN: record the centred (slip,phase) in pin_*; the
+                            // output mux forwards pin_* over slip[i]/phase[i] once
+                            // lane_pinned[i] is set (single-driver — slip[i]/
+                            // phase[i] are owned by the main datapath block, the
+                            // eyescan cursor stops driving this lane once pinned).
+                            lane_pinned[i] <= 1'b1;
+                            pin_slip[i]    <= esync_best_slip[i];
+                            pin_phase[i]   <= esync_centre_phase(
+                                                  esync_best_start_phase[i],
+                                                  esync_best_run[i]);
+                        end
+                    end
+                end else if (escan_scan_exhausted && (esync_best_run[i] != '0)) begin
+                    // Scan budget spent with a still-open or last-measured run —
+                    // pin the widest centre we found so the lane lands centred
+                    // rather than wherever the cursor happened to stop.
+                    lane_pinned[i] <= 1'b1;
+                    pin_slip[i]    <= esync_best_slip[i];
+                    pin_phase[i]   <= esync_centre_phase(
+                                          esync_best_start_phase[i],
+                                          esync_best_run[i]);
+                end
             end
         end else if (pin_converge_en && (cur_state == S_VALIDATE)) begin
+            // -----------------------------------------------------------------
+            // FIX-L (PRESERVED): pin_converge_en WITHOUT the walking eyescan
+            // (PRBS_EYESCAN=0). The cursor does not move, so the lane's phase is
+            // already frozen; debounce a held sync and pin the frozen edge —
+            // the original behaviour, unchanged.
+            // -----------------------------------------------------------------
             for (int i = 0; i < 8; i++) begin
                 // LANE-MASK: a MASKED lane carries no PRBS and is parked at
                 // (0,0) — never attempt to pin it. At lane_mask=0xFF this guard
@@ -1825,14 +1968,18 @@ module tidelink_phy_align_calibrator #(
                 S_VALIDATE: begin
                     if (escan_en) begin
                         for (int i = 0; i < 8; i++) begin
-                            // Drive only active, unpinned, unsynced lanes at the
-                            // full (slip,phase) cursor. A synced-but-unpinned or
-                            // pinned lane HOLDS slip[i]/phase[i] (no assignment)
-                            // so the pin captures the syncing alignment, not the
-                            // next cursor step. lane_done[i] stays 1 so the
-                            // output mux forwards slip[i]/phase[i] to the PHY.
+                            // FIX-CENTER: drive every active, UNPINNED lane at the
+                            // full (slip,phase) cursor — INCLUDING a lane that is
+                            // currently synced. The old code froze slip[i]/phase[i]
+                            // the instant lane_synced_i[i] asserted (the eye LEADING
+                            // EDGE); FIX-CENTER instead KEEPS WALKING the cursor
+                            // across the synced window so the esync_run_* tracker
+                            // can measure the contiguous synced-phase run and pin
+                            // its CENTRE. A PINNED lane holds: the centre-pin block
+                            // owns slip[i]/phase[i] once lane_pinned[i] latches, so
+                            // no assignment here (its write would fight the pin).
                             // At lane_mask=0xFF the mask guard is always true.
-                            if (lane_mask[i] && !lane_pinned[i] && !lane_synced_i[i]) begin
+                            if (lane_mask[i] && !lane_pinned[i]) begin
                                 slip[i]  <= escan_slip;
                                 phase[i] <= escan_phase;
                             end
@@ -2064,7 +2211,17 @@ module tidelink_phy_align_calibrator #(
         bit_slip_internal     = 24'h0;
         phase_offset_internal = 32'h0;
         for (int i = 0; i < 8; i++) begin
-            if (lane_done[i]) begin
+            // FIX-CENTER: a PINNED lane forwards the centred pin_(slip,phase) —
+            // the eye-CENTRE the FIX-CENTER run tracker computed — overriding the
+            // live cursor value held in slip[i]/phase[i]. lane_pinned[i] can only
+            // be set under pin_converge_en/escan_en (arm=1); with arm=0 it is
+            // constant 0, so this branch is dead and the mux is bit-identical to
+            // 8ab846ba. In the FIX-L (no-walk) path pin_(slip,phase) equals the
+            // frozen slip[i]/phase[i], so that path is unchanged too.
+            if (lane_pinned[i]) begin
+                bit_slip_internal[3*i +: 3]     = pin_slip[i];
+                phase_offset_internal[4*i +: 4] = pin_phase[i];
+            end else if (lane_done[i]) begin
                 bit_slip_internal[3*i +: 3]     = slip[i];
                 phase_offset_internal[4*i +: 4] = phase[i];
             end else begin

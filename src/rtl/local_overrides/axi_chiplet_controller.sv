@@ -2675,6 +2675,12 @@ module axi_chiplet_controller #(
     // =====================================================================
     localparam [3:0] CAL_S_VALIDATE = 4'd9;   // mirror tidelink_phy_align_calibrator S_VALIDATE
     wire cal_window_w   = (cal_state_w == CAL_S_VALIDATE) & ~cal_calibration_done_w;
+    // cal_escan_min_hold_w — FIX-R bilateral PRBS-hold strobe from the
+    // calibrator. HIGH while this die is inside its guaranteed-minimum PRBS
+    // window in S_VALIDATE (the peer may still be syncing). rx_link_clk domain
+    // (same as cal_window_w / obs_*), no CDC. Constant 0 when arm=0.
+    wire cal_escan_min_hold_w;
+
     // TX escan enable: cal window AND armed, DROPPED the moment a real CR/CRACK
     // is seen on RX. SoC Labs eyescan FIX #3 (CLEAN HANDOFF, 2026-06-26): once
     // the peer's first real CR/CRACK arrives the eyescan has done its job (the
@@ -2683,8 +2689,21 @@ module axi_chiplet_controller #(
     // sticky obs_cr/crack so the wire hands cleanly back to LL_TX for the CR/CRACK
     // rendezvous. obs_*_rx_w are rx_link_clk-domain (same as cal_window_w), no CDC.
     // arm=0 -> escan_tx_en_w=0 regardless, bit-identical to 8ab846ba.
+    //
+    // SoC Labs eyescan FIX-R (BILATERAL RENDEZVOUS, 2026-06-26): the FIX #3
+    // clean-handoff drop is SUPPRESSED while cal_escan_min_hold_w is HIGH. The
+    // root cause of the armed-eyescan asymmetry was that an EARLY peer CR/CRACK
+    // (or this die's own local confirm) dropped OUR PRBS before the still-
+    // syncing peer had its guaranteed minimum overlap to sync — die_b stopped
+    // emitting before die_a could sync (die_a lane_synced=0x00). Holding PRBS
+    // through the minimum window keeps the carrier up for the peer; the calibrator
+    // FSM is likewise held in S_VALIDATE for the same window (escan_min_hold_o),
+    // so cal_window_w stays HIGH and the two gates stay consistent. Once the hold
+    // elapses FIX #3 resumes (clean handoff to LL_TX). cal_escan_min_hold_w is
+    // constant 0 when arm=0 => bit-identical to 8ab846ba.
     wire escan_tx_en_w  = cal_window_w & eyescan_arm_r &
-                          ~(obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w);
+                          ~((obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w) &
+                            ~cal_escan_min_hold_w);
 
     // Per-lane PRBS sync bus (lane_synced_w) is declared up with the other obs
     // nets (near obs_fe_rx_ptr_w) so the apb_clk obs-sync block can reference it;
@@ -2921,6 +2940,9 @@ module axi_chiplet_controller #(
     // Retired V1 surfaces still RAZ (resweep/eye_status/eye_score_data not
     // produced by the deps calibrator).
     assign cal_resweep_ctr_w        = 16'h0;
+    // FIX-R: the V2 deps calibrator has no escan_min_hold_o port; tie the
+    // bilateral-hold strobe low so FIX #3 keeps its original V2 behaviour.
+    assign cal_escan_min_hold_w     = 1'b0;
     assign eye_status_o             = 32'h0;
     assign eye_score_data_o         = 6'h0;
     // EYE-WIDTH VISIBILITY: drive the top-level eye_score_* observability
@@ -2948,6 +2970,12 @@ module axi_chiplet_controller #(
         // BEFORE the VAL_TIMEOUT_TO_DONE deadlock-escape fires (the escape is a
         // last resort, not the primary convergence path).
         .VALIDATION_TIMEOUT(131072),
+        // FIX-R engaged-sim hold: a meaningful bilateral-overlap floor that is
+        // EXERCISED (both dies are held in S_VALIDATE, PRBS up, for >= this many
+        // rx_link_clk cycles before any confirm/terminal exit) yet small enough
+        // to leave headroom under VALIDATION_TIMEOUT and the cocotb poll budget.
+        // Production uses the default (= VALIDATION_TIMEOUT) for max-skew margin.
+        .MIN_PRBS_HOLD(2048),
         .EYESCAN_DWELL(16),             // engaged-sim: shorter pin-debounce so the
                                         //   pin can latch inside the sim sync window
 `else
@@ -3049,6 +3077,10 @@ module axi_chiplet_controller #(
         // diagnosis. Non-zero on a die cycling through sweeps without
         // convergence. Wired to Region C slot 3'h6 (MMIO 0x44032198).
         .resweep_ctr_o         (cal_resweep_ctr_w),
+        // FIX-R (2026-06-26): bilateral PRBS-hold strobe -> suppresses the
+        // FIX #3 clean-handoff drop during the minimum-PRBS window so the
+        // still-syncing peer keeps its carrier. Constant 0 when arm=0.
+        .escan_min_hold_o      (cal_escan_min_hold_w),
         // sweep_active_o = (cur_state == S_SWEEP). Functionally equivalent
         // to (cal_state_w == 4'd2) which is what the lane_checker's
         // sweep_active_i still consumes; this output is reserved for any

@@ -316,7 +316,36 @@ module tidelink_phy_align_calibrator #(
     parameter bit PRBS_EYESCAN = 1'b0,
     // FIX-J per-phase dwell (cycles). Must exceed the PRBS checker's seed+sync
     // latency. Default 64. PIN_CONFIRM reuses this sizing.
-    parameter int EYESCAN_DWELL = 64
+    parameter int EYESCAN_DWELL = 64,
+    // -------------------------------------------------------------------------
+    // SoC Labs eyescan FIX-R (BILATERAL RENDEZVOUS HOLD, 2026-06-26).
+    //
+    // ROOT CAUSE (armed-eyescan asymmetry, silicon evidence 2026-06-26):
+    // S_VALIDATE is the ONLY state in which PRBS is on the wire (cal_window =
+    // S_VALIDATE & ~cal_done gates escan_tx_en in the controller). Each die
+    // exits S_VALIDATE -> S_DONE on its OWN local escan_confirm / bounded
+    // terminal, WITHOUT waiting for the peer. The FIRST die out of S_VALIDATE
+    // drops cal_window -> stops emitting PRBS -> the peer, still mid-scan,
+    // loses its carrier and can never sync -> coarse-parks -> FC fails. The
+    // silicon shows die_b lane_synced=0xFF (it synced to die_a's PRBS) but
+    // die_a lane_synced=0x00 (die_b had already left S_VALIDATE and stopped
+    // emitting before die_a finished syncing) — both cal_done=1, fcsm
+    // asymmetric.
+    //
+    // FIX: a FIXED MINIMUM PRBS/eyescan window. Once S_VALIDATE is entered the
+    // die holds it (PRBS up) for at least MIN_PRBS_HOLD cycles BEFORE any
+    // confirm / bounded-terminal exit is honoured — long enough for a
+    // role-lock-skewed peer to enter S_VALIDATE and sync. Counts TOTAL cycles
+    // in S_VALIDATE (does NOT reset on the FIX-J in-place rescan). escan_en=0
+    // (arm=0) => prbs_hold_active is constant 0 => every exit arm reduces
+    // EXACTLY to the pre-FIX-R behaviour (bit-identical to 8ab846ba).
+    //
+    // Sizing: must cover (peer role-lock skew) + (peer S_HOLD) + (peer scan to
+    // its eye). HOLD_CYCLES already buys the peer ~4 sweeps; MIN_PRBS_HOLD adds
+    // a guaranteed in-S_VALIDATE overlap floor. Default = VALIDATION_TIMEOUT
+    // (one full validation window) — both dies are then guaranteed to be
+    // emitting PRBS simultaneously for at least one window even at max skew.
+    parameter int MIN_PRBS_HOLD = VALIDATION_TIMEOUT
 )(
     input  logic        clk,
     input  logic        rst,                       // active-high
@@ -445,6 +474,14 @@ module tidelink_phy_align_calibrator #(
     // through sweeps without convergence (the slave-only-fail mode
     // characterized at v14 silicon, 30% failure rate over 10 deploys).
     output logic [15:0] resweep_ctr_o,
+
+    // SoC Labs eyescan FIX-R (2026-06-26): bilateral PRBS-hold strobe. HIGH
+    // while this die is in its MINIMUM PRBS window inside S_VALIDATE (PRBS must
+    // stay on the wire for the still-syncing peer). The controller ANDs this
+    // into the FIX #3 clean-handoff gate so an early peer CR/CRACK cannot drop
+    // OUR PRBS before the peer has had the guaranteed minimum overlap to sync.
+    // Constant 0 when escan_en=0 (arm=0) => bit-identical to 8ab846ba.
+    output logic        escan_min_hold_o,
 
     // -----------------------------------------------------------------
     // Spec §7.2: sweep_active_o gates the new lane_checker's voting
@@ -912,6 +949,32 @@ module tidelink_phy_align_calibrator #(
     // (slip,phase). Because the scan stays inside S_VALIDATE (never
     // re-asserting training), it never drops the bilateral PRBS carrier.
     wire escan_en = pin_converge_en & PRBS_EYESCAN;
+
+    // -------------------------------------------------------------------------
+    // SoC Labs eyescan FIX-R — bilateral minimum PRBS-hold counter.
+    //
+    // Counts TOTAL cycles since this S_VALIDATE entry. Unlike val_ctr it does
+    // NOT reset on the FIX-J in-place rescan (escan_rescan), so it measures the
+    // whole carrier-up dwell, not one window. While prbs_hold_active is HIGH no
+    // confirm / bounded-terminal exit is honoured (the FSM stays in S_VALIDATE,
+    // PRBS up) so a role-lock-skewed peer is guaranteed an overlap floor to
+    // sync. prbs_hold_active is gated on escan_en, so with arm=0 it is constant
+    // 0 and every S_VALIDATE exit arm is bit-identical to pre-FIX-R.
+    // -------------------------------------------------------------------------
+    localparam int PRBS_HOLD_MAX = MIN_PRBS_HOLD - 1;
+    logic [$clog2(MIN_PRBS_HOLD+1)-1:0] prbs_hold_ctr;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                          prbs_hold_ctr <= '0;
+        else if (cur_state != S_VALIDATE) prbs_hold_ctr <= '0;
+        else if (prbs_hold_ctr < PRBS_HOLD_MAX[$clog2(MIN_PRBS_HOLD+1)-1:0])
+                                          prbs_hold_ctr <= prbs_hold_ctr + 1'b1;
+    end
+    // HIGH only when armed, in S_VALIDATE, and the minimum window has not yet
+    // elapsed. escan_en=0 (arm=0) => constant 0 (bit-identical).
+    wire prbs_hold_active = escan_en && (cur_state == S_VALIDATE) &&
+                            (prbs_hold_ctr < PRBS_HOLD_MAX[$clog2(MIN_PRBS_HOLD+1)-1:0]);
+    assign escan_min_hold_o = prbs_hold_active;
+
     localparam int ESCAN_MAX = EYESCAN_DWELL - 1;
     // FIX-J in-place rescan budget (windows the eyescan holds S_VALIDATE,
     // carrier UP, before the bounded terminal). Matches the donor localparam:
@@ -1097,6 +1160,14 @@ module tidelink_phy_align_calibrator #(
                 //   * timeout, budget exhausted   → S_DONE (give up)
                 if (swreset)                  nxt_state = S_CANCEL;
                 else if (!role_locked)        nxt_state = S_DONE;
+                // FIX-R (bilateral rendezvous hold): while prbs_hold_active is
+                // HIGH this die is inside its guaranteed-minimum PRBS window —
+                // do NOT honour ANY confirm / bounded-terminal exit yet, so the
+                // PRBS carrier stays up for the still-syncing peer. The FSM
+                // holds S_VALIDATE (the cursor keeps scanning, the pin debounce
+                // keeps running). prbs_hold_active is constant 0 when arm=0, so
+                // every arm below is bit-identical to pre-FIX-R.
+                else if (prbs_hold_active)    nxt_state = S_VALIDATE;
                 // FIX-K: in eyescan mode a momentary validate_confirm
                 // (partial-mask flicker-sync) must NOT terminate the scan —
                 // require the confirm HELD a full EYESCAN_DWELL (escan_confirm).
@@ -1287,7 +1358,12 @@ module tidelink_phy_align_calibrator #(
     // S_VALIDATE next-state arms in the FSM above so the flag tracks how
     // S_DONE was actually reached. role_locked-drop and swreset exits leave
     // the flag unchanged (those are external cancels, not lock verdicts).
+    // FIX-R: a confirmed S_DONE edge can only be taken once the minimum PRBS
+    // hold has elapsed (prbs_hold_active low). While held the FSM stays in
+    // S_VALIDATE so no edge actually occurs — gate the status predicate to
+    // match. prbs_hold_active is constant 0 when arm=0 => bit-identical.
     wire val_genuine_edge = (cur_state == S_VALIDATE) && role_locked && !swreset &&
+                            !prbs_hold_active &&
                             (cr_pkt_seen_i || crack_pkt_seen_i);
     // FIX-J: the eyescan bounded terminal is ALSO a give-up S_DONE — flag it so
     // SW can tell a coarse-park give-up from a real validation. escan_en is
@@ -1297,9 +1373,12 @@ module tidelink_phy_align_calibrator #(
     // validation_timed_out flag is accurate when the VAL_TIMEOUT_TO_DONE escape
     // latches terminal before the scan budget is spent. VAL_TIMEOUT_TO_DONE=0
     // (default) -> reduces to the original escan_scan_exhausted-only term.
+    // FIX-R: also gated on !prbs_hold_active so the give-up flag cannot latch
+    // during the minimum-hold window (no S_DONE edge is taken there).
     wire escan_giveup_edge = escan_en &&
                              (escan_scan_exhausted || VAL_TIMEOUT_TO_DONE) &&
                              (cur_state == S_VALIDATE) && role_locked && !swreset &&
+                             !prbs_hold_active &&
                              !validate_confirm &&
                              (val_ctr >= VAL_MAX[$clog2(VALIDATION_TIMEOUT+1)-1:0]);
     wire val_timeout_edge = ((cur_state == S_VALIDATE) && role_locked && !swreset &&

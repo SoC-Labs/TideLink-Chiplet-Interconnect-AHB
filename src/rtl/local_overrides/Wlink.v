@@ -200,6 +200,12 @@ module Wlink #(
   // own swi_word_pin_ovr_in pair below; this V1 pair feeds the local_overrides RX).
   input  [31:0] swi_word_pin_perlane_in,
   input  [7:0]  swi_word_pin_perlane_en_in,
+  // SoC Labs eyescan integration (WI-1, 2026-06-25): cal-window PRBS-15 TX
+  // enable, threaded from the chiplet controller (cal_window & eyescan_arm) down
+  // to the V1 WlinkGPIOPHY -> PRBS-15 gen + TX mux. Default 0 -> the PHY TX mux
+  // is a pure passthrough (bit-identical to 8ab846ba). Declared V1-visible
+  // (outside the V2 ifdef); only the V1 PHY arm consumes it.
+  input         escan_tx_en_in,
 `ifdef TIDELINK_PHY_V2
   // S3 PHY swap (2026-06-11): the deps/tidelink-phy WlinkGPIOPHY fork adds a
   // global word-window pin + its autonomous-mode select (FIX-R/FIX-R-proper).
@@ -1387,7 +1393,9 @@ module Wlink #(
     .swi_phase_offset_in(swi_phase_offset_in),
     // SoC Labs FIX-R (word-window pin, 2026-06-23): V1 per-lane word-pin path.
     .swi_word_pin_perlane_in(swi_word_pin_perlane_in),
-    .swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in)
+    .swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in),
+    // SoC Labs eyescan (WI-1, 2026-06-25): cal-window PRBS-15 TX enable.
+    .escan_tx_en(escan_tx_en_in)
 `endif
   );
   WlinkTxRouter txrouter ( // @[Wlink.scala 89:27]

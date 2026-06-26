@@ -140,6 +140,14 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioRx.v
 // elaboration errors). Submodule copy at deps/.../WavD2DGpioTx.v stays clean
 // for review. See src/rtl/local_overrides/WavD2DGpioTx.v.
 ${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioTx.v
+// SoC Labs eyescan integration (WI-1, 2026-06-25): PRBS-15 gen + per-lane
+// self-sync checker, reused VERBATIM from the PHY-BIST. The TX gen is
+// instantiated in local_overrides/WlinkGPIOPHY.v (on the link_tx_tx_link_clk
+// domain) and the 8x RX checkers in local_overrides/axi_chiplet_controller.sv
+// (on rx_link_clk). Listed here (before both consumers) so the modules are
+// defined first. With eyescan_arm=0 (POR) the TX escan mux is OFF and the
+// checker enables are LOW => bit-identical to 8ab846ba. 0 new modules.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_bist_prbs.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_124.v

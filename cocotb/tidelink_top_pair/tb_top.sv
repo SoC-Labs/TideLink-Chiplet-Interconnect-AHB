@@ -764,6 +764,23 @@ module tb_top #(
     // hot for the full bring-up window.
     `define M_CTRL u_master.u_chiplet_controller
     `define S_CTRL u_slave.u_chiplet_controller
+
+    // SoC Labs eyescan integration (WI-3 Sim Gate B, 2026-06-25): when compiled
+    // with +define+TB_TOP_ESCAN_ARM the eyescan chicken-bit is FORCED HIGH on
+    // both dies for the WHOLE run (a continuous force survives poresetn, which
+    // would otherwise re-clear eyescan_arm_r to 0). This lets the ENTIRE
+    // doorbell/wordpin suite run with the eyescan ARMED, proving arm=1 does not
+    // regress any of the 11/11 (the no-regression-with-chicken-bit-ON gate).
+    // Without the define the regs follow their normal APB-driven path (arm=0 at
+    // POR), so every existing test is unaffected.
+`ifdef TB_TOP_ESCAN_ARM
+    initial begin
+        force `M_CTRL.eyescan_arm_r = 1'b1;
+        force `S_CTRL.eyescan_arm_r = 1'b1;
+        $display("[%0t] tb_top: TB_TOP_ESCAN_ARM — eyescan_arm_r FORCED HIGH on both dies", $time);
+    end
+`endif
+
     initial begin
         if (BYPASS_AUTONEG == 0) begin
             $display("[%0t] tb_top: BYPASS_AUTONEG=0 — forcing autoneg+train at POR", $time);

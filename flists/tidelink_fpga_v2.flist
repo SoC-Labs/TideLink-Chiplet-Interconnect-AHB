@@ -302,6 +302,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v
 //    TIDELINK_USE_IDELAY. ──
 ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
+// SoC Labs eyescan integration (WI-1, 2026-06-25): PRBS-15 gen + per-lane
+// self-sync checker. The (V1+V2-shared) local_overrides/axi_chiplet_controller
+// instantiates the 8x RX tidelink_phy_bist_prbs_check generate-loop
+// unconditionally, so the module must be defined in BOTH flists. In V2 the
+// calibrator ties lane_synced_i=8'h00 so the checkers are dead logic
+// (eyescan_arm_r also gates the enables low) — V2 behaviour is unchanged.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_bist_prbs.sv
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob
 // (Region 8 slot 3'h0 bits[7:4] = SWI_CAL_MIN_DWELLS) wired to
 // u_calibrator.min_lock_dwells_i. Otherwise identical to upstream.

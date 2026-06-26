@@ -61,7 +61,15 @@ module WlinkGPIOPHY #(
   // pin (8x4b) + per-lane enable. Pass-through to WavD2DGpio, mirroring
   // swi_phase_offset_in. Tie 0 -> legacy framing (bit-exact default).
   input  [31:0]  swi_word_pin_perlane_in,
-  input  [7:0]   swi_word_pin_perlane_en_in
+  input  [7:0]   swi_word_pin_perlane_en_in,
+  // SoC Labs eyescan integration (WI-1, 2026-06-25): cal-window PRBS-15 TX
+  // instrument. escan_tx_en is the controller's cal_window & eyescan_arm gate
+  // (hclk/apb-domain quasi-static level). When HIGH, the 128-bit PRBS-15 word
+  // (one per accepted TX beat) is muxed onto the link TX in place of the live
+  // LL_TX word — a SEPARATE path from the per-lane PRBS-7 *training* mux inside
+  // WavD2DGpioTx. With escan_tx_en=0 (POR default, eyescan_arm=0) the mux is a
+  // pure passthrough so the TX datapath is bit-identical to 8ab846ba.
+  input          escan_tx_en
 );
   wire  gpio_clock; // @[PHY.scala 376:27]
   wire  gpio_reset; // @[PHY.scala 376:27]
@@ -160,6 +168,77 @@ module WlinkGPIOPHY #(
     .io_swi_word_pin_perlane_in(swi_word_pin_perlane_in),
     .io_swi_word_pin_perlane_en_in(swi_word_pin_perlane_en_in)
   );
+  // ==========================================================================
+  // SoC Labs eyescan PRBS-15 TX instrument (WI-1, 2026-06-25).
+  //
+  // Drives a PRBS-15 word onto the link TX during the calibration window so the
+  // partner die's per-lane self-sync checkers (in axi_chiplet_controller) can
+  // measure a REAL per-lane BER and the calibrator can pin each lane on its eye
+  // centre. Reused VERBATIM from tidelink_phy_bist_core.sv:855-919 — same
+  // generator module, same CDC, same tx_beat/gen_en cadence.
+  //
+  // ⚠ CRITICAL CLOCK DOMAIN (the one real hazard): the PHY's link_tx interface
+  // (tx_ready, the per-word cadence) lives in the TX LINK-CLOCK domain
+  // (gpio_io_link_tx_tx_link_clk = io_hsclk/16), NOT hclk. The generator MUST
+  // advance EXACTLY once per accepted word, so it is clocked by that link clock.
+  // Clocking it on hclk would let one link-clk-wide tx_ready pulse span several
+  // hclk cycles -> a DECIMATED PRBS (garbage to the self-sync checker) while a
+  // constant training word survives untouched — the historical "training locks,
+  // payload never syncs" trap. escan_tx_en originates in hclk (controller
+  // cal_window & eyescan_arm); 2-flop SYNC it into the TX link-clock domain
+  // (mirrors the BIST gate_tx0/gate_tx1 pattern). A reload pulse on the rising
+  // edge re-seeds the LFSR once per arm so both dies start from a known state.
+  //
+  // With escan_tx_en=0 (POR; eyescan_arm=0) gate_tx1=0 -> gen_en=0 (LFSR holds)
+  // and the mux selects link_tx_tx_link_data -> bit-identical to 8ab846ba.
+  // ==========================================================================
+  localparam ESCAN_WORD_W = 128;
+
+  wire escan_tx_clk = gpio_io_link_tx_tx_link_clk;   // TX link clock (io_hsclk/16)
+  wire escan_tx_rst = por_reset;                     // async, active-high
+
+  // 2-flop sync of escan_tx_en (hclk-domain level) into the TX link-clk domain,
+  // plus a 3-stage edge-detect for a one-shot reload pulse on the arm rising
+  // edge (so a re-arm restarts the PRBS sequence under a freshly-seeded LFSR).
+  reg escan_gate_tx0, escan_gate_tx1;
+  reg escan_arm_tx0, escan_arm_tx1, escan_arm_tx2;
+  always @(posedge escan_tx_clk or posedge escan_tx_rst) begin
+    if (escan_tx_rst) begin
+      escan_gate_tx0 <= 1'b0; escan_gate_tx1 <= 1'b0;
+      escan_arm_tx0  <= 1'b0; escan_arm_tx1  <= 1'b0; escan_arm_tx2 <= 1'b0;
+    end else begin
+      escan_gate_tx0 <= escan_tx_en;  escan_gate_tx1 <= escan_gate_tx0;
+      escan_arm_tx0  <= escan_tx_en;  escan_arm_tx1  <= escan_arm_tx0;
+      escan_arm_tx2  <= escan_arm_tx1;
+    end
+  end
+  wire escan_tx_load = escan_arm_tx1 & ~escan_arm_tx2;     // 1 link-clk reload pulse
+
+  // tx_beat = a word was accepted this link-clk (link_tx_tx_en & tx_ready).
+  // gen_en advances the LFSR by one 128-bit word only while gated AND accepted.
+  wire escan_tx_beat = link_tx_tx_en & gpio_io_link_tx_tx_ready;
+  wire escan_gen_en  = escan_tx_beat & escan_gate_tx1;
+
+  wire [ESCAN_WORD_W-1:0] escan_prbs_word;
+  tidelink_phy_bist_prbs_gen #(
+    .WORD_W (ESCAN_WORD_W)
+  ) u_escan_prbs_gen (
+    .clk    (escan_tx_clk),
+    .rst    (escan_tx_rst),
+    .en     (escan_gen_en),
+    .seed   (15'h0),                // 0 -> module's internal DEFAULT_SEED
+    .load   (escan_tx_load),
+    .word_o (escan_prbs_word)
+  );
+
+  // SEPARATE path from the PRBS-7 *training* mux (that lives downstream in
+  // WavD2DGpioTx). Here we replace the LL_TX word with PRBS-15 ONLY during the
+  // cal window; training_mode (asserted by the calibrator) still wins inside
+  // WavD2DGpioTx, but by construction the cal window runs in S_VALIDATE where
+  // training_mode is LOW, so the PRBS reaches the wire.
+  wire [127:0] escan_tx_link_data = escan_gate_tx1 ? escan_prbs_word
+                                                   : link_tx_tx_link_data;
+
   assign auto_in_pready = gpio_auto_in_pready; // @[Nodes.scala 1207:84 LazyModule.scala 298:16]
   assign auto_in_prdata = gpio_auto_in_prdata; // @[Nodes.scala 1207:84 LazyModule.scala 298:16]
   assign scan_out = 1'h0;
@@ -188,7 +267,9 @@ module WlinkGPIOPHY #(
   assign gpio_io_scan_clk = scan_clk; // @[Bundles.scala 21:19]
   assign gpio_io_link_tx_tx_en = link_tx_tx_en; // @[PHY.scala 408:32]
   assign gpio_io_link_tx_tx_idle = link_tx_tx_idle; // SoC Labs 2026-06-06
-  assign gpio_io_link_tx_tx_link_data = link_tx_tx_link_data; // @[PHY.scala 408:32]
+  // SoC Labs eyescan (WI-1): muxed link data (PRBS-15 in the cal window, else
+  // the live LL_TX word). escan_gate_tx1=0 at POR -> == link_tx_tx_link_data.
+  assign gpio_io_link_tx_tx_link_data = escan_tx_link_data; // @[PHY.scala 408:32]
   assign gpio_io_link_tx_tx_lane_mask = link_tx_tx_lane_mask; // @[PHY.scala 408:32]
   assign gpio_io_link_rx_rx_lane_mask = link_rx_rx_lane_mask; // @[PHY.scala 409:32]
   assign gpio_io_hsclk = user_hsclk; // @[PHY.scala 407:32]

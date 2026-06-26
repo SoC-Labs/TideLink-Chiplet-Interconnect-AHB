@@ -965,6 +965,16 @@ module axi_chiplet_controller #(
     //                               (SoC 0x4403214C [7:0]).
     reg [31:0] swi_word_pin_perlane_r;
     reg [7:0]  swi_word_pin_perlane_en_r;
+    // SoC Labs eyescan integration (WI-3 chicken-bit, 2026-06-25): RX eyescan
+    // arm. SoC 0x4403_215C (Region 10 slot 7), RW, reset 0. When 0 (POR) the
+    // PRBS-15 TX mux is OFF, the RX checkers' enables are LOW, and the
+    // calibrator's eyescan oracle inputs (sync_seen_i/lane_synced_i/
+    // lane_pin_converge_en_i) are tied to their pre-eyescan values -> the
+    // datapath is bit-identical to 8ab846ba. When 1, the cal-window PRBS
+    // instrument + FIX-J/L eyescan run, pinning each lane on its eye centre.
+    // Mirrors the swi_word_pin_perlane_* hoist (declared unconditionally so the
+    // V1 build resets/writes/reads it; same Region-10 write/read path).
+    reg        eyescan_arm_r;
 `ifdef TIDELINK_PHY_V2
     // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
     // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
@@ -1404,6 +1414,9 @@ module axi_chiplet_controller #(
             // datapath at default). Unconditional so the V1 build resets them too.
             swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
             swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
+            // SoC Labs eyescan (WI-3): RX eyescan DISARMED at POR -> the whole
+            // feature is inert and the build is bit-identical to 8ab846ba.
+            eyescan_arm_r            <= 1'b0;
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
@@ -1509,6 +1522,10 @@ module axi_chiplet_controller #(
                 swi_word_pin_perlane_r    <= ctrl_reg_wdata[31:0];
             if (region10_write && (ctrl_reg_addr[2:0] == 3'h3))
                 swi_word_pin_perlane_en_r <= ctrl_reg_wdata[7:0];
+            // SoC Labs eyescan (WI-3): Region 10 slot 7 (SoC 0x4403_215C) RW.
+            // bit[0] = eyescan_arm. Reset 0 (POR above) -> feature inert.
+            if (region10_write && (ctrl_reg_addr[2:0] == 3'h7))
+                eyescan_arm_r             <= ctrl_reg_wdata[0];
 `ifdef TIDELINK_PHY_V2
             // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
             // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
@@ -1626,6 +1643,9 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h1) ? {8'h5E, 16'h0, sync_obs_lane_live_1} :  // 0x2144 live match (RO)
         (ctrl_reg_addr[2:0] == 3'h2) ? swi_word_pin_perlane_r              :  // 0x2148 per-lane pin (RW)
         (ctrl_reg_addr[2:0] == 3'h3) ? {24'h0, swi_word_pin_perlane_en_r}  :  // 0x214C per-lane enable (RW)
+        // SoC Labs eyescan (WI-3) — slot 7 (0x4403_215C) EYESCAN_ARM (RW). bit[0]
+        // = arm; [31:24] 0xEA presence marker.
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hEA, 23'h0, eyescan_arm_r}       :  // 0x215C eyescan arm (RW)
         // EYE-WIDTH VISIBILITY (2026-06-17) — slot 4 (0x4403_2150) EYE_WIDTH_SEL
         // (RO). The DECISIVE per-lane eye-quality diagnostic: read the matched-
         // window WIDTH (IDELAY/phase taps) of the lane selected by
@@ -1739,6 +1759,9 @@ module axi_chiplet_controller #(
     assign region10_rdata =
         (ctrl_reg_addr[2:0] == 3'h2) ? swi_word_pin_perlane_r              :  // 0x2148 per-lane pin (RW)
         (ctrl_reg_addr[2:0] == 3'h3) ? {24'h0, swi_word_pin_perlane_en_r}  :  // 0x214C per-lane enable (RW)
+        // SoC Labs eyescan (WI-3) — slot 7 (0x4403_215C) EYESCAN_ARM (RW). bit[0]
+        // = arm; [31:24] 0xEA presence marker (old/V1 images read 0 here).
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hEA, 23'h0, eyescan_arm_r}       :  // 0x215C eyescan arm (RW)
                                        32'h0;
     assign regionD_rxcap_rdata     = 32'h0;
 `endif
@@ -2607,6 +2630,78 @@ module axi_chiplet_controller #(
         .canary_valid_o      (lane_canary_valid_o)
     );
 
+    // =====================================================================
+    // SoC Labs eyescan integration (WI-1, 2026-06-25) — RX PRBS-15 instrument.
+    //
+    // The deployed path produces only lane_locked (training-pattern lock), NOT
+    // per-lane PRBS sync. Here we source lane_synced_w[7:0] by reusing the BIST
+    // tidelink_phy_bist_prbs_check VERBATIM (copy of tidelink_phy_bist_core.sv:
+    // 966-1022): 8 checkers on the post-deskew word phy_link_rx_rx_link_data_w
+    // (the same bus the lane_checker taps), clocked by phy_link_rx_rx_link_clk_w.
+    // The TX-side gen + mux lives in WlinkGPIOPHY (on link_tx_tx_link_clk).
+    //
+    // cal_window = (S_VALIDATE) & ~cal_done. S_VALIDATE drops training_mode and
+    // runs BEFORE calibration_done gates FC traffic, so the PRBS never collides
+    // with live data by construction. The escan TX enable is the cal_window
+    // GATED by eyescan_arm_r so arm=0 => escan_en=0 => bit-identical to
+    // 8ab846ba. cal_state_w / cal_calibration_done_w are rx_link_clk-domain;
+    // eyescan_arm_r is apb-domain (quasi-static level). The composite level is
+    // CDC-synced where it crosses (into TX link-clk inside WlinkGPIOPHY; into
+    // rx_link_clk below for the checker gate).
+    // =====================================================================
+    localparam [3:0] CAL_S_VALIDATE = 4'd9;   // mirror tidelink_phy_align_calibrator S_VALIDATE
+    wire cal_window_w   = (cal_state_w == CAL_S_VALIDATE) & ~cal_calibration_done_w;
+    // TX escan enable: cal window AND armed. Threaded out to WlinkGPIOPHY where
+    // it is 2-flop synced into the TX link clock before gating the PRBS gen.
+    wire escan_tx_en_w  = cal_window_w & eyescan_arm_r;
+
+    // Per-lane PRBS sync bus produced by the 8 RX checkers (rx_link_clk domain).
+    wire [7:0] lane_synced_w;
+
+    // RX checker gate/clear, synced into rx_link_clk (copy of BIST CDC
+    // tidelink_phy_bist_core.sv:966-992). The gate is the armed cal window; a
+    // reload/clear pulse fires on the rising edge of the synced level so each
+    // arm restarts the checkers from a clean (unsynced) state.
+    reg escan_rx_gate_meta, escan_rx_gate_0, escan_rx_gate_1, escan_rx_gate_2;
+    always @(posedge phy_link_rx_rx_link_clk_w or negedge poresetn) begin
+        if (!poresetn) begin
+            escan_rx_gate_meta <= 1'b0;
+            escan_rx_gate_0    <= 1'b0;
+            escan_rx_gate_1    <= 1'b0;
+            escan_rx_gate_2    <= 1'b0;
+        end else begin
+            escan_rx_gate_meta <= escan_tx_en_w;   // armed cal window (apb/rxclk-src level)
+            escan_rx_gate_0    <= escan_rx_gate_meta;
+            escan_rx_gate_1    <= escan_rx_gate_0;
+            escan_rx_gate_2    <= escan_rx_gate_1;
+        end
+    end
+    wire escan_rx_clr_pulse = escan_rx_gate_1 & ~escan_rx_gate_2;   // rising-edge reload
+    wire escan_rx_gate      = escan_rx_gate_1;                      // checker enable level
+
+    genvar ESL;
+    generate
+        for (ESL = 0; ESL < 8; ESL = ESL + 1) begin : g_escan_check
+            // chk_en gated by the armed cal window AND the autoneg RX lane mask
+            // (a masked/broken lane must not score). lane_synced_w[ESL] is the
+            // FIX-J/L oracle for that lane; with the gate low (arm=0) it stays 0.
+            wire escan_chk_en = escan_rx_gate & wlink_rx_lane_mask[ESL];
+            tidelink_phy_bist_prbs_check #(
+                .LANE_W     (16),
+                .SYNC_WORDS (4),
+                .ERR_W      (32)
+            ) u_escan_chk (
+                .clk       (phy_link_rx_rx_link_clk_w),
+                .rst       (~poresetn),
+                .clr       (escan_rx_clr_pulse),
+                .en        (escan_chk_en),
+                .lane_rx   (phy_link_rx_rx_link_data_w[16*ESL +: 16]),
+                .err_count (/* per-lane BER not surfaced in V1 */),
+                .synced    (lane_synced_w[ESL])
+            );
+        end
+    endgenerate
+
     // Calibrator role_locked trigger: gated by AUTOCAL_ENABLE (parameter,
     // default 0). When disabled the calibrator is held in S_IDLE; its
     // outputs stay at the safe defaults (bit_slip=0, training_mode=0,
@@ -2807,7 +2902,20 @@ module axi_chiplet_controller #(
     tidelink_phy_align_calibrator #(
         .HOLD_CYCLES(32768),            // M10: 5.2ms at 6.25MHz → 4 full sweeps while slave trains;
                                         //      was 1024 (163μs, <1 sweep) which left master no time.
-        .VALIDATION_TIMEOUT(2_000_000)  // M6: 320ms at 6.25MHz FPGA link clk
+        .VALIDATION_TIMEOUT(2_000_000), // M6: 320ms at 6.25MHz FPGA link clk
+        // SoC Labs eyescan integration (WI-3, 2026-06-25). The FIX-J/L eyescan
+        // is COMPILED-IN but RUNTIME-GATED by eyescan_arm_r (via
+        // lane_pin_converge_en_i). escan_en = (LANE_PIN_CONVERGE |
+        // lane_pin_converge_en_i) & PRBS_EYESCAN; with LANE_PIN_CONVERGE=0 and
+        // arm=0 -> escan_en=0 -> the whole FIX-J/L datapath collapses ->
+        // bit-identical to 8ab846ba. PRBS_EYESCAN=1 + arm=1 enables it.
+        //   VAL_TIMEOUT_TO_DONE=1 + MAX_RESWEEPS=32 (NOT 0): bounded terminal —
+        // a non-converging lane times out to S_DONE + coarse-park (never hangs
+        // the link, never leaves a lane pinned at an unconfirmed phase).
+        .PRBS_EYESCAN        (1'b1),
+        .LANE_PIN_CONVERGE   (1'b0),
+        .VAL_TIMEOUT_TO_DONE (1'b1),
+        .MAX_RESWEEPS        (32)
     ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
         .rst                   (~poresetn),
@@ -2832,6 +2940,21 @@ module axi_chiplet_controller #(
         // working in parallel for SW-driven manual recovery.
         .swreset               (swi_recal_r | local_swreset_pulse_w),
         .lane_locked           (lane_locked_w),
+        // SoC Labs eyescan integration (WI-2/WI-3, 2026-06-25): FIX-J/L oracle
+        // inputs. lane_mask = the autoneg RX lane mask (8'hFF pre-handshake, the
+        // v1 default the FIX-J/L guards expect). swi_training_hold_i tied 0 (V1
+        // never uses the deps hold semantics; !swi_training_mode_r=1 keeps the
+        // S_HOLD->S_VALIDATE arm bit-identical). The eyescan oracle is GATED by
+        // eyescan_arm_r: with arm=0 all three are their pre-eyescan values
+        // (sync_seen_i=0, lane_synced_i=0, lane_pin_converge_en_i=0) so
+        // escan_en=0 and the datapath is bit-identical to 8ab846ba.
+        .lane_mask             (wlink_rx_lane_mask),
+        .swi_training_hold_i   (1'b0),
+        // sync_seen_i: V1 SYNC beacon is DORMANT (no V1 detector); tie to 0 even
+        // when armed (USE_SYNC_VALIDATE=0 ignores it anyway, but keep it clean).
+        .sync_seen_i           (1'b0),
+        .lane_synced_i         (eyescan_arm_r ? lane_synced_w : 8'h00),
+        .lane_pin_converge_en_i(eyescan_arm_r),
         // tidelink-gpio-phy scoring (spec §7.1): the calibrator now uses a
         // continuous min-distance metric per dwell for eye-centre selection,
         // not just binary lane_locked. The new lane_checker drives this bus
@@ -3200,6 +3323,10 @@ module axi_chiplet_controller #(
         // SAME regs ALSO feed the deps fork via .swi_word_pin_ovr_in below.
         .swi_word_pin_perlane_in    (swi_word_pin_perlane_r),     // 8x4b, reset 0
         .swi_word_pin_perlane_en_in (swi_word_pin_perlane_en_r),  // 8b, reset 0
+        // SoC Labs eyescan (WI-1, 2026-06-25): cal-window PRBS-15 TX enable.
+        // escan_tx_en_w = (S_VALIDATE & ~cal_done) & eyescan_arm_r. Default 0
+        // (arm=0) -> WlinkGPIOPHY TX mux is a pure passthrough (bit-identical).
+        .escan_tx_en_in             (escan_tx_en_w),
         // SoC Labs §9 auto-cal: expose internal recovered RX clock + 128-bit
         // deserialised lane data for the lane_checker + calibrator instances.
         .phy_link_rx_rx_link_data_o (phy_link_rx_rx_link_data_w),

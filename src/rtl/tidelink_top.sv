@@ -1059,7 +1059,12 @@ module tidelink_top #(
                            // eye_shim so it falls through to tidelink_internal_prdata;
                            // otherwise eye_shim (tied 0 in V2) wins and 0x2158 reads
                            // 0x00000000 with NO 0xA2 marker (same trap as 0x2150).
-                           || (tl_apb_paddr[4:0] == 5'h18));  // 0x2158 A2L_REPLAY_OBS (RO)
+                           || (tl_apb_paddr[4:0] == 5'h18)    // 0x2158 A2L_REPLAY_OBS (RO)
+                           // SoC Labs eyescan (WI-3, 2026-06-25): 0x215C EYESCAN_ARM
+                           // (Region 10 slot 7) RW, served by the chiplet controller's
+                           // region10_write/_rdata. Exclude from eye_shim so writes/
+                           // reads reach the controller (same rationale as the wp regs).
+                           || (tl_apb_paddr[4:0] == 5'h1C));  // 0x215C EYESCAN_ARM (RW)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
     assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :
@@ -1081,9 +1086,15 @@ module tidelink_top #(
     // V2 arm above already excludes these via perlane_wp_sel; that exclusion was
     // never mirrored here. Minimal scope (only the two wp regs) keeps every other
     // V1 Region-10 readback owned by eye_regs exactly as before.
+    // SoC Labs eyescan integration (WI-3, 2026-06-25): 0x215C EYESCAN_ARM
+    // (paddr[4:0]=5'h1C, Region 10 slot 7) ALSO must reach the chiplet
+    // controller (RW, region10_write/_rdata) and NOT tidelink_eye_regs — same
+    // SLVERR/SIGBUS hazard as the word_pin regs if it aliased an eye_regs RO
+    // slot. Add it to the V1 wp_cfg_sel exclusion. arm reset 0 -> inert.
     wire wp_cfg_sel = eye_shim_sel
                       && ((tl_apb_paddr[4:0] == 5'h08)     // 0x2148 WORD_PIN_PERLANE
-                       || (tl_apb_paddr[4:0] == 5'h0C));   // 0x214C WORD_PIN_PERLANE_EN
+                       || (tl_apb_paddr[4:0] == 5'h0C)     // 0x214C WORD_PIN_PERLANE_EN
+                       || (tl_apb_paddr[4:0] == 5'h1C));   // 0x215C EYESCAN_ARM
     wire eye_shim_sel_v1 = eye_shim_sel && !wp_cfg_sel;
     assign tl_apb_prdata  = eye_shim_sel_v1    ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :

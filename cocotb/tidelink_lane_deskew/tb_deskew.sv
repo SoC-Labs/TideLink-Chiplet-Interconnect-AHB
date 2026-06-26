@@ -59,6 +59,7 @@ module tb_deskew #(
     output wire         epoch_anchored,
     output wire [5:0]   epoch_span,
     output wire [7:0]   sync_seen_vec,   // 2026-06-23 per-lane out_clk-synced sync_seen
+    output wire [39:0]  sync_dist_vec,   // 2026-06-25 per-lane out_clk-synced SYNC Hamming distance (winscan metric)
 
     // 2026-06-23: SYNC re-anchor INTERNAL observation taps (read-only hierarchical
     // refs) so the silicon-debug experiments can see WHY the latch does/does not
@@ -96,7 +97,8 @@ module tb_deskew #(
         .out_valid       (out_valid),
         .epoch_anchored_o(epoch_anchored),
         .epoch_span_o    (epoch_span),
-        .sync_seen_vec_o (sync_seen_vec)
+        .sync_seen_vec_o (sync_seen_vec),
+        .sync_dist_vec_o (sync_dist_vec)   // 2026-06-25 winscan metric
     );
 
     // ---- SYNC re-anchor observation taps (hierarchical, read-only) ----------

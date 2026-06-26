@@ -46,6 +46,34 @@ from cocotb.triggers import RisingEdge, Timer
 # while the default K>=2 build asserts the self-gating COHERES. Default 2.
 SYNC_CONFIRM = int(os.environ.get("SYNC_CONFIRM", "2"))
 
+# Compiled periodic-confirm INDEX JITTER tolerance (tb_deskew/SYNC_IDX_TOL). The
+# JITTER test (test_jitter_index_*) keys on this: TOL=0 (the EXACT residue compare,
+# the "before" half) must FAIL to arm all lanes / cohere under +/-1-2 word-index
+# jitter (reproduces the silicon 0-1 lane arm); TOL>=2 (the windowed compare, the
+# "after" half) must arm EVERY active lane (sync_seen_vec full) AND cohere on the
+# true SYNC word. Default 2 = the DUT default.
+SYNC_IDX_TOL = int(os.environ.get("SYNC_IDX_TOL", "2"))
+
+# Compiled per-lane SYNC-slice Hamming tolerance (tb_deskew/SYNC_REANCHOR_TOL). The
+# FRAMER-PARITY mechanism test (test_framer_parity_dist5_arm) keys on this: at the
+# silicon-marginal fingerprint (a FIXED per-lane SYNC-slice bit error of Hamming
+# dist 5 on lanes {2,5,7} and dist 4 on lane 6), TOL=4 (the prior DUT default, the
+# "before" half) must arm ONLY lane 6 (sync_seen_vec=0x40) with reanchored=0 —
+# REPRODUCING silicon (SoC 0x4403215C=0x40, RXW=0); TOL=5 (the framer's tol, the
+# "after" half wired at the WavD2DGpio deskew instance) must arm ALL FOUR active
+# lanes (sync_seen_vec=0xE4), engage the re-anchor and cohere out_data on
+# TIDELINK_SYNC_WORD. Default 4 = the DUT param default (the tb param default).
+SYNC_REANCHOR_TOL = int(os.environ.get("SYNC_REANCHOR_TOL", "4"))
+
+# Extra settle beats the re-anchor needs before scoring, as a function of the
+# self-gating confirm depth K (SYNC_CONFIRM). A K-deep periodic confirm arms ~K
+# SYNC periods after the first beacon (vs the K=1 first-arrival latch), so the
+# fixed-skew / index-skew / reduced-mask / marginal-eye tests must wait
+# (K-1) extra SYNC periods before their coherence window or they score partly
+# pre-arm and dip below the 90% bar. SYNC_PERIOD=32; round up to 40 for CDC slack.
+# At K=1 this is 0 (bit-identical to the historical settle).
+SETTLE_EXTRA = (SYNC_CONFIRM - 1) * 40
+
 LANES = 8
 WIDTH = 16
 DEPTH = 8
@@ -282,8 +310,9 @@ async def test_fixed_skew_with_sync(dut):
         assert False, "out_data never updated (fixed-skew stall)"
 
     # Let several SYNC instances pass (32-word period) so any re-align fires.
+    # +SETTLE_EXTRA for the K-deep self-gating confirm latency (see top of file).
     await RisingEdge(dut.out_clk)
-    for _ in range(120):
+    for _ in range(120 + SETTLE_EXTRA):
         await RisingEdge(dut.out_clk)
 
     coherent_cnt = incoherent_cnt = 0
@@ -520,7 +549,8 @@ async def _run_index_skew(dut, deltas, scenario, cap=300):
                 f"lane_off >= DEPTH-PRIME_THRESH is unprimable within DEPTH=8")
         assert False, f"out_data never updated under real index skew {deltas} (Bug#1 stall)"
     # let several SYNC instances (period 32) pass so the collective re-align fires
-    for _ in range(160):
+    # (+SETTLE_EXTRA for the K-deep self-gating confirm latency, see top of file)
+    for _ in range(160 + SETTLE_EXTRA):
         await RisingEdge(dut.out_clk)
     coh = inc = 0
     samples = []
@@ -607,8 +637,9 @@ async def test_reduced_mask_e4_reanchor(dut):
         assert False, "out_data never updated (reduced-mask stall)"
 
     # let several SYNC instances pass so the masked-subset re-align fires
+    # (+SETTLE_EXTRA for the K-deep self-gating confirm latency, see top of file)
     await RisingEdge(dut.out_clk)
-    for _ in range(120):
+    for _ in range(120 + SETTLE_EXTRA):
         await RisingEdge(dut.out_clk)
 
     coherent_cnt = incoherent_cnt = 0
@@ -732,7 +763,8 @@ async def test_marginal_eye_sync_reanchor(dut):
         assert False, "out_data never updated under marginal-eye SYNC"
 
     # let several SYNC instances (period 32) pass so the re-align fires/settles
-    for _ in range(200):
+    # (+SETTLE_EXTRA for the K-deep self-gating confirm latency, see top of file)
+    for _ in range(200 + SETTLE_EXTRA):
         await RisingEdge(dut.out_clk)
 
     anchored_high = 0
@@ -1399,3 +1431,428 @@ async def test_exp3_unmasked_phase_control(dut):
               f"control is {'PHASE-INDEPENDENT (lottery is masking-specific => DEFECT 2 isolated)' if phase_independent else 'ALSO phase-dependent (attribution weakened)'}")
     verdict("exp3_unmasked_phase_CONTROL", phase_independent, detail)
     assert True
+
+
+# ===========================================================================
+# EXPERIMENT 4 — PERIODIC-CONFIRM INDEX JITTER (THE PRIMARY GATE for this fix)
+# ---------------------------------------------------------------------------
+# This is the before-fail/after-pass that proves the EXACT->WINDOWED change in the
+# self-gating periodic-confirm arm (tidelink_lane_deskew g_sync_capture). It is a
+# SYNC_REANCHOR build (run with TB_SYNC_REANCHOR_EN=1 TB_EPOCH_ANCHOR_EN=0).
+#
+# MEASURED SILICON PROBLEM (0x215C sync_seen_vec): the self-gating arm commits a
+# lane's sync_idx only after K consecutive SYNC-slice matches that recur at a
+# CONSISTENT periodic write-index residue (wr_res == sync_cand_res, exactly one
+# SYNC_PERIOD apart). On silicon the per-lane recovered word-clock PHASE WANDERS,
+# so the residue at successive SYNC arrivals JITTERS by +/-1-2 word-epochs and the
+# EXACT residue compare almost never re-confirms -> only 0-1 of 4 active lanes arm
+# (sync_seen_vec=0x00 / 0x40), even though the lanes DO carry SYNC (framer 0x2144
+# reaches 0xe5). force_always vs idle-gated made NO difference -> it is the
+# index-consistency strictness, not the gap cadence.
+#
+# MODEL: the SYNC is one TX word inserted at a COMMON content position on every
+# lane (so once re-anchored the slices assemble into TIDELINK_SYNC_WORD), but the
+# inter-SYNC SPACING JITTERS around the nominal SYNC_PERIOD by a deterministic,
+# zero-mean, bounded (+/-2) sequence whose adjacent steps are ALWAYS non-zero
+# (JITTER_SEQ below). The shared spacing jitter makes EACH lane's write-index
+# residue at successive SYNCs wander by +/-1-2 (each lane has its OWN absolute
+# residue via a fixed per-lane word skew delta[gi], and they all wander together)
+# — exactly the silicon condition. Because adjacent spacings always differ, the
+# residue NEVER repeats between adjacent SYNCs, so:
+#   * EXACT (SYNC_IDX_TOL=0): the periodic confirm requires residue_{k+1} ==
+#     residue_k -> NEVER satisfied -> the confirm run never advances -> NO lane
+#     arms (sync_seen_vec stays sub-full) -> the link does NOT cohere. This
+#     reproduces the silicon 0-1-lane arming. (Run with SYNC_IDX_TOL=0 — the
+#     "before" half; the test ASSERTS the windowed outcome, so a TOL=0 build makes
+#     THIS test FAIL, which IS the before-half evidence.)
+#   * WINDOWED (SYNC_IDX_TOL=2, default): every step |residue jitter| <= 2 falls in
+#     the circular window, the gap stays in [GAP_MAX-2, GAP_MAX+2], the confirm run
+#     advances on every SYNC, EVERY active lane arms (sync_seen_vec FULL), the
+#     re-anchor engages and out_data assembles TIDELINK_SYNC_WORD on the aligned
+#     beats. The test PASSES.
+#
+# The poison anti-property is INDEPENDENT of this window and is proven by the
+# EXP2 poison tests (continuous within-tol poison resets the gap every beat so it
+# never reaches GAP_MAX-TOL -> never confirms, for ANY SYNC_IDX_TOL).
+# ===========================================================================
+# Deterministic SYNC inter-arrival jitter (added to the nominal SYNC_PERIOD).
+# Zero-mean, bounded |.|<=2, and ADJACENT steps always non-zero so the residue
+# never repeats between adjacent SYNCs (defeats EXACT, inside the +/-2 window).
+JITTER_SEQ = [+1, -1, +2, -2, +1, -1, +2, -2, +1, -2, +2, -1, +1, -1, +2, -2]
+SYNC_PERIOD_TB = 32   # the DUT's SYNC_PERIOD (matches TIDELINK_SYNC_PERIOD)
+
+
+def make_jitter_sync_positions(n, first=SYNC_PERIOD_TB):
+    """Precompute n absolute SYNC content positions whose spacing JITTERS around
+    SYNC_PERIOD by JITTER_SEQ (shared across lanes — the SYNC is one TX word at a
+    common content position, so every lane SYNCs at the SAME content index; the
+    spacing jitter makes each lane's wr_ptr residue at the SYNC wander by +/-1-2).
+    Returns a SET for O(1) membership."""
+    pos = []
+    p = first
+    for k in range(n):
+        pos.append(p)
+        p += SYNC_PERIOD_TB + JITTER_SEQ[k % len(JITTER_SEQ)]
+    return set(pos)
+
+
+def jitter_payload(t):
+    """Content-indexed payload for the jitter test: VARIES with t (so two aligned
+    lanes at the same t emit equal payload -> coherent-by-value) but is Hamming >= 6
+    from EVERY lane's SYNC slice for ALL t (verified: 0x0001|(t&0xFE) -> min dist 6,
+    128 distinct values). This is the load-bearing test cleanliness fix: the OLD
+    0xA000|(t&0xFFF) payload collided with lanes 5/7's SYNC slices within tol=4
+    (e.g. 0xA5A6 is Hamming 1 from lane5's 0xB5A6), so payload words FALSE-FIRED the
+    per-lane sync_hit, reset the gap, and stalled the periodic confirm on those
+    lanes — a TEST artifact (payload-vs-slice collision), NOT an RTL arming bug.
+    A wide (128-value) clean payload keeps coherence-by-value meaningful (no aliasing
+    at the +/-skew offsets) while never tripping a lane's SYNC matcher."""
+    return (0x0001 | (t & 0x00FE)) & 0xFFFF
+
+
+async def jitter_sync_feeder(dut, gi, idx_box, deltas, active, sync_pos):
+    """Per-lane feeder for the index-jitter test.
+
+    * Payload words: jitter_payload(t) where t = idx_box[gi] (a function of the
+      content index ALONE, so two aligned lanes emit equal payload -> coherent;
+      Hamming >= 6 from every SYNC slice so it never false-fires a sync_hit).
+    * SYNC: emitted when this lane's content index t is one of the SHARED, jittered
+      SYNC content positions (sync_pos, precomputed read-only). All lanes SYNC at
+      the SAME content positions, but each lane has its OWN fixed cross-lane word
+      skew (its content index starts at delta[gi]), so each lane writes that common
+      SYNC at a DIFFERENT wr_ptr; and because the inter-SYNC SPACING jitters, every
+      lane's wr_ptr residue (wr_ptr mod SYNC_PERIOD) at successive SYNCs wanders by
+      +/-1-2 word-epochs — the silicon clock-wander condition.
+
+    Active lanes only — masked lanes are driven 0x0000.
+    """
+    while True:
+        await RisingEdge(lane_clk(dut, gi))
+        if gi not in active:
+            lane_data(dut, gi).value = 0x0000
+            continue
+        t = idx_box[gi]
+        if t in sync_pos:
+            lane_data(dut, gi).value = sync_slice(gi)
+        else:
+            lane_data(dut, gi).value = jitter_payload(t)
+        idx_box[gi] = t + 1
+
+
+async def _run_jitter_index(dut, scenario):
+    """Drive per-lane fixed word skew + a SHARED, jittered SYNC schedule, then
+    score (a) sync_seen_vec fullness (every active lane armed), (b) coherence +
+    out_data==SYNC_WORD, (c) reanchored. Returns (seen_full, frac, swb, reanc)."""
+    active = list(range(LANES))                 # all 8 lanes active (mask 0xFF)
+    deltas = [0, 1, 2, 3, 4, 5, 6, 7]            # real worst-case cross-lane skew
+    Clock(dut.out_clk, WORD_NS, units="ns").start()
+    start_lane_clocks(dut, phase_ns=[0.0] * LANES)   # one rate; skew is in the index
+    await do_reset(dut)
+    dut.training_mode.value = 0
+
+    # Shared, jittered SYNC content positions (read-only): first at SYNC_PERIOD,
+    # each subsequent at +SYNC_PERIOD+jitter. Precompute enough to cover the run.
+    sync_pos = make_jitter_sync_positions(64)
+    idx = list(deltas)
+    for gi in range(LANES):
+        cocotb.start_soon(jitter_sync_feeder(dut, gi, idx, deltas, active, sync_pos))
+
+    cap = 500
+    updated, cyc, first, last = await wait_out_update(dut, cap)
+    if not updated:
+        verdict(scenario, False,
+                f"out_data NEVER updated after {cap} cycles — jitter stall")
+        return False, 0.0, 0, False
+
+    # Let MANY jittered SYNC instances pass so the K-deep periodic confirm
+    # accumulates (or, under EXACT, demonstrably fails to). 700 beats covers ~20
+    # SYNC periods — ample for any K in [2,7] plus the cross-lane skew spread.
+    for _ in range(700):
+        await RisingEdge(dut.out_clk)
+
+    # sync_seen_vec snapshot (per-lane out_clk-synced sync_seen). Sample a few
+    # times and OR — once a lane arms it is sticky, so the union is the final set.
+    from cocotb.triggers import FallingEdge
+    seen_union = 0
+    coh = inc = swb = reanc_high = 0
+    samples = []
+    for _ in range(300):
+        await FallingEdge(dut.out_clk)
+        try:
+            seen_union |= int(dut.sync_seen_vec.value)
+        except Exception:
+            pass
+        if int(dut.epoch_anchored.value) == 1:
+            reanc_high += 1
+        lanes = unpack(dut.out_data.value)
+        if len(set(lanes)) == 1:
+            coh += 1
+            samples.append(lanes[0])
+        else:
+            inc += 1
+        if out_val(dut) == SYNC_WORD:
+            swb += 1
+    total = coh + inc
+    frac = coh / total if total else 0.0
+    active_mask = 0
+    for gi in active:
+        active_mask |= (1 << gi)
+    seen_full = (seen_union & active_mask) == active_mask
+    seen_cnt = bin(seen_union & active_mask).count("1")
+    reanc = reanc_high > 0
+    verdict(scenario, seen_full and (frac >= 0.9) and (swb > 0) and reanc,
+            f"SYNC_IDX_TOL={SYNC_IDX_TOL} K={SYNC_CONFIRM}; "
+            f"sync_seen_vec=0x{seen_union & 0xFF:02x} ({seen_cnt}/{len(active)} active "
+            f"lanes armed, full={seen_full}); coherent={coh}/{total} ({frac*100:.0f}%); "
+            f"out_data==SYNC_WORD on {swb} beats; reanchored={reanc} "
+            f"({reanc_high}/{total} beats); sample={sorted(set(samples))[:6]}")
+    return seen_full, frac, swb, reanc
+
+
+@cocotb.test()
+async def test_jitter_index_windowed(dut):
+    """KEY GATE for this fix. Per-lane fixed word skew + a SHARED jittered SYNC
+    schedule (+/-1-2 word-epochs around the period). Under the WINDOWED periodic
+    confirm (default SYNC_IDX_TOL=2) EVERY active lane arms (sync_seen_vec FULL),
+    out_data assembles TIDELINK_SYNC_WORD and the re-anchor engages. Under the
+    EXACT compare (SYNC_IDX_TOL=0, the 'before' half run from the Makefile) the
+    jittered residues never re-confirm so only 0-1 lanes arm and the link does NOT
+    cohere -> THIS test FAILS, which IS the before-half evidence."""
+    seen_full, frac, swb, reanc = await _run_jitter_index(
+        dut, scenario="jitter_index_windowed")
+    if SYNC_IDX_TOL >= 2:
+        assert seen_full, (
+            f"WINDOWED (SYNC_IDX_TOL={SYNC_IDX_TOL}): not every active lane armed "
+            f"under +/-1-2 residue jitter (sync_seen_vec not full) — the windowed "
+            f"periodic confirm must tolerate the clock-wander jitter so ALL lanes "
+            f"arm (the silicon 0-1-lane arming is what this fix removes).")
+        assert frac >= 0.9, (
+            f"WINDOWED: out_data not coherent under jitter ({frac*100:.0f}%) even "
+            f"though lanes armed — the re-anchor offsets did not align the slices.")
+        assert swb > 0, (
+            "WINDOWED: out_data never assembled TIDELINK_SYNC_WORD on an aligned "
+            "beat — the armed sync_idx did not produce the SYNC-word alignment.")
+        assert reanc, (
+            "WINDOWED: re-anchor never engaged under jitter — sync_seen_vec full "
+            "but the read-side latch did not fire on the measured indices.")
+    else:
+        # EXACT (TOL=0) 'before' half: the windowed outcome must NOT hold. Assert
+        # the FAILURE direction so this run is a clean negative control: the jitter
+        # defeats the exact confirm -> lanes do not all arm / link does not cohere.
+        broke = (not seen_full) or (frac < 0.9) or (swb == 0)
+        assert broke, (
+            f"EXACT (SYNC_IDX_TOL=0) did NOT break under +/-1-2 residue jitter "
+            f"(seen_full={seen_full}, coherent={frac*100:.0f}%, SYNC_WORD_beats={swb}). "
+            f"The exact residue compare MUST fail to arm all lanes so the windowed "
+            f"PASS proves the +/-TOL window is the fix.")
+
+
+# ===========================================================================
+# EXPERIMENT 5 — FRAMER-PARITY SYNC-CAPTURE TOLERANCE (THE PRIMARY GATE for the
+#                2026-06-24 "deskew must not be stricter than the framer" fix)
+# ---------------------------------------------------------------------------
+# This is the before-fail/after-pass that proves SYNC_REANCHOR_TOL 4 -> 5 at the
+# WavD2DGpio deskew instance (deps/tidelink-phy/rtl/wav/WavD2DGpio.v u_deskew).
+# It is a SYNC_REANCHOR build (TB_SYNC_REANCHOR_EN=1 TB_EPOCH_ANCHOR_EN=0), run
+# TWICE from the Makefile via SYNC_REANCHOR_TOL.
+#
+# MEASURED SILICON FINGERPRINT (the root cause, RTL-verified):
+#   The deskew's per-lane g_sync_capture sync_hit = (popcount(slice^rx) <= TOL)
+#   compiled at TOL=4, but the FRAMER/livematch per-lane SYNC detector it feeds
+#   runs at RUNTIME TOL=5 (APB SWI_SYNC_TOL 0x2128[12:8]=0x5e4). On die_b's
+#   marginal eye, with the link reduced to lanes {2,5,6,7} (mask 0xE4), each
+#   active lane's RX SYNC slice carries a FIXED per-lane bit error:
+#       lane 6 lands at Hamming dist 4 of its slice  (sync_hit FIRES at tol 4)
+#       lanes 2,5,7 land at exactly dist 5           (sync_hit DEAD at tol 4)
+#   So at tol=4 the framer sees all four (livematch=0xE5) but the deskew's
+#   sync_hit fires ONLY on lane 6. For lanes {2,5,7} the entire periodic/gap/K=2
+#   confirm machinery is gated behind `if (sync_hit)` and is therefore DEAD CODE
+#   -> sync_seen_l stays 0. Silicon obs: sync_seen_vec (0x4403215C) = 0x40 (lane6
+#   only), reanchored=0, RXW=0. The deskew was STRICTER than the framer.
+#
+# MODEL: lanes {2,5,6,7} active (mask 0xE4), masked lanes driven 0x0000 (the PHY
+# zeroes them). Real cross-lane WORD skew via a per-lane content-index delta (as
+# Scenario 6 / the jitter test). The marginal eye is modelled as a FIXED per-lane
+# bit error XORed into EVERY SYNC slice that lane emits (dist 5 on {2,5,7}, dist 4
+# on lane 6 — see SYNC_DIST5_MASK), recurring at the SYNC period so the corrupted
+# slice still satisfies the periodic K=2 confirm at whatever tol admits it. The
+# payload is jitter_payload (HD>=6 from every active slice, 128 distinct values),
+# so the ONLY within-tol words a lane sees are its corrupted SYNC slices —
+# isolating the tolerance effect from payload false-fires.
+#
+#   * TOL=4 (the prior DUT default, "before"): lanes {2,5,7}'s dist-5 corrupted
+#     slices never satisfy sync_hit -> only lane 6 arms -> sync_seen_vec & 0xE4
+#     == 0x40, all_sync_seen=0, reanchored=0, NO coherent re-align. This
+#     REPRODUCES silicon. The test ASSERTS the tol5 outcome, so a TOL=4 build
+#     makes THIS test FAIL — that IS the before-half evidence.
+#   * TOL=5 (the framer's tol, the WavD2DGpio fix, "after"): all four corrupted
+#     slices match within 5 bits -> every active lane arms -> sync_seen_vec & 0xE4
+#     == 0xE4, all_sync_seen=1, reanchored engages, the active lanes cohere and
+#     out_data reads TIDELINK_SYNC_WORD on the aligned beats. The test PASSES.
+# ===========================================================================
+ACTIVE_E4_X5 = [2, 5, 6, 7]   # set bits of 0xE4 — the reduced-lane silicon link
+
+# FIXED per-lane marginal-eye error mask XORed into this lane's SYNC slice. Chosen
+# so popcount(mask) is EXACTLY the silicon-measured per-lane Hamming distance:
+# dist 5 on lanes {2,5,7} (INVISIBLE to a tol-4 capture, VISIBLE to tol-5/the
+# framer) and dist 4 on lane 6 (visible to BOTH — the lone lane that armed on
+# silicon). The masked lanes' entries are unused (those lanes carry 0x0000).
+SYNC_DIST5_MASK = [
+    0x0000,  # lane0 (masked — unused)
+    0x0000,  # lane1 (masked — unused)
+    0x001F,  # lane2: 5 bits -> dist 5  (silicon: framer saw it, deskew did not)
+    0x0000,  # lane3 (masked — unused)
+    0x0000,  # lane4 (masked — unused)
+    0x002F,  # lane5: 5 bits -> dist 5
+    0x000F,  # lane6: 4 bits -> dist 4  (the ONLY lane that armed at tol 4)
+    0x003D,  # lane7: 5 bits -> dist 5
+]
+
+
+async def framer_parity_feeder(dut, gi, src, idx_box, active):
+    """Active lane: like lane_feeder but every SYNC slice this lane emits is
+    corrupted by its FIXED marginal-eye bit error (dist 4/5). Payload passes
+    through clean (jitter_payload, HD>=6 from every slice). Masked lanes: 0x0000."""
+    while True:
+        await RisingEdge(lane_clk(dut, gi))
+        if gi not in active:
+            lane_data(dut, gi).value = 0x0000
+            continue
+        t = idx_box[gi]
+        w = src(t)
+        if w is None:  # SYNC beat -> emit the marginal (bit-errored) slice
+            lane_data(dut, gi).value = sync_slice(gi) ^ SYNC_DIST5_MASK[gi]
+        else:
+            lane_data(dut, gi).value = w
+        idx_box[gi] = t + 1
+
+
+@cocotb.test()
+async def test_framer_parity_dist5_arm(dut):
+    """KEY GATE for the 2026-06-24 fix. Reduced link (mask 0xE4, active {2,5,6,7})
+    with real cross-lane word skew and a FIXED per-lane marginal SYNC-slice error
+    of Hamming dist 5 on {2,5,7} / dist 4 on lane 6 — the exact silicon fingerprint.
+
+    TOL=4 (before): only lane 6 arms (sync_seen_vec & 0xE4 == 0x40), reanchored=0,
+    no coherence -> reproduces silicon (0x4403215C=0x40, RXW=0). The asserts below
+    demand the tol5 outcome, so a TOL=4 build FAILS here — that is the before-half.
+
+    TOL=5 (after, the WavD2DGpio fix): ALL FOUR active lanes arm (sync_seen_vec &
+    0xE4 == 0xE4), the re-anchor engages and out_data coheres on TIDELINK_SYNC_WORD.
+    """
+    dists = [_hd(sync_slice(gi), sync_slice(gi) ^ SYNC_DIST5_MASK[gi])
+             for gi in ACTIVE_E4_X5]
+    cocotb.log.info(
+        f"framer_parity: compiled SYNC_REANCHOR_TOL={SYNC_REANCHOR_TOL}; per-lane "
+        f"dist(corrupt_sync,true_sync) for active{ACTIVE_E4_X5}={dists} "
+        f"(tol4 sees only the dist-4 lane6; tol5 sees all four — the framer's tol)")
+
+    deltas = [0, 1, 2, 3, 4, 5, 6, 7]   # real worst-case cross-lane word skew
+    Clock(dut.out_clk, WORD_NS, units="ns").start()
+    start_lane_clocks(dut, phase_ns=[0.0] * LANES)   # one rate; skew is in the index
+    await do_reset(dut, mask=0xE4)
+    dut.training_mode.value = 0
+
+    # Clean payload (HD>=6 from every active slice, 128 distinct values) so the
+    # ONLY within-tol words a lane sees are its corrupted SYNC slices. sync_every=32
+    # so the corrupted slice recurs at the SYNC period (satisfies the K=2 periodic
+    # confirm at whatever tol admits it). base is irrelevant — overridden by
+    # jitter_payload via a tiny shim source so it never collides with a slice.
+    def clean_src(t):
+        return None if (t % 32 == 0) else jitter_payload(t)
+    idx = list(deltas)
+    for gi in range(LANES):
+        cocotb.start_soon(framer_parity_feeder(dut, gi, clean_src, idx, ACTIVE_E4_X5))
+
+    cap = 500
+    updated, cyc, first, last = await wait_out_update(dut, cap)
+    if not updated:
+        verdict("framer_parity_dist5_arm", False,
+                f"out_data NEVER updated after {cap} cycles — reduced-link stall")
+        assert False, "out_data never updated under framer-parity marginal SYNC"
+
+    # Let many SYNC instances (period 32) pass so the K-deep periodic confirm
+    # accumulates on whichever lanes its tol admits (+SETTLE_EXTRA for K depth).
+    for _ in range(260 + SETTLE_EXTRA):
+        await RisingEdge(dut.out_clk)
+
+    # sync_seen_vec snapshot (sticky once armed -> union over the window is final).
+    # COHERENCE is scored over the ACTIVE-lane slices only: under mask 0xE4 the
+    # masked lanes {0,1,3,4} carry 0x0000, so the full 128-bit out_data can NEVER
+    # equal TIDELINK_SYNC_WORD (all-lane-nonzero) — coherence-by-value over the
+    # active lanes is the correct realignment proof for a reduced link. (The
+    # active SYNC slices are also bit-errored here, so even the active-lane SYNC
+    # beat is the corrupted slice, not the true SYNC_WORD slice — another reason
+    # not to gate on out_data==SYNC_WORD. The re-anchor keys on the SYNC arrival
+    # INDEX, not the exact value, so a corrupted-but-within-tol slice still aligns
+    # the lanes; coherence-by-value on the clean payload words proves it.)
+    from cocotb.triggers import FallingEdge
+    ACTIVE_MASK = 0xE4
+    seen_union = 0
+    reanc_high = 0
+    coh = inc = 0
+    samples = []
+    for _ in range(260):
+        await FallingEdge(dut.out_clk)
+        try:
+            seen_union |= int(dut.sync_seen_vec.value)
+        except Exception:
+            pass
+        if int(dut.epoch_anchored.value) == 1:   # obs carries `reanchored` here
+            reanc_high += 1
+        lanes = unpack(dut.out_data.value)
+        active = [lanes[gi] for gi in ACTIVE_E4_X5]   # masked slices don't-care
+        if len(set(active)) == 1:
+            coh += 1
+            samples.append(active[0])
+        else:
+            inc += 1
+    total = coh + inc
+    frac = coh / total if total else 0.0
+    seen_active = seen_union & ACTIVE_MASK
+    seen_cnt = bin(seen_active).count("1")
+    armed_full = (seen_active == ACTIVE_MASK)
+    reanchored = reanc_high > 0
+
+    # PASS direction depends on the compiled tol: tol5 wants all-arm+cohere (the
+    # fix), tol4 wants ONLY lane 6 armed + no reanchor (the silicon "before").
+    if SYNC_REANCHOR_TOL >= 5:
+        passed_dir = armed_full and (frac >= 0.9) and reanchored
+        half = "AFTER(fix)"
+    else:
+        passed_dir = (seen_active == 0x40) and (not reanchored) and (frac < 0.9)
+        half = "BEFORE(silicon)"
+    verdict("framer_parity_dist5_arm", passed_dir,
+            f"[{half}] SYNC_REANCHOR_TOL={SYNC_REANCHOR_TOL}; sync_seen_vec=0x{seen_union & 0xFF:02x} "
+            f"(active&0xE4=0x{seen_active:02x}, {seen_cnt}/4 active lanes armed, "
+            f"full={armed_full}); coherent={coh}/{total} ({frac*100:.0f}%); "
+            f"reanchored(obs)={reanchored} ({reanc_high}/{total} beats); "
+            f"sample={sorted(set(samples))[:6]}")
+
+    if SYNC_REANCHOR_TOL >= 5:
+        # AFTER (framer-parity) — the fix must arm every active lane and cohere.
+        assert armed_full, (
+            f"TOL={SYNC_REANCHOR_TOL}: not every active lane armed (sync_seen_vec "
+            f"active=0x{seen_active:02x}, expected 0xE4). At the framer's tol the "
+            f"dist-5 lanes {{2,5,7}} MUST capture exactly as lane 6 does.")
+        assert frac >= 0.9, (
+            f"TOL={SYNC_REANCHOR_TOL}: active-lane out_data not coherent under the "
+            f"marginal SYNC ({coh}/{total}) even though lanes armed — the re-anchor "
+            f"offsets did not align the active slices.")
+        assert reanchored, (
+            f"TOL={SYNC_REANCHOR_TOL}: re-anchor never engaged — sync_seen full but "
+            f"the read-side latch did not fire on the measured indices.")
+    else:
+        # BEFORE (tol 4) — reproduce silicon: ONLY lane 6 arms, reanchored=0, no
+        # coherence. Assert the SILICON direction so a TOL=4 run is a clean negative
+        # control documenting the bug this fix removes.
+        assert seen_active == 0x40, (
+            f"TOL={SYNC_REANCHOR_TOL} (before): expected ONLY lane 6 to arm "
+            f"(sync_seen_vec active=0x40 — the silicon 0x4403215C fingerprint), got "
+            f"0x{seen_active:02x}. The dist-5 lanes {{2,5,7}} must stay DARK at tol 4.")
+        assert not reanchored, (
+            f"TOL={SYNC_REANCHOR_TOL} (before): re-anchor engaged despite only lane 6 "
+            f"arming — all_sync_seen should be 0 with three active lanes unseen.")
+        assert frac < 0.9, (
+            f"TOL={SYNC_REANCHOR_TOL} (before): out_data cohered ({frac*100:.0f}%) "
+            f"with three active lanes unarmed — the tol-4 capture should NOT realign.")

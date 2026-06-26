@@ -882,6 +882,13 @@ module axi_chiplet_controller #(
     // (sync_obs_seen_vec_*). Read at the new SYNC-SEEN register (SoC MMIO
     // 0x4403_215C, Region 10 slot 7, RO). V2-only.
     wire [7:0]   obs_sync_seen_vec_w;
+    // DATA-MODE per-lane SYNC HAMMING-DISTANCE OBS (2026-06-25, the winscan
+    // metric) — raw rx-link-clk-domain per-lane 5-bit Hamming distance of the
+    // current word to that lane's SYNC slice from the V2 WlinkGPIOPHY fork
+    // (deskew sync_dist_vec_o). 2-flop synced to apb_clk below
+    // (sync_obs_dist_vec_*) then lane-selected. Read at the new SYNC-DIST
+    // register (SoC MMIO 0x4403_21AC, Region D slot 3, RO). V2-only.
+    wire [39:0]  obs_sync_dist_vec_w;
 `endif
 
     // Role/Region-4 register read mux. Region 8 reads served below the
@@ -1022,7 +1029,24 @@ module axi_chiplet_controller #(
     // 3'h0 at tidelink_top.sv (only lane 0 readable). Region 10 slot 5
     // (SoC 0x4403_2154 [2:0]). Reset = lane 0 (bit-identical to the old tie).
     reg [2:0]  swi_eye_lane_sel_r;
+    // DATA-MODE SYNC-DIST LANE SELECT (2026-06-25, the winscan metric). APB-
+    // writable 3-bit field that picks WHICH lane's SYNC Hamming distance the
+    // 0x4403_21AC SYNC_DIST_OBS register reports, so all 8 lanes are scanned
+    // remotely from one register pair (mirrors swi_eye_lane_sel_r). Region D
+    // slot 4 (SoC 0x4403_21B0 [2:0]). Reset = lane 0.
+    reg [2:0]  swi_dist_lane_sel_r;
 `endif
+    // FULL-RANGE IDELAY TAP LSB (2026-06-25). Per-lane low bit of the 5-bit RX
+    // IDELAY tap: tap[N] = {swi_phase_offset_w[4N +: 4], swi_phase_lsb_r[N]} =
+    // 2*nibble + lsb. The coarse nibble (SWI_PHASE_OFFSET 0x118) supplies the
+    // high 4 bits; this reg supplies bit[0], so the tap reaches the FULL 0..31
+    // IDELAYE2 range (odd taps + upper half) instead of the even-only 0,2,..30.
+    // Region D slot 5 (SoC 0x4403_21B4 [7:0], lane N at bit N) — write decode is
+    // V2-only (Region D), but the REG is declared in BOTH builds so the always-
+    // present u_idelay_rx instance can wire .lsb_i unconditionally. Reset 0 =>
+    // tap stays {nibble,1'b0} = the historical even-only behaviour, BIT-IDENTICAL
+    // (in V1 there is no write path, so it stays 0 forever — zero regression).
+    reg [7:0]  swi_phase_lsb_r;
     // Task 3 effective-select assignment (placed after swi_eye_lane_sel_r so the
     // reg reference is BACKWARD, satisfying VCS under `default_nettype none).
 `ifdef TIDELINK_PHY_V2
@@ -1185,6 +1209,14 @@ module axi_chiplet_controller #(
     // 2-flop apb_clk treatment. Per-lane "SYNC re-anchor committed a periodic-
     // confirmed index". Read at the SYNC-SEEN register (SoC MMIO 0x4403_215C).
     reg [7:0]           sync_obs_seen_vec_0, sync_obs_seen_vec_1;
+    // DATA-MODE per-lane SYNC HAMMING-DISTANCE OBS (2026-06-25, the winscan
+    // metric) — same 2-flop apb_clk treatment as the 128-bit raw-word snapshot.
+    // Per-lane 5-bit live distance to the SYNC slice, packed 8x5=40 bits. A
+    // winscan reads it quasi-statically (SYNC floods in data mode), so the multi-
+    // bit 2-flop is the same accepted treatment as the raw-word/eye-width
+    // snapshots. Lane-selected at read time by swi_dist_lane_sel_r (SoC
+    // 0x4403_21B0). Read at SoC 0x4403_21AC (Region D slot 3, RO).
+    reg [39:0]          sync_obs_dist_vec_0, sync_obs_dist_vec_1;
     // EYE-WIDTH VISIBILITY (2026-06-17) — 2-flop apb_clk sync of the selected
     // lane's eye-width fields, packed 14-bit {passed, slip[2:0], phase[3:0],
     // best[5:0]} from the rx_link_clk-domain calibrator. Same treatment as the
@@ -1257,6 +1289,8 @@ module axi_chiplet_controller #(
             sync_obs_lane_live_0 <= 8'h0;          sync_obs_lane_live_1 <= 8'h0;
             // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23)
             sync_obs_seen_vec_0  <= 8'h0;          sync_obs_seen_vec_1  <= 8'h0;
+            // DATA-MODE per-lane SYNC Hamming-distance obs (2026-06-25)
+            sync_obs_dist_vec_0  <= 40'h0;         sync_obs_dist_vec_1  <= 40'h0;
             sync_eye_width_0     <= 14'h0;         sync_eye_width_1     <= 14'h0;
             // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
             sync_obs_rxcap0_0    <= 32'h0;         sync_obs_rxcap0_1    <= 32'h0;
@@ -1367,6 +1401,11 @@ module axi_chiplet_controller #(
             // into apb_clk (each bit independent + quasi-static = tear-immune).
             sync_obs_seen_vec_0  <= obs_sync_seen_vec_w;
             sync_obs_seen_vec_1  <= sync_obs_seen_vec_0;
+            // DATA-MODE per-lane SYNC Hamming-distance obs (2026-06-25) — 2-flop
+            // sync of the rx-link-clk-domain 8x5b distance pack into apb_clk.
+            // Quasi-static while SYNC floods; lane-selected at read.
+            sync_obs_dist_vec_0  <= obs_sync_dist_vec_w;
+            sync_obs_dist_vec_1  <= sync_obs_dist_vec_0;
             // EYE-WIDTH VISIBILITY (2026-06-17): 2-flop sync of the selected
             // lane's eye-width pack into apb_clk. Quasi-static after a sweep.
             sync_eye_width_0     <= {cal_eye_lane_passed_w, cal_eye_best_slip_w,
@@ -1398,6 +1437,15 @@ module axi_chiplet_controller #(
     // Region-10 write never aliases a Region-9 slot (and vice versa, above).
     wire region10_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
                           && apb_ctrl_reg_r10;
+    // SoC Labs winscan obs (2026-06-25): Region D write (SoC 0x4403_21B0 SYNC_DIST
+    // lane-sel, 0x4403_21B4 SWI_PHASE_LSB). Region D shares the 2'b00 controller
+    // select with Region 9/10; apb_ctrl_reg_rd disambiguates (asserted on the
+    // 4'b1101 address for reads AND writes — it is purely address-decoded in
+    // tidelink_apb_regs). The rxcap slots 0/1/2 stay RO; only the new slots
+    // 4/5 are writable. apb_ctrl_reg_rd takes priority over r10 for this address,
+    // so a Region-D write never aliases a Region-9/10 slot.
+    wire regionD_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
+                         && apb_ctrl_reg_rd;
 `endif
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
@@ -1405,6 +1453,10 @@ module axi_chiplet_controller #(
             swi_training_mode_r      <= 1'b0;
             swi_recal_r              <= 1'b0;
             swi_bit_slip_lo_r        <= 24'h0;
+            // FULL-RANGE IDELAY TAP LSB (2026-06-25) — declared in BOTH builds so
+            // the always-present u_idelay_rx can wire .lsb_i. Reset 0 => even-only
+            // tap (bit-identical). V1 has no write path, so it stays 0 forever.
+            swi_phase_lsb_r          <= 8'h0;
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
@@ -1419,6 +1471,7 @@ module axi_chiplet_controller #(
             swi_word_pin_perlane_r   <= 32'h0;  // POR = no per-lane override value
             swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
             swi_eye_lane_sel_r       <= 3'h0;   // Task 3: eye-width lane sel, reset lane 0
+            swi_dist_lane_sel_r      <= 3'h0;   // winscan: SYNC-dist lane sel, reset lane 0
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1525,6 +1578,15 @@ module axi_chiplet_controller #(
             // reports, so all 8 lanes scan remotely from one bitstream.
             if (region10_write && (ctrl_reg_addr[2:0] == 3'h5))
                 swi_eye_lane_sel_r        <= ctrl_reg_wdata[2:0];
+            // SoC Labs winscan obs (2026-06-25) — Region D writable slots:
+            //   slot 4 (SoC 0x4403_21B0 [2:0]) SYNC_DIST_SEL — picks the lane the
+            //     0x21AC SYNC_DIST_OBS read reports (all 8 lanes from one bitstream).
+            //   slot 5 (SoC 0x4403_21B4 [7:0]) SWI_PHASE_LSB — per-lane RX IDELAY
+            //     tap LSB (lane N at bit N); tap = 2*nibble + lsb -> full 0..31.
+            if (regionD_write && (ctrl_reg_addr[2:0] == 3'h4))
+                swi_dist_lane_sel_r       <= ctrl_reg_wdata[2:0];
+            if (regionD_write && (ctrl_reg_addr[2:0] == 3'h5))
+                swi_phase_lsb_r           <= ctrl_reg_wdata[7:0];
 `endif
         end
     end
@@ -1737,10 +1799,21 @@ module axi_chiplet_controller #(
     //                              then read fifo_ctrl fc_wr_addr vs
     //                              write_target_addr (0x44032010 STATUS[4]).
     // =====================================================================
+    // SoC Labs winscan obs (2026-06-25): slot 3 SYNC_DIST_OBS (RO) returns the
+    // SYNC Hamming distance (5b) of the lane selected by swi_dist_lane_sel_r,
+    // with a 0x5B presence marker (old/V1 images read 0). The 8x5b distance pack
+    // is 2-flop-synced to apb_clk (sync_obs_dist_vec_1) then lane-muxed here.
+    // slot 4 SYNC_DIST_SEL (RW, readback) carries the lane select + 0x5A marker.
+    // slot 5 SWI_PHASE_LSB (RW, readback) carries the per-lane IDELAY tap LSB +
+    // 0x1B marker. Slots 6/7 stay reserved (read 0).
+    wire [4:0] dist_sel_lane = sync_obs_dist_vec_1[5*swi_dist_lane_sel_r +: 5];
     assign regionD_rxcap_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
         (ctrl_reg_addr[2:0] == 3'h1) ? sync_obs_rxcap1_1  : // 0x21A4 RXCAP1
         (ctrl_reg_addr[2:0] == 3'h2) ? sync_obs_fcsmcap_1 : // 0x21A8 FCSMCAP
+        (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
+        (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
+        (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -2959,6 +3032,11 @@ module axi_chiplet_controller #(
         // calibrator->tap wiring: identical packed source as the Wlink
         // .swi_phase_offset_in (lane N nibble at [4N+3:4N], 0..15).
         .phase_tap_i    (swi_phase_offset_w),
+        // FULL-RANGE TAP LSB (2026-06-25): per-lane tap bit[0] so the IDELAY tap
+        // reaches odd values + the upper half (0..31). swi_phase_lsb_r is
+        // declared in BOTH builds; reset 0 => even-only tap (bit-identical) and
+        // in V1 it has no write path so it stays 0 forever.
+        .lsb_i          (swi_phase_lsb_r),
         .pad_rx_i       (pad_rx),
         .pad_rx_o       (pad_rx_dly)
     );
@@ -3281,7 +3359,12 @@ module axi_chiplet_controller #(
         // SoC Labs STICKY-POISON per-lane deskew sync_seen vector (2026-06-23):
         // raw rx-link-clk-domain probe; double-synced to apb_clk below and read
         // at Region 10 slot 7 (SoC MMIO 0x4403_215C, RO).
-        .obs_sync_seen_vec_o         (obs_sync_seen_vec_w)
+        .obs_sync_seen_vec_o         (obs_sync_seen_vec_w),
+        // DATA-MODE per-lane SYNC Hamming-distance obs (2026-06-25, winscan
+        // metric): raw rx-link-clk-domain per-lane 5b distance pack; double-
+        // synced to apb_clk below and read at Region D slot 3 (SoC 0x4403_21AC,
+        // lane-selected by swi_dist_lane_sel_r at 0x4403_21B0).
+        .obs_sync_dist_vec_o         (obs_sync_dist_vec_w)
 `endif
     );
 

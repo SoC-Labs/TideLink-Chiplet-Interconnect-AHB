@@ -118,6 +118,19 @@ module tidelink_idelay_rx #(
     // Wlink deserialiser (this is the calibrator->tap wiring: SAME source).
     input  wire [4*NUM_LANES-1:0]     phase_tap_i,
 
+    // FULL-RANGE IDELAY TAP (SoC Labs 2026-06-25): per-lane tap LSB. The
+    // coarse nibble phase_tap_i[4N +: 4] supplies the high 4 bits of a 5-bit
+    // IDELAY tap; lsb_i[N] supplies bit[0], so the effective tap spans the
+    // FULL 0..31 IDELAYE2 range (odd taps + the upper half) instead of the
+    // even-only {nibble,1'b0} (0,2,..30). lane N at bit N.
+    //   tap[N] = {phase_tap_i[4N +: 4], lsb_i[N]} = 2*nibble + lsb.
+    // DEFAULT 0 (the SW reg POR value) => tap = {nibble,1'b0} = the old
+    // even-only behaviour, BIT-IDENTICAL to the pre-change module. The odd
+    // taps + upper half are unreachable until SW programs the LSBs. Threaded
+    // from the new SWI_PHASE_LSB APB register (SoC 0x4403_21B4), mirroring the
+    // swi_phase_offset (0x118) path.
+    input  wire [NUM_LANES-1:0]       lsb_i,
+
     // Raw pad_rx[*] straight from the top-level FPGA input pads.
     input  wire [NUM_LANES-1:0]       pad_rx_i,
     // Delayed pad_rx[*] feeding the Wlink GPIO PHY RX deserialiser.
@@ -154,7 +167,11 @@ module tidelink_idelay_rx #(
                 // comfortably covering one 25 MHz UI's worth of routing skew
                 // while leaving headroom and keeping a 1:1 monotone mapping.
                 wire [3:0] lane_phase = phase_tap_i[4*gl +: 4];
-                wire [4:0] lane_tap   = {lane_phase, 1'b0}; // x2, 0..30
+                // FULL-RANGE TAP (2026-06-25): low bit from the per-lane LSB
+                // strap so the tap reaches ODD values + the upper half of the
+                // 0..31 range. lsb_i[gl]=0 => {lane_phase,1'b0} = the historical
+                // even-only x2 mapping (0,2,..30), bit-identical default.
+                wire [4:0] lane_tap   = {lane_phase, lsb_i[gl]}; // 2*nibble + lsb, 0..31
 
                 // VAR_LOAD: CNTVALUEIN is loaded into the tap when LD=1.
                 // We hold LD high so the tap continuously tracks the
@@ -199,7 +216,7 @@ module tidelink_idelay_rx #(
             assign pad_rx_o = pad_rx_i;
             // Reference the would-be-unused ports so lint stays quiet.
             wire _unused_idelay = idelay_ref_clk & idelay_rst &
-                                  (|phase_tap_i);
+                                  (|phase_tap_i) & (|lsb_i);
 `endif
         end else begin : g_passthru
             // -------------------------------------------------------------
@@ -210,7 +227,7 @@ module tidelink_idelay_rx #(
             // Tie-off references so `default_nettype none + lint don't warn
             // on the (legitimately unused in this mode) control inputs.
             wire _unused_idelay = idelay_ref_clk & idelay_rst &
-                                  (|phase_tap_i);
+                                  (|phase_tap_i) & (|lsb_i);
         end
     endgenerate
 

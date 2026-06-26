@@ -168,6 +168,21 @@ FARM_HOST         ?= srv04936
 FARM_JOBS         ?=
 SKIP_PACKAGE_IP   ?=
 
+# Incremental implementation (opt-in). When set, build_design.tcl wires the
+# referenced ROUTED DCP as impl_1's INCREMENTAL_CHECKPOINT so place+route reuse
+# it and only re-route the small RTL delta (~20-40 min vs ~3.4 h from scratch).
+#   INCR_REF=auto         use THIS target's own prior routed DCP at the
+#                         canonical export path
+#                         imp/fpga/output/<TARGET>/tidelink_design_wrapper_routed.dcp
+#                         (per-target: flip ref is flip's, non-flip is non-flip's).
+#   INCR_REF=<path>       explicit DCP (absolute, or relative to the per-target
+#                         build cwd imp/fpga/run/<TARGET>).
+#   INCR_REF unset (default)  full from-scratch build — byte-unchanged flow.
+# A missing/unreadable DCP falls back to a full build (loud warning); a stale
+# DCP falls back inside Vivado's incremental engine. NEVER silently ships a bad
+# bitstream. See fpga/build_design.tcl STEP 9a.
+INCR_REF          ?=
+
 ifeq ($(SKIP_PACKAGE_IP),1)
 BUILD_DESIGN_DEPS :=
 else
@@ -243,6 +258,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \
+	export INCR_REF='$(INCR_REF)' && \
 	vivado -mode batch -source $(FPGA_DIR)/build_design.tcl \
 	    -log $(BUILD_RUN_DIR)/build_design.log \
 	    -journal $(BUILD_RUN_DIR)/build_design.jou

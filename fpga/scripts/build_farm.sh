@@ -120,8 +120,10 @@ for i in "${!JOB_T[@]}"; do
     JOB_LOG[$i]="$log"
     JOB_START[$i]=$(date +%s)
     echo "[$(ts)] launch  $t@$h   (log: ${log#$TIDELINK_HOME/})"
-    # FPGA_INSERT_DEBUG_CORE / FPGA_NUM_JOBS / REMOTE_ROOT / SSH_OPTS flow
-    # through from the caller's environment into farm_build.sh.
+    # FPGA_INSERT_DEBUG_CORE / FPGA_NUM_JOBS / REMOTE_ROOT / SSH_OPTS /
+    # INCR_REF flow through from the caller's environment into farm_build.sh.
+    # INCR_REF=auto makes each TARGET reuse its OWN prior routed DCP, so a
+    # concurrent flip + non-flip pair build is correctly per-target incremental.
     ( "$FARM_BUILD" "$t" "$h" ) > "$log" 2>&1 &
     JOB_PID[$i]=$!
 done

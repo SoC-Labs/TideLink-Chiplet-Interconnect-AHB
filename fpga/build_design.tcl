@@ -351,6 +351,74 @@ set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs im
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 
+# STEP 9a: Incremental implementation (optional, opt-in via INCR_REF).
+#
+# SoC Labs 2026-06-26 (word-window turnaround): a from-scratch flip build is
+# ~3.4 h, but the word-window iterations touch a few RTL regs whose place/route
+# delta is tiny. Vivado project-mode incremental implementation reuses a prior
+# ROUTED checkpoint as a placement+routing reference: opt_design runs fresh,
+# then place_design/route_design reuse the reference for the unchanged majority
+# and only (re)place+route the delta -> ~20-40 min instead of hours.
+#
+# This is PROJECT MODE, so the mechanism is the INCREMENTAL_CHECKPOINT property
+# on impl_1 (NOT the non-project `read_checkpoint -incremental` command — that
+# only exists in the read_checkpoint/synth_design/opt_design/route_design
+# scripted flow, which this build does not use). Vivado inserts the equivalent
+# `read_checkpoint -incremental <dcp>` into impl_1 internally.
+#
+# GATING + SAFETY:
+#   * Default (INCR_REF unset)  -> property never set -> byte-identical to the
+#     from-scratch flow. The concurrent farm and all existing callers are
+#     unaffected.
+#   * INCR_REF=auto             -> use THIS target's own prior routed DCP at the
+#     canonical export path (per-target: flip ref is the flip's, non-flip the
+#     non-flip's — they never cross). Skips cleanly (full build) if absent.
+#   * INCR_REF=<path>           -> use an explicit DCP (abs, or relative to the
+#     build cwd = imp/fpga/run/<TARGET>). Resolved on whichever host runs the
+#     build (local or the rsync'd remote tree), so the path is host-agnostic.
+#   * Missing / unreadable DCP  -> WARN and fall back to a full implementation
+#     (never silently ship: the warning is loud, the build still produces a
+#     correct bitstream from scratch).
+#   * Stale / incompatible DCP  -> Vivado's own incremental engine auto-falls
+#     back to a full place/route when reference reuse is below its threshold
+#     (REF_DESIGN_LOW_REUSE, default 0% i.e. it always tries, escalating effort
+#     as reuse drops). The build still completes correctly; it just won't get
+#     the speedup. We leave the place/route DIRECTIVE untouched so the
+#     incremental engine owns it (an explicit directive is ignored / conflicts
+#     under INCREMENTAL_CHECKPOINT) and the phys_opt steps above still run.
+#
+# NB: incremental REUSES placement/routing, including the high-fanout pad_rx
+# replication that phys_opt_design above produced. That is exactly what we want
+# for a small-RTL-delta turnaround: the eye-critical net keeps its proven route.
+# If a build changes the eye/pad constraints themselves, run a from-scratch
+# build (INCR_REF unset) to re-establish the reference, THEN iterate incrementally.
+if { [info exists ::env(INCR_REF)] && $::env(INCR_REF) ne "" } {
+    set incr_ref $::env(INCR_REF)
+    if { $incr_ref eq "auto" } {
+        # Per-target self-reference at the canonical routed-DCP export path.
+        set incr_ref [file join $output_dir tidelink_design_wrapper_routed.dcp]
+    }
+    if { [file readable $incr_ref] } {
+        set incr_ref [file normalize $incr_ref]
+        puts "==========================================="
+        puts " INCREMENTAL IMPLEMENTATION enabled"
+        puts " Reference DCP: $incr_ref"
+        puts " (place+route reuse the reference; opt_design runs fresh.)"
+        puts " Low-reuse auto-falls-back to a full route (Vivado default)."
+        puts "==========================================="
+        set_property INCREMENTAL_CHECKPOINT $incr_ref [get_runs impl_1]
+    } else {
+        puts "==========================================="
+        puts " WARNING: INCR_REF set but DCP not readable:"
+        puts "   $incr_ref"
+        puts " Falling back to a FULL (from-scratch) implementation."
+        puts " (No incremental reference applied — bitstream is still valid.)"
+        puts "==========================================="
+    }
+} else {
+    puts "INCR_REF unset - full (from-scratch) implementation."
+}
+
 puts "Starting implementation..."
 launch_runs impl_1 -to_step write_bitstream -jobs $num_jobs
 wait_on_run impl_1

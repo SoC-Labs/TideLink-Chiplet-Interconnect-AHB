@@ -33,7 +33,8 @@ module tb_calibrator_escan #(
     parameter int MIN_LOCK_DWELLS    = 2,
     parameter int MAX_RESWEEPS       = 4,
     parameter int EYESCAN_DWELL      = 4,
-    parameter int MIN_PRBS_HOLD      = 8
+    parameter int MIN_PRBS_HOLD      = 8,
+    parameter int ESCAN_CENTER_OFFSET = 0   // match RTL param default (FIX-R edge)
 )(
     input  wire        clk,
     input  wire        rst,
@@ -48,6 +49,11 @@ module tb_calibrator_escan #(
 
     input  wire        cr_pkt_seen_i,
     input  wire        crack_pkt_seen_i,
+
+    // FIX-CENTER-LITE runtime center-nudge offset (2026-06-28). 0 = use the
+    // synth ESCAN_CENTER_OFFSET param default; 1..7 overrides at runtime. Lets
+    // the centering TB prove the MMIO value (not just the param) shifts the pin.
+    input  wire [2:0]  escan_center_offset_i,
 
     // FIX-J/L eyescan oracle inputs (the surface the engaged sim drives).
     input  wire [7:0]  lane_mask,
@@ -87,7 +93,9 @@ module tb_calibrator_escan #(
         .LANE_PIN_CONVERGE       (1'b0),
         .PRBS_EYESCAN            (1'b1),
         .EYESCAN_DWELL           (EYESCAN_DWELL),
-        .MIN_PRBS_HOLD           (MIN_PRBS_HOLD)
+        .MIN_PRBS_HOLD           (MIN_PRBS_HOLD),
+        // FIX-CENTER-LITE: pin = first-sync edge + this offset (clamped to 15).
+        .ESCAN_CENTER_OFFSET     (ESCAN_CENTER_OFFSET)
     ) u_dut (
         .clk                  (clk),
         .rst                  (rst),
@@ -99,6 +107,7 @@ module tb_calibrator_escan #(
         .apb_bit_slip_override(apb_bit_slip_override),
         .apb_override_enable  (apb_override_enable),
         .min_lock_dwells_i    (min_lock_dwells_i),
+        .escan_center_offset_i(escan_center_offset_i),
         .cr_pkt_seen_i        (cr_pkt_seen_i),
         .crack_pkt_seen_i     (crack_pkt_seen_i),
         .swi_training_hold_i  (swi_training_hold_i),

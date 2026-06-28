@@ -980,6 +980,22 @@ module axi_chiplet_controller #(
     // Mirrors the swi_word_pin_perlane_* hoist (declared unconditionally so the
     // V1 build resets/writes/reads it; same Region-10 write/read path).
     reg        eyescan_arm_r;
+    // SoC Labs eyescan FIX-CENTER-LITE RUNTIME OFFSET (2026-06-28): RW MMIO
+    // register backing the calibrator's ESCAN_CENTER_OFFSET so the eye-centre
+    // nudge can be SWEPT on silicon without a rebuild (the shared-clock sim eye
+    // is 1-phase wide and cannot validate a non-zero offset; a build-time param
+    // is therefore useless for the sweep). GLOBAL — one offset for all 8 lanes,
+    // fed to the single calibrator instance. SoC 0x4403_21AC (Region D slot 3 —
+    // the rxcap window's first FREE slot; the literal 0x44032160 the task named
+    // is Region 11, already owned by the tidelink_gpio_phy APB slave, so the next
+    // free controller-decoded RW slot is used instead). Layout: [2:0] offset
+    // (0..7); [31:24] 0xEA presence marker for silicon read-back. Reset 0 ->
+    // calibrator reads escan_center_offset_i==0 -> the synth ESCAN_CENTER_OFFSET
+    // param wins -> bit-identical to FIX-R. Mirrors eyescan_arm_r exactly
+    // (declared unconditionally so the V1 build resets/writes/reads it; same
+    // Region-D-folded ctrl_reg write/read path). arm=0-gated bit-identical is
+    // preserved (the pin block this feeds is dead with arm=0).
+    reg [2:0]  swi_escan_offset_r;
 `ifdef TIDELINK_PHY_V2
     // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
     // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
@@ -1419,6 +1435,16 @@ module axi_chiplet_controller #(
     // module input, so this is V1-safe.
     wire region10_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
                           && apb_ctrl_reg_r10;
+    // SoC Labs eyescan FIX-CENTER-LITE runtime offset (2026-06-28): Region D
+    // write strobe. Region D (rxcap, paddr[8:5]=4'b1101) folds onto the SAME
+    // 2'b00 controller select as Regions 9/10; apb_ctrl_reg_rd disambiguates it
+    // (and takes priority over r10/r9 in the read mux). Requiring apb_ctrl_reg_rd
+    // here keeps Region-D writes from aliasing the V2 region9_write slot. The
+    // top-level ctrl_reg_write already includes regionD_hit, so a write to
+    // 0x4403_21AC reaches here. Unconditional (V1+V2): rxcap data is V2-only but
+    // this RW offset reg is V1-visible (V1 is the proven link-up path).
+    wire regionD_write  = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
+                          && apb_ctrl_reg_rd;
 `ifdef TIDELINK_PHY_V2
     // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
     // (ctrl_reg_addr[4:3]==2'b00) is the SYNC-OBS/CTRL bank. Slot 2 (0x44032128)
@@ -1440,6 +1466,10 @@ module axi_chiplet_controller #(
             // SoC Labs eyescan (WI-3): RX eyescan DISARMED at POR -> the whole
             // feature is inert and the build is bit-identical to 8ab846ba.
             eyescan_arm_r            <= 1'b0;
+            // SoC Labs eyescan FIX-CENTER-LITE runtime offset (2026-06-28):
+            // POR = 0 -> calibrator uses its synth ESCAN_CENTER_OFFSET default
+            // -> bit-identical to FIX-R. Unconditional so the V1 build resets it.
+            swi_escan_offset_r       <= 3'h0;
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
@@ -1549,6 +1579,13 @@ module axi_chiplet_controller #(
             // bit[0] = eyescan_arm. Reset 0 (POR above) -> feature inert.
             if (region10_write && (ctrl_reg_addr[2:0] == 3'h7))
                 eyescan_arm_r             <= ctrl_reg_wdata[0];
+            // SoC Labs eyescan FIX-CENTER-LITE runtime offset (2026-06-28):
+            // Region D slot 3 (SoC 0x4403_21AC) RW. [2:0] = global center-nudge
+            // offset. Reset 0 (POR above) -> calibrator uses its synth default ->
+            // bit-identical to FIX-R. Write BEFORE arming to select that cal
+            // cycle's offset (read at PIN time in the calibrator).
+            if (regionD_write && (ctrl_reg_addr[2:0] == 3'h3))
+                swi_escan_offset_r        <= ctrl_reg_wdata[2:0];
 `ifdef TIDELINK_PHY_V2
             // SoC Labs RX SYNC-detect SW LANE_MASK (PART 3, 2026-06-15) — Region 9
             // slot 2 (SoC MMIO 0x4403_2128) write. 8-bit; default 0xFF (POR above).
@@ -1771,6 +1808,10 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
         (ctrl_reg_addr[2:0] == 3'h1) ? sync_obs_rxcap1_1  : // 0x21A4 RXCAP1
         (ctrl_reg_addr[2:0] == 3'h2) ? sync_obs_fcsmcap_1 : // 0x21A8 FCSMCAP
+        // SoC Labs eyescan FIX-CENTER-LITE runtime offset (2026-06-28) — slot 3
+        // (0x4403_21AC) ESCAN_OFFSET (RW). [2:0] offset; [31:24] 0xEA presence
+        // marker for silicon read-back (old/V1-pre-feature images read 0 here).
+        (ctrl_reg_addr[2:0] == 3'h3) ? {8'hEA, 21'h0, swi_escan_offset_r} : // 0x21AC escan offset (RW)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical)
@@ -1786,7 +1827,13 @@ module axi_chiplet_controller #(
         // = arm; [31:24] 0xEA presence marker (old/V1 images read 0 here).
         (ctrl_reg_addr[2:0] == 3'h7) ? {8'hEA, 23'h0, eyescan_arm_r}       :  // 0x215C eyescan arm (RW)
                                        32'h0;
-    assign regionD_rxcap_rdata     = 32'h0;
+    // SoC Labs eyescan FIX-CENTER-LITE runtime offset (2026-06-28): V1 serves
+    // the RW ESCAN_OFFSET at Region D slot 3 (SoC 0x4403_21AC). All other Region
+    // D rxcap slots are V2-only observability -> read 0 in V1. [31:24]=0xEA
+    // marker, [2:0]=offset. Reset 0 -> bit-identical to FIX-R.
+    assign regionD_rxcap_rdata     =
+        (ctrl_reg_addr[2:0] == 3'h3) ? {8'hEA, 21'h0, swi_escan_offset_r} : // 0x21AC escan offset (RW)
+                                       32'h0;
 `endif
 
     // Region 8 read mux
@@ -2911,6 +2958,11 @@ module axi_chiplet_controller #(
         // at a large value, DISABLE the eye-centre arm for a bit-identical
         // build) without re-synth.
         .min_lock_dwells_i      (min_lock_dwells_r),
+        // FIX-CENTER-LITE runtime offset (2026-06-28): global center-nudge from
+        // the RW MMIO reg (SoC 0x4403_21AC). 0 = use synth ESCAN_CENTER_OFFSET
+        // default; quasi-static apb-domain level sampled in the rx-link domain
+        // (same CDC class as min_lock_dwells_r).
+        .escan_center_offset_i  (swi_escan_offset_r),
         .swi_training_hold_i    (swi_training_mode_r),
         .cr_pkt_seen_i          (obs_cr_pkt_seen_rx_w | obs_crack_pkt_seen_rx_w),
         .sync_seen_i            (1'b0),
@@ -2995,6 +3047,17 @@ module axi_chiplet_controller #(
         .PRBS_EYESCAN        (1'b1),
         .LANE_PIN_CONVERGE   (1'b0),
         .VAL_TIMEOUT_TO_DONE (1'b1),
+        // FIX-CENTER-LITE eye-centre nudge. Param default is 0 (2026-06-28) =
+        // the FIX-R fast first-sync EDGE pin = the proven link-up anchor. This
+        // V1 instance takes the param default, so at reset (and MMIO=0) the build
+        // comes up bit-identical to FIX-R; the eye-centre step is selected at
+        // RUNTIME via the swi_escan_offset_r MMIO reg (escan_center_offset_i),
+        // which is the on-silicon sweep knob (the shared-clock sim eye is ~1
+        // phase wide and cannot validate a non-zero offset). TIDELINK_ESCAN_OFFSET
+        // still lets a build hard-bake a non-zero param if ever wanted.
+`ifdef TIDELINK_ESCAN_OFFSET
+        .ESCAN_CENTER_OFFSET (`TIDELINK_ESCAN_OFFSET),
+`endif
         .MAX_RESWEEPS        (32)
     ) u_calibrator (
         .clk                   (phy_link_rx_rx_link_clk_w),
@@ -3055,6 +3118,13 @@ module axi_chiplet_controller #(
         // Allows SW to lower the eye-centre contiguity requirement on marginal-eye
         // hardware (die_a 2-3 consecutive passing phases < old default of 4).
         .min_lock_dwells_i     (min_lock_dwells_r),
+        // FIX-CENTER-LITE runtime offset (2026-06-28): global eye-centre nudge
+        // from the RW MMIO reg (SoC 0x4403_21AC, swi_escan_offset_r). 0 = use the
+        // synth ESCAN_CENTER_OFFSET param default (= the disarmed/FIX-R pin when
+        // also arm=0). Read at PIN time in the calibrator so writing the reg
+        // BEFORE arming selects that cal cycle's offset. Quasi-static apb-domain
+        // level; same CDC class as min_lock_dwells_r (rx_link_clk consumer).
+        .escan_center_offset_i (swi_escan_offset_r),
         // §9.11d Fix A1 — post-S_HOLD real-data validation. Drive from the
         // local Wlink FCSM's "saw the peer's CR_PKT on our RX" sticky flag.
         // Same clock domain as the calibrator (rx_link_clk) so no CDC. WITHOUT

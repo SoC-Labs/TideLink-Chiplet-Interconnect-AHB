@@ -558,7 +558,64 @@ module tidelink_phy_align_calibrator #(
     // is asserted. Edge detect on synced stage.
     wire role_locked_rise = role_locked_sync & ~role_locked_q;
     wire swreset_fall     = ~swreset_sync    &  swreset_q;
-    assign trigger_now = role_locked_rise | (swreset_fall & role_locked_sync);
+
+    // -------------------------------------------------------------------------
+    // SoC Labs Bug-A / autonomous master-RX root cause + fix (2026-06-28):
+    //   ROOT CAUSE — In the AUTONOMOUS I2C bring-up the WINNER (master) runs an
+    //   extended training sub-flow in tidelink_autoneg (ST_TRAIN_ENTER/RUN/
+    //   POLL_PEER/EXIT). At training-EXIT (autoneg state 15->16, ~656us in sim)
+    //   the master's SWI_RECAL bit (R8 slot0 bit[1], = this calibrator's
+    //   `swreset` input — see axi_chiplet_controller.sv:1435) PULSES 0->1->0
+    //   while this calibrator is already in S_DONE (calibration_done=1,
+    //   training_mode=0). cocotb capture (test_35_trigger_capture):
+    //       i=13583 swreset 0->1 (cal_state=4)
+    //       i=13710 swreset 1->0 (cal_state=4)
+    //       i=13727 cal_state 4->1   (S_DONE -> S_ARM)
+    //       i=14138 cal_state 7->2   (-> S_SWEEP, training_mode re-asserted)
+    //   The FALLING edge of that recal pulse fires `trigger_now`
+    //   (swreset_fall & role_locked_sync), kicking S_DONE -> S_ARM -> S_HOLD ->
+    //   S_SWEEP. S_ARM/S_PROBE/S_SWEEP/S_FINALIZE/S_HOLD assert training_mode=1
+    //   (line ~1691), which ORs into swi_training_mode_w in
+    //   axi_chiplet_controller and re-engages PHY training. That SQUELCHES the
+    //   master's Wlink CR/CRACK framing exactly while the FCSM credit-init
+    //   handshake needs to complete: the master decoded the slave's long CR
+    //   stream during the brief DONE window (cr_pkt_seen_rx=1, FCSM 1->2) but
+    //   re-enters training before it can decode the slave's short CRACK burst,
+    //   so crack_pkt_seen_rx STAYS 0 and the master FCSM wedges at state=2 with
+    //   ZERO TX credit. The LOSER (slave) exits autoneg early (NEGO_DONE), never
+    //   issues the training-exit recal pulse, holds S_DONE, and completes
+    //   CR/CRACK -> state=4. This is exactly the reported asymmetry
+    //   (M.state=2 cr=1 crack=0 vs S.state=4 cr=1 crack=1) and the SW-path
+    //   test_04 pcc=0. The SW path escapes it because its calibrator is sim-
+    //   bypassed and its single deterministic to_data_mode runs with both
+    //   calibrators settled.
+    //
+    //   FIX (calibrator-local, minimal, safe) — make calibration STICKY once
+    //   genuinely complete: latch `calibrated_once_q` on first reaching S_DONE,
+    //   and from then on IGNORE the swreset/SWI_RECAL falling-edge re-trigger
+    //   AND a role_locked re-pulse. A real cold boot still re-calibrates via
+    //   `rst` (POR, ~poresetn), which clears the sticky. NOTE: this masks the
+    //   *level/edge* recal re-trigger only after a good lock; if production SW
+    //   needs an explicit forced recal of an already-locked link, it should
+    //   issue it via a POR or a dedicated W1P (not the level SWI_RECAL), or this
+    //   sticky can be qualified additionally on (cr_pkt_seen_i | crack_pkt_seen_i)
+    //   so only a real-data-confirmed lock is protected. Proof-of-fix:
+    //   cocotb test_28/test_36 reach master crack=1 + non-zero PAIR_CREDIT.
+    //   (Owner 74d70a0c: the equally-valid alternative is to stop the autoneg
+    //   winner from pulsing SWI_RECAL at ST_TRAIN_EXIT in tidelink_autoneg.sv —
+    //   that fixes the source rather than hardening the calibrator; pick one.)
+    // -------------------------------------------------------------------------
+    reg calibrated_once_q;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)                      calibrated_once_q <= 1'b0;
+        else if (cur_state == S_DONE) calibrated_once_q <= 1'b1;
+    end
+    // Once a good lock exists, suppress BOTH re-trigger edges (the spurious
+    // training-exit SWI_RECAL pulse and any role_locked re-pulse). Cold boot
+    // re-cals via POR (rst) which clears calibrated_once_q.
+    wire role_locked_rise_eff = role_locked_rise & ~calibrated_once_q;
+    wire swreset_fall_eff     = swreset_fall     & ~calibrated_once_q;
+    assign trigger_now = role_locked_rise_eff | (swreset_fall_eff & role_locked_sync);
 
     // -------------------------------------------------------------------------
     // §9.9 runtime EARLY_EXIT override hook (cocotb/UVM compat).

@@ -24,7 +24,7 @@ SVT_HOME     = $(VIP_HOME)/vip/svt/common/latest
 # Project paths
 PROJ_HOME   ?= $(realpath ../..)
 RTL_DIR      = $(PROJ_HOME)/src/rtl
-FLIST_DIR    = $(PROJ_HOME)/flist
+FLIST_DIR    = $(PROJ_HOME)/flists
 DEPS_DIR     = $(PROJ_HOME)/deps/axi-chiplet-controller
 TB_DIR       = $(CURDIR)/tb
 ENV_DIR      = $(CURDIR)/env
@@ -113,12 +113,12 @@ VCS_FLAGS += -y $(AMBA_HOME)/sverilog/src/vcs
 VCS_FLAGS += -y $(AMBA_HOME)/sverilog/src/com
 VCS_FLAGS += +libext+.svp+.sv+.svi+.svh
 
-# §9 per-lane bit-slip alignment TB plumbing (asymmetric skew tests)
-# Lane checker now lives in src/rtl as tidelink_lane_checker (renamed from
-# the cocotb-local wlink_lane_checker; the lane_checker is also pulled in by
-# the FPGA/ASIC flists for synthesis paths).
+# §9 per-lane bit-slip alignment TB plumbing (asymmetric skew tests).
+# The tidelink_lane_checker (+ popcount/single helpers + training-pattern
+# include dir) is supplied by the DUT flist (flists/tidelink_fpga.flist, pulled
+# in below), which sources them from the tidelink-gpio-phy submodule — so they
+# are NOT re-listed here (a second copy would be a duplicate module definition).
 VCS_FLAGS += $(TB_DIR)/pad_skid_lanes.sv
-VCS_FLAGS += $(PROJ_HOME)/src/rtl/tidelink_lane_checker.sv
 
 # Top-level testbench. GATE=1 uses a probe-free TB auto-derived from
 # top.sv (XMR debug instrumentation stripped — see gen_gate_tb.awk),
@@ -219,115 +219,25 @@ VCS_FLAGS += $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog/sc12_cln65lp_base_rvt_ud
 
 else
 
-# CMSDK components
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog
-VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
-VCS_FLAGS += +incdir+$(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog
-VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v
-
-# TideLink FIFO RTL
-VCS_FLAGS += $(RTL_DIR)/fifo/generic/tidelink_sram.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ctrl.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_mem.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_returner.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_apb_regs.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo.sv
-VCS_FLAGS += $(RTL_DIR)/fifo/tidelink_fifo_ahb.sv
-
-# TideLink FC Adapter RTL
-VCS_FLAGS += $(RTL_DIR)/tidelink_fc_adapter.sv
-
-# TideLink PTP (register pass-through)
-VCS_FLAGS += $(RTL_DIR)/tidelink_ptp.sv
-
-# TideLink Address Translator
-VCS_FLAGS += $(RTL_DIR)/tidelink_addr_translator.sv
-
-# XHB500 AHB-to-AXI bridge (subordinate path — chiplet_slv)
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_reverse_regd_slice_rst_empty.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_hazard_list.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_strb.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_addr.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_wdata.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_resp.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core.sv
-VCS_FLAGS += $(XHB500_SLV_DIR)/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv.sv
-
-# XHB500 AXI-to-AHB bridge (manager path — chiplet_mst)
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_or.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_xor.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_flop.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/models/cells/generic/xhb500_sync.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice_empty.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice_empty.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_pkg.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_h_xout.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_xreg.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_hreg.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_r.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_b.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
-VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
-
-# Wlink chiplet controller (Chisel-generated Verilog, GPIO PHY + TideLink)
-# Use -y to pick up all sub-modules (APBFanout, WlinkTxRouter, etc.)
-VCS_FLAGS += -y $(DEPS_DIR)/wav-wlink-hw/output_tidelink_gpio
-VCS_FLAGS += +libext+.v
-
-# Wlink PHY (GPIO behavioural model)
-VCS_FLAGS += -y $(DEPS_DIR)/logical/PHY/generic
-VCS_FLAGS += -y $(DEPS_DIR)/logical/wlink
-VCS_FLAGS += +libext+.v
-
-# Explicitly compile the GPIO PHY files (rather than letting -y resolve them
-# lazily). XMRE references from the §9 alignment soft-strap force-blocks in
-# tb/top.sv require the gpio module's internal regs to be elaborated, which
-# only happens when the file is explicitly compiled.
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpio.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioTx.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioRx.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WlinkGPIOPHY.v
-# Use the §9 phy-align Wlink.v (with swi_bit_slip_in / swi_training_mode_in
-# ports) rather than the older Chisel output under wav-wlink-hw/.
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/Wlink.v
-
-# Address translator and its dependencies
-VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
-VCS_FLAGS += $(DEPS_DIR)/logical/apb_control/apb_control.sv
-VCS_FLAGS += $(DEPS_DIR)/logical/address_translation/address_translation.sv
-VCS_FLAGS += $(CMSDK_DIR)/logical/cmsdk_apb_slave_mux/verilog/cmsdk_apb_slave_mux.v
-
-# Bridge dependencies
-VCS_FLAGS += -y $(DEPS_DIR)/logical/bridges
-VCS_FLAGS += +libext+.v
-
-# TideLink sub-modules (PTP servo, CDC, address translator components)
-VCS_FLAGS += $(RTL_DIR)/tidelink_mul_iter.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_ptp_servo.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
-VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_regs.sv
-VCS_FLAGS += $(RTL_DIR)/tl_addr_trans_cam.sv
-
-# I2C master/slave (used by axi_chiplet_controller)
-VCS_FLAGS += -y $(DEPS_DIR)/logical/i2c/rtl
-VCS_FLAGS += +libext+.v
-
-# Autonegotiation and chiplet controller top (Wlink wrapper)
-VCS_FLAGS += $(DEPS_DIR)/logical/top/tidelink_autoneg.sv
-VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
-
-# Performance counter
-VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
-
-# TideLink top module
-VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv
+# ---------------------------------------------------------------
+# DUT RTL — sourced from the authoritative FPGA filelist.
+#
+# The bespoke per-file VCS_FLAGS list this Makefile used to carry bit-rotted
+# on the V2 phy-integration branch:
+#   * tidelink_lane_checker.sv moved out of src/rtl into the
+#     tidelink-gpio-phy submodule (commit d043909),
+#   * tidelink_top.sv / axi_chiplet_controller picked up new ports
+#     (train_fail_irq_o, apb_ctrl_reg_*, obs_*, eye/idelay/rxclk blocks),
+#   * the credit-path-observability Wlink edits live in
+#     src/rtl/local_overrides/, not in the deps submodule's plain output.
+# Keeping a second hand-maintained copy of that fileset in sync is the bug.
+#
+# flists/tidelink_fpga.flist is the proven DUT fileset (it is what the cocotb
+# tidelink_top_pair regression compiles). It is FPGA-flavoured only in its SRAM
+# choice (cmsdk_fpga_sram BRAM wrapper) and the USE_IDELAY/USE_CLKBUF defaults
+# (0 = bit-exact behavioural passthrough), both correct for behavioural sim.
+# Requires TIDELINK_HOME + CMSDK_DIR exported (source ../../set_env.sh).
+VCS_FLAGS += -f $(FLIST_DIR)/tidelink_fpga.flist
 
 endif  # GATE
 

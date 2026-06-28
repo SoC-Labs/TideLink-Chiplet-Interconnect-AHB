@@ -127,6 +127,56 @@ class test_top_addr_translate extends tidelink_top_system_base_test;
     `uvm_info("TEST",
       "5 packets verified with address translator active", UVM_LOW)
 
+    // ===============================================================
+    // Test 4: Cross-boundary AHB round-trip VALUE check (G30 closure)
+    // ===============================================================
+    // The original test asserted NOTHING on data crossing the transparent
+    // AHB bridge. With the translator in identity passthrough (CTRL.enable=0,
+    // the POR default), a write issued on A.ahb_sub lands byte-for-byte in the
+    // peer B.ahb_mng slave memory; reading the same address back returns it.
+    // This is the actual end-to-end remote read/write proof for the addr
+    // translator's data path.
+    `uvm_info("TEST", "--- Test 4: AHB passthrough round-trip value check (identity xlat) ---", UVM_LOW)
+    begin
+      bit [31:0] rt_addr[4];
+      bit [31:0] rt_data[4];
+      int unsigned xlat_pass, xlat_fail;
+      rt_addr = '{32'h0000_1000, 32'h0000_2000, 32'h0000_3004, 32'h0000_4008};
+      rt_data = '{32'h0AD2_3001, 32'hF00D_CAFE, 32'h5A5A_A5A5, 32'h1357_9BDF};
+      xlat_pass = 0; xlat_fail = 0;
+      for (int i = 0; i < 4; i++) begin
+        top_sys_ahb_sub_write_sequence wr_seq;
+        top_sys_ahb_sub_read_sequence  rd_seq;
+        wr_seq = top_sys_ahb_sub_write_sequence::type_id::create("xlat_rt_wr");
+        wr_seq.addr = rt_addr[i];
+        wr_seq.data = rt_data[i];
+        wr_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
+        repeat (phy_transit_wait) @(posedge tb_if.clk);
+
+        rd_seq = top_sys_ahb_sub_read_sequence::type_id::create("xlat_rt_rd");
+        rd_seq.addr = rt_addr[i];
+        rd_seq.start(env.a_sub_ahb_sys_env.master[0].sequencer);
+        repeat (phy_transit_wait) @(posedge tb_if.clk);
+
+        if (rd_seq.rdata === rt_data[i]) begin
+          xlat_pass++;
+          `uvm_info("TEST", $sformatf(
+            "XLAT ROUND-TRIP PASS addr=0x%08h wrote=0x%08h read=0x%08h",
+            rt_addr[i], rt_data[i], rd_seq.rdata), UVM_LOW)
+        end else begin
+          xlat_fail++;
+          `uvm_error("TEST", $sformatf(
+            "XLAT ROUND-TRIP FAIL addr=0x%08h wrote=0x%08h read=0x%08h",
+            rt_addr[i], rt_data[i], rd_seq.rdata))
+        end
+      end
+      if (xlat_pass == 0)
+        `uvm_error("TEST", "No translator round-trip checks passed")
+      `uvm_info("TEST", $sformatf(
+        "Addr-translate AHB round-trip summary: %0d passed, %0d failed",
+        xlat_pass, xlat_fail), UVM_LOW)
+    end
+
     repeat (20) @(posedge tb_if.clk);
     phase.drop_objection(this);
   endtask

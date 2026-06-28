@@ -85,6 +85,22 @@ module test_top;
   // Test by directly editing reset value of swi_phase_offset in WavD2DGpio.v
   // OR by APB-writing it post-lock + post-swreset.
 
+  // -------------------------------------------------------------------------
+  // Calibrator SIM-ONLY early-exit bypass (M6+M8). The V2 phy-align calibrator
+  // (tidelink_phy_align_calibrator.sv) holds training_mode=1 through S_VALIDATE
+  // for VALIDATION_TIMEOUT=2,000,000 link cycles (~320 ms HW). In sim that far
+  // exceeds any practical cycle budget, so cal_done never asserts and the FCSM
+  // can never leave training to exchange CR/CRACK — the link delivers all
+  // zeros. Forcing tb_early_exit_force_q=1 takes S_FINISH→S_DONE directly,
+  // exactly as the proven cocotb tidelink_top_pair harness does
+  // (force_calibrator_sim_bypass()). This is a sim-only TB force on a signal
+  // the RTL provides specifically for this purpose (see the calibrator header
+  // "<tb>.<calibrator>.tb_early_exit_force_q"); silicon never sets it.
+  initial begin
+    force u_tidelink_top_a.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+    force u_tidelink_top_b.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+  end
+
   // ---------------------------------------------------------------
   // Package imports
   // ---------------------------------------------------------------
@@ -254,18 +270,57 @@ module test_top;
   wire [7:0] a_lane_locked_w;
   wire [7:0] b_lane_locked_w;
 
+  // TB-side observability checkers. The lane_checker moved to the
+  // tidelink-gpio-phy submodule on the V2 branch and gained a wider port list
+  // (active-low rst_n, *_i/*_o suffixes, per-lane lock-threshold + training/
+  // sweep/noise controls). These instances only feed tb_if.{a,b}_lane_locked
+  // for the §9 alignment tests, so the new control inputs are tied to a benign
+  // free-running-lock config: training_mode high (so the checker tracks the
+  // training-pattern stream the §9 tests drive) and a mid per-lane threshold.
+  localparam [23:0] TB_LANE_LOCK_THRESH = {8{3'd4}};  // 4 consecutive matches/lane
+
   tidelink_lane_checker u_a_checker (
-    .clk        (a_rx_link_clk),
-    .rst        (a_checker_rst),
-    .lane_data  (a_rx_lane_data),
-    .lane_locked(a_lane_locked_w)
+    .clk              (a_rx_link_clk),
+    .rst_n            (~a_checker_rst),
+    .lane_data_i      (a_rx_lane_data),
+    .lock_thresh_i    (TB_LANE_LOCK_THRESH),
+    .training_mode_w_i(1'b1),
+    .sweep_active_i   (1'b0),
+    .clear_noise_i    (1'b0),
+    .lane_locked_o    (a_lane_locked_w),
+    .mismatch_pulse_o (),
+    .wire_status_o    (),
+    .dist_raw_o       (),
+    .dist_voted_o     (),
+    .dwell_min_dist_o (),
+    .noise_min_o      (),
+    .noise_max_o      (),
+    .noise_mean_o     (),
+    .noise_current_o  (),
+    .canary_pass_o    (),
+    .canary_valid_o   ()
   );
 
   tidelink_lane_checker u_b_checker (
-    .clk        (b_rx_link_clk),
-    .rst        (b_checker_rst),
-    .lane_data  (b_rx_lane_data),
-    .lane_locked(b_lane_locked_w)
+    .clk              (b_rx_link_clk),
+    .rst_n            (~b_checker_rst),
+    .lane_data_i      (b_rx_lane_data),
+    .lock_thresh_i    (TB_LANE_LOCK_THRESH),
+    .training_mode_w_i(1'b1),
+    .sweep_active_i   (1'b0),
+    .clear_noise_i    (1'b0),
+    .lane_locked_o    (b_lane_locked_w),
+    .mismatch_pulse_o (),
+    .wire_status_o    (),
+    .dist_raw_o       (),
+    .dist_voted_o     (),
+    .dwell_min_dist_o (),
+    .noise_min_o      (),
+    .noise_max_o      (),
+    .noise_mean_o     (),
+    .noise_current_o  (),
+    .canary_pass_o    (),
+    .canary_valid_o   ()
   );
 
   assign tb_if.a_lane_locked = a_lane_locked_w;

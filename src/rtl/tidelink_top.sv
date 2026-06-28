@@ -981,8 +981,21 @@ module tidelink_top #(
     logic                    pipe_hsel_r;
     logic                    pipe_valid_r;   // latched address phase ready for XHB500
 
-    // Detect new address phase on external port
-    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1] & ahb_sub_hready;
+    // Detect new address phase on external port.
+    //
+    // NOTE (SoC Labs 2026-06-28): ext_addr_phase must NOT be qualified by
+    // ahb_sub_hready. In a single-subordinate AHB-Lite system the bus HREADY
+    // fed back into this slave is its own HREADYOUT (the UVM tb's WIRE_AHB_SUB
+    // macro ties hready := hreadyout). Because ahb_sub_hreadyout below is gated
+    // on ext_is_nonseq, qualifying ext_addr_phase by ahb_sub_hready closes a
+    // zero-delay combinational loop hready -> ext_is_nonseq -> hreadyout ->
+    // hready that freezes simulation time the instant a NONSEQ write is
+    // presented (the AHB-passthrough path's first real exerciser). The hready
+    // qualifier was redundant anyway: the master holds HTRANS=NONSEQ stable
+    // until HREADY, and the latch is already single-shot via !pipe_valid_r.
+    // (cocotb pairs tie ahb_sub_hready=1 and never drove this path, so the loop
+    // was latent.)
+    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
     // XHB500 hreadyout (raw, before pipeline insertion)

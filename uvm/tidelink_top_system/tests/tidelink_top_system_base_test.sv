@@ -121,31 +121,122 @@ class tidelink_top_system_base_test extends uvm_test;
   endtask
 
   // ---------------------------------------------------------------
-  // Helper: initialize Wlink on both sides
+  // Unified-APB raw write/read helpers (absolute 15-bit paddr).
+  // Used by the V2 bring-up below for the Wlink (0x0xxx) and Region-8
+  // (0x21xx) registers that sit outside the TideLink 0x2000 block.
   // ---------------------------------------------------------------
+  virtual task apb_raw_write(side_t side, bit [14:0] addr, bit [31:0] data);
+    integration_cfg_write_sequence wr_seq;
+    wr_seq = integration_cfg_write_sequence::type_id::create("apb_raw_wr");
+    wr_seq.addr = addr;
+    wr_seq.data = data;
+    if (side == SIDE_A) wr_seq.start(env.a_apb_agt.sequencer);
+    else                wr_seq.start(env.b_apb_agt.sequencer);
+  endtask
+
+  virtual task apb_raw_read(side_t side, bit [14:0] addr, output bit [31:0] data);
+    integration_cfg_read_sequence rd_seq;
+    rd_seq = integration_cfg_read_sequence::type_id::create("apb_raw_rd");
+    rd_seq.addr = addr;
+    if (side == SIDE_A) rd_seq.start(env.a_apb_agt.sequencer);
+    else                rd_seq.start(env.b_apb_agt.sequencer);
+    data = rd_seq.rdata;
+  endtask
+
+  // ---------------------------------------------------------------
+  // Helper: initialize Wlink on both sides — V2 phy-integration bring-up.
+  //
+  // The V2 RTL (autocal calibrator + T3A self-aligning RX + local_overrides
+  // Wlink) does NOT reach a data-carrying link from role_lock alone: the
+  // recovered-RX framer needs the coordinated training -> calibrate -> data
+  // handoff. Mirrors the PROVEN cocotb tidelink_top_pair doorbell bring-up
+  // (cocotb/tidelink_top_pair/test_tidelink_pair_doorbell.py: do_role_lock /
+  // wait_cal_done / do_hold_training / do_to_data_mode) which is the sequence
+  // sw_coord_autocal_region8.sh runs on silicon. Without this the FCSM parks
+  // at state==1 (cr_seen_rx=0) and the A->B datapath delivers all-zeros — the
+  // pre-existing reason every data test in this suite regressed on the V2
+  // branch and the AHB passthrough never crossed.
+  //
+  //   Phase 0  POR + role_lock both sides (ROLE_CFG 0x2080)
+  //   Phase 1  passive autocal -> wait cal_done (SWI_LANE_STATUS 0x2108[16])
+  //   Phase 1b hold-training refresh: R8 SLOT0 0x2100 = 0x3 -> 0x1
+  //   Phase 2  to data mode: R8 SLOT0 = 0x0, then LL bootstrap 0x0208
+  //            (0x27f08 swreset-on -> 0x27f00 swreset-off -> 0x27f07 enable)
+  // ---------------------------------------------------------------
+  localparam bit [14:0] APB_ROLE_CFG       = 15'h2080;
+  localparam bit [14:0] APB_R8_SLOT0       = 15'h2100; // SWI_TRAINING_MODE / RECAL
+  localparam bit [14:0] APB_R8_LANE_STATUS = 15'h2108; // [16]=cal_done, [7:0]=lane_locked
+  localparam bit [14:0] APB_WL_LL_ENABLE   = 15'h0208; // Wlink LL enable/reset
+
+  localparam bit [31:0] ROLE_CFG_MASTER_LOCK = 32'h0000_0002; // role=master, lock
+  localparam bit [31:0] ROLE_CFG_SLAVE_LOCK  = 32'h0000_0003; // role=slave,  lock
+  localparam bit [31:0] R8_TRAIN_RECAL       = 32'h0000_0003; // training + recal
+  localparam bit [31:0] R8_TRAIN_ONLY        = 32'h0000_0001; // training, recal off
+  localparam bit [31:0] R8_OFF               = 32'h0000_0000;
+  localparam bit [31:0] LL_SWRESET_ON        = 32'h0002_7f08;
+  localparam bit [31:0] LL_SWRESET_OFF       = 32'h0002_7f00;
+  localparam bit [31:0] LL_ENABLE            = 32'h0002_7f07;
+
   virtual task init_wlink();
-    top_sys_wlink_init_sequence a_wlink_init, b_wlink_init;
+    bit [31:0] a_st, b_st;
+    int unsigned polls;
+    bit cal_ok;
 
-    `uvm_info("TEST", "Initializing Wlink on both sides...", UVM_LOW)
+    `uvm_info("TEST", "Initializing Wlink (V2 bring-up) on both sides...", UVM_LOW)
 
-    // Initialize both Wlink controllers. A = master (matches strap=0 in
-    // tb top.sv:381), B = slave (matches strap=1 in tb top.sv:539). The
-    // ROLE_CFG bit[0] override must MATCH the strap or the link comes up
-    // with both sides as master and no credit-grant peer.
-    a_wlink_init = top_sys_wlink_init_sequence::type_id::create("a_wlink_init");
-    a_wlink_init.side_name = "A";
-    a_wlink_init.is_slave  = 1'b0;
-    a_wlink_init.start(env.a_apb_agt.sequencer);
+    // --- Phase 0: role_lock (releases Wlink POR). A=master, B=slave to
+    //     match the straps in tb top.sv. ---
+    apb_raw_write(SIDE_A, APB_ROLE_CFG, ROLE_CFG_MASTER_LOCK);
+    apb_raw_write(SIDE_B, APB_ROLE_CFG, ROLE_CFG_SLAVE_LOCK);
+    repeat (200) @(posedge tb_if.clk);
 
-    b_wlink_init = top_sys_wlink_init_sequence::type_id::create("b_wlink_init");
-    b_wlink_init.side_name = "B";
-    b_wlink_init.is_slave  = 1'b1;
-    b_wlink_init.start(env.b_apb_agt.sequencer);
+    // --- Phase 1: wait for passive autocal to converge (cal_done on both).
+    //     The calibrator HOLD_CYCLES/VALIDATION_TIMEOUT are large, so this
+    //     can take well over 100k cycles. Poll SWI_LANE_STATUS[16]. ---
+    cal_ok = 1'b0;
+    for (polls = 0; polls < 1500; polls++) begin
+      repeat (500) @(posedge tb_if.clk);
+      apb_raw_read(SIDE_A, APB_R8_LANE_STATUS, a_st);
+      apb_raw_read(SIDE_B, APB_R8_LANE_STATUS, b_st);
+      if (a_st[16] && b_st[16]) begin
+        cal_ok = 1'b1;
+        `uvm_info("TEST", $sformatf(
+          "Autocal cal_done both sides after ~%0d poll-windows: A=0x%08h B=0x%08h (lane_locked A=0x%02h B=0x%02h)",
+          polls, a_st, b_st, a_st[7:0], b_st[7:0]), UVM_LOW)
+        break;
+      end
+    end
+    if (!cal_ok)
+      `uvm_warning("TEST", $sformatf(
+        "Autocal did not report cal_done on both sides (A=0x%08h B=0x%08h); proceeding to data-mode handoff anyway",
+        a_st, b_st))
 
-    // Wait for link training (PHY pad crossover + Wlink handshake)
+    // --- Phase 1b: hold-training refresh (recal falling edge re-sweeps
+    //     against the live peer training pattern). ---
+    apb_raw_write(SIDE_A, APB_R8_SLOT0, R8_TRAIN_RECAL);
+    apb_raw_write(SIDE_B, APB_R8_SLOT0, R8_TRAIN_RECAL);
+    repeat (200) @(posedge tb_if.clk);
+    apb_raw_write(SIDE_A, APB_R8_SLOT0, R8_TRAIN_ONLY);
+    apb_raw_write(SIDE_B, APB_R8_SLOT0, R8_TRAIN_ONLY);
+    repeat (200) @(posedge tb_if.clk);
+
+    // --- Phase 2: to data mode — drop training, run LL swreset bootstrap. ---
+    apb_raw_write(SIDE_A, APB_R8_SLOT0, R8_OFF);
+    apb_raw_write(SIDE_B, APB_R8_SLOT0, R8_OFF);
+    repeat (20) @(posedge tb_if.clk);
+    apb_raw_write(SIDE_A, APB_WL_LL_ENABLE, LL_SWRESET_ON);
+    apb_raw_write(SIDE_B, APB_WL_LL_ENABLE, LL_SWRESET_ON);
+    repeat (20) @(posedge tb_if.clk);
+    apb_raw_write(SIDE_A, APB_WL_LL_ENABLE, LL_SWRESET_OFF);
+    apb_raw_write(SIDE_B, APB_WL_LL_ENABLE, LL_SWRESET_OFF);
+    repeat (20) @(posedge tb_if.clk);
+    apb_raw_write(SIDE_A, APB_WL_LL_ENABLE, LL_ENABLE);
+    apb_raw_write(SIDE_B, APB_WL_LL_ENABLE, LL_ENABLE);
+
+    // Let the FC credit handshake (CR/CRACK) complete across the now-live link.
     repeat (wlink_link_up_wait) @(posedge tb_if.clk);
 
-    `uvm_info("TEST", "Wlink link-up complete.", UVM_LOW)
+    `uvm_info("TEST", "Wlink link-up complete (V2 bring-up).", UVM_LOW)
   endtask
 
   // Diagnostic: read Wlink link_status (0x0234) and link_capabilities (0x0200)

@@ -50,6 +50,12 @@ class top_sys_ahb_slave_config extends svt_ahb_system_configuration;
     this.slave_cfg[0].is_active = 1;
     this.slave_cfg[0].data_width = 32;
     this.slave_cfg[0].transaction_coverage_enable = 1;
+    // Back the slave with its built-in memory so the transparent AHB bridge can
+    // be round-trip checked (write crosses link -> stored here -> read returns
+    // it). Paired with registering ahb_slave_memory_response_sequence as the
+    // slave's default response sequence (see env build_phase). Defaults to 1 in
+    // the VIP; set explicitly to make the round-trip contract clear.
+    this.slave_cfg[0].enable_mem = 1;
     this.ahb_lite = 1;
     this.set_addr_range(0, 32'h0000_0000, 32'hFFFF_FFFF);
     // Disable protocol checks for manager path (DUT may not drive hprot/hmastlock)
@@ -139,6 +145,25 @@ class tidelink_top_system_env extends uvm_env;
     b_fifo_ahb_sys_env = svt_ahb_system_env::type_id::create("b_fifo_ahb_sys_env", this);
     b_mng_ahb_sys_env  = svt_ahb_system_env::type_id::create("b_mng_ahb_sys_env", this);
     b_apb_agt          = apb_master_agent::type_id::create("b_apb_agt", this);
+
+    // -----------------------------------------------------------------
+    // Make the manager-side (ahb_mng) slave VIPs behave as MEMORY so the
+    // transparent AHB bridge can be round-trip checked: a remote write that
+    // crosses the link lands in the peer ahb_mng slave's built-in memory, and
+    // a later remote read of the same address returns the stored value.
+    //
+    // The SVT AHB active slave only reads/writes its built-in memory when
+    // `ahb_slave_memory_response_sequence` is registered as the slave
+    // sequencer's run_phase default_sequence (slave cfg enable_mem defaults 1).
+    // Without it the slave returns randomized OKAY data (the prior behaviour
+    // that made any readback check meaningless). Registered on BOTH sides so
+    // A->B and B->A passthrough both round-trip.
+    uvm_config_db#(uvm_object_wrapper)::set(this,
+      "b_mng_ahb_sys_env.slave*.sequencer.run_phase", "default_sequence",
+      ahb_slave_memory_response_sequence::type_id::get());
+    uvm_config_db#(uvm_object_wrapper)::set(this,
+      "a_mng_ahb_sys_env.slave*.sequencer.run_phase", "default_sequence",
+      ahb_slave_memory_response_sequence::type_id::get());
 
     // Scoreboard, coverage, virtual sequencer
     sb    = tidelink_top_system_scoreboard::type_id::create("sb", this);

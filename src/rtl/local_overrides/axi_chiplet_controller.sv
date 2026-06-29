@@ -76,7 +76,28 @@ module axi_chiplet_controller #(
     // exactly like the pair_v2 sim recipe. REVISIT for production: re-enable
     // autoneg (7'h61) once the mask handshake propagates the reduced mask to
     // the slave (wire peer_rx_lane_mask_i / un-bypass mask_hs).
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // SoC Labs 2026-06-29 — AUTONOMOUS ON-CHIP IDELAY WINSCAN FSM enable.
+    // 1 (default) = the on-chip cross-lane deskew winscan FSM is BUILT and may
+    // run, but ONLY when armed via the autonomous nego path (nego_en &
+    // role_locked); when nego_en=0 (the proven SW-role_lock / host-winscan
+    // path) the FSM is permanently dormant and the per-lane IDELAY tap regs
+    // (swi_phase_offset_r / swi_phase_lsb_r) keep their APB-written values
+    // bit-identically — the host winscan() and the SW data regression are
+    // UNAFFECTED. 0 = the FSM is removed entirely (the autonomous deskew layer
+    // reverts to the pre-winscan behaviour, i.e. relies on the host loop only).
+    // The FSM body is additionally `ifdef TIDELINK_PHY_V2 (it consumes V2-only
+    // obs_sync_dist_vec / swi_phase_lsb), so in V1 it is absent regardless.
+    parameter bit    WINSCAN_FSM_EN       = 1'b1,
+    // Per-tap settle dwell (apb_clk cycles). The host winscan sleeps ~50 ms per
+    // tap so the IDELAYE2 reload + the cross-lane SYNC re-flood settle before
+    // SYNC_DIST is sampled; 50 ms @ 50 MHz apb_clk ≈ 2.5 M cycles. Generous by
+    // design — this dwell is the key correctness knob (too short and a lane is
+    // sampled mid-reload / before SYNC re-floods, picking a false centre). In
+    // simulation the IDELAY is passthrough and SYNC floods every beat, so the
+    // TB shrinks it via the `tb_winscan_dwell_short_q` hierarchical hook (same
+    // pattern as the calibrator's tb_early_exit_force_q) — see the FSM block.
+    parameter int    WINSCAN_DWELL        = 2_500_000
 ) (
 
     // ── Clocks and Resets ────────────────────────────────────────────────
@@ -1098,6 +1119,33 @@ module axi_chiplet_controller #(
     wire       train_fail_irq_w;
     wire       local_training_mode_set_w, local_training_mode_clr_w;
     wire       local_swreset_pulse_w;
+
+`ifdef TIDELINK_PHY_V2
+    // ── Autonomous on-chip IDELAY WINSCAN FSM forward decls (2026-06-29) ──────
+    // Driven by the winscan FSM block (placed after the FC handoff sequencer,
+    // where all its inputs are in scope). Declared here so the PHY-consumption
+    // mux (swi_phase_offset_in / .lsb_i / .swi_sync_force_always_in) and the FC
+    // handoff arm-gate, both upstream of the FSM block, can reference them.
+    //   ws_phase_offset_r : per-lane coarse nibble the FSM drives while it owns
+    //                       the taps (lane L nibble at [4L+:4]); = swi_phase_
+    //                       offset_r layout. OR-merged with cal_phase_offset_w
+    //                       exactly as the host-written reg is.
+    //   ws_phase_lsb_r    : per-lane tap LSB the FSM drives (lane L at bit L).
+    //   winscan_owns_taps : 1 while the FSM is actively sweeping/holding taps —
+    //                       mux selects the FSM values over the APB regs. 0 when
+    //                       dormant => APB/host regs pass through bit-identically.
+    //   winscan_force_sync: 1 across the scan — OR'd into the PHY SYNC controls
+    //                       (force_always + insert_en + robust_detect), the on-
+    //                       chip equivalent of the host's R8=0x1C; dropped at
+    //                       FINALIZE (the R8=0x14 idle-gate so reanchored latches).
+    //   winscan_done      : 1 once the scan + finalize completed for this nego
+    //                       episode — gates the FC data-mode handoff.
+    reg [31:0] ws_phase_offset_r;
+    reg [7:0]  ws_phase_lsb_r;
+    reg        winscan_owns_taps;
+    reg        winscan_force_sync;
+    reg        winscan_done;
+`endif
 
     // =====================================================================
     // §9 REWIRE (integration plan step 3/4): SWI_LANE_STATUS inputs come
@@ -2870,7 +2918,33 @@ module axi_chiplet_controller #(
     // FC handoff arm condition: autonomous path only (nego_en) and the role
     // must already be locked (link is up, lanes locked). On the SW-role_lock
     // path nego_en=0 ⇒ never arms.
+    //
+    // AUTONOMOUS WINSCAN ORDERING (2026-06-29): the on-chip winscan FSM must
+    // run BEFORE the FC handoff (SYNC-detect → winscan → reanchored=1 → handoff
+    // → FCSM=4), exactly as the host recipe sequences winscan() then the 0x208
+    // bootstrap. The training-mode falling edge is a 1-cycle pulse, and the
+    // winscan takes many cycles (per-lane tap sweep), so a bare AND of the fall
+    // with winscan_done would miss the arm. Instead LATCH the fall into a sticky
+    // "handoff pending" flag, then release the arm the cycle winscan_done is
+    // observed high. The winscan FSM itself is kicked off the SAME falling edge
+    // (see the winscan FSM block below), so by construction the arm waits out
+    // the scan. When WINSCAN_FSM_EN=0 / V1 the gate degenerates to the original
+    // (winscan_done tied 1), so the handoff fires on the fall as before.
+`ifdef TIDELINK_PHY_V2
+    reg  fch_pending_r;
+    wire winscan_gate = WINSCAN_FSM_EN ? winscan_done : 1'b1;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            fch_pending_r <= 1'b0;
+        else if (nego_en & role_locked & swi_training_mode_fall)
+            fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall
+        else if (fch_pending_r & winscan_gate)
+            fch_pending_r <= 1'b0;          // consumed once the arm fires
+    end
+    wire fch_arm = fch_pending_r & winscan_gate & nego_en & role_locked;
+`else
     wire fch_arm = nego_en & role_locked & swi_training_mode_fall;
+`endif
 
     // ── FC data-mode handoff sequencer state machine (apb_clk domain) ──────
     // Replicates the SW recipe's three 0x208 writes
@@ -2959,6 +3033,243 @@ module axi_chiplet_controller #(
             endcase
         end
     end
+
+`ifdef TIDELINK_PHY_V2
+    // =====================================================================
+    // AUTONOMOUS ON-CHIP IDELAY WINSCAN FSM (2026-06-29)
+    //
+    // The last autonomy layer. On silicon the cross-lane deskew `reanchored`
+    // latch (deps/tidelink-phy/rtl/tidelink_lane_deskew.sv, SYNC_REANCHOR_EN=1
+    // build) needs all ACTIVE lanes to capture a clean SYNC slice
+    // (all_sync_seen). On a marginal eye each active lane has a per-lane
+    // optimum RX IDELAY tap; off that tap the lane's SYNC slice carries enough
+    // bit errors that sync_hit (Hamming <= SYNC_REANCHOR_TOL=5) never fires,
+    // sync_seen_vec stays sparse, reanchored=0, FCSM wedges at 1.
+    //
+    // The host fixes this with a SOFTWARE winscan loop (fpga/hw_regression/
+    // td_v2_hwlib.sh winscan(), ~lines 113-139): per active lane it sweeps the
+    // 32 IDELAY taps, samples the per-lane SYNC Hamming distance (SoC 0x21AC,
+    // min over 5 reads), and writes the ARGMIN-distance tap. The autoneg path
+    // had NO equivalent — so reanchored never latched autonomously.
+    //
+    // This FSM REPLICATES that host loop on-chip, byte-for-byte in intent:
+    //   * force SYNC across the scan  (host R8=0x1C: insert_en+force_always+
+    //     robust — driven via winscan_force_sync OR'd into the PHY ports above);
+    //   * for each active lane L (swi_sync_lane_mask_r bit set): tap=0..31,
+    //     drive ws_phase_offset_r[4L+:4]=tap>>1, ws_phase_lsb_r[L]=tap&1,
+    //     DWELL (WINSCAN_DWELL apb_clk cycles — generous; the IDELAYE2 reload +
+    //     SYNC re-flood settle, see the param), sample the lane's CDC'd 5-bit
+    //     SYNC distance sync_obs_dist_vec_1[5L+:5] min-over-N, track the min;
+    //   * write the argmin tap for the lane;
+    //   * after the last lane drop winscan_force_sync (host R8=0x14, idle-gated)
+    //     so the deskew reanchor latches in the idle gap, settle, raise
+    //     winscan_done → the FC handoff (gated above) then walks to FCSM=4.
+    //
+    // GATING / additivity: the FSM only RUNS / owns the taps when ARMED via the
+    // autonomous nego path (WINSCAN_FSM_EN & nego_en & role_locked). On the
+    // proven SW-role_lock + host-winscan path nego_en=0 ⇒ winscan_owns_taps and
+    // winscan_force_sync stay 0, the tap regs hold their APB-written values, and
+    // the SYNC controls keep their strap values — the SW data regression and the
+    // host winscan() are UNAFFECTED (bit-identical datapath).
+    // =====================================================================
+    localparam [3:0] WS_IDLE            = 4'd0;  // dormant; wait for the arm kick
+    localparam [3:0] WS_ARM             = 4'd1;  // force SYNC, seed taps
+    localparam [3:0] WS_NEXT_LANE_ENTER = 4'd2;  // per-lane entry / mask skip
+    localparam [3:0] WS_SETTLE          = 4'd3;  // dwell at the current tap
+    localparam [3:0] WS_SAMPLE          = 4'd4;  // N min-over samples of SYNC_DIST
+    localparam [3:0] WS_NEXT_TAP        = 4'd5;  // argmin, advance tap
+    localparam [3:0] WS_PICK            = 4'd6;  // write best tap for the lane
+    localparam [3:0] WS_FINALIZE        = 4'd7;  // drop force-SYNC, settle reanchor
+    localparam [3:0] WS_DONE            = 4'd8;  // winscan_done held; per-episode
+
+    localparam int WINSCAN_NSAMP   = 5;          // host min-over-5
+    localparam int WINSCAN_FIN_WAIT = 4096;      // reanchor idle-gate settle
+    // Sim dwell shrink (TB-forced, same idiom as the calibrator's
+    // tb_early_exit_force_q). Default 0 = use the generous silicon WINSCAN_DWELL.
+    reg tb_winscan_dwell_short_q = 1'b0;
+    localparam int WINSCAN_DWELL_SIM = 32;       // sim: IDELAY passthrough, SYNC
+                                                 //      floods every beat
+    // Dwell counter must hold the larger of the two dwell choices.
+    localparam int WS_DW_MAX = (WINSCAN_DWELL > WINSCAN_DWELL_SIM)
+                                 ? WINSCAN_DWELL : WINSCAN_DWELL_SIM;
+    localparam int WS_DW_W   = $clog2(WS_DW_MAX + 1);
+
+    reg [3:0]          ws_state_r;
+    reg [3:0]          ws_lane_r;        // current lane index 0..7 (then 8 = end)
+    reg [5:0]          ws_tap_r;         // current tap 0..31 (6b for the ==32 test)
+    reg [2:0]          ws_nsamp_r;       // sample countdown
+    reg [4:0]          ws_dist_min_r;    // min-over-N distance at this tap
+    reg [4:0]          ws_best_dist_r;   // best (lowest) distance for this lane
+    reg [5:0]          ws_best_tap_r;    // argmin tap for this lane
+    reg [WS_DW_W-1:0]  ws_dwell_r;       // dwell countdown
+    reg                ws_kicked_q;      // sticky: armed for this nego episode
+
+    wire [WS_DW_W-1:0] ws_dwell_load =
+        tb_winscan_dwell_short_q ? WINSCAN_DWELL_SIM[WS_DW_W-1:0]
+                                 : WINSCAN_DWELL[WS_DW_W-1:0];
+
+    // Arm kick: the autoneg training-mode falling edge on the autonomous path
+    // (= post role-lock + cal-done + lane-lock = SYNC-detect-capable), the SAME
+    // event that latches fch_pending_r — so the handoff waits out the scan.
+    wire ws_arm_kick = WINSCAN_FSM_EN & nego_en & role_locked &
+                       swi_training_mode_fall & ~ws_kicked_q;
+
+    // The lane currently selected for the SYNC_DIST observation. Mirror it onto
+    // swi_dist_lane_sel_r's read path is unnecessary — the FSM reads the full
+    // CDC'd vector directly (sync_obs_dist_vec_1), exactly the same 5-bit slice
+    // the host gets via the 0x21B0/0x21AC select+read.
+    wire [4:0] ws_lane_dist = sync_obs_dist_vec_1[5*ws_lane_r[2:0] +: 5];
+    // Active-lane test: scan a lane only if its mask bit is set (the 0xe4 set on
+    // silicon; default 0xFF in sim → all 8 scanned). Matches the host's
+    // for-L-in-active-set loop.
+    wire ws_lane_active = swi_sync_lane_mask_r[ws_lane_r[2:0]];
+
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_state_r        <= WS_IDLE;
+            ws_lane_r         <= 4'd0;
+            ws_tap_r          <= 6'd0;
+            ws_nsamp_r        <= 3'd0;
+            ws_dist_min_r     <= 5'd31;
+            ws_best_dist_r    <= 5'd31;
+            ws_best_tap_r     <= 6'd0;
+            ws_dwell_r        <= '0;
+            ws_kicked_q       <= 1'b0;
+            ws_phase_offset_r <= 32'h0;
+            ws_phase_lsb_r    <= 8'h0;
+            winscan_owns_taps <= 1'b0;
+            winscan_force_sync<= 1'b0;
+            winscan_done      <= 1'b0;
+        end else begin
+            // Re-arm bookkeeping: a fresh training episode (a new rising edge)
+            // re-allows one run. ws_kicked_q gates one scan per episode.
+            if (swi_training_mode_rise)
+                ws_kicked_q <= 1'b0;
+
+            case (ws_state_r)
+                // -------------------------------------------------------------
+                WS_IDLE: begin
+                    // Dormant: APB/host owns the taps, SYNC at its strap value.
+                    winscan_owns_taps  <= 1'b0;
+                    winscan_force_sync <= 1'b0;
+                    if (ws_arm_kick) begin
+                        ws_kicked_q  <= 1'b1;
+                        winscan_done <= 1'b0;     // fresh episode
+                        ws_state_r   <= WS_ARM;
+                    end
+                end
+                // -------------------------------------------------------------
+                WS_ARM: begin
+                    // Force SYNC (host R8=0x1C) + take ownership of the taps.
+                    // Seed the override from the current host/APB regs so any
+                    // lane not (yet) scanned keeps a sane tap. Start at lane 0.
+                    winscan_force_sync <= 1'b1;
+                    winscan_owns_taps  <= 1'b1;
+                    ws_phase_offset_r  <= swi_phase_offset_r;
+                    ws_phase_lsb_r     <= swi_phase_lsb_r;
+                    ws_lane_r          <= 4'd0;
+                    ws_state_r         <= WS_NEXT_LANE_ENTER;
+                end
+                // -------------------------------------------------------------
+                WS_NEXT_LANE_ENTER: begin
+                    // Per-lane entry: if the lane is active (mask bit set) start
+                    // its tap-0 scan; otherwise skip it (leave its tap as seeded).
+                    // ws_lane_active reads the mask bit for the current lane.
+                    if (ws_lane_r > 4'd7) begin
+                        ws_state_r <= WS_FINALIZE;
+                        ws_dwell_r <= WINSCAN_FIN_WAIT[WS_DW_W-1:0];
+                    end else if (!ws_lane_active) begin
+                        ws_lane_r  <= ws_lane_r + 4'd1;     // skip masked lane
+                    end else begin
+                        ws_tap_r       <= 6'd0;
+                        ws_best_dist_r <= 5'd31;
+                        ws_best_tap_r  <= 6'd0;
+                        // Drive lane L, tap 0 (nibble 0, lsb 0).
+                        ws_phase_offset_r[4*ws_lane_r[2:0] +: 4] <= 4'd0;
+                        ws_phase_lsb_r[ws_lane_r[2:0]]           <= 1'b0;
+                        ws_dwell_r     <= ws_dwell_load;
+                        ws_state_r     <= WS_SETTLE;
+                    end
+                end
+                // -------------------------------------------------------------
+                WS_SETTLE: begin
+                    // Dwell at the current tap (IDELAYE2 reload + SYNC re-flood).
+                    if (ws_dwell_r != '0) begin
+                        ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
+                    end else begin
+                        ws_dist_min_r <= 5'd31;          // seed min-over-N
+                        ws_nsamp_r    <= WINSCAN_NSAMP[2:0] - 3'd1;
+                        ws_state_r    <= WS_SAMPLE;
+                    end
+                end
+                // -------------------------------------------------------------
+                WS_SAMPLE: begin
+                    // min-over-N samples of the selected lane's SYNC distance.
+                    if (ws_lane_dist < ws_dist_min_r)
+                        ws_dist_min_r <= ws_lane_dist;
+                    if (ws_nsamp_r != 3'd0)
+                        ws_nsamp_r <= ws_nsamp_r - 3'd1;
+                    else
+                        ws_state_r <= WS_NEXT_TAP;
+                end
+                // -------------------------------------------------------------
+                WS_NEXT_TAP: begin
+                    // Argmin (strict < keeps the earlier tap on a tie, as the
+                    // host does), then advance the tap or finish the lane.
+                    if (ws_dist_min_r < ws_best_dist_r) begin
+                        ws_best_dist_r <= ws_dist_min_r;
+                        ws_best_tap_r  <= ws_tap_r;
+                    end
+                    if (ws_tap_r == 6'd31) begin
+                        ws_state_r <= WS_PICK;
+                    end else begin
+                        ws_tap_r <= ws_tap_r + 6'd1;
+                        // Drive the NEXT tap into the selected lane's slice.
+                        ws_phase_offset_r[4*ws_lane_r[2:0] +: 4] <= (ws_tap_r + 6'd1) >> 1;
+                        ws_phase_lsb_r[ws_lane_r[2:0]]           <= ws_tap_r[0] ^ 1'b1;
+                        ws_dwell_r <= ws_dwell_load;
+                        ws_state_r <= WS_SETTLE;
+                    end
+                end
+                // -------------------------------------------------------------
+                WS_PICK: begin
+                    // Commit the argmin tap for this lane (host settap(L,best)).
+                    ws_phase_offset_r[4*ws_lane_r[2:0] +: 4] <= ws_best_tap_r[4:1];
+                    ws_phase_lsb_r[ws_lane_r[2:0]]           <= ws_best_tap_r[0];
+                    ws_lane_r  <= ws_lane_r + 4'd1;
+                    ws_state_r <= WS_NEXT_LANE_ENTER;
+                end
+                // -------------------------------------------------------------
+                WS_FINALIZE: begin
+                    // Drop force-SYNC (host R8=0x14 idle-gated) so the deskew
+                    // reanchor latches in the idle gap. KEEP owning the taps (the
+                    // picked per-lane centres stay applied). Settle, then done.
+                    winscan_force_sync <= 1'b0;
+                    if (ws_dwell_r != '0) begin
+                        ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
+                    end else begin
+                        winscan_done <= 1'b1;
+                        ws_state_r   <= WS_DONE;
+                    end
+                end
+                // -------------------------------------------------------------
+                WS_DONE: begin
+                    // Hold the picked taps + winscan_done for the episode. A new
+                    // training episode (rise→fall) re-kicks via ws_kicked_q.
+                    winscan_owns_taps  <= 1'b1;
+                    winscan_force_sync <= 1'b0;
+                    winscan_done       <= 1'b1;
+                    if (ws_arm_kick) begin
+                        ws_kicked_q  <= 1'b1;
+                        winscan_done <= 1'b0;
+                        ws_state_r   <= WS_ARM;
+                    end
+                end
+                default: ws_state_r <= WS_IDLE;
+            endcase
+        end
+    end
+`endif
 
     // Bug N14b widening (2026-06-02): the 127-cycle apb_clk pulse below
     // crosses into the rx_link_clk domain at the calibrator's swreset
@@ -3276,7 +3587,21 @@ module axi_chiplet_controller #(
     // swi_bit_slip_w (both sides zero at boot → the per-lane OR-merge
     // inside WavD2DGpio falls back to the global APB phase, so the
     // pre-§9.7 single-global-phase behaviour is bit-exact preserved).
+`ifdef TIDELINK_PHY_V2
+    // AUTONOMOUS WINSCAN tap override (2026-06-29): when the on-chip winscan FSM
+    // owns the taps (autonomous nego path only — winscan_owns_taps is 0 on the
+    // SW/host path so this is bit-identical there), mux the FSM's per-lane
+    // nibble in place of the APB-written swi_phase_offset_r. The cal_phase_
+    // offset_w OR-merge is PRESERVED so the effective tap matches the host
+    // winscan exactly (host RMWs swi_phase_offset_r, which is likewise OR'd
+    // with the settled calibrator phase). winscan_owns_taps=0 => identical to
+    // the historical cal | swi_phase_offset_r.
+    wire [31:0] phase_offset_sel = winscan_owns_taps ? ws_phase_offset_r
+                                                     : swi_phase_offset_r;
+    assign      swi_phase_offset_w  = cal_phase_offset_w  | phase_offset_sel;
+`else
     assign      swi_phase_offset_w  = cal_phase_offset_w  | swi_phase_offset_r;
+`endif
     assign      swi_training_mode_w = cal_training_mode_w | swi_training_mode_r;
 
     // =====================================================================
@@ -3297,6 +3622,14 @@ module axi_chiplet_controller #(
     // no Xilinx primitive referenced. The Wlink instance below consumes
     // pad_rx_dly instead of pad_rx — identical behaviour when disabled.
     wire [7:0] pad_rx_dly;
+    // AUTONOMOUS WINSCAN tap-LSB override (2026-06-29): mux the FSM's per-lane
+    // LSB while the winscan owns the taps; bit-identical (= swi_phase_lsb_r)
+    // when dormant and in V1 (where the FSM is absent and ws_* don't exist).
+`ifdef TIDELINK_PHY_V2
+    wire [7:0] phase_lsb_eff = winscan_owns_taps ? ws_phase_lsb_r : swi_phase_lsb_r;
+`else
+    wire [7:0] phase_lsb_eff = swi_phase_lsb_r;
+`endif
     tidelink_idelay_rx #(
         .USE_IDELAY (USE_IDELAY),
         .NUM_LANES  (8),
@@ -3312,7 +3645,7 @@ module axi_chiplet_controller #(
         // reaches odd values + the upper half (0..31). swi_phase_lsb_r is
         // declared in BOTH builds; reset 0 => even-only tap (bit-identical) and
         // in V1 it has no write path so it stays 0 forever.
-        .lsb_i          (swi_phase_lsb_r),
+        .lsb_i          (phase_lsb_eff),
         .pad_rx_i       (pad_rx),
         .pad_rx_o       (pad_rx_dly)
     );
@@ -3532,13 +3865,19 @@ module axi_chiplet_controller #(
         // Region 8 slot 0 bit[2] SWI_SYNC_INSERT_EN (MMIO 0x4403_2100). When 0
         // the PHY SYNC inserter is a pure passthrough so the TX datapath is
         // bit-identical to today. No calibrator OR-merge — pure SW strap.
-        .swi_sync_insert_en_in      (swi_sync_insert_en_r),
+        // AUTONOMOUS WINSCAN (2026-06-29): OR winscan_force_sync into the three
+        // SYNC controls so the on-chip scan replicates the host's R8=0x1C
+        // (insert_en + force_always + robust_detect all ON while scanning); the
+        // FSM drops winscan_force_sync at FINALIZE = the host's R8=0x14
+        // (force_always back to idle-gated) so the deskew `reanchored` latch can
+        // fire. winscan_force_sync=0 when the FSM is dormant => bit-identical.
+        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync),
         // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
         // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
         // 0 the SYNC beacon keeps its idle-gated production behaviour
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
-        .swi_sync_force_always_in   (swi_sync_force_always_r),
+        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync),
         // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
         // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
@@ -3547,7 +3886,7 @@ module axi_chiplet_controller #(
         // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17). SoC 0x44032128
         // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
         .swi_sync_tol_in            (swi_sync_tol_r),
-        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r),
+        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

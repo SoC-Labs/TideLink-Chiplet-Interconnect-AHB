@@ -1709,6 +1709,98 @@ module axi_chiplet_controller #(
     reg  [31:0]     wl_apb_pwdata;
     // wl_apb_prdata, wl_apb_pready, wl_apb_pslverr declared above (before bridge)
 
+    // =====================================================================
+    // FC data-mode handoff sequencer (Phase 7b — autonomous bring-up).
+    //
+    // PROBLEM (bridge1 silicon 2026-06-29): the autonomous I²C bring-up does
+    // role-lock + cal autonomously, but then STALLS at FCSM=SEND_CR (cr=0,
+    // crack=0) and never reaches data mode. Root cause: the FCSM's data-mode
+    // gate is `swi_enable` (Wlink reg 0x208 bit[0], driven through the
+    // WavDemetReset 2-FF sync into io_tx_clk). swi_enable defaults HIGH, so
+    // the FCSM leaves reset and enters SEND_CR the instant wlink_por_reset
+    // deasserts (= role_locked rises) — which is DURING training, while
+    // training_mode=1 and the lanes have not yet locked. It emits CR against
+    // training traffic, the peer never returns CR/CRACK, and it wedges in
+    // SEND_CR. Nothing re-kicks the LL framer once training completes.
+    //
+    // The MANUAL recipe fixes this with the LL swreset bootstrap on 0x208:
+    //   0x00027f08 (swi_swreset=1) → 0x00027f00 (swi_swreset=0) →
+    //   0x00027f07 (swi_enable=1, lltx_enable=1, llrx_enable=1, swreset=0).
+    // The swreset pulse re-resets the LL framer AFTER the lanes have locked
+    // and training has dropped, so the FCSM restarts the CR exchange against
+    // a clean data path and walks to data mode (cr=1 crack=1). The "SYNC-off
+    // R8" step in the manual recipe is, on this RTL, the training_mode=0 drop
+    // — already performed by the autoneg FSM's ST_TRAIN_EXIT
+    // (local_training_mode_clr → swi_training_mode_r=0).
+    //
+    // FIX: replicate the manual 0x208 bootstrap autonomously. On the FALLING
+    // edge of swi_training_mode_r (training just finished — fires symmetrically
+    // on master via local_training_mode_clr AND on slave via the I²C-driven
+    // APB clear), gated by `nego_en & role_locked` (autonomous path only),
+    // inject the three 0x208 writes onto the wl_apb_* mux as synthetic APB
+    // transfers. This is the established CDC pattern: the writes land in the
+    // Wlink apb_clk-domain swi_* registers exactly as the SW path's writes
+    // would, and the swreset crosses to the link domain via Wlink's own
+    // WavResetSync (tx/rx_link_clk_reset_wrs) — no new synchroniser needed.
+    //
+    // SAFETY / additivity:
+    //   * Gated on nego_en (= nego_cfg_reg[0]). On the proven SW-role_lock
+    //     path (BYPASS_AUTONEG=1, manual silicon recipe with SW role-lock)
+    //     nego_cfg_reg=0 ⇒ nego_en=0 ⇒ this sequencer is permanently dormant.
+    //     The SW path issues its own 0x208 writes unaffected.
+    //   * One-shot per training episode (armed by the falling edge, disarmed
+    //     when the burst completes); a later manual/SW recal+train cycle
+    //     re-arms it via the next falling edge.
+    //   * The injected writes carry swi_swreset=1 in the first step. The
+    //     Tier-2 hardening shim in tidelink_top.sv (AND-masks 0x208 bit[3] to
+    //     0 on the EXTERNAL apb_pwdata path) is UPSTREAM of this module's
+    //     wl_apb_pwdata mux, so it does NOT touch these internally-generated
+    //     writes — the swreset pulse reaches Wlink intact, which is exactly
+    //     what the handoff needs (the shim's intent was to block buggy SW from
+    //     wedging axi2wl; the LL framer swreset here is benign and required).
+    // =====================================================================
+    localparam [31:0] FCH_LL_SWRESET_ON  = 32'h0002_7f08; // swi_swreset=1
+    localparam [31:0] FCH_LL_SWRESET_OFF = 32'h0002_7f00; // swi_swreset=0
+    localparam [31:0] FCH_LL_ENABLE      = 32'h0002_7f07; // swi/lltx/llrx enable
+    localparam [12:0] FCH_LL_CTRL_ADDR   = 13'h0208;      // Wlink LL ctrl reg
+
+    // Inter-write settle gap (apb_clk cycles). Two distinct dwells:
+    //   * FCH_SWRESET_DWELL — how long swi_swreset is held HIGH (the gap that
+    //     follows the SWRESET_ON write). The two dies trigger their handoffs a
+    //     few µs apart (the slave on the master's I²C training-clear, the
+    //     master on its own ST_TRAIN_EXIT), so a SHORT swreset pulse would let
+    //     one die's framer reset, release, and walk past the CR/CRACK exchange
+    //     before the peer's framer has even reset — leaving the link half-up
+    //     (slave reaches data, master stuck at CR-seen with no inbound CRACK,
+    //     mirroring the documented S→M Bug-A signature). Holding swreset HIGH
+    //     for a wide window (≈82 µs at 50 MHz apb_clk) makes the two dies'
+    //     reset-asserted windows OVERLAP despite the trigger skew, so both
+    //     framers leave reset within the same CR/CRACK epoch — exactly the
+    //     overlap the SW recipe gets for free by writing both 0x208s in
+    //     lockstep. Purely a bring-up dwell; no steady-state impact.
+    //   * FCH_GAP_CYCLES — the short settle between SWRESET_OFF and ENABLE
+    //     (mirrors the SW recipe's ~20-cycle gap).
+    localparam [11:0] FCH_SWRESET_DWELL  = 12'd4095;  // ≈82 µs @ 50 MHz
+    localparam [11:0] FCH_GAP_CYCLES      = 12'd20;
+
+    // Sequencer phases (per write): SETUP (psel, !penable) → ACCESS
+    // (psel, penable, wait pready) → GAP (settle). A 2-bit write-index
+    // (fch_widx_r) walks the three 0x208 payloads.
+    localparam [1:0] FCH_IDLE   = 2'd0;
+    localparam [1:0] FCH_SETUP  = 2'd1;
+    localparam [1:0] FCH_ACCESS = 2'd2;
+    localparam [1:0] FCH_GAP    = 2'd3;
+
+    localparam [1:0] FCH_N_WRITES = 2'd3;  // three 0x208 writes
+
+    reg [1:0]  fch_state_r;
+    reg [1:0]  fch_widx_r;      // which of the three writes (0,1,2)
+    reg [11:0] fch_gap_r;
+    reg [31:0] fch_wdata_r;     // current write payload
+    reg        fch_active_r;    // sequencer owns the wl_apb bus this cycle
+    reg        fch_penable_r;   // APB access-phase flag
+    reg        fch_done_r;      // sticky: this episode's burst completed
+
     // Slave mode: I2C path active when psel asserted
     wire slv_apb_active = slv_apb_psel && !role_is_master;
 
@@ -1720,7 +1812,20 @@ module axi_chiplet_controller #(
     wire slv_apb_to_wlink = slv_apb_active && !slv_apb_ctrl_hit;
 
     always_comb begin
-        if (role_is_master) begin
+        if (fch_active_r) begin
+            // FC data-mode handoff sequencer owns the Wlink APB bus. Highest
+            // priority — it only asserts during the brief autonomous 0x208
+            // bootstrap burst (nego_en path), and the external/I²C APB is
+            // idle at that point (post-training, pre-data). Drives a normal
+            // APB write: psel always, penable in the ACCESS phase.
+            wl_apb_psel    = 1'b1;
+            wl_apb_paddr   = FCH_LL_CTRL_ADDR;
+            wl_apb_penable = fch_penable_r;
+            wl_apb_pprot   = 3'b0;
+            wl_apb_pstrb   = 4'b1111;
+            wl_apb_pwrite  = 1'b1;
+            wl_apb_pwdata  = fch_wdata_r;
+        end else if (role_is_master) begin
             // Master mode: external APB direct to Wlink
             wl_apb_psel    = apb_psel;
             wl_apb_paddr   = apb_paddr;
@@ -1941,6 +2046,108 @@ module axi_chiplet_controller #(
     end
     wire swi_training_mode_rise = swi_training_mode_r & ~swi_training_mode_q;
 
+    // Falling edge of swi_training_mode — the trigger for the FC data-mode
+    // handoff sequencer (see the "FC data-mode handoff sequencer" block near
+    // the Wlink APB mux). Fires once per training episode on BOTH dies:
+    //   * master — when the autoneg FSM's ST_TRAIN_EXIT pulses
+    //     local_training_mode_clr (swi_training_mode_r 1→0);
+    //   * slave  — when the master's I²C-write of the slave's
+    //     SWI_TRAINING_MODE=0 lands via the AXIL→APB bridge (Bug N2 path).
+    wire swi_training_mode_fall = ~swi_training_mode_r & swi_training_mode_q;
+
+    // FC handoff arm condition: autonomous path only (nego_en) and the role
+    // must already be locked (link is up, lanes locked). On the SW-role_lock
+    // path nego_en=0 ⇒ never arms.
+    wire fch_arm = nego_en & role_locked & swi_training_mode_fall;
+
+    // ── FC data-mode handoff sequencer state machine (apb_clk domain) ──────
+    // Replicates the SW recipe's three 0x208 writes
+    // (SWRESET_ON → SWRESET_OFF → ENABLE) the first time training drops on
+    // the autonomous path. One-shot per training episode (fch_done_r). A
+    // subsequent recal+train cycle re-arms via the next falling edge (the
+    // arm path clears fch_done_r). Crosses to the link domain through
+    // Wlink's own WavResetSync on swi_swreset — no extra synchroniser here.
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            fch_state_r   <= FCH_IDLE;
+            fch_widx_r    <= 2'd0;
+            fch_gap_r     <= 12'd0;
+            fch_wdata_r   <= FCH_LL_SWRESET_ON;
+            fch_active_r  <= 1'b0;
+            fch_penable_r <= 1'b0;
+            fch_done_r    <= 1'b0;
+        end else begin
+            case (fch_state_r)
+                FCH_IDLE: begin
+                    fch_active_r  <= 1'b0;
+                    fch_penable_r <= 1'b0;
+                    // Arm on the training-mode falling edge (autonomous path),
+                    // once per episode. fch_arm re-arms after a fresh
+                    // recal+train cycle by clearing the sticky done flag.
+                    if (fch_arm && !fch_done_r) begin
+                        fch_widx_r   <= 2'd0;
+                        fch_wdata_r  <= FCH_LL_SWRESET_ON;
+                        fch_active_r <= 1'b1;
+                        fch_state_r  <= FCH_SETUP;
+                    end else if (fch_arm && fch_done_r) begin
+                        // New training episode just ended — allow a re-run.
+                        fch_done_r   <= 1'b0;
+                        fch_widx_r   <= 2'd0;
+                        fch_wdata_r  <= FCH_LL_SWRESET_ON;
+                        fch_active_r <= 1'b1;
+                        fch_state_r  <= FCH_SETUP;
+                    end
+                end
+
+                FCH_SETUP: begin
+                    // APB setup phase: psel=1, penable=0 (driven in the mux
+                    // from fch_active_r / fch_penable_r). Advance to access.
+                    fch_active_r  <= 1'b1;
+                    fch_penable_r <= 1'b1;
+                    fch_state_r   <= FCH_ACCESS;
+                end
+
+                FCH_ACCESS: begin
+                    // APB access phase: psel=1, penable=1; complete on pready.
+                    fch_active_r  <= 1'b1;
+                    fch_penable_r <= 1'b1;
+                    if (wl_apb_pready) begin
+                        fch_penable_r <= 1'b0;
+                        // Wide dwell after the SWRESET_ON write (widx 0) so the
+                        // swi_swreset HIGH window overlaps the peer die's;
+                        // short settle after SWRESET_OFF (widx 1).
+                        fch_gap_r     <= (fch_widx_r == 2'd0) ? FCH_SWRESET_DWELL
+                                                              : FCH_GAP_CYCLES;
+                        fch_state_r   <= FCH_GAP;
+                    end
+                end
+
+                FCH_GAP: begin
+                    // Inter-write settle gap. Hold the bus (active) but idle
+                    // (psel=1, penable=0) so no spurious transfer starts.
+                    fch_active_r  <= 1'b1;
+                    fch_penable_r <= 1'b0;
+                    if (fch_gap_r != 12'd0) begin
+                        fch_gap_r <= fch_gap_r - 12'd1;
+                    end else if (fch_widx_r == FCH_N_WRITES - 2'd1) begin
+                        // Final (ENABLE) write done — burst complete.
+                        fch_active_r <= 1'b0;
+                        fch_done_r   <= 1'b1;
+                        fch_state_r  <= FCH_IDLE;
+                    end else begin
+                        // Advance to the next 0x208 payload.
+                        fch_widx_r  <= fch_widx_r + 2'd1;
+                        fch_wdata_r <= (fch_widx_r == 2'd0) ? FCH_LL_SWRESET_OFF
+                                                            : FCH_LL_ENABLE;
+                        fch_state_r <= FCH_SETUP;
+                    end
+                end
+
+                default: fch_state_r <= FCH_IDLE;
+            endcase
+        end
+    end
+
     // Bug N14b widening (2026-06-02): the 127-cycle apb_clk pulse below
     // crosses into the rx_link_clk domain at the calibrator's swreset
     // input (line ~1881). On v1 ASIC silicon (apb_clk≈50 MHz,
@@ -1971,6 +2178,41 @@ module axi_chiplet_controller #(
             training_mode_swreset_hold_r <= training_mode_swreset_hold_r - 10'd1;
     end
     wire training_mode_set_swreset_w = (training_mode_swreset_hold_r != 10'd0);
+
+    // Phase 7b (2026-06-29): sticky "calibrator converged" latch, used to
+    // suppress the destructive ST_TRAIN_EXIT re-sweep (see u_calibrator
+    // .swreset below). Set once the calibrator reaches S_DONE (cal_state==4),
+    // 2-FF-synced from the rx_link_clk domain into apb_clk (slow-moving FSM
+    // state — same CDC treatment as the existing sync_lane_locked / sync_cal
+    // chains). We use S_DONE rather than all-lanes-locked because the
+    // calibrator can legitimately reach S_DONE via its validation path even
+    // when the lane_checker's live lane_locked has dropped (training pattern
+    // gone) — S_DONE is the authoritative "calibration complete" signal.
+    // It is a LATCH so the converged status survives the lane_checker /
+    // training-pattern teardown that precedes local_swreset_pulse_w.
+    // Cleared on a manual SW recal (swi_recal_r) or POR — so a deliberate
+    // re-cal always re-opens the re-sweep path.
+    localparam [3:0] CAL_S_DONE = 4'd4;
+    reg cal_done_state_meta_r, cal_done_state_sync_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            cal_done_state_meta_r <= 1'b0;
+            cal_done_state_sync_r <= 1'b0;
+        end else begin
+            cal_done_state_meta_r <= (cal_state_w == CAL_S_DONE);
+            cal_done_state_sync_r <= cal_done_state_meta_r;
+        end
+    end
+
+    reg cal_eye_converged_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            cal_eye_converged_r <= 1'b0;
+        else if (swi_recal_r)
+            cal_eye_converged_r <= 1'b0;   // manual re-cal re-arms the sweep
+        else if (cal_done_state_sync_r)
+            cal_eye_converged_r <= 1'b1;   // sticky: reached S_DONE at least once
+    end
 
     // Path B — Bug N4 HW-real fix (2026-05-30): reduce HOLD_CYCLES default.
     //
@@ -2018,7 +2260,35 @@ module axi_chiplet_controller #(
         // tidelink_top.sv (AND-mask on 0x208 bit[3]) does NOT see this signal
         // — exactly what we want for an autonomous bring-up. SWI_RECAL keeps
         // working in parallel for SW-driven manual recovery.
-        .swreset               (swi_recal_r | local_swreset_pulse_w),
+        // Phase 7b (2026-06-29): gate the ST_TRAIN_EXIT re-sweep on
+        // "eye NOT yet converged". The autoneg FSM pulses
+        // local_swreset_pulse_w at ST_TRAIN_EXIT to RE-ARM a calibrator that
+        // had NOT yet converged (the original G1 intent). But on the
+        // autonomous path the master's calibrator reliably reaches S_DONE
+        // with all lanes locked DURING training; firing local_swreset_pulse_w
+        // then RE-SWEEPS the converged calibrator AFTER training_mode has
+        // already dropped — so it sweeps against non-training traffic, finds
+        // no eye, and the master's RX never re-locks. That kills the inbound
+        // CR-ACK decode (master FCSM wedges at CR-seen, no S→M data) and is
+        // the exact "master cal=SWEEP, locked=0x00, crack=0" signature seen in
+        // the autonomous pair sim.
+        //
+        // Convergence indicator: cal_eye_converged_r — a STICKY latch set the
+        // moment the calibrator first reaches S_DONE (cal_state==4) during
+        // training. We do NOT use the live sync_lane_locked_1 (it drops once
+        // training_mode de-asserts, before local_swreset_pulse_w fires) nor
+        // sync_cal_done_1 (calibration_done is a transient pulse, Bug N14a —
+        // reads 0 in steady S_DONE). The latch reliably remembers "the eye
+        // converged", which is exactly the case where the EXIT re-sweep must
+        // be suppressed.
+        //
+        // Suppressing the EXIT re-sweep once the eye has converged preserves it
+        // through the FC data-mode handoff. swi_recal_r (manual SW recal) is
+        // untouched and also clears the latch, so a deliberate re-cal still
+        // re-arms the sweep; the never-converged re-arm case still fires
+        // exactly as before — purely additive.
+        .swreset               (swi_recal_r |
+                                (local_swreset_pulse_w & ~cal_eye_converged_r)),
         .lane_locked           (lane_locked_w),
         // tidelink-gpio-phy scoring (spec §7.1): the calibrator now uses a
         // continuous min-distance metric per dwell for eye-centre selection,

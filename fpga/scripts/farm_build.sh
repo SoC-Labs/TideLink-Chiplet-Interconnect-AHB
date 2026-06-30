@@ -99,6 +99,19 @@ build_env_prefix() {
     # Emitted verbatim into both the local make call and the remote bash.
     printf 'export ARM_IP_LIBRARY_PATH=%q CMSDK_DIR=%q CMSDK_FPGA_SRAM_V=%q; ' \
         "$ARM_IP_LIBRARY_PATH" "$CMSDK_DIR" "$CMSDK_FPGA_SRAM_V"
+    # TIDELINK_PHY_V2 (2026-06-30): MUST be forwarded to package_ip. This is the
+    # single knob fpga/filelist.tcl reads to select the V2 flist (the v2shims
+    # that materialise the controller WITH `define TIDELINK_PHY_V2). If it is
+    # NOT in the package_ip environment, filelist.tcl silently falls back to the
+    # V1 flist and packages a V1 IP — the controller compiles with the define
+    # UNDEFINED, so the entire `ifdef TIDELINK_PHY_V2 autonomous-winscan FSM is
+    # preprocessed out (0 cells) while fch_arm degenerates to the `else (the FC
+    # handoff still fires). Root cause of the 8705a99 byte-identical "FSM
+    # optimised out" build: build_design got the define at the per-target synth
+    # run, but package_ip (run earlier, here / in build_farm.sh) did NOT, so the
+    # packaged IP was already V1 and the FSM never existed to be synthesised.
+    [ -n "$TIDELINK_PHY_V2" ] && \
+        printf 'export TIDELINK_PHY_V2=%q; ' "$TIDELINK_PHY_V2"
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && \
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
     [ -n "$FPGA_USE_IDELAY" ] && \
@@ -119,6 +132,9 @@ if is_local; then
     export ARM_IP_LIBRARY_PATH CMSDK_DIR CMSDK_FPGA_SRAM_V
     # shellcheck disable=SC1091
     source "$TIDELINK_HOME/set_env.sh" >/dev/null 2>&1 || true
+    # TIDELINK_PHY_V2 reaches the per-target build_design synth run (the top-run
+    # -verilog_define injection in build_design.tcl). See build_env_prefix().
+    [ -n "$TIDELINK_PHY_V2" ] && export TIDELINK_PHY_V2
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && export FPGA_INSERT_DEBUG_CORE
     [ -n "$FPGA_USE_IDELAY" ] && export FPGA_USE_IDELAY
     if make -C "$FPGA_DIR" build_design \

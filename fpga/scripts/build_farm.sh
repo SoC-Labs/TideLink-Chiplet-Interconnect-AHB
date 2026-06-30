@@ -81,6 +81,12 @@ if [ "$ANY_LOCAL" -eq 1 ]; then
     export ARM_IP_LIBRARY_PATH="${ARM_IP_LIBRARY_PATH:-/research/AAA/ip_library}"
     export CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
     export CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
+    # TIDELINK_PHY_V2 (2026-06-30): forward to the SHARED package_ip so it
+    # packages the V2 IP (with the autonomous-winscan FSM). set_env.sh does NOT
+    # set this knob, so without an explicit export here filelist.tcl falls back
+    # to the V1 flist and the FSM is preprocessed out of the packaged IP — the
+    # 8705a99 "FSM optimised out / byte-identical bitstream" root cause.
+    [ -n "$TIDELINK_PHY_V2" ] && export TIDELINK_PHY_V2
     # shellcheck disable=SC1091
     source "$TIDELINK_HOME/set_env.sh" >/dev/null 2>&1 || true
     PKG_LOG="$LOG_DIR/package_ip.$STAMP.log"

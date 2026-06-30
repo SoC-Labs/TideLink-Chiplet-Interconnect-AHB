@@ -42,6 +42,29 @@ set _phy_v2 0
 if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
 set _flist_name [expr { $_phy_v2 ? "tidelink_fpga_v2.flist" : "tidelink_fpga.flist" }]
 
+# ── LOUD V1/V2 selection banner (2026-06-30) ─────────────────────────────────
+# The V1/V2 split is carried SOLELY by the TIDELINK_PHY_V2 env var. When this
+# file is sourced from package_tidelink_ip.tcl, that one var decides whether the
+# packaged IP contains the V2 RTL (deskew, autonomous-winscan FSM, V2 SYNC
+# ports) or silently degrades to V1. A missing/!=1 var during package_ip was the
+# 8705a99 root cause: the IP was packaged V1, so the `ifdef TIDELINK_PHY_V2
+# winscan FSM was preprocessed out (0 cells) and the bitstream came out
+# byte-identical to the prior build. Make the selection impossible to miss in
+# the package_ip / build_design logs so a silent V1 fallback is caught by eye.
+puts "============================================================"
+puts [format "  TIDELINK filelist: %s  (TIDELINK_PHY_V2=%s -> %s)" \
+        [expr {$_phy_v2 ? "V2 (PHY-v2 / autonomous-winscan FSM PRESENT)" \
+                        : "V1 (PHY-v1 / NO autonomous-winscan FSM)"}] \
+        [expr {[info exists ::env(TIDELINK_PHY_V2)] ? $::env(TIDELINK_PHY_V2) : "<unset>"}] \
+        $_flist_name]
+if { !$_phy_v2 } {
+    puts "  WARNING: V1 flist selected. If this is an IP-package step for a V2"
+    puts "           build, the autonomous-winscan FSM and all `ifdef"
+    puts "           TIDELINK_PHY_V2 RTL will be ABSENT from the packaged IP."
+    puts "           Export TIDELINK_PHY_V2=1 before 'make package_ip'."
+}
+puts "============================================================"
+
 ###-----------------------------------------------------------------------------
 ### V2 shim materialisation (Vivado-only; VCS consumes the shims directly).
 ###

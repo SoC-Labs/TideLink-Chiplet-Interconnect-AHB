@@ -40,12 +40,18 @@ from pair_v2_common import (
 )
 
 # Per-lane "true centre" tap the modelled eye minimises at (0..31). The active
-# lane set in the silicon recipe is {2,5,6,7} (mask 0xe4); in this sim the mask
-# defaults to 0xFF so all 8 lanes scan. Distinct optima per lane prove the FSM
-# tracks an independent argmin for each.
+# lane set in the silicon recipe is {2,5,6,7} (mask 0xe4). The autonomous arm
+# (_arm_winscan -> nego_en=1 + training rise) now drives the on-chip
+# SYNC-detect config (axi_chiplet_controller.sv "AUTONOMOUS SYNC-DETECT CONFIG
+# DRIVE"), which sets swi_sync_lane_mask_r=0xe4 on the training-run edge — so the
+# winscan scans exactly those four active lanes (the masked lanes keep their
+# seeded tap). Distinct optima per active lane prove the FSM tracks an
+# independent argmin for each. (Before the autonomous SYNC-detect drive existed,
+# the mask stayed at its 0xFF POR default and all 8 lanes scanned.)
 TAP_OPT = {0: 14, 1: 9, 2: 20, 3: 5, 4: 17, 5: 11, 6: 24, 7: 3}
 
-ACTIVE_LANES = list(range(8))   # mask 0xFF default in sim
+# Active set after the autonomous arm sets mask 0xe4 (lanes 2,5,6,7).
+ACTIVE_LANES = [2, 5, 6, 7]
 
 
 def _ctrl(dut, side):

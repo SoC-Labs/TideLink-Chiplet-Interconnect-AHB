@@ -1145,6 +1145,22 @@ module axi_chiplet_controller #(
     reg        winscan_owns_taps;
     reg        winscan_force_sync;
     reg        winscan_done;
+
+    // ── Autonomous SYNC-detect config drive shadows (2026-06-30) ──────────────
+    // The LAST autonomy layer: on the autonomous (nego_en) path the host's rcp
+    // SYNC-detect config (LANEMASK 0xe4, SYNCTOL tol=5, R8 SYNC_EN=0x1D) is never
+    // applied, so the on-chip winscan's SYNC-detect runs against the POR defaults
+    // (swi_sync_lane_mask_r=0xFF, swi_sync_tol_r=0, all SYNC bits 0). With
+    // lane_mask=0xFF the deskew `all_sync_seen = &(sync_seen_vec | ~lane_mask)`
+    // waits for ALL 8 lanes when only the 0xe4 set is active → reanchored never
+    // latches → FCSM wedges at 1. The drive below (in the Region-8/9 reg-write
+    // always_ff) replicates rcp's SYNC-detect config autonomously at training-RUN,
+    // then strips the SYNC-insert bits once the winscan/reanchor completes
+    // (mirroring the host's enter_data_mode R8=0x10 SYNC-off AFTER reanchor).
+    // Self-contained 1-cycle edge shadows so the drive needs no forward reference
+    // to swi_training_mode_rise / winscan_done's own edge (declared further down).
+    reg        sync_cfg_train_q;   // shadow of swi_training_mode_r for the RUN edge
+    reg        sync_cfg_wsdone_q;  // shadow of winscan_done   for the DONE  edge
 `endif
 
     // =====================================================================
@@ -1520,6 +1536,9 @@ module axi_chiplet_controller #(
             swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
             swi_eye_lane_sel_r       <= 3'h0;   // Task 3: eye-width lane sel, reset lane 0
             swi_dist_lane_sel_r      <= 3'h0;   // winscan: SYNC-dist lane sel, reset lane 0
+            // Autonomous SYNC-detect config drive edge shadows (2026-06-30).
+            sync_cfg_train_q         <= 1'b0;
+            sync_cfg_wsdone_q        <= 1'b0;
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1635,6 +1654,76 @@ module axi_chiplet_controller #(
                 swi_dist_lane_sel_r       <= ctrl_reg_wdata[2:0];
             if (regionD_write && (ctrl_reg_addr[2:0] == 3'h5))
                 swi_phase_lsb_r           <= ctrl_reg_wdata[7:0];
+
+            // ── AUTONOMOUS SYNC-DETECT CONFIG DRIVE (the LAST autonomy layer) ──
+            // (2026-06-30) Replicate the host rcp() SYNC-detect config on-chip on
+            // the autonomous (nego_en) path, so the on-chip winscan + cross-lane
+            // deskew reanchor have the SAME config the manual recipe writes before
+            // its winscan() — without which reanchored never latches on silicon
+            // (FCSM wedges at 1, cr=0).
+            //
+            // Mapping to the golden rcp() (fpga/hw_regression/td_v2_hwlib.sh):
+            //   rcp: R_SYNCTOL 0x44032128 = 0x5e4  -> swi_sync_lane_mask_r=0xe4
+            //                                          (Region-9 slot2 [7:0]) and
+            //                                          swi_sync_tol_r=5 ([12:8]).
+            //        The deskew `all_sync_seen = &(sync_seen_vec | ~lane_mask)`
+            //        and the live-SYNC obs both consume these. lane_mask=0xe4 is
+            //        THE fix (0xFF waits for 8 lanes, only 4 active).
+            //   rcp: R_R8 0x44032100 = 0x1D        -> SYNC_EN bits: insert_en (b2)
+            //                                          + force_always (b3) + robust
+            //                                          (b4). (b0 train / b1 recal
+            //                                          are owned by the FSM and the
+            //                                          calibrator — NOT touched.)
+            //   rcp: word-pin 0x44032104 = 0       -> already the POR default
+            //        (swi_word_pin_ovr_r=0, swi_word_pin_auto_dis_r=0 = AUTO), so
+            //        no drive needed; kept AUTO explicitly here for parity.
+            //
+            // SEQUENCING (the critical part):
+            //   * SYNC-ON  fires on the swi_training_mode_r RISING edge (training-
+            //     RUN, set by the autoneg FSM's ST_TRAIN_ENTER ack on the master
+            //     and by the master's I²C write of SWI_TRAINING_MODE=1 on the
+            //     slave — so a rising-edge trigger catches BOTH dies, exactly the
+            //     idiom the N3 calibrator-rearm uses). This is BEFORE the winscan
+            //     FSM and the FC handoff (both kicked on the training-mode FALLING
+            //     edge), so the SYNC-detect config is in place before the scan
+            //     needs it.
+            //   * SYNC-OFF strips insert_en/force_always/robust on the winscan_done
+            //     RISING edge — i.e. AFTER the winscan's WS_FINALIZE has dropped
+            //     winscan_force_sync and the deskew reanchor has latched in the
+            //     idle gap. This mirrors the host enter_data_mode()'s R8=0x10
+            //     (SYNC off) AFTER reanchored=1, so the framer runs clean packets
+            //     to completion. The SYNC-ON write (training-rise) ALWAYS precedes
+            //     this SYNC-OFF write (winscan_done-rise) in FSM time, so the
+            //     prompt's ordering invariant holds. lane_mask=0xe4 / tol=5 are
+            //     LEFT set across data mode (they are correct for the deskew and
+            //     benign for the datapath — only the SYNC-insert beacon must drop).
+            //
+            // ADDITIVITY: gated on nego_en & role_locked. On the proven SW-role_
+            // lock + host-winscan path nego_en=0 ⇒ this never fires and every
+            // swi_sync_* reg holds its POR default / host-written value — the SW
+            // data regression and the manual silicon recipe are bit-identical.
+            sync_cfg_train_q  <= swi_training_mode_r;
+            sync_cfg_wsdone_q <= winscan_done;
+            if (nego_en && role_locked) begin
+                // SYNC-ON at training-RUN (rising edge of swi_training_mode_r).
+                if (swi_training_mode_r && !sync_cfg_train_q) begin
+                    swi_sync_lane_mask_r     <= 8'hE4;  // rcp 0x2128[7:0]  — active-lane SYNC mask
+                    swi_sync_tol_r           <= 5'd5;   // rcp 0x2128[12:8] — Hamming tol=5
+                    swi_sync_insert_en_r     <= 1'b1;   // rcp R8 b2 — SYNC beacon on
+                    swi_sync_force_always_r  <= 1'b1;   // rcp R8 b3 — drop idle gate
+                    swi_sync_robust_detect_r <= 1'b1;   // rcp R8 b4 — robust re-hunt
+                    swi_word_pin_ovr_r       <= 4'h0;   // rcp 0x2104=0 — per-lane AUTO
+                    swi_word_pin_auto_dis_r  <= 1'b0;   //   (POR default; explicit)
+                end
+                // SYNC-OFF after the winscan/reanchor completes (winscan_done rise).
+                // = host enter_data_mode R8=0x10 (SYNC off) AFTER reanchored.
+                if (winscan_done && !sync_cfg_wsdone_q) begin
+                    swi_sync_insert_en_r     <= 1'b0;
+                    swi_sync_force_always_r  <= 1'b0;
+                    swi_sync_robust_detect_r <= 1'b0;
+                    // lane_mask=0xe4 / tol=5 intentionally retained for the deskew.
+                end
+            end
 `endif
         end
     end

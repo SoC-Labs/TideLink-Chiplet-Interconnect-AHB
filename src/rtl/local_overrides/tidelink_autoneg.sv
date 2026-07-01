@@ -126,6 +126,12 @@ module tidelink_autoneg #(
     input  wire  [7:0] local_swi_lane_locked_i,
     input  wire  [7:0] local_swi_lane_fault_i,
     input  wire        local_calibration_done_i,
+    // L4 training-exit-deadlock fix (2026-07-01): local calibrator "parked in
+    // S_HOLD" (from the deps calibrator's cal_in_hold_o, CDC-synced in the
+    // wrapper). S_HOLD is the LOCALLY-REACHABLE rendezvous point; cal_done is
+    // downstream of the bilateral training-mode clear, so gating the exit on
+    // cal_done is the circular deadlock this input breaks.
+    input  wire        local_cal_in_hold_i,
 
     // Local strobes — single-cycle pulses to the chiplet controller's
     // SWI_TRAINING_MODE register. The wrapper OR-merges these with the
@@ -328,6 +334,10 @@ module tidelink_autoneg #(
     reg [7:0]  peer_lane_locked_r,  peer_lane_locked_nxt;
     reg [7:0]  peer_lane_fault_r,   peer_lane_fault_nxt;
     reg        peer_cal_done_r,     peer_cal_done_nxt;
+    // L4 training-exit-deadlock fix (2026-07-01): PEER's cal_in_hold, captured
+    // from SWI_LANE_STATUS byte 3 (word bit [26], see axi_chiplet_controller.sv
+    // — REPURPOSED from is_long_pkt obs). The exit rendezvous is both-in-S_HOLD.
+    reg        peer_cal_in_hold_r,  peer_cal_in_hold_nxt;
     reg [7:0]  local_lane_fault_snapshot_r, local_lane_fault_snapshot_nxt;
     reg        train_ok_r,          train_ok_nxt;
     reg        train_fail_r,        train_fail_nxt;
@@ -342,6 +352,8 @@ module tidelink_autoneg #(
     reg        peer_lane_locked_capture_en;
     reg        peer_lane_fault_capture_en;
     reg        peer_cal_done_capture_en;
+    // L4: capture strobe for byte 3 (peer cal_in_hold at word bit [26]).
+    reg        peer_cal_in_hold_capture_en;
 
     // AXI-Lite sub-state
     // Bug N7/N8 silicon observability: mark_debug on the AXL sub-FSM regs.
@@ -584,6 +596,7 @@ module tidelink_autoneg #(
         peer_lane_locked_nxt          = peer_lane_locked_r;
         peer_lane_fault_nxt           = peer_lane_fault_r;
         peer_cal_done_nxt             = peer_cal_done_r;
+        peer_cal_in_hold_nxt          = peer_cal_in_hold_r;
         local_lane_fault_snapshot_nxt = local_lane_fault_snapshot_r;
         train_ok_nxt                  = train_ok_r;
         train_fail_nxt                = train_fail_r;
@@ -595,6 +608,7 @@ module tidelink_autoneg #(
         peer_lane_locked_capture_en   = 1'b0;
         peer_lane_fault_capture_en    = 1'b0;
         peer_cal_done_capture_en      = 1'b0;
+        peer_cal_in_hold_capture_en   = 1'b0;
 
         // Timeout decrement: active in all transient negotiation states
         // (ST_IDLE excluded; ST_NEGO_DONE / BYPASS / ERROR are terminal so
@@ -946,6 +960,7 @@ module tidelink_autoneg #(
                         peer_lane_locked_nxt     = 8'h00;     // clear capture
                         peer_lane_fault_nxt      = 8'h00;
                         peer_cal_done_nxt        = 1'b0;
+                        peer_cal_in_hold_nxt     = 1'b0;      // L4: clear capture
                         txn_step_nxt             = TXN_DATA;
                         state_nxt                = ST_TRAIN_ENTER;
                     end else begin
@@ -1080,19 +1095,40 @@ module tidelink_autoneg #(
                                         3'd0: peer_lane_locked_capture_en = 1'b1;
                                         3'd1: peer_lane_fault_capture_en  = 1'b1;
                                         3'd2: peer_cal_done_capture_en    = 1'b1;
-                                        default: ; // byte 3 is reserved padding
+                                        // L4 (2026-07-01): byte 3 = word[31:24]
+                                        // carries peer cal_in_hold at word bit
+                                        // [26] = byte-3 bit 2 (see controller).
+                                        3'd3: peer_cal_in_hold_capture_en = 1'b1;
+                                        default: ;
                                     endcase
                                     if (mask_byte_cnt_r == MASK_RD_DATA_BYTES - 3'd1) begin
                                         // Last byte just captured — evaluate
                                         // using already-captured peer_lane_*
-                                        // (bytes 0-2 were captured in earlier
-                                        // cycles, so their *_r values are
-                                        // already up-to-date). Byte 3 is
-                                        // reserved padding and not used.
-                                        if ((peer_lane_locked_r == 8'hFF) &&
-                                            peer_cal_done_r &&
-                                            (local_swi_lane_locked_i == 8'hFF) &&
-                                            local_calibration_done_i &&
+                                        // (bytes 0-2 captured in earlier cycles;
+                                        // byte 3 = peer cal_in_hold captured on
+                                        // the PREVIOUS poll iteration, so its *_r
+                                        // is one poll-cycle old — the poll loop
+                                        // re-reads every attempt, so the
+                                        // rendezvous settles within one extra
+                                        // iteration).
+                                        //
+                                        // L4 training-exit-deadlock fix
+                                        // (2026-07-01): rendezvous on BOTH dies
+                                        // PARKED IN S_HOLD (the reachable state),
+                                        // NOT on cal_done (which is DOWNSTREAM of
+                                        // the bilateral training-mode clear that
+                                        // ST_TRAIN_EXIT performs — the old
+                                        // circular deadlock). cal_in_hold local +
+                                        // peer replaces cal_done local + peer.
+                                        // Lane checks are now MASK-AWARE: with the
+                                        // reduced 4-lane mask (0xe4) lane_locked
+                                        // is 0xe4 ≠ 0xFF, so the old ==8'hFF checks
+                                        // never fired. "(locked | ~mask)==8'hFF" =
+                                        // "all ACTIVE lanes locked".
+                                        if (((peer_lane_locked_r      | ~peer_rx_lane_mask_r)  == 8'hFF) &&
+                                            peer_cal_in_hold_r &&
+                                            ((local_swi_lane_locked_i  | ~local_rx_lane_mask_i) == 8'hFF) &&
+                                            local_cal_in_hold_i &&
                                             (peer_lane_fault_r == 8'h00) &&
                                             (local_swi_lane_fault_i == 8'h00)) begin
                                             // Success → EXIT
@@ -1146,8 +1182,18 @@ module tidelink_autoneg #(
                                             // local_calibration_done_i term
                                             // from the bypass so this is
                                             // silicon-survivable.
-                                            if (!peer_cal_done_r &&
-                                                (local_swi_lane_locked_i == 8'hFF) &&
+                                            // L4 (2026-07-01): mask-aware lane
+                                            // check — with the 4-lane 0xe4 mask
+                                            // the old ==8'hFF hard-coded compare
+                                            // never fired, defeating this bypass
+                                            // (→ spurious ST_TRAIN_FAIL). Use
+                                            // "all ACTIVE lanes locked". Also gate
+                                            // on !peer_cal_in_hold_r (the peer is
+                                            // truly unresponsive — never parked)
+                                            // to keep the "peer never trained"
+                                            // intent.
+                                            if (!peer_cal_in_hold_r &&
+                                                ((local_swi_lane_locked_i | ~local_rx_lane_mask_i) == 8'hFF) &&
                                                 (local_swi_lane_fault_i == 8'h00)) begin
                                                 mask_byte_cnt_nxt      = 3'd0;
                                                 train_target_value_nxt = 1'b0;
@@ -1668,6 +1714,7 @@ module tidelink_autoneg #(
             peer_lane_locked_r          <= 8'h00;
             peer_lane_fault_r           <= 8'h00;
             peer_cal_done_r             <= 1'b0;
+            peer_cal_in_hold_r          <= 1'b0;   // L4 (2026-07-01)
             local_lane_fault_snapshot_r <= 8'h00;
             train_ok_r                  <= 1'b0;
             train_fail_r                <= 1'b0;
@@ -1712,6 +1759,13 @@ module tidelink_autoneg #(
                 peer_cal_done_r    <= axl_rdata_r[0];
             else
                 peer_cal_done_r    <= peer_cal_done_nxt;
+            // L4 (2026-07-01): byte 3 (word[31:24]) carries peer cal_in_hold at
+            // word bit [26] = byte-3 bit 2. axl_rdata_r[7:0] holds the popped
+            // byte, so bit 2 is the S_HOLD flag.
+            if (peer_cal_in_hold_capture_en)
+                peer_cal_in_hold_r <= axl_rdata_r[2];
+            else
+                peer_cal_in_hold_r <= peer_cal_in_hold_nxt;
             local_lane_fault_snapshot_r <= local_lane_fault_snapshot_nxt;
             train_ok_r                  <= train_ok_nxt;
             train_fail_r                <= train_fail_nxt;

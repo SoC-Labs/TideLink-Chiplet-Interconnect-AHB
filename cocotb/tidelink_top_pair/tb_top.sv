@@ -837,4 +837,22 @@ module tb_top #(
     end
     `endif
 
+    // ---- L4 training-exit-deadlock sim knob (2026-07-01) ---------------------
+    // Shrink the V2 calibrator's S_HOLD dwell so the *de-forced* autonomous
+    // training-exit test (test_31) is bounded WITHOUT bypassing any FSM state.
+    // Production HOLD_CYCLES = 8*128*64 = 65536 link-clk cycles (≫ sim budget).
+    // This is a pure TIMING knob (parameter override) — the calibrator still
+    // walks S_SWEEP → S_HOLD → (hold_ctr expiry) → S_VALIDATE → S_DONE exactly
+    // as on silicon; only the hold WIDTH shrinks. Guarded so the existing
+    // (bypass-forced) tests are byte-identical. DWELL is also trimmed so a full
+    // sweep (128 × DWELL) fits the poll budget.
+    `ifdef TB_TOP_SHORT_CAL_HOLD
+    defparam u_master.u_chiplet_controller.u_calibrator.HOLD_CYCLES  = `TB_TOP_SHORT_CAL_HOLD;
+    defparam u_slave.u_chiplet_controller.u_calibrator.HOLD_CYCLES   = `TB_TOP_SHORT_CAL_HOLD;
+    `endif
+    `ifdef TB_TOP_SHORT_CAL_DWELL
+    defparam u_master.u_chiplet_controller.u_calibrator.DWELL_CYCLES = `TB_TOP_SHORT_CAL_DWELL;
+    defparam u_slave.u_chiplet_controller.u_calibrator.DWELL_CYCLES  = `TB_TOP_SHORT_CAL_DWELL;
+    `endif
+
 endmodule

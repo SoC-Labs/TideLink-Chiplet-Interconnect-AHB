@@ -779,6 +779,11 @@ module axi_chiplet_controller #(
     wire        cal_calibration_done_w;
     wire [7:0]  cal_lane_fault_w;
     wire [3:0]  cal_state_w;
+    // L4 training-exit-deadlock fix (2026-07-01): "locally parked in S_HOLD"
+    // from the deps calibrator (rx_link_clk domain; CDC-synced to apb_clk as
+    // sync_cal_in_hold_1 before feeding the autoneg FSM). This is the
+    // rendezvous the autonomous training-exit uses (both dies in S_HOLD).
+    wire        cal_in_hold_w;
     // M7 (2026-06-05): calibrator auto-retry counter for silicon observability
     wire [15:0] cal_resweep_ctr_w;
     // EYE-WIDTH VISIBILITY (2026-06-17): per-lane-selected eye-width read from
@@ -1179,6 +1184,11 @@ module axi_chiplet_controller #(
     reg [7:0] sync_lane_locked_0, sync_lane_locked_1;
     reg [7:0] sync_lane_fault_0,  sync_lane_fault_1;
     reg       sync_cal_done_0,    sync_cal_done_1;
+    // L4 training-exit-deadlock fix (2026-07-01): 2-flop apb_clk sync of the
+    // calibrator's cal_in_hold_o (locally parked in S_HOLD). Fed to the
+    // autoneg FSM (local_cal_in_hold_i) and packed into SWI_LANE_STATUS so
+    // the PEER can read it over I2C.
+    reg       sync_cal_in_hold_0, sync_cal_in_hold_1;
 
     // SoC Labs credit-path observability — same 2-flop apb_clk sync
     // pattern. The FCSM/byte-align bits are slow-moving status (state
@@ -1305,6 +1315,8 @@ module axi_chiplet_controller #(
             sync_lane_fault_1  <= 8'h00;
             sync_cal_done_0    <= 1'b0;
             sync_cal_done_1    <= 1'b0;
+            sync_cal_in_hold_0 <= 1'b0;
+            sync_cal_in_hold_1 <= 1'b0;
             sync_obs_fcsm_state_0  <= 3'b0;  sync_obs_fcsm_state_1  <= 3'b0;
             sync_obs_cr_seen_0     <= 1'b0;  sync_obs_cr_seen_1     <= 1'b0;
             sync_obs_crack_seen_0  <= 1'b0;  sync_obs_crack_seen_1  <= 1'b0;
@@ -1371,6 +1383,8 @@ module axi_chiplet_controller #(
             sync_lane_fault_1  <= sync_lane_fault_0;
             sync_cal_done_0    <= cal_calibration_done_w;
             sync_cal_done_1    <= sync_cal_done_0;
+            sync_cal_in_hold_0 <= cal_in_hold_w;
+            sync_cal_in_hold_1 <= sync_cal_in_hold_0;
             // SoC Labs credit-path observability — 2-flop apb_clk sync.
             sync_obs_fcsm_state_0  <= obs_fcsm_state_w;
             sync_obs_fcsm_state_1  <= sync_obs_fcsm_state_0;
@@ -1977,7 +1991,7 @@ module axi_chiplet_controller #(
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
                                         sync_obs_pkt_crack_1,           // [28]    pkt_is_crack_pkt
                                         sync_obs_pkt_cr_1,              // [27]    pkt_is_cr_pkt
-                                        sync_obs_long_1,                // [26]    is_long_pkt
+                                        sync_cal_in_hold_1,             // [26]    L4 (2026-07-01): cal_in_hold (S_HOLD) — REPURPOSED from is_long_pkt so the PEER autoneg can rendezvous on both-in-S_HOLD over I2C. is_long_pkt obs is derivable (~is_short & valid) and hierarchically probeable; NOT consumed by any regression-gate test.
                                         sync_obs_short_1,               // [25]    is_short_pkt
                                         sync_obs_crack_seen_1,          // [24]    crack_pkt_seen_rx
                                         sync_obs_cr_seen_1,             // [23]    cr_pkt_seen_rx
@@ -2598,6 +2612,11 @@ module axi_chiplet_controller #(
         .local_swi_lane_locked_i   (sync_lane_locked_1),
         .local_swi_lane_fault_i    (sync_lane_fault_1),
         .local_calibration_done_i  (sync_cal_done_1),
+        // L4 training-exit-deadlock fix (2026-07-01): "locally parked in
+        // S_HOLD" — the reachable rendezvous the ST_TRAIN_POLL_PEER success
+        // predicate now waits on (instead of the downstream cal_done, which
+        // needs training=0 which needs this exit → the old deadlock).
+        .local_cal_in_hold_i       (sync_cal_in_hold_1),
         .local_training_mode_set   (local_training_mode_set_w),
         .local_training_mode_clr   (local_training_mode_clr_w),
         .local_swreset_pulse       (local_swreset_pulse_w),
@@ -3513,8 +3532,22 @@ module axi_chiplet_controller #(
         // latch; the not-yet-converged re-arm still fires as before. Works
         // alongside the calibrator's own calibrated_once_q credit-fix (which
         // masks the same re-arm downstream).
+        //
+        // L4 fix (2026-07-01): the cal_eye_converged_r latch arms TOO LATE — it
+        // only sets on S_DONE, but on the AUTONOMOUS path the autoneg fires the
+        // ST_TRAIN_EXIT re-sweep the instant the both-in-S_HOLD rendezvous
+        // succeeds, i.e. while the calibrator is still in S_HOLD/S_VALIDATE
+        // (BEFORE S_DONE). So the guard is 0 and the destructive pulse passes,
+        // kicking the master back to S_ARM to sweep against a peer that already
+        // dropped training → death spiral (de-forced test_31). Also mask on
+        // sync_cal_in_hold_1 = "locally PARKED" (S_HOLD|S_VALIDATE|S_DONE): by
+        // the time ST_TRAIN_EXIT fires, the rendezvous predicate has ALREADY
+        // proven the local die is parked with all active lanes locked, so a
+        // re-sweep is never wanted. A genuinely-unconverged die is NOT parked
+        // (cal_in_hold=0) so the legitimate "never-locked" re-arm still fires.
         .swreset                (swi_recal_r |
-                                 (local_swreset_pulse_w & ~cal_eye_converged_r)),
+                                 (local_swreset_pulse_w &
+                                  ~(cal_eye_converged_r | sync_cal_in_hold_1))),
         .lane_locked            (lane_locked_w),
         .lane_mask              (wlink_rx_lane_mask),
         .apb_bit_slip_override  (24'h0),
@@ -3550,7 +3583,11 @@ module axi_chiplet_controller #(
         .eye_score_best         (cal_eye_best_w),
         .eye_score_best_phase   (cal_eye_best_phase_w),
         .eye_score_best_slip    (cal_eye_best_slip_w),
-        .eye_score_lane_passed  (cal_eye_lane_passed_w)
+        .eye_score_lane_passed  (cal_eye_lane_passed_w),
+        // L4 training-exit-deadlock fix (2026-07-01): expose "locally parked
+        // in S_HOLD" so the autonomous autoneg FSM can rendezvous on both
+        // dies being parked (see cal_in_hold_w declaration).
+        .cal_in_hold_o          (cal_in_hold_w)
     );
     // Retired V1 surfaces still RAZ (resweep/eye_status/eye_score_data not
     // produced by the deps calibrator).
@@ -3660,6 +3697,11 @@ module axi_chiplet_controller #(
         .eye_score_best_slip   (eye_score_best_slip_o),
         .eye_score_best_phase  (eye_score_best_phase_o)
     );
+    // L4 training-exit-deadlock fix (2026-07-01): the V1 (else) calibrator does
+    // not expose cal_in_hold_o (the autonomous training-exit rendezvous is a
+    // V2-only path). Tie the unconditionally-declared wire off so it is never
+    // floating in a V1 build.
+    assign cal_in_hold_w = 1'b0;
 `endif
 
     // EYE_LAST_LATCHED mirror — surface the current calibrator slip vector

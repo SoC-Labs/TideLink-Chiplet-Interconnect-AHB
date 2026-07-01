@@ -2908,11 +2908,23 @@ module axi_chiplet_controller #(
         end
     end
 
+    // AUTONOMOUS lock-threshold (rcp 0x2160 = 0x55555555 -> per-lane thresh 5).
+    // The host raises the lane-lock threshold from its POR default 3 to 5 (the
+    // marginal-eye robustness knob feeding the lane_checker's lock decision) in
+    // rcp() line 93. On the autonomous path NOBODY writes the gpio_phy APB slave
+    // reg 0x2160 (a separate tl_apb bus this module cannot reach), so it stays 3.
+    // The lock threshold arrives here as `lane_lock_thresh_i` (8 x 3-bit, from
+    // tidelink_top's tidelink_gpio_phy_apb_regs). Override it to {8{3'd5}} when
+    // nego_en is set — same effect as the host 0x2160=0x55555555 write, without a
+    // tl_apb injector. nego_en=0 (manual/SW path) => straight passthrough of the
+    // APB-written value, bit-identical.
+    wire [23:0] lane_lock_thresh_eff = nego_en ? {8{3'd5}} : lane_lock_thresh_i;
+
     tidelink_lane_checker u_lane_checker (
         .clk                 (phy_link_rx_rx_link_clk_w),
         .rst_n               (lane_checker_rst_n_sync_r), // M2: sync'd from role_locked
         .lane_data_i         (phy_link_rx_rx_link_data_w),
-        .lock_thresh_i       (lane_lock_thresh_i),        // from APB regs at tidelink_top
+        .lock_thresh_i       (lane_lock_thresh_eff),      // autonomous(0x2160=5) | APB regs
         .training_mode_w_i   (swi_training_mode_lc_sync_r), // M1: sync'd from swi_training_mode_w
         .sweep_active_i      (sweep_active_w),
         .clear_noise_i       (lane_clear_noise_i),

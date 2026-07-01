@@ -88,6 +88,12 @@ proc tidelink_materialise_v2_shim {shim incdirs gen_dir} {
     puts $fo "// Source: $orig"
     puts $fo "// Shim:   $shim"
     puts $fo "`define TIDELINK_PHY_V2"
+    # Build-only knob: activates the 0xE4 autonomous Wlink lane-mask POR default
+    # (bridge1 good lanes 2,5,6,7) in local_overrides/Wlink.v. Injected HERE (not
+    # in a v2shim) so it reaches only the FPGA build, never the sims — keeping the
+    # V2 8-lane sim oracles green. BOARD-SPECIFIC: gate this by a board-config
+    # once a second V2 board build exists.
+    puts $fo "`define TD_AUTO_LANE_MASK_E4"
     puts -nonewline $fo $body
     close $fo
     puts "INFO: tidelink V2: materialised $inc_name -> $out"

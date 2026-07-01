@@ -2412,16 +2412,35 @@ module Wlink #(
   assign ff2_demet_2_clock = apb_clk;
   assign ff2_demet_2_reset = apb_reset;
   assign ff2_demet_2_io_in = ecc_corrupted_sp_io_data_out; // @[Stdcell.scala 59:17]
+  // SoC Labs 2026-07-01: autonomous lane-mask default, gated on a BUILD-ONLY
+  // define (TD_AUTO_LANE_MASK_E4) injected by fpga/filelist.tcl's V2 shim
+  // materialisation — NOT by the shared TIDELINK_PHY_V2. Why the dedicated
+  // define: sims read the v2shims directly (TIDELINK_PHY_V2 defined) whereas the
+  // FPGA build materialises them, so a materialisation-only define lets every V2
+  // *sim* keep the historical 0xFF default (its 8-lane lock oracles stay green)
+  // while only the FPGA build activates 0xE4. Rationale for 0xE4: on the
+  // autonomous (nego_en) path NOBODY writes 0x214, so the local tx/rx lane mask
+  // must POR to the board's good-lane set (rcp 0x30214=0xe4e4) instead of 0xFF,
+  // else the mask-handshake agrees on 8 lanes and Wlink frames across the 4 dead
+  // silicon lanes. The manual/SW recipe writes 0x214=0xe4e4 explicitly (rcp line
+  // 91) so its behaviour is unchanged. 0xE4 = bridge1 good lanes 2,5,6,7
+  // (BOARD-SPECIFIC — gate the filelist injection by a board-config once a
+  // second V2 board build exists).
+`ifdef TD_AUTO_LANE_MASK_E4
+  localparam [7:0] LANE_MASK_RESET = 8'hE4;   // bridge1 good lanes 2,5,6,7
+`else
+  localparam [7:0] LANE_MASK_RESET = 8'hFF;
+`endif
   always @(posedge apb_clk or posedge apb_reset) begin
     if (apb_reset) begin
-      swi_tx_lane_mask <= 8'hff;
+      swi_tx_lane_mask <= LANE_MASK_RESET;
     end else if (out_f_wivalid_2) begin
       swi_tx_lane_mask <= bundleIn_0_pwdata[7:0];
     end
   end
   always @(posedge apb_clk or posedge apb_reset) begin
     if (apb_reset) begin
-      out_prepend_swi_rx_lane_mask <= 8'hff;
+      out_prepend_swi_rx_lane_mask <= LANE_MASK_RESET;
     end else if (out_f_wivalid_3) begin
       out_prepend_swi_rx_lane_mask <= bundleIn_0_pwdata[15:8];
     end

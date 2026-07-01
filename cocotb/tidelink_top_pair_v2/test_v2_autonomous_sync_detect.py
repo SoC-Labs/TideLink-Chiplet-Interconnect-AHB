@@ -84,6 +84,26 @@ def _set_nego_en(ctrl, on=True):
     ctrl.nego_cfg_reg.value = (cur | 0x1) if on else (cur & ~0x1)
 
 
+def _read_wlink_mask(ctrl):
+    """The local Wlink tx/rx lane mask (Wlink 0x214 mirror at the controller
+    boundary — a BUILD-TIME POR default, not a runtime drive)."""
+    return (int(ctrl.wlink_tx_lane_mask.value),
+            int(ctrl.wlink_rx_lane_mask.value))
+
+
+def _read_lock_thresh_eff(ctrl):
+    """The effective per-lane lock threshold feeding the lane_checker (the
+    nego_en-gated 0x2160 override). 8 x 3-bit; returns lane-0's threshold and
+    the raw 24-bit word. The combinational `lane_lock_thresh_eff` wire may be
+    collapsed by the sim, so read the lane_checker's lock_thresh_i port (the
+    same net) — falling back to the wire name if present."""
+    try:
+        w = int(ctrl.u_lane_checker.lock_thresh_i.value)
+    except (AttributeError, ValueError):
+        w = int(ctrl.lane_lock_thresh_eff.value)
+    return (w & 0x7), w
+
+
 async def _training_rise(tb, side):
     """Create the training-RUN rising edge the SYNC-ON drive arms on.
     swi_training_mode_r is procedurally driven but, with no APB write and no
@@ -141,13 +161,47 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     assert pre["force_always"] == 0 and pre["robust"] == 0, \
         "pre: force_always/robust should be POR 0"
 
+    # Wlink lane mask (0x214) at POR = 0xFF each (default sim; the FPGA build
+    # injects TD_AUTO_LANE_MASK_E4 -> 0xE4). Lock threshold (0x2160) at its
+    # gpio-phy default while nego_en=0 (passthrough). 0x214 is a build-time POR
+    # default; 0x2160 becomes a runtime nego_en override (below).
+    tx0, rx0 = _read_wlink_mask(ctrl)
+    log.info(f"pre 0x214 wlink mask: tx=0x{tx0:02x} rx=0x{rx0:02x}")
+    assert tx0 == 0xFF and rx0 == 0xFF, (
+        f"pre: Wlink lane mask should be POR 0xFF each (tx=0x{tx0:02x} "
+        f"rx=0x{rx0:02x}) — the autonomous 0x214 write must not have fired yet")
+
     # ---- Arm the autonomous path + model the silicon eye -------------------
-    # nego_en=1 (= production strap stand-in). Eye model so the winscan reaches
-    # winscan_done (needed to observe the SYNC-OFF edge). dwell-shrink hook.
+    # nego_en=1 (= production strap stand-in). The nego_en RISING edge flips the
+    # 0x2160 lock-thresh override. Eye model so the winscan reaches winscan_done.
     _set_nego_en(ctrl, True)
     ctrl.tb_winscan_dwell_short_q.value = 1
     cocotb.start_soon(_sync_dist_model(tb, "m", TAP_OPT, ACTIVE_LANES))
-    await ClockCycles(dut.hclk, 5)
+    await ClockCycles(dut.hclk, 20)
+
+    # ---- 0x214 Wlink lane mask: BUILD-TIME POR default, NOT a runtime drive ---
+    # The autonomous path does NOT write 0x214 at runtime — the local Wlink tx/rx
+    # lane mask is a POR default (0xFF here; 0xE4 when the FPGA build injects
+    # TD_AUTO_LANE_MASK_E4 via fpga/filelist.tcl, build-only so this sim keeps the
+    # 8-lane 0xFF oracle). It is therefore CONSTANT across the nego_en edge. The
+    # 0xE4 build's data integrity is covered by test_v2_pair_data test_02/03 under
+    # a 0xE4 mask + on-silicon Proof-1 (manual rcp 0x214=0xe4e4).
+    tx1, rx1 = _read_wlink_mask(ctrl)
+    log.info(f"after nego_en 0x214 wlink mask: tx=0x{tx1:02x} rx=0x{rx1:02x} "
+             f"(POR default; unchanged by nego_en)")
+    assert tx1 == tx0 and rx1 == rx0, (
+        f"0x214: Wlink lane mask changed across nego_en "
+        f"(tx 0x{tx0:02x}->0x{tx1:02x} rx 0x{rx0:02x}->0x{rx1:02x}) — it must be a "
+        f"static POR default (build-config), not a runtime drive")
+
+    EXP_THRESH_WORD = int("101" * 8, 2)   # {8{3'd5}} = 24-bit, all lanes thresh 5
+    lt_lane0, lt_word = _read_lock_thresh_eff(ctrl)
+    log.info(f"after nego_en 0x2160 lock_thresh_eff=0x{lt_word:06x} "
+             f"(lane0={lt_lane0})")
+    assert lt_lane0 == 5 and lt_word == EXP_THRESH_WORD, (
+        f"0x2160: per-lane lock threshold did NOT become 5 for all lanes "
+        f"(lane0={lt_lane0} word=0x{lt_word:06x} want=0x{EXP_THRESH_WORD:06x}) — "
+        f"rcp 0x2160=0x55555555 not replicated on the autonomous path")
 
     # ---- SYNC-ON: training-RUN rising edge applies the rcp config ----------
     await _training_rise(tb, "m")
@@ -244,5 +298,19 @@ async def test_v2_autonomous_sync_detect_manual_path_unaffected(dut):
         "ADDITIVITY VIOLATION: a SYNC-detect bit moved on the manual path "
         f"(after={after}) — nego_en=0 must keep the drive dormant")
 
+    # 0x214 Wlink lane mask stays 0xFF (MSK sequencer dormant at nego_en=0) and
+    # the 0x2160 lock-threshold override is a straight passthrough (not forced 5).
+    tx, rx = _read_wlink_mask(ctrl)
+    assert tx == 0xFF and rx == 0xFF, (
+        "ADDITIVITY VIOLATION: Wlink lane mask (0x214) changed on the manual "
+        f"path (tx=0x{tx:02x} rx=0x{rx:02x}) — the MSK sequencer must stay "
+        f"dormant at nego_en=0")
+    lt_lane0, lt_word = _read_lock_thresh_eff(ctrl)
+    assert lt_lane0 != 5 or lt_word != int("101" * 8, 2), (
+        "ADDITIVITY VIOLATION: lock-threshold override forced 5 on the manual "
+        f"path (word=0x{lt_word:06x}) — nego_en=0 must pass the APB value "
+        f"through (gpio-phy default 3), not the autonomous 5")
+
     log.info("VERDICT: PASS — manual/SW path unaffected (drive dormant at "
-             "nego_en=0; POR defaults held across training rise/fall).")
+             "nego_en=0; SYNC-detect POR defaults + 0x214=0xFF + lock-thresh "
+             "passthrough held across training rise/fall).")

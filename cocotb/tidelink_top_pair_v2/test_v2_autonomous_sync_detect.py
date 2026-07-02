@@ -23,15 +23,25 @@ host rcp() SYNC-detect configuration on-chip and SEQUENCES it correctly:
                       forcing is winscan_force_sync, OR'd at the Wlink ports by
                       the winscan FSM itself.)
                       word-pin override := 0 / auto_dis := 0  (rcp 0x2104=0, AUTO)
-    ... winscan runs (forces SYNC itself via winscan_force_sync), deskew
-        reanchor latches in WS_FINALIZE's now-genuinely-idle-gated dwell ...
+    ... winscan runs (forces SYNC itself via winscan_force_sync); WS_FINALIZE
+        (F3/F4 2026-07-02) clears the scan-era sticky anchor and re-confirms
+        the deskew reanchor at the FINAL taps under STILL-FORCED beacons (the
+        periodic-confirm needs the on-grid beacon), holding winscan_done until
+        the CDC'd reanchored reads 1 (fail-loud timeout otherwise); force
+        drops at the FINALIZE exit ...
     winscan_done 0->1   (SYNC stays ON, idle-gated — asserted)
     ... fch 0x208 bootstrap + CR/CRACK re-walk UNDER idle-gated SYNC ...
-    fch_done_r 0->1 (+ SYNC_OFF_SETTLE)
-        -> SYNC-OFF : swi_sync_insert_en_r/force_always/robust := 0 (= host
+    fch_done_r 0->1 (+ SYNC_OFF_SETTLE — F2 2026-07-02: ≈0.5 s on silicon for
+                     cross-die OFF-window overlap; the designed-in
+                     tb_syncoff_settle_short_q hook selects the old 1024)
+        -> SYNC-OFF : swi_sync_insert_en_r/force_always := 0 ONLY (= host
                       enter_data_mode R8=0x10 SYNC-off AFTER the bootstrap —
-                      R4b 2026-07-02 retime; was keyed on winscan_done), while
-                      lane_mask / tol=5 are RETAINED for the deskew.
+                      R4b 2026-07-02 retime; was keyed on winscan_done).
+                      F1 (2026-07-02): swi_sync_robust_detect_r STAYS 1 — the
+                      manual R8=0x10 end-state keeps bit4 (the tol-5 framer
+                      re-hunt); stripping it let a still-beaconing peer's SYNC
+                      byte-shear the framer stream in the cross-die OFF-skew
+                      window. lane_mask / tol=5 are RETAINED for the deskew.
 
 The ORDERING invariant — SYNC-ON strictly precedes SYNC-OFF, and SYNC-OFF now
 fires only AFTER the FC-handoff bootstrap — is asserted directly: SYNC-ON
@@ -223,6 +233,16 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     # sim hook (previous proven 4095-cycle dwell) so fch_done_r (the retimed
     # SYNC-OFF trigger, R4b) arrives inside the sim budget.
     ctrl.tb_fch_dwell_short_q.value = 1
+    # F2: the SYNC-OFF settle is 0.5 s on silicon — hook selects the old 1024
+    # so the OFF edge lands inside the bounded wait below.
+    ctrl.tb_syncoff_settle_short_q.value = 1
+    # F4: WS_FINALIZE now holds winscan_done until the CDC'd reanchored reads
+    # 1, with a 0.3 s FAIL-LOUD timeout. In this harness only the MASTER is
+    # armed — the slave never beacons toward the master's RX, so the anchor
+    # cannot re-latch and the gate exits via the TIMEOUT path (that path is
+    # exactly the graceful-degradation release; ws_anchor_timeout_q latches,
+    # logged below). The hook bounds it at 50k cycles.
+    ctrl.tb_ws_anchor_short_q.value = 1
     cocotb.start_soon(_sync_dist_model(tb, "m", TAP_OPT, ACTIVE_LANES))
     await ClockCycles(dut.hclk, 20)
 
@@ -318,8 +338,9 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     assert okf, (
         f"fch_done_r never rose (after {wf} cycles) — the FC-handoff "
         f"bootstrap did not complete (is tb_fch_dwell_short_q forced?)")
-    # OFF lands SYNC_OFF_SETTLE (=1024 apb cycles) after the fch_done_r rise;
-    # allow a bounded margin.
+    # OFF lands SYNC_OFF_SETTLE after the fch_done_r rise (F2: 0.5 s silicon /
+    # 1024 via the tb_syncoff_settle_short_q hook engaged above); allow a
+    # bounded margin.
     off = None
     off_seen = False
     for _ in range(80):
@@ -329,13 +350,24 @@ async def test_v2_autonomous_sync_detect_drive(dut):
             off_seen = True
             break
     log.info(f"after fch_done(+settle) (SYNC-OFF): {off}  (fch_done@+{wf} cyc)")
+    log.info(f"F4 anchor gate (single-die harness, timeout path expected): "
+             f"ws_anchor_timeout_q={int(ctrl.ws_anchor_timeout_q.value)}")
 
     assert off_seen and off["insert_en"] == 0, (
         "SYNC-OFF: insert_en did NOT drop after fch_done_r + settle — data "
         "path would keep beaconing SYNC (host enter_data_mode R8=0x10 not "
         "replicated on the retimed R4b path)")
     assert off["force_always"] == 0, "SYNC-OFF: force_always not 0"
-    assert off["robust"] == 0, "SYNC-OFF: robust_detect did not drop"
+    # F1 (2026-07-02): robust_detect must STAY 1 through the autonomous
+    # SYNC-OFF — byte-for-byte the manual enter_data_mode R8=0x10 end-state
+    # (bit4 set). The pre-F1 OFF stripped it, so in the ms-scale cross-die
+    # OFF-skew window the still-beaconing peer's SYNC missed the framer's
+    # exact-compare re-hunt and injected 16 undetected bytes = the permanent
+    # word-boundary displacement (0xcafe0003 / PKTLEN=0xCAF).
+    assert off["robust"] == 1, (
+        "F1 REGRESSION: robust_detect dropped at the autonomous SYNC-OFF — it "
+        "must be RETAINED (manual R8=0x10 keeps bit4; stripping it byte-shears "
+        "the framer against a still-beaconing peer)")
     # lane_mask / tol RETAINED across data mode (correct for the deskew).
     assert off["lane_mask"] == exp_lane_mask, (
         f"SYNC-OFF: lane_mask must be RETAINED at 0x{exp_lane_mask:02x} "

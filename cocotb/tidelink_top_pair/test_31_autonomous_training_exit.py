@@ -165,13 +165,17 @@ async def _reset(dut):
     await ClockCycles(dut.hclk, 50)
 
 
-async def _fch_monitor(dut, side, fch_writes):
+async def _fch_monitor(dut, side, fch_writes, anchor_at_boot):
     """R1 (g): record the ORDERED, DEDUPED sequence of 0x208 payloads the fch
     sequencer drives (fch_wdata_r while fch_active_r=1). Coarse-polls until the
     handoff arms (fch_pending_r latches on the training fall and holds for the
     whole winscan), then fine-samples every 2 hclk (= apb_clk) cycles — each
     payload is held for >=23 cycles (SETUP+ACCESS+GAP), so none can be missed.
-    Exits once fch_done_r latches."""
+    Exits once fch_done_r latches.
+
+    F4 (2026-07-02): additionally samples the controller's CDC'd deskew
+    `reanchored` status (ws_anchor_q) at the FIRST fch_active_r cycle — the F4
+    anchor gate must guarantee reanchored==1 BEFORE the fch bootstrap runs."""
     ctrl = _ctrl(dut, side)
     while True:                       # coarse: wait for the handoff to arm
         await ClockCycles(dut.hclk, 200)
@@ -185,6 +189,8 @@ async def _fch_monitor(dut, side, fch_writes):
         await ClockCycles(dut.hclk, 2)
         try:
             if int(ctrl.fch_active_r.value) == 1:
+                if side not in anchor_at_boot:
+                    anchor_at_boot[side] = _si(ctrl.ws_anchor_q)
                 w = int(ctrl.fch_wdata_r.value)
                 lst = fch_writes[side]
                 if not lst or lst[-1] != w:
@@ -195,10 +201,37 @@ async def _fch_monitor(dut, side, fch_writes):
             pass
 
 
+async def _winscan_tracer(dut, log):
+    """F3/F4 low-noise tracer: winscan FSM + anchor state on both dies every
+    25k cycles until both fch_done. Diagnoses anchor-gate rendezvous issues
+    (which die forced/cleared/anchored when)."""
+    names = {0: "IDLE", 1: "ARM", 2: "LANE", 3: "SETTLE", 4: "SAMP",
+             5: "NTAP", 6: "PICK", 7: "FIN", 8: "DONE"}
+    while True:
+        await ClockCycles(dut.hclk, 25_000)
+        line = []
+        done_both = True
+        for side in ("m", "s"):
+            c = _ctrl(dut, side)
+            st = _si(c.ws_state_r)
+            line.append(
+                f"{side}:ws={names.get(st, st)} f={_si(c.winscan_force_sync)}"
+                f" clr={_si(c.ws_obs_clr_r)} anc={_si(c.ws_anchor_q)}"
+                f" to={_si(c.ws_anchor_timeout_q)}"
+                f" seen={_si(c.sync_obs_seen_vec_1):02x}"
+                f" fch={_si(c.fch_done_r)}")
+            if _si(c.fch_done_r) != 1:
+                done_both = False
+        log.info("WSTRACE " + " | ".join(line))
+        if done_both:
+            return
+
+
 @cocotb.test()
 async def test_31_autonomous_training_exit(dut):
     log = dut._log
     log.info("L4 — de-forced autonomous training-exit (no tb_early_exit_force_q)")
+    cocotb.start_soon(_winscan_tracer(dut, log))
 
     # PairTB starts the clocks and idles the AHB/FIFO buses; it also provides
     # the proven AHB_TX / FIFO signal-level drivers used by the R1 data gate.
@@ -221,12 +254,24 @@ async def test_31_autonomous_training_exit(dut):
         # R4c: the fch swreset dwell is now 0.25s (bilateral overlap) — shrink
         # it in sim via the designed-in hook, same idiom as the winscan knob.
         _ctrl(dut, side).tb_fch_dwell_short_q.value = 1
+        # F2 (2026-07-02): the SYNC-OFF settle is now 0.5s on silicon (cross-die
+        # OFF-window overlap) — the designed-in hook selects the previous,
+        # proven 1024-cycle settle so the OFF edge lands in the sim window
+        # (needed for the F1 robust-stays-1 assertion below).
+        _ctrl(dut, side).tb_syncoff_settle_short_q.value = 1
+        # F4: the WS_FINALIZE anchor-gate timeout is 0.3s on silicon — the hook
+        # bounds it at 50k cycles. In this bilateral run BOTH dies beacon, so
+        # the anchor must genuinely (re-)latch and the timeout must NOT fire
+        # (ws_anchor_timeout_q asserted ==0 below).
+        _ctrl(dut, side).tb_ws_anchor_short_q.value = 1
         _ctrl(dut, side).obs_sync_dist_vec_w.value = Force(0)
 
-    # (g) R1: monitor the fch sequencer's 0x208 payload sequence on both dies.
+    # (g) R1: monitor the fch sequencer's 0x208 payload sequence on both dies;
+    # F4: the monitor also samples the CDC'd reanchored at the bootstrap start.
     fch_writes = {"m": [], "s": []}
+    anchor_at_boot = {}
     for side in ("m", "s"):
-        cocotb.start_soon(_fch_monitor(dut, side, fch_writes))
+        cocotb.start_soon(_fch_monitor(dut, side, fch_writes, anchor_at_boot))
 
     # ---- Sanity: the sim bypass is NOT engaged on either die -----------------
     for side in ("m", "s"):
@@ -428,6 +473,28 @@ async def test_31_autonomous_training_exit(dut):
             f"(ws=0x{wsof:08x}/{wslb:02x} != seed=0x{seed:08x}/{sdlb:02x}) — "
             f"the OR-merged deserialiser phase would be corrupted")
 
+    # ---- (8b) F3/F4: the anchor gate held the bootstrap for a SETTLED anchor.
+    # reanchored (CDC'd, ws_anchor_q) must read 1 at the FIRST fch_active_r
+    # cycle (the on-chip equivalent of the manual host's 0x2140 poll), and the
+    # FAIL-LOUD timeout must NOT have fired (both dies beacon here, so the
+    # WS_FINALIZE re-anchor clear must genuinely re-confirm on idle-gated
+    # beacons at the final taps).
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        c = _ctrl(dut, side)
+        aab = anchor_at_boot.get(side, -1)
+        wto = _si(c.ws_anchor_timeout_q)
+        log.info(f"{name} F4 anchor gate: reanchored@bootstrap-start={aab} "
+                 f"ws_anchor_timeout_q={wto}")
+        assert aab == 1, (
+            f"{name}: deskew reanchored != 1 at the fch bootstrap start "
+            f"(got {aab}) — the F4 WS_FINALIZE anchor gate did not order the "
+            f"handoff after a settled anchor")
+        assert wto == 0, (
+            f"{name}: ws_anchor_timeout_q latched — the F4 anchor gate RELEASED "
+            f"ON TIMEOUT instead of a genuine post-clear re-anchor (F3 "
+            f"sync_obs_clr routing broken, or the idle-gated beacons never "
+            f"re-confirmed during WS_FINALIZE)")
+
     # ---- (9) R1: post-BOOTSTRAP FCSM=4 (the bootstrap swreset re-walks the
     #      CR/CRACK exchange — this is the handoff path silicon takes). -------
     fc_ok2 = {"m": False, "s": False}
@@ -478,6 +545,37 @@ async def test_31_autonomous_training_exit(dut):
     assert fe_cred != 0, (
         "R1: sender fe_rx_credit_max=0 — the CR/CRACK credit grant never "
         "(re-)loaded after the autonomous bootstrap")
+
+    # ---- (11) F1/F2: the autonomous SYNC-OFF fired (insert_en dropped after
+    #      fch_done + settle) and KEPT robust_detect=1 — the manual R8=0x10
+    #      end-state byte-for-byte. Pre-F1 the OFF stripped robust, so a
+    #      still-beaconing peer's SYNC (cross-die OFF skew) injected 16
+    #      undetected bytes = the permanent word-boundary displacement
+    #      (0xcafe0003 / PKTLEN=0xCAF byte-shear).
+    off_ok = {"m": False, "s": False}
+    for _ in range(2000):
+        await ClockCycles(dut.hclk, 50)
+        for side in ("m", "s"):
+            if _si(_ctrl(dut, side).swi_sync_insert_en_r) == 0:
+                off_ok[side] = True
+        if all(off_ok.values()):
+            break
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        c = _ctrl(dut, side)
+        rb = _si(c.swi_sync_robust_detect_r)
+        fa = _si(c.swi_sync_force_always_r)
+        log.info(f"{name} F1 SYNC-OFF end-state: insert_en="
+                 f"{_si(c.swi_sync_insert_en_r)} force_always={fa} robust={rb}")
+        assert off_ok[side], (
+            f"{name}: autonomous SYNC-OFF never fired (insert_en still 1) — "
+            f"fch_done+settle path broken (is tb_syncoff_settle_short_q set?)")
+        assert rb == 1, (
+            f"{name}: F1 REGRESSION — swi_sync_robust_detect_r=0 after the "
+            f"autonomous SYNC-OFF; it must STAY 1 (manual R8=0x10 keeps bit4: "
+            f"the tol-5 framer re-hunt that heals a beacon missing the exact "
+            f"compare — without it the peer's OFF-skew beacons byte-shear the "
+            f"framer stream)")
+        assert fa == 0, f"{name}: force_always != 0 after SYNC-OFF"
 
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
              "transited S_HOLD→S_VALIDATE→S_DONE (no re-sweep after clear), "

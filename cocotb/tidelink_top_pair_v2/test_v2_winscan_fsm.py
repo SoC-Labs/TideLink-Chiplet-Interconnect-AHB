@@ -130,6 +130,14 @@ def _arm_winscan(tb, side):
     # keep the bootstrap bounded via the designed-in sim hook (the previous
     # proven 4095-cycle dwell — same idiom as the winscan hook above).
     ctrl.tb_fch_dwell_short_q.value = 1
+    # F4 (2026-07-02): WS_FINALIZE now holds winscan_done until the CDC'd
+    # deskew `reanchored` reads 1, with a FAIL-LOUD timeout (0.3 s silicon).
+    # In this harness only ONE die is armed — the peer never beacons toward
+    # the scanned die's RX, so the anchor cannot latch and FINALIZE exits via
+    # the timeout (= the graceful-degradation release, ws_anchor_timeout_q
+    # latches). The hook bounds that at 50k cycles so winscan_done still
+    # lands inside the sim budget.
+    ctrl.tb_ws_anchor_short_q.value = 1
 
 
 async def _pulse_training_fall(tb, side):
@@ -212,6 +220,17 @@ async def test_v2_winscan_fsm_picks_centre(dut):
         "winscan FSM dropped tap ownership after DONE (centres would be lost)"
     assert int(ctrl.winscan_force_sync.value) == 0, \
         "winscan FSM left force-SYNC on after finalize (reanchor idle-gate)"
+
+    # F4: in this single-die harness the anchor can never latch (no peer
+    # beacons), so winscan_done above was released by the FAIL-LOUD timeout —
+    # assert the sticky observability bit latched (pins the timeout path
+    # itself: 0x21B8[2]) and that the F3 clear level dropped again at WS_DONE.
+    assert int(ctrl.ws_anchor_timeout_q.value) == 1, (
+        "F4: ws_anchor_timeout_q did NOT latch although the anchor cannot "
+        "latch in this harness — the FAIL-LOUD timeout path is broken (a dead "
+        "anchor would deadlock or silently release the handoff)")
+    assert int(ctrl.ws_obs_clr_r.value) == 0, \
+        "F3: ws_obs_clr_r still high in WS_DONE — the one-shot level must drop"
 
     log.info("VERDICT: PASS — autonomous on-chip winscan picked every active "
              "lane's modelled eye centre; winscan_done asserted; taps held.")

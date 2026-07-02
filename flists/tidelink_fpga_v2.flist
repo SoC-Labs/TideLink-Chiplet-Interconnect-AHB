@@ -142,8 +142,14 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
 //
 // V2 PHY SWAP: cross-lane word deskew comes from the shared PHY component
 // (instantiated by the new WavD2DGpio with its own depth/offset handling)
-// instead of src/rtl/local_overrides/tidelink_lane_deskew.sv.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+// instead of src/rtl/local_overrides/tidelink_lane_deskew.sv (the V1 copy).
+// F3c LOCAL OVERRIDE (2026-07-02): the deps copy is replaced by
+// src/rtl/local_overrides/tidelink_lane_deskew_v2.sv — identical except the
+// sync_hit idle-zero qualifier (lane-0 slice 0x1F00 popcount==TOL(5) made
+// all-zero IDLE words continuously "match", starving the periodic confirm →
+// sync_seen never commits on a quiet link). Submodule copy stays pristine.
+// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_lane_deskew_v2.sv
 
 // V2 PHY SWAP: serdes lane fork from the shared PHY component (FIX-N..R,
 // silicon-validated 2026-06-10) replaces src/rtl/local_overrides/{WavD2DGpio,

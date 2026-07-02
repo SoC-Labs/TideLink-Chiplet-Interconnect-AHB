@@ -147,11 +147,17 @@ async def test_32_die_a_first_zombie_retry(dut):
     #  * tb_winscan_dwell_short_q + flat-0 eye model: test_31's (f) idiom so
     #    the post-retry winscan + fch bootstrap run in-window (the flat metric
     #    trips the R2c degenerate guard -> seeded taps, the safe sim outcome);
-    #  * tb_fch_dwell_short_q: R4c 0.25s swreset dwell -> the proven 4095.
+    #  * tb_fch_dwell_short_q: R4c 0.25s swreset dwell -> the proven 4095;
+    #  * tb_ws_anchor_short_q: F4 WS_FINALIZE anchor gate timeout 0.3s -> 50k
+    #    (REQUIRED here: the master's zombie-phase winscan episodes run with a
+    #    beacon-less peer, so the anchor gate can only exit via the timeout);
+    #  * tb_syncoff_settle_short_q: F2 SYNC-OFF settle 0.5s -> the proven 1024.
     for side in ("m", "s"):
         _autoneg(dut, side).tb_retry_backoff_short_q.value = 1
         _ctrl(dut, side).tb_winscan_dwell_short_q.value = 1
         _ctrl(dut, side).tb_fch_dwell_short_q.value = 1
+        _ctrl(dut, side).tb_ws_anchor_short_q.value = 1
+        _ctrl(dut, side).tb_syncoff_settle_short_q.value = 1
         _ctrl(dut, side).obs_sync_dist_vec_w.value = Force(0)
 
     # De-forced calibrators (test_31 contract): the sim bypass must be OFF.

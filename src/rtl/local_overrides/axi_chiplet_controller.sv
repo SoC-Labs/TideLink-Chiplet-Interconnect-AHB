@@ -1149,7 +1149,9 @@ module axi_chiplet_controller #(
     //   winscan_force_sync: 1 across the scan — OR'd into the PHY SYNC controls
     //                       (force_always + insert_en + robust_detect), the on-
     //                       chip equivalent of the host's R8=0x1C; dropped at
-    //                       FINALIZE (the R8=0x14 idle-gate so reanchored latches).
+    //                       the FINALIZE EXIT (F3/F4 2026-07-02: held through
+    //                       FINALIZE so the post-clear re-confirm sees on-grid
+    //                       beacons; = the host's R8=0x14 once anchored).
     //   winscan_done      : 1 once the scan + finalize completed for this nego
     //                       episode — gates the FC data-mode handoff.
     //   ws_degenerate_q   : R2c (2026-07-02) sticky DEGENERATE-SCAN flag: the
@@ -1165,12 +1167,20 @@ module axi_chiplet_controller #(
     //                       fch_pending_r handoff gate with no retry path);
     //                       this flag makes the condition loud via the Region-D
     //                       WINSCAN_OBS slot (0x21B8).
+    //   ws_anchor_timeout_q : F4 (2026-07-02) sticky FAIL-LOUD flag: the
+    //                       WS_FINALIZE anchor gate (winscan_done held until
+    //                       the CDC'd deskew `reanchored` status is 1 — the
+    //                       on-chip equivalent of the manual host's 0x2140
+    //                       reanchored poll) TIMED OUT and released anyway.
+    //                       Surfaced at WINSCAN_OBS 0x21B8 bit[2]. Cleared on
+    //                       a fresh scan episode (WS_ARM), like ws_degenerate_q.
     reg [31:0] ws_phase_offset_r;
     reg [7:0]  ws_phase_lsb_r;
     reg        winscan_owns_taps;
     reg        winscan_force_sync;
     reg        winscan_done;
     reg        ws_degenerate_q;
+    reg        ws_anchor_timeout_q;
 
     // ── Autonomous SYNC-detect config drive shadows (2026-06-30) ──────────────
     // The LAST autonomy layer: on the autonomous (nego_en) path the host's rcp
@@ -1202,8 +1212,34 @@ module axi_chiplet_controller #(
     // inserter only fires between real packets) and only THEN does the beacon
     // drop for data mode. sync_cfg_wsdone_q now shadows fch_done_r.
     reg        sync_cfg_wsdone_q;  // shadow of fch_done_r for the OFF edge (R4b)
-    reg [11:0] sync_off_settle_r;  // R4b: post-fch_done settle before SYNC-OFF
-    localparam [11:0] SYNC_OFF_SETTLE = 12'd1024; // ≈20 µs @ 50 MHz apb_clk
+    // F1b (2026-07-02): SYNC-config HOLD phase — 1 from the autonomous
+    // SYNC-ON until the SYNC-OFF. While set, the drive RE-ASSERTS
+    // insert_en/robust every cycle so a master-side I2C full-word R8 slot-0
+    // write (the autoneg's SWI_TRAINING_MODE writes land as whole-register
+    // writes on the slave via the AXIL->APB bridge) cannot strip the SYNC
+    // config mid-flight. See the F1b comment at the drive.
+    reg        sync_cfg_hold_q;
+    // F2 (2026-07-02): SYNC-OFF settle widened 12'd1024 (≈20 µs) → ≈0.5 s.
+    // The two dies' SYNC-OFFs fire on their LOCAL fch_done_r + settle, and the
+    // fch bootstraps' cross-die skew is ms-scale (each die's winscan/handoff
+    // runs off its own training fall). In the old 20 µs window one die dropped
+    // its SYNC-insert while the PEER was still inside its bootstrap — the
+    // still-beaconing peer's SYNC words, with robust stripped (pre-F1), were
+    // 16 undetected bytes injected into the framer stream = the permanent
+    // word-boundary displacement (0xcafe0003 / PKTLEN=0xCAF byte-shear). 0.5 s
+    // mirrors the R4c fch swreset-overlap rationale: both dies keep their
+    // idle-gated beacons + robust detectors up well past the SLOWER die's
+    // fch_done, so the ON→OFF windows overlap across the skew and no beacon
+    // lands on a framer whose SYNC handling has already been torn down.
+    // NOTE: 25 bits, not 24 — 24-bit caps at 16.7M < 25M (0.5 s @ 50 MHz).
+    // Sim: the designed-in tb_syncoff_settle_short_q hook (same idiom as
+    // tb_fch_dwell_short_q) selects the previous, proven 1024-cycle settle.
+    reg [24:0] sync_off_settle_r;  // R4b/F2: post-fch_done settle before SYNC-OFF
+    localparam [24:0] SYNC_OFF_SETTLE     = 25'd25_000_000; // ≈0.5 s @ 50 MHz apb_clk
+    localparam [24:0] SYNC_OFF_SETTLE_SIM = 25'd1024;       // TB-forced (the old value)
+    reg tb_syncoff_settle_short_q = 1'b0;  // RTL-constant 0; cocotb deposits 1
+    wire [24:0] sync_off_settle_w =
+        tb_syncoff_settle_short_q ? SYNC_OFF_SETTLE_SIM : SYNC_OFF_SETTLE;
 `endif
 
     // =====================================================================
@@ -1600,7 +1636,8 @@ module axi_chiplet_controller #(
             // one-shot rework 2026-07-02).
             sync_cfg_on_fired_q      <= 1'b0;
             sync_cfg_wsdone_q        <= 1'b0;
-            sync_off_settle_r        <= 12'd0;  // R4b: SYNC-OFF settle idle
+            sync_cfg_hold_q          <= 1'b0;  // F1b: hold phase idle at POR
+            sync_off_settle_r        <= 25'd0;  // R4b/F2: SYNC-OFF settle idle
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1760,16 +1797,18 @@ module axi_chiplet_controller #(
             //     place before the scan needs it — SYNC-ON therefore still
             //     strictly precedes the winscan_done-rise SYNC-OFF whenever the
             //     scan runs at all (ws_arm_kick needs the same gate at the fall).
-            //   * SYNC-OFF strips insert_en/force_always/robust on the winscan_done
-            //     RISING edge — i.e. AFTER the winscan's WS_FINALIZE has dropped
-            //     winscan_force_sync and the deskew reanchor has latched in the
-            //     idle gap. This mirrors the host enter_data_mode()'s R8=0x10
-            //     (SYNC off) AFTER reanchored=1, so the framer runs clean packets
-            //     to completion. The SYNC-ON write (training-rise) ALWAYS precedes
-            //     this SYNC-OFF write (winscan_done-rise) in FSM time, so the
-            //     prompt's ordering invariant holds. lane_mask=0xe4 / tol=5 are
-            //     LEFT set across data mode (they are correct for the deskew and
-            //     benign for the datapath — only the SYNC-insert beacon must drop).
+            //   * SYNC-OFF (F1 2026-07-02) strips ONLY insert_en + force_always
+            //     — robust_detect is KEPT =1, matching the manual R8=0x10
+            //     end-state (bit4 set) — AFTER the winscan's WS_FINALIZE has
+            //     dropped winscan_force_sync and the deskew reanchor has latched
+            //     in the idle gap. This mirrors the host enter_data_mode()'s
+            //     R8=0x10 (SYNC off, robust kept) AFTER reanchored=1, so the
+            //     framer runs clean packets to completion. The SYNC-ON write
+            //     (training-rise) ALWAYS precedes this SYNC-OFF write in FSM
+            //     time, so the prompt's ordering invariant holds. lane_mask=0xe4
+            //     / tol=5 are LEFT set across data mode (they are correct for
+            //     the deskew and benign for the datapath — only the SYNC-insert
+            //     beacon must drop).
             //
             // ADDITIVITY: gated on nego_en & role_locked. On the proven SW-role_
             // lock + host-winscan path nego_en=0 ⇒ this never fires and every
@@ -1819,6 +1858,28 @@ module axi_chiplet_controller #(
                     swi_sync_robust_detect_r <= 1'b1;   // rcp R8 b4 — robust re-hunt
                     swi_word_pin_ovr_r       <= 4'h0;   // rcp 0x2104=0 — per-lane AUTO
                     swi_word_pin_auto_dis_r  <= 1'b0;   //   (POR default; explicit)
+                    sync_cfg_hold_q          <= 1'b1;   // F1b: hold phase engaged
+                end
+                // F1b I2C-CLOBBER HEAL (2026-07-02, sim-discovered): on the
+                // SLAVE die the master's autoneg drives training over the
+                // AXIL->APB bridge as FULL-WORD R8 slot-0 writes (e.g.
+                // SWI_TRAINING_MODE=0 at ST_TRAIN_EXIT, wdata=32'h0) — the
+                // slot-0 case above then rewrites EVERY slot-0 bit, zeroing
+                // the autonomous SYNC-ON's insert_en/robust mid-flight (the
+                // MASTER is immune: its training clear is the local strobe,
+                // not a slot-0 write). Sim signature: slave ended data mode
+                // robust=0 while the master ended robust=1. While the drive
+                // owns the SYNC config (SYNC-ON fired, SYNC-OFF not yet —
+                // sync_cfg_hold_q), RE-DRIVE insert_en/robust every cycle so
+                // any slot-0 write is healed the next cycle (beacons stay up
+                // through the bootstrap per R4b, robust survives into data
+                // mode per F1). Placed BEFORE the OFF-settle block so the
+                // OFF-cycle's insert_en<=0 (later assignment) wins; robust is
+                // intentionally NOT assigned by the OFF (F1) so it stays 1.
+                // Nego-gated (enclosing if) => manual path bit-identical.
+                if (sync_cfg_hold_q) begin
+                    swi_sync_insert_en_r     <= 1'b1;
+                    swi_sync_robust_detect_r <= 1'b1;
                 end
                 // R4b SYNC-OFF: retimed to the FC-handoff bootstrap completing
                 // (fch_done_r rise) + SYNC_OFF_SETTLE, so the bootstrap's
@@ -1829,18 +1890,31 @@ module axi_chiplet_controller #(
                 // SYNC-ON above. Decrement first, rise-load second: a fresh
                 // episode's rise (fch_done_r one-shot re-arms on the next
                 // fch_arm) restarts the settle window cleanly.
-                if (sync_off_settle_r != 12'd0) begin
-                    sync_off_settle_r <= sync_off_settle_r - 12'd1;
-                    if (sync_off_settle_r == 12'd1) begin
+                if (sync_off_settle_r != 25'd0) begin
+                    sync_off_settle_r <= sync_off_settle_r - 25'd1;
+                    if (sync_off_settle_r == 25'd1) begin
                         swi_sync_insert_en_r     <= 1'b0;
                         swi_sync_force_always_r  <= 1'b0;  // robustness clear (POR 0; nothing autonomous sets it any more — R4a)
-                        swi_sync_robust_detect_r <= 1'b0;
+                        sync_cfg_hold_q          <= 1'b0;  // F1b: hold phase ends at OFF
+                        // F1 (2026-07-02): swi_sync_robust_detect_r is KEPT =1
+                        // here — the autonomous SYNC-OFF now clears ONLY
+                        // insert_en + force_always, byte-for-byte the manual
+                        // enter_data_mode R8=0x10 end-state (bit4 robust STAYS
+                        // set in the proven recipe). robust is the tol-5
+                        // per-lane framer re-hunt (WlinkRxLinkLayer sync_resync
+                        // via io_robust_sync_seen, gated at Wlink.v:1581):
+                        // with it stripped, a still-beaconing peer's SYNC —
+                        // the cross-die OFF-skew window — missed the framer's
+                        // exact-compare and injected 16 undetected bytes,
+                        // permanently displacing the word boundary (the
+                        // 0xcafe0003 / PKTLEN=0xCAF byte-shear). Nego-gated:
+                        // the manual nego_en=0 path never executes this block.
                         // lane_mask (=wlink_rx_lane_mask) / tol=5 intentionally
                         // retained for the deskew.
                     end
                 end
                 if (fch_done_r && !sync_cfg_wsdone_q)
-                    sync_off_settle_r <= SYNC_OFF_SETTLE;
+                    sync_off_settle_r <= sync_off_settle_w; // F2: ≈0.5 s (tb hook: 1024)
             end
 `endif
         end
@@ -2066,6 +2140,13 @@ module axi_chiplet_controller #(
     //     [1] ws_degenerate_q — STICKY: the sweep saw a FLAT metric on every
     //                           scanned lane (nothing measured); the SEEDED
     //                           host/APB taps were restored, not argmin-0.
+    //     [2] ws_anchor_timeout_q — STICKY (F4 2026-07-02): the WS_FINALIZE
+    //                           anchor gate (winscan_done held until the CDC'd
+    //                           deskew `reanchored` =1) TIMED OUT
+    //                           (WS_ANCHOR_TIMEOUT ≈0.3 s) and released anyway
+    //                           — the handoff ran WITHOUT a settled anchor
+    //                           (dead sync_obs_clr routing / un-anchorable
+    //                           eye). Cleared on a fresh scan episode (WS_ARM).
     //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
     //   All apb_clk-domain (the winscan FSM's own domain) — no CDC.
     // Slot 7 stays reserved (read 0).
@@ -2077,7 +2158,7 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
-        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 22'h0,
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 21'h0, ws_anchor_timeout_q,
                                         ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
                                        32'h0;
 `else
@@ -3347,9 +3428,12 @@ module axi_chiplet_controller #(
     //     SYNC re-flood settle, see the param), sample the lane's CDC'd 5-bit
     //     SYNC distance sync_obs_dist_vec_1[5L+:5] min-over-N, track the min;
     //   * write the argmin tap for the lane;
-    //   * after the last lane drop winscan_force_sync (host R8=0x14, idle-gated)
-    //     so the deskew reanchor latches in the idle gap, settle, raise
-    //     winscan_done → the FC handoff (gated above) then walks to FCSM=4.
+    //   * FINALIZE (F3/F4 2026-07-02): pulse the deskew sticky-anchor CLEAR
+    //     (discard scan-era mid-scan commits), keep force-SYNC so the
+    //     re-confirm sees on-grid beacons at the FINAL taps, hold winscan_done
+    //     until the CDC'd `reanchored` reads 1 (fail-loud timeout), THEN drop
+    //     force (host R8=0x14) and raise winscan_done → the FC handoff (gated
+    //     above) runs idle-gated and walks to FCSM=4.
     //
     // GATING / additivity: the FSM only RUNS / owns the taps when ARMED via the
     // autonomous nego path (WINSCAN_FSM_EN & nego_en & role_locked). On the
@@ -3369,7 +3453,22 @@ module axi_chiplet_controller #(
     localparam [3:0] WS_DONE            = 4'd8;  // winscan_done held; per-episode
 
     localparam int WINSCAN_NSAMP   = 5;          // host min-over-5
-    localparam int WINSCAN_FIN_WAIT = 4096;      // reanchor idle-gate settle
+    // F3b/F4 RENDEZVOUS (2026-07-02): WINSCAN_FIN_WAIT widened 4096 (82 µs) →
+    // ≈0.5 s. Each die's post-clear re-anchor needs the PEER to be beaconing
+    // ON-GRID (forced) during its own WS_FINALIZE — and the peer forces only
+    // through its OWN scan+FINALIZE, whose start is skewed by the cross-die
+    // training-clear latency (the master's I2C write of the slave's
+    // SWI_TRAINING_MODE=0: ~650 µs even in sim, ms-scale on silicon). With an
+    // 82 µs dwell the FASTER die's force window closed before the SLOWER
+    // die's FINALIZE opened → the slower die's re-confirm starved → F4
+    // timeout (sim-proven: test_31 slave anchored=0/timeout=1). 0.5 s makes
+    // the two dies' force-held FINALIZE windows overlap despite the skew —
+    // the same overlap rationale as the R4c 0.25 s fch swreset dwell and the
+    // F2 0.5 s SYNC-OFF settle. Sim: the existing tb_winscan_dwell_short_q
+    // hook selects WINSCAN_FIN_WAIT_SIM = 100k (2 ms — 3x the observed sim
+    // I2C skew).
+    localparam int WINSCAN_FIN_WAIT     = 25_000_000; // ≈0.5 s @ 50 MHz
+    localparam int WINSCAN_FIN_WAIT_SIM = 100_000;    // TB-forced (covers sim skew)
     // R2 sample-integrity (2026-07-02):
     //   * WINSCAN_SAMP_SPACE — inter-sample spacing (apb_clk cycles) between
     //     the 5 ACCEPTED min-over samples, so they are independent
@@ -3385,14 +3484,29 @@ module axi_chiplet_controller #(
     localparam int WINSCAN_SAMP_SPACE     = 512;
     localparam int WINSCAN_SAMP_SPACE_SIM = 8;
     localparam [7:0] WINSCAN_QUAL_TIMEOUT = 8'd255;
+    // F4 (2026-07-02) — WS_FINALIZE ANCHOR GATE. winscan_done (and hence the
+    // fch_pending_r handoff release) is HELD until the CDC'd deskew
+    // `reanchored` status (obs_epoch_anchored_o — the same net that feeds
+    // R_REANCHORED / EPOCH_STATUS 0x4403_2140 bit0 and epoch_anchored_o) reads
+    // 1: the on-chip equivalent of the manual host's reanchored poll before it
+    // runs the 0x208 bootstrap. Strictly orders SYNC-OFF (fch_done-keyed)
+    // after a SETTLED anchor. FAIL-LOUD timeout: if the anchor never latches
+    // (dead sync_obs_clr routing / genuinely un-anchorable eye) release anyway
+    // — a never-done winscan would DEADLOCK the handoff with no retry path —
+    // and latch the sticky ws_anchor_timeout_q into WINSCAN_OBS 0x21B8[2].
+    localparam [23:0] WS_ANCHOR_TIMEOUT     = 24'd15_000_000; // ≈0.3 s @ 50 MHz
+    localparam [23:0] WS_ANCHOR_TIMEOUT_SIM = 24'd50_000;     // TB-forced bound
     // Sim dwell shrink (TB-forced, same idiom as the calibrator's
     // tb_early_exit_force_q). Default 0 = use the generous silicon WINSCAN_DWELL.
     reg tb_winscan_dwell_short_q = 1'b0;
     localparam int WINSCAN_DWELL_SIM = 32;       // sim: IDELAY passthrough, SYNC
                                                  //      floods every beat
     // Dwell counter must hold the larger of the two dwell choices.
-    localparam int WS_DW_MAX = (WINSCAN_DWELL > WINSCAN_DWELL_SIM)
+    // F3b: the dwell counter must also hold the widened FINALIZE waits.
+    localparam int WS_DW_MAX0 = (WINSCAN_DWELL > WINSCAN_DWELL_SIM)
                                  ? WINSCAN_DWELL : WINSCAN_DWELL_SIM;
+    localparam int WS_DW_MAX  = (WS_DW_MAX0 > WINSCAN_FIN_WAIT)
+                                 ? WS_DW_MAX0 : WINSCAN_FIN_WAIT;
     localparam int WS_DW_W   = $clog2(WS_DW_MAX + 1);
 
     reg [3:0]          ws_state_r;
@@ -3413,6 +3527,29 @@ module axi_chiplet_controller #(
     reg                ws_lane_flat_q;      // this lane's metric flat so far
     reg                ws_all_flat_q;       // every scanned lane flat so far
     reg                ws_any_scanned_q;    // >=1 active lane actually scanned
+    // F3/F4 (2026-07-02) state:
+    reg                ws_obs_clr_r;        // F3: level driven HIGH across
+                                            //     WS_FINALIZE, OR'd into the
+                                            //     swi_sync_obs_clr_in Wlink port
+    reg [23:0]         ws_anchor_to_r;      // F4: anchor-gate timeout countdown
+    reg tb_ws_anchor_short_q = 1'b0;        // F4 sim hook (cocotb deposits 1)
+    wire [23:0] ws_anchor_to_load =
+        tb_ws_anchor_short_q ? WS_ANCHOR_TIMEOUT_SIM : WS_ANCHOR_TIMEOUT;
+    // F4: 2-flop apb_clk sync of the deskew read-side `reanchored` latch.
+    // obs_epoch_anchored_o is the rx-link-clk-domain pass-through from Wlink
+    // (u_deskew reanchored → WavD2DGpio epoch_anchored → WlinkGPIOPHY →
+    // Wlink.obs_epoch_anchored_o) — the same net EPOCH_STATUS 0x2140 bit0 /
+    // epoch_anchored_o expose. Single bit ⇒ a plain 2-FF sync is sufficient.
+    reg ws_anchor_meta_q, ws_anchor_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_anchor_meta_q <= 1'b0;
+            ws_anchor_q      <= 1'b0;
+        end else begin
+            ws_anchor_meta_q <= obs_epoch_anchored_o;
+            ws_anchor_q      <= ws_anchor_meta_q;
+        end
+    end
 
     wire [WS_DW_W-1:0] ws_dwell_load =
         tb_winscan_dwell_short_q ? WINSCAN_DWELL_SIM[WS_DW_W-1:0]
@@ -3420,6 +3557,10 @@ module axi_chiplet_controller #(
     wire [WS_DW_W-1:0] ws_samp_space =
         tb_winscan_dwell_short_q ? WINSCAN_SAMP_SPACE_SIM[WS_DW_W-1:0]
                                  : WINSCAN_SAMP_SPACE[WS_DW_W-1:0];
+    // F3b: FINALIZE force-held rendezvous dwell (same sim hook as the tap dwell).
+    wire [WS_DW_W-1:0] ws_fin_wait_load =
+        tb_winscan_dwell_short_q ? WINSCAN_FIN_WAIT_SIM[WS_DW_W-1:0]
+                                 : WINSCAN_FIN_WAIT[WS_DW_W-1:0];
 
     // Arm kick: the autoneg training-mode falling edge on the autonomous path
     // (= post role-lock + cal-done + lane-lock = SYNC-detect-capable), the SAME
@@ -3456,6 +3597,9 @@ module axi_chiplet_controller #(
             ws_all_flat_q        <= 1'b0;
             ws_any_scanned_q     <= 1'b0;
             ws_degenerate_q      <= 1'b0;
+            ws_obs_clr_r         <= 1'b0;
+            ws_anchor_to_r       <= 24'd0;
+            ws_anchor_timeout_q  <= 1'b0;
             ws_phase_offset_r <= 32'h0;
             ws_phase_lsb_r    <= 8'h0;
             winscan_owns_taps <= 1'b0;
@@ -3473,6 +3617,8 @@ module axi_chiplet_controller #(
                     // Dormant: APB/host owns the taps, SYNC at its strap value.
                     winscan_owns_taps  <= 1'b0;
                     winscan_force_sync <= 1'b0;
+                    ws_obs_clr_r       <= 1'b0;  // F3: dormant ⇒ the manual
+                                                 // R8 bit[5] path is untouched
                     if (ws_arm_kick) begin
                         ws_kicked_q  <= 1'b1;
                         winscan_done <= 1'b0;     // fresh episode
@@ -3493,6 +3639,9 @@ module axi_chiplet_controller #(
                     ws_all_flat_q      <= 1'b1;
                     ws_any_scanned_q   <= 1'b0;
                     ws_degenerate_q    <= 1'b0;
+                    // F4: fresh anchor-gate verdict for this episode (sticky
+                    // within/after an episode, like ws_degenerate_q).
+                    ws_anchor_timeout_q <= 1'b0;
                     ws_state_r         <= WS_NEXT_LANE_ENTER;
                 end
                 // -------------------------------------------------------------
@@ -3533,8 +3682,36 @@ module axi_chiplet_controller #(
                             ws_phase_offset_r <= swi_phase_offset_r;
                             ws_phase_lsb_r    <= swi_phase_lsb_r;
                         end
+                        // F3 (2026-07-02) — WS_FINALIZE RE-ANCHOR. Raise the
+                        // deskew sticky-anchor clear on FINALIZE entry: the
+                        // level is OR'd into Wlink's swi_sync_obs_clr_in (the
+                        // manual R8 bit[5] SWI_SYNC_OBS_CLR node), 2-FF-synced
+                        // + edge-detected in the PHY to WavD2DGpio's
+                        // sync_obs_clr_pulse → deskew sync_obs_clr_i, which
+                        // clears every lane's sticky sync_seen_l/sync_idx_l AND
+                        // drops the read-side `reanchored` latch (rearm_wait
+                        // settles the re-fire). This DISCARDS any scan-era
+                        // mid-scan anchor commit (sticky sync_idx captured at a
+                        // swept — not final — tap; benign today only because
+                        // the first tap swept == seed == winner) so all lanes
+                        // re-confirm at the FINAL taps during the FINALIZE
+                        // dwell, under STILL-FORCED beacons (force-SYNC is
+                        // held through FINALIZE — see the state's comment: the
+                        // periodic-confirm needs the on-grid beacon every
+                        // SYNC_PERIOD). HELD HIGH for the whole
+                        // WS_FINALIZE (dropped in WS_DONE) because the
+                        // destination is a 2-FF LEVEL sync in the ~link clock:
+                        // a 1-apb-cycle pulse would be lost in the CDC; the
+                        // destination edge-detect still yields EXACTLY ONE
+                        // clear pulse per episode. Graceful degradation: if
+                        // the routing is dead on silicon this is a no-op and
+                        // behavior = today's (pre-verify on HW with a manual
+                        // R8 bit[5] pulse watching 0x215C drop/re-fill).
+                        ws_obs_clr_r   <= 1'b1;
+                        // F4: arm the anchor-gate timeout for FINALIZE.
+                        ws_anchor_to_r <= ws_anchor_to_load;
                         ws_state_r <= WS_FINALIZE;
-                        ws_dwell_r <= WINSCAN_FIN_WAIT[WS_DW_W-1:0];
+                        ws_dwell_r <= ws_fin_wait_load; // F3b rendezvous dwell
                     end else if (!ws_lane_active) begin
                         ws_lane_r  <= ws_lane_r + 4'd1;     // skip masked lane
                     end else begin
@@ -3646,15 +3823,57 @@ module axi_chiplet_controller #(
                 end
                 // -------------------------------------------------------------
                 WS_FINALIZE: begin
-                    // Drop force-SYNC (host R8=0x14 idle-gated) so the deskew
-                    // reanchor latches in the idle gap. KEEP owning the taps (the
-                    // picked per-lane centres stay applied). Settle, then done.
-                    winscan_force_sync <= 1'b0;
+                    // F3/F4 (2026-07-02): force-SYNC is HELD THROUGH FINALIZE
+                    // and dropped only at the exit arms below — NOT on entry.
+                    // The deskew's periodic-confirm REQUIRES on-grid beacons:
+                    // a missed SYNC_PERIOD slot BREAKS the confirm run
+                    // (tidelink_lane_deskew gap_ceil → sync_conf<=0), and
+                    // idle-gated insertion on the pre-bootstrap CR-spamming
+                    // link skips most grid slots — the post-clear re-confirm
+                    // then never completes (sim-proven: test_31 anchor gate
+                    // timed out under an entry-dropped force). Under held
+                    // force the beacon fires EVERY grid slot, so seed + the
+                    // SYNC_CONFIRM run completes in ~3 SYNC periods at the
+                    // FINAL taps — deterministic. DATA-SAFE: the only traffic
+                    // here is the same pre-bootstrap CR/CRACK spam the whole
+                    // forced SCAN already ran over; force is OFF strictly
+                    // before winscan_done → the fch bootstrap's CR/CRACK
+                    // re-walk and all real data run idle-gated (R4a intact).
+                    // KEEP owning the taps (the picked per-lane centres stay
+                    // applied). ws_obs_clr_r is HELD HIGH throughout this
+                    // state (F3 — see the FINALIZE-entry comment): the
+                    // scan-era sticky anchor is discarded and all lanes
+                    // re-confirm at the FINAL taps during this dwell.
                     if (ws_dwell_r != '0) begin
                         ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
+                    end else if (ws_anchor_q) begin
+                        // F4 ANCHOR GATE: release only once the CDC'd deskew
+                        // `reanchored` reads 1 — the on-chip equivalent of the
+                        // manual host polling 0x2140 bit0 before the 0x208
+                        // bootstrap. winscan_done gates fch_pending_r, so this
+                        // strictly orders handoff (and the fch_done-keyed
+                        // SYNC-OFF) after a SETTLED post-clear anchor. Drop
+                        // force-SYNC here (host R8=0x14): the anchor is sticky,
+                        // beacons revert to idle-gated for the bootstrap.
+                        winscan_force_sync <= 1'b0;
+                        winscan_done       <= 1'b1;
+                        ws_state_r         <= WS_DONE;
+                    end else if (ws_anchor_to_r == 24'd0) begin
+                        // F4 FAIL-LOUD timeout: the anchor never (re-)latched
+                        // (dead sync_obs_clr routing / un-anchorable eye / a
+                        // ms-skewed peer already past its own force window).
+                        // Release anyway — never-done would DEADLOCK the
+                        // fch_pending_r handoff gate — and latch the sticky
+                        // observability bit (WINSCAN_OBS 0x21B8[2]). The
+                        // anchor can still latch LATE on idle-gated beacons
+                        // (insert_en stays up until fch_done + the F2 0.5 s
+                        // settle; the reanchored latch has no time veto).
+                        winscan_force_sync  <= 1'b0;
+                        ws_anchor_timeout_q <= 1'b1;
+                        winscan_done        <= 1'b1;
+                        ws_state_r          <= WS_DONE;
                     end else begin
-                        winscan_done <= 1'b1;
-                        ws_state_r   <= WS_DONE;
+                        ws_anchor_to_r <= ws_anchor_to_r - 24'd1;
                     end
                 end
                 // -------------------------------------------------------------
@@ -3664,6 +3883,9 @@ module axi_chiplet_controller #(
                     winscan_owns_taps  <= 1'b1;
                     winscan_force_sync <= 1'b0;
                     winscan_done       <= 1'b1;
+                    ws_obs_clr_r       <= 1'b0;  // F3: drop the level (re-arms the
+                                                 // destination edge-detect for the
+                                                 // next episode's single pulse)
                     if (ws_arm_kick) begin
                         ws_kicked_q  <= 1'b1;
                         winscan_done <= 1'b0;
@@ -4296,9 +4518,11 @@ module axi_chiplet_controller #(
         // AUTONOMOUS WINSCAN (2026-06-29): OR winscan_force_sync into the three
         // SYNC controls so the on-chip scan replicates the host's R8=0x1C
         // (insert_en + force_always + robust_detect all ON while scanning); the
-        // FSM drops winscan_force_sync at FINALIZE = the host's R8=0x14
-        // (force_always back to idle-gated) so the deskew `reanchored` latch can
-        // fire. winscan_force_sync=0 when the FSM is dormant => bit-identical.
+        // FSM drops winscan_force_sync at the FINALIZE EXIT (F3/F4 2026-07-02:
+        // held through FINALIZE so the post-clear `reanchored` re-confirm sees
+        // on-grid beacons; = the host's R8=0x14 once anchored, force_always
+        // back to idle-gated strictly before winscan_done/the bootstrap).
+        // winscan_force_sync=0 when the FSM is dormant => bit-identical.
         .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync),
         // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
         // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
@@ -4395,7 +4619,13 @@ module axi_chiplet_controller #(
         // SoC 0x44032100[5]) + live per-lane match vector (SoC 0x44032144) +
         // per-lane word-pin override (8x4b value + 8b enable, SoC 0x44032148).
         // Default (clr=0, ovr=0, en=0) -> bit-identical datapath.
-        .swi_sync_obs_clr_in         (swi_sync_obs_clr_r),
+        // F3 (2026-07-02): the winscan FSM's WS_FINALIZE re-anchor drives the
+        // SAME node as the manual R8 bit[5] W1-pulse — ws_obs_clr_r is a level
+        // held across WS_FINALIZE (the PHY 2-FF level sync would lose a
+        // 1-apb-cycle pulse; its edge-detect still makes exactly one clear
+        // pulse). ws_obs_clr_r=0 whenever the FSM is dormant ⇒ bit-identical
+        // manual path.
+        .swi_sync_obs_clr_in         (swi_sync_obs_clr_r | ws_obs_clr_r),
         .obs_sync_lane_live_o        (obs_sync_lane_live_w),
         .swi_word_pin_ovr_in         (swi_word_pin_perlane_r),
         .swi_word_pin_ovr_en_in      (swi_word_pin_perlane_en_r),

@@ -125,6 +125,11 @@ def _arm_winscan(tb, side):
     ctrl.nego_cfg_reg.value = cur | 0x1
     # sim dwell shrink (designed-in hook on the FSM)
     ctrl.tb_winscan_dwell_short_q.value = 1
+    # R4c (2026-07-02): the fch swreset dwell is 0.25 s on silicon; the
+    # handoff-ordering test observes the 0x208 burst the winscan gates, so
+    # keep the bootstrap bounded via the designed-in sim hook (the previous
+    # proven 4095-cycle dwell — same idiom as the winscan hook above).
+    ctrl.tb_fch_dwell_short_q.value = 1
 
 
 async def _pulse_training_fall(tb, side):

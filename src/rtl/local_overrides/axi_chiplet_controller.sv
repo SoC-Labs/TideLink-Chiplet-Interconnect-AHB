@@ -1125,6 +1125,13 @@ module axi_chiplet_controller #(
     wire       local_training_mode_set_w, local_training_mode_clr_w;
     wire       local_swreset_pulse_w;
 
+    // R4b (2026-07-02) forward decl — DRIVEN by the FC data-mode handoff
+    // sequencer (block after the autoneg instance); consumed upstream by the
+    // autonomous SYNC-OFF retime. `default_nettype none` forbids a forward
+    // reference, so the declaration is hoisted here; the driver keeps its
+    // documented position in the fch block below.
+    reg        fch_done_r;      // sticky: this fch episode's burst completed
+
 `ifdef TIDELINK_PHY_V2
     // ── Autonomous on-chip IDELAY WINSCAN FSM forward decls (2026-06-29) ──────
     // Driven by the winscan FSM block (placed after the FC handoff sequencer,
@@ -1189,7 +1196,14 @@ module axi_chiplet_controller #(
     // cstate=6 forever. sync_cfg_on_fired_q clears on the training FALL so a
     // re-training episode re-fires the drive.
     reg        sync_cfg_on_fired_q; // one-shot: SYNC-ON fired this training episode
-    reg        sync_cfg_wsdone_q;  // shadow of winscan_done   for the DONE  edge
+    // R4b (2026-07-02): SYNC-OFF is retimed from the winscan_done rise to the
+    // FC-handoff completion (fch_done_r rise) + a short settle, so the fch
+    // bootstrap's CR/CRACK re-walk runs UNDER idle-gated SYNC (safe: the TX
+    // inserter only fires between real packets) and only THEN does the beacon
+    // drop for data mode. sync_cfg_wsdone_q now shadows fch_done_r.
+    reg        sync_cfg_wsdone_q;  // shadow of fch_done_r for the OFF edge (R4b)
+    reg [11:0] sync_off_settle_r;  // R4b: post-fch_done settle before SYNC-OFF
+    localparam [11:0] SYNC_OFF_SETTLE = 12'd1024; // ≈20 µs @ 50 MHz apb_clk
 `endif
 
     // =====================================================================
@@ -1586,6 +1600,7 @@ module axi_chiplet_controller #(
             // one-shot rework 2026-07-02).
             sync_cfg_on_fired_q      <= 1'b0;
             sync_cfg_wsdone_q        <= 1'b0;
+            sync_off_settle_r        <= 12'd0;  // R4b: SYNC-OFF settle idle
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -1760,7 +1775,14 @@ module axi_chiplet_controller #(
             // lock + host-winscan path nego_en=0 ⇒ this never fires and every
             // swi_sync_* reg holds its POR default / host-written value — the SW
             // data regression and the manual silicon recipe are bit-identical.
-            sync_cfg_wsdone_q <= winscan_done;
+            // R4b (2026-07-02): shadow fch_done_r (was winscan_done) — the
+            // SYNC-OFF edge is now the FC-handoff bootstrap completing, not
+            // the winscan finishing. Ordering becomes:
+            //   scan (force-always via winscan_force_sync)
+            //   → WS_FINALIZE idle-gated dwell (reanchor latches)
+            //   → fch 0x208 bootstrap + CR/CRACK UNDER idle-gated SYNC
+            //   → fch_done_r rise + SYNC_OFF_SETTLE → SYNC off → data.
+            sync_cfg_wsdone_q <= fch_done_r;
             // R3: re-arm the one-shot on the training FALL (level, not edge —
             // robust even if the drop is missed for a cycle). Mutually
             // exclusive with the set below (which requires training HIGH).
@@ -1779,20 +1801,46 @@ module axi_chiplet_controller #(
                     swi_sync_lane_mask_r     <= wlink_rx_lane_mask; // rcp 0x2128[7:0]
                     swi_sync_tol_r           <= 5'd5;   // rcp 0x2128[12:8] — Hamming tol=5
                     swi_sync_insert_en_r     <= 1'b1;   // rcp R8 b2 — SYNC beacon on
-                    swi_sync_force_always_r  <= 1'b1;   // rcp R8 b3 — drop idle gate
+                    // R4a (2026-07-02): do NOT set swi_sync_force_always_r
+                    // here. Setting it made force-always persist through the
+                    // whole ~6.4 s scan AND past WS_FINALIZE (the OR at the
+                    // Wlink ports kept the idle gate dead), so the FCSMs —
+                    // running from POR (Wlink swi_enable PORs 1) — conversed
+                    // over a link that DELETED every 32nd payload word
+                    // (WlinkRxLinkLayer substitutes the SYNC beat with 0):
+                    // pktnum/credit desync → long=1 / credit-overcount /
+                    // fe_full re-wedge = the silicon (h)-data garble.
+                    // winscan_force_sync (WS_ARM..WS_PICK) already provides
+                    // force-always for the scan window, and training disarms
+                    // the TX inserter pre-scan (WavD2DGpio sync_insert is
+                    // gated on ~effective_training_mode), so there is no
+                    // coverage gap. Outside the scan the beacon is idle-gated
+                    // (insert_en only) — safe for live FC traffic.
                     swi_sync_robust_detect_r <= 1'b1;   // rcp R8 b4 — robust re-hunt
                     swi_word_pin_ovr_r       <= 4'h0;   // rcp 0x2104=0 — per-lane AUTO
                     swi_word_pin_auto_dis_r  <= 1'b0;   //   (POR default; explicit)
                 end
-                // SYNC-OFF after the winscan/reanchor completes (winscan_done rise).
-                // = host enter_data_mode R8=0x10 (SYNC off) AFTER reanchored.
-                if (winscan_done && !sync_cfg_wsdone_q) begin
-                    swi_sync_insert_en_r     <= 1'b0;
-                    swi_sync_force_always_r  <= 1'b0;
-                    swi_sync_robust_detect_r <= 1'b0;
-                    // lane_mask (=wlink_rx_lane_mask) / tol=5 intentionally
-                    // retained for the deskew.
+                // R4b SYNC-OFF: retimed to the FC-handoff bootstrap completing
+                // (fch_done_r rise) + SYNC_OFF_SETTLE, so the bootstrap's
+                // CR/CRACK re-walk happens UNDER idle-gated SYNC. = host
+                // enter_data_mode R8=0x10 (SYNC off) AFTER the 0x208 recipe.
+                // SYNC-ON-before-OFF invariant: fch_done_r can only rise after
+                // a training episode (arm on the training fall), which fired
+                // SYNC-ON above. Decrement first, rise-load second: a fresh
+                // episode's rise (fch_done_r one-shot re-arms on the next
+                // fch_arm) restarts the settle window cleanly.
+                if (sync_off_settle_r != 12'd0) begin
+                    sync_off_settle_r <= sync_off_settle_r - 12'd1;
+                    if (sync_off_settle_r == 12'd1) begin
+                        swi_sync_insert_en_r     <= 1'b0;
+                        swi_sync_force_always_r  <= 1'b0;  // robustness clear (POR 0; nothing autonomous sets it any more — R4a)
+                        swi_sync_robust_detect_r <= 1'b0;
+                        // lane_mask (=wlink_rx_lane_mask) / tol=5 intentionally
+                        // retained for the deskew.
+                    end
                 end
+                if (fch_done_r && !sync_cfg_wsdone_q)
+                    sync_off_settle_r <= SYNC_OFF_SETTLE;
             end
 `endif
         end
@@ -2844,8 +2892,21 @@ module axi_chiplet_controller #(
     //     lockstep. Purely a bring-up dwell; no steady-state impact.
     //   * FCH_GAP_CYCLES — the short settle between SWRESET_OFF and ENABLE
     //     (mirrors the SW recipe's ~20-cycle gap).
-    localparam [11:0] FCH_SWRESET_DWELL  = 12'd4095;  // ≈82 µs @ 50 MHz
-    localparam [11:0] FCH_GAP_CYCLES      = 12'd20;
+    // R4c (2026-07-02): widened 12'd4095 (≈82 µs) → 24'd12_500_000 (≈0.25 s
+    // @ 50 MHz). The two dies' fch bootstraps are gated on their LOCAL
+    // winscan_done, whose skew is ms-scale (the scans start on each die's own
+    // training fall and the per-tap silicon dwell is huge) — an 82 µs swreset
+    // window can NEVER overlap across the dies, so the framers left reset in
+    // different CR/CRACK epochs (the half-up wedge). The manual recipe holds
+    // ~0.2 s; 0.25 s gives huge margin over the ms-scale skew. Sims force
+    // tb_fch_dwell_short_q=1 (same idiom as tb_winscan_dwell_short_q) to get
+    // the previous, proven-in-sim 4095-cycle dwell.
+    localparam [23:0] FCH_SWRESET_DWELL     = 24'd12_500_000; // ≈0.25 s @ 50 MHz
+    localparam [23:0] FCH_SWRESET_DWELL_SIM = 24'd4095;       // TB-forced (the old value)
+    localparam [23:0] FCH_GAP_CYCLES        = 24'd20;
+    reg tb_fch_dwell_short_q = 1'b0;   // RTL-constant 0; cocotb deposits 1
+    wire [23:0] fch_swreset_dwell_w =
+        tb_fch_dwell_short_q ? FCH_SWRESET_DWELL_SIM : FCH_SWRESET_DWELL;
 
     // Sequencer phases (per write): SETUP (psel, !penable) → ACCESS
     // (psel, penable, wait pready) → GAP (settle). A 2-bit write-index
@@ -2859,11 +2920,14 @@ module axi_chiplet_controller #(
 
     reg [1:0]  fch_state_r;
     reg [1:0]  fch_widx_r;      // which of the three writes (0,1,2)
-    reg [11:0] fch_gap_r;
+    reg [23:0] fch_gap_r;       // R4c: widened 12→24 bits for the 0.25 s dwell
     reg [31:0] fch_wdata_r;     // current write payload
     reg        fch_active_r;    // sequencer owns the wl_apb bus this cycle
     reg        fch_penable_r;   // APB access-phase flag
-    reg        fch_done_r;      // sticky: this episode's burst completed
+    // fch_done_r (sticky episode-complete flag) is DECLARED early, next to the
+    // autoneg forward decls (~line 1128) — the R4b SYNC-OFF retime consumes it
+    // upstream and `default_nettype none` forbids forward references. It is
+    // driven ONLY by this block's FSM below.
 
     // Slave mode: I2C path active when psel asserted
     wire slv_apb_active = slv_apb_psel && !role_is_master;
@@ -3179,7 +3243,7 @@ module axi_chiplet_controller #(
         if (!poresetn) begin
             fch_state_r   <= FCH_IDLE;
             fch_widx_r    <= 2'd0;
-            fch_gap_r     <= 12'd0;
+            fch_gap_r     <= 24'd0;
             fch_wdata_r   <= FCH_LL_SWRESET_ON;
             fch_active_r  <= 1'b0;
             fch_penable_r <= 1'b0;
@@ -3224,7 +3288,7 @@ module axi_chiplet_controller #(
                         // Wide dwell after the SWRESET_ON write (widx 0) so the
                         // swi_swreset HIGH window overlaps the peer die's;
                         // short settle after SWRESET_OFF (widx 1).
-                        fch_gap_r     <= (fch_widx_r == 2'd0) ? FCH_SWRESET_DWELL
+                        fch_gap_r     <= (fch_widx_r == 2'd0) ? fch_swreset_dwell_w
                                                               : FCH_GAP_CYCLES;
                         fch_state_r   <= FCH_GAP;
                     end
@@ -3235,8 +3299,8 @@ module axi_chiplet_controller #(
                     // (psel=1, penable=0) so no spurious transfer starts.
                     fch_active_r  <= 1'b1;
                     fch_penable_r <= 1'b0;
-                    if (fch_gap_r != 12'd0) begin
-                        fch_gap_r <= fch_gap_r - 12'd1;
+                    if (fch_gap_r != 24'd0) begin
+                        fch_gap_r <= fch_gap_r - 24'd1;
                     end else if (fch_widx_r == FCH_N_WRITES - 2'd1) begin
                         // Final (ENABLE) write done — burst complete.
                         fch_active_r <= 1'b0;

@@ -261,6 +261,17 @@ module tidelink_autoneg #(
     localparam [2:0] TXN_POLL       = 3'd3;
     localparam [2:0] TXN_CHECK      = 3'd4;
     localparam [2:0] TXN_DONE       = 3'd5;
+    // R5 (2026-07-02): ST_TRAIN_ENTER preamble step — W1C the i2c_master_axil
+    // STICKY missed_ack (status reg 0x0 bit[3]: missed_ack_next latches
+    // missed_ack_reg||missed_ack_int and ONLY a status-reg write clears it).
+    // Without this, ONE spurious NACK — e.g. the late-arming peer's claim
+    // colliding with an in-flight retry transaction on the shared bus —
+    // stays latched forever and every later TXN_CHECK in every retry episode
+    // reads stale MISS_ACK, so the R5 auto-retry (and the SW W1P retrain)
+    // could never converge. V2-only (USE_CAL_IN_HOLD selects it on the
+    // DONE_PRE->TRAIN_ENTER arc); V1 keeps entering at TXN_DATA -> netlist
+    // unchanged.
+    localparam [2:0] TXN_STSCLR     = 3'd6;
 
     // Number of bytes pushed for the result-write transaction:
     //   2 address bytes (MSB=0x02, LSB=0x1C → Wlink.link_lane_mask_hs_result)
@@ -344,6 +355,38 @@ module tidelink_autoneg #(
     reg [11:0] train_wait_r,        train_wait_nxt;
     reg [3:0]  poll_attempt_r,      poll_attempt_nxt;
     reg [6:0]  swreset_hold_r,      swreset_hold_nxt;
+
+    // =====================================================================
+    // R5 (2026-07-02) — zombie-peer auto-retry backoff (V2/USE_CAL_IN_HOLD
+    // only; the gate constant-folds away on V1 so the V1 netlist is
+    // unchanged).
+    //
+    // Silicon trap: an un-armed slave-strapped die ACKs all I2C (POR
+    // device_address 0x7E, I2C slave core alive) while its Wlink/cal are
+    // still POR-parked — the early-armed master runs its whole training
+    // sequence against that zombie, the 16-attempt poll budget expires with
+    // local lanes unlockable (no peer TX), the N10 local-only bypass can't
+    // fire, and the FSM parks TERMINAL in ST_TRAIN_FAIL — which is excluded
+    // from the AXIL drive gate, so the master goes I2C-silent forever and
+    // the late-arming slave is never polled. Only exit was the SW W1P
+    // train_retrain_req.
+    //
+    // Fix: when train_auto_en and the backoff below expires, take the
+    // EXISTING train_retrain_req arc (ST_TRAIN_FAIL → ST_NEGO_DONE_PRE,
+    // where the episode state is fully re-seeded) AND reload timeout_ctr
+    // with nego_timeout_reg on that arc — otherwise ~50 retries drain the
+    // 2.6 s global budget into terminal ST_ERROR. Retry-forever is the
+    // intended "wait for the partner to arrive" semantics; the controller's
+    // sticky train_fail_irq_r keeps each FAIL diagnosable.
+    // =====================================================================
+    localparam [23:0] T_RETRY_BACKOFF     = 24'd15_000_000; // ≈0.3 s @ 50 MHz
+    localparam [23:0] T_RETRY_BACKOFF_SIM = 24'd20_000;     // TB-forced short
+    reg tb_retry_backoff_short_q = 1'b0;  // RTL-constant 0; cocotb deposits 1
+                                          // (same idiom as the controller's
+                                          // tb_winscan_dwell_short_q)
+    wire [23:0] retry_backoff_load_w =
+        tb_retry_backoff_short_q ? T_RETRY_BACKOFF_SIM : T_RETRY_BACKOFF;
+    reg [23:0] retry_backoff_r, retry_backoff_nxt;
     reg [7:0]  peer_lane_locked_r,  peer_lane_locked_nxt;
     reg [7:0]  peer_lane_fault_r,   peer_lane_fault_nxt;
     reg        peer_cal_done_r,     peer_cal_done_nxt;
@@ -546,6 +589,11 @@ module tidelink_autoneg #(
         state_nxt          = state_r;
         delay_ctr_nxt      = delay_ctr_r;
         timeout_ctr_nxt    = timeout_ctr_r;
+        // R5: the retry backoff is kept RELOADED everywhere except inside
+        // ST_TRAIN_FAIL (where it counts down), so each FAIL episode starts
+        // a fresh full backoff window.
+        retry_backoff_nxt  = (state_r == ST_TRAIN_FAIL) ? retry_backoff_r
+                                                        : retry_backoff_load_w;
         init_wait_nxt      = init_wait_r;
         nego_role_nxt      = nego_role_r;
         nego_done_nxt      = nego_done_r;
@@ -995,7 +1043,11 @@ module tidelink_autoneg #(
                         peer_lane_fault_nxt      = 8'h00;
                         peer_cal_done_nxt        = 1'b0;
                         peer_cal_in_hold_nxt     = 1'b0;      // L4: clear capture
-                        txn_step_nxt             = TXN_DATA;
+                        // R5: V2 enters TRAIN_ENTER via the missed_ack
+                        // status-clear preamble (see TXN_STSCLR decl); V1
+                        // (USE_CAL_IN_HOLD=0) constant-folds to TXN_DATA.
+                        txn_step_nxt             = USE_CAL_IN_HOLD ? TXN_STSCLR
+                                                                   : TXN_DATA;
                         state_nxt                = ST_TRAIN_ENTER;
                     end else begin
                         state_nxt = ST_NEGO_DONE;
@@ -1007,6 +1059,17 @@ module tidelink_autoneg #(
                     // payload bit[0]=1. Mirrors the existing
                     // ST_NEGO_MASK_RES_TX byte-push pattern.
                     case (txn_step_r)
+                        // R5 preamble (V2/USE_CAL_IN_HOLD only): one AXIL
+                        // write of 32'h8 to the i2c status reg clears the
+                        // sticky missed_ack from any PRIOR episode (bus
+                        // collision with a late-arming peer's claim, zombie
+                        // NACKs, ...) so this episode's TXN_CHECKs evaluate
+                        // THIS transaction. No I2C bus traffic (local core
+                        // register write). Falls through to TXN_DATA.
+                        TXN_STSCLR: if (axl_done_r) begin
+                            mask_byte_cnt_nxt = 3'd0;
+                            txn_step_nxt      = TXN_DATA;
+                        end
                         TXN_DATA: begin
                             if (axl_done_r) begin
                                 if (mask_byte_cnt_r == TRAIN_MODE_WR_BYTES - 3'd1) begin
@@ -1328,6 +1391,23 @@ module tidelink_autoneg #(
                         train_fail_nxt      = 1'b0;
                         train_peer_nack_nxt = 1'b0;
                         state_nxt           = ST_NEGO_DONE_PRE;
+                    end else if (USE_CAL_IN_HOLD && train_auto_en) begin
+                        // R5 (2026-07-02): zombie-peer auto-retry. On the
+                        // autonomous path (train_auto_en) FAIL is no longer
+                        // terminal — after the backoff expires, take the same
+                        // arc SW's train_retrain_req would (episode state is
+                        // re-seeded in ST_NEGO_DONE_PRE) and RELOAD the global
+                        // budget so retry-forever never drains into ST_ERROR.
+                        // Gated on USE_CAL_IN_HOLD (bit parameter): V1 (=0)
+                        // constant-folds this branch away — netlist unchanged.
+                        if (retry_backoff_r != 24'd0) begin
+                            retry_backoff_nxt   = retry_backoff_r - 24'd1;
+                        end else begin
+                            train_fail_nxt      = 1'b0;
+                            train_peer_nack_nxt = 1'b0;
+                            timeout_ctr_nxt     = nego_timeout_reg;
+                            state_nxt           = ST_NEGO_DONE_PRE;
+                        end
                     end
                 end
 
@@ -1613,6 +1693,14 @@ module tidelink_autoneg #(
                 axl_target_addr = {4'd0, I2C_REG_STATUS};
                 axl_is_read     = 1'b1;
             end
+            // R5: missed_ack W1C preamble (ST_TRAIN_ENTER, V2 only) — WRITE
+            // 32'h8 to the status reg (bit[3] clears the sticky NACK latch;
+            // bits 10/13 are 0 so the FIFO-overflow W1Cs are untouched).
+            TXN_STSCLR: begin
+                axl_target_addr  = {4'd0, I2C_REG_STATUS};
+                axl_target_wdata = 32'h0000_0008;
+                axl_is_read      = 1'b0;
+            end
             // TXN_CHECK and TXN_DONE are pure FSM-evaluation steps — no
             // AXIL transaction needed. The AXL drive gate excludes them
             // (see below) so the lookup defaults are unused.
@@ -1657,7 +1745,8 @@ module tidelink_autoneg #(
               state_r == ST_TRAIN_POLL_PEER ||
               state_r == ST_TRAIN_EXIT) &&
              (txn_step_r == TXN_PRESCALE || txn_step_r == TXN_DATA ||
-              txn_step_r == TXN_COMMAND  || txn_step_r == TXN_POLL)) begin
+              txn_step_r == TXN_COMMAND  || txn_step_r == TXN_POLL ||
+              (USE_CAL_IN_HOLD && txn_step_r == TXN_STSCLR))) begin
             case (axl_state_r)
                 AXL_IDLE: if (!axl_done_r) begin
                     // Hold AXL_IDLE while axl_done_r is asserted — the main
@@ -1757,6 +1846,7 @@ module tidelink_autoneg #(
             train_wait_r                <= '0;
             poll_attempt_r              <= '0;
             swreset_hold_r              <= '0;
+            retry_backoff_r             <= '0;   // R5: reloads in any non-FAIL state
             peer_lane_locked_r          <= 8'h00;
             peer_lane_fault_r           <= 8'h00;
             peer_cal_done_r             <= 1'b0;
@@ -1791,6 +1881,7 @@ module tidelink_autoneg #(
             train_wait_r         <= train_wait_nxt;
             poll_attempt_r       <= poll_attempt_nxt;
             swreset_hold_r       <= swreset_hold_nxt;
+            retry_backoff_r      <= retry_backoff_nxt;  // R5
             // Peer-byte captures: if capture_en pulses, latch axl_rdata_r[7:0];
             // otherwise hold (or take the _nxt assignment from the main_comb).
             if (peer_lane_locked_capture_en)

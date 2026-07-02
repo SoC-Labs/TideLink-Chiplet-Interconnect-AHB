@@ -15,20 +15,32 @@ host rcp() SYNC-detect configuration on-chip and SEQUENCES it correctly:
                       0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build = the rcp
                       0x2128[7:0] value; single source of truth, no literal)
                       swi_sync_tol_r       := 5      (rcp 0x2128[12:8])
-                      swi_sync_insert_en_r/force_always/robust := 1 (rcp R8=0x1D)
+                      swi_sync_insert_en_r/robust := 1 — and NOT force_always
+                      (R4a 2026-07-02: force-always persisting into data mode
+                      deleted every 32nd payload word — WlinkRxLinkLayer strips
+                      the SYNC beat to 0 — the silicon (h)-data garble. Outside
+                      the scan the beacon must be IDLE-GATED; the scan-window
+                      forcing is winscan_force_sync, OR'd at the Wlink ports by
+                      the winscan FSM itself.)
                       word-pin override := 0 / auto_dis := 0  (rcp 0x2104=0, AUTO)
-    ... winscan runs (forces SYNC itself), deskew reanchor latches ...
-    winscan_done 0->1
+    ... winscan runs (forces SYNC itself via winscan_force_sync), deskew
+        reanchor latches in WS_FINALIZE's now-genuinely-idle-gated dwell ...
+    winscan_done 0->1   (SYNC stays ON, idle-gated — asserted)
+    ... fch 0x208 bootstrap + CR/CRACK re-walk UNDER idle-gated SYNC ...
+    fch_done_r 0->1 (+ SYNC_OFF_SETTLE)
         -> SYNC-OFF : swi_sync_insert_en_r/force_always/robust := 0 (= host
-                      enter_data_mode R8=0x10 SYNC-off AFTER reanchored), while
+                      enter_data_mode R8=0x10 SYNC-off AFTER the bootstrap —
+                      R4b 2026-07-02 retime; was keyed on winscan_done), while
                       lane_mask / tol=5 are RETAINED for the deskew.
 
-The ORDERING invariant the prompt requires — the autonomous SYNC-ON write
-strictly precedes the SYNC-OFF — is asserted directly: SYNC-ON fires while
-training is HIGH (the one-shot needs swi_training_mode_r=1), SYNC-OFF only
-after winscan_done rises (which can only happen after the scan + finalize,
-i.e. after reanchor, kicked on the training FALL). This mirrors the existing
-FC-handoff sequencer's R8=0x10 step being driven AFTER reanchor.
+The ORDERING invariant — SYNC-ON strictly precedes SYNC-OFF, and SYNC-OFF now
+fires only AFTER the FC-handoff bootstrap — is asserted directly: SYNC-ON
+fires while training is HIGH (the one-shot needs swi_training_mode_r=1); SYNC
+is asserted STILL ON right after winscan_done (the R4b retime — the old
+winscan_done-keyed OFF must NOT fire there); OFF lands only after fch_done_r
+rises (+ settle). The fch swreset dwell rides the designed-in
+tb_fch_dwell_short_q hook (R4c: silicon dwell is now 0.25 s; the hook selects
+the previous, proven 4095-cycle sim dwell).
 
 Why this harness
 ----------------
@@ -151,6 +163,23 @@ async def _wait_winscan_done(tb, side, max_cycles=400_000, poll=200):
     return False, waited
 
 
+async def _wait_fch_done(tb, side, max_cycles=100_000, poll=100):
+    """R4b: wait for the FC-handoff bootstrap to complete (fch_done_r rise) —
+    the new SYNC-OFF trigger. Needs tb_fch_dwell_short_q=1 (R4c) or the
+    0.25 s silicon swreset dwell blows the sim budget."""
+    ctrl = _ctrl(tb.dut, side)
+    waited = 0
+    while waited < max_cycles:
+        await ClockCycles(tb.dut.hclk, poll)
+        waited += poll
+        try:
+            if int(ctrl.fch_done_r.value) == 1:
+                return True, waited
+        except ValueError:
+            pass
+    return False, waited
+
+
 @cocotb.test()
 async def test_v2_autonomous_sync_detect_drive(dut):
     """ZERO-poke autonomous SYNC-detect config: SYNC-ON at training-run, then
@@ -190,6 +219,10 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     # 0x2160 lock-thresh override. Eye model so the winscan reaches winscan_done.
     _set_nego_en(ctrl, True)
     ctrl.tb_winscan_dwell_short_q.value = 1
+    # R4c: the fch swreset dwell is 0.25 s on silicon — engage the designed-in
+    # sim hook (previous proven 4095-cycle dwell) so fch_done_r (the retimed
+    # SYNC-OFF trigger, R4b) arrives inside the sim budget.
+    ctrl.tb_fch_dwell_short_q.value = 1
     cocotb.start_soon(_sync_dist_model(tb, "m", TAP_OPT, ACTIVE_LANES))
     await ClockCycles(dut.hclk, 20)
 
@@ -234,15 +267,22 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     assert on["tol"] == EXP_SYNC_TOL, (
         f"SYNC-ON: tol did NOT become {EXP_SYNC_TOL} (got {on['tol']})")
     assert on["insert_en"] == 1, "SYNC-ON: insert_en (SYNC_EN) not set"
-    assert on["force_always"] == 1, "SYNC-ON: force_always not set"
+    # R4a: force_always must NOT be set by the autonomous SYNC-ON — outside the
+    # winscan window (which forces via winscan_force_sync at the Wlink ports)
+    # the beacon is IDLE-GATED. force_always=1 here would delete every 32nd
+    # payload word once FC traffic runs (the silicon (h)-data garble).
+    assert on["force_always"] == 0, (
+        "R4a REGRESSION: autonomous SYNC-ON set swi_sync_force_always_r — the "
+        "idle gate would be dead through data mode, deleting every 32nd "
+        "payload word (pktnum/credit desync, fe_full re-wedge)")
     assert on["robust"] == 1, "SYNC-ON: robust_detect not set"
     assert on["wp_ovr"] == 0 and on["wp_auto_dis"] == 0, (
         "SYNC-ON: word-pin not AUTO (rcp 0x2104=0): "
         f"ovr=0x{on['wp_ovr']:x} auto_dis={on['wp_auto_dis']}")
 
     log.info(f"SYNC-ON verified: lane_mask=0x{exp_lane_mask:02x} "
-             f"(=wlink_rx_lane_mask) tol=5 insert_en/force_always/robust=1 "
-             f"word-pin=AUTO (rcp R8=0x1D + 0x2128 SYNCTOL replicated)")
+             f"(=wlink_rx_lane_mask) tol=5 insert_en/robust=1 force_always=0 "
+             f"(R4a idle-gated) word-pin=AUTO (0x2128 SYNCTOL replicated)")
 
     # ---- Drive winscan to completion, observe SYNC-OFF ordering -------------
     # Snapshot that SYNC is STILL on right before winscan_done (proves SYNC-OFF
@@ -256,16 +296,45 @@ async def test_v2_autonomous_sync_detect_drive(dut):
 
     ok, w = await _wait_winscan_done(tb, "m")
     assert ok, f"winscan_done never asserted (after {w} cycles)"
-    # Let the SYNC-OFF edge (winscan_done 0->1) propagate one apb cycle.
+    # R4b RETIME GATE: right after winscan_done, SYNC must STILL be ON
+    # (idle-gated) — the old winscan_done-keyed OFF must NOT fire here. The
+    # fch 0x208 bootstrap (armed on winscan_done, ≥4095-cycle swreset dwell
+    # even with the short hook) is only just starting, so sampling a few
+    # cycles in is safely inside the bootstrap window.
     await ClockCycles(dut.hclk, 5)
-    off = _read_sync_cfg(ctrl)
-    log.info(f"after winscan_done (SYNC-OFF): {off}  (winscan_done@{w} cyc, "
-             f"{w * CLK_PERIOD_NS / 1000:.1f} us)")
+    post_ws = _read_sync_cfg(ctrl)
+    log.info(f"after winscan_done (SYNC must STILL be ON): {post_ws}  "
+             f"(winscan_done@{w} cyc, {w * CLK_PERIOD_NS / 1000:.1f} us)")
+    assert post_ws["insert_en"] == 1, (
+        "R4b ORDERING VIOLATION: SYNC-insert dropped AT winscan_done — "
+        "SYNC-OFF is retimed to fch_done_r(+settle) so the FC bootstrap's "
+        "CR/CRACK re-walk runs UNDER idle-gated SYNC")
+    assert post_ws["force_always"] == 0, (
+        "R4a: force_always high after the scan — winscan_force_sync must be "
+        "the only scan-window forcing and it drops at WS_FINALIZE")
 
-    assert off["insert_en"] == 0, (
-        "SYNC-OFF: insert_en did NOT drop after winscan_done — data path would "
-        "keep flooding SYNC (host enter_data_mode R8=0x10 not replicated)")
-    assert off["force_always"] == 0, "SYNC-OFF: force_always did not drop"
+    # ---- SYNC-OFF: retimed to the fch bootstrap completing (R4b) -----------
+    okf, wf = await _wait_fch_done(tb, "m")
+    assert okf, (
+        f"fch_done_r never rose (after {wf} cycles) — the FC-handoff "
+        f"bootstrap did not complete (is tb_fch_dwell_short_q forced?)")
+    # OFF lands SYNC_OFF_SETTLE (=1024 apb cycles) after the fch_done_r rise;
+    # allow a bounded margin.
+    off = None
+    off_seen = False
+    for _ in range(80):
+        await ClockCycles(dut.hclk, 50)
+        off = _read_sync_cfg(ctrl)
+        if off["insert_en"] == 0:
+            off_seen = True
+            break
+    log.info(f"after fch_done(+settle) (SYNC-OFF): {off}  (fch_done@+{wf} cyc)")
+
+    assert off_seen and off["insert_en"] == 0, (
+        "SYNC-OFF: insert_en did NOT drop after fch_done_r + settle — data "
+        "path would keep beaconing SYNC (host enter_data_mode R8=0x10 not "
+        "replicated on the retimed R4b path)")
+    assert off["force_always"] == 0, "SYNC-OFF: force_always not 0"
     assert off["robust"] == 0, "SYNC-OFF: robust_detect did not drop"
     # lane_mask / tol RETAINED across data mode (correct for the deskew).
     assert off["lane_mask"] == exp_lane_mask, (
@@ -274,10 +343,13 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     assert off["tol"] == EXP_SYNC_TOL, (
         f"SYNC-OFF: tol must be retained at {EXP_SYNC_TOL}, got {off['tol']}")
 
-    log.info("ORDERING VERIFIED: SYNC-ON (training-run) preceded SYNC-OFF "
-             "(after winscan_done/reanchor); lane_mask/tol retained for deskew.")
+    log.info("ORDERING VERIFIED: SYNC-ON (training-run) -> winscan (forced via "
+             "winscan_force_sync) -> STILL ON at winscan_done -> fch bootstrap "
+             "under idle-gated SYNC -> SYNC-OFF after fch_done(+settle); "
+             "lane_mask/tol retained for deskew.")
     log.info("VERDICT: PASS — autonomous SYNC-detect config replicates the host "
-             "rcp recipe on-chip with the correct SYNC-ON-before-SYNC-OFF order.")
+             "rcp recipe on-chip with the R4a idle-gated beacon and the R4b "
+             "fch_done-retimed SYNC-OFF order.")
 
 
 @cocotb.test()

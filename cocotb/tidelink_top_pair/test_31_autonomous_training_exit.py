@@ -218,6 +218,9 @@ async def test_31_autonomous_training_exit(dut):
     # (asserted below) — the safe, identity-tap outcome.
     for side in ("m", "s"):
         _ctrl(dut, side).tb_winscan_dwell_short_q.value = 1
+        # R4c: the fch swreset dwell is now 0.25s (bilateral overlap) — shrink
+        # it in sim via the designed-in hook, same idiom as the winscan knob.
+        _ctrl(dut, side).tb_fch_dwell_short_q.value = 1
         _ctrl(dut, side).obs_sync_dist_vec_w.value = Force(0)
 
     # (g) R1: monitor the fch sequencer's 0x208 payload sequence on both dies.

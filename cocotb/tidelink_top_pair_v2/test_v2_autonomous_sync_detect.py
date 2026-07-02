@@ -7,8 +7,13 @@ SYNC-detect registers, the autoneg-driven config block in
 axi_chiplet_controller.sv ("AUTONOMOUS SYNC-DETECT CONFIG DRIVE") replicates the
 host rcp() SYNC-detect configuration on-chip and SEQUENCES it correctly:
 
-    training-RUN (swi_training_mode_r 0->1, nego_en & role_locked)
-        -> SYNC-ON  : swi_sync_lane_mask_r := 0xE4   (rcp 0x2128[7:0])
+    training-RUN (nego_en & role_locked & swi_training_mode_r first ALL-true —
+                  R3 2026-07-02: a LEVEL one-shot, not a bare rising edge, so a
+                  late-arming die (master-armed-first silicon race) still fires)
+        -> SYNC-ON  : swi_sync_lane_mask_r := wlink_rx_lane_mask (M2 2026-07-02:
+                      the Wlink RX lane-mask mirror — 0xFF in this 8-lane sim,
+                      0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build = the rcp
+                      0x2128[7:0] value; single source of truth, no literal)
                       swi_sync_tol_r       := 5      (rcp 0x2128[12:8])
                       swi_sync_insert_en_r/force_always/robust := 1 (rcp R8=0x1D)
                       word-pin override := 0 / auto_dis := 0  (rcp 0x2104=0, AUTO)
@@ -16,13 +21,14 @@ host rcp() SYNC-detect configuration on-chip and SEQUENCES it correctly:
     winscan_done 0->1
         -> SYNC-OFF : swi_sync_insert_en_r/force_always/robust := 0 (= host
                       enter_data_mode R8=0x10 SYNC-off AFTER reanchored), while
-                      lane_mask=0xE4 / tol=5 are RETAINED for the deskew.
+                      lane_mask / tol=5 are RETAINED for the deskew.
 
 The ORDERING invariant the prompt requires — the autonomous SYNC-ON write
-strictly precedes the SYNC-OFF — is asserted directly: SYNC-ON fires on the
-training-mode rising edge, SYNC-OFF only after winscan_done rises (which can
-only happen after the scan + finalize, i.e. after reanchor). This mirrors the
-existing FC-handoff sequencer's R8=0x10 step being driven AFTER reanchor.
+strictly precedes the SYNC-OFF — is asserted directly: SYNC-ON fires while
+training is HIGH (the one-shot needs swi_training_mode_r=1), SYNC-OFF only
+after winscan_done rises (which can only happen after the scan + finalize,
+i.e. after reanchor, kicked on the training FALL). This mirrors the existing
+FC-handoff sequencer's R8=0x10 step being driven AFTER reanchor.
 
 Why this harness
 ----------------
@@ -62,8 +68,16 @@ from test_v2_winscan_fsm import (
 )
 
 # Golden rcp() SYNC-detect config (fpga/hw_regression/td_v2_hwlib.sh).
-EXP_LANE_MASK = 0xE4   # rcp R_SYNCTOL 0x2128[7:0]
+# M2 (2026-07-02): the expected LANE MASK is no longer a constant — the drive
+# writes wlink_rx_lane_mask (the Wlink RX lane-mask POR mirror: 0xFF in this
+# 8-lane sim, 0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build, where it equals
+# the rcp 0x5e4[7:0] value). Derived at runtime via _exp_lane_mask(ctrl).
 EXP_SYNC_TOL  = 5      # rcp R_SYNCTOL 0x2128[12:8]
+
+
+def _exp_lane_mask(ctrl):
+    """M2: the SYNC-ON drive's lane-mask source of truth (wlink_rx_lane_mask)."""
+    return int(ctrl.wlink_rx_lane_mask.value)
 
 
 def _read_sync_cfg(ctrl):
@@ -203,15 +217,20 @@ async def test_v2_autonomous_sync_detect_drive(dut):
         f"(lane0={lt_lane0} word=0x{lt_word:06x} want=0x{EXP_THRESH_WORD:06x}) — "
         f"rcp 0x2160=0x55555555 not replicated on the autonomous path")
 
-    # ---- SYNC-ON: training-RUN rising edge applies the rcp config ----------
+    # ---- SYNC-ON: training-RUN applies the rcp config ----------------------
     await _training_rise(tb, "m")
     on = _read_sync_cfg(ctrl)
     log.info(f"after training-RUN (SYNC-ON): {on}")
 
-    assert on["lane_mask"] == EXP_LANE_MASK, (
-        f"SYNC-ON: lane_mask did NOT become 0x{EXP_LANE_MASK:02x} "
+    # M2: the drive's mask value = wlink_rx_lane_mask (0xFF in this sim — same
+    # as POR, so the FIRING proof is carried by tol/insert_en/force_always/
+    # robust below; on the 0xE4 silicon build this assert additionally pins
+    # the mask update itself).
+    exp_lane_mask = _exp_lane_mask(ctrl)
+    assert on["lane_mask"] == exp_lane_mask, (
+        f"SYNC-ON: lane_mask did NOT become wlink_rx_lane_mask=0x{exp_lane_mask:02x} "
         f"(got 0x{on['lane_mask']:02x}) — autonomous SYNC-detect config did not "
-        f"fire on the training-run edge")
+        f"fire / M2 single-source-of-truth regressed")
     assert on["tol"] == EXP_SYNC_TOL, (
         f"SYNC-ON: tol did NOT become {EXP_SYNC_TOL} (got {on['tol']})")
     assert on["insert_en"] == 1, "SYNC-ON: insert_en (SYNC_EN) not set"
@@ -221,8 +240,9 @@ async def test_v2_autonomous_sync_detect_drive(dut):
         "SYNC-ON: word-pin not AUTO (rcp 0x2104=0): "
         f"ovr=0x{on['wp_ovr']:x} auto_dis={on['wp_auto_dis']}")
 
-    log.info("SYNC-ON verified: lane_mask=0xE4 tol=5 insert_en/force_always/"
-             "robust=1 word-pin=AUTO (rcp R8=0x1D + 0x2128=0x5e4 replicated)")
+    log.info(f"SYNC-ON verified: lane_mask=0x{exp_lane_mask:02x} "
+             f"(=wlink_rx_lane_mask) tol=5 insert_en/force_always/robust=1 "
+             f"word-pin=AUTO (rcp R8=0x1D + 0x2128 SYNCTOL replicated)")
 
     # ---- Drive winscan to completion, observe SYNC-OFF ordering -------------
     # Snapshot that SYNC is STILL on right before winscan_done (proves SYNC-OFF
@@ -248,9 +268,9 @@ async def test_v2_autonomous_sync_detect_drive(dut):
     assert off["force_always"] == 0, "SYNC-OFF: force_always did not drop"
     assert off["robust"] == 0, "SYNC-OFF: robust_detect did not drop"
     # lane_mask / tol RETAINED across data mode (correct for the deskew).
-    assert off["lane_mask"] == EXP_LANE_MASK, (
-        f"SYNC-OFF: lane_mask must be RETAINED at 0x{EXP_LANE_MASK:02x} for the "
-        f"deskew, got 0x{off['lane_mask']:02x}")
+    assert off["lane_mask"] == exp_lane_mask, (
+        f"SYNC-OFF: lane_mask must be RETAINED at 0x{exp_lane_mask:02x} "
+        f"(=wlink_rx_lane_mask) for the deskew, got 0x{off['lane_mask']:02x}")
     assert off["tol"] == EXP_SYNC_TOL, (
         f"SYNC-OFF: tol must be retained at {EXP_SYNC_TOL}, got {off['tol']}")
 

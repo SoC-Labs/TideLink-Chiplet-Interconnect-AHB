@@ -36,6 +36,39 @@ so they NEVER exercise the training-exit. This test:
   (e) asserts swi_training_mode_r goes 1→0 on both dies (via the autoneg's
       local_train_clr_pulse), and that the FCSM leaves state 1.
 
+R1 strengthening (2026-07-02) — autonomous FC-handoff DATA gate
+---------------------------------------------------------------
+The bridge1 silicon run completed a-g and wedged ONLY at (h) data delivery:
+the fch sequencer's bootstrap drove 0x27f08/0x27f00/0x27f07 (bit0 = FCCTRL
+0x208 swi_enable = the FCSM run/credit enable held LOW through the swreset),
+wedging the sender fe_rx_is_full=1 (OBS_FC_CREDIT=0xfc01001f); the manual
+0x27f09/0x27f01/0x27f07 re-run cleared it. WHY SIM MISSED IT: since the
+winscan handoff gate landed (8705a99), the fch bootstrap NEVER actually ran
+inside the sim window — winscan_done sits behind the SILICON per-tap dwell
+(2.5M apb cycles/tap ⇒ the scan "finishes" ~seconds of sim time after the
+training fall), so FCSM=4 was reached NATURALLY by the clean-PHY framers and
+test_30's doorbell crossed on that naturally-up link, never on the bootstrap
+path (and a doorbell is a single short packet — it doesn't stress the fe
+credit ring the way an AHB_TX data burst does). This test now:
+  (f) engages the DESIGNED-IN winscan sim-dwell hook (tb_winscan_dwell_short_q,
+      same idiom as the calibrator's knob — a timing accommodation, NOT a
+      state bypass) so the winscan AND the fch bootstrap actually RUN in-window,
+      and FORCES obs_sync_dist_vec_w=0 on both dies (a SIM EYE MODEL, the same
+      idiom as test_v2_winscan_fsm's dist model): in RTL sim there is no real
+      eye — the raw metric is pure rotation noise because the tap nibble is
+      OR-merged into the deserialiser word phase (WavD2DGpioRx adj_count), so
+      an unmodelled in-window scan commits arbitrary rotation taps and
+      permanently corrupts both dies' RX (diagnosed 2026-07-02: slave parked
+      fcsm=2 ck=0 cred=0 post-bootstrap). A flat-0 metric makes the scan
+      DEGENERATE, which additionally regression-gates the R2c guard:
+      ws_degenerate_q must latch and the SEEDED taps must be restored,
+  (g) monitors the fch sequencer and asserts it drove EXACTLY the proven
+      manual values 0x27f09 → 0x27f01 → 0x27f07 on BOTH dies,
+  (h) after the post-bootstrap FCSM=4, sends an AHB_TX data burst M→S and
+      asserts BYTE-EXACT arrival + the sender's fe credit gate OPEN
+      (fe_rx_is_full=0, fe_rx_credit_max loaded) — the exact silicon step
+      that wedged.
+
 Run
 ---
     cd cocotb/tidelink_top_pair
@@ -48,9 +81,18 @@ Run
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
+from cocotb.handle import Force
+
+# PairTB gives the proven signal-level AHB_TX / FIFO drivers for the R1 data
+# gate (h). Its ctor also starts the clocks + idles the buses.
+from test_tidelink_pair_doorbell import PairTB
 
 CLK_PERIOD_NS     = 20.0
 REF_CLK_PERIOD_NS = 8.0
+
+# R1: the PROVEN manual FC-handoff bootstrap values (0x208 writes) the
+# autonomous fch sequencer must replicate EXACTLY (bit0 = swi_enable HELD 1).
+FCH_EXPECT = [0x00027F09, 0x00027F01, 0x00027F07]
 
 # Calibrator state encoding (deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv)
 CAL_S_IDLE, CAL_S_ARM, CAL_S_SWEEP, CAL_S_FINISH = 0, 1, 2, 3
@@ -123,18 +165,65 @@ async def _reset(dut):
     await ClockCycles(dut.hclk, 50)
 
 
+async def _fch_monitor(dut, side, fch_writes):
+    """R1 (g): record the ORDERED, DEDUPED sequence of 0x208 payloads the fch
+    sequencer drives (fch_wdata_r while fch_active_r=1). Coarse-polls until the
+    handoff arms (fch_pending_r latches on the training fall and holds for the
+    whole winscan), then fine-samples every 2 hclk (= apb_clk) cycles — each
+    payload is held for >=23 cycles (SETUP+ACCESS+GAP), so none can be missed.
+    Exits once fch_done_r latches."""
+    ctrl = _ctrl(dut, side)
+    while True:                       # coarse: wait for the handoff to arm
+        await ClockCycles(dut.hclk, 200)
+        try:
+            if int(ctrl.fch_pending_r.value) == 1 or \
+               int(ctrl.fch_active_r.value) == 1:
+                break
+        except ValueError:
+            pass
+    while True:                       # fine: capture the burst
+        await ClockCycles(dut.hclk, 2)
+        try:
+            if int(ctrl.fch_active_r.value) == 1:
+                w = int(ctrl.fch_wdata_r.value)
+                lst = fch_writes[side]
+                if not lst or lst[-1] != w:
+                    lst.append(w)
+            if int(ctrl.fch_done_r.value) == 1:
+                return
+        except ValueError:
+            pass
+
+
 @cocotb.test()
 async def test_31_autonomous_training_exit(dut):
     log = dut._log
     log.info("L4 — de-forced autonomous training-exit (no tb_early_exit_force_q)")
 
-    cocotb.start_soon(
-        Clock(dut.hclk, int(round(CLK_PERIOD_NS * 1000)), unit="ps").start())
-    cocotb.start_soon(
-        Clock(dut.ref_clk, int(round(REF_CLK_PERIOD_NS * 1000)), unit="ps").start())
-
+    # PairTB starts the clocks and idles the AHB/FIFO buses; it also provides
+    # the proven AHB_TX / FIFO signal-level drivers used by the R1 data gate.
+    tb = PairTB(dut)
     await _idle_stimulus(dut)
     await _reset(dut)
+
+    # (f) R1: engage the DESIGNED-IN winscan sim-dwell hook on BOTH dies so the
+    # on-chip winscan (and hence the gated fch bootstrap) actually RUNS inside
+    # the sim window. Pure timing accommodation (parameter-designed hook, same
+    # idiom as the calibrator's) — the FSM still walks every state.
+    # Also model the eye as FLAT (dist=0): in RTL sim there is no real eye and
+    # the raw metric is rotation noise (tap nibble OR-merges into the
+    # deserialiser word phase), so an unmodelled scan commits arbitrary
+    # rotation taps and corrupts both RX paths. Flat-0 = the DEGENERATE case:
+    # the R2c guard must latch ws_degenerate_q and restore the seeded taps
+    # (asserted below) — the safe, identity-tap outcome.
+    for side in ("m", "s"):
+        _ctrl(dut, side).tb_winscan_dwell_short_q.value = 1
+        _ctrl(dut, side).obs_sync_dist_vec_w.value = Force(0)
+
+    # (g) R1: monitor the fch sequencer's 0x208 payload sequence on both dies.
+    fch_writes = {"m": [], "s": []}
+    for side in ("m", "s"):
+        cocotb.start_soon(_fch_monitor(dut, side, fch_writes))
 
     # ---- Sanity: the sim bypass is NOT engaged on either die -----------------
     for side in ("m", "s"):
@@ -291,7 +380,106 @@ async def test_31_autonomous_training_exit(dut):
             f"{name} FCSM never reached 4 (data mode) after cal S_DONE — the "
             f"autonomous FC handoff did not complete")
 
+    # ---- (8) R1: the fch bootstrap RAN and drove the EXACT manual values ----
+    # Wait for the sequencer to complete on both dies (the winscan gate holds
+    # it out for the whole scan; with the sim dwell that is ~30k cycles, then
+    # the burst itself takes ~4.2k cycles — 82 us swreset dwell included).
+    fch_done = {"m": False, "s": False}
+    for _ in range(6000):
+        await ClockCycles(dut.hclk, 500)
+        for side in ("m", "s"):
+            if _si(_ctrl(dut, side).fch_done_r) == 1:
+                fch_done[side] = True
+        if all(fch_done.values()):
+            break
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        assert fch_done[side], (
+            f"{name} fch sequencer never completed (fch_done_r=0) — the "
+            f"autonomous FC-handoff bootstrap did not run (winscan gate "
+            f"wedged?)")
+        log.info(f"{name} fch bootstrap payload sequence: "
+                 + " -> ".join(f"0x{w:05x}" for w in fch_writes[side]))
+        assert fch_writes[side] == FCH_EXPECT, (
+            f"{name} fch sequencer drove {[hex(w) for w in fch_writes[side]]} "
+            f"!= the PROVEN manual bootstrap {[hex(w) for w in FCH_EXPECT]} — "
+            f"R1 regression: 0x208 bit0 (swi_enable = FCSM run/credit enable) "
+            f"must be HELD 1 through the swreset (silicon wedge "
+            f"OBS_FC_CREDIT=0xfc01001f otherwise)")
+    # R2c regression gate: the flat-0 modelled metric MUST trip the
+    # degenerate-scan guard, and the guard MUST have restored the SEEDED
+    # (host/APB, here POR-0) taps — not committed an arbitrary argmin.
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        c = _ctrl(dut, side)
+        deg  = _si(c.ws_degenerate_q)
+        wsof = _si(c.ws_phase_offset_r)
+        wslb = _si(c.ws_phase_lsb_r)
+        seed = _si(c.swi_phase_offset_r)
+        sdlb = _si(c.swi_phase_lsb_r)
+        log.info(f"{name} winscan: degenerate={deg} "
+                 f"ws_taps=0x{wsof:08x}/{wslb:02x} seed=0x{seed:08x}/{sdlb:02x}")
+        assert deg == 1, (
+            f"{name}: ws_degenerate_q NOT latched on a FLAT metric — the R2c "
+            f"degenerate-scan guard failed (arbitrary argmin taps would ship)")
+        assert wsof == seed and wslb == sdlb, (
+            f"{name}: degenerate scan did NOT restore the seeded taps "
+            f"(ws=0x{wsof:08x}/{wslb:02x} != seed=0x{seed:08x}/{sdlb:02x}) — "
+            f"the OR-merged deserialiser phase would be corrupted")
+
+    # ---- (9) R1: post-BOOTSTRAP FCSM=4 (the bootstrap swreset re-walks the
+    #      CR/CRACK exchange — this is the handoff path silicon takes). -------
+    fc_ok2 = {"m": False, "s": False}
+    for _ in range(3000):
+        await ClockCycles(dut.hclk, 200)
+        for side in ("m", "s"):
+            if _si(_fcsm(dut, side).state) == 4:
+                fc_ok2[side] = True
+        if all(fc_ok2.values()):
+            break
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        assert fc_ok2[side], (
+            f"{name} FCSM did not (re-)reach 4 after the autonomous fch "
+            f"bootstrap — the 0x208 sequence wedged the framer "
+            f"(fcsm={_si(_fcsm(dut, side).state)})")
+
+    # ---- (10) R1: DATA GATE — AHB_TX burst M->S must arrive BYTE-EXACT and
+    #      the SENDER's fe credit gate must be OPEN (the exact silicon step
+    #      that wedged: fe_full=1, burst stuck in a2l replay). ----------------
+    from tidelink.packet import encode_word0, PKT_WR_REQ
+    payload = [0xC0DE1234, 0xFEED5678]
+    word0 = encode_word0(length=len(payload), pkt_type=PKT_WR_REQ,
+                         src_id=0, dest_id=0, tag=0)
+    await tb.ahb_tx_write_packet("m", [word0, 0x0] + payload)
+    await ClockCycles(dut.hclk, 4000)
+
+    s_w2 = await tb.ahb_fifo_read_word("s", 0x08)
+    s_w3 = await tb.ahb_fifo_read_word("s", 0x0C)
+    log.info(f"R1 data gate: slave FIFO w2=0x{s_w2:08x} w3=0x{s_w3:08x} "
+             f"(expected 0x{payload[0]:08x} 0x{payload[1]:08x})")
+
+    m_fcsm_h  = _fcsm(dut, "m")
+    fe_full   = _si(m_fcsm_h.fe_rx_is_full)
+    fe_cred   = _si(m_fcsm_h.fe_rx_credit_max)
+    fe_ptr    = _si(m_fcsm_h.fe_rx_ptr)
+    log.info(f"R1 sender credit gate: fe_rx_is_full={fe_full} "
+             f"fe_rx_credit_max={fe_cred} fe_rx_ptr={fe_ptr}")
+
+    assert (s_w2, s_w3) == (payload[0], payload[1]), (
+        f"R1 DATA GATE FAILED: AHB_TX burst did not arrive byte-exact over the "
+        f"autonomous FC handoff (got 0x{s_w2:08x}/0x{s_w3:08x}, want "
+        f"0x{payload[0]:08x}/0x{payload[1]:08x}) — the silicon (h) wedge "
+        f"signature (sender fe_full={fe_full} cred={fe_cred} ptr={fe_ptr})")
+    assert fe_full == 0, (
+        f"R1: sender fe_rx_is_full=1 AFTER the burst — the FE credit gate is "
+        f"CLOSED (silicon OBS_FC_CREDIT=0xfc01001f wedge signature); "
+        f"cred={fe_cred} ptr={fe_ptr}")
+    assert fe_cred != 0, (
+        "R1: sender fe_rx_credit_max=0 — the CR/CRACK credit grant never "
+        "(re-)loaded after the autonomous bootstrap")
+
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
              "transited S_HOLD→S_VALIDATE→S_DONE (no re-sweep after clear), "
              "swi_training_mode cleared 1→0 by the autoneg FSM (not a TB force), "
-             "both settled S_DONE + FCSM=4. L4 deadlock + death-spiral broken.")
+             "both settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
+             "0x27f09→0x27f01→0x27f07 on both dies; post-bootstrap FCSM=4; "
+             "AHB_TX data crossed BYTE-EXACT with the sender's fe credit gate "
+             "OPEN. L4 deadlock + death-spiral + R1 credit wedge covered.")

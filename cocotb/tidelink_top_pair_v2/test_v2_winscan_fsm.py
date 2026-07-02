@@ -39,19 +39,26 @@ from pair_v2_common import (
     CLK_PERIOD_NS,
 )
 
-# Per-lane "true centre" tap the modelled eye minimises at (0..31). The active
-# lane set in the silicon recipe is {2,5,6,7} (mask 0xe4). The autonomous arm
-# (_arm_winscan -> nego_en=1 + training rise) now drives the on-chip
+# Per-lane "true centre" tap the modelled eye minimises at (0..31). The
+# autonomous arm (_arm_winscan -> nego_en=1 + training rise) drives the on-chip
 # SYNC-detect config (axi_chiplet_controller.sv "AUTONOMOUS SYNC-DETECT CONFIG
-# DRIVE"), which sets swi_sync_lane_mask_r=0xe4 on the training-run edge — so the
-# winscan scans exactly those four active lanes (the masked lanes keep their
-# seeded tap). Distinct optima per active lane prove the FSM tracks an
-# independent argmin for each. (Before the autonomous SYNC-detect drive existed,
-# the mask stayed at its 0xFF POR default and all 8 lanes scanned.)
+# DRIVE"), which — since M2 (2026-07-02) — sets swi_sync_lane_mask_r =
+# wlink_rx_lane_mask (single source of truth: 0xFF POR in this 8-lane sim,
+# 0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build) instead of a hardcoded
+# bridge1 0xE4 literal. In sim ALL 8 lanes therefore scan; distinct optima per
+# lane prove the FSM tracks an independent argmin for each.
+#
+# R2 model note (2026-07-02): the FSM now TEAR-QUALIFIES its samples (accepts a
+# sample only when two consecutive reads of the CDC'd distance are EQUAL, with
+# a spacing dwell between accepted samples). This model is compatible by
+# construction: it forces the obs vector every cycle to a DETERMINISTIC
+# function of the currently-applied tap, so the value is rock-stable between
+# tap changes — exactly like real silicon between IDELAY reloads — and the
+# two-equal-reads qualifier passes immediately.
 TAP_OPT = {0: 14, 1: 9, 2: 20, 3: 5, 4: 17, 5: 11, 6: 24, 7: 3}
 
-# Active set after the autonomous arm sets mask 0xe4 (lanes 2,5,6,7).
-ACTIVE_LANES = [2, 5, 6, 7]
+# Active set = the sim POR wlink_rx_lane_mask (0xFF) => all 8 lanes (M2).
+ACTIVE_LANES = list(range(8))
 
 
 def _ctrl(dut, side):
@@ -186,6 +193,13 @@ async def test_v2_winscan_fsm_picks_centre(dut):
     assert not mismatches, (
         "winscan FSM picked the WRONG tap on lane(s) "
         + ", ".join(f"L{l}: got {g} want {w}" for l, g, w in mismatches))
+
+    # R2c: the modelled metric VARIES with the tap, so the degenerate-scan
+    # guard must NOT have fired (the picks above are real argmins, not the
+    # middle-tap fallback).
+    assert int(ctrl.ws_degenerate_q.value) == 0, (
+        "ws_degenerate_q latched on a VARYING metric — the flat-scan detector "
+        "is over-triggering (would discard real winscan results)")
 
     # The FSM must HOLD ownership (the picked centres stay applied) and have
     # dropped force-SYNC (idle-gated) at finalize.

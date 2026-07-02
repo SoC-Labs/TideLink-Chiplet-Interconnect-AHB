@@ -8,7 +8,8 @@ link all the way to DATA with no SW/APB writes at all:
 
     POR → (autoneg) role-lock + cal + training → ST_TRAIN_EXIT
         → swi_training_mode 1→0 → FC-handoff sequencer injects the 0x208
-          LL swreset bootstrap (0x27f08 → 0x27f00 → 0x27f07) autonomously
+          LL swreset bootstrap (0x27f09 → 0x27f01 → 0x27f07, R1 2026-07-02:
+          bit0/swi_enable HELD 1 = the proven manual recipe) autonomously
         → FCSM leaves SEND_CR, exchanges CR/CRACK on both dies (cr=crack=1)
         → doorbell crosses master→slave.
 

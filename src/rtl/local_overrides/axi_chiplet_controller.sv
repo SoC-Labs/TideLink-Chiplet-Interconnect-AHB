@@ -1145,11 +1145,25 @@ module axi_chiplet_controller #(
     //                       FINALIZE (the R8=0x14 idle-gate so reanchored latches).
     //   winscan_done      : 1 once the scan + finalize completed for this nego
     //                       episode — gates the FC data-mode handoff.
+    //   ws_degenerate_q   : R2c (2026-07-02) sticky DEGENERATE-SCAN flag: the
+    //                       full sweep saw NO metric variation on any scanned
+    //                       lane (flat distance ⇒ nothing was actually
+    //                       measured — the silicon taps-(0,0,0,0) signature).
+    //                       The FSM then RESTORES THE SEEDED (host/APB) taps
+    //                       instead of shipping the arbitrary argmin tap 0
+    //                       (see the WS_NEXT_LANE_ENTER guard for why the
+    //                       seed, not a "middle" tap: the nibble is OR-merged
+    //                       into the deserialiser phase) and still raises
+    //                       winscan_done (never-done would DEADLOCK the
+    //                       fch_pending_r handoff gate with no retry path);
+    //                       this flag makes the condition loud via the Region-D
+    //                       WINSCAN_OBS slot (0x21B8).
     reg [31:0] ws_phase_offset_r;
     reg [7:0]  ws_phase_lsb_r;
     reg        winscan_owns_taps;
     reg        winscan_force_sync;
     reg        winscan_done;
+    reg        ws_degenerate_q;
 
     // ── Autonomous SYNC-detect config drive shadows (2026-06-30) ──────────────
     // The LAST autonomy layer: on the autonomous (nego_en) path the host's rcp
@@ -1164,7 +1178,17 @@ module axi_chiplet_controller #(
     // (mirroring the host's enter_data_mode R8=0x10 SYNC-off AFTER reanchor).
     // Self-contained 1-cycle edge shadows so the drive needs no forward reference
     // to swi_training_mode_rise / winscan_done's own edge (declared further down).
-    reg        sync_cfg_train_q;   // shadow of swi_training_mode_r for the RUN edge
+    //
+    // R3 arm-order race fix (2026-07-02): SYNC-ON is a ONE-SHOT on the full
+    // conjunction (nego_en & role_locked & swi_training_mode_r) becoming true,
+    // NOT an edge detect on swi_training_mode_r alone. On silicon, when the
+    // MASTER arms first its autoneg I2C-writes the slave's SWI_TRAINING_MODE=1
+    // BEFORE the slave's nego_en/role_locked have latched — the old edge
+    // detector consumed the training rise while the gate was false, so the
+    // slave never got SYNC_EN (R8=0x00, tol=0) and both calibrators parked at
+    // cstate=6 forever. sync_cfg_on_fired_q clears on the training FALL so a
+    // re-training episode re-fires the drive.
+    reg        sync_cfg_on_fired_q; // one-shot: SYNC-ON fired this training episode
     reg        sync_cfg_wsdone_q;  // shadow of winscan_done   for the DONE  edge
 `endif
 
@@ -1189,6 +1213,14 @@ module axi_chiplet_controller #(
     // autoneg FSM (local_cal_in_hold_i) and packed into SWI_LANE_STATUS so
     // the PEER can read it over I2C.
     reg       sync_cal_in_hold_0, sync_cal_in_hold_1;
+
+    // Local Wlink lane-mask mirrors (read-only outputs of the Wlink swi_*_
+    // lane_mask registers; POR default 0xFF, 0xE4 under TD_AUTO_LANE_MASK_E4).
+    // Declared here (before first use) — the M2 autonomous SYNC-mask drive in
+    // the Region-8/9 write block consumes wlink_rx_lane_mask; also feeds the
+    // autoneg mask handshake and the calibrator lane_mask (below).
+    wire [7:0] wlink_tx_lane_mask;
+    wire [7:0] wlink_rx_lane_mask;
 
     // SoC Labs credit-path observability — same 2-flop apb_clk sync
     // pattern. The FCSM/byte-align bits are slow-moving status (state
@@ -1550,8 +1582,9 @@ module axi_chiplet_controller #(
             swi_word_pin_perlane_en_r <= 8'h0;  // POR = all lanes legacy (bit-identical)
             swi_eye_lane_sel_r       <= 3'h0;   // Task 3: eye-width lane sel, reset lane 0
             swi_dist_lane_sel_r      <= 3'h0;   // winscan: SYNC-dist lane sel, reset lane 0
-            // Autonomous SYNC-detect config drive edge shadows (2026-06-30).
-            sync_cfg_train_q         <= 1'b0;
+            // Autonomous SYNC-detect config drive shadows (2026-06-30; R3
+            // one-shot rework 2026-07-02).
+            sync_cfg_on_fired_q      <= 1'b0;
             sync_cfg_wsdone_q        <= 1'b0;
 `endif
             swi_phase_offset_r       <= 32'h0;
@@ -1677,12 +1710,15 @@ module axi_chiplet_controller #(
             // (FCSM wedges at 1, cr=0).
             //
             // Mapping to the golden rcp() (fpga/hw_regression/td_v2_hwlib.sh):
-            //   rcp: R_SYNCTOL 0x44032128 = 0x5e4  -> swi_sync_lane_mask_r=0xe4
-            //                                          (Region-9 slot2 [7:0]) and
-            //                                          swi_sync_tol_r=5 ([12:8]).
+            //   rcp: R_SYNCTOL 0x44032128 = 0x5e4  -> swi_sync_lane_mask_r=
+            //        wlink_rx_lane_mask (M2 2026-07-02: the Wlink RX lane mask
+            //        mirror — 0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build =
+            //        the rcp value; 0xFF in the 8-lane sim — single source of
+            //        truth, no bridge1 literal) and swi_sync_tol_r=5 ([12:8]).
             //        The deskew `all_sync_seen = &(sync_seen_vec | ~lane_mask)`
-            //        and the live-SYNC obs both consume these. lane_mask=0xe4 is
-            //        THE fix (0xFF waits for 8 lanes, only 4 active).
+            //        and the live-SYNC obs both consume these. matching the
+            //        ACTIVE lane set is THE fix (0xFF waits for 8 lanes when
+            //        only 4 are active on silicon).
             //   rcp: R_R8 0x44032100 = 0x1D        -> SYNC_EN bits: insert_en (b2)
             //                                          + force_always (b3) + robust
             //                                          (b4). (b0 train / b1 recal
@@ -1693,14 +1729,22 @@ module axi_chiplet_controller #(
             //        no drive needed; kept AUTO explicitly here for parity.
             //
             // SEQUENCING (the critical part):
-            //   * SYNC-ON  fires on the swi_training_mode_r RISING edge (training-
-            //     RUN, set by the autoneg FSM's ST_TRAIN_ENTER ack on the master
-            //     and by the master's I²C write of SWI_TRAINING_MODE=1 on the
-            //     slave — so a rising-edge trigger catches BOTH dies, exactly the
-            //     idiom the N3 calibrator-rearm uses). This is BEFORE the winscan
-            //     FSM and the FC handoff (both kicked on the training-mode FALLING
-            //     edge), so the SYNC-detect config is in place before the scan
-            //     needs it.
+            //   * SYNC-ON  fires the FIRST cycle the FULL conjunction
+            //     `nego_en & role_locked & swi_training_mode_r` is true (one-shot
+            //     latch sync_cfg_on_fired_q, cleared on the training FALL so a
+            //     re-training re-fires). R3 arm-order fix (2026-07-02): the old
+            //     RISING-edge trigger raced the gate — when the MASTER armed
+            //     first, its I²C wrote the slave's SWI_TRAINING_MODE=1 before
+            //     the slave's nego_en/role_locked latched, the edge was consumed
+            //     while the gate was false, and SYNC-ON never fired (slave
+            //     R8=0x00/tol=0 → both calibrators park at cstate=6). Training
+            //     is held HIGH for the whole run, so the level+one-shot catches
+            //     the late-arming die the instant its gate closes. This is still
+            //     BEFORE the winscan FSM and the FC handoff (both kicked on the
+            //     training-mode FALLING edge), so the SYNC-detect config is in
+            //     place before the scan needs it — SYNC-ON therefore still
+            //     strictly precedes the winscan_done-rise SYNC-OFF whenever the
+            //     scan runs at all (ws_arm_kick needs the same gate at the fall).
             //   * SYNC-OFF strips insert_en/force_always/robust on the winscan_done
             //     RISING edge — i.e. AFTER the winscan's WS_FINALIZE has dropped
             //     winscan_force_sync and the deskew reanchor has latched in the
@@ -1716,12 +1760,23 @@ module axi_chiplet_controller #(
             // lock + host-winscan path nego_en=0 ⇒ this never fires and every
             // swi_sync_* reg holds its POR default / host-written value — the SW
             // data regression and the manual silicon recipe are bit-identical.
-            sync_cfg_train_q  <= swi_training_mode_r;
             sync_cfg_wsdone_q <= winscan_done;
+            // R3: re-arm the one-shot on the training FALL (level, not edge —
+            // robust even if the drop is missed for a cycle). Mutually
+            // exclusive with the set below (which requires training HIGH).
+            if (!swi_training_mode_r)
+                sync_cfg_on_fired_q <= 1'b0;
             if (nego_en && role_locked) begin
-                // SYNC-ON at training-RUN (rising edge of swi_training_mode_r).
-                if (swi_training_mode_r && !sync_cfg_train_q) begin
-                    swi_sync_lane_mask_r     <= 8'hE4;  // rcp 0x2128[7:0]  — active-lane SYNC mask
+                // SYNC-ON: one-shot on the full conjunction first true (R3).
+                if (swi_training_mode_r && !sync_cfg_on_fired_q) begin
+                    sync_cfg_on_fired_q      <= 1'b1;
+                    // M2 (2026-07-02): the active-lane SYNC mask is the local
+                    // Wlink RX lane mask (single source of truth, POR-correct
+                    // per build: 0xFF in sim/8-lane, 0xE4 on TD_AUTO_LANE_MASK_E4
+                    // silicon builds) — NOT a hardcoded bridge1 constant. This
+                    // keeps the 8-lane sim and the 4-lane silicon SYNC masks
+                    // consistent with the datapath lane mask by construction.
+                    swi_sync_lane_mask_r     <= wlink_rx_lane_mask; // rcp 0x2128[7:0]
                     swi_sync_tol_r           <= 5'd5;   // rcp 0x2128[12:8] — Hamming tol=5
                     swi_sync_insert_en_r     <= 1'b1;   // rcp R8 b2 — SYNC beacon on
                     swi_sync_force_always_r  <= 1'b1;   // rcp R8 b3 — drop idle gate
@@ -1735,7 +1790,8 @@ module axi_chiplet_controller #(
                     swi_sync_insert_en_r     <= 1'b0;
                     swi_sync_force_always_r  <= 1'b0;
                     swi_sync_robust_detect_r <= 1'b0;
-                    // lane_mask=0xe4 / tol=5 intentionally retained for the deskew.
+                    // lane_mask (=wlink_rx_lane_mask) / tol=5 intentionally
+                    // retained for the deskew.
                 end
             end
 `endif
@@ -1956,7 +2012,15 @@ module axi_chiplet_controller #(
     // is 2-flop-synced to apb_clk (sync_obs_dist_vec_1) then lane-muxed here.
     // slot 4 SYNC_DIST_SEL (RW, readback) carries the lane select + 0x5A marker.
     // slot 5 SWI_PHASE_LSB (RW, readback) carries the per-lane IDELAY tap LSB +
-    // 0x1B marker. Slots 6/7 stay reserved (read 0).
+    // 0x1B marker.
+    // slot 6 WINSCAN_OBS (RO, R2c 2026-07-02): on-chip winscan health.
+    //     [0] winscan_done    — scan+finalize complete for this nego episode
+    //     [1] ws_degenerate_q — STICKY: the sweep saw a FLAT metric on every
+    //                           scanned lane (nothing measured); the SEEDED
+    //                           host/APB taps were restored, not argmin-0.
+    //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
+    //   All apb_clk-domain (the winscan FSM's own domain) — no CDC.
+    // Slot 7 stays reserved (read 0).
     wire [4:0] dist_sel_lane = sync_obs_dist_vec_1[5*swi_dist_lane_sel_r +: 5];
     assign regionD_rxcap_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
@@ -1965,6 +2029,8 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 22'h0,
+                                        ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -1991,7 +2057,11 @@ module axi_chiplet_controller #(
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
                                         sync_obs_pkt_crack_1,           // [28]    pkt_is_crack_pkt
                                         sync_obs_pkt_cr_1,              // [27]    pkt_is_cr_pkt
-                                        sync_cal_in_hold_1,             // [26]    L4 (2026-07-01): cal_in_hold (S_HOLD) — REPURPOSED from is_long_pkt so the PEER autoneg can rendezvous on both-in-S_HOLD over I2C. is_long_pkt obs is derivable (~is_short & valid) and hierarchically probeable; NOT consumed by any regression-gate test.
+`ifdef TIDELINK_PHY_V2
+                                        sync_cal_in_hold_1,             // [26]    L4 (2026-07-01): cal_in_hold (S_HOLD) — REPURPOSED from is_long_pkt so the PEER autoneg can rendezvous on both-in-S_HOLD over I2C. is_long_pkt obs is derivable (~is_short & valid) and hierarchically probeable; NOT consumed by any regression-gate test. M1 (2026-07-02): V2-ONLY — the V1 arm below keeps the original is_long_pkt so a V1 build's [26] is bit-identical to pre-L4 (and never aliases into a V2 peer's byte-3 capture, which is USE_CAL_IN_HOLD-gated off on V1).
+`else
+                                        sync_obs_long_1,                // [26]    is_long_pkt (pre-L4 V1 packing)
+`endif
                                         sync_obs_short_1,               // [25]    is_short_pkt
                                         sync_obs_crack_seen_1,          // [24]    crack_pkt_seen_rx
                                         sync_obs_cr_seen_1,             // [23]    cr_pkt_seen_rx
@@ -2161,8 +2231,9 @@ module axi_chiplet_controller #(
     //   peer_*_lane_mask_w — peer mask captured by the autoneg FSM during the
     //                        handshake; latched into Wlink's LaneMaskPeer
     //                        register at offset 0x218 for SW diagnosis.
-    wire [7:0] wlink_tx_lane_mask;
-    wire [7:0] wlink_rx_lane_mask;
+    // (wlink_tx/rx_lane_mask declarations moved up beside the SWI_LANE_STATUS
+    //  sync regs — the M2 autonomous SYNC-mask drive consumes wlink_rx_lane_mask
+    //  in the Region-8/9 write block above; declaration-before-use.)
     wire [7:0] peer_tx_lane_mask_w;
     wire [7:0] peer_rx_lane_mask_w;
 
@@ -2541,7 +2612,19 @@ module axi_chiplet_controller #(
     // Auto-negotiation FSM
     // =====================================================================
 
-    tidelink_autoneg u_autoneg (
+    tidelink_autoneg #(
+        // M1 (2026-07-02): the L4 training-exit predicate retarget
+        // (cal_in_hold rendezvous + mask-aware lane checks + byte-3 capture)
+        // is V2-ONLY. On V1 cal_in_hold_w is tied 0 below, which would make
+        // the autonomous training-exit UNSATISFIABLE, and SWI_LANE_STATUS[26]
+        // carries is_long_pkt on a V1 peer — so V1 selects the exact pre-L4
+        // predicate (cal_done + ==8'hFF compares, byte 3 ignored).
+`ifdef TIDELINK_PHY_V2
+        .USE_CAL_IN_HOLD    (1'b1)
+`else
+        .USE_CAL_IN_HOLD    (1'b0)
+`endif
+    ) u_autoneg (
         .clk                (apb_clk),
         .poresetn           (poresetn),
         .nego_en            (nego_cfg_reg[0]),
@@ -2721,8 +2804,27 @@ module axi_chiplet_controller #(
     //     what the handoff needs (the shim's intent was to block buggy SW from
     //     wedging axi2wl; the LL framer swreset here is benign and required).
     // =====================================================================
-    localparam [31:0] FCH_LL_SWRESET_ON  = 32'h0002_7f08; // swi_swreset=1
-    localparam [31:0] FCH_LL_SWRESET_OFF = 32'h0002_7f00; // swi_swreset=0
+    // R1 fix (2026-07-02): match the PROVEN manual recipe EXACTLY —
+    // 0x27f09 -> 0x27f01 -> 0x27f07 (bit0 HELD 1 through the swreset), not the
+    // previous 0x27f08 -> 0x27f00 -> 0x27f07 (bit0 held 0). FCCTRL 0x208 bit0
+    // is swi_enable (Wlink.v: swi_enable <= pwdata[0]) = io_app_enable = the
+    // FCSM's RUN enable: while 0 the FCSM is forced to state 0
+    // (WlinkGenericFCSM_6.v state block: `else if (_fe_rx_ptr_in_T) state<=0`,
+    // _fe_rx_ptr_in_T = ~en_ff2_tx_demet) and the FE credit bookkeeping is
+    // held cleared (fe_rx_ptr / fe_tx_credit_max / exp_pkt_num), and the
+    // replay app_ready/link_valid gates drop. Holding bit0=0 across the
+    // bootstrap defers each die's FCSM restart from the (overlap-engineered)
+    // swreset-deassert point to its own third write and inserts an extra
+    // enable-low credit-clear window; on silicon (skewed triggers, one-shot
+    // L6/L7 CR/CRACK min-emission, sticky cr/crack_seen) the peer's fresh
+    // credit grant then flies while this die's FCSM is still enable-parked ->
+    // credit ring desyncs -> sender wedges fe_rx_is_full=1 with fe_rx_ptr=0
+    // (OBS_FC_CREDIT=0xfc01001f). Manually re-running the bootstrap with
+    // bit0=1 (0x27f09/0x27f01/0x27f07) CLEARED the wedge on bridge1 — the
+    // Bug-C precedent (WlinkGenericFCSM_6.v fe_rx_credit_max comment) already
+    // documents that enable dips around the LL-swreset bootstrap wedge credit.
+    localparam [31:0] FCH_LL_SWRESET_ON  = 32'h0002_7f09; // swreset=1, ENABLE HELD 1
+    localparam [31:0] FCH_LL_SWRESET_OFF = 32'h0002_7f01; // swreset=0, ENABLE HELD 1
     localparam [31:0] FCH_LL_ENABLE      = 32'h0002_7f07; // swi/lltx/llrx enable
     localparam [12:0] FCH_LL_CTRL_ADDR   = 13'h0208;      // Wlink LL ctrl reg
 
@@ -3204,6 +3306,21 @@ module axi_chiplet_controller #(
 
     localparam int WINSCAN_NSAMP   = 5;          // host min-over-5
     localparam int WINSCAN_FIN_WAIT = 4096;      // reanchor idle-gate settle
+    // R2 sample-integrity (2026-07-02):
+    //   * WINSCAN_SAMP_SPACE — inter-sample spacing (apb_clk cycles) between
+    //     the 5 ACCEPTED min-over samples, so they are independent
+    //     observations (the old 5 back-to-back reads, ~100 ns apart, were ~one
+    //     observation — min-over-5 was vestigial vs the host's round-trip-
+    //     spaced reads). A few hundred cycles rides the existing ws_dwell_r
+    //     counter; sim uses a short spacing via the same dwell-short hook.
+    //   * WINSCAN_QUAL_TIMEOUT — per-sample bound on the two-equal-reads
+    //     tear-rejection qualifier: if the CDC'd metric genuinely never reads
+    //     equal twice (pathologically toggling lane), accept the raw read
+    //     rather than wedge WS_SAMPLE forever (winscan_done gates the FC
+    //     handoff — a scan hang would deadlock the autonomous bring-up).
+    localparam int WINSCAN_SAMP_SPACE     = 512;
+    localparam int WINSCAN_SAMP_SPACE_SIM = 8;
+    localparam [7:0] WINSCAN_QUAL_TIMEOUT = 8'd255;
     // Sim dwell shrink (TB-forced, same idiom as the calibrator's
     // tb_early_exit_force_q). Default 0 = use the generous silicon WINSCAN_DWELL.
     reg tb_winscan_dwell_short_q = 1'b0;
@@ -3223,10 +3340,22 @@ module axi_chiplet_controller #(
     reg [5:0]          ws_best_tap_r;    // argmin tap for this lane
     reg [WS_DW_W-1:0]  ws_dwell_r;       // dwell countdown
     reg                ws_kicked_q;      // sticky: armed for this nego episode
+    // R2 sample-integrity state (2026-07-02):
+    reg [4:0]          ws_dist_prev_r;      // previous read of the CDC'd dist
+    reg                ws_dist_pair_valid_q;// prev read is live (pair armed)
+    reg [7:0]          ws_qual_to_r;        // per-sample qualification timeout
+    // R2c degenerate-scan trackers:
+    reg [4:0]          ws_lane_first_r;     // this lane's tap-0 min distance
+    reg                ws_lane_flat_q;      // this lane's metric flat so far
+    reg                ws_all_flat_q;       // every scanned lane flat so far
+    reg                ws_any_scanned_q;    // >=1 active lane actually scanned
 
     wire [WS_DW_W-1:0] ws_dwell_load =
         tb_winscan_dwell_short_q ? WINSCAN_DWELL_SIM[WS_DW_W-1:0]
                                  : WINSCAN_DWELL[WS_DW_W-1:0];
+    wire [WS_DW_W-1:0] ws_samp_space =
+        tb_winscan_dwell_short_q ? WINSCAN_SAMP_SPACE_SIM[WS_DW_W-1:0]
+                                 : WINSCAN_SAMP_SPACE[WS_DW_W-1:0];
 
     // Arm kick: the autoneg training-mode falling edge on the autonomous path
     // (= post role-lock + cal-done + lane-lock = SYNC-detect-capable), the SAME
@@ -3255,6 +3384,14 @@ module axi_chiplet_controller #(
             ws_best_tap_r     <= 6'd0;
             ws_dwell_r        <= '0;
             ws_kicked_q       <= 1'b0;
+            ws_dist_prev_r       <= 5'd31;
+            ws_dist_pair_valid_q <= 1'b0;
+            ws_qual_to_r         <= 8'd0;
+            ws_lane_first_r      <= 5'd31;
+            ws_lane_flat_q       <= 1'b0;
+            ws_all_flat_q        <= 1'b0;
+            ws_any_scanned_q     <= 1'b0;
+            ws_degenerate_q      <= 1'b0;
             ws_phase_offset_r <= 32'h0;
             ws_phase_lsb_r    <= 8'h0;
             winscan_owns_taps <= 1'b0;
@@ -3288,6 +3425,10 @@ module axi_chiplet_controller #(
                     ws_phase_offset_r  <= swi_phase_offset_r;
                     ws_phase_lsb_r     <= swi_phase_lsb_r;
                     ws_lane_r          <= 4'd0;
+                    // R2c: fresh degenerate-scan trackers for this episode.
+                    ws_all_flat_q      <= 1'b1;
+                    ws_any_scanned_q   <= 1'b0;
+                    ws_degenerate_q    <= 1'b0;
                     ws_state_r         <= WS_NEXT_LANE_ENTER;
                 end
                 // -------------------------------------------------------------
@@ -3296,6 +3437,38 @@ module axi_chiplet_controller #(
                     // its tap-0 scan; otherwise skip it (leave its tap as seeded).
                     // ws_lane_active reads the mask bit for the current lane.
                     if (ws_lane_r > 4'd7) begin
+                        // R2c DEGENERATE-SCAN GUARD: the whole sweep produced a
+                        // FLAT metric on every scanned lane — no tap changed the
+                        // measured distance, i.e. nothing was actually measured
+                        // (torn/dead obs vector — the silicon taps-(0,0,0,0)
+                        // run). Do NOT ship the arbitrary argmin (tap 0 on a
+                        // flat metric, strict-<): RESTORE THE SEEDED taps (the
+                        // host/APB swi_phase_offset_r / swi_phase_lsb_r values
+                        // WS_ARM captured — the best available knowledge when
+                        // the scan measured nothing) and latch the sticky
+                        // ws_degenerate_q observability flag (Region-D
+                        // WINSCAN_OBS 0x21B8[1]).
+                        //
+                        // Why the seed and NOT the "middle tap": the tap nibble
+                        // is OR-MERGED with cal_phase_offset_w into the Wlink
+                        // deserialiser io_phase_offset (a word-phase ROTATION,
+                        // WavD2DGpioRx adj_count = count + io_phase_offset —
+                        // fully functional in sim and on silicon), so a nonzero
+                        // "centre" nibble is NOT a neutral mid-eye point: OR-ing
+                        // 8 into the calibrated phase CORRUPTS the operating
+                        // point (proven: middle-tap fallback broke the FCSM
+                        // relock in the de-forced test_31 run). The seed is the
+                        // identity on that OR-merge. winscan_done is still
+                        // raised in WS_FINALIZE — leaving it unset would
+                        // DEADLOCK the fch_pending_r handoff gate (no retry
+                        // path re-arms it within an episode), so
+                        // fail-loud-but-alive with the seeded taps is the
+                        // safest option here.
+                        if (ws_all_flat_q && ws_any_scanned_q) begin
+                            ws_degenerate_q   <= 1'b1;
+                            ws_phase_offset_r <= swi_phase_offset_r;
+                            ws_phase_lsb_r    <= swi_phase_lsb_r;
+                        end
                         ws_state_r <= WS_FINALIZE;
                         ws_dwell_r <= WINSCAN_FIN_WAIT[WS_DW_W-1:0];
                     end else if (!ws_lane_active) begin
@@ -3304,6 +3477,7 @@ module axi_chiplet_controller #(
                         ws_tap_r       <= 6'd0;
                         ws_best_dist_r <= 5'd31;
                         ws_best_tap_r  <= 6'd0;
+                        ws_lane_flat_q <= 1'b1;             // R2c: fresh lane tracker
                         // Drive lane L, tap 0 (nibble 0, lsb 0).
                         ws_phase_offset_r[4*ws_lane_r[2:0] +: 4] <= 4'd0;
                         ws_phase_lsb_r[ws_lane_r[2:0]]           <= 1'b0;
@@ -3317,20 +3491,56 @@ module axi_chiplet_controller #(
                     if (ws_dwell_r != '0) begin
                         ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
                     end else begin
-                        ws_dist_min_r <= 5'd31;          // seed min-over-N
-                        ws_nsamp_r    <= WINSCAN_NSAMP[2:0] - 3'd1;
-                        ws_state_r    <= WS_SAMPLE;
+                        ws_dist_min_r        <= 5'd31;   // seed min-over-N
+                        ws_nsamp_r           <= WINSCAN_NSAMP[2:0] - 3'd1;
+                        ws_dist_pair_valid_q <= 1'b0;    // R2: fresh read pair
+                        ws_qual_to_r         <= WINSCAN_QUAL_TIMEOUT;
+                        ws_state_r           <= WS_SAMPLE;
                     end
                 end
                 // -------------------------------------------------------------
                 WS_SAMPLE: begin
-                    // min-over-N samples of the selected lane's SYNC distance.
-                    if (ws_lane_dist < ws_dist_min_r)
-                        ws_dist_min_r <= ws_lane_dist;
-                    if (ws_nsamp_r != 3'd0)
-                        ws_nsamp_r <= ws_nsamp_r - 3'd1;
-                    else
-                        ws_state_r <= WS_NEXT_TAP;
+                    // R2 SAMPLE INTEGRITY (2026-07-02). sync_obs_dist_vec_1 is a
+                    // plain 2-FF-synced MULTI-BIT vector: a single apb_clk read
+                    // can be TORN mid-flight (a false-LOW distance for one tap =
+                    // a false argmin — the silicon taps-(0,0,0,0) scan), and the
+                    // old 5 back-to-back reads (~100 ns) were ~ONE observation
+                    // (min-over-5 vestigial vs the host's round-trip-spaced
+                    // reads). Qualify: accept a sample only when TWO CONSECUTIVE
+                    // reads are EQUAL (tear rejection — a torn word cannot read
+                    // identically across the boundary of a real change), and
+                    // SPACE the accepted samples by ws_samp_space cycles (reuse
+                    // of ws_dwell_r) so the 5 are independent observations. A
+                    // per-sample timeout accepts the raw read if the metric
+                    // never repeats (defence against a toggling lane wedging
+                    // WS_SAMPLE — winscan_done gates the FC handoff).
+                    if (ws_dwell_r != '0) begin
+                        // Inter-sample spacing gap.
+                        ws_dwell_r           <= ws_dwell_r
+                                                - {{(WS_DW_W-1){1'b0}}, 1'b1};
+                        ws_dist_pair_valid_q <= 1'b0;    // restart pair after gap
+                    end else if (!ws_dist_pair_valid_q) begin
+                        ws_dist_prev_r       <= ws_lane_dist;   // first of a pair
+                        ws_dist_pair_valid_q <= 1'b1;
+                    end else if ((ws_lane_dist == ws_dist_prev_r)
+                                 || (ws_qual_to_r == 8'd0)) begin
+                        // QUALIFIED (two equal consecutive reads) — or timed
+                        // out: accept the current read.
+                        if (ws_lane_dist < ws_dist_min_r)
+                            ws_dist_min_r <= ws_lane_dist;
+                        ws_dist_pair_valid_q <= 1'b0;
+                        ws_qual_to_r         <= WINSCAN_QUAL_TIMEOUT;
+                        if (ws_nsamp_r != 3'd0) begin
+                            ws_nsamp_r <= ws_nsamp_r - 3'd1;
+                            ws_dwell_r <= ws_samp_space; // space the next sample
+                        end else begin
+                            ws_state_r <= WS_NEXT_TAP;
+                        end
+                    end else begin
+                        // Torn/changing read — retry the pair.
+                        ws_dist_prev_r <= ws_lane_dist;
+                        ws_qual_to_r   <= ws_qual_to_r - 8'd1;
+                    end
                 end
                 // -------------------------------------------------------------
                 WS_NEXT_TAP: begin
@@ -3340,6 +3550,13 @@ module axi_chiplet_controller #(
                         ws_best_dist_r <= ws_dist_min_r;
                         ws_best_tap_r  <= ws_tap_r;
                     end
+                    // R2c: per-lane flat-metric tracking. Capture the tap-0
+                    // distance; any later tap measuring DIFFERENT clears the
+                    // lane's flat flag (something was actually measured).
+                    if (ws_tap_r == 6'd0)
+                        ws_lane_first_r <= ws_dist_min_r;
+                    else if (ws_dist_min_r != ws_lane_first_r)
+                        ws_lane_flat_q  <= 1'b0;
                     if (ws_tap_r == 6'd31) begin
                         ws_state_r <= WS_PICK;
                     end else begin
@@ -3356,6 +3573,10 @@ module axi_chiplet_controller #(
                     // Commit the argmin tap for this lane (host settap(L,best)).
                     ws_phase_offset_r[4*ws_lane_r[2:0] +: 4] <= ws_best_tap_r[4:1];
                     ws_phase_lsb_r[ws_lane_r[2:0]]           <= ws_best_tap_r[0];
+                    // R2c: fold this lane into the scan-wide degeneracy verdict.
+                    if (!ws_lane_flat_q)
+                        ws_all_flat_q <= 1'b0;      // real variation seen
+                    ws_any_scanned_q <= 1'b1;       // at least one lane scanned
                     ws_lane_r  <= ws_lane_r + 4'd1;
                     ws_state_r <= WS_NEXT_LANE_ENTER;
                 end

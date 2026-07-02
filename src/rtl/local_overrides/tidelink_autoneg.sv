@@ -26,7 +26,20 @@ module tidelink_autoneg #(
     parameter NEGO_BASE_DELAY    = 2000,       // minimum cycles before any claim
     parameter NEGO_TIMEOUT_DEFAULT = 32'd131_082_000,  // ~1.31s @ 100 MHz
     parameter NEGO_ADDR_DEFAULT  = 7'h7E,      // I2C negotiation slave address
-    parameter NEGO_MST_INIT_WAIT = 16          // cycles after I2C master reset release
+    parameter NEGO_MST_INIT_WAIT = 16,         // cycles after I2C master reset release
+    // M1 (2026-07-02): select the ST_TRAIN_POLL_PEER exit predicate.
+    //   1 (V2 builds) = the L4 training-exit fix: rendezvous on BOTH dies
+    //     PARKED IN S_HOLD (local_cal_in_hold_i + peer SWI_LANE_STATUS[26]),
+    //     with MASK-AWARE lane-lock checks ((locked|~mask)==0xFF).
+    //   0 (V1 builds, default) = the pre-L4 predicate: cal_done local+peer,
+    //     hard ==8'hFF lane compares, byte 3 of the mask read IGNORED
+    //     (reserved padding). On V1 cal_in_hold_w is tied 0 in the wrapper, so
+    //     the L4 predicate would be UNSATISFIABLE (autonomous training-exit
+    //     never fires) and SWI_LANE_STATUS[26] carries is_long_pkt on a V1
+    //     peer (byte-3 bit 2 would alias a live packet flag) — this parameter
+    //     reverts the V1 netlist to exact pre-L4 behaviour (the ternaries
+    //     constant-fold at elaboration).
+    parameter bit USE_CAL_IN_HOLD = 1'b0
 )(
     input  wire        clk,
     input  wire        poresetn,       // Power-on reset (active-low)
@@ -375,6 +388,27 @@ module tidelink_autoneg #(
     reg [7:0]  peer_rx_lane_mask_r;
     reg        mask_hs_local_match_r;
     reg        mask_hs_local_fail_r;
+
+    // M1 (2026-07-02): elaboration-time ST_TRAIN_POLL_PEER predicate selection
+    // (USE_CAL_IN_HOLD is a parameter — these ternaries constant-fold, so the
+    // V1 (=0) netlist is bit-identical to pre-L4).
+    //   *_cal_ready_w  : the calibration rendezvous term
+    //                    (V2: cal_in_hold = both-parked-in-S_HOLD, the L4 fix;
+    //                     V1: cal_done, the pre-L4 term).
+    //   *_lock_qual_w  : the lane-lock qualification vector
+    //                    (V2: mask-aware (locked|~mask), fires under the
+    //                     reduced 0xe4 lane set; V1: the raw locked vector,
+    //                     compared ==8'hFF as pre-L4).
+    wire       local_cal_ready_w = USE_CAL_IN_HOLD ? local_cal_in_hold_i
+                                                   : local_calibration_done_i;
+    wire       peer_cal_ready_w  = USE_CAL_IN_HOLD ? peer_cal_in_hold_r
+                                                   : peer_cal_done_r;
+    wire [7:0] local_lock_qual_w = USE_CAL_IN_HOLD
+                                   ? (local_swi_lane_locked_i | ~local_rx_lane_mask_i)
+                                   : local_swi_lane_locked_i;
+    wire [7:0] peer_lock_qual_w  = USE_CAL_IN_HOLD
+                                   ? (peer_lane_locked_r | ~peer_rx_lane_mask_r)
+                                   : peer_lane_locked_r;
 
     // Sticky status
     reg        nego_done_r,      nego_done_nxt;
@@ -1098,7 +1132,11 @@ module tidelink_autoneg #(
                                         // L4 (2026-07-01): byte 3 = word[31:24]
                                         // carries peer cal_in_hold at word bit
                                         // [26] = byte-3 bit 2 (see controller).
-                                        3'd3: peer_cal_in_hold_capture_en = 1'b1;
+                                        // M1 (2026-07-02): V2-only — on a V1
+                                        // peer bit [26] is is_long_pkt, so the
+                                        // capture is parameter-gated (byte 3
+                                        // reverts to ignored padding on V1).
+                                        3'd3: peer_cal_in_hold_capture_en = USE_CAL_IN_HOLD;
                                         default: ;
                                     endcase
                                     if (mask_byte_cnt_r == MASK_RD_DATA_BYTES - 3'd1) begin
@@ -1125,10 +1163,15 @@ module tidelink_autoneg #(
                                         // is 0xe4 ≠ 0xFF, so the old ==8'hFF checks
                                         // never fired. "(locked | ~mask)==8'hFF" =
                                         // "all ACTIVE lanes locked".
-                                        if (((peer_lane_locked_r      | ~peer_rx_lane_mask_r)  == 8'hFF) &&
-                                            peer_cal_in_hold_r &&
-                                            ((local_swi_lane_locked_i  | ~local_rx_lane_mask_i) == 8'hFF) &&
-                                            local_cal_in_hold_i &&
+                                        // M1 (2026-07-02): both the cal term and
+                                        // the mask-awareness are selected by
+                                        // USE_CAL_IN_HOLD (V2=1); with 0 (V1)
+                                        // the *_w wires constant-fold back to
+                                        // the exact pre-L4 predicate.
+                                        if ((peer_lock_qual_w  == 8'hFF) &&
+                                            peer_cal_ready_w &&
+                                            (local_lock_qual_w == 8'hFF) &&
+                                            local_cal_ready_w &&
                                             (peer_lane_fault_r == 8'h00) &&
                                             (local_swi_lane_fault_i == 8'h00)) begin
                                             // Success → EXIT
@@ -1188,12 +1231,15 @@ module tidelink_autoneg #(
                                             // never fired, defeating this bypass
                                             // (→ spurious ST_TRAIN_FAIL). Use
                                             // "all ACTIVE lanes locked". Also gate
-                                            // on !peer_cal_in_hold_r (the peer is
+                                            // on !peer_cal_ready (the peer is
                                             // truly unresponsive — never parked)
                                             // to keep the "peer never trained"
-                                            // intent.
-                                            if (!peer_cal_in_hold_r &&
-                                                ((local_swi_lane_locked_i | ~local_rx_lane_mask_i) == 8'hFF) &&
+                                            // intent. M1 (2026-07-02): both terms
+                                            // selected by USE_CAL_IN_HOLD; V1
+                                            // folds back to the pre-L4 bypass
+                                            // (!peer_cal_done_r + ==8'hFF).
+                                            if (!peer_cal_ready_w &&
+                                                (local_lock_qual_w == 8'hFF) &&
                                                 (local_swi_lane_fault_i == 8'h00)) begin
                                                 mask_byte_cnt_nxt      = 3'd0;
                                                 train_target_value_nxt = 1'b0;

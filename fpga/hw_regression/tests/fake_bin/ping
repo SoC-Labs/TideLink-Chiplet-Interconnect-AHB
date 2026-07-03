@@ -1,0 +1,3 @@
+#!/bin/bash
+# fake ping — boards are always "up" under the harness
+exit 0

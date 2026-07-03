@@ -20,7 +20,7 @@
 #
 # USAGE (on the lab host that can SSH the PYNQ pair, e.g. mapstone-dev):
 #   ./zeropoke_proof.sh <first:a|b|both> [--stagger SEC] [--no-deploy]
-#                       [--budget SEC] [--no-lease]
+#                       [--budget SEC] [--no-lease] [--trace] [--trace-file F]
 #     first        arm-order: which die gets NEGO_CFG/NEGO_TRAIN_CFG first
 #                  (both = near-simultaneous, a then b back-to-back)
 #     --stagger    seconds between the two arms (default 0; ignored for both)
@@ -31,6 +31,16 @@
 #                  POR (role_lock is W1S with POR-only clear) — without it the
 #                  run scores a WARM state, not a zero-poke proof.
 #     --no-lease   caller already holds the fpgahub lease
+#     --trace      time-series telemetry: during the a-g watch phase, one
+#                  on-board sampler per die streams the standard register set
+#                  (R8/SWI_LANE_STATUS/NEGO_TRAIN_STATUS/OBSCAL/WINSCAN_OBS/
+#                  REANCHORED/SYNC_SEEN/SYNCCNT/FCCRED) every ~TD_TRACE_PERIOD
+#                  (default 0.8s) into a CSV (timestamp,die,reg,name,value)
+#                  alongside the scorecard, then reports the ordering
+#                  discriminator: which die's WINSCAN_OBS[0] (winscan_done)
+#                  rose first/second, with timestamps. Snapshots can't answer
+#                  ordering questions (e.g. the starvation polarity); this can.
+#     --trace-file CSV path (default ./zeropoke_trace_<UTC-stamp>.csv)
 #
 # HARDWARE SAFETY: never writes 0x21B0/0x21B4 (winscan FSM owns them); all
 # reads throttled (TD_THROTTLE) — dense mmap loops wedge the PYNQ PS.
@@ -42,14 +52,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=./td_v2_hwlib.sh
 source "$HERE/td_v2_hwlib.sh"
 
-FIRST=""; STAGGER=0; DO_DEPLOY=1; BUDGET=240; DO_LEASE=1
+FIRST=""; STAGGER=0; DO_DEPLOY=1; BUDGET=240; DO_LEASE=1; TRACE=0; TRACE_FILE=""
 while [ $# -gt 0 ]; do case "$1" in
   a|b|both) FIRST=$1;;
   --stagger) STAGGER=$2; shift;;
   --budget)  BUDGET=$2; shift;;
   --no-deploy) DO_DEPLOY=0;;
   --no-lease)  DO_LEASE=0;;
-  -h|--help) sed -n '2,40p' "$0"; exit 0;;
+  --trace)      TRACE=1;;
+  --trace-file) TRACE_FILE=$2; shift;;
+  -h|--help) sed -n '2,53p' "$0"; exit 0;;
   *) echo "unknown arg: $1 (usage: $0 <a|b|both> [--stagger SEC])"; exit 2;;
 esac; shift; done
 [ -n "$FIRST" ] || { echo "usage: $0 <first:a|b|both> [--stagger SEC]"; exit 2; }
@@ -149,14 +161,118 @@ burst_once(){ local src=$1 dst=$2 i w exp got=() ok=1
   echo "rx=${got[*]} $( [ $ok -eq 1 ] && echo BYTE-EXACT || echo MISMATCH )"
   [ $ok -eq 1 ]; }
 
+# ===== --trace: time-series telemetry (a-g watch phase) ========================
+# One background sampler PER DIE (shipped base64, same idiom as the hwlib
+# winscan): a single SSH connection streams "die,reg,name,value" lines; the
+# host prepends its own arrival timestamp (COMMON clock — board RTCs are not
+# NTP-synced, and the discriminator needs cross-die ordering) and appends to
+# the CSV. PS-safety: mmap is READ-ONLY, 30ms between register reads inside a
+# sweep (the proven winscan spacing), one sweep per TD_TRACE_PERIOD; never
+# touches 0x21B0/0x21B4 or the pop-on-read GP1 aperture. The sampler
+# self-terminates after BUDGET+60s even if the host-side kill is lost.
+TRACE_PERIOD=${TD_TRACE_PERIOD:-0.8}
+# Sampled register set — extend with "$R_VAR:NAME" pairs (hwlib names).
+trace_regtab(){ local e out=""
+  for e in \
+    "$R_R8:R8" \
+    "$R_OBS:SWI_LANE_STATUS" \
+    "$R_NEGO_TRAIN_STATUS:NEGO_TRAIN_STATUS" \
+    "$R_OBSCAL:OBSCAL" \
+    "$R_WINSCAN_OBS:WINSCAN_OBS" \
+    "$R_REANCHORED:REANCHORED" \
+    "$R_SYNCSEEN:SYNC_SEEN" \
+    "$R_SYNCCNT:SYNCCNT" \
+    "$R_FCCRED:FCCRED"; do
+    out+="$(printf '%x' $(( ${e%%:*} - 0x44032000 ))):${e##*:} "
+  done
+  printf '%s' "${out% }"; }
+
+TRACE_PY='import mmap,struct,os,sys,time
+DIE=sys.argv[1];PER=float(sys.argv[2]);DUR=float(sys.argv[3])
+REGTAB="@REGTAB@"
+P=4096;BASE=0x44032000
+fd=os.open("/dev/mem",os.O_RDONLY|os.O_SYNC)
+bb=BASE&~(P-1);o=BASE-bb
+m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ,offset=bb)
+def rd(x):return struct.unpack_from("<I",m,o+x)[0]
+REGS=[(int(e.split(":")[0],16),e.split(":")[1]) for e in REGTAB.split()]
+tend=time.time()+DUR
+while time.time()<tend:
+ t0=time.time()
+ for off,nm in REGS:
+  sys.stdout.write("%s,0x%08x,%s,0x%08x\n"%(DIE,BASE+off,nm,rd(off)))
+  time.sleep(0.03)
+ sys.stdout.flush()
+ rem=PER-(time.time()-t0)
+ if rem>0:time.sleep(rem)'
+
+TRACE_PIDS=()
+tracer_launch(){ local die=$1 ip=$2 regtab=$3 dur=$4 py b64
+  py=${TRACE_PY/@REGTAB@/$regtab}
+  b64=$(printf '%s\n' "$py" | base64 -w0)
+  ( $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_trace.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -u /tmp/td_trace.py $die $TRACE_PERIOD $dur" 2>/dev/null \
+    | while IFS= read -r l; do printf '%s,%s\n' "$(date +%s.%N)" "$l"; done >> "$TRACE_FILE" ) &
+  TRACE_PIDS+=("$!"); }
+
+tracer_start(){
+  [ -n "$TRACE_FILE" ] || TRACE_FILE="./zeropoke_trace_$(date -u +%Y%m%d-%H%M%SZ).csv"
+  echo "timestamp,die,reg,name,value" > "$TRACE_FILE"
+  local regtab dur=$(( BUDGET + 60 ))
+  regtab=$(trace_regtab)
+  say "trace: period=${TRACE_PERIOD}s csv=$TRACE_FILE regs=[$regtab]"
+  tracer_launch die_a "$A_IP" "$regtab" "$dur"
+  tracer_launch die_b "$B_IP" "$regtab" "$dur"; }
+
+# kill the local ssh pipelines (children first — parent-only leaves orphans);
+# the on-board python exits on the next write (SIGPIPE) or at its DUR limit.
+tracer_stop(){ local p
+  for p in ${TRACE_PIDS[@]+"${TRACE_PIDS[@]}"}; do
+    pkill -TERM -P "$p" 2>/dev/null
+    kill "$p" 2>/dev/null
+  done
+  wait ${TRACE_PIDS[@]+"${TRACE_PIDS[@]}"} 2>/dev/null
+  TRACE_PIDS=(); }
+
+trace_rel(){ [ -n "${1:-}" ] || { echo ""; return 0; }
+  awk -v t="$1" -v z="$T0" 'BEGIN{printf "t+%.1fs", t-z}'; }
+
+# summary + the FIRST-CLASS ordering discriminator: which die'"'"'s WINSCAN_OBS
+# bit0 (winscan_done, 0x21B8[0]) rose first/second — the starvation-polarity
+# question every debug loop has needed a timeline for.
+trace_summary(){ local n ts die reg name val ta="" tb=""
+  n=$(( $(wc -l < "$TRACE_FILE") - 1 )); [ "$n" -lt 0 ] && n=0
+  printf 'ZP_TRACE csv=%s samples=%d period=%ss\n' "$TRACE_FILE" "$n" "$TRACE_PERIOD"
+  while IFS=, read -r ts die reg name val; do
+    [ "$name" = WINSCAN_OBS ] || continue
+    [ $(( val & 1 )) -eq 1 ] || continue
+    case "$die" in
+      die_a) [ -n "$ta" ] || ta=$ts;;
+      die_b) [ -n "$tb" ] || tb=$ts;;
+    esac
+    [ -n "$ta" ] && [ -n "$tb" ] && break
+  done < "$TRACE_FILE"
+  local first second delta=n/a
+  if   [ -z "$ta" ] && [ -z "$tb" ]; then first=none; second=none
+  elif [ -z "$tb" ]; then first=die_a; second="none(die_b_never_rose)"
+  elif [ -z "$ta" ]; then first=die_b; second="none(die_a_never_rose)"
+  else
+    if awk -v a="$ta" -v b="$tb" 'BEGIN{exit !(a<=b)}'; then first=die_a; second=die_b
+    else first=die_b; second=die_a; fi
+    delta=$(awk -v a="$ta" -v b="$tb" 'BEGIN{d=b-a; if(d<0)d=-d; printf "%.2fs", d}')
+  fi
+  printf 'ZP_TRACE_DISCRIMINATOR winscan_done(0x21B8[0]) a=%s b=%s first=%s second=%s delta=%s\n' \
+    "$(trace_rel "$ta")" "$(trace_rel "$tb")" "$first" "$second" "$delta"
+  : "$reg"; }
+
 # ----- preflight ---------------------------------------------------------------
 echo "======== zeropoke_proof first=$FIRST stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
 echo "  die_a=$A_IP($A_BOARD)  die_b=$B_IP($B_BOARD)  deploy=$DO_DEPLOY dir=$DEPLOY_DIR"
 boards_up || { echo "### ABORT: a board is unreachable ($A_IP / $B_IP)"; exit 3; }
 if [ "$DO_LEASE" = 1 ]; then
   lease_acquire 1800 || { echo "### ABORT: could not acquire $LEASE_NAME lease"; exit 3; }
-  trap 'lease_release' EXIT
 fi
+zp_cleanup(){ [ "$TRACE" = 1 ] && tracer_stop; [ "$DO_LEASE" = 1 ] && lease_release; return 0; }
+trap zp_cleanup EXIT
 
 # ----- fresh POR ----------------------------------------------------------------
 if [ "$DO_DEPLOY" = 1 ]; then
@@ -175,6 +291,7 @@ case "$FIRST" in
   both) say "arm both (near-simultaneous a,b)"; zp_arm a; zp_arm b;;
 esac
 T0=$(date +%s)   # timestamps count from arm-complete
+[ "$TRACE" = 1 ] && tracer_start
 
 # ----- the chain -----------------------------------------------------------------
 poll a role_locked            c_role    || true
@@ -184,6 +301,7 @@ poll d cal_done_cstate4       c_cal     || true
 poll e sync_ins_det_seen      c_sync    || true
 poll f winscan_reanchored     c_winscan || true
 poll g fcsm4_cr_crack_credit  c_fc      || true
+if [ "$TRACE" = 1 ]; then tracer_stop; trace_summary; fi
 
 # ----- (h) data both ways ---------------------------------------------------------
 H_ST=FAIL; A2B_PASS=0; B2A="not-run"
@@ -218,5 +336,6 @@ printf 'ZP_STEP h data_bothways %s t=%ss a2b=%d/3 b2a=%s\n' "$H_ST" "${ZP_T[h]}"
 line="ZP_SCORECARD first=$FIRST stagger=${STAGGER}s"
 for s in a b c d e f g h; do line="$line $s=${ZP_ST[$s]:-SKIP}(t=${ZP_T[$s]:-.}s)"; done
 line="$line a2b=$A2B_PASS/3 b2a=$B2A total=$(now)s"
+[ "$TRACE" = 1 ] && line="$line trace=$TRACE_FILE"
 echo "$line"
 [ "$H_ST" = PASS ]

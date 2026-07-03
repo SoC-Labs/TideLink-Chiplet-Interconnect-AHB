@@ -195,7 +195,20 @@ module WlinkRxLinkLayer(
   // L5 (tdif-10, 2026-05-25): re-enable the v3 sticky gate. Long-packet
   // entry is gated until a whitelisted SHORT bringup packet has been
   // observed in state==0 — see strengthened latch logic below.
-  wire      long_pkt_gate = first_short_pkt_seen;
+  //
+  // SoC Labs P1 fix stage 2 (2026-07-03): a WELL-FORMED LONG HEADER opens
+  // the gate itself, combinationally. Silicon proof sequence: with the
+  // widened short whitelist, the gate re-latched from keepalives and the
+  // NACK/replay chain then recovered ALL previously swallowed words
+  // (exp 0x01->0x04, sack=4) — but under continuous burst pressure the
+  // opening short never crossed and 64/64 longs were swallowed with the
+  // gate stuck 0. An ECC-clean long header (is_long_pkt includes
+  // ~ecc_check_corrupted) with a KNOWN FC data_id and a sane word_count is
+  // itself the "link is well-framed" evidence L5 wanted: accept it and let
+  // it latch the gate for the 0-lane path too. Known long data_ids: the
+  // Wlink FC node families aw/w/b/ar/r = 0x80-0x84, gb = 0xa0, tl = 0xa1.
+  wire      wellformed_long_hdr;  // assigned below, after is_long_pkt/len_ok/ph decls
+  wire      long_pkt_gate = first_short_pkt_seen | wellformed_long_hdr;
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
   reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
@@ -246,6 +259,15 @@ module WlinkRxLinkLayer(
   // still rejecting the ~60k phantom lengths seen on filler.
   localparam [15:0] LONG_PKT_WORD_MAX = 16'd64; // S->M wedge guard
   wire long_pkt_len_ok = ecc_check_corrected_ph[23:8] <= LONG_PKT_WORD_MAX; // candidate word_count plausible
+  // SoC Labs P1 fix stage 2 (2026-07-03): assignment for the forward-declared
+  // wellformed_long_hdr (see the long_pkt_gate declaration above for the full
+  // rationale). ECC-clean long header + sane word_count + KNOWN FC long
+  // data_id (aw/w/b/ar/r 0x80-0x84, gb 0xa0, tl 0xa1) self-opens the gate.
+  assign wellformed_long_hdr = is_long_pkt && long_pkt_len_ok &&
+                               ((corrected_ph[7:0] >= 8'h80 &&
+                                 corrected_ph[7:0] <= 8'h84) ||
+                                (corrected_ph[7:0] == 8'ha0) ||
+                                (corrected_ph[7:0] == 8'ha1));
   reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
   reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
   // tdif-10 visibility (2026-05-25): word_count is the framer's "how far
@@ -1195,14 +1217,38 @@ module WlinkRxLinkLayer(
   //
   // `reset` (POR + LL swreset) clears the flag so each bringup window
   // re-bootstraps from a whitelisted short pkt.
+  //
+  // SoC Labs P1 fix (2026-07-03): the 0x44-47-only whitelist DEADLOCKS the
+  // long path in steady state. Silicon-proven sequence: the gate opens
+  // during bootstrap (CR/CRACK), the bootstrap data packet crosses, then a
+  // post-bringup LL soft reset clears it -- and it can NEVER re-latch,
+  // because steady-state wire traffic is only the OTHER FC nodes' shorts
+  // (bFC ACK 0x12 / CR 0x10 keepalives), none of which match. Every
+  // subsequent data long is then silently swallowed at the hunt acceptance
+  // guard (RXCAP read: GATE=0, BLOCKED=1, ph_at_first=0x07a1 = a perfectly
+  // clean header). Fix: accept the FULL set of REAL short-packet id
+  // families as re-latch evidence -- Wlink FC nodes aw 0x08-0x0b, w 0x0c-0f,
+  // b 0x10-13, ar 0x14-17, r 0x18-1b, gb 0x40-43, tl 0x44-47 (the original
+  // four), and the ShortPacket channel 0x50-0x51. All are ECC-clean by
+  // is_short_pkt; misframed garbage stays excluded, preserving the L5
+  // intent while making the gate self-healing from any live traffic.
   wire whitelisted_short_data_id = (corrected_ph[7:0] == io_swi_cr_id) ||
                                    (corrected_ph[7:0] == io_swi_crack_id) ||
                                    (corrected_ph[7:0] == io_swi_ack_id) ||
-                                   (corrected_ph[7:0] == io_swi_nack_id);
+                                   (corrected_ph[7:0] == io_swi_nack_id) ||
+                                   (corrected_ph[7:0] >= 8'h08 &&
+                                    corrected_ph[7:0] <= 8'h1b) ||   // aw/w/b/ar/r FC families
+                                   (corrected_ph[7:0] >= 8'h40 &&
+                                    corrected_ph[7:0] <= 8'h43) ||   // gb FC family
+                                   (corrected_ph[7:0] == 8'h50) ||
+                                   (corrected_ph[7:0] == 8'h51);     // ShortPacket ch7
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       first_short_pkt_seen <= 1'b0;
-    end else if (state == 2'h0 && is_short_pkt && whitelisted_short_data_id) begin
+    end else if (state == 2'h0 &&
+                 ((is_short_pkt && whitelisted_short_data_id) ||
+                  wellformed_long_hdr)) begin
+      // P1 fix stage 2: a wellformed long header also latches the sticky.
       first_short_pkt_seen <= 1'b1;
     end
   end
@@ -2092,10 +2138,22 @@ end // initial
   reg [16:0] rxcap_max_byte_count;  // max byte_count ever reached
   reg [14:0] rxcap_long_start_cnt;  // saturating count of long-packet starts
 
-  // A "long-packet start" = is_long asserted while the framer is hunting
-  // (state == 0) and a valid byte pair is present, i.e. the same condition the
-  // FSM uses to load word_count for a long packet (see _GEN_8 / state guard).
-  wire rxcap_long_start = is_long_pkt & (state == 2'h0) & valid_byte_reg;
+  // A "long-packet start" = is_long asserted while the framer is hunting.
+  // SoC Labs 2026-07-03 P1/P2 discriminator: the original condition borrowed
+  // valid_byte_reg from the 0-LANE FSM guard; the multi-lane acceptance at
+  // the hunt transition has no such term, so the counter was structurally
+  // blind to idle-preceded multi-lane long starts (silicon read ever=1/cnt=0
+  // for the dying isolated packet). Drop it so the counter tracks is_long
+  // decodes, and separately latch WHY the acceptance guard rejected: the
+  // sticky rxcap_long_blocked + live long_pkt_gate go out on RXCAP0[17:16].
+  // gate=0 -> P1 (first_short_pkt_seen re-armed closed by a post-bringup
+  // llrx reset; the 0x44-47-only whitelist can never re-latch on bFC
+  // keepalives); gate=1 with garbage ph_at_first {wc,id} -> P2 (idle-edge
+  // header rotation failing long_pkt_len_ok).
+  wire rxcap_long_start    = is_long_pkt & (state == 2'h0);
+  wire rxcap_long_rejected = is_long_pkt & (state == 2'h0)
+                             & ~(long_pkt_gate & long_pkt_len_ok);
+  reg  rxcap_long_blocked;
 
   always @(posedge clock or posedge reset) begin
     if (reset) begin
@@ -2106,15 +2164,17 @@ end // initial
       rxcap_ph_at_first    <= 16'h0;
       rxcap_max_byte_count <= 17'h0;
       rxcap_long_start_cnt <= 15'h0;
+      rxcap_long_blocked   <= 1'b0;
     end else begin
       // Sticky "ever" flags.
       if (is_long_pkt)        rxcap_is_long_ever <= 1'b1;
       if (endOfPacket)        rxcap_eop_ever     <= 1'b1;
       if (state == 2'h2)      rxcap_err_ever     <= 1'b1;
       if (valid)              rxcap_valid_ever   <= 1'b1;
-      // Capture the decoded header (length byte + low candidate word_count)
-      // at the FIRST long-packet start only (rxcap_is_long_ever still 0).
-      if (rxcap_long_start & ~rxcap_is_long_ever)
+      if (rxcap_long_rejected) rxcap_long_blocked <= 1'b1;
+      // Capture the decoded header at the FIRST is_long decode (was gated on
+      // valid_byte_reg -> never captured for the dying packet; see above).
+      if (is_long_pkt & ~rxcap_is_long_ever)
         rxcap_ph_at_first <= corrected_ph[15:0];
       // Track the deepest byte_count the framer ever reached.
       if (byte_count > rxcap_max_byte_count)
@@ -2132,8 +2192,9 @@ end // initial
                           rxcap_err_ever,      // [21] framer error-state EVER
                           rxcap_valid_ever,    // [20] LL_RX valid EVER
                           state,               // [19:18] live framer state
-                          2'b0,                // [17:16] reserved
-                          rxcap_ph_at_first};  // [15:0] corrected_ph[15:0] @ first long
+                          rxcap_long_blocked,  // [17] long REJECTED by hunt guard EVER (sticky)
+                          long_pkt_gate,       // [16] live first_short_pkt_seen (gate)
+                          rxcap_ph_at_first};  // [15:0] corrected_ph {wc_lo,id} @ first long
   // rxcap1 = {max_byte_count[16:0], long_start_count[14:0]}
   assign io_obs_rxcap1 = {rxcap_max_byte_count, rxcap_long_start_cnt};
 

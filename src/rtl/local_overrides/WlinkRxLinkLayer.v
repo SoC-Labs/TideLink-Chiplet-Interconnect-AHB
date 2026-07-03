@@ -377,6 +377,20 @@ module WlinkRxLinkLayer(
   // still solely drives the STRIP (effective_link_data below), so a robust match
   // re-aligns the framer without zeroing a beat. Default 0 -> bit-identical.
   wire        sync_resync   = (sync_detected | io_robust_sync_seen) & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
+  // SoC Labs P2 mid-packet-abort fix (2026-07-03): honor the SYNC re-hunt ONLY
+  // at a framer BOUNDARY (state 0 hunt / state 2 error), NEVER inside a long-
+  // packet BODY (state 1). The :379 "SYNC only in idle slots" premise holds for
+  // the idle-gated inserter, but SWI_SYNC_FORCE_ALWAYS (deps/tidelink-phy
+  // WavD2DGpio.v drops the idle term) emits a SYNC every 32 words regardless of
+  // idle, so a beacon can land mid-body; the old unconditional reset then forced
+  // state 1->0 and zeroed byte/word_count, SILENTLY discarding the half-parsed
+  // long packet (no valid/eop/CRC/error -> FCSM-blind, same class as P1).
+  // Deferring the re-hunt past state==1 lets the packet reach endOfPacket; the
+  // next inter-packet SYNC (state 0) still re-aligns; slipped state==1 still
+  // self-recovers via the wedge guard (word_count>LONG_PKT_WORD_MAX) and the
+  // monotone byte_count -> endOfPacket. INERT on the proven data path: with SYNC
+  // insert OFF sync_resync==0, so sync_resync_boundary==0 identically.
+  wire        sync_resync_boundary = sync_resync & (state != 2'h1);
   // Strip: feed the framer an all-zero idle word on the SYNC cycle so the
   // delimiter itself is never interpreted as packet bytes.
   wire [127:0] effective_link_data = sync_detected ? 128'h0 : io_link_data;
@@ -1255,7 +1269,7 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       state <= 2'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       // SoC Labs SYNC re-align (2026-06-06): a SYNC delimiter forces the
       // byte-align FSM back to hunt (state 0) at a known packet boundary.
       state <= 2'h0;
@@ -1841,7 +1855,7 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       word_count <= 16'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       word_count <= 16'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
@@ -1858,7 +1872,7 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       byte_count <= 17'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       byte_count <= 17'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin

@@ -248,6 +248,27 @@ proc create_root_design { parentCell } {
     ] $clk_wiz
 
     #--------------------------------------------------------------------------
+    # PHY link/pad clock /2 divider (toggle-FF + BUFG, module reference).
+    # The clk_wiz MMCM floor is 4.687 MHz (valid range 4.687-800), so the PHY
+    # pad/link rate cannot be lowered at the MMCM. To WIDEN the marginal A->B
+    # receive eye we halve ONLY the PHY clock (user_ref_clk + scan_clk) to
+    # 2.343 MHz / 426.666 ns via a post-MMCM /2 divider, while hclk and every
+    # AXI ACLK stay on clk_out1 at 4.687 MHz (system/SW speed unchanged).
+    #
+    # The divider is tidelink_phy_clk_div2.v: a toggle flip-flop on clk_out1 +
+    # an explicit BUFG (a GLOBAL clock net for the divided clock). BUFGCE_DIV is
+    # UltraScale-only and is NOT supported on this Zynq-7000 part (Vivado
+    # Netlist 29-180 blackboxes it); util_ds_buf:2.2 has no divide mode (BUFGCE
+    # only gates). The .v is added to the fileset by build_design.tcl BEFORE
+    # create_root_design and pulled in here as a module reference.
+    # clk_in <- clk_wiz_0/clk_out1 (4.687); clk_out -> user_ref_clk + scan_clk.
+    # The hclk<->PHY paths are 2-flop CDC'd in RTL and declared asynchronous in
+    # the timing XDC, so a separate /2 user_ref_clk domain is safe.
+    #--------------------------------------------------------------------------
+    set phy_clk_div [create_bd_cell -type module \
+        -reference tidelink_phy_clk_div2 phy_clk_div]
+
+    #--------------------------------------------------------------------------
     # Processor System Reset — synchronised to 50 MHz (hclk) domain.
     # peripheral_aresetn drives hresetn, poresetn, and phc_resetn on the IP.
     #--------------------------------------------------------------------------
@@ -489,7 +510,10 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins clk_wiz_0/locked] \
                    [get_bd_pins proc_sys_reset_0/dcm_locked]
 
-    #-- Clock fan-out: clk_wiz clk_out1 (50 MHz hclk) drives all logic
+    #-- Clock fan-out: clk_wiz clk_out1 (4.687 MHz) drives hclk + ALL AXI logic.
+    #   user_ref_clk + scan_clk are NO LONGER on this net — they run at 2.343 MHz
+    #   off the phy_clk_div /2 (see below) to widen the PHY A->B eye. hclk and
+    #   every AXI ACLK stay here at 4.687 MHz (system/SW speed unchanged).
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
                    [get_bd_pins proc_sys_reset_0/slowest_sync_clk] \
                    [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
@@ -503,6 +527,13 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_gpio_strap/s_axi_aclk] \
                    [get_bd_pins axi_gpio_debug_unlock/s_axi_aclk] \
                    [get_bd_pins tidelink_0/hclk] \
+                   [get_bd_pins phy_clk_div/clk_in]
+
+    #-- PHY /2 clock: clk_out1 (4.687) -> phy_clk_div -> user_ref_clk + scan_clk
+    #   at 2.343 MHz / 426.666 ns. user_ref_clk IS the GPIO-PHY hi-speed bit
+    #   clock (serializer + forwarded pad_clk_tx run off it), so halving it
+    #   halves the pad/link rate and doubles the pad bit period (eye widening).
+    connect_bd_net [get_bd_pins phy_clk_div/clk_out] \
                    [get_bd_pins tidelink_0/user_ref_clk] \
                    [get_bd_pins tidelink_0/scan_clk]
 

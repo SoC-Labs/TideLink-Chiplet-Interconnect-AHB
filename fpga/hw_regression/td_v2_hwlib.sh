@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2034  # library: register/const vars are consumed by the sourcing scripts
 # =============================================================================
 # td_v2_hwlib.sh — TideLink V2 hardware regression LIBRARY (sourced, not run)
 #
@@ -165,3 +166,67 @@ assert_eq(){ # label expected actual
   else TD_FAIL=$((TD_FAIL+1)); TD_DETAIL+=("    FAIL $1: got=$3 want=$2"); return 1; fi
 }
 flush_detail(){ printf '%s\n' "${TD_DETAIL[@]}"; TD_DETAIL=(); }
+
+# =============================================================================
+# ZERO-POKE AUTONOMY additions (L4 training-exit era, 2026-07)
+# Named registers + helpers for zeropoke_proof.sh / zeropoke_soak.sh /
+# snapshot.sh / linkhold_soak.sh. Addresses cross-checked against
+# docs/REGISTER_MAP.md + pynq_host/scripts/tl39.py + the RTL region decode
+# (axi_chiplet_controller.sv regionD, 2026-07-02 WINSCAN_OBS).
+# =============================================================================
+
+# ----- FIFO / packet obs (Region 0) ------------------------------------------
+R_PKTLEN=0x44032008        # PACKET_WORD_LENGTH (RO, 14b; 0 when idle)
+R_CREDIT_COUNT=0x4403200C  # CREDIT_COUNT (RO) — free credits in the LOCAL FIFO
+R_FIFO_STATUS=0x44032010   # [1]=overrun(sticky) [2]=underrun(sticky) [3]=master_err [4]=committed
+
+# ----- role / autoneg (Region 4) ----------------------------------------------
+R_ROLE_CFG=0x44032080          # [0]=role [1]=role_lock (W1S, POR-only clear)
+R_ROLE_STATUS=0x44032084       # [0]=effective_role [1]=locked [2]=i2c_busy [3]=i2c_addressed
+R_NEGO_CFG=0x44032090          # [0]=nego_en [5]=force_lock [6]=mask_hs_auto_en (POR 0x61)
+R_NEGO_STATUS=0x44032094       # [3:0]=state [4]=done [5]=err [6]=won [7]=lost
+R_NEGO_TRAIN_CFG=0x4403210C    # [0]=train_auto_en [23:20]=MIN_LOCK_DWELLS
+R_NEGO_TRAIN_STATUS=0x44032110 # [0]=ok [1]=fail [2]=in_prog [7:4]=train_state
+
+# ----- PHY / SYNC / winscan obs (Regions 8-D) ---------------------------------
+R_OBS=0x44032108        # SWI_LANE_STATUS (alias of R_FCSM): lk[7:0] flt[15:8]
+                        # cal[16] fcsm[19:17] llrx[22:21] cr[23] ck[24]
+                        # long[26] llv[29] a2l[30] fe_full[31]
+R_SLIPLO=0x44032104     # [23:0]=slip [27:24]=word_pin [28]=auto_dis
+R_SYNCCNT=0x44032114    # [31:16]=sync_detected sat-cnt (coherent deskew health)
+R_PHASE=0x44032118      # per-lane IDELAY coarse nibble (== R_PHASE_NIB, tap[4:1])
+R_TXSYNC=0x44032120     # [15:0]=tx_sync_ins_cnt [16]=idle_lvl [17]=train_lvl [31:24]=0x5C
+R_RXDET2=0x44032124     # [15:0]=sync_seen_cnt [23:16]=per-lane sticky [31:24]=0x5D
+R_LIVEMATCH=0x44032144  # [7:0]=live per-lane SYNC match since clear [31:24]=0x5E
+R_OBSCAL=0x44032198     # [3:0]=V2 calibrator FSM cstate [20]=live training_mode
+R_FCCRED=0x4403219C     # OBS_FC_CREDIT: [7:0]=fe_rx_credit_max [15:8]=fe_rx_ptr
+                        # [16]=is_full [31:24]=0xFC presence (credit by VALUE lives here)
+R_RXCAP0=0x440321A0     # RX-framer long-DATA sticky capture word 0
+R_RXCAP1=0x440321A4     # RX-framer long-DATA sticky capture word 1
+R_FCSMCAP=0x440321A8    # FCSM transition sticky capture
+R_WINSCAN_OBS=0x440321B8 # [0]=winscan_done [1]=ws_degenerate(sticky)
+                         # [2]=ws_anchor_timeout(sticky) [31:24]=0x57 presence
+GP1_TX=0x84000000        # GP1 TX DATA aperture (txburst target; GP0 0x44xxxxxx data hangs)
+
+# HARDWARE-SAFETY: NEVER WRITE 0x440321B0 (SYNC_DIST_SEL) or 0x440321B4
+# (SWI_PHASE_LSB) during/after an autonomous bring-up — the on-chip winscan
+# FSM owns them; a host write mid-scan corrupts the tap walk. READS are fine.
+
+# ----- zero-poke ARM values ----------------------------------------------------
+ZP_NEGO_CFG_ARM=0x61        # nego_en + force_lock + mask_hs_auto_en
+ZP_NEGO_TRAIN_CFG_ARM=0x0001  # train_auto_en (and NOTHING else — zero-poke)
+# The a->b test packet for the (h) data gate (3 words: header + 2 payload).
+ZP_TX_WORDS=(0x00240000 0xcafe0001 0xcafe0002)
+
+# ----- die-generic helpers (arg1 = a | b) --------------------------------------
+rd_a(){ local v; v=$(a rd "$1"); sleep "$TD_THROTTLE"; echo "$v"; }   # throttled die_a read
+rd_d(){ local v; v=$("$1" rd "$2"); sleep "$TD_THROTTLE"; echo "$v"; } # throttled read, either die
+reanchored_d(){ echo $(( $("$1" rd $R_REANCHORED) & 1 )); }
+gp1_rx_d(){ "$1" rd "$(printf 0x%x $(( GP1_RX + ${2:-0}*4 )))"; }      # GP1 RX word idx, either die
+# arm one die for zero-poke autonomy: NEGO_CFG + NEGO_TRAIN_CFG, nothing else
+zp_arm(){ "$1" wr $R_NEGO_CFG $ZP_NEGO_CFG_ARM >/dev/null
+          "$1" wr $R_NEGO_TRAIN_CFG $ZP_NEGO_TRAIN_CFG_ARM >/dev/null; }
+# send the standard 3-word test packet from one die (a = A->B, b = B->A)
+zp_txburst(){ "$1" txburst "${ZP_TX_WORDS[@]}" >/dev/null 2>&1; }
+# hex-print a register read (0 on unreachable/empty)
+rdx(){ printf '0x%08x' "$(( $("$1" rd "$2" 2>/dev/null || echo 0) ))"; }

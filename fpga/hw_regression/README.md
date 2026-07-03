@@ -102,11 +102,31 @@ Key RTL fixes this path depends on (don't revert without re-validating here):
 - Override topology/paths via `TD_*` env vars (see the top of `td_v2_hwlib.sh`):
   `TD_A_IP`, `TD_B_IP`, `TD_DEPLOY_DIR`, `TD_LEASE`, `TD_THROTTLE`, …
 
+## Zero-poke autonomy scripts (added 2026-07-03, L4 training-exit era)
+
+Codify the autonomous bring-up proof loop (see `docs/TESTING.md` §3-4).
+All source `td_v2_hwlib.sh`; shellcheck-clean; validated against a board
+emulator — **first-use silicon validation pending**.
+
+| Script | Role |
+|--------|------|
+| `zeropoke_proof.sh <a\|b\|both> [--stagger SEC]` | one fresh-POR zero-poke bring-up (arm = `NEGO_CFG=0x61` + `NEGO_TRAIN_CFG=0x0001`, nothing else), per-step timestamps, machine-parseable a–h `ZP_SCORECARD`; exit 0 iff (h) data (3× A→B + B→A byte-exact) passed |
+| `zeropoke_soak.sh N` | N consecutive fresh-POR proofs, arm order alternating a,b,… + a near-simultaneous `both` last cycle; per-cycle one-liner + N/M summary split by order |
+| `snapshot.sh <tag>` | one-command FULL debug-register dump from BOTH dies to a timestamped file (read-only, safe anywhere) |
+| `linkhold_soak.sh MIN --manual\|--autonomous` | held-link time-stability: txburst every 30 s for MIN minutes, per-burst byte-exact score + link-health fields (hunts the ~20 min time-correlated death class) |
+
+Extra safety rule they enforce: **never write `0x21B0`/`0x21B4`** — the
+on-chip winscan FSM owns SYNC_DIST_SEL and SWI_PHASE_LSB now (reads are fine).
+
 ## Files
 
 | File | Role |
 |------|------|
-| `td_v2_hwlib.sh` | sourced library: board access, the proven recipe, property readers, assert framework, lease/health |
-| `td_v2_regress.sh` | the suite runner (tests 01–04, report, exit code) |
+| `td_v2_hwlib.sh` | sourced library: board access, the proven recipe, property readers, named registers (incl. the zero-poke set), assert framework, lease/health |
+| `td_v2_regress.sh` | the manual-recipe suite runner (tests 01–04, report, exit code) |
+| `zeropoke_proof.sh` | fresh-POR autonomous bring-up, a–h scorecard |
+| `zeropoke_soak.sh` | N-cycle arm-order-swept zero-poke soak |
+| `snapshot.sh` | both-die full debug-register evidence capture |
+| `linkhold_soak.sh` | held-link time-stability soak |
 | `stage_and_run.sh` | rsync the suite to the lab host and run it |
 | `README.md` | this file |

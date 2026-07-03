@@ -10,8 +10,8 @@ codifies the procedure every 2026-06/07 debug loop re-derived by hand.
 
 ```sh
 source ./set_env.sh          # VCS + cocotb env (SIM=vcs)
-make sim_gate                # all 7 suites, ~20-30 min (fresh compiles)
-make sim_gate_quick          # smoke: skips t31 + t32 (the two slowest)
+make sim_gate                # all 8 suites, ~25-40 min (fresh compiles)
+make sim_gate_quick          # smoke: skips t31/t32/t33 (the slowest)
 ```
 
 Behaviour: fail-fast per suite, all suites always run, per-suite log in
@@ -24,6 +24,7 @@ first** — the cocotb Makefiles do not track RTL as compile deps, so a cached
 |---|---|---|
 | `t31_autonomous_training_exit` | `tidelink_top_pair` `test_31` (V2 flist, `BYPASS_AUTONEG=0`, `SHORT_CAL_HOLD=64`, `sim_build_l4`) | full zero-poke chain a–h: training-exit rendezvous, SYNC, winscan, real fch bootstrap (`0x27f09/01/07`, bit0=swi_enable), bilateral data cross |
 | `t32_die_a_first_zombie_retry` | `tidelink_top_pair` `test_32` (**`BYPASS_AUTONEG=1`**, own `sim_build_l5`) | die_a-first arm order + zombie-peer trap auto-retry (R5). The test arms autoneg itself and asserts the FSM parks in ST_BYPASS pre-arm — do not run it on a `=0` build |
+| `t33_arm_stagger_episode_bind` | `tidelink_top_pair` `test_33` (**`BYPASS_AUTONEG=1`**, shares `sim_build_l5`) | FIX-1/2/3 (2026-07-03) arm-stagger episode binding: (a) seconds-stagger private-episode rebind (stale `winscan_done` rebound; final episode `0x21B8[2]=0`, rea=1, credit>0, data both ways), (b) mid-scan kick-loss → abort-restart fires (`0x21B8[7:4]`>0), (c) zero-stagger symmetric regression — all under the D2 permanent idle-gated beacons |
 | `t30_autonomous_fc_handoff` | `tidelink_top_pair` `test_30` (shares `sim_build_l4`) | autoneg FSM drives the FC data-mode handoff the manual recipe does |
 | `v2_pair_data` | `tidelink_top_pair_v2` `EPOCH_PROFILE=zero` | bilateral V2 link-up + M↔S packet delivery |
 | `v2_autonomous_sync_detect` | `tidelink_top_pair_v2` `EPOCH_PROFILE=zero` | autoneg drives the full SYNC-detect config (R8/SYNCTOL/LANEMASK/lock-thresh) + manual path bit-identical at `nego_en=0` |
@@ -59,10 +60,9 @@ RTL-constant 0 on silicon, so they synthesize away):
 
 | Hook (hierarchical reg) | What it selects when 1 | SIM / silicon value |
 |---|---|---|
-| `tb_syncoff_settle_short_q` (axi_chiplet_controller) | `SYNC_OFF_SETTLE_SIM` — autonomous SYNC-OFF settle after fch_done | 1024 / 25e6 (~0.5 s) |
 | `tb_fch_dwell_short_q` (axi_chiplet_controller) | `FCH_SWRESET_DWELL_SIM` — fch bootstrap swreset dwell | 4095 / 12.5e6 (~0.25 s) |
-| `tb_winscan_dwell_short_q` (axi_chiplet_controller) | `WINSCAN_DWELL_SIM`/`SAMP_SPACE_SIM`/`FIN_WAIT_SIM` — per-tap winscan dwell + F3b FINALIZE rendezvous | 32 & 100k / 25e6 (~0.5 s) |
-| `tb_ws_anchor_short_q` (axi_chiplet_controller) | `WS_ANCHOR_TIMEOUT_SIM` — F4 FINALIZE anchor-gate timeout | 50k / 15e6 (~0.3 s) |
+| `tb_winscan_dwell_short_q` (axi_chiplet_controller) | `WINSCAN_DWELL_SIM`/`SAMP_SPACE_SIM`/`FIN_WAIT_SIM`/`WS_CLR_HOLD_SIM` — per-tap winscan dwell + F3b FINALIZE rendezvous + FIX-3 retry clear-low hold | 32 & 100k & 512 / 25e6 (~0.5 s) |
+| `tb_ws_anchor_short_q` (axi_chiplet_controller) | `WS_ANCHOR_TIMEOUT_SIM` — F4 FINALIZE anchor-gate timeout (FIX-3: ×4 waits worst-case — 3 clear-retries then fail-open) | 50k / 15e6 (~0.3 s) |
 | `tb_retry_backoff_short_q` (tidelink_autoneg) | `T_RETRY_BACKOFF_SIM` — R5 zombie-retry backoff | 20k / 15e6 (~0.3 s) |
 | `tb_early_exit_force_q` (tidelink_phy_align_calibrator) | forces `EARLY_EXIT_ON_ALL_LOCKED` — lanes freeze on first lock instead of the full scan | 0/1, sim-only |
 
@@ -109,7 +109,7 @@ Set them per-die from cocotb, e.g.
 
 ## 4. Canonical pass criteria
 
-- **Sim**: `make sim_gate` exits 0 (7/7 PASS in the summary table).
+- **Sim**: `make sim_gate` exits 0 (8/8 PASS in the summary table).
 - **Zero-poke silicon** (`zeropoke_proof.sh`, both arm orders + `both`):
   every step a–h PASS within the ~4 min budget; (h) = 3/3 A→B bursts AND the
   B→A burst byte-exact; post-burst: no underrun/overrun, `long=0`,
@@ -126,7 +126,7 @@ Set them per-die from cocotb, e.g.
 | NEGO_CFG | `0x44032090` | `0x61` | arm value AND POR default (nego_en+force_lock+mask_hs) |
 | NEGO_TRAIN_CFG | `0x4403210C` | `0x0001` | arm value: train_auto_en (write NOTHING else) |
 | ROLE_STATUS | `0x44032084` | bit1=1 both | role_locked (W1S, POR-only clear) |
-| R8 SWI_TRAINING_MODE | `0x44032100` | `0x1D` in SYNC phase → `0x10` in data mode | [0]train [1]recal [2]insert [3]force [4]robust; F1: robust STAYS 1 after SYNC-OFF |
+| R8 SWI_TRAINING_MODE | `0x44032100` | `0x1D` in SYNC phase → `0x15` in data mode | [0]train [1]recal [2]insert [3]force [4]robust; D2 (2026-07-03): insert+robust STAY 1 permanently on the autonomous path (never-blind-OFF) — only force drops. Manual recipe still writes `0x10` at enter_data_mode (unchanged) |
 | SYNCTOL | `0x44032128` | `0x000005e4` | tol=5, lane mask 0xe4 |
 | LANEMASK | `0x44030214` | `0x0000e4e4` | rx/tx lane mask |
 | lock-thresh | `0x44032160` | `0x55555555` | per-lane Hamming thresh 5 |
@@ -134,7 +134,7 @@ Set them per-die from cocotb, e.g.
 | OBSCAL cstate | `0x44032198` | `[3:0]=4` | training-exit walks 6→4 |
 | sync_seen | `0x4403215C` | `[7:0]=0xe4`, marker 0x5F | all 4 active lanes armed |
 | SWI_EPOCH_STATUS | `0x44032140` | bit0=1 | reanchored (deskew anchor engaged) |
-| WINSCAN_OBS | `0x440321B8` | `0x57000001` | done=1, degenerate=0, anchor-timeout=0, marker 0x57 |
+| WINSCAN_OBS | `0x440321B8` | `0x570000n1` (n = abort count ≥0) | [0]done=1 [1]degenerate=0 [2]anchor-timeout=0 [3]anchored-late (diag) [7:4]abort-restart count (FIX-1; >0 = a training fall was consumed mid-scan), marker 0x57. **Stagger discriminator**: poll [0] on BOTH dies during bring-up — the die whose done rises SECOND is the (formerly) starved one |
 | OBS_FC_CREDIT | `0x4403219C` | marker 0xFC, credit_max ≈ 0x1f, ≠0 | credit by VALUE — `0x2108[31]` only catches ==0 |
 | FCCTRL | `0x44030208` | `0x00027f07` | bootstrap walk `0x27f09→0x27f01→0x27f07`, bit0=swi_enable |
 | RX slices (force-SYNC) | `0x4403212C..38` | L2=`0x5B4C` L5=`0xB5A6` L6=`0xD3C4` L7=`0xF1E2` | byte-exact ⇒ eye/PHY good |

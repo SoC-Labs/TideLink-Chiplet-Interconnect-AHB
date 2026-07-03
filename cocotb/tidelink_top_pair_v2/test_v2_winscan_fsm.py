@@ -148,7 +148,7 @@ async def _pulse_training_fall(tb, side):
     await ClockCycles(tb.dut.hclk, 4)
 
 
-async def _wait_winscan_done(tb, side, max_cycles=400_000, poll=200):
+async def _wait_winscan_done(tb, side, max_cycles=700_000, poll=200):
     ctrl = _ctrl(tb.dut, side)
     waited = 0
     while waited < max_cycles:

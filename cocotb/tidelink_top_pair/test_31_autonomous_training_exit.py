@@ -206,7 +206,7 @@ async def _winscan_tracer(dut, log):
     25k cycles until both fch_done. Diagnoses anchor-gate rendezvous issues
     (which die forced/cleared/anchored when)."""
     names = {0: "IDLE", 1: "ARM", 2: "LANE", 3: "SETTLE", 4: "SAMP",
-             5: "NTAP", 6: "PICK", 7: "FIN", 8: "DONE"}
+             5: "NTAP", 6: "PICK", 7: "FIN", 8: "DONE", 9: "CLRLOW"}
     while True:
         await ClockCycles(dut.hclk, 25_000)
         line = []
@@ -254,11 +254,9 @@ async def test_31_autonomous_training_exit(dut):
         # R4c: the fch swreset dwell is now 0.25s (bilateral overlap) — shrink
         # it in sim via the designed-in hook, same idiom as the winscan knob.
         _ctrl(dut, side).tb_fch_dwell_short_q.value = 1
-        # F2 (2026-07-02): the SYNC-OFF settle is now 0.5s on silicon (cross-die
-        # OFF-window overlap) — the designed-in hook selects the previous,
-        # proven 1024-cycle settle so the OFF edge lands in the sim window
-        # (needed for the F1 robust-stays-1 assertion below).
-        _ctrl(dut, side).tb_syncoff_settle_short_q.value = 1
+        # D2 (2026-07-03): the autonomous SYNC-OFF timer is DELETED ("never
+        # blind-OFF") — there is no tb_syncoff_settle_short_q hook any more;
+        # insert_en/robust stay 1 permanently (asserted below).
         # F4: the WS_FINALIZE anchor-gate timeout is 0.3s on silicon — the hook
         # bounds it at 50k cycles. In this bilateral run BOTH dies beacon, so
         # the anchor must genuinely (re-)latch and the timeout must NOT fire
@@ -546,41 +544,55 @@ async def test_31_autonomous_training_exit(dut):
         "R1: sender fe_rx_credit_max=0 — the CR/CRACK credit grant never "
         "(re-)loaded after the autonomous bootstrap")
 
-    # ---- (11) F1/F2: the autonomous SYNC-OFF fired (insert_en dropped after
-    #      fch_done + settle) and KEPT robust_detect=1 — the manual R8=0x10
-    #      end-state byte-for-byte. Pre-F1 the OFF stripped robust, so a
-    #      still-beaconing peer's SYNC (cross-die OFF skew) injected 16
-    #      undetected bytes = the permanent word-boundary displacement
-    #      (0xcafe0003 / PKTLEN=0xCAF byte-shear).
-    off_ok = {"m": False, "s": False}
-    for _ in range(2000):
-        await ClockCycles(dut.hclk, 50)
-        for side in ("m", "s"):
-            if _si(_ctrl(dut, side).swi_sync_insert_en_r) == 0:
-                off_ok[side] = True
-        if all(off_ok.values()):
-            break
+    # ---- (11) D2 "NEVER BLIND-OFF" (2026-07-03, INVERTED from the old F1/F2
+    #      gate): the autonomous SYNC-OFF timer is DELETED. The PERMANENT
+    #      autonomous data-mode state is insert_en=1 (idle-gated beacon) +
+    #      robust=1, with only force-SYNC dropped (winscan FINALIZE exit) and
+    #      force_always never set (R4a). The old timed OFF raced the PEER's
+    #      WS_FINALIZE re-anchor refill (needs PEER beacons; one missed
+    #      SYNC_PERIOD grid slot resets the deskew confirm run) — a race no
+    #      timer can bound across the arm-stagger. NOTE the ordering: the (10)
+    #      data gate above ALREADY ran byte-exact WITH beacons on — that IS
+    #      the new data-safety gate (idle-gated insert never deletes words;
+    #      FORCE was the R4 word-deleter). Here we additionally dwell and
+    #      assert the state HOLDS (no residual OFF path fires late).
+    await ClockCycles(dut.hclk, 100_000)   # >> the retired 1024-cycle settle
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
+        ie = _si(c.swi_sync_insert_en_r)
         rb = _si(c.swi_sync_robust_detect_r)
         fa = _si(c.swi_sync_force_always_r)
-        log.info(f"{name} F1 SYNC-OFF end-state: insert_en="
-                 f"{_si(c.swi_sync_insert_en_r)} force_always={fa} robust={rb}")
-        assert off_ok[side], (
-            f"{name}: autonomous SYNC-OFF never fired (insert_en still 1) — "
-            f"fch_done+settle path broken (is tb_syncoff_settle_short_q set?)")
+        wf = _si(c.winscan_force_sync)
+        hq = _si(c.sync_cfg_hold_q)
+        log.info(f"{name} D2 permanent data-mode state: insert_en={ie} "
+                 f"robust={rb} force_always={fa} winscan_force={wf} hold={hq}")
+        assert ie == 1, (
+            f"{name}: D2 REGRESSION — swi_sync_insert_en_r=0 in data mode; "
+            f"the autonomous SYNC-OFF must be GONE (a blind timed OFF starves "
+            f"the peer's re-anchor refill: partial sync_seen, rea=0, "
+            f"0x21B8[2], credit_max=0, dead data)")
         assert rb == 1, (
-            f"{name}: F1 REGRESSION — swi_sync_robust_detect_r=0 after the "
-            f"autonomous SYNC-OFF; it must STAY 1 (manual R8=0x10 keeps bit4: "
-            f"the tol-5 framer re-hunt that heals a beacon missing the exact "
-            f"compare — without it the peer's OFF-skew beacons byte-shear the "
-            f"framer stream)")
-        assert fa == 0, f"{name}: force_always != 0 after SYNC-OFF"
+            f"{name}: swi_sync_robust_detect_r=0 in data mode — robust must "
+            f"stay 1 permanently (tol-5 framer re-hunt = drift self-healing; "
+            f"without it a peer beacon missing the exact compare byte-shears "
+            f"the framer stream)")
+        assert fa == 0, (
+            f"{name}: swi_sync_force_always_r=1 in data mode — force-always "
+            f"is the R4 word-deleter and must NEVER be set autonomously")
+        assert wf == 0, (
+            f"{name}: winscan_force_sync still 1 after FINALIZE — force must "
+            f"drop at the FINALIZE exit (beacons revert to idle-gated)")
+        assert hq == 1, (
+            f"{name}: sync_cfg_hold_q=0 — the F1b every-cycle heal must be "
+            f"PERMANENT (it is what defends insert_en/robust against I2C "
+            f"full-word R8 slot-0 clobbers in data mode)")
 
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
              "transited S_HOLD→S_VALIDATE→S_DONE (no re-sweep after clear), "
              "swi_training_mode cleared 1→0 by the autoneg FSM (not a TB force), "
              "both settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
              "0x27f09→0x27f01→0x27f07 on both dies; post-bootstrap FCSM=4; "
-             "AHB_TX data crossed BYTE-EXACT with the sender's fe credit gate "
-             "OPEN. L4 deadlock + death-spiral + R1 credit wedge covered.")
+             "AHB_TX data crossed BYTE-EXACT — UNDER PERMANENT idle-gated "
+             "beacons (D2) — with the sender's fe credit gate OPEN, and the "
+             "beacons-on state HELD through the post-data dwell. L4 deadlock "
+             "+ death-spiral + R1 credit wedge + D2 never-blind-OFF covered.")

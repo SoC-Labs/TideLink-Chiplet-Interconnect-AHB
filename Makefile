@@ -144,13 +144,16 @@ sim-regression-v2:
 # sim_gate — THE aggregate pre-deploy sim gate (L4 training-exit era, 2026-07)
 #
 # One command that runs every suite the debug loops have been re-deriving by
-# hand. Seven gates, exact proven incantations (see docs/TESTING.md):
+# hand. Eight gates, exact proven incantations (see docs/TESTING.md):
 #
 #   tidelink_top_pair  (V2 flist, autonomy ON, short cal-hold, no dump):
 #     t31_autonomous_training_exit   full zero-poke chain a-h incl. the real
 #                                    fch bootstrap + bilateral data cross
 #     t32_die_a_first_zombie_retry   die_a-first arm order + zombie-peer
 #                                    trap auto-retry (R5)
+#     t33_arm_stagger_episode_bind   FIX-1/2/3 arm-stagger episode binding:
+#                                    private-episode rebind / mid-scan
+#                                    kick-loss abort-restart / zero-stagger
 #     t30_autonomous_fc_handoff      autoneg FSM drives the FC handoff
 #   tidelink_top_pair_v2 (EPOCH_PROFILE=zero):
 #     v2_pair_data                   bilateral link-up + M<->S packet delivery
@@ -170,7 +173,7 @@ sim-regression-v2:
 #
 # Requires the sim env:  source ./set_env.sh   (SIM=vcs)
 #
-#   make sim_gate         # all seven (~20-30 min: four fresh compiles)
+#   make sim_gate         # all eight (~25-40 min: four fresh compiles)
 #   make sim_gate_quick   # smoke: skips the two slowest (t31, t32)
 # =============================================================================
 
@@ -200,7 +203,7 @@ define sim_gate_run
 endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary \
-	sim_gate_t31 sim_gate_t32 sim_gate_t30 \
+	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
 
 sim_gate_env_check:
@@ -226,6 +229,14 @@ SIM_GATE_TP32_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=1 TB_TOP_NO_DUMP=1 \
 sim_gate_t32:
 	$(call sim_gate_run,t32_die_a_first_zombie_retry,\
 	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP32_ENV) $(MAKE) MODULE=test_32_die_a_first_zombie_retry)
+
+# t33 (FIX-1/2/3 2026-07-03): arm-stagger episode-binding gate — three
+# variants (seconds-stagger private episode / mid-scan kick-loss abort-restart
+# / zero-stagger symmetric). Same BYPASS_AUTONEG=1 build as t32 (the test arms
+# each die itself over APB), so it SHARES sim_build_l5 (one compile, two runs).
+sim_gate_t33:
+	$(call sim_gate_run,t33_arm_stagger_episode_bind,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP32_ENV) $(MAKE) MODULE=test_33_arm_stagger_episode_binding)
 
 sim_gate_t30:
 	$(call sim_gate_run,t30_autonomous_fc_handoff,\
@@ -257,6 +268,7 @@ sim_gate_v1elab:
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
+	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v1_elab
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -279,10 +291,11 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (7 suites)"
+	@echo " sim_gate — full aggregate sim gate (8 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
+	@$(MAKE) --no-print-directory sim_gate_t33
 	@$(MAKE) --no-print-directory sim_gate_t30
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet

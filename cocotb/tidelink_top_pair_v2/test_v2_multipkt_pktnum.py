@@ -31,6 +31,65 @@ from pair_v2_common import PairV2TB, run_bringup_full, APB_PKT_WORD_LEN
 
 N_WORDS = 16
 
+# SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — Region D APB regs
+# (SoC MMIO). CAP_CTRL write bit[0]=ARM (any write also resets rptr=0);
+# CAP_CTRL read = {0xCB[31:24], frozen[23], wptr[22:17], rptr[16:12], 12'b0}.
+# CAP_DATA read returns buffer[rptr] and auto-increments rptr (dump 32x).
+APB_CAP_CTRL = 0x21B8
+APB_CAP_DATA = 0x21BC
+CAP_DEPTH    = 32
+
+
+def decode_beat(entry):
+    """Decode a beatcap 32-bit packed entry (see WlinkGenericFCSM_6.v)."""
+    return {
+        "pktnum":   (entry >> 24) & 0xFF,
+        "exp":      (entry >> 16) & 0xFF,
+        "seen":     (entry >> 15) & 1,
+        "notseen":  (entry >> 14) & 1,
+        "sop":      (entry >> 13) & 1,
+        "valid":    (entry >> 12) & 1,
+        "isdata":   (entry >> 11) & 1,
+        "reanchor": (entry >> 10) & 1,
+        "idx":      entry & 0xFF,
+    }
+
+
+async def beatcap_arm(tb, side):
+    """Arm the per-beat capture ring on the RECEIVER (dst) side + reset rptr."""
+    await tb.apb(side).write(APB_CAP_CTRL, 0x1)   # ARM=1, resets rptr
+
+
+async def beatcap_dump(tb, side, label):
+    """Read CAP_CTRL status then dump all 32 entries (auto-incrementing rptr).
+    Returns the list of decoded entries."""
+    ctrl = await tb.apb(side).read(APB_CAP_CTRL)
+    marker = (ctrl >> 24) & 0xFF
+    frozen = (ctrl >> 23) & 1
+    wptr   = (ctrl >> 17) & 0x3F
+    rptr   = (ctrl >> 12) & 0x1F
+    tb.log.info(f"  [{label}] CAP_CTRL=0x{ctrl:08x} marker=0x{marker:02x} "
+                f"frozen={frozen} wptr(fill)={wptr} rptr={rptr}")
+    # Reset rptr to 0 before the dump (a CAP_CTRL write resets it; keep armed).
+    await tb.apb(side).write(APB_CAP_CTRL, 0x1)
+    entries = []
+    for _ in range(CAP_DEPTH):
+        raw = await tb.apb(side).read(APB_CAP_DATA)
+        entries.append(raw)
+    tb.log.info(f"  [{label}] PER-BEAT CAPTURE (marker=0x{marker:02x}, "
+                f"frozen={frozen}, fill={wptr}):")
+    decoded = []
+    for i, raw in enumerate(entries):
+        d = decode_beat(raw)
+        decoded.append(d)
+        flag = "MATCH" if d["seen"] else ("MISMATCH" if d["notseen"] else "-")
+        tb.log.info(f"      beat[{i:2d}] raw=0x{raw:08x} idx={d['idx']:2d} "
+                    f"pktnum={d['pktnum']:3d} exp={d['exp']:3d} "
+                    f"sop={d['sop']} valid={d['valid']} isdata={d['isdata']} "
+                    f"seen={d['seen']} notseen={d['notseen']} "
+                    f"reanchor={d['reanchor']} => {flag}")
+    return {"frozen": frozen, "wptr": wptr, "marker": marker, "entries": decoded}
+
 
 def fcsm(tb, side):
     return tb.top(side).u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
@@ -199,7 +258,7 @@ def fc_word(addr_offset, payload):
 
 
 async def _multipkt_run(tb, src, dst, label, fault=None, settle=6000,
-                        trace_cycles=8000, enable_crc=False):
+                        trace_cycles=8000, enable_crc=False, armcap=False):
     dut = tb.dut
     if enable_crc:
         # Force CRC checking ON at the receiver (default reset value is OFF,
@@ -217,6 +276,12 @@ async def _multipkt_run(tb, src, dst, label, fault=None, settle=6000,
     # delivery is checkable per word (no overwrite).
     payloads = [0xA5A50000 + (i << 8) + i for i in range(N_WORDS)]
 
+    # SoC Labs beatcap: arm the RECEIVER's per-beat capture ring BEFORE the
+    # burst so the first 32 valid RX beats of this A->B send are recorded.
+    if armcap:
+        await beatcap_arm(tb, dst)
+        tb.log.info(f"  [{label}] per-beat capture ARMED on receiver '{dst}'")
+
     tracer = cocotb.start_soon(
         trace_pktnum(tb, src, dst, cycles=trace_cycles, label=label))
 
@@ -232,6 +297,31 @@ async def _multipkt_run(tb, src, dst, label, fault=None, settle=6000,
     await ClockCycles(dut.hclk, settle)
 
     rx_data, revert_pulses, l2a_adv = await tracer
+
+    # ---- beatcap: dump the per-beat capture ring + validate the instrument ----
+    if armcap:
+        cap = await beatcap_dump(tb, dst, label)
+        # The instrument must have captured SOMETHING (buffer filled). On a clean
+        # 16-word burst the receiver sees 16 held-valid data beats (+ any credit/
+        # idle beats), so the 32-deep ring should FREEZE (wptr=32) with a
+        # decodable, marker-correct sequence. This proves per-beat visibility;
+        # it does NOT (and cannot) show the silicon 5x over-advance on clean sim.
+        assert cap["marker"] == 0xCB, (
+            f"{label}: beatcap CAP_CTRL marker=0x{cap['marker']:02x} != 0xCB "
+            f"(instrument not wired / not V2)")
+        # Count the distinct MATCH beats (seen=1): on a clean lockstep link every
+        # data packet matches exp exactly once, so the matched pktnum sequence
+        # should be 2,3,4,... (pktnums 0/1 are CR/CRACK bring-up; data starts ~2).
+        matched = [d["pktnum"] for d in cap["entries"] if d["seen"]]
+        tb.log.info(f"  [{label}] beatcap matched pktnum sequence (seen=1): "
+                    f"{matched}")
+        # Sanity: exp is monotonic non-decreasing across the captured data beats
+        # (a clean link never walks exp backward). Report any regressions.
+        data_beats = [d for d in cap["entries"] if d["isdata"]]
+        exp_seq = [d["exp"] for d in data_beats]
+        tb.log.info(f"  [{label}] beatcap exp sequence over data beats: {exp_seq}")
+        assert cap["wptr"] > 0, (
+            f"{label}: beatcap captured 0 beats (arm/valid wiring broken)")
 
     # ---- Oracle (1): END-TO-END exactly-once, read all 16 RX-FIFO offsets ----
     got = [await tb.ahb_fifo_read_word(dst, i * 4) for i in range(N_WORDS)]
@@ -275,7 +365,7 @@ async def test_a2b_multipkt_commit(dut):
     await run_bringup_full(tb)
     assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
     await ClockCycles(dut.hclk, 500)
-    await _multipkt_run(tb, "m", "s", "a2b-16w")
+    await _multipkt_run(tb, "m", "s", "a2b-16w", armcap=True)
 
 
 @cocotb.test()

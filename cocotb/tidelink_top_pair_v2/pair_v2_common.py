@@ -18,6 +18,8 @@ keeps the same Region-8/ROLE_CFG register surface, and the V2 calibrator
 auto-arms on the role_locked rising edge exactly like V1 (AUTOCAL_ENABLE=1
 at tidelink_top.sv).
 """
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
@@ -65,7 +67,13 @@ ST_SHORT_PKT   = lambda v: (v >> 25) & 1
 ST_LLRX_VALID  = lambda v: (v >> 29) & 1
 
 CLK_PERIOD_NS     = 20.0
-REF_CLK_PERIOD_NS = 8.0
+# SoC Labs 2026-07-03: silicon-ratio override. The FPGA runs hclk:ref = 2:1
+# (hclk 4.6875 MHz, ref = hclk/2 post-div2) => 32 hclk per io_tx_clk word
+# beat. The historical sim default (ref 125 MHz vs hclk 50 MHz) is INVERTED
+# vs silicon (6.4 hclk/beat) and hides the x5 a2l emit-vs-consume ratio bug
+# seen on silicon. TIDELINK_SIM_REF_PERIOD_NS=40.0 reproduces the exact
+# silicon ratio (32 hclk/beat).
+REF_CLK_PERIOD_NS = float(os.environ.get("TIDELINK_SIM_REF_PERIOD_NS", "8.0"))
 
 
 class APBMaster:

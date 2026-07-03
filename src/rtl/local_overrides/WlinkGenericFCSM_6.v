@@ -182,7 +182,16 @@ module WlinkGenericFCSM_6 #(
   // than the healthy ACK cadence (~tens of io_tx_clk cycles between data
   // packets) so it only fires after the credit-return stream has truly stopped
   // (sustained ACK loss), never disturbing a live link.
-  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100
+  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100,
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR (2026-06-28): the forward-gap window
+  // and the post-re-anchor hold-down. SOCL_L9B_FWD_WINDOW=4 forgives an isolated
+  // dropped/corrupted packet (or a short run of dropped slots inside one eye
+  // glitch) but NOT a wild far jump or a backward stale-replay echo.
+  // SOCL_L9B_HOLD_PKTS=8 rate-limits re-anchors to at most one per 8 data
+  // packets so a sustained-skew burst cannot silently walk exp forward
+  // one-slot-per-packet across the whole stream.
+  parameter [3:0]  SOCL_L9B_FWD_WINDOW     = 4'd4,
+  parameter [3:0]  SOCL_L9B_HOLD_PKTS      = 4'd8
 ) (
   input         clock,
   input         reset,
@@ -294,6 +303,31 @@ module WlinkGenericFCSM_6 #(
   // garbled to a SMALL NONZERO number (fe_rx_is_full only flags the ==0
   // case) — the link "works" for 1-4 packets then wedges.
   output [7:0]  io_obs_fe_rx_ptr,
+  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — a 32-entry, ONE-
+  // ENTRY-PER-io_rx_clk-cycle-while-auto_rx_in_valid ring that FREEZES when full.
+  // Purpose: root-cause the silicon multi-packet A->B OVER-ADVANCE where
+  // exp_pkt_num races ~5x per app packet. This gives CYCLE-ACCURATE per-beat
+  // visibility of {ll_rx_pktnum, exp_pkt_num, flags} so SW can see whether the
+  // received pktnum WALKS across the ~5 held-valid word-beats of one packet.
+  //
+  //   io_cap_arm      : LEVEL from an apb_clk-domain SWI reg (axi_chiplet_
+  //                     controller swi_capbeat_arm_r). 2-flop synced into
+  //                     io_rx_clk here; a RISING EDGE clears wptr/frozen and
+  //                     re-arms the ring. Holding it high keeps the (already
+  //                     frozen) buffer stable for readout.
+  //   io_cap_rptr     : LEVEL from an apb_clk-domain read pointer (axi_chiplet_
+  //                     controller capbeat_rptr_r). Selects which of the 32
+  //                     frozen entries io_obs_capdata presents. The buffer is
+  //                     FROZEN before readout, so this is a slow pointer into
+  //                     stable data — CDC-safe (quasi-static, same treatment as
+  //                     swi_dist_lane_sel_r).
+  //   io_obs_capdata  : the selected 32-bit packed entry (see bit-packing below).
+  //   io_obs_capstat  : {frozen, 2'b0, wptr[5:0]} status (wptr is the fill count,
+  //                     0..32). 2-flop-synced to apb_clk by the controller.
+  input         io_cap_arm,
+  input  [4:0]  io_cap_rptr,
+  output [31:0] io_obs_capdata,
+  output [8:0]  io_obs_capstat,
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — one
   // packed 32-bit word that latches, in the io_rx_clk domain (recovered RX,
   // same domain as cr_pkt_seen_rx), the FCSM-side delivery events for a
@@ -437,6 +471,15 @@ module WlinkGenericFCSM_6 #(
   // here for forward-reference by exp_pkt_not_seen_l9 at L373 and the
   // l2a_fc_replay_app_valid OR at L803.
   reg  socl_l9_first_data_seen_rx;
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR (2026-06-28): re-armable hold-down
+  // counter for the isolated-gap re-anchor. Decremented each io_rx_clk data
+  // packet after a re-anchor fires; while non-zero the re-anchor is DISARMED
+  // (so a burst of consecutive mismatches cannot thrash exp_pkt_num forward
+  // one-per-packet). Declared here (bare reg, no init expr -> no forward-ref);
+  // the combinational re-anchor wires that read exp_pkt_num/ll_rx_pktnum/
+  // fe_tx_credit_max are defined AFTER those regs (~L483) to satisfy VCS
+  // default_nettype none declaration-before-use (the prior L9b forward-ref bug).
+  reg  [3:0] socl_l9b_hold;
   // SoC Labs 2026-06-21: L9b (re-anchor on ANY pktnum gap) REVERTED. It referenced
   // exp_pkt_num/ll_rx_pktnum BEFORE their declaration; Vivado tolerated the forward-ref
   // (so the L9b bitstreams built) but VCS rejects it -> it silently broke the V2 sim
@@ -479,13 +522,83 @@ module WlinkGenericFCSM_6 #(
   wire  exp_pkt_not_seen = pkt_is_data_pkt & ll_rx_pktnum != exp_pkt_num; // @[FC.scala 211:54]
   // SoC Labs L9: suppress spurious mismatch enqueue on the resync cycle so
   // the ack_nack_fifo does not carry a stale isNotExpPacket entry forward.
+  //
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR (2026-06-28) — RX-side wedge-immunity
+  // for the marginal A->B GPIO eye.
+  // ---------------------------------------------------------------------------
+  // PROBLEM (silicon): under the marginal eye an isolated bit error corrupts a
+  // received pktnum -> exp_pkt_not_seen -> ack_nack_fifo carries a 3'h1
+  // (isNotExpPacket) entry -> send_nack_req -> FCSM state 7 -> NACK to die_a ->
+  // die_a's a2l replay reverts its read pointer (a2l_fc_replay_link_revert) and
+  // re-walks. exp_pkt_num is FROZEN on a mismatch (it only advances on
+  // exp_pkt_seen), so every replayed packet mismatches the frozen exp -> a
+  // NACK->revert->re-walk REPLAY STORM ratchets the credit ring to credit-max
+  // -> sticky wedge (POR-only clear).
+  //
+  // LEVER: on an ISOLATED FORWARD gap (ll_rx_pktnum is a small number of slots
+  // AHEAD of exp_pkt_num, the signature of a dropped/corrupted packet — NOT a
+  // stale replay which carries a LOWER/equal pktnum), RE-ANCHOR exp_pkt_num
+  // forward to ll_rx_pktnum+1 (accept the gap as best-effort loss), COMMIT the
+  // freshly-anchored packet, and SUPPRESS the mismatch enqueue so NO NACK is
+  // emitted -> die_a (unmodified old build) sees no NACK and never reverts ->
+  // the storm cannot start. This is a pure RX (die_b) decision; die_a TX is
+  // unchanged. Trades strict reliable-delivery for best-effort GPIO robustness.
+  //
+  // BOUNDING (anti-thrash, anti-garbage):
+  //   * FORWARD-ONLY + WINDOWED: only fires when the modular distance
+  //     (ll_rx_pktnum - exp_pkt_num) mod (fe_tx_credit_max+1) is in
+  //     1..SOCL_L9B_FWD_WINDOW. A backward/equal mismatch (stale replay echo,
+  //     or a wild corruption that lands far away) is NOT re-anchored -> it
+  //     still NACKs exactly as upstream (correct: a real replay must be honoured,
+  //     and a wild jump must not silently skip the whole credit ring of data).
+  //   * RATE-LIMITED: after a re-anchor, socl_l9b_hold holds the re-anchor
+  //     DISARMED for SOCL_L9B_HOLD_PKTS subsequent data packets, so a run of
+  //     consecutive mismatches (e.g. a sustained skew, not an isolated glitch)
+  //     cannot walk exp forward one-slot-per-packet (which would silently drop
+  //     a long run of data). At most one re-anchor per HOLD_PKTS window.
+  //   * NOT the first packet: the first-data case is already handled by the L9
+  //     one-shot resync (socl_l9_resync_now); L9b only arms AFTER first data.
+  //
+  // Note vs the prior reverted L9b: that version forward-referenced
+  // exp_pkt_num/ll_rx_pktnum and broke the VCS compile (never sim-gated). This
+  // version is defined here, AFTER those regs, and is sim-gated (see
+  // test_v2_multipkt_pktnum: clean 16/16 unchanged; eye-fault repro below).
   wire exp_pkt_not_seen_l9 = exp_pkt_not_seen & ~socl_l9_resync_now;
+  // Modular forward distance of the received pktnum past the expected one, in
+  // the credit-ring modulus (fe_tx_credit_max+1). fe_tx_credit_max is the wrap
+  // bound used by exp_pkt_num itself (L1251), so this matches the ring the TX
+  // walks. Computed on the {pktnum,exp} 8-bit values; the ring is <=32 so 8b is
+  // ample headroom and no value can alias.
+  wire [8:0] socl_l9b_ring_mod   = {1'b0, fe_tx_credit_max} + 9'h1;
+  wire [8:0] socl_l9b_fwd_raw    = {1'b0, ll_rx_pktnum} + socl_l9b_ring_mod
+                                   - {1'b0, exp_pkt_num};
+  wire [8:0] socl_l9b_fwd_dist   = (socl_l9b_fwd_raw >= socl_l9b_ring_mod)
+                                   ? (socl_l9b_fwd_raw - socl_l9b_ring_mod)
+                                   : socl_l9b_fwd_raw;
+  // Bounded, re-armable forward re-anchor decision (one io_rx_clk pulse):
+  //   * a real data-pkt mismatch (exp_pkt_not_seen) that is NOT the L9 one-shot,
+  //   * within the small forward window (1..SOCL_L9B_FWD_WINDOW),
+  //   * with the hold-down counter expired (re-arm budget available),
+  //   * and only after the link has actually started delivering (L9 one-shot
+  //     already happened: socl_l9_first_data_seen_rx high).
+  wire socl_l9b_reanchor_now = exp_pkt_not_seen
+                               & ~socl_l9_resync_now
+                               & socl_l9_first_data_seen_rx
+                               & (socl_l9b_hold == 4'h0)
+                               & (socl_l9b_fwd_dist >= 9'h1)
+                               & (socl_l9b_fwd_dist <= {{5{1'b0}}, SOCL_L9B_FWD_WINDOW});
   wire [7:0] _exp_pkt_num_in_T_3 = exp_pkt_num + 8'h1; // @[FC.scala 212:132]
   wire [7:0] _last_good_pkt_in_T_1 = exp_pkt_seen ? exp_pkt_num : last_good_pkt; // @[FC.scala 213:62]
   wire [7:0] last_good_pkt_in = _fe_tx_credit_max_in_T ? 8'h0 : _last_good_pkt_in_T_1; // @[FC.scala 213:41]
   wire  ack_nack_fifo_valid = ~ack_nack_fifo_io_rempty; // @[FC.scala 261:35]
   wire  _ack_nack_fifo_io_winc_T = pkt_is_ack_pkt | pkt_is_nack_pkt; // @[FC.scala 264:51]
-  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9}; // SoC Labs L9 masked mismatch
+  // SoC Labs L9b: on a forward re-anchor cycle ALSO drop the mismatch from the
+  // notifier so no isNotExpPacket (3'h1) entry is enqueued -> the TX side never
+  // latches send_nack_req -> no NACK -> die_a never reverts. (The enqueue itself
+  // is suppressed below via ack_nack_fifo_io_winc, so this is belt-and-braces:
+  // even if an entry were written it would carry tag 3'h0, not 3'h1.)
+  wire exp_pkt_not_seen_l9b = exp_pkt_not_seen_l9 & ~socl_l9b_reanchor_now;
+  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9b}; // SoC Labs L9/L9b masked mismatch
   wire [2:0] _pkttypenotifier_T_2 = pkt_is_nack_pkt ? 3'h3 : _pkttypenotifier_T_1; // @[FC.scala 275:40]
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]
   wire [18:0] _ack_nack_fifo_io_wdata_T_1 = {pkttypenotifier,auto_rx_in_word_count}; // @[Cat.scala 30:58]
@@ -1039,8 +1152,12 @@ module WlinkGenericFCSM_6 #(
   assign l2a_fc_replay_app_data = auto_rx_in_data[55:8]; // @[FC.scala 122:33]
   // SoC Labs L9: accept the FIRST observed DATA pkt regardless of pktnum
   // alignment so the resync write lands in the L2A FIFO.
+  // SoC Labs L9b: ALSO commit the packet on a bounded forward re-anchor — the
+  // newly-anchored stream is delivered (the gap is the only loss), instead of
+  // wedging on a NACK/revert storm.
   assign l2a_fc_replay_app_valid = (pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num)
-                                  | socl_l9_resync_now;
+                                  | socl_l9_resync_now
+                                  | socl_l9b_reanchor_now;
   assign l2a_fc_replay_link_clk = io_app_clk; // @[FC.scala 227:35]
   assign l2a_fc_replay_link_reset = io_app_reset; // @[FC.scala 228:35]
   assign l2a_fc_replay_link_ack_addr = l2a_fc_replay_link_cur_addr; // @[FC.scala 237:35]
@@ -1053,7 +1170,14 @@ module WlinkGenericFCSM_6 #(
   assign l2a_fifo_addr_to_tx_r_reset = io_tx_reset; // @[FC.scala 248:35]
   assign ack_nack_fifo_io_wclk = io_rx_clk; // @[FC.scala 262:33]
   assign ack_nack_fifo_io_wreset = io_rx_reset; // @[FC.scala 263:33]
-  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen | exp_pkt_not_seen |
+  // SoC Labs L9b: suppress the ack_nack_fifo write on a forward re-anchor cycle.
+  // The mismatch is being forgiven (exp_pkt_num jumps forward and the packet is
+  // committed), so it must NOT enqueue a notifier at all — neither a 3'h1
+  // (would NACK) nor a stray 3'h0 (would clobber last_good_pkt_from_rx). The
+  // re-anchored packet's credit is accounted by exp_pkt_seen on subsequent
+  // in-order packets exactly as a clean stream.
+  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen |
+    (exp_pkt_not_seen & ~socl_l9b_reanchor_now) |
     valid_rx_pkt_crc_err; // @[FC.scala 264:106]
   assign ack_nack_fifo_io_rclk = io_tx_clk; // @[FC.scala 282:33]
   assign ack_nack_fifo_io_rreset = io_tx_reset; // @[FC.scala 283:33]
@@ -1247,6 +1371,18 @@ module WlinkGenericFCSM_6 #(
       end else begin
         exp_pkt_num <= ll_rx_pktnum + 8'h1;
       end
+    end else if (socl_l9b_reanchor_now) begin
+      // SoC Labs L9b: BOUNDED FORWARD RE-ANCHOR. An isolated forward gap is
+      // forgiven: jump exp_pkt_num to ll_rx_pktnum + 1 (same wrap as L9), accept
+      // the skipped slot(s) as best-effort loss, and keep committing. No NACK is
+      // emitted for this cycle (enqueue suppressed above), so die_a does not
+      // revert -> no replay storm. The hold-down counter (below) then disarms
+      // the re-anchor for SOCL_L9B_HOLD_PKTS packets.
+      if (ll_rx_pktnum == fe_tx_credit_max) begin
+        exp_pkt_num <= 8'h0;
+      end else begin
+        exp_pkt_num <= ll_rx_pktnum + 8'h1;
+      end
     end else if (exp_pkt_seen) begin
       if (exp_pkt_num == fe_tx_credit_max) begin
         exp_pkt_num <= 8'h0;
@@ -1273,6 +1409,29 @@ module WlinkGenericFCSM_6 #(
     end else begin
       socl_l9_first_data_seen_rx <= pkt_is_data_pkt
                                     | socl_l9_first_data_seen_rx;
+    end
+  end
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR hold-down counter (io_rx_clk domain,
+  // same reset/zero domains as exp_pkt_num so it tracks the credit-ring state).
+  //   * Reloads to SOCL_L9B_HOLD_PKTS the cycle a re-anchor fires -> the
+  //     re-anchor is DISARMED (socl_l9b_reanchor_now gated on hold==0) for the
+  //     next SOCL_L9B_HOLD_PKTS data packets. This bounds re-anchors to at most
+  //     one per window so a sustained mismatch burst cannot walk exp forward
+  //     packet-by-packet (which would silently drop a long run of data); after
+  //     a window without a re-anchor the link is presumed re-synced.
+  //   * Otherwise DECREMENTS by one on each DATA packet (pkt_is_data_pkt), so
+  //     the disarm window is measured in delivered packets, not raw clocks.
+  //   * Cleared to 0 on reset / credit-ring re-zero so a fresh stream arms
+  //     immediately.
+  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (socl_l9b_reanchor_now) begin
+      socl_l9b_hold <= SOCL_L9B_HOLD_PKTS;
+    end else if (pkt_is_data_pkt & (socl_l9b_hold != 4'h0)) begin
+      socl_l9b_hold <= socl_l9b_hold - 4'h1;
     end
   end
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
@@ -1910,5 +2069,82 @@ end // initial
                            4'b0,                    // [19:16] reserved
                            fcsmcap_first_pktnum,    // [15:8] first observed ll_rx_pktnum
                            fcsmcap_last_exp_pktnum};// [7:0]  last exp_pkt_num (data pkt)
+
+  // ===========================================================================
+  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
+  //
+  //   A 32-entry buffer in the io_rx_clk domain (recovered RX clock — the exact
+  //   domain in which ll_rx_pktnum / exp_pkt_num / auto_rx_in_valid live, so the
+  //   capture is bit-cycle-accurate to the FCSM's own view of the wire). One
+  //   entry is written per io_rx_clk cycle WHILE auto_rx_in_valid (data present),
+  //   starting from an ARM rising edge, until the 32nd entry is written — then
+  //   the buffer FREEZES (frozen=1, wptr saturates at 32) so the FIRST 32 valid
+  //   beats of the armed burst are preserved for readout.
+  //
+  //   Entry bit-packing (io_obs_capdata[31:0]) — MSB..LSB:
+  //     [31:24] ll_rx_pktnum[7:0]      received pktnum on this beat (auto_rx_in_data[7:0])
+  //     [23:16] exp_pkt_num[7:0]       FCSM expected pktnum at this beat
+  //     [15]    exp_pkt_seen           pkt_is_data_pkt & pktnum==exp (a MATCH/advance beat)
+  //     [14]    exp_pkt_not_seen       pkt_is_data_pkt & pktnum!=exp (a MISMATCH beat)
+  //     [13]    auto_rx_in_sop         start-of-packet on this beat
+  //     [12]    auto_rx_in_valid       always 1 for a captured beat (sanity)
+  //     [11]    pkt_is_data_pkt        header decoded as a DATA packet
+  //     [10]    socl_l9b_reanchor_now  L9b bounded forward re-anchor fired this beat
+  //     [9:8]   2'b0                   reserved
+  //     [7:0]   entry_index[7:0]       the wptr at capture (0..31) — ordering marker
+  //
+  //   Pure read-only observer of existing FCSM nets — NO functional change to the
+  //   FC datapath (disable_crc / L9b untouched). Reset is the FCSM async POR.
+  // ===========================================================================
+  reg  [31:0] beatcap_mem [0:31];
+  reg  [5:0]  beatcap_wptr;      // fill count 0..32 (6b so 32 is representable)
+  reg         beatcap_frozen;
+  // arm rising-edge detect: 2-flop sync io_cap_arm (apb_clk level) into io_rx_clk
+  reg         beatcap_arm_meta;
+  reg         beatcap_arm_sync;
+  reg         beatcap_arm_sync_q;
+  wire        beatcap_arm_rise = beatcap_arm_sync & ~beatcap_arm_sync_q;
+  wire        beatcap_capturing = ~beatcap_frozen & (beatcap_wptr < 6'd32);
+  wire        beatcap_do_write  = beatcap_capturing & auto_rx_in_valid;
+
+  wire [31:0] beatcap_entry = {ll_rx_pktnum,          // [31:24]
+                               exp_pkt_num,           // [23:16]
+                               exp_pkt_seen,          // [15]
+                               exp_pkt_not_seen,      // [14]
+                               auto_rx_in_sop,        // [13]
+                               auto_rx_in_valid,      // [12]
+                               pkt_is_data_pkt,       // [11]
+                               socl_l9b_reanchor_now, // [10]
+                               2'b0,                  // [9:8]
+                               2'b0, beatcap_wptr[5:0]};// [7:0] entry_index = wptr (zero-ext)
+
+  always @(posedge io_rx_clk or posedge reset) begin
+    if (reset) begin
+      beatcap_wptr       <= 6'd0;
+      beatcap_frozen     <= 1'b0;
+      beatcap_arm_meta   <= 1'b0;
+      beatcap_arm_sync   <= 1'b0;
+      beatcap_arm_sync_q <= 1'b0;
+    end else begin
+      beatcap_arm_meta   <= io_cap_arm;
+      beatcap_arm_sync   <= beatcap_arm_meta;
+      beatcap_arm_sync_q <= beatcap_arm_sync;
+      if (beatcap_arm_rise) begin
+        // Re-arm: clear the ring and unfreeze.
+        beatcap_wptr   <= 6'd0;
+        beatcap_frozen <= 1'b0;
+      end else if (beatcap_do_write) begin
+        beatcap_mem[beatcap_wptr[4:0]] <= beatcap_entry;
+        if (beatcap_wptr == 6'd31)
+          beatcap_frozen <= 1'b1;   // 32nd write -> freeze
+        beatcap_wptr <= beatcap_wptr + 6'd1;
+      end
+    end
+  end
+
+  // Readout mux: present the rptr-selected entry. Buffer is frozen before the
+  // controller walks rptr, so this reads stable data across the CDC.
+  assign io_obs_capdata = beatcap_mem[io_cap_rptr];
+  assign io_obs_capstat = {beatcap_frozen, 2'b0, beatcap_wptr};
 
 endmodule

@@ -813,6 +813,14 @@ module axi_chiplet_controller #(
     wire [31:0] obs_rxcap0_w;
     wire [31:0] obs_rxcap1_w;
     wire [31:0] obs_fcsmcap_w;
+    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — the FCSM 32-entry
+    // per-beat capture ring readout (io_rx_clk domain). obs_capdata_w is the
+    // rptr-selected packed entry; obs_capstat_w = {frozen, 2'b0, wptr[5:0]}.
+    // Read at Region D slots 6/7 (SoC 0x4403_21B8 CAP_CTRL / 0x4403_21BC CAP_DATA)
+    // in V2. The ARM level + read pointer go DOWN via swi_capbeat_arm_r /
+    // capbeat_rptr_r (declared in the SWI reg block).
+    wire [31:0] obs_capdata_w;
+    wire [8:0]  obs_capstat_w;
     wire [15:0] obs_ecc_corrupted_cnt_w;
     wire [15:0] obs_ecc_corrected_cnt_w;
     // SoC Labs 2026-06-08: SYNC-detected saturating counter (cross-lane-skew obs)
@@ -1047,6 +1055,20 @@ module axi_chiplet_controller #(
     // tap stays {nibble,1'b0} = the historical even-only behaviour, BIT-IDENTICAL
     // (in V1 there is no write path, so it stays 0 forever — zero regression).
     reg [7:0]  swi_phase_lsb_r;
+    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap). Two straps down into
+    // the FCSM per-beat capture ring (feed u_wlink.cap_arm_in / cap_rptr_in,
+    // which exist in BOTH builds, so the regs are declared unconditionally; only
+    // the Region D write/read decode is V2-only). swi_capbeat_arm_r is a LEVEL:
+    // the FCSM edge-detects its rising edge to re-arm. capbeat_rptr_r is the
+    // apb_clk-domain read pointer into the (frozen) buffer; it auto-increments on
+    // each CAP_DATA read and resets to 0 on any CAP_CTRL write. Reset 0 (no arm,
+    // rptr 0) -> bit-identical (in V1 there is no write path, so they stay 0).
+    reg        swi_capbeat_arm_r;
+    reg [4:0]  capbeat_rptr_r;
+    // penable edge tracker: bump rptr on the FIRST apb_clk of a CAP_DATA read
+    // access (rising edge of penable while the read strobe holds), so a multi-
+    // cycle penable dwell increments rptr exactly once per APB transfer.
+    reg        capbeat_penable_q;
     // Task 3 effective-select assignment (placed after swi_eye_lane_sel_r so the
     // reg reference is BACKWARD, satisfying VCS under `default_nettype none).
 `ifdef TIDELINK_PHY_V2
@@ -1231,6 +1253,13 @@ module axi_chiplet_controller #(
     reg [31:0]          sync_obs_rxcap0_0, sync_obs_rxcap0_1;
     reg [31:0]          sync_obs_rxcap1_0, sync_obs_rxcap1_1;
     reg [31:0]          sync_obs_fcsmcap_0, sync_obs_fcsmcap_1;
+    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — 2-flop apb_clk sync
+    // of the rptr-selected packed entry + the {frozen,wptr} status. The buffer is
+    // FROZEN before the controller walks rptr, and rptr itself is apb_clk-driven,
+    // so each obs word is quasi-static at read time — same accepted multi-bit
+    // 2-flop treatment as the sticky rxcap/fcsmcap words above.
+    reg [31:0]          sync_obs_capdata_0, sync_obs_capdata_1;
+    reg [8:0]           sync_obs_capstat_0, sync_obs_capstat_1;
 `endif
 
     always_ff @(posedge apb_clk or negedge hresetn) begin
@@ -1296,6 +1325,9 @@ module axi_chiplet_controller #(
             sync_obs_rxcap0_0    <= 32'h0;         sync_obs_rxcap0_1    <= 32'h0;
             sync_obs_rxcap1_0    <= 32'h0;         sync_obs_rxcap1_1    <= 32'h0;
             sync_obs_fcsmcap_0   <= 32'h0;         sync_obs_fcsmcap_1   <= 32'h0;
+            // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
+            sync_obs_capdata_0   <= 32'h0;         sync_obs_capdata_1   <= 32'h0;
+            sync_obs_capstat_0   <= 9'h0;          sync_obs_capstat_1   <= 9'h0;
 `endif
         end else begin
             // REWIRED: real calibrator/lane_checker outputs (was #4's
@@ -1419,6 +1451,12 @@ module axi_chiplet_controller #(
             sync_obs_rxcap1_1    <= sync_obs_rxcap1_0;
             sync_obs_fcsmcap_0   <= obs_fcsmcap_w;
             sync_obs_fcsmcap_1   <= sync_obs_fcsmcap_0;
+            // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — 2-flop sync
+            // of the rptr-selected packed entry + {frozen,wptr} status.
+            sync_obs_capdata_0   <= obs_capdata_w;
+            sync_obs_capdata_1   <= sync_obs_capdata_0;
+            sync_obs_capstat_0   <= obs_capstat_w;
+            sync_obs_capstat_1   <= sync_obs_capstat_0;
 `endif
         end
     end
@@ -1446,6 +1484,27 @@ module axi_chiplet_controller #(
     // so a Region-D write never aliases a Region-9/10 slot.
     wire regionD_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b00)
                          && apb_ctrl_reg_rd;
+    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap): a Region-D READ
+    // access to slot 7 (CAP_DATA, SoC 0x4403_21BC) auto-increments capbeat_rptr_r
+    // so 32 sequential reads dump the whole frozen buffer. Keyed off the external
+    // APB port (the CPU dumping the buffer); the access is decoded purely by
+    // address (apb_ctrl_reg_rd = Region-D hit) + slot + a read (!pwrite) in the
+    // APB ACCESS phase (psel & penable). Edge-detected on penable below so each
+    // APB transfer bumps rptr exactly once regardless of penable dwell.
+    // Decode the slot from the SAME pre-decoded ctrl_reg_addr the read mux uses
+    // (apb_regs folds Region D onto ctrl_reg_addr={2'b00,paddr[4:2]}).
+    // IMPORTANT: the controller's apb_psel PORT is apb_sel_wlink (gated OFF for
+    // the 0x2xxx/0x4xxx register regions incl. Region D — see tidelink_top
+    // apb_sel_wlink = apb_psel & ~paddr[14] & ~paddr[13]). So Region D reads
+    // are served purely through the pre-decoded ctrl_reg_* path, and apb_psel
+    // is LOW during them. The read-access strobe therefore keys off the RAW
+    // external apb_penable/apb_pwrite (passed through un-gated) + the address-
+    // decoded apb_ctrl_reg_rd (=regionD_hit) + the slot compare. apb_penable is
+    // only high during an APB ACCESS phase, so this pulses once per region-D read.
+    wire regionD_capdata_read_access =
+             apb_ctrl_reg_rd && (ctrl_reg_addr[4:3] == 2'b00)
+             && (ctrl_reg_addr[2:0] == 3'h7)
+             && apb_penable && !apb_pwrite;
 `endif
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
@@ -1457,6 +1516,11 @@ module axi_chiplet_controller #(
             // the always-present u_idelay_rx can wire .lsb_i. Reset 0 => even-only
             // tap (bit-identical). V1 has no write path, so it stays 0 forever.
             swi_phase_lsb_r          <= 8'h0;
+            // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — POR: not
+            // armed, rptr 0, penable-edge tracker cleared. Declared in BOTH builds.
+            swi_capbeat_arm_r        <= 1'b0;
+            capbeat_rptr_r           <= 5'h0;
+            capbeat_penable_q        <= 1'b0;
 `ifdef TIDELINK_PHY_V2
             swi_sync_insert_en_r     <= 1'b0;   // POR = SYNC-insert OFF (zero-regression default)
             swi_sync_force_always_r  <= 1'b0;   // POR = idle-gated (PART2 gate fix off; bit-identical)
@@ -1587,6 +1651,26 @@ module axi_chiplet_controller #(
                 swi_dist_lane_sel_r       <= ctrl_reg_wdata[2:0];
             if (regionD_write && (ctrl_reg_addr[2:0] == 3'h5))
                 swi_phase_lsb_r           <= ctrl_reg_wdata[7:0];
+            // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — Region D
+            // slot 6 CAP_CTRL (SoC 0x4403_21B8):
+            //   * bit[0] = ARM level (drives swi_capbeat_arm_r; the FCSM edge-
+            //     detects its rising edge in io_rx_clk to (re)start capture).
+            //   * ANY write to CAP_CTRL resets the read pointer to 0, so the SW
+            //     flow is: write CAP_CTRL=1 (arm+reset rptr) -> run burst -> poll
+            //     CAP_CTRL for frozen -> write CAP_CTRL=1 again (reset rptr; leave
+            //     armed, harmless since already frozen) OR write CAP_CTRL=0 to
+            //     just reset rptr, then read CAP_DATA 32x.
+            if (regionD_write && (ctrl_reg_addr[2:0] == 3'h6)) begin
+                swi_capbeat_arm_r <= ctrl_reg_wdata[0];
+                capbeat_rptr_r    <= 5'h0;
+            end
+            // CAP_DATA (slot 7) read auto-increment: bump rptr on the rising edge
+            // of the read ACCESS phase. A CAP_CTRL write in the same cycle wins
+            // (rptr reset takes priority — but the two never target the same slot).
+            capbeat_penable_q <= regionD_capdata_read_access;
+            if (regionD_capdata_read_access && !capbeat_penable_q
+                && !(regionD_write && (ctrl_reg_addr[2:0] == 3'h6)))
+                capbeat_rptr_r <= capbeat_rptr_r + 5'h1;   // wraps 31->0
 `endif
         end
     end
@@ -1814,6 +1898,18 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
+        // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap):
+        //   slot 6 (0x21B8) CAP_CTRL — READ  = {marker 0xCB, frozen, wptr[5:0],
+        //                                        rptr[4:0], 12'b0} (EXACTLY 32b).
+        //                              WRITE = bit[0] ARM (level), any write resets rptr to 0.
+        //   slot 7 (0x21BC) CAP_DATA — READ  = rptr-selected 32-bit packed entry;
+        //                              the READ auto-increments rptr (dump 32x).
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'hCB,                    // [31:24] marker
+                                        sync_obs_capstat_1[8],    // [23]    frozen
+                                        sync_obs_capstat_1[5:0],  // [22:17] wptr (fill count 0..32)
+                                        capbeat_rptr_r,           // [16:12] current rptr
+                                        12'h0}                  : // [11:0]  reserved
+        (ctrl_reg_addr[2:0] == 3'h7) ? sync_obs_capdata_1                 : // 0x21BC CAP_DATA (RO, auto-inc rptr)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -3322,7 +3418,13 @@ module axi_chiplet_controller #(
         // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
         .obs_rxcap0_o                (obs_rxcap0_w),
         .obs_rxcap1_o                (obs_rxcap1_w),
-        .obs_fcsmcap_o               (obs_fcsmcap_w)
+        .obs_fcsmcap_o               (obs_fcsmcap_w),
+        // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — arm/rptr down,
+        // capdata/capstat up. Both u_wlink ports exist in V1+V2 (plain ports).
+        .cap_arm_in                  (swi_capbeat_arm_r),
+        .cap_rptr_in                 (capbeat_rptr_r),
+        .obs_capdata_o               (obs_capdata_w),
+        .obs_capstat_o               (obs_capstat_w)
 `ifdef TIDELINK_PHY_V2
         // SoC Labs V2 epoch-anchor obs 2026-06-14: pass straight through to the
         // controller's output ports -> tidelink_gpio_phy_apb_regs.epoch_*_i.

@@ -176,8 +176,45 @@ module tidelink_fc_adapter #(
     wire sideband_grant;
     wire arb_valid;
 
-    // Address phase detection
-    wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite;
+    // Address phase detection.
+    //
+    // Held-NONSEQ one-shot lock (SoC Labs 2026-07-03, silicon x5 TX dup fix):
+    // the Xilinx axi_ahblite_bridge:3.0 master holds HTRANS=NONSEQ with
+    // HADDR/HWDATA stable for the duration of its internal AXI transaction
+    // (~10 hclk on the PS GP1->SMC->bridge path) while the vivado wrapper
+    // loops our HREADYOUT back as HREADY. A level-only addr-phase detect
+    // then re-latches every time a data phase completes during the hold ->
+    // EXACTLY +5 duplicate FC words per single PS store on silicon (a2l
+    // wptr +5/word, 4-word burst -> +20) -> pktnum (= replay rptr) walks 5x
+    // -> fe credit ceiling 0x1f exhausted after ~6 words -> exp saturates
+    // 0x20 -> NACK/replay wedge. Repro: cocotb/tidelink_fc_adapter/
+    // test_held_nonseq.py (unfixed: 11 dups/store at unit-sim cadence).
+    //
+    // Contract: a held NONSEQ at the SAME address is ONE transfer. The lock
+    // sets when an addr phase is accepted and suppresses re-acceptance until
+    // HTRANS deasserts (IDLE gap between bridge transactions) or HADDR
+    // moves (pipelined bursts unaffected). Trade-off (documented): a
+    // spec-master issuing back-to-back same-address NONSEQ beats with no
+    // IDLE gap would be collapsed to one transfer — unreachable through the
+    // axi_ahblite_bridge, which idles between AXI transactions.
+    logic                  tx_xfer_lock_r;
+    logic [RAM_ADDR_W-1:0] tx_lock_addr_r;
+    wire tx_lock_hit = tx_xfer_lock_r && (ahb_tx_haddr == tx_lock_addr_r);
+    wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready
+                               & ahb_tx_hwrite & ~tx_lock_hit;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            tx_xfer_lock_r <= 1'b0;
+            tx_lock_addr_r <= '0;
+        end else if (tx_valid_addr_phase) begin
+            tx_xfer_lock_r <= 1'b1;
+            tx_lock_addr_r <= ahb_tx_haddr;
+        end else if (!(ahb_tx_hsel & ahb_tx_htrans[1])
+                     || (ahb_tx_haddr != tx_lock_addr_r)) begin
+            tx_xfer_lock_r <= 1'b0;
+        end
+    end
 
     // Registered address from address phase (valid in data phase)
     logic [RAM_ADDR_W-1:0] tx_addr_r;

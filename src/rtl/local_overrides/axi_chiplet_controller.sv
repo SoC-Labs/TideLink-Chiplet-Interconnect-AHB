@@ -1108,6 +1108,30 @@ module axi_chiplet_controller #(
     reg [3:0]  min_lock_dwells_r;
     reg        nego_train_retrain_pulse;  // 1-cycle pulse on W1P write
 
+    // LOOP-9 AUTONOMY SCOPE (2026-07-03, silicon-root-caused): the single
+    // qualifier for EVERY autonomous SYNC/winscan/handoff machine (the SYNC
+    // config drive + F1b heal, the winscan FSM kick, the fch handoff arm).
+    // nego_en & role_locked is NOT sufficient to exclude the manual recipe:
+    // on silicon NEGO_CFG PORs to 0x61 (nego_en=1) and the proven manual
+    // recipe never writes 0x2090 — it disarms autonomy by writing
+    // NEGO_TRAIN_CFG 0x210C = 0 FIRST (td_v2_hwlib.sh rcp :91), i.e. the
+    // real manual-vs-autonomous discriminator is train_auto_en (0x210C
+    // bit[0], POR 1 for zero-poke). Without this term the winscan FSM kicked
+    // on the MANUAL recipe's training falls (pre-existing since 8705a99,
+    // previously masked because mid-scan kicks were LOST); the FIX-1
+    // abort-restart let the recipe's LAST recal fall restart a ~8 s silicon
+    // force-SYNC window (winscan_force_sync ORs into insert_en AND
+    // force_always at the Wlink ports) that then overlapped MANUAL data
+    // mode — force_always is the R4 word-deleter: die_b credit_count=4098 /
+    // underrun=1, GP1 zeros, TXSYNC 0x2120=0x5c01ffff while R8 correctly
+    // read 0x10 (the reg was clean; the PORT OR was not). Contract: with
+    // train_auto_en=0 (or nego_en=0) every APB R8 write is AUTHORITATIVE
+    // and all autonomous machines are dormant/parked — the manual path is
+    // bit-identical. A mid-run disarm also PARKS an in-flight winscan (see
+    // the FSM's disarm arc) so 0x210C=0 is an immediate on-silicon escape
+    // hatch from a stuck force window.
+    wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0];
+
     // Phase 1 G1b — sticky train-fail IRQ. Latches on train_fail_irq_w
     // rising-edge (the FSM holds it stable for the duration of
     // ST_TRAIN_FAIL); SW reads it via Region 8 slot 3'h3 bit[16] and
@@ -1833,7 +1857,13 @@ module axi_chiplet_controller #(
             // exclusive with the set below (which requires training HIGH).
             if (!swi_training_mode_r)
                 sync_cfg_on_fired_q <= 1'b0;
-            if (nego_en && role_locked) begin
+            // LOOP-9: the whole autonomous SYNC-config drive (SYNC-ON one-shot
+            // + the F1b/D2 permanent heal) is scoped to autonomy_armed —
+            // nego_en & role_locked alone kept it LIVE on silicon manual runs
+            // (NEGO_CFG PORs 0x61; the recipe only writes 0x210C=0). With
+            // train_auto_en=0 no autonomous write ever lands on the swi_sync_*
+            // regs: the manual R8 writes are authoritative, bit-identical.
+            if (autonomy_armed) begin
                 // SYNC-ON: one-shot on the full conjunction first true (R3).
                 if (swi_training_mode_r && !sync_cfg_on_fired_q) begin
                     sync_cfg_on_fired_q      <= 1'b1;
@@ -2137,6 +2167,14 @@ module axi_chiplet_controller #(
     //                           scan at WS_ARM (the pre-fix lost-kick path).
     //                           POR-cleared only (lifetime counter).
     //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
+    //                           UNCONDITIONAL BY DESIGN (LOOP-9 2026-07-03):
+    //                           the marker is a constant in the read mux, NOT
+    //                           gated on the FSM/bring-up/arming — it reads
+    //                           0x57 from POR onward, manual or autonomous.
+    //                           A 0x00000000 read on silicon therefore means
+    //                           the bitstream's controller PREDATES this slot
+    //                           (2026-07-02) = STALE package_ip — stop and
+    //                           rebuild (the known farm packaging hazard).
     //   All apb_clk-domain (the winscan FSM's own domain) — no CDC.
     // Slot 7 stays reserved (read 0).
     wire [4:0] dist_sel_lane = sync_obs_dist_vec_1[5*swi_dist_lane_sel_r +: 5];
@@ -3293,12 +3331,16 @@ module axi_chiplet_controller #(
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             fch_pending_r <= 1'b0;
-        else if (nego_en & role_locked & swi_training_mode_fall)
+        else if (autonomy_armed & swi_training_mode_fall)   // LOOP-9: armed-only
             fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall
+        else if (!autonomy_armed)
+            fch_pending_r <= 1'b0;          // LOOP-9: disarm clears a stale
+                                            // pending (manual takeover must not
+                                            // strand a queued handoff)
         else if (fch_pending_r & winscan_gate)
             fch_pending_r <= 1'b0;          // consumed once the arm fires
     end
-    wire fch_arm = fch_pending_r & winscan_gate & nego_en & role_locked;
+    wire fch_arm = fch_pending_r & winscan_gate & autonomy_armed; // LOOP-9
 `else
     wire fch_arm = nego_en & role_locked & swi_training_mode_fall;
 `endif
@@ -3622,7 +3664,7 @@ module axi_chiplet_controller #(
     //     ws_anchor_timeout_q / ws_anchor_late_q) as on any fresh episode.
     // Result: both dies' FINAL scans start within sub-ms of the same
     // bilateral ST_TRAIN_EXIT clear — the fixed-window rendezvous holds.
-    wire ws_kick_evt = WINSCAN_FSM_EN & nego_en & role_locked &
+    wire ws_kick_evt = WINSCAN_FSM_EN & autonomy_armed &    // LOOP-9: armed-only
                        swi_training_mode_fall & ~ws_kicked_q;
     reg  ws_kick_pending_q;
     // The FSM arms off the STICKY only — NOT the raw event — so the latch
@@ -3698,6 +3740,23 @@ module axi_chiplet_controller #(
             // (ws_degenerate_q / ws_anchor_timeout_q / retry counter).
             // ws_abort_cnt_q (WINSCAN_OBS 0x21B8[7:4], saturating) counts the
             // aborts for sim assertions + on-silicon episode-binding triage.
+            // LOOP-9 DISARM-PARK (highest priority): autonomy disarmed
+            // (nego_en=0, or the manual recipe's 0x210C=0 clearing
+            // train_auto_en) while the FSM is anywhere past WS_IDLE — PARK
+            // immediately: drop force-SYNC (the Wlink-port OR goes dark the
+            // next cycle — insert_en/force_always/robust revert to the APB
+            // regs = R8 authority), release tap ownership (APB taps rule),
+            // clear winscan_done (a later re-arm starts a fresh episode; the
+            // fch pending latch is armed-gated so it cannot deadlock).
+            // This is also the on-silicon escape hatch from a live force
+            // window: write 0x210C=0 and the beacons stop within a cycle.
+            if (!autonomy_armed && ws_state_r != WS_IDLE) begin
+                winscan_owns_taps  <= 1'b0;
+                winscan_force_sync <= 1'b0;
+                winscan_done       <= 1'b0;
+                ws_obs_clr_r       <= 1'b0;
+                ws_state_r         <= WS_IDLE;
+            end else
             if (ws_arm_req && ws_state_r != WS_IDLE && ws_state_r != WS_DONE)
             begin
                 ws_kicked_q    <= 1'b1;

@@ -431,3 +431,197 @@ async def test_v2_autonomous_sync_detect_manual_path_unaffected(dut):
     log.info("VERDICT: PASS — manual/SW path unaffected (drive dormant at "
              "nego_en=0; SYNC-detect POR defaults + 0x214=0xFF + lock-thresh "
              "passthrough held across training rise/fall).")
+
+
+# ============================================================================
+# LOOP-9 (2026-07-03, silicon-root-caused) — MANUAL-RECIPE BEACON AUTHORITY.
+#
+# The SILICON manual recipe runs with nego_en=1 (NEGO_CFG PORs 0x61 and
+# td_v2_hwlib.sh rcp never writes 0x2090) and disarms autonomy ONLY via
+# NEGO_TRAIN_CFG 0x210C=0 (train_auto_en=0, the recipe's FIRST write). The
+# old drive/winscan/fch gates used nego_en & role_locked — TRUE on every
+# manual silicon run — so the winscan FSM kicked on the MANUAL recipe's
+# training falls; with the FIX-1 abort-restart the recipe's LAST recal fall
+# restarted a ~8 s silicon force-SYNC window (winscan_force_sync ORs into
+# insert_en AND force_always at the Wlink ports) that overlapped MANUAL data
+# mode: force_always = the R4 word-deleter -> die_b credit_count=4098,
+# underrun=1, GP1 zeros, TXSYNC 0x2120=0x5c01ffff, while R8 correctly READ
+# 0x10 (the reg was clean; the PORT OR was not). Sim never caught it because
+# zero-skew sim beacons are always exact-detected + stripped, so data crosses
+# anyway — hence these SIGNAL-LEVEL gates on the actual Wlink port inputs.
+# ============================================================================
+
+WS_IDLE = 0
+WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9}
+
+
+def _wlink_sync_ports(ctrl):
+    """The ACTUAL Wlink SYNC port inputs (post any OR-merge) — the nets the
+    TX inserter/RX detector really see."""
+    return {
+        "insert_en":    int(ctrl.u_wlink.swi_sync_insert_en_in.value),
+        "force_always": int(ctrl.u_wlink.swi_sync_force_always_in.value),
+        "robust":       int(ctrl.u_wlink.swi_sync_robust_detect_in.value),
+    }
+
+
+@cocotb.test()
+async def test_v2_manual_recipe_beacon_authority(dut):
+    """SILICON-SHAPE manual path: nego_en=1 (POR 0x61) + role_locked +
+    train_auto_en=0 (rcp 0x210C=0). After the manual enter_data_mode clears
+    R8[2], the WLINK PORT insert_en input must be 0 within N cycles and STAY
+    0 (robust bit4 stays 1, force bit3 stays 0 — the manual contract), with
+    every autonomous machine dormant. Would have caught the f490dc3 leak."""
+    log = dut._log
+    log.info("LOOP-9: manual-recipe beacon authority (nego_en=1, auto_en=0)")
+
+    tb = PairV2TB(dut)
+    await _bringup_to_role_cal(tb)
+    ctrl = _ctrl(dut, "m")
+
+    # THE SILICON MANUAL CONFIGURATION: nego_en=1 (POR), autonomy disarmed
+    # via train_auto_en=0 — the recipe's exact first write.
+    _set_nego_en(ctrl, True)
+    ctrl.nego_train_cfg_r.value = 0          # rcp: 0x4403210C = 0x0
+
+    # Manual recipe SYNC phase: R8=0x1D equivalent (insert+force+robust set;
+    # deposits model the LANDED APB write on the swi_* regs).
+    ctrl.swi_sync_insert_en_r.value = 1
+    ctrl.swi_sync_force_always_r.value = 1
+    ctrl.swi_sync_robust_detect_r.value = 1
+    await ClockCycles(dut.hclk, 4)
+
+    # Manual training episode (the recal rise/fall the recipe drives).
+    await _training_rise(tb, "m")
+    await ClockCycles(dut.hclk, 50)
+    await _training_fall(tb, "m")
+    await ClockCycles(dut.hclk, 200)
+
+    # Every autonomous machine must be DORMANT despite nego_en=1: the fall
+    # must not have kicked the winscan, latched the fch, or fired the drive.
+    assert int(ctrl.ws_state_r.value) == WS_IDLE, (
+        f"LOOP-9 LEAK: winscan FSM left WS_IDLE on a MANUAL training fall "
+        f"(ws_state={int(ctrl.ws_state_r.value)}) — the kick is not scoped "
+        f"to train_auto_en")
+    assert int(ctrl.winscan_force_sync.value) == 0, \
+        "LOOP-9 LEAK: winscan_force_sync high on the manual path"
+    assert int(ctrl.winscan_done.value) == 0, \
+        "winscan_done set on the manual path"
+    assert int(ctrl.fch_pending_r.value) == 0, (
+        "LOOP-9 LEAK: fch_pending_r latched on a MANUAL training fall — the "
+        "0x208 bootstrap would fire mid-manual-bring-up")
+    assert int(ctrl.sync_cfg_hold_q.value) == 0, (
+        "LOOP-9 LEAK: sync_cfg_hold_q set on the manual path — the D2 heal "
+        "would overwrite manual R8 writes every cycle")
+
+    # Manual enter_data_mode: R8=0x10 (insert=0, force=0, robust KEPT 1).
+    ctrl.swi_sync_insert_en_r.value = 0
+    ctrl.swi_sync_force_always_r.value = 0
+    await ClockCycles(dut.hclk, 16)          # N-cycle authority bound
+
+    # THE PORT-LEVEL GATE: sample the actual Wlink inputs across a long dwell
+    # — they must track the regs exactly (dark insert/force, robust up).
+    for i in range(100):
+        p = _wlink_sync_ports(ctrl)
+        assert p["insert_en"] == 0, (
+            f"LOOP-9 LEAK (sample {i}): Wlink port swi_sync_insert_en_in=1 "
+            f"after the manual R8[2]=0 write — the TX is still beaconing in "
+            f"MANUAL data mode (the f490dc3 silicon signature: TXSYNC "
+            f"0x5c01ffff with R8 reading 0x10)")
+        assert p["force_always"] == 0, (
+            f"LOOP-9 LEAK (sample {i}): Wlink port swi_sync_force_always_in=1 "
+            f"in manual data mode — the R4 word-deleter is live (credit 4098 "
+            f"/ underrun / GP1-zeros signature)")
+        assert p["robust"] == 1, (
+            f"sample {i}: Wlink port swi_sync_robust_detect_in=0 — the manual "
+            f"R8=0x10 contract keeps bit4 (framer re-hunt) up")
+        await ClockCycles(dut.hclk, 50)
+    # The regs themselves must be untouched (no autonomous rewrite).
+    assert int(ctrl.swi_sync_insert_en_r.value) == 0
+    assert int(ctrl.swi_sync_force_always_r.value) == 0
+    assert int(ctrl.swi_sync_robust_detect_r.value) == 1
+
+    # Paranoid manual recal INSIDE data mode: another rise/fall must change
+    # nothing (the fall is the winscan/fch arming edge — still scoped out).
+    await _training_rise(tb, "m")
+    await ClockCycles(dut.hclk, 20)
+    await _training_fall(tb, "m")
+    await ClockCycles(dut.hclk, 200)
+    p = _wlink_sync_ports(ctrl)
+    assert p["insert_en"] == 0 and p["force_always"] == 0, (
+        f"LOOP-9 LEAK: a manual mid-data recal re-lit the beacons "
+        f"(ports={p})")
+    assert int(ctrl.ws_state_r.value) == WS_IDLE and \
+        int(ctrl.fch_pending_r.value) == 0, \
+        "LOOP-9 LEAK: mid-data manual recal woke the autonomous machinery"
+
+    log.info("VERDICT: PASS — with nego_en=1 (silicon POR) + train_auto_en=0 "
+             "(the rcp disarm) every R8 write is authoritative AT THE WLINK "
+             "PORTS: insert/force dark in data mode, robust kept, winscan/fch/"
+             "drive all dormant across manual training falls.")
+
+
+@cocotb.test()
+async def test_v2_disarm_parks_winscan(dut):
+    """LOOP-9 escape hatch: writing 0x210C=0 (train_auto_en=0) while the
+    winscan FSM is MID-SCAN must PARK it immediately — force-SYNC drops at
+    the Wlink port within a few cycles, tap ownership returns to the APB
+    regs, winscan_done clears, and the fch pending latch is flushed. This is
+    the documented on-silicon recovery from a live force window."""
+    log = dut._log
+    log.info("LOOP-9: mid-scan disarm parks the winscan (0x210C=0 escape hatch)")
+
+    tb = PairV2TB(dut)
+    await _bringup_to_role_cal(tb)
+    ctrl = _ctrl(dut, "m")
+
+    # Arm the REAL autonomous path (nego_en=1, train_auto_en=1 explicit) and
+    # kick a scan (training fall). Eye model keeps the metric live.
+    _set_nego_en(ctrl, True)
+    ctrl.nego_train_cfg_r.value = 1          # train_auto_en=1 (armed)
+    ctrl.tb_winscan_dwell_short_q.value = 1
+    ctrl.tb_fch_dwell_short_q.value = 1
+    ctrl.tb_ws_anchor_short_q.value = 1
+    cocotb.start_soon(_sync_dist_model(tb, "m", TAP_OPT, ACTIVE_LANES))
+    await _training_rise(tb, "m")
+    await ClockCycles(dut.hclk, 20)
+    await _training_fall(tb, "m")
+
+    # Wait until demonstrably mid-scan with force up.
+    waited = 0
+    while waited < 100_000:
+        await ClockCycles(dut.hclk, 20)
+        waited += 20
+        if int(ctrl.ws_state_r.value) in WS_MIDSCAN and \
+           int(ctrl.winscan_force_sync.value) == 1:
+            break
+    assert int(ctrl.ws_state_r.value) in WS_MIDSCAN, \
+        "scan never started — cannot exercise the disarm-park arc"
+    log.info(f"mid-scan at ws_state={int(ctrl.ws_state_r.value)} "
+             f"force={int(ctrl.winscan_force_sync.value)} — disarming (0x210C=0)")
+
+    # THE DISARM (the manual recipe's first write, mid-scan this time).
+    ctrl.nego_train_cfg_r.value = 0
+    await ClockCycles(dut.hclk, 8)
+
+    assert int(ctrl.ws_state_r.value) == WS_IDLE, (
+        f"DISARM-PARK failed: ws_state={int(ctrl.ws_state_r.value)} != IDLE "
+        f"after train_auto_en=0 — a stuck force window would ride into "
+        f"manual data mode")
+    assert int(ctrl.winscan_force_sync.value) == 0, \
+        "DISARM-PARK failed: winscan_force_sync still high"
+    assert int(ctrl.winscan_owns_taps.value) == 0, \
+        "DISARM-PARK failed: FSM still owns the taps (APB taps must rule)"
+    assert int(ctrl.winscan_done.value) == 0, \
+        "DISARM-PARK: winscan_done left set"
+    assert int(ctrl.fch_pending_r.value) == 0, \
+        "DISARM-PARK: stale fch_pending_r survived the disarm"
+    p = _wlink_sync_ports(ctrl)
+    assert p["force_always"] == int(ctrl.swi_sync_force_always_r.value), \
+        f"port force_always diverges from the APB reg after disarm ({p})"
+    assert p["insert_en"] == int(ctrl.swi_sync_insert_en_r.value), \
+        f"port insert_en diverges from the APB reg after disarm ({p})"
+
+    log.info("VERDICT: PASS — 0x210C=0 mid-scan parks the FSM within cycles: "
+             "force dark, taps back to APB, done/pending flushed — R8 "
+             "authority restored instantly (the on-silicon escape hatch).")

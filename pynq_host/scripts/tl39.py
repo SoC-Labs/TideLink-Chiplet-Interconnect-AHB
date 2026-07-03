@@ -23,7 +23,7 @@
 #   rxword            read 0x44010000 (slave local RX FIFO, single pop)
 #   rxn N             read N words from 0x44010000 (sequential pops)
 #   occ               read RX FIFO occupancy 0x4403200C
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -34,10 +34,20 @@ def mm(addr):
         maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return maps[base], addr - base
+# SoC Labs 2026-07-03: struct.pack_into/unpack_from on an mmap'd /dev/mem
+# buffer emits MULTIPLE narrow bus accesses per 32-bit op on this ARMv7 PYNQ
+# (measured on silicon: 5 stores per pack_into write vs 1 for devmem2/ctypes;
+# a2l FIFO wptr +5/word). Every "word" write became ~5 AHB transfers -> 5 FC
+# packets -> fe credit ceiling (0x1f) exhausted after ~6 words -> the
+# NACK/replay wedge that blocked sustained multi-packet A->B for weeks.
+# ctypes pointer access below is a single aligned u32 load/store.
+def _u32(m, o):
+    return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(m, o)),
+                       ctypes.POINTER(ctypes.c_uint32))
 def rd(a):
-    m, o = mm(a); return struct.unpack_from("<I", m, o)[0]
+    m, o = mm(a); return int(_u32(m, o)[0])
 def wr(a, v):
-    m, o = mm(a); struct.pack_into("<I", m, o, v & 0xFFFFFFFF)
+    m, o = mm(a); _u32(m, o)[0] = v & 0xFFFFFFFF
 
 R8       = 0x44032100   # slot0: [0] swi_training_mode  [1] SWI_RECAL
 SLIPLO   = 0x44032104   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis

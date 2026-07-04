@@ -136,10 +136,10 @@ def _arm_winscan(tb, side):
     # the scanned die's RX, so the anchor cannot latch and FINALIZE exits via
     # the timeout (= the graceful-degradation release, ws_anchor_timeout_q
     # latches). The hook bounds that at 50k cycles so winscan_done still
-    # lands inside the sim budget. R-B (2026-07-04): the same applies to the
-    # WS_FIN_WAITPEER peer-rendezvous that now precedes FINALIZE — no peer
-    # ever rendezvouses here, so it exits via its own fail-loud timeout
-    # (ws_rdv_timeout_q latches; bounded at 400k by the dwell-short hook).
+    # lands inside the sim budget. Loop-13 (2026-07-04): the Loop-12
+    # WS_FIN_WAITPEER rendezvous is DORMANT — the finalize is locally timed
+    # again (no rendezvous timeout precedes it; ws_rdv_timeout_q can never
+    # latch).
     ctrl.tb_ws_anchor_short_q.value = 1
 
 
@@ -152,10 +152,10 @@ async def _pulse_training_fall(tb, side):
 
 
 async def _wait_winscan_done(tb, side, max_cycles=2_000_000, poll=200):
-    # R-A/R-B (2026-07-04): budget widened 700k -> 2M. In this single-die
-    # harness the peer never rendezvouses, so WS_FIN_WAITPEER exits via its
-    # fail-loud timeout (+400k, sim hook) and the anchor gate then walks ALL
-    # FIX-3 clear-retries (now 5, R-A) before failing open (+~300k).
+    # R-A (2026-07-04): budget widened 700k -> 2M. In this single-die
+    # harness the anchor gate walks ALL FIX-3 clear-retries (5, R-A) before
+    # failing open (+~300k). Loop-13: the WS_FIN_WAITPEER rendezvous is
+    # dormant (no +400k wait); the widened budget is retained as slack.
     ctrl = _ctrl(tb.dut, side)
     waited = 0
     while waited < max_cycles:
@@ -351,15 +351,15 @@ async def test_v2_winscan_gates_handoff_ordering(dut):
     assert _fch_pending(tb, "m") == 1, \
         "handoff did not latch pending on the training-fall"
     # Sample fch_active across the WHOLE scan+FINALIZE (until winscan_done —
-    # same 2M budget as _wait_winscan_done; R-A/R-B 2026-07-04: widened from
-    # 700k because the peerless WS_FIN_WAITPEER rendezvous timeout (400k, sim
-    # hook) + the 5 FIX-3 clear-retries now precede the fail-open release):
-    # the BOOTSTRAP must stay held off. Q1: fch_active with fch_qmode_r=1 is
-    # the quiesce single write at WS_FIN_WAITPEER entry — the one legitimate
-    # pre-done fch activity (record it; asserted positively below; the
-    # latched fch_quiesced_r level covers the write landing between two
-    # 50-cycle samples — it stays 1 for the whole ≥150k-cycle
-    # rendezvous+FINALIZE window, so a full-scan sampler cannot miss it).
+    # same 2M budget as _wait_winscan_done; R-A 2026-07-04: widened from 700k
+    # for the 5 FIX-3 clear-retries that precede the fail-open release;
+    # Loop-13: the rendezvous wait is gone, budget retained as slack): the
+    # BOOTSTRAP must stay held off. Q1: fch_active with fch_qmode_r=1 is the
+    # quiesce single write at WS_FINALIZE entry (locally timed, b55cb59
+    # semantics) — the one legitimate pre-done fch activity (record it;
+    # asserted positively below; the latched fch_quiesced_r level covers the
+    # write landing between two 50-cycle samples — it stays 1 for the whole
+    # ≥150k-cycle FINALIZE window, so a full-scan sampler cannot miss it).
     handoff_started_early = False
     quiesce_write_seen = False
     ws_done = False

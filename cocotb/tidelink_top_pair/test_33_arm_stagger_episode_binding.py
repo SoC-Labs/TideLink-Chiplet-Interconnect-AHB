@@ -82,18 +82,20 @@ Variants (BYPASS_AUTONEG=1 build; arming over the REAL APB interface):
       still latched as the episode's evidence). Pre-fix RTL: the wrong-slot
       anchor released the handoff and every word shipped one corrupted
       byte-lane forever.
-  (f) R-B A-FIRST QUIESCED PEER-RENDEZVOUS (2026-07-04): the t33a a-first
-      flow, now asserting the rendezvous mechanism directly: the PRIVATE
-      zombie episode's WS_FIN_WAITPEER must exit via its FAIL-LOUD timeout
-      (ws_rdv_timeout_q 0x21B8[10] — no peer ever quiesces), and on the
-      FINAL bilateral episode BOTH dies must be observed parked QUIESCED in
-      WS_FIN_WAITPEER (fch_quiesced_r=1) BEFORE their first WS_FINALIZE —
-      i.e. the F3 clear + anchor window only opens after the local-AND-peer
-      quiesce rendezvous (master polls SWI_LANE_STATUS[27], slave released
-      by the FINALIZE_GO write) — with ws_rdv_timeout_q CLEAN at the end
-      (released by the GO, not the timeout) + the full data oracle. Pre-R-B
-      RTL: the locally-timed windows never overlap under a-first arm skew
-      (silicon 0x57000005 both, rea=0/0).
+  (f) R-B RENDEZVOUS DORMANCY (Loop-13 2026-07-04): the t33a a-first flow,
+      now asserting the Loop-12 rendezvous is fully DORMANT — on silicon the
+      GO-aligned finalize windows REGRESSED the proven b-first zero-poke
+      order (mutual anchor starvation, 0x21B8=0x57000005 both, complementary
+      missing lanes, rea=0/0), so Loop-13 reverted the winscan to the exact
+      b55cb59/Loop-11 LOCALLY-TIMED flow. Assert: neither winscan is EVER
+      observed in WS_FIN_WAITPEER and neither autoneg ever enters
+      ST_FIN_RDV/ST_FIN_GO; ws_rdv_timeout_q (0x21B8[10]) stays 0
+      EVERYWHERE (the sticky can no longer set); the private zombie episode
+      fails loud via the ANCHOR timeout (0x21B8[2], the b55cb59 path — not
+      the retired rendezvous timeout); each die is observed QUIESCED
+      (fch_quiesced_r=1) during its own WS_FINALIZE (the locally-timed Q1
+      quiesce, unchanged from b55cb59) + the full data oracle on the final
+      bilateral episode.
 
 Run
 ---
@@ -126,10 +128,14 @@ CLK_PERIOD_NS = 20.0
 
 # Winscan FSM state encodings (axi_chiplet_controller.sv)
 WS_IDLE, WS_ARM, WS_DONE = 0, 1, 8
-WS_FIN_WAITPEER = 10                  # R-B: quiesced peer-rendezvous hold
-WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9, 10}  # LANE..FINALIZE + CLRLOW + RDV-WAIT
-                                         # = abortable (episode binding)
-# R-B: the autoneg's finalize-rendezvous states (post-ST_TRAIN_DONE phase)
+WS_FIN_WAITPEER = 10                  # R-B rendezvous hold — DORMANT since
+                                      # Loop-13 (encoding reserved; the state
+                                      # must NEVER be entered — t33f asserts)
+WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9}    # LANE..FINALIZE + CLRLOW = abortable
+                                      # (episode binding; 10 retired with the
+                                      # dormant rendezvous)
+# R-B autoneg finalize-rendezvous states — DORMANT since Loop-13 (entry arc
+# gated on local_fin_wait_i, tied 0; t33f asserts they are never entered)
 ST_FIN_RDV, ST_FIN_GO = 18, 19
 
 # Retrain W1P: the ARM cfg (auto_en=1, poll budget 2) + bit[2] W1P pulse.
@@ -349,16 +355,14 @@ async def test_33a_seconds_stagger_private_episode(dut):
         "(a) private zombie episode did NOT fail open (0x21B8[2]=0)? The "
         "beacon-less peer cannot anchor — precondition for the stagger bug "
         "not established (did the zombie beacon?)")
-    # R-B: ST_FIN_RDV/ST_FIN_GO are legal parking spots here — the private
-    # winscan's WS_FIN_WAITPEER raised local_fin_wait_i, and the autoneg's
-    # rendezvous poll of the zombie may still be draining its last I2C
-    # transaction when winscan_done (rendezvous-timeout -> fail-open) rises;
-    # it abandons back to ST_TRAIN_DONE at the next poll boundary.
-    assert _si(_autoneg(dut, "m").state_r) in (ST_TRAIN_DONE, ST_FIN_RDV,
-                                               ST_FIN_GO), (
-        f"(a) master not parked ST_TRAIN_DONE(/FIN_RDV/FIN_GO) after the "
-        f"bypass exit (an={_si(_autoneg(dut,'m').state_r)}) — private episode "
-        f"did not complete via the zombie-bypass arc")
+    # Loop-13: the R-B rendezvous is DORMANT (local_fin_wait_i tied 0), so
+    # the autoneg can only park in ST_TRAIN_DONE here — the exact b55cb59
+    # assertion is restored (ST_FIN_RDV/ST_FIN_GO are unreachable; t33f
+    # asserts that directly).
+    assert _si(_autoneg(dut, "m").state_r) == ST_TRAIN_DONE, (
+        f"(a) master not parked ST_TRAIN_DONE after the bypass exit "
+        f"(an={_si(_autoneg(dut,'m').state_r)}) — private episode did not "
+        f"complete via the zombie-bypass arc")
     assert _si(_autoneg(dut, "s").state_r) == ST_BYPASS, \
         "(a) slave left ST_BYPASS while un-armed — not a zombie scenario"
 
@@ -668,108 +672,118 @@ async def test_33e_anchor_verify_wrong_slot(dut):
 
 
 # ---------------------------------------------------------------------------
-# (f) R-B A-FIRST QUIESCED PEER-RENDEZVOUS (2026-07-04). Silicon: a-first arm
-# order starved BOTH dies (0x21B8=0x57000005 both, rea=0/0) — the
-# locally-timed quiesce/finalize windows never overlapped. Fix: each die
-# parks QUIESCED in WS_FIN_WAITPEER before its F3 clear/anchor window; the
-# master polls the slave's SWI_LANE_STATUS[27] (quiesced-in-wait) over I2C
-# and writes the slave's FINALIZE_GO (0x211C) once BOTH are quiesced —
-# releasing the two windows within one I2C write of each other. The slave
-# cannot poll; the GO write is its release (the L4 slave-release idiom).
-# This variant asserts the mechanism on the t33a a-first flow.
+# (f) R-B RENDEZVOUS DORMANCY (Loop-13 2026-07-04). Silicon verdict on the
+# Loop-12 rendezvous: the GO-aligned finalize windows REGRESSED the proven
+# b-first zero-poke order — BOTH dies anchor-timed-out (0x21B8=0x57000005
+# both), MUTUAL partial starvation with COMPLEMENTARY missing lanes (die_a
+# ss=0x64/lane 7, die_b ss=0xa4/lane 6), rea=0/0 — where the Loop-11
+# LOCALLY-TIMED quiesce (b55cb59) fully converged. Loop-13 reverts the
+# winscan behaviour to exact b55cb59 semantics and leaves the rendezvous
+# PLUMBING dormant (ws_fin_wait_lvl tied 0 -> the autoneg ST_FIN_RDV/GO
+# entry arc can never fire; ws_rdv_timeout_q can never set). This variant
+# regression-locks the DORMANCY on the t33a a-first flow: any future edit
+# that re-arms the rendezvous without a deliberate rework trips it.
 # ---------------------------------------------------------------------------
-async def _rdv_monitor(dut, side, seen, stop):
-    """Track, per current episode, whether the die was observed parked
-    QUIESCED in WS_FIN_WAITPEER BEFORE its first WS_FINALIZE/WS_FIN_CLRLOW
-    observation. The per-episode flag reset keys on the SCAN states (2..6,
-    thousands of cycles) rather than the 1-cycle WS_ARM, so the 20-cycle
-    sampler cannot miss it — a stale private-episode waitpeer_q can never
-    leak into the final episode's verdict. The WAITPEER (>= one ~40k-cycle
-    I2C poll iteration) and FINALIZE (>= the 100k sim dwell) windows are
-    likewise sample-proof."""
-    WS_SCAN_STATES = {1, 2, 3, 4, 5, 6}   # ARM..PICK: pre-finalize, per-episode
+async def _dormancy_monitor(dut, side, seen, stop):
+    """Continuously sample for Loop-13 dormancy violations: the winscan must
+    NEVER be observed in WS_FIN_WAITPEER, the autoneg must NEVER be observed
+    in ST_FIN_RDV/ST_FIN_GO, and ws_rdv_timeout_q must NEVER read 1. Also
+    latch the b55cb59 locally-timed quiesce evidence (fch_quiesced_r observed
+    1 while the winscan sits in WS_FINALIZE/WS_FIN_CLRLOW — the >=100k-cycle
+    sim finalize window is sample-proof at a 20-cycle period; WAITPEER, were
+    it ever entered, holds for >=one I2C poll iteration ~40k cycles, likewise
+    sample-proof)."""
     c = _ctrl(dut, side)
+    an = _autoneg(dut, side)
     while not stop[0]:
         await ClockCycles(dut.hclk, 20)
         st = _si(c.ws_state_r)
-        if st in WS_SCAN_STATES:
-            seen[side]["waitpeer_q"] = False
-            seen[side]["finalize"] = False
-            seen[side]["waitpeer_before_finalize"] = False
-        elif st == WS_FIN_WAITPEER and _si(c.fch_quiesced_r) == 1:
-            seen[side]["waitpeer_q"] = True
-        elif st in WS_FINALIZE_STATES and not seen[side]["finalize"]:
-            seen[side]["finalize"] = True
-            seen[side]["waitpeer_before_finalize"] = seen[side]["waitpeer_q"]
+        if st == WS_FIN_WAITPEER:
+            seen[side]["waitpeer_hit"] = True
+        if _si(an.state_r) in (ST_FIN_RDV, ST_FIN_GO):
+            seen[side]["rdv_state_hit"] = True
+        if _si(c.ws_rdv_timeout_q) == 1:
+            seen[side]["rdv_timeout_hit"] = True
+        if st in WS_FINALIZE_STATES and _si(c.fch_quiesced_r) == 1:
+            seen[side]["quiesced_in_finalize"] = True
 
 
 @cocotb.test()
-async def test_33f_a_first_quiesced_rendezvous(dut):
-    """(f) a-first: the private zombie episode's rendezvous must FAIL-LOUD
-    (ws_rdv_timeout_q), and the final bilateral episode must show BOTH dies
-    quiesced-in-WS_FIN_WAITPEER BEFORE finalize, released by the GO (clean
-    ws_rdv_timeout_q) + the full data oracle."""
+async def test_33f_a_first_rendezvous_dormant(dut):
+    """(f) a-first: the Loop-12 rendezvous must be fully DORMANT — no
+    WS_FIN_WAITPEER, no ST_FIN_RDV/GO, ws_rdv_timeout_q stuck 0; the private
+    zombie episode fails loud via the ANCHOR timeout (0x21B8[2], the b55cb59
+    locally-timed path) and the final bilateral episode delivers the full
+    data oracle with the Q1 quiesce observed in-FINALIZE on both dies."""
     log = dut._log
-    log.info("(f) A-FIRST QUIESCED PEER-RENDEZVOUS")
+    log.info("(f) A-FIRST — R-B RENDEZVOUS DORMANCY (Loop-13)")
     tb = PairTB(dut)
     await _setup(dut, tb)
 
     stop = [False]
-    seen = {s: {"waitpeer_q": False, "finalize": False,
-                "waitpeer_before_finalize": False} for s in ("m", "s")}
+    seen = {s: {"waitpeer_hit": False, "rdv_state_hit": False,
+                "rdv_timeout_hit": False, "quiesced_in_finalize": False}
+            for s in ("m", "s")}
     for side in ("m", "s"):
-        cocotb.start_soon(_rdv_monitor(dut, side, seen, stop))
+        cocotb.start_soon(_dormancy_monitor(dut, side, seen, stop))
 
     try:
         _force_zombie_bypass(dut, "m")
         await _apb_arm(tb, "m", priority=1)
         log.info("(f) MASTER armed first (zombie-bypass private episode)")
 
-        # Private episode: the rendezvous can never complete (the zombie's
-        # winscan never runs, its [27] reads 0, no GO ever arrives) — the
-        # WS_FIN_WAITPEER FAIL-LOUD timeout must fire and the finalize then
-        # proceeds locally (fail-open anchor, as in t33a). Budget: bypass
-        # walk ~233k + scan + rendezvous timeout (400k sim) + FINALIZE
-        # fail-open (5 retries).
+        # Private episode against the beacon-less zombie: b55cb59 semantics —
+        # the winscan goes STRAIGHT to WS_FINALIZE (no rendezvous park), the
+        # F4 anchor gate burns the FIX-3 clear-retries and FAILS OPEN with
+        # 0x21B8[2] latched. Budget: bypass walk ~233k + scan + FINALIZE
+        # fail-open (5 R-A retries x 50k + clr-holds).
         mc = _ctrl(dut, "m")
         ok, w = await _wait_sig(dut, lambda: _si(mc.winscan_done), 1,
                                 max_cycles=3_000_000)
         assert ok, ("(f) MASTER private-episode winscan_done never rose — the "
-                    "rendezvous timeout path deadlocked the zombie episode?")
-        assert _si(mc.ws_rdv_timeout_q) == 1, (
-            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) NOT "
-            "latched — the WS_FIN_WAITPEER fail-loud timeout did not fire "
-            "although no peer could ever rendezvous (a dead/V1/manual peer "
-            "would DEADLOCK the autonomous bring-up)")
-        assert seen["m"]["waitpeer_q"], (
-            "(f) private episode: master never observed QUIESCED in "
-            "WS_FIN_WAITPEER — the quiesce does not precede the rendezvous "
-            "hold")
-        log.info(f"(f) private episode: rendezvous timed out fail-loud "
-                 f"(0x21B8[10]) at t={w*CLK_PERIOD_NS/1000:.0f}us — arming "
+                    "locally-timed fail-open path deadlocked the zombie "
+                    "episode?")
+        assert _si(mc.ws_anchor_timeout_q) == 1, (
+            "(f) private zombie episode did NOT fail open via the ANCHOR "
+            "timeout (0x21B8[2]=0) — the b55cb59 locally-timed finalize is "
+            "not back (did a rendezvous hold sneak in?)")
+        assert _si(mc.ws_rdv_timeout_q) == 0, (
+            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) "
+            "LATCHED — the retired rendezvous timeout fired; the R-B flow is "
+            "NOT dormant")
+        log.info(f"(f) private episode failed open via the anchor timeout "
+                 f"(0x21B8[2]) at t={w*CLK_PERIOD_NS/1000:.0f}us — arming "
                  f"the late die")
 
         # Final bilateral episode (the a-first tail): the retrain re-runs
-        # training; both winscans rebind (FIX-1) and must now rendezvous.
+        # training; both winscans rebind (FIX-1) and converge LOCALLY TIMED.
         await _late_die_convergence(dut, tb, log, "f")
     finally:
         stop[0] = True
 
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
-        assert seen[side]["waitpeer_before_finalize"], (
-            f"(f) {name}: NOT observed quiesced in WS_FIN_WAITPEER before its "
-            f"first WS_FINALIZE of the final episode — the F3 clear/anchor "
-            f"window opened without the peer rendezvous (the a-first "
-            f"non-overlap window is back)")
+        assert not seen[side]["waitpeer_hit"], (
+            f"(f) {name}: winscan OBSERVED in WS_FIN_WAITPEER — the Loop-12 "
+            f"rendezvous park is NOT dormant (Loop-13 regression)")
+        assert not seen[side]["rdv_state_hit"], (
+            f"(f) {name}: autoneg OBSERVED in ST_FIN_RDV/ST_FIN_GO — the "
+            f"rendezvous entry arc fired although local_fin_wait_i is tied 0")
+        assert not seen[side]["rdv_timeout_hit"], (
+            f"(f) {name}: ws_rdv_timeout_q observed 1 — the dormant sticky "
+            f"set somehow")
+        assert seen[side]["quiesced_in_finalize"], (
+            f"(f) {name}: never observed QUIESCED (fch_quiesced_r=1) inside "
+            f"WS_FINALIZE/WS_FIN_CLRLOW — the b55cb59 locally-timed Q1 "
+            f"quiesce-before-finalize is broken")
         assert _si(c.ws_rdv_timeout_q) == 0, (
-            f"(f) {name}: ws_rdv_timeout_q latched on the FINAL bilateral "
-            f"episode — the rendezvous was released by the fail-loud timeout, "
-            f"not the GO (I2C poll/[27]/FINALIZE_GO machinery broken)")
+            f"(f) {name}: ws_rdv_timeout_q latched at end — the dormant "
+            f"rendezvous timeout fired")
         assert _si(c.ws_vfy_retry_q) == 0, (
             f"(f) {name}: ws_vfy_retry_q latched on a clean sim eye — the "
             f"anchor-verify should pass first try here")
-    log.info("VERDICT (f): PASS — private episode failed loud (0x21B8[10]); "
-             "final bilateral episode rendezvous-aligned BOTH dies' quiesced "
-             "windows before finalize (GO-released, timeout clean) and "
-             "delivered the full byte-exact oracle")
+    log.info("VERDICT (f): PASS — rendezvous fully dormant (no WAITPEER, no "
+             "ST_FIN_RDV/GO, [10] stuck 0); private episode failed loud via "
+             "the anchor timeout; final bilateral episode converged LOCALLY "
+             "TIMED with the Q1 quiesce in-state and delivered the full "
+             "byte-exact oracle")

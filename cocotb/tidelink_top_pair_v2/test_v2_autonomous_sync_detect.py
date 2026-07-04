@@ -158,11 +158,11 @@ async def _training_fall(tb, side):
 
 
 async def _wait_winscan_done(tb, side, max_cycles=2_000_000, poll=200):
-    # R-A/R-B (2026-07-04): budget widened 700k -> 2M — in this single-die
-    # harness the WS_FIN_WAITPEER peer-rendezvous exits via its fail-loud
-    # timeout (400k, sim hook) and the anchor gate then walks all 5 FIX-3
-    # clear-retries before failing open (same rationale as the winscan FSM
-    # test's helper).
+    # R-A (2026-07-04): budget widened 700k -> 2M — in this single-die
+    # harness the anchor gate walks all 5 FIX-3 clear-retries before failing
+    # open (same rationale as the winscan FSM test's helper). Loop-13: the
+    # WS_FIN_WAITPEER rendezvous is dormant (no 400k wait); the widened
+    # budget is retained as slack.
     ctrl = _ctrl(tb.dut, side)
     waited = 0
     while waited < max_cycles:

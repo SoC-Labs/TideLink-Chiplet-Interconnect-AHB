@@ -1176,36 +1176,35 @@ module axi_chiplet_controller #(
     // of the V2 winscan section that assigns it).
     //   fch_quiesced_r  : sticky — the LL swi_swreset (FCCTRL 0x208 bit[3]) is
     //                     currently held ON by the quiesce path (the early
-    //                     FCH_LL_SWRESET_ON write issued at WS_FIN_WAITPEER
-    //                     entry — R-B 2026-07-04; was WS_FINALIZE entry).
+    //                     FCH_LL_SWRESET_ON write issued at WS_FINALIZE entry).
     //                     Cleared when the bootstrap walk deasserts it, or by
     //                     the disarm-release write. WINSCAN_OBS 0x21B8[8].
     //   fch_quiesce_req : level request from the winscan FSM — asserted while
-    //                     the FSM sits in WS_FIN_WAITPEER / WS_FINALIZE /
-    //                     WS_FIN_CLRLOW on the ARMED autonomous path (V2
-    //                     winscan section assigns it; the V1 arm ties it 0 so
-    //                     the fch sequencer is bit-identical on V1). R-B
-    //                     (2026-07-04): the quiesce now rises at
-    //                     WS_FIN_WAITPEER entry — BEFORE the peer-rendezvous
-    //                     hold — so the exported quiesced-in-wait level is
-    //                     truthful when the peer polls it.
+    //                     the FSM sits in WS_FINALIZE / WS_FIN_CLRLOW on the
+    //                     ARMED autonomous path (V2 winscan section assigns
+    //                     it; the V1 arm ties it 0 so the fch sequencer is
+    //                     bit-identical on V1).
     reg        fch_quiesced_r;
     wire       fch_quiesce_req;
-    // R-B FINALIZE PEER-GATED RENDEZVOUS (2026-07-04) forward decls (same
-    // hoist rationale — the SWI_LANE_STATUS read mux and the u_autoneg
-    // instance read these upstream of the V2 winscan section that drives
-    // them; `default_nettype none` forbids forward references).
-    //   ws_fin_wait_lvl : LEVEL — the winscan FSM is parked in
-    //                     WS_FIN_WAITPEER with the Q1 quiesce landed
-    //                     (fch_quiesced_r). Packed at SWI_LANE_STATUS [27]
-    //                     (V2 — the peer's autoneg byte-3 capture reads it
-    //                     over I2C) and fed to u_autoneg.local_fin_wait_i.
-    //                     Tied 0 on V1 (the V1 arm below).
-    //   nego_fin_go_w   : u_autoneg.fin_go_o — the MASTER die's local
-    //                     finalize release (the peer FINALIZE_GO write
-    //                     completed = both dies verified quiesced-in-wait).
-    //                     Consumed only by the V2 winscan WS_FIN_WAITPEER
-    //                     release OR; sunk on V1.
+    // R-B FINALIZE PEER-GATED RENDEZVOUS plumbing — DORMANT (Loop-13
+    // 2026-07-04). The Loop-12 R-B rendezvous (winscan parks in
+    // WS_FIN_WAITPEER until the peer is verified quiesced over I2C)
+    // REGRESSED the b-first zero-poke order on silicon: aligning the two
+    // dies' finalize windows produced MUTUAL anchor starvation
+    // (0x21B8=0x57000005 both, complementary missing lanes, rea=0/0) where
+    // the Loop-11/b55cb59 LOCALLY-timed quiesce converged. Loop-13 reverts
+    // the winscan BEHAVIOUR to exact b55cb59 semantics (quiesce rises at
+    // WS_FINALIZE entry, locally timed; no peer wait) and keeps the
+    // rendezvous PLUMBING dormant for a future rework:
+    //   ws_fin_wait_lvl : tied 1'b0 (dormant). Kept wired at
+    //                     SWI_LANE_STATUS [27] (V2 read mux) and at
+    //                     u_autoneg.local_fin_wait_i — with the level tied 0
+    //                     the autoneg's ST_FIN_RDV/ST_FIN_GO entry arc never
+    //                     fires, so the whole rendezvous machinery is
+    //                     compiled but unreachable. Tied 0 on V1 too.
+    //   nego_fin_go_w   : u_autoneg.fin_go_o — can never rise while the
+    //                     rendezvous states are unreachable; sunk (the
+    //                     winscan MUST NOT depend on it).
     wire       ws_fin_wait_lvl;
     wire       nego_fin_go_w;
 
@@ -1271,18 +1270,20 @@ module axi_chiplet_controller #(
     //                       wrong-slot mis-anchor signature (die_b byte-lane
     //                       [23:16] 0x24->0x5c). WINSCAN_OBS 0x21B8[9].
     //                       Cleared on a fresh scan episode (WS_ARM).
-    //   ws_rdv_timeout_q  : R-B (2026-07-04) sticky FAIL-LOUD flag: the
-    //                       WS_FIN_WAITPEER peer-quiesced rendezvous TIMED
-    //                       OUT and the finalize proceeded LOCALLY (peer
-    //                       never observed quiesced-in-wait / GO never
-    //                       arrived). WINSCAN_OBS 0x21B8[10]. Cleared on a
-    //                       fresh scan episode (WS_ARM).
+    //   ws_rdv_timeout_q  : R-B rendezvous-timeout sticky — DORMANT since
+    //                       Loop-13 (2026-07-04): the winscan no longer
+    //                       parks in WS_FIN_WAITPEER (the Loop-12 aligned
+    //                       rendezvous regressed b-first on silicon), so
+    //                       this bit can never set — it always reads 0. The
+    //                       WINSCAN_OBS 0x21B8[10] slot and the WS_ARM
+    //                       clear are KEPT so the obs map is stable for the
+    //                       future R-B rework.
     //   ws_fin_go_reg_q   : R-B sticky FINALIZE_GO capture — the peer
     //                       master's I2C write of Region 8 slot 7 (0x211C
-    //                       bit[0], W1P) landed; the SLAVE die's
-    //                       WS_FIN_WAITPEER release. Cleared on a training
-    //                       rise (a new episode invalidates a stale go) and
-    //                       consumed on the release cycle.
+    //                       bit[0], W1P) landed. Cleared on a training rise.
+    //                       DORMANT since Loop-13: nothing consumes it (the
+    //                       winscan no longer waits on a GO); the 0x211C
+    //                       W1P plumbing is kept for the R-B rework.
     reg [31:0] ws_phase_offset_r;
     reg [7:0]  ws_phase_lsb_r;
     reg        winscan_owns_taps;
@@ -2246,10 +2247,9 @@ module axi_chiplet_controller #(
     //                           is holding the Wlink LL in swi_swreset (the
     //                           quiesce-before-finalize write landed and the
     //                           bootstrap has not yet released it). Reads 1
-    //                           exactly across WS_FIN_WAITPEER + WS_FINALIZE
-    //                           (+retries)..the bootstrap's SWRESET_OFF —
-    //                           on-silicon proof the re-anchor ran over a
-    //                           QUIET link.
+    //                           exactly across WS_FINALIZE(+retries)..the
+    //                           bootstrap's SWRESET_OFF — on-silicon proof the
+    //                           re-anchor ran over a QUIET link.
     //     [9] ws_vfy_retry_q  — STICKY (R-A 2026-07-04): a FIX-3 clear-retry
     //                           fired with `reanchored` ALREADY 1 — the
     //                           anchor latched but the zero-tolerance
@@ -2258,12 +2258,11 @@ module axi_chiplet_controller #(
     //                           die_b byte-lane[23:16] mis-anchor signature).
     //                           The retry re-cleared and re-anchored.
     //                           Cleared on a fresh scan episode (WS_ARM).
-    //     [10] ws_rdv_timeout_q — STICKY (R-B 2026-07-04): the
-    //                           WS_FIN_WAITPEER peer-quiesced rendezvous
-    //                           timed out and the finalize proceeded LOCALLY
-    //                           (fail-loud; the pre-R-B locally-timed
-    //                           behaviour). Cleared on a fresh scan episode
-    //                           (WS_ARM).
+    //     [10] ws_rdv_timeout_q — R-B rendezvous-timeout sticky. DORMANT
+    //                           since Loop-13 (2026-07-04): the winscan no
+    //                           longer waits on the peer rendezvous, so this
+    //                           always reads 0. Slot kept stable for the
+    //                           R-B rework.
     //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
     //                           UNCONDITIONAL BY DESIGN (LOOP-9 2026-07-03):
     //                           the marker is a constant in the read mux, NOT
@@ -2315,7 +2314,7 @@ module axi_chiplet_controller #(
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
                                         sync_obs_pkt_crack_1,           // [28]    pkt_is_crack_pkt
 `ifdef TIDELINK_PHY_V2
-                                        ws_fin_wait_lvl,                // [27]    R-B (2026-07-04): winscan parked QUIESCED in WS_FIN_WAITPEER — REPURPOSED from pkt_is_cr_pkt so the PEER autoneg's byte-3 capture can rendezvous both dies' finalize windows over I2C (the a-first arm-skew starvation fix). pkt_is_cr is an INSTANTANEOUS single-word flag (not consumed by any script/regression — tlchar/tl39 read the [23]/[24] STICKY seen bits) and stays derivable from the RXCAP capture obs. V1 arm below keeps pkt_is_cr_pkt bit-identical.
+                                        ws_fin_wait_lvl,                // [27]    R-B rendezvous export — DORMANT since Loop-13 (2026-07-04): ws_fin_wait_lvl is tied 1'b0 (the Loop-12 aligned rendezvous regressed b-first on silicon), so this bit reads constant 0 on V2. The slot is KEPT (repurposed from the instantaneous pkt_is_cr_pkt, which no script/regression consumes — tlchar/tl39 read the [23]/[24] STICKY seen bits) so the R-B rework can re-arm it without another map change. V1 arm below keeps pkt_is_cr_pkt bit-identical.
 `else
                                         sync_obs_pkt_cr_1,              // [27]    pkt_is_cr_pkt (pre-R-B V1 packing)
 `endif
@@ -2349,7 +2348,7 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h5) ? {sync_obs_sync_det_1,             // [31:16] SYNC-detected sat. count — SoC Labs 2026-06-08 (cross-lane-deskew health). Replaces the DEAD ECC-corrected field ([31:16] was sync_obs_ecc_correct_1, always 0 because WlinkEccSyndrome.v ties corrected=0). RX>0 proves a COHERENT SYNC word reassembled.
                                         sync_obs_ecc_corrupt_1}      : // [15:0]  ECC-corrupted sat. count (also DEAD/0) — SYNC_DETECTED_COUNTER reg (was ECC_COUNTERS; was NEGO_TRAIN_STEP RO=0; W1P write path unchanged)
         (ctrl_reg_addr[2:0] == 3'h6) ? swi_phase_offset_r            : // SWI_PHASE_OFFSET (8 × 4-bit per-lane phase)
-        (ctrl_reg_addr[2:0] == 3'h7) ? 32'h5041_0100                  : // PHY_ALIGN_ID = "PA" v1.0 (RO). V2 WRITES to this slot are the R-B FINALIZE_GO W1P (0x211C bit[0] -> ws_fin_go_reg_q — the slave-die WS_FIN_WAITPEER release, written by the peer master over I2C; see the winscan section).
+        (ctrl_reg_addr[2:0] == 3'h7) ? 32'h5041_0100                  : // PHY_ALIGN_ID = "PA" v1.0 (RO). V2 WRITES to this slot are the R-B FINALIZE_GO W1P (0x211C bit[0] -> ws_fin_go_reg_q). DORMANT since Loop-13 (2026-07-04): the write still latches the sticky, but nothing consumes it — kept for the R-B rework.
                                        32'h0;
 
     // =====================================================================
@@ -2969,11 +2968,11 @@ module axi_chiplet_controller #(
         // predicate now waits on (instead of the downstream cal_done, which
         // needs training=0 which needs this exit → the old deadlock).
         .local_cal_in_hold_i       (sync_cal_in_hold_1),
-        // R-B (2026-07-04) finalize peer-gated rendezvous: the winscan's
-        // "parked quiesced in WS_FIN_WAITPEER" level in; the master's local
-        // finalize-release level out. ws_fin_wait_lvl is tied 0 on V1 and
-        // the FSM's rendezvous states are USE_CAL_IN_HOLD-gated, so the V1
-        // netlist is unchanged.
+        // R-B finalize peer-gated rendezvous — DORMANT since Loop-13
+        // (2026-07-04): ws_fin_wait_lvl is tied 0 on BOTH V1 and V2, so the
+        // autoneg's ST_FIN_RDV/ST_FIN_GO entry arc never fires and the whole
+        // rendezvous machinery (incl. the fin_retrain_pend_r W1P-latch fix)
+        // is compiled but unreachable. Kept wired for the R-B rework.
         .local_fin_wait_i          (ws_fin_wait_lvl),
         .fin_go_o                  (nego_fin_go_w),
         .fin_rdv_in_progress_o     (fin_rdv_in_progress_w),
@@ -3116,12 +3115,12 @@ module axi_chiplet_controller #(
     // (tidelink_lane_deskew_v2 gap_ceil → sync_conf<=0) — die_a STARVES.
     // die_a's own TX is quieter (CR spam only), so die_b re-latches fine.
     // FIX: each die QUIESCES its FC link layer for its own finalize — the
-    // winscan FSM raises fch_quiesce_req across WS_FIN_WAITPEER/WS_FINALIZE/
-    // WS_FIN_CLRLOW (R-B 2026-07-04: the request now rises at the
-    // WS_FIN_WAITPEER peer-rendezvous entry, so the quiesce strictly precedes
-    // the peer-visible quiesced-in-wait level) and this sequencer issues the
-    // FCH_LL_SWRESET_ON write (0x27f09) ONCE at that entry (fch_quiesced_r
-    // latches). swi_swreset resets ONLY the link
+    // winscan FSM raises fch_quiesce_req across WS_FINALIZE/WS_FIN_CLRLOW
+    // (Loop-13 2026-07-04: back to the b55cb59 LOCALLY-TIMED rise at
+    // WS_FINALIZE entry — the Loop-12 R-B WS_FIN_WAITPEER rendezvous hold
+    // regressed b-first on silicon and is dormant) and this sequencer issues
+    // the FCH_LL_SWRESET_ON write (0x27f09) ONCE at that entry
+    // (fch_quiesced_r latches). swi_swreset resets ONLY the link
     // layer (Wlink.v :2383/:2386/:2392 — tx/rx_link_clk + app reset syncs;
     // lltx/txrouter reset = tx_link_clk_reset_wrs, Wlink.v :2025/:2086); the
     // PHY inserter + deskew are POR-reset-only, so a quiesced die transmits
@@ -3704,9 +3703,14 @@ module axi_chiplet_controller #(
     localparam [3:0] WS_FIN_CLRLOW      = 4'd9;  // FIX-3: anchor-retry — hold the
                                                  // F3 clear LOW so the destination
                                                  // edge-detect re-arms, then re-pulse
-    localparam [3:0] WS_FIN_WAITPEER    = 4'd10; // R-B: quiesced peer-rendezvous
-                                                 // hold BEFORE the F3 clear/anchor
-                                                 // window (see the state's comment)
+    localparam [3:0] WS_FIN_WAITPEER    = 4'd10; // R-B peer-rendezvous hold —
+                                                 // DORMANT (Loop-13 2026-07-04):
+                                                 // encoding RESERVED, state never
+                                                 // entered (the Loop-12 aligned
+                                                 // rendezvous regressed b-first
+                                                 // on silicon; finalize is
+                                                 // locally timed again, exact
+                                                 // b55cb59 semantics)
 
     localparam int WINSCAN_NSAMP   = 5;          // host min-over-5
     // F3b/F4 RENDEZVOUS (2026-07-02): WINSCAN_FIN_WAIT widened 4096 (82 µs) →
@@ -3772,20 +3776,9 @@ module axi_chiplet_controller #(
     // mis-latch before its retry — 5 keeps the fail-open bound ~1.8 s worst
     // case while giving a marginal lane multiple independent re-latch rolls.
     localparam [2:0]  WS_ANCHOR_RETRIES = 3'd5;
-    // R-B (2026-07-04): WS_FIN_WAITPEER peer-quiesced rendezvous timeout.
-    // FAIL-LOUD: on expiry the finalize proceeds LOCALLY (the pre-R-B
-    // locally-timed behaviour) and latches ws_rdv_timeout_q (0x21B8[10]) —
-    // never deadlocks on a dead/V1/zombie peer. 10 s @ 50 MHz: must cover a
-    // full peer scan displacement (the silicon a-first signature — 4 active
-    // lanes x 32 taps x 50 ms dwell ~= 6.4 s) plus margin; the wait is
-    // harmless when the peer is healthy (the GO releases it in ~one I2C
-    // poll+write). Sim value rides tb_winscan_dwell_short_q and must exceed
-    // the sim I2C rendezvous latency (~2-3 poll iterations ~= 100-200k).
-    localparam [28:0] WS_RDV_TIMEOUT     = 29'd500_000_000; // ~=10 s @ 50 MHz
-    localparam [28:0] WS_RDV_TIMEOUT_SIM = 29'd400_000;     // TB-forced bound
-                                                            // (> ~3 I2C poll
-                                                            // iterations + GO
-                                                            // at sim prescale)
+    // (Loop-13 2026-07-04: the R-B WS_RDV_TIMEOUT/ws_rdv_to_r rendezvous
+    // countdown was removed with the dormant WS_FIN_WAITPEER flow — see
+    // 8c1ae6a's diff for the machinery if the R-B rework revives it.)
     // Sim dwell shrink (TB-forced, same idiom as the calibrator's
     // tb_early_exit_force_q). Default 0 = use the generous silicon WINSCAN_DWELL.
     reg tb_winscan_dwell_short_q = 1'b0;
@@ -3823,16 +3816,12 @@ module axi_chiplet_controller #(
                                             //     swi_sync_obs_clr_in Wlink port
     reg [23:0]         ws_anchor_to_r;      // F4: anchor-gate timeout countdown
     reg [2:0]          ws_anchor_retry_r;   // FIX-3: clear-retries remaining (R-A: widened 2->3b, budget 5)
-    reg [28:0]         ws_rdv_to_r;         // R-B: peer-rendezvous timeout countdown
     reg tb_ws_anchor_short_q = 1'b0;        // F4 sim hook (cocotb deposits 1)
     wire [23:0] ws_anchor_to_load =
         tb_ws_anchor_short_q ? WS_ANCHOR_TIMEOUT_SIM : WS_ANCHOR_TIMEOUT;
     // FIX-3: the clear-low hold reuses the winscan sim hook (short in sim).
     wire [23:0] ws_clr_hold_load =
         tb_winscan_dwell_short_q ? WS_CLR_HOLD_SIM : WS_CLR_HOLD;
-    // R-B: the rendezvous timeout reuses the same sim hook.
-    wire [28:0] ws_rdv_to_load =
-        tb_winscan_dwell_short_q ? WS_RDV_TIMEOUT_SIM : WS_RDV_TIMEOUT;
     // F4: 2-flop apb_clk sync of the deskew read-side `reanchored` latch.
     // obs_epoch_anchored_o is the rx-link-clk-domain pass-through from Wlink
     // (u_deskew reanchored → WavD2DGpio epoch_anchored → WlinkGPIOPHY →
@@ -3869,14 +3858,13 @@ module axi_chiplet_controller #(
         end
     end
 
-    // R-B (2026-07-04): FINALIZE_GO capture — the peer master's I2C write of
-    // Region 8 slot 7 (0x211C bit[0], W1P) lands here via the slave AXIL
-    // bridge (region8_write covers both the external APB and the I2C-slave
-    // paths). STICKY so the go survives the CDC/poll skew between the
-    // master's write completing and this die's FSM sampling it; a training
-    // RISE clears it (a new episode's I2C ENTER write strictly precedes any
-    // stale go's reuse window — the master's autoneg serializes its I2C
-    // transactions), and the WS_FIN_WAITPEER release cycle consumes it.
+    // R-B FINALIZE_GO capture — the peer master's I2C write of Region 8
+    // slot 7 (0x211C bit[0], W1P) lands here via the slave AXIL bridge
+    // (region8_write covers both the external APB and the I2C-slave paths).
+    // DORMANT since Loop-13 (2026-07-04): the winscan no longer waits in
+    // WS_FIN_WAITPEER, so NOTHING consumes this sticky — the register plumbs
+    // the 0x211C W1P for the future R-B rework only. Cleared on a training
+    // rise (a new episode invalidates a stale go).
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             ws_fin_go_reg_q <= 1'b0;
@@ -3885,10 +3873,11 @@ module axi_chiplet_controller #(
         else if (region8_write && (ctrl_reg_addr[2:0] == 3'h7)
                  && ctrl_reg_wdata[0])
             ws_fin_go_reg_q <= 1'b1;
-        else if ((ws_state_r == WS_FIN_WAITPEER) && fch_quiesced_r &&
-                 (nego_fin_go_w | ws_fin_go_reg_q))
-            ws_fin_go_reg_q <= 1'b0;   // consumed on the release cycle
     end
+    // Loop-13: sink the dormant autoneg release level — the winscan MUST NOT
+    // depend on it (see the ws_fin_wait_lvl tie below).
+    wire _unused_nego_fin_go_v2 = nego_fin_go_w;
+    wire _unused_ws_fin_go_reg  = ws_fin_go_reg_q;
 
     // FIX-3 obs (2026-07-03) — "anchored-late" sticky (WINSCAN_OBS 0x21B8[3]):
     // a ws_anchor_q RISE observed while fch_done_r is already set means the
@@ -3988,16 +3977,17 @@ module axi_chiplet_controller #(
     // IDLE release arm then writes the swreset back OFF. Declared (hoisted)
     // next to fch_done_r; V1 arm ties it 0 below.
     assign fch_quiesce_req = autonomy_armed &
-                             ((ws_state_r == WS_FIN_WAITPEER) |
-                              (ws_state_r == WS_FINALIZE) |
+                             ((ws_state_r == WS_FINALIZE) |
                               (ws_state_r == WS_FIN_CLRLOW));
 
-    // R-B (2026-07-04): the exported "parked quiesced in WS_FIN_WAITPEER"
-    // level — SWI_LANE_STATUS [27] (peer-visible over the I2C byte-3 read)
-    // and u_autoneg.local_fin_wait_i. Requires the quiesce write to have
-    // LANDED (fch_quiesced_r), i.e. the link is genuinely idle+beacons when
-    // the peer observes this bit.
-    assign ws_fin_wait_lvl = (ws_state_r == WS_FIN_WAITPEER) & fch_quiesced_r;
+    // R-B rendezvous export — DORMANT (Loop-13 2026-07-04): tied 0. The
+    // Loop-12 level ((ws_state_r == WS_FIN_WAITPEER) & fch_quiesced_r) fed
+    // SWI_LANE_STATUS[27] and u_autoneg.local_fin_wait_i; with the tie the
+    // [27] export reads constant 0 and the autoneg's ST_FIN_RDV/ST_FIN_GO
+    // entry arc never fires. The winscan's finalize flow is LOCALLY TIMED
+    // (exact b55cb59 semantics) and depends on none of the rendezvous
+    // plumbing.
+    assign ws_fin_wait_lvl = 1'b0;
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -4025,7 +4015,6 @@ module axi_chiplet_controller #(
             ws_abort_cnt_q       <= 4'd0;
             ws_vfy_retry_q       <= 1'b0;
             ws_rdv_timeout_q     <= 1'b0;
-            ws_rdv_to_r          <= 29'd0;
             ws_phase_offset_r <= 32'h0;
             ws_phase_lsb_r    <= 8'h0;
             winscan_owns_taps <= 1'b0;
@@ -4150,24 +4139,45 @@ module axi_chiplet_controller #(
                             ws_phase_offset_r <= swi_phase_offset_r;
                             ws_phase_lsb_r    <= swi_phase_lsb_r;
                         end
-                        // R-B (2026-07-04) QUIESCED PEER-RENDEZVOUS: the scan
-                        // is complete — park in WS_FIN_WAITPEER BEFORE the F3
-                        // clear / anchor window. The quiesce request rises on
-                        // WS_FIN_WAITPEER entry (fch_quiesce_req below), so
-                        // this die's LL parks in swreset and its
-                        // quiesced-in-wait level becomes peer-visible
-                        // (SWI_LANE_STATUS[27]); the F3 clear and the anchor
-                        // wait then start ONLY once the PEER is verified
-                        // quiesced too (the GO), so the re-latch happens with
-                        // BOTH links carrying pure idle+beacons — the
-                        // locally-timed windows that failed to overlap under
-                        // a-first arm skew (0x57000005 both, rea=0/0) are
-                        // rendezvous-aligned by construction. Force-SYNC and
-                        // tap ownership stay held throughout the wait (the
-                        // peer's re-anchor consumes our forced on-grid
-                        // beacons). Fail-loud timeout in-state.
-                        ws_rdv_to_r <= ws_rdv_to_load;
-                        ws_state_r  <= WS_FIN_WAITPEER;
+                        // F3 (2026-07-02) — WS_FINALIZE RE-ANCHOR. Raise the
+                        // deskew sticky-anchor clear on FINALIZE entry: the
+                        // level is OR'd into Wlink's swi_sync_obs_clr_in (the
+                        // manual R8 bit[5] SWI_SYNC_OBS_CLR node), 2-FF-synced
+                        // + edge-detected in the PHY to WavD2DGpio's
+                        // sync_obs_clr_pulse → deskew sync_obs_clr_i, which
+                        // clears every lane's sticky sync_seen_l/sync_idx_l AND
+                        // drops the read-side `reanchored` latch (rearm_wait
+                        // settles the re-fire). This DISCARDS any scan-era
+                        // mid-scan anchor commit (sticky sync_idx captured at a
+                        // swept — not final — tap; benign today only because
+                        // the first tap swept == seed == winner) so all lanes
+                        // re-confirm at the FINAL taps during the FINALIZE
+                        // dwell, under STILL-FORCED beacons (force-SYNC is
+                        // held through FINALIZE — see the state's comment: the
+                        // periodic-confirm needs the on-grid beacon every
+                        // SYNC_PERIOD). HELD HIGH for the whole
+                        // WS_FINALIZE (dropped in WS_DONE) because the
+                        // destination is a 2-FF LEVEL sync in the ~link clock:
+                        // a 1-apb-cycle pulse would be lost in the CDC; the
+                        // destination edge-detect still yields EXACTLY ONE
+                        // clear pulse per episode. Graceful degradation: if
+                        // the routing is dead on silicon this is a no-op and
+                        // behavior = today's (pre-verify on HW with a manual
+                        // R8 bit[5] pulse watching 0x215C drop/re-fill).
+                        // Loop-13 (2026-07-04): this transition is the exact
+                        // b55cb59/Loop-11 LOCALLY-TIMED flow — the Loop-12
+                        // R-B WS_FIN_WAITPEER rendezvous park that used to
+                        // sit here regressed the b-first zero-poke order on
+                        // silicon (mutual anchor starvation) and is dormant.
+                        ws_obs_clr_r   <= 1'b1;
+                        // F4: arm the anchor-gate timeout for FINALIZE.
+                        ws_anchor_to_r <= ws_anchor_to_load;
+                        // FIX-3: arm the bounded clear-retry budget (R-A
+                        // budget of 5 — the verify gate is downstream of
+                        // ws_anchor_q and unchanged by the Loop-13 revert).
+                        ws_anchor_retry_r <= WS_ANCHOR_RETRIES;
+                        ws_state_r <= WS_FINALIZE;
+                        ws_dwell_r <= ws_fin_wait_load; // F3b rendezvous dwell
                     end else if (!ws_lane_active) begin
                         ws_lane_r  <= ws_lane_r + 4'd1;     // skip masked lane
                     end else begin
@@ -4292,8 +4302,7 @@ module axi_chiplet_controller #(
                     // SYNC_CONFIRM run completes in ~3 SYNC periods at the
                     // FINAL taps — deterministic. DATA-SAFE: Q1 (2026-07-04)
                     // the LL is QUIESCED for this whole state (fch_quiesce_req
-                    // → SWRESET_ON at WS_FIN_WAITPEER entry, R-B — and the
-                    // PEER is rendezvous-verified quiesced too), so the link carries
+                    // → SWRESET_ON at FINALIZE entry), so the link carries
                     // PURE IDLE + beacons — there is no CR/CRACK spam left to
                     // stomp, and the PEER's idle-gated re-anchor cannot be
                     // starved by this die's keepalives (the Loop-10 lane-7
@@ -4401,59 +4410,10 @@ module axi_chiplet_controller #(
                     end
                 end
                 // -------------------------------------------------------------
-                WS_FIN_WAITPEER: begin
-                    // R-B (2026-07-04) — QUIESCED PEER-RENDEZVOUS HOLD.
-                    // Entered with the scan complete, force-SYNC + taps held;
-                    // fch_quiesce_req is asserted for this state so the fch
-                    // sequencer issues the early SWRESET_ON (fch_quiesced_r
-                    // latches when it lands). Release = local AND peer
-                    // quiesced:
-                    //   * MASTER die: nego_fin_go_w — its autoneg polled the
-                    //     peer's SWI_LANE_STATUS[27] (quiesced-in-wait), saw
-                    //     local_fin_wait_i & peer bit, wrote the peer's
-                    //     FINALIZE_GO and raised the level (ST_FIN_RDV/GO).
-                    //   * SLAVE die: ws_fin_go_reg_q — the master's
-                    //     FINALIZE_GO write (0x211C) landed. The slave cannot
-                    //     poll (no I2C master): the GO-write release mirrors
-                    //     exactly how the L4 exit releases the slave via the
-                    //     SWI_TRAINING_MODE=0 write.
-                    //   The two sources are simply OR'd — on each die only
-                    //   its own source can fire, so no role mux is needed.
-                    // The GO path additionally requires fch_quiesced_r (the
-                    // local quiesce write actually LANDED — the exported [27]
-                    // level has the same qualifier, so the peer can only have
-                    // seen us quiesced if it was true).
-                    // FAIL-LOUD timeout (ws_rdv_to_r, ~10 s silicon / sim
-                    // hook): proceed LOCALLY — the pre-R-B locally-timed
-                    // behaviour — and latch ws_rdv_timeout_q (0x21B8[10]);
-                    // never deadlocks on a dead/V1/zombie/manual peer.
-                    // On release: raise the F3 clear (see the F3 comment
-                    // below — the level is OR'd into Wlink's
-                    // swi_sync_obs_clr_in, 2-FF level sync + edge-detect at
-                    // the destination, held through WS_FINALIZE, EXACTLY ONE
-                    // clear per episode; it discards any scan-era anchor
-                    // commit AND the stale anchor-verify so all lanes
-                    // re-confirm at the FINAL taps over the now-quiet link),
-                    // arm the F4 anchor timeout + the FIX-3 retry budget and
-                    // enter WS_FINALIZE with the F3b dwell.
-                    // A mid-wait DISARM parks via the case-priority arc (the
-                    // fch IDLE release arm writes SWRESET_OFF); a mid-wait
-                    // KICK abort-restarts to WS_ARM (episode binding) — both
-                    // unchanged from every other mid-scan state.
-                    if ((fch_quiesced_r && (nego_fin_go_w | ws_fin_go_reg_q))
-                        || (ws_rdv_to_r == 29'd0)) begin
-                        if (ws_rdv_to_r == 29'd0 &&
-                            !(fch_quiesced_r && (nego_fin_go_w | ws_fin_go_reg_q)))
-                            ws_rdv_timeout_q <= 1'b1;   // fail-loud: local-only
-                        ws_obs_clr_r      <= 1'b1;      // F3 clear (see above)
-                        ws_anchor_to_r    <= ws_anchor_to_load;
-                        ws_anchor_retry_r <= WS_ANCHOR_RETRIES;
-                        ws_dwell_r        <= ws_fin_wait_load; // F3b dwell
-                        ws_state_r        <= WS_FINALIZE;
-                    end else begin
-                        ws_rdv_to_r <= ws_rdv_to_r - 29'd1;
-                    end
-                end
+                // (Loop-13 2026-07-04: the R-B WS_FIN_WAITPEER case arm that
+                // sat here — the quiesced peer-rendezvous hold — is REMOVED
+                // from the flow; the encoding is reserved and the state is
+                // never entered. See 8c1ae6a's diff for the machinery.)
                 // -------------------------------------------------------------
                 WS_DONE: begin
                     // Hold the picked taps + winscan_done for the episode. A new

@@ -216,6 +216,42 @@ if { $phy_clk_div_v ne "" } {
     puts "WARNING: tidelink_phy_clk_div2.v not found in $target_dir - BD module-ref will fail"
 }
 
+# AHB-Lite BRAM terminus for TideLink's ahb_mng manager port — SAME
+# module-reference requirement as the /2 divider above: the BD instantiates it
+# via `create_bd_cell -type module -reference tidelink_ahb_mng_bram`, so the
+# terminus .v AND the two CMSDK library cells it wraps (cmsdk_ahb_to_sram +
+# cmsdk_fpga_sram) MUST be in sources_1 with the compile order updated BEFORE
+# create_root_design. The terminus .v is a per-target file (glob on
+# $target_dir, exactly like tidelink_phy_clk_div2.v); the CMSDK cells come from
+# the Arm BP210 package via $CMSDK_DIR / $CMSDK_FPGA_SRAM_V (see set_env.sh and
+# the cmsdk_fpga_sram workaround — fpga_sram is missing from some BP210 installs
+# so it is resolved through its own env var).
+set ahb_mng_bram_v [lindex [glob -nocomplain $target_dir/tidelink_ahb_mng_bram.v] 0]
+if { $ahb_mng_bram_v ne "" } {
+    add_files -norecurse $ahb_mng_bram_v
+    if { [info exists ::env(CMSDK_DIR)] } {
+        set cmsdk_ahb_to_sram_v $::env(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+        if { [file exists $cmsdk_ahb_to_sram_v] } {
+            add_files -norecurse $cmsdk_ahb_to_sram_v
+            puts "INFO: added CMSDK cmsdk_ahb_to_sram $cmsdk_ahb_to_sram_v"
+        } else {
+            puts "WARNING: cmsdk_ahb_to_sram.v not found at $cmsdk_ahb_to_sram_v - BRAM terminus elaboration will fail"
+        }
+    } else {
+        puts "WARNING: CMSDK_DIR not set - cmsdk_ahb_to_sram.v cannot be added, BRAM terminus elaboration will fail"
+    }
+    if { [info exists ::env(CMSDK_FPGA_SRAM_V)] && [file exists $::env(CMSDK_FPGA_SRAM_V)] } {
+        add_files -norecurse $::env(CMSDK_FPGA_SRAM_V)
+        puts "INFO: added CMSDK cmsdk_fpga_sram $::env(CMSDK_FPGA_SRAM_V)"
+    } else {
+        puts "WARNING: CMSDK_FPGA_SRAM_V unset or missing - cmsdk_fpga_sram.v cannot be added, BRAM terminus elaboration will fail"
+    }
+    update_compile_order -fileset sources_1
+    puts "INFO: added AHB-Lite BRAM terminus $ahb_mng_bram_v"
+} else {
+    puts "WARNING: tidelink_ahb_mng_bram.v not found in $target_dir - BD module-ref will fail"
+}
+
 set design_name tidelink_design
 create_bd_design $design_name
 create_root_design ""

@@ -393,6 +393,22 @@ proc create_root_design { parentCell } {
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
 
     #--------------------------------------------------------------------------
+    # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port (2026-07-04).
+    # Far side of the XHB500 transparent window: a peer die's remote-initiated
+    # access into aperture 0x4000_0000 transits the FC link, exits the local
+    # ahb_mng manager, and lands in this 4 KB BlockRAM so writes store and reads
+    # return data. Without it the window's return path floats. Module reference
+    # (tidelink_ahb_mng_bram.v, added to sources_1 by build_design.tcl BEFORE
+    # create_root_design exactly like tidelink_phy_clk_div2). Wraps the
+    # silicon-proven cmsdk_ahb_to_sram + cmsdk_fpga_sram (hclk domain, one
+    # RAMB36). ahb_mng packages as a REVERSED spirit:slave with no master
+    # address space, so its member pins are wired DISCRETELY in the CONNECTIONS
+    # section below (no connect_bd_intf_net, no assign_bd_address).
+    #--------------------------------------------------------------------------
+    set ahb_mng_bram [create_bd_cell -type module \
+        -reference tidelink_ahb_mng_bram ahb_mng_bram]
+
+    #--------------------------------------------------------------------------
     # PHC subsystem REMOVED 2026-06-19 (phc_0, axi_apb_phc, axi_gpio_pmod_trig,
     # xlconcat_phc_hw_cap, util_reduced_logic_hw_cap). These occupied slices on
     # the ~97%-packed xc7z020 and are not needed for a link bring-up test.
@@ -690,6 +706,29 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/puf_seed]
     connect_bd_net [get_bd_pins xlconst_mask_hs_bypass/dout] \
                    [get_bd_pins tidelink_0/mask_hs_bypass_i]
+
+    #-- AHB manager terminus: TideLink ahb_mng <-> BRAM slave (discrete member
+    #   pins — ahb_mng is a REVERSED slave interface with no bus-intf object, so
+    #   there is no connect_bd_intf_net and no assign_bd_address). HCLK/HRESETn
+    #   share the hclk (clk_out1, 4.687 MHz) + peripheral_aresetn domain used by
+    #   ahb_sub/apb. The IP drives the 7 request pins; the BRAM drives the 3
+    #   response pins back.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
+                   [get_bd_pins ahb_mng_bram/HCLK]
+    connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
+                   [get_bd_pins ahb_mng_bram/HRESETn]
+    #   IP outputs -> BRAM inputs
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_haddr]  [get_bd_pins ahb_mng_bram/HADDR]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hburst] [get_bd_pins ahb_mng_bram/HBURST]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hprot]  [get_bd_pins ahb_mng_bram/HPROT]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hsize]  [get_bd_pins ahb_mng_bram/HSIZE]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_htrans] [get_bd_pins ahb_mng_bram/HTRANS]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hwdata] [get_bd_pins ahb_mng_bram/HWDATA]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hwrite] [get_bd_pins ahb_mng_bram/HWRITE]
+    #   BRAM outputs -> IP inputs
+    connect_bd_net [get_bd_pins ahb_mng_bram/HREADY] [get_bd_pins tidelink_0/ahb_mng_hready]
+    connect_bd_net [get_bd_pins ahb_mng_bram/HRDATA] [get_bd_pins tidelink_0/ahb_mng_hrdata]
+    connect_bd_net [get_bd_pins ahb_mng_bram/HRESP]  [get_bd_pins tidelink_0/ahb_mng_hresp]
 
     ###########################################################################
     # ADDRESS MAP

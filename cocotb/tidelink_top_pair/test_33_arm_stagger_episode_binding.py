@@ -63,6 +63,13 @@ Variants (BYPASS_AUTONEG=1 build; arming over the REAL APB interface):
   (c) STAGGER ~ 0 (symmetric regression): arm both dies back-to-back ->
       assert the same oracle (guards the fixes against breaking the
       already-working symmetric bring-up).
+  (d) Q1 QUIESCE-BEFORE-FINALIZE (2026-07-04): symmetric arm with die_b's LL
+      TX idle slots forced BUSY whenever its LL is out of swreset (modelled
+      Loop-10 keepalive pressure) -> assert BOTH dies quiesce for their own
+      finalize (fch_quiesced_r + Wlink swi_swreset observed 1 in
+      WS_FINALIZE/WS_FIN_CLRLOW) + the full data oracle under pressure. See
+      the (d) header comment for why the raw pre-fix starvation ordering is
+      silicon-only (the zeropoke run remains the arbiter).
 
 Run
 ---
@@ -395,3 +402,124 @@ async def test_33c_zero_stagger_symmetric(dut):
     await _assert_end_state(dut, tb, log, "c")
     log.info("VERDICT (c): PASS — symmetric bring-up unbroken: done=1/"
              "timeout=0/rea=1/credit>0 + byte-exact data both ways")
+
+
+# ---------------------------------------------------------------------------
+# (d) Q1 QUIESCE-BEFORE-FINALIZE (2026-07-04) — Loop-10 silicon mechanism:
+# die_a's WS_FINALIZE re-anchor STARVED because die_b's TX carried a
+# CONTINUOUS slave->master 0x12 keepalive/credit stream (beatcap-proven) that
+# occupied the idle slots the re-anchor's IDLE-GATED beacons need (WavD2DGpio
+# V2 sync gate: insert_en & (force_always | link_tx_tx_idle); one missed
+# SYNC_PERIOD slot resets the deskew confirm run). Lane 7 never re-latched
+# (sync_seen=0x64 vs 0xe4) -> F4 retries exhausted (0x21B8=0x57000005) ->
+# unanchored bootstrap -> dead data.
+#
+# WHY THE FULL PRE-FIX STARVATION ORDERING IS NOT CHEAPLY SIM-MODELABLE: in
+# sim both dies' F3-cleared anchors re-latch FIRST-TRY inside the mutually
+# force-SYNC'd FINALIZE overlap (clean eyes — force_always drops the idle
+# term, so peer pressure cannot block the overlap-era beacons). The silicon
+# failure needed a marginal-eye lane to MISS that first window and retry
+# AFTER the peer's force had dropped, into the keepalive-saturated idle-gated
+# era — an eye/skew artefact sim does not model. The silicon zeropoke run is
+# the arbiter for the starvation itself; THIS variant regression-locks the
+# fix mechanism directly:
+#   * each die QUIESCES for its own finalize: fch_quiesced_r=1 AND the Wlink
+#     apb-domain swi_swreset register =1 observed WHILE ws_state_r is in
+#     WS_FINALIZE/WS_FIN_CLRLOW (delete the quiesce and these latches fail);
+#   * full convergence + byte-exact data BOTH ways under modelled keepalive
+#     pressure: die_b's LL TX idle flag is forced BUSY whenever its LL is out
+#     of swreset (the pressure a real keepalive stream exerts — and, like the
+#     real stream, it DIES with the framer, which is exactly what the quiesce
+#     exploits).
+# ---------------------------------------------------------------------------
+WS_FINALIZE_STATES = {7, 9}   # WS_FINALIZE, WS_FIN_CLRLOW
+
+
+async def _keepalive_pressure(dut, side, log, stop):
+    """Model the silicon 0x12 keepalive/credit stream on `side`'s TX: force
+    the LL->PHY inter-packet idle flag (lltx_io_link_idle, the ONLY consumer
+    is the PHY sync-insert idle gate) LOW whenever the LL is OUT of swreset,
+    so every idle-gated beacon slot reads BUSY. Conditioned on the Wlink
+    apb-domain swi_swreset register: the quiesce parks the LL in swreset and
+    a real keepalive stream dies with the framer, so the force lifts exactly
+    when the quiesce fires (and re-arms when the bootstrap releases it)."""
+    wl = _ctrl(dut, side).u_wlink
+    forced = False
+    n_windows = 0
+    while not stop[0]:
+        await ClockCycles(dut.hclk, 20)
+        swrst = _si(wl.out_prepend_swi_swreset)
+        if swrst == 0 and not forced:
+            wl.lltx_io_link_idle.value = Force(0)
+            forced = True
+            n_windows += 1
+        elif swrst == 1 and forced:
+            wl.lltx_io_link_idle.value = Release()
+            forced = False
+    if forced:
+        wl.lltx_io_link_idle.value = Release()
+    log.info(f"[{side}] keepalive-pressure force windows: {n_windows}")
+
+
+async def _quiesce_monitor(dut, side, seen, stop):
+    """Latch evidence that `side` QUIESCED its LL for its own finalize:
+    while ws_state_r sits in WS_FINALIZE/WS_FIN_CLRLOW, fch_quiesced_r must
+    read 1 and the Wlink swi_swreset register must read 1 (the early 0x27f09
+    landed). 20-cycle sampling against a >=100k-cycle finalize window (the
+    sim fin-wait hook) — the latches cannot be missed."""
+    c = _ctrl(dut, side)
+    wl = c.u_wlink
+    while not stop[0]:
+        await ClockCycles(dut.hclk, 20)
+        if _si(c.ws_state_r) in WS_FINALIZE_STATES:
+            seen[side]["finalize"] = True
+            if _si(c.fch_quiesced_r) == 1:
+                seen[side]["quiesced"] = True
+            if _si(wl.out_prepend_swi_swreset) == 1:
+                seen[side]["swreset"] = True
+
+
+@cocotb.test()
+async def test_33d_quiesce_under_keepalive_pressure(dut):
+    """(d) Q1 gate: both dies quiesce their LL for their own finalize (the
+    early 0x27f09 observed in-state) and the pair still converges to the full
+    data oracle with die_b's TX idle slots saturated whenever its LL runs —
+    the modelled Loop-10 keepalive pressure."""
+    log = dut._log
+    log.info("(d) QUIESCE-BEFORE-FINALIZE under modelled keepalive pressure")
+    tb = PairTB(dut)
+    await _setup(dut, tb)
+
+    stop = [False]
+    seen = {s: {"finalize": False, "quiesced": False, "swreset": False}
+            for s in ("m", "s")}
+    # Pressure on die_b only (the silicon polarity: the slave's keepalive
+    # stream starved the MASTER's re-anchor; die_a's TX stays 'quiet' = CR
+    # spam only, as on silicon).
+    cocotb.start_soon(_keepalive_pressure(dut, "s", log, stop))
+    for side in ("m", "s"):
+        cocotb.start_soon(_quiesce_monitor(dut, side, seen, stop))
+
+    await _apb_arm(tb, "m", priority=1)
+    await _apb_arm(tb, "s", priority=2)
+    log.info("(d) both dies armed back-to-back; die_b under keepalive pressure")
+
+    try:
+        await _assert_end_state(dut, tb, log, "d")
+    finally:
+        stop[0] = True
+
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        assert seen[side]["finalize"], (
+            f"(d) {name}: winscan never observed in WS_FINALIZE/WS_FIN_CLRLOW "
+            f"— the scan did not run (monitor/harness issue, not a Q1 verdict)")
+        assert seen[side]["quiesced"], (
+            f"(d) {name}: fch_quiesced_r never 1 during its own finalize — "
+            f"the Q1 quiesce write did not precede the re-anchor (the Loop-10 "
+            f"starvation window is back open)")
+        assert seen[side]["swreset"], (
+            f"(d) {name}: Wlink swi_swreset never 1 during its finalize — the "
+            f"early 0x27f09 did not LAND in the LL (mux/priority regression?)")
+    log.info("VERDICT (d): PASS — both dies quiesced (early 0x27f09 in-state, "
+             "swreset held across the re-anchor) and the pair converged to "
+             "byte-exact data both ways under modelled keepalive pressure")

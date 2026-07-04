@@ -170,12 +170,22 @@ async def _fch_monitor(dut, side, fch_writes, anchor_at_boot):
     sequencer drives (fch_wdata_r while fch_active_r=1). Coarse-polls until the
     handoff arms (fch_pending_r latches on the training fall and holds for the
     whole winscan), then fine-samples every 2 hclk (= apb_clk) cycles — each
-    payload is held for >=23 cycles (SETUP+ACCESS+GAP), so none can be missed.
-    Exits once fch_done_r latches.
+    payload is held for >=3 cycles (SETUP+ACCESS minimum, the Q1 quiesce
+    single-write case), so none can be missed. Exits once fch_done_r latches.
 
-    F4 (2026-07-02): additionally samples the controller's CDC'd deskew
-    `reanchored` status (ws_anchor_q) at the FIRST fch_active_r cycle — the F4
-    anchor gate must guarantee reanchored==1 BEFORE the fch bootstrap runs."""
+    Q1 (2026-07-04): the observed sequence now SPANS the quiesce write + the
+    bootstrap walk — 0x27f09 lands EARLY (at WS_FINALIZE entry, fch_qmode_r=1)
+    and the bootstrap then walks 0x27f01 -> 0x27f07 from the swreset-ON state.
+    The deduped payload sequence is therefore UNCHANGED (== FCH_EXPECT): the
+    proven manual values, with the SWRESET_ON step re-ordered BEFORE the
+    re-anchor exactly as the quiesce-before-finalize design intends.
+
+    F4 (2026-07-02) + Q1: samples the controller's CDC'd deskew `reanchored`
+    status (ws_anchor_q) at the first fch_active_r cycle OF THE BOOTSTRAP WALK
+    (fch_qmode_r==0) — the F4 anchor gate must guarantee reanchored==1 BEFORE
+    the bootstrap runs. The quiesce write itself (fch_qmode_r==1) legitimately
+    PRECEDES the anchor (it is what makes the anchor reachable on a chatty
+    link), so it must not be sampled as the bootstrap start."""
     ctrl = _ctrl(dut, side)
     while True:                       # coarse: wait for the handoff to arm
         await ClockCycles(dut.hclk, 200)
@@ -189,7 +199,8 @@ async def _fch_monitor(dut, side, fch_writes, anchor_at_boot):
         await ClockCycles(dut.hclk, 2)
         try:
             if int(ctrl.fch_active_r.value) == 1:
-                if side not in anchor_at_boot:
+                if side not in anchor_at_boot and \
+                   _si(ctrl.fch_qmode_r) == 0:
                     anchor_at_boot[side] = _si(ctrl.ws_anchor_q)
                 w = int(ctrl.fch_wdata_r.value)
                 lst = fch_writes[side]

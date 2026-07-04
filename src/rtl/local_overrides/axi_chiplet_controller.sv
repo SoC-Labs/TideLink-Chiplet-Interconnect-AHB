@@ -1156,6 +1156,22 @@ module axi_chiplet_controller #(
     // forward reference, so the declaration is hoisted here; the driver keeps
     // its documented position in the fch block below.
     reg        fch_done_r;      // sticky: this fch episode's burst completed
+    // Q1 QUIESCE-BEFORE-FINALIZE (2026-07-04) forward decls — same hoist
+    // rationale (the WINSCAN_OBS readback reads fch_quiesced_r upstream of the
+    // fch block that drives it; the fch block reads fch_quiesce_req upstream
+    // of the V2 winscan section that assigns it).
+    //   fch_quiesced_r  : sticky — the LL swi_swreset (FCCTRL 0x208 bit[3]) is
+    //                     currently held ON by the quiesce path (the early
+    //                     FCH_LL_SWRESET_ON write issued at WS_FINALIZE entry).
+    //                     Cleared when the bootstrap walk deasserts it, or by
+    //                     the disarm-release write. WINSCAN_OBS 0x21B8[8].
+    //   fch_quiesce_req : level request from the winscan FSM — asserted while
+    //                     the FSM sits in WS_FINALIZE / WS_FIN_CLRLOW on the
+    //                     ARMED autonomous path (V2 winscan section assigns
+    //                     it; the V1 arm ties it 0 so the fch sequencer is
+    //                     bit-identical on V1).
+    reg        fch_quiesced_r;
+    wire       fch_quiesce_req;
 
 `ifdef TIDELINK_PHY_V2
     // ── Autonomous on-chip IDELAY WINSCAN FSM forward decls (2026-06-29) ──────
@@ -2166,6 +2182,13 @@ module axi_chiplet_controller #(
     //                           training fall consumed MID-SCAN restarted the
     //                           scan at WS_ARM (the pre-fix lost-kick path).
     //                           POR-cleared only (lifetime counter).
+    //     [8] fch_quiesced_r  — Q1 (2026-07-04) LIVE level: the fch sequencer
+    //                           is holding the Wlink LL in swi_swreset (the
+    //                           quiesce-before-finalize write landed and the
+    //                           bootstrap has not yet released it). Reads 1
+    //                           exactly across WS_FINALIZE(+retries)..the
+    //                           bootstrap's SWRESET_OFF — on-silicon proof the
+    //                           re-anchor ran over a QUIET link.
     //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
     //                           UNCONDITIONAL BY DESIGN (LOOP-9 2026-07-03):
     //                           the marker is a constant in the read mux, NOT
@@ -2185,7 +2208,8 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
-        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 16'h0, ws_abort_cnt_q,
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 15'h0, fch_quiesced_r,
+                                        ws_abort_cnt_q,
                                         ws_anchor_late_q, ws_anchor_timeout_q,
                                         ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
                                        32'h0;
@@ -2980,6 +3004,43 @@ module axi_chiplet_controller #(
     // bit0=1 (0x27f09/0x27f01/0x27f07) CLEARED the wedge on bridge1 — the
     // Bug-C precedent (WlinkGenericFCSM_6.v fe_rx_credit_max comment) already
     // documents that enable dips around the LL-swreset bootstrap wedge credit.
+    //
+    // Q1 QUIESCE-BEFORE-FINALIZE (2026-07-04, Loop-10 silicon-root-caused;
+    // the Loop-8 design review's option B, deferred then). Silicon signature
+    // (build c9dd132, deterministic + arm-order-independent): die_a (master)
+    // fails its WS_FINALIZE re-anchor — F3 clear fires, lanes 2/5/6 re-latch,
+    // lane 7 NEVER (sync_seen=0x64 vs 0xe4) → F4 clear-retries exhaust
+    // (0x21B8=0x57000005) → unanchored bootstrap → dead data; die_b converges
+    // in both orders. MECHANISM: the re-anchor's periodic-confirm consumes
+    // IDLE-GATED beacons from the PEER's TX (WavD2DGpio V2 fork sync gate:
+    // insert_en & (force_always | link_tx_tx_idle)); die_b's TX carries a
+    // CONTINUOUS slave→master 0x12 keepalive/credit stream (beatcap-proven)
+    // that occupies the idle slots once die_b's own force window has closed,
+    // and ONE missed SYNC_PERIOD grid slot resets the confirm run
+    // (tidelink_lane_deskew_v2 gap_ceil → sync_conf<=0) — die_a STARVES.
+    // die_a's own TX is quieter (CR spam only), so die_b re-latches fine.
+    // FIX: each die QUIESCES its FC link layer for its own finalize — the
+    // winscan FSM raises fch_quiesce_req across WS_FINALIZE/WS_FIN_CLRLOW and
+    // this sequencer issues the FCH_LL_SWRESET_ON write (0x27f09) ONCE at
+    // that entry (fch_quiesced_r latches). swi_swreset resets ONLY the link
+    // layer (Wlink.v :2383/:2386/:2392 — tx/rx_link_clk + app reset syncs;
+    // lltx/txrouter reset = tx_link_clk_reset_wrs, Wlink.v :2025/:2086); the
+    // PHY inserter + deskew are POR-reset-only, so a quiesced die transmits
+    // PURE IDLE (WlinkTxLinkLayer io_link_idle = (state==0) & ~auto_in_sop —
+    // both reset-true) and its idle-gated beacons fire EVERY grid slot.
+    // Both dies' finalizes are sub-ms aligned (FIX-1 episode binding), so the
+    // quiet windows overlap by construction; the CONTINUOUS keepalive stream
+    // cannot even restart mid-finalize because the peer's credit ring needs
+    // this die's (reset) framer. Credits then initialize strictly AFTER the
+    // re-anchor — the manual recipe's own ordering. On winscan_done the
+    // bootstrap proceeds FROM the swreset-ON state: its own SWRESET_ON step +
+    // 0.25 s overlap dwell are SUBSUMED (walk starts at SWRESET_OFF, widx 1);
+    // the swreset-HIGH overlap the R4c dwell engineered is now provided by
+    // the aligned FINALIZE windows themselves. Armed-path-only (the req is
+    // autonomy_armed-gated and V1-tied-0): the manual recipe stays
+    // bit-identical. A mid-finalize DISARM parks the winscan (existing arc),
+    // drops the req, and the IDLE release arm below writes SWRESET_OFF so a
+    // manual takeover never inherits a stuck swreset (R5-zombie interplay).
     localparam [31:0] FCH_LL_SWRESET_ON  = 32'h0002_7f09; // swreset=1, ENABLE HELD 1
     localparam [31:0] FCH_LL_SWRESET_OFF = 32'h0002_7f01; // swreset=0, ENABLE HELD 1
     localparam [31:0] FCH_LL_ENABLE      = 32'h0002_7f07; // swi/lltx/llrx enable
@@ -3033,6 +3094,10 @@ module axi_chiplet_controller #(
     reg [31:0] fch_wdata_r;     // current write payload
     reg        fch_active_r;    // sequencer owns the wl_apb bus this cycle
     reg        fch_penable_r;   // APB access-phase flag
+    reg        fch_qmode_r;     // Q1: the in-flight burst is a QUIESCE/RELEASE
+                                //     single write (SWRESET_ON at FINALIZE
+                                //     entry, or SWRESET_OFF on disarm), NOT
+                                //     the three-write bootstrap walk
     // fch_done_r (sticky episode-complete flag) is DECLARED early, next to the
     // autoneg forward decls (~line 1128) — the WINSCAN_OBS readback reads it
     // upstream and `default_nettype none` forbids forward references. It is
@@ -3354,13 +3419,15 @@ module axi_chiplet_controller #(
     // Wlink's own WavResetSync on swi_swreset — no extra synchroniser here.
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
-            fch_state_r   <= FCH_IDLE;
-            fch_widx_r    <= 2'd0;
-            fch_gap_r     <= 24'd0;
-            fch_wdata_r   <= FCH_LL_SWRESET_ON;
-            fch_active_r  <= 1'b0;
-            fch_penable_r <= 1'b0;
-            fch_done_r    <= 1'b0;
+            fch_state_r    <= FCH_IDLE;
+            fch_widx_r     <= 2'd0;
+            fch_gap_r      <= 24'd0;
+            fch_wdata_r    <= FCH_LL_SWRESET_ON;
+            fch_active_r   <= 1'b0;
+            fch_penable_r  <= 1'b0;
+            fch_done_r     <= 1'b0;
+            fch_qmode_r    <= 1'b0;
+            fch_quiesced_r <= 1'b0;
         end else begin
             case (fch_state_r)
                 FCH_IDLE: begin
@@ -3369,16 +3436,49 @@ module axi_chiplet_controller #(
                     // Arm on the training-mode falling edge (autonomous path),
                     // once per episode. fch_arm re-arms after a fresh
                     // recal+train cycle by clearing the sticky done flag.
-                    if (fch_arm && !fch_done_r) begin
-                        fch_widx_r   <= 2'd0;
+                    // Q1 (2026-07-04): when the quiesce already holds the LL
+                    // in swreset (fch_quiesced_r — the SWRESET_ON step was
+                    // issued at WS_FINALIZE entry, ≥ the whole anchor-gate
+                    // window ago), that step AND its R4c 0.25 s overlap dwell
+                    // are SUBSUMED: the walk starts at SWRESET_OFF (widx 1).
+                    // The cross-die swreset-HIGH overlap the dwell engineered
+                    // is provided by the FIX-1-aligned FINALIZE windows.
+                    // fch_arm and the two arms below are mutually exclusive
+                    // by construction: fch_arm needs winscan_done (WS_DONE),
+                    // the quiesce arm needs WS_FINALIZE/WS_FIN_CLRLOW, the
+                    // release arm needs !autonomy_armed (fch_arm is
+                    // armed-gated on the V2 path).
+                    if (fch_arm) begin
+                        fch_done_r   <= 1'b0;   // re-run on a fresh episode
+                        fch_qmode_r  <= 1'b0;
+                        fch_widx_r   <= fch_quiesced_r ? 2'd1 : 2'd0;
+                        fch_wdata_r  <= fch_quiesced_r ? FCH_LL_SWRESET_OFF
+                                                       : FCH_LL_SWRESET_ON;
+                        fch_active_r <= 1'b1;
+                        fch_state_r  <= FCH_SETUP;
+                    end else if (fch_quiesce_req && !fch_quiesced_r) begin
+                        // Q1 QUIESCE: the winscan FSM entered WS_FINALIZE —
+                        // park the LL in swreset (single 0x27f09 write) so the
+                        // PEER's re-anchor consumes a PURE-IDLE link (beacons
+                        // every grid slot). One-shot per quiesce window: the
+                        // written swreset LEVEL is the payload; it is held by
+                        // the Wlink register itself until the bootstrap (or a
+                        // disarm release) writes it back OFF.
+                        fch_qmode_r  <= 1'b1;
                         fch_wdata_r  <= FCH_LL_SWRESET_ON;
                         fch_active_r <= 1'b1;
                         fch_state_r  <= FCH_SETUP;
-                    end else if (fch_arm && fch_done_r) begin
-                        // New training episode just ended — allow a re-run.
-                        fch_done_r   <= 1'b0;
-                        fch_widx_r   <= 2'd0;
-                        fch_wdata_r  <= FCH_LL_SWRESET_ON;
+                    end else if (!autonomy_armed && fch_quiesced_r) begin
+                        // Q1 DISARM-RELEASE: autonomy dropped (manual
+                        // takeover / R5-zombie disarm) while the quiesce held
+                        // swreset ON and no bootstrap ran to release it.
+                        // Write SWRESET_OFF (0x27f01) so the manual operator
+                        // never inherits a stuck LL reset; the manual recipe's
+                        // own 0x27f09/01/07 bootstrap remains authoritative
+                        // from here (this sequencer goes dormant: fch_arm and
+                        // fch_quiesce_req are both armed-gated).
+                        fch_qmode_r  <= 1'b1;
+                        fch_wdata_r  <= FCH_LL_SWRESET_OFF;
                         fch_active_r <= 1'b1;
                         fch_state_r  <= FCH_SETUP;
                     end
@@ -3398,12 +3498,28 @@ module axi_chiplet_controller #(
                     fch_penable_r <= 1'b1;
                     if (wl_apb_pready) begin
                         fch_penable_r <= 1'b0;
-                        // Wide dwell after the SWRESET_ON write (widx 0) so the
-                        // swi_swreset HIGH window overlaps the peer die's;
-                        // short settle after SWRESET_OFF (widx 1).
-                        fch_gap_r     <= (fch_widx_r == 2'd0) ? fch_swreset_dwell_w
-                                                              : FCH_GAP_CYCLES;
-                        fch_state_r   <= FCH_GAP;
+                        if (fch_qmode_r) begin
+                            // Q1: single quiesce/release write complete —
+                            // park back to IDLE, no dwell (the swreset LEVEL
+                            // just written is the payload; for the quiesce
+                            // the hold window is WS_FINALIZE itself, closed
+                            // by the bootstrap's SWRESET_OFF). wdata bit[3]
+                            // (swi_swreset) tracks which level landed:
+                            // SWRESET_ON sets fch_quiesced_r, the disarm
+                            // release (SWRESET_OFF) clears it.
+                            fch_quiesced_r <= fch_wdata_r[3];
+                            fch_qmode_r    <= 1'b0;
+                            fch_active_r   <= 1'b0;
+                            fch_state_r    <= FCH_IDLE;
+                        end else begin
+                            // Wide dwell after the SWRESET_ON write (widx 0) so
+                            // the swi_swreset HIGH window overlaps the peer
+                            // die's; short settle after SWRESET_OFF (widx 1).
+                            // (Quiesced walks start at widx 1 — no wide dwell.)
+                            fch_gap_r   <= (fch_widx_r == 2'd0) ? fch_swreset_dwell_w
+                                                                : FCH_GAP_CYCLES;
+                            fch_state_r <= FCH_GAP;
+                        end
                     end
                 end
 
@@ -3415,10 +3531,13 @@ module axi_chiplet_controller #(
                     if (fch_gap_r != 24'd0) begin
                         fch_gap_r <= fch_gap_r - 24'd1;
                     end else if (fch_widx_r == FCH_N_WRITES - 2'd1) begin
-                        // Final (ENABLE) write done — burst complete.
-                        fch_active_r <= 1'b0;
-                        fch_done_r   <= 1'b1;
-                        fch_state_r  <= FCH_IDLE;
+                        // Final (ENABLE) write done — burst complete. The
+                        // bootstrap walked swreset back OFF (widx 1) before
+                        // ENABLE, so any quiesce hold is released (Q1).
+                        fch_active_r   <= 1'b0;
+                        fch_done_r     <= 1'b1;
+                        fch_quiesced_r <= 1'b0;
+                        fch_state_r    <= FCH_IDLE;
                     end else begin
                         // Advance to the next 0x208 payload.
                         fch_widx_r  <= fch_widx_r + 2'd1;
@@ -3691,6 +3810,20 @@ module axi_chiplet_controller #(
     // silicon; default 0xFF in sim → all 8 scanned). Matches the host's
     // for-L-in-active-set loop.
     wire ws_lane_active = swi_sync_lane_mask_r[ws_lane_r[2:0]];
+
+    // Q1 QUIESCE-BEFORE-FINALIZE request (2026-07-04) — see the fch
+    // sequencer's Q1 comment for the full silicon mechanism. Level-asserted
+    // for the WHOLE finalize window (WS_FINALIZE + the FIX-3 WS_FIN_CLRLOW
+    // retry arcs) so a late fch (e.g. still walking a previous episode's
+    // bootstrap when FINALIZE opens) still picks the request up on its next
+    // IDLE. autonomy_armed-gated twice over (the FSM can only REACH these
+    // states while armed, and the disarm-park arc leaves them within a
+    // cycle) so a manual takeover drops the request immediately; the fch
+    // IDLE release arm then writes the swreset back OFF. Declared (hoisted)
+    // next to fch_done_r; V1 arm ties it 0 below.
+    assign fch_quiesce_req = autonomy_armed &
+                             ((ws_state_r == WS_FINALIZE) |
+                              (ws_state_r == WS_FIN_CLRLOW));
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -3991,11 +4124,16 @@ module axi_chiplet_controller #(
                     // timed out under an entry-dropped force). Under held
                     // force the beacon fires EVERY grid slot, so seed + the
                     // SYNC_CONFIRM run completes in ~3 SYNC periods at the
-                    // FINAL taps — deterministic. DATA-SAFE: the only traffic
-                    // here is the same pre-bootstrap CR/CRACK spam the whole
-                    // forced SCAN already ran over; force is OFF strictly
-                    // before winscan_done → the fch bootstrap's CR/CRACK
-                    // re-walk and all real data run idle-gated (R4a intact).
+                    // FINAL taps — deterministic. DATA-SAFE: Q1 (2026-07-04)
+                    // the LL is QUIESCED for this whole state (fch_quiesce_req
+                    // → SWRESET_ON at FINALIZE entry), so the link carries
+                    // PURE IDLE + beacons — there is no CR/CRACK spam left to
+                    // stomp, and the PEER's idle-gated re-anchor cannot be
+                    // starved by this die's keepalives (the Loop-10 lane-7
+                    // silicon signature); force is OFF strictly before
+                    // winscan_done → the fch bootstrap's CR/CRACK re-walk
+                    // (from the quiesced swreset-ON state, widx 1) and all
+                    // real data run idle-gated (R4a intact).
                     // KEEP owning the taps (the picked per-lane centres stay
                     // applied). ws_obs_clr_r is HELD HIGH throughout this
                     // state (F3 — see the FINALIZE-entry comment): the
@@ -4105,6 +4243,12 @@ module axi_chiplet_controller #(
                 winscan_done <= 1'b0;
         end
     end
+`else
+    // V1: no winscan FSM ⇒ no finalize window ⇒ the Q1 quiesce request never
+    // fires — the fch sequencer's IDLE quiesce/release arms are dead logic
+    // and the V1 bootstrap walk is bit-identical (fch_quiesced_r can never
+    // set, so the walk always starts at widx 0 with the full R4c dwell).
+    assign fch_quiesce_req = 1'b0;
 `endif
 
     // Bug N14b widening (2026-06-02): the 127-cycle apb_clk pulse below

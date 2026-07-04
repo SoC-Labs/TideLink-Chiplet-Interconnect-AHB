@@ -24,9 +24,14 @@
 #     first        arm-order: which die gets NEGO_CFG/NEGO_TRAIN_CFG first
 #                  (both = near-simultaneous, a then b back-to-back)
 #     --stagger    seconds between the two arms (default 0; ignored for both)
-#     --budget     total watch budget in seconds (default 240 — the current
-#                  build's FINALIZE+settle add ~1s/die to the 6.4s scan and
-#                  steps d-g land minutes in)
+#     --budget     total watch CEILING in seconds (default 900). First-use
+#                  fix (2026-07-04): each step now has its OWN budget (see
+#                  ZP_STEP_BUDGET below; override any step with
+#                  TD_STEP_BUDGET_<step>=SEC) — a slow/wedged early step no
+#                  longer burns the whole run and blind-FAILs every later
+#                  step with zero observation time (the Loop-10 mode:
+#                  one global 240s burn). --budget stays as the overall
+#                  ceiling; the trace sampler duration follows it.
 #     --no-deploy  skip the bitstream reflash. WARNING: reflash IS the fresh
 #                  POR (role_lock is W1S with POR-only clear) — without it the
 #                  run scores a WARM state, not a zero-poke proof.
@@ -52,7 +57,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=./td_v2_hwlib.sh
 source "$HERE/td_v2_hwlib.sh"
 
-FIRST=""; STAGGER=0; DO_DEPLOY=1; BUDGET=240; DO_LEASE=1; TRACE=0; TRACE_FILE=""
+FIRST=""; STAGGER=0; DO_DEPLOY=1; BUDGET=900; DO_LEASE=1; TRACE=0; TRACE_FILE=""
 while [ $# -gt 0 ]; do case "$1" in
   a|b|both) FIRST=$1;;
   --stagger) STAGGER=$2; shift;;
@@ -61,7 +66,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --no-lease)  DO_LEASE=0;;
   --trace)      TRACE=1;;
   --trace-file) TRACE_FILE=$2; shift;;
-  -h|--help) sed -n '2,53p' "$0"; exit 0;;
+  -h|--help) sed -n '2,58p' "$0"; exit 0;;
   *) echo "unknown arg: $1 (usage: $0 <a|b|both> [--stagger SEC])"; exit 2;;
 esac; shift; done
 [ -n "$FIRST" ] || { echo "usage: $0 <first:a|b|both> [--stagger SEC]"; exit 2; }
@@ -76,14 +81,33 @@ declare -A ZP_ST ZP_T ZP_INFO
 step_set(){ ZP_ST[$1]=$2; ZP_T[$1]=$(now); ZP_INFO[$1]=${3:-};
   printf 'ZP_STEP %s %s t=%ss %s\n' "$1" "$2" "${ZP_T[$1]}" "${ZP_INFO[$1]}"; }
 
-# poll <step> <label> <cond-fn> — poll cond-fn until true or budget exhausted
-poll(){ local st=$1 label=$2 fn=$3
-  say "waiting: ($st) $label"
-  while [ "$(left)" -gt 0 ]; do
+# PER-STEP budgets (2026-07-04 first-silicon-use fix). Rationale per step:
+#   a role-lock      ~s after arm (I2C autoneg race)          -> 90s
+#   b lane-lock      the 6.4s scan-era training window        -> 120s
+#   c sync-config    lands at training-RUN (with b)           -> 60s
+#   d cal_done       S_HOLD rendezvous + training exit        -> 120s
+#   e sync ins/det   beacons up right after (d)               -> 60s
+#   f winscan+anchor scan 6.4s + FINALIZE 0.5s + retries ~1.2s -> 180s
+#   g FCSM/credit    bootstrap + CR/CRACK walk                -> 120s
+# Override any one with TD_STEP_BUDGET_<step>=SEC in the environment.
+declare -A ZP_STEP_BUDGET=( [a]=${TD_STEP_BUDGET_a:-90}  [b]=${TD_STEP_BUDGET_b:-120} \
+                            [c]=${TD_STEP_BUDGET_c:-60}  [d]=${TD_STEP_BUDGET_d:-120} \
+                            [e]=${TD_STEP_BUDGET_e:-60}  [f]=${TD_STEP_BUDGET_f:-180} \
+                            [g]=${TD_STEP_BUDGET_g:-120} )
+
+# poll <step> <label> <cond-fn> — poll cond-fn until true, the STEP budget
+# expires (each step's clock starts when the previous step finished), or the
+# global --budget ceiling is hit. A step FAIL no longer starves later steps.
+poll(){ local st=$1 label=$2 fn=$3 sb=${ZP_STEP_BUDGET[$1]:-90} sT0 el
+  sT0=$(date +%s)
+  say "waiting: ($st) $label (step-budget ${sb}s)"
+  while :; do
     if $fn; then step_set "$st" PASS "$($fn info 2>/dev/null || true)"; return 0; fi
+    el=$(( $(date +%s) - sT0 ))
+    [ "$el" -lt "$sb" ] || { step_set "$st" FAIL "step-budget-exhausted(${sb}s) $($fn info 2>/dev/null || true)"; return 1; }
+    [ "$(left)" -gt 0 ] || { step_set "$st" FAIL "global-ceiling-exhausted(t_step=${el}s) $($fn info 2>/dev/null || true)"; return 1; }
     sleep 2
-  done
-  step_set "$st" FAIL "budget-exhausted"; return 1; }
+  done; }
 
 # ----- condition functions (each also answers "$1 = info" with detail) --------
 c_role(){ local ra rb
@@ -91,10 +115,29 @@ c_role(){ local ra rb
   [ "${1:-}" = info ] && { printf 'role_status a=0x%x b=0x%x' "$ra" "$rb"; return 0; }
   [ $(( (ra>>1)&1 )) -eq 1 ] && [ $(( (rb>>1)&1 )) -eq 1 ]; }
 
-c_lanes(){ local la lb
-  la=$(( $(rd_d a $R_OBS) & 0xff )); lb=$(( $(rd_d b $R_OBS) & 0xff ))
-  [ "${1:-}" = info ] && { printf 'lk a=0x%02x b=0x%02x (need mask 0xe4)' "$la" "$lb"; return 0; }
-  [ $(( la & 0xe4 )) -eq $(( 0xe4 )) ] && [ $(( lb & 0xe4 )) -eq $(( 0xe4 )) ]; }
+# (b) first-use fix (2026-07-04): lane_locked is a TRAINING-WINDOW LEVEL —
+# it drops with the training pattern at training exit, so a 2s-grain poll can
+# miss the whole high window and FAIL (b) while (d) then PASSes (the Loop-10
+# scorecard shape). Two-part fix:
+#   * LATCH 'ever saw (lk & 0xe4)==0xe4' across the poll samples (parent-shell
+#     globals — $fn runs unforked in poll's `if $fn`);
+#   * accept cal_done+cstate==4 as a PER-DIE PROXY: the calibrator's S_DONE is
+#     unreachable without every ACTIVE lane having locked during its sweep
+#     (the sweep's lock-qual gate), so S_DONE proves the lock window happened
+#     even if every sample missed it.
+ZP_LK_EVER_A=0; ZP_LK_EVER_B=0
+c_lanes(){ local la lb oa ob pa pb
+  oa=$(( $(rd_d a $R_OBS) )); ob=$(( $(rd_d b $R_OBS) ))
+  la=$(( oa & 0xff )); lb=$(( ob & 0xff ))
+  [ $(( la & 0xe4 )) -eq $(( 0xe4 )) ] && ZP_LK_EVER_A=1
+  [ $(( lb & 0xe4 )) -eq $(( 0xe4 )) ] && ZP_LK_EVER_B=1
+  pa=0; pb=0
+  [ $(( (oa>>16)&1 )) -eq 1 ] && [ $(( $(rd_d a $R_OBSCAL) & 0xf )) -eq 4 ] && pa=1
+  [ $(( (ob>>16)&1 )) -eq 1 ] && [ $(( $(rd_d b $R_OBSCAL) & 0xf )) -eq 4 ] && pb=1
+  [ "${1:-}" = info ] && { printf 'lk a=0x%02x b=0x%02x ever a=%d b=%d caldone-proxy a=%d b=%d (need 0xe4-ever or proxy)' \
+      "$la" "$lb" "$ZP_LK_EVER_A" "$ZP_LK_EVER_B" "$pa" "$pb"; return 0; }
+  { [ "$ZP_LK_EVER_A" = 1 ] || [ "$pa" = 1 ]; } && \
+  { [ "$ZP_LK_EVER_B" = 1 ] || [ "$pb" = 1 ]; }; }
 
 c_synccfg(){ local ta tb ma mb r8a r8b
   ta=$(( $(rd_d a $R_SYNCTOL) )); tb=$(( $(rd_d b $R_SYNCTOL) ))
@@ -148,8 +191,14 @@ c_fc(){ local oa ob ka kb
 
 # one scored burst: send from $1, read back on $2; echoes PASS/FAIL detail
 burst_once(){ local src=$1 dst=$2 i w exp got=() ok=1
-  for i in 0 1 2 3; do gp1_rx_d "$dst" "$i" >/dev/null; done   # drain stale (pops on read)
-  sleep "$TD_THROTTLE"
+  # Drain stale RX words (pops on read) — first-use fix (2026-07-04):
+  # deepened 4 -> 48 pops. Four pops cannot clear even ONE stale 3-word
+  # burst + header, and keepalive-era runs leave dozens of stale words —
+  # the Loop-10 (h) readback compared against a stale backlog. 6 chunked
+  # tl39 `rxn 8` calls (one SSH round-trip each, the silicon-proven
+  # v39_data_test idiom) with the standard throttle between chunks — never
+  # a dense 48-read mmap loop on the PS.
+  for i in 1 2 3 4 5 6; do "$dst" rxn 8 >/dev/null 2>&1; sleep "$TD_THROTTLE"; done
   zp_txburst "$src"; sleep 1
   for i in 0 1 2; do
     w=$(printf '0x%08x' "$(( $(gp1_rx_d "$dst" "$i") ))"); got+=("$w"); sleep "$TD_THROTTLE"

@@ -276,6 +276,29 @@ def _fch_active(tb, side):
         return -1
 
 
+def _fch_qmode(tb, side):
+    """Q1 (2026-07-04): 1 while the in-flight fch burst is the QUIESCE/RELEASE
+    single write (SWRESET_ON at WS_FINALIZE entry) rather than the bootstrap."""
+    try:
+        return int(_ctrl(tb.dut, side).fch_qmode_r.value)
+    except (AttributeError, ValueError):
+        return -1
+
+
+def _fch_quiesced(tb, side):
+    try:
+        return int(_ctrl(tb.dut, side).fch_quiesced_r.value)
+    except (AttributeError, ValueError):
+        return -1
+
+
+def _fch_done(tb, side):
+    try:
+        return int(_ctrl(tb.dut, side).fch_done_r.value)
+    except (AttributeError, ValueError):
+        return -1
+
+
 @cocotb.test()
 async def test_v2_winscan_gates_handoff_ordering(dut):
     """ORDERING PROOF: the FC data-mode handoff sequencer waits for the winscan.
@@ -287,11 +310,18 @@ async def test_v2_winscan_gates_handoff_ordering(dut):
 
       1. arm via the production gate (nego_en & role_locked & training-fall);
       2. WHILE the winscan is sweeping (winscan_done=0), the handoff is LATCHED
-         pending (fch_pending_r=1) but has NOT started the 0x208 burst
-         (fch_active_r stays 0) — i.e. the handoff is held off behind the scan;
+         pending (fch_pending_r=1) but has NOT started the 0x208 BOOTSTRAP
+         burst — Q1 (2026-07-04): the ONLY pre-done fch activity allowed is
+         the quiesce-before-finalize single write (fch_active_r=1 with
+         fch_qmode_r=1, the SWRESET_ON at WS_FINALIZE entry — by design it
+         precedes winscan_done, it is what quiets the link for the re-anchor);
+         any pre-done fch_active with fch_qmode_r=0 is the ordering bug;
       3. once winscan_done rises, fch_pending_r releases and the handoff burst
          runs (fch_active_r pulses) — the correct SYNC-detect->winscan->handoff
-         order. (Bilateral FCSM=4 + data over the autonomous handoff is a known
+         order. Q1 also asserts the QUIESCE ordering positively: the quiesce
+         write must have landed (fch_quiesced_r=1) BEFORE winscan_done rises,
+         and the bootstrap's completion releases it.
+         (Bilateral FCSM=4 + data over the autonomous handoff is a known
          v2-harness limitation, proven instead on the V1 harness test_30 with
          TIDELINK_PHY_V2=1; here we prove the on-chip ORDERING the winscan adds.)
     """
@@ -313,36 +343,71 @@ async def test_v2_winscan_gates_handoff_ordering(dut):
     assert int(ctrl.winscan_owns_taps.value) == 1, "winscan should be running"
     assert _fch_pending(tb, "m") == 1, \
         "handoff did not latch pending on the training-fall"
-    # Sample fch_active across the scan: it must stay 0 (handoff held off).
+    # Sample fch_active across the WHOLE scan+FINALIZE (until winscan_done —
+    # same 700k budget as _wait_winscan_done): the BOOTSTRAP must stay held
+    # off. Q1: fch_active with fch_qmode_r=1 is the quiesce single write at
+    # WS_FINALIZE entry — the one legitimate pre-done fch activity (record it;
+    # asserted positively below; the latched fch_quiesced_r level covers the
+    # write landing between two 50-cycle samples — it stays 1 for the whole
+    # ≥150k-cycle FINALIZE window, so a full-scan sampler cannot miss it).
     handoff_started_early = False
-    for _ in range(200):
+    quiesce_write_seen = False
+    ws_done = False
+    for _ in range(700_000 // 50):
         await ClockCycles(dut.hclk, 50)
         if int(ctrl.winscan_done.value) == 1:
+            ws_done = True
             break
         if _fch_active(tb, "m") == 1:
-            handoff_started_early = True
-            break
+            if _fch_qmode(tb, "m") == 1:
+                quiesce_write_seen = True
+            else:
+                handoff_started_early = True
+                break
+        if _fch_quiesced(tb, "m") == 1:
+            quiesce_write_seen = True     # write already landed between samples
     assert not handoff_started_early, (
-        "FC handoff 0x208 burst STARTED before winscan_done — the ordering gate "
-        "failed (handoff must wait out the winscan)")
+        "FC handoff 0x208 BOOTSTRAP burst STARTED before winscan_done — the "
+        "ordering gate failed (handoff must wait out the winscan; only the Q1 "
+        "quiesce single write may precede winscan_done)")
+    assert ws_done, "winscan_done never asserted (during the ordering sampler)"
 
-    ok, w = await _wait_winscan_done(tb, "m")
-    assert ok, f"winscan_done never asserted (after {w} cycles)"
+    # Q1 POSITIVE ordering gate: the quiesce (SWRESET_ON at WS_FINALIZE entry)
+    # must have landed BEFORE winscan_done — the re-anchor window runs over a
+    # QUIET link by construction. fch_quiesced_r is still 1 here iff the
+    # bootstrap has not yet walked SWRESET_OFF; seeing either the in-flight
+    # write or the latched level counts.
+    assert quiesce_write_seen or _fch_quiesced(tb, "m") == 1, (
+        "Q1: no quiesce write observed before winscan_done and fch_quiesced_r "
+        "is not set — the quiesce-before-finalize reorder is missing (the "
+        "WS_FINALIZE re-anchor would run over a chatty link: the Loop-10 "
+        "lane-7 starvation signature)")
 
-    # After winscan_done: the pending handoff releases (fch_pending_r clears) and
-    # the burst runs (fch_active_r pulses) — observe at least one active cycle.
+    # After winscan_done: the pending handoff releases (fch_pending_r clears)
+    # and the burst runs. Q1: the quiesced bootstrap SKIPS the subsumed
+    # SWRESET_ON + 4095-cycle sim dwell, so its active window is only ~50
+    # cycles — too narrow to sample reliably; use the STICKY fch_done_r as
+    # the burst-ran evidence (it latches only at the walk's final ENABLE
+    # write) alongside any directly-observed active pulse.
     released = False
     burst_ran = False
     for _ in range(400):
         await ClockCycles(dut.hclk, 20)
         if _fch_pending(tb, "m") == 0:
             released = True
-        if _fch_active(tb, "m") == 1:
+        if _fch_active(tb, "m") == 1 or _fch_done(tb, "m") == 1:
             burst_ran = True
         if released and burst_ran:
             break
     assert released, "handoff pending did not release after winscan_done"
-    assert burst_ran, "handoff 0x208 burst did not run after winscan_done"
+    assert burst_ran, (
+        "handoff 0x208 bootstrap did not run after winscan_done (no active "
+        "pulse observed and fch_done_r never latched)")
+    # Q1: the bootstrap's SWRESET_OFF walk releases the quiesce hold.
+    await ClockCycles(dut.hclk, 200)
+    assert _fch_quiesced(tb, "m") == 0, (
+        "Q1: fch_quiesced_r still set after the bootstrap completed — the "
+        "walk did not release the quiesce (stuck LL swreset)")
 
     log.info("VERDICT: PASS — the FC handoff was held off (pending, no 0x208 "
              "burst) for the whole winscan, then released + ran the bootstrap "

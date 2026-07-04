@@ -120,7 +120,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
 // V2 PHY SWAP: serdes lane fork from the shared PHY component (FIX-N..R,
 // silicon-validated 2026-06-10) replaces src/rtl/local_overrides/{WavD2DGpio,
 // WavD2DGpioRx,WavD2DGpioTx}.v. Same module names — never co-compile with V1.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpio.v
+// R-A LOCAL OVERRIDE (2026-07-04): anchor-verify sticky (io_anchor_verified)
+// — keep in lockstep with tidelink_fpga_v2.flist (local_overrides/Wlink.v
+// connects the new port, so the deps copy would no longer elaborate here).
+// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpio.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpio_v2.v
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
 // V2 PHY SWAP: PHY-owned TX/RX lane front-end blocks instantiated by the new
@@ -171,7 +175,10 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
 // V2 PHY SWAP: GPIO PHY wrapper from the shared PHY component — adds the
 // swi_word_pin_in / swi_word_pin_auto_en FIX-R ports (consumed by the
 // TIDELINK_PHY_V2 arm of local_overrides/Wlink.v) and drops link_tx_tx_idle.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WlinkGPIOPHY.v
+// R-A LOCAL OVERRIDE (2026-07-04): anchor_verified pass-through — lockstep
+// with tidelink_fpga_v2.flist (see above).
+// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WlinkGPIOPHY.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGPIOPHY_v2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v

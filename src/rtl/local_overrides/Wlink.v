@@ -343,7 +343,15 @@ module Wlink #(
   // SYNC slice — the DATA-mode RX-eye-quality metric the winscan centres the
   // IDELAY tap on. rx-link-clk domain; CDC'd to apb_clk in the chiplet
   // controller. SoC 0x4403_21AC (lane-selected). 0 unless SYNC_REANCHOR_EN.
-  output [39:0]  obs_sync_dist_vec_o          // rx-link-clk dom: per-lane SYNC Hamming distance
+  output [39:0]  obs_sync_dist_vec_o,         // rx-link-clk dom: per-lane SYNC Hamming distance
+  // R-A FINALIZE ANCHOR-VERIFY (2026-07-04). Sticky from the WavD2DGpio_v2
+  // local override: the ENGAGED deskew re-anchor has delivered >=1 post-deskew
+  // word EXACTLY equal to TIDELINK_SYNC_WORD on every active lane
+  // simultaneously (the wrong-slot mis-anchor detector — a one-slot-off lane
+  // can never satisfy the simultaneous exact match). Cleared by POR / the F3
+  // swi_sync_obs_clr_in. rx-link-clk domain; 2-FF synced to apb_clk in the
+  // chiplet controller (ws_verify_q — the winscan WS_FINALIZE release gate).
+  output         obs_anchor_verified_o        // rx-link-clk dom: engaged-anchor exact-beacon sticky
 `endif
 );
   // ===================================================================
@@ -1388,7 +1396,8 @@ module Wlink #(
     .word_pin_ovr_in(swi_word_pin_ovr_in),         // 8x4b per-lane window pin
     .word_pin_ovr_en_in(swi_word_pin_ovr_en_in),   // 8b per-lane override enable
     .sync_seen_vec(obs_sync_seen_vec_o),           // sticky-poison: per-lane deskew sync_seen
-    .sync_dist_vec(obs_sync_dist_vec_o)            // winscan metric: per-lane SYNC Hamming distance
+    .sync_dist_vec(obs_sync_dist_vec_o),           // winscan metric: per-lane SYNC Hamming distance
+    .anchor_verified(obs_anchor_verified_o)        // R-A anchor-verify: engaged-anchor exact-beacon sticky
 `else
     .swi_phase_offset_in(swi_phase_offset_in)
 `endif

@@ -174,7 +174,8 @@ async def _fch_monitor(dut, side, fch_writes, anchor_at_boot):
     single-write case), so none can be missed. Exits once fch_done_r latches.
 
     Q1 (2026-07-04): the observed sequence now SPANS the quiesce write + the
-    bootstrap walk — 0x27f09 lands EARLY (at WS_FINALIZE entry, fch_qmode_r=1)
+    bootstrap walk — 0x27f09 lands EARLY (R-B: at WS_FIN_WAITPEER entry, the
+    quiesced peer-rendezvous hold BEFORE the F3 clear; fch_qmode_r=1)
     and the bootstrap then walks 0x27f01 -> 0x27f07 from the swreset-ON state.
     The deduped payload sequence is therefore UNCHANGED (== FCH_EXPECT): the
     proven manual values, with the SWRESET_ON step re-ordered BEFORE the
@@ -217,7 +218,8 @@ async def _winscan_tracer(dut, log):
     25k cycles until both fch_done. Diagnoses anchor-gate rendezvous issues
     (which die forced/cleared/anchored when)."""
     names = {0: "IDLE", 1: "ARM", 2: "LANE", 3: "SETTLE", 4: "SAMP",
-             5: "NTAP", 6: "PICK", 7: "FIN", 8: "DONE", 9: "CLRLOW"}
+             5: "NTAP", 6: "PICK", 7: "FIN", 8: "DONE", 9: "CLRLOW",
+             10: "RDVW"}   # R-B WS_FIN_WAITPEER (quiesced peer-rendezvous)
     while True:
         await ClockCycles(dut.hclk, 25_000)
         line = []
@@ -421,8 +423,12 @@ async def test_31_autonomous_training_exit(dut):
     # (7) Both calibrators END stable in S_DONE, and the FC handoff reaches
     #     data-mode (FCSM=4) within a bounded window after S_DONE.
     fc_ok = {"m": False, "s": False}
-    for _ in range(3000):
-        await ClockCycles(dut.hclk, 50)
+    # R-B (2026-07-04): window widened 150k -> 1.2M cycles — the finalize now
+    # includes the QUIESCED PEER-RENDEZVOUS (WS_FIN_WAITPEER: master polls the
+    # slave's SWI_LANE_STATUS[27] over I2C then writes the FINALIZE_GO; each
+    # I2C poll iteration is ~40-60k cycles at the sim prescale).
+    for _ in range(6000):
+        await ClockCycles(dut.hclk, 200)
         for side in ("m", "s"):
             if _si(_fcsm(dut, side).state) == 4:
                 fc_ok[side] = True
@@ -503,6 +509,29 @@ async def test_31_autonomous_training_exit(dut):
             f"ON TIMEOUT instead of a genuine post-clear re-anchor (F3 "
             f"sync_obs_clr routing broken, or the idle-gated beacons never "
             f"re-confirmed during WS_FINALIZE)")
+        # R-A/R-B (2026-07-04): on a healthy bilateral run the finalize must
+        # have been released by the peer-rendezvous GO (not the fail-loud
+        # local timeout), the zero-tolerance anchor-verify must have PASSED
+        # first try (no verify-retry), and the release gate itself
+        # (ws_verify_q) must read 1 — beacons are permanent (D2) so the
+        # verify stays satisfied in data mode.
+        rdv_to = _si(c.ws_rdv_timeout_q)
+        vfy_rt = _si(c.ws_vfy_retry_q)
+        vfy    = _si(c.ws_verify_q)
+        log.info(f"{name} R-A/R-B: ws_rdv_timeout_q={rdv_to} "
+                 f"ws_vfy_retry_q={vfy_rt} ws_verify_q={vfy}")
+        assert rdv_to == 0, (
+            f"{name}: ws_rdv_timeout_q latched (0x21B8[10]) — the "
+            f"WS_FIN_WAITPEER peer-rendezvous TIMED OUT on a healthy "
+            f"bilateral run (I2C poll/GO machinery broken, or the sim "
+            f"rendezvous timeout is too short for the I2C prescale)")
+        assert vfy_rt == 0, (
+            f"{name}: ws_vfy_retry_q latched (0x21B8[9]) — the anchor-verify "
+            f"forced a clear-retry on a CLEAN sim eye (the exact all-lane "
+            f"compare should pass on the first post-clear beacon)")
+        assert vfy == 1, (
+            f"{name}: ws_verify_q=0 at end — the engaged anchor never "
+            f"reproduced an exact SYNC word (verify plumbing broken)")
 
     # ---- (9) R1: post-BOOTSTRAP FCSM=4 (the bootstrap swreset re-walks the
     #      CR/CRACK exchange — this is the handoff path silicon takes). -------

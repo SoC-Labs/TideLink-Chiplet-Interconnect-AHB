@@ -70,7 +70,11 @@ async def _wait_train_ok(tb, max_cycles=5_000_000, poll=500):
     return False, False, waited
 
 
-async def _wait_data_mode(tb, max_cycles=600_000, poll=500):
+async def _wait_data_mode(tb, max_cycles=2_000_000, poll=500):
+    # R-B (2026-07-04): budget widened 600k -> 2M — the finalize now includes
+    # the QUIESCED PEER-RENDEZVOUS (WS_FIN_WAITPEER I2C poll + FINALIZE_GO
+    # write, ~40-60k cycles per poll iteration at the sim prescale; the
+    # fail-loud rendezvous timeout alone is 400k with the sim hook).
     """Poll until the autonomous FC handoff has driven the FCSM out of the
     SEND_CR stall: cr_pkt_seen latches on BOTH dies and the slave's FCSM
     reaches the data-ready state (>=4). Returns the final snapshot dict.

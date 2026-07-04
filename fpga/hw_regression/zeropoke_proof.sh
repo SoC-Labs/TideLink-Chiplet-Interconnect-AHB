@@ -12,7 +12,7 @@
 #   (b) lane_locked (active mask 0xE4)     SWI_LANE_STATUS lk[7:0]
 #   (c) SYNC config landed                 SYNCTOL==0x5e4 + LANEMASK==0xe4e4 (R8 logged)
 #   (d) cal_done + cstate==4 both          SWI_LANE_STATUS[16] + OBSCAL[3:0]
-#   (e) tx_sync_ins / sync_det / sync_seen TXSYNC, SYNCCNT[31:16], 0x215C[7:0]
+#   (e) tx_sync_ins + sync_seen both dies  TXSYNC, 0x215C[7:0] (sync_det info-only: LL counter is swreset-held across the R-B quiesced rendezvous)
 #   (f) winscan done clean + reanchored    WINSCAN_OBS 0x21B8 + taps 0x2118 + 0x2140[0]
 #   (g) FCSM=4 + cr + crack + credit>0     SWI_LANE_STATUS + OBS_FC_CREDIT both
 #   (h) 3x A->B txburst byte-exact + B->A  GP1 0x84010000 vs 0x00240000/0xcafe0001/0xcafe0002
@@ -162,7 +162,17 @@ c_sync(){ local ia ib da db sa sb
   sa=$(( $(rd_d a $R_SYNCSEEN) & 0xff )); sb=$(( $(rd_d b $R_SYNCSEEN) & 0xff ))
   [ "${1:-}" = info ] && { printf 'tx_sync_ins a=%d b=%d sync_det a=%d b=%d sync_seen a=0x%02x b=0x%02x' \
       "$ia" "$ib" "$da" "$db" "$sa" "$sb"; return 0; }
-  [ "$ia" -gt 0 ] && [ "$ib" -gt 0 ] && [ "$da" -gt 0 ] && [ "$db" -gt 0 ] && \
+  # R-A/R-B (2026-07-04): sync_det (SYNCCNT[31:16]) DROPPED from the pass
+  # condition. That counter lives in the Wlink LL reset domain and the Q1 +
+  # R-B quiesce holds the LL in swi_swreset across the whole rendezvous +
+  # finalize window — it only starts counting AFTER the fch bootstrap, so a
+  # legitimate zero-poke run can read 0 here. The authoritative "beacons
+  # cross and the deskew sees them" proof is sync_seen (0x215C[7:0], the
+  # deskew's POR-domain per-lane commit vector): BOTH dies nonzero (reaches
+  # the active mask 0xe4 once all active lanes commit — checked exactly by
+  # the reanchored term in c_winscan). sync_det stays in the info line as a
+  # diagnostic.
+  [ "$ia" -gt 0 ] && [ "$ib" -gt 0 ] && \
   [ "$sa" -ne 0 ] && [ "$sb" -ne 0 ]; }
 
 c_winscan(){ local wa wb ra rb pa pb

@@ -70,6 +70,30 @@ Variants (BYPASS_AUTONEG=1 build; arming over the REAL APB interface):
       WS_FINALIZE/WS_FIN_CLRLOW) + the full data oracle under pressure. See
       the (d) header comment for why the raw pre-fix starvation ordering is
       silicon-only (the zeropoke run remains the arbiter).
+  (e) R-A ANCHOR-VERIFY WRONG-SLOT MODEL (2026-07-04): symmetric arm with the
+      WavD2DGpio_v2 per-lane exact-compare vector (anchor_vfy_lane_w) FORCED
+      0 on both dies — models a lane whose sticky sync_idx latched an
+      adjacent SYNC slot (the die_b byte-lane[23:16] 0x24->0x5c silicon
+      corruption: reanchored=1 but the all-lane simultaneous EXACT match can
+      never fire). Assert the verify GATES the release (winscan_done held,
+      FIX-3 clear-retry fires with the anchor already latched ->
+      ws_vfy_retry_q 0x21B8[9]); release the force -> the retried re-anchor
+      verifies and the pair converges to the full data oracle (sticky [9]
+      still latched as the episode's evidence). Pre-fix RTL: the wrong-slot
+      anchor released the handoff and every word shipped one corrupted
+      byte-lane forever.
+  (f) R-B A-FIRST QUIESCED PEER-RENDEZVOUS (2026-07-04): the t33a a-first
+      flow, now asserting the rendezvous mechanism directly: the PRIVATE
+      zombie episode's WS_FIN_WAITPEER must exit via its FAIL-LOUD timeout
+      (ws_rdv_timeout_q 0x21B8[10] — no peer ever quiesces), and on the
+      FINAL bilateral episode BOTH dies must be observed parked QUIESCED in
+      WS_FIN_WAITPEER (fch_quiesced_r=1) BEFORE their first WS_FINALIZE —
+      i.e. the F3 clear + anchor window only opens after the local-AND-peer
+      quiesce rendezvous (master polls SWI_LANE_STATUS[27], slave released
+      by the FINALIZE_GO write) — with ws_rdv_timeout_q CLEAN at the end
+      (released by the GO, not the timeout) + the full data oracle. Pre-R-B
+      RTL: the locally-timed windows never overlap under a-first arm skew
+      (silicon 0x57000005 both, rea=0/0).
 
 Run
 ---
@@ -102,7 +126,11 @@ CLK_PERIOD_NS = 20.0
 
 # Winscan FSM state encodings (axi_chiplet_controller.sv)
 WS_IDLE, WS_ARM, WS_DONE = 0, 1, 8
-WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9}   # LANE..FINALIZE + CLRLOW = abortable
+WS_FIN_WAITPEER = 10                  # R-B: quiesced peer-rendezvous hold
+WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9, 10}  # LANE..FINALIZE + CLRLOW + RDV-WAIT
+                                         # = abortable (episode binding)
+# R-B: the autoneg's finalize-rendezvous states (post-ST_TRAIN_DONE phase)
+ST_FIN_RDV, ST_FIN_GO = 18, 19
 
 # Retrain W1P: the ARM cfg (auto_en=1, poll budget 2) + bit[2] W1P pulse.
 NEGO_TRAIN_CFG_RETRAIN = NEGO_TRAIN_CFG_ARM | 0x4
@@ -321,10 +349,16 @@ async def test_33a_seconds_stagger_private_episode(dut):
         "(a) private zombie episode did NOT fail open (0x21B8[2]=0)? The "
         "beacon-less peer cannot anchor — precondition for the stagger bug "
         "not established (did the zombie beacon?)")
-    assert _si(_autoneg(dut, "m").state_r) == ST_TRAIN_DONE, (
-        f"(a) master not parked ST_TRAIN_DONE after the bypass exit "
-        f"(an={_si(_autoneg(dut,'m').state_r)}) — private episode did not "
-        f"complete via the zombie-bypass arc")
+    # R-B: ST_FIN_RDV/ST_FIN_GO are legal parking spots here — the private
+    # winscan's WS_FIN_WAITPEER raised local_fin_wait_i, and the autoneg's
+    # rendezvous poll of the zombie may still be draining its last I2C
+    # transaction when winscan_done (rendezvous-timeout -> fail-open) rises;
+    # it abandons back to ST_TRAIN_DONE at the next poll boundary.
+    assert _si(_autoneg(dut, "m").state_r) in (ST_TRAIN_DONE, ST_FIN_RDV,
+                                               ST_FIN_GO), (
+        f"(a) master not parked ST_TRAIN_DONE(/FIN_RDV/FIN_GO) after the "
+        f"bypass exit (an={_si(_autoneg(dut,'m').state_r)}) — private episode "
+        f"did not complete via the zombie-bypass arc")
     assert _si(_autoneg(dut, "s").state_r) == ST_BYPASS, \
         "(a) slave left ST_BYPASS while un-armed — not a zombie scenario"
 
@@ -523,3 +557,219 @@ async def test_33d_quiesce_under_keepalive_pressure(dut):
     log.info("VERDICT (d): PASS — both dies quiesced (early 0x27f09 in-state, "
              "swreset held across the re-anchor) and the pair converged to "
              "byte-exact data both ways under modelled keepalive pressure")
+
+
+# ---------------------------------------------------------------------------
+# (e) R-A FINALIZE ANCHOR-VERIFY (2026-07-04) — wrong-slot mis-anchor gate.
+#
+# Silicon mechanism (die_b RX, A->B only): during the quiesced FINALIZE
+# re-anchor ONE lane's sticky deskew anchor (sync_idx) latched on an
+# ADJACENT/offset SYNC instance — the per-lane tol-5 Hamming confirm accepted
+# a plausible-but-wrong slot on a marginal eye — so that lane's read-offset is
+# one slot wrong and its byte-lane samples an adjacent slice FOREVER
+# (deterministic 0x24->0x5c / 0xfe->0x5d on byte[23:16], rest byte-exact,
+# post-burst state healthy: reanchored=1 looked fine). The fix gates the
+# WS_FINALIZE release on ws_anchor_q AND ws_verify_q — the WavD2DGpio_v2
+# anchor-verify sticky: the ENGAGED anchor must reproduce TIDELINK_SYNC_WORD
+# EXACTLY on EVERY active lane on ONE post-deskew beat (a one-slot-off lane
+# matches its own slice one beat AWAY from the others, so the simultaneous
+# match can never fire mis-anchored).
+#
+# WHY A FORCE ON anchor_vfy_lane_w AND NOT A REAL WRONG-SLOT EYE: in RTL sim
+# the eye is clean — the deskew's periodic confirm always locks the TRUE slot,
+# so the wrong-slot latch cannot be produced from the pins without a
+# beat-accurate per-lane content model (the same reason the (d) header gives
+# for the Loop-10 ordering). Forcing the DEDICATED verify input vector to 0
+# models exactly the observable the wrong slot produces — "the engaged anchor
+# never reproduces an exact all-lane SYNC word" — without touching the
+# datapath, the deskew capture, or the rawobs latches (anchor_vfy_lane_w is a
+# named read-side fan-out added for precisely this injection). Correct-anchor
+# behaviour (verify passes first try) is asserted by test_31/t33c/t33d's new
+# ws_vfy_retry_q==0 end-state term; THIS variant pins the failure arm:
+# verify-fail => release HELD + FIX-3 clear-retry with the anchor already
+# latched (ws_vfy_retry_q 0x21B8[9]) => post-release recovery to the full
+# byte-exact oracle.
+# ---------------------------------------------------------------------------
+def _vfy_lane_net(dut, side):
+    """The WavD2DGpio_v2 per-lane exact-compare vector (rx-link-clk domain).
+    Named injection point: controller.u_wlink -> Wlink.phy -> WlinkGPIOPHY.gpio
+    -> WavD2DGpio_v2.anchor_vfy_lane_w."""
+    return _ctrl(dut, side).u_wlink.phy.gpio.anchor_vfy_lane_w
+
+
+@cocotb.test()
+async def test_33e_anchor_verify_wrong_slot(dut):
+    """(e) verify-fail gate: with the per-lane exact-compare forced 0 (the
+    wrong-slot observable) the winscan must HOLD winscan_done and burn FIX-3
+    clear-retries with the anchor already latched (ws_vfy_retry_q); releasing
+    the force lets the retried re-anchor verify and the pair converges."""
+    log = dut._log
+    log.info("(e) ANCHOR-VERIFY: wrong-slot model (forced verify-fail) on both dies")
+    tb = PairTB(dut)
+    await _setup(dut, tb)
+
+    # Force BOTH dies' verify vectors low BEFORE arming: every episode's
+    # verify fails until released. Both dies (not just one) so neither die
+    # bootstraps early and starves the other's retry window of quiesced
+    # beacons — symmetric, like the silicon's mutual-finalize overlap.
+    for side in ("m", "s"):
+        _vfy_lane_net(dut, side).value = Force(0)
+
+    await _apb_arm(tb, "m", priority=1)
+    await _apb_arm(tb, "s", priority=2)
+    log.info("(e) both dies armed; anchor_vfy_lane_w forced 0 on both")
+
+    # Wait for the verify-retry sticky on BOTH dies: the FSM reached
+    # WS_FINALIZE, the deskew anchor LATCHED (rea=1), the verify did not, the
+    # anchor window expired and the FIX-3 retry fired with ws_anchor_q==1.
+    seen_retry = {"m": False, "s": False}
+    waited = 0
+    while waited < 9_000_000 and not all(seen_retry.values()):
+        await ClockCycles(dut.hclk, 200)
+        waited += 200
+        for side in ("m", "s"):
+            if _si(_ctrl(dut, side).ws_vfy_retry_q) == 1:
+                seen_retry[side] = True
+    assert all(seen_retry.values()), (
+        f"(e) ws_vfy_retry_q never latched (m={seen_retry['m']} "
+        f"s={seen_retry['s']}) — the anchor-verify did not force a FIX-3 "
+        f"clear-retry although the exact-compare was held 0 (the verify is "
+        f"NOT gating the WS_FINALIZE release — pre-R-A behaviour: a "
+        f"wrong-slot anchor would ship a corrupted byte-lane)")
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        c = _ctrl(dut, side)
+        assert _si(c.winscan_done) == 0, (
+            f"(e) {name}: winscan_done rose while the verify was forced-failed "
+            f"(retries not yet exhausted) — the release gate ignored "
+            f"ws_verify_q")
+        assert _si(c.ws_anchor_q) == 1, (
+            f"(e) {name}: retry fired without the anchor latched — this is an "
+            f"anchor problem, not the verify gate under test")
+    log.info(f"(e) verify-retry latched on both dies at "
+             f"t={waited*CLK_PERIOD_NS/1000:.0f}us with anchors latched and "
+             f"winscan_done held — releasing the wrong-slot force")
+
+    for side in ("m", "s"):
+        _vfy_lane_net(dut, side).value = Release()
+
+    # The in-flight retry re-clears + re-anchors; the now-unforced verify
+    # passes and the pair must converge to the full byte-exact oracle.
+    await _assert_end_state(dut, tb, log, "e")
+
+    # The per-episode evidence sticky must survive to the end (cleared only
+    # at WS_ARM — no new episode ran after the release).
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        assert _si(_ctrl(dut, side).ws_vfy_retry_q) == 1, (
+            f"(e) {name}: ws_vfy_retry_q (0x21B8[9]) not sticky at end — the "
+            f"episode's verify-retry evidence was lost")
+    log.info("VERDICT (e): PASS — verify-fail HELD the release and forced the "
+             "clear-retry (0x21B8[9]); post-release the re-anchor verified and "
+             "both dies reached the full byte-exact oracle")
+
+
+# ---------------------------------------------------------------------------
+# (f) R-B A-FIRST QUIESCED PEER-RENDEZVOUS (2026-07-04). Silicon: a-first arm
+# order starved BOTH dies (0x21B8=0x57000005 both, rea=0/0) — the
+# locally-timed quiesce/finalize windows never overlapped. Fix: each die
+# parks QUIESCED in WS_FIN_WAITPEER before its F3 clear/anchor window; the
+# master polls the slave's SWI_LANE_STATUS[27] (quiesced-in-wait) over I2C
+# and writes the slave's FINALIZE_GO (0x211C) once BOTH are quiesced —
+# releasing the two windows within one I2C write of each other. The slave
+# cannot poll; the GO write is its release (the L4 slave-release idiom).
+# This variant asserts the mechanism on the t33a a-first flow.
+# ---------------------------------------------------------------------------
+async def _rdv_monitor(dut, side, seen, stop):
+    """Track, per current episode, whether the die was observed parked
+    QUIESCED in WS_FIN_WAITPEER BEFORE its first WS_FINALIZE/WS_FIN_CLRLOW
+    observation. The per-episode flag reset keys on the SCAN states (2..6,
+    thousands of cycles) rather than the 1-cycle WS_ARM, so the 20-cycle
+    sampler cannot miss it — a stale private-episode waitpeer_q can never
+    leak into the final episode's verdict. The WAITPEER (>= one ~40k-cycle
+    I2C poll iteration) and FINALIZE (>= the 100k sim dwell) windows are
+    likewise sample-proof."""
+    WS_SCAN_STATES = {1, 2, 3, 4, 5, 6}   # ARM..PICK: pre-finalize, per-episode
+    c = _ctrl(dut, side)
+    while not stop[0]:
+        await ClockCycles(dut.hclk, 20)
+        st = _si(c.ws_state_r)
+        if st in WS_SCAN_STATES:
+            seen[side]["waitpeer_q"] = False
+            seen[side]["finalize"] = False
+            seen[side]["waitpeer_before_finalize"] = False
+        elif st == WS_FIN_WAITPEER and _si(c.fch_quiesced_r) == 1:
+            seen[side]["waitpeer_q"] = True
+        elif st in WS_FINALIZE_STATES and not seen[side]["finalize"]:
+            seen[side]["finalize"] = True
+            seen[side]["waitpeer_before_finalize"] = seen[side]["waitpeer_q"]
+
+
+@cocotb.test()
+async def test_33f_a_first_quiesced_rendezvous(dut):
+    """(f) a-first: the private zombie episode's rendezvous must FAIL-LOUD
+    (ws_rdv_timeout_q), and the final bilateral episode must show BOTH dies
+    quiesced-in-WS_FIN_WAITPEER BEFORE finalize, released by the GO (clean
+    ws_rdv_timeout_q) + the full data oracle."""
+    log = dut._log
+    log.info("(f) A-FIRST QUIESCED PEER-RENDEZVOUS")
+    tb = PairTB(dut)
+    await _setup(dut, tb)
+
+    stop = [False]
+    seen = {s: {"waitpeer_q": False, "finalize": False,
+                "waitpeer_before_finalize": False} for s in ("m", "s")}
+    for side in ("m", "s"):
+        cocotb.start_soon(_rdv_monitor(dut, side, seen, stop))
+
+    try:
+        _force_zombie_bypass(dut, "m")
+        await _apb_arm(tb, "m", priority=1)
+        log.info("(f) MASTER armed first (zombie-bypass private episode)")
+
+        # Private episode: the rendezvous can never complete (the zombie's
+        # winscan never runs, its [27] reads 0, no GO ever arrives) — the
+        # WS_FIN_WAITPEER FAIL-LOUD timeout must fire and the finalize then
+        # proceeds locally (fail-open anchor, as in t33a). Budget: bypass
+        # walk ~233k + scan + rendezvous timeout (400k sim) + FINALIZE
+        # fail-open (5 retries).
+        mc = _ctrl(dut, "m")
+        ok, w = await _wait_sig(dut, lambda: _si(mc.winscan_done), 1,
+                                max_cycles=3_000_000)
+        assert ok, ("(f) MASTER private-episode winscan_done never rose — the "
+                    "rendezvous timeout path deadlocked the zombie episode?")
+        assert _si(mc.ws_rdv_timeout_q) == 1, (
+            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) NOT "
+            "latched — the WS_FIN_WAITPEER fail-loud timeout did not fire "
+            "although no peer could ever rendezvous (a dead/V1/manual peer "
+            "would DEADLOCK the autonomous bring-up)")
+        assert seen["m"]["waitpeer_q"], (
+            "(f) private episode: master never observed QUIESCED in "
+            "WS_FIN_WAITPEER — the quiesce does not precede the rendezvous "
+            "hold")
+        log.info(f"(f) private episode: rendezvous timed out fail-loud "
+                 f"(0x21B8[10]) at t={w*CLK_PERIOD_NS/1000:.0f}us — arming "
+                 f"the late die")
+
+        # Final bilateral episode (the a-first tail): the retrain re-runs
+        # training; both winscans rebind (FIX-1) and must now rendezvous.
+        await _late_die_convergence(dut, tb, log, "f")
+    finally:
+        stop[0] = True
+
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        c = _ctrl(dut, side)
+        assert seen[side]["waitpeer_before_finalize"], (
+            f"(f) {name}: NOT observed quiesced in WS_FIN_WAITPEER before its "
+            f"first WS_FINALIZE of the final episode — the F3 clear/anchor "
+            f"window opened without the peer rendezvous (the a-first "
+            f"non-overlap window is back)")
+        assert _si(c.ws_rdv_timeout_q) == 0, (
+            f"(f) {name}: ws_rdv_timeout_q latched on the FINAL bilateral "
+            f"episode — the rendezvous was released by the fail-loud timeout, "
+            f"not the GO (I2C poll/[27]/FINALIZE_GO machinery broken)")
+        assert _si(c.ws_vfy_retry_q) == 0, (
+            f"(f) {name}: ws_vfy_retry_q latched on a clean sim eye — the "
+            f"anchor-verify should pass first try here")
+    log.info("VERDICT (f): PASS — private episode failed loud (0x21B8[10]); "
+             "final bilateral episode rendezvous-aligned BOTH dies' quiesced "
+             "windows before finalize (GO-released, timeout clean) and "
+             "delivered the full byte-exact oracle")

@@ -145,6 +145,13 @@ module tidelink_autoneg #(
     // downstream of the bilateral training-mode clear, so gating the exit on
     // cal_done is the circular deadlock this input breaks.
     input  wire        local_cal_in_hold_i,
+    // R-B FINALIZE PEER-GATED RENDEZVOUS (2026-07-04): level from the
+    // winscan FSM — 1 while the LOCAL winscan is parked in WS_FIN_WAITPEER
+    // with the Q1 quiesce landed (fch_quiesced_r). Entry qualifier for
+    // ST_FIN_RDV; its FALL (winscan released / timed out / aborted /
+    // disarmed) abandons the rendezvous and auto-clears fin_go_o. apb_clk
+    // domain (same as the winscan FSM) — no CDC. Tied 0 on V1.
+    input  wire        local_fin_wait_i,
 
     // Local strobes — single-cycle pulses to the chiplet controller's
     // SWI_TRAINING_MODE register. The wrapper OR-merges these with the
@@ -153,6 +160,20 @@ module tidelink_autoneg #(
     output wire        local_training_mode_set, // pulse: write SWI_TRAINING_MODE := 1
     output wire        local_training_mode_clr, // pulse: write SWI_TRAINING_MODE := 0
     output wire        local_swreset_pulse,     // hold swreset during EXIT
+    // R-B (2026-07-04): the MASTER's local finalize release — LEVEL, raised
+    // when the peer's FINALIZE_GO write completes (both dies verified
+    // quiesced-in-finalize-wait), held until local_fin_wait_i falls (the
+    // winscan consumed it). The slave die's release is the FINALIZE_GO
+    // register write itself (ws_fin_go_reg_q in the controller).
+    output wire        fin_go_o,
+    // R-B: LEVEL — the FSM is in the finalize-rendezvous states
+    // (ST_FIN_RDV/ST_FIN_GO) and OWNS the I2C-master AXIL bus. Consumed by
+    // the controller's nego_driving mux (the train_in_progress_o idiom):
+    // nego_state[3:0] is the TRUNCATED 4-bit view, under which 18/19 alias
+    // WAIT/CLAIM — so the mux needs this dedicated full-width level or the
+    // rendezvous transactions would never reach the I2C core (the FSM would
+    // hang with awvalid unrouted until the winscan's rendezvous timeout).
+    output wire        fin_rdv_in_progress_o,
 
     // Status to NEGO_TRAIN_STATUS @ 0x110.
     output wire  [3:0] train_state_o,
@@ -221,6 +242,31 @@ module tidelink_autoneg #(
     localparam [4:0] ST_TRAIN_EXIT        = 5'd15;
     localparam [4:0] ST_TRAIN_DONE        = 5'd16;
     localparam [4:0] ST_TRAIN_FAIL        = 5'd17;
+    // R-B FINALIZE PEER-GATED RENDEZVOUS (2026-07-04, master-only,
+    // V2/USE_CAL_IN_HOLD-gated — V1 netlist unchanged, the entry arc
+    // constant-folds away). Silicon mechanism: under a-first arm skew the two
+    // dies' LOCALLY-TIMED quiesce/finalize windows do not overlap
+    // (0x21B8=0x57000005 BOTH dies, rea=0/0) — each die's WS_FINALIZE
+    // re-anchor starves because the PEER was not quiesced during its window.
+    // Fix: when the LOCAL winscan parks quiesced in WS_FIN_WAITPEER
+    // (local_fin_wait_i), the master polls the peer's SWI_LANE_STATUS byte 3
+    // until the peer's fin-wait bit (word [27] = byte-3 bit 3, the L4 [26]
+    // capture idiom) reads 1, then I2C-writes the peer's FINALIZE_GO W1P
+    // (Region 8 slot 7 @ 0x211C, a dedicated full-word-write-safe slot) and
+    // raises fin_go_o — releasing BOTH dies' finalize windows within one I2C
+    // write of each other, so the quiesced re-anchor windows overlap by
+    // construction. The SLAVE cannot poll (it has no I2C master; its autoneg
+    // parks in ST_NEGO_DONE) — it is released by the FINALIZE_GO write
+    // landing via the existing I2C-slave AXIL bridge, mirroring exactly how
+    // the L4 exit releases the slave via the SWI_TRAINING_MODE=0 write.
+    // Fail-loud: the winscan's own WS_FIN_WAITPEER timeout proceeds locally
+    // (sticky WINSCAN_OBS 0x21B8[10]) and drops local_fin_wait_i, which
+    // abandons this rendezvous back to ST_TRAIN_DONE at the next transaction
+    // boundary — the FSM can never deadlock here, and the global nego
+    // timeout is deliberately NOT armed in these states (ST_TRAIN_DONE
+    // parking semantics).
+    localparam [4:0] ST_FIN_RDV           = 5'd18;  // poll peer fin-wait bit
+    localparam [4:0] ST_FIN_GO            = 5'd19;  // write peer FINALIZE_GO
 
     // I2C master register addresses (from i2c_master_axil)
     localparam [3:0] I2C_REG_STATUS  = 4'h0;
@@ -315,6 +361,13 @@ module tidelink_autoneg #(
     localparam [7:0] TRAIN_MODE_ADDR_LSB     = 8'h00;
     localparam [7:0] TRAIN_STATUS_ADDR_MSB   = 8'h21;  // 0x2108
     localparam [7:0] TRAIN_STATUS_ADDR_LSB   = 8'h08;
+    // R-B (2026-07-04): peer FINALIZE_GO W1P — Region 8 slot 7 @ 0x211C
+    // (13-bit bridge paddr 0x11C -> slv_apb_ctrl_region8, slot 3'h7). A
+    // DEDICATED slot: the I2C write lands as a full 32-bit word and no other
+    // state shares the register (the F1b clobber hazard the SWI_TRAINING_MODE
+    // full-word writes have does not exist here).
+    localparam [7:0] FIN_GO_ADDR_MSB         = 8'h21;  // 0x211C
+    localparam [7:0] FIN_GO_ADDR_LSB         = 8'h1C;
 
     // 5-byte write to SWI_TRAINING_MODE: 2 addr + 4 data (LSB only carries
     // training bit, padding zeros). Matches the existing MASK_RES_BYTES
@@ -394,6 +447,21 @@ module tidelink_autoneg #(
     // from SWI_LANE_STATUS byte 3 (word bit [26], see axi_chiplet_controller.sv
     // — REPURPOSED from is_long_pkt obs). The exit rendezvous is both-in-S_HOLD.
     reg        peer_cal_in_hold_r,  peer_cal_in_hold_nxt;
+    // R-B (2026-07-04): PEER's "winscan parked quiesced in WS_FIN_WAITPEER",
+    // captured from SWI_LANE_STATUS byte 3 (word bit [27] = byte-3 bit 3 —
+    // REPURPOSED from the instantaneous pkt_is_cr obs on V2, see the
+    // controller's read mux; V1 keeps pkt_is_cr and never captures here).
+    reg        peer_fin_wait_r,     peer_fin_wait_nxt;
+    reg        fin_go_r,            fin_go_nxt;   // fin_go_o level (see port)
+    // R-B retrain-in-rendezvous latch (sim-caught, t33b): train_retrain_req
+    // is a 1-cycle W1P and the pre-fix FIN_RDV/FIN_GO states had no retrain
+    // arc — a retrain landing mid-rendezvous was silently LOST (the FSM
+    // abandoned back to ST_TRAIN_DONE only at the winscan's rendezvous
+    // timeout and then parked; the requested retraining episode never ran).
+    // Latch the pulse here; ST_FIN_RDV's poll-boundary evaluation abandons
+    // on it (<= one ~40k-cycle poll iteration of latency) and ST_TRAIN_DONE
+    // consumes it exactly like a live train_retrain_req.
+    reg        fin_retrain_pend_r,  fin_retrain_pend_nxt;
     reg [7:0]  local_lane_fault_snapshot_r, local_lane_fault_snapshot_nxt;
     reg        train_ok_r,          train_ok_nxt;
     reg        train_fail_r,        train_fail_nxt;
@@ -410,6 +478,8 @@ module tidelink_autoneg #(
     reg        peer_cal_done_capture_en;
     // L4: capture strobe for byte 3 (peer cal_in_hold at word bit [26]).
     reg        peer_cal_in_hold_capture_en;
+    // R-B: capture strobe for byte 3 in ST_FIN_RDV (peer fin-wait at [27]).
+    reg        peer_fin_wait_capture_en;
 
     // AXI-Lite sub-state
     // Bug N7/N8 silicon observability: mark_debug on the AXL sub-FSM regs.
@@ -625,7 +695,15 @@ module tidelink_autoneg #(
              state_r == ST_NEGO_MASK_RD_DATA ||
              state_r == ST_TRAIN_ENTER ||
              state_r == ST_TRAIN_POLL_PEER ||
-             state_r == ST_TRAIN_EXIT) &&
+             state_r == ST_TRAIN_EXIT ||
+             // R-B: the finalize-rendezvous states run the same
+             // busy-observe/idle-complete TXN_CHECK protocol — WITHOUT this
+             // set arc busy_seen can never latch there and every FIN_RDV /
+             // FIN_GO TXN_CHECK spins forever on `!busy && busy_seen`
+             // (sim-caught: the master wedged in ST_FIN_RDV phase 0 and the
+             // rendezvous "timed out" on a healthy bilateral run).
+             state_r == ST_FIN_RDV ||
+             state_r == ST_FIN_GO) &&
             txn_step_r == TXN_CHECK &&
             axl_rdata_r[I2C_STS_BUSY])
             busy_seen_nxt = 1'b1;
@@ -661,7 +739,14 @@ module tidelink_autoneg #(
                  // and on TXN_DATA byte 0 for the address-write phase.
                  (state_r == ST_TRAIN_POLL_PEER && txn_step_r == TXN_DATA &&
                   mask_byte_cnt_r == 3'd0) ||
-                 (state_r == ST_TRAIN_POLL_PEER && txn_step_r == TXN_COMMAND))
+                 (state_r == ST_TRAIN_POLL_PEER && txn_step_r == TXN_COMMAND) ||
+                 // R-B: ST_FIN_RDV reuses the POLL_PEER two-sub-phase flow;
+                 // ST_FIN_GO reuses the TRAIN_EXIT single-write flow.
+                 (state_r == ST_FIN_RDV && txn_step_r == TXN_DATA &&
+                  mask_byte_cnt_r == 3'd0) ||
+                 (state_r == ST_FIN_RDV && txn_step_r == TXN_COMMAND) ||
+                 (state_r == ST_FIN_GO && txn_step_r == TXN_DATA &&
+                  mask_byte_cnt_r == 3'd0))
             busy_seen_nxt = 1'b0;  // start of a new transaction
         else
             busy_seen_nxt = busy_seen_r;
@@ -679,6 +764,19 @@ module tidelink_autoneg #(
         peer_lane_fault_nxt           = peer_lane_fault_r;
         peer_cal_done_nxt             = peer_cal_done_r;
         peer_cal_in_hold_nxt          = peer_cal_in_hold_r;
+        peer_fin_wait_nxt             = peer_fin_wait_r;
+        // R-B: fin_go is a LEVEL that self-clears when the winscan consumes
+        // it (local_fin_wait_i falls on the WS_FIN_WAITPEER exit) — so a
+        // fresh episode's WS_FIN_WAITPEER can never be pre-released by a
+        // stale go, and the ST_TRAIN_DONE re-entry arc (!fin_go_r) re-arms.
+        fin_go_nxt                    = fin_go_r && local_fin_wait_i;
+        // R-B: latch a retrain W1P that lands while the FSM is mid-rendezvous
+        // (no retrain arc exists inside the I2C transaction walks; the
+        // TRAIN_DONE consume clears it).
+        fin_retrain_pend_nxt          = fin_retrain_pend_r ||
+                                        (train_retrain_req &&
+                                         (state_r == ST_FIN_RDV ||
+                                          state_r == ST_FIN_GO));
         local_lane_fault_snapshot_nxt = local_lane_fault_snapshot_r;
         train_ok_nxt                  = train_ok_r;
         train_fail_nxt                = train_fail_r;
@@ -691,6 +789,7 @@ module tidelink_autoneg #(
         peer_lane_fault_capture_en    = 1'b0;
         peer_cal_done_capture_en      = 1'b0;
         peer_cal_in_hold_capture_en   = 1'b0;
+        peer_fin_wait_capture_en      = 1'b0;
 
         // Timeout decrement: active in all transient negotiation states
         // (ST_IDLE excluded; ST_NEGO_DONE / BYPASS / ERROR are terminal so
@@ -1043,6 +1142,7 @@ module tidelink_autoneg #(
                         peer_lane_fault_nxt      = 8'h00;
                         peer_cal_done_nxt        = 1'b0;
                         peer_cal_in_hold_nxt     = 1'b0;      // L4: clear capture
+                        peer_fin_wait_nxt        = 1'b0;      // R-B: clear capture
                         // R5: V2 enters TRAIN_ENTER via the missed_ack
                         // status-clear preamble (see TXN_STSCLR decl); V1
                         // (USE_CAL_IN_HOLD=0) constant-folds to TXN_DATA.
@@ -1377,12 +1477,185 @@ module tidelink_autoneg #(
                     // SW request (train_retrain_req from W1P bit).
                     if (swreset_hold_r != '0)
                         swreset_hold_nxt = swreset_hold_r - 7'd1;
-                    if (train_retrain_req) begin
-                        train_ok_nxt        = 1'b0;
-                        train_fail_nxt      = 1'b0;
-                        train_peer_nack_nxt = 1'b0;
-                        state_nxt           = ST_NEGO_DONE_PRE;
+                    if (train_retrain_req || fin_retrain_pend_r) begin
+                        // Live W1P, or one LATCHED while the FSM was
+                        // mid-ST_FIN_RDV/GO (R-B; see fin_retrain_pend_r).
+                        train_ok_nxt         = 1'b0;
+                        train_fail_nxt       = 1'b0;
+                        train_peer_nack_nxt  = 1'b0;
+                        fin_retrain_pend_nxt = 1'b0;   // consumed
+                        state_nxt            = ST_NEGO_DONE_PRE;
+                    end else if (USE_CAL_IN_HOLD && train_auto_en &&
+                                 local_fin_wait_i && !fin_go_r) begin
+                        // R-B (2026-07-04): the LOCAL winscan is parked
+                        // quiesced in WS_FIN_WAITPEER — run the finalize
+                        // rendezvous. !fin_go_r prevents re-entry in the
+                        // 1-2 cycle window between the go completing and the
+                        // winscan consuming it (fin_go_nxt self-clears on
+                        // the local_fin_wait_i fall). A NACK/abandon returns
+                        // here with fin_go_r still 0 while the winscan still
+                        // waits -> natural bounded retry loop (the winscan's
+                        // WS_FIN_WAITPEER timeout is the backstop). R5-idiom
+                        // TXN_STSCLR preamble: W1C the i2c sticky missed_ack
+                        // so a stale mid-episode NACK cannot poison every
+                        // rendezvous TXN_CHECK.
+                        peer_fin_wait_nxt    = 1'b0;   // fresh capture
+                        mask_byte_cnt_nxt    = 3'd0;
+                        train_poll_phase_nxt = 1'b0;
+                        txn_step_nxt         = TXN_STSCLR;
+                        state_nxt            = ST_FIN_RDV;
                     end
+                end
+
+                // R-B (2026-07-04) — FINALIZE PEER-GATED RENDEZVOUS: poll the
+                // peer's SWI_LANE_STATUS byte 3 (the exact ST_TRAIN_POLL_PEER
+                // two-sub-phase machinery: 2-byte pointer write @0x2108, then
+                // 4 byte-reads with per-byte capture) until the peer fin-wait
+                // bit (word [27] = byte-3 bit 3) reads 1 WITH the local
+                // winscan still waiting. No poll budget of its own: the
+                // winscan's WS_FIN_WAITPEER timeout drops local_fin_wait_i,
+                // which abandons back to ST_TRAIN_DONE at the next poll
+                // boundary — never deadlocks, never trips ST_TRAIN_FAIL (the
+                // rendezvous is a post-training best-effort alignment; the
+                // stickies/train_ok of the completed training are preserved).
+                ST_FIN_RDV: begin
+                    if (train_poll_phase_r == 1'b0) begin
+                        // ---- Address-write sub-phase (pointer -> 0x2108) --
+                        case (txn_step_r)
+                            TXN_STSCLR: if (axl_done_r) begin
+                                mask_byte_cnt_nxt = 3'd0;
+                                txn_step_nxt      = TXN_DATA;
+                            end
+                            TXN_DATA: begin
+                                if (axl_done_r) begin
+                                    if (mask_byte_cnt_r == MASK_RD_ADDR_BYTES - 3'd1) begin
+                                        txn_step_nxt = TXN_COMMAND;
+                                    end else begin
+                                        mask_byte_cnt_nxt = mask_byte_cnt_r + 3'd1;
+                                    end
+                                end
+                            end
+                            TXN_COMMAND: if (axl_done_r) txn_step_nxt = TXN_POLL;
+                            TXN_POLL:    if (axl_done_r) txn_step_nxt = TXN_CHECK;
+                            TXN_CHECK: begin
+                                if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
+                                    if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
+                                        // Peer NACK'd the pointer write —
+                                        // ABANDON (bus idle here), NOT
+                                        // TRAIN_FAIL: re-entry from
+                                        // ST_TRAIN_DONE retries while the
+                                        // winscan still waits.
+                                        train_poll_phase_nxt = 1'b0;
+                                        state_nxt            = ST_TRAIN_DONE;
+                                    end else begin
+                                        mask_byte_cnt_nxt    = 3'd0;
+                                        txn_step_nxt         = TXN_COMMAND;
+                                        train_poll_phase_nxt = 1'b1;
+                                    end
+                                end else begin
+                                    txn_step_nxt = TXN_POLL;
+                                end
+                            end
+                            default: ;
+                        endcase
+                    end else begin
+                        // ---- Per-byte read sub-phase ----
+                        case (txn_step_r)
+                            TXN_COMMAND: if (axl_done_r) txn_step_nxt = TXN_POLL;
+                            TXN_POLL:    if (axl_done_r) txn_step_nxt = TXN_CHECK;
+                            TXN_CHECK: begin
+                                if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
+                                    txn_step_nxt = TXN_DATA;
+                                end else begin
+                                    txn_step_nxt = TXN_POLL;
+                                end
+                            end
+                            TXN_DATA: begin
+                                if (axl_done_r) begin
+                                    // Only byte 3 is captured (bytes 0-2 are
+                                    // the L4 lane/fault/cal fields — already
+                                    // held from training; not re-captured
+                                    // here so a post-training glitch cannot
+                                    // retro-poison the training verdict).
+                                    if (mask_byte_cnt_r == 3'd3)
+                                        peer_fin_wait_capture_en = USE_CAL_IN_HOLD;
+                                    if (mask_byte_cnt_r == MASK_RD_DATA_BYTES - 3'd1) begin
+                                        // Evaluate at the poll boundary (bus
+                                        // released by the byte-3 cmd_stop).
+                                        // peer_fin_wait_r is one poll-cycle
+                                        // old on the first pass (the L4
+                                        // byte-3 staleness caveat) — the
+                                        // loop re-reads every iteration, so
+                                        // the rendezvous settles within one
+                                        // extra poll.
+                                        if (fin_retrain_pend_r ||
+                                            !local_fin_wait_i) begin
+                                            // Winscan left WS_FIN_WAITPEER
+                                            // (timeout / disarm / abort), or
+                                            // a retrain W1P was latched
+                                            // mid-rendezvous — abandon to
+                                            // ST_TRAIN_DONE (which consumes
+                                            // the pending retrain into a
+                                            // fresh ST_NEGO_DONE_PRE walk).
+                                            train_poll_phase_nxt = 1'b0;
+                                            state_nxt            = ST_TRAIN_DONE;
+                                        end else if (peer_fin_wait_r) begin
+                                            // BOTH dies quiesced-in-wait ->
+                                            // send the peer's GO.
+                                            mask_byte_cnt_nxt    = 3'd0;
+                                            txn_step_nxt         = TXN_DATA;
+                                            train_poll_phase_nxt = 1'b0;
+                                            state_nxt            = ST_FIN_GO;
+                                        end else begin
+                                            // Re-poll.
+                                            mask_byte_cnt_nxt    = 3'd0;
+                                            txn_step_nxt         = TXN_DATA;
+                                            train_poll_phase_nxt = 1'b0;
+                                        end
+                                    end else begin
+                                        mask_byte_cnt_nxt = mask_byte_cnt_r + 3'd1;
+                                        txn_step_nxt      = TXN_COMMAND;
+                                    end
+                                end
+                            end
+                            default: ;
+                        endcase
+                    end
+                end
+
+                // R-B (2026-07-04) — write the peer's FINALIZE_GO W1P
+                // (0x211C = 0x1). Exact ST_TRAIN_EXIT 6-byte write shape. On
+                // ACK raise fin_go_r (the LOCAL release level) — the slave's
+                // release is this write landing, so both dies' finalize
+                // dwells start within one I2C-write of each other.
+                ST_FIN_GO: begin
+                    case (txn_step_r)
+                        TXN_DATA: begin
+                            if (axl_done_r) begin
+                                if (mask_byte_cnt_r == TRAIN_MODE_WR_BYTES - 3'd1) begin
+                                    txn_step_nxt = TXN_COMMAND;
+                                end else begin
+                                    mask_byte_cnt_nxt = mask_byte_cnt_r + 3'd1;
+                                end
+                            end
+                        end
+                        TXN_COMMAND: if (axl_done_r) txn_step_nxt = TXN_POLL;
+                        TXN_POLL:    if (axl_done_r) txn_step_nxt = TXN_CHECK;
+                        TXN_CHECK: begin
+                            if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
+                                if (!axl_rdata_r[I2C_STS_MISS_ACK]) begin
+                                    fin_go_nxt = 1'b1;   // local release level
+                                end
+                                // NACK: no fin_go — the ST_TRAIN_DONE arc
+                                // re-enters the rendezvous (bounded by the
+                                // winscan WS_FIN_WAITPEER timeout).
+                                state_nxt = ST_TRAIN_DONE;
+                            end else begin
+                                txn_step_nxt = TXN_POLL;
+                            end
+                        end
+                        default: ;
+                    endcase
                 end
 
                 ST_TRAIN_FAIL: begin
@@ -1514,6 +1787,22 @@ module tidelink_autoneg #(
         endcase
     end
 
+    // R-B (2026-07-04): 6-byte write to peer's FINALIZE_GO @ 0x211C —
+    // [addr_MSB, addr_LSB, 0x01, 0, 0, 0]. Mirrors train_mode_wr_byte.
+    reg [7:0] fin_go_wr_byte;
+    reg       fin_go_wr_last;
+    always_comb begin
+        case (mask_byte_cnt_r)
+            3'd0: begin fin_go_wr_byte = FIN_GO_ADDR_MSB; fin_go_wr_last = 1'b0; end
+            3'd1: begin fin_go_wr_byte = FIN_GO_ADDR_LSB; fin_go_wr_last = 1'b0; end
+            3'd2: begin fin_go_wr_byte = 8'h01;           fin_go_wr_last = 1'b0; end
+            3'd3: begin fin_go_wr_byte = 8'h00;           fin_go_wr_last = 1'b0; end
+            3'd4: begin fin_go_wr_byte = 8'h00;           fin_go_wr_last = 1'b0; end
+            3'd5: begin fin_go_wr_byte = 8'h00;           fin_go_wr_last = 1'b1; end
+            default: begin fin_go_wr_byte = 8'h00;        fin_go_wr_last = 1'b0; end
+        endcase
+    end
+
     // 2-byte read-pointer set-up for peer's SWI_LANE_STATUS @ 0x2108. Used in
     // ST_TRAIN_POLL_PEER phase 0 (address-write sub-phase).
     reg [7:0] train_status_addr_byte;
@@ -1585,13 +1874,20 @@ module tidelink_autoneg #(
                     // 6-byte write to SWI_TRAINING_MODE @ 0x2100
                     axl_target_wdata = {22'd0, train_mode_wr_last, 1'b0,
                                         train_mode_wr_byte};
-                end else if (state_r == ST_TRAIN_POLL_PEER &&
+                end else if (state_r == ST_FIN_GO) begin
+                    // R-B: 6-byte write to peer FINALIZE_GO @ 0x211C
+                    axl_target_wdata = {22'd0, fin_go_wr_last, 1'b0,
+                                        fin_go_wr_byte};
+                end else if ((state_r == ST_TRAIN_POLL_PEER ||
+                              state_r == ST_FIN_RDV) &&
                              train_poll_phase_r == 1'b0) begin
                     // Address-write sub-phase: push 2-byte pointer for
-                    // SWI_LANE_STATUS @ 0x2108
+                    // SWI_LANE_STATUS @ 0x2108 (R-B FIN_RDV polls the same
+                    // register — byte 3 carries the fin-wait bit).
                     axl_target_wdata = {22'd0, train_status_addr_last, 1'b0,
                                         train_status_addr_byte};
-                end else if (state_r == ST_TRAIN_POLL_PEER &&
+                end else if ((state_r == ST_TRAIN_POLL_PEER ||
+                              state_r == ST_FIN_RDV) &&
                              train_poll_phase_r == 1'b1) begin
                     // Read sub-phase: DATA register read pulls one byte
                     axl_target_wdata = 32'd0;
@@ -1600,7 +1896,8 @@ module tidelink_autoneg #(
                     axl_target_wdata = 32'h01;
                 end
                 if (state_r == ST_NEGO_MASK_RD_DATA ||
-                    (state_r == ST_TRAIN_POLL_PEER && train_poll_phase_r == 1'b1))
+                    ((state_r == ST_TRAIN_POLL_PEER || state_r == ST_FIN_RDV)
+                     && train_poll_phase_r == 1'b1))
                     axl_is_read = 1'b1;
             end
             TXN_COMMAND: begin
@@ -1642,9 +1939,11 @@ module tidelink_autoneg #(
                                         1'b0,                                            // [7]  reserved
                                         NEGO_ADDR_DEFAULT};
                 end else if (state_r == ST_TRAIN_ENTER ||
-                             state_r == ST_TRAIN_EXIT) begin
+                             state_r == ST_TRAIN_EXIT ||
+                             state_r == ST_FIN_GO) begin
                     // 6-byte cmd_write_multiple with START + STOP. Same
-                    // shape as ST_NEGO_MASK_RES_TX.
+                    // shape as ST_NEGO_MASK_RES_TX. (R-B FIN_GO reuses it
+                    // for the FINALIZE_GO write.)
                     axl_target_wdata = {19'd0,
                                         1'b1,               // cmd_stop
                                         1'b1,               // cmd_wr_mult
@@ -1653,7 +1952,8 @@ module tidelink_autoneg #(
                                         1'b1,               // cmd_start
                                         1'b0,
                                         NEGO_ADDR_DEFAULT};
-                end else if (state_r == ST_TRAIN_POLL_PEER &&
+                end else if ((state_r == ST_TRAIN_POLL_PEER ||
+                              state_r == ST_FIN_RDV) &&
                              train_poll_phase_r == 1'b0) begin
                     // Address-write phase: cmd_write_multiple with START,
                     // NO STOP (pointer set, repeated start follows).
@@ -1665,10 +1965,12 @@ module tidelink_autoneg #(
                                         1'b1,               // cmd_start
                                         1'b0,
                                         NEGO_ADDR_DEFAULT};
-                end else if (state_r == ST_TRAIN_POLL_PEER &&
+                end else if ((state_r == ST_TRAIN_POLL_PEER ||
+                              state_r == ST_FIN_RDV) &&
                              train_poll_phase_r == 1'b1) begin
                     // Per-byte cmd_read for SWI_LANE_STATUS. byte 0 sets
                     // cmd_start (repeated start), byte 3 sets cmd_stop.
+                    // (R-B FIN_RDV reads the same 4 bytes.)
                     axl_target_wdata = {19'd0,
                                         (mask_byte_cnt_r == MASK_RD_DATA_BYTES - 3'd1),
                                         1'b0,
@@ -1743,7 +2045,12 @@ module tidelink_autoneg #(
               state_r == ST_NEGO_MASK_RD_DATA ||
               state_r == ST_TRAIN_ENTER ||
               state_r == ST_TRAIN_POLL_PEER ||
-              state_r == ST_TRAIN_EXIT) &&
+              state_r == ST_TRAIN_EXIT ||
+              // R-B: the finalize-rendezvous states drive I2C transactions
+              // (USE_CAL_IN_HOLD-gated so the V1 netlist is unchanged —
+              // the states are unreachable on V1 anyway).
+              (USE_CAL_IN_HOLD && (state_r == ST_FIN_RDV ||
+                                   state_r == ST_FIN_GO))) &&
              (txn_step_r == TXN_PRESCALE || txn_step_r == TXN_DATA ||
               txn_step_r == TXN_COMMAND  || txn_step_r == TXN_POLL ||
               (USE_CAL_IN_HOLD && txn_step_r == TXN_STSCLR))) begin
@@ -1851,6 +2158,9 @@ module tidelink_autoneg #(
             peer_lane_fault_r           <= 8'h00;
             peer_cal_done_r             <= 1'b0;
             peer_cal_in_hold_r          <= 1'b0;   // L4 (2026-07-01)
+            peer_fin_wait_r             <= 1'b0;   // R-B (2026-07-04)
+            fin_go_r                    <= 1'b0;   // R-B (2026-07-04)
+            fin_retrain_pend_r          <= 1'b0;   // R-B retrain-in-rendezvous
             local_lane_fault_snapshot_r <= 8'h00;
             train_ok_r                  <= 1'b0;
             train_fail_r                <= 1'b0;
@@ -1903,6 +2213,14 @@ module tidelink_autoneg #(
                 peer_cal_in_hold_r <= axl_rdata_r[2];
             else
                 peer_cal_in_hold_r <= peer_cal_in_hold_nxt;
+            // R-B (2026-07-04): byte 3 bit 3 = word [27] = peer fin-wait
+            // (quiesced in WS_FIN_WAITPEER). Same capture idiom as L4 [26].
+            if (peer_fin_wait_capture_en)
+                peer_fin_wait_r <= axl_rdata_r[3];
+            else
+                peer_fin_wait_r <= peer_fin_wait_nxt;
+            fin_go_r <= fin_go_nxt;
+            fin_retrain_pend_r <= fin_retrain_pend_nxt;
             local_lane_fault_snapshot_r <= local_lane_fault_snapshot_nxt;
             train_ok_r                  <= train_ok_nxt;
             train_fail_r                <= train_fail_nxt;
@@ -1934,6 +2252,11 @@ module tidelink_autoneg #(
                            (state_r == ST_TRAIN_POLL_PEER)  ? 4'd3 :
                            (state_r == ST_TRAIN_EXIT)       ? 4'd4 :
                            (state_r == ST_TRAIN_DONE)       ? 4'd5 :
+                           // R-B: the finalize-rendezvous states are a
+                           // post-OK phase of ST_TRAIN_DONE — report 5 so the
+                           // host NEGO_TRAIN_STATUS view is unchanged.
+                           (state_r == ST_FIN_RDV)          ? 4'd5 :
+                           (state_r == ST_FIN_GO)           ? 4'd5 :
                            (state_r == ST_TRAIN_FAIL)       ? 4'd6 :
                                                               4'd0;
 
@@ -1951,6 +2274,9 @@ module tidelink_autoneg #(
     assign train_fail_irq_o           = train_fail_r;
 
     assign local_training_mode_set = local_train_set_pulse_r;
+    assign fin_go_o                = fin_go_r;   // R-B master finalize release
+    assign fin_rdv_in_progress_o   = (state_r == ST_FIN_RDV) ||
+                                     (state_r == ST_FIN_GO);
     assign local_training_mode_clr = local_train_clr_pulse_r;
     assign local_swreset_pulse     = (swreset_hold_r != '0);
 

@@ -291,10 +291,14 @@ create_generated_clock -name gpiotx0_word_clk \
 # is a half-word-period datapath transfer, not edge-aligned.
 # 2026-07-05: -quiet + empty-match guard — synth can prune link_data_stage_reg,
 # and an empty -to list raises ERROR 12-4739 (aborts implementation).
-set _fixo_stage_regs [get_cells -quiet -hier -filter {NAME =~ "*link_data_stage_reg[*]"}]
-if { [llength $_fixo_stage_regs] > 0 } {
-    set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
-}
+# SoC Labs 2026-07-05: FIX-O set_max_delay COMMENTED OUT. When synth prunes
+# link_data_stage_reg the empty -to raised ERROR Vivado 12-4739 and halted the
+# impl step chain before write_bitstream (the die_b no-bit failures). XDC does
+# NOT support if/llength guards (Designutils 20-1307 aborts the whole file;
+# see xdc_lint.py bug 6.a), and the gpiotx0_word_clk group has +6811 ns slack
+# -- the constraint is orthogonal to closure -- so disable rather than guard.
+# set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*link_data_stage_reg[*]"}]
+# set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
 
 # Four-group async isolation: recovered-RX, core hclk, TX word clock, and the
 # PHY /2 user_ref_clk (2026-06-30) — mutually asynchronous (each crossing is

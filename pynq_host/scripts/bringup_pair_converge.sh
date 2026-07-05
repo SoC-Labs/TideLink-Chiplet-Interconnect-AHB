@@ -117,13 +117,14 @@ set_slot0() {   # IP VAL
     local IP=$1 VAL=$2
     sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
       "echo '$PASS' | sudo -S python3 -c '
-import mmap,struct,os
+import mmap,os,ctypes
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a,sz=4096):
  b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
  return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
-g,go=mm(0x44041000); struct.pack_into(\"<I\",g,go,1)
-r,ro=mm(0x44032000,0x400); struct.pack_into(\"<I\",r,ro+0x100,$VAL)'" 2>/dev/null
+def u32(mp,off): return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(mp,off)),ctypes.POINTER(ctypes.c_uint32))
+g,go=mm(0x44041000); u32(g,go)[0]=1
+r,ro=mm(0x44032000,0x400); u32(r,ro+0x100)[0]=$VAL & 0xFFFFFFFF'" 2>/dev/null
 }
 
 # Read SWI_LANE_STATUS (0x44032000+0x108): locked[7:0] fault[15:8]
@@ -135,12 +136,13 @@ read_status() {  # IP
     local IP=$1
     timeout 6 sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
       "echo '$PASS' | sudo -S python3 -c '
-import mmap,struct,os
+import mmap,os,ctypes
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a,sz=4096):
  b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
  return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
-r,o=mm(0x44032000,0x400); s=struct.unpack_from(\"<I\",r,o+0x108)[0]
+def u32(mp,off): return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(mp,off)),ctypes.POINTER(ctypes.c_uint32))
+r,o=mm(0x44032000,0x400); s=u32(r,o+0x108)[0]
 lk=s&0xff; ft=(s>>8)&0xff
 print(\"0x%02x 0x%02x %d %d %d %d\"%(lk,ft,(s>>16)&1,bin(lk).count(\"1\"),(s>>17)&0x7,(s>>23)&1))'" 2>/dev/null
 }
@@ -151,14 +153,15 @@ read_release() {  # IP
     local IP=$1
     timeout 6 sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
       "echo '$PASS' | sudo -S python3 -c '
-import mmap,struct,os
+import mmap,os,ctypes
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a,sz=4096):
  b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
  return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
+def u32(mp,off): return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(mp,off)),ctypes.POINTER(ctypes.c_uint32))
 r,o=mm(0x44032000,0x400)
-t=struct.unpack_from(\"<I\",r,o+0x100)[0]&1
-s=struct.unpack_from(\"<I\",r,o+0x108)[0]
+t=u32(r,o+0x100)[0]&1
+s=u32(r,o+0x108)[0]
 print(\"%d 0x%02x %d\"%(t,s&0xff,(s>>17)&0x7))'" 2>/dev/null
 }
 
@@ -212,12 +215,13 @@ set_ctrl() {  # IP VAL
     local IP=$1 VAL=$2
     sshpass -p "$PASS" ssh $SSHCOMMON "xilinx@$IP" \
       "echo '$PASS' | sudo -S python3 -c '
-import mmap,struct,os
+import mmap,os,ctypes
 P=4096; fd=os.open(\"/dev/mem\",os.O_RDWR|os.O_SYNC)
 def mm(a,sz=4096):
  b=a&~(P-1); o=a-b; pg=((sz+o+P-1)//P)*P
  return mmap.mmap(fd,pg,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=b),o
-w,wo=mm(0x44030000,0x400); struct.pack_into(\"<I\",w,wo+0x208,$VAL)'" 2>/dev/null
+def u32(mp,off): return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(mp,off)),ctypes.POINTER(ctypes.c_uint32))
+w,wo=mm(0x44030000,0x400); u32(w,wo+0x208)[0]=$VAL & 0xFFFFFFFF'" 2>/dev/null
 }
 
 sync_bootstrap() {

@@ -63,6 +63,13 @@ CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
 CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
 FPGA_INSERT_DEBUG_CORE="${FPGA_INSERT_DEBUG_CORE:-}"
 FPGA_USE_IDELAY="${FPGA_USE_IDELAY:-}"
+# Forwarded so the msg gate bypass reaches the REMOTE build_design session.
+# NOTE (2026-07-05 forensics): the gate's get_msg_config count only sees the
+# PARENT Vivado session's messages — impl-run CWs (e.g. Timing 38-282) are in
+# the launch_runs child process and are ALWAYS invisible to the gate (every
+# log shows "count after impl_1 : 0" even with 10 CWs in the child). This
+# knob therefore only matters for parent-session CWs (BD create/validate).
+FPGA_ALLOW_CRITICAL_WARNINGS="${FPGA_ALLOW_CRITICAL_WARNINGS:-}"
 
 # rsync: ship the whole repo tree EXCEPT host-specific build outputs and
 # bulky sim/coverage debris. Keep deps/ (submodule working tree + the
@@ -116,6 +123,8 @@ build_env_prefix() {
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
     [ -n "$FPGA_USE_IDELAY" ] && \
         printf 'export FPGA_USE_IDELAY=%q; ' "$FPGA_USE_IDELAY"
+    [ -n "$FPGA_ALLOW_CRITICAL_WARNINGS" ] && \
+        printf 'export FPGA_ALLOW_CRITICAL_WARNINGS=%q; ' "$FPGA_ALLOW_CRITICAL_WARNINGS"
     # PHC IP sibling repo (used by package_phc_ip). Optional — older trees
     # without PHC integration leave this unset and skip the PHC IP package.
     [ -n "$PHC_REPO_DIR" ] && \
@@ -137,6 +146,7 @@ if is_local; then
     [ -n "$TIDELINK_PHY_V2" ] && export TIDELINK_PHY_V2
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && export FPGA_INSERT_DEBUG_CORE
     [ -n "$FPGA_USE_IDELAY" ] && export FPGA_USE_IDELAY
+    [ -n "$FPGA_ALLOW_CRITICAL_WARNINGS" ] && export FPGA_ALLOW_CRITICAL_WARNINGS
     if make -C "$FPGA_DIR" build_design \
             TARGET="$TARGET" SKIP_PACKAGE_IP=1 FPGA_NUM_JOBS="$JOBS"; then
         say "local build OK -> $TIDELINK_HOME/imp/fpga/output/$TARGET/tidelink.bit"

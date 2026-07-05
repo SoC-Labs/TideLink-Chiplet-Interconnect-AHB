@@ -36,6 +36,16 @@
 ###-----------------------------------------------------------------------------
 set -u
 
+# SILENT-V1 GUARD (2026-07-05): the pair targets MUST be packaged as V2. With
+# TIDELINK_PHY_V2 unset, the old `[ -n "$VAR" ]` forwards aborted under set -u
+# and remote package_ip silently selected the V1 flist (4 occurrences: fcsm
+# a=2/b=1 cal=0 no-link fingerprint). Fail LOUDLY here instead.
+if [ -z "${TIDELINK_PHY_V2:-}" ]; then
+    echo "ERROR: TIDELINK_PHY_V2 is unset - pair targets would package a SILENT-V1 IP." >&2
+    echo "       export TIDELINK_PHY_V2=1 (V2) explicitly before farm builds." >&2
+    exit 1
+fi
+
 TARGET="${1:?usage: farm_build.sh <TARGET> <HOST>}"
 HOST="${2:?usage: farm_build.sh <TARGET> <HOST>}"
 
@@ -110,15 +120,15 @@ build_env_prefix() {
     # optimised out" build: build_design got the define at the per-target synth
     # run, but package_ip (run earlier, here / in build_farm.sh) did NOT, so the
     # packaged IP was already V1 and the FSM never existed to be synthesised.
-    [ -n "$TIDELINK_PHY_V2" ] && \
+    [ -n "${TIDELINK_PHY_V2:-}" ] && \
         printf 'export TIDELINK_PHY_V2=%q; ' "$TIDELINK_PHY_V2"
-    [ -n "$FPGA_INSERT_DEBUG_CORE" ] && \
+    [ -n "${FPGA_INSERT_DEBUG_CORE:-}" ] && \
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
-    [ -n "$FPGA_USE_IDELAY" ] && \
+    [ -n "${FPGA_USE_IDELAY:-}" ] && \
         printf 'export FPGA_USE_IDELAY=%q; ' "$FPGA_USE_IDELAY"
     # PHC IP sibling repo (used by package_phc_ip). Optional — older trees
     # without PHC integration leave this unset and skip the PHC IP package.
-    [ -n "$PHC_REPO_DIR" ] && \
+    [ -n "${PHC_REPO_DIR:-}" ] && \
         printf 'export PHC_REPO_DIR=%q; ' "$PHC_REPO_DIR"
 }
 
@@ -134,9 +144,9 @@ if is_local; then
     source "$TIDELINK_HOME/set_env.sh" >/dev/null 2>&1 || true
     # TIDELINK_PHY_V2 reaches the per-target build_design synth run (the top-run
     # -verilog_define injection in build_design.tcl). See build_env_prefix().
-    [ -n "$TIDELINK_PHY_V2" ] && export TIDELINK_PHY_V2
-    [ -n "$FPGA_INSERT_DEBUG_CORE" ] && export FPGA_INSERT_DEBUG_CORE
-    [ -n "$FPGA_USE_IDELAY" ] && export FPGA_USE_IDELAY
+    [ -n "${TIDELINK_PHY_V2:-}" ] && export TIDELINK_PHY_V2
+    [ -n "${FPGA_INSERT_DEBUG_CORE:-}" ] && export FPGA_INSERT_DEBUG_CORE
+    [ -n "${FPGA_USE_IDELAY:-}" ] && export FPGA_USE_IDELAY
     if make -C "$FPGA_DIR" build_design \
             TARGET="$TARGET" SKIP_PACKAGE_IP=1 FPGA_NUM_JOBS="$JOBS"; then
         say "local build OK -> $TIDELINK_HOME/imp/fpga/output/$TARGET/tidelink.bit"

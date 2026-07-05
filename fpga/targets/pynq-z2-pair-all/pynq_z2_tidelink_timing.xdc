@@ -289,8 +289,12 @@ create_generated_clock -name gpiotx0_word_clk \
     -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/Q"}]
 # FIX-O handoff margin: word-domain regs -> count==7 mid-word capture (link_data_stage)
 # is a half-word-period datapath transfer, not edge-aligned.
-set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
-set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
+# 2026-07-05: -quiet + empty-match guard — synth can prune link_data_stage_reg,
+# and an empty -to list raises ERROR 12-4739 (aborts implementation).
+set _fixo_stage_regs [get_cells -quiet -hier -filter {NAME =~ "*link_data_stage_reg[*]"}]
+if { [llength $_fixo_stage_regs] > 0 } {
+    set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
+}
 
 # Four-group async isolation: recovered-RX, core hclk, TX word clock, and the
 # PHY /2 user_ref_clk (2026-06-30) — mutually asynchronous (each crossing is
@@ -327,6 +331,14 @@ set_clock_groups -asynchronous \
 #-----------------------------------------------------------------------------
 # Board LEDs are human-visible; no functional timing path needed.
 set_false_path -to [get_ports {led0 led1 led2 led3}]
+
+# 2026-07-05: quasi-static IDELAYE2 tap load (calibrator holds CNTVALUEIN
+# stable, pulses LD; no timing-critical transition). The canonical false_path
+# lives in the idelay xdc, which is skipped because FPGA_USE_IDELAY is unset
+# while the IDELAYE2 cells are still present in the packaged IP. Benign —
+# die_a-proven.
+set_false_path -to [get_pins -filter {REF_PIN_NAME =~ CNTVALUEIN[*]} \
+    -of_objects [get_cells -hierarchical -filter {REF_NAME == IDELAYE2}]]
 
 #-----------------------------------------------------------------------------
 # [7] Combinational loop waiver (unchanged — keep intact)

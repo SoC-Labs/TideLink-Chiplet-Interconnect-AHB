@@ -18,8 +18,30 @@
 #     --no-lease  caller already holds the lease (acquired once for the whole
 #                 soak either way — never per-cycle)
 #
+# STATISTICS MODE (FIX-4 2026-07-04):
+#   ./zeropoke_soak.sh --stats N [--stagger SEC] [--budget SEC] [--no-lease]
+#     N fresh-POR cycles scored ONLY through step (f): per die per roll the
+#     WS_FINALIZE anchor outcome (winscan_done / anchor-timeout sticky
+#     0x21B8[2] / reanchored 0x2140[0]) + the FIX-4 ATTEMPT COUNTER
+#     (0x21B8[13:11] — how many clear-retries the episode burned). NO (g)/(h)
+#     data gating, fast cadence (arm -> poll winscan_done both dies -> score
+#     -> next POR). Output: one ZP_STATS_CYCLE line per roll, a CSV, and a
+#     final per-die convergence-rate + attempt-histogram table — this turns
+#     the ~coin-flip per-die re-latch lottery (8 rolls / 4 builds) into a
+#     measurable RATE. The histogram is the compounding-model validator:
+#     independent ~50% windows predict attempts distributed geometrically
+#     (~50% att=0, ~25% att=1, ...) and >90% convergence within the budget
+#     of 5; correlated retries (the pre-FIX-4 constant-hold pathology) show
+#     bimodal att=0-or-exhausted. Per-die outcome classes:
+#       OK       done=1, 0x21B8[2]=0, reanchored=1  (clean re-latch)
+#       LATE     done=1, [2]=1 but reanchored=1     (failed open, healed late)
+#       FAILOPEN done=1, [2]=1, reanchored=0        (the lottery loser)
+#       NODONE   winscan_done never rose in budget  (chain stalled pre-(f))
+#       STALEIP  0x21B8[31:24] != 0x57              (stale package_ip build)
+#
 # Logs: each cycle's full proof output lands in
 #   ${TD_SOAK_DIR:-$HOME/td_zeropoke_soak}/<UTC-stamp>/cycle_<i>_<order>.log
+#   (stats mode: stats.csv + per-cycle lines on stdout, same directory)
 # First-use validation pending (no boards attached at authoring time).
 # =============================================================================
 set -u
@@ -27,15 +49,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=./td_v2_hwlib.sh
 source "$HERE/td_v2_hwlib.sh"
 
-N=""; STAGGER=0; BUDGET=240; DO_LEASE=1
+N=""; STAGGER=0; BUDGET=240; DO_LEASE=1; STATS=0
 while [ $# -gt 0 ]; do case "$1" in
+  --stats)   STATS=1; N=$2; shift;;
   --stagger) STAGGER=$2; shift;;
   --budget)  BUDGET=$2; shift;;
   --no-lease) DO_LEASE=0;;
-  -h|--help) sed -n '2,26p' "$0"; exit 0;;
+  -h|--help) sed -n '2,52p' "$0"; exit 0;;
   *) if [ -z "$N" ]; then N=$1; else echo "unknown arg: $1"; exit 2; fi;;
 esac; shift; done
-case "$N" in ''|*[!0-9]*) echo "usage: $0 N [--stagger SEC]"; exit 2;; esac
+case "$N" in ''|*[!0-9]*) echo "usage: $0 N [--stagger SEC]  |  $0 --stats N"; exit 2;; esac
 [ "$N" -ge 1 ] || { echo "N must be >= 1"; exit 2; }
 
 OUTDIR="${TD_SOAK_DIR:-$HOME/td_zeropoke_soak}/$(date -u +%Y%m%d_%H%M%SZ)"
@@ -47,6 +70,96 @@ if [ "$DO_LEASE" = 1 ]; then
   lease_acquire $(( N * (BUDGET + 180) + 300 )) || { echo "### ABORT: no $LEASE_NAME lease"; exit 3; }
   trap 'lease_release' EXIT
 fi
+
+# ===== --stats N: anchor-statistics mode (FIX-4 2026-07-04) ====================
+# Scores each fresh-POR roll ONLY through step (f). Reads per poll: ONE
+# WINSCAN_OBS word per die (throttled rd_d); reanchored read once at terminal
+# — fast cadence, PS-safe. Never writes anything but the two zp_arm words.
+zps_order(){ # cycle index -> arm order (the soak's proven rotation)
+  if [ "$N" -ge 2 ] && [ "$1" -eq "$N" ]; then echo both
+  elif [ $(( $1 % 2 )) -eq 1 ]; then echo a
+  else echo b; fi; }
+
+zps_arm(){ case "$1" in
+  a)    zp_arm a; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm b;;
+  b)    zp_arm b; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm a;;
+  both) zp_arm a; zp_arm b;;
+esac; }
+
+# classify one die's terminal state: $1=ws(0x21B8) $2=rea $3=done-ever(0/1)
+zps_classify(){ local ws=$1 rea=$2 done_ever=$3
+  if [ $(( (ws>>24)&0xff )) -ne $(( 0x57 )) ]; then echo STALEIP
+  elif [ "$done_ever" -eq 0 ]; then echo NODONE
+  elif [ $(( (ws>>2)&1 )) -eq 0 ] && [ "$rea" -eq 1 ]; then echo OK
+  elif [ "$rea" -eq 1 ]; then echo LATE
+  else echo FAILOPEN; fi; }
+
+if [ "$STATS" = 1 ]; then
+  CSV="$OUTDIR/stats.csv"
+  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s" > "$CSV"
+  echo "======== zeropoke_soak STATS mode N=$N stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
+  echo "  scoring through step (f) only; csv: $CSV"
+  declare -A HIST_A HIST_B OUT_CNT_A OUT_CNT_B
+  A_OK=0; B_OK=0; BOTH_OK=0
+  for i in $(seq 1 "$N"); do
+    order=$(zps_order "$i")
+    echo "-- stats cycle $i/$N (first=$order): fresh POR --"
+    deploy_pair; sleep 2
+    zps_arm "$order"
+    cT0=$(date +%s)
+    da=0; db=0; ta="."; tb="."; wsa=0; wsb=0
+    while :; do
+      el=$(( $(date +%s) - cT0 ))
+      [ "$el" -lt "$BUDGET" ] || break
+      wsa=$(( $(rd_d a $R_WINSCAN_OBS) )); wsb=$(( $(rd_d b $R_WINSCAN_OBS) ))
+      [ "$da" -eq 0 ] && [ $(( wsa&1 )) -eq 1 ] && { da=1; ta=$el; }
+      [ "$db" -eq 0 ] && [ $(( wsb&1 )) -eq 1 ] && { db=1; tb=$el; }
+      [ "$da" -eq 1 ] && [ "$db" -eq 1 ] && break
+      sleep 3
+    done
+    # terminal snapshot (attempts settle with done; re-read for the late case)
+    wsa=$(( $(rd_d a $R_WINSCAN_OBS) )); wsb=$(( $(rd_d b $R_WINSCAN_OBS) ))
+    ra=$(reanchored_d a); rb=$(reanchored_d b)
+    aa=$(( (wsa>>11)&7 )); ab=$(( (wsb>>11)&7 ))
+    oa=$(zps_classify "$wsa" "$ra" "$da"); ob=$(zps_classify "$wsb" "$rb" "$db")
+    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d t_a=%ss t_b=%ss\n' \
+      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" "$ta" "$tb"
+    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta" >> "$CSV"
+    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb" >> "$CSV"
+    HIST_A[$aa]=$(( ${HIST_A[$aa]:-0} + 1 )); HIST_B[$ab]=$(( ${HIST_B[$ab]:-0} + 1 ))
+    OUT_CNT_A[$oa]=$(( ${OUT_CNT_A[$oa]:-0} + 1 )); OUT_CNT_B[$ob]=$(( ${OUT_CNT_B[$ob]:-0} + 1 ))
+    [ "$oa" = OK ] && A_OK=$((A_OK+1)); [ "$ob" = OK ] && B_OK=$((B_OK+1))
+    [ "$oa" = OK ] && [ "$ob" = OK ] && BOTH_OK=$((BOTH_OK+1))
+  done
+  echo "========================================================"
+  echo "  per-die (f)-convergence rate + FIX-4 attempt histogram (0x21B8[13:11])"
+  printf '  %-5s %-10s' die conv-rate; for k in 0 1 2 3 4 5 6 7; do printf ' att%d' "$k"; done
+  printf '  outcomes\n'
+  hist_row(){ # $1=die-label $2=ok-count, then reads HIST_/OUT_CNT_ via $3 (a|b)
+    local d=$3 k o cnt out=""
+    printf '  %-5s %-10s' "$1" "$2/$N"
+    for k in 0 1 2 3 4 5 6 7; do
+      if [ "$d" = a ]; then cnt=${HIST_A[$k]:-0}; else cnt=${HIST_B[$k]:-0}; fi
+      printf ' %4s' "$cnt"
+    done
+    if [ "$d" = a ]; then
+      for o in "${!OUT_CNT_A[@]}"; do out="$out$o=${OUT_CNT_A[$o]} "; done
+    else
+      for o in "${!OUT_CNT_B[@]}"; do out="$out$o=${OUT_CNT_B[$o]} "; done
+    fi
+    printf '  %s\n' "${out% }"; }
+  [ "${#OUT_CNT_A[@]}" -gt 0 ] && hist_row a "$A_OK" a
+  [ "${#OUT_CNT_B[@]}" -gt 0 ] && hist_row b "$B_OK" b
+  ha=""; hb=""
+  for k in 0 1 2 3 4 5 6 7; do
+    ha="$ha${HIST_A[$k]:-0},"; hb="$hb${HIST_B[$k]:-0},"
+  done
+  echo "ZP_STATS_RESULT n=$N a_ok=$A_OK/$N b_ok=$B_OK/$N both_ok=$BOTH_OK/$N hist_a=${ha%,} hist_b=${hb%,}"
+  echo "  csv: $CSV"
+  echo "========================================================"
+  [ "$BOTH_OK" -eq "$N" ]; exit $?
+fi
+# ===== end --stats mode ========================================================
 
 echo "======== zeropoke_soak N=$N stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
 echo "  logs: $OUTDIR"

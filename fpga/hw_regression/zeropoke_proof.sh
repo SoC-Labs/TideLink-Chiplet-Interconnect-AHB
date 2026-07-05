@@ -179,8 +179,10 @@ c_winscan(){ local wa wb ra rb pa pb
   wa=$(( $(rd_d a $R_WINSCAN_OBS) )); wb=$(( $(rd_d b $R_WINSCAN_OBS) ))
   ra=$(reanchored_d a); rb=$(reanchored_d b)
   pa=$(( $(rd_d a $R_PHASE) )); pb=$(( $(rd_d b $R_PHASE) ))
-  [ "${1:-}" = info ] && { printf 'ws_obs a=0x%08x b=0x%08x (done/degen/anch_to) taps a=0x%08x b=0x%08x reanchored a=%d b=%d' \
-      "$wa" "$wb" "$pa" "$pb" "$ra" "$rb"; return 0; }
+  # att = FIX-4 (2026-07-04) per-episode anchor-retry attempt counter,
+  # 0x21B8[13:11] (0 on pre-FIX-4 images — bits were reserved-0).
+  [ "${1:-}" = info ] && { printf 'ws_obs a=0x%08x b=0x%08x (done/degen/anch_to) att a=%d b=%d taps a=0x%08x b=0x%08x reanchored a=%d b=%d' \
+      "$wa" "$wb" $(( (wa>>11)&7 )) $(( (wb>>11)&7 )) "$pa" "$pb" "$ra" "$rb"; return 0; }
   # presence 0x57, done=1, degenerate=0, anchor-timeout=0 on BOTH + reanchored
   [ $(( (wa>>24)&0xff )) -eq $(( 0x57 )) ] && [ $(( (wb>>24)&0xff )) -eq $(( 0x57 )) ] && \
   [ $(( wa&1 )) -eq 1 ] && [ $(( wb&1 )) -eq 1 ] && \

@@ -1270,6 +1270,17 @@ module axi_chiplet_controller #(
     //                       wrong-slot mis-anchor signature (die_b byte-lane
     //                       [23:16] 0x24->0x5c). WINSCAN_OBS 0x21B8[9].
     //                       Cleared on a fresh scan episode (WS_ARM).
+    //   ws_retry_cnt_q    : FIX-4 obs (2026-07-04) per-episode ANCHOR-RETRY
+    //                       ATTEMPT COUNTER: increments (saturating at 7) on
+    //                       every FIX-3 clear-retry arc (WS_FINALIZE ->
+    //                       WS_FIN_CLRLOW). 0 = anchored+verified in the
+    //                       FIRST window; N = N retries fired (N+1 windows);
+    //                       5 with 0x21B8[2]=1 = budget exhausted, failed
+    //                       open. WINSCAN_OBS 0x21B8[13:11]. Cleared on a
+    //                       fresh scan episode (WS_ARM). THE key statistic
+    //                       for the retry-compounding model: the 8-roll
+    //                       silicon lottery could not distinguish "5 retries
+    //                       ran, all failed" from "no retry ran" — this can.
     //   ws_rdv_timeout_q  : R-B rendezvous-timeout sticky — DORMANT since
     //                       Loop-13 (2026-07-04): the winscan no longer
     //                       parks in WS_FIN_WAITPEER (the Loop-12 aligned
@@ -1294,6 +1305,7 @@ module axi_chiplet_controller #(
     reg        ws_anchor_late_q;
     reg [3:0]  ws_abort_cnt_q;
     reg        ws_vfy_retry_q;
+    reg [2:0]  ws_retry_cnt_q;
     reg        ws_rdv_timeout_q;
     reg        ws_fin_go_reg_q;
 
@@ -2228,11 +2240,12 @@ module axi_chiplet_controller #(
     //     [2] ws_anchor_timeout_q — STICKY (F4 2026-07-02, FIX-3 2026-07-03):
     //                           the WS_FINALIZE anchor gate (winscan_done held
     //                           until the CDC'd deskew `reanchored` =1) timed
-    //                           out AND all 3 bounded clear-retries (re-pulse
-    //                           the F3 clear, re-wait) ALSO timed out — only
-    //                           then did it fail open. The handoff ran WITHOUT
-    //                           a settled anchor (dead sync_obs_clr routing /
-    //                           un-anchorable eye / beacon-less zombie peer).
+    //                           out AND all WS_ANCHOR_RETRIES(=5, R-A) bounded
+    //                           clear-retries (re-pulse the F3 clear, re-wait)
+    //                           ALSO timed out — only then did it fail open.
+    //                           The handoff ran WITHOUT a settled anchor (dead
+    //                           sync_obs_clr routing / un-anchorable eye /
+    //                           beacon-less zombie peer).
     //                           Cleared on a fresh scan episode (WS_ARM).
     //     [3] ws_anchor_late_q — STICKY (FIX-3 2026-07-03): `reanchored` ROSE
     //                           while fch_done_r was already set — the anchor
@@ -2263,6 +2276,18 @@ module axi_chiplet_controller #(
     //                           longer waits on the peer rendezvous, so this
     //                           always reads 0. Slot kept stable for the
     //                           R-B rework.
+    //     [13:11] ws_retry_cnt_q — FIX-4 (2026-07-04) per-episode ANCHOR-
+    //                           RETRY ATTEMPT COUNTER (saturates at 7):
+    //                           +1 per FIX-3 clear-retry arc. 0 = anchored
+    //                           +verified in the first window; N = N retries
+    //                           fired (the episode took N+1 windows); 5 with
+    //                           [2]=1 = budget exhausted, failed open. On
+    //                           silicon this is the statistic that validates
+    //                           the retry-compounding model (per-roll ~50%
+    //                           first-window odds -> >90% within the budget
+    //                           IFF the attempts are independent — see the
+    //                           FIX-4 jitter block at the winscan FSM).
+    //                           Cleared on a fresh scan episode (WS_ARM).
     //     [31:24] 0x57 ('W')  — presence marker (old images read 0 here).
     //                           UNCONDITIONAL BY DESIGN (LOOP-9 2026-07-03):
     //                           the marker is a constant in the read mux, NOT
@@ -2282,7 +2307,8 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
-        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 13'h0,
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 10'h0,
+                                        ws_retry_cnt_q,
                                         ws_rdv_timeout_q, ws_vfy_retry_q,
                                         fch_quiesced_r,
                                         ws_abort_cnt_q,
@@ -3776,6 +3802,50 @@ module axi_chiplet_controller #(
     // mis-latch before its retry — 5 keeps the fail-open bound ~1.8 s worst
     // case while giving a marginal lane multiple independent re-latch rolls.
     localparam [2:0]  WS_ANCHOR_RETRIES = 3'd5;
+    // FIX-4 (2026-07-04) — DECORRELATED RETRIES (retry-jitter LFSR).
+    //
+    // Silicon evidence: 8 zero-poke rolls across 4 builds show the FINALIZE
+    // anchor re-latch is a PER-BRING-UP LOTTERY — ~coin-flip per die per
+    // roll, loser varying randomly (die_a / die_b / both / nobody, no
+    // order/die correlation), and EVERY failure reads 0x21B8[2]=1 with all 5
+    // FIX-3 retries burned invisibly. If the 5 windows were INDEPENDENT
+    // ~50% rolls the budget would compound to >90% per die (1-0.5^6) — the
+    // observed ~50% per-roll rate means the retries are CORRELATED: they
+    // re-fail identically.
+    //
+    // Root of the correlation: every FIX-3 retry is DETERMINISTICALLY timed.
+    // The inter-attempt dwell is the compile-time constant WS_CLR_HOLD =
+    // 4096 apb cycles — at the ASIC 8:1 apb:word ratio that is EXACTLY 512
+    // word clocks = EXACTLY 16 SYNC_PERIODs (SYNC_PERIOD=32): the hold
+    // contributes ZERO phase shift vs the SYNC grid, and the full attempt
+    // pitch (WS_ANCHOR_TIMEOUT + WS_CLR_HOLD + 2 transition cycles) is the
+    // same constant for every attempt, every roll, both dies. Against a
+    // STATIC repeating within-tol alias in the peer's traffic (the c07f948
+    // mutual-starvation analysis: a repeating pattern that permanently
+    // blocks a marginal lane's confirm run), all 5 windows sample a
+    // lock-stepped phase sequence — retry N fails exactly like retry N-1.
+    //
+    // Fix: JITTER the inter-attempt dwell. A free-running 16-bit LFSR
+    // (apb_clk, POR seed 16'hACE1, never gated) is whitened by XOR-folding
+    // the CDC'd per-lane SYNC-distance vector into its feedback — a live
+    // rx-link-clk-domain observable sampled across a plesiochronous
+    // boundary, so the value read at a retry instant is NOT a pure function
+    // of POR time (per the decorrelation requirement: entropy from the lane
+    // dist bits, no Date-like constructs). Each retry arc extends the
+    // WS_FIN_CLRLOW hold by ws_jitter_w:
+    //   silicon: 2048 + 8*lfsr[11:0] apb cycles = 256..4351 word clocks
+    //            @8:1 — a few hundred to a few thousand word-clocks, in
+    //            1-word steps: fine-grained vs the 32-word SYNC grid and
+    //            spanning many grid periods, so consecutive attempts land
+    //            at genuinely different phases vs SYNC_PERIOD and vs the
+    //            peer's traffic pattern;
+    //   sim:     64 + lfsr[8:0] cycles (floor > 0 so the t33 gate can
+    //            assert the jitter term is live in the dwell path).
+    // Cost: <= 5 x 0.74 ms added to the ~1.8 s worst-case fail-open bound.
+    // Fail-open semantics on final-attempt exhaustion are UNCHANGED (sticky
+    // 0x21B8[2], release anyway). Attempt count observable at 0x21B8[13:11]
+    // (ws_retry_cnt_q) — the statistic that validates the compounding model
+    // on silicon.
     // (Loop-13 2026-07-04: the R-B WS_RDV_TIMEOUT/ws_rdv_to_r rendezvous
     // countdown was removed with the dormant WS_FIN_WAITPEER flow — see
     // 8c1ae6a's diff for the machinery if the R-B rework revives it.)
@@ -3822,6 +3892,35 @@ module axi_chiplet_controller #(
     // FIX-3: the clear-low hold reuses the winscan sim hook (short in sim).
     wire [23:0] ws_clr_hold_load =
         tb_winscan_dwell_short_q ? WS_CLR_HOLD_SIM : WS_CLR_HOLD;
+    // FIX-4 (2026-07-04): free-running retry-jitter LFSR — see the FIX-4
+    // block above the WS_ANCHOR_RETRIES localparam for the full rationale.
+    // 16-bit maximal Fibonacci LFSR (taps x^16+x^14+x^13+x^11), whitened by
+    // XOR-folding the CDC'd 40-bit per-lane SYNC-distance vector into the
+    // feedback (rx-link-clk sampling noise across the plesiochronous 2-FF
+    // boundary — real per-bring-up entropy; with the fold-in a transient
+    // all-zeros word cannot lock the register up, and the nonzero POR seed
+    // covers the fold-in reading constant 0, e.g. under the t33 forced-0
+    // dist model). Runs from POR, never gated — the value sampled at a
+    // retry instant has advanced ~15M steps since the previous attempt.
+    reg  [15:0] ws_jitter_lfsr_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            ws_jitter_lfsr_r <= 16'hACE1;
+        else
+            ws_jitter_lfsr_r <= {ws_jitter_lfsr_r[14:0],
+                                 ws_jitter_lfsr_r[15] ^ ws_jitter_lfsr_r[13]
+                               ^ ws_jitter_lfsr_r[12] ^ ws_jitter_lfsr_r[10]
+                               ^ (^sync_obs_dist_vec_1)};
+    end
+    // Per-retry inter-attempt dwell extension (added to ws_clr_hold_load at
+    // the FIX-3 retry arc). Silicon: 2048..34808 apb cycles in steps of 8
+    // (= 256..4351 word clocks @ the ASIC 8:1 ratio, 1-word granularity vs
+    // the 32-word SYNC grid). Sim (dwell-short hook): 64..575 cycles — the
+    // nonzero floor lets t33e assert the jitter is live in the dwell path.
+    wire [23:0] ws_jitter_w =
+        tb_winscan_dwell_short_q
+            ? (24'd64   + {15'd0, ws_jitter_lfsr_r[8:0]})
+            : (24'd2048 + {9'd0,  ws_jitter_lfsr_r[11:0], 3'b000});
     // F4: 2-flop apb_clk sync of the deskew read-side `reanchored` latch.
     // obs_epoch_anchored_o is the rx-link-clk-domain pass-through from Wlink
     // (u_deskew reanchored → WavD2DGpio epoch_anchored → WlinkGPIOPHY →
@@ -3910,6 +4009,11 @@ module axi_chiplet_controller #(
     wire [WS_DW_W-1:0] ws_fin_wait_load =
         tb_winscan_dwell_short_q ? WINSCAN_FIN_WAIT_SIM[WS_DW_W-1:0]
                                  : WINSCAN_FIN_WAIT[WS_DW_W-1:0];
+    // FIX-4b (2026-07-05): retry re-entry RE-CLEAR SETTLE dwell — the 24-bit
+    // clear-low hold constant zero-extended onto the (wider, >=25-bit from
+    // the 25M WINSCAN_FIN_WAIT) dwell counter. See the WS_FIN_CLRLOW exit arm.
+    wire [WS_DW_W-1:0] ws_clr_settle_load =
+        {{(WS_DW_W-24){1'b0}}, ws_clr_hold_load};
 
     // Arm kick: the autoneg training-mode falling edge on the autonomous path
     // (= post role-lock + cal-done + lane-lock = SYNC-detect-capable), the SAME
@@ -4014,6 +4118,7 @@ module axi_chiplet_controller #(
             ws_anchor_retry_r    <= 3'd0;
             ws_abort_cnt_q       <= 4'd0;
             ws_vfy_retry_q       <= 1'b0;
+            ws_retry_cnt_q       <= 3'd0;
             ws_rdv_timeout_q     <= 1'b0;
             ws_phase_offset_r <= 32'h0;
             ws_phase_lsb_r    <= 8'h0;
@@ -4099,6 +4204,8 @@ module axi_chiplet_controller #(
                     // R-A/R-B: fresh per-episode stickies.
                     ws_vfy_retry_q      <= 1'b0;
                     ws_rdv_timeout_q    <= 1'b0;
+                    // FIX-4: fresh per-episode attempt counter (0x21B8[13:11]).
+                    ws_retry_cnt_q      <= 3'd0;
                     ws_state_r         <= WS_NEXT_LANE_ENTER;
                 end
                 // -------------------------------------------------------------
@@ -4346,8 +4453,9 @@ module axi_chiplet_controller #(
                         if (ws_anchor_retry_r != 3'd0) begin
                             // FIX-3 BOUNDED CLEAR-RETRY (2026-07-03): the
                             // anchor did not latch in this wait — re-pulse
-                            // the F3 clear and re-wait (up to 3 attempts)
-                            // before failing open. Drop the clear level and
+                            // the F3 clear and re-wait (up to
+                            // WS_ANCHOR_RETRIES=5 attempts, R-A) before
+                            // failing open. Drop the clear level and
                             // hold it LOW in WS_FIN_CLRLOW so the destination
                             // 2-FF level sync + edge-detect re-arms; the next
                             // rise is a FRESH clear pulse. Beacons are never
@@ -4366,11 +4474,25 @@ module axi_chiplet_controller #(
                             // anchor-verify sticky (same sync_obs_clr edge),
                             // so the re-anchor re-rolls the per-lane slot
                             // confirm from scratch.
+                            // FIX-4 (2026-07-04): DECORRELATE the attempts —
+                            // extend the clear-low hold by the LFSR jitter
+                            // (ws_jitter_w, sampled HERE) so the next
+                            // window's clear pulse lands at a different
+                            // phase vs SYNC_PERIOD and vs the peer's
+                            // repeating traffic pattern (the old constant
+                            // WS_CLR_HOLD = exactly 16 SYNC periods @8:1 =
+                            // zero grid phase shift -> all 5 attempts
+                            // lock-stepped onto the same alias — see the
+                            // FIX-4 block above). Count the attempt into
+                            // the per-episode 0x21B8[13:11] observability
+                            // counter (saturating).
                             if (ws_anchor_q)
                                 ws_vfy_retry_q <= 1'b1;
                             ws_anchor_retry_r <= ws_anchor_retry_r - 3'd1;
+                            ws_retry_cnt_q    <= (ws_retry_cnt_q == 3'd7)
+                                                 ? 3'd7 : ws_retry_cnt_q + 3'd1;
                             ws_obs_clr_r      <= 1'b0;
-                            ws_anchor_to_r    <= ws_clr_hold_load;
+                            ws_anchor_to_r    <= ws_clr_hold_load + ws_jitter_w;
                             ws_state_r        <= WS_FIN_CLRLOW;
                         end else begin
                             // F4 FAIL-LOUD timeout (retries exhausted): the
@@ -4396,7 +4518,10 @@ module axi_chiplet_controller #(
                 // -------------------------------------------------------------
                 WS_FIN_CLRLOW: begin
                     // FIX-3: hold the F3 clear LOW (ws_anchor_to_r reused as
-                    // the hold counter), then re-raise it and re-enter the
+                    // the hold counter — FIX-4: loaded with base hold +
+                    // per-attempt LFSR jitter at the retry arc, so this
+                    // dwell is what decorrelates consecutive attempts), then
+                    // re-raise it and re-enter the
                     // FINALIZE anchor poll with a fresh timeout. force-SYNC
                     // and tap ownership stay held throughout (still FINALIZE
                     // in spirit); winscan_done stays 0 (fch stays blocked).
@@ -4405,7 +4530,33 @@ module axi_chiplet_controller #(
                     end else begin
                         ws_obs_clr_r   <= 1'b1;   // fresh clear pulse at dest
                         ws_anchor_to_r <= ws_anchor_to_load;
-                        ws_dwell_r     <= '0;     // skip the F3b dwell on re-entry
+                        // FIX-4b (2026-07-05) — RE-CLEAR SETTLE. Do NOT poll
+                        // the release gate right after re-entry: the fresh
+                        // clear pulse is IN FLIGHT for ~2-3 LINK-clock cycles
+                        // (apb->link 2-FF level sync + edge detect) and only
+                        // then drops the deskew `reanchored` AND the anchor-
+                        // verify sticky (same sync_obs_clr edge) — so
+                        // ws_anchor_q / ws_verify_q read STALE pre-clear
+                        // values for tens of apb cycles after re-entry. The
+                        // old '0 dwell ("skip the F3b dwell") let the FSM
+                        // release winscan_done on that stale pair whenever
+                        // the verify latched during the clear-low hold (a
+                        // marginal lane finally confirming — or t33e's
+                        // released force); the in-flight clear then landed
+                        // POST-RELEASE and wiped the anchor under the
+                        // bootstrapping link (t33e wedge signature: slave
+                        // anc_late=1 late-heal, master rea=0 starved under
+                        // data-mode traffic). LATENT race predating FIX-4 —
+                        // the retry jitter merely moved the window phases
+                        // onto it. Settle for ws_clr_hold_load (the SAME
+                        // constant already sized ">> the slowest link-clock
+                        // 2-FF window" for exactly this CDC path) so the
+                        // first release poll strictly follows the LANDED
+                        // clear and reads genuinely post-clear anchor+verify
+                        // state. The first window's 0.5 s F3b entry dwell
+                        // already provides this settle at FINALIZE entry —
+                        // retries now do too. Cost: +82 us/retry (silicon).
+                        ws_dwell_r     <= ws_clr_settle_load;
                         ws_state_r     <= WS_FINALIZE;
                     end
                 end

@@ -205,7 +205,10 @@ R_RXCAP0=0x440321A0     # RX-framer long-DATA sticky capture word 0
 R_RXCAP1=0x440321A4     # RX-framer long-DATA sticky capture word 1
 R_FCSMCAP=0x440321A8    # FCSM transition sticky capture
 R_WINSCAN_OBS=0x440321B8 # [0]=winscan_done [1]=ws_degenerate(sticky)
-                         # [2]=ws_anchor_timeout(sticky) [31:24]=0x57 presence
+                         # [2]=ws_anchor_timeout(sticky) [3]=anchored-late
+                         # [7:4]=abort cnt [9]=vfy-retry [13:11]=FIX-4 anchor-
+                         # retry attempt cnt (per-episode; reads 0 pre-FIX-4)
+                         # [31:24]=0x57 presence
 GP1_TX=0x84000000        # GP1 TX DATA aperture (txburst target; GP0 0x44xxxxxx data hangs)
 
 # HARDWARE-SAFETY: NEVER WRITE 0x440321B0 (SYNC_DIST_SEL) or 0x440321B4

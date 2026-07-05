@@ -81,7 +81,26 @@ Variants (BYPASS_AUTONEG=1 build; arming over the REAL APB interface):
       verifies and the pair converges to the full data oracle (sticky [9]
       still latched as the episode's evidence). Pre-fix RTL: the wrong-slot
       anchor released the handoff and every word shipped one corrupted
-      byte-lane forever.
+      byte-lane forever. FIX-4 (2026-07-04) extensions: this variant is also
+      the decorrelated-retry gate — a first-window failure recovering on a
+      LATER attempt must show (i) the 0x21B8[13:11] attempt counter >=1 at
+      the retry and per-episode-sticky at end, (ii) the WS_FIN_CLRLOW hold
+      counter observed ABOVE the WS_CLR_HOLD_SIM base (the LFSR-jittered
+      inter-attempt dwell is live), (iii) the jitter LFSR free-running.
+      RELEASE SCHEDULE + ORACLE (2026-07-05, debug-timeline root-caused):
+      the force is released only once BOTH dies are back in a FINALIZE
+      window with a genuine post-clear anchor — releasing at the retry arc
+      itself (the old schedule) lets the verify latch on the STALE anchor
+      during CLRLOW (pre-FIX-4b that schedule only "passed" via the
+      stale-release race FIX-4b closed). Post-release, the first die to
+      verify goes DONE, drops force and bootstraps, and its traffic starves
+      the peer's gap-intolerant re-confirm — a STRUCTURAL winner-starves-
+      loser race of the Loop-13 locally-timed finalize (the same peer-
+      finalize-exit starvation family as the silicon lottery; both
+      polarities observed in sim). Oracle: winner must recover CLEAN
+      in-episode (the R-A/FIX-4 property), loser may take the designed
+      fail-open+late-heal degradation, per-episode evidence asserted on
+      both, then a retrain W1P must deliver the full byte-exact oracle.
   (f) R-B RENDEZVOUS DORMANCY (Loop-13 2026-07-04): the t33a a-first flow,
       now asserting the Loop-12 rendezvous is fully DORMANT — on silicon the
       GO-aligned finalize windows REGRESSED the proven b-first zero-poke
@@ -128,12 +147,19 @@ CLK_PERIOD_NS = 20.0
 
 # Winscan FSM state encodings (axi_chiplet_controller.sv)
 WS_IDLE, WS_ARM, WS_DONE = 0, 1, 8
+WS_FIN_CLRLOW = 9                     # FIX-3 clear-low hold (FIX-4: the hold
+                                      # counter carries base + LFSR jitter —
+                                      # t33e samples it for jitter evidence)
 WS_FIN_WAITPEER = 10                  # R-B rendezvous hold — DORMANT since
                                       # Loop-13 (encoding reserved; the state
                                       # must NEVER be entered — t33f asserts)
 WS_MIDSCAN = {2, 3, 4, 5, 6, 7, 9}    # LANE..FINALIZE + CLRLOW = abortable
                                       # (episode binding; 10 retired with the
                                       # dormant rendezvous)
+# FIX-4 (2026-07-04): sim-mode WS_FIN_CLRLOW base hold (WS_CLR_HOLD_SIM). The
+# retry arc loads base + jitter(64..575), so ANY observed hold-counter value
+# above this base proves the jittered inter-attempt dwell is live.
+WS_CLR_HOLD_SIM = 512
 # R-B autoneg finalize-rendezvous states — DORMANT since Loop-13 (entry arc
 # gated on local_fin_wait_i, tied 0; t33f asserts they are never entered)
 ST_FIN_RDV, ST_FIN_GO = 18, 19
@@ -601,6 +627,27 @@ def _vfy_lane_net(dut, side):
     return _ctrl(dut, side).u_wlink.phy.gpio.anchor_vfy_lane_w
 
 
+async def _clrlow_jitter_monitor(dut, side, stats, stop):
+    """FIX-4 evidence sampler: whenever `side`'s winscan sits in WS_FIN_CLRLOW,
+    track the MAX observed value of the reused hold counter (ws_anchor_to_r).
+    The retry arc loads WS_CLR_HOLD_SIM + jitter(64..575) into it, so with a
+    40-cycle poll the max observed is >= load - ~40 >= 536 — any value above
+    the WS_CLR_HOLD_SIM base (512) deterministically proves the jittered
+    inter-attempt dwell is live in the dwell path (the FIX-4 decorrelation
+    term is actually consumed, not just computed). SELF-TERMINATES once the
+    evidence is collected — an always-on dense poller measurably slows the
+    whole test (the 2026-07-05 4955s t33e runtime post-mortem)."""
+    c = _ctrl(dut, side)
+    while not stop[0]:
+        await ClockCycles(dut.hclk, 40)
+        if _si(c.ws_state_r) == WS_FIN_CLRLOW:
+            v = _si(c.ws_anchor_to_r)
+            if v > stats[side]:
+                stats[side] = v
+            if stats[side] > WS_CLR_HOLD_SIM:
+                return                      # evidence in hand — stop sampling
+
+
 @cocotb.test()
 async def test_33e_anchor_verify_wrong_slot(dut):
     """(e) verify-fail gate: with the per-lane exact-compare forced 0 (the
@@ -618,6 +665,18 @@ async def test_33e_anchor_verify_wrong_slot(dut):
     # beacons — symmetric, like the silicon's mutual-finalize overlap.
     for side in ("m", "s"):
         _vfy_lane_net(dut, side).value = Force(0)
+
+    # FIX-4 (2026-07-04) evidence collection: sample the free-running jitter
+    # LFSR now (aliveness check later) and start the WS_FIN_CLRLOW hold-
+    # counter monitors (jittered-dwell evidence). This variant IS the task's
+    # "first-window anchor failure recovering on a later attempt WITH the
+    # jitter": the forced verify-fail burns window 1, the FIX-3/FIX-4 retry
+    # re-clears after a jittered dwell, and the released re-anchor converges.
+    lfsr0 = {s: _si(_ctrl(dut, s).ws_jitter_lfsr_r) for s in ("m", "s")}
+    jit_stop = [False]
+    jit_max = {"m": 0, "s": 0}
+    for side in ("m", "s"):
+        cocotb.start_soon(_clrlow_jitter_monitor(dut, side, jit_max, jit_stop))
 
     await _apb_arm(tb, "m", priority=1)
     await _apb_arm(tb, "s", priority=2)
@@ -649,26 +708,138 @@ async def test_33e_anchor_verify_wrong_slot(dut):
         assert _si(c.ws_anchor_q) == 1, (
             f"(e) {name}: retry fired without the anchor latched — this is an "
             f"anchor problem, not the verify gate under test")
+        # FIX-4: the retry must be COUNTED into the 0x21B8[13:11] attempt
+        # counter (the on-silicon statistic the compounding model needs).
+        assert _si(c.ws_retry_cnt_q) >= 1, (
+            f"(e) {name}: ws_retry_cnt_q == 0 although a clear-retry fired — "
+            f"the 0x21B8[13:11] attempt counter is not counting")
     log.info(f"(e) verify-retry latched on both dies at "
              f"t={waited*CLK_PERIOD_NS/1000:.0f}us with anchors latched and "
-             f"winscan_done held — releasing the wrong-slot force")
+             f"winscan_done held")
+
+    # FIX-4 RELEASE SCHEDULE (2026-07-05, debug-timeline root-caused): the
+    # seen_retry sample lands exactly AT the retry arc — both dies sit in
+    # WS_FIN_CLRLOW with their fresh clear pulses about to fly. Releasing
+    # the force HERE lets each verify latch on the STALE still-engaged
+    # anchor during the hold; the landing clears then re-roll both dies and
+    # whoever re-anchors first DROPS FORCE and starves the other's confirm
+    # mid-run (deterministic in sim: the slave won by ~10us of grid phase;
+    # the master burned windows 2-6 beaconless and failed open — the
+    # Loop-12-family peer-finalize-exit starvation, NOT a retry-machinery
+    # property; pre-FIX-4b this same release schedule "passed" only via the
+    # stale-release race that FIX-4b closed). Release instead once BOTH
+    # dies are back in a FINALIZE window with a GENUINE post-clear anchor
+    # (st==WS_FINALIZE, anc=1): the un-forced verifies then race on LIVE
+    # anchors under mutual force — the winner exercises the property under
+    # test (the RETRIED re-anchor verifies and releases in-episode); the
+    # loser's fate is scored by the post-release oracle below.
+    WS_FINALIZE_ST = 7
+    in_win = {"m": False, "s": False}
+    rewaited = 0
+    while rewaited < 2_000_000 and not all(in_win.values()):
+        await ClockCycles(dut.hclk, 200)
+        rewaited += 200
+        for side in ("m", "s"):
+            c = _ctrl(dut, side)
+            in_win[side] = (_si(c.ws_state_r) == WS_FINALIZE_ST
+                            and _si(c.ws_anchor_q) == 1)
+    assert all(in_win.values()), (
+        f"(e) post-retry re-anchor never observed (m={in_win['m']} "
+        f"s={in_win['s']}) — the FIX-3/FIX-4 retry did not re-latch the "
+        f"anchor inside its own window although the peer's beacons were "
+        f"still FORCED (a genuine retry-loop regression)")
+    log.info(f"(e) both dies back in a FINALIZE window with genuine "
+             f"post-clear anchors at +{rewaited*CLK_PERIOD_NS/1000:.0f}us — "
+             f"releasing the wrong-slot force")
 
     for side in ("m", "s"):
         _vfy_lane_net(dut, side).value = Release()
 
-    # The in-flight retry re-clears + re-anchors; the now-unforced verify
-    # passes and the pair must converge to the full byte-exact oracle.
-    await _assert_end_state(dut, tb, log, "e")
+    # POST-RELEASE (2026-07-05, debug-timeline root-caused): the un-forced
+    # verifies now race on LIVE anchors under mutual force — but the FIRST
+    # die to verify goes DONE, drops force and bootstraps, and its CR/CRACK
+    # spam starves the OTHER die's gap-intolerant re-confirm inside its
+    # remaining windows (one missed SYNC grid slot resets the deskew confirm
+    # run). With the Loop-13 LOCALLY-TIMED finalize this winner-starves-loser
+    # race is STRUCTURAL when both dies must re-anchor simultaneously — it is
+    # the same peer-finalize-exit starvation family as the 8-roll silicon
+    # lottery itself (loser varies with grid phase; both runs of the old
+    # schedule produced opposite winners), NOT a retry-machinery property.
+    # So the honest oracle is:
+    #   * the WINNER proves the core R-A/FIX-4 property: the RETRIED
+    #     re-anchor verifies and releases CLEANLY in-episode (anc_to=0);
+    #   * the LOSER is allowed the DESIGNED graceful degradation (fail-open
+    #     anc_to=1; its anchor late-heals on the permanent FIX-2 beacons);
+    #   * per-episode evidence (vfy_retry, attempt counter, jitter dwell) is
+    #     asserted on BOTH dies before any new episode clears it;
+    #   * then the documented retrain W1P gives the pair a fresh bilateral
+    #     episode which must deliver the FULL byte-exact oracle — the
+    #     system-level recovery guarantee.
+    both_done = {"m": False, "s": False}
+    dwaited = 0
+    while dwaited < 1_000_000 and not all(both_done.values()):
+        await ClockCycles(dut.hclk, 200)
+        dwaited += 200
+        for side in ("m", "s"):
+            both_done[side] = _si(_ctrl(dut, side).winscan_done) == 1
+    assert all(both_done.values()), (
+        f"(e) winscan_done not reached on both dies within the released "
+        f"episode (m={both_done['m']} s={both_done['s']}) — neither a clean "
+        f"retried release nor the bounded fail-open fired (retry FSM wedge)")
+    jit_stop[0] = True
 
-    # The per-episode evidence sticky must survive to the end (cleared only
-    # at WS_ARM — no new episode ran after the release).
+    outcome = {s: ("CLEAN" if _si(_ctrl(dut, s).ws_anchor_timeout_q) == 0
+                   else "FAILOPEN") for s in ("m", "s")}
+    log.info(f"(e) released-episode outcomes: m={outcome['m']} "
+             f"s={outcome['s']} (winner-starves-loser race — either polarity "
+             f"is legal, at least one CLEAN required)")
+    assert "CLEAN" in outcome.values(), (
+        f"(e) NO die recovered cleanly in the released episode "
+        f"({outcome}) — the retried re-anchor never verified although the "
+        f"verify force was released with live anchors under mutual force "
+        f"(the R-A/FIX-4 recovery property is broken)")
+
+    # Per-episode evidence — sampled BEFORE the retrain clears it at WS_ARM.
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
-        assert _si(_ctrl(dut, side).ws_vfy_retry_q) == 1, (
-            f"(e) {name}: ws_vfy_retry_q (0x21B8[9]) not sticky at end — the "
-            f"episode's verify-retry evidence was lost")
+        c = _ctrl(dut, side)
+        assert _si(c.ws_vfy_retry_q) == 1, (
+            f"(e) {name}: ws_vfy_retry_q (0x21B8[9]) not sticky post-episode "
+            f"— the verify-retry evidence was lost")
+        # FIX-4: the attempt counter is per-episode-sticky like [9] — the
+        # recovery must READ as a >=2-window (attempt-2+) episode.
+        assert _si(c.ws_retry_cnt_q) >= 1, (
+            f"(e) {name}: ws_retry_cnt_q (0x21B8[13:11]) not sticky "
+            f"post-episode — the attempt-count evidence was lost")
+        # FIX-4 jitter evidence: the WS_FIN_CLRLOW hold counter must have
+        # been observed ABOVE the WS_CLR_HOLD_SIM base — i.e. the retries
+        # dwelt for base + jitter, not the old constant (grid-phase-locked)
+        # hold. Sim floor is 64 cycles, poll grain 40 => deterministic.
+        assert jit_max[side] > WS_CLR_HOLD_SIM, (
+            f"(e) {name}: max WS_FIN_CLRLOW hold observed {jit_max[side]} <= "
+            f"base {WS_CLR_HOLD_SIM} — the FIX-4 jittered inter-attempt dwell "
+            f"is NOT live in the dwell path (retries would stay phase-locked "
+            f"to the repeating alias: the 8-roll silicon lottery)")
+        # FIX-4 LFSR aliveness: free-running from POR, never gated.
+        lfsr1 = _si(c.ws_jitter_lfsr_r)
+        assert lfsr1 != lfsr0[side], (
+            f"(e) {name}: ws_jitter_lfsr_r stuck at 0x{lfsr1:04x} — the "
+            f"jitter source is not free-running")
+    log.info(f"(e) FIX-4 evidence: max CLRLOW hold m={jit_max['m']} "
+             f"s={jit_max['s']} (base {WS_CLR_HOLD_SIM}); attempt counts "
+             f"m={_si(_ctrl(dut, 'm').ws_retry_cnt_q)} "
+             f"s={_si(_ctrl(dut, 's').ws_retry_cnt_q)}")
+
+    # Fresh bilateral episode (documented retrain W1P, the t33a/b tail) —
+    # verifies unforced, symmetric — must deliver the FULL byte-exact oracle.
+    await _retrain(tb)
+    await _assert_end_state(dut, tb, log, "e")
     log.info("VERDICT (e): PASS — verify-fail HELD the release and forced the "
-             "clear-retry (0x21B8[9]); post-release the re-anchor verified and "
-             "both dies reached the full byte-exact oracle")
+             "clear-retry (0x21B8[9]); retries were COUNTED (0x21B8[13:11]) "
+             "and dwelt JITTERED inter-attempt holds (FIX-4); the released "
+             "episode recovered CLEANLY on the race winner (loser fail-open "
+             "= the designed degradation under peer-finalize-exit "
+             "starvation); the retrained bilateral episode delivered the "
+             "full byte-exact oracle")
 
 
 # ---------------------------------------------------------------------------

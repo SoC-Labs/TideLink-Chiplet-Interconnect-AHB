@@ -334,24 +334,8 @@ module WavD2DGpioRx #(
       assign w_pad_clk = pad_clk_inv_scan_mux_1_io_o_z;
 `endif
     end else begin : g_cap_passthrough
-      // SoC Labs die_b RX-capture LUT-clock fix (2026-07-04): on FPGA
-      // (USE_CLKBUF=1) io_pol/io_scan_mode are static-0, so the
-      // WavClockMux/WavClockInv scan+pol muxes synthesise to a fabric LUT
-      // that de-globalises the capture clock after the shared u_rxclk_buf
-      // BUFG (Place 30-568: one merged LUT driving 128 capture-flop clock
-      // pins -> ~-12 ns hold on the flip/Y9-SRCC die). Drive the capture and
-      // count clocks DIRECTLY from the shared BUFG net io_pad_clk, bypassing
-      // the mux LUTs -- logically bit-exact when io_pol=io_scan_mode=0, and
-      // adds NO per-lane BUFG (avoids the USE_CAP_CLKBUF=1 8-BUFG inter-lane
-      // skew that failed 2026-06-20). sim/ASIC (USE_CLKBUF=0) keep the exact
-      // mux path below (generate branch pruned, no Xilinx primitive).
-      if (USE_CLKBUF) begin : g_cap_direct
-        assign w_cnt_clk = io_pad_clk;
-        assign w_pad_clk = io_pad_clk;
-      end else begin : g_cap_mux
-        assign w_cnt_clk = pad_clk_scan_mux_io_o_z;
-        assign w_pad_clk = pad_clk_inv_scan_mux_1_io_o_z;
-      end
+      assign w_cnt_clk = pad_clk_scan_mux_io_o_z;
+      assign w_pad_clk = pad_clk_inv_scan_mux_1_io_o_z;
     end
     // ----- derived word-clock axis: USE_LNK_CLKBUF ----------------------
     if (USE_LNK_CLKBUF) begin : g_lnk_bufg

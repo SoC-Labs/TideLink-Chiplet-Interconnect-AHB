@@ -427,5 +427,14 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # skew that blinds the SRCC-side RX) WITHOUT the over-congestion of pinning all 128.
 create_pblock pblock_rx_act
 add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+# SoC Labs die_b hold fix (2026-07-05): pull the RX capture-clock buffer + the
+# per-lane IDELAYE2s into the SAME clock-region band as the active captures, so
+# the (LUT-driven, 128-fanout) capture-clock routes + the IDELAYE2->capture data
+# routes shorten and equalise -> cuts the ~-4ns hold on the SRCC side WITHOUT
+# changing the RX clock (Option 1's direct-drive removed the LUT delay the SRCC
+# calibrator needs to lock -> die_b lock=0x00; this placement fix keeps the LUT
+# so die_b still locks, and only tightens routing).
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*u_rxclk_buf/*"}]
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {REF_NAME == IDELAYE2 && NAME =~ "*u_idelay_rx*"}]
 resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
 set_property IS_SOFT false [get_pblocks pblock_rx_act]

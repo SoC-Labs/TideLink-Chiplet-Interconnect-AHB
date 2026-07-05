@@ -176,7 +176,23 @@ create_clock -period 426.666 -name pad_clk_rx [get_ports pad_clk_rx]
 # run off user_ref_clk = clk_out1 / BUFGCE_DIV(2) = 2.343 MHz. Keep -source on
 # clk_out1 (it is in pad_clk_tx's fanin through the BUFGCE_DIV) but -divide_by 2
 # so pad_clk_tx_fwd is defined at 2.343 MHz / 426.666 ns (was -divide_by 1).
-create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] -divide_by 2 [get_ports pad_clk_tx]
+# SoC Labs die_b Group-C phantom-hold fix (2026-07-04): the TX serializer flops
+# (io_pad_q_reg) actually LAUNCH off user_ref_clk_div2 (the phy_clk_div toggle-FF
+# BUFG /2 net from fb8045d), NOT clk_out1/BUFGCE_DIV. Sourcing pad_clk_tx_fwd from
+# clk_out1 -divide_by 2 makes it a DIFFERENT /2 clock Vivado cannot prove phase-
+# aligned to the launch -> a ~-27 ns phantom hold on pad_tx[*] vs the +/-20 ns
+# output window (8 endpoints, a CRITICAL-WARNING that trips the impl CW-count gate).
+# Re-source pad_clk_tx_fwd from the SAME /2 node (u_div_bufg/O == user_ref_clk_div2,
+# -divide_by 1) so launch and forwarded clock share one edge -> coherent source-sync.
+# [4a] user_ref_clk_div2 — MOVED here (2026-07-04) so it precedes pad_clk_tx_fwd
+# below, which sources from the same u_div_bufg/O pin (sequential XDC needs the
+# master declared first). phy_clk_div toggle-FF (div_q_reg, clk_out1 master) ->
+# BUFG (u_div_bufg) -> /2 = 426.666 ns global clock net (drives user_ref_clk +
+# scan_clk). Stable explicit name for the async clock_groups below.
+create_generated_clock -name user_ref_clk_div2 \
+    -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*div_q_reg*/C"}] \
+    -divide_by 2 [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}]
+create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}] -divide_by 1 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns
 # of the 160 ns period for board trace + peer setup/hold (v36: scaled 4x with
@@ -229,7 +245,13 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+# SoC Labs die_b fix (2026-07-04): set_bus_skew -from does NOT accept ports
+# (Constraints 18-611/18-612 CRITICAL WARNINGs -> constraint dropped + trips the
+# impl CW-count gate). Use the launch clock as -from (a legal object type); this
+# bounds the inter-lane clock-arrival skew at the capture regs, which is exactly
+# what the SRCC-side clock tree needs. With the Group-B fix (capture clock driven
+# straight off the shared BUFG net) the lanes share one net so this is trivially met.
+set_bus_skew -from [get_clocks pad_clk_rx] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -277,9 +299,11 @@ set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_o
 #   -source = the toggle-FF CLOCK pin (carries the clk_out1 master), the generated
 #   clock is defined on the BUFG OUTPUT pin, -divide_by 2 -> 426.666 ns. The exact
 #   (wildcard) NAME filters resolve to exactly one pin each (the single divider).
-create_generated_clock -name user_ref_clk_div2 \
-    -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*div_q_reg*/C"}] \
-    -divide_by 2 [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}]
+# [4a] user_ref_clk_div2 create_generated_clock MOVED UP (2026-07-04) to just
+# before the [2] pad_clk_tx_fwd stanza: pad_clk_tx_fwd now sources from this same
+# u_div_bufg/O pin, and the XDC is read sequentially, so the master clock must be
+# declared first (a forward reference here would leave pad_clk_tx_fwd unbound).
+# The definition now lives immediately above the pad_clk_tx_fwd create_generated_clock.
 
 #-----------------------------------------------------------------------------
 # [4b] TX WORD CLOCK (gpiotx_0 = local hsclk/16). PORTED from the PHY-BIST
@@ -336,6 +360,18 @@ set_clock_groups -asynchronous \
 #-----------------------------------------------------------------------------
 # Board LEDs are human-visible; no functional timing path needed.
 set_false_path -to [get_ports {led0 led1 led2 led3}]
+
+# SoC Labs die_b Group-A fix (2026-07-04): the quasi-static IDELAYE2 tap-load
+# (swi_phase_offset[clk_out1] -> CNTVALUEIN[clk_out3 200MHz]) is timed as a tight
+# single-cycle 25->200MHz CDC (~-1.4ns setup, 40 eps) but is functionally static
+# (calibrator holds it stable, pulses LD, no change until link-down recal). The
+# canonical false_path for it lives in pynq_z2_tidelink_idelay.xdc but that file
+# is SKIPPED unless FPGA_USE_IDELAY=1 (unset), while the IDELAYE2 cells ARE in the
+# packaged IP -> the setup CW trips the impl gate. Apply the (surgical) false_path
+# here, in the always-loaded timing XDC, without touching the idelay IOB/IODELAY
+# policy. die_a ships with this same benign violation -> proven safe to waive.
+set_false_path -to [get_pins -filter {REF_PIN_NAME =~ CNTVALUEIN[*]} \
+    -of_objects [get_cells -hierarchical -filter {REF_NAME == IDELAYE2}]]
 
 #-----------------------------------------------------------------------------
 # [7] Combinational loop waiver (unchanged — keep intact)

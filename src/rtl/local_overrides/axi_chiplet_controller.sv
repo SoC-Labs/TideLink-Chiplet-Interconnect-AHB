@@ -4735,6 +4735,57 @@ module axi_chiplet_controller #(
     // a val_ctr timeout WITHOUT validate_confirm latches terminal S_DONE,
     // asserting calibration_done so lltx enables and CR can run. HW equivalent
     // of the sim tb_early_exit_force_q bypass. M8 give-up policy; sim-clean.
+    // =====================================================================
+    // AUTONEG CAL RE-SWEEP ONE-SHOT (2026-07-06, feat/autoneg-cal-resweep)
+    // ---------------------------------------------------------------------
+    // ROOT CAUSE addressed: autonomous-link data is marginal (15/28) vs the
+    // manual-recipe data (26/28) on the SAME build. The manual SWI_RECAL
+    // (R8 bit[1]) drives an UNMASKED calibrator swreset -> a fresh full
+    // sweep to a validated eye-centre with BOTH boards held in training by
+    // SW. The autonomous path instead KEEPS its first-pass (POR-race) eye:
+    // the Phase-7b + L4 mask below (~(cal_eye_converged_r|sync_cal_in_hold_1))
+    // suppresses the ST_TRAIN_EXIT re-sweep pulse the instant the die has
+    // converged / is parked, so it never re-sweeps like the manual recal.
+    //
+    // FIX (Option A): permit EXACTLY ONE autonomous re-sweep to bypass that
+    // suppression per training bring-up, then latch the exception off so
+    // SUBSEQUENT ST_TRAIN_EXIT episodes (e.g. a retrain triggered later,
+    // while live NON-training data is on the wire) can NEVER re-sweep --
+    // that perpetual re-sweep-vs-data is the exact failure the Phase-7b/L4
+    // mask was added to prevent (see the u_calibrator .swreset rationale
+    // just below). A manual SWI_RECAL re-arms the one-shot (same semantics
+    // as its clearing of cal_eye_converged_r), so SW-driven recovery is
+    // unchanged.
+    //
+    // ANTI-OSCILLATION / full-width guard: local_swreset_pulse_w is a
+    // T_SWRESET_HOLD (127-cycle) LEVEL, and the calibrator re-triggers its
+    // sweep on the swreset FALLING edge, so the grant MUST persist for the
+    // whole pulse (a 1-cycle apb pulse would not survive the apb->rx_link
+    // swreset_q CDC edge-detect). We therefore consume the one-shot on the
+    // FALLING edge of the pulse (via local_swreset_pulse_q edge-detect), not
+    // combinationally on the level -- the granted pulse stays full-width,
+    // and only the NEXT pulse is masked. Same apb_clk/poresetn domain as
+    // local_swreset_pulse_w and swi_recal_r, so no CDC is introduced.
+    reg autoneg_resweep_used_r;   // 0 = the one-shot re-sweep is still available
+    reg local_swreset_pulse_q;    // 1-cycle delay of the pulse for falling-edge detect
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            autoneg_resweep_used_r <= 1'b0;
+            local_swreset_pulse_q  <= 1'b0;
+        end else begin
+            local_swreset_pulse_q <= local_swreset_pulse_w;
+            if (swi_recal_r)
+                autoneg_resweep_used_r <= 1'b0;   // manual recal re-arms the one-shot
+            else if (local_swreset_pulse_q && !local_swreset_pulse_w)
+                autoneg_resweep_used_r <= 1'b1;   // falling edge: consume the one-shot
+        end
+    end
+    // The FIRST autonomous ST_TRAIN_EXIT pulse is granted in FULL even when the
+    // die has converged / is parked; every subsequent pulse falls back to the
+    // original Phase-7b/L4 mask (so a genuinely never-locked die can still
+    // re-arm, but a converged/in-hold die cannot re-sweep against live data).
+    wire autoneg_first_resweep_w = local_swreset_pulse_w & ~autoneg_resweep_used_r;
+
     tidelink_phy_align_calibrator #(
         .VAL_TIMEOUT_TO_DONE (1'b1)
     ) u_calibrator (
@@ -4767,7 +4818,17 @@ module axi_chiplet_controller #(
         // proven the local die is parked with all active lanes locked, so a
         // re-sweep is never wanted. A genuinely-unconverged die is NOT parked
         // (cal_in_hold=0) so the legitimate "never-locked" re-arm still fires.
+        //
+        // 2026-07-06 (feat/autoneg-cal-resweep): OR in autoneg_first_resweep_w
+        // so the FIRST autonomous ST_TRAIN_EXIT pulse re-sweeps ONCE even when
+        // the die has converged / is parked -- replaying the manual SWI_RECAL's
+        // fresh full sweep to a validated eye-centre. The one-shot latch
+        // (autoneg_resweep_used_r, declared above) masks EVERY subsequent pulse
+        // back to the Phase-7b/L4 term, so a later retrain can never re-sweep
+        // against live data (the oscillation the mask guards). swi_recal_r
+        // re-arms the one-shot for SW-driven recovery.
         .swreset                (swi_recal_r |
+                                 autoneg_first_resweep_w |
                                  (local_swreset_pulse_w &
                                   ~(cal_eye_converged_r | sync_cal_in_hold_1))),
         .lane_locked            (lane_locked_w),

@@ -2096,6 +2096,7 @@ end // initial
   //   Pure read-only observer of existing FCSM nets — NO functional change to the
   //   FC datapath (disable_crc / L9b untouched). Reset is the FCSM async POR.
   // ===========================================================================
+`ifndef TIDELINK_NO_BEATCAP
   reg  [31:0] beatcap_mem [0:31];
   reg  [5:0]  beatcap_wptr;      // fill count 0..32 (6b so 32 is representable)
   reg         beatcap_frozen;
@@ -2146,5 +2147,16 @@ end // initial
   // controller walks rptr, so this reads stable data across the CDC.
   assign io_obs_capdata = beatcap_mem[io_cap_rptr];
   assign io_obs_capstat = {beatcap_frozen, 2'b0, beatcap_wptr};
+`else
+  // SLICE-FIT TRADE (2026-07-06 feat/ptp-fpga-readd): TIDELINK_NO_BEATCAP drops
+  // the 32-entry per-beat capture ring (beatcap_mem = 32x32b = ~1 KB FF + the
+  // 32:1 32-bit readout mux + arm/wptr control) to reclaim slices for the
+  // re-added PHC/PTP subsystem on the ~84%-packed xc7z020. The observer ports
+  // stay in the port list (no hierarchy change) but read as zero. Purely an
+  // observability loss — the FC datapath is untouched either way (beatcap was
+  // always a read-only observer). io_cap_arm / io_cap_rptr become no-ops.
+  assign io_obs_capdata = 32'b0;
+  assign io_obs_capstat = 9'b0;
+`endif // TIDELINK_NO_BEATCAP
 
 endmodule

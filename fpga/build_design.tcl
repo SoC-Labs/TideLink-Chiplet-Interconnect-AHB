@@ -337,11 +337,26 @@ puts "Starting synthesis..."
 # Fileset verilog_define does NOT bake into packaged IP (proven 2026-05-19,
 # see package_tidelink_ip.tcl) — inject at the synth-run level instead, on
 # every synthesis run (top + OOC IP runs).
+# Accumulate -verilog_define flags for ALL synthesis runs (top + OOC IP). Several
+# defines must be combined into ONE MORE OPTIONS value because set_property
+# overwrites (it does not append).
+set _vdefs {}
 if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
+    lappend _vdefs "-verilog_define TIDELINK_PHY_V2"
+}
+if { [info exists ::env(TIDELINK_FPGA_PTP)] && $::env(TIDELINK_FPGA_PTP) == 1 } {
+    # PTP re-add (Phase 5a, feat/ptp-fpga-readd): free slices for the re-added
+    # PHC subsystem by dropping the FCSM per-beat capture ring (~1 KB FF + 32:1
+    # readout mux). The define lives in WlinkGenericFCSM_6.v — inside the packaged
+    # tidelink IP — so it MUST reach the IP's OOC synth run, exactly like V2.
+    lappend _vdefs "-verilog_define TIDELINK_NO_BEATCAP"
+}
+if { [llength $_vdefs] > 0 } {
+    set _vopt [join $_vdefs " "]
     foreach _r [get_runs -filter {IS_SYNTHESIS}] {
         set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
-            -value {-verilog_define TIDELINK_PHY_V2} -objects $_r
-        puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
+            -value $_vopt -objects $_r
+        puts "verilog_define injected into run $_r : $_vopt"
     }
 }
 launch_runs synth_1 -jobs $num_jobs

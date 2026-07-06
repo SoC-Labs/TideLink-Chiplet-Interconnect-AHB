@@ -1,7 +1,7 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
         synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
-        sim-regression
+        sim-regression farm_gate farm_gate_fast
 
 # =============================================================================
 # Silicon-replication test gates (feat/cocotb-robust-silicon-replication)
@@ -57,6 +57,26 @@ robust_all: xdc_lint_selftest synth_lint_selftest xdc_lint sim_synth_mode sim_ro
 	@echo "========================================"
 	@echo " ALL ROBUST GATES PASSED"
 	@echo "========================================"
+
+# =============================================================================
+# farm_gate — MANDATORY pre-farm-build gate (the highest-value verif-infra item)
+# =============================================================================
+# Runs the checks that turn the campaign's dominant SILICON-ONLY failure classes
+# into RED at build time instead of days of debug:
+#   Tier-0 (seconds): xdc_lint + sv_anti_pattern, RATCHETED against accepted
+#                     baselines (green today, red on any NEW finding).
+#   Tier-1 (minutes): the V2 pair sim at the SILICON epoch fingerprint +
+#                     reduced-lane + marginal-eye + XHB bridge BFM.
+# Exit non-zero => refuse to launch a farm build. build_farm.sh invokes this as
+# a precondition. See fpga/farm_gate.sh for env knobs (FARM_GATE_FAST,
+# FARM_GATE_ALLOW_NO_SIM, FARM_GATE_SIM_STAGES, FARM_GATE_STAMP).
+farm_gate:
+	@bash fpga/farm_gate.sh
+
+# Lint-only pre-flight (Tier-0). Fast dev check; NOT a substitute for the build
+# gate (does not run the silicon-config sim).
+farm_gate_fast:
+	@FARM_GATE_FAST=1 bash fpga/farm_gate.sh
 
 # =============================================================================
 # sim-repro — HW-bug regression gate (added 2026-05-24)

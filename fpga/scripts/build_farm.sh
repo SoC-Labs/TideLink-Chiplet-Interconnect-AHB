@@ -71,6 +71,33 @@ echo " TideLink concurrent farm — $N job(s)  ($(ts))"
 for i in "${!JOB_T[@]}"; do printf '   %-26s -> %s\n' "${JOB_T[$i]}" "${JOB_H[$i]}"; done
 echo "=============================================================="
 
+# ---- MANDATORY pre-build gate (refuse to launch if RED) --------------------
+# Runs the ratcheted lints + the silicon-config V2 pair sim BEFORE any build is
+# launched, so the campaign's dominant silicon-only failure classes (dropped-XDC
+# /comb-loop, sim-fidelity, latch) turn red here instead of days later on
+# silicon. FARM_SKIP_GATE=1 bypasses it for an intentional exploratory build
+# (loud warning). See fpga/farm_gate.sh / `make farm_gate`.
+if [ "${FARM_SKIP_GATE:-0}" = 1 ]; then
+    echo "[$(ts)] WARNING: FARM_SKIP_GATE=1 — pre-build gate BYPASSED (exploratory build)." >&2
+else
+    echo "[$(ts)] pre-build gate (farm_gate) ..."
+    GATE_LOG="$LOG_DIR/farm_gate.$STAMP.log"
+    # rc captured explicitly (this script has no `set -o pipefail`, so a
+    # `... | tee` would mask the gate's exit with tee's). Forward the PHY-select
+    # env the sim tier needs; inherit the rest.
+    gate_rc=0
+    TIDELINK_HOME="$TIDELINK_HOME" ${TIDELINK_PHY_V2:+TIDELINK_PHY_V2="$TIDELINK_PHY_V2"} \
+        bash "$FPGA_DIR/farm_gate.sh" > "$GATE_LOG" 2>&1 || gate_rc=$?
+    tail -n 40 "$GATE_LOG"
+    if [ "$gate_rc" -eq 0 ]; then
+        echo "[$(ts)] pre-build gate GREEN"
+    else
+        echo "ERROR: pre-build gate RED (rc=$gate_rc) — refusing to launch farm build. See $GATE_LOG" >&2
+        echo "       (bypass an exploratory build with FARM_SKIP_GATE=1)" >&2
+        exit 1
+    fi
+fi
+
 # ---- shared package_ip (once, locally) for any local job -------------------
 # package_ip writes the TARGET-independent IP repo imp/fpga/tidelink_ip;
 # farm_build.sh runs the local builds with SKIP_PACKAGE_IP=1 so they reuse

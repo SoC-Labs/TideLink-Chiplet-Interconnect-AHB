@@ -1064,7 +1064,14 @@ module tb_ahb_bram_slave #(
         end
     end
 
-    assign HREADY = 1'b1;   // zero wait state
+    // tb stall hook (default 0 = zero-wait-state, unchanged for all existing
+    // tests). A cocotb test may DEPOSIT force_stall=1 to hold HREADY low,
+    // modelling a wedged far terminus / link hiccup so the master-side XHB500
+    // slv never gets its b/r response — exercising the ahb_sub bounded-timeout
+    // backstop (test_v2_xhb_window_stall.py). No other driver, so a deposit
+    // holds; constant net otherwise (no hready<->hresp comb loop introduced).
+    reg force_stall = 1'b0;
+    assign HREADY = force_stall ? 1'b0 : 1'b1;   // zero wait state unless stalled
     assign HRESP  = 1'b0;   // always OKAY
     assign HRDATA = mem[addr_q];
 endmodule

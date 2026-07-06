@@ -1131,8 +1131,60 @@ module tidelink_top #(
     wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
-    // XHB500 hreadyout (raw, before pipeline insertion)
+    // XHB500 hreadyout / hresp (raw, before pipeline + timeout insertion)
     wire xhb_sub_hreadyout_raw;
+    wire xhb_sub_hresp_raw;
+
+    // ── ahb_sub bounded stall backstop (2026-07-06) ───────────────────────────
+    // The XHB500 subordinate holds hreadyout low for the whole data phase of a
+    // window transfer while it waits on the AXI/link round-trip to the peer. If
+    // the link wedges (credit stall, PHY drop), that hreadyout can stay low
+    // FOREVER -> ahb_sub_hreadyout (below) stays low -> the Xilinx
+    // axi_ahblite_bridge and the Zynq PS interconnect block indefinitely with no
+    // PS-side timeout, wedging z2_02 off-net (physical power-cycle to recover;
+    // bench-confirmed on the tl-data aperture before its own backstop —
+    // tidelink_fc_adapter.sv:247-329, TX_STALL_TIMEOUT). This mirrors that fix
+    // for the window path: after SUB_STALL_TIMEOUT hclk cycles of a single
+    // transfer held stalled, terminate it with the standard AHB two-cycle ERROR
+    // response (cy1: HREADYOUT=0 + HRESP=1; cy2: HREADYOUT=1 + HRESP=1) so the
+    // bridge/PS un-block with a recoverable bus error (SIGBUS) instead of hanging.
+    //
+    // 2^16 hclk (~2.6 ms @ 25 MHz FPGA rig, ~14 ms @ 4.7 MHz) is orders beyond a
+    // legitimate slow-but-progressing window round-trip: the counter RESETS every
+    // time the front-end stops stalling (i.e. on every completed beat — see
+    // ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
+    // held stalled continuously past the timeout (a genuine wedge) can trip it.
+    //
+    // NO COMB LOOP (this is the load-bearing invariant that cb33c9f established):
+    // every term below is a register or derives ONLY from ahb_sub_hsel/htrans
+    // (ext_is_nonseq), pipe_valid_r (reg) and xhb_sub_hreadyout_raw (XHB500's own
+    // output) — NEVER from ahb_sub_hready (the wrapper loopback). ahb_sub_hreadyout
+    // gains only the sub_err{1,2}_r register overrides, so it remains free of any
+    // combinational dependence on ahb_sub_hready.
+`ifdef TIDELINK_SUB_STALL_TIMEOUT_LOG2
+    // Sim override (cocotb/tidelink_top_pair_v2/test_v2_xhb_window_stall.py drives
+    // it small so the backstop trips in a few hundred cycles instead of ~2^16).
+    localparam int SUB_STALL_TIMEOUT_LOG2 = `TIDELINK_SUB_STALL_TIMEOUT_LOG2;
+`else
+    localparam int SUB_STALL_TIMEOUT_LOG2 = 16;   // ~2^16 hclk; see rationale above
+`endif
+    logic [SUB_STALL_TIMEOUT_LOG2:0] sub_stall_ctr_r;
+    logic                            sub_err1_r, sub_err2_r;
+    // Front-end is holding HREADYOUT low (a transfer is in flight and not
+    // progressing): the pipeline-fill stall cycle OR — the case that actually
+    // wedges the PS — XHB500 holding its data phase low while it waits on the
+    // cross-link b/r response. NOTE the data-phase stall persists AFTER
+    // pipe_valid_r clears (XHB500 has already accepted the address and the
+    // master has dropped to IDLE), so it is detected by xhb_sub_hreadyout_raw==0
+    // directly, NOT via pipe_valid_r. On an idle bus XHB500 drives raw==1
+    // (tidelink_top.sv:1181), so idle => not stalled => the counter resets and
+    // every completed beat (raw pulses high) re-zeroes it. Frozen during the
+    // 2-cycle ERROR response so one wedged transfer is counted exactly once.
+    wire sub_stall_fill    = ext_is_nonseq && !pipe_valid_r;
+    wire sub_stall_busy    = !xhb_sub_hreadyout_raw;
+    wire ext_stalled       = (sub_stall_fill || sub_stall_busy)
+                             && !sub_err1_r && !sub_err2_r;
+    wire sub_stall_expired = sub_stall_ctr_r[SUB_STALL_TIMEOUT_LOG2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -1160,6 +1212,33 @@ module tidelink_top #(
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
+            end else if (sub_err1_r) begin
+                // Stall-timeout abort: abandon the in-flight (wedged) transfer so
+                // it cannot re-trigger the backstop or hold hsel into XHB500.
+                pipe_valid_r   <= 1'b0;
+                pipe_hsel_r    <= 1'b0;
+                pipe_htrans_r  <= 2'b00;
+            end
+        end
+    end
+
+    // Stall-timeout counter + 2-cycle AHB ERROR sequencer (registered; driven
+    // off hclk; never combinationally dependent on ahb_sub_hready — see above).
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_stall_ctr_r <= '0;
+            sub_err1_r      <= 1'b0;
+            sub_err2_r      <= 1'b0;
+        end else begin
+            sub_err2_r <= sub_err1_r;   // ERROR cycle 2 follows cycle 1
+            sub_err1_r <= 1'b0;         // default: one-shot
+            if (!ext_stalled) begin
+                sub_stall_ctr_r <= '0;                 // resets every completed beat
+            end else if (sub_stall_expired) begin
+                sub_stall_ctr_r <= '0;
+                sub_err1_r      <= 1'b1;               // fire the ERROR response
+            end else begin
+                sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
         end
     end
@@ -1180,8 +1259,17 @@ module tidelink_top #(
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
                                              (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
-    // External hreadyout: stall upstream during the pipeline fill cycle
-    assign ahb_sub_hreadyout = (ext_is_nonseq && !pipe_valid_r) ? 1'b0 : xhb_sub_hreadyout_raw;
+    // External hreadyout: stall upstream during the pipeline fill cycle. The
+    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when the
+    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — both are
+    // registers, so no combinational dependence on ahb_sub_hready is introduced.
+    assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
+                               sub_err2_r ? 1'b1 :
+                               (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
+                               xhb_sub_hreadyout_raw;
+    // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
+    // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
+    assign ahb_sub_hresp     = (sub_err1_r | sub_err2_r) ? 1'b1 : xhb_sub_hresp_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -1728,7 +1816,7 @@ module tidelink_top #(
         .hmaster           (12'd0),
         .hrdata            (ahb_sub_hrdata),
         .hreadyout         (xhb_sub_hreadyout_raw),
-        .hresp             (ahb_sub_hresp),
+        .hresp             (xhb_sub_hresp_raw),
         .hexokay           (),
         .hqos              (4'h0),
         .hregion           (4'h0),

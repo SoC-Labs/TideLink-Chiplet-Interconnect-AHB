@@ -597,7 +597,41 @@ module WlinkGenericFCSM_6 #(
   // latches send_nack_req -> no NACK -> die_a never reverts. (The enqueue itself
   // is suppressed below via ack_nack_fifo_io_winc, so this is belt-and-braces:
   // even if an entry were written it would carry tag 3'h0, not 3'h1.)
-  wire exp_pkt_not_seen_l9b = exp_pkt_not_seen_l9 & ~socl_l9b_reanchor_now;
+  // SoC Labs L9c BACKWARD-MISMATCH RE-ACK GUARD (2026-07-06, stream-start fix).
+  // ---------------------------------------------------------------------------
+  // STREAM-START WEDGE (silicon B->A, sim EPOCH_PROFILE=silicon s2m): under a
+  // skewed/cold RX the FC receives data packets whose ll_rx_pktnum is BEHIND
+  // exp_pkt_num -- already-delivered slots re-presented by a cold-start deskew
+  // re-delivery, a stale TX replay echo, OR a PERIODIC PHANTOM (observed:
+  // a pktnum==0 data beat recurring every ~SOCL_REACK_THRESHOLD (256) io-clk
+  // cycles, i.e. on the re-ACK/keepalive cadence). Every such packet is
+  // exp_pkt_not_seen (pktnum != exp) and is NOT a small forward gap, so L9b
+  // does not re-anchor it. Upstream then enqueues a 3'h1 (isNotExpPacket) ->
+  // send_nack_req -> die_b NACKs -> die_a's a2l replay REVERTS its read pointer
+  // and replays from a lower pktnum, all of which now mismatch the advanced exp
+  // -> a NACK->revert->re-walk REPLAY STORM that ratchets to credit-max and
+  // wedges exp (POR-only clear). Observed pre-fix: exp frozen at 13, 377
+  // link_revert pulses; the recurring seed is a backward pktnum==0 beat.
+  //
+  // A pktnum that is BEHIND exp is, by construction, a slot we already
+  // committed+ACKed (or a spurious phantom): there is nothing to recover, so
+  // the correct sliding-window response is to RE-ACK (notifier 3'h0, carrying
+  // last_good_pkt_in -> "I am up to last_good, keep going"), NEVER to NACK.
+  // "Behind" = modular forward distance in the upper half of the credit ring
+  // (fwd_dist >= ring/2); a genuine FORWARD gap (fwd_dist in the lower half,
+  // beyond the L9b re-anchor window) STILL NACKs, so the designed transient-
+  // corruption NACK->replay recovery (test_v2_multipkt_pktnum
+  // test_s2m_transient_nack_recovers) is preserved. On a healthy in-order link
+  // exp_pkt_not_seen never fires, so clean-path delivery is bit-unchanged
+  // (EPOCH_PROFILE=zero pair_data 3/3 + multipkt 16/16 both dirs unchanged).
+  wire [8:0] socl_l9c_back_thresh = {1'b0, socl_l9b_ring_mod[8:1]}; // ring/2
+  wire socl_l9c_backward = exp_pkt_not_seen
+                           & socl_l9_first_data_seen_rx
+                           & ~socl_l9_resync_now
+                           & ~socl_l9b_reanchor_now
+                           & (socl_l9b_fwd_dist >= socl_l9c_back_thresh);
+  wire exp_pkt_not_seen_l9b = exp_pkt_not_seen_l9 & ~socl_l9b_reanchor_now
+                              & ~socl_l9c_backward;
   wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9b}; // SoC Labs L9/L9b masked mismatch
   wire [2:0] _pkttypenotifier_T_2 = pkt_is_nack_pkt ? 3'h3 : _pkttypenotifier_T_1; // @[FC.scala 275:40]
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]

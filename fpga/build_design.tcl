@@ -100,8 +100,30 @@ if {![info exists ::tidelink_msg_gate_installed]} {
     # filter that then propagates as a silent no-op constraint.
     set_msg_config -id "Vivado 12-1411"      -new_severity ERROR
 
+    # COMBINATIONAL-LOOP guard (cb33c9f-class silicon write-vanish). An
+    # UN-waived combinational loop is flagged by the LUTLP-1 DRC. Intentional
+    # loops are individually waived via ALLOW_COMBINATORIAL_LOOPS in
+    # *_tidelink_drc.xdc, so promoting LUTLP-1 to ERROR only bites on NEW,
+    # accidental loops. Wrapped in catch: get_drc_checks needs the DRC rule DB,
+    # which is present in the parent session but this keeps the top-of-file
+    # block robust if sourced in a bare context. The REAL enforcement is in the
+    # child hooks (fpga/scripts/msg_gate_child_{promote,check}.tcl), because the
+    # DRC actually runs in the synth/impl child processes, not this parent.
+    catch { set_property SEVERITY {ERROR} [get_drc_checks LUTLP-1] }
+
     set ::tidelink_msg_gate_installed 1
 }
+
+# Build-integrity & provenance helpers (Bug-class: silent-V1 / stale-packaged-IP
+# / dropped-XDC). Sourced here so tl_verify_packaged_ip + tl_write_manifest are
+# available at their mandatory call sites below and CANNOT be skipped. A missing
+# helper is a hard error - the integrity gate must not silently no-op.
+set _prov_tcl [file join [file dirname [info script]] scripts build_provenance.tcl]
+if { ![file exists $_prov_tcl] } {
+    puts "ERROR: build-integrity helper not found: $_prov_tcl"
+    exit 1
+}
+source $_prov_tcl
 
 # Helper: check CRITICAL_WARNING count after a phase. Honours
 # FPGA_ALLOW_CRITICAL_WARNINGS=1 to allow legacy/exploratory builds.
@@ -331,6 +353,14 @@ generate_target all [get_files ${design_name}.bd]
 # STEP 7: Update compile order
 update_compile_order -fileset sources_1
 
+# STEP 7.5: Packaged-IP integrity gate (stale-packaged-IP trap).
+# Runs BEFORE synthesis: verify every flist-referenced RTL source matches the
+# copy ipx::package_project imported into $ip_repo/src/. If an RTL file was
+# edited but `make package_ip` was not re-run, build_design would otherwise
+# synthesise the OLD sources (memory: project_farm_package_ip_stale). Hard-fails
+# (exit 1) on any content mismatch so the stale build dies here, not on silicon.
+tl_verify_packaged_ip $ip_repo
+
 # STEP 8: Synthesis
 puts "Starting synthesis..."
 # S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 must reach the IP's OOC synth.
@@ -344,6 +374,16 @@ if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
         puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
     }
 }
+# Message-gate CHILD hooks (fixes the parent-session blindness). launch_runs
+# forks a child Vivado with its OWN msg-config + CW counters, so the parent's
+# promotions and tidelink_check_cw_count never saw synth's messages. Install the
+# promotions PRE-synth (so CWs are promoted at emission) and re-run the CW-count
+# gate POST-synth (so it counts the CHILD's messages, not the parent's).
+set _mg_promote [file join [file dirname [info script]] scripts msg_gate_child_promote.tcl]
+set _mg_check   [file join [file dirname [info script]] scripts msg_gate_child_check.tcl]
+set_property STEPS.SYNTH_DESIGN.TCL.PRE  $_mg_promote [get_runs synth_1]
+set_property STEPS.SYNTH_DESIGN.TCL.POST $_mg_check   [get_runs synth_1]
+
 launch_runs synth_1 -jobs $num_jobs
 wait_on_run synth_1
 
@@ -402,6 +442,29 @@ set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs im
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 
+# Message-gate CHILD hooks on impl_1 (route child). The parent's promotions and
+# tidelink_check_cw_count were BLIND to the route child's messages, and the
+# LUTLP-1 combinational-loop DRC (the cb33c9f silicon-write-vanish class) only
+# has meaning on a ROUTED design. Wire PRE-route to promote LUTLP-1 -> ERROR and
+# POST-route to run the child-visible CW gate + the comb-loop DRC on the routed
+# design + the USR_ACCESS stamp, all BEFORE write_bitstream in the same run.
+set_property STEPS.ROUTE_DESIGN.TCL.PRE  $_mg_promote [get_runs impl_1]
+set_property STEPS.ROUTE_DESIGN.TCL.POST $_mg_check   [get_runs impl_1]
+
+# Export the git-SHA low32 into the child env so msg_gate_child_check.tcl can
+# stamp it into the bitstream USR_ACCESS register (route POST, before
+# write_bitstream). ONLY for a clean tree: a -dirty build is not reproducible
+# from a commit, so it must NOT be mislabelled with a SHA (leave the var unset
+# -> the child skips the stamp rather than lying about provenance).
+set _gsha [tl_git_sha [tl_repo_root]]
+if { ![string match "*-dirty" $_gsha] && [regexp {^[0-9a-fA-F]{8,}} $_gsha] } {
+    set ::env(TIDELINK_GIT_USR_ACCESS) "0x[string range $_gsha end-7 end]"
+    puts "USR_ACCESS: exporting git SHA low32 = $::env(TIDELINK_GIT_USR_ACCESS) to impl child"
+} else {
+    if { [info exists ::env(TIDELINK_GIT_USR_ACCESS)] } { unset ::env(TIDELINK_GIT_USR_ACCESS) }
+    puts "USR_ACCESS: tree dirty/unknown ($_gsha) - NOT stamping a commit SHA"
+}
+
 puts "Starting implementation..."
 launch_runs impl_1 -to_step write_bitstream -jobs $num_jobs
 wait_on_run impl_1
@@ -426,6 +489,13 @@ set bit_file [glob -nocomplain $project_dir/tidelink_project.runs/impl_1/*.bit]
 if { $bit_file ne "" } {
     file copy -force $bit_file $output_dir/tidelink.bit
     puts "Bitstream copied to $output_dir/tidelink.bit"
+
+    # Provenance manifest next to the shipped .bit so the artefact is
+    # self-identifying (commit + PHY V1/V2 marker + resolved flist + submodule
+    # pins + USR_ACCESS + target + host + date). Written from INSIDE the build so
+    # it cannot be forgotten the way the post-hoc make_bitstream_manifest.sh
+    # could. Kills the silent-V1 / stale-IP "which build is this?" blind spot.
+    tl_write_manifest $output_dir/tidelink_manifest.json [file tail $target_dir] $output_dir/tidelink.bit
 }
 
 # .hwh is required for PYNQ - it's the IP-XACT flat hardware description.

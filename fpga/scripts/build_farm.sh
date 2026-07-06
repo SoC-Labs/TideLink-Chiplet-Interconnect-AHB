@@ -86,7 +86,20 @@ if [ "$ANY_LOCAL" -eq 1 ]; then
     # set this knob, so without an explicit export here filelist.tcl falls back
     # to the V1 flist and the FSM is preprocessed out of the packaged IP — the
     # 8705a99 "FSM optimised out / byte-identical bitstream" root cause.
-    [ -n "$TIDELINK_PHY_V2" ] && export TIDELINK_PHY_V2
+    # SILENT-V1 GUARD (2026-07-06): match farm_build.sh's set-u-safe hard guard.
+    # The old `[ -n "$TIDELINK_PHY_V2" ]` was NOT set-u-safe: with the var UNSET
+    # this orchestrator aborts with a raw "unbound variable"; with it set-but-
+    # EMPTY the test is false so we skip the export, yet the empty value is
+    # already in the environment, so `make package_ip` below inherits it and
+    # filelist.tcl silently packages the V1 IP (autonomous-winscan FSM
+    # preprocessed out). Fail LOUDLY here instead, identically to the per-job
+    # path in farm_build.sh.
+    if [ -z "${TIDELINK_PHY_V2:-}" ]; then
+        echo "ERROR: TIDELINK_PHY_V2 is unset/empty — local package_ip would package a SILENT-V1 IP." >&2
+        echo "       export TIDELINK_PHY_V2=1 (V2) explicitly before farm builds." >&2
+        exit 1
+    fi
+    export TIDELINK_PHY_V2
     # shellcheck disable=SC1091
     source "$TIDELINK_HOME/set_env.sh" >/dev/null 2>&1 || true
     PKG_LOG="$LOG_DIR/package_ip.$STAMP.log"

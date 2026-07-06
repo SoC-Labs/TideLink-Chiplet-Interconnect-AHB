@@ -191,6 +191,19 @@ strip-generalbus-check:
   script:
     - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
 
+# Pre-build gate, Tier-0 (fast, pure-Python — no EDA license). Ratcheted
+# xdc_lint + sv_anti_pattern: a NEW dropped-XDC / latch / incomplete-case fails
+# the pipeline. This is a REAL gate (no allow_failure) — it is the class that
+# shipped the XHB combinational loop to silicon (cb33c9f). Accepted debt is
+# tracked in fpga/farm_gate_{xdc,sv}_baseline.txt so today's tree is green.
+farm-gate-lint:
+  stage: lint
+  needs: [clone, preflight]
+  before_script:
+    - export TIDELINK_HOME="$WORK_DIR"
+  script:
+    - cd "$WORK_DIR" && make farm_gate_fast
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]
@@ -302,6 +315,28 @@ cocotb-regression:
     reports:
       junit:
         - cocotb/*/results.xml
+    expire_in: 30 days
+
+# Pre-build gate, Tier-1 (the V2 pair sim at the silicon-faithful config). Runs
+# the FUNCTIONAL stages (bring-up both directions + reduced-lane + XHB bridge
+# BFM) as a REAL gate (no allow_failure). The silicon epoch-skew + marginal-eye
+# STRESS stages are opt-in (FARM_GATE_STRESS=1) because their green-ness is
+# PHY-pin dependent — enable them on the autonomous/unified lineage (bbd094c)
+# where the deskew is expected to pass. See fpga/farm_gate.sh.
+farm-gate-sim:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export TIDELINK_PHY_V2=1
+    - cd "$WORK_DIR" && make farm_gate
+  artifacts:
+    when: always
+    paths:
+      - imp/fpga/run/farm_gate/
     expire_in: 30 days
 
 cdriver-regression:

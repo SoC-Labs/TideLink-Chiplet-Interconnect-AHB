@@ -137,7 +137,12 @@ elif cmd == "rxword":
     print("0x%08x" % rd(RXBASE))
 elif cmd == "rxn":
     n = int(sys.argv[2])
-    print(" ".join("0x%08x" % rd(RXBASE) for _ in range(n)))
+    # RX aperture 0x84010000 is a 32-slot ADDRESSED ring: slot i is at
+    # RXBASE + i*4, NOT a pop-FIFO. Reading RXBASE repeatedly (the old code)
+    # only ever returned slot 0, faking a "word0-only" delivery when the whole
+    # ring had actually crossed (silicon-proven 2026-07-07: B->A 25/28). Read
+    # the addressed slots so the rotation-aware compare sees the real data.
+    print(" ".join("0x%08x" % rd(RXBASE + i * 4) for i in range(n)))
 elif cmd == "occ":
     print("credit_count=%d (0x%08x)" % (rd(CREDIT) & 0xffff, rd(CREDIT)))
 elif cmd == "status":

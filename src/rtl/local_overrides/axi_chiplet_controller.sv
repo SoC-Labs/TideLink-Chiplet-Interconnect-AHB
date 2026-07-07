@@ -4377,43 +4377,36 @@ module axi_chiplet_controller #(
                         // R-B WS_FIN_WAITPEER rendezvous park that used to
                         // sit here regressed the b-first zero-poke order on
                         // silicon (mutual anchor starvation) and is dormant.
-                        // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the scan is
-                        // complete — the two roles diverge here.
-                        if (role_is_master) begin
-                            // MASTER (die_a): do NOT raise the F3 clear or open
-                            // the anchor window yet (force-SYNC + taps stay
-                            // held). Park in WS_FIN_WAITPEER and run the
-                            // peer-serve rendezvous — the master quiesces its
-                            // own LL (fch_quiesce_req covers WAITPEER),
-                            // advertises ws_fin_wait_lvl, and its autoneg polls
-                            // the slave's ready-to-serve bit then writes the
-                            // FINALIZE_GO. The F3 clear + re-confirm then run IN
-                            // WS_FIN_WAITPEER once the GO lands and die_b is
-                            // serving idle beacons — BEFORE the master ever
-                            // enters WS_FINALIZE, so the peer's keepalive can
-                            // never occupy the link during the master's
-                            // re-anchor (the die_a beacon-starvation fix).
-                            ws_rdv_to_r <= ws_rdv_to_load;
-                            ws_state_r  <= WS_FIN_WAITPEER;
-                        end else begin
-                            // SLAVE (die_b): UNCHANGED b55cb59 locally-timed
-                            // finalize (F3 clear + WS_FINALIZE + F3b dwell). Its
-                            // RX re-anchors fine on the master's held force-SYNC
-                            // beacons (the measured die_b 83% vs die_a 8%
-                            // asymmetry — die_b was never the problem). It then
-                            // HOLDS that good anchor and, on the master's GO,
-                            // SERVES idle beacons (ws_serve_active_r); it does
-                            // NOT re-confirm.
-                            ws_obs_clr_r   <= 1'b1;
-                            // F4: arm the anchor-gate timeout for FINALIZE.
-                            ws_anchor_to_r <= ws_anchor_to_load;
-                            // FIX-3: arm the bounded clear-retry budget (R-A
-                            // budget of 5 — the verify gate is downstream of
-                            // ws_anchor_q and unchanged by the Loop-13 revert).
-                            ws_anchor_retry_r <= WS_ANCHOR_RETRIES;
-                            ws_state_r <= WS_FINALIZE;
-                            ws_dwell_r <= ws_fin_wait_load; // F3b rendezvous dwell
-                        end
+                        // R-B ASYMMETRIC PEER-SERVE (2026-07-07, rev2): the scan
+                        // is complete. BOTH roles take the base b55cb59 LOCALLY-
+                        // TIMED finalize here (F3 clear + WS_FINALIZE + F3b
+                        // dwell) — the role split is GONE. The peer-serve
+                        // rendezvous (WS_FIN_WAITPEER) is NO LONGER the master's
+                        // PRIMARY path at scan-complete: entering it FIRST dropped
+                        // a good anchor + re-confirmed over the served link and,
+                        // in the normal/multi-episode FC-handoff flows, broke the
+                        // handoff (t33 wedged the master FC at fcsm=2). The
+                        // master now enters WS_FIN_WAITPEER ONLY as a FALLBACK,
+                        // from the WS_FINALIZE fail-open arm below, and ONLY when
+                        // its LOCAL finalize STARVED (ws_anchor_q==0 — the die_a
+                        // beacon-starvation case). A master that anchors locally
+                        // NEVER enters WS_FIN_WAITPEER, so t31/t32/t33 run the
+                        // EXACT base scan->WS_FINALIZE->WS_DONE path undisturbed
+                        // and the FC handoff is identical to 788eb7e. die_b's RX
+                        // re-anchors fine on the master's held force-SYNC beacons
+                        // (the measured die_b 83% vs die_a 8% asymmetry — die_b
+                        // was never the problem); on the master's GO it SERVES
+                        // idle beacons (ws_serve_active_r) for the master's
+                        // fallback re-confirm.
+                        ws_obs_clr_r   <= 1'b1;
+                        // F4: arm the anchor-gate timeout for FINALIZE.
+                        ws_anchor_to_r <= ws_anchor_to_load;
+                        // FIX-3: arm the bounded clear-retry budget (R-A
+                        // budget of 5 — the verify gate is downstream of
+                        // ws_anchor_q and unchanged by the Loop-13 revert).
+                        ws_anchor_retry_r <= WS_ANCHOR_RETRIES;
+                        ws_state_r <= WS_FINALIZE;
+                        ws_dwell_r <= ws_fin_wait_load; // F3b rendezvous dwell
                     end else if (!ws_lane_active) begin
                         ws_lane_r  <= ws_lane_r + 4'd1;     // skip masked lane
                     end else begin
@@ -4623,6 +4616,46 @@ module axi_chiplet_controller #(
                             ws_obs_clr_r      <= 1'b0;
                             ws_anchor_to_r    <= ws_clr_hold_load + ws_jitter_w;
                             ws_state_r        <= WS_FIN_CLRLOW;
+                        end else if (role_is_master && !ws_anchor_q
+                                     && !ws_rdv_timeout_q) begin
+                            // R-B ASYMMETRIC PEER-SERVE FALLBACK (2026-07-07
+                            // rev2): the MASTER exhausted ALL its local
+                            // clear-retries WITHOUT ever anchoring
+                            // (ws_anchor_q==0) — the die_a beacon-starvation
+                            // signature: the peer's keepalive occupied every
+                            // idle slot so no commit-able periodic beacon ever
+                            // reached the master's post-clear re-confirm
+                            // (sync_seen stayed 0x00). Do NOT fail open into an
+                            // UNANCHORED fch bootstrap (dead data). Fall to the
+                            // peer-serve rendezvous: park in WS_FIN_WAITPEER,
+                            // which advertises ws_fin_wait_lvl so the autoneg
+                            // (ST_FIN_RDV/GO) polls die_b's ready-to-serve bit
+                            // and writes the slave's FINALIZE_GO. die_b then
+                            // FORCES SYNC (ws_serve_active_r, its FC left UP)
+                            // every grid slot toward the master — beating its
+                            // keepalive — and the master re-confirms over those
+                            // served beacons IN WS_FIN_WAITPEER (Phase-2) before
+                            // releasing to WS_DONE. Drop the F3 clear level to 0
+                            // on entry so WS_FIN_WAITPEER lands in Phase-1
+                            // (wait-for-GO) and re-raises a FRESH clear edge when
+                            // the serve arrives (the local finalize left
+                            // ws_obs_clr_r HIGH). KEEP winscan_force_sync HELD
+                            // (do NOT drop it) so the master's own TX stays clean
+                            // SYNC toward the slave through the rendezvous.
+                            // ws_rdv_to_r bounds the wait; on its expiry the
+                            // WS_FIN_WAITPEER Phase-1 fail-loud latches
+                            // ws_rdv_timeout_q and returns LOCALLY to WS_FINALIZE
+                            // (never a fcsm=2 wedge / deadlock). The
+                            // !ws_rdv_timeout_q guard means a peer that never
+                            // serves is tried EXACTLY ONCE per episode — a
+                            // subsequent local exhaustion then takes the base
+                            // fail-loud release below (no livelock). A master
+                            // that DID anchor locally (ws_anchor_q==1 — the
+                            // verify held the release, not the anchor) is HEALTHY
+                            // and takes the base fail-open below.
+                            ws_obs_clr_r <= 1'b0;
+                            ws_rdv_to_r  <= ws_rdv_to_load;
+                            ws_state_r   <= WS_FIN_WAITPEER;
                         end else begin
                             // F4 FAIL-LOUD timeout (retries exhausted): the
                             // anchor never (re-)latched (dead sync_obs_clr
@@ -4634,7 +4667,10 @@ module axi_chiplet_controller #(
                             // the permanent idle-gated beacons (FIX-2; the
                             // reanchored latch has no time veto) — a late
                             // rise with fch_done_r already set latches
-                            // ws_anchor_late_q (0x21B8[3]).
+                            // ws_anchor_late_q (0x21B8[3]). This is the base
+                            // 788eb7e behavior for the SLAVE, and for a master
+                            // that anchored locally or already tried the
+                            // rendezvous once (ws_rdv_timeout_q).
                             winscan_force_sync  <= 1'b0;
                             ws_anchor_timeout_q <= 1'b1;
                             winscan_done        <= 1'b1;
@@ -4691,14 +4727,24 @@ module axi_chiplet_controller #(
                 end
                 // -------------------------------------------------------------
                 WS_FIN_WAITPEER: begin
-                    // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — MASTER-ONLY
-                    // (the slave never enters this state; the scan-complete arc
-                    // routes only role_is_master here). Two sub-phases keyed on
-                    // ws_obs_clr_r:
+                    // R-B ASYMMETRIC PEER-SERVE (2026-07-07 rev2) — MASTER-ONLY
+                    // FALLBACK. The slave never enters this state; the master
+                    // enters ONLY from the WS_FINALIZE fail-open arm above and
+                    // ONLY when its LOCAL finalize STARVED (role_is_master &&
+                    // ws_anchor_q==0 — the die_a beacon-starvation case), with
+                    // ws_obs_clr_r dropped to 0 on entry so it lands in Phase-1
+                    // below. Two sub-phases keyed on ws_obs_clr_r:
                     //
                     // PHASE-1 (!ws_obs_clr_r) — WAIT FOR THE PEER TO SERVE.
-                    //   fch_quiesce_req covers this state, so the master's own
-                    //   LL is parked in swreset (fch_quiesced_r) and it
+                    //   fch_quiesce_req does NOT cover this state (it covers only
+                    //   WS_FINALIZE/WS_FIN_CLRLOW), so on entry the master's LL
+                    //   comes OUT of the finalize-window swreset — its WS_DONE
+                    //   bootstrap then runs the NORMAL widx-0 full walk (with the
+                    //   R4c cross-die overlap dwell) that aligns the credit
+                    //   handshake, NOT the widx-1 quiesced bootstrap that
+                    //   deadlocked the master FC at fcsm=2 in multi-episode
+                    //   retry. The master holds winscan_force_sync through this
+                    //   state so its own TX stays clean SYNC anyway. It
                     //   advertises ws_fin_wait_lvl. Its autoneg (ST_FIN_RDV/GO)
                     //   polls the slave's ready-to-serve bit (SWI_LANE_STATUS
                     //   [27]) and writes the slave's FINALIZE_GO, which sets the

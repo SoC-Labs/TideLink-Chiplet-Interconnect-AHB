@@ -216,6 +216,26 @@ module tidelink_fc_adapter #(
         end
     end
 
+    // -------------------------------------------------------------------------
+    // ILA debug taps (FPGA_INSERT_DEBUG_CORE=1) — die_a-TX tx_xfer_lock diagnosis
+    // (2026-07-07). Probe the AHB-TX handshake + lock state + FC emit so a
+    // silicon capture during an A->B burst shows EXACTLY why tx_xfer_lock re-arms
+    // mid-held-NONSEQ on die_a (the 5x-over-advance that caps A->B at ~6 words).
+    // mark_debug on live-driven wires (never constant-folded) => no dbg_hub /
+    // opt_design LUTLP blocker. Stripped automatically on non-ILA builds.
+    // -------------------------------------------------------------------------
+    (* mark_debug = "true" *) wire        dbg_tx_hsel      = ahb_tx_hsel;
+    (* mark_debug = "true" *) wire [1:0]  dbg_tx_htrans    = ahb_tx_htrans;
+    (* mark_debug = "true" *) wire        dbg_tx_hready    = ahb_tx_hready;
+    (* mark_debug = "true" *) wire        dbg_tx_hwrite    = ahb_tx_hwrite;
+    (* mark_debug = "true" *) wire        dbg_tx_hreadyout = ahb_tx_hreadyout;
+    (* mark_debug = "true" *) wire [7:0]  dbg_tx_haddr     = ahb_tx_haddr[7:0];
+    (* mark_debug = "true" *) wire        dbg_tx_lock      = tx_xfer_lock_r;
+    (* mark_debug = "true" *) wire        dbg_tx_lock_hit  = tx_lock_hit;
+    (* mark_debug = "true" *) wire        dbg_tx_valid_ap  = tx_valid_addr_phase;
+    (* mark_debug = "true" *) wire        dbg_tx_a2l_valid = tl_fc_a2l_valid;
+    (* mark_debug = "true" *) wire        dbg_tx_arb_valid = arb_valid;
+
     // Registered address from address phase (valid in data phase)
     logic [RAM_ADDR_W-1:0] tx_addr_r;
     logic                  tx_data_phase_r;  // Flag: data phase pending

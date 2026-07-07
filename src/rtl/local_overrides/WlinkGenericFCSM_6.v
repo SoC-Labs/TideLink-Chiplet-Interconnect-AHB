@@ -182,7 +182,16 @@ module WlinkGenericFCSM_6 #(
   // than the healthy ACK cadence (~tens of io_tx_clk cycles between data
   // packets) so it only fires after the credit-return stream has truly stopped
   // (sustained ACK loss), never disturbing a live link.
-  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100
+  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100,
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR + L9c BACKWARD RE-ACK (ported 2026-07-07
+  // from the data lineage cb33c9f + 2b/330e2a7 onto the autonomous FCSM). After
+  // the a2l reset-skew fix (b969537) let word0 cross, only word0 advanced because
+  // the RX FCSM NACK->replay-stormed on the pktnum gap after word0 (l9_resync=1,
+  // long_start_cnt=22). L9b forgives an isolated FORWARD gap (1..window) and L9c
+  // re-ACKs a BACKWARD/stale echo, both re-anchoring instead of NACKing. Rate-
+  // limited by the hold-down so a genuine multi-word loss still NACKs.
+  parameter [3:0]  SOCL_L9B_FWD_WINDOW     = 4'd8,
+  parameter [3:0]  SOCL_L9B_HOLD_PKTS      = 4'd2
 ) (
   input         clock,
   input         reset,
@@ -480,12 +489,34 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L9: suppress spurious mismatch enqueue on the resync cycle so
   // the ack_nack_fifo does not carry a stale isNotExpPacket entry forward.
   wire exp_pkt_not_seen_l9 = exp_pkt_not_seen & ~socl_l9_resync_now;
+  // --- SoC Labs L9b/L9c RX pktnum re-anchor (ported cb33c9f + 2b, 2026-07-07) ---
+  reg  [3:0] socl_l9b_hold;   // re-anchor hold-down counter (io_rx_clk); always-block below
+  wire [8:0] socl_l9b_ring_mod = {1'b0, fe_tx_credit_max} + 9'h1;   // credit-ring modulus
+  wire [8:0] socl_l9b_fwd_raw  = {1'b0, ll_rx_pktnum} + socl_l9b_ring_mod - {1'b0, exp_pkt_num};
+  wire [8:0] socl_l9b_fwd_dist = (socl_l9b_fwd_raw >= socl_l9b_ring_mod)
+                                 ? (socl_l9b_fwd_raw - socl_l9b_ring_mod) : socl_l9b_fwd_raw;
+  // L9b: forgive an isolated FORWARD gap (1..window) once the stream has started,
+  // rate-limited by the hold-down; re-anchors exp_pkt_num below instead of NACKing.
+  wire socl_l9b_reanchor_now = exp_pkt_not_seen
+                               & ~socl_l9_resync_now
+                               & socl_l9_first_data_seen_rx
+                               & (socl_l9b_hold == 4'h0)
+                               & (socl_l9b_fwd_dist >= 9'h1)
+                               & (socl_l9b_fwd_dist <= {{5{1'b0}}, SOCL_L9B_FWD_WINDOW});
+  // L9c (2b/330e2a7): a BACKWARD mismatch (fwd_dist in the upper half of the ring)
+  // is a stale replay echo / re-ACK-cadence beat -> RE-ACK it (drop mismatch), never NACK.
+  wire [8:0] socl_l9c_back_thresh = {1'b0, socl_l9b_ring_mod[8:1]}; // ring/2
+  wire socl_l9c_backward = exp_pkt_not_seen & ~socl_l9b_reanchor_now
+                           & (socl_l9b_fwd_dist >= socl_l9c_back_thresh);
+  // Masked mismatch fed to the notifier + winc: on a re-anchor or backward-re-ACK
+  // cycle drop the mismatch so no isNotExpPacket(3'h1) enqueues -> no NACK->replay storm.
+  wire exp_pkt_not_seen_l9b = exp_pkt_not_seen_l9 & ~socl_l9b_reanchor_now & ~socl_l9c_backward;
   wire [7:0] _exp_pkt_num_in_T_3 = exp_pkt_num + 8'h1; // @[FC.scala 212:132]
   wire [7:0] _last_good_pkt_in_T_1 = exp_pkt_seen ? exp_pkt_num : last_good_pkt; // @[FC.scala 213:62]
   wire [7:0] last_good_pkt_in = _fe_tx_credit_max_in_T ? 8'h0 : _last_good_pkt_in_T_1; // @[FC.scala 213:41]
   wire  ack_nack_fifo_valid = ~ack_nack_fifo_io_rempty; // @[FC.scala 261:35]
   wire  _ack_nack_fifo_io_winc_T = pkt_is_ack_pkt | pkt_is_nack_pkt; // @[FC.scala 264:51]
-  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9}; // SoC Labs L9 masked mismatch
+  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9b}; // SoC Labs L9/L9b/L9c masked mismatch
   wire [2:0] _pkttypenotifier_T_2 = pkt_is_nack_pkt ? 3'h3 : _pkttypenotifier_T_1; // @[FC.scala 275:40]
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]
   wire [18:0] _ack_nack_fifo_io_wdata_T_1 = {pkttypenotifier,auto_rx_in_word_count}; // @[Cat.scala 30:58]
@@ -1053,7 +1084,8 @@ module WlinkGenericFCSM_6 #(
   assign l2a_fifo_addr_to_tx_r_reset = io_tx_reset; // @[FC.scala 248:35]
   assign ack_nack_fifo_io_wclk = io_rx_clk; // @[FC.scala 262:33]
   assign ack_nack_fifo_io_wreset = io_rx_reset; // @[FC.scala 263:33]
-  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen | exp_pkt_not_seen |
+  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen |
+    (exp_pkt_not_seen & ~socl_l9b_reanchor_now) | // L9b: suppress enqueue on forward re-anchor. L9c backward STILL enqueues (as ACK 3'h0 via the masked notifier -> re-ACK, so die_a stops reverting).
     valid_rx_pkt_crc_err; // @[FC.scala 264:106]
   assign ack_nack_fifo_io_rclk = io_tx_clk; // @[FC.scala 282:33]
   assign ack_nack_fifo_io_rreset = io_tx_reset; // @[FC.scala 283:33]
@@ -1247,12 +1279,36 @@ module WlinkGenericFCSM_6 #(
       end else begin
         exp_pkt_num <= ll_rx_pktnum + 8'h1;
       end
+    end else if (socl_l9b_reanchor_now) begin
+      // SoC Labs L9b: BOUNDED FORWARD RE-ANCHOR. An isolated forward gap is
+      // forgiven: jump exp_pkt_num to ll_rx_pktnum + 1 (same wrap as L9), accept
+      // the skipped slot(s) as best-effort loss, keep committing. No NACK this
+      // cycle (enqueue suppressed above) so die_a does not revert -> no storm.
+      if (ll_rx_pktnum == fe_tx_credit_max) begin
+        exp_pkt_num <= 8'h0;
+      end else begin
+        exp_pkt_num <= ll_rx_pktnum + 8'h1;
+      end
     end else if (exp_pkt_seen) begin
       if (exp_pkt_num == fe_tx_credit_max) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= _exp_pkt_num_in_T_3;
       end
+    end
+  end
+  // SoC Labs L9b hold-down: reload to SOCL_L9B_HOLD_PKTS on a re-anchor, decrement
+  // per data packet -> bounds re-anchors to at most one per SOCL_L9B_HOLD_PKTS so
+  // a genuine multi-word loss run still NACKs (does not silently re-anchor away).
+  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (socl_l9b_reanchor_now) begin
+      socl_l9b_hold <= SOCL_L9B_HOLD_PKTS;
+    end else if (pkt_is_data_pkt & (socl_l9b_hold != 4'h0)) begin
+      socl_l9b_hold <= socl_l9b_hold - 4'h1;
     end
   end
   // SoC Labs L9b (2026-06-01): bind first_data_seen_rx reset domain to

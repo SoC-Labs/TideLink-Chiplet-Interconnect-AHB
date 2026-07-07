@@ -4159,38 +4159,39 @@ module axi_chiplet_controller #(
     // cycle) so a manual takeover drops the request immediately; the fch
     // IDLE release arm then writes the swreset back OFF. Declared (hoisted)
     // next to fch_done_r; V1 arm ties it 0 below.
-    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the quiesce request now covers
-    //   * WS_FIN_WAITPEER (MASTER): the master quiesces its OWN LL on entry so
-    //     its exported quiesced-in-wait level (ws_fin_wait_lvl) is truthful and
-    //     its own re-confirm runs over a quiet link;
-    //   * WS_FINALIZE/WS_FIN_CLRLOW: the legacy locally-timed re-anchor window
-    //     (the slave runs this for its OWN anchor; the master enters it only as
-    //     the 1-cycle pass-through or the rendezvous-timeout fallback).
-    // The SLAVE's SERVE does NOT quiesce (see the serve-force below): a serve
-    // quiesce would SWRESET die_b's FC, dropping it out of the credit handshake
-    // exactly while the master brings its FC up — die_b would then deadlock at
-    // fcsm=2 (never receives the master's credit). Instead die_b serves by
-    // FORCING SYNC (force_always) with its FC LEFT UP, so its RX stays live to
-    // receive the master's credit and it reaches fcsm=4.
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the quiesce request covers ONLY
+    // WS_FINALIZE/WS_FIN_CLRLOW — the SLAVE's own b55cb59 finalize window (the
+    // master enters those only as the 1-cycle pass-through or the rendezvous-
+    // timeout fallback). NEITHER role quiesces for the peer-serve rendezvous:
+    //   * The MASTER does NOT quiesce in WS_FIN_WAITPEER — it holds force-SYNC
+    //     so its TX is already clean, and keeping its FC out of swreset lets its
+    //     WS_DONE bootstrap run the NORMAL widx-0 full walk (with the R4c cross-
+    //     die overlap dwell) that aligns the credit handshake; a WAITPEER
+    //     quiesce (widx-1 bootstrap, no R4c) deadlocked the master FC at fcsm=2
+    //     in multi-episode retry (t32).
+    //   * The SLAVE serves by FORCING SYNC (see the serve-force below) with its
+    //     FC LEFT UP so its RX stays live to receive the master's credit; a
+    //     serve quiesce would SWRESET its FC and deadlock it at fcsm=2.
     assign fch_quiesce_req = autonomy_armed &
-                             ((ws_state_r == WS_FIN_WAITPEER) |
-                              (ws_state_r == WS_FINALIZE) |
+                             ((ws_state_r == WS_FINALIZE) |
                               (ws_state_r == WS_FIN_CLRLOW));
 
-    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the exported "MASTER parked
-    // quiesced in WS_FIN_WAITPEER" level. role_is_master-GATED — only die_a
-    // (master) parks in WS_FIN_WAITPEER, runs the rendezvous and re-confirms
-    // its anchor; die_b (slave) never sets this (it serves instead, see the
-    // ws_serve_active_r logic). Requires the quiesce write to have LANDED
-    // (fch_quiesced_r) so the link is genuinely idle+beacons when the master
-    // drives its own re-confirm. Fed to u_autoneg.local_fin_wait_i (master-only
-    // ST_FIN_RDV/GO entry arc). NOTE: the peer-visible SWI_LANE_STATUS[27]
-    // export is NOT this level for the slave — the slave advertises
-    // ready-to-serve there (see the [27] mux); this level is the MASTER's own
-    // in-wait state and its autoneg trigger. V1 arm below ties it 0.
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the exported "MASTER parked in
+    // WS_FIN_WAITPEER" level. role_is_master-GATED — only die_a (master) parks
+    // in WS_FIN_WAITPEER, runs the rendezvous and re-confirms its anchor; die_b
+    // (slave) never sets this (it serves instead, see ws_serve_active_r).
+    // The master does NOT quiesce its FC here (no fch_quiesced_r qualifier): it
+    // holds winscan_force_sync through WS_FIN_WAITPEER so its OWN TX is clean
+    // SYNC toward the slave anyway, and keeping its FC OUT of swreset means its
+    // WS_DONE bootstrap runs the NORMAL full walk (SWRESET_ON->OFF->ENABLE with
+    // the R4c cross-die overlap dwell) that aligns the credit handshake — a
+    // WAITPEER quiesce made it start at widx 1 (skipping R4c) and deadlocked the
+    // FC at fcsm=2 in multi-episode retry (t32). Fed to
+    // u_autoneg.local_fin_wait_i (master-only ST_FIN_RDV/GO entry arc). The
+    // peer-visible SWI_LANE_STATUS[27] export is separate (slave advertises
+    // ready-to-serve there). V1 arm below ties it 0.
     assign ws_fin_wait_lvl = role_is_master
-                             & (ws_state_r == WS_FIN_WAITPEER)
-                             & fch_quiesced_r;
+                             & (ws_state_r == WS_FIN_WAITPEER);
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -4720,20 +4721,22 @@ module axi_chiplet_controller #(
                     //
                     // PHASE-2 (ws_obs_clr_r) — RE-CONFIRM OVER THE SERVED
                     //   BEACONS. Settle the clear (ws_dwell_r), then release the
-                    //   moment ws_anchor_q && ws_verify_q read 1 by dropping
-                    //   into WS_FINALIZE: since ws_dwell_r==0 and both are
-                    //   already 1, WS_FINALIZE's first release branch fires
-                    //   winscan_done on the NEXT cycle (a 1-cycle pass-through,
-                    //   dropping force there). ws_obs_clr_r is HELD high into
-                    //   WS_FINALIZE — no NEW rising edge, so the destination
-                    //   clr_pulse edge-detect does NOT re-pulse and the anchor
-                    //   is not re-dropped. If the re-confirm times out
-                    //   (ws_anchor_to_r==0 — should not happen once the peer
-                    //   serves) fall to WS_FINALIZE and let the legacy FIX-3/
-                    //   FIX-4 retry machinery run (retry budget was armed in
-                    //   Phase-1).
+                    //   moment ws_anchor_q && ws_verify_q read 1 by raising
+                    //   winscan_done DIRECTLY and going to WS_DONE (dropping
+                    //   force here) — deliberately NOT via WS_FINALIZE, whose
+                    //   fch_quiesce_req would spuriously quiesce the master's LL
+                    //   and force its bootstrap to widx 1 (the fcsm=2 credit
+                    //   deadlock). The F3 clear was a single rising edge in
+                    //   Phase-1 and is not re-pulsed, so the anchor is not
+                    //   re-dropped. If the re-confirm times out (ws_anchor_to_r
+                    //   ==0 — should not happen once the peer serves) fall to
+                    //   WS_FINALIZE and let the legacy FIX-3/FIX-4 retry
+                    //   machinery run (retry budget was armed in Phase-1).
                     if (!ws_obs_clr_r) begin
-                        if (fch_quiesced_r && nego_fin_go_w) begin
+                        if (nego_fin_go_w) begin
+                            // GO landed (peer serving). Raise the F3 clear and
+                            // re-confirm HERE (no FC quiesce — see the
+                            // ws_fin_wait_lvl / fch_quiesce_req comments).
                             ws_obs_clr_r      <= 1'b1;              // F3 clear (one rising edge)
                             ws_dwell_r        <= ws_clr_settle_load; // FIX-4b landed-clear settle
                             ws_anchor_to_r    <= ws_anchor_to_load;  // Phase-2 anchor-gate window
@@ -4753,11 +4756,19 @@ module axi_chiplet_controller #(
                         if (ws_dwell_r != '0) begin
                             ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
                         end else if (ws_anchor_q && ws_verify_q) begin
-                            // Re-confirm succeeded over the served beacons —
-                            // 1-cycle pass-through to WS_FINALIZE's release.
-                            ws_state_r <= WS_FINALIZE;
+                            // Re-confirm succeeded over the served beacons.
+                            // Raise winscan_done DIRECTLY and go to WS_DONE —
+                            // do NOT pass through WS_FINALIZE (that state's
+                            // fch_quiesce_req would trigger a spurious LL
+                            // quiesce, forcing the bootstrap to widx 1 and the
+                            // fcsm=2 credit deadlock). Drop force here (host
+                            // R8=0x14): the anchor is sticky and STAYS up.
+                            winscan_force_sync <= 1'b0;
+                            winscan_done       <= 1'b1;
+                            ws_state_r         <= WS_DONE;
                         end else if (ws_anchor_to_r == 24'd0) begin
-                            // Timed out mid-WAITPEER — hand to the legacy retry.
+                            // Timed out mid-WAITPEER — hand to the legacy retry
+                            // (b55cb59 WS_FINALIZE; it quiesces + retries).
                             ws_state_r <= WS_FINALIZE;
                         end else begin
                             ws_anchor_to_r <= ws_anchor_to_r - 24'd1;

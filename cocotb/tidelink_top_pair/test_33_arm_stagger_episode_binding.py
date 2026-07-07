@@ -543,7 +543,11 @@ async def _quiesce_monitor(dut, side, seen, stop):
     wl = c.u_wlink
     while not stop[0]:
         await ClockCycles(dut.hclk, 20)
-        if _si(c.ws_state_r) in WS_FINALIZE_STATES:
+        # R-B ASYMMETRIC PEER-SERVE (2026-07-07): the MASTER now quiesces in
+        # WS_FIN_WAITPEER (its re-anchor window), the SLAVE still quiesces in
+        # WS_FINALIZE/WS_FIN_CLRLOW (its own b55cb59 finalize). Accept either.
+        if (_si(c.ws_state_r) in WS_FINALIZE_STATES
+                or _si(c.ws_state_r) == WS_FIN_WAITPEER):
             seen[side]["finalize"] = True
             if _si(c.fch_quiesced_r) == 1:
                 seen[side]["quiesced"] = True

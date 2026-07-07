@@ -1,0 +1,32 @@
+// ---------------------------------------------------------------------------
+// tidelink_cdc_tear_l2a.flist
+//
+// Leaf closure for the l2a twin DUT WlinkGenericFCReplayV2_12 (die_b RX replay
+// buffer) used by the cocotb/tidelink_cdc_tear env with DUT_KIND=l2a.
+//
+// Differs from tidelink_cdc_tear.flist only in the FIFO wrapper (WavFIFO_18 vs
+// WavFIFO_20) and the behavioural RAM (l2a vs a2l); the ACK-pointer mailbox
+// (WavMultibitSync_18) and AddrSync are shared.  DUT source selected by the
+// Makefile via dut_src.f.
+// ---------------------------------------------------------------------------
+
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_MEM_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
+
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
++incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
+
+// DUT (prefer local override if present, else deps -- chosen by the Makefile)
+-f ${TIDELINK_HOME}/cocotb/tidelink_cdc_tear/dut_src.f
+
+// Leaf dependencies (unmodified vendor/Chisel-generated IP)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_129.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_l2a_48x16.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v

@@ -190,7 +190,24 @@ module WlinkGenericFCReplayV2_13(
   assign fifo_io_wdata = app_data; // @[FC.scala 747:25]
   assign link_addr_to_app_clk_w_clk = link_clk; // @[FC.scala 774:45]
   assign link_addr_to_app_clk_w_reset = link_reset; // @[FC.scala 775:33]
-  assign link_addr_to_app_clk_w_inc = a2l_link_addr != a2l_link_addr_in; // @[FC.scala 776:50]
+  // TIDELINK LOCAL OVERRIDE (a2l ACK-ptr CDC self-heal) -- David Mapstone 2026-07-07
+  // Was edge-triggered (w_inc = a2l_link_addr != a2l_link_addr_in): a single ACK
+  // change pushes ONE transfer, then w_inc deasserts. On silicon (die_a async
+  // clock ratio) the WavMultibitSync mailbox occasionally delivers a TORN value
+  // (0x1f) into the app-side synced ACK -> false a2l_full -> app_ready=0 -> TX
+  // stalls -> a2l_link_addr freezes -> NO further edge -> the torn value is NEVER
+  // overwritten -> PERMANENT self-latch = the reproducible A->B cap at ~6 words.
+  // FIX: drive w_inc CONTINUOUSLY (=1), so the mailbox re-pushes the current
+  // (correct, guard-clamped <=rbin) a2l_link_addr_in every w_ready and the app-
+  // side drains it every app_clk -- BOTH free-running, independent of TX/app_ready
+  // -> a torn raddr self-heals within ~1 mailbox round-trip; P(permanent latch)=0.
+  // This EXACTLY matches the already-silicon-PROVEN sibling l2a sync, which ties
+  // w_inc=1'h1 on this same shared module (WlinkGenericFCSM_6.v:1081). The mailbox
+  // consumes w_inc only as (w_inc & w_ready) with a combinational latest-value
+  // w_addr, so continuous resend cannot lose/double-count a real ACK; re-pushing
+  // an unchanged value is idempotent. Idle single-clock sim never tears (passes
+  // either way) -> silicon is the verifier.
+  assign link_addr_to_app_clk_w_inc = 1'b1; // @[FC.scala 776:50] continuous resend (self-heal)
   assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // gated ACK (see local override above)
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]

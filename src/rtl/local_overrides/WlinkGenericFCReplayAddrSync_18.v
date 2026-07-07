@@ -83,38 +83,27 @@ module WlinkGenericFCReplayAddrSync_18(
   wire raddr_rst = r_reset | wrst_sync;
 
   // ===========================================================================
-  // TIDELINK LOCAL OVERRIDE #2 (a2l ACK-ptr OPERATIONAL CDC-tear clamp) 2026-07-07
+  // TIDELINK LOCAL OVERRIDE #2 (SUPERSEDED 2026-07-07): a forward-distance clamp
+  // used to sit here. It was built + deployed + REFUTED on silicon (A->B still
+  // 6/28, synced_ack still 31). It was wrong TWO ways: (1) it BLOCKS the heal --
+  // once raddr is torn to 31, the correcting value ~15 is a -16 (=+16 mod-32)
+  // "backward" jump that the <16 test rejects, so it holds garbage forever;
+  // (2) a sub-16 torn step still walks raddr up past the write ptr. Removed.
   //
-  // 4-agent root-cause + silicon: the reset-skew fix above cures BRING-UP, but
-  // the SAME all-ones corruption recurs DURING DATA FLOW on die_a's async
-  // app_clk/link_clk ratio. Under A->B ACK traffic the WavMultibitSync multibit
-  // mailbox occasionally delivers a TORN 5-bit value (characteristically 0x1f)
-  // into raddr -> synced_ack laps the write ptr -> the symmetric gray a2l_full
-  // test (WlinkGenericFCReplayV2_13.v:92, can't tell +16 from -16) reads FULL ->
-  // app_ready=0 -> die_a TX stalls -> die_b sends no new data-ACK -> a2l_link_addr
-  // frozen -> w_inc never fires -> the torn value NEVER self-corrects -> a hard,
-  // reproducible cap at ~6 words (A->B 6/28; B->A 25/28 = die_b's ratio is safe).
-  // Silicon proof: obs 0x2158 read synced_ack=31 while rptr(rbin)=15, violating
-  // the hardware invariant synced_ack <= rbin_ptr <= wbin_ptr -> provably garbage.
-  //
-  // CLAMP: the ACK ptr is monotonic mod-32; a legit ACK advances it by a small
-  // in-window forward step (<16, the FIFO depth). A torn lap-ahead value is a
-  // >=16 forward jump (e.g. 0x1f from a low ptr). REJECT such updates and HOLD
-  // the last-good raddr: the false-FULL never latches, app_ready stays high, TX
-  // keeps draining, and a subsequent in-window ACK re-converges raddr. A->B ACKs
-  // arrive incrementally (+1/word), so no legit advance is ever >=16 here. Idle-
-  // sim can't tear (single clock), so this is a silicon-only guard (like b969537).
+  // Recovery is now handled UPSTREAM by CONTINUOUS RESEND (w_inc=1) at
+  // WlinkGenericFCReplayV2_13.v:193 -- exactly matching the already-silicon-
+  // PROVEN sibling l2a sync (WlinkGenericFCSM_6.v:1081 ties w_inc=1'h1) that
+  // instantiates this same shared module. With the source re-pushing the correct
+  // value every cycle, a torn raddr self-heals within ~1 round-trip, so this
+  // latch must accept EVERY fresh delivery unconditionally. The b969537 reset-
+  // skew gate (raddr_rst) above is RETAINED (cures the bring-up instance).
   // ===========================================================================
-  wire [4:0] raddr_fwd_dist  = addrsync_r_data - raddr;    // mod-32 forward distance
-  wire       raddr_update_ok = (raddr_fwd_dist < 5'h10);   // legit in-window advance only
-
   always @(posedge r_clk or posedge raddr_rst) begin
     if (raddr_rst) begin
       raddr <= 5'h0;
-    end else if (addrsync_r_ready & raddr_update_ok) begin
+    end else if (addrsync_r_ready) begin
       raddr <= addrsync_r_data;
     end
-    // else: reject a torn lap-ahead CDC value; hold last-good raddr.
   end
 // Register and memory initialization
 `ifdef RANDOMIZE_GARBAGE_ASSIGN

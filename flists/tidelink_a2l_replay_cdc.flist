@@ -40,5 +40,5 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_a2l_48x16.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_20.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavMultibitSync_18.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v

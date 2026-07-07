@@ -166,7 +166,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_9.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_15.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavMultibitSync_18.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavResetSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavSyncPulse.v

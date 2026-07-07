@@ -324,9 +324,10 @@ async def _run_starvation(dut, keepalive):
              f"({peer_ev['last_force_sync']}|{peer_ev['last_link_idle']})={gate}"
              f" (die_b emits periodic SYNC toward die_a iff this is 1)")
     log.info(f"die_b SERVE (the R-B fix): serve_seen={peer_ev['serve_seen']} "
-             f"released_on_serve={peer_ev['released_on_serve']} — die_b "
-             f"quiesced its keepalive and served idle beacons on the master's "
-             f"FINALIZE_GO, so die_a re-confirmed in WS_FIN_WAITPEER")
+             f"released_on_serve={peer_ev['released_on_serve']} — die_b FORCED "
+             f"SYNC (beating its keepalive) on the master's FINALIZE_GO with its "
+             f"FC left UP, so die_a re-confirmed in WS_FIN_WAITPEER and die_b "
+             f"still reached fcsm=4")
     log.info(f"die_a (MASTER) re-anchor: entered_finalize="
              f"{diea_ev['entered_finalize']} "
              f"post-clear-retry-samples={diea_ev['retry_samples']} "

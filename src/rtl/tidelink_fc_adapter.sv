@@ -210,8 +210,20 @@ module tidelink_fc_adapter #(
         end else if (tx_valid_addr_phase) begin
             tx_xfer_lock_r <= 1'b1;
             tx_lock_addr_r <= ahb_tx_haddr;
-        end else if (!(ahb_tx_hsel & ahb_tx_htrans[1])
-                     || (ahb_tx_haddr != tx_lock_addr_r)) begin
+        // TIDELINK 2026-07-07 (A->B 5x-over-advance / die_a-TX cap fix): clear the
+        // held-NONSEQ lock ONLY on a genuine transaction end (IDLE or deselect) or
+        // a NEW NONSEQ at a DIFFERENT address. The old condition `!(hsel & htrans[1])`
+        // also cleared on a BUSY beat (htrans==2'b01, htrans[1]=0) inserted by the
+        // bridge MID-held-NONSEQ; a BUSY is not a transaction end, so clearing there
+        // let the next NONSEQ re-accept the same store -> +~5 duplicate FC words per
+        // PS store -> the a2l ACK pointer walked ~5x/word to lap-ahead (synced_ack=31)
+        // -> a2l_full after ~6 words -> A->B capped at ~6/28 on silicon (B->A/die_b-TX
+        // unaffected = 25/28). Holding the lock through BUSY makes one store == one FC
+        // word. A genuine new word (NONSEQ at a new address, or SEQ burst beat) still
+        // re-locks via tx_valid_addr_phase above, so throughput is unchanged.
+        end else if (!ahb_tx_hsel
+                     || (ahb_tx_htrans == 2'b00)
+                     || (ahb_tx_hsel & ahb_tx_htrans[1] & (ahb_tx_haddr != tx_lock_addr_r))) begin
             tx_xfer_lock_r <= 1'b0;
         end
     end

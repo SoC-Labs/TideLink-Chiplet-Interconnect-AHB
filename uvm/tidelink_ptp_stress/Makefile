@@ -141,7 +141,22 @@ VCS_FLAGS += $(RTL_DIR)/tidelink_phc_cdc.sv
 
 # TideLink performance counters
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
-VCS_FLAGS += $(RTL_DIR)/tidelink_lane_checker.sv
+# Lane checker moved out of src/rtl into the tidelink-gpio-phy submodule
+# (commit d043909: "stage3: replace tidelink_lane_checker.sv with
+# tidelink-gpio-phy submodule"). Repoint to the submodule's self-contained
+# set — matches flists/tidelink_lane_checker.flist: popcount16 + single-lane
+# matcher + 8-lane wrapper, with the incdir for tidelink_training_patterns.svh.
+VCS_FLAGS += +incdir+$(PROJ_HOME)/deps/tidelink-gpio-phy/rtl
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
+# PHY RX helper cells wired into axi_chiplet_controller during the June
+# eye-visibility-v2 work (post-dated the spring UVM freeze — u_rxclk_buf /
+# u_idelay_rx / u_eye_regs instances in axi_chiplet_controller.sv).
+VCS_FLAGS += $(RTL_DIR)/tidelink_idelay_rx.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_rxclk_buf.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_eye_regs.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
 
 # TideLink Address Translator (regs + CAM dependencies before top)
@@ -189,8 +204,13 @@ VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/veri
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
 
-# Wlink chiplet controller (Chisel-generated Verilog, GPIO PHY + TideLink)
-VCS_FLAGS += -y $(DEPS_DIR)/wav-wlink-hw/output_tidelink_gpio
+# Wlink chiplet controller.
+# 2026-07 un-rot: the sbt-regenerated output under wav-wlink-hw/output_tidelink_gpio
+# is STALE — its WlinkRxLinkLayer lacks the io_obs_* eye-visibility ports that the
+# committed logical/wlink/Wlink.v (below) now drives, so a `-y output_tidelink_gpio`
+# listed first shadowed logical/wlink and broke elaboration (UPIMI on io_obs_state
+# / io_obs_valid / io_obs_is_{short,long}_pkt). Drop that search dir; the committed
+# logical/wlink set (-y below) is the io_obs-matching source the FPGA/ASIC flists use.
 VCS_FLAGS += +libext+.v
 
 # Wlink PHY (GPIO behavioural model)
@@ -241,6 +261,25 @@ else
   SIM_FLAGS += +ntb_random_seed_automatic
 endif
 
+# ===========================================================================
+# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — DOES NOT ELABORATE
+# ---------------------------------------------------------------------------
+# UVM froze ~2026-05; RTL churned through Jun/Jul. Two rot layers were fixed
+# here (lane_checker -> tidelink-gpio-phy submodule; new PHY helper cells
+# idelay_rx/rxclk_buf/eye_regs/gpio_phy_apb_regs; stale sbt output_tidelink_gpio
+# -y dropped). REMAINING blocker needs real UVM-build work:
+#   current src/rtl/tidelink_top.sv instantiates axi_chiplet_controller with
+#   ports that exist ONLY in src/rtl/local_overrides/axi_chiplet_controller.sv
+#   (obs_a2l_replay_{app,link}_valid_o, obs_fe_rx_{is_full,credit_max}_o,
+#   train_fail_irq_o, apb_ctrl_reg_{write,addr,wdata}), but this Makefile
+#   compiles the PINNED submodule copy deps/axi-chiplet-controller/logical/top/
+#   axi_chiplet_controller.sv which predates those ports -> VCS UPIMI.
+# TODO: re-point the top/wlink source list to the src/rtl/local_overrides set
+#   that flists/tidelink_fpga.flist uses (14 overrides incl. axi_chiplet_controller,
+#   tidelink_autoneg, Wlink, WlinkRxLinkLayer, WlinkGenericFCSM_6, WavD2DGpio{,Rx,Tx}).
+#   The cocotb tidelink_top_pair env already tracks that flist. The CI job is
+#   honestly allow_failure with this reason (not fake-green) — see .gitlab-ci.yml.
+# ===========================================================================
 # ---------------------------------------------------------------
 # Test suite
 # ---------------------------------------------------------------

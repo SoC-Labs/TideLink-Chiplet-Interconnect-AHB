@@ -105,13 +105,21 @@ from test_33_arm_stagger_episode_binding import _deposit_hooks, _setup, _obs_sna
 
 CLK_PERIOD_NS = 20.0
 
-# Winscan FSM state encodings (axi_chiplet_controller.sv): the WS_FINALIZE(7)
-# re-anchor + FIX-3 WS_FIN_CLRLOW(9) clear-low retry hold are the window where
-# force-SYNC has been earned, the F3 clear drops die's own sticky anchor, and
-# the periodic re-confirm run needs the PEER's beacons.
-WS_FINALIZE   = 7
-WS_FIN_CLRLOW = 9
-DIEA_FINALIZE = {WS_FINALIZE, WS_FIN_CLRLOW}      # {7, 9}
+# Winscan FSM state encodings (axi_chiplet_controller.sv). The R-B ASYMMETRIC
+# PEER-SERVE fix (2026-07-07) moved the MASTER's re-anchor OUT of WS_FINALIZE
+# into WS_FIN_WAITPEER(10): die_a parks there, its autoneg polls die_b's
+# ready-to-serve bit and writes the FINALIZE_GO, die_b QUIESCES its keepalive
+# and SERVES idle beacons, and die_a re-confirms over those served beacons IN
+# WS_FIN_WAITPEER (dropping into WS_FINALIZE only as a 1-cycle pass-through to
+# raise winscan_done). So die_a's re-anchor WINDOW is now {10, 7, 9} — WAITPEER
+# is where the peer's beacons are actually consumed; the legacy WS_FINALIZE(7)/
+# WS_FIN_CLRLOW(9) is only the master's rendezvous-timeout fallback (b55cb59).
+WS_FINALIZE     = 7
+WS_FIN_CLRLOW   = 9
+WS_FIN_WAITPEER = 10
+# die_a's re-anchor window (where the F3 clear drops its anchor and the periodic
+# re-confirm needs the peer's beacons). WAITPEER is the ASYMMETRIC-fix window.
+DIEA_FINALIZE = {WS_FIN_WAITPEER, WS_FINALIZE, WS_FIN_CLRLOW}   # {10, 7, 9}
 
 
 async def _model_keepalive_peer(dut, keepalive, stop, ev):
@@ -149,6 +157,7 @@ async def _model_keepalive_peer(dut, keepalive, stop, ev):
     swl = sc.u_wlink
     kp_on = (keepalive == "on")
     latched = False
+    forcing = False
     while not stop[0]:
         await ClockCycles(dut.hclk, 10)
         if not latched and _si(mc.ws_state_r) in DIEA_FINALIZE:
@@ -157,15 +166,33 @@ async def _model_keepalive_peer(dut, keepalive, stop, ev):
         if latched:
             sc.winscan_force_sync.value   = Force(0)
             sc.swi_sync_insert_en_r.value = Force(1)
-            if kp_on:
-                swl.lltx_io_link_idle.value = Force(0)
+            # R-B ASYMMETRIC PEER-SERVE (2026-07-07): die_b keepalives
+            # (link_idle=0 occupies every idle slot) UNTIL the master's
+            # FINALIZE_GO makes it SERVE (ws_serve_active_r) — the FIX quiesces
+            # die_b's LL, killing the keepalive so its idle-gated SYNC inserter
+            # fires every grid slot toward die_a. Model that exactly: hold the
+            # keepalive occupancy until die_b's FIRST serve, then RELEASE the
+            # force PERMANENTLY (let the RTL's quiesced link_idle=1 show
+            # through). On the UNFIXED RTL die_b never serves -> the force stays
+            # on forever -> die_a starves (the preserved fail-first property).
+            serving = _si(sc.ws_serve_active_r) == 1
+            if serving:
+                ev["serve_seen"] = True
+            if kp_on and not ev.get("released_on_serve"):
+                if serving:
+                    swl.lltx_io_link_idle.value = Release()
+                    ev["released_on_serve"] = True
+                    forcing = False
+                else:
+                    swl.lltx_io_link_idle.value = Force(0)
+                    forcing = True
             ev["last_force_sync"] = _si(sc.winscan_force_sync)
             ev["last_insert_en"]  = _si(sc.swi_sync_insert_en_r)
             ev["last_link_idle"]  = _si(swl.lltx_io_link_idle)
     if latched:
         sc.winscan_force_sync.value   = Release()
         sc.swi_sync_insert_en_r.value = Release()
-        if kp_on:
+        if kp_on and forcing:
             swl.lltx_io_link_idle.value = Release()
 
 
@@ -185,7 +212,12 @@ async def _diea_finalize_monitor(dut, ev, stop):
         to  = _si(mc.ws_anchor_timeout_q)
         if st in DIEA_FINALIZE:
             ev["entered_finalize"] = True
-        if st == WS_FIN_CLRLOW:               # post-clear retry hold
+        # Post-clear re-confirm samples: WS_FIN_CLRLOW (legacy retry hold) OR the
+        # R-B WS_FIN_WAITPEER Phase-2 (ws_obs_clr_r high — the master's F3 clear
+        # fired and it is re-confirming over die_b's served beacons; this is the
+        # new re-anchor window).
+        if st == WS_FIN_CLRLOW or (st == WS_FIN_WAITPEER
+                                   and _si(mc.ws_obs_clr_r) == 1):
             ev["retry_samples"] += 1
             if ss > ev["max_sync_seen_post_clear"]:
                 ev["max_sync_seen_post_clear"] = ss
@@ -210,7 +242,8 @@ async def _run_starvation(dut, keepalive):
 
     stop = [False]
     peer_ev = {"latched": False, "last_force_sync": -1, "last_insert_en": -1,
-               "last_link_idle": -1}
+               "last_link_idle": -1, "serve_seen": False,
+               "released_on_serve": False}
     diea_ev = {"entered_finalize": False, "retry_samples": 0,
                "max_sync_seen_post_clear": 0, "timeout_latched": False,
                "sync_seen_at_timeout": -1}
@@ -248,9 +281,32 @@ async def _run_starvation(dut, keepalive):
                      f"rea={s['rea']} to={s['anc_to']} done={s['done']}) "
                      f"| peer_latched={peer_ev['latched']}")
 
-    # Settling tail: with the peer keepalive LATCHED on (K=0) die_a cannot
-    # recover; this dwell proves the starvation is PERMANENT (no late-anchor).
-    await ClockCycles(dut.hclk, 50_000)
+    # R-B ASYMMETRIC PEER-SERVE settling tail. die_b SERVED (quiesced its LL,
+    # fcsm drops to 0) across die_a's re-confirm; once its bounded serve window
+    # (ws_anchor_to_load) closes it re-bootstraps its FC (SWRESET_OFF->ENABLE)
+    # back to fcsm=4. Wait for die_b's serve to end AND its FC to re-establish
+    # so the M->S data path is live before the data check — bounded so a genuine
+    # never-recover still surfaces. (On the UNFIXED RTL die_b never serves, so
+    # this loop simply times out and the healthy-outcome asserts below fail as
+    # the fail-first repro intends.)
+    reboot_waited = 0
+    while reboot_waited < 900_000:
+        await ClockCycles(dut.hclk, 2000)
+        reboot_waited += 2000
+        sc = _ctrl(dut, "s")
+        ssnap = _obs_snapshot(dut, "s")
+        if reboot_waited % 50_000 == 0:
+            log.info(f"[reboot-wait t+{reboot_waited*CLK_PERIOD_NS/1000:.0f}us] "
+                     f"die_b serve_active={_si(sc.ws_serve_active_r)} "
+                     f"quiesced={_si(sc.fch_quiesced_r)} fcsm={ssnap['fcsm']} "
+                     f"rea={ssnap['rea']} done={ssnap['done']} "
+                     f"fch_done={_si(sc.fch_done_r)}")
+        if (_si(sc.ws_serve_active_r) == 0 and ssnap["fcsm"] >= 4):
+            log.info(f"die_b re-bootstrapped after serving "
+                     f"(fcsm={ssnap['fcsm']}) at "
+                     f"t+{reboot_waited*CLK_PERIOD_NS/1000:.0f}us")
+            break
+    await ClockCycles(dut.hclk, 20_000)
     m, s = _obs_snapshot(dut, "m"), _obs_snapshot(dut, "s")
     m_seen = _si(_ctrl(dut, "m").sync_obs_seen_vec_1)
     s_seen = _si(_ctrl(dut, "s").sync_obs_seen_vec_1)
@@ -267,6 +323,10 @@ async def _run_starvation(dut, keepalive):
              f"{peer_ev['last_insert_en']}&"
              f"({peer_ev['last_force_sync']}|{peer_ev['last_link_idle']})={gate}"
              f" (die_b emits periodic SYNC toward die_a iff this is 1)")
+    log.info(f"die_b SERVE (the R-B fix): serve_seen={peer_ev['serve_seen']} "
+             f"released_on_serve={peer_ev['released_on_serve']} — die_b "
+             f"quiesced its keepalive and served idle beacons on the master's "
+             f"FINALIZE_GO, so die_a re-confirmed in WS_FIN_WAITPEER")
     log.info(f"die_a (MASTER) re-anchor: entered_finalize="
              f"{diea_ev['entered_finalize']} "
              f"post-clear-retry-samples={diea_ev['retry_samples']} "
@@ -288,11 +348,22 @@ async def _run_starvation(dut, keepalive):
 
     # Harness sanity (fail loud on a broken run, not a starvation verdict):
     assert diea_ev["entered_finalize"], (
-        "die_a never entered WS_FINALIZE — the winscan did not run; harness/"
-        "config issue, not a starvation verdict")
+        "die_a never entered its re-anchor window (WS_FIN_WAITPEER/WS_FINALIZE/"
+        "WS_FIN_CLRLOW) — the winscan did not run; harness/config issue, not a "
+        "starvation verdict")
     assert peer_ev["latched"], (
-        "die_b keepalive-peer model never latched (die_a FINALIZE never seen) — "
-        "harness issue")
+        "die_b keepalive-peer model never latched (die_a re-anchor window never "
+        "seen) — harness issue")
+    # R-B ASYMMETRIC PEER-SERVE: under keepalive the FIX mechanism is die_b
+    # SERVING (quiescing its keepalive) on the master's GO. Prove it fired.
+    if keepalive == "on":
+        assert peer_ev["serve_seen"], (
+            "die_b never SERVED (ws_serve_active_r never rose) — the master's "
+            "FINALIZE_GO rendezvous did not drive the peer-serve; die_a would "
+            "have starved on the held keepalive")
+        assert peer_ev["released_on_serve"], (
+            "die_b's keepalive force was never released on serve — the fix's "
+            "quiesce did not take effect in the model")
     assert _si(_autoneg(dut, "m").state_r) != ST_ERROR, \
         "die_a autoneg parked in terminal ST_ERROR — unrelated crash"
     assert _si(_autoneg(dut, "s").state_r) != ST_ERROR, \

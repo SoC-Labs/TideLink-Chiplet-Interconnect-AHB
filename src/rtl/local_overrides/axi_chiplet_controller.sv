@@ -1308,17 +1308,19 @@ module axi_chiplet_controller #(
     reg        ws_rdv_timeout_q;
     reg        ws_fin_go_reg_q;
     // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — die_b (SLAVE) serve state.
-    //   ws_serve_active_r : the SLAVE is actively QUIESCING its own FC link
-    //                       layer to SERVE pure idle-gated SYNC beacons for the
-    //                       peer master's WS_FIN_WAITPEER re-confirm. Set when
-    //                       this die is the slave, has finished its own winscan
-    //                       (winscan_done — its anchor is already good and is
-    //                       HELD; swreset resets only the link, not the deskew
-    //                       anchor) AND the master's FINALIZE_GO landed
-    //                       (ws_fin_go_reg_q). Feeds fch_quiesce_req; its
-    //                       FALLING edge re-bootstraps the FC (SWRESET_OFF->
-    //                       ENABLE). Time-bounded by ws_serve_to_r so a lost GO
-    //                       cannot strand die_b in swreset.
+    //   ws_serve_active_r : the SLAVE is actively SERVING forced SYNC beacons
+    //                       for the peer master's WS_FIN_WAITPEER re-confirm.
+    //                       Set when this die is the slave, has finished its own
+    //                       winscan (winscan_done — its anchor is already good
+    //                       and HELD) AND the master's FINALIZE_GO landed
+    //                       (ws_fin_go_reg_q). Q'd into the PHY SYNC-insert
+    //                       force ports (insert_en+force_always+robust) so SYNC
+    //                       fires EVERY grid slot toward the master regardless
+    //                       of its keepalive/idle — WITHOUT quiescing its FC
+    //                       (its RX stays live to receive the master's credit).
+    //                       Time-bounded by ws_serve_to_r (the master re-anchors
+    //                       well within it); on expiry the force drops and its
+    //                       FC TX resumes. NO swreset, NO re-bootstrap.
     reg        ws_serve_active_r;
     reg        ws_serve_active_d;   // 1-cycle delay for the serve falling edge
     reg [28:0] ws_serve_to_r;       // serve-window timeout countdown
@@ -3534,14 +3536,8 @@ module axi_chiplet_controller #(
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             fch_pending_r <= 1'b0;
-        else if (autonomy_armed & (swi_training_mode_fall
-                                   | (ws_serve_active_d & ~ws_serve_active_r)))
-            // LOOP-9: armed-only. R-B ASYMMETRIC PEER-SERVE (2026-07-07): the
-            // slave's serve FALL (ws_serve_active_r 1->0) also re-latches the
-            // pending, so FCH_IDLE's fch_arm walks the FC re-bootstrap
-            // (SWRESET_OFF->ENABLE from the quiesced state, widx 1) — un-parks
-            // die_b's LL after it finished serving idle beacons for the master.
-            fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall / serve-fall
+        else if (autonomy_armed & swi_training_mode_fall)   // LOOP-9: armed-only
+            fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall
         else if (!autonomy_armed)
             fch_pending_r <= 1'b0;          // LOOP-9: disarm clears a stale
                                             // pending (manual takeover must not
@@ -4016,18 +4012,19 @@ module axi_chiplet_controller #(
 
     // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — SLAVE serve engine (apb_clk).
     // Only the SLAVE (die_b) runs this. Once its OWN winscan is done (its
-    // deskew anchor is already good and is HELD across the serve — swreset
-    // resets only the Wlink LL, not the POR-reset-only deskew), the master's
-    // FINALIZE_GO (ws_fin_go_reg_q) arms a bounded serve window in which die_b
-    // quiesces its LL (fch_quiesce_req covers ws_serve_active_r) — killing its
-    // keepalive/FC stream so its idle-gated SYNC inserter fires EVERY grid slot
-    // toward the master. That is the beacon-starvation fix: die_a re-confirms
-    // over these served beacons in its WS_FIN_WAITPEER Phase-2. The window is
-    // time-bounded (ws_serve_to_r, same load as the master's rendezvous
-    // timeout) so a lost GO cannot strand die_b in swreset; on the FALL the FC
-    // re-bootstraps (fch_pending_r re-latch in the FCH_IDLE region) and the
-    // consumed go is cleared (above). The ~ws_serve_active_d arm-guard blocks
-    // an immediate re-arm on the fall cycle (the go is cleared one cycle late).
+    // deskew anchor is already good and HELD), the master's FINALIZE_GO
+    // (ws_fin_go_reg_q) arms a bounded serve window in which die_b FORCES SYNC
+    // every grid slot toward the master (ws_serve_active_r is OR'd into the PHY
+    // SYNC-insert force ports) — beating the keepalive that was occupying its
+    // idle slots (the beacon-starvation fix: die_a re-confirms over these
+    // forced beacons in its WS_FIN_WAITPEER Phase-2). CRUCIALLY the FC is NOT
+    // quiesced: die_b's FC stays UP (RX live) so it still receives the master's
+    // credit and reaches fcsm=4 — a serve quiesce would SWRESET the FC and
+    // deadlock it at fcsm=2 (never receives the master's credit). The window is
+    // time-bounded (ws_serve_to_r = ws_anchor_to_load, the master re-anchors
+    // well within it); on expiry the force drops and its FC TX resumes. The
+    // consumed go is cleared on the fall (above); the ~ws_serve_active_d
+    // arm-guard blocks an immediate re-arm on the fall cycle.
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             ws_serve_active_r <= 1'b0;
@@ -4041,7 +4038,15 @@ module axi_chiplet_controller #(
                 if (autonomy_armed & ~role_is_master & winscan_done
                     & ws_fin_go_reg_q & ~ws_serve_active_d) begin
                     ws_serve_active_r <= 1'b1;
-                    ws_serve_to_r     <= ws_rdv_to_load;
+                    // Serve only as long as the master needs to re-confirm
+                    // AFTER the GO — bounded by the anchor-gate window
+                    // (ws_anchor_to_load, 0.3 s silicon / 50k sim), NOT the
+                    // master's much longer wait-for-GO patience (ws_rdv_to_r).
+                    // The master's Phase-2 re-anchor either latches well within
+                    // this window or times out at its end; either way die_b can
+                    // stop serving and re-bootstrap its FC then, minimising the
+                    // slave's data-path downtime.
+                    ws_serve_to_r     <= {5'd0, ws_anchor_to_load};
                 end
             end else begin
                 if (ws_serve_to_r == 29'd0)
@@ -4158,16 +4163,17 @@ module axi_chiplet_controller #(
     //   * WS_FIN_WAITPEER (MASTER): the master quiesces its OWN LL on entry so
     //     its exported quiesced-in-wait level (ws_fin_wait_lvl) is truthful and
     //     its own re-confirm runs over a quiet link;
-    //   * ws_serve_active_r (SLAVE): the slave quiesces its OWN LL — killing its
-    //     keepalive stream — so its idle-gated SYNC inserter fires every grid
-    //     slot toward the master (the beacon-starvation fix: die_b's keepalive
-    //     was occupying the idle slots so die_a starved);
     //   * WS_FINALIZE/WS_FIN_CLRLOW: the legacy locally-timed re-anchor window
-    //     (the slave still runs this for its OWN anchor; the master enters it
-    //     only as the 1-cycle pass-through or the rendezvous-timeout fallback).
+    //     (the slave runs this for its OWN anchor; the master enters it only as
+    //     the 1-cycle pass-through or the rendezvous-timeout fallback).
+    // The SLAVE's SERVE does NOT quiesce (see the serve-force below): a serve
+    // quiesce would SWRESET die_b's FC, dropping it out of the credit handshake
+    // exactly while the master brings its FC up — die_b would then deadlock at
+    // fcsm=2 (never receives the master's credit). Instead die_b serves by
+    // FORCING SYNC (force_always) with its FC LEFT UP, so its RX stays live to
+    // receive the master's credit and it reaches fcsm=4.
     assign fch_quiesce_req = autonomy_armed &
                              ((ws_state_r == WS_FIN_WAITPEER) |
-                              ws_serve_active_r |
                               (ws_state_r == WS_FINALIZE) |
                               (ws_state_r == WS_FIN_CLRLOW));
 
@@ -5431,13 +5437,21 @@ module axi_chiplet_controller #(
         // on-grid beacons; = the host's R8=0x14 once anchored, force_always
         // back to idle-gated strictly before winscan_done/the bootstrap).
         // winscan_force_sync=0 when the FSM is dormant => bit-identical.
-        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync),
+        // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the SLAVE also ORs
+        // ws_serve_active_r here so that, on the master's FINALIZE_GO, it
+        // FORCES SYNC every grid slot (insert_en + force_always + robust)
+        // toward the master REGARDLESS of its keepalive/idle — beating the
+        // keepalive that was occupying its idle slots (the die_a starvation) —
+        // WITHOUT quiescing its FC. Its FC stays UP (RX live) so it still
+        // receives the master's credit and reaches fcsm=4; the forced-SYNC
+        // window only briefly pre-empts its own FC TX (resumed on serve exit).
+        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync | ws_serve_active_r),
         // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
         // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
         // 0 the SYNC beacon keeps its idle-gated production behaviour
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
-        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync),
+        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r),
         // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
         // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
@@ -5446,7 +5460,7 @@ module axi_chiplet_controller #(
         // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17). SoC 0x44032128
         // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
         .swi_sync_tol_in            (swi_sync_tol_r),
-        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync),
+        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync | ws_serve_active_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

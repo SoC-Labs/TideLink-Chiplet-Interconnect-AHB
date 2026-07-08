@@ -117,8 +117,11 @@ async def test_reanchor_catchup(dut):
             saw_pending = True
         if _si(c.fch_active_r) == 1:
             saw_active = True
-        if _si(c.fch_wdata_r) == FCH_SWRESET_ON:
-            saw_boot = True
+            # Only count the bootstrap payload while the sequencer is ACTIVE —
+            # fch_wdata_r RESETS to FCH_LL_SWRESET_ON at POR, so an idle sample
+            # would false-positive (observed on the ca19da3 RED run).
+            if _si(c.fch_wdata_r) == FCH_SWRESET_ON:
+                saw_boot = True
         done = _si(c.winscan_done)
         if done == 1 and saw_active:
             break

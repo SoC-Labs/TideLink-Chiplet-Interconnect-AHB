@@ -8,7 +8,27 @@ module WavMultibitSync_18(
   input        r_reset,
   input        r_inc,
   output [4:0] r_data,
-  output       r_ready
+  output       r_ready,
+  // ---------------------------------------------------------------------------
+  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 -- David Mapstone.
+  // Purely additive read-only fan-outs of this ping-pong mailbox's internal
+  // nets (NO functional change) -- the CDC "tear surface" behind the silicon
+  // a2l false-FULL (synced_ack wedges at 0x1f). Threaded up through AddrSync_18
+  // -> FCReplayV2_13 -> FCSM_6 -> TideLinkToWlink -> Wlink -> axi_chiplet_
+  // controller and packed into APB obs reg 0x4403_21BC (marker 0xCB).
+  //   obs_mem_0  = mem_0  (ping-pong slot 0, written when ~rptr)
+  //   obs_mem_1  = mem_1  (ping-pong slot 1, written when  rptr)
+  //   obs_wptr   = wptr   (write ping-pong pointer, w_clk/link domain)
+  //   obs_rptr   = rptr   (read  ping-pong pointer, r_clk/app  domain)
+  //   obs_w_ready= w_ready(writer can push; ~(rptr_sync ^ wptr))
+  //   obs_r_ready= r_ready(reader has fresh slot; rptr ^ wptr_sync)
+  // r_data (= rptr ? mem_1 : mem_0) is derivable from obs_rptr/mem_0/mem_1.
+  output [4:0] obs_mem_0,
+  output [4:0] obs_mem_1,
+  output       obs_wptr,
+  output       obs_rptr,
+  output       obs_w_ready,
+  output       obs_r_ready
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -86,6 +106,13 @@ module WavMultibitSync_18(
   assign w_ready = ~(rptr_wclk_demet_io_out ^ wptr); // @[Components.scala 629:18]
   assign r_data = rptr ? mem_1 : mem_0; // @[Components.scala 636:15 Components.scala 636:15]
   assign r_ready = rptr ^ wptr_rclk_demet_io_out; // @[Components.scala 634:23]
+  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs, NO func change)
+  assign obs_mem_0   = mem_0;
+  assign obs_mem_1   = mem_1;
+  assign obs_wptr    = wptr;
+  assign obs_rptr    = rptr;
+  assign obs_w_ready = w_ready;
+  assign obs_r_ready = r_ready;
   assign wptr_rclk_demet_clock = r_clk;
   assign wptr_rclk_demet_reset = r_reset_coh; // @[Components.scala 623:52] (coherent)
   assign wptr_rclk_demet_io_in = wptr; // @[Stdcell.scala 59:17]

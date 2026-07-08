@@ -872,6 +872,21 @@ module axi_chiplet_controller #(
     // rreset [19]).
     wire        obs_a2l_rreset_w;
     wire [4:0]  obs_a2l_rptr_w;
+    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — David Mapstone.
+    // Raw fan-outs of the a2l replay ACK-sync CDC "tear surface": the LINK-domain
+    // ACK ptr INPUT to the sync + the AddrSync/WavMultibitSync ping-pong mailbox
+    // internals. Multi-domain (link/app), pure read-only fan-outs; 2-flop synced
+    // to apb_clk below (sync_obs_mbx_*) and PACKED into the NEW 0x4403_21BC
+    // A2L_MBX_OBS word (Region D slot 7, marker 0xCB) so silicon can see EXACTLY
+    // how synced_ack becomes 0x1f.
+    wire [4:0]  obs_a2l_link_addr_w;   // link domain (ACK ptr, the CDC input)
+    wire [4:0]  obs_mbx_raddr_w;       // app  domain (synced output = synced_ack)
+    wire [4:0]  obs_mbx_mem_0_w;       // link/w_clk domain (mailbox slot 0)
+    wire [4:0]  obs_mbx_mem_1_w;       // link/w_clk domain (mailbox slot 1)
+    wire        obs_mbx_wptr_w;        // link/w_clk domain (mailbox wptr)
+    wire        obs_mbx_rptr_w;        // app /r_clk domain (mailbox rptr)
+    wire        obs_mbx_w_ready_w;     // link/w_clk domain (mailbox w_ready)
+    wire        obs_mbx_r_ready_w;     // app /r_clk domain (mailbox r_ready)
     // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
     // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
     wire [7:0]  obs_fe_rx_ptr_w;
@@ -1456,6 +1471,26 @@ module axi_chiplet_controller #(
     reg                 sync_obs_a2l_rreset_1;
     reg [4:0]           sync_obs_a2l_rptr_0;
     reg [4:0]           sync_obs_a2l_rptr_1;
+    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — 2-flop apb_clk sync
+    // of the a2l replay ACK-sync CDC tear-surface taps (mixed link/app domains;
+    // quasi-static-snapshot treatment, per-bit coherence not required for a poll-
+    // rate debug read). Packed into 0x4403_21BC (marker 0xCB).
+    reg [4:0]           sync_obs_mbx_link_addr_0;
+    reg [4:0]           sync_obs_mbx_link_addr_1;
+    reg [4:0]           sync_obs_mbx_raddr_0;
+    reg [4:0]           sync_obs_mbx_raddr_1;
+    reg [4:0]           sync_obs_mbx_mem_0_0;
+    reg [4:0]           sync_obs_mbx_mem_0_1;
+    reg [4:0]           sync_obs_mbx_mem_1_0;
+    reg [4:0]           sync_obs_mbx_mem_1_1;
+    reg                 sync_obs_mbx_wptr_0;
+    reg                 sync_obs_mbx_wptr_1;
+    reg                 sync_obs_mbx_rptr_0;
+    reg                 sync_obs_mbx_rptr_1;
+    reg                 sync_obs_mbx_wrdy_0;
+    reg                 sync_obs_mbx_wrdy_1;
+    reg                 sync_obs_mbx_rrdy_0;
+    reg                 sync_obs_mbx_rrdy_1;
     // SoC Labs FC credit observation 2026-06-12 — same 2-flop apb_clk
     // treatment as sync_obs_fe_rx_cred (quasi-static obs snapshot; per-bit
     // coherence not guaranteed mid-update, fine for poll-rate debug reads).
@@ -1556,6 +1591,15 @@ module axi_chiplet_controller #(
             // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
             sync_obs_a2l_rreset_0   <= 1'b0;  sync_obs_a2l_rreset_1   <= 1'b0;
             sync_obs_a2l_rptr_0     <= 5'h0;  sync_obs_a2l_rptr_1     <= 5'h0;
+            // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08
+            sync_obs_mbx_link_addr_0 <= 5'h0; sync_obs_mbx_link_addr_1 <= 5'h0;
+            sync_obs_mbx_raddr_0    <= 5'h0;  sync_obs_mbx_raddr_1    <= 5'h0;
+            sync_obs_mbx_mem_0_0    <= 5'h0;  sync_obs_mbx_mem_0_1    <= 5'h0;
+            sync_obs_mbx_mem_1_0    <= 5'h0;  sync_obs_mbx_mem_1_1    <= 5'h0;
+            sync_obs_mbx_wptr_0     <= 1'b0;  sync_obs_mbx_wptr_1     <= 1'b0;
+            sync_obs_mbx_rptr_0     <= 1'b0;  sync_obs_mbx_rptr_1     <= 1'b0;
+            sync_obs_mbx_wrdy_0     <= 1'b0;  sync_obs_mbx_wrdy_1     <= 1'b0;
+            sync_obs_mbx_rrdy_0     <= 1'b0;  sync_obs_mbx_rrdy_1     <= 1'b0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
 `ifdef TIDELINK_PHY_V2
@@ -1650,6 +1694,23 @@ module axi_chiplet_controller #(
             sync_obs_a2l_rreset_1   <= sync_obs_a2l_rreset_0;
             sync_obs_a2l_rptr_0     <= obs_a2l_rptr_w;
             sync_obs_a2l_rptr_1     <= sync_obs_a2l_rptr_0;
+            // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (2-flop apb sync)
+            sync_obs_mbx_link_addr_0 <= obs_a2l_link_addr_w;
+            sync_obs_mbx_link_addr_1 <= sync_obs_mbx_link_addr_0;
+            sync_obs_mbx_raddr_0    <= obs_mbx_raddr_w;
+            sync_obs_mbx_raddr_1    <= sync_obs_mbx_raddr_0;
+            sync_obs_mbx_mem_0_0    <= obs_mbx_mem_0_w;
+            sync_obs_mbx_mem_0_1    <= sync_obs_mbx_mem_0_0;
+            sync_obs_mbx_mem_1_0    <= obs_mbx_mem_1_w;
+            sync_obs_mbx_mem_1_1    <= sync_obs_mbx_mem_1_0;
+            sync_obs_mbx_wptr_0     <= obs_mbx_wptr_w;
+            sync_obs_mbx_wptr_1     <= sync_obs_mbx_wptr_0;
+            sync_obs_mbx_rptr_0     <= obs_mbx_rptr_w;
+            sync_obs_mbx_rptr_1     <= sync_obs_mbx_rptr_0;
+            sync_obs_mbx_wrdy_0     <= obs_mbx_w_ready_w;
+            sync_obs_mbx_wrdy_1     <= sync_obs_mbx_wrdy_0;
+            sync_obs_mbx_rrdy_0     <= obs_mbx_r_ready_w;
+            sync_obs_mbx_rrdy_1     <= sync_obs_mbx_rrdy_0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
             sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
@@ -2314,6 +2375,53 @@ module axi_chiplet_controller #(
                                         ws_abort_cnt_q,
                                         ws_anchor_late_q, ws_anchor_timeout_q,
                                         ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
+        // =================================================================
+        // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 — slot 7 (0x4403_21BC)
+        //   A2L_MBX_OBS (RO). THE decisive tap for the persistent A->B blocker:
+        //   die_a's a2l ACK ptr syncs to a garbage lap-ahead 0x1f -> false
+        //   a2l_full -> app_ready=0 -> die_a TX stalls (A->B caps at ~6). FOUR
+        //   idealised-sim fixes failed on silicon; this exposes the CDC "tear
+        //   surface" (the WavMultibitSync ping-pong mailbox inside the a2l
+        //   AddrSync) so silicon can see EXACTLY how synced_ack becomes 0x1f.
+        //   All fields 2-flop apb_clk-synced from mixed link/app domains
+        //   (quasi-static snapshot; per-bit coherence not required at poll rate).
+        //
+        //   EXACT 0x4403_21BC BIT MAP:
+        //     [31:24] 0xCB               presence marker (old images read 0 here)
+        //     [23:19] a2l_link_addr[4:0] LINK-domain ACK ptr = the CDC INPUT
+        //                                (guard-clamped <= rbin <= 15). If THIS
+        //                                already reads 0x1f the corruption is
+        //                                UPSTREAM of the mailbox (the ACK latch),
+        //                                not the CDC. If it reads ~0/<=15 while
+        //                                raddr[4:0]=0x1f the mailbox tore it.
+        //     [18]    mbx_wptr           mailbox write ping-pong ptr (link/w_clk)
+        //     [17]    mbx_rptr           mailbox read  ping-pong ptr (app /r_clk)
+        //     [16]    mbx_w_ready        writer-can-push term ~(rptr_sync ^ wptr)
+        //     [15]    mbx_r_ready        reader-has-fresh term  (rptr ^ wptr_sync)
+        //                                mbx_w_ready=0 AND mbx_r_ready=0 == the
+        //                                DEADLOCK (writer can't push, no resend).
+        //     [14:10] mbx_mem_0[4:0]     ping-pong slot 0 stored ACK value
+        //     [ 9: 5] mbx_mem_1[4:0]     ping-pong slot 1 stored ACK value
+        //                                (mem_0/mem_1 = what is physically stored;
+        //                                a stale pre-wrap bit[4]=1 slot here is the
+        //                                0x1f source. r_data = rptr?mem_1:mem_0.)
+        //     [ 4: 0] raddr[4:0]         synced OUTPUT (== a2l synced_ack, the
+        //                                same value packed at 0x2158[11:7]; here
+        //                                for single-read correlation vs the input).
+        //
+        //   DECODE: input a2l_link_addr(<=15) vs output raddr(0x1f) mismatch with
+        //   both readys low = the ping-pong pointer-parity desync / stale-slot read
+        //   that the sim cannot reproduce. a2l_link_addr==raddr==0x1f = upstream.
+        // =================================================================
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hCB,                     // [31:24] marker
+                                        sync_obs_mbx_link_addr_1,  // [23:19] a2l_link_addr[4:0] (CDC input)
+                                        sync_obs_mbx_wptr_1,       // [18]    mailbox wptr
+                                        sync_obs_mbx_rptr_1,       // [17]    mailbox rptr
+                                        sync_obs_mbx_wrdy_1,       // [16]    mailbox w_ready
+                                        sync_obs_mbx_rrdy_1,       // [15]    mailbox r_ready
+                                        sync_obs_mbx_mem_0_1,      // [14:10] mailbox mem_0[4:0]
+                                        sync_obs_mbx_mem_1_1,      // [ 9: 5] mailbox mem_1[4:0]
+                                        sync_obs_mbx_raddr_1}    : // [ 4: 0] raddr[4:0] (= synced_ack)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -5360,6 +5468,17 @@ module axi_chiplet_controller #(
         // packed into the spare bits of the 0x2158 word by the Region 10 mux).
         .obs_a2l_rreset_o            (obs_a2l_rreset_w),
         .obs_a2l_rptr_o              (obs_a2l_rptr_w),
+        // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — a2l replay CDC
+        // tear-surface taps (read-only; packed into the NEW 0x21BC A2L_MBX_OBS
+        // word, marker 0xCB, by the Region D read mux).
+        .obs_a2l_link_addr_o         (obs_a2l_link_addr_w),
+        .obs_mbx_raddr_o             (obs_mbx_raddr_w),
+        .obs_mbx_mem_0_o             (obs_mbx_mem_0_w),
+        .obs_mbx_mem_1_o             (obs_mbx_mem_1_w),
+        .obs_mbx_wptr_o              (obs_mbx_wptr_w),
+        .obs_mbx_rptr_o              (obs_mbx_rptr_w),
+        .obs_mbx_w_ready_o           (obs_mbx_w_ready_w),
+        .obs_mbx_r_ready_o           (obs_mbx_r_ready_w),
         // SoC Labs FC credit observation 2026-06-12
         .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w),
         // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)

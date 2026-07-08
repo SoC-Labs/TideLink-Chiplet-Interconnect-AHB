@@ -47,7 +47,22 @@ MODULE  ?= test_v2_pair_data
 export PYTHONPATH := $(TIDELINK_HOME)/python:$(PYTHONPATH)
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+
+# ── Pre-fix fc_adapter swap (sim-only, wip/txoveradvance-simrepro) ──────────
+# PREFIX_FC=1 compiles the fc_adapter from BEFORE the tx_xfer_lock fix
+# (git 963d19d^, staged verbatim at prefix_fc_adapter.sv) so the SILICON x5 a2l
+# TX over-advance reproduces end-to-end. It swaps ONLY the one fc_adapter line
+# of tidelink_fpga_v2.flist into a generated flist; no tracked RTL is touched.
+# Default (PREFIX_FC=0) uses the in-tree fixed fc_adapter (clamps to 1:1).
+#   make EPOCH_PROFILE=zero MODULE=test_v2_multipkt_pktnum PREFIX_FC=1
+V2_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+PREFIX_FC ?= 0
+ifeq ($(PREFIX_FC),1)
+GEN_V2_FLIST := $(CURDIR)/tidelink_fpga_v2_prefixfc.flist
+$(shell sed 's#^.*tidelink_fc_adapter\.sv$$#$(CURDIR)/prefix_fc_adapter.sv#' $(V2_FLIST) > $(GEN_V2_FLIST))
+V2_FLIST := $(GEN_V2_FLIST)
+endif
+COMPILE_ARGS += -f $(V2_FLIST)
 
 # Legacy uniform bit-skid (kept for parity with the V1 pair env).
 SKID_BITS ?= 0
@@ -109,7 +124,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

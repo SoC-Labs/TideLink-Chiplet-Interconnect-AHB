@@ -18,6 +18,7 @@ keeps the same Region-8/ROLE_CFG register surface, and the V2 calibrator
 auto-arms on the role_locked rising edge exactly like V1 (AUTOCAL_ENABLE=1
 at tidelink_top.sv).
 """
+import os
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
@@ -65,7 +66,18 @@ ST_SHORT_PKT   = lambda v: (v >> 25) & 1
 ST_LLRX_VALID  = lambda v: (v >> 29) & 1
 
 CLK_PERIOD_NS     = 20.0
-REF_CLK_PERIOD_NS = 8.0
+# ── Silicon clock-ratio knob (sim-only, wip/txoveradvance-simrepro) ─────────
+# hclk (app clock) is CLK_PERIOD_NS=20 ns (~50 MHz). ref_clk drives the PHY
+# user_ref_clk / link beat. The default 8.0 ns ref keeps the link fast enough
+# that the a2l replay FIFO drains between AHB writes; combined with the
+# spec-compliant SINGLE-CYCLE ahb_tx_write_word (NONSEQ dropped to IDLE after
+# one beat), that is what HID the silicon x5 a2l emit-vs-consume over-advance in
+# sim. Override with TIDELINK_SIM_REF_PERIOD_NS to model the true silicon
+# 32-hclk/beat ratio (e.g. 40.0). NOTE: the over-advance itself is an hclk-only
+# (fc_adapter address-phase re-latch) phenomenon — the ref period only changes
+# how quickly a2l back-pressure clamps it; see ahb_tx_write_word_held below and
+# test_v2_multipkt_pktnum.py.
+REF_CLK_PERIOD_NS = float(os.environ.get("TIDELINK_SIM_REF_PERIOD_NS", "8.0"))
 
 
 class APBMaster:
@@ -327,6 +339,88 @@ class PairV2TB:
         idle slot. This is the gate that exposes the V2 packet-boundary slip
         (the spaced ahb_tx_write_packet hid it). See test_v2_pair_b2b.py."""
         await self.ahb_tx_write_packet(side, words, gap=0)
+
+    # ----- SILICON-FAITHFUL AHB-TX (held-NONSEQ bridge model) ----------------
+
+    async def ahb_tx_write_word_held(self, side, byte_addr, data,
+                                     hold_cycles=11):
+        """Model the Xilinx axi_ahblite_bridge:3.0 master as observed on
+        silicon: it holds HTRANS=NONSEQ with HADDR/HWDATA stable for the whole
+        AXI transaction (~10 hclk on the PS GP1->SMC->bridge path) while the
+        vivado wrapper loops the adapter's HREADYOUT straight back as HREADY
+        (tb_top already wires m_ahb_tx_hready <= adapter HREADYOUT). The
+        fc_adapter's LEVEL address-phase detect then re-latches a fresh FC word
+        every time a data phase completes during the hold — the silicon x5 a2l
+        over-advance. This is the exact stimulus of
+        cocotb/tidelink_fc_adapter/test_held_nonseq.py::bridge_held_write,
+        lifted into the integrated pair so the a2l wptr walk + credit
+        exhaustion are observable end-to-end. The proven-compliant
+        ahb_tx_write_word (single-cycle NONSEQ) is what hid it in sim.
+
+        One held write == ONE logical store; a spec-correct adapter (and the
+        in-tree tx_xfer_lock fix) must emit EXACTLY ONE FC word for it."""
+        dut = self.dut
+        g = lambda n: getattr(dut, f"{side}_ahb_tx_{n}")
+        await RisingEdge(dut.hclk)
+        g("hsel").value   = 1
+        g("haddr").value  = byte_addr & ((1 << 14) - 1)
+        g("htrans").value = 2                       # NONSEQ, held
+        g("hsize").value  = 2
+        g("hwrite").value = 1
+        g("hwdata").value = data & 0xFFFFFFFF
+        for _ in range(hold_cycles):
+            await RisingEdge(dut.hclk)
+        # Transaction end: IDLE gap between bridge AXI transactions.
+        g("hsel").value   = 0
+        g("htrans").value = 0
+        g("hwrite").value = 0
+        for _ in range(4):
+            await RisingEdge(dut.hclk)
+        g("hwdata").value = 0
+
+    async def ahb_tx_write_packet_held(self, side, words, hold_cycles=11,
+                                       gap=6):
+        """Write `words` to die_a's AHB-TX aperture at walking addresses using
+        the silicon held-NONSEQ bridge model (one held transaction per word)."""
+        for i, w in enumerate(words):
+            await self.ahb_tx_write_word_held(side, i * 4, w, hold_cycles)
+            if gap:
+                await ClockCycles(self.dut.hclk, gap)
+
+    # ----- a2l replay / credit observability (io_obs_* on tl2wl) -------------
+
+    def _tl2wl(self, side):
+        return self.top(side).u_chiplet_controller.u_wlink.tl2wl
+
+    def _obs(self, side, name):
+        try:
+            return int(getattr(self._tl2wl(side), name).value)
+        except (AttributeError, ValueError):
+            return -1
+
+    def a2l_wptr(self, side):
+        """5-bit a2l replay-FIFO write pointer — advances once per FC word the
+        fc_adapter pushes. Δwptr per AHB word IS the over-advance multiplier."""
+        return self._obs(side, "io_obs_a2l_wptr")
+
+    def a2l_synced_ack(self, side):
+        """5-bit a2l replay ACK pointer (== pktnum acked by the peer)."""
+        return self._obs(side, "io_obs_a2l_synced_ack")
+
+    def a2l_full(self, side):
+        return self._obs(side, "io_obs_a2l_full")
+
+    def a2l_app_ready(self, side):
+        return self._obs(side, "io_obs_a2l_replay_app_ready")
+
+    def fc_a2l_hs(self, side):
+        """1 when the master fc_adapter is emitting an FC word this cycle
+        (tl_fc_a2l_valid & tl_fc_a2l_ready)."""
+        try:
+            fa = self.top(side).u_fc_adapter
+            return int(fa.tl_fc_a2l_valid.value) & int(fa.tl_fc_a2l_ready.value)
+        except (AttributeError, ValueError):
+            return -1
 
     async def ahb_fifo_read_word(self, side, byte_addr):
         dut = self.dut

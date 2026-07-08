@@ -5,3 +5,5 @@ waves.vcd
 *.fsdb
 novas*
 verdiLog/
+ucli.key
+tidelink_fpga_v2_prefixfc.flist

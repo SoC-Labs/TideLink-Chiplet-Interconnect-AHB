@@ -896,14 +896,16 @@ async def _dormancy_monitor(dut, side, seen, stop):
 
 @cocotb.test()
 async def test_33f_a_first_asymmetric_rendezvous(dut):
-    """(f) a-first: the R-B ASYMMETRIC PEER-SERVE rendezvous (2026-07-07). Only
-    the MASTER parks in WS_FIN_WAITPEER and runs ST_FIN_RDV/GO; the SLAVE HOLDS
-    its anchor and SERVES — it is NEVER seen in WAITPEER or the rendezvous
-    states. Against the beacon-less zombie (no peer to serve) the master's
-    rendezvous times out FAIL-LOUD (ws_rdv_timeout_q=1) and proceeds LOCALLY
-    into the b55cb59 fail-open (ws_anchor_timeout_q=1). The final bilateral
-    episode then converges (real slave serves) and delivers the full data
-    oracle."""
+    """(f) a-first: the R-B ASYMMETRIC PEER-SERVE rendezvous with FIX-B's
+    peer-ready entry gate (2026-07-07). The SLAVE HOLDS its anchor and SERVES —
+    it is NEVER seen in WAITPEER or the rendezvous states. Against the un-armed
+    zombie (peer[27]=0, CANNOT serve) FIX-B keeps the MASTER OUT of
+    WS_FIN_WAITPEER: it polls the peer's ready bit (side-effect-free ST_FIN_RDV)
+    but, seeing it not ready, fails open DIRECTLY via the anchor timeout
+    (ws_anchor_timeout_q=1) with ws_rdv_timeout_q=0 and ws_waitpeer_entered_q=0
+    (pre-FIX-B it entered WAITPEER prematurely + timed out — the die_b
+    first-armed regression). The final bilateral episode then converges (real
+    slave serves) and delivers the full data oracle."""
     log = dut._log
     log.info("(f) A-FIRST — R-B ASYMMETRIC PEER-SERVE RENDEZVOUS")
     tb = PairTB(dut)
@@ -921,31 +923,44 @@ async def test_33f_a_first_asymmetric_rendezvous(dut):
         await _apb_arm(tb, "m", priority=1)
         log.info("(f) MASTER armed first (zombie-bypass private episode)")
 
-        # Private episode against the beacon-less zombie: the master parks in
-        # WS_FIN_WAITPEER and polls the zombie's ready-to-serve bit (0 — the
-        # zombie is un-armed), so the rendezvous TIMES OUT (ws_rdv_timeout_q=1)
-        # and proceeds LOCALLY into WS_FINALIZE, where the F4 anchor gate burns
-        # the FIX-3 clear-retries and FAILS OPEN (0x21B8[2]). winscan_done
-        # rises. Budget: bypass walk ~233k + scan + rdv timeout (~400k) +
-        # FINALIZE fail-open (5 R-A retries x 50k + clr-holds).
+        # Private episode against the beacon-less UN-ARMED zombie. FIX-B
+        # (2026-07-07 peer-ready entry gate): the zombie's SWI_LANE_STATUS[27]=0
+        # (peer_ready_to_serve_w=0), so the master must NOT fall into the serve
+        # rendezvous at all — it fails open DIRECTLY via the F4 anchor timeout
+        # (0x21B8[2]=1) after the FIX-3 clear-retries, with ws_rdv_timeout_q
+        # (0x21B8[10]) STAYING 0 and ws_waitpeer_entered_q (0x21B8[15]) STAYING 0.
+        # winscan_done rises. Budget: bypass walk ~233k + scan + FINALIZE
+        # fail-open (5 R-A retries x 50k + clr-holds). (The autoneg DOES enter the
+        # side-effect-free ST_FIN_RDV poll to READ the peer's bit — the
+        # rdv_state_hit invariant below — but never writes a GO, since the peer is
+        # not ready and the master never parks in WS_FIN_WAITPEER.) Pre-FIX-B
+        # (4f39fb6/rev2) the master ENTERED WS_FIN_WAITPEER prematurely and timed
+        # the rendezvous out (ws_rdv_timeout_q=1) — the die_b first-armed 83%->58%
+        # regression this test now regression-locks the fix for.
         mc = _ctrl(dut, "m")
         ok, w = await _wait_sig(dut, lambda: _si(mc.winscan_done), 1,
                                 max_cycles=4_000_000)
+        # Sample the premature-entry sticky BEFORE the retrain (WS_ARM) clears it.
+        pre_retrain_waitpeer = _si(mc.ws_waitpeer_entered_q)
         assert ok, ("(f) MASTER private-episode winscan_done never rose — the "
-                    "rendezvous-timeout -> fail-open path deadlocked the zombie "
+                    "peer-ready-gated fail-open path deadlocked the zombie "
                     "episode?")
         assert _si(mc.ws_anchor_timeout_q) == 1, (
             "(f) private zombie episode did NOT fail open via the ANCHOR "
-            "timeout (0x21B8[2]=0) — the b55cb59 local fail-open fallback is "
-            "not reached")
-        assert _si(mc.ws_rdv_timeout_q) == 1, (
-            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) did NOT "
-            "latch — the master's WS_FIN_WAITPEER rendezvous did not FAIL LOUD "
-            "on the un-serving zombie (asymmetric fail-loud broken)")
-        log.info(f"(f) private episode: master rendezvous timed out fail-loud "
-                 f"(0x21B8[10]=1) then failed open via the anchor timeout "
-                 f"(0x21B8[2]=1) at t={w*CLK_PERIOD_NS/1000:.0f}us — arming "
-                 f"the late die")
+            "timeout (0x21B8[2]=0) — the base fail-open fallback is not reached")
+        assert _si(mc.ws_rdv_timeout_q) == 0, (
+            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) LATCHED — "
+            "FIX-B's peer-ready gate must keep the master OUT of the serve "
+            "rendezvous against an un-armed peer (fail open DIRECTLY, never enter "
+            "WS_FIN_WAITPEER to time out)")
+        assert pre_retrain_waitpeer == 0, (
+            "(f) private zombie episode: ws_waitpeer_entered_q (0x21B8[15]) set — "
+            "the master PREMATURELY entered WS_FIN_WAITPEER against a peer that "
+            "cannot serve (the die_b first-armed 83%->58% regression FIX-B removes)")
+        log.info(f"(f) private episode: master peer-ready-gated OUT of the serve "
+                 f"rendezvous (rdv_timeout=0, waitpeer_entered=0) and failed open "
+                 f"via the anchor timeout (0x21B8[2]=1) at "
+                 f"t={w*CLK_PERIOD_NS/1000:.0f}us — arming the late die")
 
         # Final bilateral episode (the a-first tail): the retrain re-runs
         # training; both winscans rebind (FIX-1). The master's rendezvous now
@@ -965,13 +980,15 @@ async def test_33f_a_first_asymmetric_rendezvous(dut):
     assert not seen["s"]["rdv_timeout_hit"], (
         "(f) SLAVE ws_rdv_timeout_q observed 1 — the slave never enters the "
         "rendezvous, so it can never time out")
-    # MASTER: the asymmetric rendezvous DID engage (it re-confirms in WAITPEER).
-    assert seen["m"]["waitpeer_hit"], (
-        "(f) MASTER never entered WS_FIN_WAITPEER — the asymmetric rendezvous "
-        "did not engage")
+    # MASTER: FIX-B — against a peer that cannot serve the master must NOT PARK in
+    # WS_FIN_WAITPEER (asserted per-episode via ws_waitpeer_entered_q above); but
+    # it DOES enter the side-effect-free ST_FIN_RDV poll to READ the peer's ready
+    # bit (it just never writes a GO). (A LEGITIMATE WS_FIN_WAITPEER entry can
+    # still occur later in the bilateral episode once the real slave is ready, so
+    # seen["m"]["waitpeer_hit"] is NOT asserted either way here.)
     assert seen["m"]["rdv_state_hit"], (
-        "(f) MASTER autoneg never entered ST_FIN_RDV/ST_FIN_GO — the rendezvous "
-        "entry arc did not fire")
+        "(f) MASTER autoneg never entered ST_FIN_RDV — the side-effect-free "
+        "finalize poll arc did not fire")
     # Both dies were observed QUIESCED in their re-anchor window (master in
     # WAITPEER, slave in FINALIZE).
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):

@@ -210,19 +210,24 @@ module tidelink_fc_adapter #(
         end else if (tx_valid_addr_phase) begin
             tx_xfer_lock_r <= 1'b1;
             tx_lock_addr_r <= ahb_tx_haddr;
-        // TIDELINK 2026-07-07 (A->B 5x-over-advance / die_a-TX cap fix): clear the
-        // held-NONSEQ lock ONLY on a genuine transaction end (IDLE or deselect) or
-        // a NEW NONSEQ at a DIFFERENT address. The old condition `!(hsel & htrans[1])`
-        // also cleared on a BUSY beat (htrans==2'b01, htrans[1]=0) inserted by the
-        // bridge MID-held-NONSEQ; a BUSY is not a transaction end, so clearing there
-        // let the next NONSEQ re-accept the same store -> +~5 duplicate FC words per
-        // PS store -> the a2l ACK pointer walked ~5x/word to lap-ahead (synced_ack=31)
-        // -> a2l_full after ~6 words -> A->B capped at ~6/28 on silicon (B->A/die_b-TX
-        // unaffected = 25/28). Holding the lock through BUSY makes one store == one FC
-        // word. A genuine new word (NONSEQ at a new address, or SEQ burst beat) still
-        // re-locks via tx_valid_addr_phase above, so throughput is unchanged.
+        // TIDELINK 2026-07-08 (A->B 5x-over-advance / die_a-TX cap fix, v2): clear the
+        // held-NONSEQ lock ONLY on a genuine transaction end -- a DESELECT (~hsel) or a
+        // NEW NONSEQ at a DIFFERENT address. The 2026-07-07 version also cleared on a
+        // bare IDLE beat (htrans==2'b00) WHILE hsel stays high; on silicon the
+        // axi_ahblite_bridge inserts such a mid-held-NONSEQ IDLE (hsel held, htrans->
+        // IDLE for a beat, then back to the SAME-address NONSEQ) -> the old clause
+        // released the lock mid-store -> the next same-address NONSEQ re-accepted the
+        // SAME store -> ~5 duplicate FC words/store STILL leaked on silicon (credit
+        // ptr=30/31 after 8 words, exp saturates 0x20) even though the sim's continuous
+        // held-NONSEQ writer (which deselects between stores) read 1:1 and hid it.
+        // A mid-store IDLE with hsel HELD is a CONTINUATION, not a boundary: hold the
+        // lock through it. Real words still separate correctly -- the data path writes
+        // INCREMENTING addresses (tl39 txburst = TXBASE+i*4), so each new word is a
+        // DIFFERENT-address NONSEQ that clears+re-locks below; and a true transaction
+        // end deselects (~hsel). One PS store == one FC word == one a2l entry == one
+        // emitted packet (the FCSM emit is 1:1). Verified in the pair sim with a
+        // mid-hold-IDLE bridge model.
         end else if (!ahb_tx_hsel
-                     || (ahb_tx_htrans == 2'b00)
                      || (ahb_tx_hsel & ahb_tx_htrans[1] & (ahb_tx_haddr != tx_lock_addr_r))) begin
             tx_xfer_lock_r <= 1'b0;
         end

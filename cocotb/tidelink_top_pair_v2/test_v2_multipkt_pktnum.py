@@ -83,10 +83,11 @@ async def _emit_counter(tb, side, stop):
     stop["n_emit"] = n_emit
 
 
-async def _drive_and_measure(tb, side, held):
+async def _drive_and_measure(tb, side, held, mid_idle=False):
     """Write N_WORDS to die_a's AHB-TX aperture (walking addresses) either via
     the spec single-cycle writer or the silicon held-NONSEQ writer, counting
-    FC-word emits + the a2l wptr / credit walk. Returns a metrics dict."""
+    FC-word emits + the a2l wptr / credit walk. Returns a metrics dict.
+    mid_idle=True uses the mid-hold-IDLE bridge model (the silicon defeat)."""
     dut = tb.dut
     payload = [0xA5A50000 + i for i in range(N_WORDS)]
 
@@ -97,7 +98,8 @@ async def _drive_and_measure(tb, side, held):
 
     if held:
         await tb.ahb_tx_write_packet_held(side, payload,
-                                          hold_cycles=HOLD_CY, gap=GAP_CY)
+                                          hold_cycles=HOLD_CY, gap=GAP_CY,
+                                          mid_idle=mid_idle)
     else:
         # spec single-cycle NONSEQ, matching the proven ahb_tx_write_packet
         for i, w in enumerate(payload):
@@ -168,3 +170,23 @@ async def test_held_writer_repro(dut):
     # Report-only: do NOT fail the run — the number is the deliverable.
     tb.log.info(f"HELD-NONSEQ emit/word = {m['n_emit'] / m['n_words']:.2f}x "
                 f"(silicon signature ~5x)")
+
+
+@cocotb.test()
+async def test_held_mididle_1to1(dut):
+    """SILICON DEFEAT pattern: held-NONSEQ with a mid-hold IDLE beat (hsel HELD).
+    This is what still leaked ~5x on silicon under the 2026-07-07 lock (which
+    cleared on the bare IDLE) while the continuous-held writer read a clean 1:1.
+    The 2026-07-08 lock (clear only on ~hsel or a different-address NONSEQ) MUST
+    hold through the mid-hold IDLE -> exactly one FC word per store. This test
+    FAILS on the old lock and PASSES on the fix -> the pre-silicon gate for it."""
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
+    await ClockCycles(dut.hclk, 500)
+    m = await _drive_and_measure(tb, "m", held=True, mid_idle=True)
+    _report(tb, "MID-IDLE", m)
+    assert m["n_emit"] == m["n_words"], (
+        f"mid-hold-IDLE bridge: emitted {m['n_emit']} FC words for "
+        f"{m['n_words']} stores ({m['n_emit']/m['n_words']:.2f}x) — the "
+        f"tx_xfer_lock still leaks on the silicon mid-IDLE defeat pattern")

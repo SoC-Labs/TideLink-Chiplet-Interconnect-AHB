@@ -343,7 +343,7 @@ class PairV2TB:
     # ----- SILICON-FAITHFUL AHB-TX (held-NONSEQ bridge model) ----------------
 
     async def ahb_tx_write_word_held(self, side, byte_addr, data,
-                                     hold_cycles=11):
+                                     hold_cycles=11, mid_idle=False):
         """Model the Xilinx axi_ahblite_bridge:3.0 master as observed on
         silicon: it holds HTRANS=NONSEQ with HADDR/HWDATA stable for the whole
         AXI transaction (~10 hclk on the PS GP1->SMC->bridge path) while the
@@ -368,9 +368,21 @@ class PairV2TB:
         g("hsize").value  = 2
         g("hwrite").value = 1
         g("hwdata").value = data & 0xFFFFFFFF
-        for _ in range(hold_cycles):
+        for c in range(hold_cycles):
+            if mid_idle and c == hold_cycles // 2:
+                # SILICON DEFEAT of the 2026-07-07 lock: a mid-held-NONSEQ IDLE
+                # beat with hsel HELD (htrans->IDLE for one beat, then back to the
+                # SAME-address NONSEQ). The old clear condition released the lock
+                # on this bare IDLE -> the next same-addr NONSEQ re-accepted the
+                # SAME store -> residual ~5x/store still leaked on silicon while
+                # the continuous-held writer (which deselects) read a clean 1:1.
+                # The 2026-07-08 lock holds through it (clears only on ~hsel or a
+                # different-address NONSEQ) -> must stay 1:1 here.
+                g("htrans").value = 0
+                await RisingEdge(dut.hclk)
+                g("htrans").value = 2
             await RisingEdge(dut.hclk)
-        # Transaction end: IDLE gap between bridge AXI transactions.
+        # Transaction end: DESELECT gap between bridge AXI transactions.
         g("hsel").value   = 0
         g("htrans").value = 0
         g("hwrite").value = 0
@@ -379,11 +391,13 @@ class PairV2TB:
         g("hwdata").value = 0
 
     async def ahb_tx_write_packet_held(self, side, words, hold_cycles=11,
-                                       gap=6):
+                                       gap=6, mid_idle=False):
         """Write `words` to die_a's AHB-TX aperture at walking addresses using
-        the silicon held-NONSEQ bridge model (one held transaction per word)."""
+        the silicon held-NONSEQ bridge model (one held transaction per word).
+        mid_idle=True inserts the mid-hold IDLE beat that defeats the old lock."""
         for i, w in enumerate(words):
-            await self.ahb_tx_write_word_held(side, i * 4, w, hold_cycles)
+            await self.ahb_tx_write_word_held(side, i * 4, w, hold_cycles,
+                                              mid_idle=mid_idle)
             if gap:
                 await ClockCycles(self.dut.hclk, gap)
 

@@ -83,7 +83,8 @@ async def _emit_counter(tb, side, stop):
     stop["n_emit"] = n_emit
 
 
-async def _drive_and_measure(tb, side, held, mid_idle=False):
+async def _drive_and_measure(tb, side, held, mid_idle=False,
+                             bw_idle=False, same_addr=False):
     """Write N_WORDS to die_a's AHB-TX aperture (walking addresses) either via
     the spec single-cycle writer or the silicon held-NONSEQ writer, counting
     FC-word emits + the a2l wptr / credit walk. Returns a metrics dict.
@@ -99,7 +100,8 @@ async def _drive_and_measure(tb, side, held, mid_idle=False):
     if held:
         await tb.ahb_tx_write_packet_held(side, payload,
                                           hold_cycles=HOLD_CY, gap=GAP_CY,
-                                          mid_idle=mid_idle)
+                                          mid_idle=mid_idle, bw_idle=bw_idle,
+                                          same_addr=same_addr)
     else:
         # spec single-cycle NONSEQ, matching the proven ahb_tx_write_packet
         for i, w in enumerate(payload):
@@ -190,3 +192,25 @@ async def test_held_mididle_1to1(dut):
         f"mid-hold-IDLE bridge: emitted {m['n_emit']} FC words for "
         f"{m['n_words']} stores ({m['n_emit']/m['n_words']:.2f}x) — the "
         f"tx_xfer_lock still leaks on the silicon mid-IDLE defeat pattern")
+
+
+@cocotb.test()
+async def test_held_fifo_bwidle_1to1(dut):
+    """WORST-CASE silicon pattern: FIFO aperture (ONE address for all words) +
+    mid-hold IDLE + an hsel-HELD IDLE between-word gap (NO deselect). This is what
+    the v2 lock got wrong: with no deselect/diff-addr boundary the lock STUCK ->
+    words 2..N suppressed -> data path wedged BOTH ways on silicon (B->A 25->0).
+    The v3 IDLE-gap-count MUST: (a) hold through the brief mid-store IDLE (no 5x),
+    AND (b) clear on the sustained between-word IDLE (separate words) -> exactly N
+    FC words for N stores. FAILS (< N, wedge) on v2; PASSES on v3."""
+    tb = PairV2TB(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
+    await ClockCycles(dut.hclk, 500)
+    m = await _drive_and_measure(tb, "m", held=True, mid_idle=True,
+                                 bw_idle=True, same_addr=True)
+    _report(tb, "FIFO-BWIDLE", m)
+    assert m["n_emit"] == m["n_words"], (
+        f"FIFO + between-word-IDLE bridge: emitted {m['n_emit']} FC words for "
+        f"{m['n_words']} stores ({m['n_emit']/m['n_words']:.2f}x) — the lock "
+        f"either leaks (>N, over-advance) or wedges (<N, words suppressed)")

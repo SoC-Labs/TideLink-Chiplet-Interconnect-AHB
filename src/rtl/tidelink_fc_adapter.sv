@@ -199,37 +199,47 @@ module tidelink_fc_adapter #(
     // axi_ahblite_bridge, which idles between AXI transactions.
     logic                  tx_xfer_lock_r;
     logic [RAM_ADDR_W-1:0] tx_lock_addr_r;
+    logic [2:0]            tx_idle_cnt_r;   // consecutive no-address-phase beats
     wire tx_lock_hit = tx_xfer_lock_r && (ahb_tx_haddr == tx_lock_addr_r);
     wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready
                                & ahb_tx_hwrite & ~tx_lock_hit;
+    // A live NONSEQ/SEQ address phase is present this beat (resets the idle gap).
+    wire tx_addr_active = ahb_tx_hsel & ahb_tx_htrans[1];
+    // Beats of no-address-phase that constitute a genuine BETWEEN-WORD gap (vs a
+    // brief mid-store IDLE the bridge inserts). Lock clears when the count REACHES
+    // this, i.e. after (TX_IDLE_GAP+1) consecutive idle beats.
+    localparam [2:0] TX_IDLE_GAP = 3'd3;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             tx_xfer_lock_r <= 1'b0;
             tx_lock_addr_r <= '0;
+            tx_idle_cnt_r  <= 3'd0;
         end else if (tx_valid_addr_phase) begin
             tx_xfer_lock_r <= 1'b1;
             tx_lock_addr_r <= ahb_tx_haddr;
-        // TIDELINK 2026-07-08 (A->B 5x-over-advance / die_a-TX cap fix, v2): clear the
-        // held-NONSEQ lock ONLY on a genuine transaction end -- a DESELECT (~hsel) or a
-        // NEW NONSEQ at a DIFFERENT address. The 2026-07-07 version also cleared on a
-        // bare IDLE beat (htrans==2'b00) WHILE hsel stays high; on silicon the
-        // axi_ahblite_bridge inserts such a mid-held-NONSEQ IDLE (hsel held, htrans->
-        // IDLE for a beat, then back to the SAME-address NONSEQ) -> the old clause
-        // released the lock mid-store -> the next same-address NONSEQ re-accepted the
-        // SAME store -> ~5 duplicate FC words/store STILL leaked on silicon (credit
-        // ptr=30/31 after 8 words, exp saturates 0x20) even though the sim's continuous
-        // held-NONSEQ writer (which deselects between stores) read 1:1 and hid it.
-        // A mid-store IDLE with hsel HELD is a CONTINUATION, not a boundary: hold the
-        // lock through it. Real words still separate correctly -- the data path writes
-        // INCREMENTING addresses (tl39 txburst = TXBASE+i*4), so each new word is a
-        // DIFFERENT-address NONSEQ that clears+re-locks below; and a true transaction
-        // end deselects (~hsel). One PS store == one FC word == one a2l entry == one
-        // emitted packet (the FCSM emit is 1:1). Verified in the pair sim with a
-        // mid-hold-IDLE bridge model.
-        end else if (!ahb_tx_hsel
-                     || (ahb_tx_hsel & ahb_tx_htrans[1] & (ahb_tx_haddr != tx_lock_addr_r))) begin
-            tx_xfer_lock_r <= 1'b0;
+            tx_idle_cnt_r  <= 3'd0;
+        // TIDELINK 2026-07-08 v3 (A->B 5x-over-advance / die_a-TX cap fix): IDLE-GAP
+        // COUNT. The held-NONSEQ bridge inserts a BRIEF mid-store IDLE (hsel held,
+        // htrans->IDLE ~1 beat, then back to the SAME-address NONSEQ); clearing the
+        // lock there let the resume re-accept the SAME store -> residual ~5x on
+        // silicon (credit ptr=30/31, exp 0x20). But the BETWEEN-WORD separator on
+        // this aperture is ALSO an idle gap with hsel HELD (NOT a deselect), so the
+        // v2 "clear only on ~hsel/diff-addr" fix made the lock STICK -> words 2+
+        // suppressed -> data path wedged BOTH ways (B->A 25->0). Fix: count
+        // consecutive no-address-phase beats and treat a SUSTAINED gap (>= TX_IDLE_
+        // GAP) as the between-word boundary, while a brief mid-store IDLE (< gap) is
+        // a CONTINUATION held through. Boundary = DESELECT | DIFF-ADDR NONSEQ |
+        // sustained idle gap. One store == one FC word == one packet. Verified in
+        // the pair sim with mid-hold-IDLE + between-word-IDLE bridge models.
+        end else begin
+            if (tx_addr_active)              tx_idle_cnt_r <= 3'd0;
+            else if (tx_idle_cnt_r != 3'd7)  tx_idle_cnt_r <= tx_idle_cnt_r + 3'd1;
+
+            if (!ahb_tx_hsel
+                || (ahb_tx_hsel & ahb_tx_htrans[1] & (ahb_tx_haddr != tx_lock_addr_r))
+                || (tx_idle_cnt_r >= TX_IDLE_GAP))
+                tx_xfer_lock_r <= 1'b0;
         end
     end
 

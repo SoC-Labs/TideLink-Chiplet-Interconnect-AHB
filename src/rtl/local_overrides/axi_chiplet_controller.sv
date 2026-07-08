@@ -3582,11 +3582,30 @@ module axi_chiplet_controller #(
 `ifdef TIDELINK_PHY_V2
     reg  fch_pending_r;
     wire winscan_gate = WINSCAN_FSM_EN ? winscan_done : 1'b1;
+    // FIX-1 (2026-07-08): a 1-cycle-delayed registered copy of the winscan
+    // block's ws_reanchor_catchup pulse (that combinational net is declared with
+    // the winscan FSM, far BELOW this block, and this file is `default_nettype
+    // none` = declaration-before-use enforced, so it cannot be referenced here
+    // directly). Registered next to the winscan FSM (below) and consumed here as
+    // an extra fch_pending_r SET term: the reanchor-catchup completes the FC
+    // handoff for a die parked in WS_IDLE with a committed+verified anchor whose
+    // armed training fall was dropped (the iter-1 NODONE). The 1-cycle skew is
+    // harmless — the WS_IDLE arm raises winscan_done the same cycle catchup
+    // fires, so winscan_gate is already open when this set lands.
+    reg  ws_reanchor_catchup_q;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             fch_pending_r <= 1'b0;
         else if (autonomy_armed & swi_training_mode_fall)   // LOOP-9: armed-only
             fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall
+        else if (autonomy_armed & ws_reanchor_catchup_q)    // FIX-1 (2026-07-08)
+            fch_pending_r <= 1'b1;          // reanchor-catchup: no armed training
+                                            // fall ever landed, but the committed
+                                            // + verified anchor must still hand
+                                            // off. winscan_done is already 1 (the
+                                            // WS_IDLE catchup arm) so winscan_gate
+                                            // is open and this is consumed next
+                                            // cycle by fch_arm.
         else if (!autonomy_armed)
             fch_pending_r <= 1'b0;          // LOOP-9: disarm clears a stale
                                             // pending (manual takeover must not
@@ -4267,6 +4286,47 @@ module axi_chiplet_controller #(
                                          // in EVERY state (start or abort-restart)
     end
 
+    // FIX-1 (2026-07-08, REANCHOR-WITHOUT-WINSCAN CATCH-UP): the SECOND-armed
+    // die (the slave) can be left with a COMMITTED + VERIFIED deskew anchor but
+    // winscan_done NEVER asserting -> the fch handoff deadlocks (the NODONE
+    // observed on iter-1 silicon, build 564ddde). Root cause: its I2C ACK from
+    // POR lands BEFORE autonomy_armed=1, so the training FALL that would kick
+    // the winscan is dropped by the LOOP-9 armed-only gate on ws_kick_evt
+    // (ws_kick_evt requires autonomy_armed AT the fall). autonomy_armed then
+    // rises with NO fresh fall -> the winscan stays parked in WS_IDLE ->
+    // winscan_done stays 0 forever. But the die DID re-anchor passively (the
+    // peer's beacons drove reanchored=1 => ws_anchor_q=1) AND that anchor is
+    // ZERO-TOLERANCE VERIFIED (ws_verify_q=1 = the EXACT WS_FINALIZE release
+    // gate's own criterion, verify_stuck=0). So it is a fully-committed,
+    // verified anchor missing ONLY winscan_done + fch_pending_r. This term
+    // detects exactly that state; the WS_IDLE arm (below) completes the arc
+    // WITHOUT running a scan (raise winscan_done, one-shot ws_kicked_q, STAY in
+    // WS_IDLE so winscan_owns_taps stays 0 = host/APB anchor taps untouched, NO
+    // sweep) and the fch_pending_r set term (below) queues the handoff.
+    // SAFETY (each verified): never ships an unverified anchor (gated on
+    // ws_verify_q, the exact WS_FINALIZE release gate); NO tap sweep/disturbance
+    // (winscan_owns_taps stays 0 in WS_IDLE); one-shot (ws_kicked_q<=1, cleared
+    // only by a genuine training rise); declines the stuck-training-high variant
+    // (~swi_training_mode_r); disarm-safe (LOOP-9 park still clears winscan_done
+    // on !autonomy_armed). Does NOT affect the master: it kicks via its OWN real
+    // training fall and LEAVES WS_IDLE, and its ws_anchor_q is 0 before its
+    // anchor exists (so this term cannot fire for it).
+    wire ws_reanchor_catchup = WINSCAN_FSM_EN & autonomy_armed & ~ws_kicked_q
+                             & (ws_state_r == WS_IDLE)
+                             & ws_anchor_q & ws_verify_q & ~swi_training_mode_r;
+    // Register the (1-cycle) catchup pulse for the fch_pending_r SET term above
+    // (declaration-before-use / `default_nettype none` forbids referencing the
+    // combinational net directly in that earlier block). The WS_IDLE arm below
+    // consumes ws_reanchor_catchup combinationally (in scope); this flopped copy
+    // only feeds the fch handoff, one cycle later, by which point winscan_done
+    // (raised by the same-cycle WS_IDLE arm) has already opened winscan_gate.
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            ws_reanchor_catchup_q <= 1'b0;
+        else
+            ws_reanchor_catchup_q <= ws_reanchor_catchup;
+    end
+
     // The lane currently selected for the SYNC_DIST observation. Mirror it onto
     // swi_dist_lane_sel_r's read path is unnecessary — the FSM reads the full
     // CDC'd vector directly (sync_obs_dist_vec_1), exactly the same 5-bit slice
@@ -4423,6 +4483,19 @@ module axi_chiplet_controller #(
                         ws_kicked_q  <= 1'b1;
                         winscan_done <= 1'b0;     // fresh episode
                         ws_state_r   <= WS_ARM;
+                    end else if (ws_reanchor_catchup) begin
+                        // FIX-1 (2026-07-08): reanchored+verified but the armed
+                        // training fall never landed (dropped by the LOOP-9 gate)
+                        // -> complete the handoff arc IN PLACE. Raise winscan_done
+                        // (opens winscan_gate) + one-shot (ws_kicked_q). STAY in
+                        // WS_IDLE — do NOT go to WS_DONE, which sets
+                        // winscan_owns_taps and would PIN stale taps; WS_IDLE
+                        // holds winscan_owns_taps=0 so the host/APB anchor taps
+                        // are untouched (no sweep, no disturbance) and never
+                        // re-clears winscan_done, so done HOLDS. The end-of-block
+                        // ws_kick_evt mask cannot fire here (no training fall).
+                        winscan_done <= 1'b1;
+                        ws_kicked_q  <= 1'b1;
                     end
                 end
                 // -------------------------------------------------------------

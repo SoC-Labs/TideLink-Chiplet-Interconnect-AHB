@@ -1112,7 +1112,40 @@ module WavD2DGpio #(
   // sync_seen/sync_idx and drops `reanchored`), so every winscan clear-retry
   // starts a fresh verify. Clear WINS over a same-edge set (deskew idiom).
   // ---------------------------------------------------------------------------
-  wire [7:0] anchor_vfy_lane_w = dbg_lane_any_match_w;
+  // FIX-2 (2026-07-08, TOLERANT ANCHOR-VERIFY, tol-3, wrong-slot-safe): the
+  // anchor COMMIT is tol-5 (per-lane sync_dist <= SYNC_REANCHOR_TOL=5 in the
+  // deskew) but the anchor VERIFY was tol-0 EXACT (dbg_lane_any_match_w, ==).
+  // On die_a's marginal eye a CORRECTLY-aligned lane lands at Hamming 1-5 from
+  // its SYNC slice: it COMMITS (tol-5) but can never exact-VERIFY -> ws_verify_q
+  // stuck at 0 forever (the iter-1 die_a verify_stuck; die_b's cleaner eye
+  // verifies exact = 92%). Fix: verify with a Hamming tolerance of 3.
+  //   WHY 3 (not 5): the 8 SYNC slices of TIDELINK_SYNC_WORD form a code whose
+  //   MINIMUM pairwise inter-slice Hamming distance is 4, so tol-3 (< 4)
+  //   PROVABLY rejects any wrong slot — a mis-aligned lane reads a whole
+  //   different slice at dist >= 4 > 3 — while accepting a correctly-aligned
+  //   marginal-eye lane at dist <= 3.
+  //   The cross-lane simultaneity requirement is KEPT (anchor_vfy_word_w is the
+  //   &-over-active-lanes on ONE valid post-deskew beat), so a TEMPORALLY
+  //   mis-aligned lane still fails: one beat off it reads a whole wrong word,
+  //   dist >> 3, and the simultaneous all-lane match can never fire.
+  //   This is the SAME Hamming compare (sync_live_popcount16 of the per-lane
+  //   XOR) the live sync detector uses above (the deskew's tidelink_popcount16
+  //   is a MODULE, not callable in an expression, so this in-module function is
+  //   used — bit-identical popcount). The rawobs debug capture keeps its EXACT
+  //   compare (dbg_lane_any_match_w, untouched above) so the on-silicon
+  //   permutation/slice-index diagnostics stay zero-tolerance; ONLY the
+  //   anchor-verify uses this tolerant vector. anchor_vfy_lane_w remains a
+  //   named 8-bit net the sim gate can Force() (t33e wrong-slot injection).
+  localparam [4:0] VERIFY_TOL = 5'd3;
+  wire [7:0] anchor_vfy_lane_w;
+  genvar avl;
+  generate
+    for (avl = 0; avl < 8; avl = avl + 1) begin : g_anchor_vfy
+      assign anchor_vfy_lane_w[avl] =
+          (sync_live_popcount16(deskew_aligned_data[16*avl +: 16]
+                                ^ DBG_SYNC_WORD[16*avl +: 16]) <= VERIFY_TOL);
+    end
+  endgenerate
   wire anchor_vfy_word_w = deskew_out_valid_w &
                            (&(anchor_vfy_lane_w | ~io_link_rx_rx_lane_mask));
   reg anchor_verified_q;

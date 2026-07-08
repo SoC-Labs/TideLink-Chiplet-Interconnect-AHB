@@ -1206,6 +1206,22 @@ module axi_chiplet_controller #(
     //                     Consumed by the WS_FIN_WAITPEER Phase-1 release.
     wire       ws_fin_wait_lvl;
     wire       nego_fin_go_w;
+    // FIX-B (2026-07-07 PEER-READY ENTRY GATE) — the broadened "MASTER is in ANY
+    // finalize state" level (WS_FINALIZE | WS_FIN_CLRLOW | WS_FIN_WAITPEER),
+    // role_is_master-gated. Fed to u_autoneg.local_finalizing_i so the autoneg
+    // enters the SIDE-EFFECT-FREE ST_FIN_RDV POLL as soon as the master starts
+    // finalizing (not only once parked in WS_FIN_WAITPEER) — it reads the peer's
+    // ready-to-serve bit (SWI_LANE_STATUS[27]) WITHOUT writing a GO (the GO write
+    // stays gated on the NARROW ws_fin_wait_lvl / local_fin_wait_i). The captured
+    // peer bit comes back as peer_ready_to_serve_w below.
+    wire       ws_finalizing_lvl;
+    // FIX-B: u_autoneg.peer_ready_to_serve_o — the peer's SWI_LANE_STATUS[27]
+    // (ready-to-serve) as captured by the master's ST_FIN_RDV poll. Gates the
+    // WS_FINALIZE fallback entry into WS_FIN_WAITPEER (~4619): a FIRST-armed die
+    // whose peer is still arming (peer[27]=0) must NOT fall into the serve
+    // rendezvous — it takes the base fail-open (Loop-14 83% path, sticky anchor
+    // preserved). Only the 2nd-armed die (peer in data mode, [27]=1) rendezvouses.
+    wire       peer_ready_to_serve_w;
 
 `ifdef TIDELINK_PHY_V2
     // ── Autonomous on-chip IDELAY WINSCAN FSM forward decls (2026-06-29) ──────
@@ -1306,6 +1322,29 @@ module axi_chiplet_controller #(
     reg        ws_vfy_retry_q;
     reg [2:0]  ws_retry_cnt_q;
     reg        ws_rdv_timeout_q;
+    // FIX-D (2026-07-07 AUGMENTED OBSERVABILITY) — packed into the FREE
+    // 0x21B8[23:14] field (no register-map change). Silicon decode:
+    //   [23:20] ws_state_r            — live winscan FSM state
+    //   [19:18] ws_waitpeer_reentry_cnt — 2-bit sat: WS_FINALIZE→WS_FIN_WAITPEER
+    //                                     entries this episode (the NODONE /
+    //                                     livelock detector — >1 = ping-pong)
+    //   [17:16] ws_serve_cnt_q        — 2-bit sat (SLAVE): ws_serve_active_r
+    //                                     rising edges this episode (the die_b
+    //                                     re-serve-thrash driver)
+    //   [15]    ws_waitpeer_entered_q — sticky: the master parked in WS_FIN_WAITPEER
+    //   [14]    ws_verify_stuck_q     — sticky: anchor latched (ws_anchor_q=1)
+    //                                     while verify stayed low (ws_verify_q=0)
+    //                                     for >WS_VFY_STUCK_N cycles = the
+    //                                     wrong-slot / verify-never-passes signature
+    //                                     (the Lever-1-premise signal)
+    reg        ws_waitpeer_entered_q;
+    reg [1:0]  ws_waitpeer_reentry_cnt;
+    reg [1:0]  ws_serve_cnt_q;
+    reg        ws_verify_stuck_q;
+    // Declared EARLY (moved from the winscan FSM reg block) so the Region-D obs
+    // read mux at 0x21B8 (which is above the FSM in the file) can pack
+    // ws_state_r into [23:20] — VCS enforces declaration-before-use.
+    reg [3:0]  ws_state_r;
     reg        ws_fin_go_reg_q;
     // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — die_b (SLAVE) serve state.
     //   ws_serve_active_r : the SLAVE is actively SERVING forced SYNC beacons
@@ -2323,7 +2362,14 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
-        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 10'h0,
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57,
+                                        // FIX-D obs (2026-07-07) — the FREE
+                                        // [23:14] field (was 10'h0):
+                                        ws_state_r,               // [23:20]
+                                        ws_waitpeer_reentry_cnt,  // [19:18]
+                                        ws_serve_cnt_q,           // [17:16]
+                                        ws_waitpeer_entered_q,    // [15]
+                                        ws_verify_stuck_q,        // [14]
                                         ws_retry_cnt_q,
                                         ws_rdv_timeout_q, ws_vfy_retry_q,
                                         fch_quiesced_r,
@@ -3016,6 +3062,9 @@ module axi_chiplet_controller #(
         // rendezvous machinery (incl. the fin_retrain_pend_r W1P-latch fix)
         // is compiled but unreachable. Kept wired for the R-B rework.
         .local_fin_wait_i          (ws_fin_wait_lvl),
+        // FIX-B (2026-07-07): broadened POLL entry + the captured peer ready bit.
+        .local_finalizing_i        (ws_finalizing_lvl),
+        .peer_ready_to_serve_o     (peer_ready_to_serve_w),
         .fin_go_o                  (nego_fin_go_w),
         .fin_rdv_in_progress_o     (fin_rdv_in_progress_w),
         .local_training_mode_set   (local_training_mode_set_w),
@@ -3818,6 +3867,13 @@ module axi_chiplet_controller #(
     // mis-latch before its retry — 5 keeps the fail-open bound ~1.8 s worst
     // case while giving a marginal lane multiple independent re-latch rolls.
     localparam [2:0]  WS_ANCHOR_RETRIES = 3'd5;
+    // FIX-D (2026-07-07): VERIFY-STUCK detector threshold (apb cycles the anchor
+    // may sit latched with the verify low before ws_verify_stuck_q latches).
+    // Sized WELL above any healthy anchor→verify settle skew (the F3 clear drops
+    // both together, and the metric CDC re-latches them within a few cycles) yet
+    // WELL below both anchor windows (WS_ANCHOR_TIMEOUT_SIM 50k / silicon 15M),
+    // so it only latches on a genuine mis-anchor that verify can never confirm.
+    localparam [15:0] WS_VFY_STUCK_N = 16'd4096;
     // FIX-4 (2026-07-04) — DECORRELATED RETRIES (retry-jitter LFSR).
     //
     // Silicon evidence: 8 zero-poke rolls across 4 builds show the FINALIZE
@@ -3887,7 +3943,9 @@ module axi_chiplet_controller #(
                                  ? WS_DW_MAX0 : WINSCAN_FIN_WAIT;
     localparam int WS_DW_W   = $clog2(WS_DW_MAX + 1);
 
-    reg [3:0]          ws_state_r;
+    // ws_state_r is declared EARLY (with the FIX-D obs regs, ~line 1310) so the
+    // Region-D read mux (0x21B8[23:20], which precedes this FSM block in the
+    // file) can reference it — VCS requires declaration-before-use.
     reg [3:0]          ws_lane_r;        // current lane index 0..7 (then 8 = end)
     reg [5:0]          ws_tap_r;         // current tap 0..31 (6b for the ==32 test)
     reg [2:0]          ws_nsamp_r;       // sample countdown
@@ -4030,8 +4088,18 @@ module axi_chiplet_controller #(
             ws_serve_active_r <= 1'b0;
             ws_serve_active_d <= 1'b0;
             ws_serve_to_r     <= 29'd0;
+            ws_serve_cnt_q    <= 2'd0;
         end else begin
             ws_serve_active_d <= ws_serve_active_r;
+            // FIX-D obs (2026-07-07): count SLAVE serve engagements per episode
+            // (2-bit saturating). Rising edge of ws_serve_active_r = one serve.
+            // A count >1 flags the die_b RE-SERVE THRASH the livelock drove (each
+            // WS_FINALIZE re-entry re-issued the serve GO). Cleared per episode.
+            if (swi_training_mode_rise)
+                ws_serve_cnt_q <= 2'd0;
+            else if (ws_serve_active_r & ~ws_serve_active_d)
+                ws_serve_cnt_q <= (ws_serve_cnt_q == 2'd3) ? 2'd3
+                                                           : ws_serve_cnt_q + 2'd1;
             if (swi_training_mode_rise) begin
                 ws_serve_active_r <= 1'b0;      // fresh episode drops any serve
             end else if (!ws_serve_active_r) begin
@@ -4075,6 +4143,66 @@ module axi_chiplet_controller #(
                 ws_anchor_late_q <= 1'b0;
             else if (ws_anchor_q & ~ws_anchor_q_d & fch_done_r)
                 ws_anchor_late_q <= 1'b1;
+        end
+    end
+
+    // FIX-D obs (2026-07-07) — WS_FIN_WAITPEER entry / re-entry tracker.
+    //   ws_waitpeer_entered_q   (0x21B8[15], sticky): the master parked in
+    //                           WS_FIN_WAITPEER at least once this episode.
+    //   ws_waitpeer_reentry_cnt (0x21B8[19:18], 2-bit sat): the number of
+    //                           WS_FINALIZE→WS_FIN_WAITPEER entries this episode —
+    //                           the NODONE/livelock detector. On the pre-FIX-A RTL
+    //                           the Phase-2 anchor-timeout return to WS_FINALIZE
+    //                           re-entered WS_FIN_WAITPEER unboundedly (this
+    //                           counter saturates at 3). With FIX-A the sticky
+    //                           ws_rdv_timeout_q caps it at 1. Both cleared at
+    //                           WS_ARM / POR.
+    reg [3:0] ws_state_d;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_state_d              <= WS_IDLE;
+            ws_waitpeer_entered_q   <= 1'b0;
+            ws_waitpeer_reentry_cnt <= 2'd0;
+        end else begin
+            ws_state_d <= ws_state_r;
+            if (ws_state_r == WS_ARM) begin
+                ws_waitpeer_entered_q   <= 1'b0;
+                ws_waitpeer_reentry_cnt <= 2'd0;
+            end else if (ws_state_r == WS_FIN_WAITPEER
+                         && ws_state_d != WS_FIN_WAITPEER) begin
+                // A fresh WS_FINALIZE→WS_FIN_WAITPEER entry (the only transition
+                // into this state is the WS_FINALIZE fallback arm).
+                ws_waitpeer_entered_q   <= 1'b1;
+                ws_waitpeer_reentry_cnt <= (ws_waitpeer_reentry_cnt == 2'd3)
+                                           ? 2'd3 : ws_waitpeer_reentry_cnt + 2'd1;
+            end
+        end
+    end
+
+    // FIX-D obs (2026-07-07) — VERIFY-STUCK detector (0x21B8[14], sticky).
+    // The wrong-slot / verify-never-passes signature (the Lever-1 premise): the
+    // deskew anchor LATCHED (ws_anchor_q=1, `reanchored`) but the zero-tolerance
+    // anchor-verify (ws_verify_q) stayed LOW for more than WS_VFY_STUCK_N apb
+    // cycles — a lane whose sticky sync_idx latched an ADJACENT SYNC slot commits
+    // an anchor it can never verify. Healthy operation clears both together on the
+    // F3 clear, so a sustained anchor-high/verify-low window only occurs on a real
+    // mis-anchor. The counter resets whenever the condition breaks; the sticky
+    // clears at WS_ARM / POR.
+    reg [15:0] ws_vfy_stuck_ctr;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_vfy_stuck_ctr  <= 16'd0;
+            ws_verify_stuck_q <= 1'b0;
+        end else if (ws_state_r == WS_ARM) begin
+            ws_vfy_stuck_ctr  <= 16'd0;
+            ws_verify_stuck_q <= 1'b0;
+        end else if (ws_anchor_q & ~ws_verify_q) begin
+            if (ws_vfy_stuck_ctr == WS_VFY_STUCK_N)
+                ws_verify_stuck_q <= 1'b1;
+            else
+                ws_vfy_stuck_ctr <= ws_vfy_stuck_ctr + 16'd1;
+        end else begin
+            ws_vfy_stuck_ctr <= 16'd0;
         end
     end
 
@@ -4192,6 +4320,18 @@ module axi_chiplet_controller #(
     // ready-to-serve there). V1 arm below ties it 0.
     assign ws_fin_wait_lvl = role_is_master
                              & (ws_state_r == WS_FIN_WAITPEER);
+
+    // FIX-B (2026-07-07): the BROADENED finalize level — the master is in ANY
+    // finalize state. Fed to u_autoneg.local_finalizing_i (the ST_FIN_RDV POLL
+    // entry). role_is_master-gated (the slave serves, it never polls). The GO
+    // write inside ST_FIN_RDV stays gated on the NARROW ws_fin_wait_lvl above
+    // (routed as local_fin_wait_i), so the poll reads the peer's ready-to-serve
+    // bit while finalizing but no GO is written until the master is actually
+    // parked in WS_FIN_WAITPEER. V1 arm below ties it 0.
+    assign ws_finalizing_lvl =
+        role_is_master & ((ws_state_r == WS_FINALIZE)
+                          | (ws_state_r == WS_FIN_CLRLOW)
+                          | (ws_state_r == WS_FIN_WAITPEER));
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -4617,7 +4757,24 @@ module axi_chiplet_controller #(
                             ws_anchor_to_r    <= ws_clr_hold_load + ws_jitter_w;
                             ws_state_r        <= WS_FIN_CLRLOW;
                         end else if (role_is_master && !ws_anchor_q
-                                     && !ws_rdv_timeout_q) begin
+                                     && !ws_rdv_timeout_q
+                                     && peer_ready_to_serve_w) begin
+                            // FIX-B (2026-07-07 PEER-READY ENTRY GATE): only fall
+                            // into the serve rendezvous when the PEER has actually
+                            // advertised READY-TO-SERVE (peer_ready_to_serve_w =
+                            // its SWI_LANE_STATUS[27], captured by our ST_FIN_RDV
+                            // poll = its winscan is DONE and it is in data mode,
+                            // able to quiesce+serve). Without this term a
+                            // FIRST-armed die whose peer is STILL ARMING (peer[27]
+                            // =0, cannot serve) fell into WS_FIN_WAITPEER, stalled
+                            // for the whole rendezvous window, and its Phase-2
+                            // re-clear destroyed the sticky anchor that would else
+                            // late-heal — the die_b first-armed 83%→58% regression.
+                            // With peer_ready=0 this arm is FALSE and control falls
+                            // through to the BASE fail-open (~4659, Loop-14 83%
+                            // path: sticky anchor PRESERVED). Only the 2nd-armed
+                            // die (peer already in data mode) takes the serve.
+                            //
                             // R-B ASYMMETRIC PEER-SERVE FALLBACK (2026-07-07
                             // rev2): the MASTER exhausted ALL its local
                             // clear-retries WITHOUT ever anchoring
@@ -4788,13 +4945,23 @@ module axi_chiplet_controller #(
                             ws_anchor_to_r    <= ws_anchor_to_load;  // Phase-2 anchor-gate window
                             ws_anchor_retry_r <= WS_ANCHOR_RETRIES;  // legacy-retry safety net
                         end else if (ws_rdv_to_r == 29'd0) begin
-                            // FAIL-LOUD: peer never served — proceed locally.
-                            ws_rdv_timeout_q  <= 1'b1;
-                            ws_obs_clr_r      <= 1'b1;
-                            ws_anchor_to_r    <= ws_anchor_to_load;
-                            ws_anchor_retry_r <= WS_ANCHOR_RETRIES;
-                            ws_dwell_r        <= ws_fin_wait_load;   // F3b dwell (b55cb59 fallback)
-                            ws_state_r        <= WS_FINALIZE;
+                            // FIX-C (2026-07-07 BOUNDED FALLBACK EXIT): the peer
+                            // never served within the rendezvous window. Do NOT
+                            // return to WS_FINALIZE for a SECOND anchor-clearing
+                            // retry storm (which re-pulsed ws_obs_clr_r, wiping the
+                            // sticky anchor that could still late-heal, and re-armed
+                            // the whole FIX-3/FIX-4 budget for a second time). Go
+                            // DIRECTLY to fail-open: keep the latched anchor (do NOT
+                            // re-pulse ws_obs_clr_r), drop force, latch the sticky
+                            // obs, raise winscan_done → WS_DONE. This caps the
+                            // fallback's worst case at "Loop-14 base fail-open +
+                            // ONE bounded wait". ws_rdv_timeout_q records that the
+                            // rendezvous was attempted-and-timed-out (0x21B8[10]).
+                            winscan_force_sync  <= 1'b0;
+                            ws_rdv_timeout_q    <= 1'b1;
+                            ws_anchor_timeout_q <= 1'b1;
+                            winscan_done        <= 1'b1;
+                            ws_state_r          <= WS_DONE;
                         end else begin
                             ws_rdv_to_r <= ws_rdv_to_r - 29'd1;
                         end
@@ -4813,9 +4980,21 @@ module axi_chiplet_controller #(
                             winscan_done       <= 1'b1;
                             ws_state_r         <= WS_DONE;
                         end else if (ws_anchor_to_r == 24'd0) begin
-                            // Timed out mid-WAITPEER — hand to the legacy retry
-                            // (b55cb59 WS_FINALIZE; it quiesces + retries).
-                            ws_state_r <= WS_FINALIZE;
+                            // FIX-A (2026-07-07 LIVELOCK BREAK): the Phase-2
+                            // re-confirm over the served beacons timed out. LATCH
+                            // ws_rdv_timeout_q so the ~4619 fallback guard
+                            // (!ws_rdv_timeout_q) trips — the rendezvous is tried
+                            // EXACTLY ONCE per episode. Without this the return to
+                            // WS_FINALIZE with the fallback still open re-issued
+                            // the serve GO every cycle (WS_FIN_WAITPEER<->
+                            // WS_FINALIZE ping-pong → winscan_done never asserts
+                            // = NODONE livelock, and each re-entry re-thrashed
+                            // die_b's credit). With the sticky set, the next
+                            // WS_FINALIZE retry-exhaustion takes the BASE fail-loud
+                            // arm (~4659: winscan_done<=1, ws_anchor_timeout_q<=1,
+                            // keep the latched anchor, →WS_DONE) — no deadlock.
+                            ws_rdv_timeout_q <= 1'b1;
+                            ws_state_r       <= WS_FINALIZE;
                         end else begin
                             ws_anchor_to_r <= ws_anchor_to_r - 24'd1;
                         end
@@ -4866,6 +5045,10 @@ module axi_chiplet_controller #(
     // rendezvous entry arc is USE_CAL_IN_HOLD(=0)-gated, so local_fin_wait_i
     // is never consumed); the autoneg fin_go_o output is sunk.
     assign ws_fin_wait_lvl = 1'b0;
+    // FIX-B: no finalize FSM on V1 ⇒ the broadened poll level is tied 0 (the
+    // autoneg's ST_FIN_RDV entry arc is USE_CAL_IN_HOLD(=0)-gated anyway, and
+    // peer_ready_to_serve_o = peer_fin_wait_r stays 0 on V1).
+    assign ws_finalizing_lvl = 1'b0;
     wire _unused_nego_fin_go = nego_fin_go_w;
 `endif
 

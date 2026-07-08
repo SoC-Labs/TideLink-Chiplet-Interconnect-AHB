@@ -115,14 +115,20 @@ module WlinkGenericFCReplayV2_13(
   // a2l_link_addr and fifo_io_rbin_ptr are LINK-domain, directly comparable, so
   // this adds no CDC path. Legitimate in-window ACKs advance exactly as before.
   // ---------------------------------------------------------------------------
-  wire [4:0] a2l_ack_off_req = link_ack_addr     - a2l_link_addr; // requested advance (mod 32)
-  wire [4:0] a2l_ack_off_max = fifo_io_rbin_ptr  - a2l_link_addr; // outstanding window (mod 32)
+  // GRAY-SERIALISER split (2026-07-08 structural ACK-sync fix): a2l_ack_target =
+  // the ACTUAL acked address (jumps by the cumulative, guard-clamped ACK);
+  // a2l_link_addr = the Gray-sync pointer, advanced +1/step toward the target so
+  // exactly ONE Gray bit changes per step (the Gray sync then cannot lap to
+  // 0x1f). The window guard uses the target (the real ACK), unchanged in intent.
+  reg  [4:0] a2l_ack_target;
+  wire [4:0] a2l_ack_off_req = link_ack_addr    - a2l_ack_target; // requested advance (mod 32)
+  wire [4:0] a2l_ack_off_max = fifo_io_rbin_ptr - a2l_ack_target; // outstanding window (mod 32)
   // accept only if the requested ACK addr is within the outstanding window and
   // within the FIFO depth (<=16); otherwise the ACK is spurious and ignored.
   wire  a2l_ack_valid = link_ack_update
                         & (a2l_ack_off_req <= a2l_ack_off_max)
                         & (a2l_ack_off_max <= 5'h10);
-  wire [4:0] a2l_link_addr_in = a2l_ack_valid ? link_ack_addr : a2l_link_addr; // @[FC.scala 771:39]
+  wire  a2l_step = (a2l_link_addr != a2l_ack_target);            // +1/step serialiser advance
   WavDemetReset enable_app_clk_demet ( // @[Stdcell.scala 58:23]
     .clock(enable_app_clk_demet_clock),
     .reset(enable_app_clk_demet_reset),
@@ -151,7 +157,7 @@ module WlinkGenericFCReplayV2_13(
     .io_rbin_ptr(fifo_io_rbin_ptr),
     .io_wbin_ptr(fifo_io_wbin_ptr)
   );
-  WlinkGenericFCReplayAddrSync_18 link_addr_to_app_clk ( // @[FC.scala 773:37]
+  WlinkGenericFCReplayAddrSync_a2l_gray link_addr_to_app_clk ( // @[FC.scala 773:37] GRAY (a2l-scoped)
     .w_clk(link_addr_to_app_clk_w_clk),
     .w_reset(link_addr_to_app_clk_w_reset),
     .w_inc(link_addr_to_app_clk_w_inc),
@@ -207,16 +213,21 @@ module WlinkGenericFCReplayV2_13(
   // w_addr, so continuous resend cannot lose/double-count a real ACK; re-pushing
   // an unchanged value is idempotent. Idle single-clock sim never tears (passes
   // either way) -> silicon is the verifier.
-  assign link_addr_to_app_clk_w_inc = 1'b1; // @[FC.scala 776:50] continuous resend (self-heal)
-  assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // gated ACK (see local override above)
+  assign link_addr_to_app_clk_w_inc = 1'b1; // unused by the Gray sync (free-running)
+  assign link_addr_to_app_clk_w_addr = a2l_link_addr; // GRAY: the +1/step serialised ACK ptr
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]
+  // Capture the actual acked address (jumps by the cumulative ACK)...
   always @(posedge link_clk or posedge link_reset) begin
-    if (link_reset) begin
-      a2l_link_addr <= 5'h0;
-    end else if (a2l_ack_valid) begin   // gated ACK advance (see local override above)
-      a2l_link_addr <= link_ack_addr;
-    end
+    if (link_reset)          a2l_ack_target <= 5'h0;
+    else if (a2l_ack_valid)  a2l_ack_target <= link_ack_addr;
+  end
+  // ...then serialise the Gray-sync pointer toward it at +1/cycle (the Gray
+  // precondition: at most one bit changes per step -> a metastable capture is
+  // an off-by-one, never a lap-ahead 0x1f).
+  always @(posedge link_clk or posedge link_reset) begin
+    if (link_reset)    a2l_link_addr <= 5'h0;
+    else if (a2l_step) a2l_link_addr <= a2l_link_addr + 5'h1;
   end
 // Register and memory initialization
 `ifdef RANDOMIZE_GARBAGE_ASSIGN

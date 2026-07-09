@@ -124,7 +124,10 @@
 # pad_rx[*] sampling registers (gpiorx_*/link_data_pad_clk_reg). KEEP this
 # create_clock — pad_clk_rx must remain a real, timed clock so the
 # pad_rx[*] -> capture relationship can be analysed (constraint [3]/[4]).
-create_clock -period 213.333 -name pad_clk_rx [get_ports pad_clk_rx]
+# PHY /2 (2026-06-30): the peer forwards its user_ref_clk on pad_clk_rx, which
+# is now 2.343 MHz (clk_wiz clk_out1 4.687 / BUFGCE_DIV 2). Period 213.333 ->
+# 426.666 to widen the marginal A->B receive eye.
+create_clock -period 426.666 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -158,7 +161,11 @@ create_clock -period 213.333 -name pad_clk_rx [get_ports pad_clk_rx]
 # Declarative: inline the get_pins (no `lindex`/`set`, which Vivado rejects in
 # XDC -> Designutils 20-1307 -> the whole pad_clk_tx_fwd stanza was silently
 # dropped). The exact (wildcard-free) NAME filter resolves to exactly one pin.
-create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] -divide_by 1 [get_ports pad_clk_tx]
+# PHY /2 (2026-06-30): the GPIO-PHY TX serializer + the forwarded pad_clk_tx now
+# run off user_ref_clk = clk_out1 / BUFGCE_DIV(2) = 2.343 MHz. Keep -source on
+# clk_out1 (it is in pad_clk_tx's fanin through the BUFGCE_DIV) but -divide_by 2
+# so pad_clk_tx_fwd is defined at 2.343 MHz / 426.666 ns (was -divide_by 1).
+create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] -divide_by 2 [get_ports pad_clk_tx]
 
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns
 # of the 160 ns period for board trace + peer setup/hold (v36: scaled 4x with
@@ -252,6 +259,20 @@ set_property IOB TRUE [get_ports {pad_rx[*]}]
 set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}]
 
 #-----------------------------------------------------------------------------
+# [4a] PHY /2 clock (user_ref_clk = clk_out1 / 2 = 2.343 MHz). PHY /2 (2026-06-30).
+#   The phy_clk_div module is a toggle flip-flop (div_q_reg) clocked by clk_out1
+#   feeding a BUFG (u_div_bufg) — a clean /2 onto a global clock net that drives
+#   user_ref_clk + scan_clk. Declare the divided clock EXPLICITLY (rather than
+#   relying on Vivado auto-derivation) so it has a stable name (user_ref_clk_div2)
+#   for the async clock_groups below. Pattern mirrors gpiotx0_word_clk [4b]:
+#   -source = the toggle-FF CLOCK pin (carries the clk_out1 master), the generated
+#   clock is defined on the BUFG OUTPUT pin, -divide_by 2 -> 426.666 ns. The exact
+#   (wildcard) NAME filters resolve to exactly one pin each (the single divider).
+create_generated_clock -name user_ref_clk_div2 \
+    -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*div_q_reg*/C"}] \
+    -divide_by 2 [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}]
+
+#-----------------------------------------------------------------------------
 # [4b] TX WORD CLOCK (gpiotx_0 = local hsclk/16). PORTED from the PHY-BIST
 #   word_handoff.xdc (NEVER carried into the integrated build — build_design.tcl
 #   only globs *_tidelink_timing.xdc). WITHOUT a create_generated_clock the /16
@@ -271,12 +292,18 @@ create_generated_clock -name gpiotx0_word_clk \
 set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
 set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
 
-# Three-group async isolation: recovered-RX, core hclk, TX word clock — mutually
-# asynchronous (each crossing is 2-flop synchronised in RTL).
+# Four-group async isolation: recovered-RX, core hclk, TX word clock, and the
+# PHY /2 user_ref_clk (2026-06-30) — mutually asynchronous (each crossing is
+# 2-flop synchronised in RTL). user_ref_clk_div2 MUST be its own group vs hclk so
+# the hclk(4.687)<->PHY(2.343) CDC paths are NOT timed as a related 2:1 crossing
+# (they are async-synchronised, not balanced). gpiotx0_word_clk is itself derived
+# from user_ref_clk_div2 (/16 of it); keeping both grouped is consistent — they
+# are all in the asynchronous PHY/link timing island relative to hclk.
 set_clock_groups -asynchronous \
     -group [get_clocks pad_clk_rx] \
     -group [get_clocks -of_objects $hclk_pin] \
-    -group [get_clocks gpiotx0_word_clk]
+    -group [get_clocks gpiotx0_word_clk] \
+    -group [get_clocks user_ref_clk_div2]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job

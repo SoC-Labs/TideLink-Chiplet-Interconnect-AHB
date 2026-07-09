@@ -201,6 +201,21 @@ if { [info exists ::env(FPGA_IP_CACHE_DIR)] && $::env(FPGA_IP_CACHE_DIR) ne "" }
 # STEP 3: Source block design
 source $target_dir/tidelink_design.tcl
 
+# PHY link/pad clock /2 divider RTL — MUST be in the source fileset (with the
+# compile order updated) BEFORE create_root_design, because the BD instantiates
+# it via `create_bd_cell -type module -reference tidelink_phy_clk_div2`. Module
+# references only resolve in automatic-compile-order mode against a file already
+# in sources_1. Added here (not in tidelink_design.tcl, which only builds the BD)
+# so it lands in the project fileset the same way as the board wrapper below.
+set phy_clk_div_v [lindex [glob -nocomplain $target_dir/tidelink_phy_clk_div2.v] 0]
+if { $phy_clk_div_v ne "" } {
+    add_files -norecurse $phy_clk_div_v
+    update_compile_order -fileset sources_1
+    puts "INFO: added PHY /2 clock divider $phy_clk_div_v"
+} else {
+    puts "WARNING: tidelink_phy_clk_div2.v not found in $target_dir - BD module-ref will fail"
+}
+
 set design_name tidelink_design
 create_bd_design $design_name
 create_root_design ""

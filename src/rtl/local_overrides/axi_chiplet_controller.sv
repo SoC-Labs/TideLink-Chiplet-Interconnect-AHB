@@ -1234,6 +1234,29 @@ module axi_chiplet_controller #(
     // Software: WINSCAN_OBS 0x4403_21B8 [14] = fch_stall_err (sticky),
     //           [16:15] = the write index (0=SWRESET_ON,1=SWRESET_OFF,2=ENABLE)
     //           that timed out. Non-zero [14] means the LL never acked the APB.
+    //
+    // *** SILICON UPDATE 2026-07-09: THIS IS NOT THE FIX. ***
+    // Built (2f7cf40a/8f5d604e), deployed, and REFUTED. die_a still wedges, and
+    // fch_stall_err reads 0 -- so the fch sequencer never even stalled. The
+    // wedge fires on the very APB write that sets train_auto_en (training
+    // ENTRY), long before any fch bootstrap. Refined mechanism: at training
+    // entry the autoneg/calibrator holds Wlink in swreset, Wlink's APB stops
+    // asserting pready, and the external (PS) apb_pready is wired straight to
+    // wl_apb_pready -- so the CPU's access never completes and Zynq-7000
+    // M_AXI_GP has no transaction timeout. The fch_active_r mask below does not
+    // cover that window.
+    //
+    // THE FIX STILL TO WRITE (mirror what the slv_apb path already has at the
+    // slv_apb_bridge_* mux, ~:2955 -- this is the THIRD instance of the same
+    // fixed-one-path-not-the-other pattern, after Bug-C/fe_tx_credit_max and
+    // Bug-N2):
+    //   (a) give the external PS APB path a ctrl_hit bypass so controller/obs
+    //       registers ack unconditionally from ctrl_reg_rdata, independent of
+    //       Wlink -- then die_a stays observable through any swreset; and
+    //   (b) bound the Wlink-targeted external access with a pready timeout that
+    //       returns pslverr instead of hanging for ever.
+    // What is kept below is still worth having: it is a bounded, observable
+    // safety net on the fch sequencer, and it costs nothing (pair_data 3/3).
     // -------------------------------------------------------------------------
     reg        fch_stall_err_q;    // sticky: an FCH APB access timed out
     reg [1:0]  fch_stall_widx_q;   // which write was in flight when it timed out

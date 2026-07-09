@@ -475,6 +475,17 @@ module WlinkGenericFCSM_6 #(
   reg [7:0] fe_tx_credit_max; // @[FC.scala 200:44]
   wire  _fe_tx_credit_max_in_T = ~en_ff2_rx_demet_io_out; // @[FC.scala 201:42]
   wire  _fe_tx_credit_max_in_T_1 = pkt_is_cr_pkt | pkt_is_crack_pkt; // @[FC.scala 201:77]
+  // SoC Labs defence-in-depth (2026-07-09, port of 4e7a458): fe_tx_credit_max==0
+  // is never a legal grant (CR advertises 16'h1f1f), yet a zero makes every wrap
+  // guard below (== fe_tx_credit_max) never fire -> exp_pkt_num climbs past 31 to
+  // 32, a value the 5-bit stamped a2l pktnum (link_cur_addr, 0..31) can NEVER
+  // match, so the receiver jams at the first pktnum lap. Pin an unloaded/zeroed
+  // grant to the architectural pktnum modulus (31) so a zero can never silently
+  // disable the wrap. NOTE: this branch (788eb7e base) predates the L9b/L9c
+  // re-anchor port, so there is no socl_l9b_ring_mod here to guard -- only the two
+  // wrap comparisons below (the upstream fix also guarded the ring_mod + an L9c
+  // comparison that do not exist on this branch).
+  wire [7:0] fe_tx_credit_max_eff = (fe_tx_credit_max == 8'h0) ? 8'h1f : fe_tx_credit_max;
   wire  exp_pkt_seen = pkt_is_data_pkt & ll_rx_pktnum == exp_pkt_num; // @[FC.scala 210:54]
   wire  exp_pkt_not_seen = pkt_is_data_pkt & ll_rx_pktnum != exp_pkt_num; // @[FC.scala 211:54]
   // SoC Labs L9: suppress spurious mismatch enqueue on the resync cycle so
@@ -1241,14 +1252,14 @@ module WlinkGenericFCSM_6 #(
     end else if (_fe_tx_credit_max_in_T) begin
       exp_pkt_num <= 8'h0;
     end else if (socl_l9_resync_now) begin
-      // SoC Labs L9: jump exp_pkt_num to ll_rx_pktnum + 1 (wrap on fe_tx_credit_max).
-      if (ll_rx_pktnum == fe_tx_credit_max) begin
+      // SoC Labs L9: jump exp_pkt_num to ll_rx_pktnum + 1 (wrap on fe_tx_credit_max_eff).
+      if (ll_rx_pktnum == fe_tx_credit_max_eff) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= ll_rx_pktnum + 8'h1;
       end
     end else if (exp_pkt_seen) begin
-      if (exp_pkt_num == fe_tx_credit_max) begin
+      if (exp_pkt_num == fe_tx_credit_max_eff) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= _exp_pkt_num_in_T_3;
@@ -1278,8 +1289,19 @@ module WlinkGenericFCSM_6 #(
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
     if (io_rx_reset) begin
       fe_tx_credit_max <= 8'h0;
-    end else if (~en_ff2_rx_demet_io_out) begin
-      fe_tx_credit_max <= 8'h0;
+    // SoC Labs Bug-C TWIN fix (2026-07-09, port of 4e7a458): the synchronous re-zero
+    //   end else if (~en_ff2_rx_demet_io_out) fe_tx_credit_max <= 8'h0;
+    // is REMOVED here for exactly the reason it was removed from the sibling
+    // fe_rx_credit_max at L1186 above -- swi_enable dips low for a few cycles during
+    // the LL-swreset / data-mode bootstrap (fch triplet 0x27f09/01/07, bit0=swi_enable)
+    // AFTER the CR/CRACK grant (0x1f) has loaded it. Bug-C fixed only the credit-ring
+    // twin; THIS register (the pktnum wrap modulus) kept the re-zero and no CR/CRACK
+    // ever follows, so it stayed 0 for the life of the link -> exp_pkt_num never wraps
+    // and the receiver jams one pktnum lap in (silicon-observed on die_b, 2026-07-09).
+    // die_a was unaffected (its exp_pkt_num wraps mod 32) which is the entire A->B vs
+    // B->A asymmetry. Only a real io_rx_reset or a fresh CR/CRACK should change it.
+    // See docs/BUGC_DEEP_DEBUG_2026_06_01.md §3.1. (fe_tx_credit_max_eff above is the
+    // belt-and-braces guard so a residual zero can still never disable the wrap.)
     end else if (pkt_is_cr_pkt | pkt_is_crack_pkt) begin
       fe_tx_credit_max <= auto_rx_in_word_count[7:0];
     end
@@ -1900,14 +1922,27 @@ end // initial
     end
   end
 
-  // io_obs_fcsmcap = {marker 0xC1, ever-flags[3:0], 4'b0,
+  // SoC Labs fe_tx_credit_max OBSERVATION (2026-07-09, port of 4e7a458). The
+  // pktnum wrap modulus had NO obs tap, which is why its silent zeroing (the
+  // Bug-C twin fix at the fe_tx_credit_max load block above) hid for weeks behind
+  // a frozen last_exp. It is static after CR/CRACK (changes only on io_rx_reset or
+  // a fresh CR/CRACK) so a plain read-only fan-out needs no synchroniser. Lands in
+  // the previously-reserved [19:16] of this existing register, so NO new APB reg /
+  // port / decode is required.
+  //   [19]    = 1 when fe_tx_credit_max == 0  <- THE smoking gun (must read 0)
+  //   [18:16] = fe_tx_credit_max[2:0]         <- must read 3'b111 for the legal 0x1f
+  // Healthy link => [19:16] = 4'b0111 (0x7).  Zeroed modulus => 4'b1000 (0x8).
+  wire fcsmcap_fe_tx_credit_max_is_zero = (fe_tx_credit_max == 8'h0);
+
+  // io_obs_fcsmcap = {marker 0xC1, ever-flags[3:0], credmax[3:0],
   //                   first_pktnum[7:0], last_exp_pktnum[7:0]}
   assign io_obs_fcsmcap = {8'hC1,
                            fcsmcap_data_ever,       // [23] DATA pkt EVER decoded
                            fcsmcap_l9_resync_ever,  // [22] L9 one-shot resync EVER
                            fcsmcap_mismatch_ever,   // [21] pktnum MISMATCH EVER
                            fcsmcap_l2a_valid_ever,  // [20] L2A app_valid EVER (enqueued)
-                           4'b0,                    // [19:16] reserved
+                           fcsmcap_fe_tx_credit_max_is_zero, // [19] fe_tx_credit_max==0
+                           fe_tx_credit_max[2:0],   // [18:16] fe_tx_credit_max low bits
                            fcsmcap_first_pktnum,    // [15:8] first observed ll_rx_pktnum
                            fcsmcap_last_exp_pktnum};// [7:0]  last exp_pkt_num (data pkt)
 

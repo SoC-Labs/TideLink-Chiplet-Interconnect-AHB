@@ -172,3 +172,22 @@ assert_eq(){ # label expected actual
   else TD_FAIL=$((TD_FAIL+1)); TD_DETAIL+=("    FAIL $1: got=$3 want=$2"); return 1; fi
 }
 flush_detail(){ printf '%s\n' "${TD_DETAIL[@]}"; TD_DETAIL=(); }
+
+# --- restored register defs (dropped by the ctypes rewrite; addresses from OLD map) ---
+R_FCCRED=0x4403219C     # OBS_FC_CREDIT: [7:0]=fe_rx_credit_max [15:8]=fe_rx_ptr
+R_FIFO_STATUS=0x44032010   # [1]=overrun(sticky) [2]=underrun(sticky) [3]=master_err [4]=committed
+R_NEGO_TRAIN_STATUS=0x44032110 # [0]=ok [1]=fail [2]=in_prog [7:4]=train_state
+R_OBS=0x44032108        # SWI_LANE_STATUS (alias of R_FCSM): lk[7:0] flt[15:8]
+R_OBSCAL=0x44032198     # [3:0]=V2 calibrator FSM cstate [20]=live training_mode
+R_PHASE=0x44032118      # per-lane IDELAY coarse nibble (== R_PHASE_NIB, tap[4:1])
+R_PKTLEN=0x44032008        # PACKET_WORD_LENGTH (RO, 14b; 0 when idle)
+R_ROLE_STATUS=0x44032084       # [0]=effective_role [1]=locked [2]=i2c_busy [3]=i2c_addressed
+R_SYNCCNT=0x44032114    # [31:16]=sync_detected sat-cnt (coherent deskew health)
+R_TXSYNC=0x44032120     # [15:0]=tx_sync_ins_cnt [16]=idle_lvl [17]=train_lvl [31:24]=0x5C
+R_WINSCAN_OBS=0x440321B8 # [0]=winscan_done [1]=ws_degenerate(sticky)
+
+# --- restored generic _d read helpers (dropped by the ctypes rewrite) ---
+GP1_RX=0x84010000        # GP1 RX DATA aperture — the REAL committed A->B data
+rd_d(){ local v; v=$("$1" rd "$2"); sleep "$TD_THROTTLE"; echo "$v"; } # throttled read, either die
+reanchored_d(){ echo $(( $("$1" rd $R_REANCHORED) & 1 )); }
+gp1_rx_d(){ "$1" rd "$(printf 0x%x $(( GP1_RX + ${2:-0}*4 )))"; }      # GP1 RX word idx, either die

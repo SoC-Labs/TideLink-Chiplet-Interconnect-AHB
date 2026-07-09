@@ -326,6 +326,13 @@ module tidelink_vivado_wrapper #(
     // =========================================================================
     output wire        link_active,
     output wire        d2d_reset_o,
+
+    // SoC Labs off-fabric EMIO debug word (2026-07-09): scraped by the packager
+    // as plain 16-bit + 1-bit pins (no X_INTERFACE_INFO). Routed to PS EMIO GPIO
+    // in the BD so the wedge diagnosis survives when the PL AXI fabric errors.
+    output wire [15:0] dbg_emio_o,
+    output wire        dbg_ahb_tx_hresp_sticky_o,
+
     output wire  [4:0] tl_local_link_state_o,
     output wire        tl_link_state_change_o,
     output wire [12:0] tl_ewma_credit_o,
@@ -590,6 +597,8 @@ module tidelink_vivado_wrapper #(
         .tl_bcast_ack_i             (tl_bcast_ack_i),
         .link_active                (link_active),
         .d2d_reset_o                (d2d_reset_o),
+        .dbg_emio_o                 (dbg_emio_o),
+        .dbg_ahb_tx_hresp_sticky_o  (dbg_ahb_tx_hresp_sticky_o),
 
         // Role / negotiation / PUF
         .role_strap_i               (role_strap_i),

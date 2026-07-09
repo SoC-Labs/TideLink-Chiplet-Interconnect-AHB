@@ -1186,6 +1186,50 @@ module axi_chiplet_controller #(
     //                     bit-identical on V1).
     reg        fch_quiesced_r;
     wire       fch_quiesce_req;
+    // -------------------------------------------------------------------------
+    // SoC Labs FCH APB WATCHDOG (2026-07-09, ported from f1b3aac) — silicon-observed.
+    //
+    // The fch sequencer takes ownership of the Wlink APB bus (fch_active_r, see
+    // the wl_apb_* mux) and, in FCH_ACCESS, waits on wl_apb_pready with NO
+    // TIMEOUT. The external (PS) APB takes its pready from that SAME bus
+    // (`assign apb_pready = ... : wl_apb_pready`) with no arbitration term, and
+    // tidelink_top routes every 0x2xxx access to it (tidelink_top.sv:711).
+    //
+    // Consequence, measured on silicon 2026-07-09 (die_a, master, autonomous
+    // bring-up): the FCH burst's first write is FCH_LL_SWRESET_ON (0x27f09),
+    // which puts the Wlink LL into swi_swreset. If wl_apb_pready then never
+    // returns, the FSM sits in FCH_ACCESS forever with fch_active_r=1, so
+    // apb_pready is pinned low and EVERY PS access to the 0x2xxx region never
+    // completes. Zynq-7000 M_AXI_GP has no transaction timeout -> the CPU takes
+    // a Bus error / hangs in kernel space while Linux stays alive. The link
+    // itself trains fine (the peer reaches fcsm=4 cal=1) -- what dies is the
+    // processor's view of the PL. That is why "autonomous data = 0/28": you
+    // cannot drive data from die_a's PS at all. It was never the FC path.
+    //
+    // Fix, in two parts:
+    //   1. This watchdog. If FCH_ACCESS does not see wl_apb_pready within
+    //      FCH_WDOG_LIMIT cycles, abort the burst, RELEASE the bus
+    //      (fch_active_r=0) and latch a sticky error + the failing write index.
+    //      The bootstrap then fails VISIBLY and RECOVERABLY instead of taking
+    //      the processor's bus down with it.
+    //   2. Mask apb_pready while fch_active_r (see the assign near the bottom),
+    //      so a concurrent PS access is STALLED rather than completing against
+    //      the sequencer's transaction (an APB protocol violation today).
+    //
+    // Software: WINSCAN_OBS 0x21B8 is FULL on this branch ([23:0] all packed —
+    // FIX-D ws_verify_stuck at [14], ws_waitpeer at [15], etc.), so unlike the
+    // upstream f1b3aac (which used 0x21B8[14]/[16:15]) this port exposes the
+    // status in the previously-RESERVED regionD slot 7:
+    //   FCH_OBS 0x4403_21BC (RO):
+    //     [ 0]    fch_stall_err  (sticky) — the LL never acked the fch APB write
+    //     [ 2:1]  fch_stall_widx          — 0=SWRESET_ON,1=SWRESET_OFF,2=ENABLE
+    //     [ 3]    fch_active_r   (live)   — sequencer currently owns the wl_apb bus
+    //     [31:24] 0xFC presence marker (old images read 0 here = STALE package_ip)
+    //   Non-zero [0] means the LL never acked the APB write; [2:1] says which.
+    // -------------------------------------------------------------------------
+    reg        fch_stall_err_q;    // sticky: an FCH APB access timed out
+    reg [1:0]  fch_stall_widx_q;   // which write was in flight when it timed out
+    localparam [19:0] FCH_WDOG_LIMIT = 20'd500_000; // ~10 ms @ 50 MHz: >> any legal APB ack
     // R-B ASYMMETRIC PEER-SERVE rendezvous plumbing — RE-ARMED (2026-07-07).
     // History: the Loop-12 SYMMETRIC rendezvous (BOTH dies park in
     // WS_FIN_WAITPEER and BOTH re-confirm over each other's constant idle)
@@ -2353,7 +2397,11 @@ module axi_chiplet_controller #(
     //                           (2026-07-02) = STALE package_ip — stop and
     //                           rebuild (the known farm packaging hazard).
     //   All apb_clk-domain (the winscan FSM's own domain) — no CDC.
-    // Slot 7 stays reserved (read 0).
+    // Slot 7 (0x21BC) FCH_OBS (RO, SoC Labs 2026-07-09, ported from f1b3aac):
+    //   the FCH APB watchdog status — see the slot-7 case in the read mux below.
+    //   fch_stall_err_q / fch_stall_widx_q are apb_clk-domain (the fch sequencer's
+    //   own domain) — no CDC. (Upstream f1b3aac used 0x21B8[14]/[16:15]; that
+    //   field is full on this branch, hence the dedicated slot.)
     wire [4:0] dist_sel_lane = sync_obs_dist_vec_1[5*swi_dist_lane_sel_r +: 5];
     assign regionD_rxcap_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
@@ -2376,6 +2424,22 @@ module axi_chiplet_controller #(
                                         ws_abort_cnt_q,
                                         ws_anchor_late_q, ws_anchor_timeout_q,
                                         ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
+        // SoC Labs 2026-07-09 (ported from f1b3aac): FCH APB WATCHDOG status.
+        // 0x21B8 (WINSCAN_OBS) is FULL on this branch, so the fch_stall status
+        // lives here in the previously-reserved slot 7 instead of 0x21B8[14].
+        //   [ 0]    fch_stall_err_q  (sticky) — fch seq timed out on wl_apb_pready
+        //                            and RELEASED the bus (else the PS's apb_pready
+        //                            was pinned low for ever = "training kills the
+        //                            die_a PS<->PL bus"). 0 = the LL acked.
+        //   [ 2:1]  fch_stall_widx_q — which write stalled: 0=SWRESET_ON,
+        //                            1=SWRESET_OFF, 2=ENABLE.
+        //   [31:24] 0xFC presence marker (old/STALE-IP images read 0 here).
+        //   (Both fields are apb_clk-domain — the fch sequencer's own domain, no
+        //   CDC. fch_active_r is NOT read here: it is declared with the fch FSM
+        //   regs, downstream of this mux, so `default_nettype none forbids the
+        //   forward reference — the sticky pair is what software needs anyway.)
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hFC, 21'h0,
+                                        fch_stall_widx_q, fch_stall_err_q}  : // 0x21BC FCH_OBS (RO)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -3287,6 +3351,7 @@ module axi_chiplet_controller #(
                                 //     single write (SWRESET_ON at FINALIZE
                                 //     entry, or SWRESET_OFF on disarm), NOT
                                 //     the three-write bootstrap walk
+    reg [19:0] fch_wdog_r;      // FCH_ACCESS watchdog (see FCH_WDOG_LIMIT above)
     // fch_done_r (sticky episode-complete flag) is DECLARED early, next to the
     // autoneg forward decls (~line 1128) — the WINSCAN_OBS readback reads it
     // upstream and `default_nettype none` forbids forward references. It is
@@ -3636,6 +3701,9 @@ module axi_chiplet_controller #(
             fch_done_r     <= 1'b0;
             fch_qmode_r    <= 1'b0;
             fch_quiesced_r <= 1'b0;
+            fch_wdog_r       <= 20'd0;   // SoC Labs FCH APB watchdog
+            fch_stall_err_q  <= 1'b0;
+            fch_stall_widx_q <= 2'd0;
         end else begin
             case (fch_state_r)
                 FCH_IDLE: begin
@@ -3697,6 +3765,7 @@ module axi_chiplet_controller #(
                     // from fch_active_r / fch_penable_r). Advance to access.
                     fch_active_r  <= 1'b1;
                     fch_penable_r <= 1'b1;
+                    fch_wdog_r    <= 20'd0;   // arm the access watchdog
                     fch_state_r   <= FCH_ACCESS;
                 end
 
@@ -3704,7 +3773,21 @@ module axi_chiplet_controller #(
                     // APB access phase: psel=1, penable=1; complete on pready.
                     fch_active_r  <= 1'b1;
                     fch_penable_r <= 1'b1;
-                    if (wl_apb_pready) begin
+                    // SoC Labs watchdog (f1b3aac): a hung Wlink APB (e.g. the LL
+                    // still held in swi_swreset) must NOT pin fch_active_r high,
+                    // or the PS's apb_pready is pinned low with it and the whole
+                    // 0x2xxx region becomes unreadable for ever. Abort, release
+                    // the bus, and latch a sticky, software-visible error.
+                    if (!wl_apb_pready && fch_wdog_r != FCH_WDOG_LIMIT)
+                        fch_wdog_r <= fch_wdog_r + 20'd1;
+                    if (!wl_apb_pready && fch_wdog_r == FCH_WDOG_LIMIT) begin
+                        fch_active_r     <= 1'b0;   // RELEASE the APB bus
+                        fch_penable_r    <= 1'b0;
+                        fch_stall_err_q  <= 1'b1;   // sticky: 0x21BC[0]
+                        fch_stall_widx_q <= fch_widx_r;
+                        fch_qmode_r      <= 1'b0;
+                        fch_state_r      <= FCH_IDLE;
+                    end else if (wl_apb_pready) begin
                         fch_penable_r <= 1'b0;
                         if (fch_qmode_r) begin
                             // Q1: single quiesce/release write complete —
@@ -5531,9 +5614,19 @@ module axi_chiplet_controller #(
     // again (no paddr[12] split, no response mux). External APB response
     // passes Wlink straight back, stalled when the I²C slave bridge is
     // active.
+    // SoC Labs 2026-07-09 (ported from f1b3aac): STALL the external (PS) APB
+    // while the fch sequencer owns the Wlink APB. Previously apb_pready passed
+    // wl_apb_pready straight through with no arbitration term, so a PS access
+    // landing during the fch burst would complete against the SEQUENCER's
+    // transaction (returning its prdata / consuming its pready) -- an APB
+    // protocol violation. Holding pready low stalls the PS access until the bus
+    // is handed back, which is the normal APB way to backpressure. Bounded by
+    // the FCH_ACCESS watchdog above, so this can never become the permanent
+    // lockout it replaces. In V1 / manual (autonomy off) the fch sequencer never
+    // arms, so fch_active_r stays 0 and apb_pready is bit-identical to before.
     assign apb_prdata  = wl_apb_prdata;
-    assign apb_pready  = slv_apb_active ? 1'b0 : wl_apb_pready;
-    assign apb_pslverr = slv_apb_active ? 1'b0 : wl_apb_pslverr;
+    assign apb_pready  = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pready;
+    assign apb_pslverr = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pslverr;
 
     // =====================================================================
     // SoC Labs §9 clock fix (2026-05-19): put the recovered RX clock on a

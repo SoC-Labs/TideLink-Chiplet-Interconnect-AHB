@@ -264,6 +264,35 @@ zp_arm(){ local d="$1" cfg trn
     return 1
   fi
   return 0; }
+# Arm with bounded retry. The arm is two APB writes; a transient failure (bus
+# busy, a peer swreset window) is worth retrying, a persistent one is a real
+# arm-path bug and must surface rather than be papered over. 3 attempts, then
+# give up and let the caller score the cycle UNARMED.
+# QUIESCE BEFORE RE-DEPLOY. Reloading the PL on a LIVE link has hard-hung a board
+# (3x in 90 min, 2026-07-09). Disarm autonomy first: clearing NEGO_TRAIN_CFG[0]
+# and NEGO_CFG[0] is the RTL's own escape hatch (axi_chiplet_controller.sv:4539) —
+# the winscan parks and the SYNC beacons stop within a cycle. Safe here ONLY
+# because a reflash follows immediately: the same write, left standing, springs
+# the disarm-park ws_kicked_q trap (both re-kick paths need ~ws_kicked_q, cleared
+# only at POR). Never call this without reflashing after. Best-effort: a die whose
+# bus is already dead just fails the write, which is fine.
+zp_quiesce(){ local d
+  for d in a b; do
+    "$d" wr $R_NEGO_TRAIN_CFG 0x0 >/dev/null 2>&1 || true
+    "$d" wr $R_NEGO_CFG       0x0 >/dev/null 2>&1 || true
+  done
+  sleep 0.2; }
+ZP_ARM_TRIES=${ZP_ARM_TRIES:-3}
+zp_arm_retry(){ local d="$1" i
+  for i in $(seq 1 "$ZP_ARM_TRIES"); do
+    if zp_arm "$d" 2>/dev/null; then
+      [ "$i" -gt 1 ] && echo "zp_arm($d): armed on attempt $i" >&2
+      return 0
+    fi
+    sleep 0.3
+  done
+  echo "zp_arm($d): FAILED after $ZP_ARM_TRIES attempts — arm did not stick" >&2
+  return 1; }
 # the autoneg role-lock chain on one die: role_locked, and why (or why not).
 maskhs_d(){ "$1" rd $R_OBS_MASK_HS; }
 rolelocked_d(){ echo $(( ( $("$1" rd $R_ROLE_STATUS) >> 1 ) & 1 )); }

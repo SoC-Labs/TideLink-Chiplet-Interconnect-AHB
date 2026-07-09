@@ -113,12 +113,19 @@ wait_bilateral(){ local pors=${1:-6} secs=${2:-16} por t
 # force_always (SYNC every beat) for a stable dist read; shipped base64 (no quoting).
 winscan(){
   a wr $R_R8 0x1C>/dev/null; b wr $R_R8 0x1C>/dev/null; sleep 0.6
-  local PY='import mmap,struct,os,time
+  local PY='import mmap,struct,os,time,ctypes
 P=4096;fd=os.open("/dev/mem",os.O_RDWR|os.O_SYNC)
 bb=0x44032000&~(P-1);o=0x44032000-bb
 m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=bb)
-def rd(x):return struct.unpack_from("<I",m,o+x)[0]
-def wr(x,v):struct.pack_into("<I",m,o+x,v&0xffffffff)
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from did NOT compile to one access on this target
+# (measured: 5 AHB beats per logical poke) -- the "TX 5x over-advance phantom".
+# It corrupts the winscan itself: the dist read (0x1AC) is fine but the settap
+# W1x taps and any POP/pulse aperture fire 5x. ctypes.c_uint32.from_buffer(m,o)
+# is exactly one aligned load/store per .value. Do not revert to struct. (tl39.py)
+def _u32(off):return ctypes.c_uint32.from_buffer(m,o+off)
+def rd(x):return _u32(x).value
+def wr(x,v):_u32(x).value=v&0xffffffff
 def settap(L,t):
  n=(t>>1)&0xf;lb=t&1
  c=rd(0x118);c&=~(0xf<<(4*L));c|=n<<(4*L);wr(0x118,c)

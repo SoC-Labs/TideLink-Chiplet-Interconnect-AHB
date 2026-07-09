@@ -161,12 +161,19 @@ wr_die(){ case "$1" in a) a wr "$2" "$3" >/dev/null;; b) b wr "$2" "$3" >/dev/nu
 sweep_py(){ # tol lanes_csv
   local tol=$1 lanes=$2
   cat <<PYEOF
-import mmap,struct,os,time
+import mmap,struct,os,time,ctypes
 P=4096;fd=os.open("/dev/mem",os.O_RDWR|os.O_SYNC)
 bb=0x44032000&~(P-1);o=0x44032000-bb
 m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=bb)
-def rd(x):return struct.unpack_from("<I",m,o+x)[0]
-def wr(x,v):struct.pack_into("<I",m,o+x,v&0xffffffff)
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from did NOT compile to one access on this target
+# (measured: 5 AHB beats per logical poke) -- the "TX 5x over-advance phantom".
+# Here it is a MEASUREMENT hazard: this preflight loops rd(0x1AC)/rd(0x150) and
+# writes W1x taps per lane, so a 5x fan-out perturbs the eye it is measuring.
+# ctypes.c_uint32.from_buffer(m,o) is exactly one aligned load/store. (see tl39.py)
+def _u32(off):return ctypes.c_uint32.from_buffer(m,o+off)
+def rd(x):return _u32(x).value
+def wr(x,v):_u32(x).value=v&0xffffffff
 def settap(L,t):
  n=(t>>1)&0xf;lb=t&1
  c=rd(0x118);c&=~(0xf<<(4*L));c|=n<<(4*L);wr(0x118,c)

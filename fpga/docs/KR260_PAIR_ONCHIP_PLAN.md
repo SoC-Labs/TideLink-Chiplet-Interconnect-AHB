@@ -350,8 +350,15 @@ Grouped by file to avoid write conflicts between parallel agents.
   - `src/rtl/tidelink_top.sv`: add `parameter bit HONEST_MASK_HS = 1'b0`; replace the `:2054-2055` ties per §5.1.
   - `fpga/vivado_ip/tidelink_vivado_wrapper.v`: add params `NEGO_CFG_RESET` (7-bit) and `HONEST_MASK_HS`; pass both into
     the `u_tidelink_top` instantiation (currently neither is plumbed → IP defaults `NEGO_CFG_RESET` to `7'h00`).
-  - `imp/fpga/tidelink_ip/component.xml`: expose `CONFIG.NEGO_CFG_RESET` and `CONFIG.HONEST_MASK_HS` (+ xgui).
-  - Re-run `make -C fpga package_ip` with **`TIDELINK_PHY_V2=1` exported**.
+  - ~~`imp/fpga/tidelink_ip/component.xml`~~ — **DO NOT hand-edit.** Verified 2026-07-09: `imp/*` is gitignored
+    (`.gitignore:98`) and `component.xml` is **untracked** — it is an *output* of `package_ip`
+    (`fpga/vivado_ip/package_tidelink_ip.tcl`, whose header `:70-71` notes that `ipx::package_project` records the
+    wrapper's parameter defaults automatically). Adding the two `parameter`s to the wrapper is sufficient; a hand-edit
+    is regenerated away. Treat `component.xml` as a **post-condition to assert**, never a file to author.
+  - Re-run `make -C fpga package_ip` with **`TIDELINK_PHY_V2=1` exported**. `package_ip` is gated by
+    `check-wrapper-params` → `fpga/scripts/check_wrapper_params.sh`, which iterates only
+    `USE_IDELAY USE_CLKBUF USE_T3A` (`:55`, `:92`) asserting each defaults to `1'b1`. The two new parameters are not in
+    that list, so the guard will not trip — but do not perturb those three.
 - **Deps:** none (Wave 1). Blocks W5 (needs the CONFIG params), W7 (sim needs the un-hack for the honest gate).
 - **DoD:** `grep -c NEGO_CFG_RESET imp/fpga/tidelink_ip/component.xml > 0`; `grep -c HONEST_MASK_HS ...component.xml > 0`;
   single-die default (`HONEST_MASK_HS=0`) is byte-behaviour-identical (both ports still tie to `1'b1`).

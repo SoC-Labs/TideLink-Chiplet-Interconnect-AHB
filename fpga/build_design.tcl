@@ -261,6 +261,27 @@ if { $phy_clk_div_v ne "" } {
     puts "WARNING: tidelink_phy_clk_div2.v not found in $target_dir - BD module-ref will fail"
 }
 
+# Optional SECOND divider, phase-offset copy (kr260-pair-onchip only).
+#
+# The on-chip pair needs its two instances' PHY bit clocks to power up at
+# DIFFERENT counter phases. Two instances of one no-reset module would power up
+# identically (same FF INIT) and stay in lockstep forever, making the in-fabric
+# TX->RX cross-connect zero-skew: it would link up while exercising neither the
+# deskew, the calibrator, nor the CDC -- passing for the wrong reason.
+#
+# The offset is therefore carried STRUCTURALLY, by a distinct module whose
+# div_cnt INIT default is 3'b011, rather than by a CONFIG.INIT_PHASE property on
+# a `-type module` BD cell. A property that silently fails to propagate would
+# resurrect the zero-skew trap with no error anywhere.
+#
+# glob -nocomplain: every other target has no such file and is unaffected.
+set phy_clk_div_b_v [lindex [glob -nocomplain $target_dir/tidelink_phy_clk_div2_b.v] 0]
+if { $phy_clk_div_b_v ne "" } {
+    add_files -norecurse $phy_clk_div_b_v
+    update_compile_order -fileset sources_1
+    puts "INFO: added phase-offset PHY clock divider $phy_clk_div_b_v"
+}
+
 # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port — SAME
 # module-reference requirement as the /2 divider above: the BD instantiates it
 # via `create_bd_cell -type module -reference tidelink_ahb_mng_bram`, so the

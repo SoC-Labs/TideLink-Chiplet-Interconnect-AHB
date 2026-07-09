@@ -99,7 +99,22 @@ module tidelink_vivado_wrapper #(
     parameter STUB_SERVO       = 1'b0,
     parameter STUB_PERF        = 1'b0,
     parameter STUB_PTP         = 1'b0,
-    parameter BYPASS_ADDR_XLAT = 1'b0
+    parameter BYPASS_ADDR_XLAT = 1'b0,
+
+    // NEGO_CFG POR value forwarded to tidelink_top (companion to that RTL
+    // parameter of the same name). Default 7'h00 preserves today's behaviour:
+    // autoneg OFF at POR (SW-driven bring-up). ipx::package_project records
+    // this default into the packaged IP's component.xml as CONFIG.NEGO_CFG_RESET
+    // so a BD instance can override it (the kr260 on-chip pair bakes 0x61 for a
+    // zero-poke autonomous boot). Previously the wrapper did NOT plumb this and
+    // relied on tidelink_top's own 7'h00 default; it is now wired explicitly.
+    parameter [6:0] NEGO_CFG_RESET = 7'h00,
+    // Peer-mask handshake authenticity gate forwarded to tidelink_top.
+    //   0 (default) = legacy bench tie (single-die targets byte-identical);
+    //   1 = drive the inner controller from the real ports so the mask
+    //       handshake genuinely matches. Recorded as CONFIG.HONEST_MASK_HS in
+    //       component.xml; the kr260 on-chip pair sets it to 1.
+    parameter HONEST_MASK_HS = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -454,7 +469,13 @@ module tidelink_vivado_wrapper #(
         .STUB_SERVO          (STUB_SERVO),
         .STUB_PERF           (STUB_PERF),
         .STUB_PTP            (STUB_PTP),
-        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT)
+        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT),
+        // Autoneg POR default + honest mask-handshake gate. Previously the
+        // wrapper relied on tidelink_top's own NEGO_CFG_RESET default (7'h00)
+        // and HONEST_MASK_HS did not exist; both are now wired explicitly so
+        // the packaged IP records them as overridable CONFIG parameters.
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET),
+        .HONEST_MASK_HS      (HONEST_MASK_HS)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

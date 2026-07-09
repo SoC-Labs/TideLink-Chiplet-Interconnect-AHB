@@ -120,7 +120,20 @@ module tidelink_top #(
     // The slave's lane mask is autoneg-locked at 0xff under 7'h61; SW-driven
     // lets both dies set their mask. Revisit 7'h61 once mask-handshake
     // propagates the reduced mask to the slave.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // HONEST_MASK_HS — peer-mask handshake authenticity gate.
+    //   0 (default) = legacy bench tie: the inner axi_chiplet_controller's
+    //       apb_debug_unlock_i / mask_hs_bypass_i are held 1'b1 (see the
+    //       u_chiplet_controller instantiation below), so mask_hs_gate_open
+    //       is permanently forced open. Single-die Z2/ASIC targets are
+    //       BYTE-IDENTICAL to today — a parameter-constant ternary select
+    //       folds to the historical 1'b1 ties at elaboration.
+    //   1 = drive the inner controller from the real top-level
+    //       apb_debug_unlock_i / mask_hs_bypass_i ports (declared at the
+    //       role-strap section but previously DISCARDED) so the peer-mask
+    //       handshake must GENUINELY match. Used by the kr260 on-chip pair to
+    //       prove hardware autonomy without either bypass strap.
+    parameter        HONEST_MASK_HS       = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2051,8 +2064,16 @@ module tidelink_top #(
         // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
         // lane mask) on the non-master die. Bench-debug straps; revisit when
         // re-enabling autoneg for production.
-        .apb_debug_unlock_i         (1'b1),
-        .mask_hs_bypass_i           (1'b1),
+        //
+        // HONEST_MASK_HS gate (2026-07-09): with the default 0 both selects
+        // fold to the historical 1'b1 ties above => byte-identical single-die
+        // netlist. With 1 they drive from the real module ports (:357-358),
+        // which were previously DEAD, so mask_hs_gate_open =
+        // mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i
+        // (local_overrides/axi_chiplet_controller.sv) is no longer forced open
+        // and the peer-mask handshake must genuinely match.
+        .apb_debug_unlock_i         (HONEST_MASK_HS ? apb_debug_unlock_i : 1'b1),
+        .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),

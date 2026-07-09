@@ -407,7 +407,10 @@ proc create_root_design { parentCell } {
     #   dout[17]    = proc_sys_reset_0/peripheral_aresetn LIVE   (In2) (== hresetn)
     #   dout[18]    = tidelink_0/dbg_ahb_tx_hresp_sticky_o       (In3) 4th sticky
     #   dout[31:19] = 0 (xlconstant)                            (In4)
-    #  -> processing_system7_0/GPIO_0_tri_i (input-only; tri_o/tri_t left open)
+    #  -> processing_system7_0/GPIO_I  (EMIO GPIO input member of the GPIO_0
+    #     interface; GPIO_0_tri_i does NOT exist as a bd_pin in Vivado 2024.1 --
+    #     the gpio_rtl interface members are GPIO_I/GPIO_O/GPIO_T. GPIO_O/GPIO_T
+    #     left open, input-only.)
     #
     # DEVIATION from spec (d): spec put a 14-bit const at In3 (EMIO[31:18]).
     # ahb_tx_hresp is a VISIBLE top-level output and a prime wedge suspect, so
@@ -727,7 +730,7 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins xlconst_emio_pad/dout] \
                    [get_bd_pins xlconcat_emio/In4]
     connect_bd_net [get_bd_pins xlconcat_emio/dout] \
-                   [get_bd_pins processing_system7_0/GPIO_0_tri_i]
+                   [get_bd_pins processing_system7_0/GPIO_I]
 
     #-- PHC removed 2026-06-19: tie off tidelink_0 PHC *inputs* to 0.
     #   (tidelink_0 PHC outputs phc_hw_set_* / phc_hw_adj_* / phc_hw_capture /

@@ -422,6 +422,11 @@ module axi_chiplet_controller #(
     output wire             obs_a2l_replay_link_valid_o,
     output wire  [7:0]      obs_fe_rx_credit_max_o,
     output wire             obs_fe_rx_is_full_o,
+    // SoC Labs off-fabric EMIO instrument 2026-07-09: surface fch_active_r so
+    // it can be read through PS EMIO GPIO (0xE000_A068) while the PL AXI fabric
+    // is erroring and every APB obs register is unreachable. It already sinks
+    // into the apb_pready mux, so it cannot be optimised away.
+    output wire             obs_fch_active_o,
     // SoC Labs Bug-A FCSM observation 2026-06-03
     output wire             obs_a2l_replay_app_valid_o
 `ifdef TIDELINK_PHY_V2
@@ -5285,6 +5290,9 @@ module axi_chiplet_controller #(
     // 0.25 s FCH_SWRESET_DWELL sits in FCH_GAP where fch_active_r is also 1 --
     // see the GAP state; the PS is stalled across it, which is correct: the LL
     // is mid-swreset and its registers are not meaningful anyway.
+    // SoC Labs off-fabric EMIO instrument 2026-07-09.
+    assign obs_fch_active_o = fch_active_r;
+
     assign apb_prdata  = wl_apb_prdata;
     assign apb_pready  = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pready;
     assign apb_pslverr = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pslverr;

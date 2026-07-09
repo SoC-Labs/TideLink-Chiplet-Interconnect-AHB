@@ -349,6 +349,39 @@ module tidelink_top #(
     output wire                     d2d_reset_o,
 
     // --------------------------------------------------------------------------
+    // SoC Labs OFF-FABRIC EMIO DEBUG WORD (2026-07-09, David Mapstone)
+    //
+    // WHY THIS EXISTS. On silicon, at autonomous training entry the MASTER die
+    // loses ALL PS access to the PL: 0x4403_0xxx, 0x4403_2xxx AND 0x8401_0000
+    // all return `external abort (0x018)` -- an AXI ERROR response, not a stall
+    // -- while `fpga_manager/state` stays `operating` and the PL's link logic
+    // keeps running (the peer trains against it to cal=1 fcsm=4). Only a
+    // power-cycle recovers it. So EVERY APB observation register we own is
+    // behind the dead bus: the fabric is unreadable exactly when it matters.
+    //
+    // This word is routed to PS **EMIO GPIO**, read at 0xE000_A068 (DATA_RO_2),
+    // which never traverses the PL AXI slaves and therefore SURVIVES the wedge.
+    //
+    //   [15:8] heartbeat  -- free-running hclk counter bits, RESET-LESS. Two
+    //                        reads ~1 s apart differ IFF hclk is alive. That is
+    //                        what separates "clock stopped" from "reset asserted"
+    //                        (a reset-driven counter would freeze at 0 in both).
+    //   [7]    fch_active_r      (masks apb_pready inside the controller)
+    //   [6]    fc_cfg_apb_psel   (FC adapter owns the tidelink APB)
+    //   [5]    apb_psel          (a PS access is in flight)
+    //   [4]    apb_pready        (the PL is acking it)
+    //   [3]    link_active
+    //   [2]    role_is_master_o  (proves the "master" premise)
+    //   [1]    role_locked_o     (wedge before vs after role lock)
+    //   [0]    d2d_reset_o       (the controller resetting itself)
+    //
+    // The BD adds clk_wiz `locked` at EMIO[16] and proc_sys_reset
+    // `peripheral_aresetn` (== hresetn) at EMIO[17]. These are read-only taps;
+    // no datapath net is modified, so the proven manual recipe is untouched.
+    // --------------------------------------------------------------------------
+    output wire              [15:0] dbg_emio_o,
+
+    // --------------------------------------------------------------------------
     // Chiplet Controller Role Selection
     // --------------------------------------------------------------------------
     input  wire                     role_strap_i,
@@ -716,6 +749,34 @@ module tidelink_top #(
                          apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
 
     // =========================================================================
+    // SoC Labs OFF-FABRIC EMIO INSTRUMENT (2026-07-09) — see the dbg_emio_o
+    // port comment for why this exists.
+    //
+    // The heartbeat has NO reset term, deliberately. hresetn, poresetn and
+    // phc_resetn are all the SAME net (proc_sys_reset peripheral_aresetn), so a
+    // reset-driven counter would freeze at 0 whenever the reset asserts — which
+    // is precisely the case we must distinguish from "hclk stopped". A
+    // reset-less FF powers up to INIT=0 after configuration and advances on
+    // hclk edges alone, so:
+    //     count frozen  => hclk is DEAD
+    //     count moving  => hclk is ALIVE (whatever hresetn is doing)
+    // hclk = 4.687 MHz (213 ns). Bit[16] toggles ~35.8 Hz, bit[23] ~0.28 Hz, so
+    // the [23:16] byte changes between two reads ~1 s apart iff the clock runs.
+    // =========================================================================
+    (* dont_touch = "true" *) reg [23:0] dbg_hb_count;
+    always @(posedge hclk) dbg_hb_count <= dbg_hb_count + 24'd1;
+
+    assign dbg_emio_o = { dbg_hb_count[23:16],   // [15:8] hclk heartbeat
+                          obs_fch_active_w,      // [7]  fch sequencer owns the APB
+                          fc_cfg_apb_psel,       // [6]  FC adapter owns the tidelink APB
+                          apb_psel,              // [5]  PS access in flight
+                          apb_pready,            // [4]  PL acking it
+                          link_active,           // [3]
+                          role_is_master_o,      // [2]  proves the master premise
+                          role_locked_o,         // [1]  before vs after role lock
+                          d2d_reset_o };         // [0]  controller self-reset
+
+    // =========================================================================
     // TideLink config APB mux: 2:1 APB mux
     //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
     //   Source 1: External unified APB port (CPU reads/writes)
@@ -724,6 +785,10 @@ module tidelink_top #(
     // External APB is stalled (pready=0) when FC adapter is active.
     // =========================================================================
     wire fc_cfg_apb_active = fc_cfg_apb_psel;
+
+    // SoC Labs off-fabric EMIO instrument: fch_active_r surfaced from the
+    // controller (it masks apb_pready there, so it cannot be optimised away).
+    wire obs_fch_active_w;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -2289,6 +2354,7 @@ module tidelink_top #(
         // packaging, but tidelink_top is the OUTER scope (FPGA wrapper)
         // where probes survive (see fc_rx_fifo_wdata pattern).
         .obs_a2l_replay_link_valid_o (obs_a2l_replay_link_valid_w),
+        .obs_fch_active_o            (obs_fch_active_w),
         .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03

@@ -23,7 +23,7 @@
 #   rxword            read 0x44010000 (slave local RX FIFO, single pop)
 #   rxn N             read N words from 0x44010000 (sequential pops)
 #   occ               read RX FIFO occupancy 0x4403200C
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -34,10 +34,41 @@ def mm(addr):
         maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return maps[base], addr - base
+
+# ---------------------------------------------------------------------------
+# SoC Labs 2026-07-09: rd()/wr() MUST be single aligned 32-bit bus accesses.
+#
+# These used struct.unpack_from / struct.pack_into on the mmap buffer. Measured
+# on silicon against the a2l write pointer (obs 0x44032158, bits [6:2]):
+#
+#     struct.pack_into("<I", m, o, v)   ->  wbin advanced by 5   (FIVE bus stores)
+#     ctypes.c_uint32.from_buffer(...)  ->  wbin advanced by 1   (one store)
+#
+# The struct/buffer path does not compile to one 32-bit access on this target;
+# each logical poke became ~5 AHB beats. That is the "TX 5x over-advance
+# phantom" -- it is the HOST, not the fc_adapter (tx_xfer_lock is exonerated).
+# It made A->B appear to die after ~6 app words, because 6 stores x 5 = ~32
+# packets = one full pktnum lap, which is where the real (RTL) bug detonated.
+# See memory/project_a2b_rootcause_fe_tx_credit_max_2026_07_09.md
+#
+# rd() is fixed for the same reason and it matters MORE: several apertures are
+# POP-on-read (rxn reads 0x44010000 as sequential pops; occ at 0x4403200C).
+# A multi-beat "single" read silently consumes extra FIFO entries and corrupts
+# the very measurement you are taking. Suspected cause of the still-unexplained
+# RX-aperture read model (payloads landing at unrelated slots, "clearing" the
+# ring perturbing it). Verify on silicon before trusting any delivery count.
+#
+# ctypes.c_uint32.from_buffer(m, o) creates a uint32 view AT the mmap offset --
+# .value is exactly one aligned 32-bit load/store. Do not "optimise" this back
+# to struct, and do not use memoryview slicing (same multi-beat hazard).
+# ---------------------------------------------------------------------------
+def _u32(a):
+    m, o = mm(a)
+    return ctypes.c_uint32.from_buffer(m, o)
 def rd(a):
-    m, o = mm(a); return struct.unpack_from("<I", m, o)[0]
+    return _u32(a).value
 def wr(a, v):
-    m, o = mm(a); struct.pack_into("<I", m, o, v & 0xFFFFFFFF)
+    _u32(a).value = v & 0xFFFFFFFF
 
 R8       = 0x44032100   # slot0: [0] swi_training_mode  [1] SWI_RECAL
 SLIPLO   = 0x44032104   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis

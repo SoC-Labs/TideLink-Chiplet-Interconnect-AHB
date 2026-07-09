@@ -22,7 +22,7 @@ import os
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
 # ---------------------------------------------------------------------------
 # Register map (unified 15-bit APB view; HW 0x44030000 -> 0x0000,
@@ -154,6 +154,30 @@ class PairV2TB:
             Clock(dut.hclk, int(round(CLK_PERIOD_NS * 1000)), unit="ps").start())
         cocotb.start_soon(
             Clock(dut.ref_clk, int(round(REF_CLK_PERIOD_NS * 1000)), unit="ps").start())
+
+        # W7 on-chip pair: when tb_top.sv is compiled with TB_TOP_ONCHIP_REFCLK,
+        # the slave DUT's user_ref_clk is wired to a SEPARATE `s_ref_clk` net.
+        # Start it here as a same-frequency (0 ppm — one MMCM on silicon), static
+        # phase-offset copy of ref_clk: delayed by TIDELINK_SIM_ONCHIP_PHASE/8 of
+        # the UI, mirroring the two hardware /8 dividers' different INIT_PHASE
+        # (inst0 3'b000 vs inst1 3'b011 = +3 counts of a /8 divider = 3/8 UI,
+        # plan §4). A shared zero-skew ref edge would make the calibrator/deskew/
+        # credit-CDC pass for the wrong reason (the sim-green/silicon-red trap);
+        # the offset forces those layers to run against real static skew. Guarded
+        # by hasattr so every legacy (non-onchip) compile is byte-unchanged.
+        if hasattr(dut, "s_ref_clk"):
+            phase_counts = float(os.environ.get("TIDELINK_SIM_ONCHIP_PHASE", "3"))
+            period_ps = int(round(REF_CLK_PERIOD_NS * 1000))
+            phase_ps = int(round(REF_CLK_PERIOD_NS * phase_counts / 8.0 * 1000))
+
+            async def _phase_offset_slave_ref():
+                # Delay the slave clock's first edge by the static phase, then run
+                # forever at the identical period => a fixed mesochronous skew.
+                if phase_ps:
+                    await Timer(phase_ps, unit="ps")
+                await Clock(dut.s_ref_clk, period_ps, unit="ps").start()
+
+            cocotb.start_soon(_phase_offset_slave_ref())
 
         for prefix in ("m", "s"):
             for port in ("tx", "fifo"):

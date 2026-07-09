@@ -178,6 +178,48 @@ module tb_top #(
     logic m_mask_hs_bypass = 1'b1;
     logic s_mask_hs_bypass = 1'b1;
 
+    // =========================================================================
+    // W7 on-chip pair honest-autonomy hooks — ADDITIVE, DEFINE-GATED.
+    //   A legacy compile (none of TB_TOP_ONCHIP / TB_TOP_ONCHIP_REFCLK /
+    //   TB_TOP_MASK_HS defined) is byte-identical to before. See
+    //   test_v2_onchip_pair.py. These hooks replace the two lies the existing
+    //   pair sim tells about autonomy: (1) the hierarchical `force
+    //   nego_cfg_reg=7'h61` (BYPASS_AUTONEG=0 path, ~:938 — a force with NO
+    //   silicon equivalent) and (2) the shared zero-skew ref_clk.
+    //
+    //   TB_TOP_MASK_HS — honest peer-mask handshake. Hold BOTH bypass straps at
+    //   0 so mask_hs_gate_open (= mask_hs_match | mask_hs_bypass_i |
+    //   apb_debug_unlock_i, axi_chiplet_controller.sv:614) can open ONLY via a
+    //   genuine mask_hs_match. This is an initial-block DEPOSIT, NOT a `force`:
+    //   it overrides the =1'b1 declaration initializers at time 0 while
+    //   poresetn is still low (bit-safe — the DUT samples nothing pre-reset).
+    //   Before Wave 1 these ports were discarded inside tidelink_top (hardwired
+    //   1'b1); with HONEST_MASK_HS=1 (defparam'd below) they are live for the
+    //   first time, so 0 here actually bites.
+    // =========================================================================
+`ifdef TB_TOP_MASK_HS
+    initial begin
+        m_apb_debug_unlock = 1'b0;
+        s_apb_debug_unlock = 1'b0;
+        m_mask_hs_bypass   = 1'b0;
+        s_mask_hs_bypass   = 1'b0;
+    end
+`endif
+
+    // TB_TOP_ONCHIP_REFCLK — a SEPARATE slave PLL reference so the two dies do
+    // NOT share one zero-skew ref_clk edge. pair_v2_common starts s_ref_clk
+    // phase-offset from ref_clk by TIDELINK_SIM_ONCHIP_PHASE/8 of the UI,
+    // mirroring the two hardware /8 dividers' different INIT_PHASE (inst0
+    // 3'b000 vs inst1 3'b011 = +3 counts, plan §4). Declared ONLY under the
+    // define so legacy `hasattr(dut, "s_ref_clk")` is false and the second
+    // clock is never started. WHY: with one shared ref_clk the cross-connect is
+    // zero-skew, so the calibrator / deskew / credit-CDC never run against real
+    // static skew — the pair would pass for the wrong reason (the exact
+    // sim-green / silicon-red trap this whole target exists to close).
+`ifdef TB_TOP_ONCHIP_REFCLK
+    logic s_ref_clk = 1'b0;
+`endif
+
     // -------------------------------------------------------------------------
     // Cross-wired GPIO PHY pads
     //   master TX -> m_pad_clk_tx / m_pad_tx -> u_skid_m2s -> slave RX
@@ -262,6 +304,33 @@ module tb_top #(
 `ifdef TB_TOP_EPOCH_ANCHOR_DIS
     defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b0;
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
+`endif
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // W7 on-chip pair: silicon-faithful autonomy via elaboration-time PARAMETER
+    // OVERRIDE (defparam), NOT a `force`. This is the replacement for the legacy
+    // BYPASS_AUTONEG=0 hierarchical `force nego_cfg_reg=7'h61` (~:938) — that
+    // force has no silicon equivalent (there is no runtime path that pokes
+    // nego_cfg_reg), which is exactly why the KR260 pair now BAKES the strap as
+    // a reset default (NEGO_CFG_RESET, Wave 1). With this defparam nego_cfg_reg
+    // RESETS to 0x61 = nego_en | nego_force_lock | mask_hs_auto_en; NEGO_CFG[3:2]
+    // pri_sel = 00 selects the strap-derived nego_priority_reg (master strap 0 ->
+    // 0x0001, slave strap 1 -> 0x0002, axi_chiplet_controller.sv:657). Autoneg
+    // therefore runs at POR with ZERO APB pokes. NEGO_TRAIN_CFG_RESET is LEFT at
+    // its POR 16'h0001 (train_auto_en already 1 — no override needed).
+`ifdef TB_TOP_ONCHIP
+    defparam u_master.NEGO_CFG_RESET = 7'h61;
+    defparam u_slave.NEGO_CFG_RESET  = 7'h61;
+`endif
+    // HONEST_MASK_HS un-hack (Wave 1): drive apb_debug_unlock_i / mask_hs_bypass_i
+    // from the (now-0) ports instead of the hardwired 1'b1, so mask_hs_gate_open
+    // opens ONLY on a genuine match. Gated on TB_TOP_MASK_HS ONLY, so the
+    // negative control (test_v2_onchip_pair.py test_90, compiled with MASK_HS=0)
+    // keeps HONEST_MASK_HS=0 => the ports fold back to 1'b1 => the gate is forced
+    // open => the vacuous-pass this gate must be able to detect.
+`ifdef TB_TOP_MASK_HS
+    defparam u_master.HONEST_MASK_HS = 1'b1;
+    defparam u_slave.HONEST_MASK_HS  = 1'b1;
 `endif
 
     // Elaboration self-check: print the anchor enable actually compiled into
@@ -725,7 +794,14 @@ module tb_top #(
         .scan_in           (1'b0),
         .scan_out          (/* unused */),
 
+        // Slave PLL ref: legacy shares the master's zero-skew ref_clk; the W7
+        // on-chip gate routes a phase-offset s_ref_clk instead (defeats the
+        // zero-skew trap — see the TB_TOP_ONCHIP_REFCLK note above).
+`ifdef TB_TOP_ONCHIP_REFCLK
+        .user_ref_clk      (s_ref_clk),
+`else
         .user_ref_clk      (ref_clk),
+`endif
 
         .pad_clk_tx        (s_pad_clk_tx),
         .pad_tx            (s_pad_tx),

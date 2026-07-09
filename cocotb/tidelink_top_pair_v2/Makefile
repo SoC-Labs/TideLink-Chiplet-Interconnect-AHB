@@ -98,6 +98,35 @@ ifeq ($(EYE_FAULT),1)
 COMPILE_ARGS += +define+TB_TOP_EYE_FAULT
 endif
 
+# ── W7 on-chip pair honest-autonomy gate (ADDITIVE, opt-in) ─────────────────
+# The silicon-faithful variant of the pair sim (MODULE=test_v2_onchip_pair):
+#   ONCHIP=1        DUT param overrides (NEGO_CFG_RESET=0x61) drive autoneg at
+#                   POR instead of the legacy hierarchical `force` — the
+#                   BYPASS_AUTONEG=0 force path is NOT used (and must not be:
+#                   leave BYPASS_AUTONEG at its default so the force stays
+#                   dormant). Also enables the phase-offset slave ref-clock
+#                   (TB_TOP_ONCHIP_REFCLK) that closes the zero-skew trap.
+#   ONCHIP_PHASE=n  slave ref-clock static phase = n/8 of the UI (default 3,
+#                   mirroring the inst1 divider INIT_PHASE=3'b011). Passed to the
+#                   Python side as env TIDELINK_SIM_ONCHIP_PHASE.
+#   MASK_HS=1       HONEST_MASK_HS=1 + both bypass straps held 0 => the peer-mask
+#                   handshake is genuine (positive gate). MASK_HS=0 leaves
+#                   HONEST_MASK_HS=0 => gate forced open (the negative control,
+#                   test_90). Passed to Python as env TIDELINK_SIM_ONCHIP_MASK_HS.
+# A legacy run (ONCHIP unset) adds none of these defines and is bit-identical.
+ONCHIP        ?= 0
+ONCHIP_PHASE  ?= 3
+MASK_HS       ?= 0
+ifeq ($(ONCHIP),1)
+COMPILE_ARGS += +define+TB_TOP_ONCHIP +define+TB_TOP_ONCHIP_REFCLK
+COMPILE_ARGS += +define+TB_TOP_ONCHIP_PHASE=$(ONCHIP_PHASE)
+export TIDELINK_SIM_ONCHIP_PHASE   := $(ONCHIP_PHASE)
+export TIDELINK_SIM_ONCHIP_MASK_HS := $(MASK_HS)
+ifeq ($(MASK_HS),1)
+COMPILE_ARGS += +define+TB_TOP_MASK_HS
+endif
+endif
+
 # Extra ad-hoc defines (e.g. per-lane overrides) — passthrough.
 EXTRA_DEFINES ?=
 COMPILE_ARGS += $(EXTRA_DEFINES)
@@ -109,7 +138,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(ONCHIP)),_oc$(ONCHIP_PHASE)$(if $(filter 1,$(MASK_HS)),_mhs,),)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0
@@ -128,6 +157,16 @@ v2_gate:
 	$(MAKE) EPOCH_PROFILE=staircase MODULE=test_v2_pair_data
 	$(MAKE) EPOCH_PROFILE=silicon   MODULE=test_v2_pair_data
 	$(MAKE) EPOCH_PROFILE=silicon   EPOCH_ANCHOR_DIS=1 MODULE=test_v2_pair_epoch_negctl
+
+# ── W7 blocking on-chip autonomy gate: positive (honest handshake) THEN the
+#    negative control (gate forced open). Both must pass. Separate from v2_gate
+#    (which is the fast epoch-skew suite); W9 wires this into farm_gate as a new
+#    blocking FUNCTIONAL_STAGE. The negative control is a distinct COMPILE
+#    (HONEST_MASK_HS is a parameter), so it is its own $(MAKE) with MASK_HS=0.
+.PHONY: onchip_gate
+onchip_gate:
+	$(MAKE) EPOCH_PROFILE=zero ONCHIP=1 ONCHIP_PHASE=3 MASK_HS=1 MODULE=test_v2_onchip_pair
+	$(MAKE) EPOCH_PROFILE=zero ONCHIP=1 ONCHIP_PHASE=3 MASK_HS=0 MODULE=test_v2_onchip_pair
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
 

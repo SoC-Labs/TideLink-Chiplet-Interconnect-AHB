@@ -424,3 +424,104 @@ class TidelinkOverlay(Overlay):
         Write EN=0,FLUSH=1 -> hardware self-clears FLUSH after one clock cycle.
         """
         self.apb.write(APB_CTRL_OFF, APB_CTRL_FLUSH_BIT)  # EN=0, FLUSH=1
+
+
+# =============================================================================
+# KR260 on-chip PAIR support (dual-instance bitstream) — strictly additive
+# =============================================================================
+# The module globals + TidelinkOverlay above describe exactly ONE TideLink
+# instance (Z2, or a single-instance / flip KR260 image), selected once at
+# import time by TIDELINK_SOC. That module-level map fights a two-instance
+# design, so rather than mutate the globals (the live Z2 campaign reads them),
+# on-chip instance addressing is an explicit *parameter*: inst 0 is die_a,
+# inst 1 is die_b, and every inst-1 aperture is inst0 | 0x0800_0000.
+#
+# Nothing below touches the globals or TidelinkOverlay, so importing this module
+# with TIDELINK_SOC unset still yields the unchanged Z2 map (APB_BASE ==
+# 0x4403_0000). This block is only meaningful for fpga/targets/kr260-pair-onchip.
+#
+# The board-side runners (pynq_host/scripts/kr260_onchip_{smoke,autonomy}.py)
+# are self-contained ctypes tools that DUPLICATE this map on purpose: they are
+# scp-staged onto the board and must not import pynq. Keep the two in step.
+
+ONCHIP_INST_STRIDE = 0x0800_0000  # inst1 = inst0 | this, on every aperture
+
+# inst0 bases are byte-identical to today's single-instance KR260 map. The
+# entry order is (name, inst0_base, range). NOTE the ahb_sub range is 64 MB,
+# NOT the 256 MB single-instance value (AHB_SUB_RANGE above): a 256 MB window
+# at 0x8000_0000 would swallow inst1's control apertures at 0x8C00_0000.
+_ONCHIP_APERTURES = (
+    ("ahb_sub",  0x8000_0000, 0x0400_0000),  # ctrl (HPM0_LPD)  64 MB  <-- 64, not 256
+    ("apb",      0x8403_0000, 0x0000_8000),  # ctrl             32 KB
+    ("strap",    0x8404_0000, 0x0000_1000),  # ctrl              4 KB
+    ("debug",    0x8404_1000, 0x0000_1000),  # ctrl              4 KB (axi_gpio_debug_unlock)
+    ("ahb_tx",   0xA400_0000, 0x0001_0000),  # data (HPM0_FPD)  64 KB
+    ("ahb_fifo", 0xA401_0000, 0x0001_0000),  # data             64 KB
+)
+
+
+def onchip_instance_map(inst):
+    """Return ((name, base, range), ...) for on-chip pair instance ``inst``.
+
+    ``inst`` is 0 (die_a) or 1 (die_b). inst1 bases are ``inst0 | 0x0800_0000``
+    (every inst0 base has bit-27 clear, so OR == add). Raises for any other
+    index — the on-chip pair has exactly two instances.
+    """
+    if inst not in (0, 1):
+        raise ValueError("on-chip pair has instances 0 and 1, got %r" % (inst,))
+    off = inst * ONCHIP_INST_STRIDE
+    return tuple((name, base | off, rng) for name, base, rng in _ONCHIP_APERTURES)
+
+
+class TidelinkRegs:
+    """Light MMIO accessor for ONE instance of the KR260 on-chip pair.
+
+    Deliberately NOT a ``pynq.Overlay`` subclass: no bitstream download, no MRO
+    entanglement with Overlay, no dependence on the module-level address
+    globals. One host process constructs two of these (one per instance) over a
+    single already-loaded bitstream. ``mmio`` is the MMIO factory (defaults to
+    ``pynq.MMIO``; injectable for off-board unit testing). ``paired`` False
+    skips the strap/debug apertures (defensive — the pair always has them).
+
+    This is the pynq-path counterpart of the standalone ctypes board runners;
+    it does not add wedge-safety. A bare MMIO read of a training-wedged instance
+    can hang the PS with no AXI timeout, so the wedge-safe polling lives in the
+    board-side runners, not here.
+    """
+
+    def __init__(self, inst, mmio=MMIO, paired=True):
+        self.inst = inst
+        amap = onchip_instance_map(inst)
+        self.bases = {name: base for name, base, _rng in amap}
+        rng = {name: r for name, _base, r in amap}
+        self.apb      = mmio(self.bases["apb"],      rng["apb"])
+        self.ahb_tx   = mmio(self.bases["ahb_tx"],   rng["ahb_tx"])
+        self.ahb_fifo = mmio(self.bases["ahb_fifo"], rng["ahb_fifo"])
+        self.ahb_sub  = mmio(self.bases["ahb_sub"],  rng["ahb_sub"])
+        self.strap    = mmio(self.bases["strap"], rng["strap"]) if paired else None
+        self.debug    = mmio(self.bases["debug"], rng["debug"]) if paired else None
+
+    def get_role(self):
+        """Return 'die_a'/'die_b' from the strap GPIO ('die_a' if no strap)."""
+        if self.strap is None:
+            return "die_a"
+        return "die_b" if (self.strap.read(GPIO_DATA_OFF) & 1) else "die_a"
+
+
+def open_onchip_pair(bitfile=None, download=True, mmio=MMIO, paired=True):
+    """Load the KR260 on-chip pair bitstream and return ``(inst0, inst1)``.
+
+    Downloads the overlay ONCE (both instances share the PL), then returns two
+    ``TidelinkRegs`` accessors. Issues ZERO register writes. A reference to the
+    Overlay is retained on each accessor so the PL image is not GC'd.
+    """
+    ov = None
+    if download:
+        if bitfile is None:
+            bitfile = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'tidelink.bit')
+        ov = Overlay(bitfile)
+    inst0 = TidelinkRegs(0, mmio=mmio, paired=paired)
+    inst1 = TidelinkRegs(1, mmio=mmio, paired=paired)
+    inst0._overlay = inst1._overlay = ov
+    return inst0, inst1

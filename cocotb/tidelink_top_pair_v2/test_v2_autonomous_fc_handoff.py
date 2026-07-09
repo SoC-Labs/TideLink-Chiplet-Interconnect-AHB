@@ -81,28 +81,31 @@ async def _wait_data_mode(tb, max_cycles=800_000, poll=500):
     return await tb.snapshot("after autonomous FC handoff (V2)")
 
 
-@cocotb.test(skip=True)  # see HARNESS GAP note below — enable once the
-                         # tidelink_top_pair_v2 tb autonomous force is fixed.
+@cocotb.test()
 async def test_v2_autonomous_fc_handoff(dut):
     """ZERO-poke autonomous bring-up on the V2 deskew base reaches bilateral
     FCSM=4 and a byte-exact packet crosses M->S.
 
-    HARNESS GAP (2026-06-29): currently SKIPPED. On the tidelink_top_pair_v2
-    testbench the BYPASS_AUTONEG=0 `force` on nego_cfg_reg does NOT engage the
-    autoneg FSM — the FSM samples nego_en=0 in ST_IDLE and parks in ST_BYPASS
-    (state 6), so autonomous role-lock/training never runs. This is a tb-side
-    issue specific to the v2 harness (its per-die por_gate + the `#5000;
-    release` of the force, vs the tidelink_top_pair harness which holds the
-    force for the whole sim) and is INDEPENDENT of the RTL fix under test.
+    HARNESS GAP — DIAGNOSED + FIXED (2026-07-10, TOOL): the 2026-06-29 skip
+    note blamed the `#5000; release` of the tb force + the per-die por_gate.
+    That was WRONG: BOTH tb_top.sv files (this harness and tidelink_top_pair)
+    release the force at the same `#5000` — they are line-identical here. The
+    REAL cause was in the V2 Makefile: it never plumbed the `BYPASS_AUTONEG`
+    make variable into `+define+TB_TOP_BYPASS_AUTONEG`, so `BYPASS_AUTONEG=0
+    make ...` was silently dropped, the tb_top parameter kept its `else 1`
+    default, the `if (BYPASS_AUTONEG==0)` force block never executed, and the
+    autoneg FSM sampled nego_en=0 and parked in ST_BYPASS (state 6). Adding the
+    plumbing (parity with cocotb/tidelink_top_pair/Makefile) makes
+    `BYPASS_AUTONEG=0` engage the force exactly as on the reference harness.
 
-    The same RTL fix IS proven autonomous on the V2 RTL via
-    cocotb/tidelink_top_pair/test_30_autonomous_fc_handoff.py run with
-    TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 (compiles flists/tidelink_fpga_v2.flist
-    = the full V2 deskew stack): bilateral FCSM=4 cr=crack=1 + doorbell
-    crosses, zero pokes. And the V2 deskew DATA path is proven by
-    test_v2_pair_data test_02/03 (byte-exact M->S + S->M). This test is kept
-    (skipped) as the eventual single-harness autonomous+deskew+skew proof once
-    the v2-tb force is repaired."""
+    Run:
+        cd cocotb/tidelink_top_pair_v2
+        BYPASS_AUTONEG=0 make MODULE=test_v2_autonomous_fc_handoff
+
+    Same RTL is proven autonomous on the V2 RTL via
+    cocotb/tidelink_top_pair/test_30_autonomous_fc_handoff.py (BYPASS_AUTONEG=0,
+    TIDELINK_PHY_V2=1) and the V2 deskew DATA path by test_v2_pair_data
+    test_02/03. This test is the single-harness autonomous+deskew proof."""
     log = dut._log
     log.info("Phase 7b (V2) — autonomous FC data-mode handoff, no host pokes")
 

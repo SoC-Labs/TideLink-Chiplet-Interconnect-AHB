@@ -190,10 +190,21 @@ R_FIFO_STATUS=0x44032010   # [1]=overrun(sticky) [2]=underrun(sticky) [3]=master
 # ----- role / autoneg (Region 4) ----------------------------------------------
 R_ROLE_CFG=0x44032080          # [0]=role [1]=role_lock (W1S, POR-only clear)
 R_ROLE_STATUS=0x44032084       # [0]=effective_role [1]=locked [2]=i2c_busy [3]=i2c_addressed
-R_NEGO_CFG=0x44032090          # [0]=nego_en [5]=force_lock [6]=mask_hs_auto_en (POR 0x61)
+R_NEGO_CFG=0x44032090          # [0]=nego_en [5]=force_lock [6]=mask_hs_auto_en
+                               # POR IS 0x00000000 — *NOT* 0x61. Measured on silicon
+                               # 2026-07-09. A run that does not read this back after
+                               # arming is a NON-TEST: nego_en=0 => autonomy_armed=0 =>
+                               # training never starts and the winscan never leaves
+                               # WS_IDLE. The historical "die_a 42%" figure was exactly
+                               # this. ALWAYS use zp_arm(), which verifies.
 R_NEGO_STATUS=0x44032094       # [3:0]=state [4]=done [5]=err [6]=won [7]=lost
 R_NEGO_TRAIN_CFG=0x4403210C    # [0]=train_auto_en [23:20]=MIN_LOCK_DWELLS
 R_NEGO_TRAIN_STATUS=0x44032110 # [0]=ok [1]=fail [2]=in_prog [7:4]=train_state
+# OBS_MASK_HS (regionC slot 5) — the autoneg role-lock chain. Live in every V2
+# bitstream; never captured by the soak until 2026-07-09.
+R_OBS_MASK_HS=0x44032194       # [22:21]=mask_hs_result [20]=gate_open [19]=match
+                               # [18]=nego_lock_pending [17]=local_fail [16]=local_match
+                               # [15:8]=peer_rx_mask [7:0]=peer_tx_mask
 
 # ----- PHY / SYNC / winscan obs (Regions 8-D) ---------------------------------
 R_OBS=0x44032108        # SWI_LANE_STATUS (alias of R_FCSM): lk[7:0] flt[15:8]
@@ -233,9 +244,37 @@ rd_a(){ local v; v=$(a rd "$1"); sleep "$TD_THROTTLE"; echo "$v"; }   # throttle
 rd_d(){ local v; v=$("$1" rd "$2"); sleep "$TD_THROTTLE"; echo "$v"; } # throttled read, either die
 reanchored_d(){ echo $(( $("$1" rd $R_REANCHORED) & 1 )); }
 gp1_rx_d(){ "$1" rd "$(printf 0x%x $(( GP1_RX + ${2:-0}*4 )))"; }      # GP1 RX word idx, either die
-# arm one die for zero-poke autonomy: NEGO_CFG + NEGO_TRAIN_CFG, nothing else
-zp_arm(){ "$1" wr $R_NEGO_CFG $ZP_NEGO_CFG_ARM >/dev/null
-          "$1" wr $R_NEGO_TRAIN_CFG $ZP_NEGO_TRAIN_CFG_ARM >/dev/null; }
+# arm one die for zero-poke autonomy: NEGO_CFG + NEGO_TRAIN_CFG, nothing else.
+# READS BOTH BACK. NEGO_CFG's POR is 0x00, so an arm that silently fails leaves
+# nego_en=0 => autonomy_armed=0 => the winscan never kicks and every per-episode
+# counter reads 0. That is indistinguishable, at 0x21B8, from a genuine NODONE —
+# which is how a whole campaign of "die_a 42%" runs turned out to be NON-TESTS.
+# Returns 0 armed / 1 arm FAILED (caller MUST treat 1 as "cycle void", not FAIL).
+zp_arm(){ local d="$1" cfg trn
+  "$d" wr $R_NEGO_CFG $ZP_NEGO_CFG_ARM >/dev/null
+  "$d" wr $R_NEGO_TRAIN_CFG $ZP_NEGO_TRAIN_CFG_ARM >/dev/null
+  cfg=$("$d" rd $R_NEGO_CFG 2>/dev/null) || { echo "zp_arm($d): NEGO_CFG readback BUS ERROR" >&2; return 1; }
+  trn=$("$d" rd $R_NEGO_TRAIN_CFG 2>/dev/null) || { echo "zp_arm($d): TRAIN_CFG readback BUS ERROR" >&2; return 1; }
+  if [ $(( cfg & 1 )) -ne 1 ]; then
+    echo "zp_arm($d): NON-TEST — NEGO_CFG=$(printf 0x%08x $cfg), nego_en=0 (POR is 0x00; the write did not stick)" >&2
+    return 1
+  fi
+  if [ $(( trn & 1 )) -ne 1 ]; then
+    echo "zp_arm($d): NON-TEST — NEGO_TRAIN_CFG=$(printf 0x%08x $trn), train_auto_en=0" >&2
+    return 1
+  fi
+  return 0; }
+# the autoneg role-lock chain on one die: role_locked, and why (or why not).
+maskhs_d(){ "$1" rd $R_OBS_MASK_HS; }
+rolelocked_d(){ echo $(( ( $("$1" rd $R_ROLE_STATUS) >> 1 ) & 1 )); }
+# autonomy_armed = nego_en & role_locked & train_auto_en — the exact RTL term
+# (axi_chiplet_controller.sv:1143) that gates BOTH ws_kick_evt and the FIX-1
+# reanchor-catchup. If this is 0 the winscan CANNOT run; 0x21B8 will read
+# 0x57000000 and mean nothing.
+armed_d(){ local d="$1"
+  echo $(( ( $("$d" rd $R_NEGO_CFG) & 1 ) \
+         & $(rolelocked_d "$d") \
+         & ( $("$d" rd $R_NEGO_TRAIN_CFG) & 1 ) )); }
 # send the standard 3-word test packet from one die (a = A->B, b = B->A)
 zp_txburst(){ "$1" txburst "${ZP_TX_WORDS[@]}" >/dev/null 2>&1; }
 # hex-print a register read (0 on unreachable/empty)

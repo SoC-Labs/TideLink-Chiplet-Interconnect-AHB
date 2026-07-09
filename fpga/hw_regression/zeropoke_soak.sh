@@ -80,15 +80,27 @@ zps_order(){ # cycle index -> arm order (the soak's proven rotation)
   elif [ $(( $1 % 2 )) -eq 1 ]; then echo a
   else echo b; fi; }
 
-zps_arm(){ case "$1" in
-  a)    zp_arm a; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm b;;
-  b)    zp_arm b; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm a;;
-  both) zp_arm a; zp_arm b;;
+# Arm, VERIFYING each die actually took the arm. zp_arm returns 1 if NEGO_CFG
+# reads back with nego_en=0 (its POR value is 0x00) or the bus is dead. A cycle
+# in which either die failed to arm is a NON-TEST and must be scored VOID, never
+# NODONE — the two are indistinguishable at 0x21B8 (both read 0x57000000) and
+# conflating them is what produced the bogus "die_a 42%" statistic.
+ZPS_ARM_OK=1
+zps_arm(){ ZPS_ARM_OK=1
+  case "$1" in
+  a)    zp_arm a || ZPS_ARM_OK=0; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm b || ZPS_ARM_OK=0;;
+  b)    zp_arm b || ZPS_ARM_OK=0; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm a || ZPS_ARM_OK=0;;
+  both) zp_arm a || ZPS_ARM_OK=0; zp_arm b || ZPS_ARM_OK=0;;
 esac; }
 
-# classify one die's terminal state: $1=ws(0x21B8) $2=rea $3=done-ever(0/1)
-zps_classify(){ local ws=$1 rea=$2 done_ever=$3
+# classify one die's terminal state: $1=ws(0x21B8) $2=rea $3=done-ever $4=armed(0/1)
+# `armed` is autonomy_armed = nego_en & role_locked & train_auto_en. With armed=0
+# the winscan FSM is gated off entirely (it gates ws_kick_evt AND the FIX-1
+# catchup), so ws reads 0x57000000 with every per-episode counter at 0. That is
+# NOT a winscan failure and must never be scored as one.
+zps_classify(){ local ws=$1 rea=$2 done_ever=$3 armed=${4:-1}
   if [ $(( (ws>>24)&0xff )) -ne $(( 0x57 )) ]; then echo STALEIP
+  elif [ "$armed" -eq 0 ]; then echo UNARMED
   elif [ "$done_ever" -eq 0 ]; then echo NODONE
   elif [ $(( (ws>>2)&1 )) -eq 0 ] && [ "$rea" -eq 1 ]; then echo OK
   elif [ "$rea" -eq 1 ]; then echo LATE
@@ -96,7 +108,7 @@ zps_classify(){ local ws=$1 rea=$2 done_ever=$3
 
 if [ "$STATS" = 1 ]; then
   CSV="$OUTDIR/stats.csv"
-  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s" > "$CSV"
+  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s,autonomy_armed,obs_mask_hs" > "$CSV"
   echo "======== zeropoke_soak STATS mode N=$N stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
   echo "  scoring through step (f) only; csv: $CSV"
   declare -A HIST_A HIST_B OUT_CNT_A OUT_CNT_B
@@ -121,11 +133,17 @@ if [ "$STATS" = 1 ]; then
     wsa=$(( $(rd_d a $R_WINSCAN_OBS) )); wsb=$(( $(rd_d b $R_WINSCAN_OBS) ))
     ra=$(reanchored_d a); rb=$(reanchored_d b)
     aa=$(( (wsa>>11)&7 )); ab=$(( (wsb>>11)&7 ))
-    oa=$(zps_classify "$wsa" "$ra" "$da"); ob=$(zps_classify "$wsb" "$rb" "$db")
-    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d t_a=%ss t_b=%ss\n' \
-      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" "$ta" "$tb"
-    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta" >> "$CSV"
-    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb" >> "$CSV"
+    # autonomy_armed + the autoneg role-lock chain. Without these, a 0x57000000
+    # obs word is uninterpretable: an unarmed die and a genuinely stuck winscan
+    # look identical. Capture them BEFORE classifying.
+    arma=$(armed_d a); armb=$(armed_d b)
+    mha=$(( $(maskhs_d a) )); mhb=$(( $(maskhs_d b) ))
+    oa=$(zps_classify "$wsa" "$ra" "$da" "$arma"); ob=$(zps_classify "$wsb" "$rb" "$db" "$armb")
+    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d armed_a=%d armed_b=%d lockpend_a=%d lockpend_b=%d t_a=%ss t_b=%ss\n' \
+      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" \
+      "$arma" "$armb" $(( (mha>>18)&1 )) $(( (mhb>>18)&1 )) "$ta" "$tb"
+    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta,$arma,$(printf 0x%08x "$mha")" >> "$CSV"
+    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb,$armb,$(printf 0x%08x "$mhb")" >> "$CSV"
     HIST_A[$aa]=$(( ${HIST_A[$aa]:-0} + 1 )); HIST_B[$ab]=$(( ${HIST_B[$ab]:-0} + 1 ))
     OUT_CNT_A[$oa]=$(( ${OUT_CNT_A[$oa]:-0} + 1 )); OUT_CNT_B[$ob]=$(( ${OUT_CNT_B[$ob]:-0} + 1 ))
     [ "$oa" = OK ] && A_OK=$((A_OK+1)); [ "$ob" = OK ] && B_OK=$((B_OK+1))

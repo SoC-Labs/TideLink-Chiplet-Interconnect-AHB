@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -113,10 +113,69 @@ else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-oddr-flip-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-loopback)
 XILINX_PART     := xc7z020clg400-1
-else ifeq ($(TARGET),pynq-z2-loopback-ext)
-XILINX_PART     := xc7z020clg400-1
+# -----------------------------------------------------------------------------
+# Kria KR260 (Zynq UltraScale+, K26 SOM). 2026-07-09 port of the Z2 GPIO-PHY
+# chiplet link onto the KR260 Raspberry-Pi 40-pin header. Four targets = the
+# die_a / die_b flip pair x PTP on/off:
+#   kr260-pair-ptp        die_a, PHC/PTP hardware clock IN   (FPGA_TIDELINK_PTP=1)
+#   kr260-pair-nptp       die_a, PHC/PTP tied off            (FPGA_TIDELINK_PTP=0)
+#   kr260-pair-flip-ptp   die_b (mirror pinout), PTP IN
+#   kr260-pair-flip-nptp  die_b (mirror pinout), PTP tied off
+# PS/DDR/MIO come from the KR260 board preset (needs BOARD_PART set); PL clock,
+# HPM0/HPM1_FPD masters and pl_ps_irq0 are overridden in the BD tcl.
+else ifeq ($(TARGET),kr260-pair-ptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-pair-nptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
+else ifeq ($(TARGET),kr260-pair-flip-ptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-pair-flip-nptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
+endif
+
+# Defaults for the non-KR260 targets: no board part, PTP inclusion left to the
+# per-target BD tcl (Z2 -all targets tie PHC off, mmcmbypass-oddr-all keeps it).
+FPGA_BOARD_PART   ?=
+FPGA_TIDELINK_PTP ?=
+
+#-----------------------------------------------------------------------------
+# EPOCH_ANCHOR=1 — build the EPOCH whole-word deskew anchor variant.
+#
+# Selects TL_EPOCH_ANCHOR_EN in deps/tidelink-phy/rtl/wav/WavD2DGpio.v via a
+# run-level -verilog_define (build_design.tcl). Unset = the shipped config,
+# bit-identical. Intended for an on-silicon A/B against the default build:
+#
+#   make -C fpga build_design TARGET=kr260-pair-nptp      EPOCH_ANCHOR=1
+#   make -C fpga build_design TARGET=kr260-pair-flip-nptp EPOCH_ANCHOR=1
+#   -> imp/fpga/output/kr260-pair-nptp-anchor/tidelink.bit
+#
+# The outputs are suffixed so the two variants never overwrite each other.
+#
+# The IP CACHE gets its own directory for anchor builds. This is not paranoia:
+# the packaged IP *sources* are byte-identical between the two variants (the
+# selector is an `ifdef inside the source), and only the synth-run
+# -verilog_define differs. Vivado keys config_ip_cache on IP config + part +
+# tool, NOT on the run's MORE_OPTIONS — so a shared cache would happily return
+# the anchor-OFF OOC netlist for an anchor-ON build, silently. Same class of
+# trap as the cocotb SIM_BUILD collision (see cocotb/tidelink_top_pair_v2).
+#-----------------------------------------------------------------------------
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+TIDELINK_EPOCH_ANCHOR := 1
+export TIDELINK_EPOCH_ANCHOR
+ANCHOR_SUFFIX := -anchor
+else
+ANCHOR_SUFFIX :=
 endif
 
 # Build output directories
@@ -124,8 +183,8 @@ BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
 RUN_DIR         := $(BUILD_DIR)/run
-PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
-OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
+PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)$(ANCHOR_SUFFIX)
+OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)$(ANCHOR_SUFFIX)
 
 # PHC sibling repo (sourced by package_phc_ip; defaults assume the parallel
 # SoC Labs checkout, override with PHC_REPO_DIR for CI / alternate layouts).
@@ -134,7 +193,7 @@ PHC_REPO_DIR    ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb
 # -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
 # concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
 # or logs — the prerequisite for the farm flow (scripts/build_farm.sh).
-BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)
+BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)$(ANCHOR_SUFFIX)
 
 # IP metadata
 FPGA_VENDOR     := soclabs.org
@@ -146,7 +205,12 @@ FPGA_NUM_JOBS   ?= 8
 # builds so unchanged static Xilinx OOC IP is fetched, not re-synthesised. Outside the
 # create_project -force project dir; under imp/ (already gitignored). Override to share
 # one cache across farm hosts. Empty = disabled (old behaviour).
-FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache)
+#
+# $(ANCHOR_SUFFIX) is part of the cache PATH because Vivado keys config_ip_cache on
+# IP config + part + tool — NOT on the synth run's -verilog_define. The anchor-on and
+# anchor-off builds have byte-identical packaged IP sources, so they would collide in
+# one cache and the anchor-on build would silently link the anchor-OFF OOC netlist.
+FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache$(ANCHOR_SUFFIX))
 
 # Vivado-native remote-host farming (launch_runs -host). Empty = local build.
 # "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".
@@ -240,6 +304,8 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
 	export FPGA_IP_CACHE_DIR=$(FPGA_IP_CACHE_DIR) && \
+	export FPGA_BOARD_PART='$(FPGA_BOARD_PART)' && \
+	export FPGA_TIDELINK_PTP='$(FPGA_TIDELINK_PTP)' && \
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \
@@ -303,6 +369,33 @@ BITSTREAM       := $(OUTPUT_DIR)/tidelink.bit
 BITBIN          := $(OUTPUT_DIR)/tidelink.bin
 HWH             := $(OUTPUT_DIR)/tidelink.hwh
 BIT2BIN         := $(FPGA_DIR)/scripts/bit2bin.py
+
+#-----------------------------------------------------------------------------
+# Deploy style — keyed off TARGET.
+#
+#   fpga_manager (Zynq-7000 / Pynq-Z2): bit2bin.py strips the .bit header and
+#       byte-swaps for the *zynq-fpga* driver (equivalent to
+#       `bootgen -arch zynq -process_bitstream bin`), then the .bin is dropped
+#       into /lib/firmware and poked at /sys/class/fpga_manager/fpga0/firmware.
+#
+#   pynq_overlay (Zynq UltraScale+ / KR260 on the PYNQ Kria image): PYNQ's
+#       Overlay() loads the .bit directly (it drives the zynqmp fpga_manager
+#       itself) using the sibling .hwh. There is NO bit2bin step and NO
+#       /lib/firmware dance.
+#
+# bit2bin.py MUST NOT be used on ZynqMP: its byte-swap is the zynq-fpga
+# driver's format, not the zynqmp one. Feeding a KR260 a bit2bin .bin silently
+# produces a bad PL load. Hence the artefact list is style-dependent.
+#-----------------------------------------------------------------------------
+ifneq ($(filter kr260-%,$(TARGET)),)
+DEPLOY_STYLE     := pynq_overlay
+TIDELINK_SOC     := kr260
+DEPLOY_ARTEFACTS := $(BITSTREAM) $(HWH)
+else
+DEPLOY_STYLE     := fpga_manager
+TIDELINK_SOC     := z2
+DEPLOY_ARTEFACTS := $(BITSTREAM) $(BITBIN) $(HWH)
+endif
 
 # FPGA board selection — preferred path is via fpgahub:
 #   BOARD=fpga1          explicit board name in the local fpgahub config
@@ -461,25 +554,48 @@ provision_pynq_peer_keys:
 # physical cross-cable wires up correctly. fpgahub renders this via:
 #   command = ["make", "-C", "fpga", "deploy_pair_role",
 #              "ROLE={pair.local.role}", ...]
+#
+#   SOC=z2     (default) -> pynq-z2-pair-all / -flip-all      [PTP ignored]
+#   SOC=kr260            -> kr260-pair-{,flip-}{ptp,nptp}, selected by PTP=1|0
+#
+#   make -C fpga deploy_pair_role ROLE=die_a SOC=kr260 PTP=1 BOARD=kria1
+SOC ?= z2
+PTP ?= 0
 .PHONY: deploy_pair_role
 deploy_pair_role:
-	@case "$(ROLE)" in \
-	    die_a) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-all      \
-	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
-	    die_b) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-flip-all \
-	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
-	    *)     echo "ERROR: deploy_pair_role: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
-	esac
+	@set -e; \
+	case "$(SOC)" in \
+	  z2) case "$(ROLE)" in \
+	        die_a) t=pynq-z2-pair-all ;; \
+	        die_b) t=pynq-z2-pair-flip-all ;; \
+	        *) echo "ERROR: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	      esac ;; \
+	  kr260) case "$(PTP)" in \
+	           1) sfx=ptp ;; 0) sfx=nptp ;; \
+	           *) echo "ERROR: PTP must be 0 or 1 (got '$(PTP)')" >&2; exit 2 ;; \
+	         esac; \
+	         case "$(ROLE)" in \
+	           die_a) t=kr260-pair-$$sfx ;; \
+	           die_b) t=kr260-pair-flip-$$sfx ;; \
+	           *) echo "ERROR: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	         esac ;; \
+	  *) echo "ERROR: SOC must be z2 or kr260 (got '$(SOC)')" >&2; exit 2 ;; \
+	esac; \
+	echo "deploy_pair_role: SOC=$(SOC) ROLE=$(ROLE) PTP=$(PTP) -> TARGET=$$t"; \
+	$(MAKE) -C $(FPGA_DIR) deploy TARGET=$$t \
+	    PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)"
 
-deploy: $(BITSTREAM) $(BITBIN) $(HWH)
+deploy: $(DEPLOY_ARTEFACTS)
 	@if [ -z "$(PYNQ_HOST)" ]; then \
 	    echo "ERROR: PYNQ_HOST is empty. Set BOARD=<name> (fpgahub lookup) or PYNQ_HOST=user@host." >&2; \
 	    exit 2; \
 	fi
-	@echo "Copying overlay to $(PYNQ_HOST)$(if $(PYNQ_PROXY), via $(PYNQ_PROXY),)..."
+	@echo "Copying overlay to $(PYNQ_HOST)$(if $(PYNQ_PROXY), via $(PYNQ_PROXY),) [style=$(DEPLOY_STYLE) soc=$(TIDELINK_SOC)]..."
 	@ssh $(SSH_OPTS) $(PYNQ_HOST) "mkdir -p $(PYNQ_DEST)"
 	@scp $(SCP_OPTS) $(BITSTREAM)             $(PYNQ_HOST):$(PYNQ_DEST)/
-	@scp $(SCP_OPTS) $(BITBIN)                $(PYNQ_HOST):$(PYNQ_DEST)/
+	@if [ "$(DEPLOY_STYLE)" = "fpga_manager" ]; then \
+	    scp $(SCP_OPTS) $(BITBIN)             $(PYNQ_HOST):$(PYNQ_DEST)/ ; \
+	fi
 	@scp $(SCP_OPTS) $(HWH)                   $(PYNQ_HOST):$(PYNQ_DEST)/
 	@# Drop any leftover pynq/ from earlier deploys — it would shadow the
 	@# system PYNQ framework's `pynq` package on sys.path and break
@@ -498,14 +614,26 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@# imports `from tidelink.regs import ...`. Place it at $(PYNQ_DEST)/tidelink/
 	@# so cwd-based resolution finds both packages.
 	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/python/tidelink $(PYNQ_HOST):$(PYNQ_DEST)/
+ifeq ($(DEPLOY_STYLE),fpga_manager)
 	@echo "Installing .bin into /lib/firmware/ and loading via fpga_manager..."
 	@ssh $(SSH_OPTS) $(PYNQ_HOST) "echo $(PYNQ_PASSWORD) | sudo -S cp $(PYNQ_DEST)/tidelink.bin /lib/firmware/ && \
 	    echo $(PYNQ_PASSWORD) | sudo -S bash -c \"echo tidelink.bin > /sys/class/fpga_manager/fpga0/firmware\" && \
 	    cat /sys/class/fpga_manager/fpga0/state"
+else
+	@# PYNQ Overlay() resolves the .hwh by sibling basename (tidelink.bit ->
+	@# tidelink.hwh) and TidelinkOverlay() defaults its bitfile to the copy
+	@# living NEXT TO pynq_host/overlay.py. Stage both into pynq_host/ so the
+	@# zero-argument TidelinkOverlay() works, and keep the $(PYNQ_DEST) copies
+	@# for anything passing an explicit path.
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "cp $(PYNQ_DEST)/tidelink.bit $(PYNQ_DEST)/tidelink.hwh $(PYNQ_DEST)/pynq_host/"
+	@echo "Loading PL via PYNQ Overlay (ZynqMP; no bit2bin / no /lib/firmware)..."
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "cd $(PYNQ_DEST) && echo $(PYNQ_PASSWORD) | sudo -S -E env TIDELINK_SOC=$(TIDELINK_SOC) \
+	    python3 -c \"from pynq import Overlay; ol = Overlay('$(PYNQ_DEST)/pynq_host/tidelink.bit'); print('PL loaded:', ol.bitfile_name); print('IPs:', len(getattr(ol, 'ip_dict', {})))\""
+endif
 	@echo ""
-	@echo "Deployed and loaded. To run stress test from PYNQ:"
+	@echo "Deployed and loaded (style=$(DEPLOY_STYLE)). To run stress test from the board:"
 	@echo "  ssh $(SSH_OPTS) $(PYNQ_HOST)"
-	@echo "  cd $(PYNQ_DEST) && sudo python3 -m stress.runner --budget 300"
+	@echo "  cd $(PYNQ_DEST) && sudo TIDELINK_SOC=$(TIDELINK_SOC) python3 -m pynq_host.stress.runner --budget 300"
 
 #-----------------------------------------------------------------------------
 # fpgahub-driven variants — run the same targets through the manifest so
@@ -585,7 +713,6 @@ help:
 	@echo "  pynq-z2-pair       Digilent Pynq-Z2 — paired         (xc7z020clg400-1)"
 	@echo "  pynq-z2-pair-flip  Digilent Pynq-Z2 — paired (mirror)(xc7z020clg400-1)"
 	@echo "  pynq-z2-loopback     Digilent Pynq-Z2 — internal TX→RX  (xc7z020clg400-1)"
-	@echo "  pynq-z2-loopback-ext Digilent Pynq-Z2 — external jumper (xc7z020clg400-1)"
 	@echo "  mps3                 MPS3 / Arm baseboard               (xcku115-flvb1760-1-c)"
 	@echo ""
 	@echo "Build targets:"

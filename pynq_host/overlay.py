@@ -31,23 +31,38 @@
 import os
 from pynq import Overlay, MMIO
 
-# Block design address map — keep in sync with tidelink_design.tcl
-AHB_SUB_BASE  = 0x4000_0000
+# Block design address map — keep in sync with tidelink_design.tcl.
+#
+# SoC selection via env TIDELINK_SOC (default "z2"). On the KR260 (Zynq
+# UltraScale+, MPSoC) 0x0..0x7FFF_FFFF is DDR, so every aperture relocates into
+# the PL windows: control -> 0x8000_0000 (HPM0_LPD; top nibble 0x4->0x8), data
+# -> 0xA000_0000 (HPM0_FPD; top byte 0x84->0xA4). All low bits are preserved, so
+# the KR260 map is a pure top-nibble/top-byte swap of the Z2 map. See
+# fpga/docs/KR260_PORT.md and fpga/targets/kr260-pair-*/tidelink_design.tcl.
+_SOC = os.environ.get("TIDELINK_SOC", "z2").lower()
+
+if _SOC in ("kr260", "kria", "mpsoc", "zynqmp", "kv260"):
+    AHB_SUB_BASE  = 0x8000_0000   # was 0x4000_0000
+    AHB_TX_BASE   = 0xA400_0000   # was 0x8400_0000 (GP1-split) / data plane
+    AHB_FIFO_BASE = 0xA401_0000   # was 0x8401_0000
+    AHB_PTP_BASE  = 0x8402_0000   # was 0x4402_0000
+    APB_BASE      = 0x8403_0000   # was 0x4403_0000
+    STRAP_BASE    = 0x8404_0000   # was 0x4404_0000
+else:                             # z2 (default) — unchanged
+    AHB_SUB_BASE  = 0x4000_0000
+    AHB_TX_BASE   = 0x4400_0000
+    AHB_FIFO_BASE = 0x4401_0000
+    AHB_PTP_BASE  = 0x4402_0000
+    APB_BASE      = 0x4403_0000
+    STRAP_BASE    = 0x4404_0000
+
+# Aperture RANGES are SoC-independent (offset layout inside each aperture is
+# identical; only the base moves).
 AHB_SUB_RANGE = 0x1000_0000  # 256 MB
-
-AHB_TX_BASE   = 0x4400_0000
 AHB_TX_RANGE  = 0x0001_0000  # 64 KB
-
-AHB_FIFO_BASE = 0x4401_0000
 AHB_FIFO_RANGE= 0x0001_0000  # 64 KB
-
-AHB_PTP_BASE  = 0x4402_0000
 AHB_PTP_RANGE = 0x0000_1000  # 4 KB
-
-APB_BASE      = 0x4403_0000
 APB_RANGE     = 0x0000_8000  # 32 KB
-
-STRAP_BASE    = 0x4404_0000
 STRAP_RANGE   = 0x0000_1000  # 4 KB
 
 # Xilinx AXI GPIO register offsets

@@ -200,6 +200,29 @@ create_project tidelink_project $project_dir -part $part -force
 # SoC Labs 2026-06-21 (turnaround): let synth/impl use more host threads (QoR-neutral).
 set_param general.maxThreads 8
 
+# Optional BOARD_PART (2026-07-09, KR260 port). Zynq UltraScale+ targets (Kria
+# KR260, xck26) drive the PS/DDR/MIO configuration from the board preset, which
+# requires the board_part set on the project before the BD is sourced. The Z2
+# targets set no FPGA_BOARD_PART, so this is a no-op there (bare-part flow
+# unchanged). If a board part is named but not installed in this Vivado, fail
+# loudly here rather than let the BD silently mis-preset the PS.
+if { [info exists env(FPGA_BOARD_PART)] && $env(FPGA_BOARD_PART) ne "" } {
+    set _bp $env(FPGA_BOARD_PART)
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        # Board files ship in Vivado's XilinxBoardStore; refresh the catalog once
+        # in case they were installed after this Vivado's board cache was built.
+        catch { xhub::refresh_catalog [xhub::get_xstores] }
+        catch { update_board_part_repos }
+    }
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        puts "ERROR: FPGA_BOARD_PART='$_bp' not found in this Vivado's board catalog."
+        puts "       Install the Kria board files (XilinxBoardStore) or fix the id."
+        exit 1
+    }
+    set_property BOARD_PART $_bp [current_project]
+    puts "BOARD_PART: set to $_bp"
+}
+
 # STEP 2: Add IP repositories (tidelink + optional PHC)
 if { $phc_ip_repo ne "" } {
     set_property ip_repo_paths [list $ip_repo $phc_ip_repo] [current_project]
@@ -363,16 +386,72 @@ tl_verify_packaged_ip $ip_repo
 
 # STEP 8: Synthesis
 puts "Starting synthesis..."
-# S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 must reach the IP's OOC synth.
-# Fileset verilog_define does NOT bake into packaged IP (proven 2026-05-19,
-# see package_tidelink_ip.tcl) — inject at the synth-run level instead, on
-# every synthesis run (top + OOC IP runs).
-if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
-    foreach _r [get_runs -filter {IS_SYNTHESIS}] {
-        set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
-            -value {-verilog_define TIDELINK_PHY_V2} -objects $_r
-        puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
+# S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 injected at the synth-run level
+# (a *fileset* verilog_define does NOT bake into a packaged IP — proven
+# 2026-05-19, see package_tidelink_ip.tcl).
+#
+# !! MEASURED 2026-07-09 — READ BEFORE TRUSTING THE COMMENT THIS REPLACES !!
+# The old comment claimed this reaches "top + OOC IP runs". IT DOES NOT. At this
+# point in the script the ONLY synthesis run that exists is synth_1; Vivado
+# auto-creates the packaged IP's out-of-context run
+# (tidelink_design_tidelink_0_0_synth_1) later, inside launch_runs. Verified on a
+# real build: that OOC runme.log shows
+#     synth_design -top tidelink_design_tidelink_0_0 ... -mode out_of_context
+# with ZERO -verilog_define, while synth_1's shows two. WavD2DGpio.v and
+# axi_chiplet_controller.sv both compile in that OOC run.
+#
+# Consequence: the three `ifdef TIDELINK_PHY_V2 blocks inside the packaged IP
+# (src/rtl/local_overrides/axi_chiplet_controller.sv) have been DEAD in every
+# FPGA bitstream. The shipped builds are "V2" because the flist packages the V2
+# SOURCES (deps/tidelink-phy), not because the define did anything.
+#
+# That is left ALONE here on purpose. Making TIDELINK_PHY_V2 reach the OOC run
+# would switch on three previously-dead code blocks in a silicon-proven
+# configuration — a behaviour change that needs its own validation, not a
+# drive-by fix. So PHY_V2 keeps its historical (top-only) scope.
+#
+# TIDELINK_EPOCH_ANCHOR is different: its `ifdef lives in WavD2DGpio.v, INSIDE
+# the packaged IP, so it is worthless unless it reaches the OOC run. For anchor
+# builds only, we create the BD's IP runs up-front (create_ip_run) so they exist
+# and can be targeted. Blast radius: anchor builds only; the default path below
+# is byte-for-byte what it always was.
+#
+# Defines MUST be accumulated into ONE MORE_OPTIONS string: set_property
+# REPLACES the property, so a second independent set_property would silently
+# drop the first define — a silent-V1 relapse via a different door.
+set _epoch_anchor 0
+if { [info exists ::env(TIDELINK_EPOCH_ANCHOR)] && $::env(TIDELINK_EPOCH_ANCHOR) == 1 } {
+    set _epoch_anchor 1
+}
+
+# Anchor builds: materialise the OOC IP runs NOW so the loop below can see them.
+if { $_epoch_anchor } {
+    set _bd_file [get_files ${design_name}.bd]
+    if { [catch { export_ip_user_files -of_objects $_bd_file -no_script -sync -force -quiet } _e] } {
+        puts "WARNING: export_ip_user_files: $_e"
     }
+    if { [catch { create_ip_run [get_files -of_objects [get_fileset sources_1] $_bd_file] } _e] } {
+        puts "WARNING: create_ip_run: $_e"
+    }
+    puts "EPOCH_ANCHOR: IP runs materialised; synthesis runs now = [get_runs -filter {IS_SYNTHESIS}]"
+}
+
+set _phy_v2 0
+if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
+
+foreach _r [get_runs -filter {IS_SYNTHESIS}] {
+    set _defs {}
+    # PHY_V2: historical scope — top-level synthesis run only (see note above).
+    if { $_phy_v2 && [string equal $_r "synth_1"] } { lappend _defs TIDELINK_PHY_V2 }
+    # EPOCH_ANCHOR: must reach the packaged IP's OOC run, so apply to every run.
+    if { $_epoch_anchor }                          { lappend _defs TIDELINK_EPOCH_ANCHOR }
+    if { [llength $_defs] == 0 } { continue }
+    set _more_opts ""
+    foreach _d $_defs { append _more_opts "-verilog_define $_d " }
+    set _more_opts [string trim $_more_opts]
+    set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
+        -value $_more_opts -objects $_r
+    puts "verilog_define injected into run $_r : $_more_opts"
 }
 # Message-gate CHILD hooks (fixes the parent-session blindness). launch_runs
 # forks a child Vivado with its OWN msg-config + CW counters, so the parent's

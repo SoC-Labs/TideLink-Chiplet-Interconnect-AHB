@@ -716,14 +716,47 @@ module tidelink_top #(
                          apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
 
     // =========================================================================
-    // TideLink config APB mux: 2:1 APB mux
-    //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
-    //   Source 1: External unified APB port (CPU reads/writes)
+    // TideLink config APB mux: 2:1 TRANSACTION-ATOMIC arbiter
+    //   Source 0: FC adapter RX config (fc_cfg_apb_*, APB-native; peer
+    //             credit/doorbell/returner config writes)
+    //   Source 1: external unified APB port (PS CPU reads/writes to Region 8)
     //
-    // FC adapter has priority (credit/doorbell delivery is time-sensitive).
-    // External APB is stalled (pready=0) when FC adapter is active.
+    // The FC config port must NEVER preempt an external PS access that is already
+    // in its ACCESS phase.  On the Zynq-7000 M_AXI_GP there is NO bus timeout, so
+    // a preempted PS access hangs the CPU for ever (Bus error on every later
+    // access).  The FC adapter, by contrast, tolerates pready backpressure -- its
+    // RX FSM (tidelink_fc_adapter.sv:588-630) holds psel/paddr/pwdata stable and
+    // waits on fc_rx_cfg_pready, and tidelink_apb_regs acks combinationally
+    // (fifo/tidelink_apb_regs.sv:650, pready=1'b1), so a held-off FC waits at
+    // most 1-2 cycles.  So the PS wins any conflict; the FC waits.
+    //
+    //   ext_txn    : an external Region-8 access is in its ACCESS phase (psel &
+    //                penable) -- the exact window the old bare mux corrupted.
+    //   ext_lock_q : registered grant, latched from the first STALLED external
+    //                ACCESS cycle and held until the access is acked.  Belt &
+    //                braces: even if a slow Region-10/11 shim slave stretches the
+    //                access across many cycles, the FC can never slip in on an
+    //                intermediate edge.  The bare !ext_txn term already covers the
+    //                common single-cycle-ack case; the lock hardens the
+    //                multi-cycle stall.
+    // The FC config port is granted only when no external access owns or is
+    // waiting for the bus.  (The bounded-stall watchdog that makes the PS bus
+    // structurally hang-proof lives just below the tl_apb_* declarations, since
+    // it references tl_apb_pready.)
     // =========================================================================
-    wire fc_cfg_apb_active = fc_cfg_apb_psel;
+    wire ext_txn = apb_sel_tidelink && apb_penable;   // external in ACCESS phase
+
+    reg  ext_lock_q;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ext_lock_q <= 1'b0;
+        else if (ext_txn && !tl_regs_pready)          // access started, not yet acked
+            ext_lock_q <= 1'b1;
+        else if (tl_regs_pready)                       // access completed -> release
+            ext_lock_q <= 1'b0;
+    end
+
+    wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -734,6 +767,35 @@ module tidelink_top #(
     wire [SYS_DATA_W-1:0]  tl_apb_prdata;
     wire                    tl_apb_pready;
     wire                    tl_apb_pslverr;
+
+    // -------------------------------------------------------------------------
+    // BOUNDED EXTERNAL STALL (belt & braces).  The arbitration above stops the FC
+    // from starving the PS, but a genuinely stuck sub-slave (tl_apb_pready never
+    // rising) would still hang the PS -- and the Zynq has no timeout of its own.
+    // Saturate a counter on a stalled external ACCESS and, past the limit,
+    // complete it with pready+pslverr so the PS bus is STRUCTURALLY incapable of
+    // locking up.  ext_stall_err_q latches sticky (POR-cleared) for post-mortem
+    // (waveform/ILA-visible; not APB-mapped -- no free obs-reg slot, see the
+    // commit message).  EXT_STALL_LIMIT >> any legal ack (apb_regs acks in 1).
+    // -------------------------------------------------------------------------
+    localparam [10:0] EXT_STALL_LIMIT = 11'd1024;
+    reg  [10:0] ext_stall_ctr_q;
+    reg         ext_stall_err_q;
+    wire ext_stalled = ext_txn && !tl_apb_pready && !fc_cfg_apb_active;
+    wire ext_timeout = (ext_stall_ctr_q == EXT_STALL_LIMIT);
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            ext_stall_ctr_q <= 11'd0;
+            ext_stall_err_q <= 1'b0;
+        end else if (!ext_stalled) begin
+            ext_stall_ctr_q <= 11'd0;                   // idle or completing -> reset
+        end else if (ext_stall_ctr_q != EXT_STALL_LIMIT) begin
+            ext_stall_ctr_q <= ext_stall_ctr_q + 11'd1;
+            if (ext_stall_ctr_q == EXT_STALL_LIMIT - 11'd1)
+                ext_stall_err_q <= 1'b1;                // latch sticky as it fires
+        end
+    end
 
     assign tl_apb_paddr   = fc_cfg_apb_active ? fc_cfg_apb_paddr   : apb_paddr[APB_ADDR_W-1:0];
     assign tl_apb_psel    = fc_cfg_apb_active ? fc_cfg_apb_psel    : apb_sel_tidelink;
@@ -1089,14 +1151,23 @@ module tidelink_top #(
                                                  tidelink_internal_pslverr;
 `endif
 
-    // Route APB responses back to both sources
+    // Route APB responses back to both sources.  GATE the FC response: the FC is
+    // told 'ready' only in the cycles it actually owns the bus (fc_cfg_apb_active)
+    // -- otherwise it is held off (pready=0) and, per its RX FSM, cleanly stalls
+    // with its transaction intact.  prdata is passed through unconditionally: the
+    // FC issues writes only (fc_rx_cfg_pwrite=1) and ignores read data.
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
-    assign fc_cfg_apb_pready  = tl_apb_pready;
-    assign fc_cfg_apb_pslverr = tl_apb_pslverr;
+    assign fc_cfg_apb_pready  = fc_cfg_apb_active ? tl_apb_pready  : 1'b0;
+    assign fc_cfg_apb_pslverr = fc_cfg_apb_active ? tl_apb_pslverr : 1'b0;
 
+    // External (PS) response.  When the FC owns the bus the PS is stalled
+    // (pready=0) -- but the arbiter above guarantees fc_cfg_apb_active=0 whenever
+    // an external access is in its ACCESS phase, so the PS is never actually
+    // starved here.  ext_timeout force-completes a stuck-slave stall with a bus
+    // error so the PS can never hang (the Zynq has no timeout of its own).
     assign tl_regs_prdata  = fc_cfg_apb_active ? '0   : tl_apb_prdata;
-    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : tl_apb_pready;
-    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
+    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : (tl_apb_pready  | ext_timeout);
+    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : (tl_apb_pslverr | ext_timeout);
 
     // =========================================================================
     // Address translation wiring + pipeline register

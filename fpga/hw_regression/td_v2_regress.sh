@@ -56,6 +56,22 @@ trap '[ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && lease_release' EXIT
 [ "$DO_DEPLOY" = 1 ] && { echo "-- deploying bitstream under test --"; deploy_pair; sleep 1; }
 rcp
 
+# --- lane-health preflight gate --------------------------------------------
+# Runs right after bring-up config (rcp sets the lane mask + SYNC tol that the
+# preflight's Phase-0 sanity check reads — so it must follow rcp, not precede
+# deploy). Catches a physically DEAD RX lane on EITHER die (e.g. die_a pad_rx[7]
+# -> V7 remap, Hamming-6 at all 32 taps) BEFORE the suite sinks minutes into
+# bring-up rolls / the eye (phy_rx_clean) + data tests. A non-zero exit aborts
+# the suite with the VERDICT line naming the bad lane.
+#   SKIP_LANE_PREFLIGHT=1  bypass the gate entirely
+#   FULL_PREFLIGHT=1       run the full ~30s/die eye sweep (default: --quick, ~2s)
+if [ "${SKIP_LANE_PREFLIGHT:-0}" != 1 ]; then
+  PF=--quick; [ "${FULL_PREFLIGHT:-0}" = 1 ] && PF=""
+  echo "-- lane-health preflight ($([ -n "$PF" ] && echo quick || echo full)) --"
+  "$HERE/lane_health_preflight.sh" $PF || abort "lane-health preflight FAILED (dead/marginal RX lane — see VERDICT above)"
+  rcp   # preflight floods then idle-gates R8; re-assert the proven bring-up state
+fi
+
 # ===== test 01: link_up ====================================================
 t_link_up(){ wait_bilateral "$ROLLS" 16 || { TD_DETAIL+=("    FAIL no bilateral fcsm=4 in $ROLLS rolls"); TD_FAIL=$((TD_FAIL+1)); return 1; }
   assert_eq "fcsm die_a" 4 "$(fcsm a)"; assert_eq "fcsm die_b" 4 "$(fcsm b)"; }

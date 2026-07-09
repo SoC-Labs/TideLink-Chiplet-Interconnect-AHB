@@ -167,13 +167,37 @@ elif cmd == "txburst":
 elif cmd == "rxword":
     print("0x%08x" % rd(RXBASE))
 elif cmd == "rxn":
+    # -------------------------------------------------------------------------
+    # CORRECTED 2026-07-09. The comment that used to sit here claimed the RX
+    # window is "a 32-slot ADDRESSED ring, NOT a pop-FIFO". That is WRONG. It
+    # also contradicted this file's own docstring above ("rxn ... sequential
+    # pops"). Believing it produced a string of meaningless delivery counts.
+    #
+    # The RTL (src/rtl/fifo/tidelink_fifo_ctrl.sv) is unambiguous:
+    #   :141  translated_haddr = haddr + (hwrite ? write_ptr_r : read_ptr_r)
+    #         -> a read returns SRAM[(haddr + read_ptr)>>2]. The base MOVES;
+    #            offset i is NOT slot i.
+    #   :107  read_complete = valid & (haddr == read_target_addr_r) & ~hwrite
+    #   :118  on read_complete: read_ptr += (packet_delta<<2)   <- POP
+    #         -> reading the packet's LAST word pops the whole packet.
+    #   :201  a read of offset 0 latches the packet length from SRAM[31:20]
+    #         -> a drain MUST start at offset 0.
+    #   :184  a WRITE to offset 0 latches a NEW packet length -> writing zeros
+    #         to "clear" the window starts a bogus packet and walks write_ptr.
+    #
+    # Correct usage: `drain` (below). Never random-access, never write to RXBASE.
+    # Credit-instrumented version: pynq_host/scripts/tlfifo.py
+    # -------------------------------------------------------------------------
     n = int(sys.argv[2])
-    # RX aperture 0x84010000 is a 32-slot ADDRESSED ring: slot i is at
-    # RXBASE + i*4, NOT a pop-FIFO. Reading RXBASE repeatedly (the old code)
-    # only ever returned slot 0, faking a "word0-only" delivery when the whole
-    # ring had actually crossed (silicon-proven 2026-07-07: B->A 25/28). Read
-    # the addressed slots so the rotation-aware compare sees the real data.
     print(" ".join("0x%08x" % rd(RXBASE + i * 4) for i in range(n)))
+elif cmd == "drain":
+    # Pop exactly one packet, correctly: hdr + dest + payload.
+    hdr = rd(RXBASE)                  # arms the length latch (fifo_ctrl:201)
+    length = (hdr >> 20) & 0xFFF      # payload word count
+    total = length + 2                # hdr + dest + payload
+    words = [hdr] + [rd(RXBASE + i * 4) for i in range(1, total)]
+    # the read of offset (length+1)*4 == read_target fires the pop
+    print("len=%d %s" % (length, " ".join("0x%08x" % w for w in words)))
 elif cmd == "occ":
     print("credit_count=%d (0x%08x)" % (rd(CREDIT) & 0xffff, rd(CREDIT)))
 elif cmd == "status":

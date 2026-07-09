@@ -783,6 +783,12 @@ module tidelink_top #(
     // hclk = 4.687 MHz (213 ns). Bit[16] toggles ~35.8 Hz, bit[23] ~0.28 Hz, so
     // the [23:16] byte changes between two reads ~1 s apart iff the clock runs.
     // =========================================================================
+    // fch_active_r surfaced from the controller (it masks apb_pready there, so
+    // it cannot be optimised away). Declared HERE -- ahead of the dbg_emio_o
+    // pack that consumes it below -- because this file compiles under
+    // `default_nettype none, which forbids a forward-referenced implicit net.
+    wire obs_fch_active_w;
+
     (* dont_touch = "true" *) reg [23:0] dbg_hb_count;
     always @(posedge hclk) dbg_hb_count <= dbg_hb_count + 24'd1;
 
@@ -837,10 +843,6 @@ module tidelink_top #(
     // External APB is stalled (pready=0) when FC adapter is active.
     // =========================================================================
     wire fc_cfg_apb_active = fc_cfg_apb_psel;
-
-    // SoC Labs off-fabric EMIO instrument: fch_active_r surfaced from the
-    // controller (it masks apb_pready there, so it cannot be optimised away).
-    wire obs_fch_active_w;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;

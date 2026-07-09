@@ -366,20 +366,40 @@ module tidelink_top #(
     //                        reads ~1 s apart differ IFF hclk is alive. That is
     //                        what separates "clock stopped" from "reset asserted"
     //                        (a reset-driven counter would freeze at 0 in both).
-    //   [7]    fch_active_r      (masks apb_pready inside the controller)
-    //   [6]    fc_cfg_apb_psel   (FC adapter owns the tidelink APB)
-    //   [5]    apb_psel          (a PS access is in flight)
-    //   [4]    apb_pready        (the PL is acking it)
-    //   [3]    link_active
-    //   [2]    role_is_master_o  (proves the "master" premise)
-    //   [1]    role_locked_o     (wedge before vs after role lock)
-    //   [0]    d2d_reset_o       (the controller resetting itself)
+    //   [7]    sticky_hresetn_low       (hresetn EVER seen low, reset-less latch)
+    //   [6]    sticky_role_master_lost  (role_is_master EVER seen 0; on the SLAVE
+    //                                    die this reads 1 permanently -- only
+    //                                    meaningful on the MASTER)
+    //   [5]    sticky_apb_pslverr       (apb_pslverr EVER seen high)
+    //   [4]    obs_fch_active_w         (fch sequencer masks apb_pready in ctrlr)
+    //   [3]    fc_cfg_apb_psel          (FC adapter owns the tidelink APB)
+    //   [2]    role_is_master_o         (proves the "master" premise, live)
+    //   [1]    role_locked_o            (wedge before vs after role lock, live)
+    //   [0]    d2d_reset_o              (the controller resetting itself, live)
+    //
+    // WHY STICKY (reset-less) LATCHES. A transient glitch (a one-cycle pslverr,
+    // a momentary role_is_master dip during nego, a reset pulse) is invisible to
+    // a sampled read taken seconds later. Each sticky_* below is a set-only latch
+    // with NO reset term: it powers up to 0 at configuration and, once its event
+    // fires, stays 1. A reset-DRIVEN flop would instead freeze at 0 in BOTH the
+    // "clock stopped" and "reset asserted" cases, destroying the discrimination.
     //
     // The BD adds clk_wiz `locked` at EMIO[16] and proc_sys_reset
     // `peripheral_aresetn` (== hresetn) at EMIO[17]. These are read-only taps;
     // no datapath net is modified, so the proven manual recipe is untouched.
+    //
+    // ahb_tx_hresp is ALSO a prime suspect and IS visible at top level, but the
+    // 16-bit map above is full. It is latched into a fourth sticky and surfaced
+    // on the dedicated dbg_ahb_tx_hresp_sticky_o pin below (routed to a free EMIO
+    // bit in the BD) rather than displacing any bit of the [15:0] word.
     // --------------------------------------------------------------------------
     output wire              [15:0] dbg_emio_o,
+
+    // SoC Labs off-fabric EMIO instrument (2026-07-09): the 4th sticky. See the
+    // dbg_emio_o comment -- ahb_tx_hresp (a top-level output, line ~163) is a
+    // prime wedge suspect but the [15:0] map is full, so its reset-less sticky
+    // latch is carried out here and the BD routes it to EMIO[18].
+    output wire                     dbg_ahb_tx_hresp_sticky_o,
 
     // --------------------------------------------------------------------------
     // Chiplet Controller Role Selection
@@ -766,15 +786,47 @@ module tidelink_top #(
     (* dont_touch = "true" *) reg [23:0] dbg_hb_count;
     always @(posedge hclk) dbg_hb_count <= dbg_hb_count + 24'd1;
 
-    assign dbg_emio_o = { dbg_hb_count[23:16],   // [15:8] hclk heartbeat
-                          obs_fch_active_w,      // [7]  fch sequencer owns the APB
-                          fc_cfg_apb_psel,       // [6]  FC adapter owns the tidelink APB
-                          apb_psel,              // [5]  PS access in flight
-                          apb_pready,            // [4]  PL acking it
-                          link_active,           // [3]
-                          role_is_master_o,      // [2]  proves the master premise
-                          role_locked_o,         // [1]  before vs after role lock
-                          d2d_reset_o };         // [0]  controller self-reset
+    // -------------------------------------------------------------------------
+    // Reset-LESS sticky latches (set-only). NO reset term by design: a
+    // reset-driven flop would freeze at 0 in both "clock stopped" and "reset
+    // asserted", which are the two cases we must tell apart. Each powers up to
+    // INIT=0 at configuration and latches its event forever once seen. dont_touch
+    // keeps synthesis from folding the single-set flop into its driver.
+    // -------------------------------------------------------------------------
+    // hresetn EVER low. On silicon this discriminates a reset pulse from a bus
+    // that erred for some other reason.
+    (* dont_touch = "true" *) reg sticky_hresetn_low;
+    always @(posedge hclk) if (!hresetn) sticky_hresetn_low <= 1'b1;
+
+    // role_is_master EVER 0. NOTE: on the SLAVE (FLIP) die role_is_master is 0
+    // steady-state, so this reads 1 PERMANENTLY there and carries no information
+    // -- it is ONLY meaningful on the MASTER die, where a transient dip to slave
+    // during autonomous nego is exactly the LIVE-LEAD role-glitch we are hunting.
+    (* dont_touch = "true" *) reg sticky_role_master_lost;
+    always @(posedge hclk) if (!role_is_master_o) sticky_role_master_lost <= 1'b1;
+
+    // apb_pslverr EVER high -- catches a one-cycle PSLVERR that a later sampled
+    // read would miss. 0x018 external abort is a completed error response, so if
+    // the PS-facing APB ever emits one this latches it.
+    (* dont_touch = "true" *) reg sticky_apb_pslverr;
+    always @(posedge hclk) if (apb_pslverr) sticky_apb_pslverr <= 1'b1;
+
+    // FOURTH sticky: ahb_tx_hresp EVER high. ahb_tx_hresp is a top-level output
+    // (a prime wedge suspect); surfaced on its own pin because the [15:0] map is
+    // full. Same reset-less set-only construction.
+    (* dont_touch = "true" *) reg sticky_ahb_tx_hresp;
+    always @(posedge hclk) if (ahb_tx_hresp) sticky_ahb_tx_hresp <= 1'b1;
+    assign dbg_ahb_tx_hresp_sticky_o = sticky_ahb_tx_hresp;
+
+    assign dbg_emio_o = { dbg_hb_count[23:16],       // [15:8] hclk heartbeat
+                          sticky_hresetn_low,        // [7]  hresetn ever low
+                          sticky_role_master_lost,   // [6]  master role ever lost
+                          sticky_apb_pslverr,        // [5]  apb pslverr ever seen
+                          obs_fch_active_w,          // [4]  fch seq owns the APB
+                          fc_cfg_apb_psel,           // [3]  FC adapter owns tl APB
+                          role_is_master_o,          // [2]  master premise (live)
+                          role_locked_o,             // [1]  before/after role lock
+                          d2d_reset_o };             // [0]  controller self-reset
 
     // =========================================================================
     // TideLink config APB mux: 2:1 APB mux

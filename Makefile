@@ -202,7 +202,7 @@ define sim_gate_run
 	echo "[sim_gate] $$st $(1) ($${dt}s)"
 endef
 
-.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary \
+.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
 
@@ -242,6 +242,24 @@ sim_gate_t30:
 	$(call sim_gate_run,t30_autonomous_fc_handoff,\
 	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_30_autonomous_fc_handoff)
 
+# --- PS-facing APB safety (2026-07-09) ---------------------------------------
+# Both of these lock a bug class that HANGS the Zynq PS: the CPU's M_AXI_GP has
+# no transaction timeout, so any APB access that never gets pready wedges the
+# processor permanently (Bus error on every later /dev/mem access) and costs a
+# physical power cycle. They were written fail-first but were NOT in this list,
+# so they gated nothing. They do now.
+#   apb_fc_cfg_preempt — the fc_cfg priority mux must never preempt an in-flight
+#     external PS transaction (tidelink_top.sv). Verified FAIL pre-fix / PASS post-fix.
+#   fch_apb_watchdog   — the fch sequencer must release the Wlink APB on timeout
+#     rather than pinning pready low for ever.
+sim_gate_apb_preempt:
+	$(call sim_gate_run,apb_fc_cfg_preempt,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_apb_fc_cfg_preempt)
+
+sim_gate_fch_wdog:
+	$(call sim_gate_run,fch_apb_watchdog,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_fch_apb_watchdog)
+
 # --- tidelink_top_pair_v2 suites (EPOCH_PROFILE=zero) ------------------------
 sim_gate_v2_data:
 	$(call sim_gate_run,v2_pair_data,\
@@ -270,9 +288,13 @@ sim_gate_v1elab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v1_elab
+	v2_winscan_fsm v1_elab \
+	apb_fc_cfg_preempt fch_apb_watchdog
+# The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
+# bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm v1_elab
+	v2_autonomous_sync_detect v2_winscan_fsm v1_elab \
+	apb_fc_cfg_preempt fch_apb_watchdog
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -291,7 +313,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (8 suites)"
+	@echo " sim_gate — full aggregate sim gate (10 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -301,6 +323,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -313,6 +337,8 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

@@ -200,6 +200,29 @@ create_project tidelink_project $project_dir -part $part -force
 # SoC Labs 2026-06-21 (turnaround): let synth/impl use more host threads (QoR-neutral).
 set_param general.maxThreads 8
 
+# Optional BOARD_PART (2026-07-09, KR260 port). Zynq UltraScale+ targets (Kria
+# KR260, xck26) drive the PS/DDR/MIO configuration from the board preset, which
+# requires the board_part set on the project before the BD is sourced. The Z2
+# targets set no FPGA_BOARD_PART, so this is a no-op there (bare-part flow
+# unchanged). If a board part is named but not installed in this Vivado, fail
+# loudly here rather than let the BD silently mis-preset the PS.
+if { [info exists env(FPGA_BOARD_PART)] && $env(FPGA_BOARD_PART) ne "" } {
+    set _bp $env(FPGA_BOARD_PART)
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        # Board files ship in Vivado's XilinxBoardStore; refresh the catalog once
+        # in case they were installed after this Vivado's board cache was built.
+        catch { xhub::refresh_catalog [xhub::get_xstores] }
+        catch { update_board_part_repos }
+    }
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        puts "ERROR: FPGA_BOARD_PART='$_bp' not found in this Vivado's board catalog."
+        puts "       Install the Kria board files (XilinxBoardStore) or fix the id."
+        exit 1
+    }
+    set_property BOARD_PART $_bp [current_project]
+    puts "BOARD_PART: set to $_bp"
+}
+
 # STEP 2: Add IP repositories (tidelink + optional PHC)
 if { $phc_ip_repo ne "" } {
     set_property ip_repo_paths [list $ip_repo $phc_ip_repo] [current_project]

@@ -396,6 +396,35 @@ Grouped by file to avoid write conflicts between parallel agents.
 - **Verify:** `grep -cE 'pad_|i2c_.*_io' fpga/targets/kr260-pair-onchip/tidelink_design_wrapper.v == 0`.
 
 ### W5 — BD tcl (the big integration file) [Vivado: validate_bd_design]
+
+> **WAVE-1 EXIT GATE: GREEN (verified 2026-07-09, `package_ip` run in the worktree with `TIDELINK_PHY_V2=1`).**
+> Verified structurally, not by "the build passed":
+> - packaged `imp/fpga/tidelink_ip/src/tidelink_top.sv` contains `HONEST_MASK_HS` (×5) ⇒ **not a stale IP**;
+> - `md5sum` of packaged `src/WavD2DGpio.v` **equals** `deps/tidelink-phy/rtl/wav/WavD2DGpio.v` (V2) and **differs from**
+>   `src/rtl/local_overrides/WavD2DGpio.v` (V1) ⇒ **silent-V1 trap avoided**;
+> - `NEGO_CFG_RESET` default `"0000000"`, `HONEST_MASK_HS` default `"0"` ⇒ **every existing target byte-unchanged**;
+> - both carry `spirit:resolve="user"` ⇒ BD-overridable via `CONFIG.*`.
+>
+> **W5 LANDMINE — both new params are packaged as `spirit:format="bitString"`, not integers.**
+> `component.xml:3852` (`bitStringLength="7"`) and `:3857` (`bitStringLength="1"`). A `CONFIG.NEGO_CFG_RESET {0x61}`
+> override will not do what you mean. Use the bitString form, and note `0x61 == 7'b1100001` (bit0 `nego_en`=1;
+> **bits[3:2] `pri_sel`=00**, which selects the strap-derived `nego_priority_reg`, NOT the `nego_priority_i` port):
+> ```tcl
+> set_property -dict [list \
+>     CONFIG.NEGO_CFG_RESET {7'b1100001} \
+>     CONFIG.HONEST_MASK_HS {1'b1}       \
+>     CONFIG.USE_IDELAY     {0}          \
+>     CONFIG.TIDELINK_PAIR_BASE {0x8C032000} \
+> ] [get_bd_cells tidelink_0]
+> ```
+> (`tidelink_1` identical except `CONFIG.TIDELINK_PAIR_BASE {0x84032000}`.) After `validate_bd_design`, **assert** the
+> values actually took: `get_property CONFIG.NEGO_CFG_RESET [get_bd_cells tidelink_0]`. A silently-coerced bitString
+> that lands as `0000000` leaves autoneg OFF at POR and the pair simply never links — with no error anywhere.
+>
+> **And do NOT tie `apb_debug_unlock_i` / `mask_hs_bypass_i` high with an xlconstant.** With `HONEST_MASK_HS=1` those
+> pins are live for the first time ever; strapping them re-opens `mask_hs_gate_open` and silently voids the autonomy
+> proof (§5.4). The fork inherits an `axi_gpio_debug_unlock` cell — its GPIO defaults to 0 at reset, which is now
+> *correct and load-bearing*, not a placebo.
 - **Brief:** Author `fpga/targets/kr260-pair-onchip/tidelink_design.tcl`, forked from `kr260-pair-nptp`. Adds `tidelink_1`
   + `_1`-suffixed bridges/GPIOs/BRAM/divider/consts; widens SmartConnects (control 8, data 4); deletes the 4 pad + 6 I2C
   external ports; wires §3.7 data cross-connect + §3.6 I2C wired-AND; two dividers `phy_clk_div_0` (INIT 0) /

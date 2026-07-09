@@ -259,28 +259,29 @@ module WlinkGenericFCReplayV2_13(
   assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // gated ACK (see local override above)
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]
-  // A2L ACK-ptr LAP FIX (2026-07-08, from silicon mailbox obs 0x4403_21BC): the
-  // FIFO read ptr rbin rewinds to link_revert_addr on a replay (fifo_io_rrevert
-  // above) but the ACK ptr a2l_link_addr did NOT -> after a die_b L9-resync NACK
-  // it was left a full LAP (16) AHEAD of the rewound rbin (silicon: sack=
-  // a2l_link_addr=31 while rbin=wbin=15) -> the gray exactly-full test (:92)
-  // false-asserts -> app_ready=0 -> die_a TX permanently stalls = the persistent
-  // A->B blocker. The MAILBOX was FINE: obs read IN=mem_0=mem_1=OUT=31, it
-  // faithfully carried the lapped value; the four "mailbox CDC" fixes
-  // (clamp/self-heal/coherent-reset/Gray) hardened the WRONG layer. FIX: on a
-  // replay, rewind the ACK ptr WITH the read ptr when it is AHEAD of the re-send
-  // point (re-sent words are un-acked by definition), so a2l_link_addr can never
-  // lap rbin -> no false full. link_revert_addr is LINK-domain (same as rbin),
-  // no CDC. Legit behind-the-revert ACKs (ahead_dist > depth) are untouched.
-  wire [4:0] a2l_ack_ahead_of_revert = a2l_link_addr - link_revert_addr; // fwd dist (mod 32)
-  wire       a2l_revert_clamp = link_revert
-                                & (a2l_ack_ahead_of_revert != 5'h0)
-                                & (a2l_ack_ahead_of_revert <= 5'h10);
+  // A2L ACK-ptr LAP FIX (2026-07-08) -- REVERTED 2026-07-09, David Mapstone.
+  //
+  // A replay-time rewind of a2l_link_addr to link_revert_addr used to sit here, on the
+  // theory that the ACK ptr was left a lap ahead of the rewound rbin. It was built,
+  // deployed, and REFUTED on silicon (sack still 31, A->B still 4/28) -- the FIFTH
+  // successive fix aimed at this module to fail the same way.
+  //
+  // The real defect is in the PEER's receiver: WlinkGenericFCSM_6's fe_tx_credit_max is
+  // re-zeroed by the post-CR/CRACK swi_enable dip, so exp_pkt_num can never wrap, the
+  // receiver jams at the first pktnum lap, stops committing, and stops ACKing. This
+  // module's a2l_full is then CORRECT backpressure on a 16-deep replay buffer with 16
+  // words outstanding and unacked -- not corruption. The mailbox obs (0x4403_21BC) had
+  // already proved the CDC faithful (IN = mem_0 = mem_1 = OUT = 31).
+  //
+  // Reverted so the credit_max fix is tested in isolation, and because rewinding the ACK
+  // pointer can DISCARD a legitimate in-flight ACK. The Bug-A window guard (a2l_ack_valid,
+  // see :149-155) is retained and is sufficient: in the wedged state it computes
+  // off_max = rbin - a2l_link_addr = 15 - 31 = 16 <= 16, so it would have ACCEPTED a real
+  // ACK and cleared the full. None ever arrived. See
+  // memory/project_a2b_rootcause_fe_tx_credit_max_2026_07_09.md
   always @(posedge link_clk or posedge link_reset) begin
     if (link_reset) begin
       a2l_link_addr <= 5'h0;
-    end else if (a2l_revert_clamp) begin
-      a2l_link_addr <= link_revert_addr;  // rewind the ACK to the re-send point
     end else if (a2l_ack_valid) begin     // gated ACK advance (see local override above)
       a2l_link_addr <= link_ack_addr;
     end

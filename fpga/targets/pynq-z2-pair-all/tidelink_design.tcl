@@ -201,7 +201,15 @@ proc create_root_design { parentCell } {
         CONFIG.PCW_UART0_BAUD_RATE         {115200} \
         CONFIG.PCW_UIPARAM_DDR_PARTNO      {MT41K256M16 RE-125} \
         CONFIG.PCW_UIPARAM_DDR_MEMORY_TYPE {DDR 3 (Low Voltage)} \
+        CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE   {1} \
+        CONFIG.PCW_GPIO_EMIO_GPIO_IO       {32} \
     ] $ps7
+    # SoC Labs 2026-07-09: EMIO GPIO enabled (32-bit input bank) to carry the
+    # off-fabric debug word. Read via the PS GPIO controller at 0xE000_A000
+    # (DATA_RO_2 @ 0xE000_A068), which NEVER traverses the PL AXI slaves, so it
+    # survives the master PS-bus wedge. Property names verified against the
+    # processing_system7_v5_5 IP data in Vivado 2024.1 (PCW_GPIO_EMIO_GPIO_IO
+    # sets the width; PCW_GPIO_EMIO_GPIO_WIDTH is derived/read-only).
 
     #--------------------------------------------------------------------------
     # Clocking Wizard: 100 MHz -> 6.25 / 25 / 200 MHz
@@ -384,6 +392,45 @@ proc create_root_design { parentCell } {
     set_property -dict [list \
         CONFIG.NUM_PORTS {6} \
     ] $irq_concat
+
+    #--------------------------------------------------------------------------
+    # SoC Labs OFF-FABRIC EMIO INSTRUMENT (2026-07-09)
+    #
+    # The master die loses ALL PS access to the PL at autonomous training entry
+    # (0x4403_xxxx and 0x8401_0000 return external abort 0x018) -- every APB obs
+    # register is then behind the dead bus. This concat drives tidelink_0's
+    # off-fabric debug word onto PS EMIO GPIO, read at 0xE000_A068 (DATA_RO_2),
+    # which never traverses the PL AXI slaves and so survives the wedge.
+    #
+    #   dout[15:0]  = tidelink_0/dbg_emio_o                     (In0)
+    #   dout[16]    = clk_wiz_0/locked                LIVE       (In1)
+    #   dout[17]    = proc_sys_reset_0/peripheral_aresetn LIVE   (In2) (== hresetn)
+    #   dout[18]    = tidelink_0/dbg_ahb_tx_hresp_sticky_o       (In3) 4th sticky
+    #   dout[31:19] = 0 (xlconstant)                            (In4)
+    #  -> processing_system7_0/GPIO_0_tri_i (input-only; tri_o/tri_t left open)
+    #
+    # DEVIATION from spec (d): spec put a 14-bit const at In3 (EMIO[31:18]).
+    # ahb_tx_hresp is a VISIBLE top-level output and a prime wedge suspect, so
+    # its reset-less sticky is routed to EMIO[18] as In3; the const shrinks to
+    # 13 bits (EMIO[31:19]) as In4. The spec-(b) [15:0] word is untouched.
+    #--------------------------------------------------------------------------
+    set emio_concat [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_emio]
+    set_property -dict [list \
+        CONFIG.NUM_PORTS {5} \
+        CONFIG.IN0_WIDTH {16} \
+        CONFIG.IN1_WIDTH {1} \
+        CONFIG.IN2_WIDTH {1} \
+        CONFIG.IN3_WIDTH {1} \
+        CONFIG.IN4_WIDTH {13} \
+    ] $emio_concat
+
+    set emio_const [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_emio_pad]
+    set_property -dict [list \
+        CONFIG.CONST_WIDTH {13} \
+        CONFIG.CONST_VAL   {0} \
+    ] $emio_const
 
     #--------------------------------------------------------------------------
     # TideLink IP (packaged by Wave A3)
@@ -665,6 +712,22 @@ proc create_root_design { parentCell } {
 
     connect_bd_net [get_bd_pins xlconcat_irq/dout] \
                    [get_bd_pins processing_system7_0/IRQ_F2P]
+
+    #-- SoC Labs off-fabric EMIO instrument wiring (see xlconcat_emio above).
+    #   locked and peripheral_aresetn already drive other sinks; connecting them
+    #   here just adds a fan-out branch (both remain single-driver nets).
+    connect_bd_net [get_bd_pins tidelink_0/dbg_emio_o] \
+                   [get_bd_pins xlconcat_emio/In0]
+    connect_bd_net [get_bd_pins clk_wiz_0/locked] \
+                   [get_bd_pins xlconcat_emio/In1]
+    connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
+                   [get_bd_pins xlconcat_emio/In2]
+    connect_bd_net [get_bd_pins tidelink_0/dbg_ahb_tx_hresp_sticky_o] \
+                   [get_bd_pins xlconcat_emio/In3]
+    connect_bd_net [get_bd_pins xlconst_emio_pad/dout] \
+                   [get_bd_pins xlconcat_emio/In4]
+    connect_bd_net [get_bd_pins xlconcat_emio/dout] \
+                   [get_bd_pins processing_system7_0/GPIO_0_tri_i]
 
     #-- PHC removed 2026-06-19: tie off tidelink_0 PHC *inputs* to 0.
     #   (tidelink_0 PHC outputs phc_hw_set_* / phc_hw_adj_* / phc_hw_capture /

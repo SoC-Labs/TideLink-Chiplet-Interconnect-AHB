@@ -259,10 +259,29 @@ module WlinkGenericFCReplayV2_13(
   assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // gated ACK (see local override above)
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]
+  // A2L ACK-ptr LAP FIX (2026-07-08, from silicon mailbox obs 0x4403_21BC): the
+  // FIFO read ptr rbin rewinds to link_revert_addr on a replay (fifo_io_rrevert
+  // above) but the ACK ptr a2l_link_addr did NOT -> after a die_b L9-resync NACK
+  // it was left a full LAP (16) AHEAD of the rewound rbin (silicon: sack=
+  // a2l_link_addr=31 while rbin=wbin=15) -> the gray exactly-full test (:92)
+  // false-asserts -> app_ready=0 -> die_a TX permanently stalls = the persistent
+  // A->B blocker. The MAILBOX was FINE: obs read IN=mem_0=mem_1=OUT=31, it
+  // faithfully carried the lapped value; the four "mailbox CDC" fixes
+  // (clamp/self-heal/coherent-reset/Gray) hardened the WRONG layer. FIX: on a
+  // replay, rewind the ACK ptr WITH the read ptr when it is AHEAD of the re-send
+  // point (re-sent words are un-acked by definition), so a2l_link_addr can never
+  // lap rbin -> no false full. link_revert_addr is LINK-domain (same as rbin),
+  // no CDC. Legit behind-the-revert ACKs (ahead_dist > depth) are untouched.
+  wire [4:0] a2l_ack_ahead_of_revert = a2l_link_addr - link_revert_addr; // fwd dist (mod 32)
+  wire       a2l_revert_clamp = link_revert
+                                & (a2l_ack_ahead_of_revert != 5'h0)
+                                & (a2l_ack_ahead_of_revert <= 5'h10);
   always @(posedge link_clk or posedge link_reset) begin
     if (link_reset) begin
       a2l_link_addr <= 5'h0;
-    end else if (a2l_ack_valid) begin   // gated ACK advance (see local override above)
+    end else if (a2l_revert_clamp) begin
+      a2l_link_addr <= link_revert_addr;  // rewind the ACK to the re-send point
+    end else if (a2l_ack_valid) begin     // gated ACK advance (see local override above)
       a2l_link_addr <= link_ack_addr;
     end
   end

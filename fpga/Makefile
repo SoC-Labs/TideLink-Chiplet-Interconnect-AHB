@@ -150,13 +150,43 @@ endif
 FPGA_BOARD_PART   ?=
 FPGA_TIDELINK_PTP ?=
 
+#-----------------------------------------------------------------------------
+# EPOCH_ANCHOR=1 — build the EPOCH whole-word deskew anchor variant.
+#
+# Selects TL_EPOCH_ANCHOR_EN in deps/tidelink-phy/rtl/wav/WavD2DGpio.v via a
+# run-level -verilog_define (build_design.tcl). Unset = the shipped config,
+# bit-identical. Intended for an on-silicon A/B against the default build:
+#
+#   make -C fpga build_design TARGET=kr260-pair-nptp      EPOCH_ANCHOR=1
+#   make -C fpga build_design TARGET=kr260-pair-flip-nptp EPOCH_ANCHOR=1
+#   -> imp/fpga/output/kr260-pair-nptp-anchor/tidelink.bit
+#
+# The outputs are suffixed so the two variants never overwrite each other.
+#
+# The IP CACHE gets its own directory for anchor builds. This is not paranoia:
+# the packaged IP *sources* are byte-identical between the two variants (the
+# selector is an `ifdef inside the source), and only the synth-run
+# -verilog_define differs. Vivado keys config_ip_cache on IP config + part +
+# tool, NOT on the run's MORE_OPTIONS — so a shared cache would happily return
+# the anchor-OFF OOC netlist for an anchor-ON build, silently. Same class of
+# trap as the cocotb SIM_BUILD collision (see cocotb/tidelink_top_pair_v2).
+#-----------------------------------------------------------------------------
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+TIDELINK_EPOCH_ANCHOR := 1
+export TIDELINK_EPOCH_ANCHOR
+ANCHOR_SUFFIX := -anchor
+else
+ANCHOR_SUFFIX :=
+endif
+
 # Build output directories
 BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
 RUN_DIR         := $(BUILD_DIR)/run
-PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
-OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
+PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)$(ANCHOR_SUFFIX)
+OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)$(ANCHOR_SUFFIX)
 
 # PHC sibling repo (sourced by package_phc_ip; defaults assume the parallel
 # SoC Labs checkout, override with PHC_REPO_DIR for CI / alternate layouts).
@@ -165,7 +195,7 @@ PHC_REPO_DIR    ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb
 # -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
 # concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
 # or logs — the prerequisite for the farm flow (scripts/build_farm.sh).
-BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)
+BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)$(ANCHOR_SUFFIX)
 
 # IP metadata
 FPGA_VENDOR     := soclabs.org
@@ -177,7 +207,12 @@ FPGA_NUM_JOBS   ?= 8
 # builds so unchanged static Xilinx OOC IP is fetched, not re-synthesised. Outside the
 # create_project -force project dir; under imp/ (already gitignored). Override to share
 # one cache across farm hosts. Empty = disabled (old behaviour).
-FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache)
+#
+# $(ANCHOR_SUFFIX) is part of the cache PATH because Vivado keys config_ip_cache on
+# IP config + part + tool — NOT on the synth run's -verilog_define. The anchor-on and
+# anchor-off builds have byte-identical packaged IP sources, so they would collide in
+# one cache and the anchor-on build would silently link the anchor-OFF OOC netlist.
+FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache$(ANCHOR_SUFFIX))
 
 # Vivado-native remote-host farming (launch_runs -host). Empty = local build.
 # "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".

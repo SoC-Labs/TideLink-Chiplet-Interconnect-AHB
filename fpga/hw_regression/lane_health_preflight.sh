@@ -190,15 +190,30 @@ for L in [$lanes]:
  settap(L,best[1])
  wr(0x154,L);time.sleep(0.003);cal=rd(0x150)
  lp=(cal>>13)&1;br=cal&0x3f
- print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)))
-print("SWEEP_DONE")
+ print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)),flush=True)
+print("SWEEP_DONE",flush=True)
 PYEOF
 }
-sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE
+sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE (stdout); traceback (stderr)
   local ip=$1 tol=$2 lanes=$3 py b64
   py=$(sweep_py "$tol" "$lanes")
   b64=$(printf '%s' "$py" | base64 -w0)
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_lhp.py" 2>/dev/null
+  # Three output-integrity fixes for the "did not report SWEEP_DONE on BOTH dies"
+  # blind spot (the failure was in OUTPUT HANDLING, not the link):
+  #   python3 -u  : unbuffered stdout. Over the ssh pipe python block-buffers
+  #                 stdout; if the program is killed before a normal exit the
+  #                 buffered LANE lines + SWEEP_DONE are lost wholesale — which
+  #                 looks exactly like "no SWEEP_DONE". -u (belt: flush=True in
+  #                 the program) makes each line land immediately so a partial
+  #                 sweep still yields the lanes it did measure.
+  #   sudo -S -p '': read the password from stdin but emit an EMPTY prompt, so
+  #                 sudo's stderr does not add noise now that stderr is shown.
+  #   NO 2>/dev/null: the old redirect SWALLOWED any python traceback (e.g.
+  #                 /dev/mem EACCES, a bad register offset) — an identical-on-
+  #                 both-dies PROGRAM error was thus invisible and misread as a
+  #                 "link/PS issue". stderr now flows to the console; stdout
+  #                 (the LANE lines) is still captured clean by the caller's $().
+  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_lhp.py"
 }
 
 # ----- collected state -------------------------------------------------------
@@ -268,7 +283,9 @@ phase2(){
     echo "  [sweep] die_${d}: lanes {${GOLD_ACTIVE// /,}} x 32 IDELAY taps (min-of-5 reads/tap)..."
     out=$(sweep_die "$(die_ip "$d")" "$tol" "$SWEEP_LANES")
     if ! printf '%s\n' "$out" | grep -q SWEEP_DONE; then
-      echo "  WARN: die_${d} sweep did not report SWEEP_DONE (link/PS issue?) — results may be partial"
+      echo "  WARN: die_${d} sweep did not report SWEEP_DONE — results may be partial."
+      echo "        (any python traceback printed on stderr above; raw sweep stdout follows)"
+      printf '%s\n' "$out" | sed 's/^/          | /'
     fi
     local tag L md bt ew lp br sl
     while read -r tag L md bt ew lp br sl; do

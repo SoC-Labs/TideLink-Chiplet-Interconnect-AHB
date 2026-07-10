@@ -120,7 +120,12 @@ module tidelink_top #(
     // The slave's lane mask is autoneg-locked at 0xff under 7'h61; SW-driven
     // lets both dies set their mask. Revisit 7'h61 once mask-handshake
     // propagates the reduced mask to the slave.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // Zero-poke winscan converge-lock — POR-default forwarded verbatim to the
+    // axi_chiplet_controller (see its WINSCAN_CONVERGE_LOCK_EN note). 1'b0 =
+    // today's behaviour, bit-identical for sim/ASIC; the FPGA vivado wrapper
+    // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2012,7 +2017,9 @@ module tidelink_top #(
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
-        .NEGO_CFG_RESET       (NEGO_CFG_RESET)
+        .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

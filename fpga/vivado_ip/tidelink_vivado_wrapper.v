@@ -116,7 +116,14 @@ module tidelink_vivado_wrapper #(
     // lane mask is autoneg-locked at 0xff -- all eight lanes, no reduced-lane
     // escape hatch -- because mask_hs_bypass_i is hardwired 1'b1 and the
     // peer-mask handshake never runs. Safe only while all 8 lanes are healthy.
-    parameter [6:0] NEGO_CFG_RESET = 7'h61
+    parameter [6:0] NEGO_CFG_RESET = 7'h61,
+    // Zero-poke winscan converge-lock. Drive 1'b1 for the FPGA test build so the
+    // periodic ~60-90 s calibrator recal STOPS re-arming the on-chip winscan
+    // sweep and re-knocking already-committed lanes out of SYNC (the proven
+    // FAILOPEN-lottery root cause). Same "wrapper forces the active value"
+    // pattern as NEGO_CFG_RESET=7'h61 above; the tidelink_top / ACC default is
+    // 1'b0 (bit-identical), so cocotb / UVM / ASIC netlists are untouched.
+    parameter WINSCAN_CONVERGE_LOCK_EN = 1'b1
 )(
     // =========================================================================
     // Clocks and Resets
@@ -473,7 +480,9 @@ module tidelink_vivado_wrapper #(
         .STUB_PTP            (STUB_PTP),
         .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT),
         // Zero-poke autonomy: drive the POR value of NEGO_CFG (0x4403_2090).
-        .NEGO_CFG_RESET      (NEGO_CFG_RESET)
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET),
+        // Zero-poke winscan converge-lock: stop the recal re-arming the sweep.
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

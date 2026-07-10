@@ -4002,7 +4002,7 @@ module axi_chiplet_controller #(
     // A/B: WS_ANCHOR_EXTEND=0 restores the exact pre-lever behaviour. Sim gates
     // the extend to 0 via tb_ws_anchor_short_q (the same hook that shortens the
     // anchor timeout), so all sim suites are BIT-IDENTICAL to baseline.
-    localparam [2:0]  WS_ANCHOR_EXTEND = 3'd7;   // extra window-1 reloads (0 = baseline)
+    localparam [2:0]  WS_ANCHOR_EXTEND = 3'd0;   // CONTROL: lever OFF (A/B baseline)   // extra window-1 reloads (0 = baseline)
     // FIX-D (2026-07-07): VERIFY-STUCK detector threshold (apb cycles the anchor
     // may sit latched with the verify low before ws_verify_stuck_q latches).
     // Sized WELL above any healthy anchor→verify settle skew (the F3 clear drops

@@ -193,9 +193,15 @@ def try_rd(off):
  try: return rd(off)
  except BusErr: return None
 # --- probe register usability once (run DISARMED: a surviving fault is structural) ---
-_lsb0=try_rd(0x1B4); LSB_OK=(_lsb0 is not None) and try_wr(0x1B4,_lsb0)
-_sel0=try_rd(0x1B0); DIST_OK=(_sel0 is not None) and try_wr(0x1B0,0) and (try_rd(0x1AC) is not None)
-if _sel0 is not None and DIST_OK: try_wr(0x1B0,_sel0)
+# HARD-DISABLED 2026-07-10: 0x1AC/0x1B0/0x1B4 do NOT bus-error — they HARD-STALL
+# the CPU thread on an uninterruptible hung AXI read (proven: RC=124 twice, only
+# an external SIGKILL stops it; no in-process SIGBUS/SIGALRM handler helps). So we
+# NEVER probe or touch them. Eye must come from the calibrator path (0x150/0x154,
+# Region 10), and only AFTER the calibrator has locked (a bare deploy + force-SYNC
+# does NOT lock the RX: sync_seen low byte reads 0x00). See memory
+# project_first_valid_autonomy_measurement_2026_07_10.
+LSB_OK=False   # never touch 0x1B4
+DIST_OK=False  # never touch 0x1B0/0x1AC — they hard-stall the PS
 NTAPS = 32 if LSB_OK else 16
 print("MODE dist=%s fine_tap=%s ntaps=%d"%("0x1AC" if DIST_OK else "cal_proxy(0x150)", "on" if LSB_OK else "coarse_only", NTAPS),flush=True)
 def settap(L,t):

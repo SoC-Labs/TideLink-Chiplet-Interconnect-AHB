@@ -23,6 +23,14 @@
 # USAGE: TD_DEPLOY_DIR=/tmp/... ./reg_safety_probe.sh [a|b]   (default: both)
 # =============================================================================
 set -u
+# =============================================================================
+# ⚠ SUPERSEDED 2026-07-10: DO NOT RUN AGAINST 0x1AC/0x1B0/0x1B4.
+# Those reads/writes HARD-STALL the CPU thread (uninterruptible hung AXI access,
+# external-SIGKILL-only) — they do NOT bus-error, so this script's SIGBUS handler
+# does NOT protect you and it will hang the board until killed. The distance-obs
+# path is unusable from the PS. Use the calibrator eye (0x150/0x154) after the
+# calibrator locks. This file is kept only for the safe control reads (0x1B8/0x15C).
+# =============================================================================
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/td_v2_hwlib.sh"
 DIES="${1:-a b}"

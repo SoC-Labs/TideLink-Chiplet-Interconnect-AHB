@@ -3969,6 +3969,40 @@ module axi_chiplet_controller #(
     // mis-latch before its retry — 5 keeps the fail-open bound ~1.8 s worst
     // case while giving a marginal lane multiple independent re-latch rolls.
     localparam [2:0]  WS_ANCHOR_RETRIES = 3'd5;
+    // AUTONOMY-LEVER (2026-07-10) — SOFT-EXTEND the FIRST anchor-gate window.
+    //
+    // ROOT CAUSE (verified this session, RTL identity): the deskew sets a
+    // per-lane STICKY sync_seen_l only after SYNC_CONFIRM(=2) CONSECUTIVE
+    // periodic SYNC-beacon matches (tidelink_lane_deskew_v2.sv:606/707/748/767),
+    // and the read-side `reanchored` latches ONLY when EVERY active lane's
+    // sticky bit is set within ONE clear-to-clear window (all_sync_seen,
+    // :1350/1489). The window = time between clr_pulses; the winscan drives the
+    // clear via ws_obs_clr_r (F3) held HIGH across WS_FINALIZE — ONE clr_pulse
+    // per WS_FINALIZE entry — and each FIX-3 retry (WS_FIN_CLRLOW) RE-PULSES it,
+    // so the retry budget RESTARTS accumulation instead of accumulating. On a
+    // MARGINAL (not dead) lane that Hamming-matches only a FRACTION of beacon
+    // slots, catching 2 CONSECUTIVE beacons before the clear is a lottery
+    // (P ~ p^2 per attempt); the FIX-4 jittered retries decorrelate the PHASE
+    // but each still restarts from scratch (soak: die_a 15% / die_b 45% clean-OK).
+    //
+    // LEVER: give the FIRST accumulation window (the longest, uninterrupted one)
+    // WS_ANCHOR_EXTEND extra WS_ANCHOR_TIMEOUT reloads WITHOUT re-pulsing the F3
+    // clear (ws_obs_clr_r stays HIGH -> NO new clr_pulse -> the sticky vector is
+    // NOT cleared -> accumulation is CONTINUOUS). Window-1 becomes
+    // (WS_ANCHOR_EXTEND+1) x WS_ANCHOR_TIMEOUT ~= 8 x 0.3 s = 2.4 s of
+    // uninterrupted beacon opportunities — many more independent
+    // 2-consecutive-beacon rolls for a marginal lane — BEFORE the jittered
+    // clear-retries (unchanged) begin. A die that anchors early STILL releases
+    // immediately (the ws_anchor_q && ws_verify_q poll precedes this branch), so
+    // no clean-die latency penalty; only a struggling die spends the extra time.
+    // The zero-tolerance ANCHOR-VERIFY (VERIFY_TOL=3, WavD2DGpio_v2.v:1139)
+    // remains the backstop: a wrong-slot / temporally-misaligned accumulation
+    // can never satisfy the cross-lane simultaneous match, so a longer window
+    // cannot ship a bad anchor — worst case it fails open LATER (bound +~2.4 s).
+    // A/B: WS_ANCHOR_EXTEND=0 restores the exact pre-lever behaviour. Sim gates
+    // the extend to 0 via tb_ws_anchor_short_q (the same hook that shortens the
+    // anchor timeout), so all sim suites are BIT-IDENTICAL to baseline.
+    localparam [2:0]  WS_ANCHOR_EXTEND = 3'd7;   // extra window-1 reloads (0 = baseline)
     // FIX-D (2026-07-07): VERIFY-STUCK detector threshold (apb cycles the anchor
     // may sit latched with the verify low before ws_verify_stuck_q latches).
     // Sized WELL above any healthy anchor→verify settle skew (the F3 clear drops
@@ -4071,10 +4105,17 @@ module axi_chiplet_controller #(
                                             //     swi_sync_obs_clr_in Wlink port
     reg [23:0]         ws_anchor_to_r;      // F4: anchor-gate timeout countdown
     reg [2:0]          ws_anchor_retry_r;   // FIX-3: clear-retries remaining (R-A: widened 2->3b, budget 5)
+    reg [2:0]          ws_anchor_ext_r;     // AUTONOMY-LEVER: window-1 soft-extends remaining (no re-clear)
     reg [28:0]         ws_rdv_to_r;         // R-B: master peer-rendezvous timeout countdown (WS_FIN_WAITPEER)
     reg tb_ws_anchor_short_q = 1'b0;        // F4 sim hook (cocotb deposits 1)
     wire [23:0] ws_anchor_to_load =
         tb_ws_anchor_short_q ? WS_ANCHOR_TIMEOUT_SIM : WS_ANCHOR_TIMEOUT;
+    // AUTONOMY-LEVER: the window-1 soft-extend count. Gated to 0 in sim by the
+    // SAME hook that shortens the anchor timeout, so every sim suite that
+    // reaches WS_FINALIZE is bit-identical to the pre-lever baseline; silicon
+    // gets the full WS_ANCHOR_EXTEND uninterrupted-window widen.
+    wire [2:0]  ws_anchor_ext_load =
+        tb_ws_anchor_short_q ? 3'd0 : WS_ANCHOR_EXTEND;
     // FIX-3: the clear-low hold reuses the winscan sim hook (short in sim).
     wire [23:0] ws_clr_hold_load =
         tb_winscan_dwell_short_q ? WS_CLR_HOLD_SIM : WS_CLR_HOLD;
@@ -4499,6 +4540,8 @@ module axi_chiplet_controller #(
             ws_anchor_to_r       <= 24'd0;
             ws_anchor_timeout_q  <= 1'b0;
             ws_anchor_retry_r    <= 3'd0;
+            ws_anchor_ext_r      <= 3'd0;   // AUTONOMY-LEVER: window-1 soft-extends
+
             ws_abort_cnt_q       <= 4'd0;
             ws_vfy_retry_q       <= 1'b0;
             ws_retry_cnt_q       <= 3'd0;
@@ -4697,6 +4740,10 @@ module axi_chiplet_controller #(
                         ws_obs_clr_r   <= 1'b1;
                         // F4: arm the anchor-gate timeout for FINALIZE.
                         ws_anchor_to_r <= ws_anchor_to_load;
+                        // AUTONOMY-LEVER: arm the window-1 soft-extend budget.
+                        // These reloads extend the FIRST (uninterrupted, no
+                        // re-clear) accumulation window before the clear-retries.
+                        ws_anchor_ext_r <= ws_anchor_ext_load;
                         // FIX-3: arm the bounded clear-retry budget (R-A
                         // budget of 5 — the verify gate is downstream of
                         // ws_anchor_q and unchanged by the Loop-13 revert).
@@ -4868,7 +4915,30 @@ module axi_chiplet_controller #(
                         winscan_done       <= 1'b1;
                         ws_state_r         <= WS_DONE;
                     end else if (ws_anchor_to_r == 24'd0) begin
-                        if (ws_anchor_retry_r != 3'd0) begin
+                        if (ws_anchor_ext_r != 3'd0) begin
+                            // AUTONOMY-LEVER (2026-07-10): SOFT-EXTEND window 1.
+                            // Reload the anchor-gate countdown WITHOUT dropping
+                            // ws_obs_clr_r — so NO fresh clr_pulse reaches the
+                            // deskew and the per-lane sticky sync_seen
+                            // accumulation continues UNINTERRUPTED. ws_obs_clr_r
+                            // is already held HIGH here and force-SYNC is still
+                            // held, so beacons keep flooding every SYNC grid slot
+                            // and a marginal lane gets another full
+                            // WS_ANCHOR_TIMEOUT of 2-consecutive-beacon rolls.
+                            // Only once the extend budget is spent do the FIX-3
+                            // jittered clear-retries below (which DO restart
+                            // accumulation) begin. A clean/early anchor NEVER
+                            // reaches this branch — the ws_anchor_q &&
+                            // ws_verify_q release poll above wins first — so
+                            // there is no clean-die latency penalty. Anti-poison
+                            // is unaffected (the deskew's periodic+gap+K=2
+                            // self-gating rejects poison independently of window
+                            // length) and the VERIFY_TOL=3 backstop still gates
+                            // the release, so a longer window cannot commit a
+                            // wrong anchor.
+                            ws_anchor_ext_r <= ws_anchor_ext_r - 3'd1;
+                            ws_anchor_to_r  <= ws_anchor_to_load;
+                        end else if (ws_anchor_retry_r != 3'd0) begin
                             // FIX-3 BOUNDED CLEAR-RETRY (2026-07-03): the
                             // anchor did not latch in this wait — re-pulse
                             // the F3 clear and re-wait (up to

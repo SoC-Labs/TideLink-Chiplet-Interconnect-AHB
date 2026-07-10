@@ -111,7 +111,7 @@ zps_classify(){ local ws=$1 rea=$2 done_ever=$3 armed=${4:-1}
 
 if [ "$STATS" = 1 ]; then
   CSV="$OUTDIR/stats.csv"
-  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s,autonomy_armed,obs_mask_hs" > "$CSV"
+  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s,autonomy_armed,sync_seen,obs_mask_hs" > "$CSV"
   echo "======== zeropoke_soak STATS mode N=$N stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
   echo "  scoring through step (f) only; csv: $CSV"
   declare -A HIST_A HIST_B OUT_CNT_A OUT_CNT_B
@@ -143,12 +143,21 @@ if [ "$STATS" = 1 ]; then
     # look identical. Capture them BEFORE classifying.
     arma=$(armed_d a); armb=$(armed_d b)
     mha=$(( $(maskhs_d a) )); mhb=$(( $(maskhs_d b) ))
+    # sync_seen_vec per cycle. THE discriminator for a FAILOPEN die:
+    #   reanchored needs all_sync_seen across the active lanes (golden 0xE4).
+    #   FAILOPEN with ss==0xE4  => all lanes saw SYNC, yet the anchor never
+    #                              latched => the LATCH/CDC is at fault, and
+    #                              feat/epoch-anchor-ab (which only removes the
+    #                              all_sync_seen dependency) would change NOTHING.
+    #   FAILOPEN with ss!=0xE4  => genuine SYNC coverage failure => EPOCH is the lever.
+    # Sticky since deploy, so 0xE4 means "every active lane has seen SYNC".
+    ssa=$(( $(rd_d a $R_SYNCSEEN) & 0xff )); ssb=$(( $(rd_d b $R_SYNCSEEN) & 0xff ))
     oa=$(zps_classify "$wsa" "$ra" "$da" "$arma"); ob=$(zps_classify "$wsb" "$rb" "$db" "$armb")
-    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d armed_a=%d armed_b=%d lockpend_a=%d lockpend_b=%d t_a=%ss t_b=%ss\n' \
-      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" \
+    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d ss_a=0x%02x ss_b=0x%02x armed_a=%d armed_b=%d lockpend_a=%d lockpend_b=%d t_a=%ss t_b=%ss\n' \
+      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" "$ssa" "$ssb" \
       "$arma" "$armb" $(( (mha>>18)&1 )) $(( (mhb>>18)&1 )) "$ta" "$tb"
-    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta,$arma,$(printf 0x%08x "$mha")" >> "$CSV"
-    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb,$armb,$(printf 0x%08x "$mhb")" >> "$CSV"
+    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta,$arma,$(printf 0x%02x "$ssa"),$(printf 0x%08x "$mha")" >> "$CSV"
+    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb,$armb,$(printf 0x%02x "$ssb"),$(printf 0x%08x "$mhb")" >> "$CSV"
     HIST_A[$aa]=$(( ${HIST_A[$aa]:-0} + 1 )); HIST_B[$ab]=$(( ${HIST_B[$ab]:-0} + 1 ))
     OUT_CNT_A[$oa]=$(( ${OUT_CNT_A[$oa]:-0} + 1 )); OUT_CNT_B[$ob]=$(( ${OUT_CNT_B[$ob]:-0} + 1 ))
     [ "$oa" = OK ] && A_OK=$((A_OK+1)); [ "$ob" = OK ] && B_OK=$((B_OK+1))

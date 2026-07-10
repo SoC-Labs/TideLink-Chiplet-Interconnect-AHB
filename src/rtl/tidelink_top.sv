@@ -362,44 +362,59 @@ module tidelink_top #(
     // This word is routed to PS **EMIO GPIO**, read at 0xE000_A068 (DATA_RO_2),
     // which never traverses the PL AXI slaves and therefore SURVIVES the wedge.
     //
-    //   [15:8] heartbeat  -- free-running hclk counter bits, RESET-LESS. Two
+    //   [23:16] heartbeat -- free-running hclk counter bits, RESET-LESS. Two
     //                        reads ~1 s apart differ IFF hclk is alive. That is
     //                        what separates "clock stopped" from "reset asserted"
     //                        (a reset-driven counter would freeze at 0 in both).
-    //   [7]    sticky_hresetn_low       (hresetn EVER seen low, reset-less latch)
-    //   [6]    sticky_role_master_lost  (role_is_master EVER seen 0; on the SLAVE
-    //                                    die this reads 1 permanently -- only
+    //   [15]   dbg_warm                 (warm-up counter saturated ~0.9 s after
+    //                                    config; MUST read 1 in any sane baseline.
+    //                                    EVERY sticky below is gated by it, so the
+    //                                    POR window can no longer set them.)
+    //   [14]   sticky_locked_low        (clk_wiz_0 `locked` EVER seen low AFTER
+    //                                    warm-up -- a transient MMCM unlock)
+    //   [13]   sticky_hresetn_low       (hresetn EVER seen low after warm-up)
+    //   [12]   sticky_role_master_lost  (role_is_master EVER 0 after warm-up; on
+    //                                    the SLAVE die reads 1 permanently -- only
     //                                    meaningful on the MASTER)
-    //   [5]    sticky_apb_pslverr       (apb_pslverr EVER seen high)
+    //   [11]   sticky_apb_pslverr       (apb_pslverr EVER high after warm-up)
+    //   [10]   sticky_ahb_tx_hresp      (ahb_tx_hresp EVER high after warm-up)
+    //   [9:5]  0                        (reserved)
     //   [4]    obs_fch_active_w         (fch sequencer masks apb_pready in ctrlr)
     //   [3]    fc_cfg_apb_psel          (FC adapter owns the tidelink APB)
     //   [2]    role_is_master_o         (proves the "master" premise, live)
     //   [1]    role_locked_o            (wedge before vs after role lock, live)
     //   [0]    d2d_reset_o              (the controller resetting itself, live)
     //
-    // WHY STICKY (reset-less) LATCHES. A transient glitch (a one-cycle pslverr,
-    // a momentary role_is_master dip during nego, a reset pulse) is invisible to
-    // a sampled read taken seconds later. Each sticky_* below is a set-only latch
-    // with NO reset term: it powers up to 0 at configuration and, once its event
-    // fires, stays 1. A reset-DRIVEN flop would instead freeze at 0 in BOTH the
-    // "clock stopped" and "reset asserted" cases, destroying the discrimination.
+    // WHY STICKY (reset-less) LATCHES, AND WHY WARM-UP-GATED. A transient glitch
+    // (a one-cycle pslverr, a momentary role_is_master dip during nego, a reset
+    // pulse, a brief MMCM unlock) is invisible to a sampled read taken seconds
+    // later. Each sticky_* below is a set-only latch with NO reset term: it powers
+    // up to 0 at configuration and, once its event fires, stays 1. A reset-DRIVEN
+    // flop would instead freeze at 0 in BOTH the "clock stopped" and "reset
+    // asserted" cases, destroying the discrimination.
     //
-    // The BD adds clk_wiz `locked` at EMIO[16] and proc_sys_reset
-    // `peripheral_aresetn` (== hresetn) at EMIO[17]. These are read-only taps;
-    // no datapath net is modified, so the proven manual recipe is untouched.
+    // BUT hresetn is LOW and role_is_master is 0 for a window immediately after PL
+    // configuration, so an UNGATED sticky saturates to 1 during POR on a perfectly
+    // healthy die -- catching the power-on reset, not the training transient it
+    // was built for. Every sticky set condition is therefore gated behind dbg_warm
+    // (a reset-less SATURATING counter that reaches 1 ~0.9 s after config), so only
+    // a POST-warm-up event latches. dbg_warm MUST read 1 in any sane baseline.
     //
-    // ahb_tx_hresp is ALSO a prime suspect and IS visible at top level, but the
-    // 16-bit map above is full. It is latched into a fourth sticky and surfaced
-    // on the dedicated dbg_ahb_tx_hresp_sticky_o pin below (routed to a free EMIO
-    // bit in the BD) rather than displacing any bit of the [15:0] word.
+    // The BD adds clk_wiz `locked` LIVE at EMIO[24] and proc_sys_reset
+    // `peripheral_aresetn` (== hresetn) LIVE at EMIO[25]; EMIO[31:26] const 0.
+    // clk_wiz `locked` is ALSO fed to dbg_locked_i below so a transient unlock
+    // latches into sticky_locked_low -- a live bit alone cannot catch a glitch.
+    // These are read-only taps; no datapath net is modified, so the proven manual
+    // recipe is untouched.
     // --------------------------------------------------------------------------
-    output wire              [15:0] dbg_emio_o,
+    output wire              [23:0] dbg_emio_o,
 
-    // SoC Labs off-fabric EMIO instrument (2026-07-09): the 4th sticky. See the
-    // dbg_emio_o comment -- ahb_tx_hresp (a top-level output, line ~163) is a
-    // prime wedge suspect but the [15:0] map is full, so its reset-less sticky
-    // latch is carried out here and the BD routes it to EMIO[18].
-    output wire                     dbg_ahb_tx_hresp_sticky_o,
+    // SoC Labs off-fabric EMIO instrument: clk_wiz_0 `locked` fed in as a live bit
+    // so a TRANSIENT MMCM unlock during training can be latched into a reset-less
+    // warm-up-gated sticky (sticky_locked_low, dbg_emio_o[14]). Today `locked`
+    // only reaches EMIO as a live bit, so a momentary unlock is invisible. Tie to
+    // 1'b1 in sim testbenches (an unconnected input would X-propagate).
+    input  wire                     dbg_locked_i,
 
     // --------------------------------------------------------------------------
     // Chiplet Controller Role Selection
@@ -793,41 +808,66 @@ module tidelink_top #(
     always @(posedge hclk) dbg_hb_count <= dbg_hb_count + 24'd1;
 
     // -------------------------------------------------------------------------
-    // Reset-LESS sticky latches (set-only). NO reset term by design: a
-    // reset-driven flop would freeze at 0 in both "clock stopped" and "reset
-    // asserted", which are the two cases we must tell apart. Each powers up to
-    // INIT=0 at configuration and latches its event forever once seen. dont_touch
-    // keeps synthesis from folding the single-set flop into its driver.
+    // Warm-up gate. Reset-LESS and SATURATING: the guard `if (!dbg_warmup[22])`
+    // stops it wrapping -- a wrapping counter would re-open the gate. It reaches
+    // 1 ~0.9 s after configuration at hclk = 4.687 MHz (2^22 * 213 ns). EVERY
+    // sticky below is qualified by dbg_warm so the POR window (hresetn low,
+    // role_is_master 0, MMCM briefly unlocked) can no longer set them on a
+    // healthy die. Do NOT reuse dbg_hb_count here: it free-runs and wraps every
+    // ~3.6 s, so its top bit toggles and would re-open and re-close the gate.
+    // -------------------------------------------------------------------------
+    (* dont_touch = "true" *) reg [22:0] dbg_warmup;
+    always @(posedge hclk) if (!dbg_warmup[22]) dbg_warmup <= dbg_warmup + 23'd1;
+    wire dbg_warm = dbg_warmup[22];   // warm-up done (saturates, never wraps)
+
+    // -------------------------------------------------------------------------
+    // Reset-LESS sticky latches (set-only), each WARM-UP-GATED. NO reset term by
+    // design: a reset-driven flop would freeze at 0 in both "clock stopped" and
+    // "reset asserted", which are the two cases we must tell apart. Each powers up
+    // to INIT=0 at configuration and latches its event forever once seen AFTER
+    // warm-up. The dbg_warm qualifier is what stops the POR window from saturating
+    // them on a healthy die. dont_touch keeps synthesis from folding the
+    // single-set flop into its driver.
     // -------------------------------------------------------------------------
     // hresetn EVER low. On silicon this discriminates a reset pulse from a bus
     // that erred for some other reason.
     (* dont_touch = "true" *) reg sticky_hresetn_low;
-    always @(posedge hclk) if (!hresetn) sticky_hresetn_low <= 1'b1;
+    always @(posedge hclk) if (dbg_warm && !hresetn) sticky_hresetn_low <= 1'b1;
 
     // role_is_master EVER 0. NOTE: on the SLAVE (FLIP) die role_is_master is 0
     // steady-state, so this reads 1 PERMANENTLY there and carries no information
     // -- it is ONLY meaningful on the MASTER die, where a transient dip to slave
     // during autonomous nego is exactly the LIVE-LEAD role-glitch we are hunting.
     (* dont_touch = "true" *) reg sticky_role_master_lost;
-    always @(posedge hclk) if (!role_is_master_o) sticky_role_master_lost <= 1'b1;
+    always @(posedge hclk) if (dbg_warm && !role_is_master_o) sticky_role_master_lost <= 1'b1;
 
     // apb_pslverr EVER high -- catches a one-cycle PSLVERR that a later sampled
     // read would miss. 0x018 external abort is a completed error response, so if
     // the PS-facing APB ever emits one this latches it.
     (* dont_touch = "true" *) reg sticky_apb_pslverr;
-    always @(posedge hclk) if (apb_pslverr) sticky_apb_pslverr <= 1'b1;
+    always @(posedge hclk) if (dbg_warm && apb_pslverr) sticky_apb_pslverr <= 1'b1;
 
-    // FOURTH sticky: ahb_tx_hresp EVER high. ahb_tx_hresp is a top-level output
-    // (a prime wedge suspect); surfaced on its own pin because the [15:0] map is
-    // full. Same reset-less set-only construction.
+    // ahb_tx_hresp EVER high. ahb_tx_hresp is a top-level output (a prime wedge
+    // suspect). Same reset-less set-only construction; now packed into the word
+    // at dbg_emio_o[10] (no longer a separate output pin).
     (* dont_touch = "true" *) reg sticky_ahb_tx_hresp;
-    always @(posedge hclk) if (ahb_tx_hresp) sticky_ahb_tx_hresp <= 1'b1;
-    assign dbg_ahb_tx_hresp_sticky_o = sticky_ahb_tx_hresp;
+    always @(posedge hclk) if (dbg_warm && ahb_tx_hresp) sticky_ahb_tx_hresp <= 1'b1;
 
-    assign dbg_emio_o = { dbg_hb_count[23:16],       // [15:8] hclk heartbeat
-                          sticky_hresetn_low,        // [7]  hresetn ever low
-                          sticky_role_master_lost,   // [6]  master role ever lost
-                          sticky_apb_pslverr,        // [5]  apb pslverr ever seen
+    // clk_wiz_0 `locked` EVER low after warm-up -- a TRANSIENT MMCM unlock during
+    // training. `locked` also reaches EMIO as a live bit (EMIO[24]); this sticky
+    // is the only thing that can catch a momentary glitch a sampled read misses.
+    // dbg_locked_i is tied to 1'b1 in sim (unconnected input would X-propagate).
+    (* dont_touch = "true" *) reg sticky_locked_low;
+    always @(posedge hclk) if (dbg_warm && !dbg_locked_i) sticky_locked_low <= 1'b1;
+
+    assign dbg_emio_o = { dbg_hb_count[23:16],       // [23:16] hclk heartbeat
+                          dbg_warm,                  // [15] warm-up done (must be 1)
+                          sticky_locked_low,         // [14] MMCM locked ever low
+                          sticky_hresetn_low,        // [13] hresetn ever low
+                          sticky_role_master_lost,   // [12] master role ever lost
+                          sticky_apb_pslverr,        // [11] apb pslverr ever seen
+                          sticky_ahb_tx_hresp,       // [10] ahb_tx_hresp ever seen
+                          5'b0,                      // [9:5] reserved
                           obs_fch_active_w,          // [4]  fch seq owns the APB
                           fc_cfg_apb_psel,           // [3]  FC adapter owns tl APB
                           role_is_master_o,          // [2]  master premise (live)

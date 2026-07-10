@@ -387,36 +387,36 @@ proc create_root_design { parentCell } {
     # off-fabric debug word onto PS EMIO GPIO, read at 0xE000_A068 (DATA_RO_2),
     # which never traverses the PL AXI slaves and so survives the wedge.
     #
-    #   dout[15:0]  = tidelink_0/dbg_emio_o                     (In0)
-    #   dout[16]    = clk_wiz_0/locked                LIVE       (In1)
-    #   dout[17]    = proc_sys_reset_0/peripheral_aresetn LIVE   (In2) (== hresetn)
-    #   dout[18]    = tidelink_0/dbg_ahb_tx_hresp_sticky_o       (In3) 4th sticky
-    #   dout[31:19] = 0 (xlconstant)                            (In4)
+    #   dout[23:0]  = tidelink_0/dbg_emio_o                     (In0)
+    #   dout[24]    = clk_wiz_0/locked                LIVE       (In1)
+    #   dout[25]    = proc_sys_reset_0/peripheral_aresetn LIVE   (In2) (== hresetn)
+    #   dout[31:26] = 0 (xlconstant)                            (In3)
     #  -> processing_system7_0/GPIO_I  (EMIO GPIO input member of the GPIO_0
     #     interface; GPIO_0_tri_i does NOT exist as a bd_pin in Vivado 2024.1 --
     #     the gpio_rtl interface members are GPIO_I/GPIO_O/GPIO_T. GPIO_O/GPIO_T
     #     left open, input-only.)
     #
-    # DEVIATION from spec (d): spec put a 14-bit const at In3 (EMIO[31:18]).
-    # ahb_tx_hresp is a VISIBLE top-level output and a prime wedge suspect, so
-    # its reset-less sticky is routed to EMIO[18] as In3; the const shrinks to
-    # 13 bits (EMIO[31:19]) as In4. The spec-(b) [15:0] word is untouched.
+    # The debug word widened to [23:0] (warm-up gate at [15], sticky_locked_low at
+    # [14], the 4 wedge stickies at [13:10], the ahb_tx_hresp sticky now folded in
+    # at [10] rather than a separate EMIO[18] pin). clk_wiz `locked` also drives
+    # tidelink_0/dbg_locked_i (below) so a TRANSIENT MMCM unlock latches into the
+    # sticky -- the live EMIO[24] tap alone cannot catch a glitch. The const at In3
+    # shrinks to 6 bits (EMIO[31:26]) so the concat still totals 32.
     #--------------------------------------------------------------------------
     set emio_concat [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_emio]
     set_property -dict [list \
-        CONFIG.NUM_PORTS {5} \
-        CONFIG.IN0_WIDTH {16} \
+        CONFIG.NUM_PORTS {4} \
+        CONFIG.IN0_WIDTH {24} \
         CONFIG.IN1_WIDTH {1} \
         CONFIG.IN2_WIDTH {1} \
-        CONFIG.IN3_WIDTH {1} \
-        CONFIG.IN4_WIDTH {13} \
+        CONFIG.IN3_WIDTH {6} \
     ] $emio_concat
 
     set emio_const [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_emio_pad]
     set_property -dict [list \
-        CONFIG.CONST_WIDTH {13} \
+        CONFIG.CONST_WIDTH {6} \
         CONFIG.CONST_VAL   {0} \
     ] $emio_const
 
@@ -705,12 +705,15 @@ proc create_root_design { parentCell } {
                    [get_bd_pins xlconcat_emio/In1]
     connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
                    [get_bd_pins xlconcat_emio/In2]
-    connect_bd_net [get_bd_pins tidelink_0/dbg_ahb_tx_hresp_sticky_o] \
-                   [get_bd_pins xlconcat_emio/In3]
     connect_bd_net [get_bd_pins xlconst_emio_pad/dout] \
-                   [get_bd_pins xlconcat_emio/In4]
+                   [get_bd_pins xlconcat_emio/In3]
     connect_bd_net [get_bd_pins xlconcat_emio/dout] \
                    [get_bd_pins processing_system7_0/GPIO_I]
+    #-- clk_wiz `locked` ALSO feeds tidelink_0/dbg_locked_i so a TRANSIENT MMCM
+    #   unlock latches into sticky_locked_low (dbg_emio_o[14]); the live EMIO[24]
+    #   tap alone cannot catch a glitch. Extra fan-out branch; single-driver net.
+    connect_bd_net [get_bd_pins clk_wiz_0/locked] \
+                   [get_bd_pins tidelink_0/dbg_locked_i]
 
     #-- PHC removed 2026-06-19: tie off tidelink_0 PHC *inputs* to 0.
     #   (tidelink_0 PHC outputs phc_hw_set_* / phc_hw_adj_* / phc_hw_capture /

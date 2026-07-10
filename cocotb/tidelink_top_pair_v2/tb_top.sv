@@ -525,6 +525,10 @@ module tb_top #(
         .link_active       (m_link_active),
         .d2d_reset_o       (m_d2d_reset_o),
 
+        // EMIO instrument: clk_wiz `locked` live input. No MMCM in sim -> tie 1
+        // (unconnected input X-propagates into sticky_locked_low, dbg_emio_o[14]).
+        .dbg_locked_i      (1'b1),
+
         // Role (master)
         .role_strap_i      (1'b0),
         .role_is_master_o  (m_role_is_master),
@@ -730,6 +734,10 @@ module tb_top #(
 
         .link_active       (s_link_active),
         .d2d_reset_o       (s_d2d_reset_o),
+
+        // EMIO instrument: clk_wiz `locked` live input. No MMCM in sim -> tie 1
+        // (unconnected input X-propagates into sticky_locked_low, dbg_emio_o[14]).
+        .dbg_locked_i      (1'b1),
 
         // Role (slave)
         .role_strap_i      (1'b1),

@@ -89,6 +89,22 @@ module axi_chiplet_controller #(
     // The FSM body is additionally `ifdef TIDELINK_PHY_V2 (it consumes V2-only
     // obs_sync_dist_vec / swi_phase_lsb), so in V1 it is absent regardless.
     parameter bit    WINSCAN_FSM_EN       = 1'b1,
+    // SoC Labs 2026-07-09 — WINSCAN CONVERGE-LOCK enable. Default 1'b0 =
+    // today's behaviour EXACTLY: every term this parameter gates (below) folds
+    // to a constant 0, so the cocotb / UVM / ASIC netlists are BIT-IDENTICAL to
+    // the pre-change build. Set 1'b1 (the FPGA vivado wrapper drives it, exactly
+    // as it drives NEGO_CFG_RESET=7'h61) to STOP the on-chip winscan sweep once
+    // the active lanes converge (all_sync_seen), so the periodic ~60-90 s
+    // calibrator recal (a training episode) no longer re-arms the sweep and
+    // knocks already-committed lanes back out of SYNC — the proven FAILOPEN
+    // lottery root cause. Two param-gated effects: (a) at the WS_FINALIZE
+    // post-dwell release, preempt the ws_verify_q clear-retry storm the moment
+    // reanchored & all_sync_seen hold; (b) a POR-cleared, set-once sticky
+    // (ws_conv_lock_q) latched on first convergence that gates ws_kick_evt so
+    // NO later training episode re-arms the winscan. The FIRST sweep still runs
+    // in full (finds a marginal lane's tap) — the lock latches only AFTER
+    // convergence, so the sweep's find-the-tap ability is preserved.
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
     // Per-tap settle dwell (apb_clk cycles). The host winscan sleeps ~50 ms per
     // tap so the IDELAYE2 reload + the cross-lane SYNC re-flood settle before
     // SYNC_DIST is sampled; 50 ms @ 50 MHz apb_clk ≈ 2.5 M cycles. Generous by
@@ -4236,8 +4252,38 @@ module axi_chiplet_controller #(
     //     ws_anchor_timeout_q / ws_anchor_late_q) as on any fresh episode.
     // Result: both dies' FINAL scans start within sub-ms of the same
     // bilateral ST_TRAIN_EXIT clear — the fixed-window rendezvous holds.
+    // ── WINSCAN CONVERGE-LOCK (param WINSCAN_CONVERGE_LOCK_EN) ────────────────
+    // Mask-aware "all active lanes have seen SYNC", computed in the apb_clk
+    // domain from the already-2FF-synced per-lane sync_seen vector
+    // (sync_obs_seen_vec_1 — the 0x215C RO value) AND the active-lane mask —
+    // the exact `&(sync_seen_vec | ~lane_mask)` predicate the deskew uses
+    // (see deskew all_sync_seen). Same apb_clk domain as ws_kick_evt /
+    // ws_conv_lock_q below, so no new CDC is introduced.
+    wire all_sync_seen_apb = &(sync_obs_seen_vec_1 | ~swi_sync_lane_mask_r);
+    // PRIMARY DEFENSE (REVIEW's load-bearing point): a POR-cleared, SET-ONCE
+    // convergence lock. It latches on the FIRST convergence and is NEVER
+    // cleared except by reset — so once the link has converged, no later
+    // training episode can re-arm the winscan. ws_kicked_q alone does NOT
+    // suffice: it clears on swi_training_mode_rise, and swi_training_mode =
+    // OR(cal, SW), so EVERY ~60-90 s calibrator recal is a training episode
+    // whose fall re-kicks the sweep and re-knocks committed lanes. Gated by
+    // WINSCAN_CONVERGE_LOCK_EN: when 0 the set condition is constant 0, so this
+    // reg folds to const-0 (bit-identical default-off). Same clock domain
+    // (apb_clk) as ws_kick_evt, per the REVIEW requirement.
+    reg ws_conv_lock_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            ws_conv_lock_q <= 1'b0;
+        else if (WINSCAN_CONVERGE_LOCK_EN & all_sync_seen_apb)
+            ws_conv_lock_q <= 1'b1;   // set-once; only reset clears it
+    end
+    // ws_kick_evt: the training-fall winscan (re-)arm. The added
+    // `~(WINSCAN_CONVERGE_LOCK_EN & ws_conv_lock_q)` term blocks EVERY re-arm
+    // after the first convergence when the lock is enabled; with the param off
+    // it reduces to `~(1'b0 & …)` = 1'b1, i.e. inert (bit-identical).
     wire ws_kick_evt = WINSCAN_FSM_EN & autonomy_armed &    // LOOP-9: armed-only
-                       swi_training_mode_fall & ~ws_kicked_q;
+                       swi_training_mode_fall & ~ws_kicked_q &
+                       ~(WINSCAN_CONVERGE_LOCK_EN & ws_conv_lock_q);
     reg  ws_kick_pending_q;
     // The FSM arms off the STICKY only — NOT the raw event — so the latch
     // set (evt cycle) and the FSM consume (the following cycle) are disjoint:
@@ -4618,7 +4664,22 @@ module axi_chiplet_controller #(
                     // re-confirm at the FINAL taps during this dwell.
                     if (ws_dwell_r != '0) begin
                         ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
-                    end else if (ws_anchor_q && ws_verify_q) begin
+                    end else if ((ws_anchor_q && ws_verify_q) ||
+                                 (WINSCAN_CONVERGE_LOCK_EN &&
+                                  ws_anchor_q && all_sync_seen_apb)) begin
+                        // WINSCAN CONVERGE-LOCK preempt (param-gated, 2026-07-09):
+                        // the second OR term releases FINALIZE the moment the
+                        // deskew has re-anchored (ws_anchor_q) AND all active
+                        // lanes have converged (all_sync_seen_apb), WITHOUT
+                        // waiting for the zero-tolerance anchor-verify sticky
+                        // (ws_verify_q). Waiting on ws_verify_q is what drives
+                        // the WS_FIN_CLRLOW clear-retry loop (ws_obs_clr re-pulsed
+                        // up to 5x) — the "knocker" that perturbs already-
+                        // committed lanes. `reanchored` already implies
+                        // all_sync_seen (deskew), so this term ≈ ws_anchor_q; it
+                        // is deliberately NOT re-gated on ws_verify_q. Param off ⇒
+                        // the whole term is const-0 ⇒ this branch is bit-identical
+                        // to the original `ws_anchor_q && ws_verify_q`.
                         // F4 ANCHOR GATE + R-A ANCHOR-VERIFY (2026-07-04):
                         // release only once the CDC'd deskew `reanchored`
                         // reads 1 (the on-chip equivalent of the manual host

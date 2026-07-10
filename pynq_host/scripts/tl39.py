@@ -23,7 +23,7 @@
 #   rxword            read 0x44010000 (slave local RX FIFO, single pop)
 #   rxn N             read N words from 0x44010000 (sequential pops)
 #   occ               read RX FIFO occupancy 0x4403200C
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -34,10 +34,41 @@ def mm(addr):
         maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return maps[base], addr - base
+
+# ---------------------------------------------------------------------------
+# SoC Labs 2026-07-09: rd()/wr() MUST be single aligned 32-bit bus accesses.
+#
+# These used struct.unpack_from / struct.pack_into on the mmap buffer. Measured
+# on silicon against the a2l write pointer (obs 0x44032158, bits [6:2]):
+#
+#     struct.pack_into("<I", m, o, v)   ->  wbin advanced by 5   (FIVE bus stores)
+#     ctypes.c_uint32.from_buffer(...)  ->  wbin advanced by 1   (one store)
+#
+# The struct/buffer path does not compile to one 32-bit access on this target;
+# each logical poke became ~5 AHB beats. That is the "TX 5x over-advance
+# phantom" -- it is the HOST, not the fc_adapter (tx_xfer_lock is exonerated).
+# It made A->B appear to die after ~6 app words, because 6 stores x 5 = ~32
+# packets = one full pktnum lap, which is where the real (RTL) bug detonated.
+# See memory/project_a2b_rootcause_fe_tx_credit_max_2026_07_09.md
+#
+# rd() is fixed for the same reason and it matters MORE: several apertures are
+# POP-on-read (rxn reads 0x44010000 as sequential pops; occ at 0x4403200C).
+# A multi-beat "single" read silently consumes extra FIFO entries and corrupts
+# the very measurement you are taking. Suspected cause of the still-unexplained
+# RX-aperture read model (payloads landing at unrelated slots, "clearing" the
+# ring perturbing it). Verify on silicon before trusting any delivery count.
+#
+# ctypes.c_uint32.from_buffer(m, o) creates a uint32 view AT the mmap offset --
+# .value is exactly one aligned 32-bit load/store. Do not "optimise" this back
+# to struct, and do not use memoryview slicing (same multi-beat hazard).
+# ---------------------------------------------------------------------------
+def _u32(a):
+    m, o = mm(a)
+    return ctypes.c_uint32.from_buffer(m, o)
 def rd(a):
-    m, o = mm(a); return struct.unpack_from("<I", m, o)[0]
+    return _u32(a).value
 def wr(a, v):
-    m, o = mm(a); struct.pack_into("<I", m, o, v & 0xFFFFFFFF)
+    _u32(a).value = v & 0xFFFFFFFF
 
 R8       = 0x44032100   # slot0: [0] swi_training_mode  [1] SWI_RECAL
 SLIPLO   = 0x44032104   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis
@@ -136,8 +167,37 @@ elif cmd == "txburst":
 elif cmd == "rxword":
     print("0x%08x" % rd(RXBASE))
 elif cmd == "rxn":
+    # -------------------------------------------------------------------------
+    # CORRECTED 2026-07-09. The comment that used to sit here claimed the RX
+    # window is "a 32-slot ADDRESSED ring, NOT a pop-FIFO". That is WRONG. It
+    # also contradicted this file's own docstring above ("rxn ... sequential
+    # pops"). Believing it produced a string of meaningless delivery counts.
+    #
+    # The RTL (src/rtl/fifo/tidelink_fifo_ctrl.sv) is unambiguous:
+    #   :141  translated_haddr = haddr + (hwrite ? write_ptr_r : read_ptr_r)
+    #         -> a read returns SRAM[(haddr + read_ptr)>>2]. The base MOVES;
+    #            offset i is NOT slot i.
+    #   :107  read_complete = valid & (haddr == read_target_addr_r) & ~hwrite
+    #   :118  on read_complete: read_ptr += (packet_delta<<2)   <- POP
+    #         -> reading the packet's LAST word pops the whole packet.
+    #   :201  a read of offset 0 latches the packet length from SRAM[31:20]
+    #         -> a drain MUST start at offset 0.
+    #   :184  a WRITE to offset 0 latches a NEW packet length -> writing zeros
+    #         to "clear" the window starts a bogus packet and walks write_ptr.
+    #
+    # Correct usage: `drain` (below). Never random-access, never write to RXBASE.
+    # Credit-instrumented version: pynq_host/scripts/tlfifo.py
+    # -------------------------------------------------------------------------
     n = int(sys.argv[2])
-    print(" ".join("0x%08x" % rd(RXBASE) for _ in range(n)))
+    print(" ".join("0x%08x" % rd(RXBASE + i * 4) for i in range(n)))
+elif cmd == "drain":
+    # Pop exactly one packet, correctly: hdr + dest + payload.
+    hdr = rd(RXBASE)                  # arms the length latch (fifo_ctrl:201)
+    length = (hdr >> 20) & 0xFFF      # payload word count
+    total = length + 2                # hdr + dest + payload
+    words = [hdr] + [rd(RXBASE + i * 4) for i in range(1, total)]
+    # the read of offset (length+1)*4 == read_target fires the pop
+    print("len=%d %s" % (length, " ".join("0x%08x" % w for w in words)))
 elif cmd == "occ":
     print("credit_count=%d (0x%08x)" % (rd(CREDIT) & 0xffff, rd(CREDIT)))
 elif cmd == "status":

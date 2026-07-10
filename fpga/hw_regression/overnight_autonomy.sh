@@ -123,21 +123,31 @@ power_cycle(){ local hub="$1" ip="$2" i
 # a CONFIDENT, WRONG headline attributing a bootpy clobber to the DUT.
 # deploy_pair.sh has NO bootpy awareness (and verifies loads via fpga_manager
 # state, the one check that cannot see a clobber).
+# Two bugs fixed after review, BOTH of which fail by deploying into the clobber
+# window or by aborting a healthy run:
+#  (1) TERMINAL STATE. An earlier version returned only on `inactive|failed`. If
+#      systemd reports `active` (a oneshot with RemainAfterExit=yes does exactly
+#      that), $st is non-empty so the uptime fallback is skipped and we spin to
+#      timeout and abort a perfectly good run. The correct invariant is the one
+#      deploy_pair.sh uses: PROCEED UNLESS `activating`.
+#  (2) THE EARLY-`inactive` RACE. Queried at uptime ~5-40 s, before systemd has
+#      started the unit, `is-active` answers `inactive` -- so "wait for inactive"
+#      lets us straight through, and base.bit lands ~45 s later. State alone is
+#      NOT sufficient. Require BOTH: not-activating AND uptime past the window.
+#      Measured: the unit finishes ~85-90 s after boot; 120 s is a safe floor.
+BOOTPY_SAFE_UPTIME=${BOOTPY_SAFE_UPTIME:-120}
 wait_bootpy(){ local ip="$1" i st up
-  for i in $(seq 1 60); do
-    st=$($SSH xilinx@"$ip" "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '\r')
-    up=$($SSH xilinx@"$ip" "cut -d. -f1 /proc/uptime" 2>/dev/null | tr -d '\r')
-    case "$st" in
-      inactive|failed) log "  $ip: bootpy $st (uptime ${up}s) -> safe to deploy"; return 0;;
-    esac
-    # belt & braces: if the unit is missing/unqueryable, fall back on uptime
-    if [ -z "$st" ] && [ -n "$up" ] && [ "$up" -gt 150 ]; then
-      log "  $ip: bootpy unqueryable, uptime ${up}s > 150s -> proceeding"; return 0
+  for i in $(seq 1 72); do
+    st=$($SSH xilinx@"$ip" "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+    up=$($SSH xilinx@"$ip" "cut -d. -f1 /proc/uptime" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$up" ] && [ "$up" -ge "$BOOTPY_SAFE_UPTIME" ] && [ "$st" != "activating" ]; then
+      log "  $ip: bootpy=${st:-<unqueryable>} uptime=${up}s (>=${BOOTPY_SAFE_UPTIME}s) -> safe to deploy"
+      return 0
     fi
-    [ $(( i % 6 )) -eq 1 ] && log "  $ip: waiting for bootpy (state=$st uptime=${up}s)"
+    [ $(( i % 6 )) -eq 1 ] && log "  $ip: waiting for bootpy (state=${st:-?} uptime=${up:-?}s)"
     sleep 5
   done
-  say "ABORT: bootpy.service never went inactive on $ip; a deploy now would be clobbered."
+  say "ABORT: bootpy.service still not safe on $ip after 6 min; a deploy now would be clobbered."
   exit 33; }
 
 recover(){ # $1 = reason

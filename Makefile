@@ -204,7 +204,8 @@ endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab \
+	sim_gate_asicelab
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -266,13 +267,33 @@ sim_gate_v1elab:
 	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=0 TB_TOP_NO_DUMP=1 \
 	  SIM_BUILD=sim_build_v1elab $(MAKE) sim_build_v1elab/simv)
 
+# --- ASIC (chip-build) flist elaboration check -------------------------------
+# The v1_elab suite above elaborates only the cocotb *sim* flist. The a405809
+# class of breakage (an obs_* port threaded into a src/rtl/local_overrides
+# module while the ASIC flist still sources the deps/ submodule copy that lacks
+# the port) breaks the *chip-build* flist — flists/tidelink_top_full_asic.flist,
+# the DEFAULT of syn/asic/*/Makefile (MODULE=tidelink_top_full) — but NOT the
+# cocotb V2 sim, so a V2-only gate never sees it. This compiles the ASIC flist
+# with plain VCS (compile+elaborate, no TB, top=tidelink_top) plus a
+# behavioural rf_16k SRAM stub (Fusion Compiler binds the real macro from the
+# tech library at read_design). Any Error- / non-zero rc => FAIL. ~15 s.
+sim_gate_asicelab:
+	$(call sim_gate_run,asic_v1_elab,\
+	  rm -rf cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  mkdir -p cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  cd cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  vcs -full64 -sverilog -timescale=1ns/1ps \
+	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic.flist \
+	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
+	    -top tidelink_top +define+TB_TOP_NO_DUMP -l vcs_asicelab.log)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v1_elab
+	v2_winscan_fsm v1_elab asic_v1_elab
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm v1_elab
+	v2_autonomous_sync_detect v2_winscan_fsm v1_elab asic_v1_elab
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -286,12 +307,13 @@ sim_gate_clean_builds:
 	@rm -rf cocotb/tidelink_top_pair/sim_build_l4 \
 	        cocotb/tidelink_top_pair/sim_build_l5 \
 	        cocotb/tidelink_top_pair_v2/sim_build_zero \
-	        cocotb/tidelink_top_pair/sim_build_v1elab
+	        cocotb/tidelink_top_pair/sim_build_v1elab \
+	        cocotb/tidelink_top_pair/sim_build_asicelab
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (8 suites)"
+	@echo " sim_gate — full aggregate sim gate (9 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -301,6 +323,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -313,6 +336,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

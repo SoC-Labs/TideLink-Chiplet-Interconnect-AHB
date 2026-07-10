@@ -110,6 +110,36 @@ power_cycle(){ local hub="$1" ip="$2" i
   done
   say "ABORT: $hub did not come back after power-cycle."; exit 32; }
 
+# ---------------------------------------------------------------------------
+# WAIT FOR bootpy.service. PROVEN 2026-07-10: both PYNQ boards ship an ENABLED
+# `bootpy.service` that runs /boot/boot.py -> BaseOverlay("base.bit") ~85-90 s
+# after EVERY boot. Any bitstream deployed before it lands is silently overwritten.
+# base.bit leaves 0x4403_xxxx / 0x84xx_xxxx UNMAPPED, so the AXI-GP interconnect
+# answers DECERR -> Linux `external abort on non-linefetch (0x018)` -> every PL
+# read SIGBUSes, while `fpga_manager/state` still cheerfully reads "operating".
+#
+# Without this wait, the run deploys into the window, the die reads fine for ~85 s,
+# then dies -- and the driver reports "die_a wedged when die_b was armed". That is
+# a CONFIDENT, WRONG headline attributing a bootpy clobber to the DUT.
+# deploy_pair.sh has NO bootpy awareness (and verifies loads via fpga_manager
+# state, the one check that cannot see a clobber).
+wait_bootpy(){ local ip="$1" i st up
+  for i in $(seq 1 60); do
+    st=$($SSH xilinx@"$ip" "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '\r')
+    up=$($SSH xilinx@"$ip" "cut -d. -f1 /proc/uptime" 2>/dev/null | tr -d '\r')
+    case "$st" in
+      inactive|failed) log "  $ip: bootpy $st (uptime ${up}s) -> safe to deploy"; return 0;;
+    esac
+    # belt & braces: if the unit is missing/unqueryable, fall back on uptime
+    if [ -z "$st" ] && [ -n "$up" ] && [ "$up" -gt 150 ]; then
+      log "  $ip: bootpy unqueryable, uptime ${up}s > 150s -> proceeding"; return 0
+    fi
+    [ $(( i % 6 )) -eq 1 ] && log "  $ip: waiting for bootpy (state=$st uptime=${up}s)"
+    sleep 5
+  done
+  say "ABORT: bootpy.service never went inactive on $ip; a deploy now would be clobbered."
+  exit 33; }
+
 recover(){ # $1 = reason
   RECOVERIES=$((RECOVERIES+1))
   log "RECOVERY $RECOVERIES/$MAX_RECOVERIES — $1"
@@ -161,11 +191,25 @@ log "Phase 1: power-cycle both boards to a known state, then deploy both"
 power_cycle "$HUB_A" "$A_IP"; power_cycle "$HUB_B" "$B_IP"
 for i in $(seq 1 24); do boards_up 2>/dev/null && break; sleep 5; done
 boards_up || { say "ABORT: boards never came up after the initial power-cycle."; exit 4; }
+# MANDATORY before any deploy — see wait_bootpy(). z2_01 answers SSH in ~5 s, so
+# its deploy lands INSIDE the bootpy window; z2_02 takes ~65 s and usually lands
+# after. That latency difference is the entire reason z2_01 has looked "fragile"
+# and z2_02 "clean" -- an SSH-latency artefact, not board health.
+log "waiting for bootpy.service on both boards (it clobbers the PL at ~85s)"
+wait_bootpy "$A_IP"; wait_bootpy "$B_IP"
 deploy_pair; sleep 3
 deploy_pair; sleep 3          # double-pass: the proven deploy order
-die_alive a || { say "ABORT: die_a has no PL register access after deploy (stale/bad bitstream?)."; exit 5; }
+# Verify by READING a PL register. Never trust fpga_manager/state: it reads
+# "operating" even when base.bit has replaced our design.
+die_alive a || { say "ABORT: die_a has no PL register access after deploy (clobbered or bad bitstream)."; exit 5; }
 die_alive b || { say "ABORT: die_b has no PL register access after deploy."; exit 5; }
-log "both dies deployed and register-readable"
+log "both dies deployed and register-readable (verified by PL read, not fpga_manager)"
+# Hold, then re-verify: a bootpy clobber would land within ~90 s of boot. If a die
+# was alive and is now dead WITHOUT us arming anything, the baseline is not healthy
+# and Phase 2's result would be meaningless.
+sleep 30
+die_alive a && die_alive b || { say "ABORT: a die died 30s after deploy with NO arm issued -> baseline unhealthy (bootpy or worse). Phase 2 would be uninterpretable."; exit 6; }
+log "baseline VERIFIED HEALTHY: both dies alive 30s after deploy, no writes issued"
 
 # ==================== Phase 2 — THE DECISIVE EXPERIMENT =======================
 # Prior silicon (sibling, measured): arming die_a ALONE is harmless; die_a's PS
@@ -188,19 +232,29 @@ P2="$RUNDIR/phase2.txt"
 } | tee -a "$P2" | tee -a "$RUNDIR/run.log"
 
 if die_alive a; then
-  say "PHASE 2: **PASS** — die_a's PS bus SURVIVED the arming of die_b."
-  say "         The fc_cfg APB preempt fix (tidelink_top.sv ext_lock_q) HOLDS ON SILICON."
-  say "         Pre-fix, this write killed die_a's bus every time."
-  log "Phase 2 PASS"
+  say "PHASE 2: **die_a SURVIVED the peered arm.**"
+  say "         From a verified-healthy, post-bootpy baseline, arming die_b did not"
+  say "         kill die_a's PS bus. Historically this write killed it every time."
+  say "         CAUTION on attribution: the fc_cfg APB preempt fix (ext_lock_q) is in"
+  say "         this bitstream, but it was REFUTED as the wedge cause (wrong shape:"
+  say "         the wedge is a completed external-abort 0x018, not an unbounded stall;"
+  say "         wrong coverage: the wedge also faults 0x4403_0xxx and 0x8401_0000,"
+  say "         which fc_cfg cannot reach). So a PASS here does NOT prove that fix"
+  say "         closed it. It may equally mean the historical deaths were bootpy"
+  say "         clobbers, which this run is the first to exclude. Do not over-claim."
+  log "Phase 2: die_a survived"
 else
-  say "PHASE 2: **FAIL** — die_a's PS bus DIED when die_b was armed."
-  say "         The fc_cfg preempt fix does NOT close the silicon wedge."
-  say "         It is proven in sim (FAIL pre-fix / PASS post-fix), so either the"
-  say "         packaged IP does not contain it (check imp/fpga/tidelink_ip/src for"
-  say "         ext_lock_q -- the stale package_ip trap), or a SECOND unbounded"
-  say "         stall exists on the PS path. STOPPING: this is the headline result;"
-  say "         20 soak cycles would only bury it."
-  log "Phase 2 FAIL — stopping by design"
+  say "PHASE 2: **die_a DIED when die_b was armed** (baseline was verified healthy,"
+  say "         post-bootpy, and no other write was issued). This isolates the"
+  say "         PRODUCTION WEDGE: it requires a LIVE PEER, and it is not bootpy."
+  say "         Next: capture the fault class. external abort 0x018 => interconnect"
+  say "         DECERR (address unmapped) rather than a slave stall. Check dmesg on"
+  say "         die_a and which apertures fault (0x4403_2xxx vs 0x4403_0xxx vs 0x8401_0000)."
+  say "         STOPPING: this is the headline; 20 soak cycles would bury it."
+  log "Phase 2: die_a wedged on the peered arm — stopping by design"
+  { echo '--- die_a dmesg tail ---'
+    $SSH xilinx@$A_IP "dmesg | tail -25" 2>/dev/null; } >> "$RUNDIR/phase2_dmesg.txt" 2>&1
+  say "         dmesg captured -> phase2_dmesg.txt"
   exit 10
 fi
 

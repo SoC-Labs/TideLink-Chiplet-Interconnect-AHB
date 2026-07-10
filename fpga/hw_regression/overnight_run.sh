@@ -59,11 +59,21 @@ say "both bitstreams are newer than the packaged IP: OK"
 # ---------------- 4. stage to mapstone-dev ------------------------------------
 say "staging to mapstone-dev:$STAGE"
 ssh mapstone-dev "mkdir -p $STAGE" || die "cannot mkdir $STAGE"
+# ALWAYS regenerate the .bin from the freshly built .bit. NEVER reuse one found
+# on disk: the flip target carried a `tidelink.bit.bin` from Jun 28 next to a
+# Jul 10 `.bit`. Preferring it would have deployed a two-week-old bitstream to
+# die_b against a fresh die_a -- a silently mixed pair, and every conclusion from
+# it worthless. Regenerate, then assert the .bin is newer than the .bit.
 stage_one(){ # $1=target dir  $2=dest basename
-  local d="$ROOT/imp/fpga/output/$1" bin
-  bin="$d/tidelink.bit.bin"; [ -f "$bin" ] || bin="$d/tidelink.bin"
-  [ -f "$bin" ] || die "$1: no .bin (bootgen step missing)"
-  scp -q "$bin"          "mapstone-dev:$STAGE/$2.bin" || die "scp $2.bin"
+  local d="$ROOT/imp/fpga/output/$1" bit="$d/tidelink.bit" bin="$d/tidelink.bin"
+  [ -f "$bit" ] || die "$1: no tidelink.bit"
+  rm -f "$bin" "$d/tidelink.bit.bin"          # kill any stale artefact outright
+  python3 "$ROOT/fpga/scripts/bit2bin.py" "$bit" "$bin" >>"$LOG" 2>&1 \
+    || die "$1: bit2bin failed"
+  [ -s "$bin" ] || die "$1: bit2bin produced an empty .bin"
+  [ "$bin" -nt "$bit" ] || [ "$bin" -ef "$bit" ] || die "$1: regenerated .bin is not newer than .bit"
+  say "  $1: .bin regenerated from $(date -r "$bit" '+%b%d %H:%M') bitstream ($(stat -c%s "$bin") bytes)"
+  scp -q "$bin"            "mapstone-dev:$STAGE/$2.bin" || die "scp $2.bin"
   scp -q "$d/tidelink.hwh" "mapstone-dev:$STAGE/$2.hwh" || die "scp $2.hwh"; }
 stage_one pynq-z2-pair-all      tidelink
 stage_one pynq-z2-pair-flip-all tidelink-flip

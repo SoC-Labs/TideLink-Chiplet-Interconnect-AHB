@@ -32,12 +32,19 @@ cat "$ROOT"/imp/sim_gate/*.status 2>/dev/null | sort | tee -a "$LOG"
 [ "$pass" -eq "$tot" ] || die "sim_gate RED ($pass/$tot). No build, no deploy."
 
 # ---------------- 2. build both targets ---------------------------------------
-say "building iter-5 (TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1)"
+# SKIP_BUILD=1 resumes an already-built tree. The integrity check in step 3 is
+# NOT skipped -- it is what proves the bitstreams on disk contain the fix, and a
+# resume is exactly when a stale tree would slip through.
 cd "$ROOT" || die "no root"
-export TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1
-./fpga/scripts/build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936 \
-   >>"$ROOT/farm_build_iter5.log" 2>&1 || die "build_farm failed (see farm_build_iter5.log)"
-say "build finished"
+if [ "${SKIP_BUILD:-0}" = 1 ]; then
+  say "SKIP_BUILD=1 — reusing the bitstreams already on disk (integrity still enforced)"
+else
+  say "building iter-5 (TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1)"
+  export TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1
+  ./fpga/scripts/build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936 \
+     >>"$ROOT/farm_build_iter5.log" 2>&1 || die "build_farm failed (see farm_build_iter5.log)"
+  say "build finished"
+fi
 
 # ---------------- 3. BUILD INTEGRITY: is the fix actually IN the IP? ----------
 # The bitstream being newer than the RTL proves nothing -- package_ip can ship a

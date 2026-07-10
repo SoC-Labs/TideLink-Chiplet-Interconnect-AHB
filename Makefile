@@ -202,7 +202,7 @@ define sim_gate_run
 	echo "[sim_gate] $$st $(1) ($${dt}s)"
 endef
 
-.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog \
+.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
 
@@ -260,6 +260,19 @@ sim_gate_fch_wdog:
 	$(call sim_gate_run,fch_apb_watchdog,\
 	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_fch_apb_watchdog)
 
+# TRUE zero-poke: BYPASS_AUTONEG=1 (the tb force block is dead) + the POR parameter
+# NEGO_CFG_RESET=7'h61 (=97) via +define. Proves autonomy arms from POR with ZERO
+# APB writes to NEGO_CFG/NEGO_TRAIN_CFG — the mandated deliverable. A passive
+# monitor fails on any such write. Separate SIM_BUILD (BYPASS_AUTONEG differs from
+# the gate default, so it must not reuse the l4 simv). The FAIL-FIRST 7'h00 case is
+# deliberately NOT gated — it is meant to fail.
+sim_gate_zeropoke:
+	$(call sim_gate_run,zeropoke_por,\
+	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=1 BYPASS_AUTONEG=1 TB_TOP_NO_DUMP=1 \
+	  COCOTB_RESOLVE_X=ZEROS SIM_BUILD=sim_build_zeropoke \
+	  EXTRA_DEFINES="+define+TB_TOP_SHORT_CAL_HOLD=64 +define+TB_TOP_NEGO_CFG_RESET=97" \
+	  $(MAKE) MODULE=test_zeropoke_por)
+
 # --- tidelink_top_pair_v2 suites (EPOCH_PROFILE=zero) ------------------------
 sim_gate_v2_data:
 	$(call sim_gate_run,v2_pair_data,\
@@ -280,7 +293,8 @@ sim_gate_v2_winscan:
 # run_v1elab_*.log recipe.
 sim_gate_v1elab:
 	$(call sim_gate_run,v1_elab,\
-	  rm -rf cocotb/tidelink_top_pair/sim_build_v1elab && \
+	  rm -rf cocotb/tidelink_top_pair/sim_build_v1elab \
+	        cocotb/tidelink_top_pair/sim_build_zeropoke && \
 	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=0 TB_TOP_NO_DUMP=1 \
 	  SIM_BUILD=sim_build_v1elab $(MAKE) sim_build_v1elab/simv)
 
@@ -289,12 +303,12 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v1_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 	v2_autonomous_sync_detect v2_winscan_fsm v1_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -308,12 +322,13 @@ sim_gate_clean_builds:
 	@rm -rf cocotb/tidelink_top_pair/sim_build_l4 \
 	        cocotb/tidelink_top_pair/sim_build_l5 \
 	        cocotb/tidelink_top_pair_v2/sim_build_zero \
-	        cocotb/tidelink_top_pair/sim_build_v1elab
+	        cocotb/tidelink_top_pair/sim_build_v1elab \
+	        cocotb/tidelink_top_pair/sim_build_zeropoke
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (10 suites)"
+	@echo " sim_gate — full aggregate sim gate (11 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -325,6 +340,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -339,6 +355,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

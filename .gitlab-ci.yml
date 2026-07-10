@@ -191,6 +191,20 @@ strip-generalbus-check:
   script:
     - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
 
+merge-guard:
+  # Asserts that silicon-proven fixes have NOT been reverted by a merge:
+  # fe_tx_credit_max_eff (the A->B fix — die_b trunk has 0), and the fc_cfg APB
+  # arbiter (ext_lock_q / EXT_STALL_LIMIT). Resolving those files toward the wrong
+  # trunk silently reverts them with every sim still green — a dead chip that no
+  # functional test catches. A grep is cheap; a respin is not.
+  # allow_failure:true so feature branches predating a fix are not blocked; flip to
+  # false on the integ/main merge path once the baseline carries all three.
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && bash fpga/scripts/merge_guard.sh
+  allow_failure: true
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]

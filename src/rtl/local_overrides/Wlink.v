@@ -276,17 +276,6 @@ module Wlink #(
   // pointer (== link_cur_addr). Both link-clk domain, read-only fan-outs.
   output         obs_a2l_rreset_o,            // link domain (read-side FIFO reset)
   output [4:0]   obs_a2l_rptr_o,              // link domain (LINK read bin ptr)
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — David Mapstone.
-  // Pass-through of the a2l replay CDC "tear surface". Read-only fan-outs (NO
-  // functional change). Packed into APB obs reg 0x4403_21BC (marker 0xCB).
-  output [4:0]   obs_a2l_link_addr_o,         // link domain (ACK ptr, CDC input)
-  output [4:0]   obs_mbx_raddr_o,             // app  domain (synced output = synced_ack)
-  output [4:0]   obs_mbx_mem_0_o,             // link/w_clk domain (mailbox slot 0)
-  output [4:0]   obs_mbx_mem_1_o,             // link/w_clk domain (mailbox slot 1)
-  output         obs_mbx_wptr_o,              // link/w_clk domain (mailbox wptr)
-  output         obs_mbx_rptr_o,              // app /r_clk domain (mailbox rptr)
-  output         obs_mbx_w_ready_o,           // link/w_clk domain (mailbox w_ready)
-  output         obs_mbx_r_ready_o,           // app /r_clk domain (mailbox r_ready)
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
   output [7:0]   obs_fe_rx_ptr_o,             // tx domain
   // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
@@ -427,15 +416,6 @@ module Wlink #(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
   wire       tl2wl_io_obs_a2l_rreset;
   wire [4:0] tl2wl_io_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-out wires)
-  wire [4:0] tl2wl_io_obs_a2l_link_addr;
-  wire [4:0] tl2wl_io_obs_mbx_raddr;
-  wire [4:0] tl2wl_io_obs_mbx_mem_0;
-  wire [4:0] tl2wl_io_obs_mbx_mem_1;
-  wire       tl2wl_io_obs_mbx_wptr;
-  wire       tl2wl_io_obs_mbx_rptr;
-  wire       tl2wl_io_obs_mbx_w_ready;
-  wire       tl2wl_io_obs_mbx_r_ready;
   // SoC Labs FC credit observation 2026-06-12
   wire [7:0] tl2wl_io_obs_fe_rx_ptr;
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — packed
@@ -1094,15 +1074,6 @@ module Wlink #(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO fan-out)
   assign obs_a2l_rreset_o            = tl2wl_io_obs_a2l_rreset;
   assign obs_a2l_rptr_o              = tl2wl_io_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs)
-  assign obs_a2l_link_addr_o         = tl2wl_io_obs_a2l_link_addr;
-  assign obs_mbx_raddr_o             = tl2wl_io_obs_mbx_raddr;
-  assign obs_mbx_mem_0_o             = tl2wl_io_obs_mbx_mem_0;
-  assign obs_mbx_mem_1_o             = tl2wl_io_obs_mbx_mem_1;
-  assign obs_mbx_wptr_o              = tl2wl_io_obs_mbx_wptr;
-  assign obs_mbx_rptr_o              = tl2wl_io_obs_mbx_rptr;
-  assign obs_mbx_w_ready_o           = tl2wl_io_obs_mbx_w_ready;
-  assign obs_mbx_r_ready_o           = tl2wl_io_obs_mbx_r_ready;
   // SoC Labs FC credit observation 2026-06-12
   assign obs_fe_rx_ptr_o             = tl2wl_io_obs_fe_rx_ptr;
   assign obs_llrx_state_o        = llrx_io_obs_state;
@@ -1873,15 +1844,6 @@ module Wlink #(
     // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
     .io_obs_a2l_rreset(tl2wl_io_obs_a2l_rreset),
     .io_obs_a2l_rptr(tl2wl_io_obs_a2l_rptr),
-    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-outs)
-    .io_obs_a2l_link_addr(tl2wl_io_obs_a2l_link_addr),
-    .io_obs_mbx_raddr(tl2wl_io_obs_mbx_raddr),
-    .io_obs_mbx_mem_0(tl2wl_io_obs_mbx_mem_0),
-    .io_obs_mbx_mem_1(tl2wl_io_obs_mbx_mem_1),
-    .io_obs_mbx_wptr(tl2wl_io_obs_mbx_wptr),
-    .io_obs_mbx_rptr(tl2wl_io_obs_mbx_rptr),
-    .io_obs_mbx_w_ready(tl2wl_io_obs_mbx_w_ready),
-    .io_obs_mbx_r_ready(tl2wl_io_obs_mbx_r_ready),
     // SoC Labs FC credit observation 2026-06-12
     .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr),
     // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)

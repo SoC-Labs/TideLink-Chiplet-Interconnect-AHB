@@ -5,23 +5,7 @@ module WlinkGenericFCReplayAddrSync_18(
   input  [4:0] w_addr,
   input        r_clk,
   input        r_reset,
-  output [4:0] r_addr,
-  // ---------------------------------------------------------------------------
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 -- David Mapstone.
-  // Purely additive read-only fan-outs (NO functional change): this module's
-  // synced output ptr `raddr` plus the internal WavMultibitSync ping-pong
-  // mailbox nets threaded up from the addrsync submodule. Only the a2l path
-  // (WlinkGenericFCReplayV2_13) consumes these; the shared l2a / _12 instances
-  // leave them unconnected (named ports).
-  //   obs_raddr     = raddr (the synced ACK ptr = a2l synced_ack, app domain)
-  //   obs_mbx_*     = WavMultibitSync internal mailbox nets (tear surface)
-  output [4:0] obs_raddr,
-  output [4:0] obs_mbx_mem_0,
-  output [4:0] obs_mbx_mem_1,
-  output       obs_mbx_wptr,
-  output       obs_mbx_rptr,
-  output       obs_mbx_w_ready,
-  output       obs_mbx_r_ready
+  output [4:0] r_addr
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -37,13 +21,6 @@ module WlinkGenericFCReplayAddrSync_18(
   wire [4:0] addrsync_r_data; // @[FC.scala 826:29]
   wire  addrsync_r_ready; // @[FC.scala 826:29]
   reg [4:0] raddr; // @[FC.scala 823:73]
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-out wires)
-  wire [4:0] addrsync_obs_mem_0;
-  wire [4:0] addrsync_obs_mem_1;
-  wire       addrsync_obs_wptr;
-  wire       addrsync_obs_rptr;
-  wire       addrsync_obs_w_ready;
-  wire       addrsync_obs_r_ready;
   WavMultibitSync_18 addrsync ( // @[FC.scala 826:29]
     .w_clk(addrsync_w_clk),
     .w_reset(addrsync_w_reset),
@@ -54,24 +31,9 @@ module WlinkGenericFCReplayAddrSync_18(
     .r_reset(addrsync_r_reset),
     .r_inc(addrsync_r_inc),
     .r_data(addrsync_r_data),
-    .r_ready(addrsync_r_ready),
-    // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs)
-    .obs_mem_0(addrsync_obs_mem_0),
-    .obs_mem_1(addrsync_obs_mem_1),
-    .obs_wptr(addrsync_obs_wptr),
-    .obs_rptr(addrsync_obs_rptr),
-    .obs_w_ready(addrsync_obs_w_ready),
-    .obs_r_ready(addrsync_obs_r_ready)
+    .r_ready(addrsync_r_ready)
   );
   assign r_addr = raddr; // @[FC.scala 838:21]
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs, NO func change)
-  assign obs_raddr       = raddr;
-  assign obs_mbx_mem_0   = addrsync_obs_mem_0;
-  assign obs_mbx_mem_1   = addrsync_obs_mem_1;
-  assign obs_mbx_wptr    = addrsync_obs_wptr;
-  assign obs_mbx_rptr    = addrsync_obs_rptr;
-  assign obs_mbx_w_ready = addrsync_obs_w_ready;
-  assign obs_mbx_r_ready = addrsync_obs_r_ready;
   assign addrsync_w_clk = w_clk; // @[FC.scala 827:21]
   assign addrsync_w_reset = w_reset; // @[FC.scala 828:21]
   assign addrsync_w_inc = w_inc; // @[FC.scala 829:21]

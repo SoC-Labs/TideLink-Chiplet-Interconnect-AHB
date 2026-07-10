@@ -191,6 +191,26 @@ strip-generalbus-check:
   script:
     - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
 
+merge-guard:
+  # Assert silicon-proven fixes have NOT been reverted by a merge/rebase:
+  #   * WlinkGenericFCSM_6.v  fe_tx_credit_max_eff  — the A->B credit fix; the
+  #     die_b trunk has ZERO. Resolving that file toward die_b => dead A->B link,
+  #     silently, with every sim still green.
+  #   * tidelink_top.sv  ext_lock_q / EXT_STALL_LIMIT  — the fc_cfg APB arbiter.
+  #     Without it an in-flight PS/AHB access is preempted mid-ACCESS and never
+  #     gets PREADY => Zynq M_AXI_GP (no timeout) / cmsdk_ahb_to_apb hangs forever.
+  # A grep is cheap; a respin is not. BLOCKING (allow_failure:false): a tree
+  # missing any silicon-proven fix must not build or tape out. A feature branch
+  # that predates a fix must MERGE the fix in, not weaken this gate.
+  # NOTE: merge_guard.sh's count-capture was fixed 2026-07-10 — the prior
+  # `grep -c ... || echo 0` false-passed on a 0-count token (it could NEVER fail,
+  # measured green on a tree with all three fixes reverted). See the script header.
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && bash fpga/scripts/merge_guard.sh
+  allow_failure: false
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]
@@ -264,6 +284,38 @@ spyglass-cdc:
     - export TIDELINK_HOME="$WORK_DIR"
     - export DESIGNWARE_HOME="$VIP_HOME"
     - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
+
+sim-gate:
+  # THE pre-deploy / pre-tapeout gate. cocotb-regression (below) runs the broad
+  # unit envs but NOT the paired-die autonomy suites, NOT V1 elaboration, and NOT
+  # the ASIC-flist elaboration — exactly how a405809 (undefined obs ports in the
+  # V1/ASIC flists) reached the trunk while every CI job stayed green. `make
+  # sim_gate` already existed and was wired into ZERO CI jobs. This is that job.
+  # 9 suites: t30/t31/t32/t33 (paired-die zero-poke chain), v2_pair_data,
+  # v2_autonomous_sync_detect, v2_winscan_fsm, v1_elab, and zeropoke_por — TRUE
+  # zero-poke POR bring-up: both dies arm from NEGO_CFG_RESET=7'h61 with ZERO APB
+  # writes to NEGO_CFG/NEGO_TRAIN_CFG (a passive sticky monitor fails on any such
+  # write). zeropoke_por proves the mandated deliverable. BLOCKING (allow_failure:
+  # false) — this is a hard merge/tapeout gate.
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - cd "$WORK_DIR" && make sim_gate
+  after_script:
+    - mkdir -p sim_gate
+    - cp "$WORK_DIR/imp/sim_gate/"*.status "sim_gate/" 2>/dev/null || true
+    - cp "$WORK_DIR/imp/sim_gate/"*.log     "sim_gate/" 2>/dev/null || true
+  allow_failure: false
+  artifacts:
+    when: always
+    paths:
+      - sim_gate/*.status
+      - sim_gate/*.log
+    expire_in: 30 days
 
 cocotb-regression:
   stage: regression

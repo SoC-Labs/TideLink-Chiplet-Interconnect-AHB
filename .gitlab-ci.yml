@@ -265,6 +265,37 @@ spyglass-cdc:
     - export DESIGNWARE_HOME="$VIP_HOME"
     - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
 
+sim-gate:
+  # THE pre-deploy / pre-tapeout gate. `cocotb-regression` below runs the broad
+  # unit envs but NOT the paired-die autonomy suites, NOT V1 elaboration, and NOT
+  # the ASIC-flist elaboration — which is exactly how a405809 (undefined obs ports
+  # in the V1/ASIC flists) reached the trunk while every CI job stayed green.
+  # `make sim_gate` already existed and was wired into NO CI job. This is that job.
+  # 10 suites: t30/t31/t32/t33 (paired-die zero-poke chain), v2_pair_data,
+  # v2_autonomous_sync_detect, v2_winscan_fsm, v1_elab, apb_fc_cfg_preempt,
+  # fch_apb_watchdog. The last two lock PS-hang bugs that cost a physical power
+  # cycle. Non-blocking flagged via allow_failure until it has a green baseline on
+  # the trunk, then flip allow_failure:false to make it a hard merge gate.
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - cd "$WORK_DIR" && make sim_gate
+  after_script:
+    - mkdir -p sim_gate
+    - cp "$WORK_DIR/imp/sim_gate/"*.status "sim_gate/" 2>/dev/null || true
+    - cp "$WORK_DIR/imp/sim_gate/"*.log     "sim_gate/" 2>/dev/null || true
+  allow_failure: true      # FLIP to false once green on the trunk (see comment)
+  artifacts:
+    when: always
+    paths:
+      - sim_gate/*.status
+      - sim_gate/*.log
+    expire_in: 30 days
+
 cocotb-regression:
   stage: regression
   needs: [clone, preflight]

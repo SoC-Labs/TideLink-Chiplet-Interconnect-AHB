@@ -113,6 +113,25 @@ module tb_top #(
     //   Default = 0 (preserve existing tests).
     parameter int RELY_ON_RTL_PRIO_DEFAULTS = `ifdef TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `else 0 `endif,
 
+    // NEGO_CFG_RESET / NEGO_TRAIN_CFG_RESET — the POR value of nego_cfg_reg /
+    // nego_train_cfg_r inside axi_chiplet_controller (see its param header).
+    // These are forwarded verbatim into BOTH tidelink_top instances below so a
+    // test can prove TRUE zero-poke bring-up: the autonomy chain arms from the
+    // POR reset value ALONE, with NO tb `force` (BYPASS_AUTONEG=1) and NO APB
+    // write ever landing on NEGO_CFG (0x2090 / ctrl_reg_addr 5'h0C) or
+    // NEGO_TRAIN_CFG (0x210C / ctrl_reg_addr 5'h13).
+    //
+    // Defaults MIRROR the tidelink_top RTL defaults (7'h00 / 16'h0001), so every
+    // existing pair test elaborates byte-identically (an explicit param binding
+    // to the same value is a no-op). The fail-first zero-poke test overrides
+    // NEGO_CFG_RESET to 7'h61 at compile time:
+    //   +define+TB_TOP_NEGO_CFG_RESET=7\'h61
+    // 7'h61 = nego_en[0] | nego_force_lock[5] | mask_hs_auto_en[6] — the exact
+    // value the FPGA image now carries via tidelink_vivado_wrapper's parameter
+    // default (captured into the packaged IP's component.xml → OOC synth).
+    parameter [6:0]  NEGO_CFG_RESET_TB       = `ifdef TB_TOP_NEGO_CFG_RESET `TB_TOP_NEGO_CFG_RESET `else 7'h00 `endif,
+    parameter [15:0] NEGO_TRAIN_CFG_RESET_TB = `ifdef TB_TOP_NEGO_TRAIN_CFG_RESET `TB_TOP_NEGO_TRAIN_CFG_RESET `else 16'h0001 `endif,
+
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
     parameter SYS_ADDR_W    = 32,
@@ -303,7 +322,12 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(M_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(M_PAIR_BASE),
+        // Zero-poke POR arming — see the parameter header. Defaults mirror the
+        // tidelink_top RTL defaults (7'h00/16'h0001) so existing tests are
+        // byte-identical; test_zeropoke_por overrides NEGO_CFG_RESET → 7'h61.
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB)
     ) u_master (
         .hclk              (hclk),
         .hresetn           (m_hresetn_w),
@@ -527,7 +551,10 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(S_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(S_PAIR_BASE),
+        // Zero-poke POR arming — mirror of the master instance above.
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB)
     ) u_slave (
         .hclk              (hclk),
         .hresetn           (s_hresetn_w),
@@ -854,5 +881,34 @@ module tb_top #(
     defparam u_master.u_chiplet_controller.u_calibrator.DWELL_CYCLES = `TB_TOP_SHORT_CAL_DWELL;
     defparam u_slave.u_chiplet_controller.u_calibrator.DWELL_CYCLES  = `TB_TOP_SHORT_CAL_DWELL;
     `endif
+
+    // ---- Zero-poke assertion aid (2026-07-10) --------------------------------
+    // PASSIVE sticky monitors (no DUT fanout) that latch the instant a ctrl-reg
+    // write lands on NEGO_CFG or NEGO_TRAIN_CFG on either die. These are the ONLY
+    // two registers whose value gates the autonomy chain; a genuine zero-poke POR
+    // bring-up must leave them at their reset (parameter) value for the whole run.
+    //
+    //   ctrl_reg_addr = {paddr[8:7], paddr[4:2]}  (axi_chiplet_controller.sv:505)
+    //   NEGO_CFG       = region4(2'b01) slot 3'h4  → 5'b01100 = 5'h0C (APB 0x2090)
+    //   NEGO_TRAIN_CFG = region8(2'b10) slot 3'h3  → 5'b10011 = 5'h13 (APB 0x210C)
+    //
+    // ctrl_reg_write is the union of the local-APB write and the slave-AXIL
+    // bridge write (axi_chiplet_controller.sv:528), so this catches a host poke
+    // from EITHER config path. It is sampled on hclk (== apb_clk in this tb), the
+    // same edge that would clock the new value into the register, so no
+    // single-cycle write can be missed. test_zeropoke_por reads these and fails
+    // if either is set. Inert for every other test (they never poke these regs).
+    reg m_nego_poke_seen = 1'b0;
+    reg s_nego_poke_seen = 1'b0;
+    always @(posedge hclk) begin
+        if (u_master.u_chiplet_controller.ctrl_reg_write &&
+            ((u_master.u_chiplet_controller.ctrl_reg_addr == 5'h0C) ||
+             (u_master.u_chiplet_controller.ctrl_reg_addr == 5'h13)))
+            m_nego_poke_seen <= 1'b1;
+        if (u_slave.u_chiplet_controller.ctrl_reg_write &&
+            ((u_slave.u_chiplet_controller.ctrl_reg_addr == 5'h0C) ||
+             (u_slave.u_chiplet_controller.ctrl_reg_addr == 5'h13)))
+            s_nego_poke_seen <= 1'b1;
+    end
 
 endmodule

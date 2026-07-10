@@ -174,29 +174,64 @@ m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRI
 def _u32(off):return ctypes.c_uint32.from_buffer(m,o+off)
 def rd(x):return _u32(x).value
 def wr(x,v):_u32(x).value=v&0xffffffff
+import signal
+# FAULT-TOLERANT SWEEP (2026-07-10): the SYNC-dist read path (write 0x1B0 select,
+# read 0x1AC) and the fine-tap write 0x1B4 are winscan-FSM-owned and BUS-ERROR on
+# some builds — killing the whole sweep so it yields "lanes": {}. Survive each
+# access, probe once at startup, and DEGRADE GRACEFULLY:
+#   0x1AC usable  -> real SYNC Hamming distance (the metric we want).
+#   0x1AC faults  -> proxy: the calibrator per-lane eye (0x150 via 0x154, a
+#                    DIFFERENT region); dist unavailable, eye_width from cal pass.
+#   0x1B4 faults  -> coarse taps only (0x118 nibble): 16 even taps, half res.
+# A MODE line reports which path each die used so the output is never a silent lie.
+class BusErr(Exception):pass
+signal.signal(signal.SIGBUS, lambda s,f:(_ for _ in ()).throw(BusErr()))
+def try_wr(off,v):
+ try: wr(off,v); return True
+ except BusErr: return False
+def try_rd(off):
+ try: return rd(off)
+ except BusErr: return None
+# --- probe register usability once (run DISARMED: a surviving fault is structural) ---
+_lsb0=try_rd(0x1B4); LSB_OK=(_lsb0 is not None) and try_wr(0x1B4,_lsb0)
+_sel0=try_rd(0x1B0); DIST_OK=(_sel0 is not None) and try_wr(0x1B0,0) and (try_rd(0x1AC) is not None)
+if _sel0 is not None and DIST_OK: try_wr(0x1B0,_sel0)
+NTAPS = 32 if LSB_OK else 16
+print("MODE dist=%s fine_tap=%s ntaps=%d"%("0x1AC" if DIST_OK else "cal_proxy(0x150)", "on" if LSB_OK else "coarse_only", NTAPS),flush=True)
 def settap(L,t):
- n=(t>>1)&0xf;lb=t&1
+ tap = t if LSB_OK else (t*2)          # coarse-only: even taps 0,2,..30
+ n=(tap>>1)&0xf;lb=tap&1
  c=rd(0x118);c&=~(0xf<<(4*L));c|=n<<(4*L);wr(0x118,c)
- c=rd(0x1B4);c&=~(1<<L);c|=lb<<L;wr(0x1B4,c)
+ if LSB_OK:
+  c=try_rd(0x1B4)
+  if c is not None: c&=~(1<<L);c|=lb<<L;try_wr(0x1B4,c)
+def cal_eye(L):                         # proxy: (lane_passed, bit_err) at current tap
+ if try_wr(0x154,L) is False: return (0,63)
+ time.sleep(0.003);cal=try_rd(0x150)
+ if cal is None: return (0,63)
+ return ((cal>>13)&1, cal&0x3f)
 def measure(L):
- wr(0x1B0,L);time.sleep(0.003)
- return min(rd(0x1AC)&0x1f for _ in range(5))
+ if DIST_OK:
+  try_wr(0x1B0,L);time.sleep(0.003)
+  ds=[try_rd(0x1AC) for _ in range(5)]; ds=[d&0x1f for d in ds if d is not None]
+  return min(ds) if ds else 99
+ lp,br=cal_eye(L)                        # proxy distance: 0 if passing, else ~br
+ return 0 if lp else max(1,br>>1)
 def slice_of(L):
  reg={0:0x12C,1:0x12C,2:0x130,3:0x130,4:0x134,5:0x134,6:0x138,7:0x138}[L]
  sh=0 if (L%2)==0 else 16
- return (rd(reg)>>sh)&0xffff
+ v=try_rd(reg); return (v>>sh)&0xffff if v is not None else 0
 TOL=$tol
 for L in [$lanes]:
  best=(99,0);eye=0
- for t in range(32):
+ for t in range(NTAPS):
   settap(L,t);time.sleep(0.05)
   d=measure(L)
   if d<=TOL:eye+=1
   if d<best[0]:best=(d,t)
   time.sleep(0.008)
  settap(L,best[1])
- wr(0x154,L);time.sleep(0.003);cal=rd(0x150)
- lp=(cal>>13)&1;br=cal&0x3f
+ lp,br=cal_eye(L)
  print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)),flush=True)
 print("SWEEP_DONE",flush=True)
 PYEOF

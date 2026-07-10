@@ -319,11 +319,14 @@ SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 # its own sim_build_l5, and the three v2 modules share ONE sim_build_zero.
 .PHONY: sim_gate_clean_builds
 sim_gate_clean_builds:
-	@rm -rf cocotb/tidelink_top_pair/sim_build_l4 \
-	        cocotb/tidelink_top_pair/sim_build_l5 \
-	        cocotb/tidelink_top_pair_v2/sim_build_zero \
-	        cocotb/tidelink_top_pair/sim_build_v1elab \
-	        cocotb/tidelink_top_pair/sim_build_zeropoke
+	@# GATE-INTEGRITY (2026-07-10): remove ALL sim_build dirs with a GLOB, not an
+	@# enumerated subset. The old list rotted — sim_build_zero_auto and any new
+	@# SIM_BUILD were left behind, so a suite reused a stale simv ("../simv up to
+	@# date") and silently tested OLD RTL. cocotb only recompiles on
+	@# tb_top.sv/pad_skid.sv changes, so an RTL/flist edit alone NEVER retriggers a
+	@# compile — the cached simv is a false green. A glob cannot rot.
+	@rm -rf cocotb/tidelink_top_pair/sim_build* \
+	        cocotb/tidelink_top_pair_v2/sim_build*
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)

@@ -99,7 +99,24 @@ module tidelink_vivado_wrapper #(
     parameter STUB_SERVO       = 1'b0,
     parameter STUB_PERF        = 1'b0,
     parameter STUB_PTP         = 1'b0,
-    parameter BYPASS_ADDR_XLAT = 1'b0
+    parameter BYPASS_ADDR_XLAT = 1'b0,
+
+    // NEGO_CFG POR value. tidelink_top defaults this to 7'h00 (autoneg OFF,
+    // software-driven) so that cocotb keeps its legacy bring-up path; the
+    // parameter has been plumbed top->controller->reset since 2026-06-18 but
+    // NOTHING has ever driven it, which is why zero-poke autonomy has never
+    // been observed on the FPGA: every bitstream ever built armed with 7'h00.
+    //
+    // 7'h61 = nego_en[0] + nego_force_lock[5] + mask_hs_auto_en[6] -- exactly
+    // the value the manual recipe pokes into APB 0x4403_2090. NEGO_TRAIN_CFG
+    // already resets to 16'h0001, so this is the last thing standing between
+    // power-on and self-negotiation.
+    //
+    // CAVEAT (from the tidelink_top parameter note): under 7'h61 the slave's
+    // lane mask is autoneg-locked at 0xff -- all eight lanes, no reduced-lane
+    // escape hatch -- because mask_hs_bypass_i is hardwired 1'b1 and the
+    // peer-mask handshake never runs. Safe only while all 8 lanes are healthy.
+    parameter [6:0] NEGO_CFG_RESET = 7'h61
 )(
     // =========================================================================
     // Clocks and Resets
@@ -454,7 +471,9 @@ module tidelink_vivado_wrapper #(
         .STUB_SERVO          (STUB_SERVO),
         .STUB_PERF           (STUB_PERF),
         .STUB_PTP            (STUB_PTP),
-        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT)
+        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT),
+        // Zero-poke autonomy: drive the POR value of NEGO_CFG (0x4403_2090).
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

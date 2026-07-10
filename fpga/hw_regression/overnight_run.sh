@@ -72,7 +72,13 @@ ssh mapstone-dev "mkdir -p $STAGE" || die "cannot mkdir $STAGE"
 # die_b against a fresh die_a -- a silently mixed pair, and every conclusion from
 # it worthless. Regenerate, then assert the .bin is newer than the .bit.
 stage_one(){ # $1=target dir  $2=dest basename
-  local d="$ROOT/imp/fpga/output/$1" bit="$d/tidelink.bit" bin="$d/tidelink.bin"
+  # NOTE: separate `local` statements. Bash expands every word on a `local` line
+  # BEFORE performing any assignment, so `local d=... bit="$d/x"` leaves $d unbound
+  # -- fatal under `set -u`, and invisible if stderr is redirected away.
+  local d bit bin
+  d="$ROOT/imp/fpga/output/$1"
+  bit="$d/tidelink.bit"
+  bin="$d/tidelink.bin"
   [ -f "$bit" ] || die "$1: no tidelink.bit"
   rm -f "$bin" "$d/tidelink.bit.bin"          # kill any stale artefact outright
   python3 "$ROOT/fpga/scripts/bit2bin.py" "$bit" "$bin" >>"$LOG" 2>&1 \

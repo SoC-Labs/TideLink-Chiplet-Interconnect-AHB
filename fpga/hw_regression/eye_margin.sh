@@ -48,10 +48,11 @@ if [ "${TD_SKIP_DEPLOY:-0}" != 1 ]; then
   deploy_pair; sleep 2
 fi
 rcp
-echo "  waiting for the calibrator eye to populate (marker 0xE7)..."
+echo "  waiting for BOTH calibrators' eye to populate (marker 0xE7)..."
 for i in $(seq 1 40); do
-  mk=$(( ( $(a rd $R_EYE) >> 24 ) & 0xff ))
-  [ "$mk" -eq $(( 0xE7 )) ] && break
+  mka=$(( ( $(a rd $R_EYE) >> 24 ) & 0xff ))
+  mkb=$(( ( $(b rd $R_EYE) >> 24 ) & 0xff ))
+  [ "$mka" -eq $(( 0xE7 )) ] && [ "$mkb" -eq $(( 0xE7 )) ] && break
   sleep 0.5
 done
 
@@ -72,6 +73,17 @@ echo
 echo "== per-lane EYE MARGIN (best_run 0..16; LOCK_THRESH=$LOCK_THRESH) =="
 worst=99; any_marginal=0
 for d in a b; do
+  # Detect "eye register not populated" (all active lanes read exactly 0 with a
+  # valid marker) vs "real dead lanes". Calibrator eye may be master-side / only
+  # populated on the sweeping die — do NOT report that as DEAD lanes (silicon
+  # 2026-07-10: die_b read 0/16 on all lanes yet had 45% autonomy > die_a's 15%).
+  sum=0
+  for L in $LANES; do read br _ _ < <(read_eye "$d" "$L"); sum=$((sum+br)); done
+  if [ "$sum" -eq 0 ]; then
+    printf "  die_%s: eye register UNPOPULATED (all lanes 0 with valid marker) -> the calibrator eye is\n" "$d"
+    printf "          not measured on this die (likely master-side/sweeping-die only). NOT 'dead lanes'.\n"
+    continue
+  fi
   printf "  die_%s:\n" "$d"
   for L in $LANES; do
     read br lp mk < <(read_eye "$d" "$L")

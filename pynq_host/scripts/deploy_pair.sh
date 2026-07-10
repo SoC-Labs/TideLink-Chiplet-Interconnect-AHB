@@ -276,6 +276,32 @@ echo "==== $LABEL @ $BOARD_IP — role=$ROLE strap=$STRAP ctrl=$CTRL bitstream=$
 # `2>&1` (the recommended pattern) still see them. Final hard-fail with
 # distinctive marker so log-greppers can spot it from miles away.
 MAX_LOAD_ATTEMPTS="${MAX_LOAD_ATTEMPTS:-2}"
+
+# Bug #13 (2026-07-10, proven on silicon): bootpy.service runs /boot/boot.py, whose
+# last act is BaseOverlay("base.bit") — it downloads the base overlay INTO THE PL,
+# ~85 s after every boot. A bitstream deployed before then is silently overwritten.
+# The board then has no tidelink apertures, so every PS access DECERRs as
+# "external abort (0x018)" while fpga_manager still reports "operating" — which is
+# exactly why the state verify below cannot detect it. Measured on z2_01: marker
+# 0xc1080000 alive at uptime 42/56/71 s, SIGBUS at 85.5 s, rescued by a reload.
+BOOTPY_WAIT_S="${BOOTPY_WAIT_S:-180}"
+bootpy_waited=0
+while [ "$bootpy_waited" -lt "$BOOTPY_WAIT_S" ]; do
+    bp=$(sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+        "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+    # oneshot unit: "activating" while boot.py runs, "inactive" once it has finished.
+    [ "$bp" = "activating" ] || break
+    [ "$bootpy_waited" -eq 0 ] && \
+        echo "  waiting for bootpy.service — it overwrites the PL with base.bit" >&2
+    sleep 5
+    bootpy_waited=$((bootpy_waited+5))
+done
+if [ "$bootpy_waited" -ge "$BOOTPY_WAIT_S" ]; then
+    echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: bootpy.service still 'activating' after ${BOOTPY_WAIT_S}s — refusing to deploy into a PL that is about to be overwritten" >&2
+    exit 3
+fi
+[ "$bootpy_waited" -gt 0 ] && echo "  bootpy.service settled after ${bootpy_waited}s" >&2
+
 load_attempt=1
 loaded=0
 while [ "$load_attempt" -le "$MAX_LOAD_ATTEMPTS" ]; do
@@ -313,8 +339,30 @@ while [ "$load_attempt" -le "$MAX_LOAD_ATTEMPTS" ]; do
         "cat /sys/class/fpga_manager/fpga0/state 2>/dev/null" 2>/dev/null \
         | tr -d '[:space:]')
     if [ "$state" = "operating" ]; then
-        loaded=1
-        break
+        # Bug #13 verify-of-record: "operating" only means SOME bitstream is loaded.
+        # If bootpy (or anything else) has swapped in base.bit, this state still reads
+        # "operating" while every tidelink aperture DECERRs. The only trustworthy check
+        # is to READ a tidelink register: 0x4403_21A8 returns the 0xC1 presence marker.
+        # A dead/clobbered PL SIGBUSes here (rc 135) and prints nothing.
+        marker=""
+        if [ -f "$(dirname "$0")/tl_poke.py" ] && sshpass -p "$PASS" scp $SSHCOMMON \
+                "$(dirname "$0")/tl_poke.py" "xilinx@$BOARD_IP:/tmp/tl_poke.py" >/dev/null 2>&1; then
+            marker=$(sshpass -p "$PASS" ssh $SSHCOMMON xilinx@$BOARD_IP \
+                "echo '$PASS' | sudo -S python3 /tmp/tl_poke.py rd 0x440321A8 2>/dev/null" 2>/dev/null \
+                | tr -d '[:space:]')
+        fi
+        case "$marker" in
+            0xc1*|0xC1*)
+                echo "  PL verified: 0x440321A8 = $marker" >&2
+                loaded=1; break ;;
+            "")
+                echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: fpga_manager='operating' but 0x440321A8 did not answer (SIGBUS/no reader) attempt $load_attempt/$MAX_LOAD_ATTEMPTS" >&2 ;;
+            *)
+                echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: fpga_manager='operating' but 0x440321A8 = $marker (expected 0xC1 marker — wrong bitstream in the PL?) attempt $load_attempt/$MAX_LOAD_ATTEMPTS" >&2 ;;
+        esac
+        load_attempt=$((load_attempt+1))
+        sleep 1
+        continue
     fi
     echo "DEPLOY-FAIL: $LABEL @ $BOARD_IP: fpga_manager state='$state' (expected 'operating') attempt $load_attempt/$MAX_LOAD_ATTEMPTS" >&2
     load_attempt=$((load_attempt+1))

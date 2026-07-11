@@ -1,0 +1,20 @@
+# farm_gate.sh — sv_anti_pattern_lint accepted-baseline ratchet
+# ==============================================================
+# Each non-comment line is a KNOWN, accepted first-party sv_anti_pattern_lint
+# finding present on the branch when the farm gate was introduced. The gate
+# fails only on findings NOT listed here (i.e. a NEW latch / incomplete-case
+# regression), so it is green today yet still catches new anti-patterns.
+#
+# Format: "<relpath-from-TIDELINK_HOME>:<line>: <CODE>" (message text dropped).
+# To retire a baseline entry, fix the RTL and delete the line.
+#
+# Current accepted findings (2026-07-06):
+#   * tidelink_autoneg.sv selected_priority — the case is fully enumerated
+#     (2-bit nego_pri_sel, all 4 arms 2'd0..2'd3 assigned) so no real latch is
+#     inferred; the lint wants a defensive `default:` for tool-version safety.
+#   * axi_chiplet_controller.sv ctrl_reg_rdata — APB read mux, every reachable
+#     address arm assigns rdata; flagged for the same defensive-default reason.
+# These are pre-existing debt, tracked here so the gate ratchets forward.
+src/rtl/local_overrides/axi_chiplet_controller.sv:941: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:382: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:383: CASE_NO_DEFAULT

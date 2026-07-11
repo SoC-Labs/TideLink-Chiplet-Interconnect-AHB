@@ -1,0 +1,25 @@
+# farm_gate.sh — xdc_lint accepted-baseline ratchet
+# ==============================================================
+# Each non-comment line is a KNOWN, accepted xdc_lint finding present on the
+# branch when the farm gate was introduced. The gate fails only on findings NOT
+# listed here (i.e. a NEW droppable/anti-pattern constraint), so it is green
+# today yet still catches a genuinely dropped XDC.
+#
+# Format: "<relpath-from-TIDELINK_HOME>:<line>: <CODE>" (message text dropped).
+# To retire a baseline entry, fix the XDC and delete the line.
+#
+# Current accepted findings (2026-07-06):
+#   * XDC_NESTED_PROC_TCL at line 18 of each pynq_z2_tidelink_timing.xdc —
+#     the auto-generated guard line
+#       set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]
+#     which marks the timing XDC as impl-only. The nested [get_files [file
+#     normalize [info script]]] is evaluated by Vivado at XDC-SOURCE time (not
+#     deferred into the constraint engine), so it is NOT actually dropped — the
+#     proven builds (cb33c9f et al.) apply it correctly. Tracked here as accepted
+#     debt so the ratchet still catches a NEW nested-proc-Tcl constraint that
+#     WOULD be silently dropped.
+fpga/targets/pynq-z2-pair/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
+fpga/targets/pynq-z2-pair-flip/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
+fpga/targets/pynq-z2-pair-flip-slow/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
+fpga/targets/pynq-z2-pair-slow/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
+fpga/targets/pynq-z2-single/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL

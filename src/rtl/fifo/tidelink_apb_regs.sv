@@ -691,8 +691,16 @@ module tidelink_apb_regs #(
                     // decode-err) inside tidelink_eye_regs.  Parent OR-mux
                     // substitutes that pslverr; leave the local entry 0.
                 end
-                4'b1101: begin // Region D: rxcap sticky-OBS — all slots RO
-                    if (pwrite) pslverr = 1'b1;
+                4'b1101: begin // Region D: rxcap sticky-OBS + winscan + beatcap.
+                    // RO slots: 0/1/2 (RXCAP0/1/FCSMCAP), 3 (SYNC_DIST_OBS),
+                    // 7 (CAP_DATA). RW slots: 4 (SYNC_DIST_SEL), 5 (SWI_PHASE_LSB),
+                    // 6 (CAP_CTRL, beatcap ARM). Flag a write only to an RO slot.
+                    // (Slots 4/5 were writable but historically over-flagged here;
+                    // masters ignore pslverr, so this tightening is cosmetic.)
+                    if (pwrite && (paddr[4:2] == 3'h0 || paddr[4:2] == 3'h1 ||
+                                   paddr[4:2] == 3'h2 || paddr[4:2] == 3'h3 ||
+                                   paddr[4:2] == 3'h7))
+                        pslverr = 1'b1;
                 end
                 default: ;
             endcase

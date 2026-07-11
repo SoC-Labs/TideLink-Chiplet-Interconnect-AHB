@@ -21,7 +21,7 @@ Commands:
   credsample DURATION_S HZ    T5: CSV of t_ns,pair_credits,released_acc
   apblat N                    T6b: N timed APB reads of SWI_LANE_STATUS -> percentiles
 """
-import mmap, struct, os, sys, time, json
+import mmap, struct, os, sys, time, json, ctypes
 
 PAGE = 4096
 TX_BASE   = int(os.environ.get("TIDELINK_TX_BASE", "0x44000000"), 16)
@@ -47,13 +47,21 @@ def _mm(addr):
                                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return _maps[base], addr - base
 
+def _u32(m, o):
+    # SoC Labs 2026-07-03: struct.pack_into/unpack_from emit ~5 narrow bus
+    # accesses per u32 on this ARMv7 PYNQ (measured a2l wptr +5/word). For the
+    # doorbell trigger that means ~5 doorbells per intended one -> corrupt
+    # amplification/RTT. ctypes gives a single aligned u32 access.
+    return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(m, o)),
+                       ctypes.POINTER(ctypes.c_uint32))
+
 def rd(addr):
     m, o = _mm(addr)
-    return struct.unpack_from("<I", m, o)[0]
+    return int(_u32(m, o)[0])
 
 def wr(addr, val):
     m, o = _mm(addr)
-    struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+    _u32(m, o)[0] = val & 0xFFFFFFFF
 
 def pctiles(vals):
     s = sorted(vals)

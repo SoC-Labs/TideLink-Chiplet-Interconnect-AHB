@@ -53,6 +53,25 @@ check src/rtl/tidelink_top.sv ext_lock_q 1 \
 check src/rtl/tidelink_top.sv EXT_STALL_LIMIT 1 \
   "Bounded external APB stall REVERTED. The PS bus must be structurally unable to hang."
 
+# --- FLIST FCSM 0-4 resolution (added 2026-07-11) --------------------------------------
+# The RTL-token checks above are NOT enough: the merge can keep the RTL *files* correct
+# yet swap the FLISTS to point FCSM 0-4 at src/rtl/local_overrides/ (the dieb copies with
+# the L7 min-CRACK gate that stalls the FCSM at the silicon ratio => taped-out link-up
+# stall). integ resolves FCSM 0-4 to deps/; that is the silicon-proven resolution. Any
+# flist that compiles a local_overrides copy of FCSM 0-4 is the regression (commits
+# 74d0d52/ce58c1b). FCSM_5 (deps) and FCSM_6 (local_overrides, the L6 producer fix) are
+# BOTH correct and are deliberately not matched here.
+echo "--- flist FCSM 0-4 must resolve to deps, not local_overrides ---"
+bad=$(grep -rlE "local_overrides/WlinkGenericFCSM(\.|_[0-4]\.)v" flists/ 2>/dev/null)
+if [ -n "$bad" ]; then
+  echo "FAIL: these flists point FCSM 0-4 at local_overrides (L7 min-CRACK stall — would tape out):"
+  echo "$bad" | sed 's/^/        /'
+  echo "      Re-resolve FCSM 0-4 to deps/axi-chiplet-controller/logical/wlink/ (matches integ)."
+  fail=1
+else
+  echo "ok:   no flist compiles a local_overrides FCSM 0-4"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo; echo "MERGE GUARD FAILED — do NOT build or tape out this tree."
   exit 1

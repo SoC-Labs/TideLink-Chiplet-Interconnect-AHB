@@ -68,6 +68,17 @@ COMPILE_ARGS += -f $(V2_FLIST)
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# Autonomous-training bypass (2026-07-11): the v1 pair Makefile plumbs this; the v2 one
+# never did, so `make BYPASS_AUTONEG=0` left TB_TOP_BYPASS_AUTONEG unset -> tb defaulted to
+# BYPASS_AUTONEG=1 -> the autonomous-handoff test parked in ST_BYPASS (the stale "harness
+# gap"). Default 1 preserves every existing test; run the zero-poke autonomous handoff test
+# with `make BYPASS_AUTONEG=0 MODULE=test_v2_autonomous_fc_handoff`. Exported so the test's
+# conditional skip (os.environ["BYPASS_AUTONEG"]) sees it.
+BYPASS_AUTONEG ?= 1
+export BYPASS_AUTONEG
+COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
+# (CMSDK_FPGA_SRAM_V is exported by set_env.sh from CMSDK_DIR — source that before `make`.)
+
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
 ifeq ($(EPOCH_PROFILE),zero)

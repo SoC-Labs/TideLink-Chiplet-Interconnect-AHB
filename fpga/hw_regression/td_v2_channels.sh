@@ -81,8 +81,14 @@ R_NEGO_STS=0x44032110        # NEGO status (RO) alias — never write this
 R_ROLE=0x44032080            # role W1S: master=0x2, slave=0x3
 R_STATUS=0x44032108          # [16]=cal [19:17]=fcsm(4=bilateral) [23]=cr [31]=fe_full
 R_NEGO_TRAIN=0x4403210C      # NEGO_TRAIN_CFG (autonomy-off = 0x0 for manual)
-R_R8=0x44032100              # PHY ctrl: 0x1C sync / 0x1E->0x1C recal / 0x14 data-en
+R_R8=0x44032100              # PHY ctrl: 0x1C sync / 0x1E->0x1C recal / 0x10 data-en
                              #           NEVER bit0 (swi_training_mode = S_HOLD trap)
+                             # data-en MUST clear bit2 (SYNC_EN): 0x10 not 0x14. With
+                             # SYNC_EN left on during the burst the framer injects SYNC
+                             # beacons mid-packet -> ~3/28 words corrupt per burst
+                             # (silicon-proven 2026-07-11: 0x10 => GP1 RX byte-exact;
+                             # 0x14 => filt=25/28 rot=-1). Matches hwlib enter_data_mode
+                             # ("strip SYNC so the framer runs packets to completion").
 R_SLIPLO=0x44032104          # SWI_BIT_SLIP_LO ([23:0]slip [27:24]word_pin [28]auto_dis)
 R_LANEMASK=0x44030214        # rx/tx lane mask (0x0000_e4e4 = active lanes 2,5,6,7)
 R_SYNCTOL=0x44032128         # [12:8]=SYNC tol(5) [7:0]=per-lane mask(0xe4)
@@ -98,7 +104,7 @@ XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_G
 
 # LL/FC bootstrap triplet (bit0=swi_enable) and the R8 phase constants
 FC_TRIPLET=(0x00027f09 0x00027f01 0x00027f07)
-R8_SYNC=0x1C; R8_RECAL=0x1E; R8_DATA=0x14
+R8_SYNC=0x1C; R8_RECAL=0x1E; R8_DATA=0x10   # data-en strips SYNC_EN (bit2); see R_R8 note
 NEGO_ARM=0x61                # nego_en | force_lock | mask_hs_auto_en (0x41 never latches)
 ACTIVE_LANES="2 5 6 7"
 

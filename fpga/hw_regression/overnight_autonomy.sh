@@ -59,9 +59,10 @@ say(){ echo "$*" >> "$VERDICT"; }
 deadline_hit(){ [ $(( ($(date +%s) - T0) / 60 )) -ge "$DEADLINE_MIN" ]; }
 
 finish(){ local rc=$?
-  lease_release 2>/dev/null || true
+  # Do NOT release a lease the CALLER owns (NO_LEASE=1); only release one WE acquired.
+  [ "${NO_LEASE:-0}" = 1 ] || lease_release 2>/dev/null || true
   say ""; say "run ended $(date -u +%FT%TZ)  elapsed $(( ($(date +%s)-T0)/60 ))min  recoveries=$RECOVERIES  rc=$rc"
-  log "lease released; verdict -> $VERDICT"; }
+  log "run ended (lease $([ "${NO_LEASE:-0}" = 1 ] && echo 'left to caller' || echo released)); verdict -> $VERDICT"; }
 trap finish EXIT
 
 # --- a die is 'alive' iff its PS can actually read a PL register --------------
@@ -167,34 +168,44 @@ say "iter-5: fc_cfg APB preempt fix + div-2 + fe_tx_credit_max + fch watchdog"
 say ""
 log "Phase 0: preflight"
 
-# WAIT for the pair to be free. Another session may hold bridge1; acquiring while
-# someone else holds it just QUEUES us, and a queued lease is not a lease -- we
-# would deploy over their run. Poll politely, up to LEASE_WAIT_MIN.
-LEASE_WAIT_MIN=${LEASE_WAIT_MIN:-180}
-lease_free(){ fpgahub pair lease show "$LEASE_NAME" --json 2>/dev/null \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('state','?'))" 2>/dev/null; }
-w=0
-while :; do
-  st=$(lease_free)
-  [ "$st" != "held" ] && break
-  [ "$w" -ge "$LEASE_WAIT_MIN" ] && { say "ABORT: $LEASE_NAME still held after ${LEASE_WAIT_MIN}min. Not stealing it."; exit 2; }
-  [ $(( w % 15 )) -eq 0 ] && log "waiting for $LEASE_NAME (state=$st, ${w}min elapsed)"
-  sleep 60; w=$((w+1))
-done
-log "$LEASE_NAME is free (state=$st)"
+# NO_LEASE=1 means the CALLER already holds the lease -> skip BOTH the wait-for-free
+# and the acquire, and do NOT release in finish() (that is the caller's job). The
+# earlier bug: this block ran UNCONDITIONALLY, so a caller that pre-acquired the
+# lease AND passed NO_LEASE=1 DEADLOCKED here -- the wait-for-free loop saw the
+# lease "held" (by the caller) and waited forever. NO_LEASE now actually skips it.
+if [ "${NO_LEASE:-0}" = 1 ]; then
+  log "NO_LEASE=1 -> using the caller's lease (no wait-for-free, no acquire, no release)"
+  boards_up || recover "a board unreachable at preflight"
+else
+  # WAIT for the pair to be free. Another session may hold bridge1; acquiring while
+  # someone else holds it just QUEUES us, and a queued lease is not a lease -- we
+  # would deploy over their run. Poll politely, up to LEASE_WAIT_MIN.
+  LEASE_WAIT_MIN=${LEASE_WAIT_MIN:-180}
+  lease_free(){ fpgahub pair lease show "$LEASE_NAME" --json 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('state','?'))" 2>/dev/null; }
+  w=0
+  while :; do
+    st=$(lease_free)
+    [ "$st" != "held" ] && break
+    [ "$w" -ge "$LEASE_WAIT_MIN" ] && { say "ABORT: $LEASE_NAME still held after ${LEASE_WAIT_MIN}min. Not stealing it."; exit 2; }
+    [ $(( w % 15 )) -eq 0 ] && log "waiting for $LEASE_NAME (state=$st, ${w}min elapsed)"
+    sleep 60; w=$((w+1))
+  done
+  log "$LEASE_NAME is free (state=$st)"
 
-boards_up || recover "a board unreachable at preflight"
-lease_acquire $(( DEADLINE_MIN * 60 )) || { say "ABORT: lease acquire returned no token."; exit 3; }
-# STRICT: a token is not proof of a grant. Verify WE hold it. (hwlib's
-# lease_acquire only checks the token is non-empty.)
-holder=$(fpgahub pair lease show "$LEASE_NAME" --json 2>/dev/null | python3 -c "
+  boards_up || recover "a board unreachable at preflight"
+  lease_acquire $(( DEADLINE_MIN * 60 )) || { say "ABORT: lease acquire returned no token."; exit 3; }
+  # STRICT: a token is not proof of a grant. Verify WE hold it. (hwlib's
+  # lease_acquire only checks the token is non-empty.)
+  holder=$(fpgahub pair lease show "$LEASE_NAME" --json 2>/dev/null | python3 -c "
 import sys,json
 d=json.load(sys.stdin); m=(d.get('members') or [{}])[0].get('current') or {}
 print(f\"{d.get('state','?')}:{m.get('holder','?')}\")" 2>/dev/null)
-case "$holder" in
-  held:$(hostname)) log "lease GRANTED to $(hostname)";;
-  *) say "ABORT: lease not granted to us (state:holder = $holder). Refusing to proceed."; exit 3;;
-esac
+  case "$holder" in
+    held:$(hostname)) log "lease GRANTED to $(hostname)";;
+    *) say "ABORT: lease not granted to us (state:holder = $holder). Refusing to proceed."; exit 3;;
+  esac
+fi
 
 # ============================ Phase 1 — known state ===========================
 log "Phase 1: power-cycle both boards to a known state, then deploy both"

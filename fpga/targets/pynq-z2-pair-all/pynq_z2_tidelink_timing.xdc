@@ -212,12 +212,24 @@ set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_c
 set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
 # (3c) THE key build-to-build determinism constraint. set_bus_skew forces
-#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
+#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 0.4 ns
 #      of each other. The defect is per-lane VARIANCE (some lanes land in
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#
+# WS1 (2026-07-11, clock-tree surgeon): TIGHTENED 2.0 -> 0.4 ns. The routed
+# DCP measured the capture clock reaching the flops on a LUT2 (wpa_gap_q[3]_i_2)
+# + a high-fanout GENERAL-routing net at ~10.6 ns insertion, vs a ~1.8 ns data
+# path -> a placement-varying clk-to-data race = the bring-up lottery. A 2.0 ns
+# bus-skew ceiling is ~half the measured ~4 ns inter-lane spread, so it was
+# effectively slack and let the variance through. 0.4 ns forces true lane
+# equalisation; it is only ACHIEVABLE together with the pblock_rx_act region
+# pin below (co-located flops => region-local, short, equal clock routes) and
+# is now VERIFIED post-route by report_bus_skew (build_design.tcl STEP 10b).
+# If report_bus_skew shows 0.4 ns is unroutable, relax toward the reported
+# achievable floor -- do NOT silently widen back to 2.0 ns (that hid the bug).
+set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 0.400
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -384,6 +396,38 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # With no mark_debug attrs, no dbg_hub is auto-inserted and the noise
 # disappears at source.
 #-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+# [RX-CAPTURE FLOORPLAN v3] 2026-07-11 (WS1 clock-tree surgeon) — MIRRORED from
+# pynq-z2-pair-flip-all. This target (STRAIGHT = die_a, pad_clk_rx on Y7 MRCC)
+# was the ONLY pair target WITHOUT the capture-flop region pin, so die_a and
+# die_b floor-planned differently and failed the bring-up lottery differently.
+# Pin ONLY the 4 ACTIVE-lane (mask 0xe4 = lanes 2,5,6,7 -- TD_AUTO_LANE_MASK_E4,
+# identical on both dies) first-stage capture flops HARD into the pad/BUFG
+# clock region X0Y0:X0Y1. The routed DCP showed the per-lane capture clock
+# scattering to distant slices on GENERAL routing (~10.6 ns insertion via a
+# LUT2 + fanout-heavy net); co-locating the ACTIVE captures shortens AND
+# equalises those clock routes -- the constraint-side realisation of moving the
+# capture clock off the general route -- WITHOUT the over-congestion of pinning
+# all 128 capture flops. This is what makes the 0.4 ns set_bus_skew above
+# achievable. Kept BYTE-IDENTICAL to the flip target so the two dies floor-plan
+# symmetrically (only the pin-map comments differ between targets).
+#
+# WS1 tightening (red-team corrected 2026-07-11): ALSO pin the per-lane
+# count_reg[*] bit-counter into the SAME region. CORRECTION: count_reg is NOT a
+# "capture-clock DRIVING SLICE" -- it is a clock LOAD on the recovered capture
+# clock (w_cnt_clk) AND the /16 word-clock SOURCE (~adj_count[3]). The ~10.6 ns
+# capture-clock insertion is caused by a LUT2 UPSTREAM in the io_pol mux arc,
+# NOT by count_reg, so pinning count_reg does not by itself relocate that LUT2.
+# Co-locating count_reg with the capture flops still helps: it keeps the /16
+# word-clock generation and the capture loads in one clock region so the per-lane
+# clock insertion stays short + balanced.
+create_pblock pblock_rx_act
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/count_reg*" || NAME =~ "*gpiorx_5/count_reg*" || NAME =~ "*gpiorx_6/count_reg*" || NAME =~ "*gpiorx_7/count_reg*"}]
+resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
+# red-team: start SOFT for routability; harden to false only after a build confirms region X0Y0:X0Y1 hosts die_a pad_clk_rx BUFG + active IOBs
+set_property IS_SOFT true [get_pblocks pblock_rx_act]
 
 
 

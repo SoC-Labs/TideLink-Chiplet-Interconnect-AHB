@@ -123,7 +123,28 @@ module tidelink_vivado_wrapper #(
     // FAILOPEN-lottery root cause). Same "wrapper forces the active value"
     // pattern as NEGO_CFG_RESET=7'h61 above; the tidelink_top / ACC default is
     // 1'b0 (bit-identical), so cocotb / UVM / ASIC netlists are untouched.
-    parameter WINSCAN_CONVERGE_LOCK_EN = 1'b1
+    parameter WINSCAN_CONVERGE_LOCK_EN = 1'b1,
+    // WS2 2026-07-11 — three autonomy-bring-up refinements plumbed wrapper ->
+    // tidelink_top -> controller (the same "wrapper forces the active value"
+    // pattern as WINSCAN_CONVERGE_LOCK_EN above). The tidelink_top / controller
+    // defaults stay 1'b0, so cocotb / UVM / ASIC netlists are untouched; only the
+    // FPGA wrapper drives the values below:
+    //   (a) WINSCAN_CONVLOCK_VERIFY_EN — KEPT 1'b0 (red-team WS2-a): the anchor-
+    //       verify path is not yet silicon-trusted, so do NOT gate the already-ON
+    //       converge-lock on it yet. Recommend 1'b1 once verify is trusted.
+    //   (b) PERLANE_STICKY_ACC_OBS_EN — DRIVEN 1'b1 (red-team WS2-a, 2026-07-11):
+    //       the observability accumulator MUST be SYNTHESIZED so the union-across-
+    //       clear-retries at 0x4403_215C[15:8] is LIVE on silicon (proves/refutes
+    //       the p^4 vs physical-lane hypothesis before any datapath accumulate is
+    //       risked). It feeds NO gate and NO datapath, so enabling it by default
+    //       cannot change link behaviour — it only makes 0x215C[15:8] observable.
+    //   (c) AUTO_DATA_MODE_EN — KEPT 1'b0 (red-team WS2-a): the full SYNC-strip
+    //       re-opens a bilateral mutual-starvation window on a late anchor loss
+    //       (no bilateral-converged handshake yet). Idle-gated insert is already
+    //       data-safe. Leave OFF for silicon — see docs/WS2_AUTONOMY_FSM.md.
+    parameter WINSCAN_CONVLOCK_VERIFY_EN = 1'b0,       // red-team: verify not yet silicon-trusted
+    parameter PERLANE_STICKY_ACC_OBS_EN  = 1'b1,       // red-team WS2-a: obs accumulator must be synthesized (0x215C[15:8] live)
+    parameter AUTO_DATA_MODE_EN          = 1'b0        // red-team: auto-data-mode re-opens a bilateral starvation window
 )(
     // =========================================================================
     // Clocks and Resets
@@ -482,7 +503,11 @@ module tidelink_vivado_wrapper #(
         // Zero-poke autonomy: drive the POR value of NEGO_CFG (0x4403_2090).
         .NEGO_CFG_RESET      (NEGO_CFG_RESET),
         // Zero-poke winscan converge-lock: stop the recal re-arming the sweep.
-        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
+        // WS2 2026-07-11 — three DEFAULT-OFF autonomy refinements (see header).
+        .WINSCAN_CONVLOCK_VERIFY_EN (WINSCAN_CONVLOCK_VERIFY_EN),
+        .PERLANE_STICKY_ACC_OBS_EN  (PERLANE_STICKY_ACC_OBS_EN),
+        .AUTO_DATA_MODE_EN          (AUTO_DATA_MODE_EN)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

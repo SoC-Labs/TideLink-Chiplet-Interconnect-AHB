@@ -222,14 +222,25 @@ set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_c
 set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
 # (3c) THE key build-to-build determinism constraint. set_bus_skew forces
-#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
+#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 0.4 ns
 #      of each other. The defect is per-lane VARIANCE (some lanes land in
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#
+# WS1 (2026-07-11, clock-tree surgeon): TIGHTENED 2.0 -> 0.4 ns (matches the
+# STRAIGHT target -- kept symmetric). The routed DCP measured the capture clock
+# reaching the flops on a LUT2 (wpa_gap_q[3]_i_2) + a high-fanout GENERAL-routing
+# net at ~10.6 ns insertion, vs ~1.8 ns data -> a placement-varying clk-to-data
+# race = the bring-up lottery; the SRCC (Y9) RX side is the more skew-sensitive
+# half. A 2.0 ns ceiling was ~half the measured ~4 ns spread = effectively slack.
+# 0.4 ns forces true lane equalisation; ACHIEVABLE only with pblock_rx_act
+# (co-located flops), and now VERIFIED post-route by report_bus_skew
+# (build_design.tcl STEP 10b). If unroutable, relax toward the reported floor
+# -- do NOT silently widen back to 2.0 ns.
+set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 0.400
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -399,13 +410,27 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 
 
 #-----------------------------------------------------------------------------
-# [RX-CAPTURE FLOORPLAN v3] 2026-06-20 — targeted: pin ONLY the 4 ACTIVE-lane
-# (mask 0xe4 = lanes 2,5,6,7) capture flops HARD to the pad/BUFG region X0Y0:X0Y1.
-# DCP showed die_b's pad_clk_rx fans through 8 per-lane BUFGs (X0Y0..X0Y7) with
-# ~4ns inter-capture clock skew because the flops scatter to X1Y2; co-locating the
-# ACTIVE captures with their BUFGs shortens+equalises the clock routes (kills the
-# skew that blinds the SRCC-side RX) WITHOUT the over-congestion of pinning all 128.
+# [RX-CAPTURE FLOORPLAN v3] 2026-06-20 / WS1 2026-07-11 — targeted: pin ONLY the
+# 4 ACTIVE-lane (mask 0xe4 = lanes 2,5,6,7) capture flops HARD to the pad/BUFG
+# region X0Y0:X0Y1. DCP showed die_b's pad_clk_rx fans through per-lane BUFGs
+# with ~4ns inter-capture clock skew because the flops scatter to X1Y2;
+# co-locating the ACTIVE captures with their BUFGs shortens+equalises the clock
+# routes (kills the skew that blinds the SRCC-side RX) WITHOUT the over-
+# congestion of pinning all 128.
+#
+# WS1 (2026-07-11, red-team corrected): kept BYTE-IDENTICAL (floorplan commands)
+# to the STRAIGHT (pynq-z2-pair-all) target so the two dies floor-plan
+# symmetrically, and ALSO pin the per-lane count_reg[*] into the SAME region.
+# CORRECTION: count_reg is NOT a "capture-clock DRIVING SLICE" -- it is a clock
+# LOAD on the recovered capture clock (w_cnt_clk) AND the /16 word-clock SOURCE
+# (~adj_count[3]). The ~10.6 ns capture-clock insertion comes from a LUT2
+# UPSTREAM in the io_pol mux arc, NOT from count_reg. Co-locating count_reg still
+# helps (keeps the /16 word-clock generation + the capture loads in one clock
+# region so the per-lane clock insertion stays short + balanced); report_bus_skew
+# (build_design.tcl STEP 10b) VERIFIES the resulting skew post-route.
 create_pblock pblock_rx_act
 add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/count_reg*" || NAME =~ "*gpiorx_5/count_reg*" || NAME =~ "*gpiorx_6/count_reg*" || NAME =~ "*gpiorx_7/count_reg*"}]
 resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
-set_property IS_SOFT false [get_pblocks pblock_rx_act]
+# red-team: start SOFT for routability; harden to false only after a build confirms region X0Y0:X0Y1 hosts die_b pad_clk_rx BUFG + active IOBs
+set_property IS_SOFT true [get_pblocks pblock_rx_act]

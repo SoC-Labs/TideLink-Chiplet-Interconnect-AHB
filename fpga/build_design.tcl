@@ -533,6 +533,91 @@ if { $timing_rpt ne "" } {
     puts "Timing summary copied to $output_dir/tidelink_design_wrapper_timing_summary_routed.rpt"
 }
 
+# =====================================================================
+# STEP 10b: WS1 (2026-07-11) POST-ROUTE CLOCK-SKEW VERIFICATION.
+#
+# The RX capture-clock inter-lane skew is the ROOT CAUSE of the bring-up
+# lottery (routed DCP: capture clock reaches the flops via a LUT2 +
+# high-fanout GENERAL-routing net at ~10.6 ns insertion vs ~1.8 ns data =
+# a placement-varying clk-to-data race). The set_bus_skew targets in
+# *_timing.xdc (tightened to 0.4 ns) were historically ASSUMED met and
+# NEVER reported. Open the routed run and emit two reports next to the
+# .bit so the skew is VERIFIED, not assumed:
+#   * report_bus_skew          -> is the pad_rx[*] -> capture skew group MET?
+#   * report_clock_utilization -> BUFG/BUFR budget (xc7z020 has 32 BUFGs)
+#                                 and which clocks are on global vs. general
+#                                 routing (the LUT/general-route capture
+#                                 clock is visible here).
+# Non-fatal by default (a report, not a gate). Set FPGA_STRICT_BUS_SKEW=1
+# to FAIL the build when the capture bus-skew is VIOLATED.
+# =====================================================================
+if { [catch {
+    open_run impl_1
+    # -----------------------------------------------------------------
+    # WS1-a (red-team pre-build fix, 2026-07-11): the set_bus_skew in
+    # *_timing.xdc and the pblock_rx_act region only DO anything if the
+    # get_cells filter actually matched the capture flops. If the hier
+    # name drifts (packaged-IP rename / lane remap) the filter matches 0
+    # cells, set_bus_skew becomes a SILENT no-op, and the old pass/fail
+    # below (a literal {VIOLATED} scan) would print MET on an EMPTY report.
+    # Assert the capture-flop filter is non-empty and LOG the count BEFORE
+    # trusting the skew report.
+    # -----------------------------------------------------------------
+    set _n [llength [get_cells -hier -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*"}]]
+    if { $_n == 0 } { error "WS1: pblock filter matched 0 cells — set_bus_skew silently no-op" }
+    puts "WS1: pblock_rx_act active-lane capture cells matched = $_n (expect ~80)"
+
+    set _bs_rpt  $output_dir/tidelink_bus_skew_routed.rpt
+    set _clk_rpt $output_dir/tidelink_clock_utilization_routed.rpt
+    report_bus_skew -warn_on_violation -file $_bs_rpt
+    report_clock_utilization -file $_clk_rpt
+    puts "WS1: bus-skew report   -> $_bs_rpt"
+    puts "WS1: clock-util report -> $_clk_rpt"
+    # -----------------------------------------------------------------
+    # WS1-a: key pass/fail off the NUMERIC worst slack parsed from the
+    # report (fail if < 0), NOT only the literal {VIOLATED} string. An
+    # empty / no-path report has NO "VIOLATED" token, so the old scan would
+    # falsely print MET. Collect every "Slack (MET|VIOLATED): <n> ns" value
+    # and take the worst (minimum). ZERO slack lines == no bus-skew path was
+    # constrained (or the report format drifted) == suspect, NOT a clean MET.
+    # -----------------------------------------------------------------
+    set _viol 0
+    set _worst ""
+    set _nslack 0
+    if { ![file exists $_bs_rpt] } {
+        error "WS1: bus-skew report $_bs_rpt was not produced"
+    }
+    set _fh [open $_bs_rpt r]
+    set _txt [read $_fh]
+    close $_fh
+    foreach {_full _val} [regexp -all -inline \
+             {Slack\s*\((?:MET|VIOLATED)\)\s*:?\s*(-?\d+\.?\d*)\s*ns} $_txt] {
+        incr _nslack
+        if { $_worst eq "" || $_val < $_worst } { set _worst $_val }
+    }
+    if { $_nslack == 0 } {
+        # No numeric slack AND (above) the pblock matched cells: report-format
+        # drift or NO bus-skew path constrained. Do NOT claim MET.
+        set _viol 1
+        puts "WS1: WARNING — parsed 0 numeric bus-skew slack values from $_bs_rpt (no constrained path or report-format drift); NOT asserting MET"
+    } elseif { $_worst < 0 } {
+        set _viol 1
+    }
+    if { $_viol } {
+        puts "WS1: *** BUS SKEW VIOLATED *** RX capture-clock skew NOT met (worst slack = $_worst ns over $_nslack paths) -- see $_bs_rpt"
+        if { [info exists ::env(FPGA_STRICT_BUS_SKEW)] && $::env(FPGA_STRICT_BUS_SKEW) == 1 } {
+            error "FPGA_STRICT_BUS_SKEW=1 and RX capture bus skew VIOLATED"
+        }
+    } else {
+        puts "WS1: RX capture bus skew MET (worst slack = $_worst ns over $_nslack paths in $_bs_rpt)"
+    }
+} _wserr] } {
+    puts "WARNING: WS1 post-route bus-skew verification could not run: $_wserr"
+    if { [info exists ::env(FPGA_STRICT_BUS_SKEW)] && $::env(FPGA_STRICT_BUS_SKEW) == 1 } {
+        error "FPGA_STRICT_BUS_SKEW=1 and bus-skew verification failed to run: $_wserr"
+    }
+}
+
 puts "==========================================="
 puts " Build complete!"
 puts " Bitstream: $output_dir/tidelink.bit"

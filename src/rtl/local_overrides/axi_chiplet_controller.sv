@@ -105,6 +105,57 @@ module axi_chiplet_controller #(
     // in full (finds a marginal lane's tap) — the lock latches only AFTER
     // convergence, so the sweep's find-the-tap ability is preserved.
     parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
+    // ===================================================================== WS2
+    // SoC Labs 2026-07-11 (WS2 — FSM behaviourist) — THREE param-gated,
+    // DEFAULT-OFF autonomy-bring-up refinements. All fold to constant logic
+    // when 0, so the cocotb / UVM / ASIC netlists AND the current FPGA
+    // WINSCAN_CONVERGE_LOCK_EN=1 build are BIT-IDENTICAL to the pre-change
+    // build; the manual (nego_en=0) / master path is UNTOUCHED by construction
+    // (every effect below is scoped to autonomy_armed and/or its own param).
+    //
+    // (a-hardening) WINSCAN_CONVLOCK_VERIFY_EN — VERIFY-gate the CONVERGE-LOCK
+    // latch. The shipped ws_conv_lock_q sets on all_sync_seen_apb (SEEN). A
+    // lane can read sync_seen=1 yet be MIS-ANCHORED (an adjacent SYNC slot: the
+    // tol-5 marginal-eye 0x24->0x5c signature) — SEEN-only convergence can then
+    // latch the lock on a WRONG anchor and permanently block the winscan
+    // re-clear/re-roll that would FIX it (a stranding hazard latent in the
+    // SEEN-only lock). With this=1 the lock additionally requires ws_verify_q
+    // (the engaged anchor reproduces the KNOWN beacon EXACTLY on every active
+    // lane on one beat), so it can NEVER lock a mis-anchored link; if verify
+    // never asserts the lock simply never engages and the winscan keeps trying
+    // (== today), the SAFE failure. Default 0 preserves the shipped SEEN-only
+    // lock behaviour (FPGA-validated); recommended 1 once verify is
+    // silicon-trusted (drive it from the wrapper exactly as
+    // WINSCAN_CONVERGE_LOCK_EN).
+    parameter bit    WINSCAN_CONVLOCK_VERIFY_EN = 1'b0,
+    // (b) PERLANE_STICKY_ACC_OBS_EN — OBSERVABILITY-ONLY per-lane sticky
+    // SYNC accumulator. Latches the UNION of every active lane that has EVER
+    // committed sync_seen since the last training-mode RISE (i.e. ACROSS all of
+    // this episode's winscan clear-retries), exposed on 0x4403_215C[15:8]. It
+    // feeds NO gate and touches NO datapath — it is a pure instrument to
+    // MEASURE, on silicon, whether a real per-lane sticky-accumulate would even
+    // help: if the accumulated union reaches 0xe4 while the SIMULTANEOUS
+    // all_sync_seen never does, the p^4 all-lanes-in-one-window lottery is the
+    // blocker (accumulate would win); if the union ALSO stays sparse (stuck
+    // 0x64), the missing lane is PHYSICALLY down (accumulate is useless and a
+    // datapath accumulate would only add a stranding surface). The DATAPATH
+    // sticky-accumulate is DELIBERATELY NOT shipped — see docs/WS2_*. Default 0
+    // ties the accumulator to 0 so the 0x215C read is bit-identical.
+    parameter bit    PERLANE_STICKY_ACC_OBS_EN = 1'b0,
+    // (c) AUTO_DATA_MODE_EN — fold the manual enter_data_mode() SYNC-strip
+    // (recipe R8=0x10: swi_sync_insert_en -> 0) into the training-exit FSM,
+    // closing the last SW poke on the zero-poke path. The D2 "never blind-OFF"
+    // history removed the old TIMED SYNC-off because it RACED the peer's
+    // WS_FINALIZE re-anchor; this re-introduces it on a DETERMINISTIC gate
+    // instead of a timer — it fires only once the CONVERGE-LOCK has latched
+    // (ws_conv_lock_q), the anchor is VERIFIED (ws_verify_q) AND the FC
+    // data-mode bootstrap has completed (fch_done_r), held for a settle window,
+    // and it RE-ARMS (re-inserts beacons) the instant the anchor drops
+    // (ws_anchor_q low). Requires WINSCAN_CONVERGE_LOCK_EN=1 (else ws_conv_lock_q
+    // is const-0 and this never engages). Default 0 keeps the D2 permanent
+    // idle-gated insert_en=1 state (bit-identical); OPTIONAL — idle-gated insert
+    // is already data-safe, so this only reclaims the 1-in-32 idle beacon slot.
+    parameter bit    AUTO_DATA_MODE_EN    = 1'b0,
     // Per-tap settle dwell (apb_clk cycles). The host winscan sleeps ~50 ms per
     // tap so the IDELAYE2 reload + the cross-lane SYNC re-flood settle before
     // SYNC_DIST is sampled; 50 ms @ 50 MHz apb_clk ≈ 2.5 M cycles. Generous by
@@ -1569,6 +1620,19 @@ module axi_chiplet_controller #(
     // 2-flop apb_clk treatment. Per-lane "SYNC re-anchor committed a periodic-
     // confirmed index". Read at the SYNC-SEEN register (SoC MMIO 0x4403_215C).
     reg [7:0]           sync_obs_seen_vec_0, sync_obs_seen_vec_1;
+    // WS2 (b) OBSERVABILITY-ONLY per-lane sticky-accumulate. Declared here (its
+    // read at 0x215C[15:8] is below); the accumulate always_ff is placed after
+    // swi_training_mode_rise is declared. When PERLANE_STICKY_ACC_OBS_EN=0 the
+    // reg is never written (const-0) and sync_seen_acc_w is tied 0 so the 0x215C
+    // read is bit-identical. See the parameter header (WS2 (b)).
+    reg [7:0]           sync_seen_acc_r;
+    wire [7:0]          sync_seen_acc_w = PERLANE_STICKY_ACC_OBS_EN ? sync_seen_acc_r
+                                                                    : 8'h0;
+    // WS2 (c) AUTO_DATA_MODE_EN — forward declarations (`default_nettype none`
+    // needs decl-before-use: the F1b heal reads auto_data_mode_q well above the
+    // latch that drives it). Latch + settle logic is after the winscan block.
+    reg                 auto_data_mode_q;
+    reg [4:0]           auto_dm_settle_r;
     // DATA-MODE per-lane SYNC HAMMING-DISTANCE OBS (2026-06-25, the winscan
     // metric) — same 2-flop apb_clk treatment as the 128-bit raw-word snapshot.
     // Per-lane 5-bit live distance to the SYNC slice, packed 8x5=40 bits. A
@@ -2085,8 +2149,26 @@ module axi_chiplet_controller #(
                 // (=wlink_rx_lane_mask) / tol=5 likewise stay set for the
                 // deskew. The manual nego_en=0 path never executes this block.
                 if (sync_cfg_hold_q) begin
-                    swi_sync_insert_en_r     <= 1'b1;
-                    swi_sync_robust_detect_r <= 1'b1;
+                    // WS2 (c) AUTO_DATA_MODE_EN: once the DETERMINISTIC
+                    // converged+verified+handoff state has engaged auto data
+                    // mode (auto_data_mode_q, latched below), STRIP the SYNC
+                    // beacon — swi_sync_insert_en_r <= 0 == the manual recipe's
+                    // enter_data_mode() R8=0x10 (insert_en off, robust kept on).
+                    // This closes the last SW poke on the zero-poke path. Unlike
+                    // the DELETED D2 timed SYNC-off, the strip fires on a
+                    // deterministic gate (lock+verify+fch_done+settle) and
+                    // RE-ARMS on anchor loss (auto_data_mode_q drops when
+                    // ws_anchor_q falls), so it cannot blind-off ahead of a
+                    // peer's re-anchor. AUTO_DATA_MODE_EN=0 => auto_data_mode_q
+                    // is const-0 => the else arm always runs (D2 permanent
+                    // idle-gated insert_en=1), BIT-IDENTICAL.
+                    if (AUTO_DATA_MODE_EN && auto_data_mode_q) begin
+                        swi_sync_insert_en_r     <= 1'b0;   // enter_data_mode: SYNC beacon OFF
+                        swi_sync_robust_detect_r <= 1'b1;
+                    end else begin
+                        swi_sync_insert_en_r     <= 1'b1;
+                        swi_sync_robust_detect_r <= 1'b1;
+                    end
                 end
             end
 `endif
@@ -2257,8 +2339,14 @@ module axi_chiplet_controller #(
         //                      INCONSISTENT (the re-anchor latch has not engaged);
         //   set AND reanchored=1 -> armed + coherent (the healthy state).
         //   [ 7: 0] per-lane sync_seen (lane L at bit L)
+        //   [15: 8] WS2 (b) per-lane sync_seen UNION since the last training rise
+        //           (accumulated across this episode's clear-retries) — const-0
+        //           unless PERLANE_STICKY_ACC_OBS_EN; lets silicon tell a p^4
+        //           lottery (union reaches 0xe4, simultaneous never does) from a
+        //           physically-down lane (union also stuck 0x64). Instrument
+        //           only — feeds no gate.
         //   [31:24] 0x5F presence marker (old/V1 images read 0 here)
-        (ctrl_reg_addr[2:0] == 3'h7) ? {8'h5F, 16'h0, sync_obs_seen_vec_1} :  // 0x215C sync_seen vec (RO)
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'h5F, 8'h0, sync_seen_acc_w, sync_obs_seen_vec_1} :  // 0x215C sync_seen vec (RO)
                                        32'h0;
     // =====================================================================
     // Region D — RX-FRAMER long-DATA STICKY CAPTURE (SoC Labs 2026-06-21,
@@ -3574,6 +3662,29 @@ module axi_chiplet_controller #(
     end
     wire swi_training_mode_rise = swi_training_mode_r & ~swi_training_mode_q;
 
+    // WS2 (b) OBSERVABILITY-ONLY per-lane sticky-accumulate (see the parameter
+    // header and the 0x215C[15:8] read). Union of every active lane that has
+    // committed sync_seen since the last training-mode RISE — i.e. accumulated
+    // ACROSS all of this episode's winscan clear-retries (each ws_obs_clr wipes
+    // the LIVE sync_obs_seen_vec_1, but this UNION persists to the next training
+    // rise). Pure instrument: it drives ONLY the 0x215C read, never a gate or
+    // the datapath, so it cannot strand a lane. PERLANE_STICKY_ACC_OBS_EN=0 =>
+    // never written (const-0), sync_seen_acc_w tied 0 => 0x215C bit-identical.
+    // V2-only: sync_obs_seen_vec_1 / sync_seen_acc_r are declared under the same
+    // `ifdef TIDELINK_PHY_V2 (the per-lane deskew sync_seen path is V2-only).
+`ifdef TIDELINK_PHY_V2
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            sync_seen_acc_r <= 8'h0;
+        else if (PERLANE_STICKY_ACC_OBS_EN) begin
+            if (swi_training_mode_rise)
+                sync_seen_acc_r <= sync_obs_seen_vec_1;              // fresh episode: reseed
+            else
+                sync_seen_acc_r <= sync_seen_acc_r | sync_obs_seen_vec_1;  // accumulate the union
+        end
+    end
+`endif
+
     // Falling edge of swi_training_mode — the trigger for the FC data-mode
     // handoff sequencer (see the "FC data-mode handoff sequencer" block near
     // the Wlink APB mux). Fires once per training episode on BOTH dies:
@@ -4163,11 +4274,62 @@ module axi_chiplet_controller #(
     // reg folds to const-0 (bit-identical default-off). Same clock domain
     // (apb_clk) as ws_kick_evt, per the REVIEW requirement.
     reg ws_conv_lock_q;
+    // WS2 (a-hardening) VERIFY-GATE: with WINSCAN_CONVLOCK_VERIFY_EN=1 the lock
+    // additionally requires ws_verify_q (the ENGAGED anchor reproduced the known
+    // beacon EXACTLY on every active lane on one beat) — so a SEEN-but-mis-
+    // anchored lane (adjacent-slot tol-5 match) can never latch the durable lock
+    // and strand the wrong anchor. Default 0 => `| 1'b1` folds the extra term
+    // away, i.e. the shipped SEEN-only set condition, bit-identical. If verify
+    // never asserts the lock never engages and the winscan keeps re-rolling
+    // (== the pre-lock behaviour) — the SAFE failure, never a wrong-anchor lock.
+    wire ws_conv_lock_ok = all_sync_seen_apb &
+                           (ws_verify_q | ~WINSCAN_CONVLOCK_VERIFY_EN);
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             ws_conv_lock_q <= 1'b0;
-        else if (WINSCAN_CONVERGE_LOCK_EN & all_sync_seen_apb)
+        else if (WINSCAN_CONVERGE_LOCK_EN & ws_conv_lock_ok)
             ws_conv_lock_q <= 1'b1;   // set-once; only reset clears it
+    end
+
+    // ── WS2 (c) AUTO_DATA_MODE_EN — autonomous enter_data_mode SYNC-strip ─────
+    // Deterministic replacement for the DELETED D2 timed SYNC-off. The strip
+    // engages (auto_data_mode_q) only once ALL of: CONVERGE-LOCK latched
+    // (ws_conv_lock_q, which itself implies all_sync_seen — and, with the
+    // (a)-hardening on, verified), the anchor is verified (ws_verify_q) AND
+    // engaged (ws_anchor_q), and the FC data-mode bootstrap has completed
+    // (fch_done_r) — held for AUTO_DM_SETTLE apb cycles. It RE-ARMS
+    // (re-inserts beacons) the instant the anchor drops (ws_anchor_q low), so
+    // it never blind-strips ahead of a re-anchor need. Consumed by the F1b
+    // heal above (swi_sync_insert_en_r <= 0). Requires WINSCAN_CONVERGE_LOCK_EN
+    // (else ws_conv_lock_q is const-0 and this never engages). AUTO_DATA_MODE_EN
+    // =0 => auto_data_mode_q const-0 => the heal's else arm always runs
+    // (D2 permanent idle-gated insert), BIT-IDENTICAL.
+    localparam int AUTO_DM_SETTLE = 24;   // apb_clk cycles (~0.5 us @50 MHz)
+    // auto_data_mode_q / auto_dm_settle_r are forward-declared near the top
+    // (`default_nettype none` — the F1b heal reads them above this latch).
+    wire auto_dm_cond = AUTO_DATA_MODE_EN & autonomy_armed &
+                        ws_conv_lock_q & ws_verify_q & ws_anchor_q & fch_done_r;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            auto_dm_settle_r <= 5'd0;
+            auto_data_mode_q <= 1'b0;
+        end else if (!AUTO_DATA_MODE_EN) begin
+            auto_dm_settle_r <= 5'd0;
+            auto_data_mode_q <= 1'b0;              // param-off: never engage
+        end else if (!ws_anchor_q) begin
+            auto_dm_settle_r <= 5'd0;
+            auto_data_mode_q <= 1'b0;              // anchor lost: RE-ARM beacons
+        end else if (auto_dm_cond) begin
+            if (auto_dm_settle_r == AUTO_DM_SETTLE[4:0])
+                auto_data_mode_q <= 1'b1;          // settled: engage the strip
+            else
+                auto_dm_settle_r <= auto_dm_settle_r + 5'd1;
+        end else if (!auto_data_mode_q) begin
+            auto_dm_settle_r <= 5'd0;              // cond dropped pre-engage: restart settle
+        end
+        // once engaged (auto_data_mode_q=1) with the anchor still up, stay
+        // engaged even if verify/lock momentarily deglitch — only anchor loss
+        // (above) re-arms, mirroring the manual recipe's sticky reanchored.
     end
     // ws_kick_evt: the training-fall winscan (re-)arm. The added
     // `~(WINSCAN_CONVERGE_LOCK_EN & ws_conv_lock_q)` term blocks EVERY re-arm

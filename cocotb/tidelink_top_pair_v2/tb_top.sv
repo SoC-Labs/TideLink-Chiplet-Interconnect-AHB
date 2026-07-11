@@ -264,6 +264,26 @@ module tb_top #(
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
 `endif
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // WS2 2026-07-11 — turn ON the three DEFAULT-OFF autonomy refinements on
+    // BOTH dies for the params-ON silicon-faithful proof. Same hierarchical
+    // defparam idiom as EPOCH_ANCHOR_DIS above (the chiplet-controller params
+    // are not forwarded by the tb's tidelink_top instantiation). CONVERGE_LOCK
+    // is turned on too because (a)-verify-gate and (c) both depend on it.
+    // Without TB_TOP_WS2_ON every param stays at its RTL default 1'b0, so the
+    // params-OFF run is bit-identical to the manual/master path.
+    // ─────────────────────────────────────────────────────────────────────────
+`ifdef TB_TOP_WS2_ON
+    defparam u_master.u_chiplet_controller.WINSCAN_CONVERGE_LOCK_EN   = 1'b1;
+    defparam u_slave.u_chiplet_controller.WINSCAN_CONVERGE_LOCK_EN    = 1'b1;
+    defparam u_master.u_chiplet_controller.WINSCAN_CONVLOCK_VERIFY_EN = 1'b1;
+    defparam u_slave.u_chiplet_controller.WINSCAN_CONVLOCK_VERIFY_EN  = 1'b1;
+    defparam u_master.u_chiplet_controller.PERLANE_STICKY_ACC_OBS_EN  = 1'b1;
+    defparam u_slave.u_chiplet_controller.PERLANE_STICKY_ACC_OBS_EN   = 1'b1;
+    defparam u_master.u_chiplet_controller.AUTO_DATA_MODE_EN          = 1'b1;
+    defparam u_slave.u_chiplet_controller.AUTO_DATA_MODE_EN           = 1'b1;
+`endif
+
     // Elaboration self-check: print the anchor enable actually compiled into
     // the deskew of each die (guards against a silently-ignored defparam).
     initial begin

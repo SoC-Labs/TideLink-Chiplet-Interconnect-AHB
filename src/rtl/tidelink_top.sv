@@ -125,7 +125,15 @@ module tidelink_top #(
     // axi_chiplet_controller (see its WINSCAN_CONVERGE_LOCK_EN note). 1'b0 =
     // today's behaviour, bit-identical for sim/ASIC; the FPGA vivado wrapper
     // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
-    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
+    // WS2 2026-07-11 — three DEFAULT-OFF autonomy-bring-up refinements
+    // forwarded verbatim to axi_chiplet_controller (see its WS2 param header).
+    // All 1'b0 => sim/ASIC AND the current FPGA build are bit-identical; the
+    // wrapper may drive them 1'b1 once silicon-validated, exactly the
+    // NEGO_CFG_RESET / WINSCAN_CONVERGE_LOCK_EN plumbing pattern.
+    parameter bit    WINSCAN_CONVLOCK_VERIFY_EN = 1'b0,  // (a) verify-gate the lock
+    parameter bit    PERLANE_STICKY_ACC_OBS_EN  = 1'b0,  // (b) obs-only sticky accumulate
+    parameter bit    AUTO_DATA_MODE_EN          = 1'b0   // (c) fold enter_data_mode SYNC-strip
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2105,7 +2113,11 @@ module tidelink_top #(
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
-        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
+        // WS2 2026-07-11 — three DEFAULT-OFF autonomy refinements (see header).
+        .WINSCAN_CONVLOCK_VERIFY_EN (WINSCAN_CONVLOCK_VERIFY_EN),
+        .PERLANE_STICKY_ACC_OBS_EN  (PERLANE_STICKY_ACC_OBS_EN),
+        .AUTO_DATA_MODE_EN          (AUTO_DATA_MODE_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

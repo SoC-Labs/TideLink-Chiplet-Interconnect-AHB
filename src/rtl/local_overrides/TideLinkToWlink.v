@@ -61,18 +61,6 @@ module TideLinkToWlink(
   // binary pointer. Read-only fan-outs.
   output        io_obs_a2l_rreset,
   output [4:0]  io_obs_a2l_rptr,
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — David Mapstone.
-  // Pass-through of the a2l replay CDC "tear surface": LINK-domain ACK ptr input
-  // + ping-pong mailbox internals. Read-only fan-outs (NO functional change).
-  // Packed into APB obs reg 0x4403_21BC (marker 0xCB) in axi_chiplet_controller.
-  output [4:0]  io_obs_a2l_link_addr,
-  output [4:0]  io_obs_mbx_raddr,
-  output [4:0]  io_obs_mbx_mem_0,
-  output [4:0]  io_obs_mbx_mem_1,
-  output        io_obs_mbx_wptr,
-  output        io_obs_mbx_rptr,
-  output        io_obs_mbx_w_ready,
-  output        io_obs_mbx_r_ready,
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
   output [7:0]  io_obs_fe_rx_ptr,
   // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — pass-through of the
@@ -109,15 +97,6 @@ module TideLinkToWlink(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
   wire       wlink_tidelinktl_io_obs_a2l_rreset;
   wire [4:0] wlink_tidelinktl_io_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-out wires)
-  wire [4:0] wlink_tidelinktl_io_obs_a2l_link_addr;
-  wire [4:0] wlink_tidelinktl_io_obs_mbx_raddr;
-  wire [4:0] wlink_tidelinktl_io_obs_mbx_mem_0;
-  wire [4:0] wlink_tidelinktl_io_obs_mbx_mem_1;
-  wire       wlink_tidelinktl_io_obs_mbx_wptr;
-  wire       wlink_tidelinktl_io_obs_mbx_rptr;
-  wire       wlink_tidelinktl_io_obs_mbx_w_ready;
-  wire       wlink_tidelinktl_io_obs_mbx_r_ready;
   // SoC Labs FC credit observation 2026-06-12
   wire [7:0] wlink_tidelinktl_io_obs_fe_rx_ptr;
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
@@ -222,15 +201,6 @@ module TideLinkToWlink(
     // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
     .io_obs_a2l_rreset(wlink_tidelinktl_io_obs_a2l_rreset),
     .io_obs_a2l_rptr(wlink_tidelinktl_io_obs_a2l_rptr),
-    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-outs)
-    .io_obs_a2l_link_addr(wlink_tidelinktl_io_obs_a2l_link_addr),
-    .io_obs_mbx_raddr(wlink_tidelinktl_io_obs_mbx_raddr),
-    .io_obs_mbx_mem_0(wlink_tidelinktl_io_obs_mbx_mem_0),
-    .io_obs_mbx_mem_1(wlink_tidelinktl_io_obs_mbx_mem_1),
-    .io_obs_mbx_wptr(wlink_tidelinktl_io_obs_mbx_wptr),
-    .io_obs_mbx_rptr(wlink_tidelinktl_io_obs_mbx_rptr),
-    .io_obs_mbx_w_ready(wlink_tidelinktl_io_obs_mbx_w_ready),
-    .io_obs_mbx_r_ready(wlink_tidelinktl_io_obs_mbx_r_ready),
     // SoC Labs FC credit observation 2026-06-12
     .io_obs_fe_rx_ptr(wlink_tidelinktl_io_obs_fe_rx_ptr),
     // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
@@ -264,15 +234,6 @@ module TideLinkToWlink(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO fan-out)
   assign io_obs_a2l_rreset            = wlink_tidelinktl_io_obs_a2l_rreset;
   assign io_obs_a2l_rptr              = wlink_tidelinktl_io_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs)
-  assign io_obs_a2l_link_addr         = wlink_tidelinktl_io_obs_a2l_link_addr;
-  assign io_obs_mbx_raddr             = wlink_tidelinktl_io_obs_mbx_raddr;
-  assign io_obs_mbx_mem_0             = wlink_tidelinktl_io_obs_mbx_mem_0;
-  assign io_obs_mbx_mem_1             = wlink_tidelinktl_io_obs_mbx_mem_1;
-  assign io_obs_mbx_wptr              = wlink_tidelinktl_io_obs_mbx_wptr;
-  assign io_obs_mbx_rptr              = wlink_tidelinktl_io_obs_mbx_rptr;
-  assign io_obs_mbx_w_ready           = wlink_tidelinktl_io_obs_mbx_w_ready;
-  assign io_obs_mbx_r_ready           = wlink_tidelinktl_io_obs_mbx_r_ready;
   // SoC Labs FC credit observation 2026-06-12
   assign io_obs_fe_rx_ptr             = wlink_tidelinktl_io_obs_fe_rx_ptr;
   // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — RO fan-out up

@@ -53,30 +53,7 @@ module WlinkGenericFCReplayV2_13(
   // obs_a2l_rptr is stuck while obs_a2l_wptr advances, the write-ptr Gray sync
   // into the read domain is broken.
   output        obs_a2l_rreset,
-  output [4:0]  obs_a2l_rptr,
-  // ---------------------------------------------------------------------------
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 -- David Mapstone.
-  // Purely additive read-only fan-outs (NO functional change) exposing the CDC
-  // "tear surface" behind the silicon false-FULL that four idealised-sim fixes
-  // could not localise: the raw LINK-domain ACK ptr INPUT to the sync, plus the
-  // AddrSync/WavMultibitSync ping-pong mailbox internals (its synced output +
-  // stored slots + pointers + ready terms). Packed into APB obs reg 0x4403_21BC
-  // (marker 0xCB) so silicon can see EXACTLY how synced_ack becomes 0x1f.
-  //   obs_a2l_link_addr = a2l_link_addr (LINK-domain ACK ptr, INPUT to the CDC;
-  //                       guard-clamped <= rbin <= 15 -- if THIS already reads
-  //                       0x1f the corruption is upstream of the mailbox)
-  //   obs_mbx_raddr     = raddr        (synced output = a2l synced_ack)
-  //   obs_mbx_mem_0/1   = mailbox ping-pong stored ACK values (the tear surface)
-  //   obs_mbx_wptr/rptr = mailbox ping-pong pointers (parity desync)
-  //   obs_mbx_w_ready/r_ready = mailbox ready terms (deadlock = both 0)
-  output [4:0]  obs_a2l_link_addr,
-  output [4:0]  obs_mbx_raddr,
-  output [4:0]  obs_mbx_mem_0,
-  output [4:0]  obs_mbx_mem_1,
-  output        obs_mbx_wptr,
-  output        obs_mbx_rptr,
-  output        obs_mbx_w_ready,
-  output        obs_mbx_r_ready
+  output [4:0]  obs_a2l_rptr
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -110,14 +87,6 @@ module WlinkGenericFCReplayV2_13(
   wire  link_addr_to_app_clk_r_clk; // @[FC.scala 773:37]
   wire  link_addr_to_app_clk_r_reset; // @[FC.scala 773:37]
   wire [4:0] link_addr_to_app_clk_r_addr; // @[FC.scala 773:37]
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-out wires)
-  wire [4:0] link_addr_to_app_clk_obs_raddr;
-  wire [4:0] link_addr_to_app_clk_obs_mbx_mem_0;
-  wire [4:0] link_addr_to_app_clk_obs_mbx_mem_1;
-  wire       link_addr_to_app_clk_obs_mbx_wptr;
-  wire       link_addr_to_app_clk_obs_mbx_rptr;
-  wire       link_addr_to_app_clk_obs_mbx_w_ready;
-  wire       link_addr_to_app_clk_obs_mbx_r_ready;
   wire [4:0] a2l_app_addr = fifo_io_wbin_ptr; // @[FC.scala 725:29 FC.scala 749:25]
   wire [4:0] a2l_link_addr_app_clk = link_addr_to_app_clk_r_addr; // @[FC.scala 723:41 FC.scala 781:33]
   wire  a2l_full = a2l_app_addr[4] != a2l_link_addr_app_clk[4] & a2l_app_addr[3:0] == a2l_link_addr_app_clk[3:0]; // @[FC.scala 727:88]
@@ -189,26 +158,9 @@ module WlinkGenericFCReplayV2_13(
     .w_addr(link_addr_to_app_clk_w_addr),
     .r_clk(link_addr_to_app_clk_r_clk),
     .r_reset(link_addr_to_app_clk_r_reset),
-    .r_addr(link_addr_to_app_clk_r_addr),
-    // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs)
-    .obs_raddr(link_addr_to_app_clk_obs_raddr),
-    .obs_mbx_mem_0(link_addr_to_app_clk_obs_mbx_mem_0),
-    .obs_mbx_mem_1(link_addr_to_app_clk_obs_mbx_mem_1),
-    .obs_mbx_wptr(link_addr_to_app_clk_obs_mbx_wptr),
-    .obs_mbx_rptr(link_addr_to_app_clk_obs_mbx_rptr),
-    .obs_mbx_w_ready(link_addr_to_app_clk_obs_mbx_w_ready),
-    .obs_mbx_r_ready(link_addr_to_app_clk_obs_mbx_r_ready)
+    .r_addr(link_addr_to_app_clk_r_addr)
   );
   assign app_ready = ~a2l_full & enable_app_clk_demet_io_out; // @[FC.scala 728:36]
-  // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs, NO func change)
-  assign obs_a2l_link_addr = a2l_link_addr;                           // LINK-domain ACK ptr (CDC input)
-  assign obs_mbx_raddr     = link_addr_to_app_clk_obs_raddr;          // synced output (= synced_ack)
-  assign obs_mbx_mem_0     = link_addr_to_app_clk_obs_mbx_mem_0;
-  assign obs_mbx_mem_1     = link_addr_to_app_clk_obs_mbx_mem_1;
-  assign obs_mbx_wptr      = link_addr_to_app_clk_obs_mbx_wptr;
-  assign obs_mbx_rptr      = link_addr_to_app_clk_obs_mbx_rptr;
-  assign obs_mbx_w_ready   = link_addr_to_app_clk_obs_mbx_w_ready;
-  assign obs_mbx_r_ready   = link_addr_to_app_clk_obs_mbx_r_ready;
   // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only fan-out)
   assign obs_a2l_wptr             = fifo_io_wbin_ptr;
   assign obs_a2l_synced_ack       = a2l_link_addr_app_clk;

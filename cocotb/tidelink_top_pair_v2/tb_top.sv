@@ -291,6 +291,23 @@ module tb_top #(
     wire    [SYS_DATA_W-1:0]       m_ahb_tx_hrdata;
     wire                           m_ahb_tx_hresp;
     wire                           m_ahb_tx_hready;
+    // Master SUB aperture (XHB500 transparent window). Restored 2026-07-11 so
+    // the XHB comb-loop regression (cb33c9f) is sim-gated: the bridge-accurate
+    // test drives m_ahb_sub_hready cycle-by-cycle to model the wrapper hready
+    // loopback ring. Defaults are idle (hsel=0/htrans=IDLE/hready=1), identical
+    // to the prior tie-off, so tests that never touch these see no change.
+    logic                          m_ahb_sub_hsel   = 1'b0;
+    logic   [SYS_ADDR_W-1:0]       m_ahb_sub_haddr  = '0;
+    logic                    [2:0] m_ahb_sub_hburst = 3'h0;
+    logic                    [3:0] m_ahb_sub_hprot  = 4'h0;
+    logic                    [2:0] m_ahb_sub_hsize  = 3'h2;
+    logic                    [1:0] m_ahb_sub_htrans = 2'b00;
+    logic   [SYS_DATA_W-1:0]       m_ahb_sub_hwdata = '0;
+    logic                          m_ahb_sub_hwrite = 1'b0;
+    logic                          m_ahb_sub_hready = 1'b1;
+    wire    [SYS_DATA_W-1:0]       m_ahb_sub_hrdata;
+    wire                           m_ahb_sub_hresp;
+    wire                           m_ahb_sub_hreadyout;
     // Slave TX aperture
     logic                          s_ahb_tx_hsel;
     logic   [RAM_ADDR_W-1:0]       s_ahb_tx_haddr;
@@ -390,19 +407,20 @@ module tb_top #(
         .hresetn           (m_hresetn_w),
         .poresetn          (m_poresetn_w),
 
-        // AHB Sub — TIED OFF (not exercised; XHB500 path)
-        .ahb_sub_hsel      (1'b0),
-        .ahb_sub_haddr     (32'h0),
-        .ahb_sub_hburst    (3'h0),
-        .ahb_sub_hprot     (4'h0),
-        .ahb_sub_hsize     (3'h0),
-        .ahb_sub_htrans    (2'b00),
-        .ahb_sub_hwdata    (32'h0),
-        .ahb_sub_hwrite    (1'b0),
-        .ahb_sub_hready    (1'b1),
-        .ahb_sub_hrdata    (/* unused */),
-        .ahb_sub_hresp     (/* unused */),
-        .ahb_sub_hreadyout (/* unused */),
+        // AHB Sub — XHB500 transparent window, driven by the XHB window tests
+        // (idle by default; see m_ahb_sub_* declarations above).
+        .ahb_sub_hsel      (m_ahb_sub_hsel),
+        .ahb_sub_haddr     (m_ahb_sub_haddr),
+        .ahb_sub_hburst    (m_ahb_sub_hburst),
+        .ahb_sub_hprot     (m_ahb_sub_hprot),
+        .ahb_sub_hsize     (m_ahb_sub_hsize),
+        .ahb_sub_htrans    (m_ahb_sub_htrans),
+        .ahb_sub_hwdata    (m_ahb_sub_hwdata),
+        .ahb_sub_hwrite    (m_ahb_sub_hwrite),
+        .ahb_sub_hready    (m_ahb_sub_hready),
+        .ahb_sub_hrdata    (m_ahb_sub_hrdata),
+        .ahb_sub_hresp     (m_ahb_sub_hresp),
+        .ahb_sub_hreadyout (m_ahb_sub_hreadyout),
 
         // AHB TX aperture — driven by cocotbext-ahb
         .ahb_tx_hsel       (m_ahb_tx_hsel),

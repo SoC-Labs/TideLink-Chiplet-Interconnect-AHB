@@ -351,8 +351,15 @@ run_sim_stage() {
         return
     fi
     local n_tc n_fail
-    n_tc="$(grep -c '<testcase' "$rxml" 2>/dev/null || echo 0)"
-    n_fail="$(grep -cE '<failure|<error' "$rxml" 2>/dev/null || echo 0)"
+    # NOTE: `grep -c` prints "0" AND exits 1 on a zero-count match, so the old
+    # `|| echo 0` appended a SECOND "0", yielding the two-line string "0\n0".
+    # `[ "0\n0" -eq/-ne 0 ]` then errors ("integer expression expected") and the
+    # test is treated as false — so a 0-testcase harness failure would FALSE-PASS
+    # and a genuine all-pass run emitted spurious stderr. grep -c already prints
+    # the count; capture it and default an empty capture to 0 (same fix as
+    # merge_guard.sh). No `|| echo 0`.
+    n_tc="$(grep -c '<testcase' "$rxml" 2>/dev/null)"; n_tc=${n_tc:-0}
+    n_fail="$(grep -cE '<failure|<error' "$rxml" 2>/dev/null)"; n_fail=${n_fail:-0}
     if [ "$n_tc" -eq 0 ]; then
         sev_report "$sev" "sim[$name] — results.xml has 0 testcases (harness/compile issue; make rc=$mk_rc) — see $slog"
     elif [ "$n_fail" -ne 0 ]; then

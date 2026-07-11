@@ -210,11 +210,15 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_1.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_2.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_3.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_4.v
+// SoC Labs 2026-07-11: FCSM 0-4 RE-RESOLVED toward deps (matches integ). The tapeout-merge swapped
+// these to the dieb local_overrides copies (L7 min-CRACK gate) which stall the FCSM in state 2 at
+// silicon timing => this would tape out the stall. Reverted here as in tidelink_fpga_v2.flist. _6
+// override (L6 producer fix) kept.
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v

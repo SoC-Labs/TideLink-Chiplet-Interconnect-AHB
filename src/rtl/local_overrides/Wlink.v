@@ -188,11 +188,6 @@ module Wlink #(
   // chiplet controller — default OR-mux path inside WavD2DGpio preserves
   // cocotb hierarchical-force behaviour.
   input  [23:0] swi_bit_slip_in,
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — arm level + read
-  // pointer down into the FCSM per-beat capture ring (apb_clk-domain straps
-  // from axi_chiplet_controller). Tie 0 in environments without the controller.
-  input         cap_arm_in,
-  input  [4:0]  cap_rptr_in,
   input         swi_training_mode_in,
   // SoC Labs §9.7: per-lane 4-bit phase offset, 8 lanes x 4 bits (lane N
   // at bits [4N+3:4N]). Pass-through to WlinkGPIOPHY, mirroring
@@ -283,11 +278,6 @@ module Wlink #(
   output [4:0]   obs_a2l_rptr_o,              // link domain (LINK read bin ptr)
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
   output [7:0]   obs_fe_rx_ptr_o,             // tx domain
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — the FCSM 32-entry
-  // per-beat capture ring readout: rptr-selected packed entry + {frozen,wptr}
-  // status. io_rx_clk domain; the controller CDC-syncs. See WlinkGenericFCSM_6.v.
-  output [31:0]  obs_capdata_o,               // rptr-selected packed beat entry
-  output [8:0]   obs_capstat_o,               // {frozen, 2'b0, wptr[5:0]}
   // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
   // sticky framer (llrx) + FCSM (tl2wl) words that localise where a sustained
   // A->B long-DATA packet dies. rx-link-clk / io_rx_clk domains; pure read-only
@@ -431,9 +421,6 @@ module Wlink #(
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — packed
   // sticky FCSM word from tl2wl (io_rx_clk domain), forwarded to Wlink output.
   wire [31:0] tl2wl_io_obs_fcsmcap;
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
-  wire [31:0] tl2wl_io_obs_capdata;
-  wire [8:0]  tl2wl_io_obs_capstat;
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
@@ -1097,9 +1084,6 @@ module Wlink #(
   assign obs_rxcap0_o            = llrx_io_obs_rxcap0;
   assign obs_rxcap1_o            = llrx_io_obs_rxcap1;
   assign obs_fcsmcap_o           = tl2wl_io_obs_fcsmcap;
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — RO fan-out up
-  assign obs_capdata_o           = tl2wl_io_obs_capdata;
-  assign obs_capstat_o           = tl2wl_io_obs_capstat;
   assign obs_ecc_corrupted_cnt_o = obs_ecc_corrupted_cnt_q;
   assign obs_ecc_corrected_cnt_o = obs_ecc_corrected_cnt_q;
   assign obs_sync_detected_cnt_o = obs_sync_detected_cnt_q;
@@ -1862,11 +1846,6 @@ module Wlink #(
     .io_obs_a2l_rptr(tl2wl_io_obs_a2l_rptr),
     // SoC Labs FC credit observation 2026-06-12
     .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr),
-    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
-    .io_cap_arm(cap_arm_in),
-    .io_cap_rptr(cap_rptr_in),
-    .io_obs_capdata(tl2wl_io_obs_capdata),
-    .io_obs_capstat(tl2wl_io_obs_capstat),
     // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
     .io_obs_fcsmcap(tl2wl_io_obs_fcsmcap)
   );

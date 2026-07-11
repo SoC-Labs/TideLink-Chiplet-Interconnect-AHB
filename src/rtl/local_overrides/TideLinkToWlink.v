@@ -63,13 +63,6 @@ module TideLinkToWlink(
   output [4:0]  io_obs_a2l_rptr,
   // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
   output [7:0]  io_obs_fe_rx_ptr,
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — pass-through of the
-  // FCSM 32-entry per-beat capture ring. arm/rptr go DOWN, capdata/capstat come
-  // UP. See WlinkGenericFCSM_6.v for the bit-packing.
-  input         io_cap_arm,
-  input  [4:0]  io_cap_rptr,
-  output [31:0] io_obs_capdata,
-  output [8:0]  io_obs_capstat,
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — packed
   // sticky FCSM delivery word forwarded up from the FCSM instance.
   output [31:0] io_obs_fcsmcap
@@ -101,9 +94,6 @@ module TideLinkToWlink(
   wire [7:0] wlink_tidelinktl_io_obs_fe_rx_ptr;
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
   wire [31:0] wlink_tidelinktl_io_obs_fcsmcap;
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
-  wire [31:0] wlink_tidelinktl_io_obs_capdata;
-  wire [8:0]  wlink_tidelinktl_io_obs_capstat;
   wire  wlink_tidelinktl_clock; // @[TideLink.scala 177:22]
   wire  wlink_tidelinktl_reset; // @[TideLink.scala 177:22]
   wire  wlink_tidelinktl_auto_in_psel; // @[TideLink.scala 177:22]
@@ -203,11 +193,6 @@ module TideLinkToWlink(
     .io_obs_a2l_rptr(wlink_tidelinktl_io_obs_a2l_rptr),
     // SoC Labs FC credit observation 2026-06-12
     .io_obs_fe_rx_ptr(wlink_tidelinktl_io_obs_fe_rx_ptr),
-    // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap)
-    .io_cap_arm(io_cap_arm),
-    .io_cap_rptr(io_cap_rptr),
-    .io_obs_capdata(wlink_tidelinktl_io_obs_capdata),
-    .io_obs_capstat(wlink_tidelinktl_io_obs_capstat),
     // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
     .io_obs_fcsmcap(wlink_tidelinktl_io_obs_fcsmcap)
   );
@@ -236,9 +221,6 @@ module TideLinkToWlink(
   assign io_obs_a2l_rptr              = wlink_tidelinktl_io_obs_a2l_rptr;
   // SoC Labs FC credit observation 2026-06-12
   assign io_obs_fe_rx_ptr             = wlink_tidelinktl_io_obs_fe_rx_ptr;
-  // SoC Labs PER-BEAT PKTNUM CAPTURE 2026-07-01 (beatcap) — RO fan-out up
-  assign io_obs_capdata               = wlink_tidelinktl_io_obs_capdata;
-  assign io_obs_capstat               = wlink_tidelinktl_io_obs_capstat;
   // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (RO fan-out)
   assign io_obs_fcsmcap               = wlink_tidelinktl_io_obs_fcsmcap;
   assign auto_wlink_tidelinktl_tx_out_sop = wlink_tidelinktl_auto_tx_out_sop; // @[LazyModule.scala 311:12]

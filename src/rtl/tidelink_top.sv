@@ -1186,8 +1186,20 @@ module tidelink_top #(
     logic                    pipe_hsel_r;
     logic                    pipe_valid_r;   // latched address phase ready for XHB500
 
-    // Detect new address phase on external port
-    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1] & ahb_sub_hready;
+    // Detect new address phase on external port.
+    // SoC Labs 2026-07-05 comb-loop fix: do NOT qualify with ahb_sub_hready.
+    // The FPGA wrapper loops ahb_sub_hreadyout back into ahb_sub_hready, and
+    // ahb_sub_hreadyout (below) depended on ext_is_nonseq -> hreadyout was a
+    // combinational function of itself (Vivado: "1 combinational loop (HIGH)").
+    // On silicon the bridge / this pipe / XHB500 sampled the ring divergently:
+    // window WRITES phantom-completed at the bridge (vanish), HWDATA was
+    // captured one cycle late (poison), double-accepts corrupted FC credit
+    // (fcsm 4->0 under sustained window traffic). Reproduced deterministically
+    // in sim by test_v2_xhb_window_bridge (bridge-accurate BFM). Dropping the
+    // hready term is safe for this single-master port: pipe_valid_r blocks
+    // re-latch of a held NONSEQ, and the pipe clears exactly at the master's
+    // address-phase completion edge (hreadyout==raw whenever pipe_valid_r).
+    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
     // XHB500 hreadyout (raw, before pipeline insertion)
@@ -1233,8 +1245,11 @@ module tidelink_top #(
     wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
     // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
     // the stale address; once pipeline is valid, pass through XHB500's own hreadyout
+    // (comb-loop fix, part 2): the else-arm used ahb_sub_hready — the last
+    // remaining hready-in fan-in to XHB500's FSM through the wrapper loopback.
+    // Use XHB500's own raw hreadyout instead (idle bus: raw==1 anyway).
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
-                                             (ext_is_nonseq ? 1'b0 : ahb_sub_hready);
+                                             (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
     // External hreadyout: stall upstream during the pipeline fill cycle
     assign ahb_sub_hreadyout = (ext_is_nonseq && !pipe_valid_r) ? 1'b0 : xhb_sub_hreadyout_raw;

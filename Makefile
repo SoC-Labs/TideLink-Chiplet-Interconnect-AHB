@@ -204,7 +204,7 @@ endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_xhb sim_gate_v1elab
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -286,6 +286,17 @@ sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
 
+# XHB500 transparent-window comb-loop regression gate (2026-07-11). The
+# bridge-accurate BFM (test_v2_xhb_window_bridge) reproduces the silicon
+# write-vanish deterministically by driving the ahb_sub hready-in ring through
+# the ports; it FAILS on the pre-cb33c9f RTL (ext_addr_phase qualified with
+# ahb_sub_hready) and PASSES once the hready term is dropped. This suite exists
+# because the XHB fix silently rotted out of the iter6/iter7 lineage with NO
+# gate protecting it — never again.
+sim_gate_xhb:
+	$(call sim_gate_run,v2_xhb_window_bridge,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_xhb_window_bridge)
+
 # --- V1 elaboration check (TIDELINK_PHY_V2=0, build-only, no test run) -------
 # Fresh sim_build_v1elab each time so a stale simv can never false-PASS the
 # gate; cocotb's $(SIM_BUILD)/simv target compiles + elaborates (Verdi KDB
@@ -302,12 +313,12 @@ sim_gate_v1elab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v1_elab \
+	v2_winscan_fsm v2_xhb_window_bridge v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm v1_elab \
+	v2_autonomous_sync_detect v2_winscan_fsm v2_xhb_window_bridge v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
@@ -340,6 +351,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_xhb
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
@@ -355,6 +367,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_xhb
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog

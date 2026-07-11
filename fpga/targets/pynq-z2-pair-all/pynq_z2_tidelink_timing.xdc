@@ -373,3 +373,22 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 
 
 
+
+#-----------------------------------------------------------------------------
+# [RX-CAPTURE FLOORPLAN v3 — MIRRORED to die_a, 2026-07-11] Phase-2 physical fix.
+# ROOT CAUSE (4-agent assessment 2026-07-11): the per-lane RX capture-clock tree
+# carries a residual fabric LUT (wpa_gap, fanout 372) whose placement varies every
+# build -> few-hundred-ps inter-lane capture-clock skew -> which marginal lanes land
+# inside the SYNC-confirm window changes per build -> the bring-up LOTTERY. die_b
+# (pynq-z2-pair-flip-all) has HAD this pblock since 2026-06-20 and consistently
+# out-performs die_a (45-70% vs 15-45% clean-OK). die_a (this target) had NO pblock
+# -> its active-lane capture flops scatter (X1Y2) with ~4ns inter-capture skew, the
+# same failure the flip pblock fixed. Co-locate die_a's 4 active-lane (mask 0xE4 =
+# lanes 2,5,6,7) capture flops HARD to the pad/BUFG region X0Y0:X0Y1 (the recovered-
+# clock BUFG is BUFGCTRL_X0Y12, X0 column, shared by both targets -> region is
+# device-general, not die_b-specific). HYPOTHESIS: die_a underperforms BECAUSE it
+# lacks this pblock; mirroring should raise die_a toward die_b. Falsifiable by soak.
+create_pblock pblock_rx_act
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
+set_property IS_SOFT false [get_pblocks pblock_rx_act]

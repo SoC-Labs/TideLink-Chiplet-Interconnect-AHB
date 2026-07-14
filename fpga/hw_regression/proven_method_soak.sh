@@ -42,10 +42,18 @@ wait_ssh(){ local ip="$1" i
 }
 por(){ pc_one "$HUB_A" & pc_one "$HUB_B" & wait; wait_ssh "$A_IP" && wait_ssh "$B_IP"; }
 
-# byte-exact GP1 RX check after a fresh send_a2b
+# byte-exact GP1 RX check after a fresh send_a2b (receiver = die_b)
 data_ok(){ local i w
   for i in 0 1 2 3; do
     w=$(printf '0x%08x' $(( $(gp1_rx $i) )) 2>/dev/null)
+    [ "$w" = "${EXP[$i]}" ] || return 1
+  done; return 0
+}
+# B->A: die_b sends the same framed packet; receiver = die_a's GP1 RX aperture
+send_b2a(){ b txburst $TX_HDR ${TX_PAYLOAD[*]} >/dev/null 2>&1; }
+data_b2a_ok(){ local i w
+  for i in 0 1 2 3; do
+    w=$(printf '0x%08x' $(( $(gp1_rx_d a $i) )) 2>/dev/null)
     [ "$w" = "${EXP[$i]}" ] || return 1
   done; return 0
 }
@@ -97,8 +105,8 @@ PY
 echo "=========================================================="
 echo " proven_method_soak  N=$N  (link + framed A->B data + doorbell)"
 echo "=========================================================="
-echo "cycle,link,data,doorbell,fcsm_a,fcsm_b,reanchored,elapsed_s" > "$CSV"
-LINK=0; DATA=0; DB=0; ALL=0; DONE=0
+echo "cycle,link,a2b,b2a,doorbell,fcsm_a,fcsm_b,reanchored,elapsed_s" > "$CSV"
+LINK=0; DATA=0; B2A=0; DB=0; ALL=0; DONE=0
 for n in $(seq 1 "$N"); do
   t0=$SECONDS
   if ! por; then echo "ALLCHAN_CYCLE $n/$N -> POR-FAIL (a board did not return)"; continue; fi
@@ -108,23 +116,30 @@ for n in $(seq 1 "$N"); do
   fa=$(fcsm a); fb=$(fcsm b); rea=$(reanchored)
   lk=0; [ "$fa" = 4 ] && [ "$fb" = 4 ] && lk=1
   enter_data_mode
-  b rxn 8 >/dev/null 2>&1        # drain
+  # NO pre-send drain: fresh POR => RX FIFO empty, and `rxn` pops/advances the
+  # FIFO pointer which misaligns the fixed-address gp1_rx read (silicon 2026-07-11:
+  # draining before send_a2b made gp1_rx[0..3] read stale -> data=0 despite a
+  # byte-exact transfer). Read the aperture directly, exactly like the proven test.
   send_a2b; sleep 1.5
   dt_ok=0; data_ok && dt_ok=1
+  send_b2a; sleep 1.5
+  b2a_ok=0; data_b2a_ok && b2a_ok=1
   db_ok=0; doorbell_ok && db_ok=1
   dt=$((SECONDS-t0)); DONE=$((DONE+1))
   [ "$lk" = 1 ] && LINK=$((LINK+1))
   [ "$dt_ok" = 1 ] && DATA=$((DATA+1))
+  [ "$b2a_ok" = 1 ] && B2A=$((B2A+1))
   [ "$db_ok" = 1 ] && DB=$((DB+1))
-  [ "$lk" = 1 ] && [ "$dt_ok" = 1 ] && [ "$db_ok" = 1 ] && ALL=$((ALL+1))
-  printf 'ALLCHAN_CYCLE %d/%d -> link=%s data=%s doorbell=%s (fcsm %s/%s rea=%s) %ds\n' \
-    "$n" "$N" "$lk" "$dt_ok" "$db_ok" "$fa" "$fb" "$rea" "$dt"
-  echo "$n,$lk,$dt_ok,$db_ok,$fa,$fb,$rea,$dt" >> "$CSV"
+  [ "$lk" = 1 ] && [ "$dt_ok" = 1 ] && [ "$b2a_ok" = 1 ] && [ "$db_ok" = 1 ] && ALL=$((ALL+1))
+  printf 'ALLCHAN_CYCLE %d/%d -> link=%s a2b=%s b2a=%s doorbell=%s (fcsm %s/%s rea=%s) %ds\n' \
+    "$n" "$N" "$lk" "$dt_ok" "$b2a_ok" "$db_ok" "$fa" "$fb" "$rea" "$dt"
+  echo "$n,$lk,$dt_ok,$b2a_ok,$db_ok,$fa,$fb,$rea,$dt" >> "$CSV"
 done
 echo "=========================================================="
 echo " link:     $LINK/$DONE  $(clopper_pearson "$LINK" "$DONE")"
-echo " data:     $DATA/$DONE  $(clopper_pearson "$DATA" "$DONE")"
+echo " data A->B: $DATA/$DONE  $(clopper_pearson "$DATA" "$DONE")"
+echo " data B->A: $B2A/$DONE  $(clopper_pearson "$B2A" "$DONE")"
 echo " doorbell: $DB/$DONE  $(clopper_pearson "$DB" "$DONE")"
-echo " ALL-3:    $ALL/$DONE  $(clopper_pearson "$ALL" "$DONE")"
+echo " ALL-4:    $ALL/$DONE  $(clopper_pearson "$ALL" "$DONE")"
 echo " csv: $CSV"
 echo "=========================================================="

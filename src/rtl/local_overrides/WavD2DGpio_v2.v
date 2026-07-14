@@ -572,9 +572,60 @@ module WavD2DGpio #(
   // inserter still self-gates ~training internally). With io_swi_sync_insert_en_in
   // = 0 (V1 / default-V2 tie) the whole expression folds to 0 REGARDLESS of
   // force_always, so the default is bit-identical to before.
+  // SoC Labs 2026-07-14: `postcount` is Chisel-generated further down (its
+  // always-block driver is unchanged and still lives there). Its DECLARATION is
+  // hoisted here because the serialiser-drain guard below needs it, and Verilog
+  // requires declaration before use. Declaration-only move — no behaviour change.
+  reg [7:0] postcount; // @[GPIO.scala 226:114]
+
+  // ---------------------------------------------------------------------
+  // SoC Labs 2026-07-14 — SERIALISER-DRAIN GUARD (postcount == 0).
+  //
+  // THE BUG THIS FIXES (silicon-proven): a SYNC beacon lands on a LIVE payload
+  // word and corrupts it (~3 words per 28-word burst). Autonomous bring-up
+  // anchored 20/20 but delivered 0/20 channels — data BOTH directions AND the
+  // doorbell — because the autonomy heal pins io_swi_sync_insert_en_in=1
+  // PERMANENTLY (axi_chiplet_controller.sv:2110, the D2 "NEVER BLIND-OFF"
+  // state), so beacons keep firing in data mode. Bench proof, same bitstream:
+  //     R8=0x14 (insert_en=1)  =>  filt=25/28, rot=-1   (corrupt)
+  //     R8=0x10 (insert_en=0)  =>  GP1 RX byte-exact
+  //
+  // ROOT CAUSE: io_link_tx_tx_idle is NOT sufficient on its own.
+  // WlinkTxLinkLayer asserts idle BEFORE the serialiser has drained, so
+  // "idle=1 but serialiser still shifting" is a real window — and it is exactly
+  // the window (postcount != 0) describes. A beacon fired there overwrites the
+  // tail of the packet still going out.
+  //
+  // V1 ALREADY HAS THIS GUARD; V2 LOST IT. See WavD2DGpio.v:625 (SoC Labs
+  // 2026-06-08 SYNC-guard fix), whose comment names this precise failure:
+  //   "WlinkTxLinkLayer asserts idle before the serialiser drains postcount
+  //    ... 'idle=1 but serialiser not finished' is EXACTLY the case
+  //    postcount != 0."
+  //   wire sync_insert = (sync_word_ctr_r==0) & io_link_tx_tx_idle
+  //                    & (postcount == 8'h0) & ~effective_training_mode;
+  // V2 declares postcount (below) but never gated the beacon with it.
+  //
+  // WHY THIS, AND NOT "TURN THE BEACONS OFF": D2 (axi_chiplet_controller.sv
+  // :1436-1455) deleted the autonomous SYNC-OFF for a GOOD reason — a die that
+  // kills its beacons on a LOCAL TIMER starves the PEER's still-running
+  // re-anchor (the refill needs OUR beacons; one missed grid slot resets the
+  // deskew confirm run), and no timer can bound that skew. Permanent idle-gated
+  // beacons are the CORRECT autonomous state: the peer is never dark, the deskew
+  // can re-confirm at any time (drift self-healing), and the anchor retries only
+  // mean anything because of it. D2's design intent was right — only its
+  // DATA-SAFETY claim ("idle-gated insertion is data-safe") was untrue WITHOUT
+  // this guard. With the guard the claim becomes TRUE: we keep every property D2
+  // wanted (including the 20/20 autonomous anchor rate) and lose the corruption.
+  //
+  // Scope: the guard is applied ONLY to the idle-gated path. force_always is the
+  // winscan scan window (winscan_force_sync), where beacons MUST fire
+  // unconditionally; gating that on postcount could starve the scan and regress
+  // anchoring. Deliberately untouched.
+  // ---------------------------------------------------------------------
   wire         tx_sync_en_w = ~por_reset_scan_wrs_io_reset_out
                             &  io_swi_sync_insert_en_in
-                            & (io_swi_sync_force_always_in | io_link_tx_tx_idle);
+                            & (io_swi_sync_force_always_in
+                               | (io_link_tx_tx_idle & (postcount == 8'h0)));
   tidelink_phy_sync_insert u_tx_sync_insert (
     .clk              (io_link_tx_tx_link_clk),
     .rst_n            (~por_reset_scan_wrs_io_reset_out),
@@ -622,7 +673,9 @@ module WavD2DGpio #(
   wire  _precount_in_T = precount == 8'h0; // @[GPIO.scala 224:64]
   wire [7:0] _precount_in_T_2 = precount - 8'h1; // @[GPIO.scala 224:92]
   reg [7:0] swi_pream_count_1; // @[SW.scala 83:22]
-  reg [7:0] postcount; // @[GPIO.scala 226:114]
+  // reg [7:0] postcount;  -- DECLARATION HOISTED above (SoC Labs 2026-07-14) so the
+  //                          serialiser-drain guard on tx_sync_en_w can reference it.
+  //                          Its always-block driver below is UNCHANGED.
   wire  _postcount_in_T = ~io_link_tx_tx_en; // @[GPIO.scala 227:33]
   wire [7:0] _postcount_in_T_3 = postcount - 8'h1; // @[GPIO.scala 227:96]
   reg [7:0] out_prepend_swi_post_count; // @[SW.scala 83:22]

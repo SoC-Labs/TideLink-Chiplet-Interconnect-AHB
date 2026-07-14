@@ -204,7 +204,7 @@ endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -286,6 +286,20 @@ sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
 
+# RX-FIFO suite (42 tests) — carries the EMPTY-FIFO PHANTOM-POP regression
+# (test_41/test_42, added 2026-07-14). That defect was SILICON-ONLY and
+# tapeout-relevant: a read of an empty RX FIFO latched a zero length from the
+# zeroed SRAM, popped a phantom packet, walked read_ptr by 2 words and minted
+# credit ABOVE MAX_CREDITS — so any driver polling an empty FIFO corrupted the
+# read pointer and every later aperture read came back shifted by two words.
+# Sim was blind to it until tidelink_sram.sv began zero-initialising the SRAM to
+# match FPGA BRAM power-up. Reverting the fix makes test_41/42 FAIL with the
+# exact silicon signature (credit 4098 > 4096; payload starting at index 2).
+sim_gate_fifo:
+	$(call sim_gate_run,fifo_rx_phantom_pop,\
+	  rm -rf cocotb/tidelink_fifo/sim_build && \
+	  $(MAKE) -C cocotb/tidelink_fifo)
+
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
 #
@@ -324,12 +338,12 @@ sim_gate_v1elab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v1_elab \
+	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm v1_elab \
+	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
@@ -353,7 +367,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (11 suites)"
+	@echo " sim_gate — full aggregate sim gate (12 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -362,6 +376,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
@@ -377,6 +392,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog

@@ -1467,6 +1467,16 @@ module axi_chiplet_controller #(
     // writes on the slave via the AXIL->APB bridge) cannot strip the SYNC
     // config. See the F1b comment at the drive.
     reg        sync_cfg_hold_q;
+    // ── AUTONOMOUS SYNC-OFF sticky one-shot (2026-07-15, silicon B->A fix) ──
+    // Latches the FIRST cycle the winscan's own verified+held anchor is reached
+    // (ws_anchor_q && ws_verify_q — the EXACT WS_FINALIZE release gate). Once
+    // set it PERMANENTLY holds swi_sync_insert_en_r=0 and sync_cfg_hold_q=0,
+    // ending the D2 "never blind-OFF" heal that pinned R8-effective at 0x14 and
+    // blocked die_a's (the B->A RECEIVER's) RX-commit on silicon. STICKY so it
+    // fires exactly once and never oscillates even though ws_anchor_q/ws_verify_q
+    // can drop on an obs-clear re-pulse. See the drive block for the full
+    // rationale + silicon proof. autonomy_armed-scoped => manual path unchanged.
+    reg        sync_off_done_q;
 `endif
 
     // =====================================================================
@@ -1864,6 +1874,7 @@ module axi_chiplet_controller #(
             sync_cfg_on_fired_q      <= 1'b0;
             sync_cfg_hold_q          <= 1'b0;  // F1b/D2: hold engages at SYNC-ON,
                                                // then PERMANENT (never blind-OFF)
+            sync_off_done_q          <= 1'b0;  // 2026-07-15: SYNC-OFF one-shot armed
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -2110,6 +2121,44 @@ module axi_chiplet_controller #(
                 if (sync_cfg_hold_q) begin
                     swi_sync_insert_en_r     <= 1'b1;
                     swi_sync_robust_detect_r <= 1'b1;
+                end
+                // ── AUTONOMOUS SYNC-OFF at the verified+held anchor ──
+                // (2026-07-15) THE B->A autonomy channel fix. SILICON ROOT
+                // CAUSE: the D2 heal above (never blind-OFF) re-drove
+                // insert_en=1 every cycle while sync_cfg_hold_q — textually
+                // LATER than the APB R8 decode (:1923) in this SAME always_ff
+                // => NBA last-write-wins pinned R8-effective at 0x14 forever.
+                // At 0x14 die_a (the MASTER, i.e. the B->A RECEIVER) CAPTURES
+                // incoming B->A words (RXCAP proven) but NEVER COMMITS them to
+                // the GP1 app FIFO. Causal silicon proof: disarming (0x210C=0)
+                // -> B->A byte-exact immediately; NOT credit (send-credit 0x1f
+                // nonzero while dead), NOT beacon-substitution (0044bef drain
+                // guard already killed that; RXCAP showed no SYNC in payload).
+                // See [[project_autonomy_rootcause_sync_clamp_2026_07_14]] and
+                // [[project_drainguard_necessary_not_sufficient_b2a_residual_2026_07_14]].
+                //
+                // The D2 note (:2101) was RIGHT to delete the blind TIMER but
+                // WRONG to conclude "never turn SYNC off". Turn it off on an
+                // EVENT: the winscan's OWN verified+held anchor
+                // (ws_anchor_q && ws_verify_q — the exact WS_FINALIZE release
+                // gate at :4892). That lands the autonomous data-mode steady
+                // state on R8-effective 0x10 — the config the manual recipe
+                // uses and which is PROVEN 40/40 all-channels byte-exact.
+                //
+                // STICKY ONE-SHOT: ws_anchor_q/ws_verify_q can DROP on an
+                // obs-clear re-pulse (WS_FIN_CLRLOW), so latch sync_off_done_q
+                // the first time the anchor is verified and HOLD insert_en=0
+                // thereafter — fire once, never re-clamp, never oscillate.
+                // KEEP robust/tol/lane_mask (the deskew still consumes them);
+                // only insert_en + the hold change. force_always and
+                // winscan_force_sync (the SCAN beacons, OR'd separately at the
+                // Wlink ports :5924-5939) are UNAFFECTED — a re-scan still
+                // forces SYNC regardless of insert_en, so no coverage gap.
+                if (ws_anchor_q && ws_verify_q)
+                    sync_off_done_q <= 1'b1;
+                if (sync_off_done_q || (ws_anchor_q && ws_verify_q)) begin
+                    swi_sync_insert_en_r <= 1'b0;  // strip SYNC beacon -> R8 0x10
+                    sync_cfg_hold_q      <= 1'b0;  // release the D2 heal (stop re-clamp)
                 end
             end
 `endif

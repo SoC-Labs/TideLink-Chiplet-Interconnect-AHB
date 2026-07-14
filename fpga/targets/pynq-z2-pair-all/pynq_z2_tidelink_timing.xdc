@@ -217,7 +217,21 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#      *** 2026-07-14 FIX — THIS CONSTRAINT WAS SILENTLY DEAD IN EVERY BUILD. ***
+#      It was written -from [get_ports {pad_rx[*]}]. set_bus_skew accepts ONLY
+#      (pin,cell,clock) — NOT ports — so Vivado matched nothing and dropped it:
+#          CRITICAL WARNING [Constraints 18-612] set_bus_skew: ... does not
+#          contain any object of type(s) '(pin,cell,clock)' ... The constraint
+#          will not be applied.
+#      (The set_max_delay on the line above DOES accept ports, which is exactly
+#      why this went unnoticed — the two lines look symmetric but are not.)
+#      Consequence: inter-lane RX skew has been UNBOUNDED in every bitstream we
+#      have ever built, which is precisely the per-lane VARIANCE this constraint
+#      was written to remove — and matches the observed build-to-build autonomy
+#      lottery (identical RTL, rebuild moved die_a 15% -> 35%).
+#      Source is now the IBUF output pins (pad_rx_IBUF[n]_inst/O), the closest
+#      legal `pin` object to the pad.
+set_bus_skew -from [get_pins {pad_rx_IBUF[*]_inst/O}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

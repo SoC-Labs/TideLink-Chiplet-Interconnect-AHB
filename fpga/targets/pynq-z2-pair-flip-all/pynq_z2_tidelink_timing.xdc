@@ -229,7 +229,19 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#      *** 2026-07-14 FIX — THIS CONSTRAINT WAS SILENTLY DEAD IN EVERY BUILD. ***
+#      It was written -from [get_ports {pad_rx[*]}]. set_bus_skew accepts ONLY
+#      (pin,cell,clock) — NOT ports — so Vivado matched nothing and dropped it:
+#          CRITICAL WARNING [Constraints 18-612] set_bus_skew: ... does not
+#          contain any object of type(s) '(pin,cell,clock)' ... The constraint
+#          will not be applied.
+#      (The set_max_delay above DOES accept ports — the two lines look symmetric
+#      but are not, which is why this went unnoticed.)
+#      Consequence: inter-lane RX skew has been UNBOUNDED in every bitstream, the
+#      exact per-lane VARIANCE this was written to remove, and consistent with the
+#      build-to-build autonomy lottery.
+#      Source is now the IBUF output pins (pad_rx_IBUF[n]_inst/O).
+set_bus_skew -from [get_pins {pad_rx_IBUF[*]_inst/O}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

@@ -177,6 +177,35 @@ for t in "${TARGETS[@]}"; do
   done
 done
 
+# ----- (g) NO SILENTLY-DROPPED XDC CONSTRAINTS -------------------------------------
+# Vivado emits a CRITICAL WARNING (not an error) when a constraint matches nothing or
+# is handed an unsupported object type, then carries on and builds a bitstream WITHOUT
+# it. That is exactly how the key inter-lane-skew constraint stayed dead for months:
+#
+#   set_bus_skew -from [get_ports {pad_rx[*]}] ...
+#     -> [Constraints 18-612] ... does not contain any object of type(s)
+#        '(pin,cell,clock)' ... The constraint will not be applied.
+#
+# set_bus_skew accepts only (pin,cell,clock); the set_max_delay on the adjacent line
+# DOES accept ports, so the two looked symmetric and nobody noticed. Inter-lane RX skew
+# was therefore UNBOUNDED in every bitstream — the precise per-lane variance that
+# constraint existed to remove, and consistent with the build-to-build autonomy lottery.
+#
+# A dropped constraint must never be silent again. This is a FAIL, not a warning.
+DROP_RE='Constraints 18-61[12]|The constraint will not be applied|constraint will not be applied'
+for t in "${TARGETS[@]}"; do
+  logs=$(ls -t "$IMP"/run/farm/"$t"@*.log \
+                "$IMP"/project/"$t"/*.runs/impl_1/runme.log 2>/dev/null | head -2)
+  [ -z "$logs" ] && { warn "g" "no impl log for $t" "cannot check for dropped constraints"; continue; }
+  hits=$(grep -hoE "$DROP_RE" $logs 2>/dev/null | wc -l)
+  if [ "$hits" -gt 0 ]; then
+    ev=$(grep -hE "$DROP_RE" $logs 2>/dev/null | head -1 | cut -c1-150)
+    fail "g" "$t: $hits SILENTLY-DROPPED constraint line(s)" "$ev"
+  else
+    pass "g" "$t: no dropped XDC constraints" "no [Constraints 18-611/612] in the impl log"
+  fi
+done
+
 # ----- verdict --------------------------------------------------------------------
 echo "-------------------------------------------------------------------"
 if [ $NFAIL -eq 0 ]; then

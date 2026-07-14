@@ -238,7 +238,79 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#
+# !!! 2026-07-14 — THIS CONSTRAINT HAD NEVER APPLIED. NOT ON EITHER DIE. EVER. !!!
+#
+# It was written `-from [get_ports {pad_rx[*]}]`, and Vivado does NOT accept PORTS
+# for set_bus_skew's -from (pin / cell / clock only). It rejected it every build:
+#     CRITICAL WARNING: [Constraints 18-611] set_bus_skew: list of objects
+#       specified for option 'from' contains '8' objects of types '(port)' ...
+#     CRITICAL WARNING: [Constraints 18-612] ... does not contain any object of
+#       type(s) '(pin,cell,clock)'
+# and `report_bus_skew` on the routed KR260 design said, verbatim:
+#     "No bus skew constraints"
+#
+# So the self-described "KEY build-to-build determinism constraint" was silently
+# dropped for the entire life of the project, and inter-lane capture skew was
+# bounded by NOTHING. That is exactly consistent with the observed placement
+# lottery: nothing was holding the lanes together, so which lanes land inside the
+# calibrator window is decided by placement luck and changes every rebuild.
+# Measured on the shipped KR260 build: the 128 capture flops sprawl across FOUR
+# clock regions (X0Y0, X0Y1, X1Y0, X1Y1) while every pad_rx pin sits in X0Y1.
+#
+# !!! AND IT CANNOT BE REPAIRED AS PROPOSED — MEASURED 2026-07-14 !!!
+#
+# The suggested fix ("-from must be the IBUF/IDELAY pins") DOES NOT WORK. Tried it
+# against the routed KR260 design; Vivado rejects it outright:
+#     ERROR: [Constraints 18-513] set_bus_skew: list of objects specified for
+#       '-from' option contains no valid startpoints.
+# An IBUF output pin is a combinational net, not a timing STARTPOINT (a startpoint
+# is an input port or a sequential clock pin). And set_bus_skew's type check
+# refuses ports. There is no object that satisfies both.
+#
+# The reason is that set_bus_skew is a CDC construct — it bounds skew on a bus
+# going register-to-register ACROSS CLOCK DOMAINS. It was never applicable to a
+# port -> register INPUT bus. This was a misconception, not a typo, and no
+# -from selector will rescue it. THE CONSTRAINT IS THEREFORE DELETED, not "fixed".
+#
+# AND ON THIS DEVICE IT WOULD HAVE BEEN A NO-OP ANYWAY. Measured, per lane, on the
+# shipped routed build (pad_rx[n] -> capture, max path):
+#     lane 0 3.245   lane 1 3.385   lane 2 3.108   lane 3 2.756
+#     lane 4 2.729   lane 5 2.976    lane 6 3.265   lane 7 3.290   (ns)
+#     => INTER-LANE DATA SKEW = 0.656 ns
+# At the KR260's 320 ns UI that is 0.2% of a bit period, and already ~3x TIGHTER
+# than the 2 ns the constraint would have demanded. So on KR260 the inert
+# set_bus_skew is NOT the bring-up-lottery mechanism: the data path is fine, and
+# a working skew bound would have changed nothing. (It may still matter on the Z2 —
+# different device, different UI, different placement — but that is not this file.)
+#
+# The residual suspect on KR260 is the capture CLOCK tree, not the data path: a
+# LUT-based scan mux (pad_clk_inv_scan_mux) feeds the capture BUFG, and the
+# distributed clock net has fanout 372. That is a CLOCK-skew mechanism and is
+# tracked separately — see fpga/docs/KR260_NEXT_WEEK_PLAN.md.
+#
+# NOTE (verification method): never "check" a bus-skew fix by grepping for
+# VIOLATED. An EMPTY report contains no violations and greps as a PASS — which is
+# exactly how this hid for months. Check NUMERICALLY that > 0 paths were analyzed.
+
+# (3c-ii) PLACEMENT: give the bus-skew constraint room to be satisfiable.
+# The capture flops were spread over four clock regions while the pad_rx IO all
+# land in X0Y1 — so even a WORKING skew constraint would be fighting the placer.
+# Confine the RX capture logic to the IO's own clock-region column (X0Y0:X0Y1),
+# co-locating all 8 lanes' capture with their pads.
+#
+# This mirrors `pblock_rx_act` on wip/phase2-pblock (die_b has had it since
+# 2026-06-20 and consistently out-performs die_a, which had none). The REGIONS,
+# however, are re-derived for xck26 — the Z2's region names are meaningless on
+# this device. Verified from the routed KR260 design:
+#     pad_rx[*] IO      -> clock region X0Y1
+#     capture flops     -> X0Y0, X0Y1, X1Y0, X1Y1  (the sprawl being fixed)
+#     device grid       -> X0Y0..X2Y3
+# IS_SOFT false = a hard constraint; the placer must honour it.
+create_pblock pblock_rx_act
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
+set_property IS_SOFT false [get_pblocks pblock_rx_act]
 
 # (3d) IOB packing is FORCED OFF on KR260. This is a deliberate inversion of
 #      the Z2 constraint (which requests `IOB TRUE` here), and it is required —

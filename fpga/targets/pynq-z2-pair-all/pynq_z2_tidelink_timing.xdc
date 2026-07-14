@@ -217,21 +217,45 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-#      *** 2026-07-14 FIX — THIS CONSTRAINT WAS SILENTLY DEAD IN EVERY BUILD. ***
-#      It was written -from [get_ports {pad_rx[*]}]. set_bus_skew accepts ONLY
-#      (pin,cell,clock) — NOT ports — so Vivado matched nothing and dropped it:
-#          CRITICAL WARNING [Constraints 18-612] set_bus_skew: ... does not
-#          contain any object of type(s) '(pin,cell,clock)' ... The constraint
-#          will not be applied.
-#      (The set_max_delay on the line above DOES accept ports, which is exactly
-#      why this went unnoticed — the two lines look symmetric but are not.)
-#      Consequence: inter-lane RX skew has been UNBOUNDED in every bitstream we
-#      have ever built, which is precisely the per-lane VARIANCE this constraint
-#      was written to remove — and matches the observed build-to-build autonomy
-#      lottery (identical RTL, rebuild moved die_a 15% -> 35%).
-#      Source is now the IBUF output pins (pad_rx_IBUF[n]_inst/O), the closest
-#      legal `pin` object to the pad.
-set_bus_skew -from [get_pins {pad_rx_IBUF[*]_inst/O}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#      *** 2026-07-14 — REMOVED. THIS CONSTRAINT NEVER APPLIED, AND CANNOT. ***
+#
+#      It was:
+#        set_bus_skew -from [get_ports {pad_rx[*]}] -to <capture flops> 2.000
+#
+#      In EVERY build it was silently discarded:
+#        CRITICAL WARNING [Constraints 18-612] set_bus_skew: ... does not contain
+#        any object of type(s) '(pin,cell,clock)' ... will not be applied.
+#      It hid because the set_max_delay above uses the IDENTICAL
+#      -from [get_ports {pad_rx[*]}] and IS legal (set_max_delay accepts ports).
+#      The two lines look symmetric. They are not.
+#
+#      Re-sourcing it from the IBUF output pins does NOT rescue it:
+#        WARNING [Constraints 18-402] set_bus_skew: 'pad_rx_IBUF[0]_inst/O' is
+#        not a valid startpoint.
+#      set_bus_skew is a CDC construct: it needs a synchronous LAUNCH point (a
+#      sequential cell / its clock pin). An input port has no launch register
+#      inside the device, and a combinational IBUF output pin is not a timing
+#      startpoint. So this path is not expressible with set_bus_skew at all.
+#
+#      AND IT WOULD NOT HAVE HELPED AT 2 ns ANYWAY: the measured pad_rx -> capture
+#      setup slack on this design is ~0.44 ns. A 2 ns skew ceiling is ~5x LOOSER
+#      than the entire available margin, so it could not have bounded the thing it
+#      was written to bound.
+#
+#      The real question — how to make pad->capture margin DETERMINISTIC across
+#      builds — is open, and is the leading autonomy lead. Candidates, none yet
+#      validated (see docs/AUTONOMY_STATUS_2026_07_14.md):
+#        * IOB packing so the capture element has fixed, placement-independent delay
+#        * per-lane IDELAY used to EQUALISE (its ~2.34 ns range is well matched to a
+#          sub-ns/1-ns inter-lane skew — note the recorded "IDELAY is inert" finding
+#          answered a DIFFERENT question, namely positioning within a 426 ns UI)
+#        * pblock pinning of the capture flops (already applied, both dies)
+#        * a set_max_delay/set_min_delay WINDOW (both accept ports) to bound the
+#          pad->capture delay spread directly — the closest legal expression of the
+#          original intent, but the window must be sized against a ~0.44 ns margin,
+#          not 2 ns.
+#      Do NOT re-add a set_bus_skew here without checking the build log: any
+#      constraint that binds to nothing now FAILS verify_build.sh check (g).
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

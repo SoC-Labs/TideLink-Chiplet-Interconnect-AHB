@@ -192,17 +192,33 @@ done
 # constraint existed to remove, and consistent with the build-to-build autonomy lottery.
 #
 # A dropped constraint must never be silent again. This is a FAIL, not a warning.
-DROP_RE='Constraints 18-61[12]|The constraint will not be applied|constraint will not be applied'
+# Match EVERY way Vivado can quietly neuter a constraint, not just one:
+#   18-611/18-612  unsupported object type / matched nothing  -> constraint dropped
+#   18-402         "'X' is not a valid startpoint"            -> no valid endpoints,
+#                  so the constraint applies to NOTHING. This is only a WARNING (not
+#                  CRITICAL), and it is EXACTLY how the 2026-07-14 "fix" of the dead
+#                  set_bus_skew produced a FALSE GREEN: swapping get_ports for the
+#                  IBUF output pins silenced 18-612 but raised 18-402 instead, and an
+#                  18-611/612-only check passed a build whose skew constraint was
+#                  still dead. A constraint that binds to nothing must FAIL, however
+#                  Vivado chooses to phrase it.
+#   18-4?? generic "no valid object"/"empty" phrasings
+DROP_RE='Constraints 18-61[12]|Constraints 18-402|constraint will not be applied|is not a valid startpoint|is not a valid endpoint|No valid object\(s\) found'
 for t in "${TARGETS[@]}"; do
-  logs=$(ls -t "$IMP"/run/farm/"$t"@*.log \
-                "$IMP"/project/"$t"/*.runs/impl_1/runme.log 2>/dev/null | head -2)
-  [ -z "$logs" ] && { warn "g" "no impl log for $t" "cannot check for dropped constraints"; continue; }
-  hits=$(grep -hoE "$DROP_RE" $logs 2>/dev/null | wc -l)
+  # ONLY the single NEWEST log for this target. Using the newest N would drag in the
+  # PREVIOUS build's log and report its (already-fixed) drops against the current
+  # build — a false FAIL. Observed 2026-07-14: head -2 pulled the 07-11 pre-fix farm
+  # log alongside the clean 07-14 one and failed a build that was actually correct.
+  log=$(ls -t "$IMP"/run/farm/"$t"@*.log \
+               "$IMP"/project/"$t"/*.runs/impl_1/runme.log 2>/dev/null | head -1)
+  [ -z "$log" ] && { warn "g" "no impl log for $t" "cannot check for dropped constraints"; continue; }
+  hits=$(grep -cE "$DROP_RE" "$log" 2>/dev/null)
   if [ "$hits" -gt 0 ]; then
-    ev=$(grep -hE "$DROP_RE" $logs 2>/dev/null | head -1 | cut -c1-150)
-    fail "g" "$t: $hits SILENTLY-DROPPED constraint line(s)" "$ev"
+    ev=$(grep -hE "$DROP_RE" "$log" 2>/dev/null | head -1 | cut -c1-140)
+    fail "g" "$t: $hits SILENTLY-DROPPED constraint line(s)" "$ev  [$(basename "$log")]"
   else
-    pass "g" "$t: no dropped XDC constraints" "no [Constraints 18-611/612] in the impl log"
+    nskew=$(grep -cE "set_bus_skew" "$log" 2>/dev/null)
+    pass "g" "$t: no dropped XDC constraints" "clean impl log ($(basename "$log")); set_bus_skew refs=$nskew"
   fi
 done
 

@@ -79,7 +79,47 @@ eye does not exonerate the lane.*
 
 ---
 
-## 5. The untested lever (this is where I'd start)
+## 4b. ⚠️ THE BIGGEST LEAD — `set_bus_skew` was SILENTLY DEAD in every build
+
+Found 2026-07-14. **The one constraint that bounds inter-lane RX skew has never been
+applied.** In every build, both dies:
+
+```
+CRITICAL WARNING [Constraints 18-611/612] set_bus_skew: list of objects specified for
+option 'from' contains '8' objects of types '(port)' other than the types
+'(pin,cell,clock)' supported by the constraint.  The constraint will not be applied.
+    die_a  pynq_z2_tidelink_timing.xdc:220
+    die_b  pynq_z2_tidelink_timing.xdc:232
+```
+
+`set_bus_skew` accepts only **(pin,cell,clock)** — it was written
+`-from [get_ports {pad_rx[*]}]`, matched nothing, and was discarded. Vivado emits a
+*CRITICAL WARNING*, not an error, and ships a bitstream without it.
+
+**Why nobody noticed:** the `set_max_delay` on the *adjacent line* uses the **identical**
+`-from [get_ports {pad_rx[*]}]` and is perfectly legal (`set_max_delay` *does* accept
+ports). The two lines look symmetric. They are not.
+
+**Why this is the biggest lead:** the XDC comment directly above it reads —
+
+> *"(3c) **THE key build-to-build determinism constraint.** set_bus_skew forces Vivado to
+> EQUALISE the pad_rx[0..7] → capture delays to within 2 ns of each other. **The defect is
+> per-lane VARIANCE** (some lanes land in the calibrator window, others don't, **and which
+> is which changes every build**)."*
+
+That diagnosis is *correct* — and the constraint written to fix it has been dead the whole
+time. **Inter-lane RX skew has been UNBOUNDED in every bitstream ever built.** This is
+precisely the mechanism behind the rebuild lottery in §2 (identical RTL, rebuild moved
+die_a 15% → 35%).
+
+**Fixed (44b85d4):** sourced from the IBUF output pins (`pad_rx_IBUF[n]_inst/O`) on both
+targets, plus `verify_build.sh` check (g), which now FAILS the build gate on any dropped
+constraint (proven to have teeth — it fails the current build, 6 dropped lines per target).
+
+**NOT YET PROVEN.** Nobody has built with a *live* skew constraint, let alone measured
+autonomy on it. **This is the experiment to run first**, ahead of everything else in §5.
+
+## 5. The other untested lever
 
 The current bitstream (`wip/phase2-pblock`) is the first to carry **every** fix at once,
 including the physical one aimed squarely at the lottery:

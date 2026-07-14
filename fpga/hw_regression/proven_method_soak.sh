@@ -23,6 +23,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/td_v2_hwlib.sh"
 
 N=${1:-6}
+# TD_AUTONOMOUS=1 => TRUE ZERO-POKE bring-up: issue NO pokes at all. The bitstream
+# carries NEGO_CFG_RESET=0x61 and LANE_MASK_RESET=0xE4 as PARAMETERS, so autonomy
+# self-arms at POR. We only READ BACK the arm (NEGO_CFG[0] & NEGO_TRAIN_CFG[0] =>
+# autonomy_armed) and then poll for convergence. A cycle where the die was NOT armed
+# is a NON-TEST and is excluded from the denominator — an unarmed die never runs the
+# winscan, so scoring it as a failure would slander the FSM (this exact mistake was
+# made for months when NEGO_CFG's POR was 0x00).
+# Default (TD_AUTONOMOUS=0) = rcp(), the manual recipe, autonomy OFF.
+AUTONOMOUS=${TD_AUTONOMOUS:-0}
+AUTO_WAIT=${TD_AUTO_WAIT:-45}       # seconds to let autonomy converge
+R_NEGO_CFG_A=0x44032090
+R_NEGO_TRAIN_A=0x4403210C
 HUB_A=${TD_HUB_A:-pynq_z2_02_ps}
 HUB_B=${TD_HUB_B:-pynq_z2_01_pl}
 BOARD_PW=${TD_BOARD_PW:-xilinx}
@@ -102,19 +114,44 @@ print("%.1f%% [%.1f%%, %.1f%%]"%(100.0*k/n,100.0*lo,100.0*hi))
 PY
 }
 
+MODE_STR=$([ "$AUTONOMOUS" = 1 ] && echo "ZERO-POKE AUTONOMOUS (no writes; POR-armed)" || echo "RECIPE (rcp; autonomy OFF)")
 echo "=========================================================="
-echo " proven_method_soak  N=$N  (link + framed A->B data + doorbell)"
+echo " proven_method_soak  N=$N"
+echo "   bring-up: $MODE_STR"
+echo "   channels: link + A->B + B->A (framed, byte-exact) + doorbell"
 echo "=========================================================="
-echo "cycle,link,a2b,b2a,doorbell,fcsm_a,fcsm_b,reanchored,elapsed_s" > "$CSV"
+echo "cycle,link,a2b,b2a,doorbell,fcsm_a,fcsm_b,rea_a,rea_b,elapsed_s" > "$CSV"
 LINK=0; DATA=0; B2A=0; DB=0; ALL=0; DONE=0
 for n in $(seq 1 "$N"); do
   t0=$SECONDS
   if ! por; then echo "ALLCHAN_CYCLE $n/$N -> POR-FAIL (a board did not return)"; continue; fi
   deploy_pair; sleep 2
-  rcp
-  for i in $(seq 1 8); do sleep 1; [ "$(reanchored)" = 1 ] && break; done
+  armed=1
+  if [ "$AUTONOMOUS" = 1 ]; then
+    # ---- TRUE ZERO-POKE: no writes. Read back the POR arm, then poll. ----
+    ca=$(( $(a rd $R_NEGO_CFG_A) & 0x7f )); cb=$(( $(b rd $R_NEGO_CFG_A) & 0x7f ))
+    ta=$(( $(a rd $R_NEGO_TRAIN_A) & 1 ));  tb=$(( $(b rd $R_NEGO_TRAIN_A) & 1 ))
+    aa=0; [ $(( ca & 1 )) -eq 1 ] && [ "$ta" -eq 1 ] && aa=1
+    ab=0; [ $(( cb & 1 )) -eq 1 ] && [ "$tb" -eq 1 ] && ab=1
+    if [ "$aa" -ne 1 ] || [ "$ab" -ne 1 ]; then
+      armed=0
+      printf 'ALLCHAN_CYCLE %d/%d -> UNARMED (NEGO_CFG a=0x%02x b=0x%02x train a=%s b=%s) — NON-TEST, excluded\n' \
+        "$n" "$N" "$ca" "$cb" "$ta" "$tb"
+      echo "$n,UNARMED,,,,,," >> "$CSV"
+      continue
+    fi
+    for i in $(seq 1 "$AUTO_WAIT"); do
+      sleep 1
+      [ "$(reanchored_d a)" = 1 ] && [ "$(reanchored_d b)" = 1 ] \
+        && [ "$(fcsm a)" = 4 ] && [ "$(fcsm b)" = 4 ] && break
+    done
+  else
+    rcp
+    for i in $(seq 1 8); do sleep 1; [ "$(reanchored)" = 1 ] && break; done
+  fi
   fa=$(fcsm a); fb=$(fcsm b); rea=$(reanchored)
-  lk=0; [ "$fa" = 4 ] && [ "$fb" = 4 ] && lk=1
+  ra=$(reanchored_d a); rb=$(reanchored_d b)
+  lk=0; [ "$fa" = 4 ] && [ "$fb" = 4 ] && [ "$ra" = 1 ] && [ "$rb" = 1 ] && lk=1
   enter_data_mode
   # NO pre-send drain: fresh POR => RX FIFO empty, and `rxn` pops/advances the
   # FIFO pointer which misaligns the fixed-address gp1_rx read (silicon 2026-07-11:
@@ -131,9 +168,9 @@ for n in $(seq 1 "$N"); do
   [ "$b2a_ok" = 1 ] && B2A=$((B2A+1))
   [ "$db_ok" = 1 ] && DB=$((DB+1))
   [ "$lk" = 1 ] && [ "$dt_ok" = 1 ] && [ "$b2a_ok" = 1 ] && [ "$db_ok" = 1 ] && ALL=$((ALL+1))
-  printf 'ALLCHAN_CYCLE %d/%d -> link=%s a2b=%s b2a=%s doorbell=%s (fcsm %s/%s rea=%s) %ds\n' \
-    "$n" "$N" "$lk" "$dt_ok" "$b2a_ok" "$db_ok" "$fa" "$fb" "$rea" "$dt"
-  echo "$n,$lk,$dt_ok,$b2a_ok,$db_ok,$fa,$fb,$rea,$dt" >> "$CSV"
+  printf 'ALLCHAN_CYCLE %d/%d -> link=%s a2b=%s b2a=%s doorbell=%s (fcsm %s/%s rea_a=%s rea_b=%s) %ds\n' \
+    "$n" "$N" "$lk" "$dt_ok" "$b2a_ok" "$db_ok" "$fa" "$fb" "$ra" "$rb" "$dt"
+  echo "$n,$lk,$dt_ok,$b2a_ok,$db_ok,$fa,$fb,$ra,$rb,$dt" >> "$CSV"
 done
 echo "=========================================================="
 echo " link:     $LINK/$DONE  $(clopper_pearson "$LINK" "$DONE")"

@@ -90,8 +90,16 @@ else
     # `... | tee` would mask the gate's exit with tee's). Forward the PHY-select
     # env + the stamp path the gate needs; inherit the rest.
     gate_rc=0
+    # BUGFIX (2026-07-11): the old form was
+    #   ${TIDELINK_PHY_V2:+TIDELINK_PHY_V2="$TIDELINK_PHY_V2"}
+    # A `name=value` word that only BECOMES an assignment after parameter
+    # expansion is NOT recognised by bash as an env-assignment prefix — it is
+    # run as the COMMAND. So whenever TIDELINK_PHY_V2 was exported, this line
+    # executed `TIDELINK_PHY_V2=1` and died rc=127 ("command not found"),
+    # taking the gate RED and refusing every farm build. The assignment NAME
+    # must be a literal in the source; only the VALUE may be expanded.
     TIDELINK_HOME="$TIDELINK_HOME" FARM_GATE_STAMP="$GATE_STAMP" \
-        ${TIDELINK_PHY_V2:+TIDELINK_PHY_V2="$TIDELINK_PHY_V2"} \
+        TIDELINK_PHY_V2="$TIDELINK_PHY_V2" \
         bash "$FPGA_DIR/farm_gate.sh" > "$GATE_LOG" 2>&1 || gate_rc=$?
     tail -n 40 "$GATE_LOG"
     if [ "$gate_rc" -eq 0 ]; then

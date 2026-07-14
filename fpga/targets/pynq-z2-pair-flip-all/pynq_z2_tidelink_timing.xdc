@@ -240,7 +240,25 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 # (co-located flops), and now VERIFIED post-route by report_bus_skew
 # (build_design.tcl STEP 10b). If unroutable, relax toward the reported floor
 # -- do NOT silently widen back to 2.0 ns.
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 0.400
+# >>> 2026-07-14 BUGFIX — THIS CONSTRAINT HAD NEVER BEEN APPLIED. <<<
+# Identical defect to the STRAIGHT target: `-from [get_ports {pad_rx[*]}]` is
+# rejected by Vivado's set_bus_skew (pin/cell/clock only) — CRITICAL WARNING
+# 18-611/18-612 "The constraint will not be applied", and report_bus_skew says
+# "No bus skew constraints". THE key build-to-build determinism constraint was a
+# SILENT NO-OP on this die too, for the whole project: inter-lane capture skew
+# was never bounded. Correct form = from the pad_rx IBUF OUTPUT PINS (first legal
+# object after the pad) into the capture flops. The llength assertions make a
+# non-matching selector FAIL THE BUILD instead of silently skipping again.
+set _bs_from [get_pins -quiet {pad_rx_IBUF[*]_inst/O}]
+set _bs_to   [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+if {[llength $_bs_from] != 8} {
+    error "set_bus_skew: -from matched [llength $_bs_from] pins (expected 8 pad_rx IBUF outputs) — the constraint would SILENTLY NO-OP. Fix the selector, do not ignore this."
+}
+if {[llength $_bs_to] == 0} {
+    error "set_bus_skew: -to matched 0 capture flops — the constraint would SILENTLY NO-OP."
+}
+set_bus_skew -from $_bs_from -to $_bs_to 0.400
+puts "XDC: set_bus_skew APPLIED — [llength $_bs_from] IBUF source pins -> [llength $_bs_to] capture flops @ 0.400 ns"
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

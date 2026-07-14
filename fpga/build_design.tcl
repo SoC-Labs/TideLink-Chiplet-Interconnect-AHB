@@ -563,9 +563,19 @@ if { [catch {
     # Assert the capture-flop filter is non-empty and LOG the count BEFORE
     # trusting the skew report.
     # -----------------------------------------------------------------
-    set _n [llength [get_cells -hier -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*"}]]
-    if { $_n == 0 } { error "WS1: pblock filter matched 0 cells — set_bus_skew silently no-op" }
-    puts "WS1: pblock_rx_act active-lane capture cells matched = $_n (expect ~80)"
+    # 2026-07-14: report the TRUE pblock population, not a single-lane probe.
+    # (The old probe counted only lane-2's 16-bit link_data_pad_clk_reg => 16,
+    #  while the label said "expect ~80" — correct number, misleading label.)
+    set _n_probe [llength [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*"}]]
+    if { $_n_probe == 0 } { error "WS1: lane-2 capture-flop selector matched 0 cells — the pblock/bus_skew selectors are stale, they would SILENTLY NO-OP" }
+    set _pb [get_pblocks -quiet pblock_rx_act]
+    if { [llength $_pb] == 0 } {
+        puts "WS1: WARNING — pblock_rx_act does not exist in this design"
+    } else {
+        set _n_pb [llength [get_cells -quiet -of_objects $_pb]]
+        if { $_n_pb == 0 } { error "WS1: pblock_rx_act exists but is EMPTY — the floorplan fix is a silent no-op" }
+        puts "WS1: pblock_rx_act population = $_n_pb cells (lane-2 capture-flop probe = $_n_probe)"
+    }
 
     set _bs_rpt  $output_dir/tidelink_bus_skew_routed.rpt
     set _clk_rpt $output_dir/tidelink_clock_utilization_routed.rpt

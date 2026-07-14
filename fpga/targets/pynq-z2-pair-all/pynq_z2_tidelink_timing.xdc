@@ -229,7 +229,34 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 # is now VERIFIED post-route by report_bus_skew (build_design.tcl STEP 10b).
 # If report_bus_skew shows 0.4 ns is unroutable, relax toward the reported
 # achievable floor -- do NOT silently widen back to 2.0 ns (that hid the bug).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 0.400
+# >>> 2026-07-14 BUGFIX — THIS CONSTRAINT HAD NEVER BEEN APPLIED. <<<
+# The previous form was:
+#     set_bus_skew -from [get_ports {pad_rx[*]}] -to [...] 2.000   (and WS1's 0.400)
+# Vivado's set_bus_skew does NOT accept PORTS for -from (pin/cell/clock only).
+# Every build emitted, and everyone ignored:
+#     CRITICAL WARNING [Constraints 18-611] ... objects of types '(port)' ...
+#     CRITICAL WARNING [Constraints 18-612] ... The constraint will not be applied.
+# and report_bus_skew said, verbatim: "No bus skew constraints".
+# So THE key build-to-build determinism constraint was a SILENT NO-OP on BOTH
+# dies for the whole project — inter-lane capture skew was never bounded by
+# anything. That is fully consistent with the placement bring-up lottery.
+# Correct form: constrain from the pad_rx IBUF OUTPUT PINS (the first legal
+# object after the pad) into the capture flops. Verified against the routed
+# netlist: the IBUFs are TOP-LEVEL (`pad_rx_IBUF[7]_inst/O`) and the capture
+# flops are `.../gpiorx_7/link_data_pad_clk_reg[4]` (inside pblock_rx_act).
+#
+# The llength ASSERTIONS below are the whole point: a selector that matches
+# nothing must FAIL THE BUILD, never silently skip the constraint again.
+set _bs_from [get_pins -quiet {pad_rx_IBUF[*]_inst/O}]
+set _bs_to   [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
+if {[llength $_bs_from] != 8} {
+    error "set_bus_skew: -from matched [llength $_bs_from] pins (expected 8 pad_rx IBUF outputs) — the constraint would SILENTLY NO-OP. Fix the selector, do not ignore this."
+}
+if {[llength $_bs_to] == 0} {
+    error "set_bus_skew: -to matched 0 capture flops — the constraint would SILENTLY NO-OP."
+}
+set_bus_skew -from $_bs_from -to $_bs_to 0.400
+puts "XDC: set_bus_skew APPLIED — [llength $_bs_from] IBUF source pins -> [llength $_bs_to] capture flops @ 0.400 ns"
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

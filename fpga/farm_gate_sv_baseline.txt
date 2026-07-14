@@ -16,7 +16,11 @@
 #     (ctrl_reg_addr[4:3])` enumerates all four 2-bit arms AND carries an
 #     explicit `default: ctrl_reg_rdata = 32'b0;`. Every path assigns; flagged
 #     only for lacking a pre-case default. (Was line 941; DRIFTED to 985 as the
-#     region read-mux grew — same finding, new line.)
+#     region read-mux grew; DRIFTED again to 1036 on phaseB/attack when WS2's
+#     autonomy params were inserted above it — same finding, new line. Verified
+#     2026-07-14: the construct at :1036 is byte-identical to the one at :985
+#     (same `always_comb` + `unique case (ctrl_reg_addr[4:3])` region read-mux)
+#     and WS2's NEW combinational logic introduced NO new COMB_NO_DEFAULT.)
 #   * tidelink_autoneg.sv selected_priority — the case is fully enumerated
 #     (2-bit nego_pri_sel, all 4 arms 2'd0..2'd3 assigned) so no real latch is
 #     inferred; the lint wants a defensive `default:` for tool-version safety.
@@ -32,7 +36,7 @@
 #     were never listed; added here after line-by-line verification.
 # These are pre-existing / verified-benign debt, tracked here so the gate
 # ratchets forward.
-src/rtl/local_overrides/axi_chiplet_controller.sv:985: COMB_NO_DEFAULT
+src/rtl/local_overrides/axi_chiplet_controller.sv:1036: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_autoneg.sv:541: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_autoneg.sv:542: CASE_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1201: COMB_NO_DEFAULT

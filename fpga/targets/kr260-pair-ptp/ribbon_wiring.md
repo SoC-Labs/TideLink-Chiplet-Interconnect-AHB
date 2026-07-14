@@ -45,6 +45,38 @@ and `BCM8`/`AC14` — so the *received* clock lands on a clock-capable pin on bo
 boards with no `CLOCK_DEDICATED_ROUTE` override. They are physical pins 27 and 24,
 only three apart on the header, which keeps clock-vs-data skew small.
 
+## Mesochronous (common-clock) builds — `EXTREFCLK=1`
+
+The `-extref` bitstreams change **two** conductors. Everything else above is unchanged.
+
+| BCM | phys | ball | default build | `EXTREFCLK=1` build |
+|----:|-----:|------|---------------|---------------------|
+|  12 |   32 | AA13 (**HDGC**) | `pad_tx[2]` → `pad_rx[2]` | **`pad_refclk_in` — INPUT on BOTH boards** |
+|  20 |   38 | W12 (plain)     | *unused*                  | `pad_tx[2]` → `pad_rx[2]` (relocated) |
+
+Lane 2 moves off the clock-capable ball so the shared reference can land there — a
+reference must reach a BUFG, and only HDGC balls can do that. Lane 2 on BCM20 stays
+one-driver-against-one-receiver.
+
+**BCM12 becomes the common-clock conductor**, and it is an *input on both boards*:
+
+- **Topology (b) — external generator (use this to prove the hypothesis).** Drive a
+  25 MHz clock onto the BCM12 conductor (inject at either end, or via a T). Both
+  boards' `pad_refclk_in` sit on it. Neither board is special, and there is no
+  source-first dependency. **No contention** — two inputs on one net.
+- **Topology (a) — die_a sources it.** Build die_a with `REFCLK_OUT=1` so it drives
+  `pad_refclk_out`; die_b takes `EXTREFCLK=1`. Self-contained, no lab gear.
+
+Bridge **BCM20 as well** — 21 signal conductors instead of 20.
+
+Frequency: 25 MHz (period 40 ns). The `/8` divider then gives the same 3.125 MHz link
+rate as the default build. Change the generator and you must change `create_clock` in
+`kr260_tidelink_extrefclk.xdc` **and** `kr260_tidelink_timing.xdc` together.
+
+> The host is **not** affected: `hclk`/AXI/PHC stay on `pl_clk0`, so a board still boots
+> and its registers are still reachable with no reference clock present. Only the PHY
+> link domain stalls. Check `pad_refclk_in` is live *before* starting calibrator training.
+
 ## Ground returns
 
 The RPi header GNDs are physical pins **6, 9, 14, 20, 25, 30, 34, 39**. Bridge at

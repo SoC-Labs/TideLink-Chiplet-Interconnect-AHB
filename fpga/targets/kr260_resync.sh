@@ -10,9 +10,21 @@ SRC=kr260-pair-ptp
 SHARED="tidelink_design.tcl tidelink_design_wrapper.v tidelink_phy_clk_div2.v \
         tidelink_ahb_mng_bram.v kr260_tidelink_timing.xdc kr260_tidelink_drc.xdc \
         ribbon_wiring.md"
+
+# The extrefclk (mesochronous) XDC is NOT shared: it relocates the lane sitting on
+# the HDGC ball being freed, and that lane is pad_tx[2] on die_a but pad_rx[2] on
+# die_b (the flip build swaps TX/RX). So it is propagated per-ROLE, from the two
+# role sources, not from the single die_a source.
+EXTREF_A=kr260-pair-ptp/kr260_tidelink_extrefclk.xdc          # die_a
+EXTREF_B=kr260-pair-flip-ptp/kr260_tidelink_extrefclk.xdc     # die_b
 for d in kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp; do
   for f in $SHARED; do cp "$SRC/$f" "$d/$f"; done
 done
+# extrefclk XDC per ROLE (see note above — the relocated lane differs by role).
+# Safe against the loop: it is deliberately NOT in $SHARED, so flip-ptp (which is
+# itself the die_b source) is never clobbered by the die_a copy.
+cp "$EXTREF_A" kr260-pair-nptp/kr260_tidelink_extrefclk.xdc
+cp "$EXTREF_B" kr260-pair-flip-nptp/kr260_tidelink_extrefclk.xdc
 # die_b (flip) role-strap default 0x0 -> 0x1 (FIRST C_DOUT_DEFAULT only; the
 # second is axi_gpio_debug_unlock which stays 0x0).
 for d in kr260-pair-flip-ptp kr260-pair-flip-nptp; do

@@ -151,6 +151,46 @@ FPGA_BOARD_PART   ?=
 FPGA_TIDELINK_PTP ?=
 
 #-----------------------------------------------------------------------------
+# EXTREFCLK=1 — build the MESOCHRONOUS variant (shared external reference clock).
+#
+# By default each board derives its PHY link clock from its OWN PS oscillator
+# (pl_clk0 -> clk_wiz -> /8), so a two-board pair is PLESIOCHRONOUS: same nominal
+# rate, independent crystals, ppm drift. The PHY is forwarded-clock with NO
+# CDR/DLL/PI — the calibrator latches (slip,phase) once at S_DONE and freezes —
+# so a frozen-phase link is only reliable when the two dies are FREQUENCY-LOCKED.
+# A real chiplet pair shares a reference; the two-crystal rig is an FPGA artifact.
+#
+#   EXTREFCLK=1     this board's /8 divider takes an EXTERNAL reference arriving
+#                   on RPi BCM12 / AA13 (HDGC). Adds the pad_refclk_in port + a
+#                   BUFG, and includes *_tidelink_extrefclk.xdc (which relocates
+#                   lane 2 to BCM20/W12 to free the HDGC ball).
+#   REFCLK_OUT=1    this board also SOURCES the reference for its peer (topology
+#                   (a): die_a forwards over one extra ribbon conductor).
+#
+# Topology (b) — external generator into both boards — is just EXTREFCLK=1 on
+# BOTH targets; the generator drives the shared BCM12 ribbon conductor.
+#
+#   make -C fpga build_design TARGET=kr260-pair-nptp      EXTREFCLK=1
+#   make -C fpga build_design TARGET=kr260-pair-flip-nptp EXTREFCLK=1
+#   -> imp/fpga/output/kr260-pair-nptp-extref/tidelink.bit
+#
+# hclk/AXI/PHC stay on pl_clk0, so the HOST ALWAYS BOOTS even when no external
+# reference is present — only the PHY domain stalls. proc_sys_reset is NOT gated
+# on it (that would make a board unreachable when its peer is off).
+EXTREFCLK    ?=
+REFCLK_OUT   ?=
+ifeq ($(EXTREFCLK),1)
+FPGA_TIDELINK_EXTREFCLK := 1
+endif
+ifeq ($(REFCLK_OUT),1)
+FPGA_TIDELINK_REFCLK_OUT := 1
+endif
+export FPGA_TIDELINK_EXTREFCLK
+export FPGA_TIDELINK_REFCLK_OUT
+# (the -extref output-dir suffix is appended to ANCHOR_SUFFIX below, after the
+#  EPOCH_ANCHOR block, so the two knobs compose)
+
+#-----------------------------------------------------------------------------
 # EPOCH_ANCHOR=1 — build the EPOCH whole-word deskew anchor variant.
 #
 # Selects TL_EPOCH_ANCHOR_EN in deps/tidelink-phy/rtl/wav/WavD2DGpio.v via a
@@ -178,6 +218,18 @@ export TIDELINK_EPOCH_ANCHOR
 ANCHOR_SUFFIX := -anchor
 else
 ANCHOR_SUFFIX :=
+endif
+
+# EXTREFCLK composes with EPOCH_ANCHOR: the two knobs are orthogonal (clock
+# REGIME vs deskew CORRECTOR), and the 2x2 {SYNC,EPOCH} x {local,common} matrix
+# is exactly the experiment worth running. Append AFTER the anchor block so both
+# suffixes land, e.g. kr260-pair-nptp-anchor-extref. ANCHOR_SUFFIX is the single
+# variable already wired into PROJECT_DIR / OUTPUT_DIR / BUILD_RUN_DIR /
+# FPGA_IP_CACHE_DIR, so appending here keeps every variant's artefacts — and its
+# IP cache — fully separated. A shipped (default) bitstream can never be
+# overwritten by a variant build.
+ifeq ($(EXTREFCLK),1)
+ANCHOR_SUFFIX := $(ANCHOR_SUFFIX)-extref
 endif
 
 # Build output directories
@@ -308,6 +360,8 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_IP_CACHE_DIR=$(FPGA_IP_CACHE_DIR) && \
 	export FPGA_BOARD_PART='$(FPGA_BOARD_PART)' && \
 	export FPGA_TIDELINK_PTP='$(FPGA_TIDELINK_PTP)' && \
+	export FPGA_TIDELINK_EXTREFCLK='$(FPGA_TIDELINK_EXTREFCLK)' && \
+	export FPGA_TIDELINK_REFCLK_OUT='$(FPGA_TIDELINK_REFCLK_OUT)' && \
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \

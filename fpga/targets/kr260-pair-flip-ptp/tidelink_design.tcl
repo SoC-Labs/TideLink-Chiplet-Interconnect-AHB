@@ -611,13 +611,68 @@ proc create_root_design { parentCell } {
                    [get_bd_pins axi_apb/s_axi_aclk] \
                    [get_bd_pins axi_gpio_strap/s_axi_aclk] \
                    [get_bd_pins axi_gpio_debug_unlock/s_axi_aclk] \
-                   [get_bd_pins tidelink_0/hclk] \
-                   [get_bd_pins phy_clk_div/clk_in]
+                   [get_bd_pins tidelink_0/hclk]
 
-    #-- PHY /2 clock: clk_out1 (4.687) -> phy_clk_div -> user_ref_clk + scan_clk
-    #   at 2.343 MHz / 426.666 ns. user_ref_clk IS the GPIO-PHY hi-speed bit
-    #   clock (serializer + forwarded pad_clk_tx run off it), so halving it
-    #   halves the pad/link rate and doubles the pad bit period (eye widening).
+    #-------------------------------------------------------------------------
+    # PHY link-clock source: LOCAL (default) or COMMON EXTERNAL REF (mesochronous)
+    #-------------------------------------------------------------------------
+    # Default (FPGA_TIDELINK_EXTREFCLK unset): phy_clk_div/clk_in <- clk_wiz
+    # clk_out1. Each board then derives its link clock from its OWN PS
+    # oscillator => the two dies are PLESIOCHRONOUS (independent crystals,
+    # ppm offset).
+    #
+    # FPGA_TIDELINK_EXTREFCLK=1: phy_clk_div/clk_in <- an EXTERNAL reference
+    # arriving on a Pi-header HDGC ball => both dies frequency-lock to ONE
+    # clock => MESOCHRONOUS, which is the regime this PHY was actually built
+    # for (it is forwarded-clock with NO CDR/DLL/PI: the calibrator latches
+    # (slip,phase) once at S_DONE and freezes, so a frozen-phase link is only
+    # reliable when the two dies are frequency-locked). See
+    # fpga/docs/KR260_NEXT_WEEK_PLAN.md.
+    #
+    # HDIO NOTE: the RPi header is HDIO bank 44, which has NO MMCM/PLL sites.
+    # An HDGC pin can drive a BUFG but NOT an MMCM. That is fine here because
+    # the link clock is divided by a BUFG-based /8 (tidelink_phy_clk_div2.v),
+    # so the external ref feeds that BUFG directly and never touches an MMCM.
+    #
+    # ROBUSTNESS: clk_wiz stays on pl_clk0 and keeps driving hclk/AXI/PHC, so
+    # the HOST ALWAYS BOOTS even when the peer's clock is absent. Only the PHY
+    # domain (user_ref_clk + scan_clk) depends on the external ref. Do NOT gate
+    # proc_sys_reset on it — a board whose peer is off would be unreachable at
+    # the bus level (the ZynqMP undecoded-AXI hang class).
+    set tl_extref [expr {[info exists ::env(FPGA_TIDELINK_EXTREFCLK)] && $::env(FPGA_TIDELINK_EXTREFCLK) == 1}]
+
+    if { $tl_extref } {
+        # External common reference in on an HDGC ball -> explicit BUFG -> /8.
+        create_bd_port -dir I -type clk pad_refclk_in
+        set_property CONFIG.FREQ_HZ 25000000 [get_bd_ports pad_refclk_in]
+        set refbuf [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:util_ds_buf:2.2 refclk_bufg]
+        set_property CONFIG.C_BUF_TYPE {BUFG} $refbuf
+        connect_bd_net [get_bd_ports pad_refclk_in] \
+                       [get_bd_pins refclk_bufg/BUFG_I]
+        connect_bd_net [get_bd_pins refclk_bufg/BUFG_O] \
+                       [get_bd_pins phy_clk_div/clk_in]
+        puts "EXTREFCLK: phy_clk_div/clk_in <- pad_refclk_in (BUFG) - MESOCHRONOUS"
+    } else {
+        connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
+                       [get_bd_pins phy_clk_div/clk_in]
+        puts "EXTREFCLK: off - phy_clk_div/clk_in <- clk_wiz clk_out1 (local, plesiochronous)"
+    }
+
+    # Optional reference OUTPUT (topology (a): this die sources the common ref
+    # for its peer over one extra ribbon conductor). Driven from clk_out1, the
+    # SAME node this board's own /8 divides, so source and sink are frequency-
+    # locked. Not needed for topology (b) (external generator into both boards).
+    if { [info exists ::env(FPGA_TIDELINK_REFCLK_OUT)] && $::env(FPGA_TIDELINK_REFCLK_OUT) == 1 } {
+        create_bd_port -dir O -type clk pad_refclk_out
+        connect_bd_net [get_bd_ports pad_refclk_out] \
+                       [get_bd_pins clk_wiz_0/clk_out1]
+        puts "REFCLK_OUT: pad_refclk_out <- clk_wiz clk_out1 (this die sources the common ref)"
+    }
+
+    #-- PHY link clock: phy_clk_div /8 -> user_ref_clk + scan_clk (3.125 MHz).
+    #   user_ref_clk IS the GPIO-PHY hi-speed bit clock (the serializer and the
+    #   forwarded pad_clk_tx both run off it), so it sets the pad/link rate.
     connect_bd_net [get_bd_pins phy_clk_div/clk_out] \
                    [get_bd_pins tidelink_0/user_ref_clk] \
                    [get_bd_pins tidelink_0/scan_clk]

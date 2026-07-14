@@ -245,18 +245,12 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 # netlist: the IBUFs are TOP-LEVEL (`pad_rx_IBUF[7]_inst/O`) and the capture
 # flops are `.../gpiorx_7/link_data_pad_clk_reg[4]` (inside pblock_rx_act).
 #
-# The llength ASSERTIONS below are the whole point: a selector that matches
-# nothing must FAIL THE BUILD, never silently skip the constraint again.
-set _bs_from [get_pins -quiet {pad_rx_IBUF[*]_inst/O}]
-set _bs_to   [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
-if {[llength $_bs_from] != 8} {
-    error "set_bus_skew: -from matched [llength $_bs_from] pins (expected 8 pad_rx IBUF outputs) — the constraint would SILENTLY NO-OP. Fix the selector, do not ignore this."
-}
-if {[llength $_bs_to] == 0} {
-    error "set_bus_skew: -to matched 0 capture flops — the constraint would SILENTLY NO-OP."
-}
-set_bus_skew -from $_bs_from -to $_bs_to 0.400
-puts "XDC: set_bus_skew APPLIED — [llength $_bs_from] IBUF source pins -> [llength $_bs_to] capture flops @ 0.400 ns"
+# NOTE: the guard for "did this actually apply?" deliberately does NOT live here.
+# Procedural Tcl (if/error) inside an XDC trips [Designutils 20-1307] and Vivado
+# MAY DROP THE CONSTRAINT — i.e. a guard written here could CAUSE the very silent
+# no-op it is meant to prevent. The assertion lives in fpga/build_design.tcl
+# (STEP 10b), which is a real Tcl script. Keep this file declarative.
+set_bus_skew -from [get_pins {pad_rx_IBUF[*]_inst/O}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 0.400
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

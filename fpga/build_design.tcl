@@ -577,11 +577,40 @@ if { [catch {
         puts "WS1: pblock_rx_act population = $_n_pb cells (lane-2 capture-flop probe = $_n_probe)"
     }
 
+    # -----------------------------------------------------------------
+    # 2026-07-14 — THE ASSERTION THAT WOULD HAVE CAUGHT THE REAL BUG.
+    # set_bus_skew was written `-from [get_ports {pad_rx[*]}]` for the WHOLE
+    # project. Vivado rejects PORTS for -from (pin/cell/clock only), emitted
+    # CRITICAL WARNING 18-611/18-612 "The constraint will not be applied", and
+    # report_bus_skew printed "No bus skew constraints". THE key determinism
+    # constraint was a silent no-op on both dies, and nobody noticed because
+    # nothing asserted it had applied. It is now `-from [get_pins
+    # {pad_rx_IBUF[*]_inst/O}]`. Assert BOTH that the source selector resolves
+    # AND that the constraint actually landed in the design. This assertion
+    # cannot live in the XDC: procedural Tcl there trips [Designutils 20-1307]
+    # and Vivado MAY DROP the constraint — the guard would cause the bug.
+    # -----------------------------------------------------------------
+    set _n_from [llength [get_pins -quiet {pad_rx_IBUF[*]_inst/O}]]
+    if { $_n_from != 8 } {
+        error "WS1/bus_skew: -from selector {pad_rx_IBUF\[*\]_inst/O} matched $_n_from pins (expected 8). set_bus_skew would SILENTLY NO-OP — this is the exact defect that hid for months. Fix the selector; do NOT proceed."
+    }
+    puts "WS1: bus_skew -from selector resolves to $_n_from pad_rx IBUF output pins (expected 8)"
+
     set _bs_rpt  $output_dir/tidelink_bus_skew_routed.rpt
     set _clk_rpt $output_dir/tidelink_clock_utilization_routed.rpt
     report_bus_skew -warn_on_violation -file $_bs_rpt
     report_clock_utilization -file $_clk_rpt
     puts "WS1: bus-skew report   -> $_bs_rpt"
+
+    # HARD proof the constraint exists: Vivado prints the literal string
+    # "No bus skew constraints" when none applied. That is categorically
+    # different from "applied but violated" and must never be mistaken for it.
+    if { [file exists $_bs_rpt] } {
+        set _fh [open $_bs_rpt r]; set _bstxt [read $_fh]; close $_fh
+        if { [regexp -line {No bus skew constraints} $_bstxt] } {
+            error "WS1/bus_skew: report says 'No bus skew constraints' — the constraint DID NOT APPLY (check for CRITICAL WARNING 18-611/18-612 on object types). Inter-lane capture skew is UNBOUNDED. This is the project-long defect; do NOT ship a build believing the skew is equalised."
+        }
+    }
     puts "WS1: clock-util report -> $_clk_rpt"
     # -----------------------------------------------------------------
     # WS1-a: key pass/fail off the NUMERIC worst slack parsed from the

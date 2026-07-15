@@ -1156,9 +1156,9 @@ module axi_chiplet_controller #(
     // KEEPS the manual path bit-identical: retire only ever asserts on the
     // armed autonomous path (nego_en & role_locked & train_auto_en); with
     // nego_en=0 or train_auto_en=0 it can never set, so autonomy_armed is
-    // unchanged. Sticky until POR (the ws_kicked_q re-scan trap is ACCEPTABLE:
-    // this is a one-time bring-up into sticky-anchored data mode — see the
-    // retire block for the trap + no-regression assessment).
+    // unchanged. PER-EPISODE: re-armed (cleared) on swi_training_mode_rise so a
+    // retrain/re-scan restores the forced-SYNC chain the peer needs and avoids
+    // the ws_kicked_q re-scan trap — see the retire block below.
     reg  autonomy_retire_q;
     wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0]
                         & ~autonomy_retire_q;
@@ -4339,16 +4339,22 @@ module axi_chiplet_controller #(
     // complete and (if it latched) sticky by the time we retire: we retire into
     // a settled data-capable link, exactly when the operator applies 0x210C=0.
     //
-    // ws_kicked_q RE-SCAN TRAP (hwlib warning): a permanent autonomy_armed=0
-    // springs the FSM's disarm-park such that the winscan cannot re-kick until
-    // POR (ws_kick_evt is autonomy_armed-gated; ws_kicked_q only clears on a
-    // training rise). ACCEPTABLE here: this is a one-time bring-up into
-    // sticky-anchored data mode — no re-scan is needed, the deskew anchor is
-    // sticky (DISARM-PARK sets ws_obs_clr_r=0, so it issues NO obs-clear pulse
-    // => reanchored is NOT dropped), and the FC/data path is independent of
-    // autonomy_armed (retire touches neither the FCSM nor role_locked nor
-    // nego_en, so fcsm stays 4 and data keeps flowing). If a future drift ever
-    // needs a re-scan, a POR (or an APB re-arm of NEGO_TRAIN_CFG) restores it.
+    // PER-EPISODE ONE-SHOT (re-armed on a training rise). A permanent
+    // autonomy_armed=0 would spring the FSM's ws_kicked_q RE-SCAN TRAP (the
+    // winscan cannot re-kick until POR) AND starve a peer that later RETRAINS:
+    // a die that retired in a prior (asymmetric) episode would stay dark while
+    // the peer re-scans, so its forced beacons — which the peer's re-anchor
+    // needs — never return. So we CLEAR autonomy_retire_q on swi_training_mode_
+    // rise (a fresh training episode = a legitimate re-scan): the forced-SYNC
+    // chain is re-enabled for the new scan, and retire re-fires once the fresh
+    // episode restabilises. swi_training_mode_rise also clears ws_kicked_q
+    // (:~4614), so the master genuinely re-kicks. In STEADY data mode there is
+    // no training rise, so retire holds and the beacons stay off (the B->A fix).
+    //
+    // NO-REGRESSION: DISARM-PARK sets ws_obs_clr_r=0 => it issues NO obs-clear,
+    // so the deskew reanchored is NOT dropped; and retire touches neither the
+    // FCSM nor role_locked nor nego_en, so fcsm stays 4 and data keeps flowing
+    // (asserted in t31/t33: rea=1, fcsm=4 post-retire).
     //
     // MANUAL PATH BIT-IDENTICAL: the SET is gated on the RAW armed conjunction
     // (nego_en & role_locked & train_auto_en); on the recipe (train_auto_en=0
@@ -4357,6 +4363,11 @@ module axi_chiplet_controller #(
     reg [15:0] fc_stable_cnt_q;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
+            fc_stable_cnt_q   <= 16'd0;
+            autonomy_retire_q <= 1'b0;
+        end else if (swi_training_mode_rise) begin
+            // Fresh training episode => re-arm: restore the forced-SYNC chain
+            // for the new scan (the peer's re-anchor needs it).
             fc_stable_cnt_q   <= 16'd0;
             autonomy_retire_q <= 1'b0;
         end else begin
@@ -4368,8 +4379,8 @@ module axi_chiplet_controller #(
                                        ? RETIRE_DWELL : fc_stable_cnt_q + 16'd1;
             else
                 fc_stable_cnt_q <= 16'd0;
-            // Sticky one-shot: fire once the dwell is full AND we are on the
-            // armed autonomous path. Never clears until POR.
+            // Fire once the dwell is full AND we are on the armed autonomous
+            // path. Holds until the next training rise (or POR).
             if ((nego_en & role_locked & nego_train_cfg_r[0])
                 && (fc_stable_cnt_q == RETIRE_DWELL))
                 autonomy_retire_q <= 1'b1;

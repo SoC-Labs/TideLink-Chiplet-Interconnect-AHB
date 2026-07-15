@@ -27,7 +27,16 @@ import os
 import sys
 
 PAGE = 4096
-OBS_FC_CREDIT = 0x4403219C
+
+# `rd` / `wr` take ABSOLUTE addresses and are therefore SoC-agnostic — only the
+# `obs` decode needs to know where the TideLink APB aperture lives. On the KR260
+# (Zynq UltraScale+) 0x0..0x7FFF_FFFF is DDR, so the APB aperture relocates
+# 0x4403_0000 -> 0x8403_0000 (pure top-nibble swap; low bits preserved). Keep
+# this in step with pynq_host/overlay.py's APB_BASE. Default stays z2.
+_SOC = os.environ.get("TIDELINK_SOC", "z2").lower()
+_APB_BASE = 0x84030000 if _SOC in ("kr260", "kria", "mpsoc", "zynqmp", "kv260") \
+            else 0x44030000
+OBS_FC_CREDIT = _APB_BASE + 0x219C
 
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 _maps = {}

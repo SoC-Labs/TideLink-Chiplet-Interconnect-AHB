@@ -53,6 +53,23 @@ COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# ── Whole-word cross-lane corrector select (2026-07-09) ─────────────────────
+# tidelink_lane_deskew has two MUTUALLY EXCLUSIVE whole-word correctors. As
+# built (EPOCH_ANCHOR=0) it runs SYNC_REANCHOR — which never arms in this env,
+# because the bring-up leaves the SYNC beacon off (pair_v2_common.do_to_data_mode
+# writes R8_SLOT0=0). So the default build has NO active whole-word corrector,
+# and EPOCH_PROFILE=zero passes only because there is nothing to correct.
+#
+#   make EPOCH_PROFILE=staircase                 -> FAILS (no corrector)
+#   make EPOCH_PROFILE=staircase EPOCH_ANCHOR=1  -> PASSES (EPOCH anchor engaged)
+#
+# Keep the default at 0: it matches the silicon build bit-for-bit. See the
+# TL_EPOCH_ANCHOR_EN selector in deps/tidelink-phy/rtl/wav/WavD2DGpio.v.
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+COMPILE_ARGS += +define+TIDELINK_EPOCH_ANCHOR
+endif
+
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
 ifeq ($(EPOCH_PROFILE),zero)
@@ -109,7 +126,12 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)
+# 2026-07-09: EPOCH_ANCHOR must be part of the key too. It only changes
+# COMPILE_ARGS (+define+TIDELINK_EPOCH_ANCHOR), and cocotb recompiles on SOURCE
+# timestamps, not on COMPILE_ARGS — so anchor-on and anchor-off sharing one
+# sim_build silently reruns whichever binary was built first. Same canary as the
+# 2026-06-12 note above: watch the tb's `deskew: m=? s=?` banner.
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

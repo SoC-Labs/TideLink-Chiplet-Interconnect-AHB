@@ -149,3 +149,8 @@ fc_output.txt
 /.Xil/
 /.pytest_cache/
 **/verdi_config_file
+
+# Added 2026-07-15 (consolidation W1): Vivado managed-project generated output + scratch diff dumps
+/.gen/
+/.srcs/
+/*_FULL_DIFF.txt

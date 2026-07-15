@@ -68,16 +68,30 @@ COMPILE_ARGS += -f $(V2_FLIST)
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
-# Autonomous-training bypass (2026-07-11): the v1 pair Makefile plumbs this; the v2 one
-# never did, so `make BYPASS_AUTONEG=0` left TB_TOP_BYPASS_AUTONEG unset -> tb defaulted to
-# BYPASS_AUTONEG=1 -> the autonomous-handoff test parked in ST_BYPASS (the stale "harness
-# gap"). Default 1 preserves every existing test; run the zero-poke autonomous handoff test
-# with `make BYPASS_AUTONEG=0 MODULE=test_v2_autonomous_fc_handoff`. Exported so the test's
-# conditional skip (os.environ["BYPASS_AUTONEG"]) sees it.
+# ── Autonomy engagement (parity with cocotb/tidelink_top_pair/Makefile) ──────
+# BYPASS_AUTONEG (Phase 0c autonomy plan)
+#   1 = legacy: the autoneg FSM parks in ST_BYPASS at POR; role-lock is
+#       SW/APB-driven. Default for the SW-bring-up tests (incl. the
+#       test_v2_pair_data 3/3 gate) — bit-identical to before this line existed.
+#   0 = autonomy: tb_top forces nego_cfg_reg + nego_train_cfg_r at time 0 so the
+#       FSM walks ST_NEGO_INIT -> ST_TRAIN_DONE with NO SW writes. Required by
+#       test_v2_autonomous_fc_handoff / _sync_detect.
+# WHY THIS BLOCK EXISTS (the real "HARNESS GAP"): the V2 Makefile previously had
+# NO BYPASS_AUTONEG plumbing, so `BYPASS_AUTONEG=0 make ...` was silently
+# ignored — the tb_top parameter kept its `else 1` default, the
+# `if (BYPASS_AUTONEG==0)` force block never ran, and the autoneg FSM parked in
+# ST_BYPASS (state 6). That, NOT the `#5000; release` the skip-note blamed, is
+# why the autonomous force "did not engage" (both tb_tops release identically).
 BYPASS_AUTONEG ?= 1
-export BYPASS_AUTONEG
+export BYPASS_AUTONEG   # consolidation 2026-07-15: the handoff test's os.environ["BYPASS_AUTONEG"] skip needs it exported
 COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
 # (CMSDK_FPGA_SRAM_V is exported by set_env.sh from CMSDK_DIR — source that before `make`.)
+
+# RELY_ON_RTL_PRIO_DEFAULTS (Bug N7 regression parity)
+#   0 = tb forces nego_priority_reg master:0x0001 / slave:0x0002 (legacy).
+#   1 = leave nego_priority_reg to the RTL POR default.
+RELY_ON_RTL_PRIO_DEFAULTS ?= 0
+COMPILE_ARGS += +define+TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS=$(RELY_ON_RTL_PRIO_DEFAULTS)
 
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
@@ -135,7 +149,13 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)
+# BYPASS_AUTONEG rides in COMPILE_ARGS as a +define but does NOT change
+# SIM_BUILD's default name (the gate keeps sim_build_zero, bit-identical): only
+# the non-default BYPASS_AUTONEG!=1 (autonomous) compile gets an _auto suffix so
+# it can never reuse a stale gate simv (same trap the EPOCH note warns about).
+# Consolidation 2026-07-15: _prefixfc (integ) and _auto (phase2) are UNIONED —
+# PREFIX_FC exists on the integration branch, so both suffix terms are kept.
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

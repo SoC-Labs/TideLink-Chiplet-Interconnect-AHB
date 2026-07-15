@@ -222,9 +222,9 @@ define sim_gate_run
 	echo "[sim_gate] $$st $(1) ($${dt}s)"
 endef
 
-.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary \
+.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_v1elab
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -262,6 +262,37 @@ sim_gate_t30:
 	$(call sim_gate_run,t30_autonomous_fc_handoff,\
 	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_30_autonomous_fc_handoff)
 
+# --- PS-facing APB safety (2026-07-09) ---------------------------------------
+# Both of these lock a bug class that HANGS the Zynq PS: the CPU's M_AXI_GP has
+# no transaction timeout, so any APB access that never gets pready wedges the
+# processor permanently (Bus error on every later /dev/mem access) and costs a
+# physical power cycle. They were written fail-first but were NOT in this list,
+# so they gated nothing. They do now.
+#   apb_fc_cfg_preempt — the fc_cfg priority mux must never preempt an in-flight
+#     external PS transaction (tidelink_top.sv). Verified FAIL pre-fix / PASS post-fix.
+#   fch_apb_watchdog   — the fch sequencer must release the Wlink APB on timeout
+#     rather than pinning pready low for ever.
+sim_gate_apb_preempt:
+	$(call sim_gate_run,apb_fc_cfg_preempt,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_apb_fc_cfg_preempt)
+
+sim_gate_fch_wdog:
+	$(call sim_gate_run,fch_apb_watchdog,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_fch_apb_watchdog)
+
+# TRUE zero-poke: BYPASS_AUTONEG=1 (the tb force block is dead) + the POR parameter
+# NEGO_CFG_RESET=7'h61 (=97) via +define. Proves autonomy arms from POR with ZERO
+# APB writes to NEGO_CFG/NEGO_TRAIN_CFG — the mandated deliverable. A passive
+# monitor fails on any such write. Separate SIM_BUILD (BYPASS_AUTONEG differs from
+# the gate default, so it must not reuse the l4 simv). The FAIL-FIRST 7'h00 case is
+# deliberately NOT gated — it is meant to fail.
+sim_gate_zeropoke:
+	$(call sim_gate_run,zeropoke_por,\
+	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=1 BYPASS_AUTONEG=1 TB_TOP_NO_DUMP=1 \
+	  COCOTB_RESOLVE_X=ZEROS SIM_BUILD=sim_build_zeropoke \
+	  EXTRA_DEFINES="+define+TB_TOP_SHORT_CAL_HOLD=64 +define+TB_TOP_NEGO_CFG_RESET=97" \
+	  $(MAKE) MODULE=test_zeropoke_por)
+
 # --- tidelink_top_pair_v2 suites (EPOCH_PROFILE=zero) ------------------------
 sim_gate_v2_data:
 	$(call sim_gate_run,v2_pair_data,\
@@ -275,6 +306,42 @@ sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
 
+# RX-FIFO suite (42 tests) — carries the EMPTY-FIFO PHANTOM-POP regression
+# (test_41/test_42, added 2026-07-14). That defect was SILICON-ONLY and
+# tapeout-relevant: a read of an empty RX FIFO latched a zero length from the
+# zeroed SRAM, popped a phantom packet, walked read_ptr by 2 words and minted
+# credit ABOVE MAX_CREDITS — so any driver polling an empty FIFO corrupted the
+# read pointer and every later aperture read came back shifted by two words.
+# Sim was blind to it until tidelink_sram.sv began zero-initialising the SRAM to
+# match FPGA BRAM power-up. Reverting the fix makes test_41/42 FAIL with the
+# exact silicon signature (credit 4098 > 4096; payload starting at index 2).
+sim_gate_fifo:
+	$(call sim_gate_run,fifo_rx_phantom_pop,\
+	  rm -rf cocotb/tidelink_fifo/sim_build && \
+	  $(MAKE) -C cocotb/tidelink_fifo)
+
+# XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
+# blocking aggregate yet — see the WIP note below.
+#
+# The RTL fix (dropping ahb_sub_hready from ext_addr_phase, cb33c9f) is
+# byte-identical to the SILICON-PROVEN commit (project_xhb500_window_PROVEN_
+# 2026_07_06) and is re-applied here. The bridge-accurate BFM
+# (test_v2_xhb_window_bridge) drives the ahb_sub hready-in ring through the
+# ports to model the wrapper loopback.
+#
+# WIP GAP: the refactored tidelink_top_pair_v2 tb does NOT model the PEER-side
+# XHB500 target memory that a window write forwards into (_slave_bram_peek
+# returns X; even the idealized control read returns 0). So the window
+# round-trip cannot be exercised in THIS tb, and test_a (the health control)
+# cannot pass until the slave XHB target is modelled — a tb task, not an RTL
+# one. Until then the XHB CHANNEL is gated on SILICON via
+# fpga/hw_regression/td_v2_channels.sh (--channels xhb), where the real XHB500
+# + BRAM exist. Restoring the peer XHB target to the pair tb is the follow-up
+# that lets sim_gate_xhb rejoin the aggregate.
+sim_gate_xhb:
+	$(call sim_gate_run,v2_xhb_window_bridge,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_xhb_window_bridge)
+
 # --- V1 elaboration check (TIDELINK_PHY_V2=0, build-only, no test run) -------
 # Fresh sim_build_v1elab each time so a stale simv can never false-PASS the
 # gate; cocotb's $(SIM_BUILD)/simv target compiles + elaborates (Verdi KDB
@@ -282,7 +349,8 @@ sim_gate_v2_winscan:
 # run_v1elab_*.log recipe.
 sim_gate_v1elab:
 	$(call sim_gate_run,v1_elab,\
-	  rm -rf cocotb/tidelink_top_pair/sim_build_v1elab && \
+	  rm -rf cocotb/tidelink_top_pair/sim_build_v1elab \
+	        cocotb/tidelink_top_pair/sim_build_zeropoke && \
 	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=0 TB_TOP_NO_DUMP=1 \
 	  SIM_BUILD=sim_build_v1elab $(MAKE) sim_build_v1elab/simv)
 
@@ -290,9 +358,13 @@ sim_gate_v1elab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v1_elab
+	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
+# The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
+# bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm v1_elab
+	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -303,15 +375,19 @@ SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 # its own sim_build_l5, and the three v2 modules share ONE sim_build_zero.
 .PHONY: sim_gate_clean_builds
 sim_gate_clean_builds:
-	@rm -rf cocotb/tidelink_top_pair/sim_build_l4 \
-	        cocotb/tidelink_top_pair/sim_build_l5 \
-	        cocotb/tidelink_top_pair_v2/sim_build_zero \
-	        cocotb/tidelink_top_pair/sim_build_v1elab
+	@# GATE-INTEGRITY (2026-07-10): remove ALL sim_build dirs with a GLOB, not an
+	@# enumerated subset. The old list rotted — sim_build_zero_auto and any new
+	@# SIM_BUILD were left behind, so a suite reused a stale simv ("../simv up to
+	@# date") and silently tested OLD RTL. cocotb only recompiles on
+	@# tb_top.sv/pad_skid.sv changes, so an RTL/flist edit alone NEVER retriggers a
+	@# compile — the cached simv is a false green. A glob cannot rot.
+	@rm -rf cocotb/tidelink_top_pair/sim_build* \
+	        cocotb/tidelink_top_pair_v2/sim_build*
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (8 suites)"
+	@echo " sim_gate — full aggregate sim gate (12 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -320,7 +396,11 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -332,7 +412,11 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
+	@$(MAKE) --no-print-directory sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

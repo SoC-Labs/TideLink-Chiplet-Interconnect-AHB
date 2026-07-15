@@ -229,7 +229,21 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      any absolute hold pressure. On the FLIP target this is also what
 #      compensates the SRCC (Y9) vs MRCC clock-insertion difference noted in
 #      the header. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#      *** 2026-07-14 — REMOVED. THIS CONSTRAINT NEVER APPLIED, AND CANNOT. ***
+#      Original: set_bus_skew -from [get_ports {pad_rx[*]}] -to <capture flops> 2.000
+#      Every build: CRITICAL WARNING [Constraints 18-612] ... will not be applied.
+#      (Hid because the adjacent set_max_delay uses the IDENTICAL get_ports and IS
+#      legal — set_max_delay accepts ports, set_bus_skew does not.)
+#      Re-sourcing from the IBUF output pins does not rescue it:
+#        WARNING [Constraints 18-402] ... 'pad_rx_IBUF[0]_inst/O' is not a valid
+#        startpoint.
+#      set_bus_skew is a CDC construct needing a synchronous LAUNCH point; an input
+#      port has no launch register in the device. Not expressible for this path.
+#      It also would not have helped at 2 ns: measured pad_rx -> capture setup slack
+#      is ~0.44 ns, so a 2 ns ceiling is ~5x looser than the whole margin.
+#      See the die_a target XDC and docs/AUTONOMY_STATUS_2026_07_14.md for the
+#      candidate replacements (IOB packing / IDELAY equalisation / max-min window).
+#      Any constraint that binds to nothing now FAILS verify_build.sh check (g).
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied

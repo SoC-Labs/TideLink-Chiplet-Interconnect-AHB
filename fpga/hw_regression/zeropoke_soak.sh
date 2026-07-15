@@ -80,15 +80,30 @@ zps_order(){ # cycle index -> arm order (the soak's proven rotation)
   elif [ $(( $1 % 2 )) -eq 1 ]; then echo a
   else echo b; fi; }
 
-zps_arm(){ case "$1" in
-  a)    zp_arm a; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm b;;
-  b)    zp_arm b; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm a;;
-  both) zp_arm a; zp_arm b;;
+# Arm, VERIFYING each die actually took the arm. zp_arm returns 1 if NEGO_CFG
+# reads back with nego_en=0 (its POR value is 0x00) or the bus is dead. A cycle
+# in which either die failed to arm is a NON-TEST and must be scored VOID, never
+# NODONE — the two are indistinguishable at 0x21B8 (both read 0x57000000) and
+# conflating them is what produced the bogus "die_a 42%" statistic.
+# Bounded retry (ZP_ARM_TRIES, default 3) then continue. An UNARMED cycle is a
+# NON-TEST: it is EXCLUDED from the autonomy denominator rather than scored as a
+# failure. The UNARMED count is itself the evidence if the arm path is broken.
+ZPS_ARM_OK=1
+zps_arm(){ ZPS_ARM_OK=1
+  case "$1" in
+  a)    zp_arm_retry a || ZPS_ARM_OK=0; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm_retry b || ZPS_ARM_OK=0;;
+  b)    zp_arm_retry b || ZPS_ARM_OK=0; [ "$STAGGER" -gt 0 ] && sleep "$STAGGER"; zp_arm_retry a || ZPS_ARM_OK=0;;
+  both) zp_arm_retry a || ZPS_ARM_OK=0; zp_arm_retry b || ZPS_ARM_OK=0;;
 esac; }
 
-# classify one die's terminal state: $1=ws(0x21B8) $2=rea $3=done-ever(0/1)
-zps_classify(){ local ws=$1 rea=$2 done_ever=$3
+# classify one die's terminal state: $1=ws(0x21B8) $2=rea $3=done-ever $4=armed(0/1)
+# `armed` is autonomy_armed = nego_en & role_locked & train_auto_en. With armed=0
+# the winscan FSM is gated off entirely (it gates ws_kick_evt AND the FIX-1
+# catchup), so ws reads 0x57000000 with every per-episode counter at 0. That is
+# NOT a winscan failure and must never be scored as one.
+zps_classify(){ local ws=$1 rea=$2 done_ever=$3 armed=${4:-1}
   if [ $(( (ws>>24)&0xff )) -ne $(( 0x57 )) ]; then echo STALEIP
+  elif [ "$armed" -eq 0 ]; then echo UNARMED
   elif [ "$done_ever" -eq 0 ]; then echo NODONE
   elif [ $(( (ws>>2)&1 )) -eq 0 ] && [ "$rea" -eq 1 ]; then echo OK
   elif [ "$rea" -eq 1 ]; then echo LATE
@@ -96,14 +111,16 @@ zps_classify(){ local ws=$1 rea=$2 done_ever=$3
 
 if [ "$STATS" = 1 ]; then
   CSV="$OUTDIR/stats.csv"
-  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s" > "$CSV"
+  echo "cycle,order,die,outcome,attempts,winscan_obs,reanchored,t_done_s,autonomy_armed,sync_seen,obs_mask_hs" > "$CSV"
   echo "======== zeropoke_soak STATS mode N=$N stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
   echo "  scoring through step (f) only; csv: $CSV"
   declare -A HIST_A HIST_B OUT_CNT_A OUT_CNT_B
   A_OK=0; B_OK=0; BOTH_OK=0
+  A_N=0; B_N=0; A_UNARMED=0; B_UNARMED=0   # armed-only denominators + non-test counts
   for i in $(seq 1 "$N"); do
     order=$(zps_order "$i")
     echo "-- stats cycle $i/$N (first=$order): fresh POR --"
+    zp_quiesce            # never reload the PL on a live link (see td_v2_hwlib.sh)
     deploy_pair; sleep 2
     zps_arm "$order"
     cT0=$(date +%s)
@@ -121,23 +138,45 @@ if [ "$STATS" = 1 ]; then
     wsa=$(( $(rd_d a $R_WINSCAN_OBS) )); wsb=$(( $(rd_d b $R_WINSCAN_OBS) ))
     ra=$(reanchored_d a); rb=$(reanchored_d b)
     aa=$(( (wsa>>11)&7 )); ab=$(( (wsb>>11)&7 ))
-    oa=$(zps_classify "$wsa" "$ra" "$da"); ob=$(zps_classify "$wsb" "$rb" "$db")
-    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d t_a=%ss t_b=%ss\n' \
-      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" "$ta" "$tb"
-    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta" >> "$CSV"
-    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb" >> "$CSV"
+    # autonomy_armed + the autoneg role-lock chain. Without these, a 0x57000000
+    # obs word is uninterpretable: an unarmed die and a genuinely stuck winscan
+    # look identical. Capture them BEFORE classifying.
+    arma=$(armed_d a); armb=$(armed_d b)
+    mha=$(( $(maskhs_d a) )); mhb=$(( $(maskhs_d b) ))
+    # sync_seen_vec per cycle. THE discriminator for a FAILOPEN die:
+    #   reanchored needs all_sync_seen across the active lanes (golden 0xE4).
+    #   FAILOPEN with ss==0xE4  => all lanes saw SYNC, yet the anchor never
+    #                              latched => the LATCH/CDC is at fault, and
+    #                              feat/epoch-anchor-ab (which only removes the
+    #                              all_sync_seen dependency) would change NOTHING.
+    #   FAILOPEN with ss!=0xE4  => genuine SYNC coverage failure => EPOCH is the lever.
+    # Sticky since deploy, so 0xE4 means "every active lane has seen SYNC".
+    ssa=$(( $(rd_d a $R_SYNCSEEN) & 0xff )); ssb=$(( $(rd_d b $R_SYNCSEEN) & 0xff ))
+    oa=$(zps_classify "$wsa" "$ra" "$da" "$arma"); ob=$(zps_classify "$wsb" "$rb" "$db" "$armb")
+    printf 'ZP_STATS_CYCLE i=%d/%d order=%s a=%s att_a=%d b=%s att_b=%d ws_a=0x%08x ws_b=0x%08x rea_a=%d rea_b=%d ss_a=0x%02x ss_b=0x%02x armed_a=%d armed_b=%d lockpend_a=%d lockpend_b=%d t_a=%ss t_b=%ss\n' \
+      "$i" "$N" "$order" "$oa" "$aa" "$ob" "$ab" "$wsa" "$wsb" "$ra" "$rb" "$ssa" "$ssb" \
+      "$arma" "$armb" $(( (mha>>18)&1 )) $(( (mhb>>18)&1 )) "$ta" "$tb"
+    echo "$i,$order,a,$oa,$aa,$(printf 0x%08x "$wsa"),$ra,$ta,$arma,$(printf 0x%02x "$ssa"),$(printf 0x%08x "$mha")" >> "$CSV"
+    echo "$i,$order,b,$ob,$ab,$(printf 0x%08x "$wsb"),$rb,$tb,$armb,$(printf 0x%02x "$ssb"),$(printf 0x%08x "$mhb")" >> "$CSV"
     HIST_A[$aa]=$(( ${HIST_A[$aa]:-0} + 1 )); HIST_B[$ab]=$(( ${HIST_B[$ab]:-0} + 1 ))
     OUT_CNT_A[$oa]=$(( ${OUT_CNT_A[$oa]:-0} + 1 )); OUT_CNT_B[$ob]=$(( ${OUT_CNT_B[$ob]:-0} + 1 ))
     [ "$oa" = OK ] && A_OK=$((A_OK+1)); [ "$ob" = OK ] && B_OK=$((B_OK+1))
     [ "$oa" = OK ] && [ "$ob" = OK ] && BOTH_OK=$((BOTH_OK+1))
+    # DENOMINATOR: only cycles in which the die was genuinely armed are a test of
+    # autonomy. An UNARMED cycle means training never started; counting it as a
+    # failure is what manufactured the bogus "die_a 42%".
+    [ "$oa" != UNARMED ] && A_N=$((A_N+1)); [ "$ob" != UNARMED ] && B_N=$((B_N+1))
+    [ "$oa" = UNARMED ] && A_UNARMED=$((A_UNARMED+1)); [ "$ob" = UNARMED ] && B_UNARMED=$((B_UNARMED+1))
   done
   echo "========================================================"
   echo "  per-die (f)-convergence rate + FIX-4 attempt histogram (0x21B8[13:11])"
   printf '  %-5s %-10s' die conv-rate; for k in 0 1 2 3 4 5 6 7; do printf ' att%d' "$k"; done
   printf '  outcomes\n'
   hist_row(){ # $1=die-label $2=ok-count, then reads HIST_/OUT_CNT_ via $3 (a|b)
-    local d=$3 k o cnt out=""
-    printf '  %-5s %-10s' "$1" "$2/$N"
+    local d=$3 k o cnt out="" den
+    if [ "$d" = a ]; then den=$A_N; else den=$B_N; fi
+    [ "$den" -eq 0 ] && den="0(NO VALID CYCLES)"
+    printf '  %-5s %-10s' "$1" "$2/$den"
     for k in 0 1 2 3 4 5 6 7; do
       if [ "$d" = a ]; then cnt=${HIST_A[$k]:-0}; else cnt=${HIST_B[$k]:-0}; fi
       printf ' %4s' "$cnt"
@@ -150,6 +189,11 @@ if [ "$STATS" = 1 ]; then
     printf '  %s\n' "${out% }"; }
   [ "${#OUT_CNT_A[@]}" -gt 0 ] && hist_row a "$A_OK" a
   [ "${#OUT_CNT_B[@]}" -gt 0 ] && hist_row b "$B_OK" b
+  if [ $(( A_UNARMED + B_UNARMED )) -gt 0 ]; then
+    echo "  !! NON-TESTS EXCLUDED: die_a UNARMED=$A_UNARMED  die_b UNARMED=$B_UNARMED  (of $N cycles each)"
+    echo "     UNARMED = NEGO_CFG read back with nego_en=0 after ${ZP_ARM_TRIES:-3} arm attempts."
+    echo "     autonomy_armed=0 gates the winscan entirely; those cycles test NOTHING."
+  fi
   ha=""; hb=""
   for k in 0 1 2 3 4 5 6 7; do
     ha="$ha${HIST_A[$k]:-0},"; hb="$hb${HIST_B[$k]:-0},"

@@ -88,6 +88,11 @@ module tidelink_fifo_ctrl #(
     // Shared intermediate: payload length + 2 (2-word header + N payload words)
     wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
 
+    // RX FIFO is EMPTY iff no credit has been consumed. This is the SAME predicate
+    // the sticky `underrun` flag already uses (see underrun_event below) — reuse it
+    // rather than invent a second notion of emptiness.
+    wire rx_fifo_empty = (credit_count_r == (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS)));
+
     // -------------------------------------------------------------------------
     // Completion signals — dual-source (FC direct write + AHB read/write)
     // -------------------------------------------------------------------------
@@ -198,8 +203,29 @@ module tidelink_fifo_ctrl #(
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
             packet_word_length_nxt = clamp_length(hwdata);
             packet_active_nxt = 1'b1;
-        end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite) begin
-            // AHB read from addr 0: set flag to capture length from SRAM next cycle
+        end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite
+                     && !rx_fifo_empty) begin
+            // AHB read from addr 0: set flag to capture length from SRAM next cycle.
+            //
+            // SILICON DEFECT FIX (2026-07-14) — the `&& !rx_fifo_empty` qualifier.
+            // Without it, a read of offset 0 on an EMPTY FIFO latched a packet
+            // length from the zeroed SRAM (FPGA BRAM powers up all-zero => rdata=0
+            // => clamp_length(0)=0), set packet_active_r, and made
+            // read_target_addr = (0+1)<<2 = 4. The very next read in the sweep hit
+            // offset 4, fired read_complete, and popped a PHANTOM zero-length
+            // packet: read_ptr advanced by packet_delta(=2) words AND credit_count
+            // was incremented ABOVE MAX_CREDITS (an impossible state that
+            // over-advertises buffer space to the peer).
+            //
+            // Consequence: ANY driver that polls/drains an empty RX FIFO silently
+            // corrupts the read pointer, so every later aperture read is shifted by
+            // two words. Proven on silicon 2026-07-14: a pre-send `rxn` drain made a
+            // byte-exact 28-word burst read back as 26 words starting at payload[2];
+            // removing the drain restored byte-exactness (soak 0/6 -> 8/8). Sim was
+            // blind because the vendor SRAM model is X-init (not zero) at t=0.
+            //
+            // Reading an empty FIFO must be a NO-OP. The sticky `underrun` flag
+            // (underrun_event, below) already reports the condition to software.
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag

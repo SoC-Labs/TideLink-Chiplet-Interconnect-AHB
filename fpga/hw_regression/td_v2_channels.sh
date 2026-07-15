@@ -81,8 +81,14 @@ R_NEGO_STS=0x44032110        # NEGO status (RO) alias — never write this
 R_ROLE=0x44032080            # role W1S: master=0x2, slave=0x3
 R_STATUS=0x44032108          # [16]=cal [19:17]=fcsm(4=bilateral) [23]=cr [31]=fe_full
 R_NEGO_TRAIN=0x4403210C      # NEGO_TRAIN_CFG (autonomy-off = 0x0 for manual)
-R_R8=0x44032100              # PHY ctrl: 0x1C sync / 0x1E->0x1C recal / 0x14 data-en
+R_R8=0x44032100              # PHY ctrl: 0x1C sync / 0x1E->0x1C recal / 0x10 data-en
                              #           NEVER bit0 (swi_training_mode = S_HOLD trap)
+                             # data-en MUST clear bit2 (SYNC_EN): 0x10 not 0x14. With
+                             # SYNC_EN left on during the burst the framer injects SYNC
+                             # beacons mid-packet -> ~3/28 words corrupt per burst
+                             # (silicon-proven 2026-07-11: 0x10 => GP1 RX byte-exact;
+                             # 0x14 => filt=25/28 rot=-1). Matches hwlib enter_data_mode
+                             # ("strip SYNC so the framer runs packets to completion").
 R_SLIPLO=0x44032104          # SWI_BIT_SLIP_LO ([23:0]slip [27:24]word_pin [28]auto_dis)
 R_LANEMASK=0x44030214        # rx/tx lane mask (0x0000_e4e4 = active lanes 2,5,6,7)
 R_SYNCTOL=0x44032128         # [12:8]=SYNC tol(5) [7:0]=per-lane mask(0xe4)
@@ -98,7 +104,7 @@ XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_G
 
 # LL/FC bootstrap triplet (bit0=swi_enable) and the R8 phase constants
 FC_TRIPLET=(0x00027f09 0x00027f01 0x00027f07)
-R8_SYNC=0x1C; R8_RECAL=0x1E; R8_DATA=0x14
+R8_SYNC=0x1C; R8_RECAL=0x1E; R8_DATA=0x10   # data-en strips SYNC_EN (bit2); see R_R8 note
 NEGO_ARM=0x61                # nego_en | force_lock | mask_hs_auto_en (0x41 never latches)
 ACTIVE_LANES="2 5 6 7"
 
@@ -245,29 +251,73 @@ ring_words(){ local tag=$1 base i out=""
 # A->B first (the SAFE direction). B->A second, same throttling — now proven
 # byte-exact on silicon, but ordered after A->B so an unexpected B->A wedge
 # cannot poison the headline direction.
+# Build a PROTOCOL-LEGAL frame for direction $1 (a2b|b2a):
+#   word0 = length[31:20] (payload word count) | type/ids/tag (0 here)
+#   word1 = dest_addr
+#   word2.. = payload
+# The RX FIFO takes the packet length from word0[31:20] (tidelink_fifo_mem.sv ->
+# tidelink_fifo_ctrl.sv). The OLD test sent 28 RAW data words with no header, so
+# word0 was 0xA2B00000 => a declared length of 0xA2B (2603) => write_complete NEVER
+# fired and the packet was never committed. Send a legal frame.
+PAYLOAD_N=28
+frame_words(){ local tag=$1 base i out
+  [ "$tag" = a2b ] && base=0xA2B00000 || base=0xB2A00000
+  out="$(printf '0x%08x 0x00000000' $(( PAYLOAD_N << 20 )))"
+  for i in $(seq 0 $((PAYLOAD_N-1))); do out+=" $(printf 0x%08x $(( base + i )))"; done
+  echo "$out"; }
+
+# Byte-exact payload compare (a legal frame lands at index 0 — no rotation needed).
+frame_compare(){ python3 - "$@" <<'PY'
+import sys
+args=sys.argv[1:]; label=args[0]; args=args[1:]
+cut=args.index("--")
+sent=[int(x,16) for x in args[:cut]]
+recv=[int(x,16) for x in args[cut+1:]]
+payload = sent[2:]                      # skip word0 (length) + word1 (dest_addr)
+got     = recv[2:2+len(payload)]
+ok = (got == payload)
+print("VERDICT %s %s" % (label, "PASS" if ok else "FAIL"))
+if not ok:
+    print("  want[0:4]=%s" % [hex(w) for w in payload[:4]])
+    print("  got [0:4]=%s" % [hex(w) for w in got[:4]])
+    print("  (payload starting 2 words late == the empty-FIFO PHANTOM POP:")
+    print("   a read of an empty RX FIFO walks read_ptr by 2 words.")
+    print("   RTL fix 2026-07-14: tidelink_fifo_ctrl.sv rx_fifo_empty guard.)")
+sys.exit(0 if ok else 1)
+PY
+}
+
 gate_data(){
   handoff
   m wr $R_FCCTRL 0x00027f07>/dev/null; s wr $R_FCCTRL 0x00027f07>/dev/null; sleep 0.5
   m wr $R_R8 $R8_DATA>/dev/null;       s wr $R_R8 $R8_DATA>/dev/null;       sleep 0.5
-  local rc=0
+  local rc=0 n=$((PAYLOAD_N+2))
+
+  # NO pre-send `rxn` drain. `rxn` is a RAW ADDRESS SWEEP, and reading an EMPTY RX
+  # FIFO used to pop a PHANTOM zero-length packet: a read of offset 0 latched a
+  # length of 0 from the zeroed SRAM, and the next read fired read_complete and
+  # advanced read_ptr by 2 words. Since the RX aperture is translated by read_ptr,
+  # every later read came back SHIFTED BY TWO WORDS — which is precisely what made
+  # this gate report false data failures (silicon 2026-07-14: 0/6 -> 8/8 once the
+  # drain was dropped). Fixed in RTL (rx_fifo_empty guard), but the drain is
+  # unnecessary anyway: a fresh POR leaves the FIFO empty. If a drain is ever truly
+  # needed, use the FLUSH register (CTRL bit[1]) — never a read sweep.
 
   # ---- A->B ----
-  local aw; aw=$(ring_words a2b)
-  s rxn 32 >/dev/null 2>&1                    # drain stale RX FIFO on receiver
+  local aw; aw=$(frame_words a2b)
   m txburst $aw >/dev/null 2>&1; sleep 1.2
-  local arx; arx=$(s rxn 32); sleep "$THROTTLE"
+  local arx; arx=$(s rxn $n); sleep "$THROTTLE"
   DETAIL+=("    [a2b rx] ${arx:0:64}...")
-  if ring_compare a2b $aw -- $arx; then ok "tl-data A->B ring (28w rotation-aware)"
-  else bad "tl-data A->B ring (28w rotation-aware)"; rc=1; fi
+  if frame_compare a2b $aw -- $arx; then ok "tl-data A->B (28w framed, byte-exact)"
+  else bad "tl-data A->B (28w framed, byte-exact)"; rc=1; fi
 
   # ---- B->A ----  (guarded: slave is sender, master receives)
-  local bw; bw=$(ring_words b2a)
-  m rxn 32 >/dev/null 2>&1
+  local bw; bw=$(frame_words b2a)
   s txburst $bw >/dev/null 2>&1; sleep 1.2
-  local brx; brx=$(m rxn 32); sleep "$THROTTLE"
+  local brx; brx=$(m rxn $n); sleep "$THROTTLE"
   DETAIL+=("    [b2a rx] ${brx:0:64}...")
-  if ring_compare b2a $bw -- $brx; then ok "tl-data B->A ring (28w rotation-aware)"
-  else bad "tl-data B->A ring (28w rotation-aware)"; rc=1; fi
+  if frame_compare b2a $bw -- $brx; then ok "tl-data B->A (28w framed, byte-exact)"
+  else bad "tl-data B->A (28w framed, byte-exact)"; rc=1; fi
   return $rc
 }
 

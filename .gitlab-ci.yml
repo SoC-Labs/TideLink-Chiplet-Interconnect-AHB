@@ -204,6 +204,20 @@ farm-gate-lint:
   script:
     - cd "$WORK_DIR" && make farm_gate_fast
 
+merge-guard:
+  # Asserts that silicon-proven fixes have NOT been reverted by a merge:
+  # fe_tx_credit_max_eff (the A->B fix — die_b trunk has 0), and the fc_cfg APB
+  # arbiter (ext_lock_q / EXT_STALL_LIMIT). Resolving those files toward the wrong
+  # trunk silently reverts them with every sim still green — a dead chip that no
+  # functional test catches. A grep is cheap; a respin is not.
+  # allow_failure:true for now; consolidation W3 flips this to false on the
+  # integ branch once merge_guard.sh is confirmed green on the merged baseline.
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && bash fpga/scripts/merge_guard.sh
+  allow_failure: true
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]
@@ -277,6 +291,37 @@ spyglass-cdc:
     - export TIDELINK_HOME="$WORK_DIR"
     - export DESIGNWARE_HOME="$VIP_HOME"
     - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
+
+sim-gate:
+  # THE pre-deploy / pre-tapeout gate. `cocotb-regression` below runs the broad
+  # unit envs but NOT the paired-die autonomy suites, NOT V1 elaboration, and NOT
+  # the ASIC-flist elaboration — which is exactly how a405809 (undefined obs ports
+  # in the V1/ASIC flists) reached the trunk while every CI job stayed green.
+  # `make sim_gate` already existed and was wired into NO CI job. This is that job.
+  # 10 suites: t30/t31/t32/t33 (paired-die zero-poke chain), v2_pair_data,
+  # v2_autonomous_sync_detect, v2_winscan_fsm, v1_elab, apb_fc_cfg_preempt,
+  # fch_apb_watchdog. The last two lock PS-hang bugs that cost a physical power
+  # cycle. Non-blocking flagged via allow_failure until it has a green baseline on
+  # the trunk, then flip allow_failure:false to make it a hard merge gate.
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - cd "$WORK_DIR" && make sim_gate
+  after_script:
+    - mkdir -p sim_gate
+    - cp "$WORK_DIR/imp/sim_gate/"*.status "sim_gate/" 2>/dev/null || true
+    - cp "$WORK_DIR/imp/sim_gate/"*.log     "sim_gate/" 2>/dev/null || true
+  allow_failure: true      # FLIP to false once green on the trunk (see comment)
+  artifacts:
+    when: always
+    paths:
+      - sim_gate/*.status
+      - sim_gate/*.log
+    expire_in: 30 days
 
 cocotb-regression:
   stage: regression

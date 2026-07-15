@@ -161,44 +161,107 @@ wr_die(){ case "$1" in a) a wr "$2" "$3" >/dev/null;; b) b wr "$2" "$3" >/dev/nu
 sweep_py(){ # tol lanes_csv
   local tol=$1 lanes=$2
   cat <<PYEOF
-import mmap,struct,os,time
+import mmap,struct,os,time,ctypes
 P=4096;fd=os.open("/dev/mem",os.O_RDWR|os.O_SYNC)
 bb=0x44032000&~(P-1);o=0x44032000-bb
 m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=bb)
-def rd(x):return struct.unpack_from("<I",m,o+x)[0]
-def wr(x,v):struct.pack_into("<I",m,o+x,v&0xffffffff)
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from did NOT compile to one access on this target
+# (measured: 5 AHB beats per logical poke) -- the "TX 5x over-advance phantom".
+# Here it is a MEASUREMENT hazard: this preflight loops rd(0x1AC)/rd(0x150) and
+# writes W1x taps per lane, so a 5x fan-out perturbs the eye it is measuring.
+# ctypes.c_uint32.from_buffer(m,o) is exactly one aligned load/store. (see tl39.py)
+def _u32(off):return ctypes.c_uint32.from_buffer(m,o+off)
+def rd(x):return _u32(x).value
+def wr(x,v):_u32(x).value=v&0xffffffff
+import signal
+# FAULT-TOLERANT SWEEP (2026-07-10): the SYNC-dist read path (write 0x1B0 select,
+# read 0x1AC) and the fine-tap write 0x1B4 are winscan-FSM-owned and BUS-ERROR on
+# some builds — killing the whole sweep so it yields "lanes": {}. Survive each
+# access, probe once at startup, and DEGRADE GRACEFULLY:
+#   0x1AC usable  -> real SYNC Hamming distance (the metric we want).
+#   0x1AC faults  -> proxy: the calibrator per-lane eye (0x150 via 0x154, a
+#                    DIFFERENT region); dist unavailable, eye_width from cal pass.
+#   0x1B4 faults  -> coarse taps only (0x118 nibble): 16 even taps, half res.
+# A MODE line reports which path each die used so the output is never a silent lie.
+class BusErr(Exception):pass
+signal.signal(signal.SIGBUS, lambda s,f:(_ for _ in ()).throw(BusErr()))
+def try_wr(off,v):
+ try: wr(off,v); return True
+ except BusErr: return False
+def try_rd(off):
+ try: return rd(off)
+ except BusErr: return None
+# --- probe register usability once (run DISARMED: a surviving fault is structural) ---
+# HARD-DISABLED 2026-07-10: 0x1AC/0x1B0/0x1B4 do NOT bus-error — they HARD-STALL
+# the CPU thread on an uninterruptible hung AXI read (proven: RC=124 twice, only
+# an external SIGKILL stops it; no in-process SIGBUS/SIGALRM handler helps). So we
+# NEVER probe or touch them. Eye must come from the calibrator path (0x150/0x154,
+# Region 10), and only AFTER the calibrator has locked (a bare deploy + force-SYNC
+# does NOT lock the RX: sync_seen low byte reads 0x00). See memory
+# project_first_valid_autonomy_measurement_2026_07_10.
+LSB_OK=False   # never touch 0x1B4
+DIST_OK=False  # never touch 0x1B0/0x1AC — they hard-stall the PS
+NTAPS = 32 if LSB_OK else 16
+print("MODE dist=%s fine_tap=%s ntaps=%d"%("0x1AC" if DIST_OK else "cal_proxy(0x150)", "on" if LSB_OK else "coarse_only", NTAPS),flush=True)
 def settap(L,t):
- n=(t>>1)&0xf;lb=t&1
+ tap = t if LSB_OK else (t*2)          # coarse-only: even taps 0,2,..30
+ n=(tap>>1)&0xf;lb=tap&1
  c=rd(0x118);c&=~(0xf<<(4*L));c|=n<<(4*L);wr(0x118,c)
- c=rd(0x1B4);c&=~(1<<L);c|=lb<<L;wr(0x1B4,c)
+ if LSB_OK:
+  c=try_rd(0x1B4)
+  if c is not None: c&=~(1<<L);c|=lb<<L;try_wr(0x1B4,c)
+def cal_eye(L):                         # proxy: (lane_passed, bit_err) at current tap
+ if try_wr(0x154,L) is False: return (0,63)
+ time.sleep(0.003);cal=try_rd(0x150)
+ if cal is None: return (0,63)
+ return ((cal>>13)&1, cal&0x3f)
 def measure(L):
- wr(0x1B0,L);time.sleep(0.003)
- return min(rd(0x1AC)&0x1f for _ in range(5))
+ if DIST_OK:
+  try_wr(0x1B0,L);time.sleep(0.003)
+  ds=[try_rd(0x1AC) for _ in range(5)]; ds=[d&0x1f for d in ds if d is not None]
+  return min(ds) if ds else 99
+ lp,br=cal_eye(L)                        # proxy distance: 0 if passing, else ~br
+ return 0 if lp else max(1,br>>1)
 def slice_of(L):
  reg={0:0x12C,1:0x12C,2:0x130,3:0x130,4:0x134,5:0x134,6:0x138,7:0x138}[L]
  sh=0 if (L%2)==0 else 16
- return (rd(reg)>>sh)&0xffff
+ v=try_rd(reg); return (v>>sh)&0xffff if v is not None else 0
 TOL=$tol
 for L in [$lanes]:
  best=(99,0);eye=0
- for t in range(32):
+ for t in range(NTAPS):
   settap(L,t);time.sleep(0.05)
   d=measure(L)
   if d<=TOL:eye+=1
   if d<best[0]:best=(d,t)
   time.sleep(0.008)
  settap(L,best[1])
- wr(0x154,L);time.sleep(0.003);cal=rd(0x150)
- lp=(cal>>13)&1;br=cal&0x3f
- print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)))
-print("SWEEP_DONE")
+ lp,br=cal_eye(L)
+ print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)),flush=True)
+print("SWEEP_DONE",flush=True)
 PYEOF
 }
-sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE
+sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE (stdout); traceback (stderr)
   local ip=$1 tol=$2 lanes=$3 py b64
   py=$(sweep_py "$tol" "$lanes")
   b64=$(printf '%s' "$py" | base64 -w0)
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_lhp.py" 2>/dev/null
+  # Three output-integrity fixes for the "did not report SWEEP_DONE on BOTH dies"
+  # blind spot (the failure was in OUTPUT HANDLING, not the link):
+  #   python3 -u  : unbuffered stdout. Over the ssh pipe python block-buffers
+  #                 stdout; if the program is killed before a normal exit the
+  #                 buffered LANE lines + SWEEP_DONE are lost wholesale — which
+  #                 looks exactly like "no SWEEP_DONE". -u (belt: flush=True in
+  #                 the program) makes each line land immediately so a partial
+  #                 sweep still yields the lanes it did measure.
+  #   sudo -S -p '': read the password from stdin but emit an EMPTY prompt, so
+  #                 sudo's stderr does not add noise now that stderr is shown.
+  #   NO 2>/dev/null: the old redirect SWALLOWED any python traceback (e.g.
+  #                 /dev/mem EACCES, a bad register offset) — an identical-on-
+  #                 both-dies PROGRAM error was thus invisible and misread as a
+  #                 "link/PS issue". stderr now flows to the console; stdout
+  #                 (the LANE lines) is still captured clean by the caller's $().
+  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_lhp.py"
 }
 
 # ----- collected state -------------------------------------------------------
@@ -268,7 +331,9 @@ phase2(){
     echo "  [sweep] die_${d}: lanes {${GOLD_ACTIVE// /,}} x 32 IDELAY taps (min-of-5 reads/tap)..."
     out=$(sweep_die "$(die_ip "$d")" "$tol" "$SWEEP_LANES")
     if ! printf '%s\n' "$out" | grep -q SWEEP_DONE; then
-      echo "  WARN: die_${d} sweep did not report SWEEP_DONE (link/PS issue?) — results may be partial"
+      echo "  WARN: die_${d} sweep did not report SWEEP_DONE — results may be partial."
+      echo "        (any python traceback printed on stderr above; raw sweep stdout follows)"
+      printf '%s\n' "$out" | sed 's/^/          | /'
     fi
     local tag L md bt ew lp br sl
     while read -r tag L md bt ew lp br sl; do

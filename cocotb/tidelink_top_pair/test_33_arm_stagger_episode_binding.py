@@ -231,6 +231,8 @@ def _obs_snapshot(dut, side):
         "insert_en":  _si(c.swi_sync_insert_en_r),
         "robust":     _si(c.swi_sync_robust_detect_r),
         "force_alw":  _si(c.swi_sync_force_always_r),
+        "hold":       _si(c.sync_cfg_hold_q),
+        "sync_off":   _si(c.sync_off_done_q),
     }
 
 
@@ -282,9 +284,25 @@ async def _assert_end_state(dut, tb, log, tag):
         assert v["credit_max"] != 0, (
             f"[{tag}] {name}: fe_rx_credit_max=0 — the CR/CRACK credit grant "
             f"never loaded (unanchored-bootstrap signature)")
-        assert v["insert_en"] == 1 and v["robust"] == 1, (
-            f"[{tag}] {name}: D2 REGRESSION — beacons/robust not up in data "
-            f"mode (insert_en={v['insert_en']} robust={v['robust']})")
+        # 2026-07-15: INVERTED from the old D2 "never blind-OFF" enshrinement
+        # (insert_en==1) — see project_autonomy_rootcause_sync_clamp_2026_07_14.
+        # This oracle only runs after FULL convergence (done=1, anc_to=0, rea=1,
+        # fcsm=4, credit>0), which requires the FINALIZE release gate
+        # (ws_anchor_q && ws_verify_q) to have fired — so the SYNC-OFF one-shot
+        # must have latched and stripped insert_en to land the autonomous
+        # data-mode state on R8-effective 0x10 (insert_en=0, robust=1), the
+        # config the manual recipe uses and which is PROVEN 40/40 byte-exact.
+        assert v["sync_off"] == 1, (
+            f"[{tag}] {name}: SYNC-OFF one-shot never latched (sync_off_done_q=0) "
+            f"despite full convergence — the verified-anchor release should fire it")
+        assert v["insert_en"] == 0 and v["robust"] == 1, (
+            f"[{tag}] {name}: post-anchor SYNC-OFF wrong — autonomous data mode "
+            f"must be insert_en=0/robust=1 (R8-effective 0x10, the recipe config); "
+            f"at insert_en=1 (0x14) die_a's RX-commit dead-locks B->A on silicon. "
+            f"got insert_en={v['insert_en']} robust={v['robust']}")
+        assert v["hold"] == 0, (
+            f"[{tag}] {name}: sync_cfg_hold_q=1 at end — the D2 heal must release "
+            f"at the verified anchor so it stops re-clamping insert_en to 1")
         assert v["force_alw"] == 0, (
             f"[{tag}] {name}: force_always set — the R4 word-deleter")
         # Anchored-late (0x21B8[3]) is DIAGNOSTIC, not an error: log it.

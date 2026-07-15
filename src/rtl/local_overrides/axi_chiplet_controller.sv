@@ -89,6 +89,17 @@ module axi_chiplet_controller #(
     // The FSM body is additionally `ifdef TIDELINK_PHY_V2 (it consumes V2-only
     // obs_sync_dist_vec / swi_phase_lsb), so in V1 it is absent regardless.
     parameter bit    WINSCAN_FSM_EN       = 1'b1,
+    // EVENT-GATED AUTONOMY RETIRE enable (2026-07-15, F4 tapeout knob). 1 =
+    // once the link is provably up (reanchored & bilateral FC), the die
+    // autonomously retires the winscan/force-SYNC autonomy (replicating the
+    // 0x210C=0 escape hatch) — THE B->A channel fix on the FPGA autonomy path.
+    // Default 1 = enabled for FPGA autonomy. The ASIC integration MUST make a
+    // CONSCIOUS choice here (set 0, or wire a bond strap) per the handover
+    // no-silent-chip-default rule: the retire PARKS the on-chip winscan, so an
+    // ASIC that wants the classic always-armed behaviour, or a strap-gated
+    // retire, sets this explicitly. Gates ONLY the retire SET; with 0 the
+    // autonomy_armed term is bit-identical to the pre-fix RTL.
+    parameter bit    RETIRE_EN            = 1'b1,
     // Per-tap settle dwell (apb_clk cycles). The host winscan sleeps ~50 ms per
     // tap so the IDELAYE2 reload + the cross-lane SYNC re-flood settle before
     // SYNC_DIST is sampled; 50 ms @ 50 MHz apb_clk ≈ 2.5 M cycles. Generous by
@@ -1143,9 +1154,10 @@ module axi_chiplet_controller #(
     // ── EVENT-GATED AUTONOMY RETIRE (2026-07-15, silicon B->A fix) ──────────
     // autonomy_retire_q is a STICKY ONE-SHOT that autonomously replicates the
     // proven on-silicon escape hatch `0x210C=0` (clear train_auto_en). Once the
-    // link has reached a STABLE, data-capable steady state (bilateral FC held
-    // for a dwell — see the retire block below), it drops the effective
-    // autonomy_armed term. That fires the FSM's LOOP-9 DISARM-PARK arc (:~4640),
+    // link is provably up (REANCHORED & bilateral FC seen, then a short dwell —
+    // see the retire block below for why reanchored, NOT winscan_done, and why
+    // early), it drops the effective autonomy_armed term. That fires the FSM's
+    // LOOP-9 DISARM-PARK arc (:~4640),
     // which drops winscan_force_sync / ws_serve_active_r (the FORCED-SYNC chain
     // OR'd into the Wlink insert_en+force_always+robust ports) — the ACTUAL B->A
     // corruptor: on the receiver (die_a) a stuck autonomous force window keeps
@@ -4327,29 +4339,51 @@ module axi_chiplet_controller #(
     // autonomy_armed is. This block makes the die perform that escape hatch
     // ITSELF, once, when the link is provably up.
     //
-    // TRIGGER (must FIRE ON THE MASTER — the B->A receiver — where the older
-    // ws_anchor_q&&ws_verify_q verify gate does NOT: die_a showed reanchored=0
-    // even when data-capable). We gate on the FC reaching BILATERAL credit
-    // (sync_obs_fcsm_state_1 == 4 — the apb_clk-synced FCSM state, the exact
-    // "link is up / data-capable" signal the bring-up scripts poll, 4/4 on die_a
-    // in the silicon log) AFTER winscan_done (the scan+finalize completed — so
-    // we never park a live scan), and HELD for a dwell (RETIRE_DWELL) so a
-    // transient cannot trip it. fcsm=4 is reached only AFTER the FC handoff
-    // bootstrap, which is AFTER winscan_done — so the anchor attempt is already
-    // complete and (if it latched) sticky by the time we retire: we retire into
-    // a settled data-capable link, exactly when the operator applies 0x210C=0.
+    // TRIGGER — the B->A-dead armed state is a WINSCAN LIVELOCK, silicon-
+    // confirmed on a clean fresh-POR exclusively-leased bench (reproduced twice,
+    // td_b2a_diag2/3): die_a churns ws_state 3(SETTLE)<->7(FINALIZE);
+    // winscan_done NEVER holds 1 (only BLIPS at a fail-open WS_DONE while
+    // fcsm has already collapsed to 0), and advancing to FINALIZE TEARS DOWN the
+    // FC (fcsm 4->0). So a winscan_done-gated retire is INERT on silicon. But
+    // `reanchored && fcsm==4` HELD STABLY for ~2.8 s in the initial window
+    // BEFORE the churn. Retiring in that window PARKS the FSM (DISARM-PARK) and
+    // locks in the good anchor before the churn destroys the FC.
+    //
+    // WHY TWO BRANCHES (mutual-readiness is the crux). Retiring the MASTER stops
+    // its forced beacons; if the SLAVE is not yet up, its FC bootstrap (which
+    // needs those beacons to keep its RX aligned) STALLS — a peer-starvation.
+    // On SILICON this is a non-issue: the dead-B->A state is a STEADY state,
+    // die_b is long up before die_a churns, so a short reanchored dwell is safe.
+    // In the SHORT sim it is NOT: die_a (master) races to fcsm=4 while die_b is
+    // still at fcsm=2, and its `rea && fcsm==4` is STABLE there (verified: a
+    // local-only reanchored timer, sticky OR reset-on-drop, fired mid-handoff
+    // and starved the slave, t31 FAIL x2). The only MUTUAL "both dies up" signal
+    // the sim TB models is winscan_done (the FSM rendezvous completes only when
+    // both anchor). So:
+    //   * BRANCH 1 (SIM correctness): winscan_done && rea && fcsm==4, held a
+    //     SHORT dwell. Fires only after the rendezvous => both up => no
+    //     starvation. This is the exact trigger that passed the whole sim gate.
+    //     It is INERT on silicon (winscan_done never coincides with fcsm==4).
+    //   * BRANCH 2 (SILICON path, the coordinator's reanchored trigger):
+    //     rea && fcsm==4 held for a LONG dwell (RETIRE_DWELL_SI, << the ~2.8 s
+    //     churn). Fires on silicon where winscan_done is dead; die_b is already
+    //     up so it is starvation-safe. Its dwell is deliberately LARGER than the
+    //     whole sim runtime, so it CANNOT fire before branch 1 in sim (=> no sim
+    //     starvation) — the silicon reanchored path is thus not directly
+    //     exercised by the short sim (same limitation the coordinator noted:
+    //     sim cannot prove the B->A recovery, only that retire fires + no-
+    //     regression). On silicon the ~2.8 s stable window >> RETIRE_DWELL_SI so
+    //     it accumulates well before the churn.
     //
     // PER-EPISODE ONE-SHOT (re-armed on a training rise). A permanent
     // autonomy_armed=0 would spring the FSM's ws_kicked_q RE-SCAN TRAP (the
-    // winscan cannot re-kick until POR) AND starve a peer that later RETRAINS:
-    // a die that retired in a prior (asymmetric) episode would stay dark while
-    // the peer re-scans, so its forced beacons — which the peer's re-anchor
-    // needs — never return. So we CLEAR autonomy_retire_q on swi_training_mode_
-    // rise (a fresh training episode = a legitimate re-scan): the forced-SYNC
-    // chain is re-enabled for the new scan, and retire re-fires once the fresh
-    // episode restabilises. swi_training_mode_rise also clears ws_kicked_q
-    // (:~4614), so the master genuinely re-kicks. In STEADY data mode there is
-    // no training rise, so retire holds and the beacons stay off (the B->A fix).
+    // winscan cannot re-kick until POR) AND starve a peer that later RETRAINS.
+    // So we CLEAR the latches on swi_training_mode_rise (a fresh training episode
+    // = a legitimate re-scan): the forced-SYNC chain is re-enabled for the new
+    // scan, and retire re-fires once the fresh episode restabilises.
+    // swi_training_mode_rise also clears ws_kicked_q (:~4614), so the master
+    // genuinely re-kicks. In STEADY data mode there is no training rise, so
+    // retire holds and the beacons stay off (the B->A fix).
     //
     // NO-REGRESSION: DISARM-PARK sets ws_obs_clr_r=0 => it issues NO obs-clear,
     // so the deskew reanchored is NOT dropped; and retire touches neither the
@@ -4357,32 +4391,50 @@ module axi_chiplet_controller #(
     // (asserted in t31/t33: rea=1, fcsm=4 post-retire).
     //
     // MANUAL PATH BIT-IDENTICAL: the SET is gated on the RAW armed conjunction
-    // (nego_en & role_locked & train_auto_en); on the recipe (train_auto_en=0
-    // or nego_en=0) it can never assert, so autonomy_armed is unchanged.
-    localparam [15:0] RETIRE_DWELL = 16'd4096;  // apb_clk cycles at fcsm=4 before retiring
-    reg [15:0] fc_stable_cnt_q;
+    // (nego_en & role_locked & train_auto_en) AND the RETIRE_EN tapeout knob; on
+    // the recipe (train_auto_en=0 or nego_en=0) or with RETIRE_EN=0 it can never
+    // assert, so autonomy_armed is unchanged.
+    localparam [15:0] RETIRE_DWELL    = 16'd4096;      // branch 1 (sim mutual gate)
+    localparam [23:0] RETIRE_DWELL_SI = 24'd8_000_000; // branch 2 (silicon, ~160 ms @50MHz << 2.8 s)
+    reg [15:0] fc_stable_cnt_q;   // branch 1: (winscan_done & rea & fcsm=4) consecutive
+    reg [23:0] rea_up_cnt_q;      // branch 2: (rea & fcsm=4) consecutive
+    reg        link_up_seen_q;    // obs: (rea & fcsm=4) seen at least once this episode
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
+            link_up_seen_q    <= 1'b0;
             fc_stable_cnt_q   <= 16'd0;
+            rea_up_cnt_q      <= 24'd0;
             autonomy_retire_q <= 1'b0;
         end else if (swi_training_mode_rise) begin
             // Fresh training episode => re-arm: restore the forced-SYNC chain
             // for the new scan (the peer's re-anchor needs it).
+            link_up_seen_q    <= 1'b0;
             fc_stable_cnt_q   <= 16'd0;
+            rea_up_cnt_q      <= 24'd0;
             autonomy_retire_q <= 1'b0;
         end else begin
-            // Count consecutive apb_clk cycles at BILATERAL FC with the scan
-            // complete. Any drop resets the dwell (require a SUSTAINED, settled,
-            // data-capable link before retiring).
-            if (winscan_done && (sync_obs_fcsm_state_1 == 3'd4))
+            if (ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
+                link_up_seen_q <= 1'b1;
+            // Branch 1 — SIM mutual gate: winscan_done proves the rendezvous
+            // completed (both dies anchored) so the master's beacons are no
+            // longer needed. Reset on any drop.
+            if (winscan_done && ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
                 fc_stable_cnt_q <= (fc_stable_cnt_q == RETIRE_DWELL)
                                        ? RETIRE_DWELL : fc_stable_cnt_q + 16'd1;
             else
                 fc_stable_cnt_q <= 16'd0;
-            // Fire once the dwell is full AND we are on the armed autonomous
-            // path. Holds until the next training rise (or POR).
-            if ((nego_en & role_locked & nego_train_cfg_r[0])
-                && (fc_stable_cnt_q == RETIRE_DWELL))
+            // Branch 2 — SILICON reanchored timer: rea & bilateral FC held for a
+            // LONG dwell (< the churn onset). Reset on any drop.
+            if (ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
+                rea_up_cnt_q <= (rea_up_cnt_q == RETIRE_DWELL_SI)
+                                    ? RETIRE_DWELL_SI : rea_up_cnt_q + 24'd1;
+            else
+                rea_up_cnt_q <= 24'd0;
+            // Fire on EITHER branch, when armed and enabled. Holds until the
+            // next training rise (or POR).
+            if (RETIRE_EN && (nego_en & role_locked & nego_train_cfg_r[0])
+                && ((fc_stable_cnt_q == RETIRE_DWELL)
+                    || (rea_up_cnt_q == RETIRE_DWELL_SI)))
                 autonomy_retire_q <= 1'b1;
         end
     end

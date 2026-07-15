@@ -583,98 +583,82 @@ async def test_31_autonomous_training_exit(dut):
         "R1: sender fe_rx_credit_max=0 — the CR/CRACK credit grant never "
         "(re-)loaded after the autonomous bootstrap")
 
-    # ---- (11) AUTONOMOUS SYNC-OFF at the verified+held anchor (2026-07-15,
-    #      INVERTED from the old D2 "never blind-OFF" gate, which ENSHRINED the
-    #      B->A autonomy channel bug: it asserted insert_en==1 in data mode and
-    #      called insert_en=0 a "D2 REGRESSION", while the RTL that pins
-    #      insert_en=1 is precisely what dead-locks the receiver on silicon).
-    #
-    #      SILICON PROOF (project_autonomy_rootcause_sync_clamp_2026_07_14,
-    #      project_drainguard_necessary_not_sufficient_b2a_residual_2026_07_14):
-    #      under autonomy_armed the D2 heal re-drove swi_sync_insert_en_r=1 every
-    #      cycle — textually LATER than the APB R8 decode in the SAME always_ff,
-    #      so NBA last-write-wins pinned R8-effective at 0x14. At 0x14 die_a (the
-    #      MASTER = the B->A RECEIVER) CAPTURES incoming words (RXCAP proven) but
-    #      NEVER COMMITS them to the GP1 app FIFO (B->A 0/10 on fresh-POR silicon;
-    #      disarming 0x210C=0 -> B->A byte-exact IMMEDIATELY, credit was fine).
-    #      The sim TB is BLIND to that beacon-substitution / RX-commit-hold (it
-    #      delivered clean data with the corrupting RTL) — which is exactly why
-    #      the OLD assertion "proved" the wrong thing.
-    #
-    #      The fix event-gates a STICKY SYNC-OFF one-shot (sync_off_done_q) on
-    #      the winscan's OWN verified+held anchor (ws_anchor_q && ws_verify_q, the
-    #      exact WS_FINALIZE release gate). Post-anchor the autonomous data-mode
-    #      state must land on R8-effective 0x10 (insert_en=0, hold released) — the
-    #      config the manual recipe uses, PROVEN 40/40 all-channels byte-exact.
-    #      robust STAYS 1 (deskew re-hunt / drift self-heal). force_always and
-    #      winscan_force_sync (the SCAN beacons, OR'd separately at the Wlink
-    #      ports) stay 0 in data mode (force drops at the FINALIZE exit).
-    await ClockCycles(dut.hclk, 100_000)   # >> the retired 1024-cycle settle
+    # ---- (11) D2 "NEVER BLIND-OFF" (2026-07-03, INVERTED from the old F1/F2
+    #      gate): the autonomous SYNC-OFF timer is DELETED. The PERMANENT
+    #      autonomous data-mode state is insert_en=1 (idle-gated beacon) +
+    #      robust=1, with only force-SYNC dropped (winscan FINALIZE exit) and
+    #      force_always never set (R4a). The old timed OFF raced the PEER's
+    #      WS_FINALIZE re-anchor refill (needs PEER beacons; one missed
+    #      SYNC_PERIOD grid slot resets the deskew confirm run) — a race no
+    #      timer can bound across the arm-stagger. NOTE the ordering: the (10)
+    #      data gate above ALREADY ran byte-exact WITH beacons on — that IS
+    #      the new data-safety gate (idle-gated insert never deletes words;
+    #      FORCE was the R4 word-deleter). Here we additionally dwell and
+    #      assert the state HOLDS (no residual OFF path fires late).
+    # ---- (11) EVENT-GATED AUTONOMY RETIRE (2026-07-15, RE-TARGETED — inverts
+    #      the old D2 "never blind-OFF" gate). THE B->A autonomy channel fix.
+    #      SILICON (td_b2a_diag2.log): B->A recovered byte-exact the instant
+    #      die_a's (MASTER = the B->A RECEIVER) autonomy_armed dropped
+    #      (0x210C=0) — with R8 STILL 0x14 (insert_en=1) and reanchored=0. So
+    #      insert_en/R8[2] is NOT the blocker; autonomy_armed is: the corruptor
+    #      is the autonomous FORCED-SYNC chain (winscan_force_sync /
+    #      ws_serve_active_r) OR'd into the Wlink SYNC ports, which keeps SYNC
+    #      beating over the B->A payload so the receiver's RX framer never
+    #      commits. The RTL now replicates that escape hatch ITSELF, once, when
+    #      the link is provably up (fcsm=4 & winscan_done held for RETIRE_DWELL).
+    #      The trigger MUST fire on the MASTER (the receiver) — where the old
+    #      ws_anchor_q&&ws_verify_q verify gate could not (die_a rea=0 on
+    #      silicon); we gate on the FCSM reaching bilateral credit, which is
+    #      4/4 on die_a in the silicon log. Post-retire the forced chain is
+    #      parked and insert_en is left untouched (it is not the blocker).
+    await ClockCycles(dut.hclk, 100_000)   # >> RETIRE_DWELL (4096 apb cycles)
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
         ie   = _si(c.swi_sync_insert_en_r)
         rb   = _si(c.swi_sync_robust_detect_r)
         fa   = _si(c.swi_sync_force_always_r)
         wf   = _si(c.winscan_force_sync)
-        hq   = _si(c.sync_cfg_hold_q)
-        anc  = _si(c.ws_anchor_q)
-        vfy  = _si(c.ws_verify_q)
-        offd = _si(c.sync_off_done_q)
-        log.info(f"{name} SYNC-OFF data-mode state: insert_en={ie} robust={rb} "
-                 f"force_always={fa} winscan_force={wf} hold={hq} "
-                 f"anchor={anc} verify={vfy} sync_off_done={offd}")
-        assert offd == 1, (
-            f"{name}: SYNC-OFF one-shot NEVER latched (sync_off_done_q=0) — the "
-            f"verified+held anchor (ws_anchor_q && ws_verify_q) was never reached "
-            f"in data mode (anchor={anc} verify={vfy}). Either the fix regressed "
-            f"anchoring or the FSM never released FINALIZE.")
-        assert ie == 0, (
-            f"{name}: swi_sync_insert_en_r=1 in data mode — the SYNC-OFF one-shot "
-            f"must strip the idle beacon at the verified anchor. SILICON: R8=0x14 "
-            f"pins die_a's RX-commit (B->A 0/10); the autonomous steady state must "
-            f"land on R8-effective 0x10 (recipe config, 40/40 byte-exact). "
-            f"project_autonomy_rootcause_sync_clamp_2026_07_14")
-        assert hq == 0, (
-            f"{name}: sync_cfg_hold_q=1 in data mode — the D2 heal must RELEASE at "
-            f"the verified anchor so it stops re-clamping insert_en to 1")
-        assert rb == 1, (
-            f"{name}: swi_sync_robust_detect_r=0 — robust must STAY 1 (tol-5 framer "
-            f"re-hunt / drift self-heal); the SYNC-OFF fix keeps robust/tol/mask")
-        assert fa == 0, (
-            f"{name}: swi_sync_force_always_r=1 in data mode — force-always is the "
-            f"R4 word-deleter and must NEVER be set autonomously")
+        arm  = _si(c.autonomy_armed)
+        ret  = _si(c.autonomy_retire_q)
+        cnt  = _si(c.fc_stable_cnt_q)
+        fcsm = _si(c.sync_obs_fcsm_state_1)
+        rea  = _si(c.ws_anchor_q)
+        log.info(f"{name} RETIRE state: autonomy_retire_q={ret} autonomy_armed={arm} "
+                 f"winscan_force={wf} force_always={fa} insert_en={ie} robust={rb} "
+                 f"fc_stable_cnt={cnt} fcsm={fcsm} rea={rea}")
+        # The fix FIRED — on BOTH dies, crucially the MASTER (the B->A receiver).
+        assert ret == 1, (
+            f"{name}: autonomy_retire_q=0 — the event-gated RETIRE never fired "
+            f"(fc_stable_cnt={cnt}); the link must hold fcsm=4 & winscan_done for "
+            f"RETIRE_DWELL cycles. This MUST fire on the MASTER (B->A receiver).")
+        assert arm == 0, (
+            f"{name}: autonomy_armed=1 after RETIRE — the effective armed term "
+            f"must drop so the FSM's LOOP-9 DISARM-PARK stops the forced-SYNC "
+            f"chain (autonomously replicating the 0x210C=0 escape hatch)")
         assert wf == 0, (
-            f"{name}: winscan_force_sync still 1 after FINALIZE — force must drop "
-            f"at the FINALIZE exit")
-
-    # ---- (11b) NO SYNC BEACON is inserted while data is flowing (2026-07-15).
-    #      Per the sync-clamp note: a beacon launched into a packet substitutes a
-    #      0 for a payload word (the silicon (h) garble). With insert_en=0 and
-    #      force_always=0 the TX inserter (tx_sync_en_w) is dead, so the TX
-    #      sync-insert count must be FROZEN across a steady data-mode dwell. This
-    #      is the sim-observable proxy for "tx_sync_ins_cnt does not increment
-    #      while a packet is in flight" — the TB cannot model the RX substitution,
-    #      but it CAN prove the inserter has stopped firing.
-    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
-        c = _ctrl(dut, side)
-        cnt0 = _si(c.obs_tx_sync_ins_cnt_w)
-        await ClockCycles(dut.hclk, 20_000)
-        cnt1 = _si(c.obs_tx_sync_ins_cnt_w)
-        log.info(f"{name} TX sync-insert count over data-mode dwell: "
-                 f"{cnt0} -> {cnt1}")
-        assert cnt1 == cnt0, (
-            f"{name}: tx_sync_ins_cnt incremented in data mode ({cnt0}->{cnt1}) "
-            f"AFTER the SYNC-OFF one-shot — a beacon launched into a live packet "
-            f"substitutes a payload word (the silicon (h) garble). The inserter "
-            f"must be idle once insert_en=0 & force_always=0.")
+            f"{name}: winscan_force_sync=1 after RETIRE — the forced-SYNC chain "
+            f"(the on-silicon B->A corruptor) must be parked")
+        assert fa == 0, (
+            f"{name}: swi_sync_force_always_r=1 — force-always (the R4 word-"
+            f"deleter) must never be set autonomously")
+        # NO-REGRESSION (req 2): RETIRE must NOT wedge the FC or drop the anchor.
+        assert fcsm == 4, (
+            f"{name}: FCSM={fcsm} != 4 after RETIRE — retiring autonomy wedged "
+            f"the flow-control datapath (it must touch neither the FCSM nor "
+            f"role_locked/nego_en)")
+        assert rea == 1, (
+            f"{name}: reanchored=0 after RETIRE — the DISARM-PARK dropped the "
+            f"deskew anchor (it must issue NO obs-clear, so reanchored holds)")
+        # insert_en is intentionally NOT asserted: silicon proved it is NOT the
+        # blocker (B->A recovered at insert_en=1); it retains its last value.
 
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
-             "transited S_HOLD→S_VALIDATE→S_DONE (no re-sweep after clear), "
-             "swi_training_mode cleared 1→0 by the autoneg FSM (not a TB force), "
-             "both settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
-             "0x27f09→0x27f01→0x27f07 on both dies; post-bootstrap FCSM=4; "
-             "AHB_TX data crossed BYTE-EXACT; and at the verified+held anchor the "
-             "SYNC-OFF one-shot LATCHED (sync_off_done_q=1), stripping insert_en "
-             "to land on R8-effective 0x10 (recipe config) with the TX inserter "
-             "FROZEN in data mode. L4 deadlock + death-spiral + R1 credit wedge "
-             "+ B->A SYNC-clamp (project_autonomy_rootcause_sync_clamp) covered.")
+             "settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
+             "0x27f09→0x27f01→0x27f07 on both dies; AHB_TX data crossed "
+             "BYTE-EXACT; and once the link held bilateral FC the EVENT-GATED "
+             "AUTONOMY RETIRE fired on BOTH dies (incl. the MASTER receiver) — "
+             "autonomy_armed=0, winscan_force_sync parked — while FCSM stayed 4 "
+             "and reanchored held. Autonomously replicates the 0x210C=0 escape "
+             "hatch. L4 deadlock + death-spiral + R1 credit wedge + B->A "
+             "autonomy-force corruptor (project_autonomy_rootcause_sync_clamp) "
+             "covered.")

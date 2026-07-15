@@ -1140,7 +1140,28 @@ module axi_chiplet_controller #(
     // bit-identical. A mid-run disarm also PARKS an in-flight winscan (see
     // the FSM's disarm arc) so 0x210C=0 is an immediate on-silicon escape
     // hatch from a stuck force window.
-    wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0];
+    // ── EVENT-GATED AUTONOMY RETIRE (2026-07-15, silicon B->A fix) ──────────
+    // autonomy_retire_q is a STICKY ONE-SHOT that autonomously replicates the
+    // proven on-silicon escape hatch `0x210C=0` (clear train_auto_en). Once the
+    // link has reached a STABLE, data-capable steady state (bilateral FC held
+    // for a dwell — see the retire block below), it drops the effective
+    // autonomy_armed term. That fires the FSM's LOOP-9 DISARM-PARK arc (:~4640),
+    // which drops winscan_force_sync / ws_serve_active_r (the FORCED-SYNC chain
+    // OR'd into the Wlink insert_en+force_always+robust ports) — the ACTUAL B->A
+    // corruptor: on the receiver (die_a) a stuck autonomous force window keeps
+    // SYNC beating over the B->A payload so its RX framer never commits. SILICON
+    // PROOF (td_b2a_diag2.log): B->A recovered byte-exact the instant die_a's
+    // autonomy_armed dropped (0x210C=0) — with R8 STILL 0x14 (insert_en=1) and
+    // reanchored=0 — so insert_en/R8[2] is NOT the blocker; autonomy_armed is.
+    // KEEPS the manual path bit-identical: retire only ever asserts on the
+    // armed autonomous path (nego_en & role_locked & train_auto_en); with
+    // nego_en=0 or train_auto_en=0 it can never set, so autonomy_armed is
+    // unchanged. Sticky until POR (the ws_kicked_q re-scan trap is ACCEPTABLE:
+    // this is a one-time bring-up into sticky-anchored data mode — see the
+    // retire block for the trap + no-regression assessment).
+    reg  autonomy_retire_q;
+    wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0]
+                        & ~autonomy_retire_q;
 
     // Phase 1 G1b — sticky train-fail IRQ. Latches on train_fail_irq_w
     // rising-edge (the FSM holds it stable for the duration of
@@ -1467,16 +1488,6 @@ module axi_chiplet_controller #(
     // writes on the slave via the AXIL->APB bridge) cannot strip the SYNC
     // config. See the F1b comment at the drive.
     reg        sync_cfg_hold_q;
-    // ── AUTONOMOUS SYNC-OFF sticky one-shot (2026-07-15, silicon B->A fix) ──
-    // Latches the FIRST cycle the winscan's own verified+held anchor is reached
-    // (ws_anchor_q && ws_verify_q — the EXACT WS_FINALIZE release gate). Once
-    // set it PERMANENTLY holds swi_sync_insert_en_r=0 and sync_cfg_hold_q=0,
-    // ending the D2 "never blind-OFF" heal that pinned R8-effective at 0x14 and
-    // blocked die_a's (the B->A RECEIVER's) RX-commit on silicon. STICKY so it
-    // fires exactly once and never oscillates even though ws_anchor_q/ws_verify_q
-    // can drop on an obs-clear re-pulse. See the drive block for the full
-    // rationale + silicon proof. autonomy_armed-scoped => manual path unchanged.
-    reg        sync_off_done_q;
 `endif
 
     // =====================================================================
@@ -1845,13 +1856,6 @@ module axi_chiplet_controller #(
                          && apb_ctrl_reg_rd;
 `endif
 
-    // Forward declarations (2026-07-15): the apb_clk 2-FF syncs of the deskew
-    // anchor / anchor-verify stickies are DRIVEN further down (their always_ff
-    // blocks) but READ by the autonomous SYNC-OFF one-shot in the always_ff
-    // below, so the reg declarations are hoisted here to precede that use.
-    reg ws_anchor_meta_q, ws_anchor_q;
-    reg ws_verify_meta_q, ws_verify_q;
-
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             swi_training_mode_r      <= 1'b0;
@@ -1881,7 +1885,6 @@ module axi_chiplet_controller #(
             sync_cfg_on_fired_q      <= 1'b0;
             sync_cfg_hold_q          <= 1'b0;  // F1b/D2: hold engages at SYNC-ON,
                                                // then PERMANENT (never blind-OFF)
-            sync_off_done_q          <= 1'b0;  // 2026-07-15: SYNC-OFF one-shot armed
 `endif
             swi_phase_offset_r       <= 32'h0;
             // Phase 2 autonomy — POR-tunable default for NEGO_TRAIN_CFG.
@@ -2128,44 +2131,6 @@ module axi_chiplet_controller #(
                 if (sync_cfg_hold_q) begin
                     swi_sync_insert_en_r     <= 1'b1;
                     swi_sync_robust_detect_r <= 1'b1;
-                end
-                // ── AUTONOMOUS SYNC-OFF at the verified+held anchor ──
-                // (2026-07-15) THE B->A autonomy channel fix. SILICON ROOT
-                // CAUSE: the D2 heal above (never blind-OFF) re-drove
-                // insert_en=1 every cycle while sync_cfg_hold_q — textually
-                // LATER than the APB R8 decode (:1923) in this SAME always_ff
-                // => NBA last-write-wins pinned R8-effective at 0x14 forever.
-                // At 0x14 die_a (the MASTER, i.e. the B->A RECEIVER) CAPTURES
-                // incoming B->A words (RXCAP proven) but NEVER COMMITS them to
-                // the GP1 app FIFO. Causal silicon proof: disarming (0x210C=0)
-                // -> B->A byte-exact immediately; NOT credit (send-credit 0x1f
-                // nonzero while dead), NOT beacon-substitution (0044bef drain
-                // guard already killed that; RXCAP showed no SYNC in payload).
-                // See [[project_autonomy_rootcause_sync_clamp_2026_07_14]] and
-                // [[project_drainguard_necessary_not_sufficient_b2a_residual_2026_07_14]].
-                //
-                // The D2 note (:2101) was RIGHT to delete the blind TIMER but
-                // WRONG to conclude "never turn SYNC off". Turn it off on an
-                // EVENT: the winscan's OWN verified+held anchor
-                // (ws_anchor_q && ws_verify_q — the exact WS_FINALIZE release
-                // gate at :4892). That lands the autonomous data-mode steady
-                // state on R8-effective 0x10 — the config the manual recipe
-                // uses and which is PROVEN 40/40 all-channels byte-exact.
-                //
-                // STICKY ONE-SHOT: ws_anchor_q/ws_verify_q can DROP on an
-                // obs-clear re-pulse (WS_FIN_CLRLOW), so latch sync_off_done_q
-                // the first time the anchor is verified and HOLD insert_en=0
-                // thereafter — fire once, never re-clamp, never oscillate.
-                // KEEP robust/tol/lane_mask (the deskew still consumes them);
-                // only insert_en + the hold change. force_always and
-                // winscan_force_sync (the SCAN beacons, OR'd separately at the
-                // Wlink ports :5924-5939) are UNAFFECTED — a re-scan still
-                // forces SYNC regardless of insert_en, so no coverage gap.
-                if (ws_anchor_q && ws_verify_q)
-                    sync_off_done_q <= 1'b1;
-                if (sync_off_done_q || (ws_anchor_q && ws_verify_q)) begin
-                    swi_sync_insert_en_r <= 1'b0;  // strip SYNC beacon -> R8 0x10
-                    sync_cfg_hold_q      <= 1'b0;  // release the D2 heal (stop re-clamp)
                 end
             end
 `endif
@@ -4214,7 +4179,7 @@ module axi_chiplet_controller #(
     // (u_deskew reanchored → WavD2DGpio epoch_anchored → WlinkGPIOPHY →
     // Wlink.obs_epoch_anchored_o) — the same net EPOCH_STATUS 0x2140 bit0 /
     // epoch_anchored_o expose. Single bit ⇒ a plain 2-FF sync is sufficient.
-    // (ws_anchor_meta_q, ws_anchor_q declared hoisted above the config always_ff)
+    reg ws_anchor_meta_q, ws_anchor_q;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             ws_anchor_meta_q <= 1'b0;
@@ -4234,7 +4199,7 @@ module axi_chiplet_controller #(
     // lane whose sticky sync_idx latched one slot off (tol-5 Hamming on a
     // marginal eye can match an adjacent slot) passes the first and can
     // never pass the second.
-    // (ws_verify_meta_q, ws_verify_q declared hoisted above the config always_ff)
+    reg ws_verify_meta_q, ws_verify_q;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             ws_verify_meta_q <= 1'b0;
@@ -4342,6 +4307,72 @@ module axi_chiplet_controller #(
                 ws_anchor_late_q <= 1'b0;
             else if (ws_anchor_q & ~ws_anchor_q_d & fch_done_r)
                 ws_anchor_late_q <= 1'b1;
+        end
+    end
+
+    // ========================================================================
+    // EVENT-GATED AUTONOMY RETIRE (2026-07-15) — THE B->A autonomy channel fix.
+    //
+    // MECHANISM. On silicon the B->A corruptor is the AUTONOMOUS FORCED-SYNC
+    // chain (winscan_force_sync / ws_serve_active_r), which ORs into the Wlink
+    // insert_en+force_always+robust ports (:~5924) and keeps SYNC beating over
+    // the B->A payload on the receiver (die_a), so its RX framer never commits.
+    // The proven on-silicon escape hatch is `0x210C=0` (clear train_auto_en =>
+    // autonomy_armed=0 => the FSM's LOOP-9 DISARM-PARK arc :~4640 drops
+    // winscan_force_sync within a cycle => the forced beacons stop => B->A
+    // commits). td_b2a_diag2.log: B->A recovered byte-exact the instant die_a's
+    // autonomy_armed dropped — with R8 STILL 0x14 (insert_en=1) and rea=0 — so
+    // insert_en/R8[2] is NOT the blocker (it is a pure TX control and, with the
+    // 0044bef drain guard + postcount pinned, fires no steady-state beacon);
+    // autonomy_armed is. This block makes the die perform that escape hatch
+    // ITSELF, once, when the link is provably up.
+    //
+    // TRIGGER (must FIRE ON THE MASTER — the B->A receiver — where the older
+    // ws_anchor_q&&ws_verify_q verify gate does NOT: die_a showed reanchored=0
+    // even when data-capable). We gate on the FC reaching BILATERAL credit
+    // (sync_obs_fcsm_state_1 == 4 — the apb_clk-synced FCSM state, the exact
+    // "link is up / data-capable" signal the bring-up scripts poll, 4/4 on die_a
+    // in the silicon log) AFTER winscan_done (the scan+finalize completed — so
+    // we never park a live scan), and HELD for a dwell (RETIRE_DWELL) so a
+    // transient cannot trip it. fcsm=4 is reached only AFTER the FC handoff
+    // bootstrap, which is AFTER winscan_done — so the anchor attempt is already
+    // complete and (if it latched) sticky by the time we retire: we retire into
+    // a settled data-capable link, exactly when the operator applies 0x210C=0.
+    //
+    // ws_kicked_q RE-SCAN TRAP (hwlib warning): a permanent autonomy_armed=0
+    // springs the FSM's disarm-park such that the winscan cannot re-kick until
+    // POR (ws_kick_evt is autonomy_armed-gated; ws_kicked_q only clears on a
+    // training rise). ACCEPTABLE here: this is a one-time bring-up into
+    // sticky-anchored data mode — no re-scan is needed, the deskew anchor is
+    // sticky (DISARM-PARK sets ws_obs_clr_r=0, so it issues NO obs-clear pulse
+    // => reanchored is NOT dropped), and the FC/data path is independent of
+    // autonomy_armed (retire touches neither the FCSM nor role_locked nor
+    // nego_en, so fcsm stays 4 and data keeps flowing). If a future drift ever
+    // needs a re-scan, a POR (or an APB re-arm of NEGO_TRAIN_CFG) restores it.
+    //
+    // MANUAL PATH BIT-IDENTICAL: the SET is gated on the RAW armed conjunction
+    // (nego_en & role_locked & train_auto_en); on the recipe (train_auto_en=0
+    // or nego_en=0) it can never assert, so autonomy_armed is unchanged.
+    localparam [15:0] RETIRE_DWELL = 16'd4096;  // apb_clk cycles at fcsm=4 before retiring
+    reg [15:0] fc_stable_cnt_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            fc_stable_cnt_q   <= 16'd0;
+            autonomy_retire_q <= 1'b0;
+        end else begin
+            // Count consecutive apb_clk cycles at BILATERAL FC with the scan
+            // complete. Any drop resets the dwell (require a SUSTAINED, settled,
+            // data-capable link before retiring).
+            if (winscan_done && (sync_obs_fcsm_state_1 == 3'd4))
+                fc_stable_cnt_q <= (fc_stable_cnt_q == RETIRE_DWELL)
+                                       ? RETIRE_DWELL : fc_stable_cnt_q + 16'd1;
+            else
+                fc_stable_cnt_q <= 16'd0;
+            // Sticky one-shot: fire once the dwell is full AND we are on the
+            // armed autonomous path. Never clears until POR.
+            if ((nego_en & role_locked & nego_train_cfg_r[0])
+                && (fc_stable_cnt_q == RETIRE_DWELL))
+                autonomy_retire_q <= 1'b1;
         end
     end
 

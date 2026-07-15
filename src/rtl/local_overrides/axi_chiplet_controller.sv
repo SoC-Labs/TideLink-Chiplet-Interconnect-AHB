@@ -1845,6 +1845,13 @@ module axi_chiplet_controller #(
                          && apb_ctrl_reg_rd;
 `endif
 
+    // Forward declarations (2026-07-15): the apb_clk 2-FF syncs of the deskew
+    // anchor / anchor-verify stickies are DRIVEN further down (their always_ff
+    // blocks) but READ by the autonomous SYNC-OFF one-shot in the always_ff
+    // below, so the reg declarations are hoisted here to precede that use.
+    reg ws_anchor_meta_q, ws_anchor_q;
+    reg ws_verify_meta_q, ws_verify_q;
+
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             swi_training_mode_r      <= 1'b0;
@@ -4207,7 +4214,7 @@ module axi_chiplet_controller #(
     // (u_deskew reanchored → WavD2DGpio epoch_anchored → WlinkGPIOPHY →
     // Wlink.obs_epoch_anchored_o) — the same net EPOCH_STATUS 0x2140 bit0 /
     // epoch_anchored_o expose. Single bit ⇒ a plain 2-FF sync is sufficient.
-    reg ws_anchor_meta_q, ws_anchor_q;
+    // (ws_anchor_meta_q, ws_anchor_q declared hoisted above the config always_ff)
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             ws_anchor_meta_q <= 1'b0;
@@ -4227,7 +4234,7 @@ module axi_chiplet_controller #(
     // lane whose sticky sync_idx latched one slot off (tol-5 Hamming on a
     // marginal eye can match an adjacent slot) passes the first and can
     // never pass the second.
-    reg ws_verify_meta_q, ws_verify_q;
+    // (ws_verify_meta_q, ws_verify_q declared hoisted above the config always_ff)
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             ws_verify_meta_q <= 1'b0;

@@ -77,7 +77,27 @@ module WavD2DGpio #(
   // SoC Labs 2026-06-21: single shared capture BUFG (cap BUFGs 8->1) to cut die_b's
   // SRCC (Y9) clock jitter/skew that holds its per-lane eye at width 2 (vs die_a MRCC
   // eye=16) -> marginal data capture. Requires a clean IP re-synth (IPCACHE clears).
-  parameter USE_CAP_CLKBUF = 1'b0,
+  //
+  // SoC Labs 2026-07-16 (wip/rate-ladder) — CAPTURE-CLOCK BUFG FIX.
+  // Was hardcoded 1'b0, which pinned the capture axis to g_cap_passthrough in
+  // WavD2DGpioRx (w_pad_clk <= pad_clk_inv_scan_mux_1_io_o_z = a WavClockMux
+  // LUT output) => pad -> IBUF -> LUT -> GENERAL ROUTING -> 372 capture flops.
+  // That is the measured lane-7 capture-clock insertion delay of 15.281 ns vs
+  // ~8.2-8.8 ns on its siblings (routed die_a, 2026-07-14).
+  //
+  // The 1'b0 was justified by "the BD already does a single IBUFG->BUFG on
+  // pad_clk_rx so we don't multiply the pad load" (see the USE_CLKBUF header in
+  // WavD2DGpioRx.v:86-111). That premise is FALSE for pynq-z2-pair-all:
+  // tidelink_rxclk_buf is NEVER instantiated (tidelink_top.sv:67 is a comment
+  // only) and the BD wires the port straight through
+  // (tidelink_design.tcl:618) => there is NO BUFG on the capture clock at all.
+  //
+  // Setting this to USE_CLKBUF selects g_cap_bufg, whose
+  // `BUFG u_cap_bufg (.I(io_pad_clk), .O(w_cnt_clk))` takes the RAW io_pad_clk
+  // -- so it bypasses the scan mux AND buffers the net in one move (io_pol=0,
+  // scan_mode=0 are static on FPGA, so dropping the mux is safe here).
+  // Costs 8 BUFGs (Z7020 has 32). Sim/ASIC default USE_CLKBUF=0 => unchanged.
+  parameter USE_CAP_CLKBUF = USE_CLKBUF,
   parameter USE_LNK_CLKBUF = USE_CLKBUF,
   // SoC Labs §9 T3a (2026-05-19): self-aligning RX comma hunt. Per-lane
   // WavD2DGpioRx hunts for the per-lane training byte in the io_pad bit

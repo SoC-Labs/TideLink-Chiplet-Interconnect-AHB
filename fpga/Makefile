@@ -408,15 +408,44 @@ farm_build:
 # race-safe). *_farmed offloads the slave onto FARM_HOST so the two halves
 # build at the same time on two machines (~halves wall time, unloads the
 # contended local host).
+#
+# The two halves are PAIR_A (die_a / straight pinout) and PAIR_B (die_b / flip).
+# They default to the Pynq-Z2 pair, so bare `make build_pair_concurrent` is
+# unchanged. Override for another SoC — or use the PAIR_SOC/PAIR_PTP shorthand:
+#
+#   make build_pair_concurrent                                   # z2 (default)
+#   make build_pair_concurrent PAIR_SOC=kr260 PAIR_PTP=1         # kr260 +PTP
+#   make build_pair_concurrent PAIR_A=kr260-pair-ptp PAIR_B=kr260-pair-flip-ptp
+#   make build_pair_farmed     PAIR_SOC=kr260 PAIR_PTP=0 FARM_HOST=srv04936
+#
+# NOTE: EXTREFCLK=1 / EPOCH_ANCHOR=1 are NOT forwarded by build_farm.sh, so the
+# kr260 -extref / -anchor variants still need a direct `make build_design`.
+PAIR_SOC ?= z2
+PAIR_PTP ?= 0
+ifeq ($(PAIR_SOC),z2)
+PAIR_A ?= pynq-z2-pair-all
+PAIR_B ?= pynq-z2-pair-flip-all
+else ifeq ($(PAIR_SOC),kr260)
+ifeq ($(PAIR_PTP),1)
+PAIR_A ?= kr260-pair-ptp
+PAIR_B ?= kr260-pair-flip-ptp
+else
+PAIR_A ?= kr260-pair-nptp
+PAIR_B ?= kr260-pair-flip-nptp
+endif
+else
+$(error PAIR_SOC must be z2 or kr260 (got '$(PAIR_SOC)') — or set PAIR_A/PAIR_B directly)
+endif
+
 build_pair_concurrent:
 	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
 	    $(FPGA_DIR)/scripts/build_farm.sh \
-	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@local
+	        $(PAIR_A)@local $(PAIR_B)@local
 
 build_pair_farmed:
 	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
 	    $(FPGA_DIR)/scripts/build_farm.sh \
-	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@$(FARM_HOST)
+	        $(PAIR_A)@local $(PAIR_B)@$(FARM_HOST)
 
 #-----------------------------------------------------------------------------
 # Deployment helpers

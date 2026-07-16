@@ -13,17 +13,29 @@
 #   (b) imp/fpga/gen_v2/Wlink.v carries the V2 defines + E4 reset mask
 #   (c) key autonomy signals survive into imp/fpga/gen_v2/axi_chiplet_controller.sv
 #       (list parameterized below — extend it as loops add signals)
-#   (d) both target tidelink.bit files exist, are NEWER than the newest run's
-#       start, and have DIFFERENT md5s (identical = one half not rebuilt)
+#   (d) every target's tidelink.bit exists, is NEWER than the newest run's
+#       start, and no two targets share an md5 (identical = one half not rebuilt)
 #   (e) WINSCAN_CELLS: prints the ready-to-run Vivado one-liner per target;
 #       with --with-dcp (and vivado on PATH) actually runs it and requires >0
 #   (f) WARN on any tidelink.bin OLDER than its tidelink.bit (stale bit2bin
 #       trap — boards flash the .bin, not the .bit)
 #
 # USAGE:  fpga/scripts/verify_build.sh [--worktree DIR] [--with-dcp]
+#                                      [--targets "T1 T2 ..."]
 #   --worktree DIR  repo root to check (default: this script's repo)
 #   --with-dcp      open each routed DCP in Vivado and count winscan cells
 #                   (slow, ~minutes per target)
+#   --targets "..." space-separated list of targets to verify. Each name is an
+#                   OUTPUT DIRECTORY name under imp/fpga/output/, i.e. it must
+#                   include any ANCHOR_SUFFIX the build applied (Makefile builds
+#                   to output/$(TARGET)$(ANCHOR_SUFFIX), so an EXTREFCLK=1 build
+#                   of kr260-pair-nptp lands in kr260-pair-nptp-extref).
+#                   May also be given as the TARGETS env var. Two or more
+#                   targets are treated as halves of one link and must not share
+#                   an md5; a single target skips that cross-check.
+#                   DEFAULT (unchanged): the Pynq-Z2 pair, so every existing
+#                   invocation behaves exactly as before.
+#                   e.g. --targets "kr260-pair-ptp kr260-pair-flip-ptp"
 #
 # Exit: 0 = all checks PASS (warnings allowed), non-zero otherwise.
 # Read-only: never writes inside the worktree (safe alongside a running build).
@@ -43,18 +55,27 @@ AUTONOMY_SIGNALS=(
   ws_anchor_timeout_q     # F4/FIX-3 FINALIZE anchor-gate timeout
   cal_in_hold             # L4 training-exit rendezvous (calibrator S_HOLD)
 )
-TARGETS=( pynq-z2-pair-all pynq-z2-pair-flip-all )
+# Targets to verify = output-dir names under imp/fpga/output/. Overridable via
+# the TARGETS env var or --targets; the default is the Z2 pair, so pre-existing
+# callers are byte-for-byte unchanged.
+TARGETS_DEFAULT='pynq-z2-pair-all pynq-z2-pair-flip-all'
 WINSCAN_FILTER='NAME =~ *winscan* || NAME =~ */ws_*'
 
 # ----- args --------------------------------------------------------------------
 WT=""
 WITH_DCP=0
+TARGETS_STR="${TARGETS:-$TARGETS_DEFAULT}"
+usage(){ sed -n '2,/^# =\+$/p' "$0" | sed -n '2,$p'; }
 while [ $# -gt 0 ]; do case "$1" in
   --worktree) WT=$2; shift;;
   --with-dcp) WITH_DCP=1;;
-  -h|--help)  sed -n '2,32p' "$0"; exit 0;;
-  *) echo "unknown arg: $1 (usage: $0 [--worktree DIR] [--with-dcp])"; exit 2;;
+  --targets)  TARGETS_STR=$2; shift;;
+  -h|--help)  usage; exit 0;;
+  *) echo "unknown arg: $1 (usage: $0 [--worktree DIR] [--with-dcp] [--targets \"T1 T2 ...\"])"; exit 2;;
 esac; shift; done
+# shellcheck disable=SC2206
+TARGETS=( $TARGETS_STR )
+[ "${#TARGETS[@]}" -ge 1 ] || { echo "FAIL  setup    --targets/TARGETS is empty"; exit 2; }
 if [ -z "$WT" ]; then WT="$(cd "$(dirname "$0")/../.." && pwd)"; fi
 IMP="$WT/imp/fpga"
 GEN="$IMP/gen_v2"
@@ -68,6 +89,7 @@ mtime(){ stat -c %Y "$1" 2>/dev/null || echo 0; }
 tstr(){ date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "@$1"; }
 
 echo "======== verify_build: provenance gate  worktree=$WT  ($(date)) ========"
+echo "targets: ${TARGETS[*]}"
 
 # ----- (a) V2 banner in the newest package_ip log --------------------------------
 PKG_LOG=$(find "$IMP/run" -maxdepth 2 -name 'package_ip*.log' -printf '%T@ %p\n' 2>/dev/null \
@@ -136,12 +158,25 @@ for t in "${TARGETS[@]}"; do
     D_EV="${D_EV}[$t: bit $(tstr "$bm") md5=${BIT_MD5[$t]:0:8}] "
   fi
 done
-if [ "${#BIT_MD5[@]}" -eq "${#TARGETS[@]}" ] && \
-   [ "${BIT_MD5[${TARGETS[0]}]}" = "${BIT_MD5[${TARGETS[1]}]}" ]; then
-  D_OK=0; D_EV="${D_EV}[md5s IDENTICAL — flip/non-flip halves are the same image] "
+# Distinctness: compare EVERY pair, not just [0] vs [1]. The old hard-indexed
+# compare silently checked only the first two entries, so a >2-target list (e.g.
+# the kr260 ptp/nptp x straight/flip set) could ship duplicate halves unnoticed.
+# With a single target there is nothing to cross-check — skip, don't fail.
+if [ "${#TARGETS[@]}" -ge 2 ]; then
+  for i in "${!TARGETS[@]}"; do
+    for j in "${!TARGETS[@]}"; do
+      [ "$i" -lt "$j" ] || continue
+      ti=${TARGETS[$i]}; tj=${TARGETS[$j]}
+      [ -n "${BIT_MD5[$ti]:-}" ] && [ -n "${BIT_MD5[$tj]:-}" ] || continue
+      if [ "${BIT_MD5[$ti]}" = "${BIT_MD5[$tj]}" ]; then
+        D_OK=0
+        D_EV="${D_EV}[md5s IDENTICAL: $ti == $tj (${BIT_MD5[$ti]:0:8}) — those halves are the same image] "
+      fi
+    done
+  done
 fi
-if [ $D_OK -eq 1 ]; then pass d "pair .bit files fresh + distinct" "$D_EV"
-else fail d "pair .bit files fresh + distinct" "$D_EV"; fi
+if [ $D_OK -eq 1 ]; then pass d "target .bit files fresh + distinct" "$D_EV"
+else fail d "target .bit files fresh + distinct" "$D_EV"; fi
 
 # ----- (e) WINSCAN_CELLS (winscan FSM survived synthesis) -------------------------
 for t in "${TARGETS[@]}"; do

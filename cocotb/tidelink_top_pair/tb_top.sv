@@ -312,6 +312,104 @@ module tb_top #(
     wire i2c_sda = (m_i2c_sda_t ? 1'b1 : m_i2c_sda_o) & (s_i2c_sda_t ? 1'b1 : s_i2c_sda_o);
 
     // =========================================================================
+    // PTP — behavioural PHC models (see tb_phc_model.sv)
+    // -------------------------------------------------------------------------
+    // The previous tb tied every PHC port off (phc_*=0, phc_locked_i=1'b1),
+    // which made HW_SYNC_STATUS[18] a spurious pass and meant NO real PTP sync
+    // could be demonstrated over the link. Each die now owns a free-running
+    // PHC clock model that the servo can capture and discipline; phc_locked_i
+    // is driven realistically by the model (asserted only after the PHC has
+    // been running, NOT hard-tied). The slave PHC is started with a large
+    // initial offset vs the master so the servo has a real error to null.
+    //
+    // cocotb sets {m,s}_phc_init_{seconds,nanoseconds} BEFORE releasing
+    // hresetn, and can pull {m,s}_phc_lock_enable low to test the lock gate.
+    // -------------------------------------------------------------------------
+    // Both PHCs start in the SAME second (the interesting PTP discipline here
+    // is the sub-second offset). The slave carries a +50 us nanosecond skew
+    // that the servo must null. Keeping the seconds equal mirrors a realistic
+    // post-coarse-sync PTP scenario and avoids a whole-second ambiguity in the
+    // servo's phase-step path (which sets seconds from the local t2 capture).
+    logic [47:0] m_phc_init_seconds     = 48'd0;
+    logic [29:0] m_phc_init_nanoseconds = 30'd0;
+    logic        m_phc_lock_enable      = 1'b1;
+    logic [47:0] s_phc_init_seconds     = 48'd0;
+    logic [29:0] s_phc_init_nanoseconds = 30'd20_000;  // +20 us slave skew
+    logic        s_phc_lock_enable      = 1'b1;
+
+    // tidelink_top <-> PHC model nets (master)
+    wire        m_phc_hw_capture;
+    wire [29:0] m_phc_nanoseconds;
+    wire [47:0] m_phc_seconds;
+    wire        m_phc_pps;
+    wire [47:0] m_phc_hw_cap_seconds;
+    wire [29:0] m_phc_hw_cap_nanoseconds;
+    wire [31:0] m_phc_hw_cap_sub_nanoseconds;
+    wire        m_phc_hw_set_time;
+    wire [47:0] m_phc_hw_set_seconds;
+    wire [29:0] m_phc_hw_set_nanoseconds;
+    wire        m_phc_hw_adj_valid;
+    wire [31:0] m_phc_hw_adj_ns_incr_frac;
+    wire        m_phc_locked;
+
+    // tidelink_top <-> PHC model nets (slave)
+    wire        s_phc_hw_capture;
+    wire [29:0] s_phc_nanoseconds;
+    wire [47:0] s_phc_seconds;
+    wire        s_phc_pps;
+    wire [47:0] s_phc_hw_cap_seconds;
+    wire [29:0] s_phc_hw_cap_nanoseconds;
+    wire [31:0] s_phc_hw_cap_sub_nanoseconds;
+    wire        s_phc_hw_set_time;
+    wire [47:0] s_phc_hw_set_seconds;
+    wire [29:0] s_phc_hw_set_nanoseconds;
+    wire        s_phc_hw_adj_valid;
+    wire [31:0] s_phc_hw_adj_ns_incr_frac;
+    wire        s_phc_locked;
+
+    tb_phc_model #(.SYS_DATA_W(SYS_DATA_W), .NOMINAL_NS_INCR(1)) u_m_phc (
+        .phc_clk                    (hclk),
+        .phc_resetn                 (m_hresetn_w),
+        .init_seconds               (m_phc_init_seconds),
+        .init_nanoseconds           (m_phc_init_nanoseconds),
+        .lock_enable_i              (m_phc_lock_enable),
+        .phc_hw_capture             (m_phc_hw_capture),
+        .phc_nanoseconds            (m_phc_nanoseconds),
+        .phc_seconds                (m_phc_seconds),
+        .phc_pps                    (m_phc_pps),
+        .phc_hw_cap_seconds         (m_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (m_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (m_phc_hw_cap_sub_nanoseconds),
+        .phc_hw_set_time            (m_phc_hw_set_time),
+        .phc_hw_set_seconds         (m_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (m_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (m_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (m_phc_hw_adj_ns_incr_frac),
+        .phc_locked_o               (m_phc_locked)
+    );
+
+    tb_phc_model #(.SYS_DATA_W(SYS_DATA_W), .NOMINAL_NS_INCR(1)) u_s_phc (
+        .phc_clk                    (hclk),
+        .phc_resetn                 (s_hresetn_w),
+        .init_seconds               (s_phc_init_seconds),
+        .init_nanoseconds           (s_phc_init_nanoseconds),
+        .lock_enable_i              (s_phc_lock_enable),
+        .phc_hw_capture             (s_phc_hw_capture),
+        .phc_nanoseconds            (s_phc_nanoseconds),
+        .phc_seconds                (s_phc_seconds),
+        .phc_pps                    (s_phc_pps),
+        .phc_hw_cap_seconds         (s_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (s_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (s_phc_hw_cap_sub_nanoseconds),
+        .phc_hw_set_time            (s_phc_hw_set_time),
+        .phc_hw_set_seconds         (s_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (s_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (s_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (s_phc_hw_adj_ns_incr_frac),
+        .phc_locked_o               (s_phc_locked)
+    );
+
+    // =========================================================================
     // DUT: master `tidelink_top`
     // =========================================================================
     tidelink_top #(
@@ -418,18 +516,18 @@ module tb_top #(
         // §9 IDELAYE2 RX delay ref clock (USE_IDELAY=0 default -> passthrough)
         .idelay_ref_clk    (1'b0),
 
-        // PHC — tied off (PTP not exercised)
+        // PHC — driven by behavioural PHC model u_m_phc (PTP-over-link sync)
         .phc_clk                    (hclk),
-        .phc_resetn                 (hresetn),
-        .phc_nanoseconds            (30'h0),
-        .phc_seconds                (48'h0),
-        .phc_pps                    (1'b0),
-        .phc_hw_cap_seconds         (48'h0),
-        .phc_hw_cap_nanoseconds     (30'h0),
-        .phc_hw_cap_sub_nanoseconds (32'h0),
-        .phc_locked_i               (1'b1),
+        .phc_resetn                 (m_hresetn_w),
+        .phc_nanoseconds            (m_phc_nanoseconds),
+        .phc_seconds                (m_phc_seconds),
+        .phc_pps                    (m_phc_pps),
+        .phc_hw_cap_seconds         (m_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (m_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (m_phc_hw_cap_sub_nanoseconds),
+        .phc_locked_i               (m_phc_locked),
 
-        // PTP AHB write port — tied off
+        // PTP AHB write port — tied off (cocotb uses APB register path)
         .ahb_ptp_hsel               (1'b0),
         .ahb_ptp_haddr              (4'h0),
         .ahb_ptp_htrans             (2'b00),
@@ -440,12 +538,12 @@ module tb_top #(
         .ahb_ptp_hrdata             (/* unused */),
         .ahb_ptp_hresp              (/* unused */),
         .ahb_ptp_hreadyout          (/* unused */),
-        .phc_hw_capture             (/* unused */),
-        .phc_hw_set_time            (/* unused */),
-        .phc_hw_set_seconds         (/* unused */),
-        .phc_hw_set_nanoseconds     (/* unused */),
-        .phc_hw_adj_valid           (/* unused */),
-        .phc_hw_adj_ns_incr_frac    (/* unused */),
+        .phc_hw_capture             (m_phc_hw_capture),
+        .phc_hw_set_time            (m_phc_hw_set_time),
+        .phc_hw_set_seconds         (m_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (m_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (m_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (m_phc_hw_adj_ns_incr_frac),
         .servo_locked               (/* unused */),
 
         // TideChart axis — tied off with defined zeros (avoid X
@@ -633,15 +731,16 @@ module tb_top #(
 
         .idelay_ref_clk    (1'b0),
 
+        // PHC — driven by behavioural PHC model u_s_phc (PTP-over-link sync)
         .phc_clk                    (hclk),
-        .phc_resetn                 (hresetn),
-        .phc_nanoseconds            (30'h0),
-        .phc_seconds                (48'h0),
-        .phc_pps                    (1'b0),
-        .phc_hw_cap_seconds         (48'h0),
-        .phc_hw_cap_nanoseconds     (30'h0),
-        .phc_hw_cap_sub_nanoseconds (32'h0),
-        .phc_locked_i               (1'b1),
+        .phc_resetn                 (s_hresetn_w),
+        .phc_nanoseconds            (s_phc_nanoseconds),
+        .phc_seconds                (s_phc_seconds),
+        .phc_pps                    (s_phc_pps),
+        .phc_hw_cap_seconds         (s_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (s_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (s_phc_hw_cap_sub_nanoseconds),
+        .phc_locked_i               (s_phc_locked),
 
         .ahb_ptp_hsel               (1'b0),
         .ahb_ptp_haddr              (4'h0),
@@ -653,12 +752,12 @@ module tb_top #(
         .ahb_ptp_hrdata             (/* unused */),
         .ahb_ptp_hresp              (/* unused */),
         .ahb_ptp_hreadyout          (/* unused */),
-        .phc_hw_capture             (/* unused */),
-        .phc_hw_set_time            (/* unused */),
-        .phc_hw_set_seconds         (/* unused */),
-        .phc_hw_set_nanoseconds     (/* unused */),
-        .phc_hw_adj_valid           (/* unused */),
-        .phc_hw_adj_ns_incr_frac    (/* unused */),
+        .phc_hw_capture             (s_phc_hw_capture),
+        .phc_hw_set_time            (s_phc_hw_set_time),
+        .phc_hw_set_seconds         (s_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (s_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (s_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (s_phc_hw_adj_ns_incr_frac),
         .servo_locked               (/* unused */),
 
         .tc_axis_tx_tvalid (1'b0),

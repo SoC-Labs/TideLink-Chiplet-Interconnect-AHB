@@ -73,6 +73,38 @@ kind        = "other"
 path        = "../imp/fpga/output/pynq-z2-pair-flip-all/tidelink.hwh"
 description = "Slave-side (die_b) pair bitstream handoff — pair-flip-all RPi pinout (mirrored)."
 
+# Kria KR260 (Zynq UltraScale+) role-aware pair — die_a = kr260-pair-ptp,
+# die_b = kr260-pair-flip-ptp (mirrored RPi pinout for the cross-cable), the
+# same master/slave split as the z2 pair-all / pair-flip-all pattern above.
+#
+# NOTE — NO .bin ARTEFACT, DELIBERATELY. The z2 entries each carry a
+# bitstream_bin_* because Zynq-7000 deploys via fpga_manager, which flashes a
+# bit2bin-converted .bin out of /lib/firmware. KR260 is ZynqMP and deploys via
+# DEPLOY_STYLE=pynq_overlay: PYNQ's Overlay() loads the .bit directly using the
+# sibling .hwh, with no bit2bin step. bit2bin.py's byte-swap is the zynq-fpga
+# driver's format, NOT the zynqmp one — feeding a KR260 a bit2bin .bin silently
+# produces a bad PL load. The Makefile encodes this as
+# DEPLOY_ARTEFACTS := $(BITSTREAM) $(HWH) under `ifneq ($(filter kr260-%,...))`;
+# these entries mirror that exactly. Do not "complete the set" by adding a .bin.
+
+[artefacts.bitstream_kr260_pair_ptp]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-pair-ptp/tidelink.bit"
+
+[artefacts.hwh_kr260_pair_ptp]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-pair-ptp/tidelink.hwh"
+description = "Master-side (die_a) KR260 pair bitstream handoff — PTP in, straight RPi pinout."
+
+[artefacts.bitstream_kr260_pair_flip_ptp]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.bit"
+
+[artefacts.hwh_kr260_pair_flip_ptp]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.hwh"
+description = "Slave-side (die_b) KR260 pair bitstream handoff — PTP in, mirrored RPi pinout."
+
 [artefacts.bitstream_mps3]
 kind = "bitstream"
 path = "../imp/fpga/output/mps3/tidelink.bit"
@@ -116,6 +148,20 @@ id        = "build_z2_pair_flip_all"
 title     = "Build Pynq-Z2 pair slave bitstream (pair-flip-all)"
 command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair-flip-all", "build_design"]
 produces  = ["bitstream_built_z2_pair_flip_all"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_kr260_pair_ptp"
+title     = "Build KR260 pair master bitstream (die_a, PTP in)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-pair-ptp", "build_design"]
+produces  = ["bitstream_built_kr260_pair_ptp"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_kr260_pair_flip_ptp"
+title     = "Build KR260 pair slave bitstream (die_b, PTP in, mirrored pinout)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-pair-flip-ptp", "build_design"]
+produces  = ["bitstream_built_kr260_pair_flip_ptp"]
 timeout_s = 3600
 
 [[actions]]
@@ -194,6 +240,38 @@ PYNQ fpga_manager over SSH/SCP. die_a → pynq-z2-pair-all, die_b →
 pynq-z2-pair-flip-all (mirrored RPi pinout for the cross-cable).
 """
 command     = ["make", "-C", "fpga", "deploy_pair_role",
+               "ROLE={pair.local.role}",
+               "PYNQ_HOST={host.ssh}",
+               "PYNQ_PROXY={host.proxy}"]
+secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+# Role-aware KR260 pair deploy — the kr260 twin of deploy_pair above.
+# deploy_pair_role already maps (SOC=kr260, PTP=1, ROLE) -> the right TARGET:
+#   die_a -> kr260-pair-ptp, die_b -> kr260-pair-flip-ptp
+# and the Makefile's `kr260-%` filter routes it to DEPLOY_STYLE=pynq_overlay,
+# so only .bit + .hwh are copied (no bit2bin, no /lib/firmware).
+#
+# `requires` is intentionally omitted for the same reason as deploy_pair: the
+# Makefile's `deploy: $(DEPLOY_ARTEFACTS)` rule already errors when the
+# artefacts are absent, and a flag handshake would block dispatch on bitstreams
+# that are sitting on disk from an external Vivado run. Gate on the file
+# system, not on flag bookkeeping.
+#
+# PTP=1 matches the two bitstreams that exist and are verified good today
+# (2026-07-16). The nptp pair builds from the same tree — add a sibling action
+# with PTP=0 if/when those bitstreams are needed on a board.
+[[actions]]
+id          = "deploy_kr260_pair"
+title       = "Deploy KR260 bitstream matching this side's pair role"
+description = """
+PYNQ Overlay over SSH/SCP (ZynqMP: .bit + .hwh, no bit2bin). die_a →
+kr260-pair-ptp, die_b → kr260-pair-flip-ptp (mirrored RPi pinout for the
+cross-cable).
+"""
+command     = ["make", "-C", "fpga", "deploy_pair_role",
+               "SOC=kr260", "PTP=1",
                "ROLE={pair.local.role}",
                "PYNQ_HOST={host.ssh}",
                "PYNQ_PROXY={host.proxy}"]

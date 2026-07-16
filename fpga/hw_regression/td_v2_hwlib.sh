@@ -87,13 +87,25 @@ deploy_pair(){
   "$DEPLOY_SH" $A_IP $A_BOARD die_a "$DEPLOY_DIR" --no-verify >/dev/null 2>&1
   "$DEPLOY_SH" $B_IP $B_BOARD die_b "$DEPLOY_DIR" --no-verify >/dev/null 2>&1
 }
+# Lane-mask under test (2026-07-16, wip/rate-ladder). Defaults reproduce the
+# historical hard-coded recipe EXACTLY (0x0000e4e4 / SYNC mask 0xE4), so every
+# existing caller is unchanged. Override to run a different mask, e.g.
+#   TD_LANEMASK32=0x00006565 TD_SYNCTOL=0x00000565   -> lanes {0,2,5,6}
+# The two MUST agree: TD_SYNCTOL[7:0] is the SYNC-detect mask and must match the
+# active lanes in TD_LANEMASK32, or the deskew waits on a lane that is not
+# transmitting (V2 masks SYNC BEFORE the pads -- see u_tx_mask in WavD2DGpio_v2).
+# NOTE: use EVEN lane counts only. A 5-lane mask (e.g. 0xE5) trains (fcsm=4,
+# reanchored=1) but delivers NO data -- a real odd-lane-count defect in the RX
+# gather / FC length math (measured 2026-07-16).
+TD_LANEMASK32=${TD_LANEMASK32:-0x0000e4e4}
+TD_SYNCTOL=${TD_SYNCTOL:-0x000005e4}
 rcp(){   # the proven V2 bring-up recipe
   a wr 0x4403210C 0x0>/dev/null;       b wr 0x4403210C 0x0>/dev/null
-  a wr $R_LANEMASK 0x0000e4e4>/dev/null; b wr $R_LANEMASK 0x0000e4e4>/dev/null
+  a wr $R_LANEMASK $TD_LANEMASK32>/dev/null; b wr $R_LANEMASK $TD_LANEMASK32>/dev/null
   a wr 0x44032080 0x2>/dev/null;       b wr 0x44032080 0x3>/dev/null
   a wr 0x44032160 0x55555555>/dev/null;b wr 0x44032160 0x55555555>/dev/null
   a wr 0x44032104 0x0>/dev/null;       b wr 0x44032104 0x0>/dev/null
-  a wr $R_SYNCTOL 0x000005e4>/dev/null;b wr $R_SYNCTOL 0x000005e4>/dev/null
+  a wr $R_SYNCTOL $TD_SYNCTOL>/dev/null;b wr $R_SYNCTOL $TD_SYNCTOL>/dev/null
   a wr $R_R8 0x1D>/dev/null;           b wr $R_R8 0x1D>/dev/null
   a wr $R_R8 0x1F>/dev/null;           b wr $R_R8 0x1D>/dev/null; sleep 0.03
   a wr $R_R8 0x1D>/dev/null;           b wr $R_R8 0x1D>/dev/null

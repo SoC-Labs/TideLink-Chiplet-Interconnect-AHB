@@ -238,6 +238,12 @@ beat with an AHB ERROR (`tidelink_fc_adapter.sv:250-300`). If that beat is a
 packet's last word, this is exactly the state entered. Link errors and a
 data-mode toggle mid-packet do the same.
 
+**A/B verified 2026-07-16** (the fix is not decorative, and the test is not
+vacuous): reverting `tidelink_fifo_ctrl.sv` to pristine `cd2db38` and
+recompiling makes `test_v2_truncated_pkt_credit` **FAIL** with
+`credit=4106 > MAX=4096`; with the fix restored it reads `credit=4096` and
+**PASSES**. Same test, same TB, only the RTL differs.
+
 **Fix:** saturate at `MAX_CREDITS` — the exact mirror of the write side.
 **Inert on the healthy path:** a committed packet decrements by the same
 `packet_delta` the matching read increments by, so credit never legitimately
@@ -357,6 +363,25 @@ throughout). A clean A/B on the same script and the same link: 0/20 → 24/24.
 `zeropoke_proof.sh` shares `ZP_TX_WORDS` and inherits the fix. It never read
 offset 3 so it never drifted — but its `(h)` data gate had been validating a
 packet that **never completed**, passing on raw SRAM readback alone.
+
+---
+
+## 5b. Gate status
+
+`make sim_gate` — **14/14 PASS** on this branch (2026-07-16), including the two
+suites this work added (`v2_pair_sustained`, `v2_truncated_pkt_credit`):
+
+```
+apb_fc_cfg_preempt PASS · fch_apb_watchdog PASS · fifo_rx_phantom_pop PASS
+t30 PASS · t31 PASS · t32 PASS · t33 PASS · v1_elab PASS
+v2_autonomous_sync_detect PASS · v2_pair_data PASS · v2_pair_sustained PASS
+v2_truncated_pkt_credit PASS · v2_winscan_fsm PASS · zeropoke_por PASS
+```
+
+The manual/recipe path is untouched: the only RTL change is the §4 credit
+clamp, which is inert on a correct exchange (proved by the A/B above — the
+clamp cannot fire unless credit is already being minted for a packet the FIFO
+does not hold).
 
 ---
 

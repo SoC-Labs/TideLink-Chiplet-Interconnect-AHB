@@ -53,10 +53,12 @@ harness's pre-send `rxn` drain popping a phantom packet and walking `read_ptr`
 > The `silicon` profile lives only in the un-gated `v2_gate` target, so nothing
 > keeps it green and it has evidently been red for some time.
 >
-> The `fix/stream-start-loss` (`330e2a7`) lead noted below may still be a real
-> defect on its own merits, but **this suite provides no evidence for it**, and
-> the silicon measurement above provides evidence against it being the recorded
-> burst symptom. Do not cite this document as support for it.
+> A previous revision pointed at `fix/stream-start-loss` (`330e2a7`, a B→A
+> FCSM NACK/revert storm, not in this base) as the culprit behind the s2m
+> failure. That attribution rested entirely on the retracted result above. It
+> may still be a real defect on its own merits, but **this suite provides no
+> evidence for it**, and the silicon measurement above argues against it being
+> the recorded burst symptom. Do not cite this document as support for it.
 
 **Lesson, re-earned for the third time in this file's own history: a FAIL
 proves nothing about your hypothesis until a control shows the setup is green
@@ -88,10 +90,11 @@ Both halves of the phantom-pop fix are in this base:
 * RTL `f9b94b7` — `&& !rx_fifo_empty` on the length-latch arm.
 * Harness `f3c5359` — `gate_data` no longer pre-drains.
 
-**Status: the phantom-pop is fixed; the FCSM stream-start storm is NOT (in this
-base) and reproduces at `EPOCH_PROFILE=silicon`.** It has never been
-re-tested on hardware since the fix. `fpga/hw_regression/sustained_data_soak.sh`
-is the instrument to confirm it.
+**Status: the phantom-pop is fixed, and 2026-07-16 CONFIRMED that fix on
+hardware** — `fpga/hw_regression/sustained_data_soak.sh --negctl`, 24/24
+byte-exact, 4..1024 payload words, both directions (§1). The claim that an
+"FCSM stream-start storm reproduces at `EPOCH_PROFILE=silicon`" is RETRACTED
+(§1): that profile is red at link-up in this base, so it demonstrates nothing.
 
 ---
 

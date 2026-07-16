@@ -26,11 +26,12 @@
 // tidelink_phy_sync_insert IS now included (2026-06-15): the DEFAULT-OFF LL
 // re-hunt beacon inserter sits in the WavD2DGpio TX path, gated by APB
 // SWI_SYNC_INSERT_EN (Region 8 slot 0 bit[2], 0x4403_2100) which resets 0 ->
-// pure passthrough / bit-identical until SW opts in. NOT included (deliberate):
-// tidelink_gpio_phy_rx/tx wrappers, tidelink_phy_sync_detect (RX SYNC strip is
-// the intact WlinkRxLinkLayer path) and the BIST files — the silicon-proven
-// composition (PHY-BIST core) puts the checker + calibrator at controller
-// level on the 128-bit link data.
+// pure passthrough / bit-identical until SW opts in. tidelink_phy_sync_detect
+// IS ALSO included (2026-07-16): the R-A local override WavD2DGpio_v2.v
+// instantiates it directly, so it is mandatory — see the note at its line.
+// NOT included (deliberate): tidelink_gpio_phy_rx/tx wrappers and the BIST
+// files — the silicon-proven composition (PHY-BIST core) puts the checker +
+// calibrator at controller level on the 128-bit link data.
 // =============================================================================
 +define+TIDELINK_PHY_V2
 +incdir+${TIDELINK_HOME}/src/rtl
@@ -117,6 +118,25 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavAnd.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockGate.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockInv.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
+// Cross-lane word deskew. MUST be compiled BEFORE WavD2DGpio_v2.v below: this
+// file `includes tidelink_sync_word.svh at $unit scope, which is what declares
+// TIDELINK_SYNC_WORD / TIDELINK_SYNC_PERIOD for the parameter defaults of
+// tidelink_phy_sync_insert / _detect. WavD2DGpio*.v also includes the header,
+// but from INSIDE the module — so if it compiles first it sets the header's
+// include guard while binding the constants to module scope, and the later
+// $unit includes become no-ops (Error-[IND] identifier not declared). Same
+// order as tidelink_fpga_v2.flist.
+// F3c LOCAL OVERRIDE (2026-07-02): the deps copy is replaced by
+// src/rtl/local_overrides/tidelink_lane_deskew_v2.sv — identical except the
+// sync_hit idle-zero qualifier (lane-0 slice 0x1F00 popcount==TOL(5) made
+// all-zero IDLE words continuously "match", starving the periodic confirm →
+// sync_seen never commits on a quiet link). Submodule copy stays pristine, and
+// the fix exists on no tidelink-phy branch, so this file is its only carrier.
+// Keep in lockstep with tidelink_fpga_v2.flist — the ASIC build must not ship
+// a deskew the FPGA link validation never ran.
+// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_lane_deskew_v2.sv
+
 // V2 PHY SWAP: serdes lane fork from the shared PHY component (FIX-N..R,
 // silicon-validated 2026-06-10) replaces src/rtl/local_overrides/{WavD2DGpio,
 // WavD2DGpioRx,WavD2DGpioTx}.v. Same module names — never co-compile with V1.
@@ -135,6 +155,13 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_tx_mask.sv
 // inserter instantiated inside WavD2DGpio TX path. Bit-identical with APB
 // enable=0; includes tidelink_sync_word.svh via +incdir .../deps/tidelink-phy/rtl.
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_insert.sv
+// SoC Labs RX mask-aware SYNC-beacon DETECT: instantiated inside WavD2DGpio_v2
+// on the post-deskew word (u_rx_sync_detect, WavD2DGpio_v2.v:863), so it is
+// NOT optional here. The header's "NOT included (deliberate)" note above
+// predates the R-A local override that added the instance, and leaving it out
+// is what produced Error-[CFCILFBI] "cannot find cell tidelink_phy_sync_detect".
+// Pure read-side observability — datapath bit-identical (sync_en_i tied 1).
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_sync_detect.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_rx_demask.sv
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_107.v
@@ -264,9 +291,9 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_popcount16.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker_single.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_apb_regs.sv
-// Cross-lane word deskew — V2 PHY SWAP: shared-component copy (instantiated
-// by the new WavD2DGpio with its own depth/offset handling).
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
+// Cross-lane word deskew is compiled EARLIER in this file (before
+// WavD2DGpio_v2.v) — it must declare the sync-word constants at $unit scope
+// first. See the comment there.
 // V2 PHY SWAP: new lane-mask-aware calibrator (S_PROBE/eye-centre + M8/M9/M11
 // lineage + FIX-E/H/J hooks) replaces src/rtl/tidelink_phy_align_calibrator.sv.
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv

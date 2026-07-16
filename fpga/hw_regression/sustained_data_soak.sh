@@ -16,33 +16,33 @@
 #   the protocol-legal sweep -> byte-compare EVERY word (incl. the first two)
 #   -> report words/sec + payload bytes/sec.
 #
-# THE RECORDED BUG THIS TARGETS
-#   "long-burst drops first ~2 words (both directions)" (2026-07-11, never
-#   re-tested since).
+# THE RECORDED BUG THIS TARGETS — SETTLED 2026-07-16: IT DOES NOT REPRODUCE
+#   "long-burst drops first ~2 words (both directions)" (2026-07-11).
 #
-#   SIM STATUS (2026-07-15, see docs/SUSTAINED_DATA_2026_07_15.md):
-#     * EPOCH_PROFILE=zero  (ideal link): does NOT reproduce. Byte-exact to 126
-#       payload words both directions. The datapath/FIFO/credit are sound.
-#     * EPOCH_PROFILE=silicon (v37 fingerprint, 3-7 word cross-lane skew): DOES
-#       reproduce. s2m len=8 isolated -> first_bad_idx=0 with got[0]=payload[2]
-#       — the recorded silicon signature verbatim. m2s passes in isolation but
-#       fails after ACCUMULATED traffic.
-#   So the bug is skew-dependent, which is exactly why only real silicon can
-#   settle it. Expect s2m (B->A, the marginal direction) to be the one that
-#   fails here, and expect m2s to need SUSTAINED traffic before it does.
+#   SILICON RESULT (2026-07-16, cd2db38 bitstream, zero-poke autonomous):
+#     24/24 byte-exact. Sizes 4/8/16/32/64/128 at 8 back-to-back packets each,
+#     plus 256/512/1024, BOTH directions, every word checked incl. the leading
+#     two. Zero dropped words. Run with --negctl (below) validating the oracle
+#     on the same live link first.
+#   => This CONFIRMS the 07-14 phantom-pop attribution: the 07-11 report was the
+#      harness's pre-send `rxn` drain popping a phantom packet and walking
+#      read_ptr 2 words. RTL f9b94b7 + harness f3c5359 are both in this base.
 #
-#   Two live mechanisms alias onto this one symptom — do not attribute without
-#   measuring:
-#     1. FCSM stream-start NACK/revert storm (fix/stream-start-loss 330e2a7,
-#        NOT in this base) — a LINK defect; wedges exp, loses leading words.
-#     2. Phantom-pop (fixed f9b94b7) — a READER defect; read_ptr walks 2 words.
-#   Discriminate with the RXDETAIL flags below: CREDIT_ABOVE_MAX/underrun point
-#   at the reader; a wedged link with fcsm/fe_full stuck points at the storm.
+#   SIM STATUS (see docs/SUSTAINED_DATA_2026_07_15.md):
+#     * EPOCH_PROFILE=zero (ideal link): does NOT reproduce; byte-exact to 126
+#       payload words both directions. Agrees with silicon.
+#     * EPOCH_PROFILE=silicon: RED, but USELESS as evidence — under that same
+#       compile the baseline single-4-word-packet suite (test_v2_pair_data)
+#       ALSO fails 2/3, including test_01_bilateral_linkup, on PRISTINE cd2db38
+#       RTL. A profile that cannot bring the link up cannot demonstrate a
+#       burst-length effect. An earlier header here claimed it reproduced there;
+#       that claim is RETRACTED. Every sim_gate target runs EPOCH_PROFILE=zero,
+#       so nothing keeps `silicon` green -- it is an ungated known-red config.
 #
-#   Note "~2 words" is also EXACTLY the phantom-pop signature (read_ptr walks 2
-#   words on an empty-FIFO read; project_rxfifo_empty_read_phantom_pop). If this
-#   script reproduces a 2-word LEADING shift, suspect the reader, not the link,
-#   and check `underrun`/credit-above-max via `status`/`occ` before blaming the
+#   If a future run DOES show a 2-word LEADING shift: "~2 words" is exactly the
+#   phantom-pop signature (read_ptr walks 2 words on an empty-FIFO read;
+#   project_rxfifo_empty_read_phantom_pop). Suspect the READER first — check
+#   `underrun` / credit-above-max in the RXDETAIL lines before blaming the
 #   channel.
 #
 # USAGE
@@ -82,15 +82,22 @@
 #     FIFO so the sender cannot wedge on exhausted credit with no drainer.
 #
 # WHAT THE THROUGHPUT NUMBERS MEAN (read before quoting them)
-#   tx_wps   words/sec the PS can push into the TX aperture, timed ON die_a.
-#            With total words << FIFO depth this is the HOST store rate, NOT
-#            the link rate — the FIFO absorbs the burst.
-#   rx_wps   words/sec the receiving PS drains, timed ON die_b.
+#   *** DO NOT QUOTE THIS SCRIPT'S w/s AS THE CHANNEL'S THROUGHPUT. ***
+#   The Python sender here reports ~24-27k words/s. That is CPython, not
+#   TideLink: the identical ctypes store loop into ANONYMOUS memory (no AXI, no
+#   link) measures 96k words/s on this PS, so this instrument's own ceiling is
+#   ~24x BELOW the 2.343 MHz link and can never saturate the channel.
+#   Use fpga/hw_regression/td_tput.c (compiled C) for throughput. It measures
+#   ~48.8k words/s ~= 195 kB/s sustained = ~2.1% of the 2.343 Mword/s ceiling
+#   (~48 link UIs per 32-bit word), with --busref as the control proving the
+#   plateau is DUT-imposed rather than PS<->PL bridge cost.
+#
+#   This script's job is BYTE-EXACTNESS, which it does well. Its numbers:
+#   tx_wps   words/sec CPython can push into the TX aperture, timed ON die_a.
+#            Host-limited; see above.
+#   rx_wps   words/sec the receiving PS drains, timed ON die_b. Host-limited.
 #   e2e_wps  delivered words/sec over the whole send+settle+drain wall time.
 #            A LOWER BOUND (includes SSH + settle).
-#   The link word clock is 2.343 MHz (426.7 ns UI). If tx_wps lands far below
-#   that, the PS store rate is the bottleneck, not the channel — say so rather
-#   than reporting a "link throughput" the link never limited.
 #
 # Runs ON the lab host. Sources td_v2_hwlib.sh.
 # =============================================================================

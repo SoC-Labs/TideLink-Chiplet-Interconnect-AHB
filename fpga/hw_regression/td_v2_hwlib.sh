@@ -25,11 +25,32 @@
 # =============================================================================
 set -u
 
+# ----- SoC address map -------------------------------------------------------
+# Z2 is the default and is an exact identity (see td_socmap.sh). Every literal
+# in this file stays Z2-CANONICAL: the a()/b() helpers hand them to tl39.py,
+# which owns the single remap in the chain. Do NOT pre-relocate them here or
+# they will be remapped twice. The ONE exception is winscan()'s embedded raw
+# /dev/mem python, which bypasses tl39 and so relocates its own base below.
+_TD_HERE_SOCMAP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=fpga/hw_regression/td_socmap.sh
+source "$_TD_HERE_SOCMAP/td_socmap.sh"
+
 # ----- board / topology config (override via env) ----------------------------
-A_IP=${TD_A_IP:-192.168.4.101}   # die_a = z2_02, master / non-flip  (A->B sender)
-B_IP=${TD_B_IP:-192.168.2.101}   # die_b = z2_01, slave  / flip      (A->B receiver)
-A_BOARD=${TD_A_BOARD:-z2_02}
-B_BOARD=${TD_B_BOARD:-z2_01}
+# TD_A_IP/TD_B_IP (this library's vocabulary) and TD_MASTER_IP/TD_SLAVE_IP
+# (td_v2_channels.sh's, and the one several wrappers document — e.g.
+# proven_method_soak.sh's header lists TD_MASTER_IP while sourcing THIS file)
+# name the same two boards. Historically only TD_A_IP was read here, so a
+# wrapper exporting TD_MASTER_IP alone silently fell back to the Z2 defaults
+# and drove the Z2 pair. Both are now accepted; if both are set and DISAGREE
+# that is fatal, never a silent pick.
+A_IP=$(td_reconcile TD_A_IP TD_MASTER_IP "die_a / master board IP")
+A_IP=${A_IP:-192.168.4.101}      # die_a = z2_02, master / non-flip  (A->B sender)
+B_IP=$(td_reconcile TD_B_IP TD_SLAVE_IP "die_b / slave board IP")
+B_IP=${B_IP:-192.168.2.101}      # die_b = z2_01, slave  / flip      (A->B receiver)
+A_BOARD=$(td_reconcile TD_A_BOARD TD_MASTER_BOARD "die_a / master board name")
+A_BOARD=${A_BOARD:-z2_02}
+B_BOARD=$(td_reconcile TD_B_BOARD TD_SLAVE_BOARD "die_b / slave board name")
+B_BOARD=${B_BOARD:-z2_01}
 DEPLOY_DIR=${TD_DEPLOY_DIR:-/tmp/tidelink_deploy_l7}   # tidelink.bin (die_a) + tidelink-flip.bin (die_b)
 DEPLOY_SH=${TD_DEPLOY_SH:-$HOME/deploy_pair.sh}
 LEASE_NAME=${TD_LEASE:-bridge1}
@@ -68,7 +89,15 @@ GP1_RX=0x84010000        # GP1 RX DATA aperture — the REAL committed A->B data
 BOARD_USER=${TD_BOARD_USER:-xilinx}
 export BOARD_USER
 SSH="sshpass -p ${TD_BOARD_PW:-xilinx} ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=12"
-_PY="echo ${TD_BOARD_PW:-xilinx} | sudo -S python3 $TL39"
+# TIDELINK_SOC must cross the ssh hop: tl39.py runs ON THE BOARD and resolves
+# the address map from its OWN environment. ssh does not forward env, and sudo
+# scrubs it, so it is passed explicitly as a sudo-side assignment (same idiom as
+# pynq_host/scripts/char_session.sh). WITHOUT THIS a KR260 run would reach tl39
+# with TIDELINK_SOC unset, silently fall back to the z2 identity map, and poke
+# Z2 control addresses on ZynqMP — the exact undecoded-access hang this change
+# exists to prevent. On z2 this passes TIDELINK_SOC=z2, which resolves to the
+# same identity map as unset (proven equal), so Z2 behaviour is unchanged.
+_PY="echo ${TD_BOARD_PW:-xilinx} | sudo -S TIDELINK_SOC=$(td_soc) python3 $TL39"
 a(){ $SSH $BOARD_USER@$A_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_a
 b(){ $SSH $BOARD_USER@$B_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_b
 # raw mmap python on a board (arg1=ip, arg2=python body)
@@ -120,9 +149,14 @@ wait_bilateral(){ local pors=${1:-6} secs=${2:-16} por t
 # force_always (SYNC every beat) for a stable dist read; shipped base64 (no quoting).
 winscan(){
   a wr $R_R8 0x1C>/dev/null; b wr $R_R8 0x1C>/dev/null; sleep 0.6
+  # This python mmaps /dev/mem DIRECTLY on the board — it does NOT go through
+  # tl39.py, so it is the one place in this library that must relocate its own
+  # base. Everything inside works off PAGE-relative offsets from WS_BASE, so
+  # only the base moves. Identity on z2 => byte-identical Z2 behaviour.
+  local WS_BASE; WS_BASE=$(td_remap 0x44032000 "winscan apb base") || return 1
   local PY='import mmap,struct,os,time,ctypes
 P=4096;fd=os.open("/dev/mem",os.O_RDWR|os.O_SYNC)
-bb=0x44032000&~(P-1);o=0x44032000-bb
+bb='"$WS_BASE"'&~(P-1);o='"$WS_BASE"'-bb
 m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=bb)
 # SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
 # struct.pack_into/unpack_from did NOT compile to one access on this target

@@ -127,11 +127,28 @@ while [ $# -gt 0 ]; do case "$1" in
 esac; shift; done
 case "$MODE" in manual|autonomous) ;; *) echo "bad --mode: $MODE"; exit 2;; esac
 
+# ----- SoC address map ------------------------------------------------------
+# Z2 default is an exact identity (see td_socmap.sh). Every register literal in
+# this file stays Z2-CANONICAL: m()/s() hand them to tl39.py, which owns the
+# single remap in the chain. Do NOT pre-relocate them here (double remap =
+# undecoded address = the bus hang this is guarding against). Only bases used
+# OUTSIDE a tl39 call are relocated below.
+_TD_HERE_SOCMAP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=fpga/hw_regression/td_socmap.sh
+source "$_TD_HERE_SOCMAP/td_socmap.sh"
+
 # ----- board / topology config (override via env) ---------------------------
-MASTER_IP=${TD_MASTER_IP:-192.168.4.101}   # die_a: master / non-flip (A->B sender)
-SLAVE_IP=${TD_SLAVE_IP:-192.168.2.101}      # die_b: slave  / flip     (A->B receiver)
-MASTER_BOARD=${TD_MASTER_BOARD:-z2_02}
-SLAVE_BOARD=${TD_SLAVE_BOARD:-z2_01}
+# TD_MASTER_IP/TD_SLAVE_IP (this script's vocabulary) and TD_A_IP/TD_B_IP
+# (td_v2_hwlib.sh's) name the same two boards. Accept both; if both are set and
+# DISAGREE, abort — a silent pick would drive the wrong hardware.
+MASTER_IP=$(td_reconcile TD_MASTER_IP TD_A_IP "die_a / master board IP")
+MASTER_IP=${MASTER_IP:-192.168.4.101}       # die_a: master / non-flip (A->B sender)
+SLAVE_IP=$(td_reconcile TD_SLAVE_IP TD_B_IP "die_b / slave board IP")
+SLAVE_IP=${SLAVE_IP:-192.168.2.101}         # die_b: slave  / flip     (A->B receiver)
+MASTER_BOARD=$(td_reconcile TD_MASTER_BOARD TD_A_BOARD "die_a / master board name")
+MASTER_BOARD=${MASTER_BOARD:-z2_02}
+SLAVE_BOARD=$(td_reconcile TD_SLAVE_BOARD TD_B_BOARD "die_b / slave board name")
+SLAVE_BOARD=${SLAVE_BOARD:-z2_01}
 TL39=${TD_TL39:-/home/xilinx/tl39.py}
 LEASE_NAME=${TD_LEASE:-bridge1}
 THROTTLE=${TD_THROTTLE:-0.25}               # sleep between board reads (PS-wedge guard)
@@ -139,9 +156,14 @@ SSH_TIMEOUT=${TD_SSH_TIMEOUT:-10}           # per-call ssh wall-clock timeout (s
 WIN_SOAK_TXNS=${TD_WIN_SOAK_TXNS:-8}        # BOUNDED XHB window soak transaction count
 
 # ----- ptp channel knobs (only ever used if `ptp` is explicitly selected) ----
-PHC_BASE=${TD_PHC_BASE:-0x44050000}   # PHC hardware-clock APB. Z2 pair-all + kr260
-                                      # -ptp both map it here (GP0/HPM0). Override
-                                      # for any target that relocates it.
+# PHC hardware-clock APB, Z2-CANONICAL (handed to tl39, which relocates it).
+# CORRECTED 2026-07-16: the previous comment here claimed "Z2 pair-all + kr260
+# -ptp both map it here (GP0/HPM0)". That is WRONG — fpga/docs/KR260_PORT.md
+# puts phc apb at 0x8405_0000 on KR260, not 0x4405_0000. The stale claim was
+# load-bearing: it told a reader no relocation was needed, and a raw
+# 0x4405_0000 poke on ZynqMP is undecoded (bus hang). TIDELINK_SOC now does the
+# relocation; leave this at the Z2 literal.
+PHC_BASE=${TD_PHC_BASE:-0x44050000}
 PHC_NS_INCR=${TD_PHC_NS_INCR:-40}     # ns added per phc_clk cycle. phc_clk = clk_wiz
                                       # clk_out2, CONFIG.CLKOUT2_REQUESTED_OUT_FREQ
                                       # {25.000} in BOTH pynq-z2-pair-all and
@@ -239,9 +261,19 @@ PHC_EN_CAP=0x5               # ctrl: en | capture (capture is singlepulse/self-c
                              # between PTP hardware captures and software diagnostic
                              # captures"), so sampling here cannot perturb the servo.
 
-TX_BASE=${TIDELINK_TX_BASE:-0x84000000}     # GP1 AHB_TX data aperture
-RX_BASE=${TIDELINK_RXFIFO_BASE:-0x84010000} # GP1 RX FIFO data aperture
-XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_GP0)
+# Data-plane bases. These stay Z2-CANONICAL: every one of them is handed to
+# tl39.py (see the xhb window soak's `m wr $addr`), and tl39 owns the single
+# remap. Relocating here as well would double-remap on a KR260
+# (0x4000_0000 -> 0x8000_0000 -> 0xC000_0000 = undecoded = bus hang).
+#
+# TX_BASE/RX_BASE are NOT used by this script — the data channel goes through
+# tl39's own `txburst`/`drain`, which resolve the aperture themselves. They are
+# validated-and-dropped rather than declared, so that an operator following the
+# OLD KR260_PORT.md advice (`export TIDELINK_TX_BASE=0xA4000000`) gets a loud
+# abort here instead of a value that silently does nothing.
+td_data_base TIDELINK_TX_BASE     0x84000000 ahb_tx   >/dev/null
+td_data_base TIDELINK_RXFIFO_BASE 0x84010000 ahb_fifo >/dev/null
+XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_GP0); Z2-canonical, tl39 relocates
 
 # LL/FC bootstrap triplet (bit0=swi_enable) and the R8 phase constants
 FC_TRIPLET=(0x00027f09 0x00027f01 0x00027f07)
@@ -256,7 +288,13 @@ BOARD_PW=${TD_BOARD_PW:-xilinx}
 BOARD_USER=${TD_BOARD_USER:-xilinx}
 SSH="sshpass -p ${BOARD_PW} ssh -n -o StrictHostKeyChecking=no \
 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8"
-_PY="echo ${BOARD_PW} | sudo -S python3 $TL39"
+# TIDELINK_SOC must cross the ssh hop — tl39.py runs ON THE BOARD and resolves
+# its address map from its OWN environment. ssh does not forward env and sudo
+# scrubs it, so pass it as a sudo-side assignment. Without this a KR260 run
+# reaches tl39 with TIDELINK_SOC unset -> z2 identity -> Z2 control literals
+# poked on ZynqMP -> undecoded AXI access -> hard PS hang. On z2 this passes
+# TIDELINK_SOC=z2, identical to unset (proven), so Z2 is unchanged.
+_PY="echo ${BOARD_PW} | sudo -S TIDELINK_SOC=$(td_soc) python3 $TL39"
 # m/s: run a tl39 command on master/slave, wall-clock bounded so a wedged PS
 # access degrades to a timeout (empty output) instead of hanging the suite.
 m(){ timeout "$SSH_TIMEOUT" $SSH $BOARD_USER@$MASTER_IP "$_PY $*" 2>/dev/null; }

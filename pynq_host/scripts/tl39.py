@@ -23,7 +23,52 @@
 #   rxword            read 0x44010000 (slave local RX FIFO, single pop)
 #   rxn N             read N words from 0x44010000 (sequential pops)
 #   occ               read RX FIFO occupancy 0x4403200C
+#
+# ---------------------------------------------------------------------------
+# SoC SELECTION (added 2026-07-16 — hardware-safety). Every literal below is
+# the Z2 map and is now passed through _R() / tl_socmap.remap().
+#
+#   unset / TIDELINK_SOC=z2  -> IDENTITY. Bit-identical to every prior release.
+#   TIDELINK_SOC=kr260       -> control 0x4403_xxxx -> 0x8403_xxxx,
+#                               data    0x84xx_xxxx -> 0xA4xx_xxxx.
+#
+# This tool carries ~30 CONTROL-plane literals. Before this change it read NO
+# env at all, so an operator following fpga/docs/KR260_PORT.md's
+# "export TIDELINK_TX_BASE=0xA4000000" advice got a tool still poking Z2
+# control addresses on a KR260 — UNDECODED on ZynqMP, i.e. an AXI access with
+# no responder and NO timeout: hard PS hang, power-cycle to recover.
+# TIDELINK_TX_BASE alone can never fix that; only TIDELINK_SOC moves control.
+# ---------------------------------------------------------------------------
 import mmap, struct, os, sys, time, ctypes
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+try:
+    from tl_socmap import SocMapError, remap as _R, resolve_soc, tx_base, rxfifo_base
+except ImportError as _e:  # deployed as a lone file next to no tl_socmap.py
+    # FAIL LOUD on a relocating SoC; stay IDENTITY on the z2 default so an
+    # existing single-file deployment of tl39.py keeps working unchanged.
+    if os.environ.get("TIDELINK_SOC", "").strip().lower() not in ("", "z2"):
+        sys.stderr.write(
+            "tl39: TIDELINK_SOC=%r requires pynq_host/tl_socmap.py, which is not\n"
+            "importable (%s). Refusing to run: without it every address below is a\n"
+            "Z2 literal, and Z2 control addresses are UNDECODED on ZynqMP (AXI hang,\n"
+            "power-cycle to recover). Copy tl_socmap.py next to tl39.py's parent dir.\n"
+            % (os.environ.get("TIDELINK_SOC"), _e))
+        sys.exit(2)
+    class SocMapError(RuntimeError): pass
+    def _R(a, **_kw): return a
+    def resolve_soc(): return "z2"
+    def tx_base(z2_default=0x84000000): return z2_default
+    def rxfifo_base(z2_default=0x84010000): return z2_default
+
+# Validate the SoC selection BEFORE opening /dev/mem or building the register
+# table, so a typo ("TIDELINK_SOC=kr250") is a clean one-line refusal rather
+# than a traceback — and, critically, never a silent fall-back to the Z2 map.
+try:
+    _SOC = resolve_soc()
+except SocMapError as _e:
+    sys.stderr.write("\ntl39: REFUSING to run — %s\n\n" % _e)
+    sys.exit(2)
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -70,37 +115,75 @@ def rd(a):
 def wr(a, v):
     _u32(a).value = v & 0xFFFFFFFF
 
-R8       = 0x44032100   # slot0: [0] swi_training_mode  [1] SWI_RECAL
-SLIPLO   = 0x44032104   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis
-OBS      = 0x44032108   # lk/flt/cal/fcsm/llrx/cr/ck/...
-TRAINCFG = 0x4403210C
-OBSCAL   = 0x44032198   # [3:0] V2 cal FSM state, [20] live training_mode
-EPOCH    = 0x44032140   # SWI_EPOCH_STATUS (V2): [0]=epoch_anchored [6:1]=epoch_span
-SYNCCNT  = 0x44032114   # [31:16] = saturating SYNC-detected count (RX). >0 = coherent SYNC reassembled
-TXSYNC   = 0x44032120   # SYNC-OBS (V2): [15:0]=tx_sync_ins_cnt [16]=idle_lvl [17]=train_lvl [31:24]=0x5C
-RXDET2   = 0x44032124   # mask-aware per-lane SYNC-DETECT: [15:0]=sync_seen_cnt [23:16]=per-lane sticky [31:24]=0x5D
-LANEMASK = 0x44032128   # SWI_SYNC_LANE_MASK [7:0] (default 0xFF) for the per-lane detector
-RAWWORD  = 0x4403212C   # dbg_raw_word[127:0] best-match post-deskew word (4x32b: 0x2C,0x30,0x34,0x38)
-SLICEMAP = 0x4403213C   # per-RX-lane -> carried TX-slice idx (8x4b). identity=0x76543210 POR=0xFFFFFFFF
-PKTLEN   = 0x44032008   # Packet Word Length (RO) - length of received packet
-STATUS   = 0x44032010   # [0]returner_busy [1]fifo_overrun [2]fifo_underrun [3]master_error [4]packet_committed
-CREDIT   = 0x4403200C   # Credit Count (RO) - NOT fifo occupancy
-ECCCNT   = 0x44032114   # [31:16]=sync_det_cnt [15:0]=ecc_corrupted_cnt (RX long-pkt header-ECC fails)
-PERF_ID  = 0x440320FC   # ==0x50460100 if perf block live
-PERF_CTRL= 0x440320A0    # 0x1=en 0x5=en+clr 0x3=freeze-snapshot
-PERF_TXP = 0x440320C8   # tx_pkt_count
-PERF_RXP = 0x440320CC   # rx_pkt_count (committed)
-PERF_TXW = 0x440320D0   # tx_word_count (a2l handshakes - data LEFT this die)
-PERF_RXW = 0x440320D4   # rx_word_count (l2a handshakes - data ARRIVED at peer)
-PHASEOFF = 0x44032118   # SWI_PHASE_OFFSET 8x4-bit per-lane sub-bit-cell sample point (OR-merged w/ calibrator)
-LIVEMATCH= 0x44032144   # [7:0] live per-lane SYNC-match-since-clear vector [31:24]=0x5E (non-sticky oracle)
-PWP_VAL  = 0x44032148   # per-lane word-pin override value (8x4-bit, lane L=[4L+3:4L])
-PWP_EN   = 0x4403214C   # [7:0] per-lane word-pin override enable (1=use SW pin, 0=auto)
-LOCKTHR  = 0x44032160
+R8       = _R(0x44032100)   # slot0: [0] swi_training_mode  [1] SWI_RECAL
+SLIPLO   = _R(0x44032104)   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis
+OBS      = _R(0x44032108)   # lk/flt/cal/fcsm/llrx/cr/ck/...
+TRAINCFG = _R(0x4403210C)
+OBSCAL   = _R(0x44032198)   # [3:0] V2 cal FSM state, [20] live training_mode
+EPOCH    = _R(0x44032140)   # SWI_EPOCH_STATUS (V2): [0]=epoch_anchored [6:1]=epoch_span
+SYNCCNT  = _R(0x44032114)   # [31:16] = saturating SYNC-detected count (RX). >0 = coherent SYNC reassembled
+TXSYNC   = _R(0x44032120)   # SYNC-OBS (V2): [15:0]=tx_sync_ins_cnt [16]=idle_lvl [17]=train_lvl [31:24]=0x5C
+RXDET2   = _R(0x44032124)   # mask-aware per-lane SYNC-DETECT: [15:0]=sync_seen_cnt [23:16]=per-lane sticky [31:24]=0x5D
+LANEMASK = _R(0x44032128)   # SWI_SYNC_LANE_MASK [7:0] (default 0xFF) for the per-lane detector
+RAWWORD  = _R(0x4403212C)   # dbg_raw_word[127:0] best-match post-deskew word (4x32b: 0x2C,0x30,0x34,0x38)
+SLICEMAP = _R(0x4403213C)   # per-RX-lane -> carried TX-slice idx (8x4b). identity=0x76543210 POR=0xFFFFFFFF
+PKTLEN   = _R(0x44032008)   # Packet Word Length (RO) - length of received packet
+STATUS   = _R(0x44032010)   # [0]returner_busy [1]fifo_overrun [2]fifo_underrun [3]master_error [4]packet_committed
+CREDIT   = _R(0x4403200C)   # Credit Count (RO) - NOT fifo occupancy
+ECCCNT   = _R(0x44032114)   # [31:16]=sync_det_cnt [15:0]=ecc_corrupted_cnt (RX long-pkt header-ECC fails)
+PERF_ID  = _R(0x440320FC)   # ==0x50460100 if perf block live
+PERF_CTRL= _R(0x440320A0)   # 0x1=en 0x5=en+clr 0x3=freeze-snapshot
+PERF_TXP = _R(0x440320C8)   # tx_pkt_count
+PERF_RXP = _R(0x440320CC)   # rx_pkt_count (committed)
+PERF_TXW = _R(0x440320D0)   # tx_word_count (a2l handshakes - data LEFT this die)
+PERF_RXW = _R(0x440320D4)   # rx_word_count (l2a handshakes - data ARRIVED at peer)
+PHASEOFF = _R(0x44032118)   # SWI_PHASE_OFFSET 8x4-bit per-lane sub-bit-cell sample point (OR-merged w/ calibrator)
+LIVEMATCH= _R(0x44032144)   # [7:0] live per-lane SYNC-match-since-clear vector [31:24]=0x5E (non-sticky oracle)
+PWP_VAL  = _R(0x44032148)   # per-lane word-pin override value (8x4-bit, lane L=[4L+3:4L])
+PWP_EN   = _R(0x4403214C)   # [7:0] per-lane word-pin override enable (1=use SW pin, 0=auto)
+LOCKTHR  = _R(0x44032160)
 # GP1-split V2 bitstreams (2026-06-12): data apertures moved off GP0.
 #   AHB_TX  = 0x84000000 (was 0x44000000)   RX FIFO = 0x84010000 (was 0x44010000)
-TXBASE   = 0x84000000
-RXBASE   = 0x84010000
+# On KR260 these relocate to 0xA4000000 / 0xA4010000. tx_base()/rxfifo_base()
+# also honour the legacy TIDELINK_TX_BASE / TIDELINK_RXFIFO_BASE overrides, but
+# CROSS-CHECK them against TIDELINK_SOC and abort on disagreement rather than
+# let a half-configured run poke the wrong plane.
+TXBASE   = tx_base(0x84000000)
+RXBASE   = rxfifo_base(0x84010000)
+
+# ---------------------------------------------------------------------------
+# ADDRESS CONTRACT for `rd` / `wr` (and therefore for every caller, notably
+# fpga/hw_regression/td_v2_hwlib.sh's a()/b() helpers):
+#
+#   Addresses on the command line are Z2-CANONICAL. tl39 relocates them for the
+#   selected SoC. Callers pass Z2 literals verbatim and must NOT pre-relocate.
+#
+# This deliberately puts EXACTLY ONE remap in the chain. The alternative
+# (callers relocate, tl39 takes absolutes) invites a double-remap — a shell
+# script mapping 0x4403_2100 -> 0x8403_2100 and tl39 mapping it again would
+# land at 0x8803_2100: undecoded, i.e. the very bus hang this is here to stop.
+# On z2 the remap is an identity, so this contract is a no-op there.
+#
+# NB this differs from tl_poke.py, whose rd/wr genuinely do take absolutes
+# (it has no register table to relocate). tl39 owns ~30 Z2 literals, so
+# Z2-canonical is the only contract that keeps them meaningful.
+# ---------------------------------------------------------------------------
+def _arg_addr(s):
+    try:
+        a = int(s, 16)
+    except ValueError:
+        sys.stderr.write("tl39: bad hex address %r\n" % s); sys.exit(2)
+    try:
+        return _R(a, what="command-line address")
+    except SocMapError as e:
+        sys.stderr.write(
+            "\ntl39: REFUSING the access — %s\n\n"
+            "Addresses are Z2-CANONICAL: pass the Z2 literal (e.g. 0x44032100) and\n"
+            "tl39 relocates it for TIDELINK_SOC=%s. Do not pass a pre-relocated\n"
+            "address — that would be remapped a second time.\n"
+            % (e, os.environ.get("TIDELINK_SOC", "z2")))
+        sys.exit(2)
+
 
 def popc(x): return bin(x).count("1")
 
@@ -137,9 +220,9 @@ elif cmd == "epoch":
     e, anc, span = epoch_str()
     print("SWI_EPOCH_STATUS=0x%08x  epoch_anchored[0]=%d  epoch_span[6:1]=%d" % (e, anc, span))
 elif cmd == "rd":
-    print("0x%08x" % rd(int(sys.argv[2], 16)))
+    print("0x%08x" % rd(_arg_addr(sys.argv[2])))
 elif cmd == "wr":
-    wr(int(sys.argv[2], 16), int(sys.argv[3], 16))
+    wr(_arg_addr(sys.argv[2]), int(sys.argv[3], 16))
 elif cmd == "lockthresh":
     wr(LOCKTHR, 0x55555555); print("lockthresh=5 (0x%08x)" % rd(LOCKTHR))
 elif cmd == "hold":

@@ -90,7 +90,16 @@ else
     # `... | tee` would mask the gate's exit with tee's). Forward the PHY-select
     # env + the stamp path the gate needs; inherit the rest.
     gate_rc=0
-    TIDELINK_HOME="$TIDELINK_HOME" FARM_GATE_STAMP="$GATE_STAMP" \
+    # MUST go through `env` (2026-07-16 fix): bash only honours NAME=VALUE as an
+    # assignment when it appears LITERALLY in the source. The conditional
+    # ${TIDELINK_PHY_V2:+...} EXPANDS to the word `TIDELINK_PHY_V2=1`, and an
+    # expansion-produced word is NOT an assignment — it became the COMMAND WORD,
+    # so the gate died with `TIDELINK_PHY_V2=1: command not found` (rc=127).
+    # That made the MANDATORY gate structurally unreachable for every V2 build:
+    # unset => line ~130 refuses (silent-V1 guard); set => rc=127 here. The only
+    # way through was FARM_SKIP_GATE=1 — bypassing the gate that must block.
+    # `env` takes the expanded word as an ARGUMENT and applies it correctly.
+    env TIDELINK_HOME="$TIDELINK_HOME" FARM_GATE_STAMP="$GATE_STAMP" \
         ${TIDELINK_PHY_V2:+TIDELINK_PHY_V2="$TIDELINK_PHY_V2"} \
         bash "$FPGA_DIR/farm_gate.sh" > "$GATE_LOG" 2>&1 || gate_rc=$?
     tail -n 40 "$GATE_LOG"

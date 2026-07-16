@@ -207,13 +207,37 @@ st1=rd(STATUS); cr1=rd(CREDIT)&0xffff
 words=ok*(n+2)
 print("RXDONE ok=%d bad=%d secs=%.6f words=%d cr0=%d cr1=%d st0=0x%x st1=0x%x"
       % (ok,bad,t1-t0,words,cr0,cr1,st0,st1))
+# MAX_CREDITS = 1<<12 (RAM_ADDR_W=14). Credit above max is an IMPOSSIBLE state:
+# the RX now advertises more space than it physically has and the peer may
+# overrun it. Fixed in RTL 2026-07-15 (tidelink_fifo_ctrl saturate-at-MAX); if
+# this fires, the deployed bitstream PREDATES that fix -- say so rather than
+# reporting a data result from a link with fabricated credit.
+if cr1 > 4096 or cr0 > 4096:
+    print("  RXDETAIL CREDIT_ABOVE_MAX cr0=%d cr1=%d (MAX=4096) — bitstream "
+          "predates the saturate-at-MAX fix; credit is fabricated" % (cr0,cr1))
+if st1 & (1<<2):
+    print("  RXDETAIL UNDERRUN sticky (st1=0x%x) — a read found no packet" % st1)
+if st1 & (1<<1):
+    print("  RXDETAIL OVERRUN sticky (st1=0x%x) — a write was discarded" % st1)
 for d in details[:6]: print("  RXDETAIL "+d)
 PYEOF
+
+# Board-side worker timeout. A store into the TX aperture BLOCKS while the FC
+# adapter holds HREADYOUT low, so if credit return is broken the sender sits in
+# an uninterruptible kernel store and the SSH call would hang forever. The
+# timeout lets the harness report a STALL and move on rather than wedging the
+# whole soak. (It does NOT unwedge the board — a wedged PS still needs a
+# power-cycle, which the next cycle's por() performs.)
+PUSH_TIMEOUT=${TD_PUSH_TIMEOUT:-120}
 
 push_run(){ # ip, python-body, args...
   local ip="$1" body="$2"; shift 2
   local b64; b64=$(printf '%s' "$body" | base64 -w0)
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_sust.py && echo $BOARD_PW | sudo -S python3 /tmp/td_sust.py $*" 2>/dev/null
+  timeout "$PUSH_TIMEOUT" $SSH "xilinx@$ip" \
+    "echo $b64 | base64 -d > /tmp/td_sust.py && echo $BOARD_PW | sudo -S python3 /tmp/td_sust.py $*" 2>/dev/null
+  local rc=$?
+  [ "$rc" = 124 ] && echo "TIMEOUT after ${PUSH_TIMEOUT}s"
+  return 0
 }
 
 bringup(){ # returns 0 healthy, 1 unarmed(non-test), 2 link down
@@ -253,8 +277,20 @@ run_one(){ # dir size
 
   local w0=$SECONDS
   tx=$(push_run "$sender" "$TX_PY" "$n" "$PACKETS" "$seed" "$PKT_GAP")
+  if echo "$tx" | grep -q TIMEOUT; then
+    # The sender blocked in a TX-aperture store => credit return stalled. This
+    # is the fe_tx_credit_max / send-gate failure mode, NOT a data-integrity
+    # result — record it as such rather than scoring it as a byte mismatch.
+    printf '    size=%-4s TX-STALL (sender blocked >%ss in a TX store; credit return suspect — check fe_full/fcsm)\n' \
+      "$n" "$PUSH_TIMEOUT"
+    echo "$dir,$n,TX_STALL,0,$PACKETS,,,," >> "$CSV"; return
+  fi
   sleep 1.5
   rx=$(push_run "$recver" "$RX_PY" "$n" "$PACKETS" "$seed")
+  if echo "$rx" | grep -q TIMEOUT; then
+    printf '    size=%-4s RX-STALL (receiver blocked >%ss in a drain)\n' "$n" "$PUSH_TIMEOUT"
+    echo "$dir,$n,RX_STALL,0,$PACKETS,,,," >> "$CSV"; return
+  fi
   local e2e=$(( SECONDS - w0 )); [ "$e2e" -lt 1 ] && e2e=1
 
   local tw ts rok rbad rs rw

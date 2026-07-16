@@ -87,18 +87,39 @@ async def test_11_burst_sweep_slave_to_master(dut):
 
 
 def _report_sweep(tb, ctx, results):
-    """Emit a per-size table so the drop-threshold is visible, then assert."""
+    """Emit a per-size table so the drop-threshold is visible, then assert.
+
+    IMPORTANT — the sizes share ONE bring-up, so the sizes are NOT independent
+    measurements once anything fails. A failed burst leaves the RX FIFO's
+    read_ptr/write_ptr mid-packet, and every LATER size then reads stale bytes
+    at a misaligned pointer. Measured 2026-07-15: after a len=16 failure, sizes
+    32/64/126 all returned the IDENTICAL stale words despite different headers.
+    Only the FIRST failing size is real evidence; everything after it is
+    cascade. The table labels this rather than letting a future reader (or a
+    future me) read seven independent failures where there is one.
+    """
     tb.log.info(f"  ===== {ctx} burst-length sweep =====")
+    seen_fail = False
     for n, (ok, mism) in results.items():
         detail = ""
         if mism:
             detail = (f" first_bad_idx={mism[0][0]} "
                       f"({len(mism)} words wrong)")
-        tb.log.info(f"    payload_len={n:4d} -> {'PASS' if ok else 'FAIL'}{detail}")
+        taint = "  <- CASCADE (not independent; see docstring)" if (
+            seen_fail and not ok) else ""
+        tb.log.info(
+            f"    payload_len={n:4d} -> {'PASS' if ok else 'FAIL'}{detail}{taint}")
+        if not ok:
+            seen_fail = True
     bad = [n for n, (ok, _) in results.items() if not ok]
+    first_bad = bad[0] if bad else None
     assert not bad, (
         f"{ctx}: burst lengths {bad} did not deliver byte-exact "
-        f"(passing lengths: {[n for n, (ok, _) in results.items() if ok]})")
+        f"(passing lengths: {[n for n, (ok, _) in results.items() if ok]}). "
+        f"THE ONLY TRUSTWORTHY DATA POINT IS THE FIRST: payload_len={first_bad} "
+        f"first_bad_idx={results[first_bad][1][0][0]}. Sizes after it share the "
+        f"same bring-up and read a desynced FIFO — diagnose {first_bad} alone, "
+        f"and re-run it in isolation before believing any threshold.")
 
 
 @cocotb.test()

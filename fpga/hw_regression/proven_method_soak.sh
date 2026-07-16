@@ -48,7 +48,7 @@ pc_one(){ fpgahub hub power-cycle "$1" --off 2 --yes >/dev/null 2>&1; }
 wait_ssh(){ local ip="$1" i
   for i in $(seq 1 40); do
     sshpass -p "$BOARD_PW" ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=4 "xilinx@$ip" true >/dev/null 2>&1 && return 0
+      -o LogLevel=ERROR -o ConnectTimeout=4 "$BOARD_USER@$ip" true >/dev/null 2>&1 && return 0
     sleep 2
   done; return 1
 }

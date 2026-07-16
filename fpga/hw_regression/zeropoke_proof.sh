@@ -271,7 +271,7 @@ TRACE_PIDS=()
 tracer_launch(){ local die=$1 ip=$2 regtab=$3 dur=$4 py b64
   py=${TRACE_PY/@REGTAB@/$regtab}
   b64=$(printf '%s\n' "$py" | base64 -w0)
-  ( $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_trace.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -u /tmp/td_trace.py $die $TRACE_PERIOD $dur" 2>/dev/null \
+  ( $SSH "$BOARD_USER@$ip" "echo $b64 | base64 -d > /tmp/td_trace.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -u /tmp/td_trace.py $die $TRACE_PERIOD $dur" 2>/dev/null \
     | while IFS= read -r l; do printf '%s,%s\n' "$(date +%s.%N)" "$l"; done >> "$TRACE_FILE" ) &
   TRACE_PIDS+=("$!"); }
 

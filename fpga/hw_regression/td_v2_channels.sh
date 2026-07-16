@@ -97,7 +97,8 @@
 #   PTP demo (only on a -ptp bitstream):
 #     ./td_v2_channels.sh --demo --channels "data doorbell ptp xhb"
 #   Env overrides: TD_MASTER_IP TD_SLAVE_IP TD_MASTER_BOARD TD_SLAVE_BOARD
-#                  TD_TL39 TD_THROTTLE TD_BOARD_PW TD_LEASE TD_SSH_TIMEOUT
+#                  TD_TL39 TD_THROTTLE TD_BOARD_PW TD_BOARD_USER TD_LEASE
+#                  TD_SSH_TIMEOUT
 #                  TD_PHC_BASE TD_PHC_NS_INCR TD_PTP_TOL_NS TD_PTP_ROUNDS
 #                  TD_PTP_DWELL TD_PTP_STEP_NS
 # Exit code: 0 = every selected channel PASS (SKIP is not a failure),
@@ -250,13 +251,16 @@ ACTIVE_LANES="2 5 6 7"
 
 # ----- SSH plumbing (one hop per call, throttled; modeled on td_v2_hwlib.sh) --
 BOARD_PW=${TD_BOARD_PW:-xilinx}
+# Board login — one knob, defaults to xilinx (the PYNQ-Z2 image) so Z2 runs are
+# unchanged; set TD_BOARD_USER for images that use a different login.
+BOARD_USER=${TD_BOARD_USER:-xilinx}
 SSH="sshpass -p ${BOARD_PW} ssh -n -o StrictHostKeyChecking=no \
 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8"
 _PY="echo ${BOARD_PW} | sudo -S python3 $TL39"
 # m/s: run a tl39 command on master/slave, wall-clock bounded so a wedged PS
 # access degrades to a timeout (empty output) instead of hanging the suite.
-m(){ timeout "$SSH_TIMEOUT" $SSH xilinx@$MASTER_IP "$_PY $*" 2>/dev/null; }
-s(){ timeout "$SSH_TIMEOUT" $SSH xilinx@$SLAVE_IP  "$_PY $*" 2>/dev/null; }
+m(){ timeout "$SSH_TIMEOUT" $SSH $BOARD_USER@$MASTER_IP "$_PY $*" 2>/dev/null; }
+s(){ timeout "$SSH_TIMEOUT" $SSH $BOARD_USER@$SLAVE_IP  "$_PY $*" 2>/dev/null; }
 # throttled reads: never issue back-to-back host->ssh reads without a sleep
 mrd(){ local v; v=$(m rd $1); sleep "$THROTTLE"; echo "$v"; }
 srd(){ local v; v=$(s rd $1); sleep "$THROTTLE"; echo "$v"; }

@@ -5,7 +5,7 @@
 # WHY THIS EXISTS (the blind spot it closes)
 # ------------------------------------------------------------------------------
 # A per-lane IDELAY eye sweep already lived in td_v2_hwlib.sh:winscan() — but it
-# only EVER ran on die_b ($SSH xilinx@$B_IP, ~line 136). die_a's RX eye had never
+# only EVER ran on die_b ($SSH $BOARD_USER@$B_IP, ~line 136). die_a's RX eye had never
 # been measured on silicon. The cost of that blind spot:
 #
 #   die_a pad_rx[7] was remapped to a spare pin (V7) after its primary B19/F20
@@ -261,7 +261,7 @@ sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE (stdout); trac
   #                 both-dies PROGRAM error was thus invisible and misread as a
   #                 "link/PS issue". stderr now flows to the console; stdout
   #                 (the LANE lines) is still captured clean by the caller's $().
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_lhp.py"
+  $SSH "$BOARD_USER@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_lhp.py"
 }
 
 # ----- collected state -------------------------------------------------------

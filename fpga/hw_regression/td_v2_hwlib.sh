@@ -60,12 +60,19 @@ R_DIST=0x440321AC        # winscan: selected lane's SYNC Hamming dist [4:0]
 GP1_RX=0x84010000        # GP1 RX DATA aperture — the REAL committed A->B data
 
 # ----- SSH plumbing ----------------------------------------------------------
+# BOARD_USER: the login on the board. Was hardcoded `xilinx@` in ~7 places,
+# which is right for the PYNQ-Z2 image and not portable to others (KR260 images
+# commonly use a different login). Now one knob, DEFAULTING TO xilinx so every
+# existing Z2 invocation is unchanged. Set TD_BOARD_USER to override. Exported
+# so the scripts that source this lib inherit it without re-deriving it.
+BOARD_USER=${TD_BOARD_USER:-xilinx}
+export BOARD_USER
 SSH="sshpass -p ${TD_BOARD_PW:-xilinx} ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=12"
 _PY="echo ${TD_BOARD_PW:-xilinx} | sudo -S python3 $TL39"
-a(){ $SSH xilinx@$A_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_a
-b(){ $SSH xilinx@$B_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_b
+a(){ $SSH $BOARD_USER@$A_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_a
+b(){ $SSH $BOARD_USER@$B_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_b
 # raw mmap python on a board (arg1=ip, arg2=python body)
-braw(){ $SSH xilinx@$1 "echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -c '$2'" 2>/dev/null; }
+braw(){ $SSH $BOARD_USER@$1 "echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -c '$2'" 2>/dev/null; }
 
 TD_THROTTLE=${TD_THROTTLE:-0.25}     # sleep between board reads (PS-wedge guard)
 rd_b(){ local v; v=$(b rd $1); sleep "$TD_THROTTLE"; echo "$v"; }   # throttled die_b read
@@ -141,7 +148,7 @@ for L in [6,2,5,7]:
  settap(L,best[1])
 print("winscan_done")'
   local B64; B64=$(echo "$PY" | base64 -w0)
-  $SSH xilinx@$B_IP "echo $B64 | base64 -d > /tmp/td_ws.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_ws.py" 2>/dev/null
+  $SSH $BOARD_USER@$B_IP "echo $B64 | base64 -d > /tmp/td_ws.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_ws.py" 2>/dev/null
   a wr $R_R8 0x14>/dev/null; b wr $R_R8 0x14>/dev/null   # idle-gated -> reanchored latches
   local w; for w in $(seq 1 6); do sleep 1.0; [ "$(reanchored)" = 1 ] && break; done
 }

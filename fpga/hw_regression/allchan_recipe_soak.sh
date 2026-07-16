@@ -97,11 +97,14 @@ power_cycle_one(){ local hub="$1"
   fpgahub hub power-cycle "$hub" --off 2 --yes >/dev/null 2>&1 || { echo "  power-cycle FAILED: $hub"; return 1; }
 }
 BOARD_PW=${TD_BOARD_PW:-xilinx}
+# Board login — one knob, defaults to xilinx (the PYNQ-Z2 image) so Z2 runs are
+# unchanged; set TD_BOARD_USER for images that use a different login.
+BOARD_USER=${TD_BOARD_USER:-xilinx}
 wait_ssh(){ local ip="$1" i
   # boards are password-auth (sshpass), NOT key/BatchMode — match td_v2_hwlib.sh
   for i in $(seq 1 40); do
     sshpass -p "$BOARD_PW" ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=4 "xilinx@$ip" true >/dev/null 2>&1 && return 0
+      -o LogLevel=ERROR -o ConnectTimeout=4 "$BOARD_USER@$ip" true >/dev/null 2>&1 && return 0
     sleep 2
   done
   return 1

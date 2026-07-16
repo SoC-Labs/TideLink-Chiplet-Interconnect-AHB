@@ -138,8 +138,8 @@ power_cycle(){ local hub="$1" ip="$2" i
 BOOTPY_SAFE_UPTIME=${BOOTPY_SAFE_UPTIME:-120}
 wait_bootpy(){ local ip="$1" i st up
   for i in $(seq 1 72); do
-    st=$($SSH xilinx@"$ip" "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
-    up=$($SSH xilinx@"$ip" "cut -d. -f1 /proc/uptime" 2>/dev/null | tr -d '[:space:]')
+    st=$($SSH $BOARD_USER@"$ip" "systemctl is-active bootpy.service 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+    up=$($SSH $BOARD_USER@"$ip" "cut -d. -f1 /proc/uptime" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$up" ] && [ "$up" -ge "$BOOTPY_SAFE_UPTIME" ] && [ "$st" != "activating" ]; then
       log "  $ip: bootpy=${st:-<unqueryable>} uptime=${up}s (>=${BOOTPY_SAFE_UPTIME}s) -> safe to deploy"
       return 0
@@ -263,7 +263,7 @@ else
   say "         STOPPING: this is the headline; 20 soak cycles would bury it."
   log "Phase 2: die_a wedged on the peered arm — stopping by design"
   { echo '--- die_a dmesg tail ---'
-    $SSH xilinx@$A_IP "dmesg | tail -25" 2>/dev/null; } >> "$RUNDIR/phase2_dmesg.txt" 2>&1
+    $SSH $BOARD_USER@$A_IP "dmesg | tail -25" 2>/dev/null; } >> "$RUNDIR/phase2_dmesg.txt" 2>&1
   say "         dmesg captured -> phase2_dmesg.txt"
   exit 10
 fi

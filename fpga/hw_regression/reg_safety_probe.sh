@@ -83,7 +83,7 @@ for d in $DIES; do
   ip=$(die_ip "$d" 2>/dev/null || { [ "$d" = a ] && echo "$A_IP" || echo "$B_IP"; })
   echo "== die_$d ($ip) register-safety probe (autonomy should be DISARMED) =="
   b64=$(probe_py | base64 -w0)
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_regprobe.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_regprobe.py" 2>&1 | sed 's/^/  /'
+  $SSH "$BOARD_USER@$ip" "echo $b64 | base64 -d > /tmp/td_regprobe.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_regprobe.py" 2>&1 | sed 's/^/  /'
   echo ""
 done
 echo "VERDICT KEY:"

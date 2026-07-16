@@ -182,14 +182,15 @@ uint32_t tl_perf_get_id(tl_perf_t *perf)
     return perf_read(perf, TL_PERF_ID_OFFSET);
 }
 
-uint32_t tl_perf_get_scratch(tl_perf_t *perf)
+uint32_t tl_perf_get_cong_state(tl_perf_t *perf)
 {
-    return perf_read(perf, TL_DBG_SCRATCH_OFFSET);
+    return perf_read(perf, TL_PERF_CONG_STATE_OFFSET);
 }
 
-void tl_perf_set_scratch(tl_perf_t *perf, uint32_t val)
+uint32_t tl_perf_get_ewma_credit(tl_perf_t *perf)
 {
-    perf_write(perf, TL_DBG_SCRATCH_OFFSET, val);
+    return (perf_read(perf, TL_PERF_CONG_STATE_OFFSET) &
+            TL_PERF_CONG_EWMA_CREDIT_Msk) >> TL_PERF_CONG_EWMA_CREDIT_Pos;
 }
 
 uint32_t tl_perf_get_live(tl_perf_t *perf)
@@ -239,5 +240,14 @@ void tl_perf_dump(tl_perf_t *perf)
     printf("Live            : 0x%08lX\n", (unsigned long)perf_read(perf, TL_DBG_LIVE_OFFSET));
     printf("TX in-flight    : %lu\n", (unsigned long)perf_read(perf, TL_DBG_TX_INFLIGHT_OFFSET));
     printf("RX in-flight    : %lu\n", (unsigned long)perf_read(perf, TL_DBG_RX_INFLIGHT_OFFSET));
-    printf("Scratch         : 0x%08lX\n", (unsigned long)perf_read(perf, TL_DBG_SCRATCH_OFFSET));
+    {
+        uint32_t cong = perf_read(perf, TL_PERF_CONG_STATE_OFFSET);
+        printf("Cong EWMA credit: %lu\n",
+               (unsigned long)((cong & TL_PERF_CONG_EWMA_CREDIT_Msk) >>
+                               TL_PERF_CONG_EWMA_CREDIT_Pos));
+        printf("Cong level/trend: %lu / %lu%s\n",
+               (unsigned long)((cong & TL_PERF_CONG_LEVEL_Msk) >> TL_PERF_CONG_LEVEL_Pos),
+               (unsigned long)((cong & TL_PERF_CONG_TREND_Msk) >> TL_PERF_CONG_TREND_Pos),
+               (cong & TL_PERF_CONG_STARVE_STICKY_Msk) ? "  [credit-starve sticky]" : "");
+    }
 }

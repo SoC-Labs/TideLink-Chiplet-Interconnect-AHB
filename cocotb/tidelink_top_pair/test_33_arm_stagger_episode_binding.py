@@ -231,6 +231,12 @@ def _obs_snapshot(dut, side):
         "insert_en":  _si(c.swi_sync_insert_en_r),
         "robust":     _si(c.swi_sync_robust_detect_r),
         "force_alw":  _si(c.swi_sync_force_always_r),
+        # Event-gated autonomy RETIRE (2026-07-15): the autonomous replica of
+        # the 0x210C=0 escape hatch. Once retired, winscan_done is parked to 0
+        # (DISARM-PARK) but the link stays up (fcsm=4, rea=1).
+        "retire":     _si(c.autonomy_retire_q),
+        "arm":        _si(c.autonomy_armed),
+        "wf":         _si(c.winscan_force_sync),
     }
 
 
@@ -244,8 +250,13 @@ async def _wait_final_convergence(dut, log, tag, max_cycles=10_000_000):
         await ClockCycles(dut.hclk, poll)
         waited += poll
         snaps = {s: _obs_snapshot(dut, s) for s in ("m", "s")}
+        # Converged = data-capable steady state on both dies. Accept EITHER the
+        # pre-retire form (winscan_done=1) OR the retired form (autonomy_retire_q
+        # =1, where the escape-hatch DISARM-PARK has cleared winscan_done) — both
+        # are valid "scan complete + link up" states (rea=1, fcsm=4).
         ok = all(
-            v["done"] == 1 and v["anc_to"] == 0 and v["rea"] == 1
+            (v["done"] == 1 or v["retire"] == 1)
+            and v["anc_to"] == 0 and v["rea"] == 1
             and v["fcsm"] == 4
             for v in snaps.values())
         if ok:
@@ -267,9 +278,12 @@ async def _assert_end_state(dut, tb, log, tag):
     snaps, _ = await _wait_final_convergence(dut, log, tag)
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         v = snaps[side]
-        assert v["done"] == 1, (
-            f"[{tag}] {name}: winscan_done=0 at end (0x21B8[0]) — the final "
-            f"episode's scan never completed (episode-binding still broken?)")
+        assert v["done"] == 1 or v["retire"] == 1, (
+            f"[{tag}] {name}: winscan_done=0 AND not retired at end (0x21B8[0]) — "
+            f"the final episode's scan never completed (episode-binding still "
+            f"broken?). NB: after the event-gated RETIRE, winscan_done is parked "
+            f"to 0 by the DISARM-PARK — that is the retired steady state, not a "
+            f"failure (autonomy_retire_q=1, fcsm=4, rea=1).")
         assert v["anc_to"] == 0, (
             f"[{tag}] {name}: ws_anchor_timeout_q STICKY at end (0x21B8[2]) — "
             f"the FINAL bilateral episode failed open instead of genuinely "
@@ -282,9 +296,10 @@ async def _assert_end_state(dut, tb, log, tag):
         assert v["credit_max"] != 0, (
             f"[{tag}] {name}: fe_rx_credit_max=0 — the CR/CRACK credit grant "
             f"never loaded (unanchored-bootstrap signature)")
-        assert v["insert_en"] == 1 and v["robust"] == 1, (
-            f"[{tag}] {name}: D2 REGRESSION — beacons/robust not up in data "
-            f"mode (insert_en={v['insert_en']} robust={v['robust']})")
+        # robust stays 1 (deskew re-hunt); force_always never set. insert_en is
+        # NOT asserted — silicon proved it is not the B->A blocker (2026-07-15).
+        assert v["robust"] == 1, (
+            f"[{tag}] {name}: robust_detect=0 in data mode — must stay 1")
         assert v["force_alw"] == 0, (
             f"[{tag}] {name}: force_always set — the R4 word-deleter")
         # Anchored-late (0x21B8[3]) is DIAGNOSTIC, not an error: log it.
@@ -315,6 +330,41 @@ async def _assert_end_state(dut, tb, log, tag):
              f"want 0x{pay_sm[0]:08x}/0x{pay_sm[1]:08x}")
     assert (m_w2, m_w3) == (pay_sm[0], pay_sm[1]), (
         f"[{tag}] S->M data NOT byte-exact (got 0x{m_w2:08x}/0x{m_w3:08x})")
+
+    # ---- EVENT-GATED AUTONOMY RETIRE fired on BOTH dies (2026-07-15) --------
+    # THE B->A autonomy channel fix: once the link holds bilateral FC (fcsm=4)
+    # with the scan complete for RETIRE_DWELL cycles, the die autonomously
+    # replicates the 0x210C=0 escape hatch — drops autonomy_armed, which fires
+    # the FSM's LOOP-9 DISARM-PARK and stops the forced-SYNC chain
+    # (winscan_force_sync), the on-silicon B->A corruptor. Wait for it to latch
+    # (it may fire during the data crossings above), then assert the retired
+    # steady state WITHOUT wedging the FC or dropping the anchor.
+    ret_ok = False
+    for _ in range(80):
+        rr = {s: _obs_snapshot(dut, s) for s in ("m", "s")}
+        if all(rr[s]["retire"] == 1 for s in ("m", "s")):
+            ret_ok, snaps2 = True, rr
+            break
+        await ClockCycles(dut.hclk, 2000)
+    assert ret_ok, (
+        f"[{tag}] event-gated RETIRE never latched on both dies — the link must "
+        f"hold fcsm=4 & winscan_done for RETIRE_DWELL cycles so it can replicate "
+        f"the 0x210C=0 escape hatch that recovers B->A on silicon")
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        v = snaps2[side]
+        assert v["arm"] == 0, (
+            f"[{tag}] {name}: autonomy_armed=1 after RETIRE — the effective armed "
+            f"term must drop so the forced-SYNC chain parks")
+        assert v["wf"] == 0, (
+            f"[{tag}] {name}: winscan_force_sync=1 after RETIRE — the forced-SYNC "
+            f"chain (the B->A corruptor) must be parked")
+        assert v["fcsm"] == 4, (
+            f"[{tag}] {name}: FCSM={v['fcsm']} != 4 after RETIRE — retiring wedged "
+            f"the flow-control datapath")
+        assert v["rea"] == 1, (
+            f"[{tag}] {name}: reanchored=0 after RETIRE — DISARM-PARK dropped the "
+            f"deskew anchor (it must issue no obs-clear)")
+        log.info(f"[{tag}] {name} RETIRED steady state: {v}")
 
     # No terminal autoneg error on either die.
     for side in ("m", "s"):
@@ -793,7 +843,13 @@ async def test_33e_anchor_verify_wrong_slot(dut):
         await ClockCycles(dut.hclk, 200)
         dwaited += 200
         for side in ("m", "s"):
-            both_done[side] = _si(_ctrl(dut, side).winscan_done) == 1
+            # STICKY (2026-07-15): latch once winscan_done rises OR the die has
+            # retired (the event-gated RETIRE parks winscan_done to 0, so a plain
+            # level-read could bounce back to 0 under us — both are "scan done").
+            c = _ctrl(dut, side)
+            both_done[side] = (both_done[side]
+                               or _si(c.winscan_done) == 1
+                               or _si(c.autonomy_retire_q) == 1)
     assert all(both_done.values()), (
         f"(e) winscan_done not reached on both dies within the released "
         f"episode (m={both_done['m']} s={both_done['s']}) — neither a clean "

@@ -210,13 +210,15 @@ merge-guard:
   # arbiter (ext_lock_q / EXT_STALL_LIMIT). Resolving those files toward the wrong
   # trunk silently reverts them with every sim still green — a dead chip that no
   # functional test catches. A grep is cheap; a respin is not.
-  # allow_failure:true for now; consolidation W3 flips this to false on the
-  # integ branch once merge_guard.sh is confirmed green on the merged baseline.
+  # 2026-07-16 (consolidation W3): flipped to blocking — merge_guard.sh is confirmed
+  # GREEN on the integ trunk (fe_tx_credit_max_eff, ext_lock_q, EXT_STALL_LIMIT, FCSM
+  # 0-4 flist resolution all present). A silent revert of a silicon-proven fix now
+  # fails the pipeline.
   stage: lint
   needs: [clone, preflight]
   script:
     - cd "$WORK_DIR" && bash fpga/scripts/merge_guard.sh
-  allow_failure: true
+  allow_failure: false
 
 hal-lint:
   stage: lint
@@ -315,7 +317,7 @@ sim-gate:
     - mkdir -p sim_gate
     - cp "$WORK_DIR/imp/sim_gate/"*.status "sim_gate/" 2>/dev/null || true
     - cp "$WORK_DIR/imp/sim_gate/"*.log     "sim_gate/" 2>/dev/null || true
-  allow_failure: true      # FLIP to false once green on the trunk (see comment)
+  allow_failure: false     # 2026-07-16 (consolidation W3): flipped — sim_gate 13/13 green on integ trunk
   artifacts:
     when: always
     paths:

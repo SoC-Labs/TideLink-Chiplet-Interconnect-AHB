@@ -78,26 +78,37 @@ module WavD2DGpio #(
   // SRCC (Y9) clock jitter/skew that holds its per-lane eye at width 2 (vs die_a MRCC
   // eye=16) -> marginal data capture. Requires a clean IP re-synth (IPCACHE clears).
   //
-  // SoC Labs 2026-07-16 (wip/rate-ladder) — CAPTURE-CLOCK BUFG FIX.
-  // Was hardcoded 1'b0, which pinned the capture axis to g_cap_passthrough in
-  // WavD2DGpioRx (w_pad_clk <= pad_clk_inv_scan_mux_1_io_o_z = a WavClockMux
-  // LUT output) => pad -> IBUF -> LUT -> GENERAL ROUTING -> 372 capture flops.
-  // That is the measured lane-7 capture-clock insertion delay of 15.281 ns vs
-  // ~8.2-8.8 ns on its siblings (routed die_a, 2026-07-14).
+  // SoC Labs 2026-07-16 (wip/rate-ladder) — DO NOT SET THIS TO USE_CLKBUF.
+  // Investigated as the "capture-clock BUFG fix" and REJECTED as UNSAFE.
   //
-  // The 1'b0 was justified by "the BD already does a single IBUFG->BUFG on
-  // pad_clk_rx so we don't multiply the pad load" (see the USE_CLKBUF header in
-  // WavD2DGpioRx.v:86-111). That premise is FALSE for pynq-z2-pair-all:
-  // tidelink_rxclk_buf is NEVER instantiated (tidelink_top.sv:67 is a comment
-  // only) and the BD wires the port straight through
-  // (tidelink_design.tcl:618) => there is NO BUFG on the capture clock at all.
+  // The reasoning that leads here is seductive and WRONG:
+  //   * TRUE:  1'b0 pins the capture axis to g_cap_passthrough in WavD2DGpioRx,
+  //            so w_pad_clk comes off pad_clk_inv_scan_mux_1_io_o_z (a
+  //            WavClockMux LUT) => LUT + general routing, not a global net.
+  //   * TRUE:  the "the BD already does a boundary IBUFG->BUFG" justification
+  //            for 1'b0 does NOT hold for pynq-z2-pair-all — tidelink_rxclk_buf
+  //            is never instantiated (tidelink_top.sv:67 is a comment) and the
+  //            BD wires pad_clk_rx straight to the IP (tidelink_design.tcl:618).
+  //   * FALSE: "io_pol=0, scan_mode=0 => same edge", the comment on g_cap_bufg
+  //            that makes bypassing the mux look free.
   //
-  // Setting this to USE_CLKBUF selects g_cap_bufg, whose
-  // `BUFG u_cap_bufg (.I(io_pad_clk), .O(w_cnt_clk))` takes the RAW io_pad_clk
-  // -- so it bypasses the scan mux AND buffers the net in one move (io_pol=0,
-  // scan_mode=0 are static on FPGA, so dropping the mux is safe here).
-  // Costs 8 BUFGs (Z7020 has 32). Sim/ASIC default USE_CLKBUF=0 => unchanged.
-  parameter USE_CAP_CLKBUF = USE_CLKBUF,
+  // io_pol = out_prepend_swi_polarity, which RESETS TO 1'h1 (see :1991 in this
+  // file). With io_pol=1 the pad_clk_inv_scan_mux selects the INVERTED pad
+  // clock, so the capture flops sample on the opposite edge to the counter —
+  // i.e. MID-CELL, which is exactly the centre-sample a source-synchronous
+  // forwarded-clock link needs. g_cap_bufg's
+  // `BUFG u_cap_bufg (.I(io_pad_clk), .O(w_cnt_clk)); w_pad_clk = w_cnt_clk`
+  // takes the RAW io_pad_clk and so DROPS that inversion, collapsing the
+  // capture point onto the data-launch edge => samples at the transition and
+  // kills the link. Confirmed independently in this tree; the same conclusion
+  // is documented at WavD2DGpioRx_v2.v:619-632 on branch phaseB/attack.
+  //
+  // The CORRECT fix for the LUT/general-route capture clock is the parent
+  // hoist on phaseB/attack (2c32c2b): replicate the mux chain ONCE at this
+  // level, buffer it through 2 shared BUFGs, and fan out to all 8 lanes via
+  // WavD2DGpioRx.USE_EXT_CAP_CLK — which PRESERVES the io_pol inversion and
+  // costs 2 BUFGs, not 8/16.
+  parameter USE_CAP_CLKBUF = 1'b0,
   parameter USE_LNK_CLKBUF = USE_CLKBUF,
   // SoC Labs §9 T3a (2026-05-19): self-aligning RX comma hunt. Per-lane
   // WavD2DGpioRx hunts for the per-lane training byte in the io_pad bit

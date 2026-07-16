@@ -136,7 +136,7 @@
 # already correct for 160 ns: set_output_delay +/-20 = 12.5% of period (the v36
 # value, which was authored for exactly this 160 ns), set_input_delay +/-4, and
 # set_max_delay 8.0. They must be rescaled for rungs 3/4.
-create_clock -period 80.000 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 40.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -185,8 +185,8 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # reference are the same forwarded edge, so Vivado balances rather than
 # hold-pads every lane. The far die samples MID-CELL (80 ns from either pad
 # transition), so +/-20 ns leaves >=60 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 10.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -10.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 5.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded
@@ -206,8 +206,8 @@ set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -10.000 [get_ports {pad
 #      reference for (3b)/(3c); it is intentionally generous (the calibrator
 #      handles dynamic skew — constraints only need to bound the STATIC,
 #      build-varying part).
-set_input_delay -clock [get_clocks pad_clk_rx] -max 2.000 [get_ports {pad_rx[*]}]
-set_input_delay -clock [get_clocks pad_clk_rx] -min -2.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -max 1.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -min -1.000 [get_ports {pad_rx[*]}]
 
 # (3b) Bound the pad_rx[n] -> first-stage capture flop path as a pure
 #      datapath delay (NOT a clocked setup/hold check -> no hold-fix

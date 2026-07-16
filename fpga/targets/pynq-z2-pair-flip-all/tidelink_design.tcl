@@ -213,7 +213,7 @@ proc create_root_design { parentCell } {
     # create_clock for it (see that file's rationale).
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
-        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {25.000} \
+        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {50.000} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \

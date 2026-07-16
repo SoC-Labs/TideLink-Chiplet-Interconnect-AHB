@@ -18,12 +18,26 @@
 #
 # THE RECORDED BUG THIS TARGETS
 #   "long-burst drops first ~2 words (both directions)" (2026-07-11, never
-#   fixed, never re-tested). NOTE (2026-07-15): this did NOT reproduce in sim —
-#   a 128-word burst is byte-exact in the V2 pair TB, and the sim "repro" turned
-#   out to be a harness artifact (see cocotb/tidelink_top_pair_v2/
-#   test_v2_pair_sustained.py). So this script is the instrument that decides
-#   whether the silicon report was a REAL device defect or was itself a harness
-#   artifact of the same family. Both outcomes are results; record either.
+#   re-tested since).
+#
+#   SIM STATUS (2026-07-15, see docs/SUSTAINED_DATA_2026_07_15.md):
+#     * EPOCH_PROFILE=zero  (ideal link): does NOT reproduce. Byte-exact to 126
+#       payload words both directions. The datapath/FIFO/credit are sound.
+#     * EPOCH_PROFILE=silicon (v37 fingerprint, 3-7 word cross-lane skew): DOES
+#       reproduce. s2m len=8 isolated -> first_bad_idx=0 with got[0]=payload[2]
+#       — the recorded silicon signature verbatim. m2s passes in isolation but
+#       fails after ACCUMULATED traffic.
+#   So the bug is skew-dependent, which is exactly why only real silicon can
+#   settle it. Expect s2m (B->A, the marginal direction) to be the one that
+#   fails here, and expect m2s to need SUSTAINED traffic before it does.
+#
+#   Two live mechanisms alias onto this one symptom — do not attribute without
+#   measuring:
+#     1. FCSM stream-start NACK/revert storm (fix/stream-start-loss 330e2a7,
+#        NOT in this base) — a LINK defect; wedges exp, loses leading words.
+#     2. Phantom-pop (fixed f9b94b7) — a READER defect; read_ptr walks 2 words.
+#   Discriminate with the RXDETAIL flags below: CREDIT_ABOVE_MAX/underrun point
+#   at the reader; a wedged link with fcsm/fe_full stuck points at the storm.
 #
 #   Note "~2 words" is also EXACTLY the phantom-pop signature (read_ptr walks 2
 #   words on an empty-FIFO read; project_rxfifo_empty_read_phantom_pop). If this

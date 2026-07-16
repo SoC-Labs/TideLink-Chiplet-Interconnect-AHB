@@ -32,9 +32,9 @@
 #     were never listed; added here after line-by-line verification.
 # These are pre-existing / verified-benign debt, tracked here so the gate
 # ratchets forward.
-src/rtl/local_overrides/axi_chiplet_controller.sv:985: COMB_NO_DEFAULT
-src/rtl/local_overrides/tidelink_autoneg.sv:541: COMB_NO_DEFAULT
-src/rtl/local_overrides/tidelink_autoneg.sv:542: CASE_NO_DEFAULT
+src/rtl/local_overrides/axi_chiplet_controller.sv:987: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:568: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:569: CASE_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1201: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1234: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1373: COMB_NO_DEFAULT

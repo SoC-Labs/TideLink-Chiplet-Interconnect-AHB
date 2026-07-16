@@ -110,7 +110,9 @@ while [ $# -gt 0 ]; do
     --no-lease) DO_LEASE=0;;
     --keep) KEEP_LEASE=1;;
     --no-deploy) DO_DEPLOY=0;;
-    -h|--help) sed -n '2,70p' "$0"; exit 0;;
+    # Print the whole leading comment block — a hardcoded line range rots the
+    # moment the header grows (it already had).
+    -h|--help) awk 'NR==1{next} /^[^#]/{exit} {print}' "$0"; exit 0;;
     *) echo "unknown option: $1"; exit 2;;
   esac
   shift

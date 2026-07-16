@@ -125,7 +125,20 @@ module tidelink_top #(
     // axi_chiplet_controller (see its WINSCAN_CONVERGE_LOCK_EN note). 1'b0 =
     // today's behaviour, bit-identical for sim/ASIC; the FPGA vivado wrapper
     // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
-    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
+    // HONEST_MASK_HS — peer-mask handshake authenticity gate (from kr260-pair-onchip).
+    //   0 (default) = legacy bench tie: the inner axi_chiplet_controller's
+    //       apb_debug_unlock_i / mask_hs_bypass_i are held 1'b1 (see the
+    //       u_chiplet_controller instantiation below), so mask_hs_gate_open is
+    //       permanently forced open. Single-die Z2/ASIC targets are BYTE-IDENTICAL
+    //       to today — a parameter-constant ternary folds to the historical 1'b1
+    //       ties at elaboration.
+    //   1 = drive the inner controller from the real top-level apb_debug_unlock_i /
+    //       mask_hs_bypass_i ports (declared but previously DISCARDED) so the
+    //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
+    //       to prove hardware autonomy without either bypass strap — and the intended
+    //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
+    parameter        HONEST_MASK_HS       = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2129,8 +2142,13 @@ module tidelink_top #(
         // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
         // lane mask) on the non-master die. Bench-debug straps; revisit when
         // re-enabling autoneg for production.
-        .apb_debug_unlock_i         (1'b1),
-        .mask_hs_bypass_i           (1'b1),
+        // HONEST_MASK_HS gate (from kr260-pair-onchip): default 0 folds both selects
+        // to the historical 1'b1 ties => byte-identical single-die netlist. With 1 they
+        // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
+        // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
+        // and the peer-mask handshake must genuinely match.
+        .apb_debug_unlock_i         (HONEST_MASK_HS ? apb_debug_unlock_i : 1'b1),
+        .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),

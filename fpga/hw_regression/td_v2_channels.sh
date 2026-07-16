@@ -16,8 +16,9 @@
 #   * Two bring-up modes: `manual` (deterministic poke recipe) and `autonomous`
 #     (arm-once NEGO_CFG=0x61, longer poll to absorb the div-2 link clock).
 #   * Channel gates run in a WEDGE-SAFE order (see main): cal=1 -> tl-data both
-#     directions (rotation-aware ring compare) -> doorbell -> XHB transparent
-#     window (timeout-wrapped, bounded, ONLY after data is proven).
+#     directions (rotation-aware ring compare) -> doorbell -> ptp (opt-in) ->
+#     XHB transparent window (timeout-wrapped, bounded, ONLY after data is
+#     proven).
 #
 # Runs ON a lab host that can SSH the PYNQ pair (e.g. mapstone-dev). Assumes
 # tl39.py is already staged on both boards (TL39 path, default /home/xilinx).
@@ -37,28 +38,90 @@
 #     bound it rather than trust the backstop alone);
 #   * the window soak is BOUNDED (WIN_SOAK_TXNS), never unbounded.
 #
+# -----------------------------------------------------------------------------
+# THE `ptp` CHANNEL (added 2026-07-15) — OPT-IN, NOT IN THE DEFAULT LIST.
+# -----------------------------------------------------------------------------
+# PTP only physically exists on the -ptp targets (kr260-pair-{,flip-}ptp, or
+# pynq-z2-pair-all built with TIDELINK_FPGA_PTP=1). On every other bitstream the
+# PHC hardware clock IP is NOT instantiated and its APB aperture (0x4405_0000) is
+# NOT in any AXI address segment.
+#
+# *** WHY OPT-IN AND NOT AUTO-DETECT ***  Detecting the PHC requires READING its
+# aperture, and on a non-PTP bitstream that read is itself the hazard: the
+# SmartConnect decodes it to nothing -> DECERR -> external abort on the PS. That
+# is the same failure class as the bootpy/base.bit incident (unmapped 0x4403_xxxx
+# => "external abort 0x018" => dead board, physical power-cycle). An auto-probe
+# that runs by DEFAULT would therefore fire that read on every existing non-PTP
+# run — exactly the wedge this script is built to avoid. So:
+#   * `ptp` is NOT in the default CHANNELS. Existing runs are bit-for-bit
+#     unaffected and never touch 0x4405_0000.
+#   * Selecting it (`--channels "data doorbell ptp"`) is the operator asserting
+#     "this is a -ptp bitstream".
+#   * Even then the FIRST PHC touch is a bounded CANARY (read+readback-verify the
+#     RW ns_incr register). If it does not answer, or answers implausibly, the
+#     channel reports SKIP — never FAIL — and touches nothing else.
+# The canary is still a real (small) risk on a mis-selected bitstream: a
+# programmed non-PTP TideLink PL should return DECERR promptly (SIGBUS kills the
+# tl39 process, board survives, we SKIP), but that is expected behaviour, not a
+# guarantee. Do not select `ptp` unless you know PTP is in the bitstream.
+#
+# What the ptp channel PROVES (see gate_ptp for the per-step argument):
+#   1. a LIVE, free-running PHC time base exists on BOTH dies (software-captured
+#      counter strictly advances between two throttled samples) — this is the
+#      anti-tie-off check; a tied/absent PHC reads a frozen constant;
+#   2. the master's HW_SYNC initiator actually EMITTED SYNCs (GM seq_num
+#      advances);
+#   3. the FULL PTP round trip crossed the link (slave servo reports a non-zero
+#      hardware-computed offset — only possible if SYNC TX(t1) -> SYNC RX(t2) ->
+#      DELAY_REQ TX(t3) -> DELAY_REQ RX(t4) -> FC SIDEBAND t1/t4 delivery ALL
+#      completed);
+#   4. the subordinate servo DISCIPLINED its clock (|offset| converges under
+#      TD_PTP_TOL_NS).
+# It deliberately does NOT use HW_SYNC_STATUS[18] (phc_locked): phc_locked_i is
+# tied 0 in EVERY FPGA bitstream (the BD never connects tidelink_0/phc_locked_i,
+# and PHC_LOCK_GATE_EN=0 so the initiator does not need it). That bit is the
+# exact "spurious tied-off pass" the sim test test_ptp_link_sync.py was written
+# to kill — reading it here would re-import the bug. Skew is likewise taken from
+# the servo's OWN hardware-computed offset register, NOT from differencing two
+# ssh-separated host captures: the ssh round-trip (~100s of ms) dwarfs the ns-scale
+# quantity, so a host-differenced "skew" would measure the instrument, not the DUT.
+#
+# --demo: PRESENTATION ONLY. Adds a per-channel banner (name / what it proves /
+# PASS-FAIL-SKIP / key measured numbers) and a closing summary table. It changes
+# NOTHING about what is tested, in what order, or the exit code — so the script
+# stays a CI gate with --demo on or off.
+#
 # USAGE:
 #   ./td_v2_channels.sh [--mode manual|autonomous] [--channels "data doorbell xhb"]
-#                       [--pors N] [--no-lease] [--keep] [-h]
+#                       [--pors N] [--demo] [--no-lease] [--keep] [-h]
+#   PTP demo (only on a -ptp bitstream):
+#     ./td_v2_channels.sh --demo --channels "data doorbell ptp xhb"
 #   Env overrides: TD_MASTER_IP TD_SLAVE_IP TD_MASTER_BOARD TD_SLAVE_BOARD
 #                  TD_TL39 TD_THROTTLE TD_BOARD_PW TD_LEASE TD_SSH_TIMEOUT
-# Exit code: 0 = every selected channel PASS, 1 = any FAIL/abort (CI gate).
+#                  TD_PHC_BASE TD_PHC_NS_INCR TD_PTP_TOL_NS TD_PTP_ROUNDS
+#                  TD_PTP_DWELL TD_PTP_STEP_NS
+# Exit code: 0 = every selected channel PASS (SKIP is not a failure),
+#            1 = any FAIL/abort (CI gate).
 # =============================================================================
 set -u
 
 # ----- CLI ------------------------------------------------------------------
 MODE=manual
+# NOTE: `ptp` is deliberately NOT here — it is opt-in (see the header). Adding it
+# to this default would fire a PHC-aperture read on every non-PTP bitstream.
 CHANNELS="data doorbell xhb"
 PORS=1
 DO_LEASE=1
 KEEP_LEASE=0
+DEMO=0
 while [ $# -gt 0 ]; do case "$1" in
   --mode)     MODE="$2"; shift;;
   --channels) CHANNELS="$2"; shift;;
   --pors)     PORS="$2"; shift;;
+  --demo)     DEMO=1;;
   --no-lease) DO_LEASE=0;;
   --keep)     KEEP_LEASE=1;;
-  -h|--help)  sed -n '2,40p' "$0"; exit 0;;
+  -h|--help)  sed -n '2,105p' "$0"; exit 0;;
   *) echo "unknown arg: $1 (see -h)"; exit 2;;
 esac; shift; done
 case "$MODE" in manual|autonomous) ;; *) echo "bad --mode: $MODE"; exit 2;; esac
@@ -73,6 +136,41 @@ LEASE_NAME=${TD_LEASE:-bridge1}
 THROTTLE=${TD_THROTTLE:-0.25}               # sleep between board reads (PS-wedge guard)
 SSH_TIMEOUT=${TD_SSH_TIMEOUT:-10}           # per-call ssh wall-clock timeout (s)
 WIN_SOAK_TXNS=${TD_WIN_SOAK_TXNS:-8}        # BOUNDED XHB window soak transaction count
+
+# ----- ptp channel knobs (only ever used if `ptp` is explicitly selected) ----
+PHC_BASE=${TD_PHC_BASE:-0x44050000}   # PHC hardware-clock APB. Z2 pair-all + kr260
+                                      # -ptp both map it here (GP0/HPM0). Override
+                                      # for any target that relocates it.
+PHC_NS_INCR=${TD_PHC_NS_INCR:-40}     # ns added per phc_clk cycle. phc_clk = clk_wiz
+                                      # clk_out2, CONFIG.CLKOUT2_REQUESTED_OUT_FREQ
+                                      # {25.000} in BOTH pynq-z2-pair-all and
+                                      # kr260-pair-ptp tidelink_design.tcl => 25 MHz
+                                      # => 40 ns. (The "50 MHz" in those tcl HEADER
+                                      # comments and in phc_vivado_wrapper.v's
+                                      # "write NS_INCR=20" operator note are STALE —
+                                      # the live clk_wiz CONFIG is authoritative.)
+                                      # The PHC core POR is 4 (250 MHz ASIC target),
+                                      # so this MUST be written or the counter runs
+                                      # 10x slow. Rate only affects the reported
+                                      # ns/s diagnostic, never the pass/fail gate.
+PTP_ROUNDS=${TD_PTP_ROUNDS:-6}        # BOUNDED servo-offset samples (never a poll loop)
+PTP_DWELL=${TD_PTP_DWELL:-1.0}        # seconds between servo-offset samples
+PTP_STEP_NS=${TD_PTP_STEP_NS:-12000}  # SERVO_STEP_THRESH: above this the servo takes a
+                                      # coarse SET_TIME phase step, below it rides the
+                                      # PI frequency steer. Mirrors the sim test.
+PTP_TOL_NS=${TD_PTP_TOL_NS:-12000}    # convergence gate on |servo offset|.
+                                      # *** UNCALIBRATED ON SILICON ***  Chosen to
+                                      # mirror test_ptp_link_sync.py (sim: init skew
+                                      # 20000 ns -> steady |skew| ~4290 ns, gate
+                                      # worst |offset| <= 12000). The FPGA link runs
+                                      # far slower (6.25 MHz, /2 => 3.125 MHz) than
+                                      # the sim, so real t1..t4 latency — and thus the
+                                      # irreducible residual — may be LARGER. If the
+                                      # first hardware run fails ONLY this gate while
+                                      # offsets are clearly converging, that is a
+                                      # tolerance calibration, not a DUT regression:
+                                      # re-run with TD_PTP_TOL_NS raised and record
+                                      # the measured floor.
 
 # ----- register map (AUTHORITATIVE — current July deterministic methodology) -
 #   APB base 0x4403_0000; TideLink cfg region at 0x4403_2000. Data on GP1.
@@ -98,6 +196,48 @@ R_FCCTRL=0x44030208          # LL/FC-node bootstrap triplet target
 R_FCQUIESCE=0x44030230       # FC-node quiesce (pre-bootstrap)
 R_DOORBELL=0x44032014        # WO: write -> ring doorbell to peer (self-clearing)
 R_DOORBELL_ACC=0x44032024    # W-add / R-clear: doorbell responses RECEIVED from peer
+
+# --- PTP / servo registers (TideLink APB cfg block, base 0x4403_2000) --------
+# These live in the SAME always-mapped aperture as every other register above:
+# they exist in EVERY bitstream, PTP or not (on a non-PTP build the block is
+# present but its phc_* inputs are tied to zero xlconstants). Reading them is
+# therefore as safe as reading R_STATUS. Offsets cross-checked against
+# src/rtl/fifo/tidelink_apb_regs.sv (apb_region/servo_reg_addr decode),
+# src/rtl/tidelink_ptp.sv and src/rtl/tidelink_ptp_servo.sv, and they match the
+# sim map in cocotb/tidelink_top_pair/test_ptp_link_sync.py 1:1.
+R_PTP_CTRL=0x44032034        # [0] ptp_enable (short-packet engine: RX accept + TX)
+R_HW_SYNC_CTRL=0x44032040    # [0] enable [1] seq_clear(W1C) [2] force_en
+R_HW_SYNC_INTERVAL=0x44032044
+R_HW_SYNC_STATUS=0x44032048  # [0] active [1] busy [17:2] seq_num [18] phc_locked
+                             # [18] is TIED 0 in every FPGA build (BD never connects
+                             # tidelink_0/phc_locked_i) — NEVER gate on it. See header.
+R_SERVO_CTRL=0x4403204C      # [0] enable [1] mode (0=Grandmaster, 1=Subordinate)
+R_SERVO_STEP=0x44032058      # servo_step_thresh_r — coarse SET_TIME step threshold (ns)
+R_SERVO_STATUS=0x4403205C    # [0] servo_locked [1] active(gm|sub)
+R_SERVO_OFFSET=0x44032060    # last_offset_r — SIGNED ns, computed IN HARDWARE from
+                             # t1..t4. Host-jitter immune: this is the instrument.
+R_SERVO_DELAY=0x44032064     # last_delay_r — ns
+SERVO_GM=0x1                 # enable, mode=0 -> Grandmaster
+SERVO_SUB=0x3                # enable, mode=1 -> Subordinate
+HW_SYNC_FORCE=0x5            # [2] force_en | [0] enable -> fire immediately + free-run
+
+# --- PHC hardware-clock APB (0x4405_0000) — PRESENT ONLY ON -ptp BITSTREAMS --
+# *** Do not read ANY of these unless the `ptp` channel was explicitly selected.
+# *** On a non-PTP bitstream this aperture is unmapped => DECERR. See header.
+# Offsets from src/rdl/phc_regs.rdl (region 0 = core cfg, region 1 = SW capture).
+R_PHC_CTRL=$(printf 0x%08x $(( PHC_BASE + 0x000 )))    # [0] en [1] set_time [2] capture
+R_PHC_STATUS=$(printf 0x%08x $(( PHC_BASE + 0x004 )))  # [0] running [1] pps_sticky(RC)
+R_PHC_NS_INCR=$(printf 0x%08x $(( PHC_BASE + 0x008 ))) # [7:0] ns per phc_clk cycle (RW)
+R_PHC_CAP_SEC_LO=$(printf 0x%08x $(( PHC_BASE + 0x020 )))  # SW-captured seconds[31:0]
+R_PHC_CAP_NS=$(printf 0x%08x $(( PHC_BASE + 0x028 )))      # SW-captured nanoseconds[29:0]
+PHC_EN=0x1                   # ctrl: en
+PHC_EN_CAP=0x5               # ctrl: en | capture (capture is singlepulse/self-clearing)
+                             # This is the REGION 1 software capture. It is explicitly
+                             # independent of the REGION 2 HW_CAP_* registers that the
+                             # PTP datapath uses (phc_regs.rdl: "preventing contention
+                             # between PTP hardware captures and software diagnostic
+                             # captures"), so sampling here cannot perturb the servo.
+
 TX_BASE=${TIDELINK_TX_BASE:-0x84000000}     # GP1 AHB_TX data aperture
 RX_BASE=${TIDELINK_RXFIFO_BASE:-0x84010000} # GP1 RX FIFO data aperture
 XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_GP0)
@@ -136,6 +276,11 @@ ok(){    TD_PASS=$((TD_PASS+1)); DETAIL+=("    ok   $1"); }
 bad(){   TD_FAIL=$((TD_FAIL+1)); DETAIL+=("    FAIL $1"); }
 assert(){ if [ "$2" = "$3" ]; then ok "$1: $3"; else bad "$1: got=$3 want=$2"; return 1; fi; }
 flush(){ [ ${#DETAIL[@]} -gt 0 ] && printf '%s\n' "${DETAIL[@]}"; DETAIL=(); }
+
+# ----- small numeric helpers ------------------------------------------------
+s32(){ local v=$(( ${1:-0} & 0xFFFFFFFF ))   # 32-bit two's-complement -> signed
+       if [ $(( (v>>31)&1 )) = 1 ]; then echo $(( v - 4294967296 )); else echo "$v"; fi; }
+iabs(){ if [ "${1:-0}" -lt 0 ]; then echo $(( 0 - $1 )); else echo "${1:-0}"; fi; }
 
 # ----- lease + board health -------------------------------------------------
 board_up(){ ping -c1 -W2 "$1" >/dev/null 2>&1; }
@@ -211,11 +356,13 @@ gate_link(){
   # cal=1 is the safety gate for EVERY downstream channel — fail the gate if
   # link was not reached OR any of the four asserts fell (fcsm=4 with cal=0 must
   # NOT be allowed to proceed to the data push).
-  local gfail=0
-  assert "fcsm master" 4 "$(fcsm m)" || gfail=1
-  assert "fcsm slave"  4 "$(fcsm s)" || gfail=1
-  assert "cal master"  1 "$(cal m)"  || gfail=1
-  assert "cal slave"   1 "$(cal s)"  || gfail=1
+  local gfail=0 fm fs cm cs
+  fm=$(fcsm m); fs=$(fcsm s); cm=$(cal m); cs=$(cal s)
+  assert "fcsm master" 4 "$fm" || gfail=1
+  assert "fcsm slave"  4 "$fs" || gfail=1
+  assert "cal master"  1 "$cm" || gfail=1
+  assert "cal slave"   1 "$cs" || gfail=1
+  metric "master fcsm=$fm cal=$cm | slave fcsm=$fs cal=$cs (want fcsm=4 cal=1) | mode=$MODE"
   [ "$ok" = 0 ] && [ "$gfail" = 0 ]
 }
 
@@ -287,11 +434,16 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# Set once the FC handoff + R8 data-mode entry has been performed, so gate_ptp
+# does not re-quiesce a live FC node when `data` already ran.
+DATA_MODE_DONE=0
+
 gate_data(){
   handoff
   m wr $R_FCCTRL 0x00027f07>/dev/null; s wr $R_FCCTRL 0x00027f07>/dev/null; sleep 0.5
   m wr $R_R8 $R8_DATA>/dev/null;       s wr $R_R8 $R8_DATA>/dev/null;       sleep 0.5
-  local rc=0 n=$((PAYLOAD_N+2))
+  DATA_MODE_DONE=1
+  local rc=0 n=$((PAYLOAD_N+2)) a_ok=0 b_ok=0
 
   # NO pre-send `rxn` drain. `rxn` is a RAW ADDRESS SWEEP, and reading an EMPTY RX
   # FIFO used to pop a PHANTOM zero-length packet: a read of offset 0 latched a
@@ -308,7 +460,7 @@ gate_data(){
   m txburst $aw >/dev/null 2>&1; sleep 1.2
   local arx; arx=$(s rxn $n); sleep "$THROTTLE"
   DETAIL+=("    [a2b rx] ${arx:0:64}...")
-  if frame_compare a2b $aw -- $arx; then ok "tl-data A->B (28w framed, byte-exact)"
+  if frame_compare a2b $aw -- $arx; then ok "tl-data A->B (28w framed, byte-exact)"; a_ok=1
   else bad "tl-data A->B (28w framed, byte-exact)"; rc=1; fi
 
   # ---- B->A ----  (guarded: slave is sender, master receives)
@@ -316,25 +468,224 @@ gate_data(){
   s txburst $bw >/dev/null 2>&1; sleep 1.2
   local brx; brx=$(m rxn $n); sleep "$THROTTLE"
   DETAIL+=("    [b2a rx] ${brx:0:64}...")
-  if frame_compare b2a $bw -- $brx; then ok "tl-data B->A (28w framed, byte-exact)"
+  if frame_compare b2a $bw -- $brx; then ok "tl-data B->A (28w framed, byte-exact)"; b_ok=1
   else bad "tl-data B->A (28w framed, byte-exact)"; rc=1; fi
+  metric "A->B $([ $a_ok = 1 ] && echo "$((PAYLOAD_N*4))/$((PAYLOAD_N*4))" || echo "MISMATCH")\
+ bytes byte-exact | B->A $([ $b_ok = 1 ] && echo "$((PAYLOAD_N*4))/$((PAYLOAD_N*4))" || echo "MISMATCH") bytes byte-exact"
   return $rc
 }
 
 # GATE 2 — doorbell. Ring the doorbell from each die; the peer's RESPONSE_ACC
 # (W-add / R-clear) must increment. Read-clears, so read once and compare >0.
 gate_doorbell(){
-  local rc=0 before after
+  local rc=0 before after ms_acc=0 sm_acc=0
   # master -> slave
   s rd $R_DOORBELL_ACC >/dev/null 2>&1; sleep "$THROTTLE"     # clear
   m wr $R_DOORBELL 0x1 >/dev/null; sleep 0.4
-  after=$(val "$(srd $R_DOORBELL_ACC)")
+  after=$(val "$(srd $R_DOORBELL_ACC)"); ms_acc=$after
   if [ "$after" -gt 0 ]; then ok "doorbell M->S (acc=$after)"; else bad "doorbell M->S (acc=0)"; rc=1; fi
   # slave -> master
   m rd $R_DOORBELL_ACC >/dev/null 2>&1; sleep "$THROTTLE"
   s wr $R_DOORBELL 0x1 >/dev/null; sleep 0.4
-  after=$(val "$(mrd $R_DOORBELL_ACC)")
+  after=$(val "$(mrd $R_DOORBELL_ACC)"); sm_acc=$after
   if [ "$after" -gt 0 ]; then ok "doorbell S->M (acc=$after)"; else bad "doorbell S->M (acc=0)"; rc=1; fi
+  metric "M->S response count=$ms_acc | S->M response count=$sm_acc (each must be >0)"
+  return $rc
+}
+
+# GATE 2.5 — ptp (OPT-IN; auto-SKIPs when the PHC is absent). See the header for
+# the full safety argument. Returns 0=PASS, 1=FAIL, 77=SKIP (PHC not present).
+#
+# Sample a die's PHC "now" via the REGION 1 software capture: pulse ctrl.capture
+# (self-clearing) then read back the latched {seconds, nanoseconds}. Echoes total
+# ns, or "" if either read did not answer. Every read is THROTTLE-sleeved.
+phc_now_ns(){ # $1 = m|s
+  local d=$1 sec ns
+  $d wr $R_PHC_CTRL $PHC_EN_CAP >/dev/null; sleep "$THROTTLE"
+  if [ "$d" = m ]; then sec=$(mrd $R_PHC_CAP_SEC_LO); ns=$(mrd $R_PHC_CAP_NS)
+  else                  sec=$(srd $R_PHC_CAP_SEC_LO); ns=$(srd $R_PHC_CAP_NS); fi
+  if [ -z "$sec" ] || [ -z "$ns" ]; then echo ""; return 1; fi
+  # cap_nanoseconds is a 30-bit field; mask so a garbage upper bit cannot inflate it.
+  echo $(( $(val "$sec") * 1000000000 + ( $(val "$ns") & 0x3FFFFFFF ) ))
+}
+
+gate_ptp(){
+  local rc=0
+
+  # ---- STEP 0: PHC presence CANARY (bounded, 2 reads + 1 readback per die) ---
+  # The ONLY safe positive proof that a PHC register file is really there is an
+  # RW register that holds what we write. ns_incr is 8-bit RW, POR=4. Anything
+  # that is not a plausible ns_incr (no answer / 0 / bits above [7:0] set) means
+  # no PHC => SKIP, and we touch nothing else in the aperture.
+  local mi si
+  mi=$(mrd $R_PHC_NS_INCR); si=$(srd $R_PHC_NS_INCR)
+  if [ -z "$mi" ] || [ -z "$si" ]; then
+    DETAIL+=("    PHC canary: no answer from $R_PHC_NS_INCR (master='$mi' slave='$si')")
+    DETAIL+=("    -> aperture $PHC_BASE is not decoding: this is almost certainly a")
+    DETAIL+=("       NON-PTP bitstream. Build a -ptp target (TIDELINK_FPGA_PTP=1 /")
+    DETAIL+=("       SOC=kr260 PTP=1) to run this channel.")
+    metric "PHC absent at $PHC_BASE (canary: no answer) — nothing tested"
+    return 77
+  fi
+  local miv siv; miv=$(val "$mi"); siv=$(val "$si")
+  if [ $(( miv & 0xFFFFFF00 )) != 0 ] || [ $(( siv & 0xFFFFFF00 )) != 0 ] \
+     || [ "$miv" = 0 ] || [ "$siv" = 0 ]; then
+    DETAIL+=("    PHC canary: implausible ns_incr (master=$mi slave=$si);")
+    DETAIL+=("    ns_incr is an 8-bit field with POR=4 — bits [31:8] must read 0 and")
+    DETAIL+=("    it is never 0. This is a decode artefact, not a PHC. SKIP.")
+    metric "PHC absent at $PHC_BASE (canary: implausible ns_incr) — nothing tested"
+    return 77
+  fi
+  # Positive confirmation: write ns_incr and require the readback to stick.
+  m wr $R_PHC_NS_INCR $PHC_NS_INCR >/dev/null
+  s wr $R_PHC_NS_INCR $PHC_NS_INCR >/dev/null
+  mi=$(mrd $R_PHC_NS_INCR); si=$(srd $R_PHC_NS_INCR)
+  if [ "$(val "$mi")" != "$PHC_NS_INCR" ] || [ "$(val "$si")" != "$PHC_NS_INCR" ]; then
+    DETAIL+=("    PHC canary: ns_incr readback did not stick (wrote $PHC_NS_INCR,")
+    DETAIL+=("    read master=$mi slave=$si) — no live PHC register file. SKIP.")
+    metric "PHC at $PHC_BASE not writable (canary: readback mismatch) — nothing tested"
+    return 77
+  fi
+  DETAIL+=("    PHC canary OK on both dies (ns_incr=$PHC_NS_INCR readback verified)")
+
+  # ---- STEP 1: PHC free-run — the ANTI-TIE-OFF check -----------------------
+  # PROVES: each die has a LIVE, independently-clocked PHC time base. A tied-off
+  # or absent PHC returns a frozen constant, so a STRICTLY ADVANCING counter
+  # between two throttled samples cannot be faked by a tie-off. Gate on delta>0
+  # only (rate-agnostic): the implied ns/s is REPORTED as a diagnostic but not
+  # gated, because the host sleep is measured over ssh and is far too coarse to
+  # gate a clock rate on. (verify-the-instrument rule: do not assert on a number
+  # the instrument cannot resolve.)
+  m wr $R_PHC_CTRL $PHC_EN >/dev/null; s wr $R_PHC_CTRL $PHC_EN >/dev/null; sleep 0.2
+  local m_t0 s_t0 m_t1 s_t1 dwell=2
+  m_t0=$(phc_now_ns m); s_t0=$(phc_now_ns s)
+  if [ -z "$m_t0" ] || [ -z "$s_t0" ]; then
+    bad "PHC free-run: capture read did not answer (master='$m_t0' slave='$s_t0')"
+    metric "PHC capture unreadable after canary passed"
+    return 1
+  fi
+  sleep "$dwell"
+  m_t1=$(phc_now_ns m); s_t1=$(phc_now_ns s)
+  if [ -z "$m_t1" ] || [ -z "$s_t1" ]; then
+    bad "PHC free-run: second capture read did not answer"
+    metric "PHC second capture unreadable"
+    return 1
+  fi
+  local m_d=$(( m_t1 - m_t0 )) s_d=$(( s_t1 - s_t0 ))
+  DETAIL+=("    [phc] master advanced ${m_d} ns over ~${dwell}s of wall clock")
+  DETAIL+=("    [phc] slave  advanced ${s_d} ns over ~${dwell}s of wall clock")
+  DETAIL+=("    [phc] (implied rate is a DIAGNOSTIC only — the host sleep is measured")
+  DETAIL+=("     over ssh and cannot resolve a clock rate; the gate is strictly delta>0)")
+  # delta==0 => frozen (tied-off/absent time base). delta<0 => the counter went
+  # BACKWARDS, which a free-running PHC cannot do: the ns field wraps at 1e9 but
+  # carries into seconds, and phc_now_ns folds seconds back in — so a negative
+  # delta means a bad read or a stray set_time, not a wrap. Both are FAILs, but
+  # they are different faults, so do not report them with the same word.
+  if   [ "$m_d" -gt 0 ]; then ok "PHC master free-running (+${m_d} ns, not tied)"
+  elif [ "$m_d" = 0 ];   then bad "PHC master FROZEN (delta=0) — tied-off/absent time base"; rc=1
+  else bad "PHC master went BACKWARDS (delta=${m_d} ns) — bad read or stray set_time"; rc=1; fi
+  if   [ "$s_d" -gt 0 ]; then ok "PHC slave free-running (+${s_d} ns, not tied)"
+  elif [ "$s_d" = 0 ];   then bad "PHC slave FROZEN (delta=0) — tied-off/absent time base"; rc=1
+  else bad "PHC slave went BACKWARDS (delta=${s_d} ns) — bad read or stray set_time"; rc=1; fi
+  if [ "$rc" != 0 ]; then
+    metric "PHC free-run FAILED: master delta=${m_d} ns, slave delta=${s_d} ns over ${dwell}s"
+    return 1
+  fi
+
+  # ---- STEP 2: PTP SYNC over the link + servo discipline -------------------
+  # Needs data mode. gate_data already does the FC handoff + R8_DATA; only do it
+  # here if `data` was not selected, so we never re-quiesce a live FC node.
+  if [ "$DATA_MODE_DONE" != 1 ]; then
+    DETAIL+=("    (data channel not selected — running FC handoff + data mode for ptp)")
+    handoff
+    m wr $R_FCCTRL 0x00027f07>/dev/null; s wr $R_FCCTRL 0x00027f07>/dev/null; sleep 0.5
+    m wr $R_R8 $R8_DATA>/dev/null;       s wr $R_R8 $R8_DATA>/dev/null;       sleep 0.5
+  fi
+
+  # Roles: master = Grandmaster, slave = Subordinate. Ordering mirrors the sim's
+  # _setup_ptp: step threshold + servo roles BEFORE ptp_enable, ptp_enable before
+  # arming the initiator.
+  m wr $R_SERVO_STEP $PTP_STEP_NS>/dev/null; s wr $R_SERVO_STEP $PTP_STEP_NS>/dev/null
+  m wr $R_SERVO_CTRL $SERVO_GM   >/dev/null; s wr $R_SERVO_CTRL $SERVO_SUB  >/dev/null
+  m wr $R_PTP_CTRL   0x1         >/dev/null; s wr $R_PTP_CTRL   0x1         >/dev/null
+  sleep 0.3
+
+  local seq0; seq0=$(( ( $(val "$(mrd $R_HW_SYNC_STATUS)") >> 2 ) & 0xFFFF ))
+  DETAIL+=("    [ptp] GM seq before arm = $seq0")
+
+  # Arm the master initiator with force_en: it re-arms and re-fires continuously
+  # while held, which is what we want for a BOUNDED dwell (the alternative — the
+  # ~1 s HW_SYNC_INTERVAL — makes the whole channel minutes long). The sim fires
+  # one-shot because it can count hclk edges; over ssh we cannot, so we free-run
+  # for a bounded window and sample the servo a bounded number of times.
+  m wr $R_HW_SYNC_CTRL $HW_SYNC_FORCE>/dev/null
+
+  local i off offs_nonzero=0 last_off=0 first_abs=-1 worst_abs=0 a
+  for i in $(seq 1 "$PTP_ROUNDS"); do
+    sleep "$PTP_DWELL"
+    off=$(s32 "$(val "$(srd $R_SERVO_OFFSET)")")     # SUBORDINATE computes the offset
+    a=$(iabs "$off")
+    [ "$off" != 0 ] && offs_nonzero=$((offs_nonzero+1))
+    [ "$first_abs" = -1 ] && first_abs=$a
+    [ "$a" -gt "$worst_abs" ] && worst_abs=$a
+    last_off=$off
+    DETAIL+=("    [ptp] round $i/$PTP_ROUNDS: slave servo last_offset = ${off} ns")
+  done
+
+  local seq1; seq1=$(( ( $(val "$(mrd $R_HW_SYNC_STATUS)") >> 2 ) & 0xFFFF ))
+  local seq_adv=$(( (seq1 - seq0) & 0xFFFF ))
+  # STOP the free-running initiator BEFORE returning: leaving it armed would
+  # inject SYNC beacons into the XHB window gate that runs after us.
+  m wr $R_HW_SYNC_CTRL 0x0>/dev/null; sleep 0.2
+
+  local sstat; sstat=$(val "$(srd $R_SERVO_STATUS)")
+  local slocked=$(( sstat & 1 )) sactive=$(( (sstat>>1) & 1 ))
+  local sdelay;  sdelay=$(val "$(srd $R_SERVO_DELAY)")
+  local last_abs; last_abs=$(iabs "$last_off")
+
+  # Gate 1 — the GM initiator actually emitted SYNCs.
+  # PROVES: the master-side HW_SYNC FSM ran and pushed PTP short packets to the TX
+  # router. seq_num is incremented by hardware per fire; it cannot advance if no
+  # SYNC left the die.
+  if [ "$seq_adv" -gt 0 ]; then ok "PTP GM emitted SYNCs (seq $seq0 -> $seq1, +$seq_adv)"
+  else bad "PTP GM never fired (seq stuck at $seq0) — no SYNC crossed the link"; rc=1; fi
+
+  # Gate 2 — the FULL round trip completed.
+  # PROVES: SYNC TX(t1) -> link -> SYNC RX(t2) -> DELAY_REQ TX(t3) -> link ->
+  # DELAY_REQ RX(t4) -> GM ships t1,t4 over the FC SIDEBAND -> slave latches all
+  # four and computes offset = ((t2-t1)-(t4-t3))/2. A non-zero hardware-computed
+  # offset is only reachable if EVERY one of those hops worked. This is the real
+  # "PTP crossed the link" proof.
+  if [ "$offs_nonzero" -gt 0 ]; then
+    ok "PTP round trip complete (slave servo computed a real offset in $offs_nonzero/$PTP_ROUNDS rounds)"
+  else
+    bad "PTP round trip incomplete (slave servo offset stayed 0 in all $PTP_ROUNDS rounds)"
+    DETAIL+=("    -> SYNC/DELAY_REQ/FC-SIDEBAND did not complete end-to-end.")
+    rc=1
+  fi
+
+  # Gate 3 — convergence: the subordinate servo disciplined its clock.
+  # PROVES: the loop is closed — the servo drove |offset| into (and held it in)
+  # the fine PI frequency-steer regime rather than merely reporting an error.
+  # servo_locked (hardware: |offset| < step_thresh/4) is reported as corroboration;
+  # it is NOT the gate, since its threshold is not calibrated for this link speed.
+  DETAIL+=("    [ptp] servo_locked=$slocked active=$sactive last_delay=${sdelay} ns")
+  DETAIL+=("    [ptp] |offset|: first=${first_abs} worst=${worst_abs} final=${last_abs} ns (tol=${PTP_TOL_NS})")
+  if [ "$last_abs" -le "$PTP_TOL_NS" ]; then
+    ok "PTP servo converged (final |offset|=${last_abs} ns <= ${PTP_TOL_NS} ns, servo_locked=$slocked)"
+  else
+    bad "PTP servo did not converge (final |offset|=${last_abs} ns > ${PTP_TOL_NS} ns)"
+    DETAIL+=("    -> if the offsets above are clearly SHRINKING this is a TOLERANCE")
+    DETAIL+=("       calibration (TD_PTP_TOL_NS is UNCALIBRATED on silicon), not a")
+    DETAIL+=("       DUT regression. Record the measured floor and re-run.")
+    rc=1
+  fi
+
+  # Restore the pre-ptp link state so the XHB window gate sees a quiet link.
+  m wr $R_PTP_CTRL 0x0>/dev/null; s wr $R_PTP_CTRL 0x0>/dev/null
+  m wr $R_SERVO_CTRL 0x0>/dev/null; s wr $R_SERVO_CTRL 0x0>/dev/null; sleep 0.2
+
+  metric "PHC free-run M+${m_d}ns S+${s_d}ns/${dwell}s | GM SYNCs +${seq_adv} | offset ${first_abs}->${last_abs} ns (tol ${PTP_TOL_NS}, locked=${slocked})"
   return $rc
 }
 
@@ -356,17 +707,69 @@ gate_xhb_window(){
     else DETAIL+=("    [win $i] $addr got=$rv want=$wv"); rc=1; fi
   done
   assert "XHB window round-trip ($good/$WIN_SOAK_TXNS)" "$WIN_SOAK_TXNS" "$good"
+  metric "$good/$WIN_SOAK_TXNS transparent write+readback round-trips to peer memory at $XHB_WINDOW"
   return $rc
 }
 
-# ----- per-channel PASS/FAIL wrapper ----------------------------------------
+# ============================================================================
+# DEMO PRESENTATION (--demo)
+# ============================================================================
+# Reporting ONLY. Nothing below changes what is tested, the order it is tested
+# in, or the exit code — --demo must never alter the CI verdict.
+#
+# GATE_METRIC is the one-line "key measured numbers" a gate hands back for the
+# banner/summary. metric() is a pure sink: a gate that never calls it just shows
+# a blank metric column.
+GATE_METRIC=""
+CH_METRIC=()
+metric(){ GATE_METRIC="$1"; }
+
+# One line per channel: what a PASS on it actually proves.
+ch_proves(){ case "$1" in
+  link)     echo "both dies reach PHY calibration (cal=1) and a bilateral FC state machine (fcsm=4)";;
+  data)     echo "protocol-legal ${PAYLOAD_N}-word packets cross the link BYTE-EXACT in both directions";;
+  doorbell) echo "the peer doorbell signalling path works in both directions";;
+  ptp)      echo "a live PHC time base runs on both dies AND PTP SYNC/DELAY_REQ over the link disciplines the subordinate clock";;
+  xhb)      echo "the transparent AHB window: the host reads/writes PEER memory across the link";;
+  *)        echo "";;
+esac; }
+
+demo_open(){ [ "$DEMO" = 1 ] || return 0
+  echo ""
+  echo "########################################################################"
+  echo "#  CHANNEL : $1"
+  echo "#  PROVES  : $(ch_proves "$1")"
+  echo "########################################################################"
+}
+demo_close(){ [ "$DEMO" = 1 ] || return 0
+  echo "#  RESULT  : $2   (${3}s)"
+  [ -n "$GATE_METRIC" ] && echo "#  MEASURED: $GATE_METRIC"
+  echo "########################################################################"
+  echo ""
+}
+
+# ----- per-channel PASS/FAIL/SKIP wrapper -----------------------------------
+# Gate return contract: 0 = PASS, 77 = SKIP (channel not present in this
+# bitstream — NOT a failure), anything else = FAIL. SKIP deliberately does not
+# touch TD_PASS/TD_FAIL, so it cannot move the exit code either way.
 CH_RESULT=()
 run_gate(){ # name  fn
-  local name=$1 fn=$2 t0=$SECONDS
+  local name=$1 fn=$2 t0=$SECONDS rc res
+  GATE_METRIC=""
+  demo_open "$name"
   echo "== $name =="
-  if $fn; then printf "  [PASS] %-12s %ds\n" "$name" $((SECONDS-t0)); CH_RESULT+=("PASS $name")
-  else        printf "  [FAIL] %-12s %ds\n" "$name" $((SECONDS-t0)); CH_RESULT+=("FAIL $name"); fi
+  $fn; rc=$?
+  case $rc in
+    0)  res=PASS;;
+    77) res=SKIP;;
+    *)  res=FAIL;;
+  esac
+  printf "  [%s] %-12s %ds\n" "$res" "$name" $((SECONDS-t0))
+  CH_RESULT+=("$res $name")
+  CH_METRIC+=("$GATE_METRIC")
   flush
+  demo_close "$name" "$res" $((SECONDS-t0))
+  return 0
 }
 
 # ============================================================================
@@ -385,12 +788,20 @@ trap '[ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && lease_release' EXIT
 run_gate link gate_link
 case " ${CH_RESULT[*]} " in *"FAIL link"*) abort "no bilateral cal=1 link — downstream channels unsafe";; esac
 
-# Selected channels, in the fixed wedge-safe order (data -> doorbell -> xhb).
-for ch in data doorbell xhb; do
+# Selected channels, in the fixed wedge-safe order. This loop — NOT the order the
+# operator types --channels in — defines execution order, so a demo invocation
+# cannot accidentally hoist xhb ahead of data.
+#   data -> doorbell -> ptp -> xhb
+# ptp sits after doorbell (it needs a proven datapath: its SYNC/DELAY_REQ and FC
+# SIDEBAND ride the same link) and before xhb (which stays LAST — it is the most
+# wedge-prone channel). gate_ptp stops its free-running SYNC initiator before it
+# returns, so xhb still runs against a quiet link.
+for ch in data doorbell ptp xhb; do
   case " $CHANNELS " in *" $ch "*) ;; *) continue;; esac
   case $ch in
     data)     run_gate data     gate_data;;
     doorbell) run_gate doorbell gate_doorbell;;
+    ptp)      run_gate ptp      gate_ptp;;
     xhb)      run_gate xhb      gate_xhb_window;;
   esac
 done
@@ -403,4 +814,28 @@ echo "  asserts: $TD_PASS/$TOT passed"
 if [ "$TD_FAIL" = 0 ]; then echo "  PASS — all selected V2 channels intact"; RC=0
 else echo "  FAIL — $TD_FAIL assertion(s) regressed"; RC=1; fi
 echo "========================================================"
+
+# Demo summary. Printed AFTER the machine-readable block above and derived from
+# the same CH_RESULT/TD_FAIL data — it is a second view of the same verdict, not
+# a second verdict. RC is already final and is not touched here.
+if [ "$DEMO" = 1 ]; then
+  echo ""
+  echo "############ TideLink V2 — PER-CHANNEL DEMO SUMMARY ############"
+  i=0
+  for r in "${CH_RESULT[@]}"; do
+    res=${r%% *}; name=${r#* }
+    printf "  %-9s %-5s %s\n" "$name" "$res" "$(ch_proves "$name")"
+    [ -n "${CH_METRIC[$i]:-}" ] && printf "  %-9s %-5s measured: %s\n" "" "" "${CH_METRIC[$i]}"
+    i=$((i+1))
+  done
+  echo "  ---------------------------------------------------------------"
+  case " ${CH_RESULT[*]} " in *" SKIP "*)
+    echo "  NOTE: a SKIP means that channel is not present in this bitstream"
+    echo "        (e.g. ptp on a non-PTP target). It is NOT a failure and does"
+    echo "        not affect the exit code.";;
+  esac
+  if [ "$RC" = 0 ]; then echo "  OVERALL: PASS — every selected channel demonstrated"
+  else echo "  OVERALL: FAIL — $TD_FAIL assertion(s) regressed"; fi
+  echo "###############################################################"
+fi
 exit $RC

@@ -38,6 +38,7 @@ admits strictly behind the criterion-B + delivery-proof gates. No
 speculative TX, ever.
 """
 import argparse
+import ctypes
 import json
 import os
 import struct
@@ -84,13 +85,20 @@ class _DevMem(object):
                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
         return self._maps[base], addr - base
 
+    # SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+    # struct.pack_into/unpack_from on this ARMv7 PYNQ emit ~5 narrow bus beats
+    # per u32 (measured: a2l wptr +5/word) -- the "5x over-advance phantom".
+    # For a THROUGHPUT agent that is fatal: counter reads pop POP-on-read FIFOs
+    # 5x and every send fires ~5x, corrupting the very rate being measured.
+    # ctypes.c_uint32.from_buffer is exactly one aligned load/store per .value.
+    # Mirrors tlchar.py / tl39.py. Do not revert to struct.
     def rd(self, addr):
         m, o = self._mm(addr)
-        return struct.unpack_from("<I", m, o)[0]
+        return ctypes.c_uint32.from_buffer(m, o).value
 
     def wr(self, addr, val):
         m, o = self._mm(addr)
-        struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+        ctypes.c_uint32.from_buffer(m, o).value = val & 0xFFFFFFFF
 
     def idle(self):
         pass

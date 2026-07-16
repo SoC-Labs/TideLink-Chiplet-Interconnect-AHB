@@ -15,7 +15,7 @@
 #   recal             pulse slot0 bit1 keeping bit0 as-is
 #   txword VAL        write VAL to 0x44000000 (master M->S data test)
 #   rxword            read 0x44010000 (slave local RX FIFO)
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -26,10 +26,17 @@ def mm(addr):
         maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return maps[base], addr - base
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from on this target emit ~5 AHB beats per logical poke
+# (the "5x over-advance phantom"): W1P bits pulse 5x, POP-on-read FIFOs (rxword
+# @0x44010000) consume 5x. ctypes.c_uint32.from_buffer is exactly one aligned
+# load/store per .value. Do not revert to struct. (matches tl39.py, commit 7ce05c6)
+def _u32(a):
+    m, o = mm(a); return ctypes.c_uint32.from_buffer(m, o)
 def rd(a):
-    m, o = mm(a); return struct.unpack_from("<I", m, o)[0]
+    return _u32(a).value
 def wr(a, v):
-    m, o = mm(a); struct.pack_into("<I", m, o, v)
+    _u32(a).value = v & 0xFFFFFFFF
 
 R8       = 0x44032100   # slot0: [0] swi_training_mode(hold+drive)  [1] SWI_RECAL
 OBS      = 0x44032108   # lk/flt/cal/fcsm/llrx/cr/ck/...

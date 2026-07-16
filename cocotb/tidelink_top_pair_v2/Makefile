@@ -93,6 +93,23 @@ COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
 RELY_ON_RTL_PRIO_DEFAULTS ?= 0
 COMPILE_ARGS += +define+TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS=$(RELY_ON_RTL_PRIO_DEFAULTS)
 
+# ── Whole-word cross-lane corrector select (2026-07-09, from kr260-pblock) ───
+# tidelink_lane_deskew has two MUTUALLY EXCLUSIVE whole-word correctors. As
+# built (EPOCH_ANCHOR=0) it runs SYNC_REANCHOR — which never arms in this env,
+# because the bring-up leaves the SYNC beacon off (pair_v2_common.do_to_data_mode
+# writes R8_SLOT0=0). So the default build has NO active whole-word corrector,
+# and EPOCH_PROFILE=zero passes only because there is nothing to correct.
+#
+#   make EPOCH_PROFILE=staircase                 -> FAILS (no corrector)
+#   make EPOCH_PROFILE=staircase EPOCH_ANCHOR=1  -> PASSES (EPOCH anchor engaged)
+#
+# Keep the default at 0: it matches the silicon build bit-for-bit. See the
+# TL_EPOCH_ANCHOR_EN selector in deps/tidelink-phy/rtl/wav/WavD2DGpio.v.
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+COMPILE_ARGS += +define+TIDELINK_EPOCH_ANCHOR
+endif
+
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
 ifeq ($(EPOCH_PROFILE),zero)
@@ -149,13 +166,13 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-# BYPASS_AUTONEG rides in COMPILE_ARGS as a +define but does NOT change
-# SIM_BUILD's default name (the gate keeps sim_build_zero, bit-identical): only
-# the non-default BYPASS_AUTONEG!=1 (autonomous) compile gets an _auto suffix so
-# it can never reuse a stale gate simv (same trap the EPOCH note warns about).
-# Consolidation 2026-07-15: _prefixfc (integ) and _auto (phase2) are UNIONED —
-# PREFIX_FC exists on the integration branch, so both suffix terms are kept.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)
+# SIM_BUILD key — every knob that changes COMPILE_ARGS must appear here, because
+# cocotb recompiles on SOURCE timestamps, not COMPILE_ARGS, so two configs sharing
+# one sim_build silently rerun whichever binary built first (canary: the tb's
+# EPOCH_ANCHOR_EN / `deskew: m=? s=?` banner). Consolidation 2026-07-16 UNION of:
+#   _noanchor (EPOCH_ANCHOR_DIS), _anchor (EPOCH_ANCHOR — kr260-pblock),
+#   _eye (EYE_FAULT), _prefixfc (PREFIX_FC — integ), _auto (BYPASS_AUTONEG!=1 — phase2).
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

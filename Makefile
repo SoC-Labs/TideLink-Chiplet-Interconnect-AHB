@@ -304,6 +304,18 @@ sim_gate_v2_oddlane:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
 	    MODULE=test_v2_lane_mask_sweep LANE_MASK=0xE5 SIM_BUILD=sim_build_oddlane)
 
+# MASK-POSITION tripwire (2026-07-17). 0x65 = {0,2,5,6} has the SAME lane count
+# (4) and the same bytesPerCycle (8) as the working silicon mask 0xE4 = {2,5,6,7},
+# but differs in POSITION (it includes lane 0). Silicon: 0xE4 byte-exact, 0x65
+# all-zeros. Sim: BOTH byte-exact -> the RTL is position-generic and the silicon
+# split is NOT an RTL defect (it is winscan lane coverage; see the report).
+# This suite pins that position-genericity so an RTL change can never introduce
+# a real position dependence unnoticed.
+sim_gate_v2_lane_position:
+	$(call sim_gate_run,v2_lane_mask_position,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_sweep LANE_MASK=0x65 SIM_BUILD=sim_build_pos)
+
 sim_gate_v2_oddlane_negctl:
 	$(call sim_gate_run,v2_lane_mask_negctl,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
@@ -367,7 +379,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por \
-	v2_lane_mask_oddlane v2_lane_mask_negctl
+	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -395,7 +407,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (14 suites)"
+	@echo " sim_gate — full aggregate sim gate (15 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -410,6 +422,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
+	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 

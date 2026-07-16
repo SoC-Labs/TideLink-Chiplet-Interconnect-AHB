@@ -55,6 +55,10 @@
 #     --no-lease                   caller already holds the lease
 #     --keep                       do not release the lease on exit
 #     --no-deploy                  skip deploy (boards already carry the bits)
+#     --negctl                     run the ADVERSARIAL controls first (see
+#                                  negctl() below). Each MUST come out RED; a
+#                                  green control means the sweep's PASS is
+#                                  vacuous. Run this before quoting any PASS.
 #   env: TD_A_IP TD_B_IP TD_HUB_A TD_HUB_B TD_DEPLOY_DIR TD_DEPLOY_SH
 #        TD_AUTO_WAIT TD_THROTTLE TD_PKT_GAP
 #
@@ -99,7 +103,7 @@ PACKETS=8
 CYCLES=1
 DIRS="both"
 AUTONOMOUS=${TD_AUTONOMOUS:-1}
-DO_LEASE=1; KEEP_LEASE=0; DO_DEPLOY=1
+DO_LEASE=1; KEEP_LEASE=0; DO_DEPLOY=1; DO_NEGCTL=${TD_NEGCTL:-0}
 while [ $# -gt 0 ]; do
   case "$1" in
     --sizes) SIZES="$2"; shift;;
@@ -110,6 +114,7 @@ while [ $# -gt 0 ]; do
     --no-lease) DO_LEASE=0;;
     --keep) KEEP_LEASE=1;;
     --no-deploy) DO_DEPLOY=0;;
+    --negctl) DO_NEGCTL=1;;
     # Print the whole leading comment block — a hardcoded line range rots the
     # moment the header grows (it already had).
     -h|--help) awk 'NR==1{next} /^[^#]/{exit} {print}' "$0"; exit 0;;
@@ -194,11 +199,19 @@ def mm(a):
 def rd(a):
     m,o=mm(a); return ctypes.c_uint32.from_buffer(m,o).value
 n=int(sys.argv[1]); k=int(sys.argv[2]); seed=int(sys.argv[3],16)
+# Optional NEGATIVE-CONTROL knob (default 0 = normal scoring, bit-identical to
+# before this arg existed). shift>0 emulates the recorded "dropped the first
+# `shift` words" defect by shifting the EXPECTATION, so a correct transfer must
+# be scored FAIL with FIRSTBAD=0. That proves this oracle can actually SEE the
+# signature it claims to be hunting -- a PASS from an oracle never shown to
+# fail is worthless (see feedback_verify_instrument_before_dut).
+shift=int(sys.argv[4]) if len(sys.argv)>4 else 0
 st0=rd(STATUS); cr0=rd(CREDIT)&0xffff
 ok=0; bad=0; details=[]
 t0=time.time()
 for p in range(k):
     exp=[((n & 0xFFF)<<20)|(1<<18), 0x0]+[((seed+p)<<16)|i for i in range(n)]
+    if shift: exp=exp[shift:]+[0]*shift
     # Protocol-legal drain: offset 0 FIRST (arms the length latch), then
     # consecutive offsets; the read of (length+1)*4 fires the pop.
     hdr=rd(RXBASE)
@@ -346,6 +359,79 @@ run_one(){ # dir size
   echo "$dir,$n,$verdict,$rok,$PACKETS,$txwps,$rxwps,$e2ewps,$bps" >> "$CSV"
 }
 
+# ---------------------------------------------------------------------------
+# NEGATIVE CONTROL (--negctl) — prove the instrument HAS TEETH before believing
+# any PASS from it.
+#
+# This suite passed 12/12 on its first silicon run (sizes 4..128, both
+# directions, byte-exact). That is exactly the shape of a result that has
+# burned this project repeatedly: the pair TB delivered B->A "byte-exact" on
+# RTL that was 0/10 on silicon, and was blind to the SRAM X-init phantom-pop.
+# A green oracle that has never been shown to go red is not evidence.
+#
+# Each control below MUST come out RED. If any goes green, the sweep's PASS is
+# vacuous and must not be reported as a result.
+#   NEG-1  drain with NOTHING sent      -> proves the checker reads THIS
+#                                          transfer, not residue/stale bytes.
+#   NEG-2  send seed X, expect seed Y   -> proves it compares real payload.
+#   NEG-3  correct send, expectation
+#          shifted by 2 words           -> proves the EXACT recorded signature
+#                                          ("drops first ~2 words") is visible.
+# POS     correct send, correct expect  -> must be GREEN, so the controls above
+#                                          failed for the right reason and the
+#                                          link was healthy throughout.
+# ---------------------------------------------------------------------------
+negctl(){
+  local n=16 fails=0
+  echo "  --- NEGATIVE CONTROLS (each MUST fail; a green control invalidates the sweep) ---"
+
+  # NEG-1: no send at all. A fresh-POR RX FIFO is empty; scoring must not pass.
+  local r1; r1=$(push_run "$B_IP" "$RX_PY" "$n" 1 a2b0)
+  if echo "$r1" | grep -q "ok=1 bad=0"; then
+    echo "    NEG-1 no-send drain      : *** GREEN — INSTRUMENT IS BLIND (reading residue) ***"; fails=1
+  else
+    echo "    NEG-1 no-send drain      : RED (good) -> $(echo "$r1" | sed -n 's/^RXDONE //p' | head -1)"
+  fi
+
+  # NEG-2: real send, wrong expected seed.
+  push_run "$A_IP" "$TX_PY" "$n" 1 a2b0 0 >/dev/null; sleep 1.5
+  local r2; r2=$(push_run "$B_IP" "$RX_PY" "$n" 1 dead)
+  if echo "$r2" | grep -q "ok=1 bad=0"; then
+    echo "    NEG-2 wrong-seed compare : *** GREEN — oracle is not comparing payload ***"; fails=1
+  else
+    echo "    NEG-2 wrong-seed compare : RED (good) -> $(echo "$r2" | sed -n 's/^RXDONE //p' | head -1)"
+  fi
+
+  # NEG-3: correct send, expectation shifted 2 words = the recorded signature.
+  push_run "$A_IP" "$TX_PY" "$n" 1 b0b0 0 >/dev/null; sleep 1.5
+  local r3; r3=$(push_run "$B_IP" "$RX_PY" "$n" 1 b0b0 2)
+  # A RED here is only meaningful if it failed because of the SHIFT (FIRSTBAD=0)
+  # and NOT because the packet never arrived. The `underrun` flag is STICKY and
+  # NEG-1's deliberate empty read already set it, so the RXDETAIL underrun line
+  # is expected noise here -- anchor on the FIRSTBAD line instead.
+  local fb3; fb3=$(echo "$r3" | sed -n 's/.*\(FIRSTBAD=[0-9]*\).*/\1/p' | head -1)
+  if echo "$r3" | grep -q "ok=1 bad=0"; then
+    echo "    NEG-3 2-word-shift detect: *** GREEN — a 2-word LEADING SHIFT IS INVISIBLE ***"; fails=1
+  elif [ "$fb3" = "FIRSTBAD=0" ]; then
+    echo "    NEG-3 2-word-shift detect: RED (good) -> $fb3 = the shift was seen at word 0, as intended"
+  else
+    echo "    NEG-3 2-word-shift detect: RED but for the WRONG REASON (${fb3:-no FIRSTBAD; packet may not have arrived}) — control inconclusive"; fails=1
+  fi
+
+  # POS: correct send, correct expectation, same link — must be green.
+  push_run "$A_IP" "$TX_PY" "$n" 1 c0c0 0 >/dev/null; sleep 1.5
+  local r4; r4=$(push_run "$B_IP" "$RX_PY" "$n" 1 c0c0)
+  if echo "$r4" | grep -q "ok=1 bad=0"; then
+    echo "    POS   correct compare    : GREEN (good) — link healthy; controls failed for the right reason"
+  else
+    echo "    POS   correct compare    : *** RED — link unhealthy; the controls above prove nothing ***"; fails=1
+  fi
+
+  [ "$fails" = 0 ] && echo "  --- instrument HAS TEETH: sweep results are trustworthy ---" \
+                   || echo "  --- INSTRUMENT UNTRUSTWORTHY: do not report the sweep as a result ---"
+  return "$fails"
+}
+
 MODE_STR=$([ "$AUTONOMOUS" = 1 ] && echo "ZERO-POKE AUTONOMOUS (no writes; POR-armed)" || echo "RECIPE (rcp; autonomy OFF)")
 echo "=============================================================="
 echo " sustained_data_soak   cycles=$CYCLES packets/size=$PACKETS"
@@ -372,6 +458,10 @@ for c in $(seq 1 "$CYCLES"); do
   fi
   enter_data_mode
   echo "  link up (fcsm 4/4, reanchored both). NO pre-drain (fresh POR => RX FIFO empty)."
+  # Controls run FIRST, on this same live link, so "the instrument has teeth"
+  # is established on the very link the sweep then measures -- not on some
+  # other cycle where the link may have differed.
+  [ "${DO_NEGCTL:-0}" = 1 ] && negctl
   for d in $DLIST; do
     echo "  direction $d:"
     for n in $SIZES; do run_one "$d" "$n"; done

@@ -44,7 +44,18 @@ module tb_top #(
     output logic                    release_credits_trigger,
     output logic [SYS_ADDR_W-1:0]   pair_base_addr,
     output logic                    released_credits_irq,
-    output logic                    doorbell_irq
+    output logic                    doorbell_irq,
+
+    // Perf-block register pass-through. Exposed so the APB->perf decode can be
+    // checked directly: this is the seam where `perf_reg_region` is formed, and
+    // it was silently wrong (see test_perf_region_decode.py). The perf bench
+    // (cocotb/tidelink_perf_congestion) drives these signals rather than
+    // observing them, so nothing tested this side of the boundary.
+    output logic                    perf_reg_write,
+    output logic              [2:0] perf_reg_addr,
+    output logic [SYS_DATA_W-1:0]   perf_reg_wdata,
+    input  logic [SYS_DATA_W-1:0]   perf_reg_rdata,
+    output logic              [1:0] perf_reg_region
 );
 
     tidelink_apb_regs #(
@@ -81,6 +92,12 @@ module tb_top #(
         .pair_base_addr      (pair_base_addr),
         .released_credits_irq (released_credits_irq),
         .doorbell_irq        (doorbell_irq),
+        // Perf register pass-through — brought to the boundary, not tied off.
+        .perf_reg_write      (perf_reg_write),
+        .perf_reg_addr       (perf_reg_addr),
+        .perf_reg_wdata      (perf_reg_wdata),
+        .perf_reg_rdata      (perf_reg_rdata),
+        .perf_reg_region     (perf_reg_region),
         // PTP register pass-through (tied off — no tidelink_ptp in this testbench)
         .ptp_reg_rdata       ({SYS_DATA_W{1'b0}})
     );

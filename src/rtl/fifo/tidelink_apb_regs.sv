@@ -537,7 +537,32 @@ module tidelink_apb_regs #(
                                           (apb_region <= 4'b0111);
     assign perf_reg_addr   = paddr[4:2];
     assign perf_reg_wdata  = pwdata;
-    assign perf_reg_region = apb_region[1:0];
+    // OFFSET-FROM-5, not the raw region index. tidelink_perf.sv:53 declares this
+    // port as `00=Region5, 01=Region6, 10=Region7`, so it must be biased by 5.
+    //
+    // This was `apb_region[1:0]` (raw), which is off by one and broke the entire
+    // perf block:
+    //   * perf_reg_write is gated to apb_region 5..7 above, so the raw [1:0] was
+    //     only ever 01/10/11 — NEVER 2'b00. tidelink_perf.sv:437 writes
+    //     perf_enable_r solely under `perf_reg_write && perf_reg_region == 2'b00`,
+    //     so PERF_CTRL writes were unreachable: perf_enable_r was stuck at its
+    //     reset 0, perf_active never asserted, and every counter (including
+    //     ewma_q_r -> ewma_credit_o, the congestion telemetry) stayed 0 forever.
+    //   * The same skew rotated the read mux: Region 5 returned Region 6's map,
+    //     Region 6 returned Region 7's, and Region 7 fell through to `default:`
+    //     and read 0 — which killed PERF_ID, the presence gate bring-up scripts
+    //     check first.
+    //
+    // The subtraction cannot underflow: perf_reg_region is only consumed when
+    // perf_reg_write is high (writes) or under the apb_region 5..7 read arms
+    // (see the read mux below), and apb_region >= 5 in both cases.
+    //
+    // Not caught by cocotb/tidelink_perf_congestion because that bench compiles
+    // tidelink_perf.sv WITHOUT this file and drives perf_reg_region directly —
+    // it encodes the module's convention, so it passed while the integration was
+    // broken. See cocotb/tidelink_apb_regs/test_perf_region_decode.py, which
+    // exercises the real APB path and fails on the raw-index form.
+    assign perf_reg_region = apb_region[1:0] - 2'b01;
 
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 

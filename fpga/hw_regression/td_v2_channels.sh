@@ -52,6 +52,19 @@ CHANNELS="data doorbell xhb"
 PORS=1
 DO_LEASE=1
 KEEP_LEASE=0
+# Lane mask under test (2026-07-16, wip/rate-ladder). Defaults reproduce the
+# historical HARD-CODED bringup_manual values EXACTLY, so every existing caller
+# is bit-identical. NOTE: this script does NOT source td_v2_hwlib.sh -- it is
+# standalone with its own m()/s() -- so it needs its own copy of these knobs.
+# Setting TD_LANEMASK32 for the hwlib alone would be SILENTLY IGNORED here, and
+# a mask A/B would then quietly test 0xE4 twice and "prove" the other mask works.
+#   TD_LANEMASK32=0x00006565 TD_SYNCTOL=0x00000565  -> lanes {0,2,5,6}
+# The two MUST agree: TD_SYNCTOL[7:0] is the SYNC-detect mask and must match the
+# active lanes in TD_LANEMASK32 (V2 masks SYNC BEFORE the pads, so a lane absent
+# from TD_LANEMASK32 transmits 0x0000 and the deskew would wait on it forever).
+# Use EVEN lane counts only: a 5-lane mask trains but delivers NO data.
+TD_LANEMASK32=${TD_LANEMASK32:-0x0000e4e4}
+TD_SYNCTOL=${TD_SYNCTOL:-0x000005e4}
 while [ $# -gt 0 ]; do case "$1" in
   --mode)     MODE="$2"; shift;;
   --channels) CHANNELS="$2"; shift;;
@@ -156,12 +169,13 @@ abort(){ echo "### ABORT: $1"; [ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && l
 # pulses recal (0x1E->0x1C); the slave holds 0x1C — matches the proven recipe.
 bringup_manual(){
   echo "-- manual (deterministic) bring-up --"
+  echo "   lane mask=$TD_LANEMASK32  sync_tol=$TD_SYNCTOL"
   m wr $R_NEGO_TRAIN 0x0    >/dev/null;  s wr $R_NEGO_TRAIN 0x0    >/dev/null
-  m wr $R_LANEMASK 0x0000e4e4>/dev/null; s wr $R_LANEMASK 0x0000e4e4>/dev/null
+  m wr $R_LANEMASK $TD_LANEMASK32>/dev/null; s wr $R_LANEMASK $TD_LANEMASK32>/dev/null
   m wr $R_ROLE 0x2          >/dev/null;  s wr $R_ROLE 0x3          >/dev/null
   m wr $R_LOCKTHR 0x55555555>/dev/null;  s wr $R_LOCKTHR 0x55555555>/dev/null
   m wr $R_SLIPLO 0x0        >/dev/null;  s wr $R_SLIPLO 0x0        >/dev/null
-  m wr $R_SYNCTOL 0x000005e4>/dev/null;  s wr $R_SYNCTOL 0x000005e4>/dev/null
+  m wr $R_SYNCTOL $TD_SYNCTOL>/dev/null; s wr $R_SYNCTOL $TD_SYNCTOL>/dev/null
   m wr $R_R8 $R8_SYNC       >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null
   m wr $R_R8 $R8_RECAL      >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null; sleep 0.03
   m wr $R_R8 $R8_SYNC       >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null

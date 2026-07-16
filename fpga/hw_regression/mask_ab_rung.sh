@@ -50,27 +50,26 @@ run_mask(){ # $1=label $2=lanemask32 $3=synctol $4=lanes-desc
     # shellcheck disable=SC1091
     . "$HERE/td_v2_hwlib.sh"
 
+    # Fresh POR + flash for each mask so neither run inherits the other's state.
     deploy_pair
     sleep 1
-    rcp
-    if wait_bilateral 4 14; then echo "[$label] bilateral fcsm=4 OK"
-    else echo "[$label] RESULT: NO BILATERAL LINK at $RATE_LABEL (fcsm_a=$(fcsm a) fcsm_b=$(fcsm b))"; exit 3; fi
 
-    # read back what actually landed — never trust the write
+    # td_v2_channels.sh is standalone and does its OWN bring-up (bringup_manual)
+    # + link gate + the byte-exact data push, honouring TD_LANEMASK32/TD_SYNCTOL
+    # from the environment. --no-lease: THIS driver holds the boards' leases.
+    echo "[$label] --- link + byte-exact data both directions ---"
+    "$HERE/td_v2_channels.sh" --no-lease --mode manual --channels data 2>&1 | sed "s/^/[$label] /"
+    local rc=${PIPESTATUS[0]}
+
+    # Post-hoc state, read back from the silicon — never trust the write.
     for d in a b; do
-      v=$( [ $d = a ] && a rd $R_LANEMASK || b rd $R_LANEMASK ); sleep "$TD_THROTTLE"
-      printf "[%s] die_%s lanemask readback=0x%08x (wanted %s)\n" "$label" "$d" $((v)) "$lm"
+      v=$( [ "$d" = a ] && a rd $R_LANEMASK || b rd $R_LANEMASK ); sleep "$TD_THROTTLE"
+      printf "[%s] die_%s lanemask READBACK=0x%08x (wanted %s)%s\n" "$label" "$d" $((v)) "$lm" \
+             "$( [ $((v)) -eq $((lm)) ] && echo '' || echo '   <-- MASK DID NOT LAND; this run tested something else' )"
     done
     printf "[%s] livematch_a=0x%02x livematch_b=0x%02x reanchored=%s fcsm_a=%s fcsm_b=%s\n" \
       "$label" $(( $(a rd 0x44032144)&0xff )) $(( $(b rd 0x44032144)&0xff )) \
       "$(reanchored)" "$(fcsm a)" "$(fcsm b)"
-
-    enter_data_mode
-    sleep 0.5
-    echo "[$label] --- byte-exact data both directions ---"
-    "$HERE/td_v2_channels.sh" --mode manual --channels data 2>&1 | sed "s/^/[$label] /"
-    rc=${PIPESTATUS[0]}
-    echo "[$label] channels rc=$rc"
     exit $rc
   )
   local rc=$?

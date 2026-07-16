@@ -372,16 +372,31 @@ sim_gate_asicelab:
 	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
 	    -top tidelink_top +define+TB_TOP_NO_DUMP -l vcs_asicelab.log)
 
+# The V2 companion: the ASIC_PHY=_v2 DEFAULT chip-build flist (S3 PHY-swap, deps/
+# tidelink-phy shared component, +define+TIDELINK_PHY_V2). This is the flist a real
+# tape-out synth uses by default (syn/asic/fusion-compiler ASIC_PHY?=_v2), so a break
+# here is a literal chip-killer. Fixed 2026-07-16: the flist now compiles
+# tidelink_sync_word.svh up front so the deps deskew/sync files see the $unit params.
+sim_gate_asicelab_v2:
+	$(call sim_gate_run,asic_v2_elab,\
+	  rm -rf cocotb/tidelink_top_pair/sim_build_asicelab_v2 && \
+	  mkdir -p cocotb/tidelink_top_pair/sim_build_asicelab_v2 && \
+	  cd cocotb/tidelink_top_pair/sim_build_asicelab_v2 && \
+	  vcs -full64 -sverilog -timescale=1ns/1ps \
+	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
+	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
+	    -top tidelink_top +define+TB_TOP_NO_DUMP -l vcs_asicelab_v2.log)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab \
+	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab \
+	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
@@ -420,6 +435,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_asicelab
+	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -437,6 +453,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_asicelab
+	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

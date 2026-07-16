@@ -39,6 +39,15 @@
 +incdir+${TIDELINK_HOME}/src/rtl/fifo
 +incdir+${TIDELINK_HOME}/deps/tidelink-phy/rtl
 
+// $unit-scope constant headers — MUST compile before any user (2026-07-16 chip-killer #1
+// fix). The deps deskew/sync_detect/sync_insert reference TIDELINK_SYNC_WORD/PERIOD at
+// $unit scope but do NOT all `include tidelink_sync_word.svh (they rely on an earlier
+// establisher). In the FPGA V2 flist the local-override deskew_v2 includes it early; the
+// ASIC flist uses the deps deskew (which does not), so nothing established the params and
+// V2 ASIC elaboration died on 6 "TIDELINK_SYNC_PERIOD/WORD not declared" (VCS Error-[IND]).
+// Compiling the header as an explicit first source declares the $unit localparams up front.
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_sync_word.svh
+
 // FIFO subsystem -- ASIC variant (compiled SRAM macro)
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
 ${CMSDK_DIR}/logical/cmsdk_ahb_to_apb/verilog/cmsdk_ahb_to_apb.v

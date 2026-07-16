@@ -293,14 +293,25 @@ run_one(){ # dir size
   fi
   local e2e=$(( SECONDS - w0 )); [ "$e2e" -lt 1 ] && e2e=1
 
+  # Anchor every extractor to the ^TXDONE / ^RXDONE summary line and take the
+  # first match. `sed -n s///p` prints for EVERY matching line, and the
+  # RXDETAIL lines carry "nwords=%d/%d" — an unanchored `.*words=` would also
+  # match those, making $rw multi-line and breaking the arithmetic below.
   local tw ts rok rbad rs rw
-  tw=$(echo "$tx" | sed -n 's/.*words=\([0-9]*\).*/\1/p')
-  ts=$(echo "$tx" | sed -n 's/.*secs=\([0-9.]*\).*/\1/p')
-  rok=$(echo "$rx" | sed -n 's/.*ok=\([0-9]*\).*/\1/p')
-  rbad=$(echo "$rx" | sed -n 's/.*bad=\([0-9]*\).*/\1/p')
-  rs=$(echo "$rx" | sed -n 's/.*secs=\([0-9.]*\).*/\1/p')
-  rw=$(echo "$rx" | sed -n 's/.*words=\([0-9]*\).*/\1/p')
+  tw=$(echo "$tx"  | sed -n 's/^TXDONE .*words=\([0-9]*\).*/\1/p'   | head -1)
+  ts=$(echo "$tx"  | sed -n 's/^TXDONE .*secs=\([0-9.]*\).*/\1/p'   | head -1)
+  rok=$(echo "$rx" | sed -n 's/^RXDONE ok=\([0-9]*\).*/\1/p'        | head -1)
+  rbad=$(echo "$rx"| sed -n 's/^RXDONE .*bad=\([0-9]*\).*/\1/p'     | head -1)
+  rs=$(echo "$rx"  | sed -n 's/^RXDONE .*secs=\([0-9.]*\).*/\1/p'   | head -1)
+  rw=$(echo "$rx"  | sed -n 's/^RXDONE .*words=\([0-9]*\).*/\1/p'   | head -1)
   : "${tw:=0}" "${ts:=0}" "${rok:=0}" "${rbad:=$PACKETS}" "${rs:=0}" "${rw:=0}"
+  # A worker that printed nothing parsable (crash, python traceback swallowed by
+  # 2>/dev/null) must not silently become "0 words in 0 secs" = a fake result.
+  if [ "$tw" = 0 ] || [ "$rs" = 0 ] && [ "$rok" = 0 ]; then
+    printf '    size=%-4s NO-RESULT (worker produced no parsable summary; tx=%q rx=%q)\n' \
+      "$n" "${tx:0:60}" "${rx:0:60}"
+    echo "$dir,$n,NO_RESULT,0,$PACKETS,,,," >> "$CSV"; return
+  fi
 
   local txwps rxwps e2ewps bps
   txwps=$(python3 -c "print('%.0f'%($tw/$ts))" 2>/dev/null || echo 0)
@@ -308,7 +319,11 @@ run_one(){ # dir size
   e2ewps=$(python3 -c "print('%.0f'%($rw/$e2e))" 2>/dev/null || echo 0)
   bps=$(python3 -c "print('%.0f'%(($rok*$n*4)/$e2e))" 2>/dev/null || echo 0)
 
-  local verdict=PASS; [ "$rok" = "$PACKETS" ] || verdict=FAIL
+  # PASS demands BOTH: every packet accounted for AND zero scored bad. A
+  # receiver that bailed early (WILDLEN) reports ok<PACKETS; one that read
+  # every packet but mis-compared reports bad>0.
+  local verdict=PASS
+  { [ "$rok" = "$PACKETS" ] && [ "$rbad" = 0 ]; } || verdict=FAIL
   printf '    size=%-4s %s  pkts_ok=%s/%s  tx=%s w/s  rx=%s w/s  e2e=%s w/s (%s payload B/s)\n' \
     "$n" "$verdict" "$rok" "$PACKETS" "$txwps" "$rxwps" "$e2ewps" "$bps"
   echo "$rx" | sed -n 's/^  RXDETAIL/      RXDETAIL/p'

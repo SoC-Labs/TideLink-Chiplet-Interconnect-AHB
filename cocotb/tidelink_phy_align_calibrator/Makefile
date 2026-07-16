@@ -31,14 +31,32 @@ export TIDELINK_HOME
 #
 # The legacy T3 / S_PROBE-skip envs still build against tb_top.sv via:
 #   make TOPLEVEL=tb_top MODULE=test_calibrator_t3,test_calibrator_s_probe_skip
-TOPLEVEL ?= tb_calibrator
-ifeq ($(TOPLEVEL),tb_top)
-VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
-                  $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
+# -- Which calibrator RTL? ----------------------------------------------------
+# DEPS=1 compiles the DEPLOYED deps/tidelink-phy calibrator (the one the FPGA
+# flist actually builds — flists/tidelink_fpga_v2.flist) via the *_deps TB
+# wrappers, so the unit env gates the actually-deployed RTL. Default (DEPS=0)
+# compiles the src/ reference, preserving the historical behaviour.
+DEPS ?= 0
+ifeq ($(DEPS),1)
+  CAL_RTL        = $(TIDELINK_HOME)/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv
+  TB_CALIBRATOR  = $(CURDIR)/tb_calibrator_deps.sv
+  TB_TOP         = $(CURDIR)/tb_top_deps.sv
+  TOP_CALIBRATOR = tb_calibrator_deps
+  TOP_TOP        = tb_top_deps
+else
+  CAL_RTL        = $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
+  TB_CALIBRATOR  = $(CURDIR)/tb_calibrator.sv
+  TB_TOP         = $(CURDIR)/tb_top.sv
+  TOP_CALIBRATOR = tb_calibrator
+  TOP_TOP        = tb_top
+endif
+
+TOPLEVEL ?= $(TOP_CALIBRATOR)
+ifeq ($(TOPLEVEL),$(TOP_TOP))
+VERILOG_SOURCES = $(TB_TOP) $(CAL_RTL)
 MODULE  ?= test_calibrator_t3,test_calibrator_s_probe_skip
 else
-VERILOG_SOURCES = $(CURDIR)/tb_calibrator.sv \
-                  $(TIDELINK_HOME)/src/rtl/tidelink_phy_align_calibrator.sv
+VERILOG_SOURCES = $(TB_CALIBRATOR) $(CAL_RTL)
 MODULE  ?= test_calibrator
 endif
 

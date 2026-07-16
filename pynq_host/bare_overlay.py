@@ -24,23 +24,33 @@ import mmap
 import os
 import struct
 
-# Block design address map — keep in sync with tidelink_design.tcl
-AHB_SUB_BASE  = 0x4000_0000
+# Block design address map — keep in sync with tidelink_design.tcl.
+# SoC selection via env TIDELINK_SOC (default "z2"). KR260 (MPSoC) relocates
+# every aperture off DDR into the PL windows: control -> 0x8000_0000, data ->
+# 0xA000_0000 (pure top-nibble/top-byte swap of the Z2 map, low bits preserved).
+# See fpga/docs/KR260_PORT.md.
+_SOC = os.environ.get("TIDELINK_SOC", "z2").lower()
+
+if _SOC in ("kr260", "kria", "mpsoc", "zynqmp", "kv260"):
+    AHB_SUB_BASE  = 0x8000_0000
+    AHB_TX_BASE   = 0xA400_0000
+    AHB_FIFO_BASE = 0xA401_0000
+    AHB_PTP_BASE  = 0x8402_0000
+    APB_BASE      = 0x8403_0000
+    STRAP_BASE    = 0x8404_0000
+else:                             # z2 (default) — unchanged
+    AHB_SUB_BASE  = 0x4000_0000
+    AHB_TX_BASE   = 0x4400_0000
+    AHB_FIFO_BASE = 0x4401_0000
+    AHB_PTP_BASE  = 0x4402_0000
+    APB_BASE      = 0x4403_0000
+    STRAP_BASE    = 0x4404_0000
+
 AHB_SUB_RANGE = 0x1000_0000  # 256 MB
-
-AHB_TX_BASE   = 0x4400_0000
 AHB_TX_RANGE  = 0x0001_0000  # 64 KB
-
-AHB_FIFO_BASE = 0x4401_0000
 AHB_FIFO_RANGE= 0x0001_0000  # 64 KB
-
-AHB_PTP_BASE  = 0x4402_0000
 AHB_PTP_RANGE = 0x0000_1000  # 4 KB
-
-APB_BASE      = 0x4403_0000
 APB_RANGE     = 0x0000_8000  # 32 KB
-
-STRAP_BASE    = 0x4404_0000
 STRAP_RANGE   = 0x0000_1000  # 4 KB
 
 GPIO_DATA_OFF     = 0x000

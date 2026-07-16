@@ -4,3 +4,7 @@
 [submodule "deps/tidelink-gpio-phy"]
 	path = deps/tidelink-gpio-phy
 	url = https://git.soton.ac.uk/soclabs/tidelink-gpio-phy.git
+[submodule "deps/tidelink-phy"]
+	path = deps/tidelink-phy
+	url = git@git.soton.ac.uk:soclabs/tidelink-gpio-phy.git
+	branch = feat/phy-refactor

@@ -72,6 +72,16 @@ module tidelink_top #(
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
     parameter USE_T3A    = 1'b0,
+    // S2 scaffold (PLAN_TIDELINK_INTEGRATION, 2026-06-10): select the NEW
+    // shared PHY component (deps/tidelink-phy, feat/phy-refactor line) in
+    // place of the current WavD2DGpio datapath inside u_chiplet_controller.
+    // 0 (default, EVERYWHERE today) = bit-identical to the pre-scaffold RTL:
+    // the g_phy_v2 generate arm (see u_chiplet_controller site below)
+    // elaborates empty and nothing else is touched. 1 = reserved for the S3
+    // drop-in; sources come from flists/tidelink_phy_v2.flist (not yet
+    // included by any live flist). Do NOT set to 1 yet — the arm is a
+    // placeholder, not a functional PHY.
+    parameter logic USE_PHY_V2 = 1'b0,
     // Tier 2 RTL hardening (2026-05-25): force swi_enable=1 on any APB write
     // that asserts swi_swreset=1 to Wlink register 0x208. Protects the 7
     // FCSMs from buggy SW that writes {swreset=1, swi_enable=0} together —
@@ -105,7 +115,30 @@ module tidelink_top #(
     // NEGO_CFG POR value (companion to NEGO_TRAIN_CFG_RESET).
     // 7'h61 = nego_en + nego_force_lock + mask_hs_auto_en
     // ASIC + FPGA POR boot directly into autonomous bring-up.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h61
+    // SoC Labs 2026-06-18: default 7'h00 (autoneg OFF, SW-driven) for the
+    // reduced-lane bring-up — see axi_chiplet_controller NEGO_CFG_RESET note.
+    // The slave's lane mask is autoneg-locked at 0xff under 7'h61; SW-driven
+    // lets both dies set their mask. Revisit 7'h61 once mask-handshake
+    // propagates the reduced mask to the slave.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // Zero-poke winscan converge-lock — POR-default forwarded verbatim to the
+    // axi_chiplet_controller (see its WINSCAN_CONVERGE_LOCK_EN note). 1'b0 =
+    // today's behaviour, bit-identical for sim/ASIC; the FPGA vivado wrapper
+    // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
+    // HONEST_MASK_HS — peer-mask handshake authenticity gate (from kr260-pair-onchip).
+    //   0 (default) = legacy bench tie: the inner axi_chiplet_controller's
+    //       apb_debug_unlock_i / mask_hs_bypass_i are held 1'b1 (see the
+    //       u_chiplet_controller instantiation below), so mask_hs_gate_open is
+    //       permanently forced open. Single-die Z2/ASIC targets are BYTE-IDENTICAL
+    //       to today — a parameter-constant ternary folds to the historical 1'b1
+    //       ties at elaboration.
+    //   1 = drive the inner controller from the real top-level apb_debug_unlock_i /
+    //       mask_hs_bypass_i ports (declared but previously DISCARDED) so the
+    //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
+    //       to prove hardware autonomy without either bypass strap — and the intended
+    //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
+    parameter        HONEST_MASK_HS       = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -563,6 +596,14 @@ module tidelink_top #(
     //                     observability — autoneg probe registers, RO)
     wire                   ctrl_reg_write;
     wire            [4:0]  ctrl_reg_addr;
+    // SoC Labs perlane-wp (2026-06-16): Region 10 (SoC 0x2144/0x2148/0x214C)
+    // select from tidelink_apb_regs into the chiplet controller (the sweep
+    // oracle + per-lane word-pin registers). V1 ties it low (bit-identical).
+    wire                   ctrl_reg_r10;
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap): Region D
+    // (SoC 0x4403_21A0-0x4403_21A8) select from tidelink_apb_regs into the
+    // chiplet controller. V1 ties it low (bit-identical).
+    wire                   ctrl_reg_rd;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -693,14 +734,47 @@ module tidelink_top #(
                          apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
 
     // =========================================================================
-    // TideLink config APB mux: 2:1 APB mux
-    //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
-    //   Source 1: External unified APB port (CPU reads/writes)
+    // TideLink config APB mux: 2:1 TRANSACTION-ATOMIC arbiter
+    //   Source 0: FC adapter RX config (fc_cfg_apb_*, APB-native; peer
+    //             credit/doorbell/returner config writes)
+    //   Source 1: external unified APB port (PS CPU reads/writes to Region 8)
     //
-    // FC adapter has priority (credit/doorbell delivery is time-sensitive).
-    // External APB is stalled (pready=0) when FC adapter is active.
+    // The FC config port must NEVER preempt an external PS access that is already
+    // in its ACCESS phase.  On the Zynq-7000 M_AXI_GP there is NO bus timeout, so
+    // a preempted PS access hangs the CPU for ever (Bus error on every later
+    // access).  The FC adapter, by contrast, tolerates pready backpressure -- its
+    // RX FSM (tidelink_fc_adapter.sv:588-630) holds psel/paddr/pwdata stable and
+    // waits on fc_rx_cfg_pready, and tidelink_apb_regs acks combinationally
+    // (fifo/tidelink_apb_regs.sv:650, pready=1'b1), so a held-off FC waits at
+    // most 1-2 cycles.  So the PS wins any conflict; the FC waits.
+    //
+    //   ext_txn    : an external Region-8 access is in its ACCESS phase (psel &
+    //                penable) -- the exact window the old bare mux corrupted.
+    //   ext_lock_q : registered grant, latched from the first STALLED external
+    //                ACCESS cycle and held until the access is acked.  Belt &
+    //                braces: even if a slow Region-10/11 shim slave stretches the
+    //                access across many cycles, the FC can never slip in on an
+    //                intermediate edge.  The bare !ext_txn term already covers the
+    //                common single-cycle-ack case; the lock hardens the
+    //                multi-cycle stall.
+    // The FC config port is granted only when no external access owns or is
+    // waiting for the bus.  (The bounded-stall watchdog that makes the PS bus
+    // structurally hang-proof lives just below the tl_apb_* declarations, since
+    // it references tl_apb_pready.)
     // =========================================================================
-    wire fc_cfg_apb_active = fc_cfg_apb_psel;
+    wire ext_txn = apb_sel_tidelink && apb_penable;   // external in ACCESS phase
+
+    reg  ext_lock_q;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ext_lock_q <= 1'b0;
+        else if (ext_txn && !tl_regs_pready)          // access started, not yet acked
+            ext_lock_q <= 1'b1;
+        else if (tl_regs_pready)                       // access completed -> release
+            ext_lock_q <= 1'b0;
+    end
+
+    wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -711,6 +785,35 @@ module tidelink_top #(
     wire [SYS_DATA_W-1:0]  tl_apb_prdata;
     wire                    tl_apb_pready;
     wire                    tl_apb_pslverr;
+
+    // -------------------------------------------------------------------------
+    // BOUNDED EXTERNAL STALL (belt & braces).  The arbitration above stops the FC
+    // from starving the PS, but a genuinely stuck sub-slave (tl_apb_pready never
+    // rising) would still hang the PS -- and the Zynq has no timeout of its own.
+    // Saturate a counter on a stalled external ACCESS and, past the limit,
+    // complete it with pready+pslverr so the PS bus is STRUCTURALLY incapable of
+    // locking up.  ext_stall_err_q latches sticky (POR-cleared) for post-mortem
+    // (waveform/ILA-visible; not APB-mapped -- no free obs-reg slot, see the
+    // commit message).  EXT_STALL_LIMIT >> any legal ack (apb_regs acks in 1).
+    // -------------------------------------------------------------------------
+    localparam [10:0] EXT_STALL_LIMIT = 11'd1024;
+    reg  [10:0] ext_stall_ctr_q;
+    reg         ext_stall_err_q;
+    wire ext_stalled = ext_txn && !tl_apb_pready && !fc_cfg_apb_active;
+    wire ext_timeout = (ext_stall_ctr_q == EXT_STALL_LIMIT);
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            ext_stall_ctr_q <= 11'd0;
+            ext_stall_err_q <= 1'b0;
+        end else if (!ext_stalled) begin
+            ext_stall_ctr_q <= 11'd0;                   // idle or completing -> reset
+        end else if (ext_stall_ctr_q != EXT_STALL_LIMIT) begin
+            ext_stall_ctr_q <= ext_stall_ctr_q + 11'd1;
+            if (ext_stall_ctr_q == EXT_STALL_LIMIT - 11'd1)
+                ext_stall_err_q <= 1'b1;                // latch sticky as it fires
+        end
+    end
 
     assign tl_apb_paddr   = fc_cfg_apb_active ? fc_cfg_apb_paddr   : apb_paddr[APB_ADDR_W-1:0];
     assign tl_apb_psel    = fc_cfg_apb_active ? fc_cfg_apb_psel    : apb_sel_tidelink;
@@ -787,6 +890,7 @@ module tidelink_top #(
     // CLK_MHZ default.  Used here only to document the timing assumption
     // shared by the dwell-counter conversion in tidelink_phy_align_calibrator.
 
+`ifndef TIDELINK_PHY_V2
     tidelink_eye_regs #(
         .APB_ADDR_W (APB_ADDR_W),
         .SYS_DATA_W (SYS_DATA_W)
@@ -835,6 +939,24 @@ module tidelink_top #(
         .eye_last_slip_i         (eye_last_slip_w),
         .eye_last_lane_fault_i   (eye_last_lane_fault_w)
     );
+`else
+    // S3 PHY swap: eye-vis retired (AUDIT #17) — tidelink_eye_regs is absent
+    // from the V2 flist. Tie every net the instance drove. Region 10 APB
+    // reads return 0 with no wait states; the eye control/force surface is
+    // inert. (lane_lock_thresh_w / lane_clear_noise_w are unaffected — they
+    // come from the tidelink_gpio_phy_apb_regs slave, which remains.)
+    assign eye_shim_prdata        = {SYS_DATA_W{1'b0}};
+    assign eye_shim_pready        = 1'b1;
+    assign eye_shim_pslverr       = 1'b0;
+    assign eye_swi_lane_sel_w     = 3'h0;
+    assign eye_swi_dwell_us_w     = 32'h0;
+    assign eye_swi_ctrl_w         = 32'h0;
+    assign eye_score_idx_w        = 7'h0;
+    assign eye_force_phase_en_w   = 1'b0;
+    assign eye_force_phase_val_w  = 4'h0;
+    assign eye_force_slip_val_w   = 3'h0;
+    assign eye_crc_err_cnt_clr_w  = 1'b0;
+`endif
 
     // SWI_FORCE_PHASE_EN/VAL/SLIP_VAL are reserved register slots (proposal
     // §5); the calibrator does not consume them in v2 — kept as drivable
@@ -878,11 +1000,35 @@ module tidelink_top #(
     // ("Connect .rst_n(role_locked) directly — NO inverter"). apb_rst_n is
     // the standard hresetn.
     // =========================================================================
+    // Region 11 gpio_phy slave: SoC 0x2160-0x217F (paddr[8:5]==4'b1011) ->
+    // slave-internal 0x20-0x3F. The slave also defines SWI_EPOCH_STATUS at
+    // slave-paddr 0x40, which does NOT fit the 32-byte 0x1011 window (Region C
+    // autoneg owns 0x2180+). In V2 the eye_regs block (Region 10, paddr[8:5]==
+    // 4'b1010, SoC 0x2140-0x215F) is ABSENT, so its first word at SoC 0x2140 is
+    // free; we route exactly that word to slave-paddr 0x40. SWI_EPOCH_STATUS is
+    // therefore readable at SoC 0x4403_2140 in V2 (matches the PHY REGISTER_MAP).
+`ifdef TIDELINK_PHY_V2
+    wire gpio_phy_epoch_sel = tl_apb_psel && (tl_apb_paddr[8:0] == 9'h140);
+    wire gpio_phy_apb_sel   = (tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1011))
+                              || gpio_phy_epoch_sel;
+`else
     wire gpio_phy_apb_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1011);
+`endif
 
     wire [SYS_DATA_W-1:0]  gpio_phy_apb_prdata;
     wire                    gpio_phy_apb_pready;
     wire                    gpio_phy_apb_pslverr;
+
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs V2 epoch-anchor engagement obs 2026-06-14. Driven by
+    // u_chiplet_controller (WlinkGPIOPHY lane-deskew anchor state, in the
+    // recovered link_rx_rx_link_clk domain) and consumed by the
+    // tidelink_gpio_phy_apb_regs slave below, which 2-flop-syncs into apb_clk
+    // and exposes them at SWI_EPOCH_STATUS (paddr 0x40 -> SoC MMIO 0x4403_2140:
+    // [0]=epoch_anchored, [6:1]=epoch_span). V1 builds never see these.
+    wire                    gpio_phy_epoch_anchored_w;
+    wire [5:0]              gpio_phy_epoch_span_w;
+`endif
 
     tidelink_gpio_phy_apb_regs u_gpio_phy_apb_regs (
         // APB clock / reset
@@ -895,7 +1041,14 @@ module tidelink_top #(
         .psel                (gpio_phy_apb_sel),
         .penable             (tl_apb_penable),
         .pwrite              (tl_apb_pwrite),
+`ifdef TIDELINK_PHY_V2
+        // SoC 0x2140 (freed eye word, V2-only) -> slave-paddr 0x40
+        // (SWI_EPOCH_STATUS); the Region 11 window 0x2160-0x217F maps as before.
+        .paddr               (gpio_phy_epoch_sel ? 8'h40
+                                                 : {3'b001, tl_apb_paddr[4:0]}),
+`else
         .paddr               ({3'b001, tl_apb_paddr[4:0]}),
+`endif
         .pwdata              (tl_apb_pwdata),
         .prdata              (gpio_phy_apb_prdata),
         .pready              (gpio_phy_apb_pready),
@@ -925,6 +1078,14 @@ module tidelink_top #(
         .wire_status_i       (lane_wire_status_w),
         .canary_pass_i       (lane_canary_pass_w),
         .canary_valid_i      (lane_canary_valid_w)
+`ifdef TIDELINK_PHY_V2
+        // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state from the
+        // WlinkGPIOPHY lane-deskew engine (via u_chiplet_controller). Read at
+        // SWI_EPOCH_STATUS (paddr 0x40 -> SoC MMIO 0x4403_2140).
+        ,
+        .epoch_anchored_i    (gpio_phy_epoch_anchored_w),
+        .epoch_span_i        (gpio_phy_epoch_span_w)
+`endif
     );
 
     // Observability-bus outputs from u_chiplet_controller that the new APB
@@ -945,6 +1106,58 @@ module tidelink_top #(
     wire                    tidelink_internal_pready;
     wire                    tidelink_internal_pslverr;
 
+`ifdef TIDELINK_PHY_V2
+    // V2: SoC 0x2140 (gpio_phy_epoch_sel) lives inside the eye_shim_sel address
+    // range (0x2140-0x215F), so the gpio_phy slave must win that single word.
+    // eye_shim returns 0 in V2 anyway (Region 10 retired), so checking the
+    // gpio slave first is safe for every other address too.
+    //
+    // SoC Labs perlane-wp (2026-06-16): the new sweep-oracle / per-lane word-pin
+    // registers also live in the eye_shim address range (SoC 0x2144/0x2148/
+    // 0x214C). They are served by the chiplet controller via tidelink_internal_*
+    // (ctrl_reg path), so they must fall THROUGH eye_shim — exclude them here,
+    // exactly like gpio_phy_epoch_sel excludes 0x2140.
+    // EYE-WIDTH OBS DECODE FIX (2026-06-17): slot 4 (SoC 0x2150, paddr[4:0]=5'h10)
+    // is the EYE_WIDTH_SEL diagnostic. It is decoded in the chiplet controller's
+    // region10_rdata (ctrl_reg_r10 path) and reaches this scope via
+    // tidelink_internal_prdata. Like 0x2144/0x2148/0x214C it MUST be excluded
+    // from eye_shim_sel_eff so it falls through to tidelink_internal_prdata;
+    // otherwise eye_shim (tied to 0 in V2) wins and 0x2150 reads 0x00000000 with
+    // NO 0xE7 marker — the silicon symptom. region10_hit in tidelink_apb_regs
+    // already routes 0x2150 (paddr[4:2]=3'h4 != 0) to ctrl_reg_r10, so the
+    // controller serves {0xE7,...,sync_eye_width_1} once eye_shim is excluded.
+    wire perlane_wp_sel = tl_apb_psel
+                          && (tl_apb_paddr[8:5] == 4'b1010)
+                          && ((tl_apb_paddr[4:0] == 5'h04)    // 0x2144 SYNC_LANE_LIVE
+                           || (tl_apb_paddr[4:0] == 5'h08)    // 0x2148 WORD_PIN_PERLANE
+                           || (tl_apb_paddr[4:0] == 5'h0C)    // 0x214C WORD_PIN_PERLANE_EN
+                           || (tl_apb_paddr[4:0] == 5'h10)    // 0x2150 EYE_WIDTH_SEL (RO)
+                           || (tl_apb_paddr[4:0] == 5'h14)    // 0x2154 EYE_LANE_SEL (RW, Task 3)
+                           // SoC Labs V2 data-send obs 2026-06-21: 0x2158 is the
+                           // A2L_REPLAY_OBS RO word (Region 10 slot 6), served by the
+                           // chiplet controller's region10_rdata. Exclude it from
+                           // eye_shim so it falls through to tidelink_internal_prdata;
+                           // otherwise eye_shim (tied 0 in V2) wins and 0x2158 reads
+                           // 0x00000000 with NO 0xA2 marker (same trap as 0x2150).
+                           || (tl_apb_paddr[4:0] == 5'h18)    // 0x2158 A2L_REPLAY_OBS (RO)
+                           // STICKY-POISON sync_seen obs 2026-06-23: 0x215C is the
+                           // SYNC_SEEN_VEC RO word (Region 10 slot 7), served by the
+                           // chiplet controller's region10_rdata. Exclude it from
+                           // eye_shim so it falls through to tidelink_internal_prdata;
+                           // otherwise eye_shim (tied 0 in V2) wins and 0x215C reads
+                           // 0x00000000 with NO 0x5F marker (same trap as 0x2150/0x2158).
+                           || (tl_apb_paddr[4:0] == 5'h1C));  // 0x215C SYNC_SEEN_VEC (RO)
+    wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
+    assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
+                            eye_shim_sel_eff   ? eye_shim_prdata       :
+                                                 tidelink_internal_prdata;
+    assign tl_apb_pready  = gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
+                            eye_shim_sel_eff   ? eye_shim_pready       :
+                                                 tidelink_internal_pready;
+    assign tl_apb_pslverr = gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
+                            eye_shim_sel_eff   ? eye_shim_pslverr      :
+                                                 tidelink_internal_pslverr;
+`else
     assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
@@ -954,15 +1167,25 @@ module tidelink_top #(
     assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
+`endif
 
-    // Route APB responses back to both sources
+    // Route APB responses back to both sources.  GATE the FC response: the FC is
+    // told 'ready' only in the cycles it actually owns the bus (fc_cfg_apb_active)
+    // -- otherwise it is held off (pready=0) and, per its RX FSM, cleanly stalls
+    // with its transaction intact.  prdata is passed through unconditionally: the
+    // FC issues writes only (fc_rx_cfg_pwrite=1) and ignores read data.
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
-    assign fc_cfg_apb_pready  = tl_apb_pready;
-    assign fc_cfg_apb_pslverr = tl_apb_pslverr;
+    assign fc_cfg_apb_pready  = fc_cfg_apb_active ? tl_apb_pready  : 1'b0;
+    assign fc_cfg_apb_pslverr = fc_cfg_apb_active ? tl_apb_pslverr : 1'b0;
 
+    // External (PS) response.  When the FC owns the bus the PS is stalled
+    // (pready=0) -- but the arbiter above guarantees fc_cfg_apb_active=0 whenever
+    // an external access is in its ACCESS phase, so the PS is never actually
+    // starved here.  ext_timeout force-completes a stuck-slave stall with a bus
+    // error so the PS can never hang (the Zynq has no timeout of its own).
     assign tl_regs_prdata  = fc_cfg_apb_active ? '0   : tl_apb_prdata;
-    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : tl_apb_pready;
-    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
+    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : (tl_apb_pready  | ext_timeout);
+    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : (tl_apb_pslverr | ext_timeout);
 
     // =========================================================================
     // Address translation wiring + pipeline register
@@ -981,12 +1204,76 @@ module tidelink_top #(
     logic                    pipe_hsel_r;
     logic                    pipe_valid_r;   // latched address phase ready for XHB500
 
-    // Detect new address phase on external port
-    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1] & ahb_sub_hready;
+    // Detect new address phase on external port.
+    // SoC Labs 2026-07-05 comb-loop fix: do NOT qualify with ahb_sub_hready.
+    // The FPGA wrapper loops ahb_sub_hreadyout back into ahb_sub_hready, and
+    // ahb_sub_hreadyout (below) depended on ext_is_nonseq -> hreadyout was a
+    // combinational function of itself (Vivado: "1 combinational loop (HIGH)").
+    // On silicon the bridge / this pipe / XHB500 sampled the ring divergently:
+    // window WRITES phantom-completed at the bridge (vanish), HWDATA was
+    // captured one cycle late (poison), double-accepts corrupted FC credit
+    // (fcsm 4->0 under sustained window traffic). Reproduced deterministically
+    // in sim by test_v2_xhb_window_bridge (bridge-accurate BFM). Dropping the
+    // hready term is safe for this single-master port: pipe_valid_r blocks
+    // re-latch of a held NONSEQ, and the pipe clears exactly at the master's
+    // address-phase completion edge (hreadyout==raw whenever pipe_valid_r).
+    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
-    // XHB500 hreadyout (raw, before pipeline insertion)
+    // XHB500 hreadyout / hresp (raw, before pipeline + timeout insertion)
     wire xhb_sub_hreadyout_raw;
+    wire xhb_sub_hresp_raw;
+
+    // ── ahb_sub bounded stall backstop (2026-07-06) ───────────────────────────
+    // The XHB500 subordinate holds hreadyout low for the whole data phase of a
+    // window transfer while it waits on the AXI/link round-trip to the peer. If
+    // the link wedges (credit stall, PHY drop), that hreadyout can stay low
+    // FOREVER -> ahb_sub_hreadyout (below) stays low -> the Xilinx
+    // axi_ahblite_bridge and the Zynq PS interconnect block indefinitely with no
+    // PS-side timeout, wedging z2_02 off-net (physical power-cycle to recover;
+    // bench-confirmed on the tl-data aperture before its own backstop —
+    // tidelink_fc_adapter.sv:247-329, TX_STALL_TIMEOUT). This mirrors that fix
+    // for the window path: after SUB_STALL_TIMEOUT hclk cycles of a single
+    // transfer held stalled, terminate it with the standard AHB two-cycle ERROR
+    // response (cy1: HREADYOUT=0 + HRESP=1; cy2: HREADYOUT=1 + HRESP=1) so the
+    // bridge/PS un-block with a recoverable bus error (SIGBUS) instead of hanging.
+    //
+    // 2^16 hclk (~2.6 ms @ 25 MHz FPGA rig, ~14 ms @ 4.7 MHz) is orders beyond a
+    // legitimate slow-but-progressing window round-trip: the counter RESETS every
+    // time the front-end stops stalling (i.e. on every completed beat — see
+    // ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
+    // held stalled continuously past the timeout (a genuine wedge) can trip it.
+    //
+    // NO COMB LOOP (this is the load-bearing invariant that cb33c9f established):
+    // every term below is a register or derives ONLY from ahb_sub_hsel/htrans
+    // (ext_is_nonseq), pipe_valid_r (reg) and xhb_sub_hreadyout_raw (XHB500's own
+    // output) — NEVER from ahb_sub_hready (the wrapper loopback). ahb_sub_hreadyout
+    // gains only the sub_err{1,2}_r register overrides, so it remains free of any
+    // combinational dependence on ahb_sub_hready.
+`ifdef TIDELINK_SUB_STALL_TIMEOUT_LOG2
+    // Sim override (cocotb/tidelink_top_pair_v2/test_v2_xhb_window_stall.py drives
+    // it small so the backstop trips in a few hundred cycles instead of ~2^16).
+    localparam int SUB_STALL_TIMEOUT_LOG2 = `TIDELINK_SUB_STALL_TIMEOUT_LOG2;
+`else
+    localparam int SUB_STALL_TIMEOUT_LOG2 = 16;   // ~2^16 hclk; see rationale above
+`endif
+    logic [SUB_STALL_TIMEOUT_LOG2:0] sub_stall_ctr_r;
+    logic                            sub_err1_r, sub_err2_r;
+    // Front-end is holding HREADYOUT low (a transfer is in flight and not
+    // progressing): the pipeline-fill stall cycle OR — the case that actually
+    // wedges the PS — XHB500 holding its data phase low while it waits on the
+    // cross-link b/r response. NOTE the data-phase stall persists AFTER
+    // pipe_valid_r clears (XHB500 has already accepted the address and the
+    // master has dropped to IDLE), so it is detected by xhb_sub_hreadyout_raw==0
+    // directly, NOT via pipe_valid_r. On an idle bus XHB500 drives raw==1
+    // (tidelink_top.sv:1181), so idle => not stalled => the counter resets and
+    // every completed beat (raw pulses high) re-zeroes it. Frozen during the
+    // 2-cycle ERROR response so one wedged transfer is counted exactly once.
+    wire sub_stall_fill    = ext_is_nonseq && !pipe_valid_r;
+    wire sub_stall_busy    = !xhb_sub_hreadyout_raw;
+    wire ext_stalled       = (sub_stall_fill || sub_stall_busy)
+                             && !sub_err1_r && !sub_err2_r;
+    wire sub_stall_expired = sub_stall_ctr_r[SUB_STALL_TIMEOUT_LOG2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -1014,6 +1301,33 @@ module tidelink_top #(
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
+            end else if (sub_err1_r) begin
+                // Stall-timeout abort: abandon the in-flight (wedged) transfer so
+                // it cannot re-trigger the backstop or hold hsel into XHB500.
+                pipe_valid_r   <= 1'b0;
+                pipe_hsel_r    <= 1'b0;
+                pipe_htrans_r  <= 2'b00;
+            end
+        end
+    end
+
+    // Stall-timeout counter + 2-cycle AHB ERROR sequencer (registered; driven
+    // off hclk; never combinationally dependent on ahb_sub_hready — see above).
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_stall_ctr_r <= '0;
+            sub_err1_r      <= 1'b0;
+            sub_err2_r      <= 1'b0;
+        end else begin
+            sub_err2_r <= sub_err1_r;   // ERROR cycle 2 follows cycle 1
+            sub_err1_r <= 1'b0;         // default: one-shot
+            if (!ext_stalled) begin
+                sub_stall_ctr_r <= '0;                 // resets every completed beat
+            end else if (sub_stall_expired) begin
+                sub_stall_ctr_r <= '0;
+                sub_err1_r      <= 1'b1;               // fire the ERROR response
+            end else begin
+                sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
         end
     end
@@ -1028,11 +1342,23 @@ module tidelink_top #(
     wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
     // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
     // the stale address; once pipeline is valid, pass through XHB500's own hreadyout
+    // (comb-loop fix, part 2): the else-arm used ahb_sub_hready — the last
+    // remaining hready-in fan-in to XHB500's FSM through the wrapper loopback.
+    // Use XHB500's own raw hreadyout instead (idle bus: raw==1 anyway).
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
-                                             (ext_is_nonseq ? 1'b0 : ahb_sub_hready);
+                                             (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
-    // External hreadyout: stall upstream during the pipeline fill cycle
-    assign ahb_sub_hreadyout = (ext_is_nonseq && !pipe_valid_r) ? 1'b0 : xhb_sub_hreadyout_raw;
+    // External hreadyout: stall upstream during the pipeline fill cycle. The
+    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when the
+    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — both are
+    // registers, so no combinational dependence on ahb_sub_hready is introduced.
+    assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
+                               sub_err2_r ? 1'b1 :
+                               (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
+                               xhb_sub_hreadyout_raw;
+    // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
+    // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
+    assign ahb_sub_hresp     = (sub_err1_r | sub_err2_r) ? 1'b1 : xhb_sub_hresp_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -1113,6 +1439,8 @@ module tidelink_top #(
         // Chiplet controller register pass-through
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
+        .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
@@ -1577,7 +1905,7 @@ module tidelink_top #(
         .hmaster           (12'd0),
         .hrdata            (ahb_sub_hrdata),
         .hreadyout         (xhb_sub_hreadyout_raw),
-        .hresp             (ahb_sub_hresp),
+        .hresp             (xhb_sub_hresp_raw),
         .hexokay           (),
         .hqos              (4'h0),
         .hregion           (4'h0),
@@ -1823,6 +2151,30 @@ module tidelink_top #(
         (harden_swi_apply         ? (apb_pwdata | swi_enable_or_mask) : apb_pwdata)
         & (harden_swi_block_swreset ? swreset_clear_mask : {SYS_DATA_W{1'b1}});
 
+    // =========================================================================
+    // S2 scaffold — PHY v2 swap site (PLAN_TIDELINK_INTEGRATION §1/§5, S2→S3)
+    //
+    // This generate arm marks WHERE the new shared PHY component
+    // (deps/tidelink-phy @ feat/phy-refactor; sources enumerated in
+    // flists/tidelink_phy_v2.flist) drops in: it will replace the
+    // WavD2DGpio serdes datapath that today lives INSIDE
+    // u_chiplet_controller, leaving the L3 surface (role block, I2C,
+    // training FSM, Wlink POR gating) untouched and driving the new L2
+    // through the alignment contract (swi_*/status bundle —
+    // tidelink_phy_align_if once it lands).
+    //
+    // S2 contract: with USE_PHY_V2=0 (the only supported value today) this
+    // arm elaborates EMPTY and the build is bit-identical to pre-scaffold
+    // RTL. The S3 drop-in fills g_phy_v2 with tidelink_gpio_phy_tx/rx (+
+    // deskew/checker/mask stack), muxes the pad_* and link-clock
+    // connections away from the controller-internal PHY, and ties the new
+    // calibrator/contract surface into the existing swi_* APB plumbing.
+    // =========================================================================
+    if (USE_PHY_V2) begin : g_phy_v2
+        // S3 drop-in site; see docs (PLAN_TIDELINK_INTEGRATION S3 / AUDIT 4b)
+        // and flists/tidelink_phy_v2.flist. Intentionally empty in S2.
+    end
+
     // SoC Labs §9 auto-cal: enable the in-RTL per-lane calibration FSM at
     // the TideLink integration level. The chiplet controller defaults to
     // 0 (disabled) so the cocotb wlink_pair sweep tests keep their
@@ -1852,7 +2204,9 @@ module tidelink_top #(
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
-        .NEGO_CFG_RESET       (NEGO_CFG_RESET)
+        .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
@@ -1869,8 +2223,20 @@ module tidelink_top #(
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),
         .role_locked_o              (role_locked_o),
-        .apb_debug_unlock_i         (apb_debug_unlock_i),
-        .mask_hs_bypass_i           (mask_hs_bypass_i),
+        // SoC Labs 2026-06-18 — REDUCED-LANE SW-driven bring-up (autoneg off):
+        // force both to 1. mask_hs_bypass opens mask_hs_gate_open so the SW
+        // ROLE_CFG W1S role-lock latches WITHOUT the autoneg mask handshake
+        // (else role_locked never asserts -> Wlink held in reset -> link dead).
+        // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
+        // lane mask) on the non-master die. Bench-debug straps; revisit when
+        // re-enabling autoneg for production.
+        // HONEST_MASK_HS gate (from kr260-pair-onchip): default 0 folds both selects
+        // to the historical 1'b1 ties => byte-identical single-die netlist. With 1 they
+        // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
+        // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
+        // and the peer-mask handshake must genuinely match.
+        .apb_debug_unlock_i         (HONEST_MASK_HS ? apb_debug_unlock_i : 1'b1),
+        .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),
@@ -1885,6 +2251,8 @@ module tidelink_top #(
         // mux output for both external APB and slv_apb readbacks).
         .apb_ctrl_reg_write         (ctrl_reg_write),
         .apb_ctrl_reg_addr          (ctrl_reg_addr),
+        .apb_ctrl_reg_r10           (ctrl_reg_r10),   // perlane-wp Region-10 select
+        .apb_ctrl_reg_rd            (ctrl_reg_rd),    // rxcap Region-D select
         .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 
@@ -2124,6 +2492,13 @@ module tidelink_top #(
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
         .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
+`ifdef TIDELINK_PHY_V2
+        // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state out to the
+        // tidelink_gpio_phy_apb_regs slave (SWI_EPOCH_STATUS @ 0x4403_2140).
+        ,
+        .obs_epoch_anchored_o        (gpio_phy_epoch_anchored_w),
+        .obs_epoch_span_o            (gpio_phy_epoch_span_w)
+`endif
     );
 
     // =========================================================================

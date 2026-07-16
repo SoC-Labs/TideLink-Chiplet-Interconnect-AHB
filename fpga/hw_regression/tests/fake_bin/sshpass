@@ -1,0 +1,21 @@
+#!/bin/bash
+# fake sshpass — routes the "remote" command to the fake board model instead
+# of a real PYNQ. The hwlib always invokes:
+#   sshpass -p PW ssh [opts...] xilinx@IP "remote command"
+# so the die is identified from the xilinx@IP token and the remote command is
+# the final argument. PATH-prepend tests/fake_bin/ to use (see run_fake_zeropoke.sh).
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=SCRIPTDIR/../fake_board_model.sh
+source "$HERE/../fake_board_model.sh"
+
+die=""; cmd=""
+for a in "$@"; do
+  case "$a" in
+    xilinx@*4.101) die=die_a;;
+    xilinx@*2.101) die=die_b;;
+  esac
+  cmd="$a"                       # last argument = the remote command string
+done
+[ -n "$die" ] || exit 255
+model_dispatch "$die" "$cmd"

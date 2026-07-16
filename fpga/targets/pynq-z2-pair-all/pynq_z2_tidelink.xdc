@@ -114,9 +114,6 @@ set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 # PULLDOWN keeps the line at '0' when no board is driving (idle state).
 # Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation -- well
 # below the PHC quantisation (20 ns at 50 MHz).
-set_property PACKAGE_PIN Y16 [get_ports pmod_b_trig]
-set_property IOSTANDARD LVCMOS33 [get_ports pmod_b_trig]
-set_property PULLTYPE PULLDOWN [get_ports pmod_b_trig]
 
 #-- Inter-board I2C (autonomous lane-mask coordination) -- OFF-RIBBON --------
 # SHORTCOMINGS-14a/14b: the autonomous cross-board lane-lock flow needs a
@@ -172,6 +169,8 @@ set_property -dict {PACKAGE_PIN M14 IOSTANDARD LVCMOS33} [get_ports led3]
 #-- Bitstream configuration ---------------------------------------------------
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
+
+
 
 
 

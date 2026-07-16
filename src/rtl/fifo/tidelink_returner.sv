@@ -51,6 +51,8 @@ module tidelink_returner #(
 
     // Status output
     output wire                   busy,
+    // Pulses the cycle channel-0 parameters are captured (credit-leak fix)
+    output wire                   capture_0_pulse,
 
     // Sticky error flag: set when master port receives ERROR response
     output wire                   master_error,
@@ -91,6 +93,12 @@ module tidelink_returner #(
 
     // Pending registers — latch on rising edge, hold until serviced
     logic pending_0, pending_1, pending_2;
+
+    // Credit-leak fix (2026-06-12): tell the channel-0 producer the exact
+    // cycle its write_data_0 is captured, so it can maintain an accumulate-
+    // until-captured delta instead of a snapshot that a second trigger
+    // overwrites (the permanent-credit-leak race).
+    assign capture_0_pulse = (state_r == ST_IDLE) && pending_0;
     wire  any_pending = pending_0 | pending_1 | pending_2;
 
     assign busy = (state_r != ST_IDLE);
@@ -115,17 +123,21 @@ module tidelink_returner #(
             pending_1 <= 1'b0;
             pending_2 <= 1'b0;
         end else begin
-            // Set on rising edge (can set even while busy)
-            if (interrupt_0_rising) pending_0 <= 1'b1;
-            if (interrupt_1_rising) pending_1 <= 1'b1;
-            if (interrupt_2_rising) pending_2 <= 1'b1;
-
-            // Clear the highest-priority pending when transitioning out of IDLE
+            // Clear the highest-priority pending when transitioning out of IDLE.
+            // NOTE (credit-leak fix, 2026-06-12): the clear is written FIRST so
+            // that a same-cycle rising edge below WINS — previously a trigger
+            // landing on the service cycle was silently lost (last-assignment-
+            // wins put the clear after the set).
             if (state_r == ST_IDLE && any_pending) begin
                 if      (pending_0) pending_0 <= 1'b0;
                 else if (pending_1) pending_1 <= 1'b0;
                 else if (pending_2) pending_2 <= 1'b0;
             end
+
+            // Set on rising edge (can set even while busy) — wins over the clear
+            if (interrupt_0_rising) pending_0 <= 1'b1;
+            if (interrupt_1_rising) pending_1 <= 1'b1;
+            if (interrupt_2_rising) pending_2 <= 1'b1;
         end
     end
 

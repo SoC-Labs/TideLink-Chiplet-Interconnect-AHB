@@ -57,6 +57,24 @@ cat "$TIDELINK_HOME/pynq_host/scripts/probe_autoneg_obs.sh" | ssh mapstone-dev \
 cat "$TIDELINK_HOME/pynq_host/scripts/v24_variance_loop.sh" | ssh mapstone-dev \
     "cat > /tmp/td_v24_priv/v24_variance_loop.sh && chmod +x /tmp/td_v24_priv/v24_variance_loop.sh"
 
+# 5b. HW-regression suite + runbook (LOOP-9 2026-07-03: the HW agent runs
+#     from a DIFFERENT checkout on mapstone-dev and never had these — every
+#     bring-up loop was re-deriving the recipe by hand. Same cat-pipe idiom.)
+echo "--- transferring hw_regression suite + TESTING runbook ---"
+for f in td_v2_hwlib.sh td_v2_regress.sh zeropoke_proof.sh zeropoke_soak.sh \
+         snapshot.sh linkhold_soak.sh; do
+    if [ -f "$TIDELINK_HOME/fpga/hw_regression/$f" ]; then
+        cat "$TIDELINK_HOME/fpga/hw_regression/$f" | ssh mapstone-dev \
+            "cat > /tmp/td_v24_priv/$f && chmod +x /tmp/td_v24_priv/$f"
+        echo "  staged $f"
+    else
+        echo "  WARNING: fpga/hw_regression/$f missing in this checkout — skipped"
+    fi
+done
+cat "$TIDELINK_HOME/docs/TESTING.md" | ssh mapstone-dev \
+    "cat > /tmp/td_v24_priv/TESTING.md"
+echo "  staged TESTING.md"
+
 # 6. Manifests
 echo "--- writing manifests ---"
 ssh mapstone-dev "cat > /tmp/td_v24_priv/tidelink.bin.manifest.json" <<EOF

@@ -16,7 +16,10 @@
 #       single AHB_TX write blocks > N seconds — caught via `timeout` wrapper.
 #
 # Configuration:
-#   AHB_TX_BASE          0x44000000  (default aperture base; 32 KB)
+#   AHB_TX_BASE          defaults to $TIDELINK_TX_BASE (lib_hwtest.sh), which
+#                        defaults to the OLD 0x44000000. GP1-split bitstreams
+#                        (2026-06-12) relocate the aperture: export
+#                        TIDELINK_TX_BASE=0x84000000 (or AHB_TX_BASE directly).
 #   N_AHB_TX             16          (storm depth — keep small by default)
 #   AHB_TX_TIMEOUT_S     5           (hard ceiling per write; abort if exceeded)
 # =============================================================================
@@ -27,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAT_NAME="05_ahb_tx_storm"
 tt_log "=== $CAT_NAME start ==="
 
-: "${AHB_TX_BASE:=0x44000000}"
+: "${AHB_TX_BASE:=$TIDELINK_TX_BASE}"
 : "${N_AHB_TX:=16}"
 : "${AHB_TX_TIMEOUT_S:=5}"
 

@@ -68,6 +68,9 @@ module tidelink_dft_wrapper #(
     parameter USE_CLKBUF        = 1'b0,
     parameter USE_T3A           = 1'b0,
     parameter HARDEN_SWI_ENABLE = 1'b1,
+    // S2 scaffold: PHY v2 select pass-through (default 0 = bit-identical;
+    // see tidelink_top parameter declaration for semantics).
+    parameter logic USE_PHY_V2  = 1'b0,
 
     // ---- DFT-specific ---------------------------------------------------
     // Number of mux-D scan chains exposed at this wrapper. 8 is the
@@ -438,7 +441,9 @@ module tidelink_dft_wrapper #(
         .USE_IDELAY         (USE_IDELAY),
         .USE_CLKBUF         (USE_CLKBUF),
         .USE_T3A            (USE_T3A),
-        .HARDEN_SWI_ENABLE  (HARDEN_SWI_ENABLE)
+        .HARDEN_SWI_ENABLE  (HARDEN_SWI_ENABLE),
+        // S2 scaffold: PHY v2 select (default 0 = bit-identical)
+        .USE_PHY_V2         (USE_PHY_V2)
     ) u_top (
         // Clock / reset
         .hclk                       (hclk),

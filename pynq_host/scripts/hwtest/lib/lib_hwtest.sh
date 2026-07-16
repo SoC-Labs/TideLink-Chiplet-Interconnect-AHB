@@ -19,7 +19,18 @@
 #   APB base (TideLink)     0x4403_2000
 #   APB base (Wlink)        0x4403_0000
 #   debug_unlock GPIO       0x4404_1000  (write 1 first)
-#   AHB_TX aperture         0x4400_0000  (32 KB) — WEDGE HAZARD
+#   AHB_TX aperture         $TIDELINK_TX_BASE — WEDGE HAZARD
+#   RX FIFO window          $TIDELINK_RXFIFO_BASE
+#
+# GP1 control/data split (2026-06-12, ARCH_ANALYSIS §4): bitstreams built
+# from the GP1-split BD relocate the DATA apertures to PS7 M_AXI_GP1
+# (Zynq-7000 hard window 0x8000_0000..0xBFFF_FFFF):
+#   AHB_TX  0x4400_0000 -> 0x8400_0000
+#   RX FIFO 0x4401_0000 -> 0x8401_0000
+# Control (APB 0x4403_xxxx, GPIOs 0x4404_xxxx, PHC 0x4405_0000) is UNCHANGED.
+# Defaults below stay at the OLD addresses so this suite keeps working
+# against pre-split bitstreams; for GP1-split images export:
+#   TIDELINK_TX_BASE=0x84000000 TIDELINK_RXFIFO_BASE=0x84010000
 #
 # A joint work commissioned on behalf of SoC Labs, under Arm Academic Access
 # license.  David Mapstone (d.a.mapstone@soton.ac.uk)
@@ -33,6 +44,11 @@
 
 : "${MASTER_IP:=192.168.4.101}"
 : "${SLAVE_IP:=192.168.6.101}"
+# Data-plane aperture bases. OLD (pre-GP1-split) defaults; export
+# TIDELINK_TX_BASE=0x84000000 / TIDELINK_RXFIFO_BASE=0x84010000 against
+# GP1-split bitstreams (see header note).
+: "${TIDELINK_TX_BASE:=0x44000000}"
+: "${TIDELINK_RXFIFO_BASE:=0x44010000}"
 : "${TIDELINK_BOARD_PASS:=xilinx}"
 : "${ARTEFACTS:=/tmp/tidelink_deploy}"
 : "${HWTEST_LOGDIR:=/tmp/tidelink_hwtest_logs}"
@@ -199,8 +215,9 @@ tt_gate_ahb_tx() {
 # AHB_TX helpers — ONLY safe after tt_gate_ahb_tx() returns
 # ---------------------------------------------------------------------------
 
-# tt_ahb_tx_write IP ADDR VAL  — write to AHB_TX aperture (0x4400_0000+).
-# ADDR is absolute; caller should keep within [0x4400_0000, 0x4400_8000).
+# tt_ahb_tx_write IP ADDR VAL  — write to the AHB_TX aperture
+# ($TIDELINK_TX_BASE+). ADDR is absolute; caller should keep within
+# [TIDELINK_TX_BASE, TIDELINK_TX_BASE+0x8000).
 tt_ahb_tx_write() {
     local IP=$1 ADDR=$2 VAL=$3
     tt_devmem_write "$IP" "$ADDR" "$VAL"

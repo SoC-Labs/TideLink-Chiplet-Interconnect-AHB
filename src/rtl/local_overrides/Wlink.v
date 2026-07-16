@@ -193,6 +193,36 @@ module Wlink #(
   // at bits [4N+3:4N]). Pass-through to WlinkGPIOPHY, mirroring
   // swi_bit_slip_in. Tie 0 → legacy single-global-phase APB path.
   input  [31:0] swi_phase_offset_in,
+`ifdef TIDELINK_PHY_V2
+  // S3 PHY swap (2026-06-11): the deps/tidelink-phy WlinkGPIOPHY fork adds a
+  // global word-window pin + its autonomous-mode select (FIX-R/FIX-R-proper).
+  // Routed from the chiplet controller. V1 builds never see these ports.
+  input   [3:0] swi_word_pin_in,
+  input         swi_word_pin_auto_en,
+  // SoC Labs SYNC-insert (V2 LL re-hunt beacon, 2026-06-15) — DEFAULT-OFF APB
+  // enable strap, routed from the chiplet controller (Region 8 slot 0 bit[2]
+  // SWI_SYNC_INSERT_EN, SoC addr 0x44032100). When 0 the PHY's SYNC inserter is
+  // a pure passthrough so the TX datapath is bit-identical to today. V1 builds
+  // never see this port (the V1 PHY does its own idle-gated SYNC insertion).
+  input         swi_sync_insert_en_in,
+  // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF APB control
+  // strap, routed from the chiplet controller (Region 8 slot 0 bit[3]
+  // SWI_SYNC_FORCE_ALWAYS, SoC addr 0x44032100). When 0 the SYNC beacon keeps
+  // its idle-gated production behaviour (bit-identical). When 1 the idle gate is
+  // dropped so the beacon fires on enable alone (still self-gates ~training).
+  input         swi_sync_force_always_in,
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) — SW
+  // LANE_MASK strap for the PHY's RX SYNC detector (PART 3, default 0xFF,
+  // Region 9 slot 2 SoC addr 0x44032128), routed from the chiplet controller.
+  // SWI_SYNC_ROBUST_DETECT (PART 2, Region 8 slot 0 bit[4]) selects whether the
+  // detector's per-lane match is OR'd into the framer re-hunt below.
+  input  [7:0]  swi_sync_lane_mask_in,
+  input         swi_sync_robust_detect_in,
+  // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17) — Region 9 slot 2
+  // SoC addr 0x44032128 [12:8]. 0 = EXACT (bit-identical). Pass-through to the
+  // WlinkGPIOPHY fork's sync_tol_in.
+  input  [4:0]  swi_sync_tol_in,
+`endif
   // SoC Labs §9 auto-cal hookup: expose the recovered RX link clock and the
   // per-lane deserialised 128-bit data so the chiplet-controller can
   // instantiate the lane-checker + calibrator FSM outside Wlink. These are
@@ -229,7 +259,100 @@ module Wlink #(
   output [7:0]   obs_fe_rx_credit_max_o,      // rx domain
   output         obs_fe_rx_is_full_o,         // rx domain
   // SoC Labs Bug-A FCSM observation 2026-06-03
-  output         obs_a2l_replay_app_valid_o   // app domain
+  output         obs_a2l_replay_app_valid_o,  // app domain
+  // SoC Labs V2 data-send observation 2026-06-21 — a2l replay buffer's true
+  // app_ready (app-clk domain) and link_empty (link-clk domain). Read-only.
+  output         obs_a2l_replay_app_ready_o,  // app domain
+  output         obs_a2l_replay_link_empty_o, // link domain
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 — a2l replay
+  // buffer raw write ptr / app-clk-synced ACK ptr / false-FULL flag / enable
+  // demet term of app_ready. All app-clk domain, read-only fan-outs.
+  output [4:0]   obs_a2l_wptr_o,              // app domain (write bin ptr)
+  output [4:0]   obs_a2l_synced_ack_o,        // app domain (synced ACK ptr)
+  output         obs_a2l_full_o,              // app domain (false-FULL flag)
+  output         obs_a2l_enable_app_demet_o,  // app domain (other app_ready term)
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  // — a2l replay buffer read-side reset (== fifo_io_rreset) and LINK read binary
+  // pointer (== link_cur_addr). Both link-clk domain, read-only fan-outs.
+  output         obs_a2l_rreset_o,            // link domain (read-side FIFO reset)
+  output [4:0]   obs_a2l_rptr_o,              // link domain (LINK read bin ptr)
+  // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
+  output [7:0]   obs_fe_rx_ptr_o,             // tx domain
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky framer (llrx) + FCSM (tl2wl) words that localise where a sustained
+  // A->B long-DATA packet dies. rx-link-clk / io_rx_clk domains; pure read-only
+  // fan-outs. Present in V1 + V2 (the framer/FCSM are shared); only the V2
+  // controller decodes them to APB (Region D), so V1 stays bit-identical.
+  output [31:0]  obs_rxcap0_o,                // {marker,ever,state,ph@first_long}
+  output [31:0]  obs_rxcap1_o,                // {max_byte_count, long_start_cnt}
+  output [31:0]  obs_fcsmcap_o                // {marker,ever,first/last pktnum}
+`ifdef TIDELINK_PHY_V2
+  // SoC Labs V2 epoch-anchor engagement observable 2026-06-14 — the
+  // WlinkGPIOPHY (deps/tidelink-phy fork) exports the cross-lane word-EPOCH
+  // anchor state from its lane-deskew engine. Routed up through the chiplet
+  // controller and 2-flop-synced to apb_clk for read at SWI_EPOCH_STATUS
+  // (SoC MMIO 0x4403_2140). link_rx_rx_link_clk domain. V1 never sees these.
+  ,
+  output         obs_epoch_anchored_o,        // rx-link-clk dom: anchor engaged
+  output [5:0]   obs_epoch_span_o,            // rx-link-clk dom: measured span
+  // SoC Labs SYNC-insert TX OBSERVABILITY (2026-06-15, PART 1) — the V2
+  // WlinkGPIOPHY fork exports the TX-side SYNC-insert probe (16-bit saturating
+  // count of cycles the PHY physically drove a SYNC word + two live level bits:
+  // tx_idle and effective_training_mode). io_link_tx_tx_link_clk domain; 2-flop
+  // synced to apb_clk in axi_chiplet_controller.sv (mirrors obs_sync_detected_cnt).
+  // Read at the new SYNC-OBS register (SoC MMIO 0x4403_2120). V1 never sees these.
+  output [15:0]  obs_tx_sync_ins_cnt_o,       // tx-link-clk dom: SYNC-insert sat. count
+  output         obs_tx_link_idle_level_o,    // tx-link-clk dom: live tx_idle
+  output         obs_tx_training_level_o,     // tx-link-clk dom: live training
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 1) — the V2
+  // WlinkGPIOPHY fork exports the mask-aware per-lane SYNC detector on the
+  // post-deskew word. 16-bit saturating count + 8-bit sticky "ever-matched"
+  // per-lane vector (THE key diagnostic). rx-link-clk domain; 2-flop-synced to
+  // apb_clk in axi_chiplet_controller.sv. Read at the SYNC-DETECT register
+  // (SoC MMIO 0x4403_2124). V1 never sees these.
+  output [15:0]  obs_sync_seen_cnt_o,         // rx-link-clk dom: mask-aware sat. count
+  output [7:0]   obs_sync_seen_lane_o,        // rx-link-clk dom: per-lane sticky vector
+  // SoC Labs RX RAW-WORD + PERMUTATION observability (2026-06-15, rawobs) — the
+  // V2 WlinkGPIOPHY fork exports a BEST-MATCH-latched raw post-deskew word + a
+  // per-RX-lane carried-slice-index map, to decode WHY obs_sync_seen_lane_o
+  // reads 0 on silicon (content-transform: permutation vs bit-rotation). All
+  // rx-link-clk domain; CDC'd to apb_clk in axi_chiplet_controller.sv. Read at
+  // Region 9 slots 3..7 (SoC MMIO 0x4403_212C..0x4403_213C). V1 never sees these.
+  output [127:0] obs_dbg_raw_word_o,          // rx-link-clk dom: best-match raw word
+  output [7:0]   obs_dbg_lane_any_match_o,    // rx-link-clk dom: fixed-pos match vector
+  output [3:0]   obs_dbg_best_popcount_o,     // rx-link-clk dom: popcount of that vector
+  output [31:0]  obs_dbg_slice_idx_o,         // rx-link-clk dom: per-lane carried-slice map
+  // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (2026-06-16,
+  // perlane-wp) — the V2 WlinkGPIOPHY fork adds a CLEARABLE per-lane live-match
+  // oracle (clear pulse in + live vector out) and a per-lane word-pin SW
+  // override (8x4-bit + 8-bit enable). swi_sync_obs_clr_in is the APB W1-pulse
+  // (SoC 0x44032100[5]); obs_sync_lane_live_o is the live "matched since clear"
+  // vector (SoC 0x44032144); swi_word_pin_ovr_in / swi_word_pin_ovr_en_in are
+  // the per-lane override (SoC 0x44032148). Tie {clr=0,ovr=0,en=0} = legacy.
+  input          swi_sync_obs_clr_in,         // apb-clk strap: clearable-oracle clear pulse
+  output [7:0]   obs_sync_lane_live_o,        // rx-link-clk dom: live per-lane match vector
+  input  [31:0]  swi_word_pin_ovr_in,         // apb-clk strap: 8x4b per-lane window pin
+  input  [7:0]   swi_word_pin_ovr_en_in,      // apb-clk strap: 8b per-lane override enable
+  // STICKY-POISON per-lane sync_seen observability (2026-06-23). Per-lane deskew
+  // SYNC re-anchor sync_seen vector (which lanes committed a periodic-confirmed
+  // SYNC index). rx-link-clk domain; CDC'd to apb_clk in the chiplet controller.
+  // SoC 0x44032144 sibling at 0x4403215C. 0 unless SYNC_REANCHOR_EN.
+  output [7:0]   obs_sync_seen_vec_o,         // rx-link-clk dom: per-lane deskew sync_seen
+  // DATA-MODE per-lane SYNC HAMMING-DISTANCE OBS (2026-06-25, the winscan
+  // metric). Per-lane 5-bit Hamming distance of the current word to that lane's
+  // SYNC slice — the DATA-mode RX-eye-quality metric the winscan centres the
+  // IDELAY tap on. rx-link-clk domain; CDC'd to apb_clk in the chiplet
+  // controller. SoC 0x4403_21AC (lane-selected). 0 unless SYNC_REANCHOR_EN.
+  output [39:0]  obs_sync_dist_vec_o,         // rx-link-clk dom: per-lane SYNC Hamming distance
+  // R-A FINALIZE ANCHOR-VERIFY (2026-07-04). Sticky from the WavD2DGpio_v2
+  // local override: the ENGAGED deskew re-anchor has delivered >=1 post-deskew
+  // word EXACTLY equal to TIDELINK_SYNC_WORD on every active lane
+  // simultaneously (the wrong-slot mis-anchor detector — a one-slot-off lane
+  // can never satisfy the simultaneous exact match). Cleared by POR / the F3
+  // swi_sync_obs_clr_in. rx-link-clk domain; 2-FF synced to apb_clk in the
+  // chiplet controller (ws_verify_q — the winscan WS_FINALIZE release gate).
+  output         obs_anchor_verified_o        // rx-link-clk dom: engaged-anchor exact-beacon sticky
+`endif
 );
   // ===================================================================
   // SoC Labs credit-path observability wiring.
@@ -253,6 +376,19 @@ module Wlink #(
   wire       llrx_io_obs_valid;
   // SoC Labs 2026-06-08: SYNC-detected pulse from llrx (RX link-clock domain).
   wire       llrx_io_obs_sync_detected;
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky framer words from llrx (rx-link-clk domain), forwarded to Wlink
+  // outputs below.
+  wire [31:0] llrx_io_obs_rxcap0;
+  wire [31:0] llrx_io_obs_rxcap1;
+`ifdef TIDELINK_PHY_V2
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2) — live
+  // 1-cycle mask-aware match from the PHY detector (post-deskew word, RX
+  // link-clock domain). PART 2: OR'd into the framer re-hunt below ONLY when
+  // swi_sync_robust_detect_in=1 (default 0 -> bit-identical). Declared here so
+  // the PHY instance can drive it and the llrx instance can consume it.
+  wire       phy_io_sync_seen_pulse;
+`endif
   // tdif-10 visibility (2026-05-25): the FCSM observability outputs
   // expose the master-side credit-handshake state that lets us see CR/CRACK
   // packets being received and the FCSM's own state advance. These nets
@@ -269,6 +405,22 @@ module Wlink #(
   wire       tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   wire       tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs V2 data-send observation 2026-06-21
+  wire       tl2wl_io_obs_a2l_replay_app_ready;
+  wire       tl2wl_io_obs_a2l_replay_link_empty;
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+  wire [4:0] tl2wl_io_obs_a2l_wptr;
+  wire [4:0] tl2wl_io_obs_a2l_synced_ack;
+  wire       tl2wl_io_obs_a2l_full;
+  wire       tl2wl_io_obs_a2l_enable_app_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  wire       tl2wl_io_obs_a2l_rreset;
+  wire [4:0] tl2wl_io_obs_a2l_rptr;
+  // SoC Labs FC credit observation 2026-06-12
+  wire [7:0] tl2wl_io_obs_fe_rx_ptr;
+  // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — packed
+  // sticky FCSM word from tl2wl (io_rx_clk domain), forwarded to Wlink output.
+  wire [31:0] tl2wl_io_obs_fcsmcap;
   reg [15:0] obs_ecc_corrupted_cnt_q;
   reg [15:0] obs_ecc_corrected_cnt_q;
   // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
@@ -911,10 +1063,27 @@ module Wlink #(
   assign obs_fe_rx_is_full_o         = tl2wl_io_obs_fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign obs_a2l_replay_app_valid_o  = tl2wl_io_obs_a2l_replay_app_valid;
+  // SoC Labs V2 data-send observation 2026-06-21 (read-only fan-out)
+  assign obs_a2l_replay_app_ready_o  = tl2wl_io_obs_a2l_replay_app_ready;
+  assign obs_a2l_replay_link_empty_o = tl2wl_io_obs_a2l_replay_link_empty;
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only fan-out)
+  assign obs_a2l_wptr_o              = tl2wl_io_obs_a2l_wptr;
+  assign obs_a2l_synced_ack_o        = tl2wl_io_obs_a2l_synced_ack;
+  assign obs_a2l_full_o              = tl2wl_io_obs_a2l_full;
+  assign obs_a2l_enable_app_demet_o  = tl2wl_io_obs_a2l_enable_app_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO fan-out)
+  assign obs_a2l_rreset_o            = tl2wl_io_obs_a2l_rreset;
+  assign obs_a2l_rptr_o              = tl2wl_io_obs_a2l_rptr;
+  // SoC Labs FC credit observation 2026-06-12
+  assign obs_fe_rx_ptr_o             = tl2wl_io_obs_fe_rx_ptr;
   assign obs_llrx_state_o        = llrx_io_obs_state;
   assign obs_is_short_pkt_o      = llrx_io_obs_is_short_pkt;
   assign obs_is_long_pkt_o       = llrx_io_obs_is_long_pkt;
   assign obs_llrx_valid_o        = llrx_io_obs_valid;
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap, RO fan-out)
+  assign obs_rxcap0_o            = llrx_io_obs_rxcap0;
+  assign obs_rxcap1_o            = llrx_io_obs_rxcap1;
+  assign obs_fcsmcap_o           = tl2wl_io_obs_fcsmcap;
   assign obs_ecc_corrupted_cnt_o = obs_ecc_corrupted_cnt_q;
   assign obs_ecc_corrected_cnt_o = obs_ecc_corrected_cnt_q;
   assign obs_sync_detected_cnt_o = obs_sync_detected_cnt_q;
@@ -1154,7 +1323,9 @@ module Wlink #(
     .scan_out(phy_scan_out),
     .por_reset(phy_por_reset),
     .link_tx_tx_en(phy_link_tx_tx_en),
-    .link_tx_tx_idle(lltx_io_link_idle), // SoC Labs 2026-06-06: LL idle -> PHY gates SYNC insertion to inter-packet slots
+`ifndef TIDELINK_PHY_V2
+    .link_tx_tx_idle(lltx_io_link_idle), // SoC Labs 2026-06-06: LL idle -> PHY gates SYNC insertion to inter-packet slots (V1 fork only; V2 fork has no such port)
+`endif
     .link_tx_tx_ready(phy_link_tx_tx_ready),
     .link_tx_tx_link_data(phy_link_tx_tx_link_data),
     .link_tx_tx_lane_mask(phy_link_tx_tx_lane_mask),
@@ -1186,7 +1357,50 @@ module Wlink #(
     // APB regs at offsets 0x244/0x248 are disabled until decode issue resolved.
     .swi_bit_slip_in(swi_bit_slip_in),
     .swi_training_mode_in(swi_training_mode_in),
+`ifdef TIDELINK_PHY_V2
+    // S3 PHY swap: V2 fork adds the word-pin pair (FIX-R) and (2026-06-15) the
+    // DEFAULT-OFF SYNC-insert re-hunt beacon. The V2 WlinkGPIOPHY fork now
+    // exposes link_tx_tx_idle (mirroring the V1 connection at line ~1181) so the
+    // LL inter-packet idle gates SYNC insertion to idle slots only, plus the
+    // APB enable strap swi_sync_insert_en (DEFAULT 0 -> bit-identical TX).
+    .link_tx_tx_idle(lltx_io_link_idle),       // SYNC-insert: LL inter-packet idle gate (V2)
+    .swi_sync_insert_en(swi_sync_insert_en_in),// SYNC-insert: APB feature enable (DEFAULT 0)
+    .swi_sync_force_always(swi_sync_force_always_in), // PART2 gate fix: drop idle term (DEFAULT 0)
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2/3): SW
+    // LANE_MASK strap in, mask-aware per-lane detect outputs out.
+    .sync_lane_mask_in(swi_sync_lane_mask_in), // PART3 SW LANE_MASK strap (default 0xFF)
+    .sync_tol_in(swi_sync_tol_in),             // 2026-06-17 Hamming tolerance (0=exact)
+    .sync_seen_cnt(obs_sync_seen_cnt_o),       // PART1 obs: mask-aware sat. count
+    .sync_seen_lane(obs_sync_seen_lane_o),     // PART1 obs: per-lane sticky vector
+    .sync_seen_pulse(phy_io_sync_seen_pulse),  // PART2 robust re-hunt source
+    // rawobs: BEST-MATCH raw post-deskew word + per-lane carried-slice map.
+    .dbg_raw_word(obs_dbg_raw_word_o),         // rawobs: best-match raw word
+    .dbg_lane_any_match(obs_dbg_lane_any_match_o), // rawobs: fixed-pos match vector
+    .dbg_best_popcount(obs_dbg_best_popcount_o),   // rawobs: popcount of that vector
+    .dbg_slice_idx(obs_dbg_slice_idx_o),       // rawobs: per-lane carried-slice map
+    .swi_phase_offset_in(swi_phase_offset_in),
+    .swi_word_pin_in(swi_word_pin_in),
+    .swi_word_pin_auto_en(swi_word_pin_auto_en),
+    // SoC Labs V2 epoch-anchor obs 2026-06-14: route the WlinkGPIOPHY anchor
+    // engagement state out to the chiplet controller -> SWI_EPOCH_STATUS.
+    .epoch_anchored(obs_epoch_anchored_o),
+    .epoch_span(obs_epoch_span_o),
+    // SoC Labs SYNC-insert TX obs 2026-06-15 (PART 1): route the PHY's TX-side
+    // SYNC-insert probe out to the chiplet controller -> SoC MMIO 0x4403_2120.
+    .tx_sync_ins_cnt(obs_tx_sync_ins_cnt_o),
+    .tx_link_idle_level(obs_tx_link_idle_level_o),
+    .tx_training_level(obs_tx_training_level_o),
+    // SoC Labs PER-LANE SYNC-match sweep oracle + word-pin override (perlane-wp)
+    .sync_obs_clr_in(swi_sync_obs_clr_in),         // clearable-oracle clear pulse
+    .sync_lane_live(obs_sync_lane_live_o),         // live per-lane match vector
+    .word_pin_ovr_in(swi_word_pin_ovr_in),         // 8x4b per-lane window pin
+    .word_pin_ovr_en_in(swi_word_pin_ovr_en_in),   // 8b per-lane override enable
+    .sync_seen_vec(obs_sync_seen_vec_o),           // sticky-poison: per-lane deskew sync_seen
+    .sync_dist_vec(obs_sync_dist_vec_o),           // winscan metric: per-lane SYNC Hamming distance
+    .anchor_verified(obs_anchor_verified_o)        // R-A anchor-verify: engaged-anchor exact-beacon sticky
+`else
     .swi_phase_offset_in(swi_phase_offset_in)
+`endif
   );
   WlinkTxRouter txrouter ( // @[Wlink.scala 89:27]
     .clock(txrouter_clock),
@@ -1368,12 +1582,24 @@ module Wlink #(
     .io_ecc_corrected(llrx_io_ecc_corrected),
     .io_ecc_corrupted(llrx_io_ecc_corrupted),
     .io_link_data(llrx_io_link_data),
+`ifdef TIDELINK_PHY_V2
+    // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 2) — robust
+    // re-hunt source, gated by SWI_SYNC_ROBUST_DETECT (default 0 -> 0 here ->
+    // bit-identical). When the bit is 1, the PHY's mask-aware per-lane match
+    // (phy_io_sync_seen_pulse) additionally triggers the framer re-hunt.
+    .io_robust_sync_seen(phy_io_sync_seen_pulse & swi_sync_robust_detect_in),
+`else
+    .io_robust_sync_seen(1'b0), // V1: no PHY detector -> bit-identical re-hunt
+`endif
     .io_in_error_state(llrx_io_in_error_state),
     .io_obs_state(llrx_io_obs_state),
     .io_obs_is_short_pkt(llrx_io_obs_is_short_pkt),
     .io_obs_is_long_pkt(llrx_io_obs_is_long_pkt),
     .io_obs_valid(llrx_io_obs_valid),
-    .io_obs_sync_detected(llrx_io_obs_sync_detected) // SoC Labs 2026-06-08
+    .io_obs_sync_detected(llrx_io_obs_sync_detected), // SoC Labs 2026-06-08
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
+    .io_obs_rxcap0(llrx_io_obs_rxcap0),
+    .io_obs_rxcap1(llrx_io_obs_rxcap1)
   );
   AXI4ToWlink axi2wl ( // @[AXI.scala 99:31]
     .clock(axi2wl_clock),
@@ -1606,7 +1832,22 @@ module Wlink #(
     .io_obs_fe_rx_credit_max(tl2wl_io_obs_fe_rx_credit_max),
     .io_obs_fe_rx_is_full(tl2wl_io_obs_fe_rx_is_full),
     // SoC Labs Bug-A FCSM observation 2026-06-03
-    .io_obs_a2l_replay_app_valid(tl2wl_io_obs_a2l_replay_app_valid)
+    .io_obs_a2l_replay_app_valid(tl2wl_io_obs_a2l_replay_app_valid),
+    // SoC Labs V2 data-send observation 2026-06-21
+    .io_obs_a2l_replay_app_ready(tl2wl_io_obs_a2l_replay_app_ready),
+    .io_obs_a2l_replay_link_empty(tl2wl_io_obs_a2l_replay_link_empty),
+    // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21
+    .io_obs_a2l_wptr(tl2wl_io_obs_a2l_wptr),
+    .io_obs_a2l_synced_ack(tl2wl_io_obs_a2l_synced_ack),
+    .io_obs_a2l_full(tl2wl_io_obs_a2l_full),
+    .io_obs_a2l_enable_app_demet(tl2wl_io_obs_a2l_enable_app_demet),
+    // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+    .io_obs_a2l_rreset(tl2wl_io_obs_a2l_rreset),
+    .io_obs_a2l_rptr(tl2wl_io_obs_a2l_rptr),
+    // SoC Labs FC credit observation 2026-06-12
+    .io_obs_fe_rx_ptr(tl2wl_io_obs_fe_rx_ptr),
+    // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
+    .io_obs_fcsmcap(tl2wl_io_obs_fcsmcap)
   );
   ShortPacketToWlink sp2wl ( // @[ShortPacket.scala 87:30]
     .auto_rx_in_sop(sp2wl_auto_rx_in_sop),
@@ -2180,16 +2421,35 @@ module Wlink #(
   assign ff2_demet_2_clock = apb_clk;
   assign ff2_demet_2_reset = apb_reset;
   assign ff2_demet_2_io_in = ecc_corrupted_sp_io_data_out; // @[Stdcell.scala 59:17]
+  // SoC Labs 2026-07-01: autonomous lane-mask default, gated on a BUILD-ONLY
+  // define (TD_AUTO_LANE_MASK_E4) injected by fpga/filelist.tcl's V2 shim
+  // materialisation — NOT by the shared TIDELINK_PHY_V2. Why the dedicated
+  // define: sims read the v2shims directly (TIDELINK_PHY_V2 defined) whereas the
+  // FPGA build materialises them, so a materialisation-only define lets every V2
+  // *sim* keep the historical 0xFF default (its 8-lane lock oracles stay green)
+  // while only the FPGA build activates 0xE4. Rationale for 0xE4: on the
+  // autonomous (nego_en) path NOBODY writes 0x214, so the local tx/rx lane mask
+  // must POR to the board's good-lane set (rcp 0x30214=0xe4e4) instead of 0xFF,
+  // else the mask-handshake agrees on 8 lanes and Wlink frames across the 4 dead
+  // silicon lanes. The manual/SW recipe writes 0x214=0xe4e4 explicitly (rcp line
+  // 91) so its behaviour is unchanged. 0xE4 = bridge1 good lanes 2,5,6,7
+  // (BOARD-SPECIFIC — gate the filelist injection by a board-config once a
+  // second V2 board build exists).
+`ifdef TD_AUTO_LANE_MASK_E4
+  localparam [7:0] LANE_MASK_RESET = 8'hE4;   // bridge1 good lanes 2,5,6,7
+`else
+  localparam [7:0] LANE_MASK_RESET = 8'hFF;
+`endif
   always @(posedge apb_clk or posedge apb_reset) begin
     if (apb_reset) begin
-      swi_tx_lane_mask <= 8'hff;
+      swi_tx_lane_mask <= LANE_MASK_RESET;
     end else if (out_f_wivalid_2) begin
       swi_tx_lane_mask <= bundleIn_0_pwdata[7:0];
     end
   end
   always @(posedge apb_clk or posedge apb_reset) begin
     if (apb_reset) begin
-      out_prepend_swi_rx_lane_mask <= 8'hff;
+      out_prepend_swi_rx_lane_mask <= LANE_MASK_RESET;
     end else if (out_f_wivalid_3) begin
       out_prepend_swi_rx_lane_mask <= bundleIn_0_pwdata[15:8];
     end

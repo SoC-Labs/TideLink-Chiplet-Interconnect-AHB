@@ -86,6 +86,20 @@ module WlinkRxLinkLayer(
   output         io_ecc_corrected,
   output         io_ecc_corrupted,
   input  [127:0] io_link_data,
+  // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PART 2) — DEFAULT-OFF
+  // ROBUST framer re-hunt source. The internal full-128 sync_detected (:295)
+  // never fires on silicon if any lane's SYNC slice is off the eye. The PHY's
+  // mask-aware per-lane detector (tidelink_phy_sync_detect, on the same
+  // post-deskew word) fires even then, and Wlink.v gates its pulse by the
+  // SWI_SYNC_ROBUST_DETECT control bit (Region 8 slot 0 bit[4], default 0)
+  // before driving this port. With it 0 the port is held 0 (Wlink.v drives 0),
+  // so sync_resync (:299) is BIT-IDENTICAL to the full-128-only behaviour. When
+  // 1 a mask-aware match additionally triggers the framer re-hunt — but never
+  // STRIPS the word (effective_link_data still keys off the local full-128
+  // sync_detected only), so a robust-but-not-exact match re-aligns the framer
+  // without zeroing a beat. Tie 0 in environments without the chiplet
+  // controller (V1 / cocotb default) — preserves legacy behaviour exactly.
+  input          io_robust_sync_seen,
   output         io_in_error_state,
   // SoC Labs credit-path observability (read-only APB exposure of the
   // byte-align FSM internals — replaces the ILA debug core). These mirror
@@ -102,7 +116,19 @@ module WlinkRxLinkLayer(
   // (sync_detected, :289). Lets SW confirm the RX ever sees a COHERENT SYNC on
   // HW — the direct indicator that the lane-deskew is delivering aligned words.
   // Counted (16-bit saturating) in the RX-link-clock domain up in Wlink.v.
-  output         io_obs_sync_detected // assembled word == SYNC_WORD (1-cy pulse)
+  output         io_obs_sync_detected, // assembled word == SYNC_WORD (1-cy pulse)
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap) — localises
+  // exactly WHERE a sustained A->B multi-beat long-DATA packet dies on silicon.
+  // The slow APB-OBS poll (~0.5 s/sample vs ~4.7 MHz link) MISSES the
+  // first-long-packet transient; these latch it in the `clock` (recovered RX
+  // link clock) domain so a later APB read still sees it. Two packed 32-bit
+  // words, 2-flop-synced to apb_clk by axi_chiplet_controller.sv, read at the
+  // new Region D (SoC MMIO 0x4403_21A0 / 0x4403_21A4). Pure read-only fan-outs
+  // of internal framer nets — datapath unchanged. See the rxcap block below.
+  //   io_obs_rxcap0 = {marker 0xC0, ever flags, state, captured corrected_ph}
+  //   io_obs_rxcap1 = {max_byte_count, long-pkt-start sat. counter}
+  output [31:0]  io_obs_rxcap0,
+  output [31:0]  io_obs_rxcap1
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -169,12 +195,25 @@ module WlinkRxLinkLayer(
   // L5 (tdif-10, 2026-05-25): re-enable the v3 sticky gate. Long-packet
   // entry is gated until a whitelisted SHORT bringup packet has been
   // observed in state==0 — see strengthened latch logic below.
-  wire      long_pkt_gate = first_short_pkt_seen;
+  //
+  // SoC Labs P1 fix stage 2 (2026-07-03): a WELL-FORMED LONG HEADER opens
+  // the gate itself, combinationally. Silicon proof sequence: with the
+  // widened short whitelist, the gate re-latched from keepalives and the
+  // NACK/replay chain then recovered ALL previously swallowed words
+  // (exp 0x01->0x04, sack=4) — but under continuous burst pressure the
+  // opening short never crossed and 64/64 longs were swallowed with the
+  // gate stuck 0. An ECC-clean long header (is_long_pkt includes
+  // ~ecc_check_corrupted) with a KNOWN FC data_id and a sane word_count is
+  // itself the "link is well-framed" evidence L5 wanted: accept it and let
+  // it latch the gate for the 0-lane path too. Known long data_ids: the
+  // Wlink FC node families aw/w/b/ar/r = 0x80-0x84, gb = 0xa0, tl = 0xa1.
+  wire      wellformed_long_hdr;  // assigned below, after is_long_pkt/len_ok/ph decls
+  wire      long_pkt_gate = first_short_pkt_seen | wellformed_long_hdr;
   wire  _io_in_error_state_T = state == 2'h2; // @[LinkLayer.scala 614:53]
   reg  io_in_error_state_REG; // @[LinkLayer.scala 614:45]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_1; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] ll_byte_index_2; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
+  reg [7:0] ll_byte_index_0; // @[LinkLayer.scala 622:32]  SoC Labs ILA — decoded data_id
+  reg [7:0] ll_byte_index_1; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
+  reg [7:0] ll_byte_index_2; // @[LinkLayer.scala 622:32]  SoC Labs ILA — per-lane byte index
   reg [7:0] ll_byte_index_3; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_4; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_5; // @[LinkLayer.scala 622:32]
@@ -192,8 +231,8 @@ module WlinkRxLinkLayer(
   reg [7:0] ll_byte_index_17; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_18; // @[LinkLayer.scala 622:32]
   reg [7:0] ll_byte_index_19; // @[LinkLayer.scala 622:32]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte0_reg; // @[LinkLayer.scala 633:36]  SoC Labs ILA
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ reg [7:0] byte1_reg; // @[LinkLayer.scala 635:36]  SoC Labs ILA
+  reg [7:0] byte0_reg; // @[LinkLayer.scala 633:36]  SoC Labs ILA
+  reg [7:0] byte1_reg; // @[LinkLayer.scala 635:36]  SoC Labs ILA
   // tdif-10 visibility (2026-05-25): valid_byte_reg gates every framer
   // state transition. ILA-visible so we can correlate state==1 hangs with
   // whether the framer is still receiving bytes from the deser front-end.
@@ -220,6 +259,15 @@ module WlinkRxLinkLayer(
   // still rejecting the ~60k phantom lengths seen on filler.
   localparam [15:0] LONG_PKT_WORD_MAX = 16'd64; // S->M wedge guard
   wire long_pkt_len_ok = ecc_check_corrected_ph[23:8] <= LONG_PKT_WORD_MAX; // candidate word_count plausible
+  // SoC Labs P1 fix stage 2 (2026-07-03): assignment for the forward-declared
+  // wellformed_long_hdr (see the long_pkt_gate declaration above for the full
+  // rationale). ECC-clean long header + sane word_count + KNOWN FC long
+  // data_id (aw/w/b/ar/r 0x80-0x84, gb 0xa0, tl 0xa1) self-opens the gate.
+  assign wellformed_long_hdr = is_long_pkt && long_pkt_len_ok &&
+                               ((corrected_ph[7:0] >= 8'h80 &&
+                                 corrected_ph[7:0] <= 8'h84) ||
+                                (corrected_ph[7:0] == 8'ha0) ||
+                                (corrected_ph[7:0] == 8'ha1));
   reg  is_short_pkt_prev; // @[LinkLayer.scala 646:36]  SoC Labs ILA (feat/phc-ila-debug)
   reg  valid; // @[LinkLayer.scala 650:36]  SoC Labs ILA — LL_RX has valid packet (feat/phc-ila-debug)
   // tdif-10 visibility (2026-05-25): word_count is the framer's "how far
@@ -229,7 +277,7 @@ module WlinkRxLinkLayer(
   reg [15:0] word_count; // @[LinkLayer.scala 652:36]  tdif-10 ILA — long-pkt progress counter
   reg [16:0] byte_count; // @[LinkLayer.scala 657:36]
   wire [7:0] _bytesPerCycle_T_1 = io_active_lanes + 8'h1; // @[LinkLayer.scala 658:44]
-  /* mark_debug-disabled: dbg_hub auto-insertion noise per docs/SPYGLASS_CDC_SIGNOFF.md */ wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)
+  wire [8:0] bytesPerCycle = {_bytesPerCycle_T_1, 1'h0}; // @[LinkLayer.scala 658:51]  SoC Labs ILA — bytes per cycle (lane count)
   wire  _T = state == 2'h0; // @[LinkLayer.scala 693:16]
   wire  _T_5 = ~is_short_pkt_prev; // @[LinkLayer.scala 706:33]
   wire [15:0] _GEN_8 = is_long_pkt & ~is_short_pkt_prev ? ecc_check_corrected_ph[23:8] : word_count; // @[LinkLayer.scala 706:52 LinkLayer.scala 711:37 LinkLayer.scala 686:29]
@@ -292,11 +340,57 @@ module WlinkRxLinkLayer(
   // ===========================================================================
   localparam [127:0] SYNC_WORD =
       128'hF1E2_D3C4_B5A6_9788_796A_5B4C_3D2E_1F00;
-  wire        sync_detected = (io_link_data == SYNC_WORD);
+  // SoC Labs MASK-AWARE SYNC detect (2026-06-22): the original full-128 equality
+  // `io_link_data == SYNC_WORD` can NEVER fire under a reduced-lane mask, because
+  // the PHY TX zeroes masked lanes on the wire (tidelink_gpio_phy_tx.sv:71-72
+  // `lane_mask[gi] ? sel_w : 0`). Under e.g. 0xE4 (lanes {2,5,6,7} active) the
+  // received SYNC beat carries 16'h0000 on lanes {0,1,3,4}, so the full-128
+  // constant compare is geometrically dead -> sync_detected never pulses -> both
+  // the STRIP (effective_link_data below) and the re-hunt (sync_resync below) are
+  // dead, and the framer cannot re-align after any byte/word boundary slip on a
+  // reduced-lane link. Compare ONLY the active-lane 16-bit slices, selected by
+  // io_lane_mask[7:0] (an input at :85): a masked-out lane is a don't-care
+  // (~io_lane_mask[L] forces its term to 1). This REDUCES EXACTLY to the prior
+  // full-128 compare when io_lane_mask == 8'hFF (every ~mask term is 0, so each
+  // lane_match[L] is the bare slice equality and the AND is the full-128 ==), so
+  // the default full-mask path is bit-identical. SYNC-slice uniqueness still holds
+  // on the active subset: SYNC_WORD's low byte is 0x00 (an invalid Wlink length,
+  // so a SYNC beat can never alias a real header) and the upper-lane slices are a
+  // fixed descending-nibble ramp the encoder never emits, so even without lane 0
+  // the active-lane slices cannot collide with any encodable packet word.
+  wire [7:0] sync_lane_match;
+  genvar sync_li;
+  generate
+    for (sync_li = 0; sync_li < 8; sync_li = sync_li + 1) begin : g_sync_lane_match
+      assign sync_lane_match[sync_li] =
+          ~io_lane_mask[sync_li] |
+          (io_link_data[16*sync_li +: 16] == SYNC_WORD[16*sync_li +: 16]);
+    end
+  endgenerate
+  wire        sync_detected = &sync_lane_match;
   // Re-sync pulse: only meaningful in data mode (io_enable high, training
   // gating is upstream in the PHY glue — SYNC is never injected during
   // training so this is naturally quiescent then).
-  wire        sync_resync   = sync_detected & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
+  // SoC Labs PART 2 (2026-06-15): OR the PHY's mask-aware per-lane SYNC match
+  // (io_robust_sync_seen, already gated by SWI_SYNC_ROBUST_DETECT up in Wlink.v
+  // — held 0 by default) into the re-hunt term ONLY. The full-128 sync_detected
+  // still solely drives the STRIP (effective_link_data below), so a robust match
+  // re-aligns the framer without zeroing a beat. Default 0 -> bit-identical.
+  wire        sync_resync   = (sync_detected | io_robust_sync_seen) & io_enable; // SoC Labs 2026-06-07: always reset to hunt on SYNC. Safe because the TX data==0 gate (WavD2DGpio.v) inserts SYNC ONLY between real packets (bus truly idle), so a reset never lands inside a real packet — and it re-aligns the framer even from a post-slip fake state==1 (which a state!=1 guard would wrongly skip)
+  // SoC Labs P2 mid-packet-abort fix (2026-07-03): honor the SYNC re-hunt ONLY
+  // at a framer BOUNDARY (state 0 hunt / state 2 error), NEVER inside a long-
+  // packet BODY (state 1). The :379 "SYNC only in idle slots" premise holds for
+  // the idle-gated inserter, but SWI_SYNC_FORCE_ALWAYS (deps/tidelink-phy
+  // WavD2DGpio.v drops the idle term) emits a SYNC every 32 words regardless of
+  // idle, so a beacon can land mid-body; the old unconditional reset then forced
+  // state 1->0 and zeroed byte/word_count, SILENTLY discarding the half-parsed
+  // long packet (no valid/eop/CRC/error -> FCSM-blind, same class as P1).
+  // Deferring the re-hunt past state==1 lets the packet reach endOfPacket; the
+  // next inter-packet SYNC (state 0) still re-aligns; slipped state==1 still
+  // self-recovers via the wedge guard (word_count>LONG_PKT_WORD_MAX) and the
+  // monotone byte_count -> endOfPacket. INERT on the proven data path: with SYNC
+  // insert OFF sync_resync==0, so sync_resync_boundary==0 identically.
+  wire        sync_resync_boundary = sync_resync & (state != 2'h1);
   // Strip: feed the framer an all-zero idle word on the SYNC cycle so the
   // delimiter itself is never interpreted as packet bytes.
   wire [127:0] effective_link_data = sync_detected ? 128'h0 : io_link_data;
@@ -1137,21 +1231,45 @@ module WlinkRxLinkLayer(
   //
   // `reset` (POR + LL swreset) clears the flag so each bringup window
   // re-bootstraps from a whitelisted short pkt.
+  //
+  // SoC Labs P1 fix (2026-07-03): the 0x44-47-only whitelist DEADLOCKS the
+  // long path in steady state. Silicon-proven sequence: the gate opens
+  // during bootstrap (CR/CRACK), the bootstrap data packet crosses, then a
+  // post-bringup LL soft reset clears it -- and it can NEVER re-latch,
+  // because steady-state wire traffic is only the OTHER FC nodes' shorts
+  // (bFC ACK 0x12 / CR 0x10 keepalives), none of which match. Every
+  // subsequent data long is then silently swallowed at the hunt acceptance
+  // guard (RXCAP read: GATE=0, BLOCKED=1, ph_at_first=0x07a1 = a perfectly
+  // clean header). Fix: accept the FULL set of REAL short-packet id
+  // families as re-latch evidence -- Wlink FC nodes aw 0x08-0x0b, w 0x0c-0f,
+  // b 0x10-13, ar 0x14-17, r 0x18-1b, gb 0x40-43, tl 0x44-47 (the original
+  // four), and the ShortPacket channel 0x50-0x51. All are ECC-clean by
+  // is_short_pkt; misframed garbage stays excluded, preserving the L5
+  // intent while making the gate self-healing from any live traffic.
   wire whitelisted_short_data_id = (corrected_ph[7:0] == io_swi_cr_id) ||
                                    (corrected_ph[7:0] == io_swi_crack_id) ||
                                    (corrected_ph[7:0] == io_swi_ack_id) ||
-                                   (corrected_ph[7:0] == io_swi_nack_id);
+                                   (corrected_ph[7:0] == io_swi_nack_id) ||
+                                   (corrected_ph[7:0] >= 8'h08 &&
+                                    corrected_ph[7:0] <= 8'h1b) ||   // aw/w/b/ar/r FC families
+                                   (corrected_ph[7:0] >= 8'h40 &&
+                                    corrected_ph[7:0] <= 8'h43) ||   // gb FC family
+                                   (corrected_ph[7:0] == 8'h50) ||
+                                   (corrected_ph[7:0] == 8'h51);     // ShortPacket ch7
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       first_short_pkt_seen <= 1'b0;
-    end else if (state == 2'h0 && is_short_pkt && whitelisted_short_data_id) begin
+    end else if (state == 2'h0 &&
+                 ((is_short_pkt && whitelisted_short_data_id) ||
+                  wellformed_long_hdr)) begin
+      // P1 fix stage 2: a wellformed long header also latches the sticky.
       first_short_pkt_seen <= 1'b1;
     end
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       state <= 2'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       // SoC Labs SYNC re-align (2026-06-06): a SYNC delimiter forces the
       // byte-align FSM back to hunt (state 0) at a known packet boundary.
       state <= 2'h0;
@@ -1737,7 +1855,7 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       word_count <= 16'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       word_count <= 16'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
@@ -1754,7 +1872,7 @@ module WlinkRxLinkLayer(
   always @(posedge clock or posedge reset) begin
     if (reset) begin
       byte_count <= 17'h0;
-    end else if (sync_resync) begin
+    end else if (sync_resync_boundary) begin
       byte_count <= 17'h0;        // SoC Labs SYNC re-align (2026-06-06)
     end else if (state == 2'h0) begin
       if (enable_ff2_demet_io_out) begin
@@ -1770,6 +1888,54 @@ module WlinkRxLinkLayer(
       end
     end else if (state == 2'h1) begin
       byte_count <= _byte_count_in_T_2;
+    end
+  end
+  // ===========================================================================
+  // SoC Labs ILA snapshot regs (feat/phy-v2-integration, 2026-06-18)
+  // ---------------------------------------------------------------------------
+  // Purely OBSERVATIONAL: register-snapshots of the framer's combinational
+  // header-decode nets so they can be probed by the auto-inserted ILA debug
+  // core (fpga/insert_debug_core.tcl gathers MARK_DEBUG==1 nets, sets
+  // DONT_TOUCH, and wires one probe per base reg). NONE of these feed back
+  // into functional logic — they only drive the ILA. Same clock/reset domain
+  // (RX link clock `clock`, async active-high `reset`) as every other always
+  // block in this module. Question under investigation: does the die_b CR
+  // header data_id 0x44 ever land on link_data_byte_index_0 on die_a, and what
+  // does is_short/is_long/ECC decode it as (vs the CRACK 0x45 which frames OK)?
+  // ===========================================================================
+  reg [7:0]  dbg_link_data_byte_index_0; // gathered header data_id byte
+  reg        dbg_is_short_pkt;
+  reg        dbg_is_long_pkt;
+  reg        dbg_sync_detected;
+  reg        dbg_sync_resync;
+  reg        dbg_ecc_check_corrupted;
+  reg [7:0]  dbg_ecc_corrected_ph;       // corrected header data_id (ph[7:0])
+  reg [7:0]  dbg_io_lane_mask;
+  reg        dbg_io_robust_sync_seen;
+  reg [23:0] dbg_io_link_data_lo;        // low 3 header bytes pre-gather
+  always @(posedge clock or posedge reset) begin
+    if (reset) begin
+      dbg_link_data_byte_index_0 <= 8'h0;
+      dbg_is_short_pkt           <= 1'h0;
+      dbg_is_long_pkt            <= 1'h0;
+      dbg_sync_detected          <= 1'h0;
+      dbg_sync_resync            <= 1'h0;
+      dbg_ecc_check_corrupted    <= 1'h0;
+      dbg_ecc_corrected_ph       <= 8'h0;
+      dbg_io_lane_mask           <= 8'h0;
+      dbg_io_robust_sync_seen    <= 1'h0;
+      dbg_io_link_data_lo        <= 24'h0;
+    end else begin
+      dbg_link_data_byte_index_0 <= link_data_byte_index_0;
+      dbg_is_short_pkt           <= is_short_pkt;
+      dbg_is_long_pkt            <= is_long_pkt;
+      dbg_sync_detected          <= sync_detected;
+      dbg_sync_resync            <= sync_resync;
+      dbg_ecc_check_corrupted    <= ecc_check_corrupted;
+      dbg_ecc_corrected_ph       <= ecc_check_corrected_ph[7:0];
+      dbg_io_lane_mask           <= io_lane_mask;
+      dbg_io_robust_sync_seen    <= io_robust_sync_seen;
+      dbg_io_link_data_lo        <= io_link_data[23:0];
     end
   end
 // Register and memory initialization
@@ -1955,4 +2121,95 @@ end // initial
 `FIRRTL_AFTER_INITIAL
 `endif
 `endif // SYNTHESIS
+
+  // ===========================================================================
+  // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)
+  //
+  //   Localises exactly WHERE a sustained A->B multi-beat long-DATA packet dies
+  //   on die_b. The slow APB poll (~0.5 s/sample) cannot catch the first
+  //   long-packet START transient at ~4.7 MHz link rate; this block LATCHES it
+  //   in the `clock` (recovered RX link) domain so a later APB read still sees:
+  //     (a) whether the framer EVER saw a long packet (is_long_ever);
+  //     (b) the corrected_ph (decoded header: [7:0]=length byte, [23:8]=cand.
+  //         word_count) captured AT THE FIRST is_long — garbage here => EYE
+  //         corruption of the header word;
+  //     (c) how far byte_count ever climbed (max_byte_count) — if it stalls
+  //         far below (length+1)*16 the stream is dying mid-packet;
+  //     (d) a saturating count of long-packet starts (long_start_count);
+  //     (e) sticky endOfPacket-ever / framer-error-ever / valid-ever.
+  //
+  //   Pure read-only fan-out of existing framer nets — the datapath is
+  //   bit-identical. Reset is the framer `reset` (same as the FSM regs). The
+  //   captured fields stay valid until reset (a fresh POR / link reset). All
+  //   sticky, monotonic, or capture-once -> safe to 2-flop-sync per-field into
+  //   apb_clk (same quasi-static treatment as the other obs snapshots).
+  // ===========================================================================
+  reg        rxcap_is_long_ever;
+  reg        rxcap_eop_ever;
+  reg        rxcap_err_ever;        // framer state == 2'h2 (byte-align error)
+  reg        rxcap_valid_ever;
+  reg [15:0] rxcap_ph_at_first;     // corrected_ph[15:0] at FIRST is_long
+  reg [16:0] rxcap_max_byte_count;  // max byte_count ever reached
+  reg [14:0] rxcap_long_start_cnt;  // saturating count of long-packet starts
+
+  // A "long-packet start" = is_long asserted while the framer is hunting.
+  // SoC Labs 2026-07-03 P1/P2 discriminator: the original condition borrowed
+  // valid_byte_reg from the 0-LANE FSM guard; the multi-lane acceptance at
+  // the hunt transition has no such term, so the counter was structurally
+  // blind to idle-preceded multi-lane long starts (silicon read ever=1/cnt=0
+  // for the dying isolated packet). Drop it so the counter tracks is_long
+  // decodes, and separately latch WHY the acceptance guard rejected: the
+  // sticky rxcap_long_blocked + live long_pkt_gate go out on RXCAP0[17:16].
+  // gate=0 -> P1 (first_short_pkt_seen re-armed closed by a post-bringup
+  // llrx reset; the 0x44-47-only whitelist can never re-latch on bFC
+  // keepalives); gate=1 with garbage ph_at_first {wc,id} -> P2 (idle-edge
+  // header rotation failing long_pkt_len_ok).
+  wire rxcap_long_start    = is_long_pkt & (state == 2'h0);
+  wire rxcap_long_rejected = is_long_pkt & (state == 2'h0)
+                             & ~(long_pkt_gate & long_pkt_len_ok);
+  reg  rxcap_long_blocked;
+
+  always @(posedge clock or posedge reset) begin
+    if (reset) begin
+      rxcap_is_long_ever   <= 1'b0;
+      rxcap_eop_ever       <= 1'b0;
+      rxcap_err_ever       <= 1'b0;
+      rxcap_valid_ever     <= 1'b0;
+      rxcap_ph_at_first    <= 16'h0;
+      rxcap_max_byte_count <= 17'h0;
+      rxcap_long_start_cnt <= 15'h0;
+      rxcap_long_blocked   <= 1'b0;
+    end else begin
+      // Sticky "ever" flags.
+      if (is_long_pkt)        rxcap_is_long_ever <= 1'b1;
+      if (endOfPacket)        rxcap_eop_ever     <= 1'b1;
+      if (state == 2'h2)      rxcap_err_ever     <= 1'b1;
+      if (valid)              rxcap_valid_ever   <= 1'b1;
+      if (rxcap_long_rejected) rxcap_long_blocked <= 1'b1;
+      // Capture the decoded header at the FIRST is_long decode (was gated on
+      // valid_byte_reg -> never captured for the dying packet; see above).
+      if (is_long_pkt & ~rxcap_is_long_ever)
+        rxcap_ph_at_first <= corrected_ph[15:0];
+      // Track the deepest byte_count the framer ever reached.
+      if (byte_count > rxcap_max_byte_count)
+        rxcap_max_byte_count <= byte_count;
+      // Saturating long-packet-start counter.
+      if (rxcap_long_start & (rxcap_long_start_cnt != 15'h7FFF))
+        rxcap_long_start_cnt <= rxcap_long_start_cnt + 15'h1;
+    end
+  end
+
+  // rxcap0 = {marker 0xC0, ever-flags[3:0], framer state[1:0], 2'b0, ph[15:0]}
+  assign io_obs_rxcap0 = {8'hC0,
+                          rxcap_is_long_ever,  // [23] long packet EVER seen
+                          rxcap_eop_ever,      // [22] endOfPacket EVER fired
+                          rxcap_err_ever,      // [21] framer error-state EVER
+                          rxcap_valid_ever,    // [20] LL_RX valid EVER
+                          state,               // [19:18] live framer state
+                          rxcap_long_blocked,  // [17] long REJECTED by hunt guard EVER (sticky)
+                          long_pkt_gate,       // [16] live first_short_pkt_seen (gate)
+                          rxcap_ph_at_first};  // [15:0] corrected_ph {wc_lo,id} @ first long
+  // rxcap1 = {max_byte_count[16:0], long_start_count[14:0]}
+  assign io_obs_rxcap1 = {rxcap_max_byte_count, rxcap_long_start_cnt};
+
 endmodule

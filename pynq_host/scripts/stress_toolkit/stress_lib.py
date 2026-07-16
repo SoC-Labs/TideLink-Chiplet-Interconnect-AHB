@@ -27,8 +27,15 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 # ── Address map (Wave B2 paired bitstream) ────────────────────────────────
-AHB_TX_BASE   = 0x4400_0000   # NEVER WRITE — wedge hazard
-AHB_FIFO_BASE = 0x4401_0000   # RX FIFO window (64 KB)
+# GP1 control/data split (2026-06-12, ARCH_ANALYSIS §4): bitstreams built
+# from the GP1-split BD relocate the DATA apertures to PS7 M_AXI_GP1:
+#   AHB_TX  0x4400_0000 -> 0x8400_0000   AHB_FIFO 0x4401_0000 -> 0x8401_0000
+# Control (APB/PTP/GPIO) addresses are unchanged. Defaults stay OLD so this
+# module keeps working against pre-split images; against GP1-split images
+# export TIDELINK_TX_BASE=0x84000000 TIDELINK_RXFIFO_BASE=0x84010000.
+import os as _os
+AHB_TX_BASE   = int(_os.environ.get("TIDELINK_TX_BASE", "0x44000000"), 16)      # NEVER WRITE — wedge hazard
+AHB_FIFO_BASE = int(_os.environ.get("TIDELINK_RXFIFO_BASE", "0x44010000"), 16)  # RX FIFO window (64 KB)
 AHB_PTP_BASE  = 0x4402_0000   # PTP TX write port (4 KB)
 APB_BASE      = 0x4403_0000   # Unified config registers (32 KB)
 

@@ -28,11 +28,21 @@ configuration registers — including the address translator. The decode in
 | 0x2080 - 0x209F | Region 4: Chiplet controller role + autoneg config |
 | 0x20A0 - 0x20FF | Regions 5-7: Performance profiling |
 | 0x2100 - 0x211F | Region 8: Chiplet extended — PHY alignment + I²C training |
-| 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) |
+| 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) — V1 only. In V2 (`TIDELINK_PHY_V2`) Region 10 is retired (eye-vis AUDIT #17); the single word at **0x2140** is repurposed as **SWI_EPOCH_STATUS** (RO) from the `tidelink_gpio_phy_apb_regs` slave: `[0]`=epoch_anchored, `[6:1]`=epoch_span (words, 0..24). The rest of 0x2140-0x215F reads 0. |
+| 0x2160 - 0x217F | Region 11: tidelink-gpio-phy APB slave (`tidelink_gpio_phy_apb_regs`, slave-paddr 0x20-0x3F) |
 | 0x2180 - 0x219F | Region C: Autoneg silicon observability (RO) |
 
 > **Note:** PHC registers are external to tidelink_top and accessed via their
 > own APB port on the `ptp-hardware-clock-ahb` IP.
+
+> **FPGA BD apertures (GP1 control/data split, 2026-06-12):** on the PYNQ-Z2
+> `pair-all`/`pair-flip-all` block designs the PS-visible apertures are:
+> APB config 0x4403_0000 (TideLink region at 0x4403_2000) and peer window
+> 0x4000_0000 on `M_AXI_GP0` (unchanged); the data apertures moved to
+> `M_AXI_GP1` — **AHB_TX 0x8400_0000** (was 0x4400_0000) and
+> **RX FIFO 0x8401_0000** (was 0x4401_0000). Zynq-7000 GP windows are hard
+> (GP1 = 0x8000_0000..0xBFFF_FFFF), hence the relocation. Host scripts:
+> `TIDELINK_TX_BASE` / `TIDELINK_RXFIFO_BASE` env overrides (old defaults).
 
 ---
 
@@ -247,7 +257,7 @@ pre-existing live field moves**:
   | [28]    | pkt_is_crack_pkt          | `WlinkGenericFCSM_6.pkt_is_crack_pkt`                |
   | [29]    | llrx_valid                | `WlinkRxLinkLayer.valid`                             |
   | [30]    | a2l_fc_replay_link_valid  | FCSM 4→5 SEND app-valid gate (link side)             |
-  | [31]    | fe_rx_is_full             | FCSM 4→5 SEND credit gate (SoC Labs 2026-06-09)      |
+  | [31]    | fe_rx_is_full             | FCSM 4→5 SEND credit gate (SoC Labs 2026-06-09). Only flags `fe_rx_credit_max == 0`; for the garbled-to-small-nonzero credit case read OBS_FC_CREDIT @ 0x219C. |
 
   > **RTL/RDL divergence:** the RDL (`tidelink_regs.rdl:437-470`) still
   > documents the older packing (fcsm_state at [20:17], bits [31:30]
@@ -362,7 +372,8 @@ See `axi_chiplet_controller.sv:1103-1140`.
 | 0x218C | OBS_I2C_MST_STATUS| RO     | [3] missed_ack, [2] bus_active, [1] bus_cont(0), [0] busy. |
 | 0x2190 | OBS_OBS_ID        | RO     | "OB" v1.0 marker = 0x4F42_0100. |
 | 0x2194 | OBS_MASK_HS       | RO     | Packed mask-handshake internals (peer masks, local match/fail, lock_pending, gate_open, wlink result). |
-| 0x2198 / 0x219C | reserved | RO    | Return 0. |
+| 0x2198 | OBS_CAL           | RO     | M7 calibrator obs (2026-06-05): [3:0] cal_state, [19:4] cal_resweep_ctr, [20] live training_mode (cal OR SW). (Was documented "reserved"; live since M7.) |
+| 0x219C | OBS_FC_CREDIT     | RO     | FE credit obs (2026-06-12): [7:0] `fe_rx_credit_max` (captured from CR/CRACK `word_count[15:8]`; catches credit garbled to small NONZERO — `fe_rx_is_full` @0x2108[31] only flags ==0), [15:8] `fe_rx_ptr` (credit-return pointer from ACK/NACK), [16] `fe_rx_is_full` mirror, [23:17] reserved, [31:24] presence marker 0xFC (reads 0x0000_0000 on older images). All fields 2-flop apb-synced. MMIO 0x4403219C. |
 
 ---
 

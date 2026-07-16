@@ -99,7 +99,41 @@ module tidelink_vivado_wrapper #(
     parameter STUB_SERVO       = 1'b0,
     parameter STUB_PERF        = 1'b0,
     parameter STUB_PTP         = 1'b0,
-    parameter BYPASS_ADDR_XLAT = 1'b0
+    parameter BYPASS_ADDR_XLAT = 1'b0,
+
+    // =========================================================================
+    // ZERO-POKE AUTONOMY — POR value of the auto-negotiation config registers.
+    //
+    // TRUE zero-poke self-negotiation (the mandated deliverable): the hardware
+    // must arm its autonomy chain from power-on with NO host writes. The chain
+    //   autonomy_armed = nego_en & role_locked & train_auto_en
+    // (axi_chiplet_controller.sv) is gated by nego_cfg_reg[0] (nego_en) and
+    // nego_train_cfg_r[0] (train_auto_en), whose POR values come from these two
+    // parameters via tidelink_top → axi_chiplet_controller's poresetn branch.
+    //
+    // tidelink_top's OWN default is 7'h00 (nego_en=0 — the manual SW-role_lock /
+    // host-winscan path used by the cocotb/UVM/ASIC consumers). This FPGA IP
+    // wrapper is the SOLE production consumer that wants the autonomous POR, so
+    // it overrides the default HERE — exactly as USE_IDELAY / USE_CLKBUF / USE_T3A
+    // above do. ipx::package_project records this wrapper-parameter default in
+    // the packaged IP's component.xml, so the IP's out-of-context synthesis
+    // elaborates the register with 7'h61 baked into its reset value. NO
+    // preprocessor `define is involved: a +define+ on the packaging project does
+    // NOT reach the IP's OOC synth (proven silent no-op — see the USE_IDELAY note
+    // and memory project_verilog_define_never_reaches_ooc_ip_2026_07_09); a
+    // PARAMETER default does. To A/B against the legacy silent-V1 image, override
+    // CONFIG.NEGO_CFG_RESET=0 on the BD instance.
+    //
+    //   7'h61 = nego_en[0] | nego_force_lock[5] | mask_hs_auto_en[6]
+    //     [0] nego_en         — run the autoneg FSM from POR
+    //     [5] nego_force_lock — latch role_locked on nego completion (no SW W1S)
+    //     [6] mask_hs_auto_en — run the lane-mask handshake autonomously
+    //   NEGO_TRAIN_CFG_RESET 16'h0001 = train_auto_en[0]=1 (train_poll_timeout
+    //     nibble = 0 → the RTL T_POLL_TIMEOUT_DEFAULT). This mirrors
+    //     tidelink_top's own default; forwarded explicitly so both POR values are
+    //     visible/overridable on one IP face.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h61,
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
 )(
     // =========================================================================
     // Clocks and Resets
@@ -454,7 +488,14 @@ module tidelink_vivado_wrapper #(
         .STUB_SERVO          (STUB_SERVO),
         .STUB_PERF           (STUB_PERF),
         .STUB_PTP            (STUB_PTP),
-        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT)
+        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT),
+        // Zero-poke autonomy POR (see the parameter header). The wrapper default
+        // 7'h61 overrides tidelink_top's safe 7'h00 default, and reaches OOC
+        // synth via component.xml — the FPGA image self-negotiates from power-on.
+        // WINSCAN_CONVERGE_LOCK_EN is left at tidelink_top's 1'b0 default (the
+        // phase2 asymmetric-peer-serve FSM does not use the converge-lock).
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

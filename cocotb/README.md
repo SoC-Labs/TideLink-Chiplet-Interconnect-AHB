@@ -59,6 +59,9 @@ collected into `cocotb/<env>/coverage.vdb` and aggregated into
 | [`tidelink_top`](tidelink_top/) | `tidelink_top` full integration (chiplet controller + FIFO + FC adapter + PTP + addr trans) |
 | [`tidelink_system`](tidelink_system/) | Full-system integration test |
 | [`tidelink_py_pair`](tidelink_py_pair/) | Python-driven paired-board sim |
+| [`tidelink_top_pair`](tidelink_top_pair/) | TWO cross-wired `tidelink_top` (V1 PHY) — the HW bring-up chain regression (`make sim-regression` at repo root; not in `ENVS`, VCS-only) |
+| [`tidelink_top_pair_v2`](tidelink_top_pair_v2/) | TWO cross-wired V2 (`TIDELINK_PHY_V2`) `tidelink_top` + per-lane WHOLE-WORD epoch skew — the v38 pre-silicon gate for the v37 defect class, incl. EPOCH_ANCHOR_EN=0 negative control (`make sim-regression-v2` at repo root; not in `ENVS`, VCS-only) |
+| [`tidelink_v2_smoke`](tidelink_v2_smoke/) | Single-die V2 elaboration + APB-liveness smoke (~30 s CI sanity gate) |
 
 ### Lint flow (not a cocotb test env)
 

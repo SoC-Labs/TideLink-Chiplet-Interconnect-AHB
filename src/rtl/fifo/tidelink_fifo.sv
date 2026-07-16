@@ -108,6 +108,13 @@ module tidelink_fifo #(
     // --------------------------------------------------------------------------
     output wire                     ctrl_reg_write,
     output wire               [4:0] ctrl_reg_addr,
+    // SoC Labs perlane-wp (2026-06-16): Region 10 select pass-through (sweep
+    // oracle + per-lane word-pin regs, SoC 0x2144/0x2148/0x214C). V1 ties low.
+    output wire                     ctrl_reg_r10,
+    // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap): Region D
+    // select pass-through (die_b receiver sticky-OBS, SoC 0x21A0/0x21A4/0x21A8).
+    // V1 ties low (bit-identical).
+    output wire                     ctrl_reg_rd,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 
@@ -177,6 +184,7 @@ module tidelink_fifo #(
     // Delay trigger by 1 cycle so credit_delta_data is stable when the
     // returner captures it (both are registered on release_credits_trigger).
     logic                    release_credits_trigger_d;
+    wire                     returner_capture_0_w;   // credit-leak fix
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) release_credits_trigger_d <= 1'b0;
         else          release_credits_trigger_d <= release_credits_trigger;
@@ -266,6 +274,7 @@ module tidelink_fifo #(
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),
         .credit_delta_data    (credit_delta_data),
+        .credit_delta_captured(returner_capture_0_w),
         .credit_count_data    (credit_count_data),
         .release_credits_trigger(release_credits_trigger),
         // Pair base address
@@ -291,6 +300,8 @@ module tidelink_fifo #(
         // Chiplet controller register pass-through
         .ctrl_reg_write      (ctrl_reg_write),
         .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
+        .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
         // Performance profiling register pass-through
@@ -318,6 +329,7 @@ module tidelink_fifo #(
         .hresetn     (hresetn),
 
         // Channel 0: release credits (delayed 1 cycle so credit_delta_data is stable)
+        .capture_0_pulse (returner_capture_0_w),
         .interrupt_0 (release_credits_trigger_d),
         .write_addr_0(PAIR_RELEASED_CREDITS_ADDR),
         .write_data_0(credit_delta_data),

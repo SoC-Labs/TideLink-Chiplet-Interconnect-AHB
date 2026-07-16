@@ -49,7 +49,7 @@ set_property -dict {PACKAGE_PIN U8 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_p
 set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
 set_property -dict {PACKAGE_PIN Y6 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
 # LANE-7 REMAP (mirror of pynq-z2-pair-all): B19/F20 bad → spare V7/W9.
-set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]  ;# was F20 (bad)
+set_property -dict {PACKAGE_PIN V7 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
 
 #-- RX side (inputs to this board ← straight-through ribbon ← peer's TX) -----
 # Mirror of pynq-z2-pair: clocks on Y7/Y9 (both P-side clock-capable).
@@ -61,7 +61,7 @@ set_property -dict {PACKAGE_PIN W10 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
 set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
 set_property -dict {PACKAGE_PIN W8 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
 set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
-set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]  ;# was B19 (bad) — LANE-7 REMAP
+set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 
 #-- PMOD-B cross-board trigger -----------------------------------------------
 # PMOD-B header (JB) on PYNQ-Z2 v1.0 -- pin 1 = Y16 (bank 13 LVCMOS33).
@@ -69,7 +69,6 @@ set_property -dict {PACKAGE_PIN W9 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}] 
 # PULLDOWN keeps the line at '0' when no board is driving (idle state).
 # Asymmetric wire length is <5 cm jumper, ~one sub-ns propagation -- well
 # below the PHC quantisation (20 ns at 50 MHz).
-set_property -dict { PACKAGE_PIN Y16 IOSTANDARD LVCMOS33 PULLDOWN TRUE } [get_ports pmod_b_trig]
 
 #-- Inter-board I2C (autonomous lane-mask coordination) -- OFF-RIBBON --------
 # Mirror of pynq-z2-pair-all. I2C runs OFF the J13 ribbon, on the
@@ -88,6 +87,7 @@ set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led0]
 set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS33} [get_ports led1]
 set_property -dict {PACKAGE_PIN N16 IOSTANDARD LVCMOS33} [get_ports led2]
 set_property -dict {PACKAGE_PIN M14 IOSTANDARD LVCMOS33} [get_ports led3]
+
 
 
 

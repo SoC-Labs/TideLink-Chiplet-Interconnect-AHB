@@ -176,8 +176,92 @@ module tidelink_fc_adapter #(
     wire sideband_grant;
     wire arb_valid;
 
-    // Address phase detection
-    wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready & ahb_tx_hwrite;
+    // Address phase detection.
+    //
+    // Held-NONSEQ one-shot lock (SoC Labs 2026-07-03, silicon x5 TX dup fix):
+    // the Xilinx axi_ahblite_bridge:3.0 master holds HTRANS=NONSEQ with
+    // HADDR/HWDATA stable for the duration of its internal AXI transaction
+    // (~10 hclk on the PS GP1->SMC->bridge path) while the vivado wrapper
+    // loops our HREADYOUT back as HREADY. A level-only addr-phase detect
+    // then re-latches every time a data phase completes during the hold ->
+    // EXACTLY +5 duplicate FC words per single PS store on silicon (a2l
+    // wptr +5/word, 4-word burst -> +20) -> pktnum (= replay rptr) walks 5x
+    // -> fe credit ceiling 0x1f exhausted after ~6 words -> exp saturates
+    // 0x20 -> NACK/replay wedge. Repro: cocotb/tidelink_fc_adapter/
+    // test_held_nonseq.py (unfixed: 11 dups/store at unit-sim cadence).
+    //
+    // Contract: a held NONSEQ at the SAME address is ONE transfer. The lock
+    // sets when an addr phase is accepted and suppresses re-acceptance until
+    // HTRANS deasserts (IDLE gap between bridge transactions) or HADDR
+    // moves (pipelined bursts unaffected). Trade-off (documented): a
+    // spec-master issuing back-to-back same-address NONSEQ beats with no
+    // IDLE gap would be collapsed to one transfer — unreachable through the
+    // axi_ahblite_bridge, which idles between AXI transactions.
+    logic                  tx_xfer_lock_r;
+    logic [RAM_ADDR_W-1:0] tx_lock_addr_r;
+    logic [2:0]            tx_idle_cnt_r;   // consecutive no-address-phase beats
+    wire tx_lock_hit = tx_xfer_lock_r && (ahb_tx_haddr == tx_lock_addr_r);
+    wire tx_valid_addr_phase = ahb_tx_hsel & ahb_tx_htrans[1] & ahb_tx_hready
+                               & ahb_tx_hwrite & ~tx_lock_hit;
+    // A live NONSEQ/SEQ address phase is present this beat (resets the idle gap).
+    wire tx_addr_active = ahb_tx_hsel & ahb_tx_htrans[1];
+    // Beats of no-address-phase that constitute a genuine BETWEEN-WORD gap (vs a
+    // brief mid-store IDLE the bridge inserts). Lock clears when the count REACHES
+    // this, i.e. after (TX_IDLE_GAP+1) consecutive idle beats.
+    localparam [2:0] TX_IDLE_GAP = 3'd3;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            tx_xfer_lock_r <= 1'b0;
+            tx_lock_addr_r <= '0;
+            tx_idle_cnt_r  <= 3'd0;
+        end else if (tx_valid_addr_phase) begin
+            tx_xfer_lock_r <= 1'b1;
+            tx_lock_addr_r <= ahb_tx_haddr;
+            tx_idle_cnt_r  <= 3'd0;
+        // TIDELINK 2026-07-08 v3 (A->B 5x-over-advance / die_a-TX cap fix): IDLE-GAP
+        // COUNT. The held-NONSEQ bridge inserts a BRIEF mid-store IDLE (hsel held,
+        // htrans->IDLE ~1 beat, then back to the SAME-address NONSEQ); clearing the
+        // lock there let the resume re-accept the SAME store -> residual ~5x on
+        // silicon (credit ptr=30/31, exp 0x20). But the BETWEEN-WORD separator on
+        // this aperture is ALSO an idle gap with hsel HELD (NOT a deselect), so the
+        // v2 "clear only on ~hsel/diff-addr" fix made the lock STICK -> words 2+
+        // suppressed -> data path wedged BOTH ways (B->A 25->0). Fix: count
+        // consecutive no-address-phase beats and treat a SUSTAINED gap (>= TX_IDLE_
+        // GAP) as the between-word boundary, while a brief mid-store IDLE (< gap) is
+        // a CONTINUATION held through. Boundary = DESELECT | DIFF-ADDR NONSEQ |
+        // sustained idle gap. One store == one FC word == one packet. Verified in
+        // the pair sim with mid-hold-IDLE + between-word-IDLE bridge models.
+        end else begin
+            if (tx_addr_active)              tx_idle_cnt_r <= 3'd0;
+            else if (tx_idle_cnt_r != 3'd7)  tx_idle_cnt_r <= tx_idle_cnt_r + 3'd1;
+
+            if (!ahb_tx_hsel
+                || (ahb_tx_hsel & ahb_tx_htrans[1] & (ahb_tx_haddr != tx_lock_addr_r))
+                || (tx_idle_cnt_r >= TX_IDLE_GAP))
+                tx_xfer_lock_r <= 1'b0;
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // ILA debug taps (FPGA_INSERT_DEBUG_CORE=1) — die_a-TX tx_xfer_lock diagnosis
+    // (2026-07-07). Probe the AHB-TX handshake + lock state + FC emit so a
+    // silicon capture during an A->B burst shows EXACTLY why tx_xfer_lock re-arms
+    // mid-held-NONSEQ on die_a (the 5x-over-advance that caps A->B at ~6 words).
+    // mark_debug on live-driven wires (never constant-folded) => no dbg_hub /
+    // opt_design LUTLP blocker. Stripped automatically on non-ILA builds.
+    // -------------------------------------------------------------------------
+    (* mark_debug = "true" *) wire        dbg_tx_hsel      = ahb_tx_hsel;
+    (* mark_debug = "true" *) wire [1:0]  dbg_tx_htrans    = ahb_tx_htrans;
+    (* mark_debug = "true" *) wire        dbg_tx_hready    = ahb_tx_hready;
+    (* mark_debug = "true" *) wire        dbg_tx_hwrite    = ahb_tx_hwrite;
+    (* mark_debug = "true" *) wire        dbg_tx_hreadyout = ahb_tx_hreadyout;
+    (* mark_debug = "true" *) wire [7:0]  dbg_tx_haddr     = ahb_tx_haddr[7:0];
+    (* mark_debug = "true" *) wire        dbg_tx_lock      = tx_xfer_lock_r;
+    (* mark_debug = "true" *) wire        dbg_tx_lock_hit  = tx_lock_hit;
+    (* mark_debug = "true" *) wire        dbg_tx_valid_ap  = tx_valid_addr_phase;
+    (* mark_debug = "true" *) wire        dbg_tx_a2l_valid = tl_fc_a2l_valid;
+    (* mark_debug = "true" *) wire        dbg_tx_arb_valid = arb_valid;
 
     // Registered address from address phase (valid in data phase)
     logic [RAM_ADDR_W-1:0] tx_addr_r;

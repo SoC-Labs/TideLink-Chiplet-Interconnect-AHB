@@ -173,13 +173,25 @@
 // =============================================================================
 module WlinkGenericFCSM_6 #(
   parameter [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32,
+  // SoC Labs L7 (2026-06-19): minimum CRACK-emit hold, symmetric to the L6
+  // min-CR-emit gate. See socl_l7_crack_release below for the deadlock it fixes.
+  parameter [7:0]  SOCL_L7_MIN_CRACK_EMITS = 8'd32,
   parameter [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000,
   // SoC Labs credit-recovery (2026-06-05): receiver-side periodic ACK
   // re-emission idle threshold (io_tx_clk cycles). Chosen comfortably larger
   // than the healthy ACK cadence (~tens of io_tx_clk cycles between data
   // packets) so it only fires after the credit-return stream has truly stopped
   // (sustained ACK loss), never disturbing a live link.
-  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100
+  parameter [15:0] SOCL_REACK_THRESHOLD    = 16'h0100,
+  // SoC Labs L9b BOUNDED FORWARD RE-ANCHOR + L9c BACKWARD RE-ACK (ported 2026-07-07
+  // from the data lineage cb33c9f + 2b/330e2a7 onto the autonomous FCSM). After
+  // the a2l reset-skew fix (b969537) let word0 cross, only word0 advanced because
+  // the RX FCSM NACK->replay-stormed on the pktnum gap after word0 (l9_resync=1,
+  // long_start_cnt=22). L9b forgives an isolated FORWARD gap (1..window) and L9c
+  // re-ACKs a BACKWARD/stale echo, both re-anchoring instead of NACKing. Rate-
+  // limited by the hold-down so a genuine multi-word loss still NACKs.
+  parameter [3:0]  SOCL_L9B_FWD_WINDOW     = 4'd8,
+  parameter [3:0]  SOCL_L9B_HOLD_PKTS      = 4'd2
 ) (
   input         clock,
   input         reset,
@@ -248,7 +260,58 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs Bug-A FCSM observation 2026-06-03: APP side of the a2l FIFO.
   // Build #20 showed link side stuck at 0; need app side to know whether
   // master fc_adapter is pushing pulses that the FIFO CDC then drops.
-  output        io_obs_a2l_replay_app_valid
+  output        io_obs_a2l_replay_app_valid,
+  // SoC Labs V2 data-send observation 2026-06-21: the a2l replay buffer's
+  // true `app_ready` and `link_empty`. Build evidence: a2l_replay_app_valid=1
+  // (skid presents word) but a2l_replay_link_valid=0 (word never crossed into
+  // the async FIFO). These two taps localize whether the FIFO write never
+  // fires (app side: app_ready stuck low) vs. word crosses but link stalls
+  // (link_empty). Both are PURE read-only fan-outs of existing internal nets.
+  //   io_obs_a2l_replay_app_ready  : a2l_fc_replay_app_ready  (app-clk domain,
+  //                                  wire L343, drives io_app_a2l_ready L942).
+  //   io_obs_a2l_replay_link_empty : a2l_fc_replay_link_empty (link-clk domain,
+  //                                  wire L354, from replay buffer link_empty).
+  output        io_obs_a2l_replay_app_ready,
+  output        io_obs_a2l_replay_link_empty,
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21: the a2l replay
+  // buffer's raw internal pointers + both terms of app_ready. app_ready alone
+  // did not localize the silicon false-FULL (two sim-proven fixes failed on
+  // silicon), so expose the raw write ptr, the app-clk-synced ACK ptr, the
+  // a2l_full flag, and the enable demet term. All app-clk domain, pure RO
+  // fan-outs of WlinkGenericFCReplayV2_13 internals (NO functional change).
+  //   io_obs_a2l_wptr[4:0]        : a2l_fc_replay.fifo_io_wbin_ptr (write ptr)
+  //   io_obs_a2l_synced_ack[4:0]  : a2l_fc_replay.a2l_link_addr_app_clk (ACK ptr)
+  //   io_obs_a2l_full             : a2l_fc_replay.a2l_full (false-FULL flag)
+  //   io_obs_a2l_enable_app_demet : a2l_fc_replay.enable_app_clk_demet_io_out
+  output [4:0]  io_obs_a2l_wptr,
+  output [4:0]  io_obs_a2l_synced_ack,
+  output        io_obs_a2l_full,
+  output        io_obs_a2l_enable_app_demet,
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21:
+  // the a2l replay buffer's raw read-side reset and LINK read binary pointer.
+  // app_ready/wptr localized the false-FULL to the write side; these two say
+  // whether the read side is HELD in reset (link_empty=1 forever) vs the write-
+  // ptr sync into the read domain is broken. Pure RO fan-outs of
+  // WlinkGenericFCReplayV2_13 internals (NO functional change).
+  //   io_obs_a2l_rreset          : a2l_fc_replay.link_reset (== fifo_io_rreset)
+  //   io_obs_a2l_rptr[4:0]       : a2l_fc_replay.fifo_io_rbin_ptr (link read ptr)
+  output        io_obs_a2l_rreset,
+  output [4:0]  io_obs_a2l_rptr,
+  // SoC Labs FC credit observation 2026-06-12: far-end RX credit pointer
+  // (io_tx_clk domain reg, updated from ACK/NACK packets at L1293). Together
+  // with io_obs_fe_rx_credit_max this lets SW see a CR credit value that
+  // garbled to a SMALL NONZERO number (fe_rx_is_full only flags the ==0
+  // case) — the link "works" for 1-4 packets then wedges.
+  output [7:0]  io_obs_fe_rx_ptr,
+  // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap) — one
+  // packed 32-bit word that latches, in the io_rx_clk domain (recovered RX,
+  // same domain as cr_pkt_seen_rx), the FCSM-side delivery events for a
+  // sustained A->B long-DATA send. Distinguishes the FCSM one-shot-resync
+  // failure mode (SOP fine but pktnum mismatch after pkt1) from a clean
+  // delivery. Pure read-only fan-out of internal FCSM nets — datapath
+  // unchanged. 2-flop-synced to apb_clk by axi_chiplet_controller.sv and read
+  // at the new Region D (SoC MMIO 0x4403_21A8). See the rxcap block below.
+  output [31:0] io_obs_fcsmcap
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -343,6 +406,14 @@ module WlinkGenericFCSM_6 #(
   wire  a2l_fc_replay_link_valid; // @[FC.scala 297:43]
   wire  a2l_fc_replay_link_advance; // @[FC.scala 297:43]
   wire  a2l_fc_replay_link_empty; // @[FC.scala 297:43]
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only fan-outs)
+  wire [4:0] a2l_fc_replay_obs_a2l_wptr;
+  wire [4:0] a2l_fc_replay_obs_a2l_synced_ack;
+  wire  a2l_fc_replay_obs_a2l_full;
+  wire  a2l_fc_replay_obs_enable_app_clk_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  wire  a2l_fc_replay_obs_a2l_rreset;
+  wire [4:0] a2l_fc_replay_obs_a2l_rptr;
   wire  en_ff2_tx_demet_clock; // @[Stdcell.scala 58:23]
   wire  en_ff2_tx_demet_reset; // @[Stdcell.scala 58:23]
   wire  en_ff2_tx_demet_io_in; // @[Stdcell.scala 58:23]
@@ -375,6 +446,13 @@ module WlinkGenericFCSM_6 #(
   // here for forward-reference by exp_pkt_not_seen_l9 at L373 and the
   // l2a_fc_replay_app_valid OR at L803.
   reg  socl_l9_first_data_seen_rx;
+  // SoC Labs 2026-06-21: L9b (re-anchor on ANY pktnum gap) REVERTED. It referenced
+  // exp_pkt_num/ll_rx_pktnum BEFORE their declaration; Vivado tolerated the forward-ref
+  // (so the L9b bitstreams built) but VCS rejects it -> it silently broke the V2 sim
+  // compile, i.e. L9b was deployed without ever passing a sim gate. Moreover the real
+  // data blocker is the marginal EYE, not pktnum: test_v2_reduced_lane delivers the long
+  // packet byte-correct over the 0xE4 mask in bit-perfect sim (framer/gather/commit sound).
+  // L9 one-shot first-data resync restored (sim-clean, no forward reference).
   wire socl_l9_resync_now = pkt_is_data_pkt & ~socl_l9_first_data_seen_rx;
   wire  valid_rx_pkt_crc_err = _crc_corrupt_T_2 & crc_corrupt; // @[FC.scala 167:85]
   reg [7:0] swi_cr_id; // @[SW.scala 83:22]
@@ -411,12 +489,41 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L9: suppress spurious mismatch enqueue on the resync cycle so
   // the ack_nack_fifo does not carry a stale isNotExpPacket entry forward.
   wire exp_pkt_not_seen_l9 = exp_pkt_not_seen & ~socl_l9_resync_now;
+  // --- SoC Labs L9b/L9c RX pktnum re-anchor (ported cb33c9f + 2b, 2026-07-07) ---
+  reg  [3:0] socl_l9b_hold;   // re-anchor hold-down counter (io_rx_clk); always-block below
+  // SoC Labs defence-in-depth (2026-07-09): a fe_tx_credit_max of 0 is never a legal
+  // grant (CR advertises 16'h1f1f), yet it degenerates EVERY consumer below -- ring_mod
+  // collapses to 1, L9b can never fire, L9c swallows every mismatch, and exp_pkt_num
+  // never wraps. That is precisely the silicon failure fixed at the load (L1380). Pin an
+  // unloaded/zeroed grant to the architectural pktnum modulus (5-bit link_cur_addr => 31)
+  // so the re-anchor machinery can never be silently disabled by a zero modulus again.
+  wire [7:0] fe_tx_credit_max_eff = (fe_tx_credit_max == 8'h0) ? 8'h1f : fe_tx_credit_max;
+  wire [8:0] socl_l9b_ring_mod = {1'b0, fe_tx_credit_max_eff} + 9'h1;   // credit-ring modulus
+  wire [8:0] socl_l9b_fwd_raw  = {1'b0, ll_rx_pktnum} + socl_l9b_ring_mod - {1'b0, exp_pkt_num};
+  wire [8:0] socl_l9b_fwd_dist = (socl_l9b_fwd_raw >= socl_l9b_ring_mod)
+                                 ? (socl_l9b_fwd_raw - socl_l9b_ring_mod) : socl_l9b_fwd_raw;
+  // L9b: forgive an isolated FORWARD gap (1..window) once the stream has started,
+  // rate-limited by the hold-down; re-anchors exp_pkt_num below instead of NACKing.
+  wire socl_l9b_reanchor_now = exp_pkt_not_seen
+                               & ~socl_l9_resync_now
+                               & socl_l9_first_data_seen_rx
+                               & (socl_l9b_hold == 4'h0)
+                               & (socl_l9b_fwd_dist >= 9'h1)
+                               & (socl_l9b_fwd_dist <= {{5{1'b0}}, SOCL_L9B_FWD_WINDOW});
+  // L9c (2b/330e2a7): a BACKWARD mismatch (fwd_dist in the upper half of the ring)
+  // is a stale replay echo / re-ACK-cadence beat -> RE-ACK it (drop mismatch), never NACK.
+  wire [8:0] socl_l9c_back_thresh = {1'b0, socl_l9b_ring_mod[8:1]}; // ring/2
+  wire socl_l9c_backward = exp_pkt_not_seen & ~socl_l9b_reanchor_now
+                           & (socl_l9b_fwd_dist >= socl_l9c_back_thresh);
+  // Masked mismatch fed to the notifier + winc: on a re-anchor or backward-re-ACK
+  // cycle drop the mismatch so no isNotExpPacket(3'h1) enqueues -> no NACK->replay storm.
+  wire exp_pkt_not_seen_l9b = exp_pkt_not_seen_l9 & ~socl_l9b_reanchor_now & ~socl_l9c_backward;
   wire [7:0] _exp_pkt_num_in_T_3 = exp_pkt_num + 8'h1; // @[FC.scala 212:132]
   wire [7:0] _last_good_pkt_in_T_1 = exp_pkt_seen ? exp_pkt_num : last_good_pkt; // @[FC.scala 213:62]
   wire [7:0] last_good_pkt_in = _fe_tx_credit_max_in_T ? 8'h0 : _last_good_pkt_in_T_1; // @[FC.scala 213:41]
   wire  ack_nack_fifo_valid = ~ack_nack_fifo_io_rempty; // @[FC.scala 261:35]
   wire  _ack_nack_fifo_io_winc_T = pkt_is_ack_pkt | pkt_is_nack_pkt; // @[FC.scala 264:51]
-  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9}; // SoC Labs L9 masked mismatch
+  wire [2:0] _pkttypenotifier_T_1 = valid_rx_pkt_crc_err ? 3'h4 : {{2'd0}, exp_pkt_not_seen_l9b}; // SoC Labs L9/L9b/L9c masked mismatch
   wire [2:0] _pkttypenotifier_T_2 = pkt_is_nack_pkt ? 3'h3 : _pkttypenotifier_T_1; // @[FC.scala 275:40]
   wire [2:0] pkttypenotifier = pkt_is_ack_pkt ? 3'h2 : _pkttypenotifier_T_2; // @[FC.scala 274:39]
   wire [18:0] _ack_nack_fifo_io_wdata_T_1 = {pkttypenotifier,auto_rx_in_word_count}; // @[Cat.scala 30:58]
@@ -481,6 +588,23 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs L6 producer-side fix: count CR emissions in state==1, gate exit.
   reg  [7:0] socl_l6_cr_emit_count; // counts (advance & sop) cycles while state==1
   wire socl_l6_cr_emit_gate_ok = (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
+  // SoC Labs L7 (2026-06-19): minimum-CRACK-emit hold (mirror of the L6 gate).
+  // ROOT CAUSE (4-agent root-cause + adversarial verify, clean-PHY bilateral
+  // deadlock a[fcsm=4 cr=0 ck=1] b[fcsm=2 cr=1 ck=0]): the state-1->2 exit fires
+  // on (cr_seen | crack_seen) (the OR-term in _GEN_34), but the state-2->3 exit
+  // (_GEN_45) releases the instant crack_seen latches, with NO emit floor. A die
+  // that left state 1 because it had ALREADY latched the peer's CRACK enters
+  // state 2 with crack_pkt_seen already HIGH, so it emits exactly ONE CRACK then
+  // runs 2->3->4 and parks in LINK_IDLE -- which never re-emits CRACK. That
+  // one-shot CRACK is too short for the peer's (independently, later-aligning) RX
+  // framer to capture, so the peer wedges in state 2 forever awaiting a CRACK
+  // that is never re-sent. Fix: hold state 2 (and keep emitting CRACK) until BOTH
+  // crack_seen AND a guaranteed minimum CRACK-emit count, exactly as the L6 gate
+  // hardened the CR direction. socl_l7_crack_release replaces the bare
+  // crack_pkt_seen_tx_demet_io_out in the state-2 advance muxes (_GEN_40..45).
+  reg  [7:0] socl_l7_crack_emit_count; // counts (advance & sop) cycles while state==2
+  wire socl_l7_crack_emit_gate_ok = (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS);
+  wire socl_l7_crack_release = crack_pkt_seen_tx_demet_io_out & socl_l7_crack_emit_gate_ok;
   // SoC Labs L7 sticky-NACK bringup recovery:
   //   * socl_l7_reached_link_data : once high, disarms the forgive gate
   //     permanently for the lifetime of this reset cycle (steady-state).
@@ -582,12 +706,16 @@ module WlinkGenericFCSM_6 #(
                        ? 3'h2 : state; // SoC Labs L6 gate
   wire  _GEN_35 = auto_tx_out_advance | sop; // @[FC.scala 459:28 FC.scala 427:39]
   wire [55:0] _GEN_38 = auto_tx_out_advance ? 56'h0 : link_data; // @[FC.scala 459:28 FC.scala 430:39]
-  wire  _GEN_40 = crack_pkt_seen_tx_demet_io_out ? 1'h0 : 1'h1; // @[FC.scala 476:34 FC.scala 477:39 FC.scala 484:39]
-  wire [7:0] _GEN_41 = crack_pkt_seen_tx_demet_io_out ? 8'h0 : out_prepend_swi_crack_id; // @[FC.scala 476:34 FC.scala 478:39 FC.scala 485:39]
-  wire [15:0] _GEN_42 = crack_pkt_seen_tx_demet_io_out ? 16'h0 : 16'h1f1f; // @[FC.scala 476:34 FC.scala 479:39 FC.scala 486:39]
+  // SoC Labs L7: the state-2 advance muxes are gated on socl_l7_crack_release
+  // (= crack_seen & min-CRACK-emit-met) instead of the bare crack_seen, so the
+  // die keeps emitting CRACK (sop/data_id/word_count) and holds state 2 until the
+  // CRACK-emit floor is reached. Mirrors the L6 fix to _GEN_34 / state-1 data_id.
+  wire  _GEN_40 = socl_l7_crack_release ? 1'h0 : 1'h1; // @[FC.scala 476:34 FC.scala 477:39 FC.scala 484:39]
+  wire [7:0] _GEN_41 = socl_l7_crack_release ? 8'h0 : out_prepend_swi_crack_id; // @[FC.scala 476:34 FC.scala 478:39 FC.scala 485:39]
+  wire [15:0] _GEN_42 = socl_l7_crack_release ? 16'h0 : 16'h1f1f; // @[FC.scala 476:34 FC.scala 479:39 FC.scala 486:39]
   reg [7:0] swi_link_en_wait; // @[SW.scala 83:22]
-  wire [7:0] _GEN_44 = crack_pkt_seen_tx_demet_io_out ? swi_link_en_wait : count; // @[FC.scala 476:34 FC.scala 481:39 FC.scala 425:39]
-  wire [2:0] _GEN_45 = crack_pkt_seen_tx_demet_io_out ? 3'h3 : state; // @[FC.scala 476:34 FC.scala 482:39 FC.scala 424:39]
+  wire [7:0] _GEN_44 = socl_l7_crack_release ? swi_link_en_wait : count; // @[FC.scala 476:34 FC.scala 481:39 FC.scala 425:39]
+  wire [2:0] _GEN_45 = socl_l7_crack_release ? 3'h3 : state; // @[FC.scala 476:34 FC.scala 482:39 FC.scala 424:39]
   wire [2:0] _GEN_51 = auto_tx_out_advance ? _GEN_45 : state; // @[FC.scala 475:28 FC.scala 424:39]
   wire  _T_54 = count == 8'h0; // @[FC.scala 495:20]
   wire [7:0] _count_in_T_1 = count - 8'h1; // @[FC.scala 498:48]
@@ -871,7 +999,15 @@ module WlinkGenericFCSM_6 #(
     .link_data(a2l_fc_replay_link_data),
     .link_valid(a2l_fc_replay_link_valid),
     .link_advance(a2l_fc_replay_link_advance),
-    .link_empty(a2l_fc_replay_link_empty)
+    .link_empty(a2l_fc_replay_link_empty),
+    // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only)
+    .obs_a2l_wptr(a2l_fc_replay_obs_a2l_wptr),
+    .obs_a2l_synced_ack(a2l_fc_replay_obs_a2l_synced_ack),
+    .obs_a2l_full(a2l_fc_replay_obs_a2l_full),
+    .obs_enable_app_clk_demet(a2l_fc_replay_obs_enable_app_clk_demet),
+    // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO)
+    .obs_a2l_rreset(a2l_fc_replay_obs_a2l_rreset),
+    .obs_a2l_rptr(a2l_fc_replay_obs_a2l_rptr)
   );
   WavDemetReset en_ff2_tx_demet ( // @[Stdcell.scala 58:23]
     .clock(en_ff2_tx_demet_clock),
@@ -918,6 +1054,19 @@ module WlinkGenericFCSM_6 #(
   assign io_obs_fe_rx_is_full         = fe_rx_is_full;
   // SoC Labs Bug-A FCSM observation 2026-06-03
   assign io_obs_a2l_replay_app_valid  = a2l_fc_replay_app_valid;
+  // SoC Labs V2 data-send observation 2026-06-21 (read-only fan-out)
+  assign io_obs_a2l_replay_app_ready  = a2l_fc_replay_app_ready;
+  assign io_obs_a2l_replay_link_empty = a2l_fc_replay_link_empty;
+  // SoC Labs V2 data-send RAW-POINTER observation 2026-06-21 (read-only fan-out)
+  assign io_obs_a2l_wptr              = a2l_fc_replay_obs_a2l_wptr;
+  assign io_obs_a2l_synced_ack        = a2l_fc_replay_obs_a2l_synced_ack;
+  assign io_obs_a2l_full              = a2l_fc_replay_obs_a2l_full;
+  assign io_obs_a2l_enable_app_demet  = a2l_fc_replay_obs_enable_app_clk_demet;
+  // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
+  assign io_obs_a2l_rreset            = a2l_fc_replay_obs_a2l_rreset;
+  assign io_obs_a2l_rptr              = a2l_fc_replay_obs_a2l_rptr;
+  // SoC Labs FC credit observation 2026-06-12
+  assign io_obs_fe_rx_ptr             = fe_rx_ptr;
   assign rx_crc_computed_crcgen_io_in = auto_rx_in_data; // @[Nodes.scala 1210:84 LazyModule.scala 309:16]
   assign en_ff2_rx_demet_clock = io_rx_clk; // @[FC.scala 191:33]
   assign en_ff2_rx_demet_reset = io_rx_reset; // @[FC.scala 191:54]
@@ -942,7 +1091,8 @@ module WlinkGenericFCSM_6 #(
   assign l2a_fifo_addr_to_tx_r_reset = io_tx_reset; // @[FC.scala 248:35]
   assign ack_nack_fifo_io_wclk = io_rx_clk; // @[FC.scala 262:33]
   assign ack_nack_fifo_io_wreset = io_rx_reset; // @[FC.scala 263:33]
-  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen | exp_pkt_not_seen |
+  assign ack_nack_fifo_io_winc = pkt_is_ack_pkt | pkt_is_nack_pkt | exp_pkt_seen |
+    (exp_pkt_not_seen & ~socl_l9b_reanchor_now) | // L9b: suppress enqueue on forward re-anchor. L9c backward STILL enqueues (as ACK 3'h0 via the masked notifier -> re-ACK, so die_a stops reverting).
     valid_rx_pkt_crc_err; // @[FC.scala 264:106]
   assign ack_nack_fifo_io_rclk = io_tx_clk; // @[FC.scala 282:33]
   assign ack_nack_fifo_io_rreset = io_tx_reset; // @[FC.scala 283:33]
@@ -1008,7 +1158,13 @@ module WlinkGenericFCSM_6 #(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      out_prepend_swi_disable_crc <= 1'h0;
+      // SoC Labs 2026-06-14: default disable_crc=1 (GPIO-speed deployment).
+      // Silicon-confirmed: V2 long DATA packets arrive but header-CRC fails
+      // (crc_errors saturates) -> FCSM SEND_NACK -> no enqueue. At 6.25 MHz the
+      // BER is negligible so CRC is pure overhead (REGISTER_MAP.md "key register
+      // for GPIO-speed deployments"). Default-on also sidesteps die_b's
+      // hardware-unwritable SM Control reg. SW can still re-enable via bit[16].
+      out_prepend_swi_disable_crc <= 1'h1;
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end
@@ -1124,18 +1280,42 @@ module WlinkGenericFCSM_6 #(
     end else if (_fe_tx_credit_max_in_T) begin
       exp_pkt_num <= 8'h0;
     end else if (socl_l9_resync_now) begin
-      // SoC Labs L9: jump exp_pkt_num to ll_rx_pktnum + 1 (wrap on fe_tx_credit_max).
-      if (ll_rx_pktnum == fe_tx_credit_max) begin
+      // SoC Labs L9: jump exp_pkt_num to ll_rx_pktnum + 1 (wrap on fe_tx_credit_max_eff).
+      if (ll_rx_pktnum == fe_tx_credit_max_eff) begin
+        exp_pkt_num <= 8'h0;
+      end else begin
+        exp_pkt_num <= ll_rx_pktnum + 8'h1;
+      end
+    end else if (socl_l9b_reanchor_now) begin
+      // SoC Labs L9b: BOUNDED FORWARD RE-ANCHOR. An isolated forward gap is
+      // forgiven: jump exp_pkt_num to ll_rx_pktnum + 1 (same wrap as L9), accept
+      // the skipped slot(s) as best-effort loss, keep committing. No NACK this
+      // cycle (enqueue suppressed above) so die_a does not revert -> no storm.
+      if (ll_rx_pktnum == fe_tx_credit_max_eff) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= ll_rx_pktnum + 8'h1;
       end
     end else if (exp_pkt_seen) begin
-      if (exp_pkt_num == fe_tx_credit_max) begin
+      if (exp_pkt_num == fe_tx_credit_max_eff) begin
         exp_pkt_num <= 8'h0;
       end else begin
         exp_pkt_num <= _exp_pkt_num_in_T_3;
       end
+    end
+  end
+  // SoC Labs L9b hold-down: reload to SOCL_L9B_HOLD_PKTS on a re-anchor, decrement
+  // per data packet -> bounds re-anchors to at most one per SOCL_L9B_HOLD_PKTS so
+  // a genuine multi-word loss run still NACKs (does not silently re-anchor away).
+  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
+      socl_l9b_hold <= 4'h0;
+    end else if (socl_l9b_reanchor_now) begin
+      socl_l9b_hold <= SOCL_L9B_HOLD_PKTS;
+    end else if (pkt_is_data_pkt & (socl_l9b_hold != 4'h0)) begin
+      socl_l9b_hold <= socl_l9b_hold - 4'h1;
     end
   end
   // SoC Labs L9b (2026-06-01): bind first_data_seen_rx reset domain to
@@ -1161,8 +1341,32 @@ module WlinkGenericFCSM_6 #(
   always @(posedge io_rx_clk or posedge io_rx_reset) begin
     if (io_rx_reset) begin
       fe_tx_credit_max <= 8'h0;
-    end else if (~en_ff2_rx_demet_io_out) begin
-      fe_tx_credit_max <= 8'h0;
+    // SoC Labs Bug-C TWIN fix (2026-07-09, David Mapstone): the synchronous re-zero
+    //   end else if (~en_ff2_rx_demet_io_out) fe_tx_credit_max <= 8'h0;
+    // is REMOVED here for exactly the reason it was removed from the sibling
+    // fe_rx_credit_max at L1261 above -- swi_enable dips low for a few cycles during
+    // the LL-swreset / data-mode bootstrap (fch triplet 0x27f09/01/07, bit0=swi_enable)
+    // AFTER the CR/CRACK grant has loaded it. Bug-C fixed only the credit-ring twin;
+    // THIS register (the pktnum wrap modulus) kept the re-zero and no CR/CRACK ever
+    // follows, so it stayed 0 for the life of the link.
+    //
+    // With fe_tx_credit_max == 0 every consumer degenerates (silicon-observed on die_b,
+    // 2026-07-09):
+    //   * exp_pkt_num's wrap guard (== fe_tx_credit_max) never fires, so exp_pkt_num
+    //     climbs past 31 to 32 -- a value the 5-bit stamped pktnum (a2l link_cur_addr =
+    //     fifo_io_rbin_ptr, 0..31) can NEVER match. The receiver jams at the first lap.
+    //   * socl_l9b_ring_mod = fe_tx_credit_max + 1 = 1, so socl_l9b_fwd_dist is always 0
+    //     -> the L9b forward re-anchor (needs fwd_dist >= 1) can never fire.
+    //   * socl_l9c_back_thresh = ring_mod/2 = 0, so socl_l9c_backward is always true ->
+    //     EVERY mismatch is silently swallowed and never NACKed.
+    // Net effect: the receiver stops committing and stops ACKing, without ever NACKing,
+    // so the link sits at fcsm=4 looking healthy while the far die's a2l replay buffer
+    // fills to 16 outstanding and correctly asserts a2l_full -> app_ready=0. That
+    // downstream backpressure was misdiagnosed as an a2l CDC tear for three days.
+    //
+    // die_a was unaffected (its exp_pkt_num wraps mod 32) which is the entire A->B vs
+    // B->A asymmetry. The grant is established by CR/CRACK; only a real io_rx_reset or a
+    // fresh CR/CRACK should change it. See docs/BUGC_DEEP_DEBUG_2026_06_01.md §3.1.
     end else if (pkt_is_cr_pkt | pkt_is_crack_pkt) begin
       fe_tx_credit_max <= auto_rx_in_word_count[7:0];
     end
@@ -1179,6 +1383,19 @@ module WlinkGenericFCSM_6 #(
     end else if (auto_tx_out_advance & sop) begin
       if (socl_l6_cr_emit_count != 8'hff)
         socl_l6_cr_emit_count <= socl_l6_cr_emit_count + 8'h1;
+    end
+  end
+  // SoC Labs L7 min-CRACK-emit counter (mirror of socl_l6_cr_emit_count):
+  // counts (auto_tx_out_advance & sop) cycles while state==2, saturates at 0xFF,
+  // resets to 0 whenever the FCSM is not in state 2 (so a fresh entry re-arms it).
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_l7_crack_emit_count <= 8'h0;
+    end else if (state != 3'h2) begin
+      socl_l7_crack_emit_count <= 8'h0;
+    end else if (auto_tx_out_advance & sop) begin
+      if (socl_l7_crack_emit_count != 8'hff)
+        socl_l7_crack_emit_count <= socl_l7_crack_emit_count + 8'h1;
     end
   end
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
@@ -1712,4 +1929,86 @@ end // initial
 `FIRRTL_AFTER_INITIAL
 `endif
 `endif // SYNTHESIS
+
+  // ===========================================================================
+  // SoC Labs FCSM long-DATA DELIVERY STICKY CAPTURE 2026-06-21 (rxcap)
+  //
+  //   For a sustained A->B long-DATA send, latch (io_rx_clk domain — recovered
+  //   RX, same as cr_pkt_seen_rx) whether the FCSM ever:
+  //     - saw a DATA packet decode (pkt_is_data_pkt: header data_id == 0xa1);
+  //     - accepted one via the L9 one-shot resync (socl_l9_resync_now);
+  //     - hit a pktnum MISMATCH on a data packet after the resync
+  //       (exp_pkt_not_seen_l9) -> the FCSM one-shot-resync failure mode;
+  //     - drove l2a_fc_replay_app_valid (a data word actually enqueued to the
+  //       L2A replay buffer = delivery succeeded);
+  //   plus the FIRST observed ll_rx_pktnum and the last exp_pkt_num, so SW can
+  //   read the actual numbers that mismatched.
+  //
+  //   Decode (io_obs_fcsmcap):
+  //     (b) FCSM one-shot resync : data_ever=1, l9_resync_ever=1,
+  //         pktnum_mismatch_ever=1, l2a_valid_ever=0 (or only the 1st enqueued)
+  //     (a) EYE/framer (header never decodes as data) : data_ever=0
+  //     clean delivery : data_ever=1, l2a_valid_ever=1, mismatch_ever=0
+  //
+  //   Pure read-only fan-out of FCSM nets — datapath bit-identical. Reset is
+  //   the FCSM async `reset` (full POR), same as cr_pkt_seen_rx. Sticky /
+  //   capture-once -> safe per-field 2-flop sync into apb_clk.
+  // ===========================================================================
+  reg        fcsmcap_data_ever;
+  reg        fcsmcap_l9_resync_ever;
+  reg        fcsmcap_mismatch_ever;
+  reg        fcsmcap_l2a_valid_ever;
+  reg        fcsmcap_first_pktnum_seen;
+  reg [7:0]  fcsmcap_first_pktnum;
+  reg [7:0]  fcsmcap_last_exp_pktnum;
+
+  always @(posedge io_rx_clk or posedge reset) begin
+    if (reset) begin
+      fcsmcap_data_ever         <= 1'b0;
+      fcsmcap_l9_resync_ever    <= 1'b0;
+      fcsmcap_mismatch_ever     <= 1'b0;
+      fcsmcap_l2a_valid_ever    <= 1'b0;
+      fcsmcap_first_pktnum_seen <= 1'b0;
+      fcsmcap_first_pktnum      <= 8'h0;
+      fcsmcap_last_exp_pktnum   <= 8'h0;
+    end else begin
+      if (pkt_is_data_pkt)       fcsmcap_data_ever      <= 1'b1;
+      if (socl_l9_resync_now)    fcsmcap_l9_resync_ever <= 1'b1;
+      if (exp_pkt_not_seen_l9)   fcsmcap_mismatch_ever  <= 1'b1;
+      if (l2a_fc_replay_app_valid) fcsmcap_l2a_valid_ever <= 1'b1;
+      // Capture the FIRST data-packet pktnum, and snapshot the live exp_pkt_num
+      // each time a data packet decodes (so SW reads the mismatching pair).
+      if (pkt_is_data_pkt & ~fcsmcap_first_pktnum_seen) begin
+        fcsmcap_first_pktnum_seen <= 1'b1;
+        fcsmcap_first_pktnum      <= ll_rx_pktnum;
+      end
+      if (pkt_is_data_pkt)
+        fcsmcap_last_exp_pktnum <= exp_pkt_num;
+    end
+  end
+
+  // SoC Labs fe_tx_credit_max OBSERVATION (2026-07-09, David Mapstone).
+  // The pktnum wrap modulus had NO obs tap, which is why its silent zeroing (see the
+  // Bug-C twin fix at the fe_tx_credit_max load block) hid for weeks behind a frozen
+  // last_exp. It is static after CR/CRACK (changes only on io_rx_reset or a fresh
+  // CR/CRACK) so a plain read-only fan-out needs no synchroniser -- unlike a live
+  // counter. Landed in the previously-reserved [19:16] of this existing register, so
+  // NO new APB reg / port / decode is required.
+  //   [19]    = 1 when fe_tx_credit_max == 0  <- THE smoking gun (must read 0)
+  //   [18:16] = fe_tx_credit_max[2:0]         <- must read 3'b111 for the legal 0x1f
+  // Healthy link  => [19:16] = 4'b0111 (0x7).  Zeroed modulus => 4'b1000 (0x8).
+  wire fcsmcap_fe_tx_credit_max_is_zero = (fe_tx_credit_max == 8'h0);
+
+  // io_obs_fcsmcap = {marker 0xC1, ever-flags[3:0], credmax[3:0],
+  //                   first_pktnum[7:0], last_exp_pktnum[7:0]}
+  assign io_obs_fcsmcap = {8'hC1,
+                           fcsmcap_data_ever,       // [23] DATA pkt EVER decoded
+                           fcsmcap_l9_resync_ever,  // [22] L9 one-shot resync EVER
+                           fcsmcap_mismatch_ever,   // [21] pktnum MISMATCH EVER
+                           fcsmcap_l2a_valid_ever,  // [20] L2A app_valid EVER (enqueued)
+                           fcsmcap_fe_tx_credit_max_is_zero, // [19] fe_tx_credit_max==0
+                           fe_tx_credit_max[2:0],   // [18:16] fe_tx_credit_max low bits
+                           fcsmcap_first_pktnum,    // [15:8] first observed ll_rx_pktnum
+                           fcsmcap_last_exp_pktnum};// [7:0]  last exp_pkt_num (data pkt)
+
 endmodule

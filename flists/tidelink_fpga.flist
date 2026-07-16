@@ -166,7 +166,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_9.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_15.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WavMultibitSync_18.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavResetSync.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavSyncPulse.v
@@ -189,8 +189,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_12.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_13.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_12.v
+// Bug A fix (a2l replay false-FULL): lap-aware ACK gate. Overrides the deps copy
+// of WlinkGenericFCReplayV2_13.v -- see src/rtl/local_overrides/ and the
+// cocotb/tidelink_a2l_replay_cdc unit env (6/6 PASS).
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
@@ -201,6 +204,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
+// SoC Labs 2026-07-11: FCSM 0-4 RE-RESOLVED toward deps (matches integ) — merge dieb-override swap.
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v

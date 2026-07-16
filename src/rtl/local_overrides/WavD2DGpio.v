@@ -13,7 +13,16 @@ module WavD2DGpio #(
   // /16 word-clock still needs a per-lane BUFG to avoid LUT-driving-clock
   // warnings).
   parameter USE_CLKBUF     = 1'b0,
-  parameter USE_CAP_CLKBUF = USE_CLKBUF,
+  // SoC Labs 2026-06-20: APPLY the documented Target-A FPGA config. Previously
+  // this defaulted to USE_CLKBUF (=1 on FPGA), giving EIGHT per-lane capture
+  // BUFGs (one per gpiorx) on the same forwarded clock. DCP analysis of the
+  // flip-all (SRCC pad_clk_rx Y9) routed design showed ~4 ns of inter-buffer
+  // clock skew across those 8 BUFGs -> die_b's RX never sustained lock (the
+  // bring-up blocker). Forcing 0 collapses the capture clock to the SINGLE
+  // shared tidelink_rxclk_buf BUFG (USE_CLKBUF stays 1 for that + the word
+  // clock), eliminating the inter-lane skew. USE_LNK_CLKBUF kept at USE_CLKBUF
+  // (the /16 word-clock still needs a per-lane BUFG, see comment above).
+  parameter USE_CAP_CLKBUF = 1'b0,
   parameter USE_LNK_CLKBUF = USE_CLKBUF,
   // SoC Labs §9 T3a (2026-05-19): self-aligning RX comma hunt. Per-lane
   // WavD2DGpioRx hunts for the per-lane training byte in the io_pad bit

@@ -1,0 +1,36 @@
+// ---------------------------------------------------------------------------
+// tidelink_cdc_tear.flist
+//
+// Compiles the Wlink a2l/l2a replay-FIFO DUT (WlinkGenericFCReplayV2_13) plus
+// all of its leaf dependencies for the cocotb/tidelink_cdc_tear unit env, which
+// reproduces the silicon ACK-pointer CDC-tear / false-FULL self-heal bug class.
+//
+// Module closure is identical to tidelink_a2l_replay_cdc.flist (same DUT), the
+// only relevant leaf being the ping-pong mailbox WavMultibitSync_18 whose
+// app-clk accumulator (WlinkGenericFCReplayAddrSync_18.raddr) is the register
+// the bench injects a torn capture into.
+//
+// The DUT source is selected by the Makefile (local_override vs pristine deps)
+// via dut_src.f; the remaining leaves are the unmodified read-only deps IP.
+// ---------------------------------------------------------------------------
+
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_MEM_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
+
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
++incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
+
+// DUT (prefer local override if present, else deps -- chosen by the Makefile)
+-f ${TIDELINK_HOME}/cocotb/tidelink_cdc_tear/dut_src.f
+
+// Leaf dependencies (unmodified vendor/Chisel-generated IP)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_129.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_tidelink_tl_a2l_48x16.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_20.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_18.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v

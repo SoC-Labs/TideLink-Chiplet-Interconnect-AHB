@@ -43,13 +43,6 @@
 # deps/axi-chiplet-controller/.github/workflows/lint.yml) so each push to a
 # submodule branch gets its own lint feedback before parent integration.
 
-# V1 silicon bilateral regression flow (build -> deploy -> test).
-# Self-contained child pipeline; see ci/regression-flow.gitlab-ci.yml and
-# docs/CI_REGRESSION.md. Adds v1-sim-gate (per-push) + v1-build-flip /
-# v1-deploy-test (manual / nightly schedule, board-bound).
-include:
-  - local: ci/regression-flow.gitlab-ci.yml
-
 stages:
   - setup
   - lint
@@ -62,9 +55,6 @@ stages:
   - pages
   - cleanup
   - hwtest
-  # --- V1 silicon bilateral regression flow (ci/regression-flow.gitlab-ci.yml) ---
-  - v1_build
-  - v1_deploy_test
 
 variables:
   # Disable GitLab's built-in checkout -- we clone manually
@@ -201,6 +191,33 @@ strip-generalbus-check:
   script:
     - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
 
+# Pre-build gate, Tier-0 (fast, pure-Python — no EDA license). Ratcheted
+# xdc_lint + sv_anti_pattern: a NEW dropped-XDC / latch / incomplete-case fails
+# the pipeline. This is a REAL gate (no allow_failure) — it is the class that
+# shipped the XHB combinational loop to silicon (cb33c9f). Accepted debt is
+# tracked in fpga/farm_gate_{xdc,sv}_baseline.txt so today's tree is green.
+farm-gate-lint:
+  stage: lint
+  needs: [clone, preflight]
+  before_script:
+    - export TIDELINK_HOME="$WORK_DIR"
+  script:
+    - cd "$WORK_DIR" && make farm_gate_fast
+
+merge-guard:
+  # Asserts that silicon-proven fixes have NOT been reverted by a merge:
+  # fe_tx_credit_max_eff (the A->B fix — die_b trunk has 0), and the fc_cfg APB
+  # arbiter (ext_lock_q / EXT_STALL_LIMIT). Resolving those files toward the wrong
+  # trunk silently reverts them with every sim still green — a dead chip that no
+  # functional test catches. A grep is cheap; a respin is not.
+  # allow_failure:true for now; consolidation W3 flips this to false on the
+  # integ branch once merge_guard.sh is confirmed green on the merged baseline.
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && bash fpga/scripts/merge_guard.sh
+  allow_failure: true
+
 hal-lint:
   stage: lint
   needs: [clone, preflight]
@@ -275,6 +292,37 @@ spyglass-cdc:
     - export DESIGNWARE_HOME="$VIP_HOME"
     - source "$WORK_DIR/set_env.sh" 2>&1 | sed 's/^/  /'
 
+sim-gate:
+  # THE pre-deploy / pre-tapeout gate. `cocotb-regression` below runs the broad
+  # unit envs but NOT the paired-die autonomy suites, NOT V1 elaboration, and NOT
+  # the ASIC-flist elaboration — which is exactly how a405809 (undefined obs ports
+  # in the V1/ASIC flists) reached the trunk while every CI job stayed green.
+  # `make sim_gate` already existed and was wired into NO CI job. This is that job.
+  # 10 suites: t30/t31/t32/t33 (paired-die zero-poke chain), v2_pair_data,
+  # v2_autonomous_sync_detect, v2_winscan_fsm, v1_elab, apb_fc_cfg_preempt,
+  # fch_apb_watchdog. The last two lock PS-hang bugs that cost a physical power
+  # cycle. Non-blocking flagged via allow_failure until it has a green baseline on
+  # the trunk, then flip allow_failure:false to make it a hard merge gate.
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "VCS version:" && vcs -ID 2>&1 | head -1
+    - cd "$WORK_DIR" && make sim_gate
+  after_script:
+    - mkdir -p sim_gate
+    - cp "$WORK_DIR/imp/sim_gate/"*.status "sim_gate/" 2>/dev/null || true
+    - cp "$WORK_DIR/imp/sim_gate/"*.log     "sim_gate/" 2>/dev/null || true
+  allow_failure: true      # FLIP to false once green on the trunk (see comment)
+  artifacts:
+    when: always
+    paths:
+      - sim_gate/*.status
+      - sim_gate/*.log
+    expire_in: 30 days
+
 cocotb-regression:
   stage: regression
   needs: [clone, preflight]
@@ -314,6 +362,28 @@ cocotb-regression:
         - cocotb/*/results.xml
     expire_in: 30 days
 
+# Pre-build gate, Tier-1 (the V2 pair sim at the silicon-faithful config). Runs
+# the FUNCTIONAL stages (bring-up both directions + reduced-lane + XHB bridge
+# BFM) as a REAL gate (no allow_failure). The silicon epoch-skew + marginal-eye
+# STRESS stages are opt-in (FARM_GATE_STRESS=1) because their green-ness is
+# PHY-pin dependent — enable them on the autonomous/unified lineage (bbd094c)
+# where the deskew is expected to pass. See fpga/farm_gate.sh.
+farm-gate-sim:
+  stage: regression
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - export TIDELINK_HOME="$WORK_DIR"
+    - export TIDELINK_PHY_V2=1
+    - cd "$WORK_DIR" && make farm_gate
+  artifacts:
+    when: always
+    paths:
+      - imp/fpga/run/farm_gate/
+    expire_in: 30 days
+
 cdriver-regression:
   stage: regression
   needs: [clone, preflight]
@@ -346,8 +416,11 @@ uvm-regression:
   <<: *vcs_uvm_setup
   script:
     - echo "VCS version:" && vcs -ID 2>&1 | head -1
-    # Run all 4 existing UVM tests
-    - make -C "$WORK_DIR/uvm/tidelink" run_all || true
+    # BLOCKING gate (promoted 2026-07-07, infra/uvm-ci-reactivation): the `|| true`
+    # fake-green was removed after verifying compile + all 4 tests pass clean
+    # against current RTL (4/4 PASS). run_all `exit $fail` now fails CI on any
+    # regression. Matches the uvm-fc-adapter blocking pattern.
+    - make -C "$WORK_DIR/uvm/tidelink" run_all
     # Convert UVM logs to JUnit XML
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink/sim_build"
@@ -433,6 +506,43 @@ cocotb-top:
         - cocotb/tidelink_top/results.xml
     expire_in: 30 days
 
+# Idealized (zero-skew) paired-die V2 sim smoke — two cross-wired tidelink_top
+# instances through the GPIO PHY pads (pad_skid SKID_BITS=0 passthrough, the
+# Makefile default). Added 2026-07-07 (infra/uvm-ci-reactivation): before this,
+# NONE of the V2 pair suite was in CI, so RTL churn had no automatic paired-die
+# check. This is a BLOCKING gate — it compiles both tidelink_top instances +
+# submodule PHY/wlink against current RTL and runs the deterministically-green
+# bring-up subset (role-lock + cal-done, training-hold, LINK_IDLE cr/crack latch,
+# S->M doorbell crossing) verified 4/4 PASS on current RTL. Curated to the green
+# subset on purpose: the M->S data-path + credit-counter tests (test_04/05/08)
+# exercise the open silicon-fragile A->B path and belong to the silicon-faithful
+# farm_gate stress suite, not a fast blocking smoke. TB_TOP_NO_DUMP=1 keeps the
+# VCD from ballooning. Full pair suite still runs on demand (make in the env dir).
+cocotb-top-pair-smoke:
+  stage: new_module
+  needs: [clone, preflight]
+  tags:
+    - vcs
+  <<: *vcs_cocotb_setup
+  script:
+    - echo "Running idealized V2 paired-die bring-up smoke (4 tests, zero-skew)"
+    - cd "$WORK_DIR/cocotb/tidelink_top_pair"
+        && MODULE=test_tidelink_pair_doorbell
+           TESTCASE=test_01_role_lock_and_cal_done,test_02_training_held_pre_release,test_03_to_data_mode_cr_crack_latch,test_06_doorbell_slave_to_master
+           TB_TOP_NO_DUMP=1 make
+  after_script:
+    - mkdir -p cocotb/tidelink_top_pair
+    - cp "$WORK_DIR/cocotb/tidelink_top_pair/results.xml" cocotb/tidelink_top_pair/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/tidelink_top_pair/sim.log"     cocotb/tidelink_top_pair/ 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - cocotb/tidelink_top_pair/
+    reports:
+      junit:
+        - cocotb/tidelink_top_pair/results.xml
+    expire_in: 30 days
+
 uvm-fc-adapter:
   stage: new_module
   needs: [clone, preflight]
@@ -476,7 +586,10 @@ uvm-integration:
   <<: *vcs_uvm_setup
   script:
     - echo "Running 3 UVM tidelink_integration tests"
-    - make -C "$WORK_DIR/uvm/tidelink_integration" run_all || true
+    # BLOCKING gate (promoted 2026-07-07, infra/uvm-ci-reactivation): `|| true`
+    # fake-green removed after verifying compile + all 3 tests pass clean against
+    # current RTL (3/3 PASS). run_all `exit $fail` now fails CI on regression.
+    - make -C "$WORK_DIR/uvm/tidelink_integration" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_integration/sim_build"
         "$WORK_DIR/uvm/tidelink_integration/results.xml"
@@ -496,9 +609,20 @@ uvm-integration:
         - uvm/tidelink_integration/results.xml
     expire_in: 30 days
 
-# Full top-system paired UVM (two tidelink_top instances cross-wired by PHY
-# pads). Curated TESTS list from the Makefile — excludes WIP tests like
-# autoneg / lane_mask / peer_mask. allow_failure while the env stabilises.
+# Full top-system paired UVM (two tidelink_top instances cross-wired by PHY pads).
+# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
+# This is an HONEST quarantine, not fake-green: the env no longer elaborates against
+# current RTL. UVM froze ~May while RTL churned Jun/Jul. Two rot layers were fixed in
+# the Makefile (lane_checker -> tidelink-gpio-phy submodule; new PHY helper cells;
+# stale sbt output_tidelink_gpio + 7-min regen dropped). REMAINING blocker (real UVM
+# work): tidelink_top.sv drives axi_chiplet_controller obs/replay + apb_ctrl_reg ports
+# that live only in src/rtl/local_overrides/, but the Makefile compiles the pinned
+# submodule copy -> VCS UPIMI; the TB (tb/top.sv + pad_skid_lanes.sv) also drives
+# tidelink_lane_checker with old ports. TODO: re-point the top/wlink sources to the
+# src/rtl/local_overrides set used by flists/tidelink_fpga.flist + refresh the TB.
+# See the QUARANTINE note in uvm/tidelink_top_system/Makefile. The idealized paired-die
+# smoke moved to the BLOCKING `cocotb-top-pair-smoke` job below. `|| true` fake-green
+# removed so the red is real; allow_failure kept until the env elaborates again.
 uvm-top-system:
   stage: new_module
   needs: [clone, preflight]
@@ -507,8 +631,8 @@ uvm-top-system:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - echo "Running curated UVM tidelink_top_system tests (10 tests in run_all)"
-    - make -C "$WORK_DIR/uvm/tidelink_top_system" run_all || true
+    - 'echo "QUARANTINED tidelink_top_system does not elaborate vs current RTL - see Makefile note"'
+    - make -C "$WORK_DIR/uvm/tidelink_top_system" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_top_system/sim_build"
         "$WORK_DIR/uvm/tidelink_top_system/results.xml"
@@ -622,15 +746,26 @@ uvm-system:
   <<: *vcs_uvm_setup
   script:
     - echo "Running 12 UVM tidelink_system tests"
+    # HONEST allow_failure (2026-07-07, infra/uvm-ci-reactivation): this env
+    # COMPILES + ELABORATES CLEAN against current RTL (NOT rotted) and the early
+    # tests pass, but run_all is not deterministically all-green yet —
+    # test_error_injection drives intentional X/Z on HRESP that the SVT AHB VIP
+    # flags as UVM_ERROR (and spins the run), which the JUnit converter counts as
+    # a failure. `|| true` fake-green removed; allow_failure retained (heavy 90m
+    # SVT-VIP suite still stabilising). JUnit generation moved to after_script so
+    # the per-test PASS/FAIL breakdown survives when a test fails.
+    # TODO to promote to BLOCKING: demote the VIP error-injection checks in
+    # test_error_injection so run_all is a clean pass, then drop allow_failure.
     # UVM_LOW suppresses SVT AHB VIP's verbose end_of_elaboration psdisplay
     # (printed at UVM_MEDIUM); without this each test emits ~300 KB of VIP
     # config dump, exhausting GitLab's 4 MB job-log cap before sim completes.
-    - make -C "$WORK_DIR/uvm/tidelink_system" run_all VERBOSITY=UVM_LOW || true
-    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
-        "$WORK_DIR/uvm/tidelink_system/sim_build"
-        "$WORK_DIR/uvm/tidelink_system/results.xml"
+    - make -C "$WORK_DIR/uvm/tidelink_system" run_all VERBOSITY=UVM_LOW
   after_script:
     - mkdir -p uvm/tidelink_system
+    # JUnit gen here (not in script) so per-test results survive a failing test.
+    - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
+        "$WORK_DIR/uvm/tidelink_system/sim_build"
+        "$WORK_DIR/uvm/tidelink_system/results.xml" || true
     - cp "$WORK_DIR/uvm/tidelink_system/results.xml"      uvm/tidelink_system/ 2>/dev/null || true
     - cp "$WORK_DIR/uvm/tidelink_system/sim_build/"*.log   uvm/tidelink_system/ 2>/dev/null || true
     - mkdir -p coverage_vdbs/uvm
@@ -645,6 +780,15 @@ uvm-system:
         - uvm/tidelink_system/results.xml
     expire_in: 30 days
 
+# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
+# HONEST quarantine, not fake-green. Same root cause as uvm-top-system: two rot layers
+# fixed in the Makefile (lane_checker submodule move, new PHY helper cells, stale sbt
+# output_tidelink_gpio dropped); REMAINING blocker is that the Makefile compiles the
+# pinned deps/axi-chiplet-controller copy of axi_chiplet_controller.sv, which predates
+# the obs/replay + apb_ctrl_reg ports that current tidelink_top.sv drives (VCS UPIMI).
+# TODO: re-point top/wlink sources to the src/rtl/local_overrides set used by
+# flists/tidelink_fpga.flist — see the QUARANTINE note in the env Makefile.
+# `|| true` fake-green removed so the red is real; allow_failure kept until it elaborates.
 uvm-ptp-stress:
   stage: system
   needs: [clone, preflight]
@@ -653,8 +797,8 @@ uvm-ptp-stress:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - echo "Running 2 UVM tidelink_ptp_stress tests"
-    - make -C "$WORK_DIR/uvm/tidelink_ptp_stress" run_all || true
+    - 'echo "QUARANTINED tidelink_ptp_stress does not elaborate vs current RTL - see Makefile note"'
+    - make -C "$WORK_DIR/uvm/tidelink_ptp_stress" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_ptp_stress/sim_build"
         "$WORK_DIR/uvm/tidelink_ptp_stress/results.xml"
@@ -674,6 +818,14 @@ uvm-ptp-stress:
         - uvm/tidelink_ptp_stress/results.xml
     expire_in: 30 days
 
+# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
+# HONEST quarantine, not fake-green. Same root cause as uvm-top-system / uvm-ptp-stress:
+# Makefile rot partially fixed (lane_checker submodule move, new PHY helper cells, stale
+# sbt output_tidelink_gpio dropped); REMAINING blocker is the pinned submodule copy of
+# axi_chiplet_controller.sv predating the obs/replay + apb_ctrl_reg ports current
+# tidelink_top.sv drives (VCS UPIMI). TODO: re-point top/wlink sources to the
+# src/rtl/local_overrides set used by flists/tidelink_fpga.flist — see the env Makefile.
+# `|| true` fake-green removed so the red is real; allow_failure kept until it elaborates.
 uvm-ptp-chain:
   stage: system
   needs: [clone, preflight]
@@ -682,8 +834,8 @@ uvm-ptp-chain:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - echo "Running UVM tidelink_ptp_chain tests"
-    - make -C "$WORK_DIR/uvm/tidelink_ptp_chain" run_all || true
+    - 'echo "QUARANTINED tidelink_ptp_chain does not elaborate vs current RTL - see Makefile note"'
+    - make -C "$WORK_DIR/uvm/tidelink_ptp_chain" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_ptp_chain/sim_build"
         "$WORK_DIR/uvm/tidelink_ptp_chain/results.xml"

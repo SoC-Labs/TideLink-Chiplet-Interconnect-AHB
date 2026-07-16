@@ -88,6 +88,14 @@ module tidelink_fifo_ctrl #(
     // Shared intermediate: payload length + 2 (2-word header + N payload words)
     wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
 
+    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
+    // in the credit counter below. credit_count_r <= 2^13-1 and packet_delta
+    // <= 2^12, so this cannot overflow RAM_ADDR_W=14 bits. Declared at module
+    // scope (not inside the always_comb): a declaration in an unnamed
+    // procedural block is not portable across synthesis tools, and this file is
+    // compiled by both the FPGA and the ASIC flows.
+    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_count_r) + packet_delta;
+
     // RX FIFO is EMPTY iff no credit has been consumed. This is the SAME predicate
     // the sticky `underrun` flag already uses (see underrun_event below) — reuse it
     // rather than invent a second notion of emptiness.
@@ -266,11 +274,6 @@ module tidelink_fifo_ctrl #(
     // Credit Counter
     // -------------------------------------------------------------------------
     always_comb begin
-        // Wide (RAM_ADDR_W-bit) sum: credit_count_r <= 2^13-1 and packet_delta
-        // <= 2^12, so this cannot overflow RAM_ADDR_W=14 bits.
-        logic [RAM_ADDR_W-1:0] credit_sum;
-        credit_sum = RAM_ADDR_W'(credit_count_r) + packet_delta;
-
         credit_count_nxt = credit_count_r;
         if (write_complete) begin
             // BUG-002 fix: saturate at zero to prevent unsigned underflow wrap

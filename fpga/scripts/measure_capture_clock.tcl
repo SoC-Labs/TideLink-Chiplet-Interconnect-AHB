@@ -8,11 +8,27 @@
 # Mirrors the measurement that produced the lane-7 = 15.281 ns figure vs
 # ~8.2-8.8 ns on its siblings (routed die_a, 2026-07-14).
 #
-# Method: for each lane, take the capture flops (link_data_pad_clk_reg), grab
-# a timing path ending on them, and read ENDPOINT_CLOCK_DELAY — Vivado's
-# "Destination Clock Delay", i.e. the capture-clock arrival at the flop C pin.
-# Also reports the clock-net DRIVER type per lane, which is the structural
-# tell: BUFG => global net (fixed), LUT* => WavClockMux + general routing.
+# Method: for each lane, take the capture flops (link_data_pad_clk_reg) and grab
+# a timing path LAUNCHING FROM them, then read STARTPOINT_CLOCK_DELAY — the
+# capture-clock (pad_clk_rx) insertion delay at that lane's flops.
+#
+# WHY -from AND NOT -to (this cost a debug cycle; do not "simplify" it back):
+#   The obvious query — a path ENDING on the capture flops, read
+#   ENDPOINT_CLOCK_DELAY — returns 0.000 for EVERY lane. The only paths that
+#   end on these flops are pad_rx[*] -> capture, and those are governed by
+#   `set_max_delay -datapath_only 8.0` (timing XDC [3b]). A -datapath_only path
+#   deliberately STRIPS the clock contribution: its report has no Destination
+#   Clock Path section at all, and ENDPOINT_CLOCK_DELAY is identically 0. That
+#   is a silent 0.000-for-everything, which reads exactly like "no skew" —
+#   the most dangerous possible failure mode for this measurement.
+#   The capture flops LAUNCH into the io_link_clk domain (link_data_reg), which
+#   is an ordinary clocked path, so -from gives a real source clock path.
+#
+# Also reports the clock-net DRIVER per lane, the structural tell:
+#   BUFG  => dedicated global clock net
+#   LUT*  => WavClockMux + general routing (the defect)
+# NOTE: the driver walk needs `get_nets -segments`; without it the hierarchical
+# net segment resolves no driver pin and silently yields "-".
 #
 # Usage: vivado -mode batch -source measure_capture_clock.tcl -tclargs <routed.dcp>
 #
@@ -43,11 +59,13 @@ for {set lane 0} {$lane < 8} {incr lane} {
     }
 
     # --- structural: what drives the capture clock net for this lane? -------
+    # -segments is REQUIRED: the C pin's net is a hierarchical segment whose
+    # driver only resolves across the full segment list.
     set cpins [get_pins -quiet -of_objects $cells -filter {REF_PIN_NAME == C}]
     set drv_ref "-"
     set drv_name "-"
     if { [llength $cpins] > 0 } {
-        set cnet [get_nets -quiet -of_objects [lindex $cpins 0]]
+        set cnet [get_nets -quiet -segments -of_objects [lindex $cpins 0]]
         if { [llength $cnet] > 0 } {
             set dpin [get_pins -quiet -of_objects $cnet -filter {DIRECTION == OUT}]
             if { [llength $dpin] > 0 } {
@@ -60,15 +78,20 @@ for {set lane 0} {$lane < 8} {incr lane} {
         }
     }
 
-    # --- timing: capture-clock arrival at the endpoint ----------------------
-    # ENDPOINT_CLOCK_DELAY is exactly the "Destination Clock Delay" line in
-    # report_timing -path_type full_clock_expanded.
-    set dpins [get_pins -quiet -of_objects $cells -filter {REF_PIN_NAME == D}]
+    # --- timing: capture-clock arrival at these flops -----------------------
+    # -from (see header): the flops launch into io_link_clk, so the path's
+    # SOURCE clock path is the pad_clk_rx insertion delay we want.
     set arr "n/a"
-    if { [llength $dpins] > 0 } {
-        set paths [get_timing_paths -quiet -to $dpins -max_paths 1 -nworst 1 -setup]
-        if { [llength $paths] > 0 } {
-            set arr [get_property -quiet ENDPOINT_CLOCK_DELAY [lindex $paths 0]]
+    set paths [get_timing_paths -quiet -from $cells -max_paths 1 -nworst 1 -setup]
+    if { [llength $paths] > 0 } {
+        set p [lindex $paths 0]
+        set arr [get_property -quiet STARTPOINT_CLOCK_DELAY $p]
+        # Guard the exact trap this script fell into once: a 0.000 here means
+        # the path we grabbed carries no clock contribution (e.g. datapath_only),
+        # NOT that the clock arrives instantly. Refuse to report it as data.
+        if { $arr == 0 || $arr == "" } {
+            set arr "BAD(0)"
+        } else {
             dict set arrivals $lane $arr
         }
     }

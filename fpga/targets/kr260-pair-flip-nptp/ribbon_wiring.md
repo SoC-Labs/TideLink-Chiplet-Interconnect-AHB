@@ -91,8 +91,33 @@ independently-regulated supplies together can back-feed a regulator and damage
 both boards. A full 40-way straight ribbon **would** bridge them — so either use a
 partial loom, or physically remove/strip conductors 1, 2, 4 and 17.
 
-Suggested cable: 26-way 28 AWG flat ribbon — covers the 20 signals + 4 GNDs with
-spares, and stays narrow enough to keep the clock next to its returns.
+> ### ⚠️ DO NOT USE A 26-WAY RIBBON — it cannot reach half the link
+>
+> An earlier revision of this file suggested a 26-way cable. **That is wrong, and it
+> contradicts the conductor table above.** A 26-way seated from pin 1 spans phys 1–26,
+> but the link needs conductors out to **phys 38**:
+>
+> | phys | signal | inside a 26-way? |
+> |-----:|--------|------------------|
+> | 3, 5 | `i2c_sda_io`, `i2c_scl_io` | yes |
+> | 24 | die_b `pad_clk_tx` (BCM8) | yes |
+> | **27** | **die_a `pad_clk_tx` (BCM0)** | **NO — first pin outside** |
+> | 28,29,31,32,33 | die_a `pad_tx[0,5,6,2,3]` | NO |
+> | 35, 36 | `pad_rx[7]`, `pad_rx[0]` | NO |
+> | 38 | W12 | NO |
+>
+> **Failure signature if you use a 26-way** (measured on the KR260 pair, 2026-07-16):
+> I2C autoneg WORKS (phys 3/5 are inside), so the master ACKs, reads the peer's lane
+> mask, and its train FSM cycles — *looking like a live link*. But the PHY is stone
+> dead on **both** dies: `sync_seen=0x00`, `cal=0`, `fcsm=0`. die_b never receives
+> die_a's forwarded clock (phys 27), so it cannot sample, its calibrator never runs,
+> and it therefore emits no SYNC — so die_a reads `sync_seen=0x00` too, **even though
+> die_a's own RX clock (die_b's phys 24) is connected**. The symptom looks like a PHY
+> or eye problem. It is a cable problem.
+>
+> **Use a 40-way**, with conductors **1, 2, 4 and 17 removed/stripped** (see the note
+> above — a full 40-way would otherwise bridge those, which must not happen). A partial
+> loom is fine provided every phys pin in the conductor table is bridged.
 
 ## Bring-up order
 

@@ -354,7 +354,9 @@ proc create_root_design { parentCell } {
 
     #--------------------------------------------------------------------------
     # AXI GPIO — runtime role-strap register (paired-only).
-    # Single channel, 1-bit output. Default value 0 (slave/die_a).
+    # Single channel, 1-bit output. Default value 1 = SLAVE (die_b, flip build).
+    # POLARITY (RTL truth, axi_chiplet_controller.sv:134): role_strap_i 0=master, 1=slave.
+    # An earlier comment here said "0 (slave/die_a)" — WRONG, and it cost a debug session.
     # PYNQ runtime writes 0 or 1 via MMIO at 0x4404_0000:
     #   bit 0 = role_strap_i (drives tidelink_0/role_strap_i)
     #--------------------------------------------------------------------------

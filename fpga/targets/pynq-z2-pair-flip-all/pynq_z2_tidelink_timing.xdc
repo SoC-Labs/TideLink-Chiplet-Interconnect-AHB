@@ -142,7 +142,7 @@
 # PHY /2 (2026-06-30): the peer forwards its user_ref_clk on pad_clk_rx, which
 # is now 2.343 MHz (clk_wiz clk_out1 4.687 / BUFGCE_DIV 2). Period 213.333 ->
 # 426.666 to widen the marginal A->B receive eye.
-create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 80.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock
@@ -187,8 +187,8 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # reference are the same forwarded edge, so Vivado balances rather than
 # hold-pads every lane. Far die samples MID-CELL (80 ns from either pad edge),
 # so +/-20 ns leaves >=60 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 10.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -10.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded
@@ -208,8 +208,8 @@ set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad
 #      reference for (3b)/(3c); it is intentionally generous (the calibrator
 #      handles dynamic skew — constraints only need to bound the STATIC,
 #      build-varying part).
-set_input_delay -clock [get_clocks pad_clk_rx] -max 4.000 [get_ports {pad_rx[*]}]
-set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -max 2.000 [get_ports {pad_rx[*]}]
+set_input_delay -clock [get_clocks pad_clk_rx] -min -2.000 [get_ports {pad_rx[*]}]
 
 # (3b) Bound the pad_rx[n] -> first-stage capture flop path as a pure
 #      datapath delay (NOT a clocked setup/hold check -> no hold-fix

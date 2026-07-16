@@ -81,6 +81,28 @@ showed `slot=18 data=0x00000000` — real data never turns into a clean zero at 
 16-word cadence. Note how convincing the artifact was: a stable threshold, a
 periodic signature, and "~2 words" matching the recorded silicon bug exactly.
 
+### The same hazard is in 5 more environments (LATENT — not fixed here)
+
+`grep -rln "for _ in range(50)" cocotb/` — the identical "wait 50 cycles for
+`hready`, then fall through and zero `hwdata`" pattern also lives in:
+
+* `cocotb/tidelink_top_pair/test_tidelink_pair_doorbell.py`
+* `cocotb/tidelink_top_pair/test_data_path_compliant.py`
+* `cocotb/tidelink_top_pair_wordskew/test_tidelink_pair_doorbell.py`
+* `cocotb/tidelink_top/test_tidelink_top.py`
+* `cocotb/tidelink_system/test_tidelink_system.py`
+
+(The repo convention is a per-environment copy of the helpers, so the bug was
+copied with them.) They are **dormant**: each only ever sends short (~4-word)
+packets, which never fill the replay FIFO, so back-pressure never reaches 50
+cycles. **Only `tidelink_top_pair_v2` is fixed here** — deliberately: fixing
+five more envs would change the drivers under `t30`/`t31`/`t32`/`t33` without
+the budget to re-validate each, which is risk with no demonstrated need.
+
+**But the moment anyone lengthens a burst in those envs, the bug wakes up and
+will look exactly like an RTL data-loss defect.** Fix the driver there *first*,
+before believing any long-burst result from them.
+
 Two ordering lessons, both already in the feedback files and both re-earned:
 1. **Measure before theorising.** Dumping the RX SRAM by hierarchy (no AHB read)
    split "arrived wrong" from "read back wrong" in one run and killed four

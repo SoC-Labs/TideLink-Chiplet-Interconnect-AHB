@@ -354,16 +354,34 @@ sim_gate_v1elab:
 	  cd cocotb/tidelink_top_pair && TIDELINK_PHY_V2=0 TB_TOP_NO_DUMP=1 \
 	  SIM_BUILD=sim_build_v1elab $(MAKE) sim_build_v1elab/simv)
 
+# --- ASIC (chip-build) flist elaboration check (from fix/integ-v1-elab) ------
+# The v1_elab suite above elaborates only the cocotb *sim* flist. The a405809
+# class of breakage (an obs_* port threaded into a src/rtl/local_overrides module
+# while the ASIC flist still sources the deps/ submodule copy that lacks the port)
+# breaks the *chip-build* flist — flists/tidelink_top_full_asic.flist, the DEFAULT
+# of syn/asic/*/Makefile — but NOT the cocotb V2 sim, so a V2-only gate never sees
+# it (tapeout chip-killer #4). Compiles the ASIC flist with plain VCS + a
+# behavioural rf_16k SRAM stub. Any Error-/non-zero rc => FAIL. ~15 s.
+sim_gate_asicelab:
+	$(call sim_gate_run,asic_v1_elab,\
+	  rm -rf cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  mkdir -p cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  cd cocotb/tidelink_top_pair/sim_build_asicelab && \
+	  vcs -full64 -sverilog -timescale=1ns/1ps \
+	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic.flist \
+	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
+	    -top tidelink_top +define+TB_TOP_NO_DUMP -l vcs_asicelab.log)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
+	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
+	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
@@ -401,6 +419,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
+	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
@@ -417,6 +436,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
+	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

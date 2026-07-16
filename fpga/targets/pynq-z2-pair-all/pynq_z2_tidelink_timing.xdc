@@ -127,7 +127,16 @@
 # PHY /2 (2026-06-30): the peer forwards its user_ref_clk on pad_clk_rx, which
 # is now 2.343 MHz (clk_wiz clk_out1 4.687 / BUFGCE_DIV 2). Period 213.333 ->
 # 426.666 to widen the marginal A->B receive eye.
-create_clock -period 426.666 -name pad_clk_rx [get_ports pad_clk_rx]
+# RATE LADDER rung 2 (2026-07-16): 426.666 -> 160.000. The peer forwards its
+# user_ref_clk (= clk_wiz CLKOUT1 / 2) on pad_clk_rx. tidelink_design.tcl now
+# sets CLKOUT1=12.500, so the forwarded pad/bit clock is 6.25 MHz = 160 ns.
+# pad_clk IS the bit clock (WavD2DGpioTx.v:306-316: io_pad advances once per
+# pad_clk and io_link_clk = ~count[3] = pad_clk/16), so UI == this period.
+# The other rate-dependent constraints below are UNCHANGED at this rung and are
+# already correct for 160 ns: set_output_delay +/-20 = 12.5% of period (the v36
+# value, which was authored for exactly this 160 ns), set_input_delay +/-4, and
+# set_max_delay 8.0. They must be rescaled for rungs 3/4.
+create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock

@@ -232,9 +232,29 @@ proc create_root_design { parentCell } {
     # 200 MHz net is BD-internal so the clk_wiz IP emits its own
     # create_generated_clock — the *_idelay.xdc deliberately adds NO manual
     # create_clock for it (see that file's rationale).
+    # =========================================================================
+    # RATE LADDER rung 2 (2026-07-16, wip/rate-ladder): CLKOUT1 4.687 -> 12.500
+    # The GPIO PHY bit/pad clock is user_ref_clk = CLKOUT1 / 2 (phy_clk_div), so
+    # CLKOUT1=12.5 -> pad clock 6.25 MHz -> UI 160 ns. 6.25 MHz is the rate
+    # PROVEN on these boards by the standalone PHY-BIST pair (link_up 3/3 +
+    # 30-min soak). Was 4.687 -> 2.343 MHz / 426.666 ns.
+    #
+    # The /2 divider is deliberately RETAINED rather than bypassed: its output
+    # clock user_ref_clk_div2 is wired into BOTH create_generated_clock [4a] and
+    # the async set_clock_groups in pynq_z2_tidelink_timing.xdc. Removing it
+    # would mean XDC surgery on every rung, risking a build that fails for
+    # CONSTRAINT reasons rather than silicon ones. Scaling CLKOUT1 instead keeps
+    # every existing constraint structurally valid — only the pad_clk_rx period
+    # changes. VCO=600 => 600/48 = 12.5 exactly (no MMCM re-solve risk).
+    #
+    # CONSEQUENCE (documented deviation): hclk rides CLKOUT1 up to 12.5 MHz.
+    # The hclk<->PHY crossings are 2-flop CDC'd in RTL and declared asynchronous
+    # in the XDC, so this is safe; it does mean this ladder does NOT hold the
+    # AXI/PS clock fixed while raising the link.
+    # =========================================================================
     set_property -dict [list \
         CONFIG.PRIM_IN_FREQ              {100.000} \
-        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {4.687} \
+        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {12.500} \
         CONFIG.CLKOUT1_USED              {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
         CONFIG.CLKOUT2_USED              {true} \

@@ -142,7 +142,7 @@
 # PHY /2 (2026-06-30): the peer forwards its user_ref_clk on pad_clk_rx, which
 # is now 2.343 MHz (clk_wiz clk_out1 4.687 / BUFGCE_DIV 2). Period 213.333 ->
 # 426.666 to widen the marginal A->B receive eye.
-create_clock -period 426.666 -name pad_clk_rx [get_ports pad_clk_rx]
+create_clock -period 160.000 -name pad_clk_rx [get_ports pad_clk_rx]
 
 #-----------------------------------------------------------------------------
 # [2] Forwarded TX clock as a real source-synchronous generated clock

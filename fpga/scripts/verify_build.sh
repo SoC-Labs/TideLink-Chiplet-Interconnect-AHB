@@ -15,8 +15,9 @@
 #       (list parameterized below — extend it as loops add signals)
 #   (d) every target's tidelink.bit exists, is NEWER than the newest run's
 #       start, and no two targets share an md5 (identical = one half not rebuilt)
-#   (e) WINSCAN_CELLS: prints the ready-to-run Vivado one-liner per target;
-#       with --with-dcp (and vivado on PATH) actually runs it and requires >0
+#   (e) V2-SURVIVED-SYNTHESIS: prints the ready-to-run Vivado one-liner per
+#       target; with --with-dcp (and vivado on PATH) actually runs it. The
+#       required marker is PLATFORM-DEPENDENT — see the (e) block below.
 #   (f) WARN on any tidelink.bin OLDER than its tidelink.bit (stale bit2bin
 #       trap — boards flash the .bin, not the .bit)
 #
@@ -60,6 +61,12 @@ AUTONOMY_SIGNALS=(
 # callers are byte-for-byte unchanged.
 TARGETS_DEFAULT='pynq-z2-pair-all pynq-z2-pair-flip-all'
 WINSCAN_FILTER='NAME =~ *winscan* || NAME =~ */ws_*'
+# IDELAY-INDEPENDENT V2 markers — see the (e) block for why these exist.
+# Verified present on the 2026-07-16 routed kr260-pair-{,flip-}ptp DCPs
+# (RETIRE=3, SYNCDET=103, REANCHOR=373, IDELAY=0, ~95k cells per die).
+V2MARK_FILTER='NAME =~ *sync_detect* || NAME =~ *reanchor* || NAME =~ *autonomy_retire*'
+# Presence of ANY IDELAY primitive => this platform sweeps taps => winscan lives.
+IDELAY_FILTER='REF_NAME =~ IDELAY*'
 
 # ----- args --------------------------------------------------------------------
 WT=""
@@ -178,25 +185,85 @@ fi
 if [ $D_OK -eq 1 ]; then pass d "target .bit files fresh + distinct" "$D_EV"
 else fail d "target .bit files fresh + distinct" "$D_EV"; fi
 
-# ----- (e) WINSCAN_CELLS (winscan FSM survived synthesis) -------------------------
+# ----- (e) V2 SURVIVED SYNTHESIS — marker is PLATFORM-DEPENDENT --------------------
+#
+# WHY THIS IS NOT JUST "WINSCAN_CELLS > 0" ANY MORE. DO NOT "SIMPLIFY" IT BACK.
+#
+# The winscan FSM exists to sweep per-lane IDELAY TAPS. It is therefore only
+# instantiated where there ARE IDELAYs. On the Pynq-Z2 (USE_IDELAY defaults to 1)
+# it is present, and a count of 0 genuinely means the V2 define never reached the
+# packaged IP's OOC synth = silent V1 = dead link. That is the incident this check
+# was born from, and on Z2 it still holds exactly as before.
+#
+# On the KR260 it is the OPPOSITE. HDIO bank 44 physically cannot host an IDELAY
+# primitive, so every kr260 target hard-sets `CONFIG.USE_IDELAY {0}` — mandatory,
+# not a tuning choice (see fpga/targets/kr260-pair-ptp/tidelink_design.tcl:421).
+# With no IDELAYs to sweep, synthesis CORRECTLY prunes the winscan FSM, and
+# WINSCAN_CELLS=0 is the EXPECTED, HEALTHY result. Requiring >0 there would fail
+# every KR260 build forever — a gate that cries wolf gets switched off, and then
+# it is not guarding the Z2 either.
+#
+# So: assert V2 with markers that DO NOT depend on IDELAY (`*sync_detect*`,
+# `*reanchor*`, `*autonomy_retire*` — all V2-only, all IDELAY-independent).
+# Measured on the 2026-07-16 routed KR260 pair: RETIRE=3, SYNCDET=103,
+# REANCHOR=373, IDELAY=0, ~95k cells/die. A silent-V1 KR260 build has none.
+#
+# IDELAY-ness is derived FROM THE DCP (count of IDELAY* primitives), not from
+# the target's tcl, for two reasons:
+#   1. The TARGETS list holds OUTPUT-DIR names, which carry ANCHOR_SUFFIX
+#      (kr260-pair-nptp-extref); output-dir -> target-dir is not injective, so a
+#      tcl lookup would need fragile suffix-stripping to even find the file.
+#   2. The DCP *is* the artefact under gate. Grepping the tcl asks what the build
+#      was SUPPOSED to do; counting cells asks what it ACTUALLY did. Every
+#      silent-V1 incident so far came from exactly that gap (a define that never
+#      reached OOC synth while the config said it had).
+#
+# Decision rule (fail-safe toward the old behaviour):
+#   IDELAY_CELLS > 0  -> IDELAY platform (Z2)     -> require WINSCAN_CELLS > 0
+#   IDELAY_CELLS == 0 -> no-IDELAY platform (KR)  -> require V2MARK_CELLS  > 0
+#   IDELAY query failed/unparseable               -> fall back to the WINSCAN rule
+# The last line matters: if the query breaks we must not silently downgrade a Z2
+# build onto the weaker marker path.
+E_TCL_FOR(){ # $1 = dcp path
+  printf 'open_checkpoint %s; ' "$1"
+  printf 'puts "IDELAY_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$IDELAY_FILTER"
+  printf 'puts "WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$WINSCAN_FILTER"
+  printf 'puts "V2MARK_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$V2MARK_FILTER"
+  printf 'exit'
+}
 for t in "${TARGETS[@]}"; do
   dcp="$IMP/output/$t/tidelink_design_wrapper_routed.dcp"
-  TCL="open_checkpoint $dcp; puts \"WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {$WINSCAN_FILTER}]]\"; exit"
+  TCL=$(E_TCL_FOR "$dcp")
   if [ $WITH_DCP -eq 1 ] && command -v vivado >/dev/null 2>&1; then
     if [ ! -f "$dcp" ]; then fail e "WINSCAN_CELLS ($t)" "missing $dcp"; continue; fi
     tdir=$(mktemp -d)
-    n=$( (cd "$tdir" && echo "$TCL" | vivado -mode tcl -nolog -nojournal 2>/dev/null) \
-         | grep -oE 'WINSCAN_CELLS=[0-9]+' | cut -d= -f2 )
+    out=$( (cd "$tdir" && echo "$TCL" | vivado -mode tcl -nolog -nojournal 2>/dev/null) )
     rm -rf "$tdir"
-    if [ -n "$n" ] && [ "$n" -gt 0 ]; then
-      pass e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=$n (known-good 555-561 @2026-07-03; >0 required)"
+    n=$(  echo "$out" | grep -oE 'WINSCAN_CELLS=[0-9]+' | cut -d= -f2 )
+    nid=$(echo "$out" | grep -oE 'IDELAY_CELLS=[0-9]+'  | cut -d= -f2 )
+    nv2=$(echo "$out" | grep -oE 'V2MARK_CELLS=[0-9]+'  | cut -d= -f2 )
+    if [ -n "$nid" ] && [ "$nid" -eq 0 ]; then
+      # ---- no-IDELAY platform (KR260): winscan is CORRECTLY absent ----
+      if [ -n "$nv2" ] && [ "$nv2" -gt 0 ]; then
+        pass e "V2 markers ($t)" \
+             "IDELAY_CELLS=0 (no-IDELAY platform: winscan pruned by design, WINSCAN_CELLS=${n:-?} is EXPECTED) V2MARK_CELLS=$nv2 (>0 required; known-good ~479 @2026-07-16)"
+      else
+        fail e "V2 markers ($t)" \
+             "IDELAY_CELLS=0 and V2MARK_CELLS=${nv2:-query-failed} — no sync_detect/reanchor/autonomy_retire cells: SILENT V1 in the IP"
+      fi
     else
-      fail e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=${n:-query-failed} — winscan FSM optimised out (V2 define not in package_ip?)"
+      # ---- IDELAY platform (Z2), or query failed: original rule, unchanged ----
+      if [ -n "$n" ] && [ "$n" -gt 0 ]; then
+        pass e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=$n (known-good 555-561 @2026-07-03; >0 required)"
+      else
+        fail e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=${n:-query-failed} — winscan FSM optimised out (V2 define not in package_ip?)"
+      fi
     fi
   else
     echo "INFO  (e) WINSCAN_CELLS ($t): needs Vivado — run by hand (or re-run with --with-dcp):"
-    echo "      echo 'open_checkpoint $dcp; puts \"WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {$WINSCAN_FILTER}]]\"; exit' | vivado -mode tcl -nolog -nojournal | grep WINSCAN_CELLS"
-    echo "      REQUIRE the count > 0 (known-good 555-561 @2026-07-03; 0 = optimised out = silent V1 in the IP)"
+    echo "      echo '$TCL' | vivado -mode tcl -nolog -nojournal | grep -E 'IDELAY_CELLS|WINSCAN_CELLS|V2MARK_CELLS'"
+    echo "      IF IDELAY_CELLS>0 (Pynq-Z2): REQUIRE WINSCAN_CELLS>0 (known-good 555-561 @2026-07-03; 0 = optimised out = silent V1 in the IP)"
+    echo "      IF IDELAY_CELLS=0 (KR260):   WINSCAN_CELLS=0 is EXPECTED (nothing to sweep) — REQUIRE V2MARK_CELLS>0 instead (known-good ~479 @2026-07-16)"
   fi
 done
 

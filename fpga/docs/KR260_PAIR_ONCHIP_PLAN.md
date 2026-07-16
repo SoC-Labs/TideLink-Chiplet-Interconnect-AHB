@@ -439,6 +439,15 @@ Grouped by file to avoid write conflicts between parallel agents.
   report.
 
 ### W6 — XDC trio [Vivado: build; xdc_lint: no Vivado]
+> **STATUS 2026-07-16: OUTSTANDING — this is what blocks `kr260-pair-onchip`.**
+> W1-W5/W8 landed (target dir has the BD tcl, wrapper, dividers, BRAM, addrmap;
+> the cocotb test and the host runners exist), but the target dir contains **zero
+> .xdc files** while every buildable target ships 3-4. `build_design.tcl` only
+> *warns* on a missing pin/timing XDC and carries on, so the target is
+> deliberately **kept out of `VALID_TARGETS`** and `fpga/Makefile` raises an
+> explicit "NOT BUILDABLE — W6 outstanding" error for it rather than a generic
+> "Unknown TARGET". Do W6, then W9, then delete that guard clause.
+
 - **Brief:** Author `kr260_tidelink.xdc` (LEDs-only), `kr260_tidelink_timing.xdc` (§8 clock defs + groups + CDR),
   `kr260_tidelink_drc.xdc` (comb-loop waiver, header only). **Exact filenames** required by
   `build_design.tcl:310/318/333` globs — `*_onchip*.xdc` would be silently dropped.

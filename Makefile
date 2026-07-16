@@ -282,6 +282,33 @@ sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_autonomous_sync_detect)
 
+# ODD / PARTIAL LANE-COUNT lock (2026-07-16). Before this, pair sim only ever
+# ran popcount 8 (0xFF POR) and popcount 4 (test_v2_reduced_lane, M->S only) —
+# BOTH powers of two. These two suites pin the link layer's popcount-GENERIC
+# byte geometry (bytesPerCycle = 2*popcount(mask)) at an ODD, non-power-of-2,
+# NON-CONTIGUOUS lane count in BOTH directions.
+#
+# Why this matters beyond the +25% payload: the vendor Chisel this RTL was
+# generated from (axi-chiplet-controller .../LinkLayer.scala:577,758) still
+# carries `validLaneSeq = Seq(true,true,false,true,false,false,false,true)` — a
+# compile-time POWER-OF-2 lane-count whitelist ({1,2,4,8}) that gates the RX
+# gather. It is NOT present in the shipping local_overrides Verilog (SoC Labs
+# replaced it with the mask-aware rxLanePos prefix-popcount gather), but ANY
+# regeneration from that Chisel would silently reinstate it and kill every
+# non-power-of-2 mask — with the link still training. 0xE5 here is the tripwire.
+#
+# negctl is the instrument proof: it asserts a MISMATCHED tx/rx mask geometry
+# is DETECTED as corrupt. Without it a green sweep proves nothing.
+sim_gate_v2_oddlane:
+	$(call sim_gate_run,v2_lane_mask_oddlane,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_sweep LANE_MASK=0xE5 SIM_BUILD=sim_build_oddlane)
+
+sim_gate_v2_oddlane_negctl:
+	$(call sim_gate_run,v2_lane_mask_negctl,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_negctl SIM_BUILD=sim_build_oddlane)
+
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
@@ -339,7 +366,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por \
+	v2_lane_mask_oddlane v2_lane_mask_negctl
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -367,7 +395,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (12 suites)"
+	@echo " sim_gate — full aggregate sim gate (14 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -381,6 +409,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
+	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
+	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds

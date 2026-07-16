@@ -26,6 +26,8 @@ Oracles:
 Run:
   make EPOCH_PROFILE=zero MODULE=test_v2_pair_sustained
 """
+import os
+
 import cocotb
 from cocotb.triggers import ClockCycles
 
@@ -36,7 +38,12 @@ from pair_v2_common import (
 
 # Payload word counts to sweep. 2 = the only length ever proven on silicon;
 # everything above it is new coverage. 126 payload words = 128 FIFO words.
-SWEEP_LENS = [2, 4, 8, 16, 32, 64, 126]
+# Override for focused runs, e.g. TD_SWEEP_LENS="8" to isolate ONE size with its
+# own bring-up. Essential under EPOCH_PROFILE=silicon, where the first failure
+# WEDGES the link (330e2a7: the replay storm ratchets to credit-max and wedges
+# exp, POR-only clear) so every later size in the same bring-up is cascade.
+SWEEP_LENS = [int(x) for x in os.environ.get(
+    "TD_SWEEP_LENS", "2 4 8 16 32 64 126").split()]
 
 # Number of back-to-back packets in the b2b tests.
 B2B_PACKETS = 4

@@ -7,10 +7,61 @@
 
 ## 1. The headline
 
-The recorded silicon bug **"long-burst drops first ~2 words (both directions)"**
-**does NOT reproduce in sim**, and the evidence says it was never a link or
-framer defect in the first place: it is the **phantom-pop**, which was already
-root-caused and fixed on 2026-07-14. The `project_allchan_soak_0of6_was_test_bugs`
+**IT REPRODUCES — but only under `EPOCH_PROFILE=silicon`.**
+
+> **Correction (same day).** An earlier draft of this document concluded "does
+> not reproduce". That conclusion was drawn from `EPOCH_PROFILE=zero` runs
+> ONLY, and it was wrong. `zero` models an ideal, skew-free link; the bug needs
+> the marginal cross-lane skew of the `silicon` profile (the v37 fingerprint,
+> 3-7 words on the master's RX). Sweeping burst length under a perfect eye
+> proves the datapath is sound and proves nothing about the channel. The
+> profile is part of the experiment, not a detail.
+
+Measured at `EPOCH_PROFILE=silicon`, `TD_SWEEP_LENS="8"`, each direction with
+its **own** bring-up (so neither is cascade):
+
+| direction | payload_len=8, isolated | signature |
+|---|---|---|
+| **s2m** (B→A, the marginal direction) | **FAIL** | `first_bad_idx=0`; `got[0] = 0xb2a00002` = **payload[2]** where the header should be |
+| **m2s** (A→B) | **PASS** in isolation — but **FAIL** in a sweep after len=2 and len=4 | an **accumulated-traffic** effect, not a size threshold |
+
+`got[0] == payload[2]` is the recorded silicon signature *verbatim*: the
+phantom-pop entry describes the same burst coming back as **"26 words starting
+at payload[2]"**. Under `zero` the same test is byte-exact at every size up to
+126 words in both directions.
+
+### This is already root-caused on another branch
+
+`fix/stream-start-loss` commit **`330e2a7`** — *"fc: kill B→A stream-start
+NACK/revert storm (L9c backward-mismatch re-ACK)"* — **is NOT in this base**
+(`cd2db38`). Its analysis matches the s2m failure exactly: in
+`WlinkGenericFCSM_6.v`, a data beat whose `ll_rx_pktnum` is *behind*
+`exp_pkt_num` is treated as `isNotExpPacket` → NACK → the a2l replay reverts and
+re-walks → a NACK→revert→re-walk storm that *"ratchets to credit-max and WEDGES
+exp (POR-only clear), **losing the leading words of the transfer (silicon
+26/28)**"*. Its fix re-ACKs a backward pktnum instead of NACKing it.
+
+It also explicitly parks a residual **"a2b credit-return stall"** as out of
+scope — which is very likely the m2s accumulation failure measured above.
+
+**Recommended next step: validate `330e2a7` against this suite at
+`EPOCH_PROFILE=silicon`.** Two independent instruments agreeing (its
+`test_v2_stream_start_28w` and this burst sweep) would close the s2m half; the
+m2s accumulation failure needs separate attention and is currently owned by
+nobody.
+
+### So what about the phantom-pop explanation?
+
+The phantom-pop is **also** real, **also** produces a leading-word shift, and
+was **also** recorded against a 28-word burst. Both mechanisms are live and
+they alias onto the same silicon symptom, which is exactly why this bug has
+been mis-attributed twice. Do not treat either as "the" answer without
+re-measuring: the phantom-pop is a *reader* defect (fixed, `f9b94b7`), the
+storm is a *link* defect (unfixed here, `330e2a7`).
+
+The rest of this section (the 07-11 vs 07-14 record comparison) remains
+accurate about the phantom-pop, but it is **no longer a sufficient explanation**
+of the silicon report. The `project_allchan_soak_0of6_was_test_bugs`
 memory entry that records it as a *"remaining REAL nuance … (FC/framer warmup)"*
 was written on **07-11** and never updated after the **07-14** root-cause landed.
 
@@ -27,17 +78,23 @@ address-translated by `read_ptr` (`tidelink_fifo_ctrl.sv:141`), so a 2-word
 pointer walk shifts *every* later read by 2 words — which reads exactly like
 "the first 2 words were dropped".
 
-Both halves of the fix are in this base:
+Both halves of the phantom-pop fix are in this base:
 * RTL `f9b94b7` — `&& !rx_fifo_empty` on the length-latch arm.
 * Harness `f3c5359` — `gate_data` no longer pre-drains.
 
-**Status: strongly evidenced, not yet silicon-confirmed.** It has never been
+**Status: the phantom-pop is fixed; the FCSM stream-start storm is NOT (in this
+base) and reproduces at `EPOCH_PROFILE=silicon`.** It has never been
 re-tested on hardware since the fix. `fpga/hw_regression/sustained_data_soak.sh`
 is the instrument to confirm it.
 
 ---
 
-## 2. What sim now proves
+## 2. What sim now proves — UNDER `EPOCH_PROFILE=zero` ONLY
+
+Everything in this section is the **ideal-link** result. It says the datapath,
+the framer, the FIFO pointers and the credit accounting are sound when the eye
+is perfect. It says **nothing** about the channel under real skew — see §1 for
+the `silicon`-profile result, which FAILS.
 
 `cocotb/tidelink_top_pair_v2/test_v2_pair_sustained.py` (`EPOCH_PROFILE=zero`):
 
@@ -49,7 +106,14 @@ is the instrument to confirm it.
 
 A 126-payload-word (128-word) burst lands with **0 missing, 0 shifted**,
 `write_ptr=512`, `credit=3968` (= 4096−128, exact). There is **no leading-word
-loss at any burst length in either direction.**
+loss at any burst length in either direction — at zero skew.** Under
+`EPOCH_PROFILE=silicon` the same suite fails s2m at len=8 (§1).
+
+**The gate wires the `zero` profile only** (`sim_gate_v2_sustained`), because
+the `silicon` profile is currently RED in this base and a known-red test cannot
+block the gate. Once `330e2a7` (or an equivalent) lands, add a
+`silicon`-profile run to the aggregate — that is the one that would actually
+have caught this.
 
 ### Why the old oracle could not have seen it
 `send_and_check` (the `v2_pair_data` gate) asserts only `got[0]`, `got[2]`,

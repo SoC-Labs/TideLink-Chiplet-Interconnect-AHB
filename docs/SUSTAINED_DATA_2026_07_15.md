@@ -312,6 +312,54 @@ question** and is unowned.
 
 ---
 
+## 5a. Held-link duration — and the "1/40 link death" that wasn't
+
+`linkhold_soak.sh` had **never been run** (its own header said so). Its first
+run: **1/40 bursts byte-exact over 20 min, first failure at t=+30 s** — a
+textbook time-correlated death, the exact V1-saga signature it was built to
+hunt.
+
+**It was the instrument.** The tell was on every failing line:
+
+```
+HOLD_BURST 7 t=+180s FAIL rx=0x00000000 ... fcsm_a=4 fcsm_b=4 credit_b=31 reanchored_b=1
+```
+
+A dead link does not report fcsm 4/4 + reanchored + full credit. And the data
+was all-**zeros**, not corruption — a pointer symptom, not a channel one.
+
+**Proof it was not the link:** immediately after the 20-minute hold, with the
+link untouched, a B→A framed 16-word packet came back **byte-exact** (B→A is
+the direction linkhold never touches, so die_a's RX FIFO was uncorrupted). The
+link had been alive the whole time.
+
+Two bugs, both fixed (`83157d8`):
+1. **`td_v2_hwlib.sh: ZP_TX_WORDS` was 3 words**, commented "header + 2
+   payload". The frame is `length+2` words; header `0x00240000` declares
+   `length=2` ⇒ **4** words. Every `zp_txburst` sent a **truncated** packet that
+   never completed. Now identical to the certified `send_a2b` frame.
+2. **`linkhold_soak.sh` pre-drained offsets 0..3** before every send. Offset 3
+   is `read_target_addr = (length+1)*4` — reading it **fires `read_complete`**
+   and pops `length+2 = 4` words, while the truncated writer had advanced
+   `write_ptr` by only 3. `read_ptr` walked **1 word past `write_ptr` per
+   burst**, so from burst 2 on every read landed on unwritten SRAM. Burst 1
+   "passed" only because an incomplete packet's words are still readable in the
+   RX SRAM.
+
+The drift **persists until POR**: re-running the *fixed* script on the
+already-walked FIFO still read 0/20 from burst 1, and only a power-cycle
+cleared it — itself a confirmation of the mechanism.
+
+**RESULT after POR + fix: `HOLD_RESULT 24/24 bursts byte-exact over 12min`**
+(zero-poke autonomous, all 4 words checked, fcsm 4/4 + reanchored + credit 31
+throughout). A clean A/B on the same script and the same link: 0/20 → 24/24.
+
+`zeropoke_proof.sh` shares `ZP_TX_WORDS` and inherits the fix. It never read
+offset 3 so it never drifted — but its `(h)` data gate had been validating a
+packet that **never completed**, passing on raw SRAM readback alone.
+
+---
+
 ## 6. Answered on silicon 2026-07-16 — and what is still open
 
 **Answered:**
@@ -331,9 +379,11 @@ question** and is unowned.
    (~9.3 µs/store) vs a 2.343 Mword/s link. Every instrument we have is far
    slower than the raw link; the ~48.8k plateau is the *path's* acceptance rate.
    Proving the PHY's own ceiling needs a DMA/PL-side generator, not the PS.
-4. **Long-duration beyond 20 minutes** and **bit-error rate under continuous
-   load** — the held-link soak is bursts every 30 s, not saturation. The V1 saga
-   died at ~20 min; we now clear that bar, but not a multi-hour one.
+4. **Long-duration beyond ~20 minutes** and **bit-error rate under continuous
+   load** — the held-link soak is a burst every 30 s (24/24 over 12 min, §5a),
+   not saturation, and the link was separately proven alive at t=+20 min. The V1
+   saga died at ~20 min; we now clear that bar, but not a multi-hour one, and
+   nothing here runs the link at its ~48.8k words/s ceiling for hours.
 5. **die_a FC fragility under repeated data-mode toggling** (needs a fresh
    deploy per trial) — untouched here.
 6. **Whether a truncated packet ever occurs in the field** (does

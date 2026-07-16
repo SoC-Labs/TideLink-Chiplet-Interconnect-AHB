@@ -203,7 +203,7 @@ define sim_gate_run
 endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
-	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 \
+	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
 
 sim_gate_env_check:
@@ -225,6 +225,27 @@ sim_gate_t31:
 SIM_GATE_TP32_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=1 TB_TOP_NO_DUMP=1 \
 	EXTRA_DEFINES="+define+TB_TOP_SHORT_CAL_HOLD=64" SIM_BUILD=sim_build_l5 \
 	COCOTB_RESOLVE_X=ZEROS
+
+# --- F4 RETIRE_EN plumbing A/B (2026-07-15) ----------------------------------
+# Runs the SAME test as sim_gate_t31, with the SAME stimulus, against a build
+# that binds tidelink_top's RETIRE_EN to 0 from the tb. Identical stimulus, one
+# parameter flipped, opposite outcome:
+#   t31            (RETIRE_EN_EXPECT=1) → retire FIRES, autonomy_armed drops
+#   retire_en_plumb(RETIRE_EN_EXPECT=0) → retire NEVER fires, armed == raw term
+# That A/B is the proof the parameter genuinely reaches axi_chiplet_controller:
+# if the tidelink_top→controller forwarding were dead (the NEGO_CFG_RESET
+# failure mode — plumbed at the top, never forwarded, so every build silently
+# took the module default), the =0 build would still retire and FAIL here.
+# The test also asserts a hierarchical read-back of RETIRE_EN taken INSIDE the
+# controller, so the value is checked at the DESTINATION, not at the tb.
+# Own SIM_BUILD: the override is compile-time, so it needs its own elaboration.
+SIM_GATE_TP_RETOFF_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 TB_TOP_NO_DUMP=1 \
+	EXTRA_DEFINES="+define+TB_TOP_SHORT_CAL_HOLD=64 +define+TB_TOP_RETIRE_EN=0" \
+	SIM_BUILD=sim_build_l4_retoff COCOTB_RESOLVE_X=ZEROS RETIRE_EN_EXPECT=0
+
+sim_gate_retire_plumb:
+	$(call sim_gate_run,retire_en_plumb,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_RETOFF_ENV) $(MAKE) MODULE=test_31_autonomous_training_exit)
 
 sim_gate_t32:
 	$(call sim_gate_run,t32_die_a_first_zombie_retry,\
@@ -339,7 +360,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm fifo_rx_phantom_pop v1_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -367,7 +388,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (12 suites)"
+	@echo " sim_gate — full aggregate sim gate (13 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -381,6 +402,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
+	@$(MAKE) --no-print-directory sim_gate_retire_plumb
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds

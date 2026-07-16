@@ -132,6 +132,25 @@ module tb_top #(
     parameter [6:0]  NEGO_CFG_RESET_TB       = `ifdef TB_TOP_NEGO_CFG_RESET `TB_TOP_NEGO_CFG_RESET `else 7'h00 `endif,
     parameter [15:0] NEGO_TRAIN_CFG_RESET_TB = `ifdef TB_TOP_NEGO_TRAIN_CFG_RESET `TB_TOP_NEGO_TRAIN_CFG_RESET `else 16'h0001 `endif,
 
+    // RETIRE_EN — the F4 tapeout knob for the event-gated RETIRE-AUTONOMY
+    // (the B->A channel fix). Forwarded verbatim into BOTH tidelink_top
+    // instances below so a test can prove the parameter genuinely REACHES
+    // axi_chiplet_controller.RETIRE_EN from the top, in both settings.
+    //
+    // Default MIRRORS the tidelink_top RTL default (1'b1), so every existing
+    // pair test elaborates byte-identically (an explicit param binding to the
+    // same value is a no-op). The retire_en_plumb gate suite overrides it at
+    // compile time (decimal, mirroring the NEGO_CFG_RESET=97 convention above —
+    // keeps the +define+ free of quotes for make/shell):
+    //   +define+TB_TOP_RETIRE_EN=0
+    // That override is the DISCRIMINATING proof of the plumbing: if the
+    // tidelink_top -> controller forwarding were dead (the NEGO_CFG_RESET
+    // failure mode — plumbed at the top but never forwarded, so every build
+    // silently took the module default), a top-level 0 would have NO effect,
+    // the controller would keep its own 1'b1 default and the retire would
+    // still fire. Retire staying 0 is only possible if the 0 arrived.
+    parameter        RETIRE_EN_TB            = `ifdef TB_TOP_RETIRE_EN `TB_TOP_RETIRE_EN `else 1'b1 `endif,
+
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
     parameter SYS_ADDR_W    = 32,
@@ -327,7 +346,10 @@ module tb_top #(
         // tidelink_top RTL defaults (7'h00/16'h0001) so existing tests are
         // byte-identical; test_zeropoke_por overrides NEGO_CFG_RESET → 7'h61.
         .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
-        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB)
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB),
+        // F4 RETIRE-AUTONOMY knob — default 1'b1 (no-op vs the RTL default);
+        // test_retire_en_plumb overrides to 1'b0 to prove the plumbing is live.
+        .RETIRE_EN           (RETIRE_EN_TB)
     ) u_master (
         .hclk              (hclk),
         .hresetn           (m_hresetn_w),
@@ -554,7 +576,10 @@ module tb_top #(
         .TIDELINK_PAIR_BASE(S_PAIR_BASE),
         // Zero-poke POR arming — mirror of the master instance above.
         .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
-        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB)
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB),
+        // F4 RETIRE-AUTONOMY knob — default 1'b1 (no-op vs the RTL default);
+        // test_retire_en_plumb overrides to 1'b0 to prove the plumbing is live.
+        .RETIRE_EN           (RETIRE_EN_TB)
     ) u_slave (
         .hclk              (hclk),
         .hresetn           (s_hresetn_w),
@@ -910,5 +935,23 @@ module tb_top #(
              (u_slave.u_chiplet_controller.ctrl_reg_addr == 5'h13)))
             s_nego_poke_seen <= 1'b1;
     end
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // F4 — RETIRE_EN plumbing probe (test_retire_en_plumb)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Hierarchical READ-BACK of RETIRE_EN as it actually landed INSIDE
+    // axi_chiplet_controller — i.e. at the DESTINATION, not the value this tb
+    // handed to tidelink_top. That distinction is the whole point: the
+    // NEGO_CFG_RESET regression (plumbed at the top, never forwarded to the
+    // consumer, so every bitstream silently built the module default) would be
+    // INVISIBLE to a probe that read the top-level parameter back. This one
+    // reads through the forwarding path, so if that path is missing or wrong
+    // the probe reports the controller's own default and the test fails.
+    //
+    // A parameter is elaboration-constant, so these are constant wires; cocotb
+    // reads them as ordinary signals (no VPI parameter access required, which
+    // is simulator-dependent).
+    wire retire_en_at_ctrl_m = u_master.u_chiplet_controller.RETIRE_EN;
+    wire retire_en_at_ctrl_s = u_slave.u_chiplet_controller.RETIRE_EN;
 
 endmodule

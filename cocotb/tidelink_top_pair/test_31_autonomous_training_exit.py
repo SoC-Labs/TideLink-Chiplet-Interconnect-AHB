@@ -78,6 +78,8 @@ Run
       SIM=vcs MODULE=test_31_autonomous_training_exit \
       make MODULE=test_31_autonomous_training_exit
 """
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
@@ -611,9 +613,34 @@ async def test_31_autonomous_training_exit(dut):
     #      silicon); we gate on the FCSM reaching bilateral credit, which is
     #      4/4 on die_a in the silicon log. Post-retire the forced chain is
     #      parked and insert_en is left untouched (it is not the blocker).
+    #
+    #      F4 PLUMBING A/B (2026-07-15): this block is now driven by the env var
+    #      RETIRE_EN_EXPECT (default 1 — the historical behaviour, byte-identical
+    #      stimulus). The gate runs this SAME test against TWO builds:
+    #        RETIRE_EN_EXPECT=1  default build   → retire MUST fire  (proof (a))
+    #        RETIRE_EN_EXPECT=0  +define+TB_TOP_RETIRE_EN=0
+    #                            → retire must NEVER fire (proof (b))
+    #      Identical stimulus, one parameter changed, opposite outcome — that is
+    #      what proves the parameter genuinely reaches the controller. If the
+    #      tidelink_top→controller forwarding were dead (the NEGO_CFG_RESET
+    #      failure mode), the =0 build would still take the controller's own
+    #      1'b1 default, retire would still fire, and the =0 run would FAIL.
+    retire_expect = int(os.environ.get("RETIRE_EN_EXPECT", "1"))
     await ClockCycles(dut.hclk, 100_000)   # >> RETIRE_DWELL (4096 apb cycles)
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
+        # (0) STATIC PLUMBING READ-BACK — the value of RETIRE_EN as it landed
+        # INSIDE axi_chiplet_controller (tb probe reads through the forwarding
+        # path, so it reports the DESTINATION, not what the tb passed in).
+        probe = _si(getattr(dut, f"retire_en_at_ctrl_{side}"))
+        log.info(f"{name} RETIRE_EN at axi_chiplet_controller = {probe} "
+                 f"(expected {retire_expect})")
+        assert probe == retire_expect, (
+            f"{name}: RETIRE_EN reads {probe} INSIDE axi_chiplet_controller but "
+            f"the top was elaborated for {retire_expect} — the tidelink_top → "
+            f"axi_chiplet_controller parameter forwarding is DEAD. This is the "
+            f"NEGO_CFG_RESET regression class (plumbed at the top, never "
+            f"forwarded, every build silently took the module default).")
         ie   = _si(c.swi_sync_insert_en_r)
         rb   = _si(c.swi_sync_robust_detect_r)
         fa   = _si(c.swi_sync_force_always_r)
@@ -626,7 +653,36 @@ async def test_31_autonomous_training_exit(dut):
         log.info(f"{name} RETIRE state: autonomy_retire_q={ret} autonomy_armed={arm} "
                  f"winscan_force={wf} force_always={fa} insert_en={ie} robust={rb} "
                  f"fc_stable_cnt={cnt} fcsm={fcsm} rea={rea}")
-        # The fix FIRED — on BOTH dies, crucially the MASTER (the B->A receiver).
+        if retire_expect == 0:
+            # ---- PROOF (b): RETIRE_EN=0 at the TOP ⇒ retire never fires ----
+            # autonomy_retire_q's ONLY non-reset assignment sits inside
+            # `if (RETIRE_EN && ...)`, so a 0 that genuinely reached the
+            # controller makes it structurally unassignable. The link still
+            # comes up (everything above this block already passed) — the ONLY
+            # difference is that autonomy stays armed, i.e. the pre-fix RTL.
+            assert ret == 0, (
+                f"{name}: autonomy_retire_q=1 despite RETIRE_EN=0 at the top — "
+                f"the retire is NOT gated by the parameter, or the parameter "
+                f"never reached the controller (it kept its 1'b1 default). "
+                f"This is the exact F4 gap: an ASIC could not disable the "
+                f"retire without editing axi_chiplet_controller.")
+            # BIT-IDENTICAL TO PRE-FIX: with the retire suppressed, the
+            # effective armed term must equal the RAW armed conjunction
+            # (nego_en & role_locked & train_auto_en) — which is 1 here,
+            # because the link is up and autonomy was armed by the bring-up.
+            raw = (_si(c.nego_en) & _si(c.role_locked)
+                   & (_si(c.nego_train_cfg_r) & 1))
+            assert arm == raw == 1, (
+                f"{name}: autonomy_armed={arm} but the raw armed conjunction is "
+                f"{raw} — with RETIRE_EN=0 the effective armed term MUST reduce "
+                f"to the pre-fix expression (retire contributes nothing).")
+            log.info(f"{name}: RETIRE_EN=0 ⇒ retire suppressed "
+                     f"(autonomy_retire_q=0), autonomy_armed={arm} == raw armed "
+                     f"term — bit-identical to the pre-fix RTL. fcsm={fcsm} "
+                     f"rea={rea}")
+            continue
+        # ---- PROOF (a): default build ⇒ RETIRE_EN=1 ⇒ the fix FIRES ----
+        # on BOTH dies, crucially the MASTER (the B->A receiver).
         assert ret == 1, (
             f"{name}: autonomy_retire_q=0 — the event-gated RETIRE never fired "
             f"(fc_stable_cnt={cnt}); the link must hold fcsm=4 & winscan_done for "
@@ -651,6 +707,18 @@ async def test_31_autonomous_training_exit(dut):
             f"deskew anchor (it must issue NO obs-clear, so reanchored holds)")
         # insert_en is intentionally NOT asserted: silicon proved it is NOT the
         # blocker (B->A recovered at insert_en=1); it retains its last value.
+
+    if retire_expect == 0:
+        log.info("VERDICT: PASS (F4 plumbing proof (b)) — with RETIRE_EN=0 "
+                 "bound at tidelink_top, the probe reads RETIRE_EN=0 INSIDE "
+                 "axi_chiplet_controller on BOTH dies, the event-gated RETIRE "
+                 "never fired, and autonomy_armed reduced to the raw pre-fix "
+                 "armed conjunction — while the identical stimulus still brought "
+                 "the link up (FCSM=4, byte-exact AHB_TX). The parameter "
+                 "genuinely reaches the controller and genuinely gates the fix, "
+                 "so the ASIC integration can disable/strap it WITHOUT editing "
+                 "axi_chiplet_controller.")
+        return
 
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
              "settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "

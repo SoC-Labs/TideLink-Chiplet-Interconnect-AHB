@@ -2,13 +2,14 @@
 
 > **Protocol:** this file is the single live dashboard. Every working session (human or agent)
 > updates the relevant row + the timestamp when state changes. Detail lives in the linked docs;
-> keep this file short. Last full update: **2026-07-17 17:20 (weekend autonomous loop)**.
+> keep this file short. Last full update: **2026-07-17 21:0x (weekend autonomous loop — ALL PHASES COMPLETE, loop stopped)**.
 
 ## Headline
 **KR260 CHIPLET LINK IS UP** (first ever, 2026-07-17): root cause was the PS↔PL AFI port width
 (stock Kria firmware = 128-bit, BD = 32-bit) — fixed by devmem poke, no rebuild; `cal=1` both
-dies. **The full recovery branch is integrated, reviewed, sim_gate 15/15, tagged
-`kr260-recovery-g1`; the four target rebuilds are running.**
+dies. **The full recovery branch is integrated, reviewed, sim_gate 15/15; 4/4 bitstreams built +
+structurally verified; PTP proven in sim; ethernet M0 relay proven in sim. Tags:
+`kr260-recovery-g1` / `g2-built` / `weekend-final`. Monday = deploy + demo.**
 Plans: [KR260_RECOVERY_PLAN](KR260_RECOVERY_PLAN_2026_07_17.md) · [WEEKEND_PLAN](WEEKEND_PLAN_2026_07_18.md)
 
 ## Canaries (run before trusting ANY KR260 reading)

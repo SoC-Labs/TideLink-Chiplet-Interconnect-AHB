@@ -54,6 +54,15 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
    ([ETHERNET_CHIPLET_INTEGRATION.md](ETHERNET_CHIPLET_INTEGRATION.md)); the chiplet-repo plan
    branch `feat/tidelink-chiplet-port` (2e64919) is local-only, push/PR at your discretion.
 
+## Late addition (Fri night): Ethernet M0 sim smoke — PASS
+`cocotb/eth_tidelink_pair/` (commit ce1f6ca, tag `kr260-recovery-weekend-final`): a 16-word frame
+written on die_a crossed the link and landed byte-exact in the real `nanosoc_region_sram`
+eth-scratch component behind die_b's ahb_mng — the frame-relay datapath skeleton is proven in sim.
+Next (M1): swap in the full `ethernet_ss_ahb` via `eth_ss_0` to surface the matrix hready/burst
+contract. Known inherited gap: `EPOCH_PROFILE=silicon` stalls the peer-window B-response —
+IDENTICALLY in the unmodified pair_v2 bench (`test_v2_xhb_window`) — a pre-existing PHY-lane
+item, now precisely characterized.
+
 ## Loose ends (tracked, none urgent)
 - ~25 more Z2-literal one-shot scripts still unguarded (list in the R5 report; guard idiom ready).
 - verify_build check (d) false-positives when verifying mid-batch (bit vs next build's

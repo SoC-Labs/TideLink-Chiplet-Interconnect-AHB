@@ -18,7 +18,10 @@ module tidelink_fifo #(
     parameter RAM_ADDR_W = 14,
     parameter RAM_DATA_W = 32,
     parameter APB_ADDR_W = 12,
-    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0  // APB base address of the paired tidelink
+    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0,  // APB base address of the paired tidelink
+    // PENDING-DECISION #1 pass-through (default 1'b1 = bit-identical). See
+    // tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -201,7 +204,8 @@ module tidelink_fifo #(
     tidelink_fifo_mem #(
         .SYS_DATA_W (SYS_DATA_W),
         .RAM_ADDR_W (RAM_ADDR_W),
-        .RAM_DATA_W (RAM_DATA_W)
+        .RAM_DATA_W (RAM_DATA_W),
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_fifo_mem (
         .hclk                   (hclk),
         .hresetn                (hresetn),

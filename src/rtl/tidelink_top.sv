@@ -165,7 +165,15 @@ module tidelink_top #(
     // The F4 gap is closed by making RETIRE_EN EXPRESSIBLE at the top (and on
     // the packaged IP face), not by flipping the default: the ASIC integration
     // can now set 0 or wire a bond strap without editing the controller.
-    parameter        RETIRE_EN            = 1'b1
+    parameter        RETIRE_EN            = 1'b1,
+    // PENDING-DECISION #1 — RX-FIFO TWIN 2 (chip-killer). Forwards to
+    // tidelink_fifo → tidelink_fifo_mem → tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    //   1'b1 (default) = current behaviour, BIT-IDENTICAL: AHB CPU writes to the
+    //         RX FIFO can advance the FC-shared write_ptr / burn credit.
+    //   1'b0 = ASIC posture: RX FIFO is FC-write-only; the AHB write side cannot
+    //         touch write_ptr/credit (AHB reads unaffected). Closes the
+    //         stray-AHB-write-mis-frames-next-FC-packet chip-killer.
+    parameter bit    ENABLE_AHB_WRITE     = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1399,7 +1407,8 @@ module tidelink_top #(
         .RAM_ADDR_W        (RAM_ADDR_W),
         .RAM_DATA_W        (RAM_DATA_W),
         .APB_ADDR_W        (APB_ADDR_W),
-        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
+        .ENABLE_AHB_WRITE  (ENABLE_AHB_WRITE)
     ) u_tidelink_fifo (
         .hclk              (hclk),
         .hresetn           (hresetn),

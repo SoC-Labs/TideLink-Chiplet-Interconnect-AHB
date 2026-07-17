@@ -86,6 +86,10 @@ module tidelink_dft_wrapper #(
     // straps autonomy on; the knob is plumbed now so that choice is available
     // at that point rather than requiring an axi_chiplet_controller edit.
     parameter RETIRE_EN         = 1'b1,
+    // PENDING-DECISION #1 — RX-FIFO TWIN 2. Forwarded verbatim to
+    // tidelink_top.ENABLE_AHB_WRITE. Default 1'b1 = bit-identical. The ASIC
+    // integration sets 1'b0 (RX FIFO FC-write-only) to close the chip-killer.
+    parameter bit ENABLE_AHB_WRITE = 1'b1,
 
     // ---- DFT-specific ---------------------------------------------------
     // Number of mux-D scan chains exposed at this wrapper. 8 is the
@@ -461,7 +465,9 @@ module tidelink_dft_wrapper #(
         .USE_PHY_V2         (USE_PHY_V2),
         // F4: RETIRE-AUTONOMY knob — forwarded verbatim so the ASIC top can
         // gate/strap it without editing axi_chiplet_controller.
-        .RETIRE_EN          (RETIRE_EN)
+        .RETIRE_EN          (RETIRE_EN),
+        // PENDING-DECISION #1: RX-FIFO AHB-write gate (default 1'b1 bit-identical)
+        .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE)
     ) u_top (
         // Clock / reset
         .hclk                       (hclk),

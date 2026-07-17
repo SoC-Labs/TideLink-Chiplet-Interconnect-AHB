@@ -101,14 +101,39 @@ pin. If you crimp a partial ribbon, bridge at minimum BCM0,1,2,3,4,5,6,7,8,9,10,
 
 ## Clocking
 
-`pl_clk0` (~100 MHz) → clk_wiz (`clk_out1 = 25 MHz` hclk/AXI, `clk_out2 = 25 MHz`
-phc, `clk_out3 = 200 MHz` spare) → `tidelink_phy_clk_div2` **/8** → **3.125 MHz /
-320 ns** PHY bit clock. The Z2's 4.687 MHz clk_out1 is below the MPSoC MMCME4
-floor, hence 25 MHz + /8. 3.125 MHz is conservatively close to the Z2's silicon-
-proven-slow 2.343 MHz. **The link rate is the main bench knob**: it is set in
-exactly two co-dependent places — `tidelink_phy_clk_div2.v` (the /8) and
+`pl_clk0` (~100 MHz) → clk_wiz (`clk_out1 = 25 MHz` hclk/AXI **+ phc**, `clk_out2`
+spare, `clk_out3 = 200 MHz` IDELAY ref) → `tidelink_phy_clk_div2` **/8** →
+**3.125 MHz / 320 ns** PHY bit clock. The Z2's 4.687 MHz clk_out1 is below the
+MPSoC MMCME4 floor, hence 25 MHz + /8. 3.125 MHz is conservatively close to the
+Z2's silicon-proven-slow 2.343 MHz. **The link rate is the main bench knob**: it
+is set in exactly two co-dependent places — `tidelink_phy_clk_div2.v` (the /8) and
 `kr260_tidelink_timing.xdc` (`create_clock -period 320.000` + the two
 `-divide_by 8`). Change them together on both die_a and die_b.
+
+### phc_clk timing fix (2026-07-17, R1) — the `-ptp` builds failed setup
+
+The deployed `kr260-pair-ptp` bitstream failed setup with **WNS −2.427 ns / 1673
+failing endpoints, ALL on the `clk_out1↔clk_out2` crossing**. Root cause: `clk_out1`
+and `clk_out2` both *request* 25 MHz, but one MMCM resolves them to **different
+actual** frequencies — `clk_out1` on fractional-capable CLKOUT0 = **25.011 MHz
+(39.982 ns)**, `clk_out2` on an integer-only CLKOUTn = **24.955 MHz (40.072 ns)**.
+The tool then times every `hclk↔phc_clk` (and `axi_apb_phc→phc_0/apb`) path as a
+near-common-period inter-clock crossing with ~0.09 ns of budget. **Fix: drive
+`tidelink_0/phc_clk` and `phc_0/clk` from `clk_out1` (== hclk)** so the crossing is
+single-clock (intra-`clk_out1` WNS +28.8 ns). The PHC is a 25 MHz timebase either
+way and its `hclk↔phc_clk` boundary is CDC'd in RTL, so this is a zero-function
+change (same NS_INCR budget; 24.955→25.011 MHz is 0.2%, closer to nominal).
+`clk_wiz` CLKOUT2 is left enabled-but-unconnected (harmless spare; do **not**
+reconnect phc to it). Applied to both `kr260-pair-ptp` and `kr260-pair-flip-ptp`.
+
+The **8-endpoint hold failure (WHS −23.198 ns)** in the same report is a SEPARATE,
+pre-existing item: it is entirely on `user_ref_clk_div2 → pad_clk_tx_fwd`, i.e. the
+`pad_tx[7:0]` **source-synchronous forwarded-clock outputs** (20 ns output-delay
+constraint vs a forwarded clock) — the known benign WHS artifact class. It is not
+PHC-related and this fix neither touches nor worsens it. **Note for `-nptp`:** those
+targets still tie `tidelink_0/phc_clk` to `clk_out2`; with the PHC core absent the
+crossing is small, but if an `-nptp` routed report shows `clk_out1↔clk_out2` setup
+failures, apply the same one-line re-point there (out of R1's file scope).
 
 ## You must `export TIDELINK_PHY_V2=1` (silent-V1 trap)
 
@@ -210,6 +235,51 @@ refuse structures the Z2's HR banks accept. If a new DRC error names
 `HDIOLOGIC_*`, the fix is to stop asking for the IO-side structure, not to move
 the pins — the RPi header has nowhere else to go.
 
+## HDIO constraint #3: I2C sideband needs `PULLTYPE PULLUP` in-fabric
+
+The autoneg I2C sideband (`i2c_sda_io` AE15/BCM2, `i2c_scl_io` AE14/BCM3) is
+open-drain: the wrapper only ever drives '0' or Hi-Z, so the bus relies on a
+pull-up to reach the idle-high '1'. On a real Raspberry-Pi carrier the Pi board
+fits ~1.8 kOhm pull-ups — but in the **KR260<->KR260 straight ribbon** there is no
+Pi and no HAT, so **nothing** pulls the bus up. A floating SDA/SCL can clock the
+on-die I2C autoneg *slave* into spurious transactions, and that slave shares the
+Wlink APB port — i.e. a floating sideband can hijack control-plane accesses. (The
+old XDC comment "the carrier / peer board provide the bus pull-ups" was simply
+wrong for this topology; corrected 2026-07-17.)
+
+Fix (all four buildable ribbon XDCs — `kr260-pair-{,flip-}{ptp,nptp}`):
+
+```tcl
+set_property -dict { PACKAGE_PIN AE15 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_sda_io]
+set_property -dict { PACKAGE_PIN AE14 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_scl_io]
+```
+
+Two port-name / property notes that matter here:
+
+- **`PULLTYPE PULLUP`, not the 7-series `PULLUP TRUE`.** xck26 is UltraScale+, where
+  the single `PULLTYPE` property (values `NONE`/`PULLUP`/`PULLDOWN`/`KEEPER`)
+  replaces the 7-series boolean `PULLUP`/`PULLDOWN`/`KEEPER` properties. HDIO bank
+  44 supports a weak pull, so `PULLTYPE PULLUP` is legal and DRC-clean there;
+  `PULLUP TRUE` is the wrong syntax for this family. (The Z2 XDCs legitimately use
+  `PULLDOWN TRUE` — they are 7-series; do not copy that form here.)
+- The SOM internal pull is weak (~50 kOhm), enough to guarantee a **safe idle** and
+  stop the slave self-triggering, but for signal integrity at speed a bench
+  **2.2 kOhm to 3V3 on exactly one board** is still preferred. Do not fit external
+  pull-ups on both boards (doubles the load, halves the effective value).
+
+`kr260-pair-onchip` is unaffected: it instantiates both dies in one bitstream and
+wires the I2C wired-AND *inside the fabric* — there are no external I2C pads and no
+XDC, so the floating-bus hazard cannot occur there.
+
+**Floating-input audit (done alongside the pull-up fix):** the only top-level input
+ports on the ribbon wrapper are `pad_clk_rx`, `pad_rx[7:0]` and the two I2C inouts.
+The clock/data RX pins are driven push-pull by the peer board's `DRIVE 8` TX outputs
+(one driver per conductor) — not floating in steady state, and out of scope for a
+pull (a weak pull would only fight the driver and close the eye). There is **no**
+role-strap / enable / present *input* pin to worry about: the die role is set
+internally by BD `xlconstant` straps + I2C autoneg, not by an external pin. So the
+I2C bus is the only genuine floating-input hazard, and it is now closed.
+
 ## Deploy on KR260 (differs from the Z2 fpga_manager flow)
 
 Boards run the **PYNQ Kria image**, so `make deploy` now handles KR260 directly.
@@ -297,6 +367,8 @@ literals and have **not** been ported — they are shared with the live Z2 campa
    nets; HDIO bank 44 has a smaller clock-resource pool than an HP bank. If
    route_design complains about clock placement, that's the spot.
 4. **Deploy plumbing** (xmutil/.dtbo vs PYNQ) per above.
-4. **I2C pull-ups** on the RPi-header I2C1 (BCM2/3) — confirm the carrier/peer
-   provides them, or add externally.
+4. **I2C pull-ups** on the RPi-header I2C1 (BCM2/3) — the XDCs now fit an in-fabric
+   `PULLTYPE PULLUP` (see "HDIO constraint #3" above), which guarantees a safe idle
+   in the carrier-less KR260<->KR260 ribbon. For signal integrity at speed still add
+   a 2.2 kOhm to 3V3 on exactly one board.
 5. **Host scripts** beyond the two overlay modules still hold Z2 address literals.

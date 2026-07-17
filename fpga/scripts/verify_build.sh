@@ -34,9 +34,28 @@ set -u
 V2_BANNER='TIDELINK filelist: V2'
 WLINK_MUSTS=(
   '`define TIDELINK_PHY_V2'
-  '`define TD_AUTO_LANE_MASK_E4'
-  "LANE_MASK_RESET = 8'hE4;"
 )
+# Lane-mask POR expectation. The 0xE4 (4-lane) default is gated by the
+# TD_AUTO_LANE_MASK_E4 env var in fpga/filelist.tcl; =0 builds the 8-lane
+# (0xFF) config. Mirror that here so the verifier checks what was ASKED for.
+#
+# NOTE (2026-07-17): the old expectation list also grepped for
+#   "LANE_MASK_RESET = 8'hE4;"
+# which was VACUOUS — filelist.tcl only PREPENDS the define to the file body,
+# it does not preprocess it, so BOTH `ifdef branches (8'hE4 and 8'hFF) are
+# present in the generated text unconditionally and that grep passed either
+# way. The `define line is the only load-bearing evidence, so we assert on its
+# presence/ABSENCE instead.
+LANE_MASK_E4=1
+if [ "${TD_AUTO_LANE_MASK_E4:-1}" = "0" ]; then LANE_MASK_E4=0; fi
+if [ "$LANE_MASK_E4" = "1" ]; then
+  WLINK_MUSTS+=( '`define TD_AUTO_LANE_MASK_E4' )
+  WLINK_MUSTNOTS=()
+  LANE_MASK_EXPECT="8'hE4 (4 lanes, bytesPerCycle=8)"
+else
+  WLINK_MUSTNOTS=( '`define TD_AUTO_LANE_MASK_E4' )
+  LANE_MASK_EXPECT="8'hFF (8 lanes, bytesPerCycle=16)"
+fi
 AUTONOMY_SIGNALS=(
   ws_kick_pending_q       # FIX-1 episode-bound winscan kick
   sync_cfg_hold_q         # L3 autonomous SYNC-config hold
@@ -82,7 +101,7 @@ else
        "'$V2_BANNER' NOT in $PKG_LOG — SILENT V1 FALLBACK (TIDELINK_PHY_V2 not in the build env?)"
 fi
 
-# ----- (b) gen_v2/Wlink.v V2 defines + E4 reset mask ------------------------------
+# ----- (b) gen_v2/Wlink.v V2 defines + lane-mask POR ------------------------------
 if [ ! -f "$GEN/Wlink.v" ]; then
   fail b "gen_v2/Wlink.v V2 defines" "missing $GEN/Wlink.v"
 else
@@ -92,8 +111,14 @@ else
     if [ -n "$ln" ]; then B_EV="${B_EV}[$pat @L$ln] "
     else B_OK=0; B_EV="${B_EV}[$pat MISSING] "; fi
   done
-  if [ $B_OK -eq 1 ]; then pass b "gen_v2/Wlink.v V2 defines + E4 mask" "$B_EV"
-  else fail b "gen_v2/Wlink.v V2 defines + E4 mask" "$B_EV"; fi
+  for pat in ${WLINK_MUSTNOTS+"${WLINK_MUSTNOTS[@]}"}; do
+    ln=$(grep -nF -m1 "$pat" "$GEN/Wlink.v" | cut -d: -f1)
+    if [ -n "$ln" ]; then B_OK=0; B_EV="${B_EV}[$pat PRESENT@L$ln but must be ABSENT] "
+    else B_EV="${B_EV}[$pat correctly absent] "; fi
+  done
+  B_EV="${B_EV}[expect LANE_MASK_RESET=$LANE_MASK_EXPECT] "
+  if [ $B_OK -eq 1 ]; then pass b "gen_v2/Wlink.v V2 defines + lane-mask POR" "$B_EV"
+  else fail b "gen_v2/Wlink.v V2 defines + lane-mask POR" "$B_EV"; fi
 fi
 
 # ----- (c) autonomy signals present in gen_v2/axi_chiplet_controller.sv -----------

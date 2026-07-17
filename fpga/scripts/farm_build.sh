@@ -112,6 +112,21 @@ build_env_prefix() {
     # packaged IP was already V1 and the FSM never existed to be synthesised.
     [ -n "$TIDELINK_PHY_V2" ] && \
         printf 'export TIDELINK_PHY_V2=%q; ' "$TIDELINK_PHY_V2"
+    # TD_AUTO_LANE_MASK_E4 (2026-07-17): SAME TRAP as TIDELINK_PHY_V2 above, and
+    # it bit on the first 8-lane farm build. This knob selects Wlink's tx/rx
+    # lane-mask POR in fpga/filelist.tcl (unset/1 -> 8'hE4 = 4 lanes; 0 -> 8'hFF
+    # = 8 lanes), and Wlink derives bytesPerCycle = popcount(lane_mask)*2 — so
+    # it IS the link's bandwidth. The remote job re-sources filelist.tcl with
+    # its own environment: without this forward the var is UNSET there, the
+    # default (1) applies, and the remote half of the pair silently builds
+    # 4-lane while the local half builds 8-lane — a MIXED pair.
+    # MEASURED on the first attempt: local package_ip logged "8'hFF (8 lanes)"
+    # while pynq-z2-pair-flip-all@srv04936 logged "8'hE4 (4 lanes)
+    # TD_AUTO_LANE_MASK_E4=<unset> (default 1)", and the resulting die_b .bin
+    # came out byte-IDENTICAL (md5 e384eec6…) to the certified 4-lane build.
+    # NB `-n` is correct for the value "0": it tests for a non-empty string.
+    [ -n "${TD_AUTO_LANE_MASK_E4:-}" ] && \
+        printf 'export TD_AUTO_LANE_MASK_E4=%q; ' "$TD_AUTO_LANE_MASK_E4"
     [ -n "$FPGA_INSERT_DEBUG_CORE" ] && \
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
     [ -n "$FPGA_USE_IDELAY" ] && \

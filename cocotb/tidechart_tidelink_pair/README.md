@@ -41,6 +41,7 @@ wired to the shims instead of tied off.
 |---|---|
 | `tb_tc_pair.sv` | top: TideLink pair + TideChart on each die (derived from `tidelink_top_pair/tb_top.sv`) |
 | `test_tc_pair_smoke.py` | the smoke test (imports `PairTB` from the pair bench) |
+| `test_tc_pair_election_datamode.py` | **election IN DATA MODE — closes G1 + G2** (single-root + PKT_EXT crossing) |
 | `Makefile` | VCS + cocotb; V2 flist + tidechart flist + chiplet shim |
 | `README.md` | this file |
 
@@ -48,8 +49,9 @@ wired to the shims instead of tied off.
 
 ```bash
 cd cocotb/tidechart_tidelink_pair
-make                    # dump on (waves.vcd)
-TB_TOP_NO_DUMP=1 make   # dump off (faster; used for the transcript below)
+make                                                       # smoke, dump on
+TB_TOP_NO_DUMP=1 make                                      # smoke, dump off
+TB_TOP_NO_DUMP=1 MODULE=test_tc_pair_election_datamode make # G1/G2-closing test
 ```
 
 Simulator = VCS (same as the pair bench). Always a V2 build
@@ -89,6 +91,37 @@ Transcript tail (`TB_TOP_NO_DUMP=1 make`):
    transition is gated *solely* on the tidelink output — a genuine
    TideLink → TideChart hand-off, and discriminating (it provably does **not**
    self-advance without the link).
+
+## G1 + G2 CLOSED — `test_tc_pair_election_datamode.py` (result: **PASS 1/1**)
+
+The gaps below (found by the smoke test) are now **closed** by a second test that
+drives the election the way the *fixed* integration must: it **holds**
+`election_start` (TideChart APB `TC_CTRL[0]`) deasserted on both dies until the
+pair is genuinely in **data mode** (`role_lock → cal_done → do_to_data_mode`,
+verified by FCSM state ≥ 4 on both dies), then arms both elections. Contract +
+recommended wiring fix: `docs/TIDECHART_G1_SEQUENCING_CONTRACT.md`.
+
+```
+113040ns [data-mode] FCSM state m=4 s=4 (>=4 == LL credit/data-exchange region)
+162120ns [election] die_a: done=1 is_root=0 best=0x00014a16 own_rand=0x5d8c  FSM=SETTLED
+162120ns [election] die_b: done=1 is_root=1 best=0x00014a16 own_rand=0x4a16  FSM=SETTLED
+162120ns [crossing] PKT_EXT ELECTION delivered  die_a.rx=1 (0x800100014a16) die_b.rx=1 (0x800100015d8c)
+   (a) SINGLE root across the two dies           : PASS (die_a root=0, die_b root=1)
+   (b) PKT_EXT CLAIM crossed the real TideLink   : PASS (die_a.rx=1, die_b.rx=1)
+```
+
+* **(a) single-root:** the identical stack that dual-rooted in the smoke test
+  (both `is_root=1`) is single-root once election is held to data mode — die_b
+  wins on the lower `random_id`, die_a uplinks to it. **G1 closed.**
+* **(b) PKT_EXT crossed both directions:** each die's `tc_axis_rx` delivered the
+  peer's election CLAIM (`[47:46]=2'b10`=PKT_EXT, subtype `0x0001`); the non-root
+  die adopted the claim it heard over the link. First end-to-end proof of the
+  `tc_axis` datapath over a real TideLink. **G2 closed.**
+
+The desymmetrising 16-cycle arm offset is a **bench artefact, not the contract**:
+`PUF_ENABLE=0` ⇒ `puf_seed=0` and the two dies share one reset, so their election
+LFSRs step in lockstep; same-cycle arming would give identical `random_id`s (a
+legitimate tie). Real silicon never resets two dies on the same cycle.
 
 ## Gaps found (honest — these are the deliverable's real value)
 

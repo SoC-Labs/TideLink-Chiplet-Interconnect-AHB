@@ -621,6 +621,22 @@ def diff_captures(path_a: str, path_b: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    # --- ZynqMP (KR260) SAFETY GUARD -----------------------------------------
+    # Every remote accessor below sshes to the board and mmaps RAW Pynq-Z2
+    # control literals (0x4403_xxxx / 0x4404_xxxx / 0x4405_xxxx) over /dev/mem.
+    # On a ZynqMP (KR260) those addresses are UNDECODED with NO bus timeout =>
+    # a hard PS hang. Pynq-Z2 ONLY. Refuse before any board access (this also
+    # blocks the offline --diff path — harmless). On a KR260 use tl_poke.py
+    # (0x8403_xxxx) or tl39.py.
+    _tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+    if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+        sys.stderr.write(
+            "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — sshes to a board and "
+            "mmaps RAW Z2 literals (0x4403_xxxx)\n  UNDECODED on a ZynqMP "
+            "(KR260) => hard PS hang. Pynq-Z2 ONLY.\n  On a KR260 use "
+            "tl_poke.py (0x8403_xxxx) or tl39.py.\n"
+            % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+        raise SystemExit(3)
     ap = argparse.ArgumentParser(
         description="TideLink PHY eye-sweep toolkit (v1: global phase)",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -144,9 +144,28 @@ else
   else fail c "autonomy signals in axi_chiplet_controller.sv" "ref counts: $C_EV(0 = optimised/edited out — STALE IP?)"; fi
 fi
 
-# ----- (d) both .bit files: exist, newer than run start, different md5s -----------
-# Run start: the farm log names embed the kick-off stamp (package_ip.YYYYMMDD-HHMMSS.log);
-# fall back to the log's mtime (package_ip is the first, fast phase of a run).
+# ----- (d) both .bit files: exist, fresh vs THEIR OWN build, different md5s -------
+# BATCH SEMANTICS (2026-07-20 fix). A multi-target batch builds its targets
+# SEQUENTIALLY, so the single newest package_ip*.log belongs to the LAST target
+# only. The old check compared EVERY target's .bit against that one newest
+# run-start, which false-flagged every EARLIER target in a batch as
+# "stale/half-finished" — its .bit is legitimately older than the LAST target's
+# build (observed 2026-07-20: verifying the four kr260 targets in one shot
+# flagged 3 of 4, all freshly built minutes apart). Fix: compare each target's
+# .bit against ITS OWN build window, not the global newest run.
+#
+# The target's out-of-context synth runme.log is written DURING synthesis, which
+# STRICTLY PRECEDES bitstream generation in the same build, so a freshly-built
+# .bit is always NEWER than its own synth log, while a genuinely stale/
+# half-finished .bit (left from a prior build whose current re-synth never
+# reached bitgen) is OLDER than it. Per-target reference, in priority order:
+#   1. own OOC synth runme.log mtime          (synth precedes bitgen; bit >= it)
+#   2. own run/<t>/build_design.log START     ("Start of session at:" banner)
+#   3. GLOBAL newest run-start                 (last resort, BATCH-UNSAFE — the
+#      original behaviour, kept only for trees with no per-target logs at all)
+#
+# Global newest run-start (fallback #3 only): farm log names embed the kick-off
+# stamp (package_ip.YYYYMMDD-HHMMSS.log); else the log's mtime.
 RUN_START=0
 if [ -n "$PKG_LOG" ]; then
   bn=$(basename "$PKG_LOG")
@@ -156,6 +175,25 @@ if [ -n "$PKG_LOG" ]; then
   fi
   [ "$RUN_START" -gt 0 ] || RUN_START=$(mtime "$PKG_LOG")
 fi
+# d_ref_for TARGET -> "<REF_EPOCH>\t<SOURCE_LABEL>": this target's OWN build-window
+# start (priority list above). REF=0 => no usable reference, freshness skipped.
+d_ref_for(){
+  local t=$1 synth bd start
+  synth=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -n "$synth" ] && [ -f "$synth" ]; then
+    printf '%s\town synth log' "$(mtime "$synth")"; return
+  fi
+  bd="$IMP/run/$t/build_design.log"
+  if [ -f "$bd" ]; then
+    # build_design.log's MTIME is the build END (written after bitgen), so the
+    # .bit is legitimately a few seconds OLDER — never compare against it. Use
+    # the session START banner instead; if absent, fall through (don't false-fail).
+    start=$(grep -m1 'Start of session at:' "$bd" 2>/dev/null | sed 's/.*at: *//')
+    start=$(date -d "$start" +%s 2>/dev/null || echo 0)
+    if [ "${start:-0}" -gt 0 ]; then printf '%s\town build_design.log start' "$start"; return; fi
+  fi
+  printf '%s\tGLOBAL run-start (batch-UNSAFE fallback)' "$RUN_START"
+}
 declare -A BIT_MD5
 D_OK=1; D_EV=""
 for t in "${TARGETS[@]}"; do
@@ -163,10 +201,11 @@ for t in "${TARGETS[@]}"; do
   if [ ! -f "$bit" ]; then D_OK=0; D_EV="${D_EV}[$t: tidelink.bit MISSING] "; continue; fi
   bm=$(mtime "$bit")
   BIT_MD5[$t]=$(md5sum "$bit" | cut -d' ' -f1)
-  if [ "$RUN_START" -gt 0 ] && [ "$bm" -lt "$RUN_START" ]; then
-    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than run start $(tstr "$RUN_START") — stale/half-finished build] "
+  ref_line=$(d_ref_for "$t"); ref=${ref_line%%$'\t'*}; refsrc=${ref_line#*$'\t'}
+  if [ "${ref:-0}" -gt 0 ] && [ "$bm" -lt "$ref" ]; then
+    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than $refsrc $(tstr "$ref") — stale/half-finished build] "
   else
-    D_EV="${D_EV}[$t: bit $(tstr "$bm") md5=${BIT_MD5[$t]:0:8}] "
+    D_EV="${D_EV}[$t: bit $(tstr "$bm") fresh vs $refsrc md5=${BIT_MD5[$t]:0:8}] "
   fi
 done
 # Distinctness: compare EVERY pair, not just [0] vs [1]. The old hard-indexed

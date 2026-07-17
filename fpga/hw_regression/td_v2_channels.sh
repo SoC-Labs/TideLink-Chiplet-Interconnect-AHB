@@ -857,7 +857,7 @@ echo "  mode=$MODE  channels='$CHANNELS'  pors=$PORS  throttle=${THROTTLE}s"
 board_up "$MASTER_IP" || abort "master $MASTER_IP unreachable (power-cycle?)"
 board_up "$SLAVE_IP"  || abort "slave $SLAVE_IP unreachable (power-cycle?)"
 # tl39 must actually run on both boards before any bus access (defect class 1).
-tl39_preflight || abort "tl39 preflight failed — staging broken; see above (NOT a dead link)"
+tl39_preflight || abort "tl39 preflight failed (NOT a dead link). Most likely the boards carry a pre-selftest tl39.py — re-stage tl39.py + tl_socmap.py on BOTH boards (mirrored: ~/td/scripts/tl39.py + ~/td/tl_socmap.py; kr260_deploy.sh does this) and re-run. See above for the raw output."
 if [ "$DO_LEASE" = 1 ]; then lease_acquire 2400 || abort "could not acquire $LEASE_NAME lease"; fi
 trap '[ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && lease_release' EXIT
 

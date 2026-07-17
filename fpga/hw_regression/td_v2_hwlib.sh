@@ -44,7 +44,13 @@ TL39=${TD_TL39:-/home/xilinx/tl39.py}
 # NB the mask must match the BITSTREAM's LANE_MASK_RESET: Wlink derives
 # bytesPerCycle = popcount(lane_mask)*2 (Wlink.v:996-1014), and on the
 # autonomous path the mask handshake latches the POR value at bring-up.
-TD_MASK=${TD_MASK:-0xff}
+# DEFAULT = 0xe4 (the historical/certified 4-lane set) so that merely sourcing
+# this lib is bit-identical to the pre-2026-07-17 behaviour for every existing
+# caller. The 8-lane runs pass TD_MASK=0xff EXPLICITLY. Defaulting to 0xff here
+# would silently re-point every unrelated script at a different link width —
+# and the mask MUST match the bitstream's LANE_MASK_RESET (a 0xff recipe on a
+# 0xE4 bitstream does not negotiate 8 lanes; see the measured note below).
+TD_MASK=${TD_MASK:-0xe4}
 _mask_d=$(( TD_MASK ))
 MASK_ACTIVE_LANES=""                  # active lanes, derived from TD_MASK
 for _l in 0 1 2 3 4 5 6 7; do [ $(( (_mask_d >> _l) & 1 )) -eq 1 ] && MASK_ACTIVE_LANES="$MASK_ACTIVE_LANES $_l"; done

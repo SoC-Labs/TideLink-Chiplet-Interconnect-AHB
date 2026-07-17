@@ -173,7 +173,14 @@ module tidelink_top #(
     //   1'b0 = ASIC posture: RX FIFO is FC-write-only; the AHB write side cannot
     //         touch write_ptr/credit (AHB reads unaffected). Closes the
     //         stray-AHB-write-mis-frames-next-FC-packet chip-killer.
-    parameter bit    ENABLE_AHB_WRITE     = 1'b1
+    parameter bit    ENABLE_AHB_WRITE     = 1'b1,
+    // PENDING-DECISION #5 — terminal role from strap, not the I2C-NACK constant.
+    // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.
+    //   1'b0 (default) = BIT-IDENTICAL: I2C NACK => slave, timeout => nego_fallback
+    //         (=> the both-dies-slave trap on a dead I2C, autonomy structurally dead).
+    //   1'b1 = ASIC posture: NACK terminal role AND timeout fallback derive from
+    //         role_strap_i, so a (master,slave) strap survives a dead I2C.
+    parameter bit    ROLE_FROM_STRAP      = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2241,6 +2248,8 @@ module tidelink_top #(
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
         .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
         // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so

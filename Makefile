@@ -356,6 +356,30 @@ sim_gate_v2_reduced_lane:
 	$(call sim_gate_run,v2_reduced_lane,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_reduced_lane)
 
+# --- Wave-0 #11: skew-faithful EPOCH_PROFILE=silicon coverage --------------
+# The blocking v2 suites all run EPOCH_PROFILE=zero (no inter-lane skew), so
+# there was ZERO skew-faithful sim coverage. This suite runs the v37 silicon
+# fingerprint (scattered 3..7-word epochs on the master's RX, S->M path) with
+# the whole-word EPOCH corrector ENGAGED (TB_TOP_EPOCH_ANCHOR_FORCE defparams
+# the deskew EPOCH_ANCHOR_EN=1 / SYNC_REANCHOR_EN=0). Verified 3/3 byte-exact
+# incl. S->M -> the corrector datapath survives the modelled skew.
+#
+# CHARACTERISED CAVEAT (Wave-0 #11, honest): DEFAULT EPOCH_PROFILE=silicon (no
+# FORCE) FAILS test_03 S->M with the v37 all-zeros signature, because the
+# SHIPPING integrated stack runs the OTHER corrector (SYNC_REANCHOR_EN=1), which
+# only arms on a live SYNC beacon that the pair bring-up leaves off, AND Wlink
+# does not forward EPOCH_ANCHOR_EN down to tidelink_lane_deskew. Engaging the
+# EPOCH corrector (as here) is the datapath the RTL is designed around
+# (test_v2_pair_data docstring). Wiring the shipping corrector to survive
+# beacon-off skew is an RTL/bring-up item, OUT of Wave-0 (instruments-only)
+# scope; this gate makes the skew-faithful path visible so it can't rot.
+# Own SIM_BUILD (EXTRA_DEFINES not in the Makefile SIM_BUILD key).
+sim_gate_epoch_silicon:
+	$(call sim_gate_run,epoch_silicon,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
+	    EXTRA_DEFINES="+define+TB_TOP_EPOCH_ANCHOR_FORCE" \
+	    SIM_BUILD=sim_build_silicon_epoch MODULE=test_v2_pair_data)
+
 # --- Wave-0 #12b: contiguous-a2l — NON-BLOCKING tracking target -------------
 # The test needs an {m,s}_inj_* force injector in tb_top.sv that was never
 # committed, so all four tests are marked skip=True (clean SKIP, never RED).
@@ -450,7 +474,7 @@ sim_gate_asicelab_v2:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
+	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
@@ -481,7 +505,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (17 suites)"
+	@echo " sim_gate — full aggregate sim gate (18 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -492,6 +516,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_v2_perf
 	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
+	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
 	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt

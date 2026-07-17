@@ -42,6 +42,34 @@
 # pass/fail; an `set -e` at library level would mask test assertions.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Z2-ONLY SAFETY GUARD (inline — this lib has no tl_socmap dependency).
+# Every helper below (tt_devmem_read/write, tt_tl_read_batch, tt_read_lane_status,
+# ...) mmaps RAW Z2 control literals (0x4403_xxxx / 0x4404_xxxx / 0x4405_xxxx)
+# over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses are UNDECODED
+# with NO bus timeout => a hard PS hang, power-cycle to recover. This suite is
+# Pynq-Z2 ONLY. Refuse THE MOMENT it is sourced (before any board access) if
+# TIDELINK_SOC points at anything other than a Z2. This `exit 3` propagates to
+# the NN_*.sh script that sourced us. Safe alternatives on a KR260: tl_poke.py
+# (absolute 0x8403_xxxx) or tl39.py canonical with tl_socmap.py.
+# ---------------------------------------------------------------------------
+_hwtest_soc=$(printf '%s' "${TIDELINK_SOC:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+case "$_hwtest_soc" in
+  ""|z2|pynq-z2|pynq_z2|zynq7|zynq) : ;;   # Pynq-Z2 / default: OK
+  *)
+    {
+      printf '\n########################################################################\n'
+      printf '## hwtest suite: REFUSING TO RUN on TIDELINK_SOC=%s\n' "$TIDELINK_SOC"
+      printf '## Every helper mmaps RAW Z2 control literals (0x4403_xxxx) which are\n'
+      printf '## UNDECODED on a ZynqMP (KR260) => a hard PS hang, power-cycle to recover.\n'
+      printf '## This suite is Pynq-Z2 ONLY. On a KR260 use tl_poke.py (absolute\n'
+      printf '## 0x8403_xxxx) or tl39.py canonical with tl_socmap.py. Unset TIDELINK_SOC\n'
+      printf '## (or set it to z2/pynq_z2) to run the hwtest suite on a Pynq-Z2.\n'
+      printf '########################################################################\n\n'
+    } >&2
+    exit 3 ;;
+esac
+
 : "${MASTER_IP:=192.168.4.101}"
 : "${SLAVE_IP:=192.168.6.101}"
 # Data-plane aperture bases. OLD (pre-GP1-split) defaults; export

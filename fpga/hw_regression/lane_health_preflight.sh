@@ -2,6 +2,21 @@
 # =============================================================================
 # lane_health_preflight.sh — per-lane RX eye / commit health check for BOTH dies
 #
+# ⚠⚠⚠ V1 / PYNQ-Z2 ONLY, AND SELF-VALIDATING — DO NOT RUN ON A KR260 ⚠⚠⚠
+# ------------------------------------------------------------------------------
+# Two independent reasons this tool must never touch a ZynqMP (KR260):
+#   1. Phase 2's on-board sweep mmaps RAW Z2 /dev/mem literals (base 0x44032000)
+#      that it does NOT relocate. On a KR260 those addresses are UNDECODED with
+#      no bus timeout => a hard PS hang (power-cycle to recover).
+#   2. Its commit verdict reads 0x4403215C (sync_seen). That register is RETIRED
+#      in V2 and reads 0 BY CONSTRUCTION, so every "lane never commits / DEAD"
+#      verdict on a V2 build is VOID. The golden GOLD_SEEN=0xE4 / GOLD_MASK
+#      constants also encode this tool's OWN premise ({2,5,6,7}); it validates
+#      against the very assumption it is supposed to test. See
+#      memory/reference_lane_health_preflight.md + reference_v2_retired_obs_regs.
+# It is refused outright unless TIDELINK_SOC is unset / z2 (td_require_z2 below).
+# ------------------------------------------------------------------------------
+#
 # WHY THIS EXISTS (the blind spot it closes)
 # ------------------------------------------------------------------------------
 # A per-lane IDELAY eye sweep already lived in td_v2_hwlib.sh:winscan() — but it
@@ -526,7 +541,14 @@ PYJSON
 echo "======== TideLink lane-health preflight ($(date)) ========"
 echo "  die_a=$A_IP  die_b=$B_IP  mode=$([ "$QUICK" = 1 ] && echo quick || echo full)  dies=${DIES[*]}  out=$OUT"
 
+# HARD REFUSE on a non-Z2 SoC (raw 0x4403_xxxx mmap + V2-retired 0x215C). This
+# runs BEFORE boards_up and any /dev/mem access.
+td_require_z2 "lane_health_preflight.sh"
+
 boards_up || { echo "### a board is unreachable ($A_IP / $B_IP) — power-cycle?"; exit 3; }
+
+# Prove tl39.py runs on both boards before any bus access (defect class 1).
+td_tl39_preflight || { echo "### ABORT: tl39 preflight failed — see above"; exit 3; }
 
 phase0 || { echo "### PHASE 0 FAILED — config sanity"; exit 3; }
 phase1

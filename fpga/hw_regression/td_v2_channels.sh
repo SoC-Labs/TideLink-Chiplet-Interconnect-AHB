@@ -302,7 +302,40 @@ s(){ timeout "$SSH_TIMEOUT" $SSH $BOARD_USER@$SLAVE_IP  "$_PY $*" 2>/dev/null; }
 # throttled reads: never issue back-to-back host->ssh reads without a sleep
 mrd(){ local v; v=$(m rd $1); sleep "$THROTTLE"; echo "$v"; }
 srd(){ local v; v=$(s rd $1); sleep "$THROTTLE"; echo "$v"; }
-val(){ printf "%d" $(( ${1:-0} )) 2>/dev/null || echo 0; }   # hex/empty -> int
+# hex/empty -> int. EMPTY is LOUD (defect class 1): m()/s() swallow stderr, so a
+# staging failure or a wedged read returns nothing; silently mapping that to 0
+# is exactly how a broken tool masquerades as cal=0/fcsm=0 == a dead link. The
+# tl39 preflight below is the hard abort for the systematic case; this warns on
+# any residual empty so an all-empty run can never pass quietly. (Called inside
+# $() subshells, so `exit` here cannot stop the parent — hence WARN, not abort.)
+val(){
+  if [ -z "${1:-}" ]; then
+    printf '### WARN: val() got EMPTY board output — read returned nothing (wedge / ssh timeout / tl39 staging fail); treating as 0. A run full of these is NOT a dead link, it is a dead instrument.\n' >&2
+    echo 0; return
+  fi
+  printf "%d" $(( $1 )) 2>/dev/null || echo 0
+}
+
+# tl39 PREFLIGHT (defect class 1): m()/s() run tl39 as `... 2>/dev/null`, so if
+# tl39.py is staged without tl_socmap.py (or TIDELINK_SOC is wrong) it fails to
+# stderr and vanishes -> every read empty -> cal=0/fcsm=0, indistinguishable
+# from a dead link. Run tl39's no-bus `selftest` on each board WITH stderr shown
+# and require the TL39_OK sentinel before ANY bus access.
+tl39_preflight(){
+  local who ip out fail=0
+  for who in master slave; do
+    [ "$who" = master ] && ip=$MASTER_IP || ip=$SLAVE_IP
+    out=$(timeout "$SSH_TIMEOUT" $SSH $BOARD_USER@$ip "$_PY selftest" 2>&1)
+    case "$out" in
+      *TL39_OK*) echo "  tl39 preflight OK ($who $ip): $(printf '%s\n' "$out" | grep -m1 -o 'TL39_OK[^"]*')" ;;
+      *) echo "### tl39 preflight FAILED ($who $ip): '${out:0:200}'" >&2
+         echo "###   tl39.py did not answer TL39_OK — staged without tl_socmap.py, or a bad" >&2
+         echo "###   TIDELINK_SOC. Every read would be EMPTY and misread as a dead link." >&2
+         fail=1 ;;
+    esac
+  done
+  return $fail
+}
 
 # ----- status decoders ------------------------------------------------------
 # $1 = m|s (which die). fcsm / cal / cr read from R_STATUS, throttled.
@@ -823,6 +856,8 @@ echo "  mode=$MODE  channels='$CHANNELS'  pors=$PORS  throttle=${THROTTLE}s"
 
 board_up "$MASTER_IP" || abort "master $MASTER_IP unreachable (power-cycle?)"
 board_up "$SLAVE_IP"  || abort "slave $SLAVE_IP unreachable (power-cycle?)"
+# tl39 must actually run on both boards before any bus access (defect class 1).
+tl39_preflight || abort "tl39 preflight failed — staging broken; see above (NOT a dead link)"
 if [ "$DO_LEASE" = 1 ]; then lease_acquire 2400 || abort "could not acquire $LEASE_NAME lease"; fi
 trap '[ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && lease_release' EXIT
 

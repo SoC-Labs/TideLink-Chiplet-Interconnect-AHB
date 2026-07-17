@@ -20,6 +20,10 @@
 #       required marker is PLATFORM-DEPENDENT — see the (e) block below.
 #   (f) WARN on any tidelink.bin OLDER than its tidelink.bit (stale bit2bin
 #       trap — boards flash the .bin, not the .bit)
+#   (g) FAIL on any SILENTLY-DROPPED XDC constraint in the impl log
+#   (h) FF-REMOVAL scan of the IP's OUT-OF-CONTEXT synth log (Synth 8-3332):
+#       FAIL if any NON-benign (non-clock-gate) sequential element was pruned
+#   (i) ROUTED TIMING: FAIL if the Design Timing Summary WNS < 0 (setup not met)
 #
 # USAGE:  fpga/scripts/verify_build.sh [--worktree DIR] [--with-dcp]
 #                                      [--targets "T1 T2 ..."]
@@ -321,6 +325,71 @@ for t in "${TARGETS[@]}"; do
   else
     nskew=$(grep -cE "set_bus_skew" "$log" 2>/dev/null)
     pass "g" "$t: no dropped XDC constraints" "clean impl log ($(basename "$log")); set_bus_skew refs=$nskew"
+  fi
+done
+
+# ----- (h) FF-REMOVAL in the OUT-OF-CONTEXT synth log -----------------------------
+# The TideLink IP is packaged and synthesized OUT-OF-CONTEXT. Vivado's
+# "[Synth 8-3332] Sequential element (...) is unused and will be removed"
+# warnings therefore land in the IP's OWN OOC run log:
+#   imp/fpga/project/<t>/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log
+# NOT in imp/fpga/run/<t>/build_design.log (the top design_1 assembly). A
+# previous investigation grepped the top log, saw 8-3332=0, and wrongly "ruled
+# out" FF removal — the OOC log actually carries them. This check scans the
+# RIGHT log and distinguishes:
+#   * BENIGN: the Wlink glitch-free clock-gate latch (hs_clk_gated_wcg/latch) —
+#     Vivado always prunes it; expected on EVERY build, not an autonomy loss.
+#   * CONCERNING: any OTHER removed sequential element => a real FF (autonomy
+#     FSM / datapath) got optimized away — the silent-V1 / tied-off-input class.
+# CONCERNING > 0 => FAIL. Benign-only => PASS (reporting the count). Missing OOC
+# log => WARN (cannot verify — do not silently pass it as clean).
+BENIGN_FF_RE='clk_gat|/latch/'
+for t in "${TARGETS[@]}"; do
+  ooc=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -z "$ooc" ] || [ ! -f "$ooc" ]; then
+    warn h "OOC synth log ($t)" "no tidelink_0_0_synth_1/runme.log under $IMP/project/$t/*.runs/ — cannot check FF removal"
+    continue
+  fi
+  # element name is inside the parens of each 8-3332 warning
+  elems=$(grep -F '[Synth 8-3332]' "$ooc" | sed -E 's/.*element \(([^)]*)\).*/\1/')
+  total=$(printf '%s\n' "$elems" | grep -c . )
+  concerning=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | grep -c . )
+  benign=$(( total - concerning ))
+  if [ "$concerning" -gt 0 ]; then
+    ex=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | head -3 | paste -sd'; ' -)
+    fail h "FF removal in OOC synth ($t)" \
+      "$concerning NON-benign sequential element(s) removed [Synth 8-3332] in $(basename "$(dirname "$(dirname "$ooc")")")/.../runme.log — e.g. $ex (autonomy/datapath FF optimised out => tied-off input / silent V1)"
+  else
+    pass h "FF removal in OOC synth ($t)" \
+      "$total removed [Synth 8-3332], all BENIGN Wlink clock-gate latches (0 autonomy/datapath FFs lost); log=$ooc"
+  fi
+done
+
+# ----- (i) ROUTED TIMING — WNS MUST NOT BE NEGATIVE -------------------------------
+# A build with negative setup slack (WNS < 0) does not meet timing yet was, until
+# now, waved through every structural check: the 2026-07-16 kr260-pair-ptp build
+# shipped at WNS -2.427 ns (1673 failing endpoints) and passed verify_build. That
+# must never happen again — a not-timing-clean bitstream is a bring-up lottery at
+# best. Parse the Design Timing Summary WNS from the routed report and FAIL on <0.
+# NB: WHS (hold) is deliberately NOT gated — the -27/-29 ns WHS on every Pynq-Z2
+# source-synchronous build is a known artefact (reference_fpga_timing_whs_artifact),
+# so gating it would red every Z2 build. WHS is reported as evidence only.
+for t in "${TARGETS[@]}"; do
+  rpt="$IMP/output/$t/tidelink_design_wrapper_timing_summary_routed.rpt"
+  if [ ! -f "$rpt" ]; then
+    warn i "routed timing WNS ($t)" "missing $rpt — cannot verify timing closure"
+    continue
+  fi
+  read -r wns whs <<EOF
+$(awk '/Design Timing Summary/{s=1} s && /WNS\(ns\)/{h=1;next} h && /^[[:space:]]*-?[0-9]/{print $1, $5; exit}' "$rpt")
+EOF
+  if [ -z "$wns" ]; then
+    warn i "routed timing WNS ($t)" "could not parse WNS from $(basename "$rpt")"
+  elif awk -v w="$wns" 'BEGIN{exit !(w+0 < 0)}'; then
+    fail i "routed timing NOT MET ($t)" \
+      "########## WNS = $wns ns < 0 — SETUP TIMING VIOLATED (WHS=$whs ns) — DO NOT DEPLOY ##########  [$(basename "$rpt")]"
+  else
+    pass i "routed timing WNS ($t)" "WNS=$wns ns >= 0 (setup met; WHS=$whs ns reported, not gated) [$(basename "$rpt")]"
   fi
 done
 

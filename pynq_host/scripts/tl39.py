@@ -12,6 +12,8 @@
 # the credit/send-gate — NOT a forced global word_pin.
 #
 # Usage (as root): python3 tl39.py <cmd> [args]
+#   selftest          no-bus preflight: prints "TL39_OK soc=..." and exits 0
+#                     (or a TL39_FATAL_* sentinel on stdout if staging is broken)
 #   probe [N [GAP]]   one-line decoded obs snapshot xN (now includes epoch)
 #   epoch             decode SWI_EPOCH_STATUS: anchored[0], span[6:1]
 #   rd ADDR | wr ADDR VAL
@@ -48,6 +50,13 @@ except ImportError as _e:  # deployed as a lone file next to no tl_socmap.py
     # FAIL LOUD on a relocating SoC; stay IDENTITY on the z2 default so an
     # existing single-file deployment of tl39.py keeps working unchanged.
     if os.environ.get("TIDELINK_SOC", "").strip().lower() not in ("", "z2"):
+        # LOUD-THROUGH-A-DISCARDING-HARNESS (defect class 1): the td_v2_*.sh
+        # wrappers run us as `... python3 tl39.py ... 2>/dev/null`, so a stderr-
+        # only failure vanishes and every downstream read comes back empty ->
+        # val()==0 -> cal=0/fcsm=0, i.e. INDISTINGUISHABLE from a dead link.
+        # Emit a distinctive STDOUT sentinel FIRST so the failure survives the
+        # 2>/dev/null and the harness preflight can abort on it.
+        sys.stdout.write("TL39_FATAL_IMPORT\n"); sys.stdout.flush()
         sys.stderr.write(
             "tl39: TIDELINK_SOC=%r requires pynq_host/tl_socmap.py, which is not\n"
             "importable (%s). Refusing to run: without it every address below is a\n"
@@ -67,8 +76,22 @@ except ImportError as _e:  # deployed as a lone file next to no tl_socmap.py
 try:
     _SOC = resolve_soc()
 except SocMapError as _e:
+    # Same discarding-harness hazard as the import failure above — emit a
+    # distinctive STDOUT sentinel before the stderr detail so a bad
+    # TIDELINK_SOC value cannot masquerade as an empty (dead-link) read.
+    sys.stdout.write("TL39_FATAL_SOC\n"); sys.stdout.flush()
     sys.stderr.write("\ntl39: REFUSING to run — %s\n\n" % _e)
     sys.exit(2)
+
+# NO-BUS PREFLIGHT (defect class 1). `selftest` proves this tool imported
+# tl_socmap and resolved the SoC WITHOUT opening /dev/mem or touching a single
+# register. The td_v2_*.sh harnesses run it FIRST, with stderr shown, and
+# require the TL39_OK sentinel; TL39_FATAL_* or empty output aborts the whole
+# run rather than being misread as cal=0/fcsm=0. Handle it before /dev/mem is
+# even opened so it stays a pure, side-effect-free check.
+if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+    print("TL39_OK soc=%s" % _SOC, flush=True)
+    sys.exit(0)
 
 PAGE = 4096
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)

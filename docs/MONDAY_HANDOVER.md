@@ -44,15 +44,33 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
 1. **R6 option (b)** (`NEGO_CFG_RESET=0` on kr260 targets): restores the cold-boot calibrator
    trigger and removes the runbook's manual-triplet step, at the cost of zero-poke autonomy POR on
    the two-board targets. Option (a) is already in. See [R6_HARDEN_SWI_OPTIONS.md](R6_HARDEN_SWI_OPTIONS.md).
-2. **G1 dual-root election** (TideChart co-sim finding): `link_active` precedes data-mode ⇒ both
-   dies elect root; the ASIC integration inherits it (`nanosoc_eth_chiplet.sv:357`). Needs a
-   sequencing contract before tapeout. Evidence: `cocotb/tidechart_tidelink_pair/README.md`.
+2. **G1 dual-root election — now with a proven fix proposal**: gating the election on data-mode
+   yields single-root + the first PKT_EXT-over-link proof (test committed). Proposal: export
+   `tl_data_mode_o` (FCSM>=4, already CDC-synced in axi_chiplet_controller) and swap one net in
+   `nanosoc_eth_chiplet.sv:809` + the FPGA BD; TideChart RTL unchanged. Unfixed = silent
+   multi-die dual-root at bring-up (respin-class). Approve + apply:
+   [TIDECHART_G1_SEQUENCING_CONTRACT.md](TIDECHART_G1_SEQUENCING_CONTRACT.md).
 3. **AFI persistence style**: per-boot poke via deploy (current) vs a systemd unit on the boards
    (recommended; also report to the Kria-260 repo as an issue — our psu_init never runs).
 4. **fpgahub secret** `kr260.ssh_password` (or stage ssh keys + NOPASSWD and skip it).
 5. **Ethernet M1**: approve the no-PHY frame-relay demo shape + PMOD-RMII-at-M2 direction
    ([ETHERNET_CHIPLET_INTEGRATION.md](ETHERNET_CHIPLET_INTEGRATION.md)); the chiplet-repo plan
    branch `feat/tidelink-chiplet-port` (2e64919) is local-only, push/PR at your discretion.
+
+## Late additions (Fri night / Sat 00:1x): continuation wave — all four lanes landed
+- **X-A silicon-skew stall ROOT-CAUSED** (ea5b34d + docs/XHB_WINDOW_SKEW_ROOTCAUSE.md): V2 has no
+  armed whole-word RX corrector (the EPOCH knob is a dead no-op on the V2 flist — trap #16);
+  forward data lands byte-exact, only the skewed-direction response shears. Whole-word HW skew
+  premise is CONTESTED — measure before treating as live. Rule: bounded canary write+readback
+  before any transparent-window traffic (the runbook's data gate covers it).
+- **X-C TideChart G1+G2 CLOSED** (f3ee7bc): single-root in data-mode + first PKT_EXT-over-link
+  proof; fix = export `tl_data_mode_o`, one-net swap (see decision 2 above).
+- **X-B ethernet M1 PASS** (cocotb/eth_tidelink_pair_m1): frame through the REAL ethernet_ss_ahb
+  matrix into eth_scratch_rx, 16/16 byte-exact; contract findings: peer→eth map is IDENTITY,
+  matrix wait-states honored end-to-end, path is single-beat-only today, X-init scratch means
+  write-before-read is a firmware contract. Next: Shape A (full multicore SoC) → MAC/HA1588 regs.
+- **X-D cleanup debt CLOSED** (c8c9ecf): 24/25 Z2 tools guarded, verify_build batch fix,
+  test_ptp_corrected_regs PASS 4/4.
 
 ## Late addition (Fri night): Ethernet M0 sim smoke — PASS
 `cocotb/eth_tidelink_pair/` (commit ce1f6ca, tag `kr260-recovery-weekend-final`): a 16-word frame
@@ -64,9 +82,9 @@ IDENTICALLY in the unmodified pair_v2 bench (`test_v2_xhb_window`) — a pre-exi
 item, now precisely characterized.
 
 ## Loose ends (tracked, none urgent)
-- ~25 more Z2-literal one-shot scripts still unguarded (list in the R5 report; guard idiom ready).
-- verify_build check (d) false-positives when verifying mid-batch (bit vs next build's
-  package_ip.log timestamp) — cosmetic, worth a follow-up tweak.
-- `test_ptp_corrected_regs.py` (pair bench) not re-run this weekend (not in the gate).
+- ~~25 Z2-literal scripts unguarded~~ CLOSED (c8c9ecf): 24 guarded, 1 justified skip
+  (stress_lib.py — injected-transport only, no /dev/mem).
+- ~~verify_build (d) batch false-positive~~ CLOSED (c8c9ecf): per-target build-window compare.
+- ~~test_ptp_corrected_regs not run~~ CLOSED: PASS 4/4.
 - The Z2 pair still runs the June-18 build; any future Z2 rebuild inherits the capture-clock RTL
   (validated config, but re-certify with the N=40 soak when convenient).

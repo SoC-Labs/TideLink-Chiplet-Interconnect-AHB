@@ -2,7 +2,7 @@
 
 > **Protocol:** this file is the single live dashboard. Every working session (human or agent)
 > updates the relevant row + the timestamp when state changes. Detail lives in the linked docs;
-> keep this file short. Last full update: **2026-07-17 21:0x (weekend autonomous loop — ALL PHASES COMPLETE, loop stopped)**.
+> keep this file short. Last full update: **2026-07-18 00:1x (continuation wave complete — X-A/B/C/D all landed; loop stopped)**.
 
 ## Headline
 **KR260 CHIPLET LINK IS UP** (first ever, 2026-07-17): root cause was the PS↔PL AFI port width
@@ -26,6 +26,14 @@ Plans: [KR260_RECOVERY_PLAN](KR260_RECOVERY_PLAN_2026_07_17.md) · [WEEKEND_PLAN
 | W4 Ethernet chiplet | architecture ✅ [ETHERNET_CHIPLET_INTEGRATION](ETHERNET_CHIPLET_INTEGRATION.md) — the chiplet SoC ALREADY has MAC+HA1588; port = build/wiring; **M1 = no-PHY frame relay (~1 wk)**; chiplet-repo branch `feat/tidelink-chiplet-port` (2e64919, unpushed) | M0 sim smoke |
 | Verification env | masterplan ✅ [TIDELINK_FPGA_VERIFICATION_PLAN](TIDELINK_FPGA_VERIFICATION_PLAN.md); L1 preamble + stats libs committed; **first TideChart co-sim PASS** | execute roadmap (nightly soaks need board keys) |
 | 🔴 Finding G1 (TideChart co-sim) | **dual-root election** — link_active precedes data-mode; ASIC integration inherits (nanosoc_eth_chiplet.sv:357) | pre-tapeout triage (Monday) |
+
+## Continuation wave (Fri night, user-directed autonomous)
+| Lane | What | State |
+|---|---|---|
+| X-A | silicon-skew peer-window stall | ✅ **ROOT-CAUSED** (ea5b34d): V2 has no armed whole-word RX corrector (EPOCH knob dead on V2 flist — trap #16); forward data byte-exact, skewed return shears; HW premise contested. Rule: bounded canary before window traffic (runbook's data gate covers it) |
+| X-B | ethernet M1 | ✅ **PASS 1/1** — frame through the REAL ethernet_ss_ahb matrix into eth_scratch_rx, 16/16 byte-exact; contract findings: identity map, wait-states honored, single-beat-only, X-init read-before-write hazard (cocotb/eth_tidelink_pair_m1) |
+| X-C | TideChart G1/G2 | ✅ **CLOSED** — single-root PASS in data-mode; PKT_EXT crossed both directions (first tc_axis-over-link proof); contract = new `tl_data_mode_o` + one-net swap (docs/TIDECHART_G1_SEQUENCING_CONTRACT.md); committed f3ee7bc |
+| X-D | cleanup debt | ✅ **DONE** (c8c9ecf) — 24/25 tools guarded (1 justified skip), verify_build (d) per-target window (4/4 PASS on the batch, genuine-stale still caught), test_ptp_corrected_regs PASS 4/4 |
 
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the

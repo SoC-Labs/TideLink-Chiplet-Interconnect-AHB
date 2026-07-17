@@ -46,8 +46,13 @@ set_property -dict { PACKAGE_PIN AG13 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6
 set_property -dict { PACKAGE_PIN AH13 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}] ;# BCM7
 
 #-- Inter-board I2C sideband (symmetric — identical to die_a) -----------------
-set_property -dict { PACKAGE_PIN AE15 IOSTANDARD LVCMOS33 } [get_ports i2c_sda_io] ;# BCM2 SDA1
-set_property -dict { PACKAGE_PIN AE14 IOSTANDARD LVCMOS33 } [get_ports i2c_scl_io] ;# BCM3 SCL1
+# PULLTYPE PULLUP holds the open-drain SDA/SCL idle-high: no RPi carrier/HAT fits
+# bus pull-ups in the KR260<->KR260 ribbon topology, so the SOM's weak internal
+# pull-ups stop the floating lines from clocking the autoneg I2C slave into
+# spurious APB-hijacking transactions. xck26 is UltraScale+ => PULLTYPE, not the
+# 7-series `PULLUP TRUE`. See die_a XDC for the full rationale.
+set_property -dict { PACKAGE_PIN AE15 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_sda_io] ;# BCM2 SDA1
+set_property -dict { PACKAGE_PIN AE14 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_scl_io] ;# BCM3 SCL1
 
 #-- Status LEDs on PMOD0 (off-ribbon — identical to die_a) --------------------
 set_property -dict { PACKAGE_PIN H12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led0] ;# PMOD0_0 — link_active

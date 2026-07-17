@@ -60,10 +60,18 @@ set_property -dict { PACKAGE_PIN Y13  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7
 
 #-- Inter-board I2C sideband (autoneg role-lock) -----------------------------
 # KR260 RPi-header I2C1: BCM2 = SDA (AE15), BCM3 = SCL (AE14). Symmetric across
-# the ribbon (SDA<->SDA, SCL<->SCL) — no flip. Open-drain via wrapper assigns;
-# the carrier / peer board provide the bus pull-ups.
-set_property -dict { PACKAGE_PIN AE15 IOSTANDARD LVCMOS33 } [get_ports i2c_sda_io] ;# BCM2 SDA1
-set_property -dict { PACKAGE_PIN AE14 IOSTANDARD LVCMOS33 } [get_ports i2c_scl_io] ;# BCM3 SCL1
+# the ribbon (SDA<->SDA, SCL<->SCL) — no flip. Open-drain via wrapper assigns.
+# PULLTYPE PULLUP: in the KR260<->KR260 ribbon topology there is NO Raspberry-Pi
+# carrier or HAT fitting the I2C bus pull-ups (the old "carrier provides them"
+# comment was wrong for a straight ribbon between two SOMs). Without a pull the
+# open-drain SDA/SCL float, and a floating bus can clock the on-die autoneg I2C
+# slave into spurious transactions that hijack the Wlink APB port. The SOM's weak
+# internal pull-up (~50 kOhm) holds both lines idle-high as a safety net.
+# NB xck26 is UltraScale+ => the property is PULLTYPE, not the 7-series
+# `PULLUP TRUE`. A bench 2.2 kOhm to 3V3 on ONE board is still preferred for
+# signal integrity at speed; this weak pull only guarantees a safe idle.
+set_property -dict { PACKAGE_PIN AE15 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_sda_io] ;# BCM2 SDA1
+set_property -dict { PACKAGE_PIN AE14 IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports i2c_scl_io] ;# BCM3 SCL1
 
 #-- Status LEDs on PMOD0 (OFF the RPi ribbon — avoids driver contention when a
 #   straight ribbon bridges both boards' headers). Optional: drive an external

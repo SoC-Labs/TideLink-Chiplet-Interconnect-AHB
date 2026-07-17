@@ -91,31 +91,34 @@ independently-regulated supplies together can back-feed a regulator and damage
 both boards. A full 40-way straight ribbon **would** bridge them — so either use a
 partial loom, or physically remove/strip conductors 1, 2, 4 and 17.
 
-> ### ⚠️ DO NOT USE A 26-WAY RIBBON — it cannot reach half the link
+> ### ⚠️ RETRACTED 2026-07-17 — the "26-way cannot reach the link" claim was WRONG
 >
-> An earlier revision of this file suggested a 26-way cable. **That is wrong, and it
-> contradicts the conductor table above.** A 26-way seated from pin 1 spans phys 1–26,
-> but the link needs conductors out to **phys 38**:
+> A previous revision of this file (commit `215d10f`) carried a prominent warning that a
+> 26-way ribbon could not reach `phys 27` (die_a's forwarded clock) and that this was the
+> cause of the dead link. **That claim was an unverified hypothesis presented as if it had
+> been measured. It is now REFUTED on hardware and must not be revived.**
 >
-> | phys | signal | inside a 26-way? |
-> |-----:|--------|------------------|
-> | 3, 5 | `i2c_sda_io`, `i2c_scl_io` | yes |
-> | 24 | die_b `pad_clk_tx` (BCM8) | yes |
-> | **27** | **die_a `pad_clk_tx` (BCM0)** | **NO — first pin outside** |
-> | 28,29,31,32,33 | die_a `pad_tx[0,5,6,2,3]` | NO |
-> | 35, 36 | `pad_rx[7]`, `pad_rx[0]` | NO |
-> | 38 | W12 | NO |
+> **The refuting measurement (2026-07-17):** with both dies beaconing SYNC, die_b read
+> `0x2140 SWI_EPOCH_STATUS = anchored=1, span=18` — i.e. die_b had recovered an epoch
+> anchor **on die_a's forwarded clock, the very `phys 27` conductor the theory said could
+> never cross**. The conductors are fine. The real fault was that the two bitstreams were
+> deployed to the wrong boards (see `docs/` and the bring-up notes: kr260_01 takes the
+> **flip** image, kr260_02 the **non-flip**); swapping them gives `anchored=1 span=0` on
+> both dies.
 >
-> **Failure signature if you use a 26-way** (measured on the KR260 pair, 2026-07-16):
-> I2C autoneg WORKS (phys 3/5 are inside), so the master ACKs, reads the peer's lane
-> mask, and its train FSM cycles — *looking like a live link*. But the PHY is stone
-> dead on **both** dies: `sync_seen=0x00`, `cal=0`, `fcsm=0`. die_b never receives
-> die_a's forwarded clock (phys 27), so it cannot sample, its calibrator never runs,
-> and it therefore emits no SYNC — so die_a reads `sync_seen=0x00` too, **even though
-> die_a's own RX clock (die_b's phys 24) is connected**. The symptom looks like a PHY
-> or eye problem. It is a cable problem.
+> **The "measured" failure signature quoted in that revision was itself an instrument
+> artefact:** it rested on `sync_seen=0x00`, but `sync_seen` (`0x215C`) lives in Region 10,
+> which is **RETIRED under `TIDELINK_PHY_V2` and reads 0 by construction** regardless of
+> link health (`REGISTER_MAP.md`). On a V2 build, `sync_seen=0x00` is not evidence of
+> anything. Use `0x2140` (epoch), `0x2120` (TX SYNC-obs) and `0x2108` (cal/fcsm) instead.
 >
-> **Use a 40-way**, with conductors **1, 2, 4 and 17 removed/stripped** (see the note
+> Lesson worth keeping: that warning was written into the repo on speculation, and was
+> then cited back by a later investigation as independent corroboration — circular
+> evidence, and it nearly triggered a pointless bench trip for a replacement cable.
+>
+> The conductor/keep-out guidance below is unaffected and still stands.
+
+> **If you do use a 40-way**, with conductors **1, 2, 4 and 17 removed/stripped** (see the note
 > above — a full 40-way would otherwise bridge those, which must not happen). A partial
 > loom is fine provided every phys pin in the conductor table is bridged.
 

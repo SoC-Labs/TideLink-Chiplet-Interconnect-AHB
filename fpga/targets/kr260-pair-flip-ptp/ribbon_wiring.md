@@ -101,10 +101,16 @@ partial loom, or physically remove/strip conductors 1, 2, 4 and 17.
 > **The refuting measurement (2026-07-17):** with both dies beaconing SYNC, die_b read
 > `0x2140 SWI_EPOCH_STATUS = anchored=1, span=18` — i.e. die_b had recovered an epoch
 > anchor **on die_a's forwarded clock, the very `phys 27` conductor the theory said could
-> never cross**. The conductors are fine. The real fault was that the two bitstreams were
-> deployed to the wrong boards (see `docs/` and the bring-up notes: kr260_01 takes the
-> **flip** image, kr260_02 the **non-flip**); swapping them gives `anchored=1 span=0` on
-> both dies.
+> never cross**. The conductors are fine.
+>
+> **CORRECTION (also 2026-07-17):** an earlier revision of this retraction went on to claim
+> the real fault was that the bitstreams were deployed to the wrong boards. **That is also
+> refuted** — reloading the original placement anchors fine. The KR260 epoch anchor is a
+> **lottery** (measured: non-flip/die_a 1/4, flip/die_b 4/4 — matching the known
+> "die_b 83% vs die_a 8%" asymmetry from the RX capture-clock defect), so single-trial A/B
+> comparisons prove nothing. A success is conclusive; a failure is not. Independently
+> confirmed since: all 8 balls conduct in both directions, and the ribbon has been
+> continuity-tested good at the bench.
 >
 > **The "measured" failure signature quoted in that revision was itself an instrument
 > artefact:** it rested on `sync_seen=0x00`, but `sync_seen` (`0x215C`) lives in Region 10,

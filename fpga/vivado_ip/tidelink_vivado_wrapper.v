@@ -133,7 +133,17 @@ module tidelink_vivado_wrapper #(
     //     tidelink_top's own default; forwarded explicitly so both POR values are
     //     visible/overridable on one IP face.
     parameter [6:0]  NEGO_CFG_RESET       = 7'h61,
-    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001,
+    // RETIRE-AUTONOMY enable (the B->A channel fix) — forwarded to
+    // tidelink_top.RETIRE_EN => axi_chiplet_controller.RETIRE_EN.
+    // 1'b1 = the silicon-validated cd2db38 behaviour (10/10 all channels).
+    // Surfaced on the IP face for the same reason as NEGO_CFG_RESET above: a
+    // wrapper-parameter default IS recorded in component.xml and DOES reach the
+    // IP's OOC synth, whereas a +define+ does NOT. Exposing it here means the
+    // retire is overridable per-BD-instance (CONFIG.RETIRE_EN=0 A/Bs against the
+    // pre-fix always-armed image) instead of being welded to the controller's
+    // module default.
+    parameter        RETIRE_EN            = 1'b1
 )(
     // =========================================================================
     // Clocks and Resets
@@ -495,7 +505,9 @@ module tidelink_vivado_wrapper #(
         // WINSCAN_CONVERGE_LOCK_EN is left at tidelink_top's 1'b0 default (the
         // phase2 asymmetric-peer-serve FSM does not use the converge-lock).
         .NEGO_CFG_RESET      (NEGO_CFG_RESET),
-        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET)
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET),
+        // RETIRE-AUTONOMY (B->A fix). Forwarded verbatim; 1'b1 = validated.
+        .RETIRE_EN           (RETIRE_EN)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

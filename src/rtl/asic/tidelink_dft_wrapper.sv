@@ -71,6 +71,21 @@ module tidelink_dft_wrapper #(
     // S2 scaffold: PHY v2 select pass-through (default 0 = bit-identical;
     // see tidelink_top parameter declaration for semantics).
     parameter logic USE_PHY_V2  = 1'b0,
+    // F4 (2026-07-15): RETIRE-AUTONOMY enable pass-through. Forwards to
+    // tidelink_top.RETIRE_EN → axi_chiplet_controller.RETIRE_EN. Default 1'b1
+    // mirrors tidelink_top's default, so this is bit-identical to the pre-F4
+    // elaboration — it exposes the knob WITHOUT changing behaviour.
+    //
+    // This wrapper is the ASIC integration face, so it is the level at which
+    // the tapeout owner makes the conscious RETIRE choice the handover rule
+    // demands: override to 1'b0, or bind to a bond-strap input, at the SoC top.
+    // NOTE: as of this commit the ASIC path is INERT either way — this wrapper
+    // does not forward NEGO_CFG_RESET, so tidelink_top's safe 7'h00 default
+    // applies, nego_en=0, and the retire (gated on nego_en & role_locked &
+    // train_auto_en) can never fire. RETIRE_EN only becomes live once the ASIC
+    // straps autonomy on; the knob is plumbed now so that choice is available
+    // at that point rather than requiring an axi_chiplet_controller edit.
+    parameter RETIRE_EN         = 1'b1,
 
     // ---- DFT-specific ---------------------------------------------------
     // Number of mux-D scan chains exposed at this wrapper. 8 is the
@@ -443,7 +458,10 @@ module tidelink_dft_wrapper #(
         .USE_T3A            (USE_T3A),
         .HARDEN_SWI_ENABLE  (HARDEN_SWI_ENABLE),
         // S2 scaffold: PHY v2 select (default 0 = bit-identical)
-        .USE_PHY_V2         (USE_PHY_V2)
+        .USE_PHY_V2         (USE_PHY_V2),
+        // F4: RETIRE-AUTONOMY knob — forwarded verbatim so the ASIC top can
+        // gate/strap it without editing axi_chiplet_controller.
+        .RETIRE_EN          (RETIRE_EN)
     ) u_top (
         // Clock / reset
         .hclk                       (hclk),

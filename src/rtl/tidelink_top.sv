@@ -138,7 +138,34 @@ module tidelink_top #(
     //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
     //       to prove hardware autonomy without either bypass strap — and the intended
     //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
-    parameter        HONEST_MASK_HS       = 1'b0
+    parameter        HONEST_MASK_HS       = 1'b0,
+    // Phase 2 autonomy — RETIRE-AUTONOMY enable (the B->A channel fix).
+    // Forwards to axi_chiplet_controller.RETIRE_EN. When 1, an event-gated
+    // retire latches on (reanchored & fcsm==4) held ~160 ms and DISARM-PARKs
+    // the winscan FSM, replicating the manual `0x210C=0` escape hatch that the
+    // silicon recipe takes. Silicon-validated 10/10 all channels at cd2db38.
+    //
+    // DEFAULT = 1'b1. Deliberate; the reasoning:
+    //  1. BIT-EQUIVALENCE (mandatory): the FPGA image is validated WITH the
+    //     retire. Defaulting 0 here would silently REVERT the validated
+    //     bitstream to the known-livelocking B->A 0/10 behaviour — the exact
+    //     class of regression the NEGO_CFG_RESET precedent warns about
+    //     (plumbed, never forwarded => every bitstream silently built 7'h00).
+    //  2. NOT A SILENT CHIP-DEFAULT: the retire SET is *already* gated on the
+    //     raw armed conjunction (nego_en & role_locked & train_auto_en). The
+    //     autonomy opt-in gate is NEGO_CFG_RESET, whose tidelink_top default
+    //     is the safe 7'h00 => nego_en=0 => the retire can NEVER fire on a
+    //     default ASIC integration regardless of RETIRE_EN. So 1'b1 changes
+    //     behaviour for nobody who has not ALREADY consciously opted into
+    //     autonomy by strapping NEGO_CFG_RESET != 0.
+    //  3. FAIL-SAFE DIRECTION: an ASIC that DOES strap nego_en wants autonomy
+    //     that WORKS. RETIRE_EN=0 + nego_en=1 is precisely the broken
+    //     configuration (winscan livelock, B->A dead). Defaulting 0 would ship
+    //     the known-bad autonomy to any integration that straps 7'h61.
+    // The F4 gap is closed by making RETIRE_EN EXPRESSIBLE at the top (and on
+    // the packaged IP face), not by flipping the default: the ASIC integration
+    // can now set 0 or wire a bond strap without editing the controller.
+    parameter        RETIRE_EN            = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2206,7 +2233,12 @@ module tidelink_top #(
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
-        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN)
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
+        // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so
+        // the ASIC integration can gate/strap the retire WITHOUT editing the
+        // controller. See the module parameter declaration for the default
+        // rationale.
+        .RETIRE_EN            (RETIRE_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

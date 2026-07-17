@@ -86,6 +86,20 @@ module tidelink_dft_wrapper #(
     // straps autonomy on; the knob is plumbed now so that choice is available
     // at that point rather than requiring an axi_chiplet_controller edit.
     parameter RETIRE_EN         = 1'b1,
+    // PENDING-DECISION #6 — ASIC zero-poke autonomy default. Forwarded verbatim
+    // to tidelink_top.NEGO_CFG_RESET → axi_chiplet_controller.NEGO_CFG_RESET,
+    // which is the POR value of nego_cfg_reg (nego_en = bit[0]).
+    //   7'h00 (default) = autonomy OFF, SW-driven — BIT-IDENTICAL to today and
+    //         to the safe tidelink_top default. Until this commit the wrapper did
+    //         NOT forward NEGO_CFG_RESET at all, so the ASIC path silently took
+    //         tidelink_top's 7'h00 and zero-poke could NEVER fire on the ASIC
+    //         (this is exactly the NEGO_CFG_RESET-silently-0x00 failure class).
+    //   7'h61 = zero-poke autonomy ON from POR (nego_en=1, force_lock=1,
+    //         mask_hs_auto_en=1) — the mandated hardware-autonomy posture. Wire
+    //         to a bond strap or override here.
+    // This is a pass-through only; the value must ARRIVE at the controller (see
+    // the elaboration proof in cocotb/asic_nego_cfg_plumb).
+    parameter [6:0] NEGO_CFG_RESET = 7'h00,
     // PENDING-DECISION #1 — RX-FIFO TWIN 2. Forwarded verbatim to
     // tidelink_top.ENABLE_AHB_WRITE. Default 1'b1 = bit-identical. The ASIC
     // integration sets 1'b0 (RX FIFO FC-write-only) to close the chip-killer.
@@ -466,6 +480,10 @@ module tidelink_dft_wrapper #(
         // F4: RETIRE-AUTONOMY knob — forwarded verbatim so the ASIC top can
         // gate/strap it without editing axi_chiplet_controller.
         .RETIRE_EN          (RETIRE_EN),
+        // PENDING-DECISION #6: forward NEGO_CFG_RESET so ASIC zero-poke autonomy
+        // is expressible at the DFT wrapper (was previously NOT forwarded → the
+        // ASIC silently took 7'h00 and autonomy could never fire).
+        .NEGO_CFG_RESET     (NEGO_CFG_RESET),
         // PENDING-DECISION #1: RX-FIFO AHB-write gate (default 1'b1 bit-identical)
         .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE)
     ) u_top (

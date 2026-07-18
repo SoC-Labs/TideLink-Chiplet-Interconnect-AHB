@@ -78,7 +78,43 @@ A_IP=${TD_MASTER_IP:-192.168.4.101}; A_BOARD=${TD_MASTER_BOARD:-z2_02}
 B_IP=${TD_SLAVE_IP:-192.168.2.101};  B_BOARD=${TD_SLAVE_BOARD:-z2_01}
 LEASE_NAME=${TD_LEASE:-bridge1}
 STAMP="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo run)"
-CSV="allchan_recipe_soak_${STAMP}.csv"
+
+# ----- provenance: key every result to the bitstream that produced it --------
+# The verification plan mandates it ("autonomy % without a named bitstream md5 is
+# meaningless") and it was enforced nowhere: no run artefact was archived, so every
+# hardware claim in this repo existed only as prose and could not be reproduced or
+# defended. BITSTREAM_MD5 is captured up-front and stamped into the CSV name, a
+# header comment, and every row.
+bitstream_md5(){ local f
+  for f in "$DEPLOY_DIR"/*.bit "$DEPLOY_DIR"/*.bit.bin "$DEPLOY_DIR"/*.bin; do
+    [ -f "$f" ] && { md5sum "$f" 2>/dev/null | cut -c1-12; return; }
+  done
+  echo "nobitstream"
+}
+if [ "$DRY" = 1 ]; then BITSTREAM_MD5="SYNTHETIC"; else BITSTREAM_MD5="$(bitstream_md5)"; fi
+
+# --dry-run fabricates outcomes with NO hardware (see run_trial). Its output used
+# to be byte-indistinguishable from a real run -- same filename pattern, a genuine
+# Clopper-Pearson CI over invented data. Anything synthetic is now labelled in the
+# filename, the header and every row, so it can never be mistaken for evidence.
+if [ "$DRY" = 1 ]; then
+  CSV="SYNTHETIC_allchan_recipe_soak_${STAMP}.csv"
+else
+  CSV="allchan_recipe_soak_${STAMP}_bs-${BITSTREAM_MD5}.csv"
+fi
+
+# ARCHIVE_DIR: committed evidence, keyed by bitstream. Set TD_ARCHIVE_DIR=none to
+# opt out. Synthetic runs are never archived as evidence.
+ARCHIVE_DIR=${TD_ARCHIVE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/results/allchan_recipe_soak}
+
+{
+  echo "# tidelink allchan_recipe_soak"
+  echo "# synthetic=$([ "$DRY" = 1 ] && echo YES-NO-HARDWARE || echo no)"
+  echo "# bitstream_md5=$BITSTREAM_MD5"
+  echo "# started=$STAMP  master=$A_IP($A_BOARD)  slave=$B_IP($B_BOARD)"
+  echo "# git=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "cycle,reset,verdict,detail,elapsed_s,bitstream_md5,synthetic"
+} > "$CSV"
 START=$SECONDS
 
 # ----- lease (verify GRANTED, never queued) ---------------------------------
@@ -192,7 +228,11 @@ echo "=========================================================="
 echo " allchan_recipe_soak  mode=$MODE reset=$RESET cycles=$CYCLES"
 echo "   channels='$CHANNELS'  power-every=$POWER_EVERY  dry=$DRY"
 echo "=========================================================="
-echo "cycle,reset,verdict,detail,elapsed_s" > "$CSV"
+[ "$DRY" = 1 ] && echo " *** --dry-run: NO HARDWARE. Outcomes are FABRICATED (~80% pass). ***"
+echo "   bitstream_md5=$BITSTREAM_MD5   csv=$CSV"
+echo "=========================================================="
+# NOTE: the CSV header + provenance block is written at setup (see BITSTREAM_MD5).
+# Do NOT re-write it here with '>' -- that truncated the provenance away.
 PASS=0; DONE=0
 for n in $(seq 1 "$CYCLES"); do
   if [ "$BUDGET" -gt 0 ] && [ $((SECONDS-START)) -ge "$BUDGET" ]; then
@@ -207,12 +247,53 @@ for n in $(seq 1 "$CYCLES"); do
   DONE=$((DONE+1))
   case "$v" in PASS) PASS=$((PASS+1)); tag="PASS";; *) tag="$v";; esac
   printf 'ALLCHAN_CYCLE %d/%d reset=%s -> %-14s (%ds)\n' "$n" "$CYCLES" "$([ $want_power = 1 ] && echo POR || echo soft)" "$tag" "$dt"
-  echo "$n,$([ $want_power = 1 ] && echo POR || echo soft),${v%%:*},${v#*:},$dt" >> "$CSV"
+  echo "$n,$([ $want_power = 1 ] && echo POR || echo soft),${v%%:*},${v#*:},$dt,$BITSTREAM_MD5,$([ "$DRY" = 1 ] && echo SYNTHETIC || echo hw)" >> "$CSV"
 done
 
 # ----- verdict --------------------------------------------------------------
 echo "=========================================================="
+if [ "$DRY" = 1 ]; then
+  echo " *** SYNTHETIC RUN — NO HARDWARE. The numbers below are FABRICATED."
+  echo " *** Do NOT quote this as evidence; the CI is computed over invented data."
+fi
 echo " RESULT: $PASS/$DONE all-channel PASS   $(clopper_pearson "$PASS" "$DONE")"
+echo "   bitstream_md5: $BITSTREAM_MD5"
 echo "   csv: $CSV"
+
+# ----- archive the evidence -------------------------------------------------
+# Without this the run leaves nothing behind and the result survives only as prose
+# in a markdown file — which is why no hardware claim in this repo is currently
+# reproducible. Synthetic runs are deliberately NOT archived.
+if [ "$DRY" = 1 ]; then
+  echo "   archive: skipped (synthetic)"
+elif [ "$ARCHIVE_DIR" = none ]; then
+  echo "   archive: disabled (TD_ARCHIVE_DIR=none)"
+elif [ "$BITSTREAM_MD5" = nobitstream ]; then
+  echo "   archive: SKIPPED — no bitstream found under $DEPLOY_DIR, result is unattributable"
+else
+  if mkdir -p "$ARCHIVE_DIR" 2>/dev/null && cp "$CSV" "$ARCHIVE_DIR/" 2>/dev/null; then
+    echo "   archive: $ARCHIVE_DIR/$(basename "$CSV")"
+    echo "   ^ commit this: a result without an archived, md5-keyed CSV is not evidence."
+  else
+    echo "   archive: FAILED to write $ARCHIVE_DIR (result not persisted)"
+  fi
+fi
 echo "=========================================================="
+
+# NOTE ON EXIT STATUS: this is deliberately 0 on a completed sweep — the soak
+# MEASURES a proportion, it does not assert one, and callers treat a non-zero exit
+# as "the sweep broke". To use it as a gate, set TD_SOAK_MIN_PASS (e.g. 90) and it
+# will fail when the Clopper-Pearson LOWER bound falls below that percentage.
+if [ -n "${TD_SOAK_MIN_PASS:-}" ] && [ "$DRY" != 1 ]; then
+  # Output looks like: "80.0% [28.4%, 99.5%] (Clopper-Pearson 95%)".
+  # Gate on the CI LOWER bound (the bracketed first number), NEVER the point
+  # estimate — gating on the point estimate is the "round 91% up to 95%" error the
+  # verification plan explicitly warns against, and it is the permissive direction.
+  lo=$(clopper_pearson "$PASS" "$DONE" | sed -n 's/.*\[\([0-9.]*\)%.*/\1/p')
+  if [ -n "$lo" ] && awk "BEGIN{exit !($lo < $TD_SOAK_MIN_PASS)}"; then
+    echo " GATE FAIL: CI-lower ${lo}% < TD_SOAK_MIN_PASS=${TD_SOAK_MIN_PASS}%"
+    exit 1
+  fi
+  echo " GATE PASS: CI-lower ${lo}% >= TD_SOAK_MIN_PASS=${TD_SOAK_MIN_PASS}%"
+fi
 exit 0

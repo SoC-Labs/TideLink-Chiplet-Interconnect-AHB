@@ -43,6 +43,25 @@ Plans: [KR260_RECOVERY_PLAN](KR260_RECOVERY_PLAN_2026_07_17.md) · [WEEKEND_PLAN
 | Y-C | error-injection matrix (gap F14) | ✅ **DONE** (a19e7d5) — 🔴 **2 TAPEOUT-GATING FINDINGS**: F14-A lane-7 corruption is COMMITTED silently (crc=0, 12/12); F14-B no in-field recovery (both-die POR only) + **fcsm=4 while no data crosses ⇒ fcsm is NOT liveness**; F14-C never POR one die alone |
 | Y-D | RX-FIFO TWIN 2 (gap F10) | ✅ **DISPOSITIONED** (9f42712) — real+live, reproduced (+8B/−2 credit, FC-shared ptr), AHB-write-to-RX proven unsupported, 3-hunk default-preserving patch A/B-proven (1/3→3/3). RECOMMEND apply pre-tapeout |
 
+## Wave Z (Sat evening, autonomous)
+| Lane | What | State |
+|---|---|---|
+| Z-A | sim_gate wiring | ✅ **DONE** (0d06d51) — **15→21 suites + 2 defect sentinels** (+6.6 min); found **2 false-green gate bugs** (env SIM_BUILD silently ignored; shared results.xml ⇒ make runs NOTHING and exits 0 — caught by a sentinel, not a normal suite). ⚠️ **CI clone job needs 3 sibling repos before merge** or 6 suites go red |
+| Z-B | F14-A sweep + CRC | ✅ **ANSWER: there is NO working integrity check** (1757973) — `disable_crc=1` both dies from reset via a local override present in BOTH ASIC flists; 48/48 cells raised zero errors; F14-A is GENERIC (byte-position, not lane). ⚠️ PKT_WORD_LEN is not a commit indicator — this inverted the original finding |
+| Z-C | ethernet M2 | ✅ **HA1588 TIMESTAMPED A REAL MII EVENT, read across the link** (e752d72) — grandmaster capture works. 🔴 PHC hop NOT closed: ethernet_ss_ahb_phc can't even BIND (port-name/width mismatch), servo src1 tied off, never simulated. ~4-6 d to sim-complete chain |
+| Z-D | recovery + liveness | ✅ **BIGGEST FINDING** (fc5be83): `calibrated_once_q` (calibrator:606-618) latches on first lock and kills BOTH retrigger edges ⇒ **NO firmware-reachable PHY retrain exists, FPGA *and* ASIC — one-bit fix, unfixable after tapeout**. Corrects F14-B (most disturbances self-heal; only clock dropout wedges). Beacon-recovery REFUTED twice by its own author. Liveness = tagged canary only; no register substitutes |
+
+**GATE RESULT: ✅ 21/21 PASS + both sentinels XFAIL (correct — defect present & unchanged, NOT a
+pass).** Getting there took a 3rd gate-plumbing fix: `$(realpath)` returns EMPTY for a missing path,
+so a git worktree (two levels deeper than the main checkout) resolved the sibling repos to nothing —
+5 suites failed at 0s with a message naming `/flist/...` instead of where it looked. Fixed by
+multi-root resolution + exporting the resolved paths (benches use `?=`, so no bench file changed).
+**ONCHIP A/B COMPLETE — THE CAPTURE-CLOCK FIX IS PROVEN IN SILICON-BOUND FORM.** Same target, same
+tool, only the branch differs: main tree (pre-cherry-pick) = LUT2 driver, fanout 496, **DEFECTIVE
+on both dies**; recovery branch (with 2c32c2b) = **BUFGCE on BOTH dies, VERDICT PASS**. verify_build
+PASS/0 warnings, WNS +28.306, WHS +0.010, BUFG-per-region OK, zero-skew trap still netlist-proven
+(div_0 INIT 3'b000 / div_1 3'b011). Bitstream md5 8f8792c975d3dc27790c5631a042b400.
+
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the
    G2-verified bitstreams via `make deploy_pair_role SOC=kr260` (new fpgautil path runs the AFI

@@ -41,6 +41,26 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
    KR260 env overrides listed in §0 (defaults are Z2!).
 
 ## Decisions needed from you
+000. 🔴🔴 **THE LINK-LAYER CRC IS DISABLED BY DEFAULT — in both ASIC flists.** `disable_crc=1` on
+   both dies out of reset: a local override deliberately flips the POR default, and the Chisel
+   forces `crc_corrupt=false`. The override's own comment says why — a real header-CRC bug on GOOD
+   traffic was worked around by turning the check off — and notes die_b's control register may be
+   hardware-unwritable, so software may not be able to re-enable it. Consequence, measured across
+   48/48 injection cells: **zero error indications ever raise, and corrupted packets on two lanes
+   are committed silently and are indistinguishable from good ones while the link stays usable.**
+   Decide: root-cause and re-enable, or ship with an explicit "no link-layer integrity, end-to-end
+   checksum mandatory" contract **plus a software-visible status bit**. Shipping silently-disabled
+   integrity with no indication to software is the part that shouldn't survive review.
+   Evidence: [ERROR_INJECTION_FINDINGS.md](ERROR_INJECTION_FINDINGS.md).
+00. 🔴🔴 **HIGHEST — a one-bit RTL fix that becomes unfixable at tapeout.** `calibrated_once_q`
+   (`tidelink_phy_align_calibrator.sv:606-618`) latches on first lock and permanently gates BOTH
+   calibrator re-trigger edges, so **`SWI_RECAL` is a no-op after first lock and there is NO
+   firmware-reachable PHY retrain — in the FPGA image and the ASIC path**. The RTL comment already
+   proposes the remedy (a dedicated W1P); nobody built it. Sim-proven, measured directly.
+   Evidence: [LINK_RECOVERY_MECHANISM.md](LINK_RECOVERY_MECHANISM.md).
+   Same doc corrects the earlier "any disturbance wedges the link" claim (most self-heal; only a
+   clock dropout truly wedges) and establishes that **the only trustworthy liveness check is moving
+   tagged data — every status register reads identical healthy vs wedged**.
 0. 🔴 **NEW, HIGHEST: two tapeout-gating error-injection findings** ([ERROR_INJECTION_FINDINGS.md](ERROR_INJECTION_FINDINGS.md)).
    **F14-A** a corrupted lane 7 is COMMITTED as a valid packet with no error flagged (silent data
    corruption — SW consumes 13 garbage words); **F14-B** no in-field recovery path (any transient
@@ -105,6 +125,25 @@ Two shared-file changes rode along, both verified backward-compatible (divider-g
 `HONEST_MASK_HS` wrapper param defaulting to the legacy behaviour) — but note the main tree's
 packaged IP was regenerated, so **re-run `make -C fpga package_ip` on this branch before builds
 that need `CONFIG.HONEST_MASK_HS`**.
+
+## ⚠️ CI CHANGE REQUIRED BEFORE THE BRANCH MERGES
+`.gitlab-ci.yml`'s `sim-gate` job (`allow_failure: false`) clones tidelink only, but six of the new
+suites need the sibling repos `tidechart`, `nanosoc-ethernet-chiplet` and `ethernet-subsystem-ahb`.
+A per-suite `SIM_GATE_REQUIRE` guard fails only its own suites with an actionable message (never a
+silent skip), but **the clone job must fetch those three or six suites go red on the first CI run.**
+
+## ✅ THE CAPTURE-CLOCK FIX IS PROVEN (onchip A/B, Sat night)
+Same target, same tool, only the branch differs — this is the cleanest evidence the bring-up-lottery
+fix has ever had, on the one platform with no ribbon and no pin lottery:
+| build | capture-clock driver | verdict |
+|---|---|---|
+| main tree (pre-cherry-pick) | LUT2, fanout 496 | DEFECTIVE, both dies |
+| **recovery branch (2c32c2b)** | **BUFGCE, fanout 496** | **PASS, both dies** |
+verify_build PASS (0 warnings), WNS +28.306, WHS +0.010, BUFG-per-region OK, zero-skew trap
+netlist-proven. Bitstream `8f8792c975d3dc27790c5631a042b400` in the worktree at
+`imp/fpga/output/kr260-pair-onchip/`. **This is the single-board vehicle to deploy first on Monday**
+— one board, no ribbon, and if bring-up is now reliable where it was a 1-in-4 lottery, that is the
+fix confirmed on hardware.
 
 ## Loose ends (tracked, none urgent)
 - ~~25 Z2-literal scripts unguarded~~ CLOSED (c8c9ecf): 24 guarded, 1 justified skip

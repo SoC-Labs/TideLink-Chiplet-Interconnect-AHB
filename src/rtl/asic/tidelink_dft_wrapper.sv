@@ -68,6 +68,24 @@ module tidelink_dft_wrapper #(
     parameter USE_CLKBUF        = 1'b0,
     parameter USE_T3A           = 1'b0,
     parameter HARDEN_SWI_ENABLE = 1'b1,
+    // HONEST_MASK_HS — peer-mask-handshake authenticity gate. MUST be forwarded:
+    // tidelink_top defaults it to 1'b0, and at tidelink_top.sv:2270-2271 a 0
+    // makes it DISCARD the apb_debug_unlock_i / mask_hs_bypass_i port values and
+    // substitute 1'b1. This wrapper declares those pins (:239-240) and wires them
+    // (:613-614), so the ASIC LOOKS strapped while the straps are dead silicon and
+    // mask_hs_gate_open (= mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i)
+    // is permanently forced open — i.e. APB debug permanently unlocked in the chip.
+    // The parameter was simply absent from the instantiation below; that omission
+    // is invisible to the asic_v*_elab gates, which elaborate only.
+    //
+    // Default stays 1'b0 so this commit is behaviourally bit-identical. Setting it
+    // to 1'b1 is a deliberate TAPEOUT DECISION, and it has a prerequisite:
+    // mask_hs_match = wlink_mask_hs_result[0] | autoneg_mask_hs_local_match
+    // (axi_chiplet_controller.sv:642), and Wlink.v:433 hard-ties
+    // mask_hs_result_o = 2'b00 — so with HONEST_MASK_HS=1 the gate can ONLY be
+    // opened by the I2C autoneg local-match path or by a real strap. Verify that
+    // path (or drive the straps) BEFORE flipping this, or the gate latches shut.
+    parameter HONEST_MASK_HS    = 1'b0,
     // S2 scaffold: PHY v2 select pass-through (default 0 = bit-identical;
     // see tidelink_top parameter declaration for semantics).
     parameter logic USE_PHY_V2  = 1'b0,
@@ -457,6 +475,11 @@ module tidelink_dft_wrapper #(
         .USE_CLKBUF         (USE_CLKBUF),
         .USE_T3A            (USE_T3A),
         .HARDEN_SWI_ENABLE  (HARDEN_SWI_ENABLE),
+        // Peer-mask-handshake authenticity gate. WITHOUT this line tidelink_top
+        // takes its own 1'b0 default and throws away apb_debug_unlock_i /
+        // mask_hs_bypass_i — the strap pins this wrapper declares and wires become
+        // dead silicon. See the parameter declaration above for the tapeout note.
+        .HONEST_MASK_HS     (HONEST_MASK_HS),
         // S2 scaffold: PHY v2 select (default 0 = bit-identical)
         .USE_PHY_V2         (USE_PHY_V2),
         // F4: RETIRE-AUTONOMY knob — forwarded verbatim so the ASIC top can

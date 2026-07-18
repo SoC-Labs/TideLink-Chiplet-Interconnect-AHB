@@ -543,6 +543,17 @@ set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs im
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 
+# P-B rebuild-variance experiment (2026-07, branch wip/pb-rebuild-variance):
+# to force GENUINE placement variance across otherwise-identical builds, allow
+# per-build override of the PLACE_DESIGN directive via env TIDELINK_PLACE_DIRECTIVE.
+# A different directive perturbs the placer harder than rebuild noise alone, so
+# it is a STRONGER test of the capture-clock-skew lottery than plain reruns.
+# Unset -> Vivado default placement (unchanged behaviour). Experiment-only.
+if { [info exists ::env(TIDELINK_PLACE_DIRECTIVE)] && $::env(TIDELINK_PLACE_DIRECTIVE) ne "" } {
+    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE $::env(TIDELINK_PLACE_DIRECTIVE) [get_runs impl_1]
+    puts "P-B: PLACE_DESIGN directive overridden -> $::env(TIDELINK_PLACE_DIRECTIVE)"
+}
+
 # Message-gate CHILD hooks on impl_1 (route child). The parent's promotions and
 # tidelink_check_cw_count were BLIND to the route child's messages, and the
 # LUTLP-1 combinational-loop DRC (the cb33c9f silicon-write-vanish class) only

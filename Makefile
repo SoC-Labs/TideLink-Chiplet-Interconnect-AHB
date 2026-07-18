@@ -471,8 +471,24 @@ SIM_GATE_REQUIRE = test -e $(1) || { echo "sim_gate: MISSING DEPENDENCY $(1) —
 # Both modules share ONE compile (sim_build_gate_tc).
 SIM_GATE_TC_ENV := TB_TOP_NO_DUMP=1 SIM_BUILD=sim_build_gate_tc
 
-TIDECHART_HOME ?= $(realpath $(TIDELINK_HOME)/../tidechart)
-CHIPLET_HOME   ?= $(realpath $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet)
+# Sibling-repo resolution. TRAP: $(realpath ...) yields the EMPTY STRING for a
+# path that does not exist, which is why a wrong guess produces the confusing
+# "MISSING DEPENDENCY /flist/tidechart.flist" (note the empty leading component)
+# rather than naming the directory it looked in. Resolve against several roots so
+# a GIT WORKTREE — which lives at <root>/worktrees/<branch>, i.e. two levels
+# deeper than the main checkout — still finds the siblings. First hit wins; an
+# explicit *_HOME on the command line still overrides everything.
+SIM_GATE_SIBLING_ROOTS := $(TIDELINK_HOME)/.. $(TIDELINK_HOME)/../.. $(TIDELINK_HOME)/../../.. $(HOME)/SoCLabs
+sim_gate_sibling = $(firstword $(foreach r,$(SIM_GATE_SIBLING_ROOTS),$(realpath $(r)/$(1))))
+
+TIDECHART_HOME ?= $(call sim_gate_sibling,tidechart)
+CHIPLET_HOME   ?= $(call sim_gate_sibling,nanosoc-ethernet-chiplet)
+# EXPORT them: every bench Makefile declares these with `?=`, and a variable
+# present in the ENVIRONMENT is already defined as far as `?=` is concerned, so
+# exporting here overrides each bench's own (worktree-blind) default without
+# touching a single bench file. Benches keep working standalone.
+export TIDECHART_HOME
+export CHIPLET_HOME
 SIM_GATE_TC_DEP = $(call SIM_GATE_REQUIRE,$(TIDECHART_HOME)/flist/tidechart.flist,tc_pair_* co-sim) && \
 	$(call SIM_GATE_REQUIRE,$(CHIPLET_HOME)/src/rtl/tidechart_shim.sv,tc_pair_* co-sim)
 
@@ -534,7 +550,8 @@ sim_gate_eth_m0:
 # sources the subsystem's set_env.sh in a SUBSHELL. SIM_GATE_ETH_DEP checks the
 # checkout first, so a missing sibling is a one-line message in THIS suite's log
 # rather than an unreadable VCS flist error 40 minutes in.
-ETH_SS_HOME ?= $(realpath $(TIDELINK_HOME)/../nanoSoC-refactor/ethernet-subsystem-ahb)
+ETH_SS_HOME ?= $(call sim_gate_sibling,nanoSoC-refactor/ethernet-subsystem-ahb)
+export ETH_SS_HOME   # see the export note at TIDECHART_HOME above
 SIM_GATE_ETH_ENV := . $(ETH_SS_HOME)/set_env.sh >/dev/null 2>&1;
 
 # M1: through the REAL ethernet_ss_ahb AHB matrix into eth_scratch_rx.

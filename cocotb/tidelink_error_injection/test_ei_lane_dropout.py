@@ -93,6 +93,37 @@ async def test_01_lane_sweep_flip(dut):
                 f"unused/masked={[l for l in range(8) if l not in active]} "
                 f"SILENT-CORRUPTION lanes={silent} | per-lane={report}")
 
+    # SILENT-CORRUPTION = the receiver ACCEPTED a packet whose bits were flipped
+    # in flight, with no error signalled. That is the most serious outcome this
+    # test can produce, and until 2026-07-18 it was only log.info'd -- so the
+    # suite reported its own critical finding and exited green.
+    #
+    # It now fails by default. If it fails, read this before "fixing" the test:
+    # CRC is DISABLED BY RESET DEFAULT in shipping silicon
+    # (WlinkGenericFCSM.v:686 / _6.v:1167, `swi_disable_crc <= 1'h1`), so with the
+    # POR configuration a flipped bit is UNDETECTABLE BY CONSTRUCTION and silent
+    # corruption is the expected consequence, not a surprise. The right response
+    # is a design decision (flip the reset default, or make CRC-on a mandatory,
+    # gated bring-up step) -- not deleting this assertion.
+    #
+    # EI_ALLOW_SILENT_LANES records that debt EXPLICITLY when you need the suite
+    # green while the decision is pending, e.g. EI_ALLOW_SILENT_LANES="2,5,6,7".
+    # Set it deliberately, never to make a red go away quietly.
+    import os
+    _allow_raw = os.environ.get("EI_ALLOW_SILENT_LANES", "").strip()
+    allowed = sorted(int(x) for x in _allow_raw.replace(",", " ").split()) if _allow_raw else []
+    unexpected = [l for l in silent if l not in allowed]
+    if allowed:
+        tb.log.warning(f"EI_ALLOW_SILENT_LANES={allowed} -- silent corruption on "
+                       f"these lanes is being TOLERATED by explicit opt-in. This is "
+                       f"recorded technical debt, not a passing result.")
+    assert not unexpected, (
+        f"SILENT DATA CORRUPTION on lane(s) {unexpected}: a packet with in-flight "
+        f"bit-flips was ACCEPTED with no error signalled. per-lane={report}. "
+        f"Note CRC is off by reset default (swi_disable_crc=1) -- see the comment "
+        f"above; if this is expected for the current configuration, record it via "
+        f"EI_ALLOW_SILENT_LANES rather than removing this assertion.")
+
 
 async def _run_mode_on_active(dut, name, mode):
     tb = await _bringup_healthy(dut)

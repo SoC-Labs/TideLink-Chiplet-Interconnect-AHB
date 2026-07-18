@@ -176,5 +176,44 @@ async def classify_recovery(tb, src, dst):
     cr3 = await full_por_rebringup(tb)
     ok3, d3 = await link_healthy(tb, src, dst)
     if cr3 and ok3:
-        return "WEDGES(unwedged only by full POR of BOTH dies)", d3
-    return "WEDGES(NOT unwedged even by full POR — hard wedge)", d3
+        v = "WEDGES(unwedged only by full POR of BOTH dies)"
+        tb.log.warning(f"RECOVERY LADDER: {v} — the link needed a FULL POR of both "
+                       f"dies. On silicon that is a bench trip. detail={d3}")
+        _assert_recovery_ok(tb, v, d3)
+        return v, d3
+    v = "WEDGES(NOT unwedged even by full POR — hard wedge)"
+    tb.log.error(f"RECOVERY LADDER: {v}  detail={d3}")
+    _assert_recovery_ok(tb, v, d3)
+    return v, d3
+
+
+def _assert_recovery_ok(tb, verdict, detail):
+    """Fail the test on an unrecoverable link.
+
+    Until 2026-07-18 every caller of classify_recovery() discarded the verdict --
+    all 7 call sites did `verdict, detail = await classify_recovery(...)` and then
+    only logged. The suite headers said so out loud ("a WEDGE is a FINDING, not a
+    test failure"), which is defensible while characterising a new failure mode and
+    indefensible once these run as regressions: a hard wedge exited green.
+
+    Policy, asserted here so all call sites inherit it uniformly:
+      * HARD WEDGE (not recoverable even by a full POR of both dies) always fails.
+        There is no configuration in which that is an acceptable outcome.
+      * "unwedged only by full POR" fails only under EI_STRICT_RECOVERY=1. It is a
+        real defect -- on silicon it means a bench trip -- but several of these
+        tests were written to characterise exactly that, so making it fatal by
+        default would turn characterisation red without a decision having been made.
+      * RECOVERS / RECOVERS-WITH-INTERVENTION pass.
+    """
+    import os
+    hard = "hard wedge" in verdict
+    por_only = verdict.startswith("WEDGES") and not hard
+    strict = os.environ.get("EI_STRICT_RECOVERY", "").strip() in ("1", "true", "yes")
+    if hard:
+        raise AssertionError(
+            f"UNRECOVERABLE LINK: {verdict}. The link did not come back even after a "
+            f"full POR of both dies, so no software or operator action can restore it. "
+            f"detail={detail}")
+    if por_only and strict:
+        raise AssertionError(
+            f"EI_STRICT_RECOVERY=1: {verdict}. detail={detail}")

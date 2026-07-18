@@ -41,6 +41,12 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
    KR260 env overrides listed in §0 (defaults are Z2!).
 
 ## Decisions needed from you
+0. 🔴 **NEW, HIGHEST: two tapeout-gating error-injection findings** ([ERROR_INJECTION_FINDINGS.md](ERROR_INJECTION_FINDINGS.md)).
+   **F14-A** a corrupted lane 7 is COMMITTED as a valid packet with no error flagged (silent data
+   corruption — SW consumes 13 garbage words); **F14-B** no in-field recovery path (any transient
+   disturbance wedges the link; only a both-die POR clears it) — and **fcsm=4 reads healthy on both
+   dies while no data crosses, so every fcsm-based liveness gate can pass on a dead link**. These
+   need triage/ownership before tapeout; they are sim-proven, not yet hardware-confirmed.
 1. **R6 option (b)** (`NEGO_CFG_RESET=0` on kr260 targets): restores the cold-boot calibrator
    trigger and removes the runbook's manual-triplet step, at the cost of zero-poke autonomy POR on
    the two-board targets. Option (a) is already in. See [R6_HARDEN_SWI_OPTIONS.md](R6_HARDEN_SWI_OPTIONS.md).
@@ -53,7 +59,11 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
 3. **AFI persistence style**: per-boot poke via deploy (current) vs a systemd unit on the boards
    (recommended; also report to the Kria-260 repo as an issue — our psu_init never runs).
 4. **fpgahub secret** `kr260.ssh_password` (or stage ssh keys + NOPASSWD and skip it).
-5. **Ethernet M1**: approve the no-PHY frame-relay demo shape + PMOD-RMII-at-M2 direction
+5. **TWIN 2 patch sign-off** (NEW, Y-D): the last chip-killer is dispositioned — real, reproduced,
+   intent proven (AHB-write-to-RX unsupported anywhere), fix is a default-preserving 3-hunk patch
+   with an A/B-proven gate test. Apply docs/proposals/twin2_fix.patch + add sim_gate_fifo_twin2.
+   Evidence: [RXFIFO_TWIN2_DISPOSITION.md](RXFIFO_TWIN2_DISPOSITION.md).
+6. **Ethernet M1**: approve the no-PHY frame-relay demo shape + PMOD-RMII-at-M2 direction
    ([ETHERNET_CHIPLET_INTEGRATION.md](ETHERNET_CHIPLET_INTEGRATION.md)); the chiplet-repo plan
    branch `feat/tidelink-chiplet-port` (2e64919) is local-only, push/PR at your discretion.
 
@@ -80,6 +90,21 @@ Next (M1): swap in the full `ethernet_ss_ahb` via `eth_ss_0` to surface the matr
 contract. Known inherited gap: `EPOCH_PROFILE=silicon` stalls the peer-window B-response —
 IDENTICALLY in the unmodified pair_v2 bench (`test_v2_xhb_window`) — a pre-existing PHY-lane
 item, now precisely characterized.
+
+## NEW TARGET: kr260-pair-onchip is buildable and built (Y-A, eb3a6fd)
+Two TideLink dies in ONE xck26 bitstream — no ribbon, no link pins (4 IOB = LEDs), one board.
+54% LUT / 30% FF / 23 BUFGCE; **WNS +27.3 ns, WHS +0.010, zero failing endpoints of 141,745**
+(the ~−22 ns source-synchronous WHS class simply does not exist without pads). Bitstream is in
+the MAIN tree at `imp/fpga/output/kr260-pair-onchip/`, built before the capture-clock cherry-pick,
+so its capture clock is still LUT-driven — **rebuilding it on this branch gives the BUFG version,
+making this the cleanest possible A/B for the bring-up-lottery fix, with the ribbon and the pin
+lottery removed from the experiment**. Smoke path: `make -C fpga deploy TARGET=kr260-pair-onchip`
+(fpgautil + mandatory AFI re-poke) then `kr260_onchip_smoke.py`, then `kr260_onchip_autonomy.py`.
+Apertures: die_a APB `0x8403_0000` / die_b `0x8C03_0000` (uniform +0x0800_0000).
+Two shared-file changes rode along, both verified backward-compatible (divider-glob superset;
+`HONEST_MASK_HS` wrapper param defaulting to the legacy behaviour) — but note the main tree's
+packaged IP was regenerated, so **re-run `make -C fpga package_ip` on this branch before builds
+that need `CONFIG.HONEST_MASK_HS`**.
 
 ## Loose ends (tracked, none urgent)
 - ~~25 Z2-literal scripts unguarded~~ CLOSED (c8c9ecf): 24 guarded, 1 justified skip

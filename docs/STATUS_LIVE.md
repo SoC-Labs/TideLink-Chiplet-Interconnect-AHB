@@ -35,6 +35,14 @@ Plans: [KR260_RECOVERY_PLAN](KR260_RECOVERY_PLAN_2026_07_17.md) · [WEEKEND_PLAN
 | X-C | TideChart G1/G2 | ✅ **CLOSED** — single-root PASS in data-mode; PKT_EXT crossed both directions (first tc_axis-over-link proof); contract = new `tl_data_mode_o` + one-net swap (docs/TIDECHART_G1_SEQUENCING_CONTRACT.md); committed f3ee7bc |
 | X-D | cleanup debt | ✅ **DONE** (c8c9ecf) — 24/25 tools guarded (1 justified skip), verify_build (d) per-target window (4/4 PASS on the batch, genuine-stale still caught), test_ptp_corrected_regs PASS 4/4 |
 
+## Wave Y (Sat, user-directed autonomous)
+| Lane | What | State |
+|---|---|---|
+| Y-A | onchip target (gap F20) | ✅ **BUILT** (eb3a6fd) — first ever bitstream: 54% LUT / 30% FF / 23 BUFGCE / **4 IOB** (LEDs only); **WNS +27.3, WHS +0.010, 0 failing of 141,745** — the −22 ns WHS artifact class is ABSENT (no pads); zero-skew trap netlist-proven; BUFG-per-region risk did not materialise. Capture clock LUT-driven (built pre-cherry-pick in main tree) ⇒ **cleanest A/B vehicle for the BUFG fix** |
+| Y-B | Shape-A narrow | ✅ **PASS** — real MAC reset-constants read + HA1588.SCRATCH write/readback across the link through the subsystem matrix; NO full SoC needed (eth_ss_0→ethmac_0 proven). PTP-chain gap now a precise 4-item list |
+| Y-C | error-injection matrix (gap F14) | ✅ **DONE** (a19e7d5) — 🔴 **2 TAPEOUT-GATING FINDINGS**: F14-A lane-7 corruption is COMMITTED silently (crc=0, 12/12); F14-B no in-field recovery (both-die POR only) + **fcsm=4 while no data crosses ⇒ fcsm is NOT liveness**; F14-C never POR one die alone |
+| Y-D | RX-FIFO TWIN 2 (gap F10) | ✅ **DISPOSITIONED** (9f42712) — real+live, reproduced (+8B/−2 credit, FC-shared ptr), AHB-write-to-RX proven unsupported, 3-hunk default-preserving patch A/B-proven (1/3→3/3). RECOMMEND apply pre-tapeout |
+
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the
    G2-verified bitstreams via `make deploy_pair_role SOC=kr260` (new fpgautil path runs the AFI

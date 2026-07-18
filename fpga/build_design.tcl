@@ -252,13 +252,24 @@ source $target_dir/tidelink_design.tcl
 # references only resolve in automatic-compile-order mode against a file already
 # in sources_1. Added here (not in tidelink_design.tcl, which only builds the BD)
 # so it lands in the project fileset the same way as the board wrapper below.
-set phy_clk_div_v [lindex [glob -nocomplain $target_dir/tidelink_phy_clk_div2.v] 0]
-if { $phy_clk_div_v ne "" } {
-    add_files -norecurse $phy_clk_div_v
+# Glob is `tidelink_phy_clk_div2*.v` (a SUPERSET of the historical exact name)
+# so the kr260-pair-onchip target's SECOND divider variant
+# `tidelink_phy_clk_div2_b.v` — a distinct module-reference whose DEFAULT
+# INIT_PHASE is 3'b011 (the zero-skew-trap mitigation, KR260_PAIR_ONCHIP_PLAN
+# sec 4 / OQ3 two-file fallback) — is added to sources_1 too. Every other target
+# ships ONLY `tidelink_phy_clk_div2.v`, so the wildcard returns the same single
+# file for them and this is fully backward-compatible. Without this the onchip
+# BD's `create_bd_cell -reference tidelink_phy_clk_div2_b phy_clk_div_1` would
+# elaborate as an unresolved black box and BD generation would die.
+set phy_clk_div_vs [glob -nocomplain $target_dir/tidelink_phy_clk_div2*.v]
+if { [llength $phy_clk_div_vs] > 0 } {
+    foreach phy_clk_div_v $phy_clk_div_vs {
+        add_files -norecurse $phy_clk_div_v
+        puts "INFO: added PHY /8 clock divider $phy_clk_div_v"
+    }
     update_compile_order -fileset sources_1
-    puts "INFO: added PHY /2 clock divider $phy_clk_div_v"
 } else {
-    puts "WARNING: tidelink_phy_clk_div2.v not found in $target_dir - BD module-ref will fail"
+    puts "WARNING: tidelink_phy_clk_div2*.v not found in $target_dir - BD module-ref will fail"
 }
 
 # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port — SAME

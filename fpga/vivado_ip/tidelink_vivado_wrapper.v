@@ -143,7 +143,17 @@ module tidelink_vivado_wrapper #(
     // retire is overridable per-BD-instance (CONFIG.RETIRE_EN=0 A/Bs against the
     // pre-fix always-armed image) instead of being welded to the controller's
     // module default.
-    parameter        RETIRE_EN            = 1'b1
+    parameter        RETIRE_EN            = 1'b1,
+    // HONEST_MASK_HS — surface tidelink_top's peer-mask-handshake authenticity
+    // gate on the IP face (needed by the kr260-pair-onchip pair, which sets
+    // CONFIG.HONEST_MASK_HS=1 so the genuine handshake runs). DEFAULT 1'b0 =
+    // the legacy bench tie: tidelink_top holds apb_debug_unlock_i /
+    // mask_hs_bypass_i at 1'b1 exactly as before, so EVERY existing single-die
+    // target (Z2 + kr260 single) is byte-behaviour-identical. Only the on-chip
+    // pair overrides it to 1. Surfaced here (not just the RTL default) because a
+    // wrapper-parameter default IS recorded in component.xml and DOES reach OOC
+    // synth, whereas a +define+ does not — same rationale as NEGO_CFG_RESET.
+    parameter        HONEST_MASK_HS       = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -507,7 +517,10 @@ module tidelink_vivado_wrapper #(
         .NEGO_CFG_RESET      (NEGO_CFG_RESET),
         .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET),
         // RETIRE-AUTONOMY (B->A fix). Forwarded verbatim; 1'b1 = validated.
-        .RETIRE_EN           (RETIRE_EN)
+        .RETIRE_EN           (RETIRE_EN),
+        // Peer-mask-handshake authenticity gate. Default 0 => tidelink_top keeps
+        // the legacy 1'b1 ties (single-die byte-identical); onchip pair sets 1.
+        .HONEST_MASK_HS      (HONEST_MASK_HS)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

@@ -48,32 +48,20 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3
 
-# kr260-pair-onchip is DELIBERATELY ABSENT from VALID_TARGETS. Its target dir
-# exists (BD tcl, wrapper, phase-offset dividers, BRAM, addrmap — plan waves
-# W1-W5/W8) and that makes the omission LOOK like a slip, so diagnose it
-# explicitly rather than let the generic "Unknown TARGET" invite someone to
-# "just add it to the list".
-#
-# It is NOT buildable: plan wave W6 (fpga/docs/KR260_PAIR_ONCHIP_PLAN.md:444)
-# was never done — the target dir contains ZERO .xdc files, where every
-# buildable target ships 3-4 (pin / timing / drc). build_design.tcl only
-# WARNs on a missing pin+timing XDC (:314, :326) and carries on, so registering
-# the target here would buy an hour of synth+impl that then dies at
-# write_bitstream on unconstrained led0..led3 (DRC UCIO-1/NSTD-1) — with no
-# clock constraints on either instance either. A late, expensive, confusing
-# failure is worse than an immediate honest one.
-#
-# To land it: author the three XDC (W6), then W9 = add it to VALID_TARGETS
-# above + a part clause (xck26-sfvc784-2LV-c, kr260_som board part, PTP=0)
-# beside the other kr260 targets + the farm_gate onchip_pair sim stage.
-# Nothing else here needs to change: the `kr260-%` filter already routes it to
-# pynq_overlay / bit+hwh, and cocotb/tidelink_top_pair_v2/test_v2_onchip_pair.py
-# plus pynq_host/scripts/kr260_onchip_{smoke,autonomy}.py already exist.
-ifeq ($(TARGET),kr260-pair-onchip)
-$(error TARGET 'kr260-pair-onchip' is NOT BUILDABLE yet: no XDC in $(FPGA_DIR)/targets/kr260-pair-onchip/ (plan wave W6 outstanding; every buildable target ships pin+timing+drc XDC). Adding it to VALID_TARGETS without the XDC yields an hour-long build that fails at write_bitstream on unconstrained led0..led3. See fpga/docs/KR260_PAIR_ONCHIP_PLAN.md W6/W9)
-endif
+# kr260-pair-onchip — REGISTERED 2026-07-18 (plan wave W6/W9 landed). The target
+# dir now ships all three XDC (pin / timing / drc):
+#   kr260_tidelink.xdc         — LEDs only (no link/I2C pins exist: the PHY +
+#                                I2C cross-connect is entirely connect_bd_net
+#                                inside the BD — KR260_PAIR_ONCHIP_PLAN sec 3.1).
+#   kr260_tidelink_timing.xdc  — the 6 internal generated clocks (phy/word/rxcap
+#                                per die, all instance-qualified to dodge the
+#                                two-instance 18-359 multi-master trap) + 3-way
+#                                per-channel async clock groups. NO pad I/O delay.
+#   kr260_tidelink_drc.xdc     — the AHB HREADY combinational-loop waiver.
+# build_design.tcl was also widened (tidelink_phy_clk_div2*.v glob) so the
+# second phase-offset divider tidelink_phy_clk_div2_b.v is added to sources_1.
 
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
@@ -164,6 +152,15 @@ XILINX_PART     := xck26-sfvc784-2LV-c
 FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
 FPGA_TIDELINK_PTP := 1
 else ifeq ($(TARGET),kr260-pair-flip-nptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
+# kr260-pair-onchip — TWO TideLink dies in ONE xck26 bitstream, cross-connected
+# through the PL fabric (no ribbon, no link pins). Same K26 SOM board preset as
+# the single-die kr260 targets; PTP off (two PHCs would double PHC area for no
+# on-chip-pair benefit — plan sec 3.1). The `kr260-%` deploy filter already
+# routes it to fpgautil / bit+hwh, so nothing else here needs a per-target case.
+else ifeq ($(TARGET),kr260-pair-onchip)
 XILINX_PART     := xck26-sfvc784-2LV-c
 FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
 FPGA_TIDELINK_PTP := 0

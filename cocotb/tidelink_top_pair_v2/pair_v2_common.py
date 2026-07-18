@@ -529,12 +529,25 @@ async def send_and_check(tb, src, dst, payload, ctx, expect_pass=True):
     tb.log.info(f"  [{ctx}] {src}->{dst}: PKT_LEN=0x{pkt_len:x} "
                 f"hdr=0x{got[0]:08x} (sent 0x{words[0]:08x}) "
                 f"rx=[{', '.join(f'0x{w:08x}' for w in got)}]")
-    ok = (got[0] == words[0] and got[2] == payload[0] and got[3] == payload[1])
+    # Compare ALL FOUR words, including word 1 (dest_addr). This check used to be
+    # `got[0] and got[2] and got[3]`, silently skipping word 1 -- so any corruption
+    # of dest_addr passed the primary gating data check. That word is expected to
+    # survive intact: send_and_check_b2b() below, over the same RX FIFO and the same
+    # read path, asserts `all(got[i] == words[i])` across every word. There is no
+    # in-transit rewrite of dest_addr to accommodate.
+    ok = all(got[i] == words[i] for i in range(4))
     if expect_pass:
         assert ok, (f"{ctx} {src}->{dst} packet corrupt/undelivered: "
-                    f"sent hdr=0x{words[0]:08x} payload="
-                    f"[0x{payload[0]:08x},0x{payload[1]:08x}] got "
-                    f"[{', '.join(f'0x{w:08x}' for w in got)}] len=0x{pkt_len:x}")
+                    f"sent [{', '.join(f'0x{w:08x}' for w in words)}] got "
+                    f"[{', '.join(f'0x{w:08x}' for w in got)}] len=0x{pkt_len:x}"
+                    + ("" if got[1] == words[1] else
+                       f"  <-- word1/dest_addr MISMATCH "
+                       f"(sent 0x{words[1]:08x}, got 0x{got[1]:08x}); this word was "
+                       f"previously excluded from the compare"))
+    # NOTE: pkt_len is read above and deliberately NOT asserted here -- its exact
+    # encoding/stickiness is not established, and a wrong assertion would produce
+    # false failures. It is logged. Establishing its semantics and gating on it
+    # would additionally catch "stale FIFO contents happen to match".
     return ok, got
 
 

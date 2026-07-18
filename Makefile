@@ -213,6 +213,17 @@ SIM_GATE_TP_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 TB_TOP_NO_DUMP=1 \
 # $(call sim_gate_run,<suite-name>,<command>) — run one suite, tee-free log
 # capture, never fail the make (the summary decides the exit code).
 define sim_gate_run
+	@if echo "$(MAKEFLAGS)" | grep -qw -- n; then \
+	  echo "[sim_gate] REFUSING to run under 'make -n' ($(1))."; \
+	  echo "[sim_gate] sim_gate_run is NOT -n safe: the recipe below is a shell 'if'"; \
+	  echo "[sim_gate] whose @-prefixed body make PRINTS but the recursive \$$(MAKE) -C"; \
+	  echo "[sim_gate] inherits -n, so the sub-make does nothing, the 'if' succeeds, and"; \
+	  echo "[sim_gate] a FABRICATED 'PASS' .status is written for a suite that never ran."; \
+	  echo "[sim_gate] (Reproduced 2026-07-18: 'make -n sim_gate_nack_wedge' emitted"; \
+	  echo "[sim_gate]  'nack_wedge_recovery PASS 4s' into $(SIM_GATE_DIR).)"; \
+	  echo "[sim_gate] To inspect a recipe without side effects, read the Makefile."; \
+	  exit 1; \
+	fi
 	@mkdir -p $(SIM_GATE_DIR)
 	@echo "[sim_gate] RUN  $(1)  (log: $(SIM_GATE_DIR)/$(1).log)"
 	@t0=$$(date +%s); \
@@ -231,6 +242,14 @@ sim_gate_env_check:
 	  { echo "sim_gate: vcs not in PATH — run 'source ./set_env.sh' first"; exit 1; }
 	@command -v cocotb-config >/dev/null 2>&1 || \
 	  { echo "sim_gate: cocotb-config not in PATH — run 'source ./set_env.sh' first"; exit 1; }
+	@# Weekend-2026-07-18 suites depend on three SIBLING repos. Fail here with a
+	@# readable message rather than 40 minutes later inside a VCS flist error.
+	@test -f $(ETH_SS_HOME)/set_env.sh || \
+	  { echo "sim_gate: ethernet-subsystem-ahb not found at $(ETH_SS_HOME) (needed by eth_relay_m1 / eth_regs_shape_a) — set ETH_SS_HOME"; exit 1; }
+	@test -f $(TIDELINK_HOME)/../tidechart/flist/tidechart.flist || \
+	  { echo "sim_gate: tidechart checkout not found (needed by tc_pair_*) — set TIDECHART_HOME"; exit 1; }
+	@test -f $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet/src/rtl/tidechart_shim.sv || \
+	  { echo "sim_gate: nanosoc-ethernet-chiplet not found (tidechart_shim.sv, needed by tc_pair_*) — set CHIPLET_HOME"; exit 1; }
 
 # --- tidelink_top_pair autonomy suites (V2 flist, shared sim_build_l4) ------
 sim_gate_t31:
@@ -341,6 +360,35 @@ sim_gate_fifo:
 	  rm -rf cocotb/tidelink_fifo/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_fifo)
 
+# NACK-wedge / ACK-drop recovery regression (2026-07-18). Standalone / NOT in the
+# blocking aggregate YET — see the note below for exactly what must happen first.
+#
+# WHY THIS EXISTS: test_l7_wedge_repro, test_13_ack_drop_recovery and
+# test_14_sustained_ack_drop_wedge are GENUINE, well-asserted regression tests
+# (11 / 8 / 6 assertions) covering the NACK-wedge and ACK-drop recovery paths --
+# silicon-proven failure modes that cost real bench time. They are tracked in git
+# and they gate NOTHING, so the fixes they protect are one revert away from
+# silently regressing. Verification-coverage audit, 2026-07-18.
+#
+# WHY IT IS NOT IN THE AGGREGATE: this rule has NOT been executed. It was authored
+# while a Vivado build held the machine (co-scheduling a sim with a Vivado build
+# OOM-kills the sim and mimics a regression), so wiring an unrun rule into a
+# BLOCKING CI gate would risk breaking every merge on a mistake in the recipe, not
+# a real defect. It reuses SIM_GATE_TP_ENV and sim_build_l4 verbatim -- the same
+# environment as t31/t30 -- but "reuses the same env" is an argument, not evidence.
+#
+# TO PROMOTE IT (the whole job):
+#   1. `make sim_gate_nack_wedge` with no Vivado running; confirm PASS.
+#   2. Append `nack_wedge_recovery` to SIM_GATE_ALL_SUITES.
+#   3. Bump the suite count in .gitlab-ci.yml (it says 13, the plan says 14, the
+#      real count is 15 -- reconcile while you are there).
+sim_gate_nack_wedge:
+	$(call sim_gate_run,nack_wedge_recovery,\
+	  cd cocotb/tidelink_top_pair && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_l7_wedge_repro && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_13_ack_drop_recovery && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_14_sustained_ack_drop_wedge)
+
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
 #
@@ -362,6 +410,218 @@ sim_gate_fifo:
 sim_gate_xhb:
 	$(call sim_gate_run,v2_xhb_window_bridge,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_xhb_window_bridge)
+
+# =============================================================================
+# WEEKEND-2026-07-18 SUITES — the seven benches produced that weekend, wired in.
+#
+# WHY THIS BLOCK EXISTS: this project's documented failure mode is that an
+# ungated result rots out silently (the XHB channel fix vanished from three
+# branches unnoticed; all four tapeout chip-killers existed because `sim_gate`
+# was wired into no CI hook). A finding that is not gated becomes folklore.
+# Every bench below is therefore either GATED, or explicitly parked with the
+# one-line instruction that promotes it.
+#
+# Shared-build convention (mirrors t31/t30 sharing sim_build_l4): each bench
+# gets ONE gate-owned SIM_BUILD, cleaned by sim_gate_clean_builds, reused by
+# every module of that bench. SIM_BUILD is passed on the make COMMAND LINE
+# because the benches set it with `:=` (a command-line assignment overrides
+# `:=`; an environment variable would not).
+# =============================================================================
+.PHONY: sim_gate_tc_smoke sim_gate_tc_election \
+	sim_gate_eth_m0 sim_gate_eth_m1 sim_gate_eth_shape_a \
+	sim_gate_errinj sim_gate_xfail_f14a sim_gate_xfail_f14b \
+	sim_gate_fifo_twin2 sim_gate_sentinel_summary
+
+# --- F18 TideChart <-> TideLink co-sim ---------------------------------------
+# The ONLY place TideChart meets a real TideLink pair. Per the verification
+# plan (F18) TideChart is "entire IP unproven on hardware" and has no two-die
+# on-silicon integration at all — so this co-sim is the ONLY integration
+# evidence that exists for it. Gating it is what stops the tidechart_shim /
+# tc_axis_* / link_active contract drifting away from
+# nanosoc_eth_chiplet.sv while nobody is looking.
+# Always a V2 build (TIDELINK_PHY_V2 rides in tidelink_fpga_v2.flist).
+# Both modules share ONE compile (sim_build_gate_tc).
+SIM_GATE_TC_ENV := TB_TOP_NO_DUMP=1 SIM_BUILD=sim_build_gate_tc
+
+sim_gate_tc_smoke:
+	$(call sim_gate_run,tc_pair_smoke,\
+	  $(MAKE) -C cocotb/tidechart_tidelink_pair $(SIM_GATE_TC_ENV) \
+	    MODULE=test_tc_pair_smoke)
+
+sim_gate_tc_election:
+	$(call sim_gate_run,tc_pair_election_datamode,\
+	  $(MAKE) -C cocotb/tidechart_tidelink_pair $(SIM_GATE_TC_ENV) \
+	    MODULE=test_tc_pair_election_datamode)
+
+# --- Ethernet-over-TideLink (M0 / M1 / shape-A) ------------------------------
+# EPOCH_PROFILE=zero IS PINNED DELIBERATELY, AND IT IS NOT HIDING A DEFECT.
+#
+# The `silicon` profile injects a MODELLED whole-word S->M skew fingerprint.
+# Under it, the peer-window round-trip hangs — and per
+# docs/XHB_WINDOW_SKEW_ROOTCAUSE.md that hang is NOT a bug in any of these
+# three benches: the V2 build hard-selects SYNC_REANCHOR_EN=1 /
+# EPOCH_ANCHOR_EN=0 (local_overrides/WavD2DGpio_v2.v:790,827), there is no
+# `ifdef TIDELINK_EPOCH_ANCHOR selector in the V2 override, so the Makefile
+# EPOCH_ANCHOR knob is a DEAD NO-OP for V2 and no whole-word corrector is ever
+# armed. Every V2 bench that crosses a skewed direction fails identically.
+# That is ONE root cause in the PHY, and it is the SAME issue already tracked
+# by sim_gate_xhb (which is likewise out of the aggregate).
+#
+# So the honest split is:
+#   * gate these three at EPOCH_PROFILE=zero — that locks the thing they are
+#     actually evidence FOR (the ethernet subsystem's AHB matrix / MAC / HA1588
+#     register contract survives a link crossing);
+#   * do NOT let them silently re-litigate the un-armed-corrector defect, which
+#     belongs to ONE owner (XHB_WINDOW_SKEW_ROOTCAUSE.md) and would otherwise
+#     paint three unrelated suites red for a fourth suite's root cause.
+# Pinning is dishonest only when the pin is undocumented. It is documented here
+# and cross-referenced there. If the corrector is ever armed, the promotion is
+# to add EPOCH_PROFILE=silicon variants — NOT to edit these lines.
+#
+# M0: link-crossed frame into an ethernet-subsystem scratch RAM.
+sim_gate_eth_m0:
+	$(call sim_gate_run,eth_relay_m0,\
+	  $(MAKE) -C cocotb/eth_tidelink_pair EPOCH_PROFILE=zero \
+	    SIM_BUILD=sim_build_gate_m0 MODULE=test_eth_relay_smoke)
+
+# M1 + shape-A additionally need the ETHERNET SUBSYSTEM's own env (ETH_SS_HOME,
+# ETHMAC_AHB_HOME, SOCLABS_NANOSOC_ARCH_TECH_DIR, ARM_CORTEXM0PLUS_IP_PATH,
+# ETHMAC_IP_DIR, HA1588_IP_DIR) — their flists reference the M0+ core, the
+# OpenCores EthMAC and HA1588 under /research/AAA (READ-ONLY, flist-referenced,
+# never modified). tidelink's own set_env.sh does not set those, so the gate
+# sources the subsystem's set_env.sh in a SUBSHELL. sim_gate_env_check verifies
+# it exists up front so the failure is a clear message, not a VCS flist error.
+ETH_SS_HOME ?= $(realpath $(TIDELINK_HOME)/../nanoSoC-refactor/ethernet-subsystem-ahb)
+SIM_GATE_ETH_ENV := . $(ETH_SS_HOME)/set_env.sh >/dev/null 2>&1;
+
+# M1: through the REAL ethernet_ss_ahb AHB matrix into eth_scratch_rx.
+sim_gate_eth_m1:
+	$(call sim_gate_run,eth_relay_m1,\
+	  $(SIM_GATE_ETH_ENV) \
+	  $(MAKE) -C cocotb/eth_tidelink_pair_m1 EPOCH_PROFILE=zero \
+	    SIM_BUILD=sim_build_gate_m1 MODULE=test_eth_relay_m1)
+
+# shape-A: real MAC / HA1588 REGISTERS driven across the link.
+sim_gate_eth_shape_a:
+	$(call sim_gate_run,eth_regs_shape_a,\
+	  $(SIM_GATE_ETH_ENV) \
+	  $(MAKE) -C cocotb/eth_tidelink_pair_shape_a EPOCH_PROFILE=zero \
+	    SIM_BUILD=sim_build_gate_sha MODULE=test_eth_regs_shape_a)
+
+# --- F14 error-injection: the VERIFIED-GOOD regressions ----------------------
+# docs/ERROR_INJECTION_FINDINGS.md §4 "Non-findings (verified good — keep these
+# as regressions)". These three modules assert real policy and pass against
+# current RTL, so they gate normally:
+#   S5 sync_collision — payload can never alias SYNC, confirmed both directions
+#   S6 reset_storm    — N<=5 rapid LL swresets always recover (F-1 watchdog)
+#   S4 credit_probe   — credit/a2l observability + the f9b94b7 phantom-pop fix
+#                       STILL HOLDS (a second, independent lock on F10)
+# One shared compile (sim_build_gate_ei), reused by the two sentinels below.
+SIM_GATE_EI_ENV := TIDELINK_PHY_V2=1 SIM_BUILD=sim_build_gate_ei
+
+sim_gate_errinj:
+	$(call sim_gate_run,errinj_regressions,\
+	  cd cocotb/tidelink_error_injection && \
+	  $(SIM_GATE_EI_ENV) $(MAKE) MODULE=test_ei_sync_collision && \
+	  $(SIM_GATE_EI_ENV) $(MAKE) MODULE=test_ei_reset_storm && \
+	  $(SIM_GATE_EI_ENV) $(MAKE) MODULE=test_ei_credit_probe)
+
+# --- F14 KNOWN-DEFECT SENTINELS (XFAIL) --------------------------------------
+# THE PROBLEM: the error-injection bench is written so that "a WEDGE or
+# SILENT-CORRUPTION is recorded as a VERDICT[...] log line, NOT a test failure"
+# (ERROR_INJECTION_FINDINGS.md §5). So `make MODULE=test_ei_lane7_repro` EXITS
+# ZERO WHILE DEMONSTRATING A CRITICAL SILENT-CORRUPTION DEFECT. Gating those
+# modules the normal way would print a green PASS next to a tapeout-gating
+# finding — the worst possible outcome, strictly worse than not gating them.
+#
+# THE SENTINEL CONTRACT (a minimal xfail, consistent with the .status
+# convention): run the module, then match the log against the EXACT verdict
+# signature recorded on 2026-07-18. Three outcomes, and only one is quiet:
+#   XFAIL — the defect is present, unchanged, exactly as documented.  Tolerated
+#           by the summary, printed in its OWN section, NEVER as PASS.
+#   XCHG  — the signature no longer matches. The behaviour CHANGED, in EITHER
+#           direction: the defect may have been fixed (great — retire the
+#           sentinel, promote a real assertion) or it may have WORSENED or
+#           moved. Either way a human must look.  FAILS the gate.
+#   XERR  — the module itself errored (precondition/harness broke).  FAILS.
+# This is the only shape that satisfies "never green, but only red on news".
+# A permanently-red gate gets ignored, which is the same rot by another route.
+
+# $(call sim_gate_sentinel,<suite>,<command>,<egrep-signature>)
+define sim_gate_sentinel
+	@mkdir -p $(SIM_GATE_DIR)
+	@echo "[sim_gate] SENT $(1)  (log: $(SIM_GATE_DIR)/$(1).log)"
+	@t0=$$(date +%s); \
+	if ( $(2) ) > $(SIM_GATE_DIR)/$(1).log 2>&1; then rc=0; else rc=1; fi; \
+	dt=$$(( $$(date +%s) - t0 )); \
+	if [ $$rc -ne 0 ]; then st=XERR; \
+	elif grep -qE $(3) $(SIM_GATE_DIR)/$(1).log; then st=XFAIL; \
+	else st=XCHG; fi; \
+	printf '%-28s %-5s %6ss\n' "$(1)" "$$st" "$$dt" > $(SIM_GATE_DIR)/$(1).status; \
+	echo "[sim_gate] $$st $(1) ($${dt}s)"
+endef
+
+# F14-A (CRITICAL, SILENT CORRUPTION): corrupting lane 7 makes the RX COMMIT a
+# packet with a corrupted length + payload, raising NO CRC error; the adjacent
+# lane 6 under identical stimulus is correctly NOT committed. 4 reps per mode,
+# RX drained per trial, unique payload tag (the strict protocol of §2.3).
+# Signature = lane7 histogram reports COMMITTED-WRONG **and** the lane-6 control
+# reports NOT-COMMITTED. Both halves are required: if lane 7 got fixed the first
+# stops matching; if the lane-6 control ALSO started committing (a WORSENING —
+# the escape spread) the second stops matching. Either way -> XCHG.
+sim_gate_xfail_f14a:
+	$(call sim_gate_sentinel,xfail_f14a_lane7_silent,\
+	  cd cocotb/tidelink_error_injection && \
+	  $(SIM_GATE_EI_ENV) $(MAKE) MODULE=test_ei_lane7_repro,\
+	  'VERDICT\[S3b_lane7_.*COMMITTED-WRONG')
+
+# F14-B (HIGH, WEDGE): a transient data-mode disturbance leaves the link wedged
+# in a way the standard SW re-bring-up (to_data_mode + CR/CRACK) CANNOT clear —
+# only a full POR of BOTH dies recovers. Architectural: the SYNC beacon is off
+# in data mode so a framing slip has no re-anchor, and to_data_mode never
+# re-arms the deskew/calibrator. => no in-field recovery on silicon.
+# Signature = the S1 glitch verdicts still classify as WEDGES. If a "retrain-
+# lite" recovery path ever lands, this flips to XCHG and demands promotion.
+sim_gate_xfail_f14b:
+	$(call sim_gate_sentinel,xfail_f14b_datamode_wedge,\
+	  cd cocotb/tidelink_error_injection && \
+	  $(SIM_GATE_EI_ENV) $(MAKE) MODULE=test_ei_link_glitch,\
+	  'VERDICT\[S1_s2m_data_flip\]: WEDGES')
+
+# --- RX-FIFO TWIN 2 — AUTHORED, PARKED (NOT in the aggregate) ----------------
+# F10's write-side twin (docs/RXFIFO_TWIN2_DISPOSITION.md): the unguarded
+# write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 lets any
+# AHB write to offset 0 arm the packet-length latch, walking the write_ptr that
+# the FC committer SHARES — worse than the shipped read-side phantom pop, which
+# only corrupted the read pointer.
+#
+# WHY IT IS PARKED: the fix is a PROPOSAL — docs/proposals/twin2_fix.patch is
+# NOT applied to the tree. The bench selects RTL with its own FIFO_SRC knob
+# (cocotb/fifo_rx_twin2/Makefile: FIFO_SRC ?= patched|unfixed, swapping which
+# .sv the flist picks; the shared src/rtl files are never modified). This target
+# pins FIFO_SRC=patched, so it passes ONLY against the patched RTL and proves
+# the proposed fix holds. Putting it in the aggregate today would gate the
+# aggregate on a patch that is not in the tree — it would pass here and tell you
+# nothing about what actually ships.
+#
+# TO PROMOTE IT (one line, after twin2_fix.patch lands in src/rtl):
+#   append `fifo_rx_twin2` to SIM_GATE_ALL_SUITES  (and drop FIFO_SRC=patched,
+#   since `patched` will then BE the tree — leaving it pinned would re-create
+#   the very blindness this target exists to prevent).
+sim_gate_fifo_twin2:
+	$(call sim_gate_run,fifo_rx_twin2,\
+	  $(MAKE) -C cocotb/fifo_rx_twin2 FIFO_SRC=patched sim)
+
+# --- xhb_window_skew_debug — NOT GATE MATERIAL (deliberate) ------------------
+# cocotb/xhb_window_skew_debug/ has NO Makefile and NO testbench: it is a single
+# instrumentation module (instr_xhb.py) that attaches to the pair_v2 bench to
+# probe epoch_anchored_o / epoch_span_o. It has no pass criterion to assert —
+# it is the MICROSCOPE that produced docs/XHB_WINDOW_SKEW_ROOTCAUSE.md, not a
+# claim about the DUT. Gating a diagnostic would assert that its own
+# measurements never change, which is not a property anyone wants locked.
+# The finding it produced is already gated where it belongs: the un-armed
+# whole-word corrector is what keeps sim_gate_xhb out of the aggregate, and is
+# the documented reason the three eth suites above pin EPOCH_PROFILE=zero.
 
 # --- V1 elaboration check (TIDELINK_PHY_V2=0, build-only, no test run) -------
 # Fresh sim_build_v1elab each time so a stale simv can never false-PASS the
@@ -413,7 +673,14 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
+	tc_pair_smoke tc_pair_election_datamode \
+	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions
+# KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
+# documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
+# (behaviour changed, either direction) and XERR fail the gate. See the sentinel
+# contract above sim_gate_xfail_f14a.
+SIM_GATE_SENTINELS := xfail_f14a_lane7_silent xfail_f14b_datamode_wedge
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -435,8 +702,16 @@ sim_gate_clean_builds:
 	@# date") and silently tested OLD RTL. cocotb only recompiles on
 	@# tb_top.sv/pad_skid.sv changes, so an RTL/flist edit alone NEVER retriggers a
 	@# compile — the cached simv is a false green. A glob cannot rot.
+	@# The weekend-2026-07-18 benches get the SAME treatment — each has its own
+	@# gate-owned SIM_BUILD (sim_build_gate_*), and each would otherwise reuse a
+	@# simv that cocotb only rebuilds on tb_top.sv changes.
 	@rm -rf cocotb/tidelink_top_pair/sim_build* \
-	        cocotb/tidelink_top_pair_v2/sim_build*
+	        cocotb/tidelink_top_pair_v2/sim_build* \
+	        cocotb/tidechart_tidelink_pair/sim_build_gate* \
+	        cocotb/eth_tidelink_pair/sim_build_gate* \
+	        cocotb/eth_tidelink_pair_m1/sim_build_gate* \
+	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
+	        cocotb/tidelink_error_injection/sim_build_gate*
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
@@ -458,7 +733,19 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory sim_gate_retire_plumb
-	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)"
+	@$(MAKE) --no-print-directory sim_gate_tc_smoke
+	@$(MAKE) --no-print-directory sim_gate_tc_election
+	@$(MAKE) --no-print-directory sim_gate_eth_m0
+	@$(MAKE) --no-print-directory sim_gate_eth_m1
+	@$(MAKE) --no-print-directory sim_gate_eth_shape_a
+	@# errinj FIRST: it owns the shared sim_build_gate_ei compile that the two
+	@# sentinels then reuse (same pattern as t31 owning sim_build_l4 for t30).
+	@$(MAKE) --no-print-directory sim_gate_errinj
+	@$(MAKE) --no-print-directory sim_gate_xfail_f14a
+	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory sim_gate_summary \
+	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
+	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
@@ -492,9 +779,27 @@ sim_gate_summary:
 	  echo "  $$line"; \
 	  case "$$line" in *PASS*) ;; *) fail=1 ;; esac; \
 	done; \
+	if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
+	  echo "-------------------------------------------------------"; \
+	  echo "  KNOWN-DEFECT SENTINELS (XFAIL = defect present, UNCHANGED —"; \
+	  echo "  this is NOT a pass; XCHG = behaviour changed, INVESTIGATE)"; \
+	  for s in $(SIM_GATE_SENTINELS); do \
+	    if [ -f $(SIM_GATE_DIR)/$$s.status ]; then \
+	      line=$$(cat $(SIM_GATE_DIR)/$$s.status); \
+	    else \
+	      line=$$(printf '%-28s %-5s %6s' "$$s" MISS "-"); \
+	    fi; \
+	    echo "  $$line"; \
+	    case "$$line" in *XFAIL*) ;; *) fail=1 ;; esac; \
+	  done; \
+	fi; \
 	echo "-------------------------------------------------------"; \
 	if [ $$fail -eq 0 ]; then \
 	  echo "  RESULT: ALL SUITES PASS  (logs: $(SIM_GATE_DIR)/)"; \
+	  if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
+	    echo "          (known defects F14-A/F14-B still present as recorded —"; \
+	    echo "           see docs/ERROR_INJECTION_FINDINGS.md)"; \
+	  fi; \
 	else \
 	  echo "  RESULT: FAILURES DETECTED — see $(SIM_GATE_DIR)/<suite>.log"; \
 	fi; \

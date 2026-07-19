@@ -78,6 +78,15 @@ them, plus hardened sim_gate independently. **The merge is small and safe, but n
 - Related: integ's **2bd5612 forwards HONEST_MASK_HS in the ASIC dft_wrapper**; my Y-A forwarded it
   in the **FPGA** `tidelink_vivado_wrapper` — **complementary halves of the same fix**, keep both.
 
+## CRC diagnosis (in progress, 2026-07-19)
+- **Survey done:** no fix or root-cause exists on any of 47 branches / 37 worktrees / 3 submodules.
+  Provenance: `34b6a90` (2026-06-14), propagated by `c2b2d51` to 5 more FC nodes + all 4 flists.
+- ⚠️ **My earlier "FC.scala also forces crc_corrupt=false" claim is REFUTED** — it is a Mux else-arm.
+  **One decision, not two; clearing the register alone restores checking.**
+- 🎯 **Prime hypothesis: already fixed by `d593058`** (RX sync_resync mid-long-packet abort, merged
+  AFTER the CRC was disabled) — signature matches exactly (long DATA mangled, short CR/CRACK immune;
+  force_always beacon every 32 words ⇒ saturation per burst). Root-cause lane is testing it.
+
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the
    G2-verified bitstreams via `make deploy_pair_role SOC=kr260` (new fpgautil path runs the AFI

@@ -49,7 +49,20 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
    KR260 env overrides listed in §0 (defaults are Z2!).
 
 ## Decisions needed from you
-000. 🔴🔴 **THE LINK-LAYER CRC IS DISABLED BY DEFAULT — in both ASIC flists.** `disable_crc=1` on
+000. 🔴🔴 **THE LINK-LAYER CRC IS DISABLED BY DEFAULT — in both ASIC flists, and in the revision
+   the chiplet repo PINS (`43c3d7c`, tag v2026.07.16-chiplet-verified-3).**
+   ⚠️ **CORRECTION (2026-07-19):** an earlier note here said `FC.scala:157` *also* forces
+   `crc_corrupt=false`. **That was wrong** — it is the else-arm of a Mux gated by the CSR, i.e. live
+   logic. There is **one** decision, not two, so **clearing the register alone restores checking.**
+   🎯 **AND THE BUG MAY ALREADY BE FIXED.** A full sweep (47 branches, 37 worktrees, 3 submodules)
+   found no fix anywhere — but it surfaced `d593058` *"fix RX sync_resync mid-long-packet abort"*,
+   merged **after** the CRC was switched off: a SYNC beacon landing mid-body forced the framer out
+   of the long-packet state and zeroed its counters, mangling long packets while leaving short
+   CR/CRACK packets untouched — **exactly the original signature** ("4-word DATA packets arrive but
+   header-CRC fails; CR/CRACK decode fine"), and under `force_always` the beacon fires every 32
+   words, which explains `crc_errors` saturating *per burst*. A lane is testing this now: re-enable
+   the CRC on RTL carrying d593058, beacon off and forced. **If it passes, this decision collapses
+   from "root-cause a hard bug" to "re-enable and re-test".** `disable_crc=1` on
    both dies out of reset: a local override deliberately flips the POR default, and the Chisel
    forces `crc_corrupt=false`. The override's own comment says why — a real header-CRC bug on GOOD
    traffic was worked around by turning the check off — and notes die_b's control register may be

@@ -41,7 +41,12 @@ module WlinkGPIOPHY #(
   // WavD2DGpio.EPOCH_ANCHOR_EN (training-exit-anchored cross-lane word-EPOCH
   // deskew priming in tidelink_lane_deskew). Default 1 = the fix is IN the
   // datapath; set 0 only for A/B regression against the occupancy-only deskew.
-  parameter EPOCH_ANCHOR_EN = 1'b1
+  // DEFAULT 0 (2026-07-17 plumbing fix): matches WavD2DGpio_v2.EPOCH_ANCHOR_EN.
+  // Before the fix this defaulted 1 but the value was dropped at the u_deskew
+  // instance (hard 1'b0) — a dead knob (banner "master=1 (deskew: m=0)"). Now the
+  // param reaches u_deskew, so the default must be 0 to keep the shipping build on
+  // SYNC_REANCHOR (the corrector the winscan/autoneg autonomy stack requires).
+  parameter EPOCH_ANCHOR_EN = 1'b0
 ) (
   input          clock,
   input          reset,

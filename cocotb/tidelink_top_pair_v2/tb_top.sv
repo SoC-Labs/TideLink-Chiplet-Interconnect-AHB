@@ -279,6 +279,20 @@ module tb_top #(
     defparam u_slave.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.EPOCH_ANCHOR_EN  = 1'b1;
 `endif
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // EPOCH-ANCHOR SELECT (2026-07-17): drive the WlinkGPIOPHY EPOCH_ANCHOR_EN
+    // param =1 on both dies. With the plumbing fix (WavD2DGpio_v2 forwards the
+    // param to u_deskew, SYNC_REANCHOR_EN = its complement) this PROPAGATES
+    // phy -> gpio -> u_deskew through the REAL PARAMETER PATH — it is NOT a direct
+    // defparam on u_deskew, so it exercises the shipping plumbing. Selects the
+    // one-shot training-exit EPOCH corrector (SYNC_REANCHOR off). The elaboration
+    // banner below then reads "master=1 (deskew: m=1)" — proof the hop is live.
+    // ─────────────────────────────────────────────────────────────────────────
+`ifdef TB_TOP_EPOCH_ANCHOR_EN
+    defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b1;
+    defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b1;
+`endif
+
     // Elaboration self-check: print the anchor enable actually compiled into
     // the deskew of each die (guards against a silently-ignored defparam).
     initial begin

@@ -47,7 +47,19 @@ async def test_honest_mask_hs(dut):
     dut._log.info(f"[{MODE}] top straps=0 -> controller: apb_debug_unlock_i={unlock}, "
                   f"mask_hs_bypass_i={bypass}, mask_hs_match={match}, gate_open={gate}")
 
-    if MODE == "honest":
+    if MODE == "honest_unlocked":
+        # PENDING (DECISION #2) — the combination that a single folded param
+        # made UNREACHABLE: peer-mask handshake HONEST while APB debug stays
+        # UNLOCKED. Proves the two selects are genuinely independent.
+        assert unlock == 1, (
+            f"HONEST_UNLOCKED: DEBUG_UNLOCK_DEFAULT=1 must keep controller "
+            f"apb_debug_unlock_i tied 1; got {unlock}")
+        assert bypass == 0, (
+            f"HONEST_UNLOCKED: HONEST_MASK_HS=1 must let the real strap (0) "
+            f"reach controller mask_hs_bypass_i; got {bypass}")
+        dut._log.info("HONEST_UNLOCKED confirmed: handshake strap honoured while "
+                      "APB debug stays unlocked — the two selects are independent.")
+    elif MODE == "honest":
         # Real straps reach the controller (both 0)
         assert unlock == 0, f"HONEST: controller apb_debug_unlock_i must follow strap (0), got {unlock}"
         assert bypass == 0, f"HONEST: controller mask_hs_bypass_i must follow strap (0), got {bypass}"

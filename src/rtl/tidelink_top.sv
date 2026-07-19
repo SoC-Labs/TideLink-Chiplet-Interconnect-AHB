@@ -138,7 +138,26 @@ module tidelink_top #(
     //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
     //       to prove hardware autonomy without either bypass strap — and the intended
     //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
+    //
+    // PENDING (DECISION #2, David 2026-07-19) — SPLIT PREPARED, NOT APPLIED.
+    // The single HONEST_MASK_HS param above folds TWO independent choices, so
+    // "ship debug unlocked" (which David asked for, and which 1'b0 already
+    // gives) ALSO permanently bypasses the peer-mask handshake. They are now
+    // separable via DEBUG_UNLOCK_DEFAULT below. DEFAULTS ARE UNCHANGED: at
+    // DEBUG_UNLOCK_DEFAULT=1'b1 + HONEST_MASK_HS=1'b0 the two ties fold to the
+    // historical 1'b1/1'b1, byte-identical to today. Nothing is applied here —
+    // David is deciding whether the handshake bypass was intended.
     parameter        HONEST_MASK_HS       = 1'b0,
+    // PENDING (DECISION #2) — debug-unlock, now INDEPENDENT of HONEST_MASK_HS.
+    //   1'b1 (default) = apb_debug_unlock_i tied 1 at the controller: APB debug
+    //       permanently unlocked. This is today's effective behaviour and
+    //       matches "ship debug unlocked".
+    //   1'b0 = drive the controller from the real top-level apb_debug_unlock_i
+    //       port, so APB debug is strap-lockable.
+    // Setting HONEST_MASK_HS=1'b1 while leaving this at 1'b1 gives the
+    // combination that was previously UNREACHABLE: an honest peer-mask
+    // handshake WITH debug still unlocked.
+    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1,
     // Phase 2 autonomy — RETIRE-AUTONOMY enable (the B->A channel fix).
     // Forwards to axi_chiplet_controller.RETIRE_EN. When 1, an event-gated
     // retire latches on (reanchored & fcsm==4) held ~160 ms and DISARM-PARKs
@@ -2289,7 +2308,10 @@ module tidelink_top #(
         // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
         // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
         // and the peer-mask handshake must genuinely match.
-        .apb_debug_unlock_i         (HONEST_MASK_HS ? apb_debug_unlock_i : 1'b1),
+        // PENDING (DECISION #2) — the two selects are now INDEPENDENT. At the
+        // shipped defaults (DEBUG_UNLOCK_DEFAULT=1, HONEST_MASK_HS=0) both fold
+        // to the historical 1'b1, so this is byte-identical to today.
+        .apb_debug_unlock_i         (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i),
         .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),

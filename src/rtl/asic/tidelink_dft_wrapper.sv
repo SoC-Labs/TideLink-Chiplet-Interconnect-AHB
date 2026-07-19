@@ -85,7 +85,18 @@ module tidelink_dft_wrapper #(
     // mask_hs_result_o = 2'b00 — so with HONEST_MASK_HS=1 the gate can ONLY be
     // opened by the I2C autoneg local-match path or by a real strap. Verify that
     // path (or drive the straps) BEFORE flipping this, or the gate latches shut.
+    //
+    // PENDING (DECISION #2, David 2026-07-19) — SPLIT PREPARED, NOT APPLIED.
+    // HONEST_MASK_HS used to fold BOTH selects, so 1'b0 ("ship debug unlocked")
+    // ALSO permanently bypassed the peer-mask handshake. DEBUG_UNLOCK_DEFAULT
+    // below separates them. Defaults are unchanged and byte-identical.
     parameter HONEST_MASK_HS    = 1'b0,
+    // PENDING (DECISION #2) — APB debug-unlock, independent of HONEST_MASK_HS.
+    //   1'b1 (default) = today's behaviour: APB debug permanently unlocked.
+    //   1'b0 = controller follows the real apb_debug_unlock_i pin (lockable).
+    // HONEST_MASK_HS=1'b1 with this left at 1'b1 gives an honest handshake with
+    // debug still unlocked — previously unreachable.
+    parameter DEBUG_UNLOCK_DEFAULT = 1'b1,
     // S2 scaffold: PHY v2 select pass-through (default 0 = bit-identical;
     // see tidelink_top parameter declaration for semantics).
     parameter logic USE_PHY_V2  = 1'b0,
@@ -513,6 +524,8 @@ module tidelink_dft_wrapper #(
         // mask_hs_bypass_i — the strap pins this wrapper declares and wires become
         // dead silicon. See the parameter declaration above for the tapeout note.
         .HONEST_MASK_HS     (HONEST_MASK_HS),
+        // PENDING (DECISION #2) — split pass-through, default neutral.
+        .DEBUG_UNLOCK_DEFAULT (DEBUG_UNLOCK_DEFAULT),
         // S2 scaffold: PHY v2 select (default 0 = bit-identical)
         .USE_PHY_V2         (USE_PHY_V2),
         // F4: RETIRE-AUTONOMY knob — forwarded verbatim so the ASIC top can

@@ -16,6 +16,11 @@
 `ifndef HONEST_MASK_HS
   `define HONEST_MASK_HS 0
 `endif
+// PENDING (DECISION #2) — debug-unlock is now an INDEPENDENT param.
+// Default 1 = today's effective behaviour (APB debug permanently unlocked).
+`ifndef DEBUG_UNLOCK_DEFAULT
+  `define DEBUG_UNLOCK_DEFAULT 1
+`endif
 
 module tb_top (
     input logic hclk,
@@ -25,7 +30,8 @@ module tb_top (
     input logic mask_hs_bypass_i
 );
     tidelink_top #(
-        .HONEST_MASK_HS (`HONEST_MASK_HS)
+        .HONEST_MASK_HS       (`HONEST_MASK_HS),
+        .DEBUG_UNLOCK_DEFAULT (`DEBUG_UNLOCK_DEFAULT)
     ) u_dut (
         .hclk               (hclk),
         .hresetn            (hresetn),

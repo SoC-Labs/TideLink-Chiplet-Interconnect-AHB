@@ -174,13 +174,17 @@ module tidelink_top #(
     // TWIN 2 (stray AHB write mis-frames the next FC packet) is closed by the
     // QUALIFIED write-side arm in tidelink_fifo_ctrl, NOT by this gate.
     parameter bit    ENABLE_AHB_WRITE     = 1'b1,
-    // PENDING-DECISION #5 — terminal role from strap, not the I2C-NACK constant.
+    // Terminal role from strap, not the I2C-NACK constant.
     // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.
-    //   1'b0 (default) = BIT-IDENTICAL: I2C NACK => slave, timeout => nego_fallback
-    //         (=> the both-dies-slave trap on a dead I2C, autonomy structurally dead).
-    //   1'b1 = ASIC posture: NACK terminal role AND timeout fallback derive from
+    // DECISION (David, 2026-07-19): ENABLED GLOBALLY — default is now 1'b1.
+    //   1'b1 (default) = NACK terminal role AND timeout fallback derive from
     //         role_strap_i, so a (master,slave) strap survives a dead I2C.
-    parameter bit    ROLE_FROM_STRAP      = 1'b0
+    //         The FPGA paired targets drive role_strap_i from a real AXI GPIO
+    //         (0x4404_0000 bit 0, per-die from FPGAHUB_LOCAL_ROLE: die_a=0
+    //         master, die_b=1 slave), so the FPGA inherits the correct pair.
+    //   1'b0 = LEGACY trap: I2C NACK => slave, timeout => nego_fallback, so a
+    //         dead I2C makes BOTH dies slave and autonomy is structurally dead.
+    parameter bit    ROLE_FROM_STRAP      = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset

@@ -77,11 +77,11 @@ module axi_chiplet_controller #(
     // autoneg (7'h61) once the mask handshake propagates the reduced mask to
     // the slave (wire peer_rx_lane_mask_i / un-bypass mask_hs).
     parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
-    // PENDING-DECISION #5 — terminal role from strap, not the I2C-NACK constant.
-    // Forwarded to tidelink_autoneg.ROLE_FROM_STRAP. Default 1'b0 = BIT-IDENTICAL
-    // (NACK => slave, timeout => nego_fallback). 1'b1 => both derive from
-    // role_strap_i so a dead I2C no longer forces both dies slave.
-    parameter bit    ROLE_FROM_STRAP      = 1'b0,
+    // Terminal role from strap, not the I2C-NACK constant. Forwarded to
+    // tidelink_autoneg.ROLE_FROM_STRAP. DECISION (David, 2026-07-19): default
+    // is now 1'b1 (strap honoured) so a dead I2C no longer forces both dies
+    // slave. 1'b0 = legacy trap (NACK => slave, timeout => nego_fallback).
+    parameter bit    ROLE_FROM_STRAP      = 1'b1,
     // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
     // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
     // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,

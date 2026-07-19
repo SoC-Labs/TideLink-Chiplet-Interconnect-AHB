@@ -40,18 +40,19 @@ module tidelink_autoneg #(
     //     reverts the V1 netlist to exact pre-L4 behaviour (the ternaries
     //     constant-fold at elaboration).
     parameter bit USE_CAL_IN_HOLD = 1'b0,
-    // PENDING-DECISION #5 — terminal role from STRAP, not the I2C-NACK constant.
-    //   1'b0 (default) = BIT-IDENTICAL to today: on an I2C NACK the die becomes
-    //         SLAVE (constant 1'b1), and on TIMEOUT it takes nego_fallback
-    //         (NEGO_CFG[4], a SW bit). Because both dies NACK when the I2C
-    //         negotiation bus is dead, BOTH dies latch SLAVE => no master =>
-    //         the winscan FSM never retires => SYNC forced forever =>
-    //         zero-poke autonomy is structurally DEAD.
-    //   1'b1 = ASIC posture: the NACK terminal role AND the timeout fallback
-    //         derive from role_strap_i, so a (master,slave) strap pair survives
-    //         a dead I2C and autonomy can proceed. This is a parameter-constant
-    //         ternary => constant-folds at elaboration (1'b0 => historical).
-    parameter bit ROLE_FROM_STRAP = 1'b0
+    // Terminal role from STRAP, not the I2C-NACK constant.
+    // DECISION (David, 2026-07-19): ENABLED GLOBALLY — default is now 1'b1.
+    //   1'b1 (default) = the NACK terminal role AND the timeout fallback derive
+    //         from role_strap_i, so a (master,slave) strap pair survives a dead
+    //         I2C and autonomy can proceed.
+    //   1'b0 = LEGACY, the trap: on an I2C NACK the die becomes SLAVE (constant
+    //         1'b1) and on TIMEOUT it takes nego_fallback (NEGO_CFG[4], a SW
+    //         bit). Because both dies NACK when the I2C negotiation bus is
+    //         dead, BOTH dies latch SLAVE => no master => the winscan FSM never
+    //         retires => SYNC forced forever => zero-poke autonomy is
+    //         structurally DEAD. Retained only for A/B and bisect.
+    // Parameter-constant ternary => constant-folds at elaboration.
+    parameter bit ROLE_FROM_STRAP = 1'b1
 )(
     input  wire        clk,
     input  wire        poresetn,       // Power-on reset (active-low)

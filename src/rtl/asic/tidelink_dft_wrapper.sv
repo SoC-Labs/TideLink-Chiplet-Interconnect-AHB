@@ -118,11 +118,13 @@ module tidelink_dft_wrapper #(
     // This is a pass-through only; the value must ARRIVE at the controller (see
     // the elaboration proof in cocotb/asic_nego_cfg_plumb).
     parameter [6:0] NEGO_CFG_RESET = 7'h00,
-    // PENDING-DECISION #5 — terminal role from strap. Forwarded to
-    // tidelink_top.ROLE_FROM_STRAP. Default 1'b0 = bit-identical; 1'b1 makes the
-    // I2C-NACK / timeout terminal role derive from role_strap_i (already a real
-    // top-level port) so a dead I2C no longer forces both dies slave.
-    parameter bit ROLE_FROM_STRAP = 1'b0,
+    // Terminal role from strap. Forwarded to tidelink_top.ROLE_FROM_STRAP.
+    // DECISION (David, 2026-07-19): default 1'b1 — the I2C-NACK / timeout
+    // terminal role derives from role_strap_i (a real top-level port), so a
+    // dead I2C no longer forces both dies slave and autonomy stays reachable.
+    // NOTE: this wrapper passes the param down explicitly, so its default (not
+    // tidelink_top's) is what the ASIC gets — both are 1'b1.
+    parameter bit ROLE_FROM_STRAP = 1'b1,
     // RX-FIFO TWIN 2 master enable. Forwarded verbatim to
     // tidelink_top.ENABLE_AHB_WRITE.
     // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX IS SUPPORTED, so the

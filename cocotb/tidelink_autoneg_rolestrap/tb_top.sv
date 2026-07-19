@@ -6,10 +6,21 @@
 // Both are driven identically to the I2C-NACK terminal path. The test observes
 // each die's nego_role_value (the value latched into role_cfg_reg).
 //
-//   ROLE_FROM_STRAP=0 (default / trap): both -> 1 (slave, slave)  => NO master
-//   ROLE_FROM_STRAP=1 (fix):            die_a -> 0, die_b -> 1     => (master, slave)
+//   ROLE_FROM_STRAP=0 (legacy trap): both -> 1 (slave, slave)  => NO master
+//   ROLE_FROM_STRAP=1 (fix):         die_a -> 0, die_b -> 1     => (master, slave)
+//
+// MODE=default compiles with +define+TB_ROLE_STRAP_DEFAULT, which omits the
+// parameter override entirely so the instances take tidelink_autoneg's OWN
+// DEFAULT. That is what proves DECISION #3's global flip actually landed —
+// an explicit override would prove only that the ternary works.
 `ifndef ROLE_FROM_STRAP
   `define ROLE_FROM_STRAP 0
+`endif
+
+`ifdef TB_ROLE_STRAP_DEFAULT
+  `define RFS_PARAM
+`else
+  `define RFS_PARAM , .ROLE_FROM_STRAP (`ROLE_FROM_STRAP)
 `endif
 
 module tb_top (
@@ -35,8 +46,8 @@ module tb_top (
 
     // ------------------------------------------------------------------ die_a
     tidelink_autoneg #(
-        .NEGO_BASE_DELAY (200),               // short backoff for a fast test
-        .ROLE_FROM_STRAP (`ROLE_FROM_STRAP)
+        .NEGO_BASE_DELAY (200)                // short backoff for a fast test
+        `RFS_PARAM
     ) u_die_a (
         .clk(clk), .poresetn(poresetn),
         .nego_en(nego_en), .nego_start(nego_start),
@@ -68,8 +79,8 @@ module tb_top (
 
     // ------------------------------------------------------------------ die_b
     tidelink_autoneg #(
-        .NEGO_BASE_DELAY (200),
-        .ROLE_FROM_STRAP (`ROLE_FROM_STRAP)
+        .NEGO_BASE_DELAY (200)
+        `RFS_PARAM
     ) u_die_b (
         .clk(clk), .poresetn(poresetn),
         .nego_en(nego_en), .nego_start(nego_start),

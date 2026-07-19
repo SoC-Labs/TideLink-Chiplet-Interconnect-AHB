@@ -1,4 +1,7 @@
-"""PENDING-DECISION #5 — role from STRAP, not the I2C-NACK constant.
+"""DECISION #3 (David, 2026-07-19) — role from STRAP, not the I2C-NACK constant.
+
+ROLE_FROM_STRAP is now ENABLED GLOBALLY (parameter default 1'b1 through
+tidelink_autoneg -> axi_chiplet_controller -> tidelink_top -> dft_wrapper).
 
 Both dies are driven to the I2C-NACK terminal path. A minimal AXI-Lite
 "I2C-master" model accepts the FSM's writes (PRESCALE/DATA/COMMAND) and answers
@@ -6,15 +9,23 @@ the status-register polls: BUSY=1 on the first read (so busy_seen latches), then
 BUSY=0 | MISS_ACK on the next (the NACK), driving the FSM into its terminal role
 decision.
 
-  MODE=trap (ROLE_FROM_STRAP=0): die_a -> slave, die_b -> slave  (both slave = trap)
-  MODE=fix  (ROLE_FROM_STRAP=1): die_a -> master, die_b -> slave  (strap honoured)
+  MODE=default (no param override -> the SHIPPING default):
+                                 die_a -> master, die_b -> slave  (strap honoured)
+  MODE=fix     (ROLE_FROM_STRAP=1 explicit):
+                                 die_a -> master, die_b -> slave
+  MODE=trap    (ROLE_FROM_STRAP=0, legacy):
+                                 die_a -> slave,  die_b -> slave  (both slave = trap)
+
+MODE=default is the load-bearing one: it omits the override so the instances
+take the module's own default, proving the global flip landed rather than just
+that the ternary works.
 """
 import os
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge
 
-MODE = os.environ.get("ROLE_FROM_STRAP_MODE", "trap")
+MODE = os.environ.get("ROLE_FROM_STRAP_MODE", "default")
 
 I2C_STS_BUSY = 1 << 0
 I2C_STS_MISS_ACK = 1 << 3
@@ -120,11 +131,14 @@ async def test_nack_terminal_role_from_strap(dut):
         f"[{MODE}] expected both dies on the NACK path (nego_lost=1); "
         f"got a_lost={a_lost} b_lost={b_lost} — instrument did not reach NACK.")
 
-    if MODE == "fix":
-        assert a_role == 0, f"FIX: die_a (master strap) must be MASTER (0), got {a_role}"
-        assert b_role == 1, f"FIX: die_b (slave strap) must be SLAVE (1), got {b_role}"
-        dut._log.info("FIX confirmed: NACK honours the strap -> (master, slave). "
-                      "A master exists; autonomy can proceed.")
+    if MODE in ("fix", "default"):
+        # MODE=default takes tidelink_autoneg's OWN parameter default (no
+        # override in the tb) — so this asserts DECISION #3's global flip
+        # actually landed, not merely that the ternary works.
+        assert a_role == 0, f"{MODE.upper()}: die_a (master strap) must be MASTER (0), got {a_role}"
+        assert b_role == 1, f"{MODE.upper()}: die_b (slave strap) must be SLAVE (1), got {b_role}"
+        dut._log.info(f"{MODE.upper()} confirmed: NACK honours the strap -> "
+                      "(master, slave). A master exists; autonomy can proceed.")
     else:  # trap
         assert a_role == 1 and b_role == 1, (
             f"TRAP: today's RTL forces both dies SLAVE on NACK; "

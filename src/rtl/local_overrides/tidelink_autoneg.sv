@@ -39,7 +39,19 @@ module tidelink_autoneg #(
     //     peer (byte-3 bit 2 would alias a live packet flag) — this parameter
     //     reverts the V1 netlist to exact pre-L4 behaviour (the ternaries
     //     constant-fold at elaboration).
-    parameter bit USE_CAL_IN_HOLD = 1'b0
+    parameter bit USE_CAL_IN_HOLD = 1'b0,
+    // PENDING-DECISION #5 — terminal role from STRAP, not the I2C-NACK constant.
+    //   1'b0 (default) = BIT-IDENTICAL to today: on an I2C NACK the die becomes
+    //         SLAVE (constant 1'b1), and on TIMEOUT it takes nego_fallback
+    //         (NEGO_CFG[4], a SW bit). Because both dies NACK when the I2C
+    //         negotiation bus is dead, BOTH dies latch SLAVE => no master =>
+    //         the winscan FSM never retires => SYNC forced forever =>
+    //         zero-poke autonomy is structurally DEAD.
+    //   1'b1 = ASIC posture: the NACK terminal role AND the timeout fallback
+    //         derive from role_strap_i, so a (master,slave) strap pair survives
+    //         a dead I2C and autonomy can proceed. This is a parameter-constant
+    //         ternary => constant-folds at elaboration (1'b0 => historical).
+    parameter bit ROLE_FROM_STRAP = 1'b0
 )(
     input  wire        clk,
     input  wire        poresetn,       // Power-on reset (active-low)
@@ -50,6 +62,9 @@ module tidelink_autoneg #(
     input  wire  [1:0] nego_pri_sel,   // NEGO_CFG[3:2]: priority source
     input  wire        nego_fallback,  // NEGO_CFG[4]: error fallback role
     input  wire        nego_force_lock,// NEGO_CFG[5]: auto-lock on completion
+    // PENDING-DECISION #5: terminal-role strap (0=master, 1=slave). Only
+    // consulted when ROLE_FROM_STRAP=1; unused (folded away) otherwise.
+    input  wire        role_strap_i,
 
     // ── Priority inputs ──────────────────────────────────────────────────
     input  wire [15:0] nego_priority_reg, // From NEGO_PRIORITY register
@@ -843,11 +858,13 @@ module tidelink_autoneg #(
               state_r == ST_TRAIN_RUN ||
               state_r == ST_TRAIN_POLL_PEER ||
               state_r == ST_TRAIN_EXIT) && timeout_ctr_r == '0) begin
-            // Force fallback role and transition to error
-            nego_role_nxt      = nego_fallback;
+            // Force fallback role and transition to error.
+            // PENDING-DECISION #5: derive from role_strap_i when enabled, else
+            // the historical nego_fallback (NEGO_CFG[4]).
+            nego_role_nxt      = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
             nego_error_nxt     = 1'b1;
             nego_set_role_cfg  = 1'b1;
-            nego_role_value    = nego_fallback;
+            nego_role_value    = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
             if (nego_force_lock)
                 nego_set_role_lock = 1'b1;
             state_nxt = ST_ERROR;
@@ -948,12 +965,16 @@ module tidelink_autoneg #(
                             if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
                                 // Transaction complete
                                 if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
-                                    // NACK → become slave
-                                    nego_role_nxt     = 1'b1;
+                                    // NACK → terminal role.
+                                    // PENDING-DECISION #5: default = SLAVE (the
+                                    // both-dies-slave trap); ROLE_FROM_STRAP=1 =>
+                                    // take role_strap_i so a strapped master
+                                    // survives a dead I2C.
+                                    nego_role_nxt     = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     nego_lost_nxt     = 1'b1;
                                     nego_done_nxt     = 1'b1;
                                     nego_set_role_cfg = 1'b1;
-                                    nego_role_value   = 1'b1;
+                                    nego_role_value   = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     if (nego_force_lock)
                                         nego_set_role_lock = 1'b1;
                                     state_nxt = ST_NEGO_DONE;

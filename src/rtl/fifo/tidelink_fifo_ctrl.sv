@@ -12,7 +12,24 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_fifo_ctrl #(
-    parameter RAM_ADDR_W = 14
+    parameter RAM_ADDR_W = 14,
+    // PENDING-DECISION #1 — RX-FIFO TWIN 2 (chip-killer, 2026-07-16).
+    //   1'b1 (default) = current behaviour, BIT-IDENTICAL to today: an AHB
+    //         NONSEQ write to this RX FIFO arms the write-side packet length
+    //         latch (capture_write_length) and can complete a write
+    //         (ahb_write_complete), advancing the FC-SHARED write_ptr and
+    //         burning credit. There is NO supported CPU-write-to-RX path in the
+    //         product (RX FIFO is filled by the peer over the FC direct-write
+    //         port only), so any stray AHB write to offset 0/4 — a clear, a
+    //         probe, a mis-decoded access — walks write_ptr and mis-frames the
+    //         NEXT genuine FC packet. See sim proof in cocotb/tidelink_fifo_twin2.
+    //   1'b0 = ASIC posture: the RX FIFO is FC-write-only. The AHB write-side
+    //         length latch AND the AHB write-completion are disabled, so the
+    //         write_ptr/credit can ONLY be advanced by the FC direct-write path.
+    //         AHB READS (the CPU draining the FIFO) are untouched.
+    // The gate is a parameter-constant AND, so it constant-folds at elaboration
+    // (1'b1 => the historical expression, no added logic).
+    parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // Clock/Reset
     input  wire                   hclk,
@@ -114,7 +131,9 @@ module tidelink_fifo_ctrl #(
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
     wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
-    wire ahb_write_complete = ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
+    // PENDING-DECISION #1: AHB write-completion gated. ENABLE_AHB_WRITE=0 makes
+    // the FC-shared write_ptr / credit un-advanceable from the AHB write side.
+    wire ahb_write_complete = ENABLE_AHB_WRITE && ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
     assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
@@ -194,7 +213,10 @@ module tidelink_fifo_ctrl #(
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
         packet_active_nxt        = packet_active_r;
-        capture_write_length_nxt = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
+        // PENDING-DECISION #1: AHB write-side length latch gated. With
+        // ENABLE_AHB_WRITE=0 an AHB write to offset 0 never arms packet_active,
+        // so the TWIN-2 corruption (write_ptr walk + credit burn) cannot occur.
+        capture_write_length_nxt = ENABLE_AHB_WRITE && valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
 
         // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin

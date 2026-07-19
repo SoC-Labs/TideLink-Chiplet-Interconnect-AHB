@@ -165,7 +165,22 @@ module tidelink_top #(
     // The F4 gap is closed by making RETIRE_EN EXPRESSIBLE at the top (and on
     // the packaged IP face), not by flipping the default: the ASIC integration
     // can now set 0 or wire a bond strap without editing the controller.
-    parameter        RETIRE_EN            = 1'b1
+    parameter        RETIRE_EN            = 1'b1,
+    // PENDING-DECISION #1 — RX-FIFO TWIN 2 (chip-killer). Forwards to
+    // tidelink_fifo → tidelink_fifo_mem → tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    //   1'b1 (default) = current behaviour, BIT-IDENTICAL: AHB CPU writes to the
+    //         RX FIFO can advance the FC-shared write_ptr / burn credit.
+    //   1'b0 = ASIC posture: RX FIFO is FC-write-only; the AHB write side cannot
+    //         touch write_ptr/credit (AHB reads unaffected). Closes the
+    //         stray-AHB-write-mis-frames-next-FC-packet chip-killer.
+    parameter bit    ENABLE_AHB_WRITE     = 1'b1,
+    // PENDING-DECISION #5 — terminal role from strap, not the I2C-NACK constant.
+    // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.
+    //   1'b0 (default) = BIT-IDENTICAL: I2C NACK => slave, timeout => nego_fallback
+    //         (=> the both-dies-slave trap on a dead I2C, autonomy structurally dead).
+    //   1'b1 = ASIC posture: NACK terminal role AND timeout fallback derive from
+    //         role_strap_i, so a (master,slave) strap survives a dead I2C.
+    parameter bit    ROLE_FROM_STRAP      = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1399,7 +1414,8 @@ module tidelink_top #(
         .RAM_ADDR_W        (RAM_ADDR_W),
         .RAM_DATA_W        (RAM_DATA_W),
         .APB_ADDR_W        (APB_ADDR_W),
-        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
+        .ENABLE_AHB_WRITE  (ENABLE_AHB_WRITE)
     ) u_tidelink_fifo (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -2232,6 +2248,8 @@ module tidelink_top #(
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
         .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
         // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so

@@ -355,6 +355,45 @@ sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_autonomous_sync_detect)
 
+# ODD / PARTIAL LANE-COUNT lock (2026-07-16). Before this, pair sim only ever
+# ran popcount 8 (0xFF POR) and popcount 4 (test_v2_reduced_lane, M->S only) —
+# BOTH powers of two. These two suites pin the link layer's popcount-GENERIC
+# byte geometry (bytesPerCycle = 2*popcount(mask)) at an ODD, non-power-of-2,
+# NON-CONTIGUOUS lane count in BOTH directions.
+#
+# Why this matters beyond the +25% payload: the vendor Chisel this RTL was
+# generated from (axi-chiplet-controller .../LinkLayer.scala:577,758) still
+# carries `validLaneSeq = Seq(true,true,false,true,false,false,false,true)` — a
+# compile-time POWER-OF-2 lane-count whitelist ({1,2,4,8}) that gates the RX
+# gather. It is NOT present in the shipping local_overrides Verilog (SoC Labs
+# replaced it with the mask-aware rxLanePos prefix-popcount gather), but ANY
+# regeneration from that Chisel would silently reinstate it and kill every
+# non-power-of-2 mask — with the link still training. 0xE5 here is the tripwire.
+#
+# negctl is the instrument proof: it asserts a MISMATCHED tx/rx mask geometry
+# is DETECTED as corrupt. Without it a green sweep proves nothing.
+sim_gate_v2_oddlane:
+	$(call sim_gate_run,v2_lane_mask_oddlane,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_sweep LANE_MASK=0xE5 SIM_BUILD=sim_build_oddlane)
+
+# MASK-POSITION tripwire (2026-07-17). 0x65 = {0,2,5,6} has the SAME lane count
+# (4) and the same bytesPerCycle (8) as the working silicon mask 0xE4 = {2,5,6,7},
+# but differs in POSITION (it includes lane 0). Silicon: 0xE4 byte-exact, 0x65
+# all-zeros. Sim: BOTH byte-exact -> the RTL is position-generic and the silicon
+# split is NOT an RTL defect (it is winscan lane coverage; see the report).
+# This suite pins that position-genericity so an RTL change can never introduce
+# a real position dependence unnoticed.
+sim_gate_v2_lane_position:
+	$(call sim_gate_run,v2_lane_mask_position,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_sweep LANE_MASK=0x65 SIM_BUILD=sim_build_pos)
+
+sim_gate_v2_oddlane_negctl:
+	$(call sim_gate_run,v2_lane_mask_negctl,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_lane_mask_negctl SIM_BUILD=sim_build_oddlane)
+
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
@@ -737,6 +776,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
+	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
@@ -780,7 +820,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (18 suites)"
+	@echo " sim_gate — full aggregate sim gate (27 suites + 2 sentinels)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -800,6 +840,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory sim_gate_retire_plumb
+	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
+	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
+	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election
 	@$(MAKE) --no-print-directory sim_gate_eth_m0

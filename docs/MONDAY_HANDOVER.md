@@ -60,9 +60,23 @@ WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not 
    of the long-packet state and zeroed its counters, mangling long packets while leaving short
    CR/CRACK packets untouched — **exactly the original signature** ("4-word DATA packets arrive but
    header-CRC fails; CR/CRACK decode fine"), and under `force_always` the beacon fires every 32
-   words, which explains `crc_errors` saturating *per burst*. A lane is testing this now: re-enable
-   the CRC on RTL carrying d593058, beacon off and forced. **If it passes, this decision collapses
-   from "root-cause a hard bug" to "re-enable and re-test".** `disable_crc=1` on
+   words, which explains `crc_errors` saturating *per burst*.
+   **RESULT (a3aa9a6): the false-fire does NOT reproduce, and there is no defect to fix.** TX and RX
+   are symmetric by construction; 12/12 packets are byte-exact with the CRC **enabled**, including
+   the exact V2 silicon config. "Long packets fail" turned out to be a tautology — DATA packets are
+   the only ones that carry a CRC at all. die_b's control bit[16] **is** writable on both dies,
+   refuting the workaround's own premise. (d593058 could be neither confirmed nor refuted — the
+   harness never enters the window it repairs, so my hypothesis is unproven, not confirmed.)
+   🔴 **THE REFRAME — this is now the important part.** Nothing proves the June errors were *false*.
+   An ideal-pad sim cannot see a marginal-sampling corruption that the CRC **correctly rejected**,
+   and the June commit asserted "packets arrive" **without ever showing byte-exactness alongside the
+   CRC reading**. Given June's real skew and framing problems, the live possibility is that **the
+   CRC was the only thing telling the truth and disabling it hid real corruption.**
+   **Recommended action:** clear bit[16] at **runtime** on silicon (keep the POR default for now),
+   check byte-exactness *alongside* `crc_corrupt`, and soak. Only then land the reset-value revert —
+   which is local-override-only, as the Chisel already defaults to enabled. Note re-enabling is not
+   free: a CRC error latches a NACK, suppresses enqueue, and **`socl_l7_real_crc_seen` is sticky, so
+   one real error permanently disarms the state-7 watchdog.** `disable_crc=1` on
    both dies out of reset: a local override deliberately flips the POR default, and the Chisel
    forces `crc_corrupt=false`. The override's own comment says why — a real header-CRC bug on GOOD
    traffic was worked around by turning the check off — and notes die_b's control register may be

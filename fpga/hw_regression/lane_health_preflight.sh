@@ -63,15 +63,23 @@ R_CAL_SEL=0x44032154        # [2:0] calibrator lane select
 #  R_PHASE_LSB, GP1_RX, EXP_SLICE come from td_v2_hwlib.sh)
 
 # ----- golden / classification constants -------------------------------------
-GOLD_MASK32=0x0000E4E4      # 0x44030214 lane mask (rx|tx) — must match
-GOLD_MASK8=0xE4            # 0x44032128[7:0] SYNC mask — active lanes {2,5,6,7}
-GOLD_SEEN=0xE4             # 0x4403215C[7:0] all 4 active lanes committed
+# CONSOLIDATION 2026-07-19: these four "golden" constants were the LAST place
+# that still hardcoded the 4-lane 0xE4 assumption. They now derive from the ONE
+# mask mechanism — TD_MASK, defined in td_v2_hwlib.sh (sourced above) and
+# defaulting to 0xe4. With the default this composes to EXACTLY the historical
+# literals (GOLD_MASK32=0x0000e4e4, GOLD_MASK8=0xe4, GOLD_ACTIVE="2 5 6 7",
+# SWEEP_LANES="2,5,6,7"), so the default path is bit-identical. An 8-lane run
+# passes TD_MASK=0xff and the phase0 build-expectation ABORTs below then check
+# the RIGHT mask instead of failing a correct 8-lane build.
+GOLD_MASK32=$TD_LANEMASK32  # 0x44030214 lane mask (rx|tx) — must match
+GOLD_MASK8=$(printf '0x%02x' $((TD_MASK)))   # 0x44032128[7:0] SYNC mask
+GOLD_SEEN=$GOLD_MASK8      # 0x4403215C[7:0] all active lanes committed
 # NOTE (Wave-0 fix #12c): GOLD_SEEN is RETIRED as a comparison reference. The
 # commit expectation now derives from the live SYNC mask (EXP_SEEN, set in
 # phase0 from the hardware read-back m8). Kept only as documentation of the
-# nominal 0xE4 value; no longer used in any pass/fail decision.
-GOLD_ACTIVE="2 5 6 7"      # NEVER report masked-out lanes
-SWEEP_LANES="2,5,6,7"     # Phase 2 sweep order (per-lane independent)
+# nominal value; no longer used in any pass/fail decision.
+GOLD_ACTIVE="$MASK_ACTIVE_LANES"   # NEVER report masked-out lanes
+SWEEP_LANES="${MASK_ACTIVE_LANES// /,}"   # Phase 2 sweep order (per-lane independent)
 MARGIN_FLOOR=2            # PASS needs min_dist <= TOL-MARGIN_FLOOR
 EYE_FLOOR=4              # PASS needs eye_width >= EYE_FLOOR
 

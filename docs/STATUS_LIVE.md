@@ -62,6 +62,22 @@ on both dies**; recovery branch (with 2c32c2b) = **BUFGCE on BOTH dies, VERDICT 
 PASS/0 warnings, WNS +28.306, WHS +0.010, BUFG-per-region OK, zero-skew trap still netlist-proven
 (div_0 INIT 3'b000 / div_1 3'b011). Bitstream md5 8f8792c975d3dc27790c5631a042b400.
 
+## ⚠️ BRANCH DIVERGENCE — integ moved while wave Z ran (found 2026-07-19)
+`integ/consolidation-2026-07` is now at **a7b68f4, five commits past** the base my branch was cut
+from — another session picked up the SAME untracked benches from the shared main tree and committed
+them, plus hardened sim_gate independently. **The merge is small and safe, but not a fast-forward:**
+- **Identical on both sides** (both took the same shared-tree files) ⇒ merge trivially: all of
+  `cocotb/tidelink_error_injection/*` test files, all of `cocotb/fifo_rx_twin2/*`,
+  `docs/TIDELINK_FPGA_VERIFICATION_PLAN.md`.
+- **Only 2 real conflicts** (`git merge-tree` verified): **`Makefile`** and
+  `cocotb/tidelink_error_injection/Makefile`. Cause: BOTH sessions independently added `-n` safety
+  to sim_gate (convergent fix for the fake-PASS trap) and both edited the gate region — mine adds
+  the 21 suites + 2 sentinels + worktree-robust sibling resolution; theirs adds assert-ification of
+  green-but-blind tests. **Resolve by keeping BOTH: they are complementary, not competing.**
+- Only-on-my-branch (no conflict): the 5 new bench dirs (`tidechart_tidelink_pair`, `eth_*` ×4).
+- Related: integ's **2bd5612 forwards HONEST_MASK_HS in the ASIC dft_wrapper**; my Y-A forwarded it
+  in the **FPGA** `tidelink_vivado_wrapper` — **complementary halves of the same fix**, keep both.
+
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the
    G2-verified bitstreams via `make deploy_pair_role SOC=kr260` (new fpgautil path runs the AFI

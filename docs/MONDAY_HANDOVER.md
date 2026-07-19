@@ -28,8 +28,16 @@ Dashboard: [STATUS_LIVE.md](STATUS_LIVE.md). Nothing was deployed, nothing was p
 WHS ≈ −22 ns everywhere = the known benign source-synchronous artifact (not gated, documented).
 
 ## First 15 minutes on Monday
-1. **Merge**: review `git log d19b0da..kr260-recovery-g1` in the worktree; merge onto
-   `integ/consolidation-2026-07`. (Or deploy straight from the worktree — the artifacts are there.)
+1. **Merge** (updated 2026-07-19 — integ has MOVED, this is no longer a fast-forward):
+   `integ/consolidation-2026-07` is at **a7b68f4**, 5 commits past my base, because another session
+   committed the same shared-tree benches plus its own sim_gate hardening. Verified with
+   `git merge-tree`: **exactly two conflicts — `Makefile` and
+   `cocotb/tidelink_error_injection/Makefile`** — everything else is byte-identical or new.
+   **Resolve by keeping BOTH sides**: their `-n`-safety/assert-ification and my 21-suite wiring +
+   sentinels + worktree-robust sibling resolution are complementary (both sessions independently
+   fixed the fake-PASS `-n` trap). Likewise integ's `2bd5612` (ASIC dft_wrapper HONEST_MASK_HS) and
+   my FPGA-wrapper forwarding are two halves of one fix — keep both. Re-run `make sim_gate` after
+   resolving; expect 21 PASS + 2 XFAIL sentinels.
 2. **Deploy both boards** (power-cycle first; NEVER `reboot` a KR260):
    `make -C fpga deploy_pair_role SOC=kr260 PTP=1 ROLE=die_a` then `ROLE=die_b`
    (needs `KR260_PASSWORD=...` until ssh keys are staged). This stages tooling mirrored, loads via

@@ -88,6 +88,14 @@ module tidelink_fifo_ctrl #(
     // Shared intermediate: payload length + 2 (2-word header + N payload words)
     wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
 
+    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
+    // in the credit counter below. credit_count_r <= 2^13-1 and packet_delta
+    // <= 2^12, so this cannot overflow RAM_ADDR_W=14 bits. Declared at module
+    // scope (not inside the always_comb): a declaration in an unnamed
+    // procedural block is not portable across synthesis tools, and this file is
+    // compiled by both the FPGA and the ASIC flows.
+    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_count_r) + packet_delta;
+
     // RX FIFO is EMPTY iff no credit has been consumed. This is the SAME predicate
     // the sticky `underrun` flag already uses (see underrun_event below) — reuse it
     // rather than invent a second notion of emptiness.
@@ -274,7 +282,43 @@ module tidelink_fifo_ctrl #(
             else
                 credit_count_nxt = '0;
         end else if (read_complete) begin
-            credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_delta);
+            // SILICON DEFECT FIX (2026-07-15) — saturate at MAX_CREDITS. This is
+            // the exact MIRROR of the write side's saturate-at-zero above; the
+            // read side was never given a ceiling.
+            //
+            // Without it, a read_complete for a packet the FIFO is not actually
+            // holding mints credit ABOVE MAX_CREDITS — an impossible state that
+            // OVER-ADVERTISES buffer space to the peer and invites a real
+            // overrun of the receive buffer.
+            //
+            // The f9b94b7 `!rx_fifo_empty` guard does NOT cover this. That fix
+            // stops an AHB read of offset 0 from ARMING the length latch on an
+            // empty FIFO. But packet_active_r / packet_word_length_r /
+            // read_target_addr_r are also armed by the FC WRITE path
+            // (fc_write_addr0, :198). If a packet's header arrives and the
+            // packet never completes (write_complete needs the exact beat at
+            // write_target_addr), those stay armed; a later protocol-legal drain
+            // then hits read_target_addr, read_complete fires (:107, gated only
+            // by packet_active_r) and credit is minted above max.
+            //
+            // A truncated packet is reachable BY DESIGN on silicon: after
+            // TX_STALL_TIMEOUT (2^16 hclk) of continuous back-pressure the FC
+            // adapter deliberately abandons the in-flight beat with an AHB ERROR
+            // (tidelink_fc_adapter.sv:250-300). If that beat is a packet's last
+            // word, this is exactly the state entered. Link errors and a
+            // data-mode toggle mid-packet do the same.
+            //
+            // Reproduced (credit 4096 -> 4106, no harness misbehaviour) and
+            // gated by cocotb/tidelink_top_pair_v2/test_v2_truncated_pkt_credit.
+            //
+            // INERT ON THE HEALTHY PATH: every committed packet decrements by
+            // the same packet_delta the matching read increments by, so credit
+            // never legitimately reaches MAX_CREDITS from below — the clamp
+            // cannot fire on a correct exchange.
+            if (credit_sum > RAM_ADDR_W'(unsigned'(MAX_CREDITS)))
+                credit_count_nxt = (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS));
+            else
+                credit_count_nxt = (RAM_ADDR_W-1)'(credit_sum);
         end
     end
 

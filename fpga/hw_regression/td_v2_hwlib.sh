@@ -308,8 +308,26 @@ GP1_TX=0x84000000        # GP1 TX DATA aperture (txburst target; GP0 0x44xxxxxx 
 # ----- zero-poke ARM values ----------------------------------------------------
 ZP_NEGO_CFG_ARM=0x61        # nego_en + force_lock + mask_hs_auto_en
 ZP_NEGO_TRAIN_CFG_ARM=0x0001  # train_auto_en (and NOTHING else — zero-poke)
-# The a->b test packet for the (h) data gate (3 words: header + 2 payload).
-ZP_TX_WORDS=(0x00240000 0xcafe0001 0xcafe0002)
+# The a->b test packet for the (h) data gate.
+#
+# FIXED 2026-07-16 -- this was 3 words and the old comment called it "header + 2
+# payload". That is a MISREADING of the frame: a packet is `length+2` words
+# (word0=length<<20|type<<18, word1=dest_addr, then `length` payload words --
+# see tidelink_fifo_ctrl / pair_v2_common.make_packet). Header 0x00240000
+# declares length=2, so the packet is 2+2 = 4 words and only 3 were ever sent.
+# Every zp_txburst therefore emitted a TRUNCATED packet that never completed.
+#
+# It hid because a reader can still see the words in the RX SRAM even though the
+# packet never committed -- so a 3-word compare "passes". It bites the moment
+# anything READS OFFSET 3: that is read_target_addr = (length+1)*4, which fires
+# read_complete and pops `length+2` = 4 words while the writer only ever
+# advanced write_ptr by 3, walking read_ptr 1 word PAST write_ptr on EVERY
+# burst. That is what made linkhold_soak read all-zeros from burst 2 onward on a
+# perfectly healthy link (fcsm 4/4, reanchored, credit 31).
+#
+# Now byte-identical to the CERTIFIED send_a2b frame (TX_HDR + TX_PAYLOAD, 4
+# words) -- the one the N=40 zero-poke certification actually proved.
+ZP_TX_WORDS=(0x00240000 0xcafe0001 0xcafe0002 0xcafe0003)
 
 # ----- die-generic helpers (arg1 = a | b) --------------------------------------
 rd_a(){ local v; v=$(a rd "$1"); sleep "$TD_THROTTLE"; echo "$v"; }   # throttled die_a read

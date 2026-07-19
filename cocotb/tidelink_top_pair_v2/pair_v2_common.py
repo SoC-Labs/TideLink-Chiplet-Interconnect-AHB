@@ -299,31 +299,57 @@ class PairV2TB:
 
     # ----- AHB TX / FIFO (compliant timing, proven in the V1 env) -------------
 
+    # AHB back-pressure bound. The FC adapter HONESTLY back-pressures the CPU
+    # (holds HREADYOUT low) whenever the 1-entry TX skid / a2l replay FIFO is
+    # full, which on a link ~20x slower than hclk is the NORMAL condition for
+    # any burst longer than the replay depth. The bound must therefore be
+    # >> the link drain time for one word, and exceeding it is a REAL error
+    # that must be raised — never silently absorbed.
+    #
+    # HISTORY (2026-07-15): this bound was 50 cycles with NO else-clause on
+    # either wait loop. On a burst >~16 words the link back-pressured for
+    # longer than 50 cycles and the loops FELL THROUGH silently:
+    #   * the address phase was driven while hready=0, so the FC adapter's
+    #     tx_valid_addr_phase (tidelink_fc_adapter.sv:278, requires
+    #     ahb_tx_hready) never accepted it -> the word's address was dropped;
+    #   * the data phase then executed `hwdata = 0` -> a ZERO word was left on
+    #     the bus and captured in place of real data.
+    # Net effect: ~2 words destroyed every ~16 words, with a zero injected —
+    # a TESTBENCH artifact that convincingly mimics a link/framer defect.
+    # Do not reintroduce a silent timeout here.
+    AHB_BP_MAX_CYCLES = 200000
+
+    async def _await_hready(self, hready, ctx):
+        for _ in range(self.AHB_BP_MAX_CYCLES):
+            try:
+                if int(hready.value):
+                    return
+            except ValueError:
+                pass
+            await RisingEdge(self.dut.hclk)
+        raise TimeoutError(
+            f"AHB TX back-pressure exceeded {self.AHB_BP_MAX_CYCLES} hclk "
+            f"({ctx}) — the link is not draining. This is a REAL stall, not a "
+            f"harness limit; do not paper over it by raising the bound.")
+
     async def ahb_tx_write_word(self, side, byte_addr, data):
         dut = self.dut
         g = lambda n: getattr(dut, f"{side}_ahb_tx_{n}")
         hready = g("hready")
         await RisingEdge(dut.hclk)
-        for _ in range(50):
-            try:
-                if int(hready.value):
-                    break
-            except ValueError:
-                pass
-            await RisingEdge(dut.hclk)
+        # Address phase: only present it once the slave can accept it.
+        await self._await_hready(hready, f"{side} addr phase @0x{byte_addr:x}")
         g("hsel").value, g("htrans").value = 1, 2
         g("hsize").value, g("hwrite").value = 2, 1
         g("haddr").value = byte_addr & ((1 << 14) - 1)
         await RisingEdge(dut.hclk)
         g("hsel").value, g("htrans").value, g("hwrite").value = 0, 0, 0
         g("hwdata").value = data & 0xFFFFFFFF
-        for _ in range(50):
-            await RisingEdge(dut.hclk)
-            try:
-                if int(hready.value):
-                    break
-            except ValueError:
-                pass
+        # Data phase: HOLD hwdata until the slave actually accepts the beat.
+        # (AHB requires HWDATA stable for the whole data phase; the old code
+        # zeroed it after a fixed 50 cycles regardless.)
+        await RisingEdge(dut.hclk)
+        await self._await_hready(hready, f"{side} data phase @0x{byte_addr:x}")
         g("hwdata").value = 0
 
     async def ahb_tx_write_packet(self, side, words, gap=4):
@@ -549,6 +575,67 @@ async def send_and_check(tb, src, dst, payload, ctx, expect_pass=True):
     # false failures. It is logged. Establishing its semantics and gating on it
     # would additionally catch "stale FIFO contents happen to match".
     return ok, got
+
+
+async def read_packet_drain(tb, dst, n_words):
+    """Read one packet out of `dst`'s RX FIFO with the PROTOCOL-LEGAL drain
+    sweep: consecutive offsets 0,4,..,(n_words-1)*4.
+
+    This is the ONLY sanctioned read pattern (tl39.py: "Correct usage: drain.
+    Never random-access"). The RX aperture is address-translated by read_ptr
+    (tidelink_fifo_ctrl.sv:141) and the read at offset (length+1)*4 fires
+    read_complete, popping the packet. A sweep of exactly length+2 words
+    therefore consumes exactly one packet and leaves read_ptr packet-aligned.
+    """
+    return [await tb.ahb_fifo_read_word(dst, i * 4) for i in range(n_words)]
+
+
+def diff_words(sent, got):
+    """Per-word comparison -> list of (index, expected, actual) mismatches."""
+    return [(i, s, g) for i, (s, g) in enumerate(zip(sent, got)) if s != g]
+
+
+async def send_and_check_burst(tb, src, dst, payload, ctx, gap=4,
+                               expect_pass=True, settle=None):
+    """Send ONE framed FC packet of arbitrary payload length src->dst and
+    byte-compare EVERY word that lands in the peer's RX FIFO -- including
+    word[0] (header) and word[1] (dest_addr), which the legacy
+    `send_and_check` oracle SKIPS (it only checks got[0], got[2], got[3]).
+
+    That gap matters: the recorded silicon defect is "long burst drops the
+    first ~2 words", and the phantom-pop class (project_rxfifo_empty_read_
+    phantom_pop) walks read_ptr by exactly 2 words -- a 2-word shift is
+    INVISIBLE to any oracle that does not check the leading words against
+    their own expected values.
+
+    Returns (ok, got, mismatches).
+    """
+    words = make_packet(payload)
+    if settle is None:
+        # The link word rate is ~20x slower than hclk; scale the settle
+        # window with the burst so long packets are not scored before they
+        # have physically arrived (a too-short wait would manufacture a
+        # FALSE "dropped words" result).
+        settle = 3000 + 400 * len(words)
+    await tb.ahb_tx_write_packet(src, words, gap=gap)
+    await ClockCycles(tb.dut.hclk, settle)
+    got = await read_packet_drain(tb, dst, len(words))
+    mism = diff_words(words, got)
+    tb.log.info(
+        f"  [{ctx}] {src}->{dst} len={len(payload)} gap={gap}: "
+        f"{'OK' if not mism else f'{len(mism)} MISMATCH'} "
+        f"hdr sent=0x{words[0]:08x} got=0x{got[0]:08x}")
+    if mism:
+        for i, s, g in mism[:8]:
+            tb.log.info(f"      word[{i}]: expected 0x{s:08x} got 0x{g:08x}")
+    if expect_pass:
+        assert not mism, (
+            f"{ctx} {src}->{dst} payload_len={len(payload)}: "
+            f"{len(mism)} of {len(words)} words wrong; first bad index "
+            f"{mism[0][0]} (expected 0x{mism[0][1]:08x} got 0x{mism[0][2]:08x}); "
+            f"sent=[{', '.join(f'0x{w:08x}' for w in words)}] "
+            f"got=[{', '.join(f'0x{w:08x}' for w in got)}]")
+    return (not mism), got, mism
 
 
 async def send_and_check_b2b(tb, src, dst, words, ctx, expect_pass=True):

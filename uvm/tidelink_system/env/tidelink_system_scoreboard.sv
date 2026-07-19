@@ -200,9 +200,19 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
     if (a_tx_write_data.size() == 0 && b_fifo_read_data.size() == 0)
       return;
 
+    // A packet-count mismatch means packets were LOST (or duplicated) between A
+    // and B. This must FAIL the test: a scoreboard that does not fail on packet
+    // loss is not a scoreboard.
+    //
+    // It was a uvm_warning until 2026-07-18, and the report_phase "lost packets?"
+    // check at the bottom of this file could NOT cover for it: this function
+    // delete()s all four queues a few lines below, so by the time report_phase
+    // evaluates a_tx_write_data.size() > 0 the evidence has been wiped. That
+    // backstop only fires if compare was never called at all. This line is
+    // therefore the ONLY place an A->B drop is detectable, and it was soft.
     if (a_tx_write_data.size() != b_fifo_read_data.size()) begin
-      `uvm_warning("SB_A2B", $sformatf(
-        "A->B data count mismatch: %0d A TX writes, %0d B FIFO reads",
+      `uvm_error("SB_A2B", $sformatf(
+        "A->B data count mismatch: %0d A TX writes, %0d B FIFO reads (packets lost or duplicated)",
         a_tx_write_data.size(), b_fifo_read_data.size()))
     end
 
@@ -240,9 +250,11 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
     if (b_tx_write_data.size() == 0 && a_fifo_read_data.size() == 0)
       return;
 
+    // See the A->B note above: this is the only place a B->A drop is detectable,
+    // because the queue delete() below wipes the report_phase backstop.
     if (b_tx_write_data.size() != a_fifo_read_data.size()) begin
-      `uvm_warning("SB_B2A", $sformatf(
-        "B->A data count mismatch: %0d B TX writes, %0d A FIFO reads",
+      `uvm_error("SB_B2A", $sformatf(
+        "B->A data count mismatch: %0d B TX writes, %0d A FIFO reads (packets lost or duplicated)",
         b_tx_write_data.size(), a_fifo_read_data.size()))
     end
 

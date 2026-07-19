@@ -246,7 +246,7 @@ define sim_gate_run
 endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
-	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb \
+	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
@@ -722,13 +722,28 @@ sim_gate_xfail_f14b:
 # aggregate on a patch that is not in the tree — it would pass here and tell you
 # nothing about what actually ships.
 #
-# TO PROMOTE IT (one line, after twin2_fix.patch lands in src/rtl):
-#   append `fifo_rx_twin2` to SIM_GATE_ALL_SUITES  (and drop FIFO_SRC=patched,
-#   since `patched` will then BE the tree — leaving it pinned would re-create
-#   the very blindness this target exists to prevent).
+# SUPERSEDED (2026-07-19) — DO NOT PROMOTE THIS TARGET. The TWIN-2 fix HAS now
+# landed in src/rtl, but NOT as the patch this bench pins. David decided that
+# AHB-CPU-write-to-RX IS a supported path, so the shipped fix QUALIFIES the
+# write-side arm (tidelink_fifo_ctrl.sv `ahb_pkt_start_ok` + zero-length reject)
+# instead of gating the path off, which is what cocotb/fifo_rx_twin2's
+# *.PATCHED.sv copies do. Those copies are a FORK of the FIFO RTL and have
+# already drifted (they predate the read-side saturate-at-MAX credit fix), so
+# promoting this target would gate a stale fork, not what ships.
+# The tree-truthful replacement is sim_gate_fifo_twin2_tree below.
 sim_gate_fifo_twin2:
 	$(call sim_gate_run,fifo_rx_twin2,\
 	  $(MAKE) -C cocotb/fifo_rx_twin2 FIFO_SRC=patched sim)
+
+# --- RX-FIFO TWIN 2 — GATED AGAINST THE TREE (promoted 2026-07-19) ----------
+# cocotb/tidelink_fifo_twin2 compiles the SHIPPING flist (flists/tidelink_fifo.flist)
+# with ENABLE_AHB_WRITE=1, the supported posture, and asserts BOTH halves of the
+# decision: a stray clear/probe write pair is a no-op on write_ptr/credit AND a
+# legitimate AHB-injected packet still commits byte-exact. Red/green across the
+# RTL is cocotb/tidelink_fifo_twin2/run_redgreen.sh.
+sim_gate_fifo_twin2_tree:
+	$(call sim_gate_run,fifo_rx_twin2_tree,\
+	  $(MAKE) -C cocotb/tidelink_fifo_twin2 SIM_BUILD=sim_build_gate_twin2 sim)
 
 # --- xhb_window_skew_debug — NOT GATE MATERIAL (deliberate) ------------------
 # cocotb/xhb_window_skew_debug/ has NO Makefile and NO testbench: it is a single
@@ -796,7 +811,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
-	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions
+	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
+	fifo_rx_twin2_tree
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -869,6 +885,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_eth_m0
 	@$(MAKE) --no-print-directory sim_gate_eth_m1
 	@$(MAKE) --no-print-directory sim_gate_eth_shape_a
+	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree
 	@# errinj FIRST: it owns the shared sim_build_gate_ei compile that the two
 	@# sentinels then reuse (same pattern as t31 owning sim_build_l4 for t30).
 	@$(MAKE) --no-print-directory sim_gate_errinj

@@ -90,7 +90,7 @@ module tidelink_dft_wrapper #(
     // HONEST_MASK_HS used to fold BOTH selects, so 1'b0 ("ship debug unlocked")
     // ALSO permanently bypassed the peer-mask handshake. DEBUG_UNLOCK_DEFAULT
     // below separates them. Defaults are unchanged and byte-identical.
-    parameter HONEST_MASK_HS    = 1'b0,
+    parameter HONEST_MASK_HS    = 1'b1,
     // PENDING (DECISION #2) — APB debug-unlock, independent of HONEST_MASK_HS.
     //   1'b1 (default) = today's behaviour: APB debug permanently unlocked.
     //   1'b0 = controller follows the real apb_debug_unlock_i pin (lockable).

@@ -16,6 +16,13 @@
 `ifndef HONEST_MASK_HS
   `define HONEST_MASK_HS 0
 `endif
+// MODE=default omits BOTH overrides so the instance takes tidelink_top's OWN
+// shipped defaults — the only honest way to test what actually builds.
+`ifdef TB_MASK_DEFAULT
+  `define MASK_PARAMS
+`else
+  `define MASK_PARAMS #( .HONEST_MASK_HS (`HONEST_MASK_HS), .DEBUG_UNLOCK_DEFAULT (`DEBUG_UNLOCK_DEFAULT) )
+`endif
 // PENDING (DECISION #2) — debug-unlock is now an INDEPENDENT param.
 // Default 1 = today's effective behaviour (APB debug permanently unlocked).
 `ifndef DEBUG_UNLOCK_DEFAULT
@@ -29,10 +36,7 @@ module tb_top (
     input logic apb_debug_unlock_i,
     input logic mask_hs_bypass_i
 );
-    tidelink_top #(
-        .HONEST_MASK_HS       (`HONEST_MASK_HS),
-        .DEBUG_UNLOCK_DEFAULT (`DEBUG_UNLOCK_DEFAULT)
-    ) u_dut (
+    tidelink_top `MASK_PARAMS u_dut (
         .hclk               (hclk),
         .hresetn            (hresetn),
         .poresetn           (poresetn),

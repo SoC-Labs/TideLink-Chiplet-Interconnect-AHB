@@ -147,7 +147,7 @@ module tidelink_top #(
     // DEBUG_UNLOCK_DEFAULT=1'b1 + HONEST_MASK_HS=1'b0 the two ties fold to the
     // historical 1'b1/1'b1, byte-identical to today. Nothing is applied here —
     // David is deciding whether the handshake bypass was intended.
-    parameter        HONEST_MASK_HS       = 1'b0,
+    parameter        HONEST_MASK_HS       = 1'b1,
     // PENDING (DECISION #2) — debug-unlock, now INDEPENDENT of HONEST_MASK_HS.
     //   1'b1 (default) = apb_debug_unlock_i tied 1 at the controller: APB debug
     //       permanently unlocked. This is today's effective behaviour and

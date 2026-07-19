@@ -57,10 +57,36 @@ LEASE_NAME=${TD_LEASE:-bridge1}
 TL39=${TD_TL39:-/home/xilinx/tl39.py}
 
 # ----- expected golden values (the proven good state) ------------------------
-MASK_ACTIVE_LANES="2 5 6 7"          # link mask 0xE4 -> active lanes
-EXP_SYNC_SEEN=0xe4                    # 0x4403215C [7:0] = all 4 active lanes armed
-# per-lane SYNC slice (TIDELINK_SYNC_WORD[16*lane +: 16]); RX must read these EXACTLY
-declare -A EXP_SLICE=( [2]=0x5B4C [5]=0xB5A6 [6]=0xD3C4 [7]=0xF1E2 )
+# LANE MASK is now a PARAMETER (2026-07-17, 8-lane campaign). Everything golden
+# below is DERIVED from it, so the same lib drives the 4-lane baseline and the
+# 8-lane build without hand-editing four places that can silently disagree.
+#   TD_MASK=0xe4  -> 4 lanes (2,5,6,7)  = the historical/certified bridge1 set
+#   TD_MASK=0xff  -> 8 lanes            = the 8-lane build (LANE_MASK_RESET=8'hFF)
+# NB the mask must match the BITSTREAM's LANE_MASK_RESET: Wlink derives
+# bytesPerCycle = popcount(lane_mask)*2 (Wlink.v:996-1014), and on the
+# autonomous path the mask handshake latches the POR value at bring-up.
+# DEFAULT = 0xe4 (the historical/certified 4-lane set) so that merely sourcing
+# this lib is bit-identical to the pre-2026-07-17 behaviour for every existing
+# caller. The 8-lane runs pass TD_MASK=0xff EXPLICITLY. Defaulting to 0xff here
+# would silently re-point every unrelated script at a different link width —
+# and the mask MUST match the bitstream's LANE_MASK_RESET (a 0xff recipe on a
+# 0xE4 bitstream does not negotiate 8 lanes; see the measured note below).
+TD_MASK=${TD_MASK:-0xe4}
+_mask_d=$(( TD_MASK ))
+MASK_ACTIVE_LANES=""                  # active lanes, derived from TD_MASK
+for _l in 0 1 2 3 4 5 6 7; do [ $(( (_mask_d >> _l) & 1 )) -eq 1 ] && MASK_ACTIVE_LANES="$MASK_ACTIVE_LANES $_l"; done
+MASK_ACTIVE_LANES=${MASK_ACTIVE_LANES# }
+EXP_SYNC_SEEN=$(printf '0x%02x' $_mask_d)   # 0x4403215C [7:0] = every active lane armed
+TD_LANE_COUNT=$(echo "$MASK_ACTIVE_LANES" | wc -w)
+TD_BYTES_PER_CYCLE=$(( TD_LANE_COUNT * 2 )) # Wlink: (active_lanes+1)*2 = popcount*2
+# 32-bit 0x214 value ({rx_mask[15:8], tx_mask[7:0]}) and 0x2128 ({tol[12:8],mask[7:0]})
+TD_LANEMASK32=$(printf '0x%08x' $(( (_mask_d << 8) | _mask_d )))
+R_SYNCTOL_VAL=$(printf '0x%08x' $(( (5 << 8) | _mask_d )))   # tol=5
+# per-lane SYNC slice (TIDELINK_SYNC_WORD[16*lane +: 16]); RX must read these
+# EXACTLY. SYNC_WORD = 128'hF1E2_D3C4_B5A6_9788_796A_5B4C_3D2E_1F00
+# (WlinkRxLinkLayer.v:341). ALL EIGHT listed; only the active ones are checked.
+declare -A EXP_SLICE=( [0]=0x1F00 [1]=0x3D2E [2]=0x5B4C [3]=0x796A \
+                       [4]=0x9788 [5]=0xB5A6 [6]=0xD3C4 [7]=0xF1E2 )
 # A->B test packet (header + payload); GP1 0x84010000.. must read these back
 TX_HDR=0x00240000
 TX_PAYLOAD=( 0xCAFE0001 0xCAFE0002 0xCAFE0003 )
@@ -123,13 +149,13 @@ deploy_pair(){
   "$DEPLOY_SH" $A_IP $A_BOARD die_a "$DEPLOY_DIR" --no-verify >/dev/null 2>&1
   "$DEPLOY_SH" $B_IP $B_BOARD die_b "$DEPLOY_DIR" --no-verify >/dev/null 2>&1
 }
-rcp(){   # the proven V2 bring-up recipe
+rcp(){   # the proven V2 bring-up recipe (mask parameterised by TD_MASK)
   a wr 0x4403210C 0x0>/dev/null;       b wr 0x4403210C 0x0>/dev/null
-  a wr $R_LANEMASK 0x0000e4e4>/dev/null; b wr $R_LANEMASK 0x0000e4e4>/dev/null
+  a wr $R_LANEMASK $TD_LANEMASK32>/dev/null; b wr $R_LANEMASK $TD_LANEMASK32>/dev/null
   a wr 0x44032080 0x2>/dev/null;       b wr 0x44032080 0x3>/dev/null
   a wr 0x44032160 0x55555555>/dev/null;b wr 0x44032160 0x55555555>/dev/null
   a wr 0x44032104 0x0>/dev/null;       b wr 0x44032104 0x0>/dev/null
-  a wr $R_SYNCTOL 0x000005e4>/dev/null;b wr $R_SYNCTOL 0x000005e4>/dev/null
+  a wr $R_SYNCTOL $R_SYNCTOL_VAL>/dev/null;b wr $R_SYNCTOL $R_SYNCTOL_VAL>/dev/null
   a wr $R_R8 0x1D>/dev/null;           b wr $R_R8 0x1D>/dev/null
   a wr $R_R8 0x1F>/dev/null;           b wr $R_R8 0x1D>/dev/null; sleep 0.03
   a wr $R_R8 0x1D>/dev/null;           b wr $R_R8 0x1D>/dev/null
@@ -173,7 +199,7 @@ def settap(L,t):
  c=rd(0x1B4);c&=~(1<<L);c|=lb<<L;wr(0x1B4,c)
 def dist(L):
  wr(0x1B0,L);time.sleep(0.003);return rd(0x1AC)&0x1f
-for L in [6,2,5,7]:
+for L in [__WS_LANES__]:
  best=(99,0)
  for t in range(32):
   settap(L,t);time.sleep(0.05);d=min(dist(L) for _ in range(5))
@@ -181,6 +207,11 @@ for L in [6,2,5,7]:
   time.sleep(0.008)
  settap(L,best[1])
 print("winscan_done")'
+  # winscan only ever swept the ACTIVE lanes; derive them from TD_MASK so an
+  # 8-lane build scans all 8 (the hardcoded [6,2,5,7] silently left lanes
+  # 0/1/3/4 untrained on any wider mask).
+  local _wsl; _wsl=$(echo "$MASK_ACTIVE_LANES" | tr ' ' ',')
+  PY=${PY/__WS_LANES__/$_wsl}
   local B64; B64=$(echo "$PY" | base64 -w0)
   $SSH $BOARD_USER@$B_IP "echo $B64 | base64 -d > /tmp/td_ws.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_ws.py" 2>/dev/null
   a wr $R_R8 0x14>/dev/null; b wr $R_R8 0x14>/dev/null   # idle-gated -> reanchored latches

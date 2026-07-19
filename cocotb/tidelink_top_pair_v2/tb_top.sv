@@ -263,6 +263,21 @@ module tb_top #(
     defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b0;
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
 `endif
+    // Wave-0 #11: symmetric counterpart to _DIS — force the whole-word EPOCH
+    // corrector ON *at the deskew instance* (Wlink forwards phy.EPOCH_ANCHOR_EN
+    // to WavD2DGpio but NOT onward to tidelink_lane_deskew, so the corrector is
+    // compiled OFF in the shipping stack — banner "deskew: m=0 s=0"). This
+    // hierarchical override drives the deskew param directly so the skew-faithful
+    // EPOCH_PROFILE=silicon path can be exercised with the corrector engaged.
+`ifdef TB_TOP_EPOCH_ANCHOR_FORCE
+    // EPOCH and SYNC_REANCHOR correctors are mutually exclusive (deskew elab
+    // guard). The shipping stack runs SYNC_REANCHOR (needs the SYNC beacon,
+    // which this bring-up leaves off); swap to the EPOCH corrector here.
+    defparam u_master.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.SYNC_REANCHOR_EN = 1'b0;
+    defparam u_slave.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.SYNC_REANCHOR_EN  = 1'b0;
+    defparam u_master.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.EPOCH_ANCHOR_EN = 1'b1;
+    defparam u_slave.u_chiplet_controller.u_wlink.phy.gpio.u_deskew.EPOCH_ANCHOR_EN  = 1'b1;
+`endif
 
     // Elaboration self-check: print the anchor enable actually compiled into
     // the deskew of each die (guards against a silently-ignored defparam).

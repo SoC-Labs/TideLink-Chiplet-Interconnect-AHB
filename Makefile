@@ -212,6 +212,15 @@ SIM_GATE_TP_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 TB_TOP_NO_DUMP=1 \
 
 # $(call sim_gate_run,<suite-name>,<command>) — run one suite, tee-free log
 # capture, never fail the make (the summary decides the exit code).
+#
+# Wave-0 fix #12a: the run/status line below contains $(MAKE) (inside $(2)), so
+# GNU make EXECUTES it even under `make -n` — which meant a dry run silently ran
+# each suite and wrote a fake-PASS .status, CLOBBERING real gate results. The
+# recipe now detects dry-run from MAKEFLAGS (its first word is the single-letter
+# option cluster; 'n' there == -n) and skips the run + the .status write
+# entirely, leaving any real result on disk untouched. A real `make sim_gate`
+# has no 'n' in that cluster (--no-print-directory sits in a later word), so it
+# is unaffected.
 define sim_gate_run
 	@if echo "$(MAKEFLAGS)" | grep -qw -- n; then \
 	  echo "[sim_gate] REFUSING to run under 'make -n' ($(1))."; \
@@ -226,15 +235,19 @@ define sim_gate_run
 	fi
 	@mkdir -p $(SIM_GATE_DIR)
 	@echo "[sim_gate] RUN  $(1)  (log: $(SIM_GATE_DIR)/$(1).log)"
-	@t0=$$(date +%s); \
-	if ( $(2) ) > $(SIM_GATE_DIR)/$(1).log 2>&1; then st=PASS; else st=FAIL; fi; \
-	dt=$$(( $$(date +%s) - t0 )); \
-	printf '%-28s %-4s %6ss\n' "$(1)" "$$st" "$$dt" > $(SIM_GATE_DIR)/$(1).status; \
-	echo "[sim_gate] $$st $(1) ($${dt}s)"
+	@case "$${MAKEFLAGS%% *}" in \
+	  *n*) echo "[sim_gate] DRY-RUN: would run $(1); NOT touching $(SIM_GATE_DIR)/$(1).status" ;; \
+	  *) t0=$$(date +%s); \
+	     if ( $(2) ) > $(SIM_GATE_DIR)/$(1).log 2>&1; then st=PASS; else st=FAIL; fi; \
+	     dt=$$(( $$(date +%s) - t0 )); \
+	     printf '%-28s %-4s %6ss\n' "$(1)" "$$st" "$$dt" > $(SIM_GATE_DIR)/$(1).status; \
+	     echo "[sim_gate] $$st $(1) ($${dt}s)" ;; \
+	esac
 endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb \
+	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
 
 sim_gate_env_check:
@@ -345,6 +358,55 @@ sim_gate_v2_syncdet:
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
+
+# --- Wave-0 #9: PERF_CTRL end-to-end (perf_reg_region = apb_region-5) --------
+# Proves PERF_CTRL is writable and the perf counters ACTUALLY COUNT through the
+# real APB->tidelink_apb_regs->tidelink_perf path in a brought-up pair. RED
+# without the off-by-one fix (PERF_CTRL enable never sticks -> counters dead).
+# Shares sim_build_zero with the other EPOCH_PROFILE=zero suites.
+sim_gate_v2_perf:
+	$(call sim_gate_run,v2_perf_ctrl,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_perf_ctrl)
+
+# --- Wave-0 #12b: reduced-lane (0xE4 subset) end-to-end, previously UNGATED --
+# Integrated 4-lane-subset bring-up + M->S byte-correct data + masked-lane
+# quiet-TX proof. Real runnable suite (3 tests); now in the blocking gate.
+sim_gate_v2_reduced_lane:
+	$(call sim_gate_run,v2_reduced_lane,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_reduced_lane)
+
+# --- Wave-0 #11: skew-faithful EPOCH_PROFILE=silicon coverage --------------
+# The blocking v2 suites all run EPOCH_PROFILE=zero (no inter-lane skew), so
+# there was ZERO skew-faithful sim coverage. This suite runs the v37 silicon
+# fingerprint (scattered 3..7-word epochs on the master's RX, S->M path) with
+# the whole-word EPOCH corrector ENGAGED (TB_TOP_EPOCH_ANCHOR_FORCE defparams
+# the deskew EPOCH_ANCHOR_EN=1 / SYNC_REANCHOR_EN=0). Verified 3/3 byte-exact
+# incl. S->M -> the corrector datapath survives the modelled skew.
+#
+# CHARACTERISED CAVEAT (Wave-0 #11, honest): DEFAULT EPOCH_PROFILE=silicon (no
+# FORCE) FAILS test_03 S->M with the v37 all-zeros signature, because the
+# SHIPPING integrated stack runs the OTHER corrector (SYNC_REANCHOR_EN=1), which
+# only arms on a live SYNC beacon that the pair bring-up leaves off, AND Wlink
+# does not forward EPOCH_ANCHOR_EN down to tidelink_lane_deskew. Engaging the
+# EPOCH corrector (as here) is the datapath the RTL is designed around
+# (test_v2_pair_data docstring). Wiring the shipping corrector to survive
+# beacon-off skew is an RTL/bring-up item, OUT of Wave-0 (instruments-only)
+# scope; this gate makes the skew-faithful path visible so it can't rot.
+# Own SIM_BUILD (EXTRA_DEFINES not in the Makefile SIM_BUILD key).
+sim_gate_epoch_silicon:
+	$(call sim_gate_run,epoch_silicon,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
+	    EXTRA_DEFINES="+define+TB_TOP_EPOCH_ANCHOR_FORCE" \
+	    SIM_BUILD=sim_build_silicon_epoch MODULE=test_v2_pair_data)
+
+# --- Wave-0 #12b: contiguous-a2l — NON-BLOCKING tracking target -------------
+# The test needs an {m,s}_inj_* force injector in tb_top.sv that was never
+# committed, so all four tests are marked skip=True (clean SKIP, never RED).
+# NOT in SIM_GATE_ALL_SUITES; run standalone to track the missing hook. Promote
+# into the gate by wiring the injector + flipping SKIP_NO_INJECTOR=False.
+sim_gate_v2_fc_contiguous:
+	$(call sim_gate_run,v2_fc_contiguous,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_fc_contiguous)
 
 # RX-FIFO suite (42 tests) — carries the EMPTY-FIFO PHANTOM-POP regression
 # (test_41/test_42, added 2026-07-14). That defect was SILICON-ONLY and
@@ -672,7 +734,8 @@ sim_gate_asicelab_v2:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
+	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
+	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions
@@ -684,7 +747,8 @@ SIM_GATE_SENTINELS := xfail_f14a_lane7_silent xfail_f14b_datamode_wedge
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
-	v2_autonomous_sync_detect v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
+	v2_autonomous_sync_detect v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
+	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
@@ -716,7 +780,7 @@ sim_gate_clean_builds:
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
-	@echo " sim_gate — full aggregate sim gate (13 suites)"
+	@echo " sim_gate — full aggregate sim gate (18 suites)"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
 	@$(MAKE) --no-print-directory sim_gate_t32
@@ -725,6 +789,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_v2_perf
+	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
+	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
 	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
@@ -756,6 +823,8 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_v2_perf
+	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory sim_gate_fifo
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt

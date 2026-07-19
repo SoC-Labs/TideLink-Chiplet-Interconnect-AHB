@@ -123,9 +123,11 @@ module tidelink_dft_wrapper #(
     // I2C-NACK / timeout terminal role derive from role_strap_i (already a real
     // top-level port) so a dead I2C no longer forces both dies slave.
     parameter bit ROLE_FROM_STRAP = 1'b0,
-    // PENDING-DECISION #1 — RX-FIFO TWIN 2. Forwarded verbatim to
-    // tidelink_top.ENABLE_AHB_WRITE. Default 1'b1 = bit-identical. The ASIC
-    // integration sets 1'b0 (RX FIFO FC-write-only) to close the chip-killer.
+    // RX-FIFO TWIN 2 master enable. Forwarded verbatim to
+    // tidelink_top.ENABLE_AHB_WRITE.
+    // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX IS SUPPORTED, so the
+    // ASIC keeps this at 1'b1 (path FUNCTIONAL). TWIN 2 is closed in
+    // tidelink_fifo_ctrl by QUALIFYING the write-side arm, not by this gate.
     parameter bit ENABLE_AHB_WRITE = 1'b1,
 
     // ---- DFT-specific ---------------------------------------------------

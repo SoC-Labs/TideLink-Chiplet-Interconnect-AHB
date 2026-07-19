@@ -166,13 +166,13 @@ module tidelink_top #(
     // the packaged IP face), not by flipping the default: the ASIC integration
     // can now set 0 or wire a bond strap without editing the controller.
     parameter        RETIRE_EN            = 1'b1,
-    // PENDING-DECISION #1 — RX-FIFO TWIN 2 (chip-killer). Forwards to
+    // RX-FIFO TWIN 2 master enable. Forwards to
     // tidelink_fifo → tidelink_fifo_mem → tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
-    //   1'b1 (default) = current behaviour, BIT-IDENTICAL: AHB CPU writes to the
-    //         RX FIFO can advance the FC-shared write_ptr / burn credit.
-    //   1'b0 = ASIC posture: RX FIFO is FC-write-only; the AHB write side cannot
-    //         touch write_ptr/credit (AHB reads unaffected). Closes the
-    //         stray-AHB-write-mis-frames-next-FC-packet chip-killer.
+    //   1'b1 (default, and the ASIC setting) = AHB CPU-write-into-RX is a
+    //         SUPPORTED, FUNCTIONAL path (David, 2026-07-19).
+    //   1'b0 = optional FC-write-only posture for an integration that wants it.
+    // TWIN 2 (stray AHB write mis-frames the next FC packet) is closed by the
+    // QUALIFIED write-side arm in tidelink_fifo_ctrl, NOT by this gate.
     parameter bit    ENABLE_AHB_WRITE     = 1'b1,
     // PENDING-DECISION #5 — terminal role from strap, not the I2C-NACK constant.
     // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.

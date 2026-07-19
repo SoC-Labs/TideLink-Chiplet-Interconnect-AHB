@@ -1,11 +1,18 @@
-# PENDING-DECISION #1 — RX-FIFO TWIN 2 red/green gate.
+# RX-FIFO TWIN 2 — chip-killer fix gate (DECISION #1, David 2026-07-19).
 #
-#   make MODE=red     # ENABLE_AHB_WRITE=1 : reproduces the write_ptr corruption
-#   make MODE=green   # ENABLE_AHB_WRITE=0 : corruption prevented, FC byte-exact
+#   make                     # ENABLE_AHB_WRITE=1 (SUPPORTED posture, the default)
+#   make TWIN2_ENABLE_AHB_WRITE=0   # optional FC-write-only knob
 #
-# Both modes run the SAME stimulus; expectations flip on MODE (exported to the
-# test). SRAM is left X-init (+define+TIDELINK_SRAM_NO_ZERO_INIT) so the RED
-# mis-framed FC read-back is visibly wrong rather than masked by a zeroed BRAM.
+# AHB-CPU-write-to-RX IS a supported path, so the default build leaves it
+# ENABLED and the test asserts BOTH halves: the stray clear/probe pair is a
+# no-op AND a legitimate AHB-injected packet still commits byte-exact.
+#
+# RED/GREEN is taken across the RTL, not across this parameter: run
+# ./run_redgreen.sh, which runs this same test against the pre-fix
+# tidelink_fifo_ctrl.sv (fails) and the fixed one (passes).
+#
+# SRAM is left X-init (+define+TIDELINK_SRAM_NO_ZERO_INIT) so a mis-framed
+# read-back is visibly wrong rather than masked by a zeroed BRAM.
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
@@ -13,15 +20,9 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
-MODE ?= red
-ifeq ($(MODE),green)
-  TWIN2_DEF   = 0
-  SIM_BUILD  ?= sim_build_green
-else
-  TWIN2_DEF   = 1
-  SIM_BUILD  ?= sim_build_red
-endif
-export TWIN2_MODE = $(MODE)
+# Supported posture by default: the AHB CPU-write-into-RX path is FUNCTIONAL.
+TWIN2_DEF  ?= 1
+SIM_BUILD  ?= sim_build
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 

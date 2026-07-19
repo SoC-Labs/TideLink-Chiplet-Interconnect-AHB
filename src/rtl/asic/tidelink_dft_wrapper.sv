@@ -104,20 +104,26 @@ module tidelink_dft_wrapper #(
     // straps autonomy on; the knob is plumbed now so that choice is available
     // at that point rather than requiring an axi_chiplet_controller edit.
     parameter RETIRE_EN         = 1'b1,
-    // PENDING-DECISION #6 — ASIC zero-poke autonomy default. Forwarded verbatim
-    // to tidelink_top.NEGO_CFG_RESET → axi_chiplet_controller.NEGO_CFG_RESET,
+    // ASIC zero-poke autonomy default. Forwarded verbatim to
+    // tidelink_top.NEGO_CFG_RESET → axi_chiplet_controller.NEGO_CFG_RESET,
     // which is the POR value of nego_cfg_reg (nego_en = bit[0]).
-    //   7'h00 (default) = autonomy OFF, SW-driven — BIT-IDENTICAL to today and
-    //         to the safe tidelink_top default. Until this commit the wrapper did
-    //         NOT forward NEGO_CFG_RESET at all, so the ASIC path silently took
-    //         tidelink_top's 7'h00 and zero-poke could NEVER fire on the ASIC
-    //         (this is exactly the NEGO_CFG_RESET-silently-0x00 failure class).
-    //   7'h61 = zero-poke autonomy ON from POR (nego_en=1, force_lock=1,
-    //         mask_hs_auto_en=1) — the mandated hardware-autonomy posture. Wire
-    //         to a bond strap or override here.
-    // This is a pass-through only; the value must ARRIVE at the controller (see
-    // the elaboration proof in cocotb/asic_nego_cfg_plumb).
-    parameter [6:0] NEGO_CFG_RESET = 7'h00,
+    //
+    // DECISION (David, 2026-07-19): the ASIC integration ships 7'h61 —
+    // zero-poke autonomy ON from POR (nego_en=1, force_lock=1,
+    // mask_hs_auto_en=1), the mandated hardware-autonomy posture.
+    //
+    // THIS VALUE IS SET HERE, at the ASIC integration, and deliberately NOT by
+    // changing tidelink_top's 7'h00 default: the FPGA takes its value from its
+    // own wrapper (fpga/vivado_ip/tidelink_vivado_wrapper.v), and moving the
+    // shared default would surprise other integrations.
+    //
+    // History: the wrapper previously did NOT forward NEGO_CFG_RESET at all, so
+    // the ASIC path silently took tidelink_top's 7'h00 and zero-poke could
+    // NEVER fire on the ASIC — the NEGO_CFG_RESET-silently-0x00 failure class.
+    // A pass-through is not enough; the value must ARRIVE at the controller,
+    // which is what cocotb/asic_nego_cfg_plumb proves by hierarchical readback.
+    //   7'h00 = autonomy OFF, SW-driven (the legacy/safe posture).
+    parameter [6:0] NEGO_CFG_RESET = 7'h61,
     // Terminal role from strap. Forwarded to tidelink_top.ROLE_FROM_STRAP.
     // DECISION (David, 2026-07-19): default 1'b1 — the I2C-NACK / timeout
     // terminal role derives from role_strap_i (a real top-level port), so a

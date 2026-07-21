@@ -171,6 +171,9 @@ module tidelink_fifo #(
 
     // Control signals (from APB regs to FIFO and returner)
     logic                   ctrl_flush;
+    // RX-FIFO TWIN 2 (chip-killer) — runtime arm for the AHB CPU-write-into-RX
+    // path (APB CTRL[3], POR-disarmed) routed to tidelink_fifo_mem/ctrl.
+    logic                   swi_ahb_inject_arm;
 
     // Returner status
     logic                   returner_busy;
@@ -226,6 +229,7 @@ module tidelink_fifo #(
         .overrun                (fifo_overrun),
         .underrun               (fifo_underrun),
         .flush                  (ctrl_flush),
+        .swi_ahb_inject_arm     (swi_ahb_inject_arm),
         // FC direct write interface
         .fc_wr_valid            (fc_wr_valid),
         .fc_wr_write            (fc_wr_write),
@@ -274,6 +278,7 @@ module tidelink_fifo #(
         .packet_committed    (packet_committed_irq),
         // Control outputs (to FIFO and returner)
         .ctrl_flush          (ctrl_flush),
+        .swi_ahb_inject_arm  (swi_ahb_inject_arm),
         // Returner control
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),

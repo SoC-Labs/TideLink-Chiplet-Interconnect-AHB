@@ -272,6 +272,15 @@ async def test_08_write_target_addr_calculation(dut):
     await do_reset(dut)
 
     for pkt_len in [1, 3, 10]:
+        # Flush between iterations: the write-side length latch may only re-arm
+        # from an IDLE state (ahb_pkt_start_ok requires !packet_active_r — the
+        # TWIN-2 context qualifier), so a fresh packet start needs the previous
+        # (never-completed) one cleared first. Mirrors test_35's pattern.
+        dut.flush.value = 1
+        await RisingEdge(dut.hclk)
+        dut.flush.value = 0
+        await ClockCycles(dut.hclk, 2)
+
         await ahb.write(0x0000, pkt_len << 20)
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)

@@ -87,6 +87,17 @@ them, plus hardened sim_gate independently. **The merge is small and safe, but n
   AFTER the CRC was disabled) — signature matches exactly (long DATA mangled, short CR/CRACK immune;
   force_always beacon every 32 words ⇒ saturation per burst). Root-cause lane is testing it.
 
+## Phase B/C — APPLYING the fixes (authorized 2026-07-19; shared RTL, not proposals)
+| Lane | What | State |
+|---|---|---|
+| B1 | `calibrated_once_q` → a firmware-reachable PHY retrain (W1P per the RTL's own comment), via the local_overrides pattern so the ASIC flist gets it too | agent running |
+| B2 | apply `twin2_fix.patch` to the real FIFO RTL + promote `sim_gate_fifo_twin2` from parked to active (negative control must still fail) | agent running |
+| B3 | export `tl_data_mode_o` from the acc→top→IP wrapper; rewire the tidechart election off the tb hack onto the REAL port | agent running |
+| C | PHC hop: fix the binding (generator input, not the generated file), wire servo source 1, honest assessment of the missing PHC exports | agent running |
+**Not started, deliberately:** the CRC default revert — deferred to Monday's silicon measurement
+(runtime bit[16] clear + byte-exactness checked ALONGSIDE crc_corrupt). Exclusive file ownership per
+lane prevents collisions; I run the full gate once, after all four land.
+
 ## Blocked on David (Monday — nothing blocks the weekend work)
 1. Merge `wip/kr260-recovery-2026-07` (tag `kr260-recovery-g1`) to integ; then deploy the
    G2-verified bitstreams via `make deploy_pair_role SOC=kr260` (new fpgautil path runs the AFI

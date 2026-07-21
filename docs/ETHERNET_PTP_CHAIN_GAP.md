@@ -22,7 +22,7 @@ this work closed, and gives the exact remaining wiring at RTL/BD level.
 | Gap | Before | Now |
 |-----|--------|-----|
 | **1. HA1588 timestamps a real event** | open — MAC datapath never exercised | **CLOSED at the capture step, in sim** (§1). Timestamp *value* read-back blocked by a located bus stall (§1.7) |
-| **2. HA1588 → PHC servo hop** | open — "is `ethernet_ss_ahb_phc` the answer?" | **ANSWERED: no.** Three stacked blockers (§2) |
+| **2. HA1588 → PHC servo hop** | open — "is `ethernet_ss_ahb_phc` the answer?" | **CLOSED IN SIM (2026-07-19).** All three blockers fixed; `ethernet_ss_ahb_phc` now elaborates (first time ever) and the servo is proven to discipline the PHC, 5/5 (§2) |
 | **3. TideLink PTP TX not driven** | open | still open, but **smaller than believed** (§3) |
 | **4. G1 election / sequencing** | open | unchanged; policy not RTL (§4) |
 
@@ -220,12 +220,24 @@ is bounded at: capture occurred, and its PTP identity crossed the link.
 
 ---
 
-## 2. GAP 2 — the HA1588 → PHC servo hop — **ANSWERED: `ethernet_ss_ahb_phc` does NOT close it**
+## 2. GAP 2 — the HA1588 → PHC servo hop — **CLOSED IN SIM (2026-07-19)**
 
-The task asked whether the PHC variant closes this hop. It does not. It is a
-structurally complete but **functionally hollow** integration, and it has never
-been simulated — there is **no testbench, cocotb suite, or sim target for
-`ethernet_ss_ahb_phc` anywhere**, which is why none of the below has surfaced.
+> **UPDATE 2026-07-19.** The analysis below (§2.1–§2.5) was written when the
+> answer was "no". All three blockers have since been fixed and the hop is now
+> **demonstrated in simulation**: the HA1588 servo measurably steps the PHC onto
+> a reference time, with a negative control proving attribution. See §2.6 for
+> what was changed and §2.7 for what honestly remains. §2.1–§2.5 are retained
+> because the diagnosis was correct and explains *why* each fix was needed.
+>
+> One correction to the original diagnosis is recorded in §2.6: part of blocker
+> C was **overstated** — `ha1588_servo_en` and `sync_interval` were *not* absent
+> from the PHC RTL, they were implemented and then stranded on internal nets.
+
+The task asked whether the PHC variant closes this hop. **As shipped, it did
+not.** It was a structurally complete but **functionally hollow** integration,
+and it had never been simulated — there was **no testbench, cocotb suite, or sim
+target for `ethernet_ss_ahb_phc` anywhere**, which is why none of the below had
+surfaced.
 
 ### 2.1 Blocker A — the generated top cannot even bind to the PHC RTL
 
@@ -345,6 +357,156 @@ same contract. Source select is `servo_src_sel` (`phc.sv:169-186`) from
 
 ---
 
+### 2.6 What was actually changed (2026-07-19), and the evidence
+
+**Authority question, settled first.** `build_soc_phc/rtl/ethernet_ss_ahb_phc.sv`
+is generated (`AUTO-GENERATED FILE - DO NOT EDIT DIRECTLY`, template
+`soc_toplevel.sv.j2`). Every fix below is therefore made in the **generator
+inputs** — `sys_desc/*.yaml`, hand-written RTL, and in one case the generator
+itself — and the top regenerated with `make soc_model_phc`. No generated file
+was hand-edited.
+
+A second point settled the naming dispute: `ethmac_ahb`, `ha1588_ahb` and
+`ethmac_subsystem_ahb` are *also* `gen: False` and *also* declared with
+`HCLK`/`ahb_slave` in YAML, and their RTL conforms to the generator's canonical
+AHB target names (`nanosoc_gen/lib/interfaces/ahb_slave.yaml`). **The generator
+convention is the authority; the PHC IP is the outlier.** But renaming
+`PHC_AHB`'s ports would break its own cocotb bench and `cdc/Makefile`
+(`TOP_phc_ahb = PHC_AHB`), so the fix is an adapter — the same pattern already
+used for the MAC.
+
+#### Blocker A — binding. **FIXED.**
+
+| Change | Repo | Generated? |
+|---|---|---|
+| New `module phc_ahb` adapter wrapping `PHC_AHB`: maps `HCLK`→`hclk`, `HSEL`→`ahbs_hsel` etc., absorbs `HBURST`/`HPROT`/`HMASTLOCK`, slices `HADDR[APB_ADDR_W-1:0]` | `ethernet-subsystem-ahb/src/rtl/phc_ahb_soc_wrapper.sv` | source (new) |
+| `ahb_slave` ADDR_WIDTH `$APB_ADDR_W` → `$SYS_ADDR_W`; added `SYS_ADDR_W` param | `sys_desc/phc_ahb.yaml` | generator input |
+| Added adapter to the flist | `flist/ethernet_ss_ahb_phc.flist` | source |
+| `PHC_HOME` was never exported despite the PHC flist requiring it | `set_env.sh` | source |
+
+Two further defects surfaced only once elaboration was actually attempted:
+
+- **The generated interconnect flist pointed at the wrong build directory.**
+  `ahb_interconnect.flist.j2` hardcoded `build_soc/`, so *every variant build*
+  (`build_soc_phc`, `build_soc_m0`) emitted a flist referencing the **default
+  build's** RTL. Invisible until now because the default build is literally
+  named `build_soc`. Fixed in the generator (`backends/ahb.py` now passes
+  `build_dir_name` into the template). Backward compatible: the default build's
+  flist regenerates byte-identical.
+- Missing `-timescale` on the elaboration command (bench-side, not RTL).
+
+**Evidence — first-ever elaboration of `ethernet_ss_ahb_phc`, 0 errors:**
+
+```
+xrun -elaborate -sv -timescale 1ns/1ps -top ethernet_ss_ahb_phc \
+     -f flist/ethernet_ss_ahb_phc.flist
+   => 0 errors (warnings only: expected unconnected servo-source-0 tie-offs)
+
+xcelium> describe ethernet_ss_ahb_phc.u_phc_0
+ethernet_ss_ahb_phc.u_phc_0...instance of module phc_ahb
+xcelium> describe ethernet_ss_ahb_phc.u_phc_0.u_phc_ahb
+ethernet_ss_ahb_phc.u_phc_0.u_phc_ahb...instance of module PHC_AHB
+```
+
+The binding is real, not merely name-resolved.
+
+#### Blocker B — servo source 1 tied off. **FIXED.**
+
+`sys_desc/ethernet_ss_ahb_phc.yaml`: the 15 servo signals were added to
+`u_ethmac_0`'s connection list (previously **absent entirely**, so they dangled
+in the generated top), 15 internal wires declared, and the PHC's source-1
+tie-offs replaced with the real servo connections per the §2.5 plan.
+`ethmac_subsystem_ahb.v:239-240` no longer discards
+`ha1588_servo_locked`/`phase_step_active` — they are now output ports.
+
+Note `hw_capture_1` is now driven by **`ha1588_hw_capture` (the servo)**, not
+raw `rtc_time_one_pps`. This also resolves §2.4's CDC hazard: the crossing now
+goes through `ha1588_servo`'s existing toggle handshake instead of an
+unsynchronised `rtc_clk` pulse.
+
+#### Blocker C — PHC exports. **FIXED, and partly overstated in the original diagnosis.**
+
+The original §2.3 said `ha1588_servo_en` and `sync_interval` "do not exist in
+the RTL". **That is not accurate.** They were fully implemented — registers,
+reset values, read-back and all (`phc_apb_regs.sv:91-94, 277-296, 390-392`) —
+and `phc.sv:155-159` even declared them with the comment *"passed through to
+external servo"*. They were simply **declared as internal nets and never given a
+port**. The signals were manufactured and then thrown away one level short of
+the boundary. The same was true of live time: `phc_clock_core` has always output
+`seconds`/`nanoseconds`/`sub_nanoseconds` and `phc.sv:110-112` already carried
+them.
+
+So the fix was **purely additive plumbing, not new logic** — materially cheaper
+than the 1–2 d estimated:
+
+- `ptp-hardware-clock-ahb/src/rtl/phc.sv` — added outputs `ha1588_servo_en_o`,
+  `sync_interval_o`, `seconds_o`, `nanoseconds_o`, `sub_nanoseconds_o`, each a
+  continuous assign from an existing internal net.
+- `ptp-hardware-clock-ahb/src/rtl/phc_ahb.sv` — same five, passed through.
+- `sys_desc/phc_ahb.yaml` — declared the two servo-config outputs (the three
+  live-time ones were already declared; the YAML *was* ahead of the RTL there).
+
+**Why this was a hard blocker, not cosmetic:** `ha1588_servo` uses
+`phc_seconds`/`phc_nanoseconds` for its *interval timer*
+(`ha1588_servo.sv:160-200`). With them tied to zero the PHC time never advances
+past the target, so `sync_fire` can never assert and **the servo never runs at
+all**. This is exactly the state the pre-existing `ethmac_phc_sync` bench was
+in: `wire [47:0] phc_seconds = 48'b0;` and `.ha1588_servo_en(1'b0)`.
+
+#### Evidence — the servo actually disciplines the clock
+
+New bench `ptp-hardware-clock-ahb/cocotb/phc_ha1588_servo_loop/`, wired to mirror
+exactly what `ethernet_ss_ahb_phc` now generates:
+
+```
+test_loop_01_servo_en_export          PASS   SERVO_CTRL[1] reaches servo.enable
+test_loop_02_sync_interval_export     PASS   SYNC_INTERVAL reaches servo
+test_loop_03_live_time_export         PASS   live time advanced 1000 ns / 250 cyc
+test_loop_04_servo_disciplines_phc    PASS   PHC 100.000000012 -> 200.000000012
+                                             (HA1588 reference = 200.000000000)
+test_loop_05_negative_control         PASS   servo disabled => no capture, no
+                                             set-time, PHC stays at 100 s
+TESTS=5 PASS=5 FAIL=0
+```
+
+Test 04 is the result: a deliberate 100-second offset, and the servo drives
+capture → compute → set-time until the PHC lands on the reference. Test 05 is
+its control — without it, test 04 could have passed for reasons unrelated to the
+servo. Full PHC regression **5/5** (`cocotb/Makefile` ENVS extended); the four
+pre-existing environments still pass, so the added ports changed no behaviour.
+
+Sibling builds verified un-regressed: `ethernet_ss_ahb` (default) still
+elaborates with **0 errors**, and the default build's generated flist is
+byte-identical after the generator change.
+
+### 2.7 What remains on this hop — honestly
+
+The servo loop is proven **at the servo/PHC block level**, and the subsystem that
+contains it **elaborates**. These two facts do not yet compose into a proven
+subsystem-level loop. Specifically still open:
+
+1. **No subsystem-level functional sim.** `ethernet_ss_ahb_phc` has been
+   elaborated and its hierarchy inspected, but nothing has been *driven* through
+   its AHB. The servo loop was proven in a dedicated bench that instantiates
+   `phc` + `ha1588_servo` directly, not through the subsystem's interconnect and
+   AHB-to-APB bridge. Item 6 in §5 is reduced, not eliminated.
+2. **The HA1588 RTC is stubbed in that bench.** `rtc_time_ptp_sec/ns` are driven
+   by the test, standing in for a disciplined grandmaster. The join between
+   Gap 1's *proven MII capture* and this *proven servo* — i.e. a real timestamped
+   frame moving the PHC — is **not yet demonstrated end to end**.
+3. **`eth_rx_capture`/`eth_tx_capture` are still tied `1'b0`** in the PHC variant
+   even though the MAC exports `rx_ptp_event`/`tx_ptp_event`. Cheap to wire; not
+   done here because it is a separate capture path from the servo hop.
+4. **Servo source 0 (TideLink) remains tied off** — unchanged, and Gap 3's
+   concern.
+5. **`ethmac_phc_sync` does not currently build** — its default `PHC_HOME` points
+   at a nonexistent path, and with that corrected it fails on a missing
+   `eth_rx_cksum` source in its own Makefile. **Pre-existing and unrelated** to
+   this work (it fails at `ethmac_subsystem_apb.v:514`, untouched here), but it
+   means that bench is not a working regression guard today.
+
+---
+
 ## 3. GAP 3 — TideLink PTP TX is not driven
 
 **Smaller than the recon implied.** The PTP block is *not* stubbed: `STUB_PTP`
@@ -386,23 +548,34 @@ strap wanted before tapeout, independent of PTP.
 
 | # | Item | Where | Est. |
 |---|------|-------|------|
-| 1 | Fix PHC instantiation: module name case, `ahbs_*` port names, drop `HBURST`/`HPROT`/`HMASTLOCK`, truncate `haddr` to `APB_ADDR_W` | `sys_desc/ethernet_ss_ahb_phc.yaml` (generator source) + regenerate `build_soc_phc/` | **0.5 d** |
-| 2 | Wire HA1588 servo → PHC source 1 (the 8 signals in §2.5) | `ethernet_ss_ahb_phc.yaml:263-294` (`u_ethmac_0` conn list) + `:407-419` (PHC conn list) | **0.5 d** |
-| 3 | Stop discarding `ha1588_servo_locked` / `phase_step_active` | `ethmac_subsystem_ahb.v:239-240` | **0.5 h** |
-| 4 | Add `seconds_o`/`nanoseconds_o`/`sub_nanoseconds_o` + `ha1588_servo_en`/`sync_interval` exports to `phc`/`PHC_AHB` (YAML already specifies them; RTL does not implement) | `ptp-hardware-clock-ahb/src/rtl/phc.sv`, `phc_ahb.sv` | **1–2 d** |
-| 5 | Synchronise `rtc_time_one_pps` into `SYS_HCLK` (or route via `ha1588_servo`'s existing handshake) | PHC variant top | **0.5 d** |
-| 6 | First-ever subsystem-level sim for `ethernet_ss_ahb_phc` | new cocotb dir; model on `ethmac_phc_sync/tb_top.sv` | **1 d** |
+| ~~1~~ | ~~Fix PHC instantiation~~ | **DONE 2026-07-19** — adapter `phc_ahb_soc_wrapper.sv` + yaml; also fixed a generator bug emitting variant flists pointing at `build_soc/` | ~~0.5 d~~ |
+| ~~2~~ | ~~Wire HA1588 servo → PHC source 1~~ | **DONE** — 15 signals in `ethernet_ss_ahb_phc.yaml` (both conn lists + internal wires) | ~~0.5 d~~ |
+| ~~3~~ | ~~Stop discarding `ha1588_servo_locked`/`phase_step_active`~~ | **DONE** — now output ports of `ethmac_subsystem_ahb.v` | ~~0.5 h~~ |
+| ~~4~~ | ~~Add PHC exports~~ | **DONE, ~2 h not 1–2 d** — the signals already existed internally; it was plumbing, not new logic (§2.6) | ~~1–2 d~~ |
+| ~~5~~ | ~~Synchronise `rtc_time_one_pps` into `SYS_HCLK`~~ | **DONE by construction** — `hw_capture_1` now comes from the servo, through its existing toggle handshake, not raw 1PPS | ~~0.5 d~~ |
+| 6 | Subsystem-level *functional* sim for `ethernet_ss_ahb_phc` (elaboration + hierarchy now proven; nothing driven through its AHB yet) | new cocotb dir | **0.5 d** (was 1 d) |
+| 6b | Join Gap 1 to Gap 2: a real MII-timestamped frame moving the PHC, end to end. The two halves are each proven separately; the join is not | `cocotb/eth_ptp_chain/` + PHC | **1 d** |
+| 6c | Wire `eth_rx_capture`/`eth_tx_capture` from the MAC's `rx/tx_ptp_event` (still `1'b0`) | `ethernet_ss_ahb_phc.yaml` | **0.5 h** |
+| 6d | Repair `ethmac_phc_sync` (broken `PHC_HOME` default; missing `eth_rx_cksum` source). Pre-existing, unrelated, but it is not a working guard today | `ethernet-mac-ahb/cocotb/ethmac_phc_sync/Makefile` | **0.5 h** |
 | 7 | Extend `eth_ptp_chain` to instantiate a PHC on die_b and drive TideLink `ahb_ptp` + `phc_*` | `cocotb/eth_ptp_chain/tb_top.sv` | **1–2 d** |
 | 8 | Pin grandmaster by strap (G1) | config/firmware | **0.5 d** |
 | 9 | Localise the TSU queue-pop bus stall (§1.7) — waveform on `u_ethmac_0`, `reg.v:394-406` ack path through `wb_slv_wrapper`/`ahb3lite_to_wb` | `ethernet-mac-ahb` | **0.5–1 d** |
 | 10 | Align `flist/ha1588_ahb.flist` to the fully-patched HA1588 set (§1.7) | `ethernet-mac-ahb/flist/ha1588_ahb.flist:5-9` | **0.5 h** |
 
-**Distance to demo:** items 1–3 + 6 (~2.5 d) yield *PHC snapshots disciplined by
-HA1588 captures* — enough for a visible grandmaster→PHC hop. A genuinely
-**closed** servo loop additionally needs item 4 (~1–2 d), which is real RTL work
-in the PHC IP, not integration. Item 7 then joins TideLink as source 0. Call it
-**~4–6 engineering days to a sim-complete chain**, plus M2 (physical PHY) before
-any 1588 *conformance* claim.
+**Distance to demo — revised 2026-07-19.** Items 1–5 are done, and they were the
+bulk of the estimate. A genuinely **closed servo loop is now demonstrated** (§2.6,
+5/5 with a negative control) — so the "real RTL work in the PHC IP" that item 4
+was priced for turned out to be ~2 h of plumbing, because the logic was already
+there and merely stranded.
+
+What is left before the *chain* is sim-complete is items 6/6b/6c (~1.5–2 d): the
+subsystem needs a functional bench driven through its own AHB, and Gap 1's proven
+capture must be joined to Gap 2's proven servo. **Do not read §2.6 as an
+end-to-end grandmaster demo — it is two proven halves that have not yet been run
+as one.** Then item 7 (~1–2 d) joins TideLink as source 0.
+
+Revised total: **~3–4 engineering days to a sim-complete chain** (was 4–6), plus
+M2 (physical PHY) before any 1588 *conformance* claim.
 
 ---
 
@@ -416,5 +589,33 @@ any 1588 *conformance* claim.
 | `cocotb/eth_ptp_chain/eth_pair_common.py` | HA1588 TSU + MAC TX register map |
 | `cocotb/eth_ptp_chain/TRANSCRIPT.md` | measured transcripts, both runs |
 
-Nothing outside `cocotb/eth_ptp_chain/` and this file was modified. No commits.
-`/research/AAA/**` was read via flist reference only.
+Nothing outside `cocotb/eth_ptp_chain/` and this file was modified by *that*
+work. No commits. `/research/AAA/**` was read via flist reference only.
+
+### 6.1 Files changed by the Gap 2 work (2026-07-19)
+
+**`ptp-hardware-clock-ahb`** (PHC IP)
+
+| Path | Change |
+|------|--------|
+| `src/rtl/phc.sv` | +5 output ports, each an assign from an existing internal net |
+| `src/rtl/phc_ahb.sv` | same 5 passed through `PHC_AHB` |
+| `cocotb/phc_ha1588_servo_loop/{tb_top.sv,test_*.py,Makefile}` | **new** — the closed-loop bench (5 tests) |
+| `cocotb/Makefile` | added the new env to `ENVS` |
+
+**`nanoSoC-refactor/ethernet-subsystem-ahb`**
+
+| Path | Change | Generated? |
+|------|--------|-----------|
+| `src/rtl/phc_ahb_soc_wrapper.sv` | **new** — `module phc_ahb` adapter around `PHC_AHB` | source |
+| `src/rtl/ethmac_subsystem_ahb.v` | export `ha1588_servo_locked`/`phase_step_active` instead of discarding | source |
+| `sys_desc/phc_ahb.yaml` | `SYS_ADDR_W` param; ADDR_WIDTH fix; 2 servo-config outputs | generator input |
+| `sys_desc/ethernet_ss_ahb_phc.yaml` | 15 servo conns on `u_ethmac_0`, 15 internal wires, source-1 tie-offs replaced | generator input |
+| `flist/ethernet_ss_ahb_phc.flist` | added the adapter | source |
+| `set_env.sh` | export `PHC_HOME` (was required by the flist but never set) | source |
+| `nanosoc_arch_tech/nanosoc_gen/soc_model/backends/ahb.py` | pass `build_dir_name` to the flist template | **generator** |
+| `nanosoc_arch_tech/nanosoc_gen/.../templates/ahb_interconnect.flist.j2` | use `{{ build_dir_name }}` instead of hardcoded `build_soc` | **generator** |
+| `build_soc_phc/**` | regenerated via `make soc_model_phc` — **not hand-edited** | generated |
+
+No commits anywhere. `/research/AAA/**` untouched (read-only via flists).
+No `tidelink` file other than this document was modified.

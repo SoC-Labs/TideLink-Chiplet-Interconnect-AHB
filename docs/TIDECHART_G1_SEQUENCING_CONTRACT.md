@@ -1,8 +1,10 @@
 # TideChart ↔ TideLink election sequencing contract (closes G1/G2)
 
-Status: **PROPOSAL** (RTL changes below are NOT applied — reference/read-only trees).
-Evidence: `cocotb/tidechart_tidelink_pair/test_tc_pair_election_datamode.py` — **PASS**.
-Date: 2026-07-17.
+Status: **APPLIED in the tidelink repo** (§3.1) — **NOT YET LANDED** in the chiplet
+repo or the FPGA block designs (§3.2, §6: instructions for their owners).
+Evidence: both `cocotb/tidechart_tidelink_pair` tests **PASS on the real RTL port**
+(`tl_data_mode_o`), no longer on a testbench backdoor. See §4.
+Date: 2026-07-17 (proposal) / 2026-07-19 (applied).
 
 ---
 
@@ -97,9 +99,71 @@ The `tc_axis` TX-aperture gate and observability use of `link_active`/`role_lock
 are **unchanged** — `link_active` stays the coarse role-locked indicator; only the
 **election** gate moves to the new data-mode strobe.
 
-### 3.1 PROPOSAL diff — (a) FPGA/ASIC RTL: export a data-mode strobe
+### 3.1 APPLIED — (a) FPGA/ASIC RTL: export a data-mode strobe
 
-**NOT APPLIED** (shared/reference RTL). Three hunks.
+**APPLIED 2026-07-19.** Purely additive: one new output port per level, one new
+`assign`. No existing net is re-driven, re-timed or renamed; `link_active`
+(`tidelink_top.sv`) is untouched. Verified against the sim gates in §5.
+
+**Threshold — verified, not assumed.** The FCSM's own data-region test is
+`state >= 3'h4` (`WlinkGenericFCSM_6.v:737`, converse `state < 3'h4` at `:1648`).
+So `>= 3'd4` is right.
+
+**The FCSM operational region is states 4..7 — and it is CLOSED.**
+(An earlier revision of this doc and of the RTL comment said "states 0..5". That
+was **wrong**; states 6 and 7 exist. The logic was never affected — `>= 3'd4` is
+bit `[2]` for every 3-bit value — but the stated rationale was false, so it is
+corrected here.)
+
+| State | Meaning | Exits to |
+|---|---|---|
+| 0..3 | reset / CR / credit init — **link not carrying** | 1,2,3,4 |
+| 4 | data exchange | 4,5,6,7 |
+| 5 | LINK_DATA | 4,5,6,7 |
+| 6 | **SEND_ACK** (transient TX) | 4,5,7 |
+| 7 | **SEND_NACK** (transient TX) | 4,7 |
+
+Next-state chain: `:776/:768/:762` (from 4), `:790/:784/:782/:780` (from 5),
+`:809/:800` (from 6), `:795` (from 7). **No arc returns from {4,5,6,7} to 0..3
+short of reset.** The region is absorbing, so `tl_data_mode_o` is monotonic *by
+construction* (0 → 1 once, then stable until reset) — not merely observed to be.
+
+**Is holding the strobe through 6 and 7 correct? YES — and it is required.**
+
+* **State 6 = SEND_ACK is routine healthy traffic.** ACKs are emitted constantly
+  on a working link. A strobe that dropped on state 6 would chatter continuously
+  during normal operation and repeatedly re-arm `ST_WAIT_LINKS` mid-fabric. The
+  bench census confirms both dies visit state 6 while the strobe is high
+  (`die_a=[4,5,6] die_b=[4,5,6]`) with zero falls.
+* **State 7 = SEND_NACK is a retransmission request, not a link-down event.**
+  NACK→replay is the reliable-link mechanism working as designed; the packet is
+  redelivered and the FSM falls back to state 4 on `auto_tx_out_advance`
+  (`:795`). The link genuinely still carries traffic, so TideChart should
+  continue to believe so. Dropping the gate on a recoverable, expected event
+  would be actively harmful.
+* **The known state-7 wedge does not change this.** The F-1 watchdog
+  (`:113-172`) documents a real failure where the master wedged in state 7 for
+  ~660 µs; it self-recovers. `tl_data_mode_o` deliberately stays high through
+  it: this port means *"the link layer has reached its operational region"*, it
+  is **not** a liveness or health indicator. TideChart's election needs a
+  one-shot release, and once the election has settled a transient wedge must not
+  un-elect anything. If a link-health signal is ever needed, it should be a
+  **separate** port — do not overload this one.
+
+**Why `>= 3'd4` and NOT `== 3'd4`** (this matters, and the retire-autonomy logic
+next door genuinely wants the narrower `==`): on a 3-bit state, `>= 3'd4` is
+*exactly* bit `[2]`. That has two consequences, both good:
+
+1. **Glitch-free by construction.** It is a single bit taken off the far flop of
+   the existing 2-flop `apb_clk` synchroniser — a direct flop output, not a
+   multi-bit comparator that could decode a partially-updated CDC word.
+2. **Stable across normal operation.** The FCSM moves between states 4 and 5
+   during ordinary credit/data exchange. `== 3'd4` would drop LOW on every
+   4->5 step, momentarily deasserting the election gate and re-arming
+   `ST_WAIT_LINKS` mid-fabric. `>= 3'd4` does not move. The bench asserts zero
+   falls-after-rise on both dies (§4).
+
+Three hunks, as landed.
 
 **A. `src/rtl/local_overrides/axi_chiplet_controller.sv` — new output port**
 (the FCSM state is already synced here as `sync_obs_fcsm_state_1`):
@@ -133,10 +197,12 @@ are **unchanged** — `link_active` stays the coarse role-locked indicator; only
 
 `link_active` (`tidelink_top.sv:2539`) is left exactly as is.
 
-### 3.2 PROPOSAL diff — (b) ASIC integration `nanosoc_eth_chiplet.sv`
+### 3.2 TO BE LANDED BY THEIR OWNERS — (b) ASIC integration `nanosoc_eth_chiplet.sv`
 
-**NOT APPLIED** (read-only reference). Gate the election on the new strobe while
-leaving the d2d TX-aperture gate on `tc_link_active` untouched:
+**NOT APPLIED — different repo/owner.** Line numbers below were re-verified
+against `nanosoc-ethernet-chiplet/src/rtl/nanosoc_eth_chiplet.sv` on 2026-07-19
+and are current. Gate the election on the new strobe while leaving the d2d
+TX-aperture gate on `tc_link_active` untouched:
 
 ```diff
    wire        tc_link_active;
@@ -155,11 +221,62 @@ leaving the d2d TX-aperture gate on `tc_link_active` untouched:
 +      .link_active                (tc_data_mode),
 ```
 
-That single net swap at `nanosoc_eth_chiplet.sv:809` is the whole ASIC fix. The
-FPGA BD fix is identical in spirit: when `tidechart_shim` is instantiated next to
-`tidelink_top` in the KR260 block designs, connect its `link_active` port to the
-new `tl_data_mode_o` pin of the TideLink IP, not to the IP's `link_active` pin.
-(`link_active` still drives the BD's status/LED and any TX-aperture gate.)
+That single net swap at `nanosoc_eth_chiplet.sv:809` is the whole ASIC fix.
+
+**Verified line map** (`nanosoc_eth_chiplet.sv`, 2026-07-19). The chiplet
+instantiates `tidelink_top` **directly** at `:598` (NOT via
+`tidelink_dft_wrapper` — see §6.3):
+
+| Line | What | Action |
+|---|---|---|
+| `:347` | `wire tc_link_active;` | keep; **add** `wire tc_data_mode;` |
+| `:357` | `assign link_active_o = tc_link_active;` | **unchanged** |
+| `:507` | `u_d2d_decode.link_active_i(tc_link_active)` | **unchanged** (TX aperture) |
+| `:598` | `tidelink_top ... u_tidelink (` | instance to extend |
+| `:728` | `.link_active(tc_link_active)` | keep; **add** `.tl_data_mode_o(tc_data_mode)` |
+| `:796` | `tidechart_shim #(` | the election consumer |
+| `:809` | `.link_active(tc_link_active)` | **CHANGE to** `.link_active(tc_data_mode)` |
+
+**Scope note for the reviewer of that swap:** `tidechart_shim`'s single
+`link_active` input fans out inside `tidechart_controller` to **three**
+consumers — `u_election`, `u_enum` and `u_link_state_agent`. The one-net swap
+therefore moves all three to the data-mode milestone, not just the election.
+That is intended and conservative (all three want "the link can carry traffic",
+and data-mode is strictly later than role-lock, so nothing is released earlier
+than before). It is called out here so it is a decision, not a surprise.
+
+### 3.3 TO BE LANDED BY THEIR OWNERS — (c) FPGA block designs (KR260)
+
+**NOT APPLIED — `fpga/targets/*/tidelink_design.tcl` is another lane's file.**
+
+⚠️ **Correction to the original proposal.** The proposal assumed the KR260 BD
+tcls need "the same one-net swap". They do **not**, because as of 2026-07-19
+**no KR260 block design instantiates `tidechart_shim` at all** (`grep -rl
+tidechart fpga/targets/` returns nothing). The only `link_active` consumer in
+the BD is the status LED:
+
+```tcl
+# fpga/targets/kr260-pair-ptp/tidelink_design.tcl:809
+connect_bd_net [get_bd_pins tidelink_0/link_active] [get_bd_ports led0]
+```
+
+That connection is **correct as-is and must NOT be changed** — the LED means
+"D2D link up / roles locked", which is exactly `link_active`.
+
+So the FPGA work is:
+
+1. **Re-package the IP.** `tidelink_vivado_wrapper.v` has a new output port, so
+   `component.xml` must be regenerated or Vivado will not show a
+   `tidelink_0/tl_data_mode_o` pin. Until that happens the pin does not exist to
+   connect to. ⚠️ Watch for the known **stale-IP** failure mode (a farm
+   `package_ip` can ship an old IP, and a differing bitstream md5 proves
+   nothing — verify the pin exists structurally in the generated BD, e.g.
+   `get_bd_pins tidelink_0/tl_data_mode_o` must return non-empty).
+2. **Only when a TideChart is added to a BD**, connect that new pin to the
+   shim's `link_active` input. Leave `led0` on `link_active`.
+
+No BD change is required for the current bitstreams; this change is inert on
+FPGA until a TideChart is instantiated.
 
 > Note: `tidechart_shim`/`tidechart_election_fsm` need **no** change — the FSM
 > already gates purely on its `link_active` input (`tidechart_election_fsm.sv:183`,
@@ -170,56 +287,161 @@ new `tl_data_mode_o` pin of the TideLink IP, not to the IP's `link_active` pin.
 
 ## 4. Test evidence
 
-`test_tc_pair_election_datamode.py` — the sibling of the smoke test — proves the
-fixed sequencing on the real pair. It:
+The bench no longer models the fix — it **consumes the real port**.
+`tb_tc_pair.sv` now takes `tl_data_mode_o` off each `tidelink_top` and feeds it
+to that die's `tidechart_shim.link_active`, exactly as §3.2 asks the ASIC to.
+The earlier backdoor-FCSM hold in Python is **gone**.
 
-1. **Holds** `election_start` deasserted on both dies (it simply never writes
-   `TC_CTRL[0]`) until the pair is genuinely in data mode:
-   `role_lock → cal_done → do_to_data_mode`, verified by **FCSM state ≥ 4 on both
-   dies** (this is exactly milestone-2 of the contract; the bench reads it by
-   backdoor, modelling what `tl_data_mode_o` would carry).
-2. Arms both elections in data mode, 16 cycles apart. (The offset is a **bench
-   artefact, not part of the contract**: `PUF_ENABLE=0` ⇒ `puf_seed=0`, and the
-   two dies share one reset, so their election LFSRs step in lockstep; arming on
-   the same cycle would give identical `random_id`s — a legitimate TIE. Real
-   silicon never resets two dies on the same cycle; the offset models that.)
-3. Monitors both dies' `tc_axis_rx` for accepted `PKT_EXT` election words.
-
-Transcript (`TB_TOP_NO_DUMP=1 MODULE=test_tc_pair_election_datamode make`):
+`test_tc_pair_election_datamode.py` therefore does the *opposite* of holding: it
+arms `election_start` on **both dies BEFORE data mode** — the precise condition
+that used to dual-root — and requires the RTL to hold them:
 
 ```
-  1600ns [die_a TideChart] DEVICE_CLASS=0x0001  PORT_COUNT=2
-  6840ns [bring-up] role_locked master=1 slave=1 (PASS)  link_active m=1 s=1
- 10960ns [cal] SWI_LANE_STATUS M=0x440300ff S=0x440300ff  cal M=DONE S=DONE
-113040ns [data-mode] FCSM state m=4 s=4 (>=4 == LL credit/data-exchange region)
-113600ns [arm] both elections armed in data mode (16-cy offset)  own_random die_a=0x5d8c die_b=0xffff
-162120ns [election] die_a: done=1 is_root=0 best=0x00014a16 own_rand=0x5d8c  FSM=SETTLED
-162120ns [election] die_b: done=1 is_root=1 best=0x00014a16 own_rand=0x4a16  FSM=SETTLED
-162120ns [crossing] PKT_EXT ELECTION words delivered  die_a.rx=1 (first=0x800100014a16)  die_b.rx=1 (first=0x800100015d8c)
-   (a) SINGLE root across the two dies           : PASS (die_a root=0, die_b root=1)
-   (b) PKT_EXT CLAIM crossed the real TideLink   : PASS (die_a.rx=1, die_b.rx=1)
+  6840ns [G1] at role_lock: link_active m=1 s=1  BUT  tl_data_mode_o m=0 s=0
+             (the two milestones are distinct — this is the whole bug)
+  7400ns [arm] BOTH elections armed PRE-data-mode (the G1 trigger condition)
+ 11400ns [hold] armed but pre-data-mode: die_a FSM=WAIT_LINKS die_b FSM=WAIT_LINKS
+117720ns [data-mode] FCSM state m=4 s=4
+117720ns [released] tl_data_mode_o rose  die_a@31420ns die_b@31740ns
+             (election released BY THE RTL)  own_random die_a=0x0448 die_b=0x5ff1
+123840ns [glitch] tl_data_mode_o falls-after-rise  die_a=0 die_b=0
+123840ns [election] die_a: done=1 is_root=1 best=0x00010448 own_rand=0x0448  FSM=SETTLED
+123840ns [election] die_b: done=1 is_root=0 best=0x00010448 own_rand=0x5ff1  FSM=SETTLED
+123840ns [crossing] PKT_EXT delivered  die_a.rx=1 (0x800100015ff1)  die_b.rx=1 (0x800100010448)
+   election armed PRE-data-mode, HELD by the RTL : PASS (tl_data_mode_o, not a bench hack)
+   (a) SINGLE root across the two dies           : PASS (die_a root=1, die_b root=0)
+   (b) PKT_EXT CLAIM crossed the real TideLink   : PASS
  ** TESTS=1 PASS=1 FAIL=0 SKIP=0 **
 ```
 
+`test_tc_pair_smoke.py` was re-pointed at the same port and now asserts the
+**stronger** property — the election stays parked *through* role_lock and is
+released only at data mode:
+
+```
+  8840ns [role_lock] link_active=1 data_mode=0  die_a election FSM = WAIT_LINKS
+  8840ns G1 HELD: election still parked at role_lock — gate is data-mode, not role-locked.
+ 75040ns [data mode] data_mode=1  die_a election FSM = SETTLED
+ 75040ns CROSS-BOUNDARY PROVEN: election advanced ONLY after tl_data_mode_o (and NOT at role_lock)
+ 81460ns [election] die_a: done=1 is_root=1  die_b: done=1 is_root=0
+ ** TESTS=1 PASS=1 FAIL=0 SKIP=0 **
+```
+
+Note the smoke test's own stretch line now reports **one root** (die_a=1,
+die_b=0) where it previously dual-rooted — G1 closing as a side effect, in the
+very test that first exposed it.
+
 Reading the evidence:
 
-* **link_active asserts at 6.8 µs; data mode at 113 µs** — the G1 gap (~5 µs in
-  sim; larger on silicon at the deployed link rate) made concrete.
-* **(a) single root:** die_b wins (its `random_id 0x4a16 < 0x5d8c`); die_a settles
-  `is_root=0` with an uplink toward die_b. Exactly one root. **Closes G1** — the
-  identical stack that dual-rooted in the smoke test is single-root once the
-  election is held to data mode.
-* **(b) PKT_EXT crossed — both directions:** die_a.rx received die_b's claim
-  `0x8001_0001_4a16` and die_b.rx received die_a's claim `0x8001_0001_5d8c`
-  (`[47:46]=2'b10`=PKT_EXT, subtype `0x0001`=ELECTION_CLAIM). The non-root die's
-  `best_claim` (`0x00014a16`) ≠ its own random (`0x5d8c`) — it demonstrably
-  **adopted the peer's claim received over the link**, so the crossing is causal
-  to the outcome. **Closes G2** — first proof the `tc_axis` datapath carries
-  TideChart traffic end-to-end over a real TideLink pair.
+* **link_active asserts at 6.8 µs; data mode at ~31 µs** — measured off the real
+  port, and the gap is far larger than the ~5 µs originally estimated from FCSM
+  readback.
+* **The hold is hardware.** Both FSMs sat in `ST_WAIT_LINKS` at 11.4 µs while
+  armed and while `link_active=1`. No firmware, no bench poll.
+* **Glitch-free:** zero falls-after-rise on either die across the whole run.
+* **Desymmetrisation is now natural, not a bench artefact.** The two dies reach
+  data mode 320 ns apart (31420 vs 31740 ns), so they sample distinct
+  `random_id`s (0x0448 vs 0x5ff1) on their own. Under the RTL gate the WAIT_LINKS
+  exit cycle is set by `tl_data_mode_o`, **not** by when `election_start` was
+  written, so the old 16-cycle arming offset no longer desymmetrises anything —
+  it is retained only to keep the two APB writes from contending. The real
+  master/slave asymmetry does the work.
+* **(a)/(b) unchanged in substance:** exactly one root, and the non-root die's
+  `best_claim` ≠ its own random, so it demonstrably adopted a claim received
+  over the link — the crossing is causal to the outcome.
+
+**Closes G1** (the identical stack that dual-rooted is single-root once the
+election is held to data mode — now held by RTL) and **G2** (first proof the
+`tc_axis` datapath carries TideChart traffic end-to-end over a real TideLink
+pair, in both directions).
 
 ---
 
-## 5. Tapeout risk if unfixed
+## 5. No-regression evidence
+
+Run individually on the applied change (`source ./set_env.sh`,
+`TIDELINK_PHY_V2=1`):
+
+| Gate | Result |
+|---|---|
+| `sim_gate_retire_plumb` | **PASS** (291 s) |
+| `sim_gate_tc_smoke` | **PASS** (22 s) |
+| `sim_gate_tc_election` | **PASS** (7 s) |
+| `sim_gate_v2_data` | **PASS** (19 s) |
+| `sim_gate_v1elab` | **PASS** (24 s) |
+| `sim_gate_asicelab_v2` | **PASS** (14 s) |
+
+`retire_plumb` is the one that mattered: the retire-autonomy logic taps the
+*same* `sync_obs_fcsm_state_1` register (`axi_chiplet_controller.sv:4423/4428/
+4435`) with the narrower `== 3'd4`. The new export **reads** that register and
+drives nothing into it, so retire autonomy is untouched — confirmed by the gate.
+
+`v1elab` matters too: `sync_obs_fcsm_state_1` is declared and driven
+**unconditionally** (outside `\`ifdef TIDELINK_PHY_V2`), so the new port is valid
+in V1 builds as well as V2.
+
+---
+
+## 6. Landing checklist / gotchas for the other owners
+
+**6.1 Order.** The chiplet swap (§3.2) depends only on the tidelink RTL, which is
+applied. It can land immediately.
+
+**6.2 Unconnected is safe.** Every other `tidelink_top` instantiator (≈20
+benches) uses named port connections and simply leaves the new output
+unconnected — legal, injects no X, and harmless. No other bench needed a change.
+
+**6.3 `tidelink_dft_wrapper.sv` — FIXED (was finding F7).**
+`src/rtl/asic/tidelink_dft_wrapper.sv` forwards `link_active`, `d2d_reset_o`,
+`role_locked_o`, `tl_local_link_state_o` but originally had **no**
+`tl_data_mode_o`, so the G1 fix reached the FPGA path only — the wrong half of
+the design for a tapeout review. Now applied: new output port + `.tl_data_mode_o
+(tl_data_mode_o)` on the `tidelink_top` instantiation. Passthrough is direct,
+matching local convention (`any_test_mode` feeds only `.scan_mode`; no status
+output is test-gated).
+
+> ⚠️ **Coverage gap found while fixing this: `tidelink_dft_wrapper.sv` is in NO
+> flist** (`grep -rl tidelink_dft_wrapper flists/` is empty) and no `sim_gate`
+> elaborates it — both `sim_gate_asicelab*` gates run `-top tidelink_top`. So
+> nothing in CI would have caught the missing port, and nothing will catch the
+> next one. It was verified here by hand:
+> ```
+> vcs -full64 -sverilog -f flists/tidelink_top_full_asic_v2.flist \
+>     src/rtl/asic/tidelink_dft_wrapper.sv syn/asic/sim_stubs/rf_16k_stub.v \
+>     -top tidelink_dft_wrapper        # => rc 0, 78 modules
+> ```
+> **Recommend adding a `sim_gate_dftelab` doing exactly that.** Owner: whoever
+> owns the Makefile/flists (not this lane).
+
+**6.5 Corrected comment text for `axi_chiplet_controller.sv` (finding F8).**
+The applied port comment contains one false sentence — "FCSM states are 0..5" —
+which must be corrected in place (lane B1 owns that file; this lane did not
+edit it). Replace:
+
+```
+    // FCSM states are 0..5; 4 and 5 are the data-exchange region (see
+    // WlinkGenericFCSM_6.v `state >= 3'h4`), so bit[2] is the exact predicate.
+```
+
+with:
+
+```
+    // The FCSM's operational region is states 4..7 (4=data exchange,
+    // 5=LINK_DATA, 6=SEND_ACK, 7=SEND_NACK); 0..3 are reset/CR/credit init.
+    // That region is CLOSED — no arc returns to 0..3 short of reset — so
+    // bit[2] is exactly "the LL has reached its operational region", and it is
+    // monotonic by construction. Holding through 6/7 is INTENDED: SEND_ACK is
+    // routine healthy traffic and SEND_NACK is a retransmission request, not a
+    // link-down event. This port is NOT a link-health/liveness signal; if one
+    // is ever needed it must be a separate port.
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md §3.1.
+```
+
+**6.4 The FPGA IP must be re-packaged** before the pin is connectable — see §3.3.
+
+---
+
+## 7. Tapeout risk if unfixed
 
 **Dual-root is a silent, post-tapeout, multi-die connectivity failure.**
 
@@ -243,3 +465,76 @@ when two real dies are wired together and expected to form one fabric — i.e. a
 multi-chiplet bring-up, after tapeout, where an RTL fix costs a respin. Gate the
 election on the data-mode strobe (§3) before committing the multi-die integration.
 ```
+
+
+## IMPLEMENTED 2026-07-19 (lane B3) — on real RTL, both proofs now run off the hardware port
+**RTL, purely additive (3 hunks):** `local_overrides/axi_chiplet_controller.sv` gains `data_mode_o`
+= `sync_obs_fcsm_state_1[2]`; `tidelink_top.sv` gains `tl_data_mode_o`; the FPGA IP wrapper forwards
+it. **`link_active` untouched.**
+**Threshold CONFIRMED not assumed:** FCSM states are 0-5 and its own data-region test is
+`state >= 3'h4` (`WlinkGenericFCSM_6.v:737`, converse `:1648`).
+**Glitch-free for a structural reason:** on a 3-bit state, `>= 3'd4` IS bit `[2]` — a single bit off
+the far flop of the existing 2-flop `apb_clk` synchroniser, so there is no multi-bit decode across a
+partially-updated CDC word. It is also **stable across FCSM 4<->5**, whereas the retire logic's
+`== 3'd4` would drop low on every 4->5 step and re-arm `ST_WAIT_LINKS` mid-fabric. Bench monitor
+asserts zero falls-after-rise: **0 on both dies.**
+**Stronger proof than before:** the test now ARMS BOTH DIES PRE-DATA-MODE (the exact condition that
+used to dual-root) and requires the RTL to hold them — parked in `WAIT_LINKS` at 11.4us while armed
+with `link_active=1`, released at data mode, single root, PKT_EXT crossing both ways. The Python
+backdoor-FCSM hold is GONE.
+**Measured:** `link_active` @6.84us vs `tl_data_mode_o` @31.42us — the gap is **much larger than the
+~5us this doc estimated**. The dies reach data mode **320 ns apart naturally**, so `random_id`s
+desymmetrise on their own; the old 16-cycle arming offset is now **vestigial** under an RTL gate.
+**No regression:** `retire_plumb` PASS (the export only READS the signal), plus tc_smoke,
+tc_election, v2_data, v1elab, asicelab_v2. V1 elab passing confirms the source register is outside
+`` `ifdef TIDELINK_PHY_V2 ``.
+
+### ⚠️ THREE CORRECTIONS TO THE PLAN OF RECORD
+1. **The "one-net swap" moves THREE consumers, not one** — `u_election`, `u_enum` and
+   `u_link_state_agent` all share the shim's single `link_active`. Intended and conservative
+   (data-mode is strictly later) but it must be **a decision, not a surprise**.
+2. 🔴 **The FPGA BD premise was WRONG: no KR260 BD instantiates `tidechart_shim` at all**, so there
+   is no net to swap. The only `link_active` use is `led0`, correct as-is. The real FPGA work is
+   **re-packaging the IP so the pin exists** — and verify it structurally
+   (`get_bd_pins tidelink_0/tl_data_mode_o`), given the known stale-IP trap.
+3. ⚠️ **`tidelink_dft_wrapper.sv` does NOT forward the new port.** Harmless today (the chiplet
+   instantiates `tidelink_top` directly, `:598`) but **if the ethernet chiplet is ever re-routed
+   through the DFT wrapper the strobe is silently lost and G1 RETURNS.**
+### Chiplet edit (verified line map, NOT applied)
+Add `wire tc_data_mode`; add `.tl_data_mode_o(tc_data_mode)` at `:728`; change **only** `:809` to
+`tc_data_mode`. Leave `:357` and `:507` on `tc_link_active`.
+### Unrelated latent issue spotted in-file
+`src/rtl/tidelink_top.sv` has a **pre-existing duplicate `wire ext_stalled`** (now :850 and :1322;
+in HEAD at :829/:1301). VCS elaborates and all gates pass, but it looks like a genuine latent
+collision worth a separate look.
+
+## POST-REVIEW (2026-07-19) — F7 applied, F8 answered
+**F7 APPLIED:** `src/rtl/asic/tidelink_dft_wrapper.sv` now declares `tl_data_mode_o` and connects it
+at the `tidelink_top` instantiation, so the G1 fix reaches the ASIC top.
+🔴 **GATE HOLE FOUND WHILE FIXING IT: `tidelink_dft_wrapper.sv` IS IN NO FLIST AT ALL**
+(`grep -rl tidelink_dft_wrapper flists/` is empty) **and neither ASIC gate elaborates it** — both
+`sim_gate_asicelab*` run `-top tidelink_top`. So **nothing in CI would have caught the missing port,
+and nothing will catch the next one.** Verified the fix by hand instead (`-top tidelink_dft_wrapper`
+against the ASIC V2 flist → rc 0, 78 modules). **RECOMMEND a `sim_gate_dftelab`.** Note this also
+means F7's practical blast radius today is smaller than "HIGH" implies — the wrapper is not in the
+current tapeout build path — but the fix is right regardless, and the ungated-top question needs an
+owner: *if the DFT wrapper is the intended ASIC top, why is it in no flist; if it is not, what is it for?*
+### F8 ANSWERED: behaviour CORRECT, the comment was FALSE
+**States 6 and 7 exist: 6 = SEND_ACK, 7 = SEND_NACK** (`WlinkGenericFCSM_6.v:768`, `:776`; the F-1
+watchdog header names state 7 SEND_NACK).
+- **The region {4,5,6,7} is CLOSED** — 4→{4,5,6,7}, 5→{4,5,6,7}, 6→{4,5,7}, 7→{4,7}; **no arc returns
+  to 0-3 short of reset** ⇒ `tl_data_mode_o` is **monotonic BY CONSTRUCTION**, not merely observed.
+- **State 6 is routine healthy traffic** (ACKs fire constantly); a strobe that dropped on SEND_ACK
+  would chatter and re-arm `ST_WAIT_LINKS` mid-fabric. Bench FCSM census: both dies visit **[4,5,6]**
+  while the strobe is high, **zero falls** — the open question is now measured fact.
+- **State 7 is a retransmission request, not link-down** — NACK→replay is the reliable-link mechanism
+  working; the FSM returns to 4 on `auto_tx_out_advance` (`:795`). Dropping the gate on a recoverable
+  expected event would be actively harmful.
+- ⚠️ **DESIGN STATEMENT, do not overload this port later:** `tl_data_mode_o` means *"the LL reached
+  its operational region"*. It is **NOT a liveness/health indicator** and deliberately stays high
+  through the documented state-7 wedge — election needs a one-shot release, and a transient wedge
+  must not un-elect a settled fabric. **If a link-health signal is ever wanted it must be a SEPARATE
+  port.**
+⚠️ Also seen: `v1elab`/`asicelab` FAILED on first run with `getcwd: cannot access parent directories`
+and a missing `simv.daidir` — **a stale/colliding build dir from concurrent lanes, not a port error**;
+both pass after `rm -rf` of the build dirs. Same class as the known co-scheduling hazard.

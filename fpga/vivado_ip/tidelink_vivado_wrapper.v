@@ -379,6 +379,12 @@ module tidelink_vivado_wrapper #(
     // Link / Congestion sideband — discrete status outputs (for TideChart agent)
     // =========================================================================
     output wire        link_active,
+    // Data-mode strobe (FCSM >= 4: link carries FC/EXT words). Gate TideChart's
+    // root election on THIS pin, not on link_active — link_active is
+    // role_locked and asserts ~5us earlier, before the link can carry a CLAIM,
+    // which silently dual-roots a 2-chiplet fabric.
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    output wire        tl_data_mode_o,
     output wire        d2d_reset_o,
     output wire  [4:0] tl_local_link_state_o,
     output wire        tl_link_state_change_o,
@@ -655,6 +661,7 @@ module tidelink_vivado_wrapper #(
         .tl_ewma_credit_o           (tl_ewma_credit_o),
         .tl_bcast_ack_i             (tl_bcast_ack_i),
         .link_active                (link_active),
+        .tl_data_mode_o             (tl_data_mode_o),
         .d2d_reset_o                (d2d_reset_o),
 
         // Role / negotiation / PUF

@@ -441,7 +441,36 @@ module axi_chiplet_controller #(
     output wire  [7:0]      obs_fe_rx_credit_max_o,
     output wire             obs_fe_rx_is_full_o,
     // SoC Labs Bug-A FCSM observation 2026-06-03
-    output wire             obs_a2l_replay_app_valid_o
+    output wire             obs_a2l_replay_app_valid_o,
+    // SoC Labs TideChart sequencing contract 2026-07-17 (G1 dual-root fix) —
+    // docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    //
+    // "The Wlink link layer is in its credit/data-exchange region", i.e. the
+    // link genuinely CARRIES FC/EXT words. This is a strictly LATER milestone
+    // than role_locked_o (~5us later in sim): role_locked only means the roles
+    // are settled and PHY training MAY start. TideChart's root election must be
+    // gated on THIS, not on role_locked/link_active — gating on role_locked
+    // elects before any CLAIM can cross the die boundary, so both dies
+    // self-root (a silent dual-root).
+    //
+    // Domain: apb_clk. Source is sync_obs_fcsm_state_1, the far side of the
+    // existing 2-flop apb_clk synchroniser on the Wlink FCSM state (the same
+    // net already published as APB 0x2108[19:17] and already consumed by the
+    // retire-autonomy logic). NOTE the decode `>= 3'd4` on a 3-bit state is
+    // EXACTLY bit [2], so this is a single synchronised flop output with no
+    // multi-bit decode hazard — it cannot glitch on a partial CDC update.
+    // The FCSM's operational region is states 4..7 (4=data exchange,
+    // 5=LINK_DATA, 6=SEND_ACK, 7=SEND_NACK); 0..3 are reset/CR/credit init.
+    // That region is CLOSED — no arc returns to 0..3 short of reset — so
+    // bit[2] is exactly "the LL has reached its operational region", and it is
+    // monotonic by construction. Holding through 6/7 is INTENDED: SEND_ACK is
+    // routine healthy traffic and SEND_NACK is a retransmission request, not a
+    // link-down event. This port is NOT a link-health/liveness signal; if one
+    // is ever needed it must be a separate port.
+    // (Corrected 2026-07-19 after review finding F8 — the previous "states are
+    // 0..5" was false; 6 and 7 exist. See the contract doc §3.1/§6.5.)
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md §3.1.
+    output wire             data_mode_o
 `ifdef TIDELINK_PHY_V2
     // SoC Labs V2 epoch-anchor engagement obs 2026-06-14 — pass-through of the
     // WlinkGPIOPHY lane-deskew anchor state up to tidelink_top's
@@ -1019,6 +1048,72 @@ module axi_chiplet_controller #(
     // re-triggers a fresh sweep that clears lane_fault — now against a live
     // peer pattern. POR-only domain, same as training_mode.
     reg        swi_recal_r;
+
+    // ---------------------------------------------------------------------
+    // Slot 0 bit[6] — SWI_FORCE_RECAL (P1, 2026-07-19, lane B1). WRITE-1-PULSE.
+    //
+    // THE DEFECT IT CLOSES: the calibrator latches `calibrated_once_q` on its
+    // first S_DONE and from then on gates off BOTH re-trigger edges, so the
+    // level SWI_RECAL above is a MEASURED NO-OP after first lock — there was no
+    // firmware-reachable PHY retrain at all, in the FPGA image AND the ASIC
+    // path (docs/LINK_RECOVERY_MECHANISM.md §4: the FSM was sampled 60x on both
+    // dies and never left S_DONE; §6.1 P1 is this remedy).
+    //
+    // WHY A SEPARATE BIT AND NOT A WIDER SWI_RECAL: `swi_recal_r` shares the
+    // calibrator's `swreset` port with the autoneg FSM's local_swreset_pulse_w.
+    // calibrated_once_q exists precisely to reject that IMPLICIT pulse (Bug-A:
+    // the winner's ST_TRAIN_EXIT recal re-entered training mid-FCSM-credit-init
+    // and wedged the master at state 2 with zero TX credit). SWI_FORCE_RECAL is
+    // driven by NOTHING but a deliberate APB write, so the calibrator can honour
+    // it unconditionally without weakening that guard.
+    //
+    // WHY A PULSE STRETCHER: this is a W1P in the apb_clk domain (~100 MHz) but
+    // the calibrator lives in rx_link_clk (~1.5-6.25 MHz on FPGA, /16 of pad
+    // clk). A single apb_clk-wide pulse would be MISSED entirely by the
+    // calibrator's 2-FF synchroniser — the classic slow-destination CDC trap.
+    // Holding the request for FORCE_RECAL_STRETCH apb_clk cycles guarantees the
+    // destination sees a stable 1 across many of its own edges (1024 apb cycles
+    // ~= 15 rx_link_clk cycles at the WORST ratio of 100 MHz : 1.5 MHz). The
+    // calibrator edge-detects the synced level, so a wide assertion still
+    // produces exactly ONE re-arm.
+    //
+    // Bounded and self-clearing (no handshake, so no way to deadlock if the
+    // calibrator never responds). POR-only domain, same as the two bits above.
+    //
+    // OPEN-LOOP, AND SAID PLAINLY: this timer has NO feedback path from the
+    // calibrator. Its expiry means "the request was PRESENTED for 1024 apb_clk
+    // cycles", NOT "the calibrator consumed it". The stretch is sized so that
+    // presentation is sufficient at every supported clock ratio, but the only
+    // authoritative evidence a retrain actually happened is the calibrator FSM
+    // leaving S_DONE (Region C OBS_CAL / cal_state). This is why bit[6] is
+    // write-only and reads back 0 (see the Region 8 read mux) rather than
+    // exposing a "busy"/"consumed" status that could not honestly mean either.
+    // ---------------------------------------------------------------------
+    localparam int FORCE_RECAL_STRETCH = 1024;
+    reg        swi_force_recal_r;
+    reg [10:0] force_recal_ctr_r;
+    // Combinational W1P write strobe. region8_write / ctrl_reg_write are module
+    // -scope wires declared further down; both are `wire`, and this is a
+    // continuous-assign context, so there is no `default_nettype none forward
+    // -reference problem (unlike a reg read in the region8 mux above).
+    wire       force_recal_w1p_w = ctrl_reg_write
+                                   && (ctrl_reg_addr[4:3] == 2'b10)   // Region 8
+                                   && (ctrl_reg_addr[2:0] == 3'h0)    // slot 0
+                                   && ctrl_reg_wdata[6];              // SWI_FORCE_RECAL
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            swi_force_recal_r <= 1'b0;
+            force_recal_ctr_r <= 11'd0;
+        end else if (force_recal_w1p_w) begin
+            // (Re-)arm. A write during an in-flight stretch simply reloads it.
+            swi_force_recal_r <= 1'b1;
+            force_recal_ctr_r <= FORCE_RECAL_STRETCH[10:0];
+        end else if (force_recal_ctr_r != 11'd0) begin
+            force_recal_ctr_r <= force_recal_ctr_r - 11'd1;
+            if (force_recal_ctr_r == 11'd1)
+                swi_force_recal_r <= 1'b0;   // deassert -> ready for the next W1P
+        end
+    end
 `ifdef TIDELINK_PHY_V2
     // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
     // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
@@ -2491,6 +2586,31 @@ module axi_chiplet_controller #(
     // Region 8 read mux
     assign region8_rdata =
 `ifdef TIDELINK_PHY_V2
+        // P1 (2026-07-19): bit[6] SWI_FORCE_RECAL is WRITE-ONLY and reads back
+        // as 0, exactly like the slot-0 bit[5] SWI_SYNC_OBS_CLR W1-pulse beside
+        // it. This is a CORRECTNESS requirement, not a style choice.
+        //
+        // An earlier revision read back the pulse-stretcher state here as a
+        // "request handed off" status. That was unsafe: slot 0 is a PACKED
+        // register that firmware must READ-MODIFY-WRITE to touch
+        // training_mode / SWI_RECAL / the SYNC bits. Any RMW landing inside the
+        // 1024-cycle stretch window would read bit[6]=1, write it straight back,
+        // and re-fire force_recal_w1p_w — silently re-arming a PHY retrain on a
+        // converged link, and doing so indefinitely under a polling loop.
+        // Reading 0 makes that hazard structurally impossible: an RMW can never
+        // carry bit[6] forward, so every re-arm is a deliberate write.
+        //
+        // (Gating the write strobe with !swi_force_recal_r was the alternative.
+        // It is INCOMPLETE: it only covers an RMW whose WRITE lands inside the
+        // window, not one that SAMPLED bit[6]=1 inside the window and wrote back
+        // after the timer expired. Reading 0 covers both.)
+        //
+        // No handshake status is exposed in its place: the stretcher is an
+        // open-loop timer with NO feedback from the calibrator, so a "busy" bit
+        // could only ever prove the timer had expired — not that the calibrator
+        // saw the request. The authoritative evidence that a retrain really
+        // happened is the calibrator FSM state itself (Region C OBS_CAL /
+        // cal_state), which is where SW should look.
         (ctrl_reg_addr[2:0] == 3'h0) ? {27'h0, swi_sync_robust_detect_r, swi_sync_force_always_r, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
 `else
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
@@ -5608,6 +5728,11 @@ module axi_chiplet_controller #(
         .sync_seen_i            (1'b0),
         .lane_synced_i          (8'h00),
         .lane_pin_converge_en_i (1'b0),
+        // P1 (2026-07-19): the explicit forced-recal door. Deliberately NOT
+        // OR-merged with local_swreset_pulse_w or anything else — only a
+        // deliberate SW write reaches it, which is what lets the calibrator
+        // honour it without weakening the Bug-A calibrated_once_q guard.
+        .force_recal_i          (swi_force_recal_r),
         .bit_slip               (cal_bit_slip_w),
         .phase_offset           (cal_phase_offset_w),
         .training_mode          (cal_training_mode_w),
@@ -5712,6 +5837,10 @@ module axi_chiplet_controller #(
         // RX only ever decodes the peer's CRACK (late framer byte-align), so
         // S_VALIDATE must accept it too — same rx_link_clk domain, no CDC.
         .crack_pkt_seen_i      (obs_crack_pkt_seen_rx_w),
+        // P1 (2026-07-19): explicit forced-recal door — see the V2 instance
+        // above. The V1 src/rtl calibrator carries the IDENTICAL
+        // calibrated_once_q sticky, so the V1/trunk build needs the same fix.
+        .force_recal_i         (swi_force_recal_r),
         .bit_slip              (cal_bit_slip_w),
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),
@@ -5759,6 +5888,12 @@ module axi_chiplet_controller #(
     assign obs_fe_rx_is_full_o         = sync_obs_fe_rx_full_1;
     // SoC Labs Bug-A FCSM observation 2026-06-03
     assign obs_a2l_replay_app_valid_o  = sync_obs_a2l_app_v_1;
+    // SoC Labs TideChart sequencing contract 2026-07-17 — data-mode strobe.
+    // `>= 3'd4` over a 3-bit state reduces to bit [2]; written that way so the
+    // synthesised result is a direct flop output (glitch-free, apb_clk domain)
+    // rather than a multi-bit comparator over a partially-updated CDC word.
+    // Pure ADD: no existing net is re-driven or re-timed by this assignment.
+    assign data_mode_o                 = sync_obs_fcsm_state_1[2];
 
     // SW-override OR-mux: calibrator OR Region 8 SW-override regs
     // (swi_bit_slip_lo_r / swi_training_mode_r) → swi_bit_slip_in /

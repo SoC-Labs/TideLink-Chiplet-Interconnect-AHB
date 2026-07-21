@@ -11,25 +11,37 @@ exposed two gaps:
   G2  No TideChart PKT_EXT was ever observed crossing the real link (elections
       settled pre-data-mode; the ext-FC channel was not yet carrying).
 
-This test removes the premature-arming that caused G1 and drives the election
-the way the *fixed* integration must drive it:
+This test drives the election the way the *fixed* integration must drive it.
 
-  THE HOLD (what the bench controls):
-    election_start is the TideChart APB register TC_CTRL[0]. The bench holds it
-    DEASSERTED on BOTH dies until the pair is genuinely in DATA MODE — i.e.
-    role_lock + cal_done + do_to_data_mode(), verified by FCSM state >= 4 (the
-    Wlink LL credit/data-exchange region) on both dies. Only THEN is election_start
-    written. This is exactly the sequencing contract the FPGA/ASIC build needs:
-    gate election on "link carries EXT traffic", not on bare role_locked.
-    (Documented in docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.)
+  THE HOLD IS NOW IN THE RTL (this is the whole point):
+    Earlier revisions of this test modelled the fix in Python: they held
+    election_start (TideChart APB TC_CTRL[0]) deasserted until a BACKDOOR read
+    of the Wlink FCSM state showed >= 4. That was a testbench hack standing in
+    for a port that did not exist.
 
-  THE DESYMMETRISER (a bench artefact, not part of the contract):
+    The port now EXISTS: `tidelink_top.tl_data_mode_o` (FCSM >= 4, "the LL is in
+    its credit/data-exchange region"), and tb_tc_pair.sv feeds it to each
+    tidechart_shim's `link_active` input in place of tidelink's `link_active`.
+
+    So this test does the OPPOSITE of holding: it arms election_start on BOTH
+    dies EARLY — while link_active is already 1 but data mode has NOT been
+    reached — and proves the RTL itself parks the election in ST_WAIT_LINKS
+    until tl_data_mode_o rises. Under the OLD wiring that same early arming is
+    precisely what produced the dual-root. Passing here means the gate is real
+    hardware, not a bench recipe. (Contract:
+    docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.)
+
+  THE DESYMMETRISER:
     PUF_ENABLE=0 in the shim => puf_seed=0 on both dies, and the two dies share
-    one reset, so their election LFSRs step in lockstep. Arming both elections on
-    the SAME cycle would give identical random_ids => a legitimate TIE => both
-    remain root. Real silicon never resets two dies on the same cycle; here we
-    model that asymmetry by writing the two election_start bits a few cycles
-    apart, giving the two dies distinct random_ids.
+    one reset, so their election LFSRs step in lockstep. `own_random_r` is
+    sampled from that LFSR at the ST_WAIT_LINKS -> ST_CLAIM_TX transition, so
+    two dies leaving WAIT_LINKS on the SAME cycle would sample identical
+    random_ids => a legitimate TIE. Note that under the RTL gate the exit cycle
+    is set by tl_data_mode_o, NOT by when election_start was written, so an
+    arming offset no longer desymmetrises anything. The desymmetrisation now
+    comes from the dies' own asymmetry (master vs slave reach FCSM >= 4 at
+    different times); the test measures and reports that skew rather than
+    assuming it.
 
 Then it PROVES:
   (a) EXACTLY ONE root across the two dies (single-root election), and
@@ -63,10 +75,66 @@ SUBTYPE_ELECTION = 0x0001
 # tidelink->tidechart round trip so a peer's CLAIM lands inside the LISTEN window.
 ELECTION_TIMEOUT = 0x0800
 
-# Desymmetrising offset between the two election_start writes (cycles). Any
-# non-zero value that gives the two LFSRs distinct step counts works; 16 is
-# comfortably clear of any short-cycle coincidence.
+# Offset between the two election_start writes (cycles). Retained only so the
+# two APB writes do not contend; it no longer affects random_id, because under
+# the RTL gate the WAIT_LINKS exit cycle is set by tl_data_mode_o.
 ARM_OFFSET_CY = 16
+
+
+async def _watch_data_mode(dut, sig, box, key):
+    """Record when a data-mode strobe rises, and police it for glitches.
+
+    Two properties are checked for the whole run:
+      * it must be a clean 0 -> 1 level, and
+      * it must NEVER fall again once risen.
+
+    The second is why the decode is `>= 3'd4` (== bit[2] of the 3-bit FCSM
+    state) and not `== 3'd4`. The Wlink FCSM moves between states 4 and 5 during
+    normal credit/data exchange; `== 3'd4` would drop LOW on every 4->5 step,
+    momentarily deasserting the election gate and (worse) re-arming
+    ST_WAIT_LINKS mid-fabric. `>= 3'd4` is stable across 4<->5.
+    """
+    risen = False
+    while True:
+        await RisingEdge(dut.hclk)
+        try:
+            v = int(sig.value)
+        except ValueError:
+            continue
+        if v == 1 and not risen:
+            risen = True
+            box[key] = cocotb.utils.get_sim_time(unit="ns")
+            box[key + "_falls"] = 0
+        elif v == 0 and risen:
+            # A fall after rise: record it. Asserted on in the test body.
+            box[key + "_falls"] = box.get(key + "_falls", 0) + 1
+            risen = False
+
+
+async def _census_fcsm(dut, tb, side, box, key):
+    """Record every FCSM state visited WHILE the data-mode strobe is high.
+
+    The Wlink FCSM's operational region is states 4..7:
+       4 = data exchange     5 = LINK_DATA
+       6 = SEND_ACK          7 = SEND_NACK  (both transient TX states)
+    That region is CLOSED (4->{4,5,6,7}, 5->{4,5,6,7}, 6->{4,5,7}, 7->{4,7});
+    there is no arc back to 0..3 short of reset. This census exists to show
+    empirically that 6/7 really are visited during normal traffic and that the
+    strobe correctly stays asserted across them — a strobe that dropped on
+    SEND_ACK would drop constantly, since ACKs are routine.
+    """
+    seen = set()
+    while True:
+        await RisingEdge(dut.hclk)
+        try:
+            if int(getattr(dut, f"{side}_data_mode").value) != 1:
+                continue
+        except ValueError:
+            continue
+        st = tb.fcsm_state("m" if side == "m" else "s")
+        if st >= 0:
+            seen.add(st)
+        box[key] = seen
 
 
 class TCApb:
@@ -202,8 +270,17 @@ async def test_tc_pair_election_datamode(dut):
     assert (await m_tc.read(TC_STATUS)) & 0x1 == 0, "die_a election_done must be 0 pre-arm"
     assert (await s_tc.read(TC_STATUS)) & 0x1 == 0, "die_b election_done must be 0 pre-arm"
 
+    # Watch the REAL RTL data-mode strobes so we can report the actual
+    # link_active -> data_mode gap and the inter-die skew.
+    dm_time = {}
+    cocotb.start_soon(_watch_data_mode(dut, dut.m_data_mode, dm_time, "m"))
+    cocotb.start_soon(_watch_data_mode(dut, dut.s_data_mode, dm_time, "s"))
+    fcsm_seen = {}
+    cocotb.start_soon(_census_fcsm(dut, tb, "m", fcsm_seen, "m"))
+    cocotb.start_soon(_census_fcsm(dut, tb, "s", fcsm_seen, "s"))
+
     # -------------------------------------------------------------------------
-    # Bring the pair ALL THE WAY to data mode BEFORE arming any election.
+    # Bring the pair to role_lock. Election is armed HERE — deliberately early.
     #   role_lock  ->  cal_done  ->  do_to_data_mode  ->  FCSM state >= 4.
     # -------------------------------------------------------------------------
     await tb.do_role_lock()
@@ -214,6 +291,49 @@ async def test_tc_pair_election_datamode(dut):
     assert locked, "pair failed to role_lock with TideChart attached"
     # G1 in one line: link_active is ALREADY 1 here, long before data mode.
     assert int(dut.m_link_active.value) == 1 and int(dut.s_link_active.value) == 1
+    # ...and the NEW port proves the two milestones are genuinely distinct: the
+    # data-mode strobe is still 0 at the exact moment link_active is 1. If this
+    # ever fails, tl_data_mode_o has been mis-wired to something role-locked-ish
+    # and the gate is worthless.
+    assert int(dut.m_data_mode.value) == 0 and int(dut.s_data_mode.value) == 0, (
+        "tl_data_mode_o is ALREADY 1 at role_lock — it is not a data-mode strobe")
+    log.info("[G1] at role_lock: link_active m=1 s=1  BUT  tl_data_mode_o m=0 s=0 "
+             "(the two milestones are distinct — this is the whole bug)")
+
+    # -------------------------------------------------------------------------
+    # ARM BOTH ELECTIONS NOW — PRE-DATA-MODE, ON PURPOSE.
+    # Under the OLD wiring (shim.link_active <- tidelink link_active) this is
+    # exactly the premature arming that dual-rooted. The RTL gate must hold it.
+    # -------------------------------------------------------------------------
+    await m_tc.write(TC_TIMEOUT, ELECTION_TIMEOUT)
+    await s_tc.write(TC_TIMEOUT, ELECTION_TIMEOUT)
+    await m_tc.write(TC_CTRL, 0x1)         # die_a election_start
+    await ClockCycles(dut.hclk, ARM_OFFSET_CY)
+    await s_tc.write(TC_CTRL, 0x1)         # die_b election_start
+    log.info("[arm] BOTH elections armed PRE-data-mode (the G1 trigger condition)")
+
+    # The RTL gate must park both FSMs in ST_WAIT_LINKS despite being armed.
+    await ClockCycles(dut.hclk, 200)
+    m_es, s_es = _election_state(dut, "m"), _election_state(dut, "s")
+    log.info(f"[hold] armed but pre-data-mode: die_a FSM={ST_NAMES.get(m_es)} "
+             f"die_b FSM={ST_NAMES.get(s_es)}")
+    assert m_es == ST_WAIT_LINKS and s_es == ST_WAIT_LINKS, (
+        f"election left ST_WAIT_LINKS before data mode (die_a={ST_NAMES.get(m_es)}, "
+        f"die_b={ST_NAMES.get(s_es)}) — the RTL data-mode gate is NOT holding")
+    assert (await m_tc.read(TC_STATUS)) & 0x1 == 0, "die_a settled pre-data-mode"
+    assert (await s_tc.read(TC_STATUS)) & 0x1 == 0, "die_b settled pre-data-mode"
+
+    # -------------------------------------------------------------------------
+    # Start the PKT_EXT crossing monitors BEFORE data mode. The election is now
+    # released by the RTL, not by us, so the crossings can happen at any point
+    # once tl_data_mode_o rises — we must already be watching.
+    # -------------------------------------------------------------------------
+    mon_a = ExtRxMonitor(dut, dut.hclk, dut.m_tc_rx_tvalid, dut.m_tc_rx_tready,
+                         dut.m_tc_rx_tdata, "die_a")
+    mon_b = ExtRxMonitor(dut, dut.hclk, dut.s_tc_rx_tvalid, dut.s_tc_rx_tready,
+                         dut.s_tc_rx_tdata, "die_b")
+    cocotb.start_soon(mon_a.run())
+    cocotb.start_soon(mon_b.run())
 
     m_st, s_st = await tb.wait_cal_done(max_cycles=500000)
     log.info(f"[cal] SWI_LANE_STATUS M=0x{m_st:08x} S=0x{s_st:08x}  "
@@ -229,26 +349,12 @@ async def test_tc_pair_election_datamode(dut):
     assert m_fcsm >= 4 and s_fcsm >= 4, (
         f"link not in data mode (FCSM m={m_fcsm} s={s_fcsm}) — election must be held")
 
-    # -------------------------------------------------------------------------
-    # Start the PKT_EXT crossing monitors on BOTH dies' tc_axis_rx.
-    # -------------------------------------------------------------------------
-    mon_a = ExtRxMonitor(dut, dut.hclk, dut.m_tc_rx_tvalid, dut.m_tc_rx_tready,
-                         dut.m_tc_rx_tdata, "die_a")
-    mon_b = ExtRxMonitor(dut, dut.hclk, dut.s_tc_rx_tvalid, dut.s_tc_rx_tready,
-                         dut.s_tc_rx_tdata, "die_b")
-    cocotb.start_soon(mon_a.run())
-    cocotb.start_soon(mon_b.run())
-
-    # -------------------------------------------------------------------------
-    # Arm both elections IN DATA MODE, ARM_OFFSET_CY cycles apart (desymmetrise).
-    # -------------------------------------------------------------------------
-    await m_tc.write(TC_TIMEOUT, ELECTION_TIMEOUT)
-    await s_tc.write(TC_TIMEOUT, ELECTION_TIMEOUT)
-
-    await m_tc.write(TC_CTRL, 0x1)         # die_a election_start
-    await ClockCycles(dut.hclk, ARM_OFFSET_CY)
-    await s_tc.write(TC_CTRL, 0x1)         # die_b election_start
-    log.info(f"[arm] both elections armed in data mode ({ARM_OFFSET_CY}-cy offset)  "
+    # The RTL strobes must now have risen — and the bench never touched
+    # election_start again. Report the measured milestone gap and inter-die skew.
+    assert int(dut.m_data_mode.value) == 1 and int(dut.s_data_mode.value) == 1, (
+        "FCSM >= 4 but tl_data_mode_o did not rise — port is not tracking the FCSM")
+    log.info(f"[released] tl_data_mode_o rose  die_a@{dm_time.get('m')}ns "
+             f"die_b@{dm_time.get('s')}ns  (election released BY THE RTL)  "
              f"own_random die_a=0x{_own_random(dut,'m'):04x} "
              f"die_b=0x{_own_random(dut,'s'):04x}")
 
@@ -267,6 +373,28 @@ async def test_tc_pair_election_datamode(dut):
 
     await ClockCycles(dut.hclk, 200)
     mon_a.stop(); mon_b.stop()
+
+    # GLITCH-FREE: the strobe must be a clean level that never falls once risen
+    # (see _watch_data_mode — this is why the decode is >=4, not ==4).
+    m_falls = dm_time.get("m_falls", 0)
+    s_falls = dm_time.get("s_falls", 0)
+    log.info(f"[glitch] tl_data_mode_o falls-after-rise  die_a={m_falls} die_b={s_falls} "
+             f"(must be 0 — >=4 is stable across FCSM 4<->5)")
+    assert m_falls == 0 and s_falls == 0, (
+        f"tl_data_mode_o GLITCHED (die_a fell {m_falls}x, die_b fell {s_falls}x). "
+        f"A falling data-mode strobe re-arms ST_WAIT_LINKS mid-fabric.")
+
+    # FCSM census while the strobe is high. Every state seen must be in the
+    # operational region {4,5,6,7}; seeing 6 (SEND_ACK) and/or 7 (SEND_NACK)
+    # is the point — it shows the strobe correctly rides through the transient
+    # ACK/NACK TX states rather than dropping on routine link traffic.
+    m_seen = sorted(fcsm_seen.get("m", set()))
+    s_seen = sorted(fcsm_seen.get("s", set()))
+    log.info(f"[fcsm census] states visited while tl_data_mode_o=1  "
+             f"die_a={m_seen} die_b={s_seen}  (4=data 5=LINK_DATA 6=SEND_ACK 7=SEND_NACK)")
+    assert all(st >= 4 for st in m_seen + s_seen), (
+        f"FCSM dropped below 4 while tl_data_mode_o was HIGH (die_a={m_seen}, "
+        f"die_b={s_seen}) — the >=4 region is supposed to be closed/absorbing")
 
     n_roots = m_root + s_root
     total_cross = mon_a.count + mon_b.count
@@ -306,7 +434,8 @@ async def test_tc_pair_election_datamode(dut):
 
     log.info("=" * 70)
     log.info("ELECTION-IN-DATA-MODE RESULT (closes G1 + G2)")
-    log.info(f"  data mode reached (FCSM>=4) before arming    : PASS")
+    log.info(f"  election armed PRE-data-mode, HELD by the RTL : PASS "
+             f"(tl_data_mode_o, not a bench hack)")
     log.info(f"  (a) SINGLE root across the two dies           : PASS "
              f"(die_a root={m_root}, die_b root={s_root})")
     log.info(f"  (b) PKT_EXT CLAIM crossed the real TideLink   : PASS "

@@ -127,9 +127,13 @@ module tb_tc_pair #(
     wire m_released_credits_irq, m_doorbell_irq, m_packet_committed_irq;
     wire m_ptp_irq, m_perf_irq, m_wlink_irq;
     wire m_role_is_master, m_role_locked, m_link_active, m_d2d_reset_o;
+    // G1 contract: real RTL data-mode strobe (tidelink_top.tl_data_mode_o,
+    // FCSM >= 4). This is what gates TideChart's election — NOT link_active.
+    wire m_data_mode;
     wire s_released_credits_irq, s_doorbell_irq, s_packet_committed_irq;
     wire s_ptp_irq, s_perf_irq, s_wlink_irq;
     wire s_role_is_master, s_role_locked, s_link_active, s_d2d_reset_o;
+    wire s_data_mode;
 
     // I2C pull-up bus model
     wire m_i2c_scl_o, m_i2c_scl_t, m_i2c_sda_o, m_i2c_sda_t;
@@ -250,7 +254,7 @@ module tb_tc_pair #(
         // ---- Congestion sideband: WIRED to u_tc_master ----
         .tl_local_link_state_o(m_tl_link_state), .tl_link_state_change_o(m_tl_link_state_change),
         .tl_ewma_credit_o(), .tl_bcast_ack_i(m_tl_bcast_ack),
-        .link_active(m_link_active), .d2d_reset_o(m_d2d_reset_o),
+        .link_active(m_link_active), .tl_data_mode_o(m_data_mode), .d2d_reset_o(m_d2d_reset_o),
         .role_strap_i(1'b0), .role_is_master_o(m_role_is_master), .role_locked_o(m_role_locked),
         .apb_debug_unlock_i(m_apb_debug_unlock), .mask_hs_bypass_i(m_mask_hs_bypass),
         .nego_priority_i(16'h8000), .puf_seed(16'hA5A5), .puf_ready(1'b1), .nego_error_irq(),
@@ -322,7 +326,7 @@ module tb_tc_pair #(
         .tc_qos_priority(3'h0),
         .tl_local_link_state_o(s_tl_link_state), .tl_link_state_change_o(s_tl_link_state_change),
         .tl_ewma_credit_o(), .tl_bcast_ack_i(s_tl_bcast_ack),
-        .link_active(s_link_active), .d2d_reset_o(s_d2d_reset_o),
+        .link_active(s_link_active), .tl_data_mode_o(s_data_mode), .d2d_reset_o(s_d2d_reset_o),
         .role_strap_i(1'b1), .role_is_master_o(s_role_is_master), .role_locked_o(s_role_locked),
         .apb_debug_unlock_i(s_apb_debug_unlock), .mask_hs_bypass_i(s_mask_hs_bypass),
         .nego_priority_i(16'h7FFF), .puf_seed(16'h5A5A), .puf_ready(1'b1), .nego_error_irq(),
@@ -366,7 +370,12 @@ module tb_tc_pair #(
         .tc_axis_tx_tvalid    (m_tc_tx_tvalid_v),
         .tc_axis_tx_tdata_flat(m_tc_tx_tdata_flat),
         .tc_axis_tx_tready    ({1'b1, m_tc_tx_tready}),
-        .link_active          ({1'b0, m_link_active}),
+        // G1 SEQUENCING CONTRACT: gated on the REAL tl_data_mode_o port (FCSM
+        // >= 4, "the link carries FC/EXT words"), NOT on link_active
+        // (== role_locked, ~5us too early ⇒ silent dual-root). This mirrors the
+        // one-net swap the ASIC integration must make at
+        // nanosoc_eth_chiplet.sv's tidechart_shim instance.
+        .link_active          ({1'b0, m_data_mode}),
         .local_link_state_i_flat  ({5'b0, m_tl_link_state}),
         .local_link_state_change_i({1'b0, m_tl_link_state_change}),
         .local_bcast_ack_o        (m_tc_bcast_ack_v),
@@ -400,7 +409,8 @@ module tb_tc_pair #(
         .tc_axis_tx_tvalid    (s_tc_tx_tvalid_v),
         .tc_axis_tx_tdata_flat(s_tc_tx_tdata_flat),
         .tc_axis_tx_tready    ({1'b1, s_tc_tx_tready}),
-        .link_active          ({1'b0, s_link_active}),
+        // G1 SEQUENCING CONTRACT — see u_tc_master above.
+        .link_active          ({1'b0, s_data_mode}),
         .local_link_state_i_flat  ({5'b0, s_tl_link_state}),
         .local_link_state_change_i({1'b0, s_tl_link_state_change}),
         .local_bcast_ack_o        (s_tc_bcast_ack_v),

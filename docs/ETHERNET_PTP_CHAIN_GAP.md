@@ -21,10 +21,17 @@ this work closed, and gives the exact remaining wiring at RTL/BD level.
 
 | Gap | Before | Now |
 |-----|--------|-----|
-| **1. HA1588 timestamps a real event** | open — MAC datapath never exercised | **CLOSED at the capture step, in sim** (§1). Timestamp *value* read-back blocked by a located bus stall (§1.7) |
-| **2. HA1588 → PHC servo hop** | open — "is `ethernet_ss_ahb_phc` the answer?" | **CLOSED IN SIM (2026-07-19).** All three blockers fixed; `ethernet_ss_ahb_phc` now elaborates (first time ever) and the servo is proven to discipline the PHC, 5/5 (§2) |
+| **1. HA1588 timestamps a real event** | open — MAC datapath never exercised | **CLOSED at the capture step, in sim** (§1); now **also reproduced inside the PHC subsystem** in the SAME simv as the servo join (§2.8 test 04). Timestamp *value* read-back stall **RESOLVED — it is LINK-specific, not the HA1588** (§7) |
+| **2. HA1588 → PHC servo hop** | open — "is `ethernet_ss_ahb_phc` the answer?" | **CLOSED IN SIM (2026-07-19)** at block level, and **NOW at SUBSYSTEM level (2026-07-21)**: `ethernet_ss_ahb_phc` runs functionally for the first time — the REAL running HA1588 RTC disciplines the PHC through the servo, driven through the subsystem's own AHB, 5/5 with a negative control (§2.8) |
 | **3. TideLink PTP TX not driven** | open | still open, but **smaller than believed** (§3) |
 | **4. G1 election / sequencing** | open | unchanged; policy not RTL (§4) |
+
+> **UPDATE 2026-07-21 (JOIN lane).** The two proven halves now run as **one
+> simulation**. New bench `tidelink/cocotb/eth_ptp_phc_subsystem/` is the
+> first-ever *functional* (driven) sim of `ethernet_ss_ahb_phc` — see §2.8. The
+> §1.7 TSU-pop wedge is root-caused and bounded — see §7. What is still NOT done:
+> reading the disciplined PHC time *across the TideLink chiplet link* (demo item
+> 3). Distance to a sim-complete grandmaster chain: **~1 engineering day** (§5).
 
 ---
 
@@ -507,6 +514,47 @@ subsystem-level loop. Specifically still open:
 
 ---
 
+## 2.8 GAP 2 — SUBSYSTEM-LEVEL JOIN PROVEN (2026-07-21)
+
+The two open items §2.7.1 and §2.7.2 are now **closed**. New bench
+`tidelink/cocotb/eth_ptp_phc_subsystem/` is the **first-ever functional (driven)
+simulation of `ethernet_ss_ahb_phc`** — everything §2.6 changed had only been
+*elaborated* before. The subsystem's external AHB-Lite slave `eth_ss_0` is driven
+directly by a cocotb AHB master (no TideLink link, no CPU firmware — the M0+ is
+parked on a spin image). **5/5 PASS, one simv binary:**
+
+| test | proves |
+|------|--------|
+| `test_01` | reset comes up (PRMU-generated `sys_hclk`/`sys_hresetn`) and the die reaches HA1588 + PHC over `eth_ss_0` → interconnect → AHB→APB → `u_phc_0` (register-visibility floor: seed 0x1234, capture it back) |
+| `test_02` | **THE JOIN** — with the PHC seeded to a 100 s offset and the servo enabled (`SERVO_CTRL = SRC_SEL_HA1588 \| EN`), `ha1588_servo` drives `ha1588_hw_capture` then `ha1588_hw_set_time` (witnessed on the top-level nets) and steps the PHC **100 s → 0 s onto the REAL running HA1588 RTC** (`u_ethmac_0.u_ha1588`, not a stub) |
+| `test_03` | **negative control** — servo disabled, PHC holds 100 s, no capture/set-time ⇒ test_02 is attributable to the servo |
+| `test_04` | a **real L2 PTP Sync frame** DMA'd out of `eth_scratch_tx` by the MAC's own master, put on the MII wire by the real TX FSM, looped back, and **timestamped by HA1588** (TX+RX TSU depth=1, `DATA3=0x032a0042` → seq_id 0x0042). Same simv as the servo join ⇒ **both halves in one sim** |
+| `test_05` | resolves the §1.7 TSU-pop wedge (see §7) |
+
+**Key correction to the original chain premise.** `ha1588_servo` disciplines the
+PHC to the HA1588 **RTC** (`rtc_time_ptp_sec/ns`), *not* to the TSU MII timestamp
+— the RTL never routes the TSU timestamp into the servo. So "a timestamped MII
+event moves the PHC" is **not** what this hardware does. The honest end-to-end
+claim is: the same HA1588 that timestamps real MII traffic (test_04) provides the
+RTC that the servo disciplines the PHC to (test_02). Closing the TSU→RTC loop is
+PTP servo *software*, out of RTL scope.
+
+**Two real flist/RTL gaps found by building it (noted, not yet fixed):**
+- `flist/ethernet_ss_ahb_phc.flist` omits `sl_fpga_rom_word.v` (present in
+  `ethernet_ss_ahb_common.flist`); the bench Makefile adds it. Also omits
+  `cmsdk_apb_slave_mux.v` and the DMEM region — the base bench adds those too,
+  so this is a flist-completeness gap, not a new one.
+- HA1588 `RTC_CTRL` SET_TIME (bit 3) did **not** move the TSU-captured seconds in
+  this bench (RTC witness stayed at 0 s); the TSU `rtc_timer_in` was ~0 at
+  capture. Not on the servo path (the servo uses `rtc_time_ptp_*`, which ticks),
+  so left as a characterisation note.
+
+Nothing in the sibling repos was changed by *this* lane — the bench compiles the
+existing `ethernet_ss_ahb_phc.flist` as-is (plus the three files above). No
+commits.
+
+---
+
 ## 3. GAP 3 — TideLink PTP TX is not driven
 
 **Smaller than the recon implied.** The PTP block is *not* stubbed: `STUB_PTP`
@@ -553,28 +601,27 @@ strap wanted before tapeout, independent of PTP.
 | ~~3~~ | ~~Stop discarding `ha1588_servo_locked`/`phase_step_active`~~ | **DONE** — now output ports of `ethmac_subsystem_ahb.v` | ~~0.5 h~~ |
 | ~~4~~ | ~~Add PHC exports~~ | **DONE, ~2 h not 1–2 d** — the signals already existed internally; it was plumbing, not new logic (§2.6) | ~~1–2 d~~ |
 | ~~5~~ | ~~Synchronise `rtc_time_one_pps` into `SYS_HCLK`~~ | **DONE by construction** — `hw_capture_1` now comes from the servo, through its existing toggle handshake, not raw 1PPS | ~~0.5 d~~ |
-| 6 | Subsystem-level *functional* sim for `ethernet_ss_ahb_phc` (elaboration + hierarchy now proven; nothing driven through its AHB yet) | new cocotb dir | **0.5 d** (was 1 d) |
-| 6b | Join Gap 1 to Gap 2: a real MII-timestamped frame moving the PHC, end to end. The two halves are each proven separately; the join is not | `cocotb/eth_ptp_chain/` + PHC | **1 d** |
+| ~~6~~ | ~~Subsystem-level *functional* sim for `ethernet_ss_ahb_phc`~~ | **DONE 2026-07-21** — `cocotb/eth_ptp_phc_subsystem/`, driven through `eth_ss_0`, 5/5 (§2.8) | ~~0.5 d~~ |
+| ~~6b~~ | ~~Join Gap 1 to Gap 2 in one sim~~ | **DONE 2026-07-21** — capture (test_04) + servo-disciplines-PHC (test_02) in ONE simv (§2.8). *Caveat: the servo tracks the RTC, not the TSU timestamp — see §2.8* | ~~1 d~~ |
 | 6c | Wire `eth_rx_capture`/`eth_tx_capture` from the MAC's `rx/tx_ptp_event` (still `1'b0`) | `ethernet_ss_ahb_phc.yaml` | **0.5 h** |
 | 6d | Repair `ethmac_phc_sync` (broken `PHC_HOME` default; missing `eth_rx_cksum` source). Pre-existing, unrelated, but it is not a working guard today | `ethernet-mac-ahb/cocotb/ethmac_phc_sync/Makefile` | **0.5 h** |
-| 7 | Extend `eth_ptp_chain` to instantiate a PHC on die_b and drive TideLink `ahb_ptp` + `phc_*` | `cocotb/eth_ptp_chain/tb_top.sv` | **1–2 d** |
+| **7** | **Read the disciplined PHC time ACROSS the TideLink link** — swap `eth_ptp_chain`'s `ethernet_ss_ahb` → `ethernet_ss_ahb_phc`, re-address to the PHC map (§7 below), read PHC `CAP_SECONDS` over the link. Register-visibility across the link is already proven; this is mechanical flist-coexistence + re-addressing | `cocotb/eth_ptp_chain/` + PHC | **~1 d** |
 | 8 | Pin grandmaster by strap (G1) | config/firmware | **0.5 d** |
-| 9 | Localise the TSU queue-pop bus stall (§1.7) — waveform on `u_ethmac_0`, `reg.v:394-406` ack path through `wb_slv_wrapper`/`ahb3lite_to_wb` | `ethernet-mac-ahb` | **0.5–1 d** |
+| ~~9~~ | ~~Localise the TSU queue-pop bus stall (§1.7)~~ | **DONE 2026-07-21 — LINK-specific, NOT the HA1588 bridge** (§7 / test_05) | ~~0.5–1 d~~ |
 | 10 | Align `flist/ha1588_ahb.flist` to the fully-patched HA1588 set (§1.7) | `ethernet-mac-ahb/flist/ha1588_ahb.flist:5-9` | **0.5 h** |
+| 11 | Add `sl_fpga_rom_word.v` (+ `cmsdk_apb_slave_mux`, DMEM region) to `ethernet_ss_ahb_phc.flist` so the PHC flist is self-contained (§2.8) | `ethernet-subsystem-ahb/flist/ethernet_ss_ahb_phc.flist` | **0.25 h** |
 
-**Distance to demo — revised 2026-07-19.** Items 1–5 are done, and they were the
-bulk of the estimate. A genuinely **closed servo loop is now demonstrated** (§2.6,
-5/5 with a negative control) — so the "real RTL work in the PHC IP" that item 4
-was priced for turned out to be ~2 h of plumbing, because the logic was already
-there and merely stranded.
+**Distance to demo — revised 2026-07-21.** Items 1–6b and 9 are done. The
+subsystem-level join is proven (§2.8, 5/5 + negative control) and the TSU-pop
+wedge is resolved (§7). What remains before the *chain* is sim-complete is
+**item 7 (~1 d): read the disciplined PHC time across the TideLink link** — the
+one demo-relevant result still missing. All the pieces exist (cross-link register
+reads are proven by `eth_ptp_chain`; the PHC subsystem runs); the work is
+flist-coexistence (tidelink pair flist + full PHC subsystem flist) plus
+re-addressing to the PHC map. Then item 7-old/source-0 (TideLink as servo source
+0) and item 8 (G1 strap) complete the picture.
 
-What is left before the *chain* is sim-complete is items 6/6b/6c (~1.5–2 d): the
-subsystem needs a functional bench driven through its own AHB, and Gap 1's proven
-capture must be joined to Gap 2's proven servo. **Do not read §2.6 as an
-end-to-end grandmaster demo — it is two proven halves that have not yet been run
-as one.** Then item 7 (~1–2 d) joins TideLink as source 0.
-
-Revised total: **~3–4 engineering days to a sim-complete chain** (was 4–6), plus
+Revised total: **~1 engineering day to a sim-complete chain** (was 3–4), plus
 M2 (physical PHY) before any 1588 *conformance* claim.
 
 ---
@@ -583,11 +630,50 @@ M2 (physical PHY) before any 1588 *conformance* claim.
 
 | Path | Role |
 |------|------|
-| `cocotb/eth_ptp_chain/tb_top.sv` | MII loopback + wire recorder + RTC witness |
-| `cocotb/eth_ptp_chain/test_ptp_chain.py` | the chain test (Gap 1) |
-| `cocotb/eth_ptp_chain/test_smoke_mii_loop.py` | elaboration smoke |
-| `cocotb/eth_ptp_chain/eth_pair_common.py` | HA1588 TSU + MAC TX register map |
-| `cocotb/eth_ptp_chain/TRANSCRIPT.md` | measured transcripts, both runs |
+| `cocotb/eth_ptp_chain/tb_top.sv` | MII loopback + wire recorder + RTC witness (cross-link) |
+| `cocotb/eth_ptp_chain/test_ptp_chain.py` | the cross-link chain test (Gap 1) |
+| `cocotb/eth_ptp_chain/eth_pair_common.py` | HA1588 TSU + MAC TX register map (non-PHC map) |
+| `cocotb/eth_ptp_chain/TRANSCRIPT.md` | measured transcripts, cross-link runs |
+| **`cocotb/eth_ptp_phc_subsystem/tb_top.sv`** | **JOIN bench** — instantiates `ethernet_ss_ahb_phc`, MII loopback, `eth_ss_0` driven by cocotb |
+| **`cocotb/eth_ptp_phc_subsystem/test_phc_chain.py`** | the 5 join tests + a minimal AHB-Lite master |
+| **`cocotb/eth_ptp_phc_subsystem/Makefile`** | expands `ethernet_ss_ahb_phc.flist`; stale-simv guard |
+| **`cocotb/eth_ptp_phc_subsystem/TRANSCRIPT.md`** | 5/5 measured transcript (§2.8) |
+
+---
+
+## 7. §1.7 TSU-pop wedge — RESOLVED (2026-07-21): it is LINK-specific
+
+The §1.7 cross-link stall (a queue-pop's DATA reads never returning `HREADY`) is
+**not** in the HA1588 AHB→WB register path. Proven by `test_05` in the new
+subsystem bench, which reaches the **same** HA1588 register terminus but over a
+**direct** cocotb AHB master (no TideLink link):
+
+1. **The pop COMPLETES over a direct master** — the post-pop `DATA0..3` reads all
+   return `HREADY`. So the wedge lives in the **TideLink return path** on the
+   write-CTRL-then-read sequence, not in `wb_slv_wrapper`/`ahb3lite_to_wb`/`reg.v`.
+   This is the negative control the cross-link bench structurally could not run.
+   *(Static analysis agrees: `wb_slv_wrapper` acks on `stb_i` level and always
+   self-clears, so it cannot hang indefinitely; `reg.v`'s DATA reads have no wait
+   states.)* → the remaining localisation is on the **TideLink** side, not eth.
+
+2. **The pop is UNNECESSARY.** `ptp_queue` is first-word-fall-through
+   (`q = mem[rd_bin]`, `ptp_queue.v:80`), so the head entry — including the 80-bit
+   timestamp `{sec,ns}` and `ptp_infor` — is **continuously presented and readable
+   PRE-pop**. `test_05` reads `DATA3 = 0x032a0055` (seq_id 0x0055, the staged
+   value) with no pop. eth_ptp_chain read `DATA0..2 = 0` pre-pop because the TSU's
+   `rtc_timer_in` was ~0 at capture — that 0 was the **true** value, not
+   "unloaded". **Read the DATA registers BEFORE popping.**
+
+3. **The pop is HARMFUL on a depth-1 queue.** It advances `rd_bin` into
+   never-written FIFO memory (`mem[1]`), so post-pop `DATA0..3` read **X** — the
+   empty-FIFO X-init class (same family as the tidelink empty-RX-FIFO phantom-pop
+   in `MEMORY.md`). Never read a TSU DATA register after popping the last entry;
+   only pop to advance to a *next* queued entry.
+
+The X-propagation hypothesis from §1.7 (patched-vs-unpatched `reg.v`) is again
+**not** the cause — this bench compiles the fully-patched HA1588 set and the reads
+still complete; the post-pop X is the empty-queue read, above, not reset-less
+flops.
 
 Nothing outside `cocotb/eth_ptp_chain/` and this file was modified by *that*
 work. No commits. `/research/AAA/**` was read via flist reference only.

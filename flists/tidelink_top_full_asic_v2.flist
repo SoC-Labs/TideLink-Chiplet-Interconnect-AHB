@@ -136,22 +136,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavClockMux.v
 // connects the new port, so the deps copy would no longer elaborate here).
 // # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpio.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpio_v2.v
-// PHASE-B LOCAL OVERRIDE (2026-07-14): the deps WavD2DGpioRx.v is replaced by
-// src/rtl/local_overrides/WavD2DGpioRx_v2.v — identical except the SHARED
-// CAPTURE-CLOCK inputs (USE_EXT_CAP_CLK + io_cnt_clk_ext/io_cap_clk_ext), which
-// let WavD2DGpio_v2 hoist the (lane-identical) capture mux chain out of the 8
-// lanes and buffer it once, killing the fanout-372 general-routing capture-clock
-// LUT behind the ~7 ns lane-7 clock skew. Must be kept in lockstep with
-// WavD2DGpio_v2.v, which connects the two new ports — the deps copy would no
-// longer elaborate here. Submodule copy stays pristine.
-// SAFE FOR ASIC: USE_EXT_CAP_CLK defaults to 0 and WavD2DGpio_v2 derives
-// USE_SHARED_CAP_BUFG from USE_CLKBUF, which is 0 on the ASIC flow ⇒ the shared
-// chain + its 2 BUFGs are pruned and every lane keeps today's per-lane
-// WavClockMux passthrough. Bit-identical to the deps copy in this flist.
-// NOTE: distinct from src/rtl/local_overrides/WavD2DGpioRx.v (the V1 override,
-// still owned by the V1 flists) — same module name, never co-compile.
-// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioRx_v2.v
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
 // V2 PHY SWAP: PHY-owned TX/RX lane front-end blocks instantiated by the new
 // WavD2DGpio (128b<->8x16b segmentation + Option-A lane mask zero-fill).
@@ -305,7 +290,12 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
 // V2 PHY SWAP: new lane-mask-aware calibrator (S_PROBE/eye-centre + M8/M9/M11
 // lineage + FIX-E/H/J hooks) replaces src/rtl/tidelink_phy_align_calibrator.sv.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv
+// LOCAL OVERRIDE (P1, 2026-07-19): src/rtl/local_overrides/ copy adds the
+// force_recal_i port (SWI_FORCE_RECAL W1P) so firmware has a PHY retrain at all
+// — the deps copy's calibrated_once_q makes SWI_RECAL a no-op after first lock
+// (docs/LINK_RECOVERY_MECHANISM.md §4). THIS IS THE TAPEOUT PATH. Bit-identical
+// until the W1P is written.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv
 // V2: src/rtl/tidelink_eye_regs.sv REMOVED (eye-vis retired, AUDIT #17).
 // tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
 // §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0

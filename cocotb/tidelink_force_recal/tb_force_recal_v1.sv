@@ -1,36 +1,35 @@
 // =============================================================================
-// tb_calibrator.sv — thin cocotb wrapper around tidelink_phy_align_calibrator.
+// tb_force_recal_v1.sv — cocotb wrapper around the V1 calibrator
+// (src/rtl/tidelink_phy_align_calibrator.sv), i.e. the copy that
+// flists/tidelink_fpga.flist and flists/tidelink_top_full_asic.flist build.
 //
-// The DUT has a large flat port list and no packed-vector-clock issues, so
-// cocotb could in principle drive it directly. The reason for this wrapper is
-// PARAMETER OVERRIDE: the silicon defaults DWELL_CYCLES=64, HOLD_CYCLES=
-// 8*128*64 (=65536) and VALIDATION_TIMEOUT=2_000_000 make a full
-// S_PROBE->S_SWEEP->S_FINALIZE->S_HOLD->S_VALIDATE traversal take tens of
-// millions of cycles — far too slow for a unit test. Here we shrink those
-// three to small values via #() so the FSM exercises every state arm in a
-// few thousand cycles, WITHOUT touching the RTL's behaviour (only the
-// magnitudes of the dwell / hold / validation timers).
+// The V1 calibrator carries the IDENTICAL calibrated_once_q sticky as the V2
+// deps copy, so the P1 FORCED-RECAL W1P was applied to BOTH. This wrapper lets
+// the SAME cocotb tests (test_force_recal.py) gate the V1 trunk/ASIC path.
 //
-// All other ports are passed straight through. Unused observability ports
-// (eye_*) are tied off. Pure structural — faithful to the DUT.
+// Port-list deltas vs the V2 wrapper: V1 has dwell_min_dist_i / crack_pkt_seen_i
+// / resweep_ctr_o / the v2 eye-ctrl surface and LACKS lane_mask / sync_seen_i /
+// lane_synced_i / swi_training_hold_i / lane_pin_converge_en_i. The cocotb-facing
+// port list is kept IDENTICAL to tb_force_recal_v2 so the tests bind unchanged.
 // =============================================================================
 `timescale 1ns/1ps
 `default_nettype none
 
-module tb_calibrator #(
-    parameter int DWELL_CYCLES       = 16,
-    parameter int LOCK_THRESH        = 8,
-    parameter int HOLD_CYCLES        = 64,
+module tb_force_recal_v1 #(
+    parameter int DWELL_CYCLES         = 8,
+    parameter int LOCK_THRESH          = 2,
+    parameter int HOLD_CYCLES          = 64,
     parameter int VALIDATION_TIMEOUT   = 256,
-    parameter int MIN_LOCK_DWELLS      = 4,
+    parameter int MIN_LOCK_DWELLS      = 2,
     parameter int MAX_RESWEEPS         = 0,
-    parameter int MAX_VALIDATE_RETRIES = 2   // keep test fast: 2 retries before give-up
+    parameter int MAX_VALIDATE_RETRIES = 2
 )(
     input  wire        clk,
     input  wire        rst,
 
     input  wire        role_locked,
     input  wire        swreset,
+    input  wire        force_recal_i,     // P1 — the port under test
     input  wire [7:0]  lane_locked,
 
     input  wire [23:0] apb_bit_slip_override,
@@ -49,9 +48,8 @@ module tb_calibrator #(
     output wire [3:0]  state
 );
 
-    // dwell_min_dist_i is unused by the current scoring path (reverted to
-    // binary lane_locked); tie to 0 (= "all lanes distance-pass") so it is
-    // never the limiting factor.
+    // Unused by the current scoring path (binary lane_locked); 0 = "all lanes
+    // distance-pass" so it is never the limiting factor.
     wire [39:0] dwell_min_dist_i = 40'd0;
 
     tidelink_phy_align_calibrator #(
@@ -78,8 +76,8 @@ module tb_calibrator #(
         .min_lock_dwells_i    (min_lock_dwells_i),
         .cr_pkt_seen_i        (cr_pkt_seen_i),
         .crack_pkt_seen_i     (crack_pkt_seen_i),
-        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
-        .force_recal_i             (1'b0),
+        // P1 — the port under test.
+        .force_recal_i        (force_recal_i),
         .bit_slip             (bit_slip),
         .phase_offset         (phase_offset),
         .training_mode        (training_mode),

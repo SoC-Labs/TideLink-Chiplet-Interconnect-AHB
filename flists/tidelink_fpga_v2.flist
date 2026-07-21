@@ -163,32 +163,7 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_lane_deskew_v2.sv
 // V1 override, still owned by the V1 flist — never co-compile).
 // # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpio.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpio_v2.v
-// PHASE-B LOCAL OVERRIDE (2026-07-14): the deps WavD2DGpioRx.v is replaced by
-// src/rtl/local_overrides/WavD2DGpioRx_v2.v — identical except the SHARED
-// CAPTURE-CLOCK inputs (USE_EXT_CAP_CLK + io_cnt_clk_ext/io_cap_clk_ext).
-//
-// WHY: all four inputs of the per-lane RX capture mux chain are LANE-IDENTICAL
-// (io_pad_clk=io_pad_clk_rx, io_scan_mode, io_scan_clk, io_pol=
-// out_prepend_swi_polarity), so Vivado merged the 8 chains into ONE LUT and drove
-// all 8 lanes' capture flops from its fanout-372 GENERAL-ROUTING output. Measured
-// routed capture-clock delay: lanes 2/5/6 = 8.230/8.604/8.808 ns vs lane 7 =
-// 15.281 ns (~7 ns out) — while data-path skew across those lanes is 0.095 ns.
-// That placement-varying clock skew (amplified by the all-lanes-AND commit gate)
-// is the bring-up lottery, and it is PHYSICAL. WavD2DGpio_v2 now computes the
-// chain ONCE and buffers each output through one BUFG (2 BUFGs total: 15/32 ->
-// 17/32), fanning them to all 8 lanes.
-//
-// NOT to be confused with USE_CAP_CLKBUF, which is UNSAFE: it bypasses the io_pol
-// mux, and io_pol RESETS TO 1 (WavD2DGpio_v2.v:1885) ⇒ it would invert the capture
-// edge on all 8 lanes and kill the link. The shared-BUFG path replicates the FULL
-// chain (inverter + io_pol mux + scan mux) and so PRESERVES the inversion.
-//
-// Keep in lockstep with WavD2DGpio_v2.v, which connects the two new ports — the
-// deps copy would no longer elaborate here. Submodule copy stays pristine.
-// NOTE: distinct from src/rtl/local_overrides/WavD2DGpioRx.v (the V1 override,
-// still owned by the V1 flists) — same module name, never co-compile.
-// # Comment-out original: ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WavD2DGpioRx_v2.v
+${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioRx.v
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/wav/WavD2DGpioTx.v
 // V2 PHY SWAP: PHY-owned TX/RX lane front-end blocks instantiated by the new
 // WavD2DGpio (128b<->8x16b segmentation + Option-A lane mask zero-fill).
@@ -374,7 +349,12 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_checker.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 // V2 PHY SWAP: new lane-mask-aware calibrator (S_PROBE/eye-centre + M8/M9/M11
 // lineage + FIX-E/H/J hooks) replaces src/rtl/tidelink_phy_align_calibrator.sv.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv
+// LOCAL OVERRIDE (P1, 2026-07-19): src/rtl/local_overrides/ copy adds the
+// force_recal_i port (SWI_FORCE_RECAL W1P) so firmware has a PHY retrain at all
+// — the deps copy's calibrated_once_q makes SWI_RECAL a no-op after first lock
+// (docs/LINK_RECOVERY_MECHANISM.md §4). Bit-identical until the W1P is written.
+// The deps copy stays pristine and is still used by flists/tidelink_phy_v2.flist.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv
 
 // ── Performance profiling ────────────────────────────────────────────────────
 ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv

@@ -70,6 +70,8 @@ module tb_calibrator_robust #(
         .apb_override_enable    (apb_override_enable),
         .min_lock_dwells_i      (4'h0),
         .cr_pkt_seen_i          (1'b1),
+        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
+        .force_recal_i               (1'b0),
         .bit_slip               (bit_slip),
         .phase_offset           (/* unconnected */),
         .training_mode          (training_mode),

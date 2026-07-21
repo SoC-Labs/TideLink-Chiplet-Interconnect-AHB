@@ -26,6 +26,20 @@ PAGE = 4096
 BASE = 0x44032000
 R_SLOT0, R_BITSLIP, R_LANE, R_TRAINCFG, R_THRESH, R_OBSCAL = 0x100, 0x104, 0x108, 0x10C, 0x160, 0x198
 
+# --- ZynqMP (KR260) SAFETY GUARD ---------------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang. Pynq-Z2 ONLY. Refuse
+# before opening /dev/mem. On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.
+_tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+    sys.stderr.write(
+        "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals "
+        "(0x4403_xxxx)\n  UNDECODED on a ZynqMP (KR260) => hard PS hang. "
+        "Pynq-Z2 ONLY.\n  On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.\n"
+        % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+    raise SystemExit(3)
+
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 m = mmap.mmap(fd, PAGE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=BASE)
 # SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.

@@ -120,6 +120,8 @@ module tb_top #(
         // tests (the standalone TB has no FCSM to generate a CR_PKT).
         // Real-data validation is exercised at the tidelink_top_pair level.
         .cr_pkt_seen_i          (1'b1),
+        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
+        .force_recal_i               (1'b0),
         .bit_slip               (bit_slip),
         .phase_offset           (phase_offset),
         .training_mode          (training_mode),

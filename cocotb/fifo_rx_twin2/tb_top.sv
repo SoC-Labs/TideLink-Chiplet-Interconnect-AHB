@@ -7,11 +7,16 @@
 // TWIN 2 defect needs: the corruption is an illegitimate AHB write walking the
 // FC-shared write_ptr, so the reproduction must drive BOTH ports.
 //
-// ENABLE_AHB_WRITE(0) models the SoC RX-FIFO instantiation (the TWIN 2 fix).
-//   * Against the UNFIXED shared RTL the param does not exist -> VCS warns and
-//     IGNORES it -> AHB writes stay enabled -> the bug reproduces (test FAILs).
-//   * Against the PATCHED copy the param is honoured -> AHB writes are a NO-OP
-//     -> the FC-committed packet is never corrupted (test PASSes).
+// ENABLE_AHB_WRITE(0) models the SoC RX-FIFO instantiation (the TWIN 2 fix,
+// applied to the tree 2026-07-19 and tied 0 at the RX instance in
+// src/rtl/fifo/tidelink_fifo.sv).
+//   * FIFO_SRC=tree — the REAL shared src/rtl RTL, which now carries the guard:
+//     the param is honoured -> AHB writes are a NO-OP -> the FC-committed packet
+//     is never corrupted (test PASSes). This is the config the gate runs.
+//   * FIFO_SRC=unfixed — frozen *.UNFIXED.sv copies of the PRE-FIX RTL, where the
+//     param does not exist -> VCS warns and IGNORES it -> AHB writes stay enabled
+//     -> the bug reproduces (test FAILs). The negative control; its FAILURE is
+//     what proves this test has teeth.
 module tb_top #(
     parameter SYS_DATA_W = 32,
     parameter RAM_ADDR_W = 14,

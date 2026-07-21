@@ -65,7 +65,9 @@
 ###   packaged from ~/SoCLabs/ptp-hardware-clock-ahb by fpga/vivado_ip/phc)
 ###   is instantiated in this BD and replaces the previous xlconstant
 ###   tie-offs. Connections:
-###     phc_clk           = clk_wiz clk_out2 (50 MHz, shared MMCM with hclk)
+###     phc_clk           = clk_wiz clk_out1 (25 MHz, == hclk; R1 fix 2026-07-17,
+###                         was clk_out2 which resolved to a near-identical 24.955
+###                         MHz and created 1673 false hclk<->phc_clk crossings)
 ###     phc_resetn        = proc_sys_reset peripheral_aresetn
 ###     phc/apb           = AXI SmartConnect M05 -> axi_apb_bridge -> phc.apb
 ###     hw_capture_0_i    = tidelink_0/phc_hw_capture OR pmod_b_trig_i  (one-shot OR)
@@ -225,9 +227,12 @@ proc create_root_design { parentCell } {
     #              WORD_PIN_AUTO aligner (WavD2DGpioRx wpa_match). Dropping the
     #              link 4x re-opens that eye. hclk/AHB/APB also drop to 6.25 MHz
     #              -- the BIST runs its whole stack at 6.25 MHz, proven fine.
-    #   clk_out2 = phc_clk (25 MHz, phase-aligned; PHC is NOT in the link path
-    #              and is not exercised in this bring-up, so it is deliberately
-    #              left at 25 MHz to avoid disturbing NS_INCR/PPS behaviour).
+    #   clk_out2 = SPARE (2026-07-17 R1 fix). Formerly drove phc_clk/phc_0/clk at a
+    #              requested 25 MHz, but the MMCM resolved it to 24.955 MHz (integer
+    #              CLKOUTn) vs clk_out1's 25.011 MHz (fractional CLKOUT0) — a
+    #              near-common period that made every hclk<->phc_clk path a failing
+    #              inter-clock crossing. phc now rides clk_out1; this output is left
+    #              enabled-but-unconnected (harmless spare; see phc_clk note below).
     #   clk_out3 = 200 MHz IDELAYCTRL reference (per-lane IDELAYE2).
     # Active-low reset (resetn) from PS FCLK_RESET0_N.
     #--------------------------------------------------------------------------
@@ -430,9 +435,16 @@ proc create_root_design { parentCell } {
     # a pure combinational passthrough (pad_rx_o = pad_rx_i), which places cleanly
     # in HDIO; eye centring is still done by the Wlink calibrator's bit-slip x
     # phase sweep. pynq-z2-pair / -pair-flip ship this same override.
+    # HARDEN_SWI_ENABLE=0 (R6, 2026-07-17): KR260 bakes NEGO_CFG_RESET=0x61, so
+    # role_locked latches at PL load and the FCSM exits reset into training
+    # garbage, parking at CR-seen (fcsm=2). The only SW-reachable LL reset is
+    # 0x208 bit[3] swreset, which HARDEN_SWI_ENABLE=1 masks; the internal FCH
+    # bypass is gated on winscan_done, which never asserts with USE_IDELAY=0.
+    # Z2/ASIC keep the =1 default. See docs/R6_HARDEN_SWI_OPTIONS.md.
     set_property -dict [list \
         CONFIG.TIDELINK_PAIR_BASE {0x84032000} \
         CONFIG.USE_IDELAY         {0} \
+        CONFIG.HARDEN_SWI_ENABLE  {0} \
     ] $tl
 
     #--------------------------------------------------------------------------
@@ -679,11 +691,25 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/user_ref_clk] \
                    [get_bd_pins tidelink_0/scan_clk]
 
-    #-- phc_clk: clk_wiz clk_out2 (25 MHz, same MMCM — phase-aligned to hclk).
-    #   The PHC IP is removed (2026-06-19) but tidelink_0/phc_clk is a real
-    #   input that must still be driven; clk_out2 stays defined (a spare clk
-    #   output is harmless, lower-risk than reconfiguring the clk_wiz).
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
+    #-- phc_clk: DRIVEN FROM clk_wiz clk_out1 (== hclk), NOT clk_out2 (2026-07-17,
+    #   R1 timing fix). clk_out1 and clk_out2 BOTH request 25 MHz, but the single
+    #   MMCM resolves them to DIFFERENT actual frequencies: clk_out1 rides the
+    #   fractional-capable CLKOUT0 (25.011 MHz, 39.982 ns) while clk_out2 rides an
+    #   integer-only CLKOUTn (24.955 MHz, 40.072 ns). The tool then treats every
+    #   hclk<->phc_clk path as a near-common-period INTER-clock crossing with only
+    #   ~0.09 ns of setup requirement => 1673 failing endpoints, WNS -2.427 ns on
+    #   the deployed build (imp/.../kr260-pair-ptp/*timing_summary_routed.rpt: ALL
+    #   setup failures are the clk_out1<->clk_out2 group). The PHC is a 25 MHz
+    #   timebase either way and its hclk<->phc_clk boundary is CDC'd in RTL, so
+    #   collapsing both consumers onto ONE physical net makes the crossing
+    #   single-clock (intra-clk_out1 WNS +28.8 ns) with ZERO functional change
+    #   (same 25 MHz, same NS_INCR budget; 24.955->25.011 MHz is a 0.2% shift,
+    #   actually closer to nominal). This does NOT touch the pad_tx source-
+    #   synchronous forwarded-clock outputs (the separate benign WHS artifact).
+    #   clk_wiz CLKOUT2 is intentionally left enabled-but-unconnected (a spare MMCM
+    #   output is harmless and lower-risk than renumbering CLKOUT3=200 MHz IDELAY);
+    #   DO NOT reconnect phc_clk or phc_0/clk to it.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
                    [get_bd_pins tidelink_0/phc_clk]
 
     #-- SoC Labs §9 structural fix: clk_wiz clk_out3 (200 MHz) -> IDELAYCTRL
@@ -820,7 +846,11 @@ proc create_root_design { parentCell } {
         connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
                        [get_bd_pins axi_apb_phc/s_axi_aclk] \
                        [get_bd_pins axi_ahb_ptp/s_axi_aclk]
-        connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
+        #-- phc_0/clk on clk_out1 (== hclk), NOT clk_out2 — see the R1 timing-fix
+        #   note at the phc_clk connection above. This also collapses the
+        #   axi_apb_phc(clk_out1) -> phc_0/apb(phc_0/clk) APB crossing to a single
+        #   clock, so the PHC APB registers are reliably accessible.
+        connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
                        [get_bd_pins phc_0/clk]
         connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
                        [get_bd_pins axi_apb_phc/s_axi_aresetn] \

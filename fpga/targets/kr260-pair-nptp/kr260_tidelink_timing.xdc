@@ -284,10 +284,39 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 # a working skew bound would have changed nothing. (It may still matter on the Z2 —
 # different device, different UI, different placement — but that is not this file.)
 #
-# The residual suspect on KR260 is the capture CLOCK tree, not the data path: a
-# LUT-based scan mux (pad_clk_inv_scan_mux) feeds the capture BUFG, and the
-# distributed clock net has fanout 372. That is a CLOCK-skew mechanism and is
-# tracked separately — see fpga/docs/KR260_NEXT_WEEK_PLAN.md.
+# The residual root cause on KR260 is the capture CLOCK tree, not the data path.
+# Every per-lane RX capture mux chain is lane-IDENTICAL by construction
+# (io_pad_clk / io_pol=out_prepend_swi_polarity / scan are all common nets), so
+# Vivado legally MERGES the 8 chains into ONE LUT (routed name
+# `...g_word_pin_auto.wpa_gap_q[*]_i_*`, the pad_clk_inv_scan_mux) and drives all
+# 8 lanes' capture flops from its output — a fanout-372 GENERAL-ROUTING net. That
+# placement-varying inter-lane CLOCK skew, amplified by the all-lanes-AND commit
+# gate, is the bring-up lottery (die_a 1/4 vs die_b 4/4 on KR260, 2026-07-17).
+#
+# THE PROVEN FIX IS RTL, NOT A CONSTRAINT — and it is NOT on this branch yet.
+# phaseB's "parent hoist" (commit 2c32c2b; cherry-pick 84355b7 on wip/rate-ladder
+# and on phaseB/attack): compute the mux chain ONCE in WavD2DGpio_v2 and buffer it
+# through 2 shared BUFGs (new param USE_SHARED_CAP_BUFG, which DEFAULTS to
+# USE_CLKBUF=1 — so an FPGA build gets it for free once the RTL/flist land). It was
+# measured LUT2->BUFG on routed z2 DCPs: inter-lane capture skew 1.781 ns -> 0.244 ns
+# (7.3x tighter). It touches ZERO xdc/tcl.
+#
+# A CONSTRAINT CANNOT REPLICATE IT. It can neither un-merge the lane-identical mux
+# nor insert a BUFG on the LUT-output clock net; and bypassing the io_pol mux
+# (USE_CAP_CLKBUF) INVERTS the deliberate mid-cell centre-sample and KILLS the link
+# (out_prepend_swi_polarity resets to 1'b1 — see WavD2DGpio_v2.v). So DO NOT enable
+# USE_CAP_CLKBUF here. Porting the real fix is an RTL/flist job: cherry-pick 2c32c2b
+# onto integ, then re-run `make -C fpga package_ip` with TIDELINK_PHY_V2=1 (no BD or
+# XDC change is needed on these kr260 targets — USE_SHARED_CAP_BUFG auto-tracks
+# USE_CLKBUF). Until that lands, the pblock in (3c-ii) below plus the DORMANT
+# co-location in (3c-iii) are PLACEMENT-only partial mitigations, not the fix.
+#
+# ACCEPTANCE / STRUCTURAL CHECK (post-route): run
+# fpga/docs/verify_capture_clock_kr260.tcl on the routed design. It asserts the
+# gpiorx capture flops are clocked through a global buffer (BUFG/BUFGCE) and reports
+# the per-lane insertion-delay spread; a LUT/general-route driver means the RTL fix
+# is still absent and the lottery persists. Full rationale + risk analysis:
+# fpga/docs/KR260_CAPTURE_CLOCK_TREE.md.
 #
 # NOTE (verification method): never "check" a bus-skew fix by grepping for
 # VIOLATED. An EMPTY report contains no violations and greps as a PASS — which is
@@ -311,6 +340,42 @@ create_pblock pblock_rx_act
 add_cells_to_pblock pblock_rx_act [get_cells -quiet -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
 resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
 set_property IS_SOFT false [get_pblocks pblock_rx_act]
+
+# (3c-iii) DORMANT capture-CLOCK-driver co-location — a PLACEMENT-only PARTIAL
+#      mitigation, DISABLED by default. Mirrors the disabled-block convention of
+#      section [5] below (the future IDELAY hook): the constraint is co-located
+#      with its rationale but not active.
+#
+# WHAT IT DOES: the pblock in (3c-ii) confines the capture FLOPS (the loads). It
+# does NOT constrain the merged capture-clock LUT (the DRIVER of the fanout-372
+# net — see the root-cause note above). Adding that LUT to the same clock-region
+# column shortens the general-routing clock net and reduces its placement-varying
+# inter-lane skew. It is additive placement only: it changes NO logic and does NOT
+# bypass the io_pol mux, so it is NOT USE_CAP_CLKBUF and cannot kill the link.
+#
+# WHY IT IS DISABLED (do not blindly enable):
+#   1. It is a PARTIAL mitigation, not the fix. The net is still general routing
+#      with no global buffer; only the RTL shared-BUFG (2c32c2b) removes the LUT.
+#      Prefer landing that RTL fix over enabling this.
+#   2. The exact driver cell name is only reliable from a ROUTED report (the
+#      merged mux is named at implementation, e.g. `...wpa_gap_q[3]_i_2__0`). A
+#      guessed `-quiet` filter that matches nothing would SILENTLY no-op — the
+#      exact self-validating trap this project keeps hitting — and the xdc_lint
+#      no-procedural-Tcl rule forbids an inline llength fail-loud guard here.
+#   3. Pinning a fanout-372 clock-driver LUT into a narrow 2-region column can
+#      route WORSE; it MUST be validated before/after with
+#      fpga/docs/verify_capture_clock_kr260.tcl (per-lane skew) on real silicon,
+#      not enabled on faith.
+#
+# TO ENABLE (only with a routed-report cell name in hand + a measured before/after):
+#   1. From the routed design, find the driver cell of the net on the gpiorx
+#      link_data_pad_clk_reg[*] C pins (the verify script prints it).
+#   2. Replace <DRIVER_CELL_NAME> below with that cell's exact name, uncomment,
+#      and re-run xdc_lint (cocotb/lint/xdc_lint.py) — no wildcard-without-lindex,
+#      no procedural Tcl.
+#   3. Rebuild and re-run the verify script; keep it ONLY if per-lane skew improves.
+#
+# add_cells_to_pblock pblock_rx_act [get_cells -hier -filter {NAME =~ "*<DRIVER_CELL_NAME>*"}]
 
 # (3d) IOB packing is FORCED OFF on KR260. This is a deliberate inversion of
 #      the Z2 constraint (which requests `IOB TRUE` here), and it is required —

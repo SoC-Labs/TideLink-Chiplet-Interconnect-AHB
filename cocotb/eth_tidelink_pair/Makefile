@@ -90,4 +90,11 @@ endif
 
 SIM_BUILD := sim_build_$(EPOCH_PROFILE)
 
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f <flist>` (invisible to make), so
+#     without this an RTL-only edit re-runs the STALE simv. See SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(V2_FLIST) $(call flist_srcs,$(V2_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
 include $(shell cocotb-config --makefiles)/Makefile.sim

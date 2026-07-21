@@ -15,7 +15,12 @@ module tidelink_fifo_mem #(
     // System Parameters
     parameter SYS_DATA_W = 32,  // System Data Width
     parameter RAM_ADDR_W = 14,  // Size of SRAM
-    parameter RAM_DATA_W = 32   // Data Width of RAM
+    parameter RAM_DATA_W = 32,  // Data Width of RAM
+    // TWIN 2 FIX (F10): forward to tidelink_fifo_ctrl. DEFAULT 1 (legacy AHB
+    // inject preserved); the SoC instantiates this RX FIFO with
+    // ENABLE_AHB_WRITE = 0 so a CPU/AHB write to the read-only RX aperture
+    // cannot walk the FC-shared write_ptr. See tidelink_fifo_ctrl.sv.
+    parameter ENABLE_AHB_WRITE = 1
 )(
     // --------------------------------------------------------------------------
     // Port Definitions
@@ -123,7 +128,8 @@ module tidelink_fifo_mem #(
     // FIFO Control Logic
     // --------------------------------------------------------------------------
     tidelink_fifo_ctrl #(
-        .RAM_ADDR_W (RAM_ADDR_W)
+        .RAM_ADDR_W       (RAM_ADDR_W),
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_fifo_ctrl (
         .hclk                (hclk),
         .hresetn             (hresetn),

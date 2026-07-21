@@ -35,6 +35,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/td_v2_hwlib.sh"
 DIES="${1:-a b}"
 
+# HARD REFUSE on a non-Z2 SoC: probe_py mmaps RAW Z2 literals (base 0x44032000)
+# directly. On a ZynqMP (KR260) an undecoded 0x4403_xxxx access is a hard PS
+# hang — and its SIGBUS handler does NOT protect against that (it hard-stalls,
+# it does not bus-error). Refuse before any /dev/mem access.
+td_require_z2 "reg_safety_probe.sh"
+
 # One SIGBUS-catching Python probe per die. mmap the 0x44032000 page, then try
 # each access inside its own try/except so one fault does not abort the rest.
 probe_py() {

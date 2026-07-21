@@ -4,6 +4,65 @@ Target: **`kr260-pair-onchip`** — one Kria KR260 (`xck26-sfvc784-2LV-c`) bitst
 TideLink instances** cross-connected **entirely through the FPGA fabric** (no PHY signal reaches a pin), with the
 I2C autoneg sideband also fabric-cross-connected so **genuine hardware role negotiation runs**.
 
+> ## STATUS 2026-07-18: **BUILDABLE AND BUILT** — W6 + W9 landed; first bitstream exists.
+>
+> `make -C fpga build_design TARGET=kr260-pair-onchip` (TIDELINK_PHY_V2=1) completes end-to-end.
+> Artefacts: `imp/fpga/output/kr260-pair-onchip/{tidelink.bit,tidelink.hwh,tidelink_design.xsa,
+> tidelink_design_wrapper_routed.dcp}`; manifest `phy_marker = V2`.
+> `fpga/scripts/verify_build.sh --targets "kr260-pair-onchip"` = **PASS, warnings 0** (a,b,c,d,g,h,i).
+>
+> **Utilization (routed, xck26) — two dies fit one device with large margin:**
+>
+> | | LUT | FF | BRAM tile | DSP | BUFGCE | MMCM | Bonded IOB |
+> |---|---|---|---|---|---|---|---|
+> | onchip pair | 63,199 (53.96%) | 70,025 (29.89%) | 12 (8.33%) | 2 (0.16%) | 23 (20.5%) | 1 | **4 (LEDs only)** |
+> | single-die nptp (ref) | 34,350 (29.33%) | 39,451 (16.84%) | 6 (4.17%) | 1 | 19 | 1 | 24 |
+>
+> The second die is not a full 2x: the PS (hard block) and the single clk_wiz/MMCM are shared.
+> Tightest metric is CLB *slice* occupancy 13,834/14,640 (94.49%) at only 54% LUT — spread, not full.
+>
+> **Timing — sec 1.1 claim 4 CONFIRMED.** WNS **+27.314**, WHS **+0.010**, TNS/THS 0.000,
+> **0 failing endpoints of 141,745**, "All user specified timing constraints are met."
+> The pinned single-die `kr260-pair-nptp` for comparison: WHS **-23.107**, THS -184.601,
+> **8 failing hold**, "Timing constraints are not met." Deleting the pads deleted the entire
+> source-synchronous hold class, at ~1.76x the endpoint count.
+> **Not vacuous:** the cross-die capture paths are TIMED, not cut —
+> `phy_clk_i0 -> rxcap_clk_i1` 136 endpoints WHS +0.298; `phy_clk_i1 -> rxcap_clk_i0` 136 endpoints WHS +0.127.
+>
+> **Zero-skew trap (sec 4) — netlist proof PASSED.** Both dividers survive un-merged with distinct INIT:
+> `phy_clk_div_0/inst/div_cnt_reg[2:0]` INIT = 0,0,0 (3'b000); `phy_clk_div_1/inst/div_cnt_reg[2:0]`
+> INIT = 0,1,1 (3'b011). Six distinct FFs, `dont_touch` held. The 120 ns / 0.375 UI static offset is real.
+>
+> **Risk M2 did NOT materialise.** 24 BUFG* total; worst clock region **10 of 24** (X1Y2). No pblocking needed.
+>
+> **OPEN — inherited, not caused here.** The RX capture clock on **BOTH** dies is still driven by a
+> merged **LUT2** (`u_rxclk_buf/phy/g_word_pin_auto.wpa_gap_q[3]_i_2`), fanout 496, not a BUFG —
+> i.e. `fpga/docs/verify_capture_clock_kr260.tcl` returns DEFECTIVE for tidelink_0 AND tidelink_1
+> (128 capture flops each). This is the known pre-existing RTL condition; the proven fix is the phaseB
+> parent hoist (commit 2c32c2b / `USE_SHARED_CAP_BUFG`), which is NOT on this branch and which **no XDC
+> can substitute for**. Because this target has no ribbon and no pin lottery, it is now the cleanest
+> possible A/B vehicle for that RTL fix.
+>
+> **Deviations from this plan, as built:**
+> 1. **`set_bus_skew` OMITTED** (plan W6 DoD asked for 2). Rationale in `kr260_tidelink_timing.xdc` sec [7]:
+>    the constraint is inapplicable/no-op per the single-die file's own [3c] analysis, and an empty
+>    `-from` match would be promoted to a hard ERROR by the 12-1411 message gate. `verify_build.sh`
+>    check (g) confirms **no dropped XDC** and `set_bus_skew refs=0`.
+> 2. **`fpga/build_design.tcl` DID need an edit** (plan W9 said "no base-case edit"). Its divider glob was
+>    the exact filename `tidelink_phy_clk_div2.v`, so the OQ3 two-file fallback's
+>    `tidelink_phy_clk_div2_b.v` was never added to `sources_1` and `phy_clk_div_1` would have elaborated
+>    as an unresolved black box. Widened to `tidelink_phy_clk_div2*.v` + foreach — a superset, so all
+>    other targets (which ship only the base file) are bit-for-bit unaffected.
+> 3. **W1 was only half-landed in the main tree.** `src/rtl/tidelink_top.sv` already had the
+>    `HONEST_MASK_HS` param + the gated un-hack, but `fpga/vivado_ip/tidelink_vivado_wrapper.v` never
+>    declared/forwarded it, so it was absent from `component.xml` and `CONFIG.HONEST_MASK_HS` would have
+>    failed. Added the wrapper param (**default `1'b0`** = every existing single-die target
+>    byte-behaviour-identical) and re-ran `package_ip`. Confirmed in-build:
+>    `W5 assert OK: tidelink_{0,1} CONFIG.HONEST_MASK_HS = '0x1'` and `NEGO_CFG_RESET = '0x61'`.
+>
+> Still outstanding: W7 sim stage wiring into `farm_gate.sh` (`onchip_pair`), and hardware bring-up
+> (Wave 5) — no KR260 has been flashed with this image yet.
+
 This document is the single source of truth. It supersedes the eight independently-authored design sections
 (`bd`, `addrmap`, `clocking`, `xdc`, `i2c`, `skew`, `host`, `gates`) wherever they disagree, adopting the
 inter-section resolutions and the correctness/integration verdicts. It is written for engineers **and** for a fleet of
@@ -439,14 +498,30 @@ Grouped by file to avoid write conflicts between parallel agents.
   report.
 
 ### W6 — XDC trio [Vivado: build; xdc_lint: no Vivado]
-> **STATUS 2026-07-16: OUTSTANDING — this is what blocks `kr260-pair-onchip`.**
-> W1-W5/W8 landed (target dir has the BD tcl, wrapper, dividers, BRAM, addrmap;
-> the cocotb test and the host runners exist), but the target dir contains **zero
-> .xdc files** while every buildable target ships 3-4. `build_design.tcl` only
-> *warns* on a missing pin/timing XDC and carries on, so the target is
-> deliberately **kept out of `VALID_TARGETS`** and `fpga/Makefile` raises an
-> explicit "NOT BUILDABLE — W6 outstanding" error for it rather than a generic
-> "Unknown TARGET". Do W6, then W9, then delete that guard clause.
+> **STATUS 2026-07-18: DONE.** All three XDC authored and proven in a real build (see the
+> STATUS block at the top of this document). `xdc_lint` exits 0. The `fpga/Makefile`
+> "NOT BUILDABLE" guard clause has been deleted and `kr260-pair-onchip` is in
+> `VALID_TARGETS` with its own part clause (xck26-sfvc784-2LV-c / kr260_som / PTP=0).
+>
+> Files, and what each does differently from the single-die kr260 targets:
+> - `kr260_tidelink.xdc` — **LEDs only** (4 LOC+IOSTANDARD). No pad/I2C stanzas exist because
+>   no such ports exist. These four are load-bearing: without them write_bitstream fails
+>   DRC UCIO-1/NSTD-1, which is exactly what the deleted guard clause warned about.
+> - `kr260_tidelink_timing.xdc` — **no `create_clock`, no I/O delays, no `IOB` property** (there
+>   is no pad to reference). Instead: **6 `create_generated_clock`** — `phy_clk_i{0,1}` (/8 off
+>   each divider BUFG), `word_clk_i{0,1}` (/16 per die), `rxcap_clk_i{0,1}` (each die's rxclk_buf
+>   BUFG, sourced from the *peer's* divider) — plus a 3-way per-channel `set_clock_groups`
+>   ({A->B}, {B->A}, hclk) that cuts the genuine CDC while leaving each channel's
+>   launch<->capture pair timed. **Every filter is instance-qualified** (`phy_clk_div_0` vs
+>   `_1`, `tidelink_0/inst` vs `tidelink_1/inst`); the single-die file's bare `*phy_clk_div*` /
+>   `*gpiotx_0*` wildcards would match 2 pins here and abort with [Constraints 18-359], which
+>   the message gate promotes to ERROR. Filters deliberately start `*<name>` not `*/` so
+>   xdc_lint's XDC_MULTI_PIN_FILTER rule stays green.
+> - `kr260_tidelink_drc.xdc` — AHB HREADY combinational-loop waiver; the `-hierarchical`
+>   wildcard covers **both** dies with one line.
+>
+> All 6 generated clocks verified present and correctly parented in the routed report
+> (phy/rxcap 319.857 ns = 3.126 MHz; word 5117.710 ns), with the peer-crossing pairs timed.
 
 - **Brief:** Author `kr260_tidelink.xdc` (LEDs-only), `kr260_tidelink_timing.xdc` (§8 clock defs + groups + CDR),
   `kr260_tidelink_drc.xdc` (comb-loop waiver, header only). **Exact filenames** required by

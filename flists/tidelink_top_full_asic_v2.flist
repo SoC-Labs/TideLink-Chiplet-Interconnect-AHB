@@ -290,7 +290,12 @@ ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_gpio_phy_apb_regs.sv
 ${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_lane_deskew.sv
 // V2 PHY SWAP: new lane-mask-aware calibrator (S_PROBE/eye-centre + M8/M9/M11
 // lineage + FIX-E/H/J hooks) replaces src/rtl/tidelink_phy_align_calibrator.sv.
-${TIDELINK_HOME}/deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv
+// LOCAL OVERRIDE (P1, 2026-07-19): src/rtl/local_overrides/ copy adds the
+// force_recal_i port (SWI_FORCE_RECAL W1P) so firmware has a PHY retrain at all
+// — the deps copy's calibrated_once_q makes SWI_RECAL a no-op after first lock
+// (docs/LINK_RECOVERY_MECHANISM.md §4). THIS IS THE TAPEOUT PATH. Bit-identical
+// until the W1P is written.
+${TIDELINK_HOME}/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv
 // V2: src/rtl/tidelink_eye_regs.sv REMOVED (eye-vis retired, AUDIT #17).
 // tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
 // §9 structural fix: per-lane RX delay element. ASIC build → USE_IDELAY=0

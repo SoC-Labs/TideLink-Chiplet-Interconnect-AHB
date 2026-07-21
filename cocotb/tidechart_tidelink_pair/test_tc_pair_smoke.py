@@ -12,10 +12,20 @@ It proves three things:
                            attached (reused verbatim from the pair's PairTB).
   (c) CROSS-BOUNDARY OBS — TideChart consumes a REAL TideLink event: die_a's
                            election FSM is parked in ST_WAIT_LINKS while
-                           tidelink's link_active=0, and only advances once
-                           tidelink asserts link_active. That transition is
-                           gated *solely* on the tidelink output — a genuine
+                           tidelink's tl_data_mode_o=0, and only advances once
+                           tidelink asserts it. That transition is gated
+                           *solely* on the tidelink output — a genuine
                            TideLink -> TideChart observation, not a self-tick.
+
+                           NOTE: this gate used to be tidelink's `link_active`.
+                           It is now `tl_data_mode_o` (FCSM >= 4), per
+                           docs/TIDECHART_G1_SEQUENCING_CONTRACT.md. link_active
+                           == role_locked asserts ~5us too early, before the
+                           link can carry a CLAIM, which silently dual-rooted
+                           the fabric (finding G1). This test therefore now
+                           asserts the STRONGER property: the FSM stays parked
+                           even after role_lock/link_active go high, and is
+                           released only at data mode.
 
 Stretch observations (logged, and asserted where they reliably complete):
   * election_done / is_root latch in TC_STATUS after the link reaches data mode.
@@ -126,11 +136,12 @@ async def test_tidechart_tidelink_pair_smoke(dut):
     assert (pcnt & 0x7) == 2, f"expected NUM_PORTS=2, got {pcnt & 0x7}"
 
     # ---------------------------------------------------------------------
-    # (c) CROSS-BOUNDARY: election parks on tidelink's link_active.
-    # Arm election on die_a BEFORE the link is up. link_active[0]=role_locked=0,
-    # so the FSM must sit in ST_WAIT_LINKS and NOT self-advance.
+    # (c) CROSS-BOUNDARY: election parks on tidelink's tl_data_mode_o.
+    # Arm election on die_a BEFORE the link is up. data_mode=0, so the FSM must
+    # sit in ST_WAIT_LINKS and NOT self-advance.
     # ---------------------------------------------------------------------
     assert int(dut.m_link_active.value) == 0, "link_active should be 0 pre-role-lock"
+    assert int(dut.m_data_mode.value) == 0, "data_mode should be 0 pre-role-lock"
     await m_tc.write(TC_CTRL, 0x1)          # election_start (auto-clears)
     await ClockCycles(dut.hclk, 50)
 
@@ -151,15 +162,21 @@ async def test_tidechart_tidelink_pair_smoke(dut):
     assert locked, "pair failed to role_lock with TideChart attached"
     assert int(dut.m_link_active.value) == 1, "tidelink link_active never asserted"
 
+    # G1: link_active is now 1, but data mode has NOT been reached. Under the
+    # OLD wiring the election would advance HERE and dual-root. It must not.
     await ClockCycles(dut.hclk, 50)
-    st_after = _election_state(dut, "m")
-    log.info(f"[link UP] die_a election FSM = {ST_NAMES.get(st_after, st_after)} ({st_after})")
-    assert st_after > ST_WAIT_LINKS, (
-        f"die_a TideChart election did NOT advance past ST_WAIT_LINKS after "
-        f"tidelink asserted link_active — the cross-boundary link_active signal "
-        f"was not consumed (state stayed {st_after})")
-    log.info("CROSS-BOUNDARY PROVEN: TideChart election advanced ONLY after "
-             "TideLink asserted link_active.")
+    st_after_lock = _election_state(dut, "m")
+    log.info(f"[role_lock] link_active={int(dut.m_link_active.value)} "
+             f"data_mode={int(dut.m_data_mode.value)}  die_a election FSM = "
+             f"{ST_NAMES.get(st_after_lock, st_after_lock)} ({st_after_lock})")
+    assert int(dut.m_data_mode.value) == 0, (
+        "tl_data_mode_o asserted at role_lock — it is not a data-mode strobe")
+    assert st_after_lock == ST_WAIT_LINKS, (
+        f"die_a election LEFT ST_WAIT_LINKS at role_lock (state {st_after_lock}) — "
+        f"this is finding G1 (premature election => dual root). The gate must be "
+        f"tl_data_mode_o, not link_active.")
+    log.info("G1 HELD: election still parked at role_lock — gate is data-mode, "
+             "not role-locked.")
 
     # ---------------------------------------------------------------------
     # (b) Link continues to cal_done / data mode with TideChart attached.
@@ -171,6 +188,19 @@ async def test_tidechart_tidelink_pair_smoke(dut):
     assert (s_st >> 16) & 1, f"slave  cal_done not set with TideChart attached (0x{s_st:08x})"
     await tb.do_to_data_mode()
     await ClockCycles(dut.hclk, 3000)
+
+    # NOW the cross-boundary release must have happened: tl_data_mode_o rose and
+    # ONLY then did the election leave ST_WAIT_LINKS.
+    st_after = _election_state(dut, "m")
+    log.info(f"[data mode] data_mode={int(dut.m_data_mode.value)}  die_a election "
+             f"FSM = {ST_NAMES.get(st_after, st_after)} ({st_after})")
+    assert int(dut.m_data_mode.value) == 1, "tl_data_mode_o never asserted in data mode"
+    assert st_after > ST_WAIT_LINKS, (
+        f"die_a TideChart election did NOT advance past ST_WAIT_LINKS after "
+        f"tidelink asserted tl_data_mode_o — the cross-boundary signal was not "
+        f"consumed (state stayed {st_after})")
+    log.info("CROSS-BOUNDARY PROVEN: TideChart election advanced ONLY after "
+             "TideLink asserted tl_data_mode_o (and NOT at role_lock).")
 
     # Arm die_b election too, now that its link is up, so both dies elect.
     await s_tc.write(TC_CTRL, 0x1)
@@ -219,7 +249,8 @@ async def test_tidechart_tidelink_pair_smoke(dut):
     log.info("SMOKE RESULT SUMMARY")
     log.info(f"  (a) combined stack elaborated + ran        : PASS")
     log.info(f"  (b) pair link up w/ TideChart (role+cal)   : PASS")
-    log.info(f"  (c) TideChart consumed tidelink link_active: PASS")
+    log.info(f"  (c) TideChart consumed tl_data_mode_o      : PASS "
+             f"(parked at role_lock, released at data mode)")
     log.info(f"  stretch: die_a election_done/is_root       : {m_done}/{m_root}")
     log.info(f"  stretch: die_b election_done/is_root       : {s_done}/{s_root}")
     log.info(f"  stretch: die_a->die_b PKT_EXT bcast crossed: {crossed} "

@@ -56,6 +56,13 @@ endif
 
 SIM_BUILD := sim_build_ei
 
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f <flist>` (invisible to make), so
+#     without this an RTL-only edit re-runs the STALE simv. See SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(V2_FLIST) $(call flist_srcs,$(V2_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 .PHONY: ei_matrix
@@ -67,3 +74,27 @@ ei_matrix:
 	$(MAKE) MODULE=test_ei_sync_collision
 	$(MAKE) MODULE=test_ei_reset_storm
 	$(MAKE) MODULE=test_ei_lane7_repro
+
+# ---------------------------------------------------------------------------
+# S3c — the full 8-lane x 3-mode x 2-direction corruption sweep (F14-A scope).
+#
+# Each (direction, mode, lane) cell is its OWN cocotb test because the harness
+# can only bring the link up ONCE per simulation (a second run_bringup_full
+# comes back cal=IDLE / fcsm=0). Cells are therefore run as separate simv
+# invocations, which is slower but is the only way a degraded cell cannot
+# contaminate the next one.
+#
+#   make ei_sweep                 # all 48 cells, one simv run each
+#   make MODULE=test_ei_full_sweep TESTCASE=test_s2m_flip_lane7    # one cell
+# ---------------------------------------------------------------------------
+SWEEP_DIRS  ?= s2m m2s
+SWEEP_MODES ?= flip stuck1 stuck0
+SWEEP_LANES ?= 0 1 2 3 4 5 6 7
+
+.PHONY: ei_sweep
+ei_sweep:
+	@for d in $(SWEEP_DIRS); do for m in $(SWEEP_MODES); do for l in $(SWEEP_LANES); do \
+	  echo "=== CELL $$d/$$m/lane$$l ==="; \
+	  $(MAKE) --no-print-directory MODULE=test_ei_full_sweep \
+	          TESTCASE=test_$${d}_$${m}_lane$${l} || true; \
+	done; done; done

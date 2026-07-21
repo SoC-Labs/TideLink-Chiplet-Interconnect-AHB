@@ -28,8 +28,10 @@ INTENT (answered with grep evidence — see docs/RXFIFO_TWIN2_DISPOSITION.md):
 This bench EXPOSES the FC direct-write port (the real committer) so the genuine
 packet is delivered independently of the (defective) AHB write path. Checks are
 WHITEBOX on write_ptr / credit_count — immune to the SRAM X-init blindness that
-hid the phantom pop. The tb ties ENABLE_AHB_WRITE(0): ignored on the unfixed RTL
-(bug reproduces => FAIL), honoured on the patched copy (=> PASS).
+hid the phantom pop. The tb ties ENABLE_AHB_WRITE(0): honoured by the REAL shared
+RTL, which carries the fix as of 2026-07-19 (FIFO_SRC=tree => PASS; this is what
+the gate runs), and ignored by the frozen pre-fix copies (FIFO_SRC=unfixed => the
+bug reproduces => FAIL, the negative control that keeps this test honest).
 """
 
 import cocotb

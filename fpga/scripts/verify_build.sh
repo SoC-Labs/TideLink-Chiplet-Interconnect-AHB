@@ -20,6 +20,10 @@
 #       required marker is PLATFORM-DEPENDENT — see the (e) block below.
 #   (f) WARN on any tidelink.bin OLDER than its tidelink.bit (stale bit2bin
 #       trap — boards flash the .bin, not the .bit)
+#   (g) FAIL on any SILENTLY-DROPPED XDC constraint in the impl log
+#   (h) FF-REMOVAL scan of the IP's OUT-OF-CONTEXT synth log (Synth 8-3332):
+#       FAIL if any NON-benign (non-clock-gate) sequential element was pruned
+#   (i) ROUTED TIMING: FAIL if the Design Timing Summary WNS < 0 (setup not met)
 #
 # USAGE:  fpga/scripts/verify_build.sh [--worktree DIR] [--with-dcp]
 #                                      [--targets "T1 T2 ..."]
@@ -140,9 +144,28 @@ else
   else fail c "autonomy signals in axi_chiplet_controller.sv" "ref counts: $C_EV(0 = optimised/edited out — STALE IP?)"; fi
 fi
 
-# ----- (d) both .bit files: exist, newer than run start, different md5s -----------
-# Run start: the farm log names embed the kick-off stamp (package_ip.YYYYMMDD-HHMMSS.log);
-# fall back to the log's mtime (package_ip is the first, fast phase of a run).
+# ----- (d) both .bit files: exist, fresh vs THEIR OWN build, different md5s -------
+# BATCH SEMANTICS (2026-07-20 fix). A multi-target batch builds its targets
+# SEQUENTIALLY, so the single newest package_ip*.log belongs to the LAST target
+# only. The old check compared EVERY target's .bit against that one newest
+# run-start, which false-flagged every EARLIER target in a batch as
+# "stale/half-finished" — its .bit is legitimately older than the LAST target's
+# build (observed 2026-07-20: verifying the four kr260 targets in one shot
+# flagged 3 of 4, all freshly built minutes apart). Fix: compare each target's
+# .bit against ITS OWN build window, not the global newest run.
+#
+# The target's out-of-context synth runme.log is written DURING synthesis, which
+# STRICTLY PRECEDES bitstream generation in the same build, so a freshly-built
+# .bit is always NEWER than its own synth log, while a genuinely stale/
+# half-finished .bit (left from a prior build whose current re-synth never
+# reached bitgen) is OLDER than it. Per-target reference, in priority order:
+#   1. own OOC synth runme.log mtime          (synth precedes bitgen; bit >= it)
+#   2. own run/<t>/build_design.log START     ("Start of session at:" banner)
+#   3. GLOBAL newest run-start                 (last resort, BATCH-UNSAFE — the
+#      original behaviour, kept only for trees with no per-target logs at all)
+#
+# Global newest run-start (fallback #3 only): farm log names embed the kick-off
+# stamp (package_ip.YYYYMMDD-HHMMSS.log); else the log's mtime.
 RUN_START=0
 if [ -n "$PKG_LOG" ]; then
   bn=$(basename "$PKG_LOG")
@@ -152,6 +175,25 @@ if [ -n "$PKG_LOG" ]; then
   fi
   [ "$RUN_START" -gt 0 ] || RUN_START=$(mtime "$PKG_LOG")
 fi
+# d_ref_for TARGET -> "<REF_EPOCH>\t<SOURCE_LABEL>": this target's OWN build-window
+# start (priority list above). REF=0 => no usable reference, freshness skipped.
+d_ref_for(){
+  local t=$1 synth bd start
+  synth=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -n "$synth" ] && [ -f "$synth" ]; then
+    printf '%s\town synth log' "$(mtime "$synth")"; return
+  fi
+  bd="$IMP/run/$t/build_design.log"
+  if [ -f "$bd" ]; then
+    # build_design.log's MTIME is the build END (written after bitgen), so the
+    # .bit is legitimately a few seconds OLDER — never compare against it. Use
+    # the session START banner instead; if absent, fall through (don't false-fail).
+    start=$(grep -m1 'Start of session at:' "$bd" 2>/dev/null | sed 's/.*at: *//')
+    start=$(date -d "$start" +%s 2>/dev/null || echo 0)
+    if [ "${start:-0}" -gt 0 ]; then printf '%s\town build_design.log start' "$start"; return; fi
+  fi
+  printf '%s\tGLOBAL run-start (batch-UNSAFE fallback)' "$RUN_START"
+}
 declare -A BIT_MD5
 D_OK=1; D_EV=""
 for t in "${TARGETS[@]}"; do
@@ -159,10 +201,11 @@ for t in "${TARGETS[@]}"; do
   if [ ! -f "$bit" ]; then D_OK=0; D_EV="${D_EV}[$t: tidelink.bit MISSING] "; continue; fi
   bm=$(mtime "$bit")
   BIT_MD5[$t]=$(md5sum "$bit" | cut -d' ' -f1)
-  if [ "$RUN_START" -gt 0 ] && [ "$bm" -lt "$RUN_START" ]; then
-    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than run start $(tstr "$RUN_START") — stale/half-finished build] "
+  ref_line=$(d_ref_for "$t"); ref=${ref_line%%$'\t'*}; refsrc=${ref_line#*$'\t'}
+  if [ "${ref:-0}" -gt 0 ] && [ "$bm" -lt "$ref" ]; then
+    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than $refsrc $(tstr "$ref") — stale/half-finished build] "
   else
-    D_EV="${D_EV}[$t: bit $(tstr "$bm") md5=${BIT_MD5[$t]:0:8}] "
+    D_EV="${D_EV}[$t: bit $(tstr "$bm") fresh vs $refsrc md5=${BIT_MD5[$t]:0:8}] "
   fi
 done
 # Distinctness: compare EVERY pair, not just [0] vs [1]. The old hard-indexed
@@ -321,6 +364,71 @@ for t in "${TARGETS[@]}"; do
   else
     nskew=$(grep -cE "set_bus_skew" "$log" 2>/dev/null)
     pass "g" "$t: no dropped XDC constraints" "clean impl log ($(basename "$log")); set_bus_skew refs=$nskew"
+  fi
+done
+
+# ----- (h) FF-REMOVAL in the OUT-OF-CONTEXT synth log -----------------------------
+# The TideLink IP is packaged and synthesized OUT-OF-CONTEXT. Vivado's
+# "[Synth 8-3332] Sequential element (...) is unused and will be removed"
+# warnings therefore land in the IP's OWN OOC run log:
+#   imp/fpga/project/<t>/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log
+# NOT in imp/fpga/run/<t>/build_design.log (the top design_1 assembly). A
+# previous investigation grepped the top log, saw 8-3332=0, and wrongly "ruled
+# out" FF removal — the OOC log actually carries them. This check scans the
+# RIGHT log and distinguishes:
+#   * BENIGN: the Wlink glitch-free clock-gate latch (hs_clk_gated_wcg/latch) —
+#     Vivado always prunes it; expected on EVERY build, not an autonomy loss.
+#   * CONCERNING: any OTHER removed sequential element => a real FF (autonomy
+#     FSM / datapath) got optimized away — the silent-V1 / tied-off-input class.
+# CONCERNING > 0 => FAIL. Benign-only => PASS (reporting the count). Missing OOC
+# log => WARN (cannot verify — do not silently pass it as clean).
+BENIGN_FF_RE='clk_gat|/latch/'
+for t in "${TARGETS[@]}"; do
+  ooc=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -z "$ooc" ] || [ ! -f "$ooc" ]; then
+    warn h "OOC synth log ($t)" "no tidelink_0_0_synth_1/runme.log under $IMP/project/$t/*.runs/ — cannot check FF removal"
+    continue
+  fi
+  # element name is inside the parens of each 8-3332 warning
+  elems=$(grep -F '[Synth 8-3332]' "$ooc" | sed -E 's/.*element \(([^)]*)\).*/\1/')
+  total=$(printf '%s\n' "$elems" | grep -c . )
+  concerning=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | grep -c . )
+  benign=$(( total - concerning ))
+  if [ "$concerning" -gt 0 ]; then
+    ex=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | head -3 | paste -sd'; ' -)
+    fail h "FF removal in OOC synth ($t)" \
+      "$concerning NON-benign sequential element(s) removed [Synth 8-3332] in $(basename "$(dirname "$(dirname "$ooc")")")/.../runme.log — e.g. $ex (autonomy/datapath FF optimised out => tied-off input / silent V1)"
+  else
+    pass h "FF removal in OOC synth ($t)" \
+      "$total removed [Synth 8-3332], all BENIGN Wlink clock-gate latches (0 autonomy/datapath FFs lost); log=$ooc"
+  fi
+done
+
+# ----- (i) ROUTED TIMING — WNS MUST NOT BE NEGATIVE -------------------------------
+# A build with negative setup slack (WNS < 0) does not meet timing yet was, until
+# now, waved through every structural check: the 2026-07-16 kr260-pair-ptp build
+# shipped at WNS -2.427 ns (1673 failing endpoints) and passed verify_build. That
+# must never happen again — a not-timing-clean bitstream is a bring-up lottery at
+# best. Parse the Design Timing Summary WNS from the routed report and FAIL on <0.
+# NB: WHS (hold) is deliberately NOT gated — the -27/-29 ns WHS on every Pynq-Z2
+# source-synchronous build is a known artefact (reference_fpga_timing_whs_artifact),
+# so gating it would red every Z2 build. WHS is reported as evidence only.
+for t in "${TARGETS[@]}"; do
+  rpt="$IMP/output/$t/tidelink_design_wrapper_timing_summary_routed.rpt"
+  if [ ! -f "$rpt" ]; then
+    warn i "routed timing WNS ($t)" "missing $rpt — cannot verify timing closure"
+    continue
+  fi
+  read -r wns whs <<EOF
+$(awk '/Design Timing Summary/{s=1} s && /WNS\(ns\)/{h=1;next} h && /^[[:space:]]*-?[0-9]/{print $1, $5; exit}' "$rpt")
+EOF
+  if [ -z "$wns" ]; then
+    warn i "routed timing WNS ($t)" "could not parse WNS from $(basename "$rpt")"
+  elif awk -v w="$wns" 'BEGIN{exit !(w+0 < 0)}'; then
+    fail i "routed timing NOT MET ($t)" \
+      "########## WNS = $wns ns < 0 — SETUP TIMING VIOLATED (WHS=$whs ns) — DO NOT DEPLOY ##########  [$(basename "$rpt")]"
+  else
+    pass i "routed timing WNS ($t)" "WNS=$wns ns >= 0 (setup met; WHS=$whs ns reported, not gated) [$(basename "$rpt")]"
   fi
 done
 

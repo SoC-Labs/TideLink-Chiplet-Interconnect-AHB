@@ -45,6 +45,16 @@ DEBUG_BASE    = 0x84041000   #  4 KB  axi_gpio_debug_unlock
 AHB_PTP_BASE  = 0x84020000   #  4 KB  PTP only
 PHC_BASE      = 0x84050000   #  4 KB  PTP only
 
+# AFI PS-master-port width registers (ZynqMP SLCR, read-only here). The stock
+# Kria SOM firmware programs these; our psu_init never runs. If HPM0_LPD (ctrl)
+# or HPM0_FPD (data) is left wider than our 32-bit BD, misaligned 32-bit AXI
+# accesses read 0 / drop writes — the KR260 control-plane defect. This smoke
+# test only REPORTS the widths; kr260_afi.sh fix corrects them. See
+# docs/KR260_AFI_CHECK.md.
+AFI_LPD_SLCR  = 0xFF419000   # bits [9:8] = HPM0_LPD width (control plane)
+AFI_FPD_SLCR  = 0xFD615000   # bits [9:8] = HPM0_FPD width (data plane)
+_AFI_WIDTH = {0: "32-bit", 1: "64-bit", 2: "128-bit", 3: "reserved"}
+
 WLINK_PHY_CTRL_OFF     = 0x0000
 WLINK_ACTIVE_LANES_OFF = 0x0210
 WLINK_LANE_MASK_OFF    = 0x0214
@@ -120,6 +130,20 @@ def main():
               "the Z2 map even though this script uses the KR260 one.\n")
 
     r = Report()
+
+    # 0. AFI PS-master-port widths (read-only). Reported BEFORE the aperture
+    #    checks because a wider-than-32-bit port is the most likely reason the
+    #    apertures below misbehave. This does NOT fix anything — run
+    #    `sudo sh pynq_host/scripts/kr260_afi.sh fix` for that.
+    lpd = rd(AFI_LPD_SLCR)
+    fpd = rd(AFI_FPD_SLCR)
+    lpd_w = (lpd >> 8) & 0x3
+    fpd_w = (fpd >> 8) & 0x3
+    afi_ok = (lpd_w == 0 and fpd_w == 0)
+    r.line(afi_ok, "AFI port widths",
+           f"HPM0_LPD(ctrl)={_AFI_WIDTH[lpd_w]} HPM0_FPD(data)={_AFI_WIDTH[fpd_w]} "
+           f"(0x{AFI_LPD_SLCR:08X}=0x{lpd:08X} 0x{AFI_FPD_SLCR:08X}=0x{fpd:08X})"
+           + ("" if afi_ok else "  <-- NOT 32-bit; run kr260_afi.sh fix"))
 
     # 1. Control aperture (APB). All four images decode this.
     lanes = rd(APB_BASE + WLINK_ACTIVE_LANES_OFF)

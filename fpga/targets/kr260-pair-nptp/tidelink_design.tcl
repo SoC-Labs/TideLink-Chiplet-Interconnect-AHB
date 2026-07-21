@@ -430,9 +430,16 @@ proc create_root_design { parentCell } {
     # a pure combinational passthrough (pad_rx_o = pad_rx_i), which places cleanly
     # in HDIO; eye centring is still done by the Wlink calibrator's bit-slip x
     # phase sweep. pynq-z2-pair / -pair-flip ship this same override.
+    # HARDEN_SWI_ENABLE=0 (R6, 2026-07-17): KR260 bakes NEGO_CFG_RESET=0x61, so
+    # role_locked latches at PL load and the FCSM exits reset into training
+    # garbage, parking at CR-seen (fcsm=2). The only SW-reachable LL reset is
+    # 0x208 bit[3] swreset, which HARDEN_SWI_ENABLE=1 masks; the internal FCH
+    # bypass is gated on winscan_done, which never asserts with USE_IDELAY=0.
+    # Z2/ASIC keep the =1 default. See docs/R6_HARDEN_SWI_OPTIONS.md.
     set_property -dict [list \
         CONFIG.TIDELINK_PAIR_BASE {0x84032000} \
         CONFIG.USE_IDELAY         {0} \
+        CONFIG.HARDEN_SWI_ENABLE  {0} \
     ] $tl
 
     #--------------------------------------------------------------------------

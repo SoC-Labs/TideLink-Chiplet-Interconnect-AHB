@@ -389,6 +389,27 @@ module tidelink_top #(
     output wire                     link_active,
 
     // --------------------------------------------------------------------------
+    // Data-mode strobe (TideChart election sequencing contract — G1 dual-root)
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    //
+    // 1 = the Wlink link layer has reached its credit/data-exchange region
+    // (FCSM state >= 4), i.e. the link genuinely CARRIES FC/EXT words.
+    //
+    // This is DISTINCT from link_active above. link_active == role_locked_o,
+    // which asserts ~5us EARLIER, at role-lock, when the link cannot yet carry
+    // anything. TideChart's root election MUST be gated on this port, not on
+    // link_active: gating on link_active lets both dies settle their election
+    // before any CLAIM crosses the die boundary, producing a silent dual-root
+    // (neither die installs an uplink, enumeration never crosses the boundary).
+    //
+    // Domain: apb_clk (== hclk in all current integrations). Already CDC-synced
+    // inside the chiplet controller; it is a direct flop output, so it is a
+    // clean, glitch-free level. link_active/role_locked_o keep their existing
+    // meaning and existing users (d2d TX aperture, status/LEDs) unchanged.
+    // --------------------------------------------------------------------------
+    output wire                     tl_data_mode_o,
+
+    // --------------------------------------------------------------------------
     // Reset output
     // --------------------------------------------------------------------------
     output wire                     d2d_reset_o,
@@ -1399,7 +1420,19 @@ module tidelink_top #(
         .RAM_ADDR_W        (RAM_ADDR_W),
         .RAM_DATA_W        (RAM_DATA_W),
         .APB_ADDR_W        (APB_ADDR_W),
-        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
+        // TWIN 2 FIX (F10) — CLOSES the defect in silicon. This is the RX FIFO:
+        // its AHB slave is CPU-READ-ONLY (received data is committed exclusively
+        // by the FC adapter through the fc_wr_* direct-write port; the CPU only
+        // READS the RX aperture 0x84010000/0xA4010000). Before this tie, an AHB
+        // WRITE to offset 0 was treated as a packet-length header — it armed
+        // packet_active and, on the paired write to offset 4, walked the
+        // FC-SHARED write_ptr and burned credit, mis-framing the NEXT genuine
+        // received packet (+8 bytes / -2 credit, the measured signature).
+        // No software writes this aperture (grep evidence in the disposition);
+        // the TX aperture 0x84000000 is a separate datapath and is unaffected.
+        // See docs/RXFIFO_TWIN2_DISPOSITION.md; gated by sim_gate_fifo_twin2.
+        .ENABLE_AHB_WRITE  (0)
     ) u_tidelink_fifo (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -2523,7 +2556,10 @@ module tidelink_top #(
         .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
-        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
+        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w),
+        // TideChart election sequencing contract (G1) — FCSM >= 4 data-mode
+        // strobe, straight out to the new tl_data_mode_o port.
+        .data_mode_o                 (tl_data_mode_o)
 `ifdef TIDELINK_PHY_V2
         // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state out to the
         // tidelink_gpio_phy_apb_regs slave (SWI_EPOCH_STATUS @ 0x4403_2140).

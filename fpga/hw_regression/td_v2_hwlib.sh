@@ -103,6 +103,61 @@ b(){ $SSH $BOARD_USER@$B_IP "$_PY $*" 2>/dev/null; }     # tl39 on die_b
 # raw mmap python on a board (arg1=ip, arg2=python body)
 braw(){ $SSH $BOARD_USER@$1 "echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -c '$2'" 2>/dev/null; }
 
+# ----- SHARED SAFETY GUARDS (sourced by the raw-mmap tools in this suite) -----
+# td_require_z2 <toolname> — HARD REFUSE on a non-Z2 SoC.
+# Some tools here BYPASS tl39's address relocation and mmap RAW Z2 /dev/mem
+# literals (0x4403_xxxx) directly on the board, and/or read V2-RETIRED obs
+# registers (e.g. 0x4403215C sync_seen — reads 0 by construction on a V2 build,
+# so its verdicts are void). On a ZynqMP (KR260) a raw 0x4403_xxxx access is
+# UNDECODED with NO bus timeout -> a hard PS hang, power-cycle to recover. Such
+# a tool must run ONLY on a Pynq-Z2. Call this FIRST, before any board access.
+td_require_z2() {
+  local soc; soc=$(td_soc) || exit 1   # td_soc loud-fatals on an unrecognised value
+  [ "$soc" = z2 ] && return 0
+  cat >&2 <<EOF
+
+########################################################################
+## ${1:-this tool}: REFUSING TO RUN on TIDELINK_SOC=$soc
+##
+## It mmaps RAW Z2 control literals (0x4403_xxxx) and/or relies on
+## V2-RETIRED observation registers. On a ZynqMP (KR260) a raw 0x4403_xxxx
+## access is UNDECODED with NO bus timeout => a hard PS hang (power-cycle
+## to recover). This tool is Pynq-Z2 / V1 ONLY.
+##
+## Safe alternatives on a KR260:
+##   * tl_poke.py  — takes ABSOLUTE addresses (control is 0x8403_xxxx on KR260)
+##   * tl39.py     — CANONICAL Z2 addresses relocated via tl_socmap.py
+##                   (export TIDELINK_SOC=kr260)
+## Unset TIDELINK_SOC, or set it to z2/pynq_z2, to run this tool on a Z2.
+########################################################################
+
+EOF
+  exit 3
+}
+
+# td_tl39_preflight — prove tl39.py actually RUNS on BOTH boards before any bus
+# access. a()/b() swallow stderr (2>/dev/null), so a staging failure (tl39.py
+# deployed without tl_socmap.py under TIDELINK_SOC=kr260) makes every read come
+# back EMPTY -> 0, indistinguishable from a dead link (defect class 1). Runs
+# tl39's no-bus `selftest` once per die WITH stderr shown, requires the TL39_OK
+# sentinel. Returns 0 if both dies answered OK, 1 otherwise (caller aborts).
+td_tl39_preflight() {
+  local ip who out fail=0
+  for who in a b; do
+    [ "$who" = a ] && ip=$A_IP || ip=$B_IP
+    out=$($SSH $BOARD_USER@$ip "$_PY selftest" 2>&1)
+    case "$out" in
+      *TL39_OK*) echo "  tl39 preflight OK (die_$who $ip): $(printf '%s\n' "$out" | grep -m1 -o 'TL39_OK[^"]*')" ;;
+      *) printf '### tl39 preflight FAILED (die_%s %s): %s\n' "$who" "$ip" "${out:0:200}" >&2
+         printf '###   tl39.py did not answer TL39_OK — likely staged without tl_socmap.py,\n' >&2
+         printf '###   or a bad TIDELINK_SOC. Every register read would come back EMPTY and be\n' >&2
+         printf '###   misread as cal=0/fcsm=0 (a phantom dead link). Fix staging before a run.\n' >&2
+         fail=1 ;;
+    esac
+  done
+  return $fail
+}
+
 TD_THROTTLE=${TD_THROTTLE:-0.25}     # sleep between board reads (PS-wedge guard)
 rd_b(){ local v; v=$(b rd $1); sleep "$TD_THROTTLE"; echo "$v"; }   # throttled die_b read
 

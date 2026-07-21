@@ -250,6 +250,13 @@ module tidelink_dft_wrapper #(
 
     // Link status / reset / role
     output wire                          link_active,
+    // Data-mode strobe (Wlink FCSM in its operational region, state >= 4 ==
+    // "the link carries FC/EXT words"). Forwarded verbatim from tidelink_top.
+    // TideChart's root election MUST be gated on this, NOT on link_active:
+    // link_active == role_locked and asserts ~25us earlier, before a CLAIM can
+    // cross the die boundary, which silently dual-roots a 2-chiplet fabric.
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md (finding G1).
+    output wire                          tl_data_mode_o,
     output wire                          d2d_reset_o,
     input  wire                          role_strap_i,
     output wire                          role_is_master_o,
@@ -629,6 +636,7 @@ module tidelink_dft_wrapper #(
 
         // Link / role
         .link_active                (link_active),
+        .tl_data_mode_o             (tl_data_mode_o),
         .d2d_reset_o                (d2d_reset_o),
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),

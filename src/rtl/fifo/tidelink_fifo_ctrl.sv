@@ -12,7 +12,22 @@
 //-----------------------------------------------------------------------------
 
 module tidelink_fifo_ctrl #(
-    parameter RAM_ADDR_W = 14
+    parameter RAM_ADDR_W = 14,
+    // TWIN 2 FIX (verification-plan F10) — the RX FIFO's AHB slave port is
+    // READ-ONLY in silicon: received data is committed exclusively by the FC
+    // direct-write port (fc_wr_*), and the CPU only READS the RX aperture
+    // (0x84010000/0xA4010000). An AHB WRITE to offset 0 was UNCONDITIONALLY
+    // treated as a packet-length header — it armed packet_active and, on the
+    // paired write to offset 4, fired write_complete and walked the FC-SHARED
+    // write_ptr (fc_translated_addr = fc_wr_addr + write_ptr_r) plus burned
+    // credit. So any stray or bulk "clear the RX window" write corrupts the
+    // committer and mis-frames the next genuine FC packet.
+    //
+    // Set ENABLE_AHB_WRITE = 0 at the RX-FIFO instantiation to make AHB writes
+    // to this slave a NO-OP (the silicon configuration). DEFAULT 1 preserves the
+    // legacy AHB-inject path the unit testbench relies on; the SoC ties it 0.
+    // Sibling of the read-side phantom-pop guard (rx_fifo_empty) fixed 2026-07-14.
+    parameter ENABLE_AHB_WRITE = 1
 )(
     // Clock/Reset
     input  wire                   hclk,
@@ -106,7 +121,9 @@ module tidelink_fifo_ctrl #(
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
     wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
-    wire ahb_write_complete = ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
+    // TWIN 2 FIX: gate the AHB write-completion on ENABLE_AHB_WRITE (silicon = 0).
+    wire ahb_write_complete = (ENABLE_AHB_WRITE != 0) && ahb_valid_transfer
+                              && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
     assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
@@ -186,7 +203,12 @@ module tidelink_fifo_ctrl #(
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
         packet_active_nxt        = packet_active_r;
-        capture_write_length_nxt = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
+        // TWIN 2 FIX: gate the write-side length-latch arm on ENABLE_AHB_WRITE.
+        // The sibling read-side arm below already carries `&& !rx_fifo_empty`
+        // (the 2026-07-14 phantom-pop guard); the write arm had NO guard, so an
+        // AHB write to offset 0 latched a phantom length and armed packet_active.
+        capture_write_length_nxt = (ENABLE_AHB_WRITE != 0)
+                                   && valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
 
         // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin

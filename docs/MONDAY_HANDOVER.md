@@ -1,8 +1,41 @@
-# Monday handover — 2026-07-20 (weekend autonomous run, written Fri 19:35)
+# Monday handover — 2026-07-20 (weekend autonomous run; updated Sun 2026-07-19)
 
 Everything below was produced on branch **`wip/kr260-recovery-2026-07`** (worktree
-`~/SoCLabs/worktrees/wip-kr260-recovery`), tagged **`kr260-recovery-g1`**, 12 reviewed commits.
-Dashboard: [STATUS_LIVE.md](STATUS_LIVE.md). Nothing was deployed, nothing was pushed.
+`~/SoCLabs/worktrees/wip-kr260-recovery`), tag **`kr260-recovery-weekend-final`**, ~35 reviewed
+commits. Dashboard: [STATUS_LIVE.md](STATUS_LIVE.md). Nothing was deployed, nothing was pushed.
+
+## 🆕 PHASE B — FOUR TAPEOUT FIXES APPLIED IN RTL, REVIEWED, GATE-GREEN (2026-07-19)
+The full 22-suite gate passes (+2 known-defect sentinels correctly XFAIL) AFTER all fixes and all
+adversarial-review corrections. The four commits:
+- **B3 `b038df8` — G1 dual-root CLOSED**: `tl_data_mode_o` exported acc→top→FPGA-wrapper→**ASIC
+  dft_wrapper** (the fix reaches the tapeout top). Election runs off the real port now: single root
+  + first PKT_EXT crossing. TODO for owners: chiplet `nanosoc_eth_chiplet.sv:809` one-net swap;
+  FPGA IP re-package so the pin exists; add a `sim_gate_dftelab` — **the dft_wrapper is in NO flist
+  and NO gate elaborates it today** (that gap is why the missing port would not have been caught).
+- **B2 `628167b` — RX-FIFO TWIN 2 CLOSED in RTL**: one tie at `tidelink_top.sv`; gate now 22 suites.
+- **B1 `ec924db` — firmware PHY retrain**: new `SWI_FORCE_RECAL` W1P (R8 slot0 bit[6]); the dead
+  `SWI_RECAL`/`nego_train_retrain_pulse` are bypassed by an explicit door, the Bug-A latch untouched.
+  ⚠️ **OPEN: nobody has shown a forced recal recovers the clock-dropout wedge — now measurable,
+  unmeasured.** ⚠️ V2 calibrator is a fork of a 2367-line submodule file — re-diff `deps/tidelink-phy`
+  before any PHY uplift.
+- **CRC `8d14c6d` — DIAGNOSIS ONLY, no revert**: the disable-CRC decision stays deferred to a
+  **silicon** measurement (runtime clear bit[16], check byte-exactness ALONGSIDE `crc_corrupt`).
+  Sim shows TX/RX symmetric and 12/12 clean with CRC on, but an ideal-pad sim cannot prove the June
+  errors were false — **do not revert the default without the silicon check.**
+
+### Three escalations that need an owner (none block the above)
+1. 🔴 **The ASIC DFT wrapper is in no flist and no gate.** If it is the intended tapeout top, why is
+   nothing elaborating it? If not, what is it for? Add `sim_gate_dftelab` regardless.
+2. ⚠️ **Lane C's PHC fix touched the shared `nanosoc_arch_tech` submodule** (generator) — review on
+   its own merits, not as a tidelink change. It got `ethernet_ss_ahb_phc` to elaborate for the first
+   time ever + a 5/5 servo loop; details in memory `ethernet-ptp-chain-phc-hop-broken`.
+3. 🔴 **Build-staleness: 30 of 33 cocotb benches re-run STALE RTL after an RTL-only edit** (flist
+   RTL is invisible to make; `CUSTOM_COMPILE_DEPS` unset). `make sim_gate` is immune (cleans build
+   dirs) so gate results are trustworthy, but ad-hoc/lane-private runs are not — a fix lane is in
+   flight. Memory: `cocotb-stale-simv-flist-rtl`. **RULE: a negative control proves nothing unless
+   the changed RTL provably compiled.**
+
+## (earlier, weekend waves W–Z)
 
 ## What you're inheriting (all verified)
 - **KR260 link root cause FOUND AND FIXED on hardware** (Friday, with the live session): stock

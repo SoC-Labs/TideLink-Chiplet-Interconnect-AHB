@@ -143,7 +143,13 @@ async def test_stray_write_pair_is_noop(dut):
     assert cc(dut) == MAX_CREDITS, (
         f"TWIN-2 LIVE: stray AHB write pair burned credit to {cc(dut)} "
         f"(expected {MAX_CREDITS}).")
-    dut._log.info("PASS: stray AHB write pair is a no-op on write_ptr/credit.")
+    # Observability: the otherwise-silent no-op must raise the sticky fault so a
+    # stray write into the RX aperture is a VISIBLE fault, not a silent drop.
+    assert int(dut.ahb_inject_fault.value) == 1, (
+        "TWIN-2 observability: an AHB write into the RX aperture while DISARMED "
+        "should latch the sticky ahb_inject_fault (STATUS[5]), but it is 0.")
+    dut._log.info("PASS: stray AHB write pair is a no-op on write_ptr/credit; "
+                  "sticky fault latched.")
 
 
 @cocotb.test()
@@ -235,6 +241,9 @@ async def test_legit_ahb_inject_still_works(dut):
     assert cc(dut) == MAX_CREDITS - total_words, (
         f"SUPPORTED PATH BROKEN: credit={cc(dut)}, "
         f"expected {MAX_CREDITS - total_words}.")
+    # ARMED injection is legitimate: it must NOT raise the disarmed-fault.
+    assert int(dut.ahb_inject_fault.value) == 0, (
+        "ahb_inject_fault latched during a LEGITIMATE armed AHB inject.")
 
     # And it must read back byte-exact from offset 0.
     got = []

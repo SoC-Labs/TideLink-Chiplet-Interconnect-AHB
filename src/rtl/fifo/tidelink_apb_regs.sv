@@ -47,6 +47,10 @@ module tidelink_apb_regs #(
     input  logic                    fifo_underrun,
     input  logic                    master_error,
 
+    // RX-FIFO TWIN 2 sticky fault (from FIFO ctrl): an AHB write into the RX
+    // aperture was attempted while the inject path was DISARMED. STATUS[5].
+    input  logic                    ahb_inject_fault,
+
     // Packet committed flag (from FIFO ctrl, exposed in STATUS[4])
     input  logic                    packet_committed,
 
@@ -573,7 +577,8 @@ module tidelink_apb_regs #(
                     3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                     3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
                     3'h4:    prdata = {
-                                 {(SYS_DATA_W-5){1'b0}},
+                                 {(SYS_DATA_W-6){1'b0}},
+                                 ahb_inject_fault,   // [5] TWIN 2 sticky fault
                                  packet_committed,   // [4]
                                  master_error,        // [3]
                                  fifo_underrun,       // [2]

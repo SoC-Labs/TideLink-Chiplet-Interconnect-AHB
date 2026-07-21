@@ -79,6 +79,12 @@ module tidelink_fifo_ctrl #(
     output wire                   overrun,        // Write discarded (buffer full)
     output wire                   underrun,       // Read with no packet available
 
+    // RX-FIFO TWIN 2 (chip-killer) — sticky fault: set if an AHB write into the
+    // RX aperture (offset 0) was attempted while the inject path was DISARMED.
+    // Turns the otherwise-silent no-op into a visible fault. Sticky; cleared by
+    // flush/reset. Exposed in tidelink_apb_regs STATUS (0x010) bit[5].
+    output wire                   ahb_inject_fault,
+
     // Control inputs
     input  wire                   flush,          // Self-clearing flush: resets pointers/counters/errors
 
@@ -494,6 +500,27 @@ module tidelink_fifo_ctrl #(
 
     assign overrun  = overrun_r;
     assign underrun = underrun_r;
+
+    // -------------------------------------------------------------------------
+    // RX-FIFO TWIN 2 — sticky AHB-inject-while-disarmed fault (observability)
+    // -------------------------------------------------------------------------
+    // A NONSEQ AHB write into the RX aperture (offset 0) while the inject path
+    // is DISARMED (ahb_write_en=0) is silently dropped by the arm gate. Latch a
+    // sticky bit so software/an IRQ handler can SEE the attempt instead of it
+    // vanishing. Sticky until flush/reset — same discipline as overrun/underrun.
+    logic ahb_inject_fault_r;
+    wire ahb_inject_fault_event = ahb_write_addr0 && !ahb_write_en;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ahb_inject_fault_r <= 1'b0;
+        else if (flush)
+            ahb_inject_fault_r <= 1'b0;
+        else if (ahb_inject_fault_event)
+            ahb_inject_fault_r <= 1'b1;
+    end
+
+    assign ahb_inject_fault = ahb_inject_fault_r;
 
     // -------------------------------------------------------------------------
     // Debug-visible output assignments

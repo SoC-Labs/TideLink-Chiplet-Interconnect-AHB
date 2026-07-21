@@ -44,7 +44,10 @@ module tb_top #(
     // RX-FIFO TWIN 2 runtime arm (CTRL[3] equivalent). POR-disarmed in the real
     // register; here the TEST drives it: 0 = disarmed (stray writes are no-ops),
     // 1 = armed (the supported AHB-inject path is live).
-    input  logic                  swi_ahb_inject_arm
+    input  logic                  swi_ahb_inject_arm,
+    // RX-FIFO TWIN 2 sticky fault: set if an AHB write into the RX aperture is
+    // attempted while DISARMED. Observability for the otherwise-silent no-op.
+    output logic                  ahb_inject_fault
 );
 
     wire hreadyout;
@@ -74,6 +77,7 @@ module tb_top #(
         .packet_committed_irq (packet_committed_irq),
         .overrun              (overrun),
         .underrun             (underrun),
+        .ahb_inject_fault     (ahb_inject_fault),
         .flush                (flush),
         .swi_ahb_inject_arm   (swi_ahb_inject_arm),
         // FC direct write port (driven by the test)

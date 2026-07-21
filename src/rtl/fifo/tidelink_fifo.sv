@@ -168,6 +168,8 @@ module tidelink_fifo #(
     // FIFO error flags
     logic                   fifo_overrun;
     logic                   fifo_underrun;
+    // RX-FIFO TWIN 2 sticky fault: AHB write into RX aperture while disarmed.
+    logic                   fifo_ahb_inject_fault;
 
     // Control signals (from APB regs to FIFO and returner)
     logic                   ctrl_flush;
@@ -228,6 +230,7 @@ module tidelink_fifo #(
         .packet_committed_irq   (packet_committed_irq),
         .overrun                (fifo_overrun),
         .underrun               (fifo_underrun),
+        .ahb_inject_fault       (fifo_ahb_inject_fault),
         .flush                  (ctrl_flush),
         .swi_ahb_inject_arm     (swi_ahb_inject_arm),
         // FC direct write interface
@@ -273,6 +276,7 @@ module tidelink_fifo #(
         // Error flags
         .fifo_overrun        (fifo_overrun),
         .fifo_underrun       (fifo_underrun),
+        .ahb_inject_fault    (fifo_ahb_inject_fault),
         .master_error        (master_error),
         // Packet committed (for STATUS[4] polling)
         .packet_committed    (packet_committed_irq),

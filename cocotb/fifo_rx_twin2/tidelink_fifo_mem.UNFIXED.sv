@@ -1,3 +1,24 @@
+//=============================================================================
+// FROZEN NEGATIVE CONTROL — DO NOT "FIX", DO NOT SYNTHESISE, DO NOT SOURCE
+// FROM ANY FLIST EXCEPT cocotb/fifo_rx_twin2/flist_unfixed.f
+//
+// This is a verbatim copy of src/rtl/fifo/tidelink_fifo_mem.sv as it stood at
+// commit 9c157851 — i.e. IMMEDIATELY BEFORE the RX-FIFO TWIN 2 fix
+// (docs/proposals/twin2_fix.patch) was applied to the tree on 2026-07-19.
+// It therefore has NO ENABLE_AHB_WRITE parameter and NO guard on the
+// write-side packet-length latch arm.
+//
+// WHY IT EXISTS: it is the A/B bench's negative control. tb_top.sv passes
+// ENABLE_AHB_WRITE(0); on THIS copy the parameter does not exist, so VCS warns
+// and ignores it, AHB writes stay enabled, and the TWIN 2 defect reproduces —
+// the test MUST FAIL here. That failure is what proves the gate test has teeth.
+// If this copy ever starts PASSING, the test has gone blind and the PASS on the
+// real tree means nothing.
+//
+// It is DELIBERATELY frozen and will drift from the live RTL. That is fine: its
+// only job is to embody the pre-fix behaviour of the write-arm, which is
+// historical and will not change. Do not refresh it from the live tree.
+//=============================================================================
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink FIFO Memory Data Path
 // - SRAM-backed data path with AHB slave interface, FIFO pointer control,
@@ -15,12 +36,7 @@ module tidelink_fifo_mem #(
     // System Parameters
     parameter SYS_DATA_W = 32,  // System Data Width
     parameter RAM_ADDR_W = 14,  // Size of SRAM
-    parameter RAM_DATA_W = 32,  // Data Width of RAM
-    // TWIN 2 FIX (F10): forward to tidelink_fifo_ctrl. DEFAULT 1 (legacy AHB
-    // inject preserved); the SoC instantiates this RX FIFO with
-    // ENABLE_AHB_WRITE = 0 so a CPU/AHB write to the read-only RX aperture
-    // cannot walk the FC-shared write_ptr. See tidelink_fifo_ctrl.sv.
-    parameter ENABLE_AHB_WRITE = 1
+    parameter RAM_DATA_W = 32   // Data Width of RAM
 )(
     // --------------------------------------------------------------------------
     // Port Definitions
@@ -128,8 +144,7 @@ module tidelink_fifo_mem #(
     // FIFO Control Logic
     // --------------------------------------------------------------------------
     tidelink_fifo_ctrl #(
-        .RAM_ADDR_W       (RAM_ADDR_W),
-        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
+        .RAM_ADDR_W (RAM_ADDR_W)
     ) u_fifo_ctrl (
         .hclk                (hclk),
         .hresetn             (hresetn),

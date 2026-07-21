@@ -4,8 +4,8 @@
 single source of truth; this file explains *what each suite protects* and, more
 importantly, **what it does not**.
 
-**Last updated:** 2026-07-18 (weekend benches wired in — 15 suites → 21 blocking
-suites + 2 known-defect sentinels + 2 parked targets).
+**Last updated:** 2026-07-19 (P1 forced-recal W1P gated — 21 suites → 22
+blocking suites + 2 known-defect sentinels + 2 parked targets).
 
 ---
 
@@ -47,7 +47,7 @@ in a separate block under a header that says so in words. See §5.
 
 ---
 
-## 2. The blocking aggregate (21 suites)
+## 2. The blocking aggregate (22 suites)
 
 `make sim_gate` → `SIM_GATE_ALL_SUITES`. Feature IDs are those defined in
 `docs/TIDELINK_FPGA_VERIFICATION_PLAN.md` §"Feature inventory" (F01–F20).
@@ -82,6 +82,19 @@ in a separate block under a header that says so in words. See §5.
 | 19 | `eth_relay_m1` | `eth_tidelink_pair_m1`, zero | eth M1 | The same crossing **through the real `ethernet_ss_ahb` AHB matrix** into `eth_scratch_rx` — surfacing the actual matrix `hready` / `hprot` / burst contract. |
 | 20 | `eth_regs_shape_a` | `eth_tidelink_pair_shape_a`, zero | eth M1 | Real **MAC / HA1588 registers** driven across the link. |
 | 21 | `errinj_regressions` | `tidelink_error_injection`, V2, zero | **F14**, F10 | The three **verified-good** F14 results kept as regressions: S5 SYNC-collision (payload can never alias SYNC — confirmed both directions), S6 reset storm (N≤5 always recovers, F-1 NACK watchdog), S4 credit observability + an **independent second lock** that the `f9b94b7` phantom-pop fix still holds. |
+
+### 2.3 Added 2026-07-19 (1)
+
+| # | Suite | Bench / config | Feature | What it actually protects |
+|---|---|---|---|---|
+| 22 | `force_recal_w1p` | `tidelink_force_recal` — three arms: `RTL=v2`, `RTL=v1`, `pair` | **F03**, tapeout | The **P1 forced-recal W1P** (`SWI_FORCE_RECAL`, R8 slot0 bit[6]). Guards both directions at once: (a) that a firmware-reachable PHY retrain EXISTS — `calibrated_once_q` made `SWI_RECAL` a measured no-op after first lock, so there was none at all, in the FPGA image **and the ASIC path** (`docs/LINK_RECOVERY_MECHANISM.md` §4); and (b) that the **Bug-A guard is not weakened** — the baseline arms assert `SWI_RECAL` and a `role_locked` re-pulse STAY no-ops after first lock, including *after* a forced recal (proving the sticky is bypassed for one arming, never cleared). Runs against **both** calibrator copies because the fix spans two flist families, plus a full-stack arm that does a real APB write and re-checks **byte-exact** data both directions. |
+
+**Why three arms.** The V2 arm covers `tidelink_fpga_v2.flist` +
+`tidelink_top_full_asic_v2.flist` (FPGA + **tapeout**); the V1 arm covers
+`tidelink_fpga.flist` + `tidelink_top_full_asic.flist`. Both calibrator copies
+carry the same `calibrated_once_q` sticky, so a fix or a regression in one is
+invisible to the other. The `pair` arm is the only one that exercises the APB
+W1P decode, the 1024-cycle pulse-stretcher and the `apb_clk → rx_link_clk` CDC.
 
 **F18 note.** Per the verification plan, TideChart is *"entire IP unproven on
 hardware — no two-die on-silicon integration exists"*. Suites 16–17 are therefore
@@ -130,7 +143,7 @@ cries `XCHG` for ever, which is indistinguishable from noise and gets muted.
 > `feedback_verify_instrument_before_dut`, and the standing rule: **never
 > co-schedule a Vivado build with `sim_gate`.**
 
-### 3.2 `fifo_rx_twin2` — authored, parked (NOT in the aggregate)
+### 3.2 `fifo_rx_twin2` — **ACTIVE** (in the aggregate since 2026-07-19)
 
 F10's **write-side twin**: the unguarded write-side length-latch arm at
 `src/rtl/fifo/tidelink_fifo_ctrl.sv:189` lets any AHB write to offset 0 arm the
@@ -138,25 +151,51 @@ packet-length latch, walking the `write_ptr` that the **FC committer shares** �
 worse than the shipped read-side phantom pop, which corrupted only the read
 pointer.
 
-**It is parked because the fix is a proposal.** `docs/proposals/twin2_fix.patch`
-is **not applied to the tree**. The bench selects RTL with its own knob —
-**`FIFO_SRC`** (verified from `cocotb/fifo_rx_twin2/Makefile`: `FIFO_SRC ?=
-patched`, valid values `patched` | `unfixed`, swapping which `.sv` files the flist
-picks; shared `src/rtl` files are never modified). `sim_gate_fifo_twin2` pins
-`FIFO_SRC=patched`, so it passes **only** against the patched RTL.
+**Promoted 2026-07-19: `docs/proposals/twin2_fix.patch` is APPLIED to `src/rtl`.**
+The RTL now carries an `ENABLE_AHB_WRITE` parameter (default **1** = legacy
+behaviour, bit-for-bit) through `tidelink_fifo_ctrl` → `tidelink_fifo_mem` →
+`tidelink_fifo`; setting it **0** makes AHB writes to the FIFO a no-op.
 
-Putting it in the aggregate today would gate the aggregate on a patch that is not
-in the tree: it would go green and tell you nothing about what actually ships.
+The bench's `FIFO_SRC=patched` pin existed **only** to point at local
+`*.PATCHED.sv` copies of the then-unapplied fix. Those copies are **deleted** and
+the pin is **dropped**: `sim_gate_fifo_twin2` now runs the bench's default config
+(`FIFO_SRC=tree`) against the **real shared `src/rtl`**, because the gate must
+test what ships.
 
-**To promote it (after `twin2_fix.patch` lands in `src/rtl`):**
+**The negative control is deliberately NOT gated.** `FIFO_SRC=unfixed` compiles
+frozen `*.UNFIXED.sv` copies of the pre-fix RTL and is **expected to fail**, so it
+can never be a gate suite. Re-run it by hand whenever this bench is touched:
 
-> append `fifo_rx_twin2` to `SIM_GATE_ALL_SUITES`, **and drop `FIFO_SRC=patched`**
-> — once the patch is the tree, leaving the pin in place would re-create exactly
-> the blindness this target exists to prevent.
+```
+make -C cocotb/fifo_rx_twin2 ab      # unfixed 1/3 (FAIL, correct) | tree 3/3 (PASS)
+```
 
-The disposition doc also records the one open intent question (is AHB-write-to-RX
-supported? evidence says **no** — every access to the RX aperture in `fpga/`,
-`src/sw/` and `scripts/` is a read).
+If `unfixed` ever **passes**, the test has gone blind and the green in the
+aggregate is worthless.
+
+> ✅ **GAP CLOSED 2026-07-19 — the gate now protects a fix that ships.**
+> `src/rtl/tidelink_top.sv` instantiates the RX FIFO with
+> `.ENABLE_AHB_WRITE (0)`, so F10 is closed in the RTL and this suite gates the
+> real shipping configuration, not just the mechanism.
+>
+> The tie is at that **one** site deliberately. The other two `tidelink_fifo`
+> instantiation sites (`tidelink_fifo_ahb.sv`, the legacy `tidelink.sv`) hardwire
+> the FC direct-write port **off**, so tying them 0 would leave a FIFO nothing can
+> fill — and neither is instantiated anywhere in `src/`, so it would buy no
+> silicon safety. Both keep the default 1. Measured rationale:
+> `docs/RXFIFO_TWIN2_DISPOSITION.md` §4.2.
+>
+> An earlier draft of this note predicted the tie-off would break five benches and
+> require migrating them to the FC port. That prediction was **over-broad** — it
+> described the blast radius of hardcoding `0` inside the `tidelink_fifo` wrapper,
+> not of tying at the integration point. Measured after the tie landed: no
+> migration was needed. `cocotb/tidelink` **25/25**, `cocotb/tidelink_ahb`
+> **14/14**, and every gated suite that reaches the FIFO through `tidelink_top`
+> passes, because they deliver over the FC port the fix preserves.
+
+The disposition doc records the intent question (is AHB-write-to-RX supported?
+evidence says **no** — every access to the RX aperture in `fpga/`, `src/sw/` and
+`scripts/` is a read).
 
 ### 3.3 `xhb_window_skew_debug` — **no gate** (deliberate)
 
@@ -244,7 +283,11 @@ substrings, and no sentinel ever emits `PASS`).
 |---|---|---|---|
 | `sim_gate_xhb` | `v2_xhb_window_bridge` | **F09.** The refactored pair_v2 tb does not model the **peer-side XHB500 target memory** a window write forwards into (`_slave_bram_peek` returns X). A tb gap, not an RTL one. The XHB channel is gated **on silicon** via `fpga/hw_regression/td_v2_channels.sh --channels xhb`. | Model the peer XHB target in the pair tb, then append `v2_xhb_window_bridge` to `SIM_GATE_ALL_SUITES`. |
 | `sim_gate_nack_wedge` | `nack_wedge_recovery` | Pre-existing WIP (see its Makefile note). | Confirm PASS with no Vivado running, then append to `SIM_GATE_ALL_SUITES`. |
-| `sim_gate_fifo_twin2` | `fifo_rx_twin2` | §3.2 — the fix is an unapplied proposal. | §3.2. |
+
+> `sim_gate_fifo_twin2` / `fifo_rx_twin2` was **removed from this table on
+> 2026-07-19** — the fix landed in `src/rtl` and the suite is now in
+> `SIM_GATE_ALL_SUITES`. See §3.2, including the standing gap that the shipping
+> RX instances still default `ENABLE_AHB_WRITE=1`.
 
 ---
 
@@ -287,6 +330,7 @@ on 2026-07-18.
 | `t30_autonomous_fc_handoff` | 130 s | reuses `sim_build_l4` |
 | `v2_pair_data` | 27 s | |
 | `v2_winscan_fsm` | ~30 s | shares the `sim_build_zero` compile |
+| `force_recal_w1p` | ~60 s | 2 small unit compiles (V2 + V1 calibrator) + 1 pair compile |
 | `fifo_rx_phantom_pop` | ~2 min | 42 tests, fresh build dir |
 | `v1_elab` / `asic_v1_elab` / `asic_v2_elab` | ~15 s each | elaboration only |
 | `apb_fc_cfg_preempt` / `fch_apb_watchdog` / `zeropoke_por` / `retire_en_plumb` | ~1–3 min each | |
@@ -323,7 +367,7 @@ Final runs, all from clean gate-owned build dirs:
 | `sim_gate_errinj` | PASS | 90 s | all three modules ran (S5 sync-collision, S6 reset storm, S4 credit + phantom-pop), each writing its own `res_*.xml` |
 | `sim_gate_xfail_f14a` | **XFAIL** (correct) | 105 s | all four signature clauses matched: lane7 flip/stuck1/stuck0 = `COMMITTED-WRONG/SILENT: 4`, lane6 control = `NOT-COMMITTED: 4` |
 | `sim_gate_xfail_f14b` | **XFAIL** (correct) | 55 s | S1 flip + S1 clock-kill both `WEDGES(unwedged only by full POR of BOTH dies)`, S0 passthrough `RECOVERS` |
-| `sim_gate_fifo_twin2` | PASS (parked) | 6 s | `TESTS=3 PASS=3 FAIL=0` against `FIFO_SRC=patched`, from a clean build dir. Not in the aggregate. |
+| `sim_gate_fifo_twin2` | PASS (**now in the aggregate**) | 6 s | `TESTS=3 PASS=3 FAIL=0` against the **real shared `src/rtl`** (`FIFO_SRC=tree`), from a clean build dir. Negative control re-verified the same day: `FIFO_SRC=unfixed` → 1/3, still FAILING, so the test retains its teeth. Revalidated 2026-07-19 after the fix was applied. |
 
 Summary-logic validation (status files only, no simulation): both sentinels
 `XFAIL` → **exit 0** with the sentinel block printed under its own header;

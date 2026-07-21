@@ -18,7 +18,20 @@ module tidelink_fifo #(
     parameter RAM_ADDR_W = 14,
     parameter RAM_DATA_W = 32,
     parameter APB_ADDR_W = 12,
-    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0  // APB base address of the paired tidelink
+    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0, // APB base address of the paired tidelink
+    // TWIN 2 FIX (F10) — forwarded to tidelink_fifo_mem/tidelink_fifo_ctrl.
+    // DEFAULT 1 preserves the legacy AHB-inject path bit-for-bit, which several
+    // testbenches use to deliver packets (cocotb/tidelink, tidelink_ahb,
+    // tidelink_top, tidelink_py_pair, tidelink_system all instantiate THIS
+    // wrapper and inject via the AHB slave).
+    //
+    // ⚠ SILICON INTEGRATORS MUST TIE THIS 0 at the RX-FIFO instantiation. In an
+    // RX FIFO the AHB slave is CPU-READ-ONLY — received data is committed
+    // exclusively by the FC direct-write port — so an AHB write to offset 0 is
+    // not a supported path, and leaving it enabled lets a stray write arm the
+    // packet-length latch and walk the write_ptr the FC committer SHARES.
+    // See docs/RXFIFO_TWIN2_DISPOSITION.md.
+    parameter ENABLE_AHB_WRITE = 1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -201,7 +214,15 @@ module tidelink_fifo #(
     tidelink_fifo_mem #(
         .SYS_DATA_W (SYS_DATA_W),
         .RAM_ADDR_W (RAM_ADDR_W),
-        .RAM_DATA_W (RAM_DATA_W)
+        .RAM_DATA_W (RAM_DATA_W),
+        // TWIN 2 FIX (F10): forwarded, NOT hardcoded. When an RX-FIFO integrator
+        // ties ENABLE_AHB_WRITE=0 (as the SoC must), AHB writes into the read-only
+        // RX window become a NO-OP and cannot walk the FC-shared write_ptr.
+        // Hardcoding 0 HERE was tried and reverted: this wrapper is also the DUT
+        // of five benches that legitimately AHB-inject packets, and it broke 15 of
+        // them (cocotb/tidelink 25/25 -> 10/25). The tie belongs at the RX
+        // instantiation, not inside the reusable wrapper.
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_fifo_mem (
         .hclk                   (hclk),
         .hresetn                (hresetn),

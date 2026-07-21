@@ -245,7 +245,8 @@ endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
+	sim_gate_force_recal
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -353,6 +354,29 @@ sim_gate_v2_syncdet:
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
+
+# P1 FORCED-RECAL W1P (SWI_FORCE_RECAL, R8 slot0 bit[6]; 2026-07-19, lane B1).
+# Guards the fix for docs/LINK_RECOVERY_MECHANISM.md §4 ("no firmware-reachable
+# PHY retrain"). THREE arms, because the fix spans two RTL files and two flist
+# families and the regression it must not cause (Bug-A) is behavioural:
+#
+#   RTL=v2  — src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv, the
+#             copy built by tidelink_fpga_v2.flist AND tidelink_top_full_asic_v2
+#             .flist (FPGA + TAPEOUT).
+#   RTL=v1  — src/rtl/tidelink_phy_align_calibrator.sv (tidelink_fpga.flist +
+#             tidelink_top_full_asic.flist). Same sticky, same fix.
+#   pair    — FULL STACK: a real APB write to R8 slot0 bit[6] on the paired-die
+#             TB, proving the W1P + stretcher + CDC reach the calibrator and that
+#             the link still passes data BYTE-EXACT both ways afterwards.
+#
+# The baseline arms (SWI_RECAL / role_locked re-pulse must STAY no-ops after
+# first lock) are the Bug-A regression: if calibrated_once_q is ever weakened,
+# these go red.
+sim_gate_force_recal:
+	$(call sim_gate_run,force_recal_w1p,\
+	  $(MAKE) -C cocotb/tidelink_force_recal RTL=v2 && \
+	  $(MAKE) -C cocotb/tidelink_force_recal RTL=v1 && \
+	  $(MAKE) -C cocotb/tidelink_force_recal pair)
 
 # RX-FIFO suite (42 tests) — carries the EMPTY-FIFO PHANTOM-POP regression
 # (test_41/test_42, added 2026-07-14). That defect was SILICON-ONLY and
@@ -471,24 +495,8 @@ SIM_GATE_REQUIRE = test -e $(1) || { echo "sim_gate: MISSING DEPENDENCY $(1) —
 # Both modules share ONE compile (sim_build_gate_tc).
 SIM_GATE_TC_ENV := TB_TOP_NO_DUMP=1 SIM_BUILD=sim_build_gate_tc
 
-# Sibling-repo resolution. TRAP: $(realpath ...) yields the EMPTY STRING for a
-# path that does not exist, which is why a wrong guess produces the confusing
-# "MISSING DEPENDENCY /flist/tidechart.flist" (note the empty leading component)
-# rather than naming the directory it looked in. Resolve against several roots so
-# a GIT WORKTREE — which lives at <root>/worktrees/<branch>, i.e. two levels
-# deeper than the main checkout — still finds the siblings. First hit wins; an
-# explicit *_HOME on the command line still overrides everything.
-SIM_GATE_SIBLING_ROOTS := $(TIDELINK_HOME)/.. $(TIDELINK_HOME)/../.. $(TIDELINK_HOME)/../../.. $(HOME)/SoCLabs
-sim_gate_sibling = $(firstword $(foreach r,$(SIM_GATE_SIBLING_ROOTS),$(realpath $(r)/$(1))))
-
-TIDECHART_HOME ?= $(call sim_gate_sibling,tidechart)
-CHIPLET_HOME   ?= $(call sim_gate_sibling,nanosoc-ethernet-chiplet)
-# EXPORT them: every bench Makefile declares these with `?=`, and a variable
-# present in the ENVIRONMENT is already defined as far as `?=` is concerned, so
-# exporting here overrides each bench's own (worktree-blind) default without
-# touching a single bench file. Benches keep working standalone.
-export TIDECHART_HOME
-export CHIPLET_HOME
+TIDECHART_HOME ?= $(realpath $(TIDELINK_HOME)/../tidechart)
+CHIPLET_HOME   ?= $(realpath $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet)
 SIM_GATE_TC_DEP = $(call SIM_GATE_REQUIRE,$(TIDECHART_HOME)/flist/tidechart.flist,tc_pair_* co-sim) && \
 	$(call SIM_GATE_REQUIRE,$(CHIPLET_HOME)/src/rtl/tidechart_shim.sv,tc_pair_* co-sim)
 
@@ -550,8 +558,7 @@ sim_gate_eth_m0:
 # sources the subsystem's set_env.sh in a SUBSHELL. SIM_GATE_ETH_DEP checks the
 # checkout first, so a missing sibling is a one-line message in THIS suite's log
 # rather than an unreadable VCS flist error 40 minutes in.
-ETH_SS_HOME ?= $(call sim_gate_sibling,nanoSoC-refactor/ethernet-subsystem-ahb)
-export ETH_SS_HOME   # see the export note at TIDECHART_HOME above
+ETH_SS_HOME ?= $(realpath $(TIDELINK_HOME)/../nanoSoC-refactor/ethernet-subsystem-ahb)
 SIM_GATE_ETH_ENV := . $(ETH_SS_HOME)/set_env.sh >/dev/null 2>&1;
 
 # M1: through the REAL ethernet_ss_ahb AHB matrix into eth_scratch_rx.
@@ -688,36 +695,45 @@ sim_gate_xfail_f14b:
 	  grep -qF "VERDICT[S1_s2m_clock_kill]: WEDGES(unwedged only by full POR of BOTH dies)" $$L && \
 	  grep -qF "VERDICT[S0_passthrough]: RECOVERS" $$L)
 
-# --- RX-FIFO TWIN 2 — AUTHORED, PARKED (NOT in the aggregate) ----------------
+# --- RX-FIFO TWIN 2 — ACTIVE (in the aggregate since 2026-07-19) -------------
 # F10's write-side twin (docs/RXFIFO_TWIN2_DISPOSITION.md): the unguarded
-# write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 lets any
+# write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 let any
 # AHB write to offset 0 arm the packet-length latch, walking the write_ptr that
 # the FC committer SHARES — worse than the shipped read-side phantom pop, which
 # only corrupted the read pointer.
 #
-# WHY IT IS PARKED: the fix is a PROPOSAL — docs/proposals/twin2_fix.patch is
-# NOT applied to the tree. The bench selects RTL with its own FIFO_SRC knob
-# (cocotb/fifo_rx_twin2/Makefile: FIFO_SRC ?= patched|unfixed, swapping which
-# .sv the flist picks; the shared src/rtl files are never modified). This target
-# pins FIFO_SRC=patched, so it passes ONLY against the patched RTL and proves
-# the proposed fix holds. Putting it in the aggregate today would gate the
-# aggregate on a patch that is not in the tree — it would pass here and tell you
-# nothing about what actually ships.
+# PROMOTED 2026-07-19: docs/proposals/twin2_fix.patch is APPLIED to src/rtl
+# (ENABLE_AHB_WRITE, default 1 = legacy behaviour, threaded ctrl -> mem -> fifo),
+# and F10 is now CLOSED IN RTL — src/rtl/tidelink_top.sv instantiates the RX FIFO
+# with .ENABLE_AHB_WRITE (0), so this suite gates a fix that actually ships.
 #
-# TO PROMOTE IT (one line, after twin2_fix.patch lands in src/rtl):
-#   append `fifo_rx_twin2` to SIM_GATE_ALL_SUITES  (and drop FIFO_SRC=patched,
-#   since `patched` will then BE the tree — leaving it pinned would re-create
-#   the very blindness this target exists to prevent).
+# The tie is at that ONE site by design. The other two tidelink_fifo instantiation
+# sites (tidelink_fifo_ahb.sv, the legacy tidelink.sv) HARDWIRE the FC direct-write
+# port OFF, so tying them 0 would leave a FIFO nothing can fill — and neither is
+# instantiated anywhere in src/, so it would buy no silicon safety either. Both
+# keep the default 1. Full rationale + the measured table:
+# docs/RXFIFO_TWIN2_DISPOSITION.md §4.2.
+#
+# The bench's FIFO_SRC=patched pin existed ONLY to point at
+# local *.PATCHED.sv copies of the unapplied fix; those copies are DELETED and
+# the pin is DROPPED, so this target now runs the bench's DEFAULT config
+# (FIFO_SRC=tree) against the REAL shared src/rtl — which is the whole point: the
+# gate must test what ships.
+#
+# THE NEGATIVE CONTROL IS NOT GATED, AND THAT IS DELIBERATE: FIFO_SRC=unfixed
+# compiles frozen pre-fix copies and is EXPECTED TO FAIL, so it can never be a
+# gate suite. Re-run it by hand with `make -C cocotb/fifo_rx_twin2 ab` whenever
+# you touch this bench — if `unfixed` ever PASSES, the test has gone blind and
+# the green here is worthless. Last run 2026-07-19: unfixed 1/3, tree 3/3.
 # GATE-INTEGRITY: this bench pins SIM_BUILD to $(CURDIR)/sim_build_$(FIFO_SRC),
 # so it is NOT covered by the sim_build_gate* glob in sim_gate_clean_builds and
 # would silently reuse whatever simv the last hand-run left behind (measured: a
-# 2 s "PASS" that recompiled nothing). Since the whole point of this target is
-# to prove a PROPOSED RTL patch still holds, a cached simv would be a false
-# green about the very files under test — so it starts clean, like sim_gate_fifo.
+# 2 s "PASS" that recompiled nothing) — a false green about the very files under
+# test. So it starts clean, like sim_gate_fifo.
 sim_gate_fifo_twin2:
 	$(call sim_gate_run,fifo_rx_twin2,\
-	  rm -rf cocotb/fifo_rx_twin2/sim_build_patched && \
-	  $(MAKE) -C cocotb/fifo_rx_twin2 FIFO_SRC=patched sim)
+	  rm -rf cocotb/fifo_rx_twin2/sim_build_tree && \
+	  $(MAKE) -C cocotb/fifo_rx_twin2 sim)
 
 # --- xhb_window_skew_debug — NOT GATE MATERIAL (deliberate) ------------------
 # cocotb/xhb_window_skew_debug/ has NO Makefile and NO testbench: it is a single
@@ -782,7 +798,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_winscan_fsm fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	tc_pair_smoke tc_pair_election_datamode \
-	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions
+	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
+	fifo_rx_twin2 force_recal_w1p
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -824,7 +841,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate — full aggregate sim gate"
-	@echo " 21 blocking suites + 2 known-defect sentinels (~35-50 min)"
+	@echo " 22 blocking suites + 2 known-defect sentinels (~35-50 min)"
 	@echo " inventory + what each suite protects: docs/SIM_GATE_COVERAGE.md"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
@@ -834,7 +851,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory sim_gate_force_recal
 	@$(MAKE) --no-print-directory sim_gate_fifo
+	@$(MAKE) --no-print-directory sim_gate_fifo_twin2
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog

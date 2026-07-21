@@ -1,8 +1,22 @@
 # RX-FIFO TWIN 2 — Disposition (verification-plan gap F10)
 
-**Status:** root cause verified against current RTL, reproduced in sim (A/B with teeth),
-intent answered with evidence, turnkey fix written as a proposal patch. **Not applied,
-not committed** — shared RTL untouched.
+**Status (2026-07-19): CLOSED IN RTL.** Fix applied to the shared RTL, **tied off at
+the silicon RX-FIFO instance**, and gated by `fifo_rx_twin2` in `SIM_GATE_ALL_SUITES`.
+Root cause verified, reproduced in sim (A/B with teeth, negative control still
+failing), intent answered with evidence.
+
+> ✅ **F10 is closed in the RTL.** `src/rtl/tidelink_top.sv` instantiates the RX FIFO
+> with `.ENABLE_AHB_WRITE (0)`, so an AHB write to the read-only RX aperture can no
+> longer arm the packet-length latch or walk the FC-shared `write_ptr`. This is the
+> **only** tie required — see §4.2 for why the other two candidate sites must *not*
+> be tied. Remaining work is silicon/FPGA confirmation, not RTL.
+
+- Defect class: same family as the shipped read-side phantom pop (`f9b94b7`,
+  `project_rxfifo_empty_read_phantom_pop_2026_07_14`). This is its **write-side twin**.
+- Owner artifacts: `cocotb/fifo_rx_twin2/` (bench), `docs/proposals/twin2_fix.patch`
+  (the applied patch, kept for provenance), this document.
+- Verified on `integ/consolidation-2026-07`, `2026-07-18`, VCS 2022.06, `TIDELINK_PHY_V2=1`;
+  re-verified after application on `2026-07-19`.
 
 - Defect class: same family as the shipped read-side phantom pop (`f9b94b7`,
   `project_rxfifo_empty_read_phantom_pop_2026_07_14`). This is its **write-side twin**.
@@ -104,14 +118,64 @@ write; the distinction is *which port* and *which build*):
   With the default `1` the guards constant-fold away → **behaviour byte-identical to today**,
   so the existing 42-test `cocotb/tidelink_fifo` bench is unaffected.
 - `tidelink_fifo_mem.sv`: add the param and forward it to `u_fifo_ctrl`.
-- `tidelink_fifo.sv` (the RX FIFO): instantiate `tidelink_fifo_mem` with
-  `.ENABLE_AHB_WRITE(0)` — the one intent-bearing line that turns AHB writes to the RX
-  window into a no-op in silicon. Read path, FC commit path, IRQ, and the sticky `underrun`
-  reporter are all untouched.
+- `tidelink_fifo.sv` (the RX FIFO): ~~instantiate `tidelink_fifo_mem` with
+  `.ENABLE_AHB_WRITE(0)`~~ — **AMENDED ON APPLICATION, see §4.1.** It now declares
+  `parameter ENABLE_AHB_WRITE = 1` and *forwards* it to `u_fifo_mem`. Read path, FC
+  commit path, IRQ, and the sticky `underrun` reporter are all untouched.
 
-Only the read-only **RX** instance is tied off; the TX datapath and the unit TB (which
-instantiates `fifo_mem` directly, default `1`) keep their AHB-write behaviour. The patch
-applies cleanly (`git apply --check` clean, 3 hunks).
+The patch applied cleanly as written (`git apply` clean, 3 hunks) — but the third hunk
+had to be amended after measurement; see below.
+
+### 4.1 Amendment made when the patch was applied (2026-07-19)
+
+The patch's premise for hunk 3 was that `tidelink_fifo` **is** "the one RX instance", so
+hardcoding `.ENABLE_AHB_WRITE (0)` inside it was safe. **That premise was wrong, and was
+caught by measurement, not review.**
+
+`tidelink_fifo` is a *reusable wrapper*, not an instance. It has three RTL users
+(`tidelink_top.sv:1417`, `tidelink_fifo_ahb.sv:148`, `tidelink.sv:96` — all RX, so the
+*intent* was right) **and five testbench users** that instantiate it directly and
+legitimately inject packets through the AHB slave: `cocotb/tidelink`, `cocotb/tidelink_ahb`,
+`cocotb/tidelink_top`, `cocotb/tidelink_py_pair`, `cocotb/tidelink_system`.
+
+Hardcoding `0` there therefore broke the AHB-inject path those benches depend on —
+**measured: `cocotb/tidelink` went 25/25 → 10/25 (15 failures)**, verified as a true
+regression by re-running the same bench against the pre-fix RTL (25/25). None of those
+benches are in `SIM_GATE_ALL_SUITES`, so **the gate would not have caught this**.
+
+The applied form keeps the patch's stated contract — *default 1 = byte-identical to today,
+the integrator ties 0* — and simply moves the tie to where an actual instance exists:
+
+> **DONE 2026-07-19 — see §4.2.** The tie landed at `src/rtl/tidelink_top.sv` only.
+
+### 4.2 Where the tie-off actually belongs (measured, 2026-07-19)
+
+There are **three** `tidelink_fifo` instantiation sites. Only one of them may be tied,
+and the reason is the same in all three cases: **is the FC direct-write port wired?**
+An RX FIFO with AHB writes disabled must still be fillable by the FC committer;
+disabling both leaves a FIFO that nothing can write.
+
+| Site | FC port wired? | In silicon path? | Action | Why |
+|---|---|---|---|---|
+| `src/rtl/tidelink_top.sv:1417` | **Yes** — real `fc_wr_*` from the FC adapter | **Yes** — the shipping RX datapath | **`.ENABLE_AHB_WRITE (0)`** | This is the defect's home. Closing it here closes F10. |
+| `src/rtl/fifo/tidelink_fifo_ahb.sv:148` | **No** — `fc_wr_valid/write` hardwired `1'b0` | **No** — instantiated nowhere in `src/` | forwarded param, default **1** | Tying it 0 makes the FIFO **unfillable by any means** (measured: 4 of 14 `*_via_ahb` tests fail with no alternative path). And it buys zero silicon safety, since nothing instantiates it. |
+| `src/rtl/tidelink.sv:96` (legacy) | **No** — `fc_wr_*` hardwired `1'b0` | **No** — only in `tidelink_ahb.flist` | untouched, inherits default **1** | Same as above; explicitly a legacy wrapper ("live builds use `tidelink_top.sv`"). |
+
+**Correction to the §4.1 warning.** That warning said the tie-off would break "the five
+benches" and demanded they be migrated to the FC port. That was over-broad — it described
+the *hardcode-inside-`tidelink_fifo`* blast radius, which is not the blast radius of tying
+at the integration points. Measured after the tie landed:
+
+- The four benches that instantiate `tidelink_fifo` **directly** (`cocotb/tidelink`,
+  `tidelink_top`, `tidelink_py_pair`, `tidelink_system`) keep the default `1` and are
+  **untouched**. `cocotb/tidelink` = **25/25 with the tie-off in place**.
+- `cocotb/tidelink_ahb` goes through `tidelink_fifo_ahb`, which is **not** tied → **14/14**.
+- The 15 benches that reach the FIFO through `tidelink_top` **are** affected — and all pass,
+  because they deliver data over the link through the FC port, which is exactly the path the
+  fix preserves.
+
+**No testbench migration was required.** The tie was placed where the FC port is genuinely
+wired, so nothing lost its only fill path.
 
 *Note:* the `overrun` sticky-flag's AHB-write term is intentionally left ungated — a stray
 write to a full RX window may still raise the diagnostic `overrun` flag, which is harmless
@@ -131,51 +195,95 @@ silicon path, independent of the defective AHB write path. Checks are **whitebox
 - `test_02_genuine_fc_packet_survives_ahb_clear` — end-to-end: stray AHB clear-write, THEN
   a genuine FC packet, which must land byte-exact at base 0.
 
-The **only** difference between the two runs is which RTL the flist picks (shared files are
-never modified); `tb_top` instantiates with `ENABLE_AHB_WRITE(0)` — ignored (VCS `AOUP`
-warning) on unfixed RTL, honoured on the patched copy. Each config uses its own
-`sim_build_<cfg>` to defeat the stale-`simv` trap.
+The **only** difference between the two runs is which RTL the flist picks; `tb_top`
+instantiates with `ENABLE_AHB_WRITE(0)` — honoured by the real fixed RTL, and ignored
+(VCS `AOUP` warning) by the pre-fix copies. Each config uses its own `sim_build_<cfg>` to
+defeat the stale-`simv` trap.
+
+**A/B polarity flipped when the fix landed (2026-07-19).** Before, `unfixed` meant the
+shared RTL (then buggy) and `patched` meant local `*.PATCHED.sv` copies. Now the shared RTL
+is fixed, so the roles reverse:
+
+- `FIFO_SRC=tree` (**the default, and what the gate runs**) → the real `src/rtl/fifo/*.sv`.
+- `FIFO_SRC=unfixed` → frozen `*.UNFIXED.sv` copies of the pre-fix RTL, kept locally as the
+  **negative control**. They are deliberately frozen and will drift; their only job is to
+  embody pre-fix write-arm behaviour, which is historical.
+
+The `*.PATCHED.sv` copies were **deleted** — with the fix in the tree, a gate that compiled a
+private copy of it would prove nothing about what ships.
 
 ```
-$ make ab      # (source ./set_env.sh; TIDELINK_PHY_V2=1)
-A: UNFIXED RTL   ->  1/3 passed, 2 failed  ->  CORRECT (bug reproduced)
-B: PATCHED RTL   ->  3/3 passed, 0 failed  ->  CORRECT (fix holds)
+$ make ab      # (source ./set_env.sh; TIDELINK_PHY_V2=1)     [re-run 2026-07-19]
+A: UNFIXED (frozen pre-fix copies)  ->  1/3 passed, 2 failed  ->  CORRECT (bug reproduced)
+B: TREE (real shared src/rtl)       ->  3/3 passed, 0 failed  ->  CORRECT (fix holds in tree)
 ```
+
+The negative control **must keep failing**. If `unfixed` ever passes, the test has gone
+blind and the aggregate's green on this suite is worthless.
 
 Unfixed failure signatures (the exact derived blast radius):
 - `test_01`: *"an AHB write to the RX window BURNED credit (4096 -> 4094)"* + `write_ptr 0 -> 8`.
 - `test_02`: *"the genuine FC packet's header was committed at SRAM byte 0x0008, not 0 —
   mis-framed"*.
 
-**To run:** `cd cocotb/fifo_rx_twin2 && make ab` (or `make unfixed` / `make patched`).
+**To run:** `cd cocotb/fifo_rx_twin2 && make ab` (or `make unfixed` / `make tree`).
 
-## 6. Rollout to `sim_gate` (when the fix lands)
+## 6. Rollout to `sim_gate` — **DONE (2026-07-19)**
 
-Add a suite alongside `sim_gate_fifo`, pinned to the **patched** config so the shared RTL
-change is enshrined:
+`fifo_rx_twin2` is in `SIM_GATE_ALL_SUITES` and the aggregate invokes
+`sim_gate_fifo_twin2` immediately after `sim_gate_fifo`. The `FIFO_SRC=patched` pin is
+**dropped** (it existed only to select the local patched copies), so the target now runs the
+bench default — the real shared RTL:
+
 ```make
 sim_gate_fifo_twin2:
 	$(call sim_gate_run,fifo_rx_twin2,\
-	  rm -rf cocotb/fifo_rx_twin2/sim_build_patched && \
-	  $(MAKE) -C cocotb/fifo_rx_twin2 FIFO_SRC=patched sim)
+	  rm -rf cocotb/fifo_rx_twin2/sim_build_tree && \
+	  $(MAKE) -C cocotb/fifo_rx_twin2 sim)
 ```
-Once the patch is applied to the shared files, also switch the bench's default flist to the
-shared tree (or keep the patched copies as the frozen A/B reference). Run the full 42-test
-`cocotb/tidelink_fifo` bench post-apply to confirm the `ENABLE_AHB_WRITE=1` default leaves it
-green (algebraically guaranteed; verify anyway per the sim-gate-before-deploy rule).
+
+The negative control is **not** gated and never can be — it is expected to fail. Re-run
+`make -C cocotb/fifo_rx_twin2 ab` by hand whenever the bench or the FIFO RTL changes.
+
+### Post-apply verification actually run (2026-07-19)
+
+| Check | Result |
+|---|---|
+| `make sim_gate_fifo_twin2` (the promoted suite, real RTL) | **PASS** 6 s, `TESTS=3 PASS=3 FAIL=0` |
+| `make sim_gate_fifo` (`fifo_rx_phantom_pop`, sibling) | **PASS** 72 s, `TESTS=42 PASS=42 FAIL=0` |
+| `make sim_gate_v2_data` (`v2_pair_data`, datapath) | **PASS** 14 s |
+| `make sim_gate_asicelab` / `_v2` (param-list change → re-elaborate) | **PASS** 10 s / 11 s |
+| `make -C cocotb/fifo_rx_twin2 ab` (negative control retains teeth) | unfixed **1/3 FAIL** (correct), tree **3/3 PASS** |
+| `cocotb/tidelink` (25-test wrapper bench, the §4.1 regression check) | **25/25 PASS**, identical to the pre-fix baseline |
+
+**Default-preservation evidence.** With `ENABLE_AHB_WRITE = 1` both guards are
+`(1 != 0) && X`, which constant-folds to `X` — algebraically the pre-fix expressions.
+Empirically: `cocotb/tidelink_fifo` (42 tests) instantiates `tidelink_fifo_mem` *directly,
+without passing the parameter*, so it runs entirely on the default and **injects packets over
+the AHB write path under test** — exactly the path that would break if the default were not
+preserved. It is 42/42, unchanged. `cocotb/tidelink` (25 tests, via the wrapper) is likewise
+25/25 against a measured pre-fix baseline of 25/25.
 
 ---
 
 ## Tapeout recommendation
 
-**Apply the fix before tapeout.** RX-FIFO TWIN 2 is a real, live, unguarded silicon defect
+**CLEARED FOR TAPEOUT 2026-07-19 (RTL).** The fix is applied, tied off at the shipping RX
+FIFO (`tidelink_top.sv`), gated by `fifo_rx_twin2`, and shown not to regress anything
+(42/42, 25/25, 14/14, full `sim_gate`). What remains is **on-silicon/FPGA confirmation**,
+not RTL work — this defect has no observable-from-software signature until it mis-frames a
+packet, so treat the gate as the primary evidence.
+
+Historically, RX-FIFO TWIN 2 was a real, live, unguarded silicon defect
 in the same class as the phantom pop that already reached hardware: an AHB write to the
 CPU-read-only RX aperture walks the FC-shared `write_ptr` and burns credit, so a stray or
 bulk "clear the window" access mis-frames the *next genuinely received packet* and slowly
 desyncs credit from the peer. Evidence is unambiguous that no software legitimately writes
 the RX aperture (every driver only reads it; committed data arrives via the FC port), so the
-correct fix is to reject AHB writes to the RX FIFO — a three-hunk, default-preserving change
-(`ENABLE_AHB_WRITE`, default 1, tied 0 at the one RX instance) that changes no other path and
-leaves the existing test suite behaviour byte-identical. It is proven to have teeth (unfixed
-1/3, patched 3/3) with the exact `+8 byte / −2 credit` silicon signature. Low risk, high
-value; ship it with the gate suite wired into `sim_gate`.
+correct fix is to reject AHB writes to the RX FIFO — a default-preserving change
+(`ENABLE_AHB_WRITE`, default 1, tied 0 at the **one** shipping RX instantiation) that changes
+no other path and leaves existing test behaviour byte-identical (42/42, 25/25, 14/14
+measured). It is proven to have teeth (unfixed 1/3, tree 3/3) with the exact
+`+8 byte / −2 credit` signature. Low risk, high value — **and now landed**: the tie is in
+`tidelink_top.sv` and the gate suite is wired into `sim_gate`. No bench migration was needed
+(§4.2).

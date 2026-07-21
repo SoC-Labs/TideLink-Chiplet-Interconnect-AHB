@@ -24,7 +24,27 @@ module tidelink_fifo_ahb #(
     parameter RAM_ADDR_W = 14,
     parameter RAM_DATA_W = 32,
     parameter APB_ADDR_W = 12,
-    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0
+    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0,
+    // TWIN 2 (F10) — forwarded to tidelink_fifo. DEFAULT 1, and DELIBERATELY NOT
+    // TIED 0 here. Two reasons, both verified:
+    //   1. This wrapper HARDWIRES the FC direct-write port OFF (fc_wr_valid/write
+    //      = 1'b0 at the instance below). The AHB slave is therefore the ONLY way
+    //      to get data into the FIFO through this wrapper — tie this 0 and the
+    //      FIFO becomes unfillable by any means (measured: 4 of the 14 *_via_ahb
+    //      tests in cocotb/tidelink_ahb fail, and no other path can replace them).
+    //   2. This module IS instantiated (cocotb/tidelink_ahb/tb_top.sv:68), and the
+    //      sibling tidelink.sv is instantiated at tidelink_ahb.sv:139 — an earlier
+    //      revision of this comment claimed "instantiated NOWHERE", which is FALSE
+    //      and was corrected 2026-07-19 after adversarial review (F6). The correct
+    //      argument is point 1 ALONE: the FC port is hardwired off here, so this
+    //      wrapper is not in the silicon RX datapath — that runs
+    //      tidelink_top.sv -> tidelink_fifo (tied 0 there, which is what actually
+    //      closes F10). A tie here would buy no silicon safety and would break the
+    //      only path that fills this FIFO. Do not reason about coverage from the
+    //      old "nowhere" claim.
+    // An integrator who ever DOES use this wrapper as a real RX FIFO must first
+    // expose and wire fc_wr_*, and only then set this to 0.
+    parameter ENABLE_AHB_WRITE = 1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -151,7 +171,11 @@ module tidelink_fifo_ahb #(
         .RAM_ADDR_W       (RAM_ADDR_W),
         .RAM_DATA_W       (RAM_DATA_W),
         .APB_ADDR_W       (APB_ADDR_W),
-        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
+        // TWIN 2 (F10): forwarded, not tied — see the parameter declaration above
+        // for why (this wrapper hardwires fc_wr_* off, and is not in the silicon
+        // RX datapath). F10 is closed at tidelink_top.sv's tidelink_fifo instance.
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_tidelink_fifo (
         .hclk            (hclk),
         .hresetn         (hresetn),

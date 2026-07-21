@@ -78,11 +78,23 @@ R_CAL_SEL=0x44032154        # [2:0] calibrator lane select
 #  R_PHASE_LSB, GP1_RX, EXP_SLICE come from td_v2_hwlib.sh)
 
 # ----- golden / classification constants -------------------------------------
-GOLD_MASK32=0x0000E4E4      # 0x44030214 lane mask (rx|tx) — must match
-GOLD_MASK8=0xE4            # 0x44032128[7:0] SYNC mask — active lanes {2,5,6,7}
-GOLD_SEEN=0xE4             # 0x4403215C[7:0] all 4 active lanes committed
-GOLD_ACTIVE="2 5 6 7"      # NEVER report masked-out lanes
-SWEEP_LANES="2,5,6,7"     # Phase 2 sweep order (per-lane independent)
+# CONSOLIDATION 2026-07-19: these four "golden" constants were the LAST place
+# that still hardcoded the 4-lane 0xE4 assumption. They now derive from the ONE
+# mask mechanism — TD_MASK, defined in td_v2_hwlib.sh (sourced above) and
+# defaulting to 0xe4. With the default this composes to EXACTLY the historical
+# literals (GOLD_MASK32=0x0000e4e4, GOLD_MASK8=0xe4, GOLD_ACTIVE="2 5 6 7",
+# SWEEP_LANES="2,5,6,7"), so the default path is bit-identical. An 8-lane run
+# passes TD_MASK=0xff and the phase0 build-expectation ABORTs below then check
+# the RIGHT mask instead of failing a correct 8-lane build.
+GOLD_MASK32=$TD_LANEMASK32  # 0x44030214 lane mask (rx|tx) — must match
+GOLD_MASK8=$(printf '0x%02x' $((TD_MASK)))   # 0x44032128[7:0] SYNC mask
+GOLD_SEEN=$GOLD_MASK8      # 0x4403215C[7:0] all active lanes committed
+# NOTE (Wave-0 fix #12c): GOLD_SEEN is RETIRED as a comparison reference. The
+# commit expectation now derives from the live SYNC mask (EXP_SEEN, set in
+# phase0 from the hardware read-back m8). Kept only as documentation of the
+# nominal value; no longer used in any pass/fail decision.
+GOLD_ACTIVE="$MASK_ACTIVE_LANES"   # NEVER report masked-out lanes
+SWEEP_LANES="${MASK_ACTIVE_LANES// /,}"   # Phase 2 sweep order (per-lane independent)
 MARGIN_FLOOR=2            # PASS needs min_dist <= TOL-MARGIN_FLOOR
 EYE_FLOOR=4              # PASS needs eye_width >= EYE_FLOOR
 
@@ -280,7 +292,14 @@ sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE (stdout); trac
 }
 
 # ----- collected state -------------------------------------------------------
-declare -A EFF_TOL SEEN_VEC LIVE_VEC MISSING
+# EXP_SEEN[d] = per-die EXPECTED committed-lane vector. Wave-0 fix #12c:
+# de-circularization — this is DERIVED from the live SYNC mask read back from
+# hardware (m8) in phase0, NOT from the standalone GOLD_SEEN constant. Because
+# GOLD_SEEN was hardcoded == GOLD_MASK8, comparing seen against it validated its
+# own premise and could never fail when the mask itself was wrong. Deriving the
+# commit expectation from the live mask lets the preflight FAIL when a lane the
+# mask says is active never commits.
+declare -A EFF_TOL SEEN_VEC LIVE_VEC MISSING EXP_SEEN
 ROWS=()   # "die lane min_dist best_tap eye_width margin seen lane_passed best_run rx_slice class"
 
 # =============================================================================
@@ -298,6 +317,11 @@ phase0(){
       printf "  ABORT: die_%s lane mask 0x%08x != golden 0x%08x (wrong build / wrong mask?)\n" "$d" "$lm" $((GOLD_MASK32)); bad=1; fi
     if [ "$m8" -ne $((GOLD_MASK8)) ]; then
       printf "  ABORT: die_%s SYNC mask 0x%02x != golden 0x%02x\n" "$d" "$m8" $((GOLD_MASK8)); bad=1; fi
+    # Wave-0 fix #12c: the COMMIT expectation derives from the LIVE mask (m8),
+    # not the hardcoded GOLD_SEEN. The ABORT above is the (legitimate) build
+    # sanity check; here we record "all active lanes committed" == the mask HW
+    # actually reports, so a missing active lane is detectable downstream.
+    EXP_SEEN[$d]=$m8
     # effective TOL for classification: CLI override wins, else the read value
     if [ -n "$TOL_OVERRIDE" ]; then EFF_TOL[$d]=$TOL_OVERRIDE
     else
@@ -328,7 +352,10 @@ phase1(){
     local seen live miss
     seen=$(( $(rd_die "$d" "$R_SYNCSEEN") & 0xff ))
     live=$(( $(rd_die "$d" "$R_SYNC_LIVE") & 0xff ))
-    miss=$(( GOLD_MASK8 & ~seen & 0xff ))
+    # Wave-0 fix #12c: expected-commit derives from the live mask (EXP_SEEN,
+    # set in phase0 from m8), not the hardcoded GOLD_MASK8 constant.
+    local exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
+    miss=$(( exp & ~seen & 0xff ))
     SEEN_VEC[$d]=$seen; LIVE_VEC[$d]=$live; MISSING[$d]=$miss
     printf "  [commit] die_%s sync_seen=0x%02x live=0x%02x  missing=0x%02x %s\n" \
       "$d" "$seen" "$live" "$miss" "$([ "$miss" = 0 ] && echo "(all active lanes commit)" || echo "<-- lane(s) never commit")"
@@ -432,13 +459,16 @@ disambiguation(){
 VERDICT=""
 RC=0
 compute_verdict(){
-  local dead_msg="" marg_msg="" r d L md ew margin cls tol seen
+  local dead_msg="" marg_msg="" r d L md ew margin cls tol seen exp
   if [ ${#ROWS[@]} -gt 0 ]; then
     for r in "${ROWS[@]}"; do
       set -- $r; d=$1; L=$2; md=$3; ew=$5; cls=${11}
       tol=${EFF_TOL[$d]}; seen=${SEEN_VEC[$d]:-0}
+      # Wave-0 fix #12c: compare committed vector against the live-mask-derived
+      # expectation (EXP_SEEN), not the hardcoded GOLD_SEEN constant.
+      exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
       if [ "$cls" = DEAD ]; then
-        [ -z "$dead_msg" ] && dead_msg="die_${d} lane ${L} DEAD (min_dist=${md} > TOL=${tol}$([ "$ew" = 0 ] && echo " at all 32 taps"); sync_seen 0x$(printf %02x "$seen") $([ "$seen" = $((GOLD_SEEN)) ] && echo "== golden 0xE4" || echo "!= golden 0xE4"))"
+        [ -z "$dead_msg" ] && dead_msg="die_${d} lane ${L} DEAD (min_dist=${md} > TOL=${tol}$([ "$ew" = 0 ] && echo " at all 32 taps"); sync_seen 0x$(printf %02x "$seen") $([ "$seen" = "$exp" ] && echo "== live mask 0x$(printf %02x "$exp")" || echo "!= live mask 0x$(printf %02x "$exp")"))"
       elif [ "$cls" = MARGINAL ]; then
         [ -z "$marg_msg" ] && marg_msg="die_${d} lane ${L} MARGINAL (min_dist=${md}, eye_width=${ew}, TOL=${tol})"
       fi
@@ -448,9 +478,12 @@ compute_verdict(){
     for d in a b; do
       local miss=${MISSING[$d]:-0}
       [ "$miss" = 0 ] && continue
+      # Wave-0 fix #12c: 'missing' derives from the live mask (EXP_SEEN), so the
+      # reference we cite is the live mask, not a hardcoded golden constant.
+      exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
       for L in $GOLD_ACTIVE; do
         if [ $(( (miss >> L) & 1 )) = 1 ] && [ -z "$dead_msg" ]; then
-          dead_msg="die_${d} lane ${L} SUSPECT (never commits under beacon flood; missing=0x$(printf %02x "$miss") vs golden 0xE4) — run full preflight to confirm DEAD"
+          dead_msg="die_${d} lane ${L} SUSPECT (never commits under beacon flood; missing=0x$(printf %02x "$miss") vs live mask 0x$(printf %02x "$exp")) — run full preflight to confirm DEAD"
         fi
       done
     done

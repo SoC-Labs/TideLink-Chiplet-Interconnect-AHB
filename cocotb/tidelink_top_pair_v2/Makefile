@@ -103,11 +103,19 @@ COMPILE_ARGS += +define+TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS=$(RELY_ON_RTL_PRIO_DEFA
 #   make EPOCH_PROFILE=staircase                 -> FAILS (no corrector)
 #   make EPOCH_PROFILE=staircase EPOCH_ANCHOR=1  -> PASSES (EPOCH anchor engaged)
 #
-# Keep the default at 0: it matches the silicon build bit-for-bit. See the
-# TL_EPOCH_ANCHOR_EN selector in deps/tidelink-phy/rtl/wav/WavD2DGpio.v.
+# Keep the default at 0: it matches the silicon build bit-for-bit.
+#
+# 2026-07-17 PLUMBING FIX: the OLD `+define+TIDELINK_EPOCH_ANCHOR` was DEAD in the
+# V2 build — it selected the TL_EPOCH_ANCHOR_EN ifdef in the deps
+# deps/tidelink-phy/rtl/wav/WavD2DGpio.v, but the V2 flist compiles the LOCAL
+# OVERRIDE src/rtl/local_overrides/WavD2DGpio_v2.v (no such ifdef), so EPOCH_ANCHOR=1
+# engaged NOTHING (the "PASSES" claim above was never true in V2). It now drives
+# +define+TB_TOP_EPOCH_ANCHOR_EN, which defparams phy.EPOCH_ANCHOR_EN=1 and
+# propagates through the fixed WlinkGPIOPHY_v2 -> WavD2DGpio_v2 -> u_deskew param
+# path (banner "master=1 (deskew: m=1)"). SYNC_REANCHOR_EN becomes its complement.
 EPOCH_ANCHOR ?= 0
 ifeq ($(EPOCH_ANCHOR),1)
-COMPILE_ARGS += +define+TIDELINK_EPOCH_ANCHOR
+COMPILE_ARGS += +define+TB_TOP_EPOCH_ANCHOR_EN
 endif
 
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────

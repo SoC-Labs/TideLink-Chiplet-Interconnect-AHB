@@ -279,7 +279,27 @@ XHB_WINDOW=${TIDELINK_XHB_WINDOW:-0x40000000} # transparent peer window (M_AXI_G
 FC_TRIPLET=(0x00027f09 0x00027f01 0x00027f07)
 R8_SYNC=0x1C; R8_RECAL=0x1E; R8_DATA=0x10   # data-en strips SYNC_EN (bit2); see R_R8 note
 NEGO_ARM=0x61                # nego_en | force_lock | mask_hs_auto_en (0x41 never latches)
-ACTIVE_LANES="2 5 6 7"
+# ACTIVE_LANES is currently UNUSED in this script (kept as documentation of the
+# active-lane set). Derived from TD_MASK below so it cannot drift out of step
+# with the mask actually written to the hardware; with the TD_MASK default it is
+# exactly the historical "2 5 6 7".
+ACTIVE_LANES=""
+
+# Wave-0 fix #12d: parameterize the SYNC/lane mask. TD_MASK defaults to 0xe4
+# (active lanes {2,5,6,7}); when UNSET the composed register values are
+# BIT-IDENTICAL to the historical hardcoded writes (0x0000e4e4 / 0x000005e4).
+# Export TD_MASK (e.g. 0x3c) to retarget the active-lane set for both dies.
+TD_MASK=${TD_MASK:-0xe4}
+_tdm=$(( TD_MASK & 0xff ))
+# R_LANEMASK duplicates the mask byte into the rx|tx byte lanes: 0xe4 -> 0x0000e4e4
+TD_LANEMASK_VAL=$(printf '0x%08x' $(( (_tdm << 8) | _tdm )))
+# R_SYNCTOL = [12:8]=SYNC tol(5) [7:0]=per-lane mask: 0xe4 -> 0x000005e4
+TD_SYNCTOL_VAL=$(printf '0x%08x' $(( (0x5 << 8) | _tdm )))
+# Derive ACTIVE_LANES (declared above) from the SAME mask.
+for _l in 0 1 2 3 4 5 6 7; do
+  [ $(( (_tdm >> _l) & 1 )) -eq 1 ] && ACTIVE_LANES="$ACTIVE_LANES $_l"
+done
+ACTIVE_LANES=${ACTIVE_LANES# }
 
 # ----- SSH plumbing (one hop per call, throttled; modeled on td_v2_hwlib.sh) --
 BOARD_PW=${TD_BOARD_PW:-xilinx}
@@ -377,11 +397,11 @@ abort(){ echo "### ABORT: $1"; [ "$DO_LEASE" = 1 ] && [ "$KEEP_LEASE" = 0 ] && l
 bringup_manual(){
   echo "-- manual (deterministic) bring-up --"
   m wr $R_NEGO_TRAIN 0x0    >/dev/null;  s wr $R_NEGO_TRAIN 0x0    >/dev/null
-  m wr $R_LANEMASK 0x0000e4e4>/dev/null; s wr $R_LANEMASK 0x0000e4e4>/dev/null
+  m wr $R_LANEMASK $TD_LANEMASK_VAL>/dev/null; s wr $R_LANEMASK $TD_LANEMASK_VAL>/dev/null  # Wave-0 fix #12d
   m wr $R_ROLE 0x2          >/dev/null;  s wr $R_ROLE 0x3          >/dev/null
   m wr $R_LOCKTHR 0x55555555>/dev/null;  s wr $R_LOCKTHR 0x55555555>/dev/null
   m wr $R_SLIPLO 0x0        >/dev/null;  s wr $R_SLIPLO 0x0        >/dev/null
-  m wr $R_SYNCTOL 0x000005e4>/dev/null;  s wr $R_SYNCTOL 0x000005e4>/dev/null
+  m wr $R_SYNCTOL $TD_SYNCTOL_VAL>/dev/null;  s wr $R_SYNCTOL $TD_SYNCTOL_VAL>/dev/null  # Wave-0 fix #12d
   m wr $R_R8 $R8_SYNC       >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null
   m wr $R_R8 $R8_RECAL      >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null; sleep 0.03
   m wr $R_R8 $R8_SYNC       >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null
@@ -391,8 +411,8 @@ bringup_manual(){
 # autoneg FSM samples mask_hs at arm) — same ordering as bringup_autocal_i2c.sh.
 bringup_autonomous(){
   echo "-- autonomous (arm-once NEGO_CFG=$NEGO_ARM) bring-up --"
-  m wr $R_LANEMASK 0x0000e4e4>/dev/null; s wr $R_LANEMASK 0x0000e4e4>/dev/null
-  m wr $R_SYNCTOL 0x000005e4>/dev/null;  s wr $R_SYNCTOL 0x000005e4>/dev/null
+  m wr $R_LANEMASK $TD_LANEMASK_VAL>/dev/null; s wr $R_LANEMASK $TD_LANEMASK_VAL>/dev/null  # Wave-0 fix #12d
+  m wr $R_SYNCTOL $TD_SYNCTOL_VAL>/dev/null;  s wr $R_SYNCTOL $TD_SYNCTOL_VAL>/dev/null  # Wave-0 fix #12d
   m wr $R_LOCKTHR 0x55555555>/dev/null;  s wr $R_LOCKTHR 0x55555555>/dev/null
   m wr $R_R8 $R8_SYNC       >/dev/null;  s wr $R_R8 $R8_SYNC       >/dev/null
   m wr $R_ROLE 0x2          >/dev/null;  s wr $R_ROLE 0x3          >/dev/null

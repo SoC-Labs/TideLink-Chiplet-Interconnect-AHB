@@ -537,7 +537,14 @@ module tidelink_apb_regs #(
                                           (apb_region <= 4'b0111);
     assign perf_reg_addr   = paddr[4:2];
     assign perf_reg_wdata  = pwdata;
-    assign perf_reg_region = apb_region[1:0];
+    // Wave-0 fix #9 (2026-07-17): perf regions live at apb_region 5..7 (gated
+    // above), so the 2-bit local region index must be (apb_region-5):
+    //   region 5 -> 2'b00 (PERF_CTRL/TX-ts), 6 -> 2'b01, 7 -> 2'b10.
+    // The old `apb_region[1:0]` mapped {5,6,7}->{01,10,11} and could NEVER
+    // produce 2'b00, so PERF_CTRL (region 5, the enable/freeze/clear reg) was
+    // physically UNWRITABLE and every perf counter read 0. Behaviour-neutral
+    // for regions 6/7 reads; only enables PERF_CTRL writes.
+    assign perf_reg_region = (apb_region - 4'd5);
 
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 

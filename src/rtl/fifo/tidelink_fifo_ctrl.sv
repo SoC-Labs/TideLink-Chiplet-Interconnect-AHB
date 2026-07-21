@@ -13,21 +13,23 @@
 
 module tidelink_fifo_ctrl #(
     parameter RAM_ADDR_W = 14,
-    // TWIN 2 FIX (verification-plan F10) — the RX FIFO's AHB slave port is
-    // READ-ONLY in silicon: received data is committed exclusively by the FC
-    // direct-write port (fc_wr_*), and the CPU only READS the RX aperture
-    // (0x84010000/0xA4010000). An AHB WRITE to offset 0 was UNCONDITIONALLY
-    // treated as a packet-length header — it armed packet_active and, on the
-    // paired write to offset 4, fired write_complete and walked the FC-SHARED
-    // write_ptr (fc_translated_addr = fc_wr_addr + write_ptr_r) plus burned
-    // credit. So any stray or bulk "clear the RX window" write corrupts the
-    // committer and mis-frames the next genuine FC packet.
+    // RX-FIFO TWIN 2 (chip-killer, 2026-07-16) — master enable for the AHB
+    // CPU-write-into-RX-FIFO path.
     //
-    // Set ENABLE_AHB_WRITE = 0 at the RX-FIFO instantiation to make AHB writes
-    // to this slave a NO-OP (the silicon configuration). DEFAULT 1 preserves the
-    // legacy AHB-inject path the unit testbench relies on; the SoC ties it 0.
-    // Sibling of the read-side phantom-pop guard (rx_fifo_empty) fixed 2026-07-14.
-    parameter ENABLE_AHB_WRITE = 1
+    // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX **IS a supported path**.
+    // Therefore this parameter DEFAULTS TO 1'b1 (path FUNCTIONAL) and the ASIC
+    // integration leaves it at 1'b1. It is retained only as a belt-and-braces
+    // knob for an integration that genuinely wants an FC-write-only RX FIFO;
+    // setting it to 1'b0 disables the AHB write-side length latch AND the AHB
+    // write completion (AHB READS are untouched in both settings).
+    //
+    // TWIN 2 IS FIXED BY QUALIFYING THE ARM, NOT BY THIS GATE — see
+    // `ahb_pkt_start_ok` below. The corruption was that the write-side length
+    // latch armed on ANY AHB NONSEQ write to offset 0, so a stray clear/probe
+    // write pair (offset 0 then offset 4) walked the FC-SHARED write_ptr by two
+    // words and burned two credits, mis-framing the NEXT genuine FC packet
+    // (write_ptr is shared: fc_translated_addr = fc_wr_addr + write_ptr_r).
+    parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // Clock/Reset
     input  wire                   hclk,
@@ -103,6 +105,14 @@ module tidelink_fifo_ctrl #(
     // Shared intermediate: payload length + 2 (2-word header + N payload words)
     wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
 
+    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
+    // in the credit counter below. credit_count_r <= 2^13-1 and packet_delta
+    // <= 2^12, so this cannot overflow RAM_ADDR_W=14 bits. Declared at module
+    // scope (not inside the always_comb): a declaration in an unnamed
+    // procedural block is not portable across synthesis tools, and this file is
+    // compiled by both the FPGA and the ASIC flows.
+    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_count_r) + packet_delta;
+
     // RX FIFO is EMPTY iff no credit has been consumed. This is the SAME predicate
     // the sticky `underrun` flag already uses (see underrun_event below) — reuse it
     // rather than invent a second notion of emptiness.
@@ -121,9 +131,9 @@ module tidelink_fifo_ctrl #(
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
     wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
-    // TWIN 2 FIX: gate the AHB write-completion on ENABLE_AHB_WRITE (silicon = 0).
-    wire ahb_write_complete = (ENABLE_AHB_WRITE != 0) && ahb_valid_transfer
-                              && (haddr == write_target_addr_r) && hwrite;
+    // PENDING-DECISION #1: AHB write-completion gated. ENABLE_AHB_WRITE=0 makes
+    // the FC-shared write_ptr / credit un-advanceable from the AHB write side.
+    wire ahb_write_complete = ENABLE_AHB_WRITE && ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
     assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
@@ -178,6 +188,15 @@ module tidelink_fifo_ctrl #(
     // FC write to addr 0: same-cycle length capture
     wire fc_write_addr0 = fc_wr_valid && fc_wr_write && (fc_wr_addr == '0);
 
+    // TWIN-2 FIX — qualified AHB packet-start. See the arm comment below.
+    // Smallest legal packet is header(2 words); require that much credit.
+    localparam [RAM_ADDR_W-2:0] MIN_PKT_CREDIT = (RAM_ADDR_W-1)'(2);
+    wire ahb_write_addr0 = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
+    wire ahb_pkt_start_ok = ahb_write_addr0
+                            && !packet_active_r
+                            && !check_addr_r
+                            && (credit_count_r >= MIN_PKT_CREDIT);
+
     // AHB write pipeline: addr phase detection → data phase capture
     logic capture_write_length_r, capture_write_length_nxt;
 
@@ -203,12 +222,24 @@ module tidelink_fifo_ctrl #(
         check_addr_nxt           = check_addr_r;
         packet_word_length_nxt   = packet_word_length_r;
         packet_active_nxt        = packet_active_r;
-        // TWIN 2 FIX: gate the write-side length-latch arm on ENABLE_AHB_WRITE.
-        // The sibling read-side arm below already carries `&& !rx_fifo_empty`
-        // (the 2026-07-14 phantom-pop guard); the write arm had NO guard, so an
-        // AHB write to offset 0 latched a phantom length and armed packet_active.
-        capture_write_length_nxt = (ENABLE_AHB_WRITE != 0)
-                                   && valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
+        // TWIN-2 FIX (2026-07-19) — QUALIFY the AHB write-side length latch.
+        //
+        // The latch may arm only on a LEGITIMATE PACKET START, not on any AHB
+        // write that happens to hit offset 0:
+        //   - !packet_active_r : no packet already in flight. A second offset-0
+        //     write mid-packet must not re-arm and re-target the completion
+        //     address underneath the packet being written.
+        //   - !check_addr_r    : a read-side length capture is not pending, so
+        //     the read and write metadata paths cannot fight over
+        //     packet_word_length_r / *_target_addr_r in the same cycle.
+        //   - credit_count_r >= packet_delta_min(=2) : the FIFO can actually
+        //     accept the smallest legal packet. Arming with no credit can only
+        //     burn pointer state for a packet that will be discarded.
+        // NOTE: `!rx_fifo_empty` is deliberately NOT used here. That is the
+        // correct predicate for the READ side (:243) — a read of an EMPTY FIFO
+        // is the phantom-pop bug — but it is exactly WRONG for writes: the
+        // normal case for accepting a new packet IS an empty FIFO.
+        capture_write_length_nxt = ENABLE_AHB_WRITE && ahb_pkt_start_ok;
 
         // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin
@@ -220,9 +251,28 @@ module tidelink_fifo_ctrl #(
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
             packet_word_length_nxt = clamp_length(fc_wr_wdata);
             packet_active_nxt = 1'b1;
-        end else if (capture_write_length_r) begin
-            // AHB data phase of write to addr 0: hwdata is now valid
-            // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
+        end else if (capture_write_length_r && (clamp_length(hwdata) != '0)) begin
+            // AHB data phase of write to addr 0: hwdata is now valid.
+            // Length is in bits [11:0] of the pre-extracted input (bits [31:20]
+            // of the original word).
+            //
+            // TWIN-2 FIX (2026-07-19) — the `!= 0` qualifier is what actually
+            // blocks the stray clear/probe pair. A ZERO-PAYLOAD packet is not a
+            // legal packet: it carries no data, and its completion target
+            // degenerates to write_target = (0+1)<<2 = offset 4 — the word
+            // IMMEDIATELY after the header. That is precisely the shape of a
+            // two-word "clear"/probe (write offset 0 = 0x0, then offset 4), so
+            // such a pair self-completes, walks the FC-shared write_ptr by two
+            // words and burns two credits. Refusing to arm on length 0 makes
+            // that sequence a no-op while leaving every real packet (length
+            // >= 1) fully functional.
+            //
+            // This MIRRORS the read side, which already refuses to latch a
+            // zero length off an empty FIFO (the phantom-pop fix, :243).
+            //
+            // Scope: AHB write side ONLY. The FC direct-write path
+            // (fc_write_addr0, above) is deliberately UNTOUCHED — it is the
+            // silicon-proven packet path and must stay byte-identical.
             packet_word_length_nxt = clamp_length(hwdata);
             packet_active_nxt = 1'b1;
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite
@@ -296,7 +346,43 @@ module tidelink_fifo_ctrl #(
             else
                 credit_count_nxt = '0;
         end else if (read_complete) begin
-            credit_count_nxt = credit_count_r + (RAM_ADDR_W-1)'(packet_delta);
+            // SILICON DEFECT FIX (2026-07-15) — saturate at MAX_CREDITS. This is
+            // the exact MIRROR of the write side's saturate-at-zero above; the
+            // read side was never given a ceiling.
+            //
+            // Without it, a read_complete for a packet the FIFO is not actually
+            // holding mints credit ABOVE MAX_CREDITS — an impossible state that
+            // OVER-ADVERTISES buffer space to the peer and invites a real
+            // overrun of the receive buffer.
+            //
+            // The f9b94b7 `!rx_fifo_empty` guard does NOT cover this. That fix
+            // stops an AHB read of offset 0 from ARMING the length latch on an
+            // empty FIFO. But packet_active_r / packet_word_length_r /
+            // read_target_addr_r are also armed by the FC WRITE path
+            // (fc_write_addr0, :198). If a packet's header arrives and the
+            // packet never completes (write_complete needs the exact beat at
+            // write_target_addr), those stay armed; a later protocol-legal drain
+            // then hits read_target_addr, read_complete fires (:107, gated only
+            // by packet_active_r) and credit is minted above max.
+            //
+            // A truncated packet is reachable BY DESIGN on silicon: after
+            // TX_STALL_TIMEOUT (2^16 hclk) of continuous back-pressure the FC
+            // adapter deliberately abandons the in-flight beat with an AHB ERROR
+            // (tidelink_fc_adapter.sv:250-300). If that beat is a packet's last
+            // word, this is exactly the state entered. Link errors and a
+            // data-mode toggle mid-packet do the same.
+            //
+            // Reproduced (credit 4096 -> 4106, no harness misbehaviour) and
+            // gated by cocotb/tidelink_top_pair_v2/test_v2_truncated_pkt_credit.
+            //
+            // INERT ON THE HEALTHY PATH: every committed packet decrements by
+            // the same packet_delta the matching read increments by, so credit
+            // never legitimately reaches MAX_CREDITS from below — the clamp
+            // cannot fire on a correct exchange.
+            if (credit_sum > RAM_ADDR_W'(unsigned'(MAX_CREDITS)))
+                credit_count_nxt = (RAM_ADDR_W-1)'(unsigned'(MAX_CREDITS));
+            else
+                credit_count_nxt = (RAM_ADDR_W-1)'(credit_sum);
         end
     end
 

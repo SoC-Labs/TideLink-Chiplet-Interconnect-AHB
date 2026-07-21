@@ -138,7 +138,26 @@ module tidelink_top #(
     //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
     //       to prove hardware autonomy without either bypass strap — and the intended
     //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
-    parameter        HONEST_MASK_HS       = 1'b0,
+    //
+    // PENDING (DECISION #2, David 2026-07-19) — SPLIT PREPARED, NOT APPLIED.
+    // The single HONEST_MASK_HS param above folds TWO independent choices, so
+    // "ship debug unlocked" (which David asked for, and which 1'b0 already
+    // gives) ALSO permanently bypasses the peer-mask handshake. They are now
+    // separable via DEBUG_UNLOCK_DEFAULT below. DEFAULTS ARE UNCHANGED: at
+    // DEBUG_UNLOCK_DEFAULT=1'b1 + HONEST_MASK_HS=1'b0 the two ties fold to the
+    // historical 1'b1/1'b1, byte-identical to today. Nothing is applied here —
+    // David is deciding whether the handshake bypass was intended.
+    parameter        HONEST_MASK_HS       = 1'b1,
+    // PENDING (DECISION #2) — debug-unlock, now INDEPENDENT of HONEST_MASK_HS.
+    //   1'b1 (default) = apb_debug_unlock_i tied 1 at the controller: APB debug
+    //       permanently unlocked. This is today's effective behaviour and
+    //       matches "ship debug unlocked".
+    //   1'b0 = drive the controller from the real top-level apb_debug_unlock_i
+    //       port, so APB debug is strap-lockable.
+    // Setting HONEST_MASK_HS=1'b1 while leaving this at 1'b1 gives the
+    // combination that was previously UNREACHABLE: an honest peer-mask
+    // handshake WITH debug still unlocked.
+    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1,
     // Phase 2 autonomy — RETIRE-AUTONOMY enable (the B->A channel fix).
     // Forwards to axi_chiplet_controller.RETIRE_EN. When 1, an event-gated
     // retire latches on (reanchored & fcsm==4) held ~160 ms and DISARM-PARKs
@@ -165,7 +184,26 @@ module tidelink_top #(
     // The F4 gap is closed by making RETIRE_EN EXPRESSIBLE at the top (and on
     // the packaged IP face), not by flipping the default: the ASIC integration
     // can now set 0 or wire a bond strap without editing the controller.
-    parameter        RETIRE_EN            = 1'b1
+    parameter        RETIRE_EN            = 1'b1,
+    // RX-FIFO TWIN 2 master enable. Forwards to
+    // tidelink_fifo → tidelink_fifo_mem → tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    //   1'b1 (default, and the ASIC setting) = AHB CPU-write-into-RX is a
+    //         SUPPORTED, FUNCTIONAL path (David, 2026-07-19).
+    //   1'b0 = optional FC-write-only posture for an integration that wants it.
+    // TWIN 2 (stray AHB write mis-frames the next FC packet) is closed by the
+    // QUALIFIED write-side arm in tidelink_fifo_ctrl, NOT by this gate.
+    parameter bit    ENABLE_AHB_WRITE     = 1'b1,
+    // Terminal role from strap, not the I2C-NACK constant.
+    // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.
+    // DECISION (David, 2026-07-19): ENABLED GLOBALLY — default is now 1'b1.
+    //   1'b1 (default) = NACK terminal role AND timeout fallback derive from
+    //         role_strap_i, so a (master,slave) strap survives a dead I2C.
+    //         The FPGA paired targets drive role_strap_i from a real AXI GPIO
+    //         (0x4404_0000 bit 0, per-die from FPGAHUB_LOCAL_ROLE: die_a=0
+    //         master, die_b=1 slave), so the FPGA inherits the correct pair.
+    //   1'b0 = LEGACY trap: I2C NACK => slave, timeout => nego_fallback, so a
+    //         dead I2C makes BOTH dies slave and autonomy is structurally dead.
+    parameter bit    ROLE_FROM_STRAP      = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -1421,18 +1459,13 @@ module tidelink_top #(
         .RAM_DATA_W        (RAM_DATA_W),
         .APB_ADDR_W        (APB_ADDR_W),
         .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
-        // TWIN 2 FIX (F10) — CLOSES the defect in silicon. This is the RX FIFO:
-        // its AHB slave is CPU-READ-ONLY (received data is committed exclusively
-        // by the FC adapter through the fc_wr_* direct-write port; the CPU only
-        // READS the RX aperture 0x84010000/0xA4010000). Before this tie, an AHB
-        // WRITE to offset 0 was treated as a packet-length header — it armed
-        // packet_active and, on the paired write to offset 4, walked the
-        // FC-SHARED write_ptr and burned credit, mis-framing the NEXT genuine
-        // received packet (+8 bytes / -2 credit, the measured signature).
-        // No software writes this aperture (grep evidence in the disposition);
-        // the TX aperture 0x84000000 is a separate datapath and is unaffected.
-        // See docs/RXFIFO_TWIN2_DISPOSITION.md; gated by sim_gate_fifo_twin2.
-        .ENABLE_AHB_WRITE  (0)
+        // TWIN 2 FIX (F10, DECISION 2026-07-21): AHB-write-to-RX IS a supported
+        // path, so it is NOT disabled here. The corruption is closed instead by
+        // QUALIFYING the write arm in tidelink_fifo_ctrl.sv (ahb_pkt_start_ok +
+        // zero-length reject), so an AHB write can no longer walk the FC-shared
+        // write_ptr or mis-frame the next received packet. ENABLE_AHB_WRITE stays
+        // 1'b1. See docs/RXFIFO_TWIN2_DISPOSITION.md; gated by sim_gate_fifo_twin2.
+        .ENABLE_AHB_WRITE  (ENABLE_AHB_WRITE)
     ) u_tidelink_fifo (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -2265,6 +2298,8 @@ module tidelink_top #(
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
         .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
         // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so
@@ -2300,7 +2335,10 @@ module tidelink_top #(
         // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
         // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
         // and the peer-mask handshake must genuinely match.
-        .apb_debug_unlock_i         (HONEST_MASK_HS ? apb_debug_unlock_i : 1'b1),
+        // PENDING (DECISION #2) — the two selects are now INDEPENDENT. At the
+        // shipped defaults (DEBUG_UNLOCK_DEFAULT=1, HONEST_MASK_HS=0) both fold
+        // to the historical 1'b1, so this is byte-identical to today.
+        .apb_debug_unlock_i         (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i),
         .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),

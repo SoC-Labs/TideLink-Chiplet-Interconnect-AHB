@@ -79,6 +79,38 @@ module WavD2DGpio #(
   // eye=16) -> marginal data capture. Requires a clean IP re-synth (IPCACHE clears).
   parameter USE_CAP_CLKBUF = 1'b0,
   parameter USE_LNK_CLKBUF = USE_CLKBUF,
+  // ==========================================================================
+  // SoC Labs PHASE-B SHARED CAPTURE-CLOCK BUFG (2026-07-14).
+  //
+  // MEASURED DEFECT: with USE_CAP_CLKBUF=0 (the setting above — today's build)
+  // each WavD2DGpioRx derives its capture clocks from its OWN local WavClockMux
+  // chain. But every input to that chain is LANE-IDENTICAL by construction (see
+  // the gpiorx_<N> assigns below: io_pad_clk = io_pad_clk_rx, io_scan_mode,
+  // io_scan_clk, io_pol = out_prepend_swi_polarity — the same nets for all 8
+  // lanes), so Vivado legally merged the 8 mux chains into ONE LUT and drove
+  // all 8 lanes' capture flops from its output — a fanout-372 GENERAL-ROUTING
+  // net. Routed per-lane capture-clock delay came out at lanes 2/5/6 =
+  // 8.230/8.604/8.808 ns but lane 7 = 15.281 ns (~7 ns out), while data-path
+  // skew across those same lanes is only 0.095 ns. That placement-varying
+  // inter-lane clock skew — amplified by the all-lanes-AND commit gate — is
+  // the bring-up lottery. It is PHYSICAL, not logic.
+  //
+  // FIX (parent hoist): because the chain is already lane-identical, compute it
+  // ONCE here, buffer each of its two outputs through ONE BUFG, and fan the
+  // results to all 8 lanes (WavD2DGpioRx.USE_EXT_CAP_CLK). Logically identical
+  // — the SAME Stdcell modules in the SAME order with the SAME selects, so the
+  // io_pol inversion is PRESERVED (unlike USE_CAP_CLKBUF, which bypasses the
+  // io_pol mux and is unsafe because io_pol resets to 1 — see the WARNING in
+  // WavD2DGpioRx_v2.v). Only the physical net changes: a dedicated global clock
+  // net instead of a shared high-fanout routing LUT.
+  //
+  // BUFG BUDGET: 2 (not 16). A per-lane buffer would need 16 and take the
+  // design from 15/32 to 31/32 BUFGs; the shared hoist takes it to 17/32.
+  //
+  // Defaults to USE_CLKBUF, so FPGA (USE_CLKBUF=1) picks it up automatically
+  // and sim/ASIC (USE_CLKBUF=0) keep today's per-lane passthrough — no new
+  // plumbing needed anywhere up the chain.
+  parameter USE_SHARED_CAP_BUFG = USE_CLKBUF,
   // SoC Labs §9 T3a (2026-05-19): self-aligning RX comma hunt. Per-lane
   // WavD2DGpioRx hunts for the per-lane training byte in the io_pad bit
   // stream and slips `count` to align to the byte boundary. The per-lane
@@ -102,9 +134,15 @@ module WavD2DGpio #(
   // epoch offsets (the v37 B->A framed-but-undecodable CR failure); the
   // anchor measures them from the simultaneous all-lane training-exit edge
   // (constant pattern -> data transition) and equalises the per-lane read
-  // pointers, latched through data mode. Default 1 = fix in the datapath;
-  // 0 = bit-exact occupancy-only behaviour (A/B regression).
-  parameter EPOCH_ANCHOR_EN = 1'b1
+  // pointers, latched through data mode.
+  // DEFAULT 0 (2026-07-17 plumbing fix): now that this param is FORWARDED to
+  // u_deskew (it used to be dropped for a hard 1'b0), the default must stay 0 so
+  // the shipping build keeps EPOCH off / SYNC_REANCHOR on (the corrector the
+  // on-chip winscan/autoneg autonomy stack depends on — v2_winscan_fsm /
+  // v2_autonomous_sync_detect require the deskew `reanchored` latch + sync_dist).
+  // Set 1 (via Wlink/WlinkGPIOPHY or a defparam) to select the one-shot EPOCH
+  // anchor (SYNC_REANCHOR_EN becomes its complement in the u_deskew instance).
+  parameter EPOCH_ANCHOR_EN = 1'b0
 ) (
   input          clock,
   input          reset,
@@ -787,7 +825,16 @@ module WavD2DGpio #(
       // it never deterministically deskewed word-skew. So SYNC_REANCHOR stays ON;
       // the open problem is making its arming robust on silicon (tol5 sync_seen_vec
       // =0x00 root cause to be re-confirmed before the next arming redesign).
-      .LANES(8), .WIDTH(16), .DEPTH_LOG(5), .SYNC_REANCHOR_EN(1'b1),
+      // PLUMBING FIX (2026-07-17): the two whole-word correctors are mutually
+      // exclusive (deskew $fatal if both). Drive SYNC_REANCHOR_EN as the COMPLEMENT
+      // of the forwarded EPOCH_ANCHOR_EN param so ONE knob selects the corrector and
+      // the mutual-exclusion is satisfied by construction. Default EPOCH_ANCHOR_EN=0
+      // => SYNC_REANCHOR_EN=1 (the shipping SYNC re-anchor build — BIT-IDENTICAL to
+      // the historical hard `.SYNC_REANCHOR_EN(1'b1)`). Before this fix the param
+      // arrived here (WlinkGPIOPHY->WavD2DGpio) but was DROPPED — u_deskew was
+      // hard-wired 1'b0/1'b1, so the WlinkGPIOPHY.EPOCH_ANCHOR_EN param was a DEAD
+      // KNOB (banner "master=1 (deskew: m=0)") — the NEGO_CFG_RESET failure class.
+      .LANES(8), .WIDTH(16), .DEPTH_LOG(5), .SYNC_REANCHOR_EN(!EPOCH_ANCHOR_EN),
       // SYNC_REANCHOR_TOL 4->5 (2026-06-24 marginal-eye fix): match the per-lane
       // SYNC-capture Hamming tolerance to the FRAMER it feeds. The framer's
       // tidelink_phy_sync_detect runs at the runtime SWI_SYNC_TOL strap (SoC
@@ -824,7 +871,15 @@ module WavD2DGpio #(
       // (DUT $fatal if both), so EPOCH must be hard-0 here. Sim-proven: tidelink_lane_
       // deskew unit test fixed_skew/index_skew/reduced_mask_e4 cohere (out_data==SYNC_WORD)
       // under reanchor where EPOCH gives 0/160. EPOCH path stays available via the param.
-      .EPOCH_ANCHOR_EN(1'b0)
+      //
+      // PLUMBING FIX (2026-07-17): FORWARD the module param instead of the hard 1'b0.
+      // Default EPOCH_ANCHOR_EN=0 => this is BIT-IDENTICAL to the historical `1'b0`
+      // (SYNC re-anchor build). Setting EPOCH_ANCHOR_EN=1 at Wlink/WlinkGPIOPHY (or a
+      // tb defparam on phy.EPOCH_ANCHOR_EN) now genuinely engages the one-shot
+      // training-exit EPOCH anchor in u_deskew — the mesochronous/forwarded-clock
+      // corrector (frozen skew measured once at training exit, no live SYNC beacon,
+      // so it does NOT depend on the data-mode beacon that is the B->A corruptor).
+      .EPOCH_ANCHOR_EN(EPOCH_ANCHOR_EN)
   ) u_deskew (
       .rst_n         (~io_por_reset),
       .lane_clk      ({gpiorx_7_io_link_clk, gpiorx_6_io_link_clk,
@@ -1601,6 +1656,81 @@ module WavD2DGpio #(
     .io_pad(gpiotx_7_io_pad),
     .io_pad_clk(gpiotx_7_io_pad_clk)
   );
+  // ==========================================================================
+  // SoC Labs PHASE-B SHARED CAPTURE-CLOCK BUFG (2026-07-14) — see the
+  // USE_SHARED_CAP_BUFG parameter header for the measured root cause.
+  //
+  // ONE copy of the per-lane RX capture mux chain, buffered once, fanned to all
+  // 8 lanes. This is an EXACT replica of the chain inside WavD2DGpioRx_v2
+  // (same Stdcell modules, same port order, same selects) — the io_pol
+  // inversion is preserved. It is only legal because the chain's inputs are
+  // lane-identical, which the gpiorx_<N> assigns below make explicit:
+  //   gpiorx_<N>_io_pad_clk   = io_pad_clk_rx              (all N)
+  //   gpiorx_<N>_io_scan_mode = io_scan_mode               (all N)
+  //   gpiorx_<N>_io_scan_clk  = io_scan_clk                (all N)
+  //   gpiorx_<N>_io_pol       = out_prepend_swi_polarity   (all N)
+  //
+  // Mirrors the RX chain exactly:
+  //   cnt_mux   : sel=io_scan_mode,             a=io_pad_clk_rx, b=io_scan_clk
+  //   inv       : a=io_pad_clk_rx
+  //   cap_mux   : sel=out_prepend_swi_polarity, a=io_pad_clk_rx, b=inv_z
+  //   cap_mux_1 : sel=io_scan_mode,             a=cap_mux_z,     b=io_scan_clk
+  // ==========================================================================
+  wire cnt_clk_g;   // buffered pad_clk_scan_mux    output -> every lane's w_cnt_clk
+  wire cap_clk_g;   // buffered pad_clk_inv_scan_mux_1 out -> every lane's w_pad_clk
+  generate
+    if (USE_SHARED_CAP_BUFG) begin : g_shared_cap_bufg
+      wire shared_cnt_mux_z;
+      wire shared_inv_z;
+      wire shared_cap_mux_z;
+      wire shared_cap_mux1_z;
+
+      WavClockMux shared_pad_clk_scan_mux (
+        .io_i_sel (io_scan_mode),
+        .io_i_a   (io_pad_clk_rx),
+        .io_i_b   (io_scan_clk),
+        .io_o_z   (shared_cnt_mux_z)
+      );
+      WavClockInv shared_pad_clk_inv_winv (
+        .io_a     (io_pad_clk_rx),
+        .io_z     (shared_inv_z)
+      );
+      WavClockMux shared_pad_clk_inv_scan_mux (
+        .io_i_sel (out_prepend_swi_polarity),
+        .io_i_a   (io_pad_clk_rx),
+        .io_i_b   (shared_inv_z),
+        .io_o_z   (shared_cap_mux_z)
+      );
+      WavClockMux shared_pad_clk_inv_scan_mux_1 (
+        .io_i_sel (io_scan_mode),
+        .io_i_a   (shared_cap_mux_z),
+        .io_i_b   (io_scan_clk),
+        .io_o_z   (shared_cap_mux1_z)
+      );
+`ifndef TIDELINK_RXCLK_NO_PRIMITIVE
+      // The whole point: get these two nets off general routing and onto a
+      // dedicated global clock net, so all 8 lanes' capture flops see the same
+      // edge. 2 BUFGs total (15/32 used today -> 17/32).
+      BUFG u_cnt_bufg (.I(shared_cnt_mux_z),  .O(cnt_clk_g));
+      BUFG u_cap_bufg (.I(shared_cap_mux1_z), .O(cap_clk_g));
+`else
+      // Belt-and-braces opt-out (mirrors the RX's own NO_PRIMITIVE fallback):
+      // a non-Vivado flow can still elaborate with the shared chain, just
+      // unbuffered. NOTE: this must stay a functional passthrough, NOT a tie-off
+      // — the lanes have USE_EXT_CAP_CLK=1 in this branch, so tying these to 0
+      // would leave every capture flop without a clock.
+      assign cnt_clk_g = shared_cnt_mux_z;
+      assign cap_clk_g = shared_cap_mux1_z;
+`endif
+    end else begin : g_shared_cap_off
+      // USE_SHARED_CAP_BUFG=0 (sim/ASIC): every lane derives its own capture
+      // clocks from its own local mux chain, exactly as before. The lanes have
+      // USE_EXT_CAP_CLK=0, so these two nets are unused — tie them off.
+      assign cnt_clk_g = 1'b0;
+      assign cap_clk_g = 1'b0;
+    end
+  endgenerate
+
   // SoC Labs tidelink-gpio-phy integration (2026-05-28, Stage 7): force
   // USE_T3A=1'b0 on every per-lane WavD2DGpioRx instance, overriding the
   // wrapper's USE_T3A parameter coming down from the FPGA chain
@@ -1617,7 +1747,7 @@ module WavD2DGpio #(
   // The wrapper's USE_T3A parameter is left in place so the legacy
   // wavd2d_gpiorx_t3a* unit tests still link, but the FPGA build will
   // ignore it at this scope.
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'hA3), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_0 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'hA3), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_0 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_0_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_0_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_0_io_scan_clk),
@@ -1633,10 +1763,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_0_io_link_clk),
     .io_link_data(gpiorx_0_io_link_data),
     .io_pad_clk(gpiorx_0_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_0_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'hB5), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_1 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'hB5), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_1 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_1_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_1_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_1_io_scan_clk),
@@ -1652,10 +1784,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_1_io_link_clk),
     .io_link_data(gpiorx_1_io_link_data),
     .io_pad_clk(gpiorx_1_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_1_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'hC9), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_2 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'hC9), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_2 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_2_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_2_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_2_io_scan_clk),
@@ -1671,10 +1805,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_2_io_link_clk),
     .io_link_data(gpiorx_2_io_link_data),
     .io_pad_clk(gpiorx_2_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_2_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'hD3), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_3 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'hD3), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_3 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_3_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_3_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_3_io_scan_clk),
@@ -1690,10 +1826,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_3_io_link_clk),
     .io_link_data(gpiorx_3_io_link_data),
     .io_pad_clk(gpiorx_3_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_3_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'h65), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_4 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'h65), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_4 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_4_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_4_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_4_io_scan_clk),
@@ -1709,10 +1847,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_4_io_link_clk),
     .io_link_data(gpiorx_4_io_link_data),
     .io_pad_clk(gpiorx_4_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_4_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'h4B), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_5 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'h4B), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_5 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_5_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_5_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_5_io_scan_clk),
@@ -1728,10 +1868,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_5_io_link_clk),
     .io_link_data(gpiorx_5_io_link_data),
     .io_pad_clk(gpiorx_5_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_5_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'h59), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_6 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'h59), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'h12EB)) gpiorx_6 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_6_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_6_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_6_io_scan_clk),
@@ -1747,10 +1889,12 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_6_io_link_clk),
     .io_link_data(gpiorx_6_io_link_data),
     .io_pad_clk(gpiorx_6_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_6_io_pad)
   );
   // USE_T3A forced to 1'b0 — see rationale at gpiorx_0 above (spec §10).
-  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_T3A(1'b0), .TRAINING_BYTE(8'h2D), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_7 ( // @[GPIO.scala 191:61]
+  WavD2DGpioRx #(.USE_CLKBUF(USE_CLKBUF), .USE_CAP_CLKBUF(USE_CAP_CLKBUF), .USE_LNK_CLKBUF(USE_LNK_CLKBUF), .USE_EXT_CAP_CLK(USE_SHARED_CAP_BUFG), .USE_T3A(1'b0), .TRAINING_BYTE(8'h2D), .WORD_PIN_AUTO(WORD_PIN_AUTO), .TRAINING_WORD16(16'hED14)) gpiorx_7 ( // @[GPIO.scala 191:61]
     .io_scan_mode(gpiorx_7_io_scan_mode),
     .io_scan_asyncrst_ctrl(gpiorx_7_io_scan_asyncrst_ctrl),
     .io_scan_clk(gpiorx_7_io_scan_clk),
@@ -1766,6 +1910,8 @@ module WavD2DGpio #(
     .io_link_clk(gpiorx_7_io_link_clk),
     .io_link_data(gpiorx_7_io_link_data),
     .io_pad_clk(gpiorx_7_io_pad_clk),
+    .io_cnt_clk_ext(cnt_clk_g),  // PHASE-B: shared buffered capture clocks
+    .io_cap_clk_ext(cap_clk_g),
     .io_pad(gpiorx_7_io_pad)
   );
   WavClockMux hsclk_scan_mux ( // @[Stdcell.scala 149:21]

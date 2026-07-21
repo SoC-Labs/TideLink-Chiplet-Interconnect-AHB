@@ -430,3 +430,72 @@ Also worth reconciling while you are there: the `sim-gate` job comment says
 **"10 suites"**, `allow_failure` says **13**, the consolidation plan says **14**,
 the old aggregate banner said **13** and the real pre-existing count was **15**.
 The banner is now generated-accurate at **21 + 2**; the CI comment is still stale.
+
+---
+
+## 11. Ad-hoc per-bench runs are now staleness-safe
+
+`make sim_gate` was always immune to the stale-`simv` trap because it **cleans
+each suite's build dir** before running. The danger lived entirely in **ad-hoc /
+lane-private runs** — `cd cocotb/<bench> && make ...` with a persistent
+`SIM_BUILD`. That path already produced a **false "hazard refuted"** result once
+(memory `project_cocotb_stale_simv_flist_rtl`): an RTL edit was "tested", passed,
+and the reverted RTL **had never actually compiled**.
+
+**Root cause.** cocotb's VCS build rule is
+`$(SIM_BUILD)/simv: $(VERILOG_SOURCES) $(CUSTOM_COMPILE_DEPS)`. In ~30 of 33
+benches `VERILOG_SOURCES` lists **only the tb `.sv` files**; every DUT RTL file
+arrives via `COMPILE_ARGS += -f <flist>`, which make **cannot see**. With
+`CUSTOM_COMPILE_DEPS` unset, an RTL-only edit changes no prerequisite make knows
+about, so `make` **re-runs the previous `simv`** and silently tests stale RTL.
+
+**The fix.** Every flist-sourced bench now sets `CUSTOM_COMPILE_DEPS` so the
+`simv` target depends on the flist file **and every bare source path it lists**.
+An RTL-only edit now forces a VCS recompile on the next `make`, from any dir,
+with any `SIM_BUILD`.
+
+- Shared helper: **`cocotb/flist_deps.mk`** defines `flist_srcs(flist)`, which
+  parses a flist into its bare source paths — dropping comments (`//`, `#`),
+  `+incdir`/`+define`, and `-options`; expanding `${VAR}` refs; and **dropping
+  any path that does not resolve to an existing file** so a bench with an unset
+  var (e.g. `CMSDK_DIR`) still runs standalone instead of dying on a phantom
+  prerequisite. (`${VAR}` is expanded via `envsubst` with the flist vars injected
+  into its environment, because GNU make neither exports make-set vars to a
+  parse-time `$(shell)` nor re-scans `$(shell)` output for `${VAR}`.)
+- Per-bench pattern (the greppable line in each Makefile):
+  ```make
+  include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+  _flist_deps := $(MY_FLIST) $(call flist_srcs,$(MY_FLIST))
+  CUSTOM_COMPILE_DEPS += $(_flist_deps)
+  ```
+- **Conditional / generated flists are tracked correctly:** `fifo_rx_twin2`
+  (`FIFO_SRC=tree|unfixed`) and `tidelink_cdc_tear` (`DUT_KIND`, plus the DUT via
+  `$(DUT_SRC)` since it enters through the churning `dut_src.f` the parser skips)
+  follow whichever flist is selected; `tidelink_top_pair` follows the
+  `TIDELINK_PHY_V2` V1/V2 selection; `tidelink_top_pair_v2` (`PREFIX_FC=1`) depends
+  on the **stable source** `tidelink_fpga_v2.flist` file — *not* the generated
+  `*_prefixfc.flist`, whose mtime churns every invocation — while parsing the
+  selected (generated) flist for RTL, so `prefix_fc_adapter.sv` is tracked without
+  forcing a rebuild every run.
+
+**Benches this covers (23):** `crc_diag`, `eth_tidelink_pair`,
+`tidelink_error_injection`, `tidelink_v2_smoke`, `tidelink_a2l_replay_cdc`,
+`tidelink_ahb`, `tidelink_apb_addr_ctrl`, `tidelink_apb_regs`, `tidelink_eye_regs`,
+`tidelink_fifo`, `tidelink_py_pair`, `tidelink_returner`, `tidelink_system`,
+`tidelink_top`, `tidelink`, `tidelink_top_pair_drift`, `tidelink_top_pair_skewed`,
+`tidelink_top_pair_wordskew`, `tidechart_tidelink_pair`, `tidelink_top_pair`,
+`fifo_rx_twin2`, `tidelink_cdc_tear`, `tidelink_top_pair_v2`. The three
+`eth_*` real-subsystem benches (`eth_ptp_chain`, `eth_tidelink_pair_m1`,
+`eth_tidelink_pair_shape_a`) already carried `CUSTOM_COMPILE_DEPS` (they depend on
+their generated expanded flists). Benches that list all their RTL directly in
+`VERILOG_SOURCES` (e.g. `tidelink_force_recal`, `tidelink_phy_align_calibrator`,
+`tidelink_perf`, the `wav*` envs) were **never affected** — make already tracks
+those files.
+
+**Proof (touch RTL → recompile).** For `tidelink_apb_regs` and `fifo_rx_twin2`:
+build once; a second `make` with no change leaves `simv` **untouched** (no
+spurious rebuild); then `touch`-ing a DUT `.sv` that arrives only via the flist
+(`src/rtl/fifo/tidelink_apb_regs.sv`, `src/rtl/fifo/tidelink_fifo_ctrl.sv`) makes
+the next `make` **rebuild `simv`**. Before this change, that `touch` was a no-op
+to make and the stale binary re-ran. This ADDS a prerequisite only — it never
+changes what or how VCS compiles.

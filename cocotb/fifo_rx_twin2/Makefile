@@ -42,6 +42,15 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(FIFO_FLIST)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f $(FIFO_FLIST)` (invisible to make),
+#     so without this an RTL-only edit re-runs the STALE simv — the exact trap this
+#     bench's A/B header warns about. Tracks whichever FIFO_SRC flist is selected.
+#     See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(FIFO_FLIST) $(call flist_srcs,$(FIFO_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # ── A/B convenience targets ──────────────────────────────────────────────────

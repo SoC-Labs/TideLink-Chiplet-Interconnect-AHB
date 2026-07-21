@@ -182,6 +182,17 @@ else
 COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 endif
 
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f $(V2_FLIST)` (invisible to make),
+#     so without this an RTL-only edit re-runs the STALE simv. Track the STABLE
+#     source flist file (NOT the PREFIX_FC-generated one, whose mtime churns every
+#     invocation) plus the bare RTL paths of whichever flist is actually selected
+#     (the generated one lists prefix_fc_adapter.sv when PREFIX_FC=1).
+#     See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist $(call flist_srcs,$(V2_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # ── Aggregate gate: all four stages, in order ───────────────────────────────

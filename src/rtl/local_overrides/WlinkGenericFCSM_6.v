@@ -1158,13 +1158,26 @@ module WlinkGenericFCSM_6 #(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      // SoC Labs 2026-06-14: default disable_crc=1 (GPIO-speed deployment).
-      // Silicon-confirmed: V2 long DATA packets arrive but header-CRC fails
-      // (crc_errors saturates) -> FCSM SEND_NACK -> no enqueue. At 6.25 MHz the
-      // BER is negligible so CRC is pure overhead (REGISTER_MAP.md "key register
-      // for GPIO-speed deployments"). Default-on also sidesteps die_b's
-      // hardware-unwritable SM Control reg. SW can still re-enable via bit[16].
-      out_prepend_swi_disable_crc <= 1'h1;
+      // RE-ENABLED 2026-07-21 (freeze DECISION, David): link-layer CRC ON by POR
+      // default (restores the upstream Chisel default FC.scala:663 = false).
+      // ROOT CAUSE of the 2026-06-14 disable (docs/CRC_ROOTCAUSE.md): the June
+      // "header-CRC fails on good DATA" was almost certainly NOT a false fire —
+      // the CRC was correctly catching REAL corruption on the marginal 4-lane
+      // (0xE4) 2-beat DATA eye at 6.25 MHz. TX/RX are symmetric (same WlinkCrcGen
+      // over the same field); an ideal-pad sim CRCs the 2-beat path with zero
+      // errors, so it is not an RTL/generator bug. Disabling CRC did not fix
+      // integrity — it hid it (corrupted packets then committed silently, F14-A).
+      // The "die_b SM Control unwritable" claim is REFUTED: bit[16] at 0x1714 is
+      // an ordinary APB reg on both dies (:1168-69); June's die_b symptom was AFI
+      // reachability, not write-protect.
+      //   SILICON/BRING-UP CAVEAT: a re-enabled CRC will legitimately fire and
+      //   NACK on a marginal eye. Bring the FPGA link up at 25 MHz (byte-exact
+      //   both dirs) with the capture-clock BUFG hoist; on a bad eye it NACK-
+      //   wedges by design. socl_l7_real_crc_seen (:630) is STICKY (POR-clear
+      //   only): the first real CRC error permanently disarms the state-7 NACK
+      //   watchdog for that reset cycle — intentional; a resettable W1C is a
+      //   post-freeze enhancement. SW can still force-disable via bit[16].
+      out_prepend_swi_disable_crc <= 1'h0;
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end

@@ -234,8 +234,13 @@ module tidelink_apb_regs #(
                 // LOCK is write-once: can only be set, never cleared by software
                 if (pwdata[2])
                     ctrl_lock_r <= 1'b1;
-                // AHB_INJECT_ARM is a plain RW latch (software can arm/disarm)
-                swi_ahb_inject_arm_r <= pwdata[3];
+                // AHB_INJECT_ARM is a plain RW latch (software can arm/disarm),
+                // BUT a FLUSH pulse (pwdata[1]=1) must NOT disturb it: FLUSH is a
+                // datapath reset, not a config change, so the inject-arm survives
+                // a flush (only POR clears it). This avoids the footgun where a
+                // bare `write CTRL, FLUSH` (0x2) would silently disarm injection.
+                if (!pwdata[1])
+                    swi_ahb_inject_arm_r <= pwdata[3];
             end
         end
     end

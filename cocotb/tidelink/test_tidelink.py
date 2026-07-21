@@ -167,6 +167,12 @@ class TidelinkTB:
         self.dut.hresetn.value = 1
         # Wait extra cycles for reset deassertion pulse (channel 2) to complete
         await ClockCycles(self.dut.hclk, 10)
+        # RX-FIFO TWIN 2: ARM the AHB CPU-write-into-RX path (CTRL[3], POR-disarmed).
+        # This harness injects packets into the FIFO over the AHB slave, which
+        # models the supported decoupling-channel injection — software must arm
+        # it first. pwdata[1]=0 so no FLUSH is triggered.
+        await self.apb.write(APB_REG_CTRL, 1 << 3)
+        await ClockCycles(self.dut.hclk, 2)
         self.sw_credit_count = MAX_CREDITS
 
     # ── APB Helpers ──────────────────────────────────────────────────────
@@ -1349,6 +1355,10 @@ async def test_cov_11_ahb_master_wait_states(dut):
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 10)
     await apb.write(APB_REG_REL_THRESHOLD, 0)  # Immediate release
+    # RX-FIFO TWIN 2: this test does its OWN inline reset (bypasses tb.reset),
+    # so ARM the AHB inject path here (CTRL[3]); it injects packets over AHB.
+    await apb.write(APB_REG_CTRL, 1 << 3)
+    await ClockCycles(dut.hclk, 2)
 
     # Write a packet (all manual AHB to avoid cocotbext master interference)
     pkt_data = [0xAA, 0xBB, 0xCC]

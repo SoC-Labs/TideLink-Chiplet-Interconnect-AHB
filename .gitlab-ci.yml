@@ -78,6 +78,18 @@ variables:
   # PTP Hardware Clock (separate component, cloned for PTP tests)
   PHC_REPO: "https://git.soton.ac.uk/soclabs/chiplets/ptp-hardware-clock-ahb.git"
   PHC_BRANCH: "main"
+  # Sibling co-sim repos: 6 sim_gate suites (tc_pair_*, eth_relay_*, eth_regs_*)
+  # need these cloned next to tidelink/ (resolved via TIDECHART_HOME/CHIPLET_HOME/
+  # ETH_SS_HOME in the Makefile). Without them SIM_GATE_REQUIRE fails those suites
+  # LOUDLY (never a silent skip). See docs/FREEZE_PLAN_2026_07_21.md step C.
+  # PINS ARE PROVISIONAL — David to confirm branches; the CHIPLET repo is on
+  # GitHub, so the runner needs GitHub read creds (else the 3 tc_pair suites go red).
+  TIDECHART_REPO: "https://git.soton.ac.uk/soclabs/tidechart.git"
+  TIDECHART_BRANCH: "main"
+  ETH_SS_REPO: "https://git.soton.ac.uk/soclabs/ethernet-subsystem-ahb.git"
+  ETH_SS_BRANCH: "main"
+  CHIPLET_REPO: "https://github.com/SoC-Labs/NanoSoC-Ethernet-Chiplet.git"
+  CHIPLET_BRANCH: "main"
   PHC_DIR: "${WORK_DIR}/deps/ptp-hardware-clock-ahb/src/rtl"
   # Simulator selection for cocotb
   SIM: vcs
@@ -105,6 +117,14 @@ clone:
     - echo "Cloned $CI_COMMIT_SHORT_SHA into $WORK_DIR"
     - echo "Cloning PHC (separate component, needed for PTP tests)"
     - git clone --branch "$PHC_BRANCH" --single-branch --depth 1 "$PHC_REPO" "$WORK_DIR/deps/ptp-hardware-clock-ahb" || echo "WARN PHC clone failed, PTP tests will be skipped"
+    # Sibling co-sim repos next to the work dir (Makefile resolves ../<name>).
+    # SIM_GATE_REQUIRE fails the dependent suites LOUDLY if a clone is missing —
+    # so a clone failure surfaces as a named red suite, not a silent pass.
+    - git clone --branch "$TIDECHART_BRANCH" --single-branch --depth 1 "$TIDECHART_REPO" "$WORK_DIR/../tidechart" || echo "WARN tidechart clone failed — tc_pair_* suites will fail loudly"
+    # NB: Makefile default ETH_SS_HOME = ../nanoSoC-refactor/ethernet-subsystem-ahb
+    - mkdir -p "$WORK_DIR/../nanoSoC-refactor"
+    - git clone --branch "$ETH_SS_BRANCH"    --single-branch --depth 1 "$ETH_SS_REPO"    "$WORK_DIR/../nanoSoC-refactor/ethernet-subsystem-ahb" || echo "WARN eth-subsystem clone failed — eth_* suites will fail loudly"
+    - git clone --branch "$CHIPLET_BRANCH"   --single-branch --depth 1 "$CHIPLET_REPO"   "$WORK_DIR/../nanosoc-ethernet-chiplet" || echo "WARN chiplet clone failed (GitHub creds?) — tc_pair_* co-sim will fail loudly"
 
 preflight:
   stage: setup

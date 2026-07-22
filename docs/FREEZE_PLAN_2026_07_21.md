@@ -53,14 +53,20 @@ unwritable" premise is refuted (bit[16]@0x1714 is a normal APB reg both dies).
    corruption) — this fails the gate until re-baselined. That is expected and
    desirable; see remaining work.
 
-## Remaining work to freeze
+## Remaining work to freeze — STATUS 2026-07-22
 
-| Step | What | Blocker |
+| Step | What | Status |
 |---|---|---|
-| A | **Run full `make sim_gate`** on the branch — captures the new F14-with-CRC-on signatures and validates the whole merge behaviourally | ⛔ a Vivado build was running (07-21); do NOT co-run (OOM = fake regressions). Script staged: `scratchpad/run_gate.sh` |
-| B | **Re-baseline the F14 sentinels** to positive "CRC catches + rejects" assertions (was silent-corruption XFAIL). Harden `crc_diag/test_crc_matrix` cells B–D asserts; add an inject-corrupt-and-assert-`crc_errors`++-AND-rejected test; promote `sim_gate_nack_wedge` (parked) | needs step A output for the exact new signatures |
-| C | **CI clone job** must fetch the 3 sibling repos or 6 suites go red on a fresh pipeline. URLs: tidechart `git.soton.ac.uk:soclabs/tidechart.git`; ethernet-subsystem-ahb `git.soton.ac.uk:soclabs/ethernet-subsystem-ahb.git`; chiplet **GitHub** `SoC-Labs/NanoSoC-Ethernet-Chiplet` (needs GitHub runner creds). All on feature branches — **pins are David's call.** Resolve via `TIDECHART_HOME`/`CHIPLET_HOME`/`ETH_SS_HOME`. Alternative: split the tc/eth co-sim into a non-blocking CI job (they test sibling integration, not tidelink tapeout correctness) | David: branch pins + GitHub creds |
-| D | **Hardware demo** — deploy the Set-B on-chip bitstream (md5 `8f8792c9…`, WNS +28.3, BUFG capture clock), AFI canaries green both dies, byte-exact data at 25 MHz. Best vehicle: `kr260-pair-onchip` (one board, no ribbon, no pin lottery). PTP = exploratory upside only (never synced on HW) | David: board lease + `KR260_PASSWORD`/ssh keys |
+| A | **Full `make sim_gate`** on the branch | ✅ **DONE — 33 PASS + 1 XFAIL (rc=0)**. Ran on the idle machine (the "Vivado build" was an idle 6.5-day session owned by another user, 0–2% CPU, 94 GB RAM free — no OOM risk). |
+| B | **F14-A re-baseline** | ✅ **DONE (f7841a2)** — CRC re-enable CLOSES F14-A; promoted from XFAIL sentinel to positive `f14a_crc_catch` PASS (lane-7 corruption rejected, never silently committed, CRC fires). |
+| C | **CI clone job** fetches the 3 sibling repos | ✅ wired. ⏳ **David: confirm branch pins + GitHub runner creds** for the chiplet repo (or split tc/eth co-sim into a non-blocking CI job). |
+| D | **Hardware demo** | ✅ **DELIVERED** — KR260 **12/12 byte-exact, in-order, CRC-on clean (crc_errors=0)** on real hardware, which silicon-validates the CRC re-enable. The earlier "intermittent delivery" was a receiver read-protocol artifact (fixed-offset read of a streaming FIFO), not a link defect. |
+
+## What remains to *declare* freeze (David's calls)
+1. **F14-B waiver sign-off.** `xfail_f14b_datamode_wedge` is the one remaining XFAIL — no in-field recovery of a data-mode wedge (both-die POR clears; sim-only; unrelated to CRC). Given reliable HW delivery + working SWI_FORCE_RECAL, this is waiver-appropriate, but it needs an explicit documented waiver, not silence.
+2. **CI pins + GitHub creds** (step C) so a fresh pipeline is green.
+3. **Merge decision:** `integ/freeze-2026-07-21` → `integ/consolidation-2026-07` → `main`, and tag the freeze. (No push has been done — awaiting your go.)
+4. Post-freeze (non-blocking) enhancements: `socl_l7_real_crc_seen` W1C (self-healing), `sim_gate_dftelab`, the chiplet `tl_data_mode_o` one-net swap.
 
 ## Open items needing David (not blocking A/B)
 

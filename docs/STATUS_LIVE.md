@@ -4,28 +4,31 @@
 > updates the relevant row + the timestamp when state changes. Detail lives in the linked docs;
 > keep this file short. Last full update: **2026-07-22 (RTL-freeze consolidation branch built + audited)**.
 
-## Headline (2026-07-22) — RTL FREEZE PUSH
-**The freeze candidate is now ONE committed branch: `integ/freeze-2026-07-21`.** It was, until
-07-21, uncommitted working-tree state on no branch (a checkout would have destroyed it). The four
-freeze decisions are applied + audited; `asic_v1/v2_elab` PASS. Plan: [FREEZE_PLAN](FREEZE_PLAN_2026_07_21.md).
-Remaining to freeze: full `sim_gate` (blocked — Vivado running), F14 sentinel re-baseline, hardware demo.
+## Headline (2026-07-22) — RTL FREEZE READY (gate green + hardware-proven)
+**The freeze candidate `integ/freeze-2026-07-21` is GATE-GREEN and hardware-proven.** All four
+freeze decisions applied + audited; full `make sim_gate` = **33 PASS + 1 XFAIL** (rc=0; the one XFAIL
+is `xfail_f14b`, a tolerated sim-only known-defect). On real KR260 hardware: **12/12 byte-exact,
+in-order delivery, CRC-on clean (crc_errors=0)** — which silicon-validates the CRC re-enable. Plan:
+[FREEZE_PLAN](FREEZE_PLAN_2026_07_21.md). Remaining to *declare* freeze = David's calls (F14-B waiver,
+CI pins, merge to integ→main).
 
-## Freeze branch state (`integ/freeze-2026-07-21`, integ untouched at 9c15785)
-| Item | State | Next |
-|---|---|---|
-| Consolidation (commit-then-graft-w2) | ✅ **DONE** — 602ef8d snapshot → 683280b merge w2 → ac7dee8 CRC → be4badc plan+CI. Tag `freeze-candidate-snapshot-2026-07-21` | run the gate |
-| Silicon defaults (3 w2 flips, authorized) | ✅ **AUDITED at the ASIC dft_wrapper** — HONEST_MASK_HS=1, ROLE_FROM_STRAP=1, NEGO_CFG_RESET=7'h61; B1 retrain + B3 tl_data_mode intact | — |
-| TWIN 2 (AHB-write supported) | ✅ w2 qualify-arm (`ENABLE_AHB_WRITE=1'b1`+guard); gate uses `fifo_twin2_tree` | — |
-| Link-layer CRC | ✅ **RE-ENABLED** (POR 1'h1→1'h0). Root cause = **(c) real corruption, not a false fire** — CRC-off HID it | see caveats ↓ |
-| Full `sim_gate` on the branch | ⛔ **BLOCKED** — a Vivado build is running (OOM rule: never co-run). Script staged `scratchpad/run_gate.sh` | run when machine frees |
-| F14-A/B XFAIL sentinels | ⚠️ will flip **XFAIL→XCHG** with CRC on (CRC now *catches* the corruption) | re-baseline to positive "CRC catches+rejects" after the gate run |
-| CI fresh-clone | ✅ 3 sibling clones wired (tidechart/eth-ss GitLab, chiplet **GitHub**) | David: branch pins + GitHub runner creds |
-| Hardware demo | ⏸ **needs board lease** — rebuild Set-B on-chip bitstream from this branch, bring up **at 25 MHz** | David: lease + KR260_PASSWORD |
+## Freeze branch state (`integ/freeze-2026-07-21` @ f7841a2, integ untouched at 9c15785)
+| Item | State |
+|---|---|
+| Consolidation (commit-then-graft-w2) | ✅ **DONE** — 602ef8d snapshot → 683280b/202aeb3 merges w2 → ac7dee8 CRC → be4badc plan+CI → f7841a2 F14-A promote |
+| Silicon defaults (3 w2 flips, authorized) | ✅ **AUDITED at the ASIC dft_wrapper** — HONEST_MASK_HS=1, ROLE_FROM_STRAP=1, NEGO_CFG_RESET=7'h61; B1 retrain + B3 tl_data_mode intact |
+| TWIN 2 (AHB-write supported) | ✅ **POR-disarmed runtime ARM** (CTRL[3] `swi_ahb_inject_arm`; the `!=0` reject that broke N=0 RD_REQ was removed). fifo 42/42, twin2 5/5, apb_regs 49/49 |
+| Link-layer CRC | ✅ **RE-ENABLED** (POR 1'h1→1'h0) and **silicon-clean (crc_errors=0, 12/12 byte-exact)**. Root cause = (c) real corruption; CRC-off HID it |
+| Full `sim_gate` | ✅ **33 PASS + 1 XFAIL (rc=0)** — incl. fifo_rx_phantom_pop, f14a_crc_catch, errinj, epoch_silicon, lane-mask×3, perf_ctrl, sustained |
+| F14-A | ✅ **CLOSED by CRC** — promoted from XFAIL sentinel to positive `f14a_crc_catch` PASS (lane-7 corruption now rejected, never silently committed) |
+| Hardware demo | ✅ **DELIVERED** — 12/12 byte-exact in-order on KR260; SWI_FORCE_RECAL works+bilateral; fcsm-is-not-liveness confirmed on silicon |
+| F14-B (no in-field recovery, datamode wedge) | ⚠️ remains an XFAIL sentinel — **needs a documented waiver** (sim-only; both-die POR clears; unrelated to CRC) |
+| CI fresh-clone | ✅ 3 sibling clones wired | ⏳ David: branch pins + GitHub runner creds for the chiplet repo |
 
 **CRC caveats (docs/CRC_ROOTCAUSE.md):** (a) a re-enabled CRC legitimately NACK-wedges on a marginal
-eye ⇒ **bring the FPGA up at 25 MHz** + BUFG hoist; ASIC path not eye-limited. (b) `socl_l7_real_crc_seen`
-is STICKY (POR-clear only) ⇒ first real CRC error disarms the state-7 watchdog for that reset cycle
-(post-freeze W1C enhancement).
+eye ⇒ bring the FPGA up at the slow/25 MHz rate (silicon run confirmed clean); ASIC path not
+eye-limited. (b) `socl_l7_real_crc_seen` is STICKY (POR-clear only) ⇒ first real CRC error disarms the
+state-7 watchdog for that reset cycle (post-freeze W1C enhancement).
 
 ---
 ## Headline (2026-07-17, superseded by the freeze push above)

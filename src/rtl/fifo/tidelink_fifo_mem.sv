@@ -51,8 +51,15 @@ module tidelink_fifo_mem #(
     output wire                   overrun,
     output wire                   underrun,
 
+    // RX-FIFO TWIN 2 sticky fault: AHB write into RX aperture while disarmed.
+    output wire                   ahb_inject_fault,
+
     // Control inputs (from APB registers)
     input  wire                   flush,
+
+    // RX-FIFO TWIN 2 (chip-killer) — runtime arm for the AHB CPU-write-into-RX
+    // path, POR-disarmed at tidelink_apb_regs CTRL[3]. See tidelink_fifo_ctrl.
+    input  wire                   swi_ahb_inject_arm,
 
     // FC direct write interface (single-cycle, bypasses AHB)
     input  wire                   fc_wr_valid,
@@ -152,7 +159,9 @@ module tidelink_fifo_mem #(
         .packet_committed_irq(packet_committed_irq),
         .overrun             (overrun),
         .underrun            (underrun),
+        .ahb_inject_fault    (ahb_inject_fault),
         .flush               (flush),
+        .swi_ahb_inject_arm  (swi_ahb_inject_arm),
         // FC direct write interface
         .fc_wr_valid         (fc_wr_valid),
         .fc_wr_write         (fc_wr_write),

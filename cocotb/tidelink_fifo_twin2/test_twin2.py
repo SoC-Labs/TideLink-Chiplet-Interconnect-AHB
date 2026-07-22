@@ -8,24 +8,28 @@ mis-frames the NEXT genuine FC-direct packet, because
     fc_translated_addr = fc_wr_addr + write_ptr_r.
 
 DECISION: AHB-CPU-write-to-RX **IS a supported path**, so it must NOT be gated
-off. The fix QUALIFIES the arm instead (ahb_pkt_start_ok + a zero-length
-reject); ENABLE_AHB_WRITE stays 1'b1 so the CPU-inject path is FUNCTIONAL.
+off. The ROBUST fix (2026-07-21) makes intent EXPLICIT rather than guessing at
+patterns: a runtime ARM bit (APB CTRL[3], swi_ahb_inject_arm) POR-DISARMED. A
+stray probe with a garbage non-zero length is bit-identical to a legal minimal
+packet, so no `!= 0` / pattern test can separate them — only the arm can. The
+old `!= 0` reject is REMOVED (it also broke a legal length-0 RD_REQ).
+ENABLE_AHB_WRITE stays 1'b1; the arm is the runtime gate.
 
 Both halves are asserted here, and BOTH must hold:
   1. test_stray_write_pair_is_noop / test_fc_packet_byte_exact_after_stray_ahb
-     — the BUG is gone: a stray pair moves neither write_ptr nor credit, and
-       the next FC packet lands byte-exact at word 0.
-  2. test_legit_ahb_inject_still_works
-     — the SUPPORTED path still works: a real AHB-injected packet (length
-       header then data words) is accepted and reads back byte-exact.
-       A fix that breaks this is a FAILED fix.
-  3. test_twin1_held_nonseq_locked — TWIN-1 regression lock, unchanged.
+     — DISARMED (arm=0): the BUG is gone: a stray pair moves neither write_ptr
+       nor credit, and the next FC packet lands byte-exact at word 0.
+  2. test_legit_ahb_inject_still_works / test_legit_ahb_inject_len0_rd_req
+     — ARMED (arm=1): the SUPPORTED path works: a real AHB-injected packet
+       (incl. a length-0 RD_REQ) is accepted and reads back byte-exact.
+       A fix that breaks either is a FAILED fix.
+  3. test_twin1_held_nonseq_locked — TWIN-1 regression lock (ARMED), unchanged.
 
 RED/GREEN: this file asserts the FIXED behaviour. It is proven able to go RED by
-running it against the pre-fix tidelink_fifo_ctrl.sv (see run_redgreen.sh),
-where the TWIN-2 tests FAIL. SRAM is X-init
-(+define+TIDELINK_SRAM_NO_ZERO_INIT), faithful to the vendor model — a
-zero-init BRAM hides the mis-framing.
+neutralising the arm gating in tidelink_fifo_ctrl.sv (see run_redgreen.sh),
+where the DISARMED tests FAIL because a stray pair again walks write_ptr. SRAM
+is X-init (+define+TIDELINK_SRAM_NO_ZERO_INIT), faithful to the vendor model —
+a zero-init BRAM hides the mis-framing.
 """
 import cocotb
 from cocotb.clock import Clock
@@ -53,6 +57,8 @@ async def reset(dut):
     dut.fc_wr_addr.value = 0
     dut.fc_wr_wdata.value = 0
     dut.flush.value = 0
+    # POR-disarmed by default: the runtime AHB-inject arm (CTRL[3]) starts 0.
+    dut.swi_ahb_inject_arm.value = 0
     dut.hresetn.value = 0
     for _ in range(4):
         await RisingEdge(dut.hclk)
@@ -137,7 +143,13 @@ async def test_stray_write_pair_is_noop(dut):
     assert cc(dut) == MAX_CREDITS, (
         f"TWIN-2 LIVE: stray AHB write pair burned credit to {cc(dut)} "
         f"(expected {MAX_CREDITS}).")
-    dut._log.info("PASS: stray AHB write pair is a no-op on write_ptr/credit.")
+    # Observability: the otherwise-silent no-op must raise the sticky fault so a
+    # stray write into the RX aperture is a VISIBLE fault, not a silent drop.
+    assert int(dut.ahb_inject_fault.value) == 1, (
+        "TWIN-2 observability: an AHB write into the RX aperture while DISARMED "
+        "should latch the sticky ahb_inject_fault (STATUS[5]), but it is 0.")
+    dut._log.info("PASS: stray AHB write pair is a no-op on write_ptr/credit; "
+                  "sticky fault latched.")
 
 
 @cocotb.test()
@@ -204,6 +216,10 @@ async def test_legit_ahb_inject_still_works(dut):
     cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
     await reset(dut)
 
+    # ARM the inject path (software would set CTRL[3]=1 before injecting).
+    dut.swi_ahb_inject_arm.value = 1
+    await RisingEdge(dut.hclk)
+
     LEN = 2
     words = [
         (LEN << 20) | 0x0_00A5,   # word0: length header
@@ -225,6 +241,9 @@ async def test_legit_ahb_inject_still_works(dut):
     assert cc(dut) == MAX_CREDITS - total_words, (
         f"SUPPORTED PATH BROKEN: credit={cc(dut)}, "
         f"expected {MAX_CREDITS - total_words}.")
+    # ARMED injection is legitimate: it must NOT raise the disarmed-fault.
+    assert int(dut.ahb_inject_fault.value) == 0, (
+        "ahb_inject_fault latched during a LEGITIMATE armed AHB inject.")
 
     # And it must read back byte-exact from offset 0.
     got = []
@@ -239,6 +258,46 @@ async def test_legit_ahb_inject_still_works(dut):
 
 
 @cocotb.test()
+async def test_legit_ahb_inject_len0_rd_req(dut):
+    """HALF 2 (the regression the OLD `!= 0` reject caused): a length-0 packet is
+    a LEGAL type — PKT_RD_REQ, a header-only read request. The removed reject
+    silently dropped it on the AHB path. ARMED, it must be accepted and commit.
+
+    total_words = 0 + 2 = 2; write_target = (0+1)<<2 = offset 4, so the write of
+    word1 (dest_addr) self-completes the 2-word packet.
+    """
+    cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
+    await reset(dut)
+
+    dut.swi_ahb_inject_arm.value = 1
+    await RisingEdge(dut.hclk)
+
+    words = [
+        (0 << 20) | 0x0_00A5,     # word0: length 0 (RD_REQ), fields in low bits
+        0x5000_6000,              # word1: dest_addr
+    ]
+    for i, w in enumerate(words):
+        await ahb_write(dut, i * 4, w)
+    for _ in range(4):
+        await RisingEdge(dut.hclk)
+
+    total_words = 2
+    dut._log.info(f"after len-0 AHB inject: write_ptr={wp(dut)} B, credit={cc(dut)}")
+    assert wp(dut) == total_words * 4, (
+        f"RD_REQ DROPPED: length-0 AHB packet did not commit — write_ptr={wp(dut)}, "
+        f"expected {total_words * 4}. The removed `!= 0` reject would drop it.")
+    assert cc(dut) == MAX_CREDITS - total_words, (
+        f"RD_REQ DROPPED: credit={cc(dut)}, expected {MAX_CREDITS - total_words}.")
+
+    got = [await ahb_read_word(dut, 0), await ahb_read_word(dut, 4)]
+    for i, (g, exp) in enumerate(zip(got, words)):
+        assert g.is_resolvable, f"len-0 RD_REQ word{i} unresolvable ({g})"
+        assert int(g) == exp, (
+            f"len-0 RD_REQ word{i} read back 0x{int(g):08X}, expected 0x{exp:08X}")
+    dut._log.info("PASS: length-0 RD_REQ accepted and byte-exact when ARMED.")
+
+
+@cocotb.test()
 async def test_twin1_held_nonseq_locked(dut):
     """TWIN 1 lock (documented accidental one-shot, NONSEQ-only).
 
@@ -248,6 +307,11 @@ async def test_twin1_held_nonseq_locked(dut):
     """
     cocotb.start_soon(Clock(dut.hclk, 10, units="ns").start())
     await reset(dut)
+
+    # ARMED, so the held-NONSEQ one-shot is genuinely exercised against a LIVE
+    # write path (a disarmed path would pass this trivially and prove nothing).
+    dut.swi_ahb_inject_arm.value = 1
+    await RisingEdge(dut.hclk)
 
     dut.hsel.value = 1
     dut.htrans.value = NONSEQ

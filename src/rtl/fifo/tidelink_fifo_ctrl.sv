@@ -13,22 +13,26 @@
 
 module tidelink_fifo_ctrl #(
     parameter RAM_ADDR_W = 14,
-    // RX-FIFO TWIN 2 (chip-killer, 2026-07-16) — master enable for the AHB
+    // RX-FIFO TWIN 2 (chip-killer) — BUILD-TIME master enable for the AHB
     // CPU-write-into-RX-FIFO path.
     //
     // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX **IS a supported path**.
-    // Therefore this parameter DEFAULTS TO 1'b1 (path FUNCTIONAL) and the ASIC
+    // Therefore this parameter DEFAULTS TO 1'b1 (path buildable) and the ASIC
     // integration leaves it at 1'b1. It is retained only as a belt-and-braces
     // knob for an integration that genuinely wants an FC-write-only RX FIFO;
-    // setting it to 1'b0 disables the AHB write-side length latch AND the AHB
-    // write completion (AHB READS are untouched in both settings).
+    // setting it to 1'b0 hard-disables the AHB write-side length latch AND the
+    // AHB write completion (AHB READS are untouched in both settings).
     //
-    // TWIN 2 IS FIXED BY QUALIFYING THE ARM, NOT BY THIS GATE — see
-    // `ahb_pkt_start_ok` below. The corruption was that the write-side length
-    // latch armed on ANY AHB NONSEQ write to offset 0, so a stray clear/probe
-    // write pair (offset 0 then offset 4) walked the FC-SHARED write_ptr by two
-    // words and burned two credits, mis-framing the NEXT genuine FC packet
-    // (write_ptr is shared: fc_translated_addr = fc_wr_addr + write_ptr_r).
+    // TWIN 2 IS FIXED BY A RUNTIME ARM, NOT BY THIS BUILD PARAM (2026-07-21) —
+    // see `swi_ahb_inject_arm` / `ahb_write_en` below. The corruption was that
+    // the write-side length latch armed on ANY AHB NONSEQ write to offset 0, so
+    // a stray clear/probe write pair (offset 0 then offset 4) walked the
+    // FC-SHARED write_ptr by two words and burned two credits, mis-framing the
+    // NEXT genuine FC packet (write_ptr is shared: fc_translated_addr =
+    // fc_wr_addr + write_ptr_r). A stray probe is bit-identical to a legal
+    // minimal packet, so no pattern qualifier can separate them — only EXPLICIT
+    // INTENT can. The path is therefore POR-DISARMED and software must set the
+    // arm (APB CTRL[3]) before AHB-injecting; ENABLE_AHB_WRITE is AND-ed on top.
     parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // Clock/Reset
@@ -75,8 +79,23 @@ module tidelink_fifo_ctrl #(
     output wire                   overrun,        // Write discarded (buffer full)
     output wire                   underrun,       // Read with no packet available
 
+    // RX-FIFO TWIN 2 (chip-killer) — sticky fault: set if an AHB write into the
+    // RX aperture (offset 0) was attempted while the inject path was DISARMED.
+    // Turns the otherwise-silent no-op into a visible fault. Sticky; cleared by
+    // flush/reset. Exposed in tidelink_apb_regs STATUS (0x010) bit[5].
+    output wire                   ahb_inject_fault,
+
     // Control inputs
     input  wire                   flush,          // Self-clearing flush: resets pointers/counters/errors
+
+    // RX-FIFO TWIN 2 (chip-killer) — RUNTIME ARM for the AHB CPU-write-into-RX
+    // path. POR-DISARMED at the register source (tidelink_apb_regs CTRL[3]).
+    // When 0 an AHB write to offset 0 can neither arm a packet-length latch nor
+    // advance the FC-shared write_ptr, so a stray clear/probe write pair is a
+    // NO-OP. When 1 the supported AHB-injection path (incl. a length-0 RD_REQ)
+    // works exactly as intended. AND-ed with the build param ENABLE_AHB_WRITE.
+    // AHB READS are NEVER gated by this (reads cannot corrupt).
+    input  wire                   swi_ahb_inject_arm,
 
     // FC direct write interface (single-cycle addr+data, bypasses AHB)
     input  wire                   fc_wr_valid,
@@ -131,9 +150,18 @@ module tidelink_fifo_ctrl #(
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
     wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
-    // PENDING-DECISION #1: AHB write-completion gated. ENABLE_AHB_WRITE=0 makes
-    // the FC-shared write_ptr / credit un-advanceable from the AHB write side.
-    wire ahb_write_complete = ENABLE_AHB_WRITE && ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
+
+    // TWIN-2 FIX (2026-07-21) — the AHB CPU-write-into-RX path is enabled iff the
+    // build param is set AND software has ARMED it at runtime (POR-disarmed).
+    // This is the whole fix: a stray clear/probe write pair is indistinguishable
+    // from a legal minimal packet, so no pattern qualifier can separate them —
+    // only EXPLICIT INTENT (the arm) can. When disarmed the write side cannot
+    // touch the FC-shared write_ptr / credit at all.
+    wire ahb_write_en = ENABLE_AHB_WRITE && swi_ahb_inject_arm;
+
+    // AHB write-completion gated by ahb_write_en: disarmed => the FC-shared
+    // write_ptr / credit are un-advanceable from the AHB write side.
+    wire ahb_write_complete = ahb_write_en && ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
     assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
@@ -239,7 +267,25 @@ module tidelink_fifo_ctrl #(
         // correct predicate for the READ side (:243) — a read of an EMPTY FIFO
         // is the phantom-pop bug — but it is exactly WRONG for writes: the
         // normal case for accepting a new packet IS an empty FIFO.
-        capture_write_length_nxt = ENABLE_AHB_WRITE && ahb_pkt_start_ok;
+        //
+        // TWIN-2 FIX (2026-07-21): gated by ahb_write_en (build param AND the
+        // POR-disarmed runtime arm), not by ENABLE_AHB_WRITE alone.
+        //
+        // HOLD-THROUGH-ADDRESS-PHASE (2026-07-21): the packet-length word is
+        // sampled from hwdata one cycle after the arm. A CPU/BFM may hold the
+        // AHB ADDRESS phase for MORE than one cycle (hsel+NONSEQ+haddr==0 kept
+        // asserted, with the real hwdata only presented on the final beat — the
+        // exact timing cocotbext's AHBLiteMaster uses). ahb_pkt_start_ok goes
+        // false as soon as packet_active_r latches (mid-address), which would
+        // freeze the capture on the STALE hwdata of an early cycle. So once
+        // armed, KEEP the arm asserted for as long as the offset-0 write address
+        // phase persists (ahb_write_addr0) — the LAST cycle (real length word)
+        // wins. The old `!= 0` reject accidentally did this by refusing to latch
+        // the stale zeros; the arm makes it explicit and length-0-safe.
+        // Self-terminates the moment the address phase ends (ahb_write_addr0=0).
+        capture_write_length_nxt = ahb_write_en
+                                   && (ahb_pkt_start_ok
+                                       || (capture_write_length_r && ahb_write_addr0));
 
         // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
         if (write_complete || read_complete) begin
@@ -251,28 +297,24 @@ module tidelink_fifo_ctrl #(
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
             packet_word_length_nxt = clamp_length(fc_wr_wdata);
             packet_active_nxt = 1'b1;
-        end else if (capture_write_length_r && (clamp_length(hwdata) != '0)) begin
+        end else if (capture_write_length_r) begin
             // AHB data phase of write to addr 0: hwdata is now valid.
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20]
             // of the original word).
             //
-            // TWIN-2 FIX (2026-07-19) — the `!= 0` qualifier is what actually
-            // blocks the stray clear/probe pair. A ZERO-PAYLOAD packet is not a
-            // legal packet: it carries no data, and its completion target
-            // degenerates to write_target = (0+1)<<2 = offset 4 — the word
-            // IMMEDIATELY after the header. That is precisely the shape of a
-            // two-word "clear"/probe (write offset 0 = 0x0, then offset 4), so
-            // such a pair self-completes, walks the FC-shared write_ptr by two
-            // words and burns two credits. Refusing to arm on length 0 makes
-            // that sequence a no-op while leaving every real packet (length
-            // >= 1) fully functional.
-            //
-            // This MIRRORS the read side, which already refuses to latch a
-            // zero length off an empty FIFO (the phantom-pop fix, :243).
-            //
-            // Scope: AHB write side ONLY. The FC direct-write path
-            // (fc_write_addr0, above) is deliberately UNTOUCHED — it is the
-            // silicon-proven packet path and must stay byte-identical.
+            // TWIN-2 FIX (2026-07-21) — the OLD `!= 0` reject that lived here was
+            // BOTH WRONG and FUTILE and has been REMOVED:
+            //   * WRONG: length 0 is a LEGAL packet type (PKT_RD_REQ, a
+            //     header-only read request). Rejecting it broke AHB-injected
+            //     RD_REQ, which David confirmed is a SUPPORTED path.
+            //   * FUTILE: a stray probe with a non-zero garbage length field is
+            //     bit-identical to a valid minimal packet, so a `!= 0` test
+            //     cannot separate them anyway.
+            // The stray clear/probe pair is now blocked upstream by the runtime
+            // ARM (capture_write_length_nxt is gated by ahb_write_en): with the
+            // arm POR-disarmed, this branch is simply never reached for an
+            // unarmed stray write. Once ARMED, every AHB-injected packet —
+            // including a length-0 RD_REQ — is accepted, exactly as intended.
             packet_word_length_nxt = clamp_length(hwdata);
             packet_active_nxt = 1'b1;
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite
@@ -458,6 +500,27 @@ module tidelink_fifo_ctrl #(
 
     assign overrun  = overrun_r;
     assign underrun = underrun_r;
+
+    // -------------------------------------------------------------------------
+    // RX-FIFO TWIN 2 — sticky AHB-inject-while-disarmed fault (observability)
+    // -------------------------------------------------------------------------
+    // A NONSEQ AHB write into the RX aperture (offset 0) while the inject path
+    // is DISARMED (ahb_write_en=0) is silently dropped by the arm gate. Latch a
+    // sticky bit so software/an IRQ handler can SEE the attempt instead of it
+    // vanishing. Sticky until flush/reset — same discipline as overrun/underrun.
+    logic ahb_inject_fault_r;
+    wire ahb_inject_fault_event = ahb_write_addr0 && !ahb_write_en;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ahb_inject_fault_r <= 1'b0;
+        else if (flush)
+            ahb_inject_fault_r <= 1'b0;
+        else if (ahb_inject_fault_event)
+            ahb_inject_fault_r <= 1'b1;
+    end
+
+    assign ahb_inject_fault = ahb_inject_fault_r;
 
     // -------------------------------------------------------------------------
     // Debug-visible output assignments

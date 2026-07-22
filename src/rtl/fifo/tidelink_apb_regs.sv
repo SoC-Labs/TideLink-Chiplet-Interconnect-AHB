@@ -47,11 +47,20 @@ module tidelink_apb_regs #(
     input  logic                    fifo_underrun,
     input  logic                    master_error,
 
+    // RX-FIFO TWIN 2 sticky fault (from FIFO ctrl): an AHB write into the RX
+    // aperture was attempted while the inject path was DISARMED. STATUS[5].
+    input  logic                    ahb_inject_fault,
+
     // Packet committed flag (from FIFO ctrl, exposed in STATUS[4])
     input  logic                    packet_committed,
 
     // Control outputs (to FIFO and returner)
     output logic                    ctrl_flush,
+
+    // RX-FIFO TWIN 2 (chip-killer) — runtime ARM for the AHB CPU-write-into-RX
+    // path. CTRL register (0x01C) bit[3], RW, POR default 0 (DISARMED). Routed
+    // to tidelink_fifo_mem/tidelink_fifo_ctrl. See the CTRL block below.
+    output logic                    swi_ahb_inject_arm,
 
     // Returner control outputs (to tidelink_fifo top-level for returner wiring)
     output logic                    doorbell_trigger,
@@ -198,15 +207,23 @@ module tidelink_apb_regs #(
     //            Self-clearing.
     // [2] LOCK:  Shortcoming #25 fix — write-once. Once set, prevents modification
     //            of pair_base_addr and release_threshold until next reset.
+    // [3] AHB_INJECT_ARM: RX-FIFO TWIN 2 (chip-killer). RW, POR default 0
+    //            (DISARMED). While 0, an AHB CPU write into the RX FIFO can
+    //            neither arm a packet nor advance the FC-shared write_ptr (a
+    //            stray clear/probe pair is a NO-OP). Software must set this to 1
+    //            before AHB-injecting a packet into the RX aperture.
     logic ctrl_flush_r;
     logic ctrl_lock_r;
+    logic swi_ahb_inject_arm_r;
 
     assign ctrl_flush  = ctrl_flush_r;
+    assign swi_ahb_inject_arm = swi_ahb_inject_arm_r;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             ctrl_flush_r  <= 1'b0;
             ctrl_lock_r   <= 1'b0;
+            swi_ahb_inject_arm_r <= 1'b0;   // POR-DISARMED (TWIN 2)
         end else begin
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
@@ -217,6 +234,13 @@ module tidelink_apb_regs #(
                 // LOCK is write-once: can only be set, never cleared by software
                 if (pwdata[2])
                     ctrl_lock_r <= 1'b1;
+                // AHB_INJECT_ARM is a plain RW latch (software can arm/disarm),
+                // BUT a FLUSH pulse (pwdata[1]=1) must NOT disturb it: FLUSH is a
+                // datapath reset, not a config change, so the inject-arm survives
+                // a flush (only POR clears it). This avoids the footgun where a
+                // bare `write CTRL, FLUSH` (0x2) would silently disarm injection.
+                if (!pwdata[1])
+                    swi_ahb_inject_arm_r <= pwdata[3];
             end
         end
     end
@@ -558,7 +582,8 @@ module tidelink_apb_regs #(
                     3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                     3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
                     3'h4:    prdata = {
-                                 {(SYS_DATA_W-5){1'b0}},
+                                 {(SYS_DATA_W-6){1'b0}},
+                                 ahb_inject_fault,   // [5] TWIN 2 sticky fault
                                  packet_committed,   // [4]
                                  master_error,        // [3]
                                  fifo_underrun,       // [2]
@@ -572,7 +597,7 @@ module tidelink_apb_regs #(
                     // [7:0]   = minor version
                     3'h5:    prdata = 32'h544C_0100;  // TideLink v1.0
                     3'h6:    prdata = release_acc;
-                    3'h7:    prdata = {{(SYS_DATA_W-3){1'b0}}, ctrl_lock_r, 2'b00};
+                    3'h7:    prdata = {{(SYS_DATA_W-4){1'b0}}, swi_ahb_inject_arm_r, ctrl_lock_r, 2'b00};
                     default: ;
                 endcase
             end

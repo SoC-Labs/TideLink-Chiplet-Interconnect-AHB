@@ -52,6 +52,10 @@ module tb_top #(
         .overrun              (overrun),
         .underrun             (underrun),
         .flush                (flush),
+        // RX-FIFO TWIN 2: this bench injects packets via the AHB write path, so
+        // it models software having ARMED the inject path (CTRL[3]=1). The real
+        // register is POR-disarmed; here it is hardwired on for the whole suite.
+        .swi_ahb_inject_arm   (1'b1),
         // FC direct write port (tied off — tests use AHB)
         .fc_wr_valid          (1'b0),
         .fc_wr_write          (1'b0),

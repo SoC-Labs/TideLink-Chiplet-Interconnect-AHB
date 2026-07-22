@@ -592,7 +592,7 @@ sim_gate_xhb:
 # =============================================================================
 .PHONY: sim_gate_tc_smoke sim_gate_tc_election \
 	sim_gate_eth_m0 sim_gate_eth_m1 sim_gate_eth_shape_a \
-	sim_gate_errinj sim_gate_xfail_f14a sim_gate_xfail_f14b \
+	sim_gate_errinj sim_gate_f14a_crc_catch sim_gate_xfail_f14b \
 	sim_gate_fifo_twin2
 
 # $(call SIM_GATE_REQUIRE,<file>,<what needs it>) — a per-suite dependency
@@ -770,26 +770,26 @@ define sim_gate_sentinel
 	echo "[sim_gate] $$st $(1) ($${dt}s)"
 endef
 
-# F14-A (CRITICAL, SILENT CORRUPTION): corrupting lane 7 makes the RX COMMIT a
-# packet with a corrupted length + payload, raising NO CRC error; the adjacent
-# lane 6 under identical stimulus is correctly NOT committed. 4 reps per mode,
-# RX drained per trial, unique payload tag (the strict protocol of §2.3).
-# Signature = all THREE lane-7 modes still report COMMITTED-WRONG/SILENT 4-of-4
-# **and** the lane-6 control still reports NOT-COMMITTED 4-of-4. Every clause is
-# load-bearing and the counts are exact, so the sentinel trips on a change in
-# EITHER direction: a FIX (lane 7 stops committing, or does so only 3-of-4 —
-# which would also mean the defect went intermittent and needs re-characterising)
-# drops a lane-7 clause; a WORSENING (the escape spreads to the adjacent lane, so
-# lane 6 starts committing too) drops the control clause. Either way -> XCHG.
-sim_gate_xfail_f14a:
-	$(call sim_gate_sentinel,xfail_f14a_lane7_silent,\
+# F14-A (was CRITICAL SILENT CORRUPTION — NOW CLOSED by the CRC re-enable,
+# 2026-07-21): with the link-layer CRC on by POR default, corrupting lane 7 no
+# longer commits a bad packet silently — the RX now REJECTS it (NOT-COMMITTED,
+# crc_errors increments, rx_crc_err -> 1). This was a KNOWN-DEFECT XFAIL sentinel
+# asserting the silent-corruption signature; it is PROMOTED to a positive PASS
+# regression that guards the fix. Measured with CRC on (all 4 reps of lane7 flip
+# are NOT-COMMITTED; stuck1/stuck0 are 3x NOT-COMMITTED + 1x BYTE-EXACT where the
+# corruption is benign). The load-bearing invariant is that NOTHING is ever
+# 'COMMITTED-WRONG/SILENT' again, and lane7-flip is fully rejected. If CRC ever
+# regresses off, the silent-corruption class reappears -> this suite FAILS.
+sim_gate_f14a_crc_catch:
+	$(call sim_gate_run,f14a_crc_catch,\
 	  cd cocotb/tidelink_error_injection && \
-	  $(SIM_GATE_EI_ENV) $(MAKE) $(SIM_GATE_EI_ARGS) \
-	    COCOTB_RESULTS_FILE=sim_build_gate_ei/res_lane7.xml MODULE=test_ei_lane7_repro,\
-	  grep -qF "VERDICT[S3b_lane7_flip_x4]: histogram={'COMMITTED-WRONG/SILENT': 4}" $$L && \
-	  grep -qF "VERDICT[S3b_lane7_stuck1_x4]: histogram={'COMMITTED-WRONG/SILENT': 4}" $$L && \
-	  grep -qF "VERDICT[S3b_lane7_stuck0_x4]: histogram={'COMMITTED-WRONG/SILENT': 4}" $$L && \
-	  grep -qF "VERDICT[S3b_lane6_flip_x4]: histogram={'NOT-COMMITTED': 4}" $$L)
+	  { $(SIM_GATE_EI_ENV) $(MAKE) $(SIM_GATE_EI_ARGS) \
+	      COCOTB_RESULTS_FILE=sim_build_gate_ei/res_lane7.xml \
+	      MODULE=test_ei_lane7_repro; } > f14a_run.log 2>&1; \
+	  cat f14a_run.log; \
+	  grep -qF "VERDICT[S3b_lane7_flip_x4]: histogram={'NOT-COMMITTED': 4}" f14a_run.log && \
+	  ! grep -qF "COMMITTED-WRONG/SILENT" f14a_run.log && \
+	  grep -qE "rx_crc_err 0->1" f14a_run.log)
 
 # F14-B (HIGH, WEDGE): a transient data-mode disturbance leaves the link wedged
 # in a way the standard SW re-bring-up (to_data_mode + CR/CRACK) CANNOT clear —
@@ -916,12 +916,12 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
-	fifo_rx_twin2_tree force_recal_w1p
+	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
-# contract above sim_gate_xfail_f14a.
-SIM_GATE_SENTINELS := xfail_f14a_lane7_silent xfail_f14b_datamode_wedge
+# contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1000,7 +1000,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# errinj FIRST: it owns the shared sim_build_gate_ei compile that the two
 	@# sentinels then reuse (same pattern as t31 owning sim_build_l4 for t30).
 	@$(MAKE) --no-print-directory sim_gate_errinj
-	@$(MAKE) --no-print-directory sim_gate_xfail_f14a
+	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \

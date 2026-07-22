@@ -48,7 +48,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-eth-chiplet kr260-eth-chiplet-flip mps3
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -141,6 +141,17 @@ else ifeq ($(TARGET),kr260-pair-flip-nptp)
 XILINX_PART     := xck26-sfvc784-2LV-c
 FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
 FPGA_TIDELINK_PTP := 0
+# KR260 eth-chiplet (die_a / die_b). The WHOLE multicore+ethernet SoC + internal
+# TideLink packaged as one IP (see fpga/vivado_ip/package_eth_chiplet_ip.tcl);
+# PHC is integral so PTP is always in. Same xck26 part + KR260 board preset.
+else ifeq ($(TARGET),kr260-eth-chiplet)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-eth-chiplet-flip)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
 endif
@@ -204,10 +215,21 @@ FARM_HOST         ?= srv04936
 FARM_JOBS         ?=
 SKIP_PACKAGE_IP   ?=
 
+# The eth-chiplet targets instantiate the packaged nanosoc_eth_chiplet IP (the
+# whole SoC + internal TideLink), NOT the bare-link tidelink IP — so their
+# build_design depends on package_eth_chiplet_ip instead of package_ip.
+ifneq ($(filter kr260-eth-chiplet%,$(TARGET)),)
+_IP_DEP := package_eth_chiplet_ip
+_BUILD_IP_REPO := $(ETH_CHIPLET_IP_OUTPUT_DIR)
+else
+_IP_DEP := package_ip
+_BUILD_IP_REPO := $(IP_OUTPUT_DIR)
+endif
+
 ifeq ($(SKIP_PACKAGE_IP),1)
 BUILD_DESIGN_DEPS :=
 else
-BUILD_DESIGN_DEPS := package_ip package_phc_ip
+BUILD_DESIGN_DEPS := $(_IP_DEP) package_phc_ip
 endif
 
 .PHONY: all package_ip package_phc_ip package_eth_chiplet_ip build_design clean program deploy \
@@ -296,7 +318,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	cd $(BUILD_RUN_DIR) && \
 	export FPGA_PART=$(XILINX_PART) && \
 	export FPGA_PROJECT_DIR=$(PROJECT_DIR) && \
-	export FPGA_IP_REPO=$(IP_OUTPUT_DIR) && \
+	export FPGA_IP_REPO=$(_BUILD_IP_REPO) && \
 	export FPGA_PHC_IP_REPO=$(PHC_IP_OUTPUT_DIR) && \
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \

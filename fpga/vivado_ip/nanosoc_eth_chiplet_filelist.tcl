@@ -38,12 +38,28 @@ if {![info exists env(NANOSOC_ETH_CHIPLET_DIR)]} {
 set chiplet_root $env(NANOSOC_ETH_CHIPLET_DIR)
 
 # ${TIDELINK_HOME} appears unsubstituted in the tidelink flattened list's
-# +incdir lines; provide it for [subst].
-set TIDELINK_HOME $env(SOCLABS_TIDELINK_DIR)
+# +incdir lines; provide it for [subst]. ${TIDECHART_HOME} appears in
+# tidechart.flist; derive it from the parent repo layout (submodule).
+set TIDELINK_HOME  $env(SOCLABS_TIDELINK_DIR)
+set TIDECHART_HOME [file join $chiplet_root tidechart]
 
+# The flattened soc/tidelink lists are the SoC + link only. The master flist
+# (flist/nanosoc_eth_chiplet.flist) also pulls the TideChart component flist and
+# the 3 integration RTL files — none of which appear in the flattened .f lists,
+# so add them explicitly or the top (nanosoc_eth_chiplet) is an unresolved black
+# box (package_project tolerates it; synth_design does NOT — Synth 8-439).
 set flist_files [list \
     [file join $chiplet_root build elab soc_vcs.f] \
     [file join $chiplet_root build elab tidelink_vcs.f] \
+    [file join $TIDECHART_HOME flist tidechart.flist] \
+]
+
+# Integration RTL (this repo) — appended after the flists are parsed, below.
+set _integration_incdir [file join $chiplet_root src rtl]
+set _integration_srcs [list \
+    [file join $chiplet_root src rtl chiplet_d2d_decode.sv] \
+    [file join $chiplet_root src rtl tidechart_shim.sv] \
+    [file join $chiplet_root src rtl nanosoc_eth_chiplet.sv] \
 ]
 
 set _incdirs {}
@@ -85,6 +101,10 @@ foreach f $flist_files {
     }
     close $fh
 }
+
+# Append the integration RTL (top last) + its include dir.
+lappend _incdirs $_integration_incdir
+foreach s $_integration_srcs { lappend _sources $s }
 
 # De-duplicate include dirs (order-preserving) — the flattened lists repeat some.
 set _seen {}

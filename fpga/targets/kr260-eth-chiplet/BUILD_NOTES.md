@@ -28,6 +28,26 @@ make -C fpga build_design TARGET=kr260-eth-chiplet       # die_a
 make -C fpga build_design TARGET=kr260-eth-chiplet-flip  # die_b
 ```
 
+## Scoping-synth result (2026-07-22, Vivado 2024.1, xck26-sfvc784-2LV-c)
+
+OOC `synth_design` of `nanosoc_eth_chiplet_vivado_wrapper` **completed
+successfully — the SoC FITS with large headroom**:
+
+| Resource | Used | Avail | % |
+|---|---|---|---|
+| CLB LUTs | 52,534 | 117,120 | 44.9% |
+| CLB Registers | 43,770 | 234,240 | 18.7% |
+| Block RAM tiles | 32.5 | 144 | 22.6% (20xRAMB36 + 25xRAMB18) |
+| DSPs | 7 | 1,248 | 0.6% |
+
+The behavioural CMSDK SRAMs **inferred to Block RAM** — the memory-model risk is
+largely retired at synth level. Timing is unconstrained (pure OOC fit synth, no
+clocks); closure is a later phase once the BD clock/XDC constraints exist.
+Benign critical warnings: duplicate `xhb500_*`/`cmsdk_apb_slave_mux` module
+definitions (flist-cleanliness — last-wins), and 2 async-set flops in
+`axi_chiplet_controller.sv` flagged un-timeable. Regenerate via
+`make package_eth_chiplet_ip` (elaborate) or the standalone OOC synth.
+
 ## What is in place
 
 - **IP packaging** (`fpga/vivado_ip/`): `nanosoc_eth_chiplet_filelist.tcl`

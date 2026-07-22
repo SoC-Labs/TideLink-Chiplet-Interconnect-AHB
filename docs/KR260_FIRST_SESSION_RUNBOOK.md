@@ -101,6 +101,13 @@ for context, but never *conclude* the link is up from them.
 ---
 ## 5. 🎯 THE MILESTONE — byte-exact data crossing (never done on KR260)
 
+> 🔴 **CORRECTED 2026-07-22 (hardware): the RX FIFO is a STREAMING FIFO — read it STRIDED, not
+> fixed-offset.** Packet k lands at `ahb_fifo + 0x10*k + 8`. A fixed-offset read sees only packet 0
+> and FALSELY reports "intermittent delivery / lottery" — a multi-day phantom bug that was purely a
+> receiver artifact. Use `pynq_host/scripts/kr260_data_rx.py dump|check` (the correct reader).
+> Measured with it: **12/12 byte-exact, in order — delivery is RELIABLE.** Data aperture is
+> `0xA400_0000` (tx) / `0xA401_0000` (fifo); writing the wrong base (`0x8400_0000`) wedges the PS.
+
 ⚠️ **CONFIRM THE DATA APERTURE BASE FIRST.** The target tcl header lists `ahb_tx = 0x8400_0000` /
 `ahb_fifo = 0x8401_0000` (relocated from Z2's 0x4400/0x4401), but the FPD data window is documented
 as `0xA000_0000` and an earlier note referenced `0xA400_0000`. **These disagree — verify before

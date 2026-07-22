@@ -2,9 +2,33 @@
 
 > **Protocol:** this file is the single live dashboard. Every working session (human or agent)
 > updates the relevant row + the timestamp when state changes. Detail lives in the linked docs;
-> keep this file short. Last full update: **2026-07-18 00:1x (continuation wave complete — X-A/B/C/D all landed; loop stopped)**.
+> keep this file short. Last full update: **2026-07-22 (RTL-freeze consolidation branch built + audited)**.
 
-## Headline
+## Headline (2026-07-22) — RTL FREEZE PUSH
+**The freeze candidate is now ONE committed branch: `integ/freeze-2026-07-21`.** It was, until
+07-21, uncommitted working-tree state on no branch (a checkout would have destroyed it). The four
+freeze decisions are applied + audited; `asic_v1/v2_elab` PASS. Plan: [FREEZE_PLAN](FREEZE_PLAN_2026_07_21.md).
+Remaining to freeze: full `sim_gate` (blocked — Vivado running), F14 sentinel re-baseline, hardware demo.
+
+## Freeze branch state (`integ/freeze-2026-07-21`, integ untouched at 9c15785)
+| Item | State | Next |
+|---|---|---|
+| Consolidation (commit-then-graft-w2) | ✅ **DONE** — 602ef8d snapshot → 683280b merge w2 → ac7dee8 CRC → be4badc plan+CI. Tag `freeze-candidate-snapshot-2026-07-21` | run the gate |
+| Silicon defaults (3 w2 flips, authorized) | ✅ **AUDITED at the ASIC dft_wrapper** — HONEST_MASK_HS=1, ROLE_FROM_STRAP=1, NEGO_CFG_RESET=7'h61; B1 retrain + B3 tl_data_mode intact | — |
+| TWIN 2 (AHB-write supported) | ✅ w2 qualify-arm (`ENABLE_AHB_WRITE=1'b1`+guard); gate uses `fifo_twin2_tree` | — |
+| Link-layer CRC | ✅ **RE-ENABLED** (POR 1'h1→1'h0). Root cause = **(c) real corruption, not a false fire** — CRC-off HID it | see caveats ↓ |
+| Full `sim_gate` on the branch | ⛔ **BLOCKED** — a Vivado build is running (OOM rule: never co-run). Script staged `scratchpad/run_gate.sh` | run when machine frees |
+| F14-A/B XFAIL sentinels | ⚠️ will flip **XFAIL→XCHG** with CRC on (CRC now *catches* the corruption) | re-baseline to positive "CRC catches+rejects" after the gate run |
+| CI fresh-clone | ✅ 3 sibling clones wired (tidechart/eth-ss GitLab, chiplet **GitHub**) | David: branch pins + GitHub runner creds |
+| Hardware demo | ⏸ **needs board lease** — rebuild Set-B on-chip bitstream from this branch, bring up **at 25 MHz** | David: lease + KR260_PASSWORD |
+
+**CRC caveats (docs/CRC_ROOTCAUSE.md):** (a) a re-enabled CRC legitimately NACK-wedges on a marginal
+eye ⇒ **bring the FPGA up at 25 MHz** + BUFG hoist; ASIC path not eye-limited. (b) `socl_l7_real_crc_seen`
+is STICKY (POR-clear only) ⇒ first real CRC error disarms the state-7 watchdog for that reset cycle
+(post-freeze W1C enhancement).
+
+---
+## Headline (2026-07-17, superseded by the freeze push above)
 **KR260 CHIPLET LINK IS UP** (first ever, 2026-07-17): root cause was the PS↔PL AFI port width
 (stock Kria firmware = 128-bit, BD = 32-bit) — fixed by devmem poke, no rebuild; `cal=1` both
 dies. **The full recovery branch is integrated, reviewed, sim_gate 15/15; 4/4 bitstreams built +

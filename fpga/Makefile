@@ -58,7 +58,7 @@ endif
 # wrappers) just consumes pre-built bitstreams and doesn't need the
 # IP-library env vars set. Gating the env check on these specific goals
 # lets fpgahub-driven deploys run on hosts that don't have ARM_IP_LIBRARY_PATH.
-BUILD_GOALS := all build_design package_ip
+BUILD_GOALS := all build_design package_ip package_eth_chiplet_ip
 ifneq ($(filter $(BUILD_GOALS),$(MAKECMDGOALS)),)
 ifndef CMSDK_DIR
 $(error CMSDK_DIR is not set - source set_env.sh first (only required for build/package goals: $(BUILD_GOALS)))
@@ -154,6 +154,7 @@ FPGA_TIDELINK_PTP ?=
 BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
+ETH_CHIPLET_IP_OUTPUT_DIR := $(BUILD_DIR)/eth_chiplet_ip
 RUN_DIR         := $(BUILD_DIR)/run
 PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
 OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
@@ -161,6 +162,10 @@ OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
 # PHC sibling repo (sourced by package_phc_ip; defaults assume the parallel
 # SoC Labs checkout, override with PHC_REPO_DIR for CI / alternate layouts).
 PHC_REPO_DIR    ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb
+# Parent repo (nanosoc-ethernet-chiplet) — tidelink is its submodule, so the
+# eth-chiplet RTL + flattened flists live one level up. Used by
+# package_eth_chiplet_ip's filelist. Override for alternate layouts.
+NANOSOC_ETH_CHIPLET_DIR ?= $(realpath $(TIDELINK_HOME)/..)
 # Per-TARGET Vivado working dir. build_design cd's here and writes its
 # -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
 # concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
@@ -205,7 +210,7 @@ else
 BUILD_DESIGN_DEPS := package_ip package_phc_ip
 endif
 
-.PHONY: all package_ip package_phc_ip build_design clean program deploy \
+.PHONY: all package_ip package_phc_ip package_eth_chiplet_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
         resolve_board farm_check farm_build build_pair_concurrent \
@@ -256,6 +261,32 @@ package_phc_ip:
 	vivado -mode batch -source $(VIVADO_IP_DIR)/phc/package_phc_ip.tcl \
 	    -log $(RUN_DIR)/package_phc_ip.log \
 	    -journal $(RUN_DIR)/package_phc_ip.jou
+
+#-----------------------------------------------------------------------------
+# Step 1c: Package the WHOLE eth-chiplet (nanosoc_eth_chiplet) as a Vivado IP.
+# This is ALSO the scoping synth: OOC elaboration of the full multicore+ethernet
+# SoC on xck26. Sources come from the parent repo via NANOSOC_ETH_CHIPLET_DIR;
+# the filelist consumes the flattened lists `make -C <parent> elab` produces
+# (build/elab/{soc,tidelink}_vcs.f), so run that first. TIDELINK_PHY_V2=1 must
+# be exported (same silent-V1 trap as package_ip).
+#-----------------------------------------------------------------------------
+package_eth_chiplet_ip:
+	@if [ ! -f "$(NANOSOC_ETH_CHIPLET_DIR)/build/elab/soc_vcs.f" ]; then \
+	    echo "ERROR: $(NANOSOC_ETH_CHIPLET_DIR)/build/elab/soc_vcs.f not found." >&2; \
+	    echo "       Run 'make -C $(NANOSOC_ETH_CHIPLET_DIR) elab' first to flatten the SoC flist." >&2; \
+	    exit 2; \
+	fi
+	@mkdir -p $(RUN_DIR) $(ETH_CHIPLET_IP_OUTPUT_DIR)
+	cd $(RUN_DIR) && \
+	export FPGA_COMPONENT_FILELIST=$(VIVADO_IP_DIR)/nanosoc_eth_chiplet_filelist.tcl && \
+	export FPGA_COMPONENT_LIB=$(ETH_CHIPLET_IP_OUTPUT_DIR) && \
+	export NANOSOC_ETH_CHIPLET_DIR=$(NANOSOC_ETH_CHIPLET_DIR) && \
+	export SOCLABS_TIDELINK_DIR=$(SOCLABS_TIDELINK_DIR) && \
+	export FPGA_VENDOR=$(FPGA_VENDOR) && \
+	export FPGA_CORE_REV=$(FPGA_CORE_REV) && \
+	vivado -mode batch -source $(VIVADO_IP_DIR)/package_eth_chiplet_ip.tcl \
+	    -log $(RUN_DIR)/package_eth_chiplet_ip.log \
+	    -journal $(RUN_DIR)/package_eth_chiplet_ip.jou
 
 #-----------------------------------------------------------------------------
 # Step 2: Build block design + synthesis + implementation + bitstream

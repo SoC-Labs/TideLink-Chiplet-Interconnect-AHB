@@ -15,6 +15,7 @@ from tidelink.packet import FifoPacket
 from tidelink.regs import (
     MAX_CREDITS,
     REG_PAIR_BASE, REG_REL_THRESHOLD, REG_PKT_WORD_LEN,
+    REG_CTRL, CTRL_AHB_INJECT_ARM,
     REG_CREDIT_COUNT, REG_STATUS, REG_DOORBELL,
     REG_RELEASED_ACC, REG_DOORBELL_RESP_ACC,
     REG_PAIR_CREDIT_COUNTER, REG_PAIR_CREDIT_CONSUME, REG_PAIR_CREDIT_ENABLE,
@@ -98,6 +99,12 @@ class TidelinkAhbTB:
         pkt = FifoPacket(data=data)
         prefix = f"[{label}] " if label else ""
         dut = self.dut
+
+        # TWIN-2 (chip-killer fix, merge 202aeb3): the AHB write-into-RX path is
+        # POR-DISARMED — write_complete cannot fire unless CTRL[3] AHB_INJECT_ARM
+        # is set first. Arm it here so every write_packet() can fill the FIFO.
+        # (RW, self-preserved across FLUSH; idempotent to re-arm per packet.)
+        await self.cfg_write(REG_CTRL, 1 << CTRL_AHB_INJECT_ARM)
 
         # Write 2-word header: word0 (packed) to 0x0000, dest_addr to 0x0004
         await self.ahb_fifo.write(0x0000, pkt.word0)

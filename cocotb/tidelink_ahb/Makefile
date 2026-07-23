@@ -8,7 +8,9 @@ export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 
 TOPLEVEL = tb_top
-MODULE   = test_tidelink_ahb
+# Both modules run in one simv invocation (cocotb comma-separated list) so the
+# drain/credit-return regression gates in CI alongside the AHB write-path tests.
+MODULE   = test_tidelink_ahb,test_tidelink_drain_credit
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_ahb.flist

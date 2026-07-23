@@ -118,10 +118,29 @@ puts [format "  nanosoc_eth_chiplet filelist: %d sources, %d incdirs, %d defines
         [llength $_sources] [llength $_incdirs_uniq] [llength $_defines]]
 puts "============================================================"
 
+# Duplicate-BASENAME disambiguation (mirrors the multicore pynq filelist).
+# The SoC has two files named phc_ahb.sv with DIFFERENT contents:
+#   .../src/rtl/wrappers/phc_ahb.sv        (module phc_ahb  — the wrapper)
+#   .../ptp-hardware-clock-ahb/.../phc_ahb.sv (module PHC_AHB — the core)
+# ipx::package_project -import_files flattens sources into one dir by basename,
+# so one clobbers the other -> "module PHC_AHB not found" at IP synth. Copy the
+# WRAPPER to a disambiguated basename before reading (the module name is
+# unchanged, only the filename). Other same-basename hits (cmsdk_*, xhb500_*)
+# are the SAME file referenced twice and are harmless "already exists" skips.
+set _disambig_dir [file join $chiplet_root build fpga_disambig]
+file mkdir $_disambig_dir
+
 # Read every source. .sv -> SystemVerilog, else plain Verilog.
 foreach s $_sources {
     if {![file exists $s]} {
         error "Source file not found: $s"
+    }
+    if {[string match "*/src/rtl/wrappers/phc_ahb.sv" $s]} {
+        set _dis [file join $_disambig_dir phc_ahb_wrapper.sv]
+        file copy -force $s $_dis
+        read_verilog -sv $_dis
+        puts "INFO: disambiguated $s -> $_dis (dup-basename phc_ahb.sv)"
+        continue
     }
     if {[string match "*.sv" $s]} {
         read_verilog -sv $s

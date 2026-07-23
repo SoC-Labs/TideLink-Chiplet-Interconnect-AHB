@@ -382,7 +382,11 @@ update_compile_order -fileset sources_1
 # edited but `make package_ip` was not re-run, build_design would otherwise
 # synthesise the OLD sources (memory: project_farm_package_ip_stale). Hard-fails
 # (exit 1) on any content mismatch so the stale build dies here, not on silicon.
-tl_verify_packaged_ip $ip_repo
+if { [info exists ::env(FPGA_SKIP_IP_VERIFY)] && $::env(FPGA_SKIP_IP_VERIFY) == 1 } {
+    puts "\[tl_ip_verify\] SKIPPED (FPGA_SKIP_IP_VERIFY=1) - the eth-chiplet IP is packaged from the PARENT repo's own source resolution (its nanosoc_eth_chiplet filelist), so the tidelink-flist provenance oracle does not apply to it."
+} else {
+    tl_verify_packaged_ip $ip_repo
+}
 
 # STEP 8: Synthesis
 puts "Starting synthesis..."

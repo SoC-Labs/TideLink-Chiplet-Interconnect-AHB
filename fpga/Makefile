@@ -305,6 +305,12 @@ package_eth_chiplet_ip:
 	    echo "       Run 'make -C $(NANOSOC_ETH_CHIPLET_DIR) elab' first to flatten the SoC flist." >&2; \
 	    exit 2; \
 	fi
+	@# Regenerate the TideLink flist as V2 (ship config): the eth-chiplet needs
+	@# deps/tidelink-phy + v2shims, not the parent elab's V1 default.
+	@mkdir -p $(NANOSOC_ETH_CHIPLET_DIR)/build/fpga_gen_v2
+	python3 $(NANOSOC_ETH_CHIPLET_DIR)/flist/resolve_tidelink_flist.py \
+	    $(SOCLABS_TIDELINK_DIR)/flists/tidelink_fpga_v2.flist \
+	    > $(NANOSOC_ETH_CHIPLET_DIR)/build/fpga_gen_v2/tidelink_vcs_v2.f
 	@mkdir -p $(RUN_DIR) $(ETH_CHIPLET_IP_OUTPUT_DIR)
 	cd $(RUN_DIR) && \
 	export FPGA_COMPONENT_FILELIST=$(VIVADO_IP_DIR)/nanosoc_eth_chiplet_filelist.tcl && \

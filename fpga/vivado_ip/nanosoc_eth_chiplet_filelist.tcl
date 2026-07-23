@@ -48,9 +48,16 @@ set TIDECHART_HOME [file join $chiplet_root tidechart]
 # the 3 integration RTL files — none of which appear in the flattened .f lists,
 # so add them explicitly or the top (nanosoc_eth_chiplet) is an unresolved black
 # box (package_project tolerates it; synth_design does NOT — Synth 8-439).
+# The eth-chiplet is a V2 / ship-config build: it needs the TideLink flist
+# resolved from tidelink_fpga_v2.flist (V2 PHY: deps/tidelink-phy, epoch ports,
+# v2shims). The parent `make elab` writes a V1 tidelink_vcs.f (sim default), so
+# the package_eth_chiplet_ip Makefile goal regenerates the V2 list into
+# build/fpga_gen_v2/tidelink_vcs_v2.f. Prefer that; fall back to build/elab.
+set _tl_v2 [file join $chiplet_root build fpga_gen_v2 tidelink_vcs_v2.f]
+set _tl_flat [expr {[file exists $_tl_v2] ? $_tl_v2 : [file join $chiplet_root build elab tidelink_vcs.f]}]
 set flist_files [list \
     [file join $chiplet_root build elab soc_vcs.f] \
-    [file join $chiplet_root build elab tidelink_vcs.f] \
+    $_tl_flat \
     [file join $TIDECHART_HOME flist tidechart.flist] \
 ]
 

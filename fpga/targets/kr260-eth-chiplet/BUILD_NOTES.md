@@ -28,6 +28,48 @@ make -C fpga build_design TARGET=kr260-eth-chiplet       # die_a
 make -C fpga build_design TARGET=kr260-eth-chiplet-flip  # die_b
 ```
 
+## Full build result — die_a BITSTREAM (2026-07-23, Vivado 2024.1, xck26)
+
+`make build_design TARGET=kr260-eth-chiplet` now runs the WHOLE flow to a
+bitstream: **synth + place + route + write_bitstream all complete** ->
+`imp/fpga/output/kr260-eth-chiplet/tidelink.bit` (+ .hwh / .xsa / routed .dcp).
+The complete nanoSoC ethernet-chiplet (multicore SoC + ethernet subsystem + V2
+TideLink) implements on the KR260.
+
+Impl utilisation (placed): **47.6% CLB LUT, 21.2% FF, 22.6% BRAM, 0.6% DSP,
+25 IOB** — comfortable headroom.
+
+**Timing is NOT yet closed:** WNS = -31.0 ns, WHS = -13.9 ns (8 failing
+endpoints each). `build_design` does not gate on timing (same as the bare-link
+kr260-pair target), so the bitstream is produced but must not be trusted on the
+bench until closed. The failing paths are ALL `pad_rx[*] -> Wlink GPIO-RX
+capture registers` — source-synchronous PHY RX capture. Root cause: the reused
+`*_timing.xdc` targets the BARE-LINK hierarchy (`tidelink_0/inst/...`), but in
+the eth-chiplet the PHY is nested deeper
+(`nanosoc_eth_chiplet_0/inst/u_chiplet/u_tidelink/...`), so its
+set_max_delay / set_bus_skew / false_path constraints don't match and the RX
+paths are analysed as ordinary logic. **Next step:** re-path the RX timing
+constraints for the eth-chiplet nesting (or add an eth-chiplet-specific timing
+XDC). This is the primary remaining engineering item before bench bring-up.
+
+### Fixes required to get here (all committed on integ/kr260-eth-chiplet)
+1. build-integrity helpers (`build_provenance.tcl` + msg_gate hooks) were missing
+2. xhb `ahb_sub` comb-loop fix `cb33c9f` cherry-picked (bare-link route DRC)
+3. BD: `axi_ahblite_bridge` interface names (AXI4 / M_AHB)
+4. BD: clock HPM0 master + role strap via xlconstant
+5. BD: match clk_wiz PRIM_IN_FREQ to the PS's 99.999 MHz
+6. skip the tidelink-flist provenance gate for the eth-chiplet IP
+7. global (non-OOC) BD synthesis to dodge duplicate-basename clobber
+8. disambiguate the two `phc_ahb.sv` at packaging
+9. use the **V2** TideLink flist (tidelink_fpga_v2.flist) — the parent elab
+   defaults to V1, which mismatches the V2 tidelink_top epoch interface
+10. materialise the V2 `\`include` PHY shims so ipx packaging keeps them
+11. SWD on PMOD4 is a 1.8V HP bank -> LVCMOS18 (+ CLOCK_DEDICATED_ROUTE on the net)
+
+### die_b
+`make build_design TARGET=kr260-eth-chiplet-flip` — same flow, flipped TX/RX
+balls + role strap = 1. Not yet run in this pass.
+
 ## Scoping-synth result (2026-07-22, Vivado 2024.1, xck26-sfvc784-2LV-c)
 
 OOC `synth_design` of `nanosoc_eth_chiplet_vivado_wrapper` **completed

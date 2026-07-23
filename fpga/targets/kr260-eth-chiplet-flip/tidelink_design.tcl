@@ -144,6 +144,10 @@ proc create_root_design { parentCell } {
     ###########################################################################
     # Clocks
     connect_bd_net [get_bd_pins $ps/pl_clk0]        [get_bd_pins $clk_wiz/clk_in1]
+    # PS pl_clk0 is ~99.999 MHz (not exactly 100) -> match clk_wiz PRIM_IN_FREQ
+    # to the actual pin freq after connecting, else BD 41-238 FREQ_HZ mismatch.
+    set _pl0_hz [get_property CONFIG.FREQ_HZ [get_bd_pins $ps/pl_clk0]]
+    set_property CONFIG.PRIM_IN_FREQ [expr {$_pl0_hz / 1000000.0}] [get_bd_cells clk_wiz_0]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $soc/sys_fclk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $ps/maxihpm0_fpd_aclk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out2]  [get_bd_pins $phy_clk_div/clk_in]

@@ -130,10 +130,46 @@ puts "============================================================"
 set _disambig_dir [file join $chiplet_root build fpga_disambig]
 file mkdir $_disambig_dir
 
+# V2 PHY shim materialisation (mirrors tidelink fpga/filelist.tcl). The V2 flist
+# lists src/rtl/v2shims/v2_*.{v,sv} which are just `define TIDELINK_PHY_V2 +
+# `include "<orig>". ipx::package_project -import_files DROPS include-style files
+# ("does not exist in the project sources" -> "module Wlink not found" at synth).
+# Fix: flatten each shim into a STANDALONE generated source (defines prepended to
+# the full body of the included original) and read THAT instead.
+set _v2_gen_dir [file join $chiplet_root build fpga_gen_v2]
+file delete -force $_v2_gen_dir
+file mkdir $_v2_gen_dir
+proc ec_materialise_v2_shim {shim incdirs gen_dir} {
+    set fh [open $shim r]; set shim_text [read $fh]; close $fh
+    if { ![regexp {`include\s+"([^\"]+)"} $shim_text -> inc_name] } {
+        error "v2 shim $shim has no `include directive"
+    }
+    set orig ""
+    foreach d $incdirs {
+        if { [file exists [file join $d $inc_name]] } { set orig [file join $d $inc_name]; break }
+    }
+    if { $orig eq "" } { error "v2 shim $shim: '$inc_name' not found under incdirs" }
+    set out [file join $gen_dir $inc_name]
+    set fh [open $orig r]; set body [read $fh]; close $fh
+    set fo [open $out w]
+    puts $fo "// AUTO-GENERATED (TIDELINK_PHY_V2 build) - DO NOT EDIT. Source: $orig"
+    puts $fo "`define TIDELINK_PHY_V2"
+    puts $fo "`define TD_AUTO_LANE_MASK_E4"
+    puts -nonewline $fo $body
+    close $fo
+    puts "INFO: materialised v2shim [file tail $shim] -> $out"
+    return $out
+}
+
 # Read every source. .sv -> SystemVerilog, else plain Verilog.
 foreach s $_sources {
     if {![file exists $s]} {
         error "Source file not found: $s"
+    }
+    if {[string match "*/v2shims/*" $s]} {
+        set _mat [ec_materialise_v2_shim $s $_incdirs_uniq $_v2_gen_dir]
+        if {[string match "*.sv" $_mat]} { read_verilog -sv $_mat } else { read_verilog $_mat }
+        continue
     }
     if {[string match "*/src/rtl/wrappers/phc_ahb.sv" $s]} {
         set _dis [file join $_disambig_dir phc_ahb_wrapper.sv]

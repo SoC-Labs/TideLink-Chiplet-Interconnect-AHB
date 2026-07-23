@@ -47,6 +47,10 @@ set_property -dict { PACKAGE_PIN H12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [ge
 set_property -dict { PACKAGE_PIN E10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led1] ;# PMOD0_1 — role_is_master
 
 #-- CoreSight SWD on PMOD4 (same balls as die_a; off the ribbon) --------------
-set_property -dict { PACKAGE_PIN L2  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLDOWN true } [get_ports SWCLK]
-set_property -dict { PACKAGE_PIN T7  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWDIO]
-set_property -dict { PACKAGE_PIN AF7 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWD_NPORESETN]
+set_property -dict { PACKAGE_PIN L2  IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLDOWN true } [get_ports SWCLK]
+set_property -dict { PACKAGE_PIN T7  IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWDIO]
+set_property -dict { PACKAGE_PIN AF7 IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWD_NPORESETN]
+
+# SWCLK is a slow external debug clock on a non-ideal (N-type CCIO) pin;
+# waive dedicated clock-routing so the placer accepts it.
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_ports SWCLK]

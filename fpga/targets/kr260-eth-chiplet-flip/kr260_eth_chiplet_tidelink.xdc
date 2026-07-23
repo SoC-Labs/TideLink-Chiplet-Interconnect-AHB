@@ -53,4 +53,4 @@ set_property -dict { PACKAGE_PIN AF7 IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLU
 
 # SWCLK is a slow external debug clock on a non-ideal (N-type CCIO) pin;
 # waive dedicated clock-routing so the placer accepts it.
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_ports SWCLK]
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports SWCLK]]

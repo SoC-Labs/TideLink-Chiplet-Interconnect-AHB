@@ -1,19 +1,59 @@
-# TideLink Autonomy — Status & Analysis Brief (2026-07-14)
+# TideLink Autonomy — Status & Analysis Brief (2026-07-14, RESOLVED 2026-07-16)
 
 **Read `docs/AUTONOMOUS_BRINGUP.md` first** (the mechanism). This doc is the state of
 play, the measured numbers, what is REFUTED, and the open question.
 
 ---
 
-## 1. The bottom line
+## 0. ✅ RESOLVED (2026-07-16) — ZERO-POKE AUTONOMY DELIVERED ON SILICON
+
+**The autonomy channel gap is CLOSED.** Branch `wip/b2a-fix` @ `cd2db38`
+(worktree `td-bisect/b2a-fix`, off `0044bef`), netlist-verified, zero-poke autonomous soak:
+
+| channel | drain-guard baseline (0044bef) | **b2a-fix (cd2db38)** |
+|---|---|---|
+| link / anchor | 10/10 | **10/10** |
+| A→B data (byte-exact) | 7/10 | **10/10** |
+| B→A data (byte-exact) | **0/10 HARD-DEAD** | **10/10** ✅ |
+| doorbell | 4/10 | **10/10** |
+| both dies anchored | — | **rea_a=rea_b=1 every cycle (no peer-starvation)** |
+
+**N=40 CERTIFIED (2026-07-16): 39/39 valid cycles, 100% ALL channels, CP 95% CI
+[91.0%, 100%]** — link 39/39, A→B 39/39, B→A 39/39, doorbell 39/39, ALL-4 39/39.
+(40 cycles run; cycle 2 = `POR-FAIL (a board did not return)` — a power-cycle
+INFRASTRUCTURE flake, excluded as a non-test, not a link/data failure.)
+Earlier N=10/10 (CP [69.2%,100%]) reproduced. The lower bound now clears 90%.
+
+**Root cause (silicon-confirmed, clean exclusively-leased bench, reproduced ×2):** NOT the
+FSM anchor-lottery (§3), NOT the eye. The master die_a's **winscan FSM LIVELOCKS** in data
+mode — it reaches a good anchor (fcsm=4, rea=1) then advances SETTLE→FINALIZE and **tears
+down its own FC** (fcsm 4→0), repeating, which perpetually disrupts its RX-commit so it
+never commits incoming B→A data. `winscan_done` never stably sets (only blips at fail-open).
+The `0x210C=0` disarm parks the churning FSM (→WS_IDLE) and B→A recovers byte-exact.
+
+**Fix = event-gated RETIRE-AUTONOMY:** a sticky one-shot latches on `reanchored && fcsm==4`
+(held ~160 ms « the ~2.8 s churn onset), drops the effective `autonomy_armed` term, and
+DISARM-PARKs the FSM — autonomously replicating the proven `0x210C=0` escape hatch. Keeps
+the anchor (sticky), per-episode re-arm on training rise (avoids the ws_kicked_q trap),
+`RETIRE_EN=1` (F4 tapeout param; NOT yet plumbed to `tidelink_top` — ASIC to-do).
+BUILD KNOB: **must `export TIDELINK_PHY_V2=1`** or the build silently falls back to the V1
+flist and ships a fix-less bitstream (retire block is inside `ifdef TIDELINK_PHY_V2`).
+
+Everything below (§1–§7) is the pre-resolution analysis, kept for provenance. §3's
+"physical placement lottery" was the ANCHOR story; the delivered blocker was the CHANNEL
+(RX-commit) livelock above. §5's "untested lever" and the WS_ANCHOR_EXTEND lever are moot.
+
+---
+
+## 1. The bottom line (pre-resolution; superseded by §0)
 
 | | Status |
 |---|---|
-| **Manual recipe bring-up** (`rcp()`, autonomy OFF) | **Works, deterministic.** Currently certifying at N=40 fresh-POR cycles: link + A→B + B→A data byte-exact + doorbell. **Zero failures so far.** |
-| **Autonomous zero-poke bring-up** | **NOT reliable. ~25–35% both-dies-OK.** This is the gap. |
+| **Manual recipe bring-up** (`rcp()`, autonomy OFF) | **Works, deterministic.** N=40 fresh-POR: link + A→B + B→A + doorbell. Zero failures. |
+| **Autonomous zero-poke bring-up** | ~~**NOT reliable. ~25–35% both-dies-OK.**~~ → **RESOLVED, see §0: 10/10 all channels.** |
 
-**A manual recipe is not the deliverable.** Hardware autonomy is a hard requirement.
-The certification number above is recipe-mode and must not be read as autonomy.
+**A manual recipe is not the deliverable.** Hardware autonomy is a hard requirement —
+now met on silicon (§0).
 
 ---
 

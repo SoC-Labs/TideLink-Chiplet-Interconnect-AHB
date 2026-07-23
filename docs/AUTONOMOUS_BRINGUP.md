@@ -1,5 +1,14 @@
 # TideLink — Autonomous ("zero-poke") Bring-Up: How It Works
 
+> **✅ UPDATE 2026-07-16 — the autonomy CHANNEL gap is CLOSED.** Zero-poke all channels
+> now deliver byte-exact on silicon (N=10/10, N=40 certifying). See
+> `AUTONOMY_STATUS_2026_07_14.md §0`. The delivered blocker was NOT the §3 anchor gate — it
+> was the master die_a's **winscan FSM livelocking in data mode** (churns FINALIZE, tears
+> down its own FC, disrupts RX-commit). Fix = event-gated retire-autonomy on
+> `wip/b2a-fix` @ cd2db38 (latch `reanchored && fcsm==4` → DISARM-PARK the FSM). The
+> `autonomy_armed` / commit-gate mechanics below remain accurate as the bring-up chain.
+
+
 **Audience:** an analyst with no prior context on this project.
 **Scope:** the V2 PHY autonomous bring-up chain only. Written 2026-07-14.
 **Repo:** branch `wip/phase2-pblock`. All file:line refs verified on that branch.

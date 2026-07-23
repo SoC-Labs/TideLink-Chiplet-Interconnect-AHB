@@ -163,8 +163,8 @@ proc create_root_design { parentCell } {
 
     # PS M_AXI_HPM0 -> SmartConnect -> AHB bridge -> eth_ss_0
     connect_bd_intf_net [get_bd_intf_pins $ps/M_AXI_HPM0_FPD] [get_bd_intf_pins $smc/S00_AXI]
-    connect_bd_intf_net [get_bd_intf_pins $smc/M00_AXI]       [get_bd_intf_pins $ahb_bridge/AXI4_LITE]
-    connect_bd_intf_net [get_bd_intf_pins $ahb_bridge/AHB_M]  [get_bd_intf_pins $soc/eth_ss_0]
+    connect_bd_intf_net [get_bd_intf_pins $smc/M00_AXI]       [get_bd_intf_pins $ahb_bridge/AXI4]
+    connect_bd_intf_net [get_bd_intf_pins $ahb_bridge/M_AHB]  [get_bd_intf_pins $soc/eth_ss_0]
     # SmartConnect + bridge clocks/resets on the SoC clock (eth_ss_0 domain)
     #   SCOPING-TODO: eth_ss_0 is synchronous to the SoC's INTERNAL hclk (derived
     #   from sys_fclk). If the SoC divides fclk, the bridge must run on sys_hclk

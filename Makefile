@@ -260,7 +260,7 @@ endef
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
-	sim_gate_force_recal
+	sim_gate_force_recal sim_gate_dftelab
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -905,13 +905,32 @@ sim_gate_asicelab_v2:
 	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
 	    -top tidelink_top +define+TB_TOP_NO_DUMP -l vcs_asicelab_v2.log)
 
+# The ACTUAL TAPEOUT TOP: tidelink_dft_wrapper (adds the DFT/strap layer around
+# tidelink_top and is where the silicon-param DEFAULTS live — HONEST_MASK_HS,
+# ROLE_FROM_STRAP, NEGO_CFG_RESET, tl_data_mode_o). It was in NO flist and NO
+# gate, which is EXACTLY why the dead-HONEST_MASK_HS strap (param omitted from the
+# tidelink_top instantiation) went unseen: asic_v*_elab elaborate tidelink_top,
+# not the wrapper. This gate elaborates the wrapper itself with -top so a dropped
+# param connection / dead strap on the tapeout top FAILS here. Same flist as
+# asic_v2 + the wrapper source; top = tidelink_dft_wrapper.
+sim_gate_dftelab:
+	$(call sim_gate_run,dft_wrapper_elab,\
+	  rm -rf cocotb/tidelink_top_pair/sim_build_dftelab && \
+	  mkdir -p cocotb/tidelink_top_pair/sim_build_dftelab && \
+	  cd cocotb/tidelink_top_pair/sim_build_dftelab && \
+	  vcs -full64 -sverilog -timescale=1ns/1ps \
+	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
+	    $(TIDELINK_HOME)/src/rtl/asic/tidelink_dft_wrapper.sv \
+	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
+	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
 	v2_pair_sustained v2_truncated_pkt_credit \
-	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
+	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
@@ -987,6 +1006,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_zeropoke
 	@$(MAKE) --no-print-directory sim_gate_asicelab
 	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
+	@$(MAKE) --no-print-directory sim_gate_dftelab
 	@$(MAKE) --no-print-directory sim_gate_retire_plumb
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
 	@$(MAKE) --no-print-directory sim_gate_v2_lane_position

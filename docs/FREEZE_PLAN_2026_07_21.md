@@ -63,10 +63,18 @@ unwritable" premise is refuted (bit[16]@0x1714 is a normal APB reg both dies).
 | D | **Hardware demo** | ✅ **DELIVERED** — KR260 **12/12 byte-exact, in-order, CRC-on clean (crc_errors=0)** on real hardware, which silicon-validates the CRC re-enable. The earlier "intermittent delivery" was a receiver read-protocol artifact (fixed-offset read of a streaming FIFO), not a link defect. |
 
 ## What remains to *declare* freeze (David's calls)
-1. **F14-B waiver sign-off.** `xfail_f14b_datamode_wedge` is the one remaining XFAIL — no in-field recovery of a data-mode wedge (both-die POR clears; sim-only; unrelated to CRC). Given reliable HW delivery + working SWI_FORCE_RECAL, this is waiver-appropriate, but it needs an explicit documented waiver, not silence.
-2. **CI pins + GitHub creds** (step C) so a fresh pipeline is green.
-3. **Merge decision:** `integ/freeze-2026-07-21` → `integ/consolidation-2026-07` → `main`, and tag the freeze. (No push has been done — awaiting your go.)
-4. Post-freeze (non-blocking) enhancements: `socl_l7_real_crc_seen` W1C (self-healing), `sim_gate_dftelab`, the chiplet `tl_data_mode_o` one-net swap.
+1. **F14-B waiver sign-off.** Waiver drafted: [WAIVER_F14B_DATAMODE_WEDGE.md](WAIVER_F14B_DATAMODE_WEDGE.md) — sim-only data-mode wedge, both-die POR clears, detectable via tagged-data canary, SWI_FORCE_RECAL recovers eye-cal cases; sentinel stays in the gate so the waiver can't rot. Needs your ✅.
+2. **CI pins + GitHub creds** so a fresh pipeline is green (chiplet repo is on GitHub).
+3. **Merge decision:** `integ/freeze-2026-07-21` → `integ/consolidation-2026-07` → `main`, and push. Tagged locally `freeze-2026-07-22` (annotated, unpushed). No push has been done — awaiting your go.
+
+## Closed this session (was "remaining")
+- ✅ **`sim_gate_dftelab`** — the ASIC DFT wrapper (the actual tapeout top, where the silicon-param
+  defaults live) was in no flist and no gate; that is exactly why the dead-HONEST_MASK_HS strap went
+  unseen. Now elaborated in the gate (`dft_wrapper_elab` PASS). Gate is now **34 PASS + 1 XFAIL**.
+
+## Post-freeze (non-blocking) enhancements
+- `socl_l7_real_crc_seen` W1C (self-healing watchdog), the chiplet `tl_data_mode_o` one-net swap
+  (`nanosoc_eth_chiplet.sv`), F14-B retrain-lite recovery.
 
 ## Open items needing David (not blocking A/B)
 

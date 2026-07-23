@@ -125,13 +125,8 @@ proc create_root_design { parentCell } {
     # Role strap AXI-GPIO (bit 0 -> role_strap_i). die_a default 0; the flip
     # target overrides C_DOUT_DEFAULT to 1 (or the PYNQ runtime writes it).
     ###########################################################################
-    set strap_gpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_strap]
-    set_property -dict [list \
-        CONFIG.C_GPIO_WIDTH   {1} \
-        CONFIG.C_ALL_OUTPUTS  {1} \
-        CONFIG.C_DOUT_DEFAULT {0x00000000} \
-        CONFIG.C_IS_DUAL      {0} \
-    ] $strap_gpio
+    set strap_const [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 role_strap_const]
+    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $strap_const
 
     ###########################################################################
     # IRQ aggregation: eth / phc_pps / phc_alarm / tidechart -> pl_ps_irq0
@@ -150,6 +145,7 @@ proc create_root_design { parentCell } {
     # Clocks
     connect_bd_net [get_bd_pins $ps/pl_clk0]        [get_bd_pins $clk_wiz/clk_in1]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $soc/sys_fclk]
+    connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $ps/maxihpm0_fpd_aclk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out2]  [get_bd_pins $phy_clk_div/clk_in]
     connect_bd_net [get_bd_pins $phy_clk_div/clk_out] [get_bd_pins $soc/user_ref_clk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out3]  [get_bd_pins $soc/idelay_ref_clk]
@@ -177,7 +173,7 @@ proc create_root_design { parentCell } {
     # Role strap GPIO (its own AXI-Lite off the same SmartConnect would need
     # NUM_MI=2; SCOPING-TODO: add the strap GPIO to the AXI map, or drive
     # role_strap_i from an xlconstant for a fixed-role bring-up).
-    connect_bd_net [get_bd_pins $strap_gpio/gpio_io_o] [get_bd_pins $soc/role_strap_i]
+    connect_bd_net [get_bd_pins $strap_const/dout] [get_bd_pins $soc/role_strap_i]
 
     # Interrupts -> concat -> pl_ps_irq0
     connect_bd_net [get_bd_pins $soc/eth_irq]        [get_bd_pins $irq_concat/In0]

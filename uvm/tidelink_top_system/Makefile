@@ -114,11 +114,23 @@ VCS_FLAGS += -y $(AMBA_HOME)/sverilog/src/com
 VCS_FLAGS += +libext+.svp+.sv+.svi+.svh
 
 # §9 per-lane bit-slip alignment TB plumbing (asymmetric skew tests)
-# Lane checker now lives in src/rtl as tidelink_lane_checker (renamed from
-# the cocotb-local wlink_lane_checker; the lane_checker is also pulled in by
-# the FPGA/ASIC flists for synthesis paths).
+# Lane checker moved out of src/rtl into the tidelink-gpio-phy submodule
+# (commit d043909: "stage3: replace tidelink_lane_checker.sv with
+# tidelink-gpio-phy submodule"). Repoint to the submodule's self-contained
+# set — matches flists/tidelink_lane_checker.flist: popcount16 + single-lane
+# matcher + 8-lane wrapper, with the incdir for tidelink_training_patterns.svh.
 VCS_FLAGS += $(TB_DIR)/pad_skid_lanes.sv
-VCS_FLAGS += $(PROJ_HOME)/src/rtl/tidelink_lane_checker.sv
+VCS_FLAGS += +incdir+$(PROJ_HOME)/deps/tidelink-gpio-phy/rtl
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_popcount16.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker_single.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_lane_checker.sv
+VCS_FLAGS += $(PROJ_HOME)/deps/tidelink-gpio-phy/rtl/tidelink_gpio_phy_apb_regs.sv
+# PHY RX helper cells wired into axi_chiplet_controller during the June
+# eye-visibility-v2 work (post-dated the spring UVM freeze — u_rxclk_buf /
+# u_idelay_rx / u_eye_regs instances in axi_chiplet_controller.sv).
+VCS_FLAGS += $(RTL_DIR)/tidelink_idelay_rx.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_rxclk_buf.sv
+VCS_FLAGS += $(RTL_DIR)/tidelink_eye_regs.sv
 
 # Top-level testbench. GATE=1 uses a probe-free TB auto-derived from
 # top.sv (XMR debug instrumentation stripped — see gen_gate_tb.awk),
@@ -275,9 +287,11 @@ VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/veri
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
 VCS_FLAGS += $(XHB500_MST_DIR)/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
 
-# Wlink chiplet controller (Chisel-generated Verilog, GPIO PHY + TideLink)
-# Use -y to pick up all sub-modules (APBFanout, WlinkTxRouter, etc.)
-VCS_FLAGS += -y $(DEPS_DIR)/wav-wlink-hw/output_tidelink_gpio
+# Wlink chiplet controller.
+# 2026-07 un-rot: dropped the stale `-y wav-wlink-hw/output_tidelink_gpio`
+# search dir — its sbt-regenerated WlinkRxLinkLayer lacks the io_obs_* ports
+# that the committed logical/wlink set drives (shadowed logical/wlink, broke
+# elaboration). See the QUARANTINE note near TESTS for the remaining blocker.
 VCS_FLAGS += +libext+.v
 
 # Wlink PHY (GPIO behavioural model)
@@ -345,6 +359,29 @@ else
   SIM_FLAGS += +ntb_random_seed_automatic
 endif
 
+# ===========================================================================
+# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — DOES NOT ELABORATE
+# ---------------------------------------------------------------------------
+# UVM froze ~2026-05; RTL churned through Jun/Jul. Two rot layers were fixed
+# here (lane_checker -> tidelink-gpio-phy submodule; new PHY helper cells
+# idelay_rx/rxclk_buf/eye_regs/gpio_phy_apb_regs; stale sbt output_tidelink_gpio
+# -y dropped, and the ~7-min sbt Wlink regen removed from `compile`).
+# REMAINING blocker needs real UVM-build work:
+#   current src/rtl/tidelink_top.sv instantiates axi_chiplet_controller with
+#   ports that exist ONLY in src/rtl/local_overrides/axi_chiplet_controller.sv
+#   (obs_a2l_replay_{app,link}_valid_o, obs_fe_rx_{is_full,credit_max}_o,
+#   train_fail_irq_o, apb_ctrl_reg_{write,addr,wdata}), but this Makefile
+#   compiles the PINNED submodule copy which predates those ports -> VCS UPIMI.
+#   This env additionally has a spring-era tb/top.sv + pad_skid_lanes.sv that
+#   drives tidelink_lane_checker with old ports (lane_data/rst) — the TB itself
+#   also needs re-aligning to the current lane_checker/top interfaces.
+# TODO: re-point the top/wlink source list to the src/rtl/local_overrides set
+#   that flists/tidelink_fpga.flist uses (14 overrides), and update tb/top.sv +
+#   pad_skid_lanes.sv to the current lane_checker/top port interfaces. The
+#   cocotb tidelink_top_pair env already tracks that flist and is now the
+#   BLOCKING paired-die smoke (see .gitlab-ci.yml cocotb-top-pair-smoke). The
+#   CI job is honestly allow_failure with this reason (not fake-green).
+# ===========================================================================
 # ---------------------------------------------------------------
 # Test suite
 # ---------------------------------------------------------------
@@ -434,7 +471,12 @@ ifeq ($(GATE),1)
 COMPILE_DEPS = $(TB_DIR)/top_gate.sv
 SIM_DIR      = sim_build_gate
 else
-COMPILE_DEPS = $(WLINK_GEN_V)
+# 2026-07 un-rot: the sbt-regenerated output_tidelink_gpio is no longer used
+# (dropped as a -y search dir above — its WlinkRxLinkLayer lacks the io_obs_*
+# ports the committed logical/wlink set drives). Do NOT gate `compile` on the
+# ~7-min sbt Wlink regen; it produced only stale Verilog. Run `make wlink_regen`
+# explicitly if you ever need that output. Env is QUARANTINED (see TESTS note).
+COMPILE_DEPS =
 endif
 
 # Derive the probe-free gate TB from top.sv, then assert the strip

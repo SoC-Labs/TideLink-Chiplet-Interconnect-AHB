@@ -15,7 +15,10 @@ module tidelink_fifo_mem #(
     // System Parameters
     parameter SYS_DATA_W = 32,  // System Data Width
     parameter RAM_ADDR_W = 14,  // Size of SRAM
-    parameter RAM_DATA_W = 32   // Data Width of RAM
+    parameter RAM_DATA_W = 32,  // Data Width of RAM
+    // PENDING-DECISION #1 pass-through (default 1'b1 = bit-identical). See
+    // tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Port Definitions
@@ -48,8 +51,15 @@ module tidelink_fifo_mem #(
     output wire                   overrun,
     output wire                   underrun,
 
+    // RX-FIFO TWIN 2 sticky fault: AHB write into RX aperture while disarmed.
+    output wire                   ahb_inject_fault,
+
     // Control inputs (from APB registers)
     input  wire                   flush,
+
+    // RX-FIFO TWIN 2 (chip-killer) — runtime arm for the AHB CPU-write-into-RX
+    // path, POR-disarmed at tidelink_apb_regs CTRL[3]. See tidelink_fifo_ctrl.
+    input  wire                   swi_ahb_inject_arm,
 
     // FC direct write interface (single-cycle, bypasses AHB)
     input  wire                   fc_wr_valid,
@@ -123,7 +133,8 @@ module tidelink_fifo_mem #(
     // FIFO Control Logic
     // --------------------------------------------------------------------------
     tidelink_fifo_ctrl #(
-        .RAM_ADDR_W (RAM_ADDR_W)
+        .RAM_ADDR_W (RAM_ADDR_W),
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_fifo_ctrl (
         .hclk                (hclk),
         .hresetn             (hresetn),
@@ -148,7 +159,9 @@ module tidelink_fifo_mem #(
         .packet_committed_irq(packet_committed_irq),
         .overrun             (overrun),
         .underrun            (underrun),
+        .ahb_inject_fault    (ahb_inject_fault),
         .flush               (flush),
+        .swi_ahb_inject_arm  (swi_ahb_inject_arm),
         // FC direct write interface
         .fc_wr_valid         (fc_wr_valid),
         .fc_wr_write         (fc_wr_write),

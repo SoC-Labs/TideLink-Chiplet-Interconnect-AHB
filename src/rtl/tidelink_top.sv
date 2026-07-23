@@ -120,7 +120,90 @@ module tidelink_top #(
     // The slave's lane mask is autoneg-locked at 0xff under 7'h61; SW-driven
     // lets both dies set their mask. Revisit 7'h61 once mask-handshake
     // propagates the reduced mask to the slave.
-    parameter [6:0]  NEGO_CFG_RESET       = 7'h00
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // Zero-poke winscan converge-lock — POR-default forwarded verbatim to the
+    // axi_chiplet_controller (see its WINSCAN_CONVERGE_LOCK_EN note). 1'b0 =
+    // today's behaviour, bit-identical for sim/ASIC; the FPGA vivado wrapper
+    // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
+    // HONEST_MASK_HS — peer-mask handshake authenticity gate (from kr260-pair-onchip).
+    //   0 (default) = legacy bench tie: the inner axi_chiplet_controller's
+    //       apb_debug_unlock_i / mask_hs_bypass_i are held 1'b1 (see the
+    //       u_chiplet_controller instantiation below), so mask_hs_gate_open is
+    //       permanently forced open. Single-die Z2/ASIC targets are BYTE-IDENTICAL
+    //       to today — a parameter-constant ternary folds to the historical 1'b1
+    //       ties at elaboration.
+    //   1 = drive the inner controller from the real top-level apb_debug_unlock_i /
+    //       mask_hs_bypass_i ports (declared but previously DISCARDED) so the
+    //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
+    //       to prove hardware autonomy without either bypass strap — and the intended
+    //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
+    //
+    // PENDING (DECISION #2, David 2026-07-19) — SPLIT PREPARED, NOT APPLIED.
+    // The single HONEST_MASK_HS param above folds TWO independent choices, so
+    // "ship debug unlocked" (which David asked for, and which 1'b0 already
+    // gives) ALSO permanently bypasses the peer-mask handshake. They are now
+    // separable via DEBUG_UNLOCK_DEFAULT below. DEFAULTS ARE UNCHANGED: at
+    // DEBUG_UNLOCK_DEFAULT=1'b1 + HONEST_MASK_HS=1'b0 the two ties fold to the
+    // historical 1'b1/1'b1, byte-identical to today. Nothing is applied here —
+    // David is deciding whether the handshake bypass was intended.
+    parameter        HONEST_MASK_HS       = 1'b1,
+    // PENDING (DECISION #2) — debug-unlock, now INDEPENDENT of HONEST_MASK_HS.
+    //   1'b1 (default) = apb_debug_unlock_i tied 1 at the controller: APB debug
+    //       permanently unlocked. This is today's effective behaviour and
+    //       matches "ship debug unlocked".
+    //   1'b0 = drive the controller from the real top-level apb_debug_unlock_i
+    //       port, so APB debug is strap-lockable.
+    // Setting HONEST_MASK_HS=1'b1 while leaving this at 1'b1 gives the
+    // combination that was previously UNREACHABLE: an honest peer-mask
+    // handshake WITH debug still unlocked.
+    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1,
+    // Phase 2 autonomy — RETIRE-AUTONOMY enable (the B->A channel fix).
+    // Forwards to axi_chiplet_controller.RETIRE_EN. When 1, an event-gated
+    // retire latches on (reanchored & fcsm==4) held ~160 ms and DISARM-PARKs
+    // the winscan FSM, replicating the manual `0x210C=0` escape hatch that the
+    // silicon recipe takes. Silicon-validated 10/10 all channels at cd2db38.
+    //
+    // DEFAULT = 1'b1. Deliberate; the reasoning:
+    //  1. BIT-EQUIVALENCE (mandatory): the FPGA image is validated WITH the
+    //     retire. Defaulting 0 here would silently REVERT the validated
+    //     bitstream to the known-livelocking B->A 0/10 behaviour — the exact
+    //     class of regression the NEGO_CFG_RESET precedent warns about
+    //     (plumbed, never forwarded => every bitstream silently built 7'h00).
+    //  2. NOT A SILENT CHIP-DEFAULT: the retire SET is *already* gated on the
+    //     raw armed conjunction (nego_en & role_locked & train_auto_en). The
+    //     autonomy opt-in gate is NEGO_CFG_RESET, whose tidelink_top default
+    //     is the safe 7'h00 => nego_en=0 => the retire can NEVER fire on a
+    //     default ASIC integration regardless of RETIRE_EN. So 1'b1 changes
+    //     behaviour for nobody who has not ALREADY consciously opted into
+    //     autonomy by strapping NEGO_CFG_RESET != 0.
+    //  3. FAIL-SAFE DIRECTION: an ASIC that DOES strap nego_en wants autonomy
+    //     that WORKS. RETIRE_EN=0 + nego_en=1 is precisely the broken
+    //     configuration (winscan livelock, B->A dead). Defaulting 0 would ship
+    //     the known-bad autonomy to any integration that straps 7'h61.
+    // The F4 gap is closed by making RETIRE_EN EXPRESSIBLE at the top (and on
+    // the packaged IP face), not by flipping the default: the ASIC integration
+    // can now set 0 or wire a bond strap without editing the controller.
+    parameter        RETIRE_EN            = 1'b1,
+    // RX-FIFO TWIN 2 master enable. Forwards to
+    // tidelink_fifo → tidelink_fifo_mem → tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    //   1'b1 (default, and the ASIC setting) = AHB CPU-write-into-RX is a
+    //         SUPPORTED, FUNCTIONAL path (David, 2026-07-19).
+    //   1'b0 = optional FC-write-only posture for an integration that wants it.
+    // TWIN 2 (stray AHB write mis-frames the next FC packet) is closed by the
+    // QUALIFIED write-side arm in tidelink_fifo_ctrl, NOT by this gate.
+    parameter bit    ENABLE_AHB_WRITE     = 1'b1,
+    // Terminal role from strap, not the I2C-NACK constant.
+    // Forwards to axi_chiplet_controller.ROLE_FROM_STRAP → tidelink_autoneg.
+    // DECISION (David, 2026-07-19): ENABLED GLOBALLY — default is now 1'b1.
+    //   1'b1 (default) = NACK terminal role AND timeout fallback derive from
+    //         role_strap_i, so a (master,slave) strap survives a dead I2C.
+    //         The FPGA paired targets drive role_strap_i from a real AXI GPIO
+    //         (0x4404_0000 bit 0, per-die from FPGAHUB_LOCAL_ROLE: die_a=0
+    //         master, die_b=1 slave), so the FPGA inherits the correct pair.
+    //   1'b0 = LEGACY trap: I2C NACK => slave, timeout => nego_fallback, so a
+    //         dead I2C makes BOTH dies slave and autonomy is structurally dead.
+    parameter bit    ROLE_FROM_STRAP      = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -342,6 +425,27 @@ module tidelink_top #(
     // Link active status (Wlink link layer is up and operational)
     // --------------------------------------------------------------------------
     output wire                     link_active,
+
+    // --------------------------------------------------------------------------
+    // Data-mode strobe (TideChart election sequencing contract — G1 dual-root)
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    //
+    // 1 = the Wlink link layer has reached its credit/data-exchange region
+    // (FCSM state >= 4), i.e. the link genuinely CARRIES FC/EXT words.
+    //
+    // This is DISTINCT from link_active above. link_active == role_locked_o,
+    // which asserts ~5us EARLIER, at role-lock, when the link cannot yet carry
+    // anything. TideChart's root election MUST be gated on this port, not on
+    // link_active: gating on link_active lets both dies settle their election
+    // before any CLAIM crosses the die boundary, producing a silent dual-root
+    // (neither die installs an uplink, enumeration never crosses the boundary).
+    //
+    // Domain: apb_clk (== hclk in all current integrations). Already CDC-synced
+    // inside the chiplet controller; it is a direct flop output, so it is a
+    // clean, glitch-free level. link_active/role_locked_o keep their existing
+    // meaning and existing users (d2d TX aperture, status/LEDs) unchanged.
+    // --------------------------------------------------------------------------
+    output wire                     tl_data_mode_o,
 
     // --------------------------------------------------------------------------
     // Reset output
@@ -716,14 +820,47 @@ module tidelink_top #(
                          apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
 
     // =========================================================================
-    // TideLink config APB mux: 2:1 APB mux
-    //   Source 0 (priority): FC adapter RX config (APB-native from FC adapter)
-    //   Source 1: External unified APB port (CPU reads/writes)
+    // TideLink config APB mux: 2:1 TRANSACTION-ATOMIC arbiter
+    //   Source 0: FC adapter RX config (fc_cfg_apb_*, APB-native; peer
+    //             credit/doorbell/returner config writes)
+    //   Source 1: external unified APB port (PS CPU reads/writes to Region 8)
     //
-    // FC adapter has priority (credit/doorbell delivery is time-sensitive).
-    // External APB is stalled (pready=0) when FC adapter is active.
+    // The FC config port must NEVER preempt an external PS access that is already
+    // in its ACCESS phase.  On the Zynq-7000 M_AXI_GP there is NO bus timeout, so
+    // a preempted PS access hangs the CPU for ever (Bus error on every later
+    // access).  The FC adapter, by contrast, tolerates pready backpressure -- its
+    // RX FSM (tidelink_fc_adapter.sv:588-630) holds psel/paddr/pwdata stable and
+    // waits on fc_rx_cfg_pready, and tidelink_apb_regs acks combinationally
+    // (fifo/tidelink_apb_regs.sv:650, pready=1'b1), so a held-off FC waits at
+    // most 1-2 cycles.  So the PS wins any conflict; the FC waits.
+    //
+    //   ext_txn    : an external Region-8 access is in its ACCESS phase (psel &
+    //                penable) -- the exact window the old bare mux corrupted.
+    //   ext_lock_q : registered grant, latched from the first STALLED external
+    //                ACCESS cycle and held until the access is acked.  Belt &
+    //                braces: even if a slow Region-10/11 shim slave stretches the
+    //                access across many cycles, the FC can never slip in on an
+    //                intermediate edge.  The bare !ext_txn term already covers the
+    //                common single-cycle-ack case; the lock hardens the
+    //                multi-cycle stall.
+    // The FC config port is granted only when no external access owns or is
+    // waiting for the bus.  (The bounded-stall watchdog that makes the PS bus
+    // structurally hang-proof lives just below the tl_apb_* declarations, since
+    // it references tl_apb_pready.)
     // =========================================================================
-    wire fc_cfg_apb_active = fc_cfg_apb_psel;
+    wire ext_txn = apb_sel_tidelink && apb_penable;   // external in ACCESS phase
+
+    reg  ext_lock_q;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ext_lock_q <= 1'b0;
+        else if (ext_txn && !tl_regs_pready)          // access started, not yet acked
+            ext_lock_q <= 1'b1;
+        else if (tl_regs_pready)                       // access completed -> release
+            ext_lock_q <= 1'b0;
+    end
+
+    wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -734,6 +871,35 @@ module tidelink_top #(
     wire [SYS_DATA_W-1:0]  tl_apb_prdata;
     wire                    tl_apb_pready;
     wire                    tl_apb_pslverr;
+
+    // -------------------------------------------------------------------------
+    // BOUNDED EXTERNAL STALL (belt & braces).  The arbitration above stops the FC
+    // from starving the PS, but a genuinely stuck sub-slave (tl_apb_pready never
+    // rising) would still hang the PS -- and the Zynq has no timeout of its own.
+    // Saturate a counter on a stalled external ACCESS and, past the limit,
+    // complete it with pready+pslverr so the PS bus is STRUCTURALLY incapable of
+    // locking up.  ext_stall_err_q latches sticky (POR-cleared) for post-mortem
+    // (waveform/ILA-visible; not APB-mapped -- no free obs-reg slot, see the
+    // commit message).  EXT_STALL_LIMIT >> any legal ack (apb_regs acks in 1).
+    // -------------------------------------------------------------------------
+    localparam [10:0] EXT_STALL_LIMIT = 11'd1024;
+    reg  [10:0] ext_stall_ctr_q;
+    reg         ext_stall_err_q;
+    wire ext_stalled = ext_txn && !tl_apb_pready && !fc_cfg_apb_active;
+    wire ext_timeout = (ext_stall_ctr_q == EXT_STALL_LIMIT);
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            ext_stall_ctr_q <= 11'd0;
+            ext_stall_err_q <= 1'b0;
+        end else if (!ext_stalled) begin
+            ext_stall_ctr_q <= 11'd0;                   // idle or completing -> reset
+        end else if (ext_stall_ctr_q != EXT_STALL_LIMIT) begin
+            ext_stall_ctr_q <= ext_stall_ctr_q + 11'd1;
+            if (ext_stall_ctr_q == EXT_STALL_LIMIT - 11'd1)
+                ext_stall_err_q <= 1'b1;                // latch sticky as it fires
+        end
+    end
 
     assign tl_apb_paddr   = fc_cfg_apb_active ? fc_cfg_apb_paddr   : apb_paddr[APB_ADDR_W-1:0];
     assign tl_apb_psel    = fc_cfg_apb_active ? fc_cfg_apb_psel    : apb_sel_tidelink;
@@ -1089,14 +1255,23 @@ module tidelink_top #(
                                                  tidelink_internal_pslverr;
 `endif
 
-    // Route APB responses back to both sources
+    // Route APB responses back to both sources.  GATE the FC response: the FC is
+    // told 'ready' only in the cycles it actually owns the bus (fc_cfg_apb_active)
+    // -- otherwise it is held off (pready=0) and, per its RX FSM, cleanly stalls
+    // with its transaction intact.  prdata is passed through unconditionally: the
+    // FC issues writes only (fc_rx_cfg_pwrite=1) and ignores read data.
     assign fc_cfg_apb_prdata  = tl_apb_prdata;
-    assign fc_cfg_apb_pready  = tl_apb_pready;
-    assign fc_cfg_apb_pslverr = tl_apb_pslverr;
+    assign fc_cfg_apb_pready  = fc_cfg_apb_active ? tl_apb_pready  : 1'b0;
+    assign fc_cfg_apb_pslverr = fc_cfg_apb_active ? tl_apb_pslverr : 1'b0;
 
+    // External (PS) response.  When the FC owns the bus the PS is stalled
+    // (pready=0) -- but the arbiter above guarantees fc_cfg_apb_active=0 whenever
+    // an external access is in its ACCESS phase, so the PS is never actually
+    // starved here.  ext_timeout force-completes a stuck-slave stall with a bus
+    // error so the PS can never hang (the Zynq has no timeout of its own).
     assign tl_regs_prdata  = fc_cfg_apb_active ? '0   : tl_apb_prdata;
-    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : tl_apb_pready;
-    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : tl_apb_pslverr;
+    assign tl_regs_pready  = fc_cfg_apb_active ? 1'b0 : (tl_apb_pready  | ext_timeout);
+    assign tl_regs_pslverr = fc_cfg_apb_active ? 1'b0 : (tl_apb_pslverr | ext_timeout);
 
     // =========================================================================
     // Address translation wiring + pipeline register
@@ -1115,12 +1290,76 @@ module tidelink_top #(
     logic                    pipe_hsel_r;
     logic                    pipe_valid_r;   // latched address phase ready for XHB500
 
-    // Detect new address phase on external port
-    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1] & ahb_sub_hready;
+    // Detect new address phase on external port.
+    // SoC Labs 2026-07-05 comb-loop fix: do NOT qualify with ahb_sub_hready.
+    // The FPGA wrapper loops ahb_sub_hreadyout back into ahb_sub_hready, and
+    // ahb_sub_hreadyout (below) depended on ext_is_nonseq -> hreadyout was a
+    // combinational function of itself (Vivado: "1 combinational loop (HIGH)").
+    // On silicon the bridge / this pipe / XHB500 sampled the ring divergently:
+    // window WRITES phantom-completed at the bridge (vanish), HWDATA was
+    // captured one cycle late (poison), double-accepts corrupted FC credit
+    // (fcsm 4->0 under sustained window traffic). Reproduced deterministically
+    // in sim by test_v2_xhb_window_bridge (bridge-accurate BFM). Dropping the
+    // hready term is safe for this single-master port: pipe_valid_r blocks
+    // re-latch of a held NONSEQ, and the pipe clears exactly at the master's
+    // address-phase completion edge (hreadyout==raw whenever pipe_valid_r).
+    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
-    // XHB500 hreadyout (raw, before pipeline insertion)
+    // XHB500 hreadyout / hresp (raw, before pipeline + timeout insertion)
     wire xhb_sub_hreadyout_raw;
+    wire xhb_sub_hresp_raw;
+
+    // ── ahb_sub bounded stall backstop (2026-07-06) ───────────────────────────
+    // The XHB500 subordinate holds hreadyout low for the whole data phase of a
+    // window transfer while it waits on the AXI/link round-trip to the peer. If
+    // the link wedges (credit stall, PHY drop), that hreadyout can stay low
+    // FOREVER -> ahb_sub_hreadyout (below) stays low -> the Xilinx
+    // axi_ahblite_bridge and the Zynq PS interconnect block indefinitely with no
+    // PS-side timeout, wedging z2_02 off-net (physical power-cycle to recover;
+    // bench-confirmed on the tl-data aperture before its own backstop —
+    // tidelink_fc_adapter.sv:247-329, TX_STALL_TIMEOUT). This mirrors that fix
+    // for the window path: after SUB_STALL_TIMEOUT hclk cycles of a single
+    // transfer held stalled, terminate it with the standard AHB two-cycle ERROR
+    // response (cy1: HREADYOUT=0 + HRESP=1; cy2: HREADYOUT=1 + HRESP=1) so the
+    // bridge/PS un-block with a recoverable bus error (SIGBUS) instead of hanging.
+    //
+    // 2^16 hclk (~2.6 ms @ 25 MHz FPGA rig, ~14 ms @ 4.7 MHz) is orders beyond a
+    // legitimate slow-but-progressing window round-trip: the counter RESETS every
+    // time the front-end stops stalling (i.e. on every completed beat — see
+    // ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
+    // held stalled continuously past the timeout (a genuine wedge) can trip it.
+    //
+    // NO COMB LOOP (this is the load-bearing invariant that cb33c9f established):
+    // every term below is a register or derives ONLY from ahb_sub_hsel/htrans
+    // (ext_is_nonseq), pipe_valid_r (reg) and xhb_sub_hreadyout_raw (XHB500's own
+    // output) — NEVER from ahb_sub_hready (the wrapper loopback). ahb_sub_hreadyout
+    // gains only the sub_err{1,2}_r register overrides, so it remains free of any
+    // combinational dependence on ahb_sub_hready.
+`ifdef TIDELINK_SUB_STALL_TIMEOUT_LOG2
+    // Sim override (cocotb/tidelink_top_pair_v2/test_v2_xhb_window_stall.py drives
+    // it small so the backstop trips in a few hundred cycles instead of ~2^16).
+    localparam int SUB_STALL_TIMEOUT_LOG2 = `TIDELINK_SUB_STALL_TIMEOUT_LOG2;
+`else
+    localparam int SUB_STALL_TIMEOUT_LOG2 = 16;   // ~2^16 hclk; see rationale above
+`endif
+    logic [SUB_STALL_TIMEOUT_LOG2:0] sub_stall_ctr_r;
+    logic                            sub_err1_r, sub_err2_r;
+    // Front-end is holding HREADYOUT low (a transfer is in flight and not
+    // progressing): the pipeline-fill stall cycle OR — the case that actually
+    // wedges the PS — XHB500 holding its data phase low while it waits on the
+    // cross-link b/r response. NOTE the data-phase stall persists AFTER
+    // pipe_valid_r clears (XHB500 has already accepted the address and the
+    // master has dropped to IDLE), so it is detected by xhb_sub_hreadyout_raw==0
+    // directly, NOT via pipe_valid_r. On an idle bus XHB500 drives raw==1
+    // (tidelink_top.sv:1181), so idle => not stalled => the counter resets and
+    // every completed beat (raw pulses high) re-zeroes it. Frozen during the
+    // 2-cycle ERROR response so one wedged transfer is counted exactly once.
+    wire sub_stall_fill    = ext_is_nonseq && !pipe_valid_r;
+    wire sub_stall_busy    = !xhb_sub_hreadyout_raw;
+    wire ext_stalled       = (sub_stall_fill || sub_stall_busy)
+                             && !sub_err1_r && !sub_err2_r;
+    wire sub_stall_expired = sub_stall_ctr_r[SUB_STALL_TIMEOUT_LOG2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -1148,6 +1387,33 @@ module tidelink_top #(
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
+            end else if (sub_err1_r) begin
+                // Stall-timeout abort: abandon the in-flight (wedged) transfer so
+                // it cannot re-trigger the backstop or hold hsel into XHB500.
+                pipe_valid_r   <= 1'b0;
+                pipe_hsel_r    <= 1'b0;
+                pipe_htrans_r  <= 2'b00;
+            end
+        end
+    end
+
+    // Stall-timeout counter + 2-cycle AHB ERROR sequencer (registered; driven
+    // off hclk; never combinationally dependent on ahb_sub_hready — see above).
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_stall_ctr_r <= '0;
+            sub_err1_r      <= 1'b0;
+            sub_err2_r      <= 1'b0;
+        end else begin
+            sub_err2_r <= sub_err1_r;   // ERROR cycle 2 follows cycle 1
+            sub_err1_r <= 1'b0;         // default: one-shot
+            if (!ext_stalled) begin
+                sub_stall_ctr_r <= '0;                 // resets every completed beat
+            end else if (sub_stall_expired) begin
+                sub_stall_ctr_r <= '0;
+                sub_err1_r      <= 1'b1;               // fire the ERROR response
+            end else begin
+                sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
         end
     end
@@ -1162,11 +1428,23 @@ module tidelink_top #(
     wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
     // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
     // the stale address; once pipeline is valid, pass through XHB500's own hreadyout
+    // (comb-loop fix, part 2): the else-arm used ahb_sub_hready — the last
+    // remaining hready-in fan-in to XHB500's FSM through the wrapper loopback.
+    // Use XHB500's own raw hreadyout instead (idle bus: raw==1 anyway).
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
-                                             (ext_is_nonseq ? 1'b0 : ahb_sub_hready);
+                                             (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
-    // External hreadyout: stall upstream during the pipeline fill cycle
-    assign ahb_sub_hreadyout = (ext_is_nonseq && !pipe_valid_r) ? 1'b0 : xhb_sub_hreadyout_raw;
+    // External hreadyout: stall upstream during the pipeline fill cycle. The
+    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when the
+    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — both are
+    // registers, so no combinational dependence on ahb_sub_hready is introduced.
+    assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
+                               sub_err2_r ? 1'b1 :
+                               (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
+                               xhb_sub_hreadyout_raw;
+    // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
+    // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
+    assign ahb_sub_hresp     = (sub_err1_r | sub_err2_r) ? 1'b1 : xhb_sub_hresp_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -1180,7 +1458,14 @@ module tidelink_top #(
         .RAM_ADDR_W        (RAM_ADDR_W),
         .RAM_DATA_W        (RAM_DATA_W),
         .APB_ADDR_W        (APB_ADDR_W),
-        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(TIDELINK_PAIR_BASE),
+        // TWIN 2 FIX (F10, DECISION 2026-07-21): AHB-write-to-RX IS a supported
+        // path, so it is NOT disabled here. The corruption is closed instead by
+        // QUALIFYING the write arm in tidelink_fifo_ctrl.sv (ahb_pkt_start_ok +
+        // zero-length reject), so an AHB write can no longer walk the FC-shared
+        // write_ptr or mis-frame the next received packet. ENABLE_AHB_WRITE stays
+        // 1'b1. See docs/RXFIFO_TWIN2_DISPOSITION.md; gated by sim_gate_fifo_twin2.
+        .ENABLE_AHB_WRITE  (ENABLE_AHB_WRITE)
     ) u_tidelink_fifo (
         .hclk              (hclk),
         .hresetn           (hresetn),
@@ -1713,7 +1998,7 @@ module tidelink_top #(
         .hmaster           (12'd0),
         .hrdata            (ahb_sub_hrdata),
         .hreadyout         (xhb_sub_hreadyout_raw),
-        .hresp             (ahb_sub_hresp),
+        .hresp             (xhb_sub_hresp_raw),
         .hexokay           (),
         .hqos              (4'h0),
         .hregion           (4'h0),
@@ -2012,7 +2297,16 @@ module tidelink_top #(
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
-        .NEGO_CFG_RESET       (NEGO_CFG_RESET)
+        .NEGO_CFG_RESET       (NEGO_CFG_RESET),
+        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
+        // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
+        .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
+        // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so
+        // the ASIC integration can gate/strap the retire WITHOUT editing the
+        // controller. See the module parameter declaration for the default
+        // rationale.
+        .RETIRE_EN            (RETIRE_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
@@ -2036,8 +2330,16 @@ module tidelink_top #(
         // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
         // lane mask) on the non-master die. Bench-debug straps; revisit when
         // re-enabling autoneg for production.
-        .apb_debug_unlock_i         (1'b1),
-        .mask_hs_bypass_i           (1'b1),
+        // HONEST_MASK_HS gate (from kr260-pair-onchip): default 0 folds both selects
+        // to the historical 1'b1 ties => byte-identical single-die netlist. With 1 they
+        // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
+        // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
+        // and the peer-mask handshake must genuinely match.
+        // PENDING (DECISION #2) — the two selects are now INDEPENDENT. At the
+        // shipped defaults (DEBUG_UNLOCK_DEFAULT=1, HONEST_MASK_HS=0) both fold
+        // to the historical 1'b1, so this is byte-identical to today.
+        .apb_debug_unlock_i         (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i),
+        .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),
         .puf_seed                   (puf_seed),
         .puf_ready                  (puf_ready),
@@ -2292,7 +2594,10 @@ module tidelink_top #(
         .obs_fe_rx_credit_max_o      (obs_fe_rx_credit_max_w),
         .obs_fe_rx_is_full_o         (obs_fe_rx_is_full_w),
         // SoC Labs Bug-A FCSM observation 2026-06-03
-        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w)
+        .obs_a2l_replay_app_valid_o  (obs_a2l_replay_app_valid_w),
+        // TideChart election sequencing contract (G1) — FCSM >= 4 data-mode
+        // strobe, straight out to the new tl_data_mode_o port.
+        .data_mode_o                 (tl_data_mode_o)
 `ifdef TIDELINK_PHY_V2
         // SoC Labs V2 epoch-anchor obs 2026-06-14 — engagement state out to the
         // tidelink_gpio_phy_apb_regs slave (SWI_EPOCH_STATUS @ 0x4403_2140).

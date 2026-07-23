@@ -33,6 +33,8 @@ Run
         TESTCASE=test_v2_autonomous_fc_handoff \
         make MODULE=test_v2_autonomous_fc_handoff
 """
+import os
+
 import cocotb
 from cocotb.triggers import ClockCycles
 
@@ -81,8 +83,13 @@ async def _wait_data_mode(tb, max_cycles=800_000, poll=500):
     return await tb.snapshot("after autonomous FC handoff (V2)")
 
 
-@cocotb.test(skip=True)  # see HARNESS GAP note below — enable once the
-                         # tidelink_top_pair_v2 tb autonomous force is fixed.
+# 2026-07-11: the historical unconditional skip cited a "harness gap" that was actually a
+# Makefile omission — the v2 Makefile never plumbed TB_TOP_BYPASS_AUTONEG (the v1 Makefile
+# does). It is now plumbed + exported (BYPASS_AUTONEG, default 1). This test needs the
+# autonomous force ENGAGED, i.e. run it with `make BYPASS_AUTONEG=0`; under the default
+# (=1) the tb parks in ST_BYPASS, so we skip rather than spuriously fail. With
+# BYPASS_AUTONEG=0 it RUNS GREEN (bilateral fcsm=4, byte-exact M->S, zero pokes).
+@cocotb.test(skip=(os.environ.get("BYPASS_AUTONEG", "1") != "0"))
 async def test_v2_autonomous_fc_handoff(dut):
     """ZERO-poke autonomous bring-up on the V2 deskew base reaches bilateral
     FCSM=4 and a byte-exact packet crosses M->S.

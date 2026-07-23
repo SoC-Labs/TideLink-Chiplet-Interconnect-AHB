@@ -27,7 +27,18 @@
 ###                                      Vivado `launch_runs -host`.
 ###
 ### Usage:   farm_build.sh <TARGET> <HOST>
-### Env:     REMOTE_ROOT  (default .cache/tidelink-farm, under remote $HOME)
+### Env:     REMOTE_ROOT  subdir under remote $HOME for this checkout's farm
+###                       trees. DEFAULT is AUTO-DERIVED PER-CHECKOUT:
+###                       .cache/tidelink-farm-<worktree-basename>-<sha1[:8] of
+###                       worktree abspath>, so two different local checkouts
+###                       NEVER share a remote tree (the concurrent-collision
+###                       incident). Set explicitly to override / deliberately
+###                       share a tree.
+###          FARM_LOCK_WAIT seconds to wait for the per-target remote-tree lock
+###                       before failing (default 14400; 0 = fail fast). Two
+###                       jobs sharing HOST+REMOTE_ROOT+TARGET serialize on it.
+###          FARM_LOCK_DIR local dir holding the lockfiles
+###                       (default $HOME/.cache/tidelink-farm-locks)
 ###          FPGA_NUM_JOBS         override Vivado -jobs (default: local=4,
 ###                                remote=8)
 ###          FPGA_INSERT_DEBUG_CORE passed through to build_design.tcl
@@ -53,7 +64,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIDELINK_HOME="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FPGA_DIR="$TIDELINK_HOME/fpga"
 
-REMOTE_ROOT="${REMOTE_ROOT:-.cache/tidelink-farm}"
+# REMOTE_ROOT: the subdir under the remote $HOME that holds this checkout's
+# farm trees (RTREE=$RHOME/$REMOTE_ROOT/$TARGET). AUTO-DERIVED PER-CHECKOUT by
+# default so two different local worktrees NEVER share a remote RTREE. THE
+# incident this guards (2026-07): two checkouts building the same TARGET into
+# one shared .cache/tidelink-farm/<TARGET> — the second's rsync --delete +
+# `create_project -force` deleted the first's running impl -> phantom "timing
+# wall" no-bit failures, mis-diagnosed for days. The default embeds the
+# worktree basename (human-readable) + an 8-char sha1 of its ABSPATH
+# (collision-proof across identically-named checkouts). An explicit REMOTE_ROOT
+# still overrides (e.g. to deliberately share a tree between jobs).
+if [ -z "${REMOTE_ROOT:-}" ]; then
+    _ck_base="$(basename "$TIDELINK_HOME")"
+    _ck_hash="$(printf '%s' "$TIDELINK_HOME" | sha1sum | cut -c1-8)"
+    REMOTE_ROOT=".cache/tidelink-farm-${_ck_base}-${_ck_hash}"
+fi
 VIVADO_BIN="${VIVADO_BIN:-/apps/Xilinx/Vivado/2024.1/bin/vivado}"
 # Vivado's own launch_runs default ssh opts — same here for the build login.
 read -r -a SSH_OPTS_ARR <<< "${SSH_OPTS:--q -o ConnectTimeout=30 -o ConnectionAttempts=3 -o BatchMode=yes}"
@@ -73,6 +98,13 @@ CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
 CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
 FPGA_INSERT_DEBUG_CORE="${FPGA_INSERT_DEBUG_CORE:-}"
 FPGA_USE_IDELAY="${FPGA_USE_IDELAY:-}"
+# Forwarded so the msg gate bypass reaches the REMOTE build_design session.
+# NOTE (2026-07-05 forensics): the gate's get_msg_config count only sees the
+# PARENT Vivado session's messages — impl-run CWs (e.g. Timing 38-282) are in
+# the launch_runs child process and are ALWAYS invisible to the gate (every
+# log shows "count after impl_1 : 0" even with 10 CWs in the child). This
+# knob therefore only matters for parent-session CWs (BD create/validate).
+FPGA_ALLOW_CRITICAL_WARNINGS="${FPGA_ALLOW_CRITICAL_WARNINGS:-}"
 
 # rsync: ship the whole repo tree EXCEPT host-specific build outputs and
 # bulky sim/coverage debris. Keep deps/ (submodule working tree + the
@@ -122,10 +154,27 @@ build_env_prefix() {
     # packaged IP was already V1 and the FSM never existed to be synthesised.
     [ -n "${TIDELINK_PHY_V2:-}" ] && \
         printf 'export TIDELINK_PHY_V2=%q; ' "$TIDELINK_PHY_V2"
+    # TD_AUTO_LANE_MASK_E4 (2026-07-17): SAME TRAP as TIDELINK_PHY_V2 above, and
+    # it bit on the first 8-lane farm build. This knob selects Wlink's tx/rx
+    # lane-mask POR in fpga/filelist.tcl (unset/1 -> 8'hE4 = 4 lanes; 0 -> 8'hFF
+    # = 8 lanes), and Wlink derives bytesPerCycle = popcount(lane_mask)*2 — so
+    # it IS the link's bandwidth. The remote job re-sources filelist.tcl with
+    # its own environment: without this forward the var is UNSET there, the
+    # default (1) applies, and the remote half of the pair silently builds
+    # 4-lane while the local half builds 8-lane — a MIXED pair.
+    # MEASURED on the first attempt: local package_ip logged "8'hFF (8 lanes)"
+    # while pynq-z2-pair-flip-all@srv04936 logged "8'hE4 (4 lanes)
+    # TD_AUTO_LANE_MASK_E4=<unset> (default 1)", and the resulting die_b .bin
+    # came out byte-IDENTICAL (md5 e384eec6…) to the certified 4-lane build.
+    # NB `-n` is correct for the value "0": it tests for a non-empty string.
+    [ -n "${TD_AUTO_LANE_MASK_E4:-}" ] && \
+        printf 'export TD_AUTO_LANE_MASK_E4=%q; ' "$TD_AUTO_LANE_MASK_E4"
     [ -n "${FPGA_INSERT_DEBUG_CORE:-}" ] && \
         printf 'export FPGA_INSERT_DEBUG_CORE=%q; ' "$FPGA_INSERT_DEBUG_CORE"
     [ -n "${FPGA_USE_IDELAY:-}" ] && \
         printf 'export FPGA_USE_IDELAY=%q; ' "$FPGA_USE_IDELAY"
+    [ -n "${FPGA_ALLOW_CRITICAL_WARNINGS:-}" ] && \
+        printf 'export FPGA_ALLOW_CRITICAL_WARNINGS=%q; ' "$FPGA_ALLOW_CRITICAL_WARNINGS"
     # PHC IP sibling repo (used by package_phc_ip). Optional — older trees
     # without PHC integration leave this unset and skip the PHC IP package.
     [ -n "${PHC_REPO_DIR:-}" ] && \
@@ -147,6 +196,7 @@ if is_local; then
     [ -n "${TIDELINK_PHY_V2:-}" ] && export TIDELINK_PHY_V2
     [ -n "${FPGA_INSERT_DEBUG_CORE:-}" ] && export FPGA_INSERT_DEBUG_CORE
     [ -n "${FPGA_USE_IDELAY:-}" ] && export FPGA_USE_IDELAY
+    [ -n "${FPGA_ALLOW_CRITICAL_WARNINGS:-}" ] && export FPGA_ALLOW_CRITICAL_WARNINGS
     if make -C "$FPGA_DIR" build_design \
             TARGET="$TARGET" SKIP_PACKAGE_IP=1 FPGA_NUM_JOBS="$JOBS"; then
         say "local build OK -> $TIDELINK_HOME/imp/fpga/output/$TARGET/tidelink.bit"
@@ -170,6 +220,42 @@ RHOME="$("${SSH[@]}" "$HOST" 'printf %s "$HOME"' 2>/dev/null)"
     || die "$HOST missing one of: $CMSDK_DIR / rsync / make"
 
 RTREE="$RHOME/$REMOTE_ROOT/$TARGET"
+
+# ---- HARD LOCK on the remote tree (create_project -force race guard) --------
+# THE incident this whole file is hardened against: two farm jobs (from two
+# checkouts that share HOST+REMOTE_ROOT) targeting the same RTREE. Job A is
+# mid-impl; job B rsync --delete's over RTREE and runs package_ip/build_design
+# whose `create_project -force` DELETES A's running project -> A produces no
+# bit (mis-read as a "timing wall" for days).
+#
+# Mechanism: a LOCAL advisory flock keyed on the exact remote destination
+# (HOST + REMOTE_ROOT + TARGET). All farm orchestration runs on this one lab
+# box (every worktree shares $HOME), so a local lock is authoritative for who
+# may touch a given remote RTREE. The FD is opened here and HELD until this
+# farm_build.sh process EXITS, so the ENTIRE remote critical section — the
+# rsync --delete AND the remote create_project/build AND the artefact pull —
+# is serialized as one indivisible unit (a remote-only flock could not cover
+# the locally-launched rsync --delete, the other half of the clobber). Only
+# jobs that would actually collide (same HOST+REMOTE_ROOT+TARGET) contend;
+# per-checkout REMOTE_ROOT means distinct checkouts never reach for the lock.
+command -v flock >/dev/null 2>&1 \
+    || die "flock not found — cannot safely serialize the remote tree (install util-linux)"
+LOCK_DIR="${FARM_LOCK_DIR:-$HOME/.cache/tidelink-farm-locks}"
+mkdir -p "$LOCK_DIR" || die "cannot create lock dir $LOCK_DIR"
+LOCK_KEY="$(printf '%s' "${HOST}__${REMOTE_ROOT}__${TARGET}" | tr -c 'A-Za-z0-9._-' '_')"
+LOCKFILE="$LOCK_DIR/${LOCK_KEY}.lock"
+LOCK_WAIT="${FARM_LOCK_WAIT:-14400}"   # 0 = fail fast; else seconds to serialize
+exec {LOCK_FD}>"$LOCKFILE" || die "cannot open lockfile $LOCKFILE"
+if [ "$LOCK_WAIT" -eq 0 ]; then
+    flock -n "$LOCK_FD" \
+        || die "another build holds $TARGET on $HOST:$REMOTE_ROOT (FARM_LOCK_WAIT=0) — refusing to clobber its impl; use a distinct REMOTE_ROOT to build in parallel"
+elif ! flock -n "$LOCK_FD"; then
+    say "another build holds $TARGET on $HOST:$REMOTE_ROOT — serializing, waiting up to ${LOCK_WAIT}s (lock: $LOCKFILE)"
+    flock -w "$LOCK_WAIT" "$LOCK_FD" \
+        || die "timed out after ${LOCK_WAIT}s waiting for the $TARGET lock on $HOST:$REMOTE_ROOT — another build still holds it; use a distinct REMOTE_ROOT to build in parallel"
+fi
+say "acquired remote-tree lock $LOCKFILE"
+
 say "rsync tree -> $HOST:$RTREE/"
 "${SSH[@]}" "$HOST" "mkdir -p '$RTREE'" 2>/dev/null \
     || die "cannot mkdir $RTREE on $HOST"

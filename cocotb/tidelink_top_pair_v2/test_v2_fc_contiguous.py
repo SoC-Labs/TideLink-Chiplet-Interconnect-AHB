@@ -77,6 +77,22 @@ def _get(obj, name):
     return getattr(obj, name, None)
 
 
+# ── Wave-0 fix #12b: SKIP — injector tb_top hook not committed ──────────────
+# This suite drives an `{m,s}_inj_word/_inj_len/_inj_go/_inj_idx` force/release
+# injector that must live in cocotb/tidelink_top_pair_v2/tb_top.sv to hold
+# tl_fc_a2l_valid high and present a new 48-bit FC word each cycle tl_fc_a2l_ready
+# is high. That hook was NEVER committed (grep tb_top.sv: no `inj_` signals), so
+# every test here ERRORs with AttributeError on `dut.m_inj_word` after a full
+# bring-up. Per the RTL-freeze rule "never add a red/erroring test to the
+# blocking gate", all four tests are marked skip=True and this suite is wired
+# ONLY as a NON-blocking tracking target (Makefile: sim_gate_v2_fc_contiguous),
+# NOT in SIM_GATE_ALL_SUITES.
+#   TODO(freeze): add the contiguous-a2l force injector to tb_top.sv (drive
+#   u_master/u_slave tl_fc_a2l_{valid,data} from the inj_* array, index on
+#   tl_fc_a2l_ready), then flip skip=False to promote this into the gate.
+SKIP_NO_INJECTOR = True
+
+
 async def inject_a2l_contiguous(tb, side, fc_words):
     """Drive the tb_top contiguous-a2l injector (force/release of tl_fc_a2l)."""
     dut = tb.dut
@@ -255,7 +271,7 @@ async def _run(tb, src, dst, n_packets, ctx, disable_crc):
     return res, got, pkt_len
 
 
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_INJECTOR)
 async def test_contiguous_m2s_crc_off(dut):
     """disable_crc=1 (today's default): does contiguous injection still commit?"""
     tb = PairV2TB(dut)
@@ -265,7 +281,7 @@ async def test_contiguous_m2s_crc_off(dut):
     await _run(tb, "m", "s", n_packets=4, ctx="m2s-contig-crcOFF", disable_crc=1)
 
 
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_INJECTOR)
 async def test_contiguous_m2s_crc_on(dut):
     """disable_crc=0: does contiguous injection saturate CRC + block commit?"""
     tb = PairV2TB(dut)
@@ -275,7 +291,7 @@ async def test_contiguous_m2s_crc_on(dut):
     await _run(tb, "m", "s", n_packets=4, ctx="m2s-contig-crcON", disable_crc=0)
 
 
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_INJECTOR)
 async def test_contiguous_s2m_crc_on(dut):
     tb = PairV2TB(dut)
     await run_bringup_full(tb)
@@ -284,7 +300,7 @@ async def test_contiguous_s2m_crc_on(dut):
     await _run(tb, "s", "m", n_packets=4, ctx="s2m-contig-crcON", disable_crc=0)
 
 
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_INJECTOR)
 async def test_contiguous_s2m_crc_off(dut):
     """Silicon claim: NO commit EVEN with disable_crc=1. Under the silicon
     epoch profile + anchor OFF, does S->M still fail to enqueue with CRC off?"""

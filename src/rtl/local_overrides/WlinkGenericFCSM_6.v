@@ -297,25 +297,6 @@ module WlinkGenericFCSM_6 #(
   //   io_obs_a2l_rptr[4:0]       : a2l_fc_replay.fifo_io_rbin_ptr (link read ptr)
   output        io_obs_a2l_rreset,
   output [4:0]  io_obs_a2l_rptr,
-  // ---------------------------------------------------------------------------
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 -- David Mapstone.
-  // Purely additive read-only fan-outs of a2l_fc_replay (WlinkGenericFCReplayV2
-  // _13) mailbox internals (NO functional change). See the packed APB obs reg
-  // 0x4403_21BC (marker 0xCB) field-map in axi_chiplet_controller.sv.
-  //   io_obs_a2l_link_addr[4:0] : a2l_fc_replay.a2l_link_addr (LINK-domain ACK
-  //                               ptr, the CDC input; guard-clamped <=rbin<=15)
-  //   io_obs_mbx_raddr[4:0]     : synced output (= a2l synced_ack)
-  //   io_obs_mbx_mem_0/1[4:0]   : ping-pong mailbox stored ACK values
-  //   io_obs_mbx_wptr/rptr      : ping-pong mailbox pointers
-  //   io_obs_mbx_w_ready/r_ready: ping-pong mailbox ready terms (both 0=deadlock)
-  output [4:0]  io_obs_a2l_link_addr,
-  output [4:0]  io_obs_mbx_raddr,
-  output [4:0]  io_obs_mbx_mem_0,
-  output [4:0]  io_obs_mbx_mem_1,
-  output        io_obs_mbx_wptr,
-  output        io_obs_mbx_rptr,
-  output        io_obs_mbx_w_ready,
-  output        io_obs_mbx_r_ready,
   // SoC Labs FC credit observation 2026-06-12: far-end RX credit pointer
   // (io_tx_clk domain reg, updated from ACK/NACK packets at L1293). Together
   // with io_obs_fe_rx_credit_max this lets SW see a CR credit value that
@@ -433,15 +414,6 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
   wire  a2l_fc_replay_obs_a2l_rreset;
   wire [4:0] a2l_fc_replay_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-out wires)
-  wire [4:0] a2l_fc_replay_obs_a2l_link_addr;
-  wire [4:0] a2l_fc_replay_obs_mbx_raddr;
-  wire [4:0] a2l_fc_replay_obs_mbx_mem_0;
-  wire [4:0] a2l_fc_replay_obs_mbx_mem_1;
-  wire  a2l_fc_replay_obs_mbx_wptr;
-  wire  a2l_fc_replay_obs_mbx_rptr;
-  wire  a2l_fc_replay_obs_mbx_w_ready;
-  wire  a2l_fc_replay_obs_mbx_r_ready;
   wire  en_ff2_tx_demet_clock; // @[Stdcell.scala 58:23]
   wire  en_ff2_tx_demet_reset; // @[Stdcell.scala 58:23]
   wire  en_ff2_tx_demet_io_in; // @[Stdcell.scala 58:23]
@@ -1035,16 +1007,7 @@ module WlinkGenericFCSM_6 #(
     .obs_enable_app_clk_demet(a2l_fc_replay_obs_enable_app_clk_demet),
     // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER obs 2026-06-21 (RO)
     .obs_a2l_rreset(a2l_fc_replay_obs_a2l_rreset),
-    .obs_a2l_rptr(a2l_fc_replay_obs_a2l_rptr),
-    // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 (read-only fan-outs)
-    .obs_a2l_link_addr(a2l_fc_replay_obs_a2l_link_addr),
-    .obs_mbx_raddr(a2l_fc_replay_obs_mbx_raddr),
-    .obs_mbx_mem_0(a2l_fc_replay_obs_mbx_mem_0),
-    .obs_mbx_mem_1(a2l_fc_replay_obs_mbx_mem_1),
-    .obs_mbx_wptr(a2l_fc_replay_obs_mbx_wptr),
-    .obs_mbx_rptr(a2l_fc_replay_obs_mbx_rptr),
-    .obs_mbx_w_ready(a2l_fc_replay_obs_mbx_w_ready),
-    .obs_mbx_r_ready(a2l_fc_replay_obs_mbx_r_ready)
+    .obs_a2l_rptr(a2l_fc_replay_obs_a2l_rptr)
   );
   WavDemetReset en_ff2_tx_demet ( // @[Stdcell.scala 58:23]
     .clock(en_ff2_tx_demet_clock),
@@ -1102,15 +1065,6 @@ module WlinkGenericFCSM_6 #(
   // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
   assign io_obs_a2l_rreset            = a2l_fc_replay_obs_a2l_rreset;
   assign io_obs_a2l_rptr              = a2l_fc_replay_obs_a2l_rptr;
-  // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (read-only fan-outs)
-  assign io_obs_a2l_link_addr         = a2l_fc_replay_obs_a2l_link_addr;
-  assign io_obs_mbx_raddr             = a2l_fc_replay_obs_mbx_raddr;
-  assign io_obs_mbx_mem_0             = a2l_fc_replay_obs_mbx_mem_0;
-  assign io_obs_mbx_mem_1             = a2l_fc_replay_obs_mbx_mem_1;
-  assign io_obs_mbx_wptr              = a2l_fc_replay_obs_mbx_wptr;
-  assign io_obs_mbx_rptr              = a2l_fc_replay_obs_mbx_rptr;
-  assign io_obs_mbx_w_ready           = a2l_fc_replay_obs_mbx_w_ready;
-  assign io_obs_mbx_r_ready           = a2l_fc_replay_obs_mbx_r_ready;
   // SoC Labs FC credit observation 2026-06-12
   assign io_obs_fe_rx_ptr             = fe_rx_ptr;
   assign rx_crc_computed_crcgen_io_in = auto_rx_in_data; // @[Nodes.scala 1210:84 LazyModule.scala 309:16]
@@ -1204,13 +1158,26 @@ module WlinkGenericFCSM_6 #(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      // SoC Labs 2026-06-14: default disable_crc=1 (GPIO-speed deployment).
-      // Silicon-confirmed: V2 long DATA packets arrive but header-CRC fails
-      // (crc_errors saturates) -> FCSM SEND_NACK -> no enqueue. At 6.25 MHz the
-      // BER is negligible so CRC is pure overhead (REGISTER_MAP.md "key register
-      // for GPIO-speed deployments"). Default-on also sidesteps die_b's
-      // hardware-unwritable SM Control reg. SW can still re-enable via bit[16].
-      out_prepend_swi_disable_crc <= 1'h1;
+      // RE-ENABLED 2026-07-21 (freeze DECISION, David): link-layer CRC ON by POR
+      // default (restores the upstream Chisel default FC.scala:663 = false).
+      // ROOT CAUSE of the 2026-06-14 disable (docs/CRC_ROOTCAUSE.md): the June
+      // "header-CRC fails on good DATA" was almost certainly NOT a false fire —
+      // the CRC was correctly catching REAL corruption on the marginal 4-lane
+      // (0xE4) 2-beat DATA eye at 6.25 MHz. TX/RX are symmetric (same WlinkCrcGen
+      // over the same field); an ideal-pad sim CRCs the 2-beat path with zero
+      // errors, so it is not an RTL/generator bug. Disabling CRC did not fix
+      // integrity — it hid it (corrupted packets then committed silently, F14-A).
+      // The "die_b SM Control unwritable" claim is REFUTED: bit[16] at 0x1714 is
+      // an ordinary APB reg on both dies (:1168-69); June's die_b symptom was AFI
+      // reachability, not write-protect.
+      //   SILICON/BRING-UP CAVEAT: a re-enabled CRC will legitimately fire and
+      //   NACK on a marginal eye. Bring the FPGA link up at 25 MHz (byte-exact
+      //   both dirs) with the capture-clock BUFG hoist; on a bad eye it NACK-
+      //   wedges by design. socl_l7_real_crc_seen (:630) is STICKY (POR-clear
+      //   only): the first real CRC error permanently disarms the state-7 NACK
+      //   watchdog for that reset cycle — intentional; a resettable W1C is a
+      //   post-freeze enhancement. SW can still force-disable via bit[16].
+      out_prepend_swi_disable_crc <= 1'h0;
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end

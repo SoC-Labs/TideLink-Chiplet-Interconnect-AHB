@@ -24,9 +24,24 @@
 #   wpsweep [GAP]     walk word_pin 0..15 (auto_dis=1), after each: sleep GAP(0.2s),
 #                     read+decode 0x108. Logs every wp -> 0x108. Reports hits
 #                     (fcsm==4 and cr==1).
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
+
+# --- ZynqMP (KR260) SAFETY GUARD ---------------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang. Pynq-Z2 ONLY. Refuse
+# before opening /dev/mem. On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.
+_tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+    sys.stderr.write(
+        "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals "
+        "(0x4403_xxxx)\n  UNDECODED on a ZynqMP (KR260) => hard PS hang. "
+        "Pynq-Z2 ONLY.\n  On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.\n"
+        % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+    raise SystemExit(3)
+
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 maps = {}
 def mm(addr):
@@ -35,10 +50,18 @@ def mm(addr):
         maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return maps[base], addr - base
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from on this target emit ~5 AHB beats per logical poke
+# (the "5x over-advance phantom"): W1P bits pulse 5x, POP-on-read FIFOs (rxword
+# @0x44010000) consume 5x, and wpsweep read-loops perturb what they measure.
+# ctypes.c_uint32.from_buffer is exactly one aligned load/store per .value. Do
+# not revert to struct. (matches tl39.py, commit 7ce05c6)
+def _u32(a):
+    m, o = mm(a); return ctypes.c_uint32.from_buffer(m, o)
 def rd(a):
-    m, o = mm(a); return struct.unpack_from("<I", m, o)[0]
+    return _u32(a).value
 def wr(a, v):
-    m, o = mm(a); struct.pack_into("<I", m, o, v)
+    _u32(a).value = v & 0xFFFFFFFF
 
 R8       = 0x44032100   # slot0: [0] swi_training_mode  [1] SWI_RECAL
 SLIPLO   = 0x44032104   # SWI_BIT_SLIP_LO: [23:0] slip, [27:24] word_pin, [28] auto_dis

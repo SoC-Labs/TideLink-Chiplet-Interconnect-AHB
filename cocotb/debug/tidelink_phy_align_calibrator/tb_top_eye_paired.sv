@@ -139,6 +139,8 @@ module tb_top #(
         .apb_override_enable    (a_swi_force_phase_en_w[0]),
         .min_lock_dwells_i      (4'h0),
         .cr_pkt_seen_i          (1'b1),
+        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
+        .force_recal_i               (1'b0),
         .bit_slip               (a_bit_slip),
         .phase_offset           (a_phase_offset),
         .training_mode          (a_training_mode),
@@ -220,6 +222,8 @@ module tb_top #(
         .apb_override_enable    (b_swi_force_phase_en_w[0]),
         .min_lock_dwells_i      (4'h0),
         .cr_pkt_seen_i          (1'b1),
+        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
+        .force_recal_i               (1'b0),
         .bit_slip               (b_bit_slip),
         .phase_offset           (b_phase_offset),
         .training_mode          (b_training_mode),

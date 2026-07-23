@@ -26,10 +26,10 @@ REG_PAIR_BASE          = 0x000   # RW: pair base address (default TIDELINK_PAIR_
 REG_REL_THRESHOLD      = 0x004   # RW: release threshold (default 20, 0 = immediate)
 REG_PKT_WORD_LEN       = 0x008   # RO: packet word length sideband from FIFO
 REG_CREDIT_COUNT        = 0x00C   # RO: available FIFO credits (local)
-REG_STATUS             = 0x010   # RO: [0] returner_busy, [1] overrun, [2] underrun, [3] master_error
+REG_STATUS             = 0x010   # RO: [0] busy [1] overrun [2] underrun [3] master_err [4] pkt_committed [5] ahb_inject_fault
 REG_DOORBELL           = 0x014   # W1C: software doorbell trigger
 REG_REL_ACC            = 0x018   # RO: pending unreleased credits (debug)
-REG_CTRL               = 0x01C   # RW: [0] reserved, [1] FLUSH (self-clearing)
+REG_CTRL               = 0x01C   # RW: [1] FLUSH (self-clearing) [2] LOCK (W1) [3] AHB_INJECT_ARM (RW, POR 0)
 
 # ── Status register bit positions ────────────────────────────────────────
 STATUS_RETURNER_BUSY   = 0
@@ -37,10 +37,13 @@ STATUS_OVERRUN         = 1
 STATUS_UNDERRUN        = 2
 STATUS_MASTER_ERROR    = 3
 STATUS_PACKET_COMMITTED = 4
+STATUS_AHB_INJECT_FAULT = 5   # RX-FIFO TWIN 2: AHB write into RX while disarmed
 
 # ── CTRL register bit positions ──────────────────────────────────────────
 CTRL_EN                = 0  # Removed from hardware — FIFO always enabled after reset
 CTRL_FLUSH             = 1
+CTRL_LOCK              = 2  # write-once (pair_base_addr / release_threshold lock)
+CTRL_AHB_INJECT_ARM    = 3  # RX-FIFO TWIN 2 runtime arm (POR-disarmed)
 
 # ── Region 1 (paddr[5]=1): Incoming Credit Receivers ─────────────────────────
 REG_RELEASED_ACC       = 0x020   # W-add/R-clear: released credits accumulator

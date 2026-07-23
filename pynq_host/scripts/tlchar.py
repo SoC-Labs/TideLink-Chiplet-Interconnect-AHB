@@ -21,7 +21,7 @@ Commands:
   credsample DURATION_S HZ    T5: CSV of t_ns,pair_credits,released_acc
   apblat N                    T6b: N timed APB reads of SWI_LANE_STATUS -> percentiles
 """
-import mmap, struct, os, sys, time, json
+import mmap, struct, os, sys, time, json, ctypes
 
 PAGE = 4096
 TX_BASE   = int(os.environ.get("TIDELINK_TX_BASE", "0x44000000"), 16)
@@ -38,6 +38,20 @@ R_PAIR_CONSUME = PAIR_BASE + 0x02C   # WO: decrement pair counter by N
 R_LANE_STATUS  = PAIR_BASE + 0x108
 MAX_CREDITS = 4096
 
+# --- ZynqMP (KR260) SAFETY GUARD ---------------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang. Pynq-Z2 ONLY. Refuse
+# before opening /dev/mem. On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.
+_tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+    sys.stderr.write(
+        "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals "
+        "(0x4403_xxxx)\n  UNDECODED on a ZynqMP (KR260) => hard PS hang. "
+        "Pynq-Z2 ONLY.\n  On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.\n"
+        % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+    raise SystemExit(3)
+
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 _maps = {}
 def _mm(addr):
@@ -47,13 +61,21 @@ def _mm(addr):
                                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return _maps[base], addr - base
 
+def _u32(m, o):
+    # SoC Labs 2026-07-03: struct.pack_into/unpack_from emit ~5 narrow bus
+    # accesses per u32 on this ARMv7 PYNQ (measured a2l wptr +5/word). For the
+    # doorbell trigger that means ~5 doorbells per intended one -> corrupt
+    # amplification/RTT. ctypes gives a single aligned u32 access.
+    return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(m, o)),
+                       ctypes.POINTER(ctypes.c_uint32))
+
 def rd(addr):
     m, o = _mm(addr)
-    return struct.unpack_from("<I", m, o)[0]
+    return int(_u32(m, o)[0])
 
 def wr(addr, val):
     m, o = _mm(addr)
-    struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+    _u32(m, o)[0] = val & 0xFFFFFFFF
 
 def pctiles(vals):
     s = sorted(vals)

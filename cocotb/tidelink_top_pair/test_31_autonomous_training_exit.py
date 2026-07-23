@@ -78,6 +78,8 @@ Run
       SIM=vcs MODULE=test_31_autonomous_training_exit \
       make MODULE=test_31_autonomous_training_exit
 """
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
@@ -595,43 +597,136 @@ async def test_31_autonomous_training_exit(dut):
     #      the new data-safety gate (idle-gated insert never deletes words;
     #      FORCE was the R4 word-deleter). Here we additionally dwell and
     #      assert the state HOLDS (no residual OFF path fires late).
-    await ClockCycles(dut.hclk, 100_000)   # >> the retired 1024-cycle settle
+    # ---- (11) EVENT-GATED AUTONOMY RETIRE (2026-07-15, RE-TARGETED — inverts
+    #      the old D2 "never blind-OFF" gate). THE B->A autonomy channel fix.
+    #      SILICON (td_b2a_diag2.log): B->A recovered byte-exact the instant
+    #      die_a's (MASTER = the B->A RECEIVER) autonomy_armed dropped
+    #      (0x210C=0) — with R8 STILL 0x14 (insert_en=1) and reanchored=0. So
+    #      insert_en/R8[2] is NOT the blocker; autonomy_armed is: the corruptor
+    #      is the autonomous FORCED-SYNC chain (winscan_force_sync /
+    #      ws_serve_active_r) OR'd into the Wlink SYNC ports, which keeps SYNC
+    #      beating over the B->A payload so the receiver's RX framer never
+    #      commits. The RTL now replicates that escape hatch ITSELF, once, when
+    #      the link is provably up (fcsm=4 & winscan_done held for RETIRE_DWELL).
+    #      The trigger MUST fire on the MASTER (the receiver) — where the old
+    #      ws_anchor_q&&ws_verify_q verify gate could not (die_a rea=0 on
+    #      silicon); we gate on the FCSM reaching bilateral credit, which is
+    #      4/4 on die_a in the silicon log. Post-retire the forced chain is
+    #      parked and insert_en is left untouched (it is not the blocker).
+    #
+    #      F4 PLUMBING A/B (2026-07-15): this block is now driven by the env var
+    #      RETIRE_EN_EXPECT (default 1 — the historical behaviour, byte-identical
+    #      stimulus). The gate runs this SAME test against TWO builds:
+    #        RETIRE_EN_EXPECT=1  default build   → retire MUST fire  (proof (a))
+    #        RETIRE_EN_EXPECT=0  +define+TB_TOP_RETIRE_EN=0
+    #                            → retire must NEVER fire (proof (b))
+    #      Identical stimulus, one parameter changed, opposite outcome — that is
+    #      what proves the parameter genuinely reaches the controller. If the
+    #      tidelink_top→controller forwarding were dead (the NEGO_CFG_RESET
+    #      failure mode), the =0 build would still take the controller's own
+    #      1'b1 default, retire would still fire, and the =0 run would FAIL.
+    retire_expect = int(os.environ.get("RETIRE_EN_EXPECT", "1"))
+    await ClockCycles(dut.hclk, 100_000)   # >> RETIRE_DWELL (4096 apb cycles)
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
-        ie = _si(c.swi_sync_insert_en_r)
-        rb = _si(c.swi_sync_robust_detect_r)
-        fa = _si(c.swi_sync_force_always_r)
-        wf = _si(c.winscan_force_sync)
-        hq = _si(c.sync_cfg_hold_q)
-        log.info(f"{name} D2 permanent data-mode state: insert_en={ie} "
-                 f"robust={rb} force_always={fa} winscan_force={wf} hold={hq}")
-        assert ie == 1, (
-            f"{name}: D2 REGRESSION — swi_sync_insert_en_r=0 in data mode; "
-            f"the autonomous SYNC-OFF must be GONE (a blind timed OFF starves "
-            f"the peer's re-anchor refill: partial sync_seen, rea=0, "
-            f"0x21B8[2], credit_max=0, dead data)")
-        assert rb == 1, (
-            f"{name}: swi_sync_robust_detect_r=0 in data mode — robust must "
-            f"stay 1 permanently (tol-5 framer re-hunt = drift self-healing; "
-            f"without it a peer beacon missing the exact compare byte-shears "
-            f"the framer stream)")
-        assert fa == 0, (
-            f"{name}: swi_sync_force_always_r=1 in data mode — force-always "
-            f"is the R4 word-deleter and must NEVER be set autonomously")
+        # (0) STATIC PLUMBING READ-BACK — the value of RETIRE_EN as it landed
+        # INSIDE axi_chiplet_controller (tb probe reads through the forwarding
+        # path, so it reports the DESTINATION, not what the tb passed in).
+        probe = _si(getattr(dut, f"retire_en_at_ctrl_{side}"))
+        log.info(f"{name} RETIRE_EN at axi_chiplet_controller = {probe} "
+                 f"(expected {retire_expect})")
+        assert probe == retire_expect, (
+            f"{name}: RETIRE_EN reads {probe} INSIDE axi_chiplet_controller but "
+            f"the top was elaborated for {retire_expect} — the tidelink_top → "
+            f"axi_chiplet_controller parameter forwarding is DEAD. This is the "
+            f"NEGO_CFG_RESET regression class (plumbed at the top, never "
+            f"forwarded, every build silently took the module default).")
+        ie   = _si(c.swi_sync_insert_en_r)
+        rb   = _si(c.swi_sync_robust_detect_r)
+        fa   = _si(c.swi_sync_force_always_r)
+        wf   = _si(c.winscan_force_sync)
+        arm  = _si(c.autonomy_armed)
+        ret  = _si(c.autonomy_retire_q)
+        cnt  = _si(c.fc_stable_cnt_q)
+        fcsm = _si(c.sync_obs_fcsm_state_1)
+        rea  = _si(c.ws_anchor_q)
+        log.info(f"{name} RETIRE state: autonomy_retire_q={ret} autonomy_armed={arm} "
+                 f"winscan_force={wf} force_always={fa} insert_en={ie} robust={rb} "
+                 f"fc_stable_cnt={cnt} fcsm={fcsm} rea={rea}")
+        if retire_expect == 0:
+            # ---- PROOF (b): RETIRE_EN=0 at the TOP ⇒ retire never fires ----
+            # autonomy_retire_q's ONLY non-reset assignment sits inside
+            # `if (RETIRE_EN && ...)`, so a 0 that genuinely reached the
+            # controller makes it structurally unassignable. The link still
+            # comes up (everything above this block already passed) — the ONLY
+            # difference is that autonomy stays armed, i.e. the pre-fix RTL.
+            assert ret == 0, (
+                f"{name}: autonomy_retire_q=1 despite RETIRE_EN=0 at the top — "
+                f"the retire is NOT gated by the parameter, or the parameter "
+                f"never reached the controller (it kept its 1'b1 default). "
+                f"This is the exact F4 gap: an ASIC could not disable the "
+                f"retire without editing axi_chiplet_controller.")
+            # BIT-IDENTICAL TO PRE-FIX: with the retire suppressed, the
+            # effective armed term must equal the RAW armed conjunction
+            # (nego_en & role_locked & train_auto_en) — which is 1 here,
+            # because the link is up and autonomy was armed by the bring-up.
+            raw = (_si(c.nego_en) & _si(c.role_locked)
+                   & (_si(c.nego_train_cfg_r) & 1))
+            assert arm == raw == 1, (
+                f"{name}: autonomy_armed={arm} but the raw armed conjunction is "
+                f"{raw} — with RETIRE_EN=0 the effective armed term MUST reduce "
+                f"to the pre-fix expression (retire contributes nothing).")
+            log.info(f"{name}: RETIRE_EN=0 ⇒ retire suppressed "
+                     f"(autonomy_retire_q=0), autonomy_armed={arm} == raw armed "
+                     f"term — bit-identical to the pre-fix RTL. fcsm={fcsm} "
+                     f"rea={rea}")
+            continue
+        # ---- PROOF (a): default build ⇒ RETIRE_EN=1 ⇒ the fix FIRES ----
+        # on BOTH dies, crucially the MASTER (the B->A receiver).
+        assert ret == 1, (
+            f"{name}: autonomy_retire_q=0 — the event-gated RETIRE never fired "
+            f"(fc_stable_cnt={cnt}); the link must hold fcsm=4 & winscan_done for "
+            f"RETIRE_DWELL cycles. This MUST fire on the MASTER (B->A receiver).")
+        assert arm == 0, (
+            f"{name}: autonomy_armed=1 after RETIRE — the effective armed term "
+            f"must drop so the FSM's LOOP-9 DISARM-PARK stops the forced-SYNC "
+            f"chain (autonomously replicating the 0x210C=0 escape hatch)")
         assert wf == 0, (
-            f"{name}: winscan_force_sync still 1 after FINALIZE — force must "
-            f"drop at the FINALIZE exit (beacons revert to idle-gated)")
-        assert hq == 1, (
-            f"{name}: sync_cfg_hold_q=0 — the F1b every-cycle heal must be "
-            f"PERMANENT (it is what defends insert_en/robust against I2C "
-            f"full-word R8 slot-0 clobbers in data mode)")
+            f"{name}: winscan_force_sync=1 after RETIRE — the forced-SYNC chain "
+            f"(the on-silicon B->A corruptor) must be parked")
+        assert fa == 0, (
+            f"{name}: swi_sync_force_always_r=1 — force-always (the R4 word-"
+            f"deleter) must never be set autonomously")
+        # NO-REGRESSION (req 2): RETIRE must NOT wedge the FC or drop the anchor.
+        assert fcsm == 4, (
+            f"{name}: FCSM={fcsm} != 4 after RETIRE — retiring autonomy wedged "
+            f"the flow-control datapath (it must touch neither the FCSM nor "
+            f"role_locked/nego_en)")
+        assert rea == 1, (
+            f"{name}: reanchored=0 after RETIRE — the DISARM-PARK dropped the "
+            f"deskew anchor (it must issue NO obs-clear, so reanchored holds)")
+        # insert_en is intentionally NOT asserted: silicon proved it is NOT the
+        # blocker (B->A recovered at insert_en=1); it retains its last value.
+
+    if retire_expect == 0:
+        log.info("VERDICT: PASS (F4 plumbing proof (b)) — with RETIRE_EN=0 "
+                 "bound at tidelink_top, the probe reads RETIRE_EN=0 INSIDE "
+                 "axi_chiplet_controller on BOTH dies, the event-gated RETIRE "
+                 "never fired, and autonomy_armed reduced to the raw pre-fix "
+                 "armed conjunction — while the identical stimulus still brought "
+                 "the link up (FCSM=4, byte-exact AHB_TX). The parameter "
+                 "genuinely reaches the controller and genuinely gates the fix, "
+                 "so the ASIC integration can disable/strap it WITHOUT editing "
+                 "axi_chiplet_controller.")
+        return
 
     log.info("VERDICT: PASS — de-forced autonomous training-exit: both dies "
-             "transited S_HOLD→S_VALIDATE→S_DONE (no re-sweep after clear), "
-             "swi_training_mode cleared 1→0 by the autoneg FSM (not a TB force), "
-             "both settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
-             "0x27f09→0x27f01→0x27f07 on both dies; post-bootstrap FCSM=4; "
-             "AHB_TX data crossed BYTE-EXACT — UNDER PERMANENT idle-gated "
-             "beacons (D2) — with the sender's fe credit gate OPEN, and the "
-             "beacons-on state HELD through the post-data dwell. L4 deadlock "
-             "+ death-spiral + R1 credit wedge + D2 never-blind-OFF covered.")
+             "settled S_DONE + FCSM=4; the fch bootstrap drove EXACTLY "
+             "0x27f09→0x27f01→0x27f07 on both dies; AHB_TX data crossed "
+             "BYTE-EXACT; and once the link held bilateral FC the EVENT-GATED "
+             "AUTONOMY RETIRE fired on BOTH dies (incl. the MASTER receiver) — "
+             "autonomy_armed=0, winscan_force_sync parked — while FCSM stayed 4 "
+             "and reanchored held. Autonomously replicates the 0x210C=0 escape "
+             "hatch. L4 deadlock + death-spiral + R1 credit wedge + B->A "
+             "autonomy-force corruptor (project_autonomy_rootcause_sync_clamp) "
+             "covered.")

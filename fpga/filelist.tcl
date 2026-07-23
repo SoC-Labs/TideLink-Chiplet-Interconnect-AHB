@@ -42,6 +42,23 @@ set _phy_v2 0
 if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
 set _flist_name [expr { $_phy_v2 ? "tidelink_fpga_v2.flist" : "tidelink_fpga.flist" }]
 
+# ── 8-LANE KNOB (2026-07-17) ─────────────────────────────────────────────────
+# TD_AUTO_LANE_MASK_E4 gates the 0xE4 (4-lane, bridge1 good-lane) POR default
+# for the Wlink tx/rx lane masks in local_overrides/Wlink.v. It USED to be
+# injected unconditionally below; it is now env-gated so the 8-lane (0xFF)
+# config is buildable without editing this file.
+#   TD_AUTO_LANE_MASK_E4=0 -> no define -> LANE_MASK_RESET = 8'hFF (8 lanes).
+#   unset / =1             -> define    -> LANE_MASK_RESET = 8'hE4 (4 lanes).
+# DEFAULT REMAINS 1 so every existing build/CI path is bit-identical.
+# Rationale for wanting 0xFF: the 0xE4 default was chosen when 4 lanes were
+# believed dead. The raw post-deskew slices (0x212C-0x2138) since showed all 8
+# conduct in both directions; the "dead" lanes were merely UNTRAINED, because a
+# masked lane gets lane_off=0 (tidelink_lane_deskew_v2.sv:1491). Wlink derives
+# bytesPerCycle = popcount(lane_mask)*2 (Wlink.v:996-1014 -> LinkLayer.scala
+# 658), so 0xFF is also the 2x-bandwidth knob.
+set _lane_mask_e4 1
+if { [info exists ::env(TD_AUTO_LANE_MASK_E4)] && $::env(TD_AUTO_LANE_MASK_E4) == 0 } { set _lane_mask_e4 0 }
+
 # ── LOUD V1/V2 selection banner (2026-06-30) ─────────────────────────────────
 # The V1/V2 split is carried SOLELY by the TIDELINK_PHY_V2 env var. When this
 # file is sourced from package_tidelink_ip.tcl, that one var decides whether the
@@ -57,6 +74,17 @@ puts [format "  TIDELINK filelist: %s  (TIDELINK_PHY_V2=%s -> %s)" \
                         : "V1 (PHY-v1 / NO autonomous-winscan FSM)"}] \
         [expr {[info exists ::env(TIDELINK_PHY_V2)] ? $::env(TIDELINK_PHY_V2) : "<unset>"}] \
         $_flist_name]
+if { $_phy_v2 } {
+    # Same "impossible to miss" treatment as the V1/V2 split: the lane-mask POR
+    # decides bytesPerCycle (popcount*2), i.e. the link's bandwidth. A silent
+    # 0xE4 in a build meant to be 8-lane looks exactly like a working build that
+    # merely fails to go faster.
+    puts [format "  TIDELINK lane mask: LANE_MASK_RESET = 8'h%s  (%d lanes, bytesPerCycle=%d)  TD_AUTO_LANE_MASK_E4=%s" \
+            [expr {$_lane_mask_e4 ? "E4" : "FF"}] \
+            [expr {$_lane_mask_e4 ? 4 : 8}] \
+            [expr {$_lane_mask_e4 ? 8 : 16}] \
+            [expr {[info exists ::env(TD_AUTO_LANE_MASK_E4)] ? $::env(TD_AUTO_LANE_MASK_E4) : "<unset> (default 1)"}]]
+}
 if { !$_phy_v2 } {
     puts "  WARNING: V1 flist selected. If this is an IP-package step for a V2"
     puts "           build, the autonomous-winscan FSM and all `ifdef"
@@ -88,6 +116,9 @@ puts "============================================================"
 ### subtleties. Regenerated on every package_ip; imp/ is gitignored.
 ###-----------------------------------------------------------------------------
 proc tidelink_materialise_v2_shim {shim incdirs gen_dir} {
+    # _lane_mask_e4 is set at file scope (8-lane knob); a proc does not see
+    # globals implicitly in Tcl.
+    global _lane_mask_e4
     set fh [open $shim r]; set shim_text [read $fh]; close $fh
     if { ![regexp {`include\s+"([^\"]+)"} $shim_text -> inc_name] } {
         error "v2 shim $shim has no `include directive"
@@ -114,9 +145,14 @@ proc tidelink_materialise_v2_shim {shim incdirs gen_dir} {
     # Build-only knob: activates the 0xE4 autonomous Wlink lane-mask POR default
     # (bridge1 good lanes 2,5,6,7) in local_overrides/Wlink.v. Injected HERE (not
     # in a v2shim) so it reaches only the FPGA build, never the sims — keeping the
-    # V2 8-lane sim oracles green. BOARD-SPECIFIC: gate this by a board-config
-    # once a second V2 board build exists.
-    puts $fo "`define TD_AUTO_LANE_MASK_E4"
+    # V2 8-lane sim oracles green. Now env-gated (see _lane_mask_e4 above):
+    # TD_AUTO_LANE_MASK_E4=0 omits the define -> LANE_MASK_RESET = 8'hFF = 8 lanes
+    # = the sim default = popcount 8 -> bytesPerCycle 16.
+    if { $_lane_mask_e4 } {
+        puts $fo "`define TD_AUTO_LANE_MASK_E4"
+    } else {
+        puts $fo "// TD_AUTO_LANE_MASK_E4 OMITTED (TD_AUTO_LANE_MASK_E4=0) -> LANE_MASK_RESET = 8'hFF (8 lanes)"
+    }
     puts -nonewline $fo $body
     close $fo
     puts "INFO: tidelink V2: materialised $inc_name -> $out"

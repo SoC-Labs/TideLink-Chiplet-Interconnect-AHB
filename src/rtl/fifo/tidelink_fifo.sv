@@ -18,7 +18,10 @@ module tidelink_fifo #(
     parameter RAM_ADDR_W = 14,
     parameter RAM_DATA_W = 32,
     parameter APB_ADDR_W = 12,
-    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0  // APB base address of the paired tidelink
+    parameter [SYS_ADDR_W-1:0] TIDELINK_PAIR_BASE = '0,  // APB base address of the paired tidelink
+    // PENDING-DECISION #1 pass-through (default 1'b1 = bit-identical). See
+    // tidelink_fifo_ctrl.ENABLE_AHB_WRITE.
+    parameter bit ENABLE_AHB_WRITE = 1'b1
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -165,9 +168,14 @@ module tidelink_fifo #(
     // FIFO error flags
     logic                   fifo_overrun;
     logic                   fifo_underrun;
+    // RX-FIFO TWIN 2 sticky fault: AHB write into RX aperture while disarmed.
+    logic                   fifo_ahb_inject_fault;
 
     // Control signals (from APB regs to FIFO and returner)
     logic                   ctrl_flush;
+    // RX-FIFO TWIN 2 (chip-killer) — runtime arm for the AHB CPU-write-into-RX
+    // path (APB CTRL[3], POR-disarmed) routed to tidelink_fifo_mem/ctrl.
+    logic                   swi_ahb_inject_arm;
 
     // Returner status
     logic                   returner_busy;
@@ -201,7 +209,8 @@ module tidelink_fifo #(
     tidelink_fifo_mem #(
         .SYS_DATA_W (SYS_DATA_W),
         .RAM_ADDR_W (RAM_ADDR_W),
-        .RAM_DATA_W (RAM_DATA_W)
+        .RAM_DATA_W (RAM_DATA_W),
+        .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
     ) u_fifo_mem (
         .hclk                   (hclk),
         .hresetn                (hresetn),
@@ -221,7 +230,9 @@ module tidelink_fifo #(
         .packet_committed_irq   (packet_committed_irq),
         .overrun                (fifo_overrun),
         .underrun               (fifo_underrun),
+        .ahb_inject_fault       (fifo_ahb_inject_fault),
         .flush                  (ctrl_flush),
+        .swi_ahb_inject_arm     (swi_ahb_inject_arm),
         // FC direct write interface
         .fc_wr_valid            (fc_wr_valid),
         .fc_wr_write            (fc_wr_write),
@@ -265,11 +276,13 @@ module tidelink_fifo #(
         // Error flags
         .fifo_overrun        (fifo_overrun),
         .fifo_underrun       (fifo_underrun),
+        .ahb_inject_fault    (fifo_ahb_inject_fault),
         .master_error        (master_error),
         // Packet committed (for STATUS[4] polling)
         .packet_committed    (packet_committed_irq),
         // Control outputs (to FIFO and returner)
         .ctrl_flush          (ctrl_flush),
+        .swi_ahb_inject_arm  (swi_ahb_inject_arm),
         // Returner control
         .doorbell_trigger    (doorbell_trigger),
         .reset_deassert_pulse(reset_deassert_pulse),

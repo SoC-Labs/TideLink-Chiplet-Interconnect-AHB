@@ -1,0 +1,27 @@
+[tb_top] EPOCH_ANCHOR_EN: master=1 slave=1 (deskew: m=0 s=0)
+ 10720.00ns INFO     cocotb.tb_top                      post-autocal: M=0x440300ff S=0x440300ff cal M=DONE S=DONE
+113040.00ns INFO     cocotb.tb_top                        [after to_data_mode] M: locked=0x00 cal_done=1 cal=DONE fcsm=4 cr=1 crack=1 pkt_is_cr=0 short=0 llrx_v=0 pcc=0
+113040.00ns INFO     cocotb.tb_top                        [after to_data_mode] S: locked=0x00 cal_done=1 cal=DONE fcsm=4 cr=1 crack=1 pkt_is_cr=0 short=0 llrx_v=0 pcc=0
+137040.00ns INFO     cocotb.tb_top                      [m1] link up (cal+CR/CRACK); eth subsystem behind die_b ahb_mng
+142220.00ns INFO     cocotb.tb_top                      [m1] MEMORY-MAP DERIVATION: peer 0x30000100 -> ahb_mng presented 0x30000100  (delta=0x00000000; IDENTITY)
+142220.00ns INFO     cocotb.tb_top                      [m1] ahb_mng address decodes into subsystem region: eth_scratch_rx
+224160.00ns INFO     cocotb.tb_top                      [m1] wrote 16-word frame -> eth_scratch_rx 0x30000040+ (peer 0x30000040+)
+224160.00ns INFO     cocotb.tb_top                      [m1] eth_ss_0 BUS CONTRACT observed on ahb_mng: htrans=2 hsize=2 hburst=0 hwrite=1 (hburst=0 => SINGLE-beat; the AHBSubMaster + XHB path emits single NONSEQ transfers — a finding, not a failure)
+389160.00ns INFO     cocotb.tb_top                        [m1] w 0 T=0x30000040 sent=0xffffffff read=0xffffffff eth_scratch_rx[16]=0xffffffff
+394140.00ns INFO     cocotb.tb_top                        [m1] w 1 T=0x30000044 sent=0xffff0200 read=0xffff0200 eth_scratch_rx[17]=0xffff0200
+399140.00ns INFO     cocotb.tb_top                        [m1] w 2 T=0x30000048 sent=0x00000001 read=0x00000001 eth_scratch_rx[18]=0x00000001
+404120.00ns INFO     cocotb.tb_top                        [m1] w 3 T=0x3000004c sent=0x08060001 read=0x08060001 eth_scratch_rx[19]=0x08060001
+409120.00ns INFO     cocotb.tb_top                        [m1] w 4 T=0x30000050 sent=0xebebebeb read=0xebebebeb eth_scratch_rx[20]=0xebebebeb
+414120.00ns INFO     cocotb.tb_top                        [m1] w 5 T=0x30000054 sent=0xecececec read=0xecececec eth_scratch_rx[21]=0xecececec
+419100.00ns INFO     cocotb.tb_top                        [m1] w 6 T=0x30000058 sent=0xedededed read=0xedededed eth_scratch_rx[22]=0xedededed
+424100.00ns INFO     cocotb.tb_top                        [m1] w 7 T=0x3000005c sent=0xeeeeeeee read=0xeeeeeeee eth_scratch_rx[23]=0xeeeeeeee
+429080.00ns INFO     cocotb.tb_top                        [m1] w 8 T=0x30000060 sent=0xefefefef read=0xefefefef eth_scratch_rx[24]=0xefefefef
+434080.00ns INFO     cocotb.tb_top                        [m1] w 9 T=0x30000064 sent=0xf0f0f0f0 read=0xf0f0f0f0 eth_scratch_rx[25]=0xf0f0f0f0
+439080.00ns INFO     cocotb.tb_top                        [m1] w10 T=0x30000068 sent=0xf1f1f1f1 read=0xf1f1f1f1 eth_scratch_rx[26]=0xf1f1f1f1
+444060.00ns INFO     cocotb.tb_top                        [m1] w11 T=0x3000006c sent=0xf2f2f2f2 read=0xf2f2f2f2 eth_scratch_rx[27]=0xf2f2f2f2
+449060.00ns INFO     cocotb.tb_top                        [m1] w12 T=0x30000070 sent=0xf3f3f3f3 read=0xf3f3f3f3 eth_scratch_rx[28]=0xf3f3f3f3
+454040.00ns INFO     cocotb.tb_top                        [m1] w13 T=0x30000074 sent=0xf4f4f4f4 read=0xf4f4f4f4 eth_scratch_rx[29]=0xf4f4f4f4
+459040.00ns INFO     cocotb.tb_top                        [m1] w14 T=0x30000078 sent=0xf5f5f5f5 read=0xf5f5f5f5 eth_scratch_rx[30]=0xf5f5f5f5
+464040.00ns INFO     cocotb.tb_top                        [m1] w15 T=0x3000007c sent=0xf6f6f6f6 read=0xf6f6f6f6 eth_scratch_rx[31]=0xf6f6f6f6
+464040.00ns INFO     cocotb.tb_top                      [m1] PASS: 16/16-word frame relayed die_a peer window -> link -> die_b ethernet_ss_ahb matrix -> eth_scratch_rx, byte-exact (round-trip + hierarchical peek).
+                                                        ** TESTS=1 PASS=1 FAIL=0 SKIP=0                    464040.00          15.01      30905.65  **

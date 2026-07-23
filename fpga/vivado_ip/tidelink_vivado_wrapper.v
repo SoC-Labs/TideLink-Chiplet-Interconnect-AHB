@@ -99,7 +99,61 @@ module tidelink_vivado_wrapper #(
     parameter STUB_SERVO       = 1'b0,
     parameter STUB_PERF        = 1'b0,
     parameter STUB_PTP         = 1'b0,
-    parameter BYPASS_ADDR_XLAT = 1'b0
+    parameter BYPASS_ADDR_XLAT = 1'b0,
+
+    // =========================================================================
+    // ZERO-POKE AUTONOMY — POR value of the auto-negotiation config registers.
+    //
+    // TRUE zero-poke self-negotiation (the mandated deliverable): the hardware
+    // must arm its autonomy chain from power-on with NO host writes. The chain
+    //   autonomy_armed = nego_en & role_locked & train_auto_en
+    // (axi_chiplet_controller.sv) is gated by nego_cfg_reg[0] (nego_en) and
+    // nego_train_cfg_r[0] (train_auto_en), whose POR values come from these two
+    // parameters via tidelink_top → axi_chiplet_controller's poresetn branch.
+    //
+    // tidelink_top's OWN default is 7'h00 (nego_en=0 — the manual SW-role_lock /
+    // host-winscan path used by the cocotb/UVM/ASIC consumers). This FPGA IP
+    // wrapper is the SOLE production consumer that wants the autonomous POR, so
+    // it overrides the default HERE — exactly as USE_IDELAY / USE_CLKBUF / USE_T3A
+    // above do. ipx::package_project records this wrapper-parameter default in
+    // the packaged IP's component.xml, so the IP's out-of-context synthesis
+    // elaborates the register with 7'h61 baked into its reset value. NO
+    // preprocessor `define is involved: a +define+ on the packaging project does
+    // NOT reach the IP's OOC synth (proven silent no-op — see the USE_IDELAY note
+    // and memory project_verilog_define_never_reaches_ooc_ip_2026_07_09); a
+    // PARAMETER default does. To A/B against the legacy silent-V1 image, override
+    // CONFIG.NEGO_CFG_RESET=0 on the BD instance.
+    //
+    //   7'h61 = nego_en[0] | nego_force_lock[5] | mask_hs_auto_en[6]
+    //     [0] nego_en         — run the autoneg FSM from POR
+    //     [5] nego_force_lock — latch role_locked on nego completion (no SW W1S)
+    //     [6] mask_hs_auto_en — run the lane-mask handshake autonomously
+    //   NEGO_TRAIN_CFG_RESET 16'h0001 = train_auto_en[0]=1 (train_poll_timeout
+    //     nibble = 0 → the RTL T_POLL_TIMEOUT_DEFAULT). This mirrors
+    //     tidelink_top's own default; forwarded explicitly so both POR values are
+    //     visible/overridable on one IP face.
+    parameter [6:0]  NEGO_CFG_RESET       = 7'h61,
+    parameter [15:0] NEGO_TRAIN_CFG_RESET = 16'h0001,
+    // RETIRE-AUTONOMY enable (the B->A channel fix) — forwarded to
+    // tidelink_top.RETIRE_EN => axi_chiplet_controller.RETIRE_EN.
+    // 1'b1 = the silicon-validated cd2db38 behaviour (10/10 all channels).
+    // Surfaced on the IP face for the same reason as NEGO_CFG_RESET above: a
+    // wrapper-parameter default IS recorded in component.xml and DOES reach the
+    // IP's OOC synth, whereas a +define+ does NOT. Exposing it here means the
+    // retire is overridable per-BD-instance (CONFIG.RETIRE_EN=0 A/Bs against the
+    // pre-fix always-armed image) instead of being welded to the controller's
+    // module default.
+    parameter        RETIRE_EN            = 1'b1,
+    // HONEST_MASK_HS — surface tidelink_top's peer-mask-handshake authenticity
+    // gate on the IP face (needed by the kr260-pair-onchip pair, which sets
+    // CONFIG.HONEST_MASK_HS=1 so the genuine handshake runs). DEFAULT 1'b0 =
+    // the legacy bench tie: tidelink_top holds apb_debug_unlock_i /
+    // mask_hs_bypass_i at 1'b1 exactly as before, so EVERY existing single-die
+    // target (Z2 + kr260 single) is byte-behaviour-identical. Only the on-chip
+    // pair overrides it to 1. Surfaced here (not just the RTL default) because a
+    // wrapper-parameter default IS recorded in component.xml and DOES reach OOC
+    // synth, whereas a +define+ does not — same rationale as NEGO_CFG_RESET.
+    parameter        HONEST_MASK_HS       = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -325,6 +379,12 @@ module tidelink_vivado_wrapper #(
     // Link / Congestion sideband — discrete status outputs (for TideChart agent)
     // =========================================================================
     output wire        link_active,
+    // Data-mode strobe (FCSM >= 4: link carries FC/EXT words). Gate TideChart's
+    // root election on THIS pin, not on link_active — link_active is
+    // role_locked and asserts ~5us earlier, before the link can carry a CLAIM,
+    // which silently dual-roots a 2-chiplet fabric.
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    output wire        tl_data_mode_o,
     output wire        d2d_reset_o,
     output wire  [4:0] tl_local_link_state_o,
     output wire        tl_link_state_change_o,
@@ -454,7 +514,19 @@ module tidelink_vivado_wrapper #(
         .STUB_SERVO          (STUB_SERVO),
         .STUB_PERF           (STUB_PERF),
         .STUB_PTP            (STUB_PTP),
-        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT)
+        .BYPASS_ADDR_XLAT    (BYPASS_ADDR_XLAT),
+        // Zero-poke autonomy POR (see the parameter header). The wrapper default
+        // 7'h61 overrides tidelink_top's safe 7'h00 default, and reaches OOC
+        // synth via component.xml — the FPGA image self-negotiates from power-on.
+        // WINSCAN_CONVERGE_LOCK_EN is left at tidelink_top's 1'b0 default (the
+        // phase2 asymmetric-peer-serve FSM does not use the converge-lock).
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET),
+        // RETIRE-AUTONOMY (B->A fix). Forwarded verbatim; 1'b1 = validated.
+        .RETIRE_EN           (RETIRE_EN),
+        // Peer-mask-handshake authenticity gate. Default 0 => tidelink_top keeps
+        // the legacy 1'b1 ties (single-die byte-identical); onchip pair sets 1.
+        .HONEST_MASK_HS      (HONEST_MASK_HS)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),
@@ -589,6 +661,7 @@ module tidelink_vivado_wrapper #(
         .tl_ewma_credit_o           (tl_ewma_credit_o),
         .tl_bcast_ack_i             (tl_bcast_ack_i),
         .link_active                (link_active),
+        .tl_data_mode_o             (tl_data_mode_o),
         .d2d_reset_o                (d2d_reset_o),
 
         // Role / negotiation / PUF

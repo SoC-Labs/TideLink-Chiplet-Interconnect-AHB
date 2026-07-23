@@ -21,7 +21,14 @@
 #
 # A->B only (die_a sends) — the SAFE direction per td_v2_hwlib.sh (die_b
 # sending without credit risks wedging die_b's PS). Reads throttled.
-# First-use validation pending (no boards attached at authoring time).
+#
+# FIRST RUN: 2026-07-16 (it had never been executed). The first run reported
+# 1/40 and it was THE INSTRUMENT, not the link -- a pre-drain plus a truncated
+# ZP_TX_WORDS walked the RX read_ptr past write_ptr. Both fixed; see the loop
+# body and td_v2_hwlib.sh's ZP_TX_WORDS comment. If this script ever reports a
+# mass FAIL with fcsm=4/4 + reanchored=1 + credit unchanged on the failing
+# bursts, suspect the reader FIRST: a healthy link does not fail data while
+# reporting perfect health, and all-zeros is a pointer symptom, not a link one.
 # =============================================================================
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -61,16 +68,27 @@ echo "  die_a=$A_IP($A_BOARD) -> die_b=$B_IP($B_BOARD)  packet: ${ZP_TX_WORDS[*]
 N=0; PASS=0; FIRST_FAIL_T=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   N=$((N+1)); t=$(( $(date +%s) - T0 ))
-  # drain stale GP1 words (pops on read), send, settle, read back 3 words
-  for i in 0 1 2 3; do gp1_rx_d b "$i" >/dev/null; done
-  sleep "$TD_THROTTLE"
+  # NO PRE-DRAIN. The old code swept offsets 0..3 "to drain stale words" before
+  # every send. Offset 3 is read_target_addr = (length+1)*4 -- reading it FIRES
+  # read_complete and pops the packet. Combined with the 3-word ZP_TX_WORDS bug
+  # (now fixed in td_v2_hwlib.sh) that walked read_ptr 1 word past write_ptr per
+  # burst, so this soak read all-zeros from burst 2 onward and reported 1/40 on
+  # a link that was provably HEALTHY throughout (fcsm 4/4, reanchored, credit
+  # 31 on every failing burst) and still delivered B->A byte-exact afterwards.
+  # A pre-drain is the same anti-pattern that made proven_method_soak read 0/6
+  # (project_rxfifo_empty_read_phantom_pop); it is never needed here because the
+  # read sweep below pops exactly one packet and leaves read_ptr aligned.
   zp_txburst a; sleep 1
   got=()
-  for i in 0 1 2; do
+  # Read the WHOLE packet (length+2 = ${#ZP_TX_WORDS[@]} words). The final read
+  # is read_target_addr, which pops it -- so the FIFO stays aligned burst to
+  # burst without any drain. Checking every word (not just the leading 3) is
+  # also what makes a trailing-word defect visible.
+  for i in $(seq 0 $(( ${#ZP_TX_WORDS[@]} - 1 )) ); do
     got+=("$(printf '0x%08x' "$(( $(gp1_rx_d b "$i") ))")"); sleep "$TD_THROTTLE"
   done
   ok=1
-  for i in 0 1 2; do
+  for i in $(seq 0 $(( ${#ZP_TX_WORDS[@]} - 1 )) ); do
     [ "${got[$i]}" = "$(printf '0x%08x' "$(( ${ZP_TX_WORDS[$i]} ))")" ] || ok=0
   done
   # link-health fields alongside every burst — the death signature we're hunting

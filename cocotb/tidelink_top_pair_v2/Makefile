@@ -68,6 +68,56 @@ COMPILE_ARGS += -f $(V2_FLIST)
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# ── Autonomy engagement (parity with cocotb/tidelink_top_pair/Makefile) ──────
+# BYPASS_AUTONEG (Phase 0c autonomy plan)
+#   1 = legacy: the autoneg FSM parks in ST_BYPASS at POR; role-lock is
+#       SW/APB-driven. Default for the SW-bring-up tests (incl. the
+#       test_v2_pair_data 3/3 gate) — bit-identical to before this line existed.
+#   0 = autonomy: tb_top forces nego_cfg_reg + nego_train_cfg_r at time 0 so the
+#       FSM walks ST_NEGO_INIT -> ST_TRAIN_DONE with NO SW writes. Required by
+#       test_v2_autonomous_fc_handoff / _sync_detect.
+# WHY THIS BLOCK EXISTS (the real "HARNESS GAP"): the V2 Makefile previously had
+# NO BYPASS_AUTONEG plumbing, so `BYPASS_AUTONEG=0 make ...` was silently
+# ignored — the tb_top parameter kept its `else 1` default, the
+# `if (BYPASS_AUTONEG==0)` force block never ran, and the autoneg FSM parked in
+# ST_BYPASS (state 6). That, NOT the `#5000; release` the skip-note blamed, is
+# why the autonomous force "did not engage" (both tb_tops release identically).
+BYPASS_AUTONEG ?= 1
+export BYPASS_AUTONEG   # consolidation 2026-07-15: the handoff test's os.environ["BYPASS_AUTONEG"] skip needs it exported
+COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=$(BYPASS_AUTONEG)
+# (CMSDK_FPGA_SRAM_V is exported by set_env.sh from CMSDK_DIR — source that before `make`.)
+
+# RELY_ON_RTL_PRIO_DEFAULTS (Bug N7 regression parity)
+#   0 = tb forces nego_priority_reg master:0x0001 / slave:0x0002 (legacy).
+#   1 = leave nego_priority_reg to the RTL POR default.
+RELY_ON_RTL_PRIO_DEFAULTS ?= 0
+COMPILE_ARGS += +define+TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS=$(RELY_ON_RTL_PRIO_DEFAULTS)
+
+# ── Whole-word cross-lane corrector select (2026-07-09, from kr260-pblock) ───
+# tidelink_lane_deskew has two MUTUALLY EXCLUSIVE whole-word correctors. As
+# built (EPOCH_ANCHOR=0) it runs SYNC_REANCHOR — which never arms in this env,
+# because the bring-up leaves the SYNC beacon off (pair_v2_common.do_to_data_mode
+# writes R8_SLOT0=0). So the default build has NO active whole-word corrector,
+# and EPOCH_PROFILE=zero passes only because there is nothing to correct.
+#
+#   make EPOCH_PROFILE=staircase                 -> FAILS (no corrector)
+#   make EPOCH_PROFILE=staircase EPOCH_ANCHOR=1  -> PASSES (EPOCH anchor engaged)
+#
+# Keep the default at 0: it matches the silicon build bit-for-bit.
+#
+# 2026-07-17 PLUMBING FIX: the OLD `+define+TIDELINK_EPOCH_ANCHOR` was DEAD in the
+# V2 build — it selected the TL_EPOCH_ANCHOR_EN ifdef in the deps
+# deps/tidelink-phy/rtl/wav/WavD2DGpio.v, but the V2 flist compiles the LOCAL
+# OVERRIDE src/rtl/local_overrides/WavD2DGpio_v2.v (no such ifdef), so EPOCH_ANCHOR=1
+# engaged NOTHING (the "PASSES" claim above was never true in V2). It now drives
+# +define+TB_TOP_EPOCH_ANCHOR_EN, which defparams phy.EPOCH_ANCHOR_EN=1 and
+# propagates through the fixed WlinkGPIOPHY_v2 -> WavD2DGpio_v2 -> u_deskew param
+# path (banner "master=1 (deskew: m=1)"). SYNC_REANCHOR_EN becomes its complement.
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+COMPILE_ARGS += +define+TB_TOP_EPOCH_ANCHOR_EN
+endif
+
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
 ifeq ($(EPOCH_PROFILE),zero)
@@ -124,7 +174,13 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # rerun the zero-skew binary (observed 2026-06-12; the tb's EPOCH_ANCHOR_EN
 # banner is the canary). A plain := beats the environment; an explicit
 # SIM_BUILD=... on the command line still wins.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)
+# SIM_BUILD key — every knob that changes COMPILE_ARGS must appear here, because
+# cocotb recompiles on SOURCE timestamps, not COMPILE_ARGS, so two configs sharing
+# one sim_build silently rerun whichever binary built first (canary: the tb's
+# EPOCH_ANCHOR_EN / `deskew: m=? s=?` banner). Consolidation 2026-07-16 UNION of:
+#   _noanchor (EPOCH_ANCHOR_DIS), _anchor (EPOCH_ANCHOR — kr260-pblock),
+#   _eye (EYE_FAULT), _prefixfc (PREFIX_FC — integ), _auto (BYPASS_AUTONEG!=1 — phase2).
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0
@@ -133,6 +189,17 @@ SIM_ARGS     += +vcs+dumpvars+waves.vcd
 else
 COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 endif
+
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f $(V2_FLIST)` (invisible to make),
+#     so without this an RTL-only edit re-runs the STALE simv. Track the STABLE
+#     source flist file (NOT the PREFIX_FC-generated one, whose mtime churns every
+#     invocation) plus the bare RTL paths of whichever flist is actually selected
+#     (the generated one lists prefix_fc_adapter.sv when PREFIX_FC=1).
+#     See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist $(call flist_srcs,$(V2_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 

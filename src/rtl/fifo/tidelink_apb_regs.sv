@@ -47,11 +47,20 @@ module tidelink_apb_regs #(
     input  logic                    fifo_underrun,
     input  logic                    master_error,
 
+    // RX-FIFO TWIN 2 sticky fault (from FIFO ctrl): an AHB write into the RX
+    // aperture was attempted while the inject path was DISARMED. STATUS[5].
+    input  logic                    ahb_inject_fault,
+
     // Packet committed flag (from FIFO ctrl, exposed in STATUS[4])
     input  logic                    packet_committed,
 
     // Control outputs (to FIFO and returner)
     output logic                    ctrl_flush,
+
+    // RX-FIFO TWIN 2 (chip-killer) — runtime ARM for the AHB CPU-write-into-RX
+    // path. CTRL register (0x01C) bit[3], RW, POR default 0 (DISARMED). Routed
+    // to tidelink_fifo_mem/tidelink_fifo_ctrl. See the CTRL block below.
+    output logic                    swi_ahb_inject_arm,
 
     // Returner control outputs (to tidelink_fifo top-level for returner wiring)
     output logic                    doorbell_trigger,
@@ -198,15 +207,23 @@ module tidelink_apb_regs #(
     //            Self-clearing.
     // [2] LOCK:  Shortcoming #25 fix — write-once. Once set, prevents modification
     //            of pair_base_addr and release_threshold until next reset.
+    // [3] AHB_INJECT_ARM: RX-FIFO TWIN 2 (chip-killer). RW, POR default 0
+    //            (DISARMED). While 0, an AHB CPU write into the RX FIFO can
+    //            neither arm a packet nor advance the FC-shared write_ptr (a
+    //            stray clear/probe pair is a NO-OP). Software must set this to 1
+    //            before AHB-injecting a packet into the RX aperture.
     logic ctrl_flush_r;
     logic ctrl_lock_r;
+    logic swi_ahb_inject_arm_r;
 
     assign ctrl_flush  = ctrl_flush_r;
+    assign swi_ahb_inject_arm = swi_ahb_inject_arm_r;
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             ctrl_flush_r  <= 1'b0;
             ctrl_lock_r   <= 1'b0;
+            swi_ahb_inject_arm_r <= 1'b0;   // POR-DISARMED (TWIN 2)
         end else begin
             // FLUSH is self-clearing: assert for one cycle only
             ctrl_flush_r <= 1'b0;
@@ -217,6 +234,13 @@ module tidelink_apb_regs #(
                 // LOCK is write-once: can only be set, never cleared by software
                 if (pwdata[2])
                     ctrl_lock_r <= 1'b1;
+                // AHB_INJECT_ARM is a plain RW latch (software can arm/disarm),
+                // BUT a FLUSH pulse (pwdata[1]=1) must NOT disturb it: FLUSH is a
+                // datapath reset, not a config change, so the inject-arm survives
+                // a flush (only POR clears it). This avoids the footgun where a
+                // bare `write CTRL, FLUSH` (0x2) would silently disarm injection.
+                if (!pwdata[1])
+                    swi_ahb_inject_arm_r <= pwdata[3];
             end
         end
     end
@@ -537,32 +561,17 @@ module tidelink_apb_regs #(
                                           (apb_region <= 4'b0111);
     assign perf_reg_addr   = paddr[4:2];
     assign perf_reg_wdata  = pwdata;
-    // OFFSET-FROM-5, not the raw region index. tidelink_perf.sv:53 declares this
-    // port as `00=Region5, 01=Region6, 10=Region7`, so it must be biased by 5.
-    //
-    // This was `apb_region[1:0]` (raw), which is off by one and broke the entire
-    // perf block:
-    //   * perf_reg_write is gated to apb_region 5..7 above, so the raw [1:0] was
-    //     only ever 01/10/11 — NEVER 2'b00. tidelink_perf.sv:437 writes
-    //     perf_enable_r solely under `perf_reg_write && perf_reg_region == 2'b00`,
-    //     so PERF_CTRL writes were unreachable: perf_enable_r was stuck at its
-    //     reset 0, perf_active never asserted, and every counter (including
-    //     ewma_q_r -> ewma_credit_o, the congestion telemetry) stayed 0 forever.
-    //   * The same skew rotated the read mux: Region 5 returned Region 6's map,
-    //     Region 6 returned Region 7's, and Region 7 fell through to `default:`
-    //     and read 0 — which killed PERF_ID, the presence gate bring-up scripts
-    //     check first.
-    //
-    // The subtraction cannot underflow: perf_reg_region is only consumed when
-    // perf_reg_write is high (writes) or under the apb_region 5..7 read arms
-    // (see the read mux below), and apb_region >= 5 in both cases.
-    //
-    // Not caught by cocotb/tidelink_perf_congestion because that bench compiles
-    // tidelink_perf.sv WITHOUT this file and drives perf_reg_region directly —
-    // it encodes the module's convention, so it passed while the integration was
-    // broken. See cocotb/tidelink_apb_regs/test_perf_region_decode.py, which
-    // exercises the real APB path and fails on the raw-index form.
-    assign perf_reg_region = apb_region[1:0] - 2'b01;
+    // Wave-0 fix #9 (2026-07-17): perf regions live at apb_region 5..7 (gated
+    // above), so the 2-bit local region index must be (apb_region-5):
+    //   region 5 -> 2'b00 (PERF_CTRL/TX-ts), 6 -> 2'b01, 7 -> 2'b10.
+    // The old `apb_region[1:0]` mapped {5,6,7}->{01,10,11} and could NEVER
+    // produce 2'b00, so PERF_CTRL (region 5, the enable/freeze/clear reg) was
+    // physically UNWRITABLE and every perf counter read 0. Behaviour-neutral
+    // for regions 6/7 reads; only enables PERF_CTRL writes.
+    // (Merge 2026-07-22: main had the functionally-identical `apb_region[1:0]-1`
+    // form from e6f0254; kept this gate-validated form. The real-APB-path test is
+    // cocotb/tidelink_apb_regs/test_perf_region_decode.py.)
+    assign perf_reg_region = (apb_region - 4'd5);
 
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 
@@ -576,7 +585,8 @@ module tidelink_apb_regs #(
                     3'h2:    prdata = {{(SYS_DATA_W-RAM_ADDR_W){1'b0}}, packet_word_length};
                     3'h3:    prdata = {{(SYS_DATA_W-RAM_ADDR_W+1){1'b0}}, current_credit_count};
                     3'h4:    prdata = {
-                                 {(SYS_DATA_W-5){1'b0}},
+                                 {(SYS_DATA_W-6){1'b0}},
+                                 ahb_inject_fault,   // [5] TWIN 2 sticky fault
                                  packet_committed,   // [4]
                                  master_error,        // [3]
                                  fifo_underrun,       // [2]
@@ -590,7 +600,7 @@ module tidelink_apb_regs #(
                     // [7:0]   = minor version
                     3'h5:    prdata = 32'h544C_0100;  // TideLink v1.0
                     3'h6:    prdata = release_acc;
-                    3'h7:    prdata = {{(SYS_DATA_W-3){1'b0}}, ctrl_lock_r, 2'b00};
+                    3'h7:    prdata = {{(SYS_DATA_W-4){1'b0}}, swi_ahb_inject_arm_r, ctrl_lock_r, 2'b00};
                     default: ;
                 endcase
             end

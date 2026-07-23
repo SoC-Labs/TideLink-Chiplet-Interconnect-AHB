@@ -44,6 +44,23 @@
 # =============================================================================
 set -u
 
+# --- ZynqMP (KR260) SAFETY GUARD (inline) ------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang (power-cycle to recover).
+# Pynq-Z2 ONLY. Refuse the moment we start if TIDELINK_SOC names anything else.
+# Safe on a KR260: tl_poke.py (absolute 0x8403_xxxx) or tl39.py with tl_socmap.py.
+_tl_guard_soc=$(printf '%s' "${TIDELINK_SOC:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+case "$_tl_guard_soc" in
+  ""|z2|pynq-z2|pynq_z2|zynq7|zynq) : ;;
+  *)
+    printf '\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals (0x4403_xxxx)\n' "${0##*/}" "$TIDELINK_SOC" >&2
+    printf '  UNDECODED on a ZynqMP (KR260) => hard PS hang. This tool is Pynq-Z2 ONLY.\n' >&2
+    printf '  On a KR260 use tl_poke.py (absolute 0x8403_xxxx) or tl39.py with tl_socmap.py.\n' >&2
+    exit 3 ;;
+esac
+
+
 MASTER="${1:?usage: link_delivery_proof.sh <MASTER_IP> <SLAVE_IP>}"
 SLAVE="${2:?usage: link_delivery_proof.sh <MASTER_IP> <SLAVE_IP>}"
 PASS="${TIDELINK_BOARD_PASS:-xilinx}"
@@ -59,7 +76,7 @@ fail() { echo "DELIVERY-PROOF: FAIL — $2"; exit "$1"; }
 #    python through double-ssh quoting mangles — see unjam_fc_node.sh). ──────
 HELPER=$(mktemp)
 cat > "$HELPER" <<'PYEOF'
-import mmap, struct, os, sys, time, json
+import mmap, struct, os, sys, time, json, ctypes
 
 PAGE = 4096
 TX_BASE  = int(os.environ.get("TIDELINK_TX_BASE", "0x44000000"), 16)
@@ -82,12 +99,18 @@ def _mm(addr):
         _maps[base] = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
     return _maps[base], addr - base
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from emit ~5 AHB beats per u32 on this target -- the
+# "5x over-advance phantom". This is a DELIVERY-PROOF tool: occupancy() reads
+# the credit/RX FIFO counters, and a 5x read on a POP-on-read aperture silently
+# consumes entries and corrupts the delivery count it is trying to prove.
+# ctypes.c_uint32.from_buffer(m, o) is exactly one aligned load/store. (tl39.py)
 def rd(addr):
     m, o = _mm(addr)
-    return struct.unpack_from("<I", m, o)[0]
+    return ctypes.c_uint32.from_buffer(m, o).value
 def wr(addr, val):
     m, o = _mm(addr)
-    struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+    ctypes.c_uint32.from_buffer(m, o).value = val & 0xFFFFFFFF
 
 def occupancy():
     return MAX_CREDITS - rd(R_CREDIT_COUNT)

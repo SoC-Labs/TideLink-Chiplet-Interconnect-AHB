@@ -57,9 +57,28 @@ abstract_port -ports "apb_pprot[*]"        -clock app_clk
 abstract_port -ports "apb_pstrb[*]"        -clock app_clk
 abstract_port -ports "apb_pwrite"          -clock app_clk
 abstract_port -ports "apb_pwdata[*]"       -clock app_clk
-abstract_port -ports "ctrl_reg_write"      -clock app_clk
-abstract_port -ports "ctrl_reg_addr[*]"    -clock app_clk
-abstract_port -ports "ctrl_reg_wdata[*]"   -clock app_clk
+# integ ACC override (src/rtl/local_overrides/axi_chiplet_controller.sv) renamed
+# these three APB-side register-write inputs with an apb_ prefix; the SGDC port
+# names must track the actual module ports or SpyGlass drops them as unmatched
+# (SGDC_abstract_port02 Fatal -> Exit Code 7 -> the earlier "0 clocks / 0
+# crossings" early-termination). The read-data OUTPUT stayed `ctrl_reg_rdata`
+# (see abstract_port above).
+abstract_port -ports "apb_ctrl_reg_write"  -clock app_clk
+abstract_port -ports "apb_ctrl_reg_addr[*]" -clock app_clk
+abstract_port -ports "apb_ctrl_reg_wdata[*]" -clock app_clk
+# The same integ override added two APB read-region SELECT strobes to this same
+# hclk-domain register interface: apb_ctrl_reg_r10 (perlane-wp Region-10 select)
+# and apb_ctrl_reg_rd (rxcap Region-D select). Both are driven at top level by
+# u_tidelink_fifo's ctrl_reg_r10 / ctrl_reg_rd outputs (that instance is clocked
+# by .hclk(hclk)), i.e. they are hclk-domain siblings of the write/addr/wdata
+# strobes above and covered by this SGDC's "all input ports are app_clk" model.
+# They were omitted from the port enumeration, so SpyGlass could not bind their
+# black-box-input domain and DEFAULTED them to user_ref_clk, manufacturing two
+# spurious Ac_unsync01 hclk->user_ref_clk crossings (source domains: 1 = hclk).
+# Declaring the true (app_clk=hclk) domain — the same constraint their siblings
+# carry, NOT a waiver — collapses those to same-domain (non-crossing).
+abstract_port -ports "apb_ctrl_reg_r10"    -clock app_clk
+abstract_port -ports "apb_ctrl_reg_rd"     -clock app_clk
 # Chiplet-controller hclk-domain inputs (§3.1 of prior sign-off)
 abstract_port -ports "puf_ready"           -clock app_clk
 abstract_port -ports "apb_debug_unlock_i"  -clock app_clk

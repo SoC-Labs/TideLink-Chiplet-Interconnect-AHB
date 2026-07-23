@@ -271,7 +271,7 @@ TRACE_PIDS=()
 tracer_launch(){ local die=$1 ip=$2 regtab=$3 dur=$4 py b64
   py=${TRACE_PY/@REGTAB@/$regtab}
   b64=$(printf '%s\n' "$py" | base64 -w0)
-  ( $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_trace.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -u /tmp/td_trace.py $die $TRACE_PERIOD $dur" 2>/dev/null \
+  ( $SSH "$BOARD_USER@$ip" "echo $b64 | base64 -d > /tmp/td_trace.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 -u /tmp/td_trace.py $die $TRACE_PERIOD $dur" 2>/dev/null \
     | while IFS= read -r l; do printf '%s,%s\n' "$(date +%s.%N)" "$l"; done >> "$TRACE_FILE" ) &
   TRACE_PIDS+=("$!"); }
 
@@ -328,7 +328,13 @@ trace_summary(){ local n ts die reg name val ta="" tb=""
 # ----- preflight ---------------------------------------------------------------
 echo "======== zeropoke_proof first=$FIRST stagger=${STAGGER}s budget=${BUDGET}s ($(date)) ========"
 echo "  die_a=$A_IP($A_BOARD)  die_b=$B_IP($B_BOARD)  deploy=$DO_DEPLOY dir=$DEPLOY_DIR"
+# HARD REFUSE on a non-Z2 SoC: the --trace sampler (TRACE_PY) mmaps RAW Z2
+# literals (base 0x44032000), and c_sync reads V2-retired 0x215C. Refuse before
+# any board access (undecoded 0x4403_xxxx on ZynqMP = hard PS hang).
+td_require_z2 "zeropoke_proof.sh"
 boards_up || { echo "### ABORT: a board is unreachable ($A_IP / $B_IP)"; exit 3; }
+# Prove tl39.py runs on both boards before any bus access (defect class 1).
+td_tl39_preflight || { echo "### ABORT: tl39 preflight failed — see above"; exit 3; }
 if [ "$DO_LEASE" = 1 ]; then
   lease_acquire 1800 || { echo "### ABORT: could not acquire $LEASE_NAME lease"; exit 3; }
 fi

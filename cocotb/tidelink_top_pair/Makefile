@@ -22,7 +22,7 @@ TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
-VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv $(CURDIR)/tb_phc_model.sv
 
 TOPLEVEL = tb_top
 MODULE  ?= test_tidelink_pair_doorbell
@@ -77,6 +77,15 @@ COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 else
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 endif
+
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f <flist>` (invisible to make), so
+#     without this an RTL-only edit re-runs the STALE simv. Tracks whichever flist
+#     TIDELINK_PHY_V2 selects. See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_TL_FLIST   := $(TIDELINK_HOME)/flists/tidelink_fpga$(if $(filter 1,$(TIDELINK_PHY_V2)),_v2,).flist
+_flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 

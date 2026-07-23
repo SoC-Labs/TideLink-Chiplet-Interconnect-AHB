@@ -1,0 +1,6 @@
+sim_build*/
+__pycache__/
+results.xml
+ucli.key
+waves.vcd
+*.log

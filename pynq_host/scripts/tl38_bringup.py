@@ -20,16 +20,35 @@ Commands:
   freeze       slot0 = 0x2
   probe        decode 0x108 + OBS_CAL
 """
-import mmap, struct, os, sys, time
+import mmap, struct, os, sys, time, ctypes
 
 PAGE = 4096
 BASE = 0x44032000
 R_SLOT0, R_BITSLIP, R_LANE, R_TRAINCFG, R_THRESH, R_OBSCAL = 0x100, 0x104, 0x108, 0x10C, 0x160, 0x198
 
+# --- ZynqMP (KR260) SAFETY GUARD ---------------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang. Pynq-Z2 ONLY. Refuse
+# before opening /dev/mem. On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.
+_tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+    sys.stderr.write(
+        "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals "
+        "(0x4403_xxxx)\n  UNDECODED on a ZynqMP (KR260) => hard PS hang. "
+        "Pynq-Z2 ONLY.\n  On a KR260 use tl_poke.py (0x8403_xxxx) or tl39.py.\n"
+        % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+    raise SystemExit(3)
+
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 m = mmap.mmap(fd, PAGE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=BASE)
-def rd(o): return struct.unpack_from("<I", m, o)[0]
-def wr(o, v): struct.pack_into("<I", m, o, v & 0xFFFFFFFF)
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from on this target emit ~5 AHB beats per logical poke
+# (the "5x over-advance phantom") -- W1P recal pulses fire 5x. ctypes
+# c_uint32.from_buffer is exactly one aligned load/store. (matches tl39.py 7ce05c6)
+def _u32(o): return ctypes.c_uint32.from_buffer(m, o)
+def rd(o): return _u32(o).value
+def wr(o, v): _u32(o).value = v & 0xFFFFFFFF
 
 def probe():
     v = rd(R_LANE); c = rd(R_OBSCAL) & 0xF

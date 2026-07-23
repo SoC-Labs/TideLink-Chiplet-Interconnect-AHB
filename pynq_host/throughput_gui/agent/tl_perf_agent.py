@@ -38,6 +38,7 @@ admits strictly behind the criterion-B + delivery-proof gates. No
 speculative TX, ever.
 """
 import argparse
+import ctypes
 import json
 import os
 import struct
@@ -72,6 +73,22 @@ class _DevMem(object):
     """mmap-once /dev/mem accessor (identical to tlchar.py)."""
 
     def __init__(self):
+        # --- ZynqMP (KR260) SAFETY GUARD -------------------------------------
+        # This backend mmaps RAW Pynq-Z2 control literals (0x4403_xxxx /
+        # 0x4404_xxxx / 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP
+        # (KR260) those addresses are UNDECODED with NO bus timeout => a hard
+        # PS hang. Pynq-Z2 ONLY. Refuse before opening /dev/mem (the --fake
+        # backend never reaches here). On a KR260 use tl_poke.py (0x8403_xxxx)
+        # or tl39.py.
+        _tl_guard_soc = (os.environ.get("TIDELINK_SOC") or "").strip().lower()
+        if _tl_guard_soc not in ("", "z2", "pynq-z2", "pynq_z2", "zynq7", "zynq"):
+            sys.stderr.write(
+                "\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 "
+                "literals (0x4403_xxxx)\n  UNDECODED on a ZynqMP (KR260) => "
+                "hard PS hang. Pynq-Z2 ONLY.\n  On a KR260 use tl_poke.py "
+                "(0x8403_xxxx) or tl39.py, or run this agent with --fake.\n"
+                % (os.path.basename(__file__), os.environ.get("TIDELINK_SOC")))
+            raise SystemExit(3)
         self._fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
         self._maps = {}
 
@@ -84,13 +101,20 @@ class _DevMem(object):
                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
         return self._maps[base], addr - base
 
+    # SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+    # struct.pack_into/unpack_from on this ARMv7 PYNQ emit ~5 narrow bus beats
+    # per u32 (measured: a2l wptr +5/word) -- the "5x over-advance phantom".
+    # For a THROUGHPUT agent that is fatal: counter reads pop POP-on-read FIFOs
+    # 5x and every send fires ~5x, corrupting the very rate being measured.
+    # ctypes.c_uint32.from_buffer is exactly one aligned load/store per .value.
+    # Mirrors tlchar.py / tl39.py. Do not revert to struct.
     def rd(self, addr):
         m, o = self._mm(addr)
-        return struct.unpack_from("<I", m, o)[0]
+        return ctypes.c_uint32.from_buffer(m, o).value
 
     def wr(self, addr, val):
         m, o = self._mm(addr)
-        struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+        ctypes.c_uint32.from_buffer(m, o).value = val & 0xFFFFFFFF
 
     def idle(self):
         pass

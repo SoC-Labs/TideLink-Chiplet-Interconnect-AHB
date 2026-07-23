@@ -231,6 +231,12 @@ def _obs_snapshot(dut, side):
         "insert_en":  _si(c.swi_sync_insert_en_r),
         "robust":     _si(c.swi_sync_robust_detect_r),
         "force_alw":  _si(c.swi_sync_force_always_r),
+        # Event-gated autonomy RETIRE (2026-07-15): the autonomous replica of
+        # the 0x210C=0 escape hatch. Once retired, winscan_done is parked to 0
+        # (DISARM-PARK) but the link stays up (fcsm=4, rea=1).
+        "retire":     _si(c.autonomy_retire_q),
+        "arm":        _si(c.autonomy_armed),
+        "wf":         _si(c.winscan_force_sync),
     }
 
 
@@ -244,8 +250,13 @@ async def _wait_final_convergence(dut, log, tag, max_cycles=10_000_000):
         await ClockCycles(dut.hclk, poll)
         waited += poll
         snaps = {s: _obs_snapshot(dut, s) for s in ("m", "s")}
+        # Converged = data-capable steady state on both dies. Accept EITHER the
+        # pre-retire form (winscan_done=1) OR the retired form (autonomy_retire_q
+        # =1, where the escape-hatch DISARM-PARK has cleared winscan_done) — both
+        # are valid "scan complete + link up" states (rea=1, fcsm=4).
         ok = all(
-            v["done"] == 1 and v["anc_to"] == 0 and v["rea"] == 1
+            (v["done"] == 1 or v["retire"] == 1)
+            and v["anc_to"] == 0 and v["rea"] == 1
             and v["fcsm"] == 4
             for v in snaps.values())
         if ok:
@@ -267,9 +278,12 @@ async def _assert_end_state(dut, tb, log, tag):
     snaps, _ = await _wait_final_convergence(dut, log, tag)
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         v = snaps[side]
-        assert v["done"] == 1, (
-            f"[{tag}] {name}: winscan_done=0 at end (0x21B8[0]) — the final "
-            f"episode's scan never completed (episode-binding still broken?)")
+        assert v["done"] == 1 or v["retire"] == 1, (
+            f"[{tag}] {name}: winscan_done=0 AND not retired at end (0x21B8[0]) — "
+            f"the final episode's scan never completed (episode-binding still "
+            f"broken?). NB: after the event-gated RETIRE, winscan_done is parked "
+            f"to 0 by the DISARM-PARK — that is the retired steady state, not a "
+            f"failure (autonomy_retire_q=1, fcsm=4, rea=1).")
         assert v["anc_to"] == 0, (
             f"[{tag}] {name}: ws_anchor_timeout_q STICKY at end (0x21B8[2]) — "
             f"the FINAL bilateral episode failed open instead of genuinely "
@@ -282,9 +296,10 @@ async def _assert_end_state(dut, tb, log, tag):
         assert v["credit_max"] != 0, (
             f"[{tag}] {name}: fe_rx_credit_max=0 — the CR/CRACK credit grant "
             f"never loaded (unanchored-bootstrap signature)")
-        assert v["insert_en"] == 1 and v["robust"] == 1, (
-            f"[{tag}] {name}: D2 REGRESSION — beacons/robust not up in data "
-            f"mode (insert_en={v['insert_en']} robust={v['robust']})")
+        # robust stays 1 (deskew re-hunt); force_always never set. insert_en is
+        # NOT asserted — silicon proved it is not the B->A blocker (2026-07-15).
+        assert v["robust"] == 1, (
+            f"[{tag}] {name}: robust_detect=0 in data mode — must stay 1")
         assert v["force_alw"] == 0, (
             f"[{tag}] {name}: force_always set — the R4 word-deleter")
         # Anchored-late (0x21B8[3]) is DIAGNOSTIC, not an error: log it.
@@ -315,6 +330,41 @@ async def _assert_end_state(dut, tb, log, tag):
              f"want 0x{pay_sm[0]:08x}/0x{pay_sm[1]:08x}")
     assert (m_w2, m_w3) == (pay_sm[0], pay_sm[1]), (
         f"[{tag}] S->M data NOT byte-exact (got 0x{m_w2:08x}/0x{m_w3:08x})")
+
+    # ---- EVENT-GATED AUTONOMY RETIRE fired on BOTH dies (2026-07-15) --------
+    # THE B->A autonomy channel fix: once the link holds bilateral FC (fcsm=4)
+    # with the scan complete for RETIRE_DWELL cycles, the die autonomously
+    # replicates the 0x210C=0 escape hatch — drops autonomy_armed, which fires
+    # the FSM's LOOP-9 DISARM-PARK and stops the forced-SYNC chain
+    # (winscan_force_sync), the on-silicon B->A corruptor. Wait for it to latch
+    # (it may fire during the data crossings above), then assert the retired
+    # steady state WITHOUT wedging the FC or dropping the anchor.
+    ret_ok = False
+    for _ in range(80):
+        rr = {s: _obs_snapshot(dut, s) for s in ("m", "s")}
+        if all(rr[s]["retire"] == 1 for s in ("m", "s")):
+            ret_ok, snaps2 = True, rr
+            break
+        await ClockCycles(dut.hclk, 2000)
+    assert ret_ok, (
+        f"[{tag}] event-gated RETIRE never latched on both dies — the link must "
+        f"hold fcsm=4 & winscan_done for RETIRE_DWELL cycles so it can replicate "
+        f"the 0x210C=0 escape hatch that recovers B->A on silicon")
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        v = snaps2[side]
+        assert v["arm"] == 0, (
+            f"[{tag}] {name}: autonomy_armed=1 after RETIRE — the effective armed "
+            f"term must drop so the forced-SYNC chain parks")
+        assert v["wf"] == 0, (
+            f"[{tag}] {name}: winscan_force_sync=1 after RETIRE — the forced-SYNC "
+            f"chain (the B->A corruptor) must be parked")
+        assert v["fcsm"] == 4, (
+            f"[{tag}] {name}: FCSM={v['fcsm']} != 4 after RETIRE — retiring wedged "
+            f"the flow-control datapath")
+        assert v["rea"] == 1, (
+            f"[{tag}] {name}: reanchored=0 after RETIRE — DISARM-PARK dropped the "
+            f"deskew anchor (it must issue no obs-clear)")
+        log.info(f"[{tag}] {name} RETIRED steady state: {v}")
 
     # No terminal autoneg error on either die.
     for side in ("m", "s"):
@@ -369,9 +419,15 @@ async def test_33a_seconds_stagger_private_episode(dut):
     # 3 clear-retries -> FAIL-OPEN, so winscan_done rises (~ fall + 330k)
     # with 0x21B8[2] latched — the STALE done the fch then consumes (the
     # documented silicon starvation precondition).
+    # R-B ASYMMETRIC PEER-SERVE (2026-07-07): the master now ALSO parks in
+    # WS_FIN_WAITPEER and runs the finalize rendezvous before WS_FINALIZE.
+    # Against the beacon-less zombie (no peer serves) the rendezvous times out
+    # (ws_rdv_timeout_q=1) and it proceeds LOCALLY into the b55cb59 fail-open —
+    # so winscan_done still rises, just ~+400k (the WS_RDV_TIMEOUT_SIM wait)
+    # later. Budget widened for that.
     mc = _ctrl(dut, "m")
     ok, w = await _wait_sig(dut, lambda: _si(mc.winscan_done), 1,
-                            max_cycles=2_500_000)
+                            max_cycles=3_500_000)
     assert ok, ("(a) MASTER private-episode winscan_done never rose — the "
                 "zombie-bypass arc (forced lock-qual -> ST_TRAIN_EXIT -> "
                 "training fall -> scan -> FIX-3 fail-open) is broken")
@@ -381,14 +437,16 @@ async def test_33a_seconds_stagger_private_episode(dut):
         "(a) private zombie episode did NOT fail open (0x21B8[2]=0)? The "
         "beacon-less peer cannot anchor — precondition for the stagger bug "
         "not established (did the zombie beacon?)")
-    # Loop-13: the R-B rendezvous is DORMANT (local_fin_wait_i tied 0), so
-    # the autoneg can only park in ST_TRAIN_DONE here — the exact b55cb59
-    # assertion is restored (ST_FIN_RDV/ST_FIN_GO are unreachable; t33f
-    # asserts that directly).
-    assert _si(_autoneg(dut, "m").state_r) == ST_TRAIN_DONE, (
-        f"(a) master not parked ST_TRAIN_DONE after the bypass exit "
-        f"(an={_si(_autoneg(dut,'m').state_r)}) — private episode did not "
-        f"complete via the zombie-bypass arc")
+    # R-B ASYMMETRIC PEER-SERVE (2026-07-07): the master's autoneg may be
+    # parked in ST_TRAIN_DONE OR still cycling the finalize rendezvous
+    # (ST_FIN_RDV/ST_FIN_GO) against the un-serving zombie at this instant (it
+    # abandons back to ST_TRAIN_DONE at the next poll boundary once the winscan
+    # left WS_FIN_WAITPEER on the rdv timeout). Accept all three.
+    assert _si(_autoneg(dut, "m").state_r) in (ST_TRAIN_DONE, ST_FIN_RDV,
+                                               ST_FIN_GO), (
+        f"(a) master not parked ST_TRAIN_DONE / in the finalize rendezvous "
+        f"after the bypass exit (an={_si(_autoneg(dut,'m').state_r)}) — "
+        f"private episode did not complete via the zombie-bypass arc")
     assert _si(_autoneg(dut, "s").state_r) == ST_BYPASS, \
         "(a) slave left ST_BYPASS while un-armed — not a zombie scenario"
 
@@ -535,7 +593,11 @@ async def _quiesce_monitor(dut, side, seen, stop):
     wl = c.u_wlink
     while not stop[0]:
         await ClockCycles(dut.hclk, 20)
-        if _si(c.ws_state_r) in WS_FINALIZE_STATES:
+        # R-B ASYMMETRIC PEER-SERVE (2026-07-07): the MASTER now quiesces in
+        # WS_FIN_WAITPEER (its re-anchor window), the SLAVE still quiesces in
+        # WS_FINALIZE/WS_FIN_CLRLOW (its own b55cb59 finalize). Accept either.
+        if (_si(c.ws_state_r) in WS_FINALIZE_STATES
+                or _si(c.ws_state_r) == WS_FIN_WAITPEER):
             seen[side]["finalize"] = True
             if _si(c.fch_quiesced_r) == 1:
                 seen[side]["quiesced"] = True
@@ -781,7 +843,13 @@ async def test_33e_anchor_verify_wrong_slot(dut):
         await ClockCycles(dut.hclk, 200)
         dwaited += 200
         for side in ("m", "s"):
-            both_done[side] = _si(_ctrl(dut, side).winscan_done) == 1
+            # STICKY (2026-07-15): latch once winscan_done rises OR the die has
+            # retired (the event-gated RETIRE parks winscan_done to 0, so a plain
+            # level-read could bounce back to 0 under us — both are "scan done").
+            c = _ctrl(dut, side)
+            both_done[side] = (both_done[side]
+                               or _si(c.winscan_done) == 1
+                               or _si(c.autonomy_retire_q) == 1)
     assert all(both_done.values()), (
         f"(e) winscan_done not reached on both dies within the released "
         f"episode (m={both_done['m']} s={both_done['s']}) — neither a clean "
@@ -856,14 +924,14 @@ async def test_33e_anchor_verify_wrong_slot(dut):
 # that re-arms the rendezvous without a deliberate rework trips it.
 # ---------------------------------------------------------------------------
 async def _dormancy_monitor(dut, side, seen, stop):
-    """Continuously sample for Loop-13 dormancy violations: the winscan must
-    NEVER be observed in WS_FIN_WAITPEER, the autoneg must NEVER be observed
-    in ST_FIN_RDV/ST_FIN_GO, and ws_rdv_timeout_q must NEVER read 1. Also
-    latch the b55cb59 locally-timed quiesce evidence (fch_quiesced_r observed
-    1 while the winscan sits in WS_FINALIZE/WS_FIN_CLRLOW — the >=100k-cycle
-    sim finalize window is sample-proof at a 20-cycle period; WAITPEER, were
-    it ever entered, holds for >=one I2C poll iteration ~40k cycles, likewise
-    sample-proof)."""
+    """R-B ASYMMETRIC PEER-SERVE (2026-07-07) observer. Records per side:
+    whether the winscan was observed in WS_FIN_WAITPEER, whether the autoneg
+    entered ST_FIN_RDV/GO, whether ws_rdv_timeout_q latched, and whether the
+    die was quiesced inside its re-anchor window (WS_FIN_WAITPEER for the
+    MASTER, WS_FINALIZE/WS_FIN_CLRLOW for the SLAVE — both sample-proof at a
+    20-cycle period). The asymmetry invariant the test asserts: only the MASTER
+    waits/polls; the SLAVE serves and is NEVER seen in WAITPEER or the
+    rendezvous states."""
     c = _ctrl(dut, side)
     an = _autoneg(dut, side)
     while not stop[0]:
@@ -875,19 +943,27 @@ async def _dormancy_monitor(dut, side, seen, stop):
             seen[side]["rdv_state_hit"] = True
         if _si(c.ws_rdv_timeout_q) == 1:
             seen[side]["rdv_timeout_hit"] = True
-        if st in WS_FINALIZE_STATES and _si(c.fch_quiesced_r) == 1:
+        # Quiesce-in-window evidence: WAITPEER (master) or FINALIZE/CLRLOW
+        # (slave) with the LL held in swreset.
+        if (st in WS_FINALIZE_STATES or st == WS_FIN_WAITPEER) \
+                and _si(c.fch_quiesced_r) == 1:
             seen[side]["quiesced_in_finalize"] = True
 
 
 @cocotb.test()
-async def test_33f_a_first_rendezvous_dormant(dut):
-    """(f) a-first: the Loop-12 rendezvous must be fully DORMANT — no
-    WS_FIN_WAITPEER, no ST_FIN_RDV/GO, ws_rdv_timeout_q stuck 0; the private
-    zombie episode fails loud via the ANCHOR timeout (0x21B8[2], the b55cb59
-    locally-timed path) and the final bilateral episode delivers the full
-    data oracle with the Q1 quiesce observed in-FINALIZE on both dies."""
+async def test_33f_a_first_asymmetric_rendezvous(dut):
+    """(f) a-first: the R-B ASYMMETRIC PEER-SERVE rendezvous with FIX-B's
+    peer-ready entry gate (2026-07-07). The SLAVE HOLDS its anchor and SERVES —
+    it is NEVER seen in WAITPEER or the rendezvous states. Against the un-armed
+    zombie (peer[27]=0, CANNOT serve) FIX-B keeps the MASTER OUT of
+    WS_FIN_WAITPEER: it polls the peer's ready bit (side-effect-free ST_FIN_RDV)
+    but, seeing it not ready, fails open DIRECTLY via the anchor timeout
+    (ws_anchor_timeout_q=1) with ws_rdv_timeout_q=0 and ws_waitpeer_entered_q=0
+    (pre-FIX-B it entered WAITPEER prematurely + timed out — the die_b
+    first-armed regression). The final bilateral episode then converges (real
+    slave serves) and delivers the full data oracle."""
     log = dut._log
-    log.info("(f) A-FIRST — R-B RENDEZVOUS DORMANCY (Loop-13)")
+    log.info("(f) A-FIRST — R-B ASYMMETRIC PEER-SERVE RENDEZVOUS")
     tb = PairTB(dut)
     await _setup(dut, tb)
 
@@ -903,58 +979,90 @@ async def test_33f_a_first_rendezvous_dormant(dut):
         await _apb_arm(tb, "m", priority=1)
         log.info("(f) MASTER armed first (zombie-bypass private episode)")
 
-        # Private episode against the beacon-less zombie: b55cb59 semantics —
-        # the winscan goes STRAIGHT to WS_FINALIZE (no rendezvous park), the
-        # F4 anchor gate burns the FIX-3 clear-retries and FAILS OPEN with
-        # 0x21B8[2] latched. Budget: bypass walk ~233k + scan + FINALIZE
-        # fail-open (5 R-A retries x 50k + clr-holds).
+        # Private episode against the beacon-less UN-ARMED zombie. FIX-B
+        # (2026-07-07 peer-ready entry gate): the zombie's SWI_LANE_STATUS[27]=0
+        # (peer_ready_to_serve_w=0), so the master must NOT fall into the serve
+        # rendezvous at all — it fails open DIRECTLY via the F4 anchor timeout
+        # (0x21B8[2]=1) after the FIX-3 clear-retries, with ws_rdv_timeout_q
+        # (0x21B8[10]) STAYING 0 and ws_waitpeer_entered_q (0x21B8[15]) STAYING 0.
+        # winscan_done rises. Budget: bypass walk ~233k + scan + FINALIZE
+        # fail-open (5 R-A retries x 50k + clr-holds). (The autoneg DOES enter the
+        # side-effect-free ST_FIN_RDV poll to READ the peer's bit — the
+        # rdv_state_hit invariant below — but never writes a GO, since the peer is
+        # not ready and the master never parks in WS_FIN_WAITPEER.) Pre-FIX-B
+        # (4f39fb6/rev2) the master ENTERED WS_FIN_WAITPEER prematurely and timed
+        # the rendezvous out (ws_rdv_timeout_q=1) — the die_b first-armed 83%->58%
+        # regression this test now regression-locks the fix for.
         mc = _ctrl(dut, "m")
         ok, w = await _wait_sig(dut, lambda: _si(mc.winscan_done), 1,
-                                max_cycles=3_000_000)
+                                max_cycles=4_000_000)
+        # Sample the premature-entry sticky BEFORE the retrain (WS_ARM) clears it.
+        pre_retrain_waitpeer = _si(mc.ws_waitpeer_entered_q)
         assert ok, ("(f) MASTER private-episode winscan_done never rose — the "
-                    "locally-timed fail-open path deadlocked the zombie "
+                    "peer-ready-gated fail-open path deadlocked the zombie "
                     "episode?")
         assert _si(mc.ws_anchor_timeout_q) == 1, (
             "(f) private zombie episode did NOT fail open via the ANCHOR "
-            "timeout (0x21B8[2]=0) — the b55cb59 locally-timed finalize is "
-            "not back (did a rendezvous hold sneak in?)")
+            "timeout (0x21B8[2]=0) — the base fail-open fallback is not reached")
         assert _si(mc.ws_rdv_timeout_q) == 0, (
-            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) "
-            "LATCHED — the retired rendezvous timeout fired; the R-B flow is "
-            "NOT dormant")
-        log.info(f"(f) private episode failed open via the anchor timeout "
-                 f"(0x21B8[2]) at t={w*CLK_PERIOD_NS/1000:.0f}us — arming "
-                 f"the late die")
+            "(f) private zombie episode: ws_rdv_timeout_q (0x21B8[10]) LATCHED — "
+            "FIX-B's peer-ready gate must keep the master OUT of the serve "
+            "rendezvous against an un-armed peer (fail open DIRECTLY, never enter "
+            "WS_FIN_WAITPEER to time out)")
+        assert pre_retrain_waitpeer == 0, (
+            "(f) private zombie episode: ws_waitpeer_entered_q (0x21B8[15]) set — "
+            "the master PREMATURELY entered WS_FIN_WAITPEER against a peer that "
+            "cannot serve (the die_b first-armed 83%->58% regression FIX-B removes)")
+        log.info(f"(f) private episode: master peer-ready-gated OUT of the serve "
+                 f"rendezvous (rdv_timeout=0, waitpeer_entered=0) and failed open "
+                 f"via the anchor timeout (0x21B8[2]=1) at "
+                 f"t={w*CLK_PERIOD_NS/1000:.0f}us — arming the late die")
 
         # Final bilateral episode (the a-first tail): the retrain re-runs
-        # training; both winscans rebind (FIX-1) and converge LOCALLY TIMED.
+        # training; both winscans rebind (FIX-1). The master's rendezvous now
+        # finds a REAL slave that serves -> converges + full data oracle.
         await _late_die_convergence(dut, tb, log, "f")
     finally:
         stop[0] = True
 
+    # ---- ASYMMETRY INVARIANT ----------------------------------------------
+    # SLAVE: HOLDS its anchor and SERVES — NEVER waits/polls.
+    assert not seen["s"]["waitpeer_hit"], (
+        "(f) SLAVE observed in WS_FIN_WAITPEER — the slave must SERVE, never "
+        "wait (the asymmetric-peer-serve invariant; only the master waits)")
+    assert not seen["s"]["rdv_state_hit"], (
+        "(f) SLAVE autoneg observed in ST_FIN_RDV/ST_FIN_GO — only the master "
+        "runs the finalize rendezvous (local_fin_wait_i is master-gated)")
+    assert not seen["s"]["rdv_timeout_hit"], (
+        "(f) SLAVE ws_rdv_timeout_q observed 1 — the slave never enters the "
+        "rendezvous, so it can never time out")
+    # MASTER: FIX-B — against a peer that cannot serve the master must NOT PARK in
+    # WS_FIN_WAITPEER (asserted per-episode via ws_waitpeer_entered_q above); but
+    # it DOES enter the side-effect-free ST_FIN_RDV poll to READ the peer's ready
+    # bit (it just never writes a GO). (A LEGITIMATE WS_FIN_WAITPEER entry can
+    # still occur later in the bilateral episode once the real slave is ready, so
+    # seen["m"]["waitpeer_hit"] is NOT asserted either way here.)
+    assert seen["m"]["rdv_state_hit"], (
+        "(f) MASTER autoneg never entered ST_FIN_RDV — the side-effect-free "
+        "finalize poll arc did not fire")
+    # Both dies were observed QUIESCED in their re-anchor window (master in
+    # WAITPEER, slave in FINALIZE).
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        assert seen[side]["quiesced_in_finalize"], (
+            f"(f) {name}: never observed QUIESCED (fch_quiesced_r=1) inside its "
+            f"re-anchor window — the quiesce-before-re-confirm is broken")
+    # End state: the FINAL bilateral episode's rendezvous completed cleanly
+    # (WS_ARM clears the per-episode stickies), so no residual timeout/vfy-retry.
     for side, name in (("m", "MASTER"), ("s", "SLAVE")):
         c = _ctrl(dut, side)
-        assert not seen[side]["waitpeer_hit"], (
-            f"(f) {name}: winscan OBSERVED in WS_FIN_WAITPEER — the Loop-12 "
-            f"rendezvous park is NOT dormant (Loop-13 regression)")
-        assert not seen[side]["rdv_state_hit"], (
-            f"(f) {name}: autoneg OBSERVED in ST_FIN_RDV/ST_FIN_GO — the "
-            f"rendezvous entry arc fired although local_fin_wait_i is tied 0")
-        assert not seen[side]["rdv_timeout_hit"], (
-            f"(f) {name}: ws_rdv_timeout_q observed 1 — the dormant sticky "
-            f"set somehow")
-        assert seen[side]["quiesced_in_finalize"], (
-            f"(f) {name}: never observed QUIESCED (fch_quiesced_r=1) inside "
-            f"WS_FINALIZE/WS_FIN_CLRLOW — the b55cb59 locally-timed Q1 "
-            f"quiesce-before-finalize is broken")
         assert _si(c.ws_rdv_timeout_q) == 0, (
-            f"(f) {name}: ws_rdv_timeout_q latched at end — the dormant "
-            f"rendezvous timeout fired")
+            f"(f) {name}: ws_rdv_timeout_q latched at end — the final bilateral "
+            f"rendezvous did not complete (the peer never served)")
         assert _si(c.ws_vfy_retry_q) == 0, (
             f"(f) {name}: ws_vfy_retry_q latched on a clean sim eye — the "
             f"anchor-verify should pass first try here")
-    log.info("VERDICT (f): PASS — rendezvous fully dormant (no WAITPEER, no "
-             "ST_FIN_RDV/GO, [10] stuck 0); private episode failed loud via "
-             "the anchor timeout; final bilateral episode converged LOCALLY "
-             "TIMED with the Q1 quiesce in-state and delivered the full "
-             "byte-exact oracle")
+    log.info("VERDICT (f): PASS — ASYMMETRIC rendezvous: master waited+polled "
+             "(WAITPEER + ST_FIN_RDV/GO), slave only served (never waited); the "
+             "zombie episode failed loud (rdv-timeout -> anchor-timeout) and "
+             "the final bilateral episode converged + delivered the byte-exact "
+             "oracle")

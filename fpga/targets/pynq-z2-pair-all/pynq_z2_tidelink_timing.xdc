@@ -217,7 +217,45 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      the calibrator window, others don't, and which is which changes every
 #      build); bounding relative skew directly removes that variance without
 #      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#      *** 2026-07-14 — REMOVED. THIS CONSTRAINT NEVER APPLIED, AND CANNOT. ***
+#
+#      It was:
+#        set_bus_skew -from [get_ports {pad_rx[*]}] -to <capture flops> 2.000
+#
+#      In EVERY build it was silently discarded:
+#        CRITICAL WARNING [Constraints 18-612] set_bus_skew: ... does not contain
+#        any object of type(s) '(pin,cell,clock)' ... will not be applied.
+#      It hid because the set_max_delay above uses the IDENTICAL
+#      -from [get_ports {pad_rx[*]}] and IS legal (set_max_delay accepts ports).
+#      The two lines look symmetric. They are not.
+#
+#      Re-sourcing it from the IBUF output pins does NOT rescue it:
+#        WARNING [Constraints 18-402] set_bus_skew: 'pad_rx_IBUF[0]_inst/O' is
+#        not a valid startpoint.
+#      set_bus_skew is a CDC construct: it needs a synchronous LAUNCH point (a
+#      sequential cell / its clock pin). An input port has no launch register
+#      inside the device, and a combinational IBUF output pin is not a timing
+#      startpoint. So this path is not expressible with set_bus_skew at all.
+#
+#      AND IT WOULD NOT HAVE HELPED AT 2 ns ANYWAY: the measured pad_rx -> capture
+#      setup slack on this design is ~0.44 ns. A 2 ns skew ceiling is ~5x LOOSER
+#      than the entire available margin, so it could not have bounded the thing it
+#      was written to bound.
+#
+#      The real question — how to make pad->capture margin DETERMINISTIC across
+#      builds — is open, and is the leading autonomy lead. Candidates, none yet
+#      validated (see docs/AUTONOMY_STATUS_2026_07_14.md):
+#        * IOB packing so the capture element has fixed, placement-independent delay
+#        * per-lane IDELAY used to EQUALISE (its ~2.34 ns range is well matched to a
+#          sub-ns/1-ns inter-lane skew — note the recorded "IDELAY is inert" finding
+#          answered a DIFFERENT question, namely positioning within a 426 ns UI)
+#        * pblock pinning of the capture flops (already applied, both dies)
+#        * a set_max_delay/set_min_delay WINDOW (both accept ports) to bound the
+#          pad->capture delay spread directly — the closest legal expression of the
+#          original intent, but the window must be sized against a ~0.44 ns margin,
+#          not 2 ns.
+#      Do NOT re-add a set_bus_skew here without checking the build log: any
+#      constraint that binds to nothing now FAILS verify_build.sh check (g).
 
 # (3d) Best-effort IOB request. link_data_pad_clk_reg[*] itself cannot pack
 #      into the IOB (input mux on D — see caveat above) so this is applied
@@ -289,15 +327,15 @@ create_generated_clock -name gpiotx0_word_clk \
     -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/Q"}]
 # FIX-O handoff margin: word-domain regs -> count==7 mid-word capture (link_data_stage)
 # is a half-word-period datapath transfer, not edge-aligned.
-# 2026-07-05: -quiet + empty-match guard — synth can prune link_data_stage_reg,
-# and an empty -to list raises ERROR 12-4739 (aborts implementation).
-# SoC Labs 2026-07-05: FIX-O set_max_delay COMMENTED OUT. When synth prunes
-# link_data_stage_reg the empty -to raised ERROR Vivado 12-4739 and halted the
-# impl step chain before write_bitstream (the die_b no-bit failures). XDC does
-# NOT support if/llength guards (Designutils 20-1307 aborts the whole file;
-# see xdc_lint.py bug 6.a), and the gpiotx0_word_clk group has +6811 ns slack
-# -- the constraint is orthogonal to closure -- so disable rather than guard.
-# set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*link_data_stage_reg[*]"}]
+# SoC Labs 2026-07-05: FIX-O DISABLED. When synth prunes link_data_stage_reg[*]
+# the empty -to match raises ERROR [Vivado 12-4739] and aborts constraint
+# processing (fired in some builds, incl. die_a logs). An if/llength empty-match
+# guard is NOT an option here: procedural Tcl in an XDC is rejected
+# ([Designutils 20-1307] -- see cocotb/lint/xdc_lint.py bug #6.a and the prior
+# if/else abort documented in deps/tidelink-phy/.../pynq_z2_tidelink_word_handoff.xdc).
+# Prior timing analysis proved the gpiotx0_word_clk group closes with +6811 ns
+# slack -- the bound is orthogonal to closure, so disabling it is safe.
+# set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
 # set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
 
 # Four-group async isolation: recovered-RX, core hclk, TX word clock, and the
@@ -336,11 +374,11 @@ set_clock_groups -asynchronous \
 # Board LEDs are human-visible; no functional timing path needed.
 set_false_path -to [get_ports {led0 led1 led2 led3}]
 
-# 2026-07-05: quasi-static IDELAYE2 tap load (calibrator holds CNTVALUEIN
-# stable, pulses LD; no timing-critical transition). The canonical false_path
-# lives in the idelay xdc, which is skipped because FPGA_USE_IDELAY is unset
-# while the IDELAYE2 cells are still present in the packaged IP. Benign —
-# die_a-proven.
+# SoC Labs 2026-07-05: quasi-static IDELAYE2 tap-load (swi_phase_offset[clk_out1]
+# -> CNTVALUEIN[clk_out3 200MHz]) is functionally static (calibrator holds stable,
+# pulses LD). The canonical false_path lives in pynq_z2_tidelink_idelay.xdc but that
+# file is SKIPPED unless FPGA_USE_IDELAY=1 while the IDELAYE2 cells ARE present.
+# die_a ships with this same benign violation -> proven safe to waive.
 set_false_path -to [get_pins -filter {REF_PIN_NAME =~ CNTVALUEIN[*]} \
     -of_objects [get_cells -hierarchical -filter {REF_NAME == IDELAYE2}]]
 
@@ -389,3 +427,22 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 
 
 
+
+#-----------------------------------------------------------------------------
+# [RX-CAPTURE FLOORPLAN v3 — MIRRORED to die_a, 2026-07-11] Phase-2 physical fix.
+# ROOT CAUSE (4-agent assessment 2026-07-11): the per-lane RX capture-clock tree
+# carries a residual fabric LUT (wpa_gap, fanout 372) whose placement varies every
+# build -> few-hundred-ps inter-lane capture-clock skew -> which marginal lanes land
+# inside the SYNC-confirm window changes per build -> the bring-up LOTTERY. die_b
+# (pynq-z2-pair-flip-all) has HAD this pblock since 2026-06-20 and consistently
+# out-performs die_a (45-70% vs 15-45% clean-OK). die_a (this target) had NO pblock
+# -> its active-lane capture flops scatter (X1Y2) with ~4ns inter-capture skew, the
+# same failure the flip pblock fixed. Co-locate die_a's 4 active-lane (mask 0xE4 =
+# lanes 2,5,6,7) capture flops HARD to the pad/BUFG region X0Y0:X0Y1 (the recovered-
+# clock BUFG is BUFGCTRL_X0Y12, X0 column, shared by both targets -> region is
+# device-general, not die_b-specific). HYPOTHESIS: die_a underperforms BECAUSE it
+# lacks this pblock; mirroring should raise die_a toward die_b. Falsifiable by soak.
+create_pblock pblock_rx_act
+add_cells_to_pblock pblock_rx_act [get_cells -quiet -hierarchical -filter {NAME =~ "*gpiorx_2/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_5/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_6/link_data_pad_clk_reg*" || NAME =~ "*gpiorx_7/link_data_pad_clk_reg*"}]
+resize_pblock pblock_rx_act -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
+set_property IS_SOFT false [get_pblocks pblock_rx_act]

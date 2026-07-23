@@ -127,6 +127,11 @@ async def do_reset(dut, cycles=5):
     await ClockCycles(dut.hclk, cycles)
     dut.hresetn.value = 1
     await ClockCycles(dut.hclk, 2)
+    # RX-FIFO TWIN 2: this harness injects packets into the FIFO over the AHB
+    # slave (fifo_write_packet), which is now POR-DISARMED. ARM it (CTRL[3]).
+    # pwdata[1]=0 so no FLUSH is triggered.
+    await apb_write(dut, 0x01C, 1 << 3)
+    await ClockCycles(dut.hclk, 2)
 
 
 # ── AHB Slave (FIFO) Write Helper ───────────────────────────────────────────

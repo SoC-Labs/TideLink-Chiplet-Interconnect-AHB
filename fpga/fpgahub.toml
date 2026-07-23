@@ -73,6 +73,48 @@ kind        = "other"
 path        = "../imp/fpga/output/pynq-z2-pair-flip-all/tidelink.hwh"
 description = "Slave-side (die_b) pair bitstream handoff — pair-flip-all RPi pinout (mirrored)."
 
+# Kria KR260 (Zynq UltraScale+) role-aware pair — die_a = kr260-pair-ptp,
+# die_b = kr260-pair-flip-ptp (mirrored RPi pinout for the cross-cable), the
+# same master/slave split as the z2 pair-all / pair-flip-all pattern above.
+#
+# NOTE — the KR260 .bin is HEADER-STRIPPED, NOT byte-swapped. KR260 is ZynqMP
+# and now deploys via DEPLOY_STYLE=fpgautil (plain-Ubuntu boards, NO pynq): the
+# .bin is produced by bit2bin_zynqmp.py (strip the .bit header ONLY) and loaded
+# on-board with `fpgautil -b <bin> -f Full`. This is the OPPOSITE of the z2
+# bitstream_bin_* entries, which are bit2bin.py BYTE-SWAPPED for the Zynq-7000
+# zynq-fpga /lib/firmware path — that byte-swap corrupts a ZynqMP load, so the
+# two .bin flavours are never interchangeable. The Makefile encodes this with a
+# kr260-% split on both DEPLOY_ARTEFACTS and the $(BITBIN) rule (bit2bin_zynqmp.py
+# for kr260, bit2bin.py otherwise).
+
+[artefacts.bitstream_kr260_pair_ptp]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-pair-ptp/tidelink.bit"
+
+[artefacts.bitstream_bin_kr260_pair_ptp]
+kind        = "bitstream"
+path        = "../imp/fpga/output/kr260-pair-ptp/tidelink.bin"
+description = "Master-side (die_a) KR260 .bin — header-stripped (bit2bin_zynqmp.py), NO byte-swap; for fpgautil."
+
+[artefacts.hwh_kr260_pair_ptp]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-pair-ptp/tidelink.hwh"
+description = "Master-side (die_a) KR260 pair bitstream handoff — PTP in, straight RPi pinout."
+
+[artefacts.bitstream_kr260_pair_flip_ptp]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.bit"
+
+[artefacts.bitstream_bin_kr260_pair_flip_ptp]
+kind        = "bitstream"
+path        = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.bin"
+description = "Slave-side (die_b) KR260 .bin — header-stripped (bit2bin_zynqmp.py), NO byte-swap; for fpgautil."
+
+[artefacts.hwh_kr260_pair_flip_ptp]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.hwh"
+description = "Slave-side (die_b) KR260 pair bitstream handoff — PTP in, mirrored RPi pinout."
+
 [artefacts.bitstream_mps3]
 kind = "bitstream"
 path = "../imp/fpga/output/mps3/tidelink.bit"
@@ -116,6 +158,20 @@ id        = "build_z2_pair_flip_all"
 title     = "Build Pynq-Z2 pair slave bitstream (pair-flip-all)"
 command   = ["make", "-C", "fpga", "TARGET=pynq-z2-pair-flip-all", "build_design"]
 produces  = ["bitstream_built_z2_pair_flip_all"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_kr260_pair_ptp"
+title     = "Build KR260 pair master bitstream (die_a, PTP in)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-pair-ptp", "build_design"]
+produces  = ["bitstream_built_kr260_pair_ptp"]
+timeout_s = 3600
+
+[[actions]]
+id        = "build_kr260_pair_flip_ptp"
+title     = "Build KR260 pair slave bitstream (die_b, PTP in, mirrored pinout)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-pair-flip-ptp", "build_design"]
+produces  = ["bitstream_built_kr260_pair_flip_ptp"]
 timeout_s = 3600
 
 [[actions]]
@@ -198,6 +254,59 @@ command     = ["make", "-C", "fpga", "deploy_pair_role",
                "PYNQ_HOST={host.ssh}",
                "PYNQ_PROXY={host.proxy}"]
 secret_env  = { PYNQ_PASSWORD = "pynq.ssh_password" }
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+# Role-aware KR260 pair deploy — the kr260 twin of deploy_pair above.
+# deploy_pair_role maps (SOC=kr260, PTP=1, ROLE) -> the right TARGET:
+#   die_a -> kr260-pair-ptp, die_b -> kr260-pair-flip-ptp
+# and the Makefile's `kr260-%` filter routes it to DEPLOY_STYLE=fpgautil (the
+# REAL plain-Ubuntu KR260 path): the header-stripped .bin (bit2bin_zynqmp.py,
+# NO byte-swap) is scp'd with the pynq_host tooling and loaded on-board with
+# `fpgautil -b <bin> -f Full`, then the AFI widths are re-poked. See
+# pynq_host/scripts/kr260_deploy.sh + docs/KR260_BOARD_ENV.md.
+#
+# `requires` is intentionally omitted for the same reason as deploy_pair: the
+# Makefile's `deploy: $(DEPLOY_ARTEFACTS)` rule already errors when the
+# artefacts are absent, and a flag handshake would block dispatch on bitstreams
+# that are sitting on disk from an external Vivado run. Gate on the file
+# system, not on flag bookkeeping.
+#
+# PTP=1 matches the two bitstreams that exist and are verified good today
+# (2026-07-16). The nptp pair builds from the same tree — add a sibling action
+# with PTP=0 if/when those bitstreams are needed on a board.
+#
+# BOARD SELECTION: KR260_HOST={host.ssh} carries fpgahub's per-role board (e.g.
+# ubuntu@10.22.24.159). If fpgahub is not resolving a host, deploy_pair_role
+# falls back to the two known boards by ROLE (die_a 10.22.24.159 / die_b
+# 10.22.24.153; see the Makefile KR260_DIEA_IP/KR260_DIEB_IP defaults).
+#
+# AFI RE-POKE: the fpgautil deploy path calls `kr260_afi.sh fix` immediately
+# after the PL load (before any AXI traffic). That re-forces the AFI
+# PS-master-port widths (afi_fs: HPM0_LPD/HPM0_FPD) to 32-bit, undoing the stock
+# SOM firmware's setting that otherwise drops misaligned 32-bit accesses (the
+# KR260 control-plane defect). It runs on EVERY PL load — the widths are not
+# persisted. See pynq_host/scripts/kr260_afi.sh + docs/KR260_AFI_CHECK.md.
+#
+# secret_env: KR260_PASSWORD is the ubuntu user's password (login via sshpass
+# if key auth is not staged, and on-board `sudo -S`). Prefer staging SSH keys
+# (ssh-copy-id ubuntu@<board>) + NOPASSWD sudo and leaving this unset.
+[[actions]]
+id          = "deploy_kr260_pair"
+title       = "Deploy KR260 bitstream matching this side's pair role"
+description = """
+fpgautil over SSH/SCP on plain-Ubuntu KR260 (ZynqMP: header-stripped .bin, NO
+byte-swap; NO pynq). die_a → kr260-pair-ptp, die_b → kr260-pair-flip-ptp
+(mirrored RPi pinout for the cross-cable). After the PL load, verifies
+fpga_manager state and re-pokes the AFI PS-master-port widths to 32-bit
+(kr260_afi.sh fix) — required on every load, not persisted.
+"""
+command     = ["make", "-C", "fpga", "deploy_pair_role",
+               "SOC=kr260", "PTP=1",
+               "ROLE={pair.local.role}",
+               "KR260_HOST={host.ssh}",
+               "KR260_PROXY={host.proxy}"]
+secret_env  = { KR260_PASSWORD = "kr260.ssh_password" }
 produces    = ["bitstream_loaded"]
 timeout_s   = 600
 

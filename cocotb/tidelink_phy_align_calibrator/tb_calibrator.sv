@@ -78,6 +78,8 @@ module tb_calibrator #(
         .min_lock_dwells_i    (min_lock_dwells_i),
         .cr_pkt_seen_i        (cr_pkt_seen_i),
         .crack_pkt_seen_i     (crack_pkt_seen_i),
+        // P1 (2026-07-19): force_recal_i has no SV default port value (zero precedent in-tree; Vivado SV subset). Tie 0 = pre-P1 behaviour.
+        .force_recal_i             (1'b0),
         .bit_slip             (bit_slip),
         .phase_offset         (phase_offset),
         .training_mode        (training_mode),

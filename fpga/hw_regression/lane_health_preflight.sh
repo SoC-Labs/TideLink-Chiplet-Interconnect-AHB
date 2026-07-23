@@ -2,10 +2,25 @@
 # =============================================================================
 # lane_health_preflight.sh — per-lane RX eye / commit health check for BOTH dies
 #
+# ⚠⚠⚠ V1 / PYNQ-Z2 ONLY, AND SELF-VALIDATING — DO NOT RUN ON A KR260 ⚠⚠⚠
+# ------------------------------------------------------------------------------
+# Two independent reasons this tool must never touch a ZynqMP (KR260):
+#   1. Phase 2's on-board sweep mmaps RAW Z2 /dev/mem literals (base 0x44032000)
+#      that it does NOT relocate. On a KR260 those addresses are UNDECODED with
+#      no bus timeout => a hard PS hang (power-cycle to recover).
+#   2. Its commit verdict reads 0x4403215C (sync_seen). That register is RETIRED
+#      in V2 and reads 0 BY CONSTRUCTION, so every "lane never commits / DEAD"
+#      verdict on a V2 build is VOID. The golden GOLD_SEEN=0xE4 / GOLD_MASK
+#      constants also encode this tool's OWN premise ({2,5,6,7}); it validates
+#      against the very assumption it is supposed to test. See
+#      memory/reference_lane_health_preflight.md + reference_v2_retired_obs_regs.
+# It is refused outright unless TIDELINK_SOC is unset / z2 (td_require_z2 below).
+# ------------------------------------------------------------------------------
+#
 # WHY THIS EXISTS (the blind spot it closes)
 # ------------------------------------------------------------------------------
 # A per-lane IDELAY eye sweep already lived in td_v2_hwlib.sh:winscan() — but it
-# only EVER ran on die_b ($SSH xilinx@$B_IP, ~line 136). die_a's RX eye had never
+# only EVER ran on die_b ($SSH $BOARD_USER@$B_IP, ~line 136). die_a's RX eye had never
 # been measured on silicon. The cost of that blind spot:
 #
 #   die_a pad_rx[7] was remapped to a spare pin (V7) after its primary B19/F20
@@ -63,11 +78,23 @@ R_CAL_SEL=0x44032154        # [2:0] calibrator lane select
 #  R_PHASE_LSB, GP1_RX, EXP_SLICE come from td_v2_hwlib.sh)
 
 # ----- golden / classification constants -------------------------------------
-GOLD_MASK32=0x0000E4E4      # 0x44030214 lane mask (rx|tx) — must match
-GOLD_MASK8=0xE4            # 0x44032128[7:0] SYNC mask — active lanes {2,5,6,7}
-GOLD_SEEN=0xE4             # 0x4403215C[7:0] all 4 active lanes committed
-GOLD_ACTIVE="2 5 6 7"      # NEVER report masked-out lanes
-SWEEP_LANES="2,5,6,7"     # Phase 2 sweep order (per-lane independent)
+# CONSOLIDATION 2026-07-19: these four "golden" constants were the LAST place
+# that still hardcoded the 4-lane 0xE4 assumption. They now derive from the ONE
+# mask mechanism — TD_MASK, defined in td_v2_hwlib.sh (sourced above) and
+# defaulting to 0xe4. With the default this composes to EXACTLY the historical
+# literals (GOLD_MASK32=0x0000e4e4, GOLD_MASK8=0xe4, GOLD_ACTIVE="2 5 6 7",
+# SWEEP_LANES="2,5,6,7"), so the default path is bit-identical. An 8-lane run
+# passes TD_MASK=0xff and the phase0 build-expectation ABORTs below then check
+# the RIGHT mask instead of failing a correct 8-lane build.
+GOLD_MASK32=$TD_LANEMASK32  # 0x44030214 lane mask (rx|tx) — must match
+GOLD_MASK8=$(printf '0x%02x' $((TD_MASK)))   # 0x44032128[7:0] SYNC mask
+GOLD_SEEN=$GOLD_MASK8      # 0x4403215C[7:0] all active lanes committed
+# NOTE (Wave-0 fix #12c): GOLD_SEEN is RETIRED as a comparison reference. The
+# commit expectation now derives from the live SYNC mask (EXP_SEEN, set in
+# phase0 from the hardware read-back m8). Kept only as documentation of the
+# nominal value; no longer used in any pass/fail decision.
+GOLD_ACTIVE="$MASK_ACTIVE_LANES"   # NEVER report masked-out lanes
+SWEEP_LANES="${MASK_ACTIVE_LANES// /,}"   # Phase 2 sweep order (per-lane independent)
 MARGIN_FLOOR=2            # PASS needs min_dist <= TOL-MARGIN_FLOOR
 EYE_FLOOR=4              # PASS needs eye_width >= EYE_FLOOR
 
@@ -161,48 +188,118 @@ wr_die(){ case "$1" in a) a wr "$2" "$3" >/dev/null;; b) b wr "$2" "$3" >/dev/nu
 sweep_py(){ # tol lanes_csv
   local tol=$1 lanes=$2
   cat <<PYEOF
-import mmap,struct,os,time
+import mmap,struct,os,time,ctypes
 P=4096;fd=os.open("/dev/mem",os.O_RDWR|os.O_SYNC)
 bb=0x44032000&~(P-1);o=0x44032000-bb
 m=mmap.mmap(fd,((0x400+o+P-1)//P)*P,mmap.MAP_SHARED,mmap.PROT_READ|mmap.PROT_WRITE,offset=bb)
-def rd(x):return struct.unpack_from("<I",m,o+x)[0]
-def wr(x,v):struct.pack_into("<I",m,o+x,v&0xffffffff)
+# SoC Labs 2026-07-09: rd/wr MUST be single aligned 32-bit bus accesses.
+# struct.pack_into/unpack_from did NOT compile to one access on this target
+# (measured: 5 AHB beats per logical poke) -- the "TX 5x over-advance phantom".
+# Here it is a MEASUREMENT hazard: this preflight loops rd(0x1AC)/rd(0x150) and
+# writes W1x taps per lane, so a 5x fan-out perturbs the eye it is measuring.
+# ctypes.c_uint32.from_buffer(m,o) is exactly one aligned load/store. (see tl39.py)
+def _u32(off):return ctypes.c_uint32.from_buffer(m,o+off)
+def rd(x):return _u32(x).value
+def wr(x,v):_u32(x).value=v&0xffffffff
+import signal
+# FAULT-TOLERANT SWEEP (2026-07-10): the SYNC-dist read path (write 0x1B0 select,
+# read 0x1AC) and the fine-tap write 0x1B4 are winscan-FSM-owned and BUS-ERROR on
+# some builds — killing the whole sweep so it yields "lanes": {}. Survive each
+# access, probe once at startup, and DEGRADE GRACEFULLY:
+#   0x1AC usable  -> real SYNC Hamming distance (the metric we want).
+#   0x1AC faults  -> proxy: the calibrator per-lane eye (0x150 via 0x154, a
+#                    DIFFERENT region); dist unavailable, eye_width from cal pass.
+#   0x1B4 faults  -> coarse taps only (0x118 nibble): 16 even taps, half res.
+# A MODE line reports which path each die used so the output is never a silent lie.
+class BusErr(Exception):pass
+signal.signal(signal.SIGBUS, lambda s,f:(_ for _ in ()).throw(BusErr()))
+def try_wr(off,v):
+ try: wr(off,v); return True
+ except BusErr: return False
+def try_rd(off):
+ try: return rd(off)
+ except BusErr: return None
+# --- probe register usability once (run DISARMED: a surviving fault is structural) ---
+# HARD-DISABLED 2026-07-10: 0x1AC/0x1B0/0x1B4 do NOT bus-error — they HARD-STALL
+# the CPU thread on an uninterruptible hung AXI read (proven: RC=124 twice, only
+# an external SIGKILL stops it; no in-process SIGBUS/SIGALRM handler helps). So we
+# NEVER probe or touch them. Eye must come from the calibrator path (0x150/0x154,
+# Region 10), and only AFTER the calibrator has locked (a bare deploy + force-SYNC
+# does NOT lock the RX: sync_seen low byte reads 0x00). See memory
+# project_first_valid_autonomy_measurement_2026_07_10.
+LSB_OK=False   # never touch 0x1B4
+DIST_OK=False  # never touch 0x1B0/0x1AC — they hard-stall the PS
+NTAPS = 32 if LSB_OK else 16
+print("MODE dist=%s fine_tap=%s ntaps=%d"%("0x1AC" if DIST_OK else "cal_proxy(0x150)", "on" if LSB_OK else "coarse_only", NTAPS),flush=True)
 def settap(L,t):
- n=(t>>1)&0xf;lb=t&1
+ tap = t if LSB_OK else (t*2)          # coarse-only: even taps 0,2,..30
+ n=(tap>>1)&0xf;lb=tap&1
  c=rd(0x118);c&=~(0xf<<(4*L));c|=n<<(4*L);wr(0x118,c)
- c=rd(0x1B4);c&=~(1<<L);c|=lb<<L;wr(0x1B4,c)
+ if LSB_OK:
+  c=try_rd(0x1B4)
+  if c is not None: c&=~(1<<L);c|=lb<<L;try_wr(0x1B4,c)
+def cal_eye(L):                         # proxy: (lane_passed, bit_err) at current tap
+ if try_wr(0x154,L) is False: return (0,63)
+ time.sleep(0.003);cal=try_rd(0x150)
+ if cal is None: return (0,63)
+ return ((cal>>13)&1, cal&0x3f)
 def measure(L):
- wr(0x1B0,L);time.sleep(0.003)
- return min(rd(0x1AC)&0x1f for _ in range(5))
+ if DIST_OK:
+  try_wr(0x1B0,L);time.sleep(0.003)
+  ds=[try_rd(0x1AC) for _ in range(5)]; ds=[d&0x1f for d in ds if d is not None]
+  return min(ds) if ds else 99
+ lp,br=cal_eye(L)                        # proxy distance: 0 if passing, else ~br
+ return 0 if lp else max(1,br>>1)
 def slice_of(L):
  reg={0:0x12C,1:0x12C,2:0x130,3:0x130,4:0x134,5:0x134,6:0x138,7:0x138}[L]
  sh=0 if (L%2)==0 else 16
- return (rd(reg)>>sh)&0xffff
+ v=try_rd(reg); return (v>>sh)&0xffff if v is not None else 0
 TOL=$tol
 for L in [$lanes]:
  best=(99,0);eye=0
- for t in range(32):
+ for t in range(NTAPS):
   settap(L,t);time.sleep(0.05)
   d=measure(L)
   if d<=TOL:eye+=1
   if d<best[0]:best=(d,t)
   time.sleep(0.008)
  settap(L,best[1])
- wr(0x154,L);time.sleep(0.003);cal=rd(0x150)
- lp=(cal>>13)&1;br=cal&0x3f
- print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)))
-print("SWEEP_DONE")
+ lp,br=cal_eye(L)
+ print("LANE %d %d %d %d %d %d 0x%04X"%(L,best[0],best[1],eye,lp,br,slice_of(L)),flush=True)
+print("SWEEP_DONE",flush=True)
 PYEOF
 }
-sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE
+sweep_die(){ # ip tol lanes_csv -> prints LANE lines + SWEEP_DONE (stdout); traceback (stderr)
   local ip=$1 tol=$2 lanes=$3 py b64
   py=$(sweep_py "$tol" "$lanes")
   b64=$(printf '%s' "$py" | base64 -w0)
-  $SSH "xilinx@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S python3 /tmp/td_lhp.py" 2>/dev/null
+  # Three output-integrity fixes for the "did not report SWEEP_DONE on BOTH dies"
+  # blind spot (the failure was in OUTPUT HANDLING, not the link):
+  #   python3 -u  : unbuffered stdout. Over the ssh pipe python block-buffers
+  #                 stdout; if the program is killed before a normal exit the
+  #                 buffered LANE lines + SWEEP_DONE are lost wholesale — which
+  #                 looks exactly like "no SWEEP_DONE". -u (belt: flush=True in
+  #                 the program) makes each line land immediately so a partial
+  #                 sweep still yields the lanes it did measure.
+  #   sudo -S -p '': read the password from stdin but emit an EMPTY prompt, so
+  #                 sudo's stderr does not add noise now that stderr is shown.
+  #   NO 2>/dev/null: the old redirect SWALLOWED any python traceback (e.g.
+  #                 /dev/mem EACCES, a bad register offset) — an identical-on-
+  #                 both-dies PROGRAM error was thus invisible and misread as a
+  #                 "link/PS issue". stderr now flows to the console; stdout
+  #                 (the LANE lines) is still captured clean by the caller's $().
+  $SSH "$BOARD_USER@$ip" "echo $b64 | base64 -d > /tmp/td_lhp.py && echo ${TD_BOARD_PW:-xilinx}|sudo -S -p '' python3 -u /tmp/td_lhp.py"
 }
 
 # ----- collected state -------------------------------------------------------
-declare -A EFF_TOL SEEN_VEC LIVE_VEC MISSING
+# EXP_SEEN[d] = per-die EXPECTED committed-lane vector. Wave-0 fix #12c:
+# de-circularization — this is DERIVED from the live SYNC mask read back from
+# hardware (m8) in phase0, NOT from the standalone GOLD_SEEN constant. Because
+# GOLD_SEEN was hardcoded == GOLD_MASK8, comparing seen against it validated its
+# own premise and could never fail when the mask itself was wrong. Deriving the
+# commit expectation from the live mask lets the preflight FAIL when a lane the
+# mask says is active never commits.
+declare -A EFF_TOL SEEN_VEC LIVE_VEC MISSING EXP_SEEN
 ROWS=()   # "die lane min_dist best_tap eye_width margin seen lane_passed best_run rx_slice class"
 
 # =============================================================================
@@ -220,6 +317,11 @@ phase0(){
       printf "  ABORT: die_%s lane mask 0x%08x != golden 0x%08x (wrong build / wrong mask?)\n" "$d" "$lm" $((GOLD_MASK32)); bad=1; fi
     if [ "$m8" -ne $((GOLD_MASK8)) ]; then
       printf "  ABORT: die_%s SYNC mask 0x%02x != golden 0x%02x\n" "$d" "$m8" $((GOLD_MASK8)); bad=1; fi
+    # Wave-0 fix #12c: the COMMIT expectation derives from the LIVE mask (m8),
+    # not the hardcoded GOLD_SEEN. The ABORT above is the (legitimate) build
+    # sanity check; here we record "all active lanes committed" == the mask HW
+    # actually reports, so a missing active lane is detectable downstream.
+    EXP_SEEN[$d]=$m8
     # effective TOL for classification: CLI override wins, else the read value
     if [ -n "$TOL_OVERRIDE" ]; then EFF_TOL[$d]=$TOL_OVERRIDE
     else
@@ -250,7 +352,10 @@ phase1(){
     local seen live miss
     seen=$(( $(rd_die "$d" "$R_SYNCSEEN") & 0xff ))
     live=$(( $(rd_die "$d" "$R_SYNC_LIVE") & 0xff ))
-    miss=$(( GOLD_MASK8 & ~seen & 0xff ))
+    # Wave-0 fix #12c: expected-commit derives from the live mask (EXP_SEEN,
+    # set in phase0 from m8), not the hardcoded GOLD_MASK8 constant.
+    local exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
+    miss=$(( exp & ~seen & 0xff ))
     SEEN_VEC[$d]=$seen; LIVE_VEC[$d]=$live; MISSING[$d]=$miss
     printf "  [commit] die_%s sync_seen=0x%02x live=0x%02x  missing=0x%02x %s\n" \
       "$d" "$seen" "$live" "$miss" "$([ "$miss" = 0 ] && echo "(all active lanes commit)" || echo "<-- lane(s) never commit")"
@@ -268,7 +373,9 @@ phase2(){
     echo "  [sweep] die_${d}: lanes {${GOLD_ACTIVE// /,}} x 32 IDELAY taps (min-of-5 reads/tap)..."
     out=$(sweep_die "$(die_ip "$d")" "$tol" "$SWEEP_LANES")
     if ! printf '%s\n' "$out" | grep -q SWEEP_DONE; then
-      echo "  WARN: die_${d} sweep did not report SWEEP_DONE (link/PS issue?) — results may be partial"
+      echo "  WARN: die_${d} sweep did not report SWEEP_DONE — results may be partial."
+      echo "        (any python traceback printed on stderr above; raw sweep stdout follows)"
+      printf '%s\n' "$out" | sed 's/^/          | /'
     fi
     local tag L md bt ew lp br sl
     while read -r tag L md bt ew lp br sl; do
@@ -352,13 +459,16 @@ disambiguation(){
 VERDICT=""
 RC=0
 compute_verdict(){
-  local dead_msg="" marg_msg="" r d L md ew margin cls tol seen
+  local dead_msg="" marg_msg="" r d L md ew margin cls tol seen exp
   if [ ${#ROWS[@]} -gt 0 ]; then
     for r in "${ROWS[@]}"; do
       set -- $r; d=$1; L=$2; md=$3; ew=$5; cls=${11}
       tol=${EFF_TOL[$d]}; seen=${SEEN_VEC[$d]:-0}
+      # Wave-0 fix #12c: compare committed vector against the live-mask-derived
+      # expectation (EXP_SEEN), not the hardcoded GOLD_SEEN constant.
+      exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
       if [ "$cls" = DEAD ]; then
-        [ -z "$dead_msg" ] && dead_msg="die_${d} lane ${L} DEAD (min_dist=${md} > TOL=${tol}$([ "$ew" = 0 ] && echo " at all 32 taps"); sync_seen 0x$(printf %02x "$seen") $([ "$seen" = $((GOLD_SEEN)) ] && echo "== golden 0xE4" || echo "!= golden 0xE4"))"
+        [ -z "$dead_msg" ] && dead_msg="die_${d} lane ${L} DEAD (min_dist=${md} > TOL=${tol}$([ "$ew" = 0 ] && echo " at all 32 taps"); sync_seen 0x$(printf %02x "$seen") $([ "$seen" = "$exp" ] && echo "== live mask 0x$(printf %02x "$exp")" || echo "!= live mask 0x$(printf %02x "$exp")"))"
       elif [ "$cls" = MARGINAL ]; then
         [ -z "$marg_msg" ] && marg_msg="die_${d} lane ${L} MARGINAL (min_dist=${md}, eye_width=${ew}, TOL=${tol})"
       fi
@@ -368,9 +478,12 @@ compute_verdict(){
     for d in a b; do
       local miss=${MISSING[$d]:-0}
       [ "$miss" = 0 ] && continue
+      # Wave-0 fix #12c: 'missing' derives from the live mask (EXP_SEEN), so the
+      # reference we cite is the live mask, not a hardcoded golden constant.
+      exp=${EXP_SEEN[$d]:-$((GOLD_MASK8))}
       for L in $GOLD_ACTIVE; do
         if [ $(( (miss >> L) & 1 )) = 1 ] && [ -z "$dead_msg" ]; then
-          dead_msg="die_${d} lane ${L} SUSPECT (never commits under beacon flood; missing=0x$(printf %02x "$miss") vs golden 0xE4) — run full preflight to confirm DEAD"
+          dead_msg="die_${d} lane ${L} SUSPECT (never commits under beacon flood; missing=0x$(printf %02x "$miss") vs live mask 0x$(printf %02x "$exp")) — run full preflight to confirm DEAD"
         fi
       done
     done
@@ -461,7 +574,14 @@ PYJSON
 echo "======== TideLink lane-health preflight ($(date)) ========"
 echo "  die_a=$A_IP  die_b=$B_IP  mode=$([ "$QUICK" = 1 ] && echo quick || echo full)  dies=${DIES[*]}  out=$OUT"
 
+# HARD REFUSE on a non-Z2 SoC (raw 0x4403_xxxx mmap + V2-retired 0x215C). This
+# runs BEFORE boards_up and any /dev/mem access.
+td_require_z2 "lane_health_preflight.sh"
+
 boards_up || { echo "### a board is unreachable ($A_IP / $B_IP) — power-cycle?"; exit 3; }
+
+# Prove tl39.py runs on both boards before any bus access (defect class 1).
+td_tl39_preflight || { echo "### ABORT: tl39 preflight failed — see above"; exit 3; }
 
 phase0 || { echo "### PHASE 0 FAILED — config sanity"; exit 3; }
 phase1

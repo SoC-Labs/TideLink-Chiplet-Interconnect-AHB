@@ -77,6 +77,18 @@ module axi_chiplet_controller #(
     // autoneg (7'h61) once the mask handshake propagates the reduced mask to
     // the slave (wire peer_rx_lane_mask_i / un-bypass mask_hs).
     parameter [6:0]  NEGO_CFG_RESET       = 7'h00,
+    // Terminal role from strap, not the I2C-NACK constant. Forwarded to
+    // tidelink_autoneg.ROLE_FROM_STRAP. DECISION (David, 2026-07-19): default
+    // is now 1'b1 (strap honoured) so a dead I2C no longer forces both dies
+    // slave. 1'b0 = legacy trap (NACK => slave, timeout => nego_fallback).
+    parameter bit    ROLE_FROM_STRAP      = 1'b1,
+    // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
+    // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
+    // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,
+    // not tapeout's dormant + converge-lock strategy, so the lock mechanism is
+    // absent here and the param defaults OFF. The bring-up lottery is addressed
+    // physically (P-B capture-clock hoist), not by this lock.
+    parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
     // SoC Labs 2026-06-29 — AUTONOMOUS ON-CHIP IDELAY WINSCAN FSM enable.
     // 1 (default) = the on-chip cross-lane deskew winscan FSM is BUILT and may
     // run, but ONLY when armed via the autonomous nego path (nego_en &
@@ -89,6 +101,17 @@ module axi_chiplet_controller #(
     // The FSM body is additionally `ifdef TIDELINK_PHY_V2 (it consumes V2-only
     // obs_sync_dist_vec / swi_phase_lsb), so in V1 it is absent regardless.
     parameter bit    WINSCAN_FSM_EN       = 1'b1,
+    // EVENT-GATED AUTONOMY RETIRE enable (2026-07-15, F4 tapeout knob). 1 =
+    // once the link is provably up (reanchored & bilateral FC), the die
+    // autonomously retires the winscan/force-SYNC autonomy (replicating the
+    // 0x210C=0 escape hatch) — THE B->A channel fix on the FPGA autonomy path.
+    // Default 1 = enabled for FPGA autonomy. The ASIC integration MUST make a
+    // CONSCIOUS choice here (set 0, or wire a bond strap) per the handover
+    // no-silent-chip-default rule: the retire PARKS the on-chip winscan, so an
+    // ASIC that wants the classic always-armed behaviour, or a strap-gated
+    // retire, sets this explicitly. Gates ONLY the retire SET; with 0 the
+    // autonomy_armed term is bit-identical to the pre-fix RTL.
+    parameter bit    RETIRE_EN            = 1'b1,
     // Per-tap settle dwell (apb_clk cycles). The host winscan sleeps ~50 ms per
     // tap so the IDELAYE2 reload + the cross-lane SYNC re-flood settle before
     // SYNC_DIST is sampled; 50 ms @ 50 MHz apb_clk ≈ 2.5 M cycles. Generous by
@@ -423,7 +446,36 @@ module axi_chiplet_controller #(
     output wire  [7:0]      obs_fe_rx_credit_max_o,
     output wire             obs_fe_rx_is_full_o,
     // SoC Labs Bug-A FCSM observation 2026-06-03
-    output wire             obs_a2l_replay_app_valid_o
+    output wire             obs_a2l_replay_app_valid_o,
+    // SoC Labs TideChart sequencing contract 2026-07-17 (G1 dual-root fix) —
+    // docs/TIDECHART_G1_SEQUENCING_CONTRACT.md.
+    //
+    // "The Wlink link layer is in its credit/data-exchange region", i.e. the
+    // link genuinely CARRIES FC/EXT words. This is a strictly LATER milestone
+    // than role_locked_o (~5us later in sim): role_locked only means the roles
+    // are settled and PHY training MAY start. TideChart's root election must be
+    // gated on THIS, not on role_locked/link_active — gating on role_locked
+    // elects before any CLAIM can cross the die boundary, so both dies
+    // self-root (a silent dual-root).
+    //
+    // Domain: apb_clk. Source is sync_obs_fcsm_state_1, the far side of the
+    // existing 2-flop apb_clk synchroniser on the Wlink FCSM state (the same
+    // net already published as APB 0x2108[19:17] and already consumed by the
+    // retire-autonomy logic). NOTE the decode `>= 3'd4` on a 3-bit state is
+    // EXACTLY bit [2], so this is a single synchronised flop output with no
+    // multi-bit decode hazard — it cannot glitch on a partial CDC update.
+    // The FCSM's operational region is states 4..7 (4=data exchange,
+    // 5=LINK_DATA, 6=SEND_ACK, 7=SEND_NACK); 0..3 are reset/CR/credit init.
+    // That region is CLOSED — no arc returns to 0..3 short of reset — so
+    // bit[2] is exactly "the LL has reached its operational region", and it is
+    // monotonic by construction. Holding through 6/7 is INTENDED: SEND_ACK is
+    // routine healthy traffic and SEND_NACK is a retransmission request, not a
+    // link-down event. This port is NOT a link-health/liveness signal; if one
+    // is ever needed it must be a separate port.
+    // (Corrected 2026-07-19 after review finding F8 — the previous "states are
+    // 0..5" was false; 6 and 7 exist. See the contract doc §3.1/§6.5.)
+    // See docs/TIDECHART_G1_SEQUENCING_CONTRACT.md §3.1.
+    output wire             data_mode_o
 `ifdef TIDELINK_PHY_V2
     // SoC Labs V2 epoch-anchor engagement obs 2026-06-14 — pass-through of the
     // WlinkGPIOPHY lane-deskew anchor state up to tidelink_top's
@@ -872,21 +924,6 @@ module axi_chiplet_controller #(
     // rreset [19]).
     wire        obs_a2l_rreset_w;
     wire [4:0]  obs_a2l_rptr_w;
-    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — David Mapstone.
-    // Raw fan-outs of the a2l replay ACK-sync CDC "tear surface": the LINK-domain
-    // ACK ptr INPUT to the sync + the AddrSync/WavMultibitSync ping-pong mailbox
-    // internals. Multi-domain (link/app), pure read-only fan-outs; 2-flop synced
-    // to apb_clk below (sync_obs_mbx_*) and PACKED into the NEW 0x4403_21BC
-    // A2L_MBX_OBS word (Region D slot 7, marker 0xCB) so silicon can see EXACTLY
-    // how synced_ack becomes 0x1f.
-    wire [4:0]  obs_a2l_link_addr_w;   // link domain (ACK ptr, the CDC input)
-    wire [4:0]  obs_mbx_raddr_w;       // app  domain (synced output = synced_ack)
-    wire [4:0]  obs_mbx_mem_0_w;       // link/w_clk domain (mailbox slot 0)
-    wire [4:0]  obs_mbx_mem_1_w;       // link/w_clk domain (mailbox slot 1)
-    wire        obs_mbx_wptr_w;        // link/w_clk domain (mailbox wptr)
-    wire        obs_mbx_rptr_w;        // app /r_clk domain (mailbox rptr)
-    wire        obs_mbx_w_ready_w;     // link/w_clk domain (mailbox w_ready)
-    wire        obs_mbx_r_ready_w;     // app /r_clk domain (mailbox r_ready)
     // SoC Labs FC credit observation 2026-06-12 — far-end RX credit pointer
     // (FCSM tx-clk domain). Consumed by the OBS_FC_CREDIT Region C slot.
     wire [7:0]  obs_fe_rx_ptr_w;
@@ -1016,6 +1053,72 @@ module axi_chiplet_controller #(
     // re-triggers a fresh sweep that clears lane_fault — now against a live
     // peer pattern. POR-only domain, same as training_mode.
     reg        swi_recal_r;
+
+    // ---------------------------------------------------------------------
+    // Slot 0 bit[6] — SWI_FORCE_RECAL (P1, 2026-07-19, lane B1). WRITE-1-PULSE.
+    //
+    // THE DEFECT IT CLOSES: the calibrator latches `calibrated_once_q` on its
+    // first S_DONE and from then on gates off BOTH re-trigger edges, so the
+    // level SWI_RECAL above is a MEASURED NO-OP after first lock — there was no
+    // firmware-reachable PHY retrain at all, in the FPGA image AND the ASIC
+    // path (docs/LINK_RECOVERY_MECHANISM.md §4: the FSM was sampled 60x on both
+    // dies and never left S_DONE; §6.1 P1 is this remedy).
+    //
+    // WHY A SEPARATE BIT AND NOT A WIDER SWI_RECAL: `swi_recal_r` shares the
+    // calibrator's `swreset` port with the autoneg FSM's local_swreset_pulse_w.
+    // calibrated_once_q exists precisely to reject that IMPLICIT pulse (Bug-A:
+    // the winner's ST_TRAIN_EXIT recal re-entered training mid-FCSM-credit-init
+    // and wedged the master at state 2 with zero TX credit). SWI_FORCE_RECAL is
+    // driven by NOTHING but a deliberate APB write, so the calibrator can honour
+    // it unconditionally without weakening that guard.
+    //
+    // WHY A PULSE STRETCHER: this is a W1P in the apb_clk domain (~100 MHz) but
+    // the calibrator lives in rx_link_clk (~1.5-6.25 MHz on FPGA, /16 of pad
+    // clk). A single apb_clk-wide pulse would be MISSED entirely by the
+    // calibrator's 2-FF synchroniser — the classic slow-destination CDC trap.
+    // Holding the request for FORCE_RECAL_STRETCH apb_clk cycles guarantees the
+    // destination sees a stable 1 across many of its own edges (1024 apb cycles
+    // ~= 15 rx_link_clk cycles at the WORST ratio of 100 MHz : 1.5 MHz). The
+    // calibrator edge-detects the synced level, so a wide assertion still
+    // produces exactly ONE re-arm.
+    //
+    // Bounded and self-clearing (no handshake, so no way to deadlock if the
+    // calibrator never responds). POR-only domain, same as the two bits above.
+    //
+    // OPEN-LOOP, AND SAID PLAINLY: this timer has NO feedback path from the
+    // calibrator. Its expiry means "the request was PRESENTED for 1024 apb_clk
+    // cycles", NOT "the calibrator consumed it". The stretch is sized so that
+    // presentation is sufficient at every supported clock ratio, but the only
+    // authoritative evidence a retrain actually happened is the calibrator FSM
+    // leaving S_DONE (Region C OBS_CAL / cal_state). This is why bit[6] is
+    // write-only and reads back 0 (see the Region 8 read mux) rather than
+    // exposing a "busy"/"consumed" status that could not honestly mean either.
+    // ---------------------------------------------------------------------
+    localparam int FORCE_RECAL_STRETCH = 1024;
+    reg        swi_force_recal_r;
+    reg [10:0] force_recal_ctr_r;
+    // Combinational W1P write strobe. region8_write / ctrl_reg_write are module
+    // -scope wires declared further down; both are `wire`, and this is a
+    // continuous-assign context, so there is no `default_nettype none forward
+    // -reference problem (unlike a reg read in the region8 mux above).
+    wire       force_recal_w1p_w = ctrl_reg_write
+                                   && (ctrl_reg_addr[4:3] == 2'b10)   // Region 8
+                                   && (ctrl_reg_addr[2:0] == 3'h0)    // slot 0
+                                   && ctrl_reg_wdata[6];              // SWI_FORCE_RECAL
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            swi_force_recal_r <= 1'b0;
+            force_recal_ctr_r <= 11'd0;
+        end else if (force_recal_w1p_w) begin
+            // (Re-)arm. A write during an in-flight stretch simply reloads it.
+            swi_force_recal_r <= 1'b1;
+            force_recal_ctr_r <= FORCE_RECAL_STRETCH[10:0];
+        end else if (force_recal_ctr_r != 11'd0) begin
+            force_recal_ctr_r <= force_recal_ctr_r - 11'd1;
+            if (force_recal_ctr_r == 11'd1)
+                swi_force_recal_r <= 1'b0;   // deassert -> ready for the next W1P
+        end
+    end
 `ifdef TIDELINK_PHY_V2
     // Slot 0 bit[2] — SWI_SYNC_INSERT_EN: DEFAULT-OFF enable for the V2 PHY's
     // SYNC-word re-hunt beacon (tidelink_phy_sync_insert inside WavD2DGpio).
@@ -1155,7 +1258,29 @@ module axi_chiplet_controller #(
     // bit-identical. A mid-run disarm also PARKS an in-flight winscan (see
     // the FSM's disarm arc) so 0x210C=0 is an immediate on-silicon escape
     // hatch from a stuck force window.
-    wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0];
+    // ── EVENT-GATED AUTONOMY RETIRE (2026-07-15, silicon B->A fix) ──────────
+    // autonomy_retire_q is a STICKY ONE-SHOT that autonomously replicates the
+    // proven on-silicon escape hatch `0x210C=0` (clear train_auto_en). Once the
+    // link is provably up (REANCHORED & bilateral FC seen, then a short dwell —
+    // see the retire block below for why reanchored, NOT winscan_done, and why
+    // early), it drops the effective autonomy_armed term. That fires the FSM's
+    // LOOP-9 DISARM-PARK arc (:~4640),
+    // which drops winscan_force_sync / ws_serve_active_r (the FORCED-SYNC chain
+    // OR'd into the Wlink insert_en+force_always+robust ports) — the ACTUAL B->A
+    // corruptor: on the receiver (die_a) a stuck autonomous force window keeps
+    // SYNC beating over the B->A payload so its RX framer never commits. SILICON
+    // PROOF (td_b2a_diag2.log): B->A recovered byte-exact the instant die_a's
+    // autonomy_armed dropped (0x210C=0) — with R8 STILL 0x14 (insert_en=1) and
+    // reanchored=0 — so insert_en/R8[2] is NOT the blocker; autonomy_armed is.
+    // KEEPS the manual path bit-identical: retire only ever asserts on the
+    // armed autonomous path (nego_en & role_locked & train_auto_en); with
+    // nego_en=0 or train_auto_en=0 it can never set, so autonomy_armed is
+    // unchanged. PER-EPISODE: re-armed (cleared) on swi_training_mode_rise so a
+    // retrain/re-scan restores the forced-SYNC chain the peer needs and avoids
+    // the ws_kicked_q re-scan trap — see the retire block below.
+    reg  autonomy_retire_q;
+    wire autonomy_armed = nego_en & role_locked & nego_train_cfg_r[0]
+                        & ~autonomy_retire_q;
 
     // Phase 1 G1b — sticky train-fail IRQ. Latches on train_fail_irq_w
     // rising-edge (the FSM holds it stable for the duration of
@@ -1202,7 +1327,7 @@ module axi_chiplet_controller #(
     reg        fch_quiesced_r;
     wire       fch_quiesce_req;
     // -------------------------------------------------------------------------
-    // SoC Labs FCH APB WATCHDOG (2026-07-09, David Mapstone) — silicon-observed.
+    // SoC Labs FCH APB WATCHDOG (2026-07-09, ported from f1b3aac) — silicon-observed.
     //
     // The fch sequencer takes ownership of the Wlink APB bus (fch_active_r, see
     // the wl_apb_* mux) and, in FCH_ACCESS, waits on wl_apb_pready with NO
@@ -1231,57 +1356,56 @@ module axi_chiplet_controller #(
     //      so a concurrent PS access is STALLED rather than completing against
     //      the sequencer's transaction (an APB protocol violation today).
     //
-    // Software: WINSCAN_OBS 0x4403_21B8 [14] = fch_stall_err (sticky),
-    //           [16:15] = the write index (0=SWRESET_ON,1=SWRESET_OFF,2=ENABLE)
-    //           that timed out. Non-zero [14] means the LL never acked the APB.
-    //
-    // *** SILICON UPDATE 2026-07-09: THIS IS NOT THE FIX. ***
-    // Built (2f7cf40a/8f5d604e), deployed, and REFUTED. die_a still wedges, and
-    // fch_stall_err reads 0 -- so the fch sequencer never even stalled. The
-    // wedge fires on the very APB write that sets train_auto_en (training
-    // ENTRY), long before any fch bootstrap. Refined mechanism: at training
-    // entry the autoneg/calibrator holds Wlink in swreset, Wlink's APB stops
-    // asserting pready, and the external (PS) apb_pready is wired straight to
-    // wl_apb_pready -- so the CPU's access never completes and Zynq-7000
-    // M_AXI_GP has no transaction timeout. The fch_active_r mask below does not
-    // cover that window.
-    //
-    // THE FIX STILL TO WRITE (mirror what the slv_apb path already has at the
-    // slv_apb_bridge_* mux, ~:2955 -- this is the THIRD instance of the same
-    // fixed-one-path-not-the-other pattern, after Bug-C/fe_tx_credit_max and
-    // Bug-N2):
-    //   (a) give the external PS APB path a ctrl_hit bypass so controller/obs
-    //       registers ack unconditionally from ctrl_reg_rdata, independent of
-    //       Wlink -- then die_a stays observable through any swreset; and
-    //   (b) bound the Wlink-targeted external access with a pready timeout that
-    //       returns pslverr instead of hanging for ever.
-    // What is kept below is still worth having: it is a bounded, observable
-    // safety net on the fch sequencer, and it costs nothing (pair_data 3/3).
+    // Software: WINSCAN_OBS 0x21B8 is FULL on this branch ([23:0] all packed —
+    // FIX-D ws_verify_stuck at [14], ws_waitpeer at [15], etc.), so unlike the
+    // upstream f1b3aac (which used 0x21B8[14]/[16:15]) this port exposes the
+    // status in the previously-RESERVED regionD slot 7:
+    //   FCH_OBS 0x4403_21BC (RO):
+    //     [ 0]    fch_stall_err  (sticky) — the LL never acked the fch APB write
+    //     [ 2:1]  fch_stall_widx          — 0=SWRESET_ON,1=SWRESET_OFF,2=ENABLE
+    //     [ 3]    fch_active_r   (live)   — sequencer currently owns the wl_apb bus
+    //     [31:24] 0xFC presence marker (old images read 0 here = STALE package_ip)
+    //   Non-zero [0] means the LL never acked the APB write; [2:1] says which.
     // -------------------------------------------------------------------------
     reg        fch_stall_err_q;    // sticky: an FCH APB access timed out
     reg [1:0]  fch_stall_widx_q;   // which write was in flight when it timed out
     localparam [19:0] FCH_WDOG_LIMIT = 20'd500_000; // ~10 ms @ 50 MHz: >> any legal APB ack
-    // R-B FINALIZE PEER-GATED RENDEZVOUS plumbing — DORMANT (Loop-13
-    // 2026-07-04). The Loop-12 R-B rendezvous (winscan parks in
-    // WS_FIN_WAITPEER until the peer is verified quiesced over I2C)
-    // REGRESSED the b-first zero-poke order on silicon: aligning the two
-    // dies' finalize windows produced MUTUAL anchor starvation
-    // (0x21B8=0x57000005 both, complementary missing lanes, rea=0/0) where
-    // the Loop-11/b55cb59 LOCALLY-timed quiesce converged. Loop-13 reverts
-    // the winscan BEHAVIOUR to exact b55cb59 semantics (quiesce rises at
-    // WS_FINALIZE entry, locally timed; no peer wait) and keeps the
-    // rendezvous PLUMBING dormant for a future rework:
-    //   ws_fin_wait_lvl : tied 1'b0 (dormant). Kept wired at
-    //                     SWI_LANE_STATUS [27] (V2 read mux) and at
-    //                     u_autoneg.local_fin_wait_i — with the level tied 0
-    //                     the autoneg's ST_FIN_RDV/ST_FIN_GO entry arc never
-    //                     fires, so the whole rendezvous machinery is
-    //                     compiled but unreachable. Tied 0 on V1 too.
-    //   nego_fin_go_w   : u_autoneg.fin_go_o — can never rise while the
-    //                     rendezvous states are unreachable; sunk (the
-    //                     winscan MUST NOT depend on it).
+    // R-B ASYMMETRIC PEER-SERVE rendezvous plumbing — RE-ARMED (2026-07-07).
+    // History: the Loop-12 SYMMETRIC rendezvous (BOTH dies park in
+    // WS_FIN_WAITPEER and BOTH re-confirm over each other's constant idle)
+    // regressed b-first on silicon (mutual anchor starvation, 0x21B8=0x57000005
+    // both) and was reverted dormant (Loop-13). This is the ASYMMETRIC rework:
+    // only die_a (MASTER) parks in WS_FIN_WAITPEER, runs the rendezvous and
+    // re-confirms; die_b (SLAVE) HOLDS its already-good anchor and merely SERVES
+    // idle beacons (ws_serve_active_r) so it never re-confirms over constant
+    // idle — the mutual-starvation mechanism is gone by construction.
+    //   ws_fin_wait_lvl : LEVEL — the MASTER is parked quiesced in
+    //                     WS_FIN_WAITPEER (role_is_master-gated). Fed to
+    //                     u_autoneg.local_fin_wait_i (master ST_FIN_RDV/GO entry
+    //                     arc). The SLAVE's peer-visible SWI_LANE_STATUS[27] is
+    //                     ready-to-serve instead (see the [27] mux). Tied 0 on
+    //                     V1 (arm below).
+    //   nego_fin_go_w   : u_autoneg.fin_go_o — the master's local finalize
+    //                     release (the slave's FINALIZE_GO write completed).
+    //                     Consumed by the WS_FIN_WAITPEER Phase-1 release.
     wire       ws_fin_wait_lvl;
     wire       nego_fin_go_w;
+    // FIX-B (2026-07-07 PEER-READY ENTRY GATE) — the broadened "MASTER is in ANY
+    // finalize state" level (WS_FINALIZE | WS_FIN_CLRLOW | WS_FIN_WAITPEER),
+    // role_is_master-gated. Fed to u_autoneg.local_finalizing_i so the autoneg
+    // enters the SIDE-EFFECT-FREE ST_FIN_RDV POLL as soon as the master starts
+    // finalizing (not only once parked in WS_FIN_WAITPEER) — it reads the peer's
+    // ready-to-serve bit (SWI_LANE_STATUS[27]) WITHOUT writing a GO (the GO write
+    // stays gated on the NARROW ws_fin_wait_lvl / local_fin_wait_i). The captured
+    // peer bit comes back as peer_ready_to_serve_w below.
+    wire       ws_finalizing_lvl;
+    // FIX-B: u_autoneg.peer_ready_to_serve_o — the peer's SWI_LANE_STATUS[27]
+    // (ready-to-serve) as captured by the master's ST_FIN_RDV poll. Gates the
+    // WS_FINALIZE fallback entry into WS_FIN_WAITPEER (~4619): a FIRST-armed die
+    // whose peer is still arming (peer[27]=0) must NOT fall into the serve
+    // rendezvous — it takes the base fail-open (Loop-14 83% path, sticky anchor
+    // preserved). Only the 2nd-armed die (peer in data mode, [27]=1) rendezvouses.
+    wire       peer_ready_to_serve_w;
 
 `ifdef TIDELINK_PHY_V2
     // ── Autonomous on-chip IDELAY WINSCAN FSM forward decls (2026-06-29) ──────
@@ -1382,7 +1506,47 @@ module axi_chiplet_controller #(
     reg        ws_vfy_retry_q;
     reg [2:0]  ws_retry_cnt_q;
     reg        ws_rdv_timeout_q;
+    // FIX-D (2026-07-07 AUGMENTED OBSERVABILITY) — packed into the FREE
+    // 0x21B8[23:14] field (no register-map change). Silicon decode:
+    //   [23:20] ws_state_r            — live winscan FSM state
+    //   [19:18] ws_waitpeer_reentry_cnt — 2-bit sat: WS_FINALIZE→WS_FIN_WAITPEER
+    //                                     entries this episode (the NODONE /
+    //                                     livelock detector — >1 = ping-pong)
+    //   [17:16] ws_serve_cnt_q        — 2-bit sat (SLAVE): ws_serve_active_r
+    //                                     rising edges this episode (the die_b
+    //                                     re-serve-thrash driver)
+    //   [15]    ws_waitpeer_entered_q — sticky: the master parked in WS_FIN_WAITPEER
+    //   [14]    ws_verify_stuck_q     — sticky: anchor latched (ws_anchor_q=1)
+    //                                     while verify stayed low (ws_verify_q=0)
+    //                                     for >WS_VFY_STUCK_N cycles = the
+    //                                     wrong-slot / verify-never-passes signature
+    //                                     (the Lever-1-premise signal)
+    reg        ws_waitpeer_entered_q;
+    reg [1:0]  ws_waitpeer_reentry_cnt;
+    reg [1:0]  ws_serve_cnt_q;
+    reg        ws_verify_stuck_q;
+    // Declared EARLY (moved from the winscan FSM reg block) so the Region-D obs
+    // read mux at 0x21B8 (which is above the FSM in the file) can pack
+    // ws_state_r into [23:20] — VCS enforces declaration-before-use.
+    reg [3:0]  ws_state_r;
     reg        ws_fin_go_reg_q;
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — die_b (SLAVE) serve state.
+    //   ws_serve_active_r : the SLAVE is actively SERVING forced SYNC beacons
+    //                       for the peer master's WS_FIN_WAITPEER re-confirm.
+    //                       Set when this die is the slave, has finished its own
+    //                       winscan (winscan_done — its anchor is already good
+    //                       and HELD) AND the master's FINALIZE_GO landed
+    //                       (ws_fin_go_reg_q). Q'd into the PHY SYNC-insert
+    //                       force ports (insert_en+force_always+robust) so SYNC
+    //                       fires EVERY grid slot toward the master regardless
+    //                       of its keepalive/idle — WITHOUT quiescing its FC
+    //                       (its RX stays live to receive the master's credit).
+    //                       Time-bounded by ws_serve_to_r (the master re-anchors
+    //                       well within it); on expiry the force drops and its
+    //                       FC TX resumes. NO swreset, NO re-bootstrap.
+    reg        ws_serve_active_r;
+    reg        ws_serve_active_d;   // 1-cycle delay for the serve falling edge
+    reg [28:0] ws_serve_to_r;       // serve-window timeout countdown
 
     // ── Autonomous SYNC-detect config drive shadows (2026-06-30) ──────────────
     // The LAST autonomy layer: on the autonomous (nego_en) path the host's rcp
@@ -1531,26 +1695,6 @@ module axi_chiplet_controller #(
     reg                 sync_obs_a2l_rreset_1;
     reg [4:0]           sync_obs_a2l_rptr_0;
     reg [4:0]           sync_obs_a2l_rptr_1;
-    // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — 2-flop apb_clk sync
-    // of the a2l replay ACK-sync CDC tear-surface taps (mixed link/app domains;
-    // quasi-static-snapshot treatment, per-bit coherence not required for a poll-
-    // rate debug read). Packed into 0x4403_21BC (marker 0xCB).
-    reg [4:0]           sync_obs_mbx_link_addr_0;
-    reg [4:0]           sync_obs_mbx_link_addr_1;
-    reg [4:0]           sync_obs_mbx_raddr_0;
-    reg [4:0]           sync_obs_mbx_raddr_1;
-    reg [4:0]           sync_obs_mbx_mem_0_0;
-    reg [4:0]           sync_obs_mbx_mem_0_1;
-    reg [4:0]           sync_obs_mbx_mem_1_0;
-    reg [4:0]           sync_obs_mbx_mem_1_1;
-    reg                 sync_obs_mbx_wptr_0;
-    reg                 sync_obs_mbx_wptr_1;
-    reg                 sync_obs_mbx_rptr_0;
-    reg                 sync_obs_mbx_rptr_1;
-    reg                 sync_obs_mbx_wrdy_0;
-    reg                 sync_obs_mbx_wrdy_1;
-    reg                 sync_obs_mbx_rrdy_0;
-    reg                 sync_obs_mbx_rrdy_1;
     // SoC Labs FC credit observation 2026-06-12 — same 2-flop apb_clk
     // treatment as sync_obs_fe_rx_cred (quasi-static obs snapshot; per-bit
     // coherence not guaranteed mid-update, fine for poll-rate debug reads).
@@ -1651,15 +1795,6 @@ module axi_chiplet_controller #(
             // SoC Labs V2 data-send LINK-SIDE RESET + READ-POINTER observation 2026-06-21
             sync_obs_a2l_rreset_0   <= 1'b0;  sync_obs_a2l_rreset_1   <= 1'b0;
             sync_obs_a2l_rptr_0     <= 5'h0;  sync_obs_a2l_rptr_1     <= 5'h0;
-            // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08
-            sync_obs_mbx_link_addr_0 <= 5'h0; sync_obs_mbx_link_addr_1 <= 5'h0;
-            sync_obs_mbx_raddr_0    <= 5'h0;  sync_obs_mbx_raddr_1    <= 5'h0;
-            sync_obs_mbx_mem_0_0    <= 5'h0;  sync_obs_mbx_mem_0_1    <= 5'h0;
-            sync_obs_mbx_mem_1_0    <= 5'h0;  sync_obs_mbx_mem_1_1    <= 5'h0;
-            sync_obs_mbx_wptr_0     <= 1'b0;  sync_obs_mbx_wptr_1     <= 1'b0;
-            sync_obs_mbx_rptr_0     <= 1'b0;  sync_obs_mbx_rptr_1     <= 1'b0;
-            sync_obs_mbx_wrdy_0     <= 1'b0;  sync_obs_mbx_wrdy_1     <= 1'b0;
-            sync_obs_mbx_rrdy_0     <= 1'b0;  sync_obs_mbx_rrdy_1     <= 1'b0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= 8'h0;  sync_obs_fe_rx_ptr_1    <= 8'h0;
 `ifdef TIDELINK_PHY_V2
@@ -1754,23 +1889,6 @@ module axi_chiplet_controller #(
             sync_obs_a2l_rreset_1   <= sync_obs_a2l_rreset_0;
             sync_obs_a2l_rptr_0     <= obs_a2l_rptr_w;
             sync_obs_a2l_rptr_1     <= sync_obs_a2l_rptr_0;
-            // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 (2-flop apb sync)
-            sync_obs_mbx_link_addr_0 <= obs_a2l_link_addr_w;
-            sync_obs_mbx_link_addr_1 <= sync_obs_mbx_link_addr_0;
-            sync_obs_mbx_raddr_0    <= obs_mbx_raddr_w;
-            sync_obs_mbx_raddr_1    <= sync_obs_mbx_raddr_0;
-            sync_obs_mbx_mem_0_0    <= obs_mbx_mem_0_w;
-            sync_obs_mbx_mem_0_1    <= sync_obs_mbx_mem_0_0;
-            sync_obs_mbx_mem_1_0    <= obs_mbx_mem_1_w;
-            sync_obs_mbx_mem_1_1    <= sync_obs_mbx_mem_1_0;
-            sync_obs_mbx_wptr_0     <= obs_mbx_wptr_w;
-            sync_obs_mbx_wptr_1     <= sync_obs_mbx_wptr_0;
-            sync_obs_mbx_rptr_0     <= obs_mbx_rptr_w;
-            sync_obs_mbx_rptr_1     <= sync_obs_mbx_rptr_0;
-            sync_obs_mbx_wrdy_0     <= obs_mbx_w_ready_w;
-            sync_obs_mbx_wrdy_1     <= sync_obs_mbx_wrdy_0;
-            sync_obs_mbx_rrdy_0     <= obs_mbx_r_ready_w;
-            sync_obs_mbx_rrdy_1     <= sync_obs_mbx_rrdy_0;
             // SoC Labs FC credit observation 2026-06-12
             sync_obs_fe_rx_ptr_0    <= obs_fe_rx_ptr_w;
             sync_obs_fe_rx_ptr_1    <= sync_obs_fe_rx_ptr_0;
@@ -2419,7 +2537,11 @@ module axi_chiplet_controller #(
     //                           (2026-07-02) = STALE package_ip — stop and
     //                           rebuild (the known farm packaging hazard).
     //   All apb_clk-domain (the winscan FSM's own domain) — no CDC.
-    // Slot 7 stays reserved (read 0).
+    // Slot 7 (0x21BC) FCH_OBS (RO, SoC Labs 2026-07-09, ported from f1b3aac):
+    //   the FCH APB watchdog status — see the slot-7 case in the read mux below.
+    //   fch_stall_err_q / fch_stall_widx_q are apb_clk-domain (the fch sequencer's
+    //   own domain) — no CDC. (Upstream f1b3aac used 0x21B8[14]/[16:15]; that
+    //   field is full on this branch, hence the dedicated slot.)
     wire [4:0] dist_sel_lane = sync_obs_dist_vec_1[5*swi_dist_lane_sel_r +: 5];
     assign regionD_rxcap_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? sync_obs_rxcap0_1  : // 0x21A0 RXCAP0
@@ -2428,67 +2550,36 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? {8'h5B, 19'h0, dist_sel_lane}        : // 0x21AC SYNC_DIST_OBS (RO)
         (ctrl_reg_addr[2:0] == 3'h4) ? {8'h5A, 21'h0, swi_dist_lane_sel_r}  : // 0x21B0 SYNC_DIST_SEL (RW)
         (ctrl_reg_addr[2:0] == 3'h5) ? {8'h1B, 16'h0, swi_phase_lsb_r}      : // 0x21B4 SWI_PHASE_LSB (RW)
-        // SoC Labs 2026-07-09: the previously-reserved 10'h0 now carries the FCH
-        // APB watchdog status. [14] fch_stall_err (sticky) = the fch sequencer
-        // timed out waiting for wl_apb_pready and RELEASED the bus rather than
-        // pinning the PS's apb_pready low for ever (the silicon-observed
-        // "autonomous training kills die_a's PS<->PL bus"). [16:15] = the write
-        // index that stalled: 0=SWRESET_ON, 1=SWRESET_OFF, 2=ENABLE.
-        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57, 7'h0,
-                                        fch_stall_widx_q, fch_stall_err_q,
+        (ctrl_reg_addr[2:0] == 3'h6) ? {8'h57,
+                                        // FIX-D obs (2026-07-07) — the FREE
+                                        // [23:14] field (was 10'h0):
+                                        ws_state_r,               // [23:20]
+                                        ws_waitpeer_reentry_cnt,  // [19:18]
+                                        ws_serve_cnt_q,           // [17:16]
+                                        ws_waitpeer_entered_q,    // [15]
+                                        ws_verify_stuck_q,        // [14]
                                         ws_retry_cnt_q,
                                         ws_rdv_timeout_q, ws_vfy_retry_q,
                                         fch_quiesced_r,
                                         ws_abort_cnt_q,
                                         ws_anchor_late_q, ws_anchor_timeout_q,
                                         ws_degenerate_q, winscan_done}      : // 0x21B8 WINSCAN_OBS (RO)
-        // =================================================================
-        // SoC Labs a2l ACK-sync MAILBOX obs 2026-07-08 — slot 7 (0x4403_21BC)
-        //   A2L_MBX_OBS (RO). THE decisive tap for the persistent A->B blocker:
-        //   die_a's a2l ACK ptr syncs to a garbage lap-ahead 0x1f -> false
-        //   a2l_full -> app_ready=0 -> die_a TX stalls (A->B caps at ~6). FOUR
-        //   idealised-sim fixes failed on silicon; this exposes the CDC "tear
-        //   surface" (the WavMultibitSync ping-pong mailbox inside the a2l
-        //   AddrSync) so silicon can see EXACTLY how synced_ack becomes 0x1f.
-        //   All fields 2-flop apb_clk-synced from mixed link/app domains
-        //   (quasi-static snapshot; per-bit coherence not required at poll rate).
-        //
-        //   EXACT 0x4403_21BC BIT MAP:
-        //     [31:24] 0xCB               presence marker (old images read 0 here)
-        //     [23:19] a2l_link_addr[4:0] LINK-domain ACK ptr = the CDC INPUT
-        //                                (guard-clamped <= rbin <= 15). If THIS
-        //                                already reads 0x1f the corruption is
-        //                                UPSTREAM of the mailbox (the ACK latch),
-        //                                not the CDC. If it reads ~0/<=15 while
-        //                                raddr[4:0]=0x1f the mailbox tore it.
-        //     [18]    mbx_wptr           mailbox write ping-pong ptr (link/w_clk)
-        //     [17]    mbx_rptr           mailbox read  ping-pong ptr (app /r_clk)
-        //     [16]    mbx_w_ready        writer-can-push term ~(rptr_sync ^ wptr)
-        //     [15]    mbx_r_ready        reader-has-fresh term  (rptr ^ wptr_sync)
-        //                                mbx_w_ready=0 AND mbx_r_ready=0 == the
-        //                                DEADLOCK (writer can't push, no resend).
-        //     [14:10] mbx_mem_0[4:0]     ping-pong slot 0 stored ACK value
-        //     [ 9: 5] mbx_mem_1[4:0]     ping-pong slot 1 stored ACK value
-        //                                (mem_0/mem_1 = what is physically stored;
-        //                                a stale pre-wrap bit[4]=1 slot here is the
-        //                                0x1f source. r_data = rptr?mem_1:mem_0.)
-        //     [ 4: 0] raddr[4:0]         synced OUTPUT (== a2l synced_ack, the
-        //                                same value packed at 0x2158[11:7]; here
-        //                                for single-read correlation vs the input).
-        //
-        //   DECODE: input a2l_link_addr(<=15) vs output raddr(0x1f) mismatch with
-        //   both readys low = the ping-pong pointer-parity desync / stale-slot read
-        //   that the sim cannot reproduce. a2l_link_addr==raddr==0x1f = upstream.
-        // =================================================================
-        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hCB,                     // [31:24] marker
-                                        sync_obs_mbx_link_addr_1,  // [23:19] a2l_link_addr[4:0] (CDC input)
-                                        sync_obs_mbx_wptr_1,       // [18]    mailbox wptr
-                                        sync_obs_mbx_rptr_1,       // [17]    mailbox rptr
-                                        sync_obs_mbx_wrdy_1,       // [16]    mailbox w_ready
-                                        sync_obs_mbx_rrdy_1,       // [15]    mailbox r_ready
-                                        sync_obs_mbx_mem_0_1,      // [14:10] mailbox mem_0[4:0]
-                                        sync_obs_mbx_mem_1_1,      // [ 9: 5] mailbox mem_1[4:0]
-                                        sync_obs_mbx_raddr_1}    : // [ 4: 0] raddr[4:0] (= synced_ack)
+        // SoC Labs 2026-07-09 (ported from f1b3aac): FCH APB WATCHDOG status.
+        // 0x21B8 (WINSCAN_OBS) is FULL on this branch, so the fch_stall status
+        // lives here in the previously-reserved slot 7 instead of 0x21B8[14].
+        //   [ 0]    fch_stall_err_q  (sticky) — fch seq timed out on wl_apb_pready
+        //                            and RELEASED the bus (else the PS's apb_pready
+        //                            was pinned low for ever = "training kills the
+        //                            die_a PS<->PL bus"). 0 = the LL acked.
+        //   [ 2:1]  fch_stall_widx_q — which write stalled: 0=SWRESET_ON,
+        //                            1=SWRESET_OFF, 2=ENABLE.
+        //   [31:24] 0xFC presence marker (old/STALE-IP images read 0 here).
+        //   (Both fields are apb_clk-domain — the fch sequencer's own domain, no
+        //   CDC. fch_active_r is NOT read here: it is declared with the fch FSM
+        //   regs, downstream of this mux, so `default_nettype none forbids the
+        //   forward reference — the sticky pair is what software needs anyway.)
+        (ctrl_reg_addr[2:0] == 3'h7) ? {8'hFC, 21'h0,
+                                        fch_stall_widx_q, fch_stall_err_q}  : // 0x21BC FCH_OBS (RO)
                                        32'h0;
 `else
     // V1: no V2 SYNC inserter/detector; region-select 2'b00 reads 0 (bit-identical).
@@ -2500,6 +2591,31 @@ module axi_chiplet_controller #(
     // Region 8 read mux
     assign region8_rdata =
 `ifdef TIDELINK_PHY_V2
+        // P1 (2026-07-19): bit[6] SWI_FORCE_RECAL is WRITE-ONLY and reads back
+        // as 0, exactly like the slot-0 bit[5] SWI_SYNC_OBS_CLR W1-pulse beside
+        // it. This is a CORRECTNESS requirement, not a style choice.
+        //
+        // An earlier revision read back the pulse-stretcher state here as a
+        // "request handed off" status. That was unsafe: slot 0 is a PACKED
+        // register that firmware must READ-MODIFY-WRITE to touch
+        // training_mode / SWI_RECAL / the SYNC bits. Any RMW landing inside the
+        // 1024-cycle stretch window would read bit[6]=1, write it straight back,
+        // and re-fire force_recal_w1p_w — silently re-arming a PHY retrain on a
+        // converged link, and doing so indefinitely under a polling loop.
+        // Reading 0 makes that hazard structurally impossible: an RMW can never
+        // carry bit[6] forward, so every re-arm is a deliberate write.
+        //
+        // (Gating the write strobe with !swi_force_recal_r was the alternative.
+        // It is INCOMPLETE: it only covers an RMW whose WRITE lands inside the
+        // window, not one that SAMPLED bit[6]=1 inside the window and wrote back
+        // after the timer expired. Reading 0 covers both.)
+        //
+        // No handshake status is exposed in its place: the stretcher is an
+        // open-loop timer with NO feedback from the calibrator, so a "busy" bit
+        // could only ever prove the timer had expired — not that the calibrator
+        // saw the request. The authoritative evidence that a retrain really
+        // happened is the calibrator FSM state itself (Region C OBS_CAL /
+        // cal_state), which is where SW should look.
         (ctrl_reg_addr[2:0] == 3'h0) ? {27'h0, swi_sync_robust_detect_r, swi_sync_force_always_r, swi_sync_insert_en_r, swi_recal_r, swi_training_mode_r} :
 `else
         (ctrl_reg_addr[2:0] == 3'h0) ? {30'h0, swi_recal_r, swi_training_mode_r} :
@@ -2515,7 +2631,7 @@ module axi_chiplet_controller #(
                                         sync_obs_llrx_valid_1,          // [29]    LL_RX valid pkt
                                         sync_obs_pkt_crack_1,           // [28]    pkt_is_crack_pkt
 `ifdef TIDELINK_PHY_V2
-                                        ws_fin_wait_lvl,                // [27]    R-B rendezvous export — DORMANT since Loop-13 (2026-07-04): ws_fin_wait_lvl is tied 1'b0 (the Loop-12 aligned rendezvous regressed b-first on silicon), so this bit reads constant 0 on V2. The slot is KEPT (repurposed from the instantaneous pkt_is_cr_pkt, which no script/regression consumes — tlchar/tl39 read the [23]/[24] STICKY seen bits) so the R-B rework can re-arm it without another map change. V1 arm below keeps pkt_is_cr_pkt bit-identical.
+                                        ws_fin_wait_lvl | (autonomy_armed & winscan_done & ~role_is_master),  // [27]    R-B ASYMMETRIC PEER-SERVE (2026-07-07): the peer-visible finalize-rendezvous bit. The MASTER advertises ws_fin_wait_lvl (it is parked quiesced in WS_FIN_WAITPEER). The SLAVE — the die the master POLLS — advertises READY-TO-SERVE (autonomy_armed & winscan_done: its own winscan is complete and its anchor is good, so it can quiesce+serve idle beacons on the master's GO). The master's autoneg byte-3 capture reads THIS from the slave and, once set, sends the FINALIZE_GO. Repurposed from the instantaneous pkt_is_cr_pkt (no script/regression consumes it — tlchar/tl39 read the [23]/[24] STICKY seen bits). V1 arm below keeps pkt_is_cr_pkt bit-identical.
 `else
                                         sync_obs_pkt_cr_1,              // [27]    pkt_is_cr_pkt (pre-R-B V1 packing)
 `endif
@@ -3088,6 +3204,8 @@ module axi_chiplet_controller #(
         // the autonomous training-exit UNSATISFIABLE, and SWI_LANE_STATUS[26]
         // carries is_long_pkt on a V1 peer — so V1 selects the exact pre-L4
         // predicate (cal_done + ==8'hFF compares, byte 3 ignored).
+        // PENDING-DECISION #5: terminal role from strap (default 0 = historical)
+        .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
 `ifdef TIDELINK_PHY_V2
         .USE_CAL_IN_HOLD    (1'b1)
 `else
@@ -3101,6 +3219,8 @@ module axi_chiplet_controller #(
         .nego_pri_sel       (nego_cfg_reg[3:2]),
         .nego_fallback      (nego_cfg_reg[4]),
         .nego_force_lock    (nego_cfg_reg[5]),
+        // PENDING-DECISION #5: strap consulted only when ROLE_FROM_STRAP=1
+        .role_strap_i       (role_strap_i),
         .nego_priority_reg  (nego_priority_reg),
         .nego_priority_i    (nego_priority_i),
         .puf_seed           (puf_seed),
@@ -3175,6 +3295,9 @@ module axi_chiplet_controller #(
         // rendezvous machinery (incl. the fin_retrain_pend_r W1P-latch fix)
         // is compiled but unreachable. Kept wired for the R-B rework.
         .local_fin_wait_i          (ws_fin_wait_lvl),
+        // FIX-B (2026-07-07): broadened POLL entry + the captured peer ready bit.
+        .local_finalizing_i        (ws_finalizing_lvl),
+        .peer_ready_to_serve_o     (peer_ready_to_serve_w),
         .fin_go_o                  (nego_fin_go_w),
         .fin_rdv_in_progress_o     (fin_rdv_in_progress_w),
         .local_training_mode_set   (local_training_mode_set_w),
@@ -3394,10 +3517,10 @@ module axi_chiplet_controller #(
     reg        fch_active_r;    // sequencer owns the wl_apb bus this cycle
     reg        fch_penable_r;   // APB access-phase flag
     reg        fch_qmode_r;     // Q1: the in-flight burst is a QUIESCE/RELEASE
-    reg [19:0] fch_wdog_r;      // FCH_ACCESS watchdog (see FCH_WDOG_LIMIT above)
                                 //     single write (SWRESET_ON at FINALIZE
                                 //     entry, or SWRESET_OFF on disarm), NOT
                                 //     the three-write bootstrap walk
+    reg [19:0] fch_wdog_r;      // FCH_ACCESS watchdog (see FCH_WDOG_LIMIT above)
     // fch_done_r (sticky episode-complete flag) is DECLARED early, next to the
     // autoneg forward decls (~line 1128) — the WINSCAN_OBS readback reads it
     // upstream and `default_nettype none` forbids forward references. It is
@@ -3693,11 +3816,30 @@ module axi_chiplet_controller #(
 `ifdef TIDELINK_PHY_V2
     reg  fch_pending_r;
     wire winscan_gate = WINSCAN_FSM_EN ? winscan_done : 1'b1;
+    // FIX-1 (2026-07-08): a 1-cycle-delayed registered copy of the winscan
+    // block's ws_reanchor_catchup pulse (that combinational net is declared with
+    // the winscan FSM, far BELOW this block, and this file is `default_nettype
+    // none` = declaration-before-use enforced, so it cannot be referenced here
+    // directly). Registered next to the winscan FSM (below) and consumed here as
+    // an extra fch_pending_r SET term: the reanchor-catchup completes the FC
+    // handoff for a die parked in WS_IDLE with a committed+verified anchor whose
+    // armed training fall was dropped (the iter-1 NODONE). The 1-cycle skew is
+    // harmless — the WS_IDLE arm raises winscan_done the same cycle catchup
+    // fires, so winscan_gate is already open when this set lands.
+    reg  ws_reanchor_catchup_q;
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             fch_pending_r <= 1'b0;
         else if (autonomy_armed & swi_training_mode_fall)   // LOOP-9: armed-only
             fch_pending_r <= 1'b1;          // latch the (1-cycle) training fall
+        else if (autonomy_armed & ws_reanchor_catchup_q)    // FIX-1 (2026-07-08)
+            fch_pending_r <= 1'b1;          // reanchor-catchup: no armed training
+                                            // fall ever landed, but the committed
+                                            // + verified anchor must still hand
+                                            // off. winscan_done is already 1 (the
+                                            // WS_IDLE catchup arm) so winscan_gate
+                                            // is open and this is consumed next
+                                            // cycle by fch_arm.
         else if (!autonomy_armed)
             fch_pending_r <= 1'b0;          // LOOP-9: disarm clears a stale
                                             // pending (manual takeover must not
@@ -3800,9 +3942,9 @@ module axi_chiplet_controller #(
                     // APB access phase: psel=1, penable=1; complete on pready.
                     fch_active_r  <= 1'b1;
                     fch_penable_r <= 1'b1;
-                    // SoC Labs watchdog: a hung Wlink APB (e.g. the LL still
-                    // held in swi_swreset) must NOT pin fch_active_r high, or
-                    // the PS's apb_pready is pinned low with it and the whole
+                    // SoC Labs watchdog (f1b3aac): a hung Wlink APB (e.g. the LL
+                    // still held in swi_swreset) must NOT pin fch_active_r high,
+                    // or the PS's apb_pready is pinned low with it and the whole
                     // 0x2xxx region becomes unreadable for ever. Abort, release
                     // the bus, and latch a sticky, software-visible error.
                     if (!wl_apb_pready && fch_wdog_r != FCH_WDOG_LIMIT)
@@ -3810,7 +3952,7 @@ module axi_chiplet_controller #(
                     if (!wl_apb_pready && fch_wdog_r == FCH_WDOG_LIMIT) begin
                         fch_active_r     <= 1'b0;   // RELEASE the APB bus
                         fch_penable_r    <= 1'b0;
-                        fch_stall_err_q  <= 1'b1;   // sticky: 0x21B8[14]
+                        fch_stall_err_q  <= 1'b1;   // sticky: 0x21BC[0]
                         fch_stall_widx_q <= fch_widx_r;
                         fch_qmode_r      <= 1'b0;
                         fch_state_r      <= FCH_IDLE;
@@ -3996,6 +4138,47 @@ module axi_chiplet_controller #(
     // mis-latch before its retry — 5 keeps the fail-open bound ~1.8 s worst
     // case while giving a marginal lane multiple independent re-latch rolls.
     localparam [2:0]  WS_ANCHOR_RETRIES = 3'd5;
+    // AUTONOMY-LEVER (2026-07-10) — SOFT-EXTEND the FIRST anchor-gate window.
+    //
+    // ROOT CAUSE (verified this session, RTL identity): the deskew sets a
+    // per-lane STICKY sync_seen_l only after SYNC_CONFIRM(=2) CONSECUTIVE
+    // periodic SYNC-beacon matches (tidelink_lane_deskew_v2.sv:606/707/748/767),
+    // and the read-side `reanchored` latches ONLY when EVERY active lane's
+    // sticky bit is set within ONE clear-to-clear window (all_sync_seen,
+    // :1350/1489). The window = time between clr_pulses; the winscan drives the
+    // clear via ws_obs_clr_r (F3) held HIGH across WS_FINALIZE — ONE clr_pulse
+    // per WS_FINALIZE entry — and each FIX-3 retry (WS_FIN_CLRLOW) RE-PULSES it,
+    // so the retry budget RESTARTS accumulation instead of accumulating. On a
+    // MARGINAL (not dead) lane that Hamming-matches only a FRACTION of beacon
+    // slots, catching 2 CONSECUTIVE beacons before the clear is a lottery
+    // (P ~ p^2 per attempt); the FIX-4 jittered retries decorrelate the PHASE
+    // but each still restarts from scratch (soak: die_a 15% / die_b 45% clean-OK).
+    //
+    // LEVER: give the FIRST accumulation window (the longest, uninterrupted one)
+    // WS_ANCHOR_EXTEND extra WS_ANCHOR_TIMEOUT reloads WITHOUT re-pulsing the F3
+    // clear (ws_obs_clr_r stays HIGH -> NO new clr_pulse -> the sticky vector is
+    // NOT cleared -> accumulation is CONTINUOUS). Window-1 becomes
+    // (WS_ANCHOR_EXTEND+1) x WS_ANCHOR_TIMEOUT ~= 8 x 0.3 s = 2.4 s of
+    // uninterrupted beacon opportunities — many more independent
+    // 2-consecutive-beacon rolls for a marginal lane — BEFORE the jittered
+    // clear-retries (unchanged) begin. A die that anchors early STILL releases
+    // immediately (the ws_anchor_q && ws_verify_q poll precedes this branch), so
+    // no clean-die latency penalty; only a struggling die spends the extra time.
+    // The zero-tolerance ANCHOR-VERIFY (VERIFY_TOL=3, WavD2DGpio_v2.v:1139)
+    // remains the backstop: a wrong-slot / temporally-misaligned accumulation
+    // can never satisfy the cross-lane simultaneous match, so a longer window
+    // cannot ship a bad anchor — worst case it fails open LATER (bound +~2.4 s).
+    // A/B: WS_ANCHOR_EXTEND=0 restores the exact pre-lever behaviour. Sim gates
+    // the extend to 0 via tb_ws_anchor_short_q (the same hook that shortens the
+    // anchor timeout), so all sim suites are BIT-IDENTICAL to baseline.
+    localparam [2:0]  WS_ANCHOR_EXTEND = 3'd0;   // consolidation 2026-07-15: lever OFF (baseline); the soft-extend is unproven/build-dependent (David). 3'd7 = lever ON.
+    // FIX-D (2026-07-07): VERIFY-STUCK detector threshold (apb cycles the anchor
+    // may sit latched with the verify low before ws_verify_stuck_q latches).
+    // Sized WELL above any healthy anchor→verify settle skew (the F3 clear drops
+    // both together, and the metric CDC re-latches them within a few cycles) yet
+    // WELL below both anchor windows (WS_ANCHOR_TIMEOUT_SIM 50k / silicon 15M),
+    // so it only latches on a genuine mis-anchor that verify can never confirm.
+    localparam [15:0] WS_VFY_STUCK_N = 16'd4096;
     // FIX-4 (2026-07-04) — DECORRELATED RETRIES (retry-jitter LFSR).
     //
     // Silicon evidence: 8 zero-poke rolls across 4 builds show the FINALIZE
@@ -4040,9 +4223,18 @@ module axi_chiplet_controller #(
     // 0x21B8[2], release anyway). Attempt count observable at 0x21B8[13:11]
     // (ws_retry_cnt_q) — the statistic that validates the compounding model
     // on silicon.
-    // (Loop-13 2026-07-04: the R-B WS_RDV_TIMEOUT/ws_rdv_to_r rendezvous
-    // countdown was removed with the dormant WS_FIN_WAITPEER flow — see
-    // 8c1ae6a's diff for the machinery if the R-B rework revives it.)
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): WS_FIN_WAITPEER peer-rendezvous
+    // timeout — RE-ARMED (was dormant since Loop-13). Only die_a (MASTER) parks
+    // in WS_FIN_WAITPEER and runs the rendezvous; die_b (SLAVE) holds its
+    // already-good anchor and SERVES idle-gated beacons for this bounded window
+    // (ws_serve_to_r loads the same value). FAIL-LOUD: on master expiry the
+    // finalize proceeds LOCALLY (exact b55cb59 semantics) with ws_rdv_timeout_q
+    // (0x21B8[10]) latched — never deadlocks on a dead/V1/zombie peer. The
+    // slave's serve is time-bounded by the same countdown so a lost master GO
+    // cannot park die_b in swreset forever. Sim value rides
+    // tb_winscan_dwell_short_q and must exceed the sim I2C rendezvous latency.
+    localparam [28:0] WS_RDV_TIMEOUT     = 29'd500_000_000; // ~=10 s @ 50 MHz
+    localparam [28:0] WS_RDV_TIMEOUT_SIM = 29'd400_000;     // TB-forced bound
     // Sim dwell shrink (TB-forced, same idiom as the calibrator's
     // tb_early_exit_force_q). Default 0 = use the generous silicon WINSCAN_DWELL.
     reg tb_winscan_dwell_short_q = 1'b0;
@@ -4056,7 +4248,9 @@ module axi_chiplet_controller #(
                                  ? WS_DW_MAX0 : WINSCAN_FIN_WAIT;
     localparam int WS_DW_W   = $clog2(WS_DW_MAX + 1);
 
-    reg [3:0]          ws_state_r;
+    // ws_state_r is declared EARLY (with the FIX-D obs regs, ~line 1310) so the
+    // Region-D read mux (0x21B8[23:20], which precedes this FSM block in the
+    // file) can reference it — VCS requires declaration-before-use.
     reg [3:0]          ws_lane_r;        // current lane index 0..7 (then 8 = end)
     reg [5:0]          ws_tap_r;         // current tap 0..31 (6b for the ==32 test)
     reg [2:0]          ws_nsamp_r;       // sample countdown
@@ -4080,12 +4274,25 @@ module axi_chiplet_controller #(
                                             //     swi_sync_obs_clr_in Wlink port
     reg [23:0]         ws_anchor_to_r;      // F4: anchor-gate timeout countdown
     reg [2:0]          ws_anchor_retry_r;   // FIX-3: clear-retries remaining (R-A: widened 2->3b, budget 5)
+    reg [2:0]          ws_anchor_ext_r;     // AUTONOMY-LEVER: window-1 soft-extends remaining (no re-clear)
+    reg [28:0]         ws_rdv_to_r;         // R-B: master peer-rendezvous timeout countdown (WS_FIN_WAITPEER)
     reg tb_ws_anchor_short_q = 1'b0;        // F4 sim hook (cocotb deposits 1)
     wire [23:0] ws_anchor_to_load =
         tb_ws_anchor_short_q ? WS_ANCHOR_TIMEOUT_SIM : WS_ANCHOR_TIMEOUT;
+    // AUTONOMY-LEVER: the window-1 soft-extend count. Gated to 0 in sim by the
+    // SAME hook that shortens the anchor timeout, so every sim suite that
+    // reaches WS_FINALIZE is bit-identical to the pre-lever baseline; silicon
+    // gets the full WS_ANCHOR_EXTEND uninterrupted-window widen.
+    wire [2:0]  ws_anchor_ext_load =
+        tb_ws_anchor_short_q ? 3'd0 : WS_ANCHOR_EXTEND;
     // FIX-3: the clear-low hold reuses the winscan sim hook (short in sim).
     wire [23:0] ws_clr_hold_load =
         tb_winscan_dwell_short_q ? WS_CLR_HOLD_SIM : WS_CLR_HOLD;
+    // R-B: the master rendezvous timeout AND the slave serve window both reuse
+    // the same sim hook (short in sim), keeping the two dies' bounded windows
+    // co-scaled.
+    wire [28:0] ws_rdv_to_load =
+        tb_winscan_dwell_short_q ? WS_RDV_TIMEOUT_SIM : WS_RDV_TIMEOUT;
     // FIX-4 (2026-07-04): free-running retry-jitter LFSR — see the FIX-4
     // block above the WS_ANCHOR_RETRIES localparam for the full rationale.
     // 16-bit maximal Fibonacci LFSR (taps x^16+x^14+x^13+x^11), whitened by
@@ -4154,23 +4361,81 @@ module axi_chiplet_controller #(
     // R-B FINALIZE_GO capture — the peer master's I2C write of Region 8
     // slot 7 (0x211C bit[0], W1P) lands here via the slave AXIL bridge
     // (region8_write covers both the external APB and the I2C-slave paths).
-    // DORMANT since Loop-13 (2026-07-04): the winscan no longer waits in
-    // WS_FIN_WAITPEER, so NOTHING consumes this sticky — the register plumbs
-    // the 0x211C W1P for the future R-B rework only. Cleared on a training
-    // rise (a new episode invalidates a stale go).
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): RE-ARMED. On the SLAVE this GO
+    // arms the serve engine (ws_serve_active_r) below — die_b quiesces and
+    // serves idle beacons for the master's re-confirm. STICKY so the go
+    // survives the CDC/poll skew between the master's write completing and this
+    // die sampling it. Cleared on: a training rise (a new episode invalidates a
+    // stale go), OR the serve window closing (ws_serve_active_r falling — so
+    // the consumed go cannot immediately re-arm the serve).
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn)
             ws_fin_go_reg_q <= 1'b0;
         else if (swi_training_mode_rise)
             ws_fin_go_reg_q <= 1'b0;
+        else if (ws_serve_active_d & ~ws_serve_active_r)
+            ws_fin_go_reg_q <= 1'b0;   // serve window closed — clear consumed go
         else if (region8_write && (ctrl_reg_addr[2:0] == 3'h7)
                  && ctrl_reg_wdata[0])
             ws_fin_go_reg_q <= 1'b1;
     end
-    // Loop-13: sink the dormant autoneg release level — the winscan MUST NOT
-    // depend on it (see the ws_fin_wait_lvl tie below).
-    wire _unused_nego_fin_go_v2 = nego_fin_go_w;
-    wire _unused_ws_fin_go_reg  = ws_fin_go_reg_q;
+
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07) — SLAVE serve engine (apb_clk).
+    // Only the SLAVE (die_b) runs this. Once its OWN winscan is done (its
+    // deskew anchor is already good and HELD), the master's FINALIZE_GO
+    // (ws_fin_go_reg_q) arms a bounded serve window in which die_b FORCES SYNC
+    // every grid slot toward the master (ws_serve_active_r is OR'd into the PHY
+    // SYNC-insert force ports) — beating the keepalive that was occupying its
+    // idle slots (the beacon-starvation fix: die_a re-confirms over these
+    // forced beacons in its WS_FIN_WAITPEER Phase-2). CRUCIALLY the FC is NOT
+    // quiesced: die_b's FC stays UP (RX live) so it still receives the master's
+    // credit and reaches fcsm=4 — a serve quiesce would SWRESET the FC and
+    // deadlock it at fcsm=2 (never receives the master's credit). The window is
+    // time-bounded (ws_serve_to_r = ws_anchor_to_load, the master re-anchors
+    // well within it); on expiry the force drops and its FC TX resumes. The
+    // consumed go is cleared on the fall (above); the ~ws_serve_active_d
+    // arm-guard blocks an immediate re-arm on the fall cycle.
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_serve_active_r <= 1'b0;
+            ws_serve_active_d <= 1'b0;
+            ws_serve_to_r     <= 29'd0;
+            ws_serve_cnt_q    <= 2'd0;
+        end else begin
+            ws_serve_active_d <= ws_serve_active_r;
+            // FIX-D obs (2026-07-07): count SLAVE serve engagements per episode
+            // (2-bit saturating). Rising edge of ws_serve_active_r = one serve.
+            // A count >1 flags the die_b RE-SERVE THRASH the livelock drove (each
+            // WS_FINALIZE re-entry re-issued the serve GO). Cleared per episode.
+            if (swi_training_mode_rise)
+                ws_serve_cnt_q <= 2'd0;
+            else if (ws_serve_active_r & ~ws_serve_active_d)
+                ws_serve_cnt_q <= (ws_serve_cnt_q == 2'd3) ? 2'd3
+                                                           : ws_serve_cnt_q + 2'd1;
+            if (swi_training_mode_rise) begin
+                ws_serve_active_r <= 1'b0;      // fresh episode drops any serve
+            end else if (!ws_serve_active_r) begin
+                if (autonomy_armed & ~role_is_master & winscan_done
+                    & ws_fin_go_reg_q & ~ws_serve_active_d) begin
+                    ws_serve_active_r <= 1'b1;
+                    // Serve only as long as the master needs to re-confirm
+                    // AFTER the GO — bounded by the anchor-gate window
+                    // (ws_anchor_to_load, 0.3 s silicon / 50k sim), NOT the
+                    // master's much longer wait-for-GO patience (ws_rdv_to_r).
+                    // The master's Phase-2 re-anchor either latches well within
+                    // this window or times out at its end; either way die_b can
+                    // stop serving and re-bootstrap its FC then, minimising the
+                    // slave's data-path downtime.
+                    ws_serve_to_r     <= {5'd0, ws_anchor_to_load};
+                end
+            end else begin
+                if (ws_serve_to_r == 29'd0)
+                    ws_serve_active_r <= 1'b0;  // window closed — release + rebootstrap
+                else
+                    ws_serve_to_r <= ws_serve_to_r - 29'd1;
+            end
+        end
+    end
 
     // FIX-3 obs (2026-07-03) — "anchored-late" sticky (WINSCAN_OBS 0x21B8[3]):
     // a ws_anchor_q RISE observed while fch_done_r is already set means the
@@ -4190,6 +4455,183 @@ module axi_chiplet_controller #(
                 ws_anchor_late_q <= 1'b0;
             else if (ws_anchor_q & ~ws_anchor_q_d & fch_done_r)
                 ws_anchor_late_q <= 1'b1;
+        end
+    end
+
+    // ========================================================================
+    // EVENT-GATED AUTONOMY RETIRE (2026-07-15) — THE B->A autonomy channel fix.
+    //
+    // MECHANISM. On silicon the B->A corruptor is the AUTONOMOUS FORCED-SYNC
+    // chain (winscan_force_sync / ws_serve_active_r), which ORs into the Wlink
+    // insert_en+force_always+robust ports (:~5924) and keeps SYNC beating over
+    // the B->A payload on the receiver (die_a), so its RX framer never commits.
+    // The proven on-silicon escape hatch is `0x210C=0` (clear train_auto_en =>
+    // autonomy_armed=0 => the FSM's LOOP-9 DISARM-PARK arc :~4640 drops
+    // winscan_force_sync within a cycle => the forced beacons stop => B->A
+    // commits). td_b2a_diag2.log: B->A recovered byte-exact the instant die_a's
+    // autonomy_armed dropped — with R8 STILL 0x14 (insert_en=1) and rea=0 — so
+    // insert_en/R8[2] is NOT the blocker (it is a pure TX control and, with the
+    // 0044bef drain guard + postcount pinned, fires no steady-state beacon);
+    // autonomy_armed is. This block makes the die perform that escape hatch
+    // ITSELF, once, when the link is provably up.
+    //
+    // TRIGGER — the B->A-dead armed state is a WINSCAN LIVELOCK, silicon-
+    // confirmed on a clean fresh-POR exclusively-leased bench (reproduced twice,
+    // td_b2a_diag2/3): die_a churns ws_state 3(SETTLE)<->7(FINALIZE);
+    // winscan_done NEVER holds 1 (only BLIPS at a fail-open WS_DONE while
+    // fcsm has already collapsed to 0), and advancing to FINALIZE TEARS DOWN the
+    // FC (fcsm 4->0). So a winscan_done-gated retire is INERT on silicon. But
+    // `reanchored && fcsm==4` HELD STABLY for ~2.8 s in the initial window
+    // BEFORE the churn. Retiring in that window PARKS the FSM (DISARM-PARK) and
+    // locks in the good anchor before the churn destroys the FC.
+    //
+    // WHY TWO BRANCHES (mutual-readiness is the crux). Retiring the MASTER stops
+    // its forced beacons; if the SLAVE is not yet up, its FC bootstrap (which
+    // needs those beacons to keep its RX aligned) STALLS — a peer-starvation.
+    // On SILICON this is a non-issue: the dead-B->A state is a STEADY state,
+    // die_b is long up before die_a churns, so a short reanchored dwell is safe.
+    // In the SHORT sim it is NOT: die_a (master) races to fcsm=4 while die_b is
+    // still at fcsm=2, and its `rea && fcsm==4` is STABLE there (verified: a
+    // local-only reanchored timer, sticky OR reset-on-drop, fired mid-handoff
+    // and starved the slave, t31 FAIL x2). The only MUTUAL "both dies up" signal
+    // the sim TB models is winscan_done (the FSM rendezvous completes only when
+    // both anchor). So:
+    //   * BRANCH 1 (SIM correctness): winscan_done && rea && fcsm==4, held a
+    //     SHORT dwell. Fires only after the rendezvous => both up => no
+    //     starvation. This is the exact trigger that passed the whole sim gate.
+    //     It is INERT on silicon (winscan_done never coincides with fcsm==4).
+    //   * BRANCH 2 (SILICON path, the coordinator's reanchored trigger):
+    //     rea && fcsm==4 held for a LONG dwell (RETIRE_DWELL_SI, << the ~2.8 s
+    //     churn). Fires on silicon where winscan_done is dead; die_b is already
+    //     up so it is starvation-safe. Its dwell is deliberately LARGER than the
+    //     whole sim runtime, so it CANNOT fire before branch 1 in sim (=> no sim
+    //     starvation) — the silicon reanchored path is thus not directly
+    //     exercised by the short sim (same limitation the coordinator noted:
+    //     sim cannot prove the B->A recovery, only that retire fires + no-
+    //     regression). On silicon the ~2.8 s stable window >> RETIRE_DWELL_SI so
+    //     it accumulates well before the churn.
+    //
+    // PER-EPISODE ONE-SHOT (re-armed on a training rise). A permanent
+    // autonomy_armed=0 would spring the FSM's ws_kicked_q RE-SCAN TRAP (the
+    // winscan cannot re-kick until POR) AND starve a peer that later RETRAINS.
+    // So we CLEAR the latches on swi_training_mode_rise (a fresh training episode
+    // = a legitimate re-scan): the forced-SYNC chain is re-enabled for the new
+    // scan, and retire re-fires once the fresh episode restabilises.
+    // swi_training_mode_rise also clears ws_kicked_q (:~4614), so the master
+    // genuinely re-kicks. In STEADY data mode there is no training rise, so
+    // retire holds and the beacons stay off (the B->A fix).
+    //
+    // NO-REGRESSION: DISARM-PARK sets ws_obs_clr_r=0 => it issues NO obs-clear,
+    // so the deskew reanchored is NOT dropped; and retire touches neither the
+    // FCSM nor role_locked nor nego_en, so fcsm stays 4 and data keeps flowing
+    // (asserted in t31/t33: rea=1, fcsm=4 post-retire).
+    //
+    // MANUAL PATH BIT-IDENTICAL: the SET is gated on the RAW armed conjunction
+    // (nego_en & role_locked & train_auto_en) AND the RETIRE_EN tapeout knob; on
+    // the recipe (train_auto_en=0 or nego_en=0) or with RETIRE_EN=0 it can never
+    // assert, so autonomy_armed is unchanged.
+    localparam [15:0] RETIRE_DWELL    = 16'd4096;      // branch 1 (sim mutual gate)
+    localparam [23:0] RETIRE_DWELL_SI = 24'd8_000_000; // branch 2 (silicon, ~160 ms @50MHz << 2.8 s)
+    reg [15:0] fc_stable_cnt_q;   // branch 1: (winscan_done & rea & fcsm=4) consecutive
+    reg [23:0] rea_up_cnt_q;      // branch 2: (rea & fcsm=4) consecutive
+    reg        link_up_seen_q;    // obs: (rea & fcsm=4) seen at least once this episode
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            link_up_seen_q    <= 1'b0;
+            fc_stable_cnt_q   <= 16'd0;
+            rea_up_cnt_q      <= 24'd0;
+            autonomy_retire_q <= 1'b0;
+        end else if (swi_training_mode_rise) begin
+            // Fresh training episode => re-arm: restore the forced-SYNC chain
+            // for the new scan (the peer's re-anchor needs it).
+            link_up_seen_q    <= 1'b0;
+            fc_stable_cnt_q   <= 16'd0;
+            rea_up_cnt_q      <= 24'd0;
+            autonomy_retire_q <= 1'b0;
+        end else begin
+            if (ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
+                link_up_seen_q <= 1'b1;
+            // Branch 1 — SIM mutual gate: winscan_done proves the rendezvous
+            // completed (both dies anchored) so the master's beacons are no
+            // longer needed. Reset on any drop.
+            if (winscan_done && ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
+                fc_stable_cnt_q <= (fc_stable_cnt_q == RETIRE_DWELL)
+                                       ? RETIRE_DWELL : fc_stable_cnt_q + 16'd1;
+            else
+                fc_stable_cnt_q <= 16'd0;
+            // Branch 2 — SILICON reanchored timer: rea & bilateral FC held for a
+            // LONG dwell (< the churn onset). Reset on any drop.
+            if (ws_anchor_q && (sync_obs_fcsm_state_1 == 3'd4))
+                rea_up_cnt_q <= (rea_up_cnt_q == RETIRE_DWELL_SI)
+                                    ? RETIRE_DWELL_SI : rea_up_cnt_q + 24'd1;
+            else
+                rea_up_cnt_q <= 24'd0;
+            // Fire on EITHER branch, when armed and enabled. Holds until the
+            // next training rise (or POR).
+            if (RETIRE_EN && (nego_en & role_locked & nego_train_cfg_r[0])
+                && ((fc_stable_cnt_q == RETIRE_DWELL)
+                    || (rea_up_cnt_q == RETIRE_DWELL_SI)))
+                autonomy_retire_q <= 1'b1;
+        end
+    end
+
+    // FIX-D obs (2026-07-07) — WS_FIN_WAITPEER entry / re-entry tracker.
+    //   ws_waitpeer_entered_q   (0x21B8[15], sticky): the master parked in
+    //                           WS_FIN_WAITPEER at least once this episode.
+    //   ws_waitpeer_reentry_cnt (0x21B8[19:18], 2-bit sat): the number of
+    //                           WS_FINALIZE→WS_FIN_WAITPEER entries this episode —
+    //                           the NODONE/livelock detector. On the pre-FIX-A RTL
+    //                           the Phase-2 anchor-timeout return to WS_FINALIZE
+    //                           re-entered WS_FIN_WAITPEER unboundedly (this
+    //                           counter saturates at 3). With FIX-A the sticky
+    //                           ws_rdv_timeout_q caps it at 1. Both cleared at
+    //                           WS_ARM / POR.
+    reg [3:0] ws_state_d;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_state_d              <= WS_IDLE;
+            ws_waitpeer_entered_q   <= 1'b0;
+            ws_waitpeer_reentry_cnt <= 2'd0;
+        end else begin
+            ws_state_d <= ws_state_r;
+            if (ws_state_r == WS_ARM) begin
+                ws_waitpeer_entered_q   <= 1'b0;
+                ws_waitpeer_reentry_cnt <= 2'd0;
+            end else if (ws_state_r == WS_FIN_WAITPEER
+                         && ws_state_d != WS_FIN_WAITPEER) begin
+                // A fresh WS_FINALIZE→WS_FIN_WAITPEER entry (the only transition
+                // into this state is the WS_FINALIZE fallback arm).
+                ws_waitpeer_entered_q   <= 1'b1;
+                ws_waitpeer_reentry_cnt <= (ws_waitpeer_reentry_cnt == 2'd3)
+                                           ? 2'd3 : ws_waitpeer_reentry_cnt + 2'd1;
+            end
+        end
+    end
+
+    // FIX-D obs (2026-07-07) — VERIFY-STUCK detector (0x21B8[14], sticky).
+    // The wrong-slot / verify-never-passes signature (the Lever-1 premise): the
+    // deskew anchor LATCHED (ws_anchor_q=1, `reanchored`) but the zero-tolerance
+    // anchor-verify (ws_verify_q) stayed LOW for more than WS_VFY_STUCK_N apb
+    // cycles — a lane whose sticky sync_idx latched an ADJACENT SYNC slot commits
+    // an anchor it can never verify. Healthy operation clears both together on the
+    // F3 clear, so a sustained anchor-high/verify-low window only occurs on a real
+    // mis-anchor. The counter resets whenever the condition breaks; the sticky
+    // clears at WS_ARM / POR.
+    reg [15:0] ws_vfy_stuck_ctr;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            ws_vfy_stuck_ctr  <= 16'd0;
+            ws_verify_stuck_q <= 1'b0;
+        end else if (ws_state_r == WS_ARM) begin
+            ws_vfy_stuck_ctr  <= 16'd0;
+            ws_verify_stuck_q <= 1'b0;
+        end else if (ws_anchor_q & ~ws_verify_q) begin
+            if (ws_vfy_stuck_ctr == WS_VFY_STUCK_N)
+                ws_verify_stuck_q <= 1'b1;
+            else
+                ws_vfy_stuck_ctr <= ws_vfy_stuck_ctr + 16'd1;
+        end else begin
+            ws_vfy_stuck_ctr <= 16'd0;
         end
     end
 
@@ -4254,6 +4696,47 @@ module axi_chiplet_controller #(
                                          // in EVERY state (start or abort-restart)
     end
 
+    // FIX-1 (2026-07-08, REANCHOR-WITHOUT-WINSCAN CATCH-UP): the SECOND-armed
+    // die (the slave) can be left with a COMMITTED + VERIFIED deskew anchor but
+    // winscan_done NEVER asserting -> the fch handoff deadlocks (the NODONE
+    // observed on iter-1 silicon, build 564ddde). Root cause: its I2C ACK from
+    // POR lands BEFORE autonomy_armed=1, so the training FALL that would kick
+    // the winscan is dropped by the LOOP-9 armed-only gate on ws_kick_evt
+    // (ws_kick_evt requires autonomy_armed AT the fall). autonomy_armed then
+    // rises with NO fresh fall -> the winscan stays parked in WS_IDLE ->
+    // winscan_done stays 0 forever. But the die DID re-anchor passively (the
+    // peer's beacons drove reanchored=1 => ws_anchor_q=1) AND that anchor is
+    // ZERO-TOLERANCE VERIFIED (ws_verify_q=1 = the EXACT WS_FINALIZE release
+    // gate's own criterion, verify_stuck=0). So it is a fully-committed,
+    // verified anchor missing ONLY winscan_done + fch_pending_r. This term
+    // detects exactly that state; the WS_IDLE arm (below) completes the arc
+    // WITHOUT running a scan (raise winscan_done, one-shot ws_kicked_q, STAY in
+    // WS_IDLE so winscan_owns_taps stays 0 = host/APB anchor taps untouched, NO
+    // sweep) and the fch_pending_r set term (below) queues the handoff.
+    // SAFETY (each verified): never ships an unverified anchor (gated on
+    // ws_verify_q, the exact WS_FINALIZE release gate); NO tap sweep/disturbance
+    // (winscan_owns_taps stays 0 in WS_IDLE); one-shot (ws_kicked_q<=1, cleared
+    // only by a genuine training rise); declines the stuck-training-high variant
+    // (~swi_training_mode_r); disarm-safe (LOOP-9 park still clears winscan_done
+    // on !autonomy_armed). Does NOT affect the master: it kicks via its OWN real
+    // training fall and LEAVES WS_IDLE, and its ws_anchor_q is 0 before its
+    // anchor exists (so this term cannot fire for it).
+    wire ws_reanchor_catchup = WINSCAN_FSM_EN & autonomy_armed & ~ws_kicked_q
+                             & (ws_state_r == WS_IDLE)
+                             & ws_anchor_q & ws_verify_q & ~swi_training_mode_r;
+    // Register the (1-cycle) catchup pulse for the fch_pending_r SET term above
+    // (declaration-before-use / `default_nettype none` forbids referencing the
+    // combinational net directly in that earlier block). The WS_IDLE arm below
+    // consumes ws_reanchor_catchup combinationally (in scope); this flopped copy
+    // only feeds the fch handoff, one cycle later, by which point winscan_done
+    // (raised by the same-cycle WS_IDLE arm) has already opened winscan_gate.
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn)
+            ws_reanchor_catchup_q <= 1'b0;
+        else
+            ws_reanchor_catchup_q <= ws_reanchor_catchup;
+    end
+
     // The lane currently selected for the SYNC_DIST observation. Mirror it onto
     // swi_dist_lane_sel_r's read path is unnecessary — the FSM reads the full
     // CDC'd vector directly (sync_obs_dist_vec_1), exactly the same 5-bit slice
@@ -4274,18 +4757,51 @@ module axi_chiplet_controller #(
     // cycle) so a manual takeover drops the request immediately; the fch
     // IDLE release arm then writes the swreset back OFF. Declared (hoisted)
     // next to fch_done_r; V1 arm ties it 0 below.
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the quiesce request covers ONLY
+    // WS_FINALIZE/WS_FIN_CLRLOW — the SLAVE's own b55cb59 finalize window (the
+    // master enters those only as the 1-cycle pass-through or the rendezvous-
+    // timeout fallback). NEITHER role quiesces for the peer-serve rendezvous:
+    //   * The MASTER does NOT quiesce in WS_FIN_WAITPEER — it holds force-SYNC
+    //     so its TX is already clean, and keeping its FC out of swreset lets its
+    //     WS_DONE bootstrap run the NORMAL widx-0 full walk (with the R4c cross-
+    //     die overlap dwell) that aligns the credit handshake; a WAITPEER
+    //     quiesce (widx-1 bootstrap, no R4c) deadlocked the master FC at fcsm=2
+    //     in multi-episode retry (t32).
+    //   * The SLAVE serves by FORCING SYNC (see the serve-force below) with its
+    //     FC LEFT UP so its RX stays live to receive the master's credit; a
+    //     serve quiesce would SWRESET its FC and deadlock it at fcsm=2.
     assign fch_quiesce_req = autonomy_armed &
                              ((ws_state_r == WS_FINALIZE) |
                               (ws_state_r == WS_FIN_CLRLOW));
 
-    // R-B rendezvous export — DORMANT (Loop-13 2026-07-04): tied 0. The
-    // Loop-12 level ((ws_state_r == WS_FIN_WAITPEER) & fch_quiesced_r) fed
-    // SWI_LANE_STATUS[27] and u_autoneg.local_fin_wait_i; with the tie the
-    // [27] export reads constant 0 and the autoneg's ST_FIN_RDV/ST_FIN_GO
-    // entry arc never fires. The winscan's finalize flow is LOCALLY TIMED
-    // (exact b55cb59 semantics) and depends on none of the rendezvous
-    // plumbing.
-    assign ws_fin_wait_lvl = 1'b0;
+    // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the exported "MASTER parked in
+    // WS_FIN_WAITPEER" level. role_is_master-GATED — only die_a (master) parks
+    // in WS_FIN_WAITPEER, runs the rendezvous and re-confirms its anchor; die_b
+    // (slave) never sets this (it serves instead, see ws_serve_active_r).
+    // The master does NOT quiesce its FC here (no fch_quiesced_r qualifier): it
+    // holds winscan_force_sync through WS_FIN_WAITPEER so its OWN TX is clean
+    // SYNC toward the slave anyway, and keeping its FC OUT of swreset means its
+    // WS_DONE bootstrap runs the NORMAL full walk (SWRESET_ON->OFF->ENABLE with
+    // the R4c cross-die overlap dwell) that aligns the credit handshake — a
+    // WAITPEER quiesce made it start at widx 1 (skipping R4c) and deadlocked the
+    // FC at fcsm=2 in multi-episode retry (t32). Fed to
+    // u_autoneg.local_fin_wait_i (master-only ST_FIN_RDV/GO entry arc). The
+    // peer-visible SWI_LANE_STATUS[27] export is separate (slave advertises
+    // ready-to-serve there). V1 arm below ties it 0.
+    assign ws_fin_wait_lvl = role_is_master
+                             & (ws_state_r == WS_FIN_WAITPEER);
+
+    // FIX-B (2026-07-07): the BROADENED finalize level — the master is in ANY
+    // finalize state. Fed to u_autoneg.local_finalizing_i (the ST_FIN_RDV POLL
+    // entry). role_is_master-gated (the slave serves, it never polls). The GO
+    // write inside ST_FIN_RDV stays gated on the NARROW ws_fin_wait_lvl above
+    // (routed as local_fin_wait_i), so the poll reads the peer's ready-to-serve
+    // bit while finalizing but no GO is written until the master is actually
+    // parked in WS_FIN_WAITPEER. V1 arm below ties it 0.
+    assign ws_finalizing_lvl =
+        role_is_master & ((ws_state_r == WS_FINALIZE)
+                          | (ws_state_r == WS_FIN_CLRLOW)
+                          | (ws_state_r == WS_FIN_WAITPEER));
 
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
@@ -4310,10 +4826,13 @@ module axi_chiplet_controller #(
             ws_anchor_to_r       <= 24'd0;
             ws_anchor_timeout_q  <= 1'b0;
             ws_anchor_retry_r    <= 3'd0;
+            ws_anchor_ext_r      <= 3'd0;   // AUTONOMY-LEVER: window-1 soft-extends
+
             ws_abort_cnt_q       <= 4'd0;
             ws_vfy_retry_q       <= 1'b0;
             ws_retry_cnt_q       <= 3'd0;
             ws_rdv_timeout_q     <= 1'b0;
+            ws_rdv_to_r          <= 29'd0;
             ws_phase_offset_r <= 32'h0;
             ws_phase_lsb_r    <= 8'h0;
             winscan_owns_taps <= 1'b0;
@@ -4376,6 +4895,19 @@ module axi_chiplet_controller #(
                         ws_kicked_q  <= 1'b1;
                         winscan_done <= 1'b0;     // fresh episode
                         ws_state_r   <= WS_ARM;
+                    end else if (ws_reanchor_catchup) begin
+                        // FIX-1 (2026-07-08): reanchored+verified but the armed
+                        // training fall never landed (dropped by the LOOP-9 gate)
+                        // -> complete the handoff arc IN PLACE. Raise winscan_done
+                        // (opens winscan_gate) + one-shot (ws_kicked_q). STAY in
+                        // WS_IDLE — do NOT go to WS_DONE, which sets
+                        // winscan_owns_taps and would PIN stale taps; WS_IDLE
+                        // holds winscan_owns_taps=0 so the host/APB anchor taps
+                        // are untouched (no sweep, no disturbance) and never
+                        // re-clears winscan_done, so done HOLDS. The end-of-block
+                        // ws_kick_evt mask cannot fire here (no training fall).
+                        winscan_done <= 1'b1;
+                        ws_kicked_q  <= 1'b1;
                     end
                 end
                 // -------------------------------------------------------------
@@ -4470,9 +5002,34 @@ module axi_chiplet_controller #(
                         // R-B WS_FIN_WAITPEER rendezvous park that used to
                         // sit here regressed the b-first zero-poke order on
                         // silicon (mutual anchor starvation) and is dormant.
+                        // R-B ASYMMETRIC PEER-SERVE (2026-07-07, rev2): the scan
+                        // is complete. BOTH roles take the base b55cb59 LOCALLY-
+                        // TIMED finalize here (F3 clear + WS_FINALIZE + F3b
+                        // dwell) — the role split is GONE. The peer-serve
+                        // rendezvous (WS_FIN_WAITPEER) is NO LONGER the master's
+                        // PRIMARY path at scan-complete: entering it FIRST dropped
+                        // a good anchor + re-confirmed over the served link and,
+                        // in the normal/multi-episode FC-handoff flows, broke the
+                        // handoff (t33 wedged the master FC at fcsm=2). The
+                        // master now enters WS_FIN_WAITPEER ONLY as a FALLBACK,
+                        // from the WS_FINALIZE fail-open arm below, and ONLY when
+                        // its LOCAL finalize STARVED (ws_anchor_q==0 — the die_a
+                        // beacon-starvation case). A master that anchors locally
+                        // NEVER enters WS_FIN_WAITPEER, so t31/t32/t33 run the
+                        // EXACT base scan->WS_FINALIZE->WS_DONE path undisturbed
+                        // and the FC handoff is identical to 788eb7e. die_b's RX
+                        // re-anchors fine on the master's held force-SYNC beacons
+                        // (the measured die_b 83% vs die_a 8% asymmetry — die_b
+                        // was never the problem); on the master's GO it SERVES
+                        // idle beacons (ws_serve_active_r) for the master's
+                        // fallback re-confirm.
                         ws_obs_clr_r   <= 1'b1;
                         // F4: arm the anchor-gate timeout for FINALIZE.
                         ws_anchor_to_r <= ws_anchor_to_load;
+                        // AUTONOMY-LEVER: arm the window-1 soft-extend budget.
+                        // These reloads extend the FIRST (uninterrupted, no
+                        // re-clear) accumulation window before the clear-retries.
+                        ws_anchor_ext_r <= ws_anchor_ext_load;
                         // FIX-3: arm the bounded clear-retry budget (R-A
                         // budget of 5 — the verify gate is downstream of
                         // ws_anchor_q and unchanged by the Loop-13 revert).
@@ -4644,7 +5201,30 @@ module axi_chiplet_controller #(
                         winscan_done       <= 1'b1;
                         ws_state_r         <= WS_DONE;
                     end else if (ws_anchor_to_r == 24'd0) begin
-                        if (ws_anchor_retry_r != 3'd0) begin
+                        if (ws_anchor_ext_r != 3'd0) begin
+                            // AUTONOMY-LEVER (2026-07-10): SOFT-EXTEND window 1.
+                            // Reload the anchor-gate countdown WITHOUT dropping
+                            // ws_obs_clr_r — so NO fresh clr_pulse reaches the
+                            // deskew and the per-lane sticky sync_seen
+                            // accumulation continues UNINTERRUPTED. ws_obs_clr_r
+                            // is already held HIGH here and force-SYNC is still
+                            // held, so beacons keep flooding every SYNC grid slot
+                            // and a marginal lane gets another full
+                            // WS_ANCHOR_TIMEOUT of 2-consecutive-beacon rolls.
+                            // Only once the extend budget is spent do the FIX-3
+                            // jittered clear-retries below (which DO restart
+                            // accumulation) begin. A clean/early anchor NEVER
+                            // reaches this branch — the ws_anchor_q &&
+                            // ws_verify_q release poll above wins first — so
+                            // there is no clean-die latency penalty. Anti-poison
+                            // is unaffected (the deskew's periodic+gap+K=2
+                            // self-gating rejects poison independently of window
+                            // length) and the VERIFY_TOL=3 backstop still gates
+                            // the release, so a longer window cannot commit a
+                            // wrong anchor.
+                            ws_anchor_ext_r <= ws_anchor_ext_r - 3'd1;
+                            ws_anchor_to_r  <= ws_anchor_to_load;
+                        end else if (ws_anchor_retry_r != 3'd0) begin
                             // FIX-3 BOUNDED CLEAR-RETRY (2026-07-03): the
                             // anchor did not latch in this wait — re-pulse
                             // the F3 clear and re-wait (up to
@@ -4688,6 +5268,63 @@ module axi_chiplet_controller #(
                             ws_obs_clr_r      <= 1'b0;
                             ws_anchor_to_r    <= ws_clr_hold_load + ws_jitter_w;
                             ws_state_r        <= WS_FIN_CLRLOW;
+                        end else if (role_is_master && !ws_anchor_q
+                                     && !ws_rdv_timeout_q
+                                     && peer_ready_to_serve_w) begin
+                            // FIX-B (2026-07-07 PEER-READY ENTRY GATE): only fall
+                            // into the serve rendezvous when the PEER has actually
+                            // advertised READY-TO-SERVE (peer_ready_to_serve_w =
+                            // its SWI_LANE_STATUS[27], captured by our ST_FIN_RDV
+                            // poll = its winscan is DONE and it is in data mode,
+                            // able to quiesce+serve). Without this term a
+                            // FIRST-armed die whose peer is STILL ARMING (peer[27]
+                            // =0, cannot serve) fell into WS_FIN_WAITPEER, stalled
+                            // for the whole rendezvous window, and its Phase-2
+                            // re-clear destroyed the sticky anchor that would else
+                            // late-heal — the die_b first-armed 83%→58% regression.
+                            // With peer_ready=0 this arm is FALSE and control falls
+                            // through to the BASE fail-open (~4659, Loop-14 83%
+                            // path: sticky anchor PRESERVED). Only the 2nd-armed
+                            // die (peer already in data mode) takes the serve.
+                            //
+                            // R-B ASYMMETRIC PEER-SERVE FALLBACK (2026-07-07
+                            // rev2): the MASTER exhausted ALL its local
+                            // clear-retries WITHOUT ever anchoring
+                            // (ws_anchor_q==0) — the die_a beacon-starvation
+                            // signature: the peer's keepalive occupied every
+                            // idle slot so no commit-able periodic beacon ever
+                            // reached the master's post-clear re-confirm
+                            // (sync_seen stayed 0x00). Do NOT fail open into an
+                            // UNANCHORED fch bootstrap (dead data). Fall to the
+                            // peer-serve rendezvous: park in WS_FIN_WAITPEER,
+                            // which advertises ws_fin_wait_lvl so the autoneg
+                            // (ST_FIN_RDV/GO) polls die_b's ready-to-serve bit
+                            // and writes the slave's FINALIZE_GO. die_b then
+                            // FORCES SYNC (ws_serve_active_r, its FC left UP)
+                            // every grid slot toward the master — beating its
+                            // keepalive — and the master re-confirms over those
+                            // served beacons IN WS_FIN_WAITPEER (Phase-2) before
+                            // releasing to WS_DONE. Drop the F3 clear level to 0
+                            // on entry so WS_FIN_WAITPEER lands in Phase-1
+                            // (wait-for-GO) and re-raises a FRESH clear edge when
+                            // the serve arrives (the local finalize left
+                            // ws_obs_clr_r HIGH). KEEP winscan_force_sync HELD
+                            // (do NOT drop it) so the master's own TX stays clean
+                            // SYNC toward the slave through the rendezvous.
+                            // ws_rdv_to_r bounds the wait; on its expiry the
+                            // WS_FIN_WAITPEER Phase-1 fail-loud latches
+                            // ws_rdv_timeout_q and returns LOCALLY to WS_FINALIZE
+                            // (never a fcsm=2 wedge / deadlock). The
+                            // !ws_rdv_timeout_q guard means a peer that never
+                            // serves is tried EXACTLY ONCE per episode — a
+                            // subsequent local exhaustion then takes the base
+                            // fail-loud release below (no livelock). A master
+                            // that DID anchor locally (ws_anchor_q==1 — the
+                            // verify held the release, not the anchor) is HEALTHY
+                            // and takes the base fail-open below.
+                            ws_obs_clr_r <= 1'b0;
+                            ws_rdv_to_r  <= ws_rdv_to_load;
+                            ws_state_r   <= WS_FIN_WAITPEER;
                         end else begin
                             // F4 FAIL-LOUD timeout (retries exhausted): the
                             // anchor never (re-)latched (dead sync_obs_clr
@@ -4699,7 +5336,10 @@ module axi_chiplet_controller #(
                             // the permanent idle-gated beacons (FIX-2; the
                             // reanchored latch has no time veto) — a late
                             // rise with fch_done_r already set latches
-                            // ws_anchor_late_q (0x21B8[3]).
+                            // ws_anchor_late_q (0x21B8[3]). This is the base
+                            // 788eb7e behavior for the SLAVE, and for a master
+                            // that anchored locally or already tried the
+                            // rendezvous once (ws_rdv_timeout_q).
                             winscan_force_sync  <= 1'b0;
                             ws_anchor_timeout_q <= 1'b1;
                             winscan_done        <= 1'b1;
@@ -4755,10 +5395,123 @@ module axi_chiplet_controller #(
                     end
                 end
                 // -------------------------------------------------------------
-                // (Loop-13 2026-07-04: the R-B WS_FIN_WAITPEER case arm that
-                // sat here — the quiesced peer-rendezvous hold — is REMOVED
-                // from the flow; the encoding is reserved and the state is
-                // never entered. See 8c1ae6a's diff for the machinery.)
+                WS_FIN_WAITPEER: begin
+                    // R-B ASYMMETRIC PEER-SERVE (2026-07-07 rev2) — MASTER-ONLY
+                    // FALLBACK. The slave never enters this state; the master
+                    // enters ONLY from the WS_FINALIZE fail-open arm above and
+                    // ONLY when its LOCAL finalize STARVED (role_is_master &&
+                    // ws_anchor_q==0 — the die_a beacon-starvation case), with
+                    // ws_obs_clr_r dropped to 0 on entry so it lands in Phase-1
+                    // below. Two sub-phases keyed on ws_obs_clr_r:
+                    //
+                    // PHASE-1 (!ws_obs_clr_r) — WAIT FOR THE PEER TO SERVE.
+                    //   fch_quiesce_req does NOT cover this state (it covers only
+                    //   WS_FINALIZE/WS_FIN_CLRLOW), so on entry the master's LL
+                    //   comes OUT of the finalize-window swreset — its WS_DONE
+                    //   bootstrap then runs the NORMAL widx-0 full walk (with the
+                    //   R4c cross-die overlap dwell) that aligns the credit
+                    //   handshake, NOT the widx-1 quiesced bootstrap that
+                    //   deadlocked the master FC at fcsm=2 in multi-episode
+                    //   retry. The master holds winscan_force_sync through this
+                    //   state so its own TX stays clean SYNC anyway. It
+                    //   advertises ws_fin_wait_lvl. Its autoneg (ST_FIN_RDV/GO)
+                    //   polls the slave's ready-to-serve bit (SWI_LANE_STATUS
+                    //   [27]) and writes the slave's FINALIZE_GO, which sets the
+                    //   slave's ws_serve_active_r (die_b quiesces + serves
+                    //   idle-gated beacons every grid slot toward us) and raises
+                    //   the master's own nego_fin_go_w. On GO: raise the F3
+                    //   clear (drops our sticky anchor + verify — see the F3
+                    //   comment in WS_NEXT_LANE_ENTER), settle for the FIX-4b
+                    //   re-clear window (ws_clr_settle_load — the landed-clear
+                    //   CDC guard), arm the F4 anchor timeout + FIX-3/FIX-4
+                    //   retry budget as a safety net, and stay in-state to
+                    //   re-confirm (Phase-2) OVER THE SERVED BEACONS. This
+                    //   re-confirm happens HERE, never in WS_FINALIZE, so the
+                    //   peer's keepalive never occupies the link while the
+                    //   master re-anchors. FAIL-LOUD: ws_rdv_to_r expiry (dead/
+                    //   V1/zombie/manual peer that never serves) latches
+                    //   ws_rdv_timeout_q (0x21B8[10]) and proceeds LOCALLY into
+                    //   WS_FINALIZE with the F3b dwell — exact b55cb59 fallback,
+                    //   never deadlocks.
+                    //
+                    // PHASE-2 (ws_obs_clr_r) — RE-CONFIRM OVER THE SERVED
+                    //   BEACONS. Settle the clear (ws_dwell_r), then release the
+                    //   moment ws_anchor_q && ws_verify_q read 1 by raising
+                    //   winscan_done DIRECTLY and going to WS_DONE (dropping
+                    //   force here) — deliberately NOT via WS_FINALIZE, whose
+                    //   fch_quiesce_req would spuriously quiesce the master's LL
+                    //   and force its bootstrap to widx 1 (the fcsm=2 credit
+                    //   deadlock). The F3 clear was a single rising edge in
+                    //   Phase-1 and is not re-pulsed, so the anchor is not
+                    //   re-dropped. If the re-confirm times out (ws_anchor_to_r
+                    //   ==0 — should not happen once the peer serves) fall to
+                    //   WS_FINALIZE and let the legacy FIX-3/FIX-4 retry
+                    //   machinery run (retry budget was armed in Phase-1).
+                    if (!ws_obs_clr_r) begin
+                        if (nego_fin_go_w) begin
+                            // GO landed (peer serving). Raise the F3 clear and
+                            // re-confirm HERE (no FC quiesce — see the
+                            // ws_fin_wait_lvl / fch_quiesce_req comments).
+                            ws_obs_clr_r      <= 1'b1;              // F3 clear (one rising edge)
+                            ws_dwell_r        <= ws_clr_settle_load; // FIX-4b landed-clear settle
+                            ws_anchor_to_r    <= ws_anchor_to_load;  // Phase-2 anchor-gate window
+                            ws_anchor_retry_r <= WS_ANCHOR_RETRIES;  // legacy-retry safety net
+                        end else if (ws_rdv_to_r == 29'd0) begin
+                            // FIX-C (2026-07-07 BOUNDED FALLBACK EXIT): the peer
+                            // never served within the rendezvous window. Do NOT
+                            // return to WS_FINALIZE for a SECOND anchor-clearing
+                            // retry storm (which re-pulsed ws_obs_clr_r, wiping the
+                            // sticky anchor that could still late-heal, and re-armed
+                            // the whole FIX-3/FIX-4 budget for a second time). Go
+                            // DIRECTLY to fail-open: keep the latched anchor (do NOT
+                            // re-pulse ws_obs_clr_r), drop force, latch the sticky
+                            // obs, raise winscan_done → WS_DONE. This caps the
+                            // fallback's worst case at "Loop-14 base fail-open +
+                            // ONE bounded wait". ws_rdv_timeout_q records that the
+                            // rendezvous was attempted-and-timed-out (0x21B8[10]).
+                            winscan_force_sync  <= 1'b0;
+                            ws_rdv_timeout_q    <= 1'b1;
+                            ws_anchor_timeout_q <= 1'b1;
+                            winscan_done        <= 1'b1;
+                            ws_state_r          <= WS_DONE;
+                        end else begin
+                            ws_rdv_to_r <= ws_rdv_to_r - 29'd1;
+                        end
+                    end else begin
+                        if (ws_dwell_r != '0) begin
+                            ws_dwell_r <= ws_dwell_r - {{(WS_DW_W-1){1'b0}}, 1'b1};
+                        end else if (ws_anchor_q && ws_verify_q) begin
+                            // Re-confirm succeeded over the served beacons.
+                            // Raise winscan_done DIRECTLY and go to WS_DONE —
+                            // do NOT pass through WS_FINALIZE (that state's
+                            // fch_quiesce_req would trigger a spurious LL
+                            // quiesce, forcing the bootstrap to widx 1 and the
+                            // fcsm=2 credit deadlock). Drop force here (host
+                            // R8=0x14): the anchor is sticky and STAYS up.
+                            winscan_force_sync <= 1'b0;
+                            winscan_done       <= 1'b1;
+                            ws_state_r         <= WS_DONE;
+                        end else if (ws_anchor_to_r == 24'd0) begin
+                            // FIX-A (2026-07-07 LIVELOCK BREAK): the Phase-2
+                            // re-confirm over the served beacons timed out. LATCH
+                            // ws_rdv_timeout_q so the ~4619 fallback guard
+                            // (!ws_rdv_timeout_q) trips — the rendezvous is tried
+                            // EXACTLY ONCE per episode. Without this the return to
+                            // WS_FINALIZE with the fallback still open re-issued
+                            // the serve GO every cycle (WS_FIN_WAITPEER<->
+                            // WS_FINALIZE ping-pong → winscan_done never asserts
+                            // = NODONE livelock, and each re-entry re-thrashed
+                            // die_b's credit). With the sticky set, the next
+                            // WS_FINALIZE retry-exhaustion takes the BASE fail-loud
+                            // arm (~4659: winscan_done<=1, ws_anchor_timeout_q<=1,
+                            // keep the latched anchor, →WS_DONE) — no deadlock.
+                            ws_rdv_timeout_q <= 1'b1;
+                            ws_state_r       <= WS_FINALIZE;
+                        end else begin
+                            ws_anchor_to_r <= ws_anchor_to_r - 24'd1;
+                        end
+                    end
+                end
                 // -------------------------------------------------------------
                 WS_DONE: begin
                     // Hold the picked taps + winscan_done for the episode. A new
@@ -4804,6 +5557,10 @@ module axi_chiplet_controller #(
     // rendezvous entry arc is USE_CAL_IN_HOLD(=0)-gated, so local_fin_wait_i
     // is never consumed); the autoneg fin_go_o output is sunk.
     assign ws_fin_wait_lvl = 1'b0;
+    // FIX-B: no finalize FSM on V1 ⇒ the broadened poll level is tied 0 (the
+    // autoneg's ST_FIN_RDV entry arc is USE_CAL_IN_HOLD(=0)-gated anyway, and
+    // peer_ready_to_serve_o = peer_fin_wait_r stays 0 on V1).
+    assign ws_finalizing_lvl = 1'b0;
     wire _unused_nego_fin_go = nego_fin_go_w;
 `endif
 
@@ -4929,57 +5686,6 @@ module axi_chiplet_controller #(
     // a val_ctr timeout WITHOUT validate_confirm latches terminal S_DONE,
     // asserting calibration_done so lltx enables and CR can run. HW equivalent
     // of the sim tb_early_exit_force_q bypass. M8 give-up policy; sim-clean.
-    // =====================================================================
-    // AUTONEG CAL RE-SWEEP ONE-SHOT (2026-07-06, feat/autoneg-cal-resweep)
-    // ---------------------------------------------------------------------
-    // ROOT CAUSE addressed: autonomous-link data is marginal (15/28) vs the
-    // manual-recipe data (26/28) on the SAME build. The manual SWI_RECAL
-    // (R8 bit[1]) drives an UNMASKED calibrator swreset -> a fresh full
-    // sweep to a validated eye-centre with BOTH boards held in training by
-    // SW. The autonomous path instead KEEPS its first-pass (POR-race) eye:
-    // the Phase-7b + L4 mask below (~(cal_eye_converged_r|sync_cal_in_hold_1))
-    // suppresses the ST_TRAIN_EXIT re-sweep pulse the instant the die has
-    // converged / is parked, so it never re-sweeps like the manual recal.
-    //
-    // FIX (Option A): permit EXACTLY ONE autonomous re-sweep to bypass that
-    // suppression per training bring-up, then latch the exception off so
-    // SUBSEQUENT ST_TRAIN_EXIT episodes (e.g. a retrain triggered later,
-    // while live NON-training data is on the wire) can NEVER re-sweep --
-    // that perpetual re-sweep-vs-data is the exact failure the Phase-7b/L4
-    // mask was added to prevent (see the u_calibrator .swreset rationale
-    // just below). A manual SWI_RECAL re-arms the one-shot (same semantics
-    // as its clearing of cal_eye_converged_r), so SW-driven recovery is
-    // unchanged.
-    //
-    // ANTI-OSCILLATION / full-width guard: local_swreset_pulse_w is a
-    // T_SWRESET_HOLD (127-cycle) LEVEL, and the calibrator re-triggers its
-    // sweep on the swreset FALLING edge, so the grant MUST persist for the
-    // whole pulse (a 1-cycle apb pulse would not survive the apb->rx_link
-    // swreset_q CDC edge-detect). We therefore consume the one-shot on the
-    // FALLING edge of the pulse (via local_swreset_pulse_q edge-detect), not
-    // combinationally on the level -- the granted pulse stays full-width,
-    // and only the NEXT pulse is masked. Same apb_clk/poresetn domain as
-    // local_swreset_pulse_w and swi_recal_r, so no CDC is introduced.
-    reg autoneg_resweep_used_r;   // 0 = the one-shot re-sweep is still available
-    reg local_swreset_pulse_q;    // 1-cycle delay of the pulse for falling-edge detect
-    always_ff @(posedge apb_clk or negedge poresetn) begin
-        if (!poresetn) begin
-            autoneg_resweep_used_r <= 1'b0;
-            local_swreset_pulse_q  <= 1'b0;
-        end else begin
-            local_swreset_pulse_q <= local_swreset_pulse_w;
-            if (swi_recal_r)
-                autoneg_resweep_used_r <= 1'b0;   // manual recal re-arms the one-shot
-            else if (local_swreset_pulse_q && !local_swreset_pulse_w)
-                autoneg_resweep_used_r <= 1'b1;   // falling edge: consume the one-shot
-        end
-    end
-    // The FIRST autonomous ST_TRAIN_EXIT pulse is granted in FULL even when the
-    // die has converged / is parked; every subsequent pulse falls back to the
-    // original Phase-7b/L4 mask (so a genuinely never-locked die can still
-    // re-arm, but a converged/in-hold die cannot re-sweep against live data).
-    wire autoneg_first_resweep_w = local_swreset_pulse_w & ~autoneg_resweep_used_r;
-
     tidelink_phy_align_calibrator #(
         .VAL_TIMEOUT_TO_DONE (1'b1)
     ) u_calibrator (
@@ -5012,17 +5718,7 @@ module axi_chiplet_controller #(
         // proven the local die is parked with all active lanes locked, so a
         // re-sweep is never wanted. A genuinely-unconverged die is NOT parked
         // (cal_in_hold=0) so the legitimate "never-locked" re-arm still fires.
-        //
-        // 2026-07-06 (feat/autoneg-cal-resweep): OR in autoneg_first_resweep_w
-        // so the FIRST autonomous ST_TRAIN_EXIT pulse re-sweeps ONCE even when
-        // the die has converged / is parked -- replaying the manual SWI_RECAL's
-        // fresh full sweep to a validated eye-centre. The one-shot latch
-        // (autoneg_resweep_used_r, declared above) masks EVERY subsequent pulse
-        // back to the Phase-7b/L4 term, so a later retrain can never re-sweep
-        // against live data (the oscillation the mask guards). swi_recal_r
-        // re-arms the one-shot for SW-driven recovery.
         .swreset                (swi_recal_r |
-                                 autoneg_first_resweep_w |
                                  (local_swreset_pulse_w &
                                   ~(cal_eye_converged_r | sync_cal_in_hold_1))),
         .lane_locked            (lane_locked_w),
@@ -5041,6 +5737,11 @@ module axi_chiplet_controller #(
         .sync_seen_i            (1'b0),
         .lane_synced_i          (8'h00),
         .lane_pin_converge_en_i (1'b0),
+        // P1 (2026-07-19): the explicit forced-recal door. Deliberately NOT
+        // OR-merged with local_swreset_pulse_w or anything else — only a
+        // deliberate SW write reaches it, which is what lets the calibrator
+        // honour it without weakening the Bug-A calibrated_once_q guard.
+        .force_recal_i          (swi_force_recal_r),
         .bit_slip               (cal_bit_slip_w),
         .phase_offset           (cal_phase_offset_w),
         .training_mode          (cal_training_mode_w),
@@ -5145,6 +5846,10 @@ module axi_chiplet_controller #(
         // RX only ever decodes the peer's CRACK (late framer byte-align), so
         // S_VALIDATE must accept it too — same rx_link_clk domain, no CDC.
         .crack_pkt_seen_i      (obs_crack_pkt_seen_rx_w),
+        // P1 (2026-07-19): explicit forced-recal door — see the V2 instance
+        // above. The V1 src/rtl calibrator carries the IDENTICAL
+        // calibrated_once_q sticky, so the V1/trunk build needs the same fix.
+        .force_recal_i         (swi_force_recal_r),
         .bit_slip              (cal_bit_slip_w),
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),
@@ -5192,6 +5897,12 @@ module axi_chiplet_controller #(
     assign obs_fe_rx_is_full_o         = sync_obs_fe_rx_full_1;
     // SoC Labs Bug-A FCSM observation 2026-06-03
     assign obs_a2l_replay_app_valid_o  = sync_obs_a2l_app_v_1;
+    // SoC Labs TideChart sequencing contract 2026-07-17 — data-mode strobe.
+    // `>= 3'd4` over a 3-bit state reduces to bit [2]; written that way so the
+    // synthesised result is a direct flop output (glitch-free, apb_clk domain)
+    // rather than a multi-bit comparator over a partially-updated CDC word.
+    // Pure ADD: no existing net is re-driven or re-timed by this assignment.
+    assign data_mode_o                 = sync_obs_fcsm_state_1[2];
 
     // SW-override OR-mux: calibrator OR Region 8 SW-override regs
     // (swi_bit_slip_lo_r / swi_training_mode_r) → swi_bit_slip_in /
@@ -5274,17 +5985,16 @@ module axi_chiplet_controller #(
     // again (no paddr[12] split, no response mux). External APB response
     // passes Wlink straight back, stalled when the I²C slave bridge is
     // active.
-    // SoC Labs 2026-07-09: STALL the external (PS) APB while the fch sequencer
-    // owns the Wlink APB. Previously apb_pready passed wl_apb_pready straight
-    // through with no arbitration term, so a PS access landing during the fch
-    // burst would complete against the SEQUENCER's transaction (returning its
-    // prdata / consuming its pready) -- an APB protocol violation. Holding
-    // pready low stalls the PS access until the bus is handed back, which is the
-    // normal APB way to backpressure. Bounded by the FCH_ACCESS watchdog above,
-    // so this can never become the permanent lockout it replaces. Note the
-    // 0.25 s FCH_SWRESET_DWELL sits in FCH_GAP where fch_active_r is also 1 --
-    // see the GAP state; the PS is stalled across it, which is correct: the LL
-    // is mid-swreset and its registers are not meaningful anyway.
+    // SoC Labs 2026-07-09 (ported from f1b3aac): STALL the external (PS) APB
+    // while the fch sequencer owns the Wlink APB. Previously apb_pready passed
+    // wl_apb_pready straight through with no arbitration term, so a PS access
+    // landing during the fch burst would complete against the SEQUENCER's
+    // transaction (returning its prdata / consuming its pready) -- an APB
+    // protocol violation. Holding pready low stalls the PS access until the bus
+    // is handed back, which is the normal APB way to backpressure. Bounded by
+    // the FCH_ACCESS watchdog above, so this can never become the permanent
+    // lockout it replaces. In V1 / manual (autonomy off) the fch sequencer never
+    // arms, so fch_active_r stays 0 and apb_pready is bit-identical to before.
     assign apb_prdata  = wl_apb_prdata;
     assign apb_pready  = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pready;
     assign apb_pslverr = (fch_active_r || slv_apb_active) ? 1'b0 : wl_apb_pslverr;
@@ -5504,13 +6214,21 @@ module axi_chiplet_controller #(
         // on-grid beacons; = the host's R8=0x14 once anchored, force_always
         // back to idle-gated strictly before winscan_done/the bootstrap).
         // winscan_force_sync=0 when the FSM is dormant => bit-identical.
-        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync),
+        // R-B ASYMMETRIC PEER-SERVE (2026-07-07): the SLAVE also ORs
+        // ws_serve_active_r here so that, on the master's FINALIZE_GO, it
+        // FORCES SYNC every grid slot (insert_en + force_always + robust)
+        // toward the master REGARDLESS of its keepalive/idle — beating the
+        // keepalive that was occupying its idle slots (the die_a starvation) —
+        // WITHOUT quiescing its FC. Its FC stays UP (RX live) so it still
+        // receives the master's credit and reaches fcsm=4; the forced-SYNC
+        // window only briefly pre-empts its own FC TX (resumed on serve exit).
+        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync | ws_serve_active_r),
         // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
         // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
         // 0 the SYNC beacon keeps its idle-gated production behaviour
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
-        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync),
+        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r),
         // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
         // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
@@ -5519,7 +6237,7 @@ module axi_chiplet_controller #(
         // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17). SoC 0x44032128
         // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
         .swi_sync_tol_in            (swi_sync_tol_r),
-        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync),
+        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync | ws_serve_active_r),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8
@@ -5565,17 +6283,6 @@ module axi_chiplet_controller #(
         // packed into the spare bits of the 0x2158 word by the Region 10 mux).
         .obs_a2l_rreset_o            (obs_a2l_rreset_w),
         .obs_a2l_rptr_o              (obs_a2l_rptr_w),
-        // SoC Labs a2l ACK-sync MAILBOX observation 2026-07-08 — a2l replay CDC
-        // tear-surface taps (read-only; packed into the NEW 0x21BC A2L_MBX_OBS
-        // word, marker 0xCB, by the Region D read mux).
-        .obs_a2l_link_addr_o         (obs_a2l_link_addr_w),
-        .obs_mbx_raddr_o             (obs_mbx_raddr_w),
-        .obs_mbx_mem_0_o             (obs_mbx_mem_0_w),
-        .obs_mbx_mem_1_o             (obs_mbx_mem_1_w),
-        .obs_mbx_wptr_o              (obs_mbx_wptr_w),
-        .obs_mbx_rptr_o              (obs_mbx_rptr_w),
-        .obs_mbx_w_ready_o           (obs_mbx_w_ready_w),
-        .obs_mbx_r_ready_o           (obs_mbx_r_ready_w),
         // SoC Labs FC credit observation 2026-06-12
         .obs_fe_rx_ptr_o             (obs_fe_rx_ptr_w),
         // SoC Labs RX-FRAMER long-DATA STICKY CAPTURE 2026-06-21 (rxcap)

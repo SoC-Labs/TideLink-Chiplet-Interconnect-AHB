@@ -255,6 +255,26 @@ proc create_root_design { parentCell } {
         -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0]
 
     #--------------------------------------------------------------------------
+    # PTP RE-ADD GATE (Phase 5a, 2026-07-06 feat/ptp-fpga-readd) — flip/die_b.
+    # Mirror of pynq-z2-pair-all. The PHC (PTP hardware clock) subsystem — phc_0,
+    # axi_apb_phc, axi_ahb_ptp — was removed 2026-06-19 (bafd9cd) for slice
+    # headroom. Re-added here gated on env var TIDELINK_FPGA_PTP=1, so the default
+    # build stays byte-identical (tie-off path). When enabled: axi_smc NUM_MI
+    # 4 -> 6 (PTP masters M04/M05, highest indices, M00..M03 map untouched); PHC
+    # input tie-offs replaced by real phc_0; apertures ahb_ptp @0x4402_0000 +
+    # phc apb @0x4405_0000 re-asserted. Also sets -verilog_define
+    # TIDELINK_NO_BEATCAP (build_design.tcl) to drop the FCSM per-beat capture
+    # ring for slice fit. Requires FPGA_PHC_IP_REPO on ip_repo_paths.
+    #--------------------------------------------------------------------------
+    set ptp_enabled 0
+    if { [info exists ::env(TIDELINK_FPGA_PTP)] && $::env(TIDELINK_FPGA_PTP) == 1 } {
+        set ptp_enabled 1
+        puts "TIDELINK_FPGA_PTP=1: PHC/PTP subsystem RE-ADDED to block design"
+    } else {
+        puts "TIDELINK_FPGA_PTP unset: PHC/PTP tie-off path (default, unchanged)"
+    }
+
+    #--------------------------------------------------------------------------
     # AXI SmartConnect (control plane, GP0): 1 PS master -> 4 slaves.
     # GP1 split 2026-06-12: ahb_tx + ahb_fifo moved off this interconnect to
     # axi_smc_data on M_AXI_GP1 (own ordering domain — see header NOTE).
@@ -267,9 +287,13 @@ proc create_root_design { parentCell } {
     #--------------------------------------------------------------------------
     set smc [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:smartconnect:1.0 axi_smc]
+    # NUM_MI: 4 default (M00 ahb_sub, M01 apb, M02 strap, M03 unlock); 6 with PTP
+    # (adds M04 axi_apb_phc, M05 axi_ahb_ptp — highest indices so M00..M03 map is
+    # untouched, keeping the default build byte-identical).
+    set smc_num_mi [expr {$ptp_enabled ? 6 : 4}]
     set_property -dict [list \
         CONFIG.NUM_SI   {1} \
-        CONFIG.NUM_MI   {4} \
+        CONFIG.NUM_MI   $smc_num_mi \
         CONFIG.NUM_CLKS {1} \
     ] $smc
 
@@ -302,6 +326,13 @@ proc create_root_design { parentCell } {
 
     set ahb_fifo_bridge [create_bd_cell -type ip \
         -vlnv xilinx.com:ip:axi_ahblite_bridge:3.0 axi_ahb_fifo]
+
+    # PTP RE-ADD: AXI4-Lite -> AHB-Lite bridge for the PTP TX write port
+    # (tidelink_0/ahb_ptp @ 0x4402_0000). Only created when PTP is enabled.
+    if { $ptp_enabled } {
+        set ahb_ptp_bridge [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:axi_ahblite_bridge:3.0 axi_ahb_ptp]
+    }
 
     #--------------------------------------------------------------------------
     # AXI4-Lite -> APB bridge (unified config registers)
@@ -378,6 +409,22 @@ proc create_root_design { parentCell } {
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
 
     #--------------------------------------------------------------------------
+    # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port (2026-07-04).
+    # Far side of the XHB500 transparent window: a peer die's remote-initiated
+    # access into aperture 0x4000_0000 transits the FC link, exits the local
+    # ahb_mng manager, and lands in this 4 KB BlockRAM so writes store and reads
+    # return data. Without it the window's return path floats. Module reference
+    # (tidelink_ahb_mng_bram.v, added to sources_1 by build_design.tcl BEFORE
+    # create_root_design exactly like tidelink_phy_clk_div2). Wraps the
+    # silicon-proven cmsdk_ahb_to_sram + cmsdk_fpga_sram (hclk domain, one
+    # RAMB36). ahb_mng packages as a REVERSED spirit:slave with no master
+    # address space, so its member pins are wired DISCRETELY in the CONNECTIONS
+    # section below (no connect_bd_intf_net, no assign_bd_address).
+    #--------------------------------------------------------------------------
+    set ahb_mng_bram [create_bd_cell -type module \
+        -reference tidelink_ahb_mng_bram ahb_mng_bram]
+
+    #--------------------------------------------------------------------------
     # PHC subsystem REMOVED 2026-06-19 (phc_0, axi_apb_phc, axi_gpio_pmod_trig,
     # xlconcat_phc_hw_cap, util_reduced_logic_hw_cap). These occupied slices on
     # the ~97%-packed xc7z020 and are not needed for a link bring-up test.
@@ -387,41 +434,58 @@ proc create_root_design { parentCell } {
     # left unconnected (legal — they are outputs). ahb_ptp bridge also dropped.
     #--------------------------------------------------------------------------
 
-    # PHC input tie-offs (value 0). One xlconstant per distinct width; the
-    # 30-bit and 48-bit constants each fan out to two tidelink_0 inputs.
-    #   phc_nanoseconds            [29:0]  <- const30
-    #   phc_hw_cap_nanoseconds     [29:0]  <- const30
-    #   phc_seconds                [47:0]  <- const48
-    #   phc_hw_cap_seconds         [47:0]  <- const48
-    #   phc_hw_cap_sub_nanoseconds [31:0]  <- const32
-    #   phc_pps                    1-bit   <- const1
-    set const_phc_30 [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_30]
-    set_property -dict [list \
-        CONFIG.CONST_WIDTH {30} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_phc_30
+    if { $ptp_enabled } {
+        # PTP RE-ADD: real PHC hardware-clock IP + its dedicated APB bridge.
+        #   phc_0        = soclabs.org:user:phc_vivado_wrapper:1.0 (from PHC IP repo)
+        #   axi_apb_phc  = AXI4-Lite -> APB bridge, PHC's own 12-bit address space
+        # Counter outputs drive tidelink_0/phc_* inputs; tidelink_0 servo outputs
+        # drive phc_0 hw_set/hw_adj inputs (see CONNECTIONS). APB @ 0x4405_0000.
+        set phc [create_bd_cell -type ip \
+            -vlnv soclabs.org:user:phc_vivado_wrapper:1.0 phc_0]
 
-    set const_phc_48 [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_48]
-    set_property -dict [list \
-        CONFIG.CONST_WIDTH {48} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_phc_48
+        set phc_apb_bridge [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:axi_apb_bridge:3.0 axi_apb_phc]
+        set_property -dict [list \
+            CONFIG.C_APB_NUM_SLAVES  {1} \
+            CONFIG.C_M_APB_PROTOCOL  {apb4} \
+        ] $phc_apb_bridge
+    } else {
+        # PHC input tie-offs (value 0). One xlconstant per distinct width; the
+        # 30-bit and 48-bit constants each fan out to two tidelink_0 inputs.
+        #   phc_nanoseconds            [29:0]  <- const30
+        #   phc_hw_cap_nanoseconds     [29:0]  <- const30
+        #   phc_seconds                [47:0]  <- const48
+        #   phc_hw_cap_seconds         [47:0]  <- const48
+        #   phc_hw_cap_sub_nanoseconds [31:0]  <- const32
+        #   phc_pps                    1-bit   <- const1
+        set const_phc_30 [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_30]
+        set_property -dict [list \
+            CONFIG.CONST_WIDTH {30} \
+            CONFIG.CONST_VAL   {0} \
+        ] $const_phc_30
 
-    set const_phc_32 [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_32]
-    set_property -dict [list \
-        CONFIG.CONST_WIDTH {32} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_phc_32
+        set const_phc_48 [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_48]
+        set_property -dict [list \
+            CONFIG.CONST_WIDTH {48} \
+            CONFIG.CONST_VAL   {0} \
+        ] $const_phc_48
 
-    set const_phc_1 [create_bd_cell -type ip \
-        -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_1]
-    set_property -dict [list \
-        CONFIG.CONST_WIDTH {1} \
-        CONFIG.CONST_VAL   {0} \
-    ] $const_phc_1
+        set const_phc_32 [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_32]
+        set_property -dict [list \
+            CONFIG.CONST_WIDTH {32} \
+            CONFIG.CONST_VAL   {0} \
+        ] $const_phc_32
+
+        set const_phc_1 [create_bd_cell -type ip \
+            -vlnv xilinx.com:ip:xlconstant:1.1 xlconst_phc_tieoff_1]
+        set_property -dict [list \
+            CONFIG.CONST_WIDTH {1} \
+            CONFIG.CONST_VAL   {0} \
+        ] $const_phc_1
+    }
 
     # nego_priority_i (16-bit mid-priority = 0x8000)
     set const_nego [create_bd_cell -type ip \
@@ -509,6 +573,13 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/hclk] \
                    [get_bd_pins phy_clk_div/clk_in]
 
+    #-- PTP RE-ADD: PHC APB + PTP AHB bridges run on the same 4.687 MHz AXI clock.
+    if { $ptp_enabled } {
+        connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
+                       [get_bd_pins axi_apb_phc/s_axi_aclk] \
+                       [get_bd_pins axi_ahb_ptp/s_axi_aclk]
+    }
+
     #-- PHY /2 clock: clk_out1 (4.687) -> phy_clk_div -> user_ref_clk + scan_clk
     #   at 2.343 MHz / 426.666 ns. user_ref_clk IS the GPIO-PHY hi-speed bit
     #   clock (serializer + forwarded pad_clk_tx run off it), so halving it
@@ -518,11 +589,16 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/scan_clk]
 
     #-- phc_clk: clk_wiz clk_out2 (25 MHz, same MMCM — phase-aligned to hclk).
-    #   The PHC IP is removed (2026-06-19) but tidelink_0/phc_clk is a real
-    #   input that must still be driven; clk_out2 stays defined (a spare clk
-    #   output is harmless, lower-risk than reconfiguring the clk_wiz).
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
-                   [get_bd_pins tidelink_0/phc_clk]
+    #   Always drives tidelink_0/phc_clk (a real IP input). When PTP is enabled it
+    #   also clocks the phc_0 IP itself (shared MMCM output = phase-aligned).
+    if { $ptp_enabled } {
+        connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
+                       [get_bd_pins tidelink_0/phc_clk] \
+                       [get_bd_pins phc_0/clk]
+    } else {
+        connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] \
+                       [get_bd_pins tidelink_0/phc_clk]
+    }
 
     #-- SoC Labs §9 structural fix: clk_wiz clk_out3 (200 MHz) -> IDELAYCTRL
     #   reference clock for the per-lane IDELAYE2 RX delay elements.
@@ -542,6 +618,14 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/hresetn] \
                    [get_bd_pins tidelink_0/poresetn] \
                    [get_bd_pins tidelink_0/phc_resetn]
+
+    #-- PTP RE-ADD: PHC IP + its APB/AHB bridges share peripheral_aresetn.
+    if { $ptp_enabled } {
+        connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
+                       [get_bd_pins axi_apb_phc/s_axi_aresetn] \
+                       [get_bd_pins axi_ahb_ptp/s_axi_aresetn] \
+                       [get_bd_pins phc_0/resetn]
+    }
 
     #-- AXI: PS M_AXI_GP0 -> control-plane SmartConnect slave
     connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
@@ -589,8 +673,22 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins axi_gpio_debug_unlock/gpio_io_o] \
                    [get_bd_pins tidelink_0/apb_debug_unlock_i]
 
-    #-- (SmartConnect M05 axi_apb_phc and M06 axi_gpio_pmod_trig REMOVED
-    #--  2026-06-19 with the PHC subsystem)
+    #-- PTP RE-ADD: SmartConnect M04 -> APB bridge -> phc_0/apb (PHC config, @0x4405_0000)
+    #             SmartConnect M05 -> AHB bridge -> tidelink_0/ahb_ptp (@0x4402_0000).
+    #   The pmod_b_trig GPIO master is NOT re-added (external ports + wrapper/XDC
+    #   were cleaned in bc00aed); hw_capture is driven by tidelink_0/phc_hw_capture
+    #   alone (no cross-board OR), so the concat/reduce cells are unnecessary.
+    if { $ptp_enabled } {
+        connect_bd_intf_net [get_bd_intf_pins axi_smc/M04_AXI] \
+                            [get_bd_intf_pins axi_apb_phc/AXI4_LITE]
+        connect_bd_intf_net [get_bd_intf_pins axi_apb_phc/APB_M] \
+                            [get_bd_intf_pins phc_0/apb]
+
+        connect_bd_intf_net [get_bd_intf_pins axi_smc/M05_AXI] \
+                            [get_bd_intf_pins axi_ahb_ptp/AXI4]
+        connect_bd_intf_net [get_bd_intf_pins axi_ahb_ptp/M_AHB] \
+                            [get_bd_intf_pins tidelink_0/ahb_ptp]
+    }
 
     #-- GPIO PHY pads -> external ports
     connect_bd_net [get_bd_pins tidelink_0/pad_clk_tx] [get_bd_ports pad_clk_tx]
@@ -646,21 +744,53 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins xlconcat_irq/dout] \
                    [get_bd_pins processing_system7_0/IRQ_F2P]
 
-    #-- PHC removed 2026-06-19: tie off tidelink_0 PHC *inputs* to 0.
-    #   (tidelink_0 PHC outputs phc_hw_set_* / phc_hw_adj_* / phc_hw_capture /
-    #    ptp_irq are left unconnected — legal for outputs.)
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_30/dout] \
-                   [get_bd_pins tidelink_0/phc_nanoseconds]
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_30/dout] \
-                   [get_bd_pins tidelink_0/phc_hw_cap_nanoseconds]
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_48/dout] \
-                   [get_bd_pins tidelink_0/phc_seconds]
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_48/dout] \
-                   [get_bd_pins tidelink_0/phc_hw_cap_seconds]
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_32/dout] \
-                   [get_bd_pins tidelink_0/phc_hw_cap_sub_nanoseconds]
-    connect_bd_net [get_bd_pins xlconst_phc_tieoff_1/dout] \
-                   [get_bd_pins tidelink_0/phc_pps]
+    if { $ptp_enabled } {
+        #-- PTP RE-ADD: real phc_0 <-> tidelink_0 wiring (replaces the tie-offs).
+        #   Counter + PPS + HW-capture readouts: PHC -> tidelink.
+        connect_bd_net [get_bd_pins phc_0/nanoseconds_o] \
+                       [get_bd_pins tidelink_0/phc_nanoseconds]
+        connect_bd_net [get_bd_pins phc_0/seconds_o] \
+                       [get_bd_pins tidelink_0/phc_seconds]
+        connect_bd_net [get_bd_pins phc_0/pps_o] \
+                       [get_bd_pins tidelink_0/phc_pps]
+        connect_bd_net [get_bd_pins phc_0/hw_cap_seconds_0_o] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_seconds]
+        connect_bd_net [get_bd_pins phc_0/hw_cap_nanoseconds_0_o] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_nanoseconds]
+        connect_bd_net [get_bd_pins phc_0/hw_cap_sub_nanoseconds_0_o] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_sub_nanoseconds]
+        #   Servo phase-step + frequency-steer: tidelink -> PHC.
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_time] \
+                       [get_bd_pins phc_0/hw_set_time_0_i]
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_seconds] \
+                       [get_bd_pins phc_0/hw_set_seconds_0_i]
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_set_nanoseconds] \
+                       [get_bd_pins phc_0/hw_set_nanoseconds_0_i]
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_adj_valid] \
+                       [get_bd_pins phc_0/hw_adj_valid_0_i]
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_adj_ns_incr_frac] \
+                       [get_bd_pins phc_0/hw_adj_ns_incr_frac_0_i]
+        #   hw_capture_0_i driven directly by the TideLink PTP FC handshake
+        #   (pmod cross-board OR path not re-added — see M04/M05 note above).
+        connect_bd_net [get_bd_pins tidelink_0/phc_hw_capture] \
+                       [get_bd_pins phc_0/hw_capture_0_i]
+    } else {
+        #-- PHC removed 2026-06-19: tie off tidelink_0 PHC *inputs* to 0.
+        #   (tidelink_0 PHC outputs phc_hw_set_* / phc_hw_adj_* / phc_hw_capture /
+        #    ptp_irq are left unconnected — legal for outputs.)
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_30/dout] \
+                       [get_bd_pins tidelink_0/phc_nanoseconds]
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_30/dout] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_nanoseconds]
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_48/dout] \
+                       [get_bd_pins tidelink_0/phc_seconds]
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_48/dout] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_seconds]
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_32/dout] \
+                       [get_bd_pins tidelink_0/phc_hw_cap_sub_nanoseconds]
+        connect_bd_net [get_bd_pins xlconst_phc_tieoff_1/dout] \
+                       [get_bd_pins tidelink_0/phc_pps]
+    }
 
     #-- Misc tie-offs (discrete scalar 1-bit values handled in wrapper,
     #   but multi-bit constants are easier as xlconstant in the BD)
@@ -670,6 +800,29 @@ proc create_root_design { parentCell } {
                    [get_bd_pins tidelink_0/puf_seed]
     connect_bd_net [get_bd_pins xlconst_mask_hs_bypass/dout] \
                    [get_bd_pins tidelink_0/mask_hs_bypass_i]
+
+    #-- AHB manager terminus: TideLink ahb_mng <-> BRAM slave (discrete member
+    #   pins — ahb_mng is a REVERSED slave interface with no bus-intf object, so
+    #   there is no connect_bd_intf_net and no assign_bd_address). HCLK/HRESETn
+    #   share the hclk (clk_out1, 4.687 MHz) + peripheral_aresetn domain used by
+    #   ahb_sub/apb. The IP drives the 7 request pins; the BRAM drives the 3
+    #   response pins back.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
+                   [get_bd_pins ahb_mng_bram/HCLK]
+    connect_bd_net [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
+                   [get_bd_pins ahb_mng_bram/HRESETn]
+    #   IP outputs -> BRAM inputs
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_haddr]  [get_bd_pins ahb_mng_bram/HADDR]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hburst] [get_bd_pins ahb_mng_bram/HBURST]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hprot]  [get_bd_pins ahb_mng_bram/HPROT]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hsize]  [get_bd_pins ahb_mng_bram/HSIZE]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_htrans] [get_bd_pins ahb_mng_bram/HTRANS]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hwdata] [get_bd_pins ahb_mng_bram/HWDATA]
+    connect_bd_net [get_bd_pins tidelink_0/ahb_mng_hwrite] [get_bd_pins ahb_mng_bram/HWRITE]
+    #   BRAM outputs -> IP inputs
+    connect_bd_net [get_bd_pins ahb_mng_bram/HREADY] [get_bd_pins tidelink_0/ahb_mng_hready]
+    connect_bd_net [get_bd_pins ahb_mng_bram/HRDATA] [get_bd_pins tidelink_0/ahb_mng_hrdata]
+    connect_bd_net [get_bd_pins ahb_mng_bram/HRESP]  [get_bd_pins tidelink_0/ahb_mng_hresp]
 
     ###########################################################################
     # ADDRESS MAP
@@ -703,10 +856,12 @@ proc create_root_design { parentCell } {
     assign_bd_address -offset 0x84010000 -range 0x00010000 \
         [get_bd_addr_segs {tidelink_0/ahb_fifo/Reg}]
 
-    # ahb_ptp: address segment REMOVED 2026-06-19 — the ahb_ptp bridge was
-    # dropped with the PHC subsystem, so tidelink_0/ahb_ptp is unconnected
-    # (mirrors the ahb_mng unconnected-interface pattern) and has no master to
-    # decode this segment.
+    # ahb_ptp: 4 KB at 0x4402_0000 (PTP TX write port, 16 B internal decode).
+    #   Re-asserted only when PTP is enabled (bridge + slave both present then).
+    if { $ptp_enabled } {
+        assign_bd_address -offset 0x44020000 -range 0x00001000 \
+            [get_bd_addr_segs {tidelink_0/ahb_ptp/Reg}]
+    }
 
     # apb: 32 KB at 0x4403_0000 (covers 15-bit PADDR = 32 KB)
     assign_bd_address -offset 0x44030000 -range 0x00008000 \
@@ -720,8 +875,12 @@ proc create_root_design { parentCell } {
     assign_bd_address -offset 0x44041000 -range 0x00001000 \
         [get_bd_addr_segs {axi_gpio_debug_unlock/S_AXI/Reg}]
 
-    # pmod-trig GPIO + phc apb: address segments REMOVED 2026-06-19 along with
-    # the axi_gpio_pmod_trig and phc_0/axi_apb_phc cells (PHC subsystem).
+    # phc apb: 4 KB at 0x4405_0000 (APB_ADDR_W=12). Re-asserted only when PTP is
+    # enabled. (pmod-trig GPIO segment stays removed — cell not re-added.)
+    if { $ptp_enabled } {
+        assign_bd_address -offset 0x44050000 -range 0x00001000 \
+            [get_bd_addr_segs {phc_0/apb/Reg}]
+    }
 
     ###########################################################################
     # VALIDATE AND SAVE

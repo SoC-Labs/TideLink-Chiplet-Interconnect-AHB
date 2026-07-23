@@ -62,6 +62,16 @@ ifdef COVERAGE
   SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
 endif
 
+# --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
+#     lists only the tb; DUT RTL arrives via `-f $(FLIST)` (invisible to make), so
+#     without this an RTL-only edit re-runs the STALE simv. The flist's leaf deps
+#     are parsed out; the DUT itself comes in via the churning dut_src.f (a `-f`
+#     line the parser skips), so $(DUT_SRC) is added explicitly.
+#     See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_flist_deps := $(FLIST) $(DUT_SRC) $(call flist_srcs,$(FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2

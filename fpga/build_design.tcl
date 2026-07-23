@@ -100,8 +100,30 @@ if {![info exists ::tidelink_msg_gate_installed]} {
     # filter that then propagates as a silent no-op constraint.
     set_msg_config -id "Vivado 12-1411"      -new_severity ERROR
 
+    # COMBINATIONAL-LOOP guard (cb33c9f-class silicon write-vanish). An
+    # UN-waived combinational loop is flagged by the LUTLP-1 DRC. Intentional
+    # loops are individually waived via ALLOW_COMBINATORIAL_LOOPS in
+    # *_tidelink_drc.xdc, so promoting LUTLP-1 to ERROR only bites on NEW,
+    # accidental loops. Wrapped in catch: get_drc_checks needs the DRC rule DB,
+    # which is present in the parent session but this keeps the top-of-file
+    # block robust if sourced in a bare context. The REAL enforcement is in the
+    # child hooks (fpga/scripts/msg_gate_child_{promote,check}.tcl), because the
+    # DRC actually runs in the synth/impl child processes, not this parent.
+    catch { set_property SEVERITY {ERROR} [get_drc_checks LUTLP-1] }
+
     set ::tidelink_msg_gate_installed 1
 }
+
+# Build-integrity & provenance helpers (Bug-class: silent-V1 / stale-packaged-IP
+# / dropped-XDC). Sourced here so tl_verify_packaged_ip + tl_write_manifest are
+# available at their mandatory call sites below and CANNOT be skipped. A missing
+# helper is a hard error - the integrity gate must not silently no-op.
+set _prov_tcl [file join [file dirname [info script]] scripts build_provenance.tcl]
+if { ![file exists $_prov_tcl] } {
+    puts "ERROR: build-integrity helper not found: $_prov_tcl"
+    exit 1
+}
+source $_prov_tcl
 
 # Helper: check CRITICAL_WARNING count after a phase. Honours
 # FPGA_ALLOW_CRITICAL_WARNINGS=1 to allow legacy/exploratory builds.
@@ -178,6 +200,29 @@ create_project tidelink_project $project_dir -part $part -force
 # SoC Labs 2026-06-21 (turnaround): let synth/impl use more host threads (QoR-neutral).
 set_param general.maxThreads 8
 
+# Optional BOARD_PART (2026-07-09, KR260 port). Zynq UltraScale+ targets (Kria
+# KR260, xck26) drive the PS/DDR/MIO configuration from the board preset, which
+# requires the board_part set on the project before the BD is sourced. The Z2
+# targets set no FPGA_BOARD_PART, so this is a no-op there (bare-part flow
+# unchanged). If a board part is named but not installed in this Vivado, fail
+# loudly here rather than let the BD silently mis-preset the PS.
+if { [info exists env(FPGA_BOARD_PART)] && $env(FPGA_BOARD_PART) ne "" } {
+    set _bp $env(FPGA_BOARD_PART)
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        # Board files ship in Vivado's XilinxBoardStore; refresh the catalog once
+        # in case they were installed after this Vivado's board cache was built.
+        catch { xhub::refresh_catalog [xhub::get_xstores] }
+        catch { update_board_part_repos }
+    }
+    if { [llength [get_board_parts -quiet $_bp]] == 0 } {
+        puts "ERROR: FPGA_BOARD_PART='$_bp' not found in this Vivado's board catalog."
+        puts "       Install the Kria board files (XilinxBoardStore) or fix the id."
+        exit 1
+    }
+    set_property BOARD_PART $_bp [current_project]
+    puts "BOARD_PART: set to $_bp"
+}
+
 # STEP 2: Add IP repositories (tidelink + optional PHC)
 if { $phc_ip_repo ne "" } {
     set_property ip_repo_paths [list $ip_repo $phc_ip_repo] [current_project]
@@ -207,13 +252,60 @@ source $target_dir/tidelink_design.tcl
 # references only resolve in automatic-compile-order mode against a file already
 # in sources_1. Added here (not in tidelink_design.tcl, which only builds the BD)
 # so it lands in the project fileset the same way as the board wrapper below.
-set phy_clk_div_v [lindex [glob -nocomplain $target_dir/tidelink_phy_clk_div2.v] 0]
-if { $phy_clk_div_v ne "" } {
-    add_files -norecurse $phy_clk_div_v
+# Glob is `tidelink_phy_clk_div2*.v` (a SUPERSET of the historical exact name)
+# so the kr260-pair-onchip target's SECOND divider variant
+# `tidelink_phy_clk_div2_b.v` — a distinct module-reference whose DEFAULT
+# INIT_PHASE is 3'b011 (the zero-skew-trap mitigation, KR260_PAIR_ONCHIP_PLAN
+# sec 4 / OQ3 two-file fallback) — is added to sources_1 too. Every other target
+# ships ONLY `tidelink_phy_clk_div2.v`, so the wildcard returns the same single
+# file for them and this is fully backward-compatible. Without this the onchip
+# BD's `create_bd_cell -reference tidelink_phy_clk_div2_b phy_clk_div_1` would
+# elaborate as an unresolved black box and BD generation would die.
+set phy_clk_div_vs [glob -nocomplain $target_dir/tidelink_phy_clk_div2*.v]
+if { [llength $phy_clk_div_vs] > 0 } {
+    foreach phy_clk_div_v $phy_clk_div_vs {
+        add_files -norecurse $phy_clk_div_v
+        puts "INFO: added PHY /8 clock divider $phy_clk_div_v"
+    }
     update_compile_order -fileset sources_1
-    puts "INFO: added PHY /2 clock divider $phy_clk_div_v"
 } else {
-    puts "WARNING: tidelink_phy_clk_div2.v not found in $target_dir - BD module-ref will fail"
+    puts "WARNING: tidelink_phy_clk_div2*.v not found in $target_dir - BD module-ref will fail"
+}
+
+# AHB-Lite BRAM terminus for TideLink's ahb_mng manager port — SAME
+# module-reference requirement as the /2 divider above: the BD instantiates it
+# via `create_bd_cell -type module -reference tidelink_ahb_mng_bram`, so the
+# terminus .v AND the two CMSDK library cells it wraps (cmsdk_ahb_to_sram +
+# cmsdk_fpga_sram) MUST be in sources_1 with the compile order updated BEFORE
+# create_root_design. The terminus .v is a per-target file (glob on
+# $target_dir, exactly like tidelink_phy_clk_div2.v); the CMSDK cells come from
+# the Arm BP210 package via $CMSDK_DIR / $CMSDK_FPGA_SRAM_V (see set_env.sh and
+# the cmsdk_fpga_sram workaround — fpga_sram is missing from some BP210 installs
+# so it is resolved through its own env var).
+set ahb_mng_bram_v [lindex [glob -nocomplain $target_dir/tidelink_ahb_mng_bram.v] 0]
+if { $ahb_mng_bram_v ne "" } {
+    add_files -norecurse $ahb_mng_bram_v
+    if { [info exists ::env(CMSDK_DIR)] } {
+        set cmsdk_ahb_to_sram_v $::env(CMSDK_DIR)/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+        if { [file exists $cmsdk_ahb_to_sram_v] } {
+            add_files -norecurse $cmsdk_ahb_to_sram_v
+            puts "INFO: added CMSDK cmsdk_ahb_to_sram $cmsdk_ahb_to_sram_v"
+        } else {
+            puts "WARNING: cmsdk_ahb_to_sram.v not found at $cmsdk_ahb_to_sram_v - BRAM terminus elaboration will fail"
+        }
+    } else {
+        puts "WARNING: CMSDK_DIR not set - cmsdk_ahb_to_sram.v cannot be added, BRAM terminus elaboration will fail"
+    }
+    if { [info exists ::env(CMSDK_FPGA_SRAM_V)] && [file exists $::env(CMSDK_FPGA_SRAM_V)] } {
+        add_files -norecurse $::env(CMSDK_FPGA_SRAM_V)
+        puts "INFO: added CMSDK cmsdk_fpga_sram $::env(CMSDK_FPGA_SRAM_V)"
+    } else {
+        puts "WARNING: CMSDK_FPGA_SRAM_V unset or missing - cmsdk_fpga_sram.v cannot be added, BRAM terminus elaboration will fail"
+    }
+    update_compile_order -fileset sources_1
+    puts "INFO: added AHB-Lite BRAM terminus $ahb_mng_bram_v"
+} else {
+    puts "WARNING: tidelink_ahb_mng_bram.v not found in $target_dir - BD module-ref will fail"
 }
 
 set design_name tidelink_design
@@ -287,6 +379,28 @@ if { $idelay_xdc ne "" && $fpga_use_idelay == 1 } {
     puts "INFO: FPGA_USE_IDELAY!=1 - skipping $idelay_xdc (no IDELAYE2 cells expected)"
 }
 
+# COMMON-EXTERNAL-REFERENCE XDC — same INCLUSION-GATE reasoning as the IDELAY XDC
+# above. *_tidelink_extrefclk.xdc constrains the `pad_refclk_in` port, which only
+# exists in the BD when FPGA_TIDELINK_EXTREFCLK=1. Adding it on a default build
+# would leave get_ports empty -> [Vivado 12-1411] -> hard ERROR under the message
+# gate. XDC cannot self-guard (procedural Tcl in an XDC is [Designutils 20-1307],
+# also promoted to ERROR), so the gate has to live here.
+# The file relocates one data lane off an HDGC ball and puts the shared reference
+# there, making the two dies MESOCHRONOUS. See fpga/docs/KR260_NEXT_WEEK_PLAN.md.
+set fpga_extrefclk 0
+if { [info exists env(FPGA_TIDELINK_EXTREFCLK)] && $env(FPGA_TIDELINK_EXTREFCLK) == "1" } {
+    set fpga_extrefclk 1
+}
+set extref_xdc [lindex [glob -nocomplain $target_dir/*_tidelink_extrefclk.xdc] 0]
+if { $extref_xdc ne "" && $fpga_extrefclk == 1 } {
+    add_files -fileset constrs_1 $extref_xdc
+    set_property USED_IN_SYNTHESIS true       [get_files $extref_xdc]
+    set_property USED_IN_IMPLEMENTATION true  [get_files $extref_xdc]
+    puts "INFO: FPGA_TIDELINK_EXTREFCLK=1 - including $extref_xdc (MESOCHRONOUS: shared reference clock)"
+} elseif { $extref_xdc ne "" } {
+    puts "INFO: FPGA_TIDELINK_EXTREFCLK!=1 - skipping $extref_xdc (no pad_refclk_in port; local PS-derived link clock)"
+}
+
 # STEP 6: Generate block design outputs
 # Be specific about WHICH BD - using *.bd matches nested SmartConnect
 # sub-designs which can only be generated by their parent.
@@ -295,19 +409,93 @@ generate_target all [get_files ${design_name}.bd]
 # STEP 7: Update compile order
 update_compile_order -fileset sources_1
 
+# STEP 7.5: Packaged-IP integrity gate (stale-packaged-IP trap).
+# Runs BEFORE synthesis: verify every flist-referenced RTL source matches the
+# copy ipx::package_project imported into $ip_repo/src/. If an RTL file was
+# edited but `make package_ip` was not re-run, build_design would otherwise
+# synthesise the OLD sources (memory: project_farm_package_ip_stale). Hard-fails
+# (exit 1) on any content mismatch so the stale build dies here, not on silicon.
+tl_verify_packaged_ip $ip_repo
+
 # STEP 8: Synthesis
 puts "Starting synthesis..."
-# S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 must reach the IP's OOC synth.
-# Fileset verilog_define does NOT bake into packaged IP (proven 2026-05-19,
-# see package_tidelink_ip.tcl) — inject at the synth-run level instead, on
-# every synthesis run (top + OOC IP runs).
-if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } {
-    foreach _r [get_runs -filter {IS_SYNTHESIS}] {
-        set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
-            -value {-verilog_define TIDELINK_PHY_V2} -objects $_r
-        puts "TIDELINK_PHY_V2: -verilog_define injected into run $_r"
-    }
+# S3 PHY swap (2026-06-11): TIDELINK_PHY_V2=1 injected at the synth-run level
+# (a *fileset* verilog_define does NOT bake into a packaged IP — proven
+# 2026-05-19, see package_tidelink_ip.tcl).
+#
+# !! MEASURED 2026-07-09 — READ BEFORE TRUSTING THE COMMENT THIS REPLACES !!
+# The old comment claimed this reaches "top + OOC IP runs". IT DOES NOT. At this
+# point in the script the ONLY synthesis run that exists is synth_1; Vivado
+# auto-creates the packaged IP's out-of-context run
+# (tidelink_design_tidelink_0_0_synth_1) later, inside launch_runs. Verified on a
+# real build: that OOC runme.log shows
+#     synth_design -top tidelink_design_tidelink_0_0 ... -mode out_of_context
+# with ZERO -verilog_define, while synth_1's shows two. WavD2DGpio.v and
+# axi_chiplet_controller.sv both compile in that OOC run.
+#
+# Consequence: the three `ifdef TIDELINK_PHY_V2 blocks inside the packaged IP
+# (src/rtl/local_overrides/axi_chiplet_controller.sv) have been DEAD in every
+# FPGA bitstream. The shipped builds are "V2" because the flist packages the V2
+# SOURCES (deps/tidelink-phy), not because the define did anything.
+#
+# That is left ALONE here on purpose. Making TIDELINK_PHY_V2 reach the OOC run
+# would switch on three previously-dead code blocks in a silicon-proven
+# configuration — a behaviour change that needs its own validation, not a
+# drive-by fix. So PHY_V2 keeps its historical (top-only) scope.
+#
+# TIDELINK_EPOCH_ANCHOR is different: its `ifdef lives in WavD2DGpio.v, INSIDE
+# the packaged IP, so it is worthless unless it reaches the OOC run. For anchor
+# builds only, we create the BD's IP runs up-front (create_ip_run) so they exist
+# and can be targeted. Blast radius: anchor builds only; the default path below
+# is byte-for-byte what it always was.
+#
+# Defines MUST be accumulated into ONE MORE_OPTIONS string: set_property
+# REPLACES the property, so a second independent set_property would silently
+# drop the first define — a silent-V1 relapse via a different door.
+set _epoch_anchor 0
+if { [info exists ::env(TIDELINK_EPOCH_ANCHOR)] && $::env(TIDELINK_EPOCH_ANCHOR) == 1 } {
+    set _epoch_anchor 1
 }
+
+# Anchor builds: materialise the OOC IP runs NOW so the loop below can see them.
+if { $_epoch_anchor } {
+    set _bd_file [get_files ${design_name}.bd]
+    if { [catch { export_ip_user_files -of_objects $_bd_file -no_script -sync -force -quiet } _e] } {
+        puts "WARNING: export_ip_user_files: $_e"
+    }
+    if { [catch { create_ip_run [get_files -of_objects [get_fileset sources_1] $_bd_file] } _e] } {
+        puts "WARNING: create_ip_run: $_e"
+    }
+    puts "EPOCH_ANCHOR: IP runs materialised; synthesis runs now = [get_runs -filter {IS_SYNTHESIS}]"
+}
+
+set _phy_v2 0
+if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
+
+foreach _r [get_runs -filter {IS_SYNTHESIS}] {
+    set _defs {}
+    # PHY_V2: historical scope — top-level synthesis run only (see note above).
+    if { $_phy_v2 && [string equal $_r "synth_1"] } { lappend _defs TIDELINK_PHY_V2 }
+    # EPOCH_ANCHOR: must reach the packaged IP's OOC run, so apply to every run.
+    if { $_epoch_anchor }                          { lappend _defs TIDELINK_EPOCH_ANCHOR }
+    if { [llength $_defs] == 0 } { continue }
+    set _more_opts ""
+    foreach _d $_defs { append _more_opts "-verilog_define $_d " }
+    set _more_opts [string trim $_more_opts]
+    set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
+        -value $_more_opts -objects $_r
+    puts "verilog_define injected into run $_r : $_more_opts"
+}
+# Message-gate CHILD hooks (fixes the parent-session blindness). launch_runs
+# forks a child Vivado with its OWN msg-config + CW counters, so the parent's
+# promotions and tidelink_check_cw_count never saw synth's messages. Install the
+# promotions PRE-synth (so CWs are promoted at emission) and re-run the CW-count
+# gate POST-synth (so it counts the CHILD's messages, not the parent's).
+set _mg_promote [file join [file dirname [info script]] scripts msg_gate_child_promote.tcl]
+set _mg_check   [file join [file dirname [info script]] scripts msg_gate_child_check.tcl]
+set_property STEPS.SYNTH_DESIGN.TCL.PRE  $_mg_promote [get_runs synth_1]
+set_property STEPS.SYNTH_DESIGN.TCL.POST $_mg_check   [get_runs synth_1]
+
 launch_runs synth_1 -jobs $num_jobs
 wait_on_run synth_1
 
@@ -366,6 +554,40 @@ set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs im
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
 
+# P-B rebuild-variance experiment (2026-07, branch wip/pb-rebuild-variance):
+# to force GENUINE placement variance across otherwise-identical builds, allow
+# per-build override of the PLACE_DESIGN directive via env TIDELINK_PLACE_DIRECTIVE.
+# A different directive perturbs the placer harder than rebuild noise alone, so
+# it is a STRONGER test of the capture-clock-skew lottery than plain reruns.
+# Unset -> Vivado default placement (unchanged behaviour). Experiment-only.
+if { [info exists ::env(TIDELINK_PLACE_DIRECTIVE)] && $::env(TIDELINK_PLACE_DIRECTIVE) ne "" } {
+    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE $::env(TIDELINK_PLACE_DIRECTIVE) [get_runs impl_1]
+    puts "P-B: PLACE_DESIGN directive overridden -> $::env(TIDELINK_PLACE_DIRECTIVE)"
+}
+
+# Message-gate CHILD hooks on impl_1 (route child). The parent's promotions and
+# tidelink_check_cw_count were BLIND to the route child's messages, and the
+# LUTLP-1 combinational-loop DRC (the cb33c9f silicon-write-vanish class) only
+# has meaning on a ROUTED design. Wire PRE-route to promote LUTLP-1 -> ERROR and
+# POST-route to run the child-visible CW gate + the comb-loop DRC on the routed
+# design + the USR_ACCESS stamp, all BEFORE write_bitstream in the same run.
+set_property STEPS.ROUTE_DESIGN.TCL.PRE  $_mg_promote [get_runs impl_1]
+set_property STEPS.ROUTE_DESIGN.TCL.POST $_mg_check   [get_runs impl_1]
+
+# Export the git-SHA low32 into the child env so msg_gate_child_check.tcl can
+# stamp it into the bitstream USR_ACCESS register (route POST, before
+# write_bitstream). ONLY for a clean tree: a -dirty build is not reproducible
+# from a commit, so it must NOT be mislabelled with a SHA (leave the var unset
+# -> the child skips the stamp rather than lying about provenance).
+set _gsha [tl_git_sha [tl_repo_root]]
+if { ![string match "*-dirty" $_gsha] && [regexp {^[0-9a-fA-F]{8,}} $_gsha] } {
+    set ::env(TIDELINK_GIT_USR_ACCESS) "0x[string range $_gsha end-7 end]"
+    puts "USR_ACCESS: exporting git SHA low32 = $::env(TIDELINK_GIT_USR_ACCESS) to impl child"
+} else {
+    if { [info exists ::env(TIDELINK_GIT_USR_ACCESS)] } { unset ::env(TIDELINK_GIT_USR_ACCESS) }
+    puts "USR_ACCESS: tree dirty/unknown ($_gsha) - NOT stamping a commit SHA"
+}
+
 puts "Starting implementation..."
 launch_runs impl_1 -to_step write_bitstream -jobs $num_jobs
 wait_on_run impl_1
@@ -390,6 +612,13 @@ set bit_file [glob -nocomplain $project_dir/tidelink_project.runs/impl_1/*.bit]
 if { $bit_file ne "" } {
     file copy -force $bit_file $output_dir/tidelink.bit
     puts "Bitstream copied to $output_dir/tidelink.bit"
+
+    # Provenance manifest next to the shipped .bit so the artefact is
+    # self-identifying (commit + PHY V1/V2 marker + resolved flist + submodule
+    # pins + USR_ACCESS + target + host + date). Written from INSIDE the build so
+    # it cannot be forgotten the way the post-hoc make_bitstream_manifest.sh
+    # could. Kills the silent-V1 / stale-IP "which build is this?" blind spot.
+    tl_write_manifest $output_dir/tidelink_manifest.json [file tail $target_dir] $output_dir/tidelink.bit
 }
 
 # .hwh is required for PYNQ - it's the IP-XACT flat hardware description.

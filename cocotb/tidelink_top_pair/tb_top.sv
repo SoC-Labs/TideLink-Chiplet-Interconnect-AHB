@@ -113,6 +113,44 @@ module tb_top #(
     //   Default = 0 (preserve existing tests).
     parameter int RELY_ON_RTL_PRIO_DEFAULTS = `ifdef TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `TB_TOP_RELY_ON_RTL_PRIO_DEFAULTS `else 0 `endif,
 
+    // NEGO_CFG_RESET / NEGO_TRAIN_CFG_RESET — the POR value of nego_cfg_reg /
+    // nego_train_cfg_r inside axi_chiplet_controller (see its param header).
+    // These are forwarded verbatim into BOTH tidelink_top instances below so a
+    // test can prove TRUE zero-poke bring-up: the autonomy chain arms from the
+    // POR reset value ALONE, with NO tb `force` (BYPASS_AUTONEG=1) and NO APB
+    // write ever landing on NEGO_CFG (0x2090 / ctrl_reg_addr 5'h0C) or
+    // NEGO_TRAIN_CFG (0x210C / ctrl_reg_addr 5'h13).
+    //
+    // Defaults MIRROR the tidelink_top RTL defaults (7'h00 / 16'h0001), so every
+    // existing pair test elaborates byte-identically (an explicit param binding
+    // to the same value is a no-op). The fail-first zero-poke test overrides
+    // NEGO_CFG_RESET to 7'h61 at compile time:
+    //   +define+TB_TOP_NEGO_CFG_RESET=7\'h61
+    // 7'h61 = nego_en[0] | nego_force_lock[5] | mask_hs_auto_en[6] — the exact
+    // value the FPGA image now carries via tidelink_vivado_wrapper's parameter
+    // default (captured into the packaged IP's component.xml → OOC synth).
+    parameter [6:0]  NEGO_CFG_RESET_TB       = `ifdef TB_TOP_NEGO_CFG_RESET `TB_TOP_NEGO_CFG_RESET `else 7'h00 `endif,
+    parameter [15:0] NEGO_TRAIN_CFG_RESET_TB = `ifdef TB_TOP_NEGO_TRAIN_CFG_RESET `TB_TOP_NEGO_TRAIN_CFG_RESET `else 16'h0001 `endif,
+
+    // RETIRE_EN — the F4 tapeout knob for the event-gated RETIRE-AUTONOMY
+    // (the B->A channel fix). Forwarded verbatim into BOTH tidelink_top
+    // instances below so a test can prove the parameter genuinely REACHES
+    // axi_chiplet_controller.RETIRE_EN from the top, in both settings.
+    //
+    // Default MIRRORS the tidelink_top RTL default (1'b1), so every existing
+    // pair test elaborates byte-identically (an explicit param binding to the
+    // same value is a no-op). The retire_en_plumb gate suite overrides it at
+    // compile time (decimal, mirroring the NEGO_CFG_RESET=97 convention above —
+    // keeps the +define+ free of quotes for make/shell):
+    //   +define+TB_TOP_RETIRE_EN=0
+    // That override is the DISCRIMINATING proof of the plumbing: if the
+    // tidelink_top -> controller forwarding were dead (the NEGO_CFG_RESET
+    // failure mode — plumbed at the top but never forwarded, so every build
+    // silently took the module default), a top-level 0 would have NO effect,
+    // the controller would keep its own 1'b1 default and the retire would
+    // still fire. Retire staying 0 is only possible if the 0 arrived.
+    parameter        RETIRE_EN_TB            = `ifdef TB_TOP_RETIRE_EN `TB_TOP_RETIRE_EN `else 1'b1 `endif,
+
     // Stick parameters mostly mirrored from `tidelink_top` defaults; only
     // change those that need to be different in sim vs. silicon.
     parameter SYS_ADDR_W    = 32,
@@ -293,6 +331,104 @@ module tb_top #(
     wire i2c_sda = (m_i2c_sda_t ? 1'b1 : m_i2c_sda_o) & (s_i2c_sda_t ? 1'b1 : s_i2c_sda_o);
 
     // =========================================================================
+    // PTP — behavioural PHC models (see tb_phc_model.sv)
+    // -------------------------------------------------------------------------
+    // The previous tb tied every PHC port off (phc_*=0, phc_locked_i=1'b1),
+    // which made HW_SYNC_STATUS[18] a spurious pass and meant NO real PTP sync
+    // could be demonstrated over the link. Each die now owns a free-running
+    // PHC clock model that the servo can capture and discipline; phc_locked_i
+    // is driven realistically by the model (asserted only after the PHC has
+    // been running, NOT hard-tied). The slave PHC is started with a large
+    // initial offset vs the master so the servo has a real error to null.
+    //
+    // cocotb sets {m,s}_phc_init_{seconds,nanoseconds} BEFORE releasing
+    // hresetn, and can pull {m,s}_phc_lock_enable low to test the lock gate.
+    // -------------------------------------------------------------------------
+    // Both PHCs start in the SAME second (the interesting PTP discipline here
+    // is the sub-second offset). The slave carries a +50 us nanosecond skew
+    // that the servo must null. Keeping the seconds equal mirrors a realistic
+    // post-coarse-sync PTP scenario and avoids a whole-second ambiguity in the
+    // servo's phase-step path (which sets seconds from the local t2 capture).
+    logic [47:0] m_phc_init_seconds     = 48'd0;
+    logic [29:0] m_phc_init_nanoseconds = 30'd0;
+    logic        m_phc_lock_enable      = 1'b1;
+    logic [47:0] s_phc_init_seconds     = 48'd0;
+    logic [29:0] s_phc_init_nanoseconds = 30'd20_000;  // +20 us slave skew
+    logic        s_phc_lock_enable      = 1'b1;
+
+    // tidelink_top <-> PHC model nets (master)
+    wire        m_phc_hw_capture;
+    wire [29:0] m_phc_nanoseconds;
+    wire [47:0] m_phc_seconds;
+    wire        m_phc_pps;
+    wire [47:0] m_phc_hw_cap_seconds;
+    wire [29:0] m_phc_hw_cap_nanoseconds;
+    wire [31:0] m_phc_hw_cap_sub_nanoseconds;
+    wire        m_phc_hw_set_time;
+    wire [47:0] m_phc_hw_set_seconds;
+    wire [29:0] m_phc_hw_set_nanoseconds;
+    wire        m_phc_hw_adj_valid;
+    wire [31:0] m_phc_hw_adj_ns_incr_frac;
+    wire        m_phc_locked;
+
+    // tidelink_top <-> PHC model nets (slave)
+    wire        s_phc_hw_capture;
+    wire [29:0] s_phc_nanoseconds;
+    wire [47:0] s_phc_seconds;
+    wire        s_phc_pps;
+    wire [47:0] s_phc_hw_cap_seconds;
+    wire [29:0] s_phc_hw_cap_nanoseconds;
+    wire [31:0] s_phc_hw_cap_sub_nanoseconds;
+    wire        s_phc_hw_set_time;
+    wire [47:0] s_phc_hw_set_seconds;
+    wire [29:0] s_phc_hw_set_nanoseconds;
+    wire        s_phc_hw_adj_valid;
+    wire [31:0] s_phc_hw_adj_ns_incr_frac;
+    wire        s_phc_locked;
+
+    tb_phc_model #(.SYS_DATA_W(SYS_DATA_W), .NOMINAL_NS_INCR(1)) u_m_phc (
+        .phc_clk                    (hclk),
+        .phc_resetn                 (m_hresetn_w),
+        .init_seconds               (m_phc_init_seconds),
+        .init_nanoseconds           (m_phc_init_nanoseconds),
+        .lock_enable_i              (m_phc_lock_enable),
+        .phc_hw_capture             (m_phc_hw_capture),
+        .phc_nanoseconds            (m_phc_nanoseconds),
+        .phc_seconds                (m_phc_seconds),
+        .phc_pps                    (m_phc_pps),
+        .phc_hw_cap_seconds         (m_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (m_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (m_phc_hw_cap_sub_nanoseconds),
+        .phc_hw_set_time            (m_phc_hw_set_time),
+        .phc_hw_set_seconds         (m_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (m_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (m_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (m_phc_hw_adj_ns_incr_frac),
+        .phc_locked_o               (m_phc_locked)
+    );
+
+    tb_phc_model #(.SYS_DATA_W(SYS_DATA_W), .NOMINAL_NS_INCR(1)) u_s_phc (
+        .phc_clk                    (hclk),
+        .phc_resetn                 (s_hresetn_w),
+        .init_seconds               (s_phc_init_seconds),
+        .init_nanoseconds           (s_phc_init_nanoseconds),
+        .lock_enable_i              (s_phc_lock_enable),
+        .phc_hw_capture             (s_phc_hw_capture),
+        .phc_nanoseconds            (s_phc_nanoseconds),
+        .phc_seconds                (s_phc_seconds),
+        .phc_pps                    (s_phc_pps),
+        .phc_hw_cap_seconds         (s_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (s_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (s_phc_hw_cap_sub_nanoseconds),
+        .phc_hw_set_time            (s_phc_hw_set_time),
+        .phc_hw_set_seconds         (s_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (s_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (s_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (s_phc_hw_adj_ns_incr_frac),
+        .phc_locked_o               (s_phc_locked)
+    );
+
+    // =========================================================================
     // DUT: master `tidelink_top`
     // =========================================================================
     tidelink_top #(
@@ -303,7 +439,15 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(M_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(M_PAIR_BASE),
+        // Zero-poke POR arming — see the parameter header. Defaults mirror the
+        // tidelink_top RTL defaults (7'h00/16'h0001) so existing tests are
+        // byte-identical; test_zeropoke_por overrides NEGO_CFG_RESET → 7'h61.
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB),
+        // F4 RETIRE-AUTONOMY knob — default 1'b1 (no-op vs the RTL default);
+        // test_retire_en_plumb overrides to 1'b0 to prove the plumbing is live.
+        .RETIRE_EN           (RETIRE_EN_TB)
     ) u_master (
         .hclk              (hclk),
         .hresetn           (m_hresetn_w),
@@ -394,18 +538,18 @@ module tb_top #(
         // §9 IDELAYE2 RX delay ref clock (USE_IDELAY=0 default -> passthrough)
         .idelay_ref_clk    (1'b0),
 
-        // PHC — tied off (PTP not exercised)
+        // PHC — driven by behavioural PHC model u_m_phc (PTP-over-link sync)
         .phc_clk                    (hclk),
-        .phc_resetn                 (hresetn),
-        .phc_nanoseconds            (30'h0),
-        .phc_seconds                (48'h0),
-        .phc_pps                    (1'b0),
-        .phc_hw_cap_seconds         (48'h0),
-        .phc_hw_cap_nanoseconds     (30'h0),
-        .phc_hw_cap_sub_nanoseconds (32'h0),
-        .phc_locked_i               (1'b1),
+        .phc_resetn                 (m_hresetn_w),
+        .phc_nanoseconds            (m_phc_nanoseconds),
+        .phc_seconds                (m_phc_seconds),
+        .phc_pps                    (m_phc_pps),
+        .phc_hw_cap_seconds         (m_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (m_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (m_phc_hw_cap_sub_nanoseconds),
+        .phc_locked_i               (m_phc_locked),
 
-        // PTP AHB write port — tied off
+        // PTP AHB write port — tied off (cocotb uses APB register path)
         .ahb_ptp_hsel               (1'b0),
         .ahb_ptp_haddr              (4'h0),
         .ahb_ptp_htrans             (2'b00),
@@ -416,12 +560,12 @@ module tb_top #(
         .ahb_ptp_hrdata             (/* unused */),
         .ahb_ptp_hresp              (/* unused */),
         .ahb_ptp_hreadyout          (/* unused */),
-        .phc_hw_capture             (/* unused */),
-        .phc_hw_set_time            (/* unused */),
-        .phc_hw_set_seconds         (/* unused */),
-        .phc_hw_set_nanoseconds     (/* unused */),
-        .phc_hw_adj_valid           (/* unused */),
-        .phc_hw_adj_ns_incr_frac    (/* unused */),
+        .phc_hw_capture             (m_phc_hw_capture),
+        .phc_hw_set_time            (m_phc_hw_set_time),
+        .phc_hw_set_seconds         (m_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (m_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (m_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (m_phc_hw_adj_ns_incr_frac),
         .servo_locked               (/* unused */),
 
         // TideChart axis — tied off with defined zeros (avoid X
@@ -527,7 +671,13 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(S_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(S_PAIR_BASE),
+        // Zero-poke POR arming — mirror of the master instance above.
+        .NEGO_CFG_RESET      (NEGO_CFG_RESET_TB),
+        .NEGO_TRAIN_CFG_RESET(NEGO_TRAIN_CFG_RESET_TB),
+        // F4 RETIRE-AUTONOMY knob — default 1'b1 (no-op vs the RTL default);
+        // test_retire_en_plumb overrides to 1'b0 to prove the plumbing is live.
+        .RETIRE_EN           (RETIRE_EN_TB)
     ) u_slave (
         .hclk              (hclk),
         .hresetn           (s_hresetn_w),
@@ -606,15 +756,16 @@ module tb_top #(
 
         .idelay_ref_clk    (1'b0),
 
+        // PHC — driven by behavioural PHC model u_s_phc (PTP-over-link sync)
         .phc_clk                    (hclk),
-        .phc_resetn                 (hresetn),
-        .phc_nanoseconds            (30'h0),
-        .phc_seconds                (48'h0),
-        .phc_pps                    (1'b0),
-        .phc_hw_cap_seconds         (48'h0),
-        .phc_hw_cap_nanoseconds     (30'h0),
-        .phc_hw_cap_sub_nanoseconds (32'h0),
-        .phc_locked_i               (1'b1),
+        .phc_resetn                 (s_hresetn_w),
+        .phc_nanoseconds            (s_phc_nanoseconds),
+        .phc_seconds                (s_phc_seconds),
+        .phc_pps                    (s_phc_pps),
+        .phc_hw_cap_seconds         (s_phc_hw_cap_seconds),
+        .phc_hw_cap_nanoseconds     (s_phc_hw_cap_nanoseconds),
+        .phc_hw_cap_sub_nanoseconds (s_phc_hw_cap_sub_nanoseconds),
+        .phc_locked_i               (s_phc_locked),
 
         .ahb_ptp_hsel               (1'b0),
         .ahb_ptp_haddr              (4'h0),
@@ -626,12 +777,12 @@ module tb_top #(
         .ahb_ptp_hrdata             (/* unused */),
         .ahb_ptp_hresp              (/* unused */),
         .ahb_ptp_hreadyout          (/* unused */),
-        .phc_hw_capture             (/* unused */),
-        .phc_hw_set_time            (/* unused */),
-        .phc_hw_set_seconds         (/* unused */),
-        .phc_hw_set_nanoseconds     (/* unused */),
-        .phc_hw_adj_valid           (/* unused */),
-        .phc_hw_adj_ns_incr_frac    (/* unused */),
+        .phc_hw_capture             (s_phc_hw_capture),
+        .phc_hw_set_time            (s_phc_hw_set_time),
+        .phc_hw_set_seconds         (s_phc_hw_set_seconds),
+        .phc_hw_set_nanoseconds     (s_phc_hw_set_nanoseconds),
+        .phc_hw_adj_valid           (s_phc_hw_adj_valid),
+        .phc_hw_adj_ns_incr_frac    (s_phc_hw_adj_ns_incr_frac),
         .servo_locked               (/* unused */),
 
         .tc_axis_tx_tvalid (1'b0),
@@ -854,5 +1005,52 @@ module tb_top #(
     defparam u_master.u_chiplet_controller.u_calibrator.DWELL_CYCLES = `TB_TOP_SHORT_CAL_DWELL;
     defparam u_slave.u_chiplet_controller.u_calibrator.DWELL_CYCLES  = `TB_TOP_SHORT_CAL_DWELL;
     `endif
+
+    // ---- Zero-poke assertion aid (2026-07-10) --------------------------------
+    // PASSIVE sticky monitors (no DUT fanout) that latch the instant a ctrl-reg
+    // write lands on NEGO_CFG or NEGO_TRAIN_CFG on either die. These are the ONLY
+    // two registers whose value gates the autonomy chain; a genuine zero-poke POR
+    // bring-up must leave them at their reset (parameter) value for the whole run.
+    //
+    //   ctrl_reg_addr = {paddr[8:7], paddr[4:2]}  (axi_chiplet_controller.sv:505)
+    //   NEGO_CFG       = region4(2'b01) slot 3'h4  → 5'b01100 = 5'h0C (APB 0x2090)
+    //   NEGO_TRAIN_CFG = region8(2'b10) slot 3'h3  → 5'b10011 = 5'h13 (APB 0x210C)
+    //
+    // ctrl_reg_write is the union of the local-APB write and the slave-AXIL
+    // bridge write (axi_chiplet_controller.sv:528), so this catches a host poke
+    // from EITHER config path. It is sampled on hclk (== apb_clk in this tb), the
+    // same edge that would clock the new value into the register, so no
+    // single-cycle write can be missed. test_zeropoke_por reads these and fails
+    // if either is set. Inert for every other test (they never poke these regs).
+    reg m_nego_poke_seen = 1'b0;
+    reg s_nego_poke_seen = 1'b0;
+    always @(posedge hclk) begin
+        if (u_master.u_chiplet_controller.ctrl_reg_write &&
+            ((u_master.u_chiplet_controller.ctrl_reg_addr == 5'h0C) ||
+             (u_master.u_chiplet_controller.ctrl_reg_addr == 5'h13)))
+            m_nego_poke_seen <= 1'b1;
+        if (u_slave.u_chiplet_controller.ctrl_reg_write &&
+            ((u_slave.u_chiplet_controller.ctrl_reg_addr == 5'h0C) ||
+             (u_slave.u_chiplet_controller.ctrl_reg_addr == 5'h13)))
+            s_nego_poke_seen <= 1'b1;
+    end
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // F4 — RETIRE_EN plumbing probe (test_retire_en_plumb)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Hierarchical READ-BACK of RETIRE_EN as it actually landed INSIDE
+    // axi_chiplet_controller — i.e. at the DESTINATION, not the value this tb
+    // handed to tidelink_top. That distinction is the whole point: the
+    // NEGO_CFG_RESET regression (plumbed at the top, never forwarded to the
+    // consumer, so every bitstream silently built the module default) would be
+    // INVISIBLE to a probe that read the top-level parameter back. This one
+    // reads through the forwarding path, so if that path is missing or wrong
+    // the probe reports the controller's own default and the test fails.
+    //
+    // A parameter is elaboration-constant, so these are constant wires; cocotb
+    // reads them as ordinary signals (no VPI parameter access required, which
+    // is simulator-dependent).
+    wire retire_en_at_ctrl_m = u_master.u_chiplet_controller.RETIRE_EN;
+    wire retire_en_at_ctrl_s = u_slave.u_chiplet_controller.RETIRE_EN;
 
 endmodule

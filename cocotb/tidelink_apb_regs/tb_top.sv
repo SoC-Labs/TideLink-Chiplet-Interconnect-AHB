@@ -82,6 +82,7 @@ module tb_top #(
         .fifo_overrun        (fifo_overrun),
         .fifo_underrun       (fifo_underrun),
         .master_error        (master_error),
+        .ahb_inject_fault    (1'b0),  // RX-FIFO TWIN 2 sticky fault (STATUS[5]) — tied low here
         .packet_committed    (packet_committed),
         .ctrl_flush          (ctrl_flush),
         .doorbell_trigger    (doorbell_trigger),

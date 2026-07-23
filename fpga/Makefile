@@ -48,7 +48,21 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext mps3
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3
+
+# kr260-pair-onchip — REGISTERED 2026-07-18 (plan wave W6/W9 landed). The target
+# dir now ships all three XDC (pin / timing / drc):
+#   kr260_tidelink.xdc         — LEDs only (no link/I2C pins exist: the PHY +
+#                                I2C cross-connect is entirely connect_bd_net
+#                                inside the BD — KR260_PAIR_ONCHIP_PLAN sec 3.1).
+#   kr260_tidelink_timing.xdc  — the 6 internal generated clocks (phy/word/rxcap
+#                                per die, all instance-qualified to dodge the
+#                                two-instance 18-359 multi-master trap) + 3-way
+#                                per-channel async clock groups. NO pad I/O delay.
+#   kr260_tidelink_drc.xdc     — the AHB HREADY combinational-loop waiver.
+# build_design.tcl was also widened (tidelink_phy_clk_div2*.v glob) so the
+# second phase-offset divider tidelink_phy_clk_div2_b.v is added to sources_1.
+
 ifeq ($(filter $(TARGET),$(VALID_TARGETS)),)
 $(error Unknown TARGET '$(TARGET)'. Valid values: $(VALID_TARGETS))
 endif
@@ -115,8 +129,130 @@ else ifeq ($(TARGET),pynq-z2-loopback)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-loopback-ext)
 XILINX_PART     := xc7z020clg400-1
+# -----------------------------------------------------------------------------
+# Kria KR260 (Zynq UltraScale+, K26 SOM). 2026-07-09 port of the Z2 GPIO-PHY
+# chiplet link onto the KR260 Raspberry-Pi 40-pin header. Four targets = the
+# die_a / die_b flip pair x PTP on/off:
+#   kr260-pair-ptp        die_a, PHC/PTP hardware clock IN   (FPGA_TIDELINK_PTP=1)
+#   kr260-pair-nptp       die_a, PHC/PTP tied off            (FPGA_TIDELINK_PTP=0)
+#   kr260-pair-flip-ptp   die_b (mirror pinout), PTP IN
+#   kr260-pair-flip-nptp  die_b (mirror pinout), PTP tied off
+# PS/DDR/MIO come from the KR260 board preset (needs BOARD_PART set); PL clock,
+# HPM0/HPM1_FPD masters and pl_ps_irq0 are overridden in the BD tcl.
+else ifeq ($(TARGET),kr260-pair-ptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-pair-nptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
+else ifeq ($(TARGET),kr260-pair-flip-ptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-pair-flip-nptp)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
+# kr260-pair-onchip — TWO TideLink dies in ONE xck26 bitstream, cross-connected
+# through the PL fabric (no ribbon, no link pins). Same K26 SOM board preset as
+# the single-die kr260 targets; PTP off (two PHCs would double PHC area for no
+# on-chip-pair benefit — plan sec 3.1). The `kr260-%` deploy filter already
+# routes it to fpgautil / bit+hwh, so nothing else here needs a per-target case.
+else ifeq ($(TARGET),kr260-pair-onchip)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 0
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
+endif
+
+# Defaults for the non-KR260 targets: no board part, PTP inclusion left to the
+# per-target BD tcl (Z2 -all targets tie PHC off, mmcmbypass-oddr-all keeps it).
+FPGA_BOARD_PART   ?=
+FPGA_TIDELINK_PTP ?=
+
+#-----------------------------------------------------------------------------
+# EXTREFCLK=1 — build the MESOCHRONOUS variant (shared external reference clock).
+#
+# By default each board derives its PHY link clock from its OWN PS oscillator
+# (pl_clk0 -> clk_wiz -> /8), so a two-board pair is PLESIOCHRONOUS: same nominal
+# rate, independent crystals, ppm drift. The PHY is forwarded-clock with NO
+# CDR/DLL/PI — the calibrator latches (slip,phase) once at S_DONE and freezes —
+# so a frozen-phase link is only reliable when the two dies are FREQUENCY-LOCKED.
+# A real chiplet pair shares a reference; the two-crystal rig is an FPGA artifact.
+#
+#   EXTREFCLK=1     this board's /8 divider takes an EXTERNAL reference arriving
+#                   on RPi BCM12 / AA13 (HDGC). Adds the pad_refclk_in port + a
+#                   BUFG, and includes *_tidelink_extrefclk.xdc (which relocates
+#                   lane 2 to BCM20/W12 to free the HDGC ball).
+#   REFCLK_OUT=1    this board also SOURCES the reference for its peer (topology
+#                   (a): die_a forwards over one extra ribbon conductor).
+#
+# Topology (b) — external generator into both boards — is just EXTREFCLK=1 on
+# BOTH targets; the generator drives the shared BCM12 ribbon conductor.
+#
+#   make -C fpga build_design TARGET=kr260-pair-nptp      EXTREFCLK=1
+#   make -C fpga build_design TARGET=kr260-pair-flip-nptp EXTREFCLK=1
+#   -> imp/fpga/output/kr260-pair-nptp-extref/tidelink.bit
+#
+# hclk/AXI/PHC stay on pl_clk0, so the HOST ALWAYS BOOTS even when no external
+# reference is present — only the PHY domain stalls. proc_sys_reset is NOT gated
+# on it (that would make a board unreachable when its peer is off).
+EXTREFCLK    ?=
+REFCLK_OUT   ?=
+ifeq ($(EXTREFCLK),1)
+FPGA_TIDELINK_EXTREFCLK := 1
+endif
+ifeq ($(REFCLK_OUT),1)
+FPGA_TIDELINK_REFCLK_OUT := 1
+endif
+export FPGA_TIDELINK_EXTREFCLK
+export FPGA_TIDELINK_REFCLK_OUT
+# (the -extref output-dir suffix is appended to ANCHOR_SUFFIX below, after the
+#  EPOCH_ANCHOR block, so the two knobs compose)
+
+#-----------------------------------------------------------------------------
+# EPOCH_ANCHOR=1 — build the EPOCH whole-word deskew anchor variant.
+#
+# Selects TL_EPOCH_ANCHOR_EN in deps/tidelink-phy/rtl/wav/WavD2DGpio.v via a
+# run-level -verilog_define (build_design.tcl). Unset = the shipped config,
+# bit-identical. Intended for an on-silicon A/B against the default build:
+#
+#   make -C fpga build_design TARGET=kr260-pair-nptp      EPOCH_ANCHOR=1
+#   make -C fpga build_design TARGET=kr260-pair-flip-nptp EPOCH_ANCHOR=1
+#   -> imp/fpga/output/kr260-pair-nptp-anchor/tidelink.bit
+#
+# The outputs are suffixed so the two variants never overwrite each other.
+#
+# The IP CACHE gets its own directory for anchor builds. This is not paranoia:
+# the packaged IP *sources* are byte-identical between the two variants (the
+# selector is an `ifdef inside the source), and only the synth-run
+# -verilog_define differs. Vivado keys config_ip_cache on IP config + part +
+# tool, NOT on the run's MORE_OPTIONS — so a shared cache would happily return
+# the anchor-OFF OOC netlist for an anchor-ON build, silently. Same class of
+# trap as the cocotb SIM_BUILD collision (see cocotb/tidelink_top_pair_v2).
+#-----------------------------------------------------------------------------
+EPOCH_ANCHOR ?= 0
+ifeq ($(EPOCH_ANCHOR),1)
+TIDELINK_EPOCH_ANCHOR := 1
+export TIDELINK_EPOCH_ANCHOR
+ANCHOR_SUFFIX := -anchor
+else
+ANCHOR_SUFFIX :=
+endif
+
+# EXTREFCLK composes with EPOCH_ANCHOR: the two knobs are orthogonal (clock
+# REGIME vs deskew CORRECTOR), and the 2x2 {SYNC,EPOCH} x {local,common} matrix
+# is exactly the experiment worth running. Append AFTER the anchor block so both
+# suffixes land, e.g. kr260-pair-nptp-anchor-extref. ANCHOR_SUFFIX is the single
+# variable already wired into PROJECT_DIR / OUTPUT_DIR / BUILD_RUN_DIR /
+# FPGA_IP_CACHE_DIR, so appending here keeps every variant's artefacts — and its
+# IP cache — fully separated. A shipped (default) bitstream can never be
+# overwritten by a variant build.
+ifeq ($(EXTREFCLK),1)
+ANCHOR_SUFFIX := $(ANCHOR_SUFFIX)-extref
 endif
 
 # Build output directories
@@ -124,8 +260,8 @@ BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
 RUN_DIR         := $(BUILD_DIR)/run
-PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)
-OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)
+PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)$(ANCHOR_SUFFIX)
+OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)$(ANCHOR_SUFFIX)
 
 # PHC sibling repo (sourced by package_phc_ip; defaults assume the parallel
 # SoC Labs checkout, override with PHC_REPO_DIR for CI / alternate layouts).
@@ -134,7 +270,7 @@ PHC_REPO_DIR    ?= $(HOME)/SoCLabs/ptp-hardware-clock-ahb
 # -log/-journal here (NOT the shared RUN_DIR) so two TARGETs can build
 # concurrently without clobbering each other's cwd (.Xil/, vivado*.jou)
 # or logs — the prerequisite for the farm flow (scripts/build_farm.sh).
-BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)
+BUILD_RUN_DIR   := $(RUN_DIR)/$(TARGET)$(ANCHOR_SUFFIX)
 
 # IP metadata
 FPGA_VENDOR     := soclabs.org
@@ -146,7 +282,12 @@ FPGA_NUM_JOBS   ?= 8
 # builds so unchanged static Xilinx OOC IP is fetched, not re-synthesised. Outside the
 # create_project -force project dir; under imp/ (already gitignored). Override to share
 # one cache across farm hosts. Empty = disabled (old behaviour).
-FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache)
+#
+# $(ANCHOR_SUFFIX) is part of the cache PATH because Vivado keys config_ip_cache on
+# IP config + part + tool — NOT on the synth run's -verilog_define. The anchor-on and
+# anchor-off builds have byte-identical packaged IP sources, so they would collide in
+# one cache and the anchor-on build would silently link the anchor-OFF OOC netlist.
+FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache$(ANCHOR_SUFFIX))
 
 # Vivado-native remote-host farming (launch_runs -host). Empty = local build.
 # "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".
@@ -178,7 +319,8 @@ endif
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
         resolve_board farm_check farm_build build_pair_concurrent \
-        build_pair_farmed check-wrapper-params help
+        build_pair_farmed check-wrapper-params kr260_afi_fix \
+        deploy_kr260 deploy_kr260_both help
 
 all: build_design
 
@@ -240,6 +382,10 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \
 	export FPGA_NUM_JOBS=$(FPGA_NUM_JOBS) && \
 	export FPGA_IP_CACHE_DIR=$(FPGA_IP_CACHE_DIR) && \
+	export FPGA_BOARD_PART='$(FPGA_BOARD_PART)' && \
+	export FPGA_TIDELINK_PTP='$(FPGA_TIDELINK_PTP)' && \
+	export FPGA_TIDELINK_EXTREFCLK='$(FPGA_TIDELINK_EXTREFCLK)' && \
+	export FPGA_TIDELINK_REFCLK_OUT='$(FPGA_TIDELINK_REFCLK_OUT)' && \
 	export FPGA_REMOTE_HOSTS='$(FPGA_REMOTE_HOSTS)' && \
 	export FPGA_REMOTE_CMD='$(FPGA_REMOTE_CMD)' && \
 	export FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' && \
@@ -286,15 +432,44 @@ farm_build:
 # race-safe). *_farmed offloads the slave onto FARM_HOST so the two halves
 # build at the same time on two machines (~halves wall time, unloads the
 # contended local host).
+#
+# The two halves are PAIR_A (die_a / straight pinout) and PAIR_B (die_b / flip).
+# They default to the Pynq-Z2 pair, so bare `make build_pair_concurrent` is
+# unchanged. Override for another SoC — or use the PAIR_SOC/PAIR_PTP shorthand:
+#
+#   make build_pair_concurrent                                   # z2 (default)
+#   make build_pair_concurrent PAIR_SOC=kr260 PAIR_PTP=1         # kr260 +PTP
+#   make build_pair_concurrent PAIR_A=kr260-pair-ptp PAIR_B=kr260-pair-flip-ptp
+#   make build_pair_farmed     PAIR_SOC=kr260 PAIR_PTP=0 FARM_HOST=srv04936
+#
+# NOTE: EXTREFCLK=1 / EPOCH_ANCHOR=1 are NOT forwarded by build_farm.sh, so the
+# kr260 -extref / -anchor variants still need a direct `make build_design`.
+PAIR_SOC ?= z2
+PAIR_PTP ?= 0
+ifeq ($(PAIR_SOC),z2)
+PAIR_A ?= pynq-z2-pair-all
+PAIR_B ?= pynq-z2-pair-flip-all
+else ifeq ($(PAIR_SOC),kr260)
+ifeq ($(PAIR_PTP),1)
+PAIR_A ?= kr260-pair-ptp
+PAIR_B ?= kr260-pair-flip-ptp
+else
+PAIR_A ?= kr260-pair-nptp
+PAIR_B ?= kr260-pair-flip-nptp
+endif
+else
+$(error PAIR_SOC must be z2 or kr260 (got '$(PAIR_SOC)') — or set PAIR_A/PAIR_B directly)
+endif
+
 build_pair_concurrent:
 	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
 	    $(FPGA_DIR)/scripts/build_farm.sh \
-	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@local
+	        $(PAIR_A)@local $(PAIR_B)@local
 
 build_pair_farmed:
 	@FPGA_INSERT_DEBUG_CORE='$(FPGA_INSERT_DEBUG_CORE)' \
 	    $(FPGA_DIR)/scripts/build_farm.sh \
-	        pynq-z2-pair-all@local pynq-z2-pair-flip-all@$(FARM_HOST)
+	        $(PAIR_A)@local $(PAIR_B)@$(FARM_HOST)
 
 #-----------------------------------------------------------------------------
 # Deployment helpers
@@ -303,6 +478,49 @@ BITSTREAM       := $(OUTPUT_DIR)/tidelink.bit
 BITBIN          := $(OUTPUT_DIR)/tidelink.bin
 HWH             := $(OUTPUT_DIR)/tidelink.hwh
 BIT2BIN         := $(FPGA_DIR)/scripts/bit2bin.py
+# ZynqMP (KR260) .bit->.bin: header-strip ONLY, NO byte-swap. bit2bin.py's
+# byte-swap is the Zynq-7000 zynq-fpga format and corrupts a ZynqMP/fpgautil
+# load. The two converters are never interchangeable — the .bin rule below
+# picks bit2bin_zynqmp.py for kr260-% targets and bit2bin.py for everything else.
+BIT2BIN_ZYNQMP  := $(FPGA_DIR)/scripts/bit2bin_zynqmp.py
+
+#-----------------------------------------------------------------------------
+# Deploy style — keyed off TARGET.
+#
+#   fpga_manager (Zynq-7000 / Pynq-Z2): bit2bin.py strips the .bit header and
+#       byte-swaps for the *zynq-fpga* driver (equivalent to
+#       `bootgen -arch zynq -process_bitstream bin`), then the .bin is dropped
+#       into /lib/firmware and poked at /sys/class/fpga_manager/fpga0/firmware.
+#
+#   fpgautil (Zynq UltraScale+ / KR260 on PLAIN Ubuntu — the REAL boards):
+#       the KR260 boards run plain Ubuntu 22.04 with NO PYNQ. bit2bin_zynqmp.py
+#       strips the .bit header (NO byte-swap) to a raw .bin, which is scp'd and
+#       loaded on-board with `fpgautil -b <bin> -f Full`, then the AFI PS-port
+#       widths are re-poked (kr260_afi.sh fix). See pynq_host/scripts/
+#       kr260_deploy.sh + docs/KR260_BOARD_ENV.md. This SUPERSEDES the old
+#       pynq_overlay assumption (`from pynq import Overlay`), which never worked
+#       on these pynq-less boards.
+#
+#   pynq_overlay (Zynq UltraScale+ on the PYNQ Kria image): PYNQ's Overlay()
+#       loads the .bit directly using the sibling .hwh. Retained as a selectable
+#       style for a hypothetical PYNQ-imaged ZynqMP board, but NO current target
+#       selects it (the real KR260 boards use fpgautil, above).
+#
+# bit2bin.py MUST NOT be used on ZynqMP: its byte-swap is the zynq-fpga
+# driver's format, not the zynqmp one. Feeding a KR260 a bit2bin .bin silently
+# produces a bad PL load. The kr260 .bin is built by bit2bin_zynqmp.py instead
+# (header-strip only); the artefact list + the $(BITBIN) rule are both keyed on
+# the kr260-% filter so the right converter is used.
+#-----------------------------------------------------------------------------
+ifneq ($(filter kr260-%,$(TARGET)),)
+DEPLOY_STYLE     := fpgautil
+TIDELINK_SOC     := kr260
+DEPLOY_ARTEFACTS := $(BITSTREAM) $(BITBIN) $(HWH)
+else
+DEPLOY_STYLE     := fpga_manager
+TIDELINK_SOC     := z2
+DEPLOY_ARTEFACTS := $(BITSTREAM) $(BITBIN) $(HWH)
+endif
 
 # FPGA board selection — preferred path is via fpgahub:
 #   BOARD=fpga1          explicit board name in the local fpgahub config
@@ -365,9 +583,17 @@ program:
 	    -source $(FPGA_DIR)/program_bitstream.tcl \
 	    -tclargs $(BITSTREAM)
 
-# bit-to-bin conversion for Linux fpga_manager - strips header, bit-reverses.
+# bit-to-bin conversion. Zynq-7000 (fpga_manager) strips the header AND
+# byte-swaps (bit2bin.py); ZynqMP/KR260 (fpgautil) strips the header ONLY —
+# never byte-swap (bit2bin_zynqmp.py). Keyed on the kr260-% filter so the
+# same $(BITBIN) path is produced by the correct converter per target.
+ifneq ($(filter kr260-%,$(TARGET)),)
+$(BITBIN): $(BITSTREAM) $(BIT2BIN_ZYNQMP)
+	python3 $(BIT2BIN_ZYNQMP) $(BITSTREAM) $(BITBIN)
+else
 $(BITBIN): $(BITSTREAM) $(BIT2BIN)
 	python3 $(BIT2BIN) $(BITSTREAM) $(BITBIN)
+endif
 
 # One-time NOPASSWD sudo provisioning for a fresh PYNQ-Z2 image.
 # Wraps fpga/scripts/provision_pynq_sudo.sh so fpgahub can dispatch
@@ -461,25 +687,84 @@ provision_pynq_peer_keys:
 # physical cross-cable wires up correctly. fpgahub renders this via:
 #   command = ["make", "-C", "fpga", "deploy_pair_role",
 #              "ROLE={pair.local.role}", ...]
+#
+#   SOC=z2     (default) -> pynq-z2-pair-all / -flip-all      [PTP ignored]
+#   SOC=kr260            -> kr260-pair-{,flip-}{ptp,nptp}, selected by PTP=1|0
+#
+#   make -C fpga deploy_pair_role ROLE=die_a SOC=kr260 PTP=1 BOARD=kria1
+#
+# BOARD SELECTION:
+#   z2    forwards PYNQ_HOST/PYNQ_PROXY (fpgahub {host.ssh}) straight through.
+#   kr260 uses the fpgautil deploy path. The board is KR260_HOST if given (e.g.
+#         fpgahub {host.ssh}); otherwise it defaults per ROLE to the two known
+#         boards: die_a -> $(KR260_DIEA_IP), die_b -> $(KR260_DIEB_IP). This
+#         mirrors the z2 pattern (fpgahub picks the per-role board) while still
+#         giving a zero-config Monday one-liner when fpgahub is not in the loop.
+SOC ?= z2
+PTP ?= 0
+
+# KR260 fpgautil deploy knobs (see deploy_kr260 + pynq_host/scripts/kr260_deploy.sh)
+KR260_USER    ?= ubuntu
+KR260_HOST    ?=
+KR260_PROXY   ?=
+KR260_DEST    ?= td
+KR260_PASSWORD ?=
+# The two physical boards (docs/KR260_BOARD_ENV.md). die_a = straight pinout,
+# die_b = mirrored (flip). Override for a different rig.
+KR260_DIEA_IP ?= 10.22.24.159
+KR260_DIEB_IP ?= 10.22.24.153
+
 .PHONY: deploy_pair_role
 deploy_pair_role:
-	@case "$(ROLE)" in \
-	    die_a) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-all      \
-	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
-	    die_b) $(MAKE) -C $(FPGA_DIR) deploy TARGET=pynq-z2-pair-flip-all \
-	            PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;;    \
-	    *)     echo "ERROR: deploy_pair_role: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	@set -e; \
+	case "$(SOC)" in \
+	  z2) case "$(ROLE)" in \
+	        die_a) t=pynq-z2-pair-all ;; \
+	        die_b) t=pynq-z2-pair-flip-all ;; \
+	        *) echo "ERROR: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	      esac; \
+	      echo "deploy_pair_role: SOC=z2 ROLE=$(ROLE) -> TARGET=$$t"; \
+	      $(MAKE) -C $(FPGA_DIR) deploy TARGET=$$t \
+	          PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)" ;; \
+	  kr260) case "$(PTP)" in \
+	           1) sfx=ptp ;; 0) sfx=nptp ;; \
+	           *) echo "ERROR: PTP must be 0 or 1 (got '$(PTP)')" >&2; exit 2 ;; \
+	         esac; \
+	         case "$(ROLE)" in \
+	           die_a) t=kr260-pair-$$sfx; defip="$(KR260_DIEA_IP)" ;; \
+	           die_b) t=kr260-pair-flip-$$sfx; defip="$(KR260_DIEB_IP)" ;; \
+	           *) echo "ERROR: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	         esac; \
+	         host="$(KR260_HOST)"; [ -n "$$host" ] || host="$(KR260_USER)@$$defip"; \
+	         echo "deploy_pair_role: SOC=kr260 ROLE=$(ROLE) PTP=$(PTP) -> TARGET=$$t host=$$host"; \
+	         $(MAKE) -C $(FPGA_DIR) deploy TARGET=$$t \
+	             KR260_HOST="$$host" KR260_USER="$(KR260_USER)" \
+	             KR260_PROXY="$(KR260_PROXY)" KR260_DEST="$(KR260_DEST)" \
+	             KR260_PASSWORD="$(KR260_PASSWORD)" ;; \
+	  *) echo "ERROR: SOC must be z2 or kr260 (got '$(SOC)')" >&2; exit 2 ;; \
 	esac
 
-deploy: $(BITSTREAM) $(BITBIN) $(HWH)
+deploy: $(DEPLOY_ARTEFACTS)
+ifeq ($(DEPLOY_STYLE),fpgautil)
+	@# KR260 plain-Ubuntu path: header-strip .bin (already built) + fpgautil
+	@# load + fpga_manager verify + AFI re-poke + canaries. Delegated to
+	@# deploy_kr260 -> pynq_host/scripts/kr260_deploy.sh so the Z2 body below
+	@# stays byte-for-byte untouched.
+	@$(MAKE) -C $(FPGA_DIR) deploy_kr260 TARGET=$(TARGET) \
+	    KR260_HOST='$(KR260_HOST)' KR260_USER='$(KR260_USER)' \
+	    KR260_PROXY='$(KR260_PROXY)' KR260_DEST='$(KR260_DEST)' \
+	    KR260_PASSWORD='$(KR260_PASSWORD)'
+else
 	@if [ -z "$(PYNQ_HOST)" ]; then \
 	    echo "ERROR: PYNQ_HOST is empty. Set BOARD=<name> (fpgahub lookup) or PYNQ_HOST=user@host." >&2; \
 	    exit 2; \
 	fi
-	@echo "Copying overlay to $(PYNQ_HOST)$(if $(PYNQ_PROXY), via $(PYNQ_PROXY),)..."
+	@echo "Copying overlay to $(PYNQ_HOST)$(if $(PYNQ_PROXY), via $(PYNQ_PROXY),) [style=$(DEPLOY_STYLE) soc=$(TIDELINK_SOC)]..."
 	@ssh $(SSH_OPTS) $(PYNQ_HOST) "mkdir -p $(PYNQ_DEST)"
 	@scp $(SCP_OPTS) $(BITSTREAM)             $(PYNQ_HOST):$(PYNQ_DEST)/
-	@scp $(SCP_OPTS) $(BITBIN)                $(PYNQ_HOST):$(PYNQ_DEST)/
+	@if [ "$(DEPLOY_STYLE)" = "fpga_manager" ]; then \
+	    scp $(SCP_OPTS) $(BITBIN)             $(PYNQ_HOST):$(PYNQ_DEST)/ ; \
+	fi
 	@scp $(SCP_OPTS) $(HWH)                   $(PYNQ_HOST):$(PYNQ_DEST)/
 	@# Drop any leftover pynq/ from earlier deploys — it would shadow the
 	@# system PYNQ framework's `pynq` package on sys.path and break
@@ -498,14 +783,106 @@ deploy: $(BITSTREAM) $(BITBIN) $(HWH)
 	@# imports `from tidelink.regs import ...`. Place it at $(PYNQ_DEST)/tidelink/
 	@# so cwd-based resolution finds both packages.
 	@scp $(SCP_OPTS) -r $(TIDELINK_HOME)/python/tidelink $(PYNQ_HOST):$(PYNQ_DEST)/
+ifeq ($(DEPLOY_STYLE),fpga_manager)
 	@echo "Installing .bin into /lib/firmware/ and loading via fpga_manager..."
 	@ssh $(SSH_OPTS) $(PYNQ_HOST) "echo $(PYNQ_PASSWORD) | sudo -S cp $(PYNQ_DEST)/tidelink.bin /lib/firmware/ && \
 	    echo $(PYNQ_PASSWORD) | sudo -S bash -c \"echo tidelink.bin > /sys/class/fpga_manager/fpga0/firmware\" && \
 	    cat /sys/class/fpga_manager/fpga0/state"
+else
+	@# PYNQ Overlay() resolves the .hwh by sibling basename (tidelink.bit ->
+	@# tidelink.hwh) and TidelinkOverlay() defaults its bitfile to the copy
+	@# living NEXT TO pynq_host/overlay.py. Stage both into pynq_host/ so the
+	@# zero-argument TidelinkOverlay() works, and keep the $(PYNQ_DEST) copies
+	@# for anything passing an explicit path.
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "cp $(PYNQ_DEST)/tidelink.bit $(PYNQ_DEST)/tidelink.hwh $(PYNQ_DEST)/pynq_host/"
+	@echo "Loading PL via PYNQ Overlay (ZynqMP; no bit2bin / no /lib/firmware)..."
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "cd $(PYNQ_DEST) && echo $(PYNQ_PASSWORD) | sudo -S -E env TIDELINK_SOC=$(TIDELINK_SOC) \
+	    python3 -c \"from pynq import Overlay; ol = Overlay('$(PYNQ_DEST)/pynq_host/tidelink.bit'); print('PL loaded:', ol.bitfile_name); print('IPs:', len(getattr(ol, 'ip_dict', {})))\""
+	@# --- AFI PS-master-port width fix. MUST run after the PL load and before
+	@# any AXI traffic (afi_fs is static). On a plain-Ubuntu KR260 the stock SOM
+	@# firmware may leave HPM0_LPD/HPM0_FPD wider than our 32-bit BD, which drops
+	@# every misaligned 32-bit access (the control-plane defect). Idempotent.
+	@# See docs/KR260_AFI_CHECK.md. LANDMINE: the Overlay() load above assumes
+	@# PYNQ is installed — the real KR260 boards are plain Ubuntu with NO pynq and
+	@# load the PL via `fpgautil -b <bin> -f Full`. If you loaded the PL that way
+	@# instead, run this same step standalone: `make -C fpga kr260_afi_fix
+	@# PYNQ_HOST=... [PYNQ_PROXY=...]`.
+	@$(MAKE) -C $(FPGA_DIR) kr260_afi_fix PYNQ_HOST="$(PYNQ_HOST)" PYNQ_PROXY="$(PYNQ_PROXY)"
+endif
 	@echo ""
-	@echo "Deployed and loaded. To run stress test from PYNQ:"
+	@echo "Deployed and loaded (style=$(DEPLOY_STYLE)). To run stress test from the board:"
 	@echo "  ssh $(SSH_OPTS) $(PYNQ_HOST)"
-	@echo "  cd $(PYNQ_DEST) && sudo python3 -m stress.runner --budget 300"
+	@echo "  cd $(PYNQ_DEST) && sudo TIDELINK_SOC=$(TIDELINK_SOC) python3 -m pynq_host.stress.runner --budget 300"
+endif
+
+# KR260 (plain-Ubuntu / fpgautil) deploy worker. Called by `deploy` when
+# DEPLOY_STYLE=fpgautil, and usable standalone. scp's the header-stripped .bin
+# (bit2bin_zynqmp.py, no byte-swap) + the pynq_host tooling to ubuntu@<board>:~/td
+# in a MIRRORED layout (tl39.py -> ~/td/scripts/tl39.py, tl_socmap.py -> ~/td/
+# so tl39's parent-dir import resolves), loads the PL with `fpgautil -b <bin> -f
+# Full`, verifies fpga_manager state == operating, then re-pokes the AFI widths
+# and prints the canaries (kr260_afi.sh fix). See pynq_host/scripts/kr260_deploy.sh
+# + docs/KR260_BOARD_ENV.md. NEVER byte-swap; NEVER `sudo reboot` a KR260.
+#
+#   make -C fpga deploy_kr260 TARGET=kr260-pair-ptp KR260_HOST=10.22.24.159
+#   make -C fpga deploy_kr260 TARGET=kr260-pair-ptp KR260_HOST=ubuntu@10.22.24.159 KR260_PASSWORD=...
+.PHONY: deploy_kr260
+deploy_kr260: $(DEPLOY_ARTEFACTS)
+	@if [ -z "$(filter kr260-%,$(TARGET))" ]; then \
+	    echo "ERROR: deploy_kr260 is for kr260-% TARGETs only (got '$(TARGET)')." >&2; exit 2; \
+	fi
+	@if [ -z "$(KR260_HOST)" ]; then \
+	    echo "ERROR: set KR260_HOST=<ip|user@ip> (or use deploy_pair_role SOC=kr260 ROLE=die_a|die_b)." >&2; exit 2; \
+	fi
+	@KR260_HOST='$(KR260_HOST)' KR260_USER='$(KR260_USER)' \
+	    KR260_PROXY='$(KR260_PROXY)' KR260_DEST='$(KR260_DEST)' \
+	    KR260_PASSWORD='$(KR260_PASSWORD)' \
+	    BIN='$(BITBIN)' BITSTREAM='$(BITSTREAM)' HWH='$(HWH)' \
+	    TIDELINK_HOME='$(TIDELINK_HOME)' TIDELINK_SOC='$(TIDELINK_SOC)' \
+	    TARGET='$(TARGET)' \
+	    $(TIDELINK_HOME)/pynq_host/scripts/kr260_deploy.sh
+
+# Convenience: deploy BOTH KR260 dies sequentially (die_a then die_b) via
+# deploy_pair_role, honouring PTP=0|1. This is the Monday one-liner when
+# fpgahub is not driving the pair fan-out. die_a -> $(KR260_DIEA_IP),
+# die_b -> $(KR260_DIEB_IP) unless KR260_HOST is set.
+#
+# PAIR SAFETY (also banner-printed per side): the correct sequence is
+# POWER-CYCLE both boards -> deploy die_a -> deploy die_b -> bring up. Never
+# PL-reload one side of a LIVE link. Never `sudo reboot` a KR260.
+#
+#   make -C fpga deploy_kr260_both PTP=1
+#   make -C fpga deploy_kr260_both PTP=0 KR260_PASSWORD=...
+deploy_kr260_both:
+	@echo "######################################################################"
+	@echo "# KR260 PAIR DEPLOY (PTP=$(PTP)): power-cycle BOTH boards FIRST, then #"
+	@echo "# deploy die_a + die_b, THEN bring up. Do NOT reload one side of a    #"
+	@echo "# live link. Do NOT 'sudo reboot' a KR260 (wedges; JTAG POR only).    #"
+	@echo "######################################################################"
+	@$(MAKE) -C $(FPGA_DIR) deploy_pair_role SOC=kr260 ROLE=die_a PTP=$(PTP) \
+	    KR260_USER='$(KR260_USER)' KR260_PROXY='$(KR260_PROXY)' \
+	    KR260_DEST='$(KR260_DEST)' KR260_PASSWORD='$(KR260_PASSWORD)'
+	@$(MAKE) -C $(FPGA_DIR) deploy_pair_role SOC=kr260 ROLE=die_b PTP=$(PTP) \
+	    KR260_USER='$(KR260_USER)' KR260_PROXY='$(KR260_PROXY)' \
+	    KR260_DEST='$(KR260_DEST)' KR260_PASSWORD='$(KR260_PASSWORD)'
+	@echo "KR260 pair deploy complete (die_a + die_b). Bring up BOTH dies now."
+
+# Re-poke the AFI PS-master-port widths to 32-bit on a KR260 board over SSH.
+# Runs pynq_host/scripts/kr260_afi.sh (staged by `deploy`) as root. The `deploy`
+# target calls this automatically after the pynq_overlay PL load; run it
+# STANDALONE after a manual `fpgautil -b <bin> -f Full` load (the real
+# plain-Ubuntu KR260 path, which never touches this Makefile). Must be re-run
+# after EVERY PL load and after every board power-cycle — the stock SOM firmware
+# reprograms afi_fs on boot and it is not persisted. See docs/KR260_AFI_CHECK.md.
+#
+#   make -C fpga kr260_afi_fix PYNQ_HOST=ubuntu@10.22.24.159 [PYNQ_PROXY=...]
+.PHONY: kr260_afi_fix
+kr260_afi_fix:
+	@if [ -z "$(PYNQ_HOST)" ]; then \
+	    echo "ERROR: set PYNQ_HOST=user@host (or BOARD=<name> via fpgahub)." >&2; exit 2; \
+	fi
+	@echo "AFI width fix on $(PYNQ_HOST)$(if $(PYNQ_PROXY), via $(PYNQ_PROXY),)..."
+	@ssh $(SSH_OPTS) $(PYNQ_HOST) "cd $(PYNQ_DEST) && echo $(PYNQ_PASSWORD) | sudo -S sh pynq_host/scripts/kr260_afi.sh fix"
 
 #-----------------------------------------------------------------------------
 # fpgahub-driven variants — run the same targets through the manifest so
@@ -599,8 +976,15 @@ help:
 	@echo "  build_pair_farmed      master local + slave on FARM_HOST, concurrent"
 	@echo "  farm_build             generic: FARM_JOBS=\"TARGET@HOST ...\""
 	@echo "  program           JTAG-program the PL via Vivado Hardware Manager"
-	@echo "  deploy            SCP .bit/.bin/.hwh to PYNQ board and load via fpga_manager"
+	@echo "  deploy            Deploy to a board: Z2 -> fpga_manager (.bin byte-swap);"
+	@echo "                    KR260 -> fpgautil (.bin header-strip) + AFI re-poke"
 	@echo "  clean             Remove all build outputs (imp/fpga/)"
+	@echo ""
+	@echo "KR260 (plain-Ubuntu / fpgautil) deploy:"
+	@echo "  deploy_kr260      One board:  TARGET=kr260-pair-ptp KR260_HOST=<ip|user@ip>"
+	@echo "  deploy_kr260_both Both dies:  PTP=1 (die_a 10.22.24.159, die_b 10.22.24.153)"
+	@echo "  deploy_pair_role  Per-role:   SOC=kr260 ROLE=die_a|die_b PTP=1|0 [KR260_HOST=..]"
+	@echo "  kr260_afi_fix     Standalone AFI width re-poke (PYNQ_HOST=ubuntu@<ip>)"
 	@echo ""
 	@echo "fpgahub targets (set BOARD=<name> or BOARD_TAG=<cap>):"
 	@echo "  resolve_board          Show resolved SSH endpoint for current BOARD"

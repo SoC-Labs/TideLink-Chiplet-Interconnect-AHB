@@ -4,6 +4,23 @@
 # shell-injected). Deploy @ MP/SP, recal retry, mask Wlink 0x214 to the
 # lanes BOTH boards lock, LL bootstrap, check CURRENT_CREDITS.
 set -u
+
+# --- ZynqMP (KR260) SAFETY GUARD (inline) ------------------------------------
+# This tool mmaps RAW Pynq-Z2 control literals (0x4403_xxxx / 0x4404_xxxx /
+# 0x4405_xxxx) over /dev/mem, un-relocated. On a ZynqMP (KR260) those addresses
+# are UNDECODED with NO bus timeout => a hard PS hang (power-cycle to recover).
+# Pynq-Z2 ONLY. Refuse the moment we start if TIDELINK_SOC names anything else.
+# Safe on a KR260: tl_poke.py (absolute 0x8403_xxxx) or tl39.py with tl_socmap.py.
+_tl_guard_soc=$(printf '%s' "${TIDELINK_SOC:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+case "$_tl_guard_soc" in
+  ""|z2|pynq-z2|pynq_z2|zynq7|zynq) : ;;
+  *)
+    printf '\n[%s] REFUSING TO RUN on TIDELINK_SOC=%s — mmaps RAW Z2 literals (0x4403_xxxx)\n' "${0##*/}" "$TIDELINK_SOC" >&2
+    printf '  UNDECODED on a ZynqMP (KR260) => hard PS hang. This tool is Pynq-Z2 ONLY.\n' >&2
+    printf '  On a KR260 use tl_poke.py (absolute 0x8403_xxxx) or tl39.py with tl_socmap.py.\n' >&2
+    exit 3 ;;
+esac
+
 MIP=192.168.4.101; SIP=192.168.6.101; PASS=xilinx
 SC=/tmp/tidelink_scripts
 MP=${MP:-0}; SP=${SP:-6}

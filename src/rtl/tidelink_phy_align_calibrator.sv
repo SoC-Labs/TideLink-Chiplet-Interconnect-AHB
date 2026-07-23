@@ -345,6 +345,40 @@ module tidelink_phy_align_calibrator #(
     // Same clock domain as the calibrator (recovered RX link clock) → no CDC.
     input  logic        crack_pkt_seen_i,
 
+    // ---------------------------------------------------------------------
+    // P1 FORCED-RECAL W1P (2026-07-19, lane B1) — dedicated software-reachable
+    // door that re-arms the calibrator ONCE on an already-converged link,
+    // BYPASSING calibrated_once_q while leaving that sticky itself untouched.
+    //
+    // WHY: calibrated_once_q (below) latches on the first S_DONE and
+    // permanently gates off BOTH re-trigger edges, so SWI_RECAL is a measured
+    // no-op after first lock and there was no firmware-reachable PHY retrain at
+    // all — in the FPGA image AND the ASIC path. Evidence:
+    // docs/LINK_RECOVERY_MECHANISM.md §4 (FSM sampled 60x on both dies, never
+    // left S_DONE); §6.1 P1 proposes this remedy, as does the sticky's own
+    // comment ("a dedicated W1P").
+    //
+    // WHAT IS PRESERVED: the Bug-A guard. calibrated_once_q is not modified,
+    // cleared or qualified, and both implicit edges keep their
+    // `& ~calibrated_once_q` term verbatim — see the trigger_now block below.
+    //
+    // Driven by the acc's SWI_FORCE_RECAL (R8 slot0 bit[6]) pulse-stretcher;
+    // POR default 0.
+    //
+    // NO SV DEFAULT PORT VALUE, deliberately. An earlier revision declared this
+    // as `= 1'b0` so that unconnected instantiators kept today's behaviour, but
+    // default port values (IEEE 1800 §23.2.2.4) have ZERO precedent anywhere in
+    // this tree and Vivado's SV synthesis subset is not reliably known to accept
+    // them — and fpga/filelist.tcl feeds this file to Vivado OOC synthesis. VCS
+    // accepting it in sim proves nothing about the FPGA/ASIC path. Both shipping
+    // instantiators connect the port explicitly (axi_chiplet_controller.sv, V2
+    // and V1 arms of the TIDELINK_PHY_V2 ifdef), so the default was never
+    // load-bearing on any path that reaches silicon; only unit TBs dangled it,
+    // and those now tie it off explicitly. EVERY instantiator MUST connect this
+    // port — tie 1'b0 for pre-P1 behaviour.
+    // ---------------------------------------------------------------------
+    input  logic        force_recal_i,
+
     // Outputs to PHY
     output logic [23:0] bit_slip,
     // Per-lane 4-bit phase offset, 8 lanes × 4 bits (lane N at bits
@@ -535,6 +569,9 @@ module tidelink_phy_align_calibrator #(
     // -------------------------------------------------------------------------
     logic role_locked_meta, role_locked_sync, role_locked_q;
     logic swreset_meta,     swreset_sync,     swreset_q;
+    // P1 (2026-07-19, lane B1): force_recal_i gets the IDENTICAL meta/sync/q
+    // treatment as the two pre-existing async trigger inputs.
+    logic force_recal_meta, force_recal_sync, force_recal_q;
     logic trigger_now;
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -544,6 +581,9 @@ module tidelink_phy_align_calibrator #(
             swreset_meta     <= 1'b0;
             swreset_sync     <= 1'b0;
             swreset_q        <= 1'b0;
+            force_recal_meta <= 1'b0;
+            force_recal_sync <= 1'b0;
+            force_recal_q    <= 1'b0;
         end else begin
             role_locked_meta <= role_locked;
             role_locked_sync <= role_locked_meta;
@@ -551,6 +591,9 @@ module tidelink_phy_align_calibrator #(
             swreset_meta     <= swreset;
             swreset_sync     <= swreset_meta;
             swreset_q        <= swreset_sync;
+            force_recal_meta <= force_recal_i;
+            force_recal_sync <= force_recal_meta;
+            force_recal_q    <= force_recal_sync;
         end
     end
 
@@ -558,6 +601,7 @@ module tidelink_phy_align_calibrator #(
     // is asserted. Edge detect on synced stage.
     wire role_locked_rise = role_locked_sync & ~role_locked_q;
     wire swreset_fall     = ~swreset_sync    &  swreset_q;
+    wire force_recal_rise = force_recal_sync & ~force_recal_q;
 
     // -------------------------------------------------------------------------
     // SoC Labs Bug-A / autonomous master-RX root cause + fix (2026-06-28):
@@ -615,7 +659,36 @@ module tidelink_phy_align_calibrator #(
     // re-cals via POR (rst) which clears calibrated_once_q.
     wire role_locked_rise_eff = role_locked_rise & ~calibrated_once_q;
     wire swreset_fall_eff     = swreset_fall     & ~calibrated_once_q;
-    assign trigger_now = role_locked_rise_eff | (swreset_fall_eff & role_locked_sync);
+
+    // -------------------------------------------------------------------------
+    // P1 FORCED-RECAL (2026-07-19, lane B1) — the EXPLICIT door.
+    //
+    // The two _eff terms above keep their `& ~calibrated_once_q` gating VERBATIM:
+    // the Bug-A implicit re-triggers (the autoneg winner's ST_TRAIN_EXIT
+    // SWI_RECAL pulse, and any role_locked re-pulse) stay rejected on a
+    // converged eye, exactly as before.
+    //
+    // force_recal_rise is deliberately NOT gated by calibrated_once_q — that IS
+    // the fix. It is safe to leave ungated because, unlike `swreset`, NOTHING in
+    // the autoneg FSM or any other RTL drives SWI_FORCE_RECAL; it is set only by
+    // a deliberate APB write, so it cannot fire spuriously mid-handshake the way
+    // Bug-A's pulse did. Qualified by role_locked_sync for the same reason the
+    // swreset path is. calibrated_once_q is NOT cleared, so steady-state gating
+    // is identical before, during and after a forced recal — a one-arming
+    // bypass, not a mode change.
+    //
+    // NOT qualified by FCSM state — considered and REJECTED; see the full
+    // analysis in the V2 override
+    // (src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv). Summary:
+    // both proposed gates ("data mode only", "block credit-init") disable the
+    // lever in the FCSM=2 wedge state that is precisely when it is wanted, and a
+    // silent state-dependent gate would re-introduce the very failure class this
+    // change closes (a firmware control that silently does nothing). Firmware
+    // constraint instead: do not write SWI_FORCE_RECAL during credit-init.
+    // -------------------------------------------------------------------------
+    assign trigger_now = role_locked_rise_eff
+                       | (swreset_fall_eff  & role_locked_sync)
+                       | (force_recal_rise  & role_locked_sync);
 
     // -------------------------------------------------------------------------
     // §9.9 runtime EARLY_EXIT override hook (cocotb/UVM compat).

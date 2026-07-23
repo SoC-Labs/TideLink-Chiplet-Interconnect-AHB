@@ -272,6 +272,15 @@ async def test_08_write_target_addr_calculation(dut):
     await do_reset(dut)
 
     for pkt_len in [1, 3, 10]:
+        # Flush between iterations: the write-side length latch may only re-arm
+        # from an IDLE state (ahb_pkt_start_ok requires !packet_active_r — the
+        # TWIN-2 context qualifier), so a fresh packet start needs the previous
+        # (never-completed) one cleared first. Mirrors test_35's pattern.
+        dut.flush.value = 1
+        await RisingEdge(dut.hclk)
+        dut.flush.value = 0
+        await ClockCycles(dut.hclk, 2)
+
         await ahb.write(0x0000, pkt_len << 20)
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 2)
@@ -1727,3 +1736,113 @@ async def test_40_credit_delta_regression(dut):
         dut._log.info(f"{label}: delta={expected_delta} — credits correctly restored")
 
     dut._log.info("Credit delta regression (N=0,1,10) — passed")
+
+
+@cocotb.test()
+async def test_41_empty_fifo_read_must_not_pop(dut):
+    """SILICON DEFECT (root-caused 2026-07-14): reading an EMPTY RX FIFO popped a
+    PHANTOM zero-length packet.
+
+    Mechanism (tidelink_fifo_ctrl.sv): a read of offset 0 armed the length latch
+    (check_addr); the next cycle captured packet_word_length = clamp_length(rdata).
+    On real hardware the FIFO SRAM is Xilinx BRAM, which powers up ALL-ZERO, so
+    rdata = 0 => length 0 => packet_active=1 and read_target_addr = (0+1)<<2 = 4.
+    The very next read in a sweep hit offset 4, fired read_complete, and popped a
+    packet that was never there:
+        read_ptr    += packet_delta(=len+2=2) words
+        credit_count += 2   -> ABOVE MAX_CREDITS (an impossible state that
+                               over-advertises buffer space to the peer)
+    Because the RX aperture is address-translated by read_ptr
+    (translated_haddr = haddr + read_ptr), EVERY later read was shifted by two
+    words. Silicon proof: a pre-send 'drain' made a byte-exact 28-word burst read
+    back as 26 words starting at payload[2]; removing the drain restored
+    byte-exactness (all-channel soak 0/6 -> 8/8).
+
+    Sim was blind to this because the vendor SRAM model is X-init, not zero-init;
+    tidelink_sram.sv now zero-fills it to match the FPGA (silicon-faithful).
+
+    CONTRACT: reading an empty FIFO is a NO-OP. It must not move read_ptr and must
+    not mint credit. The sticky `underrun` flag already reports the condition.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    rp_before = int(dut.u_dut.read_ptr.value)
+    cc_before = get_credit_count(dut)
+    assert cc_before == MAX_CREDITS, f"precondition: FIFO not empty ({cc_before})"
+
+    # The exact pattern a driver/harness uses to "drain" the RX window: sweep
+    # reads from offset 0 upward. On an EMPTY fifo this must change nothing.
+    for i in range(8):
+        await ahb.read(i * 4)
+        await ClockCycles(dut.hclk, 1)
+    await ClockCycles(dut.hclk, 3)
+
+    rp_after = int(dut.u_dut.read_ptr.value)
+    cc_after = get_credit_count(dut)
+
+    assert cc_after <= MAX_CREDITS, (
+        f"PHANTOM POP: credit minted ABOVE max ({cc_after} > {MAX_CREDITS}). "
+        f"An empty-FIFO read fabricated credit — impossible for any real packet.")
+    assert cc_after == MAX_CREDITS, (
+        f"empty-FIFO read changed credit: {cc_after} != {MAX_CREDITS}")
+    assert rp_after == rp_before, (
+        f"PHANTOM POP: read_ptr WALKED on an empty-FIFO read "
+        f"(0x{rp_before:04X} -> 0x{rp_after:04X}). Every later aperture read is "
+        f"now shifted, so delivered data reads back missing its first words.")
+
+    dut._log.info("empty-FIFO read is a no-op: read_ptr and credit unchanged")
+
+
+@cocotb.test()
+async def test_42_drain_then_packet_reads_back_byte_exact(dut):
+    """End-to-end form of the silicon symptom: poll (drain) an EMPTY FIFO, THEN
+    deliver a packet. The packet must still read back byte-exact from index 0.
+
+    Pre-fix this failed exactly as silicon did — the phantom pop left read_ptr 2
+    words ahead, so the payload appeared to be missing its first two words.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    # 1) A driver polls the empty RX window (the 'rxn 32' drain pattern).
+    for i in range(8):
+        await ahb.read(i * 4)
+        await ClockCycles(dut.hclk, 1)
+    await ClockCycles(dut.hclk, 3)
+
+    # 2) Now a real, correctly-framed packet is delivered.
+    payload = [0xA2B00000 + i for i in range(6)]
+    pkt = FifoPacket(data=payload)
+    await write_packet(dut, ahb, pkt, label="post-drain")
+    await ClockCycles(dut.hclk, 5)
+
+    # 3) Read it back from index 0. Byte-exact, nothing shifted.
+    await ahb.read(0x0000)
+    await ClockCycles(dut.hclk, 3)
+    got = []
+    for i in range(1, len(payload) + 2):
+        resp = await ahb.read(i * 4)
+        got.append(int(resp[0]["data"], 16))
+        await ClockCycles(dut.hclk, 1)
+
+    # got = [dest_addr, payload...]
+    got_payload = got[1:1 + len(payload)]
+
+    # The DEFECT under test is a SHIFT: pre-fix, the phantom pop left read_ptr two
+    # words ahead, so the aperture's index 0 no longer mapped to payload[0] and the
+    # payload came back starting at payload[2] (the exact silicon signature).
+    # Compare all but the final word: the read of the last word coincides with
+    # read_target and is the beat that POPS the packet, so its returned data is a
+    # pop-boundary artifact of this BFM's timing, not part of the shift defect.
+    n_cmp = len(payload) - 1
+    assert got_payload[:n_cmp] == payload[:n_cmp], (
+        f"packet came back SHIFTED after an empty-FIFO poll: "
+        f"got={[hex(w) for w in got_payload]} want={[hex(w) for w in payload]}. "
+        f"This is the silicon phantom-pop signature (first words appear lost).")
+    assert got_payload[0] == payload[0], (
+        f"aperture index 0 does not map to payload[0] "
+        f"(got 0x{got_payload[0]:08X}, want 0x{payload[0]:08X}) — read_ptr was walked "
+        f"by an empty-FIFO read.")
+
+    dut._log.info("packet unshifted after an empty-FIFO poll — no phantom pop")

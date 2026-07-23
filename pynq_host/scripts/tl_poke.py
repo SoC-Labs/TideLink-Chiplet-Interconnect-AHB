@@ -21,13 +21,22 @@ A PS AXI bus error on any access kills this process with SIGBUS — callers
 classify a missing output line as the BUS-ERROR jam class (the same
 convention as unjam_fc_node.sh's probe).
 """
+import ctypes
 import mmap
 import os
-import struct
 import sys
 
 PAGE = 4096
-OBS_FC_CREDIT = 0x4403219C
+
+# `rd` / `wr` take ABSOLUTE addresses and are therefore SoC-agnostic — only the
+# `obs` decode needs to know where the TideLink APB aperture lives. On the KR260
+# (Zynq UltraScale+) 0x0..0x7FFF_FFFF is DDR, so the APB aperture relocates
+# 0x4403_0000 -> 0x8403_0000 (pure top-nibble swap; low bits preserved). Keep
+# this in step with pynq_host/overlay.py's APB_BASE. Default stays z2.
+_SOC = os.environ.get("TIDELINK_SOC", "z2").lower()
+_APB_BASE = 0x84030000 if _SOC in ("kr260", "kria", "mpsoc", "zynqmp", "kv260") \
+            else 0x44030000
+OBS_FC_CREDIT = _APB_BASE + 0x219C
 
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 _maps = {}
@@ -41,14 +50,26 @@ def _mm(addr):
     return _maps[base], addr - base
 
 
+# SoC Labs 2026-07-03: struct.pack_into/unpack_from on an mmap'd /dev/mem buffer
+# emits MULTIPLE narrow bus accesses per 32-bit op on this ARMv7 PYNQ (measured
+# on silicon: ~5 stores per pack_into write vs 1 for devmem2/ctypes; a2l FIFO
+# wptr +5/word). Every "word" write became ~5 AHB transfers -> 5 FC packets ->
+# fe credit ceiling (0x1f) exhausted -> the NACK/replay wedge that blocked
+# sustained multi-packet A->B for weeks. The ctypes pointer access below is a
+# SINGLE aligned u32 load/store (same fix as tl39.py / tlchar.py).
+def _u32(m, o):
+    return ctypes.cast(ctypes.addressof(ctypes.c_uint32.from_buffer(m, o)),
+                       ctypes.POINTER(ctypes.c_uint32))
+
+
 def rd(addr):
     m, o = _mm(addr)
-    return struct.unpack_from("<I", m, o)[0]
+    return int(_u32(m, o)[0])
 
 
 def wr(addr, val):
     m, o = _mm(addr)
-    struct.pack_into("<I", m, o, val & 0xFFFFFFFF)
+    _u32(m, o)[0] = val & 0xFFFFFFFF
 
 
 def main():

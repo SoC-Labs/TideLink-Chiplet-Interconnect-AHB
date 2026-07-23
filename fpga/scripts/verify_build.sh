@@ -13,17 +13,34 @@
 #   (b) imp/fpga/gen_v2/Wlink.v carries the V2 defines + E4 reset mask
 #   (c) key autonomy signals survive into imp/fpga/gen_v2/axi_chiplet_controller.sv
 #       (list parameterized below — extend it as loops add signals)
-#   (d) both target tidelink.bit files exist, are NEWER than the newest run's
-#       start, and have DIFFERENT md5s (identical = one half not rebuilt)
-#   (e) WINSCAN_CELLS: prints the ready-to-run Vivado one-liner per target;
-#       with --with-dcp (and vivado on PATH) actually runs it and requires >0
+#   (d) every target's tidelink.bit exists, is NEWER than the newest run's
+#       start, and no two targets share an md5 (identical = one half not rebuilt)
+#   (e) V2-SURVIVED-SYNTHESIS: prints the ready-to-run Vivado one-liner per
+#       target; with --with-dcp (and vivado on PATH) actually runs it. The
+#       required marker is PLATFORM-DEPENDENT — see the (e) block below.
 #   (f) WARN on any tidelink.bin OLDER than its tidelink.bit (stale bit2bin
 #       trap — boards flash the .bin, not the .bit)
+#   (g) FAIL on any SILENTLY-DROPPED XDC constraint in the impl log
+#   (h) FF-REMOVAL scan of the IP's OUT-OF-CONTEXT synth log (Synth 8-3332):
+#       FAIL if any NON-benign (non-clock-gate) sequential element was pruned
+#   (i) ROUTED TIMING: FAIL if the Design Timing Summary WNS < 0 (setup not met)
 #
 # USAGE:  fpga/scripts/verify_build.sh [--worktree DIR] [--with-dcp]
+#                                      [--targets "T1 T2 ..."]
 #   --worktree DIR  repo root to check (default: this script's repo)
 #   --with-dcp      open each routed DCP in Vivado and count winscan cells
 #                   (slow, ~minutes per target)
+#   --targets "..." space-separated list of targets to verify. Each name is an
+#                   OUTPUT DIRECTORY name under imp/fpga/output/, i.e. it must
+#                   include any ANCHOR_SUFFIX the build applied (Makefile builds
+#                   to output/$(TARGET)$(ANCHOR_SUFFIX), so an EXTREFCLK=1 build
+#                   of kr260-pair-nptp lands in kr260-pair-nptp-extref).
+#                   May also be given as the TARGETS env var. Two or more
+#                   targets are treated as halves of one link and must not share
+#                   an md5; a single target skips that cross-check.
+#                   DEFAULT (unchanged): the Pynq-Z2 pair, so every existing
+#                   invocation behaves exactly as before.
+#                   e.g. --targets "kr260-pair-ptp kr260-pair-flip-ptp"
 #
 # Exit: 0 = all checks PASS (warnings allowed), non-zero otherwise.
 # Read-only: never writes inside the worktree (safe alongside a running build).
@@ -34,27 +51,61 @@ set -u
 V2_BANNER='TIDELINK filelist: V2'
 WLINK_MUSTS=(
   '`define TIDELINK_PHY_V2'
-  '`define TD_AUTO_LANE_MASK_E4'
-  "LANE_MASK_RESET = 8'hE4;"
 )
+# Lane-mask POR expectation. The 0xE4 (4-lane) default is gated by the
+# TD_AUTO_LANE_MASK_E4 env var in fpga/filelist.tcl; =0 builds the 8-lane
+# (0xFF) config. Mirror that here so the verifier checks what was ASKED for.
+#
+# NOTE (2026-07-17): the old expectation list also grepped for
+#   "LANE_MASK_RESET = 8'hE4;"
+# which was VACUOUS — filelist.tcl only PREPENDS the define to the file body,
+# it does not preprocess it, so BOTH `ifdef branches (8'hE4 and 8'hFF) are
+# present in the generated text unconditionally and that grep passed either
+# way. The `define line is the only load-bearing evidence, so we assert on its
+# presence/ABSENCE instead.
+LANE_MASK_E4=1
+if [ "${TD_AUTO_LANE_MASK_E4:-1}" = "0" ]; then LANE_MASK_E4=0; fi
+if [ "$LANE_MASK_E4" = "1" ]; then
+  WLINK_MUSTS+=( '`define TD_AUTO_LANE_MASK_E4' )
+  WLINK_MUSTNOTS=()
+  LANE_MASK_EXPECT="8'hE4 (4 lanes, bytesPerCycle=8)"
+else
+  WLINK_MUSTNOTS=( '`define TD_AUTO_LANE_MASK_E4' )
+  LANE_MASK_EXPECT="8'hFF (8 lanes, bytesPerCycle=16)"
+fi
 AUTONOMY_SIGNALS=(
   ws_kick_pending_q       # FIX-1 episode-bound winscan kick
   sync_cfg_hold_q         # L3 autonomous SYNC-config hold
   ws_anchor_timeout_q     # F4/FIX-3 FINALIZE anchor-gate timeout
   cal_in_hold             # L4 training-exit rendezvous (calibrator S_HOLD)
 )
-TARGETS=( pynq-z2-pair-all pynq-z2-pair-flip-all )
+# Targets to verify = output-dir names under imp/fpga/output/. Overridable via
+# the TARGETS env var or --targets; the default is the Z2 pair, so pre-existing
+# callers are byte-for-byte unchanged.
+TARGETS_DEFAULT='pynq-z2-pair-all pynq-z2-pair-flip-all'
 WINSCAN_FILTER='NAME =~ *winscan* || NAME =~ */ws_*'
+# IDELAY-INDEPENDENT V2 markers — see the (e) block for why these exist.
+# Verified present on the 2026-07-16 routed kr260-pair-{,flip-}ptp DCPs
+# (RETIRE=3, SYNCDET=103, REANCHOR=373, IDELAY=0, ~95k cells per die).
+V2MARK_FILTER='NAME =~ *sync_detect* || NAME =~ *reanchor* || NAME =~ *autonomy_retire*'
+# Presence of ANY IDELAY primitive => this platform sweeps taps => winscan lives.
+IDELAY_FILTER='REF_NAME =~ IDELAY*'
 
 # ----- args --------------------------------------------------------------------
 WT=""
 WITH_DCP=0
+TARGETS_STR="${TARGETS:-$TARGETS_DEFAULT}"
+usage(){ sed -n '2,/^# =\+$/p' "$0" | sed -n '2,$p'; }
 while [ $# -gt 0 ]; do case "$1" in
   --worktree) WT=$2; shift;;
   --with-dcp) WITH_DCP=1;;
-  -h|--help)  sed -n '2,32p' "$0"; exit 0;;
-  *) echo "unknown arg: $1 (usage: $0 [--worktree DIR] [--with-dcp])"; exit 2;;
+  --targets)  TARGETS_STR=$2; shift;;
+  -h|--help)  usage; exit 0;;
+  *) echo "unknown arg: $1 (usage: $0 [--worktree DIR] [--with-dcp] [--targets \"T1 T2 ...\"])"; exit 2;;
 esac; shift; done
+# shellcheck disable=SC2206
+TARGETS=( $TARGETS_STR )
+[ "${#TARGETS[@]}" -ge 1 ] || { echo "FAIL  setup    --targets/TARGETS is empty"; exit 2; }
 if [ -z "$WT" ]; then WT="$(cd "$(dirname "$0")/../.." && pwd)"; fi
 IMP="$WT/imp/fpga"
 GEN="$IMP/gen_v2"
@@ -68,6 +119,7 @@ mtime(){ stat -c %Y "$1" 2>/dev/null || echo 0; }
 tstr(){ date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "@$1"; }
 
 echo "======== verify_build: provenance gate  worktree=$WT  ($(date)) ========"
+echo "targets: ${TARGETS[*]}"
 
 # ----- (a) V2 banner in the newest package_ip log --------------------------------
 PKG_LOG=$(find "$IMP/run" -maxdepth 2 -name 'package_ip*.log' -printf '%T@ %p\n' 2>/dev/null \
@@ -82,7 +134,7 @@ else
        "'$V2_BANNER' NOT in $PKG_LOG — SILENT V1 FALLBACK (TIDELINK_PHY_V2 not in the build env?)"
 fi
 
-# ----- (b) gen_v2/Wlink.v V2 defines + E4 reset mask ------------------------------
+# ----- (b) gen_v2/Wlink.v V2 defines + lane-mask POR ------------------------------
 if [ ! -f "$GEN/Wlink.v" ]; then
   fail b "gen_v2/Wlink.v V2 defines" "missing $GEN/Wlink.v"
 else
@@ -92,8 +144,14 @@ else
     if [ -n "$ln" ]; then B_EV="${B_EV}[$pat @L$ln] "
     else B_OK=0; B_EV="${B_EV}[$pat MISSING] "; fi
   done
-  if [ $B_OK -eq 1 ]; then pass b "gen_v2/Wlink.v V2 defines + E4 mask" "$B_EV"
-  else fail b "gen_v2/Wlink.v V2 defines + E4 mask" "$B_EV"; fi
+  for pat in ${WLINK_MUSTNOTS+"${WLINK_MUSTNOTS[@]}"}; do
+    ln=$(grep -nF -m1 "$pat" "$GEN/Wlink.v" | cut -d: -f1)
+    if [ -n "$ln" ]; then B_OK=0; B_EV="${B_EV}[$pat PRESENT@L$ln but must be ABSENT] "
+    else B_EV="${B_EV}[$pat correctly absent] "; fi
+  done
+  B_EV="${B_EV}[expect LANE_MASK_RESET=$LANE_MASK_EXPECT] "
+  if [ $B_OK -eq 1 ]; then pass b "gen_v2/Wlink.v V2 defines + lane-mask POR" "$B_EV"
+  else fail b "gen_v2/Wlink.v V2 defines + lane-mask POR" "$B_EV"; fi
 fi
 
 # ----- (c) autonomy signals present in gen_v2/axi_chiplet_controller.sv -----------
@@ -111,9 +169,28 @@ else
   else fail c "autonomy signals in axi_chiplet_controller.sv" "ref counts: $C_EV(0 = optimised/edited out — STALE IP?)"; fi
 fi
 
-# ----- (d) both .bit files: exist, newer than run start, different md5s -----------
-# Run start: the farm log names embed the kick-off stamp (package_ip.YYYYMMDD-HHMMSS.log);
-# fall back to the log's mtime (package_ip is the first, fast phase of a run).
+# ----- (d) both .bit files: exist, fresh vs THEIR OWN build, different md5s -------
+# BATCH SEMANTICS (2026-07-20 fix). A multi-target batch builds its targets
+# SEQUENTIALLY, so the single newest package_ip*.log belongs to the LAST target
+# only. The old check compared EVERY target's .bit against that one newest
+# run-start, which false-flagged every EARLIER target in a batch as
+# "stale/half-finished" — its .bit is legitimately older than the LAST target's
+# build (observed 2026-07-20: verifying the four kr260 targets in one shot
+# flagged 3 of 4, all freshly built minutes apart). Fix: compare each target's
+# .bit against ITS OWN build window, not the global newest run.
+#
+# The target's out-of-context synth runme.log is written DURING synthesis, which
+# STRICTLY PRECEDES bitstream generation in the same build, so a freshly-built
+# .bit is always NEWER than its own synth log, while a genuinely stale/
+# half-finished .bit (left from a prior build whose current re-synth never
+# reached bitgen) is OLDER than it. Per-target reference, in priority order:
+#   1. own OOC synth runme.log mtime          (synth precedes bitgen; bit >= it)
+#   2. own run/<t>/build_design.log START     ("Start of session at:" banner)
+#   3. GLOBAL newest run-start                 (last resort, BATCH-UNSAFE — the
+#      original behaviour, kept only for trees with no per-target logs at all)
+#
+# Global newest run-start (fallback #3 only): farm log names embed the kick-off
+# stamp (package_ip.YYYYMMDD-HHMMSS.log); else the log's mtime.
 RUN_START=0
 if [ -n "$PKG_LOG" ]; then
   bn=$(basename "$PKG_LOG")
@@ -123,6 +200,25 @@ if [ -n "$PKG_LOG" ]; then
   fi
   [ "$RUN_START" -gt 0 ] || RUN_START=$(mtime "$PKG_LOG")
 fi
+# d_ref_for TARGET -> "<REF_EPOCH>\t<SOURCE_LABEL>": this target's OWN build-window
+# start (priority list above). REF=0 => no usable reference, freshness skipped.
+d_ref_for(){
+  local t=$1 synth bd start
+  synth=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -n "$synth" ] && [ -f "$synth" ]; then
+    printf '%s\town synth log' "$(mtime "$synth")"; return
+  fi
+  bd="$IMP/run/$t/build_design.log"
+  if [ -f "$bd" ]; then
+    # build_design.log's MTIME is the build END (written after bitgen), so the
+    # .bit is legitimately a few seconds OLDER — never compare against it. Use
+    # the session START banner instead; if absent, fall through (don't false-fail).
+    start=$(grep -m1 'Start of session at:' "$bd" 2>/dev/null | sed 's/.*at: *//')
+    start=$(date -d "$start" +%s 2>/dev/null || echo 0)
+    if [ "${start:-0}" -gt 0 ]; then printf '%s\town build_design.log start' "$start"; return; fi
+  fi
+  printf '%s\tGLOBAL run-start (batch-UNSAFE fallback)' "$RUN_START"
+}
 declare -A BIT_MD5
 D_OK=1; D_EV=""
 for t in "${TARGETS[@]}"; do
@@ -130,38 +226,112 @@ for t in "${TARGETS[@]}"; do
   if [ ! -f "$bit" ]; then D_OK=0; D_EV="${D_EV}[$t: tidelink.bit MISSING] "; continue; fi
   bm=$(mtime "$bit")
   BIT_MD5[$t]=$(md5sum "$bit" | cut -d' ' -f1)
-  if [ "$RUN_START" -gt 0 ] && [ "$bm" -lt "$RUN_START" ]; then
-    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than run start $(tstr "$RUN_START") — stale/half-finished build] "
+  ref_line=$(d_ref_for "$t"); ref=${ref_line%%$'\t'*}; refsrc=${ref_line#*$'\t'}
+  if [ "${ref:-0}" -gt 0 ] && [ "$bm" -lt "$ref" ]; then
+    D_OK=0; D_EV="${D_EV}[$t: bit $(tstr "$bm") OLDER than $refsrc $(tstr "$ref") — stale/half-finished build] "
   else
-    D_EV="${D_EV}[$t: bit $(tstr "$bm") md5=${BIT_MD5[$t]:0:8}] "
+    D_EV="${D_EV}[$t: bit $(tstr "$bm") fresh vs $refsrc md5=${BIT_MD5[$t]:0:8}] "
   fi
 done
-if [ "${#BIT_MD5[@]}" -eq "${#TARGETS[@]}" ] && \
-   [ "${BIT_MD5[${TARGETS[0]}]}" = "${BIT_MD5[${TARGETS[1]}]}" ]; then
-  D_OK=0; D_EV="${D_EV}[md5s IDENTICAL — flip/non-flip halves are the same image] "
+# Distinctness: compare EVERY pair, not just [0] vs [1]. The old hard-indexed
+# compare silently checked only the first two entries, so a >2-target list (e.g.
+# the kr260 ptp/nptp x straight/flip set) could ship duplicate halves unnoticed.
+# With a single target there is nothing to cross-check — skip, don't fail.
+if [ "${#TARGETS[@]}" -ge 2 ]; then
+  for i in "${!TARGETS[@]}"; do
+    for j in "${!TARGETS[@]}"; do
+      [ "$i" -lt "$j" ] || continue
+      ti=${TARGETS[$i]}; tj=${TARGETS[$j]}
+      [ -n "${BIT_MD5[$ti]:-}" ] && [ -n "${BIT_MD5[$tj]:-}" ] || continue
+      if [ "${BIT_MD5[$ti]}" = "${BIT_MD5[$tj]}" ]; then
+        D_OK=0
+        D_EV="${D_EV}[md5s IDENTICAL: $ti == $tj (${BIT_MD5[$ti]:0:8}) — those halves are the same image] "
+      fi
+    done
+  done
 fi
-if [ $D_OK -eq 1 ]; then pass d "pair .bit files fresh + distinct" "$D_EV"
-else fail d "pair .bit files fresh + distinct" "$D_EV"; fi
+if [ $D_OK -eq 1 ]; then pass d "target .bit files fresh + distinct" "$D_EV"
+else fail d "target .bit files fresh + distinct" "$D_EV"; fi
 
-# ----- (e) WINSCAN_CELLS (winscan FSM survived synthesis) -------------------------
+# ----- (e) V2 SURVIVED SYNTHESIS — marker is PLATFORM-DEPENDENT --------------------
+#
+# WHY THIS IS NOT JUST "WINSCAN_CELLS > 0" ANY MORE. DO NOT "SIMPLIFY" IT BACK.
+#
+# The winscan FSM exists to sweep per-lane IDELAY TAPS. It is therefore only
+# instantiated where there ARE IDELAYs. On the Pynq-Z2 (USE_IDELAY defaults to 1)
+# it is present, and a count of 0 genuinely means the V2 define never reached the
+# packaged IP's OOC synth = silent V1 = dead link. That is the incident this check
+# was born from, and on Z2 it still holds exactly as before.
+#
+# On the KR260 it is the OPPOSITE. HDIO bank 44 physically cannot host an IDELAY
+# primitive, so every kr260 target hard-sets `CONFIG.USE_IDELAY {0}` — mandatory,
+# not a tuning choice (see fpga/targets/kr260-pair-ptp/tidelink_design.tcl:421).
+# With no IDELAYs to sweep, synthesis CORRECTLY prunes the winscan FSM, and
+# WINSCAN_CELLS=0 is the EXPECTED, HEALTHY result. Requiring >0 there would fail
+# every KR260 build forever — a gate that cries wolf gets switched off, and then
+# it is not guarding the Z2 either.
+#
+# So: assert V2 with markers that DO NOT depend on IDELAY (`*sync_detect*`,
+# `*reanchor*`, `*autonomy_retire*` — all V2-only, all IDELAY-independent).
+# Measured on the 2026-07-16 routed KR260 pair: RETIRE=3, SYNCDET=103,
+# REANCHOR=373, IDELAY=0, ~95k cells/die. A silent-V1 KR260 build has none.
+#
+# IDELAY-ness is derived FROM THE DCP (count of IDELAY* primitives), not from
+# the target's tcl, for two reasons:
+#   1. The TARGETS list holds OUTPUT-DIR names, which carry ANCHOR_SUFFIX
+#      (kr260-pair-nptp-extref); output-dir -> target-dir is not injective, so a
+#      tcl lookup would need fragile suffix-stripping to even find the file.
+#   2. The DCP *is* the artefact under gate. Grepping the tcl asks what the build
+#      was SUPPOSED to do; counting cells asks what it ACTUALLY did. Every
+#      silent-V1 incident so far came from exactly that gap (a define that never
+#      reached OOC synth while the config said it had).
+#
+# Decision rule (fail-safe toward the old behaviour):
+#   IDELAY_CELLS > 0  -> IDELAY platform (Z2)     -> require WINSCAN_CELLS > 0
+#   IDELAY_CELLS == 0 -> no-IDELAY platform (KR)  -> require V2MARK_CELLS  > 0
+#   IDELAY query failed/unparseable               -> fall back to the WINSCAN rule
+# The last line matters: if the query breaks we must not silently downgrade a Z2
+# build onto the weaker marker path.
+E_TCL_FOR(){ # $1 = dcp path
+  printf 'open_checkpoint %s; ' "$1"
+  printf 'puts "IDELAY_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$IDELAY_FILTER"
+  printf 'puts "WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$WINSCAN_FILTER"
+  printf 'puts "V2MARK_CELLS=[llength [get_cells -hierarchical -quiet -filter {%s}]]"; ' "$V2MARK_FILTER"
+  printf 'exit'
+}
 for t in "${TARGETS[@]}"; do
   dcp="$IMP/output/$t/tidelink_design_wrapper_routed.dcp"
-  TCL="open_checkpoint $dcp; puts \"WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {$WINSCAN_FILTER}]]\"; exit"
+  TCL=$(E_TCL_FOR "$dcp")
   if [ $WITH_DCP -eq 1 ] && command -v vivado >/dev/null 2>&1; then
     if [ ! -f "$dcp" ]; then fail e "WINSCAN_CELLS ($t)" "missing $dcp"; continue; fi
     tdir=$(mktemp -d)
-    n=$( (cd "$tdir" && echo "$TCL" | vivado -mode tcl -nolog -nojournal 2>/dev/null) \
-         | grep -oE 'WINSCAN_CELLS=[0-9]+' | cut -d= -f2 )
+    out=$( (cd "$tdir" && echo "$TCL" | vivado -mode tcl -nolog -nojournal 2>/dev/null) )
     rm -rf "$tdir"
-    if [ -n "$n" ] && [ "$n" -gt 0 ]; then
-      pass e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=$n (known-good 555-561 @2026-07-03; >0 required)"
+    n=$(  echo "$out" | grep -oE 'WINSCAN_CELLS=[0-9]+' | cut -d= -f2 )
+    nid=$(echo "$out" | grep -oE 'IDELAY_CELLS=[0-9]+'  | cut -d= -f2 )
+    nv2=$(echo "$out" | grep -oE 'V2MARK_CELLS=[0-9]+'  | cut -d= -f2 )
+    if [ -n "$nid" ] && [ "$nid" -eq 0 ]; then
+      # ---- no-IDELAY platform (KR260): winscan is CORRECTLY absent ----
+      if [ -n "$nv2" ] && [ "$nv2" -gt 0 ]; then
+        pass e "V2 markers ($t)" \
+             "IDELAY_CELLS=0 (no-IDELAY platform: winscan pruned by design, WINSCAN_CELLS=${n:-?} is EXPECTED) V2MARK_CELLS=$nv2 (>0 required; known-good ~479 @2026-07-16)"
+      else
+        fail e "V2 markers ($t)" \
+             "IDELAY_CELLS=0 and V2MARK_CELLS=${nv2:-query-failed} — no sync_detect/reanchor/autonomy_retire cells: SILENT V1 in the IP"
+      fi
     else
-      fail e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=${n:-query-failed} — winscan FSM optimised out (V2 define not in package_ip?)"
+      # ---- IDELAY platform (Z2), or query failed: original rule, unchanged ----
+      if [ -n "$n" ] && [ "$n" -gt 0 ]; then
+        pass e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=$n (known-good 555-561 @2026-07-03; >0 required)"
+      else
+        fail e "WINSCAN_CELLS ($t)" "WINSCAN_CELLS=${n:-query-failed} — winscan FSM optimised out (V2 define not in package_ip?)"
+      fi
     fi
   else
     echo "INFO  (e) WINSCAN_CELLS ($t): needs Vivado — run by hand (or re-run with --with-dcp):"
-    echo "      echo 'open_checkpoint $dcp; puts \"WINSCAN_CELLS=[llength [get_cells -hierarchical -quiet -filter {$WINSCAN_FILTER}]]\"; exit' | vivado -mode tcl -nolog -nojournal | grep WINSCAN_CELLS"
-    echo "      REQUIRE the count > 0 (known-good 555-561 @2026-07-03; 0 = optimised out = silent V1 in the IP)"
+    echo "      echo '$TCL' | vivado -mode tcl -nolog -nojournal | grep -E 'IDELAY_CELLS|WINSCAN_CELLS|V2MARK_CELLS'"
+    echo "      IF IDELAY_CELLS>0 (Pynq-Z2): REQUIRE WINSCAN_CELLS>0 (known-good 555-561 @2026-07-03; 0 = optimised out = silent V1 in the IP)"
+    echo "      IF IDELAY_CELLS=0 (KR260):   WINSCAN_CELLS=0 is EXPECTED (nothing to sweep) — REQUIRE V2MARK_CELLS>0 instead (known-good ~479 @2026-07-16)"
   fi
 done
 
@@ -175,6 +345,116 @@ for t in "${TARGETS[@]}"; do
         "$(basename "$bin") ($(tstr "$(mtime "$bin")")) OLDER than tidelink.bit ($(tstr "$(mtime "$bit")")) — re-run bit2bin before flashing"
     fi
   done
+done
+
+# ----- (g) NO SILENTLY-DROPPED XDC CONSTRAINTS -------------------------------------
+# Vivado emits a CRITICAL WARNING (not an error) when a constraint matches nothing or
+# is handed an unsupported object type, then carries on and builds a bitstream WITHOUT
+# it. That is exactly how the key inter-lane-skew constraint stayed dead for months:
+#
+#   set_bus_skew -from [get_ports {pad_rx[*]}] ...
+#     -> [Constraints 18-612] ... does not contain any object of type(s)
+#        '(pin,cell,clock)' ... The constraint will not be applied.
+#
+# set_bus_skew accepts only (pin,cell,clock); the set_max_delay on the adjacent line
+# DOES accept ports, so the two looked symmetric and nobody noticed. Inter-lane RX skew
+# was therefore UNBOUNDED in every bitstream — the precise per-lane variance that
+# constraint existed to remove, and consistent with the build-to-build autonomy lottery.
+#
+# A dropped constraint must never be silent again. This is a FAIL, not a warning.
+# Match EVERY way Vivado can quietly neuter a constraint, not just one:
+#   18-611/18-612  unsupported object type / matched nothing  -> constraint dropped
+#   18-402         "'X' is not a valid startpoint"            -> no valid endpoints,
+#                  so the constraint applies to NOTHING. This is only a WARNING (not
+#                  CRITICAL), and it is EXACTLY how the 2026-07-14 "fix" of the dead
+#                  set_bus_skew produced a FALSE GREEN: swapping get_ports for the
+#                  IBUF output pins silenced 18-612 but raised 18-402 instead, and an
+#                  18-611/612-only check passed a build whose skew constraint was
+#                  still dead. A constraint that binds to nothing must FAIL, however
+#                  Vivado chooses to phrase it.
+#   18-4?? generic "no valid object"/"empty" phrasings
+DROP_RE='Constraints 18-61[12]|Constraints 18-402|constraint will not be applied|is not a valid startpoint|is not a valid endpoint|No valid object\(s\) found'
+for t in "${TARGETS[@]}"; do
+  # ONLY the single NEWEST log for this target. Using the newest N would drag in the
+  # PREVIOUS build's log and report its (already-fixed) drops against the current
+  # build — a false FAIL. Observed 2026-07-14: head -2 pulled the 07-11 pre-fix farm
+  # log alongside the clean 07-14 one and failed a build that was actually correct.
+  log=$(ls -t "$IMP"/run/farm/"$t"@*.log \
+               "$IMP"/project/"$t"/*.runs/impl_1/runme.log 2>/dev/null | head -1)
+  [ -z "$log" ] && { warn "g" "no impl log for $t" "cannot check for dropped constraints"; continue; }
+  hits=$(grep -cE "$DROP_RE" "$log" 2>/dev/null)
+  if [ "$hits" -gt 0 ]; then
+    ev=$(grep -hE "$DROP_RE" "$log" 2>/dev/null | head -1 | cut -c1-140)
+    fail "g" "$t: $hits SILENTLY-DROPPED constraint line(s)" "$ev  [$(basename "$log")]"
+  else
+    nskew=$(grep -cE "set_bus_skew" "$log" 2>/dev/null)
+    pass "g" "$t: no dropped XDC constraints" "clean impl log ($(basename "$log")); set_bus_skew refs=$nskew"
+  fi
+done
+
+# ----- (h) FF-REMOVAL in the OUT-OF-CONTEXT synth log -----------------------------
+# The TideLink IP is packaged and synthesized OUT-OF-CONTEXT. Vivado's
+# "[Synth 8-3332] Sequential element (...) is unused and will be removed"
+# warnings therefore land in the IP's OWN OOC run log:
+#   imp/fpga/project/<t>/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log
+# NOT in imp/fpga/run/<t>/build_design.log (the top design_1 assembly). A
+# previous investigation grepped the top log, saw 8-3332=0, and wrongly "ruled
+# out" FF removal — the OOC log actually carries them. This check scans the
+# RIGHT log and distinguishes:
+#   * BENIGN: the Wlink glitch-free clock-gate latch (hs_clk_gated_wcg/latch) —
+#     Vivado always prunes it; expected on EVERY build, not an autonomy loss.
+#   * CONCERNING: any OTHER removed sequential element => a real FF (autonomy
+#     FSM / datapath) got optimized away — the silent-V1 / tied-off-input class.
+# CONCERNING > 0 => FAIL. Benign-only => PASS (reporting the count). Missing OOC
+# log => WARN (cannot verify — do not silently pass it as clean).
+BENIGN_FF_RE='clk_gat|/latch/'
+for t in "${TARGETS[@]}"; do
+  ooc=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
+  if [ -z "$ooc" ] || [ ! -f "$ooc" ]; then
+    warn h "OOC synth log ($t)" "no tidelink_0_0_synth_1/runme.log under $IMP/project/$t/*.runs/ — cannot check FF removal"
+    continue
+  fi
+  # element name is inside the parens of each 8-3332 warning
+  elems=$(grep -F '[Synth 8-3332]' "$ooc" | sed -E 's/.*element \(([^)]*)\).*/\1/')
+  total=$(printf '%s\n' "$elems" | grep -c . )
+  concerning=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | grep -c . )
+  benign=$(( total - concerning ))
+  if [ "$concerning" -gt 0 ]; then
+    ex=$(printf '%s\n' "$elems" | grep -Ev "$BENIGN_FF_RE" | head -3 | paste -sd'; ' -)
+    fail h "FF removal in OOC synth ($t)" \
+      "$concerning NON-benign sequential element(s) removed [Synth 8-3332] in $(basename "$(dirname "$(dirname "$ooc")")")/.../runme.log — e.g. $ex (autonomy/datapath FF optimised out => tied-off input / silent V1)"
+  else
+    pass h "FF removal in OOC synth ($t)" \
+      "$total removed [Synth 8-3332], all BENIGN Wlink clock-gate latches (0 autonomy/datapath FFs lost); log=$ooc"
+  fi
+done
+
+# ----- (i) ROUTED TIMING — WNS MUST NOT BE NEGATIVE -------------------------------
+# A build with negative setup slack (WNS < 0) does not meet timing yet was, until
+# now, waved through every structural check: the 2026-07-16 kr260-pair-ptp build
+# shipped at WNS -2.427 ns (1673 failing endpoints) and passed verify_build. That
+# must never happen again — a not-timing-clean bitstream is a bring-up lottery at
+# best. Parse the Design Timing Summary WNS from the routed report and FAIL on <0.
+# NB: WHS (hold) is deliberately NOT gated — the -27/-29 ns WHS on every Pynq-Z2
+# source-synchronous build is a known artefact (reference_fpga_timing_whs_artifact),
+# so gating it would red every Z2 build. WHS is reported as evidence only.
+for t in "${TARGETS[@]}"; do
+  rpt="$IMP/output/$t/tidelink_design_wrapper_timing_summary_routed.rpt"
+  if [ ! -f "$rpt" ]; then
+    warn i "routed timing WNS ($t)" "missing $rpt — cannot verify timing closure"
+    continue
+  fi
+  read -r wns whs <<EOF
+$(awk '/Design Timing Summary/{s=1} s && /WNS\(ns\)/{h=1;next} h && /^[[:space:]]*-?[0-9]/{print $1, $5; exit}' "$rpt")
+EOF
+  if [ -z "$wns" ]; then
+    warn i "routed timing WNS ($t)" "could not parse WNS from $(basename "$rpt")"
+  elif awk -v w="$wns" 'BEGIN{exit !(w+0 < 0)}'; then
+    fail i "routed timing NOT MET ($t)" \
+      "########## WNS = $wns ns < 0 — SETUP TIMING VIOLATED (WHS=$whs ns) — DO NOT DEPLOY ##########  [$(basename "$rpt")]"
+  else
+    pass i "routed timing WNS ($t)" "WNS=$wns ns >= 0 (setup met; WHS=$whs ns reported, not gated) [$(basename "$rpt")]"
+  fi
 done
 
 # ----- verdict --------------------------------------------------------------------

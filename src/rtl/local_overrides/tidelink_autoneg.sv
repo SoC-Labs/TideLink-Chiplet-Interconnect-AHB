@@ -39,7 +39,20 @@ module tidelink_autoneg #(
     //     peer (byte-3 bit 2 would alias a live packet flag) — this parameter
     //     reverts the V1 netlist to exact pre-L4 behaviour (the ternaries
     //     constant-fold at elaboration).
-    parameter bit USE_CAL_IN_HOLD = 1'b0
+    parameter bit USE_CAL_IN_HOLD = 1'b0,
+    // Terminal role from STRAP, not the I2C-NACK constant.
+    // DECISION (David, 2026-07-19): ENABLED GLOBALLY — default is now 1'b1.
+    //   1'b1 (default) = the NACK terminal role AND the timeout fallback derive
+    //         from role_strap_i, so a (master,slave) strap pair survives a dead
+    //         I2C and autonomy can proceed.
+    //   1'b0 = LEGACY, the trap: on an I2C NACK the die becomes SLAVE (constant
+    //         1'b1) and on TIMEOUT it takes nego_fallback (NEGO_CFG[4], a SW
+    //         bit). Because both dies NACK when the I2C negotiation bus is
+    //         dead, BOTH dies latch SLAVE => no master => the winscan FSM never
+    //         retires => SYNC forced forever => zero-poke autonomy is
+    //         structurally DEAD. Retained only for A/B and bisect.
+    // Parameter-constant ternary => constant-folds at elaboration.
+    parameter bit ROLE_FROM_STRAP = 1'b1
 )(
     input  wire        clk,
     input  wire        poresetn,       // Power-on reset (active-low)
@@ -50,6 +63,9 @@ module tidelink_autoneg #(
     input  wire  [1:0] nego_pri_sel,   // NEGO_CFG[3:2]: priority source
     input  wire        nego_fallback,  // NEGO_CFG[4]: error fallback role
     input  wire        nego_force_lock,// NEGO_CFG[5]: auto-lock on completion
+    // PENDING-DECISION #5: terminal-role strap (0=master, 1=slave). Only
+    // consulted when ROLE_FROM_STRAP=1; unused (folded away) otherwise.
+    input  wire        role_strap_i,
 
     // ── Priority inputs ──────────────────────────────────────────────────
     input  wire [15:0] nego_priority_reg, // From NEGO_PRIORITY register
@@ -153,6 +169,16 @@ module tidelink_autoneg #(
     // domain (same as the winscan FSM) — no CDC. Tied 0 on V1.
     input  wire        local_fin_wait_i,
 
+    // FIX-B (2026-07-07 PEER-READY ENTRY GATE): BROADENED level — 1 while the
+    // LOCAL winscan is in ANY finalize state (WS_FINALIZE | WS_FIN_CLRLOW |
+    // WS_FIN_WAITPEER), role_is_master-gated. Entry qualifier for the
+    // SIDE-EFFECT-FREE ST_FIN_RDV POLL, so the master reads the peer's
+    // ready-to-serve bit AS SOON AS it starts finalizing — before it commits to
+    // parking in WS_FIN_WAITPEER. The GO write inside ST_FIN_RDV stays gated on
+    // the NARROW local_fin_wait_i, so no GO is issued until the master is
+    // actually parked in WAITPEER. apb_clk domain. Tied 0 on V1.
+    input  wire        local_finalizing_i,
+
     // Local strobes — single-cycle pulses to the chiplet controller's
     // SWI_TRAINING_MODE register. The wrapper OR-merges these with the
     // I2C-slave-AXIL-bridge writes so peer-I2C and FSM-local writes both
@@ -174,6 +200,12 @@ module tidelink_autoneg #(
     // rendezvous transactions would never reach the I2C core (the FSM would
     // hang with awvalid unrouted until the winscan's rendezvous timeout).
     output wire        fin_rdv_in_progress_o,
+    // FIX-B (2026-07-07): the peer's SWI_LANE_STATUS[27] (ready-to-serve) as
+    // captured by the ST_FIN_RDV byte-3 poll (= peer_fin_wait_r). The controller
+    // gates the WS_FINALIZE fallback entry into WS_FIN_WAITPEER on this: a die
+    // whose peer is still arming (peer[27]=0) must NOT fall into the serve
+    // rendezvous. Tied 0 on V1 (peer_fin_wait_r is USE_CAL_IN_HOLD-gated).
+    output wire        peer_ready_to_serve_o,
 
     // Status to NEGO_TRAIN_STATUS @ 0x110.
     output wire  [3:0] train_state_o,
@@ -452,6 +484,17 @@ module tidelink_autoneg #(
     // REPURPOSED from the instantaneous pkt_is_cr obs on V2, see the
     // controller's read mux; V1 keeps pkt_is_cr and never captures here).
     reg        peer_fin_wait_r,     peer_fin_wait_nxt;
+    // FIX-B (2026-07-07): HELD "peer was seen ready-to-serve during THIS finalize
+    // window" — exported as peer_ready_to_serve_o. peer_fin_wait_r is a
+    // low-duty-cycle PULSE (reset to 0 on every ST_FIN_RDV re-entry per poll,
+    // ~a-few-cycles-high-out-of-hundreds), and the controller samples the gate at
+    // a SINGLE cycle (WS_FINALIZE retry-exhaustion) — so it would almost always
+    // miss the pulse. This sticky SETS when the byte-3 poll captures the peer's
+    // ready bit high and HOLDS across the poll re-entries, clearing only when the
+    // local finalize window ends (!local_finalizing_i) or POR — giving the
+    // controller a stable, correctly-scoped level at the decision cycle. Sets only
+    // via the USE_CAL_IN_HOLD-gated capture, so it stays 0 on V1.
+    reg        peer_ready_seen_r;
     reg        fin_go_r,            fin_go_nxt;   // fin_go_o level (see port)
     // R-B retrain-in-rendezvous latch (sim-caught, t33b): train_retrain_req
     // is a 1-cycle W1P and the pre-fix FIN_RDV/FIN_GO states had no retrain
@@ -816,11 +859,13 @@ module tidelink_autoneg #(
               state_r == ST_TRAIN_RUN ||
               state_r == ST_TRAIN_POLL_PEER ||
               state_r == ST_TRAIN_EXIT) && timeout_ctr_r == '0) begin
-            // Force fallback role and transition to error
-            nego_role_nxt      = nego_fallback;
+            // Force fallback role and transition to error.
+            // PENDING-DECISION #5: derive from role_strap_i when enabled, else
+            // the historical nego_fallback (NEGO_CFG[4]).
+            nego_role_nxt      = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
             nego_error_nxt     = 1'b1;
             nego_set_role_cfg  = 1'b1;
-            nego_role_value    = nego_fallback;
+            nego_role_value    = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
             if (nego_force_lock)
                 nego_set_role_lock = 1'b1;
             state_nxt = ST_ERROR;
@@ -921,12 +966,16 @@ module tidelink_autoneg #(
                             if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
                                 // Transaction complete
                                 if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
-                                    // NACK → become slave
-                                    nego_role_nxt     = 1'b1;
+                                    // NACK → terminal role.
+                                    // PENDING-DECISION #5: default = SLAVE (the
+                                    // both-dies-slave trap); ROLE_FROM_STRAP=1 =>
+                                    // take role_strap_i so a strapped master
+                                    // survives a dead I2C.
+                                    nego_role_nxt     = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     nego_lost_nxt     = 1'b1;
                                     nego_done_nxt     = 1'b1;
                                     nego_set_role_cfg = 1'b1;
-                                    nego_role_value   = 1'b1;
+                                    nego_role_value   = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     if (nego_force_lock)
                                         nego_set_role_lock = 1'b1;
                                     state_nxt = ST_NEGO_DONE;
@@ -1486,7 +1535,17 @@ module tidelink_autoneg #(
                         fin_retrain_pend_nxt = 1'b0;   // consumed
                         state_nxt            = ST_NEGO_DONE_PRE;
                     end else if (USE_CAL_IN_HOLD && train_auto_en &&
-                                 local_fin_wait_i && !fin_go_r) begin
+                                 local_finalizing_i && !fin_go_r) begin
+                        // FIX-B (2026-07-07): enter the SIDE-EFFECT-FREE
+                        // ST_FIN_RDV POLL on the BROADENED local_finalizing_i
+                        // (master in ANY finalize state), NOT only once parked in
+                        // WS_FIN_WAITPEER. The poll reads the peer's byte-3
+                        // ready-to-serve bit and exports it (peer_ready_to_serve_o)
+                        // so the controller's fallback-entry gate can consult it —
+                        // but the ST_FIN_RDV→ST_FIN_GO GO WRITE below stays gated
+                        // on the NARROW local_fin_wait_i (the `!local_fin_wait_i`
+                        // abandon), so NO GO is written until the master is
+                        // actually parked in WAITPEER.
                         // R-B (2026-07-04): the LOCAL winscan is parked
                         // quiesced in WS_FIN_WAITPEER — run the finalize
                         // rendezvous. !fin_go_r prevents re-entry in the
@@ -2159,6 +2218,7 @@ module tidelink_autoneg #(
             peer_cal_done_r             <= 1'b0;
             peer_cal_in_hold_r          <= 1'b0;   // L4 (2026-07-01)
             peer_fin_wait_r             <= 1'b0;   // R-B (2026-07-04)
+            peer_ready_seen_r           <= 1'b0;   // FIX-B (2026-07-07)
             fin_go_r                    <= 1'b0;   // R-B (2026-07-04)
             fin_retrain_pend_r          <= 1'b0;   // R-B retrain-in-rendezvous
             local_lane_fault_snapshot_r <= 8'h00;
@@ -2219,6 +2279,14 @@ module tidelink_autoneg #(
                 peer_fin_wait_r <= axl_rdata_r[3];
             else
                 peer_fin_wait_r <= peer_fin_wait_nxt;
+            // FIX-B (2026-07-07): HELD peer-ready — set on the capture of a HIGH
+            // peer byte-3 bit, hold across poll re-entries, clear at the finalize
+            // window boundary. peer_fin_wait_capture_en is USE_CAL_IN_HOLD-gated,
+            // so this stays 0 on V1.
+            if (!local_finalizing_i)
+                peer_ready_seen_r <= 1'b0;
+            else if (peer_fin_wait_capture_en & axl_rdata_r[3])
+                peer_ready_seen_r <= 1'b1;
             fin_go_r <= fin_go_nxt;
             fin_retrain_pend_r <= fin_retrain_pend_nxt;
             local_lane_fault_snapshot_r <= local_lane_fault_snapshot_nxt;
@@ -2277,6 +2345,9 @@ module tidelink_autoneg #(
     assign fin_go_o                = fin_go_r;   // R-B master finalize release
     assign fin_rdv_in_progress_o   = (state_r == ST_FIN_RDV) ||
                                      (state_r == ST_FIN_GO);
+    // FIX-B (2026-07-07): export the HELD peer ready-to-serve level (stable at
+    // the controller's single-cycle fallback-entry decision). 0 on V1.
+    assign peer_ready_to_serve_o   = peer_ready_seen_r;
     assign local_training_mode_clr = local_train_clr_pulse_r;
     assign local_swreset_pulse     = (swreset_hold_r != '0);
 

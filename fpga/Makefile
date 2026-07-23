@@ -225,10 +225,12 @@ _BUILD_IP_REPO := $(ETH_CHIPLET_IP_OUTPUT_DIR)
 # so the tidelink-flist provenance gate (tl_verify_packaged_ip) is the wrong
 # oracle for it -> skip that one check for this target.
 _SKIP_IP_VERIFY := 1
+_BD_GLOBAL_SYNTH := 1
 else
 _IP_DEP := package_ip
 _BUILD_IP_REPO := $(IP_OUTPUT_DIR)
 _SKIP_IP_VERIFY :=
+_BD_GLOBAL_SYNTH :=
 endif
 
 ifeq ($(SKIP_PACKAGE_IP),1)
@@ -325,6 +327,7 @@ build_design: $(BUILD_DESIGN_DEPS)
 	export FPGA_PROJECT_DIR=$(PROJECT_DIR) && \
 	export FPGA_IP_REPO=$(_BUILD_IP_REPO) && \
 	export FPGA_SKIP_IP_VERIFY=$(_SKIP_IP_VERIFY) && \
+	export FPGA_BD_GLOBAL_SYNTH=$(_BD_GLOBAL_SYNTH) && \
 	export FPGA_PHC_IP_REPO=$(PHC_IP_OUTPUT_DIR) && \
 	export FPGA_TARGET_DIR=$(TARGET_DIR) && \
 	export FPGA_OUTPUT_DIR=$(OUTPUT_DIR) && \

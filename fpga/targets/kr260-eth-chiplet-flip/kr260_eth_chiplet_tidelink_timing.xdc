@@ -425,7 +425,22 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # disappears at source.
 #-----------------------------------------------------------------------------
 
-
-
-
-
+#-----------------------------------------------------------------------------
+# ETHERNET (RMII / LAN8720) clock constraints — M2.
+# The nanoSoC's rmii_to_mii bridge divides the 50 MHz REF_CLK by 2 to make the
+# 25 MHz MII tx/rx clocks (mtx_clk_reg / mrx_clk_reg). Declare them as generated
+# clocks so Vivado relates them to rmii_ref_clk (else mtx_clk->rmii_txd/CE etc.
+# are analysed as unrelated clocks -> false ~-22ns hold). Then group the whole
+# RMII family async to everything else (the SoC AHB<->MAC crossing is handled by
+# the MAC's own synchronisers). Ported from the nanoSoC Z2 ethernet constraint
+# (nanosoc_gen tests: "set_clock_groups -name async_sys_rmii -asynchronous
+# -group [get_clocks {rmii_ref_clk mii_rx_clk mii_tx_clk}]").
+#-----------------------------------------------------------------------------
+create_generated_clock -name mii_tx_clk -divide_by 2 \
+    -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/C"}] \
+    [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/Q"}]
+create_generated_clock -name mii_rx_clk -divide_by 2 \
+    -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/C"}] \
+    [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/Q"}]
+set_clock_groups -name async_sys_rmii -asynchronous \
+    -group [get_clocks {rmii_ref_clk mii_tx_clk mii_rx_clk}]

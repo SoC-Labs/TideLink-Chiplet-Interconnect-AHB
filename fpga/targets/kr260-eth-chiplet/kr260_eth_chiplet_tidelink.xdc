@@ -47,17 +47,18 @@ set_property -dict { PACKAGE_PIN H12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [ge
 set_property -dict { PACKAGE_PIN E10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led1] ;# PMOD0_1 — role_is_master
 
 #-----------------------------------------------------------------------------
-# CoreSight SWD on PMOD4 (SOM240_2; 3.3V, off the bank-44 ribbon).
-# Balls resolved from the Vivado 2024.1 kr260_carrier/kr260_som board files:
-#   PMOD4 pin1 = L2  -> SWCLK ; pin2 = T7 -> SWDIO ; pin3 = AF7 -> SWD_NPORESETN
-# See the header of the companion note; drives the same OpenOCD flow as the Z2
-# build (transport=swd). VREF/level-translator caveat: confirm the PMOD4 bank
-# Vcco and that its translator passes a push-pull bidirectional SWDIO.
+# CoreSight SWD on PMOD2 (3.3V HD bank, off the bank-44 ribbon).
+# Moved off PMOD4: PMOD4 sits on HP banks 64/65 (1.8V) and rejected LVCMOS33
+# (DRC BIVB-1), which would have required a 1.8V-only probe. PMOD2 is 3.3V so an
+# ordinary ST-Link / DAPLink works directly.
+#   PMOD2 pin1 = J11 -> SWCLK ; pin2 = J10 -> SWDIO ; pin3 = K13 -> SWD_NPORESETN
+#   GND on pin5/11, 3V3 (probe VREF) on pin6/12.
+# Drives the same OpenOCD flow as the Z2 build (transport=swd).
 #-----------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN L2  IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLDOWN true } [get_ports SWCLK]
-set_property -dict { PACKAGE_PIN T7  IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWDIO]
-set_property -dict { PACKAGE_PIN AF7 IOSTANDARD LVCMOS18 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWD_NPORESETN]
+set_property -dict { PACKAGE_PIN J11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLDOWN true } [get_ports SWCLK]
+set_property -dict { PACKAGE_PIN J10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWDIO]
+set_property -dict { PACKAGE_PIN K13 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWD_NPORESETN]
 
-# SWCLK is a slow external debug clock on a non-ideal (N-type CCIO) pin;
-# waive dedicated clock-routing so the placer accepts it.
+# SWCLK is a slow external debug clock and may land on a non-ideal (clock-capable)
+# pin; waive dedicated clock-routing so the placer accepts it.
 set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports SWCLK]]

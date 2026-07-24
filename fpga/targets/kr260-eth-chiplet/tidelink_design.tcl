@@ -20,7 +20,7 @@
 ###   - aggregate eth/phc/tidechart IRQs into pl_ps_irq0.
 ###
 ### The GPIO-PHY pads go to the J21 ribbon (kr260_eth_chiplet_tidelink.xdc), and
-### CoreSight SWD goes to PMOD4 (swclk/swdio_* -> board wrapper IOBUF).
+### CoreSight SWD goes to PMOD2 (3.3V) (swclk/swdio_* -> board wrapper IOBUF).
 ###
 ### ┌── SCOPING STATUS ─────────────────────────────────────────────────────────
 ### │ FIRST-CUT scaffold. The OOC IP synth (make package_eth_chiplet_ip) is the
@@ -150,7 +150,12 @@ proc create_root_design { parentCell } {
     set_property CONFIG.PRIM_IN_FREQ [expr {$_pl0_hz / 1000000.0}] [get_bd_cells clk_wiz_0]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $soc/sys_fclk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $ps/maxihpm0_fpd_aclk]
-    connect_bd_net [get_bd_pins $clk_wiz/clk_out2]  [get_bd_pins $phy_clk_div/clk_in]
+    # PHY divider MUST derive from clk_out1: the timing XDC declares
+    # pad_clk_tx_fwd as 'clk_wiz_0/clk_out1 -divide_by 8'. Feeding the divider
+    # from clk_out2 makes the TX launch clock (user_ref_clk_div2) and the
+    # forwarded output clock unrelated near-equal-period clocks -> beat-frequency
+    # analysis, 0.728ns requirement, WNS -31ns. Matches the bare-link target.
+    connect_bd_net [get_bd_pins $clk_wiz/clk_out1]  [get_bd_pins $phy_clk_div/clk_in]
     connect_bd_net [get_bd_pins $phy_clk_div/clk_out] [get_bd_pins $soc/user_ref_clk]
     connect_bd_net [get_bd_pins $clk_wiz/clk_out3]  [get_bd_pins $soc/idelay_ref_clk]
 

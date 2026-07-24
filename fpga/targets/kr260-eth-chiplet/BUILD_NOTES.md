@@ -39,18 +39,17 @@ TideLink) implements on the KR260.
 Impl utilisation (placed): **47.6% CLB LUT, 21.2% FF, 22.6% BRAM, 0.6% DSP,
 25 IOB** — comfortable headroom.
 
-**Timing is NOT yet closed:** WNS = -31.0 ns, WHS = -13.9 ns (8 failing
-endpoints each). `build_design` does not gate on timing (same as the bare-link
-kr260-pair target), so the bitstream is produced but must not be trusted on the
-bench until closed. The failing paths are ALL `pad_rx[*] -> Wlink GPIO-RX
-capture registers` — source-synchronous PHY RX capture. Root cause: the reused
-`*_timing.xdc` targets the BARE-LINK hierarchy (`tidelink_0/inst/...`), but in
-the eth-chiplet the PHY is nested deeper
-(`nanosoc_eth_chiplet_0/inst/u_chiplet/u_tidelink/...`), so its
-set_max_delay / set_bus_skew / false_path constraints don't match and the RX
-paths are analysed as ordinary logic. **Next step:** re-path the RX timing
-constraints for the eth-chiplet nesting (or add an eth-chiplet-specific timing
-XDC). This is the primary remaining engineering item before bench bring-up.
+**Timing (build #11, superseded):** WNS = -31.0 ns. **Root cause found and
+fixed** — it was NOT a timing-XDC hierarchy problem (an earlier note in this file
+claimed that; it was wrong, those `-hier` filters are wildcards and do match).
+The real cause was a **block-design clocking bug**: this BD drove
+`phy_clk_div/clk_in` from `clk_wiz clk_out2`, while the timing XDC declares
+`pad_clk_tx_fwd` as `clk_wiz_0/clk_out1 -divide_by 8`. That made the TX launch
+clock (`user_ref_clk_div2`, off clk_out2) and the forwarded output clock
+(off clk_out1) two *unrelated* near-equal-period clocks (320.572 vs 319.857 ns),
+so Vivado analysed their beat-frequency worst case: a 0.728 ns requirement on
+`gpiotx_*/io_pad_q_reg -> pad_tx[*]`. The bare-link target drives the divider
+from clk_out1; this BD now matches it.
 
 ### Fixes required to get here (all committed on integ/kr260-eth-chiplet)
 1. build-integrity helpers (`build_provenance.tcl` + msg_gate hooks) were missing
@@ -64,7 +63,8 @@ XDC). This is the primary remaining engineering item before bench bring-up.
 9. use the **V2** TideLink flist (tidelink_fpga_v2.flist) — the parent elab
    defaults to V1, which mismatches the V2 tidelink_top epoch interface
 10. materialise the V2 `\`include` PHY shims so ipx packaging keeps them
-11. SWD on PMOD4 is a 1.8V HP bank -> LVCMOS18 (+ CLOCK_DEDICATED_ROUTE on the net)
+11. SWD pins: PMOD4 is a 1.8V HP bank -> now MOVED to PMOD2 (3.3V, J11/J10/K13)
+12. BD clocking: PHY divider must derive from clk_out1 (see timing note above)
 
 ### die_b
 `make build_design TARGET=kr260-eth-chiplet-flip` — same flow, flipped TX/RX
@@ -97,7 +97,7 @@ definitions (flist-cleanliness — last-wins), and 2 async-set flops in
   (eth_ss_0 AHB backdoor, GPIO-PHY pads, SWD, IRQs; RMII/scan/etc tied off for
   M1), `package_eth_chiplet_ip.tcl`.
 - **Constraints**: `kr260_eth_chiplet_tidelink.xdc` (J21 ribbon pads + PMOD0
-  LEDs + spare-pin UART + **SWD on PMOD4** L2/T7/AF7), timing + drc copied from
+  LEDs + spare-pin UART + **SWD on PMOD2** J11/J10/K13 (3.3V)), timing + drc copied from
   the bare-link target. The flip target swaps the TX/RX ball-sets.
 - **Board wrapper**: `tidelink_design_wrapper.v` — the SWDIO IOBUF + BD instance.
 - **Makefile**: `kr260-eth-chiplet(-flip)` targets (xck26 + KR260 board preset),
@@ -123,6 +123,6 @@ synth (step 2) is the gate; the BD is the next phase and needs Vivado work on:
 
 ## SWD bring-up
 
-Reuses the PYNQ-Z2 OpenOCD flow unchanged — external ST-Link/DAPLink on PMOD4,
+Reuses the PYNQ-Z2 OpenOCD flow unchanged — external ST-Link/DAPLink on PMOD2 (3.3V),
 `transport select swd`. See `pynq/scripts/openocd/nanosoc_multicore.cfg` and the
 `swd_pmod4` constraints folded into `kr260_eth_chiplet_tidelink.xdc`.

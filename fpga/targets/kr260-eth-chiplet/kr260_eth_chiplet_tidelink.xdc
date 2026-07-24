@@ -12,7 +12,7 @@
 # TideLink GPIO-PHY link mapped onto the KR260 Raspberry-Pi 40-pin header (J21),
 # identical ball map to the bare-link kr260-pair targets (HDIO bank 44, 3.3V,
 # straight-through ribbon; the flip build swaps TX/RX balls). Plus the SoC's
-# CoreSight SWD on PMOD4 (SOM240_2, off bank 44) and a console UART on spare
+# CoreSight SWD on PMOD2 (3.3V HD bank, off bank 44) and a console UART on spare
 # RPi pins. Balls verified against the xck26-sfvc784 SOM pin database.
 #-----------------------------------------------------------------------------
 

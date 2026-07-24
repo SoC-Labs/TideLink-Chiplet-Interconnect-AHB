@@ -54,7 +54,7 @@ proc create_root_design { parentCell } {
     create_bd_port -dir I           pad_clk_rx
     create_bd_port -dir I -from 7 -to 0 pad_rx
 
-    # CoreSight SWD -> PMOD4 (SWDIO IOBUF lives in the board wrapper)
+    # CoreSight SWD -> PMOD2, 3.3V (SWDIO IOBUF lives in the board wrapper)
     create_bd_port -dir I           swclk
     create_bd_port -dir I           swd_nporesetn
     create_bd_port -dir I           swdio_i

@@ -125,4 +125,4 @@ synth (step 2) is the gate; the BD is the next phase and needs Vivado work on:
 
 Reuses the PYNQ-Z2 OpenOCD flow unchanged — external ST-Link/DAPLink on PMOD2 (3.3V),
 `transport select swd`. See `pynq/scripts/openocd/nanosoc_multicore.cfg` and the
-`swd_pmod4` constraints folded into `kr260_eth_chiplet_tidelink.xdc`.
+the SWD constraints (PMOD2: J11/J10/K13) folded into `kr260_eth_chiplet_tidelink.xdc`.

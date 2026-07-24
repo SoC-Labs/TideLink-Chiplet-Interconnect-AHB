@@ -14,7 +14,8 @@
 //
 // Difference from the bare-link KR260 wrapper: the eth-chiplet contains the
 // whole SoC + internal TideLink, so this wrapper also folds the CoreSight SWD
-// bidirectional line (SWDIO) into an IOBUF on PMOD4. See swd_pmod4.xdc.
+// bidirectional line (SWDIO) into an IOBUF on PMOD2 (3.3V). Pins live in
+// kr260_eth_chiplet_tidelink.xdc.
 //
 // As on the bare-link KR260 target there are NO DDR_*/FIXED_IO_* ports — the
 // MPSoC PS DDR4 + MIO are bonded to the SOM and configured by the board preset
@@ -28,10 +29,10 @@ module tidelink_design_wrapper (
     input  wire        pad_clk_rx,
     input  wire  [7:0] pad_rx,
 
-    // CoreSight SWD on PMOD4 (see swd_pmod4.xdc)
-    input  wire        SWCLK,          // PMOD4 pin1 / L2
-    inout  wire        SWDIO,          // PMOD4 pin2 / T7 (bidirectional)
-    input  wire        SWD_NPORESETN,  // PMOD4 pin3 / AF7 (optional)
+    // CoreSight SWD on PMOD2, 3.3V (pins in kr260_eth_chiplet_tidelink.xdc)
+    input  wire        SWCLK,          // PMOD2 pin1 / J11
+    inout  wire        SWDIO,          // PMOD2 pin2 / J10 (bidirectional)
+    input  wire        SWD_NPORESETN,  // PMOD2 pin3 / K13 (optional)
 
     // Primary UART console (bring to a spare pad or the PS-side USB-UART; XDC)
     input  wire        uart_rxd,

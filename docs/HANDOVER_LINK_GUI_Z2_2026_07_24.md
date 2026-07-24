@@ -8,7 +8,8 @@
 ## 1. Mission
 
 Build a **live link-visibility GUI** for the TideLink chiplet interconnect running on the
-**two-board PYNQ-Z2 pair** (z2_02 = die_a "master" ↔ z2_03 = die_b "slave", GPIO ribbon).
+**two-board PYNQ-Z2 pair** (z2_02 = die_a "master" ↔ **z2_01** = die_b "slave", GPIO ribbon —
+**verified 2026-07-24 on live hardware; NOT z2_03**, see §11).
 It must show, continuously and per-die:
 
 - link state (fcsm, cal_done, lane_locked, role/mask handshake),
@@ -21,6 +22,12 @@ with **load-generator controls** (packet length N, REL_THRESHOLD, run/stop soak)
 efficiency story can be demonstrated interactively: dragging N moves header efficiency along
 N/(N+2); restoring REL_THRESHOLD to its POR of 20 visibly starves the credit loop; the
 reliability counters stay on screen the whole time.
+
+**Second mission (added 2026-07-24): versioned throughput benchmarking.** New RTL versions
+with throughput improvements will be built as tagged bitstreams. The GUI must run the same
+fixed workload suite against each deployed version, record every metric against the version
+tag, and render **version-over-version comparison graphs** that quantify the improvement —
+with repeats, so build/bring-up variance doesn't masquerade as a gain. See §10.
 
 **This is an extension of an existing app, not a new stack.** Do not start a new web service.
 
@@ -48,8 +55,10 @@ stream/drain roles already use). Boards are **not** NTP-synced (clocks ~34 h apa
 compare wall-clock across boards; each agent timestamps its own windows with
 `time.monotonic()` and the server aligns on receipt order only.
 
-Board IPs / identity: defaults in `app.py` (`192.168.4.101` / `192.168.6.101`, board
-`bridge1`); board access is arbitrated by **fpgahub** — see §7.
+Board IPs / identity: die_a = z2_02 = `192.168.4.101`; **die_b = z2_01 = `192.168.2.101`**
+(verified live 2026-07-24). ⚠ `app.py`'s defaults (`192.168.6.101` = z2_03) and the
+`bridge1` pair concept are **stale** — fix the defaults as part of Phase A. Board access is
+arbitrated by **fpgahub** — see §7 and §11 for the current per-board lease CLI.
 
 ---
 
@@ -59,10 +68,11 @@ TideLink APB block base **`0x4403_2000`** on *both* boards (each board sees only
 Register offsets below are `0x4403_2000 + off`. The agent already encodes these
 (`tl_perf_agent.py` top: `PAIR_BASE = 0x44032000`).
 
-- **AHB TX aperture:** default `0x4400_0000`, but **image-dependent** — GP1-split images
-  override via `TIDELINK_TX_BASE` env (older maps used `0x4000_0000`). Take it from the
-  deployed image's manifest / existing agent env plumbing. Never hardcode a new literal.
-- **Local RX FIFO (pop-on-read!):** `0x4401_0000` (`TIDELINK_RXFIFO_BASE`).
+- **AHB TX aperture: `0x8400_0000`** and **local RX FIFO (pop-on-read!): `0x8401_0000`** —
+  **measured from the `.hwh` of BOTH the golden and v0 images (GP1-split, M_AXI_GP1); the
+  scripts' `0x4400_0000` defaults are WRONG for these images** (a write there dies on a bus
+  error). Always export `TIDELINK_TX_BASE=0x84000000 TIDELINK_RXFIFO_BASE=0x84010000`, and
+  derive from the deployed image's `.hwh` when images change. APB stays `0x4403_xxxx`.
 
 ### 3a. Poll-safe whitelist (the ONLY offsets the monitor loop may read)
 
@@ -114,9 +124,11 @@ copy its accessor, don't write a new one.
 The Z2 boards were restored to their golden images 2026-07-17 and hold a proven-good
 byte-exact link (24/24 continual-data, both directions). Phase A must work on those images.
 
-**Do not assume the perf counters work on the golden images** — the PERF_CTRL decode fix
-(`e6f0254`/`1403248`, 2026-07-17 16:34) postdates them, so counters almost certainly read 0.
-Phase A therefore derives rates in software (the app already does this for runs).
+**The perf counters DO NOT work on the golden images — measured 2026-07-24, no longer an
+assumption:** on both dies of the freshly redeployed golden, `PERF_ID` (0x0FC) reads
+`0x00000000` (expected `0x5046_0100`) and a PERF_CTRL write does not stick — the region-decode
+bug scrambles both the write AND read paths. Phase A therefore derives rates in software (the
+app already does this for runs); every hardware gauge in Phase B needs the rebuilt image.
 
 Tasks:
 
@@ -149,11 +161,12 @@ outside the whitelist (assert in the agent, test in CI).
 Gives the headline gauges software can't derive: **link utilization = ΔLINK_BUSY/ΔSAMPLE**,
 TX/RX stall fractions, CREDIT_STARVE cycles.
 
-1. **Probe first (cheap, on golden):** write `0x0A0 = 0x1`, read back. Sticks → counters
-   live, skip the rebuild. Reads 0 → image predates the fix (expected). PERF_ID at `0x0FC`
-   (`0x5046_0100`) only proves the block exists, **not** that CTRL is writable.
+1. **Probe DONE (2026-07-24): does not stick, PERF_ID=0 on both dies** → the rebuild is
+   mandatory. (Probe method for re-use on any new image: write `0x0A0 = 0x1`, read back;
+   PERF_ID at `0x0FC` must read `0x5046_0100` AND the CTRL bit must stick AND
+   SAMPLE_COUNT `0x0E8` must advance.)
 2. **Rebuild both Z2 images from main:** targets `pynq-z2-pair-all` + `pynq-z2-pair-flip-all`,
-   farm build (`make -C fpga farm_build FARM_JOBS="<target>@srv04936"`), `TIDELINK_PHY_V2=1`
+   farm build (`make -C fpga farm_build FARM_JOBS="<target>@farm-host-a"`), `TIDELINK_PHY_V2=1`
    exported. ⚠ `-verilog_define` never reaches packaged-IP OOC synth — verify the fix is in
    the bitstream **structurally** (probe test in step 1 after deploy), never by build-log or
    md5 diff.
@@ -210,17 +223,162 @@ fixed-offset FIFO read).
 
 ## 9. Key references (read before coding)
 
-- `docs/THROUGHPUT_GUI_PLAN_2026_06_12.md` — the app's architecture plan (SSE degrade to
+- `docs/THROUGHPUT_GUI_PLAN_2026_06_12.md [removed 2026-07; in git history]` — the app's architecture plan (SSE degrade to
   1 Hz polling, run store, gates).
 - `pynq_host/throughput_gui/README.md` — dev mode, deploy on mapstone-dev, venv pattern.
 - `docs/REGISTER_MAP.md` — authoritative register map (esp. lines 60–376, 441–471).
 - `docs/HANDOVER_2026_07_10.md` — hazard registers, unjam matrix, operational history.
-- `docs/ARCH_ANALYSIS_2026_06_12.md` — the framing-overhead analysis the GUI visualizes.
+- `docs/ARCH_ANALYSIS_2026_06_12.md [removed 2026-07; in git history]` — the framing-overhead analysis the GUI visualizes.
 - `pynq_host/scripts/tl39.py` — reference decodes + the SoC guard pattern.
 - Analysis behind this handover (overhead waterfall, PHY report, demo design):
   session artifact "TideLink Link Efficiency — Analysis & Demo Plan", 2026-07-24.
 
-## 10. Definition of done
+## 10. Versioned throughput benchmarking (the comparison mission)
+
+### 10a. The confound you MUST design around (or the campaign lies)
+
+On the Z2 pair the end-to-end rate is **PS→PL-bus-bound** (~96 PL cycles/store; the link is
+~83% idle). Consequences for benchmarking RTL versions:
+
+- **Wire-efficiency improvements (FC batching, addr suppression, framing changes) will NOT
+  move delivered words/s** with the PS software generator — the bottleneck is elsewhere. If
+  the campaign's only metric is words/s, those versions will falsely read as "no improvement".
+  The metric that moves is **link-busy cycles per delivered word** (ΔLINK_BUSY/ΔRX_WORD_COUNT,
+  Phase-B counters) — it drops in direct proportion to wire efficiency.
+- **Pipelining/backpressure improvements (deeper TX skid, burst acceptance, PL-side or DMA
+  generator) DO move delivered words/s** — that's the metric for them.
+- The 2026-07-17 rate-ladder lesson is binding: hclk and link UI are chained on these images,
+  so any comparison across versions built at different clocks is **structurally confounded**.
+  All versions in one campaign must be built at the **same clk_wiz settings**, and every run
+  records a **bus-reference control** (timed non-link PS access, the `--busref` pattern) so a
+  PS/bus-rate shift between deploys is detected instead of absorbed into the results.
+
+Every version therefore gets a small **metric matrix**, not one number:
+`delivered_words_per_s`, `link_busy_per_word`, `tx_stall_frac`, `rx_stall_frac`,
+`credit_starve_cycles`, `crc_errors` (must be 0), `overrun_sticky` (must be clean),
+`busref_us` (control). Words/s answers "is the system faster"; link_busy_per_word answers
+"is the link protocol leaner"; the controls answer "was the comparison fair".
+
+### 10b. Version registry
+
+Extend the store with a `versions` table keyed by **human tag** (e.g. `tl-tp-v0-baseline`,
+`tl-tp-v1-skid8`): tag → git commit → build target(s) → bitstream manifest sha256s (both
+boards) → build date → notes. The existing fail-closed provenance (manifest + PHYID recorded
+per run, HTTP 412 without) already binds runs to bitstreams — the registry just names them.
+A run's version is **resolved from the deployed manifest sha256, never typed by the operator**
+(an operator label that disagrees with the manifest is a hard error, not a warning).
+`tl-tp-v0-baseline` = the current golden pair, benchmarked first — it is the denominator for
+every improvement claim.
+
+### 10c. Fixed workload suite (identical for every version)
+
+| id | workload | primary metric |
+|---|---|---|
+| W1 | credit-gated stream M→S, N=2, 60 s | delivered words/s (small-packet) |
+| W2 | credit-gated stream M→S, N=1024, 60 s | delivered words/s (streaming) + link_busy_per_word |
+| W3 | drain-limited (receiver-paced), 60 s | credit-loop metrics, REL_THRESHOLD=0 |
+| W4 | bidirectional simultaneous, 60 s | aggregate words/s + starve cycles |
+| W5 | busref control (no link traffic) | busref_us — comparison-validity gate |
+
+Suite parameters live in one versioned config so "the same suite" is machine-checkable.
+Byte-exactness is verified on every workload (existing delivery-proof + drain verification) —
+**a throughput number from a run that wasn't byte-exact is discarded, not annotated**.
+
+### 10d. Repeats and honesty
+
+Bring-up lottery and build variance are real on this rig. Per version: ≥3 suite repetitions,
+each from a fresh power-cycle → deploy → bring-up (the §5.3 discipline). Graphs show
+median with min–max whiskers, never a single run. A version whose runs disagree wildly is
+reported as "unstable", which is itself a finding — do not cherry-pick the good run.
+
+### 10e. Campaign orchestration
+
+A campaign = ordered list of version tags × the suite × repeat count. The orchestrator walks
+it: acquire lease → power-cycle → deploy version to BOTH boards → bring up → criterion-A/B +
+delivery proof → run suite (monitor loop recording throughout) → store. Deploy/bring-up
+failures mark the version attempt FAILED and continue the campaign; they never silently
+reduce the repeat count. Campaigns are resumable (the registry knows which cells are filled).
+Manual single-version mode must also exist (deploy is slow; the operator may drive it).
+
+### 10f. Comparison graphs (the deliverable)
+
+- **Version-over-version**: grouped bars (or a line when versions form a sequence) of each
+  metric vs version tag, baseline highlighted, median + whiskers, one panel per metric — no
+  dual axes, no mixed units on one panel.
+- **Improvement view**: % change vs `v0-baseline` per metric, with the busref control shown
+  alongside so a bus shift is visible next to any claimed gain.
+- **Time-series drill-down**: click any bar → that run's live monitor traces (words/s,
+  credit level, stalls over the 60 s window) from the stored NDJSON.
+- Export: CSV per campaign (the store already writes NDJSON/CSV per run — aggregate, don't
+  reinvent).
+
+## 11. Rig state + operational deltas (session log, 2026-07-24)
+
+Everything in this section was **measured/performed live on 2026-07-24**; trust it over any
+older doc or memory it contradicts.
+
+- **Cabling (verified by live link + deploy records): die_a = z2_02 (`192.168.4.101`) ↔
+  die_b = z2_01 (`192.168.2.101`).** z2_03 is a spare, NOT on the ribbon. Update `app.py`
+  defaults and any `.6.101` literals.
+- **fpgahub lease CLI changed** (older docs/memories reference a `pair lease acquire bridge1`
+  that no longer exists): per-board groups now —
+  `fpgahub board lease acquire pynq_z2_02 --ttl <s>` (and `pynq_z2_01`); the token is printed
+  ONCE by acquire; `board lease heartbeat|release <board> --token <tok>`. `lease.py` must be
+  ported to this model. Hub power-cycle entries: `pynq_z2_02_ps` (rshtech port 3),
+  `pynq_z2_01_pl` (rshtech port 2), `pynq_z2_03_ps` (z2_fanout port 1).
+- **The boards DO hard-hang when idle** — z2_02 was found dead (hub port on, no route) after
+  a week idle and needed a hub power-cycle. Budget for this in campaign orchestration
+  (power-cycle → deploy → bring-up is the normal per-repeat path anyway).
+- **The GOLDEN pair binaries are preserved** at mapstone-dev
+  `~/tidelink_artefacts/golden-z2-20260717/` (`tidelink.bin` die_a sha256 `6d3cadd9…`,
+  `tidelink-flip.bin` die_b sha256 `c1dbd91a…`, + `.hwh` + `SHA256SUMS` + README). They were
+  recovered from the boards' `/lib/firmware` (md5 `4b5889a9…`/`e384eec6…` — matches the
+  07-17 golden record). ⚠ They are NOT the same build as `/tmp/tidelink_deploy` (07-15,
+  different hashes) — always deploy golden from the preserved dir with `--expect-sha256`.
+- **Rig left in a healthy state:** golden redeployed to both dies with the sha256 guard,
+  link trained autonomously (cal=1, fcsm=4, cr_seen=1 both dies; credits 4096; no
+  overrun/underrun), leases released.
+- **Baseline build:** git tag `tl-tp-v0-baseline` = `ded7d15` (local tag). Built from a
+  CLEAN worktree `~/SoCLabs/tidelink-build-v0` — the main checkout carries uncommitted GUI
+  + RTL WIP and must never be the source of a benchmark bitstream. (Soton GitLab was down;
+  worktree submodules were cloned from the local checkouts with
+  `git -c protocol.file.allow=always` and URL overrides.) Farm gate requires
+  `source set_env.sh` + `export TIDELINK_PHY_V2=1` or it refuses (silent-V1 guard).
+- **Phase A note:** the golden images predate SYNC/epoch-era regs in part; the monitor must
+  tolerate individual whitelist regs reading 0 on older images (decode by PHY/OBS ID
+  markers where available, e.g. `0x19C[31:24]==0xFC`).
+
+### 11b. v0 deploy + acceptance session (later on 2026-07-24)
+
+- **v0 was deployed to both dies (sha256-manifest-verified) and its PERF acceptance PASSED:**
+  PERF_ID `0x5046_0100`, PERF_CTRL sticks, SAMPLE_COUNT free-runs at ~4.7 MHz on both dies.
+  **Phase B's hardware gauges are proven live on the v0 image.**
+- 🔴 **OPEN BLOCKER — data delivery fails under plain `deploy_pair.sh` bring-up on BOTH
+  images.** `link_delivery_proof.sh` (correct GP1 apertures, clean POR, link fcsm=4/cal=1,
+  gate_open=1 both dies) fails **both directions on v0 AND on the restored golden** — so this
+  is NOT a v0 RTL regression; the July 24/24 delivery and the GUI's criterion-B all ran under
+  the throughput_gui orchestrator / tlchar-era bring-up, which evidently performs a step the
+  plain deploy does not (data-mode/zero-poke class). **First campaign task: replay the
+  orchestrator bring-up on golden until delivery passes, diff the register writes vs plain
+  deploy, and encode the missing step into the campaign's deploy phase.** Clues recorded:
+  Wlink FE `fe_rx_ptr` advances (link-layer packets DO land), while on v0
+  `EPOCH_140=0` / `SLICEMAP=0xFFFFFFFF` (POR) / zero SYNCs inserted or detected.
+- **Role readback polarity differs between images from clean POR** (golden: die_a `cfg=1`;
+  v0: die_a `cfg=0`; complementary on both) — a real post-golden RTL delta; account for it
+  in `regmap.py` role decode rather than assuming golden semantics.
+- ⚠ **Never deploy without a power-cycle:** role-lock state lives in a POR-only reset domain
+  that SURVIVES PL reconfiguration — a warm redeploy of the golden came up with roles
+  INVERTED vs its own fresh-POR behavior. Mechanism now observed directly; the
+  power-cycle → deploy-both → bring-up → test order is mandatory per repeat.
+- The farm gate's silicon-tier advisory (`test_03_packet_slave_to_master` undelivered) should
+  be treated as a live lead until the bring-up question is closed — consider
+  `FARM_GATE_STRESS=1` for campaign builds once golden-recipe delivery is re-established.
+- **Rig state at hand-off: golden on both dies from clean POR, link trained (fcsm=4/cal=1,
+  no overrun), leases released.** v0 artifacts remain staged at
+  `~/tidelink_artefacts/tl-tp-v0-baseline/` — redeploy + delivery re-test once the bring-up
+  step is found.
+
+## 12. Definition of done
 
 1. `--fake` demo: monitor page live with two fake dies, run controls working, all tests green.
 2. Real-hardware Phase A: monitor running against the golden Z2 pair under lease, showing
@@ -228,4 +386,9 @@ fixed-offset FIFO read).
    reads (agent asserts), zero sticky overruns caused by the GUI.
 3. Phase B (if image rebuilt): utilization/stall/starve gauges live, the ~17%-utilization
    finding reproduced on screen, byte-exact delivery re-proven after deploy.
-4. Nothing in the existing throughput/eye/stress toolkits regressed; existing pytest suite green.
+4. Benchmarking: version registry resolving tags from deployed manifests; the W1–W5 suite
+   runnable end-to-end in `--fake` (two synthetic "versions" with different modeled capacity
+   produce a correct comparison graph); on hardware, `tl-tp-v0-baseline` benchmarked with ≥3
+   repeats and its medians matching the §6 sanity anchors; comparison + improvement graphs
+   rendering with median/whiskers and the busref control alongside.
+5. Nothing in the existing throughput/eye/stress toolkits regressed; existing pytest suite green.

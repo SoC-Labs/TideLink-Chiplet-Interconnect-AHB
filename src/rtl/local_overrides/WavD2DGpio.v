@@ -1,3 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Copyright 2021 Wavious, Inc.
+// Copyright 2026 SoC Labs, University of Southampton
+//
+// Derived from the Wavious "wlink" chiplet interconnect
+// (https://github.com/Wavious/wlink), licensed under the Apache License,
+// Version 2.0. This file has been MODIFIED by SoC Labs. See NOTICE and
+// THIRD_PARTY_NOTICES.md for the nature of those modifications; the git
+// history of this repository is the per-line record.
+//
+// You may obtain a copy of the License at:
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
 module WavD2DGpio #(
   // SoC Labs §9 clock fix: pass-through to per-lane WavD2DGpioRx.USE_CLKBUF
   // (default 0 = sim/ASIC bit-exact; FPGA wrapper sets 1 via threading).

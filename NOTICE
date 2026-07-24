@@ -1,0 +1,72 @@
+TideLink Chiplet Interconnect (AHB)
+Copyright 2026 SoC Labs, University of Southampton
+
+This product includes software developed at SoC Labs, University of Southampton
+(https://soclabs.org).
+
+================================================================================
+Third-party components
+================================================================================
+
+--------------------------------------------------------------------------------
+Wavious wlink  —  Apache License 2.0
+--------------------------------------------------------------------------------
+Copyright 2021 Wavious, Inc.
+
+Portions of this work are derived from the Wavious "wlink" chiplet
+interconnect IP (https://github.com/Wavious/wlink), licensed under the
+Apache License, Version 2.0.
+
+The following files in src/rtl/local_overrides/ are Verilog generated from the
+Wavious Chisel sources and subsequently MODIFIED by SoC Labs:
+
+    ShortPacketToWlink.v              WlinkGenericFCReplayAddrSync_18.v
+    TideLinkToWlink.v                 WlinkGenericFCReplayV2_12.v
+    WavD2DGpio.v                      WlinkGenericFCReplayV2_13.v
+    WavD2DGpioRx.v                    WlinkGenericFCSM.v
+    WavD2DGpioRx_v2.v                 WlinkGenericFCSM_1.v
+    WavD2DGpioTx.v                    WlinkGenericFCSM_2.v
+    WavD2DGpio_v2.v                   WlinkGenericFCSM_3.v
+    WavMultibitSync_18.v              WlinkGenericFCSM_4.v
+    Wlink.v                           WlinkGenericFCSM_6.v
+    WlinkGPIOPHY.v                    WlinkRxLinkLayer.v
+    WlinkGPIOPHY_v2.v
+
+See THIRD_PARTY_NOTICES.md for the nature of the modifications, as required by
+Section 4(b) of the Apache License, Version 2.0.
+
+You may obtain a copy of the Apache License, Version 2.0 at:
+    http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+verilog-i2c  —  MIT License
+--------------------------------------------------------------------------------
+Copyright (c) 2015-2017 Alex Forencich
+
+    src/rtl/local_overrides/i2c_master.v
+    src/rtl/local_overrides/i2c_master_axil.v
+
+These files retain their original MIT licence text in-file.
+
+--------------------------------------------------------------------------------
+Plotly.js  —  MIT License
+--------------------------------------------------------------------------------
+Copyright (c) 2016-2024 Plotly, Inc.
+
+    pynq_host/throughput_gui/static/vendor/plotly.min.js
+
+Vendored as a minified bundle so the board-side dashboard works offline.
+
+================================================================================
+Components NOT distributed with this repository
+================================================================================
+
+This repository REFERENCES, but does not contain, the following licensed IP.
+It is resolved at build time from a separately-licensed installation via the
+environment variables documented in set_env.sh. No vendor RTL is committed here.
+
+  * Arm Corstone-101 / BP210 (CMSDK)   — via $CMSDK_DIR, $CMSDK_FPGA_SRAM_V
+  * Arm XHB-500 bus bridge generator   — via $XHB500_IP_DIR; output is generated
+                                          into deps/xhb500/generated/ (gitignored)
+
+Users must obtain their own licence for these components from Arm.

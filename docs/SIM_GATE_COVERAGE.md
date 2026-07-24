@@ -4,7 +4,7 @@
 single source of truth; this file explains *what each suite protects* and, more
 importantly, **what it does not**.
 
-**Last updated:** 2026-07-19 (P1 forced-recal W1P gated — 21 suites → 22
+**Last updated:** 2026-07-24 (v1 TX traffic generator gated — 22 suites → 25
 blocking suites + 2 known-defect sentinels + 2 parked targets).
 
 ---

@@ -96,8 +96,26 @@ def _gate(tb, side):
 
 
 def _skip(dut, msg):
-    """Mark the current test as non-applicable to this compile (pass, no-op)."""
-    dut._log.warning(f"SKIP: {msg}")
+    """Mark the current test as non-applicable to this compile.
+
+    ⚠️ THIS REGISTERS AS A COCOTB **PASS**, NOT A SKIP. cocotb 1.7.2 has no
+    runtime skip (only the decoration-time `@cocotb.test(skip=True)`), so a
+    bailed-out test still prints "PASS". On `main` EVERY test in this module
+    bails this way — the module reports 5 PASS at 0.00 ns SIMULATED TIME, i.e.
+    ZERO coverage that LOOKS like full coverage. That false green is exactly
+    how the 2026-07-23 slave SHAM-GATE reached silicon unnoticed: this is the
+    only module that asserts bilateral mask_hs_match==1, and it has never once
+    executed (it needs ONCHIP=1 MASK_HS=1 + dut.s_ref_clk, which live only on
+    the unmerged 93a4cbe).
+    The banner below exists so nobody can read this module's PASS lines as
+    proof of anything. The REAL executable guard is the blocking gate suite
+    `v2_mask_hs_bilateral` (Makefile) -> test_v2_mask_hs_bilateral.py.
+    """
+    dut._log.warning("=" * 78)
+    dut._log.warning(f"SKIP (NOT A PROOF — counts as PASS, 0 ns simulated): {msg}")
+    dut._log.warning("This module asserts NOTHING in this compile. Do not cite its")
+    dut._log.warning("PASS as autonomy/handshake evidence. See gate v2_mask_hs_bilateral.")
+    dut._log.warning("=" * 78)
 
 
 async def _apb_read_or_wedge(tb, side, addr):

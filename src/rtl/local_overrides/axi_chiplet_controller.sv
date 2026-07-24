@@ -675,16 +675,23 @@ module axi_chiplet_controller #(
     // driven by Phase 2B's HW handshake).
     wire mask_hs_match     = wlink_mask_hs_result[0] | autoneg_mask_hs_local_match;
     wire mask_hs_fail      = wlink_mask_hs_result[1] | autoneg_mask_hs_local_fail;
-    // apb_debug_unlock_i opens the gate too — see the debug-strap contract in
-    // the comment block above ("apb_debug_unlock_i bypasses the gate
-    // entirely"). The strap is wired to axi_gpio_debug_unlock @ 0x4404_1000
-    // and asserted by the FPGA bring-up flow (deploy_pair.sh) on both boards,
-    // so SW W1S of ROLE_CFG[1] can latch role_lock without the cross-board
-    // I²C peer-mask handshake (which needs physical jumpers + SHORTCOMINGS-14a).
-    // Production silicon ties apb_debug_unlock_i AND mask_hs_bypass_i to 0, so
-    // the handshake stays mandatory there. The §9 SW-coordinated calibration
-    // path (training_mode held HIGH on both sides) then brings the link up.
-    wire mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i;
+    // 2026-07-24 — apb_debug_unlock_i REMOVED from this OR (F2b). It served TWO
+    // unrelated purposes and they must be independent:
+    //   (1) "bypass the peer-mask gate"  — a SHAM opener, removed here;
+    //   (2) "enable external-APB WRITES to Wlink on a slave die" (:3599) — a
+    //       real, still-needed bring-up capability.
+    // Because one strap did both, the handshake could never be honest while
+    // bring-up worked. MEASURED both ways on kr260-pair-onchip: with the strap
+    // welded 1 the slave showed gate_open=1 while mask_hs_match=0 (the SHAM,
+    // 07-23); with it driven 0 the gate became honest but the slave's Wlink
+    // config writes were silently dropped read-only, so FC never bootstrapped
+    // and BOTH dies stuck at fcsm=2 (07-24). Dropping the term here decouples
+    // them: debug-unlock may stay asserted for bring-up WITHOUT ever forging a
+    // peer-mask match.
+    // The gate now opens ONLY on a genuine match, or via the dedicated
+    // mask_hs_bypass_i debug strap (xlconstant 0 in production, and the ONLY
+    // remaining explicit escape — which the §5.4 autonomy proof checks).
+    wire mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i;
 
     reg  nego_lock_pending_reg;
     reg  nego_mask_mismatch_reg;
@@ -747,6 +754,12 @@ module axi_chiplet_controller #(
                 // Bug N9 fix: also clear pending on the lost path so the
                 // pending bit doesn't stay asserted after role_lock_reg
                 // has latched via the lost-side workaround below.
+                // (2026-07-24: this term is paired with the lost-side lock
+                // below — both were retired together as F3 and both were
+                // REVERTED together after the silicon A/B showed fcsm stalling
+                // at 2. Do not remove one without the other: clearing on
+                // nego_lost_w while the lock requires a gate would drop the
+                // intent and deadlock the slave.)
                 nego_lock_pending_reg <= 1'b0;
 
             if (nego_set_role_cfg_w) begin
@@ -779,6 +792,28 @@ module axi_chiplet_controller #(
             // can observe its outcome (Wlink port stubbed). Honour the
             // FSM's nego_set_role_lock pulse without waiting for a gate
             // signal that will never arrive.
+            //
+            // 2026-07-24 (F3) — ATTEMPTED AND REVERTED, MEASURED ON SILICON.
+            // With the 0x21C verdict sniffer in place (F1) the lost side CAN
+            // now open its own gate, so this free pass is no longer strictly
+            // necessary and tightening it looked correct. It is NOT SAFE YET:
+            // removing the `nego_lost_w` term makes the slave latch role_lock
+            // LATER (only once the winner's I2C verdict has arrived) instead of
+            // immediately at ST_NEGO_DONE. role_locked gates the slave's Wlink
+            // out of reset, so the later release misses the training window and
+            // the FC state machine stalls.
+            //   A/B on kr260-pair-onchip, identical flow, 2026-07-24:
+            //     F1 only          -> match=1 gate=1 locked=1 fcsm=4  (healthy)
+            //     F1 + this change -> match=1 gate=1 locked=1 fcsm=2  (stalled)
+            // Sim did NOT catch it: the v2 pair test passes, and test_24's own
+            // docstring disclaims asserting downstream training ("TRAIN_RUN /
+            // TRAIN_POLL_PEER ... may still fail under straps=0, tracked
+            // separately"). The integrity hole this would close is already
+            // closed in practice by F1 (the slave's gate opens on a genuine
+            // match), so the free pass is now redundant rather than load-bearing.
+            // TO RETIRE IT PROPERLY: make the slave's Wlink-out-of-reset
+            // independent of the role_lock TIMING (or hold the training window
+            // open until the verdict lands), then re-run this A/B.
             if ((nego_lock_pending_reg && mask_hs_gate_open) ||
                 (nego_lock_pending_reg && nego_lost_w)) begin
                 role_lock_reg <= 1'b1;

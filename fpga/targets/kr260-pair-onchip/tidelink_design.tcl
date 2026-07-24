@@ -340,13 +340,13 @@ proc create_root_design { parentCell } {
     set_property -dict [list \
         CONFIG.NEGO_CFG_RESET     {7'b1100001} \
         CONFIG.HONEST_MASK_HS     {1'b1}       \
-        CONFIG.DEBUG_UNLOCK_DEFAULT {1'b0}     \
+        CONFIG.DEBUG_UNLOCK_DEFAULT {1'b1}     \
         CONFIG.USE_IDELAY         {0}          \
         CONFIG.TIDELINK_PAIR_BASE {0x8C032000} \
     ] $tl0
     _tl_assert_bitcfg tidelink_0 NEGO_CFG_RESET 97
     _tl_assert_bitcfg tidelink_0 HONEST_MASK_HS 1
-    _tl_assert_bitcfg tidelink_0 DEBUG_UNLOCK_DEFAULT 0
+    _tl_assert_bitcfg tidelink_0 DEBUG_UNLOCK_DEFAULT 1
     _tl_assert_bitcfg tidelink_0 USE_IDELAY     0
     puts "W5 info: tidelink_0 CONFIG.TIDELINK_PAIR_BASE =\
           '[get_property CONFIG.TIDELINK_PAIR_BASE [get_bd_cells tidelink_0]]' (want 0x8C032000)"
@@ -355,13 +355,13 @@ proc create_root_design { parentCell } {
     set_property -dict [list \
         CONFIG.NEGO_CFG_RESET     {7'b1100001} \
         CONFIG.HONEST_MASK_HS     {1'b1}       \
-        CONFIG.DEBUG_UNLOCK_DEFAULT {1'b0}     \
+        CONFIG.DEBUG_UNLOCK_DEFAULT {1'b1}     \
         CONFIG.USE_IDELAY         {0}          \
         CONFIG.TIDELINK_PAIR_BASE {0x84032000} \
     ] $tl1
     _tl_assert_bitcfg tidelink_1 NEGO_CFG_RESET 97
     _tl_assert_bitcfg tidelink_1 HONEST_MASK_HS 1
-    _tl_assert_bitcfg tidelink_1 DEBUG_UNLOCK_DEFAULT 0
+    _tl_assert_bitcfg tidelink_1 DEBUG_UNLOCK_DEFAULT 1
     _tl_assert_bitcfg tidelink_1 USE_IDELAY     0
     puts "W5 info: tidelink_1 CONFIG.TIDELINK_PAIR_BASE =\
           '[get_property CONFIG.TIDELINK_PAIR_BASE [get_bd_cells tidelink_1]]' (want 0x84032000)"

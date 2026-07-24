@@ -68,6 +68,20 @@ COMPILE_ARGS += -f $(V2_FLIST)
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 
+# ── HONEST_STRAPS (2026-07-24) — production-silicon gate posture ─────────────
+# 0 (default) : legacy tb — m/s_apb_debug_unlock = m/s_mask_hs_bypass = 1'b1 AND
+#               tidelink_top DEBUG_UNLOCK_DEFAULT=1, so mask_hs_gate_open is
+#               FORCE-OPEN on both dies (axi_chiplet_controller.sv:687) and any
+#               autonomy claim from this env is vacuous.
+# 1           : both straps 0 AND DEBUG_UNLOCK_DEFAULT=0, so the ONLY opener is
+#               a genuine mask_hs_match. This is the posture that actually tests
+#               the peer-mask handshake.
+#   make EPOCH_PROFILE=zero BYPASS_AUTONEG=0 HONEST_STRAPS=1 MODULE=...
+HONEST_STRAPS ?= 0
+ifeq ($(HONEST_STRAPS),1)
+COMPILE_ARGS += +define+TB_TOP_HONEST_STRAPS
+endif
+
 # ── Autonomy engagement (parity with cocotb/tidelink_top_pair/Makefile) ──────
 # BYPASS_AUTONEG (Phase 0c autonomy plan)
 #   1 = legacy: the autoneg FSM parks in ST_BYPASS at POR; role-lock is
@@ -180,7 +194,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # EPOCH_ANCHOR_EN / `deskew: m=? s=?` banner). Consolidation 2026-07-16 UNION of:
 #   _noanchor (EPOCH_ANCHOR_DIS), _anchor (EPOCH_ANCHOR — kr260-pblock),
 #   _eye (EYE_FAULT), _prefixfc (PREFIX_FC — integ), _auto (BYPASS_AUTONEG!=1 — phase2).
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

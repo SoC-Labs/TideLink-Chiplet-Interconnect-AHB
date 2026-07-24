@@ -171,12 +171,28 @@ module tb_top #(
 
     // Per-side debug strap (cocotb drives high to ungate slave APB writes
     // before role_lock — same role as fpga gpio 0x44041000).
-    logic m_apb_debug_unlock = 1'b1;
-    logic s_apb_debug_unlock = 1'b1;
+    //
+    // HONEST_STRAPS (2026-07-24, TB-ONLY) — production-silicon posture. The
+    // straps were hardcoded 1'b1 with no ifdef, which force-opens
+    // mask_hs_gate_open (axi_chiplet_controller.sv:687) on BOTH dies and makes
+    // any pair-level autonomy result vacuous. Compile with
+    // +define+TB_TOP_HONEST_STRAPS (make HONEST_STRAPS=1) to drive both straps
+    // 0 AND set tidelink_top's DEBUG_UNLOCK_DEFAULT=0, so that the ONLY thing
+    // that can open the gate is a genuine mask_hs_match. Default (undefined)
+    // is bit-identical to before.
+`ifdef TB_TOP_HONEST_STRAPS
+    localparam TB_STRAP_VAL   = 1'b0;
+    localparam TB_DEBUG_UNLK  = 1'b0;
+`else
+    localparam TB_STRAP_VAL   = 1'b1;
+    localparam TB_DEBUG_UNLK  = 1'b1;
+`endif
+    logic m_apb_debug_unlock = TB_STRAP_VAL;
+    logic s_apb_debug_unlock = TB_STRAP_VAL;
 
     // Bypass autoneg lane-mask handshake gate (mirrors the wlink_pair tb).
-    logic m_mask_hs_bypass = 1'b1;
-    logic s_mask_hs_bypass = 1'b1;
+    logic m_mask_hs_bypass = TB_STRAP_VAL;
+    logic s_mask_hs_bypass = TB_STRAP_VAL;
 
     // -------------------------------------------------------------------------
     // Cross-wired GPIO PHY pads
@@ -457,7 +473,12 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(M_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(M_PAIR_BASE),
+        // TB-only honest-posture plumbing (see TB_TOP_HONEST_STRAPS above).
+        // tidelink_top.sv:2341 welds apb_debug_unlock_i to 1'b1 unless
+        // DEBUG_UNLOCK_DEFAULT=0, which DISCARDS the strap pin entirely.
+        .DEBUG_UNLOCK_DEFAULT(TB_DEBUG_UNLK),
+        .HONEST_MASK_HS      (1'b1)
     ) u_master (
         .hclk              (hclk),
         .hresetn           (m_hresetn_w),
@@ -681,7 +702,10 @@ module tb_top #(
         .APB_ADDR_W        (APB_ADDR_W),
         .FC_DATA_W         (FC_DATA_W),
         .NUM_PHY_LANES     (NUM_PHY_LANES),
-        .TIDELINK_PAIR_BASE(S_PAIR_BASE)
+        .TIDELINK_PAIR_BASE(S_PAIR_BASE),
+        // TB-only honest-posture plumbing (see TB_TOP_HONEST_STRAPS above).
+        .DEBUG_UNLOCK_DEFAULT(TB_DEBUG_UNLK),
+        .HONEST_MASK_HS      (1'b1)
     ) u_slave (
         .hclk              (hclk),
         .hresetn           (s_hresetn_w),

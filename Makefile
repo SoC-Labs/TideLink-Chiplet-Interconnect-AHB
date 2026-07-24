@@ -381,6 +381,22 @@ sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_autonomous_sync_detect)
 
+# BILATERAL PEER-MASK HANDSHAKE — the SHAM-GATE catcher (2026-07-24).
+# HONEST_STRAPS=1 drives apb_debug_unlock_i AND mask_hs_bypass_i to 0 on BOTH
+# dies, so mask_hs_gate_open can only be opened by a GENUINE mask_hs_match.
+# Guards the defect measured on kr260-pair-onchip 2026-07-23: slave
+# mask_hs_match=0 while gate_open=1 (gate forced by a welded DEBUG_UNLOCK_DEFAULT),
+# with the slave structurally unable to match at all (Wlink.v mask_hs_result_o
+# tied 2'b00 + master-only mask FSM). Sim reproduced the slave's OBS_MASK_HS
+# bit-identically to silicon (0x00100000) pre-fix and shows 0x00380000 post-fix.
+# THIS IS THE ONLY EXECUTABLE TEST THAT CAN CATCH A SHAM GATE — the pre-existing
+# test_v2_onchip_pair reports 5 PASS at 0.00 ns (it `return`s instead of skipping,
+# so CI counts false passes) and cocotb/honest_mask_hs ASSERTS the defect.
+# Do not remove without a replacement that asserts gate_open FOLLOWS match.
+sim_gate_v2_mask_hs_bilateral:
+	$(call sim_gate_run,v2_mask_hs_bilateral,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero BYPASS_AUTONEG=0 HONEST_STRAPS=1 MODULE=test_v2_mask_hs_bilateral)
+
 # ODD / PARTIAL LANE-COUNT lock (2026-07-16). Before this, pair sim only ever
 # ran popcount 8 (0xFF POR) and popcount 4 (test_v2_reduced_lane, M->S only) —
 # BOTH powers of two. These two suites pin the link layer's popcount-GENERIC
@@ -935,7 +951,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
-	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch
+	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
+	v2_mask_hs_bilateral
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel

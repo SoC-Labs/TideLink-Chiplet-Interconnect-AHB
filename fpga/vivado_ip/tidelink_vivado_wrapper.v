@@ -153,7 +153,26 @@ module tidelink_vivado_wrapper #(
     // pair overrides it to 1. Surfaced here (not just the RTL default) because a
     // wrapper-parameter default IS recorded in component.xml and DOES reach OOC
     // synth, whereas a +define+ does not — same rationale as NEGO_CFG_RESET.
-    parameter        HONEST_MASK_HS       = 1'b0
+    parameter        HONEST_MASK_HS       = 1'b0,
+    // DEBUG_UNLOCK_DEFAULT — surface tidelink_top's APB debug-unlock tie on the
+    // IP face. MUST be here: tidelink_top.sv:2341 is
+    //     .apb_debug_unlock_i (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i)
+    // so while this parameter is absent from the IP face it is welded at the RTL
+    // default 1'b1 and the top-level apb_debug_unlock_i PIN IS DISCARDED — the
+    // BD's 0-strap is decorative. That constant then ORs straight into
+    //     mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i
+    // (axi_chiplet_controller.sv:687), forcing the peer-mask gate OPEN on EVERY
+    // FPGA die. Measured on kr260-pair-onchip 2026-07-23: slave mask_hs_match=0
+    // yet gate_open=1 — a SHAM handshake that silently voids the autonomy claim.
+    // Regression origin: bd19b12/27db79f split HONEST_MASK_HS into two params but
+    // only HONEST_MASK_HS was plumbed here — the same omission as 2bd5612, on the
+    // FPGA path this time.
+    // DEFAULT 1'b1 = byte-behaviour-identical to today (no existing target moves);
+    // set CONFIG.DEBUG_UNLOCK_DEFAULT=0 per-instance to get a genuinely gating
+    // handshake. ⚠ ONLY set 0 once the die can actually reach mask_hs_match=1,
+    // otherwise a closed gate blocks the SW role-lock -> Wlink held in reset ->
+    // link DEAD (proven: cocotb/honest_mask_hs MODE=honest_locked).
+    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1
 )(
     // =========================================================================
     // Clocks and Resets
@@ -526,7 +545,11 @@ module tidelink_vivado_wrapper #(
         .RETIRE_EN           (RETIRE_EN),
         // Peer-mask-handshake authenticity gate. Default 0 => tidelink_top keeps
         // the legacy 1'b1 ties (single-die byte-identical); onchip pair sets 1.
-        .HONEST_MASK_HS      (HONEST_MASK_HS)
+        .HONEST_MASK_HS      (HONEST_MASK_HS),
+        // APB debug-unlock tie. Forwarded so the BD strap is real rather than
+        // discarded inside tidelink_top; 1'b1 default keeps every existing
+        // target byte-behaviour-identical. See the parameter comment above.
+        .DEBUG_UNLOCK_DEFAULT(DEBUG_UNLOCK_DEFAULT)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

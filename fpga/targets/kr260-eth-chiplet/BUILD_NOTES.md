@@ -95,9 +95,22 @@ likely closable.
 11. SWD pins: PMOD4 is a 1.8V HP bank -> now MOVED to PMOD2 (3.3V, J11/J10/K13)
 12. BD clocking: PHY divider must derive from clk_out1 (see timing note above)
 
-### die_b
-`make build_design TARGET=kr260-eth-chiplet-flip` — same flow, flipped TX/RX
-balls + role strap = 1. Not yet run in this pass.
+### die_b — BUILT (2026-07-24), matched pair complete
+
+`make build_design TARGET=kr260-eth-chiplet-flip` builds clean, and tracks die_a
+closely — confirming the flip target is a true mirror, not a divergent build:
+
+| | die_a | die_b |
+|---|---|---|
+| WNS | -2.923 ns (4 fail) | -3.336 ns (4 fail) |
+| WHS | -22.408 ns (8 fail) | -22.923 ns (8 fail) |
+| CLB LUTs | 58,654 (50.1%) | 58,649 (50.1%) |
+| Bonded IOB | 34 | 34 |
+| role strap | 0 (die_a) | **1 (die_b)** |
+
+Both produce the full artefact set (.bit / .hwh / .xsa / routed .dcp / timing
+report / manifest). **Pair the die_a image with the -flip image** — same image on
+both boards shorts every ribbon lane.
 
 ## Scoping-synth result (2026-07-22, Vivado 2024.1, xck26-sfvc784-2LV-c)
 

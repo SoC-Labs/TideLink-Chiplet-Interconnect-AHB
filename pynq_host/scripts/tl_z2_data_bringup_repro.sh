@@ -13,7 +13,13 @@
 #       — "the documented bring-up write" (docs/CRC_ROOTCAUSE.md:128)
 #   R2: SEED pair-credit both directions (0x44032020 = delta -> bumps 0x028)
 #       — "mandatory bring-up step, not an optimisation" (tl_perf_agent.py:1063)
-#   R3: to_data_mode LL-swreset triplet (0x44030208: 27f08->27f00->27f07)
+#   R3: to_data_mode LL-swreset triplet (0x44030208). ⚠ USE THE CORRECTED FORM
+#       0x27f09 -> 0x27f01 -> 0x27f07 (bit0 swi_enable HELD HIGH). The bit0=0
+#       form (27f08/27f00/27f07) that sw_coord_autocal_region8.sh, unjam_fc_node.sh
+#       and bringup_pair_converge.sh still use is DOCUMENTED-BAD: while swi_enable
+#       is low the FCSM is forced to state 0 and fe_rx_ptr / fe_tx_credit_max /
+#       exp_pkt_num are HELD CLEARED, desyncing the credit ring and wedging the
+#       sender (src/rtl/local_overrides/axi_chiplet_controller.sv:3440-3462, R1 fix).
 #       — "the load-bearing step" (docs/reference/TIDELINK_BRINGUP_USER_GUIDE.md:298)
 #
 # RUN ON mapstone-dev. Preconditions (NOT done by this script):
@@ -106,7 +112,7 @@ proof "stage2-seed" && { echo "RESULT: STAGE 2 (credit seed) is the missing step
 
 echo "======================================================================"
 echo " STAGE 3: to_data_mode LL-swreset triplet (0x44030208) both dies"
-echo "   (sw_coord_autocal_region8.sh:82-102 — drop training, then 27f08/27f00/27f07)"
+echo "   (CORRECTED R1 form: bit0 swi_enable HELD HIGH — 27f09/27f01/27f07)"
 echo "======================================================================"
 for ip in $A_IP $B_IP; do
     echo "-- to_data_mode $ip --"
@@ -114,9 +120,9 @@ for ip in $A_IP $B_IP; do
 mr = _m(0x44032000)
 wr(mr, 0x100, 0x0)
 time.sleep(0.005)
-wr(mw, 0x208, 0x00027f08)
+wr(mw, 0x208, 0x00027f09)
 time.sleep(0.005)
-wr(mw, 0x208, 0x00027f00)
+wr(mw, 0x208, 0x00027f01)
 time.sleep(0.005)
 wr(mw, 0x208, 0x00027f07)
 print('R8=0x%08x WL208=0x%08x' % (rd(mr, 0x100), rd(mw, 0x208)))"

@@ -260,7 +260,8 @@ endef
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
-	sim_gate_force_recal sim_gate_dftelab
+	sim_gate_force_recal sim_gate_dftelab \
+	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -435,6 +436,30 @@ sim_gate_v2_oddlane_negctl:
 	$(call sim_gate_run,v2_lane_mask_negctl,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
 	    MODULE=test_v2_lane_mask_negctl SIM_BUILD=sim_build_oddlane)
+
+# v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md). Three arms:
+#   txgen_unit    — generator + real fc_adapter in isolation: inert-when-disarmed,
+#                   saturation, no-loss/no-dup under a gapped link, credit gate.
+#   txgen_negctl  — the credit gate compiled OUT (+TXGEN_FORCE_CREDIT_GATE_DIS,
+#                   distinct SIM_BUILD): proves the generator sends into ZERO
+#                   credit without it. Without this arm the credit results are
+#                   vacuous — the mandatory negative control (c3).
+#   v2_txgen      — FULL PAIR: Region-E reachable through the real APB mux,
+#                   BYTE-EXACT delivery into the peer RX FIFO, and credit-gated
+#                   with no peer overrun. The count-only unit oracle is blind to
+#                   the AHB-pipelining + header bugs this arm caught.
+sim_gate_txgen_unit:
+	$(call sim_gate_run,txgen_unit,\
+	  $(MAKE) -C cocotb/tidelink_txgen)
+
+sim_gate_txgen_negctl:
+	$(call sim_gate_run,txgen_negctl,\
+	  $(MAKE) -C cocotb/tidelink_txgen TXGEN_NEGCTL=1)
+
+sim_gate_v2_txgen:
+	$(call sim_gate_run,v2_txgen,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    MODULE=test_v2_txgen SIM_BUILD=sim_build_txgen)
 
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
@@ -952,7 +977,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
-	v2_mask_hs_bilateral
+	v2_mask_hs_bilateral \
+	txgen_unit txgen_negctl v2_txgen
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1028,6 +1054,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
 	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
+	@$(MAKE) --no-print-directory sim_gate_txgen_unit
+	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
+	@$(MAKE) --no-print-directory sim_gate_v2_txgen
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election
 	@$(MAKE) --no-print-directory sim_gate_eth_m0

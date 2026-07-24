@@ -47,7 +47,7 @@ in a separate block under a header that says so in words. See §5.
 
 ---
 
-## 2. The blocking aggregate (22 suites)
+## 2. The blocking aggregate (25 suites)
 
 `make sim_gate` → `SIM_GATE_ALL_SUITES`. Feature IDs are those defined in
 `docs/TIDELINK_FPGA_VERIFICATION_PLAN.md` §"Feature inventory" (F01–F20).
@@ -100,6 +100,26 @@ W1P decode, the 1024-cycle pulse-stretcher and the `apb_clk → rx_link_clk` CDC
 hardware — no two-die on-silicon integration exists"*. Suites 16–17 are therefore
 the **only** integration evidence for it anywhere, which is exactly why they are
 gated rather than left as a weekend result.
+
+### 2.4 Added 2026-07-24 — v1 TX traffic generator (3)
+
+| # | Suite | Bench / config | Feature | What it actually protects |
+|---|---|---|---|---|
+| 23 | `txgen_unit` | `tidelink_txgen` (generator + real `fc_adapter`) | TXGEN v1 | Inert-when-disarmed (`gen_owns`/consume stay 0 with EN=0; START-without-EN a no-op; external master still served), saturation, **no-loss/no-duplication under a gapped link** (upper bound HARD at the generator's own count, so the ×5 duplicate-FC-word class fails loudly), and the credit gate bounding whole packets + fail-closed at zero credit. |
+| 24 | `txgen_negctl` | `tidelink_txgen TXGEN_NEGCTL=1` — credit gate compiled OUT, distinct `sim_build_negctl` | TXGEN v1 (**negative control**) | The mandatory c3: with the gate out and **zero** peer credit the generator DOES send — the complement of the gate-in refusal. Without this arm every "no overrun" result is vacuous. |
+| 25 | `v2_txgen` | `tidelink_top_pair_v2` `MODULE=test_v2_txgen` `SIM_BUILD=sim_build_txgen` | TXGEN v1 (**full stack**) | Region E reachable through the real APB mux; **byte-exact** delivery into the peer RX FIFO; credit-gated with no peer overrun. The count-only unit oracle was blind to the AHB-pipelining + WR_REQ-header bugs this arm caught. |
+
+**Why the unit oracle is not enough.** `txgen_unit` counts FC words; it cannot
+see word *content* or the peer RX FIFO. Both generator bugs found on this branch
+(HWDATA not trailing HADDR by a cycle; a RD_REQ header the peer won't store)
+passed every unit count check and were caught only by `v2_txgen`'s byte-exact
+drain — the reason the full-stack arm is gated, not just the unit one.
+
+**Scope note.** The end-to-end overrun (arm FOREVER, never drain, assert the
+peer overrun sticky) needs ~`MAX_CREDITS`=4096 words to overflow the real RX
+FIFO — a very long sim at `RAM_ADDR_W`=14 — so it is deferred to a reduced-FIFO
+build; `txgen_negctl` proves the load-bearing fact (gate out ⇒ zero-credit send)
+deterministically instead.
 
 ---
 

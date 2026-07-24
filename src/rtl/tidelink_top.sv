@@ -106,6 +106,14 @@ module tidelink_top #(
     parameter STUB_PTP         = 1'b0,
     parameter BYPASS_ADDR_XLAT = 1'b0,
 
+    // v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md). Present on
+    // FPGA benchmark builds; set 0 for tapeout so the block AND its mux are
+    // removed by the generate below and the netlist is provably unchanged.
+    parameter TXGEN_PRESENT     = 1'b1,
+    // SIM-ONLY negative control: defeats the hardware credit gate so a test can
+    // prove the peer DOES overrun without it. NEVER set in a shipping flist.
+    parameter TXGEN_CREDIT_GATE_DIS = 1'b0,
+
     // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG @ 0x4403_210C.
     // 16'h0001 = train_auto_en=1; all timers fall back to FSM defaults.
     // ASIC, FPGA and sim all enter the autonomous training arm out of

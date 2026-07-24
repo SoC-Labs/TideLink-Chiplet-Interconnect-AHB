@@ -426,11 +426,50 @@ module Wlink #(
   // SoC Labs 2026-06-08: saturating SYNC-detected event counter (RX link-clock).
   reg [15:0] obs_sync_detected_cnt_q;
   // Port stubs — read-only mirror of the lane-mask registers.
-  // mask_hs_result_o tied to 0; peer_*_lane_mask_i intentionally unused
-  // (would feed a LaneMaskPeer reg in the regenerated RTL).
   // tx_lane_mask_o / rx_lane_mask_o are assigned after the reg declarations
   // (~line 720) to avoid VCS forward-reference errors.
-  assign mask_hs_result_o = 2'b00;
+  //
+  // SHORTCOMINGS-14a/14b: link_lane_mask_hs_result @ 0x21C — the real SW
+  // escape register. This was `assign mask_hs_result_o = 2'b00;` (a dead
+  // stub), so a SLAVE-role die had NO hardware path to open its mask_hs
+  // gate and could only "pass" via mask_hs_bypass_i / apb_debug_unlock_i —
+  // i.e. a SHAM handshake. Measured on kr260-pair-onchip 2026-07-23: master
+  // OBS_MASK_HS=0x0019E4E4 (match=1) but slave=0x00100000 (match=0,
+  // gate forced), with the master's I2C verdict write ACKed (missed_ack=0)
+  // — the verdict physically ARRIVED and was discarded by this tie.
+  //
+  // The autoneg master delivers the peer-mask verdict over I2C to this
+  // peer's APB 0x21C (tidelink_autoneg.sv: MASK_RES_ADDR_MSB=0x02,
+  // LSB=0x1C; verdict byte 0x01=match / 0x02=fail). This sniffer latches
+  // that verdict so the slave drives mask_hs_result_o[0]=peer_says_match /
+  // [1]=peer_says_fail, exactly as axi_chiplet_controller.sv consumes
+  // wlink_mask_hs_result (:665,676-677). Self-contained APB-write decode at
+  // the top-level apbport_0 (same hand-patch convention as the other SoC
+  // Labs bring-up port stubs); it does not perturb the generated Chisel
+  // register decode. POR-cleared, sticky thereafter (matches the autoneg's
+  // own POR-cleared latch).
+  //
+  // Ported from deps/axi-chiplet-controller/logical/wlink/Wlink.v:209-238,
+  // where this fix already existed but was never compiled: the FPGA V2
+  // flist resolves `include "Wlink.v" through +incdir src/rtl/local_overrides
+  // (flists/tidelink_fpga_v2.flist:43), so THIS file is the one that ships.
+  localparam [12:0] LANE_MASK_HS_RESULT_ADDR = 13'h21C;
+  reg        hs_result_match_q;   // peer said our crossover masks match
+  reg        hs_result_fail_q;    // peer said they mismatch
+  wire       hs_result_apb_wr =
+                 apbport_0_psel    & apbport_0_penable &
+                 apbport_0_pwrite  & apbport_0_pready  &
+                 (apbport_0_paddr == LANE_MASK_HS_RESULT_ADDR);
+  always @(posedge apb_clk or posedge apb_reset) begin
+    if (apb_reset) begin
+      hs_result_match_q <= 1'b0;
+      hs_result_fail_q  <= 1'b0;
+    end else if (hs_result_apb_wr) begin
+      if (apbport_0_pwdata[7:0] == 8'h01) hs_result_match_q <= 1'b1;
+      if (apbport_0_pwdata[7:0] == 8'h02) hs_result_fail_q  <= 1'b1;
+    end
+  end
+  assign mask_hs_result_o = {hs_result_fail_q, hs_result_match_q};
   // synopsys translate_off
   wire _unused_peer_tx_lane_mask = |peer_tx_lane_mask_i;
   wire _unused_peer_rx_lane_mask = |peer_rx_lane_mask_i;

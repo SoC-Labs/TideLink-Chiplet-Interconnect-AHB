@@ -132,7 +132,16 @@ module tidelink_apb_regs #(
     output logic              [2:0] perf_reg_addr,
     output logic [SYS_DATA_W-1:0]  perf_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  perf_reg_rdata,
-    output logic              [1:0] perf_reg_region
+    output logic              [1:0] perf_reg_region,
+
+    // v1 TX traffic generator (docs/TXGEN_V1_DESIGN.md) — pure observability
+    // out, hardware consume in. The generator gates on the PEER's free credit,
+    // so it must both see this counter and be able to reserve against it in
+    // hardware; the peer RX write side has no backpressure, so a software-only
+    // gate would let a line-rate generator silently destroy data.
+    output logic [SYS_DATA_W-1:0]  pair_credit_count,
+    input  logic                    hw_credit_consume_vld,
+    input  logic [SYS_DATA_W-1:0]  hw_credit_consume_val
 );
 
     // -------------------------------------------------------------------------
@@ -375,6 +384,21 @@ module tidelink_apb_regs #(
     wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
     wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;
 
+    // Net-delta form of the counter update. Widened by one bit so the sum of
+    // the two decrement sources cannot wrap before the saturating compare
+    // (Shortcoming #7 kept: saturate at zero, never underflow-wrap).
+    wire [SYS_DATA_W:0] pair_credit_inc =
+        pair_counter_increment ? {1'b0, pwdata} : '0;
+    wire [SYS_DATA_W:0] pair_credit_dec =
+        ({SYS_DATA_W+1{pair_counter_decrement}} & {1'b0, pwdata})
+      + ({SYS_DATA_W+1{hw_credit_consume_vld}} & {1'b0, hw_credit_consume_val});
+    wire [SYS_DATA_W:0] pair_credit_sum = {1'b0, pair_credit_counter} + pair_credit_inc;
+    wire [SYS_DATA_W-1:0] pair_credit_next =
+        (pair_credit_sum >= pair_credit_dec)
+            ? SYS_DATA_W'(pair_credit_sum - pair_credit_dec) : '0;
+
+    assign pair_credit_count = pair_credit_counter;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pair_credit_counter    <= '0;
@@ -384,17 +408,16 @@ module tidelink_apb_regs #(
                 pair_credit_counter_en <= pwdata[0];
             end
 
+            // 3-way combine (inc from the peer's returner, dec from software,
+            // dec from the TX generator's hardware reservation). These are
+            // folded into ONE net update rather than a priority chain so a peer
+            // credit-return landing on the same cycle as a generator consume
+            // can never be dropped — losing an increment here leaks credit and
+            // eventually starves the sender for good.
             if (pair_credit_counter_en) begin
-                if (pair_counter_increment && pair_counter_decrement) begin
-                    pair_credit_counter <= pair_credit_counter + pwdata - pwdata;
-                end else if (pair_counter_increment) begin
-                    pair_credit_counter <= pair_credit_counter + pwdata;
-                end else if (pair_counter_decrement) begin
-                    // Shortcoming #7 fix: saturate at zero to prevent unsigned underflow wrap
-                    if (pair_credit_counter >= pwdata)
-                        pair_credit_counter <= pair_credit_counter - pwdata;
-                    else
-                        pair_credit_counter <= '0;
+                if (pair_counter_increment || pair_counter_decrement
+                                           || hw_credit_consume_vld) begin
+                    pair_credit_counter <= pair_credit_next;
                 end
             end
         end

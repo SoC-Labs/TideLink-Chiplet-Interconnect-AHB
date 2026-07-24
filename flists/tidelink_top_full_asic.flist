@@ -13,6 +13,7 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 
 // FC adapter
+${TIDELINK_HOME}/src/rtl/tidelink_tx_gen.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
 
 // PTP subsystem

@@ -130,6 +130,11 @@ module tidelink_fifo #(
     input  logic   [SYS_DATA_W-1:0] perf_reg_rdata,
     output wire               [1:0] perf_reg_region,
 
+    // v1 TX traffic generator credit interface (docs/TXGEN_V1_DESIGN.md)
+    output wire [SYS_DATA_W-1:0]   pair_credit_count,
+    input  wire                     hw_credit_consume_vld,
+    input  wire [SYS_DATA_W-1:0]   hw_credit_consume_val,
+
     // --------------------------------------------------------------------------
     // Credit Count Observation (for performance profiling)
     // --------------------------------------------------------------------------
@@ -322,7 +327,10 @@ module tidelink_fifo #(
         .perf_reg_addr       (perf_reg_addr),
         .perf_reg_wdata      (perf_reg_wdata),
         .perf_reg_rdata      (perf_reg_rdata),
-        .perf_reg_region     (perf_reg_region)
+        .perf_reg_region     (perf_reg_region),
+        .pair_credit_count     (pair_credit_count),
+        .hw_credit_consume_vld (hw_credit_consume_vld),
+        .hw_credit_consume_val (hw_credit_consume_val)
     );
 
     // --------------------------------------------------------------------------

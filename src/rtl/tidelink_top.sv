@@ -930,6 +930,85 @@ module tidelink_top #(
     // routed into the top-level so a follow-on commit can wire them via
     // hierarchical reference or via new chiplet-controller ports.
     // =========================================================================
+    // =========================================================================
+    // v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md)
+    // =========================================================================
+    // APB Region E (paddr[8:5]==4'b1110, SoC 0x21C0-0x21DC). Regions E and F
+    // were unclaimed: absent from the tidelink_apb_regs read mux, ctrl_reg_write,
+    // the perf bound (<=4'b0111) and pslverr, and from every [8:5] compare here
+    // and in the chiplet controller.
+    //
+    // SECURITY: WRITES are qualified with !fc_cfg_apb_active. The FC RX config
+    // path shares this APB bus and carries a PEER-SUPPLIED offset, so without
+    // this a mis-set PAIR_BASE or a faulty/hostile peer could arm our traffic
+    // generator across the link.
+    wire txgen_reg_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1110);
+    wire txgen_reg_wr  = txgen_reg_sel && tl_apb_penable && tl_apb_pwrite
+                                       && !fc_cfg_apb_active;
+
+    wire                    txgen_owns;
+    wire [RAM_ADDR_W-1:0]  txgen_haddr;
+    wire              [1:0] txgen_htrans;
+    wire              [2:0] txgen_hsize;
+    wire                    txgen_hwrite;
+    wire [SYS_DATA_W-1:0]  txgen_hwdata;
+    wire                    fc_tx_hreadyout;
+    wire [SYS_DATA_W-1:0]  txgen_pair_credit;
+    wire                    txgen_credit_consume_vld;
+    wire [SYS_DATA_W-1:0]  txgen_credit_consume_val;
+    wire [SYS_DATA_W-1:0]  txgen_prdata;
+
+    // The external master sees the adapter's own hreadyout, EXCEPT while the
+    // generator owns the port: an external beat arriving mid-packet must not be
+    // silently accepted (that was the L11 watchdog's sin). Holding hreadyout
+    // low stalls it honestly; the adapter's own TX_STALL_TIMEOUT remains the
+    // backstop against an indefinite stall.
+    assign ahb_tx_hreadyout = txgen_owns ? 1'b0 : fc_tx_hreadyout;
+
+    generate
+    if (TXGEN_PRESENT) begin : g_txgen
+        tidelink_tx_gen #(
+            .SYS_DATA_W      (SYS_DATA_W),
+            .RAM_ADDR_W      (RAM_ADDR_W),
+            .CREDIT_GATE_DIS (TXGEN_CREDIT_GATE_DIS)
+        ) u_tx_gen (
+            .hclk               (hclk),
+            .hresetn            (hresetn),
+            .reg_sel            (txgen_reg_sel),
+            .reg_addr           (tl_apb_paddr[4:2]),
+            .reg_write          (txgen_reg_wr),
+            .reg_wdata          (tl_apb_pwdata),
+            .reg_rdata          (txgen_prdata),
+            .pair_credit_count  (txgen_pair_credit),
+            .pair_credit_en     (1'b1),
+            .credit_consume_vld (txgen_credit_consume_vld),
+            .credit_consume_val (txgen_credit_consume_val),
+            .gen_owns           (txgen_owns),
+            .gen_haddr          (txgen_haddr),
+            .gen_htrans         (txgen_htrans),
+            .gen_hsize          (txgen_hsize),
+            .gen_hwrite         (txgen_hwrite),
+            .gen_hwdata         (txgen_hwdata),
+            .fc_hreadyout       (fc_tx_hreadyout),
+            .fc_hresp           (ahb_tx_hresp),
+            .ext_htrans         (ahb_tx_htrans),
+            .txgen_active       ()
+        );
+    end else begin : g_no_txgen
+        // Tapeout arm: the block AND the mux vanish, so the netlist is
+        // provably identical to a build that never had the generator.
+        assign txgen_owns               = 1'b0;
+        assign txgen_haddr              = '0;
+        assign txgen_htrans             = 2'b00;
+        assign txgen_hsize              = 3'b010;
+        assign txgen_hwrite             = 1'b0;
+        assign txgen_hwdata             = '0;
+        assign txgen_credit_consume_vld = 1'b0;
+        assign txgen_credit_consume_val = '0;
+        assign txgen_prdata             = '0;
+    end
+    endgenerate
+
     wire eye_shim_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1010);
 
     wire [SYS_DATA_W-1:0]  eye_shim_prdata;
@@ -1242,23 +1321,29 @@ module tidelink_top #(
                            // 0x00000000 with NO 0x5F marker (same trap as 0x2150/0x2158).
                            || (tl_apb_paddr[4:0] == 5'h1C));  // 0x215C SYNC_SEEN_VEC (RO)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
-    assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
+    assign tl_apb_prdata  = txgen_reg_sel      ? txgen_prdata          :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
+    assign tl_apb_pready  = txgen_reg_sel      ? 1'b1                  :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                             eye_shim_sel_eff   ? eye_shim_pready       :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
+    assign tl_apb_pslverr = txgen_reg_sel      ? 1'b0                  :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                             eye_shim_sel_eff   ? eye_shim_pslverr      :
                                                  tidelink_internal_pslverr;
 `else
-    assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
+    assign tl_apb_prdata  = txgen_reg_sel      ? txgen_prdata          :
+                            eye_shim_sel       ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = eye_shim_sel       ? eye_shim_pready       :
+    assign tl_apb_pready  = txgen_reg_sel      ? 1'b1                  :
+                            eye_shim_sel       ? eye_shim_pready       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
+    assign tl_apb_pslverr = txgen_reg_sel      ? 1'b0                  :
+                            eye_shim_sel       ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
 `endif
@@ -1552,6 +1637,11 @@ module tidelink_top #(
         .perf_reg_rdata      (perf_reg_rdata),
         .perf_reg_region     (perf_reg_region),
 
+        // v1 TX generator credit interface (docs/TXGEN_V1_DESIGN.md)
+        .pair_credit_count     (txgen_pair_credit),
+        .hw_credit_consume_vld (txgen_credit_consume_vld),
+        .hw_credit_consume_val (txgen_credit_consume_val),
+
         // Credit count observation (for performance profiling)
         .perf_credit_count   (perf_credit_count),
 
@@ -1584,17 +1674,24 @@ module tidelink_top #(
         .hclk              (hclk),
         .hresetn           (hresetn),
 
-        // AHB Slave — TX aperture (CPU/DMA writes FIFO packets here)
-        .ahb_tx_hsel       (ahb_tx_hsel),
-        .ahb_tx_haddr      (ahb_tx_haddr),
-        .ahb_tx_htrans     (ahb_tx_htrans),
-        .ahb_tx_hsize      (ahb_tx_hsize),
-        .ahb_tx_hwrite     (ahb_tx_hwrite),
-        .ahb_tx_hwdata     (ahb_tx_hwdata),
-        .ahb_tx_hready     (ahb_tx_hready),
+        // AHB Slave — TX aperture. Muxed with the v1 PL-side traffic
+        // generator (docs/TXGEN_V1_DESIGN.md): with TXGEN_PRESENT=0 the
+        // generate below removes the block and these collapse to the external
+        // nets; with the generator present but disarmed (POR) txgen_owns is a
+        // constant 0 and the mux folds away.
+        .ahb_tx_hsel       (txgen_owns ? 1'b1            : ahb_tx_hsel),
+        .ahb_tx_haddr      (txgen_owns ? txgen_haddr     : ahb_tx_haddr),
+        .ahb_tx_htrans     (txgen_owns ? txgen_htrans    : ahb_tx_htrans),
+        .ahb_tx_hsize      (txgen_owns ? txgen_hsize     : ahb_tx_hsize),
+        .ahb_tx_hwrite     (txgen_owns ? txgen_hwrite    : ahb_tx_hwrite),
+        .ahb_tx_hwdata     (txgen_owns ? txgen_hwdata    : ahb_tx_hwdata),
+        // Explicit even though both FPGA targets loop hreadyout back: an ASIC
+        // or nanoSoC integration that does NOT loop it back still needs the
+        // generator's beats to advance off the adapter's own hreadyout.
+        .ahb_tx_hready     (txgen_owns ? fc_tx_hreadyout : ahb_tx_hready),
         .ahb_tx_hrdata     (ahb_tx_hrdata),
         .ahb_tx_hresp      (ahb_tx_hresp),
-        .ahb_tx_hreadyout  (ahb_tx_hreadyout),
+        .ahb_tx_hreadyout  (fc_tx_hreadyout),
 
         // AHB Slave — Returner interception (returner thinks this is remote)
         .rtn_haddr         (rtn_haddr),

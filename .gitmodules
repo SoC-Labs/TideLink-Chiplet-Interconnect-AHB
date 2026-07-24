@@ -3,8 +3,8 @@
 	url = https://git.soton.ac.uk/soclabs/chiplets/axi-chiplet-controller.git
 [submodule "deps/tidelink-gpio-phy"]
 	path = deps/tidelink-gpio-phy
-	url = https://git.soton.ac.uk/soclabs/tidelink-gpio-phy.git
+	url = git@github.com:SoC-Labs/TideLink-Chiplet-GPIO-PHY.git
 [submodule "deps/tidelink-phy"]
 	path = deps/tidelink-phy
-	url = git@git.soton.ac.uk:soclabs/tidelink-gpio-phy.git
-	branch = feat/phy-refactor
+	url = git@github.com:SoC-Labs/TideLink-Chiplet-GPIO-PHY.git
+	branch = main

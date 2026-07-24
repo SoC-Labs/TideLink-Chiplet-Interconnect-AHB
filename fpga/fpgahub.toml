@@ -369,7 +369,7 @@ timeout_s   = 60
 #
 # Run after provision_pynq_sudo (we use sudo on the board to write
 # ~/.ssh files when needed) and after the proxy field has been wired
-# into /etc/fpgahub/config.toml (see fpga/scripts/setup_fpgahub_pynq_proxy.sh).
+# into /etc/fpgahub/config.toml on the board.
 [[actions]]
 id          = "provision_pynq_peer_keys"
 title       = "One-time: generate + propagate xilinx@board SSH keys for peer-agent"

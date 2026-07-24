@@ -9,7 +9,7 @@
 //
 //   This is a SKELETON. It intentionally does not implement BIST itself
 //   nor a TAP controller — both are closure tasks documented in
-//   docs/DFT_PLAN_2026_05_28.md §4 and §5.
+//   docs/reference/DFT_PLAN_2026_05_28.md §4 and §5.
 //
 //   The wrapper:
 //     - Adds a multi-bit scan-chain bus (8 chains by default, configurable)
@@ -38,7 +38,7 @@
 //   Read DFT_PLAN §6 for the per-signal contract.
 //
 // References:
-//   - docs/DFT_PLAN_2026_05_28.md
+//   - docs/reference/DFT_PLAN_2026_05_28.md
 //   - docs/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md §2.5
 //   - src/rtl/tidelink_top.sv (the wrapped DUT)
 //   - syn/asic/formality/scripts/run_lec.tcl:259-275 (scan-pin pin-down)

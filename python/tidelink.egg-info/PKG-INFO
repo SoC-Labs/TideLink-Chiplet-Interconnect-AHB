@@ -1,6 +1,0 @@
-Metadata-Version: 2.1
-Name: tidelink
-Version: 0.1.0
-Summary: TideLink register definitions, packet helpers, and hardware drivers
-Requires-Python: >=3.6
-Provides-Extra: pynq

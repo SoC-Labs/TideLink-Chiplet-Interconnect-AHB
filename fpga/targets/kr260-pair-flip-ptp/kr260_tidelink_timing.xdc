@@ -56,7 +56,7 @@
 # was deleted entirely. The fix below bounds *relative* (lane-to-lane and
 # clk-to-capture) skew and equalises lane delay, which attacks the
 # build-to-build VARIANCE (the real defect) WITHOUT the absolute-window
-# hold-pressure explosion. See docs/ASIC_TIMING_CONSTRAINTS.md (Part B §3).
+# hold-pressure explosion. See docs/reference/ASIC_TIMING_CONSTRAINTS.md (Part B §3).
 #=============================================================================
 
 #=============================================================================

@@ -49,7 +49,7 @@ the 8 slip values it tries, and the FSM either:
     and is no longer continuously asserted post-training).
 
 Either way: **staggered bring-up cannot complete with the clk_en fix
-alone**. Protocol-level coordination (`docs/archive/proposals/i2c_train/`) is required.
+alone**. Protocol-level coordination (`docs/reference/i2c_train/`) is required.
 
 This test reproduces the failure on the slave side under staggered POR.
 

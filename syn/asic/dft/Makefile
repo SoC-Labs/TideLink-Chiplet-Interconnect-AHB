@@ -6,7 +6,7 @@
 # wrappers); without licences these targets print a clear
 # "license required" message and exit non-zero.
 #
-# See docs/DFT_PLAN_2026_05_28.md for the strategy and closure tasks.
+# See docs/reference/DFT_PLAN_2026_05_28.md for the strategy and closure tasks.
 # =============================================================================
 
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../../..)
@@ -63,7 +63,7 @@ help:
 	@echo "  NETLIST     = $(NETLIST)     (required for real runs)"
 	@echo "  OUT_DIR     = $(OUT_DIR)"
 	@echo ""
-	@echo "Status: SCAFFOLD ONLY — see docs/DFT_PLAN_2026_05_28.md §7."
+	@echo "Status: SCAFFOLD ONLY — see docs/reference/DFT_PLAN_2026_05_28.md §7."
 	@echo ""
 
 .PHONY: show
@@ -134,7 +134,7 @@ run_atpg: | $(OUT_DIR)
 	    echo "       Action: configure SNPSLMD_LICENSE_FILE or MGLS_LICENSE_FILE,"; \
 	    echo "       then run 'make run_atpg'."; \
 	    echo ""; \
-	    echo "       See docs/DFT_PLAN_2026_05_28.md §7.4 for the licence list."; \
+	    echo "       See docs/reference/DFT_PLAN_2026_05_28.md §7.4 for the licence list."; \
 	    exit 1; \
 	fi
 	@echo "INFO: ATPG closure flow not yet authored — see DFT_PLAN §7 follow-on tasks."

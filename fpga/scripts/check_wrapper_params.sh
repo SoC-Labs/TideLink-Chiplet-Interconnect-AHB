@@ -17,7 +17,7 @@
 #
 # This script catches that exact class of regression BEFORE Vivado runs:
 # greps the wrapper file for each required default == 1'b1 and exits non-zero
-# (with a clear pointer to 51b5169 / docs/LANE_LOCK_ROOT_CAUSE.md) if any has
+# (with a clear pointer to 51b5169 / docs/reference/LANE_LOCK_ROOT_CAUSE.md) if any has
 # been flipped back to 1'b0 or removed.
 #
 # Usage:
@@ -77,7 +77,7 @@ To fix:
   2. Re-package the IP (`make -C fpga package_ip`).
   3. Rebuild.
 
-Reference: docs/LANE_LOCK_ROOT_CAUSE.md — Root cause section.
+Reference: docs/reference/LANE_LOCK_ROOT_CAUSE.md — Root cause section.
 EOF
     exit 1
 fi

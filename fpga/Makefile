@@ -328,7 +328,7 @@ all: build_design
 # Pre-flight guard: catch the 51b5169-class regression (USE_CLKBUF/USE_IDELAY
 # wrapper-param strip) BEFORE Vivado packages the IP, instead of letting the
 # silent-XDC-drop / LUT-on-clock cascade reach silicon. See
-# docs/LANE_LOCK_ROOT_CAUSE.md and docs/SIM_GUARD_FEASIBILITY.md.
+# docs/reference/LANE_LOCK_ROOT_CAUSE.md and docs/SIM_GUARD_FEASIBILITY.md.
 #-----------------------------------------------------------------------------
 check-wrapper-params:
 	@$(FPGA_DIR)/scripts/check_wrapper_params.sh

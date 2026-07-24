@@ -37,7 +37,7 @@
 #   * COLLISION GUARD: that build's lane 7 must be B19/F20, NOT W9/V7 —
 #     W9/V7 = J13 13/37 is also the lane-7-remap pair (superproject
 #     5d34baf). If the bitstream carries the lane-7 remap, ABORT (W9/V7
-#     would be double-driven). See docs/archive/proposals/i2c_train/J13_PIN_BUDGET.md.
+#     would be double-driven). See docs/reference/i2c_train/J13_PIN_BUDGET.md.
 #   * ELECTRICAL: W9/V7 have no on-board pull-up; the FPGA weak internal
 #     pull holds the bus, so I²C runs slow (prescale ≥128). Scope-verify
 #     SCL/SDA rise time once per bench (HW_VALIDATION_PLAN.md Stage 1).

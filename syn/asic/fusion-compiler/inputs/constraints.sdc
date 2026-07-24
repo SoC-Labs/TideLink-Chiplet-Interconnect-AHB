@@ -36,7 +36,7 @@
 #   pad_rx[*]→capture-flop arc that is the entire timing-critical content
 #   of a source-sync RX. Any set_input_delay added later then has no live
 #   launch/capture relationship to bound. This is the exact failure mode
-#   `docs/ASIC_TIMING_CONSTRAINTS.md` Part A §3 declares "the single most
+#   `docs/reference/ASIC_TIMING_CONSTRAINTS.md` Part A §3 declares "the single most
 #   important and historically most violated point". Replaced with:
 #
 #     - A narrowed async cut: pad_clk_rx ↔ hclk *only* (the genuine CDC,

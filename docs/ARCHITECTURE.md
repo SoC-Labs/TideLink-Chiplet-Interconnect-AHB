@@ -12,8 +12,8 @@ independently flow-controlled so neither can starve the other. The reference
 integration target is the SoC Labs nanosoc-chiplet-tech (Cortex-M0) project.
 
 Companion docs: [REGISTER_MAP.md](REGISTER_MAP.md) (APB register addresses),
-[FC_NODE_REGISTRY.md](archive/FC_NODE_REGISTRY.md) (`data_id` allocation),
-[DEPENDENCIES.md](archive/DEPENDENCIES.md) (submodules + IP policy).
+[FC_NODE_REGISTRY.md](reference/FC_NODE_REGISTRY.md) (`data_id` allocation),
+[DEPENDENCIES.md](reference/DEPENDENCIES.md) (submodules + IP policy).
 
 ---
 
@@ -136,7 +136,7 @@ PKT_EXT; setting `tc_qos_priority`>0 boosts PKT_EXT above the TX aperture. (A
 consecutive sideband grants.) The application-layer TideLink mailbox packet (2-word
 header + payload, `length`/`pkt_type`/`src_id`/`dest_id`/`tag`) is a software
 convention layered on the FIFO word stream — hardware transports each word
-independently. See `archive/TIDELINK_SPECIFICATION.md` §4, §7 for the full FSMs
+independently. See `reference/TIDELINK_SPECIFICATION.md` §4, §7 for the full FSMs
 and credit/doorbell flows.
 
 ---
@@ -268,8 +268,8 @@ must be bounded by constraints + matched routing to within roughly one phase ste
 corners — the calibrator centres the eye, the constraints bound the variance.
 bit_slip [0..7] is the whole-UI search window; phase [0..15] is the sub-UI skew
 window. Full PHY mechanics, calibrator FSM states, the M→S/S→M asymmetry analysis,
-and the ASIC constraint rationale are in `archive/PHY_ARCHITECTURE_REFERENCE.md`
-and `archive/ASIC_TIMING_CONSTRAINTS.md`.
+and the ASIC constraint rationale are in `reference/PHY_ARCHITECTURE_REFERENCE.md`
+and `reference/ASIC_TIMING_CONSTRAINTS.md`.
 
 > The v1 calibrator/checker stack is being **replaced** at integration time by
 > the standalone, independently-verified PHY now vendored at
@@ -312,10 +312,10 @@ land the new PHY rather than harden this stack further.
 The following docs were folded into this overview and are retained under
 `docs/archive/` for depth but are **not maintained** going forward:
 
-- [`archive/TIDELINK_SPECIFICATION.md`](archive/TIDELINK_SPECIFICATION.md) — canonical spec: component map, hierarchy, full port/FSM/flow detail, design justification.
-- [`archive/PHY_ARCHITECTURE_REFERENCE.md`](archive/PHY_ARCHITECTURE_REFERENCE.md) — GPIO PHY internals, calibrator/lane mechanics, M→S asymmetry analysis.
-- [`archive/DEPENDENCIES.md`](archive/DEPENDENCIES.md) — submodules (Wlink/axi-chiplet-controller, XHB500), vendor IP, and edit policy.
-- [`archive/FC_NODE_REGISTRY.md`](archive/FC_NODE_REGISTRY.md) — Wlink `data_id` allocation table.
-- [`archive/ASIC_TIMING_CONSTRAINTS.md`](archive/ASIC_TIMING_CONSTRAINTS.md) — source-sync PHY timing rationale + constraint listing.
-- [`archive/CDC_AUDIT_REPORT.md`](archive/CDC_AUDIT_REPORT.md) — CDC crossing audit and waiver/sign-off status.
-- [`archive/AUTOCAL_CLOSURE_2026_06_10.md`](archive/AUTOCAL_CLOSURE_2026_06_10.md) / [`archive/V4_ZERO_POKE_FIRST_SILICON_2026_06_11.md`](archive/V4_ZERO_POKE_FIRST_SILICON_2026_06_11.md) — current silicon bring-up status.
+- [`reference/TIDELINK_SPECIFICATION.md`](reference/TIDELINK_SPECIFICATION.md) — canonical spec: component map, hierarchy, full port/FSM/flow detail, design justification.
+- [`reference/PHY_ARCHITECTURE_REFERENCE.md`](reference/PHY_ARCHITECTURE_REFERENCE.md) — GPIO PHY internals, calibrator/lane mechanics, M→S asymmetry analysis.
+- [`reference/DEPENDENCIES.md`](reference/DEPENDENCIES.md) — submodules (Wlink/axi-chiplet-controller, XHB500), vendor IP, and edit policy.
+- [`reference/FC_NODE_REGISTRY.md`](reference/FC_NODE_REGISTRY.md) — Wlink `data_id` allocation table.
+- [`reference/ASIC_TIMING_CONSTRAINTS.md`](reference/ASIC_TIMING_CONSTRAINTS.md) — source-sync PHY timing rationale + constraint listing.
+- `archive/CDC_AUDIT_REPORT.md` _(historical — see git history)_ — CDC crossing audit and waiver/sign-off status.
+- `archive/AUTOCAL_CLOSURE_2026_06_10.md` _(historical — see git history)_ / `archive/V4_ZERO_POKE_FIRST_SILICON_2026_06_11.md` _(historical — see git history)_ — current silicon bring-up status.

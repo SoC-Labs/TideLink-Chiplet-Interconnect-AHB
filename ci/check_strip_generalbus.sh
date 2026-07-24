@@ -67,8 +67,8 @@ fi
 if [ $fail -ne 0 ]; then
     echo ""
     echo "ERROR: GeneralBus strip regression failed."
-    echo "       See tidelink/docs/FC_NODE_REGISTRY.md and"
-    echo "       tidelink/docs/TIDELINK_SPECIFICATION.md \xc2\xa75.14 for context."
+    echo "       See tidelink/docs/reference/FC_NODE_REGISTRY.md and"
+    echo "       tidelink/docs/reference/TIDELINK_SPECIFICATION.md \xc2\xa75.14 for context."
     exit 1
 fi
 

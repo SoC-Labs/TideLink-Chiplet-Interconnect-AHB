@@ -7,7 +7,7 @@
 #   sets up the command-line and design-side knobs, defines chain
 #   partitioning by clock domain, and emits placeholder calls to the chosen
 #   tool. Closure (running the licensed tool, debugging DRC, balancing
-#   chains) is documented as a follow-on in docs/DFT_PLAN_2026_05_28.md §7.
+#   chains) is documented as a follow-on in docs/reference/DFT_PLAN_2026_05_28.md §7.
 #
 # Tool flavours supported (selected via DFT_TOOL env var or -tool flag):
 #   testmax   — Synopsys TestMAX / DFT Compiler (preferred for FC flow)
@@ -84,7 +84,7 @@ if {![check_tool_license $DFT_TOOL]} {
     puts "       DFT_TOOL=spyglass for pre-scan DRC-only mode."
     puts ""
     puts "       This is expected at scaffold time — see"
-    puts "       docs/DFT_PLAN_2026_05_28.md §7.4 for the licence list."
+    puts "       docs/reference/DFT_PLAN_2026_05_28.md §7.4 for the licence list."
     exit 1
 }
 
@@ -230,5 +230,5 @@ puts "  TODO: write_test_protocol $OUT_DIR/${DESIGN}.spf"
 
 puts "INFO: ============================================================="
 puts "INFO: scan-insertion scaffold complete (no real work done — TODO above)"
-puts "INFO: see docs/DFT_PLAN_2026_05_28.md §7 for closure tasks"
+puts "INFO: see docs/reference/DFT_PLAN_2026_05_28.md §7 for closure tasks"
 puts "INFO: ============================================================="

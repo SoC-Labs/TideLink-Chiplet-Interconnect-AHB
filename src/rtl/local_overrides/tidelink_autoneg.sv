@@ -10,7 +10,7 @@
 // switching to I2C master mode and writing a "claim" byte to the peer's
 // I2C slave. The peer detects the SDA START condition and adopts slave.
 //
-// See docs/AUTONEG_PROTOCOL.md for the full specification.
+// See docs/reference/AUTONEG_PROTOCOL.md for the full specification.
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic
 // Access license.

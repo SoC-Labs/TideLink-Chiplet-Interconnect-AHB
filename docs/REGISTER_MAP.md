@@ -202,7 +202,7 @@ with `ctrl_reg_addr[4:3] = 2'b01` (`axi_chiplet_controller.sv:443-446`).
 
 These registers absorb the §9 PHY-alignment soft-strap controls (formerly
 interim-shim'd at MMIO 0x4403_1000) and the I²C-coordinated training
-protocol registers (per `docs/archive/proposals/i2c_train/I2C_TRAIN_PROTOCOL.md`). They
+protocol registers (per `docs/reference/i2c_train/I2C_TRAIN_PROTOCOL.md`). They
 reside in a 4-bit region-select decode (`paddr[8:5]=1000`) — the existing
 3-bit decode for Regions 0..7 is unchanged.
 

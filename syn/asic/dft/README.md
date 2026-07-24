@@ -6,7 +6,7 @@ invocations are gated behind licence checks and print clear messages
 when the licences are not present.
 
 For strategy, coverage targets and effort estimates, see
-[`docs/DFT_PLAN_2026_05_28.md`](../../../docs/DFT_PLAN_2026_05_28.md).
+[`docs/reference/DFT_PLAN_2026_05_28.md`](../../../docs/reference/DFT_PLAN_2026_05_28.md).
 
 For the gap analysis that motivated this scaffold, see
 [`docs/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md`](../../../docs/ASIC_READINESS_TEST_GAP_ANALYSIS_2026_05_28.md)
@@ -26,7 +26,7 @@ For the gap analysis that motivated this scaffold, see
 ## What is not here
 
 The following are explicitly **NOT** delivered by this scaffold; they
-are documented in `docs/DFT_PLAN_2026_05_28.md` §7.3 as closure tasks:
+are documented in `docs/reference/DFT_PLAN_2026_05_28.md` §7.3 as closure tasks:
 
 - Real scan-inserted netlist
 - ATPG pattern sets (`.stil` files)
@@ -99,7 +99,7 @@ All are overridable on the `make` command line:
 
 ## Required reading before running anything for real
 
-1. `docs/DFT_PLAN_2026_05_28.md` — strategy and targets.
+1. `docs/reference/DFT_PLAN_2026_05_28.md` — strategy and targets.
 2. `src/rtl/asic/tidelink_dft_wrapper.sv` — the test-mode wrapper this
    flow assumes around `tidelink_top`.
 3. `src/rtl/asic/tidelink_sram.sv` — the SRAM wrapper that MBIST will

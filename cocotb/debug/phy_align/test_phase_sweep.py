@@ -19,7 +19,7 @@ pad misalignment is correctable by bit-slip ALONE — there is a slip value
 s = (-(K+D+phase)) mod 8 that locks for *every* phase. So a test of the
 form "a lane locks ONLY when phase is swept" is NOT physically achievable
 against the real RTL + training pattern; this matches the project's own
-hardware diagnosis folded into docs/TIDELINK_SPECIFICATION.md §9.10.2
+hardware diagnosis folded into docs/reference/TIDELINK_SPECIFICATION.md §9.10.2
 ("swi_phase_offset insufficient on FPGA: the DLL is a pass-through
 placeholder, so phase quantises to whole pad_clk_rx periods — bit-slip
 carries alignment, phase re-indexes"). Per §9.10.4 ("do not replace
@@ -238,7 +238,7 @@ async def test_per_lane_phase_is_independent(dut):
 
     # Compose check: the legacy GLOBAL phase reg must still apply to the
     # lanes the per-lane override leaves at 0 (bit-slip & phase compose,
-    # per docs/TIDELINK_SPECIFICATION.md §9.10.4 "don't replace swi_phase_offset").
+    # per docs/reference/TIDELINK_SPECIFICATION.md §9.10.4 "don't replace swi_phase_offset").
     # We drive the global reg via the SAME hierarchical-force backdoor
     # cocotb already uses for swi_bit_slip (the Wlink-internal APB decode
     # for this reg has a documented unresolved issue — §9 notes — so the

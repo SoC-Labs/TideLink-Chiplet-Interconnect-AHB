@@ -65,7 +65,7 @@ link at iteration N` for some N ≤ MAX_RETRIES.
 **Lint flows:**
 ```sh
 make -C lint lint-each            # Cadence HAL — full RTL lint coverage
-make -C cdc cdc                   # SpyGlass CDC — see docs/archive/SPYGLASS_CDC_SIGNOFF.md
+make -C cdc cdc                   # SpyGlass CDC — see docs/reference/SPYGLASS_CDC_SIGNOFF.md
 ```
 
 ## Documentation map

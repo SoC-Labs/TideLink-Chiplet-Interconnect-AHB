@@ -8,8 +8,8 @@ and lane masking inside the PHY, and the single-phase PTP timestamp path.
 
 Companion docs: [REGISTER_MAP.md](REGISTER_MAP.md) (authoritative APB/register
 addresses — this doc links, it does not duplicate),
-[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) (cold-POR
-bring-up procedure and pitfalls), [ASIC_TIMING_CONSTRAINTS.md](archive/ASIC_TIMING_CONSTRAINTS.md)
+[TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md) (cold-POR
+bring-up procedure and pitfalls), [ASIC_TIMING_CONSTRAINTS.md](reference/ASIC_TIMING_CONSTRAINTS.md)
 (sign-off). The GPIO PHY's own training/matcher/calibrator internals are
 specified separately in the `tidelink-gpio-phy` repo.
 
@@ -139,7 +139,7 @@ traffic stalls — `PAIR_CREDIT_COUNTER` stays 0, doorbells do not cross, peer A
 writes read back 0, PTP sync never advances. The proof of a healthy handshake is
 `cr_pkt_seen_rx = 1` on **both** sides and `PAIR_CREDIT_COUNTER` non-zero on both
 (see the bring-up verification table in
-[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) §4).
+[TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md) §4).
 
 ### 3.2 Credit accounting registers
 
@@ -171,7 +171,7 @@ notification.
 > `tidelink_autoneg` (`src/rtl/local_overrides/tidelink_autoneg.sv`) — it is the
 > as-built RTL, not a proposal. The original design rationale (hardware-cost
 > analysis, the SRAM-PUF priority source) is retained in
-> [archive/AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md); where that archive
+> [archive/AUTONEG_PROTOCOL.md](reference/AUTONEG_PROTOCOL.md); where that archive
 > and the RTL disagree, the RTL wins. The state names below are taken from the
 > RTL `localparam` block.
 
@@ -255,7 +255,7 @@ link would invert roles mid-flight). Register additions (`NEGO_CFG`,
 
 ## 5. I²C-coordinated training handshake
 
-> Full spec retained in [archive/i2c_train/I2C_TRAIN_PROTOCOL.md](archive/i2c_train/I2C_TRAIN_PROTOCOL.md).
+> Full spec retained in archive/i2c_train/I2C_TRAIN_PROTOCOL.md _(historical — see git history)_.
 
 Per-lane training must enter and exit on **both peers within a bounded skew**, but
 the high-speed link is not yet aligned and cannot coordinate itself
@@ -310,7 +310,7 @@ Training-handshake registers (`NEGO_TRAIN_CFG`, `NEGO_TRAIN_STATUS`,
 
 ## 6. Cross-lane deskew & lane masking
 
-> Full design retained in [archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md](archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md).
+> Full design retained in archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md _(historical — see git history)_.
 
 ### 6.1 The problem (Bug A root cause)
 
@@ -368,7 +368,7 @@ interface is unchanged; only PHY internals are upgraded.
 
 ## 7. PTP single-phase timestamp path
 
-> Full spec retained in [archive/PTP_PROTOCOL.md](archive/PTP_PROTOCOL.md).
+> Full spec retained in [archive/PTP_PROTOCOL.md](reference/PTP_PROTOCOL.md).
 
 `tidelink_ptp` implements a simplified IEEE-1588-style two-message sync over the
 die-to-die link. A Grandmaster chiplet (typically Ethernet-connected) disciplines
@@ -436,7 +436,7 @@ only. PTP registers (`PTP_CTRL`/`PTP_RX_PAYLOAD`/`PTP_STATUS`,
 ## 8. Bring-up & verification at a glance
 
 Cold-POR to traffic, in order (full procedure + pitfalls in
-[TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md)):
+[TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md)):
 
 1. Assign role (strap / SW / I²C autoneg §4) and write `role_lock` → Wlink POR
    deasserts, calibrator sweeps per-lane (slip × phase).
@@ -453,7 +453,7 @@ The HW test suite (`pynq_host/scripts/hwtest/`) groups these into 13 categories
 HW sync, servo/mailbox, perf counters, chiplet-ext, long soak), each gated so a
 wedge-class write (AHB_TX) cannot proceed without a verified-up link. Functional
 intent of each category is described in
-[archive/HW_TEST_SUITE.md](archive/HW_TEST_SUITE.md).
+[archive/HW_TEST_SUITE.md](reference/HW_TEST_SUITE.md).
 
 ---
 
@@ -465,18 +465,18 @@ IMPLEMENTATION.md (plus [REGISTER_MAP.md](REGISTER_MAP.md) for addresses) is the
 living functional reference; consult the archives only for the original
 deep-dive detail.
 
-- [archive/TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md)
+- [archive/TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md)
   — canonical cold-POR bring-up sequence, the four AHB ports, APB sequences,
   flow-control / doorbell mechanics, pitfalls.
-- [archive/AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md) — I²C
+- [archive/AUTONEG_PROTOCOL.md](reference/AUTONEG_PROTOCOL.md) — I²C
   auto-negotiation / role arbitration FSM, priority sources, SRAM-PUF, hardware
   cost analysis.
-- [archive/PTP_PROTOCOL.md](archive/PTP_PROTOCOL.md) — single-phase PTP,
+- [archive/PTP_PROTOCOL.md](reference/PTP_PROTOCOL.md) — single-phase PTP,
   SYNC/DELAY_REQ, hardware timestamp capture, HW sync initiator, servo.
-- [archive/i2c_train/I2C_TRAIN_PROTOCOL.md](archive/i2c_train/I2C_TRAIN_PROTOCOL.md)
+- archive/i2c_train/I2C_TRAIN_PROTOCOL.md _(historical — see git history)_
   — I²C-coordinated training entry/exit handshake, recovery, timing budget.
-- [archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md](archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md)
+- archive/PHY_LANE_DESKEW_DESIGN_2026_06_03.md _(historical — see git history)_
   — cross-lane skew root cause + elastic deskew FIFO design.
-- [archive/HW_TEST_SUITE.md](archive/HW_TEST_SUITE.md) — HW test orchestrator
+- [archive/HW_TEST_SUITE.md](reference/HW_TEST_SUITE.md) — HW test orchestrator
   design (referenced here only for the functional description of what the link
   does, not the test infrastructure).

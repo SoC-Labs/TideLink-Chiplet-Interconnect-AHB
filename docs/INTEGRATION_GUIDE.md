@@ -7,7 +7,7 @@ it up from cold POR to verified link traffic.
 This guide does **not** repeat the register-bit or protocol detail — for those
 see [REGISTER_MAP.md](REGISTER_MAP.md) (every APB/SWI register), [IMPLEMENTATION.md](IMPLEMENTATION.md)
 (FSM / protocol / CDC), and [ARCHITECTURE.md](ARCHITECTURE.md) (component & port
-breakdown). The authoritative spec is [TIDELINK_SPECIFICATION.md](archive/TIDELINK_SPECIFICATION.md).
+breakdown). The authoritative spec is [TIDELINK_SPECIFICATION.md](reference/TIDELINK_SPECIFICATION.md).
 
 **Audience:** SoC integrators instantiating `tidelink_top` in a host bus matrix,
 and bench/ASIC engineers bringing the result up.
@@ -27,7 +27,7 @@ and bench/ASIC engineers bringing the result up.
 | Cadence Xcelium | 22.03-s005 | HAL lint (`make -C lint lint-each`) |
 | cocotb + cocotbext-ahb | pip (`pip install -e python/`) | Verification |
 
-See [archive/DEPENDENCIES.md](archive/DEPENDENCIES.md) for the full tool + IP
+See [archive/DEPENDENCIES.md](reference/DEPENDENCIES.md) for the full tool + IP
 matrix and CI-runner tags.
 
 ### 1.2 Environment setup
@@ -48,7 +48,7 @@ Vendor-IP env vars point at the shared lab IP library
 (`${ARM_IP_LIBRARY_PATH}/...`) and are overridable — never edit files under those
 trees. `cmsdk_fpga_sram.v` is missing from some BP210 installs; `set_env.sh`
 falls back to a standalone path (see
-[archive/DEPENDENCIES.md](archive/DEPENDENCIES.md)).
+[archive/DEPENDENCIES.md](reference/DEPENDENCIES.md)).
 
 ### 1.3 Submodules
 
@@ -70,7 +70,7 @@ first run (see §1.2).
 so the checkout resolves regardless of which branch the submodule HEAD is on.
 Wlink-generated files carry hand-applied TideLink
 patches — re-apply them on any Chisel regen (see
-[archive/DEPENDENCIES.md](archive/DEPENDENCIES.md) §"Updating Dependencies").
+[archive/DEPENDENCIES.md](reference/DEPENDENCIES.md) §"Updating Dependencies").
 
 ---
 
@@ -113,7 +113,7 @@ Module/feature flists (`tidelink_fifo.flist`, `tidelink_apb_regs.flist`,
 **Pick by target:** FPGA build → `tidelink_fpga.flist`; ASIC synth →
 `tidelink_asic.flist` / `tidelink_top_full_asic.flist`; everything else is a
 unit-level filelist. Apply RTL additions to **both** the FPGA and ASIC flists to
-avoid the split-brain noted in [archive/DEPENDENCIES.md](archive/DEPENDENCIES.md).
+avoid the split-brain noted in [archive/DEPENDENCIES.md](reference/DEPENDENCIES.md).
 
 ---
 
@@ -224,11 +224,11 @@ ssh mapstone-dev "cd ~/SoCLabs/tidelink && bash pynq_host/scripts/bringup_pair_c
 Acceptance: `RESULT: CONVERGED — full 16/16 bidirectional link`. Full phased
 checklist (lease → deploy → APB readback → functional bring-up → ILA → PHC soak →
 tear-down, with abort matrix) is in
-[archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md](archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md).
+archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md _(historical — see git history)_.
 
 Bring-up pitfalls (lease-granted, AHB_TX wedge hazard, manifest provenance,
 WavD2DGpioRx count-phase lottery) are documented in
-[archive/TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) §5.
+[archive/TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md) §5.
 
 ---
 
@@ -245,9 +245,9 @@ make fc_lec / fc_etm / fc_all / asic_stage / asic_clean
 
 Build from `tidelink_asic.flist` (or `tidelink_top_full_asic.flist`). Sign-off
 gates: STA at all PVT corners with source-sync arcs analysed
-([ASIC_TIMING_CONSTRAINTS.md](archive/ASIC_TIMING_CONSTRAINTS.md)), SpyGlass CDC
-(`make -C cdc cdc`, see [CDC_AUDIT_REPORT.md](archive/CDC_AUDIT_REPORT.md)), and per-lane
-skew determinism ([DETERMINISM_VALIDATION.md](archive/DETERMINISM_VALIDATION.md)). The
+([ASIC_TIMING_CONSTRAINTS.md](reference/ASIC_TIMING_CONSTRAINTS.md)), SpyGlass CDC
+(`make -C cdc cdc`, see CDC_AUDIT_REPORT.md _(historical — see git history)_), and per-lane
+skew determinism ([DETERMINISM_VALIDATION.md](reference/DETERMINISM_VALIDATION.md)). The
 ASIC target runs the GPIO pad clock at ~100 MHz (UI = 10 ns; calibrator phase
 step ≈ 0.625 ns) vs 25 MHz on FPGA.
 
@@ -279,7 +279,7 @@ Addresses below use the reference map (Wlink `0x44030000`, TideLink `0x44032000`
 On the FPGA pair, `bringup_pair_converge.sh` automates steps 1–2;
 `sw_coord_autocal_region8.sh` adds step 3. The verification register table and
 troubleshooting decision tree are in
-[archive/TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md)
+[archive/TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md)
 §4 and §6.
 
 ---
@@ -288,6 +288,6 @@ troubleshooting decision tree are in
 
 This guide folds in and supersedes (originals retained for the full detail):
 
-- [archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md](archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md) — phased FPGA build/deploy/validation checklist
-- [archive/TIDELINK_BRINGUP_USER_GUIDE.md](archive/TIDELINK_BRINGUP_USER_GUIDE.md) — full bring-up procedure, verification table, pitfalls
-- [archive/DEPENDENCIES.md](archive/DEPENDENCIES.md) — submodule + IP + tool dependencies and update recipe
+- archive/HW_VALIDATION_RUNBOOK_GPIO_PHY_INTEG.md _(historical — see git history)_ — phased FPGA build/deploy/validation checklist
+- [archive/TIDELINK_BRINGUP_USER_GUIDE.md](reference/TIDELINK_BRINGUP_USER_GUIDE.md) — full bring-up procedure, verification table, pitfalls
+- [archive/DEPENDENCIES.md](reference/DEPENDENCIES.md) — submodule + IP + tool dependencies and update recipe

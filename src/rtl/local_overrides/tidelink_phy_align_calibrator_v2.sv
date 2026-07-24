@@ -54,7 +54,7 @@
 // =============================================================================
 //
 // This module is the §9.6 "auto-staging FSM" described in BRINGUP_REPORT.md
-// and now folded into docs/TIDELINK_SPECIFICATION.md §9.10 (PHY-Align:
+// and now folded into docs/reference/TIDELINK_SPECIFICATION.md §9.10 (PHY-Align:
 // Integration Notes). It replaces the SW-driven calibration
 // sweep (cocotb / UVM hierarchical-ref writes to swi_bit_slip and
 // swi_training_mode) with a deterministic in-RTL sequencer that runs the

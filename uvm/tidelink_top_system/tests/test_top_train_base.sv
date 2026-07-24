@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Provides shared APB helpers and Region 8 address constants for the
 // `test_train_*` family (Phase 3 of the bring-up plan; see
-// `docs/archive/proposals/i2c_train/UVM_TEST_PLAN.md`).
+// `docs/reference/i2c_train/UVM_TEST_PLAN.md`).
 //
 // The tests run autoneg with `train_auto_en=1` set in NEGO_TRAIN_CFG (Region
 // 8 @ 0x4403_210C). After the existing mask-handshake completes the master

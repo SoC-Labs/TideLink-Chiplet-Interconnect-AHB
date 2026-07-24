@@ -102,7 +102,7 @@ waive -rule Ac_unsync02 -msg "*pad_rx*"                 -comment "PHY RX data �
 
 # ============================================================================
 # 2026-05-23 — additions from SpyGlass CDC sign-off report
-#   docs/SPYGLASS_CDC_SIGNOFF.md §3.2
+#   docs/reference/SPYGLASS_CDC_SIGNOFF.md §3.2
 #
 # tidelink_phc_cdc handshake synchronizers — data-hold provable by inspection.
 # All paths use the toggle-req/ack handshake pattern. The source-domain

@@ -6,10 +6,10 @@ cocotb), **integration** (paired-die cocotb + UVM), **system** (full chiplet),
 and **HW bring-up** (PYNQ-Z2 pair). Includes the test matrices, the known-issue
 backlog, and sign-off criteria.
 
-Companion docs: [TIDELINK_SPECIFICATION.md](archive/TIDELINK_SPECIFICATION.md) (module
+Companion docs: [TIDELINK_SPECIFICATION.md](reference/TIDELINK_SPECIFICATION.md) (module
 reference + block diagram), [REGISTER_MAP.md](REGISTER_MAP.md),
-[AUTONEG_PROTOCOL.md](archive/AUTONEG_PROTOCOL.md), [PTP_PROTOCOL.md](archive/PTP_PROTOCOL.md),
-[CDC_AUDIT_REPORT.md](archive/CDC_AUDIT_REPORT.md), [BUG_TRACKER.md](archive/BUG_TRACKER.md).
+[AUTONEG_PROTOCOL.md](reference/AUTONEG_PROTOCOL.md), [PTP_PROTOCOL.md](reference/PTP_PROTOCOL.md),
+CDC_AUDIT_REPORT.md _(historical — see git history)_, BUG_TRACKER.md _(historical — see git history)_.
 
 > **Re-baseline status:** Module-to-env mappings reflect the live tree as of
 > 2026-05-29 and should be re-verified before any sign-off use. The deep
@@ -165,7 +165,7 @@ HW acceptance runs on the **PYNQ-Z2 pair** (`bridge1`) via
 `pynq_host/scripts/hwtest/run_all.sh`. All board I/O goes through one trust
 boundary — `lib_hwtest.sh` (the `/dev/mem` mmap-from-Python pattern reused from
 `wlink_probe.sh` / `bringup_pair_converge.sh`); category scripts must **not**
-introduce a new transport. Detail in `archive/HW_TEST_SUITE.md`.
+introduce a new transport. Detail in `reference/HW_TEST_SUITE.md`.
 
 | Cat | Area | Pass criteria | Safety |
 |---|---|---|---|
@@ -201,7 +201,7 @@ multi-pair stress.
 ## 6. Known-issue / shortcomings backlog
 
 Full design-shortcoming inventory (locations + recommendations) in
-`archive/SHORTCOMINGS.md`; open/resolved tracker in `BUG_TRACKER.md`. Condensed:
+`reference/SHORTCOMINGS.md`; open/resolved tracker in `BUG_TRACKER.md`. Condensed:
 
 | # | Sev | Area | Issue | Status |
 |---|---|---|---|---|
@@ -277,7 +277,7 @@ CI loop (`.gitlab-ci.yml`): `hal-lint`, `spyglass-cdc`, `cocotb-regression`
   `waiver.swl` + the two accepted findings. xprop: covered modules pass.
 
 ### HW
-- Governed by `archive/HW_TEST_SUITE.md` Cat 1–13 — a **separate** gating set.
+- Governed by `reference/HW_TEST_SUITE.md` Cat 1–13 — a **separate** gating set.
   Sim sign-off does not subsume HW sign-off, nor vice versa. Sim-gate (paired-die
   cocotb green) is mandatory before any HW deploy.
 
@@ -291,5 +291,5 @@ CI loop (`.gitlab-ci.yml`): `hal-lint`, `spyglass-cdc`, `cocotb-regression`
 
 Folded and archived under `docs/archive/`:
 - `archive/VPLAN.md` — prior canonical verification plan (cocotb/UVM matrix, scope, per-module entries).
-- `archive/SHORTCOMINGS.md` — design shortcomings / known-issue inventory (§6 backlog).
-- `archive/HW_TEST_SUITE.md` — HW test orchestrator, 13-category matrix, safety gates (§5).
+- `reference/SHORTCOMINGS.md` — design shortcomings / known-issue inventory (§6 backlog).
+- `reference/HW_TEST_SUITE.md` — HW test orchestrator, 13-category matrix, safety gates (§5).

@@ -6,7 +6,7 @@
 
 WHAT THIS DOES (and does NOT) GUARD
 -----------------------------------
-The 2026-05 XDC/clock saga had TWO root defects (docs/LANE_LOCK_ROOT_CAUSE.md):
+The 2026-05 XDC/clock saga had TWO root defects (docs/reference/LANE_LOCK_ROOT_CAUSE.md):
 
   Bug A  USE_CLKBUF/USE_IDELAY stripped (51b5169) -> recovered capture clock
          on a LUT-driven net -> HOLD violation -> cal_done=0 -> 0/16 lock.

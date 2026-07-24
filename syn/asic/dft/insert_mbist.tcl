@@ -98,7 +98,7 @@ switch -- $MBIST_FLOW {
             puts "ERROR: MGLS_LICENSE_FILE / LM_LICENSE_FILE not set."
             puts "       Tessent MemoryBIST requires Mentor licence."
             puts "       Action: confirm with admin or rerun with MBIST_FLOW=custom"
-            puts "       See docs/DFT_PLAN_2026_05_28.md §7.4."
+            puts "       See docs/reference/DFT_PLAN_2026_05_28.md §7.4."
             exit 1
         }
 
@@ -165,5 +165,5 @@ switch -- $MBIST_FLOW {
 
 puts "INFO: ============================================================="
 puts "INFO: MBIST-insertion scaffold complete (no real work done — TODO above)"
-puts "INFO: see docs/DFT_PLAN_2026_05_28.md §4 + §7 for closure tasks"
+puts "INFO: see docs/reference/DFT_PLAN_2026_05_28.md §4 + §7 for closure tasks"
 puts "INFO: ============================================================="

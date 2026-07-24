@@ -12,7 +12,7 @@
 #   - It emits ONE objective verdict so a candidate constraint / IDELAY /
 #     clock-path fix can be judged against the current ~1-in-N luck.
 #
-# THE METRIC  (see docs/DETERMINISM_VALIDATION.md for the rationale)
+# THE METRIC  (see docs/reference/DETERMINISM_VALIDATION.md for the rationale)
 #   Per build b (= one sweep log), parse every (mp,sp) row's MASTER and
 #   SLAVE locked-popcount. Define a point "both-sides-good" (BSG) iff
 #   master#==8 AND slave#==8 at that (mp,sp) (configurable via

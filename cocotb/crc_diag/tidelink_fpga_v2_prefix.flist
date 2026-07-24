@@ -272,7 +272,7 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
 // a post-reset hunt_holdoff gate on the is_long_pkt → state==1 transition,
 // killing the slave-side asymmetric stuck-at-state==1 bug triggered by
 // training filler bytes. See src/rtl/local_overrides/WlinkRxLinkLayer.v.
-/home/dam1n19/SoCLabs/tidelink/cocotb/crc_diag/WlinkRxLinkLayer_prefix.v
+${TIDELINK_HOME}/cocotb/crc_diag/WlinkRxLinkLayer_prefix.v
 # Comment-out original via shebang-style: ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxLinkLayer.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkRxRouter.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkTxLinkLayer.v

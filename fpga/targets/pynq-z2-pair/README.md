@@ -84,7 +84,7 @@ Programming the bitstream is **not enough on its own** — Wlink stays in reset 
 
 The 8-lane GPIO PHY can operate at reduced width if a ribbon pin is broken or marginal. Each lane k can be individually disabled via the Wlink `link_lane_mask` register at offset `0x214` (absolute APB address `0x4403_0214`). When a lane is masked off the LinkLayer skips it during striping, the GPIO PHY drives the corresponding TX pad to 0, and the RX side ignores any garbage that pin produces.
 
-**Both boards must be programmed with identical masks** before the link is enabled — there is no auto-detection ([SHORTCOMINGS.md #14a](../../../docs/SHORTCOMINGS.md)). The cleanest way to update the mask is from PYNQ on each board:
+**Both boards must be programmed with identical masks** before the link is enabled — there is no auto-detection ([SHORTCOMINGS.md #14a](../../../docs/reference/SHORTCOMINGS.md)). The cleanest way to update the mask is from PYNQ on each board:
 
 ```python
 from overlay import TidelinkOverlay

@@ -193,11 +193,14 @@ async def test_b1_saturates_one_word_per_cycle(dut):
     w1 = int(await rd(dut, R_WORDS))
 
     words = w1 - w0
-    # The sequencer spends 2 cycles between packets (S_ARMED decision + the
-    # zero-length S_GAP), so (n+2) payload words cost (n+2)+2 cycles. That
-    # amortises away at the large N the campaign actually streams at
-    # (99.6% duty at N=1024); it is only visible on short packets like this.
-    floor = int(500 * (n + 2) / (n + 4)) - 4
+    # Per-packet overhead is 3 cycles: S_ARMED decision, the final data-phase
+    # drain (AHB pipelining — the last word's data phase completes one cycle
+    # after its address), and the zero-length S_GAP. So (n+2) words cost
+    # (n+2)+3 cycles => ~84% duty at N=14, ~99.5% at N=1024. This still outruns
+    # the link (~32 hclk/word at the FPGA rate) by ~30x, so it saturates the
+    # link; the point of this check is that the generator does not stall
+    # spuriously, not that it hits a literal 1 word/hclk.
+    floor = int(500 * (n + 2) / (n + 5)) - 4
     assert words >= floor, (
         f"only {words} words in 500 cycles (expected >= {floor}). The generator "
         f"is not saturating — a benchmark built on it would understate the link."

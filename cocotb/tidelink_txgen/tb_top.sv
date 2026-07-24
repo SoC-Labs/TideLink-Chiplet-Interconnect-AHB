@@ -71,9 +71,18 @@ module tb_top #(
     logic [SYS_DATA_W-1:0] gen_hwdata;
     logic                   fc_tx_hresp;
 
+    // CREDIT_GATE_DIS is normally 0 (gate ON). The mandatory negative control
+    // (c3) builds with +define+TXGEN_FORCE_CREDIT_GATE_DIS to force it 1 and
+    // prove the gate is load-bearing: without it the generator sends into ZERO
+    // credit (the complement of test_c1_zero_credit_never_starts). SIM-ONLY.
     tidelink_tx_gen #(
         .SYS_DATA_W (SYS_DATA_W),
-        .RAM_ADDR_W (RAM_ADDR_W)
+        .RAM_ADDR_W (RAM_ADDR_W),
+`ifdef TXGEN_FORCE_CREDIT_GATE_DIS
+        .CREDIT_GATE_DIS (1'b1)
+`else
+        .CREDIT_GATE_DIS (1'b0)
+`endif
     ) u_gen (
         .hclk               (hclk),
         .hresetn            (hresetn),

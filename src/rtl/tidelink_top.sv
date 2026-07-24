@@ -965,12 +965,23 @@ module tidelink_top #(
     // backstop against an indefinite stall.
     assign ahb_tx_hreadyout = txgen_owns ? 1'b0 : fc_tx_hreadyout;
 
+    // Effective credit-gate-disable: the shipping value is the TXGEN_CREDIT_GATE_DIS
+    // parameter (POR 0 = gate ON). `TXGEN_FORCE_CREDIT_GATE_DIS` is a SIM-ONLY
+    // define that forces it to 1 for the mandatory negative-control build (c3),
+    // proving the peer DOES overrun without the gate. It must NEVER appear in a
+    // shipping flist; with the define absent this is bit-identical to the param.
+    localparam bit TXGEN_CGD_EFF = TXGEN_CREDIT_GATE_DIS
+`ifdef TXGEN_FORCE_CREDIT_GATE_DIS
+        | 1'b1
+`endif
+        ;
+
     generate
     if (TXGEN_PRESENT) begin : g_txgen
         tidelink_tx_gen #(
             .SYS_DATA_W      (SYS_DATA_W),
             .RAM_ADDR_W      (RAM_ADDR_W),
-            .CREDIT_GATE_DIS (TXGEN_CREDIT_GATE_DIS)
+            .CREDIT_GATE_DIS (TXGEN_CGD_EFF)
         ) u_tx_gen (
             .hclk               (hclk),
             .hresetn            (hresetn),

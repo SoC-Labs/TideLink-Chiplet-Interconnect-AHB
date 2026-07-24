@@ -316,7 +316,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/axis_fifo.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master_axil.v
 // Bug N7/N8 silicon observability override: mark_debug on state_reg /
 // phy_state_reg / bus_active_reg / s_axis_cmd_ready_reg / start_bit / stop_bit.
-// Inert unless FPGA_INSERT_DEBUG_CORE=1 (pynq-z2-pair-i2c-ila target).
+// Inert unless FPGA_INSERT_DEBUG_CORE=1 (set FPGA_INSERT_DEBUG_CORE=1 in the environment).
 ${TIDELINK_HOME}/src/rtl/local_overrides/i2c_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave_axil_master.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/i2c/rtl/i2c_slave.v

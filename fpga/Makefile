@@ -53,7 +53,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-i2c-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback pynq-z2-loopback-ext kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3 kr260-eth-chiplet kr260-eth-chiplet-flip
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3 kr260-eth-chiplet kr260-eth-chiplet-flip
 
 # kr260-pair-onchip — REGISTERED 2026-07-18 (plan wave W6/W9 landed). The target
 # dir now ships all three XDC (pin / timing / drc):
@@ -111,13 +111,6 @@ else ifeq ($(TARGET),pynq-z2-pair-ila)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip-ila)
 XILINX_PART     := xc7z020clg400-1
-else ifeq ($(TARGET),pynq-z2-pair-i2c-ila)
-XILINX_PART     := xc7z020clg400-1
-# Bug N7/N8 i2c-ILA target — auto-enable insert_debug_core for this TARGET so
-# callers don't have to remember the env-var. mark_debug attrs in the
-# local_overrides RTL are inert without this flag.
-FPGA_INSERT_DEBUG_CORE := 1
-export FPGA_INSERT_DEBUG_CORE
 else ifeq ($(TARGET),pynq-z2-pair-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-pair-flip-all)
@@ -132,18 +125,6 @@ else ifeq ($(TARGET),pynq-z2-pair-mmcmbypass-oddr-flip-all)
 XILINX_PART     := xc7z020clg400-1
 else ifeq ($(TARGET),pynq-z2-loopback)
 XILINX_PART     := xc7z020clg400-1
-else ifeq ($(TARGET),pynq-z2-loopback-ext)
-XILINX_PART     := xc7z020clg400-1
-# -----------------------------------------------------------------------------
-# Kria KR260 (Zynq UltraScale+, K26 SOM). 2026-07-09 port of the Z2 GPIO-PHY
-# chiplet link onto the KR260 Raspberry-Pi 40-pin header. Four targets = the
-# die_a / die_b flip pair x PTP on/off:
-#   kr260-pair-ptp        die_a, PHC/PTP hardware clock IN   (FPGA_TIDELINK_PTP=1)
-#   kr260-pair-nptp       die_a, PHC/PTP tied off            (FPGA_TIDELINK_PTP=0)
-#   kr260-pair-flip-ptp   die_b (mirror pinout), PTP IN
-#   kr260-pair-flip-nptp  die_b (mirror pinout), PTP tied off
-# PS/DDR/MIO come from the KR260 board preset (needs BOARD_PART set); PL clock,
-# HPM0/HPM1_FPD masters and pl_ps_irq0 are overridden in the BD tcl.
 else ifeq ($(TARGET),kr260-pair-ptp)
 XILINX_PART     := xck26-sfvc784-2LV-c
 FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
@@ -1037,7 +1018,6 @@ help:
 	@echo "  pynq-z2-pair       Digilent Pynq-Z2 — paired         (xc7z020clg400-1)"
 	@echo "  pynq-z2-pair-flip  Digilent Pynq-Z2 — paired (mirror)(xc7z020clg400-1)"
 	@echo "  pynq-z2-loopback     Digilent Pynq-Z2 — internal TX→RX  (xc7z020clg400-1)"
-	@echo "  pynq-z2-loopback-ext Digilent Pynq-Z2 — external jumper (xc7z020clg400-1)"
 	@echo "  mps3                 MPS3 / Arm baseboard               (xcku115-flvb1760-1-c)"
 	@echo ""
 	@echo "Build targets:"

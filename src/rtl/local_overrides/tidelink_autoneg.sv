@@ -526,7 +526,7 @@ module tidelink_autoneg #(
 
     // AXI-Lite sub-state
     // Bug N7/N8 silicon observability: mark_debug on the AXL sub-FSM regs.
-    // Inert unless FPGA_INSERT_DEBUG_CORE=1 (pynq-z2-pair-i2c-ila target).
+    // Inert unless FPGA_INSERT_DEBUG_CORE=1 (set FPGA_INSERT_DEBUG_CORE=1 in the environment).
     reg [2:0]  axl_state_r;
                               reg [2:0]  axl_state_nxt;
     reg [2:0]  txn_step_r;

@@ -91,12 +91,36 @@ module tidelink_dft_wrapper #(
     // ALSO permanently bypassed the peer-mask handshake. DEBUG_UNLOCK_DEFAULT
     // below separates them. Defaults are unchanged and byte-identical.
     parameter HONEST_MASK_HS    = 1'b1,
-    // PENDING (DECISION #2) — APB debug-unlock, independent of HONEST_MASK_HS.
-    //   1'b1 (default) = today's behaviour: APB debug permanently unlocked.
-    //   1'b0 = controller follows the real apb_debug_unlock_i pin (lockable).
-    // HONEST_MASK_HS=1'b1 with this left at 1'b1 gives an honest handshake with
-    // debug still unlocked — previously unreachable.
-    parameter DEBUG_UNLOCK_DEFAULT = 1'b1,
+    // APB debug-unlock, independent of HONEST_MASK_HS.
+    //   1'b0 (default) = controller follows the real apb_debug_unlock_i pin, so
+    //                    silicon ships LOCKABLE and locked-by-strap.
+    //   1'b1           = APB debug permanently unlocked (bench/bring-up only).
+    //
+    // 2026-07-24 — DEFAULT FLIPPED 1'b1 -> 1'b0. It was 1'b1 because the peer-mask
+    // gate ORed apb_debug_unlock_i in, so locking debug also closed the handshake
+    // gate and killed the link. That coupling is GONE: the gate is now
+    //     mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i
+    // (axi_chiplet_controller.sv, F2b), so debug-lock and handshake-honesty are
+    // independent.
+    //
+    // EVIDENCE this is safe (kr260-pair-onchip, same RTL, 2026-07-24): built and
+    // deployed with DEBUG_UNLOCK_DEFAULT=0 on BOTH dies —
+    //   both dies match=1 gate=1 fcsm=4 cal=1 role_locked=1
+    //   "AUTONOMY PROVEN - zero host writes" (the proof issues NO register writes)
+    //   soak 25000/25000 byte-exact, 0 bad, 0 stalls
+    // The ONLY writes in that flow were the two PS-side AFI port-width registers
+    // (0xFF419000 / 0xFD615000 — AXI bus width, not TideLink); every TideLink
+    // access was a READ. So the pair self-configures from POR with ZERO TideLink
+    // register writes while debug is locked, which proves the external-APB write
+    // path that debug-unlock enables (axi_chiplet_controller.sv:3599, "lets the
+    // slave's PYNQ configure Wlink locally") is a DEBUG AFFORDANCE, not a
+    // bring-up dependency.
+    //
+    // ⚠️ RESIDUAL: that evidence is FPGA silicon driven by the PYNQ flow. ASIC
+    // bring-up (nanoSoC-driven) has not been run. If an ASIC bring-up genuinely
+    // needs external-APB writes into a slave's Wlink, override this to 1'b1 at
+    // the tapeout top rather than re-coupling it to the handshake gate.
+    parameter DEBUG_UNLOCK_DEFAULT = 1'b0,
     // S2 scaffold: PHY v2 select pass-through (default 0 = bit-identical;
     // see tidelink_top parameter declaration for semantics).
     parameter logic USE_PHY_V2  = 1'b0,

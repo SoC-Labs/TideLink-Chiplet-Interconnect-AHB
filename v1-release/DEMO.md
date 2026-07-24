@@ -74,7 +74,7 @@ ssh mapstone-dev "fpgahub pair lease release bridge1"
   `USE_CLKBUF`/`USE_IDELAY` fix. Check the routed reports for `Place 30-568`
   count = 0 and `IDELAYE2`/`BUFG` presence; a LUT-driven capture clock (`Place
   30-568` > 0, negative WHS) means the fix was stripped (this is the rc1 root
-  cause — see `docs/LANE_LOCK_ROOT_CAUSE.md`). Do not try to fix it in XDC;
+  cause — see `docs/reference/LANE_LOCK_ROOT_CAUSE.md`). Do not try to fix it in XDC;
   the fix is RTL.
 
 - **Stuck `cal_done=0`**: deploy-skew lottery; re-run `bringup_pair_converge.sh`.

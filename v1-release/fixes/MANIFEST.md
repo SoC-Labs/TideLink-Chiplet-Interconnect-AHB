@@ -36,6 +36,6 @@ needed; otherwise cut `v1.1`.
 
 The morning preserved bitstream **predates all 7** and is the artifact being
 shipped. Adding any of these would (a) require a new FPGA build, which today
-produces a 0/16 artifact on srv04936 (Bug #5/#25, deferred), and (b) change the
+produces a 0/16 artifact on farm-host-a (Bug #5/#25, deferred), and (b) change the
 provenance of the deliverable. RC1 deliberately freezes on the known-good
 bitstream and catalogues the fixes for the follow-on release.

@@ -1,7 +1,7 @@
 # Known Issues — TideLink v1.0-rc2
 
 Open items at the v1 RC2 cut-off and their status. Full historical context is in
-the source repo at `docs/BUG_TRACKER.md`, `docs/LANE_LOCK_ROOT_CAUSE.md`, and
+the source repo at `docs/BUG_TRACKER.md`, `docs/reference/LANE_LOCK_ROOT_CAUSE.md`, and
 `docs/RTL_FREEZE_CHECKLIST.md`.
 
 ## FPGA artifact: lock rate (read this first)
@@ -11,7 +11,7 @@ The v1 FPGA deliverable is the **`72c280b` (sub `17160eb`) source build**:
 `bridge1` pair 2026-05-22. The N-deploy reliability distribution is in
 `reliability.log`. Routed-netlist evidence (8× BUFG capture clocks, 8× IDELAYE2,
 `Place 30-568` = 0, WHS +0.051 ns) is summarised in
-`docs/LANE_LOCK_ROOT_CAUSE.md`.
+`docs/reference/LANE_LOCK_ROOT_CAUSE.md`.
 
 ## Resolved since rc1 (the big ones)
 
@@ -24,7 +24,7 @@ idelay_*/USE_*") had **stripped the `USE_CLKBUF`/`USE_IDELAY` RTL clock-structur
 fix** from the FPGA build path, so Vivado placed the GPIO-PHY recovered capture
 clock on a LUT-driven net (`Place 30-568`) → hold violation → `cal_done=0` →
 0/16. rc2 is branched from `72c280b`, which carries the fix; its source rebuilds
-a 16/16 bitstream. Full writeup: `docs/LANE_LOCK_ROOT_CAUSE.md`.
+a 16/16 bitstream. Full writeup: `docs/reference/LANE_LOCK_ROOT_CAUSE.md`.
 
 ### rc1 Bug #34 / #35 — "mislabelled / unidentified 14.40-16 build" — MOOT
 

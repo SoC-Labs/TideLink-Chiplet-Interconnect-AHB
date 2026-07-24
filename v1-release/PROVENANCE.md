@@ -6,7 +6,7 @@ Exact provenance for every artifact in this bundle. Hashes are in `CHECKSUMS.sha
 
 - **Release branch**: `release/v1.0-rc2`
 - **Off**: parent `72c280b` + submodule `axi-chiplet-controller @ 17160eb`
-  (the **reproducible 16/16** source — see `docs/LANE_LOCK_ROOT_CAUSE.md`)
+  (the **reproducible 16/16** source — see `docs/reference/LANE_LOCK_ROOT_CAUSE.md`)
 - **Tag (planned, not pushed)**: `v1.0`
 - **Supersedes**: `release/v1.0-rc1` (parent `02d4009` / sub `a55d346`), which
   shipped the `tl_v7` bitstream at an honest 13/16 because the lineage had the
@@ -25,12 +25,12 @@ the commit that carries the `USE_CLKBUF` + `USE_IDELAY` RTL clock-structure fix.
 **The rc2 source rebuilds its own shipped bitstream**, and that bitstream locks
 **16/16**. Source ↔ bitstream integrity is restored; the "rebuild regression"
 (rc1 Bugs #5/#25) was never an environment fault — it was the missing RTL fix
-(`51b5169` strip), now present. See `docs/LANE_LOCK_ROOT_CAUSE.md` for the full
+(`51b5169` strip), now present. See `docs/reference/LANE_LOCK_ROOT_CAUSE.md` for the full
 root-cause writeup.
 
 ## bitstreams/  (artifact = `72c280b` source build, 16/16)
 
-Built on the farm host **srv04936** (Vivado 2024.1), dispatched from srv03335,
+Built on the farm host **farm-host-a** (Vivado 2024.1), dispatched from farm-host-b,
 2026-05-22 12:18. Targets `pynq-z2-pair-all` (master) + `pynq-z2-pair-flip-all`
 (slave). `USE_CLKBUF=1` + `USE_IDELAY=1` in the FPGA wrapper; 200 MHz IDELAYCTRL
 reference wired as `clk_wiz` CLKOUT3 in both targets' block design.
@@ -48,7 +48,7 @@ reference wired as `clk_wiz` CLKOUT3 in both targets' block design.
 this build): per-lane capture clocks sourced from **BUFG** (not LUT), **8×
 `IDELAYE2` + `IDELAYCTRL`**, **`Place 30-568` count = 0**, post-route **WHS
 +0.051 ns** (hold met). Contrast the rc1 lineage: 7× `Place 30-568`, WHS
-−0.537 ns (hold violated) → 0/16. See `docs/LANE_LOCK_ROOT_CAUSE.md §"The
+−0.537 ns (hold violated) → 0/16. See `docs/reference/LANE_LOCK_ROOT_CAUSE.md §"The
 mechanism"`.
 
 **HW validation**: this exact bitstream pair locks **16/16 bidirectional,
@@ -91,9 +91,9 @@ only, no AHB_TX). This is the authoritative lock-rate record for the rc2 artifac
 
 ## Build hosts at-a-glance
 
-- FPGA bitstream build host: `srv04936` (Vivado 2024.1; OOM ceiling at ≥3
+- FPGA bitstream build host: `farm-host-a` (Vivado 2024.1; OOM ceiling at ≥3
   concurrent — discipline rule).
-- ASIC build host: `srv04936` (Synopsys Fusion Compiler / Primetime / Formality
+- ASIC build host: `farm-host-a` (Synopsys Fusion Compiler / Primetime / Formality
   U-2022.12).
 - Bring-up host: `mapstone-dev` (proxies the `bridge1` board pair via fpgahub).
 - Boards: `pynq_z2_02_pl` (master, 192.168.4.101) + `pynq_z2_03_pl` (slave, 192.168.6.101).

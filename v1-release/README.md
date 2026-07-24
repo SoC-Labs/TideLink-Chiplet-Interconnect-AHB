@@ -18,7 +18,7 @@ Formality LEC SUCCEEDED) as a self-contained deliverable.
 > #5/#25). rc2 is branched directly from `72c280b`/`17160eb`, which carries that
 > fix. **The rc2 source rebuilds its own shipped bitstream, and it locks 16/16.**
 > The rebuild regression was never an environment fault — it was the missing RTL
-> fix, now restored. Full root cause: `docs/LANE_LOCK_ROOT_CAUSE.md`.
+> fix, now restored. Full root cause: `docs/reference/LANE_LOCK_ROOT_CAUSE.md`.
 
 See `PROVENANCE.md` for exactly how every artifact was produced and `KNOWN_ISSUES.md`
 for what's deferred to v2.
@@ -85,6 +85,6 @@ v1-release/
 - Bring-up & flash procedure → `DEMO.md`
 - Provenance / how it was built → `PROVENANCE.md`
 - Deferred items (Bug list) → `KNOWN_ISSUES.md`
-- Lane-lock root cause → `docs/LANE_LOCK_ROOT_CAUSE.md` (in the tidelink repo)
+- Lane-lock root cause → `docs/reference/LANE_LOCK_ROOT_CAUSE.md` (in the tidelink repo)
 - RTL-freeze checklist → `docs/RTL_FREEZE_CHECKLIST.md`
 - Post-v1 merge plan → `fixes/MANIFEST.md`

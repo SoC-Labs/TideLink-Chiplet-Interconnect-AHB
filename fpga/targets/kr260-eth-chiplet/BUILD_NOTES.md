@@ -51,6 +51,35 @@ so Vivado analysed their beat-frequency worst case: a 0.728 ns requirement on
 `gpiotx_*/io_pad_q_reg -> pad_tx[*]`. The bare-link target drives the divider
 from clk_out1; this BD now matches it.
 
+### die_a rebuild — SWD@PMOD2 + timing fix + ethernet wired (2026-07-24)
+
+Bitstream builds. **Timing fix confirmed: WNS -31.0 -> -2.9 ns** (28 ns gain)
+from sourcing the PHY divider off `clk_out1`. Both clocks now share one period
+(319.857 ns) and are properly related (`Requirement 0.000ns`), instead of the
+old beat-frequency analysis.
+
+| | die_a (this build) |
+|---|---|
+| CLB LUTs | 58,654 / 117,120 = **50.1%** |
+| CLB Registers | 53,771 / 234,240 = 23.0% |
+| Block RAM | 32.5 / 144 = 22.6% |
+| Bonded IOB | **34** (was 25 — +9 = the RMII/MDIO signals) |
+| WNS | **-2.923 ns** (4 failing / 110,349) |
+| WHS | -22.408 ns (8 failing) |
+
+Pins all placed clean: **SWD on PMOD2 at LVCMOS33** (no BIVB-1 — PMOD2 confirmed
+a real 3.3 V bank), RMII on PMOD1 + TX1 on K12, MDIO IOBUF no multi-driver DRC.
+
+**Remaining hold (-22.4 ns) is PRE-EXISTING, not eth-chiplet-specific.** The
+bare-link `kr260-pair-nptp` shows the same -22.489 ns on the *same* path shape:
+`gpiotx_2/g_pad_iob.io_pad_q_reg -> pad_tx[2]`. It is the forwarded-clock
+(source-synchronous) TX output analysed against `set_output_delay`, where what
+physically matters is data-vs-forwarded-clock skew, not absolute hold to a
+virtual clock. The bare-link ships a bitstream with it. Treat as a constraint-
+modelling item for the TX interface, shared with the bare-link target — not a
+blocker introduced here. Residual setup (-2.9 ns, 4 endpoints) is small and
+likely closable.
+
 ### Fixes required to get here (all committed on integ/kr260-eth-chiplet)
 1. build-integrity helpers (`build_provenance.tcl` + msg_gate hooks) were missing
 2. xhb `ahb_sub` comb-loop fix `cb33c9f` cherry-picked (bare-link route DRC)

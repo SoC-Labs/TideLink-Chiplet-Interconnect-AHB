@@ -81,17 +81,31 @@ async def test_honest_mask_hs(dut):
         assert bypass == 0, (
             f"SPLIT BROKEN: HONEST_MASK_HS=1 must let the real strap (0) reach "
             f"controller mask_hs_bypass_i; got {bypass}")
-        # The finding, pinned so it cannot regress silently in either direction.
-        assert int(gate) == 1, (
-            f"gate_open expected 1 here: apb_debug_unlock_i is OR'd into it at "
-            f"axi_chiplet_controller.sv:658. Got {gate} — if this is now 0 the "
-            f":658 term was changed; re-check SW ROLE_CFG role-lock (:758).")
+        # 2026-07-24 — INVERTED. This assertion used to pin the DEFECT
+        # (gate_open==1 while mask_hs_match==0, i.e. a SHAM gate) because
+        # apb_debug_unlock_i was OR'd into mask_hs_gate_open. F2b REMOVED that
+        # term, so the shipped posture is now genuinely honest and the correct
+        # expectation is the opposite. The old assertion did its job on the way
+        # out: it fired the moment the term was deleted, exactly as its own
+        # message predicted ("if this is now 0 the :658 term was changed").
+        #
+        #   now:  mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i
+        # With HONEST_MASK_HS=1 (tidelink_top default) the real strap reaches
+        # the controller as 0, and with no peer to hand this single die a
+        # verdict mask_hs_match is 0 — so the gate is CLOSED. Debug stays
+        # unlocked (unlock==1, as David asked) WITHOUT forging the handshake:
+        # that combination was previously unreachable and is the whole point.
+        assert int(gate) == 0, (
+            f"SHAM-GATE REGRESSION: with both handshake inputs 0 the gate must "
+            f"be CLOSED, got gate_open={gate}. Something re-introduced a forging "
+            f"term into mask_hs_gate_open (axi_chiplet_controller.sv ~:694) — "
+            f"apb_debug_unlock_i must NOT be OR'd in. See "
+            f"docs/AUTONOMY_STATUS_2026_07_24.md.")
         dut._log.info(
-            "DEFAULT confirmed: split landed (bypass follows the real strap) and "
-            "debug stays UNLOCKED — but gate_open is STILL 1 via the "
-            "apb_debug_unlock_i term at axi_chiplet_controller.sv:658, so the "
-            "peer-mask handshake does NOT yet gate. Debug-unlocked AND "
-            "handshake-honest is unreachable without changing that OR.")
+            "DEFAULT confirmed (post-F2b): debug stays UNLOCKED (unlock=1) while "
+            "the peer-mask handshake GENUINELY GATES (gate_open=0 with match=0, "
+            "bypass=0). Debug-unlocked AND handshake-honest — previously "
+            "unreachable — now holds in the shipped posture.")
     elif MODE == "honest_locked":
         # Both straps reach the controller as 0 -> the handshake genuinely gates.
         assert unlock == 0, f"HONEST_LOCKED: controller apb_debug_unlock_i must follow strap (0), got {unlock}"

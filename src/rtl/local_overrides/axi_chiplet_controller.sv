@@ -694,6 +694,10 @@ module axi_chiplet_controller #(
     wire mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i;
 
     reg  nego_lock_pending_reg;
+    // Sticky witness that a GENUINE peer-mask match was observed on this die
+    // (never settable by mask_hs_bypass_i or the nego_lost_w free pass).
+    // Gates entry to autonomous RETIRED operation; mirrored in OBS_MASK_HS[23].
+    reg  mask_hs_verified_reg;
     reg  nego_mask_mismatch_reg;
     wire nego_error_irq_internal;
 
@@ -738,7 +742,31 @@ module axi_chiplet_controller #(
             nego_timeout_reg       <= 32'd131_082_000;
             nego_lock_pending_reg  <= 1'b0;
             nego_mask_mismatch_reg <= 1'b0;
+            mask_hs_verified_reg   <= 1'b0;
         end else begin
+            // 2026-07-24 — GENUINE-HANDSHAKE WITNESS (sticky, POR-only clear).
+            // Latches the first cycle this die observes a REAL peer-mask match:
+            // either its own comparator verdict (master) or the winner's I2C
+            // verdict byte sniffed at Wlink 0x21C (slave, see Wlink.v). It is
+            // deliberately driven from mask_hs_match ALONE — never from
+            // mask_hs_bypass_i and never from nego_lost_w — so no strap and no
+            // "trust the winner" fallback can forge it.
+            //
+            // WHY THIS EXISTS: role_lock still latches on the lost path via the
+            // nego_lost_w free pass (see the role_lock block below), because
+            // role_locked is a MUTUAL CLOCK ENABLE — wlink_por_reset (:2832)
+            // gates this die's forwarded pad_clk_tx, which IS the peer's
+            // pad_clk_rx. Making role_lock itself wait for the verdict would
+            // (a) collapse the ~3.1 ms bring-up stagger the CR/CRACK exchange
+            // relies on, and (b) on the I2C-NACK fallback leave a die that never
+            // receives a verdict permanently gating its own PHY clock — a hard,
+            // bilateral, unrecoverable dead link.
+            // So integrity is enforced HERE instead: this witness gates entry to
+            // autonomous RETIRED operation, which fails closed in a recoverable,
+            // observable way rather than by bricking the clock.
+            if (mask_hs_match)
+                mask_hs_verified_reg <= 1'b1;
+
             // Sticky mismatch: latch on the first cycle the peer reports fail.
             if (mask_hs_fail)
                 nego_mask_mismatch_reg <= 1'b1;
@@ -2758,7 +2786,8 @@ module axi_chiplet_controller #(
     // (tidelink_autoneg.sv ~line 448-468); nego_lock_pending_reg is the
     // controller's sticky bit; the remaining fields are combinational mirrors
     // of wires already used by the gating logic above.
-    wire [31:0] obs_mask_hs_w = {9'h0,                                // [31:23] reserved
+    wire [31:0] obs_mask_hs_w = {8'h0,                                // [31:24] reserved
+                                 mask_hs_verified_reg,                // [23] genuine-match witness
                                  wlink_mask_hs_result,                // [22:21]
                                  mask_hs_gate_open,                   // [20]
                                  mask_hs_match,                       // [19]
@@ -4603,7 +4632,17 @@ module axi_chiplet_controller #(
                 rea_up_cnt_q <= 24'd0;
             // Fire on EITHER branch, when armed and enabled. Holds until the
             // next training rise (or POR).
+            // 2026-07-24 — `& mask_hs_verified_reg` added. Entering autonomous
+            // RETIRED operation now requires a GENUINE peer-mask verdict on this
+            // die; a strap (mask_hs_bypass_i) or the nego_lost_w free pass can no
+            // longer get you here. This is the integrity boundary that the
+            // reverted F3 was reaching for, relocated off the mutual clock enable
+            // (role_locked) so it fails closed RECOVERABLY and OBSERVABLY instead
+            // of by gating this die's forwarded clock — which would also kill the
+            // peer's RX clock domain. Bring-up timing is untouched: role_lock,
+            // wlink_por_reset and autonomy_armed all latch exactly as before.
             if (RETIRE_EN && (nego_en & role_locked & nego_train_cfg_r[0])
+                && mask_hs_verified_reg
                 && ((fc_stable_cnt_q == RETIRE_DWELL)
                     || (rea_up_cnt_q == RETIRE_DWELL_SI)))
                 autonomy_retire_q <= 1'b1;

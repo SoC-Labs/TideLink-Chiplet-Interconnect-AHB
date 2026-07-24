@@ -742,6 +742,7 @@ provision_pynq_peer_keys:
 #
 #   SOC=z2     (default) -> pynq-z2-pair-all / -flip-all      [PTP ignored]
 #   SOC=kr260            -> kr260-pair-{,flip-}{ptp,nptp}, selected by PTP=1|0
+#   SOC=kr260_eth        -> kr260-eth-chiplet{,-flip} (whole SoC+eth+link; PTP integral)
 #
 #   make -C fpga deploy_pair_role ROLE=die_a SOC=kr260 PTP=1 BOARD=kria1
 #
@@ -797,7 +798,18 @@ deploy_pair_role:
 	             KR260_HOST="$$host" KR260_USER="$(KR260_USER)" \
 	             KR260_PROXY="$(KR260_PROXY)" KR260_DEST="$(KR260_DEST)" \
 	             KR260_PASSWORD="$(KR260_PASSWORD)" ;; \
-	  *) echo "ERROR: SOC must be z2 or kr260 (got '$(SOC)')" >&2; exit 2 ;; \
+	  kr260_eth) case "$(ROLE)" in \
+	           die_a) t=kr260-eth-chiplet;      defip="$(KR260_DIEA_IP)" ;; \
+	           die_b) t=kr260-eth-chiplet-flip; defip="$(KR260_DIEB_IP)" ;; \
+	           *) echo "ERROR: ROLE must be die_a or die_b (got '$(ROLE)')" >&2; exit 2 ;; \
+	         esac; \
+	         host="$(KR260_HOST)"; [ -n "$$host" ] || host="$(KR260_USER)@$$defip"; \
+	         echo "deploy_pair_role: SOC=kr260_eth ROLE=$(ROLE) -> TARGET=$$t host=$$host"; \
+	         $(MAKE) -C $(FPGA_DIR) deploy TARGET=$$t \
+	             KR260_HOST="$$host" KR260_USER="$(KR260_USER)" \
+	             KR260_PROXY="$(KR260_PROXY)" KR260_DEST="$(KR260_DEST)" \
+	             KR260_PASSWORD="$(KR260_PASSWORD)" ;; \
+	  *) echo "ERROR: SOC must be z2, kr260 or kr260_eth (got '$(SOC)')" >&2; exit 2 ;; \
 	esac
 
 deploy: $(DEPLOY_ARTEFACTS)

@@ -115,6 +115,44 @@ kind        = "other"
 path        = "../imp/fpga/output/kr260-pair-flip-ptp/tidelink.hwh"
 description = "Slave-side (die_b) KR260 pair bitstream handoff — PTP in, mirrored RPi pinout."
 
+# ---------------------------------------------------------------------------
+# KR260 ETH-CHIPLET pair — the WHOLE nanoSoC multicore+ethernet SoC with
+# TideLink INTERNAL (the on-chip Cortex-M0s drive the D2D link), as opposed to
+# the bare-link kr260-pair-* images above which terminate ahb_mng in a BRAM.
+# die_a = kr260-eth-chiplet (role strap 0), die_b = kr260-eth-chiplet-flip
+# (strap 1, mirrored RPi pinout). PTP is integral, so there is no ptp/nptp split.
+# Same ZynqMP deploy rules as the pair images: header-stripped .bin via
+# bit2bin_zynqmp.py + fpgautil, NEVER the byte-swapped bit2bin.py flavour.
+# ---------------------------------------------------------------------------
+
+[artefacts.bitstream_kr260_eth_chiplet]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-eth-chiplet/tidelink.bit"
+
+[artefacts.bitstream_bin_kr260_eth_chiplet]
+kind        = "bitstream"
+path        = "../imp/fpga/output/kr260-eth-chiplet/tidelink.bin"
+description = "die_a eth-chiplet .bin — header-stripped (bit2bin_zynqmp.py), NO byte-swap; for fpgautil."
+
+[artefacts.hwh_kr260_eth_chiplet]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-eth-chiplet/tidelink.hwh"
+description = "die_a eth-chiplet handoff — SWD on PMOD2, LAN8720 RMII on PMOD1 (+TX1 PMOD2.4)."
+
+[artefacts.bitstream_kr260_eth_chiplet_flip]
+kind = "bitstream"
+path = "../imp/fpga/output/kr260-eth-chiplet-flip/tidelink.bit"
+
+[artefacts.bitstream_bin_kr260_eth_chiplet_flip]
+kind        = "bitstream"
+path        = "../imp/fpga/output/kr260-eth-chiplet-flip/tidelink.bin"
+description = "die_b eth-chiplet .bin — header-stripped (bit2bin_zynqmp.py), NO byte-swap; for fpgautil."
+
+[artefacts.hwh_kr260_eth_chiplet_flip]
+kind        = "other"
+path        = "../imp/fpga/output/kr260-eth-chiplet-flip/tidelink.hwh"
+description = "die_b eth-chiplet handoff — mirrored RPi pinout, role strap 1."
+
 [artefacts.bitstream_mps3]
 kind = "bitstream"
 path = "../imp/fpga/output/mps3/tidelink.bit"
@@ -173,6 +211,20 @@ title     = "Build KR260 pair slave bitstream (die_b, PTP in, mirrored pinout)"
 command   = ["make", "-C", "fpga", "TARGET=kr260-pair-flip-ptp", "build_design"]
 produces  = ["bitstream_built_kr260_pair_flip_ptp"]
 timeout_s = 3600
+
+[[actions]]
+id        = "build_kr260_eth_chiplet"
+title     = "Build KR260 eth-chiplet bitstream (die_a — whole SoC + ethernet + link)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-eth-chiplet", "build_design"]
+produces  = ["bitstream_built_kr260_eth_chiplet"]
+timeout_s = 5400
+
+[[actions]]
+id        = "build_kr260_eth_chiplet_flip"
+title     = "Build KR260 eth-chiplet bitstream (die_b — mirrored pinout, strap 1)"
+command   = ["make", "-C", "fpga", "TARGET=kr260-eth-chiplet-flip", "build_design"]
+produces  = ["bitstream_built_kr260_eth_chiplet_flip"]
+timeout_s = 5400
 
 [[actions]]
 id        = "build_mps3"
@@ -303,6 +355,29 @@ fpga_manager state and re-pokes the AFI PS-master-port widths to 32-bit
 """
 command     = ["make", "-C", "fpga", "deploy_pair_role",
                "SOC=kr260", "PTP=1",
+               "ROLE={pair.local.role}",
+               "KR260_HOST={host.ssh}",
+               "KR260_PROXY={host.proxy}"]
+secret_env  = { KR260_PASSWORD = "kr260.ssh_password" }
+produces    = ["bitstream_loaded"]
+timeout_s   = 600
+
+[[actions]]
+id          = "deploy_kr260_eth_chiplet_pair"
+title       = "Deploy KR260 eth-chiplet bitstream matching this side's pair role"
+description = """
+As deploy_kr260_pair, but loads the ETH-CHIPLET image (whole nanoSoC
+multicore+ethernet SoC with TideLink internal) instead of the bare-link pair
+image. die_a -> kr260-eth-chiplet, die_b -> kr260-eth-chiplet-flip (mirrored RPi
+pinout, role strap 1). fpgautil over SSH/SCP on plain-Ubuntu KR260 (ZynqMP:
+header-stripped .bin, NO byte-swap; NO pynq), then the AFI PS-master-port width
+re-poke, exactly as the pair action.
+
+ALWAYS pair a die_a image with a die_b image - the same image on both boards
+drives two outputs onto every ribbon lane.
+"""
+command     = ["make", "-C", "fpga", "deploy_pair_role",
+               "SOC=kr260_eth",
                "ROLE={pair.local.role}",
                "KR260_HOST={host.ssh}",
                "KR260_PROXY={host.proxy}"]

@@ -34,6 +34,15 @@ module tidelink_design_wrapper (
     inout  wire        SWDIO,          // PMOD2 pin2 / J10 (bidirectional)
     input  wire        SWD_NPORESETN,  // PMOD2 pin3 / K13 (optional)
 
+    // LAN8720 RMII PHY on PMOD1 (TX1 overflows to PMOD2 pin4) — see XDC
+    input  wire        rmii_ref_clk,   // PHY REF_CLK_OUT, 50 MHz
+    output wire  [1:0] rmii_txd,       // txd[1] = PMOD2 pin4 (K12)
+    output wire        rmii_tx_en,
+    input  wire  [1:0] rmii_rxd,
+    input  wire        rmii_crs_dv,
+    output wire        mdc_pad_o,      // MDC
+    inout  wire        MDIO,           // bidirectional management data
+
     // Primary UART console (bring to a spare pad or the PS-side USB-UART; XDC)
     input  wire        uart_rxd,
     output wire        uart_txd,
@@ -60,6 +69,22 @@ module tidelink_design_wrapper (
     );
 
     //=========================================================================
+    // MDIO bidirectional buffer.
+    //   md_padoe_o is ACTIVE-HIGH output enable (OpenCores eth_top: "Signal was
+    //   always active high"). Vivado IOBUF T is active-high tristate -> T = ~oe.
+    //=========================================================================
+    wire md_pad_i_int;    // sensed value into the MAC
+    wire md_pad_o_int;    // MAC drive value
+    wire md_padoe_o_int;  // MAC output enable (active high)
+
+    IOBUF u_mdio_iobuf (
+        .IO (MDIO),
+        .I  (md_pad_o_int),
+        .O  (md_pad_i_int),
+        .T  (~md_padoe_o_int)
+    );
+
+    //=========================================================================
     // Block Design Instance
     //=========================================================================
     tidelink_design tidelink_design_i (
@@ -75,6 +100,17 @@ module tidelink_design_wrapper (
         .swdio_i         (swdio_i_int),
         .swdio_o         (swdio_o_int),
         .swdio_oe        (swdio_oe_int),
+
+        // RMII PHY + MDIO (MDIO tristate resolved by the IOBUF above)
+        .rmii_ref_clk    (rmii_ref_clk),
+        .rmii_txd        (rmii_txd),
+        .rmii_tx_en      (rmii_tx_en),
+        .rmii_rxd        (rmii_rxd),
+        .rmii_crs_dv     (rmii_crs_dv),
+        .mdc_pad_o       (mdc_pad_o),
+        .md_pad_i        (md_pad_i_int),
+        .md_pad_o        (md_pad_o_int),
+        .md_padoe_o      (md_padoe_o_int),
 
         // UART console
         .uart_rxd        (uart_rxd),

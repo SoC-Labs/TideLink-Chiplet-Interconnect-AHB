@@ -61,6 +61,17 @@ proc create_root_design { parentCell } {
     create_bd_port -dir O           swdio_o
     create_bd_port -dir O           swdio_oe
 
+    # LAN8720 RMII PHY (M2) -> PMOD1, TX1 on PMOD2 pin4. MDIO IOBUF in the wrapper.
+    create_bd_port -dir I           rmii_ref_clk
+    create_bd_port -dir O -from 1 -to 0 rmii_txd
+    create_bd_port -dir O           rmii_tx_en
+    create_bd_port -dir I -from 1 -to 0 rmii_rxd
+    create_bd_port -dir I           rmii_crs_dv
+    create_bd_port -dir O           mdc_pad_o
+    create_bd_port -dir I           md_pad_i
+    create_bd_port -dir O           md_pad_o
+    create_bd_port -dir O           md_padoe_o
+
     # UART console + status LEDs
     create_bd_port -dir I           uart_rxd
     create_bd_port -dir O           uart_txd
@@ -201,6 +212,15 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_ports swdio_i]       [get_bd_pins $soc/swdio_i]
     connect_bd_net [get_bd_pins $soc/swdio_o]   [get_bd_ports swdio_o]
     connect_bd_net [get_bd_pins $soc/swdio_oe]  [get_bd_ports swdio_oe]
+    connect_bd_net [get_bd_ports rmii_ref_clk]  [get_bd_pins $soc/rmii_ref_clk]
+    connect_bd_net [get_bd_pins $soc/rmii_txd]  [get_bd_ports rmii_txd]
+    connect_bd_net [get_bd_pins $soc/rmii_tx_en][get_bd_ports rmii_tx_en]
+    connect_bd_net [get_bd_ports rmii_rxd]      [get_bd_pins $soc/rmii_rxd]
+    connect_bd_net [get_bd_ports rmii_crs_dv]   [get_bd_pins $soc/rmii_crs_dv]
+    connect_bd_net [get_bd_pins $soc/mdc_pad_o] [get_bd_ports mdc_pad_o]
+    connect_bd_net [get_bd_ports md_pad_i]      [get_bd_pins $soc/md_pad_i]
+    connect_bd_net [get_bd_pins $soc/md_pad_o]  [get_bd_ports md_pad_o]
+    connect_bd_net [get_bd_pins $soc/md_padoe_o][get_bd_ports md_padoe_o]
     connect_bd_net [get_bd_ports uart_rxd]      [get_bd_pins $soc/uart_rxd]
     connect_bd_net [get_bd_pins $soc/uart_txd]  [get_bd_ports uart_txd]
     connect_bd_net [get_bd_pins $soc/link_active]    [get_bd_ports led0]

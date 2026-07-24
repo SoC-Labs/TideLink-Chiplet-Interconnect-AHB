@@ -17,14 +17,15 @@
 //                    initiator port, used here as the PS BACKDOOR into the SoC
 //                    AHB (firmware load + register poke via an AXI->AHB bridge).
 //   - pad_clk_tx/rx, pad_tx/rx[7:0] : GPIO-PHY pads -> the KR260 J21 ribbon.
-//   - swclk / swdio(_i/_o/_oe)       : CoreSight SWD -> PMOD4 (board IOBUF).
+//   - swclk / swdio(_i/_o/_oe)       : CoreSight SWD -> PMOD2 (board IOBUF).
+//   - rmii_* / md_pad_* / mdc_pad_o  : LAN8720 RMII PHY -> PMOD1 (+TX1 PMOD2.4).
 //   - eth_irq / phc_*_irq / tidechart_irq : interrupts -> PS pl_ps_irq.
 //   - role_strap_i                   : die_a=0 / die_b=1 (board constant).
 //
-// M1 (no-PHY) posture: RMII is tied to a benign idle and the MAC runs in
-// internal loopback (HA1588 still timestamps); MDIO/UART/QSPI/SPI/hostio and
-// all scan/DFT/PUF/nego pins are tied off INSIDE this wrapper so the OOC synth
-// and the BD see a clean boundary. M2 re-exposes RMII on a PMOD adapter.
+// RMII/MDIO are now EXPOSED (M2) for a real LAN8720; UART/QSPI/SPI/hostio and
+// all scan/DFT/PUF/nego pins remain tied off INSIDE this wrapper so the OOC
+// synth and the BD see a clean boundary. With no PHY fitted, leave the RMII
+// pins unconnected and run the MAC in internal loopback as before.
 //
 // KNOWN GAP (finding G1): DEVICE_CLASS is not a nanosoc_eth_chiplet parameter
 // (it lives in the internal tidechart_shim). Per-die DEVICE_CLASS strapping to
@@ -92,13 +93,28 @@ module nanosoc_eth_chiplet_vivado_wrapper #(
 
     // =========================================================================
     // CoreSight SWD — discrete; board wrapper folds swdio(_i/_o/_oe) into an
-    // IOBUF on PMOD4. swj_enable is tied 1 internally (SWD is the debug path).
+    // IOBUF on PMOD2. swj_enable is tied 1 internally (SWD is the debug path).
     // =========================================================================
-    input  wire        swclk,       // -> dap_swclktck  (PMOD4 pin1 / L2)
-    input  wire        swdio_i,     // IOBUF O          (PMOD4 pin2 / T7)
+    input  wire        swclk,       // -> dap_swclktck  (PMOD2 pin1 / J11)
+    input  wire        swdio_i,     // IOBUF O          (PMOD2 pin2 / J10)
     output wire        swdio_o,     // IOBUF I  (dap_swdo)
     output wire        swdio_oe,    // IOBUF T=~oe (dap_swdoen)
-    input  wire        swd_nporesetn, // -> dap_npotrst (optional; PMOD4 pin3 / AF7)
+    input  wire        swd_nporesetn, // -> dap_npotrst (optional; PMOD2 pin3 / K13)
+
+    // =========================================================================
+    // RMII PHY (LAN8720) — M2. Promoted from the M1 tie-offs so a real PHY can
+    // be wired. rmii_ref_clk is the PHY's 50 MHz REF_CLK_OUT (constrained in XDC).
+    // MDIO is exported as the raw tristate trio; the board wrapper does the IOBUF.
+    // =========================================================================
+    input  wire        rmii_ref_clk,
+    output wire  [1:0] rmii_txd,
+    output wire        rmii_tx_en,
+    input  wire  [1:0] rmii_rxd,
+    input  wire        rmii_crs_dv,
+    output wire        mdc_pad_o,
+    input  wire        md_pad_i,
+    output wire        md_pad_o,
+    output wire        md_padoe_o,
 
     // =========================================================================
     // Per-die role strap (die_a=0, die_b=1) — board constant / AXI-GPIO bit
@@ -141,11 +157,6 @@ module nanosoc_eth_chiplet_vivado_wrapper #(
     // -------------------------------------------------------------------------
     // M1 tie-offs and benign-idle constants
     // -------------------------------------------------------------------------
-    // RMII idle: ref_clk 0, rxd 0, crs_dv 0. MAC internal loopback is selected
-    // by SW/register at bring-up; txd/tx_en are simply left dangling (outputs).
-    wire        rmii_ref_clk_idle = 1'b0;
-    wire  [1:0] rmii_rxd_idle     = 2'b00;
-    wire        rmii_crs_dv_idle  = 1'b0;
 
     nanosoc_eth_chiplet #(
         .NUM_PHY_LANES (NUM_PHY_LANES)
@@ -203,18 +214,18 @@ module nanosoc_eth_chiplet_vivado_wrapper #(
         .dap_npotrst         (swd_nporesetn),
         .dap_swj_enable      (1'b1),
 
-        // RMII — M1 idle (loopback selected in SW); txd/tx_en dangling
-        .rmii_ref_clk        (rmii_ref_clk_idle),
-        .rmii_txd            (),
-        .rmii_tx_en          (),
-        .rmii_rxd            (rmii_rxd_idle),
-        .rmii_crs_dv         (rmii_crs_dv_idle),
+        // RMII — wired to the external LAN8720 (M2)
+        .rmii_ref_clk        (rmii_ref_clk),
+        .rmii_txd            (rmii_txd),
+        .rmii_tx_en          (rmii_tx_en),
+        .rmii_rxd            (rmii_rxd),
+        .rmii_crs_dv         (rmii_crs_dv),
 
-        // MDIO — tie off
-        .md_pad_i            (1'b0),
-        .mdc_pad_o           (),
-        .md_pad_o            (),
-        .md_padoe_o          (),
+        // MDIO — raw tristate trio; IOBUF lives in the board wrapper
+        .md_pad_i            (md_pad_i),
+        .mdc_pad_o           (mdc_pad_o),
+        .md_pad_o            (md_pad_o),
+        .md_padoe_o          (md_padoe_o),
 
         // UART — primary console out; chip_core console tied off
         .uart_rxd            (uart_rxd),

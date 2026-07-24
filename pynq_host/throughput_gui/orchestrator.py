@@ -92,6 +92,7 @@ class ThroughputRun:
         self.events: asyncio.Queue = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
         self._summaries: dict = {}
+        self._rel_threshold: Optional[dict] = None
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -151,7 +152,46 @@ class ThroughputRun:
         finally:
             await self._cleanup()
 
+    async def _apply_rel_threshold(self) -> None:
+        """Apply RELEASE_THRESHOLD (0x004) to the DRAINING die.
+
+        The threshold governs when that die's returner fires a
+        release-credits packet, so it belongs on the side whose RX FIFO
+        is being filled — the slave in an M->S run. Its RTL POR is 20,
+        which means small drains free fewer than 20 credits and return
+        NOTHING, and the sender starves. ``rel_threshold=-1`` leaves the
+        deployed image alone.
+
+        A locked CTRL.LOCK blocks the write; we surface that as a warning
+        with the readback rather than failing the run, but the readback is
+        recorded so a comparison can never silently attribute a rate to a
+        threshold that was never applied.
+        """
+        want = int(self.params.get("rel_threshold", -1))
+        if want < 0:
+            return
+        try:
+            res = await self.slave_ch.oneshot("setthr", want)
+        except AgentError as exc:
+            await self._emit("log", level="warning",
+                             msg="rel_threshold: agent refused (%s) — "
+                                 "running with the image's own value" % exc)
+            return
+        self._rel_threshold = res
+        got = res.get("rel_threshold")
+        if res.get("locked") or got != want:
+            await self._emit(
+                "log", level="warning",
+                msg="rel_threshold: wrote %d but read back %s%s — the "
+                    "measurement does NOT reflect the requested threshold"
+                    % (want, got, " (CTRL.LOCK set)" if res.get("locked")
+                       else ""))
+        await self._emit("rel_threshold", **res)
+
     async def _run_inner(self) -> None:
+        # 4b. load-generator setup (before any traffic).
+        await self._apply_rel_threshold()
+
         # 5. delivery proof — gate before any sustained AHB_TX traffic.
         await self._set_state(RunState.PROOFING)
         if self.skip_delivery_proof:
@@ -227,6 +267,15 @@ class ThroughputRun:
             "errors": m.get("errors", 0),
             "rx_throughput_mbps_mean": s.get("throughput_mbps_mean"),
             "rx_drained_words": s.get("drained_words"),
+            # What the load generator was ACTUALLY configured to, as read
+            # back from the die — a cross-version comparison is only
+            # meaningful if the compared runs shared this.
+            "burst_words": self.params.get("burst_words"),
+            "rate_pps": self.params.get("rate_pps"),
+            "rel_threshold_requested": self.params.get("rel_threshold", -1),
+            "rel_threshold_applied": (
+                self._rel_threshold.get("rel_threshold")
+                if self._rel_threshold else None),
             "master": m, "slave": s,
         }
 

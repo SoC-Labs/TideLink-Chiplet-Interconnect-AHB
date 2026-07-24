@@ -40,6 +40,19 @@ SSH_COMMON_ARGS = (
 )
 
 
+def _ssh_args() -> tuple:
+    """SSH_COMMON_ARGS plus an optional jump host.
+
+    The boards sit on private 192.168.x networks that only the lab host
+    can route to, so a dev box reaches them through it
+    (``TIDELINK_BOARD_SSH_JUMP=mapstone-dev``). Unset on the lab host
+    itself, where the boards are directly reachable."""
+    jump = os.environ.get("TIDELINK_BOARD_SSH_JUMP", "").strip()
+    if not jump:
+        return SSH_COMMON_ARGS
+    return SSH_COMMON_ARGS + ("-o", "ProxyJump=%s" % jump)
+
+
 class AgentError(RuntimeError):
     pass
 
@@ -214,7 +227,7 @@ class SshAgentChannel(_BaseChannel):
 
     async def stage(self) -> None:
         """cat-over-ssh the agent source to the board (quoting-robust)."""
-        argv = ["sshpass", "-p", self._password, "ssh", *SSH_COMMON_ARGS,
+        argv = ["sshpass", "-p", self._password, "ssh", *_ssh_args(),
                 "%s@%s" % (self.user, self.ip),
                 "cat > %s" % self.REMOTE_PATH]
         proc = await asyncio.create_subprocess_exec(
@@ -244,6 +257,6 @@ class SshAgentChannel(_BaseChannel):
     def _argv(self, agent_args: list) -> list:
         if not self._staged:
             raise AgentError("%s: stage() must run before use" % self.board)
-        return ["sshpass", "-p", self._password, "ssh", *SSH_COMMON_ARGS,
+        return ["sshpass", "-p", self._password, "ssh", *_ssh_args(),
                 "%s@%s" % (self.user, self.ip),
                 self._remote_cmd(agent_args)]

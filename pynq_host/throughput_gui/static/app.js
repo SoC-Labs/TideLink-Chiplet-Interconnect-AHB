@@ -1,9 +1,14 @@
-// TideLink throughput GUI — browser client.
+// TideLink throughput GUI — Run view (the original P0 client).
 // Vanilla JS + Plotly (vendored). No build step. Pattern per
 // stress_toolkit/static/app.js (SSE + Plotly.extendTraces).
+//
+// Shared helpers ($, TL) come from common.js. Behaviour of this view is
+// unchanged from P0; the only additions are (a) publishing run events on
+// TL.bus so the Link Monitor can draw delivered-words/s from the same
+// stream, and (b) exposing TL.run so the monitor's soak controls drive
+// this ONE execution path (/api/runs) instead of inventing a second.
 "use strict";
 
-const $ = (id) => document.getElementById(id);
 let currentRunId = null;
 let es = null;
 
@@ -23,18 +28,12 @@ function setBanner(state, text) {
 function setRunning(running) {
   $("run-btn").disabled = running;
   $("abort-btn").disabled = !running;
+  TL.bus.emit("run:running", running);
 }
 
 // ── Charts ────────────────────────────────────────────────────────────────
 
-const LAYOUT_BASE = {
-  margin: { t: 36, r: 16, b: 40, l: 56 },
-  paper_bgcolor: "#11151c", plot_bgcolor: "#11151c",
-  font: { color: "#c8d2e0", size: 11 },
-  xaxis: { title: "t (s)", gridcolor: "#222a36" },
-  showlegend: true,
-  legend: { orientation: "h", y: 1.15 },
-};
+const LAYOUT_BASE = TL.LAYOUT_BASE;
 
 function initCharts() {
   Plotly.newPlot("chart-tput", [
@@ -42,9 +41,10 @@ function initCharts() {
       line: { color: "#4ea1ff" } },
     { x: [], y: [], name: "slave RX (delivered)", mode: "lines+markers",
       line: { color: "#41d67c" } },
-  ], { ...LAYOUT_BASE, title: "Throughput (payload Mbit/s)",
+  ], Object.assign({}, LAYOUT_BASE, {
+       title: "Throughput (payload Mbit/s)",
        yaxis: { title: "Mbit/s", rangemode: "tozero",
-                gridcolor: "#222a36" } },
+                gridcolor: "#222a36" } }),
     { displayModeBar: false, responsive: true });
 
   Plotly.newPlot("chart-credit", [
@@ -52,9 +52,10 @@ function initCharts() {
       line: { color: "#e0b341" } },
     { x: [], y: [], name: "slave RX occupancy", mode: "lines",
       line: { color: "#d65454" } },
-  ], { ...LAYOUT_BASE, title: "Credits / occupancy",
+  ], Object.assign({}, LAYOUT_BASE, {
+       title: "Credits / occupancy",
        yaxis: { title: "words", rangemode: "tozero",
-                gridcolor: "#222a36" } },
+                gridcolor: "#222a36" } }),
     { displayModeBar: false, responsive: true });
 }
 
@@ -72,14 +73,13 @@ function onSample(s) {
     Plotly.extendTraces("chart-tput", { x: [[t]], y: [[s.throughput_mbps]] }, [1]);
     Plotly.extendTraces("chart-credit", { x: [[t]], y: [[s.occupancy]] }, [1]);
   }
+  TL.bus.emit("run:sample", s);
 }
 
 // ── API ───────────────────────────────────────────────────────────────────
 
 async function jget(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${url}: ${r.status}`);
-  return r.json();
+  return TL.jget(url);
 }
 
 async function refreshLink() {
@@ -94,9 +94,40 @@ async function refreshLink() {
   }
 }
 
+// Single admission path shared by the Run form and the Link Monitor's
+// load generator. Returns {ok, status, json}; on success the SSE stream
+// is attached and the banner/buttons are already updated.
+async function submitRun(body, onRefused) {
+  $("gate-reason").textContent = "";
+  const r = await fetch("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = {}; }
+  if (!r.ok) {
+    // 409 = mutex / run in flight, 412 = gate/lease/provenance refused
+    const msg = `refused (${r.status}): ${j.detail}`;
+    $("gate-reason").textContent = msg;
+    setBanner("failed", `refused (${r.status})`);
+    if (onRefused) onRefused(r.status, j.detail);
+    return { ok: false, status: r.status, json: j };
+  }
+  currentRunId = j.run_id;
+  $("csv-link").classList.add("hidden");
+  resetCharts();
+  setRunning(true);
+  setBanner("running", `run ${j.run_id} admitted (criterion ${j.criterion})`);
+  log("admitted", j);
+  attachSSE(j.run_id);
+  loadProvenance(j.run_id);
+  TL.bus.emit("run:started", j);
+  return { ok: true, status: r.status, json: j };
+}
+
 async function startRun(ev) {
   ev.preventDefault();
-  $("gate-reason").textContent = "";
   const body = {
     test: "throughput_m2s",
     params: {
@@ -108,27 +139,7 @@ async function startRun(ev) {
   };
   const ver = $("p-version").value.trim();
   if (ver) body.artefact_version = ver;
-
-  const r = await fetch("/api/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const j = await r.json();
-  if (!r.ok) {
-    // 409 = mutex / run in flight, 412 = gate/lease/provenance refused
-    $("gate-reason").textContent = `refused (${r.status}): ${j.detail}`;
-    setBanner("failed", `refused (${r.status})`);
-    return;
-  }
-  currentRunId = j.run_id;
-  $("csv-link").classList.add("hidden");
-  resetCharts();
-  setRunning(true);
-  setBanner("running", `run ${j.run_id} admitted (criterion ${j.criterion})`);
-  log("admitted", j);
-  attachSSE(j.run_id);
-  loadProvenance(j.run_id);
+  await submitRun(body);
 }
 
 async function loadProvenance(runId) {
@@ -153,12 +164,17 @@ function attachSSE(runId) {
     $("csv-link").href = `/api/runs/${runId}/samples.csv`;
     $("csv-link").classList.remove("hidden");
     es.close();
+    TL.bus.emit("run:finished", { run_id: runId, state: state });
   };
   es.addEventListener("state", (m) => {
     const d = JSON.parse(m.data);
     log("state", d);
+    TL.bus.emit("run:state", d);
     if (d.state === "done") {
-      finish("done", `DONE — mean ${d.summary?.throughput_mbps_mean ?? "?"} Mbit/s`);
+      const mean = (d.summary && d.summary.throughput_mbps_mean !== undefined
+                    && d.summary.throughput_mbps_mean !== null)
+        ? d.summary.throughput_mbps_mean : "?";
+      finish("done", `DONE — mean ${mean} Mbit/s`);
     } else if (d.state === "failed") {
       finish("failed", `FAILED — ${d.error}`);
     } else if (d.state === "aborted") {
@@ -170,6 +186,11 @@ function attachSSE(runId) {
   es.addEventListener("sample", (m) => onSample(JSON.parse(m.data)));
   es.addEventListener("delivery_proof", (m) => log("delivery_proof", JSON.parse(m.data)));
   es.addEventListener("agent_done", (m) => log("agent_done", JSON.parse(m.data)));
+  es.addEventListener("rel_threshold", (m) => {
+    const d = JSON.parse(m.data);
+    log("rel_threshold", d);
+    TL.bus.emit("run:rel_threshold", d);
+  });
   es.addEventListener("log", (m) => log("log", JSON.parse(m.data)));
   es.addEventListener("closed", () => es && es.close());
   es.onerror = () => { /* keepalive gaps are fine; SSE auto-reconnects */ };
@@ -179,6 +200,15 @@ async function abortRun() {
   if (!currentRunId) return;
   await fetch(`/api/runs/${currentRunId}/abort`, { method: "POST" });
 }
+
+// Exposed for the Link Monitor's load generator — same endpoint, same
+// gates, same in-flight slot.
+TL.run = {
+  start: submitRun,
+  abort: abortRun,
+  currentId: () => currentRunId,
+  log: log,
+};
 
 // ── wire-up ───────────────────────────────────────────────────────────────
 
@@ -193,6 +223,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     $("mode-badge").className = "badge " + (h.fake ? "fake" : "real");
     if (h.default_artefact_version)
       $("p-version").placeholder = h.default_artefact_version + " (default)";
+    TL.bus.emit("health", h);
   } catch (e) { /* leave badge empty */ }
   refreshLink();
+});
+
+TL.bus.on("tab", (name) => {
+  if (name === "run") TL.resizeCharts(["chart-tput", "chart-credit"]);
 });

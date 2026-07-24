@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>TideLink throughput</title>
+  <title>TideLink link GUI</title>
+  <!-- inline data URI: keeps the console clean without adding a request -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230b0e13'/%3E%3Cpath d='M2 11h3l2-6 2 9 2-6h3' stroke='%234ea1ff' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
   <!-- vendored so the GUI works when the browser host has no internet;
        falls back to the CDN if the vendor copy is missing -->
@@ -16,12 +18,18 @@
 <body>
   <header>
     <h1>TideLink throughput characterization</h1>
+    <nav class="tabs">
+      <button type="button" class="tab active" data-tab="run">Run</button>
+      <button type="button" class="tab" data-tab="monitor">Link Monitor</button>
+      <button type="button" class="tab" data-tab="compare">Compare</button>
+    </nav>
     <span id="mode-badge" class="badge"></span>
   </header>
 
   <div id="banner" class="banner state-idle">idle</div>
 
-  <main>
+  <!-- ════════════════════════════ RUN ════════════════════════════ -->
+  <main id="view-run" class="view">
     <section class="panel" id="control-panel">
       <h2>M&rarr;S sustained throughput</h2>
       <form id="run-form">
@@ -65,12 +73,157 @@
     </section>
   </main>
 
+  <!-- ═══════════════════════ LINK MONITOR ════════════════════════ -->
+  <section id="view-monitor" class="view hidden">
+    <div class="panel wide">
+      <div class="mon-bar">
+        <label class="inline">period
+          <select id="mon-period">
+            <option value="100">100 ms</option>
+            <option value="200" selected>200 ms</option>
+            <option value="500">500 ms</option>
+            <option value="1000">1000 ms</option>
+          </select>
+        </label>
+        <label class="inline"><input type="checkbox" id="mon-perf">
+          sample perf counters (phase B)</label>
+        <label class="inline"><input type="checkbox" id="mon-crc" checked>
+          read CRC error count</label>
+        <button type="button" id="mon-start">Start monitor</button>
+        <button type="button" id="mon-stop" disabled>Stop</button>
+        <button type="button" id="mon-retry" class="ghost">retry stream</button>
+        <span id="mon-state" class="chip mute">session: idle</span>
+        <span id="mon-transport" class="chip mute">idle</span>
+      </div>
+      <div id="mon-note" class="mon-note"></div>
+      <div class="muted small">
+        Read-only poll of the whitelisted registers only. Every field below is
+        decoded server-side by <code>regmap.decode_monitor()</code>. The chart
+        x-axis is host receipt time: the two boards are not NTP-synced, so
+        their monotonic clocks are never compared.
+      </div>
+    </div>
+
+    <div id="mon-faults" class="fault-banner hidden"></div>
+
+    <div class="die-row">
+      <div class="panel die" id="die-master"></div>
+      <div class="panel die" id="die-slave"></div>
+    </div>
+
+    <div class="panel wide">
+      <h3>Rolling traces (last 600 samples)</h3>
+      <div id="chart-mon-credit" class="chart"></div>
+      <div id="chart-mon-pair" class="chart"></div>
+      <div id="chart-mon-words" class="chart"></div>
+    </div>
+
+    <div class="panel wide">
+      <h3>Phase B — hardware utilisation</h3>
+      <div id="perf-missing" class="mon-note warn"></div>
+      <div id="perf-panel" class="hidden">
+        <div id="perf-grid" class="perf-grid"></div>
+        <div id="chart-mon-perf" class="chart"></div>
+      </div>
+    </div>
+
+    <div class="panel wide">
+      <h3>Load generator</h3>
+      <div class="lg-grid">
+        <div>
+          <label>packet length N (payload words)
+            <input type="range" id="lg-n" min="1" max="256" value="16">
+          </label>
+          <label class="inline">N =
+            <input type="number" id="lg-n-box" min="1" max="256" value="16"
+                   class="narrow">
+          </label>
+          <div id="lg-eff" class="eff"></div>
+        </div>
+        <div>
+          <label>RELEASE_THRESHOLD (0x004)
+            <input type="number" id="lg-thr" min="-1" max="4095" value="0">
+          </label>
+          <div class="buttons">
+            <button type="button" id="lg-thr-por" class="ghost">restore POR (20)</button>
+            <button type="button" id="lg-thr-zero" class="ghost">release-per-drain (0)</button>
+            <button type="button" id="lg-thr-leave" class="ghost">leave image (-1)</button>
+          </div>
+          <div id="lg-thr-note" class="muted"></div>
+        </div>
+        <div>
+          <label>duration_s
+            <input type="number" id="lg-duration" value="30" min="0.5"
+                   max="600" step="0.5">
+          </label>
+          <label>win_s
+            <input type="number" id="lg-win" value="0.5" min="0.1" max="10"
+                   step="0.1">
+          </label>
+          <label>rate_pps (0 = unthrottled)
+            <input type="number" id="lg-rate" value="0" min="0" step="100">
+          </label>
+          <div class="buttons">
+            <button type="button" id="lg-start">Run soak</button>
+            <button type="button" id="lg-stop" disabled>Stop soak</button>
+          </div>
+        </div>
+      </div>
+      <div id="lg-result" class="lg-result"></div>
+      <div class="muted small">
+        The soak posts to the same <code>/api/runs</code> surface as the Run
+        tab — same lease, provenance, link gate and delivery proof. There is
+        no second execution path.
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════ COMPARE ══════════════════════════ -->
+  <section id="view-compare" class="view hidden">
+    <div class="panel wide">
+      <div class="mon-bar">
+        <label class="inline">test
+          <select id="cmp-test">
+            <option value="throughput_m2s">throughput_m2s</option>
+          </select>
+        </label>
+        <label class="inline">metric
+          <input type="text" id="cmp-metric" list="cmp-metrics"
+                 value="throughput_mbps_mean">
+          <datalist id="cmp-metrics"></datalist>
+        </label>
+        <label class="inline">params_key
+          <input type="text" id="cmp-params"
+                 placeholder="burst_words=16;rate_pps=0.0;rel_threshold=0">
+        </label>
+        <label class="inline">baseline
+          <select id="cmp-baseline"></select>
+        </label>
+        <button type="button" id="cmp-go">Compare</button>
+        <button type="button" id="cmp-refresh" class="ghost">reload versions</button>
+      </div>
+      <div id="cmp-note" class="mon-note"></div>
+      <h3>versions</h3>
+      <div id="cmp-versions" class="ver-list"><div class="muted">(not loaded)</div></div>
+    </div>
+
+    <div id="cmp-results" class="panel wide hidden">
+      <div id="cmp-warnings" class="warn-box"></div>
+      <div id="chart-compare" class="chart tall"></div>
+      <h3>delta vs baseline</h3>
+      <div id="cmp-table"></div>
+    </div>
+  </section>
+
   <footer>
     loopback-only :8090 &middot; reach via
     <code>ssh -L 8090:localhost:8090 mapstone-dev</code> &middot;
-    P0 walking skeleton &middot; plan: docs/THROUGHPUT_GUI_PLAN_2026_06_12.md [removed 2026-07; in git history]
+    see <code>docs/HANDOVER_LINK_GUI_Z2_2026_07_24.md</code>
   </footer>
 
+  <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/monitor.js"></script>
+  <script src="/static/compare.js"></script>
 </body>
 </html>

@@ -43,7 +43,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from . import gates, provenance, tests_registry
+from . import compare, gates, monitor, provenance, tests_registry
 from .agent_channel import LocalAgentChannel, SshAgentChannel
 from .lease import FakeLeaseClient
 from .orchestrator import RunState, ThroughputRun
@@ -53,9 +53,34 @@ STATIC_DIR = Path(__file__).parent / "static"
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 
 DEFAULT_PORT = 8090
+# fpgahub registry (mapstone-dev daemon, /api/v1/boards):
+#   192.168.4.101 = pynq_z2_02_ps  (die_a, "master")
+#   192.168.2.101 = pynq_z2_01_ps  (die_b, "slave")
+#
+# The pair is z2_02 + z2_01, NOT z2_02 + z2_03. Older docs (including
+# docs/HANDOVER_LINK_GUI_Z2_2026_07_24.md §2) say z2_03 and this file used
+# to default to 192.168.6.101 accordingly; the golden-image recovery of
+# 2026-07-24 recorded die_b as z2_01, confirmed by David 2026-07-24.
+# Overridable per request (master_ip/slave_ip) for a different pairing.
 DEFAULT_MASTER_IP = "192.168.4.101"
-DEFAULT_SLAVE_IP = "192.168.6.101"
-DEFAULT_BOARD = "bridge1"
+DEFAULT_SLAVE_IP = "192.168.2.101"
+
+# The Z2 pair used to be leasable as the single scope "bridge1", which was
+# migrated from a board to a link. Neither exists on the current daemon —
+# /pairs, /links and /chassis all 404 and /api/v1/boards lists the two PS
+# boards individually — so the lease scope is now a LIST and every scope in
+# it must be GRANTED before we touch either board. Override with
+# TIDELINK_LEASE_BOARDS (comma-separated) when the topology changes again.
+# Member names (``lease show`` is per-member); SshLeaseClient maps each to
+# its board GROUP for acquire/release, which is where leases actually live.
+DEFAULT_BOARDS = os.environ.get(
+    "TIDELINK_LEASE_BOARDS", "pynq_z2_02_ps,pynq_z2_01_ps")
+DEFAULT_BOARD = DEFAULT_BOARDS          # back-compat alias (str, may be CSV)
+
+
+def _board_list(board: str) -> list:
+    """"a,b" -> ["a", "b"]; a bare name stays a one-element list."""
+    return [b.strip() for b in str(board or "").split(",") if b.strip()]
 
 
 @dataclass
@@ -170,12 +195,22 @@ def create_app(cfg: Optional[AppConfig] = None, *,
         if state.lease_client is None:
             if cfg.fake:
                 state.lease_client = FakeLeaseClient(cfg.board)
+            elif os.environ.get("TIDELINK_FPGAHUB_HOST"):
+                # The daemon that owns the boards is on another host and
+                # we already reach the boards through it as an ssh jump —
+                # drive its CLI rather than keep a Bearer token on disk.
+                from .lease import SshLeaseClient
+                state.lease_client = SshLeaseClient()
             else:
                 from .lease import LeaseClient
                 state.lease_client = LeaseClient()
 
     @app.on_event("shutdown")
     async def _shutdown():
+        try:
+            await monitor.shutdown(state)
+        except Exception:
+            pass
         if state.current_run is not None:
             await state.current_run.cancel()
         try:
@@ -183,6 +218,12 @@ def create_app(cfg: Optional[AppConfig] = None, *,
         except Exception:
             pass
         state.store.close()
+
+    # Link Monitor (read-only dual-die polling) and the cross-version
+    # comparison surface. Both take the AppState lazily so they see the
+    # same channel factory / lease client / store the runs use.
+    app.include_router(monitor.build_router(lambda: state))
+    app.include_router(compare.build_router(lambda: state))
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)),
@@ -207,8 +248,42 @@ def create_app(cfg: Optional[AppConfig] = None, *,
 
     @app.get("/api/lease")
     async def api_lease(board: str = DEFAULT_BOARD):
-        info = await state.lease_client.current_holder(board)
-        return info if isinstance(info, dict) else info.model_dump()
+        out = []
+        for name in _board_list(board) or [DEFAULT_BOARD]:
+            info = await state.lease_client.current_holder(name)
+            out.append(info if isinstance(info, dict) else info.model_dump())
+        # One scope still answers with a bare object so existing callers
+        # (and the P0 UI) keep working; a real pair answers with a list.
+        return out[0] if len(out) == 1 else out
+
+    async def _acquire_all(board: str, ttl: int) -> list:
+        """Acquire EVERY lease scope for the pair, or none at all.
+
+        A QUEUED lease is not a lease — running on it deploys over someone
+        else's session — so a queue position anywhere aborts the whole
+        acquisition and releases what we already took."""
+        tokens: list = []
+        for name in _board_list(board) or [DEFAULT_BOARD]:
+            try:
+                result = await state.lease_client.acquire(name, ttl=ttl)
+            except BaseException:
+                await _release_all(tokens)
+                raise
+            if hasattr(result, "position"):       # QueueState
+                await _release_all(tokens)
+                raise HTTPException(
+                    412, "lease for %s is QUEUED at position %s, not "
+                         "granted — refusing to run over someone else's "
+                         "session" % (name, result.position))
+            tokens.append(result)
+        return tokens
+
+    async def _release_all(tokens) -> None:
+        for tok in tokens or []:
+            try:
+                await state.lease_client.release(tok)
+            except Exception:
+                pass
 
     @app.get("/api/link/status")
     async def link_status():
@@ -262,17 +337,11 @@ def create_app(cfg: Optional[AppConfig] = None, *,
 
         master_ch = slave_ch = None
         cleanup = lambda: None
-        lease_token = None
+        lease_tokens: list = []
         try:
-            # 2. lease must be GRANTED, not queued
-            result = await state.lease_client.acquire(
-                board, ttl=req.ttl_seconds)
-            if hasattr(result, "position"):       # QueueState
-                raise HTTPException(
-                    412, "lease for %s is QUEUED at position %s, not "
-                         "granted — refusing to run over someone else's "
-                         "session" % (board, result.position))
-            lease_token = result
+            # 2. every lease scope must be GRANTED, not queued
+            lease_tokens = await _acquire_all(board, req.ttl_seconds)
+            lease_token = lease_tokens[0] if lease_tokens else None
 
             # 3. provenance manifests (fail-closed)
             try:
@@ -313,6 +382,7 @@ def create_app(cfg: Optional[AppConfig] = None, *,
                 provenance=prov,
                 lease={"holder": getattr(lease_token, "holder", None),
                        "token_id": getattr(lease_token, "token", None),
+                       "scopes": _board_list(board),
                        "scope": "link"},
                 gate_snapshot=verdict.snapshot)
         except BaseException:
@@ -322,26 +392,16 @@ def create_app(cfg: Optional[AppConfig] = None, *,
             if slave_ch is not None:
                 await slave_ch.close()
             cleanup()
-            if lease_token is not None:
-                try:
-                    await state.lease_client.release(lease_token)
-                except Exception:
-                    pass
+            await _release_all(lease_tokens)
             raise
 
         run_id = record["run_id"]
-        lease_ref = lease_token
+        lease_refs = list(lease_tokens)
 
-        def _on_finished(rid=run_id, cu=cleanup, tok=lease_ref):
+        def _on_finished(rid=run_id, cu=cleanup, toks=lease_refs):
             cu()
-            if tok is not None:
-                asyncio.ensure_future(_release_quietly(tok))
-
-        async def _release_quietly(tok):
-            try:
-                await state.lease_client.release(tok)
-            except Exception:
-                pass
+            if toks:
+                asyncio.ensure_future(_release_all(toks))
 
         run = ThroughputRun(
             run_id, state.store, master_ch, slave_ch, params,

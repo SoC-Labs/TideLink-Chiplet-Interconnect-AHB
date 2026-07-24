@@ -19,9 +19,18 @@ REGISTRY = {
         "param_schema": {
             "burst_words": {"type": "int", "default": 16,
                             "min": 1, "max": 256,
-                            "doc": "payload words per packet"},
+                            "doc": "payload words per packet (N). Header "
+                                   "efficiency is N/(N+2)."},
             "rate_pps": {"type": "float", "default": 0.0, "min": 0.0,
                          "doc": "offered packet rate; 0 = unthrottled"},
+            "rel_threshold": {"type": "int", "default": -1,
+                              "min": -1, "max": 4095,
+                              "doc": "RELEASE_THRESHOLD (0x004) applied to "
+                                     "the DRAINING die before the run. "
+                                     "-1 = leave the image's value alone; "
+                                     "0 = release credits per drain; RTL "
+                                     "POR is 20, which starves the credit "
+                                     "loop on small drains."},
             "duration_s": {"type": "float", "default": 10.0,
                            "min": 0.5, "max": 600.0},
             "win_s": {"type": "float", "default": 0.5,

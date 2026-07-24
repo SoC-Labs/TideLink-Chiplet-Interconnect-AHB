@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from pynq_host.throughput_gui import gates
+from pynq_host.throughput_gui import gates, regmap
 from pynq_host.throughput_gui.agent_channel import LocalAgentChannel
 
 
@@ -54,7 +54,10 @@ async def test_link_gate(channel_pair):
     master, slave = channel_pair
     verdict = await gates.link_gate(master, slave)
     assert verdict.ok and verdict.criterion == "B"
-    assert verdict.snapshot["m_phy_id"] == "0xfa4e0001"
+    # 0x11C is PHY_ALIGN_ID, the constant block-presence marker the RTL
+    # returns (axi_chiplet_controller.sv:2684) — the fake used to answer an
+    # invented 0xFA4E_0001, which made --fake and silicon disagree.
+    assert verdict.snapshot["m_phy_id"] == "0x%08x" % regmap.PHY_ALIGN_ID_EXPECT
 
 
 async def test_link_gate_down(link_dir):

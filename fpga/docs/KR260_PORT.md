@@ -38,7 +38,7 @@ make -C fpga build_design TARGET=kr260-pair-ptp       SKIP_PACKAGE_IP=1
 make -C fpga build_design TARGET=kr260-pair-flip-nptp SKIP_PACKAGE_IP=1
 make -C fpga build_design TARGET=kr260-pair-flip-ptp  SKIP_PACKAGE_IP=1
 # or fan out on the farm:
-#   make -C fpga farm_build FARM_JOBS="kr260-pair-nptp@local kr260-pair-ptp@srv04936 ..."
+#   make -C fpga farm_build FARM_JOBS="kr260-pair-nptp@local kr260-pair-ptp@farm-host-a ..."
 ```
 Outputs land in `imp/fpga/output/<TARGET>/tidelink.{bit,hwh,bin}` + a
 provenance manifest. The build uses Vivado 2024.1 (the KR260 board files ship in

@@ -41,7 +41,7 @@ if [ "${SKIP_BUILD:-0}" = 1 ]; then
 else
   say "building iter-5 (TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1)"
   export TIDELINK_PHY_V2=1 TD_AUTO_LANE_MASK_E4=1
-  ./fpga/scripts/build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936 \
+  ./fpga/scripts/build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@farm-host-a \
      >>"$ROOT/farm_build_iter5.log" 2>&1 || die "build_farm failed (see farm_build_iter5.log)"
   say "build finished"
 fi

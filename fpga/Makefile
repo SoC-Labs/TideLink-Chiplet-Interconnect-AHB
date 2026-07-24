@@ -32,6 +32,11 @@
 #-----------------------------------------------------------------------------
 
 # Project root - assumes this Makefile lives in $SOCLABS_TIDELINK_DIR/fpga
+# Site-local overrides (gitignored): real board addresses / farm host.
+# Included FIRST so these values win over every ?= default below.
+# Copy fpga/site.local.mk.example to fpga/site.local.mk to set up a rig.
+-include $(dir $(lastword $(MAKEFILE_LIST)))site.local.mk
+
 TIDELINK_HOME   := $(realpath ..)
 FPGA_DIR        := $(TIDELINK_HOME)/fpga
 VIVADO_IP_DIR   := $(FPGA_DIR)/vivado_ip
@@ -290,12 +295,12 @@ FPGA_NUM_JOBS   ?= 8
 FPGA_IP_CACHE_DIR ?= $(abspath $(BUILD_DIR)/ip_cache$(ANCHOR_SUFFIX))
 
 # Vivado-native remote-host farming (launch_runs -host). Empty = local build.
-# "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8".
+# "host jobs" pairs, e.g. FPGA_REMOTE_HOSTS="farm-host-b 4 farm-host-a 8".
 # Prerequisites + sysadmin NFS request: fpga/docs/FARM_NFS_EXPORT_REQUEST.md.
-# Validate a farm host first:  make farm_check FARM_HOST=srv04936
+# Validate a farm host first:  make farm_check FARM_HOST=farm-host-a
 FPGA_REMOTE_HOSTS ?=
 FPGA_REMOTE_CMD   ?=
-FARM_HOST         ?= srv04936
+FARM_HOST         ?=
 
 # Concurrent independent-job farming (scripts/build_farm.sh). Unlike
 # FPGA_REMOTE_HOSTS (Vivado -host, needs the unfulfilled NFS export — see
@@ -416,7 +421,7 @@ farm_check:
 # only imp/fpga/output/<TARGET>/ rsynced back to the identical local path so
 # `make deploy` / deploy_pair work unchanged). See docs/CONCURRENT_FARM.md.
 #
-#   make farm_build FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936"
+#   make farm_build FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@farm-host-a"
 #-----------------------------------------------------------------------------
 farm_build:
 	@if [ -z "$(FARM_JOBS)" ]; then \
@@ -440,7 +445,7 @@ farm_build:
 #   make build_pair_concurrent                                   # z2 (default)
 #   make build_pair_concurrent PAIR_SOC=kr260 PAIR_PTP=1         # kr260 +PTP
 #   make build_pair_concurrent PAIR_A=kr260-pair-ptp PAIR_B=kr260-pair-flip-ptp
-#   make build_pair_farmed     PAIR_SOC=kr260 PAIR_PTP=0 FARM_HOST=srv04936
+#   make build_pair_farmed     PAIR_SOC=kr260 PAIR_PTP=0 FARM_HOST=farm-host-a
 #
 # NOTE: EXTREFCLK=1 / EPOCH_ANCHOR=1 are NOT forwarded by build_farm.sh, so the
 # kr260 -extref / -anchor variants still need a direct `make build_design`.
@@ -711,8 +716,12 @@ KR260_DEST    ?= td
 KR260_PASSWORD ?=
 # The two physical boards (docs/KR260_BOARD_ENV.md). die_a = straight pinout,
 # die_b = mirrored (flip). Override for a different rig.
-KR260_DIEA_IP ?= 10.22.24.159
-KR260_DIEB_IP ?= 10.22.24.153
+# Site-specific board addresses live in fpga/site.local.mk (gitignored) so the
+# published repo carries no internal network topology. Copy
+# fpga/site.local.mk.example to fpga/site.local.mk and fill in your rig, or
+# override on the command line: make ... KR260_DIEA_IP=<addr>
+KR260_DIEA_IP ?=
+KR260_DIEB_IP ?=
 
 .PHONY: deploy_pair_role
 deploy_pair_role:
@@ -999,13 +1008,13 @@ help:
 	@echo "  make TARGET=pynq-z2-single build_design"
 	@echo "  make TARGET=pynq-z2-pair   build_design"
 	@echo "  make TARGET=mps3           build_design"
-	@echo "  make farm_check FARM_HOST=srv04936"
+	@echo "  make farm_check FARM_HOST=farm-host-a"
 	@echo "  make TARGET=pynq-z2-pair build_design \\"
-	@echo "       FPGA_REMOTE_HOSTS=\"srv03335 4 srv04936 8\""
-	@echo "  make build_pair_farmed FARM_HOST=srv04936"
+	@echo "       FPGA_REMOTE_HOSTS=\"farm-host-b 4 farm-host-a 8\""
+	@echo "  make build_pair_farmed FARM_HOST=farm-host-a"
 	@echo "  make build_pair_concurrent"
 	@echo "  make farm_build \\"
-	@echo "       FARM_JOBS=\"pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936\""
+	@echo "       FARM_JOBS=\"pynq-z2-pair-all@local pynq-z2-pair-flip-all@farm-host-a\""
 	@echo "  make TARGET=pynq-z2-single BOARD=fpga1 deploy"
 	@echo "  make TARGET=pynq-z2-pair   BOARD_TAG=pynq_z2 deploy_via_fpgahub"
 	@echo ""

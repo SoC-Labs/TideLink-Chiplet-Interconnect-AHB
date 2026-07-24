@@ -295,7 +295,7 @@ make cdc                     # full CDC run, default MODULE=tidelink_top
 
 Tool: `SpyGlass vT-2022.06-SP2` via
 `/eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2`. Runtime: ~3 min on
-`srv03335`. No license errors observed.
+`farm-host-b`. No license errors observed.
 
 ---
 

@@ -314,7 +314,7 @@ owns.
 
 ## 8. Expected wall-clock
 
-Measured individually on `srv03335`, 2026-07-18, warm `/research` NFS, no Vivado
+Measured individually on `farm-host-b`, 2026-07-18, warm `/research` NFS, no Vivado
 co-scheduled. Times are **per target**, including the VCS compile that target owns.
 
 Pre-existing suite times are the **measured** values from the last full aggregate

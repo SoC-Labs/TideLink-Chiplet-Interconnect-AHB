@@ -81,7 +81,7 @@ variables:
   # Sibling co-sim repos: 6 sim_gate suites (tc_pair_*, eth_relay_*, eth_regs_*)
   # need these cloned next to tidelink/ (resolved via TIDECHART_HOME/CHIPLET_HOME/
   # ETH_SS_HOME in the Makefile). Without them SIM_GATE_REQUIRE fails those suites
-  # LOUDLY (never a silent skip). See docs/FREEZE_PLAN_2026_07_21.md step C.
+  # LOUDLY (never a silent skip). See docs/FREEZE_PLAN_2026_07_21.md [removed 2026-07; in git history] step C.
   # PINS ARE PROVISIONAL — David to confirm branches; the CHIPLET repo is on
   # GitHub, so the runner needs GitHub read creds (else the 3 tc_pair suites go red).
   TIDECHART_REPO: "https://git.soton.ac.uk/soclabs/tidechart.git"

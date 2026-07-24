@@ -101,7 +101,7 @@ TideLink rides on Wlink's FC node multiplex. Allocations cited from `pynq_host/s
 ### 2.1 FPGA bringup (PYNQ-Z2 pair on `bridge1`)
 
 - [ ] **Boards powered and online.** z2_02 (master, die_a, IP `192.168.4.101`) and z2_03 (slave, die_b, IP `192.168.6.101`). Verify `mapstone-dev` can SSH them (`reference_pynq_boards.md`).
-- [ ] **`mapstone-dev` access** with `dam1n19` (or equivalent) credentials. Boards are not directly routable from `srv03335`; use ProxyJump per [`reference_pynq_boards.md`](../../.claude/projects/-home-dam1n19-SoCLabs-tidelink/memory/reference_pynq_boards.md).
+- [ ] **`mapstone-dev` access** with `dam1n19` (or equivalent) credentials. Boards are not directly routable from `farm-host-b`; use ProxyJump per [`reference_pynq_boards.md`](../../.claude/projects/-home-dam1n19-SoCLabs-tidelink/memory/reference_pynq_boards.md).
 - [ ] **`fpgahub bridge1` lease GRANTED**, not queued. See [Pitfall 2](#pitfall-2-lease-must-be-granted-before-deploy). Command:
   ```bash
   ssh mapstone-dev /opt/fpgahub/bin/fpgahub pair lease acquire bridge1 \

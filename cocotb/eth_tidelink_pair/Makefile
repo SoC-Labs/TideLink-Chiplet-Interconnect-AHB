@@ -6,7 +6,7 @@
 # window). The ONE change: each die's `ahb_mng` terminus is a REAL
 # ethernet-subsystem scratch RAM (`nanosoc_region_sram` -> `sl_ahb_sram`)
 # instead of the throwaway `tb_ahb_bram_slave`. See docs/ETHERNET_CHIPLET_
-# INTEGRATION.md (M0) + docs/W4_ETHERNET_SCAFFOLD_NOTES.md §3.
+# INTEGRATION.md (M0) + docs/W4_ETHERNET_SCAFFOLD_NOTES.md [removed 2026-07; in git history] §3.
 #
 # The two cmsdk deps of sl_ahb_sram (cmsdk_ahb_to_sram + cmsdk_fpga_sram) are
 # ALREADY compiled by flists/tidelink_fpga_v2.flist, so the only NEW RTL added

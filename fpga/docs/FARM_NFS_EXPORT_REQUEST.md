@@ -9,12 +9,12 @@
 
 
 This sets up **Vivado-native remote-host farming** (`launch_runs -host`) so the
-CPU-contended `srv03335` can offload synthesis/implementation onto `srv04936`
+CPU-contended `farm-host-b` can offload synthesis/implementation onto `farm-host-a`
 (and run multiple OOC-IP / strategy runs in parallel where they exist).
 
 ## What Vivado actually does (so the requirements make sense)
 
-`launch_runs synth_1 -host {srv03335 4} -host {srv04936 8}` makes Vivado **SSH
+`launch_runs synth_1 -host {farm-host-b 4} -host {farm-host-a 8}` makes Vivado **SSH
 into each host and execute the generated `runme.sh` in the *same absolute run
 directory***. It distributes whole *runs* across hosts — a single run executes
 entirely on one host; it does **not** split one synth/impl across machines.
@@ -26,7 +26,7 @@ Hard requirements (Vivado 2024.1, UG892; Project Mode, Linux only):
 | # | Requirement | Status here |
 |---|-------------|-------------|
 | 1 | Project + run tree at the **identical absolute path** on every host | **NEEDS THE NFS EXPORT BELOW** — `/home` is local per host |
-| 2 | Vivado at the **identical path**, same version, on every host | `/apps/Xilinx/Vivado/2024.1` is **local disk** on srv03335 — srv04936 must have the same install at the same path |
+| 2 | Vivado at the **identical path**, same version, on every host | `/apps/Xilinx/Vivado/2024.1` is **local disk** on farm-host-b — farm-host-a must have the same install at the same path |
 | 3 | **Passwordless** SSH launcher→host (Vivado uses `BatchMode=yes`) | run `fpga/scripts/setup_farm_ssh.sh` |
 | 4 | Consistent uid/gid + clock across hosts | central auth → uid 74755 `dam1n19`, gid 245 `fp` consistent; checked by `farm_check` |
 
@@ -38,11 +38,11 @@ exactly the directory in scope. Dependencies already under `/research`
 
 ## The request to send to the sysadmin / ECS-IT
 
-> **Subject:** NFS export of a build tree, srv03335 → srv04936, identical path
+> **Subject:** NFS export of a build tree, farm-host-b → farm-host-a, identical path
 >
 > For Vivado distributed runs I need the directory **`/home/dam1n19/SoCLabs`**
-> on **srv03335** to be visible **read-write at the exact same absolute path
-> `/home/dam1n19/SoCLabs` on srv04936** (Vivado SSHes to the remote host and
+> on **farm-host-b** to be visible **read-write at the exact same absolute path
+> `/home/dam1n19/SoCLabs` on farm-host-a** (Vivado SSHes to the remote host and
 > runs in the same absolute path; the path must match byte-for-byte).
 >
 > - Access: RW, for uid `74755` (`dam1n19`), gid `245` (`fp`) / `5171` (`arm`).
@@ -50,10 +50,10 @@ exactly the directory in scope. Dependencies already under `/research`
 > - File locking must work (Vivado/`.runs` rely on it): NFSv4.x preferred
 >   (same as the existing `/eda`, `/srv` exports), or NFSv3 **with**
 >   `nlockmgr`. Mount `rw,hard,sync` (or `actimeo` tuned), not `soft`.
-> - It overlays a subtree of srv04936's *local* `/home/dam1n19` — a single
+> - It overlays a subtree of farm-host-a's *local* `/home/dam1n19` — a single
 >   NFS submount on `/home/dam1n19/SoCLabs` is intended and expected.
 >
-> If srv03335 cannot itself be an NFS server (workstation/firewall), an
+> If farm-host-b cannot itself be an NFS server (workstation/firewall), an
 > equivalent that satisfies Vivado is **either** host serving the tree, **or**
 > relocating it onto a NAS-backed share that is mounted at one identical
 > absolute path on **both** hosts — see the fallback below.
@@ -69,7 +69,7 @@ checkout) live there, and Vivado's baked-in absolute paths then match:
 ```
 make TARGET=pynq-z2-pair build_design \
      BUILD_DIR=/fpgafarm/tidelink/imp/fpga \
-     FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8"
+     FPGA_REMOTE_HOSTS="farm-host-b 4 farm-host-a 8"
 ```
 
 (Do **not** try a symlink to fake the path — Vivado resolves real paths into
@@ -81,17 +81,17 @@ make TARGET=pynq-z2-pair build_design \
 # 0. (sysadmin) NFS export in place per the request above.
 
 # 1. Passwordless SSH for unattended Vivado login (one password prompt):
-fpga/scripts/setup_farm_ssh.sh            # FARM_HOST=srv04936 default
+fpga/scripts/setup_farm_ssh.sh            # FARM_HOST=farm-host-a default
 
-# 2. Confirm srv04936 has Vivado 2024.1 at /apps/Xilinx/Vivado/2024.1
+# 2. Confirm farm-host-a has Vivado 2024.1 at /apps/Xilinx/Vivado/2024.1
 #    (req #2 — local-disk install; ask IT to mirror it if absent).
 
 # 3. Verify ALL four prerequisites before trusting a real build:
-make -C fpga farm_check FARM_HOST=srv04936     # must print RESULT: PASS
+make -C fpga farm_check FARM_HOST=farm-host-a     # must print RESULT: PASS
 
-# 4. Farm a build (offload heavier share onto the less-loaded srv04936):
+# 4. Farm a build (offload heavier share onto the less-loaded farm-host-a):
 make -C fpga TARGET=pynq-z2-pair build_design \
-     FPGA_REMOTE_HOSTS="srv03335 4 srv04936 8"
+     FPGA_REMOTE_HOSTS="farm-host-b 4 farm-host-a 8"
 ```
 
 Leave `FPGA_REMOTE_HOSTS` empty for an unchanged local build. Kerberos sites

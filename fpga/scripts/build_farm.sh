@@ -20,7 +20,7 @@
 ###     HOST = local                      build on this box
 ###     HOST = <farm hostname>            ssh+rsync to that host
 ###
-###   e.g.  build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936
+###   e.g.  build_farm.sh pynq-z2-pair-all@local pynq-z2-pair-flip-all@farm-host-a
 ###
 ### Sequence:
 ###   1. package_ip ONCE locally (shared IP repo) iff any job is local —

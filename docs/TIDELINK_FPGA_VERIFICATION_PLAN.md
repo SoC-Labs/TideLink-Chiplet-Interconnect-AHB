@@ -7,7 +7,7 @@
 > it defines what silicon must additionally prove, how to prove it *without lying to
 > ourselves*, and the exit checklist the team signs.
 > **Read alongside:** `docs/STATUS_LIVE.md` (live dashboard), `docs/KR260_RECOVERY_PLAN_2026_07_17.md`,
-> `docs/HANDOVER_2026_07_10.md`, `docs/AUTONOMY_STATUS_2026_07_14.md`, `docs/REGISTER_MAP.md`.
+> `docs/HANDOVER_2026_07_10.md`, `docs/AUTONOMY_STATUS_2026_07_14.md [removed 2026-07; in git history]`, `docs/REGISTER_MAP.md`.
 
 ---
 
@@ -287,7 +287,7 @@ and was **never deployed**.
 ## 5. Gap list + prioritized roadmap
 
 Effort: **S** ≤1 day · **M** 2–4 days · **L** ≥1 week. "Weekend-automatable" = buildable with
-**no board access** (srv03335 is password-blocked) — design to run later from a board-local /
+**no board access** (farm-host-b is password-blocked) — design to run later from a board-local /
 key-authenticated context.
 
 ### Weekend-automatable now (no hardware)
@@ -312,7 +312,7 @@ key-authenticated context.
 | 11 | **PTP two-board convergence** end-to-end (F13) | **M** | R1 MMCM fix on -ptp targets + a bench PTP run |
 | 12 | **Deploy standalone PHY-BIST once** for real eye/BER (F19) | **S** | Bench slot + lease |
 | 13 | **kr260-pair-onchip build + smoke** (F20) — removes the ribbon variable | **M** | Not yet buildable; then `kr260_onchip_smoke.py` |
-| 14 | **Board ssh keys for srv03335** — unblocks *all* remote hardware automation | **S** | David (Monday list) |
+| 14 | **Board ssh keys for farm-host-b** — unblocks *all* remote hardware automation | **S** | David (Monday list) |
 | 15 | **RX-FIFO write-side twin** intent decision + HW check (F10) | **S** | "Is AHB-write-to-RX supported?" (evidence=no) |
 | 16 | **`apb_debug_unlock_i`/`mask_hs_bypass_i` straps** before tapeout (F17) | **M** | Design-intent sign-off; today permanently unlocked in silicon |
 | 17 | **Execute `HW_CHARACTERIZATION_PLAN` T1–T8 + SRAM sweep** (F12) | **L** | Sizes the ASIC FIFO macro; bench-heavy |

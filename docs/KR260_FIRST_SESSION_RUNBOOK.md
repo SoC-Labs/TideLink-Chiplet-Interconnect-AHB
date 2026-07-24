@@ -153,7 +153,7 @@ directions, ≥12-packet burst.** 4. (onchip) bring-up reliable across ≥8 fres
 bitstream md5 and the raw register dumps for the certification archive.
 
 ## Recovery / traps quick list
-- Board wedged / no ssh → JTAG POR: `~/bin/kpor kr260-01` on **mapstone-dev** (not srv03335).
+- Board wedged / no ssh → JTAG POR: `~/bin/kpor kr260-01` on **mapstone-dev** (not farm-host-b).
 - Never `reboot`. AFI poke doesn't survive reboot — re-run §2 after any power event.
 - `tl39.py` takes Z2-canonical addresses and remaps internally; `tl_poke.py` takes ABSOLUTE —
   mixing them silently targets the wrong address.

@@ -244,7 +244,7 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #
 #      The real question — how to make pad->capture margin DETERMINISTIC across
 #      builds — is open, and is the leading autonomy lead. Candidates, none yet
-#      validated (see docs/AUTONOMY_STATUS_2026_07_14.md):
+#      validated (see docs/AUTONOMY_STATUS_2026_07_14.md [removed 2026-07; in git history]):
 #        * IOB packing so the capture element has fixed, placement-independent delay
 #        * per-lane IDELAY used to EQUALISE (its ~2.34 ns range is well matched to a
 #          sub-ns/1-ns inter-lane skew — note the recorded "IDELAY is inert" finding

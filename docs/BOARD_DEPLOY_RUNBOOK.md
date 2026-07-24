@@ -12,7 +12,7 @@ PYNQ-Z2 bridge pair. Every failure mode in §7 was hit for real during the
 ## 1. Topology — who can reach what
 
 ```
-  you (srv03335 / dev box)
+  you (farm-host-b / dev box)
         │  ssh david@mapstone-dev          ← the ONLY route to the boards
         ▼
   mapstone-dev (10.22.27.178)

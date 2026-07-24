@@ -16,7 +16,7 @@
 ### launching host (the harness's own ssh is not credentialed). Exit 0 only if
 ### all checks pass; otherwise prints the precise blocker.
 ###
-###   FARM_HOST=srv04936 BUILD_DIR=/home/.../imp/fpga ./farm_preflight.sh
+###   FARM_HOST=farm-host-a BUILD_DIR=/home/.../imp/fpga ./farm_preflight.sh
 ###-----------------------------------------------------------------------------
 set -u
 

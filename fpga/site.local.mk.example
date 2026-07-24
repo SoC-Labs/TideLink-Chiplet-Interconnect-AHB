@@ -1,0 +1,10 @@
+# Site-local configuration for the FPGA flow — copy to fpga/site.local.mk
+# (gitignored) and fill in the values for your rig.
+#
+# KR260 board addresses. die_a = straight pinout, die_b = mirrored (flip).
+# See docs/KR260_BOARD_ENV.md.
+KR260_DIEA_IP ?= 192.0.2.1
+KR260_DIEB_IP ?= 192.0.2.2
+
+# Build-farm host used by `make farm_build` / `make farm_check`.
+FARM_HOST     ?= my-farm-host

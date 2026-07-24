@@ -188,7 +188,7 @@ make -C fpga build_design TARGET=pynq-z2-single
 # HW-validated pair (recommended for sign-off) — two targets in parallel
 bash fpga/scripts/build_farm.sh \
     pynq-z2-pair-all@local \
-    pynq-z2-pair-flip-all@srv04936
+    pynq-z2-pair-flip-all@farm-host-a
 ```
 
 `TARGET` selects the board config from `fpga/targets/` (valid values are

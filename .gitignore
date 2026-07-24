@@ -201,3 +201,6 @@ hs_err_pid*.log
 htmlcov/
 .coverage.*
 .pytest_cache/
+
+# Site-local FPGA config (real board addresses / farm host)
+fpga/site.local.mk

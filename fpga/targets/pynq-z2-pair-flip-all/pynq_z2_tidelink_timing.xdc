@@ -241,7 +241,7 @@ set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 
 #      port has no launch register in the device. Not expressible for this path.
 #      It also would not have helped at 2 ns: measured pad_rx -> capture setup slack
 #      is ~0.44 ns, so a 2 ns ceiling is ~5x looser than the whole margin.
-#      See the die_a target XDC and docs/AUTONOMY_STATUS_2026_07_14.md for the
+#      See the die_a target XDC and docs/AUTONOMY_STATUS_2026_07_14.md [removed 2026-07; in git history] for the
 #      candidate replacements (IOB packing / IDELAY equalisation / max-min window).
 #      Any constraint that binds to nothing now FAILS verify_build.sh check (g).
 

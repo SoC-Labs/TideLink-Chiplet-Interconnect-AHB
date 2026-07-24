@@ -23,7 +23,7 @@
 ### and ensure a long-lived/renewable TGT (k5start) — pubkey is more robust
 ### for multi-hour unattended runs, which is what this script sets up.
 ###
-###   FARM_HOST=srv04936 ./setup_farm_ssh.sh
+###   FARM_HOST=farm-host-a ./setup_farm_ssh.sh
 ###-----------------------------------------------------------------------------
 set -eu
 

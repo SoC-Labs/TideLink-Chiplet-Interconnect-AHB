@@ -28,7 +28,7 @@ make -C fpga build_design TARGET=pynq-z2-pair
 source set_env.sh
 bash fpga/scripts/build_farm.sh \
     pynq-z2-pair-all@local \
-    pynq-z2-pair-flip-all@srv04936
+    pynq-z2-pair-flip-all@farm-host-a
 ```
 Each target ~40-45 min Vivado; runs in parallel. Bitstreams land in
 `imp/fpga/output/<TARGET>/tidelink.bit`.

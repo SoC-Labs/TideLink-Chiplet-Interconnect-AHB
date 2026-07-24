@@ -48,7 +48,7 @@ non-zero (~512 MB).
 
 - **`sudo reboot` WEDGES a KR260.** It goes down and does not come back over the
   network; recovery is a **JTAG power-on-reset only**, and the `kpor` tool lives
-  on **`mapstone-dev`**, not on `srv03335`. Do not issue a plain `reboot` unless
+  on **`mapstone-dev`**, not on `farm-host-b`. Do not issue a plain `reboot` unless
   someone is positioned to JTAG-POR the board.
 - **`kreboot`** reboots but **reuses the old kernel cmdline** — so it will *not*
   pick up a `cma=` change you just made in `/etc/default/flash-kernel`.

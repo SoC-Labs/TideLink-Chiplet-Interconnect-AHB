@@ -2,7 +2,7 @@
 
 Third member of the web-toolkit family (`eye_toolkit/web` :8088,
 `stress_toolkit/web` :8089). FastAPI + SSE + vanilla JS + Plotly
-(vendored), per the plan in `docs/THROUGHPUT_GUI_PLAN_2026_06_12.md`.
+(vendored), per the plan in `docs/THROUGHPUT_GUI_PLAN_2026_06_12.md [removed 2026-07; in git history]`.
 
 **P0 walking skeleton** — one canned `throughput_m2s` run end-to-end:
 

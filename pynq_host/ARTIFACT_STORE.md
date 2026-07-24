@@ -17,7 +17,7 @@ is permanently labelled so it can never be silently mistaken for a good one.
 
 Root: `~/tidelink-artifacts/` by default (override with `--root` or
 `$TIDELINK_ARTIFACTS`). Lives on the deploy-origin host (**mapstone-dev**), also
-usable on srv03335.
+usable on farm-host-b.
 
 ```
 tidelink-artifacts/
@@ -51,7 +51,7 @@ pure no-op + retag (idempotent).
   "sha256": "<master sha>",          "sha256_master": "<master sha>",
   "sha256_slave": "<slave sha|null>",
   "commit": "8bc6051",               "source_commit": "8bc6051",
-  "build_host": "srv04936",          "build_date": "2026-05-20",
+  "build_host": "farm-host-a",          "build_date": "2026-05-20",
   "target": "pynq-z2-pair",          "label": "morning-v1",
   "expected_lock_min": 14,           "created_at": "2026-05-22T…Z",
   "files": ["tidelink.bin", "tidelink.hwh", "tidelink-flip.bin", "tidelink-flip.hwh"]

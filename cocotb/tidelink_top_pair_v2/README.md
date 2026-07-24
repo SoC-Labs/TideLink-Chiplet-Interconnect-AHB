@@ -1,7 +1,7 @@
 # tidelink_top_pair_v2 — integrated V2 pair sim with whole-word epoch skew
 
 The integrated pre-silicon gate for the v37 defect class
-(`docs/V37_FINAL_DIAGNOSIS_2026_06_12.md`): cross-lane word-EPOCH
+(`docs/V37_FINAL_DIAGNOSIS_2026_06_12.md [removed 2026-07; in git history]`): cross-lane word-EPOCH
 incoherence on a skewed RX, invisible to per-lane training/BIST oracles.
 Two complete `tidelink_top` instances compiled with the V2 stack
 (`flists/tidelink_fpga_v2.flist` — deps/tidelink-phy serdes, always-on

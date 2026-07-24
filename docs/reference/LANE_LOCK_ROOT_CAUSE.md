@@ -93,7 +93,7 @@ fix and then removed it at `51b5169`.
 | 15 | xhb500/generated rsync contamination | 🧊 | fresh regen still 0/16 |
 | 26 | clk_wiz 50→25 MHz mutation | 🧊 | apples-to-oranges target diff; 25 MHz since inception |
 | 28 | post-power-cycle ribbon HW damage | 🧊 | tl_v7 13/16 pre+post cycle — HW fine |
-| 25 | srv04936 build-env regression | 🧊 | 8bc6051 builds 0/16 on clean srv03335 too — it's the commit, not the env |
+| 25 | farm-host-a build-env regression | 🧊 | 8bc6051 builds 0/16 on clean farm-host-b too — it's the commit, not the env |
 | (mine) | marginal timing luck / fix via set_false_path | partially right (symptom) but **superseded** | the failing hold is the *functional* LUT-driven clock; XDC can't fix it — the RTL `USE_CLKBUF` fix can |
 
 Recurring lesson: **every dead-end was commit/bitstream/provenance confusion

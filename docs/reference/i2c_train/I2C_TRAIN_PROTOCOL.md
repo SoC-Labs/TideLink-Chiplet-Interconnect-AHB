@@ -218,7 +218,7 @@ For bench debug before the autoneg FSM extension is integrated, or as a recovery
 The PYNQ host already has an APB-write path to both peers via SSH-to-PYNQ + mmap of the chiplet controller AXI-MM region (see `pynq_host/scripts/deploy_pair.sh` and `pynq_host/scripts/wlink_probe.sh`). The SW-driven sequence is:
 
 ```python
-# Master side (deploy from srv03335)
+# Master side (deploy from farm-host-b)
 master_apb.write(SWI_TRAINING_MODE, 1)
 slave_ssh.apb_write(SWI_TRAINING_MODE, 1)    # over SSH, master srv → slave PYNQ → slave APB
 
@@ -252,7 +252,7 @@ slave_ssh.apb_write(WLINK_ENABLE_RESET, 0x07)
 
 ### 6.2 Honest timing characterisation
 
-The above code is **not** ~1 ms total. Each `slave_ssh.apb_*` call is a full SSH round-trip through the `srv03335 → mapstone-dev.ecs → z2_0X` ProxyJump chain:
+The above code is **not** ~1 ms total. Each `slave_ssh.apb_*` call is a full SSH round-trip through the `farm-host-b → mapstone-dev.ecs → z2_0X` ProxyJump chain:
 
 - SSH session reuse via `ControlMaster` cuts new-connection cost (typically ~200 ms cold) down to ~10-30 ms per call on a warm channel.
 - Linux scheduler jitter on the PYNQ side adds ~1-5 ms per call.

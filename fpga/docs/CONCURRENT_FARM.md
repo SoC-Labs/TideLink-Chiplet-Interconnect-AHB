@@ -14,23 +14,23 @@ This is the **second**, complementary farming model to
 The win here is concrete: a pair build is **two fully independent Vivado
 builds** — master `pynq-z2-pair-all` and slave `pynq-z2-pair-flip-all`.
 Sequentially that is ~2×22 min back-to-back. Run them concurrently, one
-local and one on `srv04936`, and the pair finishes in roughly the time of a
+local and one on `farm-host-a`, and the pair finishes in roughly the time of a
 single build while taking the slave's load off the contended local host.
 
 ## Use it
 
 ```bash
-# Pair: master here + slave on srv04936, at the same time (the headline):
-make -C fpga build_pair_farmed FARM_HOST=srv04936
+# Pair: master here + slave on farm-host-a, at the same time (the headline):
+make -C fpga build_pair_farmed FARM_HOST=farm-host-a
 
 # Pair: both halves in parallel on THIS host (no remote dependency):
 make -C fpga build_pair_concurrent
 
 # Generic: any set of TARGETs, each pinned to local or a farm host:
 make -C fpga farm_build \
-     FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@srv04936"
+     FARM_JOBS="pynq-z2-pair-all@local pynq-z2-pair-flip-all@farm-host-a"
 make -C fpga farm_build \
-     FARM_JOBS="pynq-z2-single@local mps3@srv04936"
+     FARM_JOBS="pynq-z2-single@local mps3@farm-host-a"
 
 # ILA build (passes through to build_design.tcl):
 make -C fpga build_pair_farmed FPGA_INSERT_DEBUG_CORE=1
@@ -45,10 +45,10 @@ the orchestrator prints a PASS/FAIL table and tails any failed job's log.
 ## One-time remote setup (per farm host)
 
 ```bash
-fpga/scripts/setup_farm_ssh.sh FARM_HOST=srv04936   # passwordless ssh (1 prompt)
+fpga/scripts/setup_farm_ssh.sh FARM_HOST=farm-host-a   # passwordless ssh (1 prompt)
 ```
 
-The remote host additionally needs (verified on srv04936, 2026-05-18):
+The remote host additionally needs (verified on farm-host-a, 2026-05-18):
 
 * `vivado` 2024.1 at `/apps/Xilinx/Vivado/2024.1/bin/vivado` (same as here),
 * the shared `/research` IP mount (`/research/AAA/ip_library/...` — CMSDK/XHB500),

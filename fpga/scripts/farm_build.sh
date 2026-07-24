@@ -163,7 +163,7 @@ build_env_prefix() {
     # default (1) applies, and the remote half of the pair silently builds
     # 4-lane while the local half builds 8-lane — a MIXED pair.
     # MEASURED on the first attempt: local package_ip logged "8'hFF (8 lanes)"
-    # while pynq-z2-pair-flip-all@srv04936 logged "8'hE4 (4 lanes)
+    # while pynq-z2-pair-flip-all@farm-host-a logged "8'hE4 (4 lanes)
     # TD_AUTO_LANE_MASK_E4=<unset> (default 1)", and the resulting die_b .bin
     # came out byte-IDENTICAL (md5 e384eec6…) to the certified 4-lane build.
     # NB `-n` is correct for the value "0": it tests for a non-empty string.

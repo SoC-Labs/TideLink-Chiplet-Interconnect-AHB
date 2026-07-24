@@ -146,6 +146,6 @@ When a submodule is updated (e.g. a Wlink Chisel regen drops in):
    [`cocotb/README.md`](../cocotb/README.md) "Known-excluded-from-CI".
 4. Run a `-all` farm build + bridge1 16/16 lock validation
    (`bash fpga/scripts/build_farm.sh pynq-z2-pair-all@local
-   pynq-z2-pair-flip-all@srv04936` + `bringup_pair_converge.sh STABLE=3`
+   pynq-z2-pair-flip-all@farm-host-a` + `bringup_pair_converge.sh STABLE=3`
    with manifest provenance).
 5. Update the recorded submodule SHA on `main`.

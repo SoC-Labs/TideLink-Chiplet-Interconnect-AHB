@@ -28,7 +28,7 @@
 #      harness's pre-send `rxn` drain popping a phantom packet and walking
 #      read_ptr 2 words. RTL f9b94b7 + harness f3c5359 are both in this base.
 #
-#   SIM STATUS (see docs/SUSTAINED_DATA_2026_07_15.md):
+#   SIM STATUS (see docs/SUSTAINED_DATA_2026_07_15.md [removed 2026-07; in git history]):
 #     * EPOCH_PROFILE=zero (ideal link): does NOT reproduce; byte-exact to 126
 #       payload words both directions. Agrees with silicon.
 #     * EPOCH_PROFILE=silicon: RED, but USELESS as evidence — under that same

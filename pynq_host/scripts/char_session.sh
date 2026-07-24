@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # char_session.sh — one-button characterization session for the bridge1 pair,
-# orchestrating tests T1/T4/T5/T6b from docs/HW_CHARACTERIZATION_PLAN_2026_06_12.md
+# orchestrating tests T1/T4/T5/T6b from docs/HW_CHARACTERIZATION_PLAN_2026_06_12.md [removed 2026-07; in git history]
 # via the on-board pynq_host/scripts/tlchar.py measurement helper.
 #
 # SEQUENCE

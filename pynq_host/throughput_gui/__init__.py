@@ -1,7 +1,7 @@
 """TideLink throughput-characterization web GUI (port 8090).
 
 Third member of the web-toolkit family (eye_toolkit/web :8088,
-stress_toolkit/web :8089) per docs/THROUGHPUT_GUI_PLAN_2026_06_12.md.
+stress_toolkit/web :8089) per docs/THROUGHPUT_GUI_PLAN_2026_06_12.md [removed 2026-07; in git history].
 
 P0 walking skeleton: one canned ``throughput_m2s`` run end-to-end with a
 live SSE Plotly chart, SQLite+NDJSON run store, fail-closed bitstream

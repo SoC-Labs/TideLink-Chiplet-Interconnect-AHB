@@ -204,3 +204,6 @@ htmlcov/
 
 # Site-local FPGA config (real board addresses / farm host)
 fpga/site.local.mk
+
+# Vivado build output per FPGA target (logs carry site hostnames; not source)
+fpga/targets/*/build_logs/

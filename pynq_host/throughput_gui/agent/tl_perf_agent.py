@@ -697,6 +697,17 @@ class _FakeMem(object):
             self._regen()
             self._pair_credits = max(0.0, self._pair_credits - val)
             return
+        if addr == R_RELEASED_ACC:
+            # W-add: bumps PAIR_CREDIT_COUNTER (and the acc, which the
+            # seed path clears with one deliberate read). This is how
+            # bring-up primes the credits toward the peer — model it, or
+            # --fake cannot exercise the seed step that real hardware
+            # cannot run without.
+            self._released_acc = min(0xFFFF,
+                                     getattr(self, "_released_acc", 0) + val)
+            self._pair_credits = self._pair_credits + val
+            self._pair_cap = max(self._pair_cap, self._pair_credits)
+            return
         if addr == R_REL_THRESH:
             # RW until CTRL.LOCK (0x01C[2]) is set, after which the write
             # is DROPPED SILENTLY — no pslverr, no error, nothing
@@ -1042,6 +1053,45 @@ def cmd_setthr(mem, value):
            "locked": 1 if (ctrl_lock or readback != value) else 0})
 
 
+def cmd_seed(mem, n):
+    """Seed the SW-maintained pair-credit counter toward the peer.
+
+    PAIR_CREDIT_COUNTER (0x028) is RO and software-maintained: it counts
+    credits this die believes the PEER's RX FIFO has free. It is bumped by
+    writes to RELEASED_CREDITS_ACC (0x020) and decremented by
+    PAIR_CREDIT_CONSUME (0x02C). At POR it is 0, so a freshly-brought-up
+    link has NO credits toward the peer and every credit-gated sender
+    starves immediately — which reads on screen exactly like a dead link.
+    Seeding is therefore a mandatory bring-up step, not an optimisation.
+
+    Procedure is the one in char_session.sh::seed_one — seed with the
+    peer's FREE credits minus what we already think we have:
+        n = peer.credit_count - local.pair_credits
+    The caller computes n from the two probes; this command just applies
+    it. Port of tlchar.py::cmd_seed.
+
+    NOTE ON 0x020: this register is in regmap.FORBIDDEN_OFFSETS and the
+    monitor's poll loop must NEVER touch it, because a READ clears the
+    accumulator and would corrupt the credit bookkeeping. This command is
+    the one legitimate owner of that access — it WRITES the delta, then
+    reads once, deliberately, to clear the accumulator side (the write
+    bumps both the pair counter and the acc). Do not copy this pattern
+    anywhere else.
+    """
+    n = int(n)
+    if n < 0 or n > 0xFFFF:
+        _emit({"error": "seed %d out of range 0..65535 (acc is 16-bit "
+                        "saturating)" % n})
+        sys.exit(1)
+    before = mem.rd(R_PAIR_CREDIT)
+    if n:
+        mem.wr(R_RELEASED_ACC, n)
+        mem.barrier()
+        mem.rd(R_RELEASED_ACC)          # clear the acc side (see above)
+    _emit({"seeded": n, "pair_credits_before": before,
+           "pair_credits": mem.rd(R_PAIR_CREDIT)})
+
+
 # ── Measurement roles (GO-barrier protocol) ──────────────────────────────
 
 def _wait_go():
@@ -1211,7 +1261,7 @@ def main():
     ap.add_argument("--fake", action="store_true",
                     help="DEV MODE: in-process die model, no /dev/mem")
     ap.add_argument("--cmd",
-                    help="one-shot: probe|send4|catch|setthr|monitor")
+                    help="one-shot: probe|send4|catch|setthr|seed|monitor")
     ap.add_argument("--args", nargs="*", default=[])
     ap.add_argument("--perf", action="store_true",
                     help="monitor: also sample the Phase-B perf window")
@@ -1232,6 +1282,8 @@ def main():
             cmd_send4(mem)
         elif ns.cmd == "catch":
             cmd_catch(mem, int(ns.args[0]), float(ns.args[1]))
+        elif ns.cmd == "seed":
+            cmd_seed(mem, ns.args[0])
         elif ns.cmd == "setthr":
             cmd_setthr(mem, int(ns.args[0]))
         elif ns.cmd == "monitor":

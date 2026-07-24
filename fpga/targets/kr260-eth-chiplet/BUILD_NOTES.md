@@ -95,6 +95,32 @@ likely closable.
 11. SWD pins: PMOD4 is a 1.8V HP bank -> now MOVED to PMOD2 (3.3V, J11/J10/K13)
 12. BD clocking: PHY divider must derive from clk_out1 (see timing note above)
 
+### Timing after ethernet-clock constraints (2026-07-24, final for this pass)
+
+Adding the MII generated clocks + `async_sys_rmii` group (see the timing XDC)
+**closed setup on both dies** — the async grouping removed over-constraint and
+let the placer close the TideLink RX capture:
+
+| | die_a | die_b | prior (no eth clocks) |
+|---|---|---|---|
+| WNS | **+0.194 ns** | **+0.267 ns** | -2.9 / -3.3 ns |
+| setup fails | **0** | **0** | 4 |
+| WHS | -22.562 ns | -22.916 ns | -22.4 ns |
+| hold fails | 8 | 8 | 8 |
+
+**Setup is met.** The remaining hold (-22.x ns, 8 endpoints) is two things,
+neither an M1 blocker:
+1. The TideLink forwarded-clock RX/TX (`pad_clk_rx`/`pad_clk_tx` domain) — **at
+   bare-link parity** (kr260-pair-nptp is -22.489 ns on the same path shape) and
+   **runtime-calibrated** (TideLink's autonomous winscan finds the capture
+   window regardless of static skew). This is why the shipping bare-link works
+   despite the same number.
+2. Some `rmii_to_mii` CE crossings (`mtx_clk`÷2 → `rmii_ref_clk`-clocked flop CE)
+   — genuinely **multicycle-stable / false** (the enable is held for 2 ref-clk
+   cycles by construction). **M2 refinement:** a `set_multicycle_path`/
+   `set_false_path` on those CE arcs would clear them. The ethernet is not
+   exercised in M1 (no PHY firmware), so left for the M2 session.
+
 ### die_b — BUILT (2026-07-24), matched pair complete
 
 `make build_design TARGET=kr260-eth-chiplet-flip` builds clean, and tracks die_a

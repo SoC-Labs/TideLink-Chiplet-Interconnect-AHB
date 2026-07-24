@@ -363,6 +363,67 @@ older doc or memory it contradicts.
   deploy, and encode the missing step into the campaign's deploy phase.** Clues recorded:
   Wlink FE `fe_rx_ptr` advances (link-layer packets DO land), while on v0
   `EPOCH_140=0` / `SLICEMAP=0xFFFFFFFF` (POR) / zero SYNCs inserted or detected.
+
+### 11c. The write-set diff is DONE (code analysis, later 07-24) — candidate pokes ranked
+
+`deploy_pair.sh`'s entire post-load write-set is **{strap GPIO `0x4404_0000`}** (Phase 3-5
+autonomy stripped everything else; its own comments say to restore the `0x208` triplet "if
+wedged"). The working July flows additionally performed, in rank order of matching our
+symptom (`EPOCH=0`, `SLICEMAP=POR`, zero SYNCs, FE ptr advances, no RX commit):
+
+1. **v39 deskew-anchor recipe** — `hold`/`lockthresh`/**`wpauto` (`0x4403_2104`,
+   "proven to fix the credit/send-gate", tl39.py:12)**/`arm`/**staggered freeze (die_b then
+   die_a)** → gate on `EPOCH 0x2140` anchored. Script: `v39_data_test.sh`.
+2. **SYNC beacon: R8 `0x4403_2100 = 0x1C`** (`sync_insert_en`+`sync_force_always`) — "the
+   documented bring-up write" (docs/CRC_ROOTCAUSE.md:128); beacon is POR-OFF and without it
+   RX has no re-anchor delimiter (docs/ERROR_INJECTION_FINDINGS.md:584).
+3. **Pair-credit SEED both directions** — `0x4403_2020 = delta` (bumps `0x028`); "mandatory
+   bring-up step, not an optimisation" (tl_perf_agent.py:1063, char_session.sh:9).
+4. **`to_data_mode()` LL-swreset triplet** — R8=0 then `0x4403_0208 = 0x27f08→0x27f00→
+   0x27f07`; "the load-bearing step" (docs/reference/TIDELINK_BRINGUP_USER_GUIDE.md:298,
+   which also warns `role_locked=1` is "necessary but NOT sufficient for traffic").
+5. `REL_THRESHOLD 0x2004 = 0` (throughput/credit-return knob, not a delivery enabler).
+
+### 11d. LADDER EXECUTED ON GOLDEN — all four hypotheses REFUTED (07-24, board-measured)
+
+Ran the ladder on golden from a clean POR. **None of the four candidate pokes restores
+delivery.** What was actually measured (this supersedes the ranking in §11c):
+
+| stage | applied | result |
+|---|---|---|
+| 0 baseline | plain deploy | **`EPOCH anchored=1` on BOTH dies** (contradicts the earlier v0 read of 0 — the anchor is NOT the blocker), fcsm=4/cal=1/cr_seen=1. Send **returns OK**, nothing commits |
+| 1 | v39 recipe (hold/lockthresh/**wpauto**/arm/staggered freeze) | wpauto+freeze applied cleanly (`slot0=2`); **delivery still FAIL** |
+| 2 | pair-credit **seed** (`0x2020=4096` ⇒ `0x028` 0→4096, both dies) | **delivery still FAIL** — and the send now AHB-ERRORs (see below) |
+| 3 | **`to_data_mode`** (R8→0, `0x208` triplet) | `WL208` was **already `0x00027f07` BEFORE the triplet** (LL already enabled ⇒ this step was already satisfied by POR/autoneg); **delivery still FAIL** |
+
+🔑 **The sharper finding (redirects the whole investigation): the TX path stalls in the FC
+adapter, and the RX never commits — this is not a missing-poke problem.** After stage 1 the
+AHB_TX write stopped returning and the board's kernel log shows
+`Unhandled fault: external abort on non-linefetch … at <TX aperture>` — that is the
+fc_adapter's deliberate `TX_STALL_TIMEOUT` (2^16 hclk ≈ 14 ms) backstop firing and answering
+the beat with an **AHB ERROR**, i.e. **`tl_fc_a2l_ready` never asserts — the Wlink FC node
+never accepts the app word** (while `fe_full=0`, `fcsm=4`, `cr_seen=1`, `a2l_valid=1`).
+So the data path is blocked at the **FC-node accept / CR-credit handshake**, one layer below
+everything the ladder was poking.
+
+**Next investigation (not a bring-up recipe — an FC-node question):**
+1. `unjam_fc_node.sh` — purpose-built for a wedged FC node; run its CLASSIC/HELD-REPLAY
+   matrix and the `0x208` cycle against this exact state.
+2. Read the FC node's own credit/enable state (Wlink region `0x4403_0xxx`, `fe_tx_credit_max`
+   — cf. [[project_a2b_rootcause_fe_tx_credit_max_2026_07_09]]: "`fe_tx_credit_max` re-zeroed
+   by a post-CR `swi_enable` dip" is the known mechanism for exactly this signature).
+3. Compare against the KR260 on-chip pair, where the same RTL lineage DOES deliver — diff the
+   FC-node config words, not the PHY/deskew ones.
+
+⚠ **Session hygiene note:** stage 1's freeze took the TX from "returns, nothing lands" to
+"AHB-ERRORs"; a power-cycle + golden redeploy restored the stage-0 baseline exactly
+(verified). Always restore before handing the rig on.
+
+**Ready-to-run staged repro:** `pynq_host/scripts/tl_z2_data_bringup_repro.sh` (mapstone-dev
+side; preconditions in its header: leases GRANTED, POR + deploy both, `~/tl39.sh` pointing at
+die_b=**.2.101**, `/tmp/ldp_v0.sh` staged). It applies stages 1→1b→2→3 with a delivery proof
+after each and stops at the first PASS — that stage is the missing step to encode into the
+campaign's deploy phase (and into the GUI orchestrator's bring-up).
 - **Role readback polarity differs between images from clean POR** (golden: die_a `cfg=1`;
   v0: die_a `cfg=0`; complementary on both) — a real post-golden RTL delta; account for it
   in `regmap.py` role decode rather than assuming golden semantics.

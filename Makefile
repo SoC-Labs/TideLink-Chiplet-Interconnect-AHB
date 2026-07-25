@@ -1007,6 +1007,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
+	@$(MAKE) --no-print-directory sim_gate_v2_mask_hs_bilateral
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_force_recal
 	@$(MAKE) --no-print-directory sim_gate_v2_perf

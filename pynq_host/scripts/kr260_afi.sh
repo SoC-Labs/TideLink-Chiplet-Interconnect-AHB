@@ -249,6 +249,22 @@ do_fix() {
     fi
 
     echo
+    # KR260_AFI_NO_CANARY=1 — skip the APB canaries. They read fixed bare-link
+    # TideLink-APB addresses (CAN_ROLE/CAN_MASK at 0x8403_xxxx). On a design that
+    # does NOT decode those (the eth-chiplet: the PS reaches the SoC only via the
+    # eth_ss_0 AHB backdoor at HPM0 0x8000_0000, and the role strap is an
+    # xlconstant, not a readable GPIO) the READ itself targets an undecoded PL
+    # address, which WEDGES the ZynqMP PS AXI bus with no timeout — recoverable
+    # only by a JTAG POR. The width fix above is generic and still runs; only the
+    # bare-link-specific canary reads are unsafe here. Set for eth-chiplet deploys.
+    if [ "${KR260_AFI_NO_CANARY:-0}" = 1 ]; then
+        echo "AFI: FIX OK — both ports 32-bit; canaries SKIPPED (KR260_AFI_NO_CANARY=1)."
+        echo "     (bare-link 0x8403_xxxx canaries are undecoded on this design —"
+        echo "      reading them would wedge the PS AXI bus; skip is intentional.)"
+        return 0
+    fi
+
+    echo
     if ! do_canaries; then
         echo "AFI: CANARY FAILED — widths are 32-bit but the APB canaries are wrong." >&2
         echo "     The AFI width was not the (only) cause; escalate to the SmartConnect/BD trace." >&2

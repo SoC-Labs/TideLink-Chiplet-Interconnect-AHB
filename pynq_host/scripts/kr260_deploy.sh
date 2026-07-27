@@ -54,6 +54,18 @@ TIDELINK_SOC=${TIDELINK_SOC:-kr260}
 TARGET=${TARGET:-}
 RUN_AFI=${RUN_AFI:-1}
 
+# The AFI fixer's post-fix canaries read fixed bare-link TideLink-APB addresses
+# (0x8403_xxxx). The eth-chiplet does NOT decode those — its PS reaches the SoC
+# only via the eth_ss_0 AHB backdoor at HPM0 0x8000_0000, and the role strap is
+# an xlconstant, not a readable GPIO — so a canary READ hits an undecoded PL
+# address and WEDGES the ZynqMP PS AXI bus (JTAG-POR-only recovery). The width
+# fix itself is generic and still runs; only the canaries are skipped here.
+# `env VAR=val` (not `sudo VAR=val`) so this does not depend on sudoers setenv.
+AFI_ENV_PREFIX=""
+case "$TARGET" in
+    kr260-eth-chiplet*) AFI_ENV_PREFIX="env KR260_AFI_NO_CANARY=1 " ;;
+esac
+
 if [ -z "$KR260_HOST" ]; then
     echo "ERROR: KR260_HOST not set (board ip or user@ip)." >&2; exit 2
 fi
@@ -166,7 +178,8 @@ fi
 # --------------------------------------------------------------------------
 if [ "$RUN_AFI" = "1" ]; then
     echo "--- AFI PS-master-port width fix + canaries (kr260_afi.sh fix) ---"
-    if SSH "$SUDO sh $KR260_DEST/scripts/kr260_afi.sh fix"; then
+    [ -n "$AFI_ENV_PREFIX" ] && echo "    (eth-chiplet: canaries skipped — bare-link 0x8403_xxxx undecoded here)"
+    if SSH "$SUDO ${AFI_ENV_PREFIX}sh $KR260_DEST/scripts/kr260_afi.sh fix"; then
         echo "    AFI fix + canaries: PASS"
     else
         rc=$?

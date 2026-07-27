@@ -137,8 +137,10 @@ SCP "$BIN" "$DEST:$KR260_DEST/tidelink.bin"
 # tl_socmap.py must land at the PARENT of scripts/ (tl39.py does
 # sys.path.insert(0, dirname(__file__)/..) then `from tl_socmap import ...`).
 SCP "$TIDELINK_HOME/pynq_host/tl_socmap.py" "$DEST:$KR260_DEST/tl_socmap.py"
-# The bring-up tool surface + the AFI fixer.
-SCP -r "$TIDELINK_HOME/pynq_host/scripts/." "$DEST:$KR260_DEST/scripts/"
+# The bring-up tool surface + the AFI fixer. Glob the contents (not the
+# `scripts/.` trailing-dot form, which OpenSSH >=8 scp rejects with
+# "unexpected filename: .") so the files land directly in the remote scripts/.
+SCP -r "$TIDELINK_HOME"/pynq_host/scripts/* "$DEST:$KR260_DEST/scripts/"
 
 # --------------------------------------------------------------------------
 # 2. Load the PL via fpgautil (the real ZynqMP path).

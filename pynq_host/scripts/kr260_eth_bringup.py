@@ -240,6 +240,9 @@ def main():
     ap.add_argument("--bringup", action="store_true",
                     help="perform the link bring-up write sequence (default is "
                          "read-only --status)")
+    ap.add_argument("--status", action="store_true",
+                    help="read-only status dump (effective role + calibration/"
+                         "FCSM); this is the default action.")
     ap.add_argument("--role", choices=("die_a", "die_b"),
                     help="die_a=master/grandmaster, die_b=slave. Required with "
                          "--bringup.")

@@ -56,6 +56,16 @@ RULE_0_VALUE  = (REMOTE_BYTE << 16) | (APERTURE_BYTE << 8) | 1   # 0x002D2F01
 DEFAULT_PAYLOAD = 0xC0FFEE01
 FCSM_LINK_IDLE  = 4
 
+# --- IPC mailbox: the 2nd (previously untested) inbound D2D target ----------
+# die_a writes the peer aperture (0x2F); a CAM rule 0x2F->0x23 lands the write in
+# die_b's ipc_mailbox_0 @ 0x2300_0000. Layout from nanosoc_multicore_addrmap.h.
+MBOX_SOC_BASE      = 0x23000000       # die_b local mailbox base
+MBOX_PEER_APERTURE = 0x2F000000       # die_a writes here (CAM 0x2F->0x23)
+IPC_SLOT0_DATA     = 0x000            # .. 0x00C (4 words)
+IPC_SLOT0_CTRL     = 0x020            # [0]=MSG_VALID, [1]=ACK
+IPC_MSG_VALID      = (1 << 0)
+MBOX_RULE_VALUE    = (0x23 << 16) | (0x2F << 8) | 1   # 0x00232F01
+
 
 def _mm(phys):
     page = phys & ~0xFFF
@@ -147,13 +157,61 @@ def do_readback(payload):
     return 0 if ok else 1
 
 
+def _mbox_words(payload):
+    return [(payload + i) & 0xFFFFFFFF for i in range(4)]
+
+
+def do_mbox_send(payload):
+    print("=== MBOX SENDER (die_a): CAM 0x2F->0x23 + mailbox write ===")
+    _require_link()
+    # CAM rule 0x2F -> 0x23 (mailbox), CTRL armed last.
+    wr(WINDOW_BASE + CAM_BASE, 0x00000000)
+    wr(WINDOW_BASE + CAM_RULE_0, MBOX_RULE_VALUE)
+    wr(WINDOW_BASE + CAM_CTRL, 1)
+    print("  CAM: RULE_0=0x%08X (0x2F -> 0x23 ipc_mailbox), global_enable=1"
+          % MBOX_RULE_VALUE)
+    words = _mbox_words(payload)
+    for i, w in enumerate(words):
+        wr(WINDOW_BASE + MBOX_PEER_APERTURE + IPC_SLOT0_DATA + i * 4, w)
+    print("  slot0 data <- [%s] via peer 0x2F00_0000+0x00..0x0C"
+          % " ".join("0x%08X" % w for w in words))
+    wr(WINDOW_BASE + MBOX_PEER_APERTURE + IPC_SLOT0_CTRL, IPC_MSG_VALID)
+    print("  SLOT0_CTRL <- MSG_VALID (peer 0x2F00_0020 -> die_b 0x2300_0020)")
+    print("  write burst issued (no bus hang). Now run mbox_recv on die_b.")
+    return 0
+
+
+def do_mbox_recv(payload):
+    print("=== MBOX RECV (die_b): read local ipc_mailbox_0 @ 0x2300_0000 ===")
+    words = [rd(WINDOW_BASE + MBOX_SOC_BASE + IPC_SLOT0_DATA + i * 4)
+             for i in range(4)]
+    ctrl = rd(WINDOW_BASE + MBOX_SOC_BASE + IPC_SLOT0_CTRL)
+    expect = _mbox_words(payload)
+    valid = (ctrl & IPC_MSG_VALID) != 0
+    data_ok = words == expect
+    print("  slot0 data = [%s]" % " ".join("0x%08X" % w for w in words))
+    print("  expect     = [%s]" % " ".join("0x%08X" % w for w in expect))
+    print("  SLOT0_CTRL = 0x%08X  (MSG_VALID=%d, ACK=%d)"
+          % (ctrl, ctrl & 1, (ctrl >> 1) & 1))
+    ok = valid and data_ok
+    if ok:
+        print("RESULT: PASS — mailbox message CROSSED the link (MSG_VALID + 4 words).")
+    else:
+        print("RESULT: FAIL — data_ok=%s msg_valid=%s. (0s ⇒ sender didn't run / "
+              "CAM not 0x2F->0x23 / link down.)" % (data_ok, valid))
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="Cross-die transfer over the live "
                                  "TideLink link (PS-side, eth_ss_0 backdoor).")
     ap.add_argument("--mode", required=True,
-                    choices=("sender", "recv", "readback", "link"),
-                    help="sender=die_a CAM+write; recv=die_b read local SRAM; "
-                         "readback=die_a read over link; link=status only.")
+                    choices=("sender", "recv", "readback", "link",
+                             "mbox_send", "mbox_recv"),
+                    help="sender=die_a CAM+write (SRAM); recv=die_b read local SRAM; "
+                         "readback=die_a read over link; mbox_send=die_a mailbox "
+                         "write (CAM 0x2F->0x23); mbox_recv=die_b read local "
+                         "mailbox; link=status only.")
     ap.add_argument("--payload", default=hex(DEFAULT_PAYLOAD),
                     help="32-bit payload (default 0xC0FFEE01).")
     args = ap.parse_args()
@@ -174,6 +232,10 @@ def main():
         return do_recv(payload)
     if args.mode == "readback":
         return do_readback(payload)
+    if args.mode == "mbox_send":
+        return do_mbox_send(payload)
+    if args.mode == "mbox_recv":
+        return do_mbox_recv(payload)
     return 4
 
 

@@ -72,10 +72,11 @@ case "$MODE" in
         echo "!! Run this on BOTH boards together — cal_done gates on the peer+ribbon."
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_bringup.py --bringup --role $KR260_ETH_ROLE"
         ;;
-    xfer_send|xfer_recv|xfer_readback|xfer_link)
+    xfer_send|xfer_recv|xfer_readback|xfer_link|xfer_mbox_send|xfer_mbox_recv)
         # Cross-die transfer over the live link (kr260_eth_xfer.py). send=die_a
         # CAM+peer-write; recv=die_b read local SRAM; readback=die_a read over
-        # link; link=status. Payload via KR260_XFER_PAYLOAD (default 0xC0FFEE01).
+        # link; mbox_send/mbox_recv=cross-die IPC mailbox (0x2F->0x23); link=status.
+        # Payload via KR260_XFER_PAYLOAD (default 0xC0FFEE01).
         xmode=${MODE#xfer_}; [ "$xmode" = "send" ] && xmode=sender
         pl=${KR260_XFER_PAYLOAD:-0xC0FFEE01}
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode --payload $pl"

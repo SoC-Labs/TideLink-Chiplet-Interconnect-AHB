@@ -66,6 +66,13 @@ IPC_SLOT0_CTRL     = 0x020            # [0]=MSG_VALID, [1]=ACK
 IPC_MSG_VALID      = (1 << 0)
 MBOX_RULE_VALUE    = (0x23 << 16) | (0x2F << 8) | 1   # 0x00232F01
 
+# --- link health / credit registers (full SoC addr = _TLAPB + REGISTER_MAP off)
+REG_CREDIT_COUNT  = _TLAPB + 0x200C   # RO local free-credit count (13-bit)
+REG_STATUS        = _TLAPB + 0x2010   # RO sticky faults: [1]OVERRUN [2]UNDERRUN [3]MASTER_ERROR
+REG_OBS_FC_CREDIT = _TLAPB + 0x219C   # RO far-end credit observation
+STATUS_STICKY_MASK = 0xE              # bits [3:1]
+SRAM_PEER_BASE    = 0x2F001000   # peer-aperture window for the soak (CAM 0x2F->0x2D)
+
 
 def _mm(phys):
     page = phys & ~0xFFF
@@ -139,7 +146,7 @@ def do_recv(payload):
     print("  shared_sram_0[0x%08X] = 0x%08X   expect 0x%08X   [%s]"
           % (LANDED_ADDR, got, payload, "PASS" if ok else "FAIL"))
     if ok:
-        print("RESULT: PASS — the payload CROSSED THE LINK from die_a to die_b.")
+        print("RESULT: PASS — the payload CROSSED THE LINK to this die's shared_sram_0.")
     else:
         print("RESULT: FAIL — payload not present. If 0x00000000, this is the "
               "'peer-write data-phase drop' the g2 sim found (should be fixed in "
@@ -154,6 +161,49 @@ def do_readback(payload):
     ok = got == payload
     print("  peer readback [0x%08X] = 0x%08X   expect 0x%08X   [%s]  (link round-trip)"
           % (PEER_ADDR, got, payload, "PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+def do_soak(iters, payload):
+    """Sustained write+readback over the link (die_a), sampling link health.
+    Exercises both directions: each iteration is a peer write (M->S) + a
+    round-trip read (S->M). Reports integrity + FCSM/sticky-fault/credit health."""
+    print("=== SOAK (die_a): %d write+readback beats over the link ===" % iters)
+    _require_link()
+    program_cam(enable=True)                       # 0x2F -> 0x2D (shared_sram_0)
+    sticky0 = rd(WINDOW_BASE + REG_STATUS)
+    print("  baseline STATUS=0x%08X (sticky[3:1]=0x%X)  CREDIT_COUNT=%d"
+          % (sticky0, sticky0 & STATUS_STICKY_MASK,
+             rd(WINDOW_BASE + REG_CREDIT_COUNT) & 0x1FFF))
+    NW = 16                                         # cycle a 16-word window
+    mism = 0
+    fcsm_min, cal_all = 7, 1
+    sticky_seen = 0
+    cc_min, cc_max = 0x1FFF, 0
+    for i in range(iters):
+        addr = SRAM_PEER_BASE + (i % NW) * 4
+        val = (payload + i) & 0xFFFFFFFF
+        wr(WINDOW_BASE + addr, val)
+        got = rd(WINDOW_BASE + addr)
+        if got != val:
+            mism += 1
+            if mism <= 5:
+                print("  MISMATCH iter %d @0x%08X: got 0x%08X want 0x%08X"
+                      % (i, addr, got, val))
+        if i % 50 == 0:
+            sv = rd(WINDOW_BASE + REG_SWI_LANE_STATUS)
+            fcsm_min = min(fcsm_min, (sv >> 17) & 7); cal_all &= (sv >> 16) & 1
+            sticky_seen |= rd(WINDOW_BASE + REG_STATUS) & STATUS_STICKY_MASK
+            cc = rd(WINDOW_BASE + REG_CREDIT_COUNT) & 0x1FFF
+            cc_min, cc_max = min(cc_min, cc), max(cc_max, cc)
+    ok = mism == 0 and fcsm_min == FCSM_LINK_IDLE and cal_all and sticky_seen == 0
+    print("  iters=%d  mismatches=%d  FCSM_min=%d  cal_all=%d  sticky_seen=0x%X"
+          % (iters, mism, fcsm_min, cal_all, sticky_seen))
+    print("  CREDIT_COUNT range [%d..%d]  OBS_FC_CREDIT=0x%08X"
+          % (cc_min, cc_max, rd(WINDOW_BASE + REG_OBS_FC_CREDIT)))
+    print("RESULT: %s — %s" % ("PASS" if ok else "FAIL",
+          "sustained data plane intact, link healthy, no sticky faults" if ok
+          else "see counts above"))
     return 0 if ok else 1
 
 
@@ -207,11 +257,14 @@ def main():
                                  "TideLink link (PS-side, eth_ss_0 backdoor).")
     ap.add_argument("--mode", required=True,
                     choices=("sender", "recv", "readback", "link",
-                             "mbox_send", "mbox_recv"),
+                             "mbox_send", "mbox_recv", "soak"),
                     help="sender=die_a CAM+write (SRAM); recv=die_b read local SRAM; "
                          "readback=die_a read over link; mbox_send=die_a mailbox "
                          "write (CAM 0x2F->0x23); mbox_recv=die_b read local "
-                         "mailbox; link=status only.")
+                         "mailbox; soak=die_a N write+readback beats + health; "
+                         "link=status only.")
+    ap.add_argument("--iters", type=int, default=500,
+                    help="soak mode: number of write+readback beats (default 500).")
     ap.add_argument("--payload", default=hex(DEFAULT_PAYLOAD),
                     help="32-bit payload (default 0xC0FFEE01).")
     args = ap.parse_args()
@@ -236,6 +289,8 @@ def main():
         return do_mbox_send(payload)
     if args.mode == "mbox_recv":
         return do_mbox_recv(payload)
+    if args.mode == "soak":
+        return do_soak(args.iters, payload)
     return 4
 
 

@@ -93,6 +93,7 @@ class ThroughputRun:
         self._task: Optional[asyncio.Task] = None
         self._summaries: dict = {}
         self._rel_threshold: Optional[dict] = None
+        self._bringup_stage: Optional[str] = None
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -188,7 +189,64 @@ class ThroughputRun:
                        else ""))
         await self._emit("rel_threshold", **res)
 
+    async def _bringup(self) -> None:
+        """Data-mode bring-up: the writes a plain deploy does NOT do.
+
+        deploy_pair.sh trains the link (fcsm=4, cal=1) but its entire
+        post-load write-set is the strap GPIO, and a trained link is not
+        the same as a link that carries data. The flows that actually
+        delivered also did, in order:
+
+          R2  seed the pair-credit counters (POR 0 => sender starves)
+          R1b SYNC beacon  (SWI_TRAINING_MODE = 0x1C)
+          R3  to_data_mode LL-swreset triplet at 0x4403_0208
+
+        ``bringup`` selects how far up that ladder to go:
+        ``none`` (deploy as-is) | ``seed`` | ``beacon`` | ``full``.
+        Staged deliberately so the sufficient step can be identified
+        rather than assumed — see
+        pynq_host/scripts/tl_z2_data_bringup_repro.sh.
+        """
+        stage = str(self.params.get("bringup", "none")).lower()
+        if stage == "none":
+            return
+        order = {"seed": 1, "beacon": 2, "full": 3}
+        depth = order.get(stage)
+        if depth is None:
+            raise gates.GateError("unknown bringup stage %r" % stage)
+
+        sides = (("master", self.master_ch), ("slave", self.slave_ch))
+
+        # R2 — seed both directions from live probes. n = peer free
+        # credits - local pair credits (char_session.sh::seed_one).
+        probes = {}
+        for name, ch in sides:
+            probes[name] = await ch.oneshot("probe", timeout=60)
+        for (name, ch), peer in ((sides[0], "slave"), (sides[1], "master")):
+            delta = min(int(probes[peer]["credit_count"])
+                        - int(probes[name]["pair_credits"]), 0xFFFF)
+            if delta <= 0:
+                continue
+            res = await ch.oneshot("seed", delta, timeout=60)
+            await self._emit("bringup", stage="seed", board=name, **res)
+
+        if depth >= 2:
+            for name, ch in sides:
+                res = await ch.oneshot("syncbeacon", timeout=60)
+                await self._emit("bringup", stage="beacon", board=name,
+                                 **res)
+        if depth >= 3:
+            for name, ch in sides:
+                res = await ch.oneshot("datamode", timeout=60)
+                await self._emit("bringup", stage="datamode", board=name,
+                                 **res)
+        self._bringup_stage = stage
+
     async def _run_inner(self) -> None:
+        # 4a. data-mode bring-up (before the proof — the proof is what
+        #     tells us whether it worked).
+        await self._bringup()
+
         # 4b. load-generator setup (before any traffic).
         await self._apply_rel_threshold()
 
@@ -273,6 +331,7 @@ class ThroughputRun:
             "burst_words": self.params.get("burst_words"),
             "rate_pps": self.params.get("rate_pps"),
             "rel_threshold_requested": self.params.get("rel_threshold", -1),
+            "bringup": self._bringup_stage,
             "rel_threshold_applied": (
                 self._rel_threshold.get("rel_threshold")
                 if self._rel_threshold else None),

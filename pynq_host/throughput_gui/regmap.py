@@ -413,8 +413,19 @@ def decode_monitor(raw: dict) -> dict:
 
     v = _get("100")
     if v is not None:
+        # SWI_TRAINING_MODE readback (V2): {robust[4], force[3], insert[2],
+        # recal[1], train[0]}. sync_insert_en is THE beacon signal — it is
+        # what autonomous training-entry sets and what the dead-I2C rig
+        # never reaches (axi_chiplet_controller / tidelink_autoneg:1246).
+        # Golden pins it via a since-fixed bug (R8=0x14); current builds
+        # read R8=0x00 and cannot anchor. Surface it so the monitor shows
+        # the beacon at a glance rather than only in the raw word.
         out["training"] = v & 1
         out["swi_recal"] = (v >> 1) & 1
+        out["sync_insert_en"] = (v >> 2) & 1
+        out["sync_force_always"] = (v >> 3) & 1
+        out["sync_robust_detect"] = (v >> 4) & 1
+        out["beacon_on"] = (v >> 2) & 1
 
     v = _get("108")
     if v is not None:
@@ -505,6 +516,16 @@ def health(dec: dict) -> dict:
     if dec.get("gate_open") and dec.get("mask_hs_match") == 0:
         reasons.append("mask_hs gate open WITHOUT a match — gate forced, "
                        "autonomy not genuine")
+    # A trained link (cal+fcsm healthy) with the SYNC beacon OFF cannot
+    # carry data: no sync words are inserted, so no lane anchors and no
+    # word reassembles. This is the exact bridge1 dead-I2C signature —
+    # autonomous training-entry never set sync_insert_en. The fix is RTL
+    # (TRAIN_ENTRY_FALLBACK); do NOT read criterion-B as "delivers".
+    if "beacon_on" in dec and dec["beacon_on"] == 0:
+        reasons.append("SYNC beacon OFF (R8 sync_insert_en=0) — link is "
+                       "trained but cannot carry data; autonomous "
+                       "training-entry did not complete (dead-I2C rig, "
+                       "see TRAIN_ENTRY_FALLBACK)")
 
     criterion = None
     if cal == 1 and dec.get("lock_count") == 8:

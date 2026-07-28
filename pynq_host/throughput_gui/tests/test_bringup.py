@@ -135,3 +135,31 @@ async def test_bringup_unknown_stage_raises(channel_pair, store):
         await run._bringup()
     await m.close()
     await s.close()
+
+
+# ── beacon-state decode (the dead-I2C delivery-blocker signal) ──────────
+
+def test_decode_surfaces_beacon_state():
+    # golden pins the beacon via a since-fixed bug (R8=0x14); current
+    # builds read R8=0x00 and cannot anchor; the interim workaround is 0x1C.
+    golden = regmap.decode_monitor({"100": 0x14})
+    assert golden["beacon_on"] == 1 and golden["sync_insert_en"] == 1
+    assert golden["training"] == 0            # NOT training-mode, beacon-mode
+
+    current = regmap.decode_monitor({"100": 0x00})
+    assert current["beacon_on"] == 0
+
+    workaround = regmap.decode_monitor({"100": 0x1C})
+    assert workaround["sync_force_always"] == 1
+
+
+def test_health_flags_beacon_off_on_a_trained_link():
+    # cal_done + fcsm healthy but beacon off => trained yet cannot deliver.
+    dec = regmap.decode_monitor({"108": (1 << 16) | (4 << 17), "100": 0x00})
+    h = regmap.health(dec)
+    assert any("beacon off" in r.lower() for r in h["reasons"])
+    # beacon-on golden-style link raises no beacon reason
+    dec_on = regmap.decode_monitor({"108": (1 << 16) | (4 << 17),
+                                    "100": 0x14})
+    assert not any("beacon off" in r.lower()
+                   for r in regmap.health(dec_on)["reasons"])

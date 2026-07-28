@@ -635,7 +635,12 @@ class _FakeMem(object):
         if addr == R_WLINK_ENABLE_RESET:
             return getattr(self, '_wlink_en', 0x00027F07)
         if addr == R_TRAINING:
-            return getattr(self, '_training', 0)
+            # Healthy default models a DELIVERING link: beacon on
+            # (sync_insert_en|sync_robust = 0x14, as golden), training-mode
+            # bit CLEAR. A fake that anchors (sync_detected>0, epoch
+            # anchored) but read R8=0 would be self-contradictory — beacon
+            # off means no lane can anchor. cmd_syncbeacon overwrites this.
+            return getattr(self, '_training', 0x14)
         if addr == R_PHY_ID:
             # 0x11C is PHY_ALIGN_ID, a CONSTANT block-presence marker
             # (axi_chiplet_controller.sv:2684, docs/REGISTER_MAP.md:223) —

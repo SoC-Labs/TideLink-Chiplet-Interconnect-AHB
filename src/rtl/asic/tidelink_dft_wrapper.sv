@@ -142,6 +142,10 @@ module tidelink_dft_wrapper #(
     // NOTE: this wrapper passes the param down explicitly, so its default (not
     // tidelink_top's) is what the ASIC gets — both are 1'b1.
     parameter bit ROLE_FROM_STRAP = 1'b1,
+    // Training-entry fallback. Forwarded to tidelink_top.TRAIN_ENTRY_FALLBACK.
+    // DEFAULT OFF here too, so the tapeout netlist is unchanged until David
+    // ratifies enabling it (the symmetric completion of DECISION #3).
+    parameter bit TRAIN_ENTRY_FALLBACK = 1'b0,
     // RX-FIFO TWIN 2 master enable. Forwarded verbatim to
     // tidelink_top.ENABLE_AHB_WRITE.
     // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX IS SUPPORTED, so the
@@ -544,6 +548,7 @@ module tidelink_dft_wrapper #(
         .NEGO_CFG_RESET     (NEGO_CFG_RESET),
         // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today)
         .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
+        .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // PENDING-DECISION #1: RX-FIFO AHB-write gate (default 1'b1 bit-identical)
         .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE)
     ) u_top (

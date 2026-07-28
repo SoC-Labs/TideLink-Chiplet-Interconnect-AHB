@@ -82,6 +82,11 @@ module axi_chiplet_controller #(
     // is now 1'b1 (strap honoured) so a dead I2C no longer forces both dies
     // slave. 1'b0 = legacy trap (NACK => slave, timeout => nego_fallback).
     parameter bit    ROLE_FROM_STRAP      = 1'b1,
+    // Forwards to tidelink_autoneg.TRAIN_ENTRY_FALLBACK. DEFAULT OFF (shipping
+    // behaviour unchanged). 1 = on a dead I2C bus, the training transaction
+    // enters training from strap instead of hanging/erroring with the SYNC
+    // beacon dark. The symmetric completion of DECISION #3 for training entry.
+    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0,
     // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
     // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
     // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,
@@ -3270,6 +3275,7 @@ module axi_chiplet_controller #(
         // predicate (cal_done + ==8'hFF compares, byte 3 ignored).
         // PENDING-DECISION #5: terminal role from strap (default 0 = historical)
         .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
+        .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
 `ifdef TIDELINK_PHY_V2
         .USE_CAL_IN_HOLD    (1'b1)
 `else

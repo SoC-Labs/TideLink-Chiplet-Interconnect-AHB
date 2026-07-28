@@ -211,7 +211,12 @@ module tidelink_top #(
     //         master, die_b=1 slave), so the FPGA inherits the correct pair.
     //   1'b0 = LEGACY trap: I2C NACK => slave, timeout => nego_fallback, so a
     //         dead I2C makes BOTH dies slave and autonomy is structurally dead.
-    parameter bit    ROLE_FROM_STRAP      = 1'b1
+    parameter bit    ROLE_FROM_STRAP      = 1'b1,
+    // Forwards to axi_chiplet_controller.TRAIN_ENTRY_FALLBACK → tidelink_autoneg.
+    // DEFAULT OFF (shipping behaviour unchanged). 1 = training-entry starts from
+    // strap on a dead I2C bus, so the SYNC beacon lights and the link can
+    // self-start without a peer I2C ACK — the training-side completion of #3.
+    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2416,6 +2421,7 @@ module tidelink_top #(
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
         // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
         .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
+        .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
         .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
         // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so

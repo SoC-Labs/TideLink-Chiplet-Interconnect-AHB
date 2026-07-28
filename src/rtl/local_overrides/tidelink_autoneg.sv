@@ -1007,7 +1007,21 @@ module tidelink_autoneg #(
                                     nego_role_value   = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     if (nego_force_lock)
                                         nego_set_role_lock = 1'b1;
-                                    state_nxt = ST_NEGO_DONE;
+                                    // TRAIN_ENTRY_FALLBACK: on a dead I2C the NEGO
+                                    // NACKs and this path otherwise parks in the
+                                    // TERMINAL ST_NEGO_DONE — so training is never
+                                    // even attempted and the SYNC beacon stays
+                                    // dark. With the fallback (and train_auto_en)
+                                    // route to ST_NEGO_DONE_PRE instead, which
+                                    // proceeds into ST_TRAIN_ENTER; the training
+                                    // transaction then also NACKs and the
+                                    // ST_TRAIN_ENTER hooks enter training from
+                                    // strap. Constant-folds to ST_NEGO_DONE when
+                                    // the param is 0. (Only the NACK/dead-I2C path
+                                    // changes; a working I2C ACKs and never
+                                    // reaches here.)
+                                    state_nxt = (TRAIN_ENTRY_FALLBACK && train_auto_en)
+                                              ? ST_NEGO_DONE_PRE : ST_NEGO_DONE;
                                 end else begin
                                     // ACK received → we are master
                                     nego_role_nxt     = 1'b0;

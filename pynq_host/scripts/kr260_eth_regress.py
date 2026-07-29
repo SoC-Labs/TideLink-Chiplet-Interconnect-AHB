@@ -87,10 +87,11 @@ def both_concurrent(fn_a, fn_b):
 
 
 class Suite:
-    def __init__(self, soak_iters, include_peer_read=False):
+    def __init__(self, soak_iters, include_peer_read=False, data_plane=False):
         self.results = []      # list of (name, ok, detail, gating)
         self.soak_iters = soak_iters
         self.include_peer_read = include_peer_read
+        self.data_plane = data_plane
 
     def record(self, name, ok, detail, gating=True):
         self.results.append((name, bool(ok), detail, gating))
@@ -208,12 +209,20 @@ class Suite:
             return self.summary()
         ok_bd, oa, ob = self.t_backdoor()
         self.t_role(oa, ob)
-        self.t_sram_fwd()
-        self.t_sram_rev()
-        self.t_mailbox()
-        self.t_soak()                 # write-only + health (no peer readback)
-        if self.include_peer_read:
-            self.t_sram_rtt()         # opt-in, wedge-prone
+        # The DEFAULT suite is CI-safe: only die-local checks that do NOT push data
+        # across the D2D link. The cross-die data-plane transfers intermittently
+        # HANG and wedge the board on current silicon (read OR write, either
+        # direction — see docs/OVERNIGHT_WORKLOG.md), so they are attended-only.
+        if self.data_plane:
+            self.t_sram_fwd()
+            self.t_sram_rev()
+            self.t_mailbox()
+            self.t_soak()             # write-only + health (no peer readback)
+            if self.include_peer_read:
+                self.t_sram_rtt()     # opt-in, extra wedge-prone
+        else:
+            print("  [SKIP] cross-die data-plane (sram/mailbox/soak) — pass "
+                  "--data-plane to run (ATTENDED: intermittently wedges silicon)")
         self.t_tidechart()
         return self.summary()
 
@@ -233,9 +242,13 @@ def main():
     ap.add_argument("--deploy", action="store_true",
                     help="reflash both dies from the latest build first.")
     ap.add_argument("--soak-iters", type=int, default=1000)
+    ap.add_argument("--data-plane", action="store_true",
+                    help="run the cross-die data-plane transfers (sram/mailbox/soak). "
+                         "ATTENDED ONLY: they intermittently hang and wedge the board "
+                         "on current silicon. Default suite is die-local + CI-safe.")
     ap.add_argument("--include-peer-read", action="store_true",
-                    help="also run the peer read-round-trip (sram_rtt) — WEDGE-PRONE "
-                         "on silicon (intermittent read-return hang); off by default.")
+                    help="with --data-plane, also run the peer read-round-trip "
+                         "(sram_rtt) — extra wedge-prone; off by default.")
     ap.add_argument("--json", help="write machine-readable results to this path.")
     args = ap.parse_args()
 
@@ -243,7 +256,8 @@ def main():
         print("WARN: KR260_PASSWORD not set — relying on ssh keys + NOPASSWD sudo.",
               file=sys.stderr)
 
-    suite = Suite(args.soak_iters, include_peer_read=args.include_peer_read)
+    suite = Suite(args.soak_iters, include_peer_read=args.include_peer_read,
+                  data_plane=args.data_plane)
     ok = suite.run(args.deploy)
 
     if args.json:

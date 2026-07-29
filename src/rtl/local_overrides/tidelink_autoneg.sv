@@ -52,7 +52,23 @@ module tidelink_autoneg #(
     //         retires => SYNC forced forever => zero-poke autonomy is
     //         structurally DEAD. Retained only for A/B and bisect.
     // Parameter-constant ternary => constant-folds at elaboration.
-    parameter bit ROLE_FROM_STRAP = 1'b1
+    parameter bit ROLE_FROM_STRAP = 1'b1,
+    // TRAINING-ENTRY FALLBACK (2026-07-25). DEFAULT OFF — shipping behaviour is
+    // bit-identical. ROLE_FROM_STRAP (6080ebd) gave the NEGO transaction a
+    // strap fallback on a dead I2C bus, so the ROLE resolves; but the TRAINING
+    // transaction (ST_TRAIN_ENTER) has none — its `local_train_set_pulse_r`
+    // (the ONLY enabler of the SYNC beacon, tidelink_autoneg.sv TXN_CHECK ACK
+    // branch) fires ONLY on a peer I2C ACK. On a rig whose I2C never ACKs
+    // (measured on bridge1 2026-07-24: master never sees the bus busy, FSM
+    // hangs in ST_TRAIN_ENTER, the global timeout resolves the role but exits
+    // to ST_ERROR without training) the beacon never lights => no lane match =>
+    // no anchor => no data. With this=1 the training-entry NACK AND the
+    // ST_TRAIN_ENTER timeout enter training from the strapped role, mirroring
+    // DECISION #3. Trade (identical to #3): a genuinely dead peer is no longer
+    // distinguished from an absent I2C — this die trains regardless. It is
+    // fail-SAFE: it never claims a working link (no tagged data crosses a dead
+    // peer), it only lights the beacon and tries.
+    parameter bit TRAIN_ENTRY_FALLBACK = 1'b0
 )(
     input  wire        clk,
     input  wire        poresetn,       // Power-on reset (active-low)
@@ -859,16 +875,29 @@ module tidelink_autoneg #(
               state_r == ST_TRAIN_RUN ||
               state_r == ST_TRAIN_POLL_PEER ||
               state_r == ST_TRAIN_EXIT) && timeout_ctr_r == '0) begin
-            // Force fallback role and transition to error.
-            // PENDING-DECISION #5: derive from role_strap_i when enabled, else
-            // the historical nego_fallback (NEGO_CFG[4]).
+            // Force fallback role. PENDING-DECISION #5: derive from role_strap_i
+            // when enabled, else the historical nego_fallback (NEGO_CFG[4]).
             nego_role_nxt      = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
-            nego_error_nxt     = 1'b1;
             nego_set_role_cfg  = 1'b1;
             nego_role_value    = ROLE_FROM_STRAP ? role_strap_i : nego_fallback;
             if (nego_force_lock)
                 nego_set_role_lock = 1'b1;
-            state_nxt = ST_ERROR;
+            if (TRAIN_ENTRY_FALLBACK && (state_r == ST_TRAIN_ENTER)) begin
+                // Dead-I2C training-entry fallback: the peer handshake timed out
+                // in ST_TRAIN_ENTER. Enter training from the strapped role (light
+                // the SYNC beacon) instead of exiting to ST_ERROR with the beacon
+                // dark — the same action as the TXN_CHECK ACK branch. Constant-
+                // folds to the plain ST_ERROR path when the param is 0.
+                local_train_set_pulse_r = 1'b1;
+                mask_byte_cnt_nxt       = 3'd0;
+                train_wait_nxt          = (train_fsm_wait_hi == 8'd0)
+                                        ? T_TRAIN_FSM_DEFAULT
+                                        : {train_fsm_wait_hi, 4'h0};
+                state_nxt               = ST_TRAIN_RUN;
+            end else begin
+                nego_error_nxt = 1'b1;
+                state_nxt      = ST_ERROR;
+            end
         end else begin
             case (state_r)
                 ST_IDLE: begin
@@ -978,7 +1007,21 @@ module tidelink_autoneg #(
                                     nego_role_value   = ROLE_FROM_STRAP ? role_strap_i : 1'b1;
                                     if (nego_force_lock)
                                         nego_set_role_lock = 1'b1;
-                                    state_nxt = ST_NEGO_DONE;
+                                    // TRAIN_ENTRY_FALLBACK: on a dead I2C the NEGO
+                                    // NACKs and this path otherwise parks in the
+                                    // TERMINAL ST_NEGO_DONE — so training is never
+                                    // even attempted and the SYNC beacon stays
+                                    // dark. With the fallback (and train_auto_en)
+                                    // route to ST_NEGO_DONE_PRE instead, which
+                                    // proceeds into ST_TRAIN_ENTER; the training
+                                    // transaction then also NACKs and the
+                                    // ST_TRAIN_ENTER hooks enter training from
+                                    // strap. Constant-folds to ST_NEGO_DONE when
+                                    // the param is 0. (Only the NACK/dead-I2C path
+                                    // changes; a working I2C ACKs and never
+                                    // reaches here.)
+                                    state_nxt = (TRAIN_ENTRY_FALLBACK && train_auto_en)
+                                              ? ST_NEGO_DONE_PRE : ST_NEGO_DONE;
                                 end else begin
                                     // ACK received → we are master
                                     nego_role_nxt     = 1'b0;
@@ -1232,7 +1275,12 @@ module tidelink_autoneg #(
                         TXN_POLL:    if (axl_done_r) txn_step_nxt = TXN_CHECK;
                         TXN_CHECK: begin
                             if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
-                                if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
+                                // TRAIN_ENTRY_FALLBACK folds the NACK arm away: a
+                                // NACK then falls through to the enter-training
+                                // branch below (start training from the strapped
+                                // role rather than ST_TRAIN_FAIL). Constant, so
+                                // with the param 0 this is exactly `MISS_ACK`.
+                                if (axl_rdata_r[I2C_STS_MISS_ACK] && !TRAIN_ENTRY_FALLBACK) begin
                                     // Peer NACK'd — bail out
                                     train_peer_nack_nxt           = 1'b1;
                                     peer_lane_fault_nxt           = 8'hFF;  // poison sentinel
@@ -1241,8 +1289,9 @@ module tidelink_autoneg #(
                                     local_lane_fault_snapshot_nxt = local_swi_lane_fault_i;
                                     state_nxt                     = ST_TRAIN_FAIL;
                                 end else begin
-                                    // Peer ACK'd — pulse local set strobe,
-                                    // dwell for the cal FSMs to converge.
+                                    // Peer ACK'd (or NACK'd with TRAIN_ENTRY_FALLBACK):
+                                    // pulse local set strobe, dwell for the cal
+                                    // FSMs to converge.
                                     local_train_set_pulse_r = 1'b1;
                                     mask_byte_cnt_nxt       = 3'd0;
                                     train_wait_nxt          = (train_fsm_wait_hi == 8'd0)
@@ -1302,6 +1351,14 @@ module tidelink_autoneg #(
                             TXN_CHECK: begin
                                 if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
                                     if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
+                                        // Peer NACK at POLL_PEER phase-0 (dead-I2C
+                                        // rig: the master holds its own I2C-slave
+                                        // in reset, so the slave's read of it
+                                        // NACKs). Fail; the TRAIN_ENTRY_FALLBACK
+                                        // PARK in ST_TRAIN_FAIL (below) keeps the
+                                        // slave's training pattern alive and lets
+                                        // the master's designed I2C clear of the
+                                        // slave's SWI_TRAINING_MODE land and stick.
                                         train_peer_nack_nxt           = 1'b1;
                                         peer_lane_fault_nxt           = 8'hFF;
                                         train_fail_nxt                = 1'b1;
@@ -1734,6 +1791,43 @@ module tidelink_autoneg #(
                         // constant-folds this branch away — netlist unchanged.
                         if (retry_backoff_r != 24'd0) begin
                             retry_backoff_nxt   = retry_backoff_r - 24'd1;
+                        end else if (TRAIN_ENTRY_FALLBACK && train_peer_nack_r &&
+                                     (local_lock_qual_w == 8'hFF) &&
+                                     (local_swi_lane_fault_i == 8'h00)) begin
+                            // TRAIN_ENTRY_FALLBACK PARK (2026-07-28). On a
+                            // dead-peer NACK with LOCAL lanes healthy, the R5
+                            // auto-retry below is exactly what makes the SLAVE
+                            // stuck at 0x15: every re-ENTER re-asserts
+                            // swi_training_mode=1, overwriting the master's
+                            // one-shot I2C clear of the slave's SWI_TRAINING_MODE.
+                            // HOLD here instead of re-entering. training_mode
+                            // STAYS 1 (no local_train_clr fires on this arc), so
+                            // the slave's TX training pattern + forwarded capture
+                            // clock stay alive — the master needs both to
+                            // converge. The churn stops, so the master's
+                            // convergence-gated write of R8:=0 (ST_TRAIN_EXIT ACK
+                            // arm, the ORIGINAL designed slave exit) lands and
+                            // STICKS ⇒ slave 0x15→0x14, RX ungates, FC handoff
+                            // arms on the training FALL.
+                            //
+                            // Safe by construction: the master only writes R8:=0
+                            // after it has READ the slave's lanes locked
+                            // (peer_lock_qual==8'hFF over I2C), which is downstream
+                            // of the same local lane-lock that arms this park —
+                            // so the write always lands on an ALREADY-parked
+                            // slave. The parked slave still SERVES the master's
+                            // I2C reads (its I2C-slave receive path is
+                            // FSM-state-independent). Failure mode (master never
+                            // converges) is identical to today's stuck-0x15, so
+                            // this can never do worse. SW train_retrain_req (the
+                            // first branch of this state) is still the escape.
+                            //
+                            // The whole arc is already gated on
+                            // USE_CAL_IN_HOLD & train_auto_en; the added
+                            // TRAIN_ENTRY_FALLBACK (default 1'b0) constant-folds
+                            // this branch away for ASIC/shipping — the else
+                            // below is the byte-identical prior auto-retry.
+                            state_nxt           = ST_TRAIN_FAIL;   // hold (park)
                         end else begin
                             train_fail_nxt      = 1'b0;
                             train_peer_nack_nxt = 1'b0;

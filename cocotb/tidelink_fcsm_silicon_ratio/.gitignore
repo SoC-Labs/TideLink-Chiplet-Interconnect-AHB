@@ -1,0 +1,3 @@
+# Build product: the local FCSM flist is regenerated from
+# flists/tidelink_fpga_v2.flist by the Makefile at parse time.
+tidelink_fpga_v2_fcsm_local.flist

@@ -116,6 +116,13 @@ module tidelink_tx_gen #(
     // tidelink_fifo_ctrl.sv:242.
     localparam logic [LEN_W-1:0] MAX_PKT_LEN = LEN_W'(MAX_CREDITS - 2);
 
+    // Word 0 header encoding MUST match tidelink/packet.py encode_word0 and the
+    // RX FIFO decode: length in [31:20], pkt_type in [19:18]. The peer only
+    // STORES a packet whose type is WR_REQ; a RD_REQ (type 0) would not land as
+    // data. This is the same header the proven send path emits (0x00240000 =
+    // WR_REQ, length 2).
+    localparam logic [1:0] PKT_WR_REQ = 2'b01;
+
     // ---- Control state -----------------------------------------------------
     logic                    en_r;          // CTRL[0] — POR-disarmed arm
     logic                    forever_r;     // CTRL[3]
@@ -136,10 +143,18 @@ module tidelink_tx_gen #(
     // Datapath state
     typedef enum logic [1:0] {S_IDLE, S_ARMED, S_SEND, S_GAP} state_e;
     state_e                  state_r;
-    logic [LEN_W+1:0]        beat_r;        // 0=len word, 1=dest, 2..N+1 payload
+    logic [LEN_W+1:0]        beat_r;        // ADDRESS beat: 0=len,1=dest,2..N+1
     logic [LEN_W+1:0]        total_beats_r; // pkt_len + 2
     logic [15:0]             gap_r;
     logic [15:0]             seq_r;         // packet sequence, into the payload
+    // AHB is PIPELINED: the adapter latches HADDR in the address phase and reads
+    // HWDATA LIVE in the NEXT (data) phase (fc_adapter tx_fc_word =
+    // {type, tx_addr_r, ahb_tx_hwdata}). So HWDATA must trail HADDR by one cycle:
+    // data_word_r holds the data for the address accepted last cycle, and
+    // data_pend_r marks that a data phase is outstanding (so ownership is held
+    // through the final data phase after the last address has been issued).
+    logic [SYS_DATA_W-1:0]   data_word_r;
+    logic                    data_pend_r;
 
     // Register writes ---------------------------------------------------------
     wire reg_hit   = reg_sel && reg_write;
@@ -164,8 +179,10 @@ module tidelink_tx_gen #(
     // two-cycle AHB ERROR; record it so the refusal is never silent.
     wire ext_collide = gen_owns && ext_htrans[1];
 
-    wire beat_accept = gen_owns && (state_r == S_SEND) && fc_hreadyout;
-    wire last_beat   = beat_accept && (beat_r == (total_beats_r - (LEN_W+2)'(1)));
+    // Still issuing addresses for this packet (vs. draining the final data).
+    wire sending_addr = (state_r == S_SEND) && (beat_r < total_beats_r);
+    // A data phase completes on every hready cycle a data phase is outstanding.
+    wire data_complete = (state_r == S_SEND) && fc_hreadyout && data_pend_r;
 
     // ---- Payload ------------------------------------------------------------
     // Position-encoded so a 2-word shift (the phantom-pop signature,
@@ -174,8 +191,9 @@ module tidelink_tx_gen #(
     always_comb begin
         beat_data = '0;
         unique case (beat_r)
-            // Length lives in [31:20] — tidelink_fifo_mem.sv:169.
-            {(LEN_W+2){1'b0}}                      : beat_data = {pkt_len_r, 20'h0};
+            // Length [31:20] + WR_REQ type [19:18] — matches encode_word0 and
+            // the 0x00240000-class header the proven send path uses.
+            {(LEN_W+2){1'b0}}                      : beat_data = {pkt_len_r, PKT_WR_REQ, 18'h0};
             {{(LEN_W+1){1'b0}}, 1'b1}              : beat_data = {{(SYS_DATA_W-LEN_W){1'b0}}, dest_off_r};
             default                                : beat_data = {seq_r, 16'(beat_r)};
         endcase
@@ -202,6 +220,8 @@ module tidelink_tx_gen #(
             total_beats_r <= '0;
             gap_r         <= '0;
             seq_r         <= '0;
+            data_word_r   <= '0;
+            data_pend_r   <= 1'b0;
         end else begin
             // --- register writes ------------------------------------------
             if (wr_ctrl) begin
@@ -260,6 +280,7 @@ module tidelink_tx_gen #(
                         // Reserve the whole packet's credit BEFORE the first beat.
                         total_beats_r <= (LEN_W+2)'(pkt_len_r) + (LEN_W+2)'(2);
                         beat_r        <= '0;
+                        data_pend_r   <= 1'b0;
                         state_r       <= S_SEND;
                     end
                 end
@@ -268,21 +289,29 @@ module tidelink_tx_gen #(
                     if (fc_hresp) begin
                         // The adapter's TX_STALL_TIMEOUT fired. Stop; do NOT
                         // auto-restart — the peer is mid-packet.
-                        err_ahb_r <= 1'b1;
-                        running_r <= 1'b0;
-                        state_r   <= S_IDLE;
-                    end else if (beat_accept) begin
-                        if (!(&words_r)) words_r <= words_r + 1'b1;
-                        if (last_beat) begin
-                            seq_r   <= seq_r + 1'b1;
-                            gap_r   <= ipg_r;
-                            state_r <= S_GAP;
+                        err_ahb_r   <= 1'b1;
+                        running_r   <= 1'b0;
+                        data_pend_r <= 1'b0;
+                        state_r     <= S_IDLE;
+                    end else if (fc_hreadyout) begin
+                        // One HREADY governs both phases: this cycle completes any
+                        // outstanding data phase AND accepts the current address.
+                        if (data_complete && !(&words_r)) words_r <= words_r + 1'b1;
+                        if (sending_addr) begin
+                            // Accept address beat_r; its data trails one cycle.
+                            data_word_r <= beat_data;
+                            data_pend_r <= 1'b1;
+                            beat_r      <= beat_r + 1'b1;
+                        end else begin
+                            // Final data phase just drained — packet complete.
+                            data_pend_r <= 1'b0;
+                            seq_r       <= seq_r + 1'b1;
+                            gap_r       <= ipg_r;
+                            state_r     <= S_GAP;
                             if (!forever_r) begin
                                 budget_r <= (budget_r > SYS_DATA_W'(total_beats_r))
                                           ? (budget_r - SYS_DATA_W'(total_beats_r)) : '0;
                             end
-                        end else begin
-                            beat_r <= beat_r + 1'b1;
                         end
                     end
                 end
@@ -303,16 +332,21 @@ module tidelink_tx_gen #(
     assign credit_consume_val = need_words;
 
     // ---- AHB master drive ---------------------------------------------------
+    // Ownership holds for the whole packet — through the final data phase after
+    // the last address is issued (data_pend_r), so the last word is never
+    // orphaned by dropping the mux early.
     assign gen_owns   = (state_r == S_SEND);
-    assign gen_htrans = gen_owns ? 2'b10 : 2'b00;   // every beat NONSEQ: the
-                                                    // addresses differ, so the
-                                                    // adapter's same-address
-                                                    // held-NONSEQ lock never
-                                                    // engages (fc_adapter:240)
+    // Address phase only while addresses remain; every beat NONSEQ (addresses
+    // differ each beat, so the adapter's same-address held-NONSEQ lock never
+    // engages, fc_adapter:240). Once the last address is issued we drive IDLE
+    // and only the trailing data phase completes.
+    assign gen_htrans = sending_addr ? 2'b10 : 2'b00;
     assign gen_hsize  = 3'b010;                     // 32-bit
     assign gen_hwrite = 1'b1;
     assign gen_haddr  = RAM_ADDR_W'({beat_r, 2'b00});
-    assign gen_hwdata = beat_data;
+    // HWDATA trails HADDR by one cycle (AHB pipelining): present the data for
+    // the address accepted last cycle.
+    assign gen_hwdata = data_word_r;
     assign txgen_active = gen_owns;
 
     // ---- Register reads -----------------------------------------------------

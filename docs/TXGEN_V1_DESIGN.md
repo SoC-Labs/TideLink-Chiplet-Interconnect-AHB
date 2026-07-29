@@ -4,11 +4,20 @@
 clean** (VCS `+lint=all`, standalone). `TXGEN_PRESENT` / `TXGEN_CREDIT_GATE_DIS` parameters
 added to `tidelink_top.sv`; full-design elaboration re-verified green
 (`flists/tidelink_fpga_v2.flist`, 78 modules, rc=0).
-**NOT YET WIRED — the module is currently unreferenced dead code.** Remaining, in order:
-the 2:1 TX mux + Region-E shim decode in `tidelink_top.sv`, the `pair_credit_count` /
-`hw_credit_consume_*` ports through `tidelink_apb_regs.sv` → `tidelink_fifo.sv`, the flist
-entries, the RDL/header regen, and the §4 test suites. Do the integration on a branch and
-gate it — it touches the tapeout top and the register file ~40 suites regress against.
+**WIRED on branch `feat/txgen-v1-integration`** (not merged to main): 2:1 TX mux + Region-E
+shim in `tidelink_top.sv`, `pair_credit_count` / `hw_credit_consume_*` through
+`tidelink_apb_regs.sv` → `tidelink_fifo.sv` (as a 3-way net-delta combine), and the module
+added to all 5 flists carrying `tidelink_fc_adapter.sv`. Verified:
+- full-design elaboration **rc=0, 79 modules** (V2 flist);
+- **`TXGEN_PRESENT=0` ⇒ 78 modules** — the block and its mux are genuinely gone, so the
+  tapeout netlist is unchanged (test a3);
+- **`test_v2_pair_data` 3/3 PASS** with the generator present-but-disarmed — the
+  proven-datapath regression is unaffected (test a2).
+
+**Still outstanding before this is usable:** the §4 unit env (`cocotb/tidelink_txgen/`, tests
+a1/b1/c1), the pair saturation/credit tests (b2/b3/b4/c2) and the **mandatory negative control
+c3**, the RDL/header regen, `sim_gate` wiring, and `package_ip` (Tier-0.a IP-MATCH will
+hard-fail until it re-runs — that is the gate working as designed).
 **Why it exists:** on FPGA the measured per-word cost is ~96 PL cycles of PS→PL store round
 trip while the link needs ~16 ⇒ **the link is ~83% idle**. Every throughput improvement we
 want to benchmark (FC batching, deeper skid, address suppression) is therefore **invisible to

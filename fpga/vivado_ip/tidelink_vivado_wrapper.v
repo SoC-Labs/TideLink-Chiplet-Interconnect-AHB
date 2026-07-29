@@ -172,7 +172,21 @@ module tidelink_vivado_wrapper #(
     // handshake. ⚠ ONLY set 0 once the die can actually reach mask_hs_match=1,
     // otherwise a closed gate blocks the SW role-lock -> Wlink held in reset ->
     // link DEAD (proven: cocotb/honest_mask_hs MODE=honest_locked).
-    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1
+    parameter        DEBUG_UNLOCK_DEFAULT = 1'b1,
+    // TRAIN_ENTRY_FALLBACK — surface tidelink_top's Option-A training-entry
+    // fallback on the IP face. MUST be here for the SAME reason as
+    // DEBUG_UNLOCK_DEFAULT / HONEST_MASK_HS above: the param is threaded through
+    // tidelink_top -> axi_chiplet_controller -> tidelink_autoneg, but a
+    // wrapper-parameter default is what package_project records in component.xml
+    // and what reaches OOC synth — a +define+ does NOT. Without this line the
+    // FPGA IP would silently take tidelink_top's 1'b0 default and the fallback
+    // could never be built ON, exactly the omission this file already documents
+    // twice. DEFAULT 1'b0 = byte-behaviour-identical to every existing image
+    // (constant-folds to the prior autoneg logic); set CONFIG.TRAIN_ENTRY_FALLBACK=1
+    // per-instance to build the dead-I2C self-start image. Enabling by default is
+    // David's ratification call — this only makes it REACHABLE, it does not turn
+    // it on. See project_z2_delivery_blocker_is_physical_z2_02_rx_2026_07_24.
+    parameter        TRAIN_ENTRY_FALLBACK = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -549,7 +563,11 @@ module tidelink_vivado_wrapper #(
         // APB debug-unlock tie. Forwarded so the BD strap is real rather than
         // discarded inside tidelink_top; 1'b1 default keeps every existing
         // target byte-behaviour-identical. See the parameter comment above.
-        .DEBUG_UNLOCK_DEFAULT(DEBUG_UNLOCK_DEFAULT)
+        .DEBUG_UNLOCK_DEFAULT(DEBUG_UNLOCK_DEFAULT),
+        // Option-A training-entry fallback. Forwarded so the wrapper default
+        // reaches OOC synth (see the parameter comment above); 1'b0 default =
+        // every existing image byte-behaviour-identical.
+        .TRAIN_ENTRY_FALLBACK(TRAIN_ENTRY_FALLBACK)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

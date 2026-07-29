@@ -252,3 +252,45 @@ SHA256SUMS). `tlsnap.py` and `tltx1.py` staged on both boards.
 Uncommitted and **not** mine, left alone deliberately: `pynq_host/throughput_gui/agent/tl_perf_agent.py`
 (the `cmd_cleartrain` interim workaround). Stage by name — a previous session swept another
 session's fix in with `git add <dir>`.
+
+---
+
+# ⛔ ADDENDUM 2026-07-30 — THE UNCONDITIONAL FIX BREAKS BRING-UP. DO NOT BUILD IT.
+
+A one-variable A/B on silicon **refutes the unconditional form of this fix.**
+
+| image | source | zero-poke result |
+|---|---|---|
+| `tl-trainfb-8lane` | `76202ed-dirty`, **no fix** | ✅ `cal=1 fcsm=4`, anchored span 0, 8/8, identity slicemap |
+| `tl-clkgatefix-8lane` | main `18491ef` **+ fix** | ❌ both dies `cal=0 fcsm=1`, no anchor, SLICEMAP POR |
+| `tl-clkgatefix-trainfb-8lane` | `76202ed-dirty` **+ fix ONLY** | ❌ **identical failure** |
+
+Two independent baselines, same fix, same failure. Each failing image POR+deployed twice (not the
+lottery); the working image redeployed on the same boards immediately after each failure (rig fine).
+
+**Failure signature:** both dies stay in training, never calibrate (`cal=0`), park at `fcsm=1` (just
+before state 2), epoch never anchors. Lanes conduct (`lk=0xff`) but die_a's LIVEMATCH collapses to
+**0x01 (1/8)** — the peer's capture is being *corrupted*, not disconnected.
+
+**Correcting §2/§3 above:** I argued the fix was "provably inert during training" from
+`insert_now = sync_en & ~training_mode & (ctr==0)`. That is unsound *as an argument about bring-up* —
+bring-up is not one continuous `training_mode=1` interval, and the V2 autonomy heal pins
+`insert_en=1` early (`axi_chiplet_controller.sv:2288`), so the inserter is armed in windows where
+training_mode is 0. I also briefly blamed main's FCSM consolidation (`b98b944`) on that reasoning
+plus a confounded first build; **the A/B refuted it and main is not implicated by any measurement.**
+
+**Likely mechanism (hypothesis, unproven):** `clk_en_qual` latches `io_clk_en` only at `count==4'hf`
+and holds it 16 cycles (`WavD2DGpioTx.v:339-345`), so one link-word `tx_sync_inserting_w` pulse opens
+the pad clock gate for a WHOLE WORD. During bring-up that injects pad-clock edges when the serialiser
+should be quiet — and `pad_clk_tx` IS the peer's `pad_clk_rx`, so calibration never converges.
+
+**What still stands:** the B→A diagnosis and its sim proof are unaffected
+(`sim_gate_pad_clkgate_idle`: edges 0→2352, peer sync_detected 0→138). **The diagnosis is right; the
+unconditional fix is not.** It must be conditioned so the extra enable applies only once the link is
+genuinely in data mode (cal_done / FCSM settled / latched post-training), never during
+winscan/calibration. That is a design change, not a one-liner.
+
+⚠ **`sim_gate_pad_clkgate_idle` passing proves NOTHING about bring-up.** Any future version must be
+re-tested for bring-up on silicon. Branch `fix/v2-sync-clock-gate` and worktree branch
+`worktree-agent-addd36a23a37dc875` both carry the unconditional form — do not build z2 images from
+either until it is conditioned.

@@ -63,6 +63,8 @@ MBOX_SOC_BASE      = 0x23000000       # die_b local mailbox base
 MBOX_PEER_APERTURE = 0x2F000000       # die_a writes here (CAM 0x2F->0x23)
 IPC_SLOT0_DATA     = 0x000            # .. 0x00C (4 words)
 IPC_SLOT0_CTRL     = 0x020            # [0]=MSG_VALID, [1]=ACK
+IPC_IRQ_STATUS     = 0x028            # [0]=slot0 msg edge -> CPU1 NVIC IRQ0 (latched
+                                      #     on MSG_VALID edge regardless of irq_enable)
 IPC_MSG_VALID      = (1 << 0)
 MBOX_RULE_VALUE    = (0x23 << 16) | (0x2F << 8) | 1   # 0x00232F01
 
@@ -243,13 +245,19 @@ def do_mbox_recv(payload):
     words = [rd(WINDOW_BASE + MBOX_SOC_BASE + IPC_SLOT0_DATA + i * 4)
              for i in range(4)]
     ctrl = rd(WINDOW_BASE + MBOX_SOC_BASE + IPC_SLOT0_CTRL)
+    irqst = rd(WINDOW_BASE + MBOX_SOC_BASE + IPC_IRQ_STATUS)
     expect = _mbox_words(payload)
     valid = (ctrl & IPC_MSG_VALID) != 0
     data_ok = words == expect
+    irq_src = irqst & 0x1
     print("  slot0 data = [%s]" % " ".join("0x%08X" % w for w in words))
     print("  expect     = [%s]" % " ".join("0x%08X" % w for w in expect))
     print("  SLOT0_CTRL = 0x%08X  (MSG_VALID=%d, ACK=%d)"
           % (ctrl, ctrl & 1, (ctrl >> 1) & 1))
+    print("  IRQ_STATUS = 0x%08X  (slot0 msg edge=%d -> feeds CPU1 NVIC IRQ0)"
+          % (irqst, irq_src))
+    print("  -> cross-die INTERRUPT SOURCE %s (a far-die write latched the near-die "
+          "mailbox IRQ)" % ("LATCHED" if irq_src else "not set"))
     ok = valid and data_ok
     if ok:
         print("RESULT: PASS — mailbox message CROSSED the link (MSG_VALID + 4 words).")

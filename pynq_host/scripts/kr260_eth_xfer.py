@@ -164,11 +164,17 @@ def do_readback(payload):
     return 0 if ok else 1
 
 
-def do_soak(iters, payload):
-    """Sustained write+readback over the link (die_a), sampling link health.
-    Exercises both directions: each iteration is a peer write (M->S) + a
-    round-trip read (S->M). Reports integrity + FCSM/sticky-fault/credit health."""
-    print("=== SOAK (die_a): %d write+readback beats over the link ===" % iters)
+def do_soak(iters, payload, readback=False):
+    """Sustained peer-write load over the link (die_a), sampling link health.
+
+    Default is WRITE-ONLY + health: peer writes are reliable, and a peer write
+    that stalls returns via HREADY. --soak-readback re-enables the per-beat peer
+    READ round-trip, which is WEDGE-PRONE on silicon (an intermittent read-return
+    hang wedged both boards on 2026-07-29; see docs/OVERNIGHT_WORKLOG.md). Data
+    integrity is covered wedge-safely by sram_fwd (die_b LOCAL read); soak's job
+    is link health (FCSM/sticky-fault/credit) under sustained write traffic."""
+    print("=== SOAK (die_a): %d peer-write beats over the link%s ==="
+          % (iters, " + readback (WEDGE-PRONE)" if readback else " (write-only)"))
     _require_link()
     program_cam(enable=True)                       # 0x2F -> 0x2D (shared_sram_0)
     sticky0 = rd(WINDOW_BASE + REG_STATUS)
@@ -184,12 +190,13 @@ def do_soak(iters, payload):
         addr = SRAM_PEER_BASE + (i % NW) * 4
         val = (payload + i) & 0xFFFFFFFF
         wr(WINDOW_BASE + addr, val)
-        got = rd(WINDOW_BASE + addr)
-        if got != val:
-            mism += 1
-            if mism <= 5:
-                print("  MISMATCH iter %d @0x%08X: got 0x%08X want 0x%08X"
-                      % (i, addr, got, val))
+        if readback:
+            got = rd(WINDOW_BASE + addr)     # peer read — WEDGE-PRONE (see header)
+            if got != val:
+                mism += 1
+                if mism <= 5:
+                    print("  MISMATCH iter %d @0x%08X: got 0x%08X want 0x%08X"
+                          % (i, addr, got, val))
         if i % 50 == 0:
             sv = rd(WINDOW_BASE + REG_SWI_LANE_STATUS)
             fcsm_min = min(fcsm_min, (sv >> 17) & 7); cal_all &= (sv >> 16) & 1
@@ -264,7 +271,10 @@ def main():
                          "mailbox; soak=die_a N write+readback beats + health; "
                          "link=status only.")
     ap.add_argument("--iters", type=int, default=500,
-                    help="soak mode: number of write+readback beats (default 500).")
+                    help="soak mode: number of beats (default 500).")
+    ap.add_argument("--soak-readback", action="store_true",
+                    help="soak mode: re-enable the per-beat peer READ round-trip "
+                         "(WEDGE-PRONE on silicon; off by default).")
     ap.add_argument("--payload", default=hex(DEFAULT_PAYLOAD),
                     help="32-bit payload (default 0xC0FFEE01).")
     args = ap.parse_args()
@@ -290,7 +300,7 @@ def main():
     if args.mode == "mbox_recv":
         return do_mbox_recv(payload)
     if args.mode == "soak":
-        return do_soak(args.iters, payload)
+        return do_soak(args.iters, payload, args.soak_readback)
     return 4
 
 

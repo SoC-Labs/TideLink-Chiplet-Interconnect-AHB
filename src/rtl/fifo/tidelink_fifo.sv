@@ -118,6 +118,9 @@ module tidelink_fifo #(
     // select pass-through (die_b receiver sticky-OBS, SoC 0x21A0/0x21A4/0x21A8).
     // V1 ties low (bit-identical).
     output wire                     ctrl_reg_rd,
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F select
+    // pass-through (OBS_AXI_NODES, SoC 0x21E0). LIVE in both V1 and V2.
+    output wire                     ctrl_reg_rf,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 
@@ -320,6 +323,7 @@ module tidelink_fifo #(
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
+        .ctrl_reg_rf         (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
         // Performance profiling register pass-through

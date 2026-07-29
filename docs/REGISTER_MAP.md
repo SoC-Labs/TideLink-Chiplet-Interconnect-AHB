@@ -31,6 +31,8 @@ configuration registers — including the address translator. The decode in
 | 0x2140 - 0x217F | Region 10: Eye-visibility v2 (`tidelink_eye_regs`) — V1 only. In V2 (`TIDELINK_PHY_V2`) Region 10 is retired (eye-vis AUDIT #17); the single word at **0x2140** is repurposed as **SWI_EPOCH_STATUS** (RO) from the `tidelink_gpio_phy_apb_regs` slave: `[0]`=epoch_anchored, `[6:1]`=epoch_span (words, 0..24). The rest of 0x2140-0x215F reads 0. |
 | 0x2160 - 0x217F | Region 11: tidelink-gpio-phy APB slave (`tidelink_gpio_phy_apb_regs`, slave-paddr 0x20-0x3F) |
 | 0x2180 - 0x219F | Region C: Autoneg silicon observability (RO) |
+| 0x21A0 - 0x21BF | Region D: RX-framer / FCH sticky observability (RO, V2) |
+| 0x21E0 - 0x21FF | Region F: AXI data-node observability (RO, item I4) — OBS_AXI_NODES @ 0x21E0 |
 
 > **Note:** PHC registers are external to tidelink_top and accessed via their
 > own APB port on the `ptp-hardware-clock-ahb` IP.
@@ -374,6 +376,22 @@ See `axi_chiplet_controller.sv:1103-1140`.
 | 0x2194 | OBS_MASK_HS       | RO     | Packed mask-handshake internals (peer masks, local match/fail, lock_pending, gate_open, wlink result). |
 | 0x2198 | OBS_CAL           | RO     | M7 calibrator obs (2026-06-05): [3:0] cal_state, [19:4] cal_resweep_ctr, [20] live training_mode (cal OR SW). (Was documented "reserved"; live since M7.) |
 | 0x219C | OBS_FC_CREDIT     | RO     | FE credit obs (2026-06-12): [7:0] `fe_rx_credit_max` (captured from CR/CRACK `word_count[15:8]`; catches credit garbled to small NONZERO — `fe_rx_is_full` @0x2108[31] only flags ==0), [15:8] `fe_rx_ptr` (credit-return pointer from ACK/NACK), [16] `fe_rx_is_full` mirror, [23:17] reserved, [31:24] presence marker 0xFC (reads 0x0000_0000 on older images). All fields 2-flop apb-synced. MMIO 0x4403219C. |
+
+### Region F: AXI Data-Node Observability (paddr[8:5] = 1111, offsets 0x1E0-0x1FF)
+
+Silicon-feedback item **I4**. `OBS_FC_CREDIT` (Region C slot 7) only surfaces
+the FCSM_6 **sideband** flow-control node; the AXI2WL **data** nodes
+(AW/W/B/AR/R on both the target and initiator faces) — the paths that actually
+wedge on silicon — had no APB-visible health field. Region F adds one. RO;
+writes raise `pslverr`. Pass-through via `ctrl_reg_*` with the dedicated
+`ctrl_reg_rf` select (folds onto `ctrl_reg_addr[4:3]==2'b00`, disambiguated
+from Region 9/10/D). **Live in both V1 and V2.** Built by
+`src/rtl/tidelink_axinode_obs.sv` (tapped, pure fan-out — no datapath change).
+
+| Offset | Name          | Access | Description |
+|--------|---------------|--------|-------------|
+| 0x21E0 | OBS_AXI_NODES | RO     | AXI data-node health. `[4:0]` tgt live-stall `{r,ar,b,w,aw}` (valid&!ready this cycle); `[9:5]` ini live-stall `{r,ar,b,w,aw}`; `[14:10]` tgt wedge-sticky (channel held stalled ≥ 2^12 app_clk cycles — a real wedge, not backpressure); `[19:15]` ini wedge-sticky; `[20]` tgt B/R resp-error sticky (`resp[1]` on a completed handshake); `[21]` ini resp-error sticky; `[22]` any-live-stall; `[23]` **data_nodes_healthy** = ~(any wedge) & ~(any resp err); `[31:24]` presence marker `0xAD` (reads 0x0000_0000 on older images). Detection in app_clk, 2-flop apb-synced. MMIO 0x440321E0. |
+| 0x21E4 - 0x21FC | (slots 1-7)   | RO     | Read 0 (reserved for future AXI-node obs). |
 
 ---
 

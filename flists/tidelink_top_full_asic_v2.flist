@@ -350,6 +350,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+// SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
+// axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
+${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 
 // Performance profiling

@@ -55,7 +55,18 @@ module tb_top #(
     output logic              [2:0] perf_reg_addr,
     output logic [SYS_DATA_W-1:0]   perf_reg_wdata,
     input  logic [SYS_DATA_W-1:0]   perf_reg_rdata,
-    output logic              [1:0] perf_reg_region
+    output logic              [1:0] perf_reg_region,
+
+    // Chiplet-controller ctrl_reg pass-through — exposed so the region decode
+    // (incl. the new Region F / AXI data-node OBS select, item I4) can be
+    // checked directly. ctrl_reg_rdata is driven by cocotb so a Region F read
+    // can be shown to return the controller's word (not an aliased Region C).
+    output logic                    ctrl_reg_write,
+    output logic              [4:0] ctrl_reg_addr,
+    output logic                    ctrl_reg_r10,
+    output logic                    ctrl_reg_rd,
+    output logic                    ctrl_reg_rf,
+    input  logic [SYS_DATA_W-1:0]   ctrl_reg_rdata
 );
 
     tidelink_apb_regs #(
@@ -99,6 +110,14 @@ module tb_top #(
         .perf_reg_wdata      (perf_reg_wdata),
         .perf_reg_rdata      (perf_reg_rdata),
         .perf_reg_region     (perf_reg_region),
+        // Chiplet-controller ctrl_reg pass-through (Region F decode test, I4).
+        .ctrl_reg_write      (ctrl_reg_write),
+        .ctrl_reg_addr       (ctrl_reg_addr),
+        .ctrl_reg_r10        (ctrl_reg_r10),
+        .ctrl_reg_rd         (ctrl_reg_rd),
+        .ctrl_reg_rf         (ctrl_reg_rf),
+        .ctrl_reg_wdata      (),
+        .ctrl_reg_rdata      (ctrl_reg_rdata),
         // PTP register pass-through (tied off — no tidelink_ptp in this testbench)
         .ptp_reg_rdata       ({SYS_DATA_W{1'b0}})
     );

@@ -279,6 +279,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob
 // (Region 8 slot 3'h0 bits[7:4] = SWI_CAL_MIN_DWELLS) wired to
 // u_calibrator.min_lock_dwells_i. Otherwise identical to upstream.
+// SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
+// axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
+${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
 // init_wait,axl_state,txn_step}_o output ports for APB Region C readback.

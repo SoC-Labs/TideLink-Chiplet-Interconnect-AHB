@@ -260,7 +260,9 @@ endef
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
-	sim_gate_force_recal sim_gate_dftelab
+	sim_gate_force_recal sim_gate_dftelab \
+	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
+	sim_gate_axinode_obs
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -526,34 +528,62 @@ sim_gate_fifo:
 	  rm -rf cocotb/tidelink_fifo/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_fifo)
 
-# NACK-wedge / ACK-drop recovery regression (2026-07-18). Standalone / NOT in the
-# blocking aggregate YET — see the note below for exactly what must happen first.
+# NACK-wedge / ACK-drop / state-7 recovery regression (2026-07-18).
 #
 # WHY THIS EXISTS: test_l7_wedge_repro, test_13_ack_drop_recovery and
 # test_14_sustained_ack_drop_wedge are GENUINE, well-asserted regression tests
-# (11 / 8 / 6 assertions) covering the NACK-wedge and ACK-drop recovery paths --
-# silicon-proven failure modes that cost real bench time. They are tracked in git
-# and they gate NOTHING, so the fixes they protect are one revert away from
-# silently regressing. Verification-coverage audit, 2026-07-18.
+# covering the NACK-wedge and ACK-drop recovery paths -- silicon-proven failure
+# modes that cost real bench time. They gated NOTHING, so the fixes they protect
+# were one revert away from silently regressing. Verification-coverage audit.
 #
-# WHY IT IS NOT IN THE AGGREGATE: this rule has NOT been executed. It was authored
-# while a Vivado build held the machine (co-scheduling a sim with a Vivado build
-# OOM-kills the sim and mimics a regression), so wiring an unrun rule into a
-# BLOCKING CI gate would risk breaking every merge on a mistake in the recipe, not
-# a real defect. It reuses SIM_GATE_TP_ENV and sim_build_l4 verbatim -- the same
-# environment as t31/t30 -- but "reuses the same env" is an argument, not evidence.
+# EXECUTED 2026-07-29 (no Vivado running, so no co-scheduling OOM artifact):
+#   * test_l7_wedge_repro          2/2 PASS  (state-7 wedge appears + recovers)
+#   * test_13_ack_drop_recovery    1/1 PASS  (ACK-drop recovery)
+#   * test_14_sustained_ack_drop_wedge  FAIL  (post-wedge data delivery 0/8 --
+#       the sustained-ACK-drop wedge does NOT auto-recover data. This is the
+#       F14-B-class "no in-field recovery" gap, a REAL pre-existing RTL
+#       limitation, NOT a recipe/env artifact and NOT introduced by any obs
+#       change -- it asserts a recovery capability the datapath does not have.)
 #
-# TO PROMOTE IT (the whole job):
-#   1. `make sim_gate_nack_wedge` with no Vivado running; confirm PASS.
-#   2. Append `nack_wedge_recovery` to SIM_GATE_ALL_SUITES.
-#   3. Bump the suite count in .gitlab-ci.yml (it says 13, the plan says 14, the
-#      real count is 15 -- reconcile while you are there).
-sim_gate_nack_wedge:
+# PROMOTION (2026-07-29): the two PROVEN-PASSING recovery tests are promoted into
+# the BLOCKING aggregate as `sim_gate_nack_wedge_recovery` (token
+# nack_wedge_recovery, in SIM_GATE_ALL_SUITES). test_14 is kept OUT of the
+# blocking aggregate as `sim_gate_nack_wedge_sustained` -- it is a real red, and
+# welding a known pre-existing failure into a blocking gate (allow_failure:false)
+# would break every merge for a defect this change does not own. It is NOT masked
+# or forced green; fix the recovery datapath (or wrap it as an XFAIL sentinel like
+# xfail_f14b) before folding it into the aggregate. Reuses SIM_GATE_TP_ENV /
+# sim_build_l4 verbatim -- the same env as t31/t30.
+sim_gate_nack_wedge_recovery:
 	$(call sim_gate_run,nack_wedge_recovery,\
 	  cd cocotb/tidelink_top_pair && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_l7_wedge_repro && \
-	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_13_ack_drop_recovery && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_13_ack_drop_recovery)
+
+# test_14 only — currently FAILS on the pre-existing unrecovered-wedge gap.
+# NON-blocking / tracked; NOT in SIM_GATE_ALL_SUITES. Run standalone to watch it.
+sim_gate_nack_wedge_sustained:
+	$(call sim_gate_run,nack_wedge_sustained,\
+	  cd cocotb/tidelink_top_pair && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_14_sustained_ack_drop_wedge)
+
+# Convenience: run the whole 3-test recovery suite standalone (both split targets).
+sim_gate_nack_wedge: sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained
+
+# AXI data-node observability (silicon-feedback item I4, 2026-07-29). Two cheap
+# unit sims that together prove OBS_AXI_NODES (Region F @ 0x21E0) end-to-end:
+#   * tidelink_axinode_obs — the sampler: an injected AXI-channel stall shows a
+#     live-stall bit, latches the sticky wedge witness past the threshold, drops
+#     data_nodes_healthy, and latches the sticky response-error bit.
+#   * tidelink_apb_regs/test_region_f_decode — the APB decode: Region F routes to
+#     the controller's ctrl_reg 2'b00 bank via ctrl_reg_rf WITHOUT aliasing
+#     Region C, returns ctrl_reg_rdata, and is read-only (writes -> pslverr).
+sim_gate_axinode_obs:
+	$(call sim_gate_run,axinode_obs,\
+	  rm -rf cocotb/tidelink_axinode_obs/sim_build \
+	        cocotb/tidelink_apb_regs/sim_build && \
+	  $(MAKE) -C cocotb/tidelink_axinode_obs && \
+	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_region_f_decode)
 
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
@@ -952,7 +982,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
-	v2_mask_hs_bilateral
+	v2_mask_hs_bilateral nack_wedge_recovery axinode_obs
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1003,6 +1033,12 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_t32
 	@$(MAKE) --no-print-directory sim_gate_t33
 	@$(MAKE) --no-print-directory sim_gate_t30
+	@# NACK-wedge / ACK-drop / state-7 recovery — the two PROVEN-passing recovery
+	@# tests, promoted into the blocking gate 2026-07-29 (test_14 stays out; see
+	@# sim_gate_nack_wedge_sustained). Reuses the t31/t30 sim_build_l4 compile.
+	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
+	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
+	@$(MAKE) --no-print-directory sim_gate_axinode_obs
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit

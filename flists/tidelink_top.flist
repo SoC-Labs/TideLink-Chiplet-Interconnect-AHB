@@ -60,6 +60,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
 
 // Generic chiplet controller (Wlink + I2C master/slave + role selection + autoneg)
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+// SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
+// axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
+${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_*_o output ports for
 // APB Region C readback. No functional behaviour change.

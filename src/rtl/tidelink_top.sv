@@ -703,6 +703,10 @@ module tidelink_top #(
     // (SoC 0x4403_21A0-0x4403_21A8) select from tidelink_apb_regs into the
     // chiplet controller. V1 ties it low (bit-identical).
     wire                   ctrl_reg_rd;
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F
+    // (SoC 0x4403_21E0) select from tidelink_apb_regs into the chiplet
+    // controller (OBS_AXI_NODES). LIVE in both V1 and V2.
+    wire                   ctrl_reg_rf;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -1643,6 +1647,7 @@ module tidelink_top #(
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
+        .ctrl_reg_rf         (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
@@ -2478,6 +2483,7 @@ module tidelink_top #(
         .apb_ctrl_reg_addr          (ctrl_reg_addr),
         .apb_ctrl_reg_r10           (ctrl_reg_r10),   // perlane-wp Region-10 select
         .apb_ctrl_reg_rd            (ctrl_reg_rd),    // rxcap Region-D select
+        .apb_ctrl_reg_rf            (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 

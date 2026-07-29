@@ -1078,3 +1078,14 @@ help:
 	@echo ""
 	@echo "Current TARGET=$(TARGET)  XILINX_PART=$(XILINX_PART)"
 	@echo ""
+
+# -----------------------------------------------------------------------------
+# Cross-die regression suite for the two-board KR260 eth-chiplet pair. Run after
+# every design iteration: reflashes both dies, brings up the link, runs the full
+# cross-die functional suite. See pynq_host/scripts/kr260_eth_regress.py.
+#   make -C fpga regress_eth_chiplet KR260_PASSWORD=... [REGRESS_ARGS="--soak-iters 2000"]
+# Override boards via env: KR260_DIEA_HOST=ubuntu@<ip> KR260_DIEB_HOST=ubuntu@<ip>
+REGRESS_ARGS ?= --deploy
+.PHONY: regress_eth_chiplet
+regress_eth_chiplet:
+	@KR260_PASSWORD='$(KR260_PASSWORD)' python3 $(TIDELINK_HOME)/pynq_host/scripts/kr260_eth_regress.py $(REGRESS_ARGS)

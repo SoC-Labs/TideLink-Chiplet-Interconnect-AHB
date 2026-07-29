@@ -87,6 +87,27 @@ FC_TXFIFO  = 0x08   # [0] FIFO empty
 FC_ACKNACK = 0x10   # [0]empty [1]full [2]halffull [3]almostempty [4]almostfull
 FC_CRC     = 0x20   # [15:0] CRC error count (RO)
 
+# --- cross-die SWD debug over the D2D bridge (one probe debugs both dies) -------
+# REQUIRES the batch RTL: 0b (network_core/chip_core_dbg_window added to d2d_m's
+# inbound target list, sim-PROVEN 2026-07-29) + 0c (REMOTE_DBG_EN gate). NOT in the
+# current bitstream — dbg_halt against today's silicon returns SLVERR/0. And the
+# per-beat PPB reads cross the AXI FC nodes, so this inherits the intermittent
+# cross-die wedge until the FCSM-recovery fix lands (docs/CROSS_DIE_WEDGE_ROOTCAUSE.md).
+# die_a drives the peer aperture (0x2F); a CAM rule 0x2F->0xA0 (CPU0) / 0x2F->0xB0
+# (CPU1) routes it to the far core's debug window; the dbg bridge maps
+# {8'hE0,HADDR[23:0]} so 0x2F00_EDF0 -> far 0xE000_EDF0 (DHCSR).
+DBG_PEER_APERTURE = 0x2F000000
+DBG_CAM_CPU0 = (0xA0 << 16) | (0x2F << 8) | 1   # 0x00A02F01 -> network_core_dbg_window
+DBG_CAM_CPU1 = (0xB0 << 16) | (0x2F << 8) | 1   # 0x00B02F01 -> chip_core_dbg_window
+PPB_DHCSR = 0x000EDF0     # peer 0x2F00EDF0 -> far 0xE000EDF0
+PPB_CPUID = 0x000ED00     # peer 0x2F00ED00 -> far 0xE000ED00
+DHCSR_HALT   = 0xA05F0003  # DBGKEY | C_HALT | C_DEBUGEN
+DHCSR_RESUME = 0xA05F0001  # DBGKEY | C_DEBUGEN
+DHCSR_S_HALT = 1 << 17
+CPUID_M0PLUS = 0x410CC601  # expected (matches the sim prototype)
+# 0c gate: reset_ctrl_0 @ 0x2A000000; REMOTE_DBG_EN in the free RAZ slot 0x004.
+REG_REMOTE_DBG_EN = 0x2A000000 + 0x004
+
 
 def _mm(phys):
     page = phys & ~0xFFF
@@ -132,13 +153,24 @@ def _require_link():
         raise SystemExit(2)
 
 
-def program_cam(enable):
-    # CTRL armed last so a half-configured rule is never live.
+def program_cam_rule(rule_value):
+    """Program CAM RULE_0 to an arbitrary {replace<<16 | match<<8 | en} value;
+    CTRL armed last so a half-configured rule is never live."""
     wr(WINDOW_BASE + CAM_BASE, 0x00000000)
-    wr(WINDOW_BASE + CAM_RULE_0, RULE_0_VALUE)
-    wr(WINDOW_BASE + CAM_CTRL, 1 if enable else 0)
-    print("  CAM: RULE_0=0x%08X (match 0x%02X -> replace 0x%02X), global_enable=%d"
-          % (RULE_0_VALUE, APERTURE_BYTE, REMOTE_BYTE, 1 if enable else 0))
+    wr(WINDOW_BASE + CAM_RULE_0, rule_value)
+    wr(WINDOW_BASE + CAM_CTRL, 1)
+    print("  CAM: RULE_0=0x%08X (match 0x%02X -> replace 0x%02X), global_enable=1"
+          % (rule_value, (rule_value >> 8) & 0xFF, (rule_value >> 16) & 0xFF))
+
+
+def program_cam(enable):
+    if enable:
+        program_cam_rule(RULE_0_VALUE)   # 0x2F -> 0x2D (shared_sram_0)
+    else:
+        wr(WINDOW_BASE + CAM_BASE, 0x00000000)
+        wr(WINDOW_BASE + CAM_RULE_0, RULE_0_VALUE)
+        wr(WINDOW_BASE + CAM_CTRL, 0)
+        print("  CAM: RULE_0=0x%08X, global_enable=0" % RULE_0_VALUE)
 
 
 def do_sender(payload):
@@ -253,6 +285,48 @@ def do_fc_health():
     return 0
 
 
+def do_dbg_gate(enable):
+    """die_b: open/close the REMOTE_DBG_EN gate (0c). Local write; harmless as a
+    RAZ no-op until the 0c RTL exists."""
+    print("=== DBG GATE (die_b): REMOTE_DBG_EN <- %d @ 0x2A000004 ===" % (1 if enable else 0))
+    wr(WINDOW_BASE + REG_REMOTE_DBG_EN, 1 if enable else 0)
+    rb = rd(WINDOW_BASE + REG_REMOTE_DBG_EN)
+    print("  readback = 0x%08X (0c not in this bitstream -> reads 0/RAZ)" % rb)
+    return 0
+
+
+def do_dbg_halt(core):
+    """die_a: halt the far core over the D2D bridge (requires 0b+0c RTL).
+    WEDGE-PRONE: the per-beat PPB reads cross the AXI FC nodes (see the
+    FCSM-recovery caveat). Gated on local FCSM=4."""
+    cam, name = (DBG_CAM_CPU0, "CPU0/net") if core == "net" else (DBG_CAM_CPU1, "CPU1/chip")
+    print("=== DBG HALT (die_a): far %s over d2d_m (CAM 0x%08X) ===" % (name, cam))
+    _require_link()
+    program_cam_rule(cam)
+    cpuid = rd(WINDOW_BASE + DBG_PEER_APERTURE + PPB_CPUID)   # peer read (wedge-prone)
+    print("  CPUID @ peer 0x2F00ED00 = 0x%08X (expect 0x%08X)%s"
+          % (cpuid, CPUID_M0PLUS,
+             "" if cpuid == CPUID_M0PLUS else "  <- 0/err => 0b/0c not built or gate closed"))
+    wr(WINDOW_BASE + DBG_PEER_APERTURE + PPB_DHCSR, DHCSR_HALT)
+    dhcsr = rd(WINDOW_BASE + DBG_PEER_APERTURE + PPB_DHCSR)
+    halted = (dhcsr & DHCSR_S_HALT) != 0
+    print("  DHCSR after halt = 0x%08X (S_HALT=%d)" % (dhcsr, 1 if halted else 0))
+    print("RESULT: %s — far %s %s" % ("PASS" if halted else "NOT halted", name,
+          "HALTED over the link" if halted else "(needs 0b/0c RTL + gate open + a running core)"))
+    return 0 if halted else 1
+
+
+def do_dbg_resume(core):
+    """die_a: resume the far core (write DHCSR C_DEBUGEN)."""
+    cam, name = (DBG_CAM_CPU0, "CPU0/net") if core == "net" else (DBG_CAM_CPU1, "CPU1/chip")
+    print("=== DBG RESUME (die_a): far %s ===" % name)
+    _require_link()
+    program_cam_rule(cam)
+    wr(WINDOW_BASE + DBG_PEER_APERTURE + PPB_DHCSR, DHCSR_RESUME)
+    print("  DHCSR <- RESUME (0x%08X)" % DHCSR_RESUME)
+    return 0
+
+
 def _mbox_words(payload):
     return [(payload + i) & 0xFFFFFFFF for i in range(4)]
 
@@ -309,7 +383,8 @@ def main():
                                  "TideLink link (PS-side, eth_ss_0 backdoor).")
     ap.add_argument("--mode", required=True,
                     choices=("sender", "recv", "readback", "link",
-                             "mbox_send", "mbox_recv", "soak", "fc_health"),
+                             "mbox_send", "mbox_recv", "soak", "fc_health",
+                             "dbg_gate", "dbg_halt", "dbg_resume"),
                     help="sender=die_a CAM+write (SRAM); recv=die_b read local SRAM; "
                          "readback=die_a read over link; mbox_send=die_a mailbox "
                          "write (CAM 0x2F->0x23); mbox_recv=die_b read local "
@@ -320,6 +395,11 @@ def main():
     ap.add_argument("--soak-readback", action="store_true",
                     help="soak mode: re-enable the per-beat peer READ round-trip "
                          "(WEDGE-PRONE on silicon; off by default).")
+    ap.add_argument("--core", choices=("net", "chip"), default="net",
+                    help="dbg_halt/dbg_resume: which far core (net=CPU0/0xA0, "
+                         "chip=CPU1/0xB0). Default net.")
+    ap.add_argument("--gate-off", action="store_true",
+                    help="dbg_gate: close (disable) REMOTE_DBG_EN instead of opening.")
     ap.add_argument("--payload", default=hex(DEFAULT_PAYLOAD),
                     help="32-bit payload (default 0xC0FFEE01).")
     args = ap.parse_args()
@@ -348,6 +428,12 @@ def main():
         return do_soak(args.iters, payload, args.soak_readback)
     if args.mode == "fc_health":
         return do_fc_health()
+    if args.mode == "dbg_gate":
+        return do_dbg_gate(not args.gate_off)
+    if args.mode == "dbg_halt":
+        return do_dbg_halt(args.core)
+    if args.mode == "dbg_resume":
+        return do_dbg_resume(args.core)
     return 4
 
 

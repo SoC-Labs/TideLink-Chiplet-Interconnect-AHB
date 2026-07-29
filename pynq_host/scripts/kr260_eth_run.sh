@@ -82,6 +82,14 @@ case "$MODE" in
         pl=${KR260_XFER_PAYLOAD:-0xC0FFEE01}
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode --payload $pl --iters ${KR260_XFER_ITERS:-500}"
         ;;
+    xfer_dbg_gate|xfer_dbg_halt|xfer_dbg_resume)
+        # Cross-die SWD debug (kr260_eth_xfer.py). REQUIRES the batch RTL (0b+0c);
+        # wedge-prone until the FCSM fix. gate=die_b REMOTE_DBG_EN; halt/resume=die_a
+        # far core via KR260_DBG_CORE (net|chip). gate-off via KR260_DBG_GATE_OFF=1.
+        xmode=${MODE#xfer_}
+        extra="--core ${KR260_DBG_CORE:-net}"; [ "${KR260_DBG_GATE_OFF:-0}" = 1 ] && extra="$extra --gate-off"
+        SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode $extra"
+        ;;
     tc_status|tc_prep|tc_elect|tc_enum|tc_route|tc_telemetry|tc_reset)
         # TideChart (chiplet identity/routing bootstrap) via kr260_tidechart.py.
         # tc_elect must run on BOTH boards together. peer id via KR260_TC_PEER_ID.

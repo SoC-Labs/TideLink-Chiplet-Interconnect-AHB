@@ -263,7 +263,7 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axinode_obs sim_gate_pad_clkgate_idle
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -884,6 +884,47 @@ sim_gate_xfail_f14b:
 	  grep -qF "VERDICT[S1_s2m_clock_kill]: WEDGES(unwedged only by full POR of BOTH dies)" $$L && \
 	  grep -qF "VERDICT[S0_passthrough]: RECOVERS" $$L)
 
+# --- V2 PAD CLOCK-GATE SYNC REGRESSION SENTINEL (XFAIL) -----------------------
+# docs/HANDOVER_SYNC_CLOCK_GATE_2026_07_29.md §7.1 — the coverage hole that let
+# the regression ship. The V2 fork dropped `| sync_insert` from the eight pad
+# clock-gate enables (gpiotx_N_io_clk_en) in src/rtl/local_overrides/WavD2DGpio_v2.v.
+# On an IDLE link in data mode (tx_en=0) the idle-gated SYNC beacon increments
+# the LOGICAL tx_sync_ins_cnt but the pad serialiser is UNCLOCKED, so pad_clk_tx
+# (the forwarded clock == the peer's pad_clk_rx) stays gated off, the beacon never
+# reaches the wire, and the peer's SYNC-detect never rises (silicon: die_b
+# ins_cnt +13747 in 3 s / die_a sync_detected delta == 0). v2_syncdet / v2_data /
+# v2_sustained are BLIND to this: this harness's LL never idles (tx_en pinned
+# high), so cocotb/tidelink_pad_clkgate_idle forces the master PHY tx_en low to
+# reach the silicon operating point, then asserts pad_clk_tx keeps toggling AND
+# the peer's SYNC-detect rises.
+#
+# EXPECTED-FAIL on main (the fix is NOT merged): the test exits non-zero with
+# pad_clk_tx=0 edges + peer sync_detected delta=0 while tx_sync_ins_cnt still
+# climbs (the beacon fires logically — the instrument is proven live). The
+# command below is wrapped so the sentinel rc reflects only "did the sim RUN"
+# (XERR fires solely on a harness/compile break), and the XFAIL predicate pins
+# the exact buggy-main verdict.
+#
+# >>> PROMOTES TO A BLOCKING PASS ONCE THE FIX LANDS ON MAIN. <<<
+# When `| tx_sync_inserting_w` is restored (fix/v2-sync-clock-gate @ c8d0e5f) the
+# test PASSES (pad_clk_tx toggles + peer sync_detected rises) -> the XFAIL
+# signature stops matching -> this sentinel reports XCHG (gate red) to force the
+# promotion. At that point: drop `xfail_pad_clkgate_idle` from SIM_GATE_SENTINELS,
+# retarget this recipe to $(call sim_gate_run,...) (a normal blocking PASS), and
+# add its suite to SIM_GATE_ALL_SUITES.
+# Proven A/B (2026-07-29, worktree cherry-pick of c8d0e5f, then dropped):
+#   main (buggy): pad_clk_tx edges=0    peer sync_detected delta=0   -> FAIL/XFAIL
+#   +c8d0e5f    : pad_clk_tx edges=2352 peer sync_detected delta=138 -> PASS/XCHG
+sim_gate_pad_clkgate_idle:
+	$(call sim_gate_sentinel,xfail_pad_clkgate_idle,\
+	  cd cocotb/tidelink_pad_clkgate_idle && rm -rf sim_build* && \
+	  { $(MAKE) MODULE=test_pad_clkgate_idle; } > pad_clkgate_run.log 2>&1; \
+	  cat pad_clkgate_run.log; \
+	  grep -qF 'TESTS=1 PASS=' pad_clkgate_run.log,\
+	  grep -qF 'master pad_clk_tx edges : 0  (cap 4096, alive-threshold 128)' $$L && \
+	  grep -qF 'slave RX sync_detected  : 0 -> 0 (delta 0)' $$L && \
+	  grep -qF 'TESTS=1 PASS=0 FAIL=1' $$L)
+
 # --- RX-FIFO TWIN 2 — ACTIVE (in the aggregate since 2026-07-19) -------------
 # F10's write-side twin (docs/RXFIFO_TWIN2_DISPOSITION.md): the unguarded
 # write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 let any
@@ -1013,7 +1054,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_pad_clkgate_idle
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1105,6 +1146,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_errinj
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory sim_gate_pad_clkgate_idle
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"

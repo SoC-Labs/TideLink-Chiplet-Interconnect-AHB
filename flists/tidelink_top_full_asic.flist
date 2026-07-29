@@ -145,20 +145,16 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-// SoC Labs I1 (silicon-feedback P1, 2026-07-29): FCSM 0-4 RE-POINTED to the
-// local_overrides recovery copies. deps copies are recovery-STRIPPED (no socl_l7
-// watchdog); local_overrides carry Fix B/C/D recovery + the state-2 CRACK gate,
-// now LOWERED (SOCL_L7_MIN_CRACK_EMITS default 8'd8, compile-overridable) so the
-// gate that stalled state 2 at the marginal silicon ratio no longer does, while
-// clean link-up is unchanged. Repro+fix proven in sim (cocotb/
-// tidelink_fcsm_silicon_ratio). ** TAPEOUT NETLIST CHANGE -- sim-verified via a
-// MODELLED marginal link; RATIFY on silicon (ILA) before tapeout. Threshold
-// value (8) and the identical SOCL_L6_MIN_CR_EMITS=32 state-1 gate need review. **
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_1.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_2.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_3.v
-${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_4.v
+// SoC Labs: FCSM 0-4 HELD on deps for the TAPEOUT netlist. The I1 silicon-feedback P1 fix
+// (local_overrides recovery + lowered SOCL_L7_MIN_CRACK_EMITS 8'd8) is applied + FPGA-proven in
+// tidelink_fpga_v2.flist, but is verified only against a MODELLED marginal link. Per decision
+// 2026-07-29 the ASIC/tapeout flists stay on the recovery-stripped deps copies until a silicon ILA
+// confirms it; re-point to local_overrides ONLY after that ratification.
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v

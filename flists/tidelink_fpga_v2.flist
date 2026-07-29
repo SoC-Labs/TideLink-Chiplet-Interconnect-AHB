@@ -274,18 +274,26 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-// SoC Labs 2026-07-11: FCSM 0-4 RE-RESOLVED toward deps (parent-1 / integ), reverting the
-// tapeout-merge's accidental swap to the dieb local_overrides copies. Those overrides carry the
-// "Fix C / L7" min-CRACK-emit gate (SOCL_L7_MIN_CRACK_EMITS=32) which STALLS the FCSM in state 2 at
-// the 40 ns silicon ratio (never reaches 32 CRACK emits) => no LINK_IDLE, all-zeros both dirs.
-// Matches silicon-proven integ. (The L7 hardening, if wanted, needs its threshold fixed for the
-// silicon ratio — a SEPARATE item, must not ship breaking link-up.) FCSM_5 already deps; _6 override
+// SoC Labs I1 (silicon-feedback P1, 2026-07-29): FCSM 0-4 RE-POINTED to the
+// local_overrides recovery copies (reverting the 2026-07-11 revert-to-deps). The
+// deps copies are RECOVERY-STRIPPED (grep -c socl_l7 == 0): the AXI FC nodes had
+// NO watchdog/recovery. The local_overrides copies carry Fix B/C/D (watchdog
+// recovery) AND the state-2 min-CRACK-emit gate. That gate's ORIGINAL 8'd32 is
+// what stalled state 2 on the marginal silicon link ("never reaches 32 CRACK
+// emits" => no LINK_IDLE); it is now LOWERED (SOCL_L7_MIN_CRACK_EMITS default
+// 8'd8, compile-overridable) so state 2 clears in the same marginal window while
+// a clean link-up is unchanged. Repro+fix proven in
+// cocotb/tidelink_fcsm_silicon_ratio (make repro FAILs at gate=32, make fixed
+// PASSes at gate=8; clean control passes at both). FCSM_5 stays deps; _6 override
 // (L6 producer-side fix) is correct and kept.
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
+// NOTE for review: SOCL_L6_MIN_CR_EMITS (state-1 CR gate) is the SAME 8'd32
+// pattern with the same marginal-link risk -- left at 32 here (state 1 was not
+// the binding gate at the tested cadence); flagged for the same treatment.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 // SoC Labs L6 producer-side fix 2026-05-26: WlinkGenericFCSM_6.v REPLACED by
 // local override. Adds socl_l6_cr_emit_count counter + gate on _GEN_34 (state

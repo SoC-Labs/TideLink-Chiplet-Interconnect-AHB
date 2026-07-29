@@ -426,6 +426,17 @@ proc create_root_design { parentCell } {
     set tl [create_bd_cell -type ip \
         -vlnv soclabs.org:user:tidelink_vivado_wrapper:1.0 tidelink_0]
 
+    # Option-A training-entry fallback (dead-I2C self-start). ENV-GATED so the
+    # committed target keeps its baseline (fallback OFF, byte-identical to every
+    # prior pynq-z2-pair-all image); export TL_TRAIN_ENTRY_FALLBACK=1 to build
+    # the HW-test image. The CONFIG reaches OOC synth via the wrapper IP-face
+    # parameter (fe6e39f) — same mechanism as USE_IDELAY / NEGO_CFG_RESET; a
+    # +define+ would NOT. Same pattern as the TD_AUTO_LANE_MASK_E4 env knob.
+    if { [info exists ::env(TL_TRAIN_ENTRY_FALLBACK)] && $::env(TL_TRAIN_ENTRY_FALLBACK) == 1 } {
+        set_property -dict [list CONFIG.TRAIN_ENTRY_FALLBACK {1'b1}] $tl
+        puts "TideLink: CONFIG.TRAIN_ENTRY_FALLBACK = 1'b1 (Option-A self-start ENABLED)"
+    }
+
     #--------------------------------------------------------------------------
     # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port (2026-07-04).
     # Far side of the XHB500 transparent window: a peer die's remote-initiated

@@ -60,6 +60,7 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 
 // FC adapter
+${TIDELINK_HOME}/src/rtl/tidelink_tx_gen.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
 
 // PTP subsystem
@@ -260,10 +261,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-// SoC Labs 2026-07-11: FCSM 0-4 RE-RESOLVED toward deps (matches integ). The tapeout-merge swapped
-// these to the dieb local_overrides copies (L7 min-CRACK gate) which stall the FCSM in state 2 at
-// silicon timing => this would tape out the stall. Reverted here as in tidelink_fpga_v2.flist. _6
-// override (L6 producer fix) kept.
+// SoC Labs: FCSM 0-4 HELD on deps for the TAPEOUT netlist. The I1 silicon-feedback P1 fix
+// (local_overrides recovery copies + lowered SOCL_L7_MIN_CRACK_EMITS 8'd8) IS applied in
+// tidelink_fpga_v2.flist and FPGA-proven, but it is a tapeout netlist change verified only against
+// a MODELLED marginal link (cocotb/tidelink_fcsm_silicon_ratio). Per decision 2026-07-29 these
+// ASIC/tapeout flists stay on the recovery-stripped deps copies until a silicon ILA confirms the
+// fix; re-point to local_overrides (as fpga_v2) ONLY after that ratification. _6 override kept.
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
@@ -349,6 +352,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+// SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
+// axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
+${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 
 // Performance profiling

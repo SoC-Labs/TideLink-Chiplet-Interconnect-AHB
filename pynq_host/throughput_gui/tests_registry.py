@@ -31,6 +31,13 @@ REGISTRY = {
                                      "0 = release credits per drain; RTL "
                                      "POR is 20, which starves the credit "
                                      "loop on small drains."},
+            "bringup": {"type": "str", "default": "none",
+                        "choices": ["none", "seed", "beacon", "full"],
+                        "doc": "data-mode bring-up ladder applied before "
+                               "the delivery proof. A plain deploy trains "
+                               "the link but does not make it carry data; "
+                               "'full' adds the credit seed, SYNC beacon "
+                               "and to_data_mode swreset triplet."},
             "duration_s": {"type": "float", "default": 10.0,
                            "min": 0.5, "max": 600.0},
             "win_s": {"type": "float", "default": 0.5,
@@ -66,6 +73,13 @@ def validate_params(test_name: str, params: dict) -> dict:
     out = {}
     for key, spec in schema.items():
         raw = params.get(key, spec["default"])
+        if spec["type"] == "str":
+            val = str(raw)
+            if "choices" in spec and val not in spec["choices"]:
+                raise ParamError("param %s=%r not one of %s"
+                                 % (key, val, ", ".join(spec["choices"])))
+            out[key] = val
+            continue
         try:
             val = int(raw) if spec["type"] == "int" else float(raw)
         except (TypeError, ValueError):

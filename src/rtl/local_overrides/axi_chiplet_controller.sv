@@ -82,6 +82,11 @@ module axi_chiplet_controller #(
     // is now 1'b1 (strap honoured) so a dead I2C no longer forces both dies
     // slave. 1'b0 = legacy trap (NACK => slave, timeout => nego_fallback).
     parameter bit    ROLE_FROM_STRAP      = 1'b1,
+    // Forwards to tidelink_autoneg.TRAIN_ENTRY_FALLBACK. DEFAULT OFF (shipping
+    // behaviour unchanged). 1 = on a dead I2C bus, the training transaction
+    // enters training from strap instead of hanging/erroring with the SYNC
+    // beacon dark. The symmetric completion of DECISION #3 for training entry.
+    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0,
     // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
     // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
     // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,
@@ -209,6 +214,13 @@ module axi_chiplet_controller #(
     // ctrl_reg_addr[4:3]==2'b00 (same as Region 9/10); this 1-bit flag from
     // tidelink_apb_regs.sv picks Region D, exactly mirroring apb_ctrl_reg_r10.
     input  wire             apb_ctrl_reg_rd,
+    // SoC Labs AXI data-node observability 2026-07-29 (I4) — Region F
+    // disambiguator. Region F (paddr[8:5]=4'b1111, SoC 0x4403_21E0+) folds onto
+    // ctrl_reg_addr[4:3]==2'b00 (same as Region 9/10/D); this 1-bit flag from
+    // tidelink_apb_regs.sv picks Region F, exactly mirroring apb_ctrl_reg_rd.
+    // Unlike the V2-only 9/10/D banks, Region F is LIVE in both V1 and V2 (the
+    // AXI data nodes exist in both), so it is never tied 0 downstream.
+    input  wire             apb_ctrl_reg_rf,
     input  wire  [31:0]     apb_ctrl_reg_wdata,
     output logic [31:0]     ctrl_reg_rdata,
 
@@ -694,6 +706,10 @@ module axi_chiplet_controller #(
     wire mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i;
 
     reg  nego_lock_pending_reg;
+    // Sticky witness that a GENUINE peer-mask match was observed on this die
+    // (never settable by mask_hs_bypass_i or the nego_lost_w free pass).
+    // Gates entry to autonomous RETIRED operation; mirrored in OBS_MASK_HS[23].
+    reg  mask_hs_verified_reg;
     reg  nego_mask_mismatch_reg;
     wire nego_error_irq_internal;
 
@@ -738,7 +754,31 @@ module axi_chiplet_controller #(
             nego_timeout_reg       <= 32'd131_082_000;
             nego_lock_pending_reg  <= 1'b0;
             nego_mask_mismatch_reg <= 1'b0;
+            mask_hs_verified_reg   <= 1'b0;
         end else begin
+            // 2026-07-24 — GENUINE-HANDSHAKE WITNESS (sticky, POR-only clear).
+            // Latches the first cycle this die observes a REAL peer-mask match:
+            // either its own comparator verdict (master) or the winner's I2C
+            // verdict byte sniffed at Wlink 0x21C (slave, see Wlink.v). It is
+            // deliberately driven from mask_hs_match ALONE — never from
+            // mask_hs_bypass_i and never from nego_lost_w — so no strap and no
+            // "trust the winner" fallback can forge it.
+            //
+            // WHY THIS EXISTS: role_lock still latches on the lost path via the
+            // nego_lost_w free pass (see the role_lock block below), because
+            // role_locked is a MUTUAL CLOCK ENABLE — wlink_por_reset (:2832)
+            // gates this die's forwarded pad_clk_tx, which IS the peer's
+            // pad_clk_rx. Making role_lock itself wait for the verdict would
+            // (a) collapse the ~3.1 ms bring-up stagger the CR/CRACK exchange
+            // relies on, and (b) on the I2C-NACK fallback leave a die that never
+            // receives a verdict permanently gating its own PHY clock — a hard,
+            // bilateral, unrecoverable dead link.
+            // So integrity is enforced HERE instead: this witness gates entry to
+            // autonomous RETIRED operation, which fails closed in a recoverable,
+            // observable way rather than by bricking the clock.
+            if (mask_hs_match)
+                mask_hs_verified_reg <= 1'b1;
+
             // Sticky mismatch: latch on the first cycle the peer reports fail.
             if (mask_hs_fail)
                 nego_mask_mismatch_reg <= 1'b1;
@@ -1053,9 +1093,16 @@ module axi_chiplet_controller #(
     // 9/10; apb_ctrl_reg_rd disambiguates (takes priority over r10/r9 because
     // tidelink_apb_regs.sv asserts at most one of {rd, r10} for a given paddr).
     wire [31:0] regionD_rxcap_rdata;
+    // SoC Labs AXI data-node observability (I4, 2026-07-29). Region F
+    // (0x4403_21E0+) also folds onto 2'b00; apb_ctrl_reg_rf picks it, taking
+    // priority over rd/r10/r9 (tidelink_apb_regs.sv asserts at most one of
+    // {rf, rd, r10} for any paddr). Live in both V1 and V2 (assigned below,
+    // outside the `ifdef TIDELINK_PHY_V2` guard the other 2'b00 banks use).
+    wire [31:0] regionF_axinodes_rdata;
     always_comb begin
         unique case (ctrl_reg_addr[4:3])
-            2'b00:   ctrl_reg_rdata = apb_ctrl_reg_rd  ? regionD_rxcap_rdata
+            2'b00:   ctrl_reg_rdata = apb_ctrl_reg_rf  ? regionF_axinodes_rdata
+                                    : apb_ctrl_reg_rd  ? regionD_rxcap_rdata
                                     : apb_ctrl_reg_r10 ? region10_rdata
                                                        : region9_sync_obs_rdata;
             2'b01:   ctrl_reg_rdata = region4_rdata;
@@ -2758,7 +2805,8 @@ module axi_chiplet_controller #(
     // (tidelink_autoneg.sv ~line 448-468); nego_lock_pending_reg is the
     // controller's sticky bit; the remaining fields are combinational mirrors
     // of wires already used by the gating logic above.
-    wire [31:0] obs_mask_hs_w = {9'h0,                                // [31:23] reserved
+    wire [31:0] obs_mask_hs_w = {8'h0,                                // [31:24] reserved
+                                 mask_hs_verified_reg,                // [23] genuine-match witness
                                  wlink_mask_hs_result,                // [22:21]
                                  mask_hs_gate_open,                   // [20]
                                  mask_hs_match,                       // [19]
@@ -2822,6 +2870,42 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h6) ? obs_cal_w                           : // M7 OBS_CAL
         (ctrl_reg_addr[2:0] == 3'h7) ? obs_fc_credit_w                     : // OBS_FC_CREDIT
                                        32'h0;
+
+    // =====================================================================
+    // Region F — AXI DATA-NODE observability (SoC Labs 2026-07-29, item I4)
+    //   OBS_FC_CREDIT (Region C slot 7) only surfaces the FCSM_6 SIDEBAND flow-
+    //   control node; the AXI2WL AW/W/B/AR/R data nodes that actually wedge had
+    //   NO APB-visible health field. This block taps the ten AXI channel
+    //   handshakes (pure fan-out — no datapath change) and packs a live-stall /
+    //   sticky-wedge / response-error / aggregate-healthy word. RO; slot 0
+    //   (0x4403_21E0) carries the word, other slots read 0. LIVE in V1 and V2.
+    //   See src/rtl/tidelink_axinode_obs.sv for the packed bit layout.
+    // =====================================================================
+    wire [31:0] axinode_obs_word;
+    tidelink_axinode_obs u_axinode_obs (
+        .app_clk      (app_clk),
+        .apb_clk      (apb_clk),
+        .resetn       (hresetn),
+        // Target face (axi_tgt_0_* — the local AXI master's view)
+        .tgt_aw_valid (axi_tgt_0_aw_valid), .tgt_aw_ready (axi_tgt_0_aw_ready),
+        .tgt_w_valid  (axi_tgt_0_w_valid),  .tgt_w_ready  (axi_tgt_0_w_ready),
+        .tgt_b_valid  (axi_tgt_0_b_valid),  .tgt_b_ready  (axi_tgt_0_b_ready),
+        .tgt_b_err    (axi_tgt_0_b_bits_resp[1]),
+        .tgt_ar_valid (axi_tgt_0_ar_valid), .tgt_ar_ready (axi_tgt_0_ar_ready),
+        .tgt_r_valid  (axi_tgt_0_r_valid),  .tgt_r_ready  (axi_tgt_0_r_ready),
+        .tgt_r_err    (axi_tgt_0_r_bits_resp[1]),
+        // Initiator face (axi_ini_0_* — the remote AXI slave's view)
+        .ini_aw_valid (axi_ini_0_aw_valid), .ini_aw_ready (axi_ini_0_aw_ready),
+        .ini_w_valid  (axi_ini_0_w_valid),  .ini_w_ready  (axi_ini_0_w_ready),
+        .ini_b_valid  (axi_ini_0_b_valid),  .ini_b_ready  (axi_ini_0_b_ready),
+        .ini_b_err    (axi_ini_0_b_bits_resp[1]),
+        .ini_ar_valid (axi_ini_0_ar_valid), .ini_ar_ready (axi_ini_0_ar_ready),
+        .ini_r_valid  (axi_ini_0_r_valid),  .ini_r_ready  (axi_ini_0_r_ready),
+        .ini_r_err    (axi_ini_0_r_bits_resp[1]),
+        .obs_axinodes (axinode_obs_word)
+    );
+    assign regionF_axinodes_rdata =
+        (ctrl_reg_addr[2:0] == 3'h0) ? axinode_obs_word : 32'h0; // 0x21E0 OBS_AXI_NODES
 
     // =====================================================================
     // Wlink POR Gating
@@ -3241,6 +3325,7 @@ module axi_chiplet_controller #(
         // predicate (cal_done + ==8'hFF compares, byte 3 ignored).
         // PENDING-DECISION #5: terminal role from strap (default 0 = historical)
         .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
+        .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
 `ifdef TIDELINK_PHY_V2
         .USE_CAL_IN_HOLD    (1'b1)
 `else
@@ -4603,7 +4688,17 @@ module axi_chiplet_controller #(
                 rea_up_cnt_q <= 24'd0;
             // Fire on EITHER branch, when armed and enabled. Holds until the
             // next training rise (or POR).
+            // 2026-07-24 — `& mask_hs_verified_reg` added. Entering autonomous
+            // RETIRED operation now requires a GENUINE peer-mask verdict on this
+            // die; a strap (mask_hs_bypass_i) or the nego_lost_w free pass can no
+            // longer get you here. This is the integrity boundary that the
+            // reverted F3 was reaching for, relocated off the mutual clock enable
+            // (role_locked) so it fails closed RECOVERABLY and OBSERVABLY instead
+            // of by gating this die's forwarded clock — which would also kill the
+            // peer's RX clock domain. Bring-up timing is untouched: role_lock,
+            // wlink_por_reset and autonomy_armed all latch exactly as before.
             if (RETIRE_EN && (nego_en & role_locked & nego_train_cfg_r[0])
+                && mask_hs_verified_reg
                 && ((fc_stable_cnt_q == RETIRE_DWELL)
                     || (rea_up_cnt_q == RETIRE_DWELL_SI)))
                 autonomy_retire_q <= 1'b1;

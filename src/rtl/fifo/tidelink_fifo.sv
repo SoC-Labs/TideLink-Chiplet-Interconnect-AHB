@@ -118,6 +118,9 @@ module tidelink_fifo #(
     // select pass-through (die_b receiver sticky-OBS, SoC 0x21A0/0x21A4/0x21A8).
     // V1 ties low (bit-identical).
     output wire                     ctrl_reg_rd,
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F select
+    // pass-through (OBS_AXI_NODES, SoC 0x21E0). LIVE in both V1 and V2.
+    output wire                     ctrl_reg_rf,
     output wire    [SYS_DATA_W-1:0] ctrl_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] ctrl_reg_rdata,
 
@@ -129,6 +132,11 @@ module tidelink_fifo #(
     output wire    [SYS_DATA_W-1:0] perf_reg_wdata,
     input  logic   [SYS_DATA_W-1:0] perf_reg_rdata,
     output wire               [1:0] perf_reg_region,
+
+    // v1 TX traffic generator credit interface (docs/TXGEN_V1_DESIGN.md)
+    output wire [SYS_DATA_W-1:0]   pair_credit_count,
+    input  wire                     hw_credit_consume_vld,
+    input  wire [SYS_DATA_W-1:0]   hw_credit_consume_val,
 
     // --------------------------------------------------------------------------
     // Credit Count Observation (for performance profiling)
@@ -315,6 +323,7 @@ module tidelink_fifo #(
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
+        .ctrl_reg_rf         (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
         // Performance profiling register pass-through
@@ -322,7 +331,10 @@ module tidelink_fifo #(
         .perf_reg_addr       (perf_reg_addr),
         .perf_reg_wdata      (perf_reg_wdata),
         .perf_reg_rdata      (perf_reg_rdata),
-        .perf_reg_region     (perf_reg_region)
+        .perf_reg_region     (perf_reg_region),
+        .pair_credit_count     (pair_credit_count),
+        .hw_credit_consume_vld (hw_credit_consume_vld),
+        .hw_credit_consume_val (hw_credit_consume_val)
     );
 
     // --------------------------------------------------------------------------

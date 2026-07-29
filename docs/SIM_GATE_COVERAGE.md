@@ -4,7 +4,7 @@
 single source of truth; this file explains *what each suite protects* and, more
 importantly, **what it does not**.
 
-**Last updated:** 2026-07-19 (P1 forced-recal W1P gated — 21 suites → 22
+**Last updated:** 2026-07-24 (v1 TX traffic generator gated — 22 suites → 25
 blocking suites + 2 known-defect sentinels + 2 parked targets).
 
 ---
@@ -47,7 +47,7 @@ in a separate block under a header that says so in words. See §5.
 
 ---
 
-## 2. The blocking aggregate (22 suites)
+## 2. The blocking aggregate (25 suites)
 
 `make sim_gate` → `SIM_GATE_ALL_SUITES`. Feature IDs are those defined in
 `docs/TIDELINK_FPGA_VERIFICATION_PLAN.md` §"Feature inventory" (F01–F20).
@@ -96,10 +96,36 @@ carry the same `calibrated_once_q` sticky, so a fix or a regression in one is
 invisible to the other. The `pair` arm is the only one that exercises the APB
 W1P decode, the 1024-cycle pulse-stretcher and the `apb_clk → rx_link_clk` CDC.
 
+### 2.4 Added 2026-07-29 (1)
+
+| # | Suite | Bench / config | Feature | What it actually protects |
+|---|---|---|---|---|
+| 23 | `nack_wedge_recovery` | `tidelink_top_pair` — `test_l7_wedge_repro` (2) + `test_13_ack_drop_recovery` (1), shared `sim_build_l4` | recovery | The **NACK-wedge / ACK-drop / state-7 recovery** paths: a forced NACK drives the FCSM into the state-7 wedge and the `socl_l7_wdog` watchdog clears it, and an ACK-drop episode recovers. Both were previously ungated — one revert from silent regression. Executed 2026-07-29 (no Vivado co-schedule), both **PASS**. `test_14_sustained_ack_drop_wedge` is deliberately **excluded** (it FAILs on the pre-existing F14-B unrecovered-wedge gap — see §6 `sim_gate_nack_wedge_sustained`; not masked, tracked non-blocking). |
+
 **F18 note.** Per the verification plan, TideChart is *"entire IP unproven on
 hardware — no two-die on-silicon integration exists"*. Suites 16–17 are therefore
 the **only** integration evidence for it anywhere, which is exactly why they are
 gated rather than left as a weekend result.
+
+### 2.4 Added 2026-07-24 — v1 TX traffic generator (3)
+
+| # | Suite | Bench / config | Feature | What it actually protects |
+|---|---|---|---|---|
+| 23 | `txgen_unit` | `tidelink_txgen` (generator + real `fc_adapter`) | TXGEN v1 | Inert-when-disarmed (`gen_owns`/consume stay 0 with EN=0; START-without-EN a no-op; external master still served), saturation, **no-loss/no-duplication under a gapped link** (upper bound HARD at the generator's own count, so the ×5 duplicate-FC-word class fails loudly), and the credit gate bounding whole packets + fail-closed at zero credit. |
+| 24 | `txgen_negctl` | `tidelink_txgen TXGEN_NEGCTL=1` — credit gate compiled OUT, distinct `sim_build_negctl` | TXGEN v1 (**negative control**) | The mandatory c3: with the gate out and **zero** peer credit the generator DOES send — the complement of the gate-in refusal. Without this arm every "no overrun" result is vacuous. |
+| 25 | `v2_txgen` | `tidelink_top_pair_v2` `MODULE=test_v2_txgen` `SIM_BUILD=sim_build_txgen` | TXGEN v1 (**full stack**) | Region E reachable through the real APB mux; **byte-exact** delivery into the peer RX FIFO; credit-gated with no peer overrun. The count-only unit oracle was blind to the AHB-pipelining + WR_REQ-header bugs this arm caught. |
+
+**Why the unit oracle is not enough.** `txgen_unit` counts FC words; it cannot
+see word *content* or the peer RX FIFO. Both generator bugs found on this branch
+(HWDATA not trailing HADDR by a cycle; a RD_REQ header the peer won't store)
+passed every unit count check and were caught only by `v2_txgen`'s byte-exact
+drain — the reason the full-stack arm is gated, not just the unit one.
+
+**Scope note.** The end-to-end overrun (arm FOREVER, never drain, assert the
+peer overrun sticky) needs ~`MAX_CREDITS`=4096 words to overflow the real RX
+FIFO — a very long sim at `RAM_ADDR_W`=14 — so it is deferred to a reduced-FIFO
+build; `txgen_negctl` proves the load-bearing fact (gate out ⇒ zero-credit send)
+deterministically instead.
 
 ---
 
@@ -282,7 +308,7 @@ substrings, and no sentinel ever emits `PASS`).
 | Target | Suite name | Why parked | Promotion |
 |---|---|---|---|
 | `sim_gate_xhb` | `v2_xhb_window_bridge` | **F09.** The refactored pair_v2 tb does not model the **peer-side XHB500 target memory** a window write forwards into (`_slave_bram_peek` returns X). A tb gap, not an RTL one. The XHB channel is gated **on silicon** via `fpga/hw_regression/td_v2_channels.sh --channels xhb`. | Model the peer XHB target in the pair tb, then append `v2_xhb_window_bridge` to `SIM_GATE_ALL_SUITES`. |
-| `sim_gate_nack_wedge` | `nack_wedge_recovery` | Pre-existing WIP (see its Makefile note). | Confirm PASS with no Vivado running, then append to `SIM_GATE_ALL_SUITES`. |
+| `sim_gate_nack_wedge_sustained` | `nack_wedge_sustained` | **Executed 2026-07-29:** `test_14_sustained_ack_drop_wedge` **FAILs** — post-wedge data delivery 0/8, the F14-B-class "no in-field recovery" gap. A REAL pre-existing RTL limitation (asserts a recovery capability the datapath lacks), not a recipe/env artifact. | Fix the sustained-ACK-drop recovery datapath (or wrap as an XFAIL sentinel like `xfail_f14b`), then fold into `SIM_GATE_ALL_SUITES`. |
 
 > `sim_gate_fifo_twin2` / `fifo_rx_twin2` was **removed from this table on
 > 2026-07-19** — the fix landed in `src/rtl` and the suite is now in

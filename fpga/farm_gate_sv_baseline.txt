@@ -16,11 +16,12 @@
 #     (ctrl_reg_addr[4:3])` enumerates all four 2-bit arms AND carries an
 #     explicit `default: ctrl_reg_rdata = 32'b0;`. Every path assigns; flagged
 #     only for lacking a pre-case default. (Was line 941; DRIFTED to 985, then
-#     1021 — 2026-07-24 refresh at ded7d15. Same finding, new line.)
+#     1021 at ded7d15, then 1089 — 2026-07-28 Option-A edits. Same finding.)
 #   * tidelink_autoneg.sv selected_priority — the case is fully enumerated
 #     (2-bit nego_pri_sel, all 4 arms 2'd0..2'd3 assigned) so no real latch is
 #     inferred; the lint wants a defensive `default:` for tool-version safety.
-#     (Was lines 382/383; DRIFTED to 541/542, then 584/585 — 2026-07-24 refresh.)
+#     (Was lines 382/383; DRIFTED to 541/542, then 584/585, then 600/601 —
+#     2026-07-28 Option-A edits shifted the block down. Same finding.)
 #   * tidelink_lane_deskew_v2.sv ci / di (x3) — the flagged name in each case is
 #     an `integer` FOR-LOOP ITERATOR (`for (ci|di = 0; ...)`), unconditionally
 #     reset to 0 on every always_comb entry, so it can never latch. Each block
@@ -32,9 +33,9 @@
 #     were never listed; added here after line-by-line verification.
 # These are pre-existing / verified-benign debt, tracked here so the gate
 # ratchets forward.
-src/rtl/local_overrides/axi_chiplet_controller.sv:1021: COMB_NO_DEFAULT
-src/rtl/local_overrides/tidelink_autoneg.sv:584: COMB_NO_DEFAULT
-src/rtl/local_overrides/tidelink_autoneg.sv:585: CASE_NO_DEFAULT
+src/rtl/local_overrides/axi_chiplet_controller.sv:1102: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:600: COMB_NO_DEFAULT
+src/rtl/local_overrides/tidelink_autoneg.sv:601: CASE_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1201: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1234: COMB_NO_DEFAULT
 src/rtl/local_overrides/tidelink_lane_deskew_v2.sv:1373: COMB_NO_DEFAULT

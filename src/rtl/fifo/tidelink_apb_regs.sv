@@ -124,6 +124,12 @@ module tidelink_apb_regs #(
     // it folds onto the controller's 2'b00 select; this 1-bit flag (mirroring
     // ctrl_reg_r10) disambiguates. RO; V1 ties it low (bit-identical).
     output logic                    ctrl_reg_rd,
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F
+    // (apb_region 4'b1111, SoC 0x4403_21E0-0x4403_21FF) select. Like Region D
+    // it folds onto the controller's 2'b00 select; this 1-bit flag (mirroring
+    // ctrl_reg_rd) disambiguates. RO. Unlike the V2-only 9/10/D banks it is
+    // LIVE in both V1 and V2 (the AXI data nodes exist in both).
+    output logic                    ctrl_reg_rf,
     output logic [SYS_DATA_W-1:0]  ctrl_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  ctrl_reg_rdata,
 
@@ -132,7 +138,16 @@ module tidelink_apb_regs #(
     output logic              [2:0] perf_reg_addr,
     output logic [SYS_DATA_W-1:0]  perf_reg_wdata,
     input  logic [SYS_DATA_W-1:0]  perf_reg_rdata,
-    output logic              [1:0] perf_reg_region
+    output logic              [1:0] perf_reg_region,
+
+    // v1 TX traffic generator (docs/TXGEN_V1_DESIGN.md) — pure observability
+    // out, hardware consume in. The generator gates on the PEER's free credit,
+    // so it must both see this counter and be able to reserve against it in
+    // hardware; the peer RX write side has no backpressure, so a software-only
+    // gate would let a line-rate generator silently destroy data.
+    output logic [SYS_DATA_W-1:0]  pair_credit_count,
+    input  logic                    hw_credit_consume_vld,
+    input  logic [SYS_DATA_W-1:0]  hw_credit_consume_val
 );
 
     // -------------------------------------------------------------------------
@@ -375,6 +390,21 @@ module tidelink_apb_regs #(
     wire pair_counter_increment = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h0;
     wire pair_counter_decrement = apb_write && (apb_region == 4'b0001) && paddr[4:2] == 3'h3;
 
+    // Net-delta form of the counter update. Widened by one bit so the sum of
+    // the two decrement sources cannot wrap before the saturating compare
+    // (Shortcoming #7 kept: saturate at zero, never underflow-wrap).
+    wire [SYS_DATA_W:0] pair_credit_inc =
+        pair_counter_increment ? {1'b0, pwdata} : '0;
+    wire [SYS_DATA_W:0] pair_credit_dec =
+        ({SYS_DATA_W+1{pair_counter_decrement}} & {1'b0, pwdata})
+      + ({SYS_DATA_W+1{hw_credit_consume_vld}} & {1'b0, hw_credit_consume_val});
+    wire [SYS_DATA_W:0] pair_credit_sum = {1'b0, pair_credit_counter} + pair_credit_inc;
+    wire [SYS_DATA_W-1:0] pair_credit_next =
+        (pair_credit_sum >= pair_credit_dec)
+            ? SYS_DATA_W'(pair_credit_sum - pair_credit_dec) : '0;
+
+    assign pair_credit_count = pair_credit_counter;
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pair_credit_counter    <= '0;
@@ -384,17 +414,16 @@ module tidelink_apb_regs #(
                 pair_credit_counter_en <= pwdata[0];
             end
 
+            // 3-way combine (inc from the peer's returner, dec from software,
+            // dec from the TX generator's hardware reservation). These are
+            // folded into ONE net update rather than a priority chain so a peer
+            // credit-return landing on the same cycle as a generator consume
+            // can never be dropped — losing an increment here leaks credit and
+            // eventually starves the sender for good.
             if (pair_credit_counter_en) begin
-                if (pair_counter_increment && pair_counter_decrement) begin
-                    pair_credit_counter <= pair_credit_counter + pwdata - pwdata;
-                end else if (pair_counter_increment) begin
-                    pair_credit_counter <= pair_credit_counter + pwdata;
-                end else if (pair_counter_decrement) begin
-                    // Shortcoming #7 fix: saturate at zero to prevent unsigned underflow wrap
-                    if (pair_credit_counter >= pwdata)
-                        pair_credit_counter <= pair_credit_counter - pwdata;
-                    else
-                        pair_credit_counter <= '0;
+                if (pair_counter_increment || pair_counter_decrement
+                                           || hw_credit_consume_vld) begin
+                    pair_credit_counter <= pair_credit_next;
                 end
             end
         end
@@ -538,18 +567,26 @@ module tidelink_apb_regs #(
     // (paddr[8:5]=4'b1101, SoC 0x4403_21A0-0x4403_21BF) -> controller Region D.
     // RO observability; all 8 slots map (no slot-0 carve-out, unlike Region 10).
     wire regionD_hit = (apb_region == 4'b1101);
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F
+    // (paddr[8:5]=4'b1111, SoC 0x4403_21E0-0x4403_21FF) -> controller Region F.
+    // RO observability; all 8 slots map (like Region D, no slot-0 carve-out).
+    // apb_region 4'b1111 would otherwise land on ctrl_reg_addr[4:3]==2'b11 and
+    // ALIAS Region C, so it is special-cased onto the 2'b00 bank with ctrl_reg_rf.
+    wire regionF_hit = (apb_region == 4'b1111);
     assign ctrl_reg_r10   = region10_hit;
     assign ctrl_reg_rd    = regionD_hit;
+    assign ctrl_reg_rf    = regionF_hit;
     assign ctrl_reg_write = apb_write && ((apb_region == 4'b0100) ||
                                            (apb_region == 4'b1000) ||
                                            (apb_region == 4'b1001) ||
                                            (apb_region == 4'b1100) ||
                                            region10_hit ||
                                            regionD_hit);
-    // Region 9, Region 10 and Region D all fold onto ctrl_reg_addr[4:3]==2'b00
-    // (the controller disambiguates 10 via ctrl_reg_r10 and D via ctrl_reg_rd);
-    // the slot index (paddr[4:2]) selects the word within each bank.
-    assign ctrl_reg_addr  = ((apb_region == 4'b1001) || region10_hit || regionD_hit)
+    // Region 9, Region 10, Region D and Region F all fold onto
+    // ctrl_reg_addr[4:3]==2'b00 (the controller disambiguates 10 via
+    // ctrl_reg_r10, D via ctrl_reg_rd, F via ctrl_reg_rf); the slot index
+    // (paddr[4:2]) selects the word within each bank.
+    assign ctrl_reg_addr  = ((apb_region == 4'b1001) || region10_hit || regionD_hit || regionF_hit)
                                 ? {2'b00, paddr[4:2]}
                                 : {apb_region[3:2], paddr[4:2]};
     assign ctrl_reg_wdata = pwdata;
@@ -678,6 +715,15 @@ module tidelink_apb_regs #(
                 //   (ctrl_reg_rd special-cased above). V2-only data; reads 0 in V1.
                 prdata = ctrl_reg_rdata;
             end
+            4'b1111: begin // Region F: AXI data-node observability (I4, 2026-07-29)
+                //   Slot 0 (SoC 0x4403_21E0) = OBS_AXI_NODES — live-stall /
+                //   sticky-wedge / response-error / aggregate-healthy word for the
+                //   AXI2WL AW/W/B/AR/R data nodes. RO. Same ctrl_reg_rdata
+                //   pass-through; the chiplet controller decodes this bank on
+                //   region-select 2'b00 (ctrl_reg_rf special-cased above). LIVE in
+                //   both V1 and V2 (the AXI data nodes exist in both).
+                prdata = ctrl_reg_rdata;
+            end
             default: ;
         endcase
     end
@@ -727,6 +773,9 @@ module tidelink_apb_regs #(
                     // substitutes that pslverr; leave the local entry 0.
                 end
                 4'b1101: begin // Region D: rxcap sticky-OBS — all slots RO
+                    if (pwrite) pslverr = 1'b1;
+                end
+                4'b1111: begin // Region F: AXI data-node OBS — all slots RO (I4)
                     if (pwrite) pslverr = 1'b1;
                 end
                 default: ;

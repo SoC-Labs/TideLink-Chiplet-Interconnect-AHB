@@ -106,6 +106,14 @@ module tidelink_top #(
     parameter STUB_PTP         = 1'b0,
     parameter BYPASS_ADDR_XLAT = 1'b0,
 
+    // v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md). Present on
+    // FPGA benchmark builds; set 0 for tapeout so the block AND its mux are
+    // removed by the generate below and the netlist is provably unchanged.
+    parameter TXGEN_PRESENT     = 1'b1,
+    // SIM-ONLY negative control: defeats the hardware credit gate so a test can
+    // prove the peer DOES overrun without it. NEVER set in a shipping flist.
+    parameter TXGEN_CREDIT_GATE_DIS = 1'b0,
+
     // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG @ 0x4403_210C.
     // 16'h0001 = train_auto_en=1; all timers fall back to FSM defaults.
     // ASIC, FPGA and sim all enter the autonomous training arm out of
@@ -203,7 +211,12 @@ module tidelink_top #(
     //         master, die_b=1 slave), so the FPGA inherits the correct pair.
     //   1'b0 = LEGACY trap: I2C NACK => slave, timeout => nego_fallback, so a
     //         dead I2C makes BOTH dies slave and autonomy is structurally dead.
-    parameter bit    ROLE_FROM_STRAP      = 1'b1
+    parameter bit    ROLE_FROM_STRAP      = 1'b1,
+    // Forwards to axi_chiplet_controller.TRAIN_ENTRY_FALLBACK → tidelink_autoneg.
+    // DEFAULT OFF (shipping behaviour unchanged). 1 = training-entry starts from
+    // strap on a dead I2C bus, so the SYNC beacon lights and the link can
+    // self-start without a peer I2C ACK — the training-side completion of #3.
+    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -690,6 +703,10 @@ module tidelink_top #(
     // (SoC 0x4403_21A0-0x4403_21A8) select from tidelink_apb_regs into the
     // chiplet controller. V1 ties it low (bit-identical).
     wire                   ctrl_reg_rd;
+    // SoC Labs AXI data-node observability 2026-07-29 (I4): Region F
+    // (SoC 0x4403_21E0) select from tidelink_apb_regs into the chiplet
+    // controller (OBS_AXI_NODES). LIVE in both V1 and V2.
+    wire                   ctrl_reg_rf;
     wire [SYS_DATA_W-1:0] ctrl_reg_wdata;
     wire [SYS_DATA_W-1:0] ctrl_reg_rdata;
 
@@ -922,6 +939,96 @@ module tidelink_top #(
     // routed into the top-level so a follow-on commit can wire them via
     // hierarchical reference or via new chiplet-controller ports.
     // =========================================================================
+    // =========================================================================
+    // v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md)
+    // =========================================================================
+    // APB Region E (paddr[8:5]==4'b1110, SoC 0x21C0-0x21DC). Regions E and F
+    // were unclaimed: absent from the tidelink_apb_regs read mux, ctrl_reg_write,
+    // the perf bound (<=4'b0111) and pslverr, and from every [8:5] compare here
+    // and in the chiplet controller.
+    //
+    // SECURITY: WRITES are qualified with !fc_cfg_apb_active. The FC RX config
+    // path shares this APB bus and carries a PEER-SUPPLIED offset, so without
+    // this a mis-set PAIR_BASE or a faulty/hostile peer could arm our traffic
+    // generator across the link.
+    wire txgen_reg_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1110);
+    wire txgen_reg_wr  = txgen_reg_sel && tl_apb_penable && tl_apb_pwrite
+                                       && !fc_cfg_apb_active;
+
+    wire                    txgen_owns;
+    wire [RAM_ADDR_W-1:0]  txgen_haddr;
+    wire              [1:0] txgen_htrans;
+    wire              [2:0] txgen_hsize;
+    wire                    txgen_hwrite;
+    wire [SYS_DATA_W-1:0]  txgen_hwdata;
+    wire                    fc_tx_hreadyout;
+    wire [SYS_DATA_W-1:0]  txgen_pair_credit;
+    wire                    txgen_credit_consume_vld;
+    wire [SYS_DATA_W-1:0]  txgen_credit_consume_val;
+    wire [SYS_DATA_W-1:0]  txgen_prdata;
+
+    // The external master sees the adapter's own hreadyout, EXCEPT while the
+    // generator owns the port: an external beat arriving mid-packet must not be
+    // silently accepted (that was the L11 watchdog's sin). Holding hreadyout
+    // low stalls it honestly; the adapter's own TX_STALL_TIMEOUT remains the
+    // backstop against an indefinite stall.
+    assign ahb_tx_hreadyout = txgen_owns ? 1'b0 : fc_tx_hreadyout;
+
+    // Effective credit-gate-disable: the shipping value is the TXGEN_CREDIT_GATE_DIS
+    // parameter (POR 0 = gate ON). `TXGEN_FORCE_CREDIT_GATE_DIS` is a SIM-ONLY
+    // define that forces it to 1 for the mandatory negative-control build (c3),
+    // proving the peer DOES overrun without the gate. It must NEVER appear in a
+    // shipping flist; with the define absent this is bit-identical to the param.
+    localparam bit TXGEN_CGD_EFF = TXGEN_CREDIT_GATE_DIS
+`ifdef TXGEN_FORCE_CREDIT_GATE_DIS
+        | 1'b1
+`endif
+        ;
+
+    generate
+    if (TXGEN_PRESENT) begin : g_txgen
+        tidelink_tx_gen #(
+            .SYS_DATA_W      (SYS_DATA_W),
+            .RAM_ADDR_W      (RAM_ADDR_W),
+            .CREDIT_GATE_DIS (TXGEN_CGD_EFF)
+        ) u_tx_gen (
+            .hclk               (hclk),
+            .hresetn            (hresetn),
+            .reg_sel            (txgen_reg_sel),
+            .reg_addr           (tl_apb_paddr[4:2]),
+            .reg_write          (txgen_reg_wr),
+            .reg_wdata          (tl_apb_pwdata),
+            .reg_rdata          (txgen_prdata),
+            .pair_credit_count  (txgen_pair_credit),
+            .pair_credit_en     (1'b1),
+            .credit_consume_vld (txgen_credit_consume_vld),
+            .credit_consume_val (txgen_credit_consume_val),
+            .gen_owns           (txgen_owns),
+            .gen_haddr          (txgen_haddr),
+            .gen_htrans         (txgen_htrans),
+            .gen_hsize          (txgen_hsize),
+            .gen_hwrite         (txgen_hwrite),
+            .gen_hwdata         (txgen_hwdata),
+            .fc_hreadyout       (fc_tx_hreadyout),
+            .fc_hresp           (ahb_tx_hresp),
+            .ext_htrans         (ahb_tx_htrans),
+            .txgen_active       ()
+        );
+    end else begin : g_no_txgen
+        // Tapeout arm: the block AND the mux vanish, so the netlist is
+        // provably identical to a build that never had the generator.
+        assign txgen_owns               = 1'b0;
+        assign txgen_haddr              = '0;
+        assign txgen_htrans             = 2'b00;
+        assign txgen_hsize              = 3'b010;
+        assign txgen_hwrite             = 1'b0;
+        assign txgen_hwdata             = '0;
+        assign txgen_credit_consume_vld = 1'b0;
+        assign txgen_credit_consume_val = '0;
+        assign txgen_prdata             = '0;
+    end
+    endgenerate
+
     wire eye_shim_sel = tl_apb_psel && (tl_apb_paddr[8:5] == 4'b1010);
 
     wire [SYS_DATA_W-1:0]  eye_shim_prdata;
@@ -1234,23 +1341,29 @@ module tidelink_top #(
                            // 0x00000000 with NO 0x5F marker (same trap as 0x2150/0x2158).
                            || (tl_apb_paddr[4:0] == 5'h1C));  // 0x215C SYNC_SEEN_VEC (RO)
     wire eye_shim_sel_eff = eye_shim_sel && !perlane_wp_sel;
-    assign tl_apb_prdata  = gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
+    assign tl_apb_prdata  = txgen_reg_sel      ? txgen_prdata          :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                             eye_shim_sel_eff   ? eye_shim_prdata       :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
+    assign tl_apb_pready  = txgen_reg_sel      ? 1'b1                  :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                             eye_shim_sel_eff   ? eye_shim_pready       :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
+    assign tl_apb_pslverr = txgen_reg_sel      ? 1'b0                  :
+                            gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                             eye_shim_sel_eff   ? eye_shim_pslverr      :
                                                  tidelink_internal_pslverr;
 `else
-    assign tl_apb_prdata  = eye_shim_sel       ? eye_shim_prdata       :
+    assign tl_apb_prdata  = txgen_reg_sel      ? txgen_prdata          :
+                            eye_shim_sel       ? eye_shim_prdata       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_prdata   :
                                                  tidelink_internal_prdata;
-    assign tl_apb_pready  = eye_shim_sel       ? eye_shim_pready       :
+    assign tl_apb_pready  = txgen_reg_sel      ? 1'b1                  :
+                            eye_shim_sel       ? eye_shim_pready       :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pready   :
                                                  tidelink_internal_pready;
-    assign tl_apb_pslverr = eye_shim_sel       ? eye_shim_pslverr      :
+    assign tl_apb_pslverr = txgen_reg_sel      ? 1'b0                  :
+                            eye_shim_sel       ? eye_shim_pslverr      :
                             gpio_phy_apb_sel   ? gpio_phy_apb_pslverr  :
                                                  tidelink_internal_pslverr;
 `endif
@@ -1327,7 +1440,7 @@ module tidelink_top #(
     // 2^16 hclk (~2.6 ms @ 25 MHz FPGA rig, ~14 ms @ 4.7 MHz) is orders beyond a
     // legitimate slow-but-progressing window round-trip: the counter RESETS every
     // time the front-end stops stalling (i.e. on every completed beat — see
-    // ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
+    // sub_ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
     // held stalled continuously past the timeout (a genuine wedge) can trip it.
     //
     // NO COMB LOOP (this is the load-bearing invariant that cb33c9f established):
@@ -1343,8 +1456,19 @@ module tidelink_top #(
 `else
     localparam int SUB_STALL_TIMEOUT_LOG2 = 16;   // ~2^16 hclk; see rationale above
 `endif
-    logic [SUB_STALL_TIMEOUT_LOG2:0] sub_stall_ctr_r;
-    logic                            sub_err1_r, sub_err2_r;
+    // I5 (2026-07-29): a SEPARATE timeout for the outstanding-response backstop
+    // (below). Sized independently of the per-beat stall timer so it tracks the
+    // whole-transaction round-trip, and so a sim can trip exactly ONE of the two
+    // backstops to prove which fired. Same 2^16 default rationale as above.
+`ifdef TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2
+    localparam int SUB_OUTSTANDING_TIMEOUT_LOG2 = `TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2;
+`else
+    localparam int SUB_OUTSTANDING_TIMEOUT_LOG2 = 16;
+`endif
+    logic [SUB_STALL_TIMEOUT_LOG2:0]       sub_stall_ctr_r;
+    logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] sub_osr_ctr_r;
+    logic                                  sub_rd_os_r, sub_wr_os_r;
+    logic                                  sub_err1_r, sub_err2_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
     // wedges the PS — XHB500 holding its data phase low while it waits on the
@@ -1357,9 +1481,38 @@ module tidelink_top #(
     // 2-cycle ERROR response so one wedged transfer is counted exactly once.
     wire sub_stall_fill    = ext_is_nonseq && !pipe_valid_r;
     wire sub_stall_busy    = !xhb_sub_hreadyout_raw;
-    wire ext_stalled       = (sub_stall_fill || sub_stall_busy)
+    // NOTE 2026-07-29: renamed from `ext_stalled` — that name is ALSO declared at
+    // module scope for the APB ext-timeout (search "wire ext_stalled" ~line 896).
+    // Two same-scope `wire ext_stalled` decls are a redeclaration hazard the
+    // language servers flag and VCS resolves ambiguously; the unique name keeps
+    // this per-beat backstop cleanly independent of the APB one.
+    wire sub_ext_stalled   = (sub_stall_fill || sub_stall_busy)
                              && !sub_err1_r && !sub_err2_r;
     wire sub_stall_expired = sub_stall_ctr_r[SUB_STALL_TIMEOUT_LOG2];
+
+    // ── I5 (2026-07-29): outstanding-response backstop (HREADYOUT-BLIND) ───────
+    // The mechanism above only accumulates while xhb_sub_hreadyout_raw is LOW. A
+    // peer response that is LOST — the AR/AW was accepted onto the XHB500 s_axi
+    // channel and crossed the link, but the returning R(last)/B beat never comes
+    // back — can leave ahb_sub_hreadyout HIGH (a posted write, or the bridge
+    // parking 'ready' between beats). Then sub_stall_busy reads 0, sub_ext_stalled
+    // deasserts, and the per-beat counter keeps RESETTING, so the wedge is never
+    // timed out and the PS hangs exactly as in the LOW case this backstop was
+    // built for. Track the transaction outstanding on the s_axi handshakes
+    // directly and time it out regardless of hreadyout.
+    //
+    // NO COMB LOOP (same invariant as above): every term derives ONLY from the
+    // XHB500 s_axi handshakes (driven by the bridge FSM from xhb_sub_hready, which
+    // is pipe_valid_r/ext_is_nonseq/xhb_sub_hreadyout_raw — never ahb_sub_hready)
+    // and from registers, and it feeds ONLY the registered sub_err{1,2}_r. So
+    // ahb_sub_hreadyout gains no combinational dependence on ahb_sub_hready.
+    wire sub_ar_accept       = s_axi_arvalid & s_axi_arready;
+    wire sub_aw_accept       = s_axi_awvalid & s_axi_awready;
+    wire sub_r_done          = s_axi_rvalid  & s_axi_rready & s_axi_rlast;
+    wire sub_b_done          = s_axi_bvalid  & s_axi_bready;
+    wire sub_axi_outstanding = sub_rd_os_r | sub_wr_os_r;
+    wire sub_axi_progress    = sub_r_done | sub_b_done;
+    wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -1397,23 +1550,53 @@ module tidelink_top #(
         end
     end
 
-    // Stall-timeout counter + 2-cycle AHB ERROR sequencer (registered; driven
+    // Stall-timeout counters + 2-cycle AHB ERROR sequencer (registered; driven
     // off hclk; never combinationally dependent on ahb_sub_hready — see above).
+    // TWO independent backstops feed the SAME 2-cycle ERROR sequencer:
+    //   (1) per-beat HREADYOUT-low stall  (sub_stall_ctr_r / sub_stall_expired)
+    //   (2) I5 outstanding-response wedge (sub_osr_ctr_r  / sub_osr_expired)
+    // Either expiry drives sub_err1_r; sub_err1_r is a register with a single
+    // always_ff driver, so multiple `<= 1'b1` assignments below simply OR.
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             sub_stall_ctr_r <= '0;
+            sub_osr_ctr_r   <= '0;
+            sub_rd_os_r     <= 1'b0;
+            sub_wr_os_r     <= 1'b0;
             sub_err1_r      <= 1'b0;
             sub_err2_r      <= 1'b0;
         end else begin
             sub_err2_r <= sub_err1_r;   // ERROR cycle 2 follows cycle 1
             sub_err1_r <= 1'b0;         // default: one-shot
-            if (!ext_stalled) begin
+
+            // (1) per-beat HREADYOUT-low stall
+            if (!sub_ext_stalled) begin
                 sub_stall_ctr_r <= '0;                 // resets every completed beat
             end else if (sub_stall_expired) begin
                 sub_stall_ctr_r <= '0;
                 sub_err1_r      <= 1'b1;               // fire the ERROR response
             end else begin
                 sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
+            end
+
+            // (2) I5 outstanding-response backstop. Track a sub read/write in
+            // flight on the XHB500 s_axi channel: SET on an accepted AR/AW, CLEAR
+            // on its returning R(last)/B. This is oblivious to ahb_sub_hreadyout,
+            // so it catches the lost-response wedge the per-beat timer is blind to.
+            if (sub_ar_accept)   sub_rd_os_r <= 1'b1;
+            else if (sub_r_done) sub_rd_os_r <= 1'b0;
+            if (sub_aw_accept)   sub_wr_os_r <= 1'b1;
+            else if (sub_b_done) sub_wr_os_r <= 1'b0;
+
+            if (!sub_axi_outstanding || sub_axi_progress) begin
+                sub_osr_ctr_r <= '0;                   // idle, or a beat retired
+            end else if (sub_osr_expired) begin
+                sub_osr_ctr_r <= '0;
+                sub_err1_r    <= 1'b1;                 // same 2-cycle ERROR
+                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn
+                sub_wr_os_r   <= 1'b0;                 // so it cannot re-trip us
+            end else begin
+                sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
             end
         end
     end
@@ -1434,13 +1617,38 @@ module tidelink_top #(
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
                                              (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
-    // External hreadyout: stall upstream during the pipeline fill cycle. The
-    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when the
-    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — both are
-    // registers, so no combinational dependence on ahb_sub_hready is introduced.
+    // ── I2 (2026-07-29): peer-READ pipe-offset mask ───────────────────────────
+    // The ahb_sub address pipeline presents the address to the XHB500 bridge one
+    // cycle late, so on the master's FIRST data-phase cycle the bridge is still in
+    // its RESP_FSM_IDLE_BUSY state, where hreadyout is 1 ("ready to accept an
+    // address"). A real AHB master reads that as its READ completing and captures
+    // STALE hrdata one cycle before the bridge has even issued the AXI read. Hold
+    // the master-facing hreadyout low for that single pipe-offset cycle on a read,
+    // so the master waits until the bridge is genuinely returning data
+    // (RESP_FSM_SEQ_NSEQ, hreadyout = r_done). Writes never set this (hwrite=1).
+    // This masks ONLY the master-facing hreadyout, not xhb_sub_hready into the
+    // bridge, so the bridge advances normally — no desync. Found by the two-real-
+    // SoC g2_soc_pair read round-trip (a zero-latency far-side memory hides it).
+    // Upstreamed from nanosoc-ethernet-chiplet patch 0003.
+    logic rd_pipe_r;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            rd_pipe_r <= 1'b0;
+        else if (ext_is_nonseq && !ahb_sub_hwrite && !pipe_valid_r)
+            rd_pipe_r <= 1'b1;   // a read's address was just latched into the pipe
+        else
+            rd_pipe_r <= 1'b0;   // one cycle only
+    end
+
+    // External hreadyout: stall upstream during the pipeline fill cycle, and for
+    // one further cycle on a read (the bridge IDLE-state hreadyout leak, I2). The
+    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when either
+    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — sub_err{1,2}_r and
+    // rd_pipe_r are registers, so no combinational dependence on ahb_sub_hready.
     assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
                                sub_err2_r ? 1'b1 :
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
+                               rd_pipe_r                        ? 1'b0 :
                                xhb_sub_hreadyout_raw;
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
@@ -1534,6 +1742,7 @@ module tidelink_top #(
         .ctrl_reg_addr       (ctrl_reg_addr),
         .ctrl_reg_r10        (ctrl_reg_r10),   // perlane-wp Region-10 select
         .ctrl_reg_rd         (ctrl_reg_rd),    // rxcap Region-D select
+        .ctrl_reg_rf         (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .ctrl_reg_wdata      (ctrl_reg_wdata),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
 
@@ -1543,6 +1752,11 @@ module tidelink_top #(
         .perf_reg_wdata      (perf_reg_wdata),
         .perf_reg_rdata      (perf_reg_rdata),
         .perf_reg_region     (perf_reg_region),
+
+        // v1 TX generator credit interface (docs/TXGEN_V1_DESIGN.md)
+        .pair_credit_count     (txgen_pair_credit),
+        .hw_credit_consume_vld (txgen_credit_consume_vld),
+        .hw_credit_consume_val (txgen_credit_consume_val),
 
         // Credit count observation (for performance profiling)
         .perf_credit_count   (perf_credit_count),
@@ -1576,17 +1790,24 @@ module tidelink_top #(
         .hclk              (hclk),
         .hresetn           (hresetn),
 
-        // AHB Slave — TX aperture (CPU/DMA writes FIFO packets here)
-        .ahb_tx_hsel       (ahb_tx_hsel),
-        .ahb_tx_haddr      (ahb_tx_haddr),
-        .ahb_tx_htrans     (ahb_tx_htrans),
-        .ahb_tx_hsize      (ahb_tx_hsize),
-        .ahb_tx_hwrite     (ahb_tx_hwrite),
-        .ahb_tx_hwdata     (ahb_tx_hwdata),
-        .ahb_tx_hready     (ahb_tx_hready),
+        // AHB Slave — TX aperture. Muxed with the v1 PL-side traffic
+        // generator (docs/TXGEN_V1_DESIGN.md): with TXGEN_PRESENT=0 the
+        // generate below removes the block and these collapse to the external
+        // nets; with the generator present but disarmed (POR) txgen_owns is a
+        // constant 0 and the mux folds away.
+        .ahb_tx_hsel       (txgen_owns ? 1'b1            : ahb_tx_hsel),
+        .ahb_tx_haddr      (txgen_owns ? txgen_haddr     : ahb_tx_haddr),
+        .ahb_tx_htrans     (txgen_owns ? txgen_htrans    : ahb_tx_htrans),
+        .ahb_tx_hsize      (txgen_owns ? txgen_hsize     : ahb_tx_hsize),
+        .ahb_tx_hwrite     (txgen_owns ? txgen_hwrite    : ahb_tx_hwrite),
+        .ahb_tx_hwdata     (txgen_owns ? txgen_hwdata    : ahb_tx_hwdata),
+        // Explicit even though both FPGA targets loop hreadyout back: an ASIC
+        // or nanoSoC integration that does NOT loop it back still needs the
+        // generator's beats to advance off the adapter's own hreadyout.
+        .ahb_tx_hready     (txgen_owns ? fc_tx_hreadyout : ahb_tx_hready),
         .ahb_tx_hrdata     (ahb_tx_hrdata),
         .ahb_tx_hresp      (ahb_tx_hresp),
-        .ahb_tx_hreadyout  (ahb_tx_hreadyout),
+        .ahb_tx_hreadyout  (fc_tx_hreadyout),
 
         // AHB Slave — Returner interception (returner thinks this is remote)
         .rtn_haddr         (rtn_haddr),
@@ -2300,6 +2521,7 @@ module tidelink_top #(
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
         // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
         .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
+        .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
         .WINSCAN_CONVERGE_LOCK_EN (WINSCAN_CONVERGE_LOCK_EN),
         // Phase 2 autonomy — RETIRE-AUTONOMY tapeout knob (F4). Forwarded so
@@ -2356,6 +2578,7 @@ module tidelink_top #(
         .apb_ctrl_reg_addr          (ctrl_reg_addr),
         .apb_ctrl_reg_r10           (ctrl_reg_r10),   // perlane-wp Region-10 select
         .apb_ctrl_reg_rd            (ctrl_reg_rd),    // rxcap Region-D select
+        .apb_ctrl_reg_rf            (ctrl_reg_rf),    // AXI data-node OBS Region-F select
         .apb_ctrl_reg_wdata         (ctrl_reg_wdata),
         .ctrl_reg_rdata             (ctrl_reg_rdata),
 

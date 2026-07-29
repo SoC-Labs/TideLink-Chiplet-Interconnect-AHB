@@ -13,6 +13,7 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo.sv
 ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 
 // FC adapter
+${TIDELINK_HOME}/src/rtl/tidelink_tx_gen.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
 
 // PTP subsystem
@@ -144,8 +145,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-// SoC Labs 2026-07-11: FCSM 0-4 RE-RESOLVED toward deps (matches integ) — the tapeout-merge swapped
-// these to the dieb local_overrides (L7 min-CRACK gate) that stalls the FCSM at silicon timing.
+// SoC Labs: FCSM 0-4 HELD on deps for the TAPEOUT netlist. The I1 silicon-feedback P1 fix
+// (local_overrides recovery + lowered SOCL_L7_MIN_CRACK_EMITS 8'd8) is applied + FPGA-proven in
+// tidelink_fpga_v2.flist, but is verified only against a MODELLED marginal link. Per decision
+// 2026-07-29 the ASIC/tapeout flists stay on the recovery-stripped deps copies until a silicon ILA
+// confirms it; re-point to local_overrides ONLY after that ratification.
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
@@ -223,6 +227,9 @@ ${TIDELINK_HOME}/src/rtl/tidelink_idelay_rx.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 
 // §9.11c TideLink local override: adds runtime MIN_LOCK_DWELLS APB knob.
+// SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
+// axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
+${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 
 // Performance profiling

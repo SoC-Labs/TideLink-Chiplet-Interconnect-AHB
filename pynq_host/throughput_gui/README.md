@@ -90,17 +90,67 @@ Configuration (environment, see the unit file):
 bind + `ssh -L` tunnel IS the authentication (same as the siblings —
 the CLI hard-refuses `--host 0.0.0.0`).
 
-## Running a real M→S throughput test
+## Running against the real Z2 pair
 
-1. Stage + deploy a manifested bitstream pair as usual
-   (`deploy_pair.sh`, manifests in `~/tidelink_artefacts/<vNN>/`),
-   converge with `bringup_pair_converge.sh`.
-2. Set `TIDELINK_THROUGHPUT_VERSION=<vNN>` (or type the version in the
-   form), hold the `bridge1` lease (the server acquires one and refuses
-   QUEUED), click *Start run*.
-3. The server probes both dies (criterion-B), runs the delivery proof,
-   then streams windowed samples to the chart over SSE. CSV/NDJSON
-   download links appear when the run lands in the store.
+The pair is **z2_02 (die_a, `192.168.4.101`) ↔ z2_01 (die_b,
+`192.168.2.101`)**. z2_03 (`.6.101`) is a spare and is NOT on the ribbon,
+despite older defaults and docs pointing at it.
+
+### Launch
+
+```bash
+TIDELINK_FPGAHUB_HOST=<lab-host> \
+TIDELINK_BOARD_SSH_JUMP=<lab-host> \
+TIDELINK_TX_BASE=0x84000000 TIDELINK_RXFIFO_BASE=0x84010000 \
+  python3 -m pynq_host.throughput_gui.app --port 8090 \
+    --artefact-dir ~/tidelink_artefacts --artefact-version <vNN>
+```
+
+* `TIDELINK_FPGAHUB_HOST` drives fpgahub leases over ssh, so no Bearer
+  token is stored on disk. Omit it to use the local REST client.
+* `TIDELINK_BOARD_SSH_JUMP` reaches boards through the lab host. The
+  shell tooling (`verify_deployed.sh`, `deploy_pair.sh`, …) doesn't read
+  it, so from a dev box also add a `ProxyCommand` stanza for the board
+  IPs to `~/.ssh/config` — with `ControlMaster=no` on the hop, because
+  multiplexing many board sessions over one connection exhausts sshd's
+  `MaxSessions` and fails as `Session open refused by peer`.
+* **The apertures are mandatory.** Both the golden and v0 Z2 images are
+  GP1-split (`ahb_tx 0x8400_0000`, `rx-fifo 0x8401_0000`, confirmed from
+  each image's `.hwh`). The `0x4400_0000` defaults are unmapped in these
+  images and a write there **SIGBUSes the agent**.
+* Leases are **board-group** scoped (`pynq_z2_02` = `_ps` + `_pl`); the
+  historical single `bridge1` scope no longer exists on the daemon. A
+  pair is two independent leases, acquired all-or-nothing.
+
+### What works today
+
+*Link Monitor* runs against the golden pair as-is: both dies stream
+decoded state, criterion-B, credit gauges, sticky faults, CRC.
+
+*Runs* are admitted only behind provenance → `verify_deployed.sh` →
+criterion-A/B link gate → delivery proof. Everything up to the proof
+passes on the golden pair; **the proof itself currently fails** —
+the packet reaches the Wlink FE but never commits to the peer RX FIFO.
+That is a bring-up gap, not a GUI or image regression: `deploy_pair.sh`'s
+whole post-load write-set is the strap GPIO, while the flows that did
+deliver additionally applied a deskew-anchor recipe, the SYNC beacon, the
+pair-credit seed (now `tl_perf_agent.py --cmd seed`) and the
+`to_data_mode` LL-swreset triplet. `pynq_host/scripts/tl_z2_data_bringup_repro.sh`
+bisects those stages; whichever one first makes the proof pass is the
+step to encode into the orchestrator's bring-up.
+
+> ⚠ Use the **corrected** swreset triplet `0x27f09 → 0x27f01 → 0x27f07`
+> (bit0 `swi_enable` held HIGH). The `…08/…00/…07` form still used by
+> several older scripts holds the FCSM in state 0 and clears
+> `fe_rx_ptr`/`fe_tx_credit_max`, desyncing the credit ring.
+
+### Golden-image provenance
+
+The recovered golden bitstreams have no recorded source commit. Their
+manifests say `"source_commit": "unknown"` on purpose — a fabricated
+commit would silently corrupt any comparison keyed on it, so golden runs
+must not be used as version-comparison datapoints. Use a manifested build
+(e.g. `tl-tp-v0-baseline`) for those.
 
 If a run FAILS with a jam-signature reason, recover with
 `pynq_host/scripts/unjam_fc_node.sh <ip>` on both boards (and/or

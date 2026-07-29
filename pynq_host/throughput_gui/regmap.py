@@ -85,6 +85,36 @@ WLINK_CRC_ERR_ADDR  = WLINK_TIDELINK_NODE + 0x20
 #     which is NOT the same as "no CRC errors".
 WLINK_CRC_ERR_MASK  = 0xFFFF
 
+# ── Data-mode bring-up (the writes deploy_pair.sh does NOT do) ──────────
+#
+# A plain deploy trains the link (fcsm=4, cal=1) but does not make it carry
+# data: its whole post-load write-set is the strap GPIO. The flows that did
+# deliver additionally applied a SYNC beacon, a pair-credit seed and the
+# to_data_mode reset triplet. See
+# pynq_host/scripts/tl_z2_data_bringup_repro.sh for the staged bisect.
+
+# R1b — SYNC beacon, SWI_TRAINING_MODE (Region 8 slot 0).
+#   [2] sync_insert_en  [3] sync_force_always  [4] sync_robust_detect
+SYNC_BEACON_VALUE = 0x1C
+
+# R3 — Wlink Link Registers "Enable/Reset" @ Wlink base + 0x200 + 0x08:
+#   [0] swi_enable  [1] ll_tx_enable  [2] ll_rx_enable  [3] sw_reset
+#   [15:8] max_short_pkt_id (0x7F)   [23:16] preq_data_id (0x02)
+WLINK_LINK_BASE      = WLINK_BASE + 0x200
+R_WLINK_ENABLE_RESET = WLINK_LINK_BASE + 0x08      # abs 0x4403_0208
+
+# ⚠ swi_enable (bit 0) is held HIGH throughout. The ...08/...00/...07 form
+# still used by unjam_fc_node.sh, bringup_pair_converge.sh and
+# sw_coord_autocal_region8.sh drops bit 0, and while swi_enable is low the
+# FCSM is forced to state 0 and fe_rx_ptr / fe_tx_credit_max / exp_pkt_num
+# are HELD CLEARED — desyncing the credit ring and wedging the sender
+# (axi_chiplet_controller.sv:3440-3462). Do not "simplify" these values.
+DATA_MODE_TRIPLET = (
+    0x00027F09,   # swi_enable + sw_reset          (LL tx/rx off)
+    0x00027F01,   # swi_enable, reset released     (LL tx/rx still off)
+    0x00027F07,   # swi_enable + ll_tx_en + ll_rx_en
+)
+
 
 # ── Poll whitelist — the ONLY offsets the monitor loop may read ──────────
 #
@@ -383,8 +413,19 @@ def decode_monitor(raw: dict) -> dict:
 
     v = _get("100")
     if v is not None:
+        # SWI_TRAINING_MODE readback (V2): {robust[4], force[3], insert[2],
+        # recal[1], train[0]}. sync_insert_en is THE beacon signal — it is
+        # what autonomous training-entry sets and what the dead-I2C rig
+        # never reaches (axi_chiplet_controller / tidelink_autoneg:1246).
+        # Golden pins it via a since-fixed bug (R8=0x14); current builds
+        # read R8=0x00 and cannot anchor. Surface it so the monitor shows
+        # the beacon at a glance rather than only in the raw word.
         out["training"] = v & 1
         out["swi_recal"] = (v >> 1) & 1
+        out["sync_insert_en"] = (v >> 2) & 1
+        out["sync_force_always"] = (v >> 3) & 1
+        out["sync_robust_detect"] = (v >> 4) & 1
+        out["beacon_on"] = (v >> 2) & 1
 
     v = _get("108")
     if v is not None:
@@ -475,6 +516,16 @@ def health(dec: dict) -> dict:
     if dec.get("gate_open") and dec.get("mask_hs_match") == 0:
         reasons.append("mask_hs gate open WITHOUT a match — gate forced, "
                        "autonomy not genuine")
+    # A trained link (cal+fcsm healthy) with the SYNC beacon OFF cannot
+    # carry data: no sync words are inserted, so no lane anchors and no
+    # word reassembles. This is the exact bridge1 dead-I2C signature —
+    # autonomous training-entry never set sync_insert_en. The fix is RTL
+    # (TRAIN_ENTRY_FALLBACK); do NOT read criterion-B as "delivers".
+    if "beacon_on" in dec and dec["beacon_on"] == 0:
+        reasons.append("SYNC beacon OFF (R8 sync_insert_en=0) — link is "
+                       "trained but cannot carry data; autonomous "
+                       "training-entry did not complete (dead-I2C rig, "
+                       "see TRAIN_ENTRY_FALLBACK)")
 
     criterion = None
     if cal == 1 and dec.get("lock_count") == 8:

@@ -50,7 +50,7 @@ never copy-modify upstream, per the standing rule).
   │ Zynq-MP PS  (Cortex-A53, Linux)                │            │ Zynq-MP PS  (Cortex-A53, Linux)                │
   │   devmem / driver  ── AXI HPM ──┐              │            │              ┌── AXI HPM ── devmem / driver     │
   └─────────────────────────────────┼──────────────┘            └──────────────┼─────────────────────────────────┘
-                                    │ PS→PL (ctrl 0x8000_0000,                 │
+                                    │ PS→PL (ctrl 0x4_0000_0000,               │
                                     │        data 0xA400_0000,                 │
                                     │        APB  0x8403_xxxx)                 │
   ┌─────────────────────────────────┼──────────────┐            ┌──────────────┼─────────────────────────────────┐
@@ -101,7 +101,7 @@ Consistent with `WEEKEND_PLAN`, STATUS_LIVE canaries, and the KR260 port memory.
 
 | PS address | What | Notes |
 |---|---|---|
-| `0x8000_0000` | TideLink **control** (AXI-Lite / status) | ctrl plane relocated here by `tl_socmap` (commit 63540e3) to dodge an AXI-hang trap |
+| `0x4_0000_0000` | TideLink chiplet **backdoor** window (PS→PL via `eth_ss_0`; SoC addr *A* reached at base + *A*) | HPM0_FPD **high** aperture on the built `kr260-eth-chiplet` bitstream — `tidelink.hwh` MEMRANGE `0x4_0000_0000`–`0x4_FFFF_FFFF`, master `M_AXI_HPM0_FPD`. (The old `0x8000_0000` / `tl_socmap` note was the standalone target's low LPD aperture.) |
 | `0x8400_0000` | GP1 **data TX** aperture (→ `ahb_tx`) | wedge hazard if link down |
 | `0x8401_0000` | GP1 **data RX FIFO** (→ `ahb_fifo`) | local RX FIFO read window |
 | `0x8402_0000` | PTP TX write port (→ `ahb_ptp`) | |

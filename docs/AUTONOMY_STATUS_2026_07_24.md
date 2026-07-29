@@ -96,6 +96,53 @@ previously it hardcoded both straps to `1'b1`, so that env could never test the 
 
 ---
 
+## 4b. Later the same day — the F3 story was re-analysed and CORRECTED
+
+Two claims in §3 above were overstated, and the correction changed the fix:
+
+**`role_locked` is a MUTUAL CLOCK ENABLE, not merely a reset.** `wlink_por_reset` (`:2832`) gates
+this die's forwarded `pad_clk_tx` — which *is* the peer's `pad_clk_rx` — so a die that never locks
+silences the **peer's entire RX clock domain** (chain verified through `Wlink.v:2071` →
+`WlinkGPIOPHY_v2.v:358` → `WavD2DGpio_v2.v:1979` → `WavD2DGpioTx.v:322-341`). The two dies' lock
+times are not independent variables. Nothing in Wlink or the PHY consumes the *role* at all.
+
+**F3's real effect was stagger collapse, not lateness.** The verdict lands ~**3.1 ms** after the
+free-pass lock instant (17 I²C bytes at 50 kHz). There is no ms-scale deadline anywhere (autoneg
+timeout 5.24 s; `TRAIN_POLL_PEER` ~18 ms) — so the sensitive machinery is the CR/CRACK exchange,
+whose own in-code fix is calibrated in *tens of link clocks*. `WlinkGenericFCSM_6.v:602-618`
+documents that symmetric deadlock and names its signature `a[fcsm=4] b[fcsm=2]` — exactly what the
+F3 build measured.
+
+**A hazard F3 would have shipped.** On the I²C-NACK fallback (`nego_force_lock`, in the shipped
+`NEGO_CFG=0x61`) the losing die never receives a verdict, so under F3 it never locks and
+**permanently gates its own PHY clock — killing the peer's RX clock too**. A degraded-but-alive
+fallback becomes a hard, bilateral, unrecoverable dead link. The free pass is what makes that
+fallback work.
+
+**Evidence caveat (correcting §3):** the F3 A/B was **N=1 vs N=1** on a vehicle with a documented
+bring-up lottery. "F3 causes `fcsm=2`" is the best-fit hypothesis, **not statistically safe**.
+Settling it needs per-die, per-POR attribution (`0x21A8` OBS_FCSMCAP + CR/CRACK sticky bits), ≥20
+PORs across three arms including an F1-only rebuilt negative control, and a ≥25k soak.
+**Simulation cannot arbitrate — sim passed the broken version.**
+
+### Adopted instead: move the integrity boundary off the clock enable (`c179660`)
+
+`mask_hs_verified_reg` — sticky, POR-only, set **only** by a genuine `mask_hs_match` (never
+`mask_hs_bypass_i`, never `nego_lost_w`), mirrored in **`OBS_MASK_HS[23]`** — now gates entry to
+autonomous **RETIRE**. This is the property F3 was reaching for, but it fails closed *recoverably
+and observably* instead of by bricking a clock. Bring-up timing is untouched: `role_lock`,
+`wlink_por_reset` and `autonomy_armed` all latch exactly as before. `autonomy_armed` is deliberately
+**not** gated — it feeds `fch_pending`/`ws_kick` sequencing, so gating it would re-introduce a
+stagger collapse.
+
+`cocotb/honest_mask_hs` MODE=default was also **inverted**: it had been *asserting the defect*
+(`gate_open==1` with `match==0`). Post-F2b the correct expectation is a closed gate, and the shipped
+posture now achieves debug-unlocked **and** handshake-honest simultaneously — previously unreachable.
+(That inversion was nearly missed: a stale per-mode `SIM_BUILD` dir produced a false PASS —
+`rm -rf sim_build` does **not** clear `sim_build_default`.)
+
+---
+
 ## 5. Open items
 
 1. **ASIC APB-debug posture.** F2b is shared RTL, so the tapeout gate is honest too.

@@ -23,6 +23,17 @@
   `define RFS_PARAM , .ROLE_FROM_STRAP (`ROLE_FROM_STRAP)
 `endif
 
+// Training-entry fallback test (2026-07-25). Defaults leave the ROLE test
+// bit-identical: train_auto_en OFF (the FSM never enters training) and
+// TRAIN_ENTRY_FALLBACK=0 (= the module default). The training test sets
+// TB_TRAIN_AUTO_EN=1 and TB_TRAIN_FALLBACK=1/0 for its A/B.
+`ifndef TB_TRAIN_AUTO_EN
+  `define TB_TRAIN_AUTO_EN 1'b0
+`endif
+`ifndef TB_TRAIN_FALLBACK
+  `define TB_TRAIN_FALLBACK 1'b0
+`endif
+
 module tb_top (
     input  logic clk,
     input  logic poresetn,
@@ -41,13 +52,15 @@ module tb_top (
     // observation
     output logic a_role_value, a_set_role_cfg, a_done, a_lost, a_role_r,
     output logic b_role_value, b_set_role_cfg, b_done, b_lost, b_role_r,
-    output logic [3:0] a_state, b_state
+    output logic [4:0] a_state, b_state,
+    output logic a_train_set, b_train_set
 );
 
     // ------------------------------------------------------------------ die_a
     tidelink_autoneg #(
         .NEGO_BASE_DELAY (200)                // short backoff for a fast test
         `RFS_PARAM
+        , .TRAIN_ENTRY_FALLBACK (`TB_TRAIN_FALLBACK)
     ) u_die_a (
         .clk(clk), .poresetn(poresetn),
         .nego_en(nego_en), .nego_start(nego_start),
@@ -68,10 +81,10 @@ module tb_top (
         .sda_start_seen(), .nego_error_irq(),
         .mask_hs_auto_en(1'b0), .local_tx_lane_mask_i(8'hFF), .local_rx_lane_mask_i(8'hFF),
         .peer_tx_lane_mask_o(), .peer_rx_lane_mask_o(), .mask_hs_local_match(), .mask_hs_local_fail(),
-        .train_auto_en(1'b0), .train_sw_step(1'b0), .train_retrain_req(1'b0),
+        .train_auto_en(`TB_TRAIN_AUTO_EN), .train_sw_step(1'b0), .train_retrain_req(1'b0),
         .train_poll_timeout(4'd0), .train_fsm_wait_hi(8'd0),
         .local_swi_lane_locked_i(8'd0), .local_swi_lane_fault_i(8'd0), .local_calibration_done_i(1'b0),
-        .local_training_mode_set(), .local_training_mode_clr(), .local_swreset_pulse(),
+        .local_training_mode_set(a_train_set), .local_training_mode_clr(), .local_swreset_pulse(),
         .train_state_o(), .train_ok_o(), .train_fail_o(), .train_in_progress_o(),
         .train_peer_nack_o(), .train_peer_lane_locked_o(), .train_peer_lane_fault_o(),
         .train_local_lane_fault_o(), .train_fail_irq_o()
@@ -81,6 +94,7 @@ module tb_top (
     tidelink_autoneg #(
         .NEGO_BASE_DELAY (200)
         `RFS_PARAM
+        , .TRAIN_ENTRY_FALLBACK (`TB_TRAIN_FALLBACK)
     ) u_die_b (
         .clk(clk), .poresetn(poresetn),
         .nego_en(nego_en), .nego_start(nego_start),
@@ -101,10 +115,10 @@ module tb_top (
         .sda_start_seen(), .nego_error_irq(),
         .mask_hs_auto_en(1'b0), .local_tx_lane_mask_i(8'hFF), .local_rx_lane_mask_i(8'hFF),
         .peer_tx_lane_mask_o(), .peer_rx_lane_mask_o(), .mask_hs_local_match(), .mask_hs_local_fail(),
-        .train_auto_en(1'b0), .train_sw_step(1'b0), .train_retrain_req(1'b0),
+        .train_auto_en(`TB_TRAIN_AUTO_EN), .train_sw_step(1'b0), .train_retrain_req(1'b0),
         .train_poll_timeout(4'd0), .train_fsm_wait_hi(8'd0),
         .local_swi_lane_locked_i(8'd0), .local_swi_lane_fault_i(8'd0), .local_calibration_done_i(1'b0),
-        .local_training_mode_set(), .local_training_mode_clr(), .local_swreset_pulse(),
+        .local_training_mode_set(b_train_set), .local_training_mode_clr(), .local_swreset_pulse(),
         .train_state_o(), .train_ok_o(), .train_fail_o(), .train_in_progress_o(),
         .train_peer_nack_o(), .train_peer_lane_locked_o(), .train_peer_lane_fault_o(),
         .train_local_lane_fault_o(), .train_fail_irq_o()

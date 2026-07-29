@@ -62,7 +62,20 @@ module WlinkGenericFCSM_1(
   //   SOCL_REACK_THRESHOLD    : periodic re-ACK idle window      (Fix E)
   // ===========================================================================
   localparam [7:0]  SOCL_L6_MIN_CR_EMITS    = 8'd32;
-  localparam [7:0]  SOCL_L7_MIN_CRACK_EMITS = 8'd32;
+  // SoC Labs I1 (silicon-feedback P1, 2026-07-29): the state-2 CRACK-emit gate
+  // hard-set to 8'd32 STALLS this AXI FC node in state 2 at the ~40 ns silicon
+  // link:app clock ratio -- the 112-bit AXI CRACK cadence never racks up 32
+  // mutual emits before the peer leaves state 2, so socl_l7_crack_release never
+  // fires (no LINK_IDLE => all-zeros both dirs). Lowered to the default below,
+  // which reproducibly clears state 2 at ref=40 ns in the
+  // cocotb/tidelink_fcsm_silicon_ratio regression while preserving Fix-C's
+  // byte-align hold (still >> the 1-2 CRACK emits a glitch-free peer needs).
+  // Compile-overridable so the sim repro can restore the failing 32
+  // (+define+SOCL_L7_MIN_CRACK_EMITS_VAL=32) and future ratios can retune.
+`ifndef SOCL_L7_MIN_CRACK_EMITS_VAL
+ `define SOCL_L7_MIN_CRACK_EMITS_VAL 8
+`endif
+  localparam [7:0]  SOCL_L7_MIN_CRACK_EMITS = `SOCL_L7_MIN_CRACK_EMITS_VAL;
   localparam [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000;
   localparam [15:0] SOCL_REACK_THRESHOLD    = 16'h0100;
 `ifdef RANDOMIZE_REG_INIT

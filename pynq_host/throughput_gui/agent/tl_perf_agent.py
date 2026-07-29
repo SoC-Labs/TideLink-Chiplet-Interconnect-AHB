@@ -632,8 +632,15 @@ class _FakeMem(object):
             # marker 0xFC + healthy credit_max=0x1F (CLASSIC jam keeps
             # fe_full=0 by definition, so the full bit stays clear)
             return (0xFC << 24) | (0 << 16) | (0x07 << 8) | 0x1F
+        if addr == R_WLINK_ENABLE_RESET:
+            return getattr(self, '_wlink_en', 0x00027F07)
         if addr == R_TRAINING:
-            return 0
+            # Healthy default models a DELIVERING link: beacon on
+            # (sync_insert_en|sync_robust = 0x14, as golden), training-mode
+            # bit CLEAR. A fake that anchors (sync_detected>0, epoch
+            # anchored) but read R8=0 would be self-contradictory — beacon
+            # off means no lane can anchor. cmd_syncbeacon overwrites this.
+            return getattr(self, '_training', 0x14)
         if addr == R_PHY_ID:
             # 0x11C is PHY_ALIGN_ID, a CONSTANT block-presence marker
             # (axi_chiplet_controller.sv:2684, docs/REGISTER_MAP.md:223) —
@@ -696,6 +703,12 @@ class _FakeMem(object):
             self._flush_pend()             # packet hits the wire
             self._regen()
             self._pair_credits = max(0.0, self._pair_credits - val)
+            return
+        if addr == R_WLINK_ENABLE_RESET:
+            self._wlink_en = val & 0xFFFFFFFF
+            return
+        if addr == R_TRAINING:
+            self._training = val & 0xFFFFFFFF
             return
         if addr == R_RELEASED_ACC:
             # W-add: bumps PAIR_CREDIT_COUNTER (and the acc, which the
@@ -1092,6 +1105,60 @@ def cmd_seed(mem, n):
            "pair_credits": mem.rd(R_PAIR_CREDIT)})
 
 
+# ── Data-mode bring-up (host-side twin: regmap.py) ───────────────────────
+# A plain deploy trains the link but does not make it carry data. These are
+# the writes the working July flows did and deploy_pair.sh does not.
+
+SYNC_BEACON_VALUE = 0x1C             # [2] insert_en [3] force_always [4] robust
+WLINK_BASE = 0x44030000
+R_WLINK_ENABLE_RESET = WLINK_BASE + 0x208
+DATA_MODE_TRIPLET = (0x00027F09, 0x00027F01, 0x00027F07)
+
+
+def cmd_syncbeacon(mem):
+    """R1b: turn on the SYNC beacon (SWI_TRAINING_MODE 0x100 = 0x1C).
+
+    Documented bring-up write (docs/CRC_ROOTCAUSE.md:128). Bit [0]
+    (training_mode) is deliberately NOT set — this enables sync insertion,
+    it does not put the PHY back into training.
+    """
+    mem.wr(R_TRAINING, SYNC_BEACON_VALUE)
+    mem.barrier()
+    rb = mem.rd(R_TRAINING)
+    _emit({"sync_beacon": "0x%08x" % SYNC_BEACON_VALUE,
+           "readback": "0x%08x" % rb,
+           "sync_insert_en": (rb >> 2) & 1,
+           "sync_force_always": (rb >> 3) & 1,
+           "sync_robust_detect": (rb >> 4) & 1,
+           "training_mode": rb & 1})
+
+
+def cmd_datamode(mem):
+    """R3: the to_data_mode LL-swreset triplet at 0x4403_0208.
+
+    swi_enable (bit 0) is held HIGH through all three writes. The
+    ...08/...00/...07 form used by several older scripts drops it, and
+    while swi_enable is low the FCSM is forced to state 0 and fe_rx_ptr /
+    fe_tx_credit_max / exp_pkt_num are HELD CLEARED — which desyncs the
+    credit ring and wedges the sender
+    (axi_chiplet_controller.sv:3440-3462). Do not "simplify" these values.
+
+    NOTE: this is the one command here that writes OUTSIDE the TideLink
+    APB half. The Wlink half has no bus-stall timeout, so a wedged
+    sub-slave can pin pready — same caveat as the CRC read.
+    """
+    seq = []
+    for val in DATA_MODE_TRIPLET:
+        mem.wr(R_WLINK_ENABLE_RESET, val)
+        mem.barrier()
+        time.sleep(0.01)
+        seq.append("0x%08x" % val)
+    rb = mem.rd(R_WLINK_ENABLE_RESET)
+    _emit({"data_mode": seq, "readback": "0x%08x" % rb,
+           "swi_enable": rb & 1, "ll_tx_enable": (rb >> 1) & 1,
+           "ll_rx_enable": (rb >> 2) & 1, "sw_reset": (rb >> 3) & 1})
+
+
 # ── Measurement roles (GO-barrier protocol) ──────────────────────────────
 
 def _wait_go():
@@ -1261,7 +1328,8 @@ def main():
     ap.add_argument("--fake", action="store_true",
                     help="DEV MODE: in-process die model, no /dev/mem")
     ap.add_argument("--cmd",
-                    help="one-shot: probe|send4|catch|setthr|seed|monitor")
+                    help="one-shot: probe|send4|catch|setthr|seed|"
+                         "syncbeacon|datamode|monitor")
     ap.add_argument("--args", nargs="*", default=[])
     ap.add_argument("--perf", action="store_true",
                     help="monitor: also sample the Phase-B perf window")
@@ -1282,6 +1350,10 @@ def main():
             cmd_send4(mem)
         elif ns.cmd == "catch":
             cmd_catch(mem, int(ns.args[0]), float(ns.args[1]))
+        elif ns.cmd == "syncbeacon":
+            cmd_syncbeacon(mem)
+        elif ns.cmd == "datamode":
+            cmd_datamode(mem)
         elif ns.cmd == "seed":
             cmd_seed(mem, ns.args[0])
         elif ns.cmd == "setthr":

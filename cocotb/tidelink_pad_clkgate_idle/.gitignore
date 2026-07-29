@@ -1,0 +1,8 @@
+sim_build*/
+results.xml
+*.log
+waves.vcd
+*.fsdb
+novas*
+verdiLog/
+ucli.key

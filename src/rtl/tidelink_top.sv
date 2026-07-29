@@ -1335,7 +1335,7 @@ module tidelink_top #(
     // 2^16 hclk (~2.6 ms @ 25 MHz FPGA rig, ~14 ms @ 4.7 MHz) is orders beyond a
     // legitimate slow-but-progressing window round-trip: the counter RESETS every
     // time the front-end stops stalling (i.e. on every completed beat — see
-    // ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
+    // sub_ext_stalled), so a long healthy burst never accumulates; ONLY a single beat
     // held stalled continuously past the timeout (a genuine wedge) can trip it.
     //
     // NO COMB LOOP (this is the load-bearing invariant that cb33c9f established):
@@ -1351,8 +1351,19 @@ module tidelink_top #(
 `else
     localparam int SUB_STALL_TIMEOUT_LOG2 = 16;   // ~2^16 hclk; see rationale above
 `endif
-    logic [SUB_STALL_TIMEOUT_LOG2:0] sub_stall_ctr_r;
-    logic                            sub_err1_r, sub_err2_r;
+    // I5 (2026-07-29): a SEPARATE timeout for the outstanding-response backstop
+    // (below). Sized independently of the per-beat stall timer so it tracks the
+    // whole-transaction round-trip, and so a sim can trip exactly ONE of the two
+    // backstops to prove which fired. Same 2^16 default rationale as above.
+`ifdef TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2
+    localparam int SUB_OUTSTANDING_TIMEOUT_LOG2 = `TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2;
+`else
+    localparam int SUB_OUTSTANDING_TIMEOUT_LOG2 = 16;
+`endif
+    logic [SUB_STALL_TIMEOUT_LOG2:0]       sub_stall_ctr_r;
+    logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] sub_osr_ctr_r;
+    logic                                  sub_rd_os_r, sub_wr_os_r;
+    logic                                  sub_err1_r, sub_err2_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
     // wedges the PS — XHB500 holding its data phase low while it waits on the
@@ -1365,9 +1376,38 @@ module tidelink_top #(
     // 2-cycle ERROR response so one wedged transfer is counted exactly once.
     wire sub_stall_fill    = ext_is_nonseq && !pipe_valid_r;
     wire sub_stall_busy    = !xhb_sub_hreadyout_raw;
-    wire ext_stalled       = (sub_stall_fill || sub_stall_busy)
+    // NOTE 2026-07-29: renamed from `ext_stalled` — that name is ALSO declared at
+    // module scope for the APB ext-timeout (search "wire ext_stalled" ~line 896).
+    // Two same-scope `wire ext_stalled` decls are a redeclaration hazard the
+    // language servers flag and VCS resolves ambiguously; the unique name keeps
+    // this per-beat backstop cleanly independent of the APB one.
+    wire sub_ext_stalled   = (sub_stall_fill || sub_stall_busy)
                              && !sub_err1_r && !sub_err2_r;
     wire sub_stall_expired = sub_stall_ctr_r[SUB_STALL_TIMEOUT_LOG2];
+
+    // ── I5 (2026-07-29): outstanding-response backstop (HREADYOUT-BLIND) ───────
+    // The mechanism above only accumulates while xhb_sub_hreadyout_raw is LOW. A
+    // peer response that is LOST — the AR/AW was accepted onto the XHB500 s_axi
+    // channel and crossed the link, but the returning R(last)/B beat never comes
+    // back — can leave ahb_sub_hreadyout HIGH (a posted write, or the bridge
+    // parking 'ready' between beats). Then sub_stall_busy reads 0, sub_ext_stalled
+    // deasserts, and the per-beat counter keeps RESETTING, so the wedge is never
+    // timed out and the PS hangs exactly as in the LOW case this backstop was
+    // built for. Track the transaction outstanding on the s_axi handshakes
+    // directly and time it out regardless of hreadyout.
+    //
+    // NO COMB LOOP (same invariant as above): every term derives ONLY from the
+    // XHB500 s_axi handshakes (driven by the bridge FSM from xhb_sub_hready, which
+    // is pipe_valid_r/ext_is_nonseq/xhb_sub_hreadyout_raw — never ahb_sub_hready)
+    // and from registers, and it feeds ONLY the registered sub_err{1,2}_r. So
+    // ahb_sub_hreadyout gains no combinational dependence on ahb_sub_hready.
+    wire sub_ar_accept       = s_axi_arvalid & s_axi_arready;
+    wire sub_aw_accept       = s_axi_awvalid & s_axi_awready;
+    wire sub_r_done          = s_axi_rvalid  & s_axi_rready & s_axi_rlast;
+    wire sub_b_done          = s_axi_bvalid  & s_axi_bready;
+    wire sub_axi_outstanding = sub_rd_os_r | sub_wr_os_r;
+    wire sub_axi_progress    = sub_r_done | sub_b_done;
+    wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
@@ -1405,23 +1445,53 @@ module tidelink_top #(
         end
     end
 
-    // Stall-timeout counter + 2-cycle AHB ERROR sequencer (registered; driven
+    // Stall-timeout counters + 2-cycle AHB ERROR sequencer (registered; driven
     // off hclk; never combinationally dependent on ahb_sub_hready — see above).
+    // TWO independent backstops feed the SAME 2-cycle ERROR sequencer:
+    //   (1) per-beat HREADYOUT-low stall  (sub_stall_ctr_r / sub_stall_expired)
+    //   (2) I5 outstanding-response wedge (sub_osr_ctr_r  / sub_osr_expired)
+    // Either expiry drives sub_err1_r; sub_err1_r is a register with a single
+    // always_ff driver, so multiple `<= 1'b1` assignments below simply OR.
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             sub_stall_ctr_r <= '0;
+            sub_osr_ctr_r   <= '0;
+            sub_rd_os_r     <= 1'b0;
+            sub_wr_os_r     <= 1'b0;
             sub_err1_r      <= 1'b0;
             sub_err2_r      <= 1'b0;
         end else begin
             sub_err2_r <= sub_err1_r;   // ERROR cycle 2 follows cycle 1
             sub_err1_r <= 1'b0;         // default: one-shot
-            if (!ext_stalled) begin
+
+            // (1) per-beat HREADYOUT-low stall
+            if (!sub_ext_stalled) begin
                 sub_stall_ctr_r <= '0;                 // resets every completed beat
             end else if (sub_stall_expired) begin
                 sub_stall_ctr_r <= '0;
                 sub_err1_r      <= 1'b1;               // fire the ERROR response
             end else begin
                 sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
+            end
+
+            // (2) I5 outstanding-response backstop. Track a sub read/write in
+            // flight on the XHB500 s_axi channel: SET on an accepted AR/AW, CLEAR
+            // on its returning R(last)/B. This is oblivious to ahb_sub_hreadyout,
+            // so it catches the lost-response wedge the per-beat timer is blind to.
+            if (sub_ar_accept)   sub_rd_os_r <= 1'b1;
+            else if (sub_r_done) sub_rd_os_r <= 1'b0;
+            if (sub_aw_accept)   sub_wr_os_r <= 1'b1;
+            else if (sub_b_done) sub_wr_os_r <= 1'b0;
+
+            if (!sub_axi_outstanding || sub_axi_progress) begin
+                sub_osr_ctr_r <= '0;                   // idle, or a beat retired
+            end else if (sub_osr_expired) begin
+                sub_osr_ctr_r <= '0;
+                sub_err1_r    <= 1'b1;                 // same 2-cycle ERROR
+                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn
+                sub_wr_os_r   <= 1'b0;                 // so it cannot re-trip us
+            end else begin
+                sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
             end
         end
     end
@@ -1442,13 +1512,38 @@ module tidelink_top #(
     wire                    xhb_sub_hready = pipe_valid_r ? xhb_sub_hreadyout_raw :
                                              (ext_is_nonseq ? 1'b0 : xhb_sub_hreadyout_raw);
 
-    // External hreadyout: stall upstream during the pipeline fill cycle. The
-    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when the
-    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — both are
-    // registers, so no combinational dependence on ahb_sub_hready is introduced.
+    // ── I2 (2026-07-29): peer-READ pipe-offset mask ───────────────────────────
+    // The ahb_sub address pipeline presents the address to the XHB500 bridge one
+    // cycle late, so on the master's FIRST data-phase cycle the bridge is still in
+    // its RESP_FSM_IDLE_BUSY state, where hreadyout is 1 ("ready to accept an
+    // address"). A real AHB master reads that as its READ completing and captures
+    // STALE hrdata one cycle before the bridge has even issued the AXI read. Hold
+    // the master-facing hreadyout low for that single pipe-offset cycle on a read,
+    // so the master waits until the bridge is genuinely returning data
+    // (RESP_FSM_SEQ_NSEQ, hreadyout = r_done). Writes never set this (hwrite=1).
+    // This masks ONLY the master-facing hreadyout, not xhb_sub_hready into the
+    // bridge, so the bridge advances normally — no desync. Found by the two-real-
+    // SoC g2_soc_pair read round-trip (a zero-latency far-side memory hides it).
+    // Upstreamed from nanosoc-ethernet-chiplet patch 0003.
+    logic rd_pipe_r;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            rd_pipe_r <= 1'b0;
+        else if (ext_is_nonseq && !ahb_sub_hwrite && !pipe_valid_r)
+            rd_pipe_r <= 1'b1;   // a read's address was just latched into the pipe
+        else
+            rd_pipe_r <= 1'b0;   // one cycle only
+    end
+
+    // External hreadyout: stall upstream during the pipeline fill cycle, and for
+    // one further cycle on a read (the bridge IDLE-state hreadyout leak, I2). The
+    // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when either
+    // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — sub_err{1,2}_r and
+    // rd_pipe_r are registers, so no combinational dependence on ahb_sub_hready.
     assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
                                sub_err2_r ? 1'b1 :
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
+                               rd_pipe_r                        ? 1'b0 :
                                xhb_sub_hreadyout_raw;
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)

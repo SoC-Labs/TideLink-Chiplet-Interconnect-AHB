@@ -82,7 +82,13 @@ case "$MODE" in
         pl=${KR260_XFER_PAYLOAD:-0xC0FFEE01}
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode --payload $pl --iters ${KR260_XFER_ITERS:-500}"
         ;;
+    tc_status|tc_prep|tc_elect|tc_enum|tc_route|tc_telemetry|tc_reset)
+        # TideChart (chiplet identity/routing bootstrap) via kr260_tidechart.py.
+        # tc_elect must run on BOTH boards together. peer id via KR260_TC_PEER_ID.
+        tcmode=${MODE#tc_}
+        SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_tidechart.py --mode $tcmode --peer-id ${KR260_TC_PEER_ID:-0} --sync-at ${KR260_TC_SYNC_AT:-0}"
+        ;;
     *)
-        echo "ERROR: MODE must be status|bringup|xfer_send|xfer_recv|xfer_readback|xfer_link (got '$MODE')." >&2
+        echo "ERROR: unknown MODE '$MODE' (status|bringup|xfer_*|tc_*)." >&2
         exit 2 ;;
 esac

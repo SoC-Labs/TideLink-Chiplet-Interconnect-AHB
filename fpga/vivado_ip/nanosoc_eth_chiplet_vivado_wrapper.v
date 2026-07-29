@@ -27,17 +27,23 @@
 // synth and the BD see a clean boundary. With no PHY fitted, leave the RMII
 // pins unconnected and run the MAC in internal loopback as before.
 //
-// KNOWN GAP (finding G1): DEVICE_CLASS is not a nanosoc_eth_chiplet parameter
-// (it lives in the internal tidechart_shim). Per-die DEVICE_CLASS strapping to
-// close the dual-root election therefore needs a one-line RTL change in the
-// parent repo to surface it. Until then, pin die_a grandmaster by strap and do
-// NOT rely on auto-election. role_strap_i is the wired-out per-die strap.
+// FINDING G1 (surfaced 2026-07-29): DEVICE_CLASS is now a parameter of both this
+// wrapper and nanosoc_eth_chiplet, threaded to the internal tidechart_shim. The
+// two build targets strap it per die (die_a=0x0001 < die_b=0x0002) via
+// CONFIG.DEVICE_CLASS for DETERMINISTIC grandmaster election, replacing the old
+// 0x0001-on-both dual-root. role_strap_i remains the per-die role strap.
+// NOTE: election also needs the tidechart-side fixes (force_root unwired, reset
+// not clearing election_done) — see docs/TIDECHART_TEST_PLAN.md; this closes the
+// determinism half. Takes effect only after a rebuild.
 //-----------------------------------------------------------------------------
 
 `timescale 1ns/1ps
 
 module nanosoc_eth_chiplet_vivado_wrapper #(
-    parameter NUM_PHY_LANES = 8
+    parameter NUM_PHY_LANES = 8,
+    // Per-die TideChart device class (G1). Packaged as CONFIG.DEVICE_CLASS; the
+    // build targets set die_a=0x0001 (< die_b=0x0002) for deterministic election.
+    parameter [15:0] DEVICE_CLASS = 16'h0001
 )(
     // =========================================================================
     // Clocks and Resets
@@ -159,7 +165,8 @@ module nanosoc_eth_chiplet_vivado_wrapper #(
     // -------------------------------------------------------------------------
 
     nanosoc_eth_chiplet #(
-        .NUM_PHY_LANES (NUM_PHY_LANES)
+        .NUM_PHY_LANES (NUM_PHY_LANES),
+        .DEVICE_CLASS  (DEVICE_CLASS)
     ) u_chiplet (
         // Clocks / resets
         .sys_fclk            (sys_fclk),

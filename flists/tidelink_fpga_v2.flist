@@ -280,11 +280,11 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 // Matches silicon-proven integ. (The L7 hardening, if wanted, needs its threshold fixed for the
 // silicon ratio — a SEPARATE item, must not ship breaking link-up.) FCSM_5 already deps; _6 override
 // (L6 producer-side fix) is correct and kept.
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 // SoC Labs L6 producer-side fix 2026-05-26: WlinkGenericFCSM_6.v REPLACED by
 // local override. Adds socl_l6_cr_emit_count counter + gate on _GEN_34 (state

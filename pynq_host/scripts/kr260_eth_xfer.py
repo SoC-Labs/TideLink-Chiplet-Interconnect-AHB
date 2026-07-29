@@ -75,6 +75,18 @@ REG_OBS_FC_CREDIT = _TLAPB + 0x219C   # RO far-end credit observation
 STATUS_STICKY_MASK = 0xE              # bits [3:1]
 SRAM_PEER_BASE    = 0x2F001000   # peer-aperture window for the soak (CAM 0x2F->0x2D)
 
+# --- per-node Wlink FC health (the nodes that wedge; NOT seen by OBS_FC_CREDIT) --
+# Node bases are offsets from _TLAPB; per-node regs +0x08/+0x10/+0x20 (REGISTER_MAP
+# §2.3). The AXI data nodes (AW/W/B/AR/R) are the recovery-stripped ones on current
+# silicon (docs/CROSS_DIE_WEDGE_ROOTCAUSE.md) — poll these BETWEEN transfers: rising
+# CRC on B/R = bit error (drift/eye); a stuck non-empty Ack/Nack FIFO = credit/ACK
+# stall (the FCSM-recovery gap).
+FC_NODES = (("AW", 0x1000), ("W", 0x1100), ("B", 0x1200), ("AR", 0x1300),
+            ("R", 0x1400), ("GenBus", 0x1600), ("TideLink", 0x1700))
+FC_TXFIFO  = 0x08   # [0] FIFO empty
+FC_ACKNACK = 0x10   # [0]empty [1]full [2]halffull [3]almostempty [4]almostfull
+FC_CRC     = 0x20   # [15:0] CRC error count (RO)
+
 
 def _mm(phys):
     page = phys & ~0xFFF
@@ -216,6 +228,31 @@ def do_soak(iters, payload, readback=False):
     return 0 if ok else 1
 
 
+def do_fc_health():
+    """Read the per-node Wlink FC health (RO, safe). Poll BETWEEN cross-die
+    transfers on an attended session to pin which node wedges. Also validates the
+    FCSM-recovery fix when it lands (CRC errors counted but link recovers)."""
+    print("=== Wlink per-node FC health (RO) — the AXI data nodes are the wedge-prone ones ===")
+    print("  node      CRC_errs  AckNack(E/F/HF)  TXfifo_empty")
+    worst_crc = 0
+    stuck = []
+    for name, base in FC_NODES:
+        tx = rd(WINDOW_BASE + _TLAPB + base + FC_TXFIFO)
+        an = rd(WINDOW_BASE + _TLAPB + base + FC_ACKNACK)
+        crc = rd(WINDOW_BASE + _TLAPB + base + FC_CRC) & 0xFFFF
+        empty, full, half = an & 1, (an >> 1) & 1, (an >> 2) & 1
+        worst_crc = max(worst_crc, crc)
+        # an Ack/Nack FIFO that is non-empty (and not draining) on an AXI data node
+        # is the credit/ACK-stall signature.
+        if name in ("AW", "W", "B", "AR", "R") and not empty:
+            stuck.append(name)
+        print("  %-8s  %6d    %d/%d/%d            %d"
+              % (name, crc, empty, full, half, tx & 1))
+    print("  worst CRC=%d; AXI nodes with non-empty Ack/Nack FIFO: %s"
+          % (worst_crc, ",".join(stuck) if stuck else "none"))
+    return 0
+
+
 def _mbox_words(payload):
     return [(payload + i) & 0xFFFFFFFF for i in range(4)]
 
@@ -272,7 +309,7 @@ def main():
                                  "TideLink link (PS-side, eth_ss_0 backdoor).")
     ap.add_argument("--mode", required=True,
                     choices=("sender", "recv", "readback", "link",
-                             "mbox_send", "mbox_recv", "soak"),
+                             "mbox_send", "mbox_recv", "soak", "fc_health"),
                     help="sender=die_a CAM+write (SRAM); recv=die_b read local SRAM; "
                          "readback=die_a read over link; mbox_send=die_a mailbox "
                          "write (CAM 0x2F->0x23); mbox_recv=die_b read local "
@@ -309,6 +346,8 @@ def main():
         return do_mbox_recv(payload)
     if args.mode == "soak":
         return do_soak(args.iters, payload, args.soak_readback)
+    if args.mode == "fc_health":
+        return do_fc_health()
     return 4
 
 

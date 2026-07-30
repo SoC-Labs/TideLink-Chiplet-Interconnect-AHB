@@ -176,6 +176,19 @@ module tidelink_dft_wrapper #(
     // ASIC keeps this at 1'b1 (path FUNCTIONAL). TWIN 2 is closed in
     // tidelink_fifo_ctrl by QUALIFYING the write-side arm, not by this gate.
     parameter bit ENABLE_AHB_WRITE = 1'b1,
+    // v1 PL-side TX traffic generator (docs/TXGEN_V1_DESIGN.md §Inertness).
+    // FPGA-ONLY benchmark instrument: its FSM AND the 2:1 mux on the ahb_tx
+    // critical path must be STRUCTURALLY ABSENT from the tapeout netlist —
+    // "the block AND the mux are absent ⇒ the ASIC netlist is provably
+    // identical". tidelink_top defaults TXGEN_PRESENT=1'b1 (for the FPGA
+    // wrapper, which inherits it); this ASIC/tapeout top forces it 1'b0 —
+    // SAME idiom as USE_IDELAY / USE_CLKBUF above — so the generate-if in
+    // tidelink_top elaborates the g_no_txgen tie-off arm and neither the
+    // generator nor its mux reach silicon. WITHOUT this line the wrapper
+    // silently inherited tidelink_top's 1'b1 default and shipped an armable
+    // line-rate generator (APB Region E) into the tapeout netlist — a
+    // sim-invisible area/timing/attack-surface + tapeout-contract regression.
+    parameter bit TXGEN_PRESENT = 1'b0,
 
     // ---- DFT-specific ---------------------------------------------------
     // Number of mux-D scan chains exposed at this wrapper. 8 is the
@@ -574,7 +587,12 @@ module tidelink_dft_wrapper #(
         .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
         .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // PENDING-DECISION #1: RX-FIFO AHB-write gate (default 1'b1 bit-identical)
-        .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE)
+        .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE),
+        // TAPEOUT CONTRACT: force the FPGA-only TX traffic generator + its
+        // ahb_tx 2:1 mux OUT of the ASIC netlist (default 1'b0 above). Without
+        // this connection tidelink_top takes its own 1'b1 default and the
+        // generator is synthesized into silicon (docs/TXGEN_V1_DESIGN.md).
+        .TXGEN_PRESENT      (TXGEN_PRESENT)
     ) u_top (
         // Clock / reset
         .hclk                       (hclk),

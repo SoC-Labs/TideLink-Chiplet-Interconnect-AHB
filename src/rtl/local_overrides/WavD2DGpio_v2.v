@@ -1977,56 +1977,56 @@ module WavD2DGpio #(
   assign gpiotx_0_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_0_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_0_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_0_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_0_io_link_data = tx_lane_masked[15:0];     // SoC Labs Step 1: segmenter+mask front-end (was tx_lane_en ? tx_lane_data : 16'h0)
   assign gpiotx_1_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_1_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_1_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_1_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_1_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_1_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_1_io_link_data = tx_lane_masked[31:16];    // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_2_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_2_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_2_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_2_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_2_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_2_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_2_io_link_data = tx_lane_masked[47:32];    // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_3_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_3_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_3_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_3_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_3_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_3_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_3_io_link_data = tx_lane_masked[63:48];    // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_4_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_4_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_4_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_4_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_4_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_4_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_4_io_link_data = tx_lane_masked[79:64];    // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_5_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_5_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_5_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_5_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_5_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_5_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_5_io_link_data = tx_lane_masked[95:80];    // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_6_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_6_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_6_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_6_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_6_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_6_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_6_io_link_data = tx_lane_masked[111:96];   // SoC Labs Step 1: segmenter+mask front-end
   assign gpiotx_7_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiotx_7_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]
   assign gpiotx_7_io_scan_clk = io_scan_clk; // @[Bundles.scala 21:19]
   assign gpiotx_7_io_clk = hsclk_scan_mux_io_o_z; // @[GPIO.scala 204:31]
   assign gpiotx_7_io_reset = io_por_reset; // @[GPIO.scala 205:31]
-  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode | tx_sync_inserting_w; // SoC Labs §9: keep serialiser clocked during training + 2026-07-29 SYNC-CLOCK FIX (restores V1 WavD2DGpio.v:1003's `| sync_insert` term, dropped in the V2 fork)
+  assign gpiotx_7_io_clk_en = io_link_tx_tx_en | postcount != 8'h0 & _postcount_in_T | effective_training_mode; // SoC Labs §9: keep serialiser clocked during training
   assign gpiotx_7_io_link_data = tx_lane_masked[127:112];  // SoC Labs Step 1: segmenter+mask front-end
   assign gpiorx_0_io_scan_mode = io_scan_mode; // @[Bundles.scala 19:19]
   assign gpiorx_0_io_scan_asyncrst_ctrl = io_scan_asyncrst_ctrl; // @[Bundles.scala 20:19]

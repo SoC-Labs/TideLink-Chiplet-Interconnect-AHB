@@ -87,6 +87,25 @@ module axi_chiplet_controller #(
     // enters training from strap instead of hanging/erroring with the SYNC
     // beacon dark. The symmetric completion of DECISION #3 for training entry.
     parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0,
+    // I1 eth-chiplet bring-up fix (2026-07-30, docs/I1_SELFARM_FIX.md).
+    // SELF-ARM ROLE-LOCK ON EXPLICIT SW INTENT. DEFAULT OFF — every existing
+    // deps/Z2/onchip build is byte-behaviour-identical (constant-folds away).
+    // When 1, a SW W1S of ROLE_CFG[1] latches role_lock_reg IMMEDIATELY, without
+    // waiting for the peer mask-handshake gate (mask_hs_gate_open) or the
+    // nego_lost_w fallback — both stay 0 on a die whose peer-I2C control plane
+    // never completes (the eth-chiplet). role_locked is a MUTUAL CLOCK ENABLE
+    // (wlink_por_reset = ~role_locked, below), so with it stuck 0 the forwarded
+    // pad_clk_tx / calibrator are held in reset and cal_done can never assert.
+    // Self-latching on the SW intent honours the design principle "role-lock must
+    // NEVER wait on a protocol event" (project_role_lock_is_a_mutual_clock_enable).
+    // The genuine-integrity witness mask_hs_verified_reg (the mask_hs_match-ALONE
+    // latch above) is LEFT UNTOUCHED, so RETIRED-autonomy entry still fails closed
+    // — a self-armed role_lock does NOT forge it. When set, this ALSO makes SW own
+    // swi_training_mode_r: the autoneg's ST_TRAIN_EXIT clear is gated off (below)
+    // so it cannot wipe an SW-held training out from under the cal_done poll.
+    // Set 1'b1 ONLY on the eth-chiplet tidelink_top instantiation; every other
+    // integration keeps the 1'b0 default.
+    parameter bit    SELF_ARM_TRAIN_EN    = 1'b0,
     // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
     // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
     // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,
@@ -790,8 +809,12 @@ module axi_chiplet_controller #(
             if (nego_set_role_lock_w ||
                 (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000 && ctrl_reg_wdata[1]))
                 nego_lock_pending_reg <= 1'b1;
-            else if (nego_lock_pending_reg && (mask_hs_gate_open || nego_lost_w))
+            else if (nego_lock_pending_reg && (mask_hs_gate_open || nego_lost_w || SELF_ARM_TRAIN_EN))
                 // Bug N9 fix: also clear pending on the lost path so the
+                // (SELF_ARM_TRAIN_EN: clear pending on the self-arm path too, so
+                //  the pending bit doesn't stay stuck after role_lock latches via
+                //  the self-arm term below — symmetric with the lost-side clear.
+                //  Default 0 ⇒ this term constant-folds away, bit-identical.)
                 // pending bit doesn't stay asserted after role_lock_reg
                 // has latched via the lost-side workaround below.
                 // (2026-07-24: this term is paired with the lost-side lock
@@ -855,7 +878,17 @@ module axi_chiplet_controller #(
             // independent of the role_lock TIMING (or hold the training window
             // open until the verdict lands), then re-run this A/B.
             if ((nego_lock_pending_reg && mask_hs_gate_open) ||
-                (nego_lock_pending_reg && nego_lost_w)) begin
+                (nego_lock_pending_reg && nego_lost_w) ||
+                // I1 SELF-ARM (2026-07-30): third OR term. With the peer-I2C
+                // control plane dead on the eth-chiplet, neither mask_hs_gate_open
+                // nor nego_lost_w ever fires, so role_lock_reg stayed 0 and held
+                // the mutual clock enable / calibrator in reset (cal_done=0,
+                // fcsm=0). This latches role_lock on the SW ROLE_CFG[1] intent
+                // (which set nego_lock_pending_reg above) as soon as the param is
+                // enabled. mask_hs_verified_reg is NOT set here, so the honest
+                // integrity witness is preserved. Default 1'b0 ⇒ constant-folds
+                // away ⇒ every existing build is byte-behaviour-identical.
+                (nego_lock_pending_reg && SELF_ARM_TRAIN_EN)) begin
                 role_lock_reg <= 1'b1;
             end else if (ctrl_reg_write && !role_locked && ctrl_reg_addr == 5'b01_000) begin
                 role_cfg_reg  <= ctrl_reg_wdata[0];
@@ -2118,7 +2151,18 @@ module axi_chiplet_controller #(
             // Local FSM-driven strobes (autoneg's ENTER/EXIT)
             if (local_training_mode_set_w)
                 swi_training_mode_r <= 1'b1;
-            else if (local_training_mode_clr_w)
+            // I1 SELF-ARM (2026-07-30): gate the autoneg's ST_TRAIN_EXIT clear
+            // when SELF_ARM_TRAIN_EN. On the self-arm bring-up the PS holds
+            // SWI_TRAINING_MODE=1 over the whole cal_done poll; a running autoneg
+            // (were nego_en=1) would else drive local_training_mode_clr_w at
+            // ST_TRAIN_EXIT and wipe that SW-held training before the calibrator
+            // completes. Only the explicit SW slot-0 write (the region8_write
+            // case below, which fires LATER in this block and therefore wins)
+            // may clear training on the self-arm path — matching the PS recipe's
+            // step-3 SWI_TRAINING_MODE=0 that takes the falling edge to data mode.
+            // Default 1'b0 ⇒ ~SELF_ARM_TRAIN_EN constant-folds to 1 ⇒ every
+            // existing build keeps the ungated clear, bit-identical.
+            else if (local_training_mode_clr_w && !SELF_ARM_TRAIN_EN)
                 swi_training_mode_r <= 1'b0;
 
             // Phase 1 G1b — sticky train-fail IRQ. Latch on rising edge of

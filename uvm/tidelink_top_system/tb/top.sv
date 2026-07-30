@@ -324,6 +324,31 @@ module test_top;
   assign tb_if.b_cal_done    = u_tidelink_top_b.u_chiplet_controller.cal_calibration_done_w;
 
   // ---------------------------------------------------------------
+  // I1 CONTROL-PLANE repro (sim/i1-controlplane-repro, 2026-07-30): mirror the
+  // calibrator-ARM bootstrap chain onto tb_if. These are the exact nets the
+  // silicon ILA read as stuck (role_locked=0, swi_training_mode_r=0, cal_state=0)
+  // when the AXI FCSM 0-4 were pointed at local_overrides. test_top_i1_controlplane
+  // drives the real ROLE_CFG / R8-training bring-up WITHOUT the calibrator bypass
+  // and checks whether deps vs override move any of them.
+  // ---------------------------------------------------------------
+  assign tb_if.a_role_locked      = u_tidelink_top_a.u_chiplet_controller.role_lock_reg;
+  assign tb_if.b_role_locked      = u_tidelink_top_b.u_chiplet_controller.role_lock_reg;
+  assign tb_if.a_train_r          = u_tidelink_top_a.u_chiplet_controller.swi_training_mode_r;
+  assign tb_if.b_train_r          = u_tidelink_top_b.u_chiplet_controller.swi_training_mode_r;
+  assign tb_if.a_nego_en          = u_tidelink_top_a.u_chiplet_controller.nego_en;
+  assign tb_if.b_nego_en          = u_tidelink_top_b.u_chiplet_controller.nego_en;
+  assign tb_if.a_mask_gate        = u_tidelink_top_a.u_chiplet_controller.mask_hs_gate_open;
+  assign tb_if.b_mask_gate        = u_tidelink_top_b.u_chiplet_controller.mask_hs_gate_open;
+  assign tb_if.a_mask_match       = u_tidelink_top_a.u_chiplet_controller.mask_hs_match;
+  assign tb_if.b_mask_match       = u_tidelink_top_b.u_chiplet_controller.mask_hs_match;
+  assign tb_if.a_cal_role_locked  = u_tidelink_top_a.u_chiplet_controller.calibrator_role_locked;
+  assign tb_if.b_cal_role_locked  = u_tidelink_top_b.u_chiplet_controller.calibrator_role_locked;
+  assign tb_if.a_cal_state        = u_tidelink_top_a.u_chiplet_controller.cal_state_w;
+  assign tb_if.b_cal_state        = u_tidelink_top_b.u_chiplet_controller.cal_state_w;
+  assign tb_if.a_nego_st          = u_tidelink_top_a.u_chiplet_controller.u_autoneg.state_r;
+  assign tb_if.b_nego_st          = u_tidelink_top_b.u_chiplet_controller.u_autoneg.state_r;
+
+  // ---------------------------------------------------------------
   // I1 sim-repro: sim-only calibrator bypass. tb_early_exit_force_q lets the V2
   // calibrator (deps/tidelink-phy, S_VALIDATE 2M-cycle timeout unreachable in
   // sim) reach cal_done so the FCSM leaves training and the CR handshake RUNS —
@@ -340,6 +365,26 @@ module test_top;
       force u_tidelink_top_a.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
       force u_tidelink_top_b.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
       $display("[I1_CAL_BYPASS] T=%0t forced tb_early_exit_force_q=1 on both calibrators", $time);
+    end
+  end
+
+  // ---------------------------------------------------------------
+  // I1 CONTROL-PLANE repro: autonomous-path NEGO_CFG strap. On silicon
+  // NEGO_CFG PORs to 0x61 (nego_en=1). An APB write of NEGO_CFG cannot survive
+  // the poreset re-arm the autoneg FSM needs (nego_cfg_reg <= NEGO_CFG_RESET on
+  // !poresetn), so a faithful autonomous-path sim must present the POR value as
+  // a strap. This continuously forces both dies' nego_cfg_reg = 7'h61 so the
+  // value is present across test_top_i1_controlplane's force_poreset re-arm —
+  // exactly the silicon POR strap, not a runtime hack. Gated on +NEGO_AUTO_STRAP
+  // (only test_top_i1_controlplane MODE=auto uses it); default OFF preserves the
+  // manual-path (nego_en=0) behaviour of every other test.
+  // ---------------------------------------------------------------
+  initial begin : i1cp_nego_strap
+    if ($test$plusargs("NEGO_AUTO_STRAP")) begin
+      repeat (2) @(posedge clk);
+      force u_tidelink_top_a.u_chiplet_controller.nego_cfg_reg = 7'h61;
+      force u_tidelink_top_b.u_chiplet_controller.nego_cfg_reg = 7'h61;
+      $display("[I1CP_NEGO_STRAP] T=%0t forced nego_cfg_reg=0x61 (nego_en=1) on both dies", $time);
     end
   end
 

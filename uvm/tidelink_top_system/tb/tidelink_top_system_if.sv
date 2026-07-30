@@ -106,6 +106,34 @@ interface tidelink_top_system_if (
   logic            b_crack_seen;
   logic            a_cal_done;
   logic            b_cal_done;
+
+  // -------------------------------------------------------------------------
+  // I1 CONTROL-PLANE repro (sim/i1-controlplane-repro, 2026-07-30): mirror the
+  // calibrator-ARM bootstrap chain the silicon ILA found stuck. On silicon the
+  // I1 FCSM override leaves role_locked=0 / swi_training_mode_r=0 so the arm
+  //   nego_en & role_locked & swi_training_mode_r
+  // never fires and cal_state stays 0 (ever_swept=0). These probe the REAL
+  // controller nets so a faithful sim can test whether the FCSM deps->override
+  // swap moves any of them (an RTL control-plane path) or leaves them identical
+  // (no RTL path -> the silicon effect is above RTL). Driven by top.sv.
+  // -------------------------------------------------------------------------
+  logic            a_role_locked;      // u_chiplet_controller.role_lock_reg
+  logic            b_role_locked;
+  logic            a_train_r;          // u_chiplet_controller.swi_training_mode_r
+  logic            b_train_r;
+  logic            a_nego_en;          // u_chiplet_controller.nego_en
+  logic            b_nego_en;
+  logic            a_mask_gate;        // u_chiplet_controller.mask_hs_gate_open
+  logic            b_mask_gate;
+  logic            a_mask_match;       // u_chiplet_controller.mask_hs_match
+  logic            b_mask_match;
+  logic            a_cal_role_locked;  // u_chiplet_controller.calibrator_role_locked
+  logic            b_cal_role_locked;
+  logic [3:0]      a_cal_state;        // u_chiplet_controller.cal_state_w  (0 = S_IDLE/never armed)
+  logic [3:0]      b_cal_state;
+  logic [4:0]      a_nego_st;          // u_chiplet_controller.u_autoneg.state_r
+  logic [4:0]      b_nego_st;
+
   // Per-side soft-strap drive
   logic [23:0]     a_align_bit_slip;
   logic [23:0]     b_align_bit_slip;

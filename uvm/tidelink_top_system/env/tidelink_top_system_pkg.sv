@@ -123,6 +123,9 @@ package tidelink_top_system_pkg;
   `include "test_top_addr_translate.sv"
   // I1 sim-repro (sim/i1-repro-uvm-topsystem): staggered cold FCSM bring-up.
   `include "test_top_i1_fcsm_bringup.sv"
+  // I1 control-plane repro (sim/i1-controlplane-repro): faithful role_lock /
+  // training / calibrator-arm bring-up WITHOUT the cal bypass.
+  `include "test_top_i1_controlplane.sv"
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"

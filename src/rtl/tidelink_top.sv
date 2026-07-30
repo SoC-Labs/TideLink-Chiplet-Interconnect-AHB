@@ -216,7 +216,15 @@ module tidelink_top #(
     // DEFAULT OFF (shipping behaviour unchanged). 1 = training-entry starts from
     // strap on a dead I2C bus, so the SYNC beacon lights and the link can
     // self-start without a peer I2C ACK — the training-side completion of #3.
-    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0
+    parameter bit    TRAIN_ENTRY_FALLBACK = 1'b0,
+    // Forwards to axi_chiplet_controller.SELF_ARM_TRAIN_EN (I1 eth-chiplet
+    // bring-up fix, docs/I1_SELFARM_FIX.md). DEFAULT OFF — every existing target
+    // is byte-behaviour-identical. When 1, a SW W1S of ROLE_CFG[1] self-latches
+    // role_lock without the peer mask-handshake gate (the eth-chiplet's peer-I2C
+    // control plane never completes). Enabled ONLY on the eth-chiplet's
+    // tidelink_top instantiation (nanosoc_eth_chiplet.sv passes 1'b1); the
+    // standalone-link FPGA/ASIC wrappers keep the default OFF.
+    parameter bit    SELF_ARM_TRAIN_EN    = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2528,7 +2536,10 @@ module tidelink_top #(
         // the ASIC integration can gate/strap the retire WITHOUT editing the
         // controller. See the module parameter declaration for the default
         // rationale.
-        .RETIRE_EN            (RETIRE_EN)
+        .RETIRE_EN            (RETIRE_EN),
+        // I1 eth-chiplet bring-up: self-arm role-lock on SW ROLE_CFG[1] intent
+        // (default 1'b0 = every existing target byte-behaviour-identical).
+        .SELF_ARM_TRAIN_EN   (SELF_ARM_TRAIN_EN)
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),

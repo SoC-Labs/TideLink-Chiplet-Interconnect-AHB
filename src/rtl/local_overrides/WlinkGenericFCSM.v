@@ -285,10 +285,41 @@ module WlinkGenericFCSM(
   wire  _GEN_25 = en_ff2_tx_demet_io_out | sop; // @[FC.scala 449:24 FC.scala 450:39 FC.scala 427:39]
   // SoC Labs L6 (Fix B): min CR-emit gate for the state-1 exit.
   reg  [7:0] socl_l6_cr_emit_count;
-  wire socl_l6_cr_emit_gate_ok = (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
+  // SoC Labs I1-FCSM-BRINGUP fix (2026-07-30): DISARM the min-emit HOLD (Fix
+  // B/C) for the very FIRST bring-up handshake. Root cause of the KR260 I1
+  // regression: the 5 AXI FC nodes are time-multiplexed with the sideband node
+  // onto ONE link via the fair round-robin WlinkTxRouter, so at the ~40 ns
+  // silicon link:app ratio a node cannot accrue SOCL_L6_MIN_CR_EMITS (=32) of
+  // its OWN CR emits before a marginal/retrying link resets the count. The
+  // state-1 exit (socl_l6_cr_emit_gate_ok) therefore never asserts -> no
+  // LINK_IDLE, cr_seen=0, fcsm stuck 0/1, BOTH dies. deps has NO such gate:
+  // state 1 leaves on the FIRST peer CR/CRACK seen, so it always converges
+  // regardless of ratio/contention. Gating the emit HOLD on the sticky
+  // socl_reached_link_idle (set at first state>=LINK_IDLE) makes the INITIAL
+  // handshake BIT-IDENTICAL to the proven deps path, while the HOLD -- and the
+  // independent Fix A/D/E traffic-recovery machinery -- still arm for the
+  // post-LINK_IDLE traffic phase (the point of I1). This is NOT the falsified
+  // "open the gate until LINK_DATA" (v1): it keys on LINK_IDLE and, together
+  // with removing the emit-count dependence during bring-up, makes state 1/2
+  // exit exactly on peer-seen. See docs/I1_FCSM_ROOTCAUSE_AND_FIX.md.
+  reg  socl_reached_link_idle;
+  // Sim RED/GREEN compile knob (default = FIX). Defining
+  // SOCL_FCSM_BRINGUP_HOLD_ALWAYS restores the pre-fix I1 behaviour (emit HOLD
+  // armed from reset) that livelocks KR260 bring-up -- the RED control used by
+  // cocotb/tidelink_fcsm_bringup_race. The shipping default holds the emit gate
+  // OPEN until the first LINK_IDLE (socl_reached_link_idle), so the initial
+  // handshake is deps-identical.
+`ifdef SOCL_FCSM_BRINGUP_HOLD_ALWAYS
+  wire socl_bringup_hold_open = 1'b0;                 // RED: HOLD armed from reset
+`else
+  wire socl_bringup_hold_open = ~socl_reached_link_idle;  // FIX: HOLD off until LINK_IDLE
+`endif
+  wire socl_l6_cr_emit_gate_ok = socl_bringup_hold_open
+                                 | (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
   // SoC Labs L7 (Fix C): min CRACK-emit gate for the state-2 exit (mirror of L6).
   reg  [7:0] socl_l7_crack_emit_count;
-  wire socl_l7_crack_emit_gate_ok = (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS);
+  wire socl_l7_crack_emit_gate_ok = socl_bringup_hold_open
+                                    | (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS);
   wire socl_l7_crack_release = crack_pkt_seen_tx_demet_io_out & socl_l7_crack_emit_gate_ok;
   // SoC Labs L7 (Fix A): sticky-NACK bringup forgive; masks the ORIGINAL
   // isNotExpPacket (no L9 layer in this lighter variant).
@@ -1001,6 +1032,21 @@ module WlinkGenericFCSM(
       socl_l7_reached_link_data <= 1'h0;
     end else if (state == 3'h5) begin
       socl_l7_reached_link_data <= 1'h1;
+    end
+  end
+  // SoC Labs I1-FCSM-BRINGUP fix (2026-07-30): tracks "LINK_IDLE reached since
+  // the last IDLE" (state>=LINK_EN_WAIT/LINK_IDLE). Cleared at reset AND on
+  // re-entering IDLE (state 0), so EVERY fresh handshake (initial or a full
+  // re-bring-up) runs with the emit HOLD OFF -> deps-identical peer-seen exit,
+  // livelock-free. The HOLD arms only while the link is up (states >=4), where
+  // the CR/CRACK emit gates are not consulted -- so it never throttles a handshake.
+  always @(posedge io_tx_clk or posedge io_tx_reset) begin
+    if (io_tx_reset) begin
+      socl_reached_link_idle <= 1'h0;
+    end else if (state == 3'h0) begin
+      socl_reached_link_idle <= 1'h0;  // fresh handshake from IDLE -> deps-clean re-bring-up
+    end else if (state >= 3'h4) begin
+      socl_reached_link_idle <= 1'h1;
     end
   end
   // SoC Labs F-1 (Fix D): sticky real-CRC-seen disarms the watchdog forever.

@@ -170,6 +170,12 @@ module tidelink_dft_wrapper #(
     // DEFAULT OFF here too, so the tapeout netlist is unchanged until David
     // ratifies enabling it (the symmetric completion of DECISION #3).
     parameter bit TRAIN_ENTRY_FALLBACK = 1'b0,
+    // Self-arm role-lock (I1 eth-chiplet bring-up, docs/I1_SELFARM_FIX.md).
+    // Forwarded to tidelink_top.SELF_ARM_TRAIN_EN. DEFAULT OFF — the standalone
+    // ASIC netlist is unchanged. Exposed here for parity with the other bring-up
+    // knobs; the eth-chiplet does NOT use this wrapper (it instantiates
+    // tidelink_top directly and enables the param there), so this stays 1'b0.
+    parameter bit SELF_ARM_TRAIN_EN = 1'b0,
     // RX-FIFO TWIN 2 master enable. Forwarded verbatim to
     // tidelink_top.ENABLE_AHB_WRITE.
     // DECISION (David, 2026-07-19): AHB-CPU-write-to-RX IS SUPPORTED, so the
@@ -573,6 +579,8 @@ module tidelink_dft_wrapper #(
         // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today)
         .ROLE_FROM_STRAP    (ROLE_FROM_STRAP),
         .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
+        // I1 self-arm role-lock (default 1'b0 = standalone ASIC bit-identical).
+        .SELF_ARM_TRAIN_EN  (SELF_ARM_TRAIN_EN),
         // PENDING-DECISION #1: RX-FIFO AHB-write gate (default 1'b1 bit-identical)
         .ENABLE_AHB_WRITE   (ENABLE_AHB_WRITE)
     ) u_top (

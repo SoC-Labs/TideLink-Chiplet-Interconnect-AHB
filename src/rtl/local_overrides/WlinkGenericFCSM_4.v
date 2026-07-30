@@ -710,7 +710,7 @@ module WlinkGenericFCSM_4(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      out_prepend_swi_disable_crc <= 1'h1; // SoC Labs (Bug-C): CRC-off default at GPIO speed; SW re-enable via bit[16]
+      out_prepend_swi_disable_crc <= 1'h0; // SoCL KR260 bring-up fix: CRC-ON reset default (match FCSM_6/deps); was 1'h1 (Bug-C GPIO) which broke RX CR/CRACK framing -> cr_seen=0
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end

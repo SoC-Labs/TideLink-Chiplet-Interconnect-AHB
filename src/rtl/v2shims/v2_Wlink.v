@@ -5,5 +5,4 @@
 // I1 FC-emit / router-grant observability (2026-07-30). Per-file define so it
 // survives Vivado IP packaging (a flist +define+ is dropped — see banner).
 // Drop this line to build a winscan-only, zero-TX-router-footprint image.
-`define TIDELINK_FCEMIT_OBS
 `include "Wlink.v"

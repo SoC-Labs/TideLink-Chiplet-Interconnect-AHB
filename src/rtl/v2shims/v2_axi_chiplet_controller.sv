@@ -6,5 +6,4 @@
 // survives Vivado IP packaging (a flist +define+ is dropped — see banner).
 // Must match v2_Wlink.v: gates the obs_fcemit_*_o Wlink ports + Region F slots
 // 3-4. Drop BOTH to build a winscan-only image.
-`define TIDELINK_FCEMIT_OBS
 `include "axi_chiplet_controller.sv"

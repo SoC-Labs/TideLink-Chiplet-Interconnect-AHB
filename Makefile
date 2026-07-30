@@ -1034,6 +1034,18 @@ sim_gate_asicelab_v2:
 # not the wrapper. This gate elaborates the wrapper itself with -top so a dropped
 # param connection / dead strap on the tapeout top FAILS here. Same flist as
 # asic_v2 + the wrapper source; top = tidelink_dft_wrapper.
+#
+# STRUCTURAL TAPEOUT-CONTRACT ASSERTION (P1, 2026-07-30): the FPGA-only TX
+# traffic generator (tidelink_tx_gen) MUST NOT be in the tapeout netlist
+# (docs/TXGEN_V1_DESIGN.md). tidelink_top defaults TXGEN_PRESENT=1'b1, so the
+# ASIC dft_wrapper must force it 1'b0 — WITHOUT that tie-off the generator +
+# its ahb_tx 2:1 mux elaborate into silicon and a plain rc=0 elab gate stays
+# GREEN (sim-invisible). Elaboration rc=0 is necessary but NOT sufficient, so
+# we additionally assert the generator is absent from the ELABORATED module
+# set. Note: tidelink_tx_gen.sv is in the flist and is always PARSED ("Parsing
+# design file .../tidelink_tx_gen.sv"), so we must anchor on the elaborated
+# instantiation line ("... module tidelink_tx_gen"), NOT the filename — the
+# module-compiled-but-not-instantiated distinction. grep-hit => FAIL.
 sim_gate_dftelab:
 	$(call sim_gate_run,dft_wrapper_elab,\
 	  rm -rf cocotb/tidelink_top_pair/sim_build_dftelab && \
@@ -1043,7 +1055,10 @@ sim_gate_dftelab:
 	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
 	    $(TIDELINK_HOME)/src/rtl/asic/tidelink_dft_wrapper.sv \
 	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
-	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log)
+	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log && \
+	  { if grep -qE 'module[[:space:]]+tidelink_tx_gen([^A-Za-z0-9_]|$$)' vcs_dftelab.log; then \
+	      echo "FAIL: tidelink_tx_gen INSTANTIATED in ASIC tapeout netlist — TXGEN_PRESENT tie-off missing (docs/TXGEN_V1_DESIGN.md)"; exit 1; \
+	    else echo "STRUCTURAL-OK: tidelink_tx_gen absent from ASIC tapeout elaborated netlist (TXGEN_PRESENT=0 tie-off holds)"; fi; })
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \

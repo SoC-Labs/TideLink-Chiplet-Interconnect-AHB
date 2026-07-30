@@ -1351,14 +1351,6 @@ module tidelink_autoneg #(
                             TXN_CHECK: begin
                                 if (!axl_rdata_r[I2C_STS_BUSY] && busy_seen_r) begin
                                     if (axl_rdata_r[I2C_STS_MISS_ACK]) begin
-                                        // Peer NACK at POLL_PEER phase-0 (dead-I2C
-                                        // rig: the master holds its own I2C-slave
-                                        // in reset, so the slave's read of it
-                                        // NACKs). Fail; the TRAIN_ENTRY_FALLBACK
-                                        // PARK in ST_TRAIN_FAIL (below) keeps the
-                                        // slave's training pattern alive and lets
-                                        // the master's designed I2C clear of the
-                                        // slave's SWI_TRAINING_MODE land and stick.
                                         train_peer_nack_nxt           = 1'b1;
                                         peer_lane_fault_nxt           = 8'hFF;
                                         train_fail_nxt                = 1'b1;
@@ -1791,43 +1783,6 @@ module tidelink_autoneg #(
                         // constant-folds this branch away — netlist unchanged.
                         if (retry_backoff_r != 24'd0) begin
                             retry_backoff_nxt   = retry_backoff_r - 24'd1;
-                        end else if (TRAIN_ENTRY_FALLBACK && train_peer_nack_r &&
-                                     (local_lock_qual_w == 8'hFF) &&
-                                     (local_swi_lane_fault_i == 8'h00)) begin
-                            // TRAIN_ENTRY_FALLBACK PARK (2026-07-28). On a
-                            // dead-peer NACK with LOCAL lanes healthy, the R5
-                            // auto-retry below is exactly what makes the SLAVE
-                            // stuck at 0x15: every re-ENTER re-asserts
-                            // swi_training_mode=1, overwriting the master's
-                            // one-shot I2C clear of the slave's SWI_TRAINING_MODE.
-                            // HOLD here instead of re-entering. training_mode
-                            // STAYS 1 (no local_train_clr fires on this arc), so
-                            // the slave's TX training pattern + forwarded capture
-                            // clock stay alive — the master needs both to
-                            // converge. The churn stops, so the master's
-                            // convergence-gated write of R8:=0 (ST_TRAIN_EXIT ACK
-                            // arm, the ORIGINAL designed slave exit) lands and
-                            // STICKS ⇒ slave 0x15→0x14, RX ungates, FC handoff
-                            // arms on the training FALL.
-                            //
-                            // Safe by construction: the master only writes R8:=0
-                            // after it has READ the slave's lanes locked
-                            // (peer_lock_qual==8'hFF over I2C), which is downstream
-                            // of the same local lane-lock that arms this park —
-                            // so the write always lands on an ALREADY-parked
-                            // slave. The parked slave still SERVES the master's
-                            // I2C reads (its I2C-slave receive path is
-                            // FSM-state-independent). Failure mode (master never
-                            // converges) is identical to today's stuck-0x15, so
-                            // this can never do worse. SW train_retrain_req (the
-                            // first branch of this state) is still the escape.
-                            //
-                            // The whole arc is already gated on
-                            // USE_CAL_IN_HOLD & train_auto_en; the added
-                            // TRAIN_ENTRY_FALLBACK (default 1'b0) constant-folds
-                            // this branch away for ASIC/shipping — the else
-                            // below is the byte-identical prior auto-retry.
-                            state_nxt           = ST_TRAIN_FAIL;   // hold (park)
                         end else begin
                             train_fail_nxt      = 1'b0;
                             train_peer_nack_nxt = 1'b0;

@@ -42,18 +42,28 @@ export PYTHONPATH := $(CURDIR):$(TIDELINK_HOME)/python:$(PYTHONPATH)
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 
-# --- DUT flist: base tidelink_fpga_v2.flist with the five AXI FC nodes
-#     (WlinkGenericFCSM{,_1,_2,_3,_4}) re-pointed deps -> local_overrides.
-#     FCSM_5 (deps) and FCSM_6 (already local) are left untouched.
+# --- DUT flist: base tidelink_fpga_v2.flist. NOTE the shipping base flist
+#     ALREADY points the five AXI FC nodes (WlinkGenericFCSM{,_1..4}) at
+#     src/rtl/local_overrides (the I1 re-point b98b944), so "override" is the
+#     base flist verbatim. FCSM_SRC (I1 async/cold repro) selects which copy of
+#     the 5 AXI nodes is compiled — see gen_flist.sh:
+#       override : shipping local_overrides recovery FCSM (L6/L7 HOLD armed from
+#                  reset) — the silicon I1 config.            [RED candidate]
+#       deps     : recovery-STRIPPED deps FCSM (no gate/footprint). [GREEN control]
+#       emitfix  : the REFUTED emit-gate fix (e79a5b8) — HOLD held open until
+#                  LINK_IDLE. Must stay RED (silicon says it doesn't work).
+#     FCSM_5 (deps) and FCSM_6 (always local_overrides) are untouched in all.
+FCSM_SRC    ?= override
 BASE_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
-LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
+LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_$(FCSM_SRC).flist
 # Generate at parse time so flist_srcs (below) can see it, and so a clean
 # checkout builds it before the simv rule runs.
-_gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+_gen := $(shell bash $(CURDIR)/gen_flist.sh $(FCSM_SRC) $(BASE_FLIST) $(LOCAL_FLIST))
 COMPILE_ARGS += -f $(LOCAL_FLIST)
 
-# Zero skew, SW bring-up (bit-identical to the EI zero profile).
-COMPILE_ARGS += +define+TB_TOP_SKID_BITS=0
+# Bit-level pad skew (RX capture-phase knob). Default 0 = passthrough.
+SKID ?= 0
+COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID)
 COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=1
 export BYPASS_AUTONEG = 1
 
@@ -63,6 +73,47 @@ CRACK_EMITS ?=
 ifneq ($(strip $(CRACK_EMITS)),)
 COMPILE_ARGS += +define+SOCL_L7_MIN_CRACK_EMITS_VAL=$(CRACK_EMITS)
 endif
+
+# ── I1 async/cold repro knobs (sim/i1-repro-silicon-ratio) ──────────────────
+# SPLIT_REFCLK=1 gives the slave die its own PHY reference (ref_clk_s), driven
+# by cocotb with a ppm/phase offset -> the two dies' io_tx_clk / forwarded pad
+# clocks become asynchronous (silicon's two-oscillator condition). Default 0
+# keeps the legacy shared-clock behaviour so repro/fixed/control are unchanged.
+SPLIT_REFCLK ?= 0
+ifeq ($(SPLIT_REFCLK),1)
+COMPILE_ARGS += +define+TB_TOP_SPLIT_REFCLK
+endif
+# CAL_FAST=1 shrinks the calibrator S_HOLD/S_VALIDATE windows via defparam so a
+# genuine COLD bring-up (no tb_early_exit bypass) is sim-feasible while keeping
+# the cr_pkt_seen S_VALIDATE gate fully armed. Off for the legacy targets.
+CAL_FAST ?= 0
+ifeq ($(CAL_FAST),1)
+COMPILE_ARGS += +define+TB_TOP_CAL_FAST
+endif
+# EMITFIX_HOLD_ALWAYS=1 forces the emitfix FCSM files back to pre-fix behaviour
+# (emit HOLD armed from reset) — the controlled A/B RED partner for FCSM_SRC=emitfix.
+EMITFIX_HOLD_ALWAYS ?= 0
+ifeq ($(EMITFIX_HOLD_ALWAYS),1)
+COMPILE_ARGS += +define+SOCL_FCSM_BRINGUP_HOLD_ALWAYS
+endif
+# Slave PHY ref ppm offset + POR-release stagger are RUNTIME (cocotb reads env).
+I1_REF_PPM ?= 0
+export I1_REF_PPM
+I1_POR_STAGGER_HCLK ?= 0
+export I1_POR_STAGGER_HCLK
+I1_REF_PHASE_PS ?= 0
+export I1_REF_PHASE_PS
+
+# Whether THIS config is expected to reach cr_seen=1 (GREEN). The test asserts
+# on it; a RED config still runs EXPECT_CR=1 so the stuck-0 shows as a FAIL.
+EXPECT_CR ?= 1
+export EXPECT_CR
+OBS_CHUNKS ?= 800
+export OBS_CHUNKS
+# Export the flist/async selectors so the cocotb python + logs can read them.
+export FCSM_SRC
+export SPLIT_REFCLK
+export SKID
 
 # Silicon clock ratio (ref_clk period ns). 40.0 = the ~40 ns silicon ratio.
 REF_PERIOD_NS ?= 40.0
@@ -115,4 +166,40 @@ control:
 	        TESTCASE=test_axi_fcsm_clean_bringup_at_silicon_ratio
 
 clean_builds:
-	rm -rf sim_build_repro sim_build_fixed sim_build_control sim_build_fixed_* $(LOCAL_FLIST)
+	rm -rf sim_build_repro sim_build_fixed sim_build_control sim_build_fixed_* \
+	       sim_build_i1_* tidelink_fpga_v2_fcsm_*.flist $(LOCAL_FLIST)
+
+# ── I1 async/cold INSTRUMENT-TRUST GATE (sim/i1-repro-silicon-ratio) ─────────
+# All four configs run the SAME test body (test_i1_async_cold.py) with the SAME
+# async operating point; only FCSM_SRC / SPLIT_REFCLK differ. Sweep the point
+# from the command line, e.g.  make i1_override I1_PPM=800 I1_STAGGER=600 I1_SKID=2
+I1_PPM     ?= 400
+I1_STAGGER ?= 300
+I1_SKID    ?= 0
+
+.PHONY: i1_deps i1_override i1_emitfix i1_poscontrol
+
+_I1_COMMON = MODULE=test_i1_async_cold TESTCASE=test_i1_cold_bringup_cr_seen \
+             CAL_FAST=1 REF_PERIOD_NS=$(REF_PERIOD_NS) \
+             I1_REF_PPM=$(I1_PPM) I1_POR_STAGGER_HCLK=$(I1_STAGGER) SKID=$(I1_SKID)
+
+# (a) deps FCSM, async  -> EXPECT GREEN (cr=1 both dies)
+i1_deps:
+	$(MAKE) $(_I1_COMMON) FCSM_SRC=deps SPLIT_REFCLK=1 EXPECT_CR=1 \
+	        SIM_BUILD=sim_build_i1_deps
+
+# (b) override FCSM (shipping I1), async -> RED candidate (a FAIL == RED repro)
+i1_override:
+	$(MAKE) $(_I1_COMMON) FCSM_SRC=override SPLIT_REFCLK=1 EXPECT_CR=1 \
+	        SIM_BUILD=sim_build_i1_override
+
+# (c) refuted emit-gate fix (e79a5b8), async -> must ALSO stay RED
+i1_emitfix:
+	$(MAKE) $(_I1_COMMON) FCSM_SRC=emitfix SPLIT_REFCLK=1 EXPECT_CR=1 \
+	        SIM_BUILD=sim_build_i1_emitfix
+
+# (d) positive control: override FCSM, SYNChronous -> EXPECT GREEN (TB reads cr=1)
+i1_poscontrol:
+	$(MAKE) $(_I1_COMMON) FCSM_SRC=override SPLIT_REFCLK=0 EXPECT_CR=1 \
+	        I1_REF_PPM=0 I1_POR_STAGGER_HCLK=0 \
+	        SIM_BUILD=sim_build_i1_poscontrol

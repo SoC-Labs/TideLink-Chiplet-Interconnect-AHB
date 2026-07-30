@@ -1,3 +1,10 @@
-# Build product: the local FCSM flist is regenerated from
-# flists/tidelink_fpga_v2.flist by the Makefile at parse time.
+# Build products: the DUT flist is regenerated from
+# flists/tidelink_fpga_v2.flist by the Makefile at parse time (per FCSM_SRC).
 tidelink_fpga_v2_fcsm_local.flist
+tidelink_fpga_v2_fcsm_*.flist
+# cocotb / VCS build dirs and sim artefacts
+sim_build*/
+__pycache__/
+*.vcd
+*.log
+results.xml

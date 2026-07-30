@@ -154,6 +154,26 @@ module tb_top #(
     logic poresetn = 1'b0;
     logic hresetn  = 1'b0;
 
+    // ── I1 async split-clock model (sim/i1-repro-silicon-ratio) ─────────────
+    // Silicon has TWO independent oscillators — one per die. The shared
+    // `ref_clk` above hides every plesiochronous effect: both dies' PHY TX
+    // beats and forwarded pad clocks stay bit-locked. `ref_clk_s` is the
+    // SLAVE die's independent PHY reference. cocotb drives it with a
+    // configurable ppm/phase offset relative to `ref_clk`. When the
+    // TB_TOP_SPLIT_REFCLK define is NOT set the slave falls back to the shared
+    // `ref_clk` (bit-exact to every legacy test). When it IS set, the slave's
+    // user_ref_clk — and therefore its io_tx_clk / forwarded pad_clk_tx (the
+    // master's pad_clk_rx) — become asynchronous to the master's, so the
+    // master's RX-capture domain sees a genuinely async recovered clock, and
+    // vice-versa. This is the "two independent io_tx_clk/link clocks per die"
+    // condition the I1 repro needs.
+    logic ref_clk_s = 1'b0;
+`ifdef TB_TOP_SPLIT_REFCLK
+    wire  slave_user_ref_clk = ref_clk_s;
+`else
+    wire  slave_user_ref_clk = ref_clk;
+`endif
+
     // ── I2 per-die POR skew injection (PLAN_TIDELINK_INTEGRATION §3 I2) ──
     // cocotb holds {m,s}_por_gate low to delay one die's reset release
     // relative to the other (asymmetric-POR / deploy-skew emulation,
@@ -264,6 +284,31 @@ module tb_top #(
 `ifdef TB_TOP_EPOCH_ANCHOR_DIS
     defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b0;
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
+`endif
+
+    // ── I1 COLD bring-up: shrink the calibrator S_HOLD/S_VALIDATE windows ────
+    // A genuine cold bring-up (no tb_early_exit_force_q bypass) walks the true
+    // sweep -> S_HOLD -> cr_pkt_seen-gated S_VALIDATE path. The V2 calibrator's
+    // default HOLD_CYCLES = 8*128*DWELL_CYCLES = 65536 link_rx_clk cycles is
+    // ~40 ms at the silicon link rate — infeasible in sim. TB_TOP_CAL_FAST
+    // shrinks ONLY the S_HOLD dwell and the S_VALIDATE timeout via defparam;
+    // DWELL_CYCLES (and therefore the real per-(slip,phase) eye dwell and
+    // LOCK_THRESH margin) is left at its default so the sweep still finds a
+    // real eye and the cr_pkt_seen_i S_VALIDATE gate stays fully armed. This
+    // preserves the true cr-gated path while making the cold run sim-feasible.
+    // VAL_TIMEOUT_TO_DONE=1 (wrapper) still lets cal_done time out to DONE, so
+    // the meaningful oracle is cr_pkt_seen_rx in data mode, NOT cal_done.
+`ifdef TB_TOP_CAL_FAST
+  `ifndef TB_TOP_CAL_HOLD
+    `define TB_TOP_CAL_HOLD 512
+  `endif
+  `ifndef TB_TOP_CAL_VALTO
+    `define TB_TOP_CAL_VALTO 1024
+  `endif
+    defparam u_master.u_chiplet_controller.u_calibrator.HOLD_CYCLES        = `TB_TOP_CAL_HOLD;
+    defparam u_master.u_chiplet_controller.u_calibrator.VALIDATION_TIMEOUT = `TB_TOP_CAL_VALTO;
+    defparam u_slave.u_chiplet_controller.u_calibrator.HOLD_CYCLES         = `TB_TOP_CAL_HOLD;
+    defparam u_slave.u_chiplet_controller.u_calibrator.VALIDATION_TIMEOUT  = `TB_TOP_CAL_VALTO;
 `endif
 
     // Elaboration self-check: print the anchor enable actually compiled into
@@ -727,7 +772,7 @@ module tb_top #(
         .scan_in           (1'b0),
         .scan_out          (/* unused */),
 
-        .user_ref_clk      (ref_clk),
+        .user_ref_clk      (slave_user_ref_clk),
 
         .pad_clk_tx        (s_pad_clk_tx),
         .pad_tx            (s_pad_tx),

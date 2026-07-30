@@ -1,9 +1,8 @@
 // V2 build shim: per-file define + include of the shared source.
-`define TIDELINK_FCEMIT_OBS
 // Per-file defines survive IP packaging where fileset/global mechanisms do
 // not (3 failed attempts logged on feat/phy-v2-integration, 2026-06-11).
 `define TIDELINK_PHY_V2
-// I1 FC-emit / router-grant observability (2026-07-30). Per-file define so it
-// survives Vivado IP packaging (a flist +define+ is dropped — see banner).
-// Drop this line to build a winscan-only, zero-TX-router-footprint image.
+// Note: the FC-emit / router-grant obs (tidelink_fcemit_obs) is now
+// UNCONDITIONAL in Wlink.v — no per-file define needed (a flist/global define
+// never reaches the packaged-IP OOC synth, so it was made unconditional).
 `include "Wlink.v"

@@ -2987,24 +2987,20 @@ module axi_chiplet_controller #(
         .obs_winscan_eye   (winscan_eye_word)
     );
 
-`ifdef TIDELINK_FCEMIT_OBS
     // Region F slots 3-4 — FC-emit / router-grant obs (H1-H4). Packed in the
     // Wlink override's tx_link_clk domain (tidelink_fcemit_obs) and delivered
     // here already synced to apb_clk via the two obs_fcemit_*_o Wlink ports.
-    // Gated by TIDELINK_FCEMIT_OBS so a winscan-only image (no TX-router-domain
-    // flops) can be built when the footprint-vs-measurement trade-off matters.
+    // UNCONDITIONAL (like the sibling winscan obs) so it survives Vivado IP
+    // packaging where a define never reaches the packaged-IP OOC synth.
     wire [31:0] obs_fcemit_stat_w;
     wire [31:0] obs_fcemit_idcnt_w;
-`endif
 
     assign regionF_axinodes_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? axinode_obs_word  : // 0x21E0 OBS_AXI_NODES
         (ctrl_reg_addr[2:0] == 3'h1) ? winscan_stat_word : // 0x21E4 WINSCAN_STAT
         (ctrl_reg_addr[2:0] == 3'h2) ? winscan_eye_word  : // 0x21E8 WINSCAN_EYE
-`ifdef TIDELINK_FCEMIT_OBS
         (ctrl_reg_addr[2:0] == 3'h3) ? obs_fcemit_stat_w  : // 0x21EC FCEMIT_STAT
         (ctrl_reg_addr[2:0] == 3'h4) ? obs_fcemit_idcnt_w : // 0x21F0 FCEMIT_IDCNT
-`endif
         32'h0;
 
     // =====================================================================
@@ -6576,13 +6572,13 @@ module axi_chiplet_controller #(
         // (ws_verify_q) and AND'd into the winscan WS_FINALIZE release gate.
         .obs_anchor_verified_o       (obs_anchor_verified_w)
 `endif
-`ifdef TIDELINK_FCEMIT_OBS
         // I1 FC-emit / router-grant observability (2026-07-30): two packed obs
         // words from the Wlink tx_link_clk-domain fcemit tap (apb_clk synced).
+        // UNCONDITIONAL (like the sibling winscan obs) so it survives Vivado IP
+        // packaging where a define never reaches the packaged-IP OOC synth.
         ,
         .obs_fcemit_stat_o           (obs_fcemit_stat_w),
         .obs_fcemit_idcnt_o          (obs_fcemit_idcnt_w)
-`endif
     );
 
 endmodule

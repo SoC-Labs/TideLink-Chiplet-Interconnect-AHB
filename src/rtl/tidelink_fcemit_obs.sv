@@ -20,9 +20,9 @@
 // sticky "ever presented / ever granted" detection MUST run in tx_link_clk
 // (apb cannot reliably sample a 1-cycle tx-clk pulse) before the 2-flop CDC to
 // apb_clk. This DOES add flops in the TX-router region (quantified in the
-// integration notes); it is gated by `TIDELINK_FCEMIT_OBS` at the instantiation
-// site so a winscan-only image (zero TX-router footprint) can be built when the
-// footprint-vs-measurement trade-off matters. All outputs RO — no datapath change.
+// integration notes); it is instantiated UNCONDITIONALLY (like the sibling
+// winscan obs) because a `define never reaches the packaged-IP OOC synth, so an
+// `ifdef gate would silently drop it. All outputs RO — no datapath change.
 //
 // A joint work commissioned on behalf of SoC Labs, under Arm Academic Access
 // license.

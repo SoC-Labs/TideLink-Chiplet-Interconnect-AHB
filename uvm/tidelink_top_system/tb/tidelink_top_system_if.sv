@@ -90,6 +90,22 @@ interface tidelink_top_system_if (
   logic [7:0][2:0] b2a_skid_bits_per_lane;   // slave  TX -> master RX
   logic [7:0]      a_lane_locked;            // observed on A's RX = b2a path
   logic [7:0]      b_lane_locked;            // observed on B's RX = a2b path
+
+  // -------------------------------------------------------------------------
+  // I1 sim-repro (2026-07-30): TideLink-FCSM CR-handshake observability. Driven
+  // by top.sv continuous assigns from the wlink_tidelinktl probes on each die.
+  // The silicon I1 signature is cr_seen=0 crack_seen=0 cal_done=0 fcsm=0 on
+  // BOTH dies; test_top_i1_fcsm_bringup samples these after a staggered role-
+  // lock bring-up and passes iff cr_seen latches on both sides.
+  // -------------------------------------------------------------------------
+  logic [2:0]      a_fcsm_state;
+  logic [2:0]      b_fcsm_state;
+  logic            a_cr_seen;
+  logic            b_cr_seen;
+  logic            a_crack_seen;
+  logic            b_crack_seen;
+  logic            a_cal_done;
+  logic            b_cal_done;
   // Per-side soft-strap drive
   logic [23:0]     a_align_bit_slip;
   logic [23:0]     b_align_bit_slip;

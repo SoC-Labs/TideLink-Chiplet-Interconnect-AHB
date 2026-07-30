@@ -121,6 +121,8 @@ package tidelink_top_system_pkg;
   `include "test_top_mixed_traffic.sv"
   `include "test_top_coordinated_reset.sv"
   `include "test_top_addr_translate.sv"
+  // I1 sim-repro (sim/i1-repro-uvm-topsystem): staggered cold FCSM bring-up.
+  `include "test_top_i1_fcsm_bringup.sv"
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"

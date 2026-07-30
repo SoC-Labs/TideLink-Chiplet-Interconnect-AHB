@@ -254,22 +254,94 @@ module test_top;
   wire [7:0] a_lane_locked_w;
   wire [7:0] b_lane_locked_w;
 
+  // I1 sim-repro (2026-07-30): TB-only lane-lock observability. Updated to the
+  // V2 tidelink_lane_checker (deps/tidelink-phy/rtl) wider port list. Active-low
+  // rst_n (was active-high rst); the extra strap/noise inputs are TB-tied and
+  // the extended noise/dist outputs left unconnected — only lane_locked_o feeds
+  // tb_if. Does not affect the DUT.
   tidelink_lane_checker u_a_checker (
-    .clk        (a_rx_link_clk),
-    .rst        (a_checker_rst),
-    .lane_data  (a_rx_lane_data),
-    .lane_locked(a_lane_locked_w)
+    .clk               (a_rx_link_clk),
+    .rst_n             (poresetn),
+    .lane_data_i       (a_rx_lane_data),
+    .lock_thresh_i     (24'd8),
+    .training_mode_w_i (1'b1),
+    .sweep_active_i    (1'b0),
+    .clear_noise_i     (1'b0),
+    .lane_locked_o     (a_lane_locked_w),
+    .lane_match_o      (),
+    .mismatch_pulse_o  (),
+    .wire_status_o     (),
+    .dist_raw_o        (),
+    .dist_voted_o      (),
+    .dwell_min_dist_o  (),
+    .noise_min_o       (),
+    .noise_max_o       (),
+    .noise_mean_o      (),
+    .noise_current_o   (),
+    .canary_pass_o     (),
+    .canary_valid_o    ()
   );
 
   tidelink_lane_checker u_b_checker (
-    .clk        (b_rx_link_clk),
-    .rst        (b_checker_rst),
-    .lane_data  (b_rx_lane_data),
-    .lane_locked(b_lane_locked_w)
+    .clk               (b_rx_link_clk),
+    .rst_n             (poresetn),
+    .lane_data_i       (b_rx_lane_data),
+    .lock_thresh_i     (24'd8),
+    .training_mode_w_i (1'b1),
+    .sweep_active_i    (1'b0),
+    .clear_noise_i     (1'b0),
+    .lane_locked_o     (b_lane_locked_w),
+    .lane_match_o      (),
+    .mismatch_pulse_o  (),
+    .wire_status_o     (),
+    .dist_raw_o        (),
+    .dist_voted_o      (),
+    .dwell_min_dist_o  (),
+    .noise_min_o       (),
+    .noise_max_o       (),
+    .noise_mean_o      (),
+    .noise_current_o   (),
+    .canary_pass_o     (),
+    .canary_valid_o    ()
   );
 
   assign tb_if.a_lane_locked = a_lane_locked_w;
   assign tb_if.b_lane_locked = b_lane_locked_w;
+
+  // ---------------------------------------------------------------
+  // I1 sim-repro (2026-07-30): mirror the TideLink-FCSM CR-handshake 4-tuple
+  // (state / cr_pkt_seen_rx / crack_pkt_seen_rx) + calibrator cal_done onto the
+  // interface for test_top_i1_fcsm_bringup. Same probe hierarchy the
+  // PROBE_AFCSM/SOCLABS_DIAG blocks already use — pure observability.
+  // ---------------------------------------------------------------
+  assign tb_if.a_fcsm_state  = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+  assign tb_if.b_fcsm_state  = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+  assign tb_if.a_cr_seen     = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx;
+  assign tb_if.b_cr_seen     = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx;
+  assign tb_if.a_crack_seen  = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx;
+  assign tb_if.b_crack_seen  = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx;
+  assign tb_if.a_cal_done    = u_tidelink_top_a.u_chiplet_controller.cal_calibration_done_w;
+  assign tb_if.b_cal_done    = u_tidelink_top_b.u_chiplet_controller.cal_calibration_done_w;
+
+  // ---------------------------------------------------------------
+  // I1 sim-repro: sim-only calibrator bypass. tb_early_exit_force_q lets the V2
+  // calibrator (deps/tidelink-phy, S_VALIDATE 2M-cycle timeout unreachable in
+  // sim) reach cal_done so the FCSM leaves training and the CR handshake RUNS —
+  // exactly the bypass the cocotb tidelink_top_pair_v2 harness applies
+  // (pair_v2_common.force_calibrator_sim_bypass). It does NOT inject CR packets
+  // and does NOT touch the FCSM CR path, so cr_pkt_seen_rx remains a faithful
+  // oracle. Applied to BOTH dies and BOTH FCSM_SRC arms equally. Disable with
+  // +NO_CAL_BYPASS to study the raw (calibrator-timeout-limited) behaviour.
+  // ---------------------------------------------------------------
+  initial begin : i1_cal_bypass
+    if (!$test$plusargs("NO_CAL_BYPASS")) begin
+      @(posedge poresetn);
+      repeat (5) @(posedge clk);
+      force u_tidelink_top_a.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+      force u_tidelink_top_b.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+      $display("[I1_CAL_BYPASS] T=%0t forced tb_early_exit_force_q=1 on both calibrators", $time);
+    end
+  end
 
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A

@@ -22,12 +22,18 @@ See `docs/I1_SIM_REPRO_PLAN.md §4.2`. In short: **cold** bring-up, **un-bypasse
 skew + wire skew**, the **~40 ns ratio without the APB crutch**, and an oracle on the **silicon
 4-tuple**. The RED lever is the L6 state-1 CR-emit hold (`SOCL_L6_MIN_CR_EMITS`, made overridable here).
 
-## Status
+## Status — RUN & CLIMBED. See `docs/I1_REPRO_ASYNC_LADDER.md` for the verdict.
 
-**Not yet run** — `deps/axi-chiplet-controller` + `deps/tidelink-phy` are un-checked-out in this
-worktree, so VCS cannot elaborate. Rungs 0-1 reuse the shared-clock `tb_top.sv` from
-`../tidelink_fcsm_silicon_ratio`; **rung 2+ (per-die clocks) needs a split-clock `tb_top` variant** —
-marked TODO in the Makefile. Populate submodules, then follow the recipe in the plan §6.
+The env is complete and runnable (local split-clock `tb_top.sv` variant, CAL defparam knobs,
+staggered role_lock, edge-triggered witnesses). It elaborates and runs against the real 2-die pair.
+
+**Verdict: a faithful, FCSM-keyed `cr_seen=0` RED was NOT achieved.** The instrument-trust positive
+controls PASS (un-bypassed `deps` GREEN via real CR-handshake validation, `fcsm->4`), but across the
+whole ladder (shared → split async clocks + reset skew + ppm + churn + narrow windows + staggered
+role_lock) `cr_seen` is **identical for `deps` and `local`** — bit-identical, down to the grant
+counts. There is a **structural reason** no L6-keyed RED can exist: `cr_pkt_seen_rx` is a
+state-independent broadcast-RX latch, and the L6 gate only ANDs a min-emit count onto the state-1→2
+exit (fires only *after* a peer CR is seen). Full analysis + reproduce recipe in the doc.
 
 ## Instrument-trust (mandatory before trusting any RED) — plan §5
 

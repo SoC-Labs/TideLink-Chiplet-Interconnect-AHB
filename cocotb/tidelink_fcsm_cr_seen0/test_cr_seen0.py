@@ -21,7 +21,8 @@ from cocotb.triggers import ClockCycles, RisingEdge, Timer
 
 from pair_v2_common import (PairV2TB, APBMaster, CLK_PERIOD_NS, REF_CLK_PERIOD_NS,
                             ST_CR_SEEN, ST_CRACK_SEEN, ST_CAL_DONE, ST_LANE_LOCKED,
-                            APB_R8_SWI_LANE_STATUS)
+                            APB_R8_SWI_LANE_STATUS, APB_ROLE_CFG,
+                            ROLE_CFG_MASTER_LOCK, ROLE_CFG_SLAVE_LOCK)
 
 FCSM_SRC   = os.environ.get("FCSM_SRC", "local")
 CAL_BYPASS = os.environ.get("TIDELINK_CAL_BYPASS", "0") == "1"
@@ -32,6 +33,11 @@ SILICON_LANE_STATUS = 0x00100000     # cr=0 crack=0 cal=0 fcsm=0, only bit20 set
 SPLIT_CLK     = os.environ.get("TIDELINK_SPLIT_CLK", "0") == "1"
 DIE_CLK_PPM   = float(os.environ.get("TIDELINK_DIE_CLK_PPM", "0"))
 RESET_SKEW_NS = float(os.environ.get("TIDELINK_RESET_SKEW_NS", "0"))
+# F6b: stagger the two dies' role_lock (= calibrator auto-arm) so their training
+# timelines genuinely offset. The peer-aware S_HOLD absorbs offsets < its dwell;
+# a stagger COMPARABLE-TO/BEYOND the S_HOLD dwell forces the S_VALIDATE windows
+# apart (the real "staggered SSH deploy" bring-up condition).
+ROLE_STAGGER_NS = float(os.environ.get("TIDELINK_ROLE_STAGGER_NS", "0"))
 
 
 class SplitPairV2TB(PairV2TB):
@@ -66,6 +72,16 @@ class SplitPairV2TB(PairV2TB):
             await Timer(int(round(RESET_SKEW_NS)), unit="ns")
             self.dut.s_por_gate.value = 1
         await ClockCycles(self.dut.hclk, 50)
+
+    async def do_role_lock(self):
+        """Staggered role_lock: the calibrator auto-arms on role_locked, so
+        role-locking the slave ROLE_STAGGER_NS after the master offsets the two
+        dies' whole training timelines (the staggered-deploy bring-up)."""
+        await self.m_apb.write(APB_ROLE_CFG, ROLE_CFG_MASTER_LOCK)
+        if ROLE_STAGGER_NS > 0:
+            await Timer(int(round(ROLE_STAGGER_NS)), unit="ns")
+        await self.s_apb.write(APB_ROLE_CFG, ROLE_CFG_SLAVE_LOCK)
+        await ClockCycles(self.dut.hclk, 200)
 
 
 def make_tb(dut):

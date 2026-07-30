@@ -120,6 +120,11 @@ endif
 export TIDELINK_DIE_CLK_PPM  = $(DIE_CLK_PPM)
 export TIDELINK_RESET_SKEW_NS = $(RESET_SKEW_NS)
 
+# F6b: stagger between the two dies' role_lock (calibrator auto-arm). A stagger
+# >= the S_HOLD dwell forces the two S_VALIDATE windows apart (staggered deploy).
+ROLE_STAGGER_NS ?= 0
+export TIDELINK_ROLE_STAGGER_NS = $(ROLE_STAGGER_NS)
+
 # F6: wire skew (non-ideal serial link). 0 = passthrough.
 SKID_BITS ?= 0
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
@@ -150,45 +155,47 @@ CUSTOM_COMPILE_DEPS += $(_flist_deps)
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # -----------------------------------------------------------------------------
-# Ladder targets (plan §4.2 / §6). Each runs both FCSM_SRC where a split matters.
+# Ladder targets. See docs/I1_REPRO_ASYNC_LADDER.md for the FULL results and the
+# structural finding (no FCSM-keyed cr_seen=0 RED exists; every cr_seen=0 state
+# is deps==local bit-identical). These targets reproduce the documented runs.
 # -----------------------------------------------------------------------------
-.PHONY: rung0 green_deps red_local l6_sweep refuted_fix clean_builds
+.PHONY: rung0 green_deps green_split stag_local stag_deps clean_builds
 
 # Rung 0 -- GREEN baseline + instrument trust (calibrator bypassed, fast, deps).
+# PASS: cr=1 cal=1, pkt_is_cr_pkt pulses, clean-hex status (no X).
 rung0:
 	$(MAKE) FCSM_SRC=deps CAL_BYPASS=1 REF_PERIOD_NS=8.0 \
 	        MODULE=test_cr_seen0 TESTCASE=test_rung0_green_baseline \
 	        SIM_BUILD=sim_build_rung0
 
-# GREEN -- deps, cold, un-bypassed calibrator (short HOLD), fast ratio.
+# UN-BYPASSED GREEN oracle -- deps, cold, real CR-handshake validation (fcsm->4).
+# The load-bearing positive control: cr=1 via S_VALIDATE confirm, NOT the bypass.
 green_deps:
-	$(MAKE) FCSM_SRC=deps CAL_BYPASS=0 CAL_HOLD_CYCLES=2048 REF_PERIOD_NS=8.0 \
-	        MODULE=test_cr_seen0 TESTCASE=test_cold_bringup_cr_seen \
+	$(MAKE) FCSM_SRC=deps CAL_BYPASS=0 CAL_HOLD_CYCLES=1024 REF_PERIOD_NS=8.0 \
+	        POLL_CHUNKS=200 MODULE=test_cr_seen0 TESTCASE=test_cold_bringup_cr_seen \
 	        SIM_BUILD=sim_build_green
 
-# RED target -- local, cold, un-bypassed, async clocks + silicon ratio.
-red_local:
-	$(MAKE) FCSM_SRC=local CAL_BYPASS=0 CAL_HOLD_CYCLES=2048 REF_PERIOD_NS=40.0 \
-	        DIE_CLK_PPM=500 RESET_SKEW_NS=37 SKID_BITS=1 \
-	        MODULE=test_cr_seen0 TESTCASE=test_cold_bringup_cr_seen \
-	        SIM_BUILD=sim_build_red
+# Un-bypassed GREEN under the async split clock (deps stays GREEN with ppm+skew).
+green_split:
+	$(MAKE) FCSM_SRC=deps CAL_BYPASS=0 CAL_HOLD_CYCLES=1024 SPLIT_CLK=1 \
+	        DIE_CLK_PPM=1000 RESET_SKEW_NS=3000 REF_PERIOD_NS=8.0 POLL_CHUNKS=250 \
+	        MODULE=test_cr_seen0 TESTCASE=test_diag SIM_BUILD=sim_build_green_split
 
-# Localise the RED onto the L6 gate: sweep 32 -> 1 (run externally in a loop).
-l6_sweep:
-	@for n in 32 16 8 4 2 1; do \
-	  echo "=== SOCL_L6_MIN_CR_EMITS_VAL=$$n ==="; \
-	  $(MAKE) FCSM_SRC=local SOCL_L6=$$n CAL_BYPASS=0 REF_PERIOD_NS=40.0 \
-	          DIE_CLK_PPM=500 RESET_SKEW_NS=37 SKID_BITS=1 \
-	          MODULE=test_cr_seen0 TESTCASE=test_cold_bringup_cr_seen \
-	          SIM_BUILD=sim_build_l6_$$n || true; \
-	done
+# FCSM-INDEPENDENCE demo (NOT a valid RED): staggered role_lock + churn drives a
+# sustained cr_seen=0 that is a CALIBRATOR rendezvous failure. Run stag_local AND
+# stag_deps -- the two are bit-identical (same grant counts) => cr_seen=0 is NOT
+# FCSM-keyed. This is the evidence, not a repro of the silicon bug.
+stag_local:
+	$(MAKE) FCSM_SRC=local CAL_BYPASS=0 CAL_HOLD_CYCLES=1024 CAL_VAL_TIMEOUT=256 \
+	        CAL_VAL_TIMEOUT_TO_DONE=0 SPLIT_CLK=1 DIE_CLK_PPM=1000 \
+	        ROLE_STAGGER_NS=200000 REF_PERIOD_NS=8.0 POLL_CHUNKS=500 \
+	        MODULE=test_cr_seen0 TESTCASE=test_diag SIM_BUILD=sim_build_stag_local
 
-# The refuted emit-gate fix MUST stay RED against the faithful repro.
-refuted_fix:
-	$(MAKE) FCSM_SRC=local CAL_BYPASS=0 REF_PERIOD_NS=40.0 \
-	        DIE_CLK_PPM=500 RESET_SKEW_NS=37 SKID_BITS=1 \
-	        MODULE=test_cr_seen0 TESTCASE=test_refuted_fix_stays_red \
-	        SIM_BUILD=sim_build_refuted
+stag_deps:
+	$(MAKE) FCSM_SRC=deps CAL_BYPASS=0 CAL_HOLD_CYCLES=1024 CAL_VAL_TIMEOUT=256 \
+	        CAL_VAL_TIMEOUT_TO_DONE=0 SPLIT_CLK=1 DIE_CLK_PPM=1000 \
+	        ROLE_STAGGER_NS=200000 REF_PERIOD_NS=8.0 POLL_CHUNKS=500 \
+	        MODULE=test_cr_seen0 TESTCASE=test_diag SIM_BUILD=sim_build_stag_deps
 
 clean_builds:
 	rm -rf sim_build* dut_local.flist dut_deps.flist gen_fcsm

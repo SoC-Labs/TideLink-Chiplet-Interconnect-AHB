@@ -1,0 +1,7 @@
+sim_build*/
+dut_local.flist
+dut_deps.flist
+gen_fcsm/
+*.vcd
+*.log
+__pycache__/

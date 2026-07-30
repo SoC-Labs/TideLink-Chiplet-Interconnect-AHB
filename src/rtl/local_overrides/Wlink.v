@@ -367,6 +367,15 @@ module Wlink #(
   // chiplet controller (ws_verify_q — the winscan WS_FINALIZE release gate).
   output         obs_anchor_verified_o        // rx-link-clk dom: engaged-anchor exact-beacon sticky
 `endif
+`ifdef TIDELINK_FCEMIT_OBS
+  // I1 FC-emit / router-grant observability (2026-07-30). Two packed obs words
+  // from tidelink_fcemit_obs, which taps the WlinkTxRouter boundary nets in the
+  // tx_link_clk domain and syncs to apb_clk internally. Pure RO fan-out; gated
+  // by TIDELINK_FCEMIT_OBS. apb_clk domain -> read directly by the Region F mux.
+  ,
+  output [31:0]  obs_fcemit_stat_o,           // apb_clk dom: FC-emit STAT verdict word
+  output [31:0]  obs_fcemit_idcnt_o           // apb_clk dom: FC-emit data_id + ch6 grant cnt
+`endif
 );
   // ===================================================================
   // SoC Labs credit-path observability wiring.
@@ -1512,6 +1521,43 @@ module Wlink #(
     .auto_out_advance(txrouter_auto_out_advance),
     .io_enable(txrouter_io_enable)
   );
+`ifdef TIDELINK_FCEMIT_OBS
+  // -------------------------------------------------------------------------
+  // I1 FC-emit / router-grant observability (2026-07-30, SoC Labs).
+  // Pure RO fan-out of the WlinkTxRouter boundary nets (tx_link_clk domain).
+  // Sticky "ever presented SOP / ever granted" per channel, emitted data_id of
+  // AXI-AW(ch0) + sideband(ch6), serializer-accept liveness + sideband grant
+  // count; 2-flop synced to apb_clk inside the module. Channel map (Wlink.scala):
+  //   0 AW 1 W 2 B 3 AR 4 R | 5 general-bus 6 SIDEBAND 7 SW-port.
+  // NO datapath change; gated by TIDELINK_FCEMIT_OBS.
+  // -------------------------------------------------------------------------
+  tidelink_fcemit_obs u_fcemit_obs (
+    .tx_link_clk  (phy_link_tx_tx_link_clk),
+    .apb_clk      (apb_clk),
+    .tx_resetn    (~txrouter_reset),
+    .apb_resetn   (~apb_reset),
+    .in0_sop      (txrouter_auto_in_0_sop),
+    .in1_sop      (txrouter_auto_in_1_sop),
+    .in2_sop      (txrouter_auto_in_2_sop),
+    .in3_sop      (txrouter_auto_in_3_sop),
+    .in4_sop      (txrouter_auto_in_4_sop),
+    .in5_sop      (txrouter_auto_in_5_sop),
+    .in6_sop      (txrouter_auto_in_6_sop),
+    .in0_adv      (txrouter_auto_in_0_advance),
+    .in1_adv      (txrouter_auto_in_1_advance),
+    .in2_adv      (txrouter_auto_in_2_advance),
+    .in3_adv      (txrouter_auto_in_3_advance),
+    .in4_adv      (txrouter_auto_in_4_advance),
+    .in5_adv      (txrouter_auto_in_5_advance),
+    .in6_adv      (txrouter_auto_in_6_advance),
+    .in0_id       (txrouter_auto_in_0_data_id),
+    .in6_id       (txrouter_auto_in_6_data_id),
+    .out_advance  (txrouter_auto_out_advance),
+    .io_enable    (txrouter_io_enable),
+    .obs_fcemit_stat  (obs_fcemit_stat_o),
+    .obs_fcemit_idcnt (obs_fcemit_idcnt_o)
+  );
+`endif
   WlinkTxPstateCtrl txpstate ( // @[Wlink.scala 90:27]
     .clock(txpstate_clock),
     .reset(txpstate_reset),

@@ -369,6 +369,21 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // axi_chiplet_controller.sv (via the v2 shim below) for APB Region F
 // (OBS_AXI_NODES @ 0x21E0). Plain SV, no V2 deps — one definition for V1/V2.
 ${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
+// SoC Labs I1 winscan / calibrator observability (2026-07-30): reads the
+// forwarded-clock alignment calibrator's winscan result (FSM state, cal_done,
+// validation-timeout, per-lane fault/lock, selected-lane eye) over the PS
+// backdoor into APB Region F slots 1-2 (WINSCAN_STAT @ 0x21E4, WINSCAN_EYE @
+// 0x21E8). Instantiated by axi_chiplet_controller.sv. Pure RO fan-out; ZERO
+// added flops in the rx_link_clk capture region (detect+CDC in apb_clk).
+${TIDELINK_HOME}/src/rtl/tidelink_winscan_obs.sv
+// SoC Labs I1 FC-emit / router-grant observability (2026-07-30): taps the
+// WlinkTxRouter boundary in the local-override Wlink.v -> Region F slots 3-4
+// (FCEMIT_STAT @ 0x21EC, FCEMIT_IDCNT @ 0x21F0). Gated by TIDELINK_FCEMIT_OBS,
+// which is defined PER-FILE in the v2 shims (v2_Wlink.v + v2_axi_chiplet_
+// controller.sv) so it survives Vivado IP packaging — NOT a flist +define+
+// (that mechanism is dropped by ipx::package_project, see banner). The leaf
+// module is listed unconditionally (dead-stripped when the define is off).
+${TIDELINK_HOME}/src/rtl/tidelink_fcemit_obs.sv
 ${TIDELINK_HOME}/src/rtl/v2shims/v2_axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
 // init_wait,axl_state,txn_step}_o output ports for APB Region C readback.

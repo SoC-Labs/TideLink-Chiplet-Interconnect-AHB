@@ -913,6 +913,10 @@ module axi_chiplet_controller #(
     wire        cal_in_hold_w;
     // M7 (2026-06-05): calibrator auto-retry counter for silicon observability
     wire [15:0] cal_resweep_ctr_w;
+    // I1 winscan obs (2026-07-30): calibrator validation-timeout give-up flag
+    // (sticky in the calibrator; was left UNCONNECTED on the V2 instance). RO tap
+    // for tidelink_winscan_obs -> Region F WINSCAN_STAT[5]. Zero datapath change.
+    wire        cal_valto_w;
     // EYE-WIDTH VISIBILITY (2026-06-17): per-lane-selected eye-width read from
     // the deps calibrator (rx_link_clk domain; CDC-synced to apb_clk before the
     // APB read mux). best = matched-window WIDTH (taps) of the SWI_EYE_LANE_SEL
@@ -2904,8 +2908,60 @@ module axi_chiplet_controller #(
         .ini_r_err    (axi_ini_0_r_bits_resp[1]),
         .obs_axinodes (axinode_obs_word)
     );
+
+    // =====================================================================
+    // Region F slots 1-2 — I1 WINSCAN / CALIBRATOR observability (2026-07-30)
+    //   Reads the forwarded-clock alignment calibrator's winscan result over
+    //   the PS backdoor to confirm/refute the "override footprint shifts the
+    //   capture phase so the winscan never locks -> cal_done=0" hypothesis.
+    //   Pure RO fan-out of calibrator FSM registers; ZERO added flops in the
+    //   rx_link_clk capture region (all detect/CDC in apb_clk). See
+    //   src/rtl/tidelink_winscan_obs.sv for the packed bit layout + A/B read.
+    //     slot 1 (0x2E03_21E4) WINSCAN_STAT  — FSM state, cal_done, val_timeout,
+    //                                           ever-reached, lane_fault[7:0]
+    //     slot 2 (0x2E03_21E8) WINSCAN_EYE   — selected-lane eye width/slip/phase,
+    //                                           lane_locked[7:0]
+    // =====================================================================
+    wire [31:0] winscan_stat_word;
+    wire [31:0] winscan_eye_word;
+    tidelink_winscan_obs u_winscan_obs (
+        .apb_clk           (apb_clk),
+        .resetn            (hresetn),
+        .cal_state         (cal_state_w),
+        .cal_done          (cal_calibration_done_w),
+        .cal_val_timeout   (cal_valto_w),
+        .cal_in_hold       (cal_in_hold_w),
+        .cal_training_mode (cal_training_mode_w),
+        .lane_fault        (cal_lane_fault_w),
+        .lane_locked       (lane_locked_w),
+        .eye_lane_sel      (eye_lane_sel_eff),
+        .eye_lane_passed   (cal_eye_lane_passed_w),
+        .eye_best_slip     (cal_eye_best_slip_w),
+        .eye_best_phase    (cal_eye_best_phase_w),
+        .eye_best_run      (cal_eye_best_w),
+        .obs_winscan_stat  (winscan_stat_word),
+        .obs_winscan_eye   (winscan_eye_word)
+    );
+
+`ifdef TIDELINK_FCEMIT_OBS
+    // Region F slots 3-4 — FC-emit / router-grant obs (H1-H4). Packed in the
+    // Wlink override's tx_link_clk domain (tidelink_fcemit_obs) and delivered
+    // here already synced to apb_clk via the two obs_fcemit_*_o Wlink ports.
+    // Gated by TIDELINK_FCEMIT_OBS so a winscan-only image (no TX-router-domain
+    // flops) can be built when the footprint-vs-measurement trade-off matters.
+    wire [31:0] obs_fcemit_stat_w;
+    wire [31:0] obs_fcemit_idcnt_w;
+`endif
+
     assign regionF_axinodes_rdata =
-        (ctrl_reg_addr[2:0] == 3'h0) ? axinode_obs_word : 32'h0; // 0x21E0 OBS_AXI_NODES
+        (ctrl_reg_addr[2:0] == 3'h0) ? axinode_obs_word  : // 0x21E0 OBS_AXI_NODES
+        (ctrl_reg_addr[2:0] == 3'h1) ? winscan_stat_word : // 0x21E4 WINSCAN_STAT
+        (ctrl_reg_addr[2:0] == 3'h2) ? winscan_eye_word  : // 0x21E8 WINSCAN_EYE
+`ifdef TIDELINK_FCEMIT_OBS
+        (ctrl_reg_addr[2:0] == 3'h3) ? obs_fcemit_stat_w  : // 0x21EC FCEMIT_STAT
+        (ctrl_reg_addr[2:0] == 3'h4) ? obs_fcemit_idcnt_w : // 0x21F0 FCEMIT_IDCNT
+`endif
+        32'h0;
 
     // =====================================================================
     // Wlink POR Gating
@@ -5876,7 +5932,9 @@ module axi_chiplet_controller #(
         .phase_offset           (cal_phase_offset_w),
         .training_mode          (cal_training_mode_w),
         .calibration_done       (cal_calibration_done_w),
-        .validation_timed_out   (),
+        // I1 winscan obs (2026-07-30): capture the sticky validation give-up flag
+        // (was unconnected). Pure RO fan-out into tidelink_winscan_obs.
+        .validation_timed_out   (cal_valto_w),
         .lane_fault             (cal_lane_fault_w),
         .state                  (cal_state_w),
         .sweep_active_o         (sweep_active_w),
@@ -5984,6 +6042,8 @@ module axi_chiplet_controller #(
         .phase_offset          (cal_phase_offset_w),
         .training_mode         (cal_training_mode_w),
         .calibration_done      (cal_calibration_done_w),
+        // I1 winscan obs (2026-07-30): sticky validation give-up flag (RO tap).
+        .validation_timed_out  (cal_valto_w),
         .lane_fault            (cal_lane_fault_w),
         .state                 (cal_state_w),
         // M7 observability (2026-06-05): auto-retry counter for stuck-sweep
@@ -6471,6 +6531,13 @@ module axi_chiplet_controller #(
         // sticky from the WavD2DGpio_v2 override; 2-FF synced to apb_clk
         // (ws_verify_q) and AND'd into the winscan WS_FINALIZE release gate.
         .obs_anchor_verified_o       (obs_anchor_verified_w)
+`endif
+`ifdef TIDELINK_FCEMIT_OBS
+        // I1 FC-emit / router-grant observability (2026-07-30): two packed obs
+        // words from the Wlink tx_link_clk-domain fcemit tap (apb_clk synced).
+        ,
+        .obs_fcemit_stat_o           (obs_fcemit_stat_w),
+        .obs_fcemit_idcnt_o          (obs_fcemit_idcnt_w)
 `endif
     );
 

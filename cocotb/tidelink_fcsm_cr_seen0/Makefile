@@ -19,7 +19,10 @@ export TIDELINK_HOME
 export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
 
 SILRATIO := $(TIDELINK_HOME)/cocotb/tidelink_fcsm_silicon_ratio
-VERILOG_SOURCES = $(SILRATIO)/tb_top.sv $(SILRATIO)/pad_skid.sv $(SILRATIO)/err_inject.sv
+# Local tb_top.sv variant: adds the F4 CAL_HOLD_CYCLES / VAL_TIMEOUT defparam
+# knobs and (guarded) the F6 split-clock option. pad_skid/err_inject are copied
+# verbatim. pair_v2_common.py still comes from SILRATIO via PYTHONPATH.
+VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv $(CURDIR)/err_inject.sv
 
 TOPLEVEL = tb_top
 MODULE  ?= test_cr_seen0
@@ -73,18 +76,47 @@ COMPILE_ARGS += -f $(DUT_FLIST)
 REF_PERIOD_NS ?= 8.0
 export TIDELINK_SIM_REF_PERIOD_NS = $(REF_PERIOD_NS)
 
-# F4: shrink the S_HOLD dwell via defparam so S_VALIDATE still gates on real
-#     cr_pkt_seen (do NOT set tb_early_exit_force_q). 0 = leave RTL default.
-CAL_HOLD_CYCLES ?= 2048
+# F4: shrink the S_HOLD dwell via hierarchical defparam (tb_top.sv) so a COLD
+#     un-bypassed bring-up is feasible: HOLD_CYCLES default 65536 link-word-clocks
+#     ~= 8.4 ms sim (link word clk ~128 ns), far past any feasible poll window.
+#     S_VALIDATE still gates on the real sideband cr_pkt_seen (NOT a bypass).
+#     Empty = leave the RTL default untouched.
+CAL_HOLD_CYCLES ?= 1024
+ifneq ($(strip $(CAL_HOLD_CYCLES)),)
+COMPILE_ARGS += +define+TB_CAL_HOLD_CYCLES=$(CAL_HOLD_CYCLES)
+endif
 export TIDELINK_CAL_HOLD_CYCLES = $(CAL_HOLD_CYCLES)
+
+# F4b: S_VALIDATE window (link cycles). Default RTL 4096. The sideband CR must
+#      cross within this window or S_VALIDATE times out. Empty = RTL default.
+CAL_VAL_TIMEOUT ?=
+ifneq ($(strip $(CAL_VAL_TIMEOUT)),)
+COMPILE_ARGS += +define+TB_CAL_VAL_TIMEOUT=$(CAL_VAL_TIMEOUT)
+endif
+
+# F4c: override VAL_TIMEOUT_TO_DONE (V2 default 1 = give up to S_DONE on
+#      S_VALIDATE timeout, asserting cal_done). Set 0 to make a starved
+#      S_VALIDATE hold cal_done=0 (closer to the FPGA `else calibrator + the
+#      silicon 4-tuple). Empty = RTL default (1 under TIDELINK_PHY_V2).
+CAL_VAL_TIMEOUT_TO_DONE ?=
+ifneq ($(strip $(CAL_VAL_TIMEOUT_TO_DONE)),)
+COMPILE_ARGS += +define+TB_CAL_VAL_TIMEOUT_TO_DONE=$(CAL_VAL_TIMEOUT_TO_DONE)
+endif
 
 # F4: whether the test forces the calibrator bypass. rung0=1 (baseline), else 0.
 CAL_BYPASS ?= 0
 export TIDELINK_CAL_BYPASS = $(CAL_BYPASS)
 
-# F6: async 2-die clocking (TODO: needs split-clock tb variant; passed through).
+# F6: async 2-die clocking. SPLIT_CLK=1 compiles the split-clock tb_top variant
+#     (slave die on independent s_hclk/s_ref_clk) and tells the cocotb harness to
+#     drive them at a DIE_CLK_PPM offset with RESET_SKEW_NS POR skew.
+SPLIT_CLK    ?= 0
 DIE_CLK_PPM  ?= 0
 RESET_SKEW_NS ?= 0
+ifeq ($(SPLIT_CLK),1)
+COMPILE_ARGS += +define+TB_SPLIT_CLK
+export TIDELINK_SPLIT_CLK = 1
+endif
 export TIDELINK_DIE_CLK_PPM  = $(DIE_CLK_PPM)
 export TIDELINK_RESET_SKEW_NS = $(RESET_SKEW_NS)
 

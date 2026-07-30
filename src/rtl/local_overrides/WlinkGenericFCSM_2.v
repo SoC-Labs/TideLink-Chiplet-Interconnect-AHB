@@ -283,16 +283,16 @@ module WlinkGenericFCSM_2(
   wire [7:0] last_good_pkt_from_rx_in = _fe_rx_ptr_in_T ? 8'h0 : _last_good_pkt_from_rx_in_T_2; // @[FC.scala 415:45]
   reg [7:0] last_ack_pkt_sent; // @[FC.scala 418:48]
   wire  _GEN_25 = en_ff2_tx_demet_io_out | sop; // @[FC.scala 449:24 FC.scala 450:39 FC.scala 427:39]
+  reg  socl_l7_reached_link_data; // SoCL: hoisted above the emit gates (bring-up ungate); assigned at state==5 below
   // SoC Labs L6 (Fix B): min CR-emit gate for the state-1 exit.
   reg  [7:0] socl_l6_cr_emit_count;
-  wire socl_l6_cr_emit_gate_ok = (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS);
+  wire socl_l6_cr_emit_gate_ok = (~socl_l7_reached_link_data) | (socl_l6_cr_emit_count >= SOCL_L6_MIN_CR_EMITS); // SoCL bring-up fix: ungate (deps-like) until first LINK_DATA; arm gate for recovery after
   // SoC Labs L7 (Fix C): min CRACK-emit gate for the state-2 exit (mirror of L6).
   reg  [7:0] socl_l7_crack_emit_count;
-  wire socl_l7_crack_emit_gate_ok = (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS);
+  wire socl_l7_crack_emit_gate_ok = (~socl_l7_reached_link_data) | (socl_l7_crack_emit_count >= SOCL_L7_MIN_CRACK_EMITS); // SoCL bring-up fix: ungate until first LINK_DATA
   wire socl_l7_crack_release = crack_pkt_seen_tx_demet_io_out & socl_l7_crack_emit_gate_ok;
   // SoC Labs L7 (Fix A): sticky-NACK bringup forgive; masks the ORIGINAL
   // isNotExpPacket (no L9 layer in this lighter variant).
-  reg  socl_l7_reached_link_data;
   wire socl_l7_bringup_forgive = (~socl_l7_reached_link_data)
                                  & cr_pkt_seen_tx_demet_io_out
                                  & crack_pkt_seen_tx_demet_io_out;

@@ -126,6 +126,9 @@ package tidelink_top_system_pkg;
   // I1 control-plane repro (sim/i1-controlplane-repro): faithful role_lock /
   // training / calibrator-arm bring-up WITHOUT the cal bypass.
   `include "test_top_i1_controlplane.sv"
+  // T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression):
+  // die A fix-ON vs die B default-OFF, single-sim role_lock latch discrimination.
+  `include "test_top_i1_selfarm.sv"
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"

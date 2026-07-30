@@ -49,6 +49,34 @@
 // Testbench package
 `include "tidelink_top_system_pkg.sv"
 
+// ---------------------------------------------------------------------------
+// I1 SELF-ARM regression (test/i1-selfarm-regression) — per-die compile-time
+// SELF_ARM_TRAIN_EN override for tidelink_top. DEFAULT OFF on BOTH dies, so
+// every existing test in this harness is byte-behaviour-identical (the param
+// constant-folds away, exactly matching the fix's default-OFF intent — see
+// docs/I1_SELFARM_FIX.md / src/rtl/local_overrides/axi_chiplet_controller.sv).
+//
+// test_top_i1_selfarm compiles with +define+TL_SELF_ARM_A_ON so die A gets the
+// fix ON while die B stays the shipping-default OFF. A SINGLE simulation then
+// discriminates the fix (die A latches role_lock on the SW ROLE_CFG[1] write
+// WITHOUT the peer mask-handshake / nego verdict) from the default behaviour
+// (die B never latches under the same eth-chiplet condition: mask_hs gate
+// engaged, nego_en=0). Die B is the built-in negative control / instrument
+// trust check: if it ALSO latches, the test is not exercising the param.
+//
+// The negative-control DISCRIMINATION run compiles WITHOUT the define, so die
+// A is ALSO OFF and the fix assertion fails — proving the test is not vacuous.
+`ifdef TL_SELF_ARM_A_ON
+  `define TL_SELF_ARM_A_VAL 1'b1
+`else
+  `define TL_SELF_ARM_A_VAL 1'b0
+`endif
+`ifdef TL_SELF_ARM_B_ON
+  `define TL_SELF_ARM_B_VAL 1'b1
+`else
+  `define TL_SELF_ARM_B_VAL 1'b0
+`endif
+
 module test_top;
 
   // ---------------------------------------------------------------
@@ -464,7 +492,10 @@ module test_top;
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
     .NUM_PHY_LANES     (NUM_PHY_LANES),
-    .TIDELINK_PAIR_BASE(A_PAIR_BASE)
+    .TIDELINK_PAIR_BASE(A_PAIR_BASE),
+    // I1 SELF-ARM regression: die A = fix ON when +define+TL_SELF_ARM_A_ON,
+    // else shipping-default OFF. See the macro block above.
+    .SELF_ARM_TRAIN_EN (`TL_SELF_ARM_A_VAL)
   ) u_tidelink_top_a (
     .hclk              (clk),
     .hresetn           (rst_n),
@@ -660,7 +691,10 @@ module test_top;
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
     .NUM_PHY_LANES     (NUM_PHY_LANES),
-    .TIDELINK_PAIR_BASE(B_PAIR_BASE)
+    .TIDELINK_PAIR_BASE(B_PAIR_BASE),
+    // I1 SELF-ARM regression: die B = built-in negative control, always the
+    // shipping-default OFF unless +define+TL_SELF_ARM_B_ON. See macro block.
+    .SELF_ARM_TRAIN_EN (`TL_SELF_ARM_B_VAL)
   ) u_tidelink_top_b (
     .hclk              (clk),
     .hresetn           (rst_n),

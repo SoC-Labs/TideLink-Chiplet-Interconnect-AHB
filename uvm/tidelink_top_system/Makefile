@@ -147,6 +147,12 @@ VCS_FLAGS += $(TB_DIR)/top.sv
 endif
 VCS_FLAGS += -top test_top
 
+# Extra user compile flags. Empty by default -> every existing target is
+# byte-identical. Used by the root sim_gate_i1_selfarm suite to pass
+# +define+TL_SELF_ARM_A_ON (die A = SELF_ARM_TRAIN_EN fix ON; die B stays the
+# shipping-default OFF negative control). See tb/top.sv macro block.
+VCS_FLAGS += $(EXTRA_VCS_FLAGS)
+
 # Compile outputs
 VCS_FLAGS += -l $(SIM_DIR)/compile.log
 VCS_FLAGS += -o $(SIM_DIR)/simv

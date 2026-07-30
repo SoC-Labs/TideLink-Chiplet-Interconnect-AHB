@@ -263,7 +263,7 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axinode_obs sim_gate_i1_selfarm
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -995,6 +995,36 @@ sim_gate_dftelab:
 	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
 	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log)
 
+# ---------------------------------------------------------------------------
+# T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression).
+# UVM tidelink_top_system paired-die harness. Compiles die A with the fix ON
+# (+define+TL_SELF_ARM_A_ON) and die B at the shipping-default OFF, drives the
+# eth-chiplet control-plane condition (mask_hs gate ENGAGED via mask_hs_bypass=0,
+# nego_en=0) and asserts, in ONE sim, that die A LATCHES role_lock on the SW
+# ROLE_CFG[1] write (the fix, without the peer handshake/nego verdict) while
+# die B does NOT (the built-in negative control / instrument-trust check). PASS
+# requires the [I1_SELFARM_VERDICT] PASS token AND the [I1_SELFARM_DONE]
+# completion marker AND the ABSENCE of any FAIL verdict.
+#
+# HONEST SCOPE: this gates the FIX LOGIC only. The silicon I1 failure is
+# above-RTL (packaged-IP / OOC-synth / reset-sequencing — docs/I1_CONTROLPLANE_SIM.md)
+# and a faithful zero-BER RTL sim is BLIND to it, so it is gated only on KR260
+# HW (kr260_eth_regress), NOT here.
+#
+# DISCRIMINATION (the negative control, run once by hand — docs/I1_SELFARM_REGRESSION.md):
+# recompiling WITHOUT the define makes die A also OFF, CHK_FIX_LATCH_A fails, and
+# this suite FAILS — proving it is not vacuously green. Own build dir
+# (sim_build_selfarm), rm'd first so a stale simv can never false-PASS the gate.
+sim_gate_i1_selfarm:
+	$(call sim_gate_run,i1_selfarm_rolelock,\
+	  rm -rf uvm/tidelink_top_system/sim_build_selfarm && \
+	  cd uvm/tidelink_top_system && \
+	  $(MAKE) run TEST=test_top_i1_selfarm FCSM_SRC=local SIM_DIR=sim_build_selfarm \
+	    EXTRA_VCS_FLAGS="+define+TL_SELF_ARM_A_ON" && \
+	  grep -qF "[I1_SELFARM_VERDICT] PASS" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  grep -qF "[I1_SELFARM_DONE]" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  ! grep -qF "[I1_SELFARM_VERDICT] FAIL" sim_build_selfarm/test_top_i1_selfarm.log)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
@@ -1008,7 +1038,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs
+	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
+	i1_selfarm_rolelock
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1065,6 +1096,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
 	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
 	@$(MAKE) --no-print-directory sim_gate_axinode_obs
+	@# T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (role_lock self-arm discrimination).
+	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit

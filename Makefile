@@ -262,7 +262,7 @@ endef
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
-	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
+	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
@@ -460,6 +460,19 @@ sim_gate_txgen_unit:
 sim_gate_txgen_negctl:
 	$(call sim_gate_run,txgen_negctl,\
 	  $(MAKE) -C cocotb/tidelink_txgen TXGEN_NEGCTL=1)
+
+# TXGEN ownership hand-off vs an outstanding external data phase (audit A4,
+# fixed 2026-07-30). tidelink_tx_gen used ext_idle = ~ext_htrans[1], but HTRANS
+# is address-phase-only, so the 2:1 ownership mux could switch mid external
+# data phase and commit {external ADDR, generator DATA} to the link — silent
+# single-word corruption (F14-A class). Fixed by ext_data_pend_r. Positive
+# regression; the 3 other txgen suites never overlap external traffic so they
+# were structurally blind to it. Measured post-fix TESTS=2 PASS=2.
+sim_gate_txgen_ext_hijack:
+	$(call sim_gate_run,txgen_ext_hijack,\
+	  $(MAKE) -C cocotb/tidelink_txgen MODULE=test_txgen_ext_hijack \
+	      SIM_BUILD=sim_build_hijack \
+	      COCOTB_RESULTS_FILE=sim_build_hijack/res_hijack.xml)
 
 sim_gate_v2_txgen:
 	$(call sim_gate_run,v2_txgen,\
@@ -1096,7 +1109,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
+	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
@@ -1189,6 +1202,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
 	@$(MAKE) --no-print-directory sim_gate_txgen_unit
 	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
+	@$(MAKE) --no-print-directory sim_gate_txgen_ext_hijack
 	@$(MAKE) --no-print-directory sim_gate_v2_txgen
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election

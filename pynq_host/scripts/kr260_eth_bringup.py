@@ -81,6 +81,7 @@ REG_ROLE_CFG             = _TIDELINK_BANK  + 0x0080   # 0x2E032080 (RW role sele
 REG_ROLE_STATUS          = _TIDELINK_BANK  + 0x0084   # 0x2E032084 (RO effective role)
 REG_SWI_TRAINING_MODE    = _TIDELINK_BANK  + 0x0100   # 0x2E032100 (sim "SLOT0")
 REG_SWI_LANE_STATUS      = _TIDELINK_BANK  + 0x0108   # 0x2E032108 (RO cal/fcsm/lanes)
+REG_WINSCAN_STAT         = _TIDELINK_BANK  + 0x01E4   # 0x2E0321E4 (RO winscan; [6]=in_hold/S_HOLD)
 
 # ROLE_CFG (0x2080): bit[0]=role (0 master, 1 slave), bit[1]=role_lock.
 ROLE_CFG_MASTER_LOCK = 0x02        # role_lock=1, role=0 -> master / grandmaster (die_a)
@@ -194,28 +195,39 @@ def bringup(bd, role, cal_timeout, converge_timeout):
     bd.wr(REG_SWI_TRAINING_MODE, 1)
     time.sleep(0.005)
 
-    # 2. wait for calibration_done. On silicon the calibrator runs the real
-    #    winscan against the PEER die over the ribbon — so this only completes
-    #    when the far board has ALSO role-locked and is training. A timeout here
-    #    almost always means "peer not up / ribbon" not "this die broken".
-    print("--- 2. poll calibration_done (needs the peer die + ribbon) ---")
+    # 2. wait until the calibrator reaches S_HOLD (WINSCAN_STAT[6]=in_hold).
+    #    CRITICAL (I1 FIX-E): do NOT poll cal_done here. S_HOLD->S_VALIDATE is
+    #    gated on (hold_ctr>=HOLD_MAX && !swi_training_mode_r)
+    #    (tidelink_phy_align_calibrator_v2.sv:1499) — cal_done can NEVER assert
+    #    while training is held. Polling cal_done before releasing training is a
+    #    self-deadlock (the original I1 bring-up bug: the die parks in S_HOLD).
+    #    So wait for S_HOLD instead, then release training (step 3) to advance.
+    print("--- 2. poll winscan in_hold (S_HOLD reached; needs peer die + ribbon) ---")
     deadline = time.time() + cal_timeout
-    cal = 0
+    inhold = 0
     while time.time() < deadline:
-        cal = decode_status(bd.rd(REG_SWI_LANE_STATUS))["cal_done"]
-        if cal:
+        inhold = (bd.rd(REG_WINSCAN_STAT) >> 6) & 1
+        if inhold:
             break
         time.sleep(0.02)
-    if not cal:
-        print("   cal_done did NOT assert in %.1fs." % cal_timeout)
+    if not inhold:
+        print("   S_HOLD (in_hold) not reached in %.1fs." % cal_timeout)
         print("   Check: peer board running this too? ribbon seated? die_a<->die_b "
               "images not swapped?")
         print_status(bd, "   ")
         return 2
-    print("   cal_done=1")
+    print("   in_hold=1 (calibrator parked in S_HOLD, training still held)")
 
-    # 3. to data mode: clear training mode, then the 3-write LL bootstrap.
-    print("--- 3. to-data-mode: SWI_TRAINING_MODE<-0, then LL enable sequence ---")
+    # 2b. bilateral-coordination settle: both dies must be in S_HOLD *before*
+    #     either drops training — the first to release stops sending the training
+    #     pattern the peer still needs to lock. When both dies run this recipe in
+    #     parallel (POR'd together) they reach S_HOLD within ms; a short settle
+    #     lets the peer arrive. For a strict barrier use bringup_pair_release.sh.
+    time.sleep(1.0)
+
+    # 3. FIX-E release: drop training -> S_HOLD->S_VALIDATE (hold_ctr expired) ->
+    #    VAL_TIMEOUT_TO_DONE -> S_DONE -> cal_done. Then the 3-write LL bootstrap.
+    print("--- 3. to-data-mode: SWI_TRAINING_MODE<-0 (FIX-E release), then LL enable ---")
     bd.wr(REG_SWI_TRAINING_MODE, 0)
     time.sleep(0.005)
     for val in (LL_SWRESET_ON, LL_SWRESET_OFF, LL_ENABLE):

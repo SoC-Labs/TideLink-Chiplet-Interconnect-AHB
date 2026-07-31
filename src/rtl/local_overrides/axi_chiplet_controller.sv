@@ -45,6 +45,11 @@ module axi_chiplet_controller #(
     // lottery that left master/slave anti-correlated. Default 0 = bit-exact
     // passthrough (sim/ASIC/UVM); FPGA wrapper sets 1 via component.xml.
     parameter USE_T3A        = 1'b0,
+    // Z2 no-data-delivery fix (2026-07-30, docs/HANDOVER_Z2_PICKUP_2026_07_30.md
+    // §5): pass-through to Wlink.EPOCH_ANCHOR_EN. Default 0 = bit-exact
+    // passthrough everywhere; a board-level integration overrides to 1 to swap
+    // in the training-EXIT anchored deskew corrector (V2 only; inert under V1).
+    parameter EPOCH_ANCHOR_EN = 1'b0,
 
     // Phase 2 autonomy — POR-default value for NEGO_TRAIN_CFG (Region 8 slot
     // 3'h3, MMIO 0x4403_210C). Bit[0]=train_auto_en, bit[1]=train_sw_step,
@@ -6193,7 +6198,7 @@ module axi_chiplet_controller #(
     // =====================================================================
     // Wlink Core Instance
     // =====================================================================
-    Wlink #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A)) u_wlink (
+    Wlink #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .EPOCH_ANCHOR_EN(EPOCH_ANCHOR_EN)) u_wlink (
         .apb_clk                    (apb_clk),
         .app_clk                    (app_clk),
         .user_hsclk                 (user_hsclk),

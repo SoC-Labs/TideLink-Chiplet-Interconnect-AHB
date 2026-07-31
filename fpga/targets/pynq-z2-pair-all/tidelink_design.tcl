@@ -437,6 +437,22 @@ proc create_root_design { parentCell } {
         puts "TideLink: CONFIG.TRAIN_ENTRY_FALLBACK = 1'b1 (Option-A self-start ENABLED)"
     }
 
+    # Epoch-anchor deskew corrector select (docs/HANDOVER_Z2_PICKUP_2026_07_30.md
+    # §5): the pair's board-to-board ribbon has real cross-lane skew, and the
+    # shipping corrector (SYNC_REANCHOR_EN) only arms on a live SYNC beacon that
+    # bring-up leaves off — proven in sim to leave s2m delivery all-zeros
+    # (cocotb/tidelink_top_pair_v2 test_v2_pair_data, EPOCH_PROFILE=silicon).
+    # ENV-GATED like TL_TRAIN_ENTRY_FALLBACK so the committed target keeps its
+    # baseline (OFF, byte-identical to every prior pynq-z2-pair-all image, and
+    # to every KR260 target which never sets this); export TL_EPOCH_ANCHOR_EN=1
+    # to build the data-delivery-fix HW-test image. Reaches OOC synth via the
+    # wrapper IP-face parameter — a +define+ would NOT (same class of trap as
+    # TRAIN_ENTRY_FALLBACK / DEBUG_UNLOCK_DEFAULT).
+    if { [info exists ::env(TL_EPOCH_ANCHOR_EN)] && $::env(TL_EPOCH_ANCHOR_EN) == 1 } {
+        set_property -dict [list CONFIG.EPOCH_ANCHOR_EN {1'b1}] $tl
+        puts "TideLink: CONFIG.EPOCH_ANCHOR_EN = 1'b1 (training-EXIT anchored deskew ENABLED)"
+    }
+
     #--------------------------------------------------------------------------
     # AHB-Lite BRAM terminus for TideLink's ahb_mng manager port (2026-07-04).
     # Far side of the XHB500 transparent window: a peer die's remote-initiated

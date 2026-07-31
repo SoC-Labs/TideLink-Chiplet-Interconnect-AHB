@@ -72,6 +72,16 @@ module tidelink_top #(
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
     parameter USE_T3A    = 1'b0,
+    // Z2 no-data-delivery fix (2026-07-30, docs/HANDOVER_Z2_PICKUP_2026_07_30.md
+    // §5): pass-through to axi_chiplet_controller.EPOCH_ANCHOR_EN ->
+    // Wlink.EPOCH_ANCHOR_EN -> WlinkGPIOPHY_v2 (V2 only; inert under V1 — the
+    // V1 WlinkGPIOPHY has no such parameter, and Wlink.v only forwards it to
+    // the phy instance under `ifdef TIDELINK_PHY_V2). Default 0 = today's
+    // shipping deskew corrector (SYNC_REANCHOR_EN), which never arms on real
+    // silicon because the idle-gated SYNC beacon can't fire. 1 swaps in the
+    // training-EXIT anchored corrector proven in sim to fix s2m delivery.
+    // This is a real netlist change; a board integration opts in explicitly.
+    parameter EPOCH_ANCHOR_EN = 1'b0,
     // S2 scaffold (PLAN_TIDELINK_INTEGRATION, 2026-06-10): select the NEW
     // shared PHY component (deps/tidelink-phy, feat/phy-refactor line) in
     // place of the current WavD2DGpio datapath inside u_chiplet_controller.
@@ -2523,6 +2533,8 @@ module tidelink_top #(
         .USE_CLKBUF    (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
         .USE_T3A       (USE_T3A),
+        // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 = today.
+        .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN),
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),

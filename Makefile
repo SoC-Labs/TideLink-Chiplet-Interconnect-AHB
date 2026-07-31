@@ -264,6 +264,7 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
+	sim_gate_axi_datanode_recovery \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect
@@ -637,6 +638,22 @@ sim_gate_axinode_obs:
 	        cocotb/tidelink_apb_regs/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_axinode_obs && \
 	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_region_f_decode)
+
+# AXI data-node error-recovery (Fix G, 2026-07-31). Repro + fix for the on-silicon
+# B-node write-response wedge (docs/AXI_DATANODE_RECOVERY_GAP): a mid-stream error
+# on an AXI FC data node was DETECTED but never NACK'd because socl_l7_bringup_
+# forgive never disarmed on a response-RECEIVE node (its TX FSM sits in LINK_IDLE,
+# never LINK_DATA) -> response never returns -> initiator hard-wedges. Fix G also
+# latches reached_link_data on LINK_IDLE. Four sims (own build each): recover with
+# the fix; NOT-recover with the fix Force-disabled (the wedge repro / non-vacuity);
+# CRC-on detects a payload error, CRC-off silently accepts it. 40ns silicon ratio.
+sim_gate_axi_datanode_recovery:
+	$(call sim_gate_run,axi_datanode_recovery,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_axirec && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_error_recovers && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_error_wedges_no_fix && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_on_detects_payload && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_off_silent_payload)
 
 # ---------------------------------------------------------------------------
 # I1 eth-chiplet bring-up regressions (integ/i1-fix, silicon-proven 2026-07-31).
@@ -1173,6 +1190,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
+	axi_datanode_recovery \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
@@ -1231,6 +1249,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
 	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
 	@$(MAKE) --no-print-directory sim_gate_axinode_obs
+	@$(MAKE) --no-print-directory sim_gate_axi_datanode_recovery
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
 	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release

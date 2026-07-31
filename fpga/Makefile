@@ -53,7 +53,7 @@ endif
 TARGET          ?= pynq-z2-single
 
 ifneq ($(MAKECMDGOALS),help)
-VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3 kr260-eth-chiplet kr260-eth-chiplet-flip
+VALID_TARGETS   := pynq-z2-single pynq-z2-pair pynq-z2-pair-flip pynq-z2-pair-slow pynq-z2-pair-flip-slow pynq-z2-pair-ila pynq-z2-pair-flip-ila pynq-z2-pair-all pynq-z2-pair-flip-all pynq-z2-pair-mmcmbypass-all pynq-z2-pair-mmcmbypass-flip-all pynq-z2-pair-mmcmbypass-oddr-all pynq-z2-pair-mmcmbypass-oddr-flip-all pynq-z2-loopback kr260-pair-ptp kr260-pair-nptp kr260-pair-flip-ptp kr260-pair-flip-nptp kr260-pair-onchip mps3 kr260-eth-chiplet kr260-eth-chiplet-flip kr260-compute-chiplet kr260-compute-chiplet-flip
 
 # kr260-pair-onchip — REGISTERED 2026-07-18 (plan wave W6/W9 landed). The target
 # dir now ships all three XDC (pin / timing / drc):
@@ -77,7 +77,7 @@ endif
 # wrappers) just consumes pre-built bitstreams and doesn't need the
 # IP-library env vars set. Gating the env check on these specific goals
 # lets fpgahub-driven deploys run on hosts that don't have ARM_IP_LIBRARY_PATH.
-BUILD_GOALS := all build_design package_ip package_eth_chiplet_ip
+BUILD_GOALS := all build_design package_ip package_eth_chiplet_ip package_compute_chiplet_ip
 ifneq ($(filter $(BUILD_GOALS),$(MAKECMDGOALS)),)
 ifndef CMSDK_DIR
 $(error CMSDK_DIR is not set - source set_env.sh first (only required for build/package goals: $(BUILD_GOALS)))
@@ -160,6 +160,18 @@ FPGA_TIDELINK_PTP := 1
 else ifeq ($(TARGET),kr260-eth-chiplet-flip)
 XILINX_PART     := xck26-sfvc784-2LV-c
 FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+# KR260 compute-chiplet (die_a / die_b). The WHOLE multicore compute SoC + TWO
+# internal TideLinks + one TideChart packaged as one IP (see
+# fpga/vivado_ip/package_compute_chiplet_ip.tcl); PHC is integral so PTP is always
+# in. Same xck26 part + KR260 board preset as the eth-chiplet.
+else ifeq ($(TARGET),kr260-compute-chiplet)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
+else ifeq ($(TARGET),kr260-compute-chiplet-flip)
+XILINX_PART     := xck26-sfvc784-2LV-c
+FPGA_BOARD_PART := xilinx.com:kr260_som:part0:1.1
+FPGA_TIDELINK_PTP := 1
 else ifeq ($(TARGET),mps3)
 XILINX_PART     := xcku115-flvb1760-1-c
 endif
@@ -256,10 +268,15 @@ BUILD_DIR       := $(TIDELINK_HOME)/imp/fpga
 IP_OUTPUT_DIR   := $(BUILD_DIR)/tidelink_ip
 PHC_IP_OUTPUT_DIR := $(BUILD_DIR)/phc_ip
 ETH_CHIPLET_IP_OUTPUT_DIR := $(BUILD_DIR)/eth_chiplet_ip
+COMPUTE_CHIPLET_IP_OUTPUT_DIR := $(BUILD_DIR)/compute_chiplet_ip
 # Parent repo (nanosoc-ethernet-chiplet) — tidelink is its submodule, so the
 # eth-chiplet RTL + flattened flists live one level up. Used by
 # package_eth_chiplet_ip's filelist. Override for alternate layouts.
 NANOSOC_ETH_CHIPLET_DIR ?= $(realpath $(TIDELINK_HOME)/..)
+# Parent repo (NanoSoC-Compute-Chiplet) — same one-level-up layout as the eth
+# chiplet (tidelink is its submodule). Used by package_compute_chiplet_ip's
+# filelist. Override for alternate layouts.
+NANOSOC_COMPUTE_CHIPLET_DIR ?= $(realpath $(TIDELINK_HOME)/..)
 RUN_DIR         := $(BUILD_DIR)/run
 PROJECT_DIR     := $(BUILD_DIR)/project/$(TARGET)$(ANCHOR_SUFFIX)
 OUTPUT_DIR      := $(BUILD_DIR)/output/$(TARGET)$(ANCHOR_SUFFIX)
@@ -321,6 +338,14 @@ _BUILD_IP_REPO := $(ETH_CHIPLET_IP_OUTPUT_DIR)
 # oracle for it -> skip that one check for this target.
 _SKIP_IP_VERIFY := 1
 _BD_GLOBAL_SYNTH := 1
+else ifneq ($(filter kr260-compute-chiplet%,$(TARGET)),)
+# The compute-chiplet IP is packaged from the parent repo's own source resolution
+# (whole compute SoC + 2x TideLink + TideChart), exactly like the eth-chiplet -> same
+# provenance-gate skip + global BD synth.
+_IP_DEP := package_compute_chiplet_ip
+_BUILD_IP_REPO := $(COMPUTE_CHIPLET_IP_OUTPUT_DIR)
+_SKIP_IP_VERIFY := 1
+_BD_GLOBAL_SYNTH := 1
 else
 _IP_DEP := package_ip
 _BUILD_IP_REPO := $(IP_OUTPUT_DIR)
@@ -334,7 +359,7 @@ else
 BUILD_DESIGN_DEPS := $(_IP_DEP) package_phc_ip
 endif
 
-.PHONY: all package_ip package_phc_ip package_eth_chiplet_ip build_design clean program deploy \
+.PHONY: all package_ip package_phc_ip package_eth_chiplet_ip package_compute_chiplet_ip build_design clean program deploy \
         program_via_fpgahub deploy_via_fpgahub stress_via_fpgahub ci_full_via_fpgahub \
         program_via_plugin deploy_via_plugin \
         resolve_board farm_check farm_build build_pair_concurrent \
@@ -418,6 +443,38 @@ package_eth_chiplet_ip:
 	export FPGA_CORE_REV=$(FPGA_CORE_REV) && \
 	vivado -mode batch -source $(VIVADO_IP_DIR)/package_eth_chiplet_ip.tcl \
 	    -log $(RUN_DIR)/package_eth_chiplet_ip.log \
+#-----------------------------------------------------------------------------
+# Step 1d: Package the WHOLE compute-chiplet (nanosoc_compute_chiplet) as a Vivado
+# IP. Two-link sibling of package_eth_chiplet_ip: OOC elaboration of the full
+# compute SoC + 2x TideLink + TideChart on xck26 (the scoping synth). Sources come
+# from the parent repo via NANOSOC_COMPUTE_CHIPLET_DIR; the filelist consumes the
+# flattened lists `make -C <parent> elab` produces (build/elab/{soc,tidelink}_vcs.f),
+# so run that first. TIDELINK_PHY_V2=1 must be exported (same silent-V1 trap).
+#-----------------------------------------------------------------------------
+package_compute_chiplet_ip:
+	@if [ ! -f "$(NANOSOC_COMPUTE_CHIPLET_DIR)/build/elab/soc_vcs.f" ]; then \
+	    echo "ERROR: $(NANOSOC_COMPUTE_CHIPLET_DIR)/build/elab/soc_vcs.f not found." >&2; \
+	    echo "       Run 'make -C $(NANOSOC_COMPUTE_CHIPLET_DIR) elab' first to flatten the SoC flist." >&2; \
+	    exit 2; \
+	fi
+	@# Regenerate the TideLink flist as V2 (ship config): the compute-chiplet needs
+	@# deps/tidelink-phy + v2shims, not the parent elab's V1 default.
+	@mkdir -p $(NANOSOC_COMPUTE_CHIPLET_DIR)/build/fpga_gen_v2
+	python3 $(NANOSOC_COMPUTE_CHIPLET_DIR)/flist/resolve_tidelink_flist.py \
+	    $(SOCLABS_TIDELINK_DIR)/flists/tidelink_fpga_v2.flist \
+	    > $(NANOSOC_COMPUTE_CHIPLET_DIR)/build/fpga_gen_v2/tidelink_vcs_v2.f
+	@mkdir -p $(RUN_DIR) $(COMPUTE_CHIPLET_IP_OUTPUT_DIR)
+	cd $(RUN_DIR) && \
+	export FPGA_COMPONENT_FILELIST=$(VIVADO_IP_DIR)/nanosoc_compute_chiplet_filelist.tcl && \
+	export FPGA_COMPONENT_LIB=$(COMPUTE_CHIPLET_IP_OUTPUT_DIR) && \
+	export NANOSOC_COMPUTE_CHIPLET_DIR=$(NANOSOC_COMPUTE_CHIPLET_DIR) && \
+	export SOCLABS_TIDELINK_DIR=$(SOCLABS_TIDELINK_DIR) && \
+	export FPGA_VENDOR=$(FPGA_VENDOR) && \
+	export FPGA_CORE_REV=$(FPGA_CORE_REV) && \
+	vivado -mode batch -source $(VIVADO_IP_DIR)/package_compute_chiplet_ip.tcl \
+	    -log $(RUN_DIR)/package_compute_chiplet_ip.log \
+	    -journal $(RUN_DIR)/package_compute_chiplet_ip.jou
+
 #-----------------------------------------------------------------------------
 # Step 2: Build block design + synthesis + implementation + bitstream
 #-----------------------------------------------------------------------------

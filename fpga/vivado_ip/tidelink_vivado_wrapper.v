@@ -186,7 +186,16 @@ module tidelink_vivado_wrapper #(
     // per-instance to build the dead-I2C self-start image. Enabling by default is
     // David's ratification call — this only makes it REACHABLE, it does not turn
     // it on. See project_z2_delivery_blocker_is_physical_z2_02_rx_2026_07_24.
-    parameter        TRAIN_ENTRY_FALLBACK = 1'b0
+    parameter        TRAIN_ENTRY_FALLBACK = 1'b0,
+    // SELF_ARM_TRAIN_EN — surface tidelink_top's I1 self-arm role-lock knob on
+    // the IP face (docs/I1_SELFARM_FIX.md). Same component.xml/OOC-synth reason
+    // as TRAIN_ENTRY_FALLBACK: a wrapper-parameter default reaches OOC synth, a
+    // +define+ does NOT. DEFAULT 1'b0 = byte-behaviour-identical to every
+    // existing image (constant-folds to the gated role_lock logic). Set
+    // CONFIG.SELF_ARM_TRAIN_EN=1 per-instance for an FPGA eth-chiplet-style
+    // integration whose peer-I2C control plane never completes. The bare-link
+    // kr260-pair / Z2 targets keep this OFF (they role-lock via the normal gate).
+    parameter        SELF_ARM_TRAIN_EN = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -567,7 +576,10 @@ module tidelink_vivado_wrapper #(
         // Option-A training-entry fallback. Forwarded so the wrapper default
         // reaches OOC synth (see the parameter comment above); 1'b0 default =
         // every existing image byte-behaviour-identical.
-        .TRAIN_ENTRY_FALLBACK(TRAIN_ENTRY_FALLBACK)
+        .TRAIN_ENTRY_FALLBACK(TRAIN_ENTRY_FALLBACK),
+        // I1 self-arm role-lock. Forwarded so the wrapper default reaches OOC
+        // synth; 1'b0 default = every existing image byte-behaviour-identical.
+        .SELF_ARM_TRAIN_EN   (SELF_ARM_TRAIN_EN)
     ) u_tidelink_top (
         // Clocks and resets
         .hclk                       (hclk),

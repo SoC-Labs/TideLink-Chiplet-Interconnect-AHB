@@ -49,6 +49,34 @@
 // Testbench package
 `include "tidelink_top_system_pkg.sv"
 
+// ---------------------------------------------------------------------------
+// I1 SELF-ARM regression (test/i1-selfarm-regression) — per-die compile-time
+// SELF_ARM_TRAIN_EN override for tidelink_top. DEFAULT OFF on BOTH dies, so
+// every existing test in this harness is byte-behaviour-identical (the param
+// constant-folds away, exactly matching the fix's default-OFF intent — see
+// docs/I1_SELFARM_FIX.md / src/rtl/local_overrides/axi_chiplet_controller.sv).
+//
+// test_top_i1_selfarm compiles with +define+TL_SELF_ARM_A_ON so die A gets the
+// fix ON while die B stays the shipping-default OFF. A SINGLE simulation then
+// discriminates the fix (die A latches role_lock on the SW ROLE_CFG[1] write
+// WITHOUT the peer mask-handshake / nego verdict) from the default behaviour
+// (die B never latches under the same eth-chiplet condition: mask_hs gate
+// engaged, nego_en=0). Die B is the built-in negative control / instrument
+// trust check: if it ALSO latches, the test is not exercising the param.
+//
+// The negative-control DISCRIMINATION run compiles WITHOUT the define, so die
+// A is ALSO OFF and the fix assertion fails — proving the test is not vacuous.
+`ifdef TL_SELF_ARM_A_ON
+  `define TL_SELF_ARM_A_VAL 1'b1
+`else
+  `define TL_SELF_ARM_A_VAL 1'b0
+`endif
+`ifdef TL_SELF_ARM_B_ON
+  `define TL_SELF_ARM_B_VAL 1'b1
+`else
+  `define TL_SELF_ARM_B_VAL 1'b0
+`endif
+
 module test_top;
 
   // ---------------------------------------------------------------
@@ -254,22 +282,139 @@ module test_top;
   wire [7:0] a_lane_locked_w;
   wire [7:0] b_lane_locked_w;
 
+  // I1 sim-repro (2026-07-30): TB-only lane-lock observability. Updated to the
+  // V2 tidelink_lane_checker (deps/tidelink-phy/rtl) wider port list. Active-low
+  // rst_n (was active-high rst); the extra strap/noise inputs are TB-tied and
+  // the extended noise/dist outputs left unconnected — only lane_locked_o feeds
+  // tb_if. Does not affect the DUT.
   tidelink_lane_checker u_a_checker (
-    .clk        (a_rx_link_clk),
-    .rst        (a_checker_rst),
-    .lane_data  (a_rx_lane_data),
-    .lane_locked(a_lane_locked_w)
+    .clk               (a_rx_link_clk),
+    .rst_n             (poresetn),
+    .lane_data_i       (a_rx_lane_data),
+    .lock_thresh_i     (24'd8),
+    .training_mode_w_i (1'b1),
+    .sweep_active_i    (1'b0),
+    .clear_noise_i     (1'b0),
+    .lane_locked_o     (a_lane_locked_w),
+    .lane_match_o      (),
+    .mismatch_pulse_o  (),
+    .wire_status_o     (),
+    .dist_raw_o        (),
+    .dist_voted_o      (),
+    .dwell_min_dist_o  (),
+    .noise_min_o       (),
+    .noise_max_o       (),
+    .noise_mean_o      (),
+    .noise_current_o   (),
+    .canary_pass_o     (),
+    .canary_valid_o    ()
   );
 
   tidelink_lane_checker u_b_checker (
-    .clk        (b_rx_link_clk),
-    .rst        (b_checker_rst),
-    .lane_data  (b_rx_lane_data),
-    .lane_locked(b_lane_locked_w)
+    .clk               (b_rx_link_clk),
+    .rst_n             (poresetn),
+    .lane_data_i       (b_rx_lane_data),
+    .lock_thresh_i     (24'd8),
+    .training_mode_w_i (1'b1),
+    .sweep_active_i    (1'b0),
+    .clear_noise_i     (1'b0),
+    .lane_locked_o     (b_lane_locked_w),
+    .lane_match_o      (),
+    .mismatch_pulse_o  (),
+    .wire_status_o     (),
+    .dist_raw_o        (),
+    .dist_voted_o      (),
+    .dwell_min_dist_o  (),
+    .noise_min_o       (),
+    .noise_max_o       (),
+    .noise_mean_o      (),
+    .noise_current_o   (),
+    .canary_pass_o     (),
+    .canary_valid_o    ()
   );
 
   assign tb_if.a_lane_locked = a_lane_locked_w;
   assign tb_if.b_lane_locked = b_lane_locked_w;
+
+  // ---------------------------------------------------------------
+  // I1 sim-repro (2026-07-30): mirror the TideLink-FCSM CR-handshake 4-tuple
+  // (state / cr_pkt_seen_rx / crack_pkt_seen_rx) + calibrator cal_done onto the
+  // interface for test_top_i1_fcsm_bringup. Same probe hierarchy the
+  // PROBE_AFCSM/SOCLABS_DIAG blocks already use — pure observability.
+  // ---------------------------------------------------------------
+  assign tb_if.a_fcsm_state  = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+  assign tb_if.b_fcsm_state  = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.state;
+  assign tb_if.a_cr_seen     = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx;
+  assign tb_if.b_cr_seen     = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.cr_pkt_seen_rx;
+  assign tb_if.a_crack_seen  = u_tidelink_top_a.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx;
+  assign tb_if.b_crack_seen  = u_tidelink_top_b.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl.crack_pkt_seen_rx;
+  assign tb_if.a_cal_done    = u_tidelink_top_a.u_chiplet_controller.cal_calibration_done_w;
+  assign tb_if.b_cal_done    = u_tidelink_top_b.u_chiplet_controller.cal_calibration_done_w;
+
+  // ---------------------------------------------------------------
+  // I1 CONTROL-PLANE repro (sim/i1-controlplane-repro, 2026-07-30): mirror the
+  // calibrator-ARM bootstrap chain onto tb_if. These are the exact nets the
+  // silicon ILA read as stuck (role_locked=0, swi_training_mode_r=0, cal_state=0)
+  // when the AXI FCSM 0-4 were pointed at local_overrides. test_top_i1_controlplane
+  // drives the real ROLE_CFG / R8-training bring-up WITHOUT the calibrator bypass
+  // and checks whether deps vs override move any of them.
+  // ---------------------------------------------------------------
+  assign tb_if.a_role_locked      = u_tidelink_top_a.u_chiplet_controller.role_lock_reg;
+  assign tb_if.b_role_locked      = u_tidelink_top_b.u_chiplet_controller.role_lock_reg;
+  assign tb_if.a_train_r          = u_tidelink_top_a.u_chiplet_controller.swi_training_mode_r;
+  assign tb_if.b_train_r          = u_tidelink_top_b.u_chiplet_controller.swi_training_mode_r;
+  assign tb_if.a_nego_en          = u_tidelink_top_a.u_chiplet_controller.nego_en;
+  assign tb_if.b_nego_en          = u_tidelink_top_b.u_chiplet_controller.nego_en;
+  assign tb_if.a_mask_gate        = u_tidelink_top_a.u_chiplet_controller.mask_hs_gate_open;
+  assign tb_if.b_mask_gate        = u_tidelink_top_b.u_chiplet_controller.mask_hs_gate_open;
+  assign tb_if.a_mask_match       = u_tidelink_top_a.u_chiplet_controller.mask_hs_match;
+  assign tb_if.b_mask_match       = u_tidelink_top_b.u_chiplet_controller.mask_hs_match;
+  assign tb_if.a_cal_role_locked  = u_tidelink_top_a.u_chiplet_controller.calibrator_role_locked;
+  assign tb_if.b_cal_role_locked  = u_tidelink_top_b.u_chiplet_controller.calibrator_role_locked;
+  assign tb_if.a_cal_state        = u_tidelink_top_a.u_chiplet_controller.cal_state_w;
+  assign tb_if.b_cal_state        = u_tidelink_top_b.u_chiplet_controller.cal_state_w;
+  assign tb_if.a_nego_st          = u_tidelink_top_a.u_chiplet_controller.u_autoneg.state_r;
+  assign tb_if.b_nego_st          = u_tidelink_top_b.u_chiplet_controller.u_autoneg.state_r;
+
+  // ---------------------------------------------------------------
+  // I1 sim-repro: sim-only calibrator bypass. tb_early_exit_force_q lets the V2
+  // calibrator (deps/tidelink-phy, S_VALIDATE 2M-cycle timeout unreachable in
+  // sim) reach cal_done so the FCSM leaves training and the CR handshake RUNS —
+  // exactly the bypass the cocotb tidelink_top_pair_v2 harness applies
+  // (pair_v2_common.force_calibrator_sim_bypass). It does NOT inject CR packets
+  // and does NOT touch the FCSM CR path, so cr_pkt_seen_rx remains a faithful
+  // oracle. Applied to BOTH dies and BOTH FCSM_SRC arms equally. Disable with
+  // +NO_CAL_BYPASS to study the raw (calibrator-timeout-limited) behaviour.
+  // ---------------------------------------------------------------
+  initial begin : i1_cal_bypass
+    if (!$test$plusargs("NO_CAL_BYPASS")) begin
+      @(posedge poresetn);
+      repeat (5) @(posedge clk);
+      force u_tidelink_top_a.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+      force u_tidelink_top_b.u_chiplet_controller.u_calibrator.tb_early_exit_force_q = 1'b1;
+      $display("[I1_CAL_BYPASS] T=%0t forced tb_early_exit_force_q=1 on both calibrators", $time);
+    end
+  end
+
+  // ---------------------------------------------------------------
+  // I1 CONTROL-PLANE repro: autonomous-path NEGO_CFG strap. On silicon
+  // NEGO_CFG PORs to 0x61 (nego_en=1). An APB write of NEGO_CFG cannot survive
+  // the poreset re-arm the autoneg FSM needs (nego_cfg_reg <= NEGO_CFG_RESET on
+  // !poresetn), so a faithful autonomous-path sim must present the POR value as
+  // a strap. This continuously forces both dies' nego_cfg_reg = 7'h61 so the
+  // value is present across test_top_i1_controlplane's force_poreset re-arm —
+  // exactly the silicon POR strap, not a runtime hack. Gated on +NEGO_AUTO_STRAP
+  // (only test_top_i1_controlplane MODE=auto uses it); default OFF preserves the
+  // manual-path (nego_en=0) behaviour of every other test.
+  // ---------------------------------------------------------------
+  initial begin : i1cp_nego_strap
+    if ($test$plusargs("NEGO_AUTO_STRAP")) begin
+      repeat (2) @(posedge clk);
+      force u_tidelink_top_a.u_chiplet_controller.nego_cfg_reg = 7'h61;
+      force u_tidelink_top_b.u_chiplet_controller.nego_cfg_reg = 7'h61;
+      $display("[I1CP_NEGO_STRAP] T=%0t forced nego_cfg_reg=0x61 (nego_en=1) on both dies", $time);
+    end
+  end
 
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A
@@ -347,7 +492,10 @@ module test_top;
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
     .NUM_PHY_LANES     (NUM_PHY_LANES),
-    .TIDELINK_PAIR_BASE(A_PAIR_BASE)
+    .TIDELINK_PAIR_BASE(A_PAIR_BASE),
+    // I1 SELF-ARM regression: die A = fix ON when +define+TL_SELF_ARM_A_ON,
+    // else shipping-default OFF. See the macro block above.
+    .SELF_ARM_TRAIN_EN (`TL_SELF_ARM_A_VAL)
   ) u_tidelink_top_a (
     .hclk              (clk),
     .hresetn           (rst_n),
@@ -543,7 +691,10 @@ module test_top;
     .APB_ADDR_W        (APB_ADDR_W),
     .FC_DATA_W         (FC_DATA_W),
     .NUM_PHY_LANES     (NUM_PHY_LANES),
-    .TIDELINK_PAIR_BASE(B_PAIR_BASE)
+    .TIDELINK_PAIR_BASE(B_PAIR_BASE),
+    // I1 SELF-ARM regression: die B = built-in negative control, always the
+    // shipping-default OFF unless +define+TL_SELF_ARM_B_ON. See macro block.
+    .SELF_ARM_TRAIN_EN (`TL_SELF_ARM_B_VAL)
   ) u_tidelink_top_b (
     .hclk              (clk),
     .hresetn           (rst_n),

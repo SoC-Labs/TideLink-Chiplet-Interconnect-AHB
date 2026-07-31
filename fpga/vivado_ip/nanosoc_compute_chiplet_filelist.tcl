@@ -79,6 +79,38 @@ set _defines {}
 set _sources {}
 
 # ---------------------------------------------------------------------------
+# Pre-scan: collect the basenames provided by every `local_overrides/` include
+# dir. Per the project convention (and CLAUDE.md), local_overrides/ holds files
+# that intentionally SHADOW an IP-library file of the same basename — e.g.
+# cm4_lic_defs.v, which `undef`s ARM_CM4_ETM_LICENSE so CORTEXM4INTEGRATION does
+# NOT instantiate the unlicensed (undelivered) CM4ETM. `include resolution honours
+# the override (its +incdir+ precedes the IP-library one), but the `-y` expansion
+# below must ALSO avoid importing the shadowed IP-library copy: ipx -import_files
+# flattens sources by basename, so the IP copy would clobber the override and
+# wrongly re-enable ETM -> `module CM4ETM not found` at synth (Synth 8-439).
+# ---------------------------------------------------------------------------
+set _override_bn {}
+foreach f $flist_files {
+    if {![file exists $f]} { continue }
+    set fh [open $f r]
+    foreach raw [split [read $fh] "\n"] {
+        set line [string trim [subst -nocommands $raw]]
+        if {[string match "+incdir+*local_overrides*" $line]} {
+            set _od [string range $line 8 end]
+            foreach _ext {v sv vh svh} {
+                foreach _of [glob -nocomplain -directory $_od *.$_ext] {
+                    dict set _override_bn [file tail $_of] 1
+                }
+            }
+        }
+    }
+    close $fh
+}
+if {[dict size $_override_bn] > 0} {
+    puts "INFO: local_overrides shadows [dict size $_override_bn] basename(s): [dict keys $_override_bn]"
+}
+
+# ---------------------------------------------------------------------------
 # Parse the VCS-style flattened .f lists into Vivado read/property inputs.
 #   +libext+...        -> ignored (Vivado infers by extension)
 #   +incdir+<path>     -> include dir
@@ -105,6 +137,41 @@ foreach f $flist_files {
             lappend _defines [string range $line 8 end]
             continue
         }
+        # VCS library search: `-y <dir>` compiles modules on demand by filename;
+        # `-v <file>` is a single library file. The COMPUTE SoC's flist expresses
+        # every Arm core (M0+, M4, cells) this way (34 `-y` dirs), whereas the eth
+        # SoC gen pre-expands the same libraries to explicit source paths. Vivado's
+        # project flow has NO on-demand library search, so a dropped `-y` dir means
+        # `module cm0p_ik_pmu not found` at synth (Synth 8-439). EXPAND: glob each
+        # `-y` dir's Verilog (non-recursive, matching VCS) into sources. Verified
+        # equivalent to the eth chiplet's pre-expanded list (e.g. cm0p
+        # models/cells/generic). A `-y` dir is a LIBRARY, not an include path, so it
+        # is deliberately NOT added to _incdirs (matches VCS, and avoids shadowing a
+        # local_overrides include dir). Files shadowed by local_overrides are
+        # skipped (see the pre-scan above) so the override — not the IP-library copy
+        # — survives the ipx basename flattening.
+        if {[string match "-y*" $line] || [string match "-v*" $line]} {
+            set _lib [string trim [string range $line 2 end]]
+            if {$_lib eq ""} { continue }
+            if {[string match "-y*" $line]} {
+                if {[file isdirectory $_lib]} {
+                    foreach _ext {v sv vlib} {
+                        foreach _lf [lsort [glob -nocomplain -directory $_lib *.$_ext]] {
+                            if {[dict exists $_override_bn [file tail $_lf]]} {
+                                puts "INFO: -y skip (local_overrides shadows [file tail $_lf]): $_lf"
+                                continue
+                            }
+                            lappend _sources $_lf
+                        }
+                    }
+                } else {
+                    puts "WARNING: nanosoc_compute_chiplet_filelist: -y target not a dir: $_lib"
+                }
+            } elseif {[file exists $_lib]} {
+                lappend _sources $_lib
+            }
+            continue
+        }
         if {[string match "-*" $line]} {
             puts "WARNING: nanosoc_compute_chiplet_filelist: skipping unexpected directive: $line"
             continue
@@ -118,12 +185,52 @@ foreach f $flist_files {
 lappend _incdirs $_integration_incdir
 foreach s $_integration_srcs { lappend _sources $s }
 
+# De-duplicate sources by normalized path (a -y library file may also appear as
+# an explicit bare path). Order-preserving; keeps the first occurrence so a
+# double read_verilog can't raise a spurious duplicate-module error.
+set _seen_src {}
+set _sources_uniq {}
+foreach s $_sources {
+    set _n [file normalize $s]
+    if {![dict exists $_seen_src $_n]} { dict set _seen_src $_n 1; lappend _sources_uniq $s }
+}
+set _sources $_sources_uniq
+
 # De-duplicate include dirs (order-preserving) — the flattened lists repeat some.
 set _seen {}
 set _incdirs_uniq {}
 foreach d $_incdirs {
     if {![dict exists $_seen $d]} { dict set _seen $d 1; lappend _incdirs_uniq $d }
 }
+
+# Drop include dirs that are FULLY shadowed by local_overrides — i.e. every
+# header basename they provide is also supplied by a local_overrides/ dir.
+# `include resolution already favours the override (its +incdir precedes the
+# IP-library one), BUT ipx -import_files flattens every include-dir file into
+# one IP src/ dir by basename, so leaving the shadowed dir on the path lets the
+# IP-library copy clobber the override there — which is what re-enabled ETM
+# (packaged cm4_lic_defs.v carried `define ARM_CM4_ETM_LICENSE -> CM4ETM not
+# found, Synth 8-439). cm4_lic_defs/verilog holds only cm4_lic_defs.v, so it is
+# fully shadowed and safe to drop. A PARTIALLY-shadowed dir is kept (it still
+# provides other, non-overridden headers).
+set _incdirs_final {}
+foreach d $_incdirs_uniq {
+    if {[string match "*local_overrides*" $d]} { lappend _incdirs_final $d; continue }
+    set _hdrs {}
+    foreach _ext {v sv vh svh vlib} {
+        foreach _hf [glob -nocomplain -directory $d *.$_ext] { lappend _hdrs [file tail $_hf] }
+    }
+    set _all_shadowed [expr {[llength $_hdrs] > 0}]
+    foreach _bn $_hdrs {
+        if {![dict exists $_override_bn $_bn]} { set _all_shadowed 0; break }
+    }
+    if {$_all_shadowed} {
+        puts "INFO: drop fully-shadowed incdir (local_overrides supersedes): $d"
+    } else {
+        lappend _incdirs_final $d
+    }
+}
+set _incdirs_uniq $_incdirs_final
 
 puts "============================================================"
 puts [format "  nanosoc_compute_chiplet filelist: %d sources, %d incdirs, %d defines" \

@@ -50,6 +50,18 @@ read_verilog $wrapper_dir/nanosoc_compute_chiplet_vivado_wrapper.v
 set_property top nanosoc_compute_chiplet_vivado_wrapper [current_fileset]
 update_compile_order -fileset sources_1
 
+# .svh headers must be INCLUDE-ONLY, never compiled standalone: Vivado 2024.1 synth
+# rejects the file-scope 'localparam int unsigned' in tidelink_sync_word.svh
+# (HDL 9-1206 "Syntax error near 'unsigned'"). Mark every .svh as a Verilog Header so
+# update_compile_order keeps it out of the standalone compile order.
+proc cc_mark_headers {} {
+    foreach _hf [get_files -quiet *.svh] {
+        catch { set_property FILE_TYPE "Verilog Header" [get_files $_hf] }
+    }
+}
+cc_mark_headers
+update_compile_order -fileset sources_1
+
 # STEP 1: Package as IP
 ipx::package_project -root_dir $component_lib \
     -vendor   $fpga_vendor \
@@ -65,6 +77,8 @@ ipx::edit_ip_in_project -upgrade true \
     -name tmp_edit_project \
     -directory $component_lib \
     $component_lib/component.xml
+update_compile_order -fileset sources_1
+cc_mark_headers
 update_compile_order -fileset sources_1
 
 # STEP 2: Core metadata
@@ -113,6 +127,36 @@ ipx::move_temp_component_back -component $core
 close_project
 update_ip_catalog
 close_project
+
+# ---------------------------------------------------------------------------
+# ETM-license fixup for the packaged IP (see nanosoc_compute_chiplet_filelist.tcl).
+# The compute SoC disables the unlicensed Cortex-M4 CM4ETM trace macrocell with
+# nanosoc-compute-system/.../local_overrides/cm4_lic_defs.v, which `include`s the
+# upstream defs (SAME basename, by absolute path) then `undef`s
+# ARM_CM4_ETM_LICENSE. That idiom works under VCS/sim but NOT under ipx: with
+# -import_files, ipx flattens every source into the IP's src/ dir BY BASENAME, so
+# the override collides with the upstream file it includes and the ETM-ON upstream
+# copy wins -> `module CM4ETM not found` at BD synth (Synth 8-439; the CM4ETM RTL
+# is license-gated and not delivered in the AT520 base bundle). No incdir ordering
+# fixes a basename flatten. Fix in place: rewrite every packaged cm4_lic_defs.v as
+# a SELF-CONTAINED ETM-off defs file (upstream content with the ARM_CM4_ETM_LICENSE
+# `define neutralised — no `include, so no collision). Build artifact only: the
+# committed repo sources and the upstream IP are untouched, and the M4F FPU
+# license (ARM_CM4_FPU_LICENSE) stays ON.
+set _etm_fixed 0
+foreach _lic [split [string trim [exec find $component_lib -name cm4_lic_defs.v]] "\n"] {
+    if {$_lic eq ""} { continue }
+    set _fh [open $_lic r]; set _txt [read $_fh]; close $_fh
+    set _new [regsub -all -line \
+        {^[[:space:]]*`define[[:space:]]+ARM_CM4_ETM_LICENSE([[:space:]].*)?$} $_txt \
+        {// [FPGA build] ARM_CM4_ETM_LICENSE neutralised - CM4ETM RTL not delivered (unlicensed)}]
+    if {$_new ne $_txt} {
+        set _fh [open $_lic w]; puts -nonewline $_fh $_new; close $_fh
+        puts "INFO: neutralised ARM_CM4_ETM_LICENSE in packaged $_lic"
+        incr _etm_fixed
+    }
+}
+puts "INFO: ETM-license fixup rewrote $_etm_fixed packaged cm4_lic_defs.v file(s)"
 
 puts "==========================================="
 puts " nanosoc_compute_chiplet IP packaged"

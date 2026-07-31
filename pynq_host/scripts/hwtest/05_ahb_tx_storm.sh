@@ -88,13 +88,27 @@ sleep 1
 s1=$(tt_devmem_read "$SLAVE_IP" 0x44032010)
 r1=$(tt_devmem_read "$SLAVE_IP" 0x44032020)
 tt_info "5b storm post slave: STATUS=$s1 REL_ACC=$r1"
-# Observe packet_committed bit ([4])
+# Observe packet_committed bit ([4]).
+#
+# FIXED 2026-07-30 (verification audit — this was a genuinely vacuous check:
+# tt_pass fired on BOTH branches, so Cat 5 — the highest-risk hardware
+# category, bench-confirmed to wedge a board on 2026-04-27 — had NO real
+# assertion that the storm's data actually arrived, only that writes didn't
+# time out). Traced the RTL before fixing rather than guessing at the
+# original "could be timing" comment: packet_committed_irq
+# (src/rtl/fifo/tidelink_fifo_ctrl.sv:445-469) is a LEVEL/STICKY bit — set on
+# write_complete, cleared ONLY by an explicit read of FIFO address 0 (the
+# peer draining the RX FIFO). It does not self-clear, does not pulse, and
+# this script never performs that read. A full 1s sleep is many orders of
+# magnitude more margin than a single-cycle completion pulse needs to latch
+# a level flop, so there is no real timing race here: if this bit reads 0
+# after the storm, that is deterministic evidence the data never landed on
+# the slave, not a benign artifact. That must fail the test.
 pc1=$(( ($(printf '%d' "$s1")) & 0x10 ))
 if [ "$pc1" -ne 0 ]; then
     tt_pass "5b packet_committed observed on slave (STATUS[4] set)"
 else
-    tt_info "5b packet_committed NOT set on slave (could be timing — release may have cleared it)"
-    tt_pass "5b storm did not assert sticky errors (informational)"
+    tt_fail "5b packet_committed NOT set on slave after storm — data did not land (STATUS[4]=0, RTL is a sticky bit, no benign explanation)"
 fi
 
 # --- 5c link did NOT degrade after the storm ---

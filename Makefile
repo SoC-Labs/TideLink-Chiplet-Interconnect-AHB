@@ -970,6 +970,69 @@ sim_gate_xfail_f14b:
 	  grep -qF "VERDICT[S1_s2m_clock_kill]: WEDGES(unwedged only by full POR of BOTH dies)" $$L && \
 	  grep -qF "VERDICT[S0_passthrough]: RECOVERS" $$L)
 
+# EPOCH shipping-default corrector sentinel (2026-07-31). Captures the GENUINE
+# still-open defect: with EPOCH_ANCHOR_EN at its shipping default (0), the
+# SYNC_REANCHOR corrector never arms on beacon-off skew ⇒ s2m delivers
+# all-zeros. On THIS base (I1 SELF_ARM+FIX-E + recovery FCSM) the link now
+# reaches LINK_IDLE, so m2s (test_02) passes and only s2m (test_03) fails ⇒
+# TESTS=3 PASS=2 FAIL=1 (on the pre-I1 z2 branch it was PASS=1 FAIL=2 with an
+# FCSM state-5 park — that signature is now obsolete). Tolerated as XFAIL; the
+# fix is EPOCH_ANCHOR_EN=1, gated by sim_gate_epoch_anchor_plumb. Flips to XCHG
+# if s2m ever starts (or stops) delivering at the shipping default.
+sim_gate_xfail_epoch_shipping:
+	$(call sim_gate_sentinel,xfail_epoch_shipping_corrector,\
+	  { $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
+	      SIM_BUILD=sim_build_epoch_shipping \
+	      COCOTB_RESULTS_FILE=sim_build_epoch_shipping/res_shipping.xml \
+	      MODULE=test_v2_pair_data; true; },\
+	  grep -qF "test_v2_pair_data.test_02_packet_master_to_slave passed" $$L && \
+	  grep -qF "test_v2_pair_data.test_03_packet_slave_to_master failed" $$L && \
+	  grep -qF "rx=[0x00000000" $$L && \
+	  grep -qF "TESTS=3 PASS=2 FAIL=1 SKIP=0" $$L)
+
+# I5 XHB500 lost-response backstop (audit; wired 2026-07-31). Exercises the
+# HREADYOUT-blind outstanding-response watchdog (tidelink_top.sv sub_osr_ctr_r)
+# that fires an AHB ERROR on a lost peer R/B beat the per-beat stall timer
+# cannot see. Needs the split-timeout build (per-beat parked at 2^20, the
+# outstanding timer shrunk to 2^10) via +define+; own SIM_BUILD since
+# EXTRA_DEFINES is not in the Makefile SIM_BUILD key.
+sim_gate_v2_xhb_lostresp_pipe:
+	$(call sim_gate_run,v2_xhb_lostresp_pipe,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    EXTRA_DEFINES="+define+TIDELINK_SUB_STALL_TIMEOUT_LOG2=20 +define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=10" \
+	    SIM_BUILD=sim_build_lostresp \
+	    COCOTB_RESULTS_FILE=sim_build_lostresp/res_lostresp.xml \
+	    MODULE=test_v2_xhb_lostresp_pipe)
+
+# Anti-vacuous wiring cross-check (2026-07-30): fails if any suite in
+# SIM_GATE_ALL_SUITES / SIM_GATE_SENTINELS is SCORED by the summary but never
+# INVOKED by the sim_gate recipe (the "gate green on another branch's run"
+# class). Run standalone (make sim_gate_inventory); not in the aggregate.
+sim_gate_inventory:
+	@echo "blocking suites ($(words $(SIM_GATE_ALL_SUITES))):"
+	@for s in $(SIM_GATE_ALL_SUITES); do echo "  $$s"; done
+	@echo "known-defect sentinels ($(words $(SIM_GATE_SENTINELS))):"
+	@for s in $(SIM_GATE_SENTINELS); do echo "  $$s"; done
+	@echo "--- wiring cross-check (declared vs invoked) ---"
+	@mk=$(firstword $(MAKEFILE_LIST)); \
+	inv=$$(mktemp); \
+	sed -n '/^sim_gate: sim_gate_env_check/,/sim_gate_summary/p' $$mk \
+	  | grep -oE 'no-print-directory sim_gate_[a-z0-9_]+' \
+	  | awk '{print $$2}' | sort -u > $$inv; \
+	miss=0; \
+	for s in $(SIM_GATE_ALL_SUITES) $(SIM_GATE_SENTINELS); do \
+	  t=$$(grep -B40 -E "call sim_gate_(run|sentinel),$$s," $$mk \
+	       | grep -oE '^sim_gate_[a-z0-9_]+:' | tail -1 | tr -d ':'); \
+	  if [ -z "$$t" ]; then \
+	    echo "  ORPHAN: $$s is scored but no target produces it"; miss=1; \
+	  elif ! grep -qx "$$t" $$inv; then \
+	    echo "  ORPHAN: $$s (target $$t) is SCORED but never INVOKED"; miss=1; \
+	  fi; \
+	done; \
+	rm -f $$inv; \
+	if [ $$miss -eq 0 ]; then echo "  OK — every declared suite is invoked"; \
+	else echo "  ^^ the gate CANNOT PASS: the summary scores these MISS"; exit 1; fi
+
 # --- RX-FIFO TWIN 2 — ACTIVE (in the aggregate since 2026-07-19) -------------
 # F10's write-side twin (docs/RXFIFO_TWIN2_DISPOSITION.md): the unguarded
 # write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 let any
@@ -1101,7 +1164,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
-	v2_pair_sustained v2_truncated_pkt_credit \
+	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -1116,7 +1179,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1173,6 +1236,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
 	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
 	@$(MAKE) --no-print-directory sim_gate_v2_mbox_writeprotect
+	@$(MAKE) --no-print-directory sim_gate_v2_xhb_lostresp_pipe
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
@@ -1215,6 +1279,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_errinj
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"

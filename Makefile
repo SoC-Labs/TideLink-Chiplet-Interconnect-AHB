@@ -258,6 +258,7 @@ endef
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
+	sim_gate_epoch_anchor_plumb \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
@@ -531,6 +532,18 @@ sim_gate_epoch_silicon:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
 	    EXTRA_DEFINES="+define+TB_TOP_EPOCH_ANCHOR_FORCE" \
 	    SIM_BUILD=sim_build_silicon_epoch MODULE=test_v2_pair_data)
+
+# EPOCH_ANCHOR_EN plumbing gate (2026-07-31): drives the REAL top-level
+# EPOCH_ANCHOR_EN=1 through the packaged param chain (EPOCH_ANCHOR=1, not the
+# TB_TOP_EPOCH_ANCHOR_FORCE defparam shortcut above) and asserts s2m delivery
+# — guards the end-to-end threading landed in f756ed8 so the Z2 data-plane fix
+# can never silently stop reaching the deskew corrector.
+sim_gate_epoch_anchor_plumb:
+	$(call sim_gate_run,epoch_anchor_plumb,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 \
+	    SIM_BUILD=sim_build_anchor_param \
+	    COCOTB_RESULTS_FILE=sim_build_anchor_param/res_plumb.xml \
+	    MODULE=test_v2_pair_data)
 
 # --- Wave-0 #12b: contiguous-a2l — NON-BLOCKING tracking target -------------
 # The test needs an {m,s}_inj_* force injector in tb_top.sv that was never
@@ -1074,7 +1087,7 @@ sim_gate_dftelab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
+	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
 	v2_pair_sustained v2_truncated_pkt_credit \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
@@ -1157,6 +1170,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_perf
 	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
+	@$(MAKE) --no-print-directory sim_gate_epoch_anchor_plumb
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree

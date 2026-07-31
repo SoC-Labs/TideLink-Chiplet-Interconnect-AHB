@@ -263,7 +263,8 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axinode_obs \
+	sim_gate_i1_fixe_training_release
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -609,6 +610,21 @@ sim_gate_axinode_obs:
 	        cocotb/tidelink_apb_regs/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_axinode_obs && \
 	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_region_f_decode)
+
+# --- I1 / FIX-E TRAINING-HOLD SELF-DEADLOCK (2026-07-30, KR260 eth-chiplet) --
+# Silicon-proven: the recovery-FCSM calibrator self-deadlocks in S_HOLD(6) when
+# the bring-up recipe holds SWI_TRAINING_MODE=1 while polling cal_done, because
+# the S_HOLD->S_VALIDATE gate (tidelink_phy_align_calibrator_v2.sv:1499) requires
+# !swi_training_mode_r.  The DEPLOYED FPGA calibrator override is compiled unit-
+# level with shrunk timers.  Phase (a) proves the deadlock + pins the :1499 gate;
+# phase (b) proves the FIX-E release path reaches cal_done.  Non-vacuity proven:
+# FIXE_INVERT=1 (skip the release) makes the suite FAIL (deadlock persists).
+# rm -rf sim_build*: the cocotb Makefile only tracks tb_fixe.sv as a compile dep,
+# so a calibrator RTL edit would otherwise re-run a STALE simv (the tree-wide trap).
+sim_gate_i1_fixe_training_release:
+	$(call sim_gate_run,i1_fixe_training_release,\
+	  rm -rf cocotb/tidelink_i1_fixe_training_release/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_i1_fixe_training_release)
 
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
@@ -1008,7 +1024,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs
+	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
+	i1_fixe_training_release
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1071,6 +1088,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_force_recal
+	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
 	@$(MAKE) --no-print-directory sim_gate_v2_perf
 	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory sim_gate_epoch_silicon

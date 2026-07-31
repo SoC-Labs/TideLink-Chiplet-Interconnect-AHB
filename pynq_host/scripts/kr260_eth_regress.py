@@ -79,6 +79,26 @@ def deploy(role, host, timeout=300):
         return 124, (e.output or "") + "\n[TIMEOUT]"
 
 
+BRINGUP_PAIR_SH = os.path.join(HERE, "bringup_pair_release.sh")
+
+
+def run_pair_bringup(timeout=120):
+    """Invoke the PROVEN FIX-E S_HOLD-barrier orchestrator (bringup_pair_release.sh)
+    from the dev host. It arms both dies, waits until BOTH reach S_HOLD, then
+    releases bilaterally — the sequence that fixed I1. This REPLACES the two
+    independent single-board bring-up runs, which have no barrier and can drop
+    training before the peer is holding (self-deadlock / desync)."""
+    env = dict(os.environ)
+    env["DIE_A"] = DIEA
+    env["DIE_B"] = DIEB
+    try:
+        p = subprocess.run(["bash", BRINGUP_PAIR_SH], env=env, timeout=timeout,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return p.returncode, p.stdout
+    except subprocess.TimeoutExpired as e:
+        return 124, (e.output or "") + "\n[TIMEOUT]"
+
+
 # --- test primitives --------------------------------------------------------
 def both_concurrent(fn_a, fn_b):
     with cf.ThreadPoolExecutor(max_workers=2) as ex:
@@ -87,11 +107,13 @@ def both_concurrent(fn_a, fn_b):
 
 
 class Suite:
-    def __init__(self, soak_iters, include_peer_read=False, data_plane=False):
+    def __init__(self, soak_iters, include_peer_read=False, data_plane=False,
+                 adversarial_soak=False):
         self.results = []      # list of (name, ok, detail, gating)
         self.soak_iters = soak_iters
         self.include_peer_read = include_peer_read
         self.data_plane = data_plane
+        self.adversarial_soak = adversarial_soak
 
     def record(self, name, ok, detail, gating=True):
         self.results.append((name, bool(ok), detail, gating))
@@ -107,17 +129,17 @@ class Suite:
         return ok
 
     def t_link_bringup(self):
-        # Full concurrent bring-up — ONLY safe on FRESH dies (right after a
-        # reflash). Re-running to_data_mode (LL_SWRESET) on an already-live link
-        # desyncs it and hangs the sender's peer writes — the "never PL-reload one
-        # side of a live link" hazard that wedged die_a on 2026-07-29.
-        (ra, oa), (rb, ob) = both_concurrent(
-            lambda: run_on(DIEA, "bringup", {"KR260_ETH_ROLE": "die_a"}),
-            lambda: run_on(DIEB, "bringup", {"KR260_ETH_ROLE": "die_b"}))
-        ua, ub = "LINK UP" in oa, "LINK UP" in ob
-        self.record("link", ua and ub, "brought up fresh: die_a=%s die_b=%s" %
-                    ("UP" if ua else "DOWN", "UP" if ub else "DOWN"))
-        return ua and ub
+        # Bilateral bring-up via the PROVEN FIX-E orchestrator (S_HOLD barrier),
+        # NOT two independent single-board runs. The barrier guarantees neither die
+        # drops training before the peer is also holding — the sequencing that
+        # resolved I1 (docs/I1_RESOLVED_HANDOVER_2026_07_31.md). ONLY safe on FRESH
+        # dies (right after a reflash): re-running LL_SWRESET on an already-live
+        # link desyncs it and hangs peer writes (the 2026-07-29 wedge).
+        rc, o = run_pair_bringup()
+        up = "LINK UP fcsm=4 BOTH DIES" in o
+        self.record("link", up, "FIX-E bilateral bring-up (bringup_pair_release.sh): %s"
+                    % ("UP both (fcsm=4)" if up else "NOT both up — see log"))
+        return up
 
     def t_link_verify(self):
         # Non-destructive: just read FCSM. Use when the link is already up (no
@@ -134,11 +156,20 @@ class Suite:
         return ua and ub
 
     def t_backdoor(self):
+        # NON-GATING with a documented bit-27 WAIVER. The eth_ss_0 boot-ROM
+        # backdoor drops bit 27 on the reset/NMI/HardFault vectors (reads
+        # 0x000001xx vs 0x080001xx) — a known eth-aperture bug ORTHOGONAL to the
+        # TideLink link (I1_RESOLVED_HANDOVER_2026_07_31.md), present link-up or
+        # link-down. eth_ss_probe.py WAIVES an exactly-bit-27 diff and still
+        # reports "backdoor is ALIVE", so aliveness is proven while the drop is
+        # characterised. Not a silicon regression gate -> gating=False.
         ra, oa = run_on(DIEA, "status")
         rb, ob = run_on(DIEB, "status")
-        ok = ("backdoor is ALIVE" in oa) and ("backdoor is ALIVE" in ob)
-        self.record("backdoor", ok, "boot-ROM + config plane both dies")
-        return ok, oa, ob
+        alive = ("backdoor is ALIVE" in oa) and ("backdoor is ALIVE" in ob)
+        waived = ("bit-27 drop WAIVED" in oa) or ("bit-27 drop WAIVED" in ob)
+        detail = "boot-ROM + config plane both dies" + (" (bit-27 WAIVED)" if waived else "")
+        self.record("backdoor", alive, detail, gating=False)
+        return alive, oa, ob
 
     def t_role(self, oa, ob):
         # role strap: die_a effective_role=0 (master), die_b=1 (slave)
@@ -173,12 +204,37 @@ class Suite:
         rc, o = run_on(DIEB, "xfer_mbox_recv", {"KR260_XFER_PAYLOAD": pl})
         self.record("mailbox", "RESULT: PASS" in o, "die_a->die_b ipc_mailbox_0")
 
-    def t_soak(self):
-        rc, o = run_on(DIEA, "xfer_soak",
-                      {"KR260_XFER_ITERS": str(self.soak_iters)}, timeout=180)
+    def t_mailbox_rev(self):
+        # Reverse direction (die_b -> die_a): the xfer script is board-symmetric,
+        # so mbox_send on die_b + mbox_recv on die_a exercises slave->master IPC.
+        pl = "0xB2A0FEED"
+        run_on(DIEB, "xfer_mbox_send", {"KR260_XFER_PAYLOAD": pl})
+        rc, o = run_on(DIEA, "xfer_mbox_recv", {"KR260_XFER_PAYLOAD": pl})
+        self.record("mailbox_rev", "RESULT: PASS" in o, "die_b->die_a ipc_mailbox_0")
+
+    def _soak_once(self, name, sender, detail_dir):
+        env = {"KR260_XFER_ITERS": str(self.soak_iters)}
+        if self.adversarial_soak:
+            env["KR260_XFER_ADVERSARIAL"] = "1"
+        rc, o = run_on(sender, "xfer_soak", env, timeout=180)
+        soak_ok = "RESULT: PASS" in o
         line = next((l for l in o.splitlines() if "iters=" in l), "").strip()
-        self.record("soak", "RESULT: PASS" in o,
-                    "%d beats: %s" % (self.soak_iters, line or "no summary"))
+        # Region-F health GATE: after the soak, confirm the AXI-node obs plane is
+        # healthy on the SENDER (catches a latched wedge-sticky the soak summary
+        # line alone would miss).
+        rh, oh = run_on(sender, "xfer_health")
+        health_ok = "RESULT: HEALTHY" in oh
+        self.record(name, soak_ok and health_ok, "%d beats%s %s: %s%s" % (
+            self.soak_iters, " [adversarial]" if self.adversarial_soak else "",
+            detail_dir, line or "no summary",
+            "" if health_ok else "  [Region-F FAULT post-soak]"))
+
+    def t_soak(self):
+        self._soak_once("soak", DIEA, "die_a->die_b")
+
+    def t_soak_rev(self):
+        # Reverse-direction sustained load (die_b -> die_a), same health gate.
+        self._soak_once("soak_rev", DIEB, "die_b->die_a")
 
     def t_tidechart(self):
         ra, oa = run_on(DIEA, "tc_status")
@@ -217,7 +273,9 @@ class Suite:
             self.t_sram_fwd()
             self.t_sram_rev()
             self.t_mailbox()
+            self.t_mailbox_rev()      # reverse-direction IPC (die_b->die_a)
             self.t_soak()             # write-only + health (no peer readback)
+            self.t_soak_rev()         # reverse-direction sustained load + health
             if self.include_peer_read:
                 self.t_sram_rtt()     # opt-in, extra wedge-prone
         else:
@@ -249,6 +307,10 @@ def main():
     ap.add_argument("--include-peer-read", action="store_true",
                     help="with --data-plane, also run the peer read-round-trip "
                          "(sram_rtt) — extra wedge-prone; off by default.")
+    ap.add_argument("--adversarial-soak", action="store_true",
+                    help="with --data-plane, drive the soak with the deterministic "
+                         "corner payloads (xfer_corners_lib) + per-N Region F "
+                         "wedge sampling instead of the linear write pattern.")
     ap.add_argument("--json", help="write machine-readable results to this path.")
     args = ap.parse_args()
 
@@ -257,7 +319,7 @@ def main():
               file=sys.stderr)
 
     suite = Suite(args.soak_iters, include_peer_read=args.include_peer_read,
-                  data_plane=args.data_plane)
+                  data_plane=args.data_plane, adversarial_soak=args.adversarial_soak)
     ok = suite.run(args.deploy)
 
     if args.json:

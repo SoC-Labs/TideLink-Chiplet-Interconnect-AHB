@@ -72,15 +72,47 @@ case "$MODE" in
         echo "!! Run this on BOTH boards together — cal_done gates on the peer+ribbon."
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_bringup.py --bringup --role $KR260_ETH_ROLE"
         ;;
-    xfer_send|xfer_recv|xfer_readback|xfer_link|xfer_mbox_send|xfer_mbox_recv|xfer_soak|xfer_fc_health)
-        # Cross-die transfer over the live link (kr260_eth_xfer.py). send=die_a
-        # CAM+peer-write; recv=die_b read local SRAM; readback=die_a read over
-        # link; mbox_send/mbox_recv=cross-die IPC mailbox (0x2F->0x23); soak=N
-        # write+readback beats + health; link=status. Payload via KR260_XFER_PAYLOAD
-        # (default 0xC0FFEE01), soak iters via KR260_XFER_ITERS (default 500).
+    xfer_send|xfer_recv|xfer_readback|xfer_link|xfer_mbox_send|xfer_mbox_recv|\
+    xfer_soak|xfer_soak_recv|xfer_fc_health|xfer_decerr|xfer_decerr_verify|\
+    xfer_boundary|xfer_boundary_verify|xfer_errinject|xfer_errinject_verify)
+        # Cross-die transfer + corner tests over the live link (kr260_eth_xfer.py).
+        #   send=die_a CAM+peer-write; recv=die_b read local SRAM; readback=die_a
+        #   read over link; mbox_send/mbox_recv=cross-die IPC mailbox (0x2F->0x23);
+        #   soak=N write beats + health (+KR260_XFER_ADVERSARIAL=1); soak_recv=die_b
+        #   verify adversarial soak; fc_health=GATING per-node FC + Region F check.
+        # !! ATTENDED / WEDGE-PRONE (JTAG-POR staged): decerr*, boundary*, errinject*
+        #    traverse the PEER window and can wedge the PS bus on current silicon —
+        #    run attended, one board pair, ready to JTAG-POR.
+        #   decerr/decerr_verify=inbound confinement (excluded byte must DECERR);
+        #   boundary/boundary_verify=8 KB-alias last-writer-wins sweep;
+        #   errinject/errinject_verify=single-bit AXI-node recovery-gap probe.
+        # Env: KR260_XFER_PAYLOAD(0xC0FFEE01), KR260_XFER_ITERS(500),
+        #      KR260_XFER_SEED(1), KR260_XFER_WIN(16), KR260_XFER_ADVERSARIAL(0/1),
+        #      KR260_XFER_NODE(B/R/W), KR260_XFER_STREAM, KR260_XFER_EXCL,
+        #      KR260_XFER_INJ_BIT, KR260_XFER_INJ_BYTE.
         xmode=${MODE#xfer_}; [ "$xmode" = "send" ] && xmode=sender
         pl=${KR260_XFER_PAYLOAD:-0xC0FFEE01}
-        SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode --payload $pl --iters ${KR260_XFER_ITERS:-500}"
+        extra="--seed ${KR260_XFER_SEED:-1} --win ${KR260_XFER_WIN:-16}"
+        [ "${KR260_XFER_ADVERSARIAL:-0}" = 1 ] && extra="$extra --adversarial"
+        [ -n "${KR260_XFER_NODE:-}" ]     && extra="$extra --node ${KR260_XFER_NODE}"
+        [ -n "${KR260_XFER_STREAM:-}" ]   && extra="$extra --stream ${KR260_XFER_STREAM}"
+        [ -n "${KR260_XFER_EXCL:-}" ]     && extra="$extra --excl ${KR260_XFER_EXCL}"
+        [ -n "${KR260_XFER_INJ_BIT:-}" ]  && extra="$extra --inj-bit ${KR260_XFER_INJ_BIT}"
+        [ -n "${KR260_XFER_INJ_BYTE:-}" ] && extra="$extra --inj-byte ${KR260_XFER_INJ_BYTE}"
+        SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_xfer.py --mode $xmode --payload $pl --iters ${KR260_XFER_ITERS:-500} $extra"
+        ;;
+    soak_write|soak_verify)
+        # Wedge-safe multi-address soak (kr260_eth_soak_fwd.py). write=die_a (arms
+        # CAM 0x2F->0x2D itself + FCSM=4 link guard, then N distinct isolated
+        # writes); verify=die_b LOCAL read of shared_sram_0 (no link traversal ->
+        # cannot wedge). N via KR260_SOAK_N (default 200), base via KR260_SOAK_BASE.
+        smode=${MODE#soak_}
+        SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_eth_soak_fwd.py $smode ${KR260_SOAK_N:-200} ${KR260_SOAK_BASE:-A5A50000}"
+        ;;
+    xfer_health)
+        # RO one-shot health snapshot (health_snapshot.py): SWI_LANE/STATUS/credit/
+        # OBS_FC_CREDIT/Region F. Wedge-safe, in-window; exits 1 on a fault bit.
+        SSH "cd $KR260_DEST && $SUDO python3 scripts/health_snapshot.py"
         ;;
     xfer_dbg_gate|xfer_dbg_halt|xfer_dbg_resume)
         # Cross-die SWD debug (kr260_eth_xfer.py). REQUIRES the batch RTL (0b+0c);
@@ -97,6 +129,10 @@ case "$MODE" in
         SSH "cd $KR260_DEST && $SUDO python3 scripts/kr260_tidechart.py --mode $tcmode --peer-id ${KR260_TC_PEER_ID:-0} --sync-at ${KR260_TC_SYNC_AT:-0}"
         ;;
     *)
-        echo "ERROR: unknown MODE '$MODE' (status|bringup|xfer_*|tc_*)." >&2
+        echo "ERROR: unknown MODE '$MODE'." >&2
+        echo "  modes: status|bringup|xfer_{send,recv,readback,link,mbox_send," >&2
+        echo "         mbox_recv,soak,soak_recv,fc_health,health,decerr,decerr_verify," >&2
+        echo "         boundary,boundary_verify,errinject,errinject_verify," >&2
+        echo "         dbg_gate,dbg_halt,dbg_resume}|soak_write|soak_verify|tc_*" >&2
         exit 2 ;;
 esac

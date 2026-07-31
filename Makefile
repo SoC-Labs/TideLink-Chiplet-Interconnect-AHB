@@ -263,7 +263,8 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axinode_obs \
+	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -609,6 +610,55 @@ sim_gate_axinode_obs:
 	        cocotb/tidelink_apb_regs/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_axinode_obs && \
 	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_region_f_decode)
+
+# ---------------------------------------------------------------------------
+# I1 eth-chiplet bring-up regressions (integ/i1-fix, silicon-proven 2026-07-31).
+# Three suites guarding the two sequencing fixes (SELF_ARM + FIX-E) + the
+# isolated-write datapath. See docs/I1_SELFARM_FIX.md, docs/I1_SELFARM_REGRESSION.md,
+# cocotb/tidelink_i1_fixe_training_release/Makefile, docs/TIDELINK_ISOLATED_WRITE_ROOTCAUSE_FIX.md.
+# ---------------------------------------------------------------------------
+
+# T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression).
+# UVM tidelink_top_system paired-die harness. Compiles die A with the fix ON
+# (+define+TL_SELF_ARM_A_ON) and die B at the shipping-default OFF, drives the
+# eth-chiplet control-plane condition (mask_hs gate ENGAGED, nego_en=0) and
+# asserts, in ONE sim, that die A LATCHES role_lock on the SW ROLE_CFG[1] write
+# (the fix) while die B does NOT (the built-in negative control). PASS requires
+# the [I1_SELFARM_VERDICT] PASS token AND the [I1_SELFARM_DONE] marker AND the
+# ABSENCE of any FAIL verdict. Own build dir (sim_build_selfarm), rm'd first so a
+# stale simv can never false-PASS. DISCRIMINATION (by hand): recompiling WITHOUT
+# the define makes die A also OFF and this suite FAILS — proving non-vacuity.
+sim_gate_i1_selfarm:
+	$(call sim_gate_run,i1_selfarm_rolelock,\
+	  rm -rf uvm/tidelink_top_system/sim_build_selfarm && \
+	  cd uvm/tidelink_top_system && \
+	  $(MAKE) run TEST=test_top_i1_selfarm FCSM_SRC=local SIM_DIR=sim_build_selfarm \
+	    EXTRA_VCS_FLAGS="+define+TL_SELF_ARM_A_ON" && \
+	  grep -qF "[I1_SELFARM_VERDICT] PASS" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  grep -qF "[I1_SELFARM_DONE]" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  ! grep -qF "[I1_SELFARM_VERDICT] FAIL" sim_build_selfarm/test_top_i1_selfarm.log)
+
+# I1 / FIX-E training-hold self-deadlock regression (test/i1-fixe-training-release).
+# UNIT env: compiles ONLY the deployed FPGA calibrator override
+# (tidelink_phy_align_calibrator_v2.sv) + tb_fixe.sv, shrunk timers. Phase (a)
+# proves the S_HOLD self-deadlock + pins the :1499 !swi_training_mode_r gate;
+# phase (b) proves the FIX-E release path reaches cal_done. Non-vacuity:
+# FIXE_INVERT=1 skips the release ⇒ the suite FAILS. rm -rf sim_build*: the
+# cocotb Makefile only tracks tb_fixe.sv as a compile dep, so a calibrator RTL
+# edit would otherwise re-run a STALE simv (the tree-wide trap).
+sim_gate_i1_fixe_training_release:
+	$(call sim_gate_run,i1_fixe_training_release,\
+	  rm -rf cocotb/tidelink_i1_fixe_training_release/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_i1_fixe_training_release)
+
+# V2 XHB500 isolated-write data-loss gate (fix/tidelink-isolated-write-dataloss).
+# Guards the NanoSoC compute-chiplet handover regression (isolated D2D window
+# write crossing with DATA=0) now fixed by cb33c9f. HREADY-aware far-ahb_mng
+# monitor, distinct back-to-back data, non-compliant prompt-drop master. Reuses
+# the shared tidelink_top_pair_v2 simv (compiled fresh by sim_gate_clean_builds).
+sim_gate_v2_isolated_write:
+	$(call sim_gate_run,v2_isolated_write_dataloss,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_isolated_write_dataloss)
 
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
@@ -1008,7 +1058,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs
+	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
+	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1065,6 +1116,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
 	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
 	@$(MAKE) --no-print-directory sim_gate_axinode_obs
+	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
+	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
+	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
+	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit

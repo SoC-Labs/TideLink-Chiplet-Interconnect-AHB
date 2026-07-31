@@ -121,6 +121,12 @@ package tidelink_top_system_pkg;
   `include "test_top_mixed_traffic.sv"
   `include "test_top_coordinated_reset.sv"
   `include "test_top_addr_translate.sv"
+  // T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression):
+  // die A fix-ON vs die B default-OFF, single-sim role_lock latch discrimination.
+  // (The sim/i1-repro fcsm_bringup + controlplane tests are intentionally NOT
+  //  pulled into this integration branch — the harness probe mirrors they use
+  //  are retained in tb/top.sv as inert observability; see the PR EXCLUDED note.)
+  `include "test_top_i1_selfarm.sv"
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"
   `include "test_top_autoneg_timeout.sv"

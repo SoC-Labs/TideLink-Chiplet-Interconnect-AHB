@@ -897,6 +897,23 @@ module tidelink_top #(
 
     wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
 
+    // SoC Labs mailbox-RO fix (2026-07-31): mbox_reg_write as computed by
+    // tidelink_apb_regs.sv (fifo/tidelink_apb_regs.sv:527) is just
+    // apb_write && Region-3-decode -- apb_write there is the raw shared-bus
+    // psel&&penable&&pwrite with NO source qualifier, so it asserts for a
+    // plain external APB write to 0x4403_2068 exactly the same as it does
+    // for a genuine peer sideband injection. That silently let the CPU/debug
+    // side overwrite mbox_sec_lo_r/mbox_sec_hi_r/mbox_ns_r -- the assembled
+    // cross-die PTP timestamp -- even though this very port's comment always
+    // said the mailbox is fed "from FC RX config path via APB": the FC peer
+    // was always meant to be the ONLY legitimate writer, but nothing enforced
+    // that structurally. Gated with fc_cfg_apb_active above -- the same signal
+    // that already keeps the PEER from writing TXGEN over the link in the
+    // opposite direction (see the "SECURITY" comment on txgen_reg_wr) -- it is
+    // true only in the cycles the 2:1 tl_apb_* arbiter has granted the shared
+    // bus to the FC adapter's RX config path, not the external PS/debug port.
+    wire mbox_reg_write_fc_only = mbox_reg_write && fc_cfg_apb_active;
+
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
     wire                    tl_apb_psel;
@@ -2036,8 +2053,12 @@ module tidelink_top #(
             .servo_fc_data          (servo_fc_data),
             .servo_fc_ready         (servo_fc_ready),
 
-            // Timestamp mailbox (from FC RX config path via APB)
-            .mbox_reg_write         (mbox_reg_write),
+            // Timestamp mailbox (from FC RX config path via APB). Gated with
+            // fc_cfg_apb_active -- see mbox_reg_write_fc_only above -- so an
+            // external APB write to Region 3 can no longer forge a PTP mailbox
+            // update; only writes the arbiter granted to the FC RX config path
+            // reach the servo.
+            .mbox_reg_write         (mbox_reg_write_fc_only),
             .mbox_reg_addr          (mbox_reg_addr),
             .mbox_reg_wdata         (mbox_reg_wdata),
 

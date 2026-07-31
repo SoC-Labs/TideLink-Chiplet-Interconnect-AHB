@@ -264,7 +264,8 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axinode_obs \
-	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write
+	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
+	sim_gate_v2_mbox_writeprotect
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -659,6 +660,15 @@ sim_gate_i1_fixe_training_release:
 sim_gate_v2_isolated_write:
 	$(call sim_gate_run,v2_isolated_write_dataloss,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_isolated_write_dataloss)
+
+# PTP mailbox APB write-protect guard (2026-07-31, verification audit). Proves an
+# external APB write to Region 3 (0x060-0x07C) can no longer forge the PTP servo
+# timestamp mailbox — tidelink_top.sv now ANDs mbox_reg_write with
+# fc_cfg_apb_active before it reaches the servo (mbox_reg_write_fc_only). Reuses
+# the shared tidelink_top_pair_v2 simv.
+sim_gate_v2_mbox_writeprotect:
+	$(call sim_gate_run,v2_mbox_writeprotect,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_mbox_apb_writeprotect)
 
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
@@ -1074,7 +1084,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
 	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
-	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss
+	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
+	v2_mbox_writeprotect
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1135,6 +1146,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
 	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
+	@$(MAKE) --no-print-directory sim_gate_v2_mbox_writeprotect
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit

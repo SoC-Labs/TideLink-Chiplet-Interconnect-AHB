@@ -381,7 +381,7 @@ async def test_axi_b_persistent_eye_bounded(dut):
             # die-m ahb_sub backstop: sub_err1_r = the 2-cycle AHB ERROR fired
             try:
                 if int(dut.u_master.sub_err1_r.value):  obs["i5_err"] = True
-                if int(dut.u_master.sub_wr_os_r.value): obs["os_hi"] = True
+                if int(dut.u_master.sub_wr_os_ctr.value): obs["os_hi"] = True
             except Exception: pass
 
     m = cocotb.start_soon(mon(80000))

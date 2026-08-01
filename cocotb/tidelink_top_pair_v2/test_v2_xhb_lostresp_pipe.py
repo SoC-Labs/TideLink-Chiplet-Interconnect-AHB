@@ -202,7 +202,7 @@ async def _watch_master_backstop(dut, stop):
     while stop["go"]:
         await RisingEdge(dut.hclk)
         rd = _int_or_none(m.sub_rd_os_r) or 0
-        wr = _int_or_none(m.sub_wr_os_r) or 0
+        wr = 1 if (_int_or_none(m.sub_wr_os_ctr) or 0) > 0 else 0   # counter (Fix H) -> outstanding bool
         osr = _int_or_none(m.sub_osr_ctr_r) or 0
         stc = _int_or_none(m.sub_stall_ctr_r) or 0
         err = _int_or_none(m.sub_err1_r) or 0

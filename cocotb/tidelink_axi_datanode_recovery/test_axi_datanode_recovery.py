@@ -164,6 +164,22 @@ async def _arm_injector(tb, side, data_id, byte, bit):
     await ClockCycles(tb.dut.hclk, 4)
 
 
+async def _arm_injector_persistent(tb, side, data_id, byte, bit):
+    """PERSISTENT (frozen-marginal-eye) injection: the built-in injector is a
+    one-shot -- err_inj_smack self-clears on the matching packet's advance
+    (WlinkTxLinkLayer.v:64). Force the smack latch HIGH so EVERY matching B SOP
+    (and every NACK-driven REPLAY) is re-corrupted. This models the on-silicon
+    persistently-marginal eye where the frozen sample point corrupts every beat,
+    so flow-control replay can never converge -- the exact condition the HW
+    hard-wedge occurred under."""
+    wl = _wlink(tb, side)
+    wl.swi_err_inj_data_id.value = Force(data_id)
+    wl.out_prepend_swi_err_inj_byte.value = Force(byte)
+    wl.out_prepend_swi_err_inj_bit.value = Force(bit)
+    wl.lltx.err_inj_smack.value = Force(1)   # never self-clears -> every B corrupts
+    await ClockCycles(tb.dut.hclk, 4)
+
+
 async def _region_f(tb):
     try:    raw = await tb.apb("m").read(REG_OBS_AXI_NODES)
     except Exception: return (None, None, None)
@@ -179,6 +195,8 @@ def _release_all(tb):
                   "out_prepend_swi_err_inj_bit", "out_prepend_swi_err_inj"):
             try:    getattr(wl, a).value = Release()
             except Exception: pass
+        try:    wl.lltx.err_inj_smack.value = Release()   # persistent-eye latch
+        except Exception: pass
         for inst in AXI_FC_NODES:
             node = _axi_node(tb, side, inst)
             for a in ("out_prepend_swi_disable_crc", "socl_l7_reached_link_data"):
@@ -287,3 +305,82 @@ async def test_axi_b_crc_off_silent_payload(dut):
     assert o["nack_fired"] is False, "CRC off but a CRC-NACK fired"
     dut._log.info(f"[axirec] PASS: CRC-off silently accepts the payload error "
                   f"(crc_errs_rose=False) -- the un-armed detection the fix enables")
+
+
+@cocotb.test()
+async def test_axi_b_persistent_eye_bounded(dut):
+    """PERSISTENT-MARGINAL-EYE experiment (the on-silicon hard-wedge condition).
+
+    The 2026-08-01 HW run hard-wedged die_a (JTAG-POR only) on a B-response error
+    even though I5 (the outstanding-response backstop) and Fix G (NACK/replay +
+    CRC-on) were BOTH confirmed in the built bitstream. The A/B showed the eye was
+    persistently marginal -- every B beat corrupts, so replay can never converge.
+
+    This test reproduces THAT condition in sim: hold err_inj_smack high so every B
+    SOP (and every replay) is re-corrupted, with Fix G on + CRC on. The question it
+    settles: does the present-and-armed I5 convert the never-returning response
+    into a BOUNDED HRESP=ERROR (a recoverable SIGBUS -- no JTAG-POR), or does it
+    ALSO wedge (a real residual amplifier bug)?
+
+    PASS = NOT a silent hard-wedge: the write must terminate as HRESP=ERROR (I5 /
+    stall backstop fired) rather than hang forever, AND a NACK must have fired
+    (the recovery FSM genuinely tried and could not converge on the frozen eye).
+    A WEDGE here would mean I5 is defeated even when present -> a real RTL gap."""
+    tb = PairV2TB(dut)
+    master = AHBSubMaster(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no CR/CRACK"
+    await ClockCycles(dut.hclk, 200)
+    _force_axi_crc(tb, True)              # Fix G bring-up CRC enable
+    _force_fix_off(tb, False)            # Fix G forgive-disarm active (shipping fix)
+
+    await master.write(APER_BASE + OFF_SANITY, D_SANITY)
+    await ClockCycles(dut.hclk, 2000)
+    assert _slave_bram_peek(dut, OFF_SANITY) == D_SANITY, "clean sanity write failed"
+
+    mB = _axi_node(tb, "m", "wlink_axibFC")
+    obs = {"state7": False, "nack_req": False, "i5_err": False, "os_hi": False}
+
+    async def mon(n):
+        for _ in range(n):
+            await RisingEdge(dut.hclk)
+            if _sig(mB, "state") == 7:        obs["state7"] = True
+            if _sig(mB, "send_nack_req"):     obs["nack_req"] = True
+            # die-m ahb_sub backstop: sub_err1_r = the 2-cycle AHB ERROR fired
+            try:
+                if int(dut.u_master.sub_err1_r.value):  obs["i5_err"] = True
+                if int(dut.u_master.sub_wr_os_r.value): obs["os_hi"] = True
+            except Exception: pass
+
+    m = cocotb.start_soon(mon(80000))
+    # PERSISTENT corruption on the far (die-s) B transmitter: every B beat flips.
+    await _arm_injector_persistent(tb, "s", B_DATA_ID, BYTE_PKTNUM, 0)
+
+    cls = None
+    try:
+        await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=80000)
+        cls = "RECOVER"
+    except TimeoutError:  cls = "WEDGE"
+    except RuntimeError:  cls = "ERROR"
+    await ClockCycles(dut.hclk, 200)
+    m.kill()
+    nack_fired = obs["state7"] or obs["nack_req"]
+    dut._log.info(f"[axirec] PERSISTENT-EYE OUTCOME: class={cls} nack_fired={nack_fired} "
+                  f"i5_err={obs['i5_err']} os_hi={obs['os_hi']}")
+    _release_all(tb)
+    await ClockCycles(dut.hclk, 50)
+
+    assert cls != "WEDGE", (
+        "PERSISTENT eye SILENTLY HARD-WEDGED in sim even with I5 present + Fix G on "
+        "-> a real residual amplifier bug (I5 defeated). Investigate why sub_err1_r "
+        f"never fired (obs={obs}).")
+    assert nack_fired, (
+        "no NACK fired under persistent corruption -> the recovery FSM never even "
+        f"tried; the repro is not exercising the CRC/forgive path (obs={obs})")
+    if cls == "ERROR":
+        assert obs["i5_err"], (
+            "classified ERROR but sub_err1_r never observed -- unexpected error "
+            f"source, verify the backstop actually fired (obs={obs})")
+    dut._log.info(f"[axirec] PASS: persistent marginal eye -> BOUNDED {cls} "
+                  f"(recoverable, no hard-wedge); recovery FSM tried (nack_fired) "
+                  f"then the ahb_sub backstop bounded it")

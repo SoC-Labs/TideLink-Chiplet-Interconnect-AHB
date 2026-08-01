@@ -41,6 +41,11 @@ COMPILE_ARGS += +define+TB_TOP_SKID_BITS=0
 COMPILE_ARGS += +define+TB_TOP_BYPASS_AUTONEG=1
 export BYPASS_AUTONEG = 1
 
+# Optional short I5 outstanding-response timeout so the persistent-eye repro
+# (test_axi_b_persistent_eye_bounded) fires the backstop fast instead of at the
+# 2^16 default. Passed only by the `persist` target (separate sim_build).
+COMPILE_ARGS += $(EXTRA_DEFINES)
+
 # Silicon clock ratio (ref_clk period ns). 40.0 = the ~40 ns silicon ratio.
 REF_PERIOD_NS ?= 40.0
 export TIDELINK_SIM_REF_PERIOD_NS = $(REF_PERIOD_NS)
@@ -60,7 +65,7 @@ CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-.PHONY: repro fixed clean_builds
+.PHONY: repro fixed persist clean_builds
 
 # Reproduce the silicon wedge: CRC at the shipping default (off) -> injected
 # B-beat error is undetected -> mis-deliver -> B never returns -> WEDGE.
@@ -73,6 +78,15 @@ repro:
 fixed:
 	$(MAKE) SIM_BUILD=sim_build_axirec MODULE=test_axi_datanode_recovery \
 	        TESTCASE=test_axi_b_error_recovers
+
+# Persistent-marginal-eye repro (the on-silicon hard-wedge condition): hold
+# err_inj_smack high so EVERY B beat corrupts -> replay never converges. Proves
+# the present-and-armed I5 bounds it to HRESP=ERROR (recoverable) rather than a
+# silent hard-wedge. Short I5 timeout (2^13) so it fires fast; own sim_build.
+persist:
+	$(MAKE) SIM_BUILD=sim_build_axirec_persist MODULE=test_axi_datanode_recovery \
+	        TESTCASE=test_axi_b_persistent_eye_bounded \
+	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13
 
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* $(LOCAL_FLIST)

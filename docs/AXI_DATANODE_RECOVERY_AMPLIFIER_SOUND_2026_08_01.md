@@ -1,8 +1,19 @@
-# AXI data-node recovery — the amplifier is SOUND in sim; the HW wedge is physical (2026-08-01)
+# AXI data-node recovery — SOUND in sim, but STILL HARD-WEDGES on silicon (2026-08-01)
 
 Branch `fix/axi-datanode-recovery`. Follow-on to `docs/AXI_DATANODE_RECOVERY_GAP_2026_07_31.md`
 (the on-silicon hard-wedge), Fix G (`WlinkGenericFCSM*.v`, NACK/replay forgive-disarm + CRC-on)
 and the I5 ahb_sub outstanding-response backstop (`tidelink_top.sv`).
+
+> **⚠ CORRECTION (2026-08-01 PM, from a HW run — see "HW RESULT" below).** The sim
+> conclusion in this doc ("the amplifier bounds a lost B to HRESP=ERROR; the HW wedge is
+> physical eye-margin") is **REFUTED by silicon.** On a **confirmed-good eye** (a clean
+> cross-die transfer passed immediately before), an errinject on the B node **hard-wedged
+> die_a's entire PS (JTAG-POR), for BOTH byte 4 (header) and byte 5 (CRC-detectable payload),
+> with Fix G + I5 + CRC all present and armed.** So the amplifier is sound only against the
+> failure mode the sim tb can model (a cleanly-DROPPED response); against a real single-bit
+> CORRUPTION that gets accepted/mis-delivered it is NOT sufficient on silicon. The wedge is
+> **not** physical eye-margin. Read the "HW RESULT" section as the current truth; the sim
+> analysis below is correct *for its model* but does not cover the silicon failure path.
 
 ## The question this settles
 
@@ -97,3 +108,67 @@ Minimal design (reuses 100% of the proven sweep path):
 
 Until then: the manual `SWI_FORCE_RECAL` poke is the operational mitigation (host polls
 Region C `cal_state` / a CRC/FIFO health reg between transfers, re-cals on degradation).
+
+---
+
+## HW RESULT (2026-08-01 PM) — the amplifier does NOT save the initiator on silicon
+
+Ran the finishing errinject round on the KR260 eth-chiplet pair (die_a `kr260_01`
+10.22.24.159, die_b `kr260_02` 10.22.24.153), Fix-G bitstreams (the `imp/fpga/output`
+build with I5 verified in the synthesized `ipshared/*/src/tidelink_top.sv`).
+
+Sequence (both dies, twice — once per inject byte, each a fresh POR→deploy→bringup cycle):
+1. POR both → deploy Fix-G → `bringup_pair_release.sh` → **LINK UP fcsm=4 BOTH DIES**.
+2. `kr260_eth_bringup.py --enable-axi-crc` → **CRC ON all 5 nodes both dies** (`0x00010708→0x00000708`).
+3. **Eye gate — clean `sender`→`recv` peer-write: byte-exact PASS** (0xC0FFEE01 / 0xC0FFEE02
+   crossed to die_b SRAM). Confirms the eye is good *this* calibration window.
+4. `kr260_eth_xfer.py --mode errinject --node B --inj-byte {4,5} --inj-bit 0 --seed 0xBEEF`.
+
+| Inject | Eye (clean xfer just before) | Outcome |
+|---|---|---|
+| B, byte 4 (pktnum/header) | GOOD (byte-exact) | **die_a HARD WEDGE** — PS fully down (100% ping loss + SSH dead), JTAG-POR required |
+| B, byte 5 (CRC-detectable payload) | GOOD (byte-exact) | **die_a HARD WEDGE** — identical (PS down, JTAG-POR) |
+
+After the byte-4 wedge, **die_b was polled and stayed completely healthy**: fcsm=4, every FC
+node CRC 0→0, `STATUS=0` no sticky faults, `CREDIT_COUNT=4096`, Region F `data_healthy=1`, no
+wedge-sticky. So the corrupted B deadlocked **die_a's PS locally**; die_b never saw a fault.
+
+### What this proves (empirical, high confidence)
+- The initiator hard-wedge is **NOT** marginal-eye margin — it reproduces on a **confirmed-good
+  eye**, twice. (This corrects the 07-31 "restored to working link" and the sim-side
+  "physical eye-margin" attribution.)
+- **Fix G + I5 + CRC-on are all present and armed and do NOT prevent it**, for two different
+  inject bytes. A full-PS death (ping gone) is *worse* than the HRESP=ERROR SIGBUS the sim
+  produces — the PS interconnect itself deadlocks, not one erroring transaction.
+
+### What it means (mechanism — stated as the leading hypothesis, NOT verified on the wedged board)
+This is precisely the failure path the sim tb **could not model** (flagged at the time): the
+AHB master BFM does no BID-matching, so it can only model a *cleanly-dropped* B (→ I5 fires →
+HRESP=ERROR). On silicon the corrupted B is very likely **ACCEPTED** (`s_axi_bvalid` pulses
+with bad data) → I5 *disarms* (it counts B **arrival**, not BID correctness — Agent-4 "Gap 2")
+→ the mis-delivered B propagates **upstream of `tidelink_top`** to the Xilinx
+`axi_ahblite_bridge` / PS SmartConnect, which rejects the wrong-BID/protocol-bad beat and
+**hard-deadlocks with no backstop** (there is no I5 there). CRC-on *should* have NACK'd the
+corrupt B at die_a's B-node receiver before egress — that it wedged anyway means either the
+CRC→NACK path does not gate egress on silicon, or the corruption is outside the field the
+B-node CRC guards. **Not verifiable from a wedged PS without JTAG/ILA — do not treat the
+mechanism as settled.**
+
+### The real fix direction (supersedes "Fix I is the only remaining fix")
+Fix I (eye re-cal) is now **secondary** — the eye was good and it still wedged. The primary gap
+is the **accepted-corrupt-B / upstream-interconnect deadlock**, which needs one or more of:
+1. **A backstop upstream of `tidelink_top`** — an AXI Firewall / AXI Timeout IP in the PL
+   between PS HPM0 and the SoC AXI (FPGA-only), so a stuck/rejected B becomes a bus error the
+   PS survives instead of a full deadlock. Cheapest path to "no more JTAG-POR".
+2. **Make I5 not disarm on a mis-matched B** — track expected BID / don't clear the outstanding
+   state on a B whose id/resp is wrong. (I5 lives in `tidelink_top`; needs BID visibility.)
+3. **Verify + fix why CRC-on did not prevent the corrupt-B egress on silicon** — the B-node
+   CRC→NACK is the first line of defense and it did not hold here.
+
+### The sim task that must precede the next HW round (close the blind spot)
+Build Agent-4's "Construction B": a **BID-checking AXI master BFM** on die-m's `s_axi` (replacing
+the non-checking AHB master), so a *corrupted-but-accepted* B (wrong BID) reproduces the
+**initiator hard-hang in sim** — the current tb cannot. That sim becomes the fast triage loop
+for the three fix candidates above; a HW errinject is a ~1.5 h build+bench cycle per hypothesis.
+
+Boards left POR-recovered (die_a un-wedged), leases released.

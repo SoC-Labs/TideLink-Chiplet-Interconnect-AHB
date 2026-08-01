@@ -258,12 +258,16 @@ endef
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
+	sim_gate_epoch_anchor_plumb \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
-	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
+	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axi_datanode_recovery \
+	sim_gate_axinode_obs \
+	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
+	sim_gate_v2_mbox_writeprotect
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -458,6 +462,19 @@ sim_gate_txgen_negctl:
 	$(call sim_gate_run,txgen_negctl,\
 	  $(MAKE) -C cocotb/tidelink_txgen TXGEN_NEGCTL=1)
 
+# TXGEN ownership hand-off vs an outstanding external data phase (audit A4,
+# fixed 2026-07-30). tidelink_tx_gen used ext_idle = ~ext_htrans[1], but HTRANS
+# is address-phase-only, so the 2:1 ownership mux could switch mid external
+# data phase and commit {external ADDR, generator DATA} to the link — silent
+# single-word corruption (F14-A class). Fixed by ext_data_pend_r. Positive
+# regression; the 3 other txgen suites never overlap external traffic so they
+# were structurally blind to it. Measured post-fix TESTS=2 PASS=2.
+sim_gate_txgen_ext_hijack:
+	$(call sim_gate_run,txgen_ext_hijack,\
+	  $(MAKE) -C cocotb/tidelink_txgen MODULE=test_txgen_ext_hijack \
+	      SIM_BUILD=sim_build_hijack \
+	      COCOTB_RESULTS_FILE=sim_build_hijack/res_hijack.xml)
+
 sim_gate_v2_txgen:
 	$(call sim_gate_run,v2_txgen,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
@@ -529,6 +546,18 @@ sim_gate_epoch_silicon:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
 	    EXTRA_DEFINES="+define+TB_TOP_EPOCH_ANCHOR_FORCE" \
 	    SIM_BUILD=sim_build_silicon_epoch MODULE=test_v2_pair_data)
+
+# EPOCH_ANCHOR_EN plumbing gate (2026-07-31): drives the REAL top-level
+# EPOCH_ANCHOR_EN=1 through the packaged param chain (EPOCH_ANCHOR=1, not the
+# TB_TOP_EPOCH_ANCHOR_FORCE defparam shortcut above) and asserts s2m delivery
+# — guards the end-to-end threading landed in f756ed8 so the Z2 data-plane fix
+# can never silently stop reaching the deskew corrector.
+sim_gate_epoch_anchor_plumb:
+	$(call sim_gate_run,epoch_anchor_plumb,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 \
+	    SIM_BUILD=sim_build_anchor_param \
+	    COCOTB_RESULTS_FILE=sim_build_anchor_param/res_plumb.xml \
+	    MODULE=test_v2_pair_data)
 
 # --- Wave-0 #12b: contiguous-a2l — NON-BLOCKING tracking target -------------
 # The test needs an {m,s}_inj_* force injector in tb_top.sv that was never
@@ -609,6 +638,82 @@ sim_gate_axinode_obs:
 	        cocotb/tidelink_apb_regs/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_axinode_obs && \
 	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_region_f_decode)
+
+# AXI data-node error-recovery (Fix G, 2026-07-31). Repro + fix for the on-silicon
+# B-node write-response wedge (docs/AXI_DATANODE_RECOVERY_GAP): a mid-stream error
+# on an AXI FC data node was DETECTED but never NACK'd because socl_l7_bringup_
+# forgive never disarmed on a response-RECEIVE node (its TX FSM sits in LINK_IDLE,
+# never LINK_DATA) -> response never returns -> initiator hard-wedges. Fix G also
+# latches reached_link_data on LINK_IDLE. Four sims (own build each): recover with
+# the fix; NOT-recover with the fix Force-disabled (the wedge repro / non-vacuity);
+# CRC-on detects a payload error, CRC-off silently accepts it. 40ns silicon ratio.
+sim_gate_axi_datanode_recovery:
+	$(call sim_gate_run,axi_datanode_recovery,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_axirec && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_error_recovers && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_error_wedges_no_fix && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_on_detects_payload && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_off_silent_payload && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_persistent_eye_bounded && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_bufferable_multi_outstanding)
+
+# ---------------------------------------------------------------------------
+# I1 eth-chiplet bring-up regressions (integ/i1-fix, silicon-proven 2026-07-31).
+# Three suites guarding the two sequencing fixes (SELF_ARM + FIX-E) + the
+# isolated-write datapath. See docs/I1_SELFARM_FIX.md, docs/I1_SELFARM_REGRESSION.md,
+# cocotb/tidelink_i1_fixe_training_release/Makefile, docs/TIDELINK_ISOLATED_WRITE_ROOTCAUSE_FIX.md.
+# ---------------------------------------------------------------------------
+
+# T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression).
+# UVM tidelink_top_system paired-die harness. Compiles die A with the fix ON
+# (+define+TL_SELF_ARM_A_ON) and die B at the shipping-default OFF, drives the
+# eth-chiplet control-plane condition (mask_hs gate ENGAGED, nego_en=0) and
+# asserts, in ONE sim, that die A LATCHES role_lock on the SW ROLE_CFG[1] write
+# (the fix) while die B does NOT (the built-in negative control). PASS requires
+# the [I1_SELFARM_VERDICT] PASS token AND the [I1_SELFARM_DONE] marker AND the
+# ABSENCE of any FAIL verdict. Own build dir (sim_build_selfarm), rm'd first so a
+# stale simv can never false-PASS. DISCRIMINATION (by hand): recompiling WITHOUT
+# the define makes die A also OFF and this suite FAILS — proving non-vacuity.
+sim_gate_i1_selfarm:
+	$(call sim_gate_run,i1_selfarm_rolelock,\
+	  rm -rf uvm/tidelink_top_system/sim_build_selfarm && \
+	  cd uvm/tidelink_top_system && \
+	  $(MAKE) run TEST=test_top_i1_selfarm FCSM_SRC=local SIM_DIR=sim_build_selfarm \
+	    EXTRA_VCS_FLAGS="+define+TL_SELF_ARM_A_ON" && \
+	  grep -qF "[I1_SELFARM_VERDICT] PASS" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  grep -qF "[I1_SELFARM_DONE]" sim_build_selfarm/test_top_i1_selfarm.log && \
+	  ! grep -qF "[I1_SELFARM_VERDICT] FAIL" sim_build_selfarm/test_top_i1_selfarm.log)
+
+# I1 / FIX-E training-hold self-deadlock regression (test/i1-fixe-training-release).
+# UNIT env: compiles ONLY the deployed FPGA calibrator override
+# (tidelink_phy_align_calibrator_v2.sv) + tb_fixe.sv, shrunk timers. Phase (a)
+# proves the S_HOLD self-deadlock + pins the :1499 !swi_training_mode_r gate;
+# phase (b) proves the FIX-E release path reaches cal_done. Non-vacuity:
+# FIXE_INVERT=1 skips the release ⇒ the suite FAILS. rm -rf sim_build*: the
+# cocotb Makefile only tracks tb_fixe.sv as a compile dep, so a calibrator RTL
+# edit would otherwise re-run a STALE simv (the tree-wide trap).
+sim_gate_i1_fixe_training_release:
+	$(call sim_gate_run,i1_fixe_training_release,\
+	  rm -rf cocotb/tidelink_i1_fixe_training_release/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_i1_fixe_training_release)
+
+# V2 XHB500 isolated-write data-loss gate (fix/tidelink-isolated-write-dataloss).
+# Guards the NanoSoC compute-chiplet handover regression (isolated D2D window
+# write crossing with DATA=0) now fixed by cb33c9f. HREADY-aware far-ahb_mng
+# monitor, distinct back-to-back data, non-compliant prompt-drop master. Reuses
+# the shared tidelink_top_pair_v2 simv (compiled fresh by sim_gate_clean_builds).
+sim_gate_v2_isolated_write:
+	$(call sim_gate_run,v2_isolated_write_dataloss,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_isolated_write_dataloss)
+
+# PTP mailbox APB write-protect guard (2026-07-31, verification audit). Proves an
+# external APB write to Region 3 (0x060-0x07C) can no longer forge the PTP servo
+# timestamp mailbox — tidelink_top.sv now ANDs mbox_reg_write with
+# fc_cfg_apb_active before it reaches the servo (mbox_reg_write_fc_only). Reuses
+# the shared tidelink_top_pair_v2 simv.
+sim_gate_v2_mbox_writeprotect:
+	$(call sim_gate_run,v2_mbox_writeprotect,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_mbox_apb_writeprotect)
 
 # XHB500 transparent-window comb-loop test (2026-07-11). Standalone / NOT in the
 # blocking aggregate yet — see the WIP note below.
@@ -884,6 +989,69 @@ sim_gate_xfail_f14b:
 	  grep -qF "VERDICT[S1_s2m_clock_kill]: WEDGES(unwedged only by full POR of BOTH dies)" $$L && \
 	  grep -qF "VERDICT[S0_passthrough]: RECOVERS" $$L)
 
+# EPOCH shipping-default corrector sentinel (2026-07-31). Captures the GENUINE
+# still-open defect: with EPOCH_ANCHOR_EN at its shipping default (0), the
+# SYNC_REANCHOR corrector never arms on beacon-off skew ⇒ s2m delivers
+# all-zeros. On THIS base (I1 SELF_ARM+FIX-E + recovery FCSM) the link now
+# reaches LINK_IDLE, so m2s (test_02) passes and only s2m (test_03) fails ⇒
+# TESTS=3 PASS=2 FAIL=1 (on the pre-I1 z2 branch it was PASS=1 FAIL=2 with an
+# FCSM state-5 park — that signature is now obsolete). Tolerated as XFAIL; the
+# fix is EPOCH_ANCHOR_EN=1, gated by sim_gate_epoch_anchor_plumb. Flips to XCHG
+# if s2m ever starts (or stops) delivering at the shipping default.
+sim_gate_xfail_epoch_shipping:
+	$(call sim_gate_sentinel,xfail_epoch_shipping_corrector,\
+	  { $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
+	      SIM_BUILD=sim_build_epoch_shipping \
+	      COCOTB_RESULTS_FILE=sim_build_epoch_shipping/res_shipping.xml \
+	      MODULE=test_v2_pair_data; true; },\
+	  grep -qF "test_v2_pair_data.test_02_packet_master_to_slave passed" $$L && \
+	  grep -qF "test_v2_pair_data.test_03_packet_slave_to_master failed" $$L && \
+	  grep -qF "rx=[0x00000000" $$L && \
+	  grep -qF "TESTS=3 PASS=2 FAIL=1 SKIP=0" $$L)
+
+# I5 XHB500 lost-response backstop (audit; wired 2026-07-31). Exercises the
+# HREADYOUT-blind outstanding-response watchdog (tidelink_top.sv sub_osr_ctr_r)
+# that fires an AHB ERROR on a lost peer R/B beat the per-beat stall timer
+# cannot see. Needs the split-timeout build (per-beat parked at 2^20, the
+# outstanding timer shrunk to 2^10) via +define+; own SIM_BUILD since
+# EXTRA_DEFINES is not in the Makefile SIM_BUILD key.
+sim_gate_v2_xhb_lostresp_pipe:
+	$(call sim_gate_run,v2_xhb_lostresp_pipe,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
+	    EXTRA_DEFINES="+define+TIDELINK_SUB_STALL_TIMEOUT_LOG2=20 +define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=10" \
+	    SIM_BUILD=sim_build_lostresp \
+	    COCOTB_RESULTS_FILE=sim_build_lostresp/res_lostresp.xml \
+	    MODULE=test_v2_xhb_lostresp_pipe)
+
+# Anti-vacuous wiring cross-check (2026-07-30): fails if any suite in
+# SIM_GATE_ALL_SUITES / SIM_GATE_SENTINELS is SCORED by the summary but never
+# INVOKED by the sim_gate recipe (the "gate green on another branch's run"
+# class). Run standalone (make sim_gate_inventory); not in the aggregate.
+sim_gate_inventory:
+	@echo "blocking suites ($(words $(SIM_GATE_ALL_SUITES))):"
+	@for s in $(SIM_GATE_ALL_SUITES); do echo "  $$s"; done
+	@echo "known-defect sentinels ($(words $(SIM_GATE_SENTINELS))):"
+	@for s in $(SIM_GATE_SENTINELS); do echo "  $$s"; done
+	@echo "--- wiring cross-check (declared vs invoked) ---"
+	@mk=$(firstword $(MAKEFILE_LIST)); \
+	inv=$$(mktemp); \
+	sed -n '/^sim_gate: sim_gate_env_check/,/sim_gate_summary/p' $$mk \
+	  | grep -oE 'no-print-directory sim_gate_[a-z0-9_]+' \
+	  | awk '{print $$2}' | sort -u > $$inv; \
+	miss=0; \
+	for s in $(SIM_GATE_ALL_SUITES) $(SIM_GATE_SENTINELS); do \
+	  t=$$(grep -B40 -E "call sim_gate_(run|sentinel),$$s," $$mk \
+	       | grep -oE '^sim_gate_[a-z0-9_]+:' | tail -1 | tr -d ':'); \
+	  if [ -z "$$t" ]; then \
+	    echo "  ORPHAN: $$s is scored but no target produces it"; miss=1; \
+	  elif ! grep -qx "$$t" $$inv; then \
+	    echo "  ORPHAN: $$s (target $$t) is SCORED but never INVOKED"; miss=1; \
+	  fi; \
+	done; \
+	rm -f $$inv; \
+	if [ $$miss -eq 0 ]; then echo "  OK — every declared suite is invoked"; \
+	else echo "  ^^ the gate CANNOT PASS: the summary scores these MISS"; exit 1; fi
+
 # --- RX-FIFO TWIN 2 — ACTIVE (in the aggregate since 2026-07-19) -------------
 # F10's write-side twin (docs/RXFIFO_TWIN2_DISPOSITION.md): the unguarded
 # write-side length-latch arm at src/rtl/fifo/tidelink_fifo_ctrl.sv:189 let any
@@ -984,6 +1152,18 @@ sim_gate_asicelab_v2:
 # not the wrapper. This gate elaborates the wrapper itself with -top so a dropped
 # param connection / dead strap on the tapeout top FAILS here. Same flist as
 # asic_v2 + the wrapper source; top = tidelink_dft_wrapper.
+#
+# STRUCTURAL TAPEOUT-CONTRACT ASSERTION (P1, 2026-07-30): the FPGA-only TX
+# traffic generator (tidelink_tx_gen) MUST NOT be in the tapeout netlist
+# (docs/TXGEN_V1_DESIGN.md). tidelink_top defaults TXGEN_PRESENT=1'b1, so the
+# ASIC dft_wrapper must force it 1'b0 — WITHOUT that tie-off the generator +
+# its ahb_tx 2:1 mux elaborate into silicon and a plain rc=0 elab gate stays
+# GREEN (sim-invisible). Elaboration rc=0 is necessary but NOT sufficient, so
+# we additionally assert the generator is absent from the ELABORATED module
+# set. Note: tidelink_tx_gen.sv is in the flist and is always PARSED ("Parsing
+# design file .../tidelink_tx_gen.sv"), so we must anchor on the elaborated
+# instantiation line ("... module tidelink_tx_gen"), NOT the filename — the
+# module-compiled-but-not-instantiated distinction. grep-hit => FAIL.
 sim_gate_dftelab:
 	$(call sim_gate_run,dft_wrapper_elab,\
 	  rm -rf cocotb/tidelink_top_pair/sim_build_dftelab && \
@@ -993,14 +1173,17 @@ sim_gate_dftelab:
 	    -f $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
 	    $(TIDELINK_HOME)/src/rtl/asic/tidelink_dft_wrapper.sv \
 	    $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v \
-	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log)
+	    -top tidelink_dft_wrapper +define+TB_TOP_NO_DUMP -l vcs_dftelab.log && \
+	  { if grep -qE 'module[[:space:]]+tidelink_tx_gen([^A-Za-z0-9_]|$$)' vcs_dftelab.log; then \
+	      echo "FAIL: tidelink_tx_gen INSTANTIATED in ASIC tapeout netlist — TXGEN_PRESENT tie-off missing (docs/TXGEN_V1_DESIGN.md)"; exit 1; \
+	    else echo "STRUCTURAL-OK: tidelink_tx_gen absent from ASIC tapeout elaborated netlist (TXGEN_PRESENT=0 tie-off holds)"; fi; })
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
-	v2_pair_sustained v2_truncated_pkt_credit \
+	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
+	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -1008,12 +1191,15 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs
+	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
+	axi_datanode_recovery \
+	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
+	v2_mbox_writeprotect
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1065,6 +1251,13 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
 	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
 	@$(MAKE) --no-print-directory sim_gate_axinode_obs
+	@$(MAKE) --no-print-directory sim_gate_axi_datanode_recovery
+	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
+	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
+	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
+	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
+	@$(MAKE) --no-print-directory sim_gate_v2_mbox_writeprotect
+	@$(MAKE) --no-print-directory sim_gate_v2_xhb_lostresp_pipe
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
@@ -1075,6 +1268,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_perf
 	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
+	@$(MAKE) --no-print-directory sim_gate_epoch_anchor_plumb
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree
@@ -1093,6 +1287,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
 	@$(MAKE) --no-print-directory sim_gate_txgen_unit
 	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
+	@$(MAKE) --no-print-directory sim_gate_txgen_ext_hijack
 	@$(MAKE) --no-print-directory sim_gate_v2_txgen
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election
@@ -1105,6 +1300,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_errinj
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"

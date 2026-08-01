@@ -654,7 +654,8 @@ sim_gate_axi_datanode_recovery:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_error_wedges_no_fix && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_on_detects_payload && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_crc_off_silent_payload && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_persistent_eye_bounded)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_persistent_eye_bounded && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_bufferable_multi_outstanding)
 
 # ---------------------------------------------------------------------------
 # I1 eth-chiplet bring-up regressions (integ/i1-fix, silicon-proven 2026-07-31).

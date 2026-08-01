@@ -112,6 +112,38 @@ class AHBSubMaster:
     async def write(self, addr, data, timeout=80000):
         await self._run(addr, True, data, timeout)
 
+    async def write_bufferable(self, addr, data, node, timeout=80000):
+        """Bufferable single write (HPROT[2]=1 -> XHB500 early-write-response path).
+        The posted response is zero-wait (hreadyout never dips) and the outstanding
+        counter saturates at the hazard-list depth, so completion is detected by THIS
+        write's AW being accepted on s_axi (node.s_axi_awvalid & s_axi_awready) — the
+        definitive 'issued into the pipeline' event (writes serialise at the AHB
+        address phase, so the next AW-accept is ours). Data is held a few cycles past
+        acceptance so XHB500 latches the W beat. RuntimeError if the backstop fires
+        HRESP=ERROR (hazard list full, a stuck write timed out); TimeoutError if never
+        accepted and no error fires."""
+        await RisingEdge(self.clk)
+        self.hsel.value = 1; self.haddr.value = addr & 0xFFFF_FFFF
+        self.htrans.value = 2; self.hsize.value = 2; self.hburst.value = 0
+        self.hprot.value = 0x4; self.hwrite.value = 1; self.hready.value = 1
+        self.hwdata.value = data & 0xFFFF_FFFF
+        await RisingEdge(self.clk)
+        self.hsel.value = 0; self.htrans.value = 0; self.hwrite.value = 0
+        accepted = False
+        for _ in range(timeout):
+            await RisingEdge(self.clk)
+            try:
+                if int(node.s_axi_awvalid.value) and int(node.s_axi_awready.value):
+                    accepted = True; break
+            except ValueError: pass
+            if int(self.hreadyout.value) and self._resp():   # backstop fired
+                self.idle(); raise RuntimeError(f"ahb_sub bufW 0x{addr:08x} HRESP=ERROR")
+        if accepted:
+            await ClockCycles(self.clk, 4)       # hold data so the W beat is latched
+        self.idle()
+        if not accepted: raise TimeoutError(f"ahb_sub bufW 0x{addr:08x} STALL")
+        return True
+
 
 def _axi_node(tb, side, inst):
     return getattr(tb.top(side).u_chiplet_controller.u_wlink.axi2wl, inst)
@@ -384,3 +416,84 @@ async def test_axi_b_persistent_eye_bounded(dut):
     dut._log.info(f"[axirec] PASS: persistent marginal eye -> BOUNDED {cls} "
                   f"(recoverable, no hard-wedge); recovery FSM tried (nack_fired) "
                   f"then the ahb_sub backstop bounded it")
+
+
+@cocotb.test()
+async def test_axi_b_bufferable_multi_outstanding(dut):
+    """Fix H (I5 write COUNTER) — the fix for the on-silicon initiator hard-wedge.
+
+    XHB500's early-write-response (bufferable, HPROT[2]=1) path keeps up to 4 writes
+    outstanding on s_axi at once (hazard-list depth 4). The OLD I5 tracker was a
+    single BIT: a returning B for one write cleared it while another was still
+    outstanding, so sub_axi_outstanding falsely read idle, the age timer reset, and a
+    genuinely-stuck write was never timed out -> the PS-facing ahb_sub hangs with no
+    backstop. On silicon the errinject resume stream is 32 pipelined bufferable
+    writes, so this masked a stuck B into a full PS hard-wedge (JTAG-POR).
+
+    This proves the COUNTER fix in two phases:
+      A. bufferable writes that COMPLETE -> sub_wr_os_ctr must reach >=2 (a single
+         bit could only ever read 0/1) and all land byte-exact -> the EWR
+         multi-outstanding path is exercised and recovers.
+      B. stall the far terminus so B's never return -> with several writes
+         outstanding the backstop STILL fires a bounded HRESP=ERROR, not a silent
+         hang. (With the old single bit, once >=2 are outstanding a returning B
+         would disarm it; here none return, so this mainly guards the fired path.)"""
+    tb = PairV2TB(dut)
+    master = AHBSubMaster(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no CR/CRACK"
+    await ClockCycles(dut.hclk, 200)
+    _force_axi_crc(tb, True)
+    _force_fix_off(tb, False)
+    m = dut.u_master
+
+    # --- Phase A: pipelined bufferable writes that complete ---
+    ctr_max = {"v": 0}
+    async def watch_ctr(n):
+        for _ in range(n):
+            await RisingEdge(dut.hclk)
+            try:
+                c = int(m.sub_wr_os_ctr.value)
+                if c > ctr_max["v"]: ctr_max["v"] = c
+            except Exception: pass
+    w = cocotb.start_soon(watch_ctr(60000))
+    NA = 6
+    base = 0x300
+    for i in range(NA):
+        await master.write_bufferable(APER_BASE + base + i * 4, 0xB0000000 + i, m)
+    await ClockCycles(dut.hclk, 12000)          # let all B's drain
+    w.kill()
+    dut._log.info(f"[axirec] MULTI-OUT phase A: max sub_wr_os_ctr={ctr_max['v']}")
+    assert ctr_max["v"] >= 2, (
+        f"bufferable writes never showed >=2 outstanding (max={ctr_max['v']}) — the "
+        f"EWR multi-outstanding path was NOT exercised, so the counter proof is "
+        f"vacuous (a single bit would have sufficed)")
+    for i in range(NA):
+        got = _slave_bram_peek(dut, base + i * 4)
+        assert got == (0xB0000000 + i), f"buf write {i} not byte-exact: got {got}"
+    dut._log.info(f"[axirec] phase A: {NA} bufferable writes tracked to depth "
+                  f"{ctr_max['v']} and all landed byte-exact")
+
+    # --- Phase B: stall the far terminus so B never returns -> backstop must fire ---
+    try:    dut.u_s_mng_bram.force_stall.value = Force(1)
+    except Exception:
+        try: dut.u_s_mng_bram.force_stall.value = 1
+        except Exception: dut._log.warning("[axirec] could not force terminus stall")
+    cls = "POSTED"
+    try:
+        for i in range(8):
+            await master.write_bufferable(APER_BASE + 0x500 + i * 4,
+                                          0xDEAD0000 + i, m, timeout=80000)
+    except RuntimeError: cls = "ERROR"
+    except TimeoutError: cls = "STALL"
+    try:    dut.u_s_mng_bram.force_stall.value = Release()
+    except Exception:
+        try: dut.u_s_mng_bram.force_stall.value = 0
+        except Exception: pass
+    await ClockCycles(dut.hclk, 200)
+    dut._log.info(f"[axirec] MULTI-OUT phase B (far stall): class={cls}")
+    assert cls == "ERROR", (
+        f"under a far-terminus stall with multiple bufferable writes outstanding, the "
+        f"I5 backstop did not bound it to HRESP=ERROR (got {cls}) — a silent hang")
+    dut._log.info("[axirec] PASS: Fix H tracks >=2 outstanding (recover byte-exact) "
+                  "AND bounds a stalled multi-outstanding burst to HRESP=ERROR")

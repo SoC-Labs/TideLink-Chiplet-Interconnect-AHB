@@ -1502,7 +1502,21 @@ module tidelink_top #(
 `endif
     logic [SUB_STALL_TIMEOUT_LOG2:0]       sub_stall_ctr_r;
     logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] sub_osr_ctr_r;
-    logic                                  sub_rd_os_r, sub_wr_os_r;
+    logic                                  sub_rd_os_r;
+    // I5 write-outstanding COUNTER (Fix H, 2026-08-01). The XHB500 AHB->AXI
+    // subordinate bridge issues its early-write-response (bufferable, HPROT[2]=1)
+    // path up to FOUR writes deep on s_axi (hazard_list.sv HAZARD_LIST_SIZE=4) —
+    // it returns HREADYOUT and issues the next AW *before* the prior B returns.
+    // A single outstanding BIT is therefore WRONG for writes: when a later write's
+    // B returns it clears the bit while an earlier write is STILL outstanding, so
+    // sub_axi_outstanding falsely reads idle, the age timer resets, and a
+    // genuinely-stuck write (lost/delayed B) is NEVER timed out -> the PS-facing
+    // ahb_sub hangs with no backstop (the on-silicon 2026-08-01 hard-wedge, where
+    // the errinject resume stream is 32 pipelined bufferable writes). Count them
+    // (saturating, width covers the depth-4 list with margin) so sub_axi_outstanding
+    // stays asserted until EVERY outstanding write drains. Reads stay single-bit —
+    // the bridge is genuinely single-outstanding for reads (ready_for_read gate).
+    logic [2:0]                            sub_wr_os_ctr;
     logic                                  sub_err1_r, sub_err2_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
@@ -1545,7 +1559,7 @@ module tidelink_top #(
     wire sub_aw_accept       = s_axi_awvalid & s_axi_awready;
     wire sub_r_done          = s_axi_rvalid  & s_axi_rready & s_axi_rlast;
     wire sub_b_done          = s_axi_bvalid  & s_axi_bready;
-    wire sub_axi_outstanding = sub_rd_os_r | sub_wr_os_r;
+    wire sub_axi_outstanding = sub_rd_os_r | (sub_wr_os_ctr != 3'd0);
     wire sub_axi_progress    = sub_r_done | sub_b_done;
     wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
 
@@ -1597,7 +1611,7 @@ module tidelink_top #(
             sub_stall_ctr_r <= '0;
             sub_osr_ctr_r   <= '0;
             sub_rd_os_r     <= 1'b0;
-            sub_wr_os_r     <= 1'b0;
+            sub_wr_os_ctr   <= 3'd0;
             sub_err1_r      <= 1'b0;
             sub_err2_r      <= 1'b0;
         end else begin
@@ -1614,22 +1628,28 @@ module tidelink_top #(
                 sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
 
-            // (2) I5 outstanding-response backstop. Track a sub read/write in
-            // flight on the XHB500 s_axi channel: SET on an accepted AR/AW, CLEAR
-            // on its returning R(last)/B. This is oblivious to ahb_sub_hreadyout,
-            // so it catches the lost-response wedge the per-beat timer is blind to.
+            // (2) I5 outstanding-response backstop. Track sub reads/writes in
+            // flight on the XHB500 s_axi channel: reads SET on an accepted AR,
+            // CLEAR on R(last) (single-outstanding); writes COUNT accepted AWs and
+            // decrement on each returning B (up to 4 outstanding, EWR path — see
+            // sub_wr_os_ctr decl). Oblivious to ahb_sub_hreadyout, so it catches
+            // the lost-response wedge the per-beat timer is blind to.
             if (sub_ar_accept)   sub_rd_os_r <= 1'b1;
             else if (sub_r_done) sub_rd_os_r <= 1'b0;
-            if (sub_aw_accept)   sub_wr_os_r <= 1'b1;
-            else if (sub_b_done) sub_wr_os_r <= 1'b0;
+            // saturating inc/dec; simultaneous AW+B is a net no-change.
+            case ({sub_aw_accept, sub_b_done})
+                2'b10: if (sub_wr_os_ctr != 3'd7) sub_wr_os_ctr <= sub_wr_os_ctr + 3'd1;
+                2'b01: if (sub_wr_os_ctr != 3'd0) sub_wr_os_ctr <= sub_wr_os_ctr - 3'd1;
+                default: /* 2'b00 idle, 2'b11 net-zero */ ;
+            endcase
 
             if (!sub_axi_outstanding || sub_axi_progress) begin
                 sub_osr_ctr_r <= '0;                   // idle, or a beat retired
             end else if (sub_osr_expired) begin
                 sub_osr_ctr_r <= '0;
                 sub_err1_r    <= 1'b1;                 // same 2-cycle ERROR
-                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn
-                sub_wr_os_r   <= 1'b0;                 // so it cannot re-trip us
+                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn(s)
+                sub_wr_os_ctr <= 3'd0;                 // so they cannot re-trip us
             end else begin
                 sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
             end

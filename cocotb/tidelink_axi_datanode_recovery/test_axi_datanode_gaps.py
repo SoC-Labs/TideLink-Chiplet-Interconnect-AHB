@@ -609,6 +609,77 @@ async def test_i5_backstop_restores_the_path(dut):
 
 
 @cocotb.test()
+async def test_diag_byte0_detection_path(dut):
+    """DIAGNOSTIC (not an acceptance test) — WHICH layer drops a byte-0 injection?
+
+    Byte 0 of a Wlink packet is the `data_id`; bytes 1-2 are `word_count` and
+    byte 3 is a MIPI-style header **ECC**. The TX injector corrupts byte 0 while
+    byte 3 is still computed from the UNCORRUPTED header
+    (`WlinkTxLinkLayer.v:69,77`), and the RX has a correcting ECC
+    (`WlinkRxLinkLayer.v` `ecc_check_corrected_ph` / `io_ecc_corrected` /
+    `io_ecc_corrupted`, with `is_short_pkt`/`is_long_pkt` decoded from the
+    CORRECTED header). So a single-bit data_id flip ought to be REPAIRED at the
+    receiver and delivered normally — yet the response is empirically lost, in
+    sim and on silicon alike.
+
+    This test does not assert a policy; it RECORDS which detector fired, so the
+    'clean silent drop' characterisation rests on measurement rather than
+    inference. Reports: RX ecc_corrected / ecc_corrupted on the receiving die,
+    the B node's crc_errors and NACK activity, and the transaction outcome."""
+    tb, master = await _bringup(dut)
+    mB  = _axi_node(tb, "m", "wlink_axibFC")
+    mwl = _wlink(tb, "m")
+
+    # INSTRUMENT CHECK FIRST. _sig() swallows a bad hierarchy path and returns
+    # None, which would silently read as "the detector never fired" — the exact
+    # way to manufacture a false negative. Resolve every probe up front and fail
+    # loudly if one is missing. Wlink's own saturating counters
+    # (Wlink.v:203-204) are used rather than sampling the single-cycle
+    # llrx_io_ecc_* pulses from Python.
+    probes = {}
+    for name in ("obs_ecc_corrected_cnt_q", "obs_ecc_corrupted_cnt_q"):
+        try:
+            probes[name] = int(getattr(mwl, name).value)
+        except Exception as e:
+            raise AssertionError(f"PROBE DEAD: {name} did not resolve ({e}) — "
+                                 f"fix the instrument before reading the result")
+    assert _sig(mB, "crc_errors") is not None, "PROBE DEAD: B-node crc_errors"
+    assert _sig(mB, "state") is not None,      "PROBE DEAD: B-node state"
+    dut._log.info(f"[gaps] probes live, baseline={probes}")
+
+    obs = {"state7": False, "nack_req": False, "crc0": _sig(mB, "crc_errors")}
+
+    async def mon(n):
+        for _ in range(n):
+            await RisingEdge(dut.hclk)
+            if _sig(mB, "state") == 7:     obs["state7"] = True
+            if _sig(mB, "send_nack_req"):  obs["nack_req"] = True
+
+    # DIAG_BYTE lets this run as its own instrument CONTROL: byte 3 IS the
+    # header ECC byte, so corrupting it MUST light the ECC counters. If byte 3
+    # also reads zero, the ECC probe is mis-placed and the byte-0 zero proves
+    # nothing about the DUT.
+    inj_byte = int(os.environ.get("DIAG_BYTE", BYTE_DATA_ID))
+    dut._log.info(f"[gaps] byte-{inj_byte} injection on the B node (data_id 0x82)")
+    m = cocotb.start_soon(mon(80000))
+    await _arm_injector(tb, "s", NODES["B"]["data_id"], inj_byte)
+    try:
+        await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=60000)
+        cls = "RECOVER"
+    except RuntimeError: cls = "ERROR"
+    except TimeoutError: cls = "WEDGE"
+    await ClockCycles(dut.hclk, 500)
+    m.kill()
+    obs["crc_errs_rose"] = (_sig(mB, "crc_errors") or 0) > (obs["crc0"] or 0)
+    for name, base in probes.items():
+        obs[name] = int(getattr(mwl, name).value) - base
+    obs["class"] = cls
+    dut._log.info(f"[gaps] BYTE0 DETECTION PATH (deltas): {obs}")
+    _release_all(tb)
+    assert cls is not None
+
+
+@cocotb.test()
 async def test_i5_clean_drop_leaves_path_usable(dut):
     """GAP-2c (silicon-faithful variant) — the CAPTURED silicon wedge, in sim.
 

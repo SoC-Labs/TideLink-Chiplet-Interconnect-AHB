@@ -98,12 +98,43 @@ coverage was one column of a 5×3 matrix.
 
 **Injection-byte axis.** Byte 4 (pktnum) and byte 5 (payload) were covered on B
 only. Byte 0 (`data_id`) — the axis the silicon ILA capture actually used — had
-**no sim coverage on any node**, and it is structurally the worst case: the CRC
-comparison is *gated on* `data_id === swi_data_id` (`FC.scala:157`, documented at
-`cocotb/tidelink_error_injection/test_ei_crc_probe.py:34-40`), so a corrupted
-data_id makes the packet not-a-data-packet. It is silently dropped: no CRC error,
-no NACK, no replay. **Fix G's entire recovery mechanism is structurally blind to
-it.**
+**no sim coverage on any node**.
+
+**Measured byte-by-byte on the B node** (`test_diag_byte0_detection_path`,
+`DIAG_BYTE=`), with every probe resolved up front so a dead handle cannot read as
+"nothing fired":
+
+| injected byte | outcome | FC `crc_errors` | NACK / state 7 | Wlink ECC counters |
+|---|---|---|---|---|
+| 4 (pktnum) | **RECOVER** | **rose** | **fired** | 0 |
+| 3 (header ECC byte) | RECOVER | flat | none | 0 |
+| 0 (`data_id`) | **ERROR (response lost)** | flat | none | 0 |
+
+**What this proves:** the FC-layer probes are demonstrably live (byte 4 lights all
+of them), and on the same node with the same arming path **byte 0 produces a lost
+response with no FC-layer detection whatsoever.** Fix G's NACK/replay recovery is
+blind to it. That is the measured fact the F-2 repro rests on.
+
+⚠ **Correction to the earlier write-up in this file / commit `7485f76`:** the
+mechanism was first stated as "the CRC comparison is gated on
+`data_id === swi_data_id` (`FC.scala:157`), so the packet is silently dropped".
+The *outcome* is measured, but that mechanism was asserted before it was
+verified, and it does not account for the Wlink packet header's **MIPI-style
+correcting ECC** (`WlinkEccSyndrome.v` — no enable input, `corrected`/`corrupted`
+outputs, RX decodes `is_short_pkt`/`is_long_pkt` from the *corrected* header,
+while the TX computes the ECC over the **uncorrupted** header,
+`WlinkTxLinkLayer.v:931`). On that reading a single-bit data_id flip ought to be
+repaired at the receiver, which is not what happens.
+
+**The ECC layer's behaviour is therefore UNRESOLVED, and deliberately not claimed
+here.** The instrument control says so: corrupting **byte 3 — the ECC byte
+itself** — also leaves `obs_ecc_corrected_cnt_q`/`obs_ecc_corrupted_cnt_q` at 0,
+so those counters never move even for the one input that must move them. That
+means the ECC probe is unproven and **no conclusion may be drawn from its zero**,
+in either direction. Resolving it is item 0 in §5 — and if the header ECC really
+is inert, a single-bit wire error in a packet header silently mis-routes a
+response between FC nodes, which would be a more serious link-integrity defect
+than anything else in this document.
 
 *Reviewed and cleared:* `sub_rd_os_r` being a single bit (`tidelink_top.sv:1505`)
 while writes got Fix H's counter is **not** a bug — XHB500 gates a new AR on
@@ -266,6 +297,12 @@ flips them XFAIL→XCHG visibly instead of silently.
 
 Ranked by expected yield, **not yet written**:
 
+0. **Resolve the header-ECC question (§2).** Prove or refute that
+   `WlinkEccSyndrome` corrects/flags single-bit header errors in this
+   configuration, by finding a probe that moves for a known ECC-byte corruption.
+   Until it moves for its own control, every ECC observation is uninterpretable.
+   If the ECC is inert, a single-bit wire error mis-routes responses between FC
+   nodes silently — a bigger defect than F-1/F-2.
 1. **Sideband FCSM_6 (0xA1) injection.** The mailbox / PTP / perf path has *no*
    error-injection test at any node, and FCSM_6 is the one node whose CRC default
    is ON — the natural control for the AXI nodes' CRC-off default.
@@ -285,6 +322,144 @@ Ranked by expected yield, **not yet written**:
    to AW/W/AR/R, not just B.
 7. **Repeated / soak injection.** Every test injects once; the silicon report is
    explicitly about the *second and subsequent* transfers.
+
+---
+
+## 7. Proving the failures on hardware
+
+**Headline: do not spend a bitstream campaign proving F-1 or F-2. F-2 is already
+proven on silicon, and F-1 is not reachable through the rig's only master.**
+
+### 7.1 F-1 is not reachable on the current silicon path (checked, not assumed)
+
+XHB500 takes the early-write-response path **iff** `ewr <= hprot[2] & ~hprot[6]`
+(`..._core_wdata.sv:248`). TideLink drives XHB500 with `{3'h0, xhb_sub_hprot}`
+(`tidelink_top.sv:2273`), so `hprot[6]=0` and **EWR is enabled directly by
+`ahb_sub_hprot[2]`**, which on the eth-chiplet comes straight from the top-level
+`eth_ss_0_hprot[2]` input (`nanosoc_eth_chiplet.sv:621` ← `:386`) — i.e. from the
+FPGA BD's AXI→AHB-Lite bridge.
+
+The ILA capture settles what that bit actually is on the rig: `dbg_s_aw_accept`
+with `dbg_i5_wr_os=1` (a write), and `dbg_xhb_hrdyout_raw=0` / `ext_stalled=1`
+for the entire 2^16 ramp. A posted (EWR) write returns HREADYOUT immediately and
+idles; this one held the master for the whole timeout. **The captured write was
+non-bufferable, so `hprot[2]=0` on the PS backdoor path.**
+
+⇒ F-1 cannot be triggered from the PS on this rig at all. Proving it on HW would
+mean *deliberately* tying `eth_ss_0_hprot[2]=1` in the BD — a rebuild whose only
+purpose is to create the fault. **Not worth board time as a bug proof.** It stays
+a latent robustness defect, and its real exposure question is a paper one:
+*which master in the shipping SoC can drive HPROT[2]=1 into the window?* (a
+write-buffering CPU or a DMA would). That is an integration review, not a bench
+session.
+
+### 7.2 F-2 is already proven on silicon — no rebuild needed
+
+`docs/ila_capA_i5_fires_2026_08_02.csv` already contains the proof (§1.1):
+`dbg_xhb_hrdyout_raw` is 0 for all 3839 post-ERROR samples with the stall counter
+ramping to the next expiry. The bitstream and `.ltx` are retained at eth-chiplet
+`imp/fpga/output/kr260-eth-chiplet/`. Nothing further is required to establish
+the defect; the PS was already wedged, which is why no follow-on access appears
+in the capture — the absence is the symptom, not a gap.
+
+### 7.3 What HW time IS worth spending — validate the fix, not the bug
+
+Once Fix J (§8.1) is in, one campaign proves everything at once, and the
+acceptance criterion is a **behaviour change visible from the PS with no ILA**:
+
+1. POR + deploy both dies, `bringup_pair_release.sh` → fcsm=4 both.
+2. Clean byte-exact eye-gate write (baseline, as today).
+3. `kr260_eth_xfer.py --mode errinject --node B --inj-byte 0 --stream 0`
+   — **today:** die_a PS hard-wedges, JTAG-POR. **With Fix J:** the access
+   returns a **bus error (SIGBUS) in bounded time and the host stays alive.**
+4. **The real acceptance test, which is impossible today:** immediately re-run a
+   clean peer write and require byte-exact success. That is F-2 closed — the
+   path recovered rather than merely erroring.
+5. Sweep `--node {AW,W,B,AR,R} × --inj-byte {0,4,5}`, tally recover/bounded-error
+   /wedge. Region F (with Fix L) gives the per-node verdict without an ILA.
+
+Only step 3 needs a board today; steps 1-5 are one session, one bitstream pair.
+
+---
+
+## 8. Proposed RTL fixes
+
+### 8.1 Fix J — synthesise the missing AXI response (closes F-2, and F-1 with it) ⭐
+
+**The one that matters.** Today the backstop fakes an AHB ERROR *upstream* of
+XHB500 and abandons the transfer, which leaves the bridge itself waiting forever
+for a beat that will never arrive — hence a dead path. Fix it at the layer that
+is actually stuck: when the outstanding-response timer expires, **inject a
+synthetic `B` (or `R`-last) with `SLVERR` into XHB500's `s_axi`**, so the bridge
+completes its own transaction, reports the error through its own machinery, and
+returns to idle.
+
+Shim between XHB500's `s_axi` manager port and the AXI chiplet controller:
+
+```
+XHB500 s_axi ──▶ [ tidelink_axi_resp_guard ] ──▶ axi_chiplet_controller
+                    · per-channel outstanding counters (reuse Fix H's)
+                    · on timeout: drive bvalid/bresp=SLVERR (or rvalid+rlast)
+                      with the stalled transaction's ID
+                    · then DISCARD exactly one late real response per
+                      synthesised one (stale-response squelch counter)
+```
+
+Why this is the right layer:
+- **non-posted write / read** — XHB500 sees a normal error response and drives
+  HRESP=ERROR itself, *in the correct data phase*. Legal by construction; the
+  wrapper's unqualified override can then be **deleted**, which is F-1's fix.
+- **posted (EWR) write** — XHB500 already has the designed path for this:
+  `pending_broken_b_resp` (`..._core_wdata.sv:270-283`) latches a broken B for a
+  non-EWR write and reports it on the master's next access. (Note for EWR writes
+  it deliberately *ignores* the B — `axi_err`/`hexokay` are gated by `~b_ewr` —
+  so a posted write's error is architecturally unreportable in-band; it must go
+  out-of-band via Fix L's status + IRQ. Worth stating explicitly rather than
+  pretending HRESP can carry it.)
+- **the path recovers**, because the bridge is never left stuck.
+
+Risks to handle in review: the stale-response squelch is the load-bearing part
+(a late real B arriving after a synthetic one must not double-count); ID
+matching must use the actual `bid`/`rid`; and the guard must not add a
+combinational path into `ahb_sub_hreadyout` (keep every output registered — the
+invariant `cb33c9f` established).
+
+### 8.2 Fix K — qualify the ERROR override (minimal F-1 fix, if Fix J is too big for the freeze)
+
+Two parts, both small:
+1. **Never drive HRESP with no transfer in flight.** Gate the
+   `sub_err{1,2}_r` override on a registered "master transfer in its data phase"
+   flag. Keep the terms already used by `ahb_sub_hreadyout` (`ext_is_nonseq`,
+   `pipe_valid_r`) plus a registered data-phase bit, so no new combinational
+   dependence on `ahb_sub_hready` appears.
+2. **Defer, don't discard.** If the backstop expires with the bus idle, latch
+   `sub_err_pend_r` + a sticky status, and fire the 2-cycle ERROR on the *next*
+   window transfer — exactly the pattern XHB500 uses for `pending_broken_b_resp`.
+
+This makes the error legal and reportable, but **does not restore the path** —
+F-2 stays open. Fix K is a stop-gap; Fix J is the fix.
+
+### 8.3 Fix L — backstop observability (F-4), cheap, ship regardless
+
+Add to Region F / `tidelink_axinode_obs.sv`: `stall_backstop_fired` sticky,
+`osr_backstop_fired` sticky, `err_deferred_pending`, and a small saturating trip
+count, W1C from APB, plus an IRQ line. This is what turns a 1.5 h ILA build and
+a JTAG session into one register read, and it is the only way a *posted* write's
+error can be reported at all (§8.1). No functional risk.
+
+### 8.4 Not proposed
+
+- **Resetting XHB500 on timeout** — considered and rejected: a mid-transaction
+  reset desyncs `s_axi` (an AW already issued whose B returns into a reset
+  bridge) and swaps a hang for corruption.
+- **Forcing `hprot[2]=0` into XHB500** to disable EWR — would make every write
+  non-posted and every error legally reportable, but pays a throughput penalty on
+  the one path the throughput campaign is trying to optimise. Keep as a fallback
+  switch, not a default.
+- **Anything in the FC/recovery layer.** Fix G/H are sound and were never the
+  problem for this failure; a data_id-class loss is invisible to them by
+  construction. The upstream AXI Firewall/Timeout IP is still worth having as
+  defence in depth — it is orthogonal to all of the above.
 
 ---
 

@@ -575,9 +575,12 @@ module tidelink_top #(
     wire         s_axi_wvalid;
     wire         s_axi_wready;
 
-    wire [11:0]  s_axi_bid;
+    wire [11:0]  s_axi_bid;         // muxed: controller B, or synthetic SLVERR (F-1/F-2)
     wire  [1:0]  s_axi_bresp;
     wire         s_axi_bvalid;
+    wire [11:0]  s_axi_bid_ctrl;    // real B from the chiplet controller (pre-mux)
+    wire  [1:0]  s_axi_bresp_ctrl;
+    wire         s_axi_bvalid_ctrl;
     wire         s_axi_bready;
 
     wire [11:0]  s_axi_arid;
@@ -1490,6 +1493,10 @@ module tidelink_top #(
     // stays asserted until EVERY outstanding write drains. Reads stay single-bit —
     // the bridge is genuinely single-outstanding for reads (ready_for_read gate).
     logic [2:0]                            sub_wr_os_ctr;
+    // F-1/F-2 synth-B state (declared early: used by the pipeline-abort gate above
+    // the always_ff that assigns them).
+    logic [11:0]                           sub_wr_awid_r;
+    logic                                  synth_b_pending;
     logic                                  sub_err1_r, sub_err2_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
@@ -1562,9 +1569,10 @@ module tidelink_top #(
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
-            end else if (sub_err1_r) begin
+            end else if (sub_err1_r & ~synth_b_pending) begin
                 // Stall-timeout abort: abandon the in-flight (wedged) transfer so
                 // it cannot re-trigger the backstop or hold hsel into XHB500.
+                // (Skipped while synth_b_pending: XHB500 is completing the write.)
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
@@ -1673,14 +1681,41 @@ module tidelink_top #(
     // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when either
     // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — sub_err{1,2}_r and
     // rd_pipe_r are registers, so no combinational dependence on ahb_sub_hready.
-    assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
-                               sub_err2_r ? 1'b1 :
+    // ── F-1/F-2 FIX (2026-08-02): synthetic SLVERR B completes a stuck write ──
+    // The old backstop drove ahb_sub_hresp/hreadyout directly from sub_err{1,2}_r.
+    // For a POSTED (bufferable EWR) write the AHB master has already retired, so
+    // that ERROR lands on an IDLE bus = AHB-illegal, and an upstream AXI->AHB
+    // bridge legitimately DISCARDS it (F-1: PS never sees a bus error -> hang).
+    // It also left XHB500 waiting for the lost B forever (F-2: next clean write
+    // also errors). Instead, when a WRITE backstop expires with a write still
+    // outstanding, inject a synthetic SLVERR B into XHB500's s_axi B channel:
+    // XHB500 completes its pending write with SLVERR through its OWN response path
+    // (a LEGAL 2-cycle AHB ERROR in the transfer's data phase = F-1) and re-idles
+    // (= F-2). The real B was permanently lost, so there is no collision.
+    wire sub_wr_stuck_fire = (sub_osr_expired | sub_stall_expired)
+                             & (sub_wr_os_ctr != 3'd0);
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_wr_awid_r   <= '0;
+            synth_b_pending <= 1'b0;
+        end else begin
+            if (sub_aw_accept) sub_wr_awid_r <= s_axi_awid;
+            if (sub_wr_stuck_fire)                   synth_b_pending <= 1'b1;
+            else if (synth_b_pending & s_axi_bready) synth_b_pending <= 1'b0;
+        end
+    end
+    assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
+    assign s_axi_bresp  = synth_b_pending ? 2'b10 : s_axi_bresp_ctrl;   // 2'b10 = SLVERR
+    assign s_axi_bid    = synth_b_pending ? sub_wr_awid_r : s_axi_bid_ctrl;
+
+    assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
+                               (sub_err2_r & ~synth_b_pending) ? 1'b1 :
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
                                rd_pipe_r                        ? 1'b0 :
                                xhb_sub_hreadyout_raw;
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
-    assign ahb_sub_hresp     = (sub_err1_r | sub_err2_r) ? 1'b1 : xhb_sub_hresp_raw;
+    assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 : xhb_sub_hresp_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -2645,10 +2680,10 @@ module tidelink_top #(
         .axi_tgt_0_w_bits_strb      (s_axi_wstrb),
         .axi_tgt_0_w_bits_last      (s_axi_wlast),
 
-        .axi_tgt_0_b_valid          (s_axi_bvalid),
+        .axi_tgt_0_b_valid          (s_axi_bvalid_ctrl),
         .axi_tgt_0_b_ready          (s_axi_bready),
-        .axi_tgt_0_b_bits_id        (s_axi_bid),
-        .axi_tgt_0_b_bits_resp      (s_axi_bresp),
+        .axi_tgt_0_b_bits_id        (s_axi_bid_ctrl),
+        .axi_tgt_0_b_bits_resp      (s_axi_bresp_ctrl),
 
         .axi_tgt_0_ar_valid         (s_axi_arvalid),
         .axi_tgt_0_ar_ready         (s_axi_arready),

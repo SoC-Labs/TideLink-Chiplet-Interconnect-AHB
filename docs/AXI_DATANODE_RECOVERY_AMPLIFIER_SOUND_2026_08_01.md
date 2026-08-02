@@ -216,3 +216,41 @@ Fix G (recovery) and Fix H (I5 counter) both cannot help — confirmed empirical
 Fix H remains a genuine correctness improvement (the single-bit tracker IS wrong for the
 depth-4 EWR path) and stays landed + gated — it just is not THIS wedge's cause. Boards
 POR-recovered, leases released.
+
+---
+
+## OBSERVABILITY-FIRST (2026-08-02) — mechanism re-pinned to "I5 does not fire", CASE B refuted
+
+A deep RTL audit of the B node (`WlinkGenericFCSM_2`) **refuted CASE B**: the app-side
+egress is strictly gated — `l2a_fc_replay_app_valid = pkt_is_data_pkt & (ll_rx_pktnum==
+exp_pkt_num)` (`WlinkGenericFCSM_2.v:642`), same-cycle combinational, and `pkt_is_data_pkt`
+is `& ~crc_corrupt`. So with CRC on, a CRC-failed / not-expected B is **dropped, never
+egressed** — it cannot mis-deliver. (Caveat: the RX CRC covers only the 24-bit data field
+`:634`, NOT `data_id`/`word_count` — a `data_id` flip makes the B unrecognised → silently
+dropped, no egress AND no NACK.)
+
+**Decisive HW test — errinject byte 0 (`data_id`, a clean silent drop) with `--stream 0`:
+die_a STILL HARD-WEDGES.** A single peer-write whose B never returns should make I5 fire
+(`sub_wr_os_ctr`=1, no B → age timer → `HRESP=ERROR` at 2^16 → recoverable SIGBUS). It does
+not — and the failure signature is an **SSH keepalive timeout** (the write blocked forever
+and the PS died), NOT a clean Python `Bus error` (which an I5-fired SIGBUS would produce).
+
+**Conclusion: the real defect is that the ahb_sub backstop (I5 + per-beat stall) does NOT
+bound a never-returning single-write B response on the eth-chiplet's actual PS path** — the
+same backstop that is sim-proven to fire (`test_axi_b_persistent_eye_bounded` → `class=ERROR`)
+does not fire on silicon. Whether I5 fires-but-the-HRESP=ERROR-does-not-propagate back
+through the CAM / chiplet_d2d_decode / axi_ahblite_bridge to the PS, vs I5 never arms/fires,
+is the one remaining question — and it needs **internal-signal observability** (`sub_wr_os_ctr`
+/ `sub_osr_ctr_r` / `sub_err1_r` / `ahb_sub_hresp` / the s_axi AW+B handshakes during the
+wedge), i.e. an **ILA**. A JTAG (xsdb) physical read of die_a's Region F during the wedge
+was attempted but the a53 faults on the MMU (the PS-phys address isn't in Linux's page
+tables) and the DAP goes unresponsive with the PS deadlocked — so a memory read can't
+reach it, and the internal I5 counters aren't APB-exposed anyway.
+
+**This is an eth-chiplet INTEGRATION-level defect** (the tidelink core backstop works in
+sim; it fails to fire/propagate on the integrated PS path), not a tidelink core RTL bug that
+G/H could reach. Next step = ILA-instrument die_a's I5 + ahb_sub error path, rebuild die_a
+with `FPGA_INSERT_DEBUG_CORE=1` (mark_debug the signals), capture the byte-0 wedge via the
+mapstone-dev hw_server (adapt `pynq_host/scripts/phc_ila_capture` from Z2 to the KR260
+cable `XFL1MHS3ZB1P`) — then the fix follows from whether it's a non-firing I5 or a
+non-propagating error (which would point to an upstream AXI Firewall after all).

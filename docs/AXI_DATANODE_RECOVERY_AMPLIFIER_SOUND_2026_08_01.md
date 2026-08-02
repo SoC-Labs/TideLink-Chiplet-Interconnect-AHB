@@ -172,3 +172,47 @@ the non-checking AHB master), so a *corrupted-but-accepted* B (wrong BID) reprod
 for the three fix candidates above; a HW errinject is a ~1.5 h build+bench cycle per hypothesis.
 
 Boards left POR-recovered (die_a un-wedged), leases released.
+
+---
+
+## FIX H HW RESULT (2026-08-02) — sim-proven I5 counter did NOT resolve it; mechanism re-pinned
+
+Root-caused the sim blind spot to **Gap 1 (multi-outstanding I5 masking)**: an XHB500
+RTL audit proved the early-write-response path keeps up to **4 writes outstanding** on
+s_axi, so I5's single-BIT write tracker mis-counts (a later B clears it while an earlier
+write is stuck). Implemented **Fix H** = a saturating outstanding COUNTER (commit
+`32d9d5e`), sim-proven (6-test gate GREEN: counter tracks depth-4, byte-exact recovery,
+stalled burst -> HRESP=ERROR), rebuilt both eth-chiplet bitstreams (provenance verified:
+`sub_wr_os_ctr` in both `ipshared/*/src/tidelink_top.sv`), deployed, brought up fcsm=4,
+CRC on, clean eye-gate PASS.
+
+**errinject B byte 4 with Fix H: die_a HARD-WEDGED AGAIN** (100% ping loss, JTAG-POR).
+Fix H did NOT resolve it — the THIRD time HW overturned a sim-based conclusion here.
+
+**Decisive diagnostic (`--stream 0` = inject + the SINGLE corrupted beat, NO resume
+stream): STILL hard-wedges.** So the culprit is **one** peer write with a corrupted B —
+**NOT** the multi-outstanding stream. This conclusively **rules out Gap 1** and Fix H as
+the mechanism.
+
+**Mechanism, now pinned (CASE B):** the corrupt B is **EGRESSED** to s_axi (not dropped
+by the receiver despite CRC-on), so `sub_b_done` pulses (wrong data/BID), I5 correctly
+decrements to 0 ("B returned") and never fires — but the mis-delivered B is **rejected
+UPSTREAM of tidelink_top** (the Xilinx axi_ahblite_bridge / PS SmartConnect BID-match),
+which hard-deadlocks the whole PS. No I5/tidelink_top backstop can reach upstream, so
+Fix G (recovery) and Fix H (I5 counter) both cannot help — confirmed empirically.
+
+**The two remaining fix paths (both a different class than G/H):**
+1. **FC-node drop-guarantee (tidelink RTL):** make the B-node DROP a CRC-failed /
+   not-expected B so it never egresses -> the B "never returns" -> I5 catches it (single
+   write, ctr=1) -> HRESP=ERROR (bounded). Surgical, but developing it needs die_a
+   observability (WHY the corrupt B egresses despite CRC-on) — and die_a is exactly what
+   wedges, so this needs JTAG/ILA on the PL registers, or a board-persistent trace.
+2. **Upstream AXI Firewall / AXI Timeout IP (FPGA block design):** insert between PS HPM0
+   and the SoC AXI so ANY stuck/rejected transaction becomes a bus error the PS survives
+   (no deadlock, no JTAG-POR). Mechanism-agnostic, guaranteed to kill the total-PS-wedge,
+   needs no observability — but it's an eth-chiplet BD change + ~1.5 h rebuild and masks
+   rather than fixes the mis-deliver.
+
+Fix H remains a genuine correctness improvement (the single-bit tracker IS wrong for the
+depth-4 EWR path) and stays landed + gated — it just is not THIS wedge's cause. Boards
+POR-recovered, leases released.

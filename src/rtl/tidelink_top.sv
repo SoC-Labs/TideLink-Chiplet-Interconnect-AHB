@@ -1705,7 +1705,7 @@ module tidelink_top #(
         end
     end
     assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
-    assign s_axi_bresp  = synth_b_pending ? 2'b10 : s_axi_bresp_ctrl;   // 2'b10 = SLVERR
+    assign s_axi_bresp  = synth_b_pending ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
     assign s_axi_bid    = synth_b_pending ? sub_wr_awid_r : s_axi_bid_ctrl;
 
     assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :

@@ -89,4 +89,46 @@ persist:
 	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13
 
 clean_builds:
-	rm -rf sim_build_axirec sim_build_axirec_* $(LOCAL_FLIST)
+	rm -rf sim_build_axirec sim_build_axirec_* sim_build_gaps* $(LOCAL_FLIST)
+
+# =============================================================================
+# COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification
+# review of the eth-chiplet pushback. Two groups:
+#
+#   GAP-1  per-node error injection (AW/W/AR/R — only B was ever tested), which
+#          is the consumer's stated acceptance gate.
+#   GAP-2  I5 backstop SEMANTICS (AHB legality of its ERROR, timeout under
+#          concurrent progress, path restoration, re-arm after abort).
+#
+# GAP-2 needs the SHORT I5 timeout (2^13) so the backstop fires inside a
+# sim-able window; GAP-1 does not, so they use separate sim_builds.
+# =============================================================================
+#
+# ONE TEST PER SIM — like the companion suite, a second run_bringup_full() in
+# the same sim does not re-POR cleanly, so every test gets its own invocation.
+# =============================================================================
+GAPS_NODE_TESTS := test_axi_r_error_recovers test_axi_r_error_wedges_no_fix \
+                   test_axi_ar_error_recovers test_axi_aw_error_recovers \
+                   test_axi_w_error_recovers
+
+GAPS_BACKSTOP_TESTS := test_i5_error_is_ahb_legal \
+                       test_i5_traffic_behind_a_stuck_write_is_bounded \
+                       test_i5_backstop_restores_the_path \
+                       test_i5_clean_drop_leaves_path_usable \
+                       test_i5_rearms_after_abort
+
+.PHONY: gaps gaps_nodes gaps_backstop $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS)
+
+# Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
+# via NACK/replay long before any backstop is relevant.
+$(GAPS_NODE_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_gaps_nodes MODULE=test_axi_datanode_gaps TESTCASE=$@
+
+# I5 backstop semantics. Short outstanding-response timeout, own sim_build.
+$(GAPS_BACKSTOP_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_gaps MODULE=test_axi_datanode_gaps \
+	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 TESTCASE=$@
+
+gaps_nodes:    ; @for t in $(GAPS_NODE_TESTS);     do $(MAKE) $$t || exit 1; done
+gaps_backstop: ; @for t in $(GAPS_BACKSTOP_TESTS); do $(MAKE) $$t || exit 1; done
+gaps: gaps_nodes gaps_backstop

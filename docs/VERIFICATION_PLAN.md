@@ -16,6 +16,15 @@ CDC_AUDIT_REPORT.md _(historical — see git history)_, BUG_TRACKER.md _(histori
 > FIFO-era test-ID index lives in `cocotb/VERIFICATION_PLAN.md`
 > (AHB-/RET-/APB-/TOP-/PTP-/SRV- IDs); env one-liners in `cocotb/README.md`.
 
+> 🔴 **REVIEWED 2026-08-02 (eth-chiplet AXI data-node pushback) — read
+> [VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md](VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md).**
+> Adds two **Critical** backlog entries (F-1, F-2) with XFAIL sentinels, a new
+> §3.3 per-node error-injection coverage axis, and one **correction of record**:
+> the on-silicon AXI data-node wedge **is** reproducible in sim (byte-0
+> `data_id` injection), so the "the tb cannot model it / TideLink is exonerated"
+> disposition is superseded. Do not sign off the data plane against the
+> 07-31/08-01 conclusions without reading §1 of that review.
+
 ---
 
 ## 1. Scope and architecture
@@ -140,6 +149,42 @@ Total in-tree cocotb test functions across all envs (in + out of CI):
 > `tidelink_top_pair_wordskew` envs exist on disk but are **not in the CI
 > regression list** — treat their pass/fail as advisory only until pinned.
 
+### 3.3 AXI FC-node error-injection coverage axis *(added 2026-08-02)*
+
+An explicit axis, because it was implicitly one-dimensional for a month: every
+error-injection test written for the AXI data plane targeted the **B** node, and
+the consumer's acceptance gate is per-node. Envs:
+`cocotb/tidelink_axi_datanode_recovery` (`test_axi_datanode_recovery.py` =
+B-node/Fix-G/Fix-H; `test_axi_datanode_gaps.py` = this axis).
+Injector = the Wlink built-in one (`0x2E03_003C` on silicon), matched by `data_id`.
+
+| node | data_id | byte 0 `data_id` | byte 4 `pktnum` | byte 5 payload |
+|---|---|---|---|---|
+| AW | 0x80 | ✗ | ✅ `test_axi_aw_error_recovers` | ✗ |
+| W  | 0x81 | ✗ | ✅ `test_axi_w_error_recovers`  | ✗ |
+| B  | 0x82 | ✅ `test_i5_clean_drop_leaves_path_usable` **(XFAIL — F-2)** | ✅ `test_axi_b_error_recovers` + Fix-G-off discriminator | ✅ `test_axi_b_crc_{on_detects,off_silent}_payload` |
+| AR | 0x83 | ✗ | ✅ `test_axi_ar_error_recovers` | ✗ |
+| R  | 0x84 | ✗ | ✅ `test_axi_r_error_recovers` + `_wedges_no_fix` discriminator | ✗ |
+| sideband FCSM_6 | 0xA1 | ✗ | ✗ | ✗ |
+
+**Byte semantics — why the columns are not interchangeable:**
+- **byte 0 (`data_id`)** — the CRC comparison is *gated on*
+  `data_id === swi_data_id` (`FC.scala:157`; see
+  `cocotb/tidelink_error_injection/test_ei_crc_probe.py:34-40`), so a corrupted
+  data_id makes the packet not-a-data-packet: **silently dropped, no CRC error,
+  no NACK, no replay.** Fix G's recovery is structurally blind to it. This is the
+  byte the on-silicon ILA capture used and the only one that reproduces the
+  captured wedge.
+- **byte 4 (`pktnum`)** — caught by `isNotExpPacket`, detected with CRC on *or*
+  off; recovers via NACK→replay. The whole ✅ column above is this byte.
+- **byte 5 (payload)** — CRC-only; undetectable with the AXI nodes' CRC-off reset
+  default.
+
+Empty cells are real coverage debt, ranked in
+`VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md` §5. **Do not read a full
+byte-4 row as "the node is proven"** — see backlog F-5 (sim recovers where
+silicon hard-wedged, same node, same byte).
+
 ---
 
 ## 4. UVM testbench matrix (7 envs, ~84 test files)
@@ -225,6 +270,12 @@ Full design-shortcoming inventory (locations + recommendations) in
 | 27 | Moderate | top/returner | No coordinated paired-chiplet reset protocol | OPEN |
 | 28–35 | Mod/Minor | **verification gaps** | E2E error-recovery; CDC ratio variations; addr-translate in top-integ; pair-credit underflow; partial-packet abandon; throughput/latency; PTP multi-hop; coordinated reset — all untested | OPEN test-debt |
 | 36–38 | Mod/Minor | PUF/TideChart | PUF SRAM lowest arbiter priority; PUF valid only pre-FIFO-write; `tc_axis_*` no flow-control credits (HOL block) | OPEN |
+| **F-1** | **Critical** | top (I5 backstop) | I5's AHB ERROR is driven with **no transfer in its data phase** on the POSTED-write path — `ahb_sub_hresp`/`hreadyout` are overridden from `sub_err{1,2}_r` alone (`tidelink_top.sv:1703-1710`), unqualified. AHB-Lite permits ERROR only in a selected transfer's data phase, so an upstream bridge may discard it — a TideLink-side mechanism for the on-silicon "HRESP=ERROR driven, PS never sees a bus error" | **OPEN** — sentinel `sim_gate_xfail_i5_ahb_legal` (`test_i5_error_is_ahb_legal`) |
+| **F-2** | **Critical** | top / XHB500 | The backstop **reports** an error but does not **restore** the path. After a silently-dropped response the wrapper fires its 2-cycle ERROR and abandons the transfer, but XHB500 is left holding HREADYOUT low and the next clean access fails too. Silicon-proven (`ila_capA_i5_fires_2026_08_02.csv`: `xhb_hrdyout_raw` 0 for all 3839 post-ERROR samples) **and now sim-reproduced** | **OPEN** — sentinel `sim_gate_xfail_i5_clean_drop` (`test_i5_clean_drop_leaves_path_usable`) |
+| F-3 | — | top (I5) | `sub_axi_progress = sub_r_done \| sub_b_done` resets the ONE shared age counter for ALL outstanding transactions | **REFUTED as reachable** on the ahb_sub port (XHB500 serialises; measured 2026-08-02). Latent smell only — regression `test_i5_traffic_behind_a_stuck_write_is_bounded` guards the assumption |
+| F-4 | Moderate | axinode_obs (I4) | Region F has **no sticky for "a backstop fired"** (`sub_err1_r` / `sub_osr_expired` / `sub_stall_expired`), so silicon debug cannot tell from APB whether/which backstop tripped — this is why the diagnosis needed a purpose-built ILA | OPEN |
+| F-5 | Moderate | **verification gap** | **sim/silicon divergence on detectable errors**: byte-4 injection recovers byte-exact on all 5 AXI nodes in sim, yet hard-wedged die_a on silicon. tb has no BID matching and a zero-wait terminus — needs the "Construction B" BID-checking BFM | OPEN test-debt |
+| F-6 | Moderate | TideChart | `force_root` (TC_CTRL[2]) **never consumed** (comment only, `tidechart_apb_regs.sv:176`); TC_CTRL[3] documented "reset" but wired to `rt_clear` (`:319`), does not clear `election_done`; `sim_gate_tc_pair_election` asserts `n_roots==1` and passes while silicon sees dual-root; `TC_ERROR[2] dual_root` never asserted-on by any test | OPEN — re-confirmed 2026-08-02 |
 
 Confirmed RTL caveats also tracked: `tidelink_fc_adapter.sv` lines 181-194 /
 226-238 has an overlapping-address-phase corner that fires only under a

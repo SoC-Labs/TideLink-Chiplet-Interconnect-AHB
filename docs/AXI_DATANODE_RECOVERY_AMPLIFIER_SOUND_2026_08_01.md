@@ -254,3 +254,38 @@ with `FPGA_INSERT_DEBUG_CORE=1` (mark_debug the signals), capture the byte-0 wed
 mapstone-dev hw_server (adapt `pynq_host/scripts/phc_ila_capture` from Z2 to the KR260
 cable `XFL1MHS3ZB1P`) — then the fix follows from whether it's a non-firing I5 or a
 non-propagating error (which would point to an upstream AXI Firewall after all).
+
+---
+
+## ILA VERDICT (2026-08-02) — I5 FIRES PERFECTLY; the HRESP=ERROR does NOT reach the PS
+
+Built die_a with an ILA (`FPGA_INSERT_DEBUG_CORE=1`, 28 probes incl. `dbg_i5_err1`,
+`dbg_i5_osr_ctr`, `dbg_ahb_hresp`, `dbg_s_bvalid`, `dbg_i5_wr_os`), captured the byte-0
+`--stream 0` wedge over KR260 JTAG (mapstone-dev hw_server, cable XFL1MHS3ZB1P, 2 MHz to
+beat the 2025.2 dbg_hub corrupted-readback issue). Trigger = `dbg_i5_err1` rising. It
+triggered — clean 4096-sample waveform (`scratchpad/ila_capA_i5_fires.csv`):
+
+    win  osr_ctr  osr_expired err1 err2 ahb_HRESP wr_os outst bvalid progress
+    254  0x0ffff   0           0    0    0         1     1     0      0
+    255  0x10000   1           0    0    0         1     1     0      0   <- age hits 2^16, expires
+    256  --        0           1    0    0         0     0     0      0   <- sub_err1_r FIRES
+    257  --        0           0    1    1         0     0     0      0   <- sub_err2_r + ahb_sub HRESP=ERROR
+
+Ground truth: I5 works exactly as designed on silicon. The AW was accepted (wr_os=1), the B
+NEVER returned (bvalid/progress flat 0), the outstanding-age timer ramped monotonically to
+exactly 2^16 with zero resets, sub_osr_expired asserted, sub_err1_r->sub_err2_r fired, and
+ahb_sub HRESP=ERROR was driven. The tidelink core backstop (I5 + Fix H) is NOT the defect.
+
+Yet the PS still hard-wedges (ping/SSH dead, JTAG-POR). Therefore the ahb_sub HRESP=ERROR is
+NOT propagated/actioned upstream of tidelink_top — the path ahb_sub -> chiplet_d2d_decode ->
+SoC AHB matrix -> Xilinx axi_ahblite_bridge -> PS HPM0 never surfaces the error to unblock
+the PS. (The SSH-keepalive-timeout signature, vs a clean Bus error, confirms the PS write
+blocked forever despite the ahb_sub ERROR.)
+
+DEFINITIVE: Fix G and Fix H both operated on a layer that was never broken; the real defect
+is upstream error propagation on the eth-chiplet integration path. Two fixes, both outside
+tidelink_top: (1) an AXI Firewall/Timeout IP between PS HPM0 and the SoC AXI (eth-chiplet BD)
+— mechanism-agnostic, bounds the PS transaction into a survivable bus error, doesn't rely on
+the lost tidelink error; (2) root-fix why axi_ahblite_bridge/chiplet_d2d_decode drops a late
+(2.6ms) AHB ERROR and returns no SLVERR to the PS. Fix H stays landed+gated (ILA proved I5
+fires correctly). die_a POR-recovered, leases released.

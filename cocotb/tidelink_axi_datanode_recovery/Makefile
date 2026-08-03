@@ -34,7 +34,7 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # local_overrides (so the recovery FCSMs and the CRC path are compiled in).
 BASE_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
 LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
-_gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+_gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
 COMPILE_ARGS += -f $(LOCAL_FLIST)
 
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=0

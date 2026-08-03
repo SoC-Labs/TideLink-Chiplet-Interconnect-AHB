@@ -336,9 +336,11 @@ async def _bringup(dut, crc_on=True, fix_off=False):
     return tb, master
 
 
-async def _run_node_scenario(dut, name, crc_on=True, fix_off=False):
+async def _run_node_scenario(dut, name, crc_on=True, fix_off=False, byte=BYTE_PKTNUM):
     """Bring up, inject ONE single-bit error on `name`'s packet stream, drive
-    the transaction that carries it, and classify RECOVER / WEDGE / ERROR."""
+    the transaction that carries it, and classify RECOVER / WEDGE / ERROR.
+    `byte` selects the corrupted LL byte (BYTE_PKTNUM=4 recovers; BYTE_DATA_ID=0
+    is the data_id/header case that mis-routes on silicon)."""
     n = NODES[name]
     tb, master = await _bringup(dut, crc_on=crc_on, fix_off=fix_off)
     rx_side = "s" if n["tx_side"] == "m" else "m"
@@ -365,7 +367,7 @@ async def _run_node_scenario(dut, name, crc_on=True, fix_off=False):
             if _sig(rx_node, "send_nack_req"): seen["nack_req"] = True
 
     m = cocotb.start_soon(mon(80000))
-    await _arm_injector(tb, n["tx_side"], n["data_id"], BYTE_PKTNUM)
+    await _arm_injector(tb, n["tx_side"], n["data_id"], byte)
 
     out = {"node": name, "class": None, "value_ok": None}
     try:
@@ -433,6 +435,33 @@ async def test_axi_aw_error_recovers(dut):
 async def test_axi_w_error_recovers(dut):
     """GAP-1 / W (0x81) — write DATA path."""
     _assert_recovered(await _run_node_scenario(dut, "W"))
+
+
+# --- byte-0 (data_id / header) diagnostics: the HW sweep found W byte-0 wedges
+# die_a while B byte-0 survives. Reproduce + classify each node's byte-0 outcome
+# so the mechanism can be root-caused in sim (no assertion — diagnostic). ------
+@cocotb.test()
+async def test_diag_w_byte0(dut):
+    """W (0x81) byte-0 = data_id corruption on the write-DATA node. Silicon: die_a
+    HARD-WEDGES. Classify RECOVER/WEDGE/ERROR + Region-F health to find why the
+    synth-B backstop does not bound it (unlike B byte-0)."""
+    o = await _run_node_scenario(dut, "W", byte=BYTE_DATA_ID)
+    dut._log.info(f"[gaps] DIAG W byte-0: {o}")
+
+
+@cocotb.test()
+async def test_diag_r_byte0(dut):
+    """R (0x84) byte-0 = data_id corruption on the read-DATA node (untested on HW).
+    A stuck read has no synth-response; the F-1 read-ERROR path should bound it."""
+    o = await _run_node_scenario(dut, "R", byte=BYTE_DATA_ID)
+    dut._log.info(f"[gaps] DIAG R byte-0: {o}")
+
+
+@cocotb.test()
+async def test_diag_aw_byte0(dut):
+    """AW (0x80) byte-0 = data_id corruption on the write-ADDRESS node."""
+    o = await _run_node_scenario(dut, "AW", byte=BYTE_DATA_ID)
+    dut._log.info(f"[gaps] DIAG AW byte-0: {o}")
 
 
 # =============================================================================
@@ -518,11 +547,13 @@ async def test_i5_read_stuck_errors_legally(dut):
     regression guard for the gate I added on the two `sub_err1_r <= 1'b1`
     assertions — it fails if that gate ever suppresses the read path too.
 
-    Scenario: a blocking READ whose R response is byte-0 (`data_id`) corrupted
-    = a clean silent drop (no CRC, no NACK, no replay — same undetectable class
-    as the B-node drop). The AR is accepted onto s_axi (sub_rd_os_r=1), R never
-    returns, and the master is HELD (outstanding=True). When I5 expires it must
-    drive HRESP=ERROR through the held read's data phase — bounded AND legal.
+    Scenario: a blocking READ whose R response is PERSISTENTLY payload-corrupted
+    (byte 4 = pktnum every beat) so CRC/NACK/replay never converges — an
+    unrecoverable stall the header ECC does NOT cover (payload, not header). The
+    AR is accepted onto s_axi (sub_rd_os_r=1), R never returns, and the master is
+    HELD (outstanding=True). When I5 expires it must drive HRESP=ERROR through
+    the held read's data phase — bounded AND legal. (A single-bit *header* R flip
+    is now ECC-corrected and recovers, so it can no longer stall a read.)
 
     PASS requires: the read is bounded by an ERROR (RuntimeError), the ERROR
     backstop fired (err1_fires>0), every HRESP=1 pulse is legal (outstanding),
@@ -537,7 +568,7 @@ async def test_i5_read_stuck_errors_legally(dut):
     trace = {}
     w = cocotb.start_soon(_err_watch(dut, master, trace, 60000))
 
-    await _arm_injector_persistent(tb, "s", NODES["R"]["data_id"], BYTE_DATA_ID)
+    await _arm_injector_persistent(tb, "s", NODES["R"]["data_id"], BYTE_PKTNUM)
     cls = None
     try:
         await master.read(APER_BASE + OFF_RD, timeout=40000)
@@ -821,12 +852,13 @@ async def test_i5_clean_drop_leaves_path_usable(dut):
     bridge, so the window path is permanently dead and every later PS access
     costs another full timeout.
 
-    Post-fix contract: the byte-0 write DATA already landed byte-exact over
-    AW/W; only the ack was lost, so synth-B retires the write with resp=OKAY —
-    the write RECOVERs and the window stays usable. This is the first sim
-    reproduction of the captured silicon wedge, now asserting the FIXED
-    behavior. Non-vacuous: the pre-fix defect presents as the next clean write
-    failing (path permanently dead)."""
+    Post-fix contract (header-ECC RESTORE, 2026-08-03): a byte-0 (`data_id`)
+    header flip is now a SINGLE-BIT error the restored WlinkEccSyndrome CORRECTS
+    at the RX before framing, so the B routes normally and the write RECOVERs
+    byte-exact — the silent drop no longer happens. Non-vacuous: with the ECC
+    inert (the old bypass) this byte-0 B silently drops, so recovery would need
+    the slow synth-B backstop (synthb_fires>0) or wedge; asserting RECOVER with
+    synthb_fires==0 proves the ECC corrected it, not a downstream backstop."""
     tb, master = await _bringup(dut)
     trace = {}
     w = cocotb.start_soon(_err_watch(dut, master, trace, 90000))
@@ -841,14 +873,20 @@ async def test_i5_clean_drop_leaves_path_usable(dut):
     _disarm_injector(tb, "s")
     await ClockCycles(dut.hclk, 20000)
     w.kill()
-    dut._log.info(f"[gaps] clean-drop write: {cls} synthb_fires={trace.get('synthb_fires')}")
+    landed_inj = _slave_bram_peek(dut, OFF_INJECT)
+    dut._log.info(f"[gaps] clean-drop write: {cls} synthb_fires={trace.get('synthb_fires')} "
+                  f"landed=0x{landed_inj:08x}")
 
-    assert cls != "WEDGE", (
-        f"byte-0 clean drop hung (class={cls}) — synth-B did not bound the "
-        f"silently-dropped B (synthb_fires={trace.get('synthb_fires')}).")
-    assert trace["synthb_fires"] > 0, (
-        f"the silently-dropped B was not backstopped by synth-B (synthb_fires=0, "
-        f"cls={cls}, osr_max={trace.get('osr_max')}).")
+    assert cls == "RECOVER", (
+        f"byte-0 B did not recover (class={cls}) — the header ECC must correct a "
+        f"single-bit data_id flip (synthb_fires={trace.get('synthb_fires')}).")
+    assert trace.get("synthb_fires", 0) == 0, (
+        f"byte-0 B recovered via the synth-B backstop (synthb_fires="
+        f"{trace['synthb_fires']}) instead of the ECC correcting it — the header "
+        f"ECC is not correcting the data_id flip.")
+    assert landed_inj == D_INJECT, (
+        f"byte-0 B recovered but landed 0x{landed_inj:08x} != 0x{D_INJECT:08x} — "
+        f"the data_id correction did not route the write correctly.")
 
     try:
         await master.write(APER_BASE + OFF_POST, D_POST, timeout=60000)

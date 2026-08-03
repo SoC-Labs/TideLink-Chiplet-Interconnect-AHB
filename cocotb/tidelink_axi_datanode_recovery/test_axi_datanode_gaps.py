@@ -293,14 +293,19 @@ async def _err_watch(dut, master, out, cycles):
     prev = 0
     out.setdefault("pulses", [])
     out.setdefault("err1_fires", 0)
+    out.setdefault("synthb_fires", 0)   # F-1: write-stuck retires via synth-B, not ERROR
     out.setdefault("osr_max", 0)
     prev_e1 = 0
+    prev_sb = 0
     for _ in range(cycles):
         await RisingEdge(dut.hclk)
         try:
             e1 = int(dut.u_master.sub_err1_r.value)
             if e1 and not prev_e1: out["err1_fires"] += 1
             prev_e1 = e1
+            sb = int(dut.u_master.synth_b_pending.value)
+            if sb and not prev_sb: out["synthb_fires"] += 1
+            prev_sb = sb
             c = int(dut.u_master.sub_osr_ctr_r.value)
             if c > out["osr_max"]: out["osr_max"] = c
         except Exception: pass
@@ -435,23 +440,31 @@ async def test_axi_w_error_recovers(dut):
 # =============================================================================
 @cocotb.test()
 async def test_i5_error_is_ahb_legal(dut):
-    """GAP-2a — the ERROR I5 emits must be a LEGAL AHB-Lite response.
+    """GAP-2a — the I5 write-stuck backstop must NEVER emit an illegal AHB ERROR.
 
     Scenario: a POSTED (bufferable) write whose B is permanently corrupted.
     XHB500's early-write-response releases the AHB master immediately, so the
     bus is IDLE while the write is still outstanding on s_axi — exactly the
     case I5 exists for (the per-beat stall timer is blind to it because
-    HREADYOUT is high). When I5 expires it drives HRESP=1 for two cycles.
+    HREADYOUT is high).
 
     AHB-Lite: a subordinate may only signal ERROR during the DATA PHASE of a
-    transfer it was selected for. If HRESP=1 is asserted with no transfer
-    outstanding, an upstream bridge is entitled to discard it — which would
-    explain the silicon observation that I5 drove HRESP=ERROR and the PS never
-    saw a bus error (docs/ila_capA_i5_fires_2026_08_02.csv).
+    transfer it was selected for. Driving HRESP=1 with no transfer outstanding
+    is illegal; an upstream AHB->AXI bridge is entitled to discard it — the
+    silicon observation that I5 drove HRESP=ERROR and the PS never saw a bus
+    error (docs/ila_capA_i5_fires_2026_08_02.csv) = the F-1 defect.
 
-    FAIL here = a real defect: `ahb_sub_hresp`/`ahb_sub_hreadyout` are driven
-    from `sub_err{1,2}_r` alone (tidelink_top.sv ~:1703-1710), with NO
-    qualification that a transfer is in its data phase."""
+    F-1 FIX (2026-08-02, tidelink_top.sv): the ERROR backstop is now READ-ONLY
+    (gated on `sub_rd_os_r`). A stuck WRITE is retired by the synthetic-B path
+    (`synth_b_pending` -> s_axi_bvalid with resp=OKAY), which completes the
+    write through XHB500's OWN response path and re-idles the bridge. So for a
+    posted write-stuck: NO `sub_err{1,2}_r` pulse is ever produced, hence NO
+    HRESP=1 reaches the idle bus, AND the backstop still ACTS (synth-B), so it
+    is not an unbounded hang either.
+
+    PASS requires BOTH: (a) the backstop acted — synth-B fired (or, for the
+    read path, a legal ERROR) — so the wedge is bounded, not a hang; and (b)
+    ZERO illegal HRESP=1 pulses (none with `outstanding=False`)."""
     tb, master = await _bringup(dut)
     trace = {}
     w = cocotb.start_soon(_err_watch(dut, master, trace, 60000))
@@ -467,21 +480,90 @@ async def test_i5_error_is_ahb_legal(dut):
     await ClockCycles(dut.hclk, 40000)
     w.kill()
     _release_all(tb)
-    dut._log.info(f"[gaps] err1_fires={trace['err1_fires']} osr_max={trace['osr_max']} "
+    dut._log.info(f"[gaps] err1_fires={trace['err1_fires']} "
+                  f"synthb_fires={trace['synthb_fires']} osr_max={trace['osr_max']} "
                   f"HRESP pulses={trace['pulses']}")
 
-    assert trace["err1_fires"] > 0, (
-        f"NO BACKSTOP AT ALL — I5 never fired on a posted write with a "
-        f"permanently-lost B (osr_max={trace['osr_max']}). That is an unbounded "
-        f"hang, which is worse than an illegal error.")
-    assert trace["pulses"], (
-        "sub_err1_r fired but NO HRESP=1 ever reached the ahb_sub port")
+    # (a) The wedge must be BOUNDED. A permanently-lost B on a posted write is a
+    # WRITE-stuck, so the backstop acts via synth-B (resp=OKAY), NOT an ERROR.
+    # osr_max reaching the timeout proves I5 detected the wedge; synthb_fires>0
+    # proves it retired the stuck write instead of hanging.
+    assert trace["synthb_fires"] > 0, (
+        f"NO BACKSTOP AT ALL — the synth-B path never fired on a posted write "
+        f"with a permanently-lost B (osr_max={trace['osr_max']}, "
+        f"err1_fires={trace['err1_fires']}). That is an unbounded hang.")
+    # (b) F-1: the write-stuck backstop must produce NO ERROR pulse — reads own
+    # the ERROR path now, writes own synth-B. So there must be ZERO illegal
+    # HRESP=1 pulses (and in fact zero HRESP=1 pulses at all here).
     illegal = [p for p in trace["pulses"] if not p["outstanding"]]
     assert not illegal, (
-        f"AHB-ILLEGAL ERROR: {len(illegal)}/{len(trace['pulses'])} HRESP=1 pulses "
-        f"were driven with NO transfer in its data phase ({illegal}). An upstream "
-        f"AHB->AXI bridge may legitimately discard these, so the PS never sees a "
-        f"bus error and hangs — the on-silicon symptom.")
+        f"AHB-ILLEGAL ERROR (F-1 REGRESSION): {len(illegal)}/{len(trace['pulses'])} "
+        f"HRESP=1 pulses were driven with NO transfer in its data phase "
+        f"({illegal}). A write-stuck timeout must retire via synth-B, never an "
+        f"ERROR on the idle bus — an upstream AHB->AXI bridge discards these, so "
+        f"the PS never sees a bus error and hangs (the on-silicon symptom).")
+    assert trace["err1_fires"] == 0, (
+        f"a WRITE-stuck timeout drove the ERROR backstop (err1_fires="
+        f"{trace['err1_fires']}); after the F-1 fix the ERROR path is READ-ONLY "
+        f"(sub_rd_os_r) and writes must retire via synth-B only.")
+
+
+@cocotb.test()
+async def test_i5_read_stuck_errors_legally(dut):
+    """GAP-2a (read side) — the F-1 fix must PRESERVE the read-stuck backstop.
+
+    The F-1 fix makes the ERROR backstop READ-ONLY (gated on `sub_rd_os_r`):
+    a stuck WRITE retires via synth-B, but a stuck READ has NO synthetic
+    response, so it must STILL drive a LEGAL HRESP=ERROR. This is the direct
+    regression guard for the gate I added on the two `sub_err1_r <= 1'b1`
+    assertions — it fails if that gate ever suppresses the read path too.
+
+    Scenario: a blocking READ whose R response is byte-0 (`data_id`) corrupted
+    = a clean silent drop (no CRC, no NACK, no replay — same undetectable class
+    as the B-node drop). The AR is accepted onto s_axi (sub_rd_os_r=1), R never
+    returns, and the master is HELD (outstanding=True). When I5 expires it must
+    drive HRESP=ERROR through the held read's data phase — bounded AND legal.
+
+    PASS requires: the read is bounded by an ERROR (RuntimeError), the ERROR
+    backstop fired (err1_fires>0), every HRESP=1 pulse is legal (outstanding),
+    and synth-B was NOT involved (a pure read stuck)."""
+    tb, master = await _bringup(dut)
+
+    # Prove the read path works BEFORE injecting, so a later failure is the
+    # injected drop and not a broken read.
+    await master.write(APER_BASE + OFF_RD, D_RD)
+    assert (await master.read(APER_BASE + OFF_RD)) == D_RD, "clean read failed"
+
+    trace = {}
+    w = cocotb.start_soon(_err_watch(dut, master, trace, 60000))
+
+    await _arm_injector_persistent(tb, "s", NODES["R"]["data_id"], BYTE_DATA_ID)
+    cls = None
+    try:
+        await master.read(APER_BASE + OFF_RD, timeout=40000)
+        cls = "RECOVER"
+    except RuntimeError: cls = "ERROR"
+    except TimeoutError: cls = "WEDGE"
+    await ClockCycles(dut.hclk, 2000)
+    w.kill()
+    _release_all(tb)
+    dut._log.info(f"[gaps] read-stuck: {cls} err1_fires={trace['err1_fires']} "
+                  f"synthb_fires={trace['synthb_fires']} osr_max={trace['osr_max']} "
+                  f"HRESP pulses={trace['pulses']}")
+
+    assert cls == "ERROR", (
+        f"a stuck READ (silently-dropped R) was not bounded by an HRESP=ERROR "
+        f"(class={cls}, osr_max={trace['osr_max']}). The F-1 read-only gate must "
+        f"NOT suppress the read backstop — reads have no synthetic response.")
+    assert trace["err1_fires"] > 0, (
+        "read errored but the ERROR backstop (sub_err1_r) never fired")
+    illegal = [p for p in trace["pulses"] if not p["outstanding"]]
+    assert not illegal, (
+        f"the read-stuck ERROR was AHB-illegal (no transfer in its data phase): "
+        f"{illegal}")
+    assert trace["synthb_fires"] == 0, (
+        f"synth-B fired on a pure read stuck (synthb_fires={trace['synthb_fires']}) "
+        f"— a stuck READ must use the ERROR path, not the write synth-B path.")
 
 
 @cocotb.test()
@@ -507,11 +589,19 @@ async def test_i5_traffic_behind_a_stuck_write_is_bounded(dut):
     held.) So `sub_osr_ctr_r` being shared is a latent smell, not a reachable
     defect on the ahb_sub port.
 
+    POST F-1 FIX (2026-08-02): the stuck WRITE is now retired by synth-B
+    (resp=OKAY) at the I5 timeout instead of driving an ERROR. Retiring it
+    re-idles XHB500, which then accepts the held read's AR, so the following
+    reads COMPLETE (measured: reads_ok=24, blocked=None, synthb_fires>0,
+    err1_fires=0, zero HRESP pulses). That is still bounded and still AHB-legal.
+
     WHAT THIS NOW ASSERTS (a real property, and the useful regression): a
-    transaction issued behind a stuck posted write is terminated by a bounded,
-    AHB-LEGAL error rather than hanging. If a future change lets the sub port
-    pipeline across channels, the shared-counter hazard reopens and the
-    `outstanding` check here is what will catch it."""
+    transaction issued behind a stuck posted write is BOUNDED — the stuck write
+    is timed out by SOME backstop (synth-B for writes, or a legal ERROR for a
+    genuinely-held read) — never an unbounded hang, and never an illegal HRESP
+    pulse. If a future change lets the sub port pipeline across channels with
+    NEITHER backstop firing while reads complete, the shared-counter hazard has
+    reopened and the synthb/err1 check here is what will catch it."""
     tb, master = await _bringup(dut)
     await master.write(APER_BASE + OFF_RD, D_RD)
     await ClockCycles(dut.hclk, 2000)
@@ -543,28 +633,38 @@ async def test_i5_traffic_behind_a_stuck_write_is_bounded(dut):
     w.kill()
     _release_all(tb)
     dut._log.info(f"[gaps] reads_ok={reads_ok} blocked={blocked} "
-                  f"err1_fires={trace['err1_fires']} osr_max={trace['osr_max']} "
-                  f"HRESP pulses={trace['pulses']}")
+                  f"err1_fires={trace['err1_fires']} synthb_fires={trace['synthb_fires']} "
+                  f"osr_max={trace['osr_max']} HRESP pulses={trace['pulses']}")
 
-    # Either XHB500 serialises (the measured behaviour: the following read is
-    # bounded by a legal ERROR) or it pipelines (reads complete -> the shared
-    # counter is being reset -> the stuck write MUST still be timed out).
+    # Post F-1 fix, the stuck WRITE is bounded by synth-B (resp=OKAY) rather
+    # than an ERROR. Three legal outcomes, all BOUNDED and all AHB-legal:
+    #   * blocked=="ERROR": a following READ was held on s_axi and timed out to
+    #     a LEGAL HRESP=ERROR (sub_rd_os_r path) — outstanding=True.
+    #   * not blocked, err1/synthb fired: the write's synth-B retired it, which
+    #     unblocks the held read so it (and the rest) complete — the MEASURED
+    #     post-fix behaviour (reads_ok=24, synthb_fires>0). NOT masking: the
+    #     write WAS timed out; retiring it is what let the reads flow.
+    # In every case NO HRESP=1 pulse may be driven with no transfer outstanding.
+    illegal = [p for p in trace["pulses"] if not p["outstanding"]]
+    assert not illegal, (
+        f"AHB-ILLEGAL: {illegal} — a HRESP=1 pulse with no transfer in its data "
+        f"phase (see F-1 / test_i5_error_is_ahb_legal)")
     if blocked == "ERROR":
         assert trace["err1_fires"] > 0, "read errored but no backstop fired"
-        illegal = [p for p in trace["pulses"] if not p["outstanding"]]
-        assert not illegal, (
-            f"the bounding ERROR was AHB-illegal (no transfer in its data "
-            f"phase): {illegal} — see F-1 / test_i5_error_is_ahb_legal")
     else:
         assert blocked != "HANG", (
             "UNBOUNDED: a read issued behind a stuck posted write hung with no "
             "backstop — neither serialised nor timed out.")
-        assert trace["err1_fires"] > 0, (
+        # The stuck write MUST have been bounded by SOME backstop. synth-B
+        # (writes) or the read ERROR path both count; if NEITHER fired while
+        # reads completed, the shared age counter was masked and the write is
+        # never timed out -> the real PROGRESS-MASKING hazard.
+        assert (trace["synthb_fires"] > 0 or trace["err1_fires"] > 0), (
             f"PROGRESS MASKING: {reads_ok} reads completed while a posted "
-            f"write's B was permanently lost, and the backstop NEVER fired. The "
-            f"single shared age counter (sub_axi_progress = sub_r_done | "
-            f"sub_b_done) is reset by unrelated traffic, so a stuck transaction "
-            f"is never timed out and the PS hangs unbounded.")
+            f"write's B was permanently lost, and NO backstop (synth-B or ERROR) "
+            f"ever fired. The single shared age counter (sub_axi_progress = "
+            f"sub_r_done | sub_b_done) is reset by unrelated traffic, so a stuck "
+            f"transaction is never timed out and the PS hangs unbounded.")
 
 
 @cocotb.test()

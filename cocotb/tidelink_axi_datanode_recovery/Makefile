@@ -112,6 +112,7 @@ GAPS_NODE_TESTS := test_axi_r_error_recovers test_axi_r_error_wedges_no_fix \
                    test_axi_w_error_recovers
 
 GAPS_BACKSTOP_TESTS := test_i5_error_is_ahb_legal \
+                       test_i5_read_stuck_errors_legally \
                        test_i5_traffic_behind_a_stuck_write_is_bounded \
                        test_i5_backstop_restores_the_path \
                        test_i5_clean_drop_leaves_path_usable \

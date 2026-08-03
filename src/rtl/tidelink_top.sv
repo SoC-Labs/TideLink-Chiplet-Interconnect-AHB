@@ -1631,7 +1631,14 @@ module tidelink_top #(
                 sub_stall_ctr_r <= '0;                 // resets every completed beat
             end else if (sub_stall_expired) begin
                 sub_stall_ctr_r <= '0;
-                sub_err1_r      <= 1'b1;               // fire the ERROR response
+                // ── F-1 FIX (2026-08-02): ERROR backstop is READ-ONLY ─────────
+                // A stuck WRITE is retired by synth-B (sub_wr_stuck_fire), which
+                // completes it through XHB500's own response path. Emitting an
+                // AHB ERROR for the same write too lands a HRESP=1 pulse on an
+                // idle/posted-write bus with no transfer in its data phase =
+                // AHB-illegal (F-1). Reads have NO synthetic response, so a stuck
+                // read still legitimately drives HRESP=ERROR here.
+                if (sub_rd_os_r) sub_err1_r <= 1'b1;  // fire ERROR (read only)
             end else begin
                 sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
@@ -1655,7 +1662,10 @@ module tidelink_top #(
                 sub_osr_ctr_r <= '0;                   // idle, or a beat retired
             end else if (sub_osr_expired) begin
                 sub_osr_ctr_r <= '0;
-                sub_err1_r    <= 1'b1;                 // same 2-cycle ERROR
+                // F-1 FIX: READ-ONLY ERROR (see per-beat path above). A stuck
+                // WRITE is owned by synth-B (sub_wr_stuck_fire keys on the SAME
+                // expiry via sub_wr_os_ctr), so it must NOT also pulse HRESP.
+                if (sub_rd_os_r) sub_err1_r <= 1'b1;  // 2-cycle ERROR (read only)
                 sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn(s)
                 sub_wr_os_ctr <= 3'd0;                 // so they cannot re-trip us
             end else begin

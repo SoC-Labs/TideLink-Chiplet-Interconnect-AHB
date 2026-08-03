@@ -625,8 +625,16 @@ async def test_diag_byte0_detection_path(dut):
     This test does not assert a policy; it RECORDS which detector fired, so the
     'clean silent drop' characterisation rests on measurement rather than
     inference. Reports: RX ecc_corrected / ecc_corrupted on the receiving die,
-    the B node's crc_errors and NACK activity, and the transaction outcome."""
-    tb, master = await _bringup(dut)
+    the B node's crc_errors and NACK activity, and the transaction outcome.
+
+    DIAG_CRC (env, default "on"): set to "off" to bring up with the AXI FC nodes
+    at their SHIPPING default (CRC disabled). This removes the packet-CRC safety
+    net so a header-field corruption is left to the header ECC alone — which is
+    bypassed (WlinkEccSyndrome.v:299-308) — exposing the raw framer blast radius
+    (byte 1 word_count -> desync). Header-ECC probe investigation 2026-08-03."""
+    _crc_on = os.environ.get("DIAG_CRC", "on").lower() != "off"
+    tb, master = await _bringup(dut, crc_on=_crc_on)
+    dut._log.info(f"[gaps] DIAG_CRC={'on' if _crc_on else 'off'}")
     mB  = _axi_node(tb, "m", "wlink_axibFC")
     mwl = _wlink(tb, "m")
 
@@ -660,9 +668,10 @@ async def test_diag_byte0_detection_path(dut):
     # also reads zero, the ECC probe is mis-placed and the byte-0 zero proves
     # nothing about the DUT.
     inj_byte = int(os.environ.get("DIAG_BYTE", BYTE_DATA_ID))
-    dut._log.info(f"[gaps] byte-{inj_byte} injection on the B node (data_id 0x82)")
+    inj_bit = int(os.environ.get("DIAG_BIT", "0"))
+    dut._log.info(f"[gaps] byte-{inj_byte} bit-{inj_bit} injection on the B node (data_id 0x82)")
     m = cocotb.start_soon(mon(80000))
-    await _arm_injector(tb, "s", NODES["B"]["data_id"], inj_byte)
+    await _arm_injector(tb, "s", NODES["B"]["data_id"], inj_byte, bit=inj_bit)
     try:
         await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=60000)
         cls = "RECOVER"

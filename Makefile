@@ -265,7 +265,6 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps \
-	sim_gate_xfail_i5_ahb_legal sim_gate_xfail_i5_clean_drop \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect
@@ -681,9 +680,7 @@ sim_gate_axi_datanode_gaps:
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_gaps_nodes \
 	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_backstop_restores_the_path && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_traffic_behind_a_stuck_write_is_bounded && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_rearms_after_abort)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1262,8 +1259,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector \
-	xfail_i5_ahb_legal xfail_i5_clean_drop
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1369,10 +1365,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
 	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
-	@# Two KNOWN-DEFECT sentinels from the 2026-08-02 AXI data-node review
-	@# (docs/VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md F-1, F-2).
-	@$(MAKE) --no-print-directory sim_gate_xfail_i5_ahb_legal
-	@$(MAKE) --no-print-directory sim_gate_xfail_i5_clean_drop
+	@# F-1/F-2 (AXI data-node review 2026-08-02) RESOLVED by the synth-B OKAY fix:
+	@# test_i5_error_is_ahb_legal + test_i5_clean_drop_leaves_path_usable now run
+	@# BLOCKING inside sim_gate_axi_datanode_gaps (gaps_backstop), not as XFAIL.
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"

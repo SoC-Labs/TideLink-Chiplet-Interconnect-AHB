@@ -669,28 +669,42 @@ async def test_i5_traffic_behind_a_stuck_write_is_bounded(dut):
 
 @cocotb.test()
 async def test_i5_backstop_restores_the_path(dut):
-    """GAP-2c — after the backstop fires, the window path must WORK again.
+    """GAP-2c — after the backstop ENGAGES, the window path must WORK again.
 
-    Firing an AHB ERROR upstream abandons the transfer at the tidelink wrapper,
-    but does nothing to XHB500's own FSM or to the FC node. The silicon ILA
-    shows `xhb_sub_hrdyout_raw` still 0 and `sub_ext_stalled` re-arming
-    immediately after the ERROR (samples 258+), i.e. the bridge is still
-    wedged. If a subsequent CLEAN transaction cannot complete, the backstop is
-    an error REPORT, not a recovery — and every later PS access costs another
-    full timeout (~2.6 ms at 25 MHz), which presents to a host as a hang."""
+    A persistently-corrupted posted write never gets its B; the synth-B backstop
+    retires it (resp=OKAY) so the write RECOVERs and XHB500 re-idles. The real
+    invariant this guards (F-2, the on-silicon defect): a subsequent CLEAN
+    transaction must complete — otherwise the backstop is a REPORT, not a
+    recovery, and every later PS access costs another full timeout (~2.6 ms at
+    25 MHz), which presents to a host as a hang.
+
+    Post-F-1 contract: a WRITE-stuck retires via synth-B, not an AHB ERROR, so
+    the backstop signal is `synth_b_pending` (synthb_fires), not sub_err1_r.
+    Non-vacuous: a dead path presents as the clean write timing out."""
     tb, master = await _bringup(dut)
+    trace = {}
+    w = cocotb.start_soon(_err_watch(dut, master, trace, 90000))
 
     await _arm_injector_persistent(tb, "s", NODES["B"]["data_id"], BYTE_PKTNUM)
-    fired = False
+    cls = None
     try:
         await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=60000)
-    except RuntimeError:  fired = True          # HRESP=ERROR — backstop tripped
-    except TimeoutError:  pass
-    assert fired, "backstop never fired — cannot test post-backstop recovery"
+        cls = "RECOVER"
+    except RuntimeError:  cls = "ERROR"
+    except TimeoutError:  cls = "WEDGE"
 
     # Remove the fault entirely, give the link time to settle, then retry clean.
     _disarm_injector(tb, "s")
     await ClockCycles(dut.hclk, 20000)
+    w.kill()
+    dut._log.info(f"[gaps] stuck write: {cls} synthb_fires={trace.get('synthb_fires')}")
+
+    assert cls != "WEDGE", (
+        f"the persistently-lost write hung (class={cls}) — the synth-B backstop "
+        f"did not bound it (synthb_fires={trace.get('synthb_fires')}).")
+    assert trace["synthb_fires"] > 0, (
+        f"backstop never engaged — synth_b_pending never pulsed (vacuous; "
+        f"cls={cls}, osr_max={trace.get('osr_max')}).")
 
     try:
         await master.write(APER_BASE + OFF_POST, D_POST, timeout=60000)
@@ -700,9 +714,8 @@ async def test_i5_backstop_restores_the_path(dut):
         _release_all(tb)
         raise AssertionError(
             f"PATH DEAD AFTER BACKSTOP: with the fault REMOVED, the next clean "
-            f"write still failed ({e}). The backstop reports an error but never "
-            f"restores XHB500/the FC node, so the window is permanently dead "
-            f"after one lost response.")
+            f"write still failed ({e}). The backstop retired the stuck write but "
+            f"did not restore XHB500/the FC node — window permanently dead.")
     _release_all(tb)
     assert landed == D_POST, (
         f"post-backstop write completed but landed 0x{landed:08x} != 0x{D_POST:08x}")
@@ -725,8 +738,16 @@ async def test_diag_byte0_detection_path(dut):
     This test does not assert a policy; it RECORDS which detector fired, so the
     'clean silent drop' characterisation rests on measurement rather than
     inference. Reports: RX ecc_corrected / ecc_corrupted on the receiving die,
-    the B node's crc_errors and NACK activity, and the transaction outcome."""
-    tb, master = await _bringup(dut)
+    the B node's crc_errors and NACK activity, and the transaction outcome.
+
+    DIAG_CRC (env, default "on"): set to "off" to bring up with the AXI FC nodes
+    at their SHIPPING default (CRC disabled). This removes the packet-CRC safety
+    net so a header-field corruption is left to the header ECC alone — which is
+    bypassed (WlinkEccSyndrome.v:299-308) — exposing the raw framer blast radius
+    (byte 1 word_count -> desync). Header-ECC probe investigation 2026-08-03."""
+    _crc_on = os.environ.get("DIAG_CRC", "on").lower() != "off"
+    tb, master = await _bringup(dut, crc_on=_crc_on)
+    dut._log.info(f"[gaps] DIAG_CRC={'on' if _crc_on else 'off'}")
     mB  = _axi_node(tb, "m", "wlink_axibFC")
     mwl = _wlink(tb, "m")
 
@@ -760,9 +781,10 @@ async def test_diag_byte0_detection_path(dut):
     # also reads zero, the ECC probe is mis-placed and the byte-0 zero proves
     # nothing about the DUT.
     inj_byte = int(os.environ.get("DIAG_BYTE", BYTE_DATA_ID))
-    dut._log.info(f"[gaps] byte-{inj_byte} injection on the B node (data_id 0x82)")
+    inj_bit = int(os.environ.get("DIAG_BIT", "0"))
+    dut._log.info(f"[gaps] byte-{inj_byte} bit-{inj_bit} injection on the B node (data_id 0x82)")
     m = cocotb.start_soon(mon(80000))
-    await _arm_injector(tb, "s", NODES["B"]["data_id"], inj_byte)
+    await _arm_injector(tb, "s", NODES["B"]["data_id"], inj_byte, bit=inj_bit)
     try:
         await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=60000)
         cls = "RECOVER"
@@ -799,26 +821,34 @@ async def test_i5_clean_drop_leaves_path_usable(dut):
     bridge, so the window path is permanently dead and every later PS access
     costs another full timeout.
 
-    This test asserts the property that ground truth denies: after a
-    silently-dropped response is backstopped, a subsequent CLEAN access still
-    works."""
+    Post-fix contract: the byte-0 write DATA already landed byte-exact over
+    AW/W; only the ack was lost, so synth-B retires the write with resp=OKAY —
+    the write RECOVERs and the window stays usable. This is the first sim
+    reproduction of the captured silicon wedge, now asserting the FIXED
+    behavior. Non-vacuous: the pre-fix defect presents as the next clean write
+    failing (path permanently dead)."""
     tb, master = await _bringup(dut)
+    trace = {}
+    w = cocotb.start_soon(_err_watch(dut, master, trace, 90000))
 
     await _arm_injector(tb, "s", NODES["B"]["data_id"], BYTE_DATA_ID)
-    fired, cls = False, None
+    cls = None
     try:
         await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=60000)
         cls = "RECOVER"
-    except RuntimeError: cls = "ERROR"; fired = True
+    except RuntimeError: cls = "ERROR"
     except TimeoutError: cls = "WEDGE"
-    dut._log.info(f"[gaps] clean-drop write: {cls}")
     _disarm_injector(tb, "s")
     await ClockCycles(dut.hclk, 20000)
+    w.kill()
+    dut._log.info(f"[gaps] clean-drop write: {cls} synthb_fires={trace.get('synthb_fires')}")
 
-    assert cls != "RECOVER", (
-        "byte-0 (data_id) corruption RECOVERED — unexpected: it should be an "
-        "undetectable silent drop. Re-check the injector byte mapping.")
-    assert fired, f"silently-dropped B was not backstopped at all (class={cls})"
+    assert cls != "WEDGE", (
+        f"byte-0 clean drop hung (class={cls}) — synth-B did not bound the "
+        f"silently-dropped B (synthb_fires={trace.get('synthb_fires')}).")
+    assert trace["synthb_fires"] > 0, (
+        f"the silently-dropped B was not backstopped by synth-B (synthb_fires=0, "
+        f"cls={cls}, osr_max={trace.get('osr_max')}).")
 
     try:
         await master.write(APER_BASE + OFF_POST, D_POST, timeout=60000)
@@ -828,10 +858,9 @@ async def test_i5_clean_drop_leaves_path_usable(dut):
         _release_all(tb)
         raise AssertionError(
             f"PATH DEAD AFTER A SILENTLY-DROPPED RESPONSE: the next CLEAN write "
-            f"failed ({e}) even though the fault is gone. Matches the silicon "
-            f"ILA (xhb_hrdyout_raw never returns high). The backstop reports an "
-            f"error but cannot restore XHB500 — one lost response kills the "
-            f"window path permanently.")
+            f"failed ({e}) even though the fault is gone. synth-B must retire the "
+            f"stuck write AND leave XHB500 usable — the on-silicon window must "
+            f"not stay dead after one lost response.")
     _release_all(tb)
     assert landed == D_POST, (
         f"post-drop write completed but landed 0x{landed:08x} != 0x{D_POST:08x}")
@@ -845,11 +874,15 @@ async def test_i5_rearms_after_abort(dut):
     timed-out transaction (tidelink_top.sv ~:1651-1652). The abandoned response
     may still arrive afterwards; with the tracker already at zero it is either
     ignored or, worse, decrements the accounting of a LATER transaction — after
-    which a second genuinely-lost response is never timed out and the PS hangs
-    with no backstop at all."""
+    which a second genuinely-lost response is never backstopped and the PS hangs.
+    Post-fix each trip RECOVERs via synth-B; both must ENGAGE the backstop
+    (synthb_fires>0) and the path must stay usable after both. Non-vacuous: a
+    re-arm failure presents as the 2nd trip WEDGE-ing."""
     tb, master = await _bringup(dut)
 
     async def trip(tag):
+        trace = {}
+        w = cocotb.start_soon(_err_watch(dut, master, trace, 90000))
         await _arm_injector_persistent(tb, "s", NODES["B"]["data_id"], BYTE_PKTNUM)
         got = None
         try:
@@ -857,16 +890,33 @@ async def test_i5_rearms_after_abort(dut):
             got = "RECOVER"
         except RuntimeError: got = "ERROR"
         except TimeoutError: got = "WEDGE"
-        dut._log.info(f"[gaps] trip {tag}: {got}")
         _disarm_injector(tb, "s")
         await ClockCycles(dut.hclk, 20000)
-        return got
+        w.kill()
+        sb = trace.get("synthb_fires", 0)
+        dut._log.info(f"[gaps] trip {tag}: {got} synthb_fires={sb}")
+        return got, sb
 
-    first  = await trip("1st")
-    assert first == "ERROR", f"1st lost response was not backstopped ({first})"
-    second = await trip("2nd")
-    _release_all(tb)
-    assert second == "ERROR", (
+    first, sb1 = await trip("1st")
+    assert first != "WEDGE", f"1st lost response hung ({first})"
+    assert sb1 > 0, f"1st trip: synth-B backstop never engaged (vacuous, cls={first})"
+    second, sb2 = await trip("2nd")
+    assert second != "WEDGE", (
         f"BACKSTOP DID NOT RE-ARM: the 2nd permanently-lost response gave "
-        f"'{second}', not a bounded HRESP=ERROR. After one abort the outstanding "
-        f"tracker no longer bounds a stuck transaction.")
+        f"'{second}', not a bounded synth-B recovery. After one abort the "
+        f"outstanding tracker no longer bounds a stuck transaction.")
+    assert sb2 > 0, f"2nd trip: synth-B backstop never re-engaged (vacuous, cls={second})"
+
+    # The window path must remain usable after two consecutive backstops.
+    try:
+        await master.write(APER_BASE + OFF_POST, D_POST, timeout=60000)
+        await ClockCycles(dut.hclk, 2000)
+        landed = _slave_bram_peek(dut, OFF_POST)
+    except (TimeoutError, RuntimeError) as e:
+        _release_all(tb)
+        raise AssertionError(
+            f"path dead after two backstops: clean write failed ({e}); the "
+            f"re-armed backstop must leave XHB500 usable.")
+    _release_all(tb)
+    assert landed == D_POST, (
+        f"post-rearm write completed but landed 0x{landed:08x} != 0x{D_POST:08x}")

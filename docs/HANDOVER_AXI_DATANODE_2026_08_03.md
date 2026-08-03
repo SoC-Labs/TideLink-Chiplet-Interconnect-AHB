@@ -6,6 +6,34 @@
 
 ---
 
+> ### ⏩ UPDATE 2026-08-03 (later) — several §-items below are now DONE
+> - **Branch is PUSHED and advanced.** `origin/fix/axi-datanode-recovery` (GitHub
+>   `SoC-Labs/TideLink-Chiplet-Interconnect-AHB`) is now at **`622b3d8`**, a
+>   fast-forward over `dcf0fce`. This is the chiplet pickup branch. Merge-base
+>   with the chiplet's `fix/i1-selfarm+obs` is GitHub `main` (`18491ef`).
+> - **§4 is DONE.** The 3 bug-repro tests were re-pointed to the synth-B OKAY
+>   contract (detect via `synth_b_pending`/`synthb_fires`, not a caught
+>   `RuntimeError`) and **promoted from XFAIL sentinels to BLOCKING**. Full
+>   `gaps_backstop` = **6/6 PASS** + `test_axi_b_error_recovers` PASS
+>   (commit `622b3d8`). `sim_gate_axi_datanode_gaps` is green, not gate-red.
+> - **§5.1 (F-1) is DONE.** The ERROR backstop is now READ-ONLY (fires only for a
+>   stuck read via `sub_rd_os_r`); a stuck write is owned entirely by synth-B, so
+>   no residual AHB-illegal HRESP pulse (commit `41c4107`). `test_i5_error_is_ahb_legal`
+>   PASS; new `test_i5_read_stuck_errors_legally` PASS (read-stuck ERROR preserved).
+> - **§5.3 (header ECC) INVESTIGATED.** The Wlink header ECC is INERT — a
+>   deliberate hardwired bypass (`WlinkEccSyndrome.v`), and *wrong* at 25 MHz per
+>   the bypass comment. byte-1 (word_count) desyncs the RX framer upstream of the
+>   FC CRC, so it wedges with CRC on or off. Latent link-integrity gap; restore
+>   is deferred by design (default-OFF, needs a TX-vs-RX polynomial audit). See
+>   `docs/AXI_DATANODE_HEADER_ECC_INVESTIGATION_2026_08_03.md`.
+> - **Consumer note:** `nanosoc-ethernet-chiplet` (the repo that FILED the bug)
+>   pins tidelink at `855096a` and is the critical-path consumer for the pin bump.
+> - **Still open:** chiplet-line merge + submodule pin bump; HW acceptance sweep
+>   of `{AW,W,B,AR,R}` byte-0 (R/AR verifies read-path ERROR propagation on
+>   silicon); byte-1 header-ECC restore (design). OKAY-vs-ERROR: **David chose OKAY.**
+
+---
+
 ## 1. Where it stands, in one paragraph
 
 The eth-chiplet's reported bug — *one bit-error on an AXI data-plane FC node
@@ -246,13 +274,21 @@ and was impossible before this fix).
 
 ## 8. Map
 
+The four RTL fix commits are `0aba92d` (Fix G) · `32d9d5e` (Fix H) · `9b4c40b`
+(synth-B) · `e827199` (OKAY). Integration adds `41c4107` (F-1) and `622b3d8`
+(tests re-pointed + blocking + header-ECC investigation).
+
 | commit | what |
 |---|---|
+| `0aba92d` | **Fix G** — FCSM forgive-disarm on LINK_IDLE + CRC enable (5 WlinkGenericFCSM overrides) |
+| `32d9d5e` | **Fix H** — I5 write tracker → saturating counter |
 | `7485f76` | review: 10 gap tests, F-1/F-2 found, gate wiring (mine) |
 | `183afc2` | byte-by-byte diagnostic, HW-proof plan, RTL fix proposals, ECC correction (mine) |
 | `9b4c40b` | synth-B (SLVERR) restores the stuck XHB500 write |
 | `e827199` | SLVERR → **OKAY**; HW-proven on die_a |
 | `dcf0fce` | HW-proof + scope doc |
+| `41c4107` | **F-1 fix** — ERROR backstop read-only; writes own synth-B (§5.1 resolved) |
+| `622b3d8` | gaps tests re-pointed to synth-B + promoted to blocking; header-ECC investigation (§4 resolved) |
 
 | doc | what |
 |---|---|

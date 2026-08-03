@@ -72,6 +72,16 @@ module tidelink_top #(
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
     parameter USE_T3A    = 1'b0,
+    // Z2 no-data-delivery fix (2026-07-30, docs/HANDOVER_Z2_PICKUP_2026_07_30.md
+    // §5): pass-through to axi_chiplet_controller.EPOCH_ANCHOR_EN ->
+    // Wlink.EPOCH_ANCHOR_EN -> WlinkGPIOPHY_v2 (V2 only; inert under V1 — the
+    // V1 WlinkGPIOPHY has no such parameter, and Wlink.v only forwards it to
+    // the phy instance under `ifdef TIDELINK_PHY_V2). Default 0 = today's
+    // shipping deskew corrector (SYNC_REANCHOR_EN), which never arms on real
+    // silicon because the idle-gated SYNC beacon can't fire. 1 swaps in the
+    // training-EXIT anchored corrector proven in sim to fix s2m delivery.
+    // This is a real netlist change; a board integration opts in explicitly.
+    parameter EPOCH_ANCHOR_EN = 1'b0,
     // S2 scaffold (PLAN_TIDELINK_INTEGRATION, 2026-06-10): select the NEW
     // shared PHY component (deps/tidelink-phy, feat/phy-refactor line) in
     // place of the current WavD2DGpio datapath inside u_chiplet_controller.
@@ -575,9 +585,12 @@ module tidelink_top #(
     wire         s_axi_wvalid;
     wire         s_axi_wready;
 
-    wire [11:0]  s_axi_bid;
+    wire [11:0]  s_axi_bid;         // muxed: controller B, or synthetic SLVERR (F-1/F-2)
     wire  [1:0]  s_axi_bresp;
     wire         s_axi_bvalid;
+    wire [11:0]  s_axi_bid_ctrl;    // real B from the chiplet controller (pre-mux)
+    wire  [1:0]  s_axi_bresp_ctrl;
+    wire         s_axi_bvalid_ctrl;
     wire         s_axi_bready;
 
     wire [11:0]  s_axi_arid;
@@ -886,6 +899,23 @@ module tidelink_top #(
     end
 
     wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
+
+    // SoC Labs mailbox-RO fix (2026-07-31): mbox_reg_write as computed by
+    // tidelink_apb_regs.sv (fifo/tidelink_apb_regs.sv:527) is just
+    // apb_write && Region-3-decode -- apb_write there is the raw shared-bus
+    // psel&&penable&&pwrite with NO source qualifier, so it asserts for a
+    // plain external APB write to 0x4403_2068 exactly the same as it does
+    // for a genuine peer sideband injection. That silently let the CPU/debug
+    // side overwrite mbox_sec_lo_r/mbox_sec_hi_r/mbox_ns_r -- the assembled
+    // cross-die PTP timestamp -- even though this very port's comment always
+    // said the mailbox is fed "from FC RX config path via APB": the FC peer
+    // was always meant to be the ONLY legitimate writer, but nothing enforced
+    // that structurally. Gated with fc_cfg_apb_active above -- the same signal
+    // that already keeps the PEER from writing TXGEN over the link in the
+    // opposite direction (see the "SECURITY" comment on txgen_reg_wr) -- it is
+    // true only in the cycles the 2:1 tl_apb_* arbiter has granted the shared
+    // bus to the FC adapter's RX config path, not the external PS/debug port.
+    wire mbox_reg_write_fc_only = mbox_reg_write && fc_cfg_apb_active;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -1475,7 +1505,25 @@ module tidelink_top #(
 `endif
     logic [SUB_STALL_TIMEOUT_LOG2:0]       sub_stall_ctr_r;
     logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] sub_osr_ctr_r;
-    logic                                  sub_rd_os_r, sub_wr_os_r;
+    logic                                  sub_rd_os_r;
+    // I5 write-outstanding COUNTER (Fix H, 2026-08-01). The XHB500 AHB->AXI
+    // subordinate bridge issues its early-write-response (bufferable, HPROT[2]=1)
+    // path up to FOUR writes deep on s_axi (hazard_list.sv HAZARD_LIST_SIZE=4) —
+    // it returns HREADYOUT and issues the next AW *before* the prior B returns.
+    // A single outstanding BIT is therefore WRONG for writes: when a later write's
+    // B returns it clears the bit while an earlier write is STILL outstanding, so
+    // sub_axi_outstanding falsely reads idle, the age timer resets, and a
+    // genuinely-stuck write (lost/delayed B) is NEVER timed out -> the PS-facing
+    // ahb_sub hangs with no backstop (the on-silicon 2026-08-01 hard-wedge, where
+    // the errinject resume stream is 32 pipelined bufferable writes). Count them
+    // (saturating, width covers the depth-4 list with margin) so sub_axi_outstanding
+    // stays asserted until EVERY outstanding write drains. Reads stay single-bit —
+    // the bridge is genuinely single-outstanding for reads (ready_for_read gate).
+    logic [2:0]                            sub_wr_os_ctr;
+    // F-1/F-2 synth-B state (declared early: used by the pipeline-abort gate above
+    // the always_ff that assigns them).
+    logic [11:0]                           sub_wr_awid_r;
+    logic                                  synth_b_pending;
     logic                                  sub_err1_r, sub_err2_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
@@ -1518,7 +1566,7 @@ module tidelink_top #(
     wire sub_aw_accept       = s_axi_awvalid & s_axi_awready;
     wire sub_r_done          = s_axi_rvalid  & s_axi_rready & s_axi_rlast;
     wire sub_b_done          = s_axi_bvalid  & s_axi_bready;
-    wire sub_axi_outstanding = sub_rd_os_r | sub_wr_os_r;
+    wire sub_axi_outstanding = sub_rd_os_r | (sub_wr_os_ctr != 3'd0);
     wire sub_axi_progress    = sub_r_done | sub_b_done;
     wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
 
@@ -1548,9 +1596,10 @@ module tidelink_top #(
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
-            end else if (sub_err1_r) begin
+            end else if (sub_err1_r & ~synth_b_pending) begin
                 // Stall-timeout abort: abandon the in-flight (wedged) transfer so
                 // it cannot re-trigger the backstop or hold hsel into XHB500.
+                // (Skipped while synth_b_pending: XHB500 is completing the write.)
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
@@ -1570,7 +1619,7 @@ module tidelink_top #(
             sub_stall_ctr_r <= '0;
             sub_osr_ctr_r   <= '0;
             sub_rd_os_r     <= 1'b0;
-            sub_wr_os_r     <= 1'b0;
+            sub_wr_os_ctr   <= 3'd0;
             sub_err1_r      <= 1'b0;
             sub_err2_r      <= 1'b0;
         end else begin
@@ -1582,27 +1631,43 @@ module tidelink_top #(
                 sub_stall_ctr_r <= '0;                 // resets every completed beat
             end else if (sub_stall_expired) begin
                 sub_stall_ctr_r <= '0;
-                sub_err1_r      <= 1'b1;               // fire the ERROR response
+                // ── F-1 FIX (2026-08-02): ERROR backstop is READ-ONLY ─────────
+                // A stuck WRITE is retired by synth-B (sub_wr_stuck_fire), which
+                // completes it through XHB500's own response path. Emitting an
+                // AHB ERROR for the same write too lands a HRESP=1 pulse on an
+                // idle/posted-write bus with no transfer in its data phase =
+                // AHB-illegal (F-1). Reads have NO synthetic response, so a stuck
+                // read still legitimately drives HRESP=ERROR here.
+                if (sub_rd_os_r) sub_err1_r <= 1'b1;  // fire ERROR (read only)
             end else begin
                 sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
             end
 
-            // (2) I5 outstanding-response backstop. Track a sub read/write in
-            // flight on the XHB500 s_axi channel: SET on an accepted AR/AW, CLEAR
-            // on its returning R(last)/B. This is oblivious to ahb_sub_hreadyout,
-            // so it catches the lost-response wedge the per-beat timer is blind to.
+            // (2) I5 outstanding-response backstop. Track sub reads/writes in
+            // flight on the XHB500 s_axi channel: reads SET on an accepted AR,
+            // CLEAR on R(last) (single-outstanding); writes COUNT accepted AWs and
+            // decrement on each returning B (up to 4 outstanding, EWR path — see
+            // sub_wr_os_ctr decl). Oblivious to ahb_sub_hreadyout, so it catches
+            // the lost-response wedge the per-beat timer is blind to.
             if (sub_ar_accept)   sub_rd_os_r <= 1'b1;
             else if (sub_r_done) sub_rd_os_r <= 1'b0;
-            if (sub_aw_accept)   sub_wr_os_r <= 1'b1;
-            else if (sub_b_done) sub_wr_os_r <= 1'b0;
+            // saturating inc/dec; simultaneous AW+B is a net no-change.
+            case ({sub_aw_accept, sub_b_done})
+                2'b10: if (sub_wr_os_ctr != 3'd7) sub_wr_os_ctr <= sub_wr_os_ctr + 3'd1;
+                2'b01: if (sub_wr_os_ctr != 3'd0) sub_wr_os_ctr <= sub_wr_os_ctr - 3'd1;
+                default: /* 2'b00 idle, 2'b11 net-zero */ ;
+            endcase
 
             if (!sub_axi_outstanding || sub_axi_progress) begin
                 sub_osr_ctr_r <= '0;                   // idle, or a beat retired
             end else if (sub_osr_expired) begin
                 sub_osr_ctr_r <= '0;
-                sub_err1_r    <= 1'b1;                 // same 2-cycle ERROR
-                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn
-                sub_wr_os_r   <= 1'b0;                 // so it cannot re-trip us
+                // F-1 FIX: READ-ONLY ERROR (see per-beat path above). A stuck
+                // WRITE is owned by synth-B (sub_wr_stuck_fire keys on the SAME
+                // expiry via sub_wr_os_ctr), so it must NOT also pulse HRESP.
+                if (sub_rd_os_r) sub_err1_r <= 1'b1;  // 2-cycle ERROR (read only)
+                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn(s)
+                sub_wr_os_ctr <= 3'd0;                 // so they cannot re-trip us
             end else begin
                 sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
             end
@@ -1653,14 +1718,41 @@ module tidelink_top #(
     // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when either
     // stall backstop trips (cy1 HREADYOUT=0, cy2 HREADYOUT=1) — sub_err{1,2}_r and
     // rd_pipe_r are registers, so no combinational dependence on ahb_sub_hready.
-    assign ahb_sub_hreadyout = sub_err1_r ? 1'b0 :
-                               sub_err2_r ? 1'b1 :
+    // ── F-1/F-2 FIX (2026-08-02): synthetic SLVERR B completes a stuck write ──
+    // The old backstop drove ahb_sub_hresp/hreadyout directly from sub_err{1,2}_r.
+    // For a POSTED (bufferable EWR) write the AHB master has already retired, so
+    // that ERROR lands on an IDLE bus = AHB-illegal, and an upstream AXI->AHB
+    // bridge legitimately DISCARDS it (F-1: PS never sees a bus error -> hang).
+    // It also left XHB500 waiting for the lost B forever (F-2: next clean write
+    // also errors). Instead, when a WRITE backstop expires with a write still
+    // outstanding, inject a synthetic SLVERR B into XHB500's s_axi B channel:
+    // XHB500 completes its pending write with SLVERR through its OWN response path
+    // (a LEGAL 2-cycle AHB ERROR in the transfer's data phase = F-1) and re-idles
+    // (= F-2). The real B was permanently lost, so there is no collision.
+    wire sub_wr_stuck_fire = (sub_osr_expired | sub_stall_expired)
+                             & (sub_wr_os_ctr != 3'd0);
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_wr_awid_r   <= '0;
+            synth_b_pending <= 1'b0;
+        end else begin
+            if (sub_aw_accept) sub_wr_awid_r <= s_axi_awid;
+            if (sub_wr_stuck_fire)                   synth_b_pending <= 1'b1;
+            else if (synth_b_pending & s_axi_bready) synth_b_pending <= 1'b0;
+        end
+    end
+    assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
+    assign s_axi_bresp  = synth_b_pending ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
+    assign s_axi_bid    = synth_b_pending ? sub_wr_awid_r : s_axi_bid_ctrl;
+
+    assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
+                               (sub_err2_r & ~synth_b_pending) ? 1'b1 :
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
                                rd_pipe_r                        ? 1'b0 :
                                xhb_sub_hreadyout_raw;
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
-    assign ahb_sub_hresp     = (sub_err1_r | sub_err2_r) ? 1'b1 : xhb_sub_hresp_raw;
+    assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 : xhb_sub_hresp_raw;
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)
@@ -2026,8 +2118,12 @@ module tidelink_top #(
             .servo_fc_data          (servo_fc_data),
             .servo_fc_ready         (servo_fc_ready),
 
-            // Timestamp mailbox (from FC RX config path via APB)
-            .mbox_reg_write         (mbox_reg_write),
+            // Timestamp mailbox (from FC RX config path via APB). Gated with
+            // fc_cfg_apb_active -- see mbox_reg_write_fc_only above -- so an
+            // external APB write to Region 3 can no longer forge a PTP mailbox
+            // update; only writes the arbiter granted to the FC RX config path
+            // reach the servo.
+            .mbox_reg_write         (mbox_reg_write_fc_only),
             .mbox_reg_addr          (mbox_reg_addr),
             .mbox_reg_wdata         (mbox_reg_wdata),
 
@@ -2523,6 +2619,8 @@ module tidelink_top #(
         .USE_CLKBUF    (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
         .USE_T3A       (USE_T3A),
+        // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 = today.
+        .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN),
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
@@ -2625,10 +2723,10 @@ module tidelink_top #(
         .axi_tgt_0_w_bits_strb      (s_axi_wstrb),
         .axi_tgt_0_w_bits_last      (s_axi_wlast),
 
-        .axi_tgt_0_b_valid          (s_axi_bvalid),
+        .axi_tgt_0_b_valid          (s_axi_bvalid_ctrl),
         .axi_tgt_0_b_ready          (s_axi_bready),
-        .axi_tgt_0_b_bits_id        (s_axi_bid),
-        .axi_tgt_0_b_bits_resp      (s_axi_bresp),
+        .axi_tgt_0_b_bits_id        (s_axi_bid_ctrl),
+        .axi_tgt_0_b_bits_resp      (s_axi_bresp_ctrl),
 
         .axi_tgt_0_ar_valid         (s_axi_arvalid),
         .axi_tgt_0_ar_ready         (s_axi_arready),

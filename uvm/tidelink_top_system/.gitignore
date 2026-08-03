@@ -1,0 +1,13 @@
+# VCS build outputs (per-FCSM_SRC variant dirs + shared work dirs)
+sim_build*/
+csrc/
+simv*
+*.daidir/
+*.log
+*.vpd
+*.vdb
+ucli.key
+vc_hdrs.h
+novas*
+verdiLog/
+DVEfiles/

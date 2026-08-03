@@ -996,10 +996,19 @@ module WlinkGenericFCSM_2(
     end
   end
   // SoC Labs L7 (Fix A): sticky reached-LINK_DATA disarms the forgive gate.
+  // SoC Labs (Fix G, 2026-07-31): ALSO latch on LINK_IDLE (state 4). A B/R
+  // write/read-RESPONSE receive node's TX FSM only ever sends ACK/NACK and sits
+  // in LINK_IDLE (4) -- it NEVER enters LINK_DATA (5) -- so gating the disarm on
+  // state==5 left socl_l7_bringup_forgive asserted forever on the response RX
+  // nodes, permanently masking the crcCorruptSeen->send_nack_req path. That is
+  // the "recovery present but ineffective" wedge: a mid-stream CRC error on a B
+  // beat is detected but never NACK'd -> no replay -> the response never returns
+  // -> initiator hard-wedges. LINK_IDLE means bring-up is complete (the CR/CRACK
+  // storm window the forgive gate guards is already past), so NACKs must be live.
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       socl_l7_reached_link_data <= 1'h0;
-    end else if (state == 3'h5) begin
+    end else if (state == 3'h4 || state == 3'h5) begin
       socl_l7_reached_link_data <= 1'h1;
     end
   end

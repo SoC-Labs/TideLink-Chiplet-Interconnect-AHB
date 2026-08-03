@@ -66,7 +66,14 @@ module tb_top #(
     output logic                    ctrl_reg_r10,
     output logic                    ctrl_reg_rd,
     output logic                    ctrl_reg_rf,
-    input  logic [SYS_DATA_W-1:0]   ctrl_reg_rdata
+    input  logic [SYS_DATA_W-1:0]   ctrl_reg_rdata,
+
+    // Timestamp mailbox (Region 3) pass-through — exposed so the APB
+    // write-protect decode can be checked directly (mbox_reg_write is meant
+    // to be FC-SIDEBAND-only, see test_mailbox_apb_writeprotect.py).
+    output logic                    mbox_reg_write,
+    output logic              [2:0] mbox_reg_addr,
+    output logic [SYS_DATA_W-1:0]   mbox_reg_wdata
 );
 
     tidelink_apb_regs #(
@@ -118,6 +125,10 @@ module tb_top #(
         .ctrl_reg_rf         (ctrl_reg_rf),
         .ctrl_reg_wdata      (),
         .ctrl_reg_rdata      (ctrl_reg_rdata),
+        // Timestamp mailbox (Region 3) pass-through — write-protect test.
+        .mbox_reg_write      (mbox_reg_write),
+        .mbox_reg_addr       (mbox_reg_addr),
+        .mbox_reg_wdata      (mbox_reg_wdata),
         // PTP register pass-through (tied off — no tidelink_ptp in this testbench)
         .ptp_reg_rdata       ({SYS_DATA_W{1'b0}})
     );

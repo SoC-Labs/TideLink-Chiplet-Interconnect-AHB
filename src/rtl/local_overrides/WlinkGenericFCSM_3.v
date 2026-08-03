@@ -999,7 +999,11 @@ module WlinkGenericFCSM_3(
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       socl_l7_reached_link_data <= 1'h0;
-    end else if (state == 3'h5) begin
+    end else if (state == 3'h4 || state == 3'h5) begin
+      // SoC Labs (Fix G, 2026-07-31): LINK_IDLE (4) also counts as reached — a
+      // response RX node's TX FSM never enters LINK_DATA (5), so gating only on 5
+      // left socl_l7_bringup_forgive armed forever, masking the CRC->NACK path
+      // (the "recovery present but ineffective" AXI-data-node wedge).
       socl_l7_reached_link_data <= 1'h1;
     end
   end

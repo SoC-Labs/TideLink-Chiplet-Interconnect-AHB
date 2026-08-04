@@ -118,11 +118,19 @@ GAPS_BACKSTOP_TESTS := test_i5_error_is_ahb_legal \
                        test_i5_clean_drop_leaves_path_usable \
                        test_i5_rearms_after_abort
 
-.PHONY: gaps gaps_nodes gaps_backstop $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS)
+# header-ECC RESTORE regression: a single-bit HEADER flip (byte 0 data_id, byte 1
+# word_count) on each data node is corrected at the RX -> byte-exact. Non-vacuous:
+# FAIL on the 2026-05-05 ECC bypass. Default 2^16 timeout (correction, not backstop).
+GAPS_ECC_TESTS := test_ecc_corrects_w_byte0 test_ecc_corrects_aw_byte0 \
+                  test_ecc_corrects_r_byte0 test_ecc_corrects_b_byte0 \
+                  test_ecc_corrects_b_byte1_wordcount \
+                  test_ecc_persistent_w_byte0_byte_exact
+
+.PHONY: gaps gaps_nodes gaps_backstop gaps_ecc $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS) $(GAPS_ECC_TESTS)
 
 # Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
 # via NACK/replay long before any backstop is relevant.
-$(GAPS_NODE_TESTS):
+$(GAPS_NODE_TESTS) $(GAPS_ECC_TESTS):
 	$(MAKE) SIM_BUILD=sim_build_gaps_nodes MODULE=test_axi_datanode_gaps TESTCASE=$@
 
 # I5 backstop semantics. Short outstanding-response timeout, own sim_build.
@@ -132,4 +140,5 @@ $(GAPS_BACKSTOP_TESTS):
 
 gaps_nodes:    ; @for t in $(GAPS_NODE_TESTS);     do $(MAKE) $$t || exit 1; done
 gaps_backstop: ; @for t in $(GAPS_BACKSTOP_TESTS); do $(MAKE) $$t || exit 1; done
-gaps: gaps_nodes gaps_backstop
+gaps_ecc:      ; @for t in $(GAPS_ECC_TESTS);      do $(MAKE) $$t || exit 1; done
+gaps: gaps_nodes gaps_backstop gaps_ecc

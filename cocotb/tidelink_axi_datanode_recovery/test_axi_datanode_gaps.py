@@ -437,31 +437,90 @@ async def test_axi_w_error_recovers(dut):
     _assert_recovered(await _run_node_scenario(dut, "W"))
 
 
-# --- byte-0 (data_id / header) diagnostics: the HW sweep found W byte-0 wedges
-# die_a while B byte-0 survives. Reproduce + classify each node's byte-0 outcome
-# so the mechanism can be root-caused in sim (no assertion — diagnostic). ------
+# --- header-ECC RESTORE regression tests (2026-08-04) -------------------------
+# The restored WlinkEccSyndrome (local_overrides/WlinkEccSyndrome.v) is a
+# single-error-correct decode: a one-bit flip in a packet HEADER byte
+# (byte 0 = data_id, byte 1-2 = word_count) is corrected at the RX BEFORE
+# framing/routing, so the beat routes correctly and lands byte-exact. With the
+# 2026-05-05 bypass a data_id flip mis-routes (value_ok=False) and a word_count
+# flip desyncs the RX framer (WEDGE) — so these assertions are non-vacuous: they
+# FAIL on the bypassed ECC and PASS only with the restore. Each is directional
+# via _run_node_scenario (arms the injector on n['tx_side']: forward nodes AW/W/AR
+# on the initiator, return nodes B/R on the target).
+def _assert_ecc_corrected(o):
+    assert o["class"] == "RECOVER", \
+        f"node {o['node']}: header flip NOT recovered (class={o['class']}) — the ECC must correct a single-bit header error"
+    assert o["value_ok"] is True, \
+        f"node {o['node']}: recovered but NOT byte-exact ({o}) — the data_id/word_count correction did not route/frame the beat correctly"
+
+
 @cocotb.test()
-async def test_diag_w_byte0(dut):
-    """W (0x81) byte-0 = data_id corruption on the write-DATA node. Silicon: die_a
-    HARD-WEDGES. Classify RECOVER/WEDGE/ERROR + Region-F health to find why the
-    synth-B backstop does not bound it (unlike B byte-0)."""
+async def test_ecc_corrects_w_byte0(dut):
+    """W (0x81) byte-0 data_id flip -> ECC corrects -> write lands byte-exact
+    (was silent mis-route value_ok=False on the bypass; = the HW W-node wedge class)."""
     o = await _run_node_scenario(dut, "W", byte=BYTE_DATA_ID)
-    dut._log.info(f"[gaps] DIAG W byte-0: {o}")
+    dut._log.info(f"[gaps] ECC W byte-0: {o}")
+    _assert_ecc_corrected(o)
 
 
 @cocotb.test()
-async def test_diag_r_byte0(dut):
-    """R (0x84) byte-0 = data_id corruption on the read-DATA node (untested on HW).
-    A stuck read has no synth-response; the F-1 read-ERROR path should bound it."""
-    o = await _run_node_scenario(dut, "R", byte=BYTE_DATA_ID)
-    dut._log.info(f"[gaps] DIAG R byte-0: {o}")
-
-
-@cocotb.test()
-async def test_diag_aw_byte0(dut):
-    """AW (0x80) byte-0 = data_id corruption on the write-ADDRESS node."""
+async def test_ecc_corrects_aw_byte0(dut):
+    """AW (0x80) byte-0 data_id flip -> ECC corrects -> write lands byte-exact."""
     o = await _run_node_scenario(dut, "AW", byte=BYTE_DATA_ID)
-    dut._log.info(f"[gaps] DIAG AW byte-0: {o}")
+    dut._log.info(f"[gaps] ECC AW byte-0: {o}")
+    _assert_ecc_corrected(o)
+
+
+@cocotb.test()
+async def test_ecc_corrects_r_byte0(dut):
+    """R (0x84) byte-0 data_id flip on the READ-data node (injected on the target,
+    the R sender) -> ECC corrects -> read returns byte-exact."""
+    o = await _run_node_scenario(dut, "R", byte=BYTE_DATA_ID)
+    dut._log.info(f"[gaps] ECC R byte-0: {o}")
+    _assert_ecc_corrected(o)
+
+
+@cocotb.test()
+async def test_ecc_corrects_b_byte0(dut):
+    """B (0x82) byte-0 data_id flip on the WRITE-RESPONSE node (injected on the
+    target, the B sender = the directional non-vacuous test) -> ECC corrects ->
+    write completes byte-exact with NO synth-B needed (the reported silent-drop is
+    corrected at the RX instead of backstopped)."""
+    o = await _run_node_scenario(dut, "B", byte=BYTE_DATA_ID)
+    dut._log.info(f"[gaps] ECC B byte-0: {o}")
+    _assert_ecc_corrected(o)
+
+
+@cocotb.test()
+async def test_ecc_corrects_b_byte1_wordcount(dut):
+    """B (0x82) byte-1 = word_count[7:0] header flip. Pre-restore this desyncs the
+    RX byte-framer (length wrong) -> WEDGE regardless of CRC (header-ECC
+    investigation §5); the ECC corrects the length before framing -> recover."""
+    o = await _run_node_scenario(dut, "B", byte=1)
+    dut._log.info(f"[gaps] ECC B byte-1 word_count: {o}")
+    _assert_ecc_corrected(o)
+
+
+@cocotb.test()
+async def test_ecc_persistent_w_byte0_byte_exact(dut):
+    """PERSISTENT W byte-0 (injector held high, every W beat's data_id re-flipped):
+    the ECC corrects each independent single-bit flip, so a resumed write stream
+    stays byte-exact — a persistently-armed HEADER injector does NOT defeat the ECC
+    (unlike a persistent PAYLOAD corruption, which is CRC/NACK's job). Guards the
+    'persistent-injector artifact' hypothesis for the W-node HW wedge."""
+    tb, master = await _bringup(dut)
+    await _arm_injector_persistent(tb, "m", NODES["W"]["data_id"], BYTE_DATA_ID)
+    ok = True
+    for i in range(6):
+        try:
+            await master.write(APER_BASE + OFF_INJECT, D_INJECT + i, timeout=60000)
+            await ClockCycles(dut.hclk, 1500)
+            landed = _slave_bram_peek(dut, OFF_INJECT)
+            if landed != (D_INJECT + i): ok = False
+        except (TimeoutError, RuntimeError):
+            ok = False; break
+    _release_all(tb)
+    assert ok, "persistent W byte-0 did NOT stay byte-exact — the ECC failed to correct a re-flipped data_id header under persistent injection"
 
 
 # =============================================================================

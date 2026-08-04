@@ -15,6 +15,18 @@
 #              TESTCASE=test_auto_anchor_no_word_loss_during_burst  (Defect-A guard)
 #
 # All run the SYNC_REANCHOR corrector (EPOCH_ANCHOR=0) so the beacon is required.
+#
+# PAUSE-ACCUMULATE (2026-08-04): on a busy link, FC keepalive can toggle the
+# app->link valid more often than ANCHOR_DWELL, and the original FSM RESET the
+# dwell on every blip -> len never advanced -> beacon never completed
+# (the leading suspect for reanchored=0 on the eth-chiplet HW). The FSM now
+# HOLDS dwell/len through app-active blips (pulse still deasserts, so it never
+# straddles a live word -- the raceguard test below proves Defect-A safety is
+# intact) and only resets dwell on a genuine link-drop. This tb (idle link) can
+# prove SAFETY + NO-REGRESSION but NOT the busy-link accumulation benefit -- a
+# faithful sub-ANCHOR_DWELL keepalive stream would overflow this RX FIFO. That
+# benefit is instead confirmed on HW via the 0x21F4 obs word (dwell_max climbs
+# past 256 and pulsed_ever latches under real keepalive traffic).
 import cocotb
 from cocotb.triggers import ClockCycles
 from pair_v2_common import PairV2TB, run_bringup_full, send_and_check

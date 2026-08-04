@@ -4874,9 +4874,19 @@ module axi_chiplet_controller #(
                     auto_anchor_pulse_q <= 1'b0;                 // release -> the anchor latches
                     auto_anchor_done_q  <= 1'b1;
                 end
+            end else if (auto_anchor_link_up) begin
+                // link UP but app TX active (~tx_idle): PAUSE, do NOT restart.
+                // Deassert the pulse so we never straddle a live word (Defect-A),
+                // but HOLD dwell AND len so a busy link (FC keepalive toggling
+                // a2l_app_v more often than ANCHOR_DWELL) still ACCUMULATES the
+                // beacon to completion across idle windows. The old reset-to-0
+                // here meant every blip forced a fresh 256-cycle settle before len
+                // could advance -> on a busy link len never completed (the leading
+                // suspect for reanchored=0 on the eth-chiplet HW; see 0x21F4 obs).
+                auto_anchor_pulse_q <= 1'b0;
             end else begin
-                // link dropped out of up, OR app TX started -> ABORT the burst
-                // immediately (never straddle a live word) and restart the dwell.
+                // link genuinely dropped out of UP -> re-settle the dwell from 0
+                // (real instability, not mere traffic). len holds.
                 auto_anchor_pulse_q <= 1'b0;
                 auto_anchor_dwell_q <= 16'd0;
             end

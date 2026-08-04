@@ -38,6 +38,9 @@ stage
 echo "--- [0] anchor state (reanchored) ---"
 echo "  die_a: $(poke "$A" epoch)"
 echo "  die_b: $(poke "$B" epoch)"
+echo "--- [0b] AUTO_ANCHOR FSM diagnostic (0x21F4) — why reanchored did/didn't latch ---"
+echo "  die_a: $(poke "$A" anchorobs)"
+echo "  die_b: $(poke "$B" anchorobs)"
 
 echo "--- [1] R1: plain cross-die write must LAND at die_b ---"
 KR260_HOST="$A" KR260_XFER_SEED=0xC0FFEE01 timeout 90 bash "$RUN" xfer_send >/dev/null 2>&1

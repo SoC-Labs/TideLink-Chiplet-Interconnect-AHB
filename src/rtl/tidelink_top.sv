@@ -234,7 +234,11 @@ module tidelink_top #(
     // control plane never completes). Enabled ONLY on the eth-chiplet's
     // tidelink_top instantiation (nanosoc_eth_chiplet.sv passes 1'b1); the
     // standalone-link FPGA/ASIC wrappers keep the default OFF.
-    parameter bit    SELF_ARM_TRAIN_EN    = 1'b0
+    parameter bit    SELF_ARM_TRAIN_EN    = 1'b0,
+    // Forwards to axi_chiplet_controller.AUTO_ANCHOR_EN (2026-08-04): on link-up,
+    // pulse the SYNC beacon once (TX-idle-gated) to latch the deskew re-anchor on
+    // the SELF_ARM path. DEFAULT OFF; nanosoc_eth_chiplet.sv passes 1'b1.
+    parameter bit    AUTO_ANCHOR_EN       = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -2621,6 +2625,7 @@ module tidelink_top #(
         .USE_T3A       (USE_T3A),
         // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 = today.
         .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN),
+        .AUTO_ANCHOR_EN  (AUTO_ANCHOR_EN),
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),

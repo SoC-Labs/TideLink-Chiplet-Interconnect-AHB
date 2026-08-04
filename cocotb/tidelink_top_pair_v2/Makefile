@@ -132,6 +132,19 @@ ifeq ($(EPOCH_ANCHOR),1)
 COMPILE_ARGS += +define+TB_TOP_EPOCH_ANCHOR_EN
 endif
 
+# Controller AUTO-ANCHOR (2026-08-04): pulse the SYNC beacon once at link-up so
+# the shipping SYNC_REANCHOR deskew corrector arms WITHOUT a host poke. AUTO_ANCHOR=1
+# defparams tidelink_top.AUTO_ANCHOR_EN=1 on both dies. Exercise vs the SYNC_REANCHOR
+# corrector (EPOCH_ANCHOR=0) under a skewed EPOCH_PROFILE so the beacon is required.
+#   make AUTO_ANCHOR=1 EPOCH_PROFILE=staircase MODULE=test_v2_auto_anchor \
+#        TESTCASE=test_auto_anchor_delivers_under_skew          # PASS (beacon re-anchors)
+#   make AUTO_ANCHOR=0 EPOCH_PROFILE=staircase MODULE=test_v2_auto_anchor \
+#        TESTCASE=test_auto_anchor_negctl_no_anchor_fails       # PASS (no beacon -> no delivery)
+AUTO_ANCHOR ?= 0
+ifeq ($(AUTO_ANCHOR),1)
+COMPILE_ARGS += +define+TB_TOP_AUTO_ANCHOR_EN
+endif
+
 # ── Whole-word epoch-skew profile ───────────────────────────────────────────
 EPOCH_PROFILE ?= zero
 ifeq ($(EPOCH_PROFILE),zero)

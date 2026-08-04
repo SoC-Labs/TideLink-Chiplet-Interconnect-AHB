@@ -111,6 +111,13 @@ module axi_chiplet_controller #(
     // Set 1'b1 ONLY on the eth-chiplet tidelink_top instantiation; every other
     // integration keeps the 1'b0 default.
     parameter bit    SELF_ARM_TRAIN_EN    = 1'b0,
+    // AUTO_ANCHOR_EN (2026-08-04): on link-up, pulse the SYNC beacon once (gated
+    // on TX-idle so it can never delete a live D2D word) to latch the deskew
+    // re-anchor on the nego_en=0 / SELF_ARM eth-chiplet path — the shipping
+    // SYNC-reanchor corrector otherwise never sees a beacon (reanchored=0 ->
+    // data mis-frames = the R1/deskew wedge). Default-OFF constant-folds the FSM
+    // + the SYNC-port ORs (bit-identical). Set 1'b1 ONLY on the eth-chiplet.
+    parameter bit    AUTO_ANCHOR_EN       = 1'b0,
     // Consolidation 2026-07-15: winscan converge-lock knob, retained ONLY for
     // tidelink_top elaboration parity (tidelink_top threads it to this ACC).
     // INERT on this line: we chose phase2's asymmetric peer-serve finalize FSM,
@@ -4806,6 +4813,54 @@ module axi_chiplet_controller #(
         end
     end
 
+    // --- AUTO-ANCHOR one-shot (2026-08-04) ------------------------------------
+    // Pulse the SYNC beacon ONCE at link-up so the shipping SYNC-reanchor deskew
+    // corrector latches its re-anchor on the nego_en=0 / SELF_ARM path (where no
+    // beacon otherwise flows -> reanchored=0 -> RX mis-frames = the R1/deskew
+    // wedge). Mirrors the ws_serve one-shot. CORRECTED per the 2026-08-04 review:
+    //  (A) the burst is GATED on TX-idle (~sync_obs_a2l_app_v_1, the apb_clk sync
+    //      of the app->link valid) so it can NEVER delete a live D2D word —
+    //      force_always is a word-deleter over live app data (Defect A);
+    //  (B) link-up = sync_obs_fcsm_state_1[2] (states 4..7, glitch-free) not ==4;
+    //  (C) the abort branch clears pulse+dwell (no frozen-asserted burst).
+    // Re-armed per training episode. AUTO_ANCHOR_EN=0 constant-folds all of it.
+    localparam [15:0] ANCHOR_DWELL = 16'd256;   // link-stable + TX-idle cycles before pulsing
+    localparam [15:0] ANCHOR_LEN   = 16'd4096;  // SYNC-burst width @apb_clk (~164us @25MHz) — TUNE
+    reg        auto_anchor_pulse_q;
+    reg        auto_anchor_done_q;
+    reg [15:0] auto_anchor_dwell_q, auto_anchor_len_q;
+    wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
+    wire       auto_anchor_tx_idle = ~sync_obs_a2l_app_v_1;      // no app->link word in flight
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+        end else if (swi_training_mode_rise) begin              // re-arm on a fresh episode
+            auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+        end else if (AUTO_ANCHOR_EN && !auto_anchor_done_q && !swi_training_mode_r) begin
+            if (ws_anchor_q) begin
+                auto_anchor_done_q  <= 1'b1;                     // already anchored — done
+                auto_anchor_pulse_q <= 1'b0;
+            end else if (auto_anchor_link_up && auto_anchor_tx_idle) begin
+                if (auto_anchor_dwell_q < ANCHOR_DWELL) begin
+                    auto_anchor_dwell_q <= auto_anchor_dwell_q + 16'd1;
+                end else if (auto_anchor_len_q < ANCHOR_LEN) begin
+                    auto_anchor_pulse_q <= 1'b1;                 // emit the SYNC burst
+                    auto_anchor_len_q   <= auto_anchor_len_q + 16'd1;
+                end else begin
+                    auto_anchor_pulse_q <= 1'b0;                 // release -> the anchor latches
+                    auto_anchor_done_q  <= 1'b1;
+                end
+            end else begin
+                // link dropped out of up, OR app TX started -> ABORT the burst
+                // immediately (never straddle a live word) and restart the dwell.
+                auto_anchor_pulse_q <= 1'b0;
+                auto_anchor_dwell_q <= 16'd0;
+            end
+        end
+    end
+
     // FIX-D obs (2026-07-07) — WS_FIN_WAITPEER entry / re-entry tracker.
     //   ws_waitpeer_entered_q   (0x21B8[15], sticky): the master parked in
     //                           WS_FIN_WAITPEER at least once this episode.
@@ -6457,13 +6512,13 @@ module axi_chiplet_controller #(
         // WITHOUT quiescing its FC. Its FC stays UP (RX live) so it still
         // receives the master's credit and reaches fcsm=4; the forced-SYNC
         // window only briefly pre-empts its own FC TX (resumed on serve exit).
-        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync | ws_serve_active_r),
+        .swi_sync_insert_en_in      (swi_sync_insert_en_r | winscan_force_sync | ws_serve_active_r | auto_anchor_pulse_q),
         // SoC Labs SYNC-insert GATE FIX (2026-06-15, PART 2) — DEFAULT-OFF.
         // Region 8 slot 0 bit[3] SWI_SYNC_FORCE_ALWAYS (MMIO 0x4403_2100). When
         // 0 the SYNC beacon keeps its idle-gated production behaviour
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
-        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r),
+        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r | auto_anchor_pulse_q),
         // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
         // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
@@ -6472,7 +6527,7 @@ module axi_chiplet_controller #(
         // SoC Labs RX SYNC-detect Hamming TOLERANCE (2026-06-17). SoC 0x44032128
         // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
         .swi_sync_tol_in            (swi_sync_tol_r),
-        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync | ws_serve_active_r),
+        .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync | ws_serve_active_r | auto_anchor_pulse_q),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

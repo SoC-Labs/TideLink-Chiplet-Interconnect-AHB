@@ -309,6 +309,16 @@ module tb_top #(
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b1;
 `endif
 
+`ifdef TB_TOP_AUTO_ANCHOR_EN
+    // Controller AUTO-ANCHOR (2026-08-04): pulse the SYNC beacon once at link-up
+    // so the shipping SYNC_REANCHOR deskew corrector arms WITHOUT a host poke.
+    // Exercise with the SYNC_REANCHOR corrector (default, EPOCH_ANCHOR_EN=0) so the
+    // beacon is actually required — under a skewed EPOCH_PROFILE the pair delivers
+    // ONLY because the auto-anchor beacon lets the corrector re-anchor.
+    defparam u_master.AUTO_ANCHOR_EN = 1'b1;
+    defparam u_slave.AUTO_ANCHOR_EN  = 1'b1;
+`endif
+
     // Elaboration self-check: print the anchor enable actually compiled into
     // the deskew of each die (guards against a silently-ignored defparam).
     initial begin

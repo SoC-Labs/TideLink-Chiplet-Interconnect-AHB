@@ -99,3 +99,52 @@ Rebuild both eth-chiplet dies from `200bce5` (`AUTO_ANCHOR_EN=1`, ~3h) and run
 Because the diagnostic-only value competes with a contended board + 3h build,
 and the fix it validates is orthogonal to the W byte-0 symptom, this rebuild is
 best **batched** with the next real RTL change rather than spent standalone.
+
+---
+
+## HW RESULT (2026-08-04, kr260_01/02, both dies @d98b58d)
+
+Ran the full flow: POR both → deploy both `d98b58d` bitstreams → bring up
+(FCSM=4 both, on retry — first attempt was a bring-up lottery miss) →
+`kr260_eth_ecc_hwverify.sh`. The 0x21F4 obs instrument gave a **decisive**
+verdict.
+
+**0x21F4 = 0x009b0100 on BOTH dies** → `AUTO_ANCHOR_EN=1, dwell_max=256,
+pulsed_ever=1, done=1, reanchored=0`:
+
+- The **FSM fires and completes on HW** — `dwell_max` reached the full
+  ANCHOR_DWELL(256) and a beacon emitted (`pulsed_ever=1`). **Pause-accumulate
+  works; the keepalive-starvation theory is REFUTED.**
+- But `reanchored=0` → *beacon emitted, peer didn't latch* (the doc's 3rd branch).
+
+**Decisive manual-pulse experiment** (host R8=0x1C held 0.4s, ~2400× the
+164 µs auto burst):
+
+| beacon source | peer that should re-anchor | result |
+|---------------|----------------------------|--------|
+| die_a (0.4s)  | die_b RX (slave)           | **reanchored = 1 (LATCHED)** |
+| die_b (0.4s)  | die_a RX (master)          | reanchored = 0 |
+| die_b (2.0s)  | die_a RX (master)          | reanchored = 0 (still) |
+
+**Two distinct findings:**
+
+1. **ANCHOR_LEN (4096 ≈ 164 µs) is too short.** The slave RX (die_b) re-anchors
+   only on a ~0.4s beacon, so the auto-anchor's 164 µs burst never latches it.
+   → **Fix A: raise ANCHOR_LEN substantially** (toward ~0.4s-equivalent, ~10⁴–10⁵
+   apb_clk cycles). Cheap RTL change; fixes the a→b direction.
+2. **die_a (master) RX won't re-anchor at all — even with a 2s beacon.** This is
+   the pre-existing **M-vs-S asymmetry** (see the concurrent-drain notes:
+   "bidir mismatches dropped m→s only"; die_a's RX never locks). It is **not**
+   fixable by beacon duration — it needs a separate master-side RX / deskew
+   root-cause. **This is the real remaining R1/deskew blocker.**
+
+R1 data-delivery FAIL and the AW-inject die_a wedge are both **downstream of
+die_a `reanchored=0`** (a mis-framed master RX), not independent AXI-logic
+failures. (0x2124 SYNC-detect read count=0 on both dies incl. the reanchored
+die_b, so it did not distinguish physical-vs-logic — not over-read.)
+
+**Net:** the auto-anchor + pause-accumulate is validated as *firing correctly*
+on silicon; closing R1/deskew now needs **(A)** a longer ANCHOR_LEN **and (B)** a
+separate root-cause of the master-side RX re-anchor asymmetry. The AXI
+data-node recovery *logic* (ECC restore + synth-B OKAY + Fix-G/H + F-1) remains
+resolved and is unaffected by any of this.

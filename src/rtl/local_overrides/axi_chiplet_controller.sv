@@ -3007,12 +3007,27 @@ module axi_chiplet_controller #(
     wire [31:0] obs_fcemit_stat_w;
     wire [31:0] obs_fcemit_idcnt_w;
 
+    // AUTO_ANCHOR diagnostic obs (2026-08-04) — Region F slot 5, SoC 0x4403_21F4.
+    // One read explains why reanchored did/didn't latch on the SELF_ARM path:
+    //   [15:0] dwell_max  = longest tx-idle streak reached; if it stays << 256 the
+    //                       beacon never got its ANCHOR_DWELL consecutive idle
+    //                       cycles (keepalive/sideband keeps resetting it).
+    //   [16] pulsed_ever  = a SYNC beacon DID emit (dwell+len both completed).
+    //   [17] done, [18] pulse(live), [19] link_up(live), [20] tx_idle(live),
+    //   [21] reanchored(ws_anchor_q), [22] training_mode_r, [23] AUTO_ANCHOR_EN.
+    // AUTO_ANCHOR_EN=0 constant-folds every field to 0 (reads 0, harmless).
+    // (net declared here so the Region-F read-mux below can reference it; the
+    //  continuous assign lives after the AUTO_ANCHOR FSM — `default_nettype none`
+    //  forbids referencing the FSM regs before their declaration.)
+    wire [31:0] auto_anchor_obs_word;
+
     assign regionF_axinodes_rdata =
         (ctrl_reg_addr[2:0] == 3'h0) ? axinode_obs_word  : // 0x21E0 OBS_AXI_NODES
         (ctrl_reg_addr[2:0] == 3'h1) ? winscan_stat_word : // 0x21E4 WINSCAN_STAT
         (ctrl_reg_addr[2:0] == 3'h2) ? winscan_eye_word  : // 0x21E8 WINSCAN_EYE
         (ctrl_reg_addr[2:0] == 3'h3) ? obs_fcemit_stat_w  : // 0x21EC FCEMIT_STAT
         (ctrl_reg_addr[2:0] == 3'h4) ? obs_fcemit_idcnt_w : // 0x21F0 FCEMIT_IDCNT
+        (ctrl_reg_addr[2:0] == 3'h5) ? auto_anchor_obs_word : // 0x21F4 AUTO_ANCHOR_OBS
         32'h0;
 
     // =====================================================================
@@ -4829,16 +4844,22 @@ module axi_chiplet_controller #(
     reg        auto_anchor_pulse_q;
     reg        auto_anchor_done_q;
     reg [15:0] auto_anchor_dwell_q, auto_anchor_len_q;
+    reg        auto_anchor_pulsed_ever_q;   // sticky diag: >=1 beacon cycle emitted this episode
+    reg [15:0] auto_anchor_dwell_max_q;      // sticky diag: max tx-idle dwell streak reached
     wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
     wire       auto_anchor_tx_idle = ~sync_obs_a2l_app_v_1;      // no app->link word in flight
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
             auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (swi_training_mode_rise) begin              // re-arm on a fresh episode
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
             auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (AUTO_ANCHOR_EN && !auto_anchor_done_q && !swi_training_mode_r) begin
+            if (auto_anchor_dwell_q > auto_anchor_dwell_max_q)
+                auto_anchor_dwell_max_q <= auto_anchor_dwell_q;   // sticky max tx-idle streak
             if (ws_anchor_q) begin
                 auto_anchor_done_q  <= 1'b1;                     // already anchored — done
                 auto_anchor_pulse_q <= 1'b0;
@@ -4847,6 +4868,7 @@ module axi_chiplet_controller #(
                     auto_anchor_dwell_q <= auto_anchor_dwell_q + 16'd1;
                 end else if (auto_anchor_len_q < ANCHOR_LEN) begin
                     auto_anchor_pulse_q <= 1'b1;                 // emit the SYNC burst
+                    auto_anchor_pulsed_ever_q <= 1'b1;           // sticky diag latch
                     auto_anchor_len_q   <= auto_anchor_len_q + 16'd1;
                 end else begin
                     auto_anchor_pulse_q <= 1'b0;                 // release -> the anchor latches
@@ -4860,6 +4882,26 @@ module axi_chiplet_controller #(
             end
         end
     end
+
+    // AUTO_ANCHOR diagnostic obs word (2026-08-04) — served at Region F slot 5,
+    // SoC 0x4403_21F4. One read explains why reanchored did/didn't latch on the
+    // SELF_ARM path: [15:0] dwell_max = longest tx-idle streak reached (if it
+    // stays << ANCHOR_DWELL the beacon never got enough consecutive idle cycles);
+    // [16] pulsed_ever = a SYNC beacon DID emit; [17] done; [18] pulse(live);
+    // [19] link_up(live); [20] tx_idle(live); [21] reanchored(ws_anchor_q);
+    // [22] training_mode_r; [23] AUTO_ANCHOR_EN. Param=0 folds every field to 0.
+    assign auto_anchor_obs_word = {
+        8'h0,                        // [31:24]
+        AUTO_ANCHOR_EN,              // [23]  build flag
+        swi_training_mode_r,         // [22]
+        ws_anchor_q,                 // [21]  reanchored (CDC'd)
+        auto_anchor_tx_idle,         // [20]
+        auto_anchor_link_up,         // [19]
+        auto_anchor_pulse_q,         // [18]
+        auto_anchor_done_q,          // [17]
+        auto_anchor_pulsed_ever_q,   // [16]
+        auto_anchor_dwell_max_q      // [15:0]
+    };
 
     // FIX-D obs (2026-07-07) — WS_FIN_WAITPEER entry / re-entry tracker.
     //   ws_waitpeer_entered_q   (0x21B8[15], sticky): the master parked in

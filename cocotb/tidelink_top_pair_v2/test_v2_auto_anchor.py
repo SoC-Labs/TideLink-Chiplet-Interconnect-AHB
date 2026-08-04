@@ -29,6 +29,18 @@ async def test_auto_anchor_delivers_under_skew(dut):
     await run_bringup_full(tb)
     assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
     await ClockCycles(dut.hclk, 6000)   # dwell(256) + burst(4096) + re-anchor latch
+    # Instrument check (0x21F4 AUTO_ANCHOR_OBS): prove the FSM actually fired and
+    # the obs word is decodable end-to-end (Region F slot 5) BEFORE trusting HW.
+    obs = await tb.apb("m").read(0x21F4)
+    dwell_max   = obs & 0xFFFF
+    pulsed_ever = (obs >> 16) & 1
+    done        = (obs >> 17) & 1
+    en          = (obs >> 23) & 1
+    tb.log.info(f"[auto_anchor obs 0x21F4] raw=0x{obs:08x} dwell_max={dwell_max} "
+                f"pulsed_ever={pulsed_ever} done={done} AUTO_ANCHOR_EN={en}")
+    assert en == 1, "AUTO_ANCHOR_EN not reflected at 0x21F4 — obs word / param wiring broken"
+    assert pulsed_ever == 1, "auto-anchor beacon never emitted (0x21F4 pulsed_ever=0) in sim"
+    assert dwell_max >= 256, f"dwell_max={dwell_max} < ANCHOR_DWELL(256) — dwell never completed"
     await send_and_check(tb, "m", "s", [0xA11C0000, 0xC0FFEE01], ctx="auto_anchor_m2s")
     await send_and_check(tb, "s", "m", [0x5A1EAD00, 0xBEEFCAFE], ctx="auto_anchor_s2m")
 

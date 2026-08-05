@@ -4840,10 +4840,17 @@ module axi_chiplet_controller #(
     //  (C) the abort branch clears pulse+dwell (no frozen-asserted burst).
     // Re-armed per training episode. AUTO_ANCHOR_EN=0 constant-folds all of it.
     localparam [15:0] ANCHOR_DWELL = 16'd256;   // link-stable + TX-idle cycles before pulsing
-    localparam [15:0] ANCHOR_LEN   = 16'd4096;  // SYNC-burst width @apb_clk (~164us @25MHz) — TUNE
+    // HW 08-05: on the marginal eye the reanchor needs MANY SYNC beats to commit all
+    // masked lanes (SYNC_CONFIRM per lane vs a high per-SYNC bit-error rate); a 164us
+    // burst (old 4096) was far too short — a sustained ~3s beacon latches reanchored
+    // on BOTH dies incl. the master, then R1 crosses byte-exact (200/200). So the
+    // beacon now runs up to this CAP; the ws_anchor_q early-out below stops it the
+    // instant reanchored latches (typically well under the cap; no app data at bring-up).
+    localparam [27:0] ANCHOR_LEN   = 28'd200_000_000; // ~8s @25MHz apb backstop cap
     reg        auto_anchor_pulse_q;
     reg        auto_anchor_done_q;
-    reg [15:0] auto_anchor_dwell_q, auto_anchor_len_q;
+    reg [15:0] auto_anchor_dwell_q;
+    reg [27:0] auto_anchor_len_q;            // widened for the multi-second beacon cap
     reg        auto_anchor_pulsed_ever_q;   // sticky diag: >=1 beacon cycle emitted this episode
     reg [15:0] auto_anchor_dwell_max_q;      // sticky diag: max tx-idle dwell streak reached
     wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
@@ -4851,11 +4858,11 @@ module axi_chiplet_controller #(
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
-            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 28'd0;
             auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (swi_training_mode_rise) begin              // re-arm on a fresh episode
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
-            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 28'd0;
             auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (AUTO_ANCHOR_EN && !auto_anchor_done_q && !swi_training_mode_r) begin
             if (auto_anchor_dwell_q > auto_anchor_dwell_max_q)
@@ -4869,21 +4876,26 @@ module axi_chiplet_controller #(
                 end else if (auto_anchor_len_q < ANCHOR_LEN) begin
                     auto_anchor_pulse_q <= 1'b1;                 // emit the SYNC burst
                     auto_anchor_pulsed_ever_q <= 1'b1;           // sticky diag latch
-                    auto_anchor_len_q   <= auto_anchor_len_q + 16'd1;
+                    auto_anchor_len_q   <= auto_anchor_len_q + 28'd1;
                 end else begin
                     auto_anchor_pulse_q <= 1'b0;                 // release -> the anchor latches
                     auto_anchor_done_q  <= 1'b1;
                 end
             end else if (auto_anchor_link_up) begin
-                // link UP but app TX active (~tx_idle): PAUSE, do NOT restart.
-                // Deassert the pulse so we never straddle a live word (Defect-A),
-                // but HOLD dwell AND len so a busy link (FC keepalive toggling
-                // a2l_app_v more often than ANCHOR_DWELL) still ACCUMULATES the
-                // beacon to completion across idle windows. The old reset-to-0
-                // here meant every blip forced a fresh 256-cycle settle before len
-                // could advance -> on a busy link len never completed (the leading
-                // suspect for reanchored=0 on the eth-chiplet HW; see 0x21F4 obs).
+                // link UP but app TX active (~tx_idle): the DATA PHASE has begun.
+                // STOP the beacon PERMANENTLY (done). force_always is a word-
+                // deleter (the idle-gated path is starved on this silicon, HW
+                // 08-05, so the beacon MUST use force_always), therefore it must
+                // NEVER run once app data flows. The a2l path is provably idle
+                // through the whole bring-up window (HW 08-05: tx_idle=1 stable
+                // for seconds; FC keepalive is a separate path, not a2l), so
+                // app-active here == the first REAL peer-write, not a blip. On a
+                // normal bring-up reanchored has already latched (ws_anchor_q
+                // early-out above) long before this, so the stop is moot; in the
+                // pathological "data immediately, no idle window" case it stops
+                // the beacon before it can straddle a word (Defect-A guard).
                 auto_anchor_pulse_q <= 1'b0;
+                auto_anchor_done_q  <= 1'b1;
             end else begin
                 // link genuinely dropped out of UP -> re-settle the dwell from 0
                 // (real instability, not mere traffic). len holds.

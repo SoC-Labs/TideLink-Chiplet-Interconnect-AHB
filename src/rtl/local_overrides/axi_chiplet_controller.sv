@@ -4844,9 +4844,22 @@ module axi_chiplet_controller #(
     // masked lanes (SYNC_CONFIRM per lane vs a high per-SYNC bit-error rate); a 164us
     // burst (old 4096) was far too short — a sustained ~3s beacon latches reanchored
     // on BOTH dies incl. the master, then R1 crosses byte-exact (200/200). So the
-    // beacon now runs up to this CAP; the ws_anchor_q early-out below stops it the
-    // instant reanchored latches (typically well under the cap; no app data at bring-up).
-    localparam [27:0] ANCHOR_LEN   = 28'd200_000_000; // ~8s @25MHz apb backstop cap
+    // beacon runs to this CAP. There is deliberately NO ws_anchor_q early-out (removed
+    // below): stopping on THIS die's own reanchor would drop its force_always beacon
+    // before the peer has latched (mutual-anchor starvation), so both dies hold the
+    // beacon for the full window. (2026-08-05 convergence: corrected the stale comment
+    // that claimed an early-out still gated the cap.)
+    // SIM keeps a short window under `ifdef TB_TOP_AUTO_ANCHOR_EN (defined ONLY by the
+    // cocotb auto-anchor build) so test_v2_auto_anchor's beacon completes inside the tb
+    // window; the eth-chiplet silicon build sets AUTO_ANCHOR_EN via the parent param and
+    // never defines it, so it gets the multi-second cap. Pairs with the SIM_BUILD
+    // `_autoanchor` key fix in the pair Makefile (else the AUTO_ANCHOR=1/0 builds share
+    // one sim_build dir and the negctl silently re-runs the beacon-ON binary = false FAIL).
+`ifdef TB_TOP_AUTO_ANCHOR_EN
+    localparam [27:0] ANCHOR_LEN   = 28'd4096;         // sim: complete within the tb window
+`else
+    localparam [27:0] ANCHOR_LEN   = 28'd200_000_000;  // silicon: ~8s @25MHz apb backstop cap
+`endif
     reg        auto_anchor_pulse_q;
     reg        auto_anchor_done_q;
     reg [15:0] auto_anchor_dwell_q;

@@ -1670,8 +1670,15 @@ module tidelink_top #(
                 // WRITE is owned by synth-B (sub_wr_stuck_fire keys on the SAME
                 // expiry via sub_wr_os_ctr), so it must NOT also pulse HRESP.
                 if (sub_rd_os_r) sub_err1_r <= 1'b1;  // 2-cycle ERROR (read only)
-                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out txn(s)
-                sub_wr_os_ctr <= 3'd0;                 // so they cannot re-trip us
+                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out READ txn
+                // SOAK-DRAIN FIX (2026-08-05): do NOT zero sub_wr_os_ctr here. The
+                // old zeroing abandoned all-but-one outstanding WRITE — synth-B
+                // fired ONCE — so a soak with N>=2 EWR (bufferable) writes stuck left
+                // N-1 un-completed -> XHB500 hazard list stays full -> die_a PS
+                // SmartConnect saturates (the soak wedge, sim-reproduced). Instead the
+                // synth-B drain below retires each stuck write one at a time: every
+                // sub_b_done (incl. each synthetic B beat) decrements sub_wr_os_ctr via
+                // the case above, and synth_b_pending stays asserted until it hits 0.
             end else begin
                 sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
             end
@@ -1741,8 +1748,12 @@ module tidelink_top #(
             synth_b_pending <= 1'b0;
         end else begin
             if (sub_aw_accept) sub_wr_awid_r <= s_axi_awid;
-            if (sub_wr_stuck_fire)                   synth_b_pending <= 1'b1;
-            else if (synth_b_pending & s_axi_bready) synth_b_pending <= 1'b0;
+            if (sub_wr_stuck_fire)                            synth_b_pending <= 1'b1;
+            // DRAIN: inject one OKAY B per outstanding write until sub_wr_os_ctr
+            // reaches 0 — clear on the beat that retires the LAST one (ctr<=1 with a
+            // handshake this cycle). One synthetic B per stuck write => all N complete,
+            // XHB500 drains, die_a PS survives the soak.
+            else if (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)) synth_b_pending <= 1'b0;
         end
     end
     assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;

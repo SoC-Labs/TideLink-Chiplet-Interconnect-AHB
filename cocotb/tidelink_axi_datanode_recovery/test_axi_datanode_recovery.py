@@ -492,8 +492,74 @@ async def test_axi_b_bufferable_multi_outstanding(dut):
         except Exception: pass
     await ClockCycles(dut.hclk, 200)
     dut._log.info(f"[axirec] MULTI-OUT phase B (far stall): class={cls}")
-    assert cls == "ERROR", (
+    # SOAK-DRAIN FIX (2026-08-05): a stuck WRITE is now completed by the synth-B
+    # DRAIN (one OKAY B per outstanding write), NOT HRESP=ERROR — so a stalled
+    # multi-outstanding burst drains (cls=POSTED) instead of firing ERROR. Either is
+    # BOUNDED; only a silent hang (STALL) is the failure. The per-write drain itself
+    # is proven precisely by test_axi_b_soak_multi_drain.
+    assert cls != "STALL", (
         f"under a far-terminus stall with multiple bufferable writes outstanding, the "
-        f"I5 backstop did not bound it to HRESP=ERROR (got {cls}) — a silent hang")
-    dut._log.info("[axirec] PASS: Fix H tracks >=2 outstanding (recover byte-exact) "
-                  "AND bounds a stalled multi-outstanding burst to HRESP=ERROR")
+        f"backstop left a SILENT HANG (got {cls}) — the die_a soak wedge")
+    dut._log.info(f"[axirec] PASS: Fix H tracks >=2 outstanding (recover byte-exact) "
+                  f"AND the synth-B drain bounds a stalled multi-outstanding burst "
+                  f"(cls={cls}, not a hang)")
+
+
+@cocotb.test()
+async def test_axi_b_soak_multi_drain(dut):
+    """SOAK-WEDGE root cause (2026-08-05): under a LOST B (far terminus stalled =
+    the marginal-eye B corruption, modelled deterministically) with N>=2 bufferable
+    (EWR) writes outstanding, the synth-B backstop must retire ALL N — one OKAY B
+    per stuck write — so XHB500 drains its hazard list and the die_a PS survives.
+
+    Current RTL fires exactly ONE synth-B (synth_b_pending is a single bit cleared on
+    the first s_axi_bready, tidelink_top.sv:1744-1745) and ZEROES sub_wr_os_ctr on
+    expiry (:1674), so with N>=2 outstanding it retires ONE and ABANDONS N-1 ->
+    XHB500 stays wedged -> die_a PS SmartConnect saturates (the soak wedge).
+
+    Discriminator = number of synth_b_pending assertions (one per rescued write):
+    current RTL -> 1; the drain fix -> N.  Phase-A vacuity guard: prove >=2 really
+    go outstanding first."""
+    tb = PairV2TB(dut); master = AHBSubMaster(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no CR/CRACK"
+    await ClockCycles(dut.hclk, 200)
+    _force_axi_crc(tb, True); _force_fix_off(tb, False)
+    m = dut.u_master
+
+    fires = {"n": 0}
+    async def count_synthb(ncyc):
+        # Count synthetic-B BEATS retired = (synth_b_pending & s_axi_bvalid &
+        # s_axi_bready). With the far terminus stalled, EVERY B beat is synthetic,
+        # and each retires one outstanding write. Current RTL fires one beat then
+        # clears; the drain fix delivers one per stuck write.
+        for _ in range(ncyc):
+            await RisingEdge(dut.hclk)
+            try:
+                if (int(m.synth_b_pending.value) and int(m.s_axi_bvalid.value)
+                        and int(m.s_axi_bready.value)):
+                    fires["n"] += 1
+            except Exception: pass
+    cb = cocotb.start_soon(count_synthb(200000))
+
+    try:    dut.u_s_mng_bram.force_stall.value = Force(1)
+    except Exception: dut.u_s_mng_bram.force_stall.value = 1
+
+    N = 4                                    # = XHB500 EWR hazard-list depth
+    for i in range(N):
+        try:
+            await master.write_bufferable(APER_BASE + 0x640 + i * 4,
+                                          0xC0DE0000 + i, m, timeout=30000)
+        except (RuntimeError, TimeoutError):
+            pass                             # posted; they will NOT complete (stalled)
+    ctr_peak = int(m.sub_wr_os_ctr.value)
+    await ClockCycles(dut.hclk, 120000)      # let I5 time out + backstop drain
+    cb.kill()
+    try:    dut.u_s_mng_bram.force_stall.value = Release()
+    except Exception: dut.u_s_mng_bram.force_stall.value = 0
+    dut._log.info(f"[axirec] SOAK-DRAIN: N={N} ctr_peak={ctr_peak} synth_b_beats={fires['n']}")
+    assert ctr_peak >= 2, f"only {ctr_peak} outstanding — EWR path not exercised (vacuous)"
+    assert fires["n"] >= N, (
+        f"synth-B retired {fires['n']} beat(s) for {N} stuck writes -> {N - fires['n']} "
+        f"ABANDONED -> XHB500 wedge (the die_a soak wedge). Fix: drain sub_wr_os_ctr, "
+        f"one synth-B per stuck write.")

@@ -4867,10 +4867,14 @@ module axi_chiplet_controller #(
         end else if (AUTO_ANCHOR_EN && !auto_anchor_done_q && !swi_training_mode_r) begin
             if (auto_anchor_dwell_q > auto_anchor_dwell_max_q)
                 auto_anchor_dwell_max_q <= auto_anchor_dwell_q;   // sticky max tx-idle streak
-            if (ws_anchor_q) begin
-                auto_anchor_done_q  <= 1'b1;                     // already anchored — done
-                auto_anchor_pulse_q <= 1'b0;
-            end else if (auto_anchor_link_up && auto_anchor_tx_idle) begin
+            // NO early-out on THIS die's ws_anchor_q (reanchored): stopping the
+            // beacon the instant THIS die latches STARVES the PEER's RX of our
+            // ongoing beacon -> mutual-anchor starvation. HW 08-05: die_a
+            // reanchored autonomously, its early-out stopped its beacon, and die_b
+            // was left reanchored=0; a sustained die_a beacon then latched die_b.
+            // So keep beaconing through the whole idle window (both dies at once)
+            // so BOTH reanchor; stop only on app-active (data) or the cap.
+            if (auto_anchor_link_up && auto_anchor_tx_idle) begin
                 if (auto_anchor_dwell_q < ANCHOR_DWELL) begin
                     auto_anchor_dwell_q <= auto_anchor_dwell_q + 16'd1;
                 end else if (auto_anchor_len_q < ANCHOR_LEN) begin
@@ -4890,8 +4894,8 @@ module axi_chiplet_controller #(
                 // through the whole bring-up window (HW 08-05: tx_idle=1 stable
                 // for seconds; FC keepalive is a separate path, not a2l), so
                 // app-active here == the first REAL peer-write, not a blip. On a
-                // normal bring-up reanchored has already latched (ws_anchor_q
-                // early-out above) long before this, so the stop is moot; in the
+                // normal bring-up both dies reanchor during the shared idle
+                // beacon window long before any data, so the stop is moot; in the
                 // pathological "data immediately, no idle window" case it stops
                 // the beacon before it can straddle a word (Defect-A guard).
                 auto_anchor_pulse_q <= 1'b0;

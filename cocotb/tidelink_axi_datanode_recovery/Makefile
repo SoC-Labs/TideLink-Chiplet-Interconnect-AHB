@@ -88,8 +88,20 @@ persist:
 	        TESTCASE=test_axi_b_persistent_eye_bounded \
 	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13
 
+# Fix K — XHB500 hazard-list BID-correction (the N=1 same-address soak wedge).
+# A returning B with a link-corrupted bid never matches its hazard entry, so the
+# bufferable write is never freed and the next same-address write stalls => wedge,
+# with NO synth-B (b_done keeps pulsing, the I5 timeout never fires). DEFAULT 2^16
+# I5 timeout on purpose: the backstop must NOT mask a hazard-list stall. Own
+# sim_build. Reproduce/fix pair (each its own bring-up).
+BIDFIX_TESTS := test_axi_bid_corrupt_wedges_no_fix test_axi_bid_corrupt_recovers_fixk
+.PHONY: bidfix $(BIDFIX_TESTS)
+$(BIDFIX_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_bidfix MODULE=test_axi_datanode_recovery TESTCASE=$@
+bidfix: ; @for t in $(BIDFIX_TESTS); do $(MAKE) $$t || exit 1; done
+
 clean_builds:
-	rm -rf sim_build_axirec sim_build_axirec_* sim_build_gaps* $(LOCAL_FLIST)
+	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification

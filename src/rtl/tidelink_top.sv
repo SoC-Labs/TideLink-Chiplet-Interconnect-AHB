@@ -1758,7 +1758,28 @@ module tidelink_top #(
     end
     assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
     assign s_axi_bresp  = synth_b_pending ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
-    assign s_axi_bid    = synth_b_pending ? sub_wr_awid_r : s_axi_bid_ctrl;
+    // ── Fix K (2026-08-05): XHB500 hazard-list BID-CORRECTION ─────────────────
+    // XHB500 frees a BUFFERABLE (EWR) write from its hazard list ONLY when the
+    // returning B's bid matches the stored AWID:
+    //   hazard_list.sv:86  match_bid_i[i] = (list_pointer>i)&(hazard_list_id[i]==bid)
+    //   hazard_list.sv:138 b_ewr = |match_bid_i ; :62 remove = b_done & b_ewr
+    // This bridge ties awid = hmaster = 12'd0 (core_addr.sv:250 + .hmaster(12'd0)
+    // on u_xhb_sub below), so EVERY hazard entry carries id 0 and the peer must
+    // return bid 0. A link bit-error that corrupts the returning bid to non-zero
+    // matches NO entry: the write is never freed, and after a few writes the
+    // same-address `hazard` stall (hazard_list.sv:139) — or a full 4-deep list —
+    // stops the bridge => die_a PS SmartConnect saturates (the on-silicon N-write
+    // soak hard-wedge). The B handshake still COMPLETES (b_done pulses), so the I5
+    // outstanding-timeout keeps resetting and synth-B NEVER arms => unrecoverable.
+    // Present the captured (correct, constant) AWID as bid whenever a real or
+    // synthetic B is returning, so the hazard match is GUARANTEED and the entry
+    // drains regardless of what the link did to the bid bits. A fully-LOST B (no
+    // b_done) is still bounded by the synth-B timeout/drain above; together they
+    // cover BOTH the corrupted-bid and the lost-B faults. No-op for a clean B
+    // (bid already == awid) and for non-EWR writes (never in the hazard list). The
+    // else-arm keeps s_axi_bid_ctrl referenced (bid is don't-care when bvalid=0).
+    assign s_axi_bid    = (s_axi_bvalid_ctrl | synth_b_pending) ? sub_wr_awid_r
+                                                                : s_axi_bid_ctrl;
 
     assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
                                (sub_err2_r & ~synth_b_pending) ? 1'b1 :

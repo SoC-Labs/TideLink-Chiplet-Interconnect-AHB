@@ -563,3 +563,145 @@ async def test_axi_b_soak_multi_drain(dut):
         f"synth-B retired {fires['n']} beat(s) for {N} stuck writes -> {N - fires['n']} "
         f"ABANDONED -> XHB500 wedge (the die_a soak wedge). Fix: drain sub_wr_os_ctr, "
         f"one synth-B per stuck write.")
+
+
+# ── Fix K: XHB500 hazard-list BID-CORRECTION (the N=1 soak wedge) ─────────────
+# The N=1-class on-silicon wedge is NOT a lost B (that path is bounded by the
+# synth-B timeout/drain, tested above) — it is a B that RETURNS with a link-
+# corrupted `bid`. XHB500 frees a bufferable (EWR) write from its hazard list
+# ONLY when the returning bid matches the stored AWID (hazard_list.sv:86,138:
+# b_ewr=|(hazard_list_id[i]==bid); remove=b_done&b_ewr). This bridge ties
+# awid=hmaster=0, so a corrupted (non-zero) bid matches NOTHING: the entry is
+# never freed, the next SAME-ADDRESS write stalls on `hazard` (:139) and the
+# bridge wedges. b_done still pulses each corrupted B, so the I5 outstanding
+# timeout keeps resetting and synth-B NEVER arms => unrecoverable (no HRESP, no
+# recovery — die_a PS SmartConnect saturates). Fix K (tidelink_top.sv:
+#   assign s_axi_bid = (s_axi_bvalid_ctrl|synth_b_pending) ? sub_wr_awid_r
+#                                                          : s_axi_bid_ctrl;)
+# presents the captured constant AWID as bid so the hazard match is GUARANTEED.
+# These two tests are a reproduce/fix PAIR (each its own bring-up):
+#   test_axi_bid_corrupt_wedges_no_fix -> corruption reaching XHB500 => WEDGE
+#   test_axi_bid_corrupt_recovers_fixk -> corruption on the controller bid, Fix K
+#                                         corrects it => soak completes, list drains
+
+HAZ_LP_PATH = ("u_xhb_sub", "u_core", "u_hazard_list", "list_pointer")
+
+
+def _haz_lp(dut):
+    """XHB500 EWR hazard-list occupancy (0..4); None if the path is unavailable."""
+    try:
+        node = dut.u_master
+        for p in HAZ_LP_PATH:
+            node = getattr(node, p)
+        return int(node.value)
+    except Exception:
+        return None
+
+
+@cocotb.test()
+async def test_axi_bid_corrupt_wedges_no_fix(dut):
+    """REPRODUCE (pre-Fix-K): a link-corrupted B `bid` reaching XHB500 never matches
+    its hazard entry (id=awid=0), so the bufferable write is never freed; the next
+    same-address bufferable write stalls on `hazard` and the bridge wedges — with NO
+    synth-B (b_done still pulses, so the I5 timeout never fires). Emulated by forcing
+    XHB500's B-id input (s_axi_bid) to a non-zero value = what the pre-Fix-K wire
+    delivered when the controller bid was corrupted."""
+    tb = PairV2TB(dut); master = AHBSubMaster(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no CR/CRACK"
+    await ClockCycles(dut.hclk, 200)
+    _force_axi_crc(tb, True); _force_fix_off(tb, False)
+    m = dut.u_master
+
+    # Force the id XHB500 sees on EVERY B to a value that can never match awid=0.
+    m.s_axi_bid.value = Force(0xBAD)
+    await ClockCycles(dut.hclk, 4)
+
+    ADDR = APER_BASE + 0x740
+    wedged = False; lp_peak = 0
+    try:
+        for i in range(6):                       # same address -> hazard on the 2nd
+            await master.write_bufferable(ADDR, 0xB1D00000 + i, m, timeout=40000)
+            await ClockCycles(dut.hclk, 3000)    # let the (corrupt-id) B return
+            lp = _haz_lp(dut)
+            if lp is not None and lp > lp_peak: lp_peak = lp
+    except (TimeoutError, RuntimeError) as e:
+        wedged = True
+        dut._log.info(f"[axirec] BID-CORRUPT repro: bridge wedged as expected: {e}")
+
+    m.s_axi_bid.value = Release()
+    lp_end = _haz_lp(dut)
+    dut._log.info(f"[axirec] BID-CORRUPT repro: wedged={wedged} lp_peak={lp_peak} lp_end={lp_end}")
+    assert wedged, (
+        "a corrupted B bid reaching XHB500 did NOT wedge the bridge — the hazard-list "
+        "stall is not being exercised (writes must be bufferable/EWR)")
+    if lp_end is not None:
+        assert lp_end > 0, (
+            f"hazard list drained ({lp_end}) despite a corrupted bid — repro invalid")
+    dut._log.info("[axirec] PASS repro: corrupted B bid => XHB500 hazard wedge, no recovery")
+
+
+@cocotb.test()
+async def test_axi_bid_corrupt_recovers_fixk(dut):
+    """Fix K: corrupt the CONTROLLER's returned bid (s_axi_bid_ctrl) — the real link-
+    fault surface — and prove Fix K overrides it with the captured constant AWID so
+    XHB500's hazard list still matches and drains. A same-address bufferable soak
+    completes byte-exact and the hazard list returns to empty; the IDENTICAL
+    corruption wedges without Fix K (test_axi_bid_corrupt_wedges_no_fix)."""
+    tb = PairV2TB(dut); master = AHBSubMaster(dut)
+    await run_bringup_full(tb)
+    assert await tb.wait_cr_crack(), "no CR/CRACK"
+    await ClockCycles(dut.hclk, 200)
+    _force_axi_crc(tb, True); _force_fix_off(tb, False)
+    m = dut.u_master
+
+    # Corrupt the controller's B-id output (pre-mux). Fix K must ignore it and drive
+    # the captured constant AWID to XHB500 instead.
+    m.s_axi_bid_ctrl.value = Force(0xBAD)
+    await ClockCycles(dut.hclk, 4)
+
+    saw_correction = {"v": False}
+    async def watch_correct(n):
+        # On a real B beat the CONTROLLER presents 0xBAD but XHB500's bid input must
+        # be the corrected 0 (== sub_wr_awid_r) — proving Fix K materially overrides.
+        for _ in range(n):
+            await RisingEdge(dut.hclk)
+            try:
+                if int(m.s_axi_bvalid_ctrl.value) and int(m.s_axi_bready.value):
+                    if int(m.s_axi_bid_ctrl.value) == 0xBAD and int(m.s_axi_bid.value) == 0:
+                        saw_correction["v"] = True
+            except Exception: pass
+    w = cocotb.start_soon(watch_correct(120000))
+
+    ADDR = APER_BASE + 0x7C0
+    NW = 6; ok = 0
+    for i in range(NW):
+        try:
+            await master.write_bufferable(ADDR, 0xF1C00000 + i, m, timeout=40000)
+            ok += 1
+            await ClockCycles(dut.hclk, 3000)    # let the B drain the hazard entry
+        except (TimeoutError, RuntimeError) as e:
+            dut._log.error(f"[axirec] Fix K FAILED: write {i} wedged: {e}")
+            break
+    await ClockCycles(dut.hclk, 4000)
+    w.kill()
+    m.s_axi_bid_ctrl.value = Release()
+
+    lp_end = _haz_lp(dut); awid = int(m.sub_wr_awid_r.value)
+    got = _slave_bram_peek(dut, 0x7C0)
+    dut._log.info(f"[axirec] Fix K recover: ok={ok}/{NW} awid={awid:#x} lp_end={lp_end} "
+                  f"corrected={saw_correction['v']} last={got}")
+    assert awid == 0, (
+        f"Fix K precondition BROKEN: captured awid={awid:#x} != 0 — this XHB500 config "
+        f"is no longer single-constant-id, Fix K may free the wrong hazard entry")
+    assert ok == NW, (
+        f"Fix K did NOT keep the bridge alive under a corrupted controller bid — only "
+        f"{ok}/{NW} same-address bufferable writes completed (hazard-list wedge)")
+    assert saw_correction["v"], (
+        "never observed XHB500's bid input corrected to the captured AWID during a "
+        "real B (controller=0xBAD, xhb=0) — Fix K is not acting")
+    if lp_end is not None:
+        assert lp_end == 0, f"hazard list did not drain (lp={lp_end}) — writes not freed"
+    assert got == (0xF1C00000 + NW - 1), f"last write not byte-exact: got {got}"
+    dut._log.info("[axirec] PASS Fix K: corrupted controller bid corrected => soak "
+                  "completes byte-exact, hazard list drains")

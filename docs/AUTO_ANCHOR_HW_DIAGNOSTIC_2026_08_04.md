@@ -148,3 +148,41 @@ on silicon; closing R1/deskew now needs **(A)** a longer ANCHOR_LEN **and (B)** 
 separate root-cause of the master-side RX re-anchor asymmetry. The AXI
 data-node recovery *logic* (ECC restore + synth-B OKAY + Fix-G/H + F-1) remains
 resolved and is unaffected by any of this.
+
+---
+
+## RESOLVED + HW-PROVEN (2026-08-05)
+
+Ran the user-agreed **diagnose-first → durable-RTL** loop. The multi-agent
+"structural master-RX asymmetry" was **refuted** in Phase 1: on a clean bring-up a
+sustained beacon latches `reanchored=1` on **both dies incl. the master**, then R1
+crosses byte-exact. Yesterday's "master won't reanchor even at 2s" was an
+**error-injection confound**.
+
+**Root cause:** the auto-anchor's 164µs beacon was far too short for the marginal
+eye (reanchor needs many SYNC beats to commit all masked lanes), and `force_always`
+is **required** — the idle-gated path (insert_en without force_always, R8=0x04/0x14)
+is **starved** on this silicon (`swi_delay_cycles=0 → postcount≡7`), leaving
+`sync_seen=0x00`.
+
+**Fix (converged over 3 HW cycles, each exposed the next layer):**
+- `b7a67fb` — widen `ANCHOR_LEN` 4096→200M (28-bit, ~8s cap) + stop-on-app-active
+  (force_always is a word-deleter; a2l is provably idle through bring-up so it never
+  fires prematurely). HW: **die_a reanchored AUTONOMOUSLY**, die_b starved.
+- `3962919` — **remove the `ws_anchor_q` early-out** (mutual-anchor starvation: die_a
+  latched first, its early-out stopped its beacon, starving die_b). Both dies now
+  beacon the shared idle window together.
+
+**HW proof (@3962919):** both dies deploy → bring up → **both `reanchored=1`
+autonomously (no manual pulse), `sync_seen=0xe4`, R1 ×3 distinct cross-die writes all
+byte-exact.** Sim green throughout: auto_anchor 3/3, gaps_ecc 6/6.
+
+**Reliability = eye-lottery per bring-up** (same lottery as FCSM=4): some bring-ups
+both latch, some partial/neither. The beacon is **not** cut short (tx_idle stable) —
+it is the marginal-eye reanchor commit. **Fix = retry the bring-up until both
+reanchored** (each retry re-runs winscan = a fresh eye). `kr260_eth_bringup.py` now
+polls `EPOCH_STATUS bit0` after FCSM=4 and returns 4 (retry) if not re-anchored.
+
+**Separate pre-existing issue (NOT this fix):** die_a PS-wedges under sustained/soak
+writes (the W-byte-0 / marginal data-path wedge class); single R1 writes pass, the
+soak wedges die_a — JTAG POR recovers. Tracked independently.

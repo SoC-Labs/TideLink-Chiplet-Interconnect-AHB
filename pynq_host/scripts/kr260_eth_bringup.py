@@ -81,6 +81,7 @@ REG_ROLE_CFG             = _TIDELINK_BANK  + 0x0080   # 0x2E032080 (RW role sele
 REG_ROLE_STATUS          = _TIDELINK_BANK  + 0x0084   # 0x2E032084 (RO effective role)
 REG_SWI_TRAINING_MODE    = _TIDELINK_BANK  + 0x0100   # 0x2E032100 (sim "SLOT0")
 REG_SWI_LANE_STATUS      = _TIDELINK_BANK  + 0x0108   # 0x2E032108 (RO cal/fcsm/lanes)
+REG_EPOCH_STATUS         = _TIDELINK_BANK  + 0x0140   # 0x2E032140 (RO reanchor bit0)
 REG_WINSCAN_STAT         = _TIDELINK_BANK  + 0x01E4   # 0x2E0321E4 (RO winscan; [6]=in_hold/S_HOLD)
 
 # ROLE_CFG (0x2080): bit[0]=role (0 master, 1 slave), bit[1]=role_lock.
@@ -247,8 +248,24 @@ def bringup(bd, role, cal_timeout, converge_timeout):
     print_status(bd, "   ")
     if ok:
         print("RESULT: LINK UP — %s reached FCSM=4 (LINK_IDLE), cal_done=1." % role)
-        print("        (M1 done once BOTH dies report this.)")
-        return 0
+        # 5. poll the AUTONOMOUS re-anchor (EPOCH_STATUS 0x2140 bit0). The
+        #    controller AUTO_ANCHOR beacon latches the deskew re-anchor within
+        #    ~8s of link-up with NO manual pulse. It is a marginal-eye lottery
+        #    per bring-up (like FCSM=4 itself); if it does not latch, the caller
+        #    should RETRY the bring-up (each retry re-runs winscan = a fresh eye).
+        print("--- 5. poll AUTONOMOUS re-anchor (EPOCH_STATUS bit0, up to 12s) ---")
+        rdl = time.time() + 12.0
+        rea = bd.rd(REG_EPOCH_STATUS) & 1
+        while time.time() < rdl and not rea:
+            time.sleep(0.1)
+            rea = bd.rd(REG_EPOCH_STATUS) & 1
+        if rea:
+            print("RESULT: RE-ANCHORED — %s EPOCH_STATUS bit0=1 (deskew locked, no "
+                  "manual pulse). M1 done once BOTH dies report this." % role)
+            return 0
+        print("RESULT: LINK UP but NOT RE-ANCHORED — %s EPOCH_STATUS bit0=0 after "
+              "12s. Marginal-eye lottery; RETRY the bring-up (both dies)." % role)
+        return 4
     print("RESULT: NOT converged — fcsm=%d (want %d), cal_done=%d. See status above."
           % (st["fcsm"], FCSM_LINK_IDLE, st["cal_done"]))
     return 3

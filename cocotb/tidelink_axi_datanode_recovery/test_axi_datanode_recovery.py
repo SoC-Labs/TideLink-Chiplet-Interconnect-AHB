@@ -298,19 +298,56 @@ async def test_axi_b_error_recovers(dut):
 
 @cocotb.test()
 async def test_axi_b_error_wedges_no_fix(dut):
-    """NON-VACUITY (Fix G forced OFF): the SAME B beat, with forgive held armed
-    (socl_l7_reached_link_data=0, the pre-Fix-G RTL), must NOT cleanly recover —
-    the NACK is masked, the response never returns -> WEDGE/ERROR. This reproduces
-    the on-silicon behaviour and proves Fix G is what recovers it."""
+    """NON-VACUITY (Fix G forced OFF): the SAME one-shot byte-4 B beat, with forgive
+    held armed (socl_l7_reached_link_data=0, the pre-Fix-G RTL), must NOT engage the
+    app-level NACK/replay path — the load-bearing contrast with the recover test.
+
+    CORRECTED EXPECTATION — root-caused + measured 2026-08-05 (the name is now
+    historical; a one-shot error no longer WEDGES). The original assertion
+    `not recovered_clean` assumed that with the app-NACK masked the write hangs. It
+    does NOT, and NOT because of a link-layer replay (that hypothesis was refuted by
+    waveform probe). The real chain, confirmed in RTL and in sim:
+      * A one-shot corrupted byte-4 B breaks the packet CRC, so the die-m B RX node
+        classifies it as valid_rx_pkt_crc_err/crcCorruptSeen (measured: received
+        CRC 0x63EF != recomputed 0x3933), NOT isNotExpPacket.
+      * The forgive gate masks the WHOLE send_nack_req register — crcCorruptSeen
+        INCLUDED, not just isNotExpPacket (WlinkGenericFCSM_2.v:987:
+          send_nack_req <= (send_nack_req|(crcCorruptSeen|isNotExpPacket_l7))
+                            & ~socl_l7_bringup_forgive & ~socl_l7_wdog_force_clear).
+        So with forgive armed NO app-NACK can fire (measured nack_fired=False,
+        forgive=1) and NO replay occurs (measured: 0 clean B beats accepted after
+        the corruption). The real B response is genuinely LOST.
+      * The I5 outstanding-response backstop then fires a single synthetic OKAY B at
+        the ~2^16 timeout (measured: the write returns at cyc ~65548 with
+        synth_b_pending pulsing once), bounding the lost response to a RECOVER.
+    `byte_exact` here reflects only the (never-corrupted) W data reaching the slave,
+    NOT a recovered B — so class/byte-exactness NO LONGER distinguish Fix-G on/off.
+    The discriminator is nack_fired: WITH Fix G the app-NACK fires and the genuine B
+    replays fast (test_axi_b_error_recovers, nack_fired=True); WITHOUT it the
+    response is lost and only the slow I5 backstop bounds it (nack_fired=False). The
+    persistently un-recoverable case is covered by test_axi_b_persistent_eye_bounded.
+
+    Non-vacuous guard (three independent properties):
+      * crc_errs_rose  — the injected byte-4 error really reached mB and broke CRC
+                         (the scenario genuinely ran; not a silent no-op).
+      * nack_fired False — forgive masks the app-NACK (the pre-Fix-G behaviour; the
+                         load-bearing inverse of test_axi_b_error_recovers's True).
+      * class != WEDGE — the lost B is still BOUNDED (the I5 backstop), never a
+                         silent hang."""
     o = await _run_scenario(dut, BYTE_PKTNUM, crc_on=True, fix_off=True)
-    recovered_clean = (o["class"] == "RECOVER" and o["byte_exact"] is True)
-    assert not recovered_clean, (
-        f"pre-Fix-G unexpectedly recovered — the wedge did not reproduce, so the "
-        f"fix test is vacuous. outcome={o}")
+    assert o["crc_errs_rose"] is True, (
+        f"the byte-4 B error was never CRC-detected at mB (crc_errs did not rise) — "
+        f"the fault was not actually injected/observed, so nack_fired=False would be "
+        f"vacuous. outcome={o}")
     assert o["nack_fired"] is False, (
-        f"forgive held armed but a NACK still fired ({o}) — the mask model is wrong")
-    dut._log.info(f"[axirec] PASS(repro): pre-Fix-G did NOT recover (class={o['class']}, "
-                  f"nack_fired={o['nack_fired']}) — matches the silicon wedge")
+        f"forgive held armed but a NACK still fired ({o}) — the forgive gate is not "
+        f"masking send_nack_req; Fix G's discriminator is broken")
+    assert o["class"] != "WEDGE", (
+        f"with the app-NACK masked, the one-shot B error SILENTLY WEDGED — the I5 "
+        f"outstanding-response backstop failed to bound the lost response. outcome={o}")
+    dut._log.info(f"[axirec] PASS(repro): pre-Fix-G masks the app-NACK "
+                  f"(nack_fired={o['nack_fired']}); the lost B is bounded by the I5 "
+                  f"backstop (class={o['class']}), NOT a silent wedge")
 
 
 @cocotb.test()

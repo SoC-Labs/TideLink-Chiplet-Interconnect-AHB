@@ -4840,10 +4840,37 @@ module axi_chiplet_controller #(
     //  (C) the abort branch clears pulse+dwell (no frozen-asserted burst).
     // Re-armed per training episode. AUTO_ANCHOR_EN=0 constant-folds all of it.
     localparam [15:0] ANCHOR_DWELL = 16'd256;   // link-stable + TX-idle cycles before pulsing
-    localparam [15:0] ANCHOR_LEN   = 16'd4096;  // SYNC-burst width @apb_clk (~164us @25MHz) — TUNE
+    // BURST WIDTH — 2026-08-05 quiesce-and-burst fix.
+    //   HW @200bce5 (both dies, AUTO_ANCHOR_EN=1): 0x21F4 read dwell_max=256,
+    //   pulsed_ever=1, done=1, but reanchored=0. The app port is idle through
+    //   bring-up (TXGEN_PRESENT=0, no D2D traffic yet) so app_valid
+    //   (=io_app_a2l_valid, NOT link-layer keepalive) stays low -> the 4096-cycle
+    //   burst was ALREADY contiguous. Fragmentation was NOT the cause. What the
+    //   4096 (~164us) window lacked is BILATERAL TIME-OVERLAP: the proven manual
+    //   recipe forces SYNC on BOTH dies for ~0.4s SIMULTANEOUSLY (R8=0x1C each,
+    //   wait 0.4s, R8=0x00); bringup_pair_release.sh releases both dies from a
+    //   mutual S_HOLD barrier at the same instant, so they reach fcsm=4 within a
+    //   ms-scale skew — which still DWARFS a 164us window, so the two per-die
+    //   bursts never overlapped and neither RX saw the peer's SYNC run. Widen the
+    //   window to ~0.4s (mirrors the manual pulse; covers the ms-scale barrier
+    //   skew with >100x margin). The FSM keeps its TX-idle gate (Defect-A: never
+    //   straddles a live word) and its early-terminate on ws_anchor_q, so on a
+    //   quiet link it forces SYNC for the full window then releases (the manual
+    //   pulse automated), and stops early if the re-anchor latches sooner.
+    // Sim keeps the short window (the pair tb brings both dies up near-
+    // simultaneously so 4096 overlaps fine, and test_v2_auto_anchor completes
+    // inside its 6000-cycle wait). TB_TOP_AUTO_ANCHOR_EN is defined ONLY by the
+    // cocotb auto-anchor build (which defparams AUTO_ANCHOR_EN=1); the eth-chiplet
+    // silicon build sets AUTO_ANCHOR_EN via the parent param and never defines it.
+`ifdef TB_TOP_AUTO_ANCHOR_EN
+    localparam [23:0] ANCHOR_LEN = 24'd4096;         // sim: complete within the tb window
+`else
+    localparam [23:0] ANCHOR_LEN = 24'd10_000_000;   // silicon: ~0.4s@25MHz / ~0.2s@50MHz — mirror the proven manual pulse, cover the ms-scale inter-die skew
+`endif
     reg        auto_anchor_pulse_q;
     reg        auto_anchor_done_q;
-    reg [15:0] auto_anchor_dwell_q, auto_anchor_len_q;
+    reg [15:0] auto_anchor_dwell_q;
+    reg [23:0] auto_anchor_len_q;
     reg        auto_anchor_pulsed_ever_q;   // sticky diag: >=1 beacon cycle emitted this episode
     reg [15:0] auto_anchor_dwell_max_q;      // sticky diag: max tx-idle dwell streak reached
     wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
@@ -4851,11 +4878,11 @@ module axi_chiplet_controller #(
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
-            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 24'd0;
             auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (swi_training_mode_rise) begin              // re-arm on a fresh episode
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
-            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 16'd0;
+            auto_anchor_dwell_q <= 16'd0; auto_anchor_len_q <= 24'd0;
             auto_anchor_pulsed_ever_q <= 1'b0; auto_anchor_dwell_max_q <= 16'd0;
         end else if (AUTO_ANCHOR_EN && !auto_anchor_done_q && !swi_training_mode_r) begin
             if (auto_anchor_dwell_q > auto_anchor_dwell_max_q)
@@ -4869,7 +4896,7 @@ module axi_chiplet_controller #(
                 end else if (auto_anchor_len_q < ANCHOR_LEN) begin
                     auto_anchor_pulse_q <= 1'b1;                 // emit the SYNC burst
                     auto_anchor_pulsed_ever_q <= 1'b1;           // sticky diag latch
-                    auto_anchor_len_q   <= auto_anchor_len_q + 16'd1;
+                    auto_anchor_len_q   <= auto_anchor_len_q + 24'd1;
                 end else begin
                     auto_anchor_pulse_q <= 1'b0;                 // release -> the anchor latches
                     auto_anchor_done_q  <= 1'b1;

@@ -207,7 +207,12 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 # EPOCH_ANCHOR_EN / `deskew: m=? s=?` banner). Consolidation 2026-07-16 UNION of:
 #   _noanchor (EPOCH_ANCHOR_DIS), _anchor (EPOCH_ANCHOR — kr260-pblock),
 #   _eye (EYE_FAULT), _prefixfc (PREFIX_FC — integ), _auto (BYPASS_AUTONEG!=1 — phase2).
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)
+#   _autoanchor (AUTO_ANCHOR=1 -> +define+TB_TOP_AUTO_ANCHOR_EN, 2026-08-05): without
+#   this, test_v2_auto_anchor's AUTO_ANCHOR=1 (deliver/raceguard) and AUTO_ANCHOR=0
+#   (negctl) share one sim_build for a given EPOCH_PROFILE, so running deliver then
+#   negctl silently re-runs the beacon-ON binary -> the negctl delivers and reports
+#   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

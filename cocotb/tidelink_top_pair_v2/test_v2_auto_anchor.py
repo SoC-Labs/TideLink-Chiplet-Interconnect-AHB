@@ -27,6 +27,21 @@
 # faithful sub-ANCHOR_DWELL keepalive stream would overflow this RX FIFO. That
 # benefit is instead confirmed on HW via the 0x21F4 obs word (dwell_max climbs
 # past 256 and pulsed_ever latches under real keepalive traffic).
+#
+# QUIESCE-AND-BURST (2026-08-05): the HW obs came back dwell_max=256, pulsed_ever=1,
+# done=1 but reanchored=0 on BOTH dies -> the burst emitted and COMPLETED, so it was
+# NOT starved/fragmented (the app port is idle through bring-up: TXGEN_PRESENT=0, no
+# D2D yet, so app_valid=io_app_a2l_valid stays low and the 4096 window was already
+# contiguous). The real gap vs the proven MANUAL pulse is BILATERAL TIME-OVERLAP: the
+# manual recipe forces SYNC on both dies for ~0.4s SIMULTANEOUSLY, whereas a 4096-cycle
+# (~164us) per-die burst fired at each die's own link-up instant is far shorter than the
+# ms-scale inter-die bring-up skew, so the two windows never overlapped and neither RX
+# saw the peer's SYNC run. Fix: widen ANCHOR_LEN to ~0.4s on silicon (the controller
+# keys the short sim window off TB_TOP_AUTO_ANCHOR_EN). This idle-link tb keeps the
+# short window and is unchanged by the widen; the overlap fix is HW-proven via 0x21F4.
+# NB: the pair Makefile SIM_BUILD key now includes AUTO_ANCHOR — without it the
+# AUTO_ANCHOR=1 (deliver/raceguard) and AUTO_ANCHOR=0 (negctl) builds collide in one
+# sim_build dir and the negctl silently re-runs the beacon-ON binary (false FAIL).
 import cocotb
 from cocotb.triggers import ClockCycles
 from pair_v2_common import PairV2TB, run_bringup_full, send_and_check

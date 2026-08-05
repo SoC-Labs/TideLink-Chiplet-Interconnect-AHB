@@ -99,3 +99,50 @@ Rebuild both eth-chiplet dies from `200bce5` (`AUTO_ANCHOR_EN=1`, ~3h) and run
 Because the diagnostic-only value competes with a contended board + 3h build,
 and the fix it validates is orthogonal to the W byte-0 symptom, this rebuild is
 best **batched** with the next real RTL change rather than spent standalone.
+
+## 2026-08-05 — HW obs read, root cause CORRECTED, quiesce-and-burst = widen the window
+
+The `200bce5` build was benched. `0x21F4` read **`dwell_max=256, pulsed_ever=1,
+done=1, reanchored=0` on BOTH dies** — the third verdict-table row
+(`pulsed_ever=1 & reanchored=0`). That row was labelled "peer needs a *contiguous*
+SYNC run", but the corrected reading is sharper:
+
+**The burst was ALREADY contiguous; it was too SHORT and not bilaterally
+time-overlapped.** `app_valid` is `io_app_a2l_valid` — the *application*-layer
+valid (`WlinkGenericFCSM_6.v:1121`), NOT link-layer keepalive. Through bring-up the
+app port is idle (eth-chiplet ships `TXGEN_PRESENT=0`, and no D2D write is issued
+until after the anchor check), so `tx_idle` held high and the FSM emitted the full
+4096-cycle window with **no pause** — `done=1` confirms it ran to completion. The
+"FC-keepalive fragments the burst" suspicion does not apply on this path (keepalive
+raises `link_valid`, not `app_valid`). What the 4096-cycle (~164 µs) window lacked
+is **bilateral time-overlap**: the proven manual recipe forces SYNC on *both* dies
+for ~0.4 s *simultaneously* (`R8=0x1C` each, wait 0.4 s, `R8=0x00`), whereas each
+die's auto-burst fires at its *own* link-up instant. `bringup_pair_release.sh`
+releases both dies from a mutual S_HOLD barrier, so they reach `fcsm=4` within a
+**ms-scale** skew — which still dwarfs a 164 µs window. The two per-die bursts never
+overlapped, so neither RX ever saw the peer's SYNC run → `reanchored` stayed 0.
+
+### Fix (this change) — widen the burst to mirror the manual pulse
+`axi_chiplet_controller.sv`: `ANCHOR_LEN` 4096 → **10,000,000 cycles** (~0.4 s @25 MHz
+/ ~0.2 s @50 MHz), covering the ms-scale barrier skew with >100× margin. The FSM is
+otherwise **unchanged**: it keeps the TX-idle gate (Defect-A: never straddles a live
+word) and the early-terminate on `ws_anchor_q`, so on a quiet link it forces SYNC for
+the full window then releases — the manual pulse, automated — and stops early if the
+re-anchor latches sooner. Sim keeps the short 4096 window via `` `ifdef
+TB_TOP_AUTO_ANCHOR_EN `` (defined only by the cocotb auto-anchor build); silicon gets
+the long one. `test_v2_auto_anchor` deliver/negctl/raceguard all PASS. A pre-existing
+`SIM_BUILD`-key collision (the key omitted `AUTO_ANCHOR`, so deliver+negctl shared one
+build dir and the negctl silently re-ran the beacon-ON binary → false FAIL) is fixed
+in the same change.
+
+### Next HW cycle — expected outcome
+Rebuild both dies (`AUTO_ANCHOR_EN=1`), bring up, wait for the ~0.4 s burst, read
+`anchorobs`:
+- `pulsed_ever=1 & done=1 & reanchored=1` → the widen closed R1 autonomously (no host
+  pulse). Then a sustained + reverse soak should run clean (W byte-0 stays separate —
+  ILA-class).
+- `done=1 & reanchored=0` → even a manual-equivalent duration via RTL doesn't latch →
+  investigate the auto vs manual PHY-force path difference (the manual pulse also sets
+  `swi_sync_*_r` shadows through the reg-write path; the auto burst OR-drives the same
+  three PHY inputs, so this would be unexpected).
+- `done=0` when read → the ~0.4 s burst is still running; re-read after ~1 s.

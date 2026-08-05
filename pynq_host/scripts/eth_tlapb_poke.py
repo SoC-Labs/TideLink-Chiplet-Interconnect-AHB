@@ -9,6 +9,9 @@
 #   0x2140 EPOCH_STATUS [0]=epoch_anchored(reanchored, sticky) [6:1]=epoch_span
 #   0x21F4 AUTO_ANCHOR_OBS [15:0]dwell_max [16]pulsed_ever [17]done [18]pulse
 #          [19]link_up [20]tx_idle [21]reanchored [22]training [23]AUTO_ANCHOR_EN (RO)
+#   0x215C SYNC_SEEN_VEC [7:0]per-lane sync_seen armed vector; [31:24]=0x5F marker (RO)
+#   0x2108 SWI_LANE_STAT [15:8]lane_locked [19:17]fcsm [22]cal_done (RO)
+#   0x0214 LANE_MASK  [7:0]TX mask  [15:8]RX mask (deskew all_sync_seen gate); reset 0xFFFF
 #   0x003C ERR_INJECT  [7:0]DataID [15:8]Byte [18:16]Bit [24]Enable
 # Only touches CONFIG-plane (combinational/obs) addresses — cannot wedge the bus.
 #
@@ -17,6 +20,8 @@
 #   epoch                      -> decodes EPOCH_STATUS + R8
 #   anchorpulse                -> R8=0x1C, 0.4s, R8=0x00 (host SYNC-force anchor)
 #   anchorobs                  -> decode AUTO_ANCHOR_OBS 0x21F4 (why reanchored latched or not)
+#   syncdiag                   -> decode fcsm/lane_locked/sync_seen_vec/reanchored/lane_mask (Phase-1 master-RX probe)
+#   lanemask <hex>             -> write 0x0214 (e.g. 0xe4e4 = tx=0xe4 rx=0xe4), read back
 #   inject <data_id> <byte> <bit>   -> ERR_INJECT enable (arm this die's injector)
 #   injectoff                  -> ERR_INJECT = 0
 import mmap, struct, sys, time
@@ -58,6 +63,22 @@ elif cmd == "anchorobs":
         print("  -> beacon emitted (pulsed_ever=1) but reanchored=0: PHY/peer did not latch")
     else:
         print("  -> pulsed_ever=1 AND reanchored=1: auto-anchor worked")
+elif cmd == "syncdiag":
+    ls = rd(0x2108); ss = rd(0x215C); ep = rd(0x2140); lm = rd(0x0214); ao = rd(0x21F4)
+    fcsm = (ls >> 17) & 0x7; lane_locked = (ls >> 8) & 0xFF; cal = (ls >> 22) & 1
+    seen = ss & 0xFF; seen_marker = (ss >> 24) & 0xFF
+    print("SYNCDIAG: fcsm=%d cal_done=%d lane_locked=0x%02x | sync_seen_vec=0x%02x (marker=0x%02x %s) | "
+          "reanchored=%d | lane_mask=0x%04x(tx=0x%02x rx=0x%02x) | anchorobs=0x%08x pulsed_ever=%d"
+          % (fcsm, cal, lane_locked, seen, seen_marker,
+             "OK" if seen_marker == 0x5F else "STALE/void-verify!",
+             ep & 1, lm & 0xFFFF, lm & 0xFF, (lm >> 8) & 0xFF, ao, (ao >> 16) & 1))
+    # per-lane armed breakdown
+    armed = [i for i in range(8) if (seen >> i) & 1]
+    stuck = [i for i in range(8) if not ((seen >> i) & 1)]
+    print("  armed lanes (sync_seen=1): %s ;  stuck lanes (sync_seen=0): %s" % (armed, stuck))
+elif cmd == "lanemask":
+    val = int(sys.argv[2], 0); wr(0x0214, val)
+    lm = rd(0x0214); print("LANE_MASK(0x0214)=0x%04x (tx=0x%02x rx=0x%02x)" % (lm & 0xFFFF, lm & 0xFF, (lm >> 8) & 0xFF))
 elif cmd == "inject":
     did, byte, bit = int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0)
     val = (1 << 24) | ((bit & 7) << 16) | ((byte & 0xFF) << 8) | (did & 0xFF)
@@ -65,4 +86,4 @@ elif cmd == "inject":
 elif cmd == "injectoff":
     wr(0x003C, 0); print("ERR_INJECT(0x003C)=0x%08x (off)" % rd(0x003C))
 else:
-    sys.exit("usage: read|write|epoch|anchorpulse|anchorobs|inject|injectoff")
+    sys.exit("usage: read|write|epoch|anchorpulse|anchorobs|syncdiag|lanemask|inject|injectoff")

@@ -100,8 +100,34 @@ $(BIDFIX_TESTS):
 	$(MAKE) SIM_BUILD=sim_build_bidfix MODULE=test_axi_datanode_recovery TESTCASE=$@
 bidfix: ; @for t in $(BIDFIX_TESTS); do $(MAKE) $$t || exit 1; done
 
+# Rank 1 — peer-WRITE data-phase drop (wr_hold_r, tidelink_top.sv). Own sim_build;
+# default 2^16 I5 timeout (the fix is a hold, NOT a backstop).
+#   #1 test_write_hold_hreadyout_waits_for_w_beat — white-box INVARIANT (primary):
+#      ahb_sub_hreadyout must not complete before the W beat. PASS post-fix; FAIL
+#      pre-fix (prove via `make writehold_prefix`, +define+TIDELINK_DISABLE_WR_HOLD).
+#   #2 test_write_lands_under_w_backpressure — data-landing repro, marked skip=True
+#      in the module (this tb cannot isolate land-vs-drop on the hreadyout axis; see
+#      its docstring + the report). Deliberately NOT a make target: a skip=True test
+#      is force-RUN when named via TESTCASE, so it stays out of `writehold` and is
+#      skipped only when the whole module runs without a TESTCASE. Real data-landing
+#      regression = the KR260 bench.
+WRITEHOLD_TESTS := test_write_hold_hreadyout_waits_for_w_beat
+.PHONY: writehold writehold_prefix $(WRITEHOLD_TESTS)
+$(WRITEHOLD_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_writehold MODULE=test_axi_datanode_writehold TESTCASE=$@
+writehold: ; @for t in $(WRITEHOLD_TESTS); do $(MAKE) $$t || exit 1; done
+
+# Reproduce-first ISOLATION build (throwaway): +define+TIDELINK_DISABLE_WR_HOLD
+# ties wr_hold_r=0 => the pre-fix RTL. Both writehold tests must FAIL here. Pick a
+# case with T=..., default the #1 invariant.
+T ?= test_write_hold_hreadyout_waits_for_w_beat
+writehold_prefix:
+	$(MAKE) SIM_BUILD=sim_build_writehold_prefix MODULE=test_axi_datanode_writehold \
+	        EXTRA_DEFINES=+define+TIDELINK_DISABLE_WR_HOLD TESTCASE=$(T)
+
 clean_builds:
-	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* $(LOCAL_FLIST)
+	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
+	       sim_build_writehold* $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification

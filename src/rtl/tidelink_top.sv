@@ -1724,6 +1724,70 @@ module tidelink_top #(
             rd_pipe_r <= 1'b0;   // one cycle only
     end
 
+    // ── Rank 1 (2026-08-06): peer-WRITE data-phase hold (the write mirror of ──
+    // rd_pipe_r above). ROOT CAUSE of the on-silicon die_a->die_b cross-die
+    // write DATA-DROP (address crosses, die_b SRAM reads 0, 5/5 deterministic):
+    // XHB500's early-write-response (bufferable / HPROT[2]=1, EWR) path asserts
+    // xhb_sub_hreadyout_raw HIGH at its ADDRESS-accept — one-plus cycles BEFORE
+    // it emits the AXI W beat (core_wdata.sv: write_data_valid set at
+    // hsel&hready&htrans[1]&hwrite; wdata_in={last,strb,LIVE hwdata} is only
+    // sampled into the wdata regslice when wdata_in_ready rises, and the W beat
+    // reaches s_axi only when wvalid&wready). So the master-facing
+    // ahb_sub_hreadyout (below) goes high at the address-accept, the AHB master
+    // ends its data phase and RELEASES HWDATA, and if the W-channel is back-
+    // pressured for >=1 cycle (W FC-node buffer full from a prior in-flight
+    // bufferable write / CDC fill / credits => s_axi_wready low) the deferred
+    // wdata sample latches the already-released value (0) => the payload is lost
+    // on the wire. g2/idle-link sim is blind: wready stays high, the W beat is at
+    // +2 and the live hwdata is still valid.
+    //
+    // FIX (mirror rd_pipe_r): hold the master-facing hreadyout LOW from the cycle
+    // the peer WRITE address is latched until the W handshake actually completes,
+    // so the master holds HWDATA stable through any W backpressure and XHB500
+    // samples the correct live value whenever wready rises. Unlike rd_pipe_r's
+    // one-cycle pulse this is a SET-then-hold LEVEL (it can span many cycles under
+    // backpressure). SET when a peer write address is latched
+    // (ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r — same qualifier the pipe
+    // uses); CLEAR on the W handshake (s_axi_wvalid & s_axi_wready & s_axi_wlast,
+    // burst-safe). Non-bufferable writes are unaffected: their raw hreadyout is
+    // already held low until B, later than this hold.
+    //
+    // NO COMB LOOP (the load-bearing wrapper invariant): every term is a register
+    // or derives ONLY from the XHB500 s_axi_* handshakes (driven by the bridge
+    // FSM off xhb_sub_hready — pipe_valid_r/ext_is_nonseq/xhb_sub_hreadyout_raw,
+    // NEVER ahb_sub_hready) — so ahb_sub_hreadyout gains no combinational
+    // dependence on ahb_sub_hready.
+    //
+    // DEADLOCK GUARD: s_axi_wready (= axi_tgt_0_w_ready = the wlink_axiwFC FC
+    // node's app-to-link ready, AXI4ToWlink.v:432) is a credit/buffer-availability
+    // that RISES for every accepted write on a live link, so the hold releases.
+    // BUT the AW and W AXI channels feed SEPARATE, independent FC nodes
+    // (wlink_axiawFC vs wlink_axiwFC; AXI4ToWlink.v:430,432) with independent
+    // buffers, so under a WEDGED link a later write's AW can be accepted (arming
+    // the I5 outstanding backstop) while its W beat's wready never rises — leaving
+    // wr_hold_r stuck and the master stalled even though the I5 synth-B has
+    // force-completed the write inside XHB500. Guard against that new hang by ALSO
+    // clearing on synth_b_pending (the ahb_sub backstop force-completing the
+    // write); synth_b_pending only asserts at the ~2^16 I5 timeout, orders of
+    // magnitude past any legitimate W backpressure, so it NEVER pre-empts the
+    // normal W-handshake clear. (synth_b_pending is a register => invariant kept.)
+    logic wr_hold_r;
+    wire  wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r;
+    wire  wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) // W beat landed
+                      | synth_b_pending;                           // backstop drain (guard)
+`ifdef TIDELINK_DISABLE_WR_HOLD
+    // Reproduce-first isolation build (throwaway): disable the hold to recover the
+    // pre-fix behaviour and prove the new tests FAIL without the fix. Never set in
+    // the shipping flow.
+    assign wr_hold_r = 1'b0;
+`else
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)         wr_hold_r <= 1'b0;
+        else if (wr_hold_clr) wr_hold_r <= 1'b0;   // clear wins if set+clr coincide
+        else if (wr_hold_set) wr_hold_r <= 1'b1;
+    end
+`endif
+
     // External hreadyout: stall upstream during the pipeline fill cycle, and for
     // one further cycle on a read (the bridge IDLE-state hreadyout leak, I2). The
     // sub_err{1,2}_r overrides drive the two-cycle AHB ERROR response when either
@@ -1785,6 +1849,7 @@ module tidelink_top #(
                                (sub_err2_r & ~synth_b_pending) ? 1'b1 :
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
                                rd_pipe_r                        ? 1'b0 :
+                               wr_hold_r                        ? 1'b0 :   // Rank 1: hold write completion until the W beat lands
                                xhb_sub_hreadyout_raw;
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)

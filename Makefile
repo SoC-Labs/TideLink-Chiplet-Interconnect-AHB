@@ -684,7 +684,8 @@ sim_gate_axi_datanode_gaps:
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_gaps_nodes \
 	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so

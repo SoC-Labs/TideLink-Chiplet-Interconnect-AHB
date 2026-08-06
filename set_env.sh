@@ -52,7 +52,13 @@ _generate_xhb500() {
     local output_dir="$2"
     local name="$3"
 
-    if [ -d "${output_dir}/logical" ]; then
+    # A generation counts as complete only if the terminal leaf artefact every
+    # flist consumes (xhb500_flop.sv) is present — NOT merely logical/, which a
+    # failed run leaves behind half-written. Testing the bare directory would
+    # [skip] regeneration over a broken tree forever (e.g. right after you
+    # install the missing dependency), making the fix look like a no-op.
+    local done_marker="${output_dir}/logical/models/cells/generic/xhb500_flop.sv"
+    if [ -f "${done_marker}" ]; then
         echo "  [skip] ${name} already generated at ${output_dir}"
         return 0
     fi
@@ -70,12 +76,49 @@ _generate_xhb500() {
         --output "${output_dir}" \
         2>&1 | sed 's/^/         /'
 
-    if [ $? -eq 0 ] && [ -d "${output_dir}/logical" ]; then
+    # $? after a pipeline is the status of its LAST command (sed, ~always 0),
+    # NOT the generator's — capture the generator's real exit code via
+    # PIPESTATUS[0]. (PIPESTATUS is used rather than `set -o pipefail` because
+    # this file is *sourced*: pipefail would leak into the caller's shell.)
+    local gen_rc="${PIPESTATUS[0]}"
+
+    if [ "${gen_rc}" -eq 0 ] && [ -f "${done_marker}" ]; then
         echo "  [done] ${name} generated at ${output_dir}"
     else
-        echo "  [ERROR] Failed to generate ${name}"
+        echo "  [ERROR] Failed to generate ${name} (generator exit ${gen_rc})"
+        # Remove the partial tree so a retry actually re-runs the generator
+        # instead of [skip]-ing over half-written output on the next source.
+        rm -rf "${output_dir}"
         return 1
     fi
+}
+
+# ---------------------------------------------------------------
+# Undocumented host requirements for the Arm XHB500 generator.
+# Both fail *inside* the generator, with a message that names neither
+# set_env.sh nor the real cause. Probe for them here so the diagnosis is
+# at the source rather than a mystifying VCS "cannot be opened" minutes later.
+#   * perl module File::Slurp  — perl-File-Slurp on RHEL 8 (appstream)
+#   * python3 in [3.7, 3.11)   — the generator calls open(..., 'U');
+#                                universal-newline mode was REMOVED in 3.11
+#                                ("ValueError: invalid mode: 'U'").
+#                                Verified: 3.6/3.8 ok, 3.11/3.12 fail.
+# Non-fatal: warn clearly and let the generator emit the authoritative error.
+# ---------------------------------------------------------------
+_xhb500_host_preflight() {
+    if ! perl -MFile::Slurp -e 1 >/dev/null 2>&1; then
+        echo "  [WARN] perl module File::Slurp not found — the XHB500 generator will"
+        echo "         abort with \"Can't locate File/Slurp.pm\". On RHEL 8:"
+        echo "         dnf install perl-File-Slurp"
+    fi
+    local _pyver
+    _pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
+    case "${_pyver}" in
+        3.7|3.8|3.9|3.10) ;;  # supported window
+        "") echo "  [WARN] could not determine python3 version; the XHB500 generator needs >= 3.7 and < 3.11." ;;
+        *)  echo "  [WARN] python3 is ${_pyver}; the XHB500 generator needs >= 3.7 and < 3.11"
+            echo "         (it calls open(...,'U'), removed in 3.11 -> \"invalid mode: 'U'\")." ;;
+    esac
 }
 
 echo "TideLink environment setup:"
@@ -86,6 +129,11 @@ echo "  XHB500_GEN_DIR = ${XHB500_GEN_DIR}"
 echo ""
 
 echo "Checking XHB500 generated IP..."
+# Probe host requirements only when a (re)generation is actually going to run.
+if [ ! -f "${XHB500_SLV_DIR}/logical/models/cells/generic/xhb500_flop.sv" ] || \
+   [ ! -f "${XHB500_MST_DIR}/logical/models/cells/generic/xhb500_flop.sv" ]; then
+    _xhb500_host_preflight
+fi
 _generate_xhb500 \
     "${XHB500_CFG_DIR}/cfg_xhb_ahb_to_axi.cfg" \
     "${XHB500_SLV_DIR}" \
@@ -96,6 +144,6 @@ _generate_xhb500 \
     "${XHB500_MST_DIR}" \
     "xhb500_axi_to_ahb_bridge_chiplet_mst"
 
-unset -f _generate_xhb500
+unset -f _generate_xhb500 _xhb500_host_preflight
 echo ""
 echo "Environment ready."

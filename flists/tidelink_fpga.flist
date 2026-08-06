@@ -283,6 +283,15 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // SoC Labs AXI data-node observability (item I4, 2026-07-29): instantiated by
 // axi_chiplet_controller.sv below for APB Region F (OBS_AXI_NODES @ 0x21E0).
 ${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
+// SoC Labs I1 observability leaves (2026-07-30). Both are instantiated
+// UNCONDITIONALLY by the shared local overrides — winscan_obs by
+// axi_chiplet_controller.sv (below), fcemit_obs by local_overrides/Wlink.v
+// (above) — so this V1 flist must list them too or elaboration fails with
+// CFCILFBI "cannot find cell in liblist". Previously only tidelink_fpga_v2.flist
+// carried them, which broke V1 elaboration. Pure RO fan-out; plain SV, no PHY
+// or TIDELINK_PHY_V2 dependency, so listing them here pulls in no V2 PHY.
+${TIDELINK_HOME}/src/rtl/tidelink_winscan_obs.sv
+${TIDELINK_HOME}/src/rtl/tidelink_fcemit_obs.sv
 ${TIDELINK_HOME}/src/rtl/local_overrides/axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
 // init_wait,axl_state,txn_step}_o output ports for APB Region C readback.

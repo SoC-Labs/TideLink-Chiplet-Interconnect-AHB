@@ -3950,7 +3950,15 @@ module axi_chiplet_controller #(
     // nego_en is set — same effect as the host 0x2160=0x55555555 write, without a
     // tl_apb injector. nego_en=0 (manual/SW path) => straight passthrough of the
     // APB-written value, bit-identical.
-    wire [23:0] lane_lock_thresh_eff = nego_en ? {8{3'd5}} : lane_lock_thresh_i;
+    // FIX 2 (2026-08-07, TL-001 framing): relax the autonomous per-lane per-cycle
+    // Hamming lock threshold 5->6. Root: winscan best_run=0 (no framing passed the
+    // Hamming<=5 / LOCK_THRESH gate) -> calibrator falls back to the (0,0) framing
+    // lottery. One-step relaxation lets a marginally-over-threshold lane (Hamming 6)
+    // accumulate lock-score -> best_run>0 -> with min_lock_dwells=1 (centering ON)
+    // the calibrator picks a REAL eye-centre framing, not the lottery fallback. A
+    // genuinely-noisy (too-loose) framing is backstopped by link_up/PRBS validation
+    // (re-sweeps). nego_en=0 (manual/SW path) unchanged. Measured step, not 3'd7.
+    wire [23:0] lane_lock_thresh_eff = nego_en ? {8{3'd6}} : lane_lock_thresh_i;
 
     tidelink_lane_checker u_lane_checker (
         .clk                 (phy_link_rx_rx_link_clk_w),

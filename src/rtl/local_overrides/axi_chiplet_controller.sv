@@ -527,7 +527,11 @@ module axi_chiplet_controller #(
     // itself, so NO sync here. V1 builds never see these ports.
     ,
     output wire             obs_epoch_anchored_o,
-    output wire  [5:0]      obs_epoch_span_o
+    output wire  [5:0]      obs_epoch_span_o,
+    // TL-009 leak witness from tidelink_top's XHB500 ahb_sub side (Region F slot
+    // 3'h6 @ 0x21F8). Unconnected in bare-link/debug tb instantiations (floats,
+    // harmless — they never read 0x21F8); tidelink_top drives it on the HW build.
+    input  wire  [31:0]     xhb_sub_obs_word_i
 `endif
 );
 
@@ -3028,6 +3032,9 @@ module axi_chiplet_controller #(
         (ctrl_reg_addr[2:0] == 3'h3) ? obs_fcemit_stat_w  : // 0x21EC FCEMIT_STAT
         (ctrl_reg_addr[2:0] == 3'h4) ? obs_fcemit_idcnt_w : // 0x21F0 FCEMIT_IDCNT
         (ctrl_reg_addr[2:0] == 3'h5) ? auto_anchor_obs_word : // 0x21F4 AUTO_ANCHOR_OBS
+`ifdef TIDELINK_PHY_V2
+        (ctrl_reg_addr[2:0] == 3'h6) ? xhb_sub_obs_word_i   : // 0x21F8 XHB_SUB_OBS (TL-009 leak witness)
+`endif
         32'h0;
 
     // =====================================================================

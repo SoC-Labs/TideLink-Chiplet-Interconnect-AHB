@@ -1685,6 +1685,51 @@ module tidelink_top #(
         end
     end
 
+    // ── TL-009 LEAK WITNESS (2026-08-07) ──────────────────────────────────────
+    // The die_a PS wedge after ~10-20 cross-die writes is INVISIBLE to Region F
+    // (FC nodes read healthy) and the kernel (silent hang). Capture the XHB500
+    // AHB-bridge / ahb_sub side here so the leaked resource becomes diagnosable
+    // from APB (Region F slot 3'h6, 0x21F8) WITHOUT a purpose-built ILA:
+    //   [0]    xhb_sub_hreadyout_raw           live bridge-ready
+    //   [3:1]  sub_wr_os_ctr                   outstanding-write count (live)
+    //   [4]    pipe_hprot_r[2]                 bufferable/EWR (settles the hprot[2] Q)
+    //   [7:5]  sub_wr_os_hwm                   outstanding-write HIGH-WATER-MARK
+    //   [8]    sub_wr_stuck_sticky             synth-B backstop fired (write)
+    //   [9]    sub_err_sticky                  2-cycle ERROR backstop fired (read)
+    //   [10]   xhb_stall_stuck_sticky          bridge hreadyout stuck LOW >= 2^12 hclk
+    //                                          == XHB500 hazard-list-full / deadlock witness
+    //   [31:24] 0xB5 presence marker
+    reg [11:0] xhb_stall_ctr_w;
+    reg        xhb_stall_stuck_sticky;
+    reg [2:0]  sub_wr_os_hwm;
+    reg        sub_wr_stuck_sticky;
+    reg        sub_err_sticky;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            xhb_stall_ctr_w        <= 12'h0;
+            xhb_stall_stuck_sticky <= 1'b0;
+            sub_wr_os_hwm          <= 3'd0;
+            sub_wr_stuck_sticky    <= 1'b0;
+            sub_err_sticky         <= 1'b0;
+        end else begin
+            if (xhb_sub_hreadyout_raw)              xhb_stall_ctr_w <= 12'h0;
+            else if (xhb_stall_ctr_w != 12'hFFF)    xhb_stall_ctr_w <= xhb_stall_ctr_w + 12'd1;
+            if (xhb_stall_ctr_w == 12'hFFF)         xhb_stall_stuck_sticky <= 1'b1;
+            if (sub_wr_os_ctr > sub_wr_os_hwm)      sub_wr_os_hwm <= sub_wr_os_ctr;
+            // inline of sub_wr_stuck_fire (declared later at ~:1851; default_nettype none forbids the fwd ref)
+            if ((sub_osr_expired | sub_stall_expired) & (sub_wr_os_ctr != 3'd0)) sub_wr_stuck_sticky <= 1'b1;
+            if (sub_err1_r)                         sub_err_sticky <= 1'b1;
+        end
+    end
+    wire [31:0] xhb_sub_obs_word = { 8'hB5, 13'h0,
+                                     xhb_stall_stuck_sticky,   // [10]
+                                     sub_err_sticky,           // [9]
+                                     sub_wr_stuck_sticky,      // [8]
+                                     sub_wr_os_hwm,            // [7:5]
+                                     pipe_hprot_r[2],          // [4]
+                                     sub_wr_os_ctr,            // [3:1]
+                                     xhb_sub_hreadyout_raw };  // [0]
+
     // Signals presented to XHB500: pipeline register when valid, pass-through for SEQ
     wire [SYS_ADDR_W-1:0] xhb_sub_haddr  = pipe_valid_r ? pipe_haddr_r  : translated_sub_haddr;
     wire              [1:0] xhb_sub_htrans = pipe_valid_r ? pipe_htrans_r : ahb_sub_htrans;
@@ -3037,7 +3082,8 @@ module tidelink_top #(
         // tidelink_gpio_phy_apb_regs slave (SWI_EPOCH_STATUS @ 0x4403_2140).
         ,
         .obs_epoch_anchored_o        (gpio_phy_epoch_anchored_w),
-        .obs_epoch_span_o            (gpio_phy_epoch_span_w)
+        .obs_epoch_span_o            (gpio_phy_epoch_span_w),
+        .xhb_sub_obs_word_i          (xhb_sub_obs_word)      // TL-009 leak witness -> 0x21F8
 `endif
     );
 

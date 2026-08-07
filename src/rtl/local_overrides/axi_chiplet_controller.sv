@@ -6061,7 +6061,12 @@ module axi_chiplet_controller #(
     // asserting calibration_done so lltx enables and CR can run. HW equivalent
     // of the sim tb_early_exit_force_q bypass. M8 give-up policy; sim-clean.
     tidelink_phy_align_calibrator #(
-        .VAL_TIMEOUT_TO_DONE (1'b1)
+        .VAL_TIMEOUT_TO_DONE (1'b1),
+        // FIX D (2026-08-07, TL-009): peer-aware S_HOLD release — hold training
+        // past HOLD_MAX until all active lanes are LOCKED (peer present+clean),
+        // backstop-bounded. Widens the bilateral overlap so W+B cross on a ms-skew
+        // bring-up (fixes the framing lottery -> data-drop + write-stall wedge).
+        .HOLD_PEER_AWARE_EN  (1'b1)
     ) u_calibrator (
         .clk                    (phy_link_rx_rx_link_clk_w),
         .rst                    (~poresetn),

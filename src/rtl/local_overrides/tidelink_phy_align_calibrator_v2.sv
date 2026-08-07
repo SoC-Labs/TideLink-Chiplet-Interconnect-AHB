@@ -309,6 +309,11 @@ module tidelink_phy_align_calibrator #(
     // first-to-succeed-abandons-the-peer deadlock the HW T3 test exposed.
     // Default = 8 full sweep periods (1 sweep = 128 × DWELL_CYCLES).
     parameter int HOLD_CYCLES  = 8 * 128 * DWELL_CYCLES,
+    // FIX D (2026-08-07, TL-009): 1 = PEER-AWARE S_HOLD release (hold training past
+    // HOLD_MAX until all active lanes synced, backstop-bounded — widens the
+    // bilateral overlap on a ms-skew bring-up so W+B cross). 0 (default) = original
+    // blind HOLD_MAX timer, BIT-IDENTICAL. Enabled on the eth-chiplet HW path only.
+    parameter bit HOLD_PEER_AWARE_EN = 1'b0,
     // §9.9 best-of-sweep selection toggle:
     //   0 (silicon default) — §9.11 EYE-CENTRE policy via MIN_LOCK_DWELLS
     //     contiguity along phase axis. Sweep walks all 128 points; the
@@ -1248,6 +1253,22 @@ module tidelink_phy_align_calibrator #(
     // T3.2 peer-aware training-hold counter (cycles spent in S_HOLD).
     localparam int HOLD_MAX = HOLD_CYCLES - 1;
     logic [$clog2(HOLD_CYCLES+1)-1:0] hold_ctr;
+    // FIX D (2026-08-07, TL-009 framing): PEER-AWARE S_HOLD release. S_HOLD's
+    // intent (comment ~:1490) is to keep our training pattern up so the peer also
+    // locks — but it uses a BLIND fixed HOLD_MAX timer, so on a ms-skew bring-up
+    // this die drops its pattern before the peer has locked -> the peer sweeps a
+    // silent lane -> bad framing -> the cross-die W/B round-trip doesn't cross ->
+    // data-drop + write-stall wedge (0x21F8 witness, 235d758). FIX D holds training
+    // past HOLD_MAX until this die's RX confirms ALL active lanes synced (peer
+    // present+clean), bounded by a backstop so it never hangs. A good bring-up
+    // (lanes synced by HOLD_MAX) releases at HOLD_MAX exactly as before.
+    localparam int HOLD_BACKSTOP_CYCLES = HOLD_CYCLES * 3;   // hang-guard ~3x HOLD
+    localparam int HOLD_BACKSTOP_MAX    = HOLD_BACKSTOP_CYCLES - 1;
+    logic [$clog2(HOLD_BACKSTOP_CYCLES+1)-1:0] hold_ext_ctr;
+    // Peer-present proxy: all ACTIVE lanes LOCKED (this die's RX is locked to the
+    // peer's training pattern). Uses `lane_locked` (connected via lane_locked_w on
+    // the eth-chiplet build) — NOT lane_synced_i, which is tied 8'h00 there.
+    wire  all_lanes_locked_d = &(lane_locked | ~lane_mask);
 
     // §9.11d Fix A1 — validation-timeout counter (cycles in S_VALIDATE).
     // Saturates at VALIDATION_TIMEOUT-1; S_VALIDATE → S_ARM (re-sweep) on
@@ -1510,7 +1531,13 @@ module tidelink_phy_align_calibrator #(
                 // PRBS sync occurs and S_VALIDATE times out forever.
                 // Has no effect when swi_training_mode=0 (normal autonomous
                 // operation: hold_ctr expiry → S_VALIDATE as before).
-                else if (hold_ctr >= HOLD_MAX && !swi_training_mode_r) nxt_state = S_VALIDATE;
+                // FIX D (2026-08-07): PEER-AWARE release — require the minimum
+                // HOLD_MAX AND all active lanes synced (peer present+clean) so we
+                // don't drop our training pattern before the peer has locked. The
+                // hold_ext_ctr backstop guarantees release if the peer never syncs.
+                // Good bring-up (lanes synced by HOLD_MAX) releases at HOLD_MAX.
+                else if (hold_ctr >= HOLD_MAX && (all_lanes_locked_d || !HOLD_PEER_AWARE_EN) && !swi_training_mode_r) nxt_state = S_VALIDATE;
+                else if (HOLD_PEER_AWARE_EN && hold_ext_ctr >= HOLD_BACKSTOP_MAX[$clog2(HOLD_BACKSTOP_CYCLES+1)-1:0] && !swi_training_mode_r) nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
                 // §9.11d Fix A1 real-data validation.
@@ -1654,10 +1681,15 @@ module tidelink_phy_align_calibrator #(
     // saturating at HOLD_MAX (the S_HOLD→S_DONE release condition).
     // -------------------------------------------------------------------------
     always_ff @(posedge clk or posedge rst) begin
-        if (rst)                       hold_ctr <= '0;
-        else if (cur_state != S_HOLD)  hold_ctr <= '0;
-        else if (hold_ctr < HOLD_MAX[$clog2(HOLD_CYCLES+1)-1:0])
-                                       hold_ctr <= hold_ctr + 1'b1;
+        if (rst) begin                      hold_ctr <= '0; hold_ext_ctr <= '0; end
+        else if (cur_state != S_HOLD) begin hold_ctr <= '0; hold_ext_ctr <= '0; end
+        else begin
+            if (hold_ctr < HOLD_MAX[$clog2(HOLD_CYCLES+1)-1:0])
+                hold_ctr <= hold_ctr + 1'b1;
+            // FIX D: free-running backstop counter, saturates at HOLD_BACKSTOP_MAX
+            if (hold_ext_ctr < HOLD_BACKSTOP_MAX[$clog2(HOLD_BACKSTOP_CYCLES+1)-1:0])
+                hold_ext_ctr <= hold_ext_ctr + 1'b1;
+        end
     end
 
     // -------------------------------------------------------------------------

@@ -2146,7 +2146,7 @@ module axi_chiplet_controller #(
             // FSM's train_poll_timeout (consumed at u_autoneg, and the tb/SW
             // value 0x00F1 was silently forcing MIN_LOCK_DWELLS=15). Own
             // 4-bit field at slot 3 [23:20]; 0 = use the RTL parameter.
-            min_lock_dwells_r        <= 4'd0;
+            min_lock_dwells_r        <= 4'd1;  // H4 fix: centering_mode ON by default (was 0=off -> S_PROBE (0,0) edge-framing lottery). Full sweep + eye-centre from the auto cal.
             nego_train_retrain_pulse <= 1'b0;
             train_fail_irq_r         <= 1'b0;
             train_fail_irq_w_d       <= 1'b0;

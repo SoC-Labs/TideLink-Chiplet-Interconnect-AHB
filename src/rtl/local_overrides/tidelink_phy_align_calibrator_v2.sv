@@ -769,9 +769,23 @@ module tidelink_phy_align_calibrator #(
     //   deps/tidelink-phy copy, so the bitstream-affecting change lives here.)
     // -------------------------------------------------------------------------
     reg calibrated_once_q;
+    // FIX 1 (2026-08-06, TL-001 terminal-latch): latch the sticky ONLY on a
+    // GENUINE success, not on a GIVE-UP S_DONE. Before this, calibrated_once_q
+    // latched on ANY first reach of S_DONE — including a give-up (val-timeout /
+    // retry-exhausted / escan-exhausted / role_locked dip). A give-up die then
+    // permanently blocked its own re-arm (role_locked_rise_eff/swreset_fall_eff
+    // gated by ~calibrated_once_q), stopped driving its training pattern, and the
+    // PEER swept a silent lane forever -> best_run=0 both dies -> (0,0) framing
+    // lottery -> cross-die WRITE data-drop. `validation_timed_out` is the existing
+    // give-up discriminator (set 1 on the give_up_to_done transition, so already 1
+    // on the first give-up S_DONE cycle; stays 0 on a real validate-confirm
+    // S_DONE per the MUST-FIX #2b comment). Gating on it keeps the Bug-A sticky
+    // behaviour for a genuine lock VERBATIM while letting a give-up keep re-arming
+    // until the peer's training window overlaps (HW-confirmed by the bilateral
+    // swi_training_mode FIX-3 pulse: forcing the pattern back converts drop->land).
     always_ff @(posedge clk or posedge rst) begin
-        if (rst)                      calibrated_once_q <= 1'b0;
-        else if (cur_state == S_DONE) calibrated_once_q <= 1'b1;
+        if (rst)                                            calibrated_once_q <= 1'b0;
+        else if (cur_state == S_DONE && !validation_timed_out) calibrated_once_q <= 1'b1;
     end
     // Once a good lock exists, suppress BOTH re-trigger edges (the spurious
     // training-exit SWI_RECAL pulse and any role_locked re-pulse). Cold boot

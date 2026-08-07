@@ -125,9 +125,34 @@ ILA" to diagnose. I cannot set up a PL ILA autonomously via SSH/APB.
 2. Fix the residual B/hazard-accounting leak (Fix K + synth-B reduced but didn't
    eliminate it).
 
-**Branch to pull:** `fix/tl001-calibrator-terminal-latch` @ **`e5bd29c`** in the
+**Branch to pull:** `fix/tl001-calibrator-terminal-latch` @ **`235d758`** in the
 eth-chiplet submodule (`nanosoc-ethernet-chiplet/tidelink`) — FIX 1 (calibrator
-give-up terminal-latch) + `min_lock_dwells=1`. Sim-proven (3/3 calibrator regression),
-low-risk (genuine bring-up provably unchanged), **but NOT the operative fix** for the
-die_a wedge. Include it as a correct improvement; the actual resolution awaits the ILA
-campaign above. Boards recovered, leases released.
+give-up terminal-latch) + `min_lock_dwells=1` (`e5bd29c`) + the leak-witness
+observability (`235d758`). Sim-proven / low-risk. Boards recovered, leases released.
+
+---
+
+## Localization update (2026-08-07 PM) — the wedge is now READABLE, no ILA needed
+
+Rather than wait for an ILA, I **built the observability**: a leak-witness register
+**`0x21F8`** (marker `0xB5`) sourced from XHB500's `ahb_sub` bridge (`stall`/`HWM`/
+`wr_stuck`/`err` stickies + bufferable bit), committed `235d758`. Deployed and read on
+the pair, it **overturns the "below-obs SmartConnect leak" theory** and pins the wedge
+exactly:
+
+- On a **bad-framing** bring-up, the first cross-die write reads `0x21F8=0xb5000521`:
+  `stall=1` (XHB500 AHB bridge `hreadyout` stuck low ≥2^12 → **the far-B never
+  returned**), `wr_stuck=1` (synth-B backstop fired at the 2^16 timeout), `HWM=1`,
+  `buf=0` (**non-bufferable** → not the EWR/hazard-list path, so Fix K is N/A). die_b=0
+  (drop); die_a wedged at write 4.
+- **The die_a wedge is a write-stall cascade, not a mystery leak:** bad framing drops
+  the W/B round-trip → no far-B → ~2^16 stall → synth-B → repeated stuck writes
+  accumulate a link/FC-node resource → wedge (~4 on a fully-bad bring-up, ~17 on a
+  mostly-good one). **Same framing root as the data-drop.** A good bring-up crosses
+  W+B, returns B, no stall, no wedge, lands 16/16.
+
+**Fix path (open, not yet built):** (root) autonomous framing/eye so W+B cross every
+bring-up (the FIX 3 / calibrator / eye work); (wedge) make the synth-B backstop also
+clear the die_a FC-node/link outstanding for the stuck write so stalls don't accumulate,
+and/or shorten `SUB_STALL/OUTSTANDING_TIMEOUT_LOG2`. The handover-doc evaluation confirmed
+`wr_hold_r` fixes only the ordering *contract*, not the `data=0` close (not sim-reproducible).

@@ -435,22 +435,35 @@ bugs:
       - "Wedge-safe soak (single guarded process) ALSO wedges => not a harness artifact; the leak is real."
     fix:
       approach: >
-        Root cause is a per-write resource leak on die_a's outbound write path,
-        BELOW tidelink's AXI-node observability (PS SmartConnect / XHB500
-        hazard-list / outstanding-write tracking, or the SoC matrix). Candidate
-        fixes for when an ILA localizes the leaked resource: (a) make the cross-die
-        write POSTED — generate B locally at the FC node when W enters the link TX
-        FIFO (decouples the PS from link latency, Agent-2 L3); (b) fix the residual
-        B/hazard-accounting leak (Fix K + synth-B drain reduced but did not
-        eliminate it). NOT the serialize-to-1 (refuted).
+        LOCALIZED (0x21F8, 235d758): a write-stall cascade from a dropped W/B
+        round-trip on a bad-framing bring-up. Fix path: (ROOT) autonomous
+        framing/eye so W+B cross every bring-up (the FIX3/calibrator/eye work — the
+        hard PHY problem; on a good bring-up everything works, 16/16). (WEDGE
+        MITIGATION, RTL) make the synth-B backstop ALSO clear the die_a
+        FC-node/link outstanding for the stuck write so repeated stalls don't
+        accumulate, and/or shorten SUB_STALL/OUTSTANDING_TIMEOUT_LOG2 so the PS
+        stall per stuck write is brief. buf=0 => NOT the EWR/hazard-list path (Fix
+        K N/A). NOT serialize-to-1 (refuted: pacing doesn't help).
       files: [src/rtl/tidelink_top.sv]
       commit: null
       branch: null
       netlist_affecting: true
-    needs: "PS-PL ILA on die_a's PS<->tidelink AXI/AHB write interface (mark_debug ahb_sub/s_axi/m_axi + sub_wr_os_ctr/hazard-list depth) to identify the leaked resource. The project docs (VERIFICATION_PLAN F-4) already state this diagnosis 'needed a purpose-built ILA'."
+    LOCALIZED_2026_08_07: >
+      The leak-witness register 0x21F8 (obs commit 235d758, branch
+      fix/tl001-calibrator-terminal-latch) made the wedge VISIBLE from APB — NO ILA
+      needed. On a bad-framing bring-up the FIRST cross-die write reads
+      0x21F8=0xb5000521: stall=1 (XHB500 AHB bridge hreadyout stuck-low >=2^12 =>
+      far-B never returned), wr_stuck=1 (synth-B backstop fired), HWM=1, buf=0
+      (non-bufferable => NOT the EWR/hazard-list path, Fix K N/A). die_b 0x2D001000=0
+      (drop), die_a wedged at w4. => the wedge is a WRITE-STALL CASCADE: bad framing
+      drops the W/B round-trip -> no far-B -> ~2^16 stall -> synth-B -> repeated
+      stuck writes accumulate a link/FC-node resource -> wedge (~4 fully-bad
+      bring-up, ~17 mostly-good). SAME framing root as the data-drop; a good
+      bring-up lands 16/16 with no stall/wedge. OVERTURNS 'below-obs SmartConnect leak'.
+    needs: "No ILA — root-caused via the 0x21F8 witness. Fix path in fix.approach."
     verification: {sim_test: none, in_sim_gate: false, hw_tested: "characterized, not fixed"}
     signoff:
-      claude_verdict: "ROOT-CAUSED to a per-write leak on die_a's outbound write path (NOT a marginal eye, NOT FC-node, NOT SError, NOT concurrency — all refuted on HW 08-07). Data path works byte-exact until the wedge. Exact leaked resource is below all available obs => needs a PS-PL ILA. This is the DOMINANT TL-001 blocker."
+      claude_verdict: "PRECISELY LOCALIZED via the new 0x21F8 witness (235d758): the die_a wedge is a WRITE-STALL CASCADE (dropped W/B -> no far-B -> ~2^16 stall -> synth-B -> accumulation -> wedge), NOT a below-obs SmartConnect leak (overturned). SAME framing root as the data-drop. NO ILA needed. Fix path = autonomous framing (root) + synth-B clears FC-node outstanding (wedge). DOMINANT TL-001 blocker; still OPEN (fix not yet built)."
       evidence: ["hw_regionf_soak.log Region-F healthy@wedge", "hw_diea_dmesg.log silent kernel", "hw_purewrite.log wedge@~10 data-lands", "hw_paced.log wedge@~20 with 100ms pacing"]
       approved: false
     related: [TL-001]

@@ -779,3 +779,59 @@ bugs:
     verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
     signoff: {claude_verdict: "gate-level hazard unproven in sim; verify pnr netlist before acting", evidence: ["WavMultibitSync_18.v raw rptr slot-select"], approved: false}
     related: [TL-009]
+
+  # ===========================================================================
+  # Regression found by re-running sim_gate on the consolidated tip (2026-08-07)
+  # ===========================================================================
+  - id: TL-024
+    title: FIX 1 (calibrator centering-on) regresses blocking gate t31_autonomous_training_exit
+    severity: high
+    area: phy/calibrator
+    status: root_caused
+    summary: >
+      Re-running `make sim_gate` on the consolidated tip (2c249ec) surfaced a REAL
+      regression the HW-only campaign missed (never re-ran sim_gate — stale-simv /
+      sim_gate-not-invoked trap): the BLOCKING suite t31_autonomous_training_exit
+      FAILs. swi_training_mode_r never engages — the autoneg FSM never asserts
+      training — so the autonomous training-exit protocol the gate encodes never runs;
+      the calibrator reaches S_DONE via HOLD->VALIDATE with tm=0 throughout.
+    root_cause: >
+      BISECTED 2026-08-07 (ran t31 across the calibrator line, VERDICT = grep of the
+      sim_gate PASS marker; note `make sim_gate_t31` exits 0 even on suite FAIL so the
+      grep is authoritative, NOT the exit code):
+        1107151 = PASS ; e5bd29c (FIX 1) = FAIL ; 235d758 (FIX1+obs) = FAIL ;
+        2c249ec (FIX1+obs+FIXD+FIX2) = FAIL.
+      => e5bd29c (FIX 1) is THE culprit commit. e5bd29c makes two changes:
+      (a) min_lock_dwells 0->1 "centering-on" (axi_chiplet_controller.sv ~:2153) — the
+      autonomous calibrator switches from S_PROBE(0,0) edge-framing to a full S_SWEEP +
+      eye-centre; (b) the calibrated_once_q latch gate. (a) is the mechanism: with
+      centering-on the calibrator reaches lock/S_HOLD without the autoneg entering
+      ST_TRAIN, so swi_training_mode_r (autoneg-driven, axi_chiplet_controller.sv:2169)
+      never rises. (b) only INCREASES training-pattern drive so cannot reduce
+      engagement. Confirming micro-test (revert just min_lock_dwells 1->0 on e5bd29c)
+      NOT yet run — high-confidence-by-mechanism, one build to confirm.
+    fix:
+      approach: >
+        DECISION, not a clean revert. Centering-on IS the H4 framing fix (avoids the
+        (0,0) edge-framing lottery, a TL-001 HW-improvement lever), so reverting it
+        reintroduces H4. Options: (1) determine whether the NEW autonomous behavior is
+        CORRECT (does D2D data still cross autonomously with centering-on, i.e. is the
+        autoneg-training handshake still needed?) and if so update t31 to the new
+        protocol; (2) gate centering-on so the autoneg training-engage path is preserved
+        for the autonomous flow; (3) fix the calibrator<->autoneg interaction so BOTH
+        centering AND training-engage occur. Needs analysis of whether autonomous
+        bilateral training still functions — ties directly to TL-001.
+      files: [src/rtl/local_overrides/axi_chiplet_controller.sv, cocotb/tidelink_top_pair/test_31_autonomous_training_exit.py]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    verification:
+      sim_test: "cocotb/tidelink_top_pair/test_31_autonomous_training_exit.py (sim_gate_t31, BLOCKING)"
+      in_sim_gate: true
+      hw_tested: n/a
+      hw_evidence: null
+    signoff:
+      claude_verdict: "BISECTED to e5bd29c (FIX 1 centering-on). Real regression of a BLOCKING gate, masked because the HW-only campaign never re-ran sim_gate. Fix is a DECISION (centering-on H4 vs the t31 autonomous-training-exit protocol) — do NOT sign the TL-001 calibrator work until resolved. Confirming min_lock_dwells micro-revert = 1 build."
+      evidence: ["t31 bisect: 1107151=PASS, e5bd29c=FAIL", "min_lock_dwells 0->1 @e5bd29c axi_chiplet_controller.sv:2153", "swi_training_mode_r never HIGH; autoneg :2169"]
+      approved: false
+    related: [TL-001, TL-009]

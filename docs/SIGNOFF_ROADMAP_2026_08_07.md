@@ -28,14 +28,15 @@ main 18491ef  ⊂  integ/axirec-on-chiplet 1107151  ⊂  tl001-calibrator 2c249e
   `SELF_ARM_TRAIN_EN` I1 silicon fix ✔.
 - The stale local `integ/axirec-on-chiplet` copies (`63222b6`, `c6cc6eb`) are **behind** origin's
   authoritative `1107151` — ignore them; origin is truth.
-- **Gate status:** `make sim_gate` on the consolidated tip surfaced a **real regression** — blocking suite
-  `t31_autonomous_training_exit` FAILs (`swi_training_mode_r` never engages; calibrator reaches S_DONE via
-  HOLD→VALIDATE without asserting training mode). The t31 **test is unchanged** since the integ line `1107151`,
-  while the calibrator RTL changed on that range (FIX 1 `e5bd29c`, FIX D `20af2b1` — which explicitly re-worked
-  the S_HOLD release + `swi_training_mode` gating). ⇒ **the calibrator work (FIX D/FIX 1) appears to have
-  regressed autonomous-training engagement in sim** — a gate the prior HW-focused campaign never re-ran
-  (stale-simv / sim_gate-not-invoked trap). Empirical pre/post confirmation (run t31 on `1107151`) in progress;
-  **do not treat the branch as gate-green until resolved** — see §8.
+- **Gate status:** `make sim_gate` on the consolidated tip surfaced a **real regression, now BISECTED** →
+  **TL-024**. Blocking suite `t31_autonomous_training_exit` FAILs (`swi_training_mode_r` never engages; the
+  calibrator reaches S_DONE via HOLD→VALIDATE without the autoneg entering training). Bisect (t31 across the
+  calibrator line): `1107151`=PASS, **`e5bd29c` (FIX 1)=FAIL**, `235d758`=FAIL, `2c249ec`=FAIL ⇒ **FIX 1 is the
+  culprit commit**; the mechanism is `min_lock_dwells 0→1` ("centering-on") switching the autonomous calibrator
+  to a full sweep+eye-centre so it locks without the autoneg training handshake. The HW-only campaign never
+  re-ran sim_gate (stale-simv trap). **This is a genuine find, not a consolidation defect** — the branch is
+  still the correct union, but it is **NOT gate-green**; the fix is a DECISION (centering-on is the H4 framing
+  fix — see TL-024). Full 44-suite gate still running in background for the complete failure set.
 
 ---
 

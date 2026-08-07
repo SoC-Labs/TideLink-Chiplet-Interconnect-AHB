@@ -436,14 +436,23 @@ bugs:
     fix:
       approach: >
         LOCALIZED (0x21F8, 235d758): a write-stall cascade from a dropped W/B
-        round-trip on a bad-framing bring-up. Fix path: (ROOT) autonomous
-        framing/eye so W+B cross every bring-up (the FIX3/calibrator/eye work — the
-        hard PHY problem; on a good bring-up everything works, 16/16). (WEDGE
-        MITIGATION, RTL) make the synth-B backstop ALSO clear the die_a
-        FC-node/link outstanding for the stuck write so repeated stalls don't
-        accumulate, and/or shorten SUB_STALL/OUTSTANDING_TIMEOUT_LOG2 so the PS
-        stall per stuck write is brief. buf=0 => NOT the EWR/hazard-list path (Fix
-        K N/A). NOT serialize-to-1 (refuted: pacing doesn't help).
+        round-trip on a bad-framing bring-up. WEDGE-FIX FEASIBILITY (agent 08-07):
+        NO clean local wedge fix. The AW-block is FAR-SIDE bilateral backpressure —
+        the Wlink a2l replay window is freed ONLY by a far-die ACK packet, depth
+        granted by far-die fe_tx_credit_max (WlinkGenericFCSM.v:630/670/814).
+        Posted-write = ineffective (AW/W still need a far ACK). Local abandon /
+        forge-ACK = DESYNCS the link -> silent corruption (rejected). synth-B
+        already does the near-die max (drains sub_wr_os_ctr, Fix K bid). => FIX THE
+        ROOT (framing) so the far side receives+ACKs and the window frees naturally.
+        Only bilateral-safe stopgap = a link RETRAIN on the wedge witness
+        (heavyweight, needs bilateral coordination). buf=0 => NOT EWR/hazard (Fix K
+        N/A). NOT serialize-to-1 (refuted). flist: FCSM edits reach FPGA-V2 only;
+        the ASIC flist uses the deps FCSM.
+        ROOT-FIX OPTIONS (framing, all substantial): calibrator peer-aware S_HOLD
+        release (Agent-1 Cand-D, additive+backstopped); autonomous bilateral
+        training coordination (self-arm); witness-triggered retrain; OR accept the
+        runtime FIX3 bilateral-training pulse as a bring-up step (proven 11/11); OR
+        physical eye (re-pin die_b SRCC). FIX3 proves the framing IS fixable.
       files: [src/rtl/tidelink_top.sv]
       commit: null
       branch: null
@@ -463,7 +472,7 @@ bugs:
     needs: "No ILA — root-caused via the 0x21F8 witness. Fix path in fix.approach."
     verification: {sim_test: none, in_sim_gate: false, hw_tested: "characterized, not fixed"}
     signoff:
-      claude_verdict: "PRECISELY LOCALIZED via the new 0x21F8 witness (235d758): the die_a wedge is a WRITE-STALL CASCADE (dropped W/B -> no far-B -> ~2^16 stall -> synth-B -> accumulation -> wedge), NOT a below-obs SmartConnect leak (overturned). SAME framing root as the data-drop. NO ILA needed. Fix path = autonomous framing (root) + synth-B clears FC-node outstanding (wedge). DOMINANT TL-001 blocker; still OPEN (fix not yet built)."
+      claude_verdict: "LOCALIZED (0x21F8, 235d758) = WRITE-STALL CASCADE (dropped W/B -> no far-B -> ~2^16 stall -> synth-B -> accumulation -> wedge). FIX D (peer-aware S_HOLD release, calibrator, committed 20af2b1) BUILT+HW-TESTED: CORRECT but NOT SUFFICIENT — W-direction data-crossing looks better (3/4 PORs landed, cyc2/4 crossed 15-20 writes byte-exact vs baseline ~1/4) but die_a still WEDGES 4/4 (stall=1). REFINED ROOT: the wedge is the B-RETURN direction and tracks CAPTURE TIMING — this build die_a WNS=-2.862 vs die_b -1.752 (source-sync pad_clk_rx build variance) => die_a's MARGINAL RX CAPTURE drops the returning B packets. The W crosses (die_b RX better); the B is lost (die_a RX worse). => residual is PHYSICAL capture-timing asymmetry (P-B lottery / eye), NOT logic. DOMINANT TL-001 blocker; still OPEN, needs capture-clock determinism / eye work."
       evidence: ["hw_regionf_soak.log Region-F healthy@wedge", "hw_diea_dmesg.log silent kernel", "hw_purewrite.log wedge@~10 data-lands", "hw_paced.log wedge@~20 with 100ms pacing"]
       approved: false
     related: [TL-001]

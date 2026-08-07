@@ -56,11 +56,19 @@ campaign:
   signed_off_by: null
   signed_off_date: null
   open_rank1_critical: 1     # TL-001 (peer-write data-drop / calibrator sweep)
-  open_functional_high: 0    # F-1/F-2/synth-B/ECC/txgen all FIXED on the integ line
-  open_tapeout_high: 2       # TL-010 (F13 PTP), TL-011 (F19 PHY BIST)
+  open_functional_high: 1    # TL-006 REOPENED 2026-08-07 — ECC fix NOT wired into the shipping ASIC flist (bypass ships)
+  open_tapeout_high: 4       # TL-010 (F13 PTP), TL-011 (F19 PHY BIST), TL-019 (ASIC FCSM strip), TL-021 (bring-up obs)
+  consolidation:
+    branch: integ/tidelink-consolidated-2026-08-07   # ecef57c = main 18491ef ⊂ integ 1107151 ⊂ tl001 2c249ec + docs
+    roadmap: docs/SIGNOFF_ROADMAP_2026_08_07.md
+    note: "single unified line; all recovery/ECC/PTP/CI fixes + calibrator work + registry, gate-verified"
   notes: >
     Populated 2026-08-06 evening from 4 assessment agents; resolution loop ran
     overnight into 2026-08-07. See docs/OVERNIGHT_SUMMARY_2026_08_07.md.
+    2026-08-07 consolidation + 2 handover evaluations: A2L-CDC doc = plausible-not-
+    proven (instrument first, do not port the refuted fix family); ASIC-line-gaps doc =
+    substantially correct -> added TL-018..023 + REOPENED TL-006 (ASIC ECC bypass ships).
+    See docs/SIGNOFF_ROADMAP_2026_08_07.md.
   awaiting_david_signoff:   # reached sim_proven/hw_proven with evidence; set signoff.approved when accepted
     - "TL-003 Fix K (hw_proven, silicon)"
     - "TL-005 F-2 backstop (hw_proven)"
@@ -345,23 +353,38 @@ bugs:
       A bypassed WlinkEccSyndrome mis-routed single-bit header flips; decode
       `corrupted` defaulted 1 for syndrome==0 (clean). The _T gate is the fix.
       byte-0 W/AW/R/B + byte-1 corrected byte-exact in sim.
+      REOPENED 2026-08-07 (ASIC line): the fix is wired into the FPGA-V2 flist
+      ONLY, NOT the shipping ASIC-V2 flist -> the tapeout netlist currently ships
+      the ECC BYPASS. See asic_flist_gap.
     fix:
       approach: header-ECC restore (_T gate on the syndrome==0 clean case)
-      files: [src/rtl/local_overrides/WlinkEccSyndrome.v]   # wired into all flists incl tidelink_top_full_asic_v2.flist -> ACTIVE in shipping ASIC
-      commit: 1aaed00   # regression tests added 8e071f7
+      files: [src/rtl/local_overrides/WlinkEccSyndrome.v]   # wired into tidelink_fpga_v2.flist:243 (FPGA). NOT the ASIC flist -- see asic_flist_gap.
+      commit: 1aaed00   # regression tests added 8e071f7. NOTE: 1aaed00 re-pointed ONLY the FPGA flist despite its "flists re-pointed" (plural) message.
       branch: integ/axirec-on-chiplet
       netlist_affecting: true
+      asic_flist_gap: >
+        VERIFIED 2026-08-07 (ASIC-line-gaps agent): tidelink_top_full_asic_v2.flist:233
+        still pulls deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v = the
+        2026-05-05 blanket bypass (corrupted=0; corrected=0), NOT the local_override with
+        the _T fix. Provenance: `git show --stat 1aaed00 -- flists/` = ONLY
+        tidelink_fpga_v2.flist changed; no ECC hold-commit on the ASIC side. => the
+        shipping ASIC has NO header ECC. FIX (Tier-1, autonomous, sim-verifiable):
+        re-point ASIC-V2 flist :233 deps -> src/rtl/local_overrides/WlinkEccSyndrome.v.
+        CAVEAT: netlist-affecting on the tapeout trunk (signoff_policy => David signs to
+        land); pair with a COMBINED-CONFIG sim (ECC-on together with the ASIC's CRC-on +
+        FCSM-deps settings -- that combination has never been co-simulated).
     verification:
       sim_test: "test_axi_datanode_gaps.py GAPS_ECC_TESTS (make gaps_ecc): test_ecc_corrects_w_byte0/_aw_byte0/_r_byte0/_b_byte0/_b_byte1_wordcount/_ecc_persistent_w_byte0_byte_exact"
       in_sim_gate: true    # A1 DONE: wired into sim_gate_axi_datanode_gaps @63222b6 (verified 6/6 PASS first)
       hw_tested: false     # HW-validate pending (B byte-0 already HW-proven; W byte-0 wedged pre-ECC)
       hw_evidence: null
     action_items:
-      - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix now regression-locked."
+      - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix regression-locked ON THE INTEG LINE. NOTE: 63222b6 is object-ABSENT from the eth-chiplet submodule Makefile (agent 2026-08-07) -> gaps_ecc runs only via gaps_nodes+gaps_backstop there; port it."
       - "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."
+      - "A3 (OPEN, 2026-08-07, CRITICAL): re-point ASIC-V2 flist :233 deps->local_override so the tapeout netlist actually gets the ECC fix (asic_flist_gap). Implement + combined-config sim-prove autonomously; David signs to land (netlist-affecting)."
     signoff:
-      claude_verdict: "sim_proven + NOW GATED (63222b6, 6/6 PASS). Coverage gap CLOSED. Candidate sign-off for the sim/gate side; A2 HW-validate still open."
-      evidence: [commit:1aaed00, commit:8e071f7, commit:63222b6, "gaps_ecc 6/6 PASS", "byte-0 W/AW/R/B byte-exact in sim"]
+      claude_verdict: "FPGA side sim_proven + gated (63222b6). BUT REOPENED: the SHIPPING ASIC flist (:233) still ships the ECC BYPASS -> A3 open, CRITICAL tapeout gap. Prior 'ACTIVE in shipping ASIC' claim was FALSE (corrected 2026-08-07). Do NOT sign off until A3 lands + combined-config sim green."
+      evidence: [commit:1aaed00, commit:8e071f7, commit:63222b6, "gaps_ecc 6/6 PASS (FPGA)", "asic_v2.flist:233 = deps bypass (agent-verified)", "git show --stat 1aaed00 = FPGA flist only"]
       approved: false
 
   # ---------------------------------------------------------------------------
@@ -649,3 +672,110 @@ bugs:
     fix: {approach: "document in release notes", files: [], commit: null, branch: null, netlist_affecting: false}
     verification: {sim_test: n/a}
     signoff: {claude_verdict: "FYI — no action; note in release notes", evidence: [commit:602ef8d], approved: true, approved_by: auto-fyi, approved_date: 2026-08-06}
+
+  # ===========================================================================
+  # ASIC-line RTL gaps (from HANDOVER_ASIC_LINE_RTL_GAPS_2026-08-07, agent-verified)
+  # Theme: FPGA-V2 flist fixes were never re-pointed into the shipping ASIC-V2 flist.
+  # See also TL-006 (ECC — the highest-severity instance, tracked there, REOPENED).
+  # ===========================================================================
+  - id: TL-018
+    title: ASIC FCSM CRC resets ON while FPGA resets OFF — combination never co-run
+    severity: medium
+    area: rtl/wlink
+    status: root_caused   # decision, SW-recoverable
+    summary: >
+      deps FCSM (ASIC) WlinkGenericFCSM.v:636 resets out_prepend_swi_disable_crc<=1'h0
+      (CRC checking ON); local_override (FPGA) :713 resets <=1'h1 (OFF). ASIC-V2 flist
+      pulls deps (:270), FPGA-V2 pulls local (:292). Polarity confirmed :195-196 (~mask).
+      The ASIC error-handling config (CRC-on + ECC-off pre-TL-006-A3 + no watchdog) has
+      never been co-simulated. Runtime-overridable via CTRL bit[16].
+    fix: {approach: "decide the ASIC CRC reset value deliberately + record it in the FCSM/flist header; co-sim the shipping config", files: [src/rtl/local_overrides/WlinkGenericFCSM.v], commit: null, branch: null, netlist_affecting: true}
+    decision_needed: "David: ratify ASIC CRC reset value (on vs off). SW-recoverable either way."
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "decision — SW-recoverable; pair the co-sim with TL-006 A3", evidence: ["FCSM :636 vs :713", "asic_v2.flist:270"], approved: false}
+    related: [TL-006]
+
+  - id: TL-019
+    title: ASIC flist pins AXI-node FCSM 0-4 to deps (no socl_ recovery hooks)
+    severity: high
+    area: build/flist
+    status: root_caused   # decision (real counter-argument)
+    summary: >
+      tidelink_top_full_asic_v2.flist:270-275 pull FCSM 0-5 from deps (only FCSM_6 local);
+      FPGA-V2 :292-296 pull FCSM 0-4 from local_overrides. grep -c socl_: deps=0 each,
+      local=66 each -> the ASIC AXI data nodes ship WITHOUT the socl_ recovery hooks
+      (F-1/F-2/Fix-K class). The ASIC flist's last touch 6e3b25d "hold(tapeout): keep
+      ASIC FCSM 0-4 on deps pending silicon ILA (I1 FPGA-only)"; that hold basis EXPIRED
+      when I1 was resolved on silicon (07-31), but was never propagated to the flist.
+    fix: {approach: "re-point ASIC-V2 FCSM 0-4 deps->local_override OR refresh the hold comment with a meetable gate", files: [flists/tidelink_top_full_asic_v2.flist], commit: null, branch: null, netlist_affecting: true}
+    decision_needed: "David: re-point (adds a NOVEL state-2 min-CRACK-emit blocking gate that stalled bring-up at 32 and 8 per I1_FCSM_BRINGUP_REGRESSION) vs refresh hold. Re-decide with I1-resolved in hand."
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "high-severity DECISION — the local FCSM carries a novel blocking gate; not a clean re-point", evidence: ["asic_v2.flist:270-275", "socl_ 0 vs 66", "6e3b25d hold-commit"], approved: false}
+    related: [TL-004, TL-005, TL-009]
+
+  - id: TL-020
+    title: ASIC flist hygiene — dup sync_detect + undefined PTP FIFO cell landmine
+    severity: low
+    area: build/flist
+    status: fix_built   # dedup autonomous; landmine dormant
+    summary: >
+      (1) tidelink_phy_sync_detect.sv listed twice in tidelink_top_full_asic_v2.flist
+      (:190 and :197). (2) LANDMINE: wlink_wlink_ptp_tl_a2l_48x4 instantiated at
+      deps/.../WavFIFO_23.v:103 (WavFIFO_23 in BOTH v2 flists) with NO module definition
+      anywhere in deps/src -> dormant only because parent WlinkGenericFCReplayV2_15 (PTP
+      FC node) is not elaborated; fires if the PTP FC node is enabled (couples TL-010).
+      (3) obs modules (winscan_obs/fcemit_obs) absent from the bare ASIC flist (silicon
+      gets them via parent nanosoc_eth_chiplet_asic.flist:81-82; bare flist won't elaborate).
+    fix: {approach: "dedup :197; guard/define a2l_48x4 (or comment the PTP-off precondition); add obs .sv to bare ASIC flist", files: [flists/tidelink_top_full_asic_v2.flist], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "dedup + obs-add autonomous; landmine is a David/PTP-enable call", evidence: ["asic_v2.flist:190,197", "WavFIFO_23.v:103 undefined a2l_48x4"], approved: false}
+    related: [TL-010, TL-013]
+
+  - id: TL-021
+    title: First-silicon debuggability gaps (APB region-hit / i2c_slv_reset / ext_stall_err_q)
+    severity: high
+    area: rtl/obs
+    status: root_caused   # bring-up observability
+    summary: >
+      (1) axi_chiplet_controller.sv:595-599 slv_apb_ctrl_hit admits only regions 4/8/C ->
+      Regions D and F (the 0x21A0-A8 RX-framer stickies + the 0x21F8 wedge witness) are
+      UNREACHABLE from the I2C sideband on silicon. (2) :3074 i2c_slv_reset = ~hresetn |
+      role_is_master -> the master die's inbound I2C door is held in reset by construction.
+      (3) tidelink_top.sv:940-959 ext_stall_err_q sticky is POR-cleared, NOT APB-mapped.
+      Directly limits first-silicon bring-up debug (the very obs that cracked TL-009 is
+      unreadable via the on-silicon sideband).
+    fix: {approach: "widen APB-hit to regions D/F; add a debug-override to i2c_slv_reset; map ext_stall_err_q to an APB obs bit; (opt) event-order trace", files: [src/rtl/local_overrides/axi_chiplet_controller.sv, src/rtl/tidelink_top.sv], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "3 small localized RTL edits, high bring-up leverage; autonomous build + APB-read cocotb, netlist-affecting so David signs to land", evidence: ["axi_chiplet_controller.sv:595-599,3074", "tidelink_top.sv:940-959"], approved: false}
+    related: [TL-009]
+
+  - id: TL-022
+    title: D2D RX-FIFO rf_16k macro never functionally simulated (random init)
+    severity: medium
+    area: rtl/fifo
+    status: root_caused   # ASIC-only exposure
+    summary: >
+      src/rtl/fifo/asic/tidelink_sram.sv:48 instantiates rf_16k u_rf on the D2D RX FIFO;
+      no sim env compiles the real macro (only sim_stubs/rf_16k_stub.v in compile-only
+      gates). Random power-up (vs the FPGA model's all-zero) is an un-exercised init-state
+      exposure that interacts with the phantom-pop guard's documented uncovered 2nd case
+      (tidelink_fifo_ctrl.sv:321,:400).
+    fix: {approach: "build a randomised-init rf_16k model + targeted RX-FIFO phantom-pop sim before tapeout", files: [src/rtl/fifo/asic/tidelink_sram.sv], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "test-infra + possible RTL; may surface a real phantom-pop bug; autonomous sim build", evidence: ["tidelink_sram.sv:48 rf_16k", "fifo_ctrl.sv:321,400"], approved: false}
+    related: []
+
+  - id: TL-023
+    title: Mailbox slot-select from async rptr — ICG runt-pulse hazard (ASIC-only)
+    severity: low
+    area: rtl/wlink
+    status: open   # gate-level, unverified in sim
+    summary: >
+      WavMultibitSync_18.v: w_ready uses the SYNCHRONISED rptr, but r_data slot-select
+      (rptr ? mem_1 : mem_0) and write-enable (~rptr/rptr) use the RAW cross-domain rptr.
+      The RTL asymmetry is real; the "Genus emits CKLNQD1 with async enable -> runt pulse"
+      step needs the pnr netlist (ASIC/genus-innovus/runs/*/pnr.v) to confirm. a2l-adjacent.
+    fix: {approach: "synchronise rptr into the slot-select/we path (verify the pnr runt-pulse claim first); coordinate with the a2l CDC handover", files: [src/rtl/local_overrides/WavMultibitSync_18.v], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "gate-level hazard unproven in sim; verify pnr netlist before acting", evidence: ["WavMultibitSync_18.v raw rptr slot-select"], approved: false}
+    related: [TL-009]

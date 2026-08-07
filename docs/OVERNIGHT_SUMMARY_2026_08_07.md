@@ -85,3 +85,49 @@ runtime bring-up step** and treat the eye as its own effort.
 - Reg note: `swi_training_mode` = `0x2100` **bit 0** (level hold), *not* bit 6
   (bit 6 = `SWI_FORCE_RECAL`, which wedges). The calibrator's own `:1491` "bit6"
   comment is stale — the decode is `axi_chiplet_controller.sv:2202 ctrl_reg_wdata[0]`.
+
+---
+
+## Deep-dive continuation — TL-001 resolution attempt (2026-08-07)
+
+Pushed for a full resolution: 3 fresh assessment agents (autonomous-training-cure,
+die_a wedge, independent data-path skeptic) + 8 hardware experiments. Result — a
+**major reframe of the root cause**, but a genuine instrumentation wall.
+
+**Refuted on hardware (theories that turned out wrong):**
+- *Kernel SError / SLVERR panic* (Agent 2) — die_a's kernel log is **silent** at the
+  wedge; the HW build already completes stuck writes with **OKAY** synth-B (`tidelink_top.sv:1824`) + Fix K + SOAK-DRAIN. The agents partly assessed the standalone tree, which lacks these.
+- *FC-node / AXI-node wedge* — Region F `OBS_AXI_NODES` (0x21E0) reads **HEALTHY** on
+  both dies right up to the wedge.
+- *Outstanding-write concurrency / pile-up* — **100ms-paced writes (~1 outstanding)
+  wedge too**, so the serialize-to-1 fix was refuted *before building it*.
+- *Marginal analog eye* — the drop is deterministic `data=0` with the address intact
+  and repairs to byte-exact; an analog eye gives random errors and corrupts the address too.
+
+**Established (the reframe):**
+- The **cross-die write DATA path WORKS byte-exact when die_a is healthy** — 16/16 in a
+  clean single-process soak (die_b `0x2D001000=0xA5A50009` confirms write #9 landed).
+- The dominant blocker is a **digital per-write resource LEAK on die_a's OUTBOUND
+  write path** (TL-009, reframed from "marginal eye"): die_a's PS goes silently
+  unreachable after ~10-20 cross-die writes, **invisible to every available instrument**
+  (Region F healthy, kernel silent, pstore empty). Most "data drops" are this wedge
+  killing the in-flight write, plus extra drops under per-write process/CAM churn.
+
+**The wall:** the leaked resource is *below* tidelink's AXI-node observability (PS
+SmartConnect / XHB500 hazard-list / SoC matrix). Localizing it needs a **PS-PL ILA**
+on die_a's PS↔tidelink AXI/AHB write interface — which the project docs
+(`VERIFICATION_PLAN` F-4) already state this class of wedge "needed a purpose-built
+ILA" to diagnose. I cannot set up a PL ILA autonomously via SSH/APB.
+
+**Candidate fixes for when the ILA localizes the leak** (do NOT build blind):
+1. **Posted cross-die write** — generate B locally at the FC node when W enters the
+   link TX FIFO, decoupling die_a's PS from link latency (Agent-2 "L3"). Strong lead.
+2. Fix the residual B/hazard-accounting leak (Fix K + synth-B reduced but didn't
+   eliminate it).
+
+**Branch to pull:** `fix/tl001-calibrator-terminal-latch` @ **`e5bd29c`** in the
+eth-chiplet submodule (`nanosoc-ethernet-chiplet/tidelink`) — FIX 1 (calibrator
+give-up terminal-latch) + `min_lock_dwells=1`. Sim-proven (3/3 calibrator regression),
+low-risk (genuine bring-up provably unchanged), **but NOT the operative fix** for the
+die_a wedge. Include it as a correct improvement; the actual resolution awaits the ILA
+campaign above. Boards recovered, leases released.

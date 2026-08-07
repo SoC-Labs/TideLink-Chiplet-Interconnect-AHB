@@ -205,6 +205,15 @@ bugs:
       approved: false
       approved_by: null
       approved_date: null
+    followup_2026_08_07: >
+      Deeper HW investigation (5 agents + 8 experiments) REFRAMES TL-001: the
+      cross-die write DATA path WORKS byte-exact when die_a is healthy (16/16 in a
+      clean single-process soak). The dominant blocker is the die_a PER-WRITE LEAK
+      (TL-009, reframed from 'marginal eye'), which wedges die_a's PS after ~10-20
+      writes; most observed 'drops' are that wedge killing the in-flight write, plus
+      extra drops under per-write process/CAM churn. So TL-001 is gated on TL-009,
+      which needs a PS-PL ILA to localize the leaked resource. FIX 1 (calibrator,
+      e5bd29c) remains a correct sim-proven improvement but is not the operative fix.
     related: [TL-002, TL-009]
 
   # ---------------------------------------------------------------------------
@@ -408,24 +417,41 @@ bugs:
 
   # ---------------------------------------------------------------------------
   - id: TL-009
-    title: die_a marginal-eye wedge under sustained writes (physical)
+    title: die_a PS wedge under sustained cross-die writes — per-write leak (REFRAMED 08-07)
     severity: high
-    area: phy/physical
-    status: deferred
+    area: rtl/write-path   # REFRAMED from phy/physical
+    status: root_caused    # localized; exact leaked resource needs PS-PL ILA
     summary: >
-      die_a wedges under sustained writes (handover: WNS +0.484ns, "wedged at
-      #6"). A per-bring-up lottery that degrades the pair under rapid POR cycling.
-      Separate workstream from TL-001 (though they interact on HW reliability).
+      die_a's PS goes UNREACHABLE (silent hang) after ~10-20 cross-die writes.
+      2026-08-07 exhaustive HW characterization REFRAMES this from "marginal eye":
+      it is a DIGITAL per-write cumulative resource LEAK on die_a's OUTBOUND
+      cross-die write path, invisible to every available instrument.
+    ground_truth_2026_08_07:
+      - "Region F OBS_AXI_NODES (0x21E0) reads HEALTHY (0xad800000, zero wedge/resp-err/stall) on BOTH dies right up to the wedge => NOT an FC-node wedge."
+      - "die_a kernel log is SILENT at the wedge (no SError/panic/lockup/fault) => REFUTES the SLVERR->SError theory. pstore empty."
+      - "The cross-die write DATA path WORKS: data lands BYTE-EXACT until the wedge (16/16 in the clean single-process soak; die_b 0x2D001000=0xA5A50009 confirms write #9 landed)."
+      - "PACING does NOT help: 100ms-spaced writes (~1 outstanding) wedge within ~20 too => NOT outstanding-write concurrency/pile-up. REFUTES the serialize-to-1 fix (confirmed before building)."
+      - "Wedge count: pure-write ~10, read-paced soak ~17, per-write-churn ~4 => a per-write leak with run-to-run noise, worse under process/CAM churn."
+      - "Wedge-safe soak (single guarded process) ALSO wedges => not a harness artifact; the leak is real."
     fix:
-      approach: "eye recal / ILA campaign / a2l window depth — separate PHY effort"
-      files: []
+      approach: >
+        Root cause is a per-write resource leak on die_a's outbound write path,
+        BELOW tidelink's AXI-node observability (PS SmartConnect / XHB500
+        hazard-list / outstanding-write tracking, or the SoC matrix). Candidate
+        fixes for when an ILA localizes the leaked resource: (a) make the cross-die
+        write POSTED — generate B locally at the FC node when W enters the link TX
+        FIFO (decouples the PS from link latency, Agent-2 L3); (b) fix the residual
+        B/hazard-accounting leak (Fix K + synth-B drain reduced but did not
+        eliminate it). NOT the serialize-to-1 (refuted).
+      files: [src/rtl/tidelink_top.sv]
       commit: null
       branch: null
       netlist_affecting: true
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: n/a}
+    needs: "PS-PL ILA on die_a's PS<->tidelink AXI/AHB write interface (mark_debug ahb_sub/s_axi/m_axi + sub_wr_os_ctr/hazard-list depth) to identify the leaked resource. The project docs (VERIFICATION_PLAN F-4) already state this diagnosis 'needed a purpose-built ILA'."
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: "characterized, not fixed"}
     signoff:
-      claude_verdict: "DEFERRED — physical PHY workstream; David decision on pursue-eye vs accept-logical-fix. RE-CONFIRMED DOMINANT 2026-08-06: after the TL-001 FIX 3 mitigation (data lands), die_a still WEDGED at write ~8 of a 25-write soak. This wedge — not the data-drop — is now the top sustained-write blocker on HW."
-      evidence: [memory:project_link_parallelism_and_phy_survey_2026_08_01, "hw_fix3_soak.log: 11/11 data byte-exact then die_a wedge@8"]
+      claude_verdict: "ROOT-CAUSED to a per-write leak on die_a's outbound write path (NOT a marginal eye, NOT FC-node, NOT SError, NOT concurrency — all refuted on HW 08-07). Data path works byte-exact until the wedge. Exact leaked resource is below all available obs => needs a PS-PL ILA. This is the DOMINANT TL-001 blocker."
+      evidence: ["hw_regionf_soak.log Region-F healthy@wedge", "hw_diea_dmesg.log silent kernel", "hw_purewrite.log wedge@~10 data-lands", "hw_paced.log wedge@~20 with 100ms pacing"]
       approved: false
     related: [TL-001]
 

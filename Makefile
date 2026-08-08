@@ -231,6 +231,17 @@ SIM_GATE_TP_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 TB_TOP_NO_DUMP=1 \
 # entirely, leaving any real result on disk untouched. A real `make sim_gate`
 # has no 'n' in that cluster (--no-print-directory sits in a later word), so it
 # is unaffected.
+
+# ── gate provenance stamp (anti-false-green) ─────────────────────────────────
+# The 2026-08 audit reproduced a "Frankenstein cohort": sim_gate_summary scored
+# .status files left on disk from DIFFERENT commits/branches/ad-hoc runs, so a
+# green summary did not prove the CURRENT tip is green (this is exactly how the
+# "freeze 46-blocking-0-FAIL / integ gate-green" claim was false). Fix: stamp
+# every .status with <sha>-<dirty>; sim_gate_summary REFUSES to report PASS
+# unless every scored status carries the CURRENT stamp.
+GATE_SHA   := $(shell git -C $(TIDELINK_HOME) rev-parse --short=12 HEAD 2>/dev/null || echo nosha)
+GATE_DIRTY := $(shell test -n "$$(git -C $(TIDELINK_HOME) status --porcelain 2>/dev/null)" && echo dirty || echo clean)
+GATE_STAMP := $(GATE_SHA)-$(GATE_DIRTY)
 define sim_gate_run
 	@if echo "$(MAKEFLAGS)" | grep -qw -- n; then \
 	  echo "[sim_gate] REFUSING to run under 'make -n' ($(1))."; \
@@ -250,8 +261,12 @@ define sim_gate_run
 	  *) t0=$$(date +%s); \
 	     if ( $(2) ) > $(SIM_GATE_DIR)/$(1).log 2>&1; then st=PASS; else st=FAIL; fi; \
 	     dt=$$(( $$(date +%s) - t0 )); \
-	     printf '%-28s %-4s %6ss\n' "$(1)" "$$st" "$$dt" > $(SIM_GATE_DIR)/$(1).status; \
-	     echo "[sim_gate] $$st $(1) ($${dt}s)" ;; \
+	     printf '%-28s %-4s %6ss %s\n' "$(1)" "$$st" "$$dt" "$(GATE_STAMP)" > $(SIM_GATE_DIR)/$(1).status; \
+	     echo "[sim_gate] $$st $(1) ($${dt}s)"; \
+	     if [ "$$st" = FAIL ] && [ -z "$(SIM_GATE_NONFATAL)" ]; then \
+	       echo "[sim_gate] FAIL $(1) — exiting non-zero (set SIM_GATE_NONFATAL=1 to record-and-continue, as the aggregate does)"; \
+	       exit 1; \
+	     fi ;; \
 	esac
 endef
 
@@ -684,7 +699,8 @@ sim_gate_axi_datanode_gaps:
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_gaps_nodes \
 	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1006,8 +1022,12 @@ define sim_gate_sentinel
 	if [ $$rc -ne 0 ]; then st=XERR; \
 	elif $(3); then st=XFAIL; \
 	else st=XCHG; fi; \
-	printf '%-28s %-5s %6ss\n' "$(1)" "$$st" "$$dt" > $(SIM_GATE_DIR)/$(1).status; \
-	echo "[sim_gate] $$st $(1) ($${dt}s)"
+	printf '%-28s %-5s %6ss %s\n' "$(1)" "$$st" "$$dt" "$(GATE_STAMP)" > $(SIM_GATE_DIR)/$(1).status; \
+	echo "[sim_gate] $$st $(1) ($${dt}s)"; \
+	if [ "$$st" != XFAIL ] && [ -z "$(SIM_GATE_NONFATAL)" ]; then \
+	  echo "[sim_gate] $$st $(1) — sentinel not XFAIL; exiting non-zero (XCHG/XERR = investigate)"; \
+	  exit 1; \
+	fi
 endef
 
 # F14-A (was CRITICAL SILENT CORRUPTION — NOW CLOSED by the CRC re-enable,
@@ -1305,74 +1325,74 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@echo " blocking suites + 2 known-defect sentinels (~40-55 min)"
 	@echo " inventory + what each suite protects: docs/SIM_GATE_COVERAGE.md"
 	@echo "========================================"
-	@$(MAKE) --no-print-directory sim_gate_t31
-	@$(MAKE) --no-print-directory sim_gate_t32
-	@$(MAKE) --no-print-directory sim_gate_t33
-	@$(MAKE) --no-print-directory sim_gate_t30
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t31
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t32
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t33
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
 	@# NACK-wedge / ACK-drop / state-7 recovery — the two PROVEN-passing recovery
 	@# tests, promoted into the blocking gate 2026-07-29 (test_14 stays out; see
 	@# sim_gate_nack_wedge_sustained). Reuses the t31/t30 sim_build_l4 compile.
-	@$(MAKE) --no-print-directory sim_gate_nack_wedge_recovery
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_nack_wedge_recovery
 	@# AXI data-node observability (item I4): sampler unit test + Region F APB decode.
-	@$(MAKE) --no-print-directory sim_gate_axinode_obs
-	@$(MAKE) --no-print-directory sim_gate_axi_datanode_recovery
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axinode_obs
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axi_datanode_recovery
 	@# AXI data-node COVERAGE GAPS (2026-08-02 review of the eth-chiplet
 	@# pushback): per-node injection on the four nodes only B ever covered,
 	@# plus the I5 backstop-semantics properties that were never asserted.
-	@$(MAKE) --no-print-directory sim_gate_axi_datanode_gaps
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axi_datanode_gaps
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
-	@$(MAKE) --no-print-directory sim_gate_i1_selfarm
-	@$(MAKE) --no-print-directory sim_gate_i1_fixe_training_release
-	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
-	@$(MAKE) --no-print-directory sim_gate_v2_mbox_writeprotect
-	@$(MAKE) --no-print-directory sim_gate_v2_xhb_lostresp_pipe
-	@$(MAKE) --no-print-directory sim_gate_v2_data
-	@$(MAKE) --no-print-directory sim_gate_v2_sustained
-	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
-	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
-	@$(MAKE) --no-print-directory sim_gate_v2_mask_hs_bilateral
-	@$(MAKE) --no-print-directory sim_gate_v2_winscan
-	@$(MAKE) --no-print-directory sim_gate_force_recal
-	@$(MAKE) --no-print-directory sim_gate_v2_perf
-	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
-	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
-	@$(MAKE) --no-print-directory sim_gate_epoch_anchor_plumb
-	@$(MAKE) --no-print-directory sim_gate_v2_sustained
-	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
-	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree
-	@$(MAKE) --no-print-directory sim_gate_fifo
-	@$(MAKE) --no-print-directory sim_gate_fifo_twin2
-	@$(MAKE) --no-print-directory sim_gate_v1elab
-	@$(MAKE) --no-print-directory sim_gate_apb_preempt
-	@$(MAKE) --no-print-directory sim_gate_fch_wdog
-	@$(MAKE) --no-print-directory sim_gate_zeropoke
-	@$(MAKE) --no-print-directory sim_gate_asicelab
-	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
-	@$(MAKE) --no-print-directory sim_gate_dftelab
-	@$(MAKE) --no-print-directory sim_gate_retire_plumb
-	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
-	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
-	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
-	@$(MAKE) --no-print-directory sim_gate_txgen_unit
-	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
-	@$(MAKE) --no-print-directory sim_gate_txgen_ext_hijack
-	@$(MAKE) --no-print-directory sim_gate_v2_txgen
-	@$(MAKE) --no-print-directory sim_gate_tc_smoke
-	@$(MAKE) --no-print-directory sim_gate_tc_election
-	@$(MAKE) --no-print-directory sim_gate_eth_m0
-	@$(MAKE) --no-print-directory sim_gate_eth_m1
-	@$(MAKE) --no-print-directory sim_gate_eth_shape_a
-	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_selfarm
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_fixe_training_release
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_isolated_write
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mbox_writeprotect
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_xhb_lostresp_pipe
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mask_hs_bilateral
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_force_recal
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_silicon
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_anchor_plumb
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2_tree
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v1elab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_zeropoke
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab_v2
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_dftelab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_retire_plumb
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_oddlane
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_lane_position
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_oddlane_negctl
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_txgen_unit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_txgen_negctl
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_txgen_ext_hijack
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_txgen
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tc_smoke
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tc_election
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_eth_m0
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_eth_m1
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_eth_shape_a
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2_tree
 	@# errinj FIRST: it owns the shared sim_build_gate_ei compile that the two
 	@# sentinels then reuse (same pattern as t31 owning sim_build_l4 for t30).
-	@$(MAKE) --no-print-directory sim_gate_errinj
-	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
-	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
-	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_errinj
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_f14a_crc_catch
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_epoch_shipping
 	@# F-1/F-2 (AXI data-node review 2026-08-02) RESOLVED by the synth-B OKAY fix:
 	@# test_i5_error_is_ahb_legal + test_i5_clean_drop_leaves_path_usable now run
 	@# BLOCKING inside sim_gate_axi_datanode_gaps (gaps_backstop), not as XFAIL.
-	@$(MAKE) --no-print-directory sim_gate_summary \
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"
 
@@ -1381,35 +1401,39 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@echo "========================================"
 	@echo " sim_gate_quick — smoke gate (skips t31/t32)"
 	@echo "========================================"
-	@$(MAKE) --no-print-directory sim_gate_t30
-	@$(MAKE) --no-print-directory sim_gate_v2_data
-	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
-	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
-	@$(MAKE) --no-print-directory sim_gate_v2_winscan
-	@$(MAKE) --no-print-directory sim_gate_v2_perf
-	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
-	@$(MAKE) --no-print-directory sim_gate_fifo
-	@$(MAKE) --no-print-directory sim_gate_v1elab
-	@$(MAKE) --no-print-directory sim_gate_apb_preempt
-	@$(MAKE) --no-print-directory sim_gate_fch_wdog
-	@$(MAKE) --no-print-directory sim_gate_zeropoke
-	@$(MAKE) --no-print-directory sim_gate_asicelab
-	@$(MAKE) --no-print-directory sim_gate_asicelab_v2
-	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v1elab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_preempt
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fch_wdog
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_zeropoke
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab_v2
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:
 	@echo "======================================================="
 	@echo " sim_gate summary"
 	@echo "======================================================="
-	@fail=0; \
+	@echo "  gate stamp: $(GATE_STAMP)"; \
+	fail=0; stale=0; \
 	for s in $(SIM_GATE_SUITES); do \
 	  if [ -f $(SIM_GATE_DIR)/$$s.status ]; then \
 	    line=$$(cat $(SIM_GATE_DIR)/$$s.status); \
 	  else \
-	    line=$$(printf '%-28s %-4s %6s' "$$s" MISS "-"); \
+	    line="$$s MISS - -"; \
 	  fi; \
 	  echo "  $$line"; \
-	  case "$$line" in *PASS*) ;; *) fail=1 ;; esac; \
+	  set -- $$line; st=$$2; stamp=$$4; \
+	  if [ "$$st" != PASS ]; then fail=1; fi; \
+	  if [ "$$st" != MISS ] && [ "$$stamp" != "$(GATE_STAMP)" ]; then \
+	    stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != current '$(GATE_STAMP)'"; fi; \
 	done; \
 	if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
 	  echo "-------------------------------------------------------"; \
@@ -1419,23 +1443,52 @@ sim_gate_summary:
 	    if [ -f $(SIM_GATE_DIR)/$$s.status ]; then \
 	      line=$$(cat $(SIM_GATE_DIR)/$$s.status); \
 	    else \
-	      line=$$(printf '%-28s %-5s %6s' "$$s" MISS "-"); \
+	      line="$$s MISS - -"; \
 	    fi; \
 	    echo "  $$line"; \
-	    case "$$line" in *XFAIL*) ;; *) fail=1 ;; esac; \
+	    set -- $$line; st=$$2; stamp=$$4; \
+	    if [ "$$st" != XFAIL ]; then fail=1; fi; \
+	    if [ "$$st" != MISS ] && [ "$$stamp" != "$(GATE_STAMP)" ]; then \
+	      stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != current '$(GATE_STAMP)'"; fi; \
 	  done; \
 	fi; \
 	echo "-------------------------------------------------------"; \
+	if [ $$stale -ne 0 ]; then \
+	  echo "  RESULT: STALE / CROSS-BRANCH — one or more .status is not from $(GATE_STAMP)."; \
+	  echo "          A green summary must belong to THIS commit; refusing to report PASS."; \
+	  echo "          Re-run 'make sim_gate' on a clean checkout of the current tip."; \
+	  exit 2; \
+	fi; \
 	if [ $$fail -eq 0 ]; then \
-	  echo "  RESULT: ALL SUITES PASS  (logs: $(SIM_GATE_DIR)/)"; \
+	  echo "  RESULT: ALL SUITES PASS @ $(GATE_STAMP)  (logs: $(SIM_GATE_DIR)/)"; \
 	  if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
-	    echo "          (known defects F14-A/F14-B still present as recorded —"; \
-	    echo "           see docs/ERROR_INJECTION_FINDINGS.md)"; \
+	    echo "          (known defects still present as recorded — see docs/ERROR_INJECTION_FINDINGS.md)"; \
 	  fi; \
 	else \
 	  echo "  RESULT: FAILURES DETECTED — see $(SIM_GATE_DIR)/<suite>.log"; \
 	fi; \
 	exit $$fail
+
+# ── registry-driven regression harness (durable, "run for all bugs") ─────────
+.PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
+
+# COVERAGE: every BUG_REGISTRY.yaml bug that claims verification.in_sim_gate:true
+# must name a real, resolvable test; FIXED-but-ungated bugs are reported as gaps.
+# Deterministic, no sim. REGCOV_ARGS=--strict also fails on fixed-but-ungated bugs.
+sim_gate_registry_coverage:
+	@python3 $(TIDELINK_HOME)/scripts/ci/registry_coverage.py $(REGCOV_ARGS)
+
+# The single authoritative regression front-end: prove registry coverage, then run
+# the tip-stamped, fail-loud, exit-on-FAIL aggregate. Use THIS in CI, not bare sim_gate.
+sim_gate_regressions: sim_gate_registry_coverage sim_gate
+
+# Sanctioned single-suite run that PROPAGATES failure (unlike bare `make sim_gate_<x>`,
+# which records status and exits 0). Routes through the tip-stamped summary.
+#   make sim_gate_one TOKEN=sim_gate_v2_data SUITE=v2_pair_data
+sim_gate_one:
+	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 $(TOKEN)
+	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SUITE)" SIM_GATE_SENTINELS=""
 
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────

@@ -871,8 +871,29 @@ bugs:
       run / scored-but-never-invoked). => TWO problems: (a) fix the NEW calibrator
       regressions (FIX 1/FIX 2 reconcile), (b) the pre-existing gate rot (TL-020 + tc_pair)
       was never really green.
+    resolution_2026_08_08: >
+      RESOLVED 12 of 14 + PINNED the last 2. (1) 5 PRE-EXISTING: TL-020 obs-flist fix ->
+      asic_v1/v2_elab + dft_wrapper_elab GREEN (committed); TL-006 ECC re-point; tc_pair
+      deferred (TL-025, tidechart owner). (2) 7 STALE-TEST NEW failures (t31, retire_en_plumb,
+      v2_autonomous_sync_detect, v2_pair_data, epoch_silicon, epoch_anchor_plumb,
+      v2_reduced_lane): tests updated to the FIX1/FIX2 behavior with STRONGER non-vacuous
+      assertions (FCSM==4, byte-exact data, sticky all-lanes-ever, specific threshold),
+      VERIFIED 7/7 PASS tip-stamped, committed 2e6f8dc. (3) 2 REAL breaks
+      (v2_mask_hs_bilateral, t33_arm_stagger_episode_bind = link never comes up: autoneg
+      TRAIN_FAIL / FCSM stuck at 1): micro-revert BISECT on 2c249ec pins the cause to
+      FIX 2 (lane_lock_thresh_eff 5->6, axi_chiplet_controller.sv:3961). min_lock_dwells
+      (centering) EXONERATED (v2_mask still FAIL reverted) and FIX D (HOLD_PEER_AWARE_EN)
+      EXONERATED (still FAIL); FIX 2 revert -> v2_mask PASS 165s (was ~600s to FAIL). This
+      CORRECTS the workflow assessment, which mis-attributed the real breaks to FIX1
+      centering-on. Mechanism: the looser threshold (6) that helps the marginal peer-write
+      eye lets marginal/wrong lanes "lock" on the masked/staggered autoneg paths ->
+      handshake mismatch -> TRAIN_FAIL. => DAVID DECISION: FIX 2 is the ~10x peer-write
+      soak lever (TL-001/TL-009) vs 2 mask/stagger sim bring-up breaks. Options: (a) accept
+      + XFAIL-sentinel the 2 (keep soak); (b) revert FIX 2 (lose soak, re-arm framing
+      lottery); (c) path/scenario-aware threshold (6 for the peer-write data path, 5 for the
+      mask-hs/stagger autoneg handshake) — a middle-ground RTL change worth scoping.
     signoff:
-      claude_verdict: "rank1: re-running FULL sim_gate (which the HW-only campaign NEVER did) = 14 blocking FAILs on 2c249ec. Split: ~9 NEW from the calibrator/obs work (FIX 1 centering-on bisected e5bd29c; FIX 2 threshold 5->6 = v2_autonomous_sync_detect; lane-lock family), ~5 PRE-EXISTING on the integ line (TL-020 ASIC elab + tc_pair tb — proving the 'gate-green' freeze claim was FALSE). Do NOT sign the TL-001 calibrator work; and the integ baseline itself needs a real gate. Fix is a DECISION (centering-on/threshold are the HW-improvement levers vs the autonomous sim gates)."
+      claude_verdict: "12 of 14 RESOLVED (3 elab TL-020, 7 stale-tests verified 7/7 committed 2e6f8dc, ECC path, tc_pair deferred). The 2 REAL breaks (v2_mask_hs, t33) are PINNED by micro-revert bisect to FIX 2 (threshold 5->6) — NOT centering-on nor FIX D (both empirically exonerated; corrects the workflow's attribution). FIX 2 is the ~10x peer-write soak lever, so this is a DAVID DECISION (accept+sentinel / revert / path-aware threshold), now with the exact culprit + a middle-ground option. The regression-prevention system (hardened tip-stamped gate + registry coverage + reusable workflow) stops this class recurring."
       evidence: ["full sim_gate: 38 PASS / 14 FAIL / XCHG epoch_shipping", "t31 bisect 1107151=PASS e5bd29c=FAIL", "base run: asic elabs+tc_smoke FAIL on 1107151 (pre-existing), v2_pair_data PASS on 1107151 (new)", "v2_autonomous_sync_detect asserts thresh=5, FIX2=6"]
       approved: false
     related: [TL-001, TL-009, TL-020]

@@ -33,8 +33,31 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # DUT flist: base v2 flist with the five AXI FC nodes re-pointed deps ->
 # local_overrides (so the recovery FCSMs and the CRC path are compiled in).
 BASE_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+# Default gaps config: FCSM_{,1-4} + WlinkEccSyndrome ALL re-pointed deps->local
+# (recovery FSM present + ECC restored) = the FPGA-V2 flist config.
+#
+# TL-006 A3 COMBINED-CONFIG (ASIC_MIRROR=1): mirror the SHIPPING ASIC-V2 wlink
+# error-path exactly -- WlinkEccSyndrome=local_override (the _T ECC-restore fix,
+# ON) but WlinkGenericFCSM*=deps (recovery FSM ABSENT), CRC on at runtime. This is
+# the tidelink_top_full_asic_v2.flist combination (Ecc :247 local, FCSM :284-288
+# deps) that had never been co-simulated. The 5 FCSM modules are port-identical
+# deps-vs-local (recovery is internal; verified), so the local->deps swap
+# elaborates. Proves header-ECC correction is UPSTREAM of / independent from the
+# recovery FCSM and co-exists with CRC-on.
+ifeq ($(ASIC_MIRROR),1)
+LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_ecc_only_local.flist
+_gen := $(shell sed -E 's@src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?)\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+else ifeq ($(ASIC_MIRROR),2)
+# NON-VACUITY control: the PRE-A3 shipping ASIC (the 2026-05-05 blanket ECC bypass)
+# = Ecc=deps AND FCSM=deps. Under this config the ECC header-correction tests MUST
+# WEDGE (value_ok=False) -- proves the ASIC_MIRROR=1 pass is the _T fix, not the
+# FCSM axis masking. Diagnostic only; not wired into any gate.
+LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_full_bypass.flist
+_gen := $(shell sed -E 's@src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+else
 LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
 _gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+endif
 COMPILE_ARGS += -f $(LOCAL_FLIST)
 
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=0
@@ -179,4 +202,8 @@ $(GAPS_BACKSTOP_TESTS):
 gaps_nodes:    ; @for t in $(GAPS_NODE_TESTS);     do $(MAKE) $$t || exit 1; done
 gaps_backstop: ; @for t in $(GAPS_BACKSTOP_TESTS); do $(MAKE) $$t || exit 1; done
 gaps_ecc:      ; @for t in $(GAPS_ECC_TESTS);      do $(MAKE) $$t || exit 1; done
+# TL-006 A3 combined-config: the 6 ECC-restore tests under the SHIPPING ASIC wlink
+# config (Ecc-local fix ON + FCSM-deps recovery ABSENT + CRC-on). Own sim_build.
+gaps_ecc_asic: ; @for t in $(GAPS_ECC_TESTS); do \
+	$(MAKE) ASIC_MIRROR=1 SIM_BUILD=sim_build_gaps_ecc_asic MODULE=test_axi_datanode_gaps TESTCASE=$$t || exit 1; done
 gaps: gaps_nodes gaps_backstop gaps_ecc

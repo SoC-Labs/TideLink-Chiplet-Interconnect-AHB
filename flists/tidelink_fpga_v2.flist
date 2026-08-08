@@ -224,6 +224,14 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_20.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_21.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_23.v
+// TL-020 landmine defuse (2026-08-08): WavFIFO_23 (above) instantiates the PTP a2l
+// replay memory wlink_wlink_ptp_tl_a2l_48x4, which the Chisel memory generator never
+// emitted (siblings _48x16/_14x8 exist in deps/). Dormant only because the PTP FC node
+// is not elaborated by these tops; if it is enabled (TL-010) elaboration would abort
+// 'Cannot find cell'. This local_override behavioral model (copy of the sibling _48x16)
+// resolves it. ZERO current-netlist-impact (compiled, not elaborated). TAPEOUT: swap for
+// the tech SRAM macro if PTP is enabled -- David/TL-010.
+${TIDELINK_HOME}/src/rtl/local_overrides/wlink_wlink_ptp_tl_a2l_48x4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_6.v

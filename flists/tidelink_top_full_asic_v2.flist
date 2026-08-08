@@ -238,7 +238,13 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_8.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
+// TL-006 ECC re-point (2026-08-08): the shipping ASIC was pulling the DEPS
+// WlinkEccSyndrome.v = the 2026-05-05 BLANKET BYPASS (corrupted=0; corrected=0),
+// so the tapeout netlist had NO header ECC. The FPGA-V2 flist already uses the
+// local_override with the _T clean-syndrome fix; 1aaed00 only re-pointed the FPGA
+// flist. Port-compatible drop-in (same module decl, 6 ports). David signs to land
+// (netlist-affecting); pair with a combined-config sim (ECC-on + ASIC CRC-on + FCSM-deps).
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkEccSyndrome.v
 // V2 PHY SWAP: GPIO PHY wrapper from the shared PHY component — adds the
 // swi_word_pin_in / swi_word_pin_auto_en FIX-R ports (consumed by the
 // TIDELINK_PHY_V2 arm of local_overrides/Wlink.v) and drops link_tx_tx_idle.

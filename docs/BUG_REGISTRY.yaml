@@ -381,7 +381,7 @@ bugs:
     action_items:
       - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix regression-locked ON THE INTEG LINE. NOTE: 63222b6 is object-ABSENT from the eth-chiplet submodule Makefile (agent 2026-08-07) -> gaps_ecc runs only via gaps_nodes+gaps_backstop there; port it."
       - "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."
-      - "A3 (OPEN, 2026-08-07, CRITICAL): re-point ASIC-V2 flist :233 deps->local_override so the tapeout netlist actually gets the ECC fix (asic_flist_gap). Implement + combined-config sim-prove autonomously; David signs to land (netlist-affecting)."
+      - "A3 (2026-08-08, DONE-structural): re-pointed the ASIC-V2 flist ECC line deps->src/rtl/local_overrides/WlinkEccSyndrome.v (port-compatible drop-in). VERIFIED: asic_v2_elab PASS(10s) and the flist now PARSES the local_override (the _T fix), not the deps bypass -> the tapeout netlist now carries header ECC. REMAINING: (a) combined-config FUNCTIONAL sim (ECC-on WITH the ASIC's CRC-on + FCSM-deps, never co-simulated); (b) David signs to land (netlist-affecting)."
     signoff:
       claude_verdict: "FPGA side sim_proven + gated (63222b6). BUT REOPENED: the SHIPPING ASIC flist (:233) still ships the ECC BYPASS -> A3 open, CRITICAL tapeout gap. Prior 'ACTIVE in shipping ASIC' claim was FALSE (corrected 2026-08-07). Do NOT sign off until A3 lands + combined-config sim green."
       evidence: [commit:1aaed00, commit:8e071f7, commit:63222b6, "gaps_ecc 6/6 PASS (FPGA)", "asic_v2.flist:233 = deps bypass (agent-verified)", "git show --stat 1aaed00 = FPGA flist only"]

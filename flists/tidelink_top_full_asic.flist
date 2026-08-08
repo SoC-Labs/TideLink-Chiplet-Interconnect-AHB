@@ -15,6 +15,10 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 // FC adapter
 ${TIDELINK_HOME}/src/rtl/tidelink_tx_gen.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
+// Observability modules — instantiated in the ASIC RTL but MISSING from this bare
+// ASIC flist -> asic_v1_elab failed "Cannot find cell tidelink_winscan_obs" (TL-020).
+${TIDELINK_HOME}/src/rtl/tidelink_fcemit_obs.sv
+${TIDELINK_HOME}/src/rtl/tidelink_winscan_obs.sv
 
 // PTP subsystem
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv

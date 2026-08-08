@@ -717,14 +717,22 @@ bugs:
     title: ASIC flist hygiene — obs modules missing (BREAKS asic elab gate) + dup sync_detect + undefined PTP FIFO cell
     severity: high   # RAISED 2026-08-07: gate-confirmed — breaks 3 blocking elab suites on BOTH lines
     area: build/flist
-    status: root_caused   # gate-confirmed pre-existing
+    status: sim_proven   # obs-add half FIXED+verified 2026-08-08; dedup+landmine still open
+    obs_add_FIXED_2026_08_08: >
+      FIXED (obs-modules half): added tidelink_fcemit_obs.sv + tidelink_winscan_obs.sv to
+      BOTH bare ASIC flists (tidelink_top_full_asic_v2.flist after :64, tidelink_top_full_asic.flist
+      after :17). VERIFIED: sim_gate_asicelab_v2=PASS(9s), sim_gate_dftelab=PASS(10s),
+      sim_gate_asicelab=PASS(9s) — all 3 previously-FAILing elab suites now elaborate clean
+      (winscan_obs error gone, zero VCS errors). COORDINATED DOWNSTREAM CHANGE REQUIRED: the
+      eth-chiplet parent nanosoc_eth_chiplet_asic.flist:81-82 adds these same two files as a
+      workaround — those two lines MUST be removed when the submodule pin is bumped, else the
+      chiplet build double-defines. (The parent's own comment :79 prescribes this upstream fix.)
+      STILL OPEN: dedup tidelink_phy_sync_detect (:190/:197) + the a2l_48x4 landmine (David/PTP).
     gate_confirmed_2026_08_07: >
-      asic_v1_elab, asic_v2_elab, dft_wrapper_elab all FAIL "Error-[CFCILFBI] Cannot
+      asic_v1_elab, asic_v2_elab, dft_wrapper_elab all FAILED "Error-[CFCILFBI] Cannot
       find cell tidelink_winscan_obs" on BOTH 2c249ec AND the integ base 1107151 -> this
-      is a PRE-EXISTING blocking-gate failure, not new. Proves the "integ line gate-green"
-      claim was false (see TL-024 gate_split). Fix: add tidelink_winscan_obs.sv +
-      tidelink_fcemit_obs.sv to the bare ASIC flist (silicon already gets them via the
-      parent nanosoc_eth_chiplet_asic.flist:81-82). Autonomous, sim-verifiable.
+      was a PRE-EXISTING blocking-gate failure, not new. Proved the "integ line gate-green"
+      claim was false (see TL-024 gate_split).
     summary: >
       (1) tidelink_phy_sync_detect.sv listed twice in tidelink_top_full_asic_v2.flist
       (:190 and :197). (2) LANDMINE: wlink_wlink_ptp_tl_a2l_48x4 instantiated at
@@ -733,9 +741,9 @@ bugs:
       FC node) is not elaborated; fires if the PTP FC node is enabled (couples TL-010).
       (3) obs modules (winscan_obs/fcemit_obs) absent from the bare ASIC flist (silicon
       gets them via parent nanosoc_eth_chiplet_asic.flist:81-82; bare flist won't elaborate).
-    fix: {approach: "dedup :197; guard/define a2l_48x4 (or comment the PTP-off precondition); add obs .sv to bare ASIC flist", files: [flists/tidelink_top_full_asic_v2.flist], commit: null, branch: null, netlist_affecting: false}
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "dedup + obs-add autonomous; landmine is a David/PTP-enable call", evidence: ["asic_v2.flist:190,197", "WavFIFO_23.v:103 undefined a2l_48x4"], approved: false}
+    fix: {approach: "DONE obs-add (both bare ASIC flists); STILL: dedup :197 + guard/define a2l_48x4", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist], commit: pending, branch: integ/tidelink-consolidated-2026-08-07, netlist_affecting: false}
+    verification: {sim_test: "sim_gate_asicelab/asicelab_v2/dftelab", in_sim_gate: true, hw_tested: "n/a — elab", result: "3/3 PASS after fix (were 3/3 FAIL)"}
+    signoff: {claude_verdict: "obs-add FIXED+verified (3 elab suites green); needs coordinated parent workaround removal on pin bump. dedup + landmine still open (David/PTP).", evidence: ["asicelab_v2 PASS 9s", "dftelab PASS 10s", "asicelab PASS 9s", "parent flist:79 prescribes this fix"], approved: false}
     related: [TL-010, TL-013]
 
   - id: TL-021

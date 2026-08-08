@@ -62,6 +62,14 @@ ${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_ahb.sv
 // FC adapter
 ${TIDELINK_HOME}/src/rtl/tidelink_tx_gen.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_fc_adapter.sv
+// Observability modules — instantiated in the ASIC RTL (winscan_obs @
+// local_overrides/axi_chiplet_controller.sv:2983, fcemit_obs @ local_overrides/Wlink.v:1554)
+// but were MISSING from this bare ASIC flist -> asic_v2_elab/dft_wrapper_elab failed
+// "Cannot find cell tidelink_winscan_obs" (TL-020). Added upstream per the eth-chiplet
+// parent flist's own note. COORDINATED: the parent nanosoc_eth_chiplet_asic.flist:81-82
+// workaround (which adds these separately) MUST be removed on the pin bump, else double-define.
+${TIDELINK_HOME}/src/rtl/tidelink_fcemit_obs.sv
+${TIDELINK_HOME}/src/rtl/tidelink_winscan_obs.sv
 
 // PTP subsystem
 ${TIDELINK_HOME}/src/rtl/tidelink_ptp.sv

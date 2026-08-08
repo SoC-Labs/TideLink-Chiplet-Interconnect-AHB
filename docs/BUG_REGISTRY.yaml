@@ -1023,7 +1023,7 @@ bugs:
       commit: null
       branch: null
       netlist_affecting: true
-    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=5 (B) + NODE=3 (W) reproduce+heal A/B BOTH PROVEN 2026-08-08; NODE=13 (sideband)", in_sim_gate: false, hw_tested: false}
+    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=1 (AW) + NODE=3 (W) + NODE=5 (B) reproduce+heal A/B ALL 3 PROVEN 2026-08-08; NODE=13 (sideband)", in_sim_gate: false, hw_tested: false}
     cdc_selflatch_derisk_2026_08_08: >
       CONTESTED-QUESTION SETTLED (sim). Extended cocotb/tidelink_a2l_replay_cdc to the B
       data-plane node via a NODE knob (NODE=5: tb_top_5.sv + flists/tidelink_a2l_replay_cdc_5.flist
@@ -1040,7 +1040,8 @@ bugs:
       before the netlist change is bet on. The override is NOT wired into any shipping flist
       (only the cocotb NODE=5 DUT), so ZERO shipping-netlist impact; David lands the flist
       re-point. STILL instrument-first for the obs half + physical-eye (dominant cause). W node (_3,
-      37-bit/6-bit/depth-32, window 6'h20) ALSO PROVEN (same A/B: deps FAIL / override PASS).
+      37/6/depth-32, 6'h20) AND AW node (_1, 101/4/depth-8, 4'h8) ALSO PROVEN -- ALL THREE
+      AXI write-path data-plane nodes now reproduce+heal (deps FAIL / override PASS).
     signoff:
       claude_verdict: "CDC-self-latch half DE-RISKED (sim, 2026-08-08): reproduces on the B node (deps _5 FAIL) + the ported fix self-heals (override _5 PASS) -- settles the plausible-not-proven doubt. Obs-instrument half still SPEC-READY (docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md). NOT auto-committed to the shipping netlist: netlist-affecting + register-map + rank-1 dominant cause is physical. David: land the _5 flist re-point (+ optionally _1/_3) after weighing vs the physical-eye workstream; do the obs instrument first if betting on silicon confirmation."
       evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision", "docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md", "B-node instantiation trace AXI4ToWlink.v:605/FCSM_2.v:505,629"]

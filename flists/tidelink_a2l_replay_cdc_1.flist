@@ -1,0 +1,44 @@
+// ---------------------------------------------------------------------------
+// tidelink_a2l_replay_cdc_1.flist
+//
+// Compiles the AW (write-address, data_id 0x80) channel a2l replay node
+// WlinkGenericFCReplayV2_1 standalone, for the cocotb/tidelink_a2l_replay_cdc
+// unit env with NODE=1. Completes the data-plane trio (AW=_1 / W=_3 / B=_5).
+//
+// Geometry: _1 is 101-bit data / 4-bit ptr / depth-8 (WavFIFO_2, the
+// wlink_wlink_axi_awFC_a2l_101x8 RAM). Same false-FULL test + lap-ahead ACK (9)
+// as the B node _5 (both are depth-8); only the datum width and FIFO/RAM differ.
+//
+// Module closure:
+//   WlinkGenericFCReplayV2_1
+//     +- WavDemetReset
+//     +- WavFIFO_2                          (replay async FIFO, depth-8)
+//     |    +- WavDemetReset_7
+//     |    +- wlink_WavFIFOPtrLogic
+//     |    +- wlink_WavReplayFIFOPtrLogic
+//     |    +- wlink_wlink_axi_awFC_a2l_101x8 (101x8 behavioural RAM)
+//     +- WlinkGenericFCReplayAddrSync
+//          +- WavMultibitSync
+//               +- WavDemetReset
+// ---------------------------------------------------------------------------
+
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_MEM_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
+
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
++incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
+
+// DUT (prefer local override if present, else deps) — written by the Makefile
+-f ${TIDELINK_HOME}/cocotb/tidelink_a2l_replay_cdc/dut_src_1.f
+
+// Leaf dependencies (unmodified vendor/Chisel-generated IP)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_7.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_awFC_a2l_101x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_2.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v

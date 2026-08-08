@@ -896,3 +896,36 @@ bugs:
     verification: {sim_test: "sim_gate_tc_smoke / tc_pair_election_datamode", in_sim_gate: true, hw_tested: false}
     signoff: {claude_verdict: "pre-existing tidechart-integration break; deferred to tidechart owner (interface decision)", evidence: ["tc_pair_smoke.log UPIMI device_strap", "FAIL on 1107151 too"], approved: false}
     related: [TL-024]
+
+  - id: TL-026
+    title: ASIC critical-path — pipeline pair_credit_next (timing optimization)
+    severity: medium
+    area: rtl/fifo/tidelink_apb_regs
+    status: sim_proven   # equivalence-proven; netlist-affecting -> David signs to land
+    summary: >
+      tidelink_apb_regs.sv pair_credit_next was a long combinational chain
+      (33-bit add -> add -> compare -> subtract -> mux -> flop) fed by pwdata from
+      the CM0+ across the die — a top timing endpoint (wins up to ~32 endpoints).
+      Broke it with the SAME proven pipelining idiom already in the file (the
+      release-accumulator block ~:438-449): register the input-derived addends +
+      the enable-qualified update strobe (stage 1); accumulate/compare/subtract
+      against the LIVE counter stays single-cycle. Net: pair_credit_counter is
+      BIT-IDENTICAL, delayed exactly 1 cycle.
+    invisibility: >
+      The only HW reader (tidelink_tx_gen reserve-then-send FSM :306-372) reads the
+      count once in S_ARMED, consumes (len+2) up front, holds S_SEND >= 6 cycles +
+      S_GAP before re-gating on credit -> a consume settles many cycles before the
+      next credit decision; double-spend structurally unreachable. Stronger than the
+      release-acc block's soft argument.
+    fix: {approach: "1-cycle pipeline (register inc_r/dec_r/update_r), mirror :438-449", files: [src/rtl/fifo/tidelink_apb_regs.sv], commit: pending, branch: integ/tidelink-consolidated-2026-08-07, netlist_affecting: true}
+    verification:
+      sim_test: "cocotb/tidelink_apb_regs (44 PASS/5 FAIL identical before+after — the 5 are a PRE-EXISTING tb float-to-X on hw_credit_consume, NOT a regression) + a dual-instance equivalence harness (40k cycles, 0 delayed-compare mismatches; negative control 12465 mismatches proves non-vacuous)"
+      in_sim_gate: false
+      hw_tested: false
+    followups:
+      - "tb deficiency: cocotb/tidelink_apb_regs/tb_top.sv leaves hw_credit_consume_vld/val unconnected (float to X) -> 5 pair-counter tests fail on BOTH baseline and this change. Tie them to 0 so the tests cover this datapath (separate change)."
+    signoff:
+      claude_verdict: "equivalence-proven (induction + 40k-cycle dual-instance harness). Netlist-affecting (67 flops on the tapeout trunk) -> David signs to land. Area cost noted."
+      evidence: ["dual-instance harness 0/40000 mismatch, negcontrol 12465", "cocotb/tidelink_apb_regs 44/5 identical pre+post", "diff registers inc_r/dec_r/update_r"]
+      approved: false
+    related: []

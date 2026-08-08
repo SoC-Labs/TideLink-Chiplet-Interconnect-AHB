@@ -393,15 +393,68 @@ module tidelink_apb_regs #(
     // Net-delta form of the counter update. Widened by one bit so the sum of
     // the two decrement sources cannot wrap before the saturating compare
     // (Shortcoming #7 kept: saturate at zero, never underflow-wrap).
+    //
+    // ── ASIC critical-path pipeline (mirrors the release-acc block below) ─────
+    // The un-pipelined update is a 33-bit add (dec) → 33-bit add (sum) → 33-bit
+    // compare → 33-bit subtract → mux → flop, all combinational, fed by pwdata
+    // arriving from the CM0+ across the whole die — a top timing endpoint.
+    // Break it with the SAME idiom the release accumulator uses below (the
+    // credit_delta_data_r / read_complete_pipe stage-1 register): register the
+    // input-derived deltas (the increment addend, the decrement
+    // addend, and the enable-qualified update strobe) so the pwdata-wire →
+    // addend-compute stage is separated by a register from the accumulate →
+    // compare → subtract stage. The accumulate stays a SINGLE cycle against the
+    // LIVE counter (no register is placed inside the counter's self-recurrence),
+    // so throughput is unchanged at one update/cycle and no event is ever
+    // dropped. Net effect: pair_credit_counter is bit-identical to the
+    // un-pipelined value, delayed by exactly one cycle.
+    //
+    // That one-cycle delay is invisible. The only hardware reader of
+    // pair_credit_count is tidelink_tx_gen, whose reserve-then-send FSM reads
+    // this count once in S_ARMED, consumes the whole (len+2) up front, then holds
+    // S_SEND for the entire packet (≥ len+2 ≥ 6 cycles) plus S_GAP before it can
+    // read credit again — so a consume has settled many cycles before the next
+    // credit-gate decision and can never be double-spent. Software/APB readers
+    // are inherently multi-cycle and cannot resolve a single-cycle shift. (This
+    // is the pair-credit analogue of the release-acc block's invisible-latency
+    // argument, which rests on "the returner takes 3+ cycles per txn".)
+
+    // Combinational addends (pre-register).
     wire [SYS_DATA_W:0] pair_credit_inc =
         pair_counter_increment ? {1'b0, pwdata} : '0;
     wire [SYS_DATA_W:0] pair_credit_dec =
         ({SYS_DATA_W+1{pair_counter_decrement}} & {1'b0, pwdata})
       + ({SYS_DATA_W+1{hw_credit_consume_vld}} & {1'b0, hw_credit_consume_val});
-    wire [SYS_DATA_W:0] pair_credit_sum = {1'b0, pair_credit_counter} + pair_credit_inc;
+    // Update qualified by the enable AT THE EVENT CYCLE — matches the original
+    // gate exactly (a disabled counter DROPS the event, it does not defer it).
+    wire pair_credit_update = pair_credit_counter_en
+                            && (pair_counter_increment
+                             || pair_counter_decrement
+                             || hw_credit_consume_vld);
+
+    // Pipeline stage 1: register the addends and the qualified update strobe.
+    logic [SYS_DATA_W:0] pair_credit_inc_r;
+    logic [SYS_DATA_W:0] pair_credit_dec_r;
+    logic                pair_credit_update_r;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            pair_credit_inc_r    <= '0;
+            pair_credit_dec_r    <= '0;
+            pair_credit_update_r <= 1'b0;
+        end else begin
+            pair_credit_inc_r    <= pair_credit_inc;
+            pair_credit_dec_r    <= pair_credit_dec;
+            pair_credit_update_r <= pair_credit_update;
+        end
+    end
+
+    // Accumulate/compare/subtract against the LIVE counter using the registered
+    // addends (this is the post-register half of the split path).
+    wire [SYS_DATA_W:0] pair_credit_sum = {1'b0, pair_credit_counter} + pair_credit_inc_r;
     wire [SYS_DATA_W-1:0] pair_credit_next =
-        (pair_credit_sum >= pair_credit_dec)
-            ? SYS_DATA_W'(pair_credit_sum - pair_credit_dec) : '0;
+        (pair_credit_sum >= pair_credit_dec_r)
+            ? SYS_DATA_W'(pair_credit_sum - pair_credit_dec_r) : '0;
 
     assign pair_credit_count = pair_credit_counter;
 
@@ -420,11 +473,15 @@ module tidelink_apb_regs #(
             // credit-return landing on the same cycle as a generator consume
             // can never be dropped — losing an increment here leaks credit and
             // eventually starves the sender for good.
-            if (pair_credit_counter_en) begin
-                if (pair_counter_increment || pair_counter_decrement
-                                           || hw_credit_consume_vld) begin
-                    pair_credit_counter <= pair_credit_next;
-                end
+            //
+            // pair_credit_update_r already folds the enable sampled at the event
+            // cycle and the 3-way OR (see the stage-1 pipeline above), so the
+            // apply is a single registered strobe. The net delta was likewise
+            // pre-registered, so the whole 3-way combine is still applied
+            // atomically in one update — the no-drop guarantee is preserved,
+            // just one cycle later.
+            if (pair_credit_update_r) begin
+                pair_credit_counter <= pair_credit_next;
             end
         end
     end

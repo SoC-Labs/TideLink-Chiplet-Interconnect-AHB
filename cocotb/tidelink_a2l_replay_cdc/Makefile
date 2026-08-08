@@ -15,6 +15,12 @@ ifeq ($(NODE),5)
   A2L_FLIST := tidelink_a2l_replay_cdc_5.flist
   DUT_SRC_F := $(CURDIR)/dut_src_5.f
   MODULE   ?= test_a2l_replay_cdc_5
+else ifeq ($(NODE),3)
+  TB_FILE   := tb_top_3.sv
+  NODE_MOD  := WlinkGenericFCReplayV2_3
+  A2L_FLIST := tidelink_a2l_replay_cdc_3.flist
+  DUT_SRC_F := $(CURDIR)/dut_src_3.f
+  MODULE   ?= test_a2l_replay_cdc_3
 else
   TB_FILE   := tb_top.sv
   NODE_MOD  := WlinkGenericFCReplayV2_13

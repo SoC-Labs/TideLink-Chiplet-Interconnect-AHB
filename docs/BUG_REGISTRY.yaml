@@ -950,3 +950,85 @@ bugs:
       evidence: ["dual-instance harness 0/40000 mismatch, negcontrol 12465", "cocotb/tidelink_apb_regs 44/5 identical pre+post", "diff registers inc_r/dec_r/update_r"]
       approved: false
     related: []
+
+  # ===========================================================================
+  # Registration gaps found by the outstanding-bug census (2026-08-08).
+  # These were real defects/decisions with NO TL-0xx id.
+  # ===========================================================================
+  - id: TL-027
+    title: a2l data-plane replay nodes _1/_3/_5 ship UNFIXED (no CDC self-heal)
+    severity: high
+    area: rtl/wlink
+    status: root_caused
+    summary: >
+      The AW/W/B app-to-link replay nodes WlinkGenericFCReplayV2_{1,3,5} are the
+      pristine (unfixed) deps/ copies in BOTH tidelink_fpga_v2.flist and
+      tidelink_top_full_asic_v2.flist. The continuous-w_inc + ACK-window-guard CDC
+      self-heal that fixed the A->B "cap ~6 words" self-latch was only applied to
+      siblings _12/_13 (the sideband nodes). Per the eth-chiplet A2L_CDC handover,
+      hardening these is the highest-leverage TL-009 wedge mitigation (turns a lost-B
+      from fatal into self-healing). NOTE: the SIGNOFF_ROADMAP §3b said "propose TL-018"
+      for exactly this, but that id was reused for the ASIC-CRC item, so it fell
+      through the cracks. Causally contested (A2L_CDC eval called the CDC-self-latch
+      theory "plausible-not-proven"; FIX 2 was the empirical cause of the 2 real
+      breaks) — but the unhardened-node robustness gap is real regardless.
+    fix:
+      approach: "copy deps _1/_3/_5 -> src/rtl/local_overrides/ with _12/_13's continuous w_inc + ACK window-guard + the addr-sync reset-skew gate the doc omits; per-node width re-derivation (_1/_5=4-bit/8, _3=6-bit/32); repoint tidelink_fpga_v2.flist (NOT the V1 flist the doc named) + asic_v2 flist"
+      files: [deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v, flists/tidelink_fpga_v2.flist]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc/ (exists; targets _13 — extend to _1 4-bit/8 + _3 6-bit/32)", in_sim_gate: false, hw_tested: false}
+    signoff:
+      claude_verdict: "registration gap closed. Bounded autonomous port + sim-A/B (reset-skew only; 'silicon is the verifier' per the RTL). Instrument-first (port _13 obs to B-channel node) before betting the wedge cure on it."
+      evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision"]
+      approved: false
+    related: [TL-009, TL-001, TL-023]
+
+  - id: TL-028
+    title: Unconstrained D2D RX word clock (missing create_generated_clock / no CTS)
+    severity: high
+    area: fpga/sdc
+    status: root_caused
+    summary: >
+      The /16 recovered D2D RX word clock has no create_generated_clock constraint
+      and thus no CTS clock tree. Flagged in HW_RESULTS_FRAMING_WEDGE as plausibly
+      worsening die_a's marginal B-return eye (RX WNS -2.862, STA-invisible). Concrete,
+      actionable SDC/physical finding under the TL-009 umbrella that never had its own id.
+    fix: {approach: "add the create_generated_clock on the /16 recovered RX word clock + let CTS build the tree; re-check WNS on the pad_clk_rx path-group", files: [fpga/constraints], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: n/a, in_sim_gate: false, hw_tested: "needs routed-timing + HW eye A/B"}
+    signoff: {claude_verdict: "physical/SDC — couples TL-009. Add constraint, rebuild, HW A/B the land-rate.", evidence: ["HW_RESULTS_FRAMING_WEDGE handover"], approved: false}
+    related: [TL-009]
+
+  - id: TL-029
+    title: F14-B data-mode wedge — XFAIL sentinel + waiver, was unregistered
+    severity: medium
+    area: rtl/phy
+    status: deferred   # known-live defect under waiver
+    summary: >
+      xfail_f14b_datamode_wedge is a live known-defect sim_gate sentinel with a full
+      proposed WAIVER (docs/WAIVER_F14B_DATAMODE_WEDGE.md) awaiting David sign-off, but
+      it had no TL-0xx. All-lane data-flip / link-clock-kill during data mode wedges the
+      link until a both-die POR (SYNC beacon off in data mode -> no re-anchor). Post-
+      freeze retrain-lite is the open engineering enhancement.
+    fix: {approach: "David accepts the freeze WAIVER; optional post-freeze retrain-lite (re-anchor in data mode on the wedge witness)", files: [docs/WAIVER_F14B_DATAMODE_WEDGE.md], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: "sim_gate sentinel xfail_f14b_datamode_wedge (XFAIL = defect present, tolerated)", in_sim_gate: true, hw_tested: false}
+    signoff: {claude_verdict: "known-defect under waiver; David sign. Registration gap closed.", evidence: ["WAIVER_F14B_DATAMODE_WEDGE.md", "Makefile sim_gate_xfail_f14b"], approved: false}
+    related: []
+
+  - id: TL-030
+    title: EPOCH shipping-default corrector — XFAIL sentinel unregistered + flipped XCHG
+    severity: medium
+    area: rtl/phy
+    status: open   # XCHG needs investigating
+    summary: >
+      xfail_epoch_shipping_corrector is the other live XFAIL sentinel, also previously
+      unregistered. Guards the beacon-starvation corrector weakness in the shipping
+      default; mitigated by EPOCH_ANCHOR_EN (default-OFF). Decision: ship the anchor
+      on or off. ALSO: it flipped to XCHG (behaviour changed) on the consolidated tip
+      (see TL-024 gate result) — a change that needs investigating, likely a FIX1/FIX2
+      side-effect on the epoch corrector path.
+    fix: {approach: "investigate the XCHG flip (is the corrector behaviour better or worse under FIX1/FIX2?); decide EPOCH_ANCHOR_EN ship default", files: [src/rtl/local_overrides/axi_chiplet_controller.sv], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: "sim_gate sentinel xfail_epoch_shipping_corrector (XCHG on consolidated tip = INVESTIGATE)", in_sim_gate: true, hw_tested: false}
+    signoff: {claude_verdict: "XCHG = behaviour changed, not a clean XFAIL — investigate before ship-default decision. Registration gap closed.", evidence: ["Makefile sim_gate_xfail_epoch_shipping", "TL-024 gate result XCHG"], approved: false}
+    related: [TL-024]

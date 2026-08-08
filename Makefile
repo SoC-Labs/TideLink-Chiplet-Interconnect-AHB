@@ -1264,7 +1264,6 @@ sim_gate_dftelab:
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
-	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
 	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
@@ -1274,7 +1273,6 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
-	v2_mask_hs_bilateral \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	axi_datanode_recovery axi_datanode_gaps \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
@@ -1283,7 +1281,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector v2_mask_hs_regress
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1327,7 +1325,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@echo "========================================"
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t31
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t32
-	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t33
+	@# TL-024: t33_arm_stagger_episode_bind -> tracked-standalone known-defect (3.5h
+	@# livelock budget; same FIX2 root cause as v2_mask_hs_regress). Nightly: make sim_gate_t33
+	@#   (docs/WAIVER_TL024_FIX2_MASK_STAGGER.md)
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
 	@# NACK-wedge / ACK-drop / state-7 recovery — the two PROVEN-passing recovery
 	@# tests, promoted into the blocking gate 2026-07-29 (test_14 stays out; see
@@ -1350,7 +1350,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
-	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mask_hs_bilateral
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_mask_hs
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_force_recal
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
@@ -1491,6 +1491,15 @@ sim_gate_one:
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SUITE)" SIM_GATE_SENTINELS=""
 
 # ── HARDWARE regression gate (durable, run-each-time; HW mirror of sim_gate) ──
+# TL-024 (ratified 2026-08-08, keep-6): FIX 2 (lock thresh 5->6) is the ~10x peer-write
+# soak lever but kills autonomous MASKED/STAGGERED bring-up (autoneg TRAIN_FAIL, FCSM
+# never 4). Path-aware NOT viable (single lane_locked consumer; benefit+harm same
+# decision). Tolerated as a known-defect XFAIL. docs/WAIVER_TL024_FIX2_MASK_STAGGER.md.
+sim_gate_xfail_mask_hs:
+	$(call sim_gate_sentinel,v2_mask_hs_regress,\
+	  { $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero BYPASS_AUTONEG=0 HONEST_STRAPS=1 MODULE=test_v2_mask_hs_bilateral || true; },\
+	  grep -qE "BLOCKING: role_lock (never latched|latched but the pair never reached bilateral FCSM)" $$L)
+
 .PHONY: hwtest_registry_coverage hwtest_gate
 
 # HW COVERAGE: every bug that claims verification.in_hw_gate:true must name a real

@@ -1065,5 +1065,59 @@ bugs:
       side-effect on the epoch corrector path.
     fix: {approach: "investigate the XCHG flip (is the corrector behaviour better or worse under FIX1/FIX2?); decide EPOCH_ANCHOR_EN ship default", files: [src/rtl/local_overrides/axi_chiplet_controller.sv], commit: null, branch: null, netlist_affecting: true}
     verification: {sim_test: "sim_gate sentinel xfail_epoch_shipping_corrector (XCHG on consolidated tip = INVESTIGATE)", in_sim_gate: true, hw_tested: false}
-    signoff: {claude_verdict: "XCHG = behaviour changed, not a clean XFAIL — investigate before ship-default decision. Registration gap closed.", evidence: ["Makefile sim_gate_xfail_epoch_shipping", "TL-024 gate result XCHG"], approved: false}
+    probe_2026_08_08: >
+      RAN the sentinel's underlying test (cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon
+      MODULE=test_v2_pair_data). XCHG LOCALIZED: it is test_01_bilateral_linkup flipping
+      PASS->FAIL (documented XFAIL signature = PASS=2 FAIL=1 with test_01+test_02 pass /
+      test_03 fail; NOW = PASS=1 FAIL=2 with ONLY test_02 pass, test_01 AND test_03 fail).
+      The CORE beacon-starvation defect is UNCHANGED: test_03 (s->m) still fails with the
+      exact all-zeros symptom rx=[0,0,0,0]; test_02 (m->s) still passes (rx=[0x00240000,...]).
+      test_01 now fails for the SAME reason -- its s->m leg reads rx=[0,0,0,0] (all-zeros),
+      identical to test_03. So this is the SAME s->m beacon-starvation defect, now also
+      caught by the bilateral-linkup test, NOT a new/worse corrector fault. CAVEAT (honest):
+      cannot PROVE test_01's flip is pure detection-tightening vs a FIX1/FIX2 s->m-linkup
+      timing interaction WITHOUT the pre-consolidation baseline or a micro-revert bisect
+      (FIX2 thresh 6->5) -- the pre-consolidation test_01 passed, and I don't have its old
+      s->m rx values. RECOMMEND: (a) a one-shot FIX2 6->5 micro-revert of the epoch build to
+      confirm test_01 goes back to PASS (ties directly to the TL-024 keep-6 tradeoff), OR
+      (b) re-baseline the sentinel signature to PASS=1 FAIL=2 (test_01+test_03 fail, s->m
+      all-zeros) since the substance is the same known defect. EPOCH_ANCHOR_EN ship-default
+      decision is UNAFFECTED in substance (same s->m beacon starvation; anchor is the fix).
+    signoff: {claude_verdict: "XCHG LOCALIZED to test_01_bilateral_linkup PASS->FAIL; the s->m beacon-starvation defect (test_03 all-zeros) is UNCHANGED and test_01 now fails for the same all-zeros reason => same known defect, more detection. Not proven benign vs a FIX1/FIX2 s->m-linkup interaction without a bisect. David: micro-revert bisect (6->5) OR re-baseline the sentinel; EPOCH_ANCHOR_EN ship-default unaffected in substance.", evidence: ["probe PASS=1 FAIL=2 2026-08-08", "test_01 s2m rx=[0,0,0,0] = test_03 symptom", "test_02 m2s PASS unchanged", "TL-024 gate result XCHG"], approved: false}
     related: [TL-024]
+
+  # ---------------------------------------------------------------------------
+  # Bring-up reliability roll-up (HANDOVER_RELIABILITY_EYE_GATED_2026-08-08)
+  # ---------------------------------------------------------------------------
+  - id: TL-031
+    title: "Bring-up eye-qualification metric (SW-readable per-lane BER/eye margin) to turn the framing lottery into bounded retry"
+    severity: medium
+    area: phy/obs
+    status: open
+    summary: >
+      The eye-gated reliability handover (2026-08-08) is a RE-FRAME of TL-001 (drop) + TL-009
+      (wedge), NOT a new bug; its two cures already exist as TL-027 (a2l CDC self-heal port,
+      instrument-first) and TL-028 (RX word clock create_generated_clock). The ONE genuinely
+      new sub-item is lever 3: there is no SW-readable end-of-bring-up eye/BER margin, so the
+      orchestrator cannot reject a marginal eye and re-winscan (reanchored=1 + FCSM=4 do NOT
+      imply a good eye). Without it the good-eye lottery stays a coin-flip on the two-board
+      eth-chiplet bench (the kr260-pair-ONCHIP vehicle does NOT exhibit it: onchip_landrate.log
+      = 4/4 PORs x 500/500 byte-exact). Lever 4 (replace the transient stall-STICKY 0x21F8
+      bit10 with a per-run stall COUNT) is an obs sub-task best FOLDED INTO the TL-027 obs
+      instrument to avoid a second rebuild.
+    fix: {approach: "add a per-lane eye/BER margin readable over APB at end of winscan; fold the stall-count obs into the TL-027 B-channel obs instrument (single rebuild). Instrument-first, same as TL-027.", files: [src/rtl/local_overrides/axi_chiplet_controller.sv, deps/tidelink-phy/rtl], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff:
+      claude_verdict: >
+        NEW sub-item from the eye-gated handover (agent-analyzed 2026-08-08); levers 1/2 are
+        NOT new (= TL-027/TL-028). Netlist-affecting + register-map -> David-gated, fold into
+        the TL-027 obs rebuild. HIGHEST-VALUE AUTONOMOUS de-risking move (non-netlist,
+        sim-provable) is NOT this item but extending cocotb/tidelink_a2l_replay_cdc to the _5
+        (4b/depth-8) + _3 (6b/depth-32) geometries to reproduce-first the self-latch and
+        prove the self-heal BEFORE the David-gated TL-027 port. CONTESTED in the handover:
+        its "die_a WNS -2.862 on B-return" root cause is partially REFUTED by TL-009 signoff
+        (pad_clk_rx paths MEET +0.486; -2.862 is async_default path-group) -- dominant cause
+        is STA-invisible physical eye variance, fix necessary-not-sufficient.
+      evidence: ["HANDOVER_RELIABILITY_EYE_GATED_2026-08-08", "TL-027 instrument-first spec", "TL-028 RX word clock", "onchip_landrate.log 4/4x500", "TL-009 signoff WNS walk-back"]
+      approved: false
+    related: [TL-001, TL-009, TL-027, TL-028, TL-019]

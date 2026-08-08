@@ -1,0 +1,51 @@
+// ---------------------------------------------------------------------------
+// tidelink_a2l_replay_cdc_5.flist
+//
+// Compiles the Wlink a2l (app->link) replay FIFO DUT for the B (write-response,
+// data_id 0x82) channel node WlinkGenericFCReplayV2_5 standalone, for the
+// cocotb/tidelink_a2l_replay_cdc unit env with NODE=5. This is the DATA-PLANE
+// analogue of the _13 (TideLink sideband) env: it exists to REPRODUCE-FIRST the
+// a2l ACK-lap-ahead false-FULL self-latch on the B node (the TL-027 contested
+// question) and, when a fixed override is dropped in, prove self-heal.
+//
+// Geometry vs _13: _5 is 14-bit data / 4-bit ptr / depth-8 (WavFIFO_8, the
+// wlink_wlink_axi_bFC_a2l_14x8 RAM), where _13 is 48/5/16. So the false-FULL
+// test is a2l_full = a2l_app_addr[3]!=ack[3] & [2:0]==[2:0], and the torn ACK
+// lap-ahead value is 9 (0b1001), not 17 (0b10001).
+//
+// Module closure (verified by grepping the instanced names):
+//   WlinkGenericFCReplayV2_5
+//     +- WavDemetReset                    (1-bit 2-FF reset synchroniser)
+//     +- WavFIFO_8                         (replay async FIFO, depth-8)
+//     |    +- WavDemetReset_7              (4-bit 2-FF synchroniser)
+//     |    +- wlink_WavFIFOPtrLogic        (write ptr / full flag)
+//     |    +- wlink_WavReplayFIFOPtrLogic  (read ptr / empty flag + revert)
+//     |    +- wlink_wlink_axi_bFC_a2l_14x8 (14x8 behavioural RAM)
+//     +- WlinkGenericFCReplayAddrSync      (link->app ACK ptr CDC wrapper)
+//          +- WavMultibitSync              (Gray/toggle multibit handshake CDC)
+//               +- WavDemetReset           (shared leaf)
+//
+// The DUT source is pulled from dut_src_5.f (Makefile writes it: local override
+// if one exists, else the deps pristine copy). The leaves are unmodified deps IP.
+// ---------------------------------------------------------------------------
+
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_MEM_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
+
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
++incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
+
+// DUT (prefer local override if present, else deps) — written by the Makefile
+-f ${TIDELINK_HOME}/cocotb/tidelink_a2l_replay_cdc/dut_src_5.f
+
+// Leaf dependencies (unmodified vendor/Chisel-generated IP)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_7.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_bFC_a2l_14x8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_8.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync.v

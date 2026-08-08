@@ -1023,9 +1023,26 @@ bugs:
       commit: null
       branch: null
       netlist_affecting: true
-    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc/ (exists; targets _13 — extend to _1 4-bit/8 + _3 6-bit/32)", in_sim_gate: false, hw_tested: false}
+    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=5 (B node reproduce+heal A/B, PROVEN 2026-08-08); NODE=13 (sideband); _3 W-node = follow-up", in_sim_gate: false, hw_tested: false}
+    cdc_selflatch_derisk_2026_08_08: >
+      CONTESTED-QUESTION SETTLED (sim). Extended cocotb/tidelink_a2l_replay_cdc to the B
+      data-plane node via a NODE knob (NODE=5: tb_top_5.sv + flists/tidelink_a2l_replay_cdc_5.flist
+      + test_a2l_replay_cdc_5.py, 14-bit/4-bit/depth-8, lap-ahead ACK=9). RESULT:
+      REPRODUCE-FIRST -- pristine deps WlinkGenericFCReplayV2_5 FAILS (after a lap-ahead ACK(9)
+      the first app write sees a2l_full=1, app_ready=0 => the B FCSM would never transmit). So the
+      a2l ACK-lap-ahead CDC self-latch is REAL on the write-response node, NOT just the _13
+      sideband -- the "plausible-not-proven" doubt is resolved: it reproduces. SELF-HEAL --
+      built src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v (the _13 3-part fix ported to
+      4-bit/window 4'h8: ACK-window guard a2l_ack_valid + continuous w_inc=1 + gated latch); the
+      SAME test PASSES (spurious ACK(9) is rejected -> synced_ack stays 0 -> a2l_full=0,
+      app_ready=1). NON-VACUOUS by construction (deps FAIL / override PASS). This DE-RISKS the
+      contested CDC self-heal half of TL-027 -- the fix is now sim-proven on the actual B node
+      before the netlist change is bet on. The override is NOT wired into any shipping flist
+      (only the cocotb NODE=5 DUT), so ZERO shipping-netlist impact; David lands the flist
+      re-point. STILL instrument-first for the obs half + physical-eye (dominant cause). W node
+      (_3, 37-bit/6-bit/depth-32, window 6'h20) is a straightforward follow-up.
     signoff:
-      claude_verdict: "INSTRUMENT-FIRST SPEC-READY, David-gated (2026-08-08). B-channel a2l node identified = WlinkGenericFCReplayV2_5 (AXI4ToWlink.v:605 wlink_axibFC -> FCSM_2.v:505; swi_data_id_1=0x82). Ready-to-execute port map in docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md (8 files, 4 hierarchy levels, NEW Region-10 APB slot, taps NARROWER [3:0] not [4:0]; AXI4ToWlink has NO precedent override). NOT auto-committed: netlist-affecting (invalidates HW-proven 9cca6fe -> rebuild) + register-map contract change (tl39/GUI must learn the slot) + confirmatory only (rank-1 dominant cause is physical). Do the contested CDC self-heal port ONLY after this instrument confirms the write-path false-FULL on silicon."
+      claude_verdict: "CDC-self-latch half DE-RISKED (sim, 2026-08-08): reproduces on the B node (deps _5 FAIL) + the ported fix self-heals (override _5 PASS) -- settles the plausible-not-proven doubt. Obs-instrument half still SPEC-READY (docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md). NOT auto-committed to the shipping netlist: netlist-affecting + register-map + rank-1 dominant cause is physical. David: land the _5 flist re-point (+ optionally _1/_3) after weighing vs the physical-eye workstream; do the obs instrument first if betting on silicon confirmation."
       evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision", "docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md", "B-node instantiation trace AXI4ToWlink.v:605/FCSM_2.v:505,629"]
       approved: false
     related: [TL-009, TL-001, TL-023]

@@ -51,6 +51,7 @@ CATEGORIES=(
     "11:11_perf_counters.sh:Performance counters (R5/R6/R7)"
     "12:12_chiplet_phyalign.sh:Chiplet ext (R8: PHY-align/I2C-train)"
     "13:13_long_soak.sh:Long soak (safe-ops only)"
+    "14:14_rx_fifo_phantom_pop.sh:RX-FIFO empty-read phantom-pop guard (TL-022, credit<=MAX)"
 )
 
 # Resolve include/exclude.

@@ -280,6 +280,8 @@ bugs:
       in_sim_gate: true
       hw_tested: true
       hw_evidence: "silicon-confirmed die_a wedge #3 -> survives to #6"
+      in_hw_gate: true
+      hw_test: kr260_eth_ecc_hwverify.sh   # [3] W byte-0 SOAK exercises the hazard-list write path; die_a must survive N injections (Fix K regression = wedge returns)
     signoff:
       claude_verdict: "hw_proven (silicon-confirmed). Candidate sign-off."
       evidence: [commit:9dfe1da, "cocotb bid_corrupt reproduce+fix PASS", "silicon #3->#6"]
@@ -334,6 +336,8 @@ bugs:
       in_sim_gate: true   # gaps_backstop BLOCKING (integ), promoted 622b3d8
       hw_tested: true
       hw_evidence: "die_a survives `errinject --node B --inj-byte 0` (ping 2/2, SSH up); every prior build hard-wedged"
+      in_hw_gate: true
+      hw_test: kr260_eth_ecc_hwverify.sh   # [2] B byte-0 injection -> die_a ALIVE is exactly this bug's evidence (backstop-restore regression = die_a wedges)
     caveats:
       - "OKAY masks the lost write-ack — sound only for a data_id-routing corruption where DATA already landed. David RATIFIED OKAY over SLVERR (SLVERR caused a PS write-retry loop = self-sustaining wedge)."
       - "Physical marginal-eye wedge (TL-009) still dominates on HW independent of this logical fix."
@@ -378,6 +382,8 @@ bugs:
       in_sim_gate: true    # A1 DONE: wired into sim_gate_axi_datanode_gaps @63222b6 (verified 6/6 PASS first)
       hw_tested: false     # HW-validate pending (B byte-0 already HW-proven; W byte-0 wedged pre-ECC)
       hw_evidence: null
+      in_hw_gate: true
+      hw_test: kr260_eth_ecc_hwverify.sh   # [2] directional byte-0 injection sweep = the ECC-correction regression (each node's header flip -> die_a ALIVE + byte-exact); board-run pending for W byte-0
     action_items:
       - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix regression-locked ON THE INTEG LINE. NOTE: 63222b6 is object-ABSENT from the eth-chiplet submodule Makefile (agent 2026-08-07) -> gaps_ecc runs only via gaps_nodes+gaps_backstop there; port it."
       - "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."
@@ -408,6 +414,8 @@ bugs:
       in_sim_gate: unknown
       hw_tested: true
       hw_evidence: "die_a survives `errinject B byte0` (was hard-wedge every prior build)"
+      in_hw_gate: true
+      hw_test: kr260_eth_ecc_hwverify.sh   # [2] B byte-0 injection -> die_a ALIVE is this bug's exact evidence (synth-B-OKAY regression = SLVERR again = die_a wedges)
     signoff:
       claude_verdict: "hw_proven; OKAY-vs-ERROR semantics is a David decision"
       evidence: [commit:e827199, "@dcf0fce not pushed"]
@@ -418,7 +426,7 @@ bugs:
     title: txgen ownership-mux hijack — {ext ADDR, gen DATA} silent corruption
     severity: high
     area: rtl/tidelink_tx_gen
-    status: hw_proven
+    status: sim_proven   # CORRECTED 2026-08-08 from hw_proven: verification.hw_tested=false ("logical/sim fix, no HW claim") -> the hw_proven label was wrong and made hw_registry_coverage.py report a false coverage gap. Regression gate is the SIM test (sim_gate_txgen_ext_hijack), not a fabricated HW one.
     summary: >
       ext_data_pend_r closes a silent {ext ADDR, gen DATA} corruption (F14-A
       class). Promoted to blocking gate.
@@ -797,7 +805,7 @@ bugs:
       contents), so random init adds NO empty-FIFO exposure beyond the all-zero case, and
       that is now proven under a dangerous non-zero init.
     fix: {approach: "TIDELINK_SRAM_RAND_INIT knob (fpga/tidelink_sram.sv, sim-only translate_off) + `make randinit` target (cocotb/tidelink_fifo) run the whole FIFO suite under an ADVERSARIAL non-zero power-up", files: [src/rtl/fifo/fpga/tidelink_sram.sv, cocotb/tidelink_fifo/Makefile], commit: null, branch: null, netlist_affecting: false}
-    verification: {sim_test: "cocotb/tidelink_fifo `make randinit` (42/42 PASS under SRAM[0]=0x2 adversarial init)", in_sim_gate: false, hw_tested: "n/a"}
+    verification: {sim_test: "cocotb/tidelink_fifo `make randinit` (42/42 PASS under SRAM[0]=0x2 adversarial init)", in_sim_gate: true, hw_tested: false, in_hw_gate: true, hw_test: "14_rx_fifo_phantom_pop.sh"}
     result_2026_08_08: >
       The default RAND_INIT fill was CORRECTED after a first-pass error: 0xFF (=> clamp_length
       MAX => read_target_addr beyond the read sweep) CANNOT pop and is NOT adversarial; the

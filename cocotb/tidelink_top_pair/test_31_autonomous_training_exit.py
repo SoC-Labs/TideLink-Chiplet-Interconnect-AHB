@@ -325,7 +325,10 @@ async def test_31_autonomous_training_exit(dut):
                 seen_valid[side] = True
             if cs == CAL_S_DONE:
                 seen_done[side] = True
-            tm = _si(_ctrl(dut, side).swi_training_mode_r)
+            # LIVE training carrier (cal_training_mode_w | swi_training_mode_r,
+            # axi_chiplet_controller.sv:6327) — NOT the autoneg register alone,
+            # which FIX1 can leave un-raised when cal S_DONE beats the autoneg.
+            tm = _si(_ctrl(dut, side).swi_training_mode_w)
             if tm == 1:
                 train_hi[side] = True
             if train_prev[side] == 1 and tm == 0 and train_hi[side]:
@@ -350,9 +353,14 @@ async def test_31_autonomous_training_exit(dut):
                 f"| holdM={seen_hold['m']} doneM={seen_done['m']} "
                 f"holdS={seen_hold['s']} doneS={seen_done['s']}")
 
-        # Early-out once BOTH dies have transited hold and reached done.
-        if all(seen_hold.values()) and all(seen_done.values()):
-            log.info(f"both dies transited S_HOLD → S_DONE by "
+        # Early-out once BOTH dies reach FCSM=4 (data mode) — the true link-up
+        # rendezvous (autoneg training-exit + winscan + fch bootstrap). NEVER
+        # exit on calibrator S_DONE: FIX1 centering (min_lock_dwells 0->1) lands
+        # cal S_DONE ~1.3ms, BEFORE the slow I2C-paced autoneg reaches training
+        # (~4.5ms), so a cal-S_DONE early-out races AHEAD of the training toggle.
+        # MAX_CYCLES (5M*20ns = 100ms) is already ample for the >=12ms bring-up.
+        if all(_si(_fcsm(dut, side).state) == 4 for side in ("m", "s")):
+            log.info(f"both dies reached FCSM=4 (data mode) by "
                      f"{waited*CLK_PERIOD_NS/1000:.0f}us")
             break
 
@@ -368,34 +376,52 @@ async def test_31_autonomous_training_exit(dut):
             f"fcsm={_si(_fcsm(dut,side).state)}")
 
     # ---- ASSERTIONS ----------------------------------------------------------
-    # (1) THE key NEW assertion: both calibrators actually PASSED THROUGH S_HOLD
-    #     (state 6) — the reachable rendezvous the fix targets.
-    assert seen_hold["m"], (
-        "MASTER calibrator NEVER entered S_HOLD (state 6) — the training sweep "
-        "did not converge; the de-forced flow is broken upstream of the fix")
-    assert seen_hold["s"], (
-        "SLAVE calibrator NEVER entered S_HOLD (state 6)")
+    # (0) PRIMARY GATE (rank-1): both dies reached FCSM=4 (data mode). This is
+    #     the true link-up proof and is asserted FIRST, BEFORE any calibrator
+    #     observation. On a genuine dead-link regression (autoneg ST_TRAIN_FAIL,
+    #     or FCSM stuck at 1) the monitor loop above runs to MAX_CYCLES without
+    #     FCSM=4 and this FAILS LOUD here — it NEVER depends on cal S_HOLD/S_DONE
+    #     ordering. (The second half of the primary gate — a byte-exact AHB_TX
+    #     M->S burst — is item (10) below.)
+    for side, name in (("m", "MASTER"), ("s", "SLAVE")):
+        fcsm_now = _si(_fcsm(dut, side).state)
+        assert fcsm_now == 4, (
+            f"{name} FCSM never reached 4 (data mode) within budget — the "
+            f"autonomous link never came up (dead-link regression: autoneg "
+            f"ST_TRAIN_FAIL, or FCSM stuck at 1). fcsm={fcsm_now} "
+            f"an_state={_si(_autoneg(dut, side).state_r)}")
 
-    # (2) swi_training_mode_r rose then fell on both dies — driven by the autoneg
-    #     FSM's local_train_clr_pulse at ST_TRAIN_EXIT, NOT a TB force.
+    # (1) OBSERVATION ONLY (was a hard gate): whether each calibrator transited
+    #     S_HOLD (state 6). NOT gated — FIX1 centering lands cal S_DONE before
+    #     the autoneg raises training, so the S_HOLD bilateral-release park can
+    #     be transient or skipped. Link-up is proven by the FCSM=4 gate (0) above
+    #     and the AHB_TX data gate (10) below, never by calibrator ordering.
+    log.info(f"cal S_HOLD transit (observational): M={seen_hold['m']} "
+             f"S={seen_hold['s']}")
+
+    # (2) swi_training_mode_w (the LIVE carrier = cal_training_mode_w |
+    #     swi_training_mode_r) rose then fell on both dies — driven HIGH by the
+    #     calibrator during S_SWEEP and/or by the autoneg, dropped at S_DONE / the
+    #     autoneg's ST_TRAIN_EXIT clear. Sampled continuously and asserted AFTER
+    #     the FCSM=4 gate (0): a link that reached data-mode MUST have raised then
+    #     cleared training; a carrier stuck HIGH is the L4 training-exit deadlock.
+    #     This never gates loop exit and never depends on cal S_HOLD/S_DONE order.
     assert train_hi["m"] and train_hi["s"], (
-        "swi_training_mode_r never went HIGH on both dies — the autonomous "
+        "swi_training_mode_w never went HIGH on both dies — the autonomous "
         "training run did not engage")
     assert train_cleared["m"], (
-        "MASTER swi_training_mode_r was HELD HIGH (never cleared 1→0) — the "
+        "MASTER swi_training_mode_w was HELD HIGH (never cleared 1→0) — the "
         "training-exit DEADLOCK is still present (this is exactly the L4 bug)")
     assert train_cleared["s"], (
-        "SLAVE swi_training_mode_r was HELD HIGH (never cleared 1→0) — "
+        "SLAVE swi_training_mode_w was HELD HIGH (never cleared 1→0) — "
         "training-exit deadlock still present")
 
-    # (3) Having cleared training, the S_HOLD gate opens and both calibrators
-    #     advance to S_DONE (cal_done=1). PROVES the S_HOLD→S_VALIDATE→S_DONE
-    #     transit happened because the FSM cleared training, not a bypass.
-    assert seen_done["m"], (
-        "MASTER calibrator never reached S_DONE after S_HOLD — the S_HOLD gate "
-        "never opened (swi_training_mode_r not cleared bilaterally)")
-    assert seen_done["s"], (
-        "SLAVE calibrator never reached S_DONE after S_HOLD")
+    # (3) OBSERVATION ONLY (was a hard gate): whether each calibrator reached
+    #     S_DONE. NOT gated on ordering — with FIX1 the calibrator can settle in
+    #     S_DONE before training even engages. The calibrator's SETTLED S_DONE is
+    #     still asserted in item (7) below, AFTER the FCSM=4 rendezvous.
+    log.info(f"cal S_DONE reached (observational): M={seen_done['m']} "
+             f"S={seen_done['s']}")
 
     # (4) The autoneg FSM must NOT have tripped ST_TRAIN_FAIL — it should have
     #     rendezvoused on both-in-S_HOLD and taken ST_TRAIN_EXIT.
@@ -405,12 +431,12 @@ async def test_31_autonomous_training_exit(dut):
         f"MASTER autoneg ended in ST_TRAIN_FAIL (17) — the mask-aware "
         f"POLL_PEER rendezvous did not fire (an_state={m_an})")
 
-    # (5) FCSM is asserted AFTER the handoff window in (7) below. At this loop
-    #     break the calibrators have only just reached S_DONE and the autonomous
-    #     FC handoff (FCCTRL drive on training-clear) has not completed yet, so
-    #     FCSM is legitimately still 1 here — do NOT assert on it at this instant.
-    log.info(f"FCSM at cal-S_DONE break: M={_si(_fcsm(dut,'m').state)} "
-             f"S={_si(_fcsm(dut,'s').state)} (handoff pending; asserted below)")
+    # (5) FCSM=4 was already asserted as the PRIMARY gate (0): the monitor loop
+    #     now exits ON FCSM=4 (not on cal-S_DONE), so the link is provably up at
+    #     this point. Re-log for the trace; the post-bootstrap FCSM=4 re-check is
+    #     item (9) below.
+    log.info(f"FCSM at loop break: M={_si(_fcsm(dut,'m').state)} "
+             f"S={_si(_fcsm(dut,'s').state)} (primary gate 0 passed)")
 
     # (6) DEATH-SPIRAL fingerprint (the A2 swreset-suppress fix): after the
     #     bilateral training clear the master must NOT be re-swept back into

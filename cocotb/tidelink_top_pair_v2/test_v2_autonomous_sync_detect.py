@@ -93,6 +93,8 @@ from test_v2_winscan_fsm import (
 # 8-lane sim, 0xE4 on the TD_AUTO_LANE_MASK_E4 silicon build, where it equals
 # the rcp 0x5e4[7:0] value). Derived at runtime via _exp_lane_mask(ctrl).
 EXP_SYNC_TOL  = 5      # rcp R_SYNCTOL 0x2128[12:8]
+AUTO_LOCK_THRESH = 6   # MUST track RTL axi_chiplet_controller.sv ~L3961 `nego_en ? {8{3'dN}}`; FIX2 5->6 (TL-001)
+PHY_POR_THRESH   = 3   # gpio-phy passthrough default (nego_en=0)
 
 
 def _exp_lane_mask(ctrl):
@@ -266,14 +268,14 @@ async def test_v2_autonomous_sync_detect_drive(dut):
         f"(tx 0x{tx0:02x}->0x{tx1:02x} rx 0x{rx0:02x}->0x{rx1:02x}) — it must be a "
         f"static POR default (build-config), not a runtime drive")
 
-    EXP_THRESH_WORD = int("101" * 8, 2)   # {8{3'd5}} = 24-bit, all lanes thresh 5
+    EXP_THRESH_WORD = int(format(AUTO_LOCK_THRESH, "03b") * 8, 2)   # {8{3'd6}} = 0xdb6db6
     lt_lane0, lt_word = _read_lock_thresh_eff(ctrl)
     log.info(f"after nego_en 0x2160 lock_thresh_eff=0x{lt_word:06x} "
              f"(lane0={lt_lane0})")
-    assert lt_lane0 == 5 and lt_word == EXP_THRESH_WORD, (
-        f"0x2160: per-lane lock threshold did NOT become 5 for all lanes "
+    assert lt_lane0 == AUTO_LOCK_THRESH and lt_word == EXP_THRESH_WORD and PHY_POR_THRESH < lt_lane0 < 7, (
+        f"0x2160: per-lane lock threshold did NOT become {AUTO_LOCK_THRESH} for all lanes "
         f"(lane0={lt_lane0} word=0x{lt_word:06x} want=0x{EXP_THRESH_WORD:06x}) — "
-        f"rcp 0x2160=0x55555555 not replicated on the autonomous path")
+        f"rcp 0x2160 not replicated on the autonomous path (FIX2 5->6, TL-001)")
 
     # ---- SYNC-ON: training-RUN applies the rcp config ----------------------
     await _training_rise(tb, "m")

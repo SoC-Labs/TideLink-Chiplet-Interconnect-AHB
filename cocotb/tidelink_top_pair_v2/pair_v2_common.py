@@ -231,6 +231,18 @@ class PairV2TB:
             return "?"
         return self.CAL_STATE_NAMES.get(s, f"?{s}")
 
+    def live_lane_locked(self, side):
+        """Live per-die lane_locked[7:0] — the apb_clk-synced lane-checker byte
+        that also feeds SWI_LANE_STATUS[7:0] (u_chiplet_controller.sync_lane_
+        locked_1; apb_clk == hclk in this TB, tidelink_top.sv). Training-only:
+        0xFF while the calibrator holds all lanes locked, drops back toward 0
+        once training is released for data mode — so it must be sampled LIVE,
+        not read once via APB after cal_done (that races the release)."""
+        try:
+            return int(self.top(side).u_chiplet_controller.sync_lane_locked_1.value)
+        except (AttributeError, ValueError):
+            return 0
+
     # ----- bring-up phases ----------------------------------------------------
 
     async def do_role_lock(self):
@@ -519,19 +531,45 @@ async def run_bringup_full(tb):
     Returns a dict with the PHASE-1 lane statuses (m_p1/s_p1 — sample
     lane_locked/cal_done HERE; lane_locked naturally drops back to 0 once
     training is released for data mode, the checker only scores the training
-    pattern) plus the post-data-mode snapshot."""
+    pattern) plus the post-data-mode snapshot.
+
+    Also returns m_locked_seen/s_locked_seen: the sticky OR of the LIVE
+    per-die lane_locked[7:0] byte, accumulated every hclk from role_lock until
+    cal_done by a background sampler. lane_locked is a training-only signal the
+    calibrator releases at S_DONE, so a single post-cal APB read of it RACES
+    that release (FIX1/e5bd29c min_lock_dwells 0->1 + full-sweep/eye-centre
+    widened the gap). The sticky accumulator answers "did all 8 lanes lock at
+    some point during training?" without depending on when the poll lands."""
     await tb.reset()
     tb.force_calibrator_sim_bypass()
     await tb.do_role_lock()
+
+    # ---- background lane_locked sampler (see docstring) ------------------
+    # Sampled off the SAME apb_clk-synced net the SWI_LANE_STATUS[7:0] APB read
+    # returns (tb.live_lane_locked -> sync_lane_locked_1). OR only sets bits, so
+    # a lane that never locks during training keeps its bit 0 here.
+    locked_seen = {"m": 0, "s": 0}
+
+    async def _lane_lock_sampler():
+        while True:
+            await RisingEdge(tb.dut.hclk)
+            for x in ("m", "s"):
+                locked_seen[x] |= tb.live_lane_locked(x)
+
+    sampler = cocotb.start_soon(_lane_lock_sampler())
+
     locked = await tb.wait_role_locked()
     assert locked, "role_locked did not assert on both dies"
     m_p1, s_p1 = await tb.wait_cal_done()
+    sampler.kill()   # stop accumulating once cal_done is observed on both dies
     tb.log.info(f"post-autocal: M=0x{m_p1:08x} S=0x{s_p1:08x} "
-                f"cal M={tb.cal_state_name('m')} S={tb.cal_state_name('s')}")
+                f"cal M={tb.cal_state_name('m')} S={tb.cal_state_name('s')} "
+                f"lane_seen M=0x{locked_seen['m']:02x} S=0x{locked_seen['s']:02x}")
     await tb.do_to_data_mode()
     await ClockCycles(tb.dut.hclk, 5000)
     snap = await tb.snapshot("after to_data_mode")
     snap["m_p1"], snap["s_p1"] = m_p1, s_p1
+    snap["m_locked_seen"], snap["s_locked_seen"] = locked_seen["m"], locked_seen["s"]
     return snap
 
 

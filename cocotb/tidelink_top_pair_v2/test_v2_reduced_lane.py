@@ -43,7 +43,7 @@ from cocotb.triggers import ClockCycles
 
 from pair_v2_common import (
     PairV2TB, run_bringup_full, send_and_check,
-    ST_LANE_LOCKED, ST_CAL_DONE,
+    ST_CAL_DONE,
 )
 
 ACTIVE_MASK = 0xE4               # lanes 2,5,6,7 active; 0,1,3,4 masked off
@@ -131,17 +131,23 @@ async def test_01_reduced_lane_linkup(dut):
             f"{name}: deskew lane_mask=0x{dsk:02x} != 0x{ACTIVE_MASK:02x} "
             f"(mask did not reach the deskew)")
 
-    # Phase-1: cal_done must set on the SUBSET. lane_locked oracle is relaxed to
-    # the ACTIVE lanes only (masked lanes never train -> their lock bit is 0 by
-    # design; the full-0xFF oracle of test_v2_pair_data does not apply here).
-    for name, st in (("M", snap["m_p1"]), ("S", snap["s_p1"])):
+    # Phase-1: cal_done must set on the SUBSET. lane_locked[7:0] is a LIVE
+    # training-only signal the calibrator releases at S_DONE; FIX1 centering-on
+    # (min_lock_dwells 0->1) legitimately shifts that release vs the single
+    # cal_done poll, so a single-sample read of ST_LANE_LOCKED is a RACE. Use the
+    # sticky-OR of lane_locked accumulated over the whole role_locked->cal_done
+    # training window (snap['*_locked_seen']) instead: every ACTIVE lane must
+    # have been observed locked AT LEAST ONCE during training. Masked lanes never
+    # train, so their lock bit is not required to set (not constrained here; the
+    # full-0xFF oracle of test_v2_pair_data does not apply on the subset).
+    for name, st, seen in (("M", snap["m_p1"], snap["m_locked_seen"]),
+                           ("S", snap["s_p1"], snap["s_locked_seen"])):
         assert ST_CAL_DONE(st) == 1, f"{name}: cal_done not set (0x{st:08x})"
-        locked = ST_LANE_LOCKED(st)
-        active_locked = all((locked >> i) & 1 for i in ACTIVE_LANES)
-        tb.log.info(f"  {name}: lane_locked=0x{locked:02x} "
+        tb.log.info(f"  {name}: lane_locked ever-seen=0x{seen:02x} "
                     f"(active lanes {ACTIVE_LANES})")
-        assert active_locked, (
-            f"{name}: active lanes not all locked: lane_locked=0x{locked:02x}, "
+        assert all((seen >> i) & 1 for i in ACTIVE_LANES), (
+            f"{name}: active lanes {ACTIVE_LANES} not all locked during "
+            f"training: lane_locked ever-seen=0x{seen:02x}, "
             f"need bits {ACTIVE_LANES} set")
 
     ok = await tb.wait_cr_crack()

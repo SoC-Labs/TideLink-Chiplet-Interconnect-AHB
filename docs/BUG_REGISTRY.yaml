@@ -384,6 +384,7 @@ bugs:
       hw_evidence: null
       in_hw_gate: true
       hw_test: kr260_eth_ecc_hwverify.sh   # [2] directional byte-0 injection sweep = the ECC-correction regression (each node's header flip -> die_a ALIVE + byte-exact); board-run pending for W byte-0
+      hw_validation_2026_08_08: "ATTEMPTED on the eth-chiplet pair (leased/deployed/ran/released clean). GATED by the rank-1 marginal-eye blocker (TL-009): correct deploy = KR260_AFI_NO_CANARY=1; good-eye bring-ups land cross-die writes byte-exact (5 consecutive proven) so the DATA PATH works, but the pair WEDGES intermittently (die_a hangs on sustained writes AND on injection) so the injection sweep never got a wedge-free window -- every full ECC run FAILED at R1-drop/AW-inject-wedge (die_a POR-recovered 5x). NOT a fix failure: the logical fixes are sim-proven; clean HW validation needs a SOLID-eye bring-up this rig does not reliably produce (physical, David eye-workstream). FOLLOW-UP: gate kr260_eth_ecc_hwverify.sh on a repeated-write solid-eye check before the injection sweep."
     action_items:
       - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix regression-locked ON THE INTEG LINE. NOTE: 63222b6 is object-ABSENT from the eth-chiplet submodule Makefile (agent 2026-08-07) -> gaps_ecc runs only via gaps_nodes+gaps_backstop there; port it."
       - "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."

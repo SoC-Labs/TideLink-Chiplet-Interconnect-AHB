@@ -554,10 +554,27 @@ bugs:
       branch: null
       netlist_affecting: true
     closes_when: "DFT/BIST harness + gate/hwtest hook + first-silicon go/no-go metric"
-    verification: {sim_test: "deps/tidelink-phy/cocotb/phy_bist/ (passes, unwired)", in_sim_gate: false, hw_tested: false}
+    verification: {sim_test: "deps/tidelink-phy/cocotb/phy_bist/ — NOT passing in the consolidated env (see below); unwired", in_sim_gate: false, hw_tested: false}
+    instrument_finding_2026_08_08: >
+      ATTEMPTED the autonomous half (wire the passing phy_bist cocotb into sim_gate). BLOCKED
+      by an instrument check: the suite does NOT pass in the consolidated tree with the
+      top-level env (source ./set_env.sh; VCS; TIDELINK_PHY_V2=1). `make` (default MODULE
+      test_phy_bist) = 1 PASS / 10 FAIL (only test_lane_mask passes); `make fast`
+      (test_phy_bist_fast) also FAILs test_prbs_multi_candidate_convergence. This directly
+      CONTRADICTS the registry/README "passing (5/5)" premise. The failures are a
+      LINK-NEVER-COMES-UP CASCADE (test_link_up_both_dirs, test_prbs_clean,
+      test_sync_beacon_traverses_link, test_error_clear_on_caldone all FAIL; the only pass
+      is test_lane_mask, which does not need the link up) -- so this smells like ONE
+      systemic config/bring-up prerequisite, not 10 independent regressions. NOT a
+      missing-define: the Makefile header confirms USE_CLKBUF=0 is the default path (no
+      unisim needed) and I invoked it with its own defaults. => the "wire the passing suite"
+      task CANNOT proceed until phy_bist is triaged green in this env. Did NOT wire it (would
+      have turned the gate red). POSSIBLE LINK: the link-up cascade may share a root cause
+      with the eye-gated reliability handover (HANDOVER_RELIABILITY_EYE_GATED_2026-08-08) --
+      cross-check. Triage + first-silicon go/no-go remain David's (item is DEFERRED/HIGH).
     signoff:
-      claude_verdict: "DEFERRED — verification/DFT-integration gap, HIGH tapeout risk, unmitigated. BIST RTL exists but unwired. Not an RTL bug."
-      evidence: [memory:project_phy_harness_landscape, "grep phy_bist|prbs Makefile = 0 hits"]
+      claude_verdict: "DEFERRED — HIGH tapeout risk, unmitigated. BIST RTL exists but (a) unwired AND (b) NOT green in the consolidated env (1/11), so the 'wire the passing suite' autonomous half is blocked on a triage. Not wired (would red the gate). David: triage the link-up cascade (poss. shared with the eye-gated handover) + first-silicon go/no-go."
+      evidence: [memory:project_phy_harness_landscape, "grep phy_bist|prbs Makefile = 0 hits", "make phy_bist = 1P/10F in consolidated env (2026-08-08)", "make fast FAIL test_prbs_multi_candidate_convergence"]
       approved: false
 
   # ---------------------------------------------------------------------------

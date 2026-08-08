@@ -275,7 +275,7 @@ endef
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_epoch_anchor_plumb \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
-	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
+	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_fifo_randinit sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
@@ -596,6 +596,15 @@ sim_gate_fifo:
 	$(call sim_gate_run,fifo_rx_phantom_pop,\
 	  rm -rf cocotb/tidelink_fifo/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_fifo)
+
+# TL-022: the SAME FIFO suite under an ADVERSARIAL non-zero SRAM power-up
+# (TIDELINK_SRAM_RAND_INIT, default fill 0x2 => length 2 => read_target inside the
+# read sweep). Locks the phantom-pop guard against ASIC random init: non-vacuous
+# (removing the guard makes test_41 FAIL under this init, proven 2026-08-08). ~60s.
+sim_gate_fifo_randinit:
+	$(call sim_gate_run,fifo_rx_randinit,\
+	  rm -rf cocotb/tidelink_fifo/sim_build_randinit && \
+	  $(MAKE) -C cocotb/tidelink_fifo randinit)
 
 # NACK-wedge / ACK-drop / state-7 recovery regression (2026-07-18).
 #
@@ -1267,7 +1276,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
 	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
-	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
+	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
@@ -1361,6 +1370,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2_tree
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_randinit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v1elab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_preempt

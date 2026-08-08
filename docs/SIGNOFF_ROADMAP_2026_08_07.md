@@ -28,15 +28,32 @@ main 18491ef  ⊂  integ/axirec-on-chiplet 1107151  ⊂  tl001-calibrator 2c249e
   `SELF_ARM_TRAIN_EN` I1 silicon fix ✔.
 - The stale local `integ/axirec-on-chiplet` copies (`63222b6`, `c6cc6eb`) are **behind** origin's
   authoritative `1107151` — ignore them; origin is truth.
-- **Gate status:** `make sim_gate` on the consolidated tip surfaced a **real regression, now BISECTED** →
-  **TL-024**. Blocking suite `t31_autonomous_training_exit` FAILs (`swi_training_mode_r` never engages; the
-  calibrator reaches S_DONE via HOLD→VALIDATE without the autoneg entering training). Bisect (t31 across the
-  calibrator line): `1107151`=PASS, **`e5bd29c` (FIX 1)=FAIL**, `235d758`=FAIL, `2c249ec`=FAIL ⇒ **FIX 1 is the
-  culprit commit**; the mechanism is `min_lock_dwells 0→1` ("centering-on") switching the autonomous calibrator
-  to a full sweep+eye-centre so it locks without the autoneg training handshake. The HW-only campaign never
-  re-ran sim_gate (stale-simv trap). **This is a genuine find, not a consolidation defect** — the branch is
-  still the correct union, but it is **NOT gate-green**; the fix is a DECISION (centering-on is the H4 framing
-  fix — see TL-024). Full 44-suite gate still running in background for the complete failure set.
+- **Gate status: NOT gate-green — the full `make sim_gate` finished with 14 blocking FAILs (38 PASS)** plus
+  `xfail_epoch_shipping_corrector`=**XCHG** ("behaviour changed — investigate"). This is far broader than the
+  single t31 regression first seen: **the calibrator/obs work on `2c249ec` (which the eth-chiplet already pins)
+  broke a whole swath of autonomous suites, uncaught because the HW-only campaign never re-ran sim_gate.**
+  The 14 sort into three families (see **TL-024**):
+  - **FIX 1 centering-on** (`min_lock_dwells 0→1`): `t31_autonomous_training_exit`, `t33_arm_stagger_episode_bind`
+    (ran **3.5 h** then failed — a hang), `retire_en_plumb` — all "swi_training_mode_r never engaged." **Bisected**:
+    `1107151`=PASS, `e5bd29c`=FAIL.
+  - **FIX 2 threshold 5→6**: `v2_autonomous_sync_detect` asserts the autonomous lock threshold == 5 and gets 6
+    (literally FIX 2); plus the `lane_locked=0x00` family `v2_pair_data` / `epoch_silicon` / `v2_reduced_lane` /
+    `v2_mask_hs_bilateral`.
+  - **obs work / flist**: `asic_v1_elab` / `asic_v2_elab` / `dft_wrapper_elab` fail to elaborate —
+    `tidelink_winscan_obs` not in the ASIC flist (**TL-020**); `tc_pair_smoke` / `tc_pair_election_datamode`
+    undefined-port. `epoch_anchor_plumb` also fails.
+  **Base run on `1107151` DONE — the split is confirmed:**
+  - **~9 NEW** (calibrator/obs work; PASS on `1107151`, confirmed for `v2_pair_data` PASS=3 and
+    `v2_autonomous_sync_detect` PASS=4): the FIX 1 training suites + FIX 2 threshold + lane-lock family.
+  - **~5 PRE-EXISTING** (FAIL on `1107151` too): `asic_v1/v2_elab` + `dft_wrapper_elab` (TL-020) + `tc_pair_*`.
+  - **🔴 Meta-finding:** the **"integ line gate-green / freeze 46-blocking-0-FAIL" claim was FALSE** — `1107151`
+    (the eth-chiplet's pin) already carries ≥5 blocking FAILs. The classic verification-audit trap (`imp/sim_gate`
+    green = a *different* branch's run / scored-but-never-invoked). So there are **two** problems: reconcile the
+    NEW calibrator regressions, **and** the baseline was never really gated.
+
+  **Bottom line: `2c249ec` / this branch is the correct union but is NOT gate-clean — the calibrator "10× soak"
+  win added ~9 sim regressions, on top of ~5 pre-existing that a never-run gate had masked. Both need reconciling
+  before any sign-off.**
 
 ---
 

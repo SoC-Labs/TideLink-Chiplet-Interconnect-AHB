@@ -714,10 +714,17 @@ bugs:
     related: [TL-004, TL-005, TL-009]
 
   - id: TL-020
-    title: ASIC flist hygiene — dup sync_detect + undefined PTP FIFO cell landmine
-    severity: low
+    title: ASIC flist hygiene — obs modules missing (BREAKS asic elab gate) + dup sync_detect + undefined PTP FIFO cell
+    severity: high   # RAISED 2026-08-07: gate-confirmed — breaks 3 blocking elab suites on BOTH lines
     area: build/flist
-    status: fix_built   # dedup autonomous; landmine dormant
+    status: root_caused   # gate-confirmed pre-existing
+    gate_confirmed_2026_08_07: >
+      asic_v1_elab, asic_v2_elab, dft_wrapper_elab all FAIL "Error-[CFCILFBI] Cannot
+      find cell tidelink_winscan_obs" on BOTH 2c249ec AND the integ base 1107151 -> this
+      is a PRE-EXISTING blocking-gate failure, not new. Proves the "integ line gate-green"
+      claim was false (see TL-024 gate_split). Fix: add tidelink_winscan_obs.sv +
+      tidelink_fcemit_obs.sv to the bare ASIC flist (silicon already gets them via the
+      parent nanosoc_eth_chiplet_asic.flist:81-82). Autonomous, sim-verifiable.
     summary: >
       (1) tidelink_phy_sync_detect.sv listed twice in tidelink_top_full_asic_v2.flist
       (:190 and :197). (2) LANDMINE: wlink_wlink_ptp_tl_a2l_48x4 instantiated at
@@ -784,17 +791,27 @@ bugs:
   # Regression found by re-running sim_gate on the consolidated tip (2026-08-07)
   # ===========================================================================
   - id: TL-024
-    title: FIX 1 (calibrator centering-on) regresses blocking gate t31_autonomous_training_exit
-    severity: high
+    title: Calibrator/obs work (FIX 1/FIX 2/obs) regresses 14 blocking sim_gate suites
+    severity: rank1_critical
     area: phy/calibrator
     status: root_caused
     summary: >
-      Re-running `make sim_gate` on the consolidated tip (2c249ec) surfaced a REAL
-      regression the HW-only campaign missed (never re-ran sim_gate — stale-simv /
-      sim_gate-not-invoked trap): the BLOCKING suite t31_autonomous_training_exit
-      FAILs. swi_training_mode_r never engages — the autoneg FSM never asserts
-      training — so the autonomous training-exit protocol the gate encodes never runs;
-      the calibrator reaches S_DONE via HOLD->VALIDATE with tm=0 throughout.
+      Re-running the FULL `make sim_gate` on the consolidated tip (2c249ec = the
+      eth-chiplet's current pin) — which the HW-only campaign NEVER did (stale-simv /
+      sim_gate-not-invoked trap) — finished with 14 BLOCKING FAILs + 38 PASS +
+      xfail_epoch_shipping_corrector=XCHG. The TL-001 calibrator "10x soak" work broke a
+      broad swath of autonomous suites. Three families:
+      (1) FIX 1 centering-on (min_lock_dwells 0->1): t31_autonomous_training_exit,
+          t33_arm_stagger_episode_bind (ran 3.5h then FAILED = hang), retire_en_plumb —
+          all "swi_training_mode_r never engaged". BISECTED: 1107151=PASS, e5bd29c=FAIL.
+      (2) FIX 2 threshold 5->6: v2_autonomous_sync_detect asserts autonomous lock
+          threshold==5, gets 6 (LITERALLY FIX 2); + lane_locked=0x00 family v2_pair_data,
+          epoch_silicon, v2_reduced_lane, v2_mask_hs_bilateral.
+      (3) obs work / flist: asic_v1_elab, asic_v2_elab, dft_wrapper_elab fail to
+          elaborate (tidelink_winscan_obs not in ASIC flist = TL-020); tc_pair_smoke,
+          tc_pair_election_datamode undefined-port; epoch_anchor_plumb.
+      A fast 1107151 base run is splitting pre-existing (TL-020 flist) from new. The
+      original single-suite framing (t31 only) UNDERSTATED this — it is broad.
     root_cause: >
       BISECTED 2026-08-07 (ran t31 across the calibrator line, VERDICT = grep of the
       sim_gate PASS marker; note `make sim_gate_t31` exits 0 even on suite FAIL so the
@@ -830,8 +847,24 @@ bugs:
       in_sim_gate: true
       hw_tested: n/a
       hw_evidence: null
+    gate_split_2026_08_07: >
+      Fast base run on 1107151 (integ line) splits the 14 FAILs by pre-existing-vs-new:
+      PRE-EXISTING on the integ line (the eth-chiplet ALREADY ships these, NOT caused by
+      the calibrator work): asic_v1_elab + asic_v2_elab + dft_wrapper_elab (all TL-020,
+      tidelink_winscan_obs not in the ASIC flist — SAME failure signature on 1107151),
+      tc_pair_smoke (+tc_pair_election_datamode, same tb, undefined-port).
+      NEW / calibrator-obs-caused (2c249ec delta; PASS on 1107151): v2_pair_data (base
+      PASS -> now lane_locked=0x00), v2_autonomous_sync_detect (FIX 2 threshold 5->6,
+      test asserts 5), t31 + t33 + retire_en_plumb (FIX 1 centering-on), and the
+      lane-lock family epoch_silicon/v2_reduced_lane/v2_mask_hs_bilateral (lane never
+      locks on the autonomous path). CRITICAL META-FINDING: the "integ line gate-green /
+      freeze 46-blocking-0-FAIL" claim was FALSE — 1107151 already carries >=5 blocking
+      FAILs. Classic verification-audit trap (imp/sim_gate green = a DIFFERENT branch's
+      run / scored-but-never-invoked). => TWO problems: (a) fix the NEW calibrator
+      regressions (FIX 1/FIX 2 reconcile), (b) the pre-existing gate rot (TL-020 + tc_pair)
+      was never really green.
     signoff:
-      claude_verdict: "BISECTED to e5bd29c (FIX 1 centering-on). Real regression of a BLOCKING gate, masked because the HW-only campaign never re-ran sim_gate. Fix is a DECISION (centering-on H4 vs the t31 autonomous-training-exit protocol) — do NOT sign the TL-001 calibrator work until resolved. Confirming min_lock_dwells micro-revert = 1 build."
-      evidence: ["t31 bisect: 1107151=PASS, e5bd29c=FAIL", "min_lock_dwells 0->1 @e5bd29c axi_chiplet_controller.sv:2153", "swi_training_mode_r never HIGH; autoneg :2169"]
+      claude_verdict: "rank1: re-running FULL sim_gate (which the HW-only campaign NEVER did) = 14 blocking FAILs on 2c249ec. Split: ~9 NEW from the calibrator/obs work (FIX 1 centering-on bisected e5bd29c; FIX 2 threshold 5->6 = v2_autonomous_sync_detect; lane-lock family), ~5 PRE-EXISTING on the integ line (TL-020 ASIC elab + tc_pair tb — proving the 'gate-green' freeze claim was FALSE). Do NOT sign the TL-001 calibrator work; and the integ baseline itself needs a real gate. Fix is a DECISION (centering-on/threshold are the HW-improvement levers vs the autonomous sim gates)."
+      evidence: ["full sim_gate: 38 PASS / 14 FAIL / XCHG epoch_shipping", "t31 bisect 1107151=PASS e5bd29c=FAIL", "base run: asic elabs+tc_smoke FAIL on 1107151 (pre-existing), v2_pair_data PASS on 1107151 (new)", "v2_autonomous_sync_detect asserts thresh=5, FIX2=6"]
       approved: false
-    related: [TL-001, TL-009]
+    related: [TL-001, TL-009, TL-020]

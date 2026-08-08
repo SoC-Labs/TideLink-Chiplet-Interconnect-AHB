@@ -1490,6 +1490,20 @@ sim_gate_one:
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 $(TOKEN)
 	@$(MAKE) --no-print-directory sim_gate_summary SIM_GATE_SUITES="$(SUITE)" SIM_GATE_SENTINELS=""
 
+# ── HARDWARE regression gate (durable, run-each-time; HW mirror of sim_gate) ──
+.PHONY: hwtest_registry_coverage hwtest_gate
+
+# HW COVERAGE: every bug that claims verification.in_hw_gate:true must name a real
+# HW test; HW-proven-but-ungated bugs are reported as gaps. Deterministic, no HW.
+hwtest_registry_coverage:
+	@python3 $(TIDELINK_HOME)/scripts/ci/hw_registry_coverage.py $(HWCOV_ARGS)
+
+# The authoritative HW regression front-end: prove HW coverage, then run the
+# provenance-stamped, POR-disciplined, byte-exact, fail-loud onchip gate.
+# Never claim "HW green" from resident-bitstream logs — only from this.
+hwtest_gate: hwtest_registry_coverage
+	@bash $(TIDELINK_HOME)/pynq_host/scripts/hwtest_gate.sh
+
 
 # ── ASIC PnR / GDSII flow ────────────────────────────────────────────────
 # Exposes `make fc`, `make gdsii`, `make fc_lec`, `make fc_etm`, `make

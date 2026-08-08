@@ -762,23 +762,40 @@ bugs:
       unreadable via the on-silicon sideband).
     fix: {approach: "widen APB-hit to regions D/F; add a debug-override to i2c_slv_reset; map ext_stall_err_q to an APB obs bit; (opt) event-order trace", files: [src/rtl/local_overrides/axi_chiplet_controller.sv, src/rtl/tidelink_top.sv], commit: null, branch: null, netlist_affecting: true}
     verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "3 small localized RTL edits, high bring-up leverage; autonomous build + APB-read cocotb, netlist-affecting so David signs to land", evidence: ["axi_chiplet_controller.sv:595-599,3074", "tidelink_top.sv:940-959"], approved: false}
+    signoff: {claude_verdict: "SPEC-READY, David-gated (2026-08-08). Map complete in docs/TL021_FIRST_SILICON_OBS_SPEC.md. CORRECTION: sub-item (1) is NOT a one-liner -- Regions D(0x21A0-A8 RX-framer)/F(0x21F8 wedge witness) FOLD onto ctrl_reg_addr[4:3]==2'b00 (only 2 bits/4 slots) and are picked by 1-bit flags (apb_ctrl_reg_rf/_rd) the I2C sideband never drives, so a naive hit-widen COLLIDES with Region C. Needs a coordinated 4-site change on the critical HW-proven read-mux (hit + fold + slv-side flags + mux merge) -- netlist-affecting, David signs + rebuild. Sub-item (2) i2c_slv_reset override = new default-OFF bit 0x2088[7] (bit-identical when 0). Sub-item (3) ext_stall_err_q -> 0x21F8[11] = one-word additive, V2-only. All 3 APB-read sim-provable pre-land. NOT auto-committed: 4-site edit on the tapeout controller read-mux = David-gated (TL-027 profile).", evidence: ["docs/TL021_FIRST_SILICON_OBS_SPEC.md", "read-mux axi_chiplet_controller.sv:1156-1164", "D/F fold tidelink_apb_regs.sv:626-635", "i2c_slv_reset :3074", "ext_stall_err_q tidelink_top.sv:944-961/:1724"], approved: false}
     related: [TL-009]
 
   - id: TL-022
     title: D2D RX-FIFO rf_16k macro never functionally simulated (random init)
     severity: medium
     area: rtl/fifo
-    status: root_caused   # ASIC-only exposure
+    status: sim_proven   # random-init exposure tested; guard holds
     summary: >
       src/rtl/fifo/asic/tidelink_sram.sv:48 instantiates rf_16k u_rf on the D2D RX FIFO;
       no sim env compiles the real macro (only sim_stubs/rf_16k_stub.v in compile-only
       gates). Random power-up (vs the FPGA model's all-zero) is an un-exercised init-state
       exposure that interacts with the phantom-pop guard's documented uncovered 2nd case
-      (tidelink_fifo_ctrl.sv:321,:400).
-    fix: {approach: "build a randomised-init rf_16k model + targeted RX-FIFO phantom-pop sim before tapeout", files: [src/rtl/fifo/asic/tidelink_sram.sv], commit: null, branch: null, netlist_affecting: false}
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "test-infra + possible RTL; may surface a real phantom-pop bug; autonomous sim build", evidence: ["tidelink_sram.sv:48 rf_16k", "fifo_ctrl.sv:321,400"], approved: false}
+      (tidelink_fifo_ctrl.sv:321,:400). RESOLVED 2026-08-08 (below): the phantom-pop guard
+      is SRAM-value-INDEPENDENT (blocks the offset-0 arming on rx_fifo_empty, not on SRAM
+      contents), so random init adds NO empty-FIFO exposure beyond the all-zero case, and
+      that is now proven under a dangerous non-zero init.
+    fix: {approach: "TIDELINK_SRAM_RAND_INIT knob (fpga/tidelink_sram.sv, sim-only translate_off) + `make randinit` target (cocotb/tidelink_fifo) run the whole FIFO suite under an ADVERSARIAL non-zero power-up", files: [src/rtl/fifo/fpga/tidelink_sram.sv, cocotb/tidelink_fifo/Makefile], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: "cocotb/tidelink_fifo `make randinit` (42/42 PASS under SRAM[0]=0x2 adversarial init)", in_sim_gate: false, hw_tested: "n/a"}
+    result_2026_08_08: >
+      The default RAND_INIT fill was CORRECTED after a first-pass error: 0xFF (=> clamp_length
+      MAX => read_target_addr beyond the read sweep) CANNOT pop and is NOT adversarial; the
+      pop-triggering low-bit range is 0x0..0x6. Default is now 0x0000_0002 (length 2 =>
+      read_target_addr=12, inside the sweep). NON-VACUITY MATRIX (all via a transient
+      guard-bypass, since REMOVED from the safety-critical RTL): guard-OFF+zero -> test_41
+      FAIL (reproduces f9b94b7 phantom pop, read_ptr 0x0->0x8); guard-OFF+V2 -> test_41 FAIL
+      (V2 is genuinely pop-triggering); guard-ON+V2 -> 42/42 PASS. => the guard is
+      load-bearing AND holds under dangerous non-zero (random-like) init. `make randinit` is
+      now a PERMANENT non-vacuous regression (fails if the guard is ever removed).
+      RESIDUAL (separate, NOT closed): the documented 2nd uncovered case (FC-write-path arms
+      packet_active on a header that never completes, fifo_ctrl.sv:400) is SRAM-init-
+      INDEPENDENT (length from fc_wr_wdata, not SRAM), so this init-focused test does not
+      exercise it; a targeted incomplete-packet test is a follow-up.
+    signoff: {claude_verdict: "RANDOM-INIT question ANSWERED: phantom-pop guard is SRAM-value-independent and holds under adversarial non-zero init (42/42, non-vacuity proven). Instrument (randinit) is a permanent regression. No new RTL bug surfaced on the init axis. FOLLOW-UP (not this bug): the FC-write incomplete-packet 2nd case is init-independent and still un-tested.", evidence: ["make randinit 42/42 PASS (V2 init)", "guard-OFF+zero test_41 FAIL", "guard-OFF+V2 test_41 FAIL", "guard-ON+V2 test_41 PASS"], approved: false}
     related: []
 
   - id: TL-023

@@ -12,6 +12,7 @@ MODULE   = test_tidelink_fifo
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist
+COMPILE_ARGS += $(EXTRA_COMPILE_ARGS)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # ── Code coverage ───────────────────────────────────────────────────────
@@ -30,6 +31,19 @@ _flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# TL-022: run the whole FIFO suite against a silicon-faithful RANDOM/adversarial
+# SRAM power-up (the ASIC rf_16k register-file inits to random LEGAL values, NOT
+# the FPGA all-zero). The phantom-pop guard (tidelink_fifo_ctrl.sv rx_fifo_empty
+# + FC-write-path arm) MUST hold: no phantom pop, credit_count never exceeds
+# MAX_CREDITS after reset. Default 0xFF fill (SRAM[0]=0xFFFF_FFFF => clamp_length
+# maximal, the worst case); `make randinit SEEDARG=+TL_SRAM_SEED=7` sweeps a
+# seeded $random pattern. Separate sim_build (different +define).
+# Default 0xFF fill (worst case). Seed sweep: `make randinit PLUSARGS=+TL_SRAM_SEED=7`.
+.PHONY: randinit
+randinit:
+	$(MAKE) SIM_BUILD=sim_build_randinit \
+	        EXTRA_COMPILE_ARGS=+define+TIDELINK_SRAM_RAND_INIT
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
 

@@ -56,8 +56,48 @@ module tidelink_sram #(
     // needs no init, and forcing one would infer an init file).
     // -------------------------------------------------------------------------
     // synthesis translate_off
-    `ifndef TIDELINK_SRAM_NO_ZERO_INIT
     localparam int SRAM_AWT = (1 << (AW - 2)) - 1;
+    `ifdef TIDELINK_SRAM_RAND_INIT
+    // -------------------------------------------------------------------------
+    // TL-022: SILICON-FAITHFUL *RANDOM/ADVERSARIAL* POWER-UP (ASIC rf_16k).
+    //
+    // The FPGA zero-init above models Xilinx BRAM. The ASIC RX-FIFO uses the
+    // rf_16k compiled register-file macro (fifo/asic/tidelink_sram.sv:48), which
+    // powers up to random LEGAL values — NOT all-zero, NOT X. A non-zero SRAM[0]
+    // is the phantom-pop WORST case: clamp_length(garbage) != 0 can mint a fake
+    // packet length. This arm reproduces that init so the phantom-pop guard
+    // (tidelink_fifo_ctrl.sv rx_fifo_empty + the FC-write-path arm, :217/:321)
+    // is exercised under the real ASIC condition. Default fill = a DANGEROUS
+    // NON-ZERO small value 0x0000_0002 (clamp_length=2 => read_target_addr =
+    // (2+1)<<2 = 12, which lands INSIDE a typical empty-FIFO read sweep and pops
+    // a phantom packet WITHOUT the guard). Non-zero on purpose: proves the guard
+    // covers arbitrary random init, not just the FPGA all-zero (the pop-triggering
+    // low-bit range is 0x0..0x6; MAX-length values like 0xFF put read_target
+    // BEYOND the sweep and cannot pop, so 0xFF is NOT adversarial for this
+    // mechanism). +TL_SRAM_SEED=<n> selects a seeded $random sweep. Mutually
+    // exclusive with the zero-init.
+    // -------------------------------------------------------------------------
+    integer tl_sram_seed;
+    initial begin
+        if ($value$plusargs("TL_SRAM_SEED=%d", tl_sram_seed)) begin
+            for (int i = 0; i <= SRAM_AWT; i++) begin
+                u_sram.BRAM0[i] = $random(tl_sram_seed);
+                u_sram.BRAM1[i] = $random(tl_sram_seed);
+                u_sram.BRAM2[i] = $random(tl_sram_seed);
+                u_sram.BRAM3[i] = $random(tl_sram_seed);
+            end
+        end else begin
+            for (int i = 0; i <= SRAM_AWT; i++) begin
+                u_sram.BRAM0[i] = 8'h02;   // word = 0x0000_0002 => length 2 (pop-triggering)
+                u_sram.BRAM1[i] = 8'h00;
+                u_sram.BRAM2[i] = 8'h00;
+                u_sram.BRAM3[i] = 8'h00;
+            end
+        end
+    end
+    `elsif TIDELINK_SRAM_NO_ZERO_INIT
+    // legacy knob: leave BRAM at X (no init)
+    `else
     initial begin
         for (int i = 0; i <= SRAM_AWT; i++) begin
             u_sram.BRAM0[i] = 8'h00;

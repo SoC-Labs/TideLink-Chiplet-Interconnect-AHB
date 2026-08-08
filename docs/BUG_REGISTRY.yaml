@@ -980,8 +980,8 @@ bugs:
       netlist_affecting: true
     verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc/ (exists; targets _13 — extend to _1 4-bit/8 + _3 6-bit/32)", in_sim_gate: false, hw_tested: false}
     signoff:
-      claude_verdict: "registration gap closed. Bounded autonomous port + sim-A/B (reset-skew only; 'silicon is the verifier' per the RTL). Instrument-first (port _13 obs to B-channel node) before betting the wedge cure on it."
-      evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision"]
+      claude_verdict: "INSTRUMENT-FIRST SPEC-READY, David-gated (2026-08-08). B-channel a2l node identified = WlinkGenericFCReplayV2_5 (AXI4ToWlink.v:605 wlink_axibFC -> FCSM_2.v:505; swi_data_id_1=0x82). Ready-to-execute port map in docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md (8 files, 4 hierarchy levels, NEW Region-10 APB slot, taps NARROWER [3:0] not [4:0]; AXI4ToWlink has NO precedent override). NOT auto-committed: netlist-affecting (invalidates HW-proven 9cca6fe -> rebuild) + register-map contract change (tl39/GUI must learn the slot) + confirmatory only (rank-1 dominant cause is physical). Do the contested CDC self-heal port ONLY after this instrument confirms the write-path false-FULL on silicon."
+      evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision", "docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md", "B-node instantiation trace AXI4ToWlink.v:605/FCSM_2.v:505,629"]
       approved: false
     related: [TL-009, TL-001, TL-023]
 

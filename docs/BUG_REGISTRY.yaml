@@ -1061,7 +1061,7 @@ bugs:
       actionable SDC/physical finding under the TL-009 umbrella that never had its own id.
     fix: {approach: "add the create_generated_clock on the /16 recovered RX word clock + let CTS build the tree; re-check WNS on the pad_clk_rx path-group", files: [fpga/constraints], commit: null, branch: null, netlist_affecting: true}
     verification: {sim_test: n/a, in_sim_gate: false, hw_tested: "needs routed-timing + HW eye A/B"}
-    signoff: {claude_verdict: "physical/SDC — couples TL-009. Add constraint, rebuild, HW A/B the land-rate.", evidence: ["HW_RESULTS_FRAMING_WEDGE handover"], approved: false}
+    signoff: {claude_verdict: "physical/SDC — couples TL-009. CORRECTION 2026-08-08 (multi-agent probe): the ASIC SDC ALREADY applies it (nanosoc-ethernet-chiplet/ASIC/.../tidelink_constraints.sdc:31-81 = 8x create_generated_clock D2D_RX_WORD_CLK, added 2026-08-08); the FPGA eth-chiplet XDC does NOT (has TX-word + pad_clk_rx create_clock, no RX /16 word gen-clock). FPGA leverage is LOW (word clock ~195kHz on KR260, us slack) but it makes the B-return path STA-VISIBLE (diagnostic). NOT the onchip-vs-eth-chiplet differentiator (onchip omits it too yet is lottery-free). The high-leverage capture-clock lever is the BUFG hoist (USE_SHARED_CAP_BUFG=1, measured 9.8x tighter), NOT this.", evidence: ["ASIC tidelink_constraints.sdc:31-81 applied", "FPGA kr260_eth_chiplet timing.xdc missing RX word gen-clock", "onchip omits it too yet lottery-free"], approved: false}
     related: [TL-009]
 
   - id: TL-029
@@ -1150,3 +1150,72 @@ bugs:
       evidence: ["HANDOVER_RELIABILITY_EYE_GATED_2026-08-08", "TL-027 instrument-first spec", "TL-028 RX word clock", "onchip_landrate.log 4/4x500", "TL-009 signoff WNS walk-back"]
       approved: false
     related: [TL-001, TL-009, TL-027, TL-028, TL-019]
+
+  # ---------------------------------------------------------------------------
+  # From the 2026-08-08 multi-agent physical-eye investigation
+  # ---------------------------------------------------------------------------
+  - id: TL-032
+    title: "Calibrator eye-centre run-tracker SPLITS a wrap-straddling framing (non-circular over the mod-16 phase axis) -> write-drop lottery"
+    severity: high
+    area: rtl/phy
+    status: sim_proven
+    summary: >
+      The RX phase axis is CIRCULAR mod-16 (WavD2DGpioRx_v2.v:406 adj_count=count+io_phase_offset) but the
+      calibrator eye-centre run-tracker scores it LINEAR [0..15] and resets run_len at sweep_phase==15
+      (tidelink_phy_align_calibrator_v2.sv ~:2179-2246). A passing eye STRADDLING the phase 15->0 wrap at a
+      fixed slip (e.g. {14,15,0,1}) is split into two sub-runs; with MIN_LOCK_DWELLS=3 neither reaches the
+      gate, best_run never promotes, S_FINALIZE finds no eye-centre, and the lane drops to the (0,0)/edge
+      fallback = THE PEER-WRITE DROP. Whether the eye straddles the wrap is set per bring-up by the mod-16
+      free-running-count lottery (WavD2DGpioRx_v2.v:262) -> a DETERMINISTIC ~2-3/16 contributor to the
+      TL-001 drop lottery, INDEPENDENT of the physical eye. Found by the multi-agent 'is it really physical?'
+      probe; REPRODUCED + FIXED in sim.
+    fix:
+      approach: "circular stitch: new head_run_len tracker (the run starting at phase 0) + a phase-15 wrap-stitch so a straddling run scores its true width. Applied to calibrator_v2 (FPGA-V2 + ASIC-V2 shipping) + the deps cocotb twin. V1 src/rtl calibrator (legacy/being-retired, different structure) NOT patched."
+      files: [src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv, deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv]
+      commit: pending
+      branch: integ/tidelink-consolidated-2026-08-07
+      netlist_affecting: true
+    verification:
+      sim_test: "cocotb/tidelink_phy_align_calibrator test_calibrator_wrap.py -- reproduce-first: deps FAIL best_run=0 (dropped to (0,0)) -> heal PASS best_run=4 centred phase 15. No-regression: centering 3/3, t3 4/4, s_probe 3/3, sim_gate v2_winscan_fsm PASS(569s) + v2_autonomous_sync_detect PASS(293s)."
+      in_sim_gate: false
+      hw_tested: false
+    signoff:
+      claude_verdict: "SIM-PROVEN digital fix, non-vacuous, no-regression incl. the SHIPPING calibrator_v2 integration. DIRECTLY reduces the TL-001 drop lottery (deterministic wrap contributor). Netlist-affecting -> David lands + rebuild; it is one of the fixes that should ride the decisive BUFG-hoist+CTS build and be HW-A/B'd on per-POR land-rate. Necessary-not-sufficient (complements TL-027 wedge self-heal + the capture-clock BUFG hoist). FOLLOW-UP: wire test_calibrator_wrap into a sim_gate suite."
+      evidence: ["test_calibrator_wrap reproduce FAIL best_run=0", "heal PASS best_run=4 centred phase15", "sim_gate v2_winscan/syncdet PASS", "WavD2DGpioRx_v2.v:406 mod-16 circular phase"]
+      approved: false
+    related: [TL-001, TL-009, TL-028, TL-031]
+
+  - id: TL-033
+    title: "No credit-underflow protection — 13-bit credit counter wraps (silent credit corruption)"
+    severity: high
+    area: rtl/fifo
+    status: open
+    summary: >
+      MIGRATED from docs/reference/SHORTCOMINGS.md BUG-002 (Critical; never in the TL-registry). In
+      tidelink_fifo_ctrl.sv credit_count is decremented UNCONDITIONALLY on write_complete without checking
+      the packet fits; a packet larger than credit_count wraps the unsigned 13-bit counter -> silent
+      credit-accounting corruption (FIFO ptr/credit inconsistent, unread data silently overwritten). The
+      overrun flag only detects credit_count==0 at a valid transfer, not whether the whole packet fits.
+      Candidate first FPV target.
+    fix: {approach: "guard/saturate the credit decrement so it cannot underflow + flag an oversize packet; FPV the invariant that credit_count never wraps", files: [src/rtl/fifo/tidelink_fifo_ctrl.sv], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "MIGRATED unregistered Critical (SHORTCOMINGS.md BUG-002). Real silent-corruption risk, sim/FPV-provable. David: fix + FPV or explicitly waive for tapeout. Related credit-integrity family: TL-022 phantom-pop over-credit.", evidence: ["reference/SHORTCOMINGS.md BUG-002", "VERIFICATION_PLAN.md:249-266"], approved: false}
+    related: [TL-022]
+
+  - id: TL-034
+    title: "TideChart register-map defects (F-6): force_root unconsumed, TC_CTRL[3] mis-wired, sim/silicon dual-root divergence"
+    severity: medium
+    area: rtl/tidechart
+    status: open
+    summary: >
+      MIGRATED from VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02 / HANDOVER_AXI_DATANODE_2026_08_03
+      (unregistered; distinct from TL-025 device_strap elab break). (1) force_root (TC_CTRL[2]) is NEVER
+      consumed -- occurs once, in a comment (tidechart_apb_regs.sv:176); the documented SW override does not
+      exist. (2) TC_CTRL[3] documented "reset" but wired to rt_clear (:319) -- clears the route table, NOT
+      election_done; register map wrong as written. (3) sim_gate_tc_pair_election asserts n_roots==1 and
+      PASSES while silicon sees DUAL-ROOT -- a live sim/silicon divergence; TC_ERROR[2] dual_root never
+      asserted-on by any test.
+    fix: {approach: "tidechart owner: implement or remove force_root; fix the TC_CTRL[3] map; add a dual-root test that reproduces the silicon divergence", files: [tidechart], commit: null, branch: null, netlist_affecting: true}
+    verification: {sim_test: "sim_gate_tc_pair_election (vacuous n_roots==1 -- needs a dual-root repro)", in_sim_gate: true, hw_tested: false}
+    signoff: {claude_verdict: "MIGRATED unregistered TideChart defects. Register-map wrong as documented; the election gate is vacuous vs the silicon dual-root. TideChart owner. Couples TL-025.", evidence: ["VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02:229-243", "tidechart_apb_regs.sv:176,319"], approved: false}
+    related: [TL-025]

@@ -897,6 +897,8 @@ bugs:
       sim_test: "cocotb/tidelink_top_pair/test_31_autonomous_training_exit.py (sim_gate_t31, BLOCKING)"
       in_sim_gate: true
       hw_tested: n/a
+      in_hw_gate: true
+      hw_test: hwtest_gate.sh   # FIX 2 (lock thresh 6) is the ~10x peer-write soak lever; hwtest_gate's land-rate + byte-exact N-of-M soak drops below MIN_PASS if it silently reverts to 5 (the revert-alternative regression)
       hw_evidence: null
     gate_split_2026_08_07: >
       Fast base run on 1107151 (integ line) splits the 14 FAILs by pre-existing-vs-new:

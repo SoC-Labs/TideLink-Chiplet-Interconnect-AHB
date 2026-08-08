@@ -876,3 +876,23 @@ bugs:
       evidence: ["full sim_gate: 38 PASS / 14 FAIL / XCHG epoch_shipping", "t31 bisect 1107151=PASS e5bd29c=FAIL", "base run: asic elabs+tc_smoke FAIL on 1107151 (pre-existing), v2_pair_data PASS on 1107151 (new)", "v2_autonomous_sync_detect asserts thresh=5, FIX2=6"]
       approved: false
     related: [TL-001, TL-009, TL-020]
+
+  - id: TL-025
+    title: Pre-existing tc_pair elab break — tidechart_controller ".device_strap" undefined port
+    severity: medium
+    area: build/tidechart-integration
+    status: root_caused   # pre-existing (fails on 1107151 too), deferred
+    summary: >
+      sim_gate tc_pair_smoke + tc_pair_election_datamode FAIL "Error-[UPIMI-E] Undefined
+      port device_strap in module tidechart_controller". PRE-EXISTING (FAIL on 1107151
+      too — part of the false-'gate-green' rot, see TL-024). The tc_pair tb/RTL connects a
+      .device_strap port that tidechart_controller does not expose. tidechart_controller
+      lives in the tidechart subsystem (separate repo, not the core tidelink src tree), and
+      a 'surface DEVICE_CLASS as a per-die strap' feature was WIP (eth-chiplet branch
+      backup/pre-fcsm-merge-809f038 finding G1). NOT blind-fixable: needs the tidechart
+      owner to decide whether device_strap is a real port (add it) or a stale tb connection
+      (remove it). Deferred — tidechart interface decision.
+    fix: {approach: "reconcile the tidechart_controller device_strap interface (add port vs drop tb connection) — tidechart owner", files: [], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: "sim_gate_tc_smoke / tc_pair_election_datamode", in_sim_gate: true, hw_tested: false}
+    signoff: {claude_verdict: "pre-existing tidechart-integration break; deferred to tidechart owner (interface decision)", evidence: ["tc_pair_smoke.log UPIMI device_strap", "FAIL on 1107151 too"], approved: false}
+    related: [TL-024]

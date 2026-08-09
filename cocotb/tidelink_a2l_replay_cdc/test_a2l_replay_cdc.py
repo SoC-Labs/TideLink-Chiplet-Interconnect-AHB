@@ -35,7 +35,16 @@ APP_PERIOD_NS  = 20      # 50 MHz-ish fast app/hclk domain
 LINK_PERIOD_NS = 320     # app/16 slow link domain
 
 # ── DUT-source provenance (just for the log banner) ────────────────────────
-USE_DEPS_DUT = os.environ.get("USE_DEPS_DUT", "0") == "1"
+USE_DEPS_DUT   = os.environ.get("USE_DEPS_DUT", "0") == "1"
+USE_PREFIX_DUT = os.environ.get("USE_PREFIX_DUT", "0") == "1"
+
+
+def _dut_src_label():
+    if USE_DEPS_DUT:
+        return "deps(pristine,no-guard)"
+    if USE_PREFIX_DUT:
+        return "tl027only(guard,not-revert-aware)"
+    return "local_override(revert-aware)"
 
 
 def _sigint(sig):
@@ -43,6 +52,16 @@ def _sigint(sig):
         return int(sig.value)
     except ValueError:
         return -1   # X/Z
+
+
+def _sig_opt(dut, name):
+    """Read an optional internal net by name; return -1 if it is not present
+    (e.g. a2l_ack_off_max exists only on the TL-027-guarded DUTs, not pristine
+    deps). Used for logging so a deps run never crashes on a missing signal."""
+    try:
+        return _sigint(getattr(dut.dut, name))
+    except AttributeError:
+        return -1
 
 
 def probe(dut):
@@ -520,3 +539,113 @@ async def test_adversarial_addrsync_reset_skew(dut):
         f"lap-ahead ACK (wbin_ptr={wp}, a2l_full={full}, app_ready={rdy})."
     )
     dut._log.info("adversarial PASS: first write accepted, no false-full")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  TL-032 — REVERT-AWARENESS of the a2l ACK-window guard (residual R1)        ║
+# ║  A NACK-driven replay asserts link_revert and rewinds the FIFO read ptr;    ║
+# ║  the TL-027 window guard must stay in-window so recovery ACKs are accepted. ║
+# ║  MUST FAIL on the pristine (non-revert-aware) deps, PASS on the fixed RTL.  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+async def run_revert_recovery(dut, label, ptr_mask, window, N=4, M=2):
+    """TL-032 residual: a mid-stream link_revert that rewinds the FIFO read ptr
+    (fifo_io_rbin_ptr) BELOW the ACK ptr must NOT lock the TL-027 ACK-window guard
+    out of accepting the subsequent recovery ACKs.
+
+    Scenario (faithful to a NACK-driven replay on silicon — the error-inject wedge):
+      1. stream N app writes, read them out on the link side, then ACK addr N so
+         a2l_link_addr == N and fifo_io_rbin_ptr == N (a normal in-window ACK,
+         accepted by both deps and the fix);
+      2. pulse link_revert=1 / link_revert_addr=0 mid-stream -> the replay FIFO
+         rewinds fifo_io_rbin_ptr to 0 (re-transmit from base), exactly as the
+         FCSM drives it on a NACK (WlinkGenericFCSM_4.v:672-673);
+      3. re-read M(<N) of the replayed words (rbin 0->M) and deliver an in-window
+         recovery ACK(M).
+
+    GATE: the recovery ACK must be ACCEPTED -> a2l_link_addr advances to M.
+      pristine deps: a2l_link_addr is advanced ONLY on a2l_ack_valid, never
+        rewound on revert, so a2l_ack_off_max = rbin - a2l_link_addr = M - N wraps
+        mod-2^w to a large value (> window). The guard then rejects EVERY recovery
+        ACK -> a2l_link_addr frozen at N -> a2l_full sticks -> app_ready=0 ->
+        TX stall -> PS-bus wedge. => a2l_link_addr never reaches M => this FAILS.
+      revert-aware override (TL-032): a2l_link_addr rewinds to link_revert_addr in
+        lock-step with rbin, so off_max stays in-window (==0 right after the
+        revert) and the recovery ACK is accepted. => a2l_link_addr == M => PASSES.
+    """
+    src = _dut_src_label()
+
+    await start_clocks(dut)
+    await reset_with_skew(dut, 5)
+
+    st = probe(dut)
+    assert st["wbin_ptr"] == 0 and st["app_ready"] == 1, f"[{label}] idle not clean: {st}"
+
+    # 1. stream N writes, then read them all out on the link side ---------------
+    for i in range(N):
+        await app_write(dut, (i + 1))
+    await ClockCycles(dut.link_clk, 4)          # let wbin gray-sync to link side
+    for _ in range(N):
+        await link_read_one(dut)
+        await ClockCycles(dut.link_clk, 1)
+    rbin = _sigint(dut.dut.fifo_io_rbin_ptr)
+    assert rbin == N, f"[{label}] setup: expected rbin={N} after reading N, got {rbin}"
+
+    # ACK addr N (off_req=N, off_max=rbin-0=N, both <= window) -> a2l_link_addr=N
+    await link_ack(dut, N, pulses=2)
+    for _ in range(64):
+        await RisingEdge(dut.link_clk)
+        if _sigint(dut.dut.a2l_link_addr) == N:
+            break
+    la = _sigint(dut.dut.a2l_link_addr)
+    assert la == N, f"[{label}] setup ACK({N}) not latched: a2l_link_addr={la} (want {N})"
+    dut._log.info("[%s %s] pre-revert: a2l_link_addr=%d rbin=%d a2l_full=%d app_ready=%d",
+                  label, src, la, _sigint(dut.dut.fifo_io_rbin_ptr),
+                  _sigint(dut.dut.a2l_full), _sigint(dut.dut.app_ready))
+
+    # 2. mid-stream revert to base (0) -- the NACK-driven replay rewind ---------
+    dut.link_revert_addr.value = 0
+    dut.link_revert.value      = 1
+    await RisingEdge(dut.link_clk)
+    await RisingEdge(dut.link_clk)
+    dut.link_revert.value      = 0
+    await RisingEdge(dut.link_clk)
+    rbin = _sigint(dut.dut.fifo_io_rbin_ptr)
+    assert rbin == 0, f"[{label}] revert did not rewind rbin to 0 (got {rbin})"
+    off_max = _sig_opt(dut, "a2l_ack_off_max") & ptr_mask
+    dut._log.info("[%s %s] post-revert: a2l_link_addr=%d rbin=%d off_max=%d (window=%d)",
+                  label, src, _sigint(dut.dut.a2l_link_addr), rbin, off_max, window)
+
+    # 3. re-read M replayed words, then deliver an in-window recovery ACK(M) -----
+    for _ in range(M):
+        await link_read_one(dut)
+        await ClockCycles(dut.link_clk, 1)
+    rbin = _sigint(dut.dut.fifo_io_rbin_ptr)
+    assert rbin == M, f"[{label}] recovery re-read: expected rbin={M}, got {rbin}"
+
+    await link_ack(dut, M, pulses=2)
+    for _ in range(64):
+        await RisingEdge(dut.link_clk)
+        if _sigint(dut.dut.a2l_link_addr) == M:
+            break
+    la      = _sigint(dut.dut.a2l_link_addr)
+    off_max = _sig_opt(dut, "a2l_ack_off_max") & ptr_mask
+    full    = _sigint(dut.dut.a2l_full)
+    rdy     = _sigint(dut.dut.app_ready)
+    dut._log.info("[%s %s] post-recovery-ACK(%d): a2l_link_addr=%d off_max=%d a2l_full=%d app_ready=%d",
+                  label, src, M, la, off_max, full, rdy)
+
+    assert la == M, (
+        f"REVERT-WEDGE reproduced ({src}, {label}): after a mid-stream link_revert "
+        f"to 0 the recovery ACK({M}) was REJECTED -- a2l_link_addr stuck at {la} "
+        f"(want {M}); a2l_ack_off_max={off_max} > window {window}. The TL-027 guard "
+        f"is NOT revert-aware: rbin rewound below a2l_link_addr, off_max wrapped, so "
+        f"every recovery ACK is locked out -> a2l_full sticks -> app_ready=0 -> TX "
+        f"stall -> PS-bus wedge (residual R1). The revert-aware override (TL-032) "
+        f"must rewind a2l_link_addr with rbin so this PASSES.")
+    # terminal health: with the recovery ACK accepted the node is not stuck-full
+    assert full == 0 and rdy == 1, (
+        f"[{label} {src}] after an accepted recovery ACK the node is still "
+        f"a2l_full={full} app_ready={rdy} -- backpressure did not clear.")
+    dut._log.info("[%s %s] TL-032 revert-recovery PASS: recovery ACK accepted, "
+                  "a2l_link_addr advanced, no stuck a2l_full", label, src)

@@ -12,7 +12,8 @@ and the lap-ahead ACK value is 33 (0b100001) not 9 (_5) or 17 (_13).
 import cocotb
 from cocotb.triggers import RisingEdge
 from test_a2l_replay_cdc import (
-    start_clocks, reset_with_skew, probe, link_ack, _sigint, USE_DEPS_DUT)
+    start_clocks, reset_with_skew, probe, link_ack, _sigint, USE_DEPS_DUT,
+    run_revert_recovery)
 
 LAP_AHEAD = 33   # depth-32: one lap (32) + 1  ->  a2l_full when wptr=1, ack=0b100001
 
@@ -59,3 +60,11 @@ async def test_w_node_predata_ack_lap_ahead(dut):
         f"the first write sees a2l_full={full} app_ready={rdy} wbin_ptr={wp} -- winc never fires, "
         f"the W FCSM would never transmit. Pristine deps _3 => the TL-027 CDC self-latch is REAL "
         f"on the data-plane W node; the fixed override must make this PASS.")
+
+
+@cocotb.test()
+async def test_w_node_revert_recovery_ack_accepted(dut):
+    """TL-032 residual R1 (W node, 6-bit ptr / depth-32 / window 6'h20): a mid-stream
+    link_revert that rewinds rbin below the ACK ptr must not lock the guard out of
+    accepting recovery ACKs. deps FAIL (guard not revert-aware), override PASS."""
+    await run_revert_recovery(dut, "_3", ptr_mask=0x3F, window=32)

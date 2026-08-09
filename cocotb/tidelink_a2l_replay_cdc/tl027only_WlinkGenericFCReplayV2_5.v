@@ -4,39 +4,40 @@
 // Copyright 2026 SoC Labs, University of Southampton
 //
 // Derived from the Wavious "wlink" chiplet interconnect (Apache-2.0). MODIFIED by
-// SoC Labs: this is the AW (write-address, data_id 0x80) data-plane a2l replay node
-// WlinkGenericFCReplayV2_1 with the a2l ACK-ptr CDC self-heal PORTED from
-// WlinkGenericFCReplayV2_13.v (David Mapstone 2026-07-07) for TL-027. Same 3-part
-// fix, 4-bit / depth-8 widths (window bound 4'h8, as the B node _5):
-//   (1) ACK-window guard (a2l_ack_valid); (2) continuous w_inc(=1) self-heal;
-//   (3) gated latch. REPRODUCE-FIRST proven in cocotb/tidelink_a2l_replay_cdc
-//   NODE=1: pristine deps _1 FAILS (a2l_full=1 after a lap-ahead ACK(9)); this
-//   override PASSES. Idle single-clock sim never tears -> silicon verifies w_inc.
+// SoC Labs: this is the B (write-response, data_id 0x82) data-plane a2l replay
+// node WlinkGenericFCReplayV2_5 with the a2l ACK-ptr CDC self-heal PORTED from the
+// TideLink-sideband node WlinkGenericFCReplayV2_13.v (David Mapstone 2026-07-07),
+// for TL-027. 3-part fix, 4-bit / depth-8 widths (window bound 4'h8 not 5'h10):
+//   (1) ACK-window guard (a2l_ack_valid): only latch an ACK whose addr is within
+//       the outstanding [a2l_link_addr, rbin_ptr] window (mod 16), so a torn /
+//       lap-ahead ACK can never drive a2l_link_addr past what was read out ->
+//       no false a2l_full on the first write.
+//   (2) continuous w_inc (=1): the mailbox re-pushes the guard-clamped
+//       a2l_link_addr_in every w_ready so a torn synced-ACK self-heals in ~1
+//       mailbox round-trip (matches the silicon-proven l2a sibling, w_inc=1).
+//   (3) gated latch (else if a2l_ack_valid).
+// REPRODUCE-FIRST proven in cocotb/tidelink_a2l_replay_cdc NODE=5: pristine deps
+// _5 FAILS (a2l_full=1 after a lap-ahead ACK(9)); this override PASSES (self-heal).
+// Idle single-clock sim never tears -> silicon is the verifier for the w_inc half.
 //
-// TL-032 (2026-08-09): the TL-027 window guard was NOT revert-aware. Added a
-//   revert-aware rewind of a2l_link_addr on link_revert (see the always block)
-//   so a NACK-driven replay's recovery ACKs are accepted instead of wedging.
-//   REPRODUCE-FIRST proven NODE=1: deps FAIL / override PASS on the mid-stream
-//   revert scenario (test_revert_recovery_ack_accepted).
-//
-module WlinkGenericFCReplayV2_1(
-  input          app_clk,
-  input          app_reset,
-  input          app_enable,
-  input  [100:0] app_data,
-  input          app_valid,
-  output         app_ready,
-  input          link_clk,
-  input          link_reset,
-  input          link_ack_update,
-  input  [3:0]   link_ack_addr,
-  input          link_revert,
-  input  [3:0]   link_revert_addr,
-  output [3:0]   link_cur_addr,
-  output [100:0] link_data,
-  output         link_valid,
-  input          link_advance,
-  output         link_empty
+module WlinkGenericFCReplayV2_5(
+  input         app_clk,
+  input         app_reset,
+  input         app_enable,
+  input  [13:0] app_data,
+  input         app_valid,
+  output        app_ready,
+  input         link_clk,
+  input         link_reset,
+  input         link_ack_update,
+  input  [3:0]  link_ack_addr,
+  input         link_revert,
+  input  [3:0]  link_revert_addr,
+  output [3:0]  link_cur_addr,
+  output [13:0] link_data,
+  output        link_valid,
+  input         link_advance,
+  output        link_empty
 );
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -57,8 +58,8 @@ module WlinkGenericFCReplayV2_1(
   wire  fifo_io_rinc; // @[FC.scala 743:20]
   wire  fifo_io_rrevert; // @[FC.scala 743:20]
   wire [3:0] fifo_io_rrevert_addr; // @[FC.scala 743:20]
-  wire [100:0] fifo_io_wdata; // @[FC.scala 743:20]
-  wire [100:0] fifo_io_rdata; // @[FC.scala 743:20]
+  wire [13:0] fifo_io_wdata; // @[FC.scala 743:20]
+  wire [13:0] fifo_io_rdata; // @[FC.scala 743:20]
   wire  fifo_io_wfull; // @[FC.scala 743:20]
   wire  fifo_io_rempty; // @[FC.scala 743:20]
   wire [3:0] fifo_io_rbin_ptr; // @[FC.scala 743:20]
@@ -74,7 +75,7 @@ module WlinkGenericFCReplayV2_1(
   wire [3:0] a2l_link_addr_app_clk = link_addr_to_app_clk_r_addr; // @[FC.scala 723:41 FC.scala 781:33]
   wire  a2l_full = a2l_app_addr[3] != a2l_link_addr_app_clk[3] & a2l_app_addr[2:0] == a2l_link_addr_app_clk[2:0]; // @[FC.scala 727:88]
   reg [3:0] a2l_link_addr; // @[FC.scala 770:103]
-  // TIDELINK LOCAL OVERRIDE (TL-027 a2l ACK-ptr CDC self-heal, AW-node port)
+  // TIDELINK LOCAL OVERRIDE (TL-027 a2l ACK-ptr CDC self-heal, B-node port)
   wire [3:0] a2l_ack_off_req = link_ack_addr    - a2l_link_addr; // requested advance (mod 16)
   wire [3:0] a2l_ack_off_max = fifo_io_rbin_ptr - a2l_link_addr; // outstanding window (mod 16)
   wire  a2l_ack_valid = link_ack_update
@@ -93,7 +94,7 @@ module WlinkGenericFCReplayV2_1(
     .io_in(enable_link_clk_demet_io_in),
     .io_out(enable_link_clk_demet_io_out)
   );
-  WavFIFO_2 fifo ( // @[FC.scala 743:20]
+  WavFIFO_8 fifo ( // @[FC.scala 743:20]
     .io_wclk(fifo_io_wclk),
     .io_wreset(fifo_io_wreset),
     .io_winc(fifo_io_winc),
@@ -140,31 +141,13 @@ module WlinkGenericFCReplayV2_1(
   assign fifo_io_wdata = app_data; // @[FC.scala 747:25]
   assign link_addr_to_app_clk_w_clk = link_clk; // @[FC.scala 774:45]
   assign link_addr_to_app_clk_w_reset = link_reset; // @[FC.scala 775:33]
-  assign link_addr_to_app_clk_w_inc = 1'b1; // TL-027 port: continuous resend (self-heal)
+  assign link_addr_to_app_clk_w_inc = 1'b1; // TL-027 port: continuous resend (self-heal), was a2l_link_addr!=a2l_link_addr_in
   assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // TL-027 port: gated ACK (guard-clamped)
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]
-  // TIDELINK LOCAL OVERRIDE (TL-032 revert-aware a2l ACK-ptr, AW-node port)
-  // The TL-027 window guard (a2l_ack_valid) rejects any ACK whose outstanding
-  // window a2l_ack_off_max = fifo_io_rbin_ptr - a2l_link_addr exceeds 4'h8. On a
-  // NACK-driven replay the FCSM asserts link_revert and rewinds the FIFO read ptr
-  // (fifo_io_rbin_ptr -> link_revert_addr, often 0). Pre-fix a2l_link_addr was
-  // advanced ONLY on a2l_ack_valid, never rewound, so a revert that pulls rbin
-  // BELOW a2l_link_addr makes off_max wrap mod-16 to a huge value (> 4'h8) ->
-  // every recovery ACK is rejected -> a2l_link_addr frozen -> a2l_full sticks ->
-  // app_ready=0 -> TX stall -> PS-bus wedge (the R1 residual after TL-027).
-  // FIX: rewind a2l_link_addr to link_revert_addr IN LOCK-STEP with the FIFO's
-  // rbin rewind, so off_max stays in-window (== 0 right after the revert) and the
-  // recovery ACKs are accepted again. link_revert and a2l_ack_valid are mutually
-  // exclusive (the FCSM decodes them from the same 3-bit ack_nack tag: ACK=2 vs
-  // NACK/revert=3, WlinkGenericFCSM_4.v:670/672), so prioritising revert here can
-  // never drop a concurrent legitimate ACK. Non-revert path (continuous w_inc +
-  // window guard) is unchanged.
   always @(posedge link_clk or posedge link_reset) begin
     if (link_reset) begin
       a2l_link_addr <= 4'h0;
-    end else if (link_revert) begin       // TL-032: revert-aware rewind (with rbin)
-      a2l_link_addr <= link_revert_addr;
     end else if (a2l_ack_valid) begin     // TL-027 port: gated ACK advance
       a2l_link_addr <= link_ack_addr;
     end

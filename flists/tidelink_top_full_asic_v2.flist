@@ -263,7 +263,12 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayA
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
+// TL-027 a2l CDC self-latch fix (AW node _1): re-point deps->local_override for the
+// TAPEOUT netlist, mirroring tidelink_fpga_v2.flist (:269). These override files are
+// FPGA-HW-proven (2026-08-09, 128/128 write+read soak) and port-byte-identical to deps
+// -> ASIC-safe drop-in (LEC boundary unchanged). INERT until build/chip/flist/
+// tidelink_asic.flist is regenerated (make asic-flist). See docs/TAPEOUT_FOLD_PLAN_2026-08-09.md item A.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_12.v
@@ -274,9 +279,13 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_3.v
+// TL-027 a2l CDC self-latch fix (W node _3): re-point deps->local_override for the
+// TAPEOUT netlist, mirroring tidelink_fpga_v2.flist (:281). 2026-08-09. See fold-plan item A.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
+// TL-027 a2l CDC self-latch fix (B node _5): re-point deps->local_override for the
+// TAPEOUT netlist, mirroring tidelink_fpga_v2.flist (:284). 2026-08-09. See fold-plan item A.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v

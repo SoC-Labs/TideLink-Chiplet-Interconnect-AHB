@@ -12,7 +12,15 @@
 #   T10 read_soak   : die_b seed_local -> die_a read over link in <=CHUNK chunks,
 #                     Region-F gate between chunks, POR-stage on wedge (H2 closure)
 # Non-zero exit if any gating test FAILs. Wedge => POR die_a, mark FAIL, stop reads.
-import subprocess, sys, os, json, time, hashlib, glob
+#
+# RESULTS ARE WRITTEN TO DISK. Pass --json-out PATH (or set SYSVAL_JSON_OUT) and
+# every verdict, plus the provenance needed to trust it, lands in one JSON file.
+# This exists because for months every silicon claim this project made --
+# "128/128 byte-exact", "16/16", "11/11" -- was a number in a chat log or a
+# handover with no surviving artefact. None of them can be re-checked today; the
+# logs they cited are not in the tree. A verdict nobody can reproduce is not
+# evidence, so the harness now records its own.
+import subprocess, sys, os, json, time, hashlib, glob, argparse, socket
 
 A = os.environ.get("DIE_A", "ubuntu@10.22.24.159")
 B = os.environ.get("DIE_B", "ubuntu@10.22.24.153")
@@ -80,6 +88,65 @@ RESULTS = []
 def record(name, verdict, detail=""):
     RESULTS.append((name, verdict, detail))
     print("  [%s] %s %s" % (verdict.ljust(12), name, detail))
+
+# ---- run provenance ----------------------------------------------------------
+JSON_OUT = os.environ.get("SYSVAL_JSON_OUT") or None
+T_START  = time.time()
+
+def _git(*args):
+    """Best-effort git query against the tidelink checkout this script lives in."""
+    try:
+        r = subprocess.run(["git", "-C", SCR] + list(args),
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def _provenance():
+    # The point of recording this: a verdict is only meaningful against the RTL
+    # and the bitstream that produced it. `dirty` matters as much as the sha --
+    # most of this project's runs happen on a dirty tree, and a clean sha would
+    # be a lie about what was tested.
+    sha = _git("rev-parse", "HEAD")
+    return {
+        "tidelink_sha":    sha,
+        "tidelink_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "tidelink_dirty":  (_git("status", "--porcelain") or "") != "" if sha else None,
+        "host":            socket.gethostname(),
+        "die_a":           _mask(A),
+        "die_b":           _mask(B),
+        "params": {"soak_n": SOAK_N, "read_n": READ_N,
+                   "endur_beats": ENDUR_BEATS, "read_chunk": CHUNK},
+    }
+
+def _write_json(path, exit_code):
+    doc = {
+        "schema":      "kr260_sysval/1",
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(T_START)),
+        "ended_utc":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_s":  round(time.time() - T_START, 1),
+        "provenance":  _provenance(),
+        "tests":       [{"name": n, "verdict": v, "detail": d} for n, v, d in RESULTS],
+        "counts":      {k: sum(1 for _, v, _ in RESULTS if v == k)
+                        for k in ("PASS", "FAIL", "INCONCLUSIVE", "SKIPPED")},
+        "exit_code":   exit_code,
+        # overall is FAIL if anything failed, and INCOMPLETE if we aborted before
+        # the data-plane tests ran -- an aborted run is not a pass.
+        "overall":     ("FAIL" if any(v == "FAIL" for _, v, _ in RESULTS)
+                        else "INCOMPLETE" if exit_code not in (0, None)
+                        else "PASS"),
+    }
+    try:
+        d = os.path.dirname(os.path.abspath(path))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(doc, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print("  json: %s (%s)" % (path, doc["overall"]))
+    except Exception as e:
+        # Never let a reporting failure change the verdict of the run.
+        print("  WARNING: could not write %s: %s" % (path, e))
 
 # ---- T1 provenance -----------------------------------------------------------
 def t1_provenance():
@@ -180,9 +247,22 @@ def t10_read_soak(base):
     return True
 
 def main():
+    global JSON_OUT
+    ap = argparse.ArgumentParser(
+        description="system-level validation regression for the eth-chiplet KR260 pair")
+    ap.add_argument("--json-out", metavar="PATH", default=JSON_OUT,
+                    help="write the full verdict set + provenance to PATH as JSON "
+                         "(default: $SYSVAL_JSON_OUT, else stdout only)")
+    args = ap.parse_args()
+    JSON_OUT = args.json_out
+
     print("=== kr260_sysval : system-level validation regression %s ===" % time.strftime("%H:%M:%S"))
     if not PW:
-        print("ERROR: no password"); sys.exit(2)
+        # Still emit the artefact -- "we could not run" is a result worth keeping,
+        # and a missing file is indistinguishable from a run that never started.
+        print("ERROR: no password")
+        record("T0_preflight", "INCONCLUSIVE", "KR260_PASSWORD unset")
+        _summary(2)
     t1_provenance()
     o = t2_obs_probe()
     if not (o and o["healthy"]):
@@ -213,7 +293,10 @@ def _summary(force_exit):
     for n, v, d in RESULTS:
         print("  %-14s %s" % (v, n))
     print("  ---- %d PASS / %d FAIL / %d INCONCLUSIVE ----" % (npass, nfail, ninc))
-    sys.exit(force_exit if force_exit is not None else (1 if nfail else 0))
+    code = force_exit if force_exit is not None else (1 if nfail else 0)
+    if JSON_OUT:
+        _write_json(JSON_OUT, code)
+    sys.exit(code)
 
 if __name__ == "__main__":
     main()

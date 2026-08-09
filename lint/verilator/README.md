@@ -178,20 +178,48 @@ the local feedback loop under 5s.
 
 ## Known-noisy modules / current findings
 
-As of `feat/td-combined` tip 57c2810:
+**As of 2026-08-09: `make -C lint/verilator lint-all` is CLEAN across all 14
+targets.** `UNUSED`/`UNDRIVEN` remain visible-but-non-gating (APB `paddr` upper
+bits, AXI4-Lite `bresp`/`rresp`, write-only-path `hrdata`).
 
-| Module                       | Findings                                                  |
-|------------------------------|-----------------------------------------------------------|
-| `tidelink_phy_align_calibrator` | clean                                                     |
-| `tidelink_lane_checker`      | clean                                                     |
-| **`tidelink_perf`**          | **1× `WIDTH` ERROR at line 493** — 33-bit RHS into 32-bit `perf_reg_rdata`. Real bug; layout comment doesn't match actual width |
-| `tidelink_apb_regs` (FIFO)   | 2× `UNUSED` — APB `paddr` + `reset_n_raw_edge` (intentional CDC edge detect, not consumed) |
-| `tidelink_fifo_ctrl`         | clean                                                     |
-| `tidelink_returner`          | 1× `UNUSED` — AHB `hrdata` (write-only path)              |
-| `tidelink_autoneg`           | 2× `UNUSED` — AXI4-Lite `bresp`/`rresp` (we don't read responses) |
+### What changed on 2026-08-09, and the lesson in it
 
-The `tidelink_perf:493` WIDTH finding is **gating** — fixing this is the
-first action item once the gate lands.
+The gate had been **red** for some time and nobody was reading it:
+
+- `lint-lane-checker` pointed at `src/rtl/tidelink_lane_checker.sv`, which was
+  deleted in d043909 — the module moved to `deps/tidelink-gpio-phy/rtl/`.
+  Removed from `LINT_TARGETS` (the target is kept, with a note, because the
+  right answer is to re-scope it, not to forget it).
+- `lint-calibrator` failed on four `WIDTH` findings: a 32-bit `parameter int`
+  in a 1-bit generate condition, two counters compared against 32-bit `int`
+  localparams, and one implicit 5→4 truncation. All four fixed by widening the
+  narrow side (or making the truncation an explicit cast). **Note:** the ASIC
+  integration binds `src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv`,
+  not this file, so those four were FPGA-path only.
+
+Seven targets were added, because the full-chiplet lint pass
+(`verif/lint/full/`) found that **every** authored TideLink finding was in a
+module this gate did not cover:
+
+| Added target | Why |
+|---|---|
+| `lint-ptp-servo`, `lint-mul-iter` | `tidelink_ptp_servo` used `$unsigned()` as if it were absolute value in the lock compare, so `servo_locked` could never latch on a negative offset. A tracking PTP servo dithers about zero, so it never latched at all |
+| `lint-fifo-ahb` | `tidelink_fifo_ahb` omitted two INPUT pins (`hw_credit_consume_vld`/`_val`) from a port map — floating |
+| `lint-ptp`, `lint-fc-adapter`, `lint-axinode-obs`, `lint-idelay-rx`, `lint-addr-translator` | same class of gap: authored `src/rtl/` modules with no per-module target |
+
+**The rule this leaves behind: a gate that does not cover a file is not a gate.
+If you add a module to `src/rtl/`, add a target here in the same commit.**
+
+### A limitation worth knowing
+
+Per-module `-Werror-PINMISSING` here is **not** direction-aware: an omitted
+OUTPUT fails the same as an omitted INPUT. `verif/lint/full/verilator_lint.py`
+resolves the pin's direction from the module port table and gates only
+inputs/unresolved. So when a target trips `PINMISSING` on a deliberately open
+output, write the connection out explicitly as `.pin()` (which is
+`PINCONNECTEMPTY`, not gated here) rather than adding `-Wno-PINMISSING`.
+An omitted pin and an open output must not look the same in the source —
+that resemblance is exactly what hid the `tidelink_fifo_ahb` floating inputs.
 
 ---
 

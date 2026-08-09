@@ -168,6 +168,17 @@ proc ec_materialise_v2_shim {shim incdirs gen_dir} {
     return $out
 }
 
+# fw_p0 RAM_PRELOAD bake (2026-08-09): output dir for materialised ROM-branch
+# RTL. nanosoc_region_imem.v / sl_ahb_rom.v gate their preload-BRAM path on
+# `ifdef RAM_PRELOAD, and NO project-level define survives ipx::package_project
+# (see fpga/filelist.tcl:99-110). So — exactly like the TIDELINK_PHY_V2 shim
+# materialisation above — we bake `define RAM_PRELOAD into a standalone copy of
+# each file's body and read THAT. Scoped to this eth-chiplet package; the shared
+# soc_vcs.f sources are untouched.
+set _rompreload_dir [file join $chiplet_root build fpga_gen_rom]
+file delete -force $_rompreload_dir
+file mkdir $_rompreload_dir
+
 # Read every source. .sv -> SystemVerilog, else plain Verilog.
 foreach s $_sources {
     if {![file exists $s]} {
@@ -183,6 +194,35 @@ foreach s $_sources {
         file copy -force $s $_dis
         read_verilog -sv $_dis
         puts "INFO: disambiguated $s -> $_dis (dup-basename phc_ahb.sv)"
+        continue
+    }
+    if {[string match "*/nanosoc_region_imem.v" $s]} {
+        # fw_p0 Rank 1 SCOPED bake: read the local override that selects ROM-vs-SRAM
+        # PER INSTANCE on MEM_FPGA_IMG (ROM only when a real image is supplied),
+        # in place of upstream's file-global `ifdef RAM_PRELOAD (which flipped the
+        # CPU1 IMEM to a ROM with no hex -> Synth 8-4445 on 'image.hex'). Upstream
+        # is untouched; the override is module/port/param identical. .v -> Verilog.
+        set _rp_ovr [file join $chiplet_root src rtl local_overrides nanosoc_region_imem.v]
+        if {![file exists $_rp_ovr]} { error "fw_p0 scoped override missing: $_rp_ovr" }
+        read_verilog $_rp_ovr
+        puts "INFO: fw_p0 scoped IMEM ROM: read override $_rp_ovr (in place of $s)"
+        continue
+    }
+    if {[string match "*/sl_ahb_rom.v" $s]} {
+        # fw_p0 bake: prepend `define RAM_PRELOAD so sl_ahb_rom selects the
+        # Vivado-synth-friendly sl_fpga_rom_word (not the FPGA-zeroing
+        # cmsdk_fpga_rom). Baked in-body (immune to the packaging define-drop
+        # trap). sl_ahb_rom is only instantiated in the ROM branch above (CPU0
+        # IMEM), so this affects nothing else. .v -> plain Verilog.
+        set _rp_dst [file join $_rompreload_dir [file tail $s]]
+        set _rp_fi [open $s r]; set _rp_body [read $_rp_fi]; close $_rp_fi
+        set _rp_fo [open $_rp_dst w]
+        puts $_rp_fo "// AUTO-GENERATED (fw_p0 RAM_PRELOAD bake) — DO NOT EDIT. Source: $s"
+        puts $_rp_fo "`define RAM_PRELOAD"
+        puts -nonewline $_rp_fo $_rp_body
+        close $_rp_fo
+        read_verilog $_rp_dst
+        puts "INFO: RAM_PRELOAD-baked [file tail $s] -> $_rp_dst"
         continue
     }
     if {[string match "*.sv" $s]} {

@@ -10,6 +10,8 @@
 # PASS/FAIL table and exits non-zero if any gating test fails — CI-friendly.
 #
 # What it runs (all PS-side over the eth_ss_0 backdoor, no SWD/firmware):
+#   provenance  board ~/td/scripts/eth_sysval_board.py sha256 == repo (HYGIENE-2,
+#               runs FIRST; a mismatch is gating AND aborts the data plane)
 #   deploy*     (optional --deploy) reflash die_a/die_b from the latest build
 #   link        bring the TideLink link up on BOTH dies concurrently -> FCSM=4
 #   backdoor    eth_ss_0 boot-ROM aliveness + TideLink config plane, per die
@@ -25,17 +27,25 @@
 # Env / args:
 #   KR260_DIEA_HOST  (default ubuntu@10.22.24.159)
 #   KR260_DIEB_HOST  (default ubuntu@10.22.24.153)
-#   KR260_PASSWORD   board sudo/ssh password (passed through to kr260_eth_run.sh)
+#   KR260_PASSWORD   board sudo/ssh password (passed through to kr260_eth_run.sh;
+#                    also used by the direct-ssh provenance + interlock gates)
 #   --deploy         reflash both dies first (make deploy_pair_role SOC=kr260_eth)
 #   --soak-iters N   soak beats (default 1000)
+#   --config-only    HYGIENE-1: skip the cross-die data plane (ON by default). A
+#                    bare run drives the WEDGE-SAFE transfers behind a FCSM=4 +
+#                    Region-F safety interlock; no delivery witness -> the top-line
+#                    is CONFIG-ONLY (delivery UNPROVEN), never a bare green.
+#   --include-peer-read  also run the wedge-prone peer read-round-trip (opt-in)
 #   --json PATH      also write a machine-readable result summary
 #
 # Copyright (C) 2026, SoC Labs (www.soclabs.org)
 # =============================================================================
 import argparse
 import concurrent.futures as cf
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -48,6 +58,13 @@ FPGA_DIR = os.path.join(TL_ROOT, "fpga")
 
 DIEA = os.environ.get("KR260_DIEA_HOST", "ubuntu@10.22.24.159")
 DIEB = os.environ.get("KR260_DIEB_HOST", "ubuntu@10.22.24.153")
+
+# HYGIENE-2 provenance + HYGIENE-1 interlock: the board-side sysval helper whose
+# sha256 we pin, and the marker-gated obs plane (0x21E0/0x21E8/0x2108) it reads for
+# the safety interlock. Both gates reach the board via direct ssh (below), NOT
+# through kr260_eth_run.sh (which has no mode for eth_sysval_board.py).
+BOARD_SYSVAL_REMOTE = "~/td/scripts/eth_sysval_board.py"
+LOCAL_SYSVAL = os.path.join(HERE, "eth_sysval_board.py")
 
 
 def run_on(host, mode, extra_env=None, timeout=120):
@@ -106,19 +123,173 @@ def both_concurrent(fn_a, fn_b):
         return fa.result(), fb.result()
 
 
+# --- direct board ssh (for the RO provenance + interlock gates only) ---------
+# kr260_eth_run.sh has no mode for eth_sysval_board.py, so the HYGIENE-2 provenance
+# gate and the HYGIENE-1 safety interlock reach the board directly. Auth mirrors
+# kr260_eth_run.sh: sshpass -e (SSHPASS from env, NEVER in argv) when KR260_PASSWORD
+# is set + sshpass is present, else key auth (BatchMode); on-board root via sudo -S
+# with the password on stdin.
+_HAVE_SSHPASS = None
+
+
+def have_sshpass():
+    global _HAVE_SSHPASS
+    if _HAVE_SSHPASS is None:
+        _HAVE_SSHPASS = subprocess.run(
+            ["bash", "-c", "command -v sshpass"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    return _HAVE_SSHPASS
+
+
+def ssh_capture(host, remote_cmd, timeout=20):
+    """Run remote_cmd on a board (host='user@ip') over ssh. Returns
+    (rc, combined_output); rc=124 on timeout (a hung RO access == an unreachable or
+    wedged board)."""
+    pw = os.environ.get("KR260_PASSWORD", "")
+    opts = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
+            "-o", "ServerAliveInterval=15"]
+    env = dict(os.environ)
+    if pw and have_sshpass():
+        env["SSHPASS"] = pw
+        cmd = ["sshpass", "-e", "ssh"] + opts + [host, remote_cmd]
+    else:
+        cmd = ["ssh", "-o", "BatchMode=yes"] + opts + [host, remote_cmd]
+    try:
+        p = subprocess.run(cmd, env=env, timeout=timeout, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
+        return p.returncode, p.stdout
+    except subprocess.TimeoutExpired as e:
+        return 124, (e.output or "") + "\n[TIMEOUT]"
+
+
+def board_obs(host, timeout=25):
+    """Read eth_sysval_board.py `obs` (marker-gated Region-F / eye / fcsm JSON) as
+    root on a board. RO config-plane read -> wedge-safe. Returns the decoded dict,
+    or None if the read failed / could not be parsed. NB: the board path uses ~ so
+    it must be expanded by the LOGIN shell before sudo — do NOT wrap in `bash -c`
+    (that re-expands ~ under root's home). Password goes in on stdin (sudo -S)."""
+    pw = os.environ.get("KR260_PASSWORD", "")
+    if pw:
+        remote = "echo %s | sudo -S python3 %s obs" % (
+            shlex.quote(pw), BOARD_SYSVAL_REMOTE)
+    else:
+        remote = "sudo -n python3 %s obs" % BOARD_SYSVAL_REMOTE
+    rc, out = ssh_capture(host, remote, timeout)
+    for ln in out.splitlines():
+        ln = ln.strip()
+        if ln.startswith("{"):
+            try:
+                return json.loads(ln)
+            except Exception:
+                pass
+    return None
+
+
+def regf_healthy(o):
+    """HYGIENE-1 interlock + CC-3 predicate. A die is safe to drive iff FCSM=4,
+    calibrated, the Region-F marker 0xAD is PRESENT (regf_present), data_healthy=1,
+    and no wedge-sticky on either side. Marker ABSENT (obs plane not in the
+    bitstream) => NOT healthy — never green on a missing obs plane (CC-3)."""
+    if not o:
+        return False
+    if o.get("fcsm") != 4 or o.get("cal") != 1:
+        return False
+    if not o.get("regf_present"):
+        return False
+    if o.get("data_healthy") != 1:
+        return False
+    if (o.get("wedge_tgt") or 0) != 0 or (o.get("wedge_ini") or 0) != 0:
+        return False
+    return True
+
+
 class Suite:
-    def __init__(self, soak_iters, include_peer_read=False, data_plane=False,
+    def __init__(self, soak_iters, include_peer_read=False, config_only=False,
                  adversarial_soak=False):
         self.results = []      # list of (name, ok, detail, gating)
         self.soak_iters = soak_iters
         self.include_peer_read = include_peer_read
-        self.data_plane = data_plane
+        # HYGIENE-1: the data plane is ON by default now; --config-only opts out.
+        self.config_only = config_only        # operator explicitly asked config-only
+        self.data_plane = not config_only      # attempt the data plane unless told not to
+        self.downgraded = False                # interlock/provenance forced config-only
         self.adversarial_soak = adversarial_soak
+        # HYGIENE-3: names of die-local reads that PROVED bytes landed. A bare green
+        # top-line requires >=1 of these; else CONFIG-ONLY (delivery UNPROVEN).
+        self.delivery_witnesses = []
+        self.provenance_ok = None              # HYGIENE-2 gate result
 
-    def record(self, name, ok, detail, gating=True):
+    def record(self, name, ok, detail, gating=True, delivery=False):
         self.results.append((name, bool(ok), detail, gating))
         tag = "PASS" if ok else ("FAIL" if gating else "WARN")
         print("  [%s] %-12s %s" % (tag, name, detail))
+        # HYGIENE-3: a passing die-local delivery test (bytes moved AND verified by
+        # a local read) is the ONLY thing that lets the summary print a bare green.
+        if ok and delivery:
+            self.delivery_witnesses.append(name)
+
+    # -- HYGIENE-2 provenance gate (runs FIRST, RO ssh+sha256, cannot wedge) --
+    def t_provenance(self):
+        """Compare the board-side ~/td/scripts/eth_sysval_board.py sha256 against
+        the repo copy on BOTH dies. Board-side script drift is the confirmed cause
+        of the 'verify prints nothing' false result, so a mismatch makes every
+        downstream delivery verdict untrustworthy -> a FAIL here is gating (non-zero
+        exit) AND aborts the data plane (run() downgrades to config-only). Pure ssh
+        + sha256: RO, cannot wedge. Runs before t_link_* so a stale board is caught
+        before any traffic."""
+        try:
+            want = hashlib.sha256(open(LOCAL_SYSVAL, "rb").read()).hexdigest()
+        except OSError as e:
+            self.provenance_ok = False
+            self.record("provenance", False,
+                        "repo eth_sysval_board.py unreadable: %s" % e)
+            return False
+        drift = []
+        for host, tag in ((DIEA, "die_a"), (DIEB, "die_b")):
+            rc, out = ssh_capture(
+                host, "sha256sum %s 2>/dev/null | cut -d' ' -f1"
+                % BOARD_SYSVAL_REMOTE, 20)
+            got = ""
+            for tok in out.split():
+                if len(tok) == 64 and all(c in "0123456789abcdef" for c in tok):
+                    got = tok
+                    break
+            if got != want:
+                drift.append("%s(board=%s repo=%s)"
+                             % (tag, got[:12] if got else "MISSING", want[:12]))
+        self.provenance_ok = not drift
+        self.record("provenance", self.provenance_ok,
+                    "eth_sysval_board.py board==repo both dies" if self.provenance_ok
+                    else "STALE/MISSING -> " + "; ".join(drift))
+        return self.provenance_ok
+
+    # -- HYGIENE-1 data-plane safety interlock (RO obs, cannot wedge) --
+    def t_dataplane_interlock(self):
+        """Mandatory before ANY peer traffic: require FCSM=4 on both dies (already
+        established by t_link_*) AND a Region-F health check on both (marker 0xAD
+        present + data_healthy, no wedge-sticky) via the marker-gated obs plane.
+        Returns True iff both dies are data-plane-safe; a False result makes run()
+        AUTO-DOWNGRADE to config-only with a loud warn — never traffic onto a
+        marginal/unhealthy link, never a silent green."""
+        oa, ob = board_obs(DIEA), board_obs(DIEB)
+        ha, hb = regf_healthy(oa), regf_healthy(ob)
+        for tag, o, h in (("die_a", oa, ha), ("die_b", ob, hb)):
+            if not o:
+                print("    %s obs UNREADABLE (RO read failed/timeout)" % tag)
+            else:
+                print("    %s fcsm=%s cal=%s regf_present=%s data_healthy=%s "
+                      "wedge_tgt=%s wedge_ini=%s -> %s"
+                      % (tag, o.get("fcsm"), o.get("cal"), o.get("regf_present"),
+                         o.get("data_healthy"), o.get("wedge_tgt"),
+                         o.get("wedge_ini"), "HEALTHY" if h else "UNHEALTHY"))
+        ok = ha and hb
+        # NON-gating: the interlock is a SAFETY gate, not a test — its verdict is
+        # surfaced via the top-line CONFIG-ONLY downgrade, not as a gating failure.
+        self.record("interlock", ok,
+                    "FCSM=4 + Region-F healthy both dies (marker 0xAD + data_healthy)"
+                    if ok else "link NOT data-plane-safe -> AUTO-DOWNGRADE",
+                    gating=False)
+        return ok
 
     # -- individual tests --
     def t_deploy(self):
@@ -181,7 +352,8 @@ class Suite:
         pl = "0xC0FFEE01"
         run_on(DIEA, "xfer_send", {"KR260_XFER_PAYLOAD": pl})
         rc, o = run_on(DIEB, "xfer_recv", {"KR260_XFER_PAYLOAD": pl})
-        self.record("sram_fwd", "RESULT: PASS" in o, "die_a->die_b SRAM = %s" % pl)
+        self.record("sram_fwd", "RESULT: PASS" in o, "die_a->die_b SRAM = %s" % pl,
+                    delivery=True)   # die_b LOCAL read == a delivery witness (HYGIENE-3)
 
     def t_sram_rtt(self):
         # WEDGE-PRONE (opt-in, non-gating): the peer read-round-trip intermittently
@@ -196,13 +368,15 @@ class Suite:
         pl = "0xB2A0FEED"
         run_on(DIEB, "xfer_send", {"KR260_XFER_PAYLOAD": pl})
         rc, o = run_on(DIEA, "xfer_recv", {"KR260_XFER_PAYLOAD": pl})
-        self.record("sram_rev", "RESULT: PASS" in o, "die_b->die_a SRAM = %s" % pl)
+        self.record("sram_rev", "RESULT: PASS" in o, "die_b->die_a SRAM = %s" % pl,
+                    delivery=True)   # die_a LOCAL read == a delivery witness (HYGIENE-3)
 
     def t_mailbox(self):
         pl = "0xC0FFEE01"
         run_on(DIEA, "xfer_mbox_send", {"KR260_XFER_PAYLOAD": pl})
         rc, o = run_on(DIEB, "xfer_mbox_recv", {"KR260_XFER_PAYLOAD": pl})
-        self.record("mailbox", "RESULT: PASS" in o, "die_a->die_b ipc_mailbox_0")
+        self.record("mailbox", "RESULT: PASS" in o, "die_a->die_b ipc_mailbox_0",
+                    delivery=True)   # die_b LOCAL mbox_recv == a delivery witness (HYGIENE-3)
 
     def t_mailbox_rev(self):
         # Reverse direction (die_b -> die_a): the xfer script is board-symmetric,
@@ -210,7 +384,8 @@ class Suite:
         pl = "0xB2A0FEED"
         run_on(DIEB, "xfer_mbox_send", {"KR260_XFER_PAYLOAD": pl})
         rc, o = run_on(DIEA, "xfer_mbox_recv", {"KR260_XFER_PAYLOAD": pl})
-        self.record("mailbox_rev", "RESULT: PASS" in o, "die_b->die_a ipc_mailbox_0")
+        self.record("mailbox_rev", "RESULT: PASS" in o, "die_b->die_a ipc_mailbox_0",
+                    delivery=True)   # die_a LOCAL mbox_recv == a delivery witness (HYGIENE-3)
 
     def _soak_once(self, name, sender, detail_dir):
         env = {"KR260_XFER_ITERS": str(self.soak_iters)}
@@ -223,11 +398,18 @@ class Suite:
         # healthy on the SENDER (catches a latched wedge-sticky the soak summary
         # line alone would miss).
         rh, oh = run_on(sender, "xfer_health")
-        health_ok = "RESULT: HEALTHY" in oh
+        # CC-3 / item 5: health_snapshot's "RESULT: HEALTHY" goes green even when the
+        # Region-F marker 0xAD is ABSENT (its predicate is `not present or ...`), so
+        # AND regf_present in explicitly. health_snapshot prints "marker=0xAD" only
+        # when the obs plane is actually in the bitstream.
+        regf_present = "marker=0xAD" in oh
+        health_ok = ("RESULT: HEALTHY" in oh) and regf_present
         self.record(name, soak_ok and health_ok, "%d beats%s %s: %s%s" % (
             self.soak_iters, " [adversarial]" if self.adversarial_soak else "",
             detail_dir, line or "no summary",
-            "" if health_ok else "  [Region-F FAULT post-soak]"))
+            "" if health_ok else
+            ("  [Region-F marker 0xAD ABSENT]" if not regf_present
+             else "  [Region-F FAULT post-soak]")))
 
     def t_soak(self):
         self._soak_once("soak", DIEA, "die_a->die_b")
@@ -252,6 +434,10 @@ class Suite:
         print(" KR260 eth-chiplet cross-die regression  (die_a=%s die_b=%s)"
               % (DIEA, DIEB))
         print("=" * 70)
+        # HYGIENE-2: script-provenance gate FIRST, before the link tests. A stale or
+        # missing board-side eth_sysval_board.py makes every delivery verdict a lie;
+        # a FAIL here is gating (non-zero exit) AND aborts the data plane.
+        self.t_provenance()
         if do_deploy:
             if not self.t_deploy():
                 print("  deploy failed — aborting (nothing else can pass).")
@@ -265,11 +451,28 @@ class Suite:
             return self.summary()
         ok_bd, oa, ob = self.t_backdoor()
         self.t_role(oa, ob)
-        # The DEFAULT suite is CI-safe: only die-local checks that do NOT push data
-        # across the D2D link. The cross-die data-plane transfers intermittently
-        # HANG and wedge the board on current silicon (read OR write, either
-        # direction — see docs/OVERNIGHT_WORKLOG.md), so they are attended-only.
-        if self.data_plane:
+        # HYGIENE-1: the data plane is ON by default now. Only WEDGE-SAFE transfers
+        # (die-local-verify writes + IPC) run by default; the wedge-prone peer read
+        # stays behind --include-peer-read. Before ANY peer traffic BOTH interlocks
+        # must hold:
+        #   (1) provenance PASS — board helpers match the repo, and
+        #   (2) FCSM=4 + Region-F health on both dies (t_dataplane_interlock).
+        # Either failing AUTO-DOWNGRADES to config-only with a loud warn — never a
+        # silent green, never traffic onto a bad/marginal link.
+        if not self.data_plane:
+            print("  [CONFIG-ONLY] --config-only: cross-die data plane skipped. "
+                  "Delivery UNPROVEN (see top-line).")
+        elif not self.provenance_ok:
+            self.downgraded = True
+            self._warn_downgrade(
+                "script-provenance FAILED — board eth_sysval_board.py != repo. "
+                "Delivery verdicts would be untrustworthy; refusing the data plane.")
+        elif not self.t_dataplane_interlock():
+            self.downgraded = True
+            self._warn_downgrade(
+                "data-plane SAFETY INTERLOCK FAILED — not FCSM=4 + Region-F healthy "
+                "on both dies. Refusing to drive traffic onto a marginal link.")
+        else:
             self.t_sram_fwd()
             self.t_sram_rev()
             self.t_mailbox()
@@ -278,21 +481,45 @@ class Suite:
             self.t_soak_rev()         # reverse-direction sustained load + health
             if self.include_peer_read:
                 self.t_sram_rtt()     # opt-in, extra wedge-prone
-        else:
-            print("  [SKIP] cross-die data-plane (sram/mailbox/soak) — pass "
-                  "--data-plane to run (ATTENDED: intermittently wedges silicon)")
         self.t_tidechart()
         return self.summary()
 
+    def _warn_downgrade(self, why):
+        """Loud, un-missable auto-downgrade banner (HYGIENE-1: never a silent green)."""
+        bar = "!" * 66
+        print("  " + bar)
+        print("  !! WARN: AUTO-DOWNGRADE to CONFIG-ONLY (delivery will be UNPROVEN).")
+        print("  !!       %s" % why)
+        print("  " + bar)
+
     def summary(self):
         print("-" * 70)
-        gating = [r for r in self.results if r[3]]
         npass = sum(1 for _, ok, _, _ in self.results if ok)
         gfail = [n for n, ok, _, g in self.results if g and not ok]
+        witnessed = len(self.delivery_witnesses) >= 1
         print(" SUMMARY: %d/%d checks passed; gating failures: %s"
               % (npass, len(self.results), ", ".join(gfail) if gfail else "none"))
+        # HYGIENE-3 delivery-interlock: a bare green REQUIRES >=1 die-local delivery
+        # witness (bytes moved AND verified by a local read). No witness -> the
+        # top-line is CONFIG-ONLY (delivery UNPROVEN), never a bare green.
+        if witnessed:
+            print(" delivery witnesses: %s (bytes moved AND die-local verified)"
+                  % ", ".join(self.delivery_witnesses))
+        else:
+            print(" delivery witnesses: NONE — no die-local read proved bytes landed")
+        if gfail:
+            top, ok = "FAIL (gating: %s)" % ", ".join(gfail), False
+        elif witnessed:
+            top, ok = "PASS", True
+        else:
+            top = "CONFIG-ONLY (delivery UNPROVEN)"
+            # Honest exit: green (0) ONLY for an explicitly-requested config-only run
+            # that hit no gating failure. A default-mode run that moved zero bytes —
+            # skipped or auto-downgraded onto a bad link — is NOT green.
+            ok = self.config_only and not self.downgraded
+        print(" TOP-LINE: %s" % top)
         print("=" * 70)
-        return len(gfail) == 0
+        return ok
 
 
 def main():
@@ -300,17 +527,20 @@ def main():
     ap.add_argument("--deploy", action="store_true",
                     help="reflash both dies from the latest build first.")
     ap.add_argument("--soak-iters", type=int, default=1000)
-    ap.add_argument("--data-plane", action="store_true",
-                    help="run the cross-die data-plane transfers (sram/mailbox/soak). "
-                         "ATTENDED ONLY: they intermittently hang and wedge the board "
-                         "on current silicon. Default suite is die-local + CI-safe.")
+    ap.add_argument("--config-only", action="store_true",
+                    help="run ONLY the die-local config plane (link/backdoor/role/"
+                         "tidechart); skip ALL cross-die data-plane traffic. HYGIENE-1: "
+                         "the data plane is ON by default now — a bare run drives the "
+                         "WEDGE-SAFE transfers (die-local-verify writes + IPC) behind a "
+                         "FCSM=4 + Region-F safety interlock. --config-only reports "
+                         "CONFIG-ONLY (delivery UNPROVEN), never a bare green.")
     ap.add_argument("--include-peer-read", action="store_true",
-                    help="with --data-plane, also run the peer read-round-trip "
-                         "(sram_rtt) — extra wedge-prone; off by default.")
+                    help="also run the peer read-round-trip (sram_rtt) — extra "
+                         "wedge-prone; OFF by default even with the data plane on.")
     ap.add_argument("--adversarial-soak", action="store_true",
-                    help="with --data-plane, drive the soak with the deterministic "
-                         "corner payloads (xfer_corners_lib) + per-N Region F "
-                         "wedge sampling instead of the linear write pattern.")
+                    help="drive the soak with the deterministic corner payloads "
+                         "(xfer_corners_lib) + per-N Region F wedge sampling instead of "
+                         "the linear write pattern (ignored under --config-only).")
     ap.add_argument("--json", help="write machine-readable results to this path.")
     args = ap.parse_args()
 
@@ -319,14 +549,18 @@ def main():
               file=sys.stderr)
 
     suite = Suite(args.soak_iters, include_peer_read=args.include_peer_read,
-                  data_plane=args.data_plane, adversarial_soak=args.adversarial_soak)
+                  config_only=args.config_only, adversarial_soak=args.adversarial_soak)
     ok = suite.run(args.deploy)
 
     if args.json:
         with open(args.json, "w") as f:
-            json.dump({"pass": ok, "results": [
-                {"name": n, "ok": o, "detail": d, "gating": g}
-                for n, o, d, g in suite.results]}, f, indent=2)
+            json.dump({"pass": ok,
+                       "delivery_witnesses": suite.delivery_witnesses,
+                       "config_only": suite.config_only,
+                       "downgraded": suite.downgraded,
+                       "results": [
+                           {"name": n, "ok": o, "detail": d, "gating": g}
+                           for n, o, d, g in suite.results]}, f, indent=2)
         print("wrote %s" % args.json)
     return 0 if ok else 1
 

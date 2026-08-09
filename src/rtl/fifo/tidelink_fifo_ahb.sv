@@ -242,6 +242,15 @@ module tidelink_fifo_ahb #(
         .mbox_reg_addr       (),
         .mbox_reg_wdata      (),
 
+        // v1 TX traffic-generator credit-consume port (tied off — this wrapper
+        // has no txgen; the generator lives in tidelink_top). _val is masked by
+        // _vld inside tidelink_apb_regs (the credit accumulator ANDs the value
+        // with {N{_vld}}), so 1'b0 / all-zeros is the only tie that preserves
+        // the behaviour this instance already had when the pins were omitted
+        // and floating.
+        .hw_credit_consume_vld (1'b0),
+        .hw_credit_consume_val ({SYS_DATA_W{1'b0}}),
+
         // Ctrl/Perf register read-back peers (tied off — this wrapper exposes
         // only the FIFO/APB/returner surface; the ctrl/perf regfile peers
         // live in tidelink_top, not here).
@@ -250,7 +259,31 @@ module tidelink_fifo_ahb #(
 
         // PUF read-port (tied off — no PUF instance in the AHB-only wrapper).
         .puf_addr            ({(RAM_ADDR_W-2){1'b0}}),
-        .puf_req             (1'b0)
+        .puf_req             (1'b0),
+
+        // ── Deliberately open OUTPUTS ────────────────────────────────────────
+        // These were previously OMITTED from the port map, which reads exactly
+        // the same as a floating input and is why the two genuinely-floating
+        // INPUTS above (hw_credit_consume_vld/_val) hid here for so long.
+        // Written out as explicit empty connections: same hardware, but the
+        // omission is now a statement rather than an accident, and the module
+        // can be gated on PINMISSING. Every one is an output of a peer block
+        // that this AHB-only wrapper does not instantiate (the ctrl/perf
+        // regfiles and the PUF live in tidelink_top).
+        .ctrl_reg_write      (),
+        .ctrl_reg_addr       (),
+        .ctrl_reg_r10        (),
+        .ctrl_reg_rd         (),
+        .ctrl_reg_rf         (),
+        .ctrl_reg_wdata      (),
+        .perf_reg_write      (),
+        .perf_reg_addr       (),
+        .perf_reg_wdata      (),
+        .perf_reg_region     (),
+        .perf_credit_count   (),
+        .pair_credit_count   (),
+        .puf_rdata           (),
+        .puf_ack             ()
     );
 
 endmodule

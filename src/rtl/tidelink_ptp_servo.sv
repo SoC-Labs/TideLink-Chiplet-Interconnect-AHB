@@ -104,16 +104,29 @@ module tidelink_ptp_servo #(
     // Constants
     // =========================================================================
     localparam [1:0]  PKT_SIDEBAND = 2'b01;
-    localparam [29:0] NS_PER_SECOND = 30'd999_999_999;
+    // (NS_PER_SECOND was declared here and never referenced; ONE_SEC_NS below
+    // is the constant this block actually uses. Removed rather than waived.)
     // One second in nanoseconds
     localparam signed [30:0] ONE_SEC_NS = 31'sd1_000_000_000;
+
+    // Saturated seconds-difference encodings, shared by the assignment sites
+    // and the case tags below. Named because `-2'sd1` is a unary-minus
+    // EXPRESSION rather than a literal, and an expression used as a case item
+    // is a real trap in general (HAL CSTEXP) -- here the value is constant-
+    // folded, so this is naming, not a behaviour change. 2'sd(-1) == 2'b11.
+    localparam signed [1:0] SEC_DIFF_ZERO = 2'sd0;
+    localparam signed [1:0] SEC_DIFF_POS1 = 2'sd1;
+    localparam signed [1:0] SEC_DIFF_NEG1 = -2'sd1;
 
     // Mailbox target offsets (where SIDEBAND packets write on the remote side)
     // These are APB register offsets within TideLink config space
     localparam [13:0] MBOX_SEC_LO_OFFSET  = 14'h068;
     localparam [13:0] MBOX_SEC_HI_OFFSET  = 14'h06C;
     localparam [13:0] MBOX_NS_OFFSET      = 14'h070;
-    localparam [13:0] MBOX_SUB_NS_OFFSET  = 14'h074;
+    // Mailbox slot 0x074 (sub-ns) exists in the remote register map but this
+    // Grandmaster never transmits it -- the sub-ns field is dropped from the
+    // 30-bit ns arithmetic below. The localparam that named it was unreferenced
+    // and is removed; the address is recorded here so the map stays documented.
 
     // =========================================================================
     // Configuration Registers
@@ -174,7 +187,7 @@ module tidelink_ptp_servo #(
             3'h2: servo_reg_rdata = servo_ki_r;
             3'h3: servo_reg_rdata = servo_step_thresh_r;
             3'h4: servo_reg_rdata = {{(SYS_DATA_W-2){1'b0}}, gm_active | sub_active, servo_locked};
-            3'h5: servo_reg_rdata = last_offset_r;       // Region 3 offset 0x060
+            3'h5: servo_reg_rdata = $unsigned(last_offset_r);  // Region 3 offset 0x060 (signed ns, read as a raw word)
             3'h6: servo_reg_rdata = last_delay_r;        // Region 3 offset 0x064
             3'h7: servo_reg_rdata = current_frac_r;      // Region 3 offset 0x068
             default: ;
@@ -373,7 +386,11 @@ module tidelink_ptp_servo #(
     logic signed [31:0] integral_r;
 
     // Locked detection: offset below threshold for consecutive exchanges
-    localparam LOCK_COUNT = 4;
+    // Sized to lock_counter_r's width so the `<` below compares like with like
+    // (was an unsized integer -> 32-bit RHS, HAL ULRELE). lock_counter_r is
+    // unsigned and saturates at LOCK_COUNT, so zero-extending the 4-bit LHS to
+    // 32 bits gave the same answer -- this is width hygiene, not a bug fix.
+    localparam [3:0] LOCK_COUNT = 4'd4;
     logic [3:0] lock_counter_r;
 
     // =========================================================================
@@ -413,21 +430,21 @@ module tidelink_ptp_servo #(
     always_ff @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             sub_state_r        <= SUB_IDLE;
-            d_fwd_r            <= '0;
-            d_rev_r            <= '0;
-            raw_offset_r       <= '0;
-            raw_delay_r        <= '0;
-            offset_r           <= '0;
-            delay_r            <= '0;
-            sec_diff_fwd_r     <= 2'sd0;
+            d_fwd_r            <= 31'sd0;
+            d_rev_r            <= 31'sd0;
+            raw_offset_r       <= 32'sd0;
+            raw_delay_r        <= 32'sd0;
+            offset_r           <= 32'sd0;
+            delay_r            <= 32'sd0;
+            sec_diff_fwd_r     <= SEC_DIFF_ZERO;
             sec_diff_fwd_ovf   <= 1'b0;
-            sec_diff_rev_r     <= 2'sd0;
+            sec_diff_rev_r     <= SEC_DIFF_ZERO;
             sec_diff_rev_ovf   <= 1'b0;
             needs_phase_step_r <= 1'b0;
-            integral_r         <= '0;
+            integral_r         <= 32'sd0;
             lock_counter_r     <= '0;
             servo_locked       <= 1'b0;
-            last_offset_r      <= '0;
+            last_offset_r      <= 32'sd0;
             last_delay_r       <= '0;
             current_frac_r     <= '0;
             phc_hw_set_time       <= 1'b0;
@@ -505,16 +522,16 @@ module tidelink_ptp_servo #(
                                    $signed({1'b0, sub_t1_ns});
                         // Seconds difference: compressed to -1/0/+1 with overflow flag
                         if (sub_t2_sec == sub_t1_sec) begin
-                            sec_diff_fwd_r  <= 2'sd0;
+                            sec_diff_fwd_r  <= SEC_DIFF_ZERO;
                             sec_diff_fwd_ovf <= 1'b0;
                         end else if (sub_t2_sec == sub_t1_sec + 48'd1) begin
-                            sec_diff_fwd_r  <= 2'sd1;
+                            sec_diff_fwd_r  <= SEC_DIFF_POS1;
                             sec_diff_fwd_ovf <= 1'b0;
                         end else if (sub_t2_sec + 48'd1 == sub_t1_sec) begin
-                            sec_diff_fwd_r  <= -2'sd1;
+                            sec_diff_fwd_r  <= SEC_DIFF_NEG1;
                             sec_diff_fwd_ovf <= 1'b0;
                         end else begin
-                            sec_diff_fwd_r  <= 2'sd0;
+                            sec_diff_fwd_r  <= SEC_DIFF_ZERO;
                             sec_diff_fwd_ovf <= 1'b1;  // |diff| > 1 → phase step
                         end
                         sub_state_r <= SUB_COMPUTE_2;
@@ -526,23 +543,23 @@ module tidelink_ptp_servo #(
                                    $signed({1'b0, sub_t3_ns});
                         // Seconds difference for reverse path
                         if (sub_t4_sec == sub_t3_sec) begin
-                            sec_diff_rev_r  <= 2'sd0;
+                            sec_diff_rev_r  <= SEC_DIFF_ZERO;
                             sec_diff_rev_ovf <= 1'b0;
                         end else if (sub_t4_sec == sub_t3_sec + 48'd1) begin
-                            sec_diff_rev_r  <= 2'sd1;
+                            sec_diff_rev_r  <= SEC_DIFF_POS1;
                             sec_diff_rev_ovf <= 1'b0;
                         end else if (sub_t4_sec + 48'd1 == sub_t3_sec) begin
-                            sec_diff_rev_r  <= -2'sd1;
+                            sec_diff_rev_r  <= SEC_DIFF_NEG1;
                             sec_diff_rev_ovf <= 1'b0;
                         end else begin
-                            sec_diff_rev_r  <= 2'sd0;
+                            sec_diff_rev_r  <= SEC_DIFF_ZERO;
                             sec_diff_rev_ovf <= 1'b1;
                         end
                         // Adjust d_fwd for seconds borrow/carry
                         case (sec_diff_fwd_r)
-                            2'sd0:  ; // Same second — no adjustment
-                            2'sd1:  d_fwd_r <= d_fwd_r + ONE_SEC_NS;
-                            -2'sd1: d_fwd_r <= d_fwd_r - ONE_SEC_NS;
+                            SEC_DIFF_ZERO: ; // Same second — no adjustment
+                            SEC_DIFF_POS1: d_fwd_r <= d_fwd_r + ONE_SEC_NS;
+                            SEC_DIFF_NEG1: d_fwd_r <= d_fwd_r - ONE_SEC_NS;
                             default: ;
                         endcase
                         if (sec_diff_fwd_ovf)
@@ -553,17 +570,22 @@ module tidelink_ptp_servo #(
                     SUB_COMPUTE_3: begin
                         // Adjust d_rev for seconds borrow/carry
                         case (sec_diff_rev_r)
-                            2'sd0:  ; // Same second — no adjustment
-                            2'sd1:  d_rev_r <= d_rev_r + ONE_SEC_NS;
-                            -2'sd1: d_rev_r <= d_rev_r - ONE_SEC_NS;
+                            SEC_DIFF_ZERO: ; // Same second — no adjustment
+                            SEC_DIFF_POS1: d_rev_r <= d_rev_r + ONE_SEC_NS;
+                            SEC_DIFF_NEG1: d_rev_r <= d_rev_r - ONE_SEC_NS;
                             default: ;
                         endcase
-                        // Compute raw offset and delay
-                        // Sign-extend d_fwd_r[30] and d_rev_r[30] (the actual sign bits)
-                        raw_offset_r <= $signed({d_fwd_r[30], d_fwd_r}) -
-                                        $signed({d_rev_r[30], d_rev_r});
-                        raw_delay_r  <= $signed({d_fwd_r[30], d_fwd_r}) +
-                                        $signed({d_rev_r[30], d_rev_r});
+                        // Compute raw offset and delay.
+                        // d_fwd_r/d_rev_r are `signed [30:0]`, raw_* are
+                        // `signed [31:0]`; the 32'() size cast preserves
+                        // signedness and therefore SIGN-extends bit 30 -- the
+                        // same value the old `$signed({d_fwd_r[30], d_fwd_r})`
+                        // concatenation produced, but without a hand-written
+                        // sign bit that silently goes wrong if the width of
+                        // d_fwd_r ever changes (and without the signed/unsigned
+                        // mix HAL flagged inside the concatenation).
+                        raw_offset_r <= 32'(d_fwd_r) - 32'(d_rev_r);
+                        raw_delay_r  <= 32'(d_fwd_r) + 32'(d_rev_r);
                         if (sec_diff_rev_ovf)
                             needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_4;
@@ -580,7 +602,7 @@ module tidelink_ptp_servo #(
                     SUB_ADJUST: begin
                         // offset_r and delay_r are now directly in nanoseconds
                         last_offset_r <= offset_r;
-                        last_delay_r  <= delay_r;
+                        last_delay_r  <= $unsigned(delay_r);  // delay is non-negative by construction
 
                         if (needs_phase_step_r ||
                             (offset_r > $signed(servo_step_thresh_r)) ||
@@ -590,7 +612,7 @@ module tidelink_ptp_servo #(
                             phc_hw_set_seconds    <= sub_t2_sec;
                             phc_hw_set_nanoseconds <= sub_t2_ns -
                                                       offset_r[29:0];
-                            integral_r     <= '0;
+                            integral_r     <= 32'sd0;
                             lock_counter_r <= '0;
                             servo_locked   <= 1'b0;
                             sub_state_r    <= SUB_IDLE;
@@ -633,8 +655,30 @@ module tidelink_ptp_servo #(
                             phc_hw_adj_valid        <= 1'b1;
                             phc_hw_adj_ns_incr_frac <= current_frac_r - (pi_p_term_r + mul_result[63:32]);
 
-                            // Lock detection
-                            if ($unsigned(offset_r) < servo_step_thresh_r[31:2]) begin
+                            // Lock detection: |offset| < step_thresh/4.
+                            //
+                            // BEHAVIOUR-CHANGING FIX (was: `$unsigned(offset_r)
+                            // < servo_step_thresh_r[31:2]`). offset_r is
+                            // `logic signed [31:0]` (:362). $unsigned() is a
+                            // reinterpretation of the bit pattern, NOT an
+                            // absolute value: any negative offset became
+                            // >= 2**31, which can never be below
+                            // servo_step_thresh_r[31:2] (max 2**30-1), so the
+                            // else arm fired and cleared lock_counter_r and
+                            // servo_locked. Lock could therefore only latch on
+                            // LOCK_COUNT consecutive POSITIVE offsets, and a
+                            // tracking servo dithers about zero -- so it never
+                            // latched in practice. Line 585-587 of this file
+                            // does the equivalent magnitude test correctly with
+                            // a bidirectional $signed() compare; this is that
+                            // form, applied to the quarter-threshold.
+                            //
+                            // {2'b00, ...} keeps the value non-negative before
+                            // $signed(), so a software-written threshold with
+                            // bit[31] set cannot flip the comparison sign.
+                            // Also clears the HAL ULRELE (32 vs 30 bits) here.
+                            if ((offset_r <  $signed({2'b00, servo_step_thresh_r[31:2]})) &&
+                                (offset_r > -$signed({2'b00, servo_step_thresh_r[31:2]}))) begin
                                 if (lock_counter_r < LOCK_COUNT)
                                     lock_counter_r <= lock_counter_r + 4'd1;
                                 else

@@ -116,7 +116,7 @@ module tidelink_axinode_obs #(
             // the counter, so normal bursty backpressure never accumulates.
             if ((stall_live_q != 10'h0) && (stall_live_q == stall_prev_q)) begin
                 if (!cnt_saturated)
-                    persist_cnt_q <= persist_cnt_q + 1'b1;
+                    persist_cnt_q <= persist_cnt_q + (WEDGE_LOG2+1)'(1'b1);
             end else begin
                 persist_cnt_q <= '0;
             end

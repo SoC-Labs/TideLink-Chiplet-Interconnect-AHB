@@ -665,7 +665,15 @@ module tidelink_apb_regs #(
     // (Merge 2026-07-22: main had the functionally-identical `apb_region[1:0]-1`
     // form from e6f0254; kept this gate-validated form. The real-APB-path test is
     // cocotb/tidelink_apb_regs/test_perf_region_decode.py.)
-    assign perf_reg_region = (apb_region - 4'd5);
+    // The subtraction is 4-bit; perf_reg_region is 2-bit. Both the write enable
+    // (perf_reg_write, above) and the read mux (prdata, apb_region 4'b0101..
+    // 4'b0111) gate perf on regions 5..7 ONLY, so the difference is 0..2 and
+    // bits [3:2] are always zero at every point this value is consumed. The
+    // slice is the truncation Verilog was applying implicitly -- made explicit
+    // so the intent is reviewable and the WIDTH finding does not mask a real
+    // narrowing elsewhere in this file. Bit-identical to the implicit form.
+    wire [3:0] perf_region_idx = apb_region - 4'd5;
+    assign perf_reg_region = perf_region_idx[1:0];
 
     // ── APB Read Mux ──────────────────────────────────────────────────────────
 

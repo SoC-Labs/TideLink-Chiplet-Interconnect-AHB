@@ -157,10 +157,10 @@ module tidelink_fc_adapter #(
     localparam [13:0] SUB_PUF_READ_REQ = 14'h0020;
     localparam [13:0] SUB_PUF_READ_RSP = 14'h0021;
 
-    // AHB constants
-    localparam [1:0] HTRANS_IDLE   = 2'b00;
-    localparam [1:0] HTRANS_NONSEQ = 2'b10;
-    localparam [2:0] HSIZE_WORD    = 3'b010;
+    // (AHB constants HTRANS_IDLE/HTRANS_NONSEQ/HSIZE_WORD were declared here
+    // and never referenced -- this block decodes htrans/hsize inline. Removed
+    // rather than waived: an unused named constant is a claim that some code
+    // reads it, and there was none.)
 
     // =========================================================================
     // TX Aperture — AHB Slave → FC TX (FIFO_DATA packets)
@@ -339,7 +339,7 @@ module tidelink_fc_adapter #(
                     tx_stall_ctr_r  <= '0;
                     tx_err1_r       <= 1'b1;
                 end else begin
-                    tx_stall_ctr_r <= tx_stall_ctr_r + 1'b1;
+                    tx_stall_ctr_r <= tx_stall_ctr_r + (TX_STALL_TIMEOUT_LOG2+1)'(1'b1);
                 end
             end
         end

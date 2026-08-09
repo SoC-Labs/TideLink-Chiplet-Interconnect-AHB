@@ -129,8 +129,8 @@ module tidelink_ptp #(
     // =========================================================================
     localparam [7:0] DATA_ID_SYNC      = 8'h50;
     localparam [7:0] DATA_ID_DELAY_REQ = 8'h51;
-    localparam [1:0] HTRANS_IDLE       = 2'b00;
-    localparam [1:0] HTRANS_NONSEQ     = 2'b10;
+    // (HTRANS_IDLE/HTRANS_NONSEQ were declared here and never referenced --
+    // this block has no AHB port. Removed rather than waived.)
 
     // =========================================================================
     // PTP Control Register (offset 0x034, mapped at ptp_reg_addr = 3'h5)

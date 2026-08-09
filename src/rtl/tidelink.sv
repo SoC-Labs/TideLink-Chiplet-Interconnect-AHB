@@ -164,6 +164,13 @@ module tidelink #(
         .ctrl_reg_addr        (/* unused */),
         .ctrl_reg_wdata       (/* unused */),
         .ctrl_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        // Region 10 / D / F select strobes — outputs, not exposed by this
+        // legacy wrapper. Written out explicitly rather than omitted: an
+        // omitted pin is indistinguishable from a floating input, which is
+        // exactly how the hw_credit_consume pair below went unnoticed.
+        .ctrl_reg_r10         (/* unused */),
+        .ctrl_reg_rd          (/* unused */),
+        .ctrl_reg_rf          (/* unused */),
 
         // Performance profiling register pass-through — not exposed
         .perf_reg_write       (/* unused */),
@@ -174,6 +181,17 @@ module tidelink #(
 
         // Credit count observation (debug-only output) — not exposed
         .perf_credit_count    (/* unused */),
+
+        // v1 TX traffic-generator credit port. pair_credit_count is an OUTPUT
+        // (not exposed here); hw_credit_consume_vld/_val are INPUTS and were
+        // OMITTED, i.e. floating — the same defect the full-chiplet lint found
+        // at tidelink_fifo_ahb.sv:179. This wrapper has no txgen, so 1'b0 /
+        // all-zeros is the tie that preserves the behaviour it had when the
+        // pins were simply absent (_val is masked by _vld inside
+        // tidelink_apb_regs, so the value never reaches the accumulator).
+        .pair_credit_count    (/* unused */),
+        .hw_credit_consume_vld(1'b0),
+        .hw_credit_consume_val({SYS_DATA_W{1'b0}}),
 
         // FC direct write interface — tied inactive (legacy wrapper has no FC)
         .fc_wr_valid          (1'b0),

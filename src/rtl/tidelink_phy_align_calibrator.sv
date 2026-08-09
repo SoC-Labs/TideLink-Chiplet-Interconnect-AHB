@@ -914,7 +914,10 @@ module tidelink_phy_align_calibrator #(
     // block). MAX_RESWEEPS==0 ⇒ never exhausts (retry while role_locked).
     logic [15:0] resweep_ctr;
     wire retry_exhausted = (MAX_RESWEEPS != 0) &&
-                           (resweep_ctr >= MAX_RESWEEPS);
+                           // MAX_RESWEEPS is `parameter int` (32b). Widen the
+                           // NARROW side; the comparison was already being
+                           // done at 32 bits with resweep_ctr zero-extended.
+                           (32'(resweep_ctr) >= MAX_RESWEEPS);
 
     // T3.2 peer-aware training-hold counter (cycles spent in S_HOLD).
     localparam int HOLD_MAX = HOLD_CYCLES - 1;
@@ -1048,7 +1051,10 @@ module tidelink_phy_align_calibrator #(
                 // on real data (not just training pattern).
                 if (swreset)                   nxt_state = S_CANCEL;
                 else if (!role_locked)         nxt_state = S_DONE;
-                else if (hold_ctr >= HOLD_MAX) nxt_state = S_VALIDATE;
+                // HOLD_MAX is `localparam int` (32b); same widening as
+                // retry_exhausted above -- hold_ctr is unsigned, so the
+                // zero-extension is what the compare already did.
+                else if (32'(hold_ctr) >= HOLD_MAX) nxt_state = S_VALIDATE;
             end
             S_VALIDATE: begin
                 // §9.11d Fix A1 + M9 + M10.
@@ -1525,7 +1531,9 @@ module tidelink_phy_align_calibrator #(
                             // <=16, (15>>1)=7), so the 4-bit truncation is
                             // safe and the sum start+centre is at most 15.
                             automatic logic [3:0] centre_off;
-                            centre_off = (best_run[i] - 5'd1) >> 1;
+                            // 4'() makes the documented 5->4 truncation above
+                            // explicit rather than implicit.
+                            centre_off = 4'((best_run[i] - 5'd1) >> 1);
                             slip[i]      <= best_run_slip[i];
                             phase[i]     <= best_run_start_phase[i] + centre_off;
                             lane_done[i] <= 1'b1;
@@ -1625,7 +1633,10 @@ module tidelink_phy_align_calibrator #(
     // extends to per-lane along a generate.  Index encoding matches
     // EYE_SCORE_IDX: idx[6:4]=slip, idx[3:0]=phase.
     logic [5:0] score_buf [0:127];
-    generate if (EYE_BUF_WIDE) begin : g_wide_buf
+    // `!= 0` rather than a bare truth test: EYE_BUF_WIDE is `parameter int`,
+    // so a bare `if (EYE_BUF_WIDE)` feeds 32 bits to a 1-bit generate
+    // condition. Identical semantics (Verilog's truth test IS `!= 0`).
+    generate if (EYE_BUF_WIDE != 0) begin : g_wide_buf
         // Reserved wide-mode storage (Option A wide variant).  Each lane
         // owns its own 768-bit buffer; the read mux uses eye_lane_sel_q
         // as the row select.  Same no-reset policy as the single-lane

@@ -88,6 +88,19 @@ assign CTRL_APB.prdata = reg_rdata;
 wire [REG_IDX_W-1:0] reg_word_addr;
 assign reg_word_addr = CTRL_APB.paddr[ADDR_W-1:2];
 
+// Zero-extended copy of the word address, for the comparisons against the
+// UNSIZED integer localparams below (RULE_BASE_WORD, RULE_BASE_WORD+NUM_RULES,
+// and the literal 1). Those localparams are 32-bit integers, so the compares
+// were 10-bit-vs-32-bit and HAL rightly flagged them (ULCMPE/ULRELE/UELOPR).
+//
+// The narrow side is widened deliberately, and the wide side is left alone:
+// zero-extension is exactly what the simulator was already doing, so this is
+// bit-identical. Sizing the CONSTANTS down to REG_IDX_W instead would put
+// RULE_BASE_WORD + NUM_RULES -- the rule window's UPPER bound -- at the mercy
+// of the parameterised width, and a future NUM_RULES could silently truncate
+// it and shrink the window.
+wire [31:0] reg_word_addr_x = 32'(reg_word_addr);
+
 // --------------------------------------------------------------------------
 // BASE_OFFSET register (word address 0)
 // --------------------------------------------------------------------------
@@ -115,7 +128,7 @@ reg ctrl_enable_reg;
 always @(posedge PCLK or negedge PRESETn) begin
     if (~PRESETn) begin
         ctrl_enable_reg <= 1'b0;
-    end else if (reg_write_en && (reg_word_addr == 1)) begin
+    end else if (reg_write_en && (reg_word_addr_x == 32'd1)) begin
         if (CTRL_APB.pstrb[0])
             ctrl_enable_reg <= CTRL_APB.pwdata[0];
     end
@@ -141,7 +154,7 @@ generate
         always @(posedge PCLK or negedge PRESETn) begin
             if (~PRESETn) begin
                 rule_reg[k] <= {DATA_W{1'b0}};
-            end else if (reg_write_en && (reg_word_addr == (RULE_BASE_WORD + k))) begin
+            end else if (reg_write_en && (reg_word_addr_x == (RULE_BASE_WORD + k))) begin
                 for (int b = 0; b < (DATA_W / 8); b = b + 1) begin
                     if (CTRL_APB.pstrb[b])
                         rule_reg[k][b*8 +: 8] <= CTRL_APB.pwdata[b*8 +: 8];
@@ -165,13 +178,13 @@ always @(*) begin
         if (reg_word_addr == '0) begin
             // BASE_OFFSET
             reg_rdata = base_offset_reg;
-        end else if (reg_word_addr == 1) begin
+        end else if (reg_word_addr_x == 32'd1) begin
             // CTRL
             reg_rdata = {{(DATA_W-1){1'b0}}, ctrl_enable_reg};
-        end else if (reg_word_addr >= RULE_BASE_WORD &&
-                     reg_word_addr < (RULE_BASE_WORD + NUM_RULES)) begin
+        end else if (reg_word_addr_x >= RULE_BASE_WORD &&
+                     reg_word_addr_x < (RULE_BASE_WORD + NUM_RULES)) begin
             // RULE registers
-            reg_rdata = rule_reg[reg_word_addr - RULE_BASE_WORD];
+            reg_rdata = rule_reg[reg_word_addr_x - RULE_BASE_WORD];
         end else begin
             // PID/CID or default
             case (reg_word_addr)

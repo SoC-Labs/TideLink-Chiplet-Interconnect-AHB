@@ -114,7 +114,10 @@ assign chp_adr_pslverr = i_pslverr_mux;
 // Channel 0 APB wiring (always present)
 // --------------------------------------------------------------------------
 assign CHP_ADR_APB_0.penable = chp_adr_penable;
-assign CHP_ADR_APB_0.paddr = chp_adr_paddr;
+// apb4_if.paddr is 32-bit; this block's chp_adr_paddr port is 16-bit. Widen the
+// narrow side: zero-extension is what the implicit assignment already did, and
+// the register decode below only ever compares the low bits.
+assign CHP_ADR_APB_0.paddr = {16'h0, chp_adr_paddr};
 assign CHP_ADR_APB_0.pwrite = chp_adr_pwrite;
 assign CHP_ADR_APB_0.pwdata = chp_adr_pwdata;
 assign CHP_ADR_APB_0.pstrb = chp_adr_pstrb;
@@ -157,7 +160,8 @@ generate
 if (NUM_CHANNELS > 1) begin : gen_ch1
 
     assign CHP_ADR_APB_1.penable = chp_adr_penable;
-    assign CHP_ADR_APB_1.paddr = chp_adr_paddr;
+    // Same 16->32 zero-extension as channel 0 above.
+    assign CHP_ADR_APB_1.paddr = {16'h0, chp_adr_paddr};
     assign CHP_ADR_APB_1.pwrite = chp_adr_pwrite;
     assign CHP_ADR_APB_1.pwdata = chp_adr_pwdata;
     assign CHP_ADR_APB_1.pstrb = chp_adr_pstrb;

@@ -341,7 +341,21 @@ module tidelink_tx_gen #(
                             data_pend_r <= 1'b0;
                             seq_r       <= seq_r + 1'b1;
                             gap_r       <= ipg_r;
-                            state_r     <= S_GAP;
+                            // FIX (link-survey campaign, 2026-08-01): when the
+                            // configured inter-packet gap is already zero,
+                            // S_GAP would do nothing but immediately observe
+                            // gap_r=='0 and fall through to S_ARMED on its
+                            // very next cycle (see S_GAP below) — that extra
+                            // registered check-then-transition cycle is pure
+                            // dead time with IPG=0. Skip straight to S_ARMED
+                            // in that case; S_ARMED unconditionally
+                            // re-validates running_r/budget_r/can_take
+                            // regardless of which state it was entered from,
+                            // so admission safety is unchanged — only the
+                            // timing of that check moves one cycle earlier.
+                            // The ipg_r!=0 path (gap_r counting down) is
+                            // completely untouched.
+                            state_r     <= (ipg_r == '0) ? S_ARMED : S_GAP;
                             if (!forever_r) begin
                                 budget_r <= (budget_r > SYS_DATA_W'(total_beats_r))
                                           ? (budget_r - SYS_DATA_W'(total_beats_r)) : '0;

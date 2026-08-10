@@ -244,13 +244,24 @@ class APBMasterMonitor:
 
 
 class DirectWriteMonitor:
-    """Monitors a direct valid/addr/wdata write port driven by the DUT."""
+    """Monitors a direct valid/ready/addr/wdata write port driven by the DUT.
+
+    `valid` is a LEVEL (asserted for as long as the FSM sits in its address
+    phase waiting for `ready`, e.g. RX_ADDR_PHASE under downstream
+    backpressure), not a pulse — exactly like AHB hready-qualified address
+    phases or APB pready-qualified access phases. A write only actually
+    completes on the cycle `ready` is also asserted; sampling `valid` alone
+    (as this monitor used to) double-counts every cycle a transaction is
+    held while stalled. Gated on `ready` here to match AHBMasterMonitor /
+    APBMasterMonitor's hready/pready-qualified sampling above.
+    """
 
     def __init__(self, dut, prefix, log=None):
         self.valid = getattr(dut, f"{prefix}_valid")
         self.write = getattr(dut, f"{prefix}_write")
         self.addr  = getattr(dut, f"{prefix}_addr")
         self.wdata = getattr(dut, f"{prefix}_wdata")
+        self.ready = getattr(dut, f"{prefix}_ready")
         self.dut   = dut
         self.log   = log
         self.writes = Queue()
@@ -266,9 +277,10 @@ class DirectWriteMonitor:
             try:
                 valid_val = int(self.valid.value)
                 write_val = int(self.write.value)
+                ready_val = int(self.ready.value)
             except ValueError:
                 continue
-            if valid_val and write_val:
+            if valid_val and write_val and ready_val:
                 addr = int(self.addr.value)
                 data = int(self.wdata.value)
                 if self.log:

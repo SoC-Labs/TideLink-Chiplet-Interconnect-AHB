@@ -109,8 +109,12 @@ async def write_packet(dut, ahb, pkt, label=""):
 
     write_ptr_before = int(dut.u_dut.write_ptr.value)
     target = int(dut.u_dut.write_target_addr.value)
+    # RX-FIFO TWIN 3 FIX (2026-08-01): the `packet_word_length` port now
+    # reflects the READ side only (tidelink_apb_regs.sv's returner-facing
+    # semantics) — write-side capture checks must probe the internal
+    # write_packet_word_length_r register directly.
     dut._log.info(f"{prefix}After header write: write_ptr=0x{write_ptr_before:04X}, "
-                  f"packet_word_length={int(dut.u_dut.packet_word_length.value)}, "
+                  f"packet_word_length={int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)}, "
                   f"write_target_addr=0x{target:04X}")
 
     # Remaining beats: dest_addr (Word 1) then payload words
@@ -253,7 +257,11 @@ async def test_06_pointers_zero_after_reset(dut):
 
 @cocotb.test()
 async def test_07_write_packet_length_capture(dut):
-    """Writing to address 0 should capture hwdata as packet_word_length."""
+    """Writing to address 0 should capture hwdata as write_packet_word_length_r.
+
+    RX-FIFO TWIN 3 FIX (2026-08-01): probes the internal write-side register
+    directly — the external `packet_word_length` port now reflects the READ
+    side only (see write_packet() helper's comment above for why)."""
     ahb = await setup(dut)
     await do_reset(dut)
 
@@ -261,8 +269,8 @@ async def test_07_write_packet_length_capture(dut):
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 2)
 
-    captured = int(dut.u_dut.packet_word_length.value)
-    assert captured == 5, f"packet_word_length: expected 5, got {captured}"
+    captured = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
+    assert captured == 5, f"write_packet_word_length_r: expected 5, got {captured}"
 
 
 @cocotb.test()
@@ -1431,7 +1439,8 @@ async def test_34_packet_size_clamped_to_max(dut):
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    captured_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    # RX-FIFO TWIN 3 FIX: write-side capture, probe the internal register.
+    captured_len = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
     max_valid = MAX_CREDITS - 2  # 4094
 
     dut._log.info(f"Wrote length {oversized_length}, captured as {captured_len} "
@@ -1462,7 +1471,8 @@ async def test_35_packet_size_valid_length_unaffected(dut):
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
-        captured = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+        # RX-FIFO TWIN 3 FIX: write-side capture, probe the internal register.
+        captured = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
         assert captured == length, (
             f"Valid length {length} should not be clamped, got {captured}"
         )
@@ -1486,7 +1496,8 @@ async def test_36_seq_transfers_rejected(dut):
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    pkt_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    # RX-FIFO TWIN 3 FIX: write-side capture, probe the internal register.
+    pkt_len = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
     assert pkt_len == 5, f"NONSEQ write to addr 0 should capture length, got {pkt_len}"
 
     # Flush and try again with SEQ (htrans=3) — should NOT capture
@@ -1506,9 +1517,10 @@ async def test_36_seq_transfers_rejected(dut):
     dut.hwrite.value = 0
     await ClockCycles(dut.hclk, 3)
 
-    pkt_len = int(dut.u_dut.u_fifo_ctrl.packet_word_length.value)
+    # RX-FIFO TWIN 3 FIX: write-side capture, probe the internal register.
+    pkt_len = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
     assert pkt_len == 0, (
-        f"SEQ transfer (htrans=3) should be ignored, but packet_word_length={pkt_len}"
+        f"SEQ transfer (htrans=3) should be ignored, but write_packet_word_length_r={pkt_len}"
     )
 
     dut._log.info("SEQ transfers correctly rejected — passed")
@@ -1620,8 +1632,9 @@ async def test_38_packed_header_field_preservation(dut):
         dut.haddr.value = 0x3FFF
         await ClockCycles(dut.hclk, 3)
 
-        # Verify hardware extracted only the length
-        hw_length = int(dut.u_dut.packet_word_length.value)
+        # Verify hardware extracted only the length.
+        # RX-FIFO TWIN 3 FIX: write-side capture, probe the internal register.
+        hw_length = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
         assert hw_length == length, \
             f"Case {i}: expected hw length={length}, got {hw_length}"
 

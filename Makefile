@@ -567,6 +567,40 @@ sim_gate_a2l_replay_cdc_5:
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=5 \
 	    SIM_BUILD=sim_build_a2l_5 COCOTB_RESULTS_FILE=sim_build_a2l_5/res_a2l_5.xml)
 
+# ---------------------------------------------------------------------------
+# Rescued from the link-survey line (analysis/link-survey-2026-08-01, folded
+# 2026-08-10). These four suites had NO definition anywhere else on the trunk;
+# their cocotb sources shipped, but the targets that run them did not, so the
+# tests were unreachable.
+#
+# DELIBERATELY NOT registered in sim_gate / SIM_GATE_SUITES below. None has
+# been run on this trunk, and adding a never-run suite to the aggregate gate
+# either turns it red for reasons nobody has triaged, or -- worse, under
+# SIM_GATE_NONFATAL=1 -- adds a line of green that was never earned. Run them
+# by hand, triage, THEN register:
+#     make sim_gate_fifo_concurrent_race
+# ---------------------------------------------------------------------------
+sim_gate_fc_adapter_rx_saturation:
+	$(call sim_gate_run,fc_adapter_rx_saturation,\
+	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_rx_saturation_throughput)
+
+sim_gate_fifo_concurrent_race:
+	$(call sim_gate_run,fifo_concurrent_race,\
+	  rm -rf cocotb/tidelink_fifo_concurrent_race/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fifo_concurrent_race)
+
+sim_gate_txgen_deadtime:
+	$(call sim_gate_run,txgen_deadtime,\
+	  $(MAKE) -C cocotb/tidelink_txgen MODULE=test_txgen_deadtime \
+	      SIM_BUILD=sim_build_deadtime \
+	      COCOTB_RESULTS_FILE=sim_build_deadtime/res_deadtime.xml)
+
+sim_gate_v2_lane_mask_throughput:
+	$(call sim_gate_run,v2_lane_mask_throughput,\
+	  TIDELINK_SIM_REF_PERIOD_NS=40.0 $(MAKE) -C cocotb/tidelink_top_pair_v2 \
+	    EPOCH_PROFILE=zero MODULE=test_v2_lane_mask_throughput)
+
 # --- Wave-0 #9: PERF_CTRL end-to-end (perf_reg_region = apb_region-5) --------
 # Proves PERF_CTRL is writable and the perf counters ACTUALLY COUNT through the
 # real APB->tidelink_apb_regs->tidelink_perf path in a brought-up pair. RED

@@ -91,8 +91,121 @@ module tidelink_fifo_mem #(
     wire fc_active = fc_wr_valid && fc_wr_write;
     assign fc_wr_ready = 1'b1;  // SRAM completes writes in 1 cycle
 
-    // PUF read: lowest priority — only when FC and AHB are both idle
-    wire puf_can_read = puf_req && !fc_active && !ahb_sram_cs;
+    // --------------------------------------------------------------------------
+    // AHB-read / FC-write SRAM arbitration race fix (link-survey campaign,
+    // 2026-08-02)
+    // --------------------------------------------------------------------------
+    // ROOT CAUSE (proven by cocotb/tidelink_fifo_concurrent_race/
+    // test_diag_sram_addr_hijack.py): the vendor SRAM (cmsdk_fpga_sram.v,
+    // read-only IP) registers its read address (addr_q1) UNCONDITIONALLY
+    // every cycle, from whatever this module's own ADDR mux happens to show
+    // that cycle, regardless of chip-select. An AHB read's target address
+    // only flows correctly through cmsdk_ahb_to_sram's SRAMADDR output
+    // DURING its own address-phase cycle (its internal `ahb_read`
+    // combinational condition, which needs HSEL+HTRANS+HREADY together) —
+    // for every cycle afterward, while this module holds the data phase
+    // open via ahb_hready_gated, the AHB master has typically already
+    // dropped HSEL (single-beat, non-pipelined transfer, exactly how every
+    // driver in this repo — production and test — issues an AHB FIFO
+    // read), so cmsdk's own SRAMADDR reverts to `buf_addr` (an unrelated
+    // write-buffer leftover). If a concurrent FC direct write's
+    // `fc_active` cycle lands anywhere in that stalled window, its own
+    // address wins the top-priority ADDR mux below and gets latched into
+    // addr_q1 — clobbering the read's real target. Because
+    // `ahb_hreadyout_raw` never wait-states on its own (cmsdk_ahb_to_sram's
+    // `HREADYOUT` is hardwired 1'b1 — it has no internal stall logic), this
+    // module's own `hreadyout` used to release the very same cycle
+    // `fc_active` cleared: one full SRAM pipeline stage too early — the
+    // re-presented correct address hadn't yet been re-latched into
+    // addr_q1, let alone had a further cycle for the corresponding data to
+    // become valid at the SRAM's output.
+    //
+    // FIX (direction (b) from the investigation, not a bare stall
+    // extension: extending the stall ALONE cannot work here, because once
+    // HSEL drops after the address phase nothing ever re-drives the real
+    // HADDR through cmsdk_ahb_to_sram again — waiting longer just samples
+    // `buf_addr` garbage instead of the FC poison, not the real target).
+    // Capture the read's own translated SRAM address the cycle its address
+    // phase is accepted (`read_addr_pending_r`), and re-present THAT
+    // captured address to the physical SRAM on every subsequent cycle the
+    // FC-write path isn't actively driving the port, for as long as the
+    // read remains unresolved (`read_active_r`). Only release (let
+    // hreadyout go high again) once the re-presented address has survived
+    // one full clean (non-fc_active) cycle immediately followed by another
+    // clean cycle — i.e. addr_q1 has been correctly re-registered with the
+    // real address AND the corresponding data has had a further cycle to
+    // become valid at the SRAM output. A multi-cycle, or repeated, FC-write
+    // burst simply keeps re-arming this condition every time it disturbs
+    // the port; it self-clears exactly 2 cycles after the SRAM is last left
+    // alone. Cost: ZERO extra cycles on any read that never races an FC
+    // write (the overwhelming majority — see the suite results this change
+    // was verified against); exactly the minimum extra stall needed on
+    // ones that do.
+    //
+    logic                   read_active_r;       // an AHB read's data has not yet been safely delivered
+    logic                   addr_clean_prev_r;    // fc_active was 0 during the cycle immediately preceding this one
+    logic [RAM_ADDR_W-3:0]  read_addr_pending_r;  // captured, correct SRAM word address for that read
+
+    // Extra stall needed: a read is outstanding and the address was not
+    // cleanly (re-)registered on the cycle immediately before this one —
+    // i.e. at most one clean cycle has elapsed since the last disturbance
+    // (or since the address phase, if the read has never been disturbed).
+    wire read_recovery_stall = read_active_r && !addr_clean_prev_r;
+
+    // Generalizes the original fc_active-only stall: hold the AHB port
+    // whenever FC owns the SRAM this cycle, OR a prior read's data is not
+    // yet safely re-registered following a disturbance. Declared here
+    // (ahead of the original "AHB stall" section further down, which now
+    // just consumes it) so ahb_read_addr_phase below can use it — VCS
+    // requires continuous `wire = expr` assignments declared before use.
+    wire hold_for_sram_race = fc_active || read_recovery_stall;
+    wire ahb_hready_gated = hready && !hold_for_sram_race;
+
+    // Mirrors cmsdk_ahb_to_sram's own internal `ahb_read` condition
+    // (ahb_access & ~HWRITE, ahb_access = HTRANS[1] & HSEL & HREADY) using
+    // this module's own view of the (gated) HREADY fed to that IP, so it
+    // fires on exactly the same cycle cmsdk latches HADDR into its
+    // SRAMADDR output — i.e. the address-phase-acceptance cycle of an AHB
+    // read.
+    wire ahb_read_addr_phase = hsel && htrans[1] && !hwrite && ahb_hready_gated;
+
+    always @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            read_active_r       <= 1'b0;
+            addr_clean_prev_r   <= 1'b0;
+            read_addr_pending_r <= '0;
+        end else begin
+            // Tracks "was the cycle that just ended clean" for use as next
+            // cycle's recovery-stall input (one-cycle delayed fc_active,
+            // sampled every cycle regardless of read_active_r).
+            addr_clean_prev_r <= !fc_active;
+
+            if (ahb_read_addr_phase) begin
+                // New read address phase accepted -- always on a clean
+                // cycle by construction (hold_for_sram_race gates
+                // ahb_hready_gated, so it already forces fc_active=0
+                // whenever this fires). Prime tracking for the data
+                // phase(s) ahead.
+                read_active_r       <= 1'b1;
+                read_addr_pending_r <= ahb_sram_addr;
+            end else if (read_active_r && !hold_for_sram_race) begin
+                // hold_for_sram_race was 0 last cycle -> hreadyout was
+                // high -> the data phase completed (per AHB semantics, a
+                // completer's own HREADYOUT going high is the transfer
+                // completing, independent of when a master's driver script
+                // happens to poll it). Stop tracking so the ADDR mux below
+                // reverts to the normal translated_addr path for whatever
+                // comes next.
+                read_active_r <= 1'b0;
+            end
+        end
+    end
+
+    // PUF read: lowest priority — only when FC, AHB, and an in-recovery AHB
+    // read are all idle (the last exclusion keeps PUF from stealing the
+    // SRAM port, and re-poisoning read_addr_pending_r's recovery window,
+    // during the race-fix re-presentation cycles above).
+    wire puf_can_read = puf_req && !fc_active && !ahb_sram_cs && !read_active_r;
 
     // Final SRAM signals (muxed between FC, AHB, and PUF paths).
     // (HAL URDWIR cleanup: a `sram_addr` mux wire previously here was unused —
@@ -102,7 +215,12 @@ module tidelink_fifo_mem #(
     wire            [3:0] sram_wen   = fc_active    ? 4'b1111 :
                                         puf_can_read ? 4'b0000 :
                                                        ahb_sram_wen;
-    wire                  sram_cs    = fc_active | ahb_sram_cs | puf_can_read;
+    // read_active_r forces CS during the race-fix re-presentation cycles
+    // (sram_wen stays 0 there, so this is a read-only access — see ADDR mux
+    // below) so the vendor SRAM's registered `cs_reg` (see
+    // cmsdk_fpga_sram.v) doesn't gate the eventually-valid RDATA back to
+    // zero.
+    wire                  sram_cs    = fc_active | ahb_sram_cs | puf_can_read | read_active_r;
 
     // PUF read data: shared SRAM output, valid one cycle after puf_can_read
     assign puf_rdata = rdata;
@@ -115,8 +233,11 @@ module tidelink_fifo_mem #(
             puf_ack <= puf_can_read;
     end
 
-    // AHB stall: hold hready low when FC write occupies the SRAM
-    wire ahb_hready_gated = hready && !fc_active;
+    // AHB stall: hold hready low when FC write occupies the SRAM, OR (race
+    // fix, see above) while a prior read's data is not yet safely
+    // re-registered after a disturbance. (ahb_hready_gated itself is
+    // declared earlier, alongside hold_for_sram_race, since
+    // ahb_read_addr_phase needs it ahead of this point.)
     wire ahb_hreadyout_raw;
 
     // Testbench-visible signal aliases (preserve cocotb probe paths)
@@ -202,8 +323,9 @@ module tidelink_fifo_mem #(
         .SRAMCS     (ahb_sram_cs)
    );
 
-    // AHB hreadyout: stall when FC write is active
-    assign hreadyout = ahb_hreadyout_raw && !fc_active;
+    // AHB hreadyout: stall when FC write is active, or (race fix) while a
+    // prior read's data is not yet safely re-registered.
+    assign hreadyout = ahb_hreadyout_raw && !hold_for_sram_race;
 
     // --------------------------------------------------------------------------
     // SRAM (swap tidelink_sram.sv in filelist for FPGA vs ASIC)
@@ -212,9 +334,10 @@ module tidelink_fifo_mem #(
         .AW (RAM_ADDR_W)
     ) u_sram (
         .CLK        (hclk),
-        .ADDR       (fc_active    ? fc_translated_addr[RAM_ADDR_W-1:2] :
-                     puf_can_read ? puf_addr :
-                                    translated_addr),
+        .ADDR       (fc_active     ? fc_translated_addr[RAM_ADDR_W-1:2] :
+                     puf_can_read  ? puf_addr :
+                     read_active_r ? read_addr_pending_r :
+                                     translated_addr),
         .WDATA      (sram_wdata),
         .WREN       (sram_wen),
         .CS         (sram_cs),

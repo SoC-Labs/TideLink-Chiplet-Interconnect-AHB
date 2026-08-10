@@ -149,6 +149,10 @@ proc create_root_design { parentCell } {
     # The packaged eth-chiplet IP (whole multicore+ethernet SoC + TideLink)
     ###########################################################################
     set soc [create_bd_cell -type ip -vlnv soclabs.org:user:nanosoc_eth_chiplet_vivado_wrapper:1.0 nanosoc_eth_chiplet_0]
+    # die_b = TideChart slave: DEVICE_CLASS 2 (> die_a's 1) loses root election
+    # deterministically (finding G1). Requires the re-packaged IP that exposes
+    # CONFIG.DEVICE_CLASS (nanosoc_eth_chiplet_vivado_wrapper param, added 2026-07-29).
+    set_property CONFIG.DEVICE_CLASS {2} $soc
 
     ###########################################################################
     # CONNECTIONS

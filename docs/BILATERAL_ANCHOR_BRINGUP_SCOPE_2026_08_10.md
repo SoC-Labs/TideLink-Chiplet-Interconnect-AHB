@@ -24,6 +24,14 @@ Two independent residuals, both **orthogonal to cand-2**:
    `HOLD_CYCLES = 8·128·DWELL_CYCLES = 8·128·64 = 65,536` link-clock cycles ≈ **0.5–1.5 ms**, clock TBC §7).
    A ~1-minute skew is ~10⁴–10⁵× the S_HOLD budget, so only the first-locking die anchors. **Fix = make both
    dies' role_lock land within ~HOLD_CYCLES of each other.**
+
+   **CLOCK CONFIRMED (2026-08-10, static from the KR260 XDC):** the calibrator/S_HOLD counter clocks on
+   `phy_link_rx_rx_link_clk_w` = the **/16 recovered RX word clock**. `create_clock -period 320.000
+   pad_clk_rx` ⇒ pad_clk_rx = 3.125 MHz ⇒ word clock ≈ **195 kHz**. So `HOLD_CYCLES = 65,536` word cycles ≈
+   **336 ms** (not ~1 ms). **This makes the sync EASY**: a plain parallel `fpgautil` launch (fan-out skew
+   ~10–50 ms) is ~7–30× *inside* the 336 ms budget — no NTP / shared-timestamp precision needed. The ~1-min
+   sequential skew is what breaks (≫336 ms). My earlier concurrent-load attempt failed **only** on die_b's
+   sshd not being up post-POR (`Connection refused`), a boot race — NOT on skew.
 2. **die_a RX marginal eye.** `MIN_LOCK_DWELLS` was cut 4→2 with the RTL comment *"die_a marginal eye has
    only 2-3 consecutive passing phases."* Even with zero skew, die_a's RX may not set all-4-lane sticky
    `sync_seen` inside one clear-to-clear window. This is a **hardware eye** limit, not timing.
@@ -42,16 +50,17 @@ attempts. Consistent with (a) skew dominating + (b) die_a being the weaker eye.
 
 ## 4. Approaches, ranked
 
-### A — Synchronized PL load (PRIMARY; keeps cand-2 fully autonomous)
-Pre-stage both `.bin`s (already at `~/td/tidelink.bin` on each board), then fire `fpgautil -b … -f Full` on
-BOTH boards at a **shared wall-clock instant** so nego + role_lock complete near-simultaneously → tight
-word-counter skew → S_HOLD bridges the residual → both dies anchor.
-- Trigger: both boards NTP-synced; stage a tiny `recal_at.sh` / `load_at.sh` that busy-waits to a shared
-  epoch `T = now + 3s` then execs `fpgautil` (+ AFI). Sub-ms simultaneity is achievable this way; ssh
-  fan-out jitter (~10–50 ms) is avoided because the *fire* is local to each board, gated on the clock.
-- Re-roll: role_lock is **W1S / POR-only clear**, so each attempt = POR both → synchronized load. ~2 min
-  each, but with **tight skew the bilateral odds jump** from ~1/36 to (expected) near-1 IF skew was the only
-  blocker. If die_a's eye is the blocker, this alone won't fix it → go to C.
+### A — Parallel PL load with sshd-barrier (PRIMARY; keeps cand-2 fully autonomous)
+Because the S_HOLD budget is **~336 ms** (§2), the sync is easy — a plain **parallel** `fpgautil -b … -f Full`
+on both boards (fan-out skew ~10–50 ms ≪ 336 ms) puts nego + role_lock inside budget → S_HOLD bridges → both
+anchor. **No NTP / shared-timestamp needed.** The one thing that MUST be fixed vs the failed attempt: **wait
+for BOTH boards' sshd to answer after POR before launching the loads** (the earlier concurrent run died on
+die_b `Connection refused`, a boot race, not skew).
+- Sequence: POR both → poll until `ssh true` succeeds on BOTH → launch both `fpgautil`(+AFI) in parallel
+  (background) → wait → probe bilateral `anc`.
+- Re-roll: role_lock is **W1S / POR-only clear**, so each attempt = POR both → parallel load (~2–3 min).
+  With the skew now inside budget, **if skew was the only blocker, bilateral should land at ~1** (vs the
+  sequential ~1/36). If die_a still won't anchor, the residual is die_a's **eye**, not timing → go to C.
 - Keeps autoneg/cand-2 active (role_lock via nego force_lock, not a host poke) → still an autonomous result.
 
 ### B — Synchronized recal (FAST probe; may or may not re-roll the skew)
@@ -73,10 +82,11 @@ bug; die_a's RX eye is a hardware ceiling on this board.** Options then: (i) swa
 the memory's lottery-free path), or (iii) ship the logical fix and document the physical residual.
 
 ## 5. Recommended staged plan
-1. **Confirm the S_HOLD real-time budget (§7):** read the calibrator/link clock freq on the deployed build;
-   convert 65,536 cy to ms. This sets how tight the sync in A must be (target: sync ≪ HOLD_CYCLES).
-2. **Build `kr260_sync_bringup.sh`** — NTP-gated shared-`T` `fpgautil` (+AFI) fire on both boards; then the
-   existing autonomous converge; then probe bilateral `anc`. ~half a day.
+1. ~~Confirm the S_HOLD real-time budget~~ **DONE (§2/§7):** ≈336 ms → parallel load suffices, no NTP.
+2. **`kr260_sync_bringup.sh` — BUILT (2026-08-10, `pynq_host/scripts/`, syntax-checked, not yet run).**
+   POR→wait-both-sshd→PARALLEL `fpgautil`+AFI→autonomous converge→probe bilateral `anc`→credit-safe delivery
+   BOTH directions, looping `ATTEMPTS` times. Just needs a leased pair to run:
+   `source ./set_env.sh; KR260_PASSWORD=soclabs2026 ATTEMPTS=6 bash pynq_host/scripts/kr260_sync_bringup.sh`.
 3. **Run A** for ~5 POR cycles; record per-die `anc` land-rate with tight skew vs the sequential baseline
    (die_b 1/4, die_a 0/4). If die_a's rate rises → skew was the blocker.
 4. **Interleave B** (synchronized recal) as a fast inner loop between A's POR cycles.
@@ -93,11 +103,13 @@ the memory's lottery-free path), or (iii) ship the logical fix and document the 
   the raw register dumps — for the certification archive.
 
 ## 7. Risks & open items
-- **HOLD_CYCLES real-time window unconfirmed** — 65,536 cy is ~0.5–1.5 ms only if the calibrator clock is
-  ~40–130 MHz; confirm the actual clock before trusting that A's sync is "tight enough."
-- **die_a marginal eye may be the hard ceiling** — A fixes skew, not eye. Budget for C.
-- **NTP sync between the two KR260s** — verify `chrony`/`timedatectl` offset is ≪ HOLD_CYCLES; if the boards
-  aren't disciplined, use a one-shot PTP or a manual offset calibration before relying on shared-`T`.
+- **HOLD_CYCLES window — RESOLVED:** calibrator clocks on the /16 RX word clock ≈ 195 kHz (pad_clk_rx 320 ns
+  ÷16), so `HOLD_CYCLES` ≈ **336 ms**. A parallel `fpgautil` (~10–50 ms skew) is comfortably inside → sync is
+  NOT the hard part. (No NTP / shared-timestamp needed — that section of the original plan is over-engineered
+  and dropped.)
+- **die_a marginal eye is now the PRIMARY suspect** — RTL literally flags it (`MIN_LOCK_DWELLS` 4→2, *"die_a
+  marginal eye has only 2-3 consecutive passing phases"*). With skew removed by A, if die_a still won't
+  anchor, this is the ceiling → C (IDELAY / `MIN_LOCK_DWELLS=1` micro-rebuild) or D (different pair / onchip).
 - **role_lock is POR-only clear** — every skew re-roll costs a ~2-min POR; keep the inner loop (B) for speed.
 - **Board contention** — this needs the kr260 pair leased; coordinate (the pair was contended from
   mapstone-dev this session).

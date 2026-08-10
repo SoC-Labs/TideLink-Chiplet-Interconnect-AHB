@@ -1,0 +1,46 @@
+#
+# .gitattributes SNIPPET — flist semantic merge driver
+# ====================================================
+# Stage 4 resolution, 2026-08-10. See docs/STAGE4_RESOLUTION_2026_08_10.md §6.
+#
+# THIS FILE IS NOT ACTIVE. Git only reads a file literally named `.gitattributes`.
+# These are the lines to APPEND to the repo-root `.gitattributes`. Applying them is
+# a deliberate human step; nothing here takes effect until you do it.
+#
+# At 321edbf the repo has NO `.gitattributes` at any path (`git ls-files | grep -i
+# gitattributes` is empty), so applying this creates the file.
+#
+# Apply with (copies the final block only — everything from the marker line down):
+#     sed -n '/^# TideLink flist semantic merge/,$p' \
+#         .gitattributes.flist-driver-snippet >> .gitattributes
+#     git add .gitattributes
+# then verify Git agrees:
+#     git check-attr merge -- flists/tidelink_fpga_v2.flist   # => "merge: flist"
+# then register the driver in this clone (per-clone, NOT committed):
+#     bash scripts/setup_flist_merge_driver.sh
+#
+# Pattern scope, measured at 321edbf:
+#   *.flist -> 37 tracked files (flists/, cocotb/crc_diag/,
+#              cocotb/tidelink_axi_datanode_recovery/, cocotb/tidelink_fifo/)
+#   *.f     -> 7 tracked files (cocotb/debug/tidelink_peer_aperture/flist.f,
+#              cocotb/fifo_rx_twin2/flist_tree.f, flist_unfixed.f, and the four
+#              cocotb/tidelink_a2l_replay_cdc/dut_src*.f generated artefacts)
+#   No tracked Fortran or other `.f` sources exist, so `*.f` is unambiguous here.
+#
+# FAIL-SAFE PROPERTY (do not weaken it): if these lines are committed but
+# `merge.flist.driver` is not registered in a given clone, Git falls back to the
+# built-in text merge and the file CONFLICTS. An unregistered driver can only cost
+# extra human work; it can never produce a bad auto-resolution. That is why the
+# gate's driver-registration check (`flist_semantic.py check`) reports an ADVISORY
+# rather than a hard failure unless `--require-driver` is passed.
+#
+# DO NOT add a per-file exclusion line here for the tapeout flist. The
+# never-auto-resolve boundary belongs in the driver's policy file so that a refusal
+# carries a reason and a named approver; a `.gitattributes` exclusion would produce
+# a bare, unexplained conflict instead.
+#
+
+# TideLink flist semantic merge (docs/STAGE4_RESOLUTION_2026_08_10.md §6).
+# Register the driver in each clone with: bash scripts/setup_flist_merge_driver.sh
+*.flist merge=flist
+*.f     merge=flist

@@ -632,19 +632,33 @@ uvm-integration:
     expire_in: 30 days
 
 # Full top-system paired UVM (two tidelink_top instances cross-wired by PHY pads).
-# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
-# This is an HONEST quarantine, not fake-green: the env no longer elaborates against
-# current RTL. UVM froze ~May while RTL churned Jun/Jul. Two rot layers were fixed in
-# the Makefile (lane_checker -> tidelink-gpio-phy submodule; new PHY helper cells;
-# stale sbt output_tidelink_gpio + 7-min regen dropped). REMAINING blocker (real UVM
-# work): tidelink_top.sv drives axi_chiplet_controller obs/replay + apb_ctrl_reg ports
-# that live only in src/rtl/local_overrides/, but the Makefile compiles the pinned
-# submodule copy -> VCS UPIMI; the TB (tb/top.sv + pad_skid_lanes.sv) also drives
-# tidelink_lane_checker with old ports. TODO: re-point the top/wlink sources to the
-# src/rtl/local_overrides set used by flists/tidelink_fpga.flist + refresh the TB.
-# See the QUARANTINE note in uvm/tidelink_top_system/Makefile. The idealized paired-die
-# smoke moved to the BLOCKING `cocotb-top-pair-smoke` job below. `|| true` fake-green
-# removed so the red is real; allow_failure kept until the env elaborates again.
+# QUARANTINED 2026-07-07 -> RE-CHARACTERISED 2026-07-30 (verification audit,
+# docs/VERIFICATION_AUDIT_2026_07_30.md §A5) — ELABORATES; FUNCTIONALLY BLOCKED,
+# allow_failure kept. The compile blocker (UPIMI: tidelink_top.sv drives
+# axi_chiplet_controller/tidelink_autoneg with obs_*/apb_ctrl_reg_* ports that
+# exist only in src/rtl/local_overrides/) is FIXED — the Makefile now compiles
+# all 17 local_overrides files the FPGA flist uses (was 5); tb/top.sv's stale
+# duplicate lane_checker was replaced with an XMR into the DUT's own internal
+# checker instance. Measured 2026-07-30: clean compile+elab+link.
+# REMAINING (functional, not build): running the 10 wired TESTS, link training
+# completes but the FC-layer FCSM never leaves state 1 on either die
+# (cr_seen_rx=0) — reproduced identically on the first 3/10 tests run, so this
+# is uniform, not one flaky case. CLASSIFIED same day by an independent 5-agent
+# panel investigating the unrelated I1/b98b944 eth-chiplet regression: this env
+# compiles the DEPS FCSM (only axi_chiplet_controller.sv/tidelink_autoneg.sv
+# were re-pointed to local_overrides, for unrelated obs ports), and their panel
+# found the identical cr_pkt_seen_rx-never-asserts signature under a staggered
+# wlink_por_reset is generic reset-sequencing — i.e. this IS backlog #14b
+# ("Autoneg-driven role-lock doesn't carry A→B... FCSM credit-grant...
+# scoreboard RX=0"), not a new defect. #14b's disposition ("OPEN — deferred
+# wave-debug") stands; this env is a second, corroborating reproduction of it.
+# See the re-characterised QUARANTINE note in uvm/tidelink_top_system/Makefile
+# for the full picture, including a second, independent bug fixed alongside
+# this: `run_all`'s PASS/FAIL echo trusted simv's shell exit code, which UVM
+# does not set non-zero for UVM_ERROR (only UVM_FATAL does) —
+# test_top_single_packet printed PASSED with UVM_ERROR:6 in its own log.
+# ci/uvm_results_to_junit.py below, what CI actually gates on, already parsed
+# the real tally correctly; only the Makefile's own echo lied.
 uvm-top-system:
   stage: new_module
   needs: [clone, preflight]
@@ -653,7 +667,7 @@ uvm-top-system:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - 'echo "QUARANTINED tidelink_top_system does not elaborate vs current RTL - see Makefile note"'
+    - 'echo "tidelink_top_system: elaborates (2026-07-30 fix); hits pre-existing backlog #14b reset-sequencing class - see Makefile note"'
     - make -C "$WORK_DIR/uvm/tidelink_top_system" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_top_system/sim_build"
@@ -802,15 +816,17 @@ uvm-system:
         - uvm/tidelink_system/results.xml
     expire_in: 30 days
 
-# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
-# HONEST quarantine, not fake-green. Same root cause as uvm-top-system: two rot layers
-# fixed in the Makefile (lane_checker submodule move, new PHY helper cells, stale sbt
-# output_tidelink_gpio dropped); REMAINING blocker is that the Makefile compiles the
-# pinned deps/axi-chiplet-controller copy of axi_chiplet_controller.sv, which predates
-# the obs/replay + apb_ctrl_reg ports that current tidelink_top.sv drives (VCS UPIMI).
-# TODO: re-point top/wlink sources to the src/rtl/local_overrides set used by
-# flists/tidelink_fpga.flist — see the QUARANTINE note in the env Makefile.
-# `|| true` fake-green removed so the red is real; allow_failure kept until it elaborates.
+# QUARANTINED 2026-07-07 -> ELABORATION FIXED 2026-07-30 (verification audit,
+# docs/VERIFICATION_AUDIT_2026_07_30.md §A5), allow_failure kept — same UPIMI
+# cause and same fix as uvm-top-system: this Makefile now compiles all 17
+# local_overrides files the FPGA flist uses (was 5), instead of the pinned
+# deps/axi-chiplet-controller copies that predate the obs_*/apb_ctrl_reg_*
+# ports current tidelink_top.sv drives. Measured 2026-07-30: clean
+# compile+elab+link. TEST EXECUTION NOT YET RUN on this env — uvm-top-system
+# (identical fix, same shared DUT, same deps FCSM) hit backlog #14b's generic
+# reset-sequencing stall post-fix (see its comment above), so this env likely
+# hits the same class, but that is UNVERIFIED here, not assumed. allow_failure
+# stays true either way.
 uvm-ptp-stress:
   stage: system
   needs: [clone, preflight]
@@ -819,7 +835,7 @@ uvm-ptp-stress:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - 'echo "QUARANTINED tidelink_ptp_stress does not elaborate vs current RTL - see Makefile note"'
+    - 'echo "tidelink_ptp_stress: elaborates (2026-07-30 fix); test execution unverified - see Makefile note"'
     - make -C "$WORK_DIR/uvm/tidelink_ptp_stress" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_ptp_stress/sim_build"
@@ -840,14 +856,17 @@ uvm-ptp-stress:
         - uvm/tidelink_ptp_stress/results.xml
     expire_in: 30 days
 
-# QUARANTINED 2026-07-07 (infra/uvm-ci-reactivation) — ELABORATION IS RED, allow_failure.
-# HONEST quarantine, not fake-green. Same root cause as uvm-top-system / uvm-ptp-stress:
-# Makefile rot partially fixed (lane_checker submodule move, new PHY helper cells, stale
-# sbt output_tidelink_gpio dropped); REMAINING blocker is the pinned submodule copy of
-# axi_chiplet_controller.sv predating the obs/replay + apb_ctrl_reg ports current
-# tidelink_top.sv drives (VCS UPIMI). TODO: re-point top/wlink sources to the
-# src/rtl/local_overrides set used by flists/tidelink_fpga.flist — see the env Makefile.
-# `|| true` fake-green removed so the red is real; allow_failure kept until it elaborates.
+# QUARANTINED 2026-07-07 -> ELABORATION FIXED 2026-07-30 (verification audit,
+# docs/VERIFICATION_AUDIT_2026_07_30.md §A5), allow_failure kept — same UPIMI
+# cause and same fix as uvm-top-system / uvm-ptp-stress: this Makefile now
+# compiles all 17 local_overrides files the FPGA flist uses (was 5), instead
+# of the pinned deps/axi-chiplet-controller copies that predate the
+# obs_*/apb_ctrl_reg_* ports current tidelink_top.sv drives. Measured
+# 2026-07-30: clean compile+elab+link. TEST EXECUTION NOT YET RUN on this
+# env — uvm-top-system (identical fix, same shared DUT) hit a real functional
+# blocker post-fix (FCSM CR/CRACK stall on every packet test; see its comment
+# above), so this env likely needs the same triage before allow_failure can
+# drop, but that is UNVERIFIED here, not assumed. allow_failure stays true.
 uvm-ptp-chain:
   stage: system
   needs: [clone, preflight]
@@ -856,7 +875,7 @@ uvm-ptp-chain:
   allow_failure: true
   <<: *vcs_uvm_setup
   script:
-    - 'echo "QUARANTINED tidelink_ptp_chain does not elaborate vs current RTL - see Makefile note"'
+    - 'echo "tidelink_ptp_chain: elaborates (2026-07-30 fix); test execution unverified - see Makefile note"'
     - make -C "$WORK_DIR/uvm/tidelink_ptp_chain" run_all
     - python3 "$WORK_DIR/ci/uvm_results_to_junit.py"
         "$WORK_DIR/uvm/tidelink_ptp_chain/sim_build"

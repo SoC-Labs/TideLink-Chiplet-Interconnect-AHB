@@ -1,0 +1,29 @@
+# ReadTheDocs build configuration for the TideLink documentation site.
+# Docs: https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# The site source lives in docs_site/ (Sphinx + MyST-Markdown). The legacy
+# engineering notes in docs/ are NOT part of this build; they remain the
+# working record and are cited from the site pages by path.
+
+version: 2
+
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.11"
+
+sphinx:
+  configuration: docs_site/conf.py
+  # Warnings are not fatal: several pages deliberately cite repo paths that
+  # are not Sphinx targets. Flip to true once the content pages have landed.
+  fail_on_warning: false
+
+python:
+  install:
+    - requirements: docs_site/requirements.txt
+
+# htmlzip only. PDF is deliberately NOT requested: it pulls the full LaTeX
+# toolchain and the register/parameter tables in this site are wide enough
+# that latexmk failures would break otherwise-good builds.
+formats:
+  - htmlzip

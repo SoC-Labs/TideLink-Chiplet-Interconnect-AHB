@@ -4,8 +4,21 @@
 single source of truth; this file explains *what each suite protects* and, more
 importantly, **what it does not**.
 
-**Last updated:** 2026-07-24 (v1 TX traffic generator gated — 22 suites → 25
-blocking suites + 2 known-defect sentinels + 2 parked targets).
+**Last updated:** 2026-07-30 (verification audit — see
+[VERIFICATION_AUDIT_2026_07_30.md](VERIFICATION_AUDIT_2026_07_30.md)).
+
+> ⚠️ **Do not trust a suite count written in prose — including the one that used
+> to be on this line.** It said "25 blocking suites + 2 sentinels" while the real
+> figure was 37 + 3, and the CI job comment still says "10". Counts here rotted
+> twice. The authoritative answer now comes from the Makefile itself:
+>
+> ```
+> make sim_gate_inventory     # prints both lists AND cross-checks the wiring
+> ```
+>
+> That target also fails if a suite is **scored but never invoked** — the defect
+> `fix/z2-drop-park-hook` shipped with (`v2_mask_hs_bilateral`), which made
+> `make sim_gate` score it `MISS` and fail unconditionally. See audit §A1.
 
 ---
 
@@ -128,6 +141,32 @@ build; `txgen_negctl` proves the load-bearing fact (gate out ⇒ zero-credit sen
 deterministically instead.
 
 ---
+
+### 2.5 Added 2026-07-30 — audit sentinels (2)
+
+Both are **sentinels, not suites**: they assert a defect is **present and
+unchanged**, are never printed as `PASS`, and trip `XCHG` (which fails the gate)
+the moment the behaviour moves in either direction. Rationale in §3.1.
+
+| Sentinel | Bench / config | Feature | The defect it pins |
+|---|---|---|---|
+| `xfail_epoch_shipping_corrector` | `tidelink_top_pair_v2` `EPOCH_PROFILE=silicon`, **no** `TB_TOP_EPOCH_ANCHOR_FORCE`, own `sim_build_epoch_shipping` | **F04** | The skew-faithful suite above (`epoch_silicon`) forces the corrector the silicon does **not** run. In the **shipping** configuration (`SYNC_REANCHOR_EN=1`, and Wlink never forwards `EPOCH_ANCHOR_EN` to the deskew) the same skew gives `TESTS=3 PASS=1 FAIL=2`: link-up shears (`S: FCSM state 5 != 4`) and s2m reassembles **all zeros** with `fcsm=4 cr=1 crack=1` on both dies. Nothing ran this before. **m2s still passing is the instrument clause** — without it a broken build would XFAIL for the wrong reason. |
+| `xfail_txgen_ext_hijack` | `tidelink_txgen` `MODULE=test_txgen_ext_hijack`, own `sim_build_hijack` | TXGEN v1 | **New defect, found by this audit.** `ext_idle = ~ext_htrans[1]` (`tidelink_tx_gen.sv:176`) cannot see an outstanding external **data** phase (AHB masters drive IDLE through it), so the ownership mux switches mid-transfer and the adapter — which reads HWDATA *live* (`tidelink_fc_adapter.sv:361`) — commits `{external ADDRESS, generator DATA}`. The master sees OKAY; `ext_collide` is keyed on the same address-phase signal so `ext_abort_r` stays 0. **Silent single-word corruption**, the F14-A class. The three gated txgen suites miss it because none of them changes ownership while an external transfer is in flight. |
+
+**Why sentinels and not fixes.** F04's fix is an RTL/bring-up item on the live
+"no data crosses" blocker; the TXGEN fix changes an admission predicate on a live
+chiplet TX datapath. Both are design calls. What the audit could do is make them
+impossible to lose — which is exactly what §3.1 says a sentinel is for.
+
+### 2.6 Added 2026-07-30 — isolated D2D write data-loss guard (1)
+
+| Suite | Bench / config | Feature | What it protects |
+|---|---|---|---|
+| `v2_isolated_write` (`sim_gate_v2_isolated_write`, `test_v2_isolated_write_dataloss`) | `tidelink_top_pair_v2` `EPOCH_PROFILE=zero` | AHB SUB / XHB bridge datapath | A D2D peer-aperture write **not immediately followed by another AHB transfer** — including the cross-die PTP/mailbox doorbell — must still deliver its write data. Pre-`cb33c9f`, the FPGA wrapper's combinational `ahb_sub_hready` loopback collapsed the address-phase detect during the pipe-fill wait-state, so HWDATA sampled late and the isolated write landed as `data=0x00000000` (address correct, payload lost). `cb33c9f` is already in this tree; this suite exists so the fix cannot silently rot back out the way it already did on a sibling repo's stale `tidelink` submodule pin (see `docs/TIDELINK_ISOLATED_WRITE_ROOTCAUSE_FIX.md`). 4/4: isolated distinct-data delivery, back-to-back distinct-data (no one-transfer shift), non-compliant early-HWDATA-withdrawal (documented as master-noncompliance, not a bridge defect), and the `hready`-loopback RED→GREEN discriminator itself. |
+
+Cherry-picked from `fix/tidelink-isolated-write-dataloss@fda8288` (sim + doc only,
+zero RTL delta — the fix was already present via `cb33c9f`). Confirmed 4/4 PASS
+on this tree before wiring into the aggregate.
 
 ## 3. The three nuanced dispositions
 

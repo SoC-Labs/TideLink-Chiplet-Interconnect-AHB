@@ -72,6 +72,7 @@ R_RELEASED_ACC = PAIR_BASE + 0x020   # read-clear  <- NOT 0x018, see above
 R_PAIR_CREDIT = PAIR_BASE + 0x028    # SW-maintained credits toward peer
 R_PAIR_CONSUME = PAIR_BASE + 0x02C   # WO: decrement pair counter by N
 R_TRAINING = PAIR_BASE + 0x100       # [0] swi_training_mode
+R_NEGO_TRAIN_CFG = PAIR_BASE + 0x10C # [0] train_auto_en (retrain loop)
 R_LANE_STATUS = PAIR_BASE + 0x108
 R_SYNC_DET = PAIR_BASE + 0x114       # [31:16] sync_detected sat-count
 R_PHY_ID = PAIR_BASE + 0x11C         # PHY_ALIGN_ID — NEVER write (V2 write
@@ -634,6 +635,8 @@ class _FakeMem(object):
             return (0xFC << 24) | (0 << 16) | (0x07 << 8) | 0x1F
         if addr == R_WLINK_ENABLE_RESET:
             return getattr(self, '_wlink_en', 0x00027F07)
+        if addr == R_NEGO_TRAIN_CFG:
+            return getattr(self, '_nego_train_cfg', 0x1)
         if addr == R_TRAINING:
             # Healthy default models a DELIVERING link: beacon on
             # (sync_insert_en|sync_robust = 0x14, as golden), training-mode
@@ -709,6 +712,9 @@ class _FakeMem(object):
             return
         if addr == R_TRAINING:
             self._training = val & 0xFFFFFFFF
+            return
+        if addr == R_NEGO_TRAIN_CFG:
+            self._nego_train_cfg = val & 0xFFFFFFFF
             return
         if addr == R_RELEASED_ACC:
             # W-add: bumps PAIR_CREDIT_COUNTER (and the acc, which the
@@ -1159,6 +1165,46 @@ def cmd_datamode(mem):
            "ll_rx_enable": (rb >> 2) & 1, "sw_reset": (rb >> 3) & 1})
 
 
+def cmd_cleartrain(mem):
+    """INTERIM workaround for the slave training-EXIT gap (2026-07-28).
+
+    On the dead-I2C rig with TRAIN_ENTRY_FALLBACK the SLAVE self-lights the
+    beacon (R8 bit[2]=1) but stays stuck at training_mode=1 (R8=0x15): its
+    only autonomous training-exit is ST_TRAIN_EXIT, reachable only by
+    reading the peer over I2C, and the master holds its own I2C-slave in
+    reset (axi_chiplet_controller.sv:2894), so the slave NACKs → ST_TRAIN_FAIL
+    → auto-retry → re-asserts training. While training_mode=1 the slave's
+    RX deskew is gated off and the FC data-mode handoff (gated on the
+    training FALL edge) never runs, so no data can land.
+
+    This forces the state the master reaches on its own:
+      1. clear train_auto_en (NEGO_TRAIN_CFG[0]) so the FSM stops
+         re-asserting training on its retry loop;
+      2. clear SWI_TRAINING_MODE[0], PRESERVING the beacon bits [2]/[4] —
+         the 1->0 edge is what the FC handoff / 0x208 bootstrap wait on.
+
+    NOT the autonomous end state. The real fix is a local training-exit
+    fallback hook in tidelink_autoneg. Reports the before/after so a
+    comparison can never mistake a poked link for a self-started one.
+    """
+    r8_before = mem.rd(R_TRAINING)
+    ntc = mem.rd(R_NEGO_TRAIN_CFG)
+    mem.wr(R_NEGO_TRAIN_CFG, ntc & ~0x1)     # stop the auto-retrain loop
+    mem.barrier()
+    mem.wr(R_TRAINING, r8_before & ~0x1)     # clear training_mode -> FALL
+    mem.barrier()
+    time.sleep(0.05)
+    r8_after = mem.rd(R_TRAINING)
+    ls = mem.rd(R_LANE_STATUS)
+    _emit({"r8_before": "0x%08x" % r8_before,
+           "r8_after": "0x%08x" % r8_after,
+           "training_mode": r8_after & 1,
+           "sync_insert_en": (r8_after >> 2) & 1,
+           "beacon_on": (r8_after >> 2) & 1,
+           "fcsm": (ls >> 17) & 0x7, "cal_done": (ls >> 16) & 1,
+           "note": "interim poke, NOT autonomous"})
+
+
 # ── Measurement roles (GO-barrier protocol) ──────────────────────────────
 
 def _wait_go():
@@ -1329,7 +1375,7 @@ def main():
                     help="DEV MODE: in-process die model, no /dev/mem")
     ap.add_argument("--cmd",
                     help="one-shot: probe|send4|catch|setthr|seed|"
-                         "syncbeacon|datamode|monitor")
+                         "syncbeacon|datamode|cleartrain|monitor")
     ap.add_argument("--args", nargs="*", default=[])
     ap.add_argument("--perf", action="store_true",
                     help="monitor: also sample the Phase-B perf window")
@@ -1350,6 +1396,8 @@ def main():
             cmd_send4(mem)
         elif ns.cmd == "catch":
             cmd_catch(mem, int(ns.args[0]), float(ns.args[1]))
+        elif ns.cmd == "cleartrain":
+            cmd_cleartrain(mem)
         elif ns.cmd == "syncbeacon":
             cmd_syncbeacon(mem)
         elif ns.cmd == "datamode":

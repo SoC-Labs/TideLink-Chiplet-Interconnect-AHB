@@ -180,14 +180,28 @@ VCS_FLAGS += +libext+.v
 VCS_FLAGS += -y $(DEPS_DIR)/logical/PHY/generic
 VCS_FLAGS += -y $(DEPS_DIR)/logical/wlink
 VCS_FLAGS += +libext+.v
-# Use the §9 phy-align Wlink.v + edited GPIO PHY files (swi_bit_slip_in /
-# swi_training_mode_in ports) rather than the older Chisel output under
-# wav-wlink-hw/.
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpio.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioTx.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WavD2DGpioRx.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/WlinkGPIOPHY.v
-VCS_FLAGS += $(DEPS_DIR)/logical/wlink/Wlink.v
+
+# 2026-07-30 (verification audit, docs/VERIFICATION_AUDIT_2026_07_30.md §A5):
+# same de-quarantine re-point as uvm/tidelink_top_system — this env explicitly
+# compiled 5 of the 17 files flists/tidelink_fpga.flist takes from
+# src/rtl/local_overrides/ instead of $(DEPS_DIR); the other 12 (incl.
+# axi_chiplet_controller.sv / tidelink_autoneg.sv, the actual UPIMI cause —
+# tidelink_top.sv instantiates them with obs_*/apb_ctrl_reg_* ports that exist
+# only in the local_overrides copies) were never listed, so `-y` silently
+# resolved them to stale deps/ originals. Order mirrors the flist.
+VCS_FLAGS += $(RTL_DIR)/local_overrides/ShortPacketToWlink.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/TideLinkToWlink.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/tidelink_lane_deskew.sv
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WavD2DGpio.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WavD2DGpioTx.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WavD2DGpioRx.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WavMultibitSync_18.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WlinkGPIOPHY.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WlinkGenericFCReplayV2_12.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WlinkGenericFCReplayV2_13.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WlinkGenericFCSM_6.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/WlinkRxLinkLayer.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/Wlink.v
 
 # Address translator dependencies
 VCS_FLAGS += $(DEPS_DIR)/logical/interfaces/apb4_if.sv
@@ -202,10 +216,12 @@ VCS_FLAGS += +libext+.v
 # I2C master/slave (used by axi_chiplet_controller)
 VCS_FLAGS += -y $(DEPS_DIR)/logical/i2c/rtl
 VCS_FLAGS += +libext+.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/i2c_master_axil.v
+VCS_FLAGS += $(RTL_DIR)/local_overrides/i2c_master.v
 
-# Autonegotiation and chiplet controller top (Wlink wrapper)
-VCS_FLAGS += $(DEPS_DIR)/logical/top/tidelink_autoneg.sv
-VCS_FLAGS += $(DEPS_DIR)/logical/top/axi_chiplet_controller.sv
+# Autonegotiation and chiplet controller top (Wlink wrapper) — THE UPIMI FIX.
+VCS_FLAGS += $(RTL_DIR)/local_overrides/tidelink_autoneg.sv
+VCS_FLAGS += $(RTL_DIR)/local_overrides/axi_chiplet_controller.sv
 
 # Performance counter
 VCS_FLAGS += $(RTL_DIR)/tidelink_perf.sv
@@ -228,6 +244,14 @@ VCS_FLAGS += $(RTL_DIR)/tidelink_eye_regs.sv
 VCS_FLAGS += $(RTL_DIR)/tidelink_phy_align_calibrator.sv
 
 # TideLink top module
+# v1 PL-side TX traffic generator - instantiated by tidelink_top.sv:990 in
+# g_txgen. Added 2026-07-24 (docs/TXGEN_V1_DESIGN.md) and NOT added here, which
+# made this env fail with a NEW error (CFCILFBI "Cell 'tidelink_tx_gen' cannot
+# be found in liblist") ON TOP of the documented UPIMI blocker below. Because
+# the CI job is allow_failure the extra rot layer was invisible. Restored
+# 2026-07-30 so the remaining failure is the ONE blocker the note describes.
+VCS_FLAGS += $(RTL_DIR)/tidelink_tx_gen.sv
+
 VCS_FLAGS += $(RTL_DIR)/tidelink_top.sv
 
 # ---------------------------------------------------------------

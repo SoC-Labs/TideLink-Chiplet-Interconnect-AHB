@@ -1,0 +1,1139 @@
+<title>TideLink Known-Bug Registry</title>
+<style>
+  /* ---- tokens ------------------------------------------------------------ */
+  :root {
+    color-scheme: light;
+    --bg:        #e9edf0;
+    --surface:   #f9fbfc;
+    --surface-2: #f1f4f6;
+    --ink:       #101a20;
+    --ink-mid:   #46555f;
+    --ink-dim:   #6d7d88;
+    --line:      #ccd6dc;
+    --line-soft: #dde4e9;
+    --accent:    #0b6e7a;
+    --accent-ink:#07515a;
+    --accent-bg: #dceef0;
+
+    --sev-crit:  #ad1f3c;
+    --sev-high:  #a9650c;
+    --sev-med:   #6f6a16;
+    --sev-low:   #566571;
+    --sev-fyi:   #78838d;
+
+    --st-open:       #a9b6bf;
+    --st-root:       #90a7b3;
+    --st-fix:        #648e9e;
+    --st-sim:        #367d90;
+    --st-hw:         #0f6675;
+    --st-signed:     #084d59;
+    --st-deferred:   #6c5f87;
+    --st-wontfix:    #8e99a1;
+
+    /* in-band label ink: group A rides the pale stages, group B the saturated
+       ones. The two groups swap ink between themes, so both stay legible. */
+    --seg-a: #0b0f13;
+    --seg-b: #f7fbfc;
+
+    --ok:      #1c6b4f;
+    --ok-bg:   #ddeee6;
+    --warn-bg: #f4e8d6;
+
+    --shadow: 0 1px 2px rgba(16, 26, 32, .06), 0 6px 18px -12px rgba(16, 26, 32, .28);
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg:        #0b0f13;
+      --surface:   #141b21;
+      --surface-2: #1a232a;
+      --ink:       #dde5ea;
+      --ink-mid:   #a6b4be;
+      --ink-dim:   #7d8c97;
+      --line:      #27333c;
+      --line-soft: #1f2931;
+      --accent:    #54c6d2;
+      --accent-ink:#8adde6;
+      --accent-bg: #10333a;
+
+      --sev-crit:  #f2708a;
+      --sev-high:  #e2a251;
+      --sev-med:   #c2ba5e;
+      --sev-low:   #93a3b0;
+      --sev-fyi:   #78868f;
+
+      --st-open:       #3a4750;
+      --st-root:       #4f6874;
+      --st-fix:        #2f7d90;
+      --st-sim:        #3ba0b0;
+      --st-hw:         #58c5d1;
+      --st-signed:     #8fe3ea;
+      --st-deferred:   #9d8fc0;
+      --st-wontfix:    #5c686f;
+
+      --seg-a: #dde5ea;
+      --seg-b: #08181c;
+
+      --ok:      #63c79b;
+      --ok-bg:   #10322a;
+      --warn-bg: #33291a;
+
+      --shadow: 0 1px 0 rgba(255, 255, 255, .02), 0 10px 24px -18px rgba(0, 0, 0, .9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b0f13; --surface: #141b21; --surface-2: #1a232a;
+    --ink: #dde5ea; --ink-mid: #a6b4be; --ink-dim: #7d8c97;
+    --line: #27333c; --line-soft: #1f2931;
+    --accent: #54c6d2; --accent-ink: #8adde6; --accent-bg: #10333a;
+    --sev-crit: #f2708a; --sev-high: #e2a251; --sev-med: #c2ba5e; --sev-low: #93a3b0; --sev-fyi: #78868f;
+    --st-open: #3a4750; --st-root: #4f6874; --st-fix: #2f7d90; --st-sim: #3ba0b0;
+    --st-hw: #58c5d1; --st-signed: #8fe3ea; --st-deferred: #9d8fc0; --st-wontfix: #5c686f;
+    --seg-a: #dde5ea; --seg-b: #08181c;
+    --ok: #63c79b; --ok-bg: #10322a; --warn-bg: #33291a;
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 10px 24px -18px rgba(0,0,0,.9);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #e9edf0; --surface: #f9fbfc; --surface-2: #f1f4f6;
+    --ink: #101a20; --ink-mid: #46555f; --ink-dim: #6d7d88;
+    --line: #ccd6dc; --line-soft: #dde4e9;
+    --accent: #0b6e7a; --accent-ink: #07515a; --accent-bg: #dceef0;
+    --sev-crit: #ad1f3c; --sev-high: #a9650c; --sev-med: #6f6a16; --sev-low: #566571; --sev-fyi: #78838d;
+    --st-open: #a9b6bf; --st-root: #90a7b3; --st-fix: #648e9e; --st-sim: #367d90;
+    --st-hw: #0f6675; --st-signed: #084d59; --st-deferred: #6c5f87; --st-wontfix: #8e99a1;
+    --seg-a: #0b0f13; --seg-b: #f7fbfc;
+    --ok: #1c6b4f; --ok-bg: #ddeee6; --warn-bg: #f4e8d6;
+    --shadow: 0 1px 2px rgba(16,26,32,.06), 0 6px 18px -12px rgba(16,26,32,.28);
+  }
+
+  /* ---- base -------------------------------------------------------------- */
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1160px;
+    margin-inline: auto;
+    padding: 28px 20px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  code, .mono { font-family: var(--mono); font-variant-ligatures: none; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  /* ---- masthead ---------------------------------------------------------- */
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--line);
+  }
+  .masthead h1 {
+    font-family: var(--mono);
+    font-size: clamp(21px, 3vw, 28px);
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1.15;
+    margin: 4px 0 3px;
+    text-wrap: balance;
+  }
+  .masthead .lede { margin: 0; color: var(--ink-mid); max-width: 68ch; font-size: 14px; }
+  .meta-strip {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 22px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-dim);
+  }
+  .meta-strip b { color: var(--ink-mid); font-weight: 500; }
+
+  /* ---- board ------------------------------------------------------------- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .tile {
+    background: var(--surface);
+    padding: 13px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .tile .num {
+    font-family: var(--mono);
+    font-size: 27px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+  }
+  .tile .cap { font-size: 11.5px; color: var(--ink-mid); line-height: 1.35; }
+  .tile.is-alarm .num { color: var(--sev-crit); }
+  .tile.is-act .num   { color: var(--sev-high); }
+  .tile.is-good .num  { color: var(--ok); }
+
+  .lifecycle { display: flex; flex-direction: column; gap: 8px; }
+  .lc-bar {
+    display: flex;
+    height: 30px;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .lc-seg {
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    min-width: 26px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--seg-fg, #fff);
+    font-variant-numeric: tabular-nums;
+    transition: filter .12s ease;
+  }
+  .lc-seg:hover { filter: brightness(1.12); }
+  .lc-seg[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--ink); }
+  .lc-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .lc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .lc-key { width: 9px; height: 9px; border-radius: 1px; flex: none; }
+
+  /* ---- panels ------------------------------------------------------------ */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 14px 16px 15px;
+    box-shadow: var(--shadow);
+  }
+  .panel > h2 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .panel > h2 .n { color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .panel li { font-size: 13.5px; line-height: 1.45; display: flex; gap: 9px; }
+  .panel li .idref { flex: none; }
+
+  .idref {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent-ink);
+    background: var(--accent-bg);
+    border: 1px solid transparent;
+    border-radius: 2px;
+    padding: 1px 5px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .idref:hover { border-color: var(--accent); }
+
+  details.context {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 16px;
+  }
+  details.context > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 12px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  details.context > summary::-webkit-details-marker { display: none; }
+  details.context .ctx-body { padding: 0 0 16px; display: flex; flex-direction: column; gap: 12px; }
+  details.context p { margin: 0; font-size: 13.5px; color: var(--ink-mid); max-width: 92ch; }
+
+  /* ---- filters ----------------------------------------------------------- */
+  .filters {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+  }
+  .filters input[type="search"] {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 6px 9px;
+    min-width: 210px;
+    flex: 1 1 210px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+  .filters input[type="search"]::placeholder { color: var(--ink-dim); }
+  .fgroup { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .fgroup > .eyebrow { margin-right: 2px; }
+
+  .toggle {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    padding: 4px 8px;
+    border-radius: 2px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-mid);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .toggle:hover { border-color: var(--ink-dim); }
+  .toggle[aria-pressed="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--bg);
+  }
+  .toggle .dot { width: 8px; height: 8px; border-radius: 1px; flex: none; }
+  .toggle .n { font-variant-numeric: tabular-nums; opacity: .72; }
+  .filters .spacer { flex: 1 1 auto; }
+  .filters .count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .linkbtn {
+    background: none; border: 0; padding: 0; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--accent-ink);
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+
+  /* ---- bug cards --------------------------------------------------------- */
+  .list { display: flex; flex-direction: column; gap: 8px; }
+
+  .bug {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--sev);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+  }
+  .bug[hidden] { display: none; }
+  .bug[open] { background: var(--surface); border-color: var(--ink-dim); }
+  .bug > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 11px 14px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .bug > summary::-webkit-details-marker { display: none; }
+  .bug > summary:hover .btitle { color: var(--accent-ink); }
+
+  .chev {
+    width: 9px; height: 9px; flex: none;
+    border-right: 1.5px solid var(--ink-dim);
+    border-bottom: 1.5px solid var(--ink-dim);
+    transform: rotate(-45deg);
+    transition: transform .16s ease;
+    margin-left: 2px;
+  }
+  .bug[open] .chev { transform: rotate(45deg); }
+
+  .bhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .bid { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--sev); letter-spacing: .02em; flex: none; }
+  .btitle { font-size: 14.5px; font-weight: 500; line-height: 1.35; }
+  .bmeta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 5px; padding-top: 5px; }
+  .bstatus { display: flex; align-items: center; gap: 9px; flex: none; }
+  .bstatus .slabel {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--st); white-space: nowrap;
+  }
+
+  .rail { display: flex; gap: 2px; flex: none; }
+  .rail i { width: 13px; height: 5px; border-radius: 1px; background: var(--line); display: block; }
+  .rail i.on { background: var(--st); }
+  .rail.off i { background: transparent; box-shadow: inset 0 0 0 1px var(--st); }
+
+  .chip {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .04em;
+    padding: 2px 6px;
+    border-radius: 2px;
+    border: 1px solid var(--line);
+    color: var(--ink-mid);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .chip.k { color: var(--ink-dim); }
+  .chip.k b { color: var(--ink-mid); font-weight: 500; }
+  .chip.gate { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+  .chip.hw   { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+  .chip.net  { color: var(--sev-high); border-color: color-mix(in srgb, var(--sev-high) 40%, var(--line)); background: var(--warn-bg); }
+  .chip.sign { color: var(--st-signed); border-color: color-mix(in srgb, var(--st-signed) 45%, var(--line)); background: var(--accent-bg); }
+
+  /* ---- card body --------------------------------------------------------- */
+  .body { padding: 4px 14px 18px 14px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--line-soft); margin-top: 2px; }
+  .body > section { display: flex; flex-direction: column; gap: 7px; }
+  .body h3 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    padding-top: 12px;
+    border-top: 1px dashed var(--line-soft);
+  }
+  .body > section:first-child h3 { padding-top: 4px; border-top: 0; }
+  .body p { margin: 0; max-width: 82ch; color: var(--ink-mid); font-size: 13.5px; }
+  .body p + p { margin-top: 7px; }
+  .body p strong, .body li strong { color: var(--ink); font-weight: 600; }
+  .body code {
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    padding: 0 4px;
+    color: var(--ink);
+  }
+  .body ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .body ul.bul li { position: relative; padding-left: 15px; font-size: 13.5px; color: var(--ink-mid); max-width: 82ch; }
+  .body ul.bul li::before {
+    content: "";
+    position: absolute; left: 2px; top: .62em;
+    width: 5px; height: 5px; border-radius: 1px;
+    background: var(--ink-dim);
+  }
+  .body ul.bul.warm li::before { background: var(--sev-high); }
+  .body ul.bul.cold li::before { background: var(--st-deferred); }
+
+  .sub { display: flex; flex-direction: column; gap: 5px; }
+  .subhead {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+
+  .kv { display: grid; grid-template-columns: minmax(96px, max-content) minmax(0, 1fr); gap: 6px 14px; align-items: baseline; }
+  .kv dt {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  .kv dd { margin: 0; font-size: 13px; color: var(--ink-mid); min-width: 0; }
+  .kv dd .mono { font-size: 12px; color: var(--ink); word-break: break-word; }
+
+  .state { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
+  .state .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ink-dim); }
+  .state.yes { color: var(--ok); } .state.yes .dot { background: var(--ok); }
+  .state.no  { color: var(--ink-dim); } .state.no .dot { background: var(--line); box-shadow: inset 0 0 0 1px var(--ink-dim); }
+  .state.part { color: var(--sev-high); } .state.part .dot { background: var(--sev-high); }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  .verdict {
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--st);
+    border-radius: 3px;
+    padding: 11px 13px;
+  }
+  .verdict p { color: var(--ink); }
+  .signrow { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding-top: 9px; }
+
+  pre.snip {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    color: var(--ink);
+  }
+  .scroll-x { overflow-x: auto; max-width: 100%; }
+
+  footer.foot {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+  }
+  footer.foot p { margin: 0; max-width: 88ch; }
+
+  .empty { padding: 40px 8px; text-align: center; color: var(--ink-dim); font-family: var(--mono); font-size: 13px; }
+
+  @media (max-width: 720px) {
+    .bug > summary { grid-template-columns: auto minmax(0, 1fr); }
+    .bstatus { grid-column: 2; padding-top: 6px; }
+    .kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .kv dd { margin-bottom: 6px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div>
+      <div class="eyebrow" id="m-eyebrow"></div>
+      <h1>TideLink known-bug registry</h1>
+      <p class="lede">Outstanding and recently-resolved bugs on the GPIO&nbsp;PHY&nbsp;V2 chiplet interconnect.
+        Agents advance <span class="mono">status</span>, <span class="mono">fix</span> and
+        <span class="mono">verification</span>; the approver owns <span class="mono">signoff.approved</span>.</p>
+    </div>
+    <div class="meta-strip" id="m-meta"></div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Registry summary"></section>
+
+  <section class="lifecycle" aria-label="Sign-off lifecycle distribution">
+    <div class="eyebrow">Sign-off lifecycle &mdash; where all bugs sit (click a band to filter)</div>
+    <div class="lc-bar" id="lc-bar"></div>
+    <div class="lc-legend" id="lc-legend"></div>
+  </section>
+
+  <section class="panels" id="panels" aria-label="Action queues"></section>
+
+  <details class="context" id="context">
+    <summary><span class="chev" aria-hidden="true"></span>Key context &mdash; read before acting on any item</summary>
+    <div class="ctx-body" id="ctx-body"></div>
+  </details>
+
+  <div class="filters" role="toolbar" aria-label="Filter bugs">
+    <input type="search" id="q" placeholder="search id, title, commit, file, verdict…" aria-label="Search registry" />
+    <div class="fgroup" id="f-sev" aria-label="Filter by severity"></div>
+    <div class="fgroup" id="f-flag" aria-label="Filter by state"></div>
+    <span class="spacer"></span>
+    <span class="count" id="count"></span>
+    <button type="button" class="linkbtn" id="expand-all">expand all</button>
+    <button type="button" class="linkbtn" id="reset">reset</button>
+  </div>
+
+  <main class="list" id="list"></main>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<script id="registry-data" type="application/json">{"schema_version": 1, "generated": "2026-08-06", "maintainer": "autonomous overnight campaign (Claude Opus 4.8)", "approver": "David Mapstone \u003cdavid@mapstone.me>", "legend": {"severity": ["rank1_critical", "high", "medium", "low", "fyi"], "status": ["open", "root_caused", "fix_built", "sim_proven", "hw_proven", "signed_off", "deferred", "wontfix"]}, "signoff_policy": {"auto_signoff_allowed": false, "claude_max_status": "hw_proven", "approver": "David Mapstone", "how_to_sign": "Set signoff.approved: true, signoff.approved_by, signoff.approved_date on a bug whose status is hw_proven (or sim_proven where HW is not applicable) and whose evidence you accept. Bulk sign-off: set campaign.signed_off_by/date once every rank1_critical + high bug is individually approved.\n"}, "campaign": {"name": "overnight-bug-resolution-2026-08-06", "goal": "resolve + hardware-test outstanding bugs autonomously by morning", "signed_off_by": null, "signed_off_date": null, "open_rank1_critical": 1, "open_functional_high": 0, "open_tapeout_high": 2, "notes": "Populated 2026-08-06 evening from 4 assessment agents; resolution loop ran overnight into 2026-08-07. See docs/OVERNIGHT_SUMMARY_2026_08_07.md.\n", "awaiting_david_signoff": ["TL-003 Fix K (hw_proven, silicon)", "TL-005 F-2 backstop (hw_proven)", "TL-004 F-1 illegal-ERROR (sim_proven+gated)", "TL-006 W-byte-0 ECC (sim_proven+NOW gated 63222b6)", "TL-007 B-wedge OKAY synth-B (hw_proven)", "TL-002 wr_hold_r (sim_proven, standalone)", "TL-008 txgen hijack (sim_proven+gated)"], "david_decisions": ["TL-001 peer-write drop: pursue eye/framing (autonomous FIX-3 equivalent + TL-009) OR accept FIX 3 as a runtime bring-up step. NOT resolved.", "TL-009 die_a marginal-eye wedge: physical PHY workstream (re-pin SRCC / ILA / a2l). DOMINANT HW blocker.", "TL-010 F13 PTP: land+gate a0a224c on shipping branch/main; two-board convergence HW.", "TL-011 F19 PHY BIST: DFT/BIST harness + first-silicon go/no-go metric (unmitigated tapeout risk).", "TL-013/014 V1 flist retire + drop dup gpio-phy submodule (coupled).", "TL-015 push CI/integ fixes to main (clean FF: 5be494b or 1107151)."], "key_context": ["TWO TREES DIVERGE. integ/axirec-on-chiplet @1107151 = the eth-chiplet submodule pin; carries ALL recovery/PTP/ECC fixes and gates them. Standalone fix/z2-drop-park-hook @9eaafb7 (the main checkout) carries NONE (grep synth_b_pending=0). So on the standalone IP branch F-1/F-2/PTP-RO are structurally OPEN — a MERGE/PIN gap, not unfixed RTL. NEITHER line is on main (see TL-015).", "What actually ships consumes the integ line: eth-chiplet pin=1107151; ASIC v2 flists carry the fixes. The standalone branch is behind.", "F-1/F-2 reachability is latent on the KR260 rig: the XHB500 early-write-response path needs hprot[2]=1; the PS backdoor drives it 0. Real exposure = which shipping-SoC master drives HPROT[2]=1 (write-buffering CPU/DMA) — an integration question.", "Naming collision: the commit labelled 'Fix K' (9dfe1da) is the XHB500 hazard-list BID-correction, NOT the 08-02 review's proposed 'Fix K' (qualify ERROR override), which was SUPERSEDED by the read-only-ERROR F-1 fix 41c4107. One item = TL-003."]}, "bugs": [{"id": "TL-001", "title": "Peer-write DATA-drop (die_b SRAM reads 0) — calibrator framing lottery", "severity": "rank1_critical", "area": "phy/calibrator", "status": "root_caused", "summary": "die_a->die_b cross-die AXI writes cross their ADDRESS but die_b SRAM reads 0 — the write payload is lost. Per-POR \"lottery\": some bring-ups land the write byte-exact, most drop it. Reframed (08-06) from \"physical marginal eye\" to a calibrator FRAMING-SELECTION logic issue: on KR260 USE_IDELAY=0, the \"phase sweep\" only rotates the 16 DIGITAL word framings.\n", "root_cause": "TERMINAL-LATCH BUG in the calibrator autonomous convergence. The RX lane checker scores the PEER's incoming training pattern, so best_run>0 needs BOTH dies training-transmitting SIMULTANEOUSLY. calibrated_once_q latches on ANY first reach of S_DONE (calibrator_v2.sv:771-774) INCLUDING a give-up S_DONE (retry_exhausted :1465, or :1467 else->S_DONE on a transient role_locked dip). Once a die latches a give-up S_DONE it drops training_mode, stops driving the pattern, and can never re-sweep -> the peer sweeps against a silent lane forever -> BOTH dies read best_run=0 and fall back to the (0,0) framing = the drop. Matches the land\u003c->0x27 / drop\u003c->0x05 (one die done, one sweeping) asymmetry. The earlier \":384 PRBS-not-on-wire\" suspect is REFUTED (that comment is the S_VALIDATE PRBS oracle, not best_run, which is scored off the training pattern that IS on the wire locally). min_lock_dwells=1 was necessary (forces S_ARM->S_SWEEP) but orthogonal to the PASS gate and to overlap — why it ran the sweep yet left best_run=0. Pass chain: per-cycle Hamming\u003c=5 (hardwired autonomous, axi_chiplet_controller.sv:3828) -> lock after LOCK_CONSEC=8 consecutive -> lane_score>=LOCK_THRESH=16 at 64-cyc dwell -> best_run promote; lane_passed = best_run>=16.\n", "fix": {"approach": "Sequence: FIX 3 (diagnostic + mitigation, APB-only, NO rebuild) -> FIX 1 (autonomous cure, netlist) -> FIX 2 (follow-on if residual quantisation).\n", "candidates": ["FIX 3 (HIGH as diagnostic, NON-netlist/APB): assert swi_training_mode CTRL[6] hold on BOTH dies simultaneously, clear together -> forces both patterns on the wire concurrently -> guaranteed overlap. Decisive A/B test between cause A(absent) vs B(marginal) AND a runtime HW workaround. NO bitstream rebuild.", "FIX 1 (HIGH, netlist): calibrator_v2.sv:774 latch calibrated_once_q ONLY on genuine success (sweep_success / not validation_timed_out / link_up), so a give-up S_DONE keeps re-arming (MAX_RESWEEPS=0 -> re-sweep forever) until peer overlap. Also revisit :1467 else->S_DONE on transient role_locked dip. Impl note: sweep_success declared :1202 (below) -> move decl up under default_nettype none.", "FIX 2 (MEDIUM, netlist): relax PASS gate — axi_chiplet_controller.sv:3828 Hamming {8{3'd5}}->{8{3'd7}}, or calibrator_v2.sv:976 SCORE_DECAY 2->1, or :5918 .LOCK_THRESH(8). Safe: link_up ANDs CR_PKT/PRBS validation so a false framing re-sweeps, no silent corruption."], "files": ["src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv", "src/rtl/local_overrides/axi_chiplet_controller.sv"], "fix1_implementation": "DONE (2026-08-06, uncommitted in eth-chiplet submodule): calibrator_v2.sv latch gated `else if (cur_state == S_DONE && !validation_timed_out)`. Uses the EXISTING give-up discriminator (validation_timed_out, declared L545, set on give_up_to_done so already 1 on the first give-up S_DONE cycle; stays 0 on a genuine validate-confirm S_DONE). Genuine bringup is PROVABLY unchanged (validation_timed_out=0 -> still latches); only the give-up path now keeps re-arming. Sidesteps the sweep_success decl-order issue (validation_timed_out is declared above the latch). Building both dies + calibrator sim regression in flight.\n", "build_note": "HW build (V2 flist) compiles src/rtl/local_overrides/tidelink_phy_align_ calibrator_v2.sv (verified: tidelink_fpga_v2.flist:410). The cocotb calibrator suite compiles the PRISTINE deps copy (deps/tidelink-phy/rtl/ tidelink_phy_align_calibrator.sv, same latch logic) — sim mirrors FIX 1 into deps transiently then reverts. A permanent gated reproduce test for FIX 1 needs the local-override plumbed into a tb (force_recal_i port) — FOLLOW-UP coverage gap.\n", "commit": "e5bd29c", "branch": "fix/tl001-calibrator-terminal-latch", "netlist_affecting": true}, "hw_discriminators": ["Cause A (peer pattern absent) vs B (present-marginal): on a dropping sweep read 0x2144 sync_obs_lane_live_1 + dwell_min_dist. dwell_min_dist~16 + live-match=0 => ABSENT(A, coordination); dwell_min_dist\u003c=5-7 flickering => PRESENT-marginal(B, quantisation).", "Terminal-latch hit: read both dies 0x2108 fcsm[19:17] + ILA state — a die stuck at S_DONE/cal_done=1 while the peer shows cal=0/sweeping confirms the abandon.", "Physical residual: if FIX 3 still yields best_run=0 with small dwell_min_dist AND re-POR flips land\u003c->drop on the identical bitstream => physical capture-clock variance (P-B lottery class), FIX 2 is the only lever."], "verification": {"sim_test": "calibrator suite (deps mirror + revert): all 3 PASS with FIX 1 — happy_path_lock, validate_timeout_without_lock (give-up invariant cal_done=1+validation_timed_out=1), hold_training_mode. Regression-neutral + compiles. Positive re-arm behavior = HW-validated (existing tests don't assert calibrated_once_q).", "in_sim_gate": false, "hw_tested": "mitigation_demonstrated", "hw_evidence": "2026-08-06 23:10 (mindwell build, kr260 pair): baseline bring-up DROPPED (die_b=0x00000000) AND die_a WEDGED under the write (status 0x05890000, best_run=0, lane_locked=0x00 both dies). After a bilateral swi_training_mode 0x2100-bit0 pulse on BOTH dies: die_a lane_locked 0x00->0xe4, and 3/3 peer writes landed byte-exact (0xF3C00001/2/3) with die_a staying ALIVE. NOTE: best_run stayed 0 throughout -> the working mechanism is lane RE-LOCK + coherent default framing (forcing a give-up die to re-drive its training pattern), NOT best_run>0 as predicted. This STRENGTHENS FIX 1 (a give-up die stops driving its pattern; FIX 1 stops it giving up). Durability soak (25 writes, 23:16): 11/11 writes DELIVERED DATA byte-exact to die_b, BUT die_a WEDGED at write ~8 -> FIX 3 fixes the DATA-DROP but NOT the die_a marginal-eye wedge (TL-009), the dominant sustained-write blocker (separate physical bug). FIX 1 AUTONOMOUS HW (2026-08-07, FIX1 build, no APB pulse): across bring-ups 1 land / 2 drops (~baseline lottery) with die_a wedging at write 1-2 every cycle. CRUCIALLY both the landing and dropping bring-ups reached a GENUINE S_DONE (FCSM=4, reanchored try 1-2) -> FIX 1's give-up re-arm path was NOT exercised -> the drop ALSO occurs on genuine bring-ups, which FIX 1 alone does NOT cure. 0x2108 is not a land/drop predictor (land had 0x05890000, drop had 0x27890000 — opposite of the FIX 3 run). The 3-cycle test earlier was INVALID (die_a unreachable from rapid-POR degradation; recovered by a clean single JTAG POR). NET: FIX 1 is sim-proven + correct for the give-up mode but is NOT a demonstrated autonomous cure; robust soak blocked by TL-009.\n"}, "refuted": ["in-situ SWI_FORCE_RECAL (7 recals, 0 lands, progressively wedged die_a)", "CRC-enable (both-die SEND_NACK wedge)", "H3 lower-rate (link already ~3.125 MHz)", "land\u003c->good-eye correlation via SWI_LANE_STATUS 0x27/0x05 (XOR=return-traffic bits, not eye predictor)"], "signoff": {"claude_verdict": "NOT RESOLVED — do NOT sign off. Progress: (a) FIX 3 bilateral-training pulse (APB) is a HW-demonstrated mitigation — 11/11 byte-exact data deliveries, proving the drop is fixable at the framing/re-lock level, not physical-eye-only; (b) FIX 1 (give-up terminal-latch) is sim-proven + correct for the give-up mode + committed e5bd29c. BUT FIX 1 did NOT autonomously cure the drop on HW (1 land / 2 drop; drop persists on GENUINE S_DONE bring-ups where the give-up path is not exercised) -> the root cause is INCOMPLETE (a framing-quality drop exists independent of the give-up latch). The physical die_a marginal-eye wedge (TL-009) wedges within 1-2 writes, blocking any robust soak. REMAINING: (1) explain+fix the genuine- bring-up framing drop (find the autonomous equivalent of the FIX 3 active re-training); (2) resolve TL-009 to enable a soak. David call: pursue the eye/framing, or accept FIX 3 as a runtime bring-up step.\n", "evidence": ["memory:project_rank1_peerwrite_datadrop_2026_08_06", "hw_fix3 11/11 data land", "hw_fix1_single 1 land wedge@1", "hw_fix1_final 0/2 drop wedge@2", "commit:e5bd29c"], "approved": false, "approved_by": null, "approved_date": null}, "followup_2026_08_07": "Deeper HW investigation (5 agents + 8 experiments) REFRAMES TL-001: the cross-die write DATA path WORKS byte-exact when die_a is healthy (16/16 in a clean single-process soak). The dominant blocker is the die_a PER-WRITE LEAK (TL-009, reframed from 'marginal eye'), which wedges die_a's PS after ~10-20 writes; most observed 'drops' are that wedge killing the in-flight write, plus extra drops under per-write process/CAM churn. So TL-001 is gated on TL-009, which needs a PS-PL ILA to localize the leaked resource. FIX 1 (calibrator, e5bd29c) remains a correct sim-proven improvement but is not the operative fix.\n", "related": ["TL-002", "TL-009"]}, {"id": "TL-002", "title": "Standalone-IP early HREADYOUT on peer write (wr_hold_r)", "severity": "high", "area": "rtl/tidelink_top", "status": "sim_proven", "summary": "Write mirror of the rd_pipe_r read fix. ahb_sub_hreadyout asserted early on a peer write, so the AHB master released HWDATA before the AXI W beat landed -> W captured 0 under XHB500 backpressure. wr_hold_r holds hreadyout LOW from the peer-write address latch until the AXI W beat lands.\n", "root_cause": "ahb_sub_hreadyout early-assert. SET ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r; CLEAR on W-last handshake OR synth_b_pending (I5 backstop, bounded ~2^16 — no new hang). Deadlock-guarded (AW/W feed separate FC nodes).\n", "fix": {"approach": "hold ahb_sub_hreadyout LOW until AXI W beat lands", "files": ["src/rtl/tidelink_top.sv"], "commit": "e28c898", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "verification": {"sim_test": "cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_writehold.py", "in_sim_gate": true, "hw_tested": "n/a-standalone", "hw_evidence": "eth-chiplet residual drop is DOWNSTREAM of s_axi_wdata; wr_hold_r correctly does not move it there"}, "signoff": {"claude_verdict": "sim_proven + correct for standalone IP; redundant (not harmful) on eth-chiplet. Candidate sign-off as standalone fix.", "evidence": ["commit:e28c898", "reproduce-first sim: pre-fix FAIL, post-fix PASS; recovery gate GREEN 236s"], "approved": false, "approved_by": null, "approved_date": null}, "related": ["TL-001"]}, {"id": "TL-003", "title": "Fix K — XHB500 hazard-list write-wedge (s_axi_bid mux)", "severity": "high", "area": "rtl/tidelink_top", "status": "hw_proven", "summary": "Under a bid-mismatch the XHB500 hazard-list never freed the EWR write, hard-wedging the write path. Fix K muxes s_axi_bid to sub_wr_awid_r when a B is pending so the bid matches and the hazard entry is removed.\n", "fix": {"approach": "XHB500 hazard-list BID-correction: s_axi_bid = (s_axi_bvalid_ctrl | synth_b_pending) ? sub_wr_awid_r : s_axi_bid_ctrl (forces constant AWID=0 onto bid so the hazard entry drains under a link-corrupted bid)", "files": ["src/rtl/tidelink_top.sv"], "commit": "9dfe1da", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true, "naming_note": "This 'Fix K' commit is the hazard-list BID-correction, NOT the 08-02 review's proposed 'Fix K' (qualify ERROR override), superseded by the read-only-ERROR F-1 fix 41c4107."}, "verification": {"sim_test": "cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_recovery.py", "in_sim_gate": true, "hw_tested": true, "hw_evidence": "silicon-confirmed die_a wedge #3 -> survives to #6"}, "signoff": {"claude_verdict": "hw_proven (silicon-confirmed). Candidate sign-off.", "evidence": ["commit:9dfe1da", "cocotb bid_corrupt reproduce+fix PASS", "silicon #3->#6"], "approved": false, "approved_by": null, "approved_date": null}}, {"id": "TL-004", "title": "AXI data-node F-1 — recovery path drives illegal AHB ERROR response", "severity": "high", "area": "rtl/tidelink_top", "status": "sim_proven", "summary": "2026-08-02 verification review CRITICAL: the I5 ERROR backstop could drive an AHB response that violates the AHB protocol. FIXED — I5 ERROR backstop made read-only and writes its own (AHB-legal) synth-B.\n", "fix": {"approach": "make I5 ERROR backstop read-only; it writes its own AHB-legal synth-B", "files": ["src/rtl/tidelink_top.sv"], "commit": "41c4107", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "verification": {"sim_test": "cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_gaps.py::test_i5_error_is_ahb_legal", "in_sim_gate": true, "hw_tested": false}, "signoff": {"claude_verdict": "sim_proven + gated (blocking) on integ. Candidate sign-off.", "evidence": ["commit:41c4107", "gaps_backstop::test_i5_error_is_ahb_legal PASS (blocking)"], "approved": false}}, {"id": "TL-005", "title": "AXI data-node F-2 — I5 backstop asserts but never restores", "severity": "high", "area": "rtl/tidelink_top", "status": "hw_proven", "summary": "2026-08-02 review CRITICAL: the backstop drove ERROR upstream of XHB500 and abandoned s_axi tracking -> XHB500 waits forever for a B that never arrives -> window path permanently dead (silicon-proven: dbg_xhb_hrdyout_raw=0 for all 3839 post-ERROR samples). FIXED via synth-B DRAIN.\n", "fix": {"approach": "on backstop expiry latch synth_b_pending, inject synthetic B (bvalid=1, bid=sub_wr_awid_r, bresp=OKAY) into XHB500 s_axi; DRAIN one OKAY-B per outstanding write until sub_wr_os_ctr=0 so the bridge retires + re-idles", "files": ["src/rtl/tidelink_top.sv"], "commit": "9b4c40b", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "verification": {"sim_test": "test_axi_datanode_gaps.py gaps_backstop 6/6 + test_i5_clean_drop_leaves_path_usable (XFAIL->positive regression)", "in_sim_gate": true, "hw_tested": true, "hw_evidence": "die_a survives `errinject --node B --inj-byte 0` (ping 2/2, SSH up); every prior build hard-wedged"}, "caveats": ["OKAY masks the lost write-ack — sound only for a data_id-routing corruption where DATA already landed. David RATIFIED OKAY over SLVERR (SLVERR caused a PS write-retry loop = self-sustaining wedge).", "Physical marginal-eye wedge (TL-009) still dominates on HW independent of this logical fix.", "OPEN on standalone fix/z2-drop-park-hook (mechanism absent) — merge/pin gap."], "signoff": {"claude_verdict": "hw_proven + gated (blocking) on integ. Candidate sign-off (integ line).", "evidence": ["commit:9b4c40b", "commit:e827199", "commit:42da64b", "gaps_backstop 6/6", "die_a survives errinject B byte0"], "approved": false}}, {"id": "TL-006", "title": "W-byte-0 header-ECC restore (WlinkEccSyndrome mis-route)", "severity": "high", "area": "rtl/wlink", "status": "sim_proven", "summary": "A bypassed WlinkEccSyndrome mis-routed single-bit header flips; decode `corrupted` defaulted 1 for syndrome==0 (clean). The _T gate is the fix. byte-0 W/AW/R/B + byte-1 corrected byte-exact in sim.\n", "fix": {"approach": "header-ECC restore (_T gate on the syndrome==0 clean case)", "files": ["src/rtl/local_overrides/WlinkEccSyndrome.v"], "commit": "1aaed00", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "verification": {"sim_test": "test_axi_datanode_gaps.py GAPS_ECC_TESTS (make gaps_ecc): test_ecc_corrects_w_byte0/_aw_byte0/_r_byte0/_b_byte0/_b_byte1_wordcount/_ecc_persistent_w_byte0_byte_exact", "in_sim_gate": true, "hw_tested": false, "hw_evidence": null}, "action_items": ["A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix now regression-locked.", "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."], "signoff": {"claude_verdict": "sim_proven + NOW GATED (63222b6, 6/6 PASS). Coverage gap CLOSED. Candidate sign-off for the sim/gate side; A2 HW-validate still open.", "evidence": ["commit:1aaed00", "commit:8e071f7", "commit:63222b6", "gaps_ecc 6/6 PASS", "byte-0 W/AW/R/B byte-exact in sim"], "approved": false}}, {"id": "TL-007", "title": "AXI data-node B-wedge — synth-B OKAY (not SLVERR) restores stuck write", "severity": "high", "area": "rtl/tidelink_top", "status": "hw_proven", "summary": "synth-B response returned SLVERR which failed to restore a stuck XHB500 write; emitting OKAY restores it so die_a survives errinject B byte0.\n", "fix": {"approach": "synth-B emits OKAY not SLVERR (David decision on OKAY-vs-ERROR noted)", "files": ["src/rtl/tidelink_top.sv"], "commit": "e827199", "branch": "fix/axi-datanode-recovery", "netlist_affecting": true}, "verification": {"sim_test": "pending_agent:2", "in_sim_gate": "unknown", "hw_tested": true, "hw_evidence": "die_a survives `errinject B byte0` (was hard-wedge every prior build)"}, "signoff": {"claude_verdict": "hw_proven; OKAY-vs-ERROR semantics is a David decision", "evidence": ["commit:e827199", "@dcf0fce not pushed"], "approved": false}}, {"id": "TL-008", "title": "txgen ownership-mux hijack — {ext ADDR, gen DATA} silent corruption", "severity": "high", "area": "rtl/tidelink_tx_gen", "status": "hw_proven", "summary": "ext_data_pend_r closes a silent {ext ADDR, gen DATA} corruption (F14-A class). Promoted to blocking gate.\n", "fix": {"approach": "ext_data_pend_r ownership latch (closes {ext ADDR, gen DATA} corruption)", "files": ["src/rtl/tidelink_tx_gen.sv"], "commit": "383927e", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "verification": {"sim_test": "cocotb/tidelink_txgen/test_txgen_ext_hijack.py", "in_sim_gate": true, "hw_tested": false}, "action_items": ["A3 (hygiene, CAUTION): on fix/z2-drop-park-hook the test file is UNTRACKED and the Makefile wiring UNCOMMITTED -> a fresh clone gate-references a missing file. Committing risks sweeping another session's WIP; recommend David stage by name, do NOT auto-commit."], "signoff": {"claude_verdict": "resolved + gated (sim) on integ. Standalone-branch commit hygiene pending (A3, caution).", "evidence": ["commit:383927e"], "approved": false}}, {"id": "TL-009", "title": "die_a PS wedge under sustained cross-die writes — per-write leak (REFRAMED 08-07)", "severity": "high", "area": "rtl/write-path", "status": "root_caused", "summary": "die_a's PS goes UNREACHABLE (silent hang) after ~10-20 cross-die writes. 2026-08-07 exhaustive HW characterization REFRAMES this from \"marginal eye\": it is a DIGITAL per-write cumulative resource LEAK on die_a's OUTBOUND cross-die write path, invisible to every available instrument.\n", "ground_truth_2026_08_07": ["Region F OBS_AXI_NODES (0x21E0) reads HEALTHY (0xad800000, zero wedge/resp-err/stall) on BOTH dies right up to the wedge => NOT an FC-node wedge.", "die_a kernel log is SILENT at the wedge (no SError/panic/lockup/fault) => REFUTES the SLVERR->SError theory. pstore empty.", "The cross-die write DATA path WORKS: data lands BYTE-EXACT until the wedge (16/16 in the clean single-process soak; die_b 0x2D001000=0xA5A50009 confirms write #9 landed).", "PACING does NOT help: 100ms-spaced writes (~1 outstanding) wedge within ~20 too => NOT outstanding-write concurrency/pile-up. REFUTES the serialize-to-1 fix (confirmed before building).", "Wedge count: pure-write ~10, read-paced soak ~17, per-write-churn ~4 => a per-write leak with run-to-run noise, worse under process/CAM churn.", "Wedge-safe soak (single guarded process) ALSO wedges => not a harness artifact; the leak is real."], "fix": {"approach": "LOCALIZED (0x21F8, 235d758): a write-stall cascade from a dropped W/B round-trip on a bad-framing bring-up. WEDGE-FIX FEASIBILITY (agent 08-07): NO clean local wedge fix. The AW-block is FAR-SIDE bilateral backpressure — the Wlink a2l replay window is freed ONLY by a far-die ACK packet, depth granted by far-die fe_tx_credit_max (WlinkGenericFCSM.v:630/670/814). Posted-write = ineffective (AW/W still need a far ACK). Local abandon / forge-ACK = DESYNCS the link -> silent corruption (rejected). synth-B already does the near-die max (drains sub_wr_os_ctr, Fix K bid). => FIX THE ROOT (framing) so the far side receives+ACKs and the window frees naturally. Only bilateral-safe stopgap = a link RETRAIN on the wedge witness (heavyweight, needs bilateral coordination). buf=0 => NOT EWR/hazard (Fix K N/A). NOT serialize-to-1 (refuted). flist: FCSM edits reach FPGA-V2 only; the ASIC flist uses the deps FCSM. ROOT-FIX OPTIONS (framing, all substantial): calibrator peer-aware S_HOLD release (Agent-1 Cand-D, additive+backstopped); autonomous bilateral training coordination (self-arm); witness-triggered retrain; OR accept the runtime FIX3 bilateral-training pulse as a bring-up step (proven 11/11); OR physical eye (re-pin die_b SRCC). FIX3 proves the framing IS fixable.\n", "files": ["src/rtl/tidelink_top.sv"], "commit": null, "branch": null, "netlist_affecting": true}, "LOCALIZED_2026_08_07": "The leak-witness register 0x21F8 (obs commit 235d758, branch fix/tl001-calibrator-terminal-latch) made the wedge VISIBLE from APB — NO ILA needed. On a bad-framing bring-up the FIRST cross-die write reads 0x21F8=0xb5000521: stall=1 (XHB500 AHB bridge hreadyout stuck-low >=2^12 => far-B never returned), wr_stuck=1 (synth-B backstop fired), HWM=1, buf=0 (non-bufferable => NOT the EWR/hazard-list path, Fix K N/A). die_b 0x2D001000=0 (drop), die_a wedged at w4. => the wedge is a WRITE-STALL CASCADE: bad framing drops the W/B round-trip -> no far-B -> ~2^16 stall -> synth-B -> repeated stuck writes accumulate a link/FC-node resource -> wedge (~4 fully-bad bring-up, ~17 mostly-good). SAME framing root as the data-drop; a good bring-up lands 16/16 with no stall/wedge. OVERTURNS 'below-obs SmartConnect leak'.\n", "needs": "No ILA — root-caused via the 0x21F8 witness. Fix path in fix.approach.", "verification": {"sim_test": "none", "in_sim_gate": false, "hw_tested": "characterized, not fixed"}, "signoff": {"claude_verdict": "LOCALIZED (0x21F8, 235d758) = WRITE-STALL CASCADE (dropped W/B -> no far-B -> ~2^16 stall -> synth-B -> accumulation -> wedge). FIX D (peer-aware S_HOLD, 20af2b1) BUILT+HW-TESTED: correct but NOT sufficient (W data-crossing better 3/4, but die_a wedges 4/4, stall=1). CORRECTION (routed-timing check, 08-07): my earlier 'die_a RX-capture WNS drops the B' attribution is WRONG — the pad_clk_rx RX-capture paths MEET at +0.486ns; the -2.862 WNS is path-group **async_default** and the -23 WHS is pad_clk_tx_fwd (benign TX-fwd artifact); a sibling build closed WNS to +0.399. So the residual is PHYSICAL FRAMING/EYE VARIANCE that STA cannot measure, NOT a capture-WNS margin. ACTIONABLE LEVER FOUND: the P-B-lottery killer (shared-cap BUFG hoist, commit 2c32c2b) is CONFIRMED ABSENT from the deployed netlist (grep g_shared_cap_bufg=0); RTL exists WavD2DGpio_v2.v:1696-1740 gated USE_SHARED_CAP_BUFG but blocked by the OOC-IP-define trap. STA-proven 9.8x tighter capture-clock spread + placement-invariant => directly attacks the per-POR/per-build lottery. NEXT = port the hoist into the eth-chiplet build (USE_SHARED_CAP_BUFG=1, NEVER USE_CAP_CLKBUF), structurally verify via check_wrapper_params.sh, HW A/B the land-rate. Decisive: deterministic bring-up => physical skew confirmed; still-flaky => calibrator logic (FIX 2). FIX 2 DONE+HW-TESTED (Hamming 5->6, commit 2c249ec): W-direction data-crossing improved MARKEDLY — all 4 PORs landed, cyc2/3 crossed 37-50 writes byte-exact (vs baseline ~4-17), die_a survived ~10x longer. best_run stayed 0 (winscan-obs artifact, not the true framing). die_a still WEDGES 4/4. => residual DECISIVELY the B-RETURN direction: die_b's a2l ACK/B occasionally lost on die_a's RX -> after ~(a2l window depth) losses the far-gated replay window fills -> wedge. PHYSICAL DIRECTIONAL EYE ASYMMETRY (one die's RX pin/eye worse; board asymmetry), STA-invisible. NOT autonomously fixable (BUFG hoist = per-build not per-POR; RX capture MEETS). Fix = physical re-pin / accept + increase a2l window / Wlink retransmit persistence. Branch @2c249ec = FIX1+obs+FIX D+FIX 2 = W-path works, 10x soak. DOMINANT TL-001 blocker; residual PHYSICAL/OPEN.", "evidence": ["hw_regionf_soak.log Region-F healthy@wedge", "hw_diea_dmesg.log silent kernel", "hw_purewrite.log wedge@~10 data-lands", "hw_paced.log wedge@~20 with 100ms pacing"], "approved": false}, "related": ["TL-001"]}, {"id": "TL-010", "title": "F13 (PTP) tapeout risk — HIGH residual (mailbox-RO bug + convergence gap)", "severity": "high", "area": "ptp", "status": "fix_built", "summary": "tidelink_ptp.sv + tidelink_ptp_servo.sv ship (asic_v2 flist :67,:69). Fused risk: (1) CONFIRMED RTL BUG — cross-die PTP timestamp mailbox not RO from APB (mbox_reg_write was raw psel&penable&pwrite; an external APB/debug write to 0x4403_2068 could forge the assembled timestamp); (2) two-board PTP convergence never proven on HW, PHC hop broken.\n", "fix": {"approach": "mbox_reg_write_fc_only = mbox_reg_write && fc_cfg_apb_active (source-qualify the mailbox write)", "files": ["src/rtl/tidelink_top.sv"], "commit": "a0a224c", "branch": "integ/axirec-on-chiplet", "netlist_affecting": true}, "decision_needed": "RTL-owner review of PTP mailbox write path; land/gate a0a224c on shipping branch + main.", "verification": {"sim_test": "cocotb/tidelink_top_pair_v2/test_v2_mbox_apb_writeprotect.py (gated sim_gate_v2_mbox_writeprotect) + module-level test_mailbox_apb_writeprotect.py (RED-by-design, ungated)", "in_sim_gate": true, "hw_tested": false}, "closes_when": "land+gate a0a224c on shipping branch/main; two-board convergence HW run; close PHC hop", "signoff": {"claude_verdict": "RTL-bug half FIXED+gated (integ); convergence/PHC-hop half OPEN. gap+bug.", "evidence": ["commit:a0a224c", "memory:project_hwtest_vacuous_checks_ptp_mailbox_rtl_defect_2026_07_30", "memory:project_ethernet_ptp_chain_phc_hop_broken_2026_07_18"], "approved": false}}, {"id": "TL-011", "title": "F19 (PHY BIST) tapeout risk — HIGH residual (on-silicon BIST unwired)", "severity": "high", "area": "phy/bist", "status": "deferred", "summary": "On-silicon PHY-BIST instrumentation gap. BIST RTL EXISTS (deps/tidelink-phy/rtl/tidelink_phy_bist_core.sv, _prbs.sv PRBS-15, _regs.sv) with a passing cocotb suite (deps/tidelink-phy/cocotb/phy_bist/), but is wired into NOTHING in sim_gate or hwtest (grep phy_bist|prbs = 0 hits). Compounded by F12 (ASIC 100MHz GPIO PHY has zero soak evidence; FPGA rig runs a structurally different PHY). First-tapeout blind spot: no instrument can distinguish healthy-margin from marginal-but-functional ASIC PHY before first silicon.\n", "fix": {"approach": "wire the existing BIST core into an on-silicon-runnable DFT/BIST harness (APB/JTAG), add sim_gate/hwtest PRBS-margin hook, define go/no-go BER/eye metric readable on first silicon", "files": ["deps/tidelink-phy/rtl/tidelink_phy_bist_core.sv"], "commit": null, "branch": null, "netlist_affecting": true}, "closes_when": "DFT/BIST harness + gate/hwtest hook + first-silicon go/no-go metric", "verification": {"sim_test": "deps/tidelink-phy/cocotb/phy_bist/ (passes, unwired)", "in_sim_gate": false, "hw_tested": false}, "signoff": {"claude_verdict": "DEFERRED — verification/DFT-integration gap, HIGH tapeout risk, unmitigated. BIST RTL exists but unwired. Not an RTL bug.", "evidence": ["memory:project_phy_harness_landscape", "grep phy_bist|prbs Makefile = 0 hits"], "approved": false}}, {"id": "TL-012", "title": "_generate_xhb500 reports success on failed generation (pipefail)", "severity": "high", "area": "build/set_env", "status": "fix_built", "summary": "$? after a pipeline reads sed's status not the generator's; partial logical/ tree left behind makes the next run skip. Reported as highest-value CI fix. FIXED in 5be494b (PIPESTATUS[0] + rm-on-fail + inline host preflight).\n", "fix": {"approach": "set_env.sh:83 PIPESTATUS[0]; :60/85 terminal-leaf xhb500_flop.sv early-out test; :91 rm -rf on fail; :108-122 _xhb500_host_preflight warns File::Slurp + python\u003c3.11 (preflight is INLINE, not scripts/ci/preflight.sh which is integrator-side)", "files": ["set_env.sh"], "commit": "5be494b", "branch": "integ/axirec-on-chiplet", "netlist_affecting": false}, "verification": {"sim_test": "n/a", "in_sim_gate": "n/a", "hw_tested": "n/a"}, "signoff": {"claude_verdict": "LANDED+pushed on integ/axirec-on-chiplet, consumed by pin 1107151. Candidate sign-off (build fix). Reaches main only via TL-015 decision.", "evidence": ["commit:5be494b", "set_env.sh:83 PIPESTATUS[0]"], "approved": false}}, {"id": "TL-013", "title": "V1 flist tidelink_fpga.flist no longer elaborates (missing obs modules)", "severity": "medium", "area": "build/flist", "status": "fix_built", "summary": "Wlink.v instantiates tidelink_fcemit_obs + tidelink_winscan_obs, listed only in the V2 flist. Reportedly fixed by adding both .sv to V1 flist. OPEN QUESTION: is V1 still supported, or should it be retired?\n", "fix": {"approach": "flists/tidelink_fpga.flist:293-294 now list tidelink_winscan_obs.sv + tidelink_fcemit_obs.sv (elaborate-fix LANDED). V1 deliberately NOT retired.", "files": ["flists/tidelink_fpga.flist"], "commit": "5be494b", "branch": "integ/axirec-on-chiplet", "netlist_affecting": false}, "decision_needed": "Keep V1 flist (elaborate-fix already landed) or retire it (loud comment/removal)? Coupled to TL-014.", "verification": {"sim_test": "n/a"}, "signoff": {"claude_verdict": "elaborate-fix LANDED+pushed; retire-or-keep is a David decision", "evidence": ["commit:5be494b", "tidelink_fpga.flist:293-294"], "approved": false}}, {"id": "TL-014", "title": "Duplicate PHY submodule (gpio-phy vs phy, same repo, 97 commits apart)", "severity": "low", "area": "build/gitmodules", "status": "deferred", "summary": "deps/tidelink-gpio-phy (6ee8418) and deps/tidelink-phy (5c76e76) point at the same upstream, 97 commits apart. gpio-phy reachable only from V1 flist.\n", "decision_needed": "Drop deps/tidelink-gpio-phy if V1 is retired?", "fix": {"approach": "drop dup submodule (depends on TL-013 decision)", "files": [".gitmodules"], "commit": null, "branch": null, "netlist_affecting": false}, "verification": {"sim_test": "n/a"}, "signoff": {"claude_verdict": "DEFERRED — decision coupled to TL-013", "evidence": [], "approved": false}, "related": ["TL-013"]}, {"id": "TL-015", "title": "Integration pins unreachable on remote (land tidelink on main)", "severity": "high", "area": "build/git-hygiene", "status": "deferred", "summary": "tidelink was pinned ahead of origin/main on no branch (now on integ/eth-chiplet-pin); a PHY dep pin was GitLab-only. David decision: push tidelink main + parent pin bump (clean fast-forwards computed by agent 3).\n", "decision_needed": "Push tidelink CI/integ fixes to main — David-only (public default branch). origin/main @18491ef is a clean ANCESTOR of the integ line (all fast-forwards, no merge).", "fix": {"approach": "fast-forward push (DO NOT auto-execute). Prefer FF/curated land not rebase (integ->main burned before via b98b944).", "files": [], "commit": null, "branch": "main", "netlist_affecting": false, "review_only_commands": ["# Option A (land only CI-fix tip, 61-commit FF): git -C .../tidelink push origin 5be494b:refs/heads/main", "# Option B (land full integ line = eth-chiplet pin, 63-commit FF, incl wr_hold_r e28c898): git -C .../tidelink push origin 1107151:refs/heads/main", "# Verify pin reachable first: git -C .../tidelink ls-remote origin refs/heads/integ/axirec-on-chiplet | grep 1107151"]}, "verification": {"sim_test": "n/a"}, "signoff": {"claude_verdict": "DEFERRED — public-main push is David's decision; FF ranges computed and ready", "evidence": ["origin/main 18491ef is ancestor; FF-OK to 1107151"], "approved": false}}, {"id": "TL-016", "title": "SSH URLs in .gitmodules unusable from sandboxed CI (want HTTPS)", "severity": "medium", "area": "build/gitmodules", "status": "fix_built", "summary": "git@github.com: URLs break under bubblewrap sandbox (getpwuid fails). All three repos are public; HTTPS works everywhere. Reportedly fixed in 5be494b.\n", "fix": {"approach": "SSH -> HTTPS for both PHY dep submodule URLs in tidelink/.gitmodules. NOTE: eth-chiplet PARENT .gitmodules still git@github: for the tidelink submodule — separate downstream fix, not tidelink-side.", "files": [".gitmodules"], "commit": "5be494b", "branch": "integ/axirec-on-chiplet", "netlist_affecting": false}, "verification": {"sim_test": "n/a"}, "signoff": {"claude_verdict": "LANDED+pushed (tidelink-side). Candidate sign-off.", "evidence": ["commit:5be494b", ".gitmodules both PHY deps now https://"], "approved": false}}, {"id": "TL-017", "title": "New top port tl_data_mode_o is a silent downstream lint break (FYI)", "severity": "fyi", "area": "rtl/tidelink_top", "status": "wontfix", "summary": "tl_data_mode_o added 2026-07-21 (602ef8d); integrations that don't connect it get lint PINMISSING. FYI only — call out new top ports in release notes.\n", "fix": {"approach": "document in release notes", "files": [], "commit": null, "branch": null, "netlist_affecting": false}, "verification": {"sim_test": "n/a"}, "signoff": {"claude_verdict": "FYI — no action; note in release notes", "evidence": ["commit:602ef8d"], "approved": true, "approved_by": "auto-fyi", "approved_date": "2026-08-06"}}]}</script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA = JSON.parse(document.getElementById("registry-data").textContent);
+  var BUGS = DATA.bugs || [];
+
+  var SEV = {
+    rank1_critical: { label: "rank-1 critical", short: "RANK-1", v: "--sev-crit", order: 0 },
+    high:           { label: "high",            short: "HIGH",   v: "--sev-high", order: 1 },
+    medium:         { label: "medium",          short: "MED",    v: "--sev-med",  order: 2 },
+    low:            { label: "low",             short: "LOW",    v: "--sev-low",  order: 3 },
+    fyi:            { label: "fyi",             short: "FYI",    v: "--sev-fyi",  order: 4 }
+  };
+
+  // The lifecycle is a real progression, so it is drawn as one. deferred/wontfix
+  // are not stages on it and are drawn off-ladder.
+  var LADDER = ["open", "root_caused", "fix_built", "sim_proven", "hw_proven", "signed_off"];
+  var STATUS = {
+    open:        { label: "open",        v: "--st-open",     fg: "--seg-a", step: 0, note: "not yet root-caused" },
+    root_caused: { label: "root caused", v: "--st-root",     fg: "--seg-a", step: 1, note: "mechanism understood, no working fix yet" },
+    fix_built:   { label: "fix built",   v: "--st-fix",      fg: "--seg-a", step: 2, note: "implemented, not yet verified" },
+    sim_proven:  { label: "sim proven",  v: "--st-sim",      fg: "--seg-b", step: 3, note: "reproduce-first sim test passes with the fix" },
+    hw_proven:   { label: "hw proven",   v: "--st-hw",       fg: "--seg-b", step: 4, note: "verified on the KR260 pair" },
+    signed_off:  { label: "signed off",  v: "--st-signed",   fg: "--seg-b", step: 5, note: "approver has signed" },
+    deferred:    { label: "deferred",    v: "--st-deferred", fg: "--seg-b", step: -1, note: "needs a decision or a separate workstream" },
+    wontfix:     { label: "wontfix",     v: "--st-wontfix",  fg: "--seg-a", step: -1, note: "accepted as-is / out of scope" }
+  };
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // Folded YAML scalars arrive as one long line; blank lines survive as \n\n.
+  function prose(text) {
+    return String(text || "").trim().split(/\n\s*\n/).map(function (p) {
+      var html = esc(p.replace(/\s*\n\s*/g, " ").trim())
+        .replace(/`([^`]+)`/g, function (_, c) { return "<code>" + c + "</code>"; })
+        .replace(/\b(FIXED|OPEN|DEFERRED|NOT RESOLVED|CONFIRMED|REFUTED|CRITICAL|DONE|LANDED|SUPERSEDED|BLOCKED)\b/g,
+                 "<strong>$1</strong>");
+      return "<p>" + html + "</p>";
+    }).join("");
+  }
+
+  var CODEISH = /^(?:[0-9a-f]{7,40}|0x[0-9A-Fa-f_]+|[\w./-]*\.(?:sv|v|py|sh|flist|yaml|yml|tcl|log|md)(?:[:#][\w:.-]+)?|[\w./-]+\/[\w./-]+)$/;
+  function isCodeish(s) { return typeof s === "string" && CODEISH.test(s.trim()); }
+
+  function inline(s) {
+    if (s === true)  return '<span class="state yes"><i class="dot"></i>yes</span>';
+    if (s === false) return '<span class="state no"><i class="dot"></i>no</span>';
+    if (s == null)   return '<span class="state no"><i class="dot"></i>none</span>';
+    var t = String(s).trim();
+    if (/^(n\/a|none|unknown)/i.test(t)) return '<span class="state no"><i class="dot"></i>' + esc(t) + "</span>";
+    if (isCodeish(t)) return '<span class="mono">' + esc(t) + "</span>";
+    return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>");
+  }
+
+  // Evidence entries are typed: commit:<sha>, memory:<file>, or a free claim.
+  function evidence(list) {
+    if (!list || !list.length) return '<span class="state no"><i class="dot"></i>none recorded</span>';
+    return '<div class="tags">' + list.map(function (e) {
+      var s = String(e), m = s.match(/^(commit|memory|file|test):(.+)$/);
+      if (m) return '<span class="chip k"><b>' + esc(m[1]) + "</b> " + esc(m[2]) + "</span>";
+      return '<span class="chip">' + esc(s) + "</span>";
+    }).join("") + "</div>";
+  }
+
+  function bullets(list, tone) {
+    return '<ul class="bul ' + (tone || "") + '">' + list.map(function (i) {
+      var html = esc(String(i).replace(/\s*\n\s*/g, " ").trim())
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/^((?:FIX\s*\d|A\d|Cause [AB]|Option [AB]|# Option [AB])[^:(]*)/, "<strong>$1</strong>");
+      return "<li>" + html + "</li>";
+    }).join("") + "</ul>";
+  }
+
+  // Command lists (review_only_commands) belong in a terminal block, not bullets —
+  // they are meant to be read and copied verbatim.
+  function isCommandList(list) {
+    return list.length > 0 && list.every(function (i) {
+      return /^\s*(#|git |make |python|source |bash |ssh |sudo )/.test(String(i));
+    });
+  }
+
+  function section(title, inner) {
+    return inner ? "<section><h3>" + esc(title) + "</h3>" + inner + "</section>" : "";
+  }
+
+  function statusOf(bug) { return STATUS[bug.status] || STATUS.open; }
+  function sevOf(bug) { return SEV[bug.severity] || SEV.fyi; }
+
+  function awaitingSignoff(b) {
+    var s = b.status;
+    return (s === "sim_proven" || s === "hw_proven") && !(b.signoff && b.signoff.approved);
+  }
+  function needsDecision(b) {
+    return b.status === "deferred" || !!b.decision_needed;
+  }
+
+  /* ---- card ------------------------------------------------------------- */
+  function rail(bug) {
+    var st = statusOf(bug), off = st.step < 0;
+    var out = '<span class="rail' + (off ? " off" : "") + '" aria-hidden="true">';
+    for (var i = 1; i <= 5; i++) out += "<i" + (!off && st.step >= i ? ' class="on"' : "") + "></i>";
+    return out + "</span>";
+  }
+
+  function headChips(bug) {
+    var v = bug.verification || {}, f = bug.fix || {}, out = [];
+    out.push('<span class="chip k"><b>area</b> ' + esc(bug.area || "—") + "</span>");
+    if (f.branch) out.push('<span class="chip k"><b>branch</b> ' + esc(f.branch) + "</span>");
+    if (f.commit) out.push('<span class="chip k"><b>commit</b> ' + esc(f.commit) + "</span>");
+    if (v.in_sim_gate === true) out.push('<span class="chip gate">gated</span>');
+    if (v.hw_tested === true) out.push('<span class="chip hw">hw-proven</span>');
+    if (f.netlist_affecting === true) out.push('<span class="chip net">netlist</span>');
+    if (bug.signoff && bug.signoff.approved) out.push('<span class="chip sign">signed</span>');
+    else if (awaitingSignoff(bug)) out.push('<span class="chip sign">awaiting sign-off</span>');
+    if (bug.decision_needed) out.push('<span class="chip net">decision needed</span>');
+    return out.join("");
+  }
+
+  var KNOWN = {
+    id: 1, title: 1, severity: 1, area: 1, status: 1, summary: 1, root_cause: 1, fix: 1,
+    verification: 1, signoff: 1, related: 1, caveats: 1, action_items: 1, refuted: 1,
+    hw_discriminators: 1, decision_needed: 1, closes_when: 1
+  };
+  var FIX_KNOWN = { approach: 1, candidates: 1, files: 1, commit: 1, branch: 1, netlist_affecting: 1 };
+
+  function fixBlock(f) {
+    if (!f) return "";
+    var out = "";
+    if (f.approach) out += prose(f.approach);
+    if (f.candidates && f.candidates.length) out += bullets(f.candidates, "warm");
+
+    // Free-form extras (build_note, naming_note, review_only_commands, …). Prose
+    // and lists get a stacked label so they keep the same measure as the body;
+    // short scalars fall through to the facts table below.
+    var rows = "";
+    Object.keys(f).forEach(function (k) {
+      if (FIX_KNOWN[k]) return;
+      var val = f[k];
+      if (val == null) return;
+      var label = esc(k.replace(/_/g, " "));
+      if (Array.isArray(val) && isCommandList(val)) {
+        out += '<div class="sub"><span class="subhead">' + label + '</span><pre class="snip">' +
+          esc(val.join("\n")) + "</pre></div>";
+      } else if (Array.isArray(val)) {
+        out += '<div class="sub"><span class="subhead">' + label + "</span>" + bullets(val) + "</div>";
+      } else if (typeof val === "string" && val.length > 90) {
+        out += '<div class="sub"><span class="subhead">' + label + "</span>" + prose(val) + "</div>";
+      } else {
+        rows += "<dt>" + label + "</dt><dd>" + inline(val) + "</dd>";
+      }
+    });
+
+    if (f.files && f.files.length) {
+      rows += "<dt>files</dt><dd>" + f.files.map(function (x) {
+        return '<div class="mono">' + esc(x) + "</div>";
+      }).join("") + "</dd>";
+    }
+    if (f.commit) rows += "<dt>commit</dt><dd>" + inline(f.commit) + "</dd>";
+    if (f.branch) rows += "<dt>branch</dt><dd>" + inline(f.branch) + "</dd>";
+    if ("netlist_affecting" in f) {
+      rows += "<dt>netlist</dt><dd>" + (f.netlist_affecting
+        ? '<span class="state part"><i class="dot"></i>changes the netlist</span>'
+        : '<span class="state no"><i class="dot"></i>no netlist change</span>') + "</dd>";
+    }
+    if (rows) out += '<dl class="kv">' + rows + "</dl>";
+    return out;
+  }
+
+  function verifyBlock(v) {
+    if (!v) return "";
+    var order = ["sim_test", "in_sim_gate", "hw_tested", "hw_evidence"], rows = "";
+    var keys = order.filter(function (k) { return k in v; })
+      .concat(Object.keys(v).filter(function (k) { return order.indexOf(k) < 0; }));
+    keys.forEach(function (k) {
+      var val = v[k], body;
+      if (k === "in_sim_gate") {
+        body = val === true ? '<span class="state yes"><i class="dot"></i>in <span class="mono">make sim_gate</span></span>'
+             : val === false ? '<span class="state no"><i class="dot"></i>not gated</span>'
+             : '<span class="state part"><i class="dot"></i>' + esc(String(val)) + "</span>";
+      } else if (k === "hw_tested") {
+        body = val === true ? '<span class="state yes"><i class="dot"></i>proven on the pair</span>'
+             : val === false ? '<span class="state no"><i class="dot"></i>not hardware-tested</span>'
+             : '<span class="state part"><i class="dot"></i>' + esc(String(val)) + "</span>";
+      } else if (typeof val === "string" && val.length > 90) {
+        body = prose(val);
+      } else {
+        body = '<span class="scroll-x">' + inline(val) + "</span>";
+      }
+      rows += "<dt>" + esc(k.replace(/_/g, " ")) + "</dt><dd>" + body + "</dd>";
+    });
+    return '<dl class="kv">' + rows + "</dl>";
+  }
+
+  function signBlock(bug) {
+    var s = bug.signoff || {}, st = statusOf(bug);
+    var out = '<div class="verdict" style="--st: var(' + st.v + ')">' +
+      (s.claude_verdict ? prose(s.claude_verdict) : "<p>No verdict recorded.</p>") +
+      '<div class="signrow">' +
+      (s.approved
+        ? '<span class="chip sign">approved' + (s.approved_by ? " · " + esc(s.approved_by) : "") +
+          (s.approved_date ? " · " + esc(s.approved_date) : "") + "</span>"
+        : '<span class="chip">not approved &mdash; approver action required</span>') +
+      (!s.approved ? ' <button type="button" class="linkbtn snipbtn" data-id="' + esc(bug.id) + '">sign-off snippet</button>' : "") +
+      "</div>" +
+      '<pre class="snip" hidden data-snip="' + esc(bug.id) + '"></pre>' +
+      "</div>";
+    return out + section("Evidence", evidence(s.evidence));
+  }
+
+  function card(bug) {
+    var st = statusOf(bug), sev = sevOf(bug);
+    var el = document.createElement("details");
+    el.className = "bug";
+    el.id = bug.id;
+    el.style.setProperty("--sev", "var(" + sev.v + ")");
+    el.style.setProperty("--st", "var(" + st.v + ")");
+    el.dataset.sev = bug.severity;
+    el.dataset.status = bug.status;
+    el.dataset.text = [bug.id, bug.title, bug.area, bug.summary, bug.root_cause,
+      JSON.stringify(bug.fix || {}), JSON.stringify(bug.verification || {}),
+      JSON.stringify(bug.signoff || {})].join(" ").toLowerCase();
+    el.dataset.awaiting = awaitingSignoff(bug) ? "1" : "0";
+    el.dataset.gated = (bug.verification && bug.verification.in_sim_gate === true) ? "1" : "0";
+    el.dataset.decision = needsDecision(bug) ? "1" : "0";
+
+    var body = "";
+    body += section("Summary", bug.summary ? prose(bug.summary) : "");
+    body += section("Root cause", bug.root_cause ? prose(bug.root_cause) : "");
+    body += section("Fix", fixBlock(bug.fix));
+    body += section("Hardware discriminators", bug.hw_discriminators ? bullets(bug.hw_discriminators) : "");
+    body += section("Verification", verifyBlock(bug.verification));
+    body += section("Caveats", bug.caveats ? bullets(bug.caveats, "warm") : "");
+    body += section("Action items", bug.action_items ? bullets(bug.action_items, "warm") : "");
+    body += section("Refuted", bug.refuted ? bullets(bug.refuted, "cold") : "");
+    body += section("Decision needed", bug.decision_needed ? prose(bug.decision_needed) : "");
+    body += section("Closes when", bug.closes_when ? prose(bug.closes_when) : "");
+    body += section("Sign-off", signBlock(bug));
+    if (bug.related && bug.related.length) {
+      body += section("Related", '<div class="tags">' + bug.related.map(function (r) {
+        return '<a class="idref" href="#' + esc(r) + '">' + esc(r) + "</a>";
+      }).join("") + "</div>");
+    }
+    Object.keys(bug).forEach(function (k) {
+      if (KNOWN[k] || bug[k] == null) return;
+      body += section(k.replace(/_/g, " "), Array.isArray(bug[k]) ? bullets(bug[k]) : prose(bug[k]));
+    });
+
+    el.innerHTML =
+      "<summary>" +
+        '<span class="chev" aria-hidden="true"></span>' +
+        '<span class="bhead"><span class="bid">' + esc(bug.id) + '</span>' +
+        '<span class="btitle">' + esc(bug.title) + "</span></span>" +
+        '<span class="bstatus">' + rail(bug) + '<span class="slabel">' + esc(st.label) + "</span></span>" +
+        '<span class="bmeta">' + headChips(bug) + "</span>" +
+      "</summary>" +
+      '<div class="body">' + body + "</div>";
+    return el;
+  }
+
+  /* ---- board ------------------------------------------------------------ */
+  function tile(num, cap, cls) {
+    return '<div class="tile ' + (cls || "") + '"><span class="num">' + num + '</span><span class="cap">' + cap + "</span></div>";
+  }
+
+  function buildBoard() {
+    var openCrit = BUGS.filter(function (b) {
+      return b.severity === "rank1_critical" && ["signed_off", "wontfix"].indexOf(b.status) < 0;
+    }).length;
+    var awaiting = BUGS.filter(awaitingSignoff).length;
+    var decisions = BUGS.filter(needsDecision).length;
+    var gated = BUGS.filter(function (b) { return b.verification && b.verification.in_sim_gate === true; }).length;
+    var hw = BUGS.filter(function (b) { return b.verification && b.verification.hw_tested === true; }).length;
+
+    document.getElementById("tiles").innerHTML =
+      tile(BUGS.length, "bugs tracked") +
+      tile(openCrit, "rank-1 critical still open", openCrit ? "is-alarm" : "is-good") +
+      tile(awaiting, "awaiting sign-off", awaiting ? "is-act" : "") +
+      tile(decisions, "awaiting a decision", decisions ? "is-act" : "") +
+      tile(gated, "regression-locked in <span class=\"mono\">sim_gate</span>", "is-good") +
+      tile(hw, "proven on the KR260 pair", "is-good");
+
+    var counts = {}, order = LADDER.concat(["deferred", "wontfix"]);
+    BUGS.forEach(function (b) { counts[b.status] = (counts[b.status] || 0) + 1; });
+
+    var bar = document.getElementById("lc-bar"), legend = document.getElementById("lc-legend");
+    bar.innerHTML = ""; legend.innerHTML = "";
+    order.forEach(function (k) {
+      var n = counts[k] || 0, meta = STATUS[k];
+      if (n) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "lc-seg";
+        b.style.flexGrow = String(n);
+        b.style.background = "var(" + meta.v + ")";
+        b.style.setProperty("--seg-fg", "var(" + meta.fg + ")");
+        b.textContent = n;
+        b.title = meta.label + " — " + meta.note;
+        b.setAttribute("aria-pressed", "false");
+        b.dataset.status = k;
+        b.addEventListener("click", function () { toggleStatus(k); });
+        bar.appendChild(b);
+      }
+      var l = document.createElement("span");
+      l.innerHTML = '<i class="lc-key" style="background: var(' + meta.v + ')"></i>' +
+        esc(meta.label) + " · " + n;
+      if (!n) l.style.opacity = ".45";
+      legend.appendChild(l);
+    });
+  }
+
+  function buildPanels() {
+    var c = DATA.campaign || {}, html = "";
+    function panel(title, n, items, render) {
+      return '<div class="panel"><h2>' + esc(title) + '<span class="n">' + n + "</span></h2><ul>" +
+        items.map(render).join("") + "</ul></div>";
+    }
+    // Entries are "TL-004 …" or "TL-013/014 …" (a coupled pair) — link every id.
+    function withId(text) {
+      var m = String(text).match(/^(TL-\d+(?:\/\d+)*)\s*[: ]\s*(.*)$/);
+      if (!m) return "<li><span>" + esc(text) + "</span></li>";
+      var ids = m[1].split("/").map(function (part, i) {
+        return i === 0 ? part : "TL-" + part;
+      });
+      return "<li>" + ids.map(function (id) {
+        return '<a class="idref" href="#' + esc(id) + '">' + esc(id) + "</a>";
+      }).join("") + "<span>" + esc(m[2].replace(/^[—-]\s*/, "")) + "</span></li>";
+    }
+    if (c.awaiting_david_signoff) {
+      html += panel("Awaiting sign-off", c.awaiting_david_signoff.length, c.awaiting_david_signoff, withId);
+    }
+    if (c.david_decisions) {
+      html += panel("Decisions for the approver", c.david_decisions.length, c.david_decisions, withId);
+    }
+    document.getElementById("panels").innerHTML = html;
+
+    var ctx = (c.key_context || []).map(function (t) { return prose(t); }).join("");
+    if (c.notes) ctx = prose(c.notes) + ctx;
+    document.getElementById("ctx-body").innerHTML = ctx || "<p>No campaign context recorded.</p>";
+    if (!ctx) document.getElementById("context").hidden = true;
+
+    document.getElementById("m-eyebrow").textContent =
+      (c.name || "bug registry") + " · schema v" + (DATA.schema_version || "?");
+    document.getElementById("m-meta").innerHTML =
+      "<span><b>generated</b> " + esc(DATA.generated || "—") + "</span>" +
+      "<span><b>approver</b> " + esc(DATA.approver || "—") + "</span>" +
+      "<span><b>maintainer</b> " + esc(DATA.maintainer || "—") + "</span>";
+
+    var p = DATA.signoff_policy || {};
+    document.getElementById("foot").innerHTML =
+      "<p><b>Sign-off policy.</b> Claude may advance status to <span class=\"mono\">" +
+        esc(p.claude_max_status || "hw_proven") + "</span> on evidence; <span class=\"mono\">signed_off</span> " +
+        "requires the approver. Anything that changes the netlist on the tapeout trunk, pushes to a public " +
+        "default branch, or is a rig/architecture decision is never auto-signed.</p>" +
+      "<p>Generated from <span class=\"mono\">docs/BUG_REGISTRY.yaml</span> — the YAML stays the source of truth. " +
+        "Regenerate with <span class=\"mono\">python3 scripts/gen_bug_registry_html.py</span> after any edit." +
+        " The bitstreams these defects were seen in are in the companion <a href=\"build_registry.html\">build registry</a>.</p>";
+  }
+
+  /* ---- filtering -------------------------------------------------------- */
+  var state = { q: "", sev: {}, status: {}, awaiting: false, gated: false, decision: false };
+
+  function buildFilters() {
+    var sevCounts = {}, wrap = document.getElementById("f-sev");
+    BUGS.forEach(function (b) { sevCounts[b.severity] = (sevCounts[b.severity] || 0) + 1; });
+    wrap.innerHTML = '<span class="eyebrow">severity</span>';
+    Object.keys(SEV).sort(function (a, b) { return SEV[a].order - SEV[b].order; }).forEach(function (k) {
+      if (!sevCounts[k]) return;
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "toggle"; b.setAttribute("aria-pressed", "false");
+      b.dataset.key = k;
+      b.innerHTML = '<i class="dot" style="background: var(' + SEV[k].v + ')"></i>' +
+        SEV[k].label + ' <span class="n">' + sevCounts[k] + "</span>";
+      b.addEventListener("click", function () {
+        state.sev[k] = !state.sev[k];
+        syncToggles();
+        apply();
+      });
+      wrap.appendChild(b);
+    });
+
+    var flags = [
+      ["awaiting", "awaiting sign-off"],
+      ["decision", "needs a decision"],
+      ["gated", "regression-locked"]
+    ];
+    var fw = document.getElementById("f-flag");
+    fw.innerHTML = '<span class="eyebrow">state</span>';
+    flags.forEach(function (pair) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "toggle"; b.setAttribute("aria-pressed", "false");
+      b.dataset.flag = pair[0];
+      b.textContent = pair[1];
+      b.addEventListener("click", function () {
+        state[pair[0]] = !state[pair[0]];
+        syncToggles();
+        apply();
+      });
+      fw.appendChild(b);
+    });
+  }
+
+  // Single source of truth for control appearance: every control re-reads `state`,
+  // so restoring state after a live reload needs no per-control bookkeeping.
+  function syncToggles() {
+    document.querySelectorAll("[data-key]").forEach(function (b) {
+      b.setAttribute("aria-pressed", state.sev[b.dataset.key] ? "true" : "false");
+    });
+    document.querySelectorAll("[data-flag]").forEach(function (b) {
+      b.setAttribute("aria-pressed", state[b.dataset.flag] ? "true" : "false");
+    });
+    document.querySelectorAll(".lc-seg").forEach(function (b) {
+      b.setAttribute("aria-pressed", state.status[b.dataset.status] ? "true" : "false");
+    });
+    document.getElementById("q").value = state.q;
+  }
+
+  function toggleStatus(k) {
+    state.status[k] = !state.status[k];
+    syncToggles();
+    apply();
+  }
+
+  function apply() {
+    var anySev = Object.keys(state.sev).some(function (k) { return state.sev[k]; });
+    var anyStatus = Object.keys(state.status).some(function (k) { return state.status[k]; });
+    var shown = 0;
+    document.querySelectorAll(".bug").forEach(function (el) {
+      var ok = true;
+      if (anySev && !state.sev[el.dataset.sev]) ok = false;
+      if (anyStatus && !state.status[el.dataset.status]) ok = false;
+      if (state.awaiting && el.dataset.awaiting !== "1") ok = false;
+      if (state.gated && el.dataset.gated !== "1") ok = false;
+      if (state.decision && el.dataset.decision !== "1") ok = false;
+      if (ok && state.q && el.dataset.text.indexOf(state.q) < 0) ok = false;
+      el.hidden = !ok;
+      if (ok) shown++;
+    });
+    document.getElementById("count").textContent = shown + " / " + BUGS.length + " shown";
+    document.getElementById("empty").hidden = shown > 0;
+  }
+
+  /* ---- wire up ---------------------------------------------------------- */
+  var list = document.getElementById("list");
+  BUGS.slice().sort(function (a, b) {
+    var d = sevOf(a).order - sevOf(b).order;
+    return d || String(a.id).localeCompare(String(b.id));
+  }).forEach(function (b) { list.appendChild(card(b)); });
+
+  var empty = document.createElement("div");
+  empty.className = "empty"; empty.id = "empty"; empty.hidden = true;
+  empty.textContent = "no bugs match these filters";
+  list.appendChild(empty);
+
+  buildBoard();
+  buildPanels();
+  buildFilters();
+  apply();
+
+  document.getElementById("q").addEventListener("input", function (e) {
+    state.q = e.target.value.trim().toLowerCase();
+    apply();
+  });
+
+  document.getElementById("expand-all").addEventListener("click", function (e) {
+    var opening = e.target.textContent === "expand all";
+    document.querySelectorAll(".bug").forEach(function (d) { if (!d.hidden) d.open = opening; });
+    e.target.textContent = opening ? "collapse all" : "expand all";
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    state = { q: "", sev: {}, status: {}, awaiting: false, gated: false, decision: false };
+    syncToggles();
+    apply();
+  });
+
+  // Sign-off snippet: the exact YAML block to paste back into the registry.
+  list.addEventListener("click", function (e) {
+    var btn = e.target.closest(".snipbtn");
+    if (!btn) return;
+    e.preventDefault();
+    var pre = list.querySelector('pre[data-snip="' + btn.dataset.id + '"]');
+    if (!pre.textContent) {
+      var d = new Date(), pad = function (n) { return String(n).padStart(2, "0"); };
+      pre.textContent =
+        "# docs/BUG_REGISTRY.yaml — " + btn.dataset.id + "\n" +
+        "    signoff:\n" +
+        "      approved: true\n" +
+        "      approved_by: " + (DATA.approver || "").replace(/\s*<.*>$/, "") + "\n" +
+        "      approved_date: " + d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "\n";
+    }
+    pre.hidden = !pre.hidden;
+    btn.textContent = pre.hidden ? "sign-off snippet" : "hide snippet";
+  });
+
+  function openHash() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (el && el.classList.contains("bug")) {
+      el.hidden = false;
+      el.open = true;
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+  }
+  window.addEventListener("hashchange", openHash);
+  openHash();
+
+  // Read/replay the whole view. The dev server uses this to carry filters, open
+  // cards and scroll position across a live reload when the YAML changes.
+  window.TLRegistry = {
+    generated: DATA.generated || null,
+    state: function () {
+      return {
+        q: state.q, sev: state.sev, status: state.status,
+        awaiting: state.awaiting, gated: state.gated, decision: state.decision,
+        open: Array.prototype.map.call(document.querySelectorAll(".bug[open]"),
+                                       function (d) { return d.id; }),
+        scroll: window.scrollY
+      };
+    },
+    restore: function (s) {
+      if (!s) return;
+      state.q = s.q || "";
+      state.sev = s.sev || {};
+      state.status = s.status || {};
+      state.awaiting = !!s.awaiting;
+      state.gated = !!s.gated;
+      state.decision = !!s.decision;
+      syncToggles();
+      apply();
+      (s.open || []).forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && el.classList.contains("bug")) el.open = true;
+      });
+      if (typeof s.scroll === "number") {
+        requestAnimationFrame(function () { window.scrollTo(0, s.scroll); });
+      }
+    }
+  };
+})();
+</script>

@@ -121,11 +121,13 @@ package tidelink_top_system_pkg;
   `include "test_top_mixed_traffic.sv"
   `include "test_top_coordinated_reset.sv"
   `include "test_top_addr_translate.sv"
+  // I1 sim-repro (sim/i1-repro-uvm-topsystem): staggered cold FCSM bring-up.
+  `include "test_top_i1_fcsm_bringup.sv"
+  // I1 control-plane repro (sim/i1-controlplane-repro): faithful role_lock /
+  // training / calibrator-arm bring-up WITHOUT the cal bypass.
+  `include "test_top_i1_controlplane.sv"
   // T1 — I1 SELF_ARM_TRAIN_EN fix-logic regression (test/i1-selfarm-regression):
   // die A fix-ON vs die B default-OFF, single-sim role_lock latch discrimination.
-  // (The sim/i1-repro fcsm_bringup + controlplane tests are intentionally NOT
-  //  pulled into this integration branch — the harness probe mirrors they use
-  //  are retained in tb/top.sv as inert observability; see the PR EXCLUDED note.)
   `include "test_top_i1_selfarm.sv"
   `include "test_top_autoneg_basic.sv"
   `include "test_top_autoneg_bypass.sv"

@@ -1,0 +1,13 @@
+// TL-033 non-vacuity flist — IDENTICAL to flists/tidelink_fifo.flist EXCEPT the
+// FIFO-control DUT is the guard-DISABLED variant (BUG-002 saturate guard removed
+// so the credit consume unsigned-underflow-WRAPS). Used only by `make noguard`
+// to prove test_43_credit_underflow_saturates_whitebox has teeth (it must FAIL
+// here — credit_count wraps to 0x1FFF — and PASS against the shipping RTL).
+// NOT a synthesis / shipping flist.
++incdir+${TIDELINK_HOME}/src/rtl
++incdir+${TIDELINK_HOME}/src/rtl/fifo
+${CMSDK_DIR}/logical/cmsdk_ahb_to_sram/verilog/cmsdk_ahb_to_sram.v
+${CMSDK_FPGA_SRAM_V}
+${TIDELINK_HOME}/src/rtl/fifo/fpga/tidelink_sram.sv
+${TIDELINK_HOME}/cocotb/tidelink_fifo/tidelink_fifo_ctrl_noguard.sv
+${TIDELINK_HOME}/src/rtl/fifo/tidelink_fifo_mem.sv

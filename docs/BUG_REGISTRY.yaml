@@ -1024,7 +1024,7 @@ bugs:
       commit: null
       branch: null
       netlist_affecting: true
-    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=1 (AW) + NODE=3 (W) + NODE=5 (B) reproduce+heal A/B ALL 3 PROVEN 2026-08-08; NODE=13 (sideband)", in_sim_gate: false, hw_tested: false}
+    verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=1 (AW) + NODE=3 (W) + NODE=5 (B) reproduce+heal A/B ALL 3 PROVEN 2026-08-08; NODE=13 (sideband)", in_sim_gate: true, hw_tested: false}
     cdc_selflatch_derisk_2026_08_08: >
       CONTESTED-QUESTION SETTLED (sim). Extended cocotb/tidelink_a2l_replay_cdc to the B
       data-plane node via a NODE knob (NODE=5: tb_top_5.sv + flists/tidelink_a2l_replay_cdc_5.flist
@@ -1177,7 +1177,7 @@ bugs:
       netlist_affecting: true
     verification:
       sim_test: "cocotb/tidelink_phy_align_calibrator test_calibrator_wrap.py -- reproduce-first: deps FAIL best_run=0 (dropped to (0,0)) -> heal PASS best_run=4 centred phase 15. No-regression: centering 3/3, t3 4/4, s_probe 3/3, sim_gate v2_winscan_fsm PASS(569s) + v2_autonomous_sync_detect PASS(293s)."
-      in_sim_gate: false
+      in_sim_gate: true
       hw_tested: false
     signoff:
       claude_verdict: "SIM-PROVEN digital fix, non-vacuous, no-regression incl. the SHIPPING calibrator_v2 integration. DIRECTLY reduces the TL-001 drop lottery (deterministic wrap contributor). Netlist-affecting -> David lands + rebuild; it is one of the fixes that should ride the decisive BUFG-hoist+CTS build and be HW-A/B'd on per-POR land-rate. Necessary-not-sufficient (complements TL-027 wedge self-heal + the capture-clock BUFG hoist). FOLLOW-UP: wire test_calibrator_wrap into a sim_gate suite."
@@ -1219,3 +1219,43 @@ bugs:
     verification: {sim_test: "sim_gate_tc_pair_election (vacuous n_roots==1 -- needs a dual-root repro)", in_sim_gate: true, hw_tested: false}
     signoff: {claude_verdict: "MIGRATED unregistered TideChart defects. Register-map wrong as documented; the election gate is vacuous vs the silicon dual-root. TideChart owner. Couples TL-025.", evidence: ["VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02:229-243", "tidechart_apb_regs.sv:176,319"], approved: false}
     related: [TL-025]
+
+  - id: TL-035
+    title: "State-7 NACK watchdog dead after first CRC error (sticky socl_l7_real_crc_seen pins wdog_cnt=0)"
+    severity: high
+    area: rtl/fcsm-recovery
+    status: root_caused
+    summary: >
+      Surfaced by DEV_MESSAGE_A2L_SELFLATCH_SILICON_2026_08_09 (eth-chiplet integrator) as a real secondary
+      defect distinct from the TL-027 a2l self-latch. After the FIRST real CRC error the FCSM latches
+      socl_l7_real_crc_seen (no clear path except reset), which permanently pins socl_l7_wdog_cnt=0 and
+      DISABLES the state-7 NACK backstop forever -- so the recovery watchdog never re-fires. Silicon-only
+      witness = cov_errinject_sweep wedges die_a on the first AW error-inject (R1); does NOT reproduce in any
+      sim (a2l unit bench nor the 4-config FCSM recovery env incl. ASIC_MIRROR).
+    root_cause: >
+      src/rtl/local_overrides/WlinkGenericFCSM_4.v:303-305 socl_l7_wdog_force_clear gated by
+      ~socl_l7_real_crc_seen; :1013-1017 socl_l7_real_crc_seen latches on first crcCorruptSeen with no clear;
+      :1024-1025 `else if (socl_l7_real_crc_seen) socl_l7_wdog_cnt <= 0` (self-comment "disarms the watchdog
+      forever"). socl_l7_* is a SoC-Labs local-override addition (absent from deps/). Live in the shipping v2
+      flists via the recovery FCSM copies.
+    fix:
+      approach: >
+        Part-A (dev-sim-proven dead->live + no-regression, NOT yet applied here): drop the sticky gate on
+        force_clear (`= (wdog_cnt==THRESHOLD)`), and replace the sticky reset with an instantaneous
+        forward-progress proxy (`else if (auto_tx_out_advance) wdog_cnt <= 0`). Part-B (§6 state-7-exit:
+        `state 7 leaves on auto_tx_out_advance | wdog_force_clear`) is BLIND-MERGE-FORBIDDEN -- needs an
+        attended die_b AW-FCSM ILA to decide (auto_tx_out_advance flat-0 => emit-starvation => Part-B needed;
+        pulsing => Part-A alone suffices).
+      candidates:
+        - "Part-A (HIGH, netlist): unstick the watchdog. Apply to WlinkGenericFCSM{,_1,_2,_3,_4}.v. Dev sim-proved dead->live + no-regression in the eth-chiplet tree; probe test test_a2l_r1_probe.py lives only there -- port it to tidelink-consolidated to re-prove locally."
+        - "Part-B (§6 state-7-exit): DO NOT SHIP without the attended ILA."
+      files:
+        - src/rtl/local_overrides/WlinkGenericFCSM_4.v
+        - src/rtl/local_overrides/WlinkGenericFCSM.v
+      commit: null
+      branch: null
+      netlist_affecting: true
+    verification: {sim_test: "dev Part-A dead->live proof (eth-chiplet tree, not re-run here -- probe test absent); R1 errinject silicon-only, does NOT reproduce in sim", in_sim_gate: false, hw_tested: false}
+    signoff: {claude_verdict: "NEW (2026-08-09) from the a2l silicon dev-message. Root cause confirmed structurally in the live override FCSM. Part-A is netlist + David-gated; Part-B is ILA-gated (do not merge blind). Next step per dev = attended die_b AW-FCSM ILA. Port the dev's probe test to re-prove Part-A locally.", evidence: ["DEV_MESSAGE_A2L_SELFLATCH_SILICON_2026_08_09.md", "WlinkGenericFCSM_4.v:303-305,1013-1017,1024-1025"], approved: false}
+    related: [TL-027, TL-009, TL-029]
+    decision_needed: "attended die_b AW-FCSM ILA to decide Part-B (§6); then land Part-A"

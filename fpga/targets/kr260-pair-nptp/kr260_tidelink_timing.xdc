@@ -478,18 +478,74 @@ create_generated_clock -name gpiotx0_word_clk \
 # set _fixo_stage_regs [get_cells -hier -filter {NAME =~ "*gpiotx_*/link_data_stage_reg[*]"}]
 # set_max_delay -datapath_only -from [get_clocks gpiotx0_word_clk] -to $_fixo_stage_regs 70.000
 
-# Four-group async isolation: recovered-RX, core hclk, TX word clock, and the
+#-----------------------------------------------------------------------------
+# [4c] RX WORD CLOCKS (gpiorx_0 .. gpiorx_7 = recovered pad_clk_rx / 16).
+#   TL-028 (2026-08-10, DIAGNOSTIC; hold-for-David). The B-return twin of [4b].
+#   count_reg[3]/Q is the root of the BUFG(~count[3]) per-lane word clock -- /16
+#   of pad_clk_rx (320 ns) = 5120 ns (~195 kHz on KR260). This is the SAME idiom
+#   already proven for the RX side in the PHY-BIST word_handoff.xdc [1] on the
+#   identical WavD2DGpioRx RTL; only [4b]'s TX twin was ever ported into the
+#   integrated *_tidelink_timing.xdc, so the 8 RX word clocks were left
+#   undeclared. WavD2DGpioRx.v:365-366 records the symptom: Vivado's routed
+#   timing summary reports "no_clock" for the BUFG'd ~count[3], i.e. the ENTIRE
+#   recovered RX word-clock domain (link_data_word -> link_data_reg FIX-N
+#   handoff, deskew read, calibrator) is STA-INVISIBLE. Declaring the generated
+#   clocks makes that B-return domain timing-visible (intra-domain paths timed at
+#   the /16 period). Wildcard "*count_reg[3]*" is generate-scope-insensitive
+#   (matches g_t3a_passthru.count_reg[3] and g_t3a_realign.count_reg[3]).
+#   LOW FUNCTIONAL LEVERAGE: at ~195 kHz the slack is us-scale; the value is
+#   VISIBILITY of the B-return path, not closure pressure. The root/leaf pins
+#   resolve at impl only -- verify get_pins is non-empty on the routed design
+#   (a Vivado-time check; not sim-testable). If David wants the FIX-N handoff
+#   VERIFIED (timed+bounded) rather than excluded by [4c]'s async grouping,
+#   port PHY-BIST word_handoff.xdc [2]: set_max_delay -datapath_only 100.000
+#   -from *gpiorx_*/link_data_word_reg[*] -to *gpiorx_*/link_data_reg_reg[*].
+#-----------------------------------------------------------------------------
+create_generated_clock -name gpiorx0_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_0/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_0/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx1_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_1/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_1/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx2_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_2/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_2/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx3_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_3/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_3/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx4_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_4/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_4/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx5_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_5/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_5/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx6_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_6/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_6/*count_reg[3]/Q"}]
+create_generated_clock -name gpiorx7_word_clk \
+    -source [get_pins -hier -filter {NAME =~ "*gpiorx_7/*count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiorx_7/*count_reg[3]/Q"}]
+
+# Five-group async isolation: recovered-RX, core hclk, TX word clock, and the
 # PHY /2 user_ref_clk (2026-06-30) — mutually asynchronous (each crossing is
 # 2-flop synchronised in RTL). user_ref_clk_div2 MUST be its own group vs hclk so
 # the hclk(4.687)<->PHY(2.343) CDC paths are NOT timed as a related 2:1 crossing
 # (they are async-synchronised, not balanced). gpiotx0_word_clk is itself derived
 # from user_ref_clk_div2 (/16 of it); keeping both grouped is consistent — they
 # are all in the asynchronous PHY/link timing island relative to hclk.
+# TL-028: the [4c] RX word clocks form a 5th mutually-async island. Kept a
+# SEPARATE group from pad_clk_rx (rather than folded in) so declaring them
+# cannot introduce a new cross-domain violation on David's build: the FIX-N
+# link_data_word -> link_data_reg handoff is skew-tolerant by construction and
+# is excluded here (async), not timed. All real RX-word->hclk/tx crossings are
+# 2-flop CDC'd in RTL. Intra-RX-word-domain paths remain timed at the /16 rate.
 set_clock_groups -asynchronous \
     -group [get_clocks pad_clk_rx] \
     -group [get_clocks -of_objects $hclk_pin] \
     -group [get_clocks gpiotx0_word_clk] \
-    -group [get_clocks user_ref_clk_div2]
+    -group [get_clocks user_ref_clk_div2] \
+    -group [get_clocks {gpiorx0_word_clk gpiorx1_word_clk gpiorx2_word_clk gpiorx3_word_clk \
+                        gpiorx4_word_clk gpiorx5_word_clk gpiorx6_word_clk gpiorx7_word_clk}]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job

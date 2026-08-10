@@ -1721,7 +1721,8 @@ module tidelink_top #(
             if (sub_err1_r)                         sub_err_sticky <= 1'b1;
         end
     end
-    wire [31:0] xhb_sub_obs_word = { 8'hB5, 13'h0,
+    wire [31:0] xhb_sub_obs_word = { 8'hB5, 12'h0,
+                                     ext_stall_err_q,          // [11] TL-021: bounded-ext-stall sticky (was spare 0; additive, V2-only via 0x21F8)
                                      xhb_stall_stuck_sticky,   // [10]
                                      sub_err_sticky,           // [9]
                                      sub_wr_stuck_sticky,      // [8]

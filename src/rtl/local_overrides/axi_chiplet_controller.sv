@@ -643,6 +643,10 @@ module axi_chiplet_controller #(
     logic        role_cfg_reg;       // bit[0] of ROLE_CFG
     logic        role_lock_reg;      // bit[1] of ROLE_CFG (W1S, POR-only clear)
     logic [6:0]  i2c_slv_addr_reg;
+    // TL-021 first-silicon debug (David-gated, default 0 = bit-identical): SW
+    // override at I2C_SLV_ADDR[7] (SoC 0x2088[7]) to release i2c_slv_reset while
+    // master, so the on-silicon I2C sideband slave can be un-parked for probing.
+    logic        i2c_slv_dbg_force_reg;
     logic [15:0] i2c_prescale_reg;
 
     // Auto-negotiation registers (POR-only reset domain)
@@ -753,6 +757,7 @@ module axi_chiplet_controller #(
         if (!poresetn) begin
             role_cfg_reg           <= 1'b0;
             role_lock_reg          <= 1'b0;
+            i2c_slv_dbg_force_reg  <= 1'b0;   // TL-021 debug override: default OFF (bit-identical)
             i2c_slv_addr_reg       <= 7'h7E;  // default to autoneg slave address so
                                                 // post-role_lock device_address mux
                                                 // doesn't NACK in-flight claim writes
@@ -916,7 +921,10 @@ module axi_chiplet_controller #(
                 // Slot 0 (ROLE_CFG) handled above with mask gate; remaining
                 // pre-lock writable Region-4 registers handled here.
                 case (ctrl_reg_addr[2:0])
-                    3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
+                    3'h2: begin
+                              i2c_slv_addr_reg      <= ctrl_reg_wdata[6:0];
+                              i2c_slv_dbg_force_reg <= ctrl_reg_wdata[7]; // TL-021 debug override
+                          end
                     3'h3: i2c_prescale_reg  <= ctrl_reg_wdata[15:0];
                     3'h4: nego_cfg_reg      <= ctrl_reg_wdata[6:0];
                     3'h6: nego_priority_reg <= ctrl_reg_wdata[15:0];
@@ -927,7 +935,10 @@ module axi_chiplet_controller #(
                          (ctrl_reg_addr[4:3] == 2'b01)) begin
                 // After lock, only I2C slave address, prescale, and nego regs remain writable
                 case (ctrl_reg_addr[2:0])
-                    3'h2: i2c_slv_addr_reg  <= ctrl_reg_wdata[6:0];
+                    3'h2: begin
+                              i2c_slv_addr_reg      <= ctrl_reg_wdata[6:0];
+                              i2c_slv_dbg_force_reg <= ctrl_reg_wdata[7]; // TL-021 debug override
+                          end
                     3'h3: i2c_prescale_reg  <= ctrl_reg_wdata[15:0];
                     3'h4: nego_cfg_reg      <= ctrl_reg_wdata[6:0];
                     3'h6: nego_priority_reg <= ctrl_reg_wdata[15:0];
@@ -1115,7 +1126,7 @@ module axi_chiplet_controller #(
             3'h0:    region4_rdata = {30'b0, role_lock_reg, role_cfg_reg};
             3'h1:    region4_rdata = {28'b0, i2c_slv_addressed, i2c_slv_busy,
                                        role_locked, role_effective};
-            3'h2:    region4_rdata = {25'b0, i2c_slv_addr_reg};
+            3'h2:    region4_rdata = {24'b0, i2c_slv_dbg_force_reg, i2c_slv_addr_reg}; // [7]=TL-021 dbg override (default 0)
             3'h3:    region4_rdata = {16'b0, i2c_prescale_reg};
             3'h4:    region4_rdata = {25'd0, nego_cfg_reg};
             3'h5:    region4_rdata = {22'd0, nego_mask_mismatch_reg, nego_sda_start_seen, nego_lost_w, nego_won_w, nego_error_w, nego_done_w, nego_state_w};
@@ -2329,7 +2340,25 @@ module axi_chiplet_controller #(
             // R3: re-arm the one-shot on the training FALL (level, not edge —
             // robust even if the drop is missed for a cycle). Mutually
             // exclusive with the set below (which requires training HIGH).
-            if (!swi_training_mode_r)
+            //
+            // BEACON CANDIDATE 1 (2026-08-09, dead-I2C fix): re-arm on the FALL
+            // of (training OR link-up), NOT training alone. On the dead-I2C
+            // bare-link (NEGO_CFG_RESET=0x61, TRAIN_ENTRY_FALLBACK=0, no peer
+            // I2C) autoneg NACK-parks WITHOUT pulsing local_train_set, so
+            // swi_training_mode_r NEVER rises. With a training-alone re-arm this
+            // clear would run EVERY cycle (training held 0) and the SYNC-ON
+            // one-shot below would re-drive every cycle instead of latching once.
+            // Gating the clear on (training OR link-up) lets sync_cfg_on_fired_q
+            // LATCH the moment the FCSM reaches data mode (link_up=1) on that
+            // path. NORMAL path is UNCHANGED: training rises first, so fired_q
+            // latches on the training rise (before link_up is ever relevant) and
+            // stays latched while training is held HIGH — bit-identical to before.
+            // link_up here is sync_obs_fcsm_state_1[2] (FCSM in 4..7 = data/link
+            // up; the SAME canonical net as data_mode_o and auto_anchor_link_up),
+            // an apb_clk-synced reg declared above (~:1793), driven
+            // unconditionally, ungated by AUTO_ANCHOR_EN — coherent with this
+            // apb_clk one-shot and with swi_training_mode_r.
+            if (!(swi_training_mode_r || sync_obs_fcsm_state_1[2]))
                 sync_cfg_on_fired_q <= 1'b0;
             // LOOP-9: the whole autonomous SYNC-config drive (SYNC-ON one-shot
             // + the F1b/D2 permanent heal) is scoped to autonomy_armed —
@@ -2339,7 +2368,18 @@ module axi_chiplet_controller #(
             // regs: the manual R8 writes are authoritative, bit-identical.
             if (autonomy_armed) begin
                 // SYNC-ON: one-shot on the full conjunction first true (R3).
-                if (swi_training_mode_r && !sync_cfg_on_fired_q) begin
+                // BEACON CANDIDATE 1 (2026-08-09): fire on (training OR link-up)
+                // so the dead-I2C path (training never rises — autoneg NACK-parks
+                // without pulsing local_train_set) STILL arms the RX SYNC detector
+                // (lane_mask/tol=5/insert_en/robust) once the FCSM reaches data
+                // mode; without this the detector stays at POR (mask 0xFF, tol 0,
+                // insert_en 0) -> all_sync_seen never asserts -> reanchor never
+                // latches -> cross-die writes read all-zeros. NORMAL path is
+                // UNCHANGED: training rises first and fires this one-shot before
+                // link_up is ever checked, so sync_cfg_on_fired_q latches on the
+                // training edge exactly as before. link_up = sync_obs_fcsm_state_1[2]
+                // (canonical fcsm data-mode net; see the re-arm note above).
+                if ((swi_training_mode_r || sync_obs_fcsm_state_1[2]) && !sync_cfg_on_fired_q) begin
                     sync_cfg_on_fired_q      <= 1'b1;
                     // M2 (2026-07-02): the active-lane SYNC mask is the local
                     // Wlink RX lane mask (single source of truth, POR-correct
@@ -3071,7 +3111,7 @@ module axi_chiplet_controller #(
     // I2C Core Resets — inactive core held in reset
     // =====================================================================
     wire i2c_mst_reset = ~hresetn | (~role_is_master & ~nego_driving);
-    wire i2c_slv_reset = ~hresetn |  role_is_master;
+    wire i2c_slv_reset = ~hresetn | (role_is_master & ~i2c_slv_dbg_force_reg); // TL-021: default force=0 => bit-identical (role_is_master)
 
     // =====================================================================
     // I2C Master Path

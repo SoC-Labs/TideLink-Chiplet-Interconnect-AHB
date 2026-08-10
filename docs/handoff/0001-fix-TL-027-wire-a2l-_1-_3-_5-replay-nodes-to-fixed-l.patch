@@ -1,0 +1,78 @@
+From 1037a63b6e8da042f31f62ae1e2950908beeef06 Mon Sep 17 00:00:00 2001
+From: dam1n19 <dam1n19@soton.ac.uk>
+Date: Mon, 10 Aug 2026 08:02:45 +0100
+Subject: [PATCH] fix(TL-027): wire a2l _1/_3/_5 replay nodes to fixed
+ local_overrides in FPGA+ASIC flists
+
+The a2l CDC self-latch fix (WlinkGenericFCReplayV2_{1,3,5}.v, committed 9210dc5)
+was shipping as a SILENT NO-OP: tidelink_fpga_v2.flist and tidelink_top_full_asic_v2.flist
+still pointed the AW(_1)/W(_3)/B(_5) write-path nodes at the unfixed deps/ copies.
+Re-point deps -> src/rtl/local_overrides for all three, on both FPGA and ASIC flists.
+
+Sim-proven non-vacuous: deps FAIL (a2l_full=1/app_ready=0 ACK-lap-ahead self-latch) ->
+override PASS (a2l_full=0/app_ready=1) on all 3 nodes; now gated
+(sim_gate_a2l_replay_cdc_{1,3,5}). Batch sim_gate green with the re-point
+(asic_v2_elab PASS, no regression).
+
+ASIC caveat: the tapeout consumes a GENERATED flist, so this source edit is inert
+until the tapeout owner regenerates it. The FPGA build picks it up directly.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ flists/tidelink_fpga_v2.flist          | 6 +++---
+ flists/tidelink_top_full_asic_v2.flist | 6 +++---
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/flists/tidelink_fpga_v2.flist b/flists/tidelink_fpga_v2.flist
+index f5f6845..2863116 100644
+--- a/flists/tidelink_fpga_v2.flist
++++ b/flists/tidelink_fpga_v2.flist
+@@ -264,7 +264,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayA
+ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
+ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_12.v
+@@ -275,9 +275,9 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_3.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
+diff --git a/flists/tidelink_top_full_asic_v2.flist b/flists/tidelink_top_full_asic_v2.flist
+index 58fbf45..0b4a5c4 100644
+--- a/flists/tidelink_top_full_asic_v2.flist
++++ b/flists/tidelink_top_full_asic_v2.flist
+@@ -263,7 +263,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayA
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
+ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_12.v
+@@ -274,9 +274,9 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_3.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
+-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
++${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
+ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
+-- 
+2.43.7
+

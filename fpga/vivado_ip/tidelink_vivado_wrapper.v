@@ -207,7 +207,19 @@ module tidelink_vivado_wrapper #(
     // CONFIG.SELF_ARM_TRAIN_EN=1 per-instance for an FPGA eth-chiplet-style
     // integration whose peer-I2C control plane never completes. The bare-link
     // kr260-pair / Z2 targets keep this OFF (they role-lock via the normal gate).
-    parameter        SELF_ARM_TRAIN_EN = 1'b0
+    parameter        SELF_ARM_TRAIN_EN = 1'b0,
+    // AUTO_ANCHOR_EN — surface tidelink_top's link-up SYNC-beacon auto-pulse knob
+    // on the IP face (nanosoc-ethernet-chiplet/docs/PROPOSAL_AUTO_ANCHOR_RTL_2026_08_04.md).
+    // Same component.xml/OOC-synth reason as SELF_ARM_TRAIN_EN: a wrapper-parameter
+    // default reaches OOC synth, a +define+ does NOT. With EPOCH_ANCHOR_EN=0 (default)
+    // the RX deskew compiles the beacon-DEPENDENT SYNC_REANCHOR arm; AUTO_ANCHOR_EN=1
+    // force-pulses the SYNC beacon (insert_en+force_always+robust, widened ANCHOR_LEN)
+    // at link-up so `reanchored`/SWI_EPOCH_STATUS[0] latches autonomously — the
+    // config HW-PROVEN byte-exact on the two-board eth-chiplet (nanosoc_eth_chiplet.sv:749,
+    // AUTO_ANCHOR_HW_DIAGNOSTIC 2026-08-05). DEFAULT 1'b0 = byte-behaviour-identical to
+    // every existing image (the whole FSM constant-folds away). Set CONFIG.AUTO_ANCHOR_EN=1
+    // per-instance on the two-board bare-link kr260-pair targets to enable delivery.
+    parameter        AUTO_ANCHOR_EN = 1'b0
 )(
     // =========================================================================
     // Clocks and Resets
@@ -565,6 +577,10 @@ module tidelink_vivado_wrapper #(
         // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 =
         // today's SYNC_REANCHOR corrector; override per-project (see param).
         .EPOCH_ANCHOR_EN     (EPOCH_ANCHOR_EN),
+        // Link-up SYNC-beacon auto-pulse (see param header). Default 0 =
+        // constant-folds away; kr260-pair two-board targets set =1 to arm the
+        // beacon-driven SYNC_REANCHOR corrector autonomously (byte-exact on eth-chiplet).
+        .AUTO_ANCHOR_EN      (AUTO_ANCHOR_EN),
         // Tier 2 hardening: force swi_enable=1 on swreset writes (FPGA: ON).
         .HARDEN_SWI_ENABLE   (HARDEN_SWI_ENABLE),
         // Interface-debug stubs — forward verbatim (default 0 = no-op)

@@ -282,7 +282,9 @@ endef
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
-	sim_gate_v2_mbox_writeprotect
+	sim_gate_v2_mbox_writeprotect \
+	sim_gate_calibrator_wrap \
+	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -521,6 +523,49 @@ sim_gate_force_recal:
 	  $(MAKE) -C cocotb/tidelink_force_recal RTL=v2 && \
 	  $(MAKE) -C cocotb/tidelink_force_recal RTL=v1 && \
 	  $(MAKE) -C cocotb/tidelink_force_recal pair)
+
+# TL-032 CALIBRATOR CIRCULAR RUN-TRACKER WRAP-STITCH (reproduce+heal, 2026-08-08).
+# The RX phase axis is CIRCULAR mod-16 (WavD2DGpioRx_v2.v:406) but the pristine
+# calibrator eye-centre run-tracker scores it LINEAR and resets run_len at
+# sweep_phase==15, so a width-4 eye STRADDLING the phase 15->0 wrap ({14,15,0,1})
+# splits into two sub-runs; with MIN_LOCK_DWELLS=3 neither reaches the gate ->
+# best_run never promotes -> the lane drops to the (0,0)/edge fallback = the
+# peer-write DROP (a deterministic ~2-3/16 contributor to the TL-001 drop lottery).
+# The SHIPPING calibrator_v2 (FPGA-V2 + ASIC-V2 flists) carries the head_run_len
+# circular stitch. This suite compiles the DEPS-twin TB (tb_top_deps exposes
+# min_lock_dwells_i + the eye-vis reads) with CAL_RTL pointed at that shipping v2
+# override, so the gate exercises the ACTUAL fix RTL: best_run=4, centred phase 15.
+#   reproduce (pristine deps twin):  DEPS=1 MODULE=test_calibrator_wrap -> FAIL best_run=0
+sim_gate_calibrator_wrap:
+	$(call sim_gate_run,calibrator_wrap,\
+	  $(MAKE) -C cocotb/tidelink_phy_align_calibrator DEPS=1 TOPLEVEL=tb_top_deps \
+	    CAL_RTL=$(TIDELINK_HOME)/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv \
+	    MODULE=test_calibrator_wrap SIM_BUILD=sim_build_wrap \
+	    COCOTB_RESULTS_FILE=sim_build_wrap/res_wrap.xml)
+
+# TL-027 a2l REPLAY-FIFO CDC FALSE-FULL SELF-LATCH (reproduce+heal, 2026-08-08).
+# Data-plane FC trio — _1 (AW 0x80), _3 (W 0x81), _5 (B 0x82). A pre-data link ACK
+# a full FIFO-lap ahead (=9 for depth-8 _1/_5, =33 for depth-32 _3) must NOT leave
+# the first app write false-FULL. Pristine deps node self-latches a2l_full=1 /
+# app_ready=0 (winc never fires, the FCSM would never transmit = reproduce, FAIL
+# via USE_DEPS_DUT=1). The in-tree local_overrides/WlinkGenericFCReplayV2_N.v fix —
+# the DEFAULT DUT the flist picks (dut_src_N.f: local override if present, else
+# deps) — self-heals to a2l_full=0 / app_ready=1. Distinct SIM_BUILD per node so
+# the three flist geometries never share a stale simv.
+sim_gate_a2l_replay_cdc_1:
+	$(call sim_gate_run,a2l_replay_cdc_1,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=1 \
+	    SIM_BUILD=sim_build_a2l_1 COCOTB_RESULTS_FILE=sim_build_a2l_1/res_a2l_1.xml)
+
+sim_gate_a2l_replay_cdc_3:
+	$(call sim_gate_run,a2l_replay_cdc_3,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=3 \
+	    SIM_BUILD=sim_build_a2l_3 COCOTB_RESULTS_FILE=sim_build_a2l_3/res_a2l_3.xml)
+
+sim_gate_a2l_replay_cdc_5:
+	$(call sim_gate_run,a2l_replay_cdc_5,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=5 \
+	    SIM_BUILD=sim_build_a2l_5 COCOTB_RESULTS_FILE=sim_build_a2l_5/res_a2l_5.xml)
 
 # --- Wave-0 #9: PERF_CTRL end-to-end (perf_reg_region = apb_region-5) --------
 # Proves PERF_CTRL is writable and the perf counters ACTUALLY COUNT through the
@@ -1086,11 +1131,15 @@ sim_gate_xfail_f14b:
 # still-open defect: with EPOCH_ANCHOR_EN at its shipping default (0), the
 # SYNC_REANCHOR corrector never arms on beacon-off skew ⇒ s2m delivers
 # all-zeros. On THIS base (I1 SELF_ARM+FIX-E + recovery FCSM) the link now
-# reaches LINK_IDLE, so m2s (test_02) passes and only s2m (test_03) fails ⇒
-# TESTS=3 PASS=2 FAIL=1 (on the pre-I1 z2 branch it was PASS=1 FAIL=2 with an
-# FCSM state-5 park — that signature is now obsolete). Tolerated as XFAIL; the
-# fix is EPOCH_ANCHOR_EN=1, gated by sim_gate_epoch_anchor_plumb. Flips to XCHG
-# if s2m ever starts (or stops) delivering at the shipping default.
+# reaches LINK_IDLE, so m2s (test_02) passes. Re-baselined 2026-08-09 (TL-030):
+# after the FIX2/TL-024 calibrator update (2e6f8dc) the bilateral test_01 now
+# ALSO exercises + fails on the SAME s2m all-zeros defect as test_03 (its m2s
+# sub-check still delivers), so the signature is TESTS=3 PASS=1 FAIL=2 (test_01
+# + test_03 s2m all-zeros, test_02 m2s pass). Core defect UNCHANGED — this is
+# wider detection of the one beacon-starvation defect, not a regression; the
+# rx=[0x00000000 check keeps it non-vacuous. Tolerated as XFAIL; the fix is
+# EPOCH_ANCHOR_EN=1, gated by sim_gate_epoch_anchor_plumb. Flips to XCHG if s2m
+# ever starts (or stops) delivering at the shipping default.
 sim_gate_xfail_epoch_shipping:
 	$(call sim_gate_sentinel,xfail_epoch_shipping_corrector,\
 	  { $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
@@ -1099,8 +1148,9 @@ sim_gate_xfail_epoch_shipping:
 	      MODULE=test_v2_pair_data; true; },\
 	  grep -qF "test_v2_pair_data.test_02_packet_master_to_slave passed" $$L && \
 	  grep -qF "test_v2_pair_data.test_03_packet_slave_to_master failed" $$L && \
+	  grep -qF "test_v2_pair_data.test_01_bilateral_linkup failed" $$L && \
 	  grep -qF "rx=[0x00000000" $$L && \
-	  grep -qF "TESTS=3 PASS=2 FAIL=1 SKIP=0" $$L)
+	  grep -qF "TESTS=3 PASS=1 FAIL=2 SKIP=0" $$L)
 
 # I5 XHB500 lost-response backstop (audit; wired 2026-07-31). Exercises the
 # HREADYOUT-blind outstanding-response watchdog (tidelink_top.sv sub_osr_ctr_r)
@@ -1129,7 +1179,7 @@ sim_gate_inventory:
 	@mk=$(firstword $(MAKEFILE_LIST)); \
 	inv=$$(mktemp); \
 	sed -n '/^sim_gate: sim_gate_env_check/,/sim_gate_summary/p' $$mk \
-	  | grep -oE 'no-print-directory sim_gate_[a-z0-9_]+' \
+	  | grep -oE 'SIM_GATE_NONFATAL=1 sim_gate_[a-z0-9_]+' \
 	  | awk '{print $$2}' | sort -u > $$inv; \
 	miss=0; \
 	for s in $(SIM_GATE_ALL_SUITES) $(SIM_GATE_SENTINELS); do \
@@ -1285,7 +1335,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	axi_datanode_recovery axi_datanode_gaps \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
-	v2_mbox_writeprotect
+	v2_mbox_writeprotect \
+	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1362,6 +1413,11 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_mask_hs
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_force_recal
+	@# TL-032 calibrator wrap-stitch + TL-027 a2l replay-CDC data-plane trio (reproduce+heal).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_calibrator_wrap
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_1
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_3
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_5
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_silicon

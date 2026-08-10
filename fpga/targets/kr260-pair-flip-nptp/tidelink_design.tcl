@@ -436,10 +436,29 @@ proc create_root_design { parentCell } {
     # 0x208 bit[3] swreset, which HARDEN_SWI_ENABLE=1 masks; the internal FCH
     # bypass is gated on winscan_done, which never asserts with USE_IDELAY=0.
     # Z2/ASIC keep the =1 default. See docs/R6_HARDEN_SWI_OPTIONS.md.
+    # TRAIN_ENTRY_FALLBACK=1 (2026-08-09): the ADDITIONAL bare-link blocker on
+    # top of AUTO_ANCHOR_EN. The standalone kr260-pair runs NEGO autonomy
+    # (NEGO_CFG_RESET=0x61, nego_en=1) over the J21 ribbon, which has NO peer I2C
+    # control plane => every I2C transaction NACKs. With the fallback OFF (the
+    # wrapper default) the NEGO NACK parks in the TERMINAL ST_NEGO_DONE without
+    # ever pulsing local_training_mode_set, so swi_training_mode_r never rises,
+    # the controller SYNC-config one-shot never arms, the SYNC beacon stays DARK
+    # and AUTO_ANCHOR alone cannot re-anchor => cross-die writes read ALL-ZEROS
+    # (HW-observed 2026-08-09: fcsm=4/cr=1 every deploy but anc=0). With the
+    # fallback ON the NEGO NACK reroutes to ST_NEGO_DONE_PRE->ST_TRAIN_ENTER and
+    # the training-entry hook enters training from the strapped role, lighting the
+    # beacon (Option-A self-start). This is the dead-I2C posture the parameter was
+    # designed for (tidelink_autoneg.sv:56-70) and is the same treatment already
+    # shipped env-gated on pynq-z2-pair-flip-all. Sim-proven by the rolestrap A/B
+    # cocotb/tidelink_autoneg_rolestrap MODE=trainfb_on (beacon lights / PASS) vs
+    # MODE=trainfb_off (beacon dark, the reproduced bug). Forwards
+    # wrapper->tidelink_top->axi_chiplet_controller->tidelink_autoneg.
     set_property -dict [list \
         CONFIG.TIDELINK_PAIR_BASE {0x84032000} \
         CONFIG.USE_IDELAY         {0} \
         CONFIG.HARDEN_SWI_ENABLE  {0} \
+        CONFIG.AUTO_ANCHOR_EN     {1'b1} \
+        CONFIG.TRAIN_ENTRY_FALLBACK {1'b1} \
     ] $tl
 
     #--------------------------------------------------------------------------

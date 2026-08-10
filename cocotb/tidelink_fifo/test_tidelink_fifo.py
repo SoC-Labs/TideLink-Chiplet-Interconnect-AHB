@@ -1846,3 +1846,131 @@ async def test_42_drain_then_packet_reads_back_byte_exact(dut):
         f"by an empty-FIFO read.")
 
     dut._log.info("packet unshifted after an empty-FIFO poll — no phantom pop")
+
+
+@cocotb.test()
+async def test_43_credit_underflow_saturates_whitebox(dut):
+    """TL-033 (BUG-002) WHITE-BOX reproduce-first: the RX-FIFO credit counter
+    must SATURATE at 0 when a consume (write_complete) is applied with
+    credit_count_r < packet_delta. It must NOT unsigned-underflow-WRAP to a
+    large value (~0x1FFF).
+
+    WHY WHITE-BOX. The saturate branch (tidelink_fifo_ctrl.sv:388-389 `else
+    credit_count_nxt = '0;`) is a DEFENSIVE guard. The normal AHB write path is
+    credit-gated — `ahb_pkt_start_ok` (:223-226) only arms a packet when
+    `credit_count_r >= MIN_PKT_CREDIT` — so ordinary stimulus struggles to place
+    the counter strictly below packet_delta at the completing beat. So, like the
+    a2l CDC tests, we drive it WHITE-BOX: arm a real packet (length L,
+    packet_delta = L+2) and then DEPOSIT `credit_count_r = packet_delta - 1`
+    (strictly below packet_delta, yet non-zero so saturate-to-0 is
+    distinguishable from a plain decrement), then let write_complete fire.
+
+    While write_complete/read_complete are 0, `credit_count_nxt == credit_count_r`
+    (:383), so the deposit HOLDS across the intervening beats until the
+    completing beat consumes it.
+
+    NON-VACUITY.
+      * BRANCH-HIT PROOF (option b): this test asserts the else-branch
+        PRECONDITION actually held (credit_count_r < packet_delta immediately
+        before the consume) AND that the post-consume value is 0, not the wrap.
+        Without the :386-389 guard the subtract would wrap to
+        (packet_delta-1) - packet_delta mod 2^(RAM_ADDR_W-1) = 0x1FFF (8191).
+      * GUARD-DISABLED A/B (option a, the stronger proof): `make noguard`
+        recompiles this SAME test against tidelink_fifo_ctrl_noguard.sv (the
+        :386-389 guard removed so the subtract wraps). Against that RTL this
+        test FAILS with credit_count == 8191; against the fixed shipping RTL it
+        PASSES with credit_count == 0. See run_redgreen.sh.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    credit_width = RAM_ADDR_W - 1          # 13-bit unsigned counter
+    wrap_mod = 1 << credit_width           # 8192
+
+    L = 8
+    packet_delta = L + 2                   # header(2) + payload(L) = 10
+    deposit = packet_delta - 1             # 9  — strictly below packet_delta, > 0
+    wrap_value = (deposit - packet_delta) % wrap_mod   # 8191 = 0x1FFF
+
+    # 1) Arm a real packet: capture length L from a write to addr 0.
+    await ahb.write(0x0000, L << 20)
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    captured_len = int(dut.u_dut.packet_word_length.value)
+    assert captured_len == L, \
+        f"precondition: header length capture failed (got {captured_len}, want {L})"
+    target = int(dut.u_dut.write_target_addr.value)
+    assert target == (L + 1) * 4, \
+        f"precondition: write_target_addr=0x{target:04X}, want 0x{(L+1)*4:04X}"
+
+    # 2) WHITE-BOX deposit: drive credit_count_r strictly below packet_delta.
+    #    write_complete/read_complete are 0 here, so credit_count_nxt tracks
+    #    credit_count_r and the deposit persists to the completing beat.
+    dut.u_dut.u_fifo_ctrl.credit_count_r.value = deposit
+    await ClockCycles(dut.hclk, 1)
+
+    pre = int(dut.u_dut.credit_count.value)
+    assert pre == deposit, \
+        f"white-box deposit did not take (credit_count={pre}, want {deposit})"
+    # ── Non-vacuity PRECONDITION: the else-branch (:388-389) is exercised iff
+    #    credit_count_r < packet_delta at the completing write_complete. Prove it.
+    assert pre < packet_delta, (
+        f"VACUOUS: credit_count_r={pre} is NOT below packet_delta={packet_delta}; "
+        f"the underflow else-branch would not be reached")
+    dut._log.info(
+        f"[TL-033] armed L={L} packet_delta={packet_delta}; deposited "
+        f"credit_count_r={pre} (< {packet_delta}) => the consume MUST underflow")
+
+    # 3) Complete the write: drive dest_addr + L payload beats up to
+    #    write_target_addr. The final beat (haddr == write_target) fires
+    #    write_complete, consuming packet_delta from a counter holding only
+    #    packet_delta-1 — the underflow event under test.
+    remaining_words = [0xD0000000] + [0xE0000000 | i for i in range(L)]
+    wc_fired = False
+    for i, word in enumerate(remaining_words):
+        addr = (i + 1) * 4
+        # Address phase
+        await RisingEdge(dut.hclk)
+        dut.hsel.value = 1; dut.htrans.value = 2; dut.hwrite.value = 1
+        dut.hsize.value = 2; dut.haddr.value = addr
+        # Data phase — sample write_complete while hsel/htrans still active
+        await RisingEdge(dut.hclk)
+        try:
+            wc = int(dut.u_dut.u_fifo_ctrl.write_complete.value)
+        except ValueError:
+            wc = 0
+        dut.hwdata.value = word
+        dut.htrans.value = 0; dut.hsel.value = 0
+        await RisingEdge(dut.hclk)
+        dut.hwrite.value = 0
+        if wc:
+            wc_fired = True
+
+    dut.haddr.value = 0x3FFF
+    await ClockCycles(dut.hclk, 3)
+
+    # ── Non-vacuity: the consume actually happened. If write_complete never
+    #    fired the else-branch was never exercised and the test proves nothing.
+    assert wc_fired, (
+        "VACUOUS: write_complete never fired — the underflow consume did not "
+        "occur, so the saturate guard was not exercised")
+
+    # 4) The consume must SATURATE at 0, NOT wrap to a large value.
+    final = int(dut.u_dut.credit_count.value)
+    dut._log.info(
+        f"[TL-033] post-consume credit_count={final}  "
+        f"(guard PASS=0 ; BUG-002 WRAP={wrap_value}=0x{wrap_value:04X})")
+
+    assert final != wrap_value, (
+        f"BUG-002 UNDERFLOW WRAP: credit_count={final} (0x{final:04X}). "
+        f"credit {deposit} - packet_delta {packet_delta} underflowed the "
+        f"{credit_width}-bit counter instead of saturating. The "
+        f"tidelink_fifo_ctrl.sv:386-389 saturate guard is missing/ineffective.")
+    assert final == 0, (
+        f"credit_count must SATURATE at 0 on underflow, got {final} "
+        f"(unguarded wrap would be {wrap_value})")
+
+    dut._log.info(
+        "[TL-033] credit underflow SATURATED at 0 — :386-389 guard proven "
+        "(else-branch precondition hit; non-vacuous)")

@@ -10,8 +10,12 @@ VERILOG_SOURCES = $(CURDIR)/tb_top.sv
 TOPLEVEL = tb_top
 MODULE   = test_tidelink_fifo
 
+# TL-033: the DUT flist is overridable so `make noguard` can swap in the
+# guard-DISABLED FIFO-control variant (non-vacuity A/B). Default = shipping flist.
+TL_FIFO_FLIST ?= $(TIDELINK_HOME)/flists/tidelink_fifo.flist
+
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist
+COMPILE_ARGS += -f $(TL_FIFO_FLIST)
 COMPILE_ARGS += $(EXTRA_COMPILE_ARGS)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
@@ -26,7 +30,7 @@ endif
 #     lists only the tb; DUT RTL arrives via `-f <flist>` (invisible to make), so
 #     without this an RTL-only edit re-runs the STALE simv. See SIM_GATE_COVERAGE.md.
 include $(TIDELINK_HOME)/cocotb/flist_deps.mk
-_TL_FLIST   := $(TIDELINK_HOME)/flists/tidelink_fifo.flist
+_TL_FLIST   := $(TL_FIFO_FLIST)
 _flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
@@ -44,6 +48,17 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 randinit:
 	$(MAKE) SIM_BUILD=sim_build_randinit \
 	        EXTRA_COMPILE_ARGS=+define+TIDELINK_SRAM_RAND_INIT
+
+# TL-033 non-vacuity A/B: recompile the SAME suite against the guard-DISABLED
+# FIFO-control variant (BUG-002 saturate guard removed => credit consume WRAPS).
+# test_43_credit_underflow_saturates_whitebox MUST FAIL here (credit_count=0x1FFF)
+# while it PASSES against the shipping RTL — that FAIL-vs-PASS is the non-vacuity
+# proof. Runs only the underflow test by default; `make noguard TESTCASE=` for all.
+.PHONY: noguard
+noguard:
+	$(MAKE) SIM_BUILD=sim_build_noguard \
+	        TL_FIFO_FLIST=$(CURDIR)/tidelink_fifo_noguard.flist \
+	        TESTCASE=test_43_credit_underflow_saturates_whitebox
 
 VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
 

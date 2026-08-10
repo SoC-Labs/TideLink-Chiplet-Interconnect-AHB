@@ -973,6 +973,10 @@ module tidelink_phy_align_calibrator #(
     localparam int EYE_WIDTH_W = 5;
     logic [EYE_WIDTH_W-1:0] run_len                [0:7];
     logic [EYE_WIDTH_W-1:0] best_run               [0:7];
+    // TL-CALWRAP: length of the passing run that STARTED at phase 0 this slip
+    // (the circular-wrap 'head'), so a run reaching phase 15 can stitch across
+    // the mod-16 phase 15<->0 boundary instead of splitting a wrap-straddling eye.
+    logic [EYE_WIDTH_W-1:0] head_run_len           [0:7];
     logic [3:0]             cur_run_start_phase    [0:7];
     logic [3:0]             best_run_start_phase   [0:7];
     logic [2:0]             best_run_slip          [0:7];
@@ -1862,6 +1866,7 @@ module tidelink_phy_align_calibrator #(
                 phase[i]                 <= 4'd0;
                 lane_score[i]            <= 6'd0;
                 run_len[i]               <= '0;
+                head_run_len[i]          <= '0;
                 best_run[i]              <= '0;
                 cur_run_start_phase[i]   <= 4'd0;
                 best_run_start_phase[i]  <= 4'd0;
@@ -1888,6 +1893,7 @@ module tidelink_phy_align_calibrator #(
                         phase[i]                 <= 4'd0;
                         lane_score[i]            <= 6'd0;
                         run_len[i]               <= '0;
+                        head_run_len[i]          <= '0;
                         best_run[i]              <= '0;
                         cur_run_start_phase[i]   <= 4'd0;
                         best_run_start_phase[i]  <= 4'd0;
@@ -2190,9 +2196,32 @@ module tidelink_phy_align_calibrator #(
                                                                : cur_run_start_phase[i];
                                         best_run_slip[i]        <= sweep_slip;
                                     end
+                                    // TL-CALWRAP: circular stitch. A passing run reaching
+                                    // phase 15 that connects to a passing head run from
+                                    // phase 0 is ONE run on the mod-16 phase axis; promote
+                                    // the stitched length so a wrap-straddling eye is NOT
+                                    // split (the split undercounts best_run -> the lane
+                                    // drops to the (0,0) fallback = the write-drop lottery).
+                                    if ((sweep_phase == 4'd15) && (head_run_len[i] != '0) &&
+                                        ((run_len[i] + 5'd1 + head_run_len[i]) >= min_lock_dwells_eff) &&
+                                        ((run_len[i] + 5'd1 + head_run_len[i]) >  best_run[i])) begin
+                                        best_run[i]             <= run_len[i] + 5'd1 + head_run_len[i];
+                                        best_run_start_phase[i] <=
+                                            (run_len[i] == '0) ? sweep_phase
+                                                               : cur_run_start_phase[i];
+                                        best_run_slip[i]        <= sweep_slip;
+                                    end
                                 end else begin
                                     // Fail — close the contiguous-phase run.
                                     run_len[i] <= '0;
+                                    // TL-CALWRAP: freeze the phase-0 head-run length so a
+                                    // later run reaching phase 15 can stitch the wrap.
+                                    // cur_run_start_phase==0 && run_len!=0 uniquely marks
+                                    // the run that began at phase 0.
+                                    if ((cur_run_start_phase[i] == 4'd0) && (run_len[i] != '0) &&
+                                        (head_run_len[i] == '0)) begin
+                                        head_run_len[i] <= run_len[i];
+                                    end
                                 end
                             end
                             // Fresh dwell window next cycle.
@@ -2230,7 +2259,8 @@ module tidelink_phy_align_calibrator #(
                             // wrapped into the next slip would be a meaningless
                             // cross-slip artefact). best_run is preserved.
                             for (int i = 0; i < 8; i++) begin
-                                run_len[i] <= '0;
+                                run_len[i]      <= '0;
+                                head_run_len[i] <= '0;
                             end
                             if (sweep_slip == 3'd7) begin
                                 // iter_at_end. FSM next-state goes to

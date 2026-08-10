@@ -479,6 +479,70 @@ sim_gate_v2_txgen:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero \
 	    MODULE=test_v2_txgen SIM_BUILD=sim_build_txgen)
 
+# TXGEN inter-packet dead time (2026-08-01 link-survey campaign, C4). S_SEND's
+# final-data-phase-drained branch now skips S_GAP entirely when ipg_r==0,
+# collapsing the strictly-serialized dead time from ~2 to ~1 hclk cycle/packet
+# (the remaining 1 cycle is S_ARMED's unavoidable total_beats_r/beat_r latch).
+# Pins the fix; fails if it ever regresses back toward 2.
+sim_gate_txgen_deadtime:
+	$(call sim_gate_run,txgen_deadtime,\
+	  $(MAKE) -C cocotb/tidelink_txgen MODULE=test_txgen_deadtime \
+	      SIM_BUILD=sim_build_deadtime \
+	      COCOTB_RESULTS_FILE=sim_build_deadtime/res_deadtime.xml)
+
+# fc_adapter RX FSM saturation floor (2026-08-01 link-survey campaign, C3).
+# RX_IDLE's transition to RX_ADDR_PHASE now also gates on combinational
+# rx_accept, not just registered rx_pending_r, collapsing the empirically-
+# measured RX ingestion floor from 3 to 2 hclk cycles/word under saturation.
+# First sim_gate coverage for cocotb/tidelink_fc_adapter/ at all — the other
+# 4 suites there (test_tidelink_fc_adapter, test_held_nonseq,
+# test_rx_pkt_type_decode, test_buga) remain ungated, a known follow-up.
+sim_gate_fc_adapter_rx_saturation:
+	$(call sim_gate_run,fc_adapter_rx_saturation,\
+	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_rx_saturation_throughput)
+
+# RX-FIFO TWIN 3 FIX (2026-08-01) — write-side FC writes and read-side AHB
+# drains used to share one set of "packet in flight" metadata registers in
+# tidelink_fifo_ctrl.sv, so an inbound packet's header arriving mid-drain of
+# an older packet silently clobbered the drain's own tracking (desyncing the
+# ring buffer for the rest of the run — up to 30-65% packet loss observed).
+# Fixed by fully independent write-side/read-side tracking. This isolated
+# unit-level bench drives tidelink_fifo_mem directly (no PHY/link/credit
+# stack) and proves the fix at the signal level plus end-to-end.
+sim_gate_fifo_concurrent_race:
+	$(call sim_gate_run,fifo_concurrent_race,\
+	  rm -rf cocotb/tidelink_fifo_concurrent_race/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fifo_concurrent_race)
+
+# Sustained throughput at 8 lanes (0xFF) vs the shipped 4-lane (0xE4) default
+# (2026-08-01 link-survey campaign, C1). Lane mask is APB-runtime-writable
+# (register 0x214), not just a build-time LANE_MASK_RESET parameter — this
+# forces the mask via the same technique test_v2_lane_mask_sweep.py uses.
+# NOTE: at both realistic silicon clock ratios this measured ~1.00-1.07x, NOT
+# the naive 2x popcount(lane_mask) prediction — the ACK/credit-window RTT
+# floor dominates sustained cost and barely scales with lane count. See
+# project_link_parallelism_and_phy_survey_2026_08_01.md for the full writeup.
+sim_gate_v2_lane_mask_throughput:
+	$(call sim_gate_run,v2_lane_mask_throughput,\
+	  TIDELINK_SIM_REF_PERIOD_NS=40.0 $(MAKE) -C cocotb/tidelink_top_pair_v2 \
+	    EPOCH_PROFILE=zero MODULE=test_v2_lane_mask_throughput)
+
+# NOT YET GATED, deliberately (2026-08-01 link-survey campaign):
+#   - cocotb/tidelink_top_pair_v2/test_v2_txgen_kr260_ratio.py (C7/C9) — 2/3
+#     PASS, but test_txgen_kr260_ratio_live_credit FAILS with 238 byte
+#     mismatches under concurrent live-credit drain at the KR260 ratio, a
+#     newly-found correctness defect distinct from the known last-packet-lost
+#     issue. Needs root-causing (or splitting into a separate sentinel) before
+#     this suite can gate cleanly.
+#   - cocotb/tidelink_top_pair_v2/test_v2_bidir_throughput.py (C5) — its one
+#     testcase technically PASSes, but every run (including the one-
+#     directional baseline configs) stalls at 30-65% packet loss with 150-300
+#     word mismatches, deliberately not scored as a failure by the test's own
+#     design. Gating this as a green suite today would be a misleading result
+#     sitting on top of an unexplained, much-larger-than-previously-known
+#     defect. Root-cause first.
+
 sim_gate_v2_winscan:
 	$(call sim_gate_run,v2_winscan_fsm,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_winscan_fsm)
@@ -1174,7 +1238,9 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_mask_hs_bilateral \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
-	v2_mbox_writeprotect
+	v2_mbox_writeprotect \
+	txgen_deadtime fc_adapter_rx_saturation v2_lane_mask_throughput \
+	fifo_concurrent_race
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1264,10 +1330,14 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
 	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
+	@$(MAKE) --no-print-directory sim_gate_v2_lane_mask_throughput
 	@$(MAKE) --no-print-directory sim_gate_txgen_unit
 	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
 	@$(MAKE) --no-print-directory sim_gate_txgen_ext_hijack
+	@$(MAKE) --no-print-directory sim_gate_txgen_deadtime
 	@$(MAKE) --no-print-directory sim_gate_v2_txgen
+	@$(MAKE) --no-print-directory sim_gate_fc_adapter_rx_saturation
+	@$(MAKE) --no-print-directory sim_gate_fifo_concurrent_race
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election
 	@$(MAKE) --no-print-directory sim_gate_eth_m0

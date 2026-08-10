@@ -653,7 +653,12 @@ module tidelink_fc_adapter #(
         rx_state_next = rx_state_r;
         case (rx_state_r)
             RX_IDLE: begin
-                if (rx_pending_r)
+                // Leave RX_IDLE the same cycle a word is accepted (rx_accept,
+                // combinational), not just on the registered rx_pending_r one
+                // cycle later — closes the RX saturation floor from 3 down to
+                // the achievable 2 hclk cycles/word. See
+                // cocotb/tidelink_fc_adapter/test_rx_saturation_throughput.py.
+                if (rx_pending_r || rx_accept)
                     rx_state_next = RX_ADDR_PHASE;
             end
             RX_ADDR_PHASE: begin

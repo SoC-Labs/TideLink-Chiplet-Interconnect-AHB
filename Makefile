@@ -669,10 +669,13 @@ sim_gate_axi_datanode_recovery:
 #         node in {AW,W,B,AR,R}, expect recovery on every one". All five now
 #         recover byte-exact via NACK->replay, with the R node carrying its own
 #         Fix-G-off discriminator so the result is not vacuous.
-#  GAP-2  I5 backstop SEMANTICS. Only the three PROVEN-passing properties are
-#         blocking here (path restoration after a removable fault, bounded
-#         traffic behind a stuck posted write, re-arm after abort). The two
-#         that FAIL are registered as XFAIL sentinels below, NOT hidden.
+#  GAP-2  I5 backstop SEMANTICS. FOUR properties are blocking here (path
+#         restoration after a REMOVABLE fault AND after a byte-0 SILENT DROP,
+#         bounded traffic behind a stuck posted write, re-arm after abort) — all
+#         now PASS against the synth-B OKAY fix (2026-08-03), which retires a
+#         stuck write with an OKAY B instead of a bare AHB HRESP=ERROR. The one
+#         property still asserting the pre-fix port-ERROR symptom (I5 AHB
+#         legality of the ERROR pulse, F-1) stays an XFAIL sentinel below.
 #
 # Two sim_builds: the GAP-2 tests need the short (2^13) I5 outstanding timeout
 # so the backstop fires inside a sim-able window; GAP-1 uses the 2^16 default.
@@ -683,7 +686,8 @@ sim_gate_axi_datanode_gaps:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_backstop_restores_the_path && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_traffic_behind_a_stuck_write_is_bounded && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_rearms_after_abort)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_rearms_after_abort && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_clean_drop_leaves_path_usable)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -703,22 +707,17 @@ sim_gate_xfail_i5_ahb_legal:
 	  grep -qF "AHB-ILLEGAL ERROR" $$L && \
 	  grep -qF "err1_fires=1" $$L)
 
-# F-2 (KNOWN DEFECT, 2026-08-02): the backstop reports an error but does not
-# RESTORE the path. A byte-0 (data_id) corruption is a clean silent drop — the
-# CRC comparison is gated on data_id === swi_data_id, so no CRC error, no NACK,
-# no replay, and the response is gone forever. The wrapper fires its 2-cycle AHB
-# ERROR and abandons the transfer, but XHB500 is left holding HREADYOUT low with
-# nothing to unwedge it, so the NEXT clean access fails too. This is the first
-# SIM REPRODUCTION of the captured on-silicon wedge: docs/ila_capA_i5_fires_
-# 2026_08_02.csv shows dbg_xhb_hrdyout_raw at 0 for all 3839 samples after the
-# ERROR, never once high, with dbg_i5_stall_ctr already ramping to the next
-# 2^16 expiry. Prior rounds concluded the tb could not model this; it can — it
-# just needed byte 0 instead of byte 4/5.
-sim_gate_xfail_i5_clean_drop:
-	$(call sim_gate_sentinel,xfail_i5_clean_drop,\
-	  { $(MAKE) -C cocotb/tidelink_axi_datanode_recovery test_i5_clean_drop_leaves_path_usable; true; },\
-	  grep -qF "PATH DEAD AFTER A SILENTLY-DROPPED RESPONSE" $$L && \
-	  grep -qF "clean-drop write: ERROR" $$L)
+# F-2 (RESOLVED 2026-08-03): the backstop now RESTORES the path. A byte-0
+# (data_id) corruption is a clean silent drop — the CRC comparison is gated on
+# data_id === swi_data_id, so no CRC error, no NACK, no replay, and the response
+# is gone forever. The old bare-ERROR backstop left XHB500 holding HREADYOUT low
+# with nothing to unwedge it (the captured on-silicon wedge: docs/ila_capA_i5_
+# fires_2026_08_02.csv, dbg_xhb_hrdyout_raw 0 for all 3839 post-ERROR samples).
+# The synth-B OKAY fix (tidelink_top.sv ~:1711-1736) retires the stuck write and
+# re-idles the bridge, so the exact silent-drop repro now RECOVERs and a later
+# clean write lands byte-exact. test_i5_clean_drop_leaves_path_usable was flipped
+# from an XFAIL sentinel to a POSITIVE regression and promoted into the blocking
+# sim_gate_axi_datanode_gaps recipe above.
 
 # ---------------------------------------------------------------------------
 # I1 eth-chiplet bring-up regressions (integ/i1-fix, silicon-proven 2026-07-31).
@@ -1263,7 +1262,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
 SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector \
-	xfail_i5_ahb_legal xfail_i5_clean_drop
+	xfail_i5_ahb_legal
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1369,10 +1368,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
 	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
-	@# Two KNOWN-DEFECT sentinels from the 2026-08-02 AXI data-node review
-	@# (docs/VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md F-1, F-2).
+	@# KNOWN-DEFECT sentinel from the 2026-08-02 AXI data-node review
+	@# (docs/VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02.md F-1). F-2 was
+	@# fixed 2026-08-03 (synth-B OKAY) and promoted into sim_gate_axi_datanode_gaps.
 	@$(MAKE) --no-print-directory sim_gate_xfail_i5_ahb_legal
-	@$(MAKE) --no-print-directory sim_gate_xfail_i5_clean_drop
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"

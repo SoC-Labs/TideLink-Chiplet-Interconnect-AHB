@@ -1187,9 +1187,9 @@ module tidelink_top #(
     assign eye_swi_dwell_us_w     = 32'h0;
     assign eye_swi_ctrl_w         = 32'h0;
     assign eye_score_idx_w        = 7'h0;
-    assign eye_force_phase_en_w   = 1'b0;
-    assign eye_force_phase_val_w  = 4'h0;
-    assign eye_force_slip_val_w   = 3'h0;
+    assign eye_force_phase_en_w   = 32'h0;
+    assign eye_force_phase_val_w  = 32'h0;
+    assign eye_force_slip_val_w   = 32'h0;
     assign eye_crc_err_cnt_clr_w  = 1'b0;
 `endif
 
@@ -1644,7 +1644,9 @@ module tidelink_top #(
                 // read still legitimately drives HRESP=ERROR here.
                 if (sub_rd_os_r) sub_err1_r <= 1'b1;  // fire ERROR (read only)
             end else begin
-                sub_stall_ctr_r <= sub_stall_ctr_r + 1'b1;
+                // Sized increment (was `+ 1'b1`): identical value, equal-width
+                // operands. TL-009 mitigation code -- deliberately a no-op.
+                sub_stall_ctr_r <= sub_stall_ctr_r + (SUB_STALL_TIMEOUT_LOG2+1)'(1'b1);
             end
 
             // (2) I5 outstanding-response backstop. Track sub reads/writes in
@@ -1680,7 +1682,9 @@ module tidelink_top #(
                 // sub_b_done (incl. each synthetic B beat) decrements sub_wr_os_ctr via
                 // the case above, and synth_b_pending stays asserted until it hits 0.
             end else begin
-                sub_osr_ctr_r <= sub_osr_ctr_r + 1'b1;
+                // Sized increment (was `+ 1'b1`): identical value, equal-width
+                // operands. TL-009 mitigation code -- deliberately a no-op.
+                sub_osr_ctr_r <= sub_osr_ctr_r + (SUB_OUTSTANDING_TIMEOUT_LOG2+1)'(1'b1);
             end
         end
     end

@@ -13,6 +13,12 @@
 //   NODE=3: pristine deps _3 FAILS (a2l_full=1 after a lap-ahead ACK(33)); this
 //   override PASSES. Idle single-clock sim never tears -> silicon verifies w_inc.
 //
+// TL-032 (2026-08-09): the TL-027 window guard was NOT revert-aware. Added a
+//   revert-aware rewind of a2l_link_addr on link_revert (see the always block)
+//   so a NACK-driven replay's recovery ACKs are accepted instead of wedging.
+//   REPRODUCE-FIRST proven NODE=3: deps FAIL / override PASS on the mid-stream
+//   revert scenario (test_revert_recovery_ack_accepted).
+//
 module WlinkGenericFCReplayV2_3(
   input         app_clk,
   input         app_reset,
@@ -138,9 +144,27 @@ module WlinkGenericFCReplayV2_3(
   assign link_addr_to_app_clk_w_addr = a2l_link_addr_in; // TL-027 port: gated ACK (guard-clamped)
   assign link_addr_to_app_clk_r_clk = app_clk; // @[FC.scala 779:44]
   assign link_addr_to_app_clk_r_reset = app_reset; // @[FC.scala 780:33]
+  // TIDELINK LOCAL OVERRIDE (TL-032 revert-aware a2l ACK-ptr, W-node port)
+  // The TL-027 window guard (a2l_ack_valid) rejects any ACK whose outstanding
+  // window a2l_ack_off_max = fifo_io_rbin_ptr - a2l_link_addr exceeds 6'h20. On a
+  // NACK-driven replay the FCSM asserts link_revert and rewinds the FIFO read ptr
+  // (fifo_io_rbin_ptr -> link_revert_addr, often 0). Pre-fix a2l_link_addr was
+  // advanced ONLY on a2l_ack_valid, never rewound, so a revert that pulls rbin
+  // BELOW a2l_link_addr makes off_max wrap mod-64 to a huge value (> 6'h20) ->
+  // every recovery ACK is rejected -> a2l_link_addr frozen -> a2l_full sticks ->
+  // app_ready=0 -> TX stall -> PS-bus wedge (the R1 residual after TL-027).
+  // FIX: rewind a2l_link_addr to link_revert_addr IN LOCK-STEP with the FIFO's
+  // rbin rewind, so off_max stays in-window (== 0 right after the revert) and the
+  // recovery ACKs are accepted again. link_revert and a2l_ack_valid are mutually
+  // exclusive (the FCSM decodes them from the same 3-bit ack_nack tag: ACK=2 vs
+  // NACK/revert=3, WlinkGenericFCSM_4.v:670/672), so prioritising revert here can
+  // never drop a concurrent legitimate ACK. Non-revert path (continuous w_inc +
+  // window guard) is unchanged. Widths are node-specific: 6-bit ptr, window 6'h20.
   always @(posedge link_clk or posedge link_reset) begin
     if (link_reset) begin
       a2l_link_addr <= 6'h0;
+    end else if (link_revert) begin       // TL-032: revert-aware rewind (with rbin)
+      a2l_link_addr <= link_revert_addr;
     end else if (a2l_ack_valid) begin     // TL-027 port: gated ACK advance
       a2l_link_addr <= link_ack_addr;
     end

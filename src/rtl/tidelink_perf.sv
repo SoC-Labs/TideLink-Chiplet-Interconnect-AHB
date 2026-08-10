@@ -357,7 +357,10 @@ module tidelink_perf #(
             ewma_primed_r          <= 1'b0;
             deriv_sample_r         <= '0;
             prev_credit_sample_r   <= '0;
-            deriv_r                <= '0;
+            // $signed() keeps the reset value's type matched to deriv_r, which
+            // is `logic signed [CREDIT_W:0]`; a bare '0 is unsigned and was an
+            // implicit unsigned->signed conversion (same bits, explicit now).
+            deriv_r                <= $signed({(CREDIT_W+1){1'b0}});
             trend_r                <= 2'b01;   // steady
             level_r                <= 2'b11;   // deep (no credits burned yet)
             credit_starve_sticky_r <= 1'b0;
@@ -378,7 +381,7 @@ module tidelink_perf #(
             ewma_q_r <= ewma_q_next;
 
             // -------- Derivative window -------------------------------------
-            deriv_sample_r <= deriv_sample_r + 1'b1;
+            deriv_sample_r <= deriv_sample_r + DERIV_WINDOW_LOG'(1'b1);
             if (&deriv_sample_r) begin
                 deriv_r <= $signed({1'b0, credit_count})
                          - $signed({1'b0, prev_credit_sample_r});

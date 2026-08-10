@@ -22,7 +22,8 @@ result: the B node lacks the self-latch, so the TL-027 port is not its cure.
 import cocotb
 from cocotb.triggers import RisingEdge
 from test_a2l_replay_cdc import (
-    start_clocks, reset_with_skew, probe, link_ack, _sigint, USE_DEPS_DUT)
+    start_clocks, reset_with_skew, probe, link_ack, _sigint, USE_DEPS_DUT,
+    run_revert_recovery)
 
 LAP_AHEAD = 9   # depth-8: one lap (8) + 1  ->  a2l_full when wptr=1 (0b0001), ack=0b1001
 
@@ -71,3 +72,11 @@ async def test_b_node_predata_ack_lap_ahead(dut):
         f"the first write sees a2l_full={full} app_ready={rdy} wbin_ptr={wp} -- winc never fires, "
         f"the B FCSM would never transmit. Pristine deps _5 => the TL-027 CDC self-latch is REAL "
         f"on the data-plane B node; the fixed override must make this PASS.")
+
+
+@cocotb.test()
+async def test_b_node_revert_recovery_ack_accepted(dut):
+    """TL-032 residual R1 (B node, 4-bit ptr / depth-8 / window 4'h8): a mid-stream
+    link_revert that rewinds rbin below the ACK ptr must not lock the guard out of
+    accepting recovery ACKs. deps FAIL (guard not revert-aware), override PASS."""
+    await run_revert_recovery(dut, "_5", ptr_mask=0xF, window=8)

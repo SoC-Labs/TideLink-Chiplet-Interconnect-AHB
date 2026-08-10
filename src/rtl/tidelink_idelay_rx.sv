@@ -149,12 +149,21 @@ module tidelink_idelay_rx #(
             // it must NOT gate the RX datapath or the calibrator. The XDC
             // ties this IDELAYCTRL to the IDELAYE2s via IODELAY_GROUP.
             // ---------------------------------------------------------------
+            // Dead-end sink for the IDELAYCTRL RDY output (see below).
+            wire idelayctrl_rdy_nc;
             // Literal (not the IDELAY_GRP param) — Vivado synth requires a
             // packed/literal attribute value. MUST equal IDELAY_GRP default
             // and _idelay_grp in pynq_z2_tidelink_idelay.xdc.
+            // RDY is an OUTPUT of IDELAYCTRL (UG471/UG953: RDY out, REFCLK in,
+            // RST in). Routed to a named dead-end net rather than left as an
+            // empty `.RDY()`: the lint flow resolves pin direction from the
+            // module port table, and the unisim primitive is not in the lint
+            // file set, so an empty connection here is indistinguishable from
+            // a floating INPUT — which is a gating class. Naming the net makes
+            // the openness explicit and provably inert.
             (* IODELAY_GROUP = "tidelink_rx_idelay" *)
             IDELAYCTRL u_idelayctrl (
-                .RDY    (/* unconnected — see note above */),
+                .RDY    (idelayctrl_rdy_nc),
                 .REFCLK (idelay_ref_clk),
                 .RST    (idelay_rst)
             );
@@ -172,6 +181,11 @@ module tidelink_idelay_rx #(
                 // 0..31 range. lsb_i[gl]=0 => {lane_phase,1'b0} = the historical
                 // even-only x2 mapping (0,2,..30), bit-identical default.
                 wire [4:0] lane_tap   = {lane_phase, lsb_i[gl]}; // 2*nibble + lsb, 0..31
+                // CNTVALUEOUT is an OUTPUT of IDELAYE2 (UG471/UG953) reporting
+                // the loaded tap back. Unused: the tap is written, never read
+                // back. Named dead-end net rather than an empty connection, for
+                // the same reason as IDELAYCTRL.RDY above.
+                wire [4:0] cntvalueout_nc;
 
                 // VAR_LOAD: CNTVALUEIN is loaded into the tap when LD=1.
                 // We hold LD high so the tap continuously tracks the
@@ -192,7 +206,7 @@ module tidelink_idelay_rx #(
                     .REFCLK_FREQUENCY      (REFCLK_MHZ),
                     .SIGNAL_PATTERN        ("DATA")
                 ) u_idelaye2 (
-                    .CNTVALUEOUT (/* unused */),
+                    .CNTVALUEOUT (cntvalueout_nc),
                     .DATAOUT     (pad_rx_o[gl]),
                     .C           (idelay_ref_clk),
                     .CE          (1'b0),

@@ -43,11 +43,22 @@ TOPLEVEL = tb_top
 # Default: use the local-override DUT if it exists (so the in-tree CDC fix is
 # what gets simulated), else fall back to the deps (pre-fix) source.
 # Force the pristine pre-fix deps source with: make USE_DEPS_DUT=1
+#
+# TL-032 reproduce-first "before" baseline: make USE_PREFIX_DUT=1 selects the
+# TL-027 override WITHOUT the revert-aware a2l_link_addr rewind (captured from the
+# override's git HEAD as tl027only_<NODE_MOD>.v). This is the correct A/B for the
+# revert-wedge residual R1 — the pristine deps has NO ACK-window guard at all, so
+# the guard-lockout residual can only be shown against the TL-027-guarded baseline:
+#   USE_PREFIX_DUT=1 (TL-027 guard, NOT revert-aware) -> revert test FAILS.
+#   default (local override, revert-aware TL-032)     -> revert test PASSES.
 LOCAL_DUT  := $(TIDELINK_HOME)/src/rtl/local_overrides/$(NODE_MOD).v
 DEPS_DUT   := $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/wlink/$(NODE_MOD).v
+PREFIX_DUT := $(CURDIR)/tl027only_$(NODE_MOD).v
 
 ifeq ($(USE_DEPS_DUT),1)
   DUT_SRC := $(DEPS_DUT)
+else ifeq ($(USE_PREFIX_DUT),1)
+  DUT_SRC := $(PREFIX_DUT)
 else
   DUT_SRC := $(if $(wildcard $(LOCAL_DUT)),$(LOCAL_DUT),$(DEPS_DUT))
 endif

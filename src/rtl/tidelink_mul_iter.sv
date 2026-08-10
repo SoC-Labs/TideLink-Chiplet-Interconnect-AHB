@@ -67,7 +67,13 @@ module tidelink_mul_iter (
             count_r   <= 5'd0;
             accum_r   <= 64'sd0;
             b_shift_r <= b;
-            a_ext_r   <= {{32{a[31]}}, a};  // Sign-extend a to 64 bits
+            // Sign-extend a to 64 bits. The 64'() size cast preserves the
+            // operand's signedness, so on `input wire signed [31:0] a` it is
+            // exactly the {{32{a[31]}}, a} it replaces -- without the manual
+            // sign bit (which mixed a signed variable with an unsigned
+            // replication inside one concatenation, and which silently goes
+            // wrong the day `a` changes width).
+            a_ext_r   <= 64'(a);
         end else if (active_r) begin
             // Shift-and-add: if current bit of b is 1, add shifted a
             if (b_shift_r[0])

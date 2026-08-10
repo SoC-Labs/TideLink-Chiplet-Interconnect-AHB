@@ -818,3 +818,122 @@ async def test_gm_3word_timestamp(dut):
     assert len(extra) == 0, f"Unexpected extra packet after 6: got {len(extra)}"
 
     dut._log.info("SRV-015 test_gm_3word_timestamp PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SRV-016..018 — lock detection is symmetric about zero.
+#
+# These close the gap that let the `$unsigned(offset_r)` lock compare survive:
+# before them, servo_locked was never asserted-on anywhere in the suite (the one
+# UVM test that consumes it FORCES it high), so a lock indicator that could only
+# latch on consecutive POSITIVE offsets looked healthy.
+#
+# STEP_THRESH = 1000 ns throughout, so:
+#   phase-step band  : |offset| > 1000        (SET_TIME, integral+lock cleared)
+#   lock band        : |offset| < 1000/4 = 250
+#   PI-but-unlocked  : 250 <= |offset| <= 1000
+# LOCK_COUNT = 4, and lock asserts on the iteration AFTER the counter reaches
+# it, so 5 exchanges are the minimum; these use 8.
+# ═══════════════════════════════════════════════════════════════════════════
+
+STEP_THRESH_NS = 1_000
+LOCK_EXCHANGES = 8
+
+
+async def _lock_tb(dut):
+    """Subordinate servo configured for the lock-band tests."""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    tb = ServoTB(dut)
+    await tb.reset()
+    await tb.reg_write(0, 0x3)                 # enable=1, mode=1 (Subordinate)
+    await tb.reg_write(3, STEP_THRESH_NS)      # SERVO_STEP_THRESH
+    # Small gains: keep the PI from dominating the test's runtime. The offset
+    # is re-driven from the testbench each exchange, so the loop is open here
+    # and the stimulus stays exactly at the value each test intends.
+    await tb.reg_write(1, math.floor(0.1 * (1 << 32)) & 0xFFFFFFFF)  # Kp
+    await tb.reg_write(2, math.floor(0.01 * (1 << 32)) & 0xFFFFFFFF)  # Ki
+    return tb
+
+
+async def _run_offset(tb, offset_ns, n=LOCK_EXCHANGES):
+    """Drive `n` exchanges that each compute exactly `offset_ns`.
+
+    offset = ((t2-t1) - (t4-t3)) / 2, so fix (t2-t1) + (t4-t3) = 2000 ns and
+    let the asymmetry carry the sign.  offset_ns > 0 => forward path longer.
+    """
+    fwd = 1_000 + offset_ns          # t2 - t1
+    rev = 1_000 - offset_ns          # t4 - t3
+    for _ in range(n):
+        await tb.run_sub_exchange(
+            t1_sec=0, t1_ns=10_000,
+            t2_sec=0, t2_ns=10_000 + fwd,
+            t3_sec=0, t3_ns=50_000,
+            t4_sec=0, t4_ns=50_000 + rev,
+        )
+    raw = await tb.reg_read(5)                 # SERVO_DELAY slot 5 = last_offset
+    return raw - (1 << 32) if raw >= (1 << 31) else raw
+
+
+@cocotb.test()
+async def test_lock_on_small_negative_offset(dut):
+    """SRV-016: a small NEGATIVE offset must latch servo_locked.
+
+    THE REGRESSION TEST for the `$unsigned(offset_r)` lock compare. $unsigned()
+    reinterprets the bit pattern rather than taking a magnitude, so every
+    negative offset read as >= 2**31, always exceeded STEP_THRESH/4, and the
+    else arm cleared lock_counter_r and servo_locked on every iteration. A
+    tracking servo dithers about zero, so lock could never latch in the field.
+    Reads servo_locked == 0 on the pre-fix RTL and 1 after.
+    """
+    tb = await _lock_tb(dut)
+    offset = await _run_offset(tb, -50)
+
+    assert offset == -50, f"expected a -50 ns offset stimulus, computed {offset}"
+    assert int(dut.servo_locked.value) == 1, (
+        f"servo_locked did not latch on |offset|=50 ns < STEP_THRESH/4="
+        f"{STEP_THRESH_NS // 4} ns after {LOCK_EXCHANGES} exchanges "
+        f"(offset={offset} ns)")
+    status = await tb.reg_read(4)
+    assert status & 0x1, "SERVO_STATUS[0] (locked) disagrees with servo_locked"
+
+    dut._log.info("SRV-016 test_lock_on_small_negative_offset PASSED")
+
+
+@cocotb.test()
+async def test_lock_on_small_positive_offset(dut):
+    """SRV-017: a small POSITIVE offset still latches servo_locked.
+
+    The no-regression half of SRV-016: the positive arm is the only one the
+    pre-fix compare could ever satisfy, so it must survive the change.
+    """
+    tb = await _lock_tb(dut)
+    offset = await _run_offset(tb, +50)
+
+    assert offset == 50, f"expected a +50 ns offset stimulus, computed {offset}"
+    assert int(dut.servo_locked.value) == 1, (
+        f"servo_locked did not latch on a +50 ns offset after "
+        f"{LOCK_EXCHANGES} exchanges")
+
+    dut._log.info("SRV-017 test_lock_on_small_positive_offset PASSED")
+
+
+@cocotb.test()
+async def test_lock_clears_outside_quarter_threshold(dut):
+    """SRV-018: |offset| > STEP_THRESH/4 clears a latched lock.
+
+    Proves the fix did not simply make the compare always-true. 400 ns sits
+    above the 250 ns lock band but below the 1000 ns phase-step band, so the
+    servo still runs the PI path and reaches the lock-detect else arm.
+    """
+    tb = await _lock_tb(dut)
+
+    await _run_offset(tb, -50)
+    assert int(dut.servo_locked.value) == 1, "precondition: servo should be locked"
+
+    offset = await _run_offset(tb, +400, n=1)
+    assert offset == 400, f"expected a +400 ns offset stimulus, computed {offset}"
+    assert int(dut.servo_locked.value) == 0, (
+        "servo_locked stayed set with |offset|=400 ns > STEP_THRESH/4="
+        f"{STEP_THRESH_NS // 4} ns")
+
+    dut._log.info("SRV-018 test_lock_clears_outside_quarter_threshold PASSED")

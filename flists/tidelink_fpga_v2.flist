@@ -264,6 +264,8 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayA
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
+// TL-027 a2l CDC self-latch fix (AW node _1): re-point deps->local_override so the
+// FPGA build carries the fix (added by 1112d63 but NOT wired into this flist). 2026-08-09.
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
@@ -275,8 +277,10 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
+// TL-027 a2l CDC self-latch fix (W node _3): re-point deps->local_override. 2026-08-09.
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
+// TL-027 a2l CDC self-latch fix (B node _5): re-point deps->local_override. 2026-08-09.
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v

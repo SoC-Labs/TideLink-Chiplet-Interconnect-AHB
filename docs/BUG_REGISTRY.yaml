@@ -1,0 +1,651 @@
+# =============================================================================
+# TideLink chiplet interconnect — KNOWN-BUG REGISTRY
+# =============================================================================
+# Single source of truth for outstanding + recently-resolved bugs on the
+# TideLink GPIO PHY V2 chiplet interconnect (KR260 two-board eth-chiplet pair,
+# XHB500 AHB<->AXI bridge, axi_chiplet_controller / Wlink FC nodes).
+#
+# This file is machine-referenceable and human-signable. Agents update the
+# per-bug `status`, `fix`, and `verification` blocks; the human approver owns
+# the final `signoff.approved` flag.
+# -----------------------------------------------------------------------------
+schema_version: 1
+generated: 2026-08-06
+maintainer: autonomous overnight campaign (Claude Opus 4.8)
+approver: David Mapstone <david@mapstone.me>
+
+# ---- STATUS LIFECYCLE -------------------------------------------------------
+# open        : not yet root-caused
+# root_caused : mechanism understood, no working fix yet
+# fix_built   : fix implemented in RTL/scripts, not yet verified
+# sim_proven  : reproduce-first sim test PASSES with fix / FAILS without it
+# hw_proven   : verified on the KR260 pair (byte-exact / defect gone)
+# signed_off  : human approver has set signoff.approved: true
+# deferred    : needs a decision or a separate workstream before progress
+# wontfix     : accepted as-is / out of scope
+# -----------------------------------------------------------------------------
+legend:
+  severity: [rank1_critical, high, medium, low, fyi]
+  status: [open, root_caused, fix_built, sim_proven, hw_proven, signed_off, deferred, wontfix]
+
+# ---- SIGN-OFF MECHANISM -----------------------------------------------------
+# Every bug carries a `signoff` block:
+#   claude_verdict : Claude's evidence-backed claim about the fix state
+#   evidence       : list of concrete artefacts (commit sha, test path+result,
+#                    HW log line, APB register read) supporting the verdict
+#   approved       : true ONLY when the human approver signs off (never by Claude)
+#   approved_by / approved_date : filled at sign-off time
+# Claude may advance `status` up to `hw_proven` autonomously with evidence.
+# `signed_off` requires approver action. Anything that (a) changes the netlist
+# on the tapeout trunk, (b) pushes to a public default branch, or (c) is a
+# rig/architecture decision is a DECISION and is never auto-signed.
+signoff_policy:
+  auto_signoff_allowed: false
+  claude_max_status: hw_proven
+  approver: David Mapstone
+  how_to_sign: >
+    Set signoff.approved: true, signoff.approved_by, signoff.approved_date on a
+    bug whose status is hw_proven (or sim_proven where HW is not applicable) and
+    whose evidence you accept. Bulk sign-off: set campaign.signed_off_by/date
+    once every rank1_critical + high bug is individually approved.
+
+# ---- CAMPAIGN ROLLUP --------------------------------------------------------
+campaign:
+  name: overnight-bug-resolution-2026-08-06
+  goal: resolve + hardware-test outstanding bugs autonomously by morning
+  signed_off_by: null
+  signed_off_date: null
+  open_rank1_critical: 1     # TL-001 (peer-write data-drop / calibrator sweep)
+  open_functional_high: 0    # F-1/F-2/synth-B/ECC/txgen all FIXED on the integ line
+  open_tapeout_high: 2       # TL-010 (F13 PTP), TL-011 (F19 PHY BIST)
+  notes: >
+    Populated 2026-08-06 evening from 4 assessment agents; resolution loop ran
+    overnight into 2026-08-07. See docs/OVERNIGHT_SUMMARY_2026_08_07.md.
+  awaiting_david_signoff:   # reached sim_proven/hw_proven with evidence; set signoff.approved when accepted
+    - "TL-003 Fix K (hw_proven, silicon)"
+    - "TL-005 F-2 backstop (hw_proven)"
+    - "TL-004 F-1 illegal-ERROR (sim_proven+gated)"
+    - "TL-006 W-byte-0 ECC (sim_proven+NOW gated 63222b6)"
+    - "TL-007 B-wedge OKAY synth-B (hw_proven)"
+    - "TL-002 wr_hold_r (sim_proven, standalone)"
+    - "TL-008 txgen hijack (sim_proven+gated)"
+  david_decisions:
+    - "TL-001 peer-write drop: pursue eye/framing (autonomous FIX-3 equivalent + TL-009) OR accept FIX 3 as a runtime bring-up step. NOT resolved."
+    - "TL-009 die_a marginal-eye wedge: physical PHY workstream (re-pin SRCC / ILA / a2l). DOMINANT HW blocker."
+    - "TL-010 F13 PTP: land+gate a0a224c on shipping branch/main; two-board convergence HW."
+    - "TL-011 F19 PHY BIST: DFT/BIST harness + first-silicon go/no-go metric (unmitigated tapeout risk)."
+    - "TL-013/014 V1 flist retire + drop dup gpio-phy submodule (coupled)."
+    - "TL-015 push CI/integ fixes to main (clean FF: 5be494b or 1107151)."
+  key_context:
+    - "TWO TREES DIVERGE. integ/axirec-on-chiplet @1107151 = the eth-chiplet submodule pin; carries ALL recovery/PTP/ECC fixes and gates them. Standalone fix/z2-drop-park-hook @9eaafb7 (the main checkout) carries NONE (grep synth_b_pending=0). So on the standalone IP branch F-1/F-2/PTP-RO are structurally OPEN — a MERGE/PIN gap, not unfixed RTL. NEITHER line is on main (see TL-015)."
+    - "What actually ships consumes the integ line: eth-chiplet pin=1107151; ASIC v2 flists carry the fixes. The standalone branch is behind."
+    - "F-1/F-2 reachability is latent on the KR260 rig: the XHB500 early-write-response path needs hprot[2]=1; the PS backdoor drives it 0. Real exposure = which shipping-SoC master drives HPROT[2]=1 (write-buffering CPU/DMA) — an integration question."
+    - "Naming collision: the commit labelled 'Fix K' (9dfe1da) is the XHB500 hazard-list BID-correction, NOT the 08-02 review's proposed 'Fix K' (qualify ERROR override), which was SUPERSEDED by the read-only-ERROR F-1 fix 41c4107. One item = TL-003."
+
+# =============================================================================
+# BUGS
+# =============================================================================
+bugs:
+
+  # ---------------------------------------------------------------------------
+  - id: TL-001
+    title: Peer-write DATA-drop (die_b SRAM reads 0) — calibrator framing lottery
+    severity: rank1_critical
+    area: phy/calibrator
+    status: root_caused
+    summary: >
+      die_a->die_b cross-die AXI writes cross their ADDRESS but die_b SRAM reads
+      0 — the write payload is lost. Per-POR "lottery": some bring-ups land the
+      write byte-exact, most drop it. Reframed (08-06) from "physical marginal
+      eye" to a calibrator FRAMING-SELECTION logic issue: on KR260 USE_IDELAY=0,
+      the "phase sweep" only rotates the 16 DIGITAL word framings.
+    root_cause: >
+      TERMINAL-LATCH BUG in the calibrator autonomous convergence. The RX lane
+      checker scores the PEER's incoming training pattern, so best_run>0 needs
+      BOTH dies training-transmitting SIMULTANEOUSLY. calibrated_once_q latches on
+      ANY first reach of S_DONE (calibrator_v2.sv:771-774) INCLUDING a give-up
+      S_DONE (retry_exhausted :1465, or :1467 else->S_DONE on a transient
+      role_locked dip). Once a die latches a give-up S_DONE it drops training_mode,
+      stops driving the pattern, and can never re-sweep -> the peer sweeps against
+      a silent lane forever -> BOTH dies read best_run=0 and fall back to the (0,0)
+      framing = the drop. Matches the land<->0x27 / drop<->0x05 (one die done, one
+      sweeping) asymmetry. The earlier ":384 PRBS-not-on-wire" suspect is REFUTED
+      (that comment is the S_VALIDATE PRBS oracle, not best_run, which is scored
+      off the training pattern that IS on the wire locally). min_lock_dwells=1 was
+      necessary (forces S_ARM->S_SWEEP) but orthogonal to the PASS gate and to
+      overlap — why it ran the sweep yet left best_run=0. Pass chain: per-cycle
+      Hamming<=5 (hardwired autonomous, axi_chiplet_controller.sv:3828) -> lock
+      after LOCK_CONSEC=8 consecutive -> lane_score>=LOCK_THRESH=16 at 64-cyc
+      dwell -> best_run promote; lane_passed = best_run>=16.
+    fix:
+      approach: >
+        Sequence: FIX 3 (diagnostic + mitigation, APB-only, NO rebuild) -> FIX 1
+        (autonomous cure, netlist) -> FIX 2 (follow-on if residual quantisation).
+      candidates:
+        - "FIX 3 (HIGH as diagnostic, NON-netlist/APB): assert swi_training_mode CTRL[6] hold on BOTH dies simultaneously, clear together -> forces both patterns on the wire concurrently -> guaranteed overlap. Decisive A/B test between cause A(absent) vs B(marginal) AND a runtime HW workaround. NO bitstream rebuild."
+        - "FIX 1 (HIGH, netlist): calibrator_v2.sv:774 latch calibrated_once_q ONLY on genuine success (sweep_success / not validation_timed_out / link_up), so a give-up S_DONE keeps re-arming (MAX_RESWEEPS=0 -> re-sweep forever) until peer overlap. Also revisit :1467 else->S_DONE on transient role_locked dip. Impl note: sweep_success declared :1202 (below) -> move decl up under default_nettype none."
+        - "FIX 2 (MEDIUM, netlist): relax PASS gate — axi_chiplet_controller.sv:3828 Hamming {8{3'd5}}->{8{3'd7}}, or calibrator_v2.sv:976 SCORE_DECAY 2->1, or :5918 .LOCK_THRESH(8). Safe: link_up ANDs CR_PKT/PRBS validation so a false framing re-sweeps, no silent corruption."
+      files:
+        - src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv   # FIX 1 IMPLEMENTED here (uncommitted)
+        - src/rtl/local_overrides/axi_chiplet_controller.sv
+      fix1_implementation: >
+        DONE (2026-08-06, uncommitted in eth-chiplet submodule): calibrator_v2.sv
+        latch gated `else if (cur_state == S_DONE && !validation_timed_out)`.
+        Uses the EXISTING give-up discriminator (validation_timed_out, declared
+        L545, set on give_up_to_done so already 1 on the first give-up S_DONE
+        cycle; stays 0 on a genuine validate-confirm S_DONE). Genuine bringup is
+        PROVABLY unchanged (validation_timed_out=0 -> still latches); only the
+        give-up path now keeps re-arming. Sidesteps the sweep_success decl-order
+        issue (validation_timed_out is declared above the latch). Building both
+        dies + calibrator sim regression in flight.
+      build_note: >
+        HW build (V2 flist) compiles src/rtl/local_overrides/tidelink_phy_align_
+        calibrator_v2.sv (verified: tidelink_fpga_v2.flist:410). The cocotb
+        calibrator suite compiles the PRISTINE deps copy (deps/tidelink-phy/rtl/
+        tidelink_phy_align_calibrator.sv, same latch logic) — sim mirrors FIX 1
+        into deps transiently then reverts. A permanent gated reproduce test for
+        FIX 1 needs the local-override plumbed into a tb (force_recal_i port) —
+        FOLLOW-UP coverage gap.
+      commit: e5bd29c   # FIX 1 + min_lock_dwells, branch fix/tl001-calibrator-terminal-latch (submodule; NOT main)
+      branch: fix/tl001-calibrator-terminal-latch
+      netlist_affecting: true   # FIX 1/2 yes; FIX 3 no
+    hw_discriminators:
+      - "Cause A (peer pattern absent) vs B (present-marginal): on a dropping sweep read 0x2144 sync_obs_lane_live_1 + dwell_min_dist. dwell_min_dist~16 + live-match=0 => ABSENT(A, coordination); dwell_min_dist<=5-7 flickering => PRESENT-marginal(B, quantisation)."
+      - "Terminal-latch hit: read both dies 0x2108 fcsm[19:17] + ILA state — a die stuck at S_DONE/cal_done=1 while the peer shows cal=0/sweeping confirms the abandon."
+      - "Physical residual: if FIX 3 still yields best_run=0 with small dwell_min_dist AND re-POR flips land<->drop on the identical bitstream => physical capture-clock variance (P-B lottery class), FIX 2 is the only lever."
+    verification:
+      sim_test: "calibrator suite (deps mirror + revert): all 3 PASS with FIX 1 — happy_path_lock, validate_timeout_without_lock (give-up invariant cal_done=1+validation_timed_out=1), hold_training_mode. Regression-neutral + compiles. Positive re-arm behavior = HW-validated (existing tests don't assert calibrated_once_q)."
+      in_sim_gate: false   # FIX 1 permanent gated reproduce = follow-up (needs local-override plumbed into a tb)
+      hw_tested: mitigation_demonstrated   # FIX 3 (APB) converts drop->land; autonomous FIX 1 building+pending HW
+      hw_evidence: >
+        2026-08-06 23:10 (mindwell build, kr260 pair): baseline bring-up DROPPED
+        (die_b=0x00000000) AND die_a WEDGED under the write (status 0x05890000,
+        best_run=0, lane_locked=0x00 both dies). After a bilateral swi_training_mode
+        0x2100-bit0 pulse on BOTH dies: die_a lane_locked 0x00->0xe4, and 3/3 peer
+        writes landed byte-exact (0xF3C00001/2/3) with die_a staying ALIVE. NOTE:
+        best_run stayed 0 throughout -> the working mechanism is lane RE-LOCK +
+        coherent default framing (forcing a give-up die to re-drive its training
+        pattern), NOT best_run>0 as predicted. This STRENGTHENS FIX 1 (a give-up
+        die stops driving its pattern; FIX 1 stops it giving up). Durability soak
+        (25 writes, 23:16): 11/11 writes DELIVERED DATA byte-exact to die_b, BUT
+        die_a WEDGED at write ~8 -> FIX 3 fixes the DATA-DROP but NOT the die_a
+        marginal-eye wedge (TL-009), the dominant sustained-write blocker (separate
+        physical bug).
+        FIX 1 AUTONOMOUS HW (2026-08-07, FIX1 build, no APB pulse): across bring-ups
+        1 land / 2 drops (~baseline lottery) with die_a wedging at write 1-2 every
+        cycle. CRUCIALLY both the landing and dropping bring-ups reached a GENUINE
+        S_DONE (FCSM=4, reanchored try 1-2) -> FIX 1's give-up re-arm path was NOT
+        exercised -> the drop ALSO occurs on genuine bring-ups, which FIX 1 alone
+        does NOT cure. 0x2108 is not a land/drop predictor (land had 0x05890000,
+        drop had 0x27890000 — opposite of the FIX 3 run). The 3-cycle test earlier
+        was INVALID (die_a unreachable from rapid-POR degradation; recovered by a
+        clean single JTAG POR). NET: FIX 1 is sim-proven + correct for the give-up
+        mode but is NOT a demonstrated autonomous cure; robust soak blocked by TL-009.
+    refuted:
+      - in-situ SWI_FORCE_RECAL (7 recals, 0 lands, progressively wedged die_a)
+      - CRC-enable (both-die SEND_NACK wedge)
+      - H3 lower-rate (link already ~3.125 MHz)
+      - "land<->good-eye correlation via SWI_LANE_STATUS 0x27/0x05 (XOR=return-traffic bits, not eye predictor)"
+    signoff:
+      claude_verdict: >
+        NOT RESOLVED — do NOT sign off. Progress: (a) FIX 3 bilateral-training
+        pulse (APB) is a HW-demonstrated mitigation — 11/11 byte-exact data
+        deliveries, proving the drop is fixable at the framing/re-lock level, not
+        physical-eye-only; (b) FIX 1 (give-up terminal-latch) is sim-proven +
+        correct for the give-up mode + committed e5bd29c. BUT FIX 1 did NOT
+        autonomously cure the drop on HW (1 land / 2 drop; drop persists on GENUINE
+        S_DONE bring-ups where the give-up path is not exercised) -> the root cause
+        is INCOMPLETE (a framing-quality drop exists independent of the give-up
+        latch). The physical die_a marginal-eye wedge (TL-009) wedges within 1-2
+        writes, blocking any robust soak. REMAINING: (1) explain+fix the genuine-
+        bring-up framing drop (find the autonomous equivalent of the FIX 3 active
+        re-training); (2) resolve TL-009 to enable a soak. David call: pursue the
+        eye/framing, or accept FIX 3 as a runtime bring-up step.
+      evidence: [memory:project_rank1_peerwrite_datadrop_2026_08_06, "hw_fix3 11/11 data land", "hw_fix1_single 1 land wedge@1", "hw_fix1_final 0/2 drop wedge@2", commit:e5bd29c]
+      approved: false
+      approved_by: null
+      approved_date: null
+    followup_2026_08_07: >
+      Deeper HW investigation (5 agents + 8 experiments) REFRAMES TL-001: the
+      cross-die write DATA path WORKS byte-exact when die_a is healthy (16/16 in a
+      clean single-process soak). The dominant blocker is the die_a PER-WRITE LEAK
+      (TL-009, reframed from 'marginal eye'), which wedges die_a's PS after ~10-20
+      writes; most observed 'drops' are that wedge killing the in-flight write, plus
+      extra drops under per-write process/CAM churn. So TL-001 is gated on TL-009,
+      which needs a PS-PL ILA to localize the leaked resource. FIX 1 (calibrator,
+      e5bd29c) remains a correct sim-proven improvement but is not the operative fix.
+    related: [TL-002, TL-009]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-002
+    title: Standalone-IP early HREADYOUT on peer write (wr_hold_r)
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven
+    summary: >
+      Write mirror of the rd_pipe_r read fix. ahb_sub_hreadyout asserted early on
+      a peer write, so the AHB master released HWDATA before the AXI W beat landed
+      -> W captured 0 under XHB500 backpressure. wr_hold_r holds hreadyout LOW
+      from the peer-write address latch until the AXI W beat lands.
+    root_cause: >
+      ahb_sub_hreadyout early-assert. SET ext_is_nonseq & ahb_sub_hwrite &
+      ~pipe_valid_r; CLEAR on W-last handshake OR synth_b_pending (I5 backstop,
+      bounded ~2^16 — no new hang). Deadlock-guarded (AW/W feed separate FC nodes).
+    fix:
+      approach: hold ahb_sub_hreadyout LOW until AXI W beat lands
+      files: [src/rtl/tidelink_top.sv]
+      commit: e28c898
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: true
+    verification:
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_writehold.py  # integ tree only
+      in_sim_gate: true   # gated BLOCKING on integ (token axi_datanode_recovery); ABSENT on standalone fix/z2-drop-park-hook
+      hw_tested: n/a-standalone   # redundant on eth-chiplet (parent cap_done_r holds HWDATA)
+      hw_evidence: "eth-chiplet residual drop is DOWNSTREAM of s_axi_wdata; wr_hold_r correctly does not move it there"
+    signoff:
+      claude_verdict: "sim_proven + correct for standalone IP; redundant (not harmful) on eth-chiplet. Candidate sign-off as standalone fix."
+      evidence: [commit:e28c898, "reproduce-first sim: pre-fix FAIL, post-fix PASS; recovery gate GREEN 236s"]
+      approved: false
+      approved_by: null
+      approved_date: null
+    related: [TL-001]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-003
+    title: Fix K — XHB500 hazard-list write-wedge (s_axi_bid mux)
+    severity: high
+    area: rtl/tidelink_top
+    status: hw_proven
+    summary: >
+      Under a bid-mismatch the XHB500 hazard-list never freed the EWR write,
+      hard-wedging the write path. Fix K muxes s_axi_bid to sub_wr_awid_r when a
+      B is pending so the bid matches and the hazard entry is removed.
+    fix:
+      approach: "XHB500 hazard-list BID-correction: s_axi_bid = (s_axi_bvalid_ctrl | synth_b_pending) ? sub_wr_awid_r : s_axi_bid_ctrl (forces constant AWID=0 onto bid so the hazard entry drains under a link-corrupted bid)"
+      files: [src/rtl/tidelink_top.sv]   # integ tidelink_top.sv:1845 (shifted from ~1781 by wr_hold_r); ABSENT on standalone
+      commit: 9dfe1da
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: true
+      naming_note: "This 'Fix K' commit is the hazard-list BID-correction, NOT the 08-02 review's proposed 'Fix K' (qualify ERROR override), superseded by the read-only-ERROR F-1 fix 41c4107."
+    verification:
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_recovery.py  # bid_corrupt reproduce/fix pair
+      in_sim_gate: true
+      hw_tested: true
+      hw_evidence: "silicon-confirmed die_a wedge #3 -> survives to #6"
+    signoff:
+      claude_verdict: "hw_proven (silicon-confirmed). Candidate sign-off."
+      evidence: [commit:9dfe1da, "cocotb bid_corrupt reproduce+fix PASS", "silicon #3->#6"]
+      approved: false
+      approved_by: null
+      approved_date: null
+
+  # ---------------------------------------------------------------------------
+  - id: TL-004
+    title: AXI data-node F-1 — recovery path drives illegal AHB ERROR response
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven   # FIXED + GATED (blocking) on integ line
+    summary: >
+      2026-08-02 verification review CRITICAL: the I5 ERROR backstop could drive
+      an AHB response that violates the AHB protocol. FIXED — I5 ERROR backstop
+      made read-only and writes its own (AHB-legal) synth-B.
+    fix:
+      approach: "make I5 ERROR backstop read-only; it writes its own AHB-legal synth-B"
+      files: [src/rtl/tidelink_top.sv]
+      commit: 41c4107
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: true
+    verification:
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_gaps.py::test_i5_error_is_ahb_legal
+      in_sim_gate: true   # sim_gate_axi_datanode_gaps -> gaps_backstop, BLOCKING (integ)
+      hw_tested: false     # sim only (read-only ERROR path)
+    signoff:
+      claude_verdict: "sim_proven + gated (blocking) on integ. Candidate sign-off."
+      evidence: [commit:41c4107, "gaps_backstop::test_i5_error_is_ahb_legal PASS (blocking)"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-005
+    title: AXI data-node F-2 — I5 backstop asserts but never restores
+    severity: high
+    area: rtl/tidelink_top
+    status: hw_proven   # FIXED + GATED + HW-proven on integ line
+    summary: >
+      2026-08-02 review CRITICAL: the backstop drove ERROR upstream of XHB500 and
+      abandoned s_axi tracking -> XHB500 waits forever for a B that never arrives
+      -> window path permanently dead (silicon-proven: dbg_xhb_hrdyout_raw=0 for
+      all 3839 post-ERROR samples). FIXED via synth-B DRAIN.
+    fix:
+      approach: "on backstop expiry latch synth_b_pending, inject synthetic B (bvalid=1, bid=sub_wr_awid_r, bresp=OKAY) into XHB500 s_axi; DRAIN one OKAY-B per outstanding write until sub_wr_os_ctr=0 so the bridge retires + re-idles"
+      files: [src/rtl/tidelink_top.sv]   # integ :1530/:1807-1824/:1845 ; ABSENT on standalone
+      commit: 9b4c40b   # + e827199 (SLVERR->OKAY, HW-proven) + 42da64b (DRAIN N>=2) + 9dfe1da (Fix K N=1) + e28c898 (wr_hold_r)
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: true
+    verification:
+      sim_test: "test_axi_datanode_gaps.py gaps_backstop 6/6 + test_i5_clean_drop_leaves_path_usable (XFAIL->positive regression)"
+      in_sim_gate: true   # gaps_backstop BLOCKING (integ), promoted 622b3d8
+      hw_tested: true
+      hw_evidence: "die_a survives `errinject --node B --inj-byte 0` (ping 2/2, SSH up); every prior build hard-wedged"
+    caveats:
+      - "OKAY masks the lost write-ack — sound only for a data_id-routing corruption where DATA already landed. David RATIFIED OKAY over SLVERR (SLVERR caused a PS write-retry loop = self-sustaining wedge)."
+      - "Physical marginal-eye wedge (TL-009) still dominates on HW independent of this logical fix."
+      - "OPEN on standalone fix/z2-drop-park-hook (mechanism absent) — merge/pin gap."
+    signoff:
+      claude_verdict: "hw_proven + gated (blocking) on integ. Candidate sign-off (integ line)."
+      evidence: [commit:9b4c40b, commit:e827199, commit:42da64b, "gaps_backstop 6/6", "die_a survives errinject B byte0"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-006
+    title: W-byte-0 header-ECC restore (WlinkEccSyndrome mis-route)
+    severity: high
+    area: rtl/wlink
+    status: sim_proven
+    summary: >
+      A bypassed WlinkEccSyndrome mis-routed single-bit header flips; decode
+      `corrupted` defaulted 1 for syndrome==0 (clean). The _T gate is the fix.
+      byte-0 W/AW/R/B + byte-1 corrected byte-exact in sim.
+    fix:
+      approach: header-ECC restore (_T gate on the syndrome==0 clean case)
+      files: [src/rtl/local_overrides/WlinkEccSyndrome.v]   # wired into all flists incl tidelink_top_full_asic_v2.flist -> ACTIVE in shipping ASIC
+      commit: 1aaed00   # regression tests added 8e071f7
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: true
+    verification:
+      sim_test: "test_axi_datanode_gaps.py GAPS_ECC_TESTS (make gaps_ecc): test_ecc_corrects_w_byte0/_aw_byte0/_r_byte0/_b_byte0/_b_byte1_wordcount/_ecc_persistent_w_byte0_byte_exact"
+      in_sim_gate: true    # A1 DONE: wired into sim_gate_axi_datanode_gaps @63222b6 (verified 6/6 PASS first)
+      hw_tested: false     # HW-validate pending (B byte-0 already HW-proven; W byte-0 wedged pre-ECC)
+      hw_evidence: null
+    action_items:
+      - "A1 DONE (2026-08-06, commit 63222b6): gaps_ecc verified 6/6 PASS then appended to sim_gate_axi_datanode_gaps -> ECC-restore fix now regression-locked."
+      - "A2 (open): HW-validate W byte-0 on KR260 (B byte-0 already HW-proven). Blocked on the die_a wedge TL-009 for a sustained W-corruption soak."
+    signoff:
+      claude_verdict: "sim_proven + NOW GATED (63222b6, 6/6 PASS). Coverage gap CLOSED. Candidate sign-off for the sim/gate side; A2 HW-validate still open."
+      evidence: [commit:1aaed00, commit:8e071f7, commit:63222b6, "gaps_ecc 6/6 PASS", "byte-0 W/AW/R/B byte-exact in sim"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-007
+    title: AXI data-node B-wedge — synth-B OKAY (not SLVERR) restores stuck write
+    severity: high
+    area: rtl/tidelink_top
+    status: hw_proven
+    summary: >
+      synth-B response returned SLVERR which failed to restore a stuck XHB500
+      write; emitting OKAY restores it so die_a survives errinject B byte0.
+    fix:
+      approach: synth-B emits OKAY not SLVERR (David decision on OKAY-vs-ERROR noted)
+      files: [src/rtl/tidelink_top.sv]
+      commit: e827199
+      branch: fix/axi-datanode-recovery
+      netlist_affecting: true
+    verification:
+      sim_test: pending_agent:2
+      in_sim_gate: unknown
+      hw_tested: true
+      hw_evidence: "die_a survives `errinject B byte0` (was hard-wedge every prior build)"
+    signoff:
+      claude_verdict: "hw_proven; OKAY-vs-ERROR semantics is a David decision"
+      evidence: [commit:e827199, "@dcf0fce not pushed"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-008
+    title: txgen ownership-mux hijack — {ext ADDR, gen DATA} silent corruption
+    severity: high
+    area: rtl/tidelink_tx_gen
+    status: hw_proven
+    summary: >
+      ext_data_pend_r closes a silent {ext ADDR, gen DATA} corruption (F14-A
+      class). Promoted to blocking gate.
+    fix:
+      approach: ext_data_pend_r ownership latch (closes {ext ADDR, gen DATA} corruption)
+      files: [src/rtl/tidelink_tx_gen.sv]
+      commit: 383927e
+      branch: integ/axirec-on-chiplet   # also integ/freeze-2026-07-31
+      netlist_affecting: true
+    verification:
+      sim_test: cocotb/tidelink_txgen/test_txgen_ext_hijack.py
+      in_sim_gate: true   # sim_gate_txgen_ext_hijack (both Makefiles)
+      hw_tested: false    # logical/sim fix, no HW claim
+    action_items:
+      - "A3 (hygiene, CAUTION): on fix/z2-drop-park-hook the test file is UNTRACKED and the Makefile wiring UNCOMMITTED -> a fresh clone gate-references a missing file. Committing risks sweeping another session's WIP; recommend David stage by name, do NOT auto-commit."
+    signoff:
+      claude_verdict: "resolved + gated (sim) on integ. Standalone-branch commit hygiene pending (A3, caution)."
+      evidence: [commit:383927e]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-009
+    title: die_a PS wedge under sustained cross-die writes — per-write leak (REFRAMED 08-07)
+    severity: high
+    area: rtl/write-path   # REFRAMED from phy/physical
+    status: root_caused    # localized; exact leaked resource needs PS-PL ILA
+    summary: >
+      die_a's PS goes UNREACHABLE (silent hang) after ~10-20 cross-die writes.
+      2026-08-07 exhaustive HW characterization REFRAMES this from "marginal eye":
+      it is a DIGITAL per-write cumulative resource LEAK on die_a's OUTBOUND
+      cross-die write path, invisible to every available instrument.
+    ground_truth_2026_08_07:
+      - "Region F OBS_AXI_NODES (0x21E0) reads HEALTHY (0xad800000, zero wedge/resp-err/stall) on BOTH dies right up to the wedge => NOT an FC-node wedge."
+      - "die_a kernel log is SILENT at the wedge (no SError/panic/lockup/fault) => REFUTES the SLVERR->SError theory. pstore empty."
+      - "The cross-die write DATA path WORKS: data lands BYTE-EXACT until the wedge (16/16 in the clean single-process soak; die_b 0x2D001000=0xA5A50009 confirms write #9 landed)."
+      - "PACING does NOT help: 100ms-spaced writes (~1 outstanding) wedge within ~20 too => NOT outstanding-write concurrency/pile-up. REFUTES the serialize-to-1 fix (confirmed before building)."
+      - "Wedge count: pure-write ~10, read-paced soak ~17, per-write-churn ~4 => a per-write leak with run-to-run noise, worse under process/CAM churn."
+      - "Wedge-safe soak (single guarded process) ALSO wedges => not a harness artifact; the leak is real."
+    fix:
+      approach: >
+        LOCALIZED (0x21F8, 235d758): a write-stall cascade from a dropped W/B
+        round-trip on a bad-framing bring-up. WEDGE-FIX FEASIBILITY (agent 08-07):
+        NO clean local wedge fix. The AW-block is FAR-SIDE bilateral backpressure —
+        the Wlink a2l replay window is freed ONLY by a far-die ACK packet, depth
+        granted by far-die fe_tx_credit_max (WlinkGenericFCSM.v:630/670/814).
+        Posted-write = ineffective (AW/W still need a far ACK). Local abandon /
+        forge-ACK = DESYNCS the link -> silent corruption (rejected). synth-B
+        already does the near-die max (drains sub_wr_os_ctr, Fix K bid). => FIX THE
+        ROOT (framing) so the far side receives+ACKs and the window frees naturally.
+        Only bilateral-safe stopgap = a link RETRAIN on the wedge witness
+        (heavyweight, needs bilateral coordination). buf=0 => NOT EWR/hazard (Fix K
+        N/A). NOT serialize-to-1 (refuted). flist: FCSM edits reach FPGA-V2 only;
+        the ASIC flist uses the deps FCSM.
+        ROOT-FIX OPTIONS (framing, all substantial): calibrator peer-aware S_HOLD
+        release (Agent-1 Cand-D, additive+backstopped); autonomous bilateral
+        training coordination (self-arm); witness-triggered retrain; OR accept the
+        runtime FIX3 bilateral-training pulse as a bring-up step (proven 11/11); OR
+        physical eye (re-pin die_b SRCC). FIX3 proves the framing IS fixable.
+      files: [src/rtl/tidelink_top.sv]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    LOCALIZED_2026_08_07: >
+      The leak-witness register 0x21F8 (obs commit 235d758, branch
+      fix/tl001-calibrator-terminal-latch) made the wedge VISIBLE from APB — NO ILA
+      needed. On a bad-framing bring-up the FIRST cross-die write reads
+      0x21F8=0xb5000521: stall=1 (XHB500 AHB bridge hreadyout stuck-low >=2^12 =>
+      far-B never returned), wr_stuck=1 (synth-B backstop fired), HWM=1, buf=0
+      (non-bufferable => NOT the EWR/hazard-list path, Fix K N/A). die_b 0x2D001000=0
+      (drop), die_a wedged at w4. => the wedge is a WRITE-STALL CASCADE: bad framing
+      drops the W/B round-trip -> no far-B -> ~2^16 stall -> synth-B -> repeated
+      stuck writes accumulate a link/FC-node resource -> wedge (~4 fully-bad
+      bring-up, ~17 mostly-good). SAME framing root as the data-drop; a good
+      bring-up lands 16/16 with no stall/wedge. OVERTURNS 'below-obs SmartConnect leak'.
+    needs: "No ILA — root-caused via the 0x21F8 witness. Fix path in fix.approach."
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: "characterized, not fixed"}
+    signoff:
+      claude_verdict: "LOCALIZED (0x21F8, 235d758) = WRITE-STALL CASCADE (dropped W/B -> no far-B -> ~2^16 stall -> synth-B -> accumulation -> wedge). FIX D (peer-aware S_HOLD, 20af2b1) BUILT+HW-TESTED: correct but NOT sufficient (W data-crossing better 3/4, but die_a wedges 4/4, stall=1). CORRECTION (routed-timing check, 08-07): my earlier 'die_a RX-capture WNS drops the B' attribution is WRONG — the pad_clk_rx RX-capture paths MEET at +0.486ns; the -2.862 WNS is path-group **async_default** and the -23 WHS is pad_clk_tx_fwd (benign TX-fwd artifact); a sibling build closed WNS to +0.399. So the residual is PHYSICAL FRAMING/EYE VARIANCE that STA cannot measure, NOT a capture-WNS margin. ACTIONABLE LEVER FOUND: the P-B-lottery killer (shared-cap BUFG hoist, commit 2c32c2b) is CONFIRMED ABSENT from the deployed netlist (grep g_shared_cap_bufg=0); RTL exists WavD2DGpio_v2.v:1696-1740 gated USE_SHARED_CAP_BUFG but blocked by the OOC-IP-define trap. STA-proven 9.8x tighter capture-clock spread + placement-invariant => directly attacks the per-POR/per-build lottery. NEXT = port the hoist into the eth-chiplet build (USE_SHARED_CAP_BUFG=1, NEVER USE_CAP_CLKBUF), structurally verify via check_wrapper_params.sh, HW A/B the land-rate. Decisive: deterministic bring-up => physical skew confirmed; still-flaky => calibrator logic (FIX 2). FIX 2 DONE+HW-TESTED (Hamming 5->6, commit 2c249ec): W-direction data-crossing improved MARKEDLY — all 4 PORs landed, cyc2/3 crossed 37-50 writes byte-exact (vs baseline ~4-17), die_a survived ~10x longer. best_run stayed 0 (winscan-obs artifact, not the true framing). die_a still WEDGES 4/4. => residual DECISIVELY the B-RETURN direction: die_b's a2l ACK/B occasionally lost on die_a's RX -> after ~(a2l window depth) losses the far-gated replay window fills -> wedge. PHYSICAL DIRECTIONAL EYE ASYMMETRY (one die's RX pin/eye worse; board asymmetry), STA-invisible. NOT autonomously fixable (BUFG hoist = per-build not per-POR; RX capture MEETS). Fix = physical re-pin / accept + increase a2l window / Wlink retransmit persistence. Branch @2c249ec = FIX1+obs+FIX D+FIX 2 = W-path works, 10x soak. DOMINANT TL-001 blocker; residual PHYSICAL/OPEN."
+      evidence: ["hw_regionf_soak.log Region-F healthy@wedge", "hw_diea_dmesg.log silent kernel", "hw_purewrite.log wedge@~10 data-lands", "hw_paced.log wedge@~20 with 100ms pacing"]
+      approved: false
+    related: [TL-001]
+
+  # ---------------------------------------------------------------------------
+  # Tapeout risks
+  # ---------------------------------------------------------------------------
+  - id: TL-010
+    title: F13 (PTP) tapeout risk — HIGH residual (mailbox-RO bug + convergence gap)
+    severity: high
+    area: ptp
+    status: fix_built   # RTL-bug half fixed on integ; convergence half open
+    summary: >
+      tidelink_ptp.sv + tidelink_ptp_servo.sv ship (asic_v2 flist :67,:69). Fused
+      risk: (1) CONFIRMED RTL BUG — cross-die PTP timestamp mailbox not RO from
+      APB (mbox_reg_write was raw psel&penable&pwrite; an external APB/debug write
+      to 0x4403_2068 could forge the assembled timestamp); (2) two-board PTP
+      convergence never proven on HW, PHC hop broken.
+    fix:
+      approach: "mbox_reg_write_fc_only = mbox_reg_write && fc_cfg_apb_active (source-qualify the mailbox write)"
+      files: [src/rtl/tidelink_top.sv]   # integ :922 wired at servo mbox port
+      commit: a0a224c
+      branch: integ/axirec-on-chiplet   # UNCOMMITTED working-tree edit on standalone fix/z2-drop-park-hook
+      netlist_affecting: true
+    decision_needed: "RTL-owner review of PTP mailbox write path; land/gate a0a224c on shipping branch + main."
+    verification:
+      sim_test: "cocotb/tidelink_top_pair_v2/test_v2_mbox_apb_writeprotect.py (gated sim_gate_v2_mbox_writeprotect) + module-level test_mailbox_apb_writeprotect.py (RED-by-design, ungated)"
+      in_sim_gate: true   # v2_mbox_writeprotect (both branches)
+      hw_tested: false    # two-board convergence + PHC hop still open
+    closes_when: "land+gate a0a224c on shipping branch/main; two-board convergence HW run; close PHC hop"
+    signoff:
+      claude_verdict: "RTL-bug half FIXED+gated (integ); convergence/PHC-hop half OPEN. gap+bug."
+      evidence: [commit:a0a224c, memory:project_hwtest_vacuous_checks_ptp_mailbox_rtl_defect_2026_07_30, memory:project_ethernet_ptp_chain_phc_hop_broken_2026_07_18]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-011
+    title: F19 (PHY BIST) tapeout risk — HIGH residual (on-silicon BIST unwired)
+    severity: high
+    area: phy/bist
+    status: deferred   # verification/DFT-integration gap, not an RTL bug
+    summary: >
+      On-silicon PHY-BIST instrumentation gap. BIST RTL EXISTS
+      (deps/tidelink-phy/rtl/tidelink_phy_bist_core.sv, _prbs.sv PRBS-15,
+      _regs.sv) with a passing cocotb suite (deps/tidelink-phy/cocotb/phy_bist/),
+      but is wired into NOTHING in sim_gate or hwtest (grep phy_bist|prbs = 0
+      hits). Compounded by F12 (ASIC 100MHz GPIO PHY has zero soak evidence; FPGA
+      rig runs a structurally different PHY). First-tapeout blind spot: no
+      instrument can distinguish healthy-margin from marginal-but-functional ASIC
+      PHY before first silicon.
+    fix:
+      approach: "wire the existing BIST core into an on-silicon-runnable DFT/BIST harness (APB/JTAG), add sim_gate/hwtest PRBS-margin hook, define go/no-go BER/eye metric readable on first silicon"
+      files: [deps/tidelink-phy/rtl/tidelink_phy_bist_core.sv]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    closes_when: "DFT/BIST harness + gate/hwtest hook + first-silicon go/no-go metric"
+    verification: {sim_test: "deps/tidelink-phy/cocotb/phy_bist/ (passes, unwired)", in_sim_gate: false, hw_tested: false}
+    signoff:
+      claude_verdict: "DEFERRED — verification/DFT-integration gap, HIGH tapeout risk, unmitigated. BIST RTL exists but unwired. Not an RTL bug."
+      evidence: [memory:project_phy_harness_landscape, "grep phy_bist|prbs Makefile = 0 hits"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  # CI / build-hygiene findings (from DEV_MESSAGE_TIDELINK_CI_FINDINGS_2026_08_06)
+  # ---------------------------------------------------------------------------
+  - id: TL-012
+    title: "_generate_xhb500 reports success on failed generation (pipefail)"
+    severity: high
+    area: build/set_env
+    status: fix_built   # LANDED + pushed + consumed by eth-chiplet pin 1107151
+    summary: >
+      $? after a pipeline reads sed's status not the generator's; partial
+      logical/ tree left behind makes the next run skip. Reported as highest-value
+      CI fix. FIXED in 5be494b (PIPESTATUS[0] + rm-on-fail + inline host preflight).
+    fix:
+      approach: "set_env.sh:83 PIPESTATUS[0]; :60/85 terminal-leaf xhb500_flop.sv early-out test; :91 rm -rf on fail; :108-122 _xhb500_host_preflight warns File::Slurp + python<3.11 (preflight is INLINE, not scripts/ci/preflight.sh which is integrator-side)"
+      files: [set_env.sh]
+      commit: 5be494b
+      branch: integ/axirec-on-chiplet   # pushed to origin; NOT on main / not on fix/z2-drop-park-hook
+      netlist_affecting: false
+    verification: {sim_test: n/a, in_sim_gate: n/a, hw_tested: n/a}
+    signoff:
+      claude_verdict: "LANDED+pushed on integ/axirec-on-chiplet, consumed by pin 1107151. Candidate sign-off (build fix). Reaches main only via TL-015 decision."
+      evidence: [commit:5be494b, "set_env.sh:83 PIPESTATUS[0]"]
+      approved: false
+
+  # ---------------------------------------------------------------------------
+  - id: TL-013
+    title: V1 flist tidelink_fpga.flist no longer elaborates (missing obs modules)
+    severity: medium
+    area: build/flist
+    status: fix_built   # pending_agent:3
+    summary: >
+      Wlink.v instantiates tidelink_fcemit_obs + tidelink_winscan_obs, listed
+      only in the V2 flist. Reportedly fixed by adding both .sv to V1 flist.
+      OPEN QUESTION: is V1 still supported, or should it be retired?
+    fix:
+      approach: "flists/tidelink_fpga.flist:293-294 now list tidelink_winscan_obs.sv + tidelink_fcemit_obs.sv (elaborate-fix LANDED). V1 deliberately NOT retired."
+      files: [flists/tidelink_fpga.flist]
+      commit: 5be494b
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: false
+    decision_needed: "Keep V1 flist (elaborate-fix already landed) or retire it (loud comment/removal)? Coupled to TL-014."
+    verification: {sim_test: n/a}
+    signoff: {claude_verdict: "elaborate-fix LANDED+pushed; retire-or-keep is a David decision", evidence: [commit:5be494b, "tidelink_fpga.flist:293-294"], approved: false}
+
+  # ---------------------------------------------------------------------------
+  - id: TL-014
+    title: Duplicate PHY submodule (gpio-phy vs phy, same repo, 97 commits apart)
+    severity: low
+    area: build/gitmodules
+    status: deferred
+    summary: >
+      deps/tidelink-gpio-phy (6ee8418) and deps/tidelink-phy (5c76e76) point at
+      the same upstream, 97 commits apart. gpio-phy reachable only from V1 flist.
+    decision_needed: "Drop deps/tidelink-gpio-phy if V1 is retired?"
+    fix: {approach: "drop dup submodule (depends on TL-013 decision)", files: [.gitmodules], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: n/a}
+    signoff: {claude_verdict: "DEFERRED — decision coupled to TL-013", evidence: [], approved: false}
+    related: [TL-013]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-015
+    title: Integration pins unreachable on remote (land tidelink on main)
+    severity: high
+    area: build/git-hygiene
+    status: deferred
+    summary: >
+      tidelink was pinned ahead of origin/main on no branch (now on
+      integ/eth-chiplet-pin); a PHY dep pin was GitLab-only. David decision: push
+      tidelink main + parent pin bump (clean fast-forwards computed by agent 3).
+    decision_needed: "Push tidelink CI/integ fixes to main — David-only (public default branch). origin/main @18491ef is a clean ANCESTOR of the integ line (all fast-forwards, no merge)."
+    fix:
+      approach: "fast-forward push (DO NOT auto-execute). Prefer FF/curated land not rebase (integ->main burned before via b98b944)."
+      files: []
+      commit: null
+      branch: main
+      netlist_affecting: false
+      review_only_commands:
+        - "# Option A (land only CI-fix tip, 61-commit FF): git -C .../tidelink push origin 5be494b:refs/heads/main"
+        - "# Option B (land full integ line = eth-chiplet pin, 63-commit FF, incl wr_hold_r e28c898): git -C .../tidelink push origin 1107151:refs/heads/main"
+        - "# Verify pin reachable first: git -C .../tidelink ls-remote origin refs/heads/integ/axirec-on-chiplet | grep 1107151"
+    verification: {sim_test: n/a}
+    signoff: {claude_verdict: "DEFERRED — public-main push is David's decision; FF ranges computed and ready", evidence: ["origin/main 18491ef is ancestor; FF-OK to 1107151"], approved: false}
+
+  # ---------------------------------------------------------------------------
+  - id: TL-016
+    title: SSH URLs in .gitmodules unusable from sandboxed CI (want HTTPS)
+    severity: medium
+    area: build/gitmodules
+    status: fix_built   # pending_agent:3
+    summary: >
+      git@github.com: URLs break under bubblewrap sandbox (getpwuid fails). All
+      three repos are public; HTTPS works everywhere. Reportedly fixed in 5be494b.
+    fix:
+      approach: "SSH -> HTTPS for both PHY dep submodule URLs in tidelink/.gitmodules. NOTE: eth-chiplet PARENT .gitmodules still git@github: for the tidelink submodule — separate downstream fix, not tidelink-side."
+      files: [.gitmodules]
+      commit: 5be494b
+      branch: integ/axirec-on-chiplet
+      netlist_affecting: false
+    verification: {sim_test: n/a}
+    signoff: {claude_verdict: "LANDED+pushed (tidelink-side). Candidate sign-off.", evidence: [commit:5be494b, ".gitmodules both PHY deps now https://"], approved: false}
+
+  # ---------------------------------------------------------------------------
+  - id: TL-017
+    title: "New top port tl_data_mode_o is a silent downstream lint break (FYI)"
+    severity: fyi
+    area: rtl/tidelink_top
+    status: wontfix
+    summary: >
+      tl_data_mode_o added 2026-07-21 (602ef8d); integrations that don't connect
+      it get lint PINMISSING. FYI only — call out new top ports in release notes.
+    fix: {approach: "document in release notes", files: [], commit: null, branch: null, netlist_affecting: false}
+    verification: {sim_test: n/a}
+    signoff: {claude_verdict: "FYI — no action; note in release notes", evidence: [commit:602ef8d], approved: true, approved_by: auto-fyi, approved_date: 2026-08-06}

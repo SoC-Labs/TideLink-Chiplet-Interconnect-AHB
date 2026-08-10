@@ -1,0 +1,18 @@
+# Documentation build dependencies for the TideLink Sphinx site.
+#
+# Installed by ReadTheDocs (see /.readthedocs.yaml) and by developers locally:
+#   python3 -m pip install -r docs_site/requirements.txt
+#
+# Minimum versions are pinned to the first release that is known-compatible
+# with the others in this list; upper bounds only where a major version is
+# known to break the pairing.
+
+sphinx>=7.2,<9
+myst-parser>=2.0.0
+sphinx-rtd-theme>=3.0.0
+sphinx-copybutton>=0.5.2
+sphinx-design>=0.5.0
+
+# Mermaid diagrams. Rendered client-side (mermaid_output_format = "raw" in
+# conf.py) so the build needs no node/mmdc/puppeteer on the RTD builder.
+sphinxcontrib-mermaid>=0.9.2

@@ -81,6 +81,18 @@ module tidelink_vivado_wrapper #(
     // killing the per-deploy 16-cycle count-phase lottery that anti-
     // correlated master/slave 0xff hits. Override to 0 for A/B comparison.
     parameter USE_T3A    = 1'b1,
+    // Z2 no-data-delivery fix (2026-07-30,
+    // docs/HANDOVER_Z2_PICKUP_2026_07_30.md §5): pass-through to
+    // tidelink_top.EPOCH_ANCHOR_EN. UNLIKE USE_T3A/USE_CLKBUF above, this
+    // stays at IP default 0 (NOT flipped ON for every FPGA target) because it
+    // is a real netlist change (swaps which cross-lane deskew corrector is
+    // compiled into WavD2DGpio_v2, V2-only) and the corrector it disables
+    // (SYNC_REANCHOR_EN) is what KR260's already-proven on-chip pair uses.
+    // Turn on per-project via `set_property CONFIG.EPOCH_ANCHOR_EN {1}` on
+    // the BD instance for boards that need it (real board-to-board skew,
+    // e.g. the Z2 pair) — never by changing this default, which would
+    // silently re-litigate every existing golden bitstream (KR260 included).
+    parameter EPOCH_ANCHOR_EN = 1'b0,
     // Tier 2 RTL hardening (2026-05-25): force swi_enable=1 on any APB write
     // that asserts swi_swreset=1 to Wlink register 0x208. FPGA default ON.
     // Set to 0 in the IPI customize dialog for A/B comparison against an
@@ -541,6 +553,9 @@ module tidelink_vivado_wrapper #(
         .USE_CLKBUF          (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt (FPGA wants it on).
         .USE_T3A             (USE_T3A),
+        // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 =
+        // today's SYNC_REANCHOR corrector; override per-project (see param).
+        .EPOCH_ANCHOR_EN     (EPOCH_ANCHOR_EN),
         // Tier 2 hardening: force swi_enable=1 on swreset writes (FPGA: ON).
         .HARDEN_SWI_ENABLE   (HARDEN_SWI_ENABLE),
         // Interface-debug stubs — forward verbatim (default 0 = no-op)

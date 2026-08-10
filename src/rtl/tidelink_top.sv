@@ -72,6 +72,16 @@ module tidelink_top #(
     // peer's training-byte boundary, killing the per-deploy 16-cycle phase
     // lottery. See deps/.../wlink/WavD2DGpioRx.v header.
     parameter USE_T3A    = 1'b0,
+    // Z2 no-data-delivery fix (2026-07-30, docs/HANDOVER_Z2_PICKUP_2026_07_30.md
+    // §5): pass-through to axi_chiplet_controller.EPOCH_ANCHOR_EN ->
+    // Wlink.EPOCH_ANCHOR_EN -> WlinkGPIOPHY_v2 (V2 only; inert under V1 — the
+    // V1 WlinkGPIOPHY has no such parameter, and Wlink.v only forwards it to
+    // the phy instance under `ifdef TIDELINK_PHY_V2). Default 0 = today's
+    // shipping deskew corrector (SYNC_REANCHOR_EN), which never arms on real
+    // silicon because the idle-gated SYNC beacon can't fire. 1 swaps in the
+    // training-EXIT anchored corrector proven in sim to fix s2m delivery.
+    // This is a real netlist change; a board integration opts in explicitly.
+    parameter EPOCH_ANCHOR_EN = 1'b0,
     // S2 scaffold (PLAN_TIDELINK_INTEGRATION, 2026-06-10): select the NEW
     // shared PHY component (deps/tidelink-phy, feat/phy-refactor line) in
     // place of the current WavD2DGpio datapath inside u_chiplet_controller.
@@ -685,6 +695,12 @@ module tidelink_top #(
     wire                   mbox_reg_write;
     wire            [2:0]  mbox_reg_addr;
     wire [SYS_DATA_W-1:0] mbox_reg_wdata;
+    // SoC Labs mailbox-RO fix (2026-07-31): mbox_reg_write_fc_only is
+    // declared below, right after fc_cfg_apb_active (~line 907) -- VCS
+    // requires declare-before-use even across two `wire x = expr;` net
+    // declarations, and fc_cfg_apb_active isn't available yet at this point
+    // in the file (2026-07-31 compile-order fix; verified with an isolated
+    // VCS repro that this is a hard requirement, not a false positive).
 
     // Chiplet controller register interface (APB regs Regions 4 + 8 + C ↔ controller).
     // ctrl_reg_addr is 5 bits — bits[2:0] are the slot within the region;
@@ -878,6 +894,27 @@ module tidelink_top #(
     end
 
     wire fc_cfg_apb_active = fc_cfg_apb_psel && !ext_txn && !ext_lock_q;
+
+    // SoC Labs mailbox-RO fix (2026-07-31): mbox_reg_write as computed by
+    // tidelink_apb_regs.sv (fifo/tidelink_apb_regs.sv:527) is just
+    // apb_write && Region-3-decode -- apb_write there is the raw shared-bus
+    // psel&&penable&&pwrite with NO source qualifier, so it asserts for a
+    // plain external APB write to 0x4403_2068 exactly the same as it does
+    // for a genuine peer sideband injection. That silently let the CPU/debug
+    // side overwrite mbox_sec_lo_r/mbox_sec_hi_r/mbox_ns_r -- the assembled
+    // cross-die PTP timestamp -- even though this very port's comment always
+    // said the mailbox is fed "from FC RX config path via APB": the FC peer
+    // was always meant to be the ONLY legitimate writer, but nothing
+    // enforced that structurally. Gated with fc_cfg_apb_active above -- the
+    // same signal that already keeps the PEER from writing TXGEN over the
+    // link in the opposite direction (see the "SECURITY" comment on
+    // txgen_reg_wr, ~line 960) -- it is true only in the cycles the 2:1
+    // tl_apb_* arbiter has granted the shared bus to the FC adapter's RX
+    // config path, as opposed to the external PS/debug port. (Declared here,
+    // not next to mbox_reg_write/mbox_reg_addr/mbox_reg_wdata ~line 697,
+    // because it must textually follow fc_cfg_apb_active -- see the note
+    // there.)
+    wire mbox_reg_write_fc_only = mbox_reg_write && fc_cfg_apb_active;
 
     // APB signals to tidelink_fifo APB slave
     wire [APB_ADDR_W-1:0]  tl_apb_paddr;
@@ -1923,8 +1960,12 @@ module tidelink_top #(
             .servo_fc_data          (servo_fc_data),
             .servo_fc_ready         (servo_fc_ready),
 
-            // Timestamp mailbox (from FC RX config path via APB)
-            .mbox_reg_write         (mbox_reg_write),
+            // Timestamp mailbox (from FC RX config path via APB). Gated with
+            // fc_cfg_apb_active -- see mbox_reg_write_fc_only above -- so an
+            // external APB write to Region 3 can no longer forge a PTP
+            // mailbox update; only writes the arbiter granted to the FC RX
+            // config path reach the servo.
+            .mbox_reg_write         (mbox_reg_write_fc_only),
             .mbox_reg_addr          (mbox_reg_addr),
             .mbox_reg_wdata         (mbox_reg_wdata),
 
@@ -2420,6 +2461,8 @@ module tidelink_top #(
         .USE_CLKBUF    (USE_CLKBUF),
         // §9 T3a: self-aligning RX comma hunt. Default 0 sim/ASIC bit-exact.
         .USE_T3A       (USE_T3A),
+        // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 = today.
+        .EPOCH_ANCHOR_EN (EPOCH_ANCHOR_EN),
         // Phase 2 autonomy — POR-default for NEGO_TRAIN_CFG. See module
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),

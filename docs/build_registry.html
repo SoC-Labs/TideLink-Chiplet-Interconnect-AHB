@@ -1,0 +1,906 @@
+<title>TideLink Build Registry</title>
+<style>
+  /* ---- tokens ------------------------------------------------------------ */
+  :root {
+    color-scheme: light;
+    --bg:        #e9edf0;
+    --surface:   #f9fbfc;
+    --surface-2: #f1f4f6;
+    --ink:       #101a20;
+    --ink-mid:   #46555f;
+    --ink-dim:   #6d7d88;
+    --line:      #ccd6dc;
+    --line-soft: #dde4e9;
+    --accent:    #0b6e7a;
+    --accent-ink:#07515a;
+    --accent-bg: #dceef0;
+
+    --sev-crit:  #ad1f3c;
+    --sev-high:  #a9650c;
+    --sev-med:   #6f6a16;
+    --sev-low:   #566571;
+    --sev-fyi:   #78838d;
+
+    --st-open:       #a9b6bf;
+    --st-root:       #90a7b3;
+    --st-fix:        #648e9e;
+    --st-sim:        #367d90;
+    --st-hw:         #0f6675;
+    --st-signed:     #084d59;
+    --st-deferred:   #6c5f87;
+    --st-wontfix:    #8e99a1;
+
+    /* in-band label ink: group A rides the pale stages, group B the saturated
+       ones. The two groups swap ink between themes, so both stay legible. */
+    --seg-a: #0b0f13;
+    --seg-b: #f7fbfc;
+
+    --ok:      #1c6b4f;
+    --ok-bg:   #ddeee6;
+    --warn-bg: #f4e8d6;
+
+    --shadow: 0 1px 2px rgba(16, 26, 32, .06), 0 6px 18px -12px rgba(16, 26, 32, .28);
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg:        #0b0f13;
+      --surface:   #141b21;
+      --surface-2: #1a232a;
+      --ink:       #dde5ea;
+      --ink-mid:   #a6b4be;
+      --ink-dim:   #7d8c97;
+      --line:      #27333c;
+      --line-soft: #1f2931;
+      --accent:    #54c6d2;
+      --accent-ink:#8adde6;
+      --accent-bg: #10333a;
+
+      --sev-crit:  #f2708a;
+      --sev-high:  #e2a251;
+      --sev-med:   #c2ba5e;
+      --sev-low:   #93a3b0;
+      --sev-fyi:   #78868f;
+
+      --st-open:       #3a4750;
+      --st-root:       #4f6874;
+      --st-fix:        #2f7d90;
+      --st-sim:        #3ba0b0;
+      --st-hw:         #58c5d1;
+      --st-signed:     #8fe3ea;
+      --st-deferred:   #9d8fc0;
+      --st-wontfix:    #5c686f;
+
+      --seg-a: #dde5ea;
+      --seg-b: #08181c;
+
+      --ok:      #63c79b;
+      --ok-bg:   #10322a;
+      --warn-bg: #33291a;
+
+      --shadow: 0 1px 0 rgba(255, 255, 255, .02), 0 10px 24px -18px rgba(0, 0, 0, .9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b0f13; --surface: #141b21; --surface-2: #1a232a;
+    --ink: #dde5ea; --ink-mid: #a6b4be; --ink-dim: #7d8c97;
+    --line: #27333c; --line-soft: #1f2931;
+    --accent: #54c6d2; --accent-ink: #8adde6; --accent-bg: #10333a;
+    --sev-crit: #f2708a; --sev-high: #e2a251; --sev-med: #c2ba5e; --sev-low: #93a3b0; --sev-fyi: #78868f;
+    --st-open: #3a4750; --st-root: #4f6874; --st-fix: #2f7d90; --st-sim: #3ba0b0;
+    --st-hw: #58c5d1; --st-signed: #8fe3ea; --st-deferred: #9d8fc0; --st-wontfix: #5c686f;
+    --seg-a: #dde5ea; --seg-b: #08181c;
+    --ok: #63c79b; --ok-bg: #10322a; --warn-bg: #33291a;
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 10px 24px -18px rgba(0,0,0,.9);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #e9edf0; --surface: #f9fbfc; --surface-2: #f1f4f6;
+    --ink: #101a20; --ink-mid: #46555f; --ink-dim: #6d7d88;
+    --line: #ccd6dc; --line-soft: #dde4e9;
+    --accent: #0b6e7a; --accent-ink: #07515a; --accent-bg: #dceef0;
+    --sev-crit: #ad1f3c; --sev-high: #a9650c; --sev-med: #6f6a16; --sev-low: #566571; --sev-fyi: #78838d;
+    --st-open: #a9b6bf; --st-root: #90a7b3; --st-fix: #648e9e; --st-sim: #367d90;
+    --st-hw: #0f6675; --st-signed: #084d59; --st-deferred: #6c5f87; --st-wontfix: #8e99a1;
+    --seg-a: #0b0f13; --seg-b: #f7fbfc;
+    --ok: #1c6b4f; --ok-bg: #ddeee6; --warn-bg: #f4e8d6;
+    --shadow: 0 1px 2px rgba(16,26,32,.06), 0 6px 18px -12px rgba(16,26,32,.28);
+  }
+
+  /* ---- base -------------------------------------------------------------- */
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1160px;
+    margin-inline: auto;
+    padding: 28px 20px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  code, .mono { font-family: var(--mono); font-variant-ligatures: none; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  /* ---- masthead ---------------------------------------------------------- */
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--line);
+  }
+  .masthead h1 {
+    font-family: var(--mono);
+    font-size: clamp(21px, 3vw, 28px);
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1.15;
+    margin: 4px 0 3px;
+    text-wrap: balance;
+  }
+  .masthead .lede { margin: 0; color: var(--ink-mid); max-width: 68ch; font-size: 14px; }
+  .meta-strip {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 22px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-dim);
+  }
+  .meta-strip b { color: var(--ink-mid); font-weight: 500; }
+
+  /* ---- board ------------------------------------------------------------- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .tile {
+    background: var(--surface);
+    padding: 13px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .tile .num {
+    font-family: var(--mono);
+    font-size: 27px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+  }
+  .tile .cap { font-size: 11.5px; color: var(--ink-mid); line-height: 1.35; }
+  .tile.is-alarm .num { color: var(--sev-crit); }
+  .tile.is-act .num   { color: var(--sev-high); }
+  .tile.is-good .num  { color: var(--ok); }
+
+  .lifecycle { display: flex; flex-direction: column; gap: 8px; }
+  .lc-bar {
+    display: flex;
+    height: 30px;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .lc-seg {
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    min-width: 26px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--seg-fg, #fff);
+    font-variant-numeric: tabular-nums;
+    transition: filter .12s ease;
+  }
+  .lc-seg:hover { filter: brightness(1.12); }
+  .lc-seg[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--ink); }
+  .lc-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .lc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .lc-key { width: 9px; height: 9px; border-radius: 1px; flex: none; }
+
+  /* ---- panels ------------------------------------------------------------ */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 14px 16px 15px;
+    box-shadow: var(--shadow);
+  }
+  .panel > h2 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .panel > h2 .n { color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .panel li { font-size: 13.5px; line-height: 1.45; display: flex; gap: 9px; }
+  .panel li .idref { flex: none; }
+
+  .idref {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent-ink);
+    background: var(--accent-bg);
+    border: 1px solid transparent;
+    border-radius: 2px;
+    padding: 1px 5px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .idref:hover { border-color: var(--accent); }
+
+  details.context {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 16px;
+  }
+  details.context > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 12px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  details.context > summary::-webkit-details-marker { display: none; }
+  details.context .ctx-body { padding: 0 0 16px; display: flex; flex-direction: column; gap: 12px; }
+  details.context p { margin: 0; font-size: 13.5px; color: var(--ink-mid); max-width: 92ch; }
+
+  /* ---- filters ----------------------------------------------------------- */
+  .filters {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+  }
+  .filters input[type="search"] {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 6px 9px;
+    min-width: 210px;
+    flex: 1 1 210px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+  .filters input[type="search"]::placeholder { color: var(--ink-dim); }
+  .fgroup { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .fgroup > .eyebrow { margin-right: 2px; }
+
+  .toggle {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    padding: 4px 8px;
+    border-radius: 2px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-mid);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .toggle:hover { border-color: var(--ink-dim); }
+  .toggle[aria-pressed="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--bg);
+  }
+  .toggle .dot { width: 8px; height: 8px; border-radius: 1px; flex: none; }
+  .toggle .n { font-variant-numeric: tabular-nums; opacity: .72; }
+  .filters .spacer { flex: 1 1 auto; }
+  .filters .count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .linkbtn {
+    background: none; border: 0; padding: 0; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--accent-ink);
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+
+  /* ---- bug cards --------------------------------------------------------- */
+  .list { display: flex; flex-direction: column; gap: 8px; }
+
+  .bug {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--sev);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+  }
+  .bug[hidden] { display: none; }
+  .bug[open] { background: var(--surface); border-color: var(--ink-dim); }
+  .bug > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 11px 14px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .bug > summary::-webkit-details-marker { display: none; }
+  .bug > summary:hover .btitle { color: var(--accent-ink); }
+
+  .chev {
+    width: 9px; height: 9px; flex: none;
+    border-right: 1.5px solid var(--ink-dim);
+    border-bottom: 1.5px solid var(--ink-dim);
+    transform: rotate(-45deg);
+    transition: transform .16s ease;
+    margin-left: 2px;
+  }
+  .bug[open] .chev { transform: rotate(45deg); }
+
+  .bhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .bid { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--sev); letter-spacing: .02em; flex: none; }
+  .btitle { font-size: 14.5px; font-weight: 500; line-height: 1.35; }
+  .bmeta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 5px; padding-top: 5px; }
+  .bstatus { display: flex; align-items: center; gap: 9px; flex: none; }
+  .bstatus .slabel {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--st); white-space: nowrap;
+  }
+
+  .rail { display: flex; gap: 2px; flex: none; }
+  .rail i { width: 13px; height: 5px; border-radius: 1px; background: var(--line); display: block; }
+  .rail i.on { background: var(--st); }
+  .rail.off i { background: transparent; box-shadow: inset 0 0 0 1px var(--st); }
+
+  .chip {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .04em;
+    padding: 2px 6px;
+    border-radius: 2px;
+    border: 1px solid var(--line);
+    color: var(--ink-mid);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .chip.k { color: var(--ink-dim); }
+  .chip.k b { color: var(--ink-mid); font-weight: 500; }
+  .chip.gate { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+  .chip.hw   { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+  .chip.net  { color: var(--sev-high); border-color: color-mix(in srgb, var(--sev-high) 40%, var(--line)); background: var(--warn-bg); }
+  .chip.sign { color: var(--st-signed); border-color: color-mix(in srgb, var(--st-signed) 45%, var(--line)); background: var(--accent-bg); }
+
+  /* ---- card body --------------------------------------------------------- */
+  .body { padding: 4px 14px 18px 14px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--line-soft); margin-top: 2px; }
+  .body > section { display: flex; flex-direction: column; gap: 7px; }
+  .body h3 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    padding-top: 12px;
+    border-top: 1px dashed var(--line-soft);
+  }
+  .body > section:first-child h3 { padding-top: 4px; border-top: 0; }
+  .body p { margin: 0; max-width: 82ch; color: var(--ink-mid); font-size: 13.5px; }
+  .body p + p { margin-top: 7px; }
+  .body p strong, .body li strong { color: var(--ink); font-weight: 600; }
+  .body code {
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    padding: 0 4px;
+    color: var(--ink);
+  }
+  .body ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .body ul.bul li { position: relative; padding-left: 15px; font-size: 13.5px; color: var(--ink-mid); max-width: 82ch; }
+  .body ul.bul li::before {
+    content: "";
+    position: absolute; left: 2px; top: .62em;
+    width: 5px; height: 5px; border-radius: 1px;
+    background: var(--ink-dim);
+  }
+  .body ul.bul.warm li::before { background: var(--sev-high); }
+  .body ul.bul.cold li::before { background: var(--st-deferred); }
+
+  .sub { display: flex; flex-direction: column; gap: 5px; }
+  .subhead {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+
+  .kv { display: grid; grid-template-columns: minmax(96px, max-content) minmax(0, 1fr); gap: 6px 14px; align-items: baseline; }
+  .kv dt {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  .kv dd { margin: 0; font-size: 13px; color: var(--ink-mid); min-width: 0; }
+  .kv dd .mono { font-size: 12px; color: var(--ink); word-break: break-word; }
+
+  .state { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
+  .state .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ink-dim); }
+  .state.yes { color: var(--ok); } .state.yes .dot { background: var(--ok); }
+  .state.no  { color: var(--ink-dim); } .state.no .dot { background: var(--line); box-shadow: inset 0 0 0 1px var(--ink-dim); }
+  .state.part { color: var(--sev-high); } .state.part .dot { background: var(--sev-high); }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  .verdict {
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--st);
+    border-radius: 3px;
+    padding: 11px 13px;
+  }
+  .verdict p { color: var(--ink); }
+  .signrow { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding-top: 9px; }
+
+  pre.snip {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    color: var(--ink);
+  }
+  .scroll-x { overflow-x: auto; max-width: 100%; }
+
+  footer.foot {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+  }
+  footer.foot p { margin: 0; max-width: 88ch; }
+
+  .empty { padding: 40px 8px; text-align: center; color: var(--ink-dim); font-family: var(--mono); font-size: 13px; }
+
+  @media (max-width: 720px) {
+    .bug > summary { grid-template-columns: auto minmax(0, 1fr); }
+    .bstatus { grid-column: 2; padding-top: 6px; }
+    .kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .kv dd { margin-bottom: 6px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+<style>
+  /* Build-page additions only. Everything else is the bug page's stylesheet. */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ok);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    padding: 15px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .hero h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .hero p  { margin: 0; max-width: 88ch; color: var(--ink-mid); font-size: 13.5px; }
+  .hero .tags { margin-top: 2px; }
+  .unknown { color: var(--ink-dim); font-family: var(--mono); font-size: 12px; font-style: italic; }
+  .kv dd .tags { margin-top: 1px; }
+  .warnrow {
+    background: var(--warn-bg);
+    border: 1px solid color-mix(in srgb, var(--sev-high) 40%, var(--line));
+    border-radius: 3px;
+    padding: 8px 11px;
+    font-size: 13px;
+    color: var(--ink-mid);
+    max-width: 88ch;
+  }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div>
+      <div class="eyebrow" id="m-eyebrow"></div>
+      <h1>TideLink build registry</h1>
+      <p class="lede">Which bitstream ran on which board, built from which commit, with which
+        parameters, and what was actually proven. A new entry is appended on every deploy and
+        promoted to <span class="mono">hw_validated</span> only when a named, retained artefact
+        proves it.</p>
+    </div>
+    <div class="meta-strip" id="m-meta"></div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Registry summary"></section>
+
+  <section id="hero" aria-label="Last known-good build"></section>
+
+  <details class="context" id="mech">
+    <summary><span class="chev" aria-hidden="true"></span>What the build manifest records &mdash; and what it does not</summary>
+    <div class="ctx-body" id="mech-body"></div>
+  </details>
+
+  <div class="filters" role="toolbar" aria-label="Filter builds">
+    <input type="search" id="q" placeholder="search id, target, sha, board, hash…" aria-label="Search builds" />
+    <div class="fgroup" id="f-status" aria-label="Filter by status"></div>
+    <div class="fgroup" id="f-prov" aria-label="Filter by provenance"></div>
+    <span class="spacer"></span>
+    <span class="count" id="count"></span>
+    <button type="button" class="linkbtn" id="expand-all">expand all</button>
+    <button type="button" class="linkbtn" id="reset">reset</button>
+  </div>
+
+  <main class="list" id="list"></main>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<script id="build-data" type="application/json">{"schema_version": 1, "generated": "2026-08-10", "maintainer": "docs-site authoring pass (Claude Opus 5)", "approver": "David Mapstone \u003cdavid@mapstone.me>", "companion": "docs/BUG_REGISTRY.yaml", "legend": {"status": ["built", "deployed", "hw_validated", "superseded", "known_bad"], "provenance": {"full": "clean tree, full 40-char commit, bit hash recomputable from surviving bytes, and the commit is reachable in a repo we can fetch.\n", "partial": "commit known but the tree was dirty (the diff was never captured), or the commit is unreachable from this repo, or the bytes are gone.\n", "sha_unrecoverable": "the source commit was never recorded, or the recorded identifier is a reconstruction rather than the build source. Bytes may still exist and can serve as an A/B control, but the build MUST NOT be quoted as a version datapoint.\n"}, "evidence_class": {"retained_artifact": "a log/JSON that still exists on disk and names the build", "commit_message": "a sentence in a git commit", "tag_body": "a sentence in an annotated tag", "memory_note": "a project memory/handover document", "none": "no result recorded"}}, "signoff_policy": {"auto_signoff_allowed": false, "agent_max_status": "hw_validated", "approver": "David Mapstone", "hw_validated_requires": ["validation.evidence_class == retained_artifact", "validation.evidence names a path that exists", "bitstream.bit_sha256 recomputable from the bytes it names"], "how_to_sign": "Set signoff.approved / approved_by / approved_date on an entry whose validation evidence you accept.\n"}, "manifest_mechanism": {"schema": "tidelink-build-manifest/1", "writer": "fpga/scripts/build_provenance.tcl", "call_site": "fpga/build_design.tcl", "records": ["schema", "sha256", "source_commit", "git_dirty", "phy_marker", "flist", "submodule_pins (deps/tidelink-phy + deps/tidelink-gpio-phy only)", "usr_access", "target", "build_host", "build_date", "label"], "does_not_record": ["IP parameters — no CONFIG.* value set on the tidelink_0/_1 BD cells", "build-time env — TL_TRAIN_ENTRY_FALLBACK, TL_EPOCH_ANCHOR_EN, TIDELINK_FPGA_PTP, TD_AUTO_LANE_MASK_E4, FPGA_ALLOW_CRITICAL_WARNINGS (only TIDELINK_PHY_V2 survives, indirectly, as phy_marker)", "tool version — no Vivado version anywhere in build_design.tcl or build_provenance.tcl", "deps/axi-chiplet-controller pin (declared in .gitmodules) and deps/xhb500 (not a submodule; versioned by nothing)", "the dirty diff — a `-dirty` build records only those six characters", "any test result"], "traps": {"usr_access_is_not_a_discriminator": "build_provenance.tcl:275 strips \"-dirty\" before deriving usr_access, so a DIRTY manifest still carries a plausible-looking hex value that was never stamped into the bitstream (build_design.tcl:637-643 only exports TIDELINK_GIT_USR_ACCESS on a clean tree). Presence of usr_access proves nothing; only git_dirty:false does.\n", "deploy_sidecar_drops_dirty": "imp/fpga/output/pynq-z2-pair-all/tidelink_manifest.json records \"9eaafb7152f...-dirty\"; the sibling tidelink.bin.manifest.json that travels to the board records \"9eaafb7\" with the dirty flag gone. The artefact that reaches hardware is the one that overstates reproducibility.\n", "bit_and_bin_can_disagree": "imp/fpga/output/kr260-pair-onchip/ holds a .bit from 2026-07-24 and a .bin from 2026-07-29 — different builds. The .bin is what gets flashed and has no manifest of its own.\n", "directory_label_is_typed_not_derived": "imp/fpga/output/kr260-eth-chiplet.prefixG-855096a/ contains a manifest whose source_commit is 34b006cb…; 855096a appears nowhere in it.\n"}}, "rollup": {"entries": 26, "hw_validated": 1, "sha_unrecoverable": 5, "builds_with_surviving_bytes": 18, "last_known_good": "BLD-2026-08-08-kr260-onchip", "headline": "The last build that is BOTH hardware-validated AND fully recoverable from git is kr260-pair-onchip @9cca6fe (2026-08-08), bitstream sha256 fa9d0fe2…, USR_ACCESS 0xcb6e8cde, built from a CLEAN tree. It is the only entry in this file backed by a retained artefact on disk (tidelink-consolidated/onchip_landrate.log), and even that artefact covers only the 4/4 fresh-POR land-rate half of the claim — the \"1000/1000 byte-exact first POR\" half survives only in commit e66b539's message.\n", "caveats": ["The onchip vehicle is a SINGLE board with two TideLink instances in fabric and no ribbon. It is lottery-free by construction and does NOT exercise the two-board eye where TL-001 (peer-write drop) and TL-009 (die_a PS wedge) live.", "The project's own newest commit on the live line states it plainly: kr260_sysval.py printed to stdout and nothing else, so 128/128, 16/16 and 11/11 have no surviving artefact.", "The live hardware line is NOT this repo. 2026-08-01..09 hardware ran from nanosoc-ethernet-chiplet/tidelink @28409f5; `git cat-file -t 28409f5` in this repo returns 'fatal: Not a valid object name'. Same for 5d58c2a3 and 90fe6cc.", "137 tags exist and none is newer than 2026-07-30, so the whole August campaign is untagged. Tags are also unreliable as a build index (see BLD-2026-06-10 and the freeze-2026-07-22 note)."]}, "builds": [{"id": "BLD-2026-06-10-z2-pair-v33", "date": "2026-06-10", "status": "superseded", "provenance": "sha_unrecoverable", "source": {"git_sha": "4b656feb0ed5a3755a816957d7ae7759d6ba8b2b", "git_dirty": "unknown", "branch": "unknown", "tag": "v33-ms-data-crossed", "sha_note": "The tag body says the bitstream was built from e2fefd4 + deskew pipeline c5f24b6 and run with the M12 bootstrap 7702f07, and that the tag \"points at the first commit whose tree MATCHES what was on the boards\". It is a reconstruction, not the build source.\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "unknown", "flist": "unknown", "phy": "V1", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "unknown", "bin_sha256": "unknown", "usr_access": "unknown", "retained": false}, "boards": ["z2_02", "z2_03"], "validation": {"claimed": ["first master->slave application data crossing", "bilateral 16/16 cal+lock, FCSM=4", "4-packet AHB_TX burst byte-perfect (hdr 0x00240000, p0 0xDA7A0000)"], "evidence_class": "tag_body", "evidence": ["tag v33-ms-data-crossed (git tag -n99)"]}, "known_bad": ["slave->master credit decode ~97% intermittent"], "notes": "Kept for lineage. Cannot be reproduced or bisected against.\n"}, {"id": "BLD-2026-06-23-z2-v1-b2a", "date": "2026-06-23", "status": "superseded", "provenance": "partial", "source": {"git_sha": "142a7ca80517aea4ba004f0383e72da52042692f", "git_dirty": "unknown", "branch": "exp/v1-route-a", "tag": "v1-silicon-b2a-2026-06-23", "sha_note": "the tagged commit is itself labelled 'checkpoint ... WIP'"}, "submodule_pins": {"deps/axi-chiplet-controller": "efe5623", "deps/tidelink-gpio-phy": "6ee8418", "deps/tidelink-phy": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "pynq-z2-pair + pynq-z2-pair-flip (8-lane 0xff, ~4.687 MHz)", "flist": "tidelink_fpga.flist", "phy": "V1", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256_die_a": "b039a9b0…", "bit_sha256_die_b": "a5e23e6e…", "hashes_verified": false, "usr_access": "unknown", "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["bilateral fcsm=4 + cr + crack + cal_done", "B->A byte-exact 0xCAFE5678"], "evidence_class": "tag_body", "evidence": ["tag v1-silicon-b2a-2026-06-23"]}, "known_bad": ["A->B dead (die_b flip: LUT-driven pad_clk_rx, WHS -21.7 ns)"], "notes": "The best freeform provenance record in the repo — it names bit hashes and submodule pins — but it is prose in a tag body, so nothing can check it.\n"}, {"id": "BLD-2026-06-23-z2-v1-bilateral", "date": "2026-06-23", "status": "superseded", "provenance": "partial", "source": {"git_sha": "3ba88232502428e9d4b61961ccb0a2ffbe1f654c", "git_dirty": "unknown", "branch": "unknown", "tag": "v1-silicon-bilateral-2026-06-23"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair / pynq-z2-pair-flip", "flist": "tidelink_fpga.flist", "phy": "V1", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_md5_die_b": "314bc0e6", "hashes_verified": false, "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["full bilateral V1 data; A->B byte-exact 0xFEED4C4A / 0xFEED5FC6"], "evidence_class": "tag_body", "evidence": ["tag v1-silicon-bilateral-2026-06-23"]}, "known_bad": ["A->B only 2/15 (~13% window lottery)"]}, {"id": "BLD-2026-06-26-z2-v2-a2b", "date": "2026-06-26", "status": "superseded", "provenance": "partial", "source": {"git_sha": "04db8337bdcd5b858027e12121722a0011980a37", "git_dirty": "unknown", "branch": "unknown", "tag": "v2-silicon-a2b-data-2026-06-26"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all / pynq-z2-pair-flip-all", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": {"TIDELINK_PHY_V2": "1", "lane_mask": "0xE4 (lanes 2,5,6,7)"}, "bitstream": {"bit_sha256": "unknown", "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["first V2 A->B byte-exact AND deterministic (not the eye lottery), into die_b GP1 0x84010000"], "evidence_class": "tag_body", "evidence": ["tag v2-silicon-a2b-data-2026-06-26"]}}, {"id": "BLD-2026-06-28-z2-v1-eyescan", "date": "2026-06-28", "status": "superseded", "provenance": "partial", "source": {"git_sha": "7e548ebd8dc0d6af74c2faebbe05e06713f792e3", "git_dirty": "unknown", "branch": "unknown", "tag": "v1-silicon-eyescan-linkup-2026-06-28"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair / pynq-z2-pair-flip", "flist": "tidelink_fpga.flist", "phy": "V1", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"build_ids": ["die_a eac1d151", "die_b a5d9af83"], "rollback_ids": ["1bbee279", "314bc0e6"], "hashes_verified": false, "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["armed-eyescan BILATERAL link-up; fcsm=4, cal_done=1, lane_synced=0xFF; holds on first roll"], "evidence_class": "tag_body", "evidence": ["tag v1-silicon-eyescan-linkup-2026-06-28"]}, "known_bad": ["A->B sustained data is a TIME-CORRELATED lottery (6/6 at 04:22-42, 0/15 at 04:59, 0/5..0/8 at 05:33)"]}, {"id": "BLD-2026-07-07-z2-a2l-reset-skew", "date": "2026-07-07", "status": "superseded", "provenance": "partial", "source": {"git_sha": "b96953734dd92711b5a164397cffb37f006d9d2c", "git_dirty": "unknown", "branch": "unknown", "tag": "a2l-reset-skew-fix-silicon-2026-07-07", "sha_note": "`git rev-parse a2l-reset-skew-fix-silicon-2026-07-07` returns 85bd3b5b654bd1f7cd7a8b956b06faf9084604e2, which is the annotated TAG object, not a commit. Checking out 85bd3b5 does not do what the tag name implies. The commit is the sha above (verified 2026-08-10).\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all / pynq-z2-pair-flip-all", "flist": "unknown", "phy": "unknown", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"build_ids": ["die_a 945241cd", "die_b 2180350b"], "hashes_verified": false, "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["autonomous data 0->word0 byte-exact in BOTH directions"], "evidence_class": "tag_body", "evidence": ["tag a2l-reset-skew-fix-silicon-2026-07-07"]}}, {"id": "BLD-2026-07-09-z2-a2b-credit-max", "date": "2026-07-09", "status": "superseded", "provenance": "partial", "source": {"git_sha": "4e7a458d37f60fd4a7a468e58b1880f40d21ebed", "git_dirty": "unknown", "branch": "unknown", "tag": "a2b-credit-max-fix-silicon-2026-07-09", "sha_note": "Same trap as the 07-07 entry: `git rev-parse` on this tag returns the tag object 2c1f0befde1c19b05109cd12e57a25031983caa6, not a commit. The commit is the sha above (verified 2026-08-10).\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all / pynq-z2-pair-flip-all", "flist": "unknown", "phy": "unknown", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"build_ids": ["die_a 161b0998", "die_b b659fd41"], "hashes_verified": false, "retained": false}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["fe_tx_credit_max=0x1f preserved; exp_pkt_num wraps 31->0; mism=0", "31/32 ring slots over two laps, no wedge; B->A unregressed"], "evidence_class": "tag_body", "evidence": ["tag a2b-credit-max-fix-silicon-2026-07-09"]}}, {"id": "BLD-2026-07-09-kr260-pair-anchor", "date": "2026-07-09", "status": "superseded", "provenance": "partial", "source": {"git_sha": "2449098aba9dd0573d4bff7eff6eb30aa8e600a5", "git_dirty": true, "branch": "unknown", "tag": null}, "submodule_pins": {"deps/tidelink-phy": "9f4953c1ac6fbf934d49c0719736d39c8c07d2e7", "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-nptp + kr260-pair-flip-nptp", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-09T16:26:42+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256_nptp": "b8c7d6eeb7498616bc1273db3895719fb29df70dccca4181dbd5cd84f6ac5e15", "bit_sha256_flip": "f0a11825024c340e1e541ea262311ab26a6393091a51e08444c5196481c5521c", "usr_access": "0xa8e600a5", "usr_access_stamped": false, "retained": true, "path": "imp/fpga/output/kr260-pair-{,flip-}nptp-anchor/"}, "boards": "unknown", "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "notes": "Bytes and a manifest survive; no hardware result was ever attached. Listed so the surviving artefacts are accounted for.\n"}, {"id": "BLD-2026-07-17-golden-z2", "date": "2026-07-17", "status": "deployed", "provenance": "sha_unrecoverable", "source": {"git_sha": "unknown", "git_dirty": "unknown", "branch": "unknown", "tag": null, "sha_note": "The manifest's own provenance_note: \"Recovered 2026-07-24 from the boards' /lib/firmware; md5 matches the 2026-07-17 golden record. Source commit is NOT known -- these artefacts must not be used as a version-comparison datapoint.\" The bytes were read back off the boards because the build had been lost.\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all (die_a) + pynq-z2-pair-flip-all (die_b)", "flist": "unknown", "phy": "unknown", "tool_version": "unknown", "build_host": "unknown", "build_date": "2026-07-17T00:00:00+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bin_sha256_die_a": "6d3cadd99101e2fb0de9ee9d58777ad704583c3e9d0de5d2bbec319df5e81ace", "bin_md5_die_a": "4b5889a9eac7975003089ebe3ebaecd6", "bin_sha256_die_b": "c1dbd91a6bd4fa94a136578ae33770513e4684a85d786f8fec416f118eecb16d", "bin_md5_die_b": "e384eec66b6a4f670867498a84f92cdd", "retained": true, "path": "~/tidelink_artefacts/golden-z2-20260717/"}, "boards": ["z2_02 (192.168.4.101)", "z2_01 (192.168.2.101)"], "deployments": ["2026-07-28T20:00:10+00:00", "2026-07-28T20:00:24+00:00", "2026-07-28T21:32:10+00:00", "2026-07-28T21:32:26+00:00"], "validation": {"claimed": ["the Z2 reference/control image for the clock-gate and PARK-hook investigations"], "evidence_class": "memory_note", "evidence": ["~/tidelink_artefacts/golden-z2-20260717/deployed.json (4 deploy records, each commit:'unknown')"]}, "notes": "USABLE AS AN A/B CONTROL (the bytes are stable and hashed), NEVER as a version datapoint. This is the canonical example of why this registry exists.\n"}, {"id": "BLD-2026-07-22-kr260-pair-nptp", "date": "2026-07-22", "status": "superseded", "provenance": "partial", "source": {"git_sha": "f7841a2577ebde74d474a6ed68e0d5110b9644c5", "git_dirty": true, "branch": "unknown", "tag": null, "related_tag": "freeze-2026-07-22 (commit af3acd4b28110233abb67dd41d47b0ddf23c9534) claims \"hardware-proven (KR260 12/12 byte-exact, CRC-on clean)\" but names no bitstream, no target and no board, and shares its commit with two other tags. It cannot be bound to this build with confidence.\n"}, "submodule_pins": {"deps/tidelink-phy": "5c76e76470ff82e36716a38bc067e9c60af7eafc", "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-nptp + kr260-pair-flip-nptp", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-22T10:42:40+00:00"}, "key_parameters": {"recorded": "none", "note": "fpga/targets/kr260-pair-{,flip-}nptp/tidelink_design.tcl sets TIDELINK_PAIR_BASE / USE_IDELAY 0 / HARDEN_SWI_ENABLE 0, but the values that reached THIS netlist were never recorded.\n"}, "build_env": "unknown", "bitstream": {"bit_sha256_nptp": "e606364650f8b6c27e7b626d540501ad5a926655f8dcbee24098f32583d77124", "bit_sha256_flip": "7bd66f2bb42f073106a4b5b4157cad45b69e72f904d67d8e94aab2264651d9e4", "usr_access": "0x0b9644c5", "usr_access_stamped": false, "retained": true, "path": "imp/fpga/output/kr260-pair-{,flip-}nptp/"}, "boards": ["kr260-01 (10.22.24.159)", "kr260-02 (10.22.24.153)"], "validation": {"claimed": ["KR260 12/12 byte-exact, CRC-on clean (freeze tag, unbound)"], "evidence_class": "tag_body", "evidence": ["tag freeze-2026-07-22"]}, "notes": "First KR260 two-board data crossing. See also HW-10: the RX FIFO must be read STRIDED (packet k at ahb_fifo + 0x10*k + 8); a fixed-offset read here produced a multi-day phantom \"intermittent delivery\" bug.\n"}, {"id": "BLD-2026-07-23-kr260-pair-nptp-clean", "date": "2026-07-23", "status": "built", "provenance": "full", "source": {"git_sha": "4d392c99c5e0547c5b0feb35396114cf45389774", "git_dirty": false, "branch": "unknown", "tag": null}, "submodule_pins": {"deps/tidelink-phy": "unknown", "deps/tidelink-gpio-phy": "unknown", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-nptp", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-23T16:36:40+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "b1cf4736e50216e08f1e3fd0edac0b510f307c75789161f1fad7a10dccd77d88", "usr_access": "0x45389774", "usr_access_stamped": true, "retained": true, "path": "/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/fpga/output/kr260-pair-nptp/"}, "boards": "unknown", "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "notes": "A CLEAN kr260-pair-nptp build with a real USR_ACCESS stamp, sitting in the eth-chiplet tree with no recorded hardware result. It appears in no handover, no tag and no memory note — found only by walking the six trees that hold build outputs.\n"}, {"id": "BLD-2026-07-23-kr260-onchip-soak", "date": "2026-07-23", "status": "superseded", "provenance": "sha_unrecoverable", "source": {"git_sha": "unknown", "git_dirty": "unknown", "branch": "unknown", "tag": null, "sha_note": "The only record is \"Farm-built on srv04936 (40m, WNS +28.5/WHS +0.010, current RTL)\" in a project memory note. \"current RTL\" was never resolved to a sha.\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-pair-onchip", "flist": "unknown", "phy": "unknown", "tool_version": "unknown", "build_host": "srv04936", "build_date": "unknown", "timing": {"wns": "+28.5", "whs": "+0.010"}}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "unknown", "retained": false}, "boards": ["kr260-01"], "validation": {"claimed": ["500/500 + 5000/5000 + 25000/25000 = 30,500 byte-exact in-order deliveries; 0 bad, 0 stalls, 0 wedges", "credit-return loop proven on silicon (pair-credit +4/packet, 2008 -> 122004 over 25k)", "bring-up lottery gone"], "evidence_class": "memory_note", "evidence": ["memory/project_kr260_onchip_sustained_soak_2026_07_23.md"]}, "known_bad": ["slave mask_hs_match=0 while gate_open=1 — a strap-forced (sham) handshake, so autonomy was NOT genuinely proven on this build"], "notes": "THE LARGEST SOAK THIS PROJECT HAS, AND ITS SHA IS UNRECOVERABLE. Re-running it on BLD-2026-08-08-kr260-onchip would re-establish the number on a recoverable commit.\n"}, {"id": "BLD-2026-07-24-kr260-onchip", "date": "2026-07-24", "status": "superseded", "provenance": "sha_unrecoverable", "source": {"git_sha": "unknown", "git_dirty": false, "branch": "unknown", "tag": null}, "submodule_pins": {"deps/tidelink-phy": "-", "deps/tidelink-gpio-phy": "-", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-onchip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv04936", "build_date": "2026-07-24T15:41:03+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "ca7ea353c0f1570141b8239b678c8f3d68a190d4617219cdf9dc3266cb12d239", "bin_sha256": "9edb738ca83b9b7b451047aeacb1c88b75dde8cdabb5126ceec74ac7949e9383", "usr_access": "-", "usr_access_stamped": false, "retained": true, "path": "imp/fpga/output/kr260-pair-onchip/"}, "boards": "unknown", "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "known_bad": ["the .bit (mtime 2026-07-24 16:40) and the .bin (mtime 2026-07-29 10:39) in this directory are from DIFFERENT builds, and the .bin — which is what gets flashed — has no manifest at all"], "notes": "The only kr260-pair-onchip manifest in this repo, and it identifies nothing.\n"}, {"id": "BLD-2026-07-24-eth-chiplet-baseline", "date": "2026-07-24", "status": "superseded", "provenance": "partial", "source": {"git_sha": "0ed6d46e5689b3e8934bd764617ab1bfa09b60bb", "git_dirty": false, "branch": "unknown", "tag": null, "reachable_here": false}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-eth-chiplet + kr260-eth-chiplet-flip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-24T21:39:49+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "f7e3fd1d8198e973e288872a20d0a5bed4fb77b6a1e95473319a686d2c930264", "bit_sha256_flip": "d2c73e64dbafa372d81b80a765c72327b43ca8219fde91dd8c81e14e3a2d88d4", "usr_access": "0xa09b60bb", "usr_access_stamped": true, "retained": true, "path": "/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/fpga/output/kr260-eth-chiplet{,-flip}.baseline-0ed6d46/"}, "boards": ["kr260-01", "kr260-02"], "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "notes": "The eth-chiplet output directories embed the sha in their NAME — a good convention, but hand-typed (see BLD-2026-07-30-eth-chiplet-prefixG).\n"}, {"id": "BLD-2026-07-28-z2-trainfb", "date": "2026-07-28", "status": "known_bad", "provenance": "partial", "source": {"git_sha": "76202ed", "git_dirty": true, "dirty_note": "The build note says the \"-dirty\" is the wrapper enable-edit plus an sv_anti_pattern baseline line-refresh. The diff itself was never captured.\n", "branch": "feat/txgen-v1-integration", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all (die_a) + pynq-z2-pair-flip-all (die_b)", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv04936", "build_date": "2026-07-28T15:35:16+00:00", "timing": {"wns": "+0.444"}}, "key_parameters": {"TRAIN_ENTRY_FALLBACK": "1'b1", "note": "Structurally verified for the sibling tl-optionA image by reading the .hwh: \"PARAMETER TRAIN_ENTRY_FALLBACK VALUE=0x1 + OOC MODELPARAM_VALUE=0x1 (both dies)\". That check is the only reason any parameter value is recorded for this era at all.\n"}, "build_env": {"TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0"}, "bitstream": {"bin_sha256_die_a": "777bf435347bae3d0e51a18cf4839a13503e365000c3e39754376f856b48b6dc", "bin_md5_die_a": "e4d2cd59bcbc3e298ef02c30787fc434", "bin_sha256_die_b": "51c952ac5e7c6e3ef649bd43518f58536bdcf2fcb3444b4cbc8c0af221728b76", "retained": true, "path": "~/tidelink_artefacts/tl-trainfb-8lane/"}, "boards": ["z2_02 (192.168.4.101)", "z2_01 (192.168.2.101)"], "deployments": ["2026-07-28T15:44:15+00:00", "2026-07-28T21:27:26+00:00"], "validation": {"claimed": [], "evidence_class": "memory_note", "evidence": ["~/tidelink_artefacts/tl-trainfb-8lane/deployed.json", "~/tidelink_artefacts/tl-optionA-z2-20260728/MANIFEST.txt"]}, "known_bad": ["HW VERDICT: entry-only Option A is INSUFFICIENT — the beacon lights but the slave sticks at R8=0x15 (training_mode=1) and no data crosses."], "notes": "~/tidelink_artefacts/tl-optionA-z2-20260728/ is a DUPLICATE of this build kept for its branch-committed structural proof; its own MANIFEST.txt marks it SUPERSEDED — DO NOT DEPLOY AS \"THE FIX\".\n"}, {"id": "BLD-2026-07-28-z2-trainfb-exit", "date": "2026-07-28", "status": "superseded", "provenance": "partial", "source": {"git_sha": "76202ed", "git_dirty": true, "branch": "feat/txgen-v1-integration", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all + pynq-z2-pair-flip-all", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv04936", "build_date": "2026-07-28T19:43:54+00:00"}, "key_parameters": {"TRAIN_ENTRY_FALLBACK": "1'b1", "extra": "4th hook — local training-exit on dead-peer NACK (tidelink_autoneg.sv:1354)"}, "build_env": {"TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0"}, "bitstream": {"bin_sha256_die_a": "e18c9ff870e614ece240dde452e91a407a7ecc60c02e09b823d1696d3771200e", "bin_sha256_die_b": "76c449478d90512638103b5510f56540bac270d0ef95639db571364941ca24ac", "retained": true, "path": "~/tidelink_artefacts/tl-trainfb-exit-8lane/"}, "boards": ["z2_02", "z2_01"], "deployments": ["2026-07-28T19:47:18+00:00", "2026-07-28T19:52:47+00:00"], "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "notes": "The 4th PARK/exit hook was later REVERTED on the standalone branch (a5df514 reverts 0a3b1cf) — see BLD-2026-07-30-z2-nopark.\n"}, {"id": "BLD-2026-07-28-z2-trainfb-park", "date": "2026-07-28", "status": "superseded", "provenance": "partial", "source": {"git_sha": "76202ed", "git_dirty": true, "branch": "feat/txgen-v1-integration", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all + pynq-z2-pair-flip-all", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv04936", "build_date": "2026-07-28T21:15:00+00:00"}, "key_parameters": {"TRAIN_ENTRY_FALLBACK": "1'b1", "extra": "Fix A — park the slave in ST_TRAIN_FAIL on dead-peer NACK so the master's I2C clear sticks"}, "build_env": {"TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0"}, "bitstream": {"bin_sha256_die_a": "791ac90ad8cdc2e3080460c8c529a2ce0529f27077dfb42ebc4b9e8940ec6859", "bin_sha256_die_b": "89d663261839f4dd808edee1326c7b059b8ce1e9b7c03c087c3f6bb9d9168b56", "retained": true, "path": "~/tidelink_artefacts/tl-trainfb-park-8lane/"}, "boards": ["z2_02", "z2_01"], "deployments": ["2026-07-28T21:17:35+00:00", "2026-07-28T21:22:10+00:00"], "validation": {"claimed": [], "evidence_class": "none", "evidence": []}}, {"id": "BLD-2026-07-29-z2-clkgatefix", "date": "2026-07-29", "status": "known_bad", "provenance": "partial", "source": {"git_sha": "e569b50", "git_dirty": "unknown", "branch": "worktree-agent-addd36a23a37dc875", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all + pynq-z2-pair-flip-all", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-29T23:22:47+00:00", "timing": {"wns": "+0.403 / +0.342"}}, "key_parameters": {"note": "pad clock-gate change in WavD2DGpio_v2.v (restores V1's `| sync_insert` term on all 8 gpiotx_N_io_clk_en) — an RTL edit, not a parameter"}, "build_env": {"TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0"}, "bitstream": {"bin_sha256_die_a": "272879ad5f30d416309912ec2106d0359238536deb7d2b41972e1344342e4638", "bin_sha256_die_b": "5b03acf51c9297d11178aad7850d7f93098c350d46f9405491149b98dd8c6055", "retained": true, "path": "~/tidelink_artefacts/tl-clkgatefix-8lane/"}, "boards": ["z2_02", "z2_01"], "deployments": ["2026-07-29T22:26:53+00:00", "2026-07-29T22:30:26+00:00"], "validation": {"claimed": ["sim: sim_gate_pad_clkgate_idle XCHG (pad_clk_tx edges 0->2352, peer sync_detected 0->138); farm_gate GREEN"], "evidence_class": "memory_note", "evidence": ["~/tidelink_artefacts/tl-clkgatefix-8lane/tidelink.bin.manifest.json (build_note)"]}, "known_bad": ["the clock-gate theory was REFUTED on hardware; the real Z2 root cause was beacon starvation (swi_delay_cycles=0 => postcount==7 => the SYNC beacon never fires)"], "notes": "~/tidelink_artefacts/tl-clkgatefix-trainfb-8lane/ (source_commit \"76202ed-dirty+clkgatefix\", die_a .bin 0e99e312…, deployed 2026-07-29T23:00:42Z) is the one-variable A/B sibling of this build.\n"}, {"id": "BLD-2026-07-30-z2-nopark", "date": "2026-07-30", "status": "superseded", "provenance": "partial", "source": {"git_sha": "a5df514", "git_dirty": "unknown", "branch": "fix/z2-drop-park-hook", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "pynq-z2-pair-all + pynq-z2-pair-flip-all", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": {"TRAIN_ENTRY_FALLBACK": "1'b1"}, "build_env": {"TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0"}, "bitstream": {"bin_sha256_die_a": "777bf435347bae3d0e51a18cf4839a13503e365000c3e39754376f856b48b6dc", "bin_md5_die_a": "e4d2cd59bcbc3e298ef02c30787fc434", "bin_sha256_die_b": "51c952ac5e7c6e3ef649bd43518f58536bdcf2fcb3444b4cbc8c0af221728b76", "retained": true, "path": "~/tidelink_artefacts/tl-nopark-8lane/"}, "boards": ["z2_02", "z2_01"], "deployments": ["2026-07-30T07:34:58+00:00", "2026-07-30T07:35:15+00:00", "2026-07-30T07:41:17+00:00"], "validation": {"claimed": ["the reverted 4th PARK hook was the only functional difference; 3 ENTRY hooks retained"], "evidence_class": "memory_note", "evidence": ["~/tidelink_artefacts/tl-nopark-8lane/deployed.json"]}, "known_bad": ["⚠ BYTE-IDENTICAL to BLD-2026-07-28-z2-trainfb (both .bin sha256 777bf435…, md5 e4d2cd59) despite a DIFFERENT recorded source_commit (76202ed-dirty vs a5df514). Two labels, two commits, one blob — so at most one of the two source_commit fields describes these bytes."], "notes": "The single clearest demonstration in this repo that a label and a commit field are not a build identity. Only the hash is.\n"}, {"id": "BLD-2026-07-30-z2-epochfix", "date": "2026-07-30", "status": "deployed", "provenance": "partial", "source": {"git_sha": "9eaafb7152f1570157008da469bfebe5573006d4", "git_dirty": true, "branch": "fix/z2-drop-park-hook", "tag": null, "sha_note": "The build manifest records \"9eaafb7152f…-dirty\"; the deploy sidecar that travelled to the board records \"9eaafb7\" with the dirty flag DROPPED.\n"}, "submodule_pins": {"deps/tidelink-phy": "5c76e76470ff82e36716a38bc067e9c60af7eafc", "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "pynq-z2-pair-all (die_a) + pynq-z2-pair-flip-all (die_b)", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-30T10:06:34+00:00"}, "key_parameters": {"EPOCH_ANCHOR_EN": "1'b1", "TRAIN_ENTRY_FALLBACK": "1'b1", "recorded": "none"}, "build_env": {"TL_EPOCH_ANCHOR_EN": "1", "TL_TRAIN_ENTRY_FALLBACK": "1", "TIDELINK_PHY_V2": "1", "TD_AUTO_LANE_MASK_E4": "0", "note": "pynq-z2-pair-all/tidelink_design.tcl:435,451 (flip :417,:433) apply TRAIN_ENTRY_FALLBACK and EPOCH_ANCHOR_EN ONLY inside `if {[info exists ::env(TL_*)]}` guards, so a PLAIN build of these targets has BOTH OFF and produces a manifest indistinguishable from this one.\n"}, "bitstream": {"bit_sha256": "bfad969399d13c4de7765688fc76c2fea08ba59d42fcd17fc430d5acd4bb063f", "bit_sha256_flip": "ed72c737d0a6a3edf7cfc6e617545b24f70cd955fde5bbbe5198fabe66d8f299", "bin_sha256": "e2ec5d5b117c09ab4969775fe61d6f23b217ebd72940475545d69b468d076619", "usr_access": "0x573006d4", "usr_access_stamped": false, "retained": true, "path": "imp/fpga/output/pynq-z2-pair-{,flip-}all/", "label": "tl-epochfix-8lane"}, "boards": ["z2_02", "z2_01"], "validation": {"claimed": ["bring-up fixed zero-poke: cal=1, fcsm=4, cr=1, ck=1; LIVEMATCH 8/8; SLICEMAP 0x76543210 on both dies", "EPOCH_ANCHOR_EN fix confirmed ENGAGED on silicon (anchored=1 both dies)"], "evidence_class": "memory_note", "evidence": ["docs/HANDOVER_Z2_PICKUP_2026_07_30.md"]}, "known_bad": ["the conclusive slave->master data test was never completed — blocked by a lane-lock plateau"], "notes": "This is the build whose parameters are invisible in its own manifest, and whose env recipe exists only in a handover document.\n"}, {"id": "BLD-2026-07-30-eth-chiplet-i1", "date": "2026-07-30", "status": "deployed", "provenance": "partial", "source": {"git_sha": "90fe6cc12786229191d6eda7c5c5a29c155235b1", "git_dirty": false, "branch": "unknown", "tag": null, "reachable_here": false}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-eth-chiplet + kr260-eth-chiplet-flip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-30T00:00:10+00:00"}, "key_parameters": {"AUTO_ANCHOR_EN": "1'b1", "note": "Forced by the SoC RTL, not by the FPGA target: nanosoc_eth_chiplet.sv:760 instantiates tidelink_top with .AUTO_ANCHOR_EN(1'b1) while the parameter defaults to 1'b0. The eth-chiplet targets set NO tidelink CONFIG.* at all — they package the whole chiplet as one IP. This is exactly the difference that made the 2026-08-09 standalone rebuild fail.\n"}, "build_env": "unknown", "bitstream": {"bit_sha256": "bc28fc8fd7ca617ad5cba586769afd25fa9a36a22611e335217c9ff973544441", "bit_sha256_flip": "6b9a16bab63c082fd38aa7aa41beedd390bc150db01177eecbaf6334fd8ec275", "usr_access": "0x155235b1", "usr_access_stamped": true, "retained": true, "path": "/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/fpga/output/kr260-eth-chiplet{,-flip}.i1-90fe6cc/"}, "boards": ["kr260-01", "kr260-02"], "validation": {"claimed": ["I1 resolved on silicon: fcsm=4, 6/6 byte-exact D2D via SELF_ARM_TRAIN_EN + bilateral training-release"], "evidence_class": "memory_note", "evidence": ["memory/project_i1_fcsm_breaks_eth_chiplet_bringup_2026_07_30.md"]}}, {"id": "BLD-2026-07-30-eth-chiplet-prefixG", "date": "2026-07-30", "status": "superseded", "provenance": "partial", "source": {"git_sha": "34b006cb579f1ea58c9e2645191ab0e670c6290f", "git_dirty": false, "branch": "unknown", "tag": null, "reachable_here": false}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-eth-chiplet + kr260-eth-chiplet-flip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-07-30T23:02:50+00:00"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"bit_sha256": "f15906789d2c7d239c7d0157c55b567fe46caffb30380e8e1d483300a471bbf0", "bit_sha256_flip": "387a4b2856306109e1c0e53dcee2f08d6cce305385f4e9947b5142c957231504", "usr_access": "0x70c6290f", "usr_access_stamped": true, "retained": true, "path": ".../imp/fpga/output/kr260-eth-chiplet{,-flip}.prefixG-855096a/"}, "boards": "unknown", "validation": {"claimed": [], "evidence_class": "none", "evidence": []}, "known_bad": ["⚠ the DIRECTORY NAME says 855096a; the manifest inside says 34b006cb…. 855096a appears nowhere in the manifest. Anyone bisecting from the directory name checks out the wrong commit."]}, {"id": "BLD-2026-08-02-eth-chiplet-bare", "date": "2026-08-02", "status": "deployed", "provenance": "sha_unrecoverable", "source": {"git_sha": "unknown", "git_dirty": "unknown", "branch": "unknown", "tag": null}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-eth-chiplet", "flist": "unknown", "phy": "unknown", "tool_version": "unknown", "build_host": "unknown", "build_date": "unknown"}, "key_parameters": "unknown", "build_env": "unknown", "bitstream": {"files": ["kr260-eth-chiplet.fixG-snap.bit", "kr260-eth-chiplet.fixH-noila.bit", "kr260-eth-chiplet.ila-t16.bit", "kr260-eth-chiplet-flip.fixG-snap.bit"], "bit_sha256": "unknown", "retained": true, "path": "/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/fpga/output/  (bare .bit files, no directory, no manifest)"}, "boards": ["kr260-01", "kr260-02"], "validation": {"claimed": ["TL-007 B-wedge: die_a survives `errinject B byte0` (ping 2/2, SSH up); every prior build hard-wedged"], "evidence_class": "memory_note", "evidence": ["docs/BUG_REGISTRY.yaml TL-007 (hw_proven); the cited HW log does not exist on disk"]}, "known_bad": ["four bitstreams written straight into the output root with no manifest and no directory — the only builds in any tree that bypassed tl_write_manifest entirely"], "notes": "A hardware proof recorded against a bitstream with zero provenance.\n"}, {"id": "BLD-2026-08-08-kr260-onchip", "date": "2026-08-08", "status": "hw_validated", "provenance": "full", "source": {"git_sha": "9cca6fe276330743f3e8a7d26760305dcb6e8cde", "git_dirty": false, "branch": "integ/tidelink-consolidated-2026-08-07", "tag": null, "worktree": "/home/dam1n19/SoCLabs/tidelink-consolidated", "reachable_here": true, "fetchable": true}, "submodule_pins": {"deps/tidelink-phy": "5c76e76470ff82e36716a38bc067e9c60af7eafc", "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-onchip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-08-08T11:15:47+00:00", "timing": "unknown"}, "key_parameters": {"recorded": "none", "inferred_from": "fpga/targets/kr260-pair-onchip/tidelink_design.tcl @9cca6fe (READ 2026-08-10; an inference, not a build-time record)", "values": {"NEGO_CFG_RESET": "7'b1100001", "HONEST_MASK_HS": "1'b1", "DEBUG_UNLOCK_DEFAULT": "1'b0", "USE_IDELAY": "0", "TIDELINK_PAIR_BASE": "0x8C032000 (tidelink_0) / 0x84032000 (tidelink_1)"}, "parameter_drift_warning": "The SAME target at 9eaafb7 (this checkout's HEAD) sets DEBUG_UNLOCK_DEFAULT {1'b1} on BOTH dies. `git diff 9eaafb7 9cca6fe -- fpga/targets/kr260-pair-onchip/tidelink_design.tcl` is 4 changed lines, all parameter values. Rebuilding \"kr260-pair-onchip\" from this branch therefore yields a DIFFERENT netlist from the validated one, and both builds produce manifests that differ only in the commit field. This is the failure this registry exists to prevent.\n"}, "build_env": {"TIDELINK_PHY_V2": "1", "others": "unknown"}, "bitstream": {"bit_sha256": "fa9d0fe282f7e0e679fa85ce3dc3d34cbcda2b839245479470b829e553ec74e3", "bit_sha256_verified": "2026-08-10", "bin_sha256": "unknown", "usr_access": "0xcb6e8cde", "usr_access_stamped": true, "usr_access_check": "low 32 bits of 9cca6fe…cb6e8cde — internally consistent", "retained": true, "path": "/home/dam1n19/SoCLabs/tidelink-consolidated/imp/fpga/output/kr260-pair-onchip/tidelink.bit"}, "boards": ["kr260-01"], "rig": "onchip-single-board", "validation": {"proven": ["4/4 fresh PORs: autonomy PASS and SOAK sent=500 drained=500 good=500 bad=0 stalls=0 on every cycle"], "claimed": ["1000/1000 byte-exact on the first (pre-loop) POR", "autonomy PROVEN — fcsm=4 / cal / HONEST mask_hs"], "evidence_class": "retained_artifact", "evidence": ["/home/dam1n19/SoCLabs/tidelink-consolidated/onchip_landrate.log (1172 B, 2026-08-08 12:38, header stamps tip=9cca6fe)", "commit e66b5393e4a7ea6af05c420d035c9184c862740e message (the 1000/1000 half — prose only)"], "caveats": ["the landrate log stamps `tip=9cca6fe` but does NOT record the bitstream hash or a USR_ACCESS read-back, so the binding between log and bytes is by timestamp and commit, not by identity", "the '1000/1000' figure appears in NO document in any tree — only in the commit message", "pynq_host/scripts/hwtest_gate.sh (added by e66b539) emits imp/hw_gate/verdict.json; no such directory or file exists in any tree, so the gate has never run"]}, "known_bad": ["does NOT exercise the two-board ribbon eye — TL-001 (peer-write DATA drop) and TL-009 (die_a PS wedge) are structurally out of scope on this vehicle", "not a multi-hour soak; the 30,500-packet soak (BLD-2026-07-23-kr260-onchip-soak) has never been repeated on a recoverable sha"], "supersedes": "BLD-2026-07-24-kr260-onchip", "signoff": {"approved": false, "approved_by": null, "approved_date": null}, "actions": ["tag it (e.g. hwgood/kr260-pair-onchip-2026-08-08) — it is currently untagged", "archive the .bit + .bin + .hwh alongside a verdict.json so the claim stops being a commit message", "re-run the 30,500-packet soak on this build to re-establish that number on a recoverable commit"]}, {"id": "BLD-2026-08-09-kr260-pair-autoanchor", "date": "2026-08-09", "status": "known_bad", "provenance": "partial", "source": {"git_sha": "3f037c04e72536f94f18c98cf56d127e21817845", "git_dirty": true, "dirty_note": "⚠ THE FIX UNDER TEST IS THE UNCOMMITTED PART. The AUTO_ANCHOR_EN wrapper parameter (fpga/vivado_ip/tidelink_vivado_wrapper.v:222, forwarded :583) and both CONFIG.AUTO_ANCHOR_EN {1'b1} / CONFIG.TRAIN_ENTRY_FALLBACK {1'b1} target edits (kr260-pair-nptp/tidelink_design.tcl:473-474, kr260-pair-flip-nptp:460-461) exist ONLY as working-tree modifications in /home/dam1n19/SoCLabs/tidelink-consolidated. `git grep AUTO_ANCHOR_EN HEAD -- fpga/` there returns nothing. A `git checkout` erases the fix for the project's top blocker; the manifest's only record of it is the six characters \"-dirty\".\n", "branch": "integ/tidelink-consolidated-2026-08-07", "worktree": "/home/dam1n19/SoCLabs/tidelink-consolidated"}, "submodule_pins": {"deps/tidelink-phy": "5c76e76470ff82e36716a38bc067e9c60af7eafc", "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587", "deps/axi-chiplet-controller": "unknown", "deps/xhb500": "unknown"}, "build": {"fpga_target": "kr260-pair-nptp + kr260-pair-flip-nptp", "flist": "tidelink_fpga.flist", "phy": "V1", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-08-09T14:06:09+00:00"}, "key_parameters": {"AUTO_ANCHOR_EN": "1'b1", "TRAIN_ENTRY_FALLBACK": "1'b1", "USE_IDELAY": "0", "HARDEN_SWI_ENABLE": "0", "TIDELINK_PAIR_BASE": "0x84032000", "source": "read from the UNCOMMITTED working-tree tidelink_design.tcl (:470-474) on 2026-08-10 — nothing in the manifest records them"}, "build_env": "unknown", "bitstream": {"bit_sha256": "531596ed057d73478fa6cc15c2ba806b9beaebd03963e32cae478697a3ec6022", "bit_sha256_flip": "ab5bf83ef9ec844f39ec1e8dd77e686381c9d64d775a2d180d54f85fd063ac41", "usr_access": "0x21817845", "usr_access_stamped": false, "retained": true, "path": "/home/dam1n19/SoCLabs/tidelink-consolidated/imp/fpga/output/kr260-pair-{,flip-}nptp/"}, "boards": ["kr260-01", "kr260-02"], "validation": {"claimed": [], "evidence_class": "memory_note", "evidence": ["tidelink-consolidated/docs/OVERNIGHT_PROGRESS_2026_08_09.md"]}, "known_bad": ["AUTO_ANCHOR_EN=1 built and deployed, but delivery is STILL all-zeros on the bare link — the anchor is necessary, not sufficient", "⚠ phy_marker is V1 / tidelink_fpga.flist, while the SAME target built 2026-07-22 was V2 and the byte-exact eth-chiplet reference vehicle is V2. If the V1 fallback was unintended, the 'AUTO_ANCHOR did not fix it' conclusion was drawn on a V1 PHY build. Nothing on disk records the operator's TIDELINK_PHY_V2 value, so this is unresolvable from artefacts."], "actions": ["commit the AUTO_ANCHOR_EN / TRAIN_ENTRY_FALLBACK changes to a named branch", "confirm whether V1 was intended; if not, rebuild with TIDELINK_PHY_V2=1 before drawing any further conclusion"]}, {"id": "BLD-2026-08-09-eth-chiplet-a2lonly", "date": "2026-08-09", "status": "deployed", "provenance": "partial", "source": {"git_sha": "5d58c2a331604500b8c1912bbbc6ca4bcfce3725", "git_dirty": false, "branch": "integ/tidelink-consolidated-2026-08-09", "tag": null, "reachable_here": false, "sha_note": "The directory is named \".a2lonly-28409f5\" but the manifest says 5d58c2a3…, which is 28409f5's PARENT. (28409f5 touches only pynq_host/scripts/kr260_sysval.py, so the netlist is unaffected — but the label is demonstrably not derived from the build.)\n"}, "submodule_pins": "unknown", "build": {"fpga_target": "kr260-eth-chiplet + kr260-eth-chiplet-flip", "flist": "tidelink_fpga_v2.flist", "phy": "V2", "tool_version": "unknown", "build_host": "srv03335", "build_date": "2026-08-09T14:34:55+00:00"}, "key_parameters": {"AUTO_ANCHOR_EN": "1'b1", "recorded": "none"}, "build_env": "unknown", "bitstream": {"bit_sha256": "523039026399d158d8d830fcecad4bbb5bd47c5cd57836fd7cc334448a5e858b", "bit_sha256_flip": "e06cd4fa6a7f35027d325cb92c020e109acc115e5505edd172d5add64c832873", "usr_access": "0xcfce3725", "usr_access_stamped": true, "retained": true, "path": "/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/fpga/output/kr260-eth-chiplet{,-flip}.a2lonly-28409f5/"}, "boards": ["kr260-01 (10.22.24.159)", "kr260-02 (10.22.24.153)"], "validation": {"claimed": ["T3 128/128 writes and T10 128/128 reads byte-exact, no wedge, after the a2l CDC re-point"], "evidence_class": "commit_message", "evidence": ["reported by the eth-chiplet integrator; explicitly NOT re-verified"], "caveats": ["commit 28409f5's own message flags this class of claim: 'That is also how \"128/128\" ended up quoted as a headline from a session whose own matrix line read FAIL.'"]}, "known_bad": ["source commit is not fetchable from the standalone tidelink repo, so this build cannot be reproduced from here"], "notes": "Beats BLD-2026-08-08-kr260-onchip on recency, clean tree, hash and a real USR_ACCESS stamp. It loses on the two things that matter: the commit is unreachable here, and its hardware result is disputed by the project's own commit log. The 08-08 onchip build therefore remains last-known-good.\n"}]}</script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA   = JSON.parse(document.getElementById("build-data").textContent);
+  var BUILDS = DATA.builds || [];
+
+  var STATUS = {
+    hw_validated: { label: "hw validated", v: "--st-hw",      order: 0, note: "a named retained artefact proves a hardware result" },
+    deployed:     { label: "deployed",     v: "--st-sim",     order: 1, note: "flashed to a board; results claimed, not evidenced" },
+    built:        { label: "built",        v: "--st-fix",     order: 2, note: "bitstream exists; never recorded as flashed" },
+    superseded:   { label: "superseded",   v: "--st-wontfix", order: 3, note: "replaced by a later build of the same target" },
+    known_bad:    { label: "known bad",    v: "--sev-crit",   order: 4, note: "hardware showed this build broken" }
+  };
+
+  var PROV = {
+    full:              { label: "full",              v: "--ok",        note: "clean tree, hash recomputable, commit fetchable" },
+    partial:           { label: "partial",           v: "--sev-high",  note: "dirty tree, unreachable commit, or bytes gone" },
+    sha_unrecoverable: { label: "sha unrecoverable", v: "--sev-crit",  note: "source commit never recorded — A/B control only, never a version datapoint" }
+  };
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function prose(text) {
+    return String(text || "").trim().split(/\n\s*\n/).map(function (p) {
+      var html = esc(p.replace(/\s*\n\s*/g, " ").trim())
+        .replace(/`([^`]+)`/g, function (_, c) { return "<code>" + c + "</code>"; })
+        .replace(/\b(NOT|NEVER|ONLY|UNKNOWN|DIFFERENT|BYTE-IDENTICAL|WARNING)\b/g, "<strong>$1</strong>");
+      return "<p>" + html + "</p>";
+    }).join("");
+  }
+
+  var CODEISH = /^(?:[0-9a-f]{7,64}|0x[0-9A-Fa-f_]+|[\w./{},~+-]*\.(?:sv|v|py|sh|flist|yaml|yml|tcl|log|json|bit|bin|md)(?:[:#][\w:.-]+)?|[\w./~-]+\/[\w./{},~-]*)$/;
+
+  // "unknown" is the whole point of this registry: it means the field was never
+  // recorded at build time, not that nobody looked. It gets its own treatment.
+  function inline(s) {
+    if (s === true)  return '<span class="state yes"><i class="dot"></i>yes</span>';
+    if (s === false) return '<span class="state no"><i class="dot"></i>no</span>';
+    if (s == null)   return '<span class="unknown">not recorded</span>';
+    var t = String(s).trim();
+    if (/^(unknown|none|n\/a|-)$/i.test(t)) return '<span class="unknown">' + esc(t) + " &mdash; not recorded at build time</span>";
+    if (CODEISH.test(t)) return '<span class="mono">' + esc(t) + "</span>";
+    return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>");
+  }
+
+  function chips(list) {
+    return '<div class="tags">' + list.map(function (c) {
+      return '<span class="chip">' + esc(c) + "</span>";
+    }).join("") + "</div>";
+  }
+
+  function bullets(list, tone) {
+    return '<ul class="bul ' + (tone || "") + '">' + list.map(function (i) {
+      return "<li>" + esc(String(i).replace(/\s*\n\s*/g, " ").trim())
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\b(NOT|NEVER|ONLY|DIFFERENT|BYTE-IDENTICAL)\b/g, "<strong>$1</strong>") + "</li>";
+    }).join("") + "</ul>";
+  }
+
+  function isLong(v) { return typeof v === "string" && (v.length > 130 || /\s\s/.test(v)); }
+
+  // One value, rendered by shape: long prose as paragraphs, lists as bullets or
+  // chips, nested maps as a nested kv block.
+  function value(v) {
+    if (Array.isArray(v)) {
+      if (!v.length) return '<span class="unknown">none</span>';
+      return v.some(isLong) ? bullets(v) : chips(v.map(String));
+    }
+    if (v && typeof v === "object") return kv(v);
+    if (isLong(v)) return prose(v);
+    return inline(v);
+  }
+
+  function kv(obj) {
+    var rows = Object.keys(obj).map(function (k) {
+      return "<dt>" + esc(k.replace(/_/g, " ")) + "</dt><dd>" + value(obj[k]) + "</dd>";
+    });
+    return rows.length ? '<dl class="kv">' + rows.join("") + "</dl>"
+                       : '<span class="unknown">empty</span>';
+  }
+
+  function section(title, html) {
+    return html ? "<section><h3>" + esc(title) + "</h3>" + html + "</section>" : "";
+  }
+
+  function statusOf(b) { return STATUS[b.status] || STATUS.built; }
+  function provOf(b)   { return PROV[b.provenance] || PROV.partial; }
+
+  // ---- search index: everything a reader might paste in, including hashes ----
+  function haystack(b) {
+    return JSON.stringify(b).toLowerCase();
+  }
+
+  function card(b) {
+    var st = statusOf(b), pv = provOf(b);
+    var src = b.source || {}, bd = b.build || {}, bs = b.bitstream || {}, val = b.validation || {};
+
+    var head =
+      '<summary><div class="bhead">' +
+        '<span class="bid">' + esc(b.id) + "</span>" +
+        '<span class="btitle">' + esc(bd.fpga_target || bd.asic_flow || "unknown target") +
+          ' <span class="mono" style="color:var(--ink-dim)">' + esc(String(b.date || "")) + "</span></span>" +
+      "</div>" +
+      '<div class="bstatus">' +
+        '<span class="chip">' + esc(pv.label) + "</span>" +
+        '<span class="slabel">' + esc(st.label) + "</span>" +
+      "</div>" +
+      '<div class="bmeta">' +
+        (src.git_sha ? '<span class="chip k"><b>sha</b> ' + esc(String(src.git_sha).slice(0, 12)) + "</span>" : "") +
+        (src.git_dirty === true ? '<span class="chip net">dirty</span>' : "") +
+        (bd.phy ? '<span class="chip k"><b>phy</b> ' + esc(bd.phy) + "</span>" : "") +
+        (bs.retained === true ? '<span class="chip">bytes on disk</span>' : '<span class="chip net">bytes gone</span>') +
+        ((val.evidence_class && val.evidence_class !== "none")
+          ? '<span class="chip k"><b>evidence</b> ' + esc(val.evidence_class) + "</span>"
+          : '<span class="chip net">no evidence</span>') +
+      "</div></summary>";
+
+    var body = '<div class="body">' +
+      section("Source", kv(src)) +
+      section("Dependencies", b.submodule_pins ? value(b.submodule_pins) : "") +
+      section("Build", kv(bd)) +
+      section("Parameters", b.key_parameters ? value(b.key_parameters) : "") +
+      section("Build environment", b.build_env ? value(b.build_env) : "") +
+      section("Bitstream", kv(bs)) +
+      section("Hardware", kv({
+        boards: b.boards, rig: b.rig, deployments: b.deployments
+      })) +
+      section("Validation", kv(val)) +
+      section("Known bad", (b.known_bad && b.known_bad.length) ? bullets(b.known_bad, "warm") : "") +
+      section("Actions", (b.actions && b.actions.length) ? bullets(b.actions) : "") +
+      section("Notes", b.notes ? prose(b.notes) : "") +
+      section("Sign-off", b.signoff ? kv(b.signoff) : "") +
+    "</div>";
+
+    return '<details class="bug" id="' + esc(b.id) + '" style="--sev: var(' + st.v + '); --st: var(' + st.v + ')">' +
+           head + body + "</details>";
+  }
+
+  // ---- summary ---------------------------------------------------------- //
+  var counts = {
+    total: BUILDS.length,
+    hw: BUILDS.filter(function (b) { return b.status === "hw_validated"; }).length,
+    unrec: BUILDS.filter(function (b) { return b.provenance === "sha_unrecoverable"; }).length,
+    dirty: BUILDS.filter(function (b) { return (b.source || {}).git_dirty === true; }).length,
+    bytes: BUILDS.filter(function (b) { return (b.bitstream || {}).retained === true; }).length,
+    artefact: BUILDS.filter(function (b) { return (b.validation || {}).evidence_class === "retained_artifact"; }).length
+  };
+
+  document.getElementById("tiles").innerHTML = [
+    ['<div class="tile"><div class="num">' + counts.total + '</div><div class="cap">builds registered</div></div>'],
+    ['<div class="tile is-good"><div class="num">' + counts.hw + '</div><div class="cap">hw&nbsp;validated &mdash; a retained artefact proves it</div></div>'],
+    ['<div class="tile is-alarm"><div class="num">' + counts.unrec + '</div><div class="cap">source commit unrecoverable</div></div>'],
+    ['<div class="tile is-act"><div class="num">' + counts.dirty + '</div><div class="cap">built from a dirty tree (diff never captured)</div></div>'],
+    ['<div class="tile"><div class="num">' + counts.bytes + '</div><div class="cap">bitstreams still on disk</div></div>'],
+    ['<div class="tile is-act"><div class="num">' + counts.artefact + '</div><div class="cap">with a retained test artefact</div></div>']
+  ].join("");
+
+  var meta = [];
+  if (DATA.generated) meta.push(["generated", DATA.generated]);
+  if (DATA.schema_version != null) meta.push(["schema", "v" + DATA.schema_version]);
+  if (DATA.companion) meta.push(["companion", DATA.companion]);
+  document.getElementById("m-meta").innerHTML = meta.map(function (m) {
+    return '<span class="chip k"><b>' + esc(m[0]) + "</b> " + esc(m[1]) + "</span>";
+  }).join("");
+  document.getElementById("m-eyebrow").textContent = "docs/BUILD_REGISTRY.yaml";
+
+  var roll = DATA.rollup || {};
+  var lkg = BUILDS.filter(function (b) { return b.id === roll.last_known_good; })[0];
+  document.getElementById("hero").innerHTML =
+    '<div class="hero">' +
+      '<div class="eyebrow">Last known-good build</div>' +
+      "<h2>" + esc(roll.last_known_good || "none recorded") + "</h2>" +
+      (roll.headline ? prose(roll.headline) : "") +
+      (lkg ? '<div class="tags">' +
+        '<span class="chip k"><b>commit</b> ' + esc((lkg.source || {}).git_sha || "unknown") + "</span>" +
+        '<span class="chip k"><b>bit sha256</b> ' + esc((lkg.bitstream || {}).bit_sha256 || "unknown") + "</span>" +
+        '<span class="chip k"><b>usr_access</b> ' + esc((lkg.bitstream || {}).usr_access || "unknown") + "</span>" +
+      "</div>" : "") +
+      ((roll.caveats && roll.caveats.length) ? bullets(roll.caveats, "warm") : "") +
+    "</div>";
+
+  var mech = DATA.manifest_mechanism || {};
+  document.getElementById("mech-body").innerHTML =
+    kv({ schema: mech.schema, writer: mech.writer, call_site: mech.call_site }) +
+    (mech.records ? '<div class="sub"><div class="subhead">records</div>' + value(mech.records) + "</div>" : "") +
+    (mech.does_not_record ? '<div class="sub"><div class="subhead">does not record</div>' + bullets(mech.does_not_record, "warm") + "</div>" : "") +
+    (mech.traps ? '<div class="sub"><div class="subhead">traps</div>' + value(mech.traps) + "</div>" : "");
+
+  // ---- filters ----------------------------------------------------------- //
+  var state = { q: "", status: {}, prov: {} };
+  var list = document.getElementById("list");
+
+  list.innerHTML = BUILDS.map(card).join("") || '<div class="empty">no builds registered</div>';
+
+  function group(el, map, key, tally) {
+    el.innerHTML = '<span class="eyebrow">' + (key === "status" ? "status" : "provenance") + "</span>" +
+      Object.keys(map).map(function (k) {
+        var n = tally[k] || 0;
+        return '<button type="button" class="toggle" data-k="' + key + '" data-v="' + k + '"' +
+               ' aria-pressed="false" title="' + esc(map[k].note) + '">' +
+               '<i class="dot" style="background: var(' + map[k].v + ')"></i>' +
+               esc(map[k].label) + ' <span class="n">' + n + "</span></button>";
+      }).join("");
+  }
+
+  function tally(field) {
+    var out = {};
+    BUILDS.forEach(function (b) { out[b[field]] = (out[b[field]] || 0) + 1; });
+    return out;
+  }
+
+  group(document.getElementById("f-status"), STATUS, "status", tally("status"));
+  group(document.getElementById("f-prov"), PROV, "prov", tally("provenance"));
+
+  function apply() {
+    var shown = 0;
+    BUILDS.forEach(function (b) {
+      var el = document.getElementById(b.id);
+      if (!el) return;
+      var okS = !Object.keys(state.status).length || state.status[b.status];
+      var okP = !Object.keys(state.prov).length || state.prov[b.provenance];
+      var okQ = !state.q || haystack(b).indexOf(state.q) !== -1;
+      var vis = okS && okP && okQ;
+      el.hidden = !vis;
+      if (vis) shown++;
+    });
+    document.getElementById("count").textContent = shown + " / " + BUILDS.length + " builds";
+  }
+
+  function syncToggles() {
+    Array.prototype.forEach.call(document.querySelectorAll(".toggle"), function (t) {
+      var bag = t.dataset.k === "status" ? state.status : state.prov;
+      t.setAttribute("aria-pressed", bag[t.dataset.v] ? "true" : "false");
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest(".toggle");
+    if (!t) return;
+    var bag = t.dataset.k === "status" ? state.status : state.prov;
+    if (bag[t.dataset.v]) delete bag[t.dataset.v]; else bag[t.dataset.v] = true;
+    syncToggles();
+    apply();
+  });
+
+  document.getElementById("q").addEventListener("input", function (e) {
+    state.q = e.target.value.trim().toLowerCase();
+    apply();
+  });
+
+  document.getElementById("expand-all").addEventListener("click", function () {
+    var any = !!list.querySelector(".bug:not([hidden]):not([open])");
+    Array.prototype.forEach.call(list.querySelectorAll(".bug:not([hidden])"), function (d) { d.open = any; });
+    this.textContent = any ? "collapse all" : "expand all";
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    state = { q: "", status: {}, prov: {} };
+    document.getElementById("q").value = "";
+    syncToggles();
+    apply();
+  });
+
+  document.getElementById("foot").innerHTML =
+    "Generated from <span class=\"mono\">docs/BUILD_REGISTRY.yaml</span>. " +
+    "A field shown as <span class=\"unknown\">unknown</span> was not recorded at build time &mdash; " +
+    "the YAML carries the reason as a comment on each such line. " +
+    "Defects live in the companion <a href=\"bug_registry.html\">known-bug registry</a>.";
+
+  apply();
+
+  function openHash() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (el && el.classList.contains("bug")) {
+      el.hidden = false;
+      el.open = true;
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+  }
+  window.addEventListener("hashchange", openHash);
+  openHash();
+})();
+</script>

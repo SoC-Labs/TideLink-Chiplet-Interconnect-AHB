@@ -258,12 +258,49 @@ endef
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
-	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
+	sim_gate_v2_sustained sim_gate_v2_trunc_credit sim_gate_v2_isolated_write \
+	sim_gate_v2_mbox_writeprotect \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axinode_obs
+	sim_gate_axinode_obs \
+	sim_gate_v2_mask_hs_bilateral sim_gate_xfail_epoch_shipping \
+	sim_gate_epoch_anchor_plumb \
+	sim_gate_txgen_ext_hijack
+
+# Print the AUTHORITATIVE gate inventory without running anything. Use this
+# instead of copying counts into docs or CI comments — both had rotted (the CI
+# job comment still said "10 suites" at 37, docs/SIM_GATE_COVERAGE.md said 25).
+# Also cross-checks that every declared suite is actually invoked by the
+# aggregate, which is the exact defect this branch shipped with:
+# v2_mask_hs_bilateral was scored but never run, so the gate could only ever
+# report MISS. Cheap enough to run before every merge.
+.PHONY: sim_gate_inventory
+sim_gate_inventory:
+	@echo "blocking suites ($(words $(SIM_GATE_ALL_SUITES))):"
+	@for s in $(SIM_GATE_ALL_SUITES); do echo "  $$s"; done
+	@echo "known-defect sentinels ($(words $(SIM_GATE_SENTINELS))):"
+	@for s in $(SIM_GATE_SENTINELS); do echo "  $$s"; done
+	@echo "--- wiring cross-check (declared vs invoked) ---"
+	@mk=$(firstword $(MAKEFILE_LIST)); \
+	inv=$$(mktemp); \
+	sed -n '/^sim_gate: sim_gate_env_check/,/sim_gate_summary/p' $$mk \
+	  | grep -oE 'no-print-directory sim_gate_[a-z0-9_]+' \
+	  | awk '{print $$2}' | sort -u > $$inv; \
+	miss=0; \
+	for s in $(SIM_GATE_ALL_SUITES) $(SIM_GATE_SENTINELS); do \
+	  t=$$(grep -B40 -E "call sim_gate_(run|sentinel),$$s," $$mk \
+	       | grep -oE '^sim_gate_[a-z0-9_]+:' | tail -1 | tr -d ':'); \
+	  if [ -z "$$t" ]; then \
+	    echo "  ORPHAN: $$s is scored but no target produces it"; miss=1; \
+	  elif ! grep -qx "$$t" $$inv; then \
+	    echo "  ORPHAN: $$s (target $$t) is SCORED but never INVOKED"; miss=1; \
+	  fi; \
+	done; \
+	rm -f $$inv; \
+	if [ $$miss -eq 0 ]; then echo "  OK — every declared suite is invoked"; \
+	else echo "  ^^ the gate CANNOT PASS: the summary scores these MISS"; exit 1; fi
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -380,6 +417,38 @@ sim_gate_v2_trunc_credit:
 	$(call sim_gate_run,v2_truncated_pkt_credit,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_truncated_pkt_credit)
 
+# Isolated D2D write data-loss guard (2026-07-30). A D2D peer-aperture write
+# NOT followed by another AHB transfer must still deliver its write data —
+# pre-cb33c9f, ext_addr_phase gated by the FPGA wrapper's combinational
+# ahb_sub_hready loopback collapsed the address-phase detect during the
+# pipe-fill wait-state, so HWDATA sampled late and the isolated write (incl.
+# the cross-die mailbox doorbell) silently landed as data=0. cb33c9f is
+# already in this tree; this suite is the regression gate so it cannot rot
+# back out unnoticed the way it did on the compute-chiplet's stale pin (see
+# docs/TIDELINK_ISOLATED_WRITE_ROOTCAUSE_FIX.md). 4 sub-tests: isolated
+# distinct-data delivery, back-to-back distinct-data (no one-transfer shift),
+# non-compliant early-HWDATA-withdrawal (documented as master-compliance, not
+# a bridge defect), and the hready-loopback discriminator itself.
+sim_gate_v2_isolated_write:
+	$(call sim_gate_run,v2_isolated_write,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_isolated_write_dataloss)
+
+# PTP mailbox APB write-protect guard (2026-07-31, verification audit A11.2 /
+# tapeout risk recheck A13). mbox_reg_write, as computed by
+# tidelink_apb_regs.sv, has no source qualifier — a plain external APB write
+# to Region 3 (e.g. 0x4403_2068) was indistinguishable from a genuine
+# FC-sideband write and silently corrupted the PTP servo's cross-die
+# timestamp mailbox (mbox_sec_lo_r/hi_r/ns_r). Fixed by gating the write this
+# suite guards: tidelink_top.sv now ANDs mbox_reg_write with
+# fc_cfg_apb_active (the same arbiter signal that already protects TXGEN
+# from a hostile peer write in the opposite direction) before it reaches the
+# servo. Root-cause reproduction (permanently RED by design, NOT gated) is
+# cocotb/tidelink_apb_regs/test_mailbox_apb_writeprotect.py — see its
+# docstring for why that layer can never go green.
+sim_gate_v2_mbox_writeprotect:
+	$(call sim_gate_run,v2_mbox_writeprotect,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_mbox_apb_writeprotect)
+
 sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_autonomous_sync_detect)
@@ -490,6 +559,80 @@ sim_gate_force_recal:
 	  $(MAKE) -C cocotb/tidelink_force_recal RTL=v1 && \
 	  $(MAKE) -C cocotb/tidelink_force_recal pair)
 
+# --- EPOCH_ANCHOR_EN A/B PLUMBING PROOF (2026-07-30) -------------------------
+# The companion of xfail_epoch_shipping_corrector below. Same bench, same
+# stimulus, same silicon skew profile — ONE parameter flipped, opposite outcome:
+#
+#   EPOCH_ANCHOR_EN = 0 (shipping default)  -> 1/3   link-up shears, s2m all-zeros
+#   EPOCH_ANCHOR_EN = 1                     -> 3/3   byte-exact both directions
+#
+# This is the sim_gate_retire_plumb SHAPE, and for the same reason. The 2026-07-30
+# fix threads EPOCH_ANCHOR_EN tidelink_top -> axi_chiplet_controller -> Wlink ->
+# WlinkGPIOPHY_v2 and defaults it to 0, so the shipping netlist is unchanged and
+# a board integration opts in. That is the right default AND the exact shape of
+# this repo's most-repeated defect: a parameter plumbed at the top and never
+# forwarded at the destination (NEGO_CFG_RESET, RETIRE_EN). A fix that is
+# available but unexercised rots out silently.
+#
+# So this suite drives EPOCH_ANCHOR=1, which the bench turns into
+# +define+TB_TOP_EPOCH_ANCHOR_EN -> defparam on phy.EPOCH_ANCHOR_EN (the
+# SHIPPING plumbing node), NOT a defparam on u_deskew — the whole point is that
+# the value must survive the hop Wlink previously did not make. tb_top prints
+#     [tb_top] EPOCH_ANCHOR_EN: master=1 slave=1 (deskew: m=1 s=1)
+# and the `deskew:` half is the anti-silently-ignored-defparam guard: if Wlink
+# ever stops forwarding, master/slave stay 1 while deskew reads 0 and the data
+# tests fail — this suite goes RED rather than quietly proving nothing.
+#
+# Measured 2026-07-30 on fix/z2-drop-park-hook: TESTS=3 PASS=3 FAIL=0, 12 s.
+# Own SIM_BUILD (EPOCH_ANCHOR changes COMPILE_ARGS, not the bench's SIM_BUILD key).
+sim_gate_epoch_anchor_plumb:
+	$(call sim_gate_run,epoch_anchor_plumb,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 \
+	    SIM_BUILD=sim_build_anchor_param \
+	    COCOTB_RESULTS_FILE=sim_build_anchor_param/res_plumb.xml \
+	    MODULE=test_v2_pair_data)
+
+# --- TXGEN ownership hand-off vs an outstanding external data phase --------
+# FOUND + FIXED 2026-07-30 (verification audit, finding A4). tidelink_tx_gen
+# used to decide it could take the shared TX port from
+# `ext_idle = ~ext_htrans[1]`, but HTRANS is an ADDRESS-phase signal: an
+# AHB-Lite master drives IDLE throughout the DATA phase of a transfer already
+# accepted. So the 2:1 ownership mux (tidelink_top.sv:1709-1715) could switch
+# while an external write was still in flight, and because the adapter reads
+# HWDATA *live* in the data phase (tidelink_fc_adapter.sv:361 tx_fc_word =
+# {type, tx_addr_r, ahb_tx_hwdata}) the word committed to the link was
+# {external ADDRESS, generator DATA} — a SILENT single-word corruption, the
+# F14-A class, on a path the module header claims to protect. The external
+# master was never told (ahb_tx_hreadyout forced 0 while the generator owns
+# the port, so it just held and completed with OKAY) and it was never
+# recorded (ext_collide keyed on the same address-phase signal it missed).
+#
+# FIX: an ext_data_pend_r tracker (tidelink_tx_gen.sv) derives "an external
+# data phase is outstanding" from signals the module already has — while it
+# does not own the port, fc_hreadyout IS the external master's own hreadyout
+# (tidelink_top.sv ties ext_hreadyout = fc_hreadyout whenever !gen_owns).
+# ext_idle and ext_collide both now gate on it.
+#
+# The three OTHER gated txgen suites never caught this: they prove
+# transparency with EN=0 and otherwise run the generator with NO concurrent
+# external traffic, so ownership never CHANGES while an external transfer is
+# outstanding — this suite is what closes that gap, reusing the exact
+# corruption scenario as a positive regression:
+#   test_a2_ownership_deferred_until_ext_data_phase_completes — credit alone
+#     must not be enough to take the port mid-data-phase, the defer must not
+#     wedge permanently, and the FC word for the external address must carry
+#     the external master's own data byte-exact.
+#   test_a2_ext_collide_never_fires_because_no_overlap_is_possible — unit
+#     check that the admission gate (not incidental timing) is what prevents
+#     the switch.
+# Measured 2026-07-30 post-fix: TESTS=2 PASS=2 FAIL=0. No regression on
+# txgen_unit (7/7) or txgen_negctl (1/1).
+sim_gate_txgen_ext_hijack:
+	$(call sim_gate_run,txgen_ext_hijack,\
+	  $(MAKE) -C cocotb/tidelink_txgen MODULE=test_txgen_ext_hijack \
+	      SIM_BUILD=sim_build_hijack \
+	      COCOTB_RESULTS_FILE=sim_build_hijack/res_hijack.xml)
+
 # --- Wave-0 #9: PERF_CTRL end-to-end (perf_reg_region = apb_region-5) --------
 # Proves PERF_CTRL is writable and the perf counters ACTUALLY COUNT through the
 # real APB->tidelink_apb_regs->tidelink_perf path in a brought-up pair. RED
@@ -529,6 +672,47 @@ sim_gate_epoch_silicon:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
 	    EXTRA_DEFINES="+define+TB_TOP_EPOCH_ANCHOR_FORCE" \
 	    SIM_BUILD=sim_build_silicon_epoch MODULE=test_v2_pair_data)
+
+# --- SENTINEL: the SHIPPING corrector under the SAME skew (2026-07-30) -------
+# sim_gate_epoch_silicon above forces the OTHER corrector (EPOCH_ANCHOR_EN=1 /
+# SYNC_REANCHOR_EN=0) via TB_TOP_EPOCH_ANCHOR_FORCE, so it proves the corrector
+# DATAPATH survives the v37 skew — but it says NOTHING about the configuration
+# that actually ships. The shipping V2 override hard-selects SYNC_REANCHOR_EN=1
+# (local_overrides/WavD2DGpio_v2.v:790/827) and Wlink never forwards
+# EPOCH_ANCHOR_EN down to tidelink_lane_deskew, so on silicon the armed
+# corrector is the one that only arms on a live SYNC beacon that data-mode
+# bring-up leaves OFF.
+#
+# That combination REPRODUCES IN SIM, and until now nothing ran it: the gate was
+# configured to look away from the shipping build. Measured 2026-07-30 on
+# fix/z2-drop-park-hook (deterministic across two runs):
+#   TESTS=3 PASS=1 FAIL=2
+#   test_01  S: FCSM state 5 != 4 (LINK_IDLE) after bilateral CR/CRACK
+#   test_03  s2m reassembles ALL ZEROS  (rx=[0x00000000 ...])   <- the silicon
+#            signature: fcsm=4 cr=1 crack=1 on BOTH dies and still no data
+#   test_02  m2s STILL PASSES  <- the instrument clause. Without it a broken
+#            compile or a dead bench would wedge both directions and report a
+#            comfortable XFAIL for the WRONG cause
+#            (cf. feedback_verify_instrument_before_dut).
+#
+# XFAIL = the defect is present and UNCHANGED. The day the shipping corrector is
+# wired to survive beacon-off skew, PASS=3 and the clauses stop matching -> XCHG
+# -> a human looks and promotes this to a positive regression. Per
+# docs/SIM_GATE_COVERAGE.md §3.1 a sentinel is the only shape that is never
+# green and only red on news.
+#
+# Own SIM_BUILD: EXTRA_DEFINES is not part of the bench's SIM_BUILD key, so this
+# MUST NOT share sim_build_silicon_epoch with the forced arm above.
+sim_gate_xfail_epoch_shipping:
+	$(call sim_gate_sentinel,xfail_epoch_shipping_corrector,\
+	  { $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon \
+	      SIM_BUILD=sim_build_epoch_shipping \
+	      COCOTB_RESULTS_FILE=sim_build_epoch_shipping/res_shipping.xml \
+	      MODULE=test_v2_pair_data; true; },\
+	  grep -qF "S: FCSM state 5 != 4 (LINK_IDLE) after bilateral CR/CRACK" $$L && \
+	  grep -qF "rx=[0x00000000" $$L && \
+	  grep -qF "test_v2_pair_data.test_02_packet_master_to_slave passed" $$L && \
+	  grep -qF "TESTS=3 PASS=1 FAIL=2 SKIP=0" $$L)
 
 # --- Wave-0 #12b: contiguous-a2l — NON-BLOCKING tracking target -------------
 # The test needs an {m,s}_inj_* force injector in tb_top.sv that was never
@@ -1000,20 +1184,23 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	t33_arm_stagger_episode_bind \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon \
-	v2_pair_sustained v2_truncated_pkt_credit \
+	v2_pair_sustained v2_truncated_pkt_credit v2_isolated_write \
+	v2_mbox_writeprotect \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
+	epoch_anchor_plumb \
 	tc_pair_smoke tc_pair_election_datamode \
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	v2_mask_hs_bilateral \
-	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs
+	txgen_unit txgen_negctl v2_txgen nack_wedge_recovery axinode_obs \
+	txgen_ext_hijack
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
 # contract above sim_gate_xfail_f14b (F14-A was promoted to sim_gate_f14a_crc_catch).
-SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge
+SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector
 # The two PS-hang locks are cheap (~1 min each) and guard a failure that costs a
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
@@ -1046,13 +1233,26 @@ sim_gate_clean_builds:
 	        cocotb/eth_tidelink_pair/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_m1/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
-	        cocotb/tidelink_error_injection/sim_build_gate*
+	        cocotb/tidelink_error_injection/sim_build_gate* \
+	        cocotb/tidelink_txgen/sim_build*
+	@# 2026-07-30: cocotb/tidelink_txgen was NOT in the list above, so the gate
+	@# never cleaned the build dirs of its three gated suites (txgen_unit,
+	@# txgen_negctl, and the new hijack sentinel) — the same enumerated-list rot
+	@# the note at the top of this target warns about. They happen to be safe
+	@# (that bench names its DUT sources explicitly in VERILOG_SOURCES /
+	@# CUSTOM_COMPILE_DEPS, so make tracks an RTL edit) but the gate's policy is
+	@# clean dirs, not "safe by accident".
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate — full aggregate sim gate"
-	@echo " blocking suites + 2 known-defect sentinels (~40-55 min)"
+	@# GENERATED COUNTS (2026-07-30): these were hand-written and had rotted to
+	@# "13 suites" while the real count was 37. A number nobody recomputes is the
+	@# same rot this gate exists to prevent, so both are now $(words ...) of the
+	@# authoritative variables and cannot drift. `make sim_gate_inventory` prints
+	@# the lists themselves.
+	@echo " $(words $(SIM_GATE_ALL_SUITES)) blocking suites + $(words $(SIM_GATE_SENTINELS)) known-defect sentinels (~45-60 min)"
 	@echo " inventory + what each suite protects: docs/SIM_GATE_COVERAGE.md"
 	@echo "========================================"
 	@$(MAKE) --no-print-directory sim_gate_t31
@@ -1068,17 +1268,23 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_data
 	@$(MAKE) --no-print-directory sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory sim_gate_v2_isolated_write
+	@$(MAKE) --no-print-directory sim_gate_v2_mbox_writeprotect
 	@$(MAKE) --no-print-directory sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory sim_gate_force_recal
 	@$(MAKE) --no-print-directory sim_gate_v2_perf
 	@$(MAKE) --no-print-directory sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory sim_gate_epoch_silicon
-	@$(MAKE) --no-print-directory sim_gate_v2_sustained
-	@$(MAKE) --no-print-directory sim_gate_v2_trunc_credit
-	@$(MAKE) --no-print-directory sim_gate_fifo_twin2_tree
+	@$(MAKE) --no-print-directory sim_gate_epoch_anchor_plumb
+	@# GATE-HYGIENE (2026-07-30): v2_sustained + v2_trunc_credit were invoked a
+	@# SECOND time here (they already run above), and sim_gate_fifo_twin2 ran but
+	@# is scored by NOTHING — its own Makefile note says "SUPERSEDED — DO NOT
+	@# PROMOTE THIS TARGET" because it pins a stale FORK of the FIFO RTL, and
+	@# fifo_rx_twin2_tree replaced it. Dropped all three: the duplicates cost
+	@# ~160 s per gate run for no coverage, and the unscored .status file made
+	@# imp/sim_gate/ look like it held a gate result that nothing checks.
 	@$(MAKE) --no-print-directory sim_gate_fifo
-	@$(MAKE) --no-print-directory sim_gate_fifo_twin2
 	@$(MAKE) --no-print-directory sim_gate_v1elab
 	@$(MAKE) --no-print-directory sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory sim_gate_fch_wdog
@@ -1090,9 +1296,16 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane
 	@$(MAKE) --no-print-directory sim_gate_v2_lane_position
 	@$(MAKE) --no-print-directory sim_gate_v2_oddlane_negctl
+	@# GATE-INTEGRITY (2026-07-30): v2_mask_hs_bilateral was listed in
+	@# SIM_GATE_ALL_SUITES by 5c85602 but the aggregate never invoked its target,
+	@# so `make sim_gate` scored it MISS and could not pass at all. The only
+	@# executable test that can catch a SHAM MASK GATE was therefore ungated.
+	@# Measured 2026-07-30: PASS in 161s (2/2) on fix/z2-drop-park-hook.
+	@$(MAKE) --no-print-directory sim_gate_v2_mask_hs_bilateral
 	@$(MAKE) --no-print-directory sim_gate_txgen_unit
 	@$(MAKE) --no-print-directory sim_gate_txgen_negctl
 	@$(MAKE) --no-print-directory sim_gate_v2_txgen
+	@$(MAKE) --no-print-directory sim_gate_txgen_ext_hijack
 	@$(MAKE) --no-print-directory sim_gate_tc_smoke
 	@$(MAKE) --no-print-directory sim_gate_tc_election
 	@$(MAKE) --no-print-directory sim_gate_eth_m0
@@ -1104,6 +1317,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory sim_gate_errinj
 	@$(MAKE) --no-print-directory sim_gate_f14a_crc_catch
 	@$(MAKE) --no-print-directory sim_gate_xfail_f14b
+	@$(MAKE) --no-print-directory sim_gate_xfail_epoch_shipping
 	@$(MAKE) --no-print-directory sim_gate_summary \
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"
@@ -1161,8 +1375,9 @@ sim_gate_summary:
 	if [ $$fail -eq 0 ]; then \
 	  echo "  RESULT: ALL SUITES PASS  (logs: $(SIM_GATE_DIR)/)"; \
 	  if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
-	    echo "          (known defects F14-A/F14-B still present as recorded —"; \
-	    echo "           see docs/ERROR_INJECTION_FINDINGS.md)"; \
+	    echo "          (the sentinels above are KNOWN DEFECTS still present as"; \
+	    echo "           recorded — NOT passes. F14-B: docs/ERROR_INJECTION_FINDINGS.md;"; \
+	    echo "           epoch-shipping: docs/XHB_WINDOW_SKEW_ROOTCAUSE.md)"; \
 	  fi; \
 	else \
 	  echo "  RESULT: FAILURES DETECTED — see $(SIM_GATE_DIR)/<suite>.log"; \

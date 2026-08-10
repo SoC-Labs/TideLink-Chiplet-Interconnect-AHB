@@ -58,6 +58,26 @@ test_servo_on() {
     done
 
     # --- 10c mailbox W from APB ignored (Region 3 is W from FC sideband only) ---
+    #
+    # FIXED 2026-07-30 (verification audit): this was a vacuous check — tt_pass
+    # fired whether the write was rejected OR accepted, so a genuine RO-contract
+    # violation could never fail this test. Traced the RTL before fixing:
+    # mbox_reg_write (src/rtl/fifo/tidelink_apb_regs.sv:527) is
+    # `apb_write && (apb_region == 4'b0011)`, and apb_write itself
+    # (:212) is `psel && penable && pwrite` — the RAW external APB bus, with NO
+    # source discrimination. It gates a write directly into the PTP servo's
+    # mailbox timestamp registers (src/rtl/tidelink_ptp_servo.sv:220,
+    # mbox_sec_lo_r/mbox_sec_hi_r/mbox_ns_r) with no separate qualifier
+    # distinguishing "genuine FC sideband" from "external APB poke". Offset
+    # 0x068 -> mbox_reg_addr=2 -> mbox_sec_lo_r: CONFIRMED an external APB
+    # write there corrupts the servo's assembled mailbox timestamp. This has
+    # ZERO existing sim coverage (cocotb/tidelink_ptp_servo drives
+    # mbox_reg_write by hand as a DUT input, bypassing the APB decode this bug
+    # lives in entirely) — this hwtest sub-test was the only thing that could
+    # have caught it, and it was silently disabled. See
+    # docs/VERIFICATION_AUDIT_2026_07_30.md §A11 for full detail; NOT fixed at
+    # the RTL level here — needs an owner's review of the intended FC-sideband
+    # write path before a fix is applied.
     for off in 0x060 0x068; do
         addr=$(( 0x44032000 + off ))
         before=$(tt_devmem_read "$IP" "$addr")
@@ -66,8 +86,7 @@ test_servo_on() {
         if [ "$after" != "0xcafebabe" ]; then
             tt_pass "10c mailbox $off $tag rejects APB write (before=$before after=$after)"
         else
-            tt_info "10c mailbox $off $tag accepted APB write — may be design choice"
-            tt_pass "10c mailbox $off $tag write-observed (informational)"
+            tt_fail "10c mailbox $off $tag ACCEPTED an APB write (before=$before after=$after) — RO-from-APB contract violated, see src/rtl/fifo/tidelink_apb_regs.sv:527 / tidelink_ptp_servo.sv:220"
         fi
     done
 }

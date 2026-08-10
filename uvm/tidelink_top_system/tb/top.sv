@@ -240,36 +240,31 @@ module test_top;
   assign tb_if.b_pad_tx_obs = b_pad_tx;
 
   // ---------------------------------------------------------------
-  // §9 per-lane training-pattern lane-lock checkers — one per side.
-  // Driven by the deserialised lane data at each side's WavD2DGpio.
+  // §9 per-lane training-pattern lane-lock status — one per side.
+  //
+  // 2026-07-30 (verification audit, de-quarantine): this used to instantiate
+  // a SECOND, external tidelink_lane_checker fed by a raw XMR into the
+  // deserialised lane data, with a bare .clk/.rst/.lane_data/.lane_locked
+  // port list. That module's interface grew four more inputs
+  // (lock_thresh_i, training_mode_w_i, sweep_active_i, clear_noise_i) —
+  // the immediate UPIMI cause on this file — but reproducing them here would
+  // only be a second, WORSE copy: axi_chiplet_controller.sv now instantiates
+  // tidelink_lane_checker itself (u_lane_checker), wired to the REAL
+  // calibrator lock-threshold, synchronised training-mode edge and sweep/
+  // clear-noise controls (see local_overrides/axi_chiplet_controller.sv
+  // u_lane_checker). A duplicate probe checker fed only raw lane data and
+  // guessed tie-offs for those four inputs would score a DIFFERENT lock
+  // decision than the DUT's own, and silently drift out of sync with it
+  // again the next time the checker's interface changes.
+  //
+  // So this reads the DUT's own live result via XMR instead — one hierarchy
+  // level shallower than the lane-data probe it replaces, same style as the
+  // pad_tx_obs mirrors above. AUTOCAL_ENABLE is forced 1 in tidelink_top.sv
+  // for every build (FPGA/ASIC/UVM alike), so the internal checker is
+  // actively running once role_locked rises.
   // ---------------------------------------------------------------
-  wire [127:0] a_rx_lane_data = u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_data;
-  wire         a_rx_link_clk  = u_tidelink_top_a.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
-  wire [127:0] b_rx_lane_data = u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_data;
-  wire         b_rx_link_clk  = u_tidelink_top_b.u_chiplet_controller.u_wlink.phy.gpio.io_link_rx_rx_link_clk;
-
-  wire a_checker_rst = ~poresetn;
-  wire b_checker_rst = ~poresetn;
-
-  wire [7:0] a_lane_locked_w;
-  wire [7:0] b_lane_locked_w;
-
-  tidelink_lane_checker u_a_checker (
-    .clk        (a_rx_link_clk),
-    .rst        (a_checker_rst),
-    .lane_data  (a_rx_lane_data),
-    .lane_locked(a_lane_locked_w)
-  );
-
-  tidelink_lane_checker u_b_checker (
-    .clk        (b_rx_link_clk),
-    .rst        (b_checker_rst),
-    .lane_data  (b_rx_lane_data),
-    .lane_locked(b_lane_locked_w)
-  );
-
-  assign tb_if.a_lane_locked = a_lane_locked_w;
-  assign tb_if.b_lane_locked = b_lane_locked_w;
+  assign tb_if.a_lane_locked = u_tidelink_top_a.u_chiplet_controller.lane_locked_w;
+  assign tb_if.b_lane_locked = u_tidelink_top_b.u_chiplet_controller.lane_locked_w;
 
   // ---------------------------------------------------------------
   // DUT output wires — Chiplet A

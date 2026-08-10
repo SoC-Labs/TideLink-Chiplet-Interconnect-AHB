@@ -67,6 +67,12 @@ module tidelink_dft_wrapper #(
     parameter USE_IDELAY        = 1'b0,
     parameter USE_CLKBUF        = 1'b0,
     parameter USE_T3A           = 1'b0,
+    // Z2 no-data-delivery fix (2026-07-30,
+    // docs/HANDOVER_Z2_PICKUP_2026_07_30.md §5): pass-through to
+    // tidelink_top.EPOCH_ANCHOR_EN. Default 0 = bit-identical; a real
+    // tapeout decision would ratify flipping this (see tidelink_top's
+    // parameter comment for the full chain).
+    parameter EPOCH_ANCHOR_EN   = 1'b0,
     parameter HARDEN_SWI_ENABLE = 1'b1,
     // HONEST_MASK_HS — peer-mask-handshake authenticity gate. MUST be forwarded:
     // tidelink_top defaults it to 1'b0, and at tidelink_top.sv:2270-2271 a 0
@@ -529,6 +535,8 @@ module tidelink_dft_wrapper #(
         .USE_IDELAY         (USE_IDELAY),
         .USE_CLKBUF         (USE_CLKBUF),
         .USE_T3A            (USE_T3A),
+        // Z2 fix (§5): epoch-anchor deskew corrector select. Default 0 = today.
+        .EPOCH_ANCHOR_EN    (EPOCH_ANCHOR_EN),
         .HARDEN_SWI_ENABLE  (HARDEN_SWI_ENABLE),
         // Peer-mask-handshake authenticity gate. WITHOUT this line tidelink_top
         // takes its own 1'b0 default and throws away apb_debug_unlock_i /

@@ -173,11 +173,45 @@ module tidelink_tx_gen #(
 
     // Ownership: only take the port while the external master is idle, and hold
     // it for the whole packet once taken.
-    wire ext_idle   = ~ext_htrans[1];
+    //
+    // FIX (2026-07-30, audit finding A4 — see cocotb/tidelink_txgen/
+    // test_txgen_ext_hijack.py for the pre-fix repro): HTRANS is an
+    // ADDRESS-phase-only signal — an AHB master drives IDLE throughout the
+    // DATA phase of a beat it already had accepted, so `~ext_htrans[1]` alone
+    // reads "idle" for the whole of an outstanding external data phase, and
+    // ownership could switch mid-transfer. Because the adapter reads HWDATA
+    // LIVE in the data phase (tidelink_fc_adapter.sv tx_fc_word =
+    // {type, tx_addr_r, ahb_tx_hwdata}), the word committed to the link was
+    // {external ADDRESS, generator DATA} — silent single-word corruption.
+    //
+    // ext_data_pend_r closes the gap: while this module does not own the
+    // port, fc_hreadyout is exactly what the external master sees as its own
+    // hreadyout (tidelink_top.sv ties ext_hreadyout = fc_hreadyout whenever
+    // !gen_owns), so "an address phase was just accepted" and "the
+    // outstanding data phase just completed" are both directly observable
+    // from signals this module already has. Held while gen_owns so a stale
+    // 0 can't reappear if ownership somehow returns before the tracker is
+    // re-armed (defensive; by construction gen_owns and ext_data_pend_r=1
+    // should never coexist once ext_idle gates on this too).
+    logic ext_data_pend_r;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)
+            ext_data_pend_r <= 1'b0;
+        else if (!gen_owns) begin
+            if (ext_htrans[1] && fc_hreadyout)      ext_data_pend_r <= 1'b1;
+            else if (ext_data_pend_r && fc_hreadyout) ext_data_pend_r <= 1'b0;
+        end
+    end
+
+    wire ext_idle   = ~ext_htrans[1] && !ext_data_pend_r;
     wire can_take   = en_r && running_r && ext_idle && credit_ok;
     // An external beat while we own the port is refused by tidelink_top with a
-    // two-cycle AHB ERROR; record it so the refusal is never silent.
-    wire ext_collide = gen_owns && ext_htrans[1];
+    // two-cycle AHB ERROR; record it so the refusal is never silent. Widened
+    // to the SAME predicate ext_idle checks (was ext_htrans[1] alone, which
+    // is structurally blind to a data-phase-only overlap — the exact gap the
+    // fix above closes) so any residual overlap is at least sticky-recorded,
+    // never silent.
+    wire ext_collide = gen_owns && (ext_htrans[1] || ext_data_pend_r);
 
     // Still issuing addresses for this packet (vs. draining the final data).
     wire sending_addr = (state_r == S_SEND) && (beat_r < total_beats_r);

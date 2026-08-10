@@ -16,6 +16,44 @@ CDC_AUDIT_REPORT.md _(historical — see git history)_, BUG_TRACKER.md _(histori
 > FIFO-era test-ID index lives in `cocotb/VERIFICATION_PLAN.md`
 > (AHB-/RET-/APB-/TOP-/PTP-/SRV- IDs); env one-liners in `cocotb/README.md`.
 
+> 🔴 **AUDITED 2026-07-30 — read
+> [VERIFICATION_AUDIT_2026_07_30.md](VERIFICATION_AUDIT_2026_07_30.md) before
+> using this plan for sign-off.** Four claims below are measurably wrong today:
+>
+> 1. **§4/§8 — UPDATE 2026-07-30: the elaboration blocker for 3 of the 7 UVM
+>    envs is FIXED** (`uvm-top-system`, `uvm-ptp-chain`, `uvm-ptp-stress` —
+>    quarantined `allow_failure: true` since 2026-07-07; `uvm-system` remains
+>    separately non-blocking). All three now compile+elaborate+link clean;
+>    `allow_failure` stays **true** because `uvm-top-system`'s actual test run
+>    hit a real functional blocker (link training completes but the FC-layer
+>    FCSM never leaves state 1 — every packet test's scoreboard reads TX≠RX),
+>    reproduced on the first 3/10 wired tests. `uvm-ptp-chain`/`uvm-ptp-stress`
+>    got the identical build fix but their test suites have not yet been run.
+>    §8's system sign-off criterion naming three envs at "0 FAIL" is **still
+>    unmeetable today**, but for a different, narrower reason than three weeks
+>    ago — see `VERIFICATION_AUDIT_2026_07_30.md` §A5 for the full picture,
+>    including a second, independent bug found and fixed alongside this: the
+>    `run_all` PASS/FAIL echo trusted simv's shell exit code (which UVM does
+>    not set non-zero for UVM_ERROR), so a test with 6 scoreboard errors in its
+>    own log printed "PASSED". `ci/uvm_results_to_junit.py`, what CI actually
+>    gates on, already parsed the real UVM_ERROR/UVM_FATAL tally correctly.
+> 2. **§1/§2 — the module inventory is short by two.** `tidelink_tx_gen` (new
+>    2026-07-24, covered by 3 gated suites) and `tidelink_fifo_ctrl` are absent
+>    from the §2 matrix; the file count is 20+6, not 19+6.
+> 3. **§6 #1 is no longer OPEN in RTL.** The credit-underflow guard exists
+>    (`tidelink_fifo_ctrl.sv:386-389` clamps the consume at 0, `:424-425`
+>    saturates the mint at `MAX_CREDITS`). Its *test* remains vacuous — see 4.
+> 4. **§3 test counts include tests that cannot fail.** 84 of 982
+>    `@cocotb.test()` functions have no reachable `assert`/`raise`. Most are
+>    honest diagnostics, but they are counted here as coverage — including
+>    `test_21_credit_underflow_attempt` (#1) and `test_accumulator_race` (#8),
+>    the two tests named for backlog defects.
+>
+> Also: `cocotb/Makefile` `ENVS` covers **28 of 57** on-disk envs, so any figure
+> from `make -C cocotb coverage` (which §8 tells you to re-run) is the **unit
+> half only** — every paired-die, eth, tidechart, txgen and errinj env is
+> excluded by design and gated by `make sim_gate` instead.
+
 ---
 
 ## 1. Scope and architecture
@@ -144,6 +182,53 @@ Total in-tree cocotb test functions across all envs (in + out of CI):
 
 ## 4. UVM testbench matrix (7 envs, ~84 test files)
 
+> ✅🔴 **Elaboration status, measured 2026-07-30 (was: "4 of these 7 envs do
+> not build").** `tidelink_top_system`, `tidelink_ptp_chain` and
+> `tidelink_ptp_stress` were CI-quarantined (`allow_failure: true`,
+> "ELABORATION IS RED") since 2026-07-07; `tidelink_system` remains separately
+> non-blocking. **The elaboration blocker for all three is now FIXED**: the
+> pinned deps/ copies of `axi_chiplet_controller.sv` / `tidelink_autoneg.sv`
+> (predating the obs/replay + apb_ctrl_reg ports current `tidelink_top.sv`
+> drives, causing VCS `UPIMI`) were 2 of **17** files these Makefiles needed
+> from `src/rtl/local_overrides/` and only had 5; a *second*, newer rot layer
+> (`tidelink_tx_gen.sv`, added 2026-07-24 and missing from all three source
+> lists, `CFCILFBI` before even reaching UPIMI) was fixed the same day. All
+> three now compile+elaborate+link clean. `tidelink_top_system`'s stale
+> external `tidelink_lane_checker` duplicate (spring-era `tb/top.sv`, wrong
+> ports) was replaced — not re-ported — with a hierarchical read of the
+> checker `axi_chiplet_controller.sv` now instantiates internally, wired to
+> real calibrator/training signals rather than a second probe fed guessed
+> tie-offs.
+>
+> **Still blocking, for a different reason: a real functional defect, not a
+> build one — and now CLASSIFIED as backlog #14b, not a mystery.** Running
+> `tidelink_top_system`'s 10 wired tests, link training reports complete but
+> the FC-layer FCSM never leaves state 1 on either die (`cr_seen_rx=0`) —
+> reproduced identically on the first 3/10 tests, so every packet-exchange
+> test currently fails (scoreboard TX≠RX). An independent 5-agent panel
+> investigating the unrelated I1/`b98b944` eth-chiplet regression checked this
+> env the same day and confirmed: this env compiles the **deps** FCSM (only
+> `axi_chiplet_controller.sv`/`tidelink_autoneg.sv` were re-pointed to
+> `local_overrides`, for unrelated obs ports), and its `cr_pkt_seen_rx`-never-
+> asserts signature under a staggered `wlink_por_reset` is **generic
+> reset-sequencing** — i.e. this IS **#14b** ("Autoneg-driven role-lock
+> doesn't carry A→B... FCSM credit-grant... scoreboard RX=0"), not a new or
+> DUT-specific defect this env introduced. #14b's own disposition ("OPEN —
+> deferred wave-debug") stands; this is a second, corroborating reproduction
+> under a different test name. `tidelink_ptp_chain`/`tidelink_ptp_stress`
+> share the identical build fix but their test suites have not yet been run
+> (likely the same class, unverified). `allow_failure` stays true on all
+> three. Full detail: `VERIFICATION_AUDIT_2026_07_30.md` §A5.
+>
+> **`tidelink_top_system` is the only env covering `align_*`, `autoneg_*`,
+> `lane_mask_*`, `peer_mask_*`, `train_*`, `addr_translate`, `ahb_passthrough`
+> and `reset_recovery`** — 43 tests, though only 15 are wired into any
+> Makefile-level `TESTS*` variable (10 base + 4 align + 1 experimental); the
+> other 28 (`lane_mask_*`, `peer_mask_*`, `autoneg_*`, most `train_*`) exist as
+> files but are not invoked by `run_all` or any target — a second, independent
+> gap `VERIFICATION_AUDIT_2026_07_30.md` §A5 documents. Fixing #14b and wiring
+> the remaining 28 tests are the two highest-value items left in UVM coverage.
+
 | Env | DUT | Tests |
 |---|---|---|
 | `uvm/tidelink/` | `tidelink` (legacy wrapper) | base + random + register + single-packet + stall (5) |
@@ -215,7 +300,7 @@ Full design-shortcoming inventory (locations + recommendations) in
 | 8 | Moderate | apb_regs | Accumulator R-clear/W-add same-cycle race drops freed credits | OPEN |
 | 9–15 | Minor | apb_regs/fifo | 32-bit width hard-coded; no hreadyout back-pressure; no ID/version reg; `pslverr`≡0; reset-deassert glitch; burst SEQ accepted unhandled; threshold writable while enabled | OPEN (documented) |
 | 14a | Resolved | autoneg | HW-driven peer lane-mask handshake (state 4→9→10→8→5) | RESOLVED — UVM `test_top_peer_mask_auto[_mismatch]` |
-| 14b | Open(UVM) | top/Wlink | Autoneg-driven role-lock doesn't carry A→B in `test_top_autoneg_basic` (staggered POR / FCSM credit-grant); link_status=0x18 but scoreboard RX=0 | OPEN — deferred wave-debug |
+| 14b | Open(UVM) | top/Wlink | Autoneg-driven role-lock doesn't carry A→B in `test_top_autoneg_basic` (staggered POR / FCSM credit-grant); link_status=0x18 but scoreboard RX=0. **Corroborated 2026-07-30 in `tidelink_top_system`'s other 10 tests** (`cr_pkt_seen_rx` never asserts under staggered `wlink_por_reset`, deps FCSM — an independent 5-agent panel confirmed this is generic reset-sequencing, not a new defect) | OPEN — deferred wave-debug |
 | 16–17 | Moderate | ptp | PTP TX idle-gating unbounded wait; RX pipeline jitter not eliminated | OPEN (characterise via stress) |
 | 18–22 | Minor | ptp/servo | SW-mediated servo (Tier 1); shared capture core; sub-ns dropped; +64-cy PI latency; large-offset phase-step | Accepted/by-design |
 | 23 | Moderate | fc_adapter/fifo | No app-layer packet integrity (CRC/seq) on mailbox path | OPEN |

@@ -58,7 +58,22 @@ module Wlink #(
   parameter USE_CLKBUF = 1'b0,
   // SoC Labs §9 T3a: pass-through to WlinkGPIOPHY.USE_T3A. Default 0
   // (sim/ASIC bit-exact); FPGA wrapper sets 1 via threading.
-  parameter USE_T3A   = 1'b0
+  parameter USE_T3A   = 1'b0,
+  // Z2 no-data-delivery fix (2026-07-30,
+  // docs/HANDOVER_Z2_PICKUP_2026_07_30.md §3-5): pass-through to
+  // WlinkGPIOPHY_v2.EPOCH_ANCHOR_EN (V2 fork only — V1's WlinkGPIOPHY has no
+  // such parameter, so this is only ever forwarded to the phy instance under
+  // `ifdef TIDELINK_PHY_V2 below; declared here unconditionally so V1 and V2
+  // parents can both pass it without an ifdef of their own).
+  // Default 0 = today's shipping behaviour (SYNC_REANCHOR_EN=1, the
+  // complement, in WavD2DGpio_v2), which never arms on real silicon because
+  // the idle-gated SYNC beacon can't fire (swi_delay_cycles PORs to 0 ⇒
+  // tx_en≡1 ⇒ postcount≡7). 1 swaps in the training-EXIT anchored deskew
+  // corrector — proven in sim (cocotb/tidelink_top_pair_v2 test_v2_pair_data,
+  // EPOCH_PROFILE=silicon) to fix s2m delivery. This is a real netlist
+  // change (swaps which deskew corrector is compiled in); leave at 0 unless
+  // explicitly overridden at the integration that wants it.
+  parameter EPOCH_ANCHOR_EN = 1'b0
 ) (
   input         apb_clk,
   input         apb_reset,
@@ -1360,7 +1375,12 @@ module Wlink #(
     .auto_out_0_pready(xbar_auto_out_0_pready),
     .auto_out_0_prdata(xbar_auto_out_0_prdata)
   );
+`ifdef TIDELINK_PHY_V2
+  // Z2 fix (§5): V2 fork's WlinkGPIOPHY_v2 has EPOCH_ANCHOR_EN; V1's does not.
+  WlinkGPIOPHY #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A), .EPOCH_ANCHOR_EN(EPOCH_ANCHOR_EN)) phy ( // @[Wlink.scala 87:27]
+`else
   WlinkGPIOPHY #(.USE_CLKBUF(USE_CLKBUF), .USE_T3A(USE_T3A)) phy ( // @[Wlink.scala 87:27]
+`endif
     .clock(phy_clock),
     .reset(phy_reset),
     .auto_in_psel(phy_auto_in_psel),

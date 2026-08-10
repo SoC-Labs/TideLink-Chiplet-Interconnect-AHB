@@ -71,7 +71,12 @@ run_storm_on "$SLAVE_IP"  slave
 
 # --- 3c sustained throughput indication. mmap-via-ssh is single-word, so this
 # is a rough timing only (the slow path is ssh-RTT, not the AHB itself). We
-# just measure wall-clock per N-word burst and report. ---
+# measure wall-clock per N-word burst and report — AND (added 2026-07-30,
+# verification audit: the previous version called tt_pass unconditionally
+# with no assertion at all, not even the vacuous-branch kind, so a burst that
+# silently dropped writes would go unnoticed) read back a sample of the
+# written words to confirm the burst itself didn't corrupt data, not just
+# time it. ---
 T0=$(date +%s.%N)
 for i in $(seq 0 31); do
     a=$(( AHB_SUB_BASE + i*4 ))
@@ -80,7 +85,17 @@ done
 T1=$(date +%s.%N)
 elapsed=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.2f", b-a}')
 tt_info "3c 32-word write burst on master: ${elapsed}s (ssh-RTT bound, indicative only)"
-tt_pass "3c sustained-burst telemetry captured (${elapsed}s)"
+burst_ok=1
+for i in 0 15 31; do
+    a=$(( AHB_SUB_BASE + i*4 ))
+    exp=$(printf '0xcafe%04x' "$i")
+    rb=$(tt_devmem_read "$MASTER_IP" "$a")
+    if [ "$rb" != "$exp" ]; then
+        tt_fail "3c burst word $i corrupted: wrote $exp, read back $rb"
+        burst_ok=0
+    fi
+done
+[ "$burst_ok" -eq 1 ] && tt_pass "3c sustained-burst telemetry + sample readback OK (${elapsed}s)"
 
 # --- 3d peer-visible side-effect: requires link up. Write to master's
 # AHB_SUB and verify the *peer*'s AHB_SUB aperture took the same value

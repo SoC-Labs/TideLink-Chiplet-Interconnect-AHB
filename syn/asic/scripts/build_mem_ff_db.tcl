@@ -2,18 +2,26 @@
 # lc_shell helper — compile the FF (fast-min) Liberty files for the
 # precompiled rf_16k macro into .db format.
 #
-# /research/precompiled_mems/TSMC65/rf_16k actually ships FF .db files
-# directly, so this script is normally a no-op (the FF .db symlinks land
-# straight onto MEM_DBS_FF). It exists as the canonical hook for the FC
-# multi-corner flow: any future rf_*k flavour added without an FF .db
-# can be regenerated locally via `make mem_ff_db` without writing into
-# the shared /research/precompiled_mems tree.
+# The precompiled rf_16k already ships FF .db files directly, so this script
+# is normally a no-op (the FF .db symlinks land straight onto MEM_DBS_FF). It
+# exists as the canonical hook for the FC multi-corner flow: any future rf_*k
+# flavour added without an FF .db can be regenerated locally via
+# `make mem_ff_db` without writing into the shared macro tree, which is
+# read-only.
+#
+# MEM_BASE is that tree's root — a per-machine fact, set in <repo>/site.env
+# (see site.env.example). No default.
 #
 # Run with: lc_shell -f scripts/build_mem_ff_db.tcl
 # Output  : syn/asic/libs/mem_ff/rf_*k_ff_*.db
 #-----------------------------------------------------------------------------
 
-set src_root  "/research/precompiled_mems/TSMC65"
+if {![info exists ::env(MEM_BASE)] || $::env(MEM_BASE) eq ""} {
+    error "\[mem_ff_db\] MEM_BASE is not set — it locates the precompiled memory\n\
+           \      macro tree (the directory holding rf_01k/, rf_16k/, ...). Set it\n\
+           \      in <repo>/site.env (see site.env.example) or export it."
+}
+set src_root  $::env(MEM_BASE)
 set dst_root  $::env(MEM_FF_DB_DIR)
 
 file mkdir $dst_root

@@ -25,6 +25,15 @@
 #-----------------------------------------------------------------------------
 set -euo pipefail
 
+# The calibre executable is a per-machine fact and comes from site.env via the
+# Makefile. No default: see site.env.example.
+cal_bin="${CAL_BIN:-}"
+if [ -z "$cal_bin" ]; then
+    echo "ERROR: CAL_BIN is not set — it locates the calibre executable."
+    echo "       Set it in <repo>/site.env (see site.env.example)."
+    exit 1
+fi
+
 deck="$1"
 gds="$2"
 top="$3"
@@ -82,7 +91,7 @@ echo "INFO: [calibre_drc] work       = $work"
 # 64-bit; -drc selects the DRC engine; -hier runs hierarchical mode.
 cd "$work"
 set +e
-/eda/mentor/calibre/bin/calibre -drc -hier -64 "$local_deck" 2>&1 | tee "$log"
+"$cal_bin" -drc -hier -64 "$local_deck" 2>&1 | tee "$log"
 rc=${PIPESTATUS[0]}
 set -e
 

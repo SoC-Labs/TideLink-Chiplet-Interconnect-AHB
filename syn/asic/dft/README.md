@@ -124,11 +124,12 @@ All are overridable on the `make` command line:
 Do **NOT** modify the following — they are shared lab IP collateral and
 other engineers / CI rely on them:
 
-- `/research/AAA/ip_library/**`
-- `/research/AAA/phys_ip_library/**`
-- `/research/precompiled_mems/TSMC65/**`
+- everything under `$ARM_IP_LIBRARY_PATH` and `$PHYS_IP_PATH` (vendor IP)
+- everything under `$MEM_BASE` (the compiled memory-macro tree)
 
-The CTL test model at `/research/precompiled_mems/TSMC65/rf_16k/rf_16k.ctl`
-is read-only. If the closure phase needs a fix, copy it to
+Those roots are set per machine in `<repo>/site.env` — see `site.env.example`.
+
+The CTL test model at `$MEM_CTL_FILE` (default `$MEM_PATH/rf_16k.ctl`) is
+read-only. If the closure phase needs a fix, copy it to
 `src/rtl/asic/local_overrides/` and re-point `insert_mbist.tcl`'s
 `MEM_CTL_FILE` env var.

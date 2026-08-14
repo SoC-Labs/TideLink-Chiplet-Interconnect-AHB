@@ -30,8 +30,10 @@ export FC_OUTPUTS = $(FC_DIR)/outputs
 export FC_WORK    = $(FC_DIR)/work
 
 # ── Tool binary ────────────────────────────────────────────────────────────
-FM_BIN_DIR = /eda/synopsys/2022-23/RHELx86/FM_2022.12/bin
-export PATH := $(FM_BIN_DIR):$(PATH)
+# FM_BIN_DIR is set in <repo>/site.env, or left unset with fm_shell already on
+# PATH from a site module file. An install path with its exact version is a
+# per-machine fact, so it is not committed here.
+export PATH := $(if $(FM_BIN_DIR),$(FM_BIN_DIR):)$(PATH)
 
 FM_SHELL = fm_shell
 

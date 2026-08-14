@@ -132,21 +132,30 @@ elaborate $top_module
 set_top_module $top_module
 
 #-----------------------------------------------------------------------------
-# MCMM (Multi-Corner Multi-Mode) setup — tcbn65lpbwp12t 200a operating
-# conditions (12-track).
-#   tcbn65lpbwp12twc  worst case  V_LO T_HI  → SS (max-delay) → scen_slow
-#   tcbn65lpbwp12ttc  typical case            → TT             → scen_typ
-#   tcbn65lpbwp12tbc  best  case  V_HI T_LO  → FF (min-delay) → scen_fast
-# Library names match the .db filenames (without extension); env-
-# overridable via FC_LIB_NAME_SS / FC_LIB_NAME_FF if STANDARD_CELL_BASE_PATH
-# is repointed at the legacy 9-track install (tcbn65lpwc/tcbn65lpbc).
-# Operating-condition labels WCCOM/BCCOM are foundry-standard, same for
-# 9-track and 12-track libraries.
+# MCMM (Multi-Corner Multi-Mode) setup.
+#   FC_LIB_NAME_SS  worst case  V_LO T_HI  → SS (max-delay) → scen_slow
+#   FC_LIB_NAME_FF  best  case  V_HI T_LO  → FF (min-delay) → scen_fast
+#
+# These are the Liberty LIBRARY NAMES as they appear inside the .db (normally
+# the .db filename without its extension), not paths. The stems encode the PVT
+# characterisation corner and therefore differ per library family and per
+# release, so they are set in <repo>/site.env (see site.env.example) — deriving
+# them here from DB_SS/DB_FF would be a guess, and a wrong -library name is
+# reported by fc_shell as a missing library rather than as a misconfiguration.
+#
+# Operating-condition labels WCCOM/BCCOM are foundry-standard across families.
 #-----------------------------------------------------------------------------
 echo "FC_RTL_SCRIPT: MCMM"
 
-set _lib_name_ss [expr {[info exists ::env(FC_LIB_NAME_SS)] && $::env(FC_LIB_NAME_SS) ne "" ? $::env(FC_LIB_NAME_SS) : "tcbn65lpbwp12twc"}]
-set _lib_name_ff [expr {[info exists ::env(FC_LIB_NAME_FF)] && $::env(FC_LIB_NAME_FF) ne "" ? $::env(FC_LIB_NAME_FF) : "tcbn65lpbwp12tbc"}]
+proc _fc_lib_name {var corner} {
+    if {[info exists ::env($var)] && $::env($var) ne ""} { return $::env($var) }
+    error "\[MCMM\] $var is not set — it is the $corner-corner Liberty library\n\
+           \      name as it appears inside the .db (usually the .db filename\n\
+           \      without its extension). Set it in <repo>/site.env (see\n\
+           \      site.env.example) or export it. There is no default."
+}
+set _lib_name_ss [_fc_lib_name FC_LIB_NAME_SS slow]
+set _lib_name_ff [_fc_lib_name FC_LIB_NAME_FF fast]
 puts "INFO: \[MCMM\] -library SS=$_lib_name_ss  FF=$_lib_name_ff"
 
 create_mode func
@@ -165,13 +174,20 @@ set_operating_conditions \
     -library $_lib_name_ff
 
 #-----------------------------------------------------------------------------
-# Parasitic extraction (TLU+) — cln65lp 1p05m+alrdl, top2 = 9lm_T2 stack
-# (12-track tcbn65lpbwp12t convention; 9-track tcbn65lp shipped as
-# 1p09m+alrdl). Env-overridable via FC_TLU_STACK if you re-point
-# STANDARD_CELL_BASE_PATH at a library family that uses a different
-# stack name.
+# Parasitic extraction (TLU+).
+# FC_TLU_STACK is the filename stem the TLU+ files in TLUPLUS_PATH are named
+# with. It encodes the metal-stack option, which differs per library family and
+# per release, so it is set in <repo>/site.env (see site.env.example) rather
+# than committed. It must describe the same stack as TF_FILE: a mismatched
+# TLU+ set is read without complaint and extracts the wrong parasitics.
 #-----------------------------------------------------------------------------
-set _stack [expr {[info exists ::env(FC_TLU_STACK)] && $::env(FC_TLU_STACK) ne "" ? $::env(FC_TLU_STACK) : "cln65lp_1p05m+alrdl"}]
+if {![info exists ::env(FC_TLU_STACK)] || $::env(FC_TLU_STACK) eq ""} {
+    error "\[MCMM\] FC_TLU_STACK is not set — it is the filename stem of the TLU+\n\
+           \      files in TLUPLUS_PATH, encoding the metal stack (the flow reads\n\
+           \      <stem>_typical_top2.tluplus and its rcbest/rcworst siblings).\n\
+           \      Set it in <repo>/site.env (see site.env.example). No default."
+}
+set _stack $::env(FC_TLU_STACK)
 puts "INFO: \[MCMM\] TLU+ stack = $_stack"
 read_parasitic_tech -name typical -tlup ${tluplus_path}/${_stack}_typical_top2.tluplus -layermap ${tluplus_map}
 read_parasitic_tech -name rcbest  -tlup ${tluplus_path}/${_stack}_rcbest_top2.tluplus  -layermap ${tluplus_map}
@@ -208,8 +224,6 @@ create_clock -name $clk_name -period $clk_period \
 # closes hold without triggering aggressive opto on outputs.
 set hold_uncert 0.10
 puts "INFO: clock uncertainty: setup=$clk_uncert  hold=$hold_uncert"
-set_clock_uncertainty -setup $clk_uncert [get_clocks $clk_name]
-set_clock_uncertainty -hold  $hold_uncert [get_clocks $clk_name]
 
 if {[sizeof_collection [get_ports $rst_name -quiet]] > 0} {
     set_false_path -from [get_ports $rst_name]
@@ -229,11 +243,91 @@ if {[llength $exclude_ports] > 0} {
 }
 set all_outputs [all_outputs]
 
-if {[sizeof_collection $all_inputs] > 0} {
-    set_input_delay  -clock $clk_name $io_delay $all_inputs
+#-----------------------------------------------------------------------------
+# PER-SCENARIO application (blocker ASIC-2, fixed 2026-08-14).
+#
+# set_clock_uncertainty / set_input_delay / set_output_delay are applied
+# to the CURRENT SCENARIO in fc_shell U-2022.12 — they are not shared
+# across the scenarios of a mode the way create_clock is. Until now this
+# block ran once, with no current_scenario call, so everything landed in
+# whichever scenario happened to be current — scen_fast, because it is
+# created last (:170 above).
+#
+# What that cost, MEASURED on the shipping 2026-06-03 signoff.design:
+#   get_attribute [get_clocks hclk] setup_uncertainty
+#     scen_slow (WCCOM, THE setup-signoff corner) : 0.000000
+#     scen_fast (BCCOM)                           : 0.350000
+#   check_timing TCK-012 "input port has no clock_relative delay"
+#     Corner 'slow' : 607 ports      Corner 'fast' : 1 port (hresetn,
+#                                    the one this script excludes)
+# i.e. scen_slow was placed, CTS'd, routed and signed off with zero
+# clock uncertainty and zero boundary I/O constraints. Its reported
+# Setup WNS of -0.00 had no margin subtracted from it at all.
+#
+# The pad_rx[*] delays were never affected — 1_init_design.tcl already
+# loops read_sdc over both scenarios, which is the control that proves
+# the split was real (pad_rx appears in neither corner's TCK-012 list).
+#-----------------------------------------------------------------------------
+set _scen_list [list]
+foreach_in_collection _s [get_scenarios -quiet] {
+    lappend _scen_list [get_attribute $_s name]
 }
-if {[sizeof_collection $all_outputs] > 0} {
-    set_output_delay -clock $clk_name $io_delay $all_outputs
+if {[llength $_scen_list] == 0} { set _scen_list [list ""] }
+
+foreach _scen $_scen_list {
+    if {$_scen ne ""} { current_scenario $_scen }
+
+    set_clock_uncertainty -setup $clk_uncert [get_clocks $clk_name]
+    set_clock_uncertainty -hold  $hold_uncert [get_clocks $clk_name]
+
+    if {[sizeof_collection $all_inputs] > 0} {
+        set_input_delay  -clock $clk_name $io_delay $all_inputs
+    }
+    if {[sizeof_collection $all_outputs] > 0} {
+        set_output_delay -clock $clk_name $io_delay $all_outputs
+    }
+
+    #-------------------------------------------------------------------------
+    # OCV timing derate. There was NO set_timing_derate anywhere in the
+    # repo before 2026-08-14 ("Clock derating is disabled",
+    # reports/07_check_clock_trees.rep:11), on a 65 nm design signed off
+    # with on_chip_variation analysis — so OCV analysis was running with
+    # a derate factor of exactly 1.0, i.e. no on-chip variation at all.
+    #
+    # These are conventional 65 nm flat-derate starting values, NOT
+    # characterised numbers. They are deliberately modest so that
+    # re-enabling them is a margin change, not a redesign. Replace with
+    # foundry AOCV/POCV tables before tapeout.
+    #   cell/net late  +5%   early -5%
+    #   clock late     +7%   early -7%   (clock trees see more variation)
+    # Override with FC_DERATE_LATE / FC_DERATE_EARLY, or set
+    # FC_TIMING_DERATE=off to reproduce the pre-2026-08-14 behaviour.
+    #-------------------------------------------------------------------------
+    set _derate on
+    if {[info exists ::env(FC_TIMING_DERATE)]} { set _derate $::env(FC_TIMING_DERATE) }
+    if {$_derate eq "off"} {
+        puts "WARNING: \[read_design\] $_scen: FC_TIMING_DERATE=off — OCV runs with derate 1.0"
+    } else {
+        set _d_late  1.05
+        set _d_early 0.95
+        if {[info exists ::env(FC_DERATE_LATE)]  && $::env(FC_DERATE_LATE)  ne ""} { set _d_late  $::env(FC_DERATE_LATE) }
+        if {[info exists ::env(FC_DERATE_EARLY)] && $::env(FC_DERATE_EARLY) ne ""} { set _d_early $::env(FC_DERATE_EARLY) }
+        set _d_clk_late  [expr {1.0 + ($_d_late  - 1.0) * 1.4}]
+        set _d_clk_early [expr {1.0 - (1.0 - $_d_early) * 1.4}]
+
+        set_timing_derate -cell_delay -late  $_d_late
+        set_timing_derate -cell_delay -early $_d_early
+        set_timing_derate -net_delay  -late  $_d_late
+        set_timing_derate -net_delay  -early $_d_early
+        set_timing_derate -clock -cell_delay -late  $_d_clk_late
+        set_timing_derate -clock -cell_delay -early $_d_clk_early
+        set_timing_derate -clock -net_delay  -late  $_d_clk_late
+        set_timing_derate -clock -net_delay  -early $_d_clk_early
+        puts [format "INFO: \[read_design\] %s: derate data %.3f/%.3f  clock %.3f/%.3f (late/early)" \
+                $_scen $_d_late $_d_early $_d_clk_late $_d_clk_early]
+    }
+
+    puts "INFO: \[read_design\] $_scen: uncertainty + I/O delay + derate applied"
 }
 
 set_scenario_status -setup true -leakage_power false *

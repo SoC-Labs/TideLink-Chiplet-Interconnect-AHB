@@ -254,7 +254,7 @@ puts $mf "| Cell internal power | $pwr_internal |"
 puts $mf "| Net switching power | $pwr_switching |"
 puts $mf "| Total dynamic power | $pwr_dynamic @ $::env(CLK_PERIOD) ns |"
 puts $mf "| Cell leakage power | $pwr_leakage |"
-puts $mf "| Library | TSMC65 tcbn65lp 9-track 9lm_T2 (220a release, RVT) |"
+puts $mf "| Library | [file tail [file dirname $::env(DB_SS)]]/[file tail $::env(DB_SS)] |"
 # Compute knob status strings outside the heredoc to dodge Tcl quoting issues.
 set cg_status "on (CKLNQD*/CKLHQD*) min_bitwidth=2"
 if {[info exists ::env(FC_CLOCK_GATING)] && $::env(FC_CLOCK_GATING) eq "off"} {

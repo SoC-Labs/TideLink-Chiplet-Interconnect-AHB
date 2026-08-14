@@ -958,7 +958,27 @@ SIM_GATE_REQUIRE = test -e $(1) || { echo "sim_gate: MISSING DEPENDENCY $(1) —
 SIM_GATE_TC_ENV := TB_TOP_NO_DUMP=1 SIM_BUILD=sim_build_gate_tc
 
 TIDECHART_HOME ?= $(realpath $(TIDELINK_HOME)/../tidechart)
-CHIPLET_HOME   ?= $(realpath $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet)
+# PROBE for the chiplet root by MARKER FILE rather than assuming a directory
+# shape. tidelink is checked out two ways: as a SIBLING of the chiplet, and as a
+# CHILD (submodule) of it. The old sibling-only default resolved to a NONEXISTENT
+# nested path in the submodule layout; $(realpath) then returned EMPTY, the
+# dep-check below saw a bare `/src/rtl/tidechart_shim.sv`, and tc_pair_smoke /
+# tc_pair_election_datamode / eth_relay_m0 / eth_relay_m1 / eth_regs_shape_a all
+# reported FALSE failures on `make sim_gate` — aborting at 0s BEFORE elaboration,
+# so they cannot even reflect an RTL change. Measured 2026-08-14: all five PASS
+# once the roots resolve. A STANDING FALSE-RED IS HOW A REAL RED GETS WAVED OFF.
+# Sibling is probed first, so the historical layout keeps its exact behaviour.
+CHIPLET_HOME   ?= $(realpath $(patsubst %/src/rtl/tidechart_shim.sv,%,$(firstword $(wildcard \
+                    $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet/src/rtl/tidechart_shim.sv \
+                    $(TIDELINK_HOME)/../src/rtl/tidechart_shim.sv))))
+# EXPORT is load-bearing: the tc_pair_*/eth_* suites run in a RECURSIVE
+# `$(MAKE) -C cocotb/...`, which does NOT inherit a plain make variable. Without
+# these exports the sub-make sees an EMPTY value and dies on a bare
+# `/src/rtl/tidechart_shim.sv`, which looks identical to the missing-checkout
+# case. Setting them as shell env vars used to mask this, because the environment
+# propagates where a make variable does not.
+export CHIPLET_HOME
+export TIDECHART_HOME
 SIM_GATE_TC_DEP = $(call SIM_GATE_REQUIRE,$(TIDECHART_HOME)/flist/tidechart.flist,tc_pair_* co-sim) && \
 	$(call SIM_GATE_REQUIRE,$(CHIPLET_HOME)/src/rtl/tidechart_shim.sv,tc_pair_* co-sim)
 
@@ -1020,7 +1040,13 @@ sim_gate_eth_m0:
 # sources the subsystem's set_env.sh in a SUBSHELL. SIM_GATE_ETH_DEP checks the
 # checkout first, so a missing sibling is a one-line message in THIS suite's log
 # rather than an unreadable VCS flist error 40 minutes in.
-ETH_SS_HOME ?= $(realpath $(TIDELINK_HOME)/../nanoSoC-refactor/ethernet-subsystem-ahb)
+# Same two-layout probe as CHIPLET_HOME above: one level up for the SIBLING
+# checkout, two for the SUBMODULE one. Sibling first, so existing setups are
+# byte-identical in behaviour.
+ETH_SS_HOME ?= $(realpath $(patsubst %/set_env.sh,%,$(firstword $(wildcard \
+                 $(TIDELINK_HOME)/../nanoSoC-refactor/ethernet-subsystem-ahb/set_env.sh \
+                 $(TIDELINK_HOME)/../../nanoSoC-refactor/ethernet-subsystem-ahb/set_env.sh))))
+export ETH_SS_HOME
 SIM_GATE_ETH_ENV := . $(ETH_SS_HOME)/set_env.sh >/dev/null 2>&1;
 
 # M1: through the REAL ethernet_ss_ahb AHB matrix into eth_scratch_rx.

@@ -255,10 +255,21 @@ def bringup(bd, role, cal_timeout, converge_timeout):
         #    should RETRY the bring-up (each retry re-runs winscan = a fresh eye).
         print("--- 5. poll AUTONOMOUS re-anchor (EPOCH_STATUS bit0, up to 12s) ---")
         rdl = time.time() + 12.0
-        rea = bd.rd(REG_EPOCH_STATUS) & 1
+        # Keep the FULL word, not just bit0. Bits [6:1] are sr_span_meas — the
+        # measured skew span — and masking them off with `& 1` threw away the
+        # only quantitative bring-up-quality number the design exposes. The n=20
+        # campaign (2026-08-13) found delivery fails in EXACTLY the runs where
+        # die_a re-anchored and die_b did NOT, so the anchor bit is the
+        # stratifier; the span is what could turn that binary signal into one
+        # that explains itself. Cheap to log, impossible to recover afterwards.
+        epoch_raw = bd.rd(REG_EPOCH_STATUS)
+        rea = epoch_raw & 1
         while time.time() < rdl and not rea:
             time.sleep(0.1)
-            rea = bd.rd(REG_EPOCH_STATUS) & 1
+            epoch_raw = bd.rd(REG_EPOCH_STATUS)
+            rea = epoch_raw & 1
+        print("    EPOCH_STATUS = 0x%08x (reanchored=%d sr_span_meas=%d)"
+              % (epoch_raw, rea, (epoch_raw >> 1) & 0x3F))
         if rea:
             print("RESULT: RE-ANCHORED — %s EPOCH_STATUS bit0=1 (deskew locked, no "
                   "manual pulse). M1 done once BOTH dies report this." % role)

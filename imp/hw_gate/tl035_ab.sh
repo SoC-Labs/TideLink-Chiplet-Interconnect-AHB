@@ -102,14 +102,50 @@ KR260_PASSWORD="$KR260_PASSWORD" "$KB" $IP_B "env KR260_AFI_NO_CANARY=1 sh td/sc
 grep -h "^AFI:" "$OUT"/03_afi_*.log | tee -a "$OUT/00_run.log"
 
 # --- 4. bring up the link, BOTH dies together -----------------------------
-log "step 4: bringup (concurrent — cal_done gates on the peer)"
-KR260_PASSWORD="$KR260_PASSWORD" KR260_HOST=ubuntu@$IP_A KR260_ETH_ROLE=die_a \
-    timeout 300 bash "$RUN" bringup > "$OUT/04_bringup_a.log" 2>&1 &
-qa=$!
-KR260_PASSWORD="$KR260_PASSWORD" KR260_HOST=ubuntu@$IP_B KR260_ETH_ROLE=die_b \
-    timeout 300 bash "$RUN" bringup > "$OUT/04_bringup_b.log" 2>&1 &
-qb=$!
-wait $qa; wait $qb
+# ANCHOR-PAIR RETRY GATE (2026-08-14). This step used to be a SINGLE-SHOT
+# concurrent bring-up with no retry, which is how every lottery number in
+# MVP_SCOPE_2026_08_13.md §4 was measured. The n=20 campaign then showed the 3
+# delivery failures were EXACTLY the runs whose anchor pair was die_a=YES /
+# die_b=NO — a state readable BEFORE any payload is sent. So the bring-up is now
+# routed through the pair orchestrator, which re-rolls that one pair.
+#
+#   ANCHOR_GATE=0            -> the old single-shot path, byte-for-byte. Use this
+#                               to produce numbers COMPARABLE to the 08-13
+#                               baseline campaign (which had retry switched off).
+#   ANCHOR_GATE_MODE=off     -> gated path but no anchor predicate (link-up only).
+#   ANCHOR_GATE_MODE=both    -> legacy require-both-re-anchored.
+#
+# Either way the final attempt's logs land at 04_bringup_{a,b}.log, so every
+# downstream parser (and the retrospective validator) keeps working unchanged.
+# The retry cost is recorded in 04_anchor_gate.log — a reliability claim from a
+# gated run is only honest quoted together with its attempts_used.
+ANCHOR_GATE=${ANCHOR_GATE:-1}
+PAIRSH="$ETH/tidelink/pynq_host/scripts/kr260_eth_bringup_pair.sh"
+if [ "$ANCHOR_GATE" = 1 ] && [ -r "$PAIRSH" ]; then
+  log "step 4: bringup via ANCHOR-PAIR GATE (mode=${ANCHOR_GATE_MODE:-pair}, budget=${BRINGUP_TRIES:-8})"
+  DIE_A=ubuntu@$IP_A DIE_B=ubuntu@$IP_B KR260_PASSWORD="$KR260_PASSWORD" \
+      MAX_TRIES=${BRINGUP_TRIES:-8} ANCHOR_GATE_MODE=${ANCHOR_GATE_MODE:-pair} \
+      PAIR_LOG_DIR="$OUT" BU_LOG_A="$OUT/04_bringup_a.log" BU_LOG_B="$OUT/04_bringup_b.log" \
+      timeout ${PAIR_TIMEOUT:-1200} bash "$PAIRSH" > "$OUT/04_anchor_gate.log" 2>&1
+  gate_rc=$?
+  grep -aE "ANCHOR_GATE (mode|SUMMARY)|PAIR (ACCEPTED|did NOT)" "$OUT/04_anchor_gate.log" \
+      | tail -6 | tee -a "$OUT/00_run.log"
+  log "  anchor-gate rc=$gate_rc (0=accepted, 1=budget exhausted)"
+  if [ "$gate_rc" != 0 ]; then
+    log "  WARNING: anchor gate did not accept — the run CONTINUES so the bad pair is"
+    log "           still measured, but treat its delivery result as GATE-REJECTED,"
+    log "           not as a baseline sample."
+  fi
+else
+  log "step 4: bringup (concurrent, SINGLE-SHOT — anchor gate disabled)"
+  KR260_PASSWORD="$KR260_PASSWORD" KR260_HOST=ubuntu@$IP_A KR260_ETH_ROLE=die_a \
+      timeout 300 bash "$RUN" bringup > "$OUT/04_bringup_a.log" 2>&1 &
+  qa=$!
+  KR260_PASSWORD="$KR260_PASSWORD" KR260_HOST=ubuntu@$IP_B KR260_ETH_ROLE=die_b \
+      timeout 300 bash "$RUN" bringup > "$OUT/04_bringup_b.log" 2>&1 &
+  qb=$!
+  wait $qa; wait $qb
+fi
 log "  bringup rc: die_a/die_b captured in 04_bringup_*.log"
 
 # --- 5. status -------------------------------------------------------------
@@ -311,6 +347,10 @@ log "step 8: post-mortem reachability"
 log "  die_a=$(alive $IP_A) die_b=$(alive $IP_B)"
 {
   echo "arm=$ARM"
+  # Provenance: a gated run and an un-gated run are NOT the same sample. Record
+  # which one this was so nobody can later pool them by accident.
+  echo "anchor_gate=$ANCHOR_GATE mode=${ANCHOR_GATE_MODE:-pair}"
+  echo "anchor_gate_summary=$(grep -ah 'ANCHOR_GATE_SUMMARY' "$OUT/04_anchor_gate.log" 2>/dev/null | tail -1)"
   echo "errinject_rc=$rc"
   echo "die_a_post=$(alive $IP_A)"
   echo "die_b_post=$(alive $IP_B)"

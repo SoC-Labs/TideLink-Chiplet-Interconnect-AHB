@@ -15,31 +15,67 @@
 # Project root
 export TIDELINK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# CMSDK path (Arm Corstone SSE-200 / BP210 package)
-export CMSDK_DIR="${CMSDK_DIR:-${ARM_IP_LIBRARY_PATH}/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0}"
+# ---------------------------------------------------------------
+# Site configuration.
+#
+# Tool installs and vendor IP roots are per-machine facts, so they live in
+# site.env (NOT tracked). Copy site.env.example to site.env and edit it, or
+# export the same names from your login profile / site module file.
+#
+# NOTHING HERE CARRIES A DEFAULT PATH, deliberately: a default pointing at one
+# lab's mount produces a setup that looks configured and is not — it resolves
+# on exactly one machine, and everywhere else it fails as a missing FILE rather
+# than as a missing SETTING. Unset, _require below names the variable.
+#
+# site.env is also `-include`d by syn/asic/common.mk, which is why it is
+# written in the Make/shell syntax intersection (`export N=v`, no spaces).
+# ---------------------------------------------------------------
+if [ -f "${TIDELINK_HOME}/site.env" ]; then
+    # shellcheck disable=SC1091
+    . "${TIDELINK_HOME}/site.env"
+fi
 
-# cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install used in CI;
-# fall back to the standalone BP210 install when not present in CMSDK_DIR.
+# Name the variable, say what it locates, and point at the one file that sets
+# it. Non-fatal (this script is *sourced*; exiting would kill the caller's
+# shell) but unmissable, and the flist/VCS failure that follows is no longer a
+# mystery.
+_require() {
+    local var="$1" what="$2"
+    if [ -z "${!var}" ]; then
+        echo "  [ERROR] ${var} is not set — it locates ${what}."
+        echo "          Copy site.env.example to site.env and set it there, or"
+        echo "          export it in your environment. There is no default."
+        return 1
+    fi
+}
+
+# Arm Cortex-M System Design Kit. The package directory name carries a release
+# code that differs per licensee, so CMSDK_DIR is set whole, not assembled.
+_require CMSDK_DIR "the Arm Cortex-M System Design Kit package root"
+
+# cmsdk_fpga_sram.v is absent from some CMSDK packages. Derive it from
+# CMSDK_DIR when it is there; otherwise site.env must name it directly.
 if [ -z "${CMSDK_FPGA_SRAM_V}" ]; then
     if [ -f "${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v" ]; then
         export CMSDK_FPGA_SRAM_V="${CMSDK_DIR}/logical/models/memories/cmsdk_fpga_sram.v"
     else
-        export CMSDK_FPGA_SRAM_V="${ARM_IP_LIBRARY_PATH}/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
+        _require CMSDK_FPGA_SRAM_V \
+            "cmsdk_fpga_sram.v, which this CMSDK package does not ship (set it to the copy in whichever package does)"
     fi
 fi
+export CMSDK_FPGA_SRAM_V
 
-# XHB500 source IP (Arm XHB-500 Generic Global Bundle)
-export XHB500_IP_DIR="${XHB500_IP_DIR:-${ARM_IP_LIBRARY_PATH}/DMA-350/CG096-r0p0-00rel0/PL417-BU-50000-r0p1-00rel0/xhb500}"
+# Arm XHB-500 AHB/AXI bridge generator bundle
+_require XHB500_IP_DIR "the Arm XHB-500 bridge IP root (the directory holding logical/generate)"
 
 # Generated XHB500 output (within this repo, gitignored)
 export XHB500_GEN_DIR="${TIDELINK_HOME}/deps/xhb500/generated"
 export XHB500_SLV_DIR="${XHB500_GEN_DIR}/xhb_chiplet_slv"
 export XHB500_MST_DIR="${XHB500_GEN_DIR}/xhb_chiplet_mst"
 
-# EDA tools
-export VCS_HOME="${VCS_HOME:-/eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2}"
-export VERDI_HOME="${VERDI_HOME:-/eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2}"
-export VIP_HOME="${VIP_HOME:-/eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12}"
+# EDA tools. Not _require'd: many hosts put these on PATH from a site module
+# file instead, and the simulator's own "command not found" is already clear.
+export VCS_HOME VERDI_HOME VIP_HOME
 
 # ---------------------------------------------------------------
 # Generate XHB500 bridges if not already present
@@ -144,6 +180,6 @@ _generate_xhb500 \
     "${XHB500_MST_DIR}" \
     "xhb500_axi_to_ahb_bridge_chiplet_mst"
 
-unset -f _generate_xhb500 _xhb500_host_preflight
+unset -f _generate_xhb500 _xhb500_host_preflight _require
 echo ""
 echo "Environment ready."

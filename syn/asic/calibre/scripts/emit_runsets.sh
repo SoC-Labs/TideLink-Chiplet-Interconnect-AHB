@@ -15,8 +15,22 @@ top="$3"
 gds="$4"
 netlist="$5"
 
-drc_deck="${DRC_DECK:-/home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/util/MAIN_DECK/CALIBRE_FLOW/nonUTM/DFM_LVS_RC_CAL_N65_ALRDL_noU_v16a.9m}"
-lvs_deck="${LVS_DECK:-/home/dwn1c21/SoC-Labs/phys_ip/TSMC/65/CMOS/LP/pdk/Calibre/lvs/calibre.lvs}"
+# Deck paths come from the caller (the Makefile passes CALIBRE_*_DECK through
+# as DRC_DECK / LVS_DECK, which come from site.env). No defaults: a deck
+# filename encodes the signoff release this site holds, and a runset written
+# against someone else's mount is worse than no runset — Calibre opens it and
+# reports against the wrong rules.
+_require_deck() {
+    if [ -z "${2:-}" ]; then
+        echo "ERROR: $1 is not set — it locates the foundry $3 deck." >&2
+        echo "       Set CALIBRE_$1 in <repo>/site.env (see site.env.example)." >&2
+        exit 1
+    fi
+}
+drc_deck="${DRC_DECK:-}"
+lvs_deck="${LVS_DECK:-}"
+_require_deck DRC_DECK "$drc_deck" DRC
+_require_deck LVS_DECK "$lvs_deck" LVS
 
 mkdir -p "$runsets_dir"
 

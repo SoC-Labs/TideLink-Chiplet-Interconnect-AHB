@@ -68,9 +68,15 @@ puts "INFO: \[fc_pg\] (re)creating std_cell_rail pattern"
 catch {remove_pg_patterns   -all}
 catch {remove_pg_strategies -all}
 
+# Same nominal, and the same override, as pg_mesh.tcl Step 3 — see the note
+# there. It is a value chosen to make via stacks land, not a library minimum.
+set pg_rail_width 0.18
+if {[info exists ::env(FC_PG_RAIL_WIDTH)] && $::env(FC_PG_RAIL_WIDTH) ne ""} {
+    set pg_rail_width $::env(FC_PG_RAIL_WIDTH)
+}
 create_pg_std_cell_conn_pattern std_cell_rail \
     -layers {M1} \
-    -rail_width 0.18
+    -rail_width $pg_rail_width
 
 set_pg_strategy rail_strategy \
     -pattern {{name: std_cell_rail} {nets: {VDD VSS}}} \

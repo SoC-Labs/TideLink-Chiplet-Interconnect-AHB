@@ -1,0 +1,25 @@
+samples=4096   columns=37
+
+===== VACUITY GUARD =====
+  sub_stall_ctr_r : min=42398 max=46493 distinct=4096   -> ramp PRESENT
+  wr_hold_r       : ones=4096/4096               -> HELD 1 (wedge state)
+  dbg_fcsm_state  : values=[4]   dbg_cr_seen values=[1] -> known-live YES
+  VERDICT: CAPTURE VALID -- safe to interpret
+
+===== PER-PROBE WINDOW SUMMARY (hex-parsed) =====
+  probe                    min      max      ones     distinct
+  xhb_sub_hreadyout_raw    0        0        0        1       
+  sub_stall_busy           1        1        4096     1       
+  sub_stall_ctr_r          42398    46493    4096     4096    
+  wr_hold_r                1        1        4096     1       
+  sub_rd_os_r              0        0        0        1       
+  synth_b_pending          0        0        0        1       
+  sub_err1_r               0        0        0        1       
+  sub_err2_r               0        0        0        1       
+  ext_is_nonseq            0        0        0        1       
+  pipe_valid_r             0        0        0        1       
+  rd_pipe_r                0        0        0        1       
+  sub_wr_os_ctr            0        0        0        1       
+  dbg_fcsm_state           4        4        4096     1       
+  dbg_cr_seen              1        1        4096     1       
+  TRIGGER column: asserted at sample index [512]

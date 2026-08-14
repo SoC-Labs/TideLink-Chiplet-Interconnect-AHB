@@ -1,0 +1,5 @@
+arm=tl035
+errinject_rc=2
+die_a_post=DOWN
+die_b_post=UP
+finished=2026-08-13T12:07:26Z

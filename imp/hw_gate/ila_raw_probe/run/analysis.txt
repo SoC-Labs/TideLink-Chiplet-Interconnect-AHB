@@ -1,0 +1,49 @@
+samples=4096   columns=37
+
+===== VACUITY GUARD =====
+  sub_stall_ctr_r : min=0 max=0 distinct=1   -> ramp ABSENT
+  wr_hold_r       : ones=0/4096               -> NOT held 1
+  dbg_fcsm_state  : values=[4]   dbg_cr_seen values=[1] -> known-live YES
+  VERDICT: VOID -- guard failed; this run reports NOTHING
+
+===== PER-PROBE WINDOW SUMMARY (hex-parsed) =====
+  probe                    min      max      ones     distinct
+  xhb_sub_hreadyout_raw    1        1        4096     1       
+  sub_stall_busy           0        0        0        1       
+  sub_stall_ctr_r          0        0        0        1       
+  wr_hold_r                0        0        0        1       
+  sub_rd_os_r              0        0        0        1       
+  synth_b_pending          0        0        0        1       
+  sub_err1_r               0        0        0        1       
+  sub_err2_r               0        0        0        1       
+  ext_is_nonseq            0        0        0        1       
+  pipe_valid_r             0        0        0        1       
+  rd_pipe_r                0        0        0        1       
+  sub_wr_os_ctr            0        0        0        1       
+  dbg_fcsm_state           4        4        4096     1       
+  dbg_cr_seen              1        1        4096     1       
+  TRIGGER column: asserted at sample index [1024]
+
+===== xhb_sub_hreadyout_raw =====
+  value histogram: {1: 4096}
+  first sample=1  last sample=1
+  FROZEN VALUE = 1 across all 4096 samples
+
+===== P3 / N1 COINCIDENCE =====
+  samples with synth_b_pending=1 AND sub_err1_r=0 AND sub_rd_os_r=0: 0
+
+===== TRANSITION CENSUS (how static is the window?) =====
+  xhb_sub_hreadyout_raw    transitions=0
+  sub_stall_busy           transitions=0
+  sub_stall_ctr_r          transitions=0
+  wr_hold_r                transitions=0
+  sub_rd_os_r              transitions=0
+  synth_b_pending          transitions=0
+  sub_err1_r               transitions=0
+  sub_err2_r               transitions=0
+  ext_is_nonseq            transitions=0
+  pipe_valid_r             transitions=0
+  rd_pipe_r                transitions=0
+  sub_wr_os_ctr            transitions=0
+  dbg_fcsm_state           transitions=0
+  dbg_cr_seen              transitions=0

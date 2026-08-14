@@ -1,0 +1,9 @@
+iter	arm	die_b_pre	die_b_post	die_a_post	errinject_rc
+1	tl035	0xad800000	0xad408020	UNREADABLE (die wedged / bus hung)	1
+1	baseline	0xad800000	0xad408020	UNREADABLE (die wedged / bus hung)	1
+2	tl035	0xad800000	0xad408020	UNREADABLE (die wedged / bus hung)	1
+2	baseline	0xa5a50000	0xa5a50000	UNREADABLE (die wedged / bus hung)	2
+3	tl035	?	0xa5a50000	UNREADABLE (die wedged / bus hung)	1
+3	baseline	?	0xa5a50000	UNREADABLE (die wedged / bus hung)	1
+4	tl035	0xa5a50000	0xa5a50000	UNREADABLE (die wedged / bus hung)	2
+4	baseline	?	0xa5a50000	UNREADABLE (die wedged / bus hung)	1

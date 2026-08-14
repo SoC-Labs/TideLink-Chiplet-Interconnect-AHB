@@ -1,0 +1,12 @@
+ILA_PROBE_COUNT: 37
+ILA_PROBE_OK: synth_b_pending
+ILA_PROBE_OK: sub_osr_ctr_r
+ILA_PROBE_OK: sub_wr_os_ctr
+ILA_PROBE_OK: sub_axi_progress
+ILA_PROBE_OK: sub_r_done
+ILA_PROBE_OK: sub_b_done
+ILA_PROBE_OK: sub_wr_stuck_fire
+ILA_PROBE_OK: dbg_ahb_sub_hreadyout
+ILA_TRIGGER: dbg_ahb_sub_hreadyout == 0
+die_a wedged after raw AW inject: YES
+RESULT: capture timeout

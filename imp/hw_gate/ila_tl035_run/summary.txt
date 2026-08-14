@@ -1,0 +1,61 @@
+ILA_PROBE_COUNT: 37
+ILA_PROBE_OK: synth_b_pending
+ILA_PROBE_OK: sub_osr_ctr_r
+ILA_PROBE_OK: sub_wr_os_ctr
+ILA_PROBE_OK: sub_axi_progress
+ILA_PROBE_OK: sub_r_done
+ILA_PROBE_OK: sub_b_done
+ILA_PROBE_OK: sub_wr_stuck_fire
+ILA_PROBE_OK: dbg_ahb_sub_hreadyout
+ILA_TRIGGER: dbg_ahb_sub_hreadyout == 0
+die_a wedged after raw AW inject: YES
+ILA_DEV: xck26_0
+ILA_CORE: hw_ila_1
+TRIG_STATUS: unavailable (CORE_STATUS not a property on this hw_ila)
+CAPTURE_DONE csv=/tmp/ila_capture.csv
+== ARMING DECISION ==
+import csv,sys
+rows=list(csv.DictReader(open(sys.argv[1])))
+if not rows: print("empty CSV"); sys.exit()
+cols=list(rows[0].keys())
+def col(n):
+    for c in cols:
+        if n in c.lower(): return c
+    return None
+def val(r,c):
+    if c is None: return None
+    s=str(r[c]).strip().replace("'","")
+    for p in ("0x","b","h"):
+        if s.lower().startswith(p): s=s[len(p):]
+    try: return int(s,16) if any(ch in s.lower() for ch in "abcdef") else int(s)
+    except:
+        try: return int(s,2)
+        except: return None
+NAMES=['synth_b_pending','sub_osr_ctr_r','sub_wr_os_ctr','sub_axi_progress','sub_r_done',
+       'sub_b_done','sub_wr_stuck_fire','dbg_ahb_sub_hreadyout','sub_axi_outstanding',
+       'sub_err1_r','sub_rd_os_r','sub_osr_expired','sub_aw_accept','sub_stall_ctr_r']
+C={n:col(n) for n in NAMES}
+missing=[n for n,c in C.items() if c is None]
+if missing: print("  PROBES MISSING FROM CSV:", missing)
+print("  samples=%d"%len(rows))
+# window summary — this is what answers the question, not a single sample
+for n in NAMES:
+    c=C[n]
+    if c is None: continue
+    vs=[val(r,c) for r in rows]; vs=[v for v in vs if v is not None]
+    if not vs: continue
+    print("  %-24s min=%-8s max=%-8s ones=%-6s distinct=%s"%(n,min(vs),max(vs),sum(1 for v in vs if v),len(set(vs))))
+sb=[val(r,C['synth_b_pending']) for r in rows] if C['synth_b_pending'] else []
+sb=[v for v in sb if v is not None]
+print()
+if sb and max(sb)==0:
+    print("  => synth_b_pending NEVER ASSERTS across the captured window.")
+    print("     Consistent with ARMING STARVATION: the :1667 `|| sub_axi_progress`")
+    print("     term keeps resetting the age timer. Check sub_osr_ctr_r max vs the")
+    print("     2**16 threshold and which of sub_r_done / sub_b_done is pulsing.")
+elif sb:
+    print("  => synth_b_pending ASSERTS (ones=%d). synth-B ARMED and the wedge"%sum(1 for v in sb if v))
+    print("     persisted anyway -> the synthetic B did not retire die_a's PS write.")
+    print("     DIFFERENT defect from arming starvation; head-of-line timer is NOT the fix.")
+else:
+    print("  => synth_b_pending not readable — cannot decide. Do not infer.")

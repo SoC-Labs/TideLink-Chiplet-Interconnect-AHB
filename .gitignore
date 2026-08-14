@@ -101,6 +101,22 @@ imp/ASIC/*
 !imp/ASIC/Makefile
 !imp/ASIC/README.md
 
+# imp/hw_gate = the HARDWARE EVIDENCE TREE. Tracked deliberately: unlike
+# imp/fpga (6.7 GB of build output) and imp/sim_gate (regenerable logs), these
+# are bench runs that CANNOT be reproduced by re-running anything — md5-pinned
+# deploys, ILA captures, per-run campaign logs, and the verdicts that cite them.
+# Until 2026-08-14 the whole tree was untracked and single-copy, which meant no
+# `in_hw_gate: true` row in the bug registry could be substantiated by anything
+# a reviewer could fetch. ~9 MB, no file over 2 MB.
+# Large regenerable artefacts stay excluded below — keep that list current if a
+# capture format grows, and NEVER un-ignore imp/fpga.
+!imp/hw_gate/
+imp/hw_gate/**/*.bit
+imp/hw_gate/**/*.bin
+imp/hw_gate/**/*.dcp
+imp/hw_gate/**/*.ltx
+imp/hw_gate/**/sim_build*/
+
 # Fusion Compiler
 *.gz
 *.pvl
@@ -207,3 +223,9 @@ fpga/site.local.mk
 
 # Vivado build output per FPGA target (logs carry site hostnames; not source)
 fpga/targets/*/build_logs/
+
+# Per-machine host facts: tool installs, vendor IP roots, foundry collateral.
+# ONE PER MACHINE, never committed — a real mount point published here is an
+# inventory of one site's licensed installation. site.env.example is the
+# tracked template; it carries placeholders only. See it for the full list.
+site.env

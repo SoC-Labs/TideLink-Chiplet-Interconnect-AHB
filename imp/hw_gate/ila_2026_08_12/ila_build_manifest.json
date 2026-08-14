@@ -1,0 +1,17 @@
+{
+  "schema":          "tidelink-build-manifest/1",
+  "sha256":          "29a32e368c6f631a5cc101cca76b6ac3be869d40712f3aa2376540c3df3b5ed6",
+  "source_commit":   "d317c98242f9f688085d28b3e00c8c8debf79fbf-dirty",
+  "git_dirty":       true,
+  "phy_marker":      "V2",
+  "flist":           "tidelink_fpga_v2.flist",
+  "submodule_pins": {
+    "deps/tidelink-phy":      "8c560c574a6d77f14769790dc67176d07aaf0d44",
+    "deps/tidelink-gpio-phy": "6ee8418ba2989258fc647a1bc005d879fb0b6587"
+  },
+  "usr_access":      "0xebf79fbf",
+  "target":          "kr260-eth-chiplet",
+  "build_host":      "srv03335",
+  "build_date":      "2026-08-12T11:12:38Z",
+  "label":           "kr260-eth-chiplet-V2"
+}

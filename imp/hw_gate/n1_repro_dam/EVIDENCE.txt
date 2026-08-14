@@ -1,0 +1,110 @@
+N1 INDEPENDENT VERIFICATION -- EVIDENCE CAPTURE (dam, 2026-08-14)
+Repo: tidelink submodule, git HEAD 7701335 (NOT d317c98 as the task named; working
+tree has uncommitted src/rtl/tidelink_top.sv -- the claim references "current
+working-tree lines", so verified against the working tree). Independent of
+imp/hw_gate/n1_repro/ (not read).
+
+TB: cocotb/tidelink_axi_datanode_recovery
+NEW TEST FILE: cocotb/tidelink_axi_datanode_recovery/test_n1_readbackstop_suppress.py
+No vendor IP touched; test_axi_datanode_writehold.py and the Makefile NOT edited.
+
+CONSTRUCTION (the only legal way in this TB):
+  * far terminus wedged: dut.u_s_mng_bram.force_stall=1  -> no real R and no real B.
+  * real posted (bufferable/EWR) writes -> sub_wr_os_ctr climbs REALISTICALLY,
+    XHB500-tracked (s_axi_bready stays the real bridge value = 1).
+  * ONE pulsed Force(s_axi_arvalid) -> sub_rd_os_r=1, then RELEASED (AR consumed,
+    no re-issue -- the faithful "R lost, no further AR" condition). Pulsing not
+    holding: holding would re-arm sub_rd_os_r artificially and defeat the test.
+  * harness rule honoured: only s_axi_arvalid forced; awready/wready/arready NEVER.
+
+REPRODUCE (each its own fresh simv run; reuses the one compiled binary):
+  cd cocotb/tidelink_axi_datanode_recovery
+  source ../../set_env.sh          # under `set +u`
+  for TC in test_n1_control_read_backstop_recovers \
+            test_n1_coincident_ctr_ge2_suppresses_read \
+            test_n1_coincident_ctr_eq1_single_write \
+            test_n1_realtraffic_serialisation_probe ; do
+    make SIM_BUILD=sim_build_n1 MODULE=test_n1_readbackstop_suppress \
+         EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
+         N1_TIMEOUT_LOG2=13 TESTCASE=$TC
+  done
+  # (short 2^13 shared timer so expiry fits the sim; RTL default is 2^16.)
+
+RESULT: 4/4 PASS. Verdict = REPRODUCED (conditional on sub_wr_os_ctr>=2), with a
+decisive reachability caveat (Q3). Raw cycle-by-cycle traces below. T = expiry
+cycle (sub_osr_ctr_r == 2^13 == 8192). Signals are post-clock-edge values.
+
+============================================================================
+CONTROL  test_n1_control_read_backstop_recovers  -> class=ERROR (RECOVERS)  PASS
+  stuck read ALONE, no write. Proves TB + read backstop work when synth_b absent.
+  osr= 8192 rd_os=1 wr_ctr=0 err1=0 err2=0 synth_b=0 | hresp=0 hreadyout=0 bready=1
+  osr=    0 rd_os=0 wr_ctr=0 err1=1 err2=0 synth_b=0 | hresp=1 hreadyout=0 bready=1  <-ERR cy1
+  osr=    0 rd_os=0 wr_ctr=0 err1=0 err2=1 synth_b=0 | hresp=1 hreadyout=1 bready=1  <-ERR cy2 -> master completes HRESP=ERROR
+  err1_fires=1 err2_fires=1 synthb_fires=0 hresp_err_pulses=[{hreadyout:0}]
+
+============================================================================
+PRIMARY  test_n1_coincident_ctr_ge2_suppresses_read  -> VERDICT=REPRODUCED  PASS
+  coincident: after 4 posted writes sub_wr_os_ctr=4, s_axi_arready=1;
+  armed read: sub_rd_os_r=1 sub_wr_os_ctr=4 (coincident=True)
+  osr= 8190 rd_os=1 wr_ctr=4 err1=0 err2=0 synth_b=0 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0
+  osr= 8191 rd_os=1 wr_ctr=4 err1=0 err2=0 synth_b=0 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0
+  osr= 8192 rd_os=1 wr_ctr=4 err1=0 err2=0 synth_b=0 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0   <- T (coincident stuck read + 4 stuck writes)
+  osr=    0 rd_os=0 wr_ctr=4 err1=1 err2=0 synth_b=1 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0   <- T+1 err1 fired, MASKED (synth_b=1), rd_os CLEARED
+  osr=    0 rd_os=0 wr_ctr=3 err1=0 err2=1 synth_b=1 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0   <- T+2 err2 fired, MASKED (synth_b still 1)
+  osr=    0 rd_os=0 wr_ctr=2 err1=0 err2=0 synth_b=1 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0
+  osr=    0 rd_os=0 wr_ctr=1 err1=0 err2=0 synth_b=1 | hresp=0 hreadyout=1 bready=1 bvalid_ctrl=0
+  final sub_rd_os_r=0
+  err1_fires=1 err2_fires=1 synthb_fires=1 hresp_err_pulses=[] (ZERO)  rd_os_reArmed=False
+  --> read ERROR fired internally on BOTH cycles but was MASKED at the port for the
+      whole window; sub_rd_os_r abandoned; NO HRESP=ERROR ever reached the master.
+      This is the N1 hang. (No real AHB master is waiting here by construction --
+      see Q3: a real master read cannot be the sub_rd_os_r read while writes are
+      outstanding, so the master-level hang is INFERRED from "zero port ERROR +
+      sub_rd_os_r abandoned", not directly timed out.)
+
+============================================================================
+COMPARATOR test_n1_coincident_ctr_eq1_single_write -> ERROR DELIVERED at T+2  PASS
+  single stuck write (ctr==1) coincident with the stuck read:
+  armed read: sub_rd_os_r=1 sub_wr_os_ctr=1 (coincident=True)
+  osr= 8192 rd_os=1 wr_ctr=1 err1=0 err2=0 synth_b=0 | hresp=0 hreadyout=1 bready=1   <- T
+  osr=    0 rd_os=0 wr_ctr=1 err1=1 err2=0 synth_b=1 | hresp=0 hreadyout=1 bready=1   <- T+1 err1 MASKED (synth_b=1)
+  osr=    0 rd_os=0 wr_ctr=0 err1=0 err2=1 synth_b=0 | hresp=1 hreadyout=1 bready=1   <- T+2 synth_b DRAINED, err2 DELIVERED HRESP=ERROR
+  ctr_at_arm=1  HRESP=ERROR pulses at port=1 ([{hreadyout:1}])
+  --> synth_b_pending drains a SINGLE write in one cycle, so it masks ONLY T+1;
+      err2 reaches the port at T+2 (the degenerate single-cycle HRESP=1/HREADYOUT=1
+      the audit itself flagged, lines 85-87). NOT a permanent hang for ctr==1.
+
+============================================================================
+Q3  test_n1_realtraffic_serialisation_probe  -> coincident UNREACHABLE via traffic  PASS
+  sub_wr_os_ctr after posted writes = 4
+  real-read class=HANG  coincident(sub_rd_os_r=1 & ctr>0)=False  rd_os_max=1
+  --> a REAL AHB read issued behind the 4 posted stuck writes NEVER set sub_rd_os_r
+      while ctr>0. XHB500 SERIALISES the read AR behind outstanding writes (matches
+      the existing suite's documented "XHB500 serialises the sub port",
+      test_i5_traffic_behind_a_stuck_write_is_bounded). sub_rd_os_r only reached 1
+      AFTER the writes drained (ctr=0). The coincident precondition N1 needs was
+      thus NOT reachable from the ahb_sub port without forcing s_axi_arvalid.
+      (class=HANG here is a measurement-window artifact: the read got issued post-
+      drain and its own 2^13 timer had not yet expired inside the read timeout.)
+
+============================================================================
+ANSWERS TO THE THREE ADVERSARIAL QUESTIONS
+Q1 (does synth_b mask BOTH read-error cycles?): CONDITIONAL. Masks BOTH iff
+   sub_wr_os_ctr>=2 (synth_b drains one write/cycle; stays high >= 2 cycles). For
+   ctr==1 it drains in one cycle, masks only T+1, and the read ERROR IS delivered
+   at T+2. MEASURED (ge2 vs eq1). s_axi_bready==1 throughout in every run.
+Q2 (any other completion path once masked?): NO. R held off (force_stall), AR
+   released (no re-issue), backstop masked -> zero HRESP=ERROR at the port, rd_os
+   abandoned. No alternate completion observed (ge2: hresp_err_pulses=[]).
+Q3 (can the coincident state be constructed?): NOT via real ahb_sub traffic --
+   XHB500 serialises the read AR behind outstanding writes (coincident=False). It
+   was constructible ONLY by the harness-sanctioned Force(s_axi_arvalid) directly
+   at the internal AXI bus, which injects an AR the bridge itself would not emit.
+
+VERDICT = REPRODUCED (RTL mechanism confirmed cycle-exact for sub_wr_os_ctr>=2),
+with two load-bearing caveats: (a) a SINGLE coincident stuck write self-heals
+(ERROR delivered T+2); (b) the coincident precondition is unreachable from the
+ahb_sub port via normal traffic due to XHB500 read/write serialisation -- the
+forced AR does work the real bridge does not. Severity for silicon hinges on
+whether any real agent can present sub_rd_os_r=1 AND sub_wr_os_ctr>=2 at the
+s_axi bus; I found no such real-traffic path from this port.

@@ -1,0 +1,2 @@
+die_a wedged after raw AW inject: YES
+RESULT: ILA capture timeout

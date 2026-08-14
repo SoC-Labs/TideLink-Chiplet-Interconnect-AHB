@@ -1,0 +1,14 @@
+RUN    ARM       DIE_B_PRE    DIE_B_POST   RC     VALID    NOTE
+r1     baseline  0xad800000   0xad408020   1      yes      
+r1     tl035     0xad800000   0xad408020   1      yes      
+r2     baseline  0xad800000   0xad800000   2      NO       sweep aborted (link not up) -> NO INJECT; data-plane FAIL during pre-inject soak
+r2     tl035     0xad800000   0xad408020   1      yes      
+r3     baseline  0xad800000   0xad408020   1      yes      
+r3     tl035     0xad800000   0xad800000   1      yes      
+r4     baseline  0xad800000   0xad408020   1      yes      
+r4     tl035     0xad800000   0xad800000   2      NO       sweep aborted (link not up) -> NO INJECT; data-plane FAIL during pre-inject soak
+
+VALID post-inject signature tally (ini_aw = 0xad408020, all-clean = 0xad800000):
+        3 baseline 0xad408020
+        2 tl035 0xad408020
+        1 tl035 0xad800000

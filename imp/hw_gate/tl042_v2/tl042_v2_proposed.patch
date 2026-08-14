@@ -1,0 +1,113 @@
+diff --git a/src/rtl/tidelink_top.sv b/src/rtl/tidelink_top.sv
+index 23428f2..ce3c8f8 100644
+--- a/src/rtl/tidelink_top.sv
++++ b/src/rtl/tidelink_top.sv
+@@ -1708,6 +1708,11 @@ module tidelink_top #(
+     reg [2:0]  sub_wr_os_hwm;
+     reg        sub_wr_stuck_sticky;
+     reg        sub_err_sticky;
++    // TL-042 v2 witness (declared here so it can reach xhb_sub_obs_word below;
++    // DRIVEN by its own always_ff next to the wr_hold logic at ~:1840, because
++    // `default_nettype none` forbids the forward reference to
++    // wr_hold_stuck_expired from this block).
++    reg        wr_hold_stuck_sticky;
+     always_ff @(posedge hclk or negedge hresetn) begin
+         if (!hresetn) begin
+             xhb_stall_ctr_w        <= 12'h0;
+@@ -1725,7 +1730,8 @@ module tidelink_top #(
+             if (sub_err1_r)                         sub_err_sticky <= 1'b1;
+         end
+     end
+-    wire [31:0] xhb_sub_obs_word = { 8'hB5, 12'h0,
++    wire [31:0] xhb_sub_obs_word = { 8'hB5, 11'h0,
++                                     wr_hold_stuck_sticky,     // [12] TL-042 v2: the wr_hold starvation escape FIRED (was spare 0; additive)
+                                      ext_stall_err_q,          // [11] TL-021: bounded-ext-stall sticky (was spare 0; additive, V2-only via 0x21F8)
+                                      xhb_stall_stuck_sticky,   // [10]
+                                      sub_err_sticky,           // [9]
+@@ -1825,6 +1831,72 @@ module tidelink_top #(
+     wire  wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r;
+     wire  wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) // W beat landed
+                       | synth_b_pending;                           // backstop drain (guard)
++    // ── TL-042 v2 (2026-08-13): BOUND the wr_hold self-latch ──────────────────
++    // MEASURED ON SILICON (43-probe die_a ILA, 4096 contiguous samples,
++    // imp/hw_gate/ila_tl035_run_round2/ila_capture.csv, hex-parsed):
++    //     wr_hold_r      = 1  on ALL 4096 samples
++    //     wr_hold_set    = 0, wr_hold_clr = 0      (never re-set, never cleared)
++    //     ext_is_nonseq  = 0, pipe_valid_r = 0, rd_pipe_r = 0
++    //     sub_err1_r     = 0, sub_err2_r  = 0
++    //     sub_aw_accept  = 0, sub_wr_os_ctr = 0, synth_b_pending = 0
++    //     ahb_sub_hreadyout = 0            (the PS-facing wedge)
++    //     sub_stall_ctr_r ramps +1/clk through 2**16 (so sub_stall_expired DOES fire)
++    // The loop that makes it PERMANENT:
++    //     wr_hold_r=1 -> ahb_sub_hreadyout low -> the master's data phase never ends
++    //                 -> no new AW is accepted on s_axi (sub_aw_accept=0)
++    //                 -> sub_wr_os_ctr stays 0
++    //                 -> sub_wr_stuck_fire is gated on (ctr != 0), so synth_b_pending
++    //                    can never arm
++    //                 -> wr_hold_clr = (W-last | synth_b_pending) never asserts
++    //                 -> wr_hold_r stays 1. Only a JTAG POR clears it.
++    //
++    // THE ARM — "no AW has been accepted SINCE this hold was set", aged.
++    // NOT `sub_wr_os_ctr == 0`: on the bufferable/EWR path an early B can return
++    // that counter to 0 while wr_hold_r is still VALIDLY waiting for its W beat,
++    // so a ctr-based arm can fire on a live write. (The 2026-08-13 candidate did
++    // exactly that and regressed the data plane on silicon, 16/16 -> 0/16;
++    // imp/hw_gate/TL042_HW_RESULT_REJECTED_2026_08_13.md.) aw_since_hold_r is
++    // per-hold-EPOCH: wr_hold_set (a NEW peer-write address latch) restarts it, and
++    // this write's OWN AW-accept is always strictly LATER than its wr_hold_set
++    // (during the fill cycle xhb_sub_hready is driven low, so XHB500 cannot even
++    // accept the address until the next cycle) — hence set-priority on the clear
++    // cannot swallow this write's own AW.
++    //
++    // THE RELEASE — clears wr_hold_r AND NOTHING ELSE. It is deliberately NOT
++    // routed through synth_b_pending: synth_b_pending is a term of wr_hold_clr, so
++    // asserting it DISABLES the TL-002 peer-write data-phase hold wholesale for as
++    // long as it is high — that is what dropped every peer-write payload on the
++    // rejected candidate. It is also NOT a new term in the ahb_sub_hreadyout
++    // override mux (that mux has produced three guard failures already).
++    //
++    // PRIORITY: the release is the LOWEST-priority arm of wr_hold_r, strictly below
++    // wr_hold_set, and the age counter is reset by wr_hold_set. A brand-new peer
++    // write therefore always wins over a stale expiry — there is no cycle in which
++    // this mechanism can suppress a legitimate hold.
++    logic aw_since_hold_r;
++    always_ff @(posedge hclk or negedge hresetn) begin
++        if (!hresetn)           aw_since_hold_r <= 1'b0;
++        else if (wr_hold_set)   aw_since_hold_r <= 1'b0;   // new hold epoch
++        else if (sub_aw_accept) aw_since_hold_r <= 1'b1;   // this hold's AW got out
++    end
++    // Starved := held, with nothing of this hold's own having reached s_axi.
++    wire wr_hold_starved = wr_hold_r & ~aw_since_hold_r;
++    logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] wr_hold_stuck_ctr_r;
++    wire wr_hold_stuck_expired = wr_hold_stuck_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
++    // Age restart: not starved (AW accepted, or the hold is down) OR a new epoch.
++    wire wr_hold_age_rst = wr_hold_set | ~wr_hold_starved;
++    always_ff @(posedge hclk or negedge hresetn) begin
++        if (!hresetn)                    wr_hold_stuck_ctr_r <= '0;
++        else if (wr_hold_age_rst)        wr_hold_stuck_ctr_r <= '0;
++        else if (!wr_hold_stuck_expired) wr_hold_stuck_ctr_r <= wr_hold_stuck_ctr_r
++                                             + (SUB_OUTSTANDING_TIMEOUT_LOG2+1)'(1'b1);
++    end
++    // Bench witness (APB 0x21F8 bit[12]) — a HW run must be able to tell "the arm
++    // never fired" from "the arm fired and something ELSE still held the bus".
++    always_ff @(posedge hclk or negedge hresetn) begin
++        if (!hresetn)                 wr_hold_stuck_sticky <= 1'b0;
++        else if (wr_hold_stuck_expired) wr_hold_stuck_sticky <= 1'b1;
++    end
+ `ifdef TIDELINK_DISABLE_WR_HOLD
+     // Reproduce-first isolation build (throwaway): disable the hold to recover the
+     // pre-fix behaviour and prove the new tests FAIL without the fix. Never set in
+@@ -1832,9 +1904,10 @@ module tidelink_top #(
+     assign wr_hold_r = 1'b0;
+ `else
+     always_ff @(posedge hclk or negedge hresetn) begin
+-        if (!hresetn)         wr_hold_r <= 1'b0;
+-        else if (wr_hold_clr) wr_hold_r <= 1'b0;   // clear wins if set+clr coincide
+-        else if (wr_hold_set) wr_hold_r <= 1'b1;
++        if (!hresetn)                   wr_hold_r <= 1'b0;
++        else if (wr_hold_clr)           wr_hold_r <= 1'b0;   // clear wins if set+clr coincide
++        else if (wr_hold_set)           wr_hold_r <= 1'b1;
++        else if (wr_hold_stuck_expired) wr_hold_r <= 1'b0;   // TL-042 v2: starvation escape (lowest priority)
+     end
+ `endif
+ 

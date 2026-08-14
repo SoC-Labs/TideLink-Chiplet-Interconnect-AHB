@@ -1,0 +1,36 @@
+local ILA bin md5 OK: 8045683b6f8cf3d16f7a332c41045e56
+provenance OK: bin 2026-08-13_21:58:23Z >= ltx 2026-08-13_21:31:24Z
+die_a deployed md5=8045683b6f8cf3d16f7a332c41045e56 expected=8045683b6f8cf3d16f7a332c41045e56
+die_b staged  md5=13573e46c3b27bb6b03b41b2ce730aa8 expected=13573e46c3b27bb6b03b41b2ce730aa8 (baseline, NOT reflashed)
+try 1/6: die_a[linkup=2 reanchored=0] die_b[linkup=2 reanchored=0]
+try 2/6: die_a[linkup=1 reanchored=1] die_b[linkup=1 reanchored=1]
+PAIR RE-ANCHORED on try 2 — both dies FCSM=4 + deskew locked (autonomous).
+  die_a SWI_LANE_STAT(0x2108)=0x05890000 fcsm=4 cal[16]=1 cal[22]=0
+  die_b SWI_LANE_STAT(0x2108)=0x05890000 fcsm=4 cal[16]=1 cal[22]=0
+[GOOD EYE] try 1
+ILA_DEV: xck26_0
+ILA_CORE: hw_ila_1
+ILA_PROBE_COUNT: 34
+ILA_PROBE_OK: xhb_sub_hreadyout_raw (1)
+ILA_PROBE_OK: sub_stall_busy (1)
+ILA_PROBE_OK: sub_stall_ctr_r (1)
+ILA_PROBE_OK: wr_hold_r (1)
+ILA_PROBE_OK: sub_rd_os_r (1)
+ILA_PROBE_OK: synth_b_pending (1)
+ILA_PROBE_OK: sub_err1_r (1)
+ILA_PROBE_OK: sub_err2_r (1)
+ILA_PROBE_OK: ext_is_nonseq (1)
+ILA_PROBE_OK: pipe_valid_r (1)
+ILA_PROBE_OK: rd_pipe_r (1)
+ILA_PROBE_OK: sub_wr_os_ctr (1)
+ILA_PROBE_OK: dbg_fcsm_state (1)
+ILA_PROBE_OK: dbg_cr_seen (1)
+ILA_TRIGGER: wr_hold_r == 1 (on tidelink_design_i/nanosoc_eth_chiplet_0/inst/u_chiplet/u_tidelink/wr_hold_r)
+pre_inject  die_b DUMP base=0x2D001000 n=32 8e770000 8e770001 8e770002 8e770003 8e770004 8e770005 8e770006 8e770007 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+die_a wedged after raw AW inject: YES
+post_inject die_b DUMP base=0x2D001000 n=32 8e770000 8e770001 8e770002 8e770003 8e770004 8e770005 8e770006 8e770007 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+DO_CAPTURE=1
+TRIG_STATUS: unavailable (CORE_STATUS not a property on this hw_ila)
+CAPTURE_DONE csv=/tmp/ila_capture.csv
+CSV: 4098 lines
+RESULT: capture complete, csv at /home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink/imp/hw_gate/ila_raw_probe/run/ila_capture.csv

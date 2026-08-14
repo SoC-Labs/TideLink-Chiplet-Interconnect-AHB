@@ -1,0 +1,120 @@
+ILA_PROBE_COUNT: 43
+ILA_PROBE_OK: synth_b_pending
+ILA_PROBE_OK: sub_osr_ctr_r
+ILA_PROBE_OK: sub_wr_os_ctr
+ILA_PROBE_OK: sub_axi_progress
+ILA_PROBE_OK: sub_r_done
+ILA_PROBE_OK: sub_b_done
+ILA_PROBE_OK: sub_wr_stuck_fire
+ILA_PROBE_OK: dbg_ahb_sub_hreadyout
+ILA_TRIGGER: dbg_ahb_sub_hreadyout == 0
+pre_inject  die_b DUMP base=0x2D001000 n=32 8e770000 8e770001 8e770002 8e770003 8e770004 8e770005 8e770006 8e770007 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+die_a wedged after raw AW inject: YES
+post_inject die_b DUMP base=0x2D001000 n=32 b0008000 b0008001 b0008002 b0008003 8e770004 8e770005 8e770006 8e770007 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+import sys
+def w(s): return [x for x in s.split() if len(x)==8 and all(c in "0123456789abcdef" for c in x)]
+a,b=w(sys.argv[1]),w(sys.argv[2])
+if not a or not b or len(a)!=len(b):
+    print("  LOCALMEM: unavailable/length mismatch — cannot diff"); raise SystemExit
+ch=[i for i in range(len(a)) if a[i]!=b[i]]
+print("  LOCALMEM changed idx %s"%(ch if ch else "NONE"))
+for i in ch[:8]: print("    idx%-3d 0x%s -> 0x%s"%(i,a[i],b[i]))
+if ch:
+    print("  => writes DID land on die_b in THIS run, while die_a's frozen state shows")
+    print("     sub_aw_accept=0 for the wedge write. Landed writes and the wedge write")
+    print("     are DIFFERENT writes — now a single-run fact, not a cross-run inference.")
+else:
+    print("  => NOTHING landed in this run; the landed-vs-wedge reconciliation does NOT")
+    print("     hold here and must not be asserted from the earlier batch.")
+ILA_DEV: xck26_0
+ILA_CORE: hw_ila_1
+TRIG_STATUS: unavailable (CORE_STATUS not a property on this hw_ila)
+CAPTURE_DONE csv=/tmp/ila_capture.csv
+== ARMING DECISION ==
+import csv,sys
+rows=list(csv.DictReader(open(sys.argv[1])))
+if not rows: print("empty CSV"); sys.exit()
+cols=list(rows[0].keys())
+def col(n):
+    for c in cols:
+        if n in c.lower(): return c
+    return None
+def val(r,c):
+    # Vivado ILA CSV encodes multi-bit probes as HEX, unprefixed and quoted:
+    # '015fc' '01600' ... An all-DIGIT hex value ('01600') is indistinguishable
+    # from decimal by inspection, so a base-10-first parser silently returns 1600
+    # where the true value is 0x1600 = 5632. That fabricated a 100-point "sawtooth"
+    # in a counter that is actually a clean monotonic +1/clock ramp, and the fake
+    # sawtooth was then used to argue a mechanism. PARSE HEX FIRST, ALWAYS.
+    if c is None: return None
+    s=str(r[c]).strip().strip("'")
+    if s.lower().startswith("0x"): s=s[2:]
+    try: return int(s,16)
+    except: return None
+NAMES=['synth_b_pending','sub_osr_ctr_r','sub_wr_os_ctr','sub_axi_progress','sub_r_done',
+       'sub_b_done','sub_wr_stuck_fire','dbg_ahb_sub_hreadyout','sub_axi_outstanding',
+       'sub_err1_r','sub_rd_os_r','sub_osr_expired','sub_aw_accept','sub_stall_ctr_r',
+       # round-2: the :1909 override terms themselves, to say WHICH one gates
+       'dbg_wr_hold_r','dbg_wr_hold_set','dbg_wr_hold_clr','dbg_ext_is_nonseq',
+       'dbg_pipe_valid_r','dbg_rd_pipe_r']
+C={n:col(n) for n in NAMES}
+missing=[n for n,c in C.items() if c is None]
+if missing: print("  PROBES MISSING FROM CSV:", missing)
+print("  samples=%d"%len(rows))
+# window summary — this is what answers the question, not a single sample
+for n in NAMES:
+    c=C[n]
+    if c is None: continue
+    vs=[val(r,c) for r in rows]; vs=[v for v in vs if v is not None]
+    if not vs: continue
+    print("  %-24s min=%-8s max=%-8s ones=%-6s distinct=%s"%(n,min(vs),max(vs),sum(1 for v in vs if v),len(set(vs))))
+sb=[val(r,C['synth_b_pending']) for r in rows] if C['synth_b_pending'] else []
+sb=[v for v in sb if v is not None]
+print()
+if sb and max(sb)==0:
+    print("  => synth_b_pending NEVER ASSERTS across the captured window.")
+    print("     Consistent with ARMING STARVATION: the :1667 `|| sub_axi_progress`")
+    print("     term keeps resetting the age timer. Check sub_osr_ctr_r max vs the")
+    print("     2**16 threshold and which of sub_r_done / sub_b_done is pulsing.")
+elif sb:
+    print("  => synth_b_pending ASSERTS (ones=%d). synth-B ARMED and the wedge"%sum(1 for v in sb if v))
+    print("     persisted anyway -> the synthetic B did not retire die_a's PS write.")
+    print("     DIFFERENT defect from arming starvation; head-of-line timer is NOT the fix.")
+else:
+    print("  => synth_b_pending not readable — cannot decide. Do not infer.")
+
+# ---- round-2: WHICH :1909 override term gates ahb_sub_hreadyout low? ----
+# Priority order in the mux: rank3 (ext_is_nonseq && !pipe_valid_r) BEFORE
+# rank5 (wr_hold_r). If both hold, rank3 is the operative selector and wr_hold_r
+# is a passenger — so pipe_valid_r, not wr_hold_r, is the discriminator.
+def ser(n):
+    c=C.get(n) or col(n)
+    if c is None: return None
+    return [v for v in (val(r,c) for r in rows) if v is not None]
+pv, wh, ws, wc, en, rp = (ser(x) for x in
+    ['dbg_pipe_valid_r','dbg_wr_hold_r','dbg_wr_hold_set','dbg_wr_hold_clr',
+     'dbg_ext_is_nonseq','dbg_rd_pipe_r'])
+print()
+print("  OVERRIDE-TERM VERDICT")
+if not pv or not wh:
+    print("    round-2 probes absent from this CSV — this is a round-1 capture.")
+else:
+    print("    pipe_valid_r  ones=%d/%d   ext_is_nonseq ones=%s"%(sum(1 for v in pv if v),len(pv), sum(1 for v in en if v) if en else '?'))
+    print("    wr_hold_r     ones=%d/%d   set=%s clr=%s"%(sum(1 for v in wh if v),len(wh),
+          sum(1 for v in ws if v) if ws else '?', sum(1 for v in wc if v) if wc else '?'))
+    print("    rd_pipe_r     ones=%s"%(sum(1 for v in rp if v) if rp else '?'))
+    rank3 = en and pv and all(v==0 for v in pv) and any(v for v in en)
+    if rank3:
+        print("    => RANK3 GATES: (ext_is_nonseq && !pipe_valid_r). pipe_valid_r stuck LOW —")
+        print("       the pipe never fills. Root is UPSTREAM of wr_hold_r, which is a passenger")
+        print("       even if it also reads 1. Do NOT attribute this to TL-002 on that basis.")
+    elif all(v for v in wh) and wc and not any(v for v in wc):
+        print("    => RANK5 GATES: wr_hold_r stuck HIGH with wr_hold_clr never asserting.")
+        print("       TL-002 IMPLICATED: its guard clears on synth_b_pending, which cannot")
+        print("       assert here (no AW counted). Deadlock is the :1828-1834 case its own")
+        print("       guard does not cover. Check before signing TL-002 off.")
+    elif ws and any(v for v in ws) and not any(v for v in wh):
+        print("    => wr_hold_set pulses but wr_hold_r never latches — neither rank3 nor rank5.")
+        print("       Fall back to rd_pipe_r / re-check the mux.")
+    else:
+        print("    => AMBIGUOUS on these values. Report raw, do not force a branch.")

@@ -1,0 +1,171 @@
+diff --git a/src/rtl/tidelink_top.sv b/src/rtl/tidelink_top.sv
+index 23428f2..3e41cd3 100644
+--- a/src/rtl/tidelink_top.sv
++++ b/src/rtl/tidelink_top.sv
+@@ -1528,6 +1528,7 @@ module tidelink_top #(
+     // the always_ff that assigns them).
+     logic [11:0]                           sub_wr_awid_r;
+     logic                                  synth_b_pending;
++    logic                                  synth_b_holdclr_only_r; // TL-042: armed to release wr_hold only
+     logic                                  sub_err1_r, sub_err2_r;
+     // Front-end is holding HREADYOUT low (a transfer is in flight and not
+     // progressing): the pipeline-fill stall cycle OR — the case that actually
+@@ -1573,6 +1574,17 @@ module tidelink_top #(
+     wire sub_axi_outstanding = sub_rd_os_r | (sub_wr_os_ctr != 3'd0);
+     wire sub_axi_progress    = sub_r_done | sub_b_done;
+     wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
++    // ── TL-035/H2 die_a ILA probe set (2026-08-13) ───────────────────────────
++    // Purpose: decide WHY synth-B never arms on a lost-completion wedge. The
++    // top-level split is synth_b_pending: never-asserts => arming-starved (the
++    // `|| sub_axi_progress` reset at :1667 keeps rearming the stuck write's
++    // timer via reads and SIBLING write-Bs); asserts-but-still-wedged => the
++    // synthetic B does not retire die_a's PS write. Those imply different fixes,
++    // which is why this is measured rather than argued.
++    // sub_r_done and sub_b_done are probed SEPARATELY (not just their OR in
++    // sub_axi_progress) so we can SEE which one is doing the resetting.
++    // Remove these attrs before any non-ILA build — a marked net that later
++    // constant-folds aborts impl with Chipscope 16-213.
+ 
+     always_ff @(posedge hclk or negedge hresetn) begin
+         if (!hresetn) begin
+@@ -1854,15 +1866,72 @@ module tidelink_top #(
+     // XHB500 completes its pending write with SLVERR through its OWN response path
+     // (a LEGAL 2-cycle AHB ERROR in the transfer's data phase = F-1) and re-idles
+     // (= F-2). The real B was permanently lost, so there is no collision.
+-    wire sub_wr_stuck_fire = (sub_osr_expired | sub_stall_expired)
+-                             & (sub_wr_os_ctr != 3'd0);
++    // ── TL-042-CLASS FIX (2026-08-13): arm on the CONSEQUENCE, not on a proxy ──
++    // MEASURED ON SILICON (imp/hw_gate/ila_tl035_run_round2/ and the n=2 confirm,
++    // 43-probe die_a ILA, identical in both): at the wedge
++    //     wr_hold_r=1 (all 4096 samples)   wr_hold_clr=0   wr_hold_set=0
++    //     ext_is_nonseq=0  pipe_valid_r=0  rd_pipe_r=0  sub_err1_r=sub_err2_r=0
++    //     ahb_sub_hreadyout=0   sub_aw_accept=0   sub_wr_os_ctr=0
++    //     synth_b_pending=0     sub_stall_ctr_r ramping (bit[16] DOES set)
++    // Walking the :1909 mux, ranks 1-4 are all false, so rank5 wr_hold_r is the
++    // sole term driving hreadyout low. The loop is self-sustaining:
++    //     wr_hold_r=1 -> hreadyout low -> the PS write cannot proceed
++    //                 -> no AW reaches s_axi (sub_aw_accept=0) -> sub_wr_os_ctr=0
++    //                 -> the arm below needs (ctr != 0), so synth_b_pending=0
++    //                 -> wr_hold_clr (W-last | synth_b_pending) never asserts
++    //                 -> wr_hold_r stays 1 forever.
++    // Note sub_stall_expired DOES fire (the counter reaches 2**16) and arming
++    // still cannot happen — so `& (sub_wr_os_ctr != 0)` is the blocker, not the
++    // timers. This is TL-042's class exactly: the guard keys on a signal the
++    // wedge itself prevents from ever asserting.
++    //
++    // FIX: age the MEASURED deadlock state (held with nothing outstanding) and
++    // widen the arm with it, so the EXISTING synth_b_pending path clears
++    // wr_hold_r. One lever covers both the wr_hold hang and the arm starvation;
++    // no new term is added to the hreadyout mux (that mux has now produced three
++    // guard failures, so it is deliberately left alone).
++    //
++    // WHY THIS CANNOT FIRE ON NORMAL BACKPRESSURE: in a healthy write, wr_hold_r
++    // sets and the AW is accepted within a handful of cycles, which makes
++    // sub_wr_os_ctr non-zero and RESETS this counter; the pre-existing paths then
++    // own the transaction. Only the stuck case — held with no AW ever accepted —
++    // is aged, and at 2**16 hclk (~0.65 ms @100MHz) that is ~4 orders of margin.
++    // NOTE ON ILA SCAFFOLDING: the 2026-08-13 captures marked this whole region
++    // with (* mark_debug *). Those attributes have been STRIPPED — a marked net
++    // that later constant-folds aborts impl with Chipscope 16-213 (cost six farm
++    // builds in June 2026), and the HW-validation build must differ from the
++    // known-good 08-09 baseline by the RTL fix ALONE to stay interpretable.
++    // To watch the fix work on silicon, re-mark wr_hold_stuck_expired and
++    // wr_hold_r in a THROWAWAY debug build: those two nets are the proof
++    // (expired firing, then the hold dropping). Do not ship that build.
++    logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] wr_hold_stuck_ctr_r;
++    wire wr_hold_stuck         = wr_hold_r && (sub_wr_os_ctr == 3'd0);
++    wire wr_hold_stuck_expired = wr_hold_stuck_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
++    always_ff @(posedge hclk or negedge hresetn) begin
++        if (!hresetn)                     wr_hold_stuck_ctr_r <= '0;
++        else if (!wr_hold_stuck)          wr_hold_stuck_ctr_r <= '0;  // AW accepted, or hold released
++        else if (!wr_hold_stuck_expired)  wr_hold_stuck_ctr_r <= wr_hold_stuck_ctr_r + 1'b1;
++    end
++
++    wire sub_wr_stuck_fire =
++                               ((sub_osr_expired | sub_stall_expired) & (sub_wr_os_ctr != 3'd0))
++                             | wr_hold_stuck_expired;   // TL-042 fix: the ctr==0 deadlock
+     always_ff @(posedge hclk or negedge hresetn) begin
+         if (!hresetn) begin
+-            sub_wr_awid_r   <= '0;
+-            synth_b_pending <= 1'b0;
++            sub_wr_awid_r          <= '0;
++            synth_b_pending        <= 1'b0;
++            synth_b_holdclr_only_r <= 1'b0;
+         end else begin
+             if (sub_aw_accept) sub_wr_awid_r <= s_axi_awid;
+             if (sub_wr_stuck_fire)                            synth_b_pending <= 1'b1;
++            // TL-042: remember WHY we armed. Set only when the new hold-breaker
++            // arm fires with nothing outstanding — i.e. the measured deadlock,
++            // where the point is to release wr_hold_r and NOT to answer a write
++            // XHB500 never issued. The original arm (which requires ctr != 0)
++            // leaves this clear, so Fix K / F-1 / F-2 behaviour is unchanged.
++            if (sub_wr_stuck_fire)
++                synth_b_holdclr_only_r <= wr_hold_stuck_expired
++                                        & ~((sub_osr_expired | sub_stall_expired) & (sub_wr_os_ctr != 3'd0));
+             // DRAIN: inject one OKAY B per outstanding write until sub_wr_os_ctr
+             // reaches 0 — clear on the beat that retires the LAST one (ctr<=1 with a
+             // handshake this cycle). One synthetic B per stuck write => all N complete,
+@@ -1870,7 +1939,26 @@ module tidelink_top #(
+             else if (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)) synth_b_pending <= 1'b0;
+         end
+     end
+-    assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
++    // TL-042 fix companion (2026-08-13) — DO NOT PRESENT A B FOR A WRITE THAT WAS
++    // NEVER ISSUED, but do not disturb Fix K either.
++    //
++    // We drive s_axi_bvalid as the SUBORDINATE toward XHB500 (the AXI manager on
++    // this face). The widened arm can set synth_b_pending in the deadlock state,
++    // where sub_wr_os_ctr == 0 means XHB500 has no outstanding write on s_axi —
++    // injecting a B there responds to a transaction that does not exist.
++    //
++    // FIRST ATTEMPT WAS WRONG AND IS RECORDED HERE SO IT IS NOT RETRIED: gating on
++    // `(sub_wr_os_ctr != 0)` at injection time REGRESSED Fix K
++    // (test_axi_bid_corrupt_recovers_fixk FAILED, suite 8/9). In the bid-corrupt
++    // case b_done pulses DECREMENT sub_wr_os_ctr to 0 while a hazard entry is
++    // still stuck, so Fix K legitimately needs the synthetic B injected at ctr==0.
++    // A ctr-based guard cannot tell the two cases apart.
++    //
++    // Gate on the ARM SOURCE instead. synth_b_holdclr_only_r is set only when the
++    // NEW arm fires in the deadlock state; the original F-1/F-2/Fix-K arm never
++    // sets it, so those paths are bit-for-bit unchanged.
++    assign s_axi_bvalid = s_axi_bvalid_ctrl
++                        | (synth_b_pending & ~synth_b_holdclr_only_r);
+     assign s_axi_bresp  = synth_b_pending ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
+     // ── Fix K (2026-08-05): XHB500 hazard-list BID-CORRECTION ─────────────────
+     // XHB500 frees a BUFFERABLE (EWR) write from its hazard list ONLY when the
+@@ -1901,6 +1989,35 @@ module tidelink_top #(
+                                rd_pipe_r                        ? 1'b0 :
+                                wr_hold_r                        ? 1'b0 :   // Rank 1: hold write completion until the W beat lands
+                                xhb_sub_hreadyout_raw;
++    // TL-035/H2 ILA trigger alias (2026-08-13). ahb_sub_hreadyout is an output
++    // PORT, so it cannot carry mark_debug directly; probe a local alias instead.
++    // Sustained-low on this net is the wedge witness the capture triggers on —
++    // it is the PS-facing stall, i.e. exactly what "die_a is hung" means.
++    wire dbg_ahb_sub_hreadyout = ahb_sub_hreadyout;
++    // ── Round 2 (2026-08-13): WHICH :1909 override term holds hreadyout low? ──
++    // Round 1 measured the consequence (hreadyout=0) but none of the terms, so it
++    // could not say which one is the gate. sub_err1_r measured 0 (ruled out) and
++    // sub_err2_r drives 1'b1 so cannot be the low-driver (ruled out by inspection).
++    // Two live candidates remain, and MUX PRIORITY MATTERS:
++    //   rank3  (ext_is_nonseq && !pipe_valid_r)
++    //   rank5  wr_hold_r
++    // If BOTH hold, rank3 is the operative selector and wr_hold_r is a passenger —
++    // so probing wr_hold_r alone would yield a true-but-misleading attribution.
++    // pipe_valid_r is the discriminator:
++    //   pipe_valid_r stuck LOW            => rank3 is the gate; the pipe never
++    //                                        fills; root is UPSTREAM of wr_hold.
++    //   pipe_valid_r toggling/high AND
++    //   wr_hold_r stuck HIGH, clr=0       => wr_hold_r is the gate; TL-002's own
++    //                                        guard cannot fire here (it clears on
++    //                                        synth_b_pending, which cannot assert
++    //                                        when no AW was ever counted).
++    //   wr_hold_set pulsing, r not latching => a different term; check rd_pipe_r.
++    wire dbg_wr_hold_r     = wr_hold_r;
++    wire dbg_wr_hold_set   = wr_hold_set;
++    wire dbg_wr_hold_clr   = wr_hold_clr;
++    wire dbg_ext_is_nonseq = ext_is_nonseq;
++    wire dbg_pipe_valid_r  = pipe_valid_r;
++    wire dbg_rd_pipe_r     = rd_pipe_r;
+     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
+     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
+     assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 : xhb_sub_hresp_raw;

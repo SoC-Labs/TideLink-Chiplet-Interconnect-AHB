@@ -1,0 +1,5 @@
+arm=baseline
+errinject_rc=1
+die_a_post=DOWN
+die_b_post=UP
+finished=2026-08-13T21:30:12Z

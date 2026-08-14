@@ -96,6 +96,36 @@ LL_ENABLE      = 0x00027F07
 
 FCSM_LINK_IDLE = 4                 # link-up criterion (bilateral)
 
+# --- TL-018: link-CRC checking on the five AXI data-plane FC nodes ------------
+# Each Wlink FC node has SM Control at base+0x14 with bit[16] = `disable_crc`,
+# and a 16-bit RO CRC-error counter at base+0x20 (docs/REGISTER_MAP.md §2.3).
+# Bases are in the Wlink bank, so they are reachable through this same backdoor
+# (the map span already covers 0x0000-0x3FFF).
+#
+# WHY THIS IS HERE. The five AXI nodes ship with checking DISABLED — the FPGA
+# flist pulls src/rtl/local_overrides/WlinkGenericFCSM{,_1..4}.v, whose reset
+# value is `out_prepend_swi_disable_crc <= 1'h1` (:747 / :725). With that bit
+# set, `crc_corrupt` is forced 0, so a bit-flip anywhere in a packet's app
+# payload — peer WRITE DATA, read data, address, BID/BRESP — is accepted
+# silently: no counter moves, no NACK is sent, nothing is replayed, and the AHB
+# master is told the access SUCCEEDED. Sim-proven both ways, 2026-08-14:
+#   test_crc_off_silently_corrupts_write_data -> wrong word in peer memory
+#   test_crc_on_detects_write_data_corruption -> detected, NACK'd, byte-exact
+# (cocotb/tidelink_axi_datanode_recovery, `make gaps_crc`).
+#
+# The `report` default below only READS. It is deliberately not `on`: enabling
+# checking arms the NACK/replay path, and the ONE time an enabled CRC has run on
+# a live link (2026-06-14, Z2 pair) it saturated crc_errors and parked the FCSM
+# in SEND_NACK — which the 2026-07-21 root-cause concluded was the CRC correctly
+# catching REAL corruption on a marginal eye, not a false fire. On a bad eye,
+# `on` converts silent corruption into a visible stall, which is the right trade
+# for a research chip but is NOT free. Ratify it with a soak before defaulting.
+FC_AXI_NODES = (("AW", 0x1000), ("W", 0x1100), ("B", 0x1200),
+                ("AR", 0x1300), ("R", 0x1400))
+FC_SM_CONTROL   = 0x14             # [16] disable_crc (RW)
+FC_CRC_ERRORS   = 0x20             # [15:0] CRC errors seen (RO)
+FC_DISABLE_CRC_BIT = 16
+
 # Map span from TLAPB_SOC_BASE: 16 KB covers the highest offset we touch (0x2108).
 _MAP_SPAN = 0x4000
 _ROLE_NAMES = {"die_a": (ROLE_CFG_MASTER_LOCK, 0, "master/grandmaster"),
@@ -169,7 +199,68 @@ def print_status(bd, prefix=""):
     return st
 
 
-def bringup(bd, role, cal_timeout, converge_timeout):
+def crc_state(bd):
+    """Read SM Control[16] + the CRC-error counter for the five AXI data nodes.
+
+    Pure reads of the Wlink bank; no side effects. Returns a list of
+    (name, base, sm_control, checking_enabled, crc_errors)."""
+    out = []
+    for name, base in FC_AXI_NODES:
+        sm = bd.rd(_WLINK_BANK + base + FC_SM_CONTROL)
+        ce = bd.rd(_WLINK_BANK + base + FC_CRC_ERRORS) & 0xFFFF
+        out.append((name, base, sm, not (sm >> FC_DISABLE_CRC_BIT) & 1, ce))
+    return out
+
+
+def print_crc_state(bd, prefix=""):
+    """Report the AXI data plane's link-CRC state. TL-018: this is invisible on
+    every existing bring-up path — the user-guide's 'CRC clean' check reads only
+    the TideLink node (0x1720 = FCSM_6), which is the ONE node that already
+    resets with checking on, so it says nothing about the AXI data path.
+
+    INSTRUMENT CAVEAT (verify the instrument before the DUT): `crc_errors` is
+    force-zeroed on every io_rx_clk edge where the demetted app enable is low
+    (WlinkGenericFCSM.v:761-763), so `crc_errors == 0` does NOT prove no error
+    ever fired. Read `checking` first: while checking=off the counter is pinned
+    at 0 BY CONSTRUCTION and carries no information at all."""
+    st = crc_state(bd)
+    n_on = sum(1 for _, _, _, en, _ in st)
+    print("%sAXI data-plane link CRC (TL-018):" % prefix)
+    for name, base, sm, en, ce in st:
+        print("%s   %-2s @0x%04X  SM_CONTROL=0x%08X  checking=%-3s  crc_errors=%d%s"
+              % (prefix, name, base, sm, "ON" if en else "OFF", ce,
+                 "  (pinned 0: checking off)" if not en else ""))
+    if n_on == 0:
+        print("%s   => ALL FIVE AXI NODES HAVE CRC CHECKING OFF. A corrupted "
+              "payload byte is accepted SILENTLY: no counter, no NACK, no "
+              "replay, and the master is told the access succeeded." % prefix)
+    elif n_on < len(st):
+        print("%s   => MIXED (%d/%d on). The link is only as trustworthy as its "
+              "weakest node." % (prefix, n_on, len(st)))
+    return st
+
+
+def set_crc_check(bd, on):
+    """Clear (on=True) or set (on=False) `disable_crc` on the five AXI FC nodes,
+    with a read-back verify per node. Returns True if every node took the write.
+
+    Read-modify-write: SM Control also holds link_en_wait[7:0] and
+    ack_dly_count[15:8], and `ack_dly_count=4` is HW-validated — a blind write
+    would silently re-time the link."""
+    ok = True
+    for name, base, sm, en, _ in crc_state(bd):
+        want = (sm & ~(1 << FC_DISABLE_CRC_BIT)) if on else (sm | (1 << FC_DISABLE_CRC_BIT))
+        if want != sm:
+            bd.wr(_WLINK_BANK + base + FC_SM_CONTROL, want)
+        got = bd.rd(_WLINK_BANK + base + FC_SM_CONTROL)
+        good = ((got >> FC_DISABLE_CRC_BIT) & 1) == (0 if on else 1)
+        print("   %-2s @0x%04X  0x%08X -> 0x%08X (readback 0x%08X) %s"
+              % (name, base, sm, want, got, "OK" if good else "*** WRITE DID NOT TAKE ***"))
+        ok = ok and good
+    return ok
+
+
+def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report"):
     cfg, want_eff, human = _ROLE_NAMES[role]
     print("=== eth-chiplet TideLink bring-up: %s (%s) ===" % (role, human))
     print("--- initial status ---")
@@ -248,6 +339,26 @@ def bringup(bd, role, cal_timeout, converge_timeout):
     print_status(bd, "   ")
     if ok:
         print("RESULT: LINK UP — %s reached FCSM=4 (LINK_IDLE), cal_done=1." % role)
+
+        # 4b. TL-018 — AXI data-plane link-CRC checking. Sequenced HERE, after
+        #     FCSM=4 and before any data traffic: CR/CRACK are short packets and
+        #     carry no CRC at all, so nothing before this point is affected, and
+        #     the first DATA packet is the first one that can be checked.
+        #     `report` (the default) only reads.
+        print("--- 4b. AXI data-plane link CRC (TL-018), mode=%s ---" % crc_check)
+        if crc_check in ("on", "off"):
+            want_on = crc_check == "on"
+            if not set_crc_check(bd, want_on):
+                print("WARNING: CRC-check write did not take on every AXI node. "
+                      "The data plane is in a MIXED state — see the report below.")
+        print_crc_state(bd, "   ")
+        if crc_check == "on":
+            print("   NOTE: checking is now ARMED. A real corruption will now NACK "
+                  "and replay instead of committing silently. On a marginal eye "
+                  "that can present as a stalled link (2026-06-14 Z2: crc_errors "
+                  "saturated, FCSM parked in SEND_NACK) — that is the CRC doing "
+                  "its job, not a new defect. Watch crc_errors AND fcsm together.")
+
         # 5. poll the AUTONOMOUS re-anchor (EPOCH_STATUS 0x2140 bit0). The
         #    controller AUTO_ANCHOR beacon latches the deskew re-anchor within
         #    ~8s of link-up with NO manual pulse. It is a marginal-eye lottery
@@ -303,6 +414,15 @@ def main():
                     help="seconds to wait for calibration_done (default 20).")
     ap.add_argument("--converge-timeout", type=float, default=10.0,
                     help="seconds to wait for FCSM=4 after LL enable (default 10).")
+    ap.add_argument("--crc-check", choices=("report", "on", "off"), default="report",
+                    help="TL-018: link-CRC checking on the five AXI data-plane FC "
+                         "nodes. 'report' (default) only READS SM_CONTROL[16] and "
+                         "the CRC counters — the AXI nodes ship with checking OFF, "
+                         "which makes a corrupted payload byte a SILENT wrong "
+                         "value in peer memory. 'on' clears disable_crc on all "
+                         "five (detect + NACK + replay; sim-proven byte-exact, "
+                         "NOT yet ratified on hardware). 'off' restores the "
+                         "shipping default.")
     args = ap.parse_args()
 
     if os.geteuid() != 0:
@@ -321,12 +441,14 @@ def main():
             print("=== eth-chiplet TideLink status (read-only) @ window 0x%X ===" % wb)
             print("(This is the SAFE aliveness check: reads only RO APB registers.)")
             print_status(bd, "   ")
+            print_crc_state(bd, "   ")
             print("Run with --bringup --role die_a|die_b to bring the link up.")
             return 0
         if not args.role:
             print("ERROR: --bringup requires --role die_a|die_b.", file=sys.stderr)
             return 4
-        return bringup(bd, args.role, args.cal_timeout, args.converge_timeout)
+        return bringup(bd, args.role, args.cal_timeout, args.converge_timeout,
+                       args.crc_check)
     finally:
         bd.close()
 

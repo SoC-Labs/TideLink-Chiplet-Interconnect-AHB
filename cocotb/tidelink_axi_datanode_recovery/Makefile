@@ -148,9 +148,30 @@ writehold_prefix:
 	$(MAKE) SIM_BUILD=sim_build_writehold_prefix MODULE=test_axi_datanode_writehold \
 	        EXTRA_DEFINES=+define+TIDELINK_DISABLE_WR_HOLD TESTCASE=$(T)
 
+# TL-042 v2 — wr_hold_r starvation escape (the self-latch measured on die_a,
+# imp/hw_gate/ila_tl035_run_round2/). SHORT backstop threshold so the 2**16 age
+# fits in a sim; TL042_TIMEOUT_LOG2 must match the define. Own sim_build, one
+# test per sim (a second run_bringup_full does not re-POR cleanly).
+#   escape...  (a) hold escapes, (b) NOT via synth_b_pending and no synthetic B,
+#              (c) a normal peer write still lands byte-exact afterwards.
+#              FAILS on pre-TL-042-v2 RTL at (a) = the non-vacuity contract.
+#   live_write safety: the escape is unreachable by a write whose AW was accepted
+#              (constraint 1). Post-fix only; not an A/B discriminator.
+TL042V2_LOG2  ?= 13
+TL042V2_TESTS := test_tl042_v2_escape_is_clean_and_writes_still_land \
+                 test_tl042_v2_live_write_is_never_released \
+                 test_tl042_v2_escape_with_stalled_bridge
+.PHONY: tl042v2 $(TL042V2_TESTS)
+$(TL042V2_TESTS):
+	TL042_TIMEOUT_LOG2=$(TL042V2_LOG2) $(MAKE) SIM_BUILD=sim_build_tl042v2 \
+	        MODULE=test_axi_datanode_writehold \
+	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=$(TL042V2_LOG2) \
+	        TESTCASE=$@
+tl042v2: ; @for t in $(TL042V2_TESTS); do $(MAKE) $$t || exit 1; done
+
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
-	       sim_build_writehold* $(LOCAL_FLIST)
+	       sim_build_writehold* sim_build_tl042v2* $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification
@@ -187,7 +208,21 @@ GAPS_ECC_TESTS := test_ecc_corrects_w_byte0 test_ecc_corrects_aw_byte0 \
                   test_ecc_corrects_b_byte1_wordcount \
                   test_ecc_persistent_w_byte0_byte_exact
 
-.PHONY: gaps gaps_nodes gaps_backstop gaps_ecc $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS) $(GAPS_ECC_TESTS)
+# TL-018 link-CRC A/B on the WRITE-DATA (W, 0x81) node. The two tests differ
+# ONLY in `crc_on`, so the pair is its own non-vacuity control:
+#   crc_off -> wrong word lands in peer memory, master sees SUCCESS, crc_errors=0
+#   crc_on  -> detected, NACK'd, replayed, byte-exact
+# Default 2^16 I5 timeout on purpose: this must be the CRC/NACK path recovering,
+# not a backstop masking it. Shares the GAP-1 sim_build (same compile).
+GAPS_CRC_TESTS := test_crc_off_silently_corrupts_write_data \
+                  test_crc_on_detects_write_data_corruption
+
+.PHONY: gaps gaps_nodes gaps_backstop gaps_ecc gaps_crc $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS) $(GAPS_ECC_TESTS) $(GAPS_CRC_TESTS)
+
+$(GAPS_CRC_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_gaps_nodes MODULE=test_axi_datanode_gaps TESTCASE=$@
+
+gaps_crc: ; @for t in $(GAPS_CRC_TESTS); do $(MAKE) $$t || exit 1; done
 
 # Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
 # via NACK/replay long before any backstop is relevant.

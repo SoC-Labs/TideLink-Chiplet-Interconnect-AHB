@@ -94,6 +94,16 @@ BYTE_PKTNUM = 4    # header pktnum -> isNotExpPacket (detected with CRC on OR of
 # (docs/AXI_DATANODE_RECOVERY_AMPLIFIER_SOUND_2026_08_01.md:232, byte 0 +
 # --stream 0) — the failure mode Fix G's NACK/replay is structurally blind to.
 BYTE_DATA_ID = 0
+# TL-018. LL wire format is `data_id | word_count[15:0] | ECC | ll.data[..] | CRC`
+# (docs/CRC_ROOTCAUSE.md §1). `ll.data` starts at byte 4 and is
+# `{app_data, pkt_num[7:0]}`, so byte 4 is the FC packet number and byte 5 is
+# app_data[7:0] -- for the W node (0x81) that is the low byte of the AXI WRITE
+# DATA itself. The 16-bit CRC covers `ll.data` and NOTHING else: the header is
+# covered by the ECC byte, and there is no second check anywhere on app_data.
+# So byte 5 is the one byte in the packet whose ONLY integrity protection is the
+# link CRC -- corrupt it with `disable_crc=1` and the wrong word lands in peer
+# memory with no counter, no NACK and no error to the AHB master.
+BYTE_PAYLOAD = 5
 
 
 # ── hierarchy / force helpers (kept local: importing a module that defines
@@ -435,6 +445,72 @@ async def test_axi_aw_error_recovers(dut):
 async def test_axi_w_error_recovers(dut):
     """GAP-1 / W (0x81) — write DATA path."""
     _assert_recovered(await _run_node_scenario(dut, "W"))
+
+
+# --- TL-018: link CRC OFF = SILENT WRITE-DATA CORRUPTION (A/B pair) ----------
+# The five AXI FC nodes ship with link CRC CHECKING DISABLED on the FPGA line
+# (src/rtl/local_overrides/WlinkGenericFCSM{,_1..4}.v `out_prepend_swi_disable_crc
+# <= 1'h1`), while the ASIC line pulls the deps copies, which reset to 1'h0 (ON).
+# The bit is RW at SM Control[16] of each node (AW 0x1014 / W 0x1114 / B 0x1214 /
+# AR 0x1314 / R 0x1414, docs/REGISTER_MAP.md §2.3) and NOTHING in the shipping
+# bring-up writes it, so the FPGA runs with the check off.
+#
+# The companion suite's `test_axi_b_crc_{on,off}_*_payload` pair proves the
+# detector is dead on the B node — i.e. a corrupted write RESPONSE. This pair
+# raises it to the case that actually matters for a research chip: the corrupted
+# byte is the peer's WRITE DATA, and the master is told the write SUCCEEDED.
+#
+# Non-vacuity is structural, not asserted-by-hope: the two tests differ ONLY in
+# `crc_on`. Same node, same injected byte, same bit, same bring-up. If the OFF
+# arm ever stops corrupting, its `value_ok is False` assertion fails rather than
+# passing vacuously; if the ON arm ever stops detecting, `crc_errs_rose` fails.
+@cocotb.test()
+async def test_crc_off_silently_corrupts_write_data(dut):
+    """TL-018 NEGATIVE ARM (the shipping FPGA default). One single-bit error on
+    byte 5 of a W (0x81) packet — the AXI write data — with `disable_crc=1`.
+
+    The failure is SILENT on every channel the system can observe:
+      * the AHB master's write COMPLETES (class=RECOVER, no HRESP=ERROR),
+      * `crc_errors` never increments,
+      * no NACK is raised and nothing is replayed,
+      * and peer memory holds the WRONG WORD (`value_ok is False`).
+
+    That combination — success reported upstream, wrong data in memory, zero
+    error indication anywhere — is the whole of TL-018."""
+    o = await _run_node_scenario(dut, "W", crc_on=False, byte=BYTE_PAYLOAD)
+    assert o["value_ok"] is False, (
+        f"TL-018 negative arm is VACUOUS: the byte-{BYTE_PAYLOAD} W injection did "
+        f"NOT corrupt the landed write data, so 'silent corruption' is not being "
+        f"demonstrated. Re-derive the payload byte index before trusting the "
+        f"positive arm ({o})")
+    assert o["crc_errs_rose"] is False, f"CRC off but crc_errors rose ({o})"
+    assert o["nack_fired"] is False, f"CRC off but a NACK fired ({o})"
+    assert o["class"] == "RECOVER", (
+        f"the corrupted write did not complete cleanly upstream — if it ERRORed "
+        f"or WEDGED the corruption is at least visible, and TL-018 is weaker "
+        f"than claimed ({o})")
+    dut._log.info(f"[gaps] PASS(TL-018 neg): CRC off — peer memory holds the WRONG "
+                  f"word, the master saw SUCCESS, crc_errors=0, no NACK ({o})")
+
+
+@cocotb.test()
+async def test_crc_on_detects_write_data_corruption(dut):
+    """TL-018 POSITIVE ARM (the proposed bring-up default, SM Control[16]=0).
+    The SAME injection with `disable_crc=0` is DETECTED (`crc_errors` rises),
+    NACK'd, replayed, and the write lands BYTE-EXACT.
+
+    This is the arm that makes the fix a fix: not merely "an error is counted"
+    but "the correct data arrives", which is what a research chip's experiments
+    depend on."""
+    o = await _run_node_scenario(dut, "W", crc_on=True, byte=BYTE_PAYLOAD)
+    assert o["crc_errs_rose"] is True, f"CRC on did not detect the W payload error ({o})"
+    assert o["nack_fired"] is True,    f"CRC detected the error but no NACK fired ({o})"
+    assert o["class"] == "RECOVER",    f"CRC on but the write did not complete ({o})"
+    assert o["value_ok"] is True, (
+        f"CRC on detected+NACK'd but the replay did NOT restore the data — "
+        f"detection without correction ({o})")
+    dut._log.info(f"[gaps] PASS(TL-018 pos): CRC on — DETECTED, NACK'd, replayed, "
+                  f"peer memory byte-exact ({o})")
 
 
 # --- header-ECC RESTORE regression tests (2026-08-04) -------------------------

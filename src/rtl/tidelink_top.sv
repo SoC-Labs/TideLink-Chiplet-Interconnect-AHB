@@ -1671,8 +1671,29 @@ module tidelink_top #(
                 // F-1 FIX: READ-ONLY ERROR (see per-beat path above). A stuck
                 // WRITE is owned by synth-B (sub_wr_stuck_fire keys on the SAME
                 // expiry via sub_wr_os_ctr), so it must NOT also pulse HRESP.
-                if (sub_rd_os_r) sub_err1_r <= 1'b1;  // 2-cycle ERROR (read only)
-                sub_rd_os_r   <= 1'b0;                 // abandon the timed-out READ txn
+                // ── N1 FIX (2026-08-14, sim-reproduced) ──────────────────────
+                // The master-facing ERROR is gated `& ~synth_b_pending` at :1898
+                // /:1906. A COINCIDENT stuck read + stuck write expires this ONE
+                // shared timer together, so the write path sets synth_b_pending on
+                // the SAME cycle and MASKS the read's whole 2-cycle ERROR - while
+                // the old unconditional `sub_rd_os_r <= 1'b0` below abandoned the
+                // read anyway. Both ERROR fire sites (:1645 and here) are gated on
+                // sub_rd_os_r, so once it is cleared NEITHER backstop can ever fire
+                // for that read again: no ERROR, no retry, unrecoverable PS hang
+                // (sim-reproduced 2026-08-14, cocotb
+                // test_n1_read_backstop_defeat.py).
+                // Abandon the read ONLY when its ERROR will actually be VISIBLE:
+                // no synth-B drain in flight, and none about to arm on this same
+                // expiry (inside this branch sub_osr_expired==1, so
+                // sub_wr_stuck_fire reduces to sub_wr_os_ctr != 0). Otherwise keep
+                // sub_rd_os_r SET - the timer restarts, the synth-B drain retires
+                // the stuck writes, and the NEXT window delivers a legal, visible
+                // 2-cycle ERROR. Recovery is deferred by one timeout window
+                // instead of being lost forever.
+                if (sub_rd_os_r && (sub_wr_os_ctr == 3'd0) && !synth_b_pending) begin
+                    sub_err1_r  <= 1'b1;  // 2-cycle ERROR (read only)
+                    sub_rd_os_r <= 1'b0;  // abandon the timed-out READ txn
+                end
                 // SOAK-DRAIN FIX (2026-08-05): do NOT zero sub_wr_os_ctr here. The
                 // old zeroing abandoned all-but-one outstanding WRITE — synth-B
                 // fired ONCE — so a soak with N>=2 EWR (bufferable) writes stuck left

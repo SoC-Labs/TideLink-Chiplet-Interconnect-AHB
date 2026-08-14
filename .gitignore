@@ -229,3 +229,64 @@ fpga/targets/*/build_logs/
 # inventory of one site's licensed installation. site.env.example is the
 # tracked template; it carries placeholders only. See it for the full list.
 site.env
+
+# =============================================================================
+# EDA RUN DIRECTORIES — THE SUFFIXED VARIANTS  (added 2026-08-14)
+#
+# THIS REPOSITORY IS PUBLIC:
+#   github.com/SoC-Labs/TideLink-Chiplet-Interconnect-AHB
+#
+# The rules further up cover the flows whose run trees are spelled plainly, and
+# fusion-compiler and primetime already carry their `*` variants. The flows
+# below were still spelled bare, or not at all.
+#
+# WHY THE GLOB MATTERS. Every flow here takes a run suffix, so a real run lands
+# in `work_12t/` or `outputs_12t_flat/` — and a bare `work/` matches neither. A
+# vendor-derived netlist, .lib, .db or GDS sitting in an unignored run directory
+# is one `git add -A` away from publication, and an untracked file in a
+# directory nobody had ignored is exactly how this estate's two disclosures
+# happened. Verified with `git check-ignore` that none of these covers a file
+# tracked on this branch.
+# =============================================================================
+syn/asic/design-compiler/work*/
+syn/asic/design-compiler/libs*/
+syn/asic/design-compiler/logs*/
+syn/asic/design-compiler/reports*/
+syn/asic/design-compiler/outputs*/
+syn/asic/design-compiler/*_dc_output/
+syn/asic/design-compiler/*_dc_reports/
+syn/asic/rtl-architect/work*/
+syn/asic/rtl-architect/libs*/
+syn/asic/rtl-architect/logs*/
+syn/asic/rtl-architect/reports*/
+syn/asic/rtl-architect/outputs*/
+syn/asic/formality/work*/
+syn/asic/formality/logs*/
+syn/asic/formality/reports*/
+syn/asic/formality/outputs*/
+syn/asic/calibre/work*/
+syn/asic/calibre/logs*/
+syn/asic/calibre/reports*/
+syn/asic/calibre/outputs*/
+syn/asic/dft/work*/
+syn/asic/dft/logs*/
+syn/asic/dft/reports*/
+syn/asic/dft/outputs*/
+
+# Catch-all for a flow directory added after this list was written. The thing
+# that keeps being missed is the SUFFIX, not the flow name — so these match only
+# the suffixed spellings and leave a bare `scripts/` or `inputs/` alone.
+syn/asic/*/work_*/
+syn/asic/*/libs_*/
+syn/asic/*/logs_*/
+syn/asic/*/reports_*/
+syn/asic/*/outputs_*/
+
+# Simulator build products that carry a run suffix. The bare spellings (`simv`,
+# `csrc`, `xcelium.d`) are already above; these are the per-run variants a
+# parallel or multi-config regression leaves behind.
+**/simv*.daidir/
+**/csrc*/
+**/xcelium.d*/
+**/INCA_libs*/
+**/*.vdb/

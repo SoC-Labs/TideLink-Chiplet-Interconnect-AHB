@@ -63,15 +63,25 @@ redirect -tee -file ${fc_reports}/05_signoff.qor.rep {
     report_power
 }
 
+# `current_scenario` does NOT scope report_timing — 2026-08-14.
+#
+# Without an explicit `-scenarios`, report_timing reports the worst paths
+# across ALL active scenarios, so both per-scenario files ended up with
+# the same mixed path set and differed only in their banner line.
+# Measured on the 2026-06-03 reports: 05_signoff.scen_slow.setup.rep and
+# 05_signoff.scen_fast.setup.rep list identical Startpoint/Endpoint pairs
+# at identical line offsets (3 tagged "Scenario: scen_slow", 2 tagged
+# "Scenario: scen_fast" — in BOTH files). Anyone reading the scen_slow
+# file to check the slow corner was reading fast-corner paths.
 foreach scen $active_scenarios {
     current_scenario $scen
     redirect -tee -file ${fc_reports}/05_signoff.${scen}.setup.rep {
         puts "=== Scenario $scen — setup ==="
-        report_timing -delay_type max -nets -capacitance -max_paths 5
+        report_timing -scenarios $scen -delay_type max -nets -capacitance -max_paths 5
     }
     redirect -tee -file ${fc_reports}/05_signoff.${scen}.hold.rep {
         puts "=== Scenario $scen — hold ==="
-        report_timing -delay_type min -nets -capacitance -max_paths 5
+        report_timing -scenarios $scen -delay_type min -nets -capacitance -max_paths 5
     }
 }
 

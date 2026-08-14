@@ -284,7 +284,43 @@ puts $sfp "  ----------------------  -------  --------------------------------"
 summarise_check pre_netlist         1
 summarise_check pre_designdata      1
 summarise_check pre_signoff         0
-summarise_check pre_timing          0
+
+#-----------------------------------------------------------------------------
+# pre_timing (check_timing) needs its OWN scoring rule — 2026-08-14.
+#
+# summarise_check only looks for a "Total N EMS messages : N errors" line.
+# check_timing does not emit one, so it fell through to the generic
+# `rc == 0 -> PASS "completed"` branch. On the shipping 2026-06-03 build
+# that scored PASS while the very same report contained:
+#     TCK-001  48357  unconstrained endpoints
+#     TCK-012    608  input ports with no clock-relative delay
+#                     (607 of them in Corner 'slow' — the setup-signoff
+#                      corner — and 1 in 'fast')
+# check_timing is THE check that would have caught the scen_slow
+# zero-uncertainty / zero-I/O-delay defect on the day it appeared. It has
+# to be scored on its own counters.
+#
+# Thresholds are deliberately absolute, not ratcheted: any register clock
+# pin with no fanin clock (TCK-002) and any undelayed input port
+# (TCK-012) is a real signoff hole. TCK-001 is reported but not gated —
+# it is dominated by legitimately case-constant endpoints (41863 of
+# 48357 on the 2026-06 build) and needs a separate triage.
+#-----------------------------------------------------------------------------
+if {[info exists drc_results(pre_timing)]} {
+    lassign $drc_results(pre_timing) _pt_rc _pt_rpt
+    set _tck001 [grep_count $_pt_rpt {TCK-001\s+Warn\s+(\d+)} 0]
+    set _tck002 [grep_count $_pt_rpt {TCK-002\s+Warn\s+(\d+)} 0]
+    set _tck012 [grep_count $_pt_rpt {TCK-012\s+Warn\s+(\d+)} 0]
+    set _pt_bad [expr {$_tck002 + $_tck012}]
+    set _pt_detail "TCK-001 $_tck001 (ungated) / TCK-002 $_tck002 / TCK-012 $_tck012"
+    if {$_pt_bad == 0} {
+        summarise "pre_timing" "PASS" $_pt_detail 0
+    } else {
+        summarise "pre_timing" "FAIL" "$_pt_detail — unclocked regs / undelayed inputs" 1
+    }
+} else {
+    summarise_check pre_timing      0
+}
 summarise_check check_placement     1
 summarise_check check_mv_design     1
 summarise_check check_pin_placement 1

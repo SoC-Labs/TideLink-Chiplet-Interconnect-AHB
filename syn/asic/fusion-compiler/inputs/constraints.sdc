@@ -153,37 +153,32 @@ set_input_delay -clock pad_clk_rx -max  $RX_INPUT_DELAY_SYMM [get_ports {pad_rx[
 # needs the tighter window.
 set_input_delay -clock pad_clk_rx -min -0.4 [get_ports {pad_rx[*]}] -add_delay
 
-# ── §2. pad_rx[*] absolute per-lane pad→capture delay cap ────────────────
-# set_max_delay -datapath_only bounds the pure datapath delay (clock
-# skew and clock-tree latency excluded), so it expresses "no one lane's
-# pad→capture path may drift more than RX_DATAPATH_MAX_NS" without any
-# hold component — STA will not insert hold-fixing routing for it. This
-# is the canonical source-sync way to cap per-lane pad→capture delay
-# (Part B §3.2).
+# ═════════════════════════════════════════════════════════════════════════
+# ORDERING RULE (2026-08-14, blocker ASIC-3)
 #
-# Selector: capture flop is `link_data_pad_clk[*]` inside each per-lane
-# WavD2DGpioRx instance (gpiorx_0..7 in WavD2DGpio.v). Falls back to a
-# no-op (with a CRITICAL WARNING) if a future Wlink/Chisel regen renames
-# the cell — fail-safe, not a wrong constraint (Part B §8 risk 2).
-if {[sizeof_collection [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg*"}]] > 0} {
-    set_max_delay -datapath_only $RX_DATAPATH_MAX_NS \
-        -from [get_ports {pad_rx[*]}] \
-        -to   [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg*"}]
-} else {
-    puts "CRITICAL WARNING: pad_rx capture flop selector returned 0 cells — set_max_delay skipped. Check WavD2DGpioRx cell naming."
-}
+# read_sdc runs this file through fc_shell's *restricted* SDC interpreter,
+# not full Tcl. When any command in it errors, the interpreter STOPS at
+# that line and silently discards EVERYTHING BELOW IT (CMD-081 + SDC-5),
+# yet read_sdc still returns Tcl rc=0, so a `catch` around it does not
+# trip. That is a silent-constraint-loss trap.
+#
+# Therefore:
+#   1. This file contains PURE SDC only. No `-filter`, no `-quiet`, no
+#      `sizeof_collection`, no `foreach_in_collection`, no if/else that
+#      depends on a collection query. Anything needing full Tcl lives in
+#      1_init_design.tcl, applied per-scenario AFTER this overlay.
+#   2. The boundary I/O constraints (§2 TX eye, §3 PHC) are placed as
+#      EARLY as possible — directly after §1 — so that even a future
+#      parse abort further down cannot take the TX eye with it. That is
+#      exactly what happened between 2026-06 and 2026-08: the TX eye sat
+#      below a `get_cells -hier -filter` guard and was never applied to
+#      any build.
+#   3. The file ends with an explicit completion marker that
+#      1_init_design.tcl asserts on. Do not remove it.
+# ═════════════════════════════════════════════════════════════════════════
 
-# ── §3. Lane-bundle skew — set_data_check (ASIC form of set_bus_skew) ────
-# This is THE key fix per Part B §3.3 — it bounds the lane-to-lane
-# variance that *is* the determinism defect. set_data_check is a
-# *relative* (clock-vs-data) constraint with no absolute-window
-# component, so it cannot trigger per-endpoint hold-buffer insertion.
-# Splits into setup (data stable BEFORE strobe) and hold (data stable
-# AFTER strobe), each within RX_BUS_SKEW_NS.
-set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -setup $RX_BUS_SKEW_NS
-set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -hold  $RX_BUS_SKEW_NS
-
-# ── §4. TX eye — pad_tx[*] vs pad_clk_tx_fwd ─────────────────────────────
+# ── §2. TX eye — pad_tx[*] vs pad_clk_tx_fwd ─────────────────────────────
+#      (was §4; hoisted 2026-08-14 per the ORDERING RULE above)
 # pad_clk_tx_fwd is declared above (with the other create_clock /
 # create_generated_clock statements) so set_clock_groups can reference
 # it. Sourcing the generated clock from the user_ref_clk *port* (rather
@@ -205,13 +200,63 @@ set_data_check -from [get_ports pad_clk_rx] -to [get_ports {pad_rx[*]}] -hold  $
 set_output_delay -clock pad_clk_tx_fwd -max  $TX_OUTPUT_DELAY_SYMM [get_ports {pad_tx[*]}] -add_delay
 set_output_delay -clock pad_clk_tx_fwd -min -$TX_OUTPUT_DELAY_SYMM [get_ports {pad_tx[*]}] -add_delay
 
-# ── §5. phc_clk-domain output (PHC hw_capture handoff) ────────────────────
+# ── §3. phc_clk-domain output (PHC hw_capture handoff) ────────────────────
+#      (was §5; hoisted 2026-08-14 per the ORDERING RULE above)
 # 25% of clock period; pre-existing, unchanged by the CRITICAL #2 fix.
 # phc_seconds/phc_nanoseconds/phc_pps come IN through tidelink_phc_cdc
 # and are false-pathed by the clock-group declaration above.
 set_output_delay -clock phc_clk [expr 20.0 * 0.25] [get_ports phc_hw_capture] -add_delay
 
+# ── §4. pad_rx[*] per-lane pad→capture delay cap — MOVED TO TCL ───────────
+# Was, until 2026-08-14, an inline
+#   if {[sizeof_collection [get_cells -hier -filter {NAME =~ "..."}]] > 0} {
+#       set_max_delay -datapath_only $RX_DATAPATH_MAX_NS ... }
+# at this point in the file. fc_shell's SDC interpreter rejects `-filter`
+# (CMD-010) and then aborted the whole overlay at that line — killing the
+# TX eye (§2 above), the PHC output delay (§3) and the lane-skew check
+# (§5) in every build from 2026-06-03 onward.
+#
+# TWO further fc_shell incompatibilities make this constraint impossible
+# to express in SDC at all, so it cannot simply be reworded here:
+#   * `set_max_delay -datapath_only` is PrimeTime-only; fc_shell rejects
+#     it with CMD-010 (measured: logs_b10_datapath_only_20260601/
+#     1_init_design.log). The fc_shell equivalent is
+#     `-ignore_clock_latency`.
+#   * The selector needs `-hierarchical`; the `-filter` form is Tcl-only.
+#
+# It is therefore applied per-scenario from 1_init_design.tcl, in the
+# full-Tcl section after this overlay is read. See the block headed
+# "§4 (from constraints.sdc)" there. Value: RX_DATAPATH_MAX_NS = T_UI/5.
+
+# ── §5. Lane-bundle skew (set_data_check) — MOVED TO TCL ──────────────────
+# Was, until 2026-08-14:
+#   set_data_check -from [get_ports pad_clk_rx] \
+#                  -to [get_ports {pad_rx[*]}] -setup $RX_BUS_SKEW_NS
+# fc_shell's `set_data_check -to` accepts a SINGLE pin/port; a bus
+# collection trips CMD-013 "bad value specified for option -to". The
+# constraint must be issued one bit at a time, which needs
+# foreach_in_collection — full Tcl. Applied from 1_init_design.tcl.
+# Value: RX_BUS_SKEW_NS = T_UI/20.
+
 # NOTE: Wav demet-flop async-reset false_paths for the ASIC_TSMC65
 # substitution are NOT applied here — fc_shell's SDC parser rejects
 # sizeof_collection / -quiet. They are applied from 1_init_design.tcl
 # AFTER the SDC overlay is read, where full fc_shell Tcl is available.
+
+# ═════════════════════════════════════════════════════════════════════════
+# COMPLETION MARKER — asserted by 1_init_design.tcl.
+#
+# If the SDC interpreter aborts anywhere above, this line never executes,
+# the marker never appears in the redirected read_sdc log, and
+# 1_init_design.tcl aborts the run — instead of silently building with
+# half a constraint set (which is what happened for every build from
+# 2026-06-03 to 2026-08-14).
+#
+# It has to be a `puts`, not a `set`: measured 2026-08-14, variables
+# assigned inside read_sdc do NOT propagate to the calling Tcl scope, so
+# a sentinel variable cannot be tested from 1_init_design.tcl. `puts`
+# does work inside the SDC interpreter. Do not "simplify" this to a set.
+#
+# Do not move, rename, or delete.
+# ═════════════════════════════════════════════════════════════════════════
+puts "TIDELINK_SDC_OVERLAY_COMPLETE"

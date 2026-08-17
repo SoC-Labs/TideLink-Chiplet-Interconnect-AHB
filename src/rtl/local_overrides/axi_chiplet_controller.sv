@@ -2096,6 +2096,74 @@ module axi_chiplet_controller #(
         end
     end
 
+    // =========================================================================
+    // SoC Labs D2D rc=124 write-wedge ILA capture (2026-08-12)
+    //
+    // The initiator (die_a) AXI write burst hangs after an AW-node CRC -> NACK ->
+    // replay stall -> a2l_full=1 -> app_ready=0 -> PS AXI deadlock. When wedged,
+    // die_a's PS AXI is DEAD, so the APB obs registers (A2L_REPLAY_OBS 0x4403_2158,
+    // STATUS 0x4403_2010, credit 0x4403_200C/2028) FAULT on read — the decision-
+    // tree state must be captured over JTAG/ILA, not APB. These (* mark_debug *)
+    // alias wires expose the apb_clk-SYNCED obs snapshots (sync_obs_*_1, one
+    // coherent domain) to insert_debug_core.tcl, which groups by base name into
+    // one probe each and pins them DONT_TOUCH. Mirror-alias style matches the
+    // proven dbg_tx_* probes in tidelink_fc_adapter.sv (mark_debug alone is
+    // sufficient: each source reg already has a real logical sink — the APB read
+    // mux and, for app_v, the auto_anchor_tx_idle gate — so synth never prunes it).
+    //
+    // Frozen-at-wedge fingerprints (which frozen value discriminates which of the
+    // four candidate recovery-latch mechanisms):
+    //   mailbox-tear   : dbg_a2l_full=1 + dbg_a2l_sack a lap ahead (0x1f-class) of
+    //                    dbg_a2l_wptr (write ptr left behind)
+    //   a2l self-latch : dbg_a2l_full=1 + dbg_a2l_wptr/dbg_a2l_sack frozen while
+    //                    link keeps draining (dbg_a2l_lnk_empty context)
+    //   FCSM state-7   : dbg_fcsm_state==7 stuck + dbg_cr_seen=1 (CRC/NACK seen)
+    //   credit starve  : dbg_fcsm_state idle + dbg_fe_rx_cred==0 not replenishing
+    // The 4th mechanism's remaining taps (a2l_ack_valid / send_nack_req / wdog_cnt
+    // / auto_tx_out_advance) live inside WlinkGenericFCSM/FCReplay in the link/word
+    // clock domains with NO existing apb_clk obs sync — adding them would need new
+    // cross-domain plumbing, so they are deliberately SKIPPED here (see report).
+    // -------------------------------------------------------------------------
+    (* mark_debug = "true" *) wire [2:0] dbg_fcsm_state    = sync_obs_fcsm_state_1;
+    (* mark_debug = "true" *) wire       dbg_a2l_full      = sync_obs_a2l_full_1;
+    (* mark_debug = "true" *) wire       dbg_a2l_app_rdy   = sync_obs_a2l_app_rdy_1;
+    (* mark_debug = "true" *) wire       dbg_a2l_app_v     = sync_obs_a2l_app_v_1;
+    (* mark_debug = "true" *) wire [4:0] dbg_a2l_wptr      = sync_obs_a2l_wptr_1;
+    (* mark_debug = "true" *) wire [4:0] dbg_a2l_sack      = sync_obs_a2l_sack_1;
+    (* mark_debug = "true" *) wire       dbg_cr_seen       = sync_obs_cr_seen_1;
+    (* mark_debug = "true" *) wire [7:0] dbg_fe_rx_cred    = sync_obs_fe_rx_cred_1;
+    (* mark_debug = "true" *) wire       dbg_a2l_lnk_empty = sync_obs_a2l_lnk_empty_1;
+    (* mark_debug = "true" *) wire       dbg_a2l_rreset    = sync_obs_a2l_rreset_1;
+
+    // Wedge TRIGGER (apb_clk domain). Saturating counter of "write offered but
+    // stalled" (app_valid & ~app_ready). Cleared to 0 whenever app_ready is high
+    // (real forward progress as the replay FIFO drains), so a NORMAL transient
+    // app_ready=0 (FIFO momentarily full) can never reach threshold. Only a
+    // PERMANENT stall (the wedge) counts to 2^12 and latches dbg_a2l_wedged=1,
+    // giving the ILA one clean single-bit trigger (~82 us of zero-progress stall
+    // at 50 MHz apb_clk). Saturating idiom mirrors ws_abort_cnt_q; reset domain
+    // mirrors the sync_obs chain (posedge apb_clk / negedge hresetn).
+    reg [12:0]                dbg_a2l_stall_cnt_q;
+    (* mark_debug = "true" *) reg dbg_a2l_wedged;
+    always_ff @(posedge apb_clk or negedge hresetn) begin
+        if (!hresetn) begin
+            dbg_a2l_stall_cnt_q <= 13'd0;
+            dbg_a2l_wedged      <= 1'b0;
+        end else if (sync_obs_a2l_app_rdy_1) begin
+            // forward progress -> clear the stall accumulator and de-assert
+            dbg_a2l_stall_cnt_q <= 13'd0;
+            dbg_a2l_wedged      <= 1'b0;
+        end else begin
+            // app_ready low: accumulate only while a write is actually offered,
+            // saturating at 0x1FFF. Latch dbg_a2l_wedged once the count has
+            // crossed 2^12 (bit[12] set) — holds until app_ready returns.
+            if (sync_obs_a2l_app_v_1 && (dbg_a2l_stall_cnt_q != 13'h1FFF))
+                dbg_a2l_stall_cnt_q <= dbg_a2l_stall_cnt_q + 13'd1;
+            dbg_a2l_wedged <= dbg_a2l_stall_cnt_q[12];
+        end
+    end
+    // =========================================================================
+
     // Writeable Region-8 register storage. POR-only reset for
     // training-related state so it survives warm reset.
     wire region8_write = ctrl_reg_write && (ctrl_reg_addr[4:3] == 2'b10);

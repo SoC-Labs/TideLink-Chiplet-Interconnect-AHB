@@ -76,7 +76,13 @@ module WlinkGenericFCSM(
  `define SOCL_L7_MIN_CRACK_EMITS_VAL 8
 `endif
   localparam [7:0]  SOCL_L7_MIN_CRACK_EMITS = `SOCL_L7_MIN_CRACK_EMITS_VAL;
-  localparam [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000;
+  // TL-033 (2026-08-09): compile-overridable so the recovery-env white-box
+  // arming test can trip the state-7 backstop inside a sim-able window. Default
+  // is the silicon value 16'h4000 (16384 tx-clk cycles) -- silicon UNCHANGED.
+`ifndef SOCL_L7_WDOG_THRESHOLD_VAL
+ `define SOCL_L7_WDOG_THRESHOLD_VAL 16'h4000
+`endif
+  localparam [15:0] SOCL_L7_WDOG_THRESHOLD  = `SOCL_L7_WDOG_THRESHOLD_VAL;
   localparam [15:0] SOCL_REACK_THRESHOLD    = 16'h0100;
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -300,9 +306,37 @@ module WlinkGenericFCSM(
   // SoC Labs F-1 (Fix D): state-7 NACK watchdog (routing-insensitive backup).
   reg         socl_l7_real_crc_seen;
   reg  [15:0] socl_l7_wdog_cnt;
+  // TL-033 (2026-08-09) revert-aware state-7 watchdog. Fix D gated the backstop
+  // with `& ~socl_l7_real_crc_seen` so it would not stomp a legit in-progress
+  // NACK/replay. But real_crc_seen is a STICKY latch: the FIRST real CRC error
+  // sets it forever, so the backstop is DEAD for the rest of the session -- the
+  // exact condition (a real CRC error) under which a stuck state-7 must be
+  // caught. Replace the sticky proxy with an INSTANTANEOUS forward-progress
+  // proxy: a legit replay makes progress by actually EMITTING a NACK/word on the
+  // link (auto_tx_out_advance), which resets the dwell counter and so is never
+  // stomped; only a state-7 dwell with ZERO emit for THRESHOLD cycles (a genuine
+  // starvation hang) trips force_clear. The counter's existing `state != 3'h7`
+  // reset already covered the common 7->4->7 cycling; this keeps the same
+  // protection for a slow revert that legitimately lingers in state 7 while
+  // words are still being emitted. (isAckPacket was tried as an additional
+  // progress term but was too lenient: background ACKs on the shared ack/nack
+  // fifo kept the counter clear even under a genuine emit-stall.)
+  //
+  // KNOWN LIMIT (sim-measured, 2026-08-09): force_clear only clears
+  // send_nack_req; the state-7 EXIT itself is gated on auto_tx_out_advance
+  // (_GEN_115), which force_clear does NOT assert. So this backstop breaks a
+  // send_nack_req-stuck (post-stall bounce) but NOT a pure emit-starvation
+  // stall. See scratchpad/plan_a2l_r1_fcsm.md.
+  wire        socl_l7_wdog_progress = auto_tx_out_advance;
+`ifdef TL033_LEGACY_WDOG
+  // Pre-TL-033 behaviour (repro only): sticky real_crc_seen kills the backstop.
   wire        socl_l7_wdog_force_clear =
                 (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
                 & ~socl_l7_real_crc_seen;
+`else
+  wire        socl_l7_wdog_force_clear =
+                (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD);
+`endif
   // SoC Labs (Fix E): receiver-side periodic ACK re-emission (idempotent).
   reg  [15:0] socl_reack_idle_cnt;
   wire socl_reack_have_rx = (last_good_pkt_from_rx != 8'h0);
@@ -389,7 +423,7 @@ module WlinkGenericFCSM(
   wire  _GEN_112 = auto_tx_out_advance & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
   wire [7:0] _GEN_113 = auto_tx_out_advance ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
   wire  _GEN_114 = auto_tx_out_advance ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
-  wire [2:0] _GEN_115 = auto_tx_out_advance ? 3'h4 : state; // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
+  wire [2:0] _GEN_115 = (auto_tx_out_advance | socl_l7_wdog_force_clear) ? 3'h4 : state; // TL-033-§6: state-7 EXIT on watchdog force_clear (emit-starvation backstop) // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
   wire  _GEN_123 = send_nack_req | _T_59; // @[FC.scala 586:30 FC.scala 589:39]
   wire [7:0] _GEN_124 = send_nack_req ? out_prepend_swi_nack_id : _GEN_56; // @[FC.scala 586:30 FC.scala 590:39]
   wire [15:0] _GEN_125 = send_nack_req ? {{4'd0}, _word_count_in_T_4} : _GEN_57; // @[FC.scala 586:30 FC.scala 591:39]
@@ -1015,14 +1049,22 @@ module WlinkGenericFCSM(
       socl_l7_real_crc_seen <= 1'h1;
     end
   end
-  // SoC Labs F-1 (Fix D): state-7 dwell counter; saturates at threshold.
+  // SoC Labs F-1 (Fix D) + TL-033: state-7 dwell counter; saturates at
+  // threshold. Reset on any forward progress (revert-aware) instead of on the
+  // sticky real_crc_seen latch, so the backstop stays LIVE after a real CRC
+  // error while a genuinely-progressing replay still keeps it clear.
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       socl_l7_wdog_cnt <= 16'h0;
     end else if (state != 3'h7) begin
       socl_l7_wdog_cnt <= 16'h0;
-    end else if (socl_l7_real_crc_seen) begin
+`ifdef TL033_LEGACY_WDOG
+    end else if (socl_l7_real_crc_seen) begin   // pre-TL-033: pinned dead
       socl_l7_wdog_cnt <= 16'h0;
+`else
+    end else if (socl_l7_wdog_progress) begin    // TL-033: revert-aware reset
+      socl_l7_wdog_cnt <= 16'h0;
+`endif
     end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
       socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
     end

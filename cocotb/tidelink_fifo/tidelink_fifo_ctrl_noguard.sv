@@ -1,10 +1,17 @@
 //-----------------------------------------------------------------------------
-// !!! TL-033 TEST-ONLY GUARD-DISABLED VARIANT — DO NOT SYNTHESIZE / DO NOT SHIP.
-// Byte-for-byte copy of src/rtl/fifo/tidelink_fifo_ctrl.sv EXCEPT the BUG-002
-// saturate-at-zero credit guard (:386-389) is REMOVED so the write-side consume
+// !!! TL-033 TEST-ONLY GUARD-DISABLED VARIANT - DO NOT SYNTHESIZE / DO NOT SHIP.
+// Regenerated 2026-08-13 from src/rtl/fifo/tidelink_fifo_ctrl.sv (post-TWIN-3
+// write/read tracker split). Byte-for-byte identical to the shipping RTL EXCEPT
+// the BUG-002 saturate-at-zero credit guard is REMOVED so the write-side consume
 // unsigned-underflow-WRAPS. Selected only by tidelink_fifo_noguard.flist via
 // `make noguard`, to PROVE test_43_credit_underflow_saturates_whitebox is
 // non-vacuous (it must FAIL against this WRAP and PASS against the guarded RTL).
+//
+// STALENESS WARNING (why this file was regenerated): the previous copy was taken
+// BEFORE the 2026-08-01 TWIN-3 split, so `make noguard` failed with an
+// AttributeError on write_packet_word_length_r instead of the credit WRAP - a
+// red result for the WRONG cause, i.e. a non-vacuity proof that proved nothing.
+// If tidelink_fifo_ctrl.sv changes structurally, REGENERATE this file.
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 // SoCLabs TideLink FIFO Control Logic
@@ -122,23 +129,41 @@ module tidelink_fifo_ctrl #(
     // -------------------------------------------------------------------------
     logic [RAM_ADDR_W-1:0] read_ptr_r,            read_ptr_nxt;
     logic [RAM_ADDR_W-1:0] write_ptr_r,           write_ptr_nxt;
-    logic [RAM_ADDR_W-1:0] packet_word_length_r,  packet_word_length_nxt;
+    // RX-FIFO TWIN 3 FIX (2026-08-01) — the write-side ("a packet is currently
+    // arriving via FC/AHB write") and read-side ("a packet is currently being
+    // drained via AHB read") packet-metadata trackers used to share ONE set of
+    // registers (packet_active_r/packet_word_length_r), on the unstated
+    // assumption that a write and a read never overlap in time. That
+    // assumption is false by design: the RX FIFO's whole purpose is
+    // concurrent "FC adapter RX writes + CPU reads" (see the module instance
+    // comment in tidelink_top.sv). An inbound packet's header arriving
+    // mid-drain of an older packet silently clobbered the drain's own
+    // read_target_addr_r/packet_word_length_r, because the FC-write-start
+    // branch (fc_write_addr0, below) had no guard analogous to the AHB
+    // write-side's ahb_pkt_start_ok (!packet_active_r) — the same
+    // architectural gap the read-side saturate-at-MAX credit-counter comment
+    // below already flags for a related (truncated-packet) scenario.
+    // Reproduced + root-caused 2026-08-01 (2 independent methods converged):
+    // an isolated unit-level testbench proved the clobber signal-by-signal,
+    // and eliminating every testbench-side theory converged on this same
+    // mechanism by process of elimination.
+    // FIX: fully independent write-side and read-side trackers below. They
+    // can now legitimately both be active, and both complete, on the same
+    // cycle — every downstream consumer (pointers, credit) is updated to
+    // compose the two independently rather than assume mutual exclusion.
+    logic [RAM_ADDR_W-1:0] write_packet_word_length_r, write_packet_word_length_nxt;
+    logic [RAM_ADDR_W-1:0] read_packet_word_length_r,  read_packet_word_length_nxt;
     logic                  check_addr_r,           check_addr_nxt;
-    logic                  packet_active_r,        packet_active_nxt;
+    logic                  write_packet_active_r,  write_packet_active_nxt;
+    logic                  read_packet_active_r,   read_packet_active_nxt;
     logic [RAM_ADDR_W-1:0] write_target_addr_r,   write_target_addr_nxt;
     logic [RAM_ADDR_W-1:0] read_target_addr_r,    read_target_addr_nxt;
     logic [RAM_ADDR_W-2:0] credit_count_r,          credit_count_nxt;
 
-    // Shared intermediate: payload length + 2 (2-word header + N payload words)
-    wire [RAM_ADDR_W-1:0] packet_delta = packet_word_length_r + RAM_ADDR_W'(2'd2);
-
-    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
-    // in the credit counter below. credit_count_r <= 2^13-1 and packet_delta
-    // <= 2^12, so this cannot overflow RAM_ADDR_W=14 bits. Declared at module
-    // scope (not inside the always_comb): a declaration in an unnamed
-    // procedural block is not portable across synthesis tools, and this file is
-    // compiled by both the FPGA and the ASIC flows.
-    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_count_r) + packet_delta;
+    // Payload length + 2 (2-word header + N payload words), independently
+    // per side (RX-FIFO TWIN 3 FIX — see register-declaration comment above).
+    wire [RAM_ADDR_W-1:0] write_packet_delta = write_packet_word_length_r + RAM_ADDR_W'(2'd2);
+    wire [RAM_ADDR_W-1:0] read_packet_delta  = read_packet_word_length_r  + RAM_ADDR_W'(2'd2);
 
     // RX FIFO is EMPTY iff no credit has been consumed. This is the SAME predicate
     // the sticky `underrun` flag already uses (see underrun_event below) — reuse it
@@ -147,17 +172,20 @@ module tidelink_fifo_ctrl #(
 
     // -------------------------------------------------------------------------
     // Completion signals — dual-source (FC direct write + AHB read/write)
+    // RX-FIFO TWIN 3 FIX: write-side and read-side each gate on their OWN
+    // _packet_active_r now, not a shared one — write_complete and
+    // read_complete are independent events that can legitimately both fire
+    // the same cycle.
     // -------------------------------------------------------------------------
     logic write_complete;
 
     // FC direct write completion (single-cycle, addr+data in same cycle)
-    wire fc_write_valid = fc_wr_valid && fc_wr_write && packet_active_r;
+    wire fc_write_valid = fc_wr_valid && fc_wr_write && write_packet_active_r;
     wire fc_write_complete = fc_write_valid && (fc_wr_addr == write_target_addr_r);
 
-    // AHB path completion (preserved for CPU reads + testbench backward compat)
     // Shortcoming #14 fix: check htrans == NONSEQ (2'b10), rejecting SEQ (2'b11)
     // beats from burst transfers which the FIFO logic cannot handle correctly.
-    wire ahb_valid_transfer = hsel && (htrans == 2'b10) && hready && packet_active_r;
+    wire valid_ahb_access = hsel && (htrans == 2'b10) && hready;
 
     // TWIN-2 FIX (2026-07-21) — the AHB CPU-write-into-RX path is enabled iff the
     // build param is set AND software has ARMED it at runtime (POR-disarmed).
@@ -169,10 +197,10 @@ module tidelink_fifo_ctrl #(
 
     // AHB write-completion gated by ahb_write_en: disarmed => the FC-shared
     // write_ptr / credit are un-advanceable from the AHB write side.
-    wire ahb_write_complete = ahb_write_en && ahb_valid_transfer && (haddr == write_target_addr_r) && hwrite;
+    wire ahb_write_complete = ahb_write_en && valid_ahb_access && write_packet_active_r && (haddr == write_target_addr_r) && hwrite;
 
     assign write_complete = fc_write_complete || ahb_write_complete;
-    assign read_complete  = ahb_valid_transfer && (haddr == read_target_addr_r) && ~hwrite;
+    assign read_complete  = valid_ahb_access && read_packet_active_r && (haddr == read_target_addr_r) && ~hwrite;
 
     // -------------------------------------------------------------------------
     // Pointer Management and Address Translation
@@ -181,10 +209,13 @@ module tidelink_fifo_ctrl #(
         write_ptr_nxt  = write_ptr_r;
         read_ptr_nxt   = read_ptr_r;
 
+        // RX-FIFO TWIN 3 FIX: independent `if`s, not if/else-if — write_complete
+        // and read_complete can now legitimately both fire the same cycle.
         if (write_complete) begin
-            write_ptr_nxt = write_ptr_r + RAM_ADDR_W'(packet_delta << 2);
-        end else if (read_complete) begin
-            read_ptr_nxt = read_ptr_r + RAM_ADDR_W'(packet_delta << 2);
+            write_ptr_nxt = write_ptr_r + RAM_ADDR_W'(write_packet_delta << 2);
+        end
+        if (read_complete) begin
+            read_ptr_nxt = read_ptr_r + RAM_ADDR_W'(read_packet_delta << 2);
         end
     end
 
@@ -212,25 +243,34 @@ module tidelink_fifo_ctrl #(
     assign fc_translated_addr = fc_wr_addr + write_ptr_r;
 
     // -------------------------------------------------------------------------
-    // Packet Metadata Capture — Dual Source
+    // Packet Metadata Capture — Dual Source, INDEPENDENT write-side/read-side
     // -------------------------------------------------------------------------
     // FC direct writes deliver addr+data in the same cycle (same-cycle capture).
     // AHB writes use the standard 2-phase protocol (pipelined capture).
     // AHB reads use check_addr_r to capture length from SRAM read data.
+    // RX-FIFO TWIN 3 FIX: the write-side and read-side captures below no
+    // longer share any state — see the register-declaration comment above.
 
-    // Shortcoming #14 fix: NONSEQ only (htrans == 2'b10), reject SEQ bursts
-    wire valid_ahb_access = hsel && (htrans == 2'b10) && hready;
-
-    // FC write to addr 0: same-cycle length capture
-    wire fc_write_addr0 = fc_wr_valid && fc_wr_write && (fc_wr_addr == '0);
+    // FC write to addr 0: same-cycle length capture.
+    // RX-FIFO TWIN 3 FIX: gated by !write_packet_active_r, mirroring the AHB
+    // write-side's ahb_pkt_start_ok guard below — an FC write cannot start a
+    // new packet's metadata capture while its OWN side already has one in
+    // flight. It no longer needs to check the read side at all now that the
+    // two are independent — THAT was the missing guard: previously this had
+    // NO qualifier, so it could clobber an in-progress READ's (then-shared)
+    // state. Write-vs-write self-collision (two FC headers before the first
+    // completes) is a separate, pre-existing, protocol-level question — the
+    // link layer's own credit/window admission is what's expected to prevent
+    // it — and is unaffected by this fix either way.
+    wire fc_write_addr0 = fc_wr_valid && fc_wr_write && (fc_wr_addr == '0)
+                          && !write_packet_active_r;
 
     // TWIN-2 FIX — qualified AHB packet-start. See the arm comment below.
     // Smallest legal packet is header(2 words); require that much credit.
     localparam [RAM_ADDR_W-2:0] MIN_PKT_CREDIT = (RAM_ADDR_W-1)'(2);
     wire ahb_write_addr0 = valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && hwrite;
     wire ahb_pkt_start_ok = ahb_write_addr0
-                            && !packet_active_r
-                            && !check_addr_r
+                            && !write_packet_active_r
                             && (credit_count_r >= MIN_PKT_CREDIT);
 
     // AHB write pipeline: addr phase detection → data phase capture
@@ -255,26 +295,28 @@ module tidelink_fifo_ctrl #(
     endfunction
 
     always_comb begin
-        check_addr_nxt           = check_addr_r;
-        packet_word_length_nxt   = packet_word_length_r;
-        packet_active_nxt        = packet_active_r;
+        check_addr_nxt                = check_addr_r;
+        write_packet_word_length_nxt  = write_packet_word_length_r;
+        read_packet_word_length_nxt   = read_packet_word_length_r;
+        write_packet_active_nxt       = write_packet_active_r;
+        read_packet_active_nxt        = read_packet_active_r;
         // TWIN-2 FIX (2026-07-19) — QUALIFY the AHB write-side length latch.
         //
         // The latch may arm only on a LEGITIMATE PACKET START, not on any AHB
         // write that happens to hit offset 0:
-        //   - !packet_active_r : no packet already in flight. A second offset-0
-        //     write mid-packet must not re-arm and re-target the completion
-        //     address underneath the packet being written.
-        //   - !check_addr_r    : a read-side length capture is not pending, so
-        //     the read and write metadata paths cannot fight over
-        //     packet_word_length_r / *_target_addr_r in the same cycle.
+        //   - !write_packet_active_r : no write-side packet already in flight.
+        //     A second offset-0 write mid-packet must not re-arm and re-target
+        //     the completion address underneath the packet being written.
+        //     (RX-FIFO TWIN 3 FIX: this used to also require !check_addr_r, to
+        //     stop the read and write metadata paths fighting over shared
+        //     state — now unnecessary, they no longer share any state.)
         //   - credit_count_r >= packet_delta_min(=2) : the FIFO can actually
         //     accept the smallest legal packet. Arming with no credit can only
         //     burn pointer state for a packet that will be discarded.
         // NOTE: `!rx_fifo_empty` is deliberately NOT used here. That is the
-        // correct predicate for the READ side (:243) — a read of an EMPTY FIFO
-        // is the phantom-pop bug — but it is exactly WRONG for writes: the
-        // normal case for accepting a new packet IS an empty FIFO.
+        // correct predicate for the READ side (below) — a read of an EMPTY
+        // FIFO is the phantom-pop bug — but it is exactly WRONG for writes:
+        // the normal case for accepting a new packet IS an empty FIFO.
         //
         // TWIN-2 FIX (2026-07-21): gated by ahb_write_en (build param AND the
         // POR-disarmed runtime arm), not by ENABLE_AHB_WRITE alone.
@@ -284,27 +326,28 @@ module tidelink_fifo_ctrl #(
         // AHB ADDRESS phase for MORE than one cycle (hsel+NONSEQ+haddr==0 kept
         // asserted, with the real hwdata only presented on the final beat — the
         // exact timing cocotbext's AHBLiteMaster uses). ahb_pkt_start_ok goes
-        // false as soon as packet_active_r latches (mid-address), which would
-        // freeze the capture on the STALE hwdata of an early cycle. So once
-        // armed, KEEP the arm asserted for as long as the offset-0 write address
-        // phase persists (ahb_write_addr0) — the LAST cycle (real length word)
-        // wins. The old `!= 0` reject accidentally did this by refusing to latch
-        // the stale zeros; the arm makes it explicit and length-0-safe.
+        // false as soon as write_packet_active_r latches (mid-address), which
+        // would freeze the capture on the STALE hwdata of an early cycle. So
+        // once armed, KEEP the arm asserted for as long as the offset-0 write
+        // address phase persists (ahb_write_addr0) — the LAST cycle (real
+        // length word) wins. The old `!= 0` reject accidentally did this by
+        // refusing to latch the stale zeros; the arm makes it explicit and
+        // length-0-safe.
         // Self-terminates the moment the address phase ends (ahb_write_addr0=0).
         capture_write_length_nxt = ahb_write_en
                                    && (ahb_pkt_start_ok
                                        || (capture_write_length_r && ahb_write_addr0));
 
-        // Clear packet_word_length, packet_active, and check_addr on completion (BUG-005 fix)
-        if (write_complete || read_complete) begin
-            packet_word_length_nxt = '0;
-            packet_active_nxt = 1'b0;
-            check_addr_nxt = 1'b0;
+        // ---- WRITE side (RX-FIFO TWIN 3 FIX: independent of the read side) ----
+        // Clear on write_complete (BUG-005 fix, write-side half).
+        if (write_complete) begin
+            write_packet_word_length_nxt = '0;
+            write_packet_active_nxt = 1'b0;
         end else if (fc_write_addr0) begin
             // FC direct write to addr 0: capture length immediately (same cycle)
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20] of original word)
-            packet_word_length_nxt = clamp_length(fc_wr_wdata);
-            packet_active_nxt = 1'b1;
+            write_packet_word_length_nxt = clamp_length(fc_wr_wdata);
+            write_packet_active_nxt = 1'b1;
         end else if (capture_write_length_r) begin
             // AHB data phase of write to addr 0: hwdata is now valid.
             // Length is in bits [11:0] of the pre-extracted input (bits [31:20]
@@ -323,8 +366,16 @@ module tidelink_fifo_ctrl #(
             // arm POR-disarmed, this branch is simply never reached for an
             // unarmed stray write. Once ARMED, every AHB-injected packet —
             // including a length-0 RD_REQ — is accepted, exactly as intended.
-            packet_word_length_nxt = clamp_length(hwdata);
-            packet_active_nxt = 1'b1;
+            write_packet_word_length_nxt = clamp_length(hwdata);
+            write_packet_active_nxt = 1'b1;
+        end
+
+        // ---- READ side (RX-FIFO TWIN 3 FIX: independent of the write side) ----
+        // Clear on read_complete (BUG-005 fix, read-side half).
+        if (read_complete) begin
+            read_packet_word_length_nxt = '0;
+            read_packet_active_nxt = 1'b0;
+            check_addr_nxt = 1'b0;
         end else if (valid_ahb_access && (haddr == RAM_ADDR_W'(1'd0)) && ~hwrite
                      && !rx_fifo_empty) begin
             // AHB read from addr 0: set flag to capture length from SRAM next cycle.
@@ -351,52 +402,78 @@ module tidelink_fifo_ctrl #(
             check_addr_nxt = 1'b1;
         end else if (check_addr_r) begin
             // Capture SRAM read data as packet length, clear flag
-            packet_word_length_nxt = clamp_length(rdata);
-            packet_active_nxt = 1'b1;
+            read_packet_word_length_nxt = clamp_length(rdata);
+            read_packet_active_nxt = 1'b1;
             check_addr_nxt = 1'b0;
         end
 
         // Target address = (payload_length + 1) in bytes — last word is dest_addr
         // (at offset 0x4) plus N payload words. Use _nxt to eliminate 1-cycle lag.
-        write_target_addr_nxt = RAM_ADDR_W'((packet_word_length_nxt + RAM_ADDR_W'(1)) << 2);
-        read_target_addr_nxt  = RAM_ADDR_W'((packet_word_length_nxt + RAM_ADDR_W'(1)) << 2);
+        // RX-FIFO TWIN 3 FIX: each side now derives its target address from its
+        // OWN length register, not a shared one.
+        write_target_addr_nxt = RAM_ADDR_W'((write_packet_word_length_nxt + RAM_ADDR_W'(1)) << 2);
+        read_target_addr_nxt  = RAM_ADDR_W'((read_packet_word_length_nxt  + RAM_ADDR_W'(1)) << 2);
     end
 
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
-            packet_word_length_r <= '0;
-            packet_active_r      <= 1'b0;
-            check_addr_r         <= 1'b0;
-            write_target_addr_r  <= '0;
-            read_target_addr_r   <= '0;
+            write_packet_word_length_r <= '0;
+            read_packet_word_length_r  <= '0;
+            write_packet_active_r      <= 1'b0;
+            read_packet_active_r       <= 1'b0;
+            check_addr_r                <= 1'b0;
+            write_target_addr_r         <= '0;
+            read_target_addr_r          <= '0;
         end else if (flush) begin
-            packet_word_length_r <= '0;
-            packet_active_r      <= 1'b0;
-            check_addr_r         <= 1'b0;
-            write_target_addr_r  <= '0;
-            read_target_addr_r   <= '0;
+            write_packet_word_length_r <= '0;
+            read_packet_word_length_r  <= '0;
+            write_packet_active_r      <= 1'b0;
+            read_packet_active_r       <= 1'b0;
+            check_addr_r                <= 1'b0;
+            write_target_addr_r         <= '0;
+            read_target_addr_r          <= '0;
         end else begin
-            packet_word_length_r <= packet_word_length_nxt;
-            packet_active_r      <= packet_active_nxt;
-            check_addr_r         <= check_addr_nxt;
-            write_target_addr_r  <= write_target_addr_nxt;
-            read_target_addr_r   <= read_target_addr_nxt;
+            write_packet_word_length_r <= write_packet_word_length_nxt;
+            read_packet_word_length_r  <= read_packet_word_length_nxt;
+            write_packet_active_r      <= write_packet_active_nxt;
+            read_packet_active_r       <= read_packet_active_nxt;
+            check_addr_r                <= check_addr_nxt;
+            write_target_addr_r         <= write_target_addr_nxt;
+            read_target_addr_r          <= read_target_addr_nxt;
         end
     end
 
     // -------------------------------------------------------------------------
     // Credit Counter
     // -------------------------------------------------------------------------
+    // RX-FIFO TWIN 3 FIX: write_complete and read_complete are now independent
+    // events that can legitimately coincide on the same cycle (previously
+    // impossible, since they shared one packet_active_r that only one side
+    // could hold at a time). Compose the write-side decrement and read-side
+    // increment explicitly — write_complete's adjustment feeds into
+    // read_complete's, rather than the two being mutually exclusive branches
+    // of one if/else-if — so a same-cycle write+read updates credit correctly
+    // in both directions instead of silently dropping one of them.
+
+    // TL-033 GUARD-DISABLED: the BUG-002 saturate-at-zero guard is REMOVED here,
+    // so the write-side consume subtracts UNCONDITIONALLY and unsigned-underflow-
+    // WRAPS to ~0x1FFF. This is the ONLY delta from the shipping RTL.
+    wire [RAM_ADDR_W-2:0] credit_after_write =
+        write_complete
+            ? credit_count_r - (RAM_ADDR_W-1)'(write_packet_delta)
+            : credit_count_r;
+
+    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
+    // below. credit_after_write <= 2^13-1 and read_packet_delta <= 2^12, so
+    // this cannot overflow RAM_ADDR_W=14 bits. Declared at module scope (not
+    // inside the always_comb): a declaration in an unnamed procedural block
+    // is not portable across synthesis tools, and this file is compiled by
+    // both the FPGA and the ASIC flows.
+    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_after_write) + read_packet_delta;
+
     always_comb begin
-        credit_count_nxt = credit_count_r;
-        if (write_complete) begin
-            // TL-033 NON-VACUITY HARNESS ONLY — the BUG-002 saturate-at-zero
-            // guard is DELIBERATELY REMOVED here to reproduce the pre-fix
-            // unsigned-underflow WRAP. NOT FOR SYNTHESIS / NOT SHIPPED. Selected
-            // only by cocotb/tidelink_fifo/tidelink_fifo_noguard.flist (`make
-            // noguard`). The shipping RTL is src/rtl/fifo/tidelink_fifo_ctrl.sv.
-            credit_count_nxt = credit_count_r - (RAM_ADDR_W-1)'(packet_delta);
-        end else if (read_complete) begin
+        credit_count_nxt = credit_after_write;
+        if (read_complete) begin
             // SILICON DEFECT FIX (2026-07-15) — saturate at MAX_CREDITS. This is
             // the exact MIRROR of the write side's saturate-at-zero above; the
             // read side was never given a ceiling.
@@ -408,13 +485,18 @@ module tidelink_fifo_ctrl #(
             //
             // The f9b94b7 `!rx_fifo_empty` guard does NOT cover this. That fix
             // stops an AHB read of offset 0 from ARMING the length latch on an
-            // empty FIFO. But packet_active_r / packet_word_length_r /
-            // read_target_addr_r are also armed by the FC WRITE path
-            // (fc_write_addr0, :198). If a packet's header arrives and the
-            // packet never completes (write_complete needs the exact beat at
-            // write_target_addr), those stay armed; a later protocol-legal drain
-            // then hits read_target_addr, read_complete fires (:107, gated only
-            // by packet_active_r) and credit is minted above max.
+            // empty FIFO. But (pre-TWIN-3-fix) packet_active_r / packet_word_length_r /
+            // read_target_addr_r were ALSO armed by the FC WRITE path
+            // (fc_write_addr0). If a packet's header arrived and the packet
+            // never completed (write_complete needs the exact beat at
+            // write_target_addr), those stayed armed; a later protocol-legal
+            // drain then hit read_target_addr, read_complete fired, and credit
+            // was minted above max. RX-FIFO TWIN 3 FIX (2026-08-01) removes the
+            // shared-state mechanism this depended on — write-side and
+            // read-side tracking are now fully independent registers — but
+            // this saturate-at-MAX clamp is kept regardless, as a genuine
+            // defense-in-depth backstop for the still-reachable truncated-
+            // packet scenario described below, which is unrelated to sharing.
             //
             // A truncated packet is reachable BY DESIGN on silicon: after
             // TX_STALL_TIMEOUT (2^16 hclk) of continuous back-pressure the FC
@@ -538,7 +620,12 @@ module tidelink_fifo_ctrl #(
     assign read_ptr           = read_ptr_r;
     assign write_target_addr  = write_target_addr_r;
     assign read_target_addr   = read_target_addr_r;
-    assign packet_word_length = packet_word_length_r;
+    // RX-FIFO TWIN 3 FIX: this port is consumed externally by
+    // tidelink_apb_regs.sv's credit_delta_data_comb, captured specifically
+    // "on each read_complete" (its own comment) — it is the RETURNER-facing
+    // signal describing the packet just DRAINED locally, so it must map to
+    // the read-side register, not a shared/write-side one.
+    assign packet_word_length = read_packet_word_length_r;
     assign credit_count        = credit_count_r;
 
 endmodule

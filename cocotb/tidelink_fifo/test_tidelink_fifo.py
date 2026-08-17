@@ -1910,7 +1910,14 @@ async def test_43_credit_underflow_saturates_whitebox(dut):
     dut.haddr.value = 0x3FFF
     await ClockCycles(dut.hclk, 3)
 
-    captured_len = int(dut.u_dut.packet_word_length.value)
+    # RX-FIFO TWIN 3 FIX (2026-08-01): the external `packet_word_length` port now
+    # maps to read_packet_word_length_r (the RETURNER-facing, read-side register —
+    # tidelink_fifo_ctrl.sv:612), so it reads 0 for a WRITE-side arm. Probe the
+    # write-side register directly, the same convention test_07/test_39/test_40
+    # already use. (Stale-probe fix 2026-08-13: this test was authored on a
+    # pre-TWIN-3 worktree and merged in the 08-10 consolidation, so it still read
+    # the old shared port and failed its own precondition with got=0.)
+    captured_len = int(dut.u_dut.u_fifo_ctrl.write_packet_word_length_r.value)
     assert captured_len == L, \
         f"precondition: header length capture failed (got {captured_len}, want {L})"
     target = int(dut.u_dut.write_target_addr.value)

@@ -1,0 +1,125 @@
+--- tidelink_top_orig.sv	2026-08-14 01:31:42.780371052 +0100
++++ tidelink_top.sv	2026-08-17 17:47:57.155715932 +0100
+@@ -597,6 +597,26 @@
+     wire         s_axi_bvalid_ctrl;
+     wire         s_axi_bready;
+ 
++    // ── TL-042 Option-1 (AW/W-unaccepted synthetic-accept recovery) PROTOTYPE ──
++    // Scratch prototype (docs/DIAGNOSE_XHB500_RAW_HREADYOUT_LOW.md Option 1).
++    // On the XHB500 write-wedge where an AW is presented on s_axi but the
++    // downstream Wlink target never asserts awready, the existing synth-B backstop
++    // is blind (it arms on sub_wr_os_ctr!=0 = ACCEPTED AWs). These nets let the
++    // wrapper synthesise the AW/W accept into the bridge at the stall timeout and
++    // then reuse the existing synth-B drain. The REAL downstream awready/wready
++    // (s_axi_awready / s_axi_wready) stay the Wlink-driven nets; the bridge is fed
++    // the MUXED *_brg versions instead, and the Wlink is fed the MASKED *_dn valids.
++    wire         s_axi_awready_brg;   // AW ready presented TO the bridge (real|synthetic)
++    wire         s_axi_wready_brg;    // W  ready presented TO the bridge (real|synthetic)
++    wire         s_axi_awvalid_dn;    // AW valid presented to the DOWNSTREAM Wlink (masked)
++    wire         s_axi_wvalid_dn;     // W  valid presented to the DOWNSTREAM Wlink (masked)
++    wire         synth_aw_accept;     // one-cycle synthetic AW accept strobe (bridge side)
++    wire         synth_w_accept;      // synthetic W accept strobe (per beat until wlast)
++    logic        rec_active;          // AW-unaccepted recovery in progress
++    logic        rec_awdone;          // synthetic AW beat taken (doubles as the AW mask)
++    logic        rec_wdone;           // synthetic W(last) beat taken (doubles as the W mask)
++    logic        rec_bseen;           // synth-B has been armed at least once this recovery
++
+     wire [11:0]  s_axi_arid;
+     wire [35:0]  s_axi_araddr;
+     wire  [7:0]  s_axi_arlen;
+@@ -1567,7 +1587,9 @@
+     // and from registers, and it feeds ONLY the registered sub_err{1,2}_r. So
+     // ahb_sub_hreadyout gains no combinational dependence on ahb_sub_hready.
+     wire sub_ar_accept       = s_axi_arvalid & s_axi_arready;
+-    wire sub_aw_accept       = s_axi_awvalid & s_axi_awready;
++    // TL-042: use the BRIDGE-facing ready so a synthetic accept also increments
++    // sub_wr_os_ctr and hands the write to the existing synth-B drain machinery.
++    wire sub_aw_accept       = s_axi_awvalid & s_axi_awready_brg;
+     wire sub_r_done          = s_axi_rvalid  & s_axi_rready & s_axi_rlast;
+     wire sub_b_done          = s_axi_bvalid  & s_axi_bready;
+     wire sub_axi_outstanding = sub_rd_os_r | (sub_wr_os_ctr != 3'd0);
+@@ -1875,8 +1897,46 @@
+     // XHB500 completes its pending write with SLVERR through its OWN response path
+     // (a LEGAL 2-cycle AHB ERROR in the transfer's data phase = F-1) and re-idles
+     // (= F-2). The real B was permanently lost, so there is no collision.
+-    wire sub_wr_stuck_fire = (sub_osr_expired | sub_stall_expired)
+-                             & (sub_wr_os_ctr != 3'd0);
++    // ── TL-042 Option-1: synthetic AW/W accept + reuse of the synth-B drain ─────
++    // synth_aw_accept / synth_w_accept assert the bridge-facing ready for the
++    // stuck beats; the real downstream ready is MASKED (rec_awdone/rec_wdone) once
++    // synthesised, and the downstream (Wlink) valid is masked in the SAME cycle we
++    // synthesise (…& ~synth_*_accept) AND every later recovery cycle, so a revived
++    // link can never double-accept the same AW/W beat.
++    assign synth_aw_accept   = rec_active & ~rec_awdone & s_axi_awvalid;
++    assign synth_w_accept    = rec_active & ~rec_wdone  & s_axi_wvalid;
++    assign s_axi_awready_brg = (s_axi_awready & ~rec_awdone) | synth_aw_accept;
++    assign s_axi_wready_brg  = (s_axi_wready  & ~rec_wdone ) | synth_w_accept;
++    assign s_axi_awvalid_dn  = s_axi_awvalid & ~rec_awdone & ~synth_aw_accept;
++    assign s_axi_wvalid_dn   = s_axi_wvalid  & ~rec_wdone  & ~synth_w_accept;
++
++    // Recovery sequencer. Arm on a stall-timeout while an AW is presented but the
++    // DOWNSTREAM ready is low AND no accepted-write is already outstanding (that
++    // case is the pre-existing synth-B's). Retire once AW+W synthesised and drained.
++    always_ff @(posedge hclk or negedge hresetn) begin
++        if (!hresetn) begin
++            rec_active <= 1'b0; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
++        end else if (!rec_active) begin
++            if (sub_stall_expired & s_axi_awvalid & ~s_axi_awready
++                & (sub_wr_os_ctr == 3'd0) & ~synth_b_pending) begin
++                rec_active <= 1'b1; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
++            end
++        end else begin
++            if (synth_aw_accept)               rec_awdone <= 1'b1;  // AW taken (1 beat)
++            if (synth_w_accept & s_axi_wlast)  rec_wdone  <= 1'b1;  // last W beat taken
++            if (synth_b_pending)               rec_bseen  <= 1'b1;  // synth-B armed
++            if (rec_awdone & rec_wdone & rec_bseen & ~synth_b_pending) begin
++                rec_active <= 1'b0; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
++            end
++        end
++    end
++
++    // TL-042: broaden the arming. Original term (accepted-write stuck) is kept; the
++    // added term fires the synth-B once the synthetic AW has entered the bridge
++    // (rec_awdone) so sub_wr_os_ctr!=0 and the existing drain retires it.
++    wire sub_wr_stuck_fire = ((sub_osr_expired | sub_stall_expired)
++                             & (sub_wr_os_ctr != 3'd0))
++                             | (rec_active & rec_awdone & ~rec_bseen);
+     always_ff @(posedge hclk or negedge hresetn) begin
+         if (!hresetn) begin
+             sub_wr_awid_r   <= '0;
+@@ -2509,7 +2569,7 @@
+         .awsize            (s_axi_awsize),
+         .awlock            (s_axi_awlock),
+         .awprot            (s_axi_awprot),
+-        .awready           (s_axi_awready),
++        .awready           (s_axi_awready_brg),   // TL-042: real|synthetic AW ready
+         .awcache           (s_axi_awcache),
+         .awqos             (s_axi_awqos),
+ 
+@@ -2529,7 +2589,7 @@
+         .wlast             (s_axi_wlast),
+         .wstrb             (s_axi_wstrb),
+         .wdata             (s_axi_wdata),
+-        .wready            (s_axi_wready),
++        .wready            (s_axi_wready_brg),    // TL-042: real|synthetic W ready
+ 
+         .rvalid            (s_axi_rvalid),
+         .rid               (s_axi_rid),
+@@ -2878,7 +2938,7 @@
+         .apb_pslverr                (wlink_pslverr),
+ 
+         // AXI target (from XHB500 AHB→AXI bridge)
+-        .axi_tgt_0_aw_valid         (s_axi_awvalid),
++        .axi_tgt_0_aw_valid         (s_axi_awvalid_dn),   // TL-042: masked after synth-accept
+         .axi_tgt_0_aw_ready         (s_axi_awready),
+         .axi_tgt_0_aw_bits_id       (s_axi_awid),
+         .axi_tgt_0_aw_bits_addr     (s_axi_awaddr),
+@@ -2890,7 +2950,7 @@
+         .axi_tgt_0_aw_bits_prot     (s_axi_awprot),
+         .axi_tgt_0_aw_bits_qos      (s_axi_awqos),
+ 
+-        .axi_tgt_0_w_valid          (s_axi_wvalid),
++        .axi_tgt_0_w_valid          (s_axi_wvalid_dn),    // TL-042: masked after synth-accept
+         .axi_tgt_0_w_ready          (s_axi_wready),
+         .axi_tgt_0_w_bits_data      (s_axi_wdata),
+         .axi_tgt_0_w_bits_strb      (s_axi_wstrb),

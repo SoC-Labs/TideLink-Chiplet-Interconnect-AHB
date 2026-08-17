@@ -274,7 +274,7 @@ endef
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_epoch_anchor_plumb \
-	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
+	sim_gate_v2_sustained sim_gate_v2_trunc_credit sim_gate_v2_trunc_aperture \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_fifo_randinit sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
@@ -400,6 +400,20 @@ sim_gate_v2_sustained:
 sim_gate_v2_trunc_credit:
 	$(call sim_gate_run,v2_truncated_pkt_credit,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_truncated_pkt_credit)
+
+# N3 / "Hazard 4" — read_ptr aperture drift (2026-08-17). Sibling of
+# sim_gate_v2_trunc_credit, SAME truncated-packet stimulus: proves the
+# read-pointer advance is now gated on the same credit-legitimacy clamp
+# (read_would_overmint) the credit ceiling above already uses, so a
+# never-committed (truncated) packet's phantom read_complete cannot drift
+# read_ptr away from write_ptr. The credit test alone did NOT catch this --
+# credit reads "numerically legal" while the pointer still silently moves --
+# so this suite additionally asserts the very next legitimate packet comes
+# back 100% byte-exact with a correct non-zero PKT_LEN, the actual observable
+# consequence (pre-fix: all-zero words, PKT_LEN=0x0).
+sim_gate_v2_trunc_aperture:
+	$(call sim_gate_run,v2_truncated_pkt_aperture_offset,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_truncated_pkt_aperture_offset)
 
 sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
@@ -1410,7 +1424,7 @@ sim_gate_dftelab:
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
-	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
+	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -1431,7 +1445,7 @@ SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector v
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 	v2_autonomous_sync_detect v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
-	v2_truncated_pkt_credit \
+	v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
@@ -1494,6 +1508,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_aperture
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_mask_hs
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
@@ -1555,6 +1570,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_aperture
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf

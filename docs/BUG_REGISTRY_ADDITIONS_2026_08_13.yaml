@@ -1,0 +1,517 @@
+# =============================================================================
+# BUG_REGISTRY additions + amendments — 2026-08-13
+#
+# DELIVERED AS A SEPARATE FILE, NOT MERGED INTO docs/BUG_REGISTRY.yaml, because
+# that file is currently contended by three concurrent sessions and has already
+# been in a both-added conflict once today. Merge this in ONE commit after
+# re-resolving the branch tip and re-reading the target file.
+#
+# Target: docs/BUG_REGISTRY.yaml on integ/tidelink-consolidated-2026-08-07
+# Tip at time of writing: d317c982, highest allocated id TL-035 (verified).
+# Evidence for every hardware claim: tidelink/imp/hw_gate/
+# =============================================================================
+
+  # ---------------------------------------------------------------------------
+  - id: TL-036
+    title: TL-035 watchdog fix does not cover WlinkGenericFCSM_6 (sideband FC node)
+    severity: medium
+    area: rtl/wlink
+    status: root_caused
+    summary: >
+      The TL-035 fix (non-sticky state-7 NACK watchdog) was applied to
+      WlinkGenericFCSM.v and _1/_2/_3/_4 — which is complete coverage of the AXI
+      data plane (base=wlink_axiawFC AW 0x80, _1=wlink_axiwFC W 0x81,
+      _2=wlink_axibFC B 0x82, _3=wlink_axiarFC AR 0x83, _4=wlink_axirFC R 0x84,
+      all instantiated in deps/axi-chiplet-controller/logical/wlink/AXI4ToWlink.v).
+      It was NOT applied to WlinkGenericFCSM_6 (`wlink_tidelinktl`, the sideband
+      FC node, data_id 0xA1), where the identical defect is still live and
+      unconditional: `socl_l7_wdog_force_clear = (wdog_cnt==THRESHOLD) &
+      ~socl_l7_real_crc_seen` and `else if (socl_l7_real_crc_seen) wdog_cnt <= 0`.
+      So after the FIRST real CRC on the sideband channel, the sideband state-7
+      NACK backstop is disarmed for the lifetime of the reset cycle — the exact
+      TL-035 mechanism, on the channel that carries doorbell/mailbox/IPC.
+    root_cause: >
+      src/rtl/local_overrides/WlinkGenericFCSM_6.v — sticky `socl_l7_real_crc_seen`
+      gates both `wdog_force_clear` and `wdog_cnt`. _6 carries an extensive header
+      comment (:143-186) documenting the disarm as INTENTIONAL ("production silicon
+      with genuine link errors disarms the watchdog permanently"), which is the
+      design intent TL-035 overturns: the disarm is what creates the permanent
+      recovery deadlock. The TL-035 fix preserves the original safety intent by
+      replacing the sticky disarm with an instantaneous forward-progress proxy
+      (`auto_tx_out_advance`), so the watchdog cannot fire while the FCSM is
+      making progress — that same reasoning applies unchanged to _6.
+    fix:
+      approach: >
+        Port the TL-035 Part-A pattern to _6 verbatim: guard the legacy gate behind
+        `ifdef TL033_LEGACY_WDOG` (default = fixed), add
+        `socl_l7_wdog_progress = auto_tx_out_advance`, and clear wdog_cnt on
+        progress instead of on the sticky. Part-B (state-7 exit) needs the same
+        attended-ILA decision as TL-035 before it is applied to _6.
+      files: [src/rtl/local_overrides/WlinkGenericFCSM_6.v]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    verification:
+      sim_test: >
+        cocotb/tidelink_top_pair/test_l7_wedge_repro.py already forces the pair-TB
+        master FCSM (which IS _6) into a stuck state 7, but does NOT set
+        socl_l7_real_crc_seen — so it exercises the bringup-forgive path, not the
+        sticky-CRC path. A TL-036 reproduce test is a small delta on that file
+        (additionally Force socl_l7_real_crc_seen=1); with the ifdef in place the
+        same test proves fix-vs-legacy by define. COVERAGE GAP.
+      in_sim_gate: false
+      hw_tested: false
+    discovered: >
+      2026-08-13, while structurally verifying that the TL-035 FPGA build actually
+      changes the operative write path (it does — all 5 AXI nodes are covered).
+    signoff:
+      claude_verdict: >
+        Real but SECONDARY to TL-035: off the AXI write path, so it does not
+        invalidate the TL-035 A/B. Sideband-channel exposure only. Not yet fixed,
+        deliberately not widened mid-experiment to keep the TL-035 build provenance
+        clean.
+      evidence:
+        - "grep matrix: FCSM.v/_1/_2/_3/_4 carry TL033_LEGACY_WDOG ifdef; _6 does not"
+        - "WlinkGenericFCSM_6.v:646-648 `& ~socl_l7_real_crc_seen` live"
+        - "AXI4ToWlink.v:567/605/643/681 instance->node mapping"
+      approved: false
+    related: [TL-035, TL-033]
+
+
+  # ---------------------------------------------------------------------------
+  - id: TL-037
+    title: No AXI firewall / AXI timeout on the cross-die write path (PS hard-hangs, no recovery)
+    severity: high
+    area: fpga/integration
+    status: open
+    summary: >
+      A wedged cross-die write hangs the PS AXI bus with NO software-visible
+      timeout: the store never returns, ssh dies at 60 s, and recovery is
+      JTAG-POR ONLY. There is no AXI Firewall / AXI Timeout IP in the block
+      design to terminate the stalled transaction and return a DECERR, so a
+      single lost B response escalates from "one failed write" to "board
+      unreachable, POR required". This is a PRE-EXISTING documented proposal
+      (docs/AXI_DATANODE_RECOVERY_AMPLIFIER_SOUND_2026_08_01.md:160,210,287)
+      that was never given a registry id — grep of the registry for
+      `firewall|axi timeout` returns nothing.
+    root_cause: >
+      Not an RTL defect: an integration/survivability gap. The AXI interconnect
+      between the PS master and the TideLink peer window has no timeout
+      terminator, so a far-side stall propagates all the way back into a
+      non-interruptible PS store.
+    fix:
+      approach: >
+        Instantiate AXI Firewall (or AXI Timeout) on the PS->peer-window path in
+        the eth-chiplet block design; program a bounded timeout; return DECERR on
+        expiry so the PS store completes and Linux survives. Pair with the
+        existing synth-B drain so the bridge also re-idles.
+      files: [fpga/targets/kr260-eth-chiplet]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    caveats:
+      - "SURVIVABILITY MITIGATION, NOT A ROOT-CAUSE FIX — it converts a hard hang into a reported error; the write is still lost."
+      - "FPGA-ONLY (PL block design). Does NOT help the ASIC, where the same stall must be handled in RTL. Do not let it mask TL-035/TL-009 on the tapeout trunk."
+    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+    signoff:
+      claude_verdict: >
+        Real, valuable for rig throughput (removes the JTAG-POR-per-wedge tax
+        that has been costing whole sessions), but explicitly NOT a substitute
+        for the root-cause fix and NOT applicable to silicon.
+      evidence: ["docs/AXI_DATANODE_RECOVERY_AMPLIFIER_SOUND_2026_08_01.md:160,210,287", "registry grep firewall|axi timeout = 0 hits"]
+      approved: false
+    related: [TL-035, TL-009, TL-005]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-038
+    title: "errinject --node B --inj-byte 1 (word_count) still HARD-WEDGES the board on silicon"
+    severity: high
+    area: rtl/wlink
+    status: open
+    summary: >
+      TL-006's header-ECC restore corrects byte-1 (word_count) IN SIM
+      (test_ecc_corrects_b_byte1_wordcount, gated), but on silicon a byte-1
+      B-node inject STILL hard-wedges: HANDOVER_AXI_DATANODE_2026_08_03.md:176-177
+      — "errinject --node B --inj-byte 1 (the word_count header field) still
+      wedges the board". This sim/silicon divergence was never given a registry
+      id, so TL-006 reads as fully covered when its byte-1 coverage is sim-only.
+    root_cause: >
+      Unknown. A corrupted word_count is not merely a routing error — it
+      mis-frames the packet length, so ECC correction of the header may not be
+      sufficient to resynchronise the receiver's framing. Needs the Region F
+      per-channel readout (0x21E0) to establish whether the B node or the
+      framing/replay path is the one that latches.
+    fix: {approach: "root-cause the byte-1 framing divergence; extend the ECC/framing restore to cover word_count corruption on silicon", files: [], commit: null, branch: null, netlist_affecting: true}
+    verification:
+      sim_test: "cocotb/.../test_axi_datanode_gaps.py::test_ecc_corrects_b_byte1_wordcount (PASSES in sim — that is the point)"
+      in_sim_gate: true
+      hw_tested: "wedges (documented 2026-08-03, not re-run since)"
+    signoff:
+      claude_verdict: "Open sim-vs-silicon divergence hiding inside TL-006's coverage claim. Re-run with the Region F readout before trusting any byte-1 ECC claim."
+      evidence: ["HANDOVER_AXI_DATANODE_2026_08_03.md:176-177"]
+      approved: false
+    related: [TL-006, TL-035]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-039
+    title: ILA/obs plane is mis-scoped — no probe observes the AXI data nodes
+    severity: medium
+    area: verif/obs
+    status: root_caused
+    summary: >
+      The 2026-08-12 die_a ILA probe set (22 probes, tidelink_design_wrapper.ltx)
+      observes ONLY the sideband FC node and the AHB control adapter, never the
+      AXI data nodes that wedge. Every dbg_a2l_*/dbg_fcsm_*/dbg_fe_rx_cred alias
+      chains Wlink.v:1132 -> tl2wl -> TideLinkToWlink.v:149 = WlinkGenericFCSM_6
+      (sideband, 0xA1); the dbg_tx_* probes come from tidelink_fc_adapter.sv:254-264
+      (AHB ctrl path). No probe exists for auto_tx_out_advance, send_nack_req,
+      socl_l7_wdog_cnt, socl_l7_real_crc_seen, synth_b_pending, or the s_axi B
+      channel. Consequence: a capture taken to root-cause an AXI write wedge
+      contains no information about the AXI write path, and was read as
+      "all four mechanisms refuted".
+    fix:
+      approach: >
+        Add (* mark_debug *) on axinode_obs_word[31:0] (ALREADY instantiated and
+        apb_clk-synced — axi_chiplet_controller.sv:3057 tidelink_axinode_obs
+        u_axinode_obs), plus the AW-node auto_tx_out_advance / send_nack_req /
+        socl_l7_wdog_cnt and synth_b_pending + the I5 outstanding counter. One
+        rebuild. Pair with a NO-CORE control build of identical source (see caveat).
+      files: [src/rtl/local_overrides/axi_chiplet_controller.sv]
+      netlist_affecting: true
+    caveats:
+      - "ILA insertion has PREVIOUSLY CAUSED this wedge class on this design: WlinkGenericFCSM_6.v:129-138 records build #4 (ILA-inserted) wedging 5/5 deploys at state 7 because P&R moved crack_pkt_seen_rx downstream of the slave's state-2 exit. Any die_a ILA arm MUST be paired with a no-core control build."
+      - "Region F 0x21E0 already answers the per-channel question with NO ILA — try that first (see TL-040 note and cov_axinode_wedge_gate.py)."
+    verification: {sim_test: n/a, in_sim_gate: false, hw_tested: n/a}
+    signoff:
+      claude_verdict: "Instrument defect, not a DUT defect — but it invalidated a silicon root-cause conclusion, so it is worth an id."
+      evidence: ["strings _ila/tidelink_design_wrapper.ltx | grep dbg_ -> 22 probes, none on the AXI nodes", "Wlink.v:1132", "TideLinkToWlink.v:149", "tidelink_fc_adapter.sv:254-264", "axi_chiplet_controller.sv Region F comment: the AXI2WL data nodes that actually wedge had NO APB-visible health field"]
+      approved: false
+    related: [TL-035, TL-040]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-040
+    title: dbg_a2l_wedged trigger cannot fire for the observed wedge class
+    severity: medium
+    area: verif/obs
+    status: root_caused
+    summary: >
+      The ILA's designed trigger is inert for exactly the failure it was built to
+      catch. axi_chiplet_controller.sv: `else if (sync_obs_a2l_app_rdy_1) begin
+      dbg_a2l_stall_cnt_q <= 0; dbg_a2l_wedged <= 1'b0;` — at this wedge
+      app_rdy=1, so the stall accumulator is pinned at zero and dbg_a2l_wedged
+      never asserts. The 08-12 capture confirms it: dbg_a2l_wedged=0 in all 4096
+      samples, TRIGGER=1 only at the forced trigger-position marker, and the
+      harness logged "RESULT: ILA capture timeout". The capture window is
+      therefore arbitrary, NOT proven to be the wedge instant.
+    fix:
+      approach: "trigger on the Region F wedge-sticky bits (OBS_AXI_NODES 0x21E0 [19:10]) instead of dbg_a2l_wedged; those latch and cannot self-clear"
+      files: [src/rtl/local_overrides/axi_chiplet_controller.sv]
+      netlist_affecting: true
+    verification: {sim_test: n/a, in_sim_gate: false, hw_tested: n/a}
+    signoff:
+      claude_verdict: "Instrument defect. Any future capture that keeps this trigger will keep producing arbitrary windows read as wedge evidence."
+      evidence: ["ila_capture.csv: dbg_a2l_wedged=0 x4096", "ila_capture_run/summary.txt: RESULT: ILA capture timeout", "run.log: hw_ila does not have a CORE_STATUS property"]
+      approved: false
+    related: [TL-039]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-041
+    title: servo_locked behaviour change reached shipping+tapeout RTL inside a "No functional intent" commit
+    severity: high        # tapeout-record / process risk, not a functional defect
+    area: ptp
+    status: sim_proven
+    summary: >
+      A BEHAVIOUR-CHANGING fix to servo_locked / SERVO_STATUS[0] landed in
+      src/rtl/tidelink_ptp_servo.sv in commit b0e9334, whose header reads "lint:
+      explicit widths and signedness across the RTL" with the body "No functional
+      intent: each change makes an existing implicit conversion explicit". The
+      hunk's OWN comment says "BEHAVIOUR-CHANGING FIX". It reached the trunk via
+      merge a9ff715, so SERVO_STATUS[0] now changes value in the shipping FPGA
+      AND in the tapeout ASIC netlist. The fix is CORRECT — reverting it would
+      reinstate the defect — but it must not be inherited silently into a tapeout
+      audit trail.
+    root_cause: >
+      Pre-fix (verified via `git show b0e9334`): `if ($unsigned(offset_r) <
+      servo_step_thresh_r[31:2])`. offset_r is `logic signed [31:0]`, and
+      $unsigned() REINTERPRETS the bit pattern rather than taking a magnitude, so
+      any negative offset read as >= 2**31 — never below servo_step_thresh_r[31:2]
+      (max 2**30-1). The else arm therefore fired and cleared lock_counter_r and
+      servo_locked. Lock could only latch on LOCK_COUNT consecutive POSITIVE
+      offsets, which a tracking servo dithering about zero never produces — so
+      servo_locked never latched in practice. Post-fix (:680-681) the compare is a
+      correct two-sided signed magnitude test:
+        (offset_r <  $signed({2'b00, servo_step_thresh_r[31:2]})) &&
+        (offset_r > -$signed({2'b00, servo_step_thresh_r[31:2]}))
+      which also hardens against a software-written threshold with bit[31] set.
+    fix:
+      approach: "already applied and correct — this entry exists to make the change VISIBLE and signed-off, and to close its gating gap"
+      files: [src/rtl/tidelink_ptp_servo.sv]
+      commit: b0e9334      # landed on the trunk via merge a9ff715
+      branch: integ/tidelink-consolidated-2026-08-07
+      netlist_affecting: true
+    verification:
+      sim_test: "cocotb/tidelink_ptp_servo/test_tidelink_ptp_servo.py SRV-016..018 (added SEPARATELY in 9622c3d)"
+      in_sim_gate: false   # VERIFIED 2026-08-13: grep -c ptp_servo Makefile = 0 -> CI sweep only, NOT gated
+      hw_tested: false
+    action_items:
+      - "David sign-off required: this is a FUNCTIONAL change to tapeout RTL, not a lint change. Do not let the commit header stand as the record."
+      - "Gate the servo suite: add cocotb/tidelink_ptp_servo to sim_gate (currently 0 references in the Makefile) so SERVO_STATUS[0] cannot move again ungated."
+      - "Cross-check whether any PTP convergence claim (TL-010) was measured on the pre-fix, never-latching servo_locked."
+    signoff:
+      claude_verdict: >
+        Fix is correct and independently verified (pre/post hunks read from
+        b0e9334). The RISK is the audit trail, not the logic: a behaviour change
+        to shipping AND tapeout RTL arriving under "No functional intent", with
+        its regression tests in a different commit and the suite ungated. Exactly
+        the class this project has been bitten by before.
+      evidence:
+        - "git show b0e9334 -- src/rtl/tidelink_ptp_servo.sv: pre `$unsigned(offset_r) < servo_step_thresh_r[31:2]`, post two-sided $signed compare, hunk comment 'BEHAVIOUR-CHANGING FIX'"
+        - "commit body: 'No functional intent'"
+        - "src/rtl/tidelink_ptp_servo.sv:680-681 (post-fix), :151 `logic signed [31:0]`"
+        - "grep -c ptp_servo Makefile = 0 (suite exists at cocotb/tidelink_ptp_servo, SRV-016..018 present)"
+      approved: false
+    related: [TL-010]
+
+# =============================================================================
+# AMENDMENTS to existing entries
+# =============================================================================
+# TL-009 — its FIRST ground_truth bullet is an OVER-READING and must be softened.
+#   It states: "Region F OBS_AXI_NODES (0x21E0) reads HEALTHY (0xad800000, zero
+#   wedge/resp-err/stall) on BOTH dies right up to the wedge => NOT an FC-node
+#   wedge."  The inference does not hold. Verified against
+#   src/rtl/tidelink_axinode_obs.sv:65-90: BOTH wedge_sticky[19:10] and
+#   stall_live[9:0] are built from (valid & ~ready), and resp_err[21:20] latches
+#   only on a COMPLETED handshake carrying resp[1]. So a B that is NEVER DRIVEN
+#   (b_valid = 0 forever — exactly the AXIREC lost-completion case) produces no b
+#   stall, no b wedge and no resp_err, and the word reads 0xad800000 = "healthy"
+#   DURING a genuine PS hang.
+#   => 0xad800000 at a wedge is AMBIGUOUS between (a) a never-returned B and
+#      (b) the sampler not sampling (TL-039/TL-040). It is NOT evidence that the
+#      AXI nodes are fine, and TL-009's "NOT an FC-node wedge" conclusion — which
+#      is what pushed that investigation toward "per-write resource leak" and then
+#      toward the physical-eye story — was never entitled to that reading.
+#   The only POSITIVE signal for a stuck write is aw/w wedge_sticky
+#   (tgt [10]/[11], ini [15]/[16]) = write accepted but not draining.
+#   ACTION: amend the bullet to "Region F reads 0xad800000; by construction this
+#   cannot distinguish a never-driven B from an unsampling instrument, so it
+#   neither confirms nor excludes an AXI-node wedge", and re-run with the
+#   aw/w-sticky reading before drawing any conclusion.
+# TL-005 / TL-007 — NARROW the hw_proven scope.
+#   Both cite exactly one silicon observation: "die_a survives
+#   `errinject --node B --inj-byte 0`". That is ONE inject class on ONE node.
+#   It does NOT establish recovery for AW/W injects, nor for B byte-1 (TL-038,
+#   which still wedges). Add to each verification block:
+#     hw_scope: "B-node byte-0 single-bit inject ONLY; AW/W and B byte-1 untested/failing"
+#   This does not retract either verdict — it stops them reading as general
+#   recovery proof, which is how the campaign rollup has been using them.
+#
+# TL-006 — byte-1 coverage is SIM-ONLY on silicon evidence; cross-reference TL-038.
+#
+# TL-035 — record that the 2026-08-12 ILA capture does NOT bear on it (wrong
+#   node: sideband FCSM_6, not the AW/W/B data nodes), and that Part-B remains
+#   BLIND-MERGE-FORBIDDEN because auto_tx_out_advance was never probed
+#   (08-11 doc lines 195-196 admit skipping it as "too-risky-to-plumb").
+
+# =============================================================================
+# TL-035 — replacement verification + signoff blocks (supersedes the existing)
+# =============================================================================
+# =============================================================================
+# TL-035 — amendment from the 2026-08-13 hardware A/B.
+# Replaces the verification + signoff blocks. Evidence: tidelink/imp/hw_gate/
+#
+# STRUCTURAL NOTE — do not remove the `---` or the wrapper key below. In the
+# first revision this block sat as a bare 4-space-indented verification:/signoff:
+# pair, so YAML absorbed it into the PRECEDING list item (TL-041) and silently
+# shadowed that entry's own verification and signoff by last-key-wins. PyYAML
+# parsed it without complaint; only a duplicate-key linter caught it. Making it a
+# separate document under its own key keeps TL-041 intact and keeps this block
+# machine-readable for whoever merges it.
+# =============================================================================
+---
+tl035_replacement_blocks:
+    verification:
+      sim_test: >
+        NONE that exercises this defect. cocotb/tidelink_top_pair/test_l7_wedge_repro.py
+        drives the pair-TB master FCSM (which is WlinkGenericFCSM_6, the TRANSPORT
+        node) into a stuck state 7 via the bringup-forgive path, and never sets
+        socl_l7_real_crc_seen — so the gated `nack_wedge_recovery` suite PASSING
+        does NOT validate TL-035. Confirms the registry's original "does NOT
+        reproduce in any sim". COVERAGE GAP remains open.
+      in_sim_gate: false
+      hw_tested: true      # 2026-08-13, first attributable A/B on the KR260 pair
+      hw_evidence: >
+        Arm B = .tl033 (source d317c98...-dirty, Part-A + Part-B, verified
+        STRUCTURALLY in the packaged IP the build consumed; TL033_LEGACY_WDOG
+        defined nowhere). Deployed md5-pinned (die_a 8947a50d, die_b 5979d88c)
+        with abort-on-mismatch. Fresh JTAG POR both dies, AFI 32-bit PASS both,
+        concurrent bring-up: both dies calibration_done=1 fcsm=4 cr_seen=1
+        crack_seen=1.
+        DELIVERY: PASS — adversarial stream landed byte-exact, 200 iters
+        (seed 0xC0FFEE, win=16), both directions, data_exact=True wedge=False.
+        INJECT: a SINGLE AW byte0/bit0 inject on die_a WEDGED die_a hard (ssh
+        timeout, JTAG-POR required). Region F 0x21E0 on die_b moved
+        0xad800000 -> 0xad408020 = healthy=0, any_stall_live=1,
+        ini_wedge_sticky={aw}, ini_stall_live={aw}, tgt clean, resp_err=0 both.
+        => THE FIX IS PRESENT AND DOES NOT PREVENT THE WEDGE.
+      hw_scope: "single AW byte-0/bit-0 inject, eth-chiplet two-board pair, n=1 per arm"
+    localization_2026_08_13: >
+      The wedge is at the AW ADDRESS phase on die_b's RECEIVE/RE-ISSUE side, not
+      on the completion/return path. Face identity is fixed by PORT DIRECTION and
+      is role- AND flip-independent (verified: axi_tgt_0_aw_valid is `input wire`
+      at axi_chiplet_controller.sv:271 = the local PS master's subordinate face;
+      axi_ini_0_aw_valid is `output wire` at :314 = the manager re-issuing an
+      incoming remote write into LOCAL memory; grep of the -flip target dir for
+      axi_tgt_0/axi_ini_0 is EMPTY, and role_is_master never gates face identity).
+      So die_b's ini_aw sticky = die_b re-issuing the die_a-originated write into
+      die_b's own memory and stalling at the address phase. The write CROSSED the
+      link and never reached a completion stage.
+      CONSEQUENCE: the "lost write completion (B/HRESP) on the PS-return path"
+      thesis of DEV_MESSAGE_D2D_WEDGE_ILA_CONFIRMED_2026_08_13.md is REFUTED BY
+      POSITIVE CONTRADICTION (b channel clean, resp_err=0, aw sustained-stalled),
+      not merely unsupported. Its author has withdrawn it.
+      NEXT LOCUS — "what holds die_b's re-issue AW after a CRC recovery", given
+      steady-state delivery is 200/200 so it is recovery-specific:
+        (i)   AW-node a2l-replay RECOVERY latch (self-latch on the recovery path);
+        (ii)  a credit / outstanding counter on die_b's AW path not clearing
+              after the NACK/replay;
+        (iii) the manager re-presenting a stale/duplicate AW the local slave
+              will not re-accept.
+    signoff:
+      claude_verdict: >
+        NOT the operative fix for the AW-inject wedge. TL-035 is real, correctly
+        reasoned and sim-clean, and it is PRESENT in the tested netlist — and the
+        wedge still occurs on a single AW inject. The failure is UPSTREAM of what
+        the state-7 NACK watchdog controls: die_b never completes the ADDRESS
+        phase of the re-issued write, so the completion machinery TL-035 governs
+        is never reached. Do NOT sign TL-035 off as the wedge fix. It may still be
+        correct-and-worth-keeping (it removes a real permanent-disarm defect), but
+        its justification is now hygiene, not this failure mode.
+        Part-B remains BLIND-MERGE-FORBIDDEN: auto_tx_out_advance has still never
+        been probed, so the attended-ILA decision the registry demands is still
+        outstanding and is NOT discharged by this run.
+      evidence:
+        - "imp/hw_gate/tl035_tl035/ (full Arm B run: 00_run.log, Region F pre/post, sweep, verdict)"
+        - "imp/hw_gate/PREREGISTERED_PREDICTIONS_2026_08_13.md (predictions recorded BEFORE the run)"
+        - "die_b 0x21E0: 0xad800000 -> 0xad408020"
+        - "structural: packaged IP WlinkGenericFCSM*.v carry wdog_progress + state-7 exit; TL033_LEGACY_WDOG undefined in the build"
+      approved: false
+
+# =============================================================================
+# FIX-DESIGN CONSTRAINT for the synth-B arming gap (carry into whatever entry
+# the merger opens for it — TL-005 amendment or a new id)
+# =============================================================================
+# The gap: tidelink_top.sv:1667
+#     if (!sub_axi_outstanding || sub_axi_progress) sub_osr_ctr_r <= '0;
+#   Fix H (2026-08-01, :1513-1525) fixed the FIRST term — a single outstanding
+#   BIT falsely read idle for 4-deep bufferable EWR writes, so it added
+#   sub_wr_os_ctr to keep sub_axi_outstanding asserted until every write drains.
+#   The SECOND term was left. sub_axi_progress = sub_r_done | sub_b_done (:1574)
+#   still resets the age timer on ANY read completion or ANY SIBLING write-B.
+#   In a mostly-succeeding 32-write bufferable stream each sibling completion
+#   rearms the stuck write's timer, sub_osr_expired never fires,
+#   sub_wr_stuck_fire (:1857) never asserts, and synth-B never arms —
+#   "present, ungated, never arms". Same defect class as the one Fix H fixed
+#   (per-write state collapsed into a global signal), one line apart.
+#
+# THE FIX MUST BE A SEPARATE TIMER, NOT A RE-GATE OF THE SHARED COUNTER.
+#   - Age the OLDEST UNRETIRED (head-of-line) write; reset ONLY when THAT write
+#     retires. A global "no write-B in N" counter is the same defect one level
+#     up, because any sibling B resets it.
+#   - Reads are genuinely single-outstanding (sub_rd_os_r is a single bit,
+#     :1525) so they need no head-of-line treatment — BUT because sub_osr_ctr_r
+#     is SHARED, a read completion still resets the write timer through the
+#     `|| sub_axi_progress` term. So re-gating the shared counter re-imports the
+#     defect a third time via the read path. Use a distinct write-age timer, or
+#     exclude BOTH sub_r_done and sibling sub_b_done from the write reset.
+#   - Wrapper-side, beside synth-B in tidelink_top. XHB500 itself is under
+#     /research/AAA/ip_library/ (shared vendor IP, must not be modified).
+#
+# DO NOT BUILD IT YET. This is an RTL reading, not a measurement. Gate it on a
+# die_a ILA showing BOTH: synth_b_pending never asserting, AND sub_osr_ctr_r
+# being reset by sibling Bs. Probe set: synth_b_pending, sub_osr_ctr_r,
+# sub_axi_progress, sub_r_done and sub_b_done SEPARATELY, sub_wr_os_ctr, hazard
+# occupancy, s_axi aw/b. Trigger on sustained ahb_sub_hreadyout low. Pair with a
+# NO-CORE control build of identical source (ILA insertion has itself caused a
+# wedge class on this design — WlinkGenericFCSM_6.v:129-138, build #4).
+# The capture modality already exists and is proven: imp/hw_gate/ila_2026_08_12/
+# {ila_capture.tcl, ila_capture_run.sh} force-capture through the PS deadlock.
+
+---
+# TL-042 is its own document because it was appended AFTER the TL-035 amendment
+# block above. Merge it into the same `bugs:` list as TL-036..TL-041.
+  # ---------------------------------------------------------------------------
+  - id: TL-042
+    title: "CLASS: backstops that arm/clear on an intermediate signal the wedge itself suppresses"
+    severity: high
+    area: rtl/tidelink_top
+    status: root_caused
+    summary: >
+      Three separate recovery backstops on the die_a outbound write path each
+      fail the same way, and the shared shape matters more than any one of them:
+      the arming or clearing condition is correct for the failure route its
+      author had in mind, and is DEFEATED by a route they did not — because the
+      condition keys on an INTERMEDIATE signal that the wedge itself suppresses.
+      Logged as a class so the next backstop is not written the same way.
+    instances:
+      - "Fix H (2026-08-01, tidelink_top.sv:1513-1525). Correctly diagnosed that a
+         single outstanding BIT false-idles for 4-deep bufferable EWR writes and
+         added sub_wr_os_ctr. That fixed the FIRST term of the :1667 reset. The
+         SECOND term, `|| sub_axi_progress` (= sub_r_done | sub_b_done, :1574),
+         survived — any read or SIBLING write-B still rearms the age timer."
+      - "synth-B arming (:1857). `sub_wr_stuck_fire = (osr_expired | stall_expired)
+         & (sub_wr_os_ctr != 3'd0)`. MEASURED ON SILICON 2026-08-13: at the wedge
+         sub_wr_os_ctr = 0 because the write never reached s_axi at all
+         (sub_aw_accept = 0), so the AND guard is false and NO timer expiry can
+         ever arm the backstop. The guard keys on a counter the wedge prevents
+         from ever incrementing."
+      - "TL-002 wr_hold_r (:1828-1848). Its own comment documents a wr_hold-stuck
+         hang and adds `clear on synth_b_pending` as the guard. But synth-B cannot
+         arm when no AW was ever counted — precisely the measured state — so the
+         guard cannot fire in the case it was added for. SUSPECTED, not yet
+         probed: wr_hold_r is one of two live candidates holding
+         ahb_sub_hreadyout low."
+    root_cause: >
+      Each backstop observes a PROXY for "the bus is stuck" rather than the
+      condition itself. The proxies (outstanding-count non-zero, forward-progress
+      absent, a sibling backstop having armed) are all downstream of the very
+      transaction the wedge blocks, so the wedge removes the evidence of itself.
+    fix:
+      approach: >
+        Backstops on this path must arm and clear on the CONSEQUENCE — the bus
+        being held (sustained ahb_sub_hreadyout low) or a write not retiring
+        within a bound — NOT on an intermediate signal that the wedge suppresses.
+        Concretely: a watchdog keyed on sustained PS-facing stall, independent of
+        sub_wr_os_ctr, sub_axi_progress and synth_b_pending. Wrapper-side; XHB500
+        is read-only vendor IP under /research/AAA/ip_library/.
+      files: [src/rtl/tidelink_top.sv]
+      commit: null
+      netlist_affecting: true
+    caveats:
+      - "DO NOT build the previously-proposed head-of-line write-age timer: it ages
+         writes counted in sub_wr_os_ctr, and the stuck write is never counted.
+         It would review as correct and do nothing. Killed by the 08-13 ILA."
+      - "The third instance (wr_hold_r) is SUSPECTED, not measured. Priority in the
+         :1909 mux matters: (ext_is_nonseq && !pipe_valid_r) is rank 3 and
+         wr_hold_r rank 5, so if both hold, rank 3 is the operative selector and
+         wr_hold_r is a passenger. pipe_valid_r is the discriminator — probing
+         wr_hold_r alone can produce a true-but-misleading attribution."
+    verification:
+      sim_test: none
+      in_sim_gate: false
+      hw_tested: "instance 2 MEASURED (imp/hw_gate/ila_tl035_run/); instances 1 and 3 read from RTL"
+    signoff:
+      claude_verdict: >
+        The most reusable result of the 2026-08-13 campaign. Two fixes were
+        designed and discarded before implementation because measurement
+        contradicted a well-grounded RTL reading; both would have reviewed as
+        correct. Treat any new backstop on this path as suspect until its arming
+        condition is shown to hold in the wedged state, not merely in the state
+        its author was picturing.
+      evidence:
+        - "imp/hw_gate/ila_tl035_run/ (37-probe die_a capture: sub_aw_accept=0, sub_wr_os_ctr=0, synth_b_pending=0)"
+        - "sub_stall_ctr_r is a CLEAN MONOTONIC +1/clock ramp 0x159f->0x259e with ZERO resets in the 4096-sample window. It ramps continuously, so over a ~20s wedge it MUST reach 2**16 (0.65ms @100MHz) and sub_stall_expired MUST fire repeatedly — yet arming still never occurs. That makes `& (sub_wr_os_ctr != 0)` the DECISIVE blocker: a timer genuinely expires and arming genuinely cannot happen."
+        - "CORRECTION: this counter was first reported as a 'sawtooth'. That was a DECODE BUG — Vivado ILA CSVs encode multi-bit probes as unprefixed quoted HEX ('015fc','01600'), and parsing an all-digit hex value base-10-first yields 1600 instead of 0x1600=5632, fabricating 100 fake drops. ALWAYS PARSE ILA MULTI-BIT PROBES HEX-FIRST. A full mechanism argument was built on the fake sawtooth before it was caught."
+        - "CONSEQUENCE: because the counter never resets in-window, sub_ext_stalled is continuously high, so there is NO sample with rank3=0 AND xhb_sub_hreadyout_raw=1. The round-1 capture therefore CANNOT discriminate rank3 (ext_is_nonseq && !pipe_valid_r) from rank5 (wr_hold_r). Round-2 (43 probes) is a discovery run, not a confirmation."
+        - "tidelink_top.sv:1513-1525 (Fix H), :1667, :1574, :1857, :1828-1848, :1909-1914, :1542-1550, :1645-1646"
+      approved: false
+    related: [TL-002, TL-005, TL-035, TL-037]

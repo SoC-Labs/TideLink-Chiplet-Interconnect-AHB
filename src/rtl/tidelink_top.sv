@@ -346,6 +346,24 @@ module tidelink_top #(
     input  wire                     user_ref_clk,
 
     // --------------------------------------------------------------------------
+    // Link-clock divider ratio (quasi-static, integration-driven)
+    //
+    // 0=/1 bypass, 1=/2, 2=/4, 3=/8, 4=/16. Lowers the D2D bit rate at bring-up
+    // to open a marginal receive eye without moving the SoC system clock. See
+    // tidelink_link_clk_div.sv for the safety properties.
+    //
+    // SAFE TO LEAVE UNCONNECTED. An undriven (X) ratio never satisfies the
+    // divider's two-consecutive-samples-equal filter, so the ratio register
+    // holds its RATIO_RESET value and the module stays in /1 bypass — i.e.
+    // byte-behaviour-identical to this module before the divider existed.
+    // That property is deliberate and load-bearing: it is what lets the ~20
+    // existing cocotb tb_top.sv instantiations stay untouched, and what lets
+    // the compute chiplet pick this up on its next bump without a coordinated
+    // change. Do not "improve" the filter into something X-optimistic.
+    // --------------------------------------------------------------------------
+    input  wire               [2:0] link_clk_div_ratio_i,
+
+    // --------------------------------------------------------------------------
     // PHY Pads (width depends on NUM_PHY_LANES: 1 for GPIO, 8 for SerDes)
     // --------------------------------------------------------------------------
     output wire                              pad_clk_tx,
@@ -2770,6 +2788,48 @@ module tidelink_top #(
     // 0 (disabled) so the cocotb wlink_pair sweep tests keep their
     // hierarchical-force semantics; turning it on here means every TideLink
     // build (FPGA + ASIC + UVM) runs the calibrator after role_locked rises.
+    // =========================================================================
+    // Link-clock divider — the PHY high-speed reference
+    // =========================================================================
+    // Sits between the user_ref_clk port and the controller's user_hsclk input.
+    // Deliberately does NOT open axi_chiplet_controller.sv: the FCSM L6/L7/L9
+    // fixes, the calibrator and the replay logic stay untouched, so this change
+    // cannot perturb any of them.
+    //
+    // WHY IT IS HERE AT ALL. WlinkGPIOPHY_v2.v:357 is a 1:1 assign from
+    // user_hsclk to the PHY's io_hsclk (there is no PLL on this path), and
+    // WavD2DGpioTx.v:322 forwards a gated copy of that clock on the pad. So
+    // this net IS the per-lane bit rate, and on the ethernet chiplet it is
+    // aliased onto sys_fclk at the chip boundary — meaning without this module
+    // the link rate cannot be changed except by moving the whole SoC clock.
+    //
+    // SCOPE — BRING-UP, NOT MID-TRAFFIC. The divider's handover is glitchless
+    // by construction, but that is defence against a mis-timed register write,
+    // NOT a licence to retune a live link. Changing the rate changes the UI,
+    // which invalidates the phase offset the calibrator solved for at the old
+    // rate; a rate change must be followed by re-calibration, so it belongs in
+    // the window where the PHY is held in POR (wlink_por_reset, i.e. before
+    // role_lock). A live mid-link ratio change additionally intersects the
+    // backstop/recovery machinery (N1 / TL-037 / TL-042) and would need its own
+    // hazard pass — it is explicitly NOT claimed by this change.
+    wire link_hsclk_w;
+
+    tidelink_link_clk_div #(
+        // /1 bypass out of reset: the shipping configuration stays the one
+        // already signed off, and divided modes are opt-in at bring-up.
+        .RATIO_RESET (3'd0)
+    ) u_link_clk_div (
+        .clk_in     (user_ref_clk),
+        // poresetn, not hresetn. This clock feeds the PHY, whose reset is held
+        // longer than the fabric's precisely so the PHY survives a warm reset;
+        // resetting its reference on hresetn would break that.
+        .rst_n      (poresetn),
+        .ratio_i    (link_clk_div_ratio_i),
+        .scan_mode  (scan_mode),
+        .clk_out    (link_hsclk_w),
+        .ratio_o    (/* unconnected — readback surfaced by the integration */)
+    );
+
     axi_chiplet_controller #(
         // Re-enabled for build #3 (Fix A2 + Fix B per
         // docs/CALIBRATOR_HW_FAILURE_AUDIT_2026_05_29.md). The
@@ -2814,7 +2874,7 @@ module tidelink_top #(
     ) u_chiplet_controller (
         .apb_clk                    (hclk),
         .app_clk                    (hclk),
-        .user_hsclk                 (user_ref_clk),
+        .user_hsclk                 (link_hsclk_w),
 
         .poresetn                   (poresetn),
         .hresetn                    (hresetn),

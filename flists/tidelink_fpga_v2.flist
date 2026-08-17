@@ -428,4 +428,7 @@ ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
 // tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
 
 // ── Top-level wrapper ────────────────────────────────────────────────────────
+// ── Link-clock divider — must come before the tidelink_top shim, which
+//    `include`s the real tidelink_top.sv and therefore instantiates it.
+${TIDELINK_HOME}/src/rtl/tidelink_link_clk_div.sv
 ${TIDELINK_HOME}/src/rtl/v2shims/v2_tidelink_top.sv

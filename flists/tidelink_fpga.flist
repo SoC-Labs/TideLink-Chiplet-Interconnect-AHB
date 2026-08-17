@@ -325,4 +325,6 @@ ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
 
 // ── Top-level wrapper ────────────────────────────────────────────────────────
+// ── Link-clock divider — must come before tidelink_top.sv which instantiates it
+${TIDELINK_HOME}/src/rtl/tidelink_link_clk_div.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

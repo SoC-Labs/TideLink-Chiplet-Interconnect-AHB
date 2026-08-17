@@ -76,7 +76,12 @@ module WlinkGenericFCSM_3(
  `define SOCL_L7_MIN_CRACK_EMITS_VAL 8
 `endif
   localparam [7:0]  SOCL_L7_MIN_CRACK_EMITS = `SOCL_L7_MIN_CRACK_EMITS_VAL;
-  localparam [15:0] SOCL_L7_WDOG_THRESHOLD  = 16'h4000;
+  // TL-033 (2026-08-09): compile-overridable state-7 watchdog threshold (default
+  // = silicon value 16'h4000). See WlinkGenericFCSM.v for the full rationale.
+`ifndef SOCL_L7_WDOG_THRESHOLD_VAL
+ `define SOCL_L7_WDOG_THRESHOLD_VAL 16'h4000
+`endif
+  localparam [15:0] SOCL_L7_WDOG_THRESHOLD  = `SOCL_L7_WDOG_THRESHOLD_VAL;
   localparam [15:0] SOCL_REACK_THRESHOLD    = 16'h0100;
 `ifdef RANDOMIZE_REG_INIT
   reg [31:0] _RAND_0;
@@ -300,9 +305,16 @@ module WlinkGenericFCSM_3(
   // SoC Labs F-1 (Fix D): state-7 NACK watchdog (routing-insensitive backup).
   reg         socl_l7_real_crc_seen;
   reg  [15:0] socl_l7_wdog_cnt;
+  // TL-033 (2026-08-09) revert-aware state-7 watchdog (see WlinkGenericFCSM.v).
+  wire        socl_l7_wdog_progress = auto_tx_out_advance;
+`ifdef TL033_LEGACY_WDOG
   wire        socl_l7_wdog_force_clear =
                 (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
                 & ~socl_l7_real_crc_seen;
+`else
+  wire        socl_l7_wdog_force_clear =
+                (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD);
+`endif
   // SoC Labs (Fix E): receiver-side periodic ACK re-emission (idempotent).
   reg  [15:0] socl_reack_idle_cnt;
   wire socl_reack_have_rx = (last_good_pkt_from_rx != 8'h0);
@@ -389,7 +401,11 @@ module WlinkGenericFCSM_3(
   wire  _GEN_112 = auto_tx_out_advance & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
   wire [7:0] _GEN_113 = auto_tx_out_advance ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
   wire  _GEN_114 = auto_tx_out_advance ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
+`ifdef TL035_PARTB
+  wire [2:0] _GEN_115 = (auto_tx_out_advance | socl_l7_wdog_force_clear) ? 3'h4 : state; // TL-035 Part-B state-7 exit
+`else
   wire [2:0] _GEN_115 = auto_tx_out_advance ? 3'h4 : state; // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
+`endif
   wire  _GEN_123 = send_nack_req | _T_59; // @[FC.scala 586:30 FC.scala 589:39]
   wire [7:0] _GEN_124 = send_nack_req ? out_prepend_swi_nack_id : _GEN_56; // @[FC.scala 586:30 FC.scala 590:39]
   wire [15:0] _GEN_125 = send_nack_req ? {{4'd0}, _word_count_in_T_4} : _GEN_57; // @[FC.scala 586:30 FC.scala 591:39]
@@ -1021,8 +1037,13 @@ module WlinkGenericFCSM_3(
       socl_l7_wdog_cnt <= 16'h0;
     end else if (state != 3'h7) begin
       socl_l7_wdog_cnt <= 16'h0;
+`ifdef TL033_LEGACY_WDOG
     end else if (socl_l7_real_crc_seen) begin
       socl_l7_wdog_cnt <= 16'h0;
+`else
+    end else if (socl_l7_wdog_progress) begin
+      socl_l7_wdog_cnt <= 16'h0;
+`endif
     end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
       socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
     end

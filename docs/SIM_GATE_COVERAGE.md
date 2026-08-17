@@ -168,6 +168,24 @@ Cherry-picked from `fix/tidelink-isolated-write-dataloss@fda8288` (sim + doc onl
 zero RTL delta — the fix was already present via `cb33c9f`). Confirmed 4/4 PASS
 on this tree before wiring into the aggregate.
 
+### 2.7 Added 2026-08-17 — two-board PTP convergence (1)
+
+| Suite | Bench / config | Feature | What it actually protects |
+|---|---|---|---|
+| `ptp_link_sync` (`sim_gate_ptp_link_sync`, `test_ptp_link_sync`) | `tidelink_top_pair`, V2, autonomy ON (`SIM_GATE_TP_ENV`, shares `sim_build_l4`) | **F13** | A REAL two-PHC convergence test, not a register-only stand-in: `tb_phc_model.sv` gives each die a free-running behavioural PHC, and `phc_locked_i` is proven NOT tied (`test_phc_locked_is_real_not_tied` drives the lock gate low/high and confirms `HW_SYNC_STATUS[18]` follows). Master(GM)/slave(Sub) servos then exchange SYNC/DELAY_REQ + FC SIDEBAND timestamps **across the link**, and `test_ptp_offset_converges_over_link` asserts a numeric gate (`SERVO_STEP_THRESH_NS = 12000` ns) — the servo-reported offset converges AND the two PHC counters actually align, not just that PTP registers exist. The file existed on disk, invoked from nowhere (no Makefile, no CI, and — until this entry — not even listed in this document, which mischaracterised two-board PTP convergence as un-sim-able). Confirmed 2/2 PASS standalone before wiring into the aggregate. |
+
+This closes the **sim** half of the old §7 "Two-board PTP convergence" gap. It
+does **not** close convergence between two **real silicon** PHCs on real
+hardware — `tb_phc_model.sv` is a behavioural TB double, not the on-chip PHC IP
+driven end to end over an actual board-to-board link. See the updated §7 row.
+
+Separately: the "mailbox not read-only from APB" RTL defect that shares the
+F13 tapeout-risk tag (TL-010) is a **different, already-closed** sub-issue —
+fixed and gated at `5169de3d` (2026-08-10) via `test_v2_mbox_apb_writeprotect.py`
+(`sim_gate_v2_mbox_writeprotect`, already in §2 above). Do not read an "F13
+open/HIGH" framing as covering the mailbox defect too — only the real-hardware
+two-board convergence sub-item (this section) remains open.
+
 ## 3. The three nuanced dispositions
 
 ### 3.1 Error injection — gate the good, sentinel the defects
@@ -370,7 +388,7 @@ owns.
 | `xhb_window_skew_debug` diagnostic | — | no pass criterion (§3.3) | its output lives in `XHB_WINDOW_SKEW_ROOTCAUSE.md` |
 | Lane mask `0xFF` (the 2× lever) | F05 | mask is latched at the mask-handshake; a runtime poke does not rewire the datapath, so sim cannot gate the HW lever | separate rebuild campaign (`LANE_MASK_RESET=0xFF`) |
 | Throughput / sustained soak | F12 | wall-clock; not a correctness gate | `linkhold_soak.sh`, `HW_CHARACTERIZATION_PLAN` T1–T8 (**unexecuted**) |
-| Two-board PTP convergence | F13 | needs two real PHCs | `gate_ptp` on silicon; never end-to-end on HW |
+| Two-board PTP convergence — **real hardware** | F13 | CORRECTED 2026-08-17: a genuine two-PHC sim test now exists and is gated (`sim_gate_ptp_link_sync`, §2.7) — this row is scoped to what sim structurally cannot reach: convergence between two REAL silicon PHCs over an actual board-to-board link. (The F13-tagged mailbox RO-from-APB RTL defect, TL-010, is unrelated and already fixed+gated — see §2.7.) | `gate_ptp` on silicon; never end-to-end on HW |
 | On-silicon PHY BIST / BER | F19 | no production bitstream contains it | nothing — the standing BIST gap |
 | TideChart **on hardware** | F18 | suites 16–17 are sim-only | nothing — never wired to a TideLink pair on silicon |
 | Straps for `apb_debug_unlock_i` / `mask_hs_bypass_i` | F17 | tied `1'b1`; **APB debug is permanently unlocked in silicon** | open pre-tapeout item |

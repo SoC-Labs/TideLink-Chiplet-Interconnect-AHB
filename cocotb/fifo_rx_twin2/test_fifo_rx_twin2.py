@@ -54,9 +54,42 @@ def read_ptr(dut):       return int(dut.u_dut.read_ptr.value)
 def credit(dut):         return int(dut.u_dut.credit_count.value)
 
 def packet_active(dut):
+    """Is ANY packet-metadata tracker armed? (TWIN-2's 'no phantom packet' probe)
+
+    RX-FIFO TWIN 3 (2026-08-01, tidelink_fifo_ctrl.sv) SPLIT the single shared
+    `packet_active_r` into independent write-side and read-side trackers
+    (`write_packet_active_r` / `read_packet_active_r`). The faithful successor of
+    the pre-split probe is therefore the OR of the two: TWIN-2 asserts that a
+    stray AHB write to the RX window arms NOTHING, and the OR is the strictly
+    stronger statement of exactly that (the stray write targets the WRITE-side
+    arm, so write_packet_active_r is the load-bearing term).
+
+    The frozen FIFO_SRC=unfixed copies (tidelink_fifo_ctrl.UNFIXED.sv — the
+    NEGATIVE CONTROL that keeps this test honest) still carry the single
+    pre-split register, so fall back to it. The A/B must resolve on BOTH
+    namings, otherwise `make ab` would report a red for a stale-probe
+    AttributeError rather than for the defect.
+
+    Stale-probe fix 2026-08-13: this helper still named the pre-split register,
+    so test_01 died with AttributeError against the shipping tree RTL.
+    """
+    ctrl = dut.u_dut.u_fifo_ctrl
+
+    split = [n for n in ("write_packet_active_r", "read_packet_active_r")
+             if hasattr(ctrl, n)]
+    if split:
+        active = 0
+        for name in split:
+            try:
+                active |= int(getattr(ctrl, name).value)
+            except ValueError:      # X/Z -> treat as not-armed, as before
+                pass
+        return active
+
+    # pre-TWIN-3 RTL (the frozen UNFIXED negative control): one shared register
     try:
-        return int(dut.u_dut.u_fifo_ctrl.packet_active_r.value)
-    except ValueError:
+        return int(ctrl.packet_active_r.value)
+    except (AttributeError, ValueError):
         return 0
 
 def fc_landing_addr(dut):

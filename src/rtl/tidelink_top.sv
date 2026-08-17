@@ -1529,6 +1529,14 @@ module tidelink_top #(
     logic [11:0]                           sub_wr_awid_r;
     logic                                  synth_b_pending;
     logic                                  sub_err1_r, sub_err2_r;
+    // ── TL-037 (2026-08-14): "a master transfer is in its DATA PHASE" ────────
+    // Declared here (used by the backstop always_ff below); DRIVEN after the
+    // ahb_sub_hreadyout assign, which is its clear term. Set when the wrapper
+    // captures a master address phase (the SAME qualifier the address pipeline
+    // and wr_hold_r use), cleared the cycle the master is answered. It is the
+    // AHB-legality predicate the F-1 fix actually needed: "is the master
+    // waiting?", as opposed to "is a transaction outstanding on s_axi?".
+    logic                                  sub_mst_dphase_r;
     // Front-end is holding HREADYOUT low (a transfer is in flight and not
     // progressing): the pipeline-fill stall cycle OR — the case that actually
     // wedges the PS — XHB500 holding its data phase low while it waits on the
@@ -1643,6 +1651,57 @@ module tidelink_top #(
                 // AHB-illegal (F-1). Reads have NO synthetic response, so a stuck
                 // read still legitimately drives HRESP=ERROR here.
                 if (sub_rd_os_r) sub_err1_r <= 1'b1;  // fire ERROR (read only)
+                // ── TL-037 FIX (2026-08-14, sim-reproduced) ──────────────────
+                // TERMINAL TIMEOUT for a transfer stalled BEFORE it ever
+                // reaches s_axi. Every existing backstop on this port is
+                // conditioned on a transaction ALREADY being outstanding:
+                // the two ERROR fire sites on sub_rd_os_r, and the synth-B
+                // drain on sub_wr_os_ctr. But XHB500 holds hreadyout LOW in
+                // RESP_FSM_SEQ_NSEQ whenever it cannot SUBMIT the address
+                // (core_resp.sv:181-183 `if (~address_readyout)`), and
+                // pause_addr_submit (core_addr.sv:151-154) blocks a read on
+                // `~ready_for_read`, whose read_counter is decremented ONLY by
+                // r_done (core_resp.sv:115-123). So after ANY read whose R is
+                // permanently lost -- including one the read backstop above has
+                // just legitimately retired -- read_counter is parked non-zero,
+                // every later peer access is paused with sub_rd_os_r == 0 AND
+                // sub_wr_os_ctr == 0, and this timer expires into a DEAD GATE:
+                // it resets itself and fires nothing, forever. ahb_sub_hreadyout
+                // stays low, the PS store/load never returns, and the only
+                // recovery is a power-on reset (TL-037; sim-reproduced
+                // 2026-08-14, cocotb test_tl037_ahb_sub_terminal_timeout.py --
+                // the stall timer expired 6x in that state with zero HRESP).
+                // Fire the SAME 2-cycle ERROR sequencer, under the three
+                // conditions that keep every earlier fix intact:
+                //   sub_mst_dphase_r   the master really is waiting on a
+                //                      transfer, so the ERROR lands in a data
+                //                      phase and is AHB-LEGAL. This is F-1's
+                //                      requirement stated correctly: F-1 barred
+                //                      an ERROR on an IDLE bus, and gated on
+                //                      sub_rd_os_r to do it -- which also
+                //                      disabled the one case the per-beat stall
+                //                      backstop was BUILT for. On an idle bus
+                //                      sub_mst_dphase_r is 0, so nothing fires.
+                //   sub_wr_os_ctr==0   a stuck WRITE is owned by synth-B
+                //                      (sub_wr_stuck_fire keys on this SAME
+                //                      expiry); never double-drive it (F-1).
+                //   !synth_b_pending   the master-facing ERROR is masked by
+                //                      `& ~synth_b_pending` at the two assigns
+                //                      below, so firing into a drain would be
+                //                      the N1 defect (an ERROR that is fired,
+                //                      masked, and never re-fired).
+                // NOTE this ASSERTS NOTHING and CLEARS NOTHING but its own
+                // one-shot: it does not touch synth_b_pending (a LEVEL that is
+                // a term of wr_hold_clr -- asserting it disables the TL-002
+                // peer-write hold, which is why the TL-042 candidate was
+                // rejected on hardware), sub_rd_os_r, sub_wr_os_ctr or
+                // wr_hold_r. It only fires an ERROR into a stall that today
+                // ends in silence. The `else` keeps the pre-existing
+                // sub_rd_os_r path bit-identical, so the ONLY behaviour change
+                // is in a case that previously did nothing at all.
+                else if (sub_mst_dphase_r && (sub_wr_os_ctr == 3'd0)
+                                          && !synth_b_pending)
+                    sub_err1_r <= 1'b1;  // 2-cycle ERROR: terminal timeout
             end else begin
                 // Sized increment (was `+ 1'b1`): identical value, equal-width
                 // operands. TL-009 mitigation code -- deliberately a no-op.
@@ -1925,6 +1984,30 @@ module tidelink_top #(
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
     assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 : xhb_sub_hresp_raw;
+
+    // ── TL-037 FIX (2026-08-14): driver for sub_mst_dphase_r ─────────────────
+    // "The master has been given a transfer and has not been answered yet."
+    // SET on the cycle the wrapper captures a master address phase -- the SAME
+    // qualifier the address pipeline (:1596) and wr_hold_r (:1846) use, which
+    // is the one that works whether or not the master holds HTRANS through the
+    // stall. CLEAR the cycle ahb_sub_hreadyout goes high, which on this port is
+    // exactly the cycle the master is answered: the fill term, rd_pipe_r and
+    // wr_hold_r each hold hreadyout LOW across the whole of a read's and a
+    // write's data phase, so there is no intermediate high pulse to clear it
+    // early. Set wins over clear (a new transfer means the master is waiting
+    // again), which makes back-to-back transfers correct.
+    //
+    // NO COMB LOOP (the load-bearing wrapper invariant, cb33c9f): this is a
+    // REGISTER whose inputs are ext_is_nonseq (ahb_sub_hsel/htrans only),
+    // pipe_valid_r (reg) and ahb_sub_hreadyout (already free of any
+    // ahb_sub_hready dependence), and it feeds ONLY the registered sub_err1_r.
+    // ahb_sub_hreadyout therefore gains no combinational dependence on
+    // ahb_sub_hready -- never read it here.
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)                            sub_mst_dphase_r <= 1'b0;
+        else if (ext_is_nonseq && !pipe_valid_r) sub_mst_dphase_r <= 1'b1;
+        else if (ahb_sub_hreadyout)              sub_mst_dphase_r <= 1'b0;
+    end
 
     // =========================================================================
     // 1. TideLink RX FIFO (tidelink_fifo)

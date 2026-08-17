@@ -171,7 +171,7 @@ tl042v2: ; @for t in $(TL042V2_TESTS); do $(MAKE) $$t || exit 1; done
 
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
-	       sim_build_writehold* sim_build_tl042v2* $(LOCAL_FLIST)
+	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification
@@ -217,12 +217,40 @@ GAPS_ECC_TESTS := test_ecc_corrects_w_byte0 test_ecc_corrects_aw_byte0 \
 GAPS_CRC_TESTS := test_crc_off_silently_corrupts_write_data \
                   test_crc_on_detects_write_data_corruption
 
-.PHONY: gaps gaps_nodes gaps_backstop gaps_ecc gaps_crc $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS) $(GAPS_ECC_TESTS) $(GAPS_CRC_TESTS)
+# TL-037 (2026-08-14) — ahb_sub TERMINAL TIMEOUT dead gate. Every recovery on
+# this port (both per-beat-stall ERROR fire sites, the I5 outstanding-response
+# backstop, the synth-B write drain) requires the stalled transfer to already
+# be counted outstanding (sub_rd_os_r set / sub_wr_os_ctr != 0). XHB500 can
+# stall a transfer BEFORE that acceptance, and lands in exactly that state the
+# instant any earlier backstop (N1 included) rescues a transaction whose
+# remote response never returns -- the per-beat stall timer then expires into
+# a dead gate forever. Fix: imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch
+# (sub_mst_dphase_r + one `else if`, gated on !synth_b_pending and
+# sub_wr_os_ctr==0 so it never double-fires against synth-B or N1).
+# SHORT stall + outstanding windows so both expiries are reachable in sim
+# (own sim_build/defines -- distinct from gaps_backstop's). ONE TEST PER SIM
+# (test_tl037_ahb_sub_terminal_timeout.py: a second run_bringup_full does not
+# re-POR cleanly).
+TL037_LOG2 ?= 13
+GAPS_TL037_TESTS := test_tl037_control_first_stuck_read_is_bounded \
+                    test_tl037_second_access_after_backstop_hangs \
+                    test_tl037_second_access_write_after_backstop_hangs \
+                    test_tl037_fix_clears_state_and_normal_path_survives
+
+.PHONY: gaps gaps_nodes gaps_backstop gaps_ecc gaps_crc gaps_tl037 $(GAPS_NODE_TESTS) $(GAPS_BACKSTOP_TESTS) $(GAPS_ECC_TESTS) $(GAPS_CRC_TESTS) $(GAPS_TL037_TESTS)
 
 $(GAPS_CRC_TESTS):
 	$(MAKE) SIM_BUILD=sim_build_gaps_nodes MODULE=test_axi_datanode_gaps TESTCASE=$@
 
 gaps_crc: ; @for t in $(GAPS_CRC_TESTS); do $(MAKE) $$t || exit 1; done
+
+$(GAPS_TL037_TESTS):
+	TL037_STALL_LOG2=$(TL037_LOG2) $(MAKE) SIM_BUILD=sim_build_tl037 \
+	        MODULE=test_tl037_ahb_sub_terminal_timeout \
+	        EXTRA_DEFINES="+define+TIDELINK_SUB_STALL_TIMEOUT_LOG2=$(TL037_LOG2) +define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=$(TL037_LOG2)" \
+	        TESTCASE=$@
+
+gaps_tl037: ; @for t in $(GAPS_TL037_TESTS); do $(MAKE) $$t || exit 1; done
 
 # Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
 # via NACK/replay long before any backstop is relevant.

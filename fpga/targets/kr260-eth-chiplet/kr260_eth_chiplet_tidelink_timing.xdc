@@ -294,7 +294,6 @@ set_property IOB FALSE [get_ports {pad_rx[*]}]
 # covers the (possibly inverted) capture clock too.
 # SoC Labs 2026-06-21: $hclk_pin was UNDEFINED here -> this whole set_clock_groups threw
 # "can't read hclk_pin" and was SILENTLY DROPPED. Define it (= clk_wiz hclk/clk_out1).
-set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}]
 
 #-----------------------------------------------------------------------------
 # [4a] PHY /2 clock (user_ref_clk = clk_out1 / 2 = 2.343 MHz). PHY /2 (2026-06-30).
@@ -309,9 +308,7 @@ set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_o
 # KR260: tidelink_phy_clk_div2 is a /8 free-running counter (div_cnt_reg[2:0])
 # feeding u_div_bufg -> 3.125 MHz. Source on the [2] bit's C pin (a SINGLE pin;
 # matching div_cnt_reg[*] would hit 3 pins and trip Constraints 18-359).
-create_generated_clock -name user_ref_clk_div2 \
-    -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*div_cnt_reg[2]/C"}] \
-    -divide_by 8 [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}]
+create_generated_clock -name user_ref_clk_div2 -source [get_pins -hier -filter {NAME =~ "*phy_clk_div*div_cnt_reg[2]/C"}] -divide_by 8 [get_pins -hier -filter {NAME =~ "*phy_clk_div*u_div_bufg*/O"}]
 
 #-----------------------------------------------------------------------------
 # [4b] TX WORD CLOCK (gpiotx_0 = local hsclk/16). PORTED from the PHY-BIST
@@ -325,9 +322,7 @@ create_generated_clock -name user_ref_clk_div2 \
 #   FCSM never drains -> NO V2 DATA TX. Declaring the clock makes Vivado TIME the
 #   domain and route the 285-fanout net on a global clock buffer.
 #-----------------------------------------------------------------------------
-create_generated_clock -name gpiotx0_word_clk \
-    -source [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/C"}] \
-    -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/Q"}]
+create_generated_clock -name gpiotx0_word_clk -source [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/C"}] -divide_by 16 [get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/Q"}]
 # FIX-O handoff margin: word-domain regs -> count==7 mid-word capture (link_data_stage)
 # is a half-word-period datapath transfer, not edge-aligned.
 # SoC Labs 2026-07-05: FIX-O DISABLED. When synth prunes link_data_stage_reg[*]
@@ -348,11 +343,7 @@ create_generated_clock -name gpiotx0_word_clk \
 # (they are async-synchronised, not balanced). gpiotx0_word_clk is itself derived
 # from user_ref_clk_div2 (/16 of it); keeping both grouped is consistent — they
 # are all in the asynchronous PHY/link timing island relative to hclk.
-set_clock_groups -asynchronous \
-    -group [get_clocks pad_clk_rx] \
-    -group [get_clocks -of_objects $hclk_pin] \
-    -group [get_clocks gpiotx0_word_clk] \
-    -group [get_clocks user_ref_clk_div2]
+set_clock_groups -asynchronous -group [get_clocks pad_clk_rx] -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}]] -group [get_clocks gpiotx0_word_clk] -group [get_clocks user_ref_clk_div2]
 
 #-----------------------------------------------------------------------------
 # [5] (DISABLED) Future IDELAYE2 per-lane delay line — separate agent's job
@@ -436,11 +427,7 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 # (nanosoc_gen tests: "set_clock_groups -name async_sys_rmii -asynchronous
 # -group [get_clocks {rmii_ref_clk mii_rx_clk mii_tx_clk}]").
 #-----------------------------------------------------------------------------
-create_generated_clock -name mii_tx_clk -divide_by 2 \
-    -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/C"}] \
-    [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/Q"}]
-create_generated_clock -name mii_rx_clk -divide_by 2 \
-    -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/C"}] \
-    [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/Q"}]
-set_clock_groups -name async_sys_rmii -asynchronous \
-    -group [get_clocks {rmii_ref_clk mii_tx_clk mii_rx_clk}]
+create_generated_clock -name mii_tx_clk -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/C"}] -divide_by 2 [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mtx_clk_reg/Q"}]
+create_generated_clock -name mii_rx_clk -source [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/C"}] -divide_by 2 [get_pins -hier -filter {NAME =~ "*/u_rmii_to_mii/mrx_clk_reg/Q"}]
+set_clock_groups -name async_sys_rmii -asynchronous -group [get_clocks {rmii_ref_clk mii_tx_clk mii_rx_clk}]
+

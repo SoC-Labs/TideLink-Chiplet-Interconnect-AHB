@@ -17,34 +17,34 @@
 #-----------------------------------------------------------------------------
 
 #-- TX side (outputs from the chiplet's internal TideLink) --------------------
-set_property -dict { PACKAGE_PIN AD15 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports pad_clk_tx]  ;# BCM0 HDGC
-set_property -dict { PACKAGE_PIN AD14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[0]}] ;# BCM1
-set_property -dict { PACKAGE_PIN AC13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[1]}] ;# BCM9
-set_property -dict { PACKAGE_PIN AA13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[2]}] ;# BCM12
-set_property -dict { PACKAGE_PIN AB13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[3]}] ;# BCM13
-set_property -dict { PACKAGE_PIN AG14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[4]}] ;# BCM4
-set_property -dict { PACKAGE_PIN AH14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[5]}] ;# BCM5
-set_property -dict { PACKAGE_PIN AG13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[6]}] ;# BCM6
-set_property -dict { PACKAGE_PIN AH13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8 } [get_ports {pad_tx[7]}] ;# BCM7
+set_property -dict {PACKAGE_PIN AD15 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports pad_clk_tx]
+set_property -dict {PACKAGE_PIN AD14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[0]}]
+set_property -dict {PACKAGE_PIN AC13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[1]}]
+set_property -dict {PACKAGE_PIN AA13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[2]}]
+set_property -dict {PACKAGE_PIN AB13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[3]}]
+set_property -dict {PACKAGE_PIN AG14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[4]}]
+set_property -dict {PACKAGE_PIN AH14 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[5]}]
+set_property -dict {PACKAGE_PIN AG13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[6]}]
+set_property -dict {PACKAGE_PIN AH13 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 8} [get_ports {pad_tx[7]}]
 
 #-- RX side (inputs to the chiplet's internal TideLink) -----------------------
-set_property -dict { PACKAGE_PIN AC14 IOSTANDARD LVCMOS33 } [get_ports pad_clk_rx]  ;# BCM8 HDGC
-set_property -dict { PACKAGE_PIN AB15 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[0]}] ;# BCM16
-set_property -dict { PACKAGE_PIN AB14 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[1]}] ;# BCM17
-set_property -dict { PACKAGE_PIN AE13 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[2]}] ;# BCM10
-set_property -dict { PACKAGE_PIN AF13 IOSTANDARD LVCMOS33 } [get_ports {pad_rx[3]}] ;# BCM11
-set_property -dict { PACKAGE_PIN W14  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[4]}] ;# BCM14
-set_property -dict { PACKAGE_PIN W13  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[5]}] ;# BCM15
-set_property -dict { PACKAGE_PIN Y14  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[6]}] ;# BCM18
-set_property -dict { PACKAGE_PIN Y13  IOSTANDARD LVCMOS33 } [get_ports {pad_rx[7]}] ;# BCM19
+set_property -dict {PACKAGE_PIN AC14 IOSTANDARD LVCMOS33} [get_ports pad_clk_rx]
+set_property -dict {PACKAGE_PIN AB15 IOSTANDARD LVCMOS33} [get_ports {pad_rx[0]}]
+set_property -dict {PACKAGE_PIN AB14 IOSTANDARD LVCMOS33} [get_ports {pad_rx[1]}]
+set_property -dict {PACKAGE_PIN AE13 IOSTANDARD LVCMOS33} [get_ports {pad_rx[2]}]
+set_property -dict {PACKAGE_PIN AF13 IOSTANDARD LVCMOS33} [get_ports {pad_rx[3]}]
+set_property -dict {PACKAGE_PIN W14 IOSTANDARD LVCMOS33} [get_ports {pad_rx[4]}]
+set_property -dict {PACKAGE_PIN W13 IOSTANDARD LVCMOS33} [get_ports {pad_rx[5]}]
+set_property -dict {PACKAGE_PIN Y14 IOSTANDARD LVCMOS33} [get_ports {pad_rx[6]}]
+set_property -dict {PACKAGE_PIN Y13 IOSTANDARD LVCMOS33} [get_ports {pad_rx[7]}]
 
 #-- Console UART on spare RPi pins (BCM20/21, plain IO, off the ribbon) -------
-set_property -dict { PACKAGE_PIN W12  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports uart_txd] ;# BCM20
-set_property -dict { PACKAGE_PIN W11  IOSTANDARD LVCMOS33 }                    [get_ports uart_rxd] ;# BCM21
+set_property -dict {PACKAGE_PIN W12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports uart_txd]
+set_property -dict {PACKAGE_PIN W11 IOSTANDARD LVCMOS33} [get_ports uart_rxd]
 
 #-- Status LEDs on PMOD3 (moved off PMOD1 — the LAN8720 module takes it) -----
-set_property -dict { PACKAGE_PIN AG10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led0] ;# PMOD3.3 — link_active (moved off PMOD1: PHY)
-set_property -dict { PACKAGE_PIN AH10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led1] ;# PMOD3.4 — role_is_master (moved off PMOD1: PHY)
+set_property -dict {PACKAGE_PIN AG10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports led0]
+set_property -dict {PACKAGE_PIN AH10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4} [get_ports led1]
 
 #-----------------------------------------------------------------------------
 # CoreSight SWD on PMOD2 (3.3V HD bank, off the bank-44 ribbon).
@@ -55,9 +55,17 @@ set_property -dict { PACKAGE_PIN AH10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [g
 #   GND on pin5/11, 3V3 (probe VREF) on pin6/12.
 # Drives the same OpenOCD flow as the Z2 build (transport=swd).
 #-----------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN J11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLDOWN true } [get_ports SWCLK]
-set_property -dict { PACKAGE_PIN J10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWDIO]
-set_property -dict { PACKAGE_PIN K13 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true }   [get_ports SWD_NPORESETN]
+set_property PACKAGE_PIN J11 [get_ports SWCLK]
+set_property IOSTANDARD LVCMOS33 [get_ports SWCLK]
+set_property PULLTYPE PULLDOWN [get_ports SWCLK]
+set_property PACKAGE_PIN J10 [get_ports SWDIO]
+set_property IOSTANDARD LVCMOS33 [get_ports SWDIO]
+set_property SLEW SLOW [get_ports SWDIO]
+set_property DRIVE 8 [get_ports SWDIO]
+set_property PULLTYPE PULLUP [get_ports SWDIO]
+set_property PACKAGE_PIN K13 [get_ports SWD_NPORESETN]
+set_property IOSTANDARD LVCMOS33 [get_ports SWD_NPORESETN]
+set_property PULLTYPE PULLUP [get_ports SWD_NPORESETN]
 
 # SWCLK is a slow external debug clock and may land on a non-ideal (clock-capable)
 # pin; waive dedicated clock-routing so the placer accepts it.
@@ -73,23 +81,28 @@ set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports SWCLK]
 # the nearest free pin (SWD occupies PMOD2 pins 1-3 only).
 # No PHY reset pin: the Waveshare module self-resets (the Z2 drives none).
 #-----------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN H12 IOSTANDARD LVCMOS33 } [get_ports {rmii_rxd[1]}]   ;# PMOD1.1  RX1
-set_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports rmii_crs_dv]      ;# PMOD1.3  CRS_DV
-set_property -dict { PACKAGE_PIN E12 IOSTANDARD LVCMOS33 } [get_ports {rmii_rxd[0]}]   ;# PMOD1.8  RX0
-set_property -dict { PACKAGE_PIN C11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 } [get_ports mdc_pad_o] ;# PMOD1.4 MDC
-set_property -dict { PACKAGE_PIN D11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true } [get_ports MDIO] ;# PMOD1.9
+set_property -dict {PACKAGE_PIN H12 IOSTANDARD LVCMOS33} [get_ports {rmii_rxd[1]}]
+set_property -dict {PACKAGE_PIN D10 IOSTANDARD LVCMOS33} [get_ports rmii_crs_dv]
+set_property -dict {PACKAGE_PIN E12 IOSTANDARD LVCMOS33} [get_ports {rmii_rxd[0]}]
+set_property -dict {PACKAGE_PIN C11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8} [get_ports mdc_pad_o]
+set_property PACKAGE_PIN D11 [get_ports MDIO]
+set_property IOSTANDARD LVCMOS33 [get_ports MDIO]
+set_property SLEW SLOW [get_ports MDIO]
+set_property DRIVE 8 [get_ports MDIO]
+set_property PULLTYPE PULLUP [get_ports MDIO]
 
 # RMII TX: SLEW FAST + DRIVE 16 is the Z2-validated source-synchronous config.
 # NOTE: the Z2 also sets IOB TRUE here; NOT replicated because TideLink's pad_rx
 # needed IOB FALSE on this device — verify IOB packing on the KR260 HD bank
 # before adding it.
-set_property -dict { PACKAGE_PIN E10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16 } [get_ports {rmii_txd[0]}] ;# PMOD1.2 TX0
-set_property -dict { PACKAGE_PIN B10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16 } [get_ports rmii_tx_en]     ;# PMOD1.7 TX_EN
-set_property -dict { PACKAGE_PIN K12 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16 } [get_ports {rmii_txd[1]}] ;# PMOD2.4 TX1 (overflow)
+set_property -dict {PACKAGE_PIN E10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16} [get_ports {rmii_txd[0]}]
+set_property -dict {PACKAGE_PIN B10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16} [get_ports rmii_tx_en]
+set_property -dict {PACKAGE_PIN K12 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16} [get_ports {rmii_txd[1]}]
 
 # 50 MHz REF_CLK from the PHY (REF_CLK_OUT mode) on a non-clock-capable pin —
 # exactly as the Z2 does at V12. The create_clock is REQUIRED: without it any
 # rmii_ref_clk-referencing timing constraint silently matches nothing.
-set_property -dict { PACKAGE_PIN B11 IOSTANDARD LVCMOS33 } [get_ports rmii_ref_clk]     ;# PMOD1.10
+set_property -dict {PACKAGE_PIN B11 IOSTANDARD LVCMOS33} [get_ports rmii_ref_clk]
 create_clock -period 20.000 -name rmii_ref_clk -waveform {0.000 10.000} -add [get_ports rmii_ref_clk]
 set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports rmii_ref_clk]]
+

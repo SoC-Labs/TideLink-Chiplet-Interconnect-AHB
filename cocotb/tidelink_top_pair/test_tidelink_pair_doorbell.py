@@ -644,7 +644,15 @@ async def run_bringup_full(tb):
     snap_p1 = await run_bringup_through_phase1(tb)
     await tb.do_to_data_mode()
     # Allow time for the LL swreset cascade + cr_pkt+crack_pkt exchange.
-    await ClockCycles(tb.dut.hclk, 5000)
+    #
+    # SCALES WITH THE D2D RATE. This is an HCLK count waiting on a LINK-domain
+    # exchange: the FCSM must emit SOCL_L6_MIN_CR_EMITS then
+    # SOCL_L7_MIN_CRACK_EMITS packets, and those are paced by the link word
+    # clock = hclk/(16*div). A fixed 5000 silently encodes "div==1" — at /16 it
+    # buys a sixteenth of the link cycles and the snapshot is taken with the
+    # FCSM still in state 2 (emit-CRACK), cr=1 crack=0. That reads exactly like
+    # a PHY rate limit and is not one.
+    await ClockCycles(tb.dut.hclk, 5000 * (1 << int(tb.dut.link_div_ratio.value)))
     snap_p2 = await tb.snapshot("after to_data_mode")
     return snap_p1, snap_p2
 
@@ -1229,13 +1237,17 @@ async def test_10_sustained_doorbell_replenish(dut):
         # Clear receiver acc first (read-to-clear).
         await recv_apb.read(APB_DOORBELL_RESP_ACC)
         await ClockCycles(tb.dut.hclk, 20)
+        # Same hclk-counting-a-link-event scaling as run_bringup_full and
+        # test_11. Third instance of one confirmed bug class in this file, not
+        # three separate numbers tuned until the suite went green.
+        _div = 1 << int(tb.dut.link_div_ratio.value)
         for _ in range(RINGS_PER_BATCH):
             await ring_apb.write(APB_DOORBELL, 1)
             # Space rings so each crosses as its own FC data packet, exercising
             # ne_rx_ptr advance + ACK return per packet.
-            await ClockCycles(tb.dut.hclk, 150)
+            await ClockCycles(tb.dut.hclk, 150 * _div)
         # Let the last rings + their ACKs settle.
-        await ClockCycles(tb.dut.hclk, 600)
+        await ClockCycles(tb.dut.hclk, 600 * _div)
         acc = await recv_apb.read(APB_DOORBELL_RESP_ACC)
         tb.log.info(f"  [{label}] batch DOORBELL_RESP_ACC = {acc}")
         return acc

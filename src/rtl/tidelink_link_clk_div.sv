@@ -85,17 +85,30 @@ module tidelink_link_clk_div #(
     // /16 during a /1 -> /2 write would briefly retime the PHY reference.
     reg [2:0] ratio_meta_r;
     reg [2:0] ratio_sync_r;
+    reg [2:0] ratio_hold_r;
     reg [2:0] ratio_r;
 
     always @(posedge clk_in or negedge rst_n) begin
         if (!rst_n) begin
             ratio_meta_r <= RATIO_RESET;
             ratio_sync_r <= RATIO_RESET;
+            ratio_hold_r <= RATIO_RESET;
             ratio_r      <= RATIO_RESET;
         end else begin
             ratio_meta_r <= ratio_i;
             ratio_sync_r <= ratio_meta_r;
-            if (ratio_sync_r == ratio_meta_r) begin
+            ratio_hold_r <= ratio_sync_r;
+            // COMPARE TWO POST-SYNCHRONISER STAGES, never the stage-1 flop.
+            // This previously read `ratio_sync_r == ratio_meta_r`, which put
+            // ratio_meta_r -- the metastability-catching flop -- inside the
+            // comparator that gates ratio_r's update. That is the thing 2FF
+            // discipline exists to forbid: a metastable stage-1 value makes the
+            // ENABLE unreliable. The captured DATA was always the clean stage-2
+            // value, so the practical exposure was a mis-timed adopt on a
+            // quasi-static input rather than a corrupt ratio -- but "benign
+            // because the input is quasi-static" is a usage constraint nothing
+            // enforces, and this costs one flop.
+            if (ratio_sync_r == ratio_hold_r) begin
                 ratio_r <= ratio_sync_r;
             end
         end

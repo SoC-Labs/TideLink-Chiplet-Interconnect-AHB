@@ -254,6 +254,55 @@ module WavD2DGpio #(
   //   io_swi_sync_insert_en_in = 0 (the V1 / default-V2 tie) the gate is
   //   BIT-IDENTICAL to today.
   input          io_swi_sync_force_always_in,
+  // SoC Labs HAZARD-3 / N2 fix (2026-08-18) — AUTO_ANCHOR gets its OWN
+  // idle-qualified force path, structurally separate from
+  // io_swi_sync_force_always_in above.
+  //   io_swi_auto_anchor_force_in: apb_clk-domain AUTO_ANCHOR recovery-beacon
+  //   pulse (axi_chiplet_controller.sv auto_anchor_pulse_q), routed straight
+  //   through Wlink.v / WlinkGPIOPHY_v2.v. It USED to be OR'd directly into
+  //   io_swi_sync_force_always_in, which collapses tx_sync_en_w to
+  //   io_swi_sync_insert_en_in alone — dropping BOTH io_link_tx_tx_idle AND
+  //   the postcount==0 serialiser-drain guard, so the beacon could force a
+  //   SYNC insertion over a live app word mid-shift in the TX serializer.
+  //   FIX: this new term is qualified by io_link_tx_tx_idle (the link layer's
+  //   OWN "no packet queued" signal, in the io_link_tx_tx_link_clk domain —
+  //   the SAME fast domain as the serializer itself), NOT by postcount==0.
+  //   postcount==0 is architecturally unreachable on the shipping default:
+  //   swi_delay_cycles PORs to 0 (Wlink.v tdif-04, 2026-05-25), which pins
+  //   io_link_tx_tx_en effectively permanently asserted, and postcount only
+  //   ever reloads to a nonzero value (out_prepend_swi_post_count) every
+  //   cycle tx_en is high, decrementing only while tx_en is LOW — so routing
+  //   auto_anchor through the postcount-gated path would make the beacon
+  //   functionally inert on the exact vehicle it targets (AUTO_ANCHOR_EN=1).
+  //   KNOWN RESIDUAL #1 (documented, not closed here): io_link_tx_tx_idle
+  //   alone still carries the tail-latency race the postcount guard existed
+  //   to close — WlinkTxLinkLayer can assert idle fractionally before the
+  //   serialiser physically finishes shifting the CURRENT word. That window
+  //   is far narrower than today's fully-unconditional bypass (it only bites
+  //   at the exact data-mode handoff boundary, not the whole steady-state
+  //   window) but is not provably zero. Follow-up, not solved in this pass.
+  //   KNOWN RESIDUAL #2 (measured, 2026-08-18, cocotb/tidelink_top_pair_v2/
+  //   test_v2_auto_anchor.py's test_auto_anchor_delivers_under_skew): under a
+  //   SEVERE skew stress profile (EPOCH_PROFILE=staircase, 0..7-word per-lane
+  //   skew), io_link_tx_tx_idle was hierarchically monitored at ~3144 io_
+  //   link_tx_tx_link_clk edges per die across the whole bring-up+beacon
+  //   window and read 0 on EVERY sample — the link layer's own io_link_idle
+  //   (WlinkTxLinkLayer: state==0 & ~sop) never returns to idle under that
+  //   stress, so the new idle-qualified auto_anchor term never fires and the
+  //   corrector never reanchors (0 SYNC insertions measured). This is NOT a
+  //   testbench artifact: it is the SAME phenomenon the force_always OR-term
+  //   comment above already documents ("the idle-gated path is starved on
+  //   this silicon, HW 08-05, so the beacon MUST use force_always") — i.e. an
+  //   idle-gated approach was already known, before this fix, to be
+  //   insufficient for actually FIRING the beacon on a sufficiently marginal
+  //   link. This fix knowingly trades some of that firing effectiveness back
+  //   for data safety (never insert over a live word) — the right call for a
+  //   corruption hazard, but it means auto_anchor's ability to reanchor a
+  //   SEVERELY skewed link is now unproven and needs dedicated follow-up +
+  //   mandatory HW validation, not just confirmation that it no longer
+  //   corrupts data. Un-skewed / moderate scenarios (EPOCH_PROFILE=zero) are
+  //   unaffected — confirmed still passing after this fix.
+  input          io_swi_auto_anchor_force_in,
   // SoC Labs SYNC-insert TX OBSERVABILITY (2026-06-15, PART 1) — read-only.
   //   io_tx_sync_ins_cnt  : 16-bit SATURATING count of TX word-clock cycles the
   //                         inserter physically drove a SYNC word (saturates at
@@ -673,10 +722,20 @@ module WavD2DGpio #(
   // winscan scan window (winscan_force_sync), where beacons MUST fire
   // unconditionally; gating that on postcount could starve the scan and regress
   // anchoring. Deliberately untouched.
+  //
+  // HAZARD-3 / N2 fix (2026-08-18): auto_anchor no longer rides force_always.
+  // It gets its own term, io_swi_auto_anchor_force_in & io_link_tx_tx_idle —
+  // qualified by the fast-domain idle signal (NOT postcount==0, which is
+  // unreachable on the shipping default; see the port comment above) so the
+  // beacon can never fire while a real app word is mid-shift, while remaining
+  // reachable once the link is genuinely idle. Structurally separate from the
+  // io_swi_sync_force_always_in term so the SW-strap/winscan/peer-serve
+  // sources keep their existing unconditional (pre-data-window-only) behaviour.
   // ---------------------------------------------------------------------
   wire         tx_sync_en_w = ~por_reset_scan_wrs_io_reset_out
                             &  io_swi_sync_insert_en_in
                             & (io_swi_sync_force_always_in
+                               | (io_swi_auto_anchor_force_in & io_link_tx_tx_idle)
                                | (io_link_tx_tx_idle & (postcount == 8'h0)));
   tidelink_phy_sync_insert u_tx_sync_insert (
     .clk              (io_link_tx_tx_link_clk),

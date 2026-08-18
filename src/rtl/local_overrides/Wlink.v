@@ -240,6 +240,13 @@ module Wlink #(
   // its idle-gated production behaviour (bit-identical). When 1 the idle gate is
   // dropped so the beacon fires on enable alone (still self-gates ~training).
   input         swi_sync_force_always_in,
+  // SoC Labs HAZARD-3 / N2 fix (2026-08-18) — AUTO_ANCHOR's OWN idle-qualified
+  // force path, routed alongside swi_sync_force_always_in but kept
+  // structurally separate all the way down to WavD2DGpio_v2's tx_sync_en_w.
+  // Pass-through to WlinkGPIOPHY_v2.swi_auto_anchor_force; see that port's
+  // header comment (WavD2DGpio_v2.v) for the full rationale. V1 builds never
+  // see this port (the whole AUTO_ANCHOR beacon is a V2-only feature).
+  input         swi_auto_anchor_force_in,
   // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) — SW
   // LANE_MASK strap for the PHY's RX SYNC detector (PART 3, default 0xFF,
   // Region 9 slot 2 SoC addr 0x44032128), routed from the chiplet controller.
@@ -1448,6 +1455,7 @@ module Wlink #(
     .link_tx_tx_idle(lltx_io_link_idle),       // SYNC-insert: LL inter-packet idle gate (V2)
     .swi_sync_insert_en(swi_sync_insert_en_in),// SYNC-insert: APB feature enable (DEFAULT 0)
     .swi_sync_force_always(swi_sync_force_always_in), // PART2 gate fix: drop idle term (DEFAULT 0)
+    .swi_auto_anchor_force(swi_auto_anchor_force_in), // HAZARD-3/N2 fix: auto_anchor's own idle-qualified force (DEFAULT 0)
     // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 1/2/3): SW
     // LANE_MASK strap in, mask-aware per-lane detect outputs out.
     .sync_lane_mask_in(swi_sync_lane_mask_in), // PART3 SW LANE_MASK strap (default 0xFF)

@@ -6659,7 +6659,15 @@ module axi_chiplet_controller #(
         // 0 the SYNC beacon keeps its idle-gated production behaviour
         // (bit-identical); when 1 the PHY drops the idle gate so the beacon
         // fires on enable alone (still self-gates ~training). Pure SW strap.
-        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r | auto_anchor_pulse_q),
+        // HAZARD-3 / N2 fix (2026-08-18): auto_anchor_pulse_q REMOVED from this
+        // OR (it used to ride here, alongside winscan_force_sync/ws_serve_active_r
+        // — both structurally confined to pre-data windows, unlike auto_anchor_
+        // link_up which stays true through ordinary steady-state data mode).
+        // force_always collapses tx_sync_en_w to insert_en alone, dropping BOTH
+        // io_link_tx_tx_idle and the postcount==0 drain guard — a live app word
+        // mid-shift in the TX serializer could be corrupted. auto_anchor now
+        // gets its own idle-qualified path below (swi_auto_anchor_force_in).
+        .swi_sync_force_always_in   (swi_sync_force_always_r | winscan_force_sync | ws_serve_active_r),
         // SoC Labs RX mask-aware SYNC-beacon DETECT (2026-06-15, PARTs 2/3) —
         // SW LANE_MASK strap (Region 9 slot 2, 0x44032128, default 0xFF) +
         // SWI_SYNC_ROBUST_DETECT (Region 8 slot 0 bit[4], default 0). Default
@@ -6669,6 +6677,16 @@ module axi_chiplet_controller #(
         // [12:8]. Reset 0 (exact) -> bit-identical. Sweep 0..5 on marginal silicon.
         .swi_sync_tol_in            (swi_sync_tol_r),
         .swi_sync_robust_detect_in  (swi_sync_robust_detect_r | winscan_force_sync | ws_serve_active_r | auto_anchor_pulse_q),
+        // HAZARD-3 / N2 fix (2026-08-18): auto_anchor_pulse_q's OWN force path,
+        // structurally separate from swi_sync_force_always_in above. Threaded
+        // through Wlink.v -> WlinkGPIOPHY_v2.v -> WavD2DGpio_v2.v, where it is
+        // qualified by io_link_tx_tx_idle (the link layer's own idle signal, in
+        // the serializer's own fast clock domain) before it can force a SYNC
+        // insertion — closing the word-mid-shift corruption window that the
+        // unconditional force_always route left open. See WavD2DGpio_v2.v's
+        // io_swi_auto_anchor_force_in port comment for the full rationale,
+        // including the documented residual and why postcount==0 is unusable.
+        .swi_auto_anchor_force_in   (auto_anchor_pulse_q),
 `endif
         .swi_training_mode_in       (swi_training_mode_w),
         // §9.7: per-lane phase offset = calibrator OR Region 8

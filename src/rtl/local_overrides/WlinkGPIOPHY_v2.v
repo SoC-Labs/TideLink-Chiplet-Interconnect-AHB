@@ -135,6 +135,12 @@ module WlinkGPIOPHY #(
   //   SWI_SYNC_FORCE_ALWAYS, SoC addr 0x44032100). Pass-through to WavD2DGpio.
   //   Tie 0 = original idle-gated production behaviour (bit-identical).
   input          swi_sync_force_always,
+  // SoC Labs HAZARD-3 / N2 fix (2026-08-18) — AUTO_ANCHOR's OWN idle-qualified
+  // force path, structurally separate from swi_sync_force_always above. Pure
+  // pass-through to WavD2DGpio.io_swi_auto_anchor_force_in; see that port's
+  // header comment (WavD2DGpio_v2.v) for the full rationale. Tie 0 in
+  // environments without the chiplet controller (bit-identical default-off).
+  input          swi_auto_anchor_force,
   // SoC Labs SYNC-insert TX OBSERVABILITY (2026-06-15, PART 1) — read-only.
   //   Pass-through from WavD2DGpio. 16-bit saturating SYNC-insert count + two
   //   live level bits, all in the TX word-clk domain (CDC'd to apb_clk in the
@@ -300,6 +306,7 @@ module WlinkGPIOPHY #(
     .io_link_tx_tx_idle(link_tx_tx_idle),          // SYNC-insert: LL inter-packet idle gate
     .io_swi_sync_insert_en_in(swi_sync_insert_en), // SYNC-insert: APB feature enable (DEFAULT 0)
     .io_swi_sync_force_always_in(swi_sync_force_always), // PART2 gate fix: drop idle term (DEFAULT 0)
+    .io_swi_auto_anchor_force_in(swi_auto_anchor_force), // HAZARD-3/N2 fix: auto_anchor's own idle-qualified force (DEFAULT 0)
     .io_tx_sync_ins_cnt(tx_sync_ins_cnt),          // PART1 obs: TX SYNC-insert sat. count
     .io_tx_link_idle_level(tx_link_idle_level),    // PART1 obs: live tx_idle level
     .io_tx_training_level(tx_training_level),       // PART1 obs: live training level

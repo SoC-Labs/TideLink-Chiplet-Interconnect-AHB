@@ -6,7 +6,7 @@
 
 ENVS = tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion \
        tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp tidelink_ptp_servo \
-       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check tidelink_eye_regs tidelink_phy_align_calibrator \
+       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check tidelink_link_clk_div tidelink_eye_regs tidelink_phy_align_calibrator \
        wav_d2d_gpio_tx wavd2d_gpiorx_clkbuf wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off wavd2d_gpiorx_t3a_timeout
 
 # ── Per-environment targets ──────────────────────────────────────────────────
@@ -35,6 +35,38 @@ $(foreach env,$(ENVS),$(eval $(call run_env,$(env))))
 # ── Regression target ────────────────────────────────────────────────────────
 .PHONY: regression
 regression: $(ENVS)
+
+# ── D2D link-rate gates ──────────────────────────────────────────────────────
+# The divider lets the D2D bit rate be lowered without moving the SoC clock.
+# These run the EXISTING tidelink_top_pair bring-up suite at divided ratios via
+# +LINK_DIV_RATIO — deliberately not a bespoke test, because the strongest
+# evidence a divided link works is the suite the project already trusts passing
+# unmodified.
+#
+# TWO TIERS, because the full sweep is ~18 min and an 18-minute default gate
+# gets switched off:
+#   link_rate_quick  /1 + /4    ~3.5 min   /1 is the control that proves the tb
+#                                          hook is inert; /4 proves a divided
+#                                          link trains and carries traffic.
+#   link_rate_full   /1../16    ~18 min    complete coverage, for the non-quick
+#                                          tier alongside the other long poles.
+#
+# NOT in ENVS on purpose: tidelink_top_pair is not in ENVS either, and whether
+# the pair suite should be gated at all is a policy question for the regression
+# owner, not something to change as a side effect of adding a rate check.
+link_rate_quick:
+	@for r in 0 2; do \
+	  echo "== tidelink_top_pair @ /$$((1<<$$r)) =="; \
+	  $(MAKE) -C tidelink_top_pair PLUSARGS=+LINK_DIV_RATIO=$$r || exit 1; \
+	done
+
+link_rate_full:
+	@for r in 0 1 2 3 4; do \
+	  echo "== tidelink_top_pair @ /$$((1<<$$r)) =="; \
+	  $(MAKE) -C tidelink_top_pair PLUSARGS=+LINK_DIV_RATIO=$$r || exit 1; \
+	done
+
+.PHONY: link_rate_quick link_rate_full
 	@echo "========================================"
 	@echo " Regression Summary"
 	@echo "========================================"

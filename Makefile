@@ -762,7 +762,8 @@ sim_gate_axi_datanode_recovery:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_soak_multi_drain && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_bid_corrupt_wedges_no_fix && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_bid_corrupt_recovers_fixk && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery writehold)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery writehold && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery wrhold_drain_guard)
 
 # ── AXI data-node COVERAGE GAPS (2026-08-02) ─────────────────────────────────
 # Closes two holes the B-node suite above left open, found reviewing the

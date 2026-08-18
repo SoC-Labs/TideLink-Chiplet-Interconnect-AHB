@@ -148,6 +148,31 @@ writehold_prefix:
 	$(MAKE) SIM_BUILD=sim_build_writehold_prefix MODULE=test_axi_datanode_writehold \
 	        EXTRA_DEFINES=+define+TIDELINK_DISABLE_WR_HOLD TESTCASE=$(T)
 
+# TL-043 — synth_b_pending drain-guard LEVEL defeats wr_hold_r for ANY
+# concurrent write, not just the stuck one the drain exists to rescue
+# (test_tl002_wrhold_drain_guard.py). SHORT I5 outstanding-response timeout so
+# the drain is sim-reachable (same 2^13 value as N1/gaps-backstop/TL-037); own
+# sim_build. One test per sim (a second run_bringup_full does not re-POR
+# cleanly, same as every other suite here).
+#   test_second_write_survives_drain_guard — white-box INVARIANT (primary):
+#      a second, unrelated peer write's wr_hold_r must latch and hold despite
+#      a concurrent synth-B drain. FAILS pre-fix (or with
+#      +define+TIDELINK_WR_HOLD_CLR_LEVEL_MUTANT, which recreates the pre-fix
+#      LEVEL guard) — the second write's wr_hold_r never latches.
+#   test_second_write_data_landing — data-landing corroboration: measured
+#      non-vacuous (unlike writehold's own #2, which stays skip=True), so it
+#      is a REAL blocking test here, not force-run-only. Pre-fix the payload
+#      lands 0x00000000 (dropped) at the far terminus; post-fix byte-exact.
+WRHOLD_DRAIN_GUARD_LOG2  ?= 13
+WRHOLD_DRAIN_GUARD_TESTS := test_second_write_survives_drain_guard \
+                            test_second_write_data_landing
+.PHONY: wrhold_drain_guard $(WRHOLD_DRAIN_GUARD_TESTS)
+$(WRHOLD_DRAIN_GUARD_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_wrhold_drain_guard MODULE=test_tl002_wrhold_drain_guard \
+	        EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=$(WRHOLD_DRAIN_GUARD_LOG2) \
+	        TESTCASE=$@
+wrhold_drain_guard: ; @for t in $(WRHOLD_DRAIN_GUARD_TESTS); do $(MAKE) $$t || exit 1; done
+
 # TL-042 v2 — wr_hold_r starvation escape (the self-latch measured on die_a,
 # imp/hw_gate/ila_tl035_run_round2/). SHORT backstop threshold so the 2**16 age
 # fits in a sim; TL042_TIMEOUT_LOG2 must match the define. Own sim_build, one
@@ -171,7 +196,8 @@ tl042v2: ; @for t in $(TL042V2_TESTS); do $(MAKE) $$t || exit 1; done
 
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
-	       sim_build_writehold* sim_build_tl042v2* $(LOCAL_FLIST)
+	       sim_build_writehold* sim_build_tl042v2* sim_build_wrhold_drain_guard* \
+	       $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification
